@@ -33,10 +33,6 @@ pub struct BlockCtx {
     pub variant: LadderVariant,
     /// Master tune + pitch bend, in semitones.
     pub base_semis: f32,
-    pub env1_adsr: (f32, f32, f32, f32),
-    pub env1_shape: AdsrShape,
-    pub env2_adsr: (f32, f32, f32, f32),
-    pub env2_shape: AdsrShape,
     /// LFO value for this block (bipolar `[-1, 1]`, held across the block).
     pub lfo_val: f32,
     pub matrix: ModMatrix,
@@ -110,6 +106,22 @@ impl Voice {
         self.gate = false;
     }
 
+    /// Apply envelope parameters. The engine calls this only when an envelope
+    /// param actually changes (the derived coefficients need an `exp()` per
+    /// segment), so the per-block render loop stays free of transcendentals.
+    pub fn set_envelopes(
+        &mut self,
+        env1: (f32, f32, f32, f32),
+        env1_shape: AdsrShape,
+        env2: (f32, f32, f32, f32),
+        env2_shape: AdsrShape,
+    ) {
+        self.env1.set_params(env1.0, env1.1, env1.2, env1.3);
+        self.env1.set_shape(env1_shape);
+        self.env2.set_params(env2.0, env2.1, env2.2, env2.3);
+        self.env2.set_shape(env2_shape);
+    }
+
     #[inline]
     pub fn is_free(&self) -> bool {
         !self.active
@@ -126,11 +138,6 @@ impl Voice {
         if !self.active {
             return;
         }
-
-        self.env1.set_params(ctx.env1_adsr.0, ctx.env1_adsr.1, ctx.env1_adsr.2, ctx.env1_adsr.3);
-        self.env1.set_shape(ctx.env1_shape);
-        self.env2.set_params(ctx.env2_adsr.0, ctx.env2_adsr.1, ctx.env2_adsr.2, ctx.env2_adsr.3);
-        self.env2.set_shape(ctx.env2_shape);
 
         let kf = self.key_follow();
         let lfo = ctx.lfo_val;

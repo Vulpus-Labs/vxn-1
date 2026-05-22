@@ -11,8 +11,18 @@ pub mod voice;
 pub use modmatrix::{ModDest, ModMatrix, ModSource};
 pub use params::{PARAMS, ParamDesc, ParamId, ParamKind, ParamValues};
 
-use vxn_dsp::{CONTROL_BLOCK, LfoCore, MAX_VOICES, StereoChorus, StereoDelay, note_to_hz};
+use vxn_dsp::{AdsrShape, CONTROL_BLOCK, LfoCore, MAX_VOICES, StereoChorus, StereoDelay, note_to_hz};
 use voice::{BlockCtx, Voice};
+
+/// Snapshot of the envelope-shaping parameters. Used to skip recomputing ADSR
+/// coefficients (which cost an `exp()` per segment) unless a knob actually moved.
+#[derive(Clone, Copy, PartialEq)]
+struct EnvSnapshot {
+    env1: (f32, f32, f32, f32),
+    env1_shape: AdsrShape,
+    env2: (f32, f32, f32, f32),
+    env2_shape: AdsrShape,
+}
 
 /// Re-export so the plugin shell can flush denormals without depending on
 /// `vxn-dsp` directly.
@@ -29,6 +39,8 @@ pub struct Synth {
     /// Pitch bend in semitones (±2 by default range).
     bend_semis: f32,
     alloc_counter: u64,
+    /// Last envelope params pushed to the voices; `None` forces a refresh.
+    last_env: Option<EnvSnapshot>,
 }
 
 impl Synth {
@@ -48,6 +60,7 @@ impl Synth {
             delay: StereoDelay::new(sample_rate, 2.0),
             bend_semis: 0.0,
             alloc_counter: 0,
+            last_env: None,
         }
     }
 
@@ -62,6 +75,8 @@ impl Synth {
         self.lfo = LfoCore::new(sample_rate / CONTROL_BLOCK as f32, 0x51A7);
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
+        // Envelope cores were recreated with zeroed coefficients; force a refresh.
+        self.last_env = None;
     }
 
     pub fn params(&self) -> &ParamValues {
@@ -136,6 +151,10 @@ impl Synth {
     /// Render `out_l`/`out_r` (equal length). No events occur within this span;
     /// the caller splits the host buffer at event boundaries.
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        // Params are constant across a process call; refresh envelope coeffs at
+        // most once, and only when they actually changed.
+        self.sync_envelopes();
+
         let n = out_l.len().min(out_r.len());
         let mut start = 0;
         while start < n {
@@ -169,6 +188,35 @@ impl Synth {
             }
             start += block;
         }
+    }
+
+    /// Push envelope params to all voices when they change. Applies to every
+    /// voice (active or not) so a later-reused voice already has fresh coeffs.
+    fn sync_envelopes(&mut self) {
+        let p = &self.params;
+        let snap = EnvSnapshot {
+            env1: (
+                p.get(ParamId::Env1Attack),
+                p.get(ParamId::Env1Decay),
+                p.get(ParamId::Env1Sustain),
+                p.get(ParamId::Env1Release),
+            ),
+            env1_shape: p.env1_shape(),
+            env2: (
+                p.get(ParamId::Env2Attack),
+                p.get(ParamId::Env2Decay),
+                p.get(ParamId::Env2Sustain),
+                p.get(ParamId::Env2Release),
+            ),
+            env2_shape: p.env2_shape(),
+        };
+        if self.last_env == Some(snap) {
+            return;
+        }
+        for v in &mut self.voices {
+            v.set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
+        }
+        self.last_env = Some(snap);
     }
 
     fn update_effects(&mut self) {
@@ -219,20 +267,6 @@ impl Synth {
             drive: p.get(ParamId::Drive),
             variant: p.filter_variant(),
             base_semis: p.get(ParamId::MasterTune) + self.bend_semis,
-            env1_adsr: (
-                p.get(ParamId::Env1Attack),
-                p.get(ParamId::Env1Decay),
-                p.get(ParamId::Env1Sustain),
-                p.get(ParamId::Env1Release),
-            ),
-            env1_shape: p.env1_shape(),
-            env2_adsr: (
-                p.get(ParamId::Env2Attack),
-                p.get(ParamId::Env2Decay),
-                p.get(ParamId::Env2Sustain),
-                p.get(ParamId::Env2Release),
-            ),
-            env2_shape: p.env2_shape(),
             lfo_val,
             matrix,
         }
