@@ -12,10 +12,10 @@ pub use modmatrix::{ModDest, ModMatrix, ModSource};
 pub use params::{PARAMS, ParamDesc, ParamId, ParamKind, ParamValues};
 
 use vxn_dsp::{
-    AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, MAX_VOICES, Oversampler, StereoChorus,
-    StereoDelay, note_to_hz,
+    AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, StereoChorus, StereoDelay,
+    note_to_hz,
 };
-use voice::{BlockCtx, Voice};
+use voice::{BlockCtx, VoiceBank};
 
 /// Snapshot of the envelope-shaping parameters. Used to skip recomputing ADSR
 /// coefficients (which cost an `exp()` per segment) unless a knob actually moved.
@@ -35,7 +35,7 @@ pub use vxn_dsp::enable_flush_to_zero;
 pub struct Synth {
     sample_rate: f32,
     params: ParamValues,
-    voices: Vec<Voice>,
+    bank: VoiceBank,
     lfo: LfoCore,
     chorus: StereoChorus,
     delay: StereoDelay,
@@ -52,16 +52,13 @@ pub struct Synth {
 
 impl Synth {
     pub fn new(sample_rate: f32) -> Self {
-        let voices = (0..MAX_VOICES)
-            .map(|i| Voice::new(sample_rate, i as u64 + 1))
-            .collect();
         // The LFO ticks once per control block, so its effective sample rate
         // is the control rate. Max LFO rate (40 Hz) still has ample steps/cycle.
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         Self {
             sample_rate,
             params: ParamValues::default(),
-            voices,
+            bank: VoiceBank::new(sample_rate),
             lfo: LfoCore::new(control_rate, 0x51A7),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
@@ -78,9 +75,7 @@ impl Synth {
             return;
         }
         self.sample_rate = sample_rate;
-        for v in &mut self.voices {
-            v.set_sample_rate(sample_rate);
-        }
+        self.bank.set_sample_rate(sample_rate);
         self.lfo = LfoCore::new(sample_rate / CONTROL_BLOCK as f32, 0x51A7);
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
@@ -109,54 +104,23 @@ impl Synth {
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
         self.alloc_counter += 1;
-        let tick = self.alloc_counter;
-        let idx = self.allocate_voice(note);
-        self.voices[idx].note_on(note, velocity, tick);
+        self.bank.note_on(note, velocity, self.alloc_counter);
     }
 
     pub fn note_off(&mut self, note: u8) {
-        for v in &mut self.voices {
-            if v.active && v.gate && v.note == note {
-                v.note_off();
-            }
-        }
+        self.bank.note_off(note);
     }
 
     pub fn all_notes_off(&mut self) {
-        for v in &mut self.voices {
-            v.note_off();
-        }
+        self.bank.all_notes_off();
     }
 
     pub fn reset(&mut self) {
-        for v in &mut self.voices {
-            v.reset_state();
-        }
+        self.bank.reset_all();
         self.chorus.clear();
         self.delay.clear();
         self.lfo.reset();
         self.oversampler.reset();
-    }
-
-    /// Pick a voice: prefer a free one, else steal the oldest (lowest stamp).
-    fn allocate_voice(&mut self, note: u8) -> usize {
-        // Re-use a voice already playing this note (mono-legato within a key).
-        if let Some(i) = self.voices.iter().position(|v| v.active && v.note == note) {
-            return i;
-        }
-        if let Some(i) = self.voices.iter().position(|v| v.is_free()) {
-            return i;
-        }
-        // Steal oldest.
-        let mut best = 0;
-        let mut best_tick = u64::MAX;
-        for (i, v) in self.voices.iter().enumerate() {
-            if v.alloc_tick < best_tick {
-                best_tick = v.alloc_tick;
-                best = i;
-            }
-        }
-        best
     }
 
     /// Render `out_l`/`out_r` (equal length). No events occur within this span;
@@ -183,9 +147,7 @@ impl Synth {
             // back to the base rate before the effects.
             let mut mono_os = [0.0f32; CONTROL_BLOCK * MAX_OVERSAMPLE];
             let mono_os = &mut mono_os[..block * os];
-            for v in &mut self.voices {
-                v.render_block(mono_os, &ctx);
-            }
+            self.bank.render_block(mono_os, &ctx);
 
             let mut mono = [0.0f32; CONTROL_BLOCK];
             let mono = &mut mono[..block];
@@ -236,9 +198,8 @@ impl Synth {
         if self.last_env == Some(snap) {
             return;
         }
-        for v in &mut self.voices {
-            v.set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
-        }
+        self.bank
+            .set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
         self.last_env = Some(snap);
     }
 
@@ -380,7 +341,7 @@ mod tests {
         for n in 0..40u8 {
             s.note_on(n, 1.0);
         }
-        let active = s.voices.iter().filter(|v| v.active).count();
-        assert!(active <= MAX_VOICES, "too many active voices: {active}");
+        let active = s.bank.active_count();
+        assert!(active <= vxn_dsp::MAX_VOICES, "too many active voices: {active}");
     }
 }

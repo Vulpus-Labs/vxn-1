@@ -1,25 +1,28 @@
-//! A single synth voice: two oscillators + noise → mixer → ladder VCF → VCA,
-//! with two assignable ADSR envelopes feeding a modulation matrix.
+//! Structure-of-arrays voice bank: all 16 voices processed together so the
+//! oscillator/filter/noise hot path vectorises across voices (see
+//! `vxn_dsp::poly`). Envelopes stay scalar (one [`AdsrCore`] per voice) and
+//! tick at the base rate; the oscillators and ladder run at the oversampled
+//! rate.
 //!
-//! Modulation model (Jupiter-8-shaped, generalised): ENV-1, ENV-2, the LFO,
+//! Modulation model (Jupiter-8-shaped, generalised): ENV-1, ENV-2, LFO,
 //! velocity and key-follow are sources; pitch, cutoff, amp and PWM are
-//! destinations. Pitch/cutoff/PWM are resolved once per control block (smooth
-//! enough at 32 samples); amp is summed per sample so the VCA envelope stays
-//! click-free.
+//! destinations. Pitch/cutoff/PWM are resolved once per control block; amp is
+//! evaluated per base frame (held across oversampled subframes).
 
-use crate::modmatrix::{ModDest, ModMatrix};
 use vxn_dsp::{
-    AdsrCore, AdsrShape, LadderCoeffs, LadderKernel, LadderVariant, NoiseColor, NoiseSource,
-    Oscillator, Waveform, fast_exp2, note_to_hz,
+    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyLadder, PolyNoise,
+    PolyOscillator, Waveform, fast_exp2, note_to_hz,
 };
 
-/// Everything a voice needs for one control block.
+use crate::modmatrix::{ModDest, ModMatrix};
+
+const N: usize = MAX_VOICES;
+
+/// Control-block context shared by all voices.
 pub struct BlockCtx {
-    /// Oversampled sample rate (`base_rate * oversample`). Oscillators and the
-    /// filter run at this rate; envelopes run at the base rate.
+    /// Oversampled sample rate (`base_rate * oversample`).
     pub os_sample_rate: f32,
-    /// Oversampling factor (1, 2 or 4): the number of audio samples produced
-    /// per base-rate frame.
+    /// Oversampling factor (1, 2 or 4).
     pub os: usize,
     pub osc1_wave: Waveform,
     pub osc2_wave: Waveform,
@@ -31,89 +34,77 @@ pub struct BlockCtx {
     pub osc1_semi: f32,
     pub osc2_semi: f32,
     pub noise_color: NoiseColor,
-    /// Base filter cutoff in Hz, before modulation.
     pub cutoff: f32,
     pub resonance: f32,
     pub drive: f32,
     pub variant: LadderVariant,
-    /// Master tune + pitch bend, in semitones.
     pub base_semis: f32,
-    /// LFO value for this block (bipolar `[-1, 1]`, held across the block).
     pub lfo_val: f32,
     pub matrix: ModMatrix,
 }
 
-pub struct Voice {
-    osc1: Oscillator,
-    osc2: Oscillator,
-    noise: NoiseSource,
-    ladder: LadderKernel,
-    /// ENV-1: assignable (defaults unrouted).
-    env1: AdsrCore,
-    /// ENV-2: the conventional amp envelope (defaults ENV-2→Amp = 1).
-    env2: AdsrCore,
+/// All 16 voices in structure-of-arrays form.
+pub struct VoiceBank {
+    osc1: PolyOscillator,
+    osc2: PolyOscillator,
+    noise: PolyNoise,
+    ladder: PolyLadder,
+    env1: [AdsrCore; N],
+    env2: [AdsrCore; N],
 
-    pub note: u8,
-    velocity: f32,
-    pub gate: bool,
-    pub active: bool,
-    trigger_pending: bool,
-    pub alloc_tick: u64,
+    note: [u8; N],
+    velocity: [f32; N],
+    gate: [bool; N],
+    active: [bool; N],
+    trigger_pending: [bool; N],
+    alloc_tick: [u64; N],
 }
 
-impl Voice {
-    pub fn new(sample_rate: f32, seed: u64) -> Self {
+impl VoiceBank {
+    pub fn new(sample_rate: f32) -> Self {
         Self {
-            osc1: Oscillator::new(),
-            osc2: Oscillator::new(),
-            noise: NoiseSource::new(seed.wrapping_mul(2_654_435_761) | 1),
-            ladder: LadderKernel::new(),
-            env1: AdsrCore::new(sample_rate),
-            env2: AdsrCore::new(sample_rate),
-            note: 0,
-            velocity: 0.0,
-            gate: false,
-            active: false,
-            trigger_pending: false,
-            alloc_tick: 0,
+            osc1: PolyOscillator::new(),
+            osc2: PolyOscillator::new(),
+            noise: PolyNoise::new(0x9E37_79B9),
+            ladder: PolyLadder::new(),
+            env1: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
+            env2: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
+            note: [0; N],
+            velocity: [0.0; N],
+            gate: [false; N],
+            active: [false; N],
+            trigger_pending: [false; N],
+            alloc_tick: [0; N],
         }
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.env1 = AdsrCore::new(sample_rate);
-        self.env2 = AdsrCore::new(sample_rate);
-        self.reset_state();
+        self.env1 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
+        self.env2 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
+        self.reset_all();
     }
 
-    pub fn reset_state(&mut self) {
-        self.osc1.reset();
-        self.osc2.reset();
+    pub fn reset_all(&mut self) {
+        self.osc1 = PolyOscillator::new();
+        self.osc2 = PolyOscillator::new();
         self.noise.reset();
         self.ladder.reset();
-        self.env1.reset();
-        self.env2.reset();
-        self.active = false;
-        self.gate = false;
+        for e in &mut self.env1 {
+            e.reset();
+        }
+        for e in &mut self.env2 {
+            e.reset();
+        }
+        self.active = [false; N];
+        self.gate = [false; N];
     }
 
-    pub fn note_on(&mut self, note: u8, velocity: f32, alloc_tick: u64) {
-        self.note = note;
-        self.velocity = velocity;
-        self.gate = true;
-        self.active = true;
-        self.trigger_pending = true;
-        self.alloc_tick = alloc_tick;
-        self.osc1.reset();
-        self.osc2.reset();
+    pub fn active_count(&self) -> usize {
+        self.active.iter().filter(|&&a| a).count()
     }
 
-    pub fn note_off(&mut self) {
-        self.gate = false;
-    }
-
-    /// Apply envelope parameters. The engine calls this only when an envelope
-    /// param actually changes (the derived coefficients need an `exp()` per
-    /// segment), so the per-block render loop stays free of transcendentals.
+    /// Apply envelope params to every voice (called by the engine only when an
+    /// envelope param changed).
     pub fn set_envelopes(
         &mut self,
         env1: (f32, f32, f32, f32),
@@ -121,90 +112,150 @@ impl Voice {
         env2: (f32, f32, f32, f32),
         env2_shape: AdsrShape,
     ) {
-        self.env1.set_params(env1.0, env1.1, env1.2, env1.3);
-        self.env1.set_shape(env1_shape);
-        self.env2.set_params(env2.0, env2.1, env2.2, env2.3);
-        self.env2.set_shape(env2_shape);
-    }
-
-    #[inline]
-    pub fn is_free(&self) -> bool {
-        !self.active
-    }
-
-    /// Key-follow source value: octaves relative to middle C (note 60).
-    #[inline]
-    fn key_follow(&self) -> f32 {
-        (self.note as f32 - 60.0) / 12.0
-    }
-
-    /// Render one control block, accumulating into the oversampled `out` buffer
-    /// (mono, length = `base_frames * ctx.os`).
-    ///
-    /// Envelopes tick once per base frame; the oscillators and filter run at the
-    /// oversampled rate (`ctx.os` samples per base frame). The amp envelope is
-    /// held across the oversampled subframes (it is far slower than audio rate).
-    pub fn render_block(&mut self, out: &mut [f32], ctx: &BlockCtx) {
-        if !self.active {
-            return;
+        for e in &mut self.env1 {
+            e.set_params(env1.0, env1.1, env1.2, env1.3);
+            e.set_shape(env1_shape);
         }
+        for e in &mut self.env2 {
+            e.set_params(env2.0, env2.1, env2.2, env2.3);
+            e.set_shape(env2_shape);
+        }
+    }
 
-        let kf = self.key_follow();
-        let lfo = ctx.lfo_val;
-        let vel = self.velocity;
+    /// Start a note. Phases reset (DCO behaviour); envelopes retrigger from
+    /// their current level.
+    pub fn note_on(&mut self, note: u8, velocity: f32, alloc_tick: u64) {
+        let v = self.allocate(note);
+        self.note[v] = note;
+        self.velocity[v] = velocity;
+        self.gate[v] = true;
+        self.active[v] = true;
+        self.trigger_pending[v] = true;
+        self.alloc_tick[v] = alloc_tick;
+        self.osc1.reset(v);
+        self.osc2.reset(v);
+    }
+
+    pub fn note_off(&mut self, note: u8) {
+        for v in 0..N {
+            if self.active[v] && self.gate[v] && self.note[v] == note {
+                self.gate[v] = false;
+            }
+        }
+    }
+
+    pub fn all_notes_off(&mut self) {
+        self.gate = [false; N];
+    }
+
+    /// Pick a voice: re-use one already playing this note, else a free voice,
+    /// else steal the oldest.
+    fn allocate(&self, note: u8) -> usize {
+        if let Some(v) = (0..N).find(|&v| self.active[v] && self.note[v] == note) {
+            return v;
+        }
+        if let Some(v) = (0..N).find(|&v| !self.active[v]) {
+            return v;
+        }
+        let mut best = 0;
+        let mut best_tick = u64::MAX;
+        for v in 0..N {
+            if self.alloc_tick[v] < best_tick {
+                best_tick = self.alloc_tick[v];
+                best = v;
+            }
+        }
+        best
+    }
+
+    /// Render one control block into the oversampled mono buffer `out`
+    /// (length = `base_frames * ctx.os`), accumulating all voices.
+    pub fn render_block(&mut self, out: &mut [f32], ctx: &BlockCtx) {
         let os = ctx.os;
-
-        // Block-start source vector (env levels sampled now). Order must match
-        // ModSource: [Env1, Env2, Lfo, Velocity, KeyFollow].
-        let srcs0 = [self.env1.level, self.env2.level, lfo, vel, kf];
-        let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs0);
-        let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs0);
-        let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs0);
-
-        let note = self.note as f32;
-        let semis1 = ctx.base_semis + note + ctx.osc1_semi + pitch_mod;
-        let semis2 = ctx.base_semis + note + ctx.osc2_semi + pitch_mod;
-        // Increments are relative to the oversampled rate.
-        self.osc1.set_increment(note_to_hz(semis1) / ctx.os_sample_rate);
-        self.osc2.set_increment(note_to_hz(semis2) / ctx.os_sample_rate);
-        self.osc1.pulse_width = (ctx.osc1_pw + pwm_mod).clamp(0.05, 0.95);
-        self.osc2.pulse_width = (ctx.osc2_pw + pwm_mod).clamp(0.05, 0.95);
-
-        // Cutoff modulation is in semitones above the base cutoff; coeffs at the
-        // oversampled rate.
-        let cutoff_hz = ctx.cutoff * fast_exp2(cutoff_mod / 12.0);
-        self.ladder.set_coeffs(LadderCoeffs::new(
-            cutoff_hz,
-            ctx.os_sample_rate,
-            ctx.resonance,
-            ctx.drive,
-            ctx.variant,
-        ));
-
-        let trig_at_start = std::mem::take(&mut self.trigger_pending);
         let base_frames = out.len() / os;
 
+        // ── Per-voice control-rate resolution (block start) ──
+        let mut pw1 = [0.5f32; N];
+        let mut pw2 = [0.5f32; N];
+        for v in 0..N {
+            let kf = key_follow(self.note[v]);
+            let srcs = [self.env1[v].level, self.env2[v].level, ctx.lfo_val, self.velocity[v], kf];
+            let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs);
+            let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs);
+            let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs);
+
+            let nf = self.note[v] as f32;
+            let s1 = ctx.base_semis + nf + ctx.osc1_semi + pitch_mod;
+            let s2 = ctx.base_semis + nf + ctx.osc2_semi + pitch_mod;
+            self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
+            self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
+            pw1[v] = (ctx.osc1_pw + pwm_mod).clamp(0.05, 0.95);
+            pw2[v] = (ctx.osc2_pw + pwm_mod).clamp(0.05, 0.95);
+
+            let cutoff_hz = ctx.cutoff * fast_exp2(cutoff_mod / 12.0);
+            self.ladder.set_coeffs(
+                v,
+                LadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, ctx.resonance, ctx.drive, ctx.variant),
+            );
+        }
+
+        let mut trig = [false; N];
+        trig.iter_mut()
+            .zip(self.trigger_pending.iter_mut())
+            .for_each(|(t, p)| *t = std::mem::take(p));
+
+        // Scratch lane buffers.
+        let mut o1 = [0.0f32; N];
+        let mut o2 = [0.0f32; N];
+        let mut nz = [0.0f32; N];
+        let mut mix = [0.0f32; N];
+        let mut filt = [0.0f32; N];
+        let mut amp = [0.0f32; N];
+
         for base_i in 0..base_frames {
-            let trg = trig_at_start && base_i == 0;
-            let e1 = self.env1.tick(trg, self.gate);
-            let e2 = self.env2.tick(trg, self.gate);
-            // VCA gain = the Amp column of the matrix; held across oversampled
-            // subframes. ENV-2→Amp defaults to 1.0.
-            let amp = ctx.matrix.dest(ModDest::Amp, &[e1, e2, lfo, vel, kf]).max(0.0);
+            // Envelopes + amp (base rate, scalar; gated to 0 for inactive voices).
+            for v in 0..N {
+                let t = trig[v] && base_i == 0;
+                let e1 = self.env1[v].tick(t, self.gate[v]);
+                let e2 = self.env2[v].tick(t, self.gate[v]);
+                amp[v] = if self.active[v] {
+                    let kf = key_follow(self.note[v]);
+                    ctx.matrix
+                        .dest(ModDest::Amp, &[e1, e2, ctx.lfo_val, self.velocity[v], kf])
+                        .max(0.0)
+                } else {
+                    0.0
+                };
+            }
 
             let frame = base_i * os;
             for k in 0..os {
-                let s1 = self.osc1.next(ctx.osc1_wave) * ctx.osc1_level;
-                let s2 = self.osc2.next(ctx.osc2_wave) * ctx.osc2_level;
-                let nz = self.noise.next(ctx.noise_color) * ctx.noise_level;
-                let filtered = self.ladder.tick(s1 + s2 + nz);
-                out[frame + k] += filtered * amp;
+                self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
+                self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
+                self.noise.process(ctx.noise_color, &mut nz);
+                for v in 0..N {
+                    mix[v] = o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
+                }
+                self.ladder.process(&mix, &mut filt);
+                let mut sum = 0.0;
+                for v in 0..N {
+                    sum += filt[v] * amp[v];
+                }
+                out[frame + k] += sum;
+            }
+
+            // Free voices whose envelopes have fully released.
+            for v in 0..N {
+                if self.active[v] && !self.gate[v] && self.env1[v].is_idle() && self.env2[v].is_idle() {
+                    self.active[v] = false;
+                }
             }
         }
-
-        // Free the voice once both envelopes have released and the gate is off.
-        if !self.gate && self.env1.is_idle() && self.env2.is_idle() {
-            self.active = false;
-        }
     }
+}
+
+/// Key-follow source value: octaves relative to middle C (note 60).
+#[inline]
+fn key_follow(note: u8) -> f32 {
+    (note as f32 - 60.0) / 12.0
 }

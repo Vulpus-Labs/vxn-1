@@ -28,6 +28,7 @@ pub mod math;
 pub mod noise;
 pub mod oscillator;
 pub mod phase;
+pub mod poly;
 pub mod smoothing;
 
 /// Maximum polyphony. Fixed so per-voice arrays can live on the stack and the
@@ -54,6 +55,7 @@ pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine};
 pub use noise::{BrownFilter, NoiseColor, NoiseSource, PinkFilter, xorshift64};
 pub use oscillator::{Oscillator, Waveform};
 pub use phase::{MonoPhaseAccumulator, polyblep};
+pub use poly::{PolyLadder, PolyNoise, PolyOscillator};
 pub use smoothing::{Smoothed, ms_to_samples, one_pole_coeff};
 
 /// Flush x86/ARM denormals-to-zero on the current thread. Call once at the top
