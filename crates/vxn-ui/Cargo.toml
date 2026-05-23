@@ -1,0 +1,16 @@
+[package]
+name = "vxn-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vxn-engine.workspace = true
+
+# Vizia editor, embedded into the host window via baseview. Pinned to a known
+# rev whose baseview speaks raw-window-handle 0.5 (matches clack's
+# `raw-window-handle_05` gui feature). See vxn1-ui-deps notes.
+vizia = { git = "https://github.com/vizia/vizia", rev = "1b1d1b6b30cf383bdb06e87611088026945f10c2", default-features = false, features = ["baseview"] }
+raw-window-handle = "0.5"

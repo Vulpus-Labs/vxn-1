@@ -10,8 +10,8 @@
 //! evaluated per base frame (held across oversampled subframes).
 
 use vxn_dsp::{
-    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyLadder, PolyNoise,
-    PolyOscillator, Waveform, fast_exp2, note_to_hz,
+    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyLadder,
+    PolyNoise, PolyOscillator, Waveform, fast_exp2, note_to_hz,
 };
 
 use crate::modmatrix::{ModDest, ModMatrix};
@@ -179,7 +179,13 @@ impl VoiceBank {
         let mut pw2 = [0.5f32; N];
         for v in 0..N {
             let kf = key_follow(self.note[v]);
-            let srcs = [self.env1[v].level, self.env2[v].level, ctx.lfo_val, self.velocity[v], kf];
+            let srcs = [
+                self.env1[v].level,
+                self.env2[v].level,
+                ctx.lfo_val,
+                self.velocity[v],
+                kf,
+            ];
             let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs);
             let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs);
             let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs);
@@ -195,9 +201,19 @@ impl VoiceBank {
             let cutoff_hz = ctx.cutoff * fast_exp2(cutoff_mod / 12.0);
             self.ladder.set_coeffs(
                 v,
-                LadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, ctx.resonance, ctx.drive, ctx.variant),
+                LadderCoeffs::new(
+                    cutoff_hz,
+                    ctx.os_sample_rate,
+                    ctx.resonance,
+                    ctx.drive,
+                    ctx.variant,
+                ),
             );
         }
+        // Ramp the ladder coefficients across this block's `base_frames * os`
+        // samples so block-rate cutoff/LFO/envelope steps become a smooth
+        // piecewise-linear coefficient trajectory (no zipper / staircase).
+        self.ladder.prepare_ramp(base_frames * os);
 
         let mut trig = [false; N];
         trig.iter_mut()
@@ -234,7 +250,8 @@ impl VoiceBank {
                 self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
                 self.noise.process(ctx.noise_color, &mut nz);
                 for v in 0..N {
-                    mix[v] = o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
+                    mix[v] =
+                        o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
                 }
                 self.ladder.process(&mix, &mut filt);
                 let mut sum = 0.0;
@@ -246,7 +263,11 @@ impl VoiceBank {
 
             // Free voices whose envelopes have fully released.
             for v in 0..N {
-                if self.active[v] && !self.gate[v] && self.env1[v].is_idle() && self.env2[v].is_idle() {
+                if self.active[v]
+                    && !self.gate[v]
+                    && self.env1[v].is_idle()
+                    && self.env2[v].is_idle()
+                {
                     self.active[v] = false;
                 }
             }

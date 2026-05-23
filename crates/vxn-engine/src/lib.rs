@@ -6,16 +6,20 @@
 
 pub mod modmatrix;
 pub mod params;
+pub mod shared;
+pub mod smoothing;
 pub mod voice;
 
 pub use modmatrix::{ModDest, ModMatrix, ModSource};
 pub use params::{PARAMS, ParamDesc, ParamId, ParamKind, ParamValues};
+pub use shared::SharedParams;
+use smoothing::ParamSmoother;
 
+use voice::{BlockCtx, VoiceBank};
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, StereoChorus, StereoDelay,
     note_to_hz,
 };
-use voice::{BlockCtx, VoiceBank};
 
 /// Snapshot of the envelope-shaping parameters. Used to skip recomputing ADSR
 /// coefficients (which cost an `exp()` per segment) unless a knob actually moved.
@@ -35,6 +39,9 @@ pub use vxn_dsp::enable_flush_to_zero;
 pub struct Synth {
     sample_rate: f32,
     params: ParamValues,
+    /// Glides gain-like params toward `params` to remove zipper noise. The
+    /// filter is smoothed separately by ladder coefficient interpolation.
+    smoother: ParamSmoother,
     bank: VoiceBank,
     lfo: LfoCore,
     chorus: StereoChorus,
@@ -55,9 +62,11 @@ impl Synth {
         // The LFO ticks once per control block, so its effective sample rate
         // is the control rate. Max LFO rate (40 Hz) still has ample steps/cycle.
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        let params = ParamValues::default();
         Self {
             sample_rate,
-            params: ParamValues::default(),
+            smoother: ParamSmoother::new(sample_rate, &params),
+            params,
             bank: VoiceBank::new(sample_rate),
             lfo: LfoCore::new(control_rate, 0x51A7),
             chorus: StereoChorus::new(sample_rate),
@@ -80,6 +89,8 @@ impl Synth {
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
         self.oversampler.reset();
+        self.smoother.set_sample_rate(sample_rate);
+        self.smoother.snap_all(&self.params);
         // Envelope cores were recreated with zeroed coefficients; force a refresh.
         self.last_env = None;
     }
@@ -121,6 +132,7 @@ impl Synth {
         self.delay.clear();
         self.lfo.reset();
         self.oversampler.reset();
+        self.smoother.snap_all(&self.params);
     }
 
     /// Render `out_l`/`out_r` (equal length). No events occur within this span;
@@ -141,6 +153,8 @@ impl Synth {
         let mut start = 0;
         while start < n {
             let block = (n - start).min(CONTROL_BLOCK);
+            // Advance gain-like smoothers toward the raw targets for this block.
+            self.smoother.tick_block(&self.params);
             let ctx = self.build_ctx(os);
 
             // Voices render into an oversampled mono mix, which is then decimated
@@ -156,11 +170,11 @@ impl Synth {
             // Effects (stereo), then write out.
             let chorus_on = self.params.bool(ParamId::ChorusOn);
             let delay_on = self.params.bool(ParamId::DelayOn);
-            let volume = self.params.get(ParamId::MasterVolume);
             self.update_effects();
 
             for (i, &m) in mono.iter().enumerate() {
-                let dry = m * volume;
+                // Master volume glides per sample (zipper-free gain automation).
+                let dry = m * self.smoother.next_volume();
                 let (mut l, mut r) = (dry, dry);
                 if chorus_on {
                     (l, r) = self.chorus.process(l, r);
@@ -204,7 +218,7 @@ impl Synth {
     }
 
     fn update_effects(&mut self) {
-        let p = &self.params;
+        let p = self.smoother.values();
         self.chorus.set_params(
             p.get(ParamId::ChorusRate),
             p.get(ParamId::ChorusDepth),
@@ -222,7 +236,7 @@ impl Synth {
     }
 
     fn build_ctx(&mut self, os: usize) -> BlockCtx {
-        let p = &self.params;
+        let p = self.smoother.values();
         let lfo_val = self.lfo.next(p.lfo_shape());
         self.lfo.set_rate(p.get(ParamId::LfoRate));
 
@@ -305,7 +319,11 @@ mod tests {
         // Render well past the release.
         let (tail, _) = render(&mut s, 48_000);
         let last = &tail[tail.len() - 4800..];
-        assert!(rms(last) < 1e-4, "did not release to silence: {}", rms(last));
+        assert!(
+            rms(last) < 1e-4,
+            "did not release to silence: {}",
+            rms(last)
+        );
     }
 
     #[test]
@@ -318,7 +336,10 @@ mod tests {
             s.note_on(n, 1.0);
         }
         let (l, r) = render(&mut s, 44_100);
-        assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "non-finite output");
+        assert!(
+            l.iter().chain(r.iter()).all(|x| x.is_finite()),
+            "non-finite output"
+        );
         let peak = l.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(peak < 20.0, "output blew up: peak {peak}");
     }
@@ -326,13 +347,20 @@ mod tests {
     #[test]
     fn vca_is_driven_by_env2_to_amp_route() {
         // Zeroing the ENV-2→Amp route should silence the voice even while held,
-        // proving the VCA gain comes from the modulation matrix.
+        // proving the VCA gain comes from the modulation matrix. The depth is a
+        // block-rate-smoothed param, so it glides to zero over ~10 ms; assert on
+        // the settled tail rather than the glide transient.
         let mut s = Synth::new(48_000.0);
         s.set_param(ParamId::ChorusOn.index(), 0.0);
         s.set_param(ParamId::Env2Amp.index(), 0.0);
         s.note_on(69, 1.0);
-        let (l, _) = render(&mut s, 4800);
-        assert!(rms(&l) < 1e-6, "Env2→Amp=0 should be silent, got {}", rms(&l));
+        let (l, _) = render(&mut s, 48_000);
+        let tail = &l[l.len() - 4800..];
+        assert!(
+            rms(tail) < 1e-6,
+            "Env2→Amp=0 should settle to silence, got {}",
+            rms(tail)
+        );
     }
 
     #[test]
@@ -342,6 +370,9 @@ mod tests {
             s.note_on(n, 1.0);
         }
         let active = s.bank.active_count();
-        assert!(active <= vxn_dsp::MAX_VOICES, "too many active voices: {active}");
+        assert!(
+            active <= vxn_dsp::MAX_VOICES,
+            "too many active voices: {active}"
+        );
     }
 }

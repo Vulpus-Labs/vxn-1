@@ -1,22 +1,28 @@
 //! VXN1 CLAP plugin shell (clack).
 //!
 //! Wires the framework-agnostic [`Synth`] engine to CLAP: a stereo output port,
-//! a CLAP note input, the full parameter set, and state save/restore. The UI is
-//! a separate crate added later via the `gui` extension.
+//! a CLAP note input, the full parameter set, state save/restore, and the
+//! `vxn-ui` Vizia editor via the `gui` extension. Parameters bridge the engine,
+//! the host and the UI through `vxn_engine::SharedParams`; [`local::LocalParams`]
+//! diffs that store to echo UI edits to the host without echoing host
+//! automation back (see its module docs).
 
-mod shared;
+mod gui;
+mod local;
 
+use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::Match;
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
-use shared::SharedParams;
+use local::LocalParams;
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::{Read, Write as _};
-use vxn_engine::{PARAMS, ParamId, ParamKind, Synth};
+use std::sync::Arc;
+use vxn_engine::{PARAMS, ParamId, ParamKind, SharedParams, Synth};
 
 /// Top-level plugin marker type.
 pub struct VxnPlugin;
@@ -31,47 +37,65 @@ impl Plugin for VxnPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
-            .register::<PluginState>();
+            .register::<PluginState>()
+            .register::<PluginGui>();
     }
 }
 
 impl DefaultPluginFactory for VxnPlugin {
     fn get_descriptor() -> PluginDescriptor {
         use clack_plugin::plugin::features::*;
-        PluginDescriptor::new("labs.vulpus.vxn1", "VXN1")
-            .with_features([SYNTHESIZER, INSTRUMENT, STEREO])
+        PluginDescriptor::new("labs.vulpus.vxn1", "VXN1").with_features([
+            SYNTHESIZER,
+            INSTRUMENT,
+            STEREO,
+        ])
     }
 
     fn new_shared(_host: HostSharedHandle) -> Result<VxnShared, PluginError> {
-        Ok(VxnShared { params: SharedParams::new() })
+        Ok(VxnShared {
+            params: Arc::new(SharedParams::new()),
+        })
     }
 
     fn new_main_thread<'a>(
         _host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        Ok(VxnMainThread { shared })
+        Ok(VxnMainThread {
+            shared,
+            params: LocalParams::new(&shared.params),
+            gui: None,
+        })
     }
 }
 
-/// Data shared between the main and audio threads.
+/// Data shared between the main and audio threads. The parameter store lives
+/// behind an `Arc` so the editor (created on the main thread) can hold a clone.
 pub struct VxnShared {
-    params: SharedParams,
+    params: Arc<SharedParams>,
 }
 
 impl PluginShared<'_> for VxnShared {}
 
-/// Main-thread state (parameter queries, state save/restore).
+/// Main-thread state (parameter queries, state save/restore). Holds a local
+/// parameter mirror used when the host flushes params while the plugin is
+/// inactive.
 pub struct VxnMainThread<'a> {
     shared: &'a VxnShared,
+    params: LocalParams,
+    /// The live editor window, while the GUI is open.
+    gui: Option<vxn_ui::EditorHandle>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
 
-/// Audio-thread processor: owns the synth engine and render scratch.
+/// Audio-thread processor: owns the synth engine, a local parameter mirror and
+/// render scratch.
 pub struct VxnAudioProcessor<'a> {
     synth: Synth,
     shared: &'a VxnShared,
+    local: LocalParams,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
 }
@@ -87,6 +111,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         let max = audio_config.max_frames_count as usize;
         Ok(Self {
             synth: Synth::new(audio_config.sample_rate as f32),
+            local: LocalParams::new(&shared.params),
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
@@ -99,8 +124,10 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Pick up any parameter changes made on the main thread / UI.
-        self.shared.params.snapshot_into(self.synth.params_mut());
+        // Fold UI edits made since the last process into the local mirror, then
+        // drive the engine from the working values (UI + last host state).
+        self.local.fetch_ui_changes(&self.shared.params);
+        self.local.write_to(self.synth.params_mut());
 
         let mut output_port = audio
             .output_port(0)
@@ -115,13 +142,31 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         // Disjoint field borrows so event handling and rendering can coexist.
         let synth = &mut self.synth;
-        let shared = &self.shared.params;
+        let local = &mut self.local;
         let l = &mut self.scratch_l[..frames];
         let r = &mut self.scratch_r[..frames];
 
         for event_batch in events.input.batch() {
             for event in event_batch.events() {
-                apply_event(synth, shared, event);
+                match event.as_core_event() {
+                    Some(CoreEventSpace::NoteOn(e)) => {
+                        if let Match::Specific(key) = e.key() {
+                            synth.note_on(key as u8, e.velocity() as f32);
+                        }
+                    }
+                    Some(CoreEventSpace::NoteOff(e)) => {
+                        if let Match::Specific(key) = e.key() {
+                            synth.note_off(key as u8);
+                        }
+                    }
+                    Some(CoreEventSpace::ParamValue(_)) => {
+                        // Host automation: fold into the mirror and the engine.
+                        if let Some((idx, value)) = local.apply_input(event) {
+                            synth.set_param(idx, value);
+                        }
+                    }
+                    _ => {}
+                }
             }
             let (sb, eb) = event_batch.sample_bounds();
             let start = match sb {
@@ -153,39 +198,17 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             }
         }
 
+        // Fold host automation into the shared store (so the UI/host observe it)
+        // and echo UI edits back to the host as gesture-bracketed param events.
+        self.local.publish(&self.shared.params);
+        self.local
+            .emit(&self.shared.params, events.output, frames as u32);
+
         Ok(ProcessStatus::Continue)
     }
 
     fn reset(&mut self) {
         self.synth.reset();
-    }
-}
-
-impl VxnAudioProcessor<'_> {}
-
-/// Apply a single input event to the engine. Free function so the caller can
-/// keep the synth and scratch buffers borrowed disjointly.
-fn apply_event(synth: &mut Synth, shared: &SharedParams, event: &UnknownEvent) {
-    match event.as_core_event() {
-        Some(CoreEventSpace::NoteOn(e)) => {
-            if let Match::Specific(key) = e.key() {
-                synth.note_on(key as u8, e.velocity() as f32);
-            }
-        }
-        Some(CoreEventSpace::NoteOff(e)) => {
-            if let Match::Specific(key) = e.key() {
-                synth.note_off(key as u8);
-            }
-        }
-        Some(CoreEventSpace::ParamValue(e)) => {
-            if let Some(pid) = e.param_id() {
-                let idx = pid.get() as usize;
-                let value = e.value() as f32;
-                shared.set(idx, value);
-                synth.set_param(idx, value);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -299,28 +322,32 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     fn text_to_value(&mut self, _param_id: ClapId, text: &CStr) -> Option<f64> {
         let s = text.to_str().ok()?;
         // Take the leading numeric token (ignore any unit suffix).
-        let num: String = s.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
+        let num: String = s
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect();
         num.parse::<f64>().ok()
     }
 
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
+        // Inactive-plugin param flush (main thread): fold host changes into the
+        // mirror and publish so `get_value`/the UI observe them.
         for event in input {
-            if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
-                if let Some(pid) = e.param_id() {
-                    self.shared.params.set(pid.get() as usize, e.value() as f32);
-                }
-            }
+            self.params.apply_input(event);
         }
+        self.params.publish(&self.shared.params);
     }
 }
 
 impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
-        let synth = &mut self.synth;
-        let shared = &self.shared.params;
         for event in input {
-            apply_event(synth, shared, event);
+            if let Some((idx, value)) = self.local.apply_input(event) {
+                self.synth.set_param(idx, value);
+            }
         }
+        self.local.publish(&self.shared.params);
     }
 }
 
