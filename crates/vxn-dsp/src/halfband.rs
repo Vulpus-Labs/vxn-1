@@ -13,7 +13,13 @@
 
 /// Non-zero off-centre taps for the default 33-tap halfband FIR.
 pub const DEFAULT_TAPS: [f32; 8] = [
-    -0.00188788, 0.00386248, -0.00824247, 0.01594711, -0.02867656, 0.05071856, -0.09801591,
+    -0.00188788,
+    0.00386248,
+    -0.00824247,
+    0.01594711,
+    -0.02867656,
+    0.05071856,
+    -0.09801591,
     0.31594176,
 ];
 pub const DEFAULT_CENTRE: f32 = 0.500_705_8;
@@ -105,7 +111,10 @@ impl Default for Oversampler {
 
 impl Oversampler {
     pub fn new() -> Self {
-        Self { stage_a: HalfbandFir::default(), stage_b: HalfbandFir::default() }
+        Self {
+            stage_a: HalfbandFir::default(),
+            stage_b: HalfbandFir::default(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -164,7 +173,9 @@ mod tests {
         for _ in 0..6 {
             os.decimate(&input, &mut output, 2);
         }
-        let peak = output[output.len() - 8..].iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        let peak = output[output.len() - 8..]
+            .iter()
+            .fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(peak < 0.05, "2x Nyquist leakage {peak}");
     }
 

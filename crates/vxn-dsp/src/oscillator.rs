@@ -20,7 +20,12 @@ pub enum Waveform {
 }
 
 impl Waveform {
-    pub const ALL: [Waveform; 4] = [Waveform::Sine, Waveform::Triangle, Waveform::Saw, Waveform::Pulse];
+    pub const ALL: [Waveform; 4] = [
+        Waveform::Sine,
+        Waveform::Triangle,
+        Waveform::Saw,
+        Waveform::Pulse,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -43,7 +48,10 @@ pub struct Oscillator {
 
 impl Oscillator {
     pub fn new() -> Self {
-        Self { acc: MonoPhaseAccumulator::new(), pulse_width: 0.5 }
+        Self {
+            acc: MonoPhaseAccumulator::new(),
+            pulse_width: 0.5,
+        }
     }
 
     pub fn reset(&mut self) {
@@ -103,7 +111,10 @@ mod tests {
             let mut osc = Oscillator::new();
             osc.set_increment(440.0 / 48000.0);
             let buf: Vec<f32> = (0..4800).map(|_| osc.next(wave)).collect();
-            assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 2.0), "{wave:?} bounds");
+            assert!(
+                buf.iter().all(|s| s.is_finite() && s.abs() <= 2.0),
+                "{wave:?} bounds"
+            );
             assert!(rms(&buf) > 0.1, "{wave:?} produced near-silence");
         }
     }

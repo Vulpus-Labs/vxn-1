@@ -64,7 +64,13 @@ impl AdsrCore {
         }
     }
 
-    pub fn set_params(&mut self, attack_secs: f32, decay_secs: f32, sustain: f32, release_secs: f32) {
+    pub fn set_params(
+        &mut self,
+        attack_secs: f32,
+        decay_secs: f32,
+        sustain: f32,
+        release_secs: f32,
+    ) {
         let a = attack_secs.max(1.0e-4);
         let d = decay_secs.max(1.0e-4);
         self.attack_inc = 1.0 / (a * self.sample_rate);

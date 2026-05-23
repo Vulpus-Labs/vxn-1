@@ -38,7 +38,13 @@ pub struct LadderCoeffs {
 }
 
 impl LadderCoeffs {
-    pub fn new(cutoff_hz: f32, sample_rate: f32, resonance: f32, drive: f32, variant: LadderVariant) -> Self {
+    pub fn new(
+        cutoff_hz: f32,
+        sample_rate: f32,
+        resonance: f32,
+        drive: f32,
+        variant: LadderVariant,
+    ) -> Self {
         let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
         let wd = (PI * fc / sample_rate).tan();
         let g_raw = wd / (1.0 + wd);
@@ -52,7 +58,12 @@ impl LadderCoeffs {
             LadderVariant::Sharp => 1.0,
             LadderVariant::Smooth => 1.0 - 0.0875 * k,
         };
-        Self { g, k, drive: drive.max(0.0), scale }
+        Self {
+            g,
+            k,
+            drive: drive.max(0.0),
+            scale,
+        }
     }
 }
 
@@ -69,7 +80,14 @@ pub struct LadderKernel {
 
 impl LadderKernel {
     pub fn new() -> Self {
-        Self { g: 0.5, k: 0.0, drive: 1.0, scale: 1.0, s: [0.0; 4], y4_prev: 0.0 }
+        Self {
+            g: 0.5,
+            k: 0.0,
+            drive: 1.0,
+            scale: 1.0,
+            s: [0.0; 4],
+            y4_prev: 0.0,
+        }
     }
 
     /// Replace coefficients (call once per control block).
@@ -117,7 +135,13 @@ mod tests {
     fn passes_dc_and_attenuates_hf() {
         let sr = 48_000.0;
         let mut k = LadderKernel::new();
-        k.set_coeffs(LadderCoeffs::new(1000.0, sr, 0.0, 1.0, LadderVariant::Sharp));
+        k.set_coeffs(LadderCoeffs::new(
+            1000.0,
+            sr,
+            0.0,
+            1.0,
+            LadderVariant::Sharp,
+        ));
         // DC settles near input. Use a small-signal input so the input tanh
         // stays linear (tanh(0.05) ≈ 0.04996); the four LP stages pass DC at
         // unity, so the steady-state gain is ~1.
@@ -142,7 +166,13 @@ mod tests {
     fn stable_at_high_resonance() {
         let sr = 48_000.0;
         let mut k = LadderKernel::new();
-        k.set_coeffs(LadderCoeffs::new(2000.0, sr, 1.0, 1.0, LadderVariant::Sharp));
+        k.set_coeffs(LadderCoeffs::new(
+            2000.0,
+            sr,
+            1.0,
+            1.0,
+            LadderVariant::Sharp,
+        ));
         let mut peak = 0.0f32;
         for i in 0..48_000 {
             let x = if i == 0 { 1.0 } else { 0.0 };

@@ -175,17 +175,72 @@ const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x"];
 
 #[allow(clippy::too_many_arguments)]
-const fn f(id: ParamId, name: &'static str, label: &'static str, min: f32, max: f32, default: f32, unit: &'static str, log: bool) -> ParamDesc {
-    ParamDesc { id, name, label, min, max, default, kind: ParamKind::Float { unit, log } }
+const fn f(
+    id: ParamId,
+    name: &'static str,
+    label: &'static str,
+    min: f32,
+    max: f32,
+    default: f32,
+    unit: &'static str,
+    log: bool,
+) -> ParamDesc {
+    ParamDesc {
+        id,
+        name,
+        label,
+        min,
+        max,
+        default,
+        kind: ParamKind::Float { unit, log },
+    }
 }
-const fn e(id: ParamId, name: &'static str, label: &'static str, variants: &'static [&'static str], default: f32) -> ParamDesc {
-    ParamDesc { id, name, label, min: 0.0, max: (variants.len() - 1) as f32, default, kind: ParamKind::Enum { variants } }
+const fn e(
+    id: ParamId,
+    name: &'static str,
+    label: &'static str,
+    variants: &'static [&'static str],
+    default: f32,
+) -> ParamDesc {
+    ParamDesc {
+        id,
+        name,
+        label,
+        min: 0.0,
+        max: (variants.len() - 1) as f32,
+        default,
+        kind: ParamKind::Enum { variants },
+    }
 }
 const fn b(id: ParamId, name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    ParamDesc { id, name, label, min: 0.0, max: 1.0, default, kind: ParamKind::Bool }
+    ParamDesc {
+        id,
+        name,
+        label,
+        min: 0.0,
+        max: 1.0,
+        default,
+        kind: ParamKind::Bool,
+    }
 }
-const fn i(id: ParamId, name: &'static str, label: &'static str, min: f32, max: f32, default: f32, unit: &'static str) -> ParamDesc {
-    ParamDesc { id, name, label, min, max, default, kind: ParamKind::Int { unit } }
+const fn i(
+    id: ParamId,
+    name: &'static str,
+    label: &'static str,
+    min: f32,
+    max: f32,
+    default: f32,
+    unit: &'static str,
+) -> ParamDesc {
+    ParamDesc {
+        id,
+        name,
+        label,
+        min,
+        max,
+        default,
+        kind: ParamKind::Int { unit },
+    }
 }
 /// Pitch-destination depth param (semitones).
 const fn mp(id: ParamId, name: &'static str, label: &'static str) -> ParamDesc {
@@ -208,30 +263,198 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = {
     use ParamId::*;
     [
         e(Osc1Wave, "osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
-        i(Osc1Coarse, "osc1_coarse", "Osc 1 Coarse", -24.0, 24.0, 0.0, "st"),
-        f(Osc1Fine, "osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", false),
-        f(Osc1Level, "osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", false),
-        f(Osc1PulseWidth, "osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", false),
+        i(
+            Osc1Coarse,
+            "osc1_coarse",
+            "Osc 1 Coarse",
+            -24.0,
+            24.0,
+            0.0,
+            "st",
+        ),
+        f(
+            Osc1Fine,
+            "osc1_fine",
+            "Osc 1 Fine",
+            -50.0,
+            50.0,
+            0.0,
+            "ct",
+            false,
+        ),
+        f(
+            Osc1Level,
+            "osc1_level",
+            "Osc 1 Level",
+            0.0,
+            1.0,
+            0.8,
+            "",
+            false,
+        ),
+        f(
+            Osc1PulseWidth,
+            "osc1_pw",
+            "Osc 1 PW",
+            0.05,
+            0.95,
+            0.5,
+            "",
+            false,
+        ),
         e(Osc2Wave, "osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
-        i(Osc2Coarse, "osc2_coarse", "Osc 2 Coarse", -24.0, 24.0, -12.0, "st"),
-        f(Osc2Fine, "osc2_fine", "Osc 2 Fine", -50.0, 50.0, 7.0, "ct", false),
-        f(Osc2Level, "osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", false),
-        f(Osc2PulseWidth, "osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", false),
+        i(
+            Osc2Coarse,
+            "osc2_coarse",
+            "Osc 2 Coarse",
+            -24.0,
+            24.0,
+            -12.0,
+            "st",
+        ),
+        f(
+            Osc2Fine,
+            "osc2_fine",
+            "Osc 2 Fine",
+            -50.0,
+            50.0,
+            7.0,
+            "ct",
+            false,
+        ),
+        f(
+            Osc2Level,
+            "osc2_level",
+            "Osc 2 Level",
+            0.0,
+            1.0,
+            0.6,
+            "",
+            false,
+        ),
+        f(
+            Osc2PulseWidth,
+            "osc2_pw",
+            "Osc 2 PW",
+            0.05,
+            0.95,
+            0.5,
+            "",
+            false,
+        ),
         e(NoiseColor, "noise_color", "Noise Color", NOISE_LABELS, 0.0),
-        f(NoiseLevel, "noise_level", "Noise Level", 0.0, 1.0, 0.0, "", false),
-        f(Cutoff, "cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true),
-        f(Resonance, "resonance", "Resonance", 0.0, 1.0, 0.2, "", false),
+        f(
+            NoiseLevel,
+            "noise_level",
+            "Noise Level",
+            0.0,
+            1.0,
+            0.0,
+            "",
+            false,
+        ),
+        f(
+            Cutoff, "cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true,
+        ),
+        f(
+            Resonance,
+            "resonance",
+            "Resonance",
+            0.0,
+            1.0,
+            0.2,
+            "",
+            false,
+        ),
         f(Drive, "drive", "Drive", 0.1, 4.0, 1.0, "", false),
-        e(FilterVariant, "filter_variant", "Filter Type", VARIANT_LABELS, 0.0),
-        f(Env1Attack, "env1_attack", "Env 1 Attack", 0.001, 10.0, 0.005, "s", true),
-        f(Env1Decay, "env1_decay", "Env 1 Decay", 0.001, 10.0, 0.3, "s", true),
-        f(Env1Sustain, "env1_sustain", "Env 1 Sustain", 0.0, 1.0, 0.0, "", false),
-        f(Env1Release, "env1_release", "Env 1 Release", 0.001, 10.0, 0.3, "s", true),
+        e(
+            FilterVariant,
+            "filter_variant",
+            "Filter Type",
+            VARIANT_LABELS,
+            0.0,
+        ),
+        f(
+            Env1Attack,
+            "env1_attack",
+            "Env 1 Attack",
+            0.001,
+            10.0,
+            0.005,
+            "s",
+            true,
+        ),
+        f(
+            Env1Decay,
+            "env1_decay",
+            "Env 1 Decay",
+            0.001,
+            10.0,
+            0.3,
+            "s",
+            true,
+        ),
+        f(
+            Env1Sustain,
+            "env1_sustain",
+            "Env 1 Sustain",
+            0.0,
+            1.0,
+            0.0,
+            "",
+            false,
+        ),
+        f(
+            Env1Release,
+            "env1_release",
+            "Env 1 Release",
+            0.001,
+            10.0,
+            0.3,
+            "s",
+            true,
+        ),
         e(Env1Shape, "env1_shape", "Env 1 Shape", SHAPE_LABELS, 0.0),
-        f(Env2Attack, "env2_attack", "Env 2 Attack", 0.001, 10.0, 0.005, "s", true),
-        f(Env2Decay, "env2_decay", "Env 2 Decay", 0.001, 10.0, 0.2, "s", true),
-        f(Env2Sustain, "env2_sustain", "Env 2 Sustain", 0.0, 1.0, 0.8, "", false),
-        f(Env2Release, "env2_release", "Env 2 Release", 0.001, 10.0, 0.3, "s", true),
+        f(
+            Env2Attack,
+            "env2_attack",
+            "Env 2 Attack",
+            0.001,
+            10.0,
+            0.005,
+            "s",
+            true,
+        ),
+        f(
+            Env2Decay,
+            "env2_decay",
+            "Env 2 Decay",
+            0.001,
+            10.0,
+            0.2,
+            "s",
+            true,
+        ),
+        f(
+            Env2Sustain,
+            "env2_sustain",
+            "Env 2 Sustain",
+            0.0,
+            1.0,
+            0.8,
+            "",
+            false,
+        ),
+        f(
+            Env2Release,
+            "env2_release",
+            "Env 2 Release",
+            0.001,
+            10.0,
+            0.3,
+            "s",
+            true,
+        ),
         e(Env2Shape, "env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
         // Modulation matrix (source-major, dest-minor). ENV-2→Amp seeds to 1.0.
         mp(Env1Pitch, "env1_pitch", "Env1→Pitch"),
@@ -256,18 +479,96 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = {
         mw(KeyPwm, "key_pwm", "Key→PWM"),
         e(LfoShape, "lfo_shape", "LFO Shape", LFO_LABELS, 0.0),
         f(LfoRate, "lfo_rate", "LFO Rate", 0.01, 40.0, 5.0, "Hz", true),
-        f(MasterTune, "master_tune", "Master Tune", -12.0, 12.0, 0.0, "st", false),
-        f(MasterVolume, "master_volume", "Volume", 0.0, 1.0, 0.7, "", false),
+        f(
+            MasterTune,
+            "master_tune",
+            "Master Tune",
+            -12.0,
+            12.0,
+            0.0,
+            "st",
+            false,
+        ),
+        f(
+            MasterVolume,
+            "master_volume",
+            "Volume",
+            0.0,
+            1.0,
+            0.7,
+            "",
+            false,
+        ),
         b(ChorusOn, "chorus_on", "Chorus", 1.0),
-        f(ChorusRate, "chorus_rate", "Chorus Rate", 0.05, 8.0, 0.6, "Hz", true),
-        f(ChorusDepth, "chorus_depth", "Chorus Depth", 0.0, 1.0, 0.5, "", false),
-        f(ChorusMix, "chorus_mix", "Chorus Mix", 0.0, 1.0, 0.4, "", false),
+        f(
+            ChorusRate,
+            "chorus_rate",
+            "Chorus Rate",
+            0.05,
+            8.0,
+            0.6,
+            "Hz",
+            true,
+        ),
+        f(
+            ChorusDepth,
+            "chorus_depth",
+            "Chorus Depth",
+            0.0,
+            1.0,
+            0.5,
+            "",
+            false,
+        ),
+        f(
+            ChorusMix,
+            "chorus_mix",
+            "Chorus Mix",
+            0.0,
+            1.0,
+            0.4,
+            "",
+            false,
+        ),
         b(DelayOn, "delay_on", "Delay", 0.0),
-        f(DelayTime, "delay_time", "Delay Time", 0.01, 2.0, 0.35, "s", true),
-        f(DelayFeedback, "delay_feedback", "Delay FB", 0.0, 0.95, 0.4, "", false),
-        f(DelayMix, "delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", false),
+        f(
+            DelayTime,
+            "delay_time",
+            "Delay Time",
+            0.01,
+            2.0,
+            0.35,
+            "s",
+            true,
+        ),
+        f(
+            DelayFeedback,
+            "delay_feedback",
+            "Delay FB",
+            0.0,
+            0.95,
+            0.4,
+            "",
+            false,
+        ),
+        f(
+            DelayMix,
+            "delay_mix",
+            "Delay Mix",
+            0.0,
+            1.0,
+            0.25,
+            "",
+            false,
+        ),
         b(DelayPingPong, "delay_pingpong", "Ping-Pong", 1.0),
-        e(Oversample, "oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
+        e(
+            Oversample,
+            "oversample",
+            "Oversample",
+            OVERSAMPLE_LABELS,
+            1.0,
+        ),
     ]
 };
 
@@ -404,9 +705,18 @@ mod tests {
         // The 20 matrix params must sit at MATRIX_BASE in source-major,
         // dest-minor order so matrix_index() addresses them correctly.
         assert_eq!(ParamId::MATRIX_BASE, ParamId::Env1Pitch.index());
-        assert_eq!(ParamId::matrix_index(ModSource::Env2, ModDest::Amp), ParamId::Env2Amp.index());
-        assert_eq!(ParamId::matrix_index(ModSource::KeyFollow, ModDest::Pwm), ParamId::KeyPwm.index());
-        assert_eq!(ParamId::matrix_index(ModSource::Lfo, ModDest::Cutoff), ParamId::LfoCutoff.index());
+        assert_eq!(
+            ParamId::matrix_index(ModSource::Env2, ModDest::Amp),
+            ParamId::Env2Amp.index()
+        );
+        assert_eq!(
+            ParamId::matrix_index(ModSource::KeyFollow, ModDest::Pwm),
+            ParamId::KeyPwm.index()
+        );
+        assert_eq!(
+            ParamId::matrix_index(ModSource::Lfo, ModDest::Cutoff),
+            ParamId::LfoCutoff.index()
+        );
         // ENV-2→Amp is the only route that defaults non-zero.
         assert_eq!(ParamValues::default().get(ParamId::Env2Amp), 1.0);
     }

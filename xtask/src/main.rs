@@ -39,7 +39,10 @@ fn main() {
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR points at xtask/; the workspace root is its parent.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn bundle(release: bool, install: bool) -> Result<(), String> {
@@ -48,11 +51,15 @@ fn bundle(release: bool, install: bool) -> Result<(), String> {
 
     // 1. Compile the cdylib.
     let mut build = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    build.current_dir(&root).args(["build", "--package", "vxn-clap"]);
+    build
+        .current_dir(&root)
+        .args(["build", "--package", "vxn-clap"]);
     if release {
         build.arg("--release");
     }
-    let status = build.status().map_err(|e| format!("failed to run cargo: {e}"))?;
+    let status = build
+        .status()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
     if !status.success() {
         return Err("cargo build failed".into());
     }

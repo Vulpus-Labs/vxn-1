@@ -80,7 +80,9 @@ impl Default for ModMatrix {
 
 impl ModMatrix {
     pub fn new() -> Self {
-        Self { depth: [[0.0; ModDest::COUNT]; ModSource::COUNT] }
+        Self {
+            depth: [[0.0; ModDest::COUNT]; ModSource::COUNT],
+        }
     }
 
     #[inline]

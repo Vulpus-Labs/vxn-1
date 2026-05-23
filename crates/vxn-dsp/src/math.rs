@@ -16,8 +16,7 @@ pub fn fast_tanh(x: f32) -> f32 {
     let x2 = x * x;
     let x4 = x2 * x2;
     let x6 = x4 * x2;
-    x * (10395.0 + 1260.0 * x2 + 21.0 * x4)
-        / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
+    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
 }
 
 static SINE_TABLE: std::sync::LazyLock<Vec<f32>> =

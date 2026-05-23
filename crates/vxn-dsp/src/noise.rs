@@ -40,7 +40,11 @@ pub struct PinkFilter {
 
 impl PinkFilter {
     pub fn new() -> Self {
-        Self { b0: 0.0, b1: 0.0, b2: 0.0 }
+        Self {
+            b0: 0.0,
+            b1: 0.0,
+            b2: 0.0,
+        }
     }
 
     pub fn reset(&mut self) {
@@ -102,7 +106,11 @@ pub struct NoiseSource {
 
 impl NoiseSource {
     pub fn new(seed: u64) -> Self {
-        Self { state: seed | 1, pink: PinkFilter::new(), brown: BrownFilter::new() }
+        Self {
+            state: seed | 1,
+            pink: PinkFilter::new(),
+            brown: BrownFilter::new(),
+        }
     }
 
     pub fn reset(&mut self) {

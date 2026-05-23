@@ -22,7 +22,7 @@ pub struct StereoChorus {
     lfo_phase: f32,
     lfo_inc: f32,
     // Control-block parameters.
-    depth: f32,    // 0..1 → modulation excursion
+    depth: f32, // 0..1 → modulation excursion
     center_ms: f32,
     mix: f32,
 }

@@ -15,7 +15,11 @@ impl DelayLine {
     /// is rounded up to a power of two. Allocates — call off the audio thread.
     pub fn new(max_samples: usize) -> Self {
         let cap = max_samples.max(2).next_power_of_two();
-        Self { buf: vec![0.0; cap], mask: cap - 1, write: 0 }
+        Self {
+            buf: vec![0.0; cap],
+            mask: cap - 1,
+            write: 0,
+        }
     }
 
     pub fn clear(&mut self) {
@@ -94,7 +98,15 @@ impl StereoDelay {
 
     /// Set parameters for the next control block. `time_l/time_r` in seconds,
     /// `feedback`/`mix`/`damping` in `[0, 1]`.
-    pub fn set_params(&mut self, time_l: f32, time_r: f32, feedback: f32, damping: f32, mix: f32, ping_pong: bool) {
+    pub fn set_params(
+        &mut self,
+        time_l: f32,
+        time_r: f32,
+        feedback: f32,
+        damping: f32,
+        mix: f32,
+        ping_pong: bool,
+    ) {
         self.delay_samples_l = (time_l * self.sample_rate).max(1.0);
         self.delay_samples_r = (time_r * self.sample_rate).max(1.0);
         self.feedback = feedback.clamp(0.0, 0.99);

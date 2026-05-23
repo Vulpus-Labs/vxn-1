@@ -12,7 +12,10 @@ pub struct MonoPhaseAccumulator {
 
 impl MonoPhaseAccumulator {
     pub fn new() -> Self {
-        Self { phase: 0.0, phase_increment: 0.0 }
+        Self {
+            phase: 0.0,
+            phase_increment: 0.0,
+        }
     }
 
     pub fn reset(&mut self) {

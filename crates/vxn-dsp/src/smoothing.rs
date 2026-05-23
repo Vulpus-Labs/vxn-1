@@ -27,7 +27,11 @@ pub struct Smoothed {
 impl Smoothed {
     /// Create a smoother with the given glide time. Starts settled at `initial`.
     pub fn new(initial: f32, ms: f32, sample_rate: f32) -> Self {
-        Self { current: initial, target: initial, coeff: one_pole_coeff(ms, sample_rate) }
+        Self {
+            current: initial,
+            target: initial,
+            coeff: one_pole_coeff(ms, sample_rate),
+        }
     }
 
     /// Change the glide time.
