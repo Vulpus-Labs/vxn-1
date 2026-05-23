@@ -242,9 +242,10 @@ const fn i(
         kind: ParamKind::Int { unit },
     }
 }
-/// Pitch-destination depth param (semitones).
-const fn mp(id: ParamId, name: &'static str, label: &'static str) -> ParamDesc {
-    f(id, name, label, -48.0, 48.0, 0.0, "st", false)
+/// Pitch-destination depth param (semitones). `default` lets LFO→Pitch seed a
+/// gentle default vibrato.
+const fn mp(id: ParamId, name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    f(id, name, label, -48.0, 48.0, default, "st", false)
 }
 /// Cutoff-destination depth param (semitones of cutoff).
 const fn mc(id: ParamId, name: &'static str, label: &'static str) -> ParamDesc {
@@ -457,23 +458,24 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = {
         ),
         e(Env2Shape, "env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
         // Modulation matrix (source-major, dest-minor). ENV-2→Amp seeds to 1.0.
-        mp(Env1Pitch, "env1_pitch", "Env1→Pitch"),
+        mp(Env1Pitch, "env1_pitch", "Env1→Pitch", 0.0),
         mc(Env1Cutoff, "env1_cutoff", "Env1→Cutoff"),
         ma(Env1Amp, "env1_amp", "Env1→Amp", 0.0),
         mw(Env1Pwm, "env1_pwm", "Env1→PWM"),
-        mp(Env2Pitch, "env2_pitch", "Env2→Pitch"),
+        mp(Env2Pitch, "env2_pitch", "Env2→Pitch", 0.0),
         mc(Env2Cutoff, "env2_cutoff", "Env2→Cutoff"),
         ma(Env2Amp, "env2_amp", "Env2→Amp", 1.0),
         mw(Env2Pwm, "env2_pwm", "Env2→PWM"),
-        mp(LfoPitch, "lfo_pitch", "LFO→Pitch"),
+        // Gentle always-on vibrato by default (~5 cents at the 5 Hz LFO rate).
+        mp(LfoPitch, "lfo_pitch", "LFO→Pitch", 0.05),
         mc(LfoCutoff, "lfo_cutoff", "LFO→Cutoff"),
         ma(LfoAmp, "lfo_amp", "LFO→Amp", 0.0),
         mw(LfoPwm, "lfo_pwm", "LFO→PWM"),
-        mp(VelPitch, "vel_pitch", "Vel→Pitch"),
+        mp(VelPitch, "vel_pitch", "Vel→Pitch", 0.0),
         mc(VelCutoff, "vel_cutoff", "Vel→Cutoff"),
         ma(VelAmp, "vel_amp", "Vel→Amp", 0.0),
         mw(VelPwm, "vel_pwm", "Vel→PWM"),
-        mp(KeyPitch, "key_pitch", "Key→Pitch"),
+        mp(KeyPitch, "key_pitch", "Key→Pitch", 0.0),
         mc(KeyCutoff, "key_cutoff", "Key→Cutoff"),
         ma(KeyAmp, "key_amp", "Key→Amp", 0.0),
         mw(KeyPwm, "key_pwm", "Key→PWM"),
