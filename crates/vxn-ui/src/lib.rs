@@ -24,7 +24,10 @@
 //! Fader signals hold the *normalized* `[0, 1]` value; the shared store converts
 //! to/from plain units via the parameter descriptors.
 //!
-//! Scope: every parameter except the 20-cell modulation matrix (its own pass).
+//! The 5×4 modulation matrix is surfaced economically: only the musically
+//! useful routes get dedicated faders, placed in context (filter mods in the
+//! Filter panel, vibrato/pitch-env/PWM in VCO Mod, velocity/tremolo in Amp).
+//! The remaining cells stay engine-only but host-automatable.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -45,7 +48,8 @@ pub const EDITOR_HEIGHT: u32 = 470;
 type Entry = (ParamId, &'static str);
 
 /// Faceplate layout: rows of panels, each panel a titled group of controls.
-/// Covers every param except the 20-cell modulation matrix (`Env1Pitch`..).
+/// Mod-matrix routes appear as dedicated faders in context (VCO Mod / Filter /
+/// Amp panels), not as a generic grid.
 const ROWS: &[&[(&str, &[Entry])]] = {
     use ParamId::*;
     &[
@@ -71,7 +75,10 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 ],
             ),
             ("Noise", &[(NoiseColor, "Color"), (NoiseLevel, "Level")]),
-            ("LFO", &[(LfoShape, "Shape"), (LfoRate, "Rate")]),
+            (
+                "VCO Mod",
+                &[(LfoPitch, "Vib"), (Env1Pitch, "P.Env"), (LfoPwm, "PWM")],
+            ),
         ],
         &[
             (
@@ -109,6 +116,8 @@ const ROWS: &[&[(&str, &[Entry])]] = {
             ),
         ],
         &[
+            ("LFO", &[(LfoShape, "Shape"), (LfoRate, "Rate")]),
+            ("Amp", &[(VelAmp, "Vel"), (LfoAmp, "Trem")]),
             (
                 "Master",
                 &[
@@ -142,30 +151,34 @@ const ROWS: &[&[(&str, &[Entry])]] = {
 
 /// Stylesheet: dark faceplate, orange panel headers, small text.
 const STYLE: &str = r#"
-:root { background-color: #2b2b2b; }
-label { font-size: 10; color: #d6d6d6; }
+:root { background-color: #2b2b2b; font-family: "IBM Plex Sans Condensed Medium"; }
+label { font-size: 11; color: #d6d6d6; }
 .panel { background-color: #1c1c1c; border-width: 1px; border-color: #0e0e0e; corner-radius: 4px; }
-.panel-header { background-color: #d9701b; color: #141414; font-weight: bold; corner-radius: 2px; }
+.panel-header { background-color: #d9701b; color: #141414; corner-radius: 2px; }
 .ctl-label { font-size: 9; color: #aeaeae; }
 .ctl-value { font-size: 9; color: #d9701b; }
-.vswitch { rotate: 270deg; }
+.vswitch { rotate: 270deg; top: 20px; }
 .ovsmp { gap: 2px; }
-.ovsmp button { font-size: 9; padding: 3px; }
+.ovsmp toggle-button { background-color: #555555; padding: 3px; }
+.ovsmp toggle-button:checked { background-color: #2e9e3f; }
+.ovsmp toggle-button label { color: #ffffff; font-size: 9; }
 "#;
 
 const FADER_H: f32 = 66.0;
 const COL_H: f32 = 98.0;
 const PANEL_H: f32 = 124.0;
 
-/// UI value range for a fader. Most params use their full descriptor range; the
-/// unipolar filter-mod amounts (key-follow / LFO / velocity → cutoff) are shown
-/// positive-only even though the underlying depth param is bipolar. The
-/// env→cutoff amount keeps its bipolar range so the envelope can duck the
-/// cutoff.
+/// UI value range for a fader. Bipolar routes (env→cutoff, env→pitch) use the
+/// full descriptor range, centred at zero; the unipolar mod amounts
+/// (key/LFO/velocity→cutoff, vibrato, LFO→PWM, velocity/LFO→amp) are shown
+/// positive-only (`0..max`) even though the underlying depth param is bipolar.
 fn ui_range(idx: usize) -> (f32, f32) {
+    use ParamId::*;
     let d = &PARAMS[idx];
     match ParamId::from_index(idx) {
-        Some(ParamId::KeyCutoff | ParamId::LfoCutoff | ParamId::VelCutoff) => (0.0, d.max),
+        Some(KeyCutoff | LfoCutoff | VelCutoff | LfoPitch | LfoPwm | VelAmp | LfoAmp) => {
+            (0.0, d.max)
+        }
         _ => (d.min, d.max),
     }
 }
@@ -295,14 +308,20 @@ pub fn open_editor(parent: *mut c_void, shared: Arc<SharedParams>) -> EditorHand
 }
 
 fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
+    // Bundle the faceplate font so it renders identically on any host/OS. Each
+    // weight is its own family ("IBM Plex Sans Condensed {Thin|ExtraLight|
+    // Medium}"); referenced by name in STYLE.
+    cx.add_font_mem(include_bytes!("../fonts/IBMPlexSansCondensed-Thin.ttf"));
+    cx.add_font_mem(include_bytes!(
+        "../fonts/IBMPlexSansCondensed-ExtraLight.ttf"
+    ));
+    cx.add_font_mem(include_bytes!("../fonts/IBMPlexSansCondensed-Medium.ttf"));
     let _ = cx.add_stylesheet(STYLE);
 
-    let controls: Vec<Ctl> = ROWS
-        .iter()
-        .flat_map(|row| row.iter())
-        .flat_map(|(_, entries)| entries.iter())
-        .map(|(id, _)| make_ctl(*id, &shared))
-        .collect();
+    // One control per parameter (panels look them up by index; mod-matrix cells
+    // not surfaced on the faceplate stay engine-only but remain host-automatable).
+    // The model syncs every control from host automation on idle.
+    let controls: Vec<Ctl> = ParamId::all().map(|id| make_ctl(id, &shared)).collect();
 
     UiModel {
         controls: controls.clone(),
