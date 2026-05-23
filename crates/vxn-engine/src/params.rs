@@ -165,6 +165,26 @@ impl ParamDesc {
     pub fn from_normalized(&self, n: f32) -> f32 {
         self.min + n.clamp(0.0, 1.0) * (self.max - self.min)
     }
+
+    /// Human-readable value text (shared by the CLAP `value_to_text` callback
+    /// and the editor's value readouts, so both render identically).
+    pub fn display(&self, value: f32) -> String {
+        match self.kind {
+            ParamKind::Enum { variants } => {
+                let i = (value.round() as usize).min(variants.len().saturating_sub(1));
+                variants[i].to_string()
+            }
+            ParamKind::Bool => if value >= 0.5 { "On" } else { "Off" }.to_string(),
+            ParamKind::Int { unit } => format!("{} {}", value.round() as i64, unit),
+            ParamKind::Float { unit, .. } => {
+                if unit.is_empty() {
+                    format!("{value:.3}")
+                } else {
+                    format!("{value:.2} {unit}")
+                }
+            }
+        }
+    }
 }
 
 const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];

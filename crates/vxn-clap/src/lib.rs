@@ -253,22 +253,8 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
 // ── Parameters ────────────────────────────────────────────────────────────────
 
 fn format_value(id: ParamId, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
-    let desc = id.desc();
-    match desc.kind {
-        ParamKind::Enum { variants } => {
-            let i = (value.round() as usize).min(variants.len().saturating_sub(1));
-            write!(writer, "{}", variants[i])
-        }
-        ParamKind::Bool => write!(writer, "{}", if value >= 0.5 { "On" } else { "Off" }),
-        ParamKind::Int { unit } => write!(writer, "{} {}", value.round() as i64, unit),
-        ParamKind::Float { unit, .. } => {
-            if unit.is_empty() {
-                write!(writer, "{value:.3}")
-            } else {
-                write!(writer, "{value:.2} {unit}")
-            }
-        }
-    }
+    // Shared with the editor's value readouts so host and UI render identically.
+    write!(writer, "{}", id.desc().display(value as f32))
 }
 
 impl PluginMainThreadParams for VxnMainThread<'_> {
