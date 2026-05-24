@@ -17,9 +17,13 @@ use smoothing::ParamSmoother;
 
 use voice::{BlockCtx, VoiceBank};
 use vxn_dsp::{
-    AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, StereoChorus, StereoDelay,
-    note_to_hz,
+    AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, Smoothed, StereoChorus,
+    StereoDelay, fast_exp2, note_to_hz,
 };
+
+/// Mod-wheel (CC1) glide time (ms), applied at the control-block rate. Rounds
+/// off the 7-bit CC steps so wheel sweeps don't zipper the cutoff / osc2 pitch.
+const MOD_WHEEL_SMOOTH_MS: f32 = 20.0;
 
 /// Snapshot of the envelope-shaping parameters. Used to skip recomputing ADSR
 /// coefficients (which cost an `exp()` per segment) unless a knob actually moved.
@@ -32,8 +36,9 @@ struct EnvSnapshot {
 }
 
 /// Re-export so the plugin shell can flush denormals without depending on
-/// `vxn-dsp` directly.
-pub use vxn_dsp::enable_flush_to_zero;
+/// `vxn-dsp` directly. `ScopedFlushToZero` is the per-`process` guard (sets FTZ
+/// on entry, restores on drop); `enable_flush_to_zero` is the bare one-shot.
+pub use vxn_dsp::{ScopedFlushToZero, enable_flush_to_zero};
 
 /// The complete VXN1 instrument.
 pub struct Synth {
@@ -50,6 +55,8 @@ pub struct Synth {
     oversampler: Oversampler,
     /// Pitch bend in semitones (±2 by default range).
     bend_semis: f32,
+    /// Mod-wheel (CC1) position in `[0, 1]`, smoothed at the control rate.
+    mod_wheel: Smoothed,
     alloc_counter: u64,
     /// Last envelope params pushed to the voices; `None` forces a refresh.
     last_env: Option<EnvSnapshot>,
@@ -73,6 +80,7 @@ impl Synth {
             delay: StereoDelay::new(sample_rate, 2.0),
             oversampler: Oversampler::new(),
             bend_semis: 0.0,
+            mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
             alloc_counter: 0,
             last_env: None,
             last_os: 1,
@@ -89,6 +97,8 @@ impl Synth {
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
         self.oversampler.reset();
+        self.mod_wheel
+            .set_time(MOD_WHEEL_SMOOTH_MS, sample_rate / CONTROL_BLOCK as f32);
         self.smoother.set_sample_rate(sample_rate);
         self.smoother.snap_all(&self.params);
         // Envelope cores were recreated with zeroed coefficients; force a refresh.
@@ -111,6 +121,12 @@ impl Synth {
     /// Pitch bend in normalised `[-1, 1]`; mapped to ±2 semitones.
     pub fn set_pitch_bend(&mut self, normalized: f32) {
         self.bend_semis = normalized.clamp(-1.0, 1.0) * 2.0;
+    }
+
+    /// Mod wheel (CC1) in normalised `[0, 1]`. Routed in `build_ctx` per
+    /// [`ParamId::ModWheelDest`]; smoothed at the control rate.
+    pub fn set_mod_wheel(&mut self, normalized: f32) {
+        self.mod_wheel.set_target(normalized.clamp(0.0, 1.0));
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -172,18 +188,28 @@ impl Synth {
             let delay_on = self.params.bool(ParamId::DelayOn);
             self.update_effects();
 
-            for (i, &m) in mono.iter().enumerate() {
-                // Master volume glides per sample (zipper-free gain automation).
-                let dry = m * self.smoother.next_volume();
-                let (mut l, mut r) = (dry, dry);
-                if chorus_on {
-                    (l, r) = self.chorus.process(l, r);
+            // Apply the per-sample master-volume glide into a dry mono block,
+            // then run the stereo effects a block at a time.
+            let mut dry_buf = [0.0f32; CONTROL_BLOCK];
+            let dry = &mut dry_buf[..block];
+            for (d, &m) in dry.iter_mut().zip(mono.iter()) {
+                *d = m * self.smoother.next_volume();
+            }
+
+            let l_out = &mut out_l[start..start + block];
+            let r_out = &mut out_r[start..start + block];
+            if chorus_on {
+                self.chorus.process_block(dry, l_out, r_out);
+            } else {
+                l_out.copy_from_slice(dry);
+                r_out.copy_from_slice(dry);
+            }
+            if delay_on {
+                for i in 0..block {
+                    let (l, r) = self.delay.process(l_out[i], r_out[i]);
+                    l_out[i] = l;
+                    r_out[i] = r;
                 }
-                if delay_on {
-                    (l, r) = self.delay.process(l, r);
-                }
-                out_l[start + i] = l;
-                out_r[start + i] = r;
             }
             start += block;
         }
@@ -240,12 +266,30 @@ impl Synth {
         let lfo_val = self.lfo.next(p.lfo_shape());
         self.lfo.set_rate(p.get(ParamId::LfoRate));
 
-        // Pull the 20 depth params into the matrix (source-major, dest-minor).
+        // Pull the depth params into the matrix via the layout's own index
+        // mapping, so an appended source row (future second LFO) needs no change
+        // here — only `ParamId::matrix_row_base`.
         let mut matrix = ModMatrix::new();
-        for (s, row) in matrix.depth.iter_mut().enumerate() {
-            for (d, cell) in row.iter_mut().enumerate() {
-                *cell = p.get_index(ParamId::MATRIX_BASE + s * ModDest::COUNT + d);
+        for (s, &src) in ModSource::ALL.iter().enumerate() {
+            for (d, &dest) in ModDest::ALL.iter().enumerate() {
+                matrix.depth[s][d] = p.get_index(ParamId::matrix_index(src, dest));
             }
+        }
+
+        // Mod wheel (CC1): a global control applied here, not per-voice — like
+        // pitch bend riding `base_semis`. Smoothed at the control rate; the
+        // semitone-domain amount feeds either the cutoff (octaves) or osc2 pitch.
+        let wheel = self.mod_wheel.tick();
+        let mw_amount = wheel * p.get(ParamId::ModWheelDepth);
+        let mw_dest = p.get(ParamId::ModWheelDest).round() as i32;
+        let mut cutoff = p.get(ParamId::Cutoff);
+        let mut osc2_semi = p.get(ParamId::Osc2Octave) * 12.0
+            + p.get(ParamId::Osc2Coarse)
+            + p.get(ParamId::Osc2Fine) / 100.0;
+        match mw_dest {
+            1 => cutoff *= fast_exp2(mw_amount / 12.0), // Cutoff: semitone-domain scale
+            2 => osc2_semi += mw_amount,                // Osc2 Pitch: add semitones
+            _ => {}                                     // Off
         }
 
         BlockCtx {
@@ -258,15 +302,21 @@ impl Synth {
             noise_level: p.get(ParamId::NoiseLevel),
             osc1_pw: p.get(ParamId::Osc1PulseWidth),
             osc2_pw: p.get(ParamId::Osc2PulseWidth),
-            osc1_semi: p.get(ParamId::Osc1Coarse) + p.get(ParamId::Osc1Fine) / 100.0,
-            osc2_semi: p.get(ParamId::Osc2Coarse) + p.get(ParamId::Osc2Fine) / 100.0,
+            osc1_semi: p.get(ParamId::Osc1Octave) * 12.0
+                + p.get(ParamId::Osc1Coarse)
+                + p.get(ParamId::Osc1Fine) / 100.0,
+            osc2_semi,
             noise_color: p.noise_color(),
-            cutoff: p.get(ParamId::Cutoff),
+            cutoff,
+            hpf_cutoff: p.get(ParamId::HpfCutoff),
             resonance: p.get(ParamId::Resonance),
             drive: p.get(ParamId::Drive),
             variant: p.filter_variant(),
             base_semis: p.get(ParamId::MasterTune) + self.bend_semis,
             lfo_val,
+            lfo_delay: p.get(ParamId::LfoDelay),
+            sync: p.bool(ParamId::OscSync),
+            cross_mod: p.get(ParamId::CrossMod),
             matrix,
         }
     }
@@ -360,6 +410,308 @@ mod tests {
             rms(tail) < 1e-6,
             "Env2→Amp=0 should settle to silence, got {}",
             rms(tail)
+        );
+    }
+
+    /// Dominant frequency of a mono buffer via zero-crossing count (rising
+    /// edges). Crude but enough to tell an octave apart.
+    fn dominant_hz(s: &[f32], sr: f32) -> f32 {
+        let mut crossings = 0usize;
+        for w in s.windows(2) {
+            if w[0] <= 0.0 && w[1] > 0.0 {
+                crossings += 1;
+            }
+        }
+        crossings as f32 * sr / s.len() as f32
+    }
+
+    fn pitched_synth() -> Synth {
+        let mut s = Synth::new(48_000.0);
+        // Single sine osc, no chorus/vibrato, fast attack — clean pitch readout.
+        s.set_param(ParamId::Osc1Wave.index(), 0.0); // Sine
+        s.set_param(ParamId::Osc2Level.index(), 0.0);
+        s.set_param(ParamId::NoiseLevel.index(), 0.0);
+        s.set_param(ParamId::LfoPitch.index(), 0.0); // kill default vibrato
+        s.set_param(ParamId::ChorusOn.index(), 0.0);
+        s.set_param(ParamId::Env2Attack.index(), 0.001);
+        s
+    }
+
+    #[test]
+    fn octave_up_doubles_frequency() {
+        let mut base = pitched_synth();
+        base.note_on(57, 1.0); // A3 = 220 Hz
+        let (l0, _) = render(&mut base, 24_000);
+        let f0 = dominant_hz(&l0[4800..], 48_000.0);
+
+        let mut up = pitched_synth();
+        up.set_param(ParamId::Osc1Octave.index(), 1.0);
+        up.note_on(57, 1.0);
+        let (l1, _) = render(&mut up, 24_000);
+        let f1 = dominant_hz(&l1[4800..], 48_000.0);
+
+        assert!(
+            (f1 / f0 - 2.0).abs() < 0.05,
+            "octave up should double freq: {f0} -> {f1}"
+        );
+    }
+
+    #[test]
+    fn octave_and_coarse_combine_additively() {
+        // +1 octave & +7 st = +19 st. Compare against +19 st coarse alone.
+        let mut a = pitched_synth();
+        a.set_param(ParamId::Osc1Octave.index(), 1.0);
+        a.set_param(ParamId::Osc1Coarse.index(), 7.0);
+        a.note_on(45, 1.0);
+        let (la, _) = render(&mut a, 24_000);
+        let fa = dominant_hz(&la[4800..], 48_000.0);
+
+        let mut b = pitched_synth();
+        b.set_param(ParamId::Osc1Coarse.index(), 19.0);
+        b.note_on(45, 1.0);
+        let (lb, _) = render(&mut b, 24_000);
+        let fb = dominant_hz(&lb[4800..], 48_000.0);
+
+        assert!((fa / fb - 1.0).abs() < 0.02, "not additive: {fa} vs {fb}");
+    }
+
+    #[test]
+    fn hpf_thins_low_content_when_engaged() {
+        // A low note through a high HPF cutoff loses energy vs the open default.
+        fn low_note_rms(hpf_hz: f32) -> f32 {
+            let mut s = pitched_synth();
+            s.set_param(ParamId::HpfCutoff.index(), hpf_hz);
+            s.note_on(33, 1.0); // A1 ≈ 55 Hz
+            let (l, _) = render(&mut s, 24_000);
+            rms(&l[4800..])
+        }
+        let open = low_note_rms(20.0); // default ≈ off
+        let engaged = low_note_rms(2000.0);
+        assert!(
+            engaged < 0.5 * open,
+            "HPF did not thin lows: open {open}, engaged {engaged}"
+        );
+    }
+
+    #[test]
+    fn lfo_delay_fades_modulation_in() {
+        // Make LFO→Amp the *only* VCA route (zero ENV-2→Amp) and add a 1 s
+        // delay. Faded out the amp is ~0 (silent); faded in the LFO opens it.
+        fn amp_swing(window: std::ops::Range<usize>) -> f32 {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(ParamId::ChorusOn.index(), 0.0);
+            s.set_param(ParamId::Env2Amp.index(), 0.0);
+            s.set_param(ParamId::LfoRate.index(), 4.0);
+            s.set_param(ParamId::LfoAmp.index(), 1.0);
+            s.set_param(ParamId::LfoDelay.index(), 1.0);
+            s.note_on(69, 1.0);
+            let (l, _) = render(&mut s, 96_000);
+            rms(&l[window])
+        }
+        // 0.1–0.2 s after note-on (past the Env2Amp glide) vs a window past the
+        // 1 s fade.
+        let early = amp_swing(4800..9600);
+        let late = amp_swing(58_000..67_600);
+        assert!(
+            early < 0.25 * late,
+            "LFO did not fade in: early {early}, late {late}"
+        );
+    }
+
+    #[test]
+    fn lfo_delay_zero_matches_immediate_modulation() {
+        // With delay 0, the LFO is at full depth from the first block.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(ParamId::ChorusOn.index(), 0.0);
+        s.set_param(ParamId::LfoRate.index(), 6.0);
+        s.set_param(ParamId::LfoAmp.index(), 1.0);
+        s.set_param(ParamId::LfoDelay.index(), 0.0);
+        s.note_on(69, 1.0);
+        let (l, _) = render(&mut s, 9600);
+        // Modulation present immediately (no quiet fade-in lead-in).
+        assert!(rms(&l[0..4800]) > 0.01, "delay 0 should modulate at once");
+    }
+
+    #[test]
+    fn sync_engages_and_sweeps_formant_finitely() {
+        // Integration check that the coupled path is live and stable. (The
+        // master-period lock itself is proven in the DSP unit test
+        // `synced_slave_locks_to_master_period`; a zero-crossing fundamental
+        // detector can't see it through the synced waveform.) Here: enabling
+        // sync changes the timbre, sweeping the slave tuning sweeps it further
+        // (the synced formant), and every render stays finite.
+        fn render_sync(sync: bool, osc2_coarse: f32) -> Vec<f32> {
+            let mut s = pitched_synth();
+            s.set_param(ParamId::OscSync.index(), if sync { 1.0 } else { 0.0 });
+            s.set_param(ParamId::Osc1Wave.index(), 2.0); // saw master
+            s.set_param(ParamId::Osc2Wave.index(), 2.0); // saw slave
+            s.set_param(ParamId::Osc2Level.index(), 0.8);
+            s.set_param(ParamId::Osc2Coarse.index(), osc2_coarse);
+            s.note_on(45, 1.0); // A2 ≈ 110 Hz master
+            let (l, _) = render(&mut s, 24_000);
+            assert!(l.iter().all(|x| x.is_finite()), "sync output not finite");
+            l[4800..].to_vec()
+        }
+        fn diff(a: &[f32], b: &[f32]) -> f32 {
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32
+        }
+        let unsynced = render_sync(false, 7.0);
+        let synced_low = render_sync(true, 7.0);
+        let synced_high = render_sync(true, 19.0);
+        // Sync changes the timbre vs the independent path …
+        assert!(
+            diff(&unsynced, &synced_low) > 1e-3,
+            "sync did not change the output"
+        );
+        // … and sweeping the slave tuning sweeps the synced formant.
+        assert!(
+            diff(&synced_low, &synced_high) > 1e-3,
+            "slave tuning did not sweep the synced formant"
+        );
+    }
+
+    #[test]
+    fn cross_mod_adds_content_and_stays_finite() {
+        // Cross-mod with osc2 at an inharmonic interval injects a sideband at
+        // f(osc1)+f(osc2). Measure that bin via a single-bin DFT: ≈0 at depth 0,
+        // present at depth > 0, output finite throughout.
+        let sr = 48_000.0;
+        let f1 = note_to_hz(45.0); // A2 ≈ 110 Hz carrier
+        let f2 = note_to_hz(45.0 + 5.0); // osc2 +5 st (inharmonic)
+        fn sideband(cross_mod: f32, side_hz: f32, sr: f32) -> (f32, bool) {
+            let mut s = pitched_synth();
+            s.set_param(ParamId::Osc2Level.index(), 0.0); // carrier audible alone
+            s.set_param(ParamId::Osc2Coarse.index(), 5.0); // inharmonic vs osc1
+            s.set_param(ParamId::CrossMod.index(), cross_mod);
+            s.note_on(45, 1.0);
+            let (l, _) = render(&mut s, 24_000);
+            let finite = l.iter().all(|x| x.is_finite());
+            let tail = &l[4800..]; // past the amp-envelope attack
+            let w = std::f32::consts::TAU * side_hz / sr;
+            let len = tail.len();
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            // Hann window: keep the carrier's leakage out of the sideband bin.
+            for (n, &x) in tail.iter().enumerate() {
+                let win = 0.5 * (1.0 - (std::f32::consts::TAU * n as f32 / (len - 1) as f32).cos());
+                let ph = w * n as f32;
+                re += x * win * ph.cos();
+                im -= x * win * ph.sin();
+            }
+            ((re * re + im * im).sqrt() / len as f32, finite)
+        }
+        let (clean, clean_finite) = sideband(0.0, f1 + f2, sr);
+        let (modulated, mod_finite) = sideband(0.8, f1 + f2, sr);
+        assert!(clean_finite && mod_finite, "cross-mod output not finite");
+        assert!(
+            modulated > 10.0 * clean.max(1e-6),
+            "cross-mod produced no sideband: clean {clean}, modulated {modulated}"
+        );
+    }
+
+    /// Single audible osc2 sine — for mod-wheel→osc2-pitch tests.
+    fn osc2_sine_synth() -> Synth {
+        let mut s = Synth::new(48_000.0);
+        s.set_param(ParamId::Osc1Level.index(), 0.0);
+        s.set_param(ParamId::Osc2Wave.index(), 0.0); // sine
+        s.set_param(ParamId::Osc2Level.index(), 0.8);
+        s.set_param(ParamId::Osc2Coarse.index(), 0.0);
+        s.set_param(ParamId::Osc2Fine.index(), 0.0);
+        s.set_param(ParamId::NoiseLevel.index(), 0.0);
+        s.set_param(ParamId::LfoPitch.index(), 0.0);
+        s.set_param(ParamId::ChorusOn.index(), 0.0);
+        s.set_param(ParamId::Env2Attack.index(), 0.001);
+        s
+    }
+
+    #[test]
+    fn pitch_bend_shifts_rendered_pitch() {
+        // Full positive bend (+1.0 normalised) = +2 st = ×2^(2/12) ≈ 1.122.
+        let mut base = pitched_synth();
+        base.note_on(57, 1.0); // A3 ≈ 220 Hz
+        let (l0, _) = render(&mut base, 24_000);
+        let f0 = dominant_hz(&l0[4800..], 48_000.0);
+
+        let mut bent = pitched_synth();
+        bent.set_pitch_bend(1.0);
+        bent.note_on(57, 1.0);
+        let (l1, _) = render(&mut bent, 24_000);
+        let f1 = dominant_hz(&l1[4800..], 48_000.0);
+
+        let expected = 2.0f32.powf(2.0 / 12.0);
+        assert!(
+            (f1 / f0 - expected).abs() < 0.03,
+            "bend should raise pitch ×{expected:.3}: {f0} -> {f1}"
+        );
+    }
+
+    #[test]
+    fn mod_wheel_osc2_pitch_shifts_osc2() {
+        // dest = Osc2 Pitch, depth 12 st, wheel full → osc2 up an octave (×2).
+        let mut base = osc2_sine_synth();
+        base.note_on(57, 1.0); // 220 Hz
+        let (l0, _) = render(&mut base, 24_000);
+        let f0 = dominant_hz(&l0[4800..], 48_000.0);
+
+        let mut up = osc2_sine_synth();
+        up.set_param(ParamId::ModWheelDest.index(), 2.0); // Osc2 Pitch
+        up.set_param(ParamId::ModWheelDepth.index(), 12.0);
+        up.set_mod_wheel(1.0);
+        up.note_on(57, 1.0);
+        let (l1, _) = render(&mut up, 24_000);
+        let f1 = dominant_hz(&l1[4800..], 48_000.0);
+
+        assert!(
+            (f1 / f0 - 2.0).abs() < 0.05,
+            "wheel→osc2 +12 st should double osc2 freq: {f0} -> {f1}"
+        );
+    }
+
+    #[test]
+    fn mod_wheel_off_is_inert() {
+        // dest = Off: a full wheel changes nothing, even with depth set.
+        let mut base = osc2_sine_synth();
+        base.note_on(57, 1.0);
+        let (l0, _) = render(&mut base, 24_000);
+        let f0 = dominant_hz(&l0[4800..], 48_000.0);
+
+        let mut off = osc2_sine_synth();
+        off.set_param(ParamId::ModWheelDest.index(), 0.0); // Off
+        off.set_param(ParamId::ModWheelDepth.index(), 12.0);
+        off.set_mod_wheel(1.0);
+        off.note_on(57, 1.0);
+        let (l1, _) = render(&mut off, 24_000);
+        let f1 = dominant_hz(&l1[4800..], 48_000.0);
+
+        assert!((f1 / f0 - 1.0).abs() < 0.02, "wheel Off shifted pitch: {f0} -> {f1}");
+    }
+
+    #[test]
+    fn mod_wheel_cutoff_moves_cutoff() {
+        // dest = Cutoff: a full wheel opens the filter, passing more saw
+        // harmonics → higher RMS than the dark baseline.
+        fn bright(wheel: f32) -> f32 {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(ParamId::Osc1Wave.index(), 2.0); // saw (harmonic-rich)
+            s.set_param(ParamId::Osc2Level.index(), 0.0);
+            s.set_param(ParamId::NoiseLevel.index(), 0.0);
+            s.set_param(ParamId::LfoPitch.index(), 0.0);
+            s.set_param(ParamId::ChorusOn.index(), 0.0);
+            s.set_param(ParamId::Env2Attack.index(), 0.001);
+            s.set_param(ParamId::Cutoff.index(), 200.0); // dark base
+            s.set_param(ParamId::Resonance.index(), 0.0);
+            s.set_param(ParamId::ModWheelDest.index(), 1.0); // Cutoff
+            s.set_param(ParamId::ModWheelDepth.index(), 48.0); // ×2^4 = 16
+            s.set_mod_wheel(wheel);
+            s.note_on(45, 1.0); // 110 Hz, many harmonics
+            let (l, _) = render(&mut s, 24_000);
+            assert!(l.iter().all(|x| x.is_finite()), "mod-wheel cutoff not finite");
+            rms(&l[4800..])
+        }
+        let dark = bright(0.0);
+        let open = bright(1.0);
+        assert!(
+            open > 1.3 * dark,
+            "wheel→cutoff did not open the filter: dark {dark}, open {open}"
         );
     }
 

@@ -10,13 +10,71 @@
 //! evaluated per base frame (held across oversampled subframes).
 
 use vxn_dsp::{
-    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyLadder,
+    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyHpf, PolyLadder,
     PolyNoise, PolyOscillator, Waveform, fast_exp2, note_to_hz,
 };
 
-use crate::modmatrix::{ModDest, ModMatrix};
+use crate::modmatrix::{ModDest, ModMatrix, ModSource};
 
 const N: usize = MAX_VOICES;
+
+/// HPF cutoff at or below this (Hz) is treated as "off" and bypassed. Matches
+/// the `HpfCutoff` param minimum (its default, ≈ fully open).
+const HPF_OFF_HZ: f32 = 20.0;
+
+/// Per-voice LFO modulation fade-in (the JP-8 "LFO delay"): each voice's gain
+/// ramps 0→1 over a settable time after note-on, scaling the LFO source seen by
+/// the matrix so every LFO-driven destination fades in together. One instance
+/// per LFO — a second LFO is a second `LfoFadeIn`, no new ramp logic.
+#[derive(Clone)]
+struct LfoFadeIn {
+    gain: [f32; N],
+}
+
+impl LfoFadeIn {
+    fn new() -> Self {
+        Self { gain: [0.0; N] }
+    }
+
+    fn reset(&mut self) {
+        self.gain = [0.0; N];
+    }
+
+    /// Restart voice `v`'s fade from zero (call on note-on).
+    #[inline]
+    fn retrigger(&mut self, v: usize) {
+        self.gain[v] = 0.0;
+    }
+
+    #[inline]
+    fn gain(&self, v: usize) -> f32 {
+        self.gain[v]
+    }
+
+    /// Prepare the block: returns the per-base-frame ramp increment for
+    /// `delay_s`. A delay of 0 pins every voice to full depth and returns 0,
+    /// reproducing the undelayed path exactly.
+    #[inline]
+    fn begin_block(&mut self, delay_s: f32, base_rate: f32) -> f32 {
+        if delay_s > 0.0 {
+            1.0 / (delay_s * base_rate)
+        } else {
+            self.gain = [1.0; N];
+            0.0
+        }
+    }
+
+    /// Advance every voice's fade one base frame toward full depth. `inc == 0`
+    /// (no delay) is a no-op.
+    #[inline]
+    fn advance(&mut self, inc: f32) {
+        if inc > 0.0 {
+            for g in &mut self.gain {
+                *g = (*g + inc).min(1.0);
+            }
+        }
+    }
+}
 
 /// Control-block context shared by all voices.
 pub struct BlockCtx {
@@ -35,11 +93,21 @@ pub struct BlockCtx {
     pub osc2_semi: f32,
     pub noise_color: NoiseColor,
     pub cutoff: f32,
+    /// Pre-VCF high-pass cutoff (Hz). 20 ≈ open / "off".
+    pub hpf_cutoff: f32,
     pub resonance: f32,
     pub drive: f32,
     pub variant: LadderVariant,
     pub base_semis: f32,
     pub lfo_val: f32,
+    /// LFO modulation fade-in time after note-on (s); 0 = no delay.
+    pub lfo_delay: f32,
+    /// Hard sync on: osc2 (slave) phase resets each osc1 (master) cycle. Off
+    /// keeps the independent, vectorised osc fast path (E002 ticket 0004).
+    pub sync: bool,
+    /// Cross-mod / linear FM depth (osc2 → osc1 pitch). 0 = off. Engages the
+    /// coupled path alongside `sync` (E002 ticket 0005).
+    pub cross_mod: f32,
     pub matrix: ModMatrix,
 }
 
@@ -48,6 +116,7 @@ pub struct VoiceBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
     noise: PolyNoise,
+    hpf: PolyHpf,
     ladder: PolyLadder,
     env1: [AdsrCore; N],
     env2: [AdsrCore; N],
@@ -58,6 +127,8 @@ pub struct VoiceBank {
     active: [bool; N],
     trigger_pending: [bool; N],
     alloc_tick: [u64; N],
+    /// LFO modulation fade-in after note-on (`ctx.lfo_delay`).
+    lfo_fade: LfoFadeIn,
 }
 
 impl VoiceBank {
@@ -66,6 +137,7 @@ impl VoiceBank {
             osc1: PolyOscillator::new(),
             osc2: PolyOscillator::new(),
             noise: PolyNoise::new(0x9E37_79B9),
+            hpf: PolyHpf::new(),
             ladder: PolyLadder::new(),
             env1: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
             env2: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
@@ -75,6 +147,7 @@ impl VoiceBank {
             active: [false; N],
             trigger_pending: [false; N],
             alloc_tick: [0; N],
+            lfo_fade: LfoFadeIn::new(),
         }
     }
 
@@ -88,6 +161,7 @@ impl VoiceBank {
         self.osc1 = PolyOscillator::new();
         self.osc2 = PolyOscillator::new();
         self.noise.reset();
+        self.hpf.reset();
         self.ladder.reset();
         for e in &mut self.env1 {
             e.reset();
@@ -97,6 +171,7 @@ impl VoiceBank {
         }
         self.active = [false; N];
         self.gate = [false; N];
+        self.lfo_fade.reset();
     }
 
     pub fn active_count(&self) -> usize {
@@ -132,6 +207,7 @@ impl VoiceBank {
         self.active[v] = true;
         self.trigger_pending[v] = true;
         self.alloc_tick[v] = alloc_tick;
+        self.lfo_fade.retrigger(v);
         self.osc1.reset(v);
         self.osc2.reset(v);
     }
@@ -168,24 +244,41 @@ impl VoiceBank {
         best
     }
 
+    /// Assemble the modulation source vector for voice `v`, in [`ModSource`]
+    /// order. The envelope levels are passed in because the two call sites
+    /// differ — block-start resolution reads the stored ENV level, the per-frame
+    /// amp path the just-ticked value — while velocity, key-follow and the
+    /// fade-scaled LFO are common to both. A new source is added in one place.
+    #[inline]
+    fn mod_sources(
+        &self,
+        v: usize,
+        ctx: &BlockCtx,
+        env1: f32,
+        env2: f32,
+    ) -> [f32; ModSource::COUNT] {
+        [
+            env1,
+            env2,
+            ctx.lfo_val * self.lfo_fade.gain(v),
+            self.velocity[v],
+            key_follow(self.note[v]),
+        ]
+    }
+
     /// Render one control block into the oversampled mono buffer `out`
     /// (length = `base_frames * ctx.os`), accumulating all voices.
     pub fn render_block(&mut self, out: &mut [f32], ctx: &BlockCtx) {
         let os = ctx.os;
         let base_frames = out.len() / os;
+        let base_rate = ctx.os_sample_rate / os as f32;
+        let lfo_gain_inc = self.lfo_fade.begin_block(ctx.lfo_delay, base_rate);
 
         // ── Per-voice control-rate resolution (block start) ──
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         for v in 0..N {
-            let kf = key_follow(self.note[v]);
-            let srcs = [
-                self.env1[v].level,
-                self.env2[v].level,
-                ctx.lfo_val,
-                self.velocity[v],
-                kf,
-            ];
+            let srcs = self.mod_sources(v, ctx, self.env1[v].level, self.env2[v].level);
             let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs);
             let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs);
             let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs);
@@ -210,6 +303,15 @@ impl VoiceBank {
                 ),
             );
         }
+
+        // Pre-VCF high-pass. Cutoff is global (not a mod destination), so the
+        // coefficient is computed once and broadcast. At the default low cutoff
+        // it's near-transparent, so bypass it entirely and feed the mixer
+        // straight into the ladder (the common case pays nothing).
+        let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ;
+        if hpf_active {
+            self.hpf.set_cutoff_all(ctx.hpf_cutoff, ctx.os_sample_rate);
+        }
         // Ramp the ladder coefficients across this block's `base_frames * os`
         // samples so block-rate cutoff/LFO/envelope steps become a smooth
         // piecewise-linear coefficient trajectory (no zipper / staircase).
@@ -225,6 +327,7 @@ impl VoiceBank {
         let mut o2 = [0.0f32; N];
         let mut nz = [0.0f32; N];
         let mut mix = [0.0f32; N];
+        let mut hp = [0.0f32; N];
         let mut filt = [0.0f32; N];
         let mut amp = [0.0f32; N];
 
@@ -235,10 +338,8 @@ impl VoiceBank {
                 let e1 = self.env1[v].tick(t, self.gate[v]);
                 let e2 = self.env2[v].tick(t, self.gate[v]);
                 amp[v] = if self.active[v] {
-                    let kf = key_follow(self.note[v]);
-                    ctx.matrix
-                        .dest(ModDest::Amp, &[e1, e2, ctx.lfo_val, self.velocity[v], kf])
-                        .max(0.0)
+                    let srcs = self.mod_sources(v, ctx, e1, e2);
+                    ctx.matrix.dest(ModDest::Amp, &srcs).max(0.0)
                 } else {
                     0.0
                 };
@@ -246,20 +347,48 @@ impl VoiceBank {
 
             let frame = base_i * os;
             for k in 0..os {
-                self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
-                self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
+                // Coupled osc2→osc1 path when sync is engaged or cross-mod depth
+                // is non-zero; otherwise the independent, vectorised fast path —
+                // no cost for plain patches.
+                if ctx.sync || ctx.cross_mod != 0.0 {
+                    self.osc1.process_pair(
+                        &mut self.osc2,
+                        ctx.sync,
+                        ctx.cross_mod,
+                        ctx.osc1_wave,
+                        ctx.osc2_wave,
+                        &pw1,
+                        &pw2,
+                        &mut o1,
+                        &mut o2,
+                    );
+                } else {
+                    self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
+                    self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
+                }
                 self.noise.process(ctx.noise_color, &mut nz);
                 for v in 0..N {
                     mix[v] =
                         o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
                 }
-                self.ladder.process(&mix, &mut filt);
+                // Source Mixer → HPF → VCF → VCA (JP-8 topology). HPF bypassed
+                // when disengaged (default), feeding the mix straight to the VCF.
+                let ladder_in = if hpf_active {
+                    self.hpf.process(&mix, &mut hp);
+                    &hp
+                } else {
+                    &mix
+                };
+                self.ladder.process(ladder_in, &mut filt);
                 let mut sum = 0.0;
                 for v in 0..N {
                     sum += filt[v] * amp[v];
                 }
                 out[frame + k] += sum;
             }
+
+            // Advance the per-voice LFO fade-in one base frame (held at 1).
+            self.lfo_fade.advance(lfo_gain_inc);
 
             // Free voices whose envelopes have fully released.
             for v in 0..N {

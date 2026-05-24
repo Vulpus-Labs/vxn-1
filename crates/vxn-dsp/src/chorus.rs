@@ -1,93 +1,235 @@
-//! Stereo chorus: a small modulated delay line per channel with quadrature
-//! LFOs, in the classic Juno/string-machine style.
+//! Stereo chorus: the `VChorus` vintage bucket-brigade-device (BBD) emulation,
+//! ported from `patches-bundles::patches-vintage`, voiced after an early-80s
+//! Roland BBD chorus ("bright" / Juno-60 reference).
 //!
-//! This is a clean modulated-delay implementation reusing [`DelayLine`]. A
-//! future upgrade can swap the delay core for the bucket-brigade (BBD) model
-//! from `patches-bundles::patches-vintage` (clock-aliasing image-fold + bucket
-//! saturation) for more authentic vintage character; the interface here is
-//! designed to accommodate that drop-in later.
+//! Two [`ModDelayLine`]s (the BBD's input anti-image bank → soft bucket
+//! saturation → fractional read → output reconstruction bank → variant trim)
+//! are swept by a single strict-triangle LFO. The right channel reads the
+//! *inverted* LFO — the authentic mono-compatible stereo trick, not two
+//! phase-offset LFOs. Broadband BBD hiss and clock jitter are modelled but
+//! default to silent/off.
+//!
+//! ## Block processing
+//!
+//! The engine drives this once per [`CONTROL_BLOCK`]. All control-rate
+//! quantities — LFO increment, delay centre/swing, dry/wet gains, hiss floor —
+//! are hoisted out of the inner loop by [`set_params`](StereoChorus::set_params)
+//! and [`process_block`](StereoChorus::process_block) (the old per-sample
+//! `process` recomputed the LFO increment, a divide, every sample). The block
+//! method also runs each delay line as its own pass so its filter-bank and ring
+//! state stay hot in cache for the whole block.
 
-use crate::delay::DelayLine;
-use crate::math::lookup_sine;
+use crate::CONTROL_BLOCK;
+use crate::bbd::{Interp, ModDelayLine};
+use crate::noise::xorshift64;
 
-/// Base delay range for the modulated taps, in milliseconds.
-const MIN_DELAY_MS: f32 = 5.0;
-const MAX_DELAY_MS: f32 = 25.0;
+/// Bright (Juno-60 reference) delay sweep, in seconds: 1.66–5.35 ms.
+const DELAY_MIN_S: f32 = 0.00166;
+const DELAY_MAX_S: f32 = 0.00535;
+/// Ring headroom — the largest delay any setting commands, with margin.
+const MAX_DELAY_S: f32 = 0.008;
+/// Write soft-saturation drive, matching `BbdDevice::BBD_256`.
+const SAT_DRIVE: f32 = 1.2;
+/// Post-BBD reconstruction trim for the bright voicing.
+const RECON_CUTOFF_HZ: f32 = 9_000.0;
+/// Bright summing runs the wet a touch hotter than the dry (≈ 1:1.15).
+const WET_GAIN: f32 = 1.15;
+/// Broadband uncompanded hiss floor at `hiss = 1.0` (bright is ~-54 dBFS).
+const HISS_FLOOR: f32 = 0.0020;
 
+#[inline]
+fn center_s() -> f32 {
+    0.5 * (DELAY_MIN_S + DELAY_MAX_S)
+}
+#[inline]
+fn swing_s() -> f32 {
+    0.5 * (DELAY_MAX_S - DELAY_MIN_S)
+}
+
+/// Strict triangle LFO in `[-1, +1]`, phase wrapped to `[0, 1)`.
+#[derive(Clone)]
+struct TriangleLfo {
+    phase: f32,
+    increment: f32,
+}
+
+impl TriangleLfo {
+    fn new() -> Self {
+        Self {
+            phase: 0.0,
+            increment: 0.0,
+        }
+    }
+
+    fn set_rate(&mut self, rate_hz: f32, sample_rate: f32) {
+        self.increment = rate_hz / sample_rate;
+    }
+
+    #[inline]
+    fn tick(&mut self) -> f32 {
+        self.phase += self.increment;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+        }
+        let p = self.phase;
+        (4.0 * (p - (p + 0.5).floor()).abs() - 1.0).clamp(-1.0, 1.0)
+    }
+}
+
+/// Stereo BBD chorus (`VChorus`, bright voicing). The engine keeps its existing
+/// three controls: `rate_hz` drives the LFO, `depth` scales the delay swing,
+/// `mix` is the dry/wet blend. Variant (bright/dark), mode, hiss and jitter are
+/// further `VChorus` knobs not yet surfaced as plugin params; bright + full
+/// modulation + silent hiss + no jitter is the default voicing.
 #[derive(Clone)]
 pub struct StereoChorus {
     sample_rate: f32,
-    left: DelayLine,
-    right: DelayLine,
-    lfo_phase: f32,
-    lfo_inc: f32,
+    left: ModDelayLine,
+    right: ModDelayLine,
+    lfo: TriangleLfo,
+    noise_state: u64,
     // Control-block parameters.
-    depth: f32, // 0..1 → modulation excursion
-    center_ms: f32,
+    depth: f32, // 0..1 → fraction of the swing actually used
     mix: f32,
+    hiss_amount: f32,
 }
 
 impl StereoChorus {
     pub fn new(sample_rate: f32) -> Self {
-        let max = (sample_rate * (MAX_DELAY_MS + 5.0) * 0.001) as usize + 4;
+        let mut left = ModDelayLine::new(MAX_DELAY_S, sample_rate);
+        let mut right = ModDelayLine::new(MAX_DELAY_S, sample_rate);
+        for line in [&mut left, &mut right] {
+            line.set_saturation(SAT_DRIVE);
+            line.set_recon_cutoff(RECON_CUTOFF_HZ);
+            // Thiran read: flat magnitude + group delay tracks the BBD's clean
+            // analog delay best under the smooth Juno-style sweep.
+            line.set_interp(Interp::Thiran);
+        }
+        // Decorrelate the (currently disabled) jitter walks across channels.
+        left.set_jitter_seed(0x1BBD_0001);
+        right.set_jitter_seed(0x1BBD_0002);
         Self {
             sample_rate,
-            left: DelayLine::new(max),
-            right: DelayLine::new(max),
-            lfo_phase: 0.0,
-            lfo_inc: 0.5 / sample_rate,
+            left,
+            right,
+            lfo: TriangleLfo::new(),
+            noise_state: 0x5DE5,
             depth: 0.5,
-            center_ms: (MIN_DELAY_MS + MAX_DELAY_MS) * 0.5,
             mix: 0.5,
+            hiss_amount: 0.0,
         }
     }
 
     pub fn clear(&mut self) {
         self.left.clear();
         self.right.clear();
-        self.lfo_phase = 0.0;
+        self.lfo.phase = 0.0;
     }
 
     /// Set parameters for the next control block. `rate_hz` typically 0.1–6 Hz,
-    /// `depth` and `mix` in `[0, 1]`.
+    /// `depth` and `mix` in `[0, 1]`. The LFO increment is computed here, once
+    /// per block, rather than per sample.
     pub fn set_params(&mut self, rate_hz: f32, depth: f32, mix: f32) {
-        self.lfo_inc = rate_hz.clamp(0.01, 12.0) / self.sample_rate;
+        self.lfo
+            .set_rate(rate_hz.clamp(0.01, 12.0), self.sample_rate);
         self.depth = depth.clamp(0.0, 1.0);
         self.mix = mix.clamp(0.0, 1.0);
     }
 
-    /// Process one stereo sample. The left and right taps are modulated in
-    /// quadrature (90° apart) for stereo width.
+    /// Broadband BBD hiss amount in `[0, 1]`. `0.0` (the default) keeps the
+    /// effect silent when idle; `1.0` is the faithful uncompanded floor.
+    pub fn set_hiss(&mut self, amount: f32) {
+        self.hiss_amount = amount.clamp(0.0, 1.0);
+    }
+
+    /// Clock-jitter amount in `[0, 1]` (delay-line clock drift). `0.0` disables.
+    pub fn set_jitter(&mut self, amount: f32) {
+        self.left.set_jitter_amount(amount);
+        self.right.set_jitter_amount(amount);
+    }
+
+    /// Block-level process: `dry` is the mono input; `out_l`/`out_r` receive the
+    /// dry/wet mix. All three slices share the block length. Each delay line is
+    /// run as a contiguous pass to keep its state cache-resident.
+    pub fn process_block(&mut self, dry: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        let n = dry.len().min(out_l.len()).min(out_r.len());
+
+        // ── Control-rate constants, hoisted out of the sample loops. ──
+        let center = center_s();
+        let swing = swing_s() * self.depth;
+        let min_d = (center - swing_s()).max(1.0e-4);
+        let max_d = center + swing_s();
+        let mix = self.mix;
+        let dry_gain = 1.0 - mix;
+        let wet_gain = WET_GAIN * mix;
+        let floor = HISS_FLOOR * self.hiss_amount;
+
+        // Per-sample modulation + hiss, computed once and shared by both
+        // channels (right reads the inverted LFO). Scratch lives on the stack.
+        let mut dl = [0.0f32; CONTROL_BLOCK];
+        let mut dr = [0.0f32; CONTROL_BLOCK];
+        let mut nl = [0.0f32; CONTROL_BLOCK];
+        let mut nr = [0.0f32; CONTROL_BLOCK];
+        for i in 0..n {
+            let lfo = self.lfo.tick();
+            dl[i] = (center + swing * lfo).clamp(min_d, max_d);
+            dr[i] = (center - swing * lfo).clamp(min_d, max_d);
+            nl[i] = xorshift64(&mut self.noise_state) * floor;
+            nr[i] = xorshift64(&mut self.noise_state) * floor;
+            // Seed the dry contribution; the wet is added per channel below.
+            out_l[i] = dry[i] * dry_gain;
+            out_r[i] = dry[i] * dry_gain;
+        }
+
+        // Left channel pass, then right — each keeps its line's banks hot.
+        for i in 0..n {
+            let wet = self.left.process(dry[i] + nl[i], dl[i]);
+            out_l[i] += wet_gain * wet;
+        }
+        for i in 0..n {
+            let wet = self.right.process(dry[i] + nr[i], dr[i]);
+            out_r[i] += wet_gain * wet;
+        }
+    }
+
+    /// Process one stereo sample. Convenience wrapper over the BBD core for
+    /// callers outside the block engine; the mono sum drives both lines.
     #[inline]
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        self.lfo_phase += self.lfo_inc;
-        if self.lfo_phase >= 1.0 {
-            self.lfo_phase -= 1.0;
-        }
-        let mod_l = lookup_sine(self.lfo_phase);
-        let mod_r = lookup_sine((self.lfo_phase + 0.25).fract());
+        let mono = 0.5 * (in_l + in_r);
+        let center = center_s();
+        let swing = swing_s() * self.depth;
+        let min_d = (center - swing_s()).max(1.0e-4);
+        let max_d = center + swing_s();
+        let floor = HISS_FLOOR * self.hiss_amount;
 
-        let excursion_ms = self.depth * (MAX_DELAY_MS - MIN_DELAY_MS) * 0.5;
-        let ms_to_samp = self.sample_rate * 0.001;
-        let dl = (self.center_ms + mod_l * excursion_ms) * ms_to_samp;
-        let dr = (self.center_ms + mod_r * excursion_ms) * ms_to_samp;
+        let lfo = self.lfo.tick();
+        let dl = (center + swing * lfo).clamp(min_d, max_d);
+        let dr = (center - swing * lfo).clamp(min_d, max_d);
+        let nl = xorshift64(&mut self.noise_state) * floor;
+        let nr = xorshift64(&mut self.noise_state) * floor;
 
-        self.left.write(in_l);
-        self.right.write(in_r);
-        let wet_l = self.left.read(dl);
-        let wet_r = self.right.read(dr);
+        let wet_l = self.left.process(mono + nl, dl);
+        let wet_r = self.right.process(mono + nr, dr);
 
         let m = self.mix;
-        (in_l * (1.0 - m) + wet_l * m, in_r * (1.0 - m) + wet_r * m)
+        (
+            in_l * (1.0 - m) + WET_GAIN * wet_l * m,
+            in_r * (1.0 - m) + WET_GAIN * wet_r * m,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::lookup_sine;
 
     #[test]
     fn output_finite_and_passes_signal() {
+        // The BBD banks rely on the audio thread's flush-to-zero rather than
+        // per-lane denormal flushing; mirror that contract in the test.
+        crate::enable_flush_to_zero();
         let sr = 48_000.0;
         let mut c = StereoChorus::new(sr);
         c.set_params(1.0, 0.7, 0.5);
@@ -99,5 +241,56 @@ mod tests {
             energy += l.abs();
         }
         assert!(energy > 100.0, "chorus produced near-silence");
+    }
+
+    #[test]
+    fn block_matches_per_sample() {
+        // The block path and the per-sample wrapper share the same core; with a
+        // mono source (l == r) they must agree sample-for-sample.
+        crate::enable_flush_to_zero();
+        let sr = 48_000.0;
+        let mut a = StereoChorus::new(sr);
+        let mut b = StereoChorus::new(sr);
+        a.set_params(0.6, 0.5, 0.4);
+        b.set_params(0.6, 0.5, 0.4);
+
+        let mut dry = [0.0f32; CONTROL_BLOCK];
+        let mut bl = [0.0f32; CONTROL_BLOCK];
+        let mut br = [0.0f32; CONTROL_BLOCK];
+        for blk in 0..32 {
+            for (i, d) in dry.iter_mut().enumerate() {
+                let phase = ((blk * CONTROL_BLOCK + i) as f32 * 330.0 / sr).fract();
+                *d = lookup_sine(phase);
+            }
+            b.process_block(&dry, &mut bl, &mut br);
+            for (i, &d) in dry.iter().enumerate() {
+                let (l, r) = a.process(d, d);
+                assert!(
+                    (l - bl[i]).abs() < 1e-5,
+                    "L mismatch blk{blk} i{i}: {l} vs {}",
+                    bl[i]
+                );
+                assert!(
+                    (r - br[i]).abs() < 1e-5,
+                    "R mismatch blk{blk} i{i}: {r} vs {}",
+                    br[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hiss_floor_is_audible_when_enabled() {
+        crate::enable_flush_to_zero();
+        let sr = 48_000.0;
+        let mut c = StereoChorus::new(sr);
+        c.set_params(0.5, 0.5, 1.0);
+        c.set_hiss(1.0);
+        let mut energy = 0.0f32;
+        for _ in 0..48_000 {
+            let (l, _) = c.process(0.0, 0.0); // silent input
+            energy += l.abs();
+        }
+        assert!(energy > 0.0, "hiss should leak through on silence");
     }
 }

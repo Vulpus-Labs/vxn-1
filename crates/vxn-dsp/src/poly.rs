@@ -17,7 +17,7 @@
 
 use crate::MAX_VOICES;
 use crate::ladder::LadderCoeffs;
-use crate::math::fast_sine;
+use crate::math::{fast_exp2, fast_sine};
 use crate::noise::{NoiseColor, xorshift64};
 use crate::oscillator::Waveform;
 
@@ -53,6 +53,29 @@ fn tanh_c(x: f32) -> f32 {
 fn advance(phase: f32, inc: f32) -> f32 {
     let np = phase + inc;
     np - (np >= 1.0) as u32 as f32
+}
+
+/// One oscillator sample from a phase, matching the per-waveform arithmetic of
+/// [`PolyOscillator::process`] exactly. Used by the coupled `process_pair_*`
+/// paths, where osc1 and osc2 can carry *different* waveforms within one lane
+/// loop, so the global waveform `match` can't be hoisted out per oscillator the
+/// way the independent fast path does it. `wave` is loop-invariant, so the
+/// branch predicts perfectly even though it sits inside the loop.
+#[inline(always)]
+fn osc_sample(wave: Waveform, p: f32, pw: f32, dt: f32) -> f32 {
+    match wave {
+        Waveform::Sine => fast_sine(p),
+        Waveform::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
+        Waveform::Saw => (2.0 * p - 1.0) - pblep(p, dt),
+        Waveform::Pulse => {
+            let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32; // +1 below pw, -1 above
+            let pf = {
+                let x = p - pw + 1.0;
+                x - x.floor()
+            };
+            naive + pblep(p, dt) - pblep(pf, dt)
+        }
+    }
 }
 
 // ── PolyOscillator ────────────────────────────────────────────────────────
@@ -123,6 +146,64 @@ impl PolyOscillator {
                     self.phase[v] = advance(p, dt);
                 }
             }
+        }
+    }
+
+    /// Coupled master(self=osc1)→slave(osc2) path carrying **hard sync** and
+    /// **cross-mod / linear FM** together (JP-8 VCO-2 sync + Cross Mod):
+    ///
+    /// - **Cross-mod** (`xmod` = depth): osc2's current output modulates osc1's
+    ///   per-sample phase increment — `inc1 = base_inc1 * exp2(xmod * o2)`.
+    ///   Exponential (semitone-domain) FM keeps the perceived pitch centred as
+    ///   depth rises and matches the rest of the engine's pitch maths. At
+    ///   `xmod == 0`, `exp2(0) == 1.0` exactly, so the increment is untouched.
+    /// - **Sync** (`sync`): when the master's phase wraps, the slave's phase
+    ///   resets to 0 so it relocks to the master's period.
+    ///
+    /// osc2 is evaluated first because it is the FM source for osc1. This is the
+    /// slow path, taken only when `sync` is on **or** `xmod != 0`; plain patches
+    /// keep the vectorised [`process`](Self::process) fast path. The reset is
+    /// mask-selected (not branched) so the lane loop still vectorises. Both the
+    /// sync step and high-depth FM are alias-prone; v1 leans on the engine's
+    /// oversampling for control.
+    // TODO(E002 follow-up): band-limited (minBLEP) sync correction to suppress
+    // the reset discontinuity's aliasing — deferred, see epic E002 scope.
+    #[inline]
+    #[allow(clippy::too_many_arguments)] // two waves + two pw/out arrays is the coupled shape
+    pub fn process_pair(
+        &mut self,
+        slave: &mut PolyOscillator,
+        sync: bool,
+        xmod: f32,
+        wave1: Waveform,
+        wave2: Waveform,
+        pw1: &[f32; N],
+        pw2: &[f32; N],
+        o1: &mut [f32; N],
+        o2: &mut [f32; N],
+    ) {
+        let sync_f = sync as u32 as f32;
+        for v in 0..N {
+            // osc2 (slave) first — it is the FM source for osc1.
+            o2[v] = osc_sample(wave2, slave.phase[v], pw2[v], slave.inc[v]);
+
+            // osc1 (master) increment modulated by osc2 (exponential FM). The
+            // modulated increment is also the polyblep `dt`, so the band-limiting
+            // tracks the instantaneous frequency.
+            let inc1 = self.inc[v] * fast_exp2(xmod * o2[v]);
+            o1[v] = osc_sample(wave1, self.phase[v], pw1[v], inc1);
+
+            // Advance the master with the modulated increment, capturing the wrap
+            // signal explicitly (the coupled path needs it; `advance` hides it).
+            let np1 = self.phase[v] + inc1;
+            let wrapped = (np1 >= 1.0) as u32 as f32;
+            self.phase[v] = np1 - wrapped;
+
+            // Advance the slave, then mask-reset to 0 only when sync is on *and*
+            // the master wrapped (cross-mod-only patches leave the slave free).
+            let np2 = slave.phase[v] + slave.inc[v];
+            let reset = wrapped * sync_f;
+            slave.phase[v] = (np2 - (np2 >= 1.0) as u32 as f32) * (1.0 - reset);
         }
     }
 }
@@ -465,6 +546,132 @@ mod tests {
             "ramp missed target: {} vs {}",
             lad.g[0],
             target.g
+        );
+    }
+
+    #[test]
+    fn synced_slave_locks_to_master_period() {
+        // Master at an integer sample period (480); slave tuned well above and
+        // not a divisor of it. With sync, the slave resets at every master wrap,
+        // so its output is exactly periodic at the master's period.
+        let period = 480usize;
+        let mut osc1 = PolyOscillator::new();
+        let mut osc2 = PolyOscillator::new();
+        osc1.inc[0] = 1.0 / period as f32;
+        osc2.inc[0] = 1.0 / 63.0; // ~7.6× master, non-divisor
+        let pw = [0.5; N];
+        let (mut o1, mut o2) = ([0.0; N], [0.0; N]);
+
+        // Capture two full master periods after a one-period warm-up.
+        let mut log = Vec::with_capacity(2 * period);
+        for i in 0..(3 * period) {
+            osc1.process_pair(&mut osc2, true, 0.0, Waveform::Saw, Waveform::Sine, &pw, &pw, &mut o1, &mut o2);
+            if i >= period {
+                log.push(o2[0]);
+            }
+        }
+        // Slave output repeats with the master's period (sync lock).
+        let mut max_diff = 0.0f32;
+        for i in 0..period {
+            max_diff = max_diff.max((log[i] - log[i + period]).abs());
+        }
+        assert!(max_diff < 1e-6, "slave not locked to master period: {max_diff}");
+    }
+
+    #[test]
+    fn synced_pair_all_lanes_finite() {
+        // Mixed waveforms, varied tunings, and a frozen (inc = 0) lane: the
+        // coupled path must stay finite, including the masked phase reset.
+        let mut osc1 = PolyOscillator::new();
+        let mut osc2 = PolyOscillator::new();
+        for v in 0..N {
+            osc1.inc[v] = (40.0 + v as f32 * 30.0) / 48_000.0;
+            osc2.inc[v] = (300.0 + v as f32 * 90.0) / 48_000.0;
+        }
+        osc1.inc[3] = 0.0; // frozen master lane
+        osc2.inc[5] = 0.0; // frozen slave lane
+        let pw = [0.5; N];
+        let (mut o1, mut o2) = ([0.0; N], [0.0; N]);
+        for (w1, w2) in [
+            (Waveform::Saw, Waveform::Pulse),
+            (Waveform::Pulse, Waveform::Saw),
+            (Waveform::Sine, Waveform::Triangle),
+        ] {
+            for _ in 0..4800 {
+                // sync on + heavy cross-mod: both couplings active at once.
+                osc1.process_pair(&mut osc2, true, 0.9, w1, w2, &pw, &pw, &mut o1, &mut o2);
+                assert!(o1.iter().chain(o2.iter()).all(|s| s.is_finite()), "{w1:?}/{w2:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn coupled_xmod_zero_matches_fast_path() {
+        // The coupled path with sync off and cross-mod 0 must be bit-identical to
+        // the independent fast path (`exp2(0) == 1`, no reset), so plain patches
+        // selecting the fast path lose nothing.
+        let mut a1 = PolyOscillator::new();
+        let mut a2 = PolyOscillator::new();
+        let mut b1 = PolyOscillator::new();
+        let mut b2 = PolyOscillator::new();
+        for v in 0..N {
+            let i1 = (60.0 + v as f32 * 25.0) / 48_000.0;
+            let i2 = (90.0 + v as f32 * 55.0) / 48_000.0;
+            a1.inc[v] = i1;
+            b1.inc[v] = i1;
+            a2.inc[v] = i2;
+            b2.inc[v] = i2;
+        }
+        a1.inc[7] = 0.0; // frozen lane
+        b1.inc[7] = 0.0;
+        let pw = [0.5; N];
+        let (mut fo1, mut fo2) = ([0.0; N], [0.0; N]);
+        let (mut co1, mut co2) = ([0.0; N], [0.0; N]);
+        for _ in 0..4800 {
+            // Fast path.
+            a1.process(Waveform::Saw, &pw, &mut fo1);
+            a2.process(Waveform::Pulse, &pw, &mut fo2);
+            // Coupled path, sync off, depth 0.
+            b1.process_pair(&mut b2, false, 0.0, Waveform::Saw, Waveform::Pulse, &pw, &pw, &mut co1, &mut co2);
+            assert_eq!(fo1, co1, "osc1 diverged from fast path");
+            assert_eq!(fo2, co2, "osc2 diverged from fast path");
+        }
+    }
+
+    #[test]
+    fn cross_mod_adds_spectral_content() {
+        // Cross-mod of a sine carrier (f1) by a sine modulator (f2) creates
+        // sidebands at f1 ± f2. Measure the magnitude at the f1+f2 bin via a
+        // single-bin DFT: ≈0 at depth 0, clearly present at depth > 0.
+        let sr = 48_000.0;
+        let f1 = 110.0f32;
+        let f2 = 270.0f32; // inharmonic ratio
+        fn sideband(xmod: f32, f1: f32, f2: f32, sr: f32) -> f32 {
+            let mut osc1 = PolyOscillator::new();
+            let mut osc2 = PolyOscillator::new();
+            osc1.inc[0] = f1 / sr;
+            osc2.inc[0] = f2 / sr;
+            let pw = [0.5; N];
+            let (mut o1, mut o2) = ([0.0; N], [0.0; N]);
+            let w = std::f32::consts::TAU * (f1 + f2) / sr;
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            let frames = 8192usize;
+            // Hann window so the strong carrier's spectral leakage doesn't swamp
+            // the sideband bin (rectangular sidelobes fall off only as 1/k).
+            for n in 0..frames {
+                osc1.process_pair(&mut osc2, false, xmod, Waveform::Sine, Waveform::Sine, &pw, &pw, &mut o1, &mut o2);
+                let win = 0.5 * (1.0 - (std::f32::consts::TAU * n as f32 / (frames - 1) as f32).cos());
+                let ph = w * n as f32;
+                re += o1[0] * win * ph.cos();
+                im -= o1[0] * win * ph.sin();
+            }
+            (re * re + im * im).sqrt() / frames as f32
+        }
+        let clean = sideband(0.0, f1, f2, sr);
+        let modulated = sideband(0.6, f1, f2, sr);
+        assert!(
+            modulated > 10.0 * clean.max(1e-6),
+            "cross-mod produced no sideband: clean {clean}, modulated {modulated}"
         );
     }
 

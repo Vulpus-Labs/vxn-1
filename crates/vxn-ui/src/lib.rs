@@ -33,7 +33,9 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use vizia::ParentWindow;
+use vizia::context::TreeProps;
 use vizia::prelude::*;
+use vizia::vg;
 use vxn_engine::{PARAMS, ParamId, ParamKind, SharedParams};
 
 /// Handle to the live editor window. Call [`WindowHandle::close`] when the host
@@ -162,11 +164,22 @@ label { font-size: 11; color: #d6d6d6; }
 .ovsmp toggle-button { background-color: #555555; padding: 3px; }
 .ovsmp toggle-button:checked { background-color: #2e9e3f; }
 .ovsmp toggle-button label { color: #ffffff; font-size: 9; }
+.value-pop { background-color: #0e0e0e; border-width: 1px; border-color: #d9701b; corner-radius: 3px; padding-left: 4px; padding-right: 4px; font-size: 10; color: #f6f6f6; }
+.fader .track { background-color: #555555; width: 6px; corner-radius: 2px; }
+.fader .range { background-color: #d9701b; corner-radius: 2px; }
+.fader .thumb { background-color: #e8e8e8; border-width: 1px; border-color: #141414; corner-radius: 1px; width: 20px; height: 8px; }
+.wave-glyph { color: #888888; }
+.wave-glyph.active { color: #e8902f; }
+.wave-txt { font-size: 8; color: #888888; }
+.wave-txt.active { color: #e8902f; }
 "#;
 
 const FADER_H: f32 = 66.0;
 const COL_H: f32 = 98.0;
 const PANEL_H: f32 = 124.0;
+/// Square area framing a selector knob, sized to fit the variant glyphs/labels
+/// arranged around its arc.
+const DIAL: f32 = 62.0;
 
 /// UI value range for a fader. Bipolar routes (env→cutoff, env→pitch) use the
 /// full descriptor range, centred at zero; the unipolar mod amounts
@@ -237,7 +250,7 @@ fn make_ctl(id: ParamId, shared: &SharedParams) -> Ctl {
         ParamKind::Enum { variants } => {
             if matches!(
                 id,
-                ParamId::Osc1Wave | ParamId::Osc2Wave | ParamId::NoiseColor | ParamId::LfoShape
+                ParamId::Osc1Wave | ParamId::Osc2Wave | ParamId::LfoShape
             ) {
                 Ctl::Rotary(i, SyncSignal::new(shared.get_normalized(i)))
             } else if matches!(id, ParamId::Oversample) {
@@ -378,6 +391,127 @@ fn panel_view(
     .vertical_gap(Pixels(4.0));
 }
 
+/// Polyline (in a `[0, 1]²` box, y down) approximating one cycle of a named
+/// waveform, for the little icons drawn around a waveform selector knob. Returns
+/// empty for labels that aren't waveforms (e.g. noise colours), which fall back to
+/// text labels instead.
+fn wave_points(label: &str) -> Vec<(f32, f32)> {
+    match label {
+        "Sine" => (0..=16)
+            .map(|k| {
+                let t = k as f32 / 16.0;
+                (t, 0.5 - 0.38 * (t * std::f32::consts::TAU).sin())
+            })
+            .collect(),
+        "Triangle" | "Tri" => vec![(0.0, 0.85), (0.5, 0.15), (1.0, 0.85)],
+        // Rising ramp with a vertical reset (one and a bit cycles reads clearly small).
+        "Saw" | "Saw+" => vec![(0.0, 0.85), (0.5, 0.15), (0.5, 0.85), (1.0, 0.15)],
+        "Saw-" => vec![(0.0, 0.15), (0.5, 0.85), (0.5, 0.15), (1.0, 0.85)],
+        "Pulse" | "Square" => vec![
+            (0.0, 0.85),
+            (0.0, 0.15),
+            (0.5, 0.15),
+            (0.5, 0.85),
+            (1.0, 0.85),
+        ],
+        "S&H" => vec![
+            (0.0, 0.6),
+            (0.28, 0.6),
+            (0.28, 0.2),
+            (0.56, 0.2),
+            (0.56, 0.8),
+            (0.82, 0.8),
+            (0.82, 0.45),
+            (1.0, 0.45),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// A small waveform icon, stroked in the view's current `color` so a `.active`
+/// class can light it up. Used as a glyph "label" around a waveform selector knob.
+struct WaveGlyph {
+    label: &'static str,
+}
+
+impl WaveGlyph {
+    fn new<'a>(cx: &'a mut Context, label: &'static str) -> Handle<'a, Self> {
+        Self { label }.build(cx, |_| {})
+    }
+}
+
+impl View for WaveGlyph {
+    fn element(&self) -> Option<&'static str> {
+        Some("waveglyph")
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let pts = wave_points(self.label);
+        if pts.is_empty() {
+            return;
+        }
+        let b = cx.bounds();
+        let s = cx.scale_factor();
+        let pad = 2.0 * s;
+        let (w, h) = (b.w - 2.0 * pad, b.h - 2.0 * pad);
+        let mut path = vg::PathBuilder::new();
+        for (k, (t, y)) in pts.iter().enumerate() {
+            let p = (b.x + pad + t * w, b.y + pad + y * h);
+            if k == 0 {
+                path.move_to(p);
+            } else {
+                path.line_to(p);
+            }
+        }
+        let mut paint = vg::Paint::default();
+        paint.set_color(cx.font_color());
+        paint.set_stroke_width(1.3 * s);
+        paint.set_style(vg::PaintStyle::Stroke);
+        paint.set_stroke_cap(vg::PaintCap::Round);
+        paint.set_stroke_join(vg::PaintJoin::Round);
+        paint.set_anti_alias(true);
+        let path = path.detach();
+        canvas.draw_path(&path, &paint);
+    }
+}
+
+/// Cursor Y as a top offset (logical px) within the control cell, clamped to the
+/// cell so the readout can't drift above it. Used to pin the value popup to the
+/// point where the pointer entered/grabbed the control.
+fn cursor_top(cx: &EventContext) -> f32 {
+    let cell_y = cx.cache.get_bounds(cx.parent()).y;
+    (((cx.mouse().cursor_y - cell_y) / cx.scale_factor()) - 8.0).max(0.0)
+}
+
+/// Floating value readout shown over a fader/knob while it is hovered or being
+/// dragged. Absolutely positioned so it never reserves layout space, rendered only
+/// while `show` is set, and pinned to `posy` (the cursor Y at hover/grab) so it
+/// sits beside the pointer rather than over the control's label. Non-hoverable so
+/// it doesn't steal the pointer and make the control flicker. The faceplate's
+/// overflow stays visible so the readout can spill past the narrow control cell.
+fn value_popup<T: ToStringLocalized + 'static>(
+    cx: &mut Context,
+    text: impl Res<T> + Clone + 'static,
+    show: SyncSignal<bool>,
+    posy: SyncSignal<f32>,
+    x_off: f32,
+) {
+    Label::new(cx, text)
+        .class("value-pop")
+        .position_type(PositionType::Absolute)
+        .top(posy.map(|y: &f32| Pixels(*y)))
+        .left(Stretch(1.0))
+        .right(Stretch(1.0))
+        .width(Auto)
+        .height(Auto)
+        // Nudge sideways (faders) so the readout sits beside the thumb rather than
+        // on top of it, keeping the thumb visible while dragging.
+        .translate((Pixels(x_off), Pixels(0.0)))
+        .z_index(100)
+        .hoverable(false)
+        .display(show);
+}
+
 fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &'static str) {
     VStack::new(cx, |cx| {
         Label::new(cx, short)
@@ -385,6 +519,12 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
             .height(Pixels(11.0));
         match ctl {
             Ctl::Fader(i, sig) => {
+                let (hover, drag, show, posy) = (
+                    SyncSignal::new(false),
+                    SyncSignal::new(false),
+                    SyncSignal::new(false),
+                    SyncSignal::new(0.0f32),
+                );
                 let (sh_set, sh_down, sh_up) =
                     (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
                 Slider::new(cx, sig)
@@ -396,14 +536,33 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                         sig.set(v);
                         sh_set.set(i, fader_from_ui(i, v));
                     })
-                    .on_mouse_down(move |_cx, _btn| sh_down.set_gesture(i, true))
-                    .on_mouse_up(move |_cx, _btn| sh_up.set_gesture(i, false));
-                Label::new(
+                    .on_over(move |cx| {
+                        posy.set(cursor_top(cx));
+                        hover.set(true);
+                        show.set(true);
+                    })
+                    .on_over_out(move |_cx| {
+                        hover.set(false);
+                        show.set(drag.get());
+                    })
+                    .on_mouse_down(move |cx, _btn| {
+                        posy.set(cursor_top(cx));
+                        drag.set(true);
+                        show.set(true);
+                        sh_down.set_gesture(i, true);
+                    })
+                    .on_mouse_up(move |_cx, _btn| {
+                        drag.set(false);
+                        show.set(hover.get());
+                        sh_up.set_gesture(i, false);
+                    });
+                value_popup(
                     cx,
                     sig.map(move |n: &f32| PARAMS[i].display(fader_from_ui(i, *n))),
-                )
-                .class("ctl-value")
-                .height(Pixels(11.0));
+                    show,
+                    posy,
+                    22.0,
+                );
             }
             Ctl::Rotary(i, sig) => {
                 let cnt = match PARAMS[i].kind {
@@ -418,21 +577,98 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     }
                 };
                 let default_norm = PARAMS[i].to_normalized(PARAMS[i].default);
+                let variants = match PARAMS[i].kind {
+                    ParamKind::Enum { variants } => variants,
+                    _ => &[][..],
+                };
+                // Waveform selectors get drawn glyphs around the arc; other enums
+                // (e.g. noise colour) get small text labels at the same positions.
+                let use_glyphs = !variants.is_empty() && variants.iter().all(|l| !wave_points(l).is_empty());
+                let (hover, drag, show, posy) = (
+                    SyncSignal::new(false),
+                    SyncSignal::new(false),
+                    SyncSignal::new(false),
+                    SyncSignal::new(0.0f32),
+                );
                 let (sh_set, sh_down, sh_up) =
                     (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
-                Knob::new(cx, default_norm, sig, false)
-                    .on_change(move |_cx, v| {
-                        // Snap to the nearest variant.
-                        let idx = snap(v);
-                        sig.set(if cnt > 1 { idx / (cnt - 1) as f32 } else { 0.0 });
-                        sh_set.set(i, idx);
-                    })
-                    .on_mouse_down(move |_cx, _btn| sh_down.set_gesture(i, true))
-                    .on_mouse_up(move |_cx, _btn| sh_up.set_gesture(i, false))
-                    .size(Pixels(34.0));
-                Label::new(cx, sig.map(move |n: &f32| PARAMS[i].display(snap(*n))))
-                    .class("ctl-value")
-                    .height(Pixels(11.0));
+                // Dial: knob centred, variant glyphs/labels arranged around its
+                // 300° sweep (value 0..1 -> -150°..+150°, gap at the bottom). The
+                // popup lives here too so its cursor-pinned offset shares the knob's
+                // coordinate space.
+                ZStack::new(cx, move |cx| {
+                    const C: f32 = DIAL / 2.0;
+                    const R: f32 = 25.0;
+                    for (n, label) in variants.iter().enumerate() {
+                        let value = if cnt > 1 { n as f32 / (cnt - 1) as f32 } else { 0.5 };
+                        let theta = (value * 300.0 - 150.0).to_radians();
+                        let active = sig.map(move |v: &f32| {
+                            cnt > 1 && (*v * (cnt - 1) as f32).round() as usize == n
+                        });
+                        if use_glyphs {
+                            const G: f32 = 14.0;
+                            WaveGlyph::new(cx, label)
+                                .class("wave-glyph")
+                                .toggle_class("active", active)
+                                .position_type(PositionType::Absolute)
+                                .left(Pixels(C + R * theta.sin() - G / 2.0))
+                                .top(Pixels(C - R * theta.cos() - G / 2.0))
+                                .width(Pixels(G))
+                                .height(Pixels(G))
+                                .hoverable(false);
+                        } else {
+                            const GW: f32 = 24.0;
+                            const GH: f32 = 10.0;
+                            Label::new(cx, *label)
+                                .class("wave-txt")
+                                .toggle_class("active", active)
+                                .position_type(PositionType::Absolute)
+                                .left(Pixels(C + R * theta.sin() - GW / 2.0))
+                                .top(Pixels(C - R * theta.cos() - GH / 2.0))
+                                .width(Pixels(GW))
+                                .height(Pixels(GH))
+                                .alignment(Alignment::Center)
+                                .hoverable(false);
+                        }
+                    }
+                    Knob::new(cx, default_norm, sig, false)
+                        .on_change(move |_cx, v| {
+                            // Snap to the nearest variant.
+                            let idx = snap(v);
+                            sig.set(if cnt > 1 { idx / (cnt - 1) as f32 } else { 0.0 });
+                            sh_set.set(i, idx);
+                        })
+                        .on_over(move |cx| {
+                            posy.set(cursor_top(cx));
+                            hover.set(true);
+                            show.set(true);
+                        })
+                        .on_over_out(move |_cx| {
+                            hover.set(false);
+                            show.set(drag.get());
+                        })
+                        .on_mouse_down(move |cx, _btn| {
+                            posy.set(cursor_top(cx));
+                            drag.set(true);
+                            show.set(true);
+                            sh_down.set_gesture(i, true);
+                        })
+                        .on_mouse_up(move |_cx, _btn| {
+                            drag.set(false);
+                            show.set(hover.get());
+                            sh_up.set_gesture(i, false);
+                        })
+                        .size(Pixels(26.0));
+                    value_popup(
+                        cx,
+                        sig.map(move |n: &f32| PARAMS[i].display(snap(*n))),
+                        show,
+                        posy,
+                        0.0,
+                    );
+                })
+                .size(Pixels(DIAL))
+                .alignment(Alignment::Center);
             }
             Ctl::Switch(i, sig) => {
                 let sh = Arc::clone(shared);
@@ -493,6 +729,6 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
         }
     })
     .height(Pixels(COL_H))
-    .vertical_gap(Pixels(3.0))
+    .vertical_gap(Pixels(8.0))
     .alignment(Alignment::TopCenter);
 }

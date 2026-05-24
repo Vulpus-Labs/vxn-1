@@ -1,4 +1,4 @@
-# ADR 0001 — VXN1 overall design approach (first draft)
+e# ADR 0001 — VXN1 overall design approach (first draft)
 
 - **Status:** Accepted
 - **Date:** 2026-05-24

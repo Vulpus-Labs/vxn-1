@@ -18,7 +18,6 @@
 //!   modulation uniformly. Smoothing the cutoff *value* here too would be
 //!   redundant, so these jump.
 
-use crate::modmatrix::{ModDest, ModSource};
 use crate::{ParamId, ParamValues};
 use vxn_dsp::{CONTROL_BLOCK, Smoothed, one_pole_coeff};
 
@@ -26,9 +25,6 @@ use vxn_dsp::{CONTROL_BLOCK, Smoothed, one_pole_coeff};
 const BLOCK_SMOOTH_MS: f32 = 10.0;
 /// Glide time for the per-sample master volume (ms).
 const VOLUME_SMOOTH_MS: f32 = 5.0;
-
-/// Number of contiguous modulation-depth params at [`ParamId::MATRIX_BASE`].
-const MATRIX_LEN: usize = ModSource::COUNT * ModDest::COUNT;
 
 /// How a parameter is smoothed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,14 +40,14 @@ enum Glide {
 #[inline]
 fn glide_of(id: ParamId) -> Glide {
     use ParamId::*;
-    // The 20 mod-matrix depth params sit contiguously at MATRIX_BASE.
-    let i = id.index();
-    if (ParamId::MATRIX_BASE..ParamId::MATRIX_BASE + MATRIX_LEN).contains(&i) {
+    // All mod-matrix depth params glide at block rate, wherever they sit.
+    if ParamId::is_matrix_param(id.index()) {
         return Glide::Block;
     }
     match id {
         MasterVolume => Glide::PerSample,
-        Osc1Level | Osc2Level | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth => Glide::Block,
+        Osc1Level | Osc2Level | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth | CrossMod
+        | ModWheelDepth => Glide::Block,
         _ => Glide::Snap,
     }
 }

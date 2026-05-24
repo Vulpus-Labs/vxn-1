@@ -91,10 +91,27 @@ pub enum ParamId {
     DelayPingPong,
     // Quality
     Oversample,
+    // ── Appended after v1 to keep earlier CLAP ids stable (E001) ──
+    /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
+    HpfCutoff,
+    /// Per-oscillator octave offset, stacks with coarse/fine.
+    Osc1Octave,
+    Osc2Octave,
+    /// Per-voice fade-in of LFO modulation after note-on (s).
+    LfoDelay,
+    // ── E002: oscillator interaction ──
+    /// Hard sync: osc2 (slave) phase resets each osc1 (master) cycle.
+    OscSync,
+    /// Cross-mod / linear FM depth: osc2 output modulates osc1 pitch.
+    CrossMod,
+    /// Mod-wheel (CC1) destination: Off / Cutoff / Osc2 Pitch.
+    ModWheelDest,
+    /// Mod-wheel modulation depth (semitone-domain: cutoff octaves or osc2 st).
+    ModWheelDepth,
 }
 
 impl ParamId {
-    pub const COUNT: usize = ParamId::Oversample as usize + 1;
+    pub const COUNT: usize = ParamId::ModWheelDepth as usize + 1;
 
     /// Index of the first modulation-matrix parameter (`Env1Pitch`).
     pub const MATRIX_BASE: usize = ParamId::Env1Pitch as usize;
@@ -116,10 +133,33 @@ impl ParamId {
         }
     }
 
+    /// Table index where source `src`'s block of destination-depth params
+    /// begins. The original five sources are contiguous from [`Self::MATRIX_BASE`];
+    /// a source added later (appended at the end of the table to keep earlier
+    /// CLAP ids stable) can return its own base here without disturbing the
+    /// existing layout. This is the single place that encodes the matrix layout —
+    /// [`Self::matrix_index`], [`Self::is_matrix_param`], the engine's `build_ctx`
+    /// and the smoother all derive from it.
+    #[inline]
+    pub fn matrix_row_base(src: ModSource) -> usize {
+        Self::MATRIX_BASE + (src as usize) * ModDest::COUNT
+    }
+
     /// Table index of the depth param for a `(source, destination)` route.
     #[inline]
     pub fn matrix_index(src: ModSource, dest: ModDest) -> usize {
-        Self::MATRIX_BASE + (src as usize) * ModDest::COUNT + (dest as usize)
+        Self::matrix_row_base(src) + (dest as usize)
+    }
+
+    /// Whether table index `idx` is one of the modulation-depth params, across
+    /// every source. Derived from [`Self::matrix_row_base`], so it stays correct
+    /// even if a source's row is appended out of line rather than kept contiguous.
+    #[inline]
+    pub fn is_matrix_param(idx: usize) -> bool {
+        ModSource::ALL.iter().any(|&src| {
+            let base = Self::matrix_row_base(src);
+            (base..base + ModDest::COUNT).contains(&idx)
+        })
     }
 
     pub fn desc(self) -> &'static ParamDesc {
@@ -188,11 +228,12 @@ impl ParamDesc {
 }
 
 const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];
-const NOISE_LABELS: &[&str] = &["White", "Pink", "Brown"];
+const NOISE_LABELS: &[&str] = &["White", "Pink"];
 const VARIANT_LABELS: &[&str] = &["Sharp", "Smooth"];
 const SHAPE_LABELS: &[&str] = &["Linear", "Exponential"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x"];
+const MOD_WHEEL_DEST_LABELS: &[&str] = &["Off", "Cutoff", "Osc2 Pitch"];
 
 #[allow(clippy::too_many_arguments)]
 const fn f(
@@ -590,6 +631,65 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = {
             "Oversample",
             OVERSAMPLE_LABELS,
             1.0,
+        ),
+        // ── Appended after v1 (E001); ids stay stable above this line. ──
+        f(
+            HpfCutoff,
+            "hpf_cutoff",
+            "HPF Cutoff",
+            20.0,
+            18000.0,
+            20.0,
+            "Hz",
+            true,
+        ),
+        i(
+            Osc1Octave,
+            "osc1_octave",
+            "Osc 1 Octave",
+            -4.0,
+            4.0,
+            0.0,
+            "oct",
+        ),
+        i(
+            Osc2Octave,
+            "osc2_octave",
+            "Osc 2 Octave",
+            -4.0,
+            4.0,
+            0.0,
+            "oct",
+        ),
+        f(
+            LfoDelay,
+            "lfo_delay",
+            "LFO Delay",
+            0.0,
+            4.0,
+            0.0,
+            "s",
+            false,
+        ),
+        // ── E002 (ids stay stable above this line) ──
+        b(OscSync, "osc_sync", "Sync", 0.0),
+        f(CrossMod, "cross_mod", "Cross Mod", 0.0, 1.0, 0.0, "", false),
+        e(
+            ModWheelDest,
+            "mod_wheel_dest",
+            "Mod Wheel",
+            MOD_WHEEL_DEST_LABELS,
+            0.0,
+        ),
+        f(
+            ModWheelDepth,
+            "mod_wheel_depth",
+            "Mod Wheel Depth",
+            -48.0,
+            48.0,
+            12.0,
+            "st",
+            false,
         ),
     ]
 };

@@ -107,7 +107,6 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         shared: &'a VxnShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        vxn_engine::enable_flush_to_zero();
         let max = audio_config.max_frames_count as usize;
         Ok(Self {
             synth: Synth::new(audio_config.sample_rate as f32),
@@ -124,6 +123,12 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush denormals to zero for this block, restoring the host's FP mode
+        // on return. Set per-process (not once in `activate`) because the FP
+        // control word is thread-local and the host may run `process` on a
+        // different thread; the engine's filter/delay feedback paths rely on it.
+        let _ftz = vxn_engine::ScopedFlushToZero::new();
+
         // Fold UI edits made since the last process into the local mirror, then
         // drive the engine from the working values (UI + last host state).
         self.local.fetch_ui_changes(&self.shared.params);
@@ -163,6 +168,22 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
                         // Host automation: fold into the mirror and the engine.
                         if let Some((idx, value)) = local.apply_input(event) {
                             synth.set_param(idx, value);
+                        }
+                    }
+                    Some(CoreEventSpace::Midi(e)) => {
+                        // Raw MIDI 1.0: pitch bend (0xE0) → pitch; CC1 (mod wheel)
+                        // → routable destination. Channel nibble ignored (global).
+                        let [status, d1, d2] = e.data();
+                        match status & 0xF0 {
+                            0xE0 => {
+                                // 14-bit bend, centre 8192 → normalised [-1, 1].
+                                let raw = ((d2 as u16) << 7) | d1 as u16;
+                                synth.set_pitch_bend((raw as f32 - 8192.0) / 8192.0);
+                            }
+                            0xB0 if d1 == 1 => {
+                                synth.set_mod_wheel(d2 as f32 / 127.0);
+                            }
+                            _ => {}
                         }
                     }
                     _ => {}
