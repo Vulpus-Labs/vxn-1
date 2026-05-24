@@ -20,9 +20,11 @@ use clack_plugin::stream::{InputStream, OutputStream};
 use local::LocalParams;
 use std::ffi::CStr;
 use std::fmt::Write as _;
-use std::io::{Read, Write as _};
 use std::sync::Arc;
-use vxn_engine::{PARAMS, ParamId, ParamKind, SharedParams, Synth};
+use vxn_engine::{
+    ParamDesc, ParamKind, PluginState as VxnState, SharedParams, Synth, TOTAL_PARAMS,
+    desc_for_clap_id, module_for_clap_id,
+};
 
 /// Top-level plugin marker type.
 pub struct VxnPlugin;
@@ -273,32 +275,33 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
 
 // ── Parameters ────────────────────────────────────────────────────────────────
 
-fn format_value(id: ParamId, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
+fn format_value(desc: &ParamDesc, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
     // Shared with the editor's value readouts so host and UI render identically.
-    write!(writer, "{}", id.desc().display(value as f32))
+    write!(writer, "{}", desc.display(value as f32))
 }
 
 impl PluginMainThreadParams for VxnMainThread<'_> {
     fn count(&mut self) -> u32 {
-        ParamId::COUNT as u32
+        TOTAL_PARAMS as u32
     }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
-        let Some(id) = ParamId::from_index(param_index as usize) else {
+        let idx = param_index as usize;
+        let Some(desc) = desc_for_clap_id(idx) else {
             return;
         };
-        let desc = id.desc();
         let stepped = !matches!(desc.kind, ParamKind::Float { .. });
         let mut flags = ParamInfoFlags::IS_AUTOMATABLE;
         if stepped {
             flags |= ParamInfoFlags::IS_STEPPED;
         }
         info.set(&ParamInfo {
-            id: ClapId::new(id.index() as u32),
+            id: ClapId::new(idx as u32),
             flags,
             cookie: Default::default(),
             name: desc.label.as_bytes(),
-            module: b"",
+            // Group the automation list by layer (Upper/Lower/Global).
+            module: module_for_clap_id(idx).as_bytes(),
             min_value: desc.min as f64,
             max_value: desc.max as f64,
             default_value: desc.default as f64,
@@ -307,7 +310,7 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
 
     fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
         let idx = param_id.get() as usize;
-        if idx < ParamId::COUNT {
+        if idx < TOTAL_PARAMS {
             Some(self.shared.params.get(idx) as f64)
         } else {
             None
@@ -320,8 +323,8 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
-        match ParamId::from_index(param_id.get() as usize) {
-            Some(id) => format_value(id, value, writer),
+        match desc_for_clap_id(param_id.get() as usize) {
+            Some(desc) => format_value(desc, value, writer),
             None => Err(std::fmt::Error),
         }
     }
@@ -362,25 +365,25 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        for i in 0..ParamId::COUNT {
-            output.write_all(&self.shared.params.get(i).to_le_bytes())?;
-        }
-        Ok(())
+        // One canonical serializer (both per-patch blocks + global + the
+        // non-automatable shared state); reused by future preset management.
+        self.shared
+            .params
+            .to_state()
+            .write(output)
+            .map_err(|_| PluginError::Message("state save failed"))
     }
 
     fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
-        for i in 0..ParamId::COUNT {
-            let mut buf = [0u8; 4];
-            input.read_exact(&mut buf)?;
-            self.shared.params.set(i, f32::from_le_bytes(buf));
-        }
+        let state = VxnState::read(input).map_err(|_| PluginError::Message("state load failed"))?;
+        self.shared.params.restore_from(&state);
         Ok(())
     }
 }
 
 clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 
-// Keep the param table referenced so the linker never drops it in a thin-LTO
+// Keep the param tables referenced so the linker never drops them in a thin-LTO
 // cdylib build (defensive; also a compile-time check the import is used).
 #[used]
-static _PARAM_COUNT: usize = PARAMS.len();
+static _PARAM_COUNT: usize = TOTAL_PARAMS;

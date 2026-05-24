@@ -8,7 +8,14 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::time::Duration;
-use vxn_engine::{ParamId, Synth};
+use vxn_engine::{GlobalParam, Layer, PatchParam, Synth, global_clap_id, patch_clap_id};
+
+fn pp(p: PatchParam) -> usize {
+    patch_clap_id(Layer::Upper, p)
+}
+fn gp(g: GlobalParam) -> usize {
+    global_clap_id(g)
+}
 
 const SR: f32 = 48_000.0;
 const FRAMES: usize = 512;
@@ -17,14 +24,14 @@ const FRAMES: usize = 512;
 /// `res` sets filter resonance; `os` is the oversampling factor (1/2/4).
 fn setup(fx: bool, res: f32, os: f32) -> Synth {
     let mut s = Synth::new(SR);
-    s.set_param(ParamId::ChorusOn.index(), if fx { 1.0 } else { 0.0 });
-    s.set_param(ParamId::DelayOn.index(), if fx { 1.0 } else { 0.0 });
-    s.set_param(ParamId::Oversample.index(), os);
-    s.set_param(ParamId::Resonance.index(), res);
-    s.set_param(ParamId::NoiseLevel.index(), 0.2);
+    s.set_param(gp(GlobalParam::ChorusOn), if fx { 1.0 } else { 0.0 });
+    s.set_param(gp(GlobalParam::DelayOn), if fx { 1.0 } else { 0.0 });
+    s.set_param(gp(GlobalParam::Oversample), os);
+    s.set_param(pp(PatchParam::Resonance), res);
+    s.set_param(pp(PatchParam::NoiseLevel), 0.2);
     // Route ENV-1 -> cutoff and LFO -> pitch so the matrix is doing real work.
-    s.set_param(ParamId::Env1Cutoff.index(), 24.0);
-    s.set_param(ParamId::LfoPitch.index(), 3.0);
+    s.set_param(pp(PatchParam::Env1Cutoff), 24.0);
+    s.set_param(pp(PatchParam::LfoPitch), 3.0);
     for n in 48..64u8 {
         s.note_on(n, 1.0);
     }

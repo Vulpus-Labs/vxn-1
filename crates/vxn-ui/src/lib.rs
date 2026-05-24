@@ -36,7 +36,10 @@ use vizia::ParentWindow;
 use vizia::context::TreeProps;
 use vizia::prelude::*;
 use vizia::vg;
-use vxn_engine::{PARAMS, ParamId, ParamKind, SharedParams};
+use vxn_engine::{
+    GlobalParam, Layer, ParamKind, ParamRef, PatchParam, SharedParams, TOTAL_PARAMS,
+    desc_for_clap_id, global_clap_id, param_ref, patch_clap_id,
+};
 
 /// Handle to the live editor window. Call [`WindowHandle::close`] when the host
 /// destroys the GUI.
@@ -45,106 +48,127 @@ pub type EditorHandle = WindowHandle;
 pub const EDITOR_WIDTH: u32 = 820;
 pub const EDITOR_HEIGHT: u32 = 470;
 
-/// A control entry: parameter id plus a short faceplate label (the panel header
-/// supplies the context, so per-control labels stay terse).
-type Entry = (ParamId, &'static str);
+/// A control entry: CLAP id plus a short faceplate label (the panel header
+/// supplies the context, so per-control labels stay terse). Per-patch entries
+/// resolve to the **Upper** layer for now; the Upper/Lower edit toggle is 0013.
+type Entry = (usize, &'static str);
 
 /// Faceplate layout: rows of panels, each panel a titled group of controls.
 /// Mod-matrix routes appear as dedicated faders in context (VCO Mod / Filter /
 /// Amp panels), not as a generic grid.
+/// Upper-layer per-patch CLAP id (the faceplate edits the Upper layer in 0007).
+const fn u(p: PatchParam) -> usize {
+    patch_clap_id(Layer::Upper, p)
+}
+/// Global-param CLAP id.
+const fn g(p: GlobalParam) -> usize {
+    global_clap_id(p)
+}
+
 const ROWS: &[&[(&str, &[Entry])]] = {
-    use ParamId::*;
+    use GlobalParam::{
+        ChorusDepth, ChorusMix, ChorusOn, ChorusRate, DelayFeedback, DelayMix, DelayOn,
+        DelayPingPong, DelayTime, MasterTune, MasterVolume, Oversample,
+    };
+    use PatchParam::*;
     &[
         &[
             (
                 "Osc 1",
                 &[
-                    (Osc1Wave, "Wave"),
-                    (Osc1Coarse, "Coarse"),
-                    (Osc1Fine, "Fine"),
-                    (Osc1Level, "Level"),
-                    (Osc1PulseWidth, "PW"),
+                    (u(Osc1Wave), "Wave"),
+                    (u(Osc1Coarse), "Coarse"),
+                    (u(Osc1Fine), "Fine"),
+                    (u(Osc1Level), "Level"),
+                    (u(Osc1PulseWidth), "PW"),
                 ],
             ),
             (
                 "Osc 2",
                 &[
-                    (Osc2Wave, "Wave"),
-                    (Osc2Coarse, "Coarse"),
-                    (Osc2Fine, "Fine"),
-                    (Osc2Level, "Level"),
-                    (Osc2PulseWidth, "PW"),
+                    (u(Osc2Wave), "Wave"),
+                    (u(Osc2Coarse), "Coarse"),
+                    (u(Osc2Fine), "Fine"),
+                    (u(Osc2Level), "Level"),
+                    (u(Osc2PulseWidth), "PW"),
                 ],
             ),
-            ("Noise", &[(NoiseColor, "Color"), (NoiseLevel, "Level")]),
+            (
+                "Noise",
+                &[(u(NoiseColor), "Color"), (u(NoiseLevel), "Level")],
+            ),
             (
                 "VCO Mod",
-                &[(LfoPitch, "Vib"), (Env1Pitch, "P.Env"), (LfoPwm, "PWM")],
+                &[
+                    (u(LfoPitch), "Vib"),
+                    (u(Env1Pitch), "P.Env"),
+                    (u(LfoPwm), "PWM"),
+                ],
             ),
         ],
         &[
             (
                 "Filter",
                 &[
-                    (Cutoff, "Cutoff"),
-                    (Resonance, "Reso"),
-                    (Drive, "Drive"),
-                    (Env1Cutoff, "Env"),
-                    (KeyCutoff, "Key"),
-                    (LfoCutoff, "LFO"),
-                    (VelCutoff, "Vel"),
-                    (FilterVariant, "Type"),
+                    (u(Cutoff), "Cutoff"),
+                    (u(Resonance), "Reso"),
+                    (u(Drive), "Drive"),
+                    (u(Env1Cutoff), "Env"),
+                    (u(KeyCutoff), "Key"),
+                    (u(LfoCutoff), "LFO"),
+                    (u(VelCutoff), "Vel"),
+                    (u(FilterVariant), "Type"),
                 ],
             ),
             (
                 "Env 1",
                 &[
-                    (Env1Attack, "A"),
-                    (Env1Decay, "D"),
-                    (Env1Sustain, "S"),
-                    (Env1Release, "R"),
-                    (Env1Shape, "Shape"),
+                    (u(Env1Attack), "A"),
+                    (u(Env1Decay), "D"),
+                    (u(Env1Sustain), "S"),
+                    (u(Env1Release), "R"),
+                    (u(Env1Shape), "Shape"),
                 ],
             ),
             (
                 "Env 2",
                 &[
-                    (Env2Attack, "A"),
-                    (Env2Decay, "D"),
-                    (Env2Sustain, "S"),
-                    (Env2Release, "R"),
-                    (Env2Shape, "Shape"),
+                    (u(Env2Attack), "A"),
+                    (u(Env2Decay), "D"),
+                    (u(Env2Sustain), "S"),
+                    (u(Env2Release), "R"),
+                    (u(Env2Shape), "Shape"),
                 ],
             ),
         ],
         &[
-            ("LFO", &[(LfoShape, "Shape"), (LfoRate, "Rate")]),
-            ("Amp", &[(VelAmp, "Vel"), (LfoAmp, "Trem")]),
+            ("LFO", &[(u(LfoShape), "Shape"), (u(LfoRate), "Rate")]),
+            ("Amp", &[(u(VelAmp), "Vel"), (u(LfoAmp), "Trem")]),
             (
                 "Master",
                 &[
-                    (MasterTune, "Tune"),
-                    (MasterVolume, "Volume"),
-                    (Oversample, "OvSmp"),
+                    (g(MasterTune), "Tune"),
+                    (g(MasterVolume), "Volume"),
+                    (g(Oversample), "OvSmp"),
                 ],
             ),
             (
                 "Chorus",
                 &[
-                    (ChorusOn, "On"),
-                    (ChorusRate, "Rate"),
-                    (ChorusDepth, "Depth"),
-                    (ChorusMix, "Mix"),
+                    (g(ChorusOn), "On"),
+                    (g(ChorusRate), "Rate"),
+                    (g(ChorusDepth), "Depth"),
+                    (g(ChorusMix), "Mix"),
                 ],
             ),
             (
                 "Delay",
                 &[
-                    (DelayOn, "On"),
-                    (DelayTime, "Time"),
-                    (DelayFeedback, "FB"),
-                    (DelayMix, "Mix"),
-                    (DelayPingPong, "Ping"),
+                    (g(DelayOn), "On"),
+                    (g(DelayTime), "Time"),
+                    (g(DelayFeedback), "FB"),
+                    (g(DelayMix), "Mix"),
+                    (g(DelayPingPong), "Ping"),
                 ],
             ),
         ],
@@ -186,12 +210,15 @@ const DIAL: f32 = 62.0;
 /// (key/LFO/velocity→cutoff, vibrato, LFO→PWM, velocity/LFO→amp) are shown
 /// positive-only (`0..max`) even though the underlying depth param is bipolar.
 fn ui_range(idx: usize) -> (f32, f32) {
-    use ParamId::*;
-    let d = &PARAMS[idx];
-    match ParamId::from_index(idx) {
-        Some(KeyCutoff | LfoCutoff | VelCutoff | LfoPitch | LfoPwm | VelAmp | LfoAmp) => {
-            (0.0, d.max)
-        }
+    use PatchParam::*;
+    let Some(d) = desc_for_clap_id(idx) else {
+        return (0.0, 1.0);
+    };
+    match param_ref(idx) {
+        Some(ParamRef::Patch(
+            _,
+            KeyCutoff | LfoCutoff | VelCutoff | LfoPitch | LfoPwm | VelAmp | LfoAmp,
+        )) => (0.0, d.max),
         _ => (d.min, d.max),
     }
 }
@@ -241,19 +268,31 @@ impl Ctl {
     }
 }
 
-fn make_ctl(id: ParamId, shared: &SharedParams) -> Ctl {
-    let i = id.index();
-    match id.desc().kind {
+fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
+    let Some(desc) = desc_for_clap_id(i) else {
+        return Ctl::Fader(i, SyncSignal::new(0.0));
+    };
+    // Rotary for the waveform / LFO-shape selectors; buttons for Oversample —
+    // detected on the typed param so it holds across both layers.
+    let is_rotary = matches!(
+        param_ref(i),
+        Some(ParamRef::Patch(
+            _,
+            PatchParam::Osc1Wave | PatchParam::Osc2Wave | PatchParam::LfoShape
+        ))
+    );
+    let is_buttons = matches!(
+        param_ref(i),
+        Some(ParamRef::Global(GlobalParam::Oversample))
+    );
+    match desc.kind {
         ParamKind::Bool => Ctl::Switch(i, SyncSignal::new(shared.get(i) >= 0.5)),
         // Waveform / colour / shape selectors are rotary; Oversample is a button
         // group; two-option enums are switches; anything else a dropdown.
         ParamKind::Enum { variants } => {
-            if matches!(
-                id,
-                ParamId::Osc1Wave | ParamId::Osc2Wave | ParamId::LfoShape
-            ) {
+            if is_rotary {
                 Ctl::Rotary(i, SyncSignal::new(shared.get_normalized(i)))
-            } else if matches!(id, ParamId::Oversample) {
+            } else if is_buttons {
                 Ctl::Buttons(i, SyncSignal::new(Some(shared.get(i).round() as usize)))
             } else if variants.len() == 2 {
                 Ctl::Switch(i, SyncSignal::new(shared.get(i) >= 0.5))
@@ -334,7 +373,7 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     // One control per parameter (panels look them up by index; mod-matrix cells
     // not surfaced on the faceplate stay engine-only but remain host-automatable).
     // The model syncs every control from host automation on idle.
-    let controls: Vec<Ctl> = ParamId::all().map(|id| make_ctl(id, &shared)).collect();
+    let controls: Vec<Ctl> = (0..TOTAL_PARAMS).map(|i| make_ctl(i, &shared)).collect();
 
     UiModel {
         controls: controls.clone(),
@@ -374,11 +413,7 @@ fn panel_view(
             .alignment(Alignment::Center);
         HStack::new(cx, |cx| {
             for (id, short) in entries {
-                let ctl = controls
-                    .iter()
-                    .copied()
-                    .find(|c| c.idx() == id.index())
-                    .unwrap();
+                let ctl = controls.iter().copied().find(|c| c.idx() == *id).unwrap();
                 control_view(cx, ctl, shared, short);
             }
         })
@@ -558,14 +593,16 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     });
                 value_popup(
                     cx,
-                    sig.map(move |n: &f32| PARAMS[i].display(fader_from_ui(i, *n))),
+                    sig.map(move |n: &f32| {
+                        desc_for_clap_id(i).unwrap().display(fader_from_ui(i, *n))
+                    }),
                     show,
                     posy,
                     22.0,
                 );
             }
             Ctl::Rotary(i, sig) => {
-                let cnt = match PARAMS[i].kind {
+                let cnt = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants.len(),
                     _ => 1,
                 };
@@ -576,14 +613,17 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                         0.0
                     }
                 };
-                let default_norm = PARAMS[i].to_normalized(PARAMS[i].default);
-                let variants = match PARAMS[i].kind {
+                let default_norm = desc_for_clap_id(i)
+                    .unwrap()
+                    .to_normalized(desc_for_clap_id(i).unwrap().default);
+                let variants = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants,
                     _ => &[][..],
                 };
                 // Waveform selectors get drawn glyphs around the arc; other enums
                 // (e.g. noise colour) get small text labels at the same positions.
-                let use_glyphs = !variants.is_empty() && variants.iter().all(|l| !wave_points(l).is_empty());
+                let use_glyphs =
+                    !variants.is_empty() && variants.iter().all(|l| !wave_points(l).is_empty());
                 let (hover, drag, show, posy) = (
                     SyncSignal::new(false),
                     SyncSignal::new(false),
@@ -600,7 +640,11 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     const C: f32 = DIAL / 2.0;
                     const R: f32 = 25.0;
                     for (n, label) in variants.iter().enumerate() {
-                        let value = if cnt > 1 { n as f32 / (cnt - 1) as f32 } else { 0.5 };
+                        let value = if cnt > 1 {
+                            n as f32 / (cnt - 1) as f32
+                        } else {
+                            0.5
+                        };
                         let theta = (value * 300.0 - 150.0).to_radians();
                         let active = sig.map(move |v: &f32| {
                             cnt > 1 && (*v * (cnt - 1) as f32).round() as usize == n
@@ -661,7 +705,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                         .size(Pixels(26.0));
                     value_popup(
                         cx,
-                        sig.map(move |n: &f32| PARAMS[i].display(snap(*n))),
+                        sig.map(move |n: &f32| desc_for_clap_id(i).unwrap().display(snap(*n))),
                         show,
                         posy,
                         0.0,
@@ -679,13 +723,17 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                 });
                 Label::new(
                     cx,
-                    sig.map(move |b: &bool| PARAMS[i].display(if *b { 1.0 } else { 0.0 })),
+                    sig.map(move |b: &bool| {
+                        desc_for_clap_id(i)
+                            .unwrap()
+                            .display(if *b { 1.0 } else { 0.0 })
+                    }),
                 )
                 .class("ctl-value")
                 .height(Pixels(11.0));
             }
             Ctl::Buttons(i, sig) => {
-                let variants = match PARAMS[i].kind {
+                let variants = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants,
                     _ => &[],
                 };
@@ -707,7 +755,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                 .class("ovsmp");
             }
             Ctl::Select(i, sig) => {
-                let variants = match PARAMS[i].kind {
+                let variants = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants,
                     _ => &[],
                 };

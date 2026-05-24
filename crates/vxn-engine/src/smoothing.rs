@@ -5,8 +5,8 @@
 //! This layer sets smoothing *targets* once per control block and glides toward
 //! them, matching glide granularity to where each parameter is consumed:
 //!
-//! - **Per-sample** ([`ParamId::MasterVolume`]): the final gain multiply runs
-//!   per output sample, so its smoother ticks per sample.
+//! - **Per-sample** ([`GlobalParam::MasterVolume`]): the final gain multiply
+//!   runs per output sample, so its smoother ticks per sample.
 //! - **Block-rate** (oscillator/noise levels, pulse width, mod-matrix depths):
 //!   read once per control block into [`crate::voice::BlockCtx`], so one glide
 //!   step per block (control rate = sr / `CONTROL_BLOCK` ≈ 1.5 kHz) is enough
@@ -17,8 +17,12 @@
 //!   in [`vxn_dsp::PolyLadder`], which handles automation, LFO and envelope
 //!   modulation uniformly. Smoothing the cutoff *value* here too would be
 //!   redundant, so these jump.
+//!
+//! Glide classification is per per-patch / global param and applied to **both
+//! layers** (ADR 0003): a layer is a complete patch, so each gets the same
+//! smoothing treatment.
 
-use crate::{ParamId, ParamValues};
+use crate::params::{GlobalParam, Layer, ParamValues, PatchParam};
 use vxn_dsp::{CONTROL_BLOCK, Smoothed, one_pole_coeff};
 
 /// Glide time for block-rate smoothed params (ms).
@@ -37,17 +41,27 @@ enum Glide {
     PerSample,
 }
 
+/// Block-rate vs snap classification for a per-patch param.
 #[inline]
-fn glide_of(id: ParamId) -> Glide {
-    use ParamId::*;
+fn patch_glide(p: PatchParam) -> Glide {
+    use PatchParam::*;
     // All mod-matrix depth params glide at block rate, wherever they sit.
-    if ParamId::is_matrix_param(id.index()) {
+    if PatchParam::is_matrix_param(p.index()) {
         return Glide::Block;
     }
-    match id {
-        MasterVolume => Glide::PerSample,
+    match p {
         Osc1Level | Osc2Level | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth | CrossMod
         | ModWheelDepth => Glide::Block,
+        _ => Glide::Snap,
+    }
+}
+
+/// Classification for a global param. Master volume is glided per-sample by the
+/// dedicated [`Smoothed`]; the rest snap (FX read snapped values each block).
+#[inline]
+fn global_glide(g: GlobalParam) -> Glide {
+    match g {
+        GlobalParam::MasterVolume => Glide::PerSample,
         _ => Glide::Snap,
     }
 }
@@ -56,9 +70,9 @@ fn glide_of(id: ParamId) -> Glide {
 /// engine's per-block read. Cutoff/resonance/drive are deliberately *not*
 /// handled here — the ladder interpolates their coefficients per sample.
 pub struct ParamSmoother {
-    /// Smoothed current values for every param. Block-rate params glide here;
-    /// snap params mirror their target each block; the per-sample volume value
-    /// is taken from [`Self::next_volume`] instead.
+    /// Smoothed current values for every param (both layers + global).
+    /// Block-rate params glide here; snap params mirror their target each block;
+    /// the per-sample volume value is taken from [`Self::next_volume`] instead.
     current: ParamValues,
     /// One-pole coefficient at the control rate (block-rate glide).
     block_coeff: f32,
@@ -73,7 +87,7 @@ impl ParamSmoother {
             current: targets.clone(),
             block_coeff: one_pole_coeff(BLOCK_SMOOTH_MS, control_rate),
             volume: Smoothed::new(
-                targets.get(ParamId::MasterVolume),
+                targets.global().get(GlobalParam::MasterVolume),
                 VOLUME_SMOOTH_MS,
                 sample_rate,
             ),
@@ -89,24 +103,41 @@ impl ParamSmoother {
     /// Jump every smoothed value to its target (reset / sample-rate change).
     pub fn snap_all(&mut self, targets: &ParamValues) {
         self.current = targets.clone();
-        self.volume.snap(targets.get(ParamId::MasterVolume));
+        self.volume
+            .snap(targets.global().get(GlobalParam::MasterVolume));
     }
 
     /// Advance block-rate smoothers one step toward `targets`, snap the rest,
     /// and arm the per-sample volume target. Call once per control block.
     pub fn tick_block(&mut self, targets: &ParamValues) {
-        for id in ParamId::all() {
-            match glide_of(id) {
-                Glide::Block => {
-                    let cur = self.current.get(id);
-                    let t = targets.get(id);
-                    self.current.set(id, cur + self.block_coeff * (t - cur));
+        let coeff = self.block_coeff;
+        for layer in Layer::ALL {
+            let cur = self.current.layer_mut(layer);
+            let tgt = targets.layer(layer);
+            for p in PatchParam::all() {
+                match patch_glide(p) {
+                    Glide::Block => {
+                        let c = cur.get(p);
+                        cur.set(p, c + coeff * (tgt.get(p) - c));
+                    }
+                    // Snap is the only other patch outcome.
+                    _ => cur.set(p, tgt.get(p)),
                 }
-                Glide::Snap => self.current.set(id, targets.get(id)),
+            }
+        }
+        let cur = self.current.global_mut();
+        let tgt = targets.global();
+        for g in GlobalParam::all() {
+            match global_glide(g) {
                 Glide::PerSample => {
-                    self.volume.set_target(targets.get(id));
-                    self.current.set(id, targets.get(id));
+                    self.volume.set_target(tgt.get(g));
+                    cur.set(g, tgt.get(g));
                 }
+                Glide::Block => {
+                    let c = cur.get(g);
+                    cur.set(g, c + coeff * (tgt.get(g) - c));
+                }
+                Glide::Snap => cur.set(g, tgt.get(g)),
             }
         }
     }
@@ -128,63 +159,94 @@ impl ParamSmoother {
 mod tests {
     use super::*;
 
-    fn targets_with(id: ParamId, v: f32) -> ParamValues {
-        let mut p = ParamValues::default();
-        p.set(id, v);
-        p
+    fn patch_target(p: PatchParam, v: f32) -> ParamValues {
+        let mut pv = ParamValues::default();
+        pv.layer_mut(Layer::Upper).set(p, v);
+        pv
     }
 
     #[test]
     fn block_param_glides_toward_target() {
         let mut s = ParamSmoother::new(48_000.0, &ParamValues::default());
-        let start = ParamValues::default().get(ParamId::Osc1Level);
-        let targets = targets_with(ParamId::Osc1Level, 0.0);
-        // After one block it has moved, but not all the way.
+        let start = ParamValues::default()
+            .layer(Layer::Upper)
+            .get(PatchParam::Osc1Level);
+        let targets = patch_target(PatchParam::Osc1Level, 0.0);
         s.tick_block(&targets);
-        let after_one = s.values().get(ParamId::Osc1Level);
+        let after_one = s.values().layer(Layer::Upper).get(PatchParam::Osc1Level);
         assert!(
             after_one < start && after_one > 0.0,
             "no glide: {after_one}"
         );
-        // After many blocks it converges.
         for _ in 0..2000 {
             s.tick_block(&targets);
         }
-        assert!(s.values().get(ParamId::Osc1Level).abs() < 1e-3);
+        assert!(
+            s.values()
+                .layer(Layer::Upper)
+                .get(PatchParam::Osc1Level)
+                .abs()
+                < 1e-3
+        );
     }
 
     #[test]
     fn snap_params_jump_immediately() {
         // Cutoff is snapped here (ladder interpolates its coeffs downstream).
         let mut s = ParamSmoother::new(48_000.0, &ParamValues::default());
-        let targets = targets_with(ParamId::Cutoff, 100.0);
+        let targets = patch_target(PatchParam::Cutoff, 100.0);
         s.tick_block(&targets);
-        assert_eq!(s.values().get(ParamId::Cutoff), 100.0);
+        assert_eq!(
+            s.values().layer(Layer::Upper).get(PatchParam::Cutoff),
+            100.0
+        );
     }
 
     #[test]
     fn matrix_depths_are_block_smoothed() {
-        assert_eq!(glide_of(ParamId::LfoCutoff), Glide::Block);
-        assert_eq!(glide_of(ParamId::Env2Amp), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::LfoCutoff), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::Env2Amp), Glide::Block);
+    }
+
+    #[test]
+    fn both_layers_smooth_independently() {
+        let mut s = ParamSmoother::new(48_000.0, &ParamValues::default());
+        let mut targets = ParamValues::default();
+        targets
+            .layer_mut(Layer::Upper)
+            .set(PatchParam::Cutoff, 100.0);
+        targets
+            .layer_mut(Layer::Lower)
+            .set(PatchParam::Cutoff, 200.0);
+        s.tick_block(&targets);
+        assert_eq!(
+            s.values().layer(Layer::Upper).get(PatchParam::Cutoff),
+            100.0
+        );
+        assert_eq!(
+            s.values().layer(Layer::Lower).get(PatchParam::Cutoff),
+            200.0
+        );
     }
 
     #[test]
     fn volume_glides_per_sample() {
         let mut s = ParamSmoother::new(48_000.0, &ParamValues::default());
-        let targets = targets_with(ParamId::MasterVolume, 0.0);
+        let mut targets = ParamValues::default();
+        targets.global_mut().set(GlobalParam::MasterVolume, 0.0);
         s.tick_block(&targets);
         let v0 = s.next_volume();
         let v1 = s.next_volume();
-        // Per-sample glide downward, not an instant jump to 0.
         assert!(v0 > 0.0 && v1 < v0, "no per-sample glide: {v0} -> {v1}");
     }
 
     #[test]
     fn snap_all_settles_volume_and_values() {
         let mut s = ParamSmoother::new(48_000.0, &ParamValues::default());
-        let targets = targets_with(ParamId::MasterVolume, 0.3);
+        let mut targets = ParamValues::default();
+        targets.global_mut().set(GlobalParam::MasterVolume, 0.3);
         s.snap_all(&targets);
         assert_eq!(s.next_volume(), 0.3);
-        assert_eq!(s.values().get(ParamId::MasterVolume), 0.3);
+        assert_eq!(s.values().global().get(GlobalParam::MasterVolume), 0.3);
     }
 }

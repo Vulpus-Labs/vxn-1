@@ -24,23 +24,23 @@ use clack_plugin::events::event_types::{
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::utils::Cookie;
-use vxn_engine::{ParamId, ParamValues, SharedParams};
+use vxn_engine::{ParamValues, SharedParams, TOTAL_PARAMS};
 
 pub struct LocalParams {
     /// Working values (plain units), the authoritative set for this thread.
-    values: [f32; ParamId::COUNT],
+    values: [f32; TOTAL_PARAMS],
     /// Last-seen UI gesture state per param (to detect begin/end transitions).
-    gesture: [bool; ParamId::COUNT],
+    gesture: [bool; TOTAL_PARAMS],
     /// Params changed by the UI since the last [`emit`](Self::emit).
-    ui_changed: [bool; ParamId::COUNT],
+    ui_changed: [bool; TOTAL_PARAMS],
 }
 
 impl LocalParams {
     pub fn new(shared: &SharedParams) -> Self {
         Self {
             values: std::array::from_fn(|i| shared.get(i)),
-            gesture: [false; ParamId::COUNT],
-            ui_changed: [false; ParamId::COUNT],
+            gesture: [false; TOTAL_PARAMS],
+            ui_changed: [false; TOTAL_PARAMS],
         }
     }
 
@@ -48,7 +48,7 @@ impl LocalParams {
     /// for echo to the host. Returns whether anything changed.
     pub fn fetch_ui_changes(&mut self, shared: &SharedParams) -> bool {
         let mut any = false;
-        for i in 0..ParamId::COUNT {
+        for i in 0..TOTAL_PARAMS {
             let sv = shared.get(i);
             if sv != self.values[i] {
                 self.values[i] = sv;
@@ -66,7 +66,7 @@ impl LocalParams {
         if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
             if let Some(pid) = e.param_id() {
                 let i = pid.get() as usize;
-                if i < ParamId::COUNT {
+                if i < TOTAL_PARAMS {
                     let v = e.value() as f32;
                     self.values[i] = v;
                     return Some((i, v));
@@ -79,7 +79,7 @@ impl LocalParams {
     /// Copy the working values into the engine's parameter table.
     pub fn write_to(&self, params: &mut ParamValues) {
         for (i, &v) in self.values.iter().enumerate() {
-            params.set_index(i, v);
+            params.set_by_clap_id(i, v);
         }
     }
 
@@ -94,7 +94,7 @@ impl LocalParams {
     /// Emit UI-originated changes to the host, each bracketed by a gesture
     /// begin/end. `end_time` is the sample offset for the closing gesture.
     pub fn emit(&mut self, shared: &SharedParams, out: &mut OutputEvents, end_time: u32) {
-        for i in 0..ParamId::COUNT {
+        for i in 0..TOTAL_PARAMS {
             let prev = self.gesture[i];
             let cur = shared.gesture(i);
             self.gesture[i] = cur;

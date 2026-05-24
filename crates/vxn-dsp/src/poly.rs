@@ -565,7 +565,17 @@ mod tests {
         // Capture two full master periods after a one-period warm-up.
         let mut log = Vec::with_capacity(2 * period);
         for i in 0..(3 * period) {
-            osc1.process_pair(&mut osc2, true, 0.0, Waveform::Saw, Waveform::Sine, &pw, &pw, &mut o1, &mut o2);
+            osc1.process_pair(
+                &mut osc2,
+                true,
+                0.0,
+                Waveform::Saw,
+                Waveform::Sine,
+                &pw,
+                &pw,
+                &mut o1,
+                &mut o2,
+            );
             if i >= period {
                 log.push(o2[0]);
             }
@@ -575,7 +585,10 @@ mod tests {
         for i in 0..period {
             max_diff = max_diff.max((log[i] - log[i + period]).abs());
         }
-        assert!(max_diff < 1e-6, "slave not locked to master period: {max_diff}");
+        assert!(
+            max_diff < 1e-6,
+            "slave not locked to master period: {max_diff}"
+        );
     }
 
     #[test]
@@ -600,7 +613,10 @@ mod tests {
             for _ in 0..4800 {
                 // sync on + heavy cross-mod: both couplings active at once.
                 osc1.process_pair(&mut osc2, true, 0.9, w1, w2, &pw, &pw, &mut o1, &mut o2);
-                assert!(o1.iter().chain(o2.iter()).all(|s| s.is_finite()), "{w1:?}/{w2:?}");
+                assert!(
+                    o1.iter().chain(o2.iter()).all(|s| s.is_finite()),
+                    "{w1:?}/{w2:?}"
+                );
             }
         }
     }
@@ -632,7 +648,17 @@ mod tests {
             a1.process(Waveform::Saw, &pw, &mut fo1);
             a2.process(Waveform::Pulse, &pw, &mut fo2);
             // Coupled path, sync off, depth 0.
-            b1.process_pair(&mut b2, false, 0.0, Waveform::Saw, Waveform::Pulse, &pw, &pw, &mut co1, &mut co2);
+            b1.process_pair(
+                &mut b2,
+                false,
+                0.0,
+                Waveform::Saw,
+                Waveform::Pulse,
+                &pw,
+                &pw,
+                &mut co1,
+                &mut co2,
+            );
             assert_eq!(fo1, co1, "osc1 diverged from fast path");
             assert_eq!(fo2, co2, "osc2 diverged from fast path");
         }
@@ -659,8 +685,19 @@ mod tests {
             // Hann window so the strong carrier's spectral leakage doesn't swamp
             // the sideband bin (rectangular sidelobes fall off only as 1/k).
             for n in 0..frames {
-                osc1.process_pair(&mut osc2, false, xmod, Waveform::Sine, Waveform::Sine, &pw, &pw, &mut o1, &mut o2);
-                let win = 0.5 * (1.0 - (std::f32::consts::TAU * n as f32 / (frames - 1) as f32).cos());
+                osc1.process_pair(
+                    &mut osc2,
+                    false,
+                    xmod,
+                    Waveform::Sine,
+                    Waveform::Sine,
+                    &pw,
+                    &pw,
+                    &mut o1,
+                    &mut o2,
+                );
+                let win =
+                    0.5 * (1.0 - (std::f32::consts::TAU * n as f32 / (frames - 1) as f32).cos());
                 let ph = w * n as f32;
                 re += o1[0] * win * ph.cos();
                 im -= o1[0] * win * ph.sin();

@@ -1,24 +1,100 @@
-//! VXN1 parameter model.
+//! VXN1 parameter model — split into a per-patch block and a global block
+//! (ADR 0003 §6).
 //!
-//! Parameters are a flat, index-addressed table so the same definition serves
-//! the engine (reads plain values), the CLAP layer (stable integer ids =
-//! indices, automation, save/restore) and the UI (labels, ranges, formatting).
+//! A **layer is a complete patch**: oscillators, noise, filter, envelopes, LFO
+//! and modulation matrix. Those live in [`PatchParam`] and are instantiated
+//! **twice** (Upper, Lower — see [`Layer`]), so each layer is independently
+//! automatable. Truly global state (master tune/volume, FX, oversample) lives
+//! once in [`GlobalParam`].
+//!
+//! ## CLAP id layout
+//!
+//! Every automatable parameter needs a stable integer id. The id space is three
+//! contiguous ranges:
+//!
+//! ```text
+//! [ 0 .. PATCH_COUNT )                 Upper per-patch params
+//! [ PATCH_COUNT .. 2*PATCH_COUNT )     Lower per-patch params
+//! [ 2*PATCH_COUNT .. TOTAL_PARAMS )    global params
+//! ```
+//!
+//! [`patch_clap_id`] / [`global_clap_id`] map a typed param to its id;
+//! [`param_ref`] / [`desc_for_clap_id`] invert it for incoming automation and
+//! for the CLAP/UI metadata callbacks.
+//!
+//! `KeyMode` and the split point are **not** in this table: they are
+//! non-automatable shared state (ADR 0003 §3, §8), carried as atomics in
+//! [`crate::SharedParams`] and persisted by [`crate::state`].
 //!
 //! Values are stored as `f32` in *plain* units (Hz, seconds, semitones, …),
 //! matching CLAP's plain-value convention. Enum/bool params store the variant
 //! index / 0.0|1.0 and are read back through typed accessors.
 //!
 //! The 20 modulation-depth params (`Env1Pitch` … `KeyPwm`) are laid out
-//! source-major, destination-minor so the engine can address them by
-//! `MATRIX_BASE + source*ModDest::COUNT + dest` (see [`crate::modmatrix`]).
+//! source-major, destination-minor **within** the per-patch block so the engine
+//! can address them by `MATRIX_BASE + source*ModDest::COUNT + dest` (see
+//! [`crate::modmatrix`]).
 
 use crate::modmatrix::{ModDest, ModSource};
 use vxn_dsp::{AdsrShape, LadderVariant, LfoShape, NoiseColor, Waveform};
 
-/// Stable parameter identifiers. Discriminant = CLAP param id = table index.
+/// Which of the two always-present patches a per-patch param belongs to.
+/// Discriminant doubles as the index into [`ParamValues::layers`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
-pub enum ParamId {
+pub enum Layer {
+    Upper = 0,
+    Lower = 1,
+}
+
+impl Layer {
+    pub const COUNT: usize = 2;
+    pub const ALL: [Layer; Self::COUNT] = [Layer::Upper, Layer::Lower];
+}
+
+/// Jupiter-8 key mode. Non-automatable shared state (ADR 0003 §3): it travels in
+/// the plugin-state blob, not the CLAP param table, because its seed-on-entry
+/// side effect (0009) wants a discrete edge rather than an automation value
+/// stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum KeyMode {
+    #[default]
+    Whole = 0,
+    Dual = 1,
+    Split = 2,
+}
+
+impl KeyMode {
+    pub const COUNT: usize = 3;
+    pub const ALL: [KeyMode; Self::COUNT] = [KeyMode::Whole, KeyMode::Dual, KeyMode::Split];
+
+    pub fn from_u8(v: u8) -> KeyMode {
+        match v {
+            1 => KeyMode::Dual,
+            2 => KeyMode::Split,
+            _ => KeyMode::Whole,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KeyMode::Whole => "Whole",
+            KeyMode::Dual => "Dual",
+            KeyMode::Split => "Split",
+        }
+    }
+}
+
+/// Default split point (MIDI note) when none has been set — middle C.
+pub const DEFAULT_SPLIT_POINT: u8 = 60;
+
+/// Per-patch parameter ids. Discriminant = index into the per-patch block (and
+/// into [`PATCH_PARAMS`]). Instantiated once per [`Layer`]; the CLAP id is
+/// derived via [`patch_clap_id`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum PatchParam {
     // Oscillator 1
     Osc1Wave,
     Osc1Coarse,
@@ -72,26 +148,10 @@ pub enum ParamId {
     KeyCutoff,
     KeyAmp,
     KeyPwm,
-    // LFO
+    // LFO (per-layer — ADR 0003 §5)
     LfoShape,
     LfoRate,
-    // Global
-    MasterTune,
-    MasterVolume,
-    // Chorus
-    ChorusOn,
-    ChorusRate,
-    ChorusDepth,
-    ChorusMix,
-    // Delay
-    DelayOn,
-    DelayTime,
-    DelayFeedback,
-    DelayMix,
-    DelayPingPong,
-    // Quality
-    Oversample,
-    // ── Appended after v1 to keep earlier CLAP ids stable (E001) ──
+    // ── Appended after v1 to keep earlier in-block offsets stable (E001) ──
     /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
     HpfCutoff,
     /// Per-oscillator octave offset, stacks with coarse/fine.
@@ -110,13 +170,13 @@ pub enum ParamId {
     ModWheelDepth,
 }
 
-impl ParamId {
-    pub const COUNT: usize = ParamId::ModWheelDepth as usize + 1;
+impl PatchParam {
+    pub const COUNT: usize = PatchParam::ModWheelDepth as usize + 1;
 
-    /// Index of the first modulation-matrix parameter (`Env1Pitch`).
-    pub const MATRIX_BASE: usize = ParamId::Env1Pitch as usize;
+    /// In-block offset of the first modulation-matrix parameter (`Env1Pitch`).
+    pub const MATRIX_BASE: usize = PatchParam::Env1Pitch as usize;
 
-    pub fn all() -> impl Iterator<Item = ParamId> {
+    pub fn all() -> impl Iterator<Item = PatchParam> {
         (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
     }
 
@@ -125,35 +185,29 @@ impl ParamId {
         self as usize
     }
 
-    pub fn from_index(i: usize) -> Option<ParamId> {
+    pub fn from_index(i: usize) -> Option<PatchParam> {
         if i < Self::COUNT {
-            Some(unsafe { std::mem::transmute::<usize, ParamId>(i) })
+            Some(unsafe { std::mem::transmute::<usize, PatchParam>(i) })
         } else {
             None
         }
     }
 
-    /// Table index where source `src`'s block of destination-depth params
-    /// begins. The original five sources are contiguous from [`Self::MATRIX_BASE`];
-    /// a source added later (appended at the end of the table to keep earlier
-    /// CLAP ids stable) can return its own base here without disturbing the
-    /// existing layout. This is the single place that encodes the matrix layout —
-    /// [`Self::matrix_index`], [`Self::is_matrix_param`], the engine's `build_ctx`
-    /// and the smoother all derive from it.
+    /// In-block offset where source `src`'s row of destination-depth params
+    /// begins. Single source of truth for the matrix layout — [`Self::matrix_index`],
+    /// [`Self::is_matrix_param`] and the engine's `build_ctx` all derive from it.
     #[inline]
     pub fn matrix_row_base(src: ModSource) -> usize {
         Self::MATRIX_BASE + (src as usize) * ModDest::COUNT
     }
 
-    /// Table index of the depth param for a `(source, destination)` route.
+    /// In-block offset of the depth param for a `(source, destination)` route.
     #[inline]
     pub fn matrix_index(src: ModSource, dest: ModDest) -> usize {
         Self::matrix_row_base(src) + (dest as usize)
     }
 
-    /// Whether table index `idx` is one of the modulation-depth params, across
-    /// every source. Derived from [`Self::matrix_row_base`], so it stays correct
-    /// even if a source's row is appended out of line rather than kept contiguous.
+    /// Whether in-block offset `idx` is one of the modulation-depth params.
     #[inline]
     pub fn is_matrix_param(idx: usize) -> bool {
         ModSource::ALL.iter().any(|&src| {
@@ -163,7 +217,123 @@ impl ParamId {
     }
 
     pub fn desc(self) -> &'static ParamDesc {
-        &PARAMS[self.index()]
+        &PATCH_PARAMS[self.index()]
+    }
+}
+
+/// Global parameter ids. Discriminant = index into the global block (and into
+/// [`GLOBAL_PARAMS`]); the CLAP id is derived via [`global_clap_id`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum GlobalParam {
+    MasterTune,
+    MasterVolume,
+    // Chorus
+    ChorusOn,
+    ChorusRate,
+    ChorusDepth,
+    ChorusMix,
+    // Delay
+    DelayOn,
+    DelayTime,
+    DelayFeedback,
+    DelayMix,
+    DelayPingPong,
+    // Quality
+    Oversample,
+}
+
+impl GlobalParam {
+    pub const COUNT: usize = GlobalParam::Oversample as usize + 1;
+
+    pub fn all() -> impl Iterator<Item = GlobalParam> {
+        (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
+    }
+
+    #[inline]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(i: usize) -> Option<GlobalParam> {
+        if i < Self::COUNT {
+            Some(unsafe { std::mem::transmute::<usize, GlobalParam>(i) })
+        } else {
+            None
+        }
+    }
+
+    pub fn desc(self) -> &'static ParamDesc {
+        &GLOBAL_PARAMS[self.index()]
+    }
+}
+
+// ── CLAP id layout ──────────────────────────────────────────────────────────
+
+/// Number of per-patch params (per layer).
+pub const PATCH_COUNT: usize = PatchParam::COUNT;
+/// Number of global params.
+pub const GLOBAL_COUNT: usize = GlobalParam::COUNT;
+/// Total CLAP parameter count: two per-patch blocks plus the global block.
+pub const TOTAL_PARAMS: usize = Layer::COUNT * PATCH_COUNT + GLOBAL_COUNT;
+
+/// CLAP id of per-patch param `p` on `layer`.
+#[inline]
+pub const fn patch_clap_id(layer: Layer, p: PatchParam) -> usize {
+    (layer as usize) * PATCH_COUNT + (p as usize)
+}
+
+/// CLAP id of global param `g`.
+#[inline]
+pub const fn global_clap_id(g: GlobalParam) -> usize {
+    Layer::COUNT * PATCH_COUNT + (g as usize)
+}
+
+/// A resolved CLAP id: either a per-patch param on a specific layer, or global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamRef {
+    Patch(Layer, PatchParam),
+    Global(GlobalParam),
+}
+
+/// Resolve a CLAP id back to its typed param (inverse of [`patch_clap_id`] /
+/// [`global_clap_id`]). `None` if out of range.
+pub fn param_ref(clap_id: usize) -> Option<ParamRef> {
+    if clap_id < PATCH_COUNT {
+        Some(ParamRef::Patch(
+            Layer::Upper,
+            PatchParam::from_index(clap_id)?,
+        ))
+    } else if clap_id < Layer::COUNT * PATCH_COUNT {
+        Some(ParamRef::Patch(
+            Layer::Lower,
+            PatchParam::from_index(clap_id - PATCH_COUNT)?,
+        ))
+    } else if clap_id < TOTAL_PARAMS {
+        Some(ParamRef::Global(GlobalParam::from_index(
+            clap_id - Layer::COUNT * PATCH_COUNT,
+        )?))
+    } else {
+        None
+    }
+}
+
+/// Descriptor for a CLAP id (metadata for `get_info` / `value_to_text` / UI).
+pub fn desc_for_clap_id(clap_id: usize) -> Option<&'static ParamDesc> {
+    match param_ref(clap_id)? {
+        ParamRef::Patch(_, p) => Some(p.desc()),
+        ParamRef::Global(g) => Some(g.desc()),
+    }
+}
+
+/// CLAP `module` string for a CLAP id — groups the automation list by layer
+/// ("Upper"/"Lower"/"Global") without disturbing the per-control label.
+pub fn module_for_clap_id(clap_id: usize) -> &'static str {
+    match param_ref(clap_id) {
+        Some(ParamRef::Patch(Layer::Upper, _)) => "Upper",
+        Some(ParamRef::Patch(Layer::Lower, _)) => "Lower",
+        Some(ParamRef::Global(_)) => "Global",
+        None => "",
     }
 }
 
@@ -175,9 +345,10 @@ pub enum ParamKind {
     Enum { variants: &'static [&'static str] },
 }
 
+/// Pure metadata for one parameter (name, range, formatting). Id-type-agnostic:
+/// shared by the per-patch and global tables, addressed positionally.
 #[derive(Clone, Copy, Debug)]
 pub struct ParamDesc {
-    pub id: ParamId,
     pub name: &'static str,
     pub label: &'static str,
     pub min: f32,
@@ -235,9 +406,7 @@ const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x"];
 const MOD_WHEEL_DEST_LABELS: &[&str] = &["Off", "Cutoff", "Osc2 Pitch"];
 
-#[allow(clippy::too_many_arguments)]
 const fn f(
-    id: ParamId,
     name: &'static str,
     label: &'static str,
     min: f32,
@@ -247,7 +416,6 @@ const fn f(
     log: bool,
 ) -> ParamDesc {
     ParamDesc {
-        id,
         name,
         label,
         min,
@@ -257,14 +425,12 @@ const fn f(
     }
 }
 const fn e(
-    id: ParamId,
     name: &'static str,
     label: &'static str,
     variants: &'static [&'static str],
     default: f32,
 ) -> ParamDesc {
     ParamDesc {
-        id,
         name,
         label,
         min: 0.0,
@@ -273,9 +439,8 @@ const fn e(
         kind: ParamKind::Enum { variants },
     }
 }
-const fn b(id: ParamId, name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+const fn b(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
     ParamDesc {
-        id,
         name,
         label,
         min: 0.0,
@@ -285,7 +450,6 @@ const fn b(id: ParamId, name: &'static str, label: &'static str, default: f32) -
     }
 }
 const fn i(
-    id: ParamId,
     name: &'static str,
     label: &'static str,
     min: f32,
@@ -294,7 +458,6 @@ const fn i(
     unit: &'static str,
 ) -> ParamDesc {
     ParamDesc {
-        id,
         name,
         label,
         min,
@@ -305,414 +468,139 @@ const fn i(
 }
 /// Pitch-destination depth param (semitones). `default` lets LFO→Pitch seed a
 /// gentle default vibrato.
-const fn mp(id: ParamId, name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    f(id, name, label, -48.0, 48.0, default, "st", false)
+const fn mp(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    f(name, label, -48.0, 48.0, default, "st", false)
 }
 /// Cutoff-destination depth param (semitones of cutoff).
-const fn mc(id: ParamId, name: &'static str, label: &'static str) -> ParamDesc {
-    f(id, name, label, -96.0, 96.0, 0.0, "st", false)
+const fn mc(name: &'static str, label: &'static str) -> ParamDesc {
+    f(name, label, -96.0, 96.0, 0.0, "st", false)
 }
 /// Amp-destination depth param (gain). `default` lets ENV-2→Amp seed to 1.0.
-const fn ma(id: ParamId, name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    f(id, name, label, -1.0, 1.0, default, "", false)
+const fn ma(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    f(name, label, -1.0, 1.0, default, "", false)
 }
 /// PWM-destination depth param (pulse-width fraction).
-const fn mw(id: ParamId, name: &'static str, label: &'static str) -> ParamDesc {
-    f(id, name, label, -0.5, 0.5, 0.0, "", false)
+const fn mw(name: &'static str, label: &'static str) -> ParamDesc {
+    f(name, label, -0.5, 0.5, 0.0, "", false)
 }
 
-pub static PARAMS: [ParamDesc; ParamId::COUNT] = {
-    use ParamId::*;
-    [
-        e(Osc1Wave, "osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
-        i(
-            Osc1Coarse,
-            "osc1_coarse",
-            "Osc 1 Coarse",
-            -24.0,
-            24.0,
-            0.0,
-            "st",
-        ),
-        f(
-            Osc1Fine,
-            "osc1_fine",
-            "Osc 1 Fine",
-            -50.0,
-            50.0,
-            0.0,
-            "ct",
-            false,
-        ),
-        f(
-            Osc1Level,
-            "osc1_level",
-            "Osc 1 Level",
-            0.0,
-            1.0,
-            0.8,
-            "",
-            false,
-        ),
-        f(
-            Osc1PulseWidth,
-            "osc1_pw",
-            "Osc 1 PW",
-            0.05,
-            0.95,
-            0.5,
-            "",
-            false,
-        ),
-        e(Osc2Wave, "osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
-        i(
-            Osc2Coarse,
-            "osc2_coarse",
-            "Osc 2 Coarse",
-            -24.0,
-            24.0,
-            -12.0,
-            "st",
-        ),
-        f(
-            Osc2Fine,
-            "osc2_fine",
-            "Osc 2 Fine",
-            -50.0,
-            50.0,
-            7.0,
-            "ct",
-            false,
-        ),
-        f(
-            Osc2Level,
-            "osc2_level",
-            "Osc 2 Level",
-            0.0,
-            1.0,
-            0.6,
-            "",
-            false,
-        ),
-        f(
-            Osc2PulseWidth,
-            "osc2_pw",
-            "Osc 2 PW",
-            0.05,
-            0.95,
-            0.5,
-            "",
-            false,
-        ),
-        e(NoiseColor, "noise_color", "Noise Color", NOISE_LABELS, 0.0),
-        f(
-            NoiseLevel,
-            "noise_level",
-            "Noise Level",
-            0.0,
-            1.0,
-            0.0,
-            "",
-            false,
-        ),
-        f(
-            Cutoff, "cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true,
-        ),
-        f(
-            Resonance,
-            "resonance",
-            "Resonance",
-            0.0,
-            1.0,
-            0.2,
-            "",
-            false,
-        ),
-        f(Drive, "drive", "Drive", 0.1, 4.0, 1.0, "", false),
-        e(
-            FilterVariant,
-            "filter_variant",
-            "Filter Type",
-            VARIANT_LABELS,
-            0.0,
-        ),
-        f(
-            Env1Attack,
-            "env1_attack",
-            "Env 1 Attack",
-            0.001,
-            10.0,
-            0.005,
-            "s",
-            true,
-        ),
-        f(
-            Env1Decay,
-            "env1_decay",
-            "Env 1 Decay",
-            0.001,
-            10.0,
-            0.3,
-            "s",
-            true,
-        ),
-        f(
-            Env1Sustain,
-            "env1_sustain",
-            "Env 1 Sustain",
-            0.0,
-            1.0,
-            0.0,
-            "",
-            false,
-        ),
-        f(
-            Env1Release,
-            "env1_release",
-            "Env 1 Release",
-            0.001,
-            10.0,
-            0.3,
-            "s",
-            true,
-        ),
-        e(Env1Shape, "env1_shape", "Env 1 Shape", SHAPE_LABELS, 0.0),
-        f(
-            Env2Attack,
-            "env2_attack",
-            "Env 2 Attack",
-            0.001,
-            10.0,
-            0.005,
-            "s",
-            true,
-        ),
-        f(
-            Env2Decay,
-            "env2_decay",
-            "Env 2 Decay",
-            0.001,
-            10.0,
-            0.2,
-            "s",
-            true,
-        ),
-        f(
-            Env2Sustain,
-            "env2_sustain",
-            "Env 2 Sustain",
-            0.0,
-            1.0,
-            0.8,
-            "",
-            false,
-        ),
-        f(
-            Env2Release,
-            "env2_release",
-            "Env 2 Release",
-            0.001,
-            10.0,
-            0.3,
-            "s",
-            true,
-        ),
-        e(Env2Shape, "env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
-        // Modulation matrix (source-major, dest-minor). ENV-2→Amp seeds to 1.0.
-        mp(Env1Pitch, "env1_pitch", "Env1→Pitch", 0.0),
-        mc(Env1Cutoff, "env1_cutoff", "Env1→Cutoff"),
-        ma(Env1Amp, "env1_amp", "Env1→Amp", 0.0),
-        mw(Env1Pwm, "env1_pwm", "Env1→PWM"),
-        mp(Env2Pitch, "env2_pitch", "Env2→Pitch", 0.0),
-        mc(Env2Cutoff, "env2_cutoff", "Env2→Cutoff"),
-        ma(Env2Amp, "env2_amp", "Env2→Amp", 1.0),
-        mw(Env2Pwm, "env2_pwm", "Env2→PWM"),
-        // Gentle always-on vibrato by default (~5 cents at the 5 Hz LFO rate).
-        mp(LfoPitch, "lfo_pitch", "LFO→Pitch", 0.05),
-        mc(LfoCutoff, "lfo_cutoff", "LFO→Cutoff"),
-        ma(LfoAmp, "lfo_amp", "LFO→Amp", 0.0),
-        mw(LfoPwm, "lfo_pwm", "LFO→PWM"),
-        mp(VelPitch, "vel_pitch", "Vel→Pitch", 0.0),
-        mc(VelCutoff, "vel_cutoff", "Vel→Cutoff"),
-        ma(VelAmp, "vel_amp", "Vel→Amp", 0.0),
-        mw(VelPwm, "vel_pwm", "Vel→PWM"),
-        mp(KeyPitch, "key_pitch", "Key→Pitch", 0.0),
-        mc(KeyCutoff, "key_cutoff", "Key→Cutoff"),
-        ma(KeyAmp, "key_amp", "Key→Amp", 0.0),
-        mw(KeyPwm, "key_pwm", "Key→PWM"),
-        e(LfoShape, "lfo_shape", "LFO Shape", LFO_LABELS, 0.0),
-        f(LfoRate, "lfo_rate", "LFO Rate", 0.01, 40.0, 5.0, "Hz", true),
-        f(
-            MasterTune,
-            "master_tune",
-            "Master Tune",
-            -12.0,
-            12.0,
-            0.0,
-            "st",
-            false,
-        ),
-        f(
-            MasterVolume,
-            "master_volume",
-            "Volume",
-            0.0,
-            1.0,
-            0.7,
-            "",
-            false,
-        ),
-        b(ChorusOn, "chorus_on", "Chorus", 1.0),
-        f(
-            ChorusRate,
-            "chorus_rate",
-            "Chorus Rate",
-            0.05,
-            8.0,
-            0.6,
-            "Hz",
-            true,
-        ),
-        f(
-            ChorusDepth,
-            "chorus_depth",
-            "Chorus Depth",
-            0.0,
-            1.0,
-            0.5,
-            "",
-            false,
-        ),
-        f(
-            ChorusMix,
-            "chorus_mix",
-            "Chorus Mix",
-            0.0,
-            1.0,
-            0.4,
-            "",
-            false,
-        ),
-        b(DelayOn, "delay_on", "Delay", 0.0),
-        f(
-            DelayTime,
-            "delay_time",
-            "Delay Time",
-            0.01,
-            2.0,
-            0.35,
-            "s",
-            true,
-        ),
-        f(
-            DelayFeedback,
-            "delay_feedback",
-            "Delay FB",
-            0.0,
-            0.95,
-            0.4,
-            "",
-            false,
-        ),
-        f(
-            DelayMix,
-            "delay_mix",
-            "Delay Mix",
-            0.0,
-            1.0,
-            0.25,
-            "",
-            false,
-        ),
-        b(DelayPingPong, "delay_pingpong", "Ping-Pong", 1.0),
-        e(
-            Oversample,
-            "oversample",
-            "Oversample",
-            OVERSAMPLE_LABELS,
-            1.0,
-        ),
-        // ── Appended after v1 (E001); ids stay stable above this line. ──
-        f(
-            HpfCutoff,
-            "hpf_cutoff",
-            "HPF Cutoff",
-            20.0,
-            18000.0,
-            20.0,
-            "Hz",
-            true,
-        ),
-        i(
-            Osc1Octave,
-            "osc1_octave",
-            "Osc 1 Octave",
-            -4.0,
-            4.0,
-            0.0,
-            "oct",
-        ),
-        i(
-            Osc2Octave,
-            "osc2_octave",
-            "Osc 2 Octave",
-            -4.0,
-            4.0,
-            0.0,
-            "oct",
-        ),
-        f(
-            LfoDelay,
-            "lfo_delay",
-            "LFO Delay",
-            0.0,
-            4.0,
-            0.0,
-            "s",
-            false,
-        ),
-        // ── E002 (ids stay stable above this line) ──
-        b(OscSync, "osc_sync", "Sync", 0.0),
-        f(CrossMod, "cross_mod", "Cross Mod", 0.0, 1.0, 0.0, "", false),
-        e(
-            ModWheelDest,
-            "mod_wheel_dest",
-            "Mod Wheel",
-            MOD_WHEEL_DEST_LABELS,
-            0.0,
-        ),
-        f(
-            ModWheelDepth,
-            "mod_wheel_depth",
-            "Mod Wheel Depth",
-            -48.0,
-            48.0,
-            12.0,
-            "st",
-            false,
-        ),
-    ]
-};
+/// Per-patch descriptor table; indexed by [`PatchParam`] (= in-block offset).
+pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
+    e("osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
+    i("osc1_coarse", "Osc 1 Coarse", -24.0, 24.0, 0.0, "st"),
+    f("osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", false),
+    f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", false),
+    f("osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", false),
+    e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
+    i("osc2_coarse", "Osc 2 Coarse", -24.0, 24.0, -12.0, "st"),
+    f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 7.0, "ct", false),
+    f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", false),
+    f("osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", false),
+    e("noise_color", "Noise Color", NOISE_LABELS, 0.0),
+    f("noise_level", "Noise Level", 0.0, 1.0, 0.0, "", false),
+    f("cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true),
+    f("resonance", "Resonance", 0.0, 1.0, 0.2, "", false),
+    f("drive", "Drive", 0.1, 4.0, 1.0, "", false),
+    e("filter_variant", "Filter Type", VARIANT_LABELS, 0.0),
+    f("env1_attack", "Env 1 Attack", 0.001, 10.0, 0.005, "s", true),
+    f("env1_decay", "Env 1 Decay", 0.001, 10.0, 0.3, "s", true),
+    f("env1_sustain", "Env 1 Sustain", 0.0, 1.0, 0.0, "", false),
+    f("env1_release", "Env 1 Release", 0.001, 10.0, 0.3, "s", true),
+    e("env1_shape", "Env 1 Shape", SHAPE_LABELS, 0.0),
+    f("env2_attack", "Env 2 Attack", 0.001, 10.0, 0.005, "s", true),
+    f("env2_decay", "Env 2 Decay", 0.001, 10.0, 0.2, "s", true),
+    f("env2_sustain", "Env 2 Sustain", 0.0, 1.0, 0.8, "", false),
+    f("env2_release", "Env 2 Release", 0.001, 10.0, 0.3, "s", true),
+    e("env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
+    // Modulation matrix (source-major, dest-minor). ENV-2→Amp seeds to 1.0.
+    mp("env1_pitch", "Env1→Pitch", 0.0),
+    mc("env1_cutoff", "Env1→Cutoff"),
+    ma("env1_amp", "Env1→Amp", 0.0),
+    mw("env1_pwm", "Env1→PWM"),
+    mp("env2_pitch", "Env2→Pitch", 0.0),
+    mc("env2_cutoff", "Env2→Cutoff"),
+    ma("env2_amp", "Env2→Amp", 1.0),
+    mw("env2_pwm", "Env2→PWM"),
+    // Gentle always-on vibrato by default (~5 cents at the 5 Hz LFO rate).
+    mp("lfo_pitch", "LFO→Pitch", 0.05),
+    mc("lfo_cutoff", "LFO→Cutoff"),
+    ma("lfo_amp", "LFO→Amp", 0.0),
+    mw("lfo_pwm", "LFO→PWM"),
+    mp("vel_pitch", "Vel→Pitch", 0.0),
+    mc("vel_cutoff", "Vel→Cutoff"),
+    ma("vel_amp", "Vel→Amp", 0.0),
+    mw("vel_pwm", "Vel→PWM"),
+    mp("key_pitch", "Key→Pitch", 0.0),
+    mc("key_cutoff", "Key→Cutoff"),
+    ma("key_amp", "Key→Amp", 0.0),
+    mw("key_pwm", "Key→PWM"),
+    e("lfo_shape", "LFO Shape", LFO_LABELS, 0.0),
+    f("lfo_rate", "LFO Rate", 0.01, 40.0, 5.0, "Hz", true),
+    // ── Appended after v1 (E001); in-block offsets stay stable above this line. ──
+    f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", true),
+    i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
+    i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, 0.0, "oct"),
+    f("lfo_delay", "LFO Delay", 0.0, 4.0, 0.0, "s", false),
+    // ── E002 (offsets stay stable above this line) ──
+    b("osc_sync", "Sync", 0.0),
+    f("cross_mod", "Cross Mod", 0.0, 1.0, 0.0, "", false),
+    e("mod_wheel_dest", "Mod Wheel", MOD_WHEEL_DEST_LABELS, 0.0),
+    f(
+        "mod_wheel_depth",
+        "Mod Wheel Depth",
+        -48.0,
+        48.0,
+        12.0,
+        "st",
+        false,
+    ),
+];
 
+/// Global descriptor table; indexed by [`GlobalParam`].
+pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
+    f("master_tune", "Master Tune", -12.0, 12.0, 0.0, "st", false),
+    f("master_volume", "Volume", 0.0, 1.0, 0.7, "", false),
+    b("chorus_on", "Chorus", 1.0),
+    f("chorus_rate", "Chorus Rate", 0.05, 8.0, 0.6, "Hz", true),
+    f("chorus_depth", "Chorus Depth", 0.0, 1.0, 0.5, "", false),
+    f("chorus_mix", "Chorus Mix", 0.0, 1.0, 0.4, "", false),
+    b("delay_on", "Delay", 0.0),
+    f("delay_time", "Delay Time", 0.01, 2.0, 0.35, "s", true),
+    f("delay_feedback", "Delay FB", 0.0, 0.95, 0.4, "", false),
+    f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", false),
+    b("delay_pingpong", "Ping-Pong", 1.0),
+    e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
+];
+
+// ── Value storage ─────────────────────────────────────────────────────────────
+
+#[inline]
+fn enum_index(value: f32, max: usize) -> usize {
+    (value.round() as usize).min(max)
+}
+
+/// One layer's worth of per-patch values (plain units). A **self-contained,
+/// serializable unit** (ADR 0003 §6 / ticket 0007): a future single-patch preset
+/// loads straight into one of these.
 #[derive(Clone)]
-pub struct ParamValues {
-    v: [f32; ParamId::COUNT],
+pub struct PatchValues {
+    v: [f32; PatchParam::COUNT],
 }
 
-impl Default for ParamValues {
+impl Default for PatchValues {
     fn default() -> Self {
-        let mut v = [0.0; ParamId::COUNT];
-        for (idx, d) in PARAMS.iter().enumerate() {
+        let mut v = [0.0; PatchParam::COUNT];
+        for (idx, d) in PATCH_PARAMS.iter().enumerate() {
             v[idx] = d.default;
         }
         Self { v }
     }
 }
 
-impl ParamValues {
+impl PatchValues {
     #[inline]
-    pub fn get(&self, id: ParamId) -> f32 {
-        self.v[id.index()]
+    pub fn get(&self, p: PatchParam) -> f32 {
+        self.v[p.index()]
     }
 
     #[inline]
@@ -721,37 +609,32 @@ impl ParamValues {
     }
 
     #[inline]
-    pub fn set(&mut self, id: ParamId, value: f32) {
-        self.v[id.index()] = id.desc().clamp(value);
+    pub fn set(&mut self, p: PatchParam, value: f32) {
+        self.v[p.index()] = p.desc().clamp(value);
     }
 
     #[inline]
     pub fn set_index(&mut self, index: usize, value: f32) {
-        if let Some(id) = ParamId::from_index(index) {
-            self.set(id, value);
+        if let Some(p) = PatchParam::from_index(index) {
+            self.set(p, value);
         }
     }
 
     #[inline]
-    pub fn bool(&self, id: ParamId) -> bool {
-        self.get(id) >= 0.5
+    pub fn bool(&self, p: PatchParam) -> bool {
+        self.get(p) >= 0.5
     }
 
-    #[inline]
-    fn enum_index(&self, id: ParamId, max: usize) -> usize {
-        (self.get(id).round() as usize).min(max)
-    }
-
-    pub fn osc_wave(&self, id: ParamId) -> Waveform {
-        Waveform::ALL[self.enum_index(id, Waveform::ALL.len() - 1)]
+    pub fn osc_wave(&self, p: PatchParam) -> Waveform {
+        Waveform::ALL[enum_index(self.get(p), Waveform::ALL.len() - 1)]
     }
 
     pub fn noise_color(&self) -> NoiseColor {
-        NoiseColor::ALL[self.enum_index(ParamId::NoiseColor, NoiseColor::ALL.len() - 1)]
+        NoiseColor::ALL[enum_index(self.get(PatchParam::NoiseColor), NoiseColor::ALL.len() - 1)]
     }
 
     pub fn filter_variant(&self) -> LadderVariant {
-        if self.enum_index(ParamId::FilterVariant, 1) == 0 {
+        if enum_index(self.get(PatchParam::FilterVariant), 1) == 0 {
             LadderVariant::Sharp
         } else {
             LadderVariant::Smooth
@@ -759,31 +642,128 @@ impl ParamValues {
     }
 
     pub fn lfo_shape(&self) -> LfoShape {
-        LfoShape::ALL[self.enum_index(ParamId::LfoShape, LfoShape::ALL.len() - 1)]
+        LfoShape::ALL[enum_index(self.get(PatchParam::LfoShape), LfoShape::ALL.len() - 1)]
+    }
+
+    pub fn env1_shape(&self) -> AdsrShape {
+        self.adsr_shape(PatchParam::Env1Shape)
+    }
+
+    pub fn env2_shape(&self) -> AdsrShape {
+        self.adsr_shape(PatchParam::Env2Shape)
+    }
+
+    fn adsr_shape(&self, p: PatchParam) -> AdsrShape {
+        if enum_index(self.get(p), 1) == 0 {
+            AdsrShape::Linear
+        } else {
+            AdsrShape::Exponential
+        }
+    }
+}
+
+/// The global value block (master, FX, oversample).
+#[derive(Clone)]
+pub struct GlobalValues {
+    v: [f32; GlobalParam::COUNT],
+}
+
+impl Default for GlobalValues {
+    fn default() -> Self {
+        let mut v = [0.0; GlobalParam::COUNT];
+        for (idx, d) in GLOBAL_PARAMS.iter().enumerate() {
+            v[idx] = d.default;
+        }
+        Self { v }
+    }
+}
+
+impl GlobalValues {
+    #[inline]
+    pub fn get(&self, g: GlobalParam) -> f32 {
+        self.v[g.index()]
+    }
+
+    #[inline]
+    pub fn get_index(&self, index: usize) -> f32 {
+        self.v[index]
+    }
+
+    #[inline]
+    pub fn set(&mut self, g: GlobalParam, value: f32) {
+        self.v[g.index()] = g.desc().clamp(value);
+    }
+
+    #[inline]
+    pub fn set_index(&mut self, index: usize, value: f32) {
+        if let Some(g) = GlobalParam::from_index(index) {
+            self.set(g, value);
+        }
+    }
+
+    #[inline]
+    pub fn bool(&self, g: GlobalParam) -> bool {
+        self.get(g) >= 0.5
     }
 
     /// Oversampling factor for the synthesis path: 1 (Off), 2 or 4.
     pub fn oversample_factor(&self) -> usize {
-        match self.enum_index(ParamId::Oversample, 2) {
+        match enum_index(self.get(GlobalParam::Oversample), 2) {
             0 => 1,
             1 => 2,
             _ => 4,
         }
     }
+}
 
-    pub fn env1_shape(&self) -> AdsrShape {
-        self.adsr_shape(ParamId::Env1Shape)
+/// The complete engine-side value set: two per-patch layers plus the global
+/// block. Addressed typed (per layer / global) by the engine, or by CLAP id at
+/// the host/UI boundary via [`Self::get_by_clap_id`] / [`Self::set_by_clap_id`].
+#[derive(Clone, Default)]
+pub struct ParamValues {
+    pub layers: [PatchValues; Layer::COUNT],
+    pub global: GlobalValues,
+}
+
+impl ParamValues {
+    #[inline]
+    pub fn layer(&self, layer: Layer) -> &PatchValues {
+        &self.layers[layer as usize]
     }
 
-    pub fn env2_shape(&self) -> AdsrShape {
-        self.adsr_shape(ParamId::Env2Shape)
+    #[inline]
+    pub fn layer_mut(&mut self, layer: Layer) -> &mut PatchValues {
+        &mut self.layers[layer as usize]
     }
 
-    fn adsr_shape(&self, id: ParamId) -> AdsrShape {
-        if self.enum_index(id, 1) == 0 {
-            AdsrShape::Linear
-        } else {
-            AdsrShape::Exponential
+    #[inline]
+    pub fn global(&self) -> &GlobalValues {
+        &self.global
+    }
+
+    #[inline]
+    pub fn global_mut(&mut self) -> &mut GlobalValues {
+        &mut self.global
+    }
+
+    /// Read a value by CLAP id (host/UI boundary).
+    #[inline]
+    pub fn get_by_clap_id(&self, clap_id: usize) -> f32 {
+        match param_ref(clap_id) {
+            Some(ParamRef::Patch(layer, p)) => self.layer(layer).get(p),
+            Some(ParamRef::Global(g)) => self.global.get(g),
+            None => 0.0,
+        }
+    }
+
+    /// Write a value (clamped) by CLAP id (host/UI boundary). Out-of-range ids
+    /// are ignored.
+    #[inline]
+    pub fn set_by_clap_id(&mut self, clap_id: usize, value: f32) {
+        match param_ref(clap_id) {
+            Some(ParamRef::Patch(layer, p)) => self.layer_mut(layer).set(p, value),
+            Some(ParamRef::Global(g)) => self.global.set(g, value),
+            None => {}
         }
     }
 }
@@ -793,53 +773,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_len_matches_count() {
-        assert_eq!(PARAMS.len(), ParamId::COUNT);
-    }
-
-    #[test]
-    fn ids_match_table_indices() {
-        for (idx, d) in PARAMS.iter().enumerate() {
-            assert_eq!(d.id.index(), idx, "param {} misindexed", d.name);
-        }
+    fn tables_len_match_counts() {
+        assert_eq!(PATCH_PARAMS.len(), PatchParam::COUNT);
+        assert_eq!(GLOBAL_PARAMS.len(), GlobalParam::COUNT);
     }
 
     #[test]
     fn from_index_roundtrips() {
-        for id in ParamId::all() {
-            assert_eq!(ParamId::from_index(id.index()), Some(id));
+        for p in PatchParam::all() {
+            assert_eq!(PatchParam::from_index(p.index()), Some(p));
         }
-        assert_eq!(ParamId::from_index(ParamId::COUNT), None);
+        assert_eq!(PatchParam::from_index(PatchParam::COUNT), None);
+        for g in GlobalParam::all() {
+            assert_eq!(GlobalParam::from_index(g.index()), Some(g));
+        }
+        assert_eq!(GlobalParam::from_index(GlobalParam::COUNT), None);
+    }
+
+    #[test]
+    fn clap_id_layout_is_contiguous_and_invertible() {
+        // Upper block, then Lower block, then global block — no gaps, no overlap.
+        let mut expected = 0usize;
+        for layer in Layer::ALL {
+            for p in PatchParam::all() {
+                let id = patch_clap_id(layer, p);
+                assert_eq!(id, expected, "{layer:?} {p:?} misindexed");
+                assert_eq!(param_ref(id), Some(ParamRef::Patch(layer, p)));
+                expected += 1;
+            }
+        }
+        for g in GlobalParam::all() {
+            let id = global_clap_id(g);
+            assert_eq!(id, expected);
+            assert_eq!(param_ref(id), Some(ParamRef::Global(g)));
+            expected += 1;
+        }
+        assert_eq!(expected, TOTAL_PARAMS);
+        assert_eq!(param_ref(TOTAL_PARAMS), None);
     }
 
     #[test]
     fn defaults_in_range() {
         let p = ParamValues::default();
-        for id in ParamId::all() {
-            let d = id.desc();
-            let val = p.get(id);
+        for id in 0..TOTAL_PARAMS {
+            let d = desc_for_clap_id(id).unwrap();
+            let val = p.get_by_clap_id(id);
             assert!(val >= d.min && val <= d.max, "{} default OOR", d.name);
         }
     }
 
     #[test]
     fn matrix_layout_is_contiguous_and_ordered() {
-        // The 20 matrix params must sit at MATRIX_BASE in source-major,
-        // dest-minor order so matrix_index() addresses them correctly.
-        assert_eq!(ParamId::MATRIX_BASE, ParamId::Env1Pitch.index());
+        // The 20 matrix params sit at MATRIX_BASE in source-major, dest-minor
+        // order within the per-patch block so matrix_index() addresses them.
+        assert_eq!(PatchParam::MATRIX_BASE, PatchParam::Env1Pitch.index());
         assert_eq!(
-            ParamId::matrix_index(ModSource::Env2, ModDest::Amp),
-            ParamId::Env2Amp.index()
+            PatchParam::matrix_index(ModSource::Env2, ModDest::Amp),
+            PatchParam::Env2Amp.index()
         );
         assert_eq!(
-            ParamId::matrix_index(ModSource::KeyFollow, ModDest::Pwm),
-            ParamId::KeyPwm.index()
+            PatchParam::matrix_index(ModSource::KeyFollow, ModDest::Pwm),
+            PatchParam::KeyPwm.index()
         );
         assert_eq!(
-            ParamId::matrix_index(ModSource::Lfo, ModDest::Cutoff),
-            ParamId::LfoCutoff.index()
+            PatchParam::matrix_index(ModSource::Lfo, ModDest::Cutoff),
+            PatchParam::LfoCutoff.index()
         );
+        assert!(PatchParam::is_matrix_param(PatchParam::Env1Pitch.index()));
+        assert!(!PatchParam::is_matrix_param(PatchParam::LfoShape.index()));
         // ENV-2→Amp is the only route that defaults non-zero.
-        assert_eq!(ParamValues::default().get(ParamId::Env2Amp), 1.0);
+        assert_eq!(PatchValues::default().get(PatchParam::Env2Amp), 1.0);
+    }
+
+    #[test]
+    fn clap_id_roundtrip_through_values() {
+        // A value written by CLAP id lands in the right layer/global slot.
+        let mut pv = ParamValues::default();
+        let up = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
+        let lo = patch_clap_id(Layer::Lower, PatchParam::Cutoff);
+        pv.set_by_clap_id(up, 1000.0);
+        pv.set_by_clap_id(lo, 2000.0);
+        assert_eq!(pv.layer(Layer::Upper).get(PatchParam::Cutoff), 1000.0);
+        assert_eq!(pv.layer(Layer::Lower).get(PatchParam::Cutoff), 2000.0);
+        assert_eq!(pv.get_by_clap_id(up), 1000.0);
+        // Clamping applies on the way in.
+        let res = patch_clap_id(Layer::Upper, PatchParam::Resonance);
+        pv.set_by_clap_id(res, 5.0);
+        assert_eq!(pv.get_by_clap_id(res), 1.0);
+    }
+
+    #[test]
+    fn key_mode_roundtrips() {
+        for m in KeyMode::ALL {
+            assert_eq!(KeyMode::from_u8(m as u8), m);
+        }
+        assert_eq!(KeyMode::default(), KeyMode::Whole);
     }
 }

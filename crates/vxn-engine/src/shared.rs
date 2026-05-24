@@ -1,9 +1,11 @@
 //! Thread-safe parameter store shared between the audio thread, the main thread
 //! and the UI.
 //!
-//! Values are plain `f32` (plain units, matching [`ParamValues`]) stored as bits
-//! in `AtomicU32`. This is the single source of truth that all three writers
-//! (host automation, UI edits, state load) update and all readers observe:
+//! Indexed by **CLAP id** (the host/UI boundary speaks ids — see
+//! [`crate::params`] for the layout): a flat `[AtomicU32; TOTAL_PARAMS]` of plain
+//! `f32` values stored as bits. This is the single source of truth that all
+//! writers (host automation, UI edits, state load) update and all readers
+//! observe:
 //!
 //! - **Host → engine/UI:** the CLAP layer applies input param events to this
 //!   store; the audio thread snapshots it into the engine each block; the UI
@@ -13,20 +15,30 @@
 //!   against a per-thread mirror and emits the change (wrapped in gesture
 //!   begin/end) to the host as output param events.
 //!
+//! Alongside the param array it carries the **non-automatable shared state**
+//! (key mode + split point — ADR 0003 §3, §8) as atomics: setup state, not
+//! sound parameters, set discretely from the UI and persisted via
+//! [`crate::state`].
+//!
 //! Kept in `vxn-engine` (framework-free) so both `vxn-clap` and `vxn-ui` share
 //! one definition without depending on each other.
 
-use crate::{PARAMS, ParamId, ParamValues};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use crate::params::{KeyMode, ParamValues, TOTAL_PARAMS, desc_for_clap_id};
+use crate::state::PluginState;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 /// Atomic, lock-free parameter store. Intended to live behind an `Arc` so the
 /// editor and the plugin can both hold it.
 pub struct SharedParams {
-    values: [AtomicU32; ParamId::COUNT],
+    values: [AtomicU32; TOTAL_PARAMS],
     /// Whether the UI is currently holding an edit gesture (e.g. pointer down)
     /// on each param. Read by the plugin to bracket output events in CLAP
     /// gesture begin/end.
-    gesture: [AtomicBool; ParamId::COUNT],
+    gesture: [AtomicBool; TOTAL_PARAMS],
+    /// Key mode (ADR 0003 §3) — non-automatable shared state.
+    key_mode: AtomicU8,
+    /// Split point as a MIDI note (ADR 0003 §8) — non-automatable shared state.
+    split_point: AtomicU8,
 }
 
 impl Default for SharedParams {
@@ -38,8 +50,12 @@ impl Default for SharedParams {
 impl SharedParams {
     pub fn new() -> Self {
         Self {
-            values: std::array::from_fn(|i| AtomicU32::new(PARAMS[i].default.to_bits())),
+            values: std::array::from_fn(|i| {
+                AtomicU32::new(desc_for_clap_id(i).map_or(0.0, |d| d.default).to_bits())
+            }),
             gesture: std::array::from_fn(|_| AtomicBool::new(false)),
+            key_mode: AtomicU8::new(KeyMode::default() as u8),
+            split_point: AtomicU8::new(crate::params::DEFAULT_SPLIT_POINT),
         }
     }
 
@@ -48,26 +64,25 @@ impl SharedParams {
         f32::from_bits(self.values[index].load(Ordering::Relaxed))
     }
 
-    /// Store `value` (clamped to the param's range) at `index`.
+    /// Store `value` (clamped to the param's range) at CLAP id `index`.
     #[inline]
     pub fn set(&self, index: usize, value: f32) {
-        if index < ParamId::COUNT {
-            let clamped = PARAMS[index].clamp(value);
-            self.values[index].store(clamped.to_bits(), Ordering::Relaxed);
+        if let Some(d) = desc_for_clap_id(index) {
+            self.values[index].store(d.clamp(value).to_bits(), Ordering::Relaxed);
         }
     }
 
     /// Read by normalized `[0, 1]` position (UI convenience).
     #[inline]
     pub fn get_normalized(&self, index: usize) -> f32 {
-        PARAMS[index].to_normalized(self.get(index))
+        desc_for_clap_id(index).map_or(0.0, |d| d.to_normalized(self.get(index)))
     }
 
     /// Write from a normalized `[0, 1]` position (UI convenience).
     #[inline]
     pub fn set_normalized(&self, index: usize, n: f32) {
-        if index < ParamId::COUNT {
-            self.set(index, PARAMS[index].from_normalized(n));
+        if let Some(d) = desc_for_clap_id(index) {
+            self.set(index, d.from_normalized(n));
         }
     }
 
@@ -79,48 +94,99 @@ impl SharedParams {
     /// Mark the start (`true`) or end (`false`) of a UI edit gesture.
     #[inline]
     pub fn set_gesture(&self, index: usize, active: bool) {
-        if index < ParamId::COUNT {
+        if index < TOTAL_PARAMS {
             self.gesture[index].store(active, Ordering::Relaxed);
         }
     }
 
-    /// Copy the whole store into an engine [`ParamValues`] (audio thread).
+    // ── Non-automatable shared state ──────────────────────────────────────────
+
+    #[inline]
+    pub fn key_mode(&self) -> KeyMode {
+        KeyMode::from_u8(self.key_mode.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn set_key_mode(&self, mode: KeyMode) {
+        self.key_mode.store(mode as u8, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn split_point(&self) -> u8 {
+        self.split_point.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_split_point(&self, note: u8) {
+        self.split_point.store(note.min(127), Ordering::Relaxed);
+    }
+
+    // ── Engine / state-blob bridges ───────────────────────────────────────────
+
+    /// Copy the whole store into an engine [`ParamValues`] (audio thread),
+    /// routing each CLAP id into its layer/global slot.
     pub fn snapshot_into(&self, params: &mut ParamValues) {
-        for i in 0..ParamId::COUNT {
-            params.set_index(i, self.get(i));
+        for i in 0..TOTAL_PARAMS {
+            params.set_by_clap_id(i, self.get(i));
         }
+    }
+
+    /// Build a [`PluginState`] snapshot for serialization.
+    pub fn to_state(&self) -> PluginState {
+        let mut params = ParamValues::default();
+        self.snapshot_into(&mut params);
+        PluginState {
+            params,
+            key_mode: self.key_mode(),
+            split_point: self.split_point(),
+        }
+    }
+
+    /// Apply a deserialized [`PluginState`] back into the store (state load).
+    pub fn restore_from(&self, state: &PluginState) {
+        for i in 0..TOTAL_PARAMS {
+            self.set(i, state.params.get_by_clap_id(i));
+        }
+        self.set_key_mode(state.key_mode);
+        self.set_split_point(state.split_point);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{GlobalParam, Layer, PatchParam, global_clap_id, patch_clap_id};
 
     #[test]
     fn defaults_match_table_and_clamp() {
         let s = SharedParams::new();
-        assert_eq!(
-            s.get(ParamId::MasterVolume.index()),
-            PARAMS[ParamId::MasterVolume.index()].default
-        );
+        let vol = global_clap_id(GlobalParam::MasterVolume);
+        assert_eq!(s.get(vol), GlobalParam::MasterVolume.desc().default);
         // Out-of-range writes are clamped to the descriptor range.
-        s.set(ParamId::Resonance.index(), 5.0);
-        assert_eq!(s.get(ParamId::Resonance.index()), 1.0);
+        let reso = patch_clap_id(Layer::Upper, PatchParam::Resonance);
+        s.set(reso, 5.0);
+        assert_eq!(s.get(reso), 1.0);
+    }
+
+    #[test]
+    fn layers_are_independent() {
+        let s = SharedParams::new();
+        let up = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
+        let lo = patch_clap_id(Layer::Lower, PatchParam::Cutoff);
+        s.set(up, 1000.0);
+        s.set(lo, 2000.0);
+        assert_eq!(s.get(up), 1000.0);
+        assert_eq!(s.get(lo), 2000.0);
     }
 
     #[test]
     fn normalized_roundtrip() {
         let s = SharedParams::new();
-        s.set_normalized(ParamId::Cutoff.index(), 0.0);
-        assert_eq!(
-            s.get(ParamId::Cutoff.index()),
-            PARAMS[ParamId::Cutoff.index()].min
-        );
-        s.set_normalized(ParamId::Cutoff.index(), 1.0);
-        assert_eq!(
-            s.get(ParamId::Cutoff.index()),
-            PARAMS[ParamId::Cutoff.index()].max
-        );
+        let cutoff = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
+        s.set_normalized(cutoff, 0.0);
+        assert_eq!(s.get(cutoff), PatchParam::Cutoff.desc().min);
+        s.set_normalized(cutoff, 1.0);
+        assert_eq!(s.get(cutoff), PatchParam::Cutoff.desc().max);
     }
 
     #[test]
@@ -129,5 +195,32 @@ mod tests {
         assert!(!s.gesture(0));
         s.set_gesture(0, true);
         assert!(s.gesture(0));
+    }
+
+    #[test]
+    fn key_mode_and_split_default_and_roundtrip() {
+        let s = SharedParams::new();
+        assert_eq!(s.key_mode(), KeyMode::Whole);
+        assert_eq!(s.split_point(), crate::params::DEFAULT_SPLIT_POINT);
+        s.set_key_mode(KeyMode::Dual);
+        s.set_split_point(72);
+        assert_eq!(s.key_mode(), KeyMode::Dual);
+        assert_eq!(s.split_point(), 72);
+    }
+
+    #[test]
+    fn state_roundtrip_through_store() {
+        let s = SharedParams::new();
+        let up = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
+        s.set(up, 4321.0);
+        s.set_key_mode(KeyMode::Split);
+        s.set_split_point(48);
+
+        let state = s.to_state();
+        let s2 = SharedParams::new();
+        s2.restore_from(&state);
+        assert_eq!(s2.get(up), 4321.0);
+        assert_eq!(s2.key_mode(), KeyMode::Split);
+        assert_eq!(s2.split_point(), 48);
     }
 }

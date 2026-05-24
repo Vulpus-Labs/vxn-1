@@ -8,12 +8,18 @@ pub mod modmatrix;
 pub mod params;
 pub mod shared;
 pub mod smoothing;
+pub mod state;
 pub mod voice;
 
 pub use modmatrix::{ModDest, ModMatrix, ModSource};
-pub use params::{PARAMS, ParamDesc, ParamId, ParamKind, ParamValues};
+pub use params::{
+    DEFAULT_SPLIT_POINT, GLOBAL_PARAMS, GlobalParam, GlobalValues, KeyMode, Layer, PATCH_PARAMS,
+    ParamDesc, ParamKind, ParamRef, ParamValues, PatchParam, PatchValues, TOTAL_PARAMS,
+    desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref, patch_clap_id,
+};
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;
+pub use state::PluginState;
 
 use voice::{BlockCtx, VoiceBank};
 use vxn_dsp::{
@@ -113,9 +119,9 @@ impl Synth {
         &mut self.params
     }
 
-    /// Set a parameter by CLAP id (= table index).
+    /// Set a parameter by CLAP id (routed to its layer/global slot).
     pub fn set_param(&mut self, index: usize, value: f32) {
-        self.params.set_index(index, value);
+        self.params.set_by_clap_id(index, value);
     }
 
     /// Pitch bend in normalised `[-1, 1]`; mapped to ±2 semitones.
@@ -124,7 +130,7 @@ impl Synth {
     }
 
     /// Mod wheel (CC1) in normalised `[0, 1]`. Routed in `build_ctx` per
-    /// [`ParamId::ModWheelDest`]; smoothed at the control rate.
+    /// [`PatchParam::ModWheelDest`]; smoothed at the control rate.
     pub fn set_mod_wheel(&mut self, normalized: f32) {
         self.mod_wheel.set_target(normalized.clamp(0.0, 1.0));
     }
@@ -159,7 +165,7 @@ impl Synth {
         self.sync_envelopes();
 
         // Oversampling factor for this call; a change resets the decimator.
-        let os = self.params.oversample_factor();
+        let os = self.params.global().oversample_factor();
         if os != self.last_os {
             self.oversampler.reset();
             self.last_os = os;
@@ -184,8 +190,8 @@ impl Synth {
             self.oversampler.decimate(mono_os, mono, os);
 
             // Effects (stereo), then write out.
-            let chorus_on = self.params.bool(ParamId::ChorusOn);
-            let delay_on = self.params.bool(ParamId::DelayOn);
+            let chorus_on = self.params.global().bool(GlobalParam::ChorusOn);
+            let delay_on = self.params.global().bool(GlobalParam::DelayOn);
             self.update_effects();
 
             // Apply the per-sample master-volume glide into a dry mono block,
@@ -218,20 +224,22 @@ impl Synth {
     /// Push envelope params to all voices when they change. Applies to every
     /// voice (active or not) so a later-reused voice already has fresh coeffs.
     fn sync_envelopes(&mut self) {
-        let p = &self.params;
+        // 0007: single render path still reads the Upper layer; the two-layer
+        // render (per-layer envelopes) lands in 0008.
+        let p = self.params.layer(Layer::Upper);
         let snap = EnvSnapshot {
             env1: (
-                p.get(ParamId::Env1Attack),
-                p.get(ParamId::Env1Decay),
-                p.get(ParamId::Env1Sustain),
-                p.get(ParamId::Env1Release),
+                p.get(PatchParam::Env1Attack),
+                p.get(PatchParam::Env1Decay),
+                p.get(PatchParam::Env1Sustain),
+                p.get(PatchParam::Env1Release),
             ),
             env1_shape: p.env1_shape(),
             env2: (
-                p.get(ParamId::Env2Attack),
-                p.get(ParamId::Env2Decay),
-                p.get(ParamId::Env2Sustain),
-                p.get(ParamId::Env2Release),
+                p.get(PatchParam::Env2Attack),
+                p.get(PatchParam::Env2Decay),
+                p.get(PatchParam::Env2Sustain),
+                p.get(PatchParam::Env2Release),
             ),
             env2_shape: p.env2_shape(),
         };
@@ -244,35 +252,39 @@ impl Synth {
     }
 
     fn update_effects(&mut self) {
-        let p = self.smoother.values();
+        let g = self.smoother.values().global();
         self.chorus.set_params(
-            p.get(ParamId::ChorusRate),
-            p.get(ParamId::ChorusDepth),
-            p.get(ParamId::ChorusMix),
+            g.get(GlobalParam::ChorusRate),
+            g.get(GlobalParam::ChorusDepth),
+            g.get(GlobalParam::ChorusMix),
         );
-        let t = p.get(ParamId::DelayTime);
+        let t = g.get(GlobalParam::DelayTime);
         self.delay.set_params(
             t,
             t,
-            p.get(ParamId::DelayFeedback),
+            g.get(GlobalParam::DelayFeedback),
             0.3,
-            p.get(ParamId::DelayMix),
-            p.bool(ParamId::DelayPingPong),
+            g.get(GlobalParam::DelayMix),
+            g.bool(GlobalParam::DelayPingPong),
         );
     }
 
     fn build_ctx(&mut self, os: usize) -> BlockCtx {
-        let p = self.smoother.values();
+        // 0007: single render path reads the Upper layer's patch params plus the
+        // global block. The per-layer render (a `BlockCtx` per layer) is 0008.
+        let vals = self.smoother.values();
+        let p = vals.layer(Layer::Upper);
+        let g = vals.global();
         let lfo_val = self.lfo.next(p.lfo_shape());
-        self.lfo.set_rate(p.get(ParamId::LfoRate));
+        self.lfo.set_rate(p.get(PatchParam::LfoRate));
 
         // Pull the depth params into the matrix via the layout's own index
         // mapping, so an appended source row (future second LFO) needs no change
-        // here — only `ParamId::matrix_row_base`.
+        // here — only `PatchParam::matrix_row_base`.
         let mut matrix = ModMatrix::new();
         for (s, &src) in ModSource::ALL.iter().enumerate() {
             for (d, &dest) in ModDest::ALL.iter().enumerate() {
-                matrix.depth[s][d] = p.get_index(ParamId::matrix_index(src, dest));
+                matrix.depth[s][d] = p.get_index(PatchParam::matrix_index(src, dest));
             }
         }
 
@@ -280,12 +292,12 @@ impl Synth {
         // pitch bend riding `base_semis`. Smoothed at the control rate; the
         // semitone-domain amount feeds either the cutoff (octaves) or osc2 pitch.
         let wheel = self.mod_wheel.tick();
-        let mw_amount = wheel * p.get(ParamId::ModWheelDepth);
-        let mw_dest = p.get(ParamId::ModWheelDest).round() as i32;
-        let mut cutoff = p.get(ParamId::Cutoff);
-        let mut osc2_semi = p.get(ParamId::Osc2Octave) * 12.0
-            + p.get(ParamId::Osc2Coarse)
-            + p.get(ParamId::Osc2Fine) / 100.0;
+        let mw_amount = wheel * p.get(PatchParam::ModWheelDepth);
+        let mw_dest = p.get(PatchParam::ModWheelDest).round() as i32;
+        let mut cutoff = p.get(PatchParam::Cutoff);
+        let mut osc2_semi = p.get(PatchParam::Osc2Octave) * 12.0
+            + p.get(PatchParam::Osc2Coarse)
+            + p.get(PatchParam::Osc2Fine) / 100.0;
         match mw_dest {
             1 => cutoff *= fast_exp2(mw_amount / 12.0), // Cutoff: semitone-domain scale
             2 => osc2_semi += mw_amount,                // Osc2 Pitch: add semitones
@@ -295,28 +307,28 @@ impl Synth {
         BlockCtx {
             os_sample_rate: self.sample_rate * os as f32,
             os,
-            osc1_wave: p.osc_wave(ParamId::Osc1Wave),
-            osc2_wave: p.osc_wave(ParamId::Osc2Wave),
-            osc1_level: p.get(ParamId::Osc1Level),
-            osc2_level: p.get(ParamId::Osc2Level),
-            noise_level: p.get(ParamId::NoiseLevel),
-            osc1_pw: p.get(ParamId::Osc1PulseWidth),
-            osc2_pw: p.get(ParamId::Osc2PulseWidth),
-            osc1_semi: p.get(ParamId::Osc1Octave) * 12.0
-                + p.get(ParamId::Osc1Coarse)
-                + p.get(ParamId::Osc1Fine) / 100.0,
+            osc1_wave: p.osc_wave(PatchParam::Osc1Wave),
+            osc2_wave: p.osc_wave(PatchParam::Osc2Wave),
+            osc1_level: p.get(PatchParam::Osc1Level),
+            osc2_level: p.get(PatchParam::Osc2Level),
+            noise_level: p.get(PatchParam::NoiseLevel),
+            osc1_pw: p.get(PatchParam::Osc1PulseWidth),
+            osc2_pw: p.get(PatchParam::Osc2PulseWidth),
+            osc1_semi: p.get(PatchParam::Osc1Octave) * 12.0
+                + p.get(PatchParam::Osc1Coarse)
+                + p.get(PatchParam::Osc1Fine) / 100.0,
             osc2_semi,
             noise_color: p.noise_color(),
             cutoff,
-            hpf_cutoff: p.get(ParamId::HpfCutoff),
-            resonance: p.get(ParamId::Resonance),
-            drive: p.get(ParamId::Drive),
+            hpf_cutoff: p.get(PatchParam::HpfCutoff),
+            resonance: p.get(PatchParam::Resonance),
+            drive: p.get(PatchParam::Drive),
             variant: p.filter_variant(),
-            base_semis: p.get(ParamId::MasterTune) + self.bend_semis,
+            base_semis: g.get(GlobalParam::MasterTune) + self.bend_semis,
             lfo_val,
-            lfo_delay: p.get(ParamId::LfoDelay),
-            sync: p.bool(ParamId::OscSync),
-            cross_mod: p.get(ParamId::CrossMod),
+            lfo_delay: p.get(PatchParam::LfoDelay),
+            sync: p.bool(PatchParam::OscSync),
+            cross_mod: p.get(PatchParam::CrossMod),
             matrix,
         }
     }
@@ -330,6 +342,16 @@ pub fn a4_hz() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{GlobalParam, Layer, PatchParam, global_clap_id, patch_clap_id};
+
+    /// Upper-layer per-patch CLAP id (tests drive the single render path = Upper).
+    fn pp(p: PatchParam) -> usize {
+        patch_clap_id(Layer::Upper, p)
+    }
+    /// Global-param CLAP id.
+    fn gp(g: GlobalParam) -> usize {
+        global_clap_id(g)
+    }
 
     fn render(synth: &mut Synth, frames: usize) -> (Vec<f32>, Vec<f32>) {
         let mut l = vec![0.0; frames];
@@ -358,9 +380,9 @@ mod tests {
     fn note_produces_sound_then_releases_to_silence() {
         let mut s = Synth::new(48_000.0);
         // Fast amp envelope (ENV-2 drives the VCA by default) so the test is short.
-        s.set_param(ParamId::Env2Attack.index(), 0.001);
-        s.set_param(ParamId::Env2Release.index(), 0.01);
-        s.set_param(ParamId::ChorusOn.index(), 0.0);
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        s.set_param(pp(PatchParam::Env2Release), 0.01);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.note_on(69, 1.0);
         let (l, _) = render(&mut s, 4800);
         assert!(rms(&l) > 0.01, "note produced no sound");
@@ -379,9 +401,9 @@ mod tests {
     #[test]
     fn output_finite_under_stress() {
         let mut s = Synth::new(44_100.0);
-        s.set_param(ParamId::Resonance.index(), 1.0);
-        s.set_param(ParamId::NoiseLevel.index(), 0.5);
-        s.set_param(ParamId::DelayOn.index(), 1.0);
+        s.set_param(pp(PatchParam::Resonance), 1.0);
+        s.set_param(pp(PatchParam::NoiseLevel), 0.5);
+        s.set_param(gp(GlobalParam::DelayOn), 1.0);
         for n in 60..76 {
             s.note_on(n, 1.0);
         }
@@ -401,8 +423,8 @@ mod tests {
         // block-rate-smoothed param, so it glides to zero over ~10 ms; assert on
         // the settled tail rather than the glide transient.
         let mut s = Synth::new(48_000.0);
-        s.set_param(ParamId::ChorusOn.index(), 0.0);
-        s.set_param(ParamId::Env2Amp.index(), 0.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Env2Amp), 0.0);
         s.note_on(69, 1.0);
         let (l, _) = render(&mut s, 48_000);
         let tail = &l[l.len() - 4800..];
@@ -428,12 +450,12 @@ mod tests {
     fn pitched_synth() -> Synth {
         let mut s = Synth::new(48_000.0);
         // Single sine osc, no chorus/vibrato, fast attack — clean pitch readout.
-        s.set_param(ParamId::Osc1Wave.index(), 0.0); // Sine
-        s.set_param(ParamId::Osc2Level.index(), 0.0);
-        s.set_param(ParamId::NoiseLevel.index(), 0.0);
-        s.set_param(ParamId::LfoPitch.index(), 0.0); // kill default vibrato
-        s.set_param(ParamId::ChorusOn.index(), 0.0);
-        s.set_param(ParamId::Env2Attack.index(), 0.001);
+        s.set_param(pp(PatchParam::Osc1Wave), 0.0); // Sine
+        s.set_param(pp(PatchParam::Osc2Level), 0.0);
+        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+        s.set_param(pp(PatchParam::LfoPitch), 0.0); // kill default vibrato
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
     }
 
@@ -445,7 +467,7 @@ mod tests {
         let f0 = dominant_hz(&l0[4800..], 48_000.0);
 
         let mut up = pitched_synth();
-        up.set_param(ParamId::Osc1Octave.index(), 1.0);
+        up.set_param(pp(PatchParam::Osc1Octave), 1.0);
         up.note_on(57, 1.0);
         let (l1, _) = render(&mut up, 24_000);
         let f1 = dominant_hz(&l1[4800..], 48_000.0);
@@ -460,14 +482,14 @@ mod tests {
     fn octave_and_coarse_combine_additively() {
         // +1 octave & +7 st = +19 st. Compare against +19 st coarse alone.
         let mut a = pitched_synth();
-        a.set_param(ParamId::Osc1Octave.index(), 1.0);
-        a.set_param(ParamId::Osc1Coarse.index(), 7.0);
+        a.set_param(pp(PatchParam::Osc1Octave), 1.0);
+        a.set_param(pp(PatchParam::Osc1Coarse), 7.0);
         a.note_on(45, 1.0);
         let (la, _) = render(&mut a, 24_000);
         let fa = dominant_hz(&la[4800..], 48_000.0);
 
         let mut b = pitched_synth();
-        b.set_param(ParamId::Osc1Coarse.index(), 19.0);
+        b.set_param(pp(PatchParam::Osc1Coarse), 19.0);
         b.note_on(45, 1.0);
         let (lb, _) = render(&mut b, 24_000);
         let fb = dominant_hz(&lb[4800..], 48_000.0);
@@ -480,7 +502,7 @@ mod tests {
         // A low note through a high HPF cutoff loses energy vs the open default.
         fn low_note_rms(hpf_hz: f32) -> f32 {
             let mut s = pitched_synth();
-            s.set_param(ParamId::HpfCutoff.index(), hpf_hz);
+            s.set_param(pp(PatchParam::HpfCutoff), hpf_hz);
             s.note_on(33, 1.0); // A1 ≈ 55 Hz
             let (l, _) = render(&mut s, 24_000);
             rms(&l[4800..])
@@ -499,11 +521,11 @@ mod tests {
         // delay. Faded out the amp is ~0 (silent); faded in the LFO opens it.
         fn amp_swing(window: std::ops::Range<usize>) -> f32 {
             let mut s = Synth::new(48_000.0);
-            s.set_param(ParamId::ChorusOn.index(), 0.0);
-            s.set_param(ParamId::Env2Amp.index(), 0.0);
-            s.set_param(ParamId::LfoRate.index(), 4.0);
-            s.set_param(ParamId::LfoAmp.index(), 1.0);
-            s.set_param(ParamId::LfoDelay.index(), 1.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(pp(PatchParam::Env2Amp), 0.0);
+            s.set_param(pp(PatchParam::LfoRate), 4.0);
+            s.set_param(pp(PatchParam::LfoAmp), 1.0);
+            s.set_param(pp(PatchParam::LfoDelay), 1.0);
             s.note_on(69, 1.0);
             let (l, _) = render(&mut s, 96_000);
             rms(&l[window])
@@ -522,10 +544,10 @@ mod tests {
     fn lfo_delay_zero_matches_immediate_modulation() {
         // With delay 0, the LFO is at full depth from the first block.
         let mut s = Synth::new(48_000.0);
-        s.set_param(ParamId::ChorusOn.index(), 0.0);
-        s.set_param(ParamId::LfoRate.index(), 6.0);
-        s.set_param(ParamId::LfoAmp.index(), 1.0);
-        s.set_param(ParamId::LfoDelay.index(), 0.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::LfoRate), 6.0);
+        s.set_param(pp(PatchParam::LfoAmp), 1.0);
+        s.set_param(pp(PatchParam::LfoDelay), 0.0);
         s.note_on(69, 1.0);
         let (l, _) = render(&mut s, 9600);
         // Modulation present immediately (no quiet fade-in lead-in).
@@ -542,11 +564,11 @@ mod tests {
         // (the synced formant), and every render stays finite.
         fn render_sync(sync: bool, osc2_coarse: f32) -> Vec<f32> {
             let mut s = pitched_synth();
-            s.set_param(ParamId::OscSync.index(), if sync { 1.0 } else { 0.0 });
-            s.set_param(ParamId::Osc1Wave.index(), 2.0); // saw master
-            s.set_param(ParamId::Osc2Wave.index(), 2.0); // saw slave
-            s.set_param(ParamId::Osc2Level.index(), 0.8);
-            s.set_param(ParamId::Osc2Coarse.index(), osc2_coarse);
+            s.set_param(pp(PatchParam::OscSync), if sync { 1.0 } else { 0.0 });
+            s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw master
+            s.set_param(pp(PatchParam::Osc2Wave), 2.0); // saw slave
+            s.set_param(pp(PatchParam::Osc2Level), 0.8);
+            s.set_param(pp(PatchParam::Osc2Coarse), osc2_coarse);
             s.note_on(45, 1.0); // A2 ≈ 110 Hz master
             let (l, _) = render(&mut s, 24_000);
             assert!(l.iter().all(|x| x.is_finite()), "sync output not finite");
@@ -580,9 +602,9 @@ mod tests {
         let f2 = note_to_hz(45.0 + 5.0); // osc2 +5 st (inharmonic)
         fn sideband(cross_mod: f32, side_hz: f32, sr: f32) -> (f32, bool) {
             let mut s = pitched_synth();
-            s.set_param(ParamId::Osc2Level.index(), 0.0); // carrier audible alone
-            s.set_param(ParamId::Osc2Coarse.index(), 5.0); // inharmonic vs osc1
-            s.set_param(ParamId::CrossMod.index(), cross_mod);
+            s.set_param(pp(PatchParam::Osc2Level), 0.0); // carrier audible alone
+            s.set_param(pp(PatchParam::Osc2Coarse), 5.0); // inharmonic vs osc1
+            s.set_param(pp(PatchParam::CrossMod), cross_mod);
             s.note_on(45, 1.0);
             let (l, _) = render(&mut s, 24_000);
             let finite = l.iter().all(|x| x.is_finite());
@@ -611,15 +633,15 @@ mod tests {
     /// Single audible osc2 sine — for mod-wheel→osc2-pitch tests.
     fn osc2_sine_synth() -> Synth {
         let mut s = Synth::new(48_000.0);
-        s.set_param(ParamId::Osc1Level.index(), 0.0);
-        s.set_param(ParamId::Osc2Wave.index(), 0.0); // sine
-        s.set_param(ParamId::Osc2Level.index(), 0.8);
-        s.set_param(ParamId::Osc2Coarse.index(), 0.0);
-        s.set_param(ParamId::Osc2Fine.index(), 0.0);
-        s.set_param(ParamId::NoiseLevel.index(), 0.0);
-        s.set_param(ParamId::LfoPitch.index(), 0.0);
-        s.set_param(ParamId::ChorusOn.index(), 0.0);
-        s.set_param(ParamId::Env2Attack.index(), 0.001);
+        s.set_param(pp(PatchParam::Osc1Level), 0.0);
+        s.set_param(pp(PatchParam::Osc2Wave), 0.0); // sine
+        s.set_param(pp(PatchParam::Osc2Level), 0.8);
+        s.set_param(pp(PatchParam::Osc2Coarse), 0.0);
+        s.set_param(pp(PatchParam::Osc2Fine), 0.0);
+        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+        s.set_param(pp(PatchParam::LfoPitch), 0.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
     }
 
@@ -653,8 +675,8 @@ mod tests {
         let f0 = dominant_hz(&l0[4800..], 48_000.0);
 
         let mut up = osc2_sine_synth();
-        up.set_param(ParamId::ModWheelDest.index(), 2.0); // Osc2 Pitch
-        up.set_param(ParamId::ModWheelDepth.index(), 12.0);
+        up.set_param(pp(PatchParam::ModWheelDest), 2.0); // Osc2 Pitch
+        up.set_param(pp(PatchParam::ModWheelDepth), 12.0);
         up.set_mod_wheel(1.0);
         up.note_on(57, 1.0);
         let (l1, _) = render(&mut up, 24_000);
@@ -675,14 +697,17 @@ mod tests {
         let f0 = dominant_hz(&l0[4800..], 48_000.0);
 
         let mut off = osc2_sine_synth();
-        off.set_param(ParamId::ModWheelDest.index(), 0.0); // Off
-        off.set_param(ParamId::ModWheelDepth.index(), 12.0);
+        off.set_param(pp(PatchParam::ModWheelDest), 0.0); // Off
+        off.set_param(pp(PatchParam::ModWheelDepth), 12.0);
         off.set_mod_wheel(1.0);
         off.note_on(57, 1.0);
         let (l1, _) = render(&mut off, 24_000);
         let f1 = dominant_hz(&l1[4800..], 48_000.0);
 
-        assert!((f1 / f0 - 1.0).abs() < 0.02, "wheel Off shifted pitch: {f0} -> {f1}");
+        assert!(
+            (f1 / f0 - 1.0).abs() < 0.02,
+            "wheel Off shifted pitch: {f0} -> {f1}"
+        );
     }
 
     #[test]
@@ -691,20 +716,23 @@ mod tests {
         // harmonics → higher RMS than the dark baseline.
         fn bright(wheel: f32) -> f32 {
             let mut s = Synth::new(48_000.0);
-            s.set_param(ParamId::Osc1Wave.index(), 2.0); // saw (harmonic-rich)
-            s.set_param(ParamId::Osc2Level.index(), 0.0);
-            s.set_param(ParamId::NoiseLevel.index(), 0.0);
-            s.set_param(ParamId::LfoPitch.index(), 0.0);
-            s.set_param(ParamId::ChorusOn.index(), 0.0);
-            s.set_param(ParamId::Env2Attack.index(), 0.001);
-            s.set_param(ParamId::Cutoff.index(), 200.0); // dark base
-            s.set_param(ParamId::Resonance.index(), 0.0);
-            s.set_param(ParamId::ModWheelDest.index(), 1.0); // Cutoff
-            s.set_param(ParamId::ModWheelDepth.index(), 48.0); // ×2^4 = 16
+            s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw (harmonic-rich)
+            s.set_param(pp(PatchParam::Osc2Level), 0.0);
+            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(pp(PatchParam::Env2Attack), 0.001);
+            s.set_param(pp(PatchParam::Cutoff), 200.0); // dark base
+            s.set_param(pp(PatchParam::Resonance), 0.0);
+            s.set_param(pp(PatchParam::ModWheelDest), 1.0); // Cutoff
+            s.set_param(pp(PatchParam::ModWheelDepth), 48.0); // ×2^4 = 16
             s.set_mod_wheel(wheel);
             s.note_on(45, 1.0); // 110 Hz, many harmonics
             let (l, _) = render(&mut s, 24_000);
-            assert!(l.iter().all(|x| x.is_finite()), "mod-wheel cutoff not finite");
+            assert!(
+                l.iter().all(|x| x.is_finite()),
+                "mod-wheel cutoff not finite"
+            );
             rms(&l[4800..])
         }
         let dark = bright(0.0);
