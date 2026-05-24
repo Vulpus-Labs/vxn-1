@@ -1,10 +1,11 @@
 //! Structure-of-arrays poly kernels for the synthesis hot path.
 //!
-//! Each kernel holds `[f32; MAX_VOICES]` state and processes all voices per
-//! sample in a branchless loop the compiler auto-vectorises (NEON is 4-wide
-//! f32, so 16 voices = 4 SIMD lanes deep). Waveform / noise colour / filter
-//! variant are *global* parameters, so the `match` on them is hoisted outside
-//! the lane loop — the inner loop has no data-dependent branches.
+//! Each kernel holds `[f32; CHANNELS_PER_LAYER]` state and processes one layer's
+//! channels per sample in a branchless loop the compiler auto-vectorises (NEON
+//! is 4-wide f32, so 8 channels = 2 SIMD lanes deep). Waveform / noise colour /
+//! filter variant are *per-layer* parameters, hoisted outside the lane loop —
+//! the inner loop has no data-dependent branches. A heterogeneous second layer
+//! is simply a second kernel instance with its own hoisted globals.
 //!
 //! Mirrors the design of `patches-dsp`'s poly kernels. The mono kernels in the
 //! sibling modules remain for non-voice uses and as the readable reference.
@@ -15,13 +16,13 @@
 //! is allowed module-wide.
 #![allow(clippy::needless_range_loop)]
 
-use crate::MAX_VOICES;
+use crate::CHANNELS_PER_LAYER;
 use crate::ladder::LadderCoeffs;
 use crate::math::{fast_exp2, fast_sine};
 use crate::noise::{NoiseColor, xorshift64};
 use crate::oscillator::Waveform;
 
-const N: usize = MAX_VOICES;
+const N: usize = CHANNELS_PER_LAYER;
 
 /// Branchless PolyBLEP. `dt` is floored away from zero so frozen (inactive)
 /// voices can't produce NaNs; the comparison masks select the active branch.

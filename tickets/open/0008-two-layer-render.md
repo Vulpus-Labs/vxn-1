@@ -15,23 +15,23 @@ into the global FX bus (ADR 0003 §1, §5, §10). This replaces the single
 
 ## Acceptance criteria
 
-- [ ] Per-layer channel count = 8; two layers = 16 total (a new
+- [x] Per-layer channel count = 8; two layers = 16 total (a new
       `CHANNELS_PER_LAYER = 8` const; `MAX_VOICES` total stays 16). Choose **two
       `VoiceBank`s of 8** or one bank processing 8-channel slices — whichever
       keeps the poly kernel's hoisted-global / vectorised lane loop intact
       *within* a homogeneous layer (ADR 0003 §10).
-- [ ] `build_ctx` becomes per-layer: each layer's `BlockCtx` is built from its
+- [x] `build_ctx` becomes per-layer: each layer's `BlockCtx` is built from its
       own param block; each layer owns an LFO instance and resolves its own
       matrix.
-- [ ] `render` runs both layers and **sums** their outputs into the existing
+- [x] `render` runs both layers and **sums** their outputs into the existing
       global chorus/delay bus (FX stays global — ADR 0003 §7).
-- [ ] **Whole-mode param source:** in Whole, both layers read **layer A's**
+- [x] **Whole-mode param source:** in Whole, both layers read **layer A's**
       param block (no mirroring); in Dual/Split each layer reads its own. The
       key-mode read is wired here even though event routing (Whole vs others)
       lands in 0009 — expose a clean `param_source(layer, key_mode)`.
-- [ ] Per-layer LFO/envelope/filter state resets correctly on
+- [x] Per-layer LFO/envelope/filter state resets correctly on
       `set_sample_rate` / `reset_all`.
-- [ ] Tests: with both layers fed identical params + notes, output equals a
+- [x] Tests: with both layers fed identical params + notes, output equals a
       single-layer render of the same patch (Whole-equivalence); two different
       patches produce two distinguishable spectra summed; all 16 channels stay
       finite.

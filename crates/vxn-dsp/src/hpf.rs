@@ -10,10 +10,10 @@
 //! HPF cutoff is not a modulation destination, so no per-sample ramp is needed
 //! (unlike [`crate::PolyLadder`], whose cutoff is modulated).
 
-use crate::MAX_VOICES;
+use crate::CHANNELS_PER_LAYER;
 use std::f32::consts::PI;
 
-const N: usize = MAX_VOICES;
+const N: usize = CHANNELS_PER_LAYER;
 
 #[inline]
 fn sanitize(v: f32) -> f32 {

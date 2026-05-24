@@ -46,6 +46,14 @@ struct EnvSnapshot {
 /// on entry, restores on drop); `enable_flush_to_zero` is the bare one-shot.
 pub use vxn_dsp::{ScopedFlushToZero, enable_flush_to_zero};
 
+/// Number of always-present layers (ADR 0003 §1). Indexed by [`Layer`].
+const LAYERS: usize = Layer::COUNT;
+
+/// Per-layer LFO seeds (decorrelate the S&H shape between layers).
+const LFO_SEEDS: [u64; LAYERS] = [0x51A7, 0xC0FF];
+/// Per-layer noise seeds (decorrelate the two layers' noise generators).
+const NOISE_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
+
 /// The complete VXN1 instrument.
 pub struct Synth {
     sample_rate: f32,
@@ -53,19 +61,31 @@ pub struct Synth {
     /// Glides gain-like params toward `params` to remove zipper noise. The
     /// filter is smoothed separately by ladder coefficient interpolation.
     smoother: ParamSmoother,
-    bank: VoiceBank,
-    lfo: LfoCore,
+    /// Two always-present layers of 8 channels each (ADR 0003 §2). Each is a
+    /// complete patch; both sum into the global FX bus.
+    banks: [VoiceBank; LAYERS],
+    /// Per-layer LFO (ADR 0003 §5): each layer modulates from its own LFO.
+    lfos: [LfoCore; LAYERS],
     chorus: StereoChorus,
     delay: StereoDelay,
     /// Anti-aliasing decimator for the oversampled synthesis path.
     oversampler: Oversampler,
-    /// Pitch bend in semitones (±2 by default range).
+    /// Pitch bend in semitones (±2 by default range). Global value, applied per
+    /// layer (ADR 0003 §9).
     bend_semis: f32,
     /// Mod-wheel (CC1) position in `[0, 1]`, smoothed at the control rate.
+    /// Global value; each layer applies it via its own routing params.
     mod_wheel: Smoothed,
+    /// Current key mode (ADR 0003 §3). Decides each layer's param source via
+    /// [`Synth::param_source`]; the event router that also depends on it is 0009.
+    key_mode: KeyMode,
     alloc_counter: u64,
-    /// Last envelope params pushed to the voices; `None` forces a refresh.
-    last_env: Option<EnvSnapshot>,
+    /// Round-robin layer cursor for note-on. **Temporary**: it spreads incoming
+    /// notes 8+8 across the two layers, reproducing today's 16-voice behaviour
+    /// until the key-mode event router replaces it (0009).
+    rr_layer: usize,
+    /// Last envelope params pushed to each layer's voices; `None` forces a refresh.
+    last_env: [Option<EnvSnapshot>; LAYERS],
     /// Oversampling factor in effect last block; a change resets the decimator.
     last_os: usize,
 }
@@ -80,15 +100,17 @@ impl Synth {
             sample_rate,
             smoother: ParamSmoother::new(sample_rate, &params),
             params,
-            bank: VoiceBank::new(sample_rate),
-            lfo: LfoCore::new(control_rate, 0x51A7),
+            banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, NOISE_SEEDS[i])),
+            lfos: std::array::from_fn(|i| LfoCore::new(control_rate, LFO_SEEDS[i])),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
             oversampler: Oversampler::new(),
             bend_semis: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
+            key_mode: KeyMode::Whole,
             alloc_counter: 0,
-            last_env: None,
+            rr_layer: 0,
+            last_env: [None; LAYERS],
             last_os: 1,
         }
     }
@@ -98,17 +120,19 @@ impl Synth {
             return;
         }
         self.sample_rate = sample_rate;
-        self.bank.set_sample_rate(sample_rate);
-        self.lfo = LfoCore::new(sample_rate / CONTROL_BLOCK as f32, 0x51A7);
+        let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        for (i, bank) in self.banks.iter_mut().enumerate() {
+            bank.set_sample_rate(sample_rate);
+            self.lfos[i] = LfoCore::new(control_rate, LFO_SEEDS[i]);
+        }
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
         self.oversampler.reset();
-        self.mod_wheel
-            .set_time(MOD_WHEEL_SMOOTH_MS, sample_rate / CONTROL_BLOCK as f32);
+        self.mod_wheel.set_time(MOD_WHEEL_SMOOTH_MS, control_rate);
         self.smoother.set_sample_rate(sample_rate);
         self.smoother.snap_all(&self.params);
         // Envelope cores were recreated with zeroed coefficients; force a refresh.
-        self.last_env = None;
+        self.last_env = [None; LAYERS];
     }
 
     pub fn params(&self) -> &ParamValues {
@@ -135,24 +159,67 @@ impl Synth {
         self.mod_wheel.set_target(normalized.clamp(0.0, 1.0));
     }
 
+    /// Set the key mode (ADR 0003 §3). Cheap; the event router (0009) reads the
+    /// same mode to decide note routing.
+    pub fn set_key_mode(&mut self, mode: KeyMode) {
+        self.key_mode = mode;
+    }
+
+    pub fn key_mode(&self) -> KeyMode {
+        self.key_mode
+    }
+
+    /// Which param block layer `layer` reads under `key_mode` (ADR 0003 §3):
+    /// in **Whole**, both layers read layer A's (Upper) block — no mirroring;
+    /// in **Dual/Split**, each layer reads its own.
+    #[inline]
+    fn param_source(layer: usize, key_mode: KeyMode) -> Layer {
+        match key_mode {
+            KeyMode::Whole => Layer::Upper,
+            _ => Layer::ALL[layer],
+        }
+    }
+
     pub fn note_on(&mut self, note: u8, velocity: f32) {
+        // Temporary round-robin (0009 replaces this with the key-mode router):
+        // alternate layers so notes spread 8+8, reproducing 16-voice polyphony.
+        let layer = self.rr_layer;
+        self.rr_layer ^= 1;
+        self.note_on_layer(layer, note, velocity);
+    }
+
+    /// Start a note on a specific layer. The event router (0009) calls this per
+    /// its key-mode policy; until then [`Self::note_on`] round-robins here.
+    pub fn note_on_layer(&mut self, layer: usize, note: u8, velocity: f32) {
         self.alloc_counter += 1;
-        self.bank.note_on(note, velocity, self.alloc_counter);
+        self.banks[layer].note_on(note, velocity, self.alloc_counter);
     }
 
     pub fn note_off(&mut self, note: u8) {
-        self.bank.note_off(note);
+        // Broadcast: each layer releases the note only if it is holding it.
+        for bank in &mut self.banks {
+            bank.note_off(note);
+        }
     }
 
     pub fn all_notes_off(&mut self) {
-        self.bank.all_notes_off();
+        for bank in &mut self.banks {
+            bank.all_notes_off();
+        }
+    }
+
+    /// Total active channels across both layers.
+    pub fn active_count(&self) -> usize {
+        self.banks.iter().map(|b| b.active_count()).sum()
     }
 
     pub fn reset(&mut self) {
-        self.bank.reset_all();
+        for (i, bank) in self.banks.iter_mut().enumerate() {
+            bank.reset_all();
+            self.lfos[i].reset();
+        }
         self.chorus.clear();
         self.delay.clear();
-        self.lfo.reset();
         self.oversampler.reset();
         self.smoother.snap_all(&self.params);
     }
@@ -161,8 +228,10 @@ impl Synth {
     /// the caller splits the host buffer at event boundaries.
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         // Params are constant across a process call; refresh envelope coeffs at
-        // most once, and only when they actually changed.
-        self.sync_envelopes();
+        // most once per layer, and only when they actually changed.
+        for layer in 0..LAYERS {
+            self.sync_envelopes(layer);
+        }
 
         // Oversampling factor for this call; a change resets the decimator.
         let os = self.params.global().oversample_factor();
@@ -171,19 +240,25 @@ impl Synth {
             self.last_os = os;
         }
 
+        let key_mode = self.key_mode;
         let n = out_l.len().min(out_r.len());
         let mut start = 0;
         while start < n {
             let block = (n - start).min(CONTROL_BLOCK);
             // Advance gain-like smoothers toward the raw targets for this block.
             self.smoother.tick_block(&self.params);
-            let ctx = self.build_ctx(os);
+            // Mod wheel is a single global control; tick once per block and
+            // apply per layer (each layer routes it via its own params §9).
+            let wheel = self.mod_wheel.tick();
 
-            // Voices render into an oversampled mono mix, which is then decimated
-            // back to the base rate before the effects.
+            // Both layers render (summed) into one oversampled mono mix, then
+            // decimated back to the base rate before the global FX bus (§7).
             let mut mono_os = [0.0f32; CONTROL_BLOCK * MAX_OVERSAMPLE];
             let mono_os = &mut mono_os[..block * os];
-            self.bank.render_block(mono_os, &ctx);
+            for layer in 0..LAYERS {
+                let ctx = self.build_ctx(layer, key_mode, os, wheel);
+                self.banks[layer].render_block(mono_os, &ctx);
+            }
 
             let mut mono = [0.0f32; CONTROL_BLOCK];
             let mono = &mut mono[..block];
@@ -221,12 +296,12 @@ impl Synth {
         }
     }
 
-    /// Push envelope params to all voices when they change. Applies to every
-    /// voice (active or not) so a later-reused voice already has fresh coeffs.
-    fn sync_envelopes(&mut self) {
-        // 0007: single render path still reads the Upper layer; the two-layer
-        // render (per-layer envelopes) lands in 0008.
-        let p = self.params.layer(Layer::Upper);
+    /// Push envelope params to a layer's voices when they change. Reads the
+    /// layer's param source (Whole → Upper for both). Applies to every voice
+    /// (active or not) so a later-reused voice already has fresh coeffs.
+    fn sync_envelopes(&mut self, layer: usize) {
+        let src = Self::param_source(layer, self.key_mode);
+        let p = self.params.layer(src);
         let snap = EnvSnapshot {
             env1: (
                 p.get(PatchParam::Env1Attack),
@@ -243,12 +318,11 @@ impl Synth {
             ),
             env2_shape: p.env2_shape(),
         };
-        if self.last_env == Some(snap) {
+        if self.last_env[layer] == Some(snap) {
             return;
         }
-        self.bank
-            .set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
-        self.last_env = Some(snap);
+        self.banks[layer].set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
+        self.last_env[layer] = Some(snap);
     }
 
     fn update_effects(&mut self) {
@@ -269,29 +343,30 @@ impl Synth {
         );
     }
 
-    fn build_ctx(&mut self, os: usize) -> BlockCtx {
-        // 0007: single render path reads the Upper layer's patch params plus the
-        // global block. The per-layer render (a `BlockCtx` per layer) is 0008.
+    /// Build one layer's control-block context from its param source (§3), its
+    /// own LFO (§5) and the global block. `wheel` is the once-per-block global
+    /// mod-wheel value, applied here via this layer's routing params (§9).
+    fn build_ctx(&mut self, layer: usize, key_mode: KeyMode, os: usize, wheel: f32) -> BlockCtx {
+        let src = Self::param_source(layer, key_mode);
         let vals = self.smoother.values();
-        let p = vals.layer(Layer::Upper);
+        let p = vals.layer(src);
         let g = vals.global();
-        let lfo_val = self.lfo.next(p.lfo_shape());
-        self.lfo.set_rate(p.get(PatchParam::LfoRate));
+        let lfo_val = self.lfos[layer].next(p.lfo_shape());
+        self.lfos[layer].set_rate(p.get(PatchParam::LfoRate));
 
         // Pull the depth params into the matrix via the layout's own index
         // mapping, so an appended source row (future second LFO) needs no change
         // here — only `PatchParam::matrix_row_base`.
         let mut matrix = ModMatrix::new();
-        for (s, &src) in ModSource::ALL.iter().enumerate() {
+        for (s, &mod_src) in ModSource::ALL.iter().enumerate() {
             for (d, &dest) in ModDest::ALL.iter().enumerate() {
-                matrix.depth[s][d] = p.get_index(PatchParam::matrix_index(src, dest));
+                matrix.depth[s][d] = p.get_index(PatchParam::matrix_index(mod_src, dest));
             }
         }
 
         // Mod wheel (CC1): a global control applied here, not per-voice — like
-        // pitch bend riding `base_semis`. Smoothed at the control rate; the
-        // semitone-domain amount feeds either the cutoff (octaves) or osc2 pitch.
-        let wheel = self.mod_wheel.tick();
+        // pitch bend riding `base_semis`. The semitone-domain amount feeds either
+        // the cutoff (octaves) or osc2 pitch per this layer's routing.
         let mw_amount = wheel * p.get(PatchParam::ModWheelDepth);
         let mw_dest = p.get(PatchParam::ModWheelDest).round() as i32;
         let mut cutoff = p.get(PatchParam::Cutoff);
@@ -351,6 +426,10 @@ mod tests {
     /// Global-param CLAP id.
     fn gp(g: GlobalParam) -> usize {
         global_clap_id(g)
+    }
+    /// Lower-layer per-patch CLAP id (for two-layer tests).
+    fn lo(p: PatchParam) -> usize {
+        patch_clap_id(Layer::Lower, p)
     }
 
     fn render(synth: &mut Synth, frames: usize) -> (Vec<f32>, Vec<f32>) {
@@ -749,10 +828,139 @@ mod tests {
         for n in 0..40u8 {
             s.note_on(n, 1.0);
         }
-        let active = s.bank.active_count();
+        let active = s.active_count();
         assert!(
             active <= vxn_dsp::MAX_VOICES,
             "too many active voices: {active}"
+        );
+    }
+
+    // ── E003 / 0008: two-layer render ───────────────────────────────────────
+
+    #[test]
+    fn param_source_follows_key_mode() {
+        // Whole: both layers read layer A (Upper). Dual/Split: each reads its own.
+        assert_eq!(Synth::param_source(0, KeyMode::Whole), Layer::Upper);
+        assert_eq!(Synth::param_source(1, KeyMode::Whole), Layer::Upper);
+        for m in [KeyMode::Dual, KeyMode::Split] {
+            assert_eq!(Synth::param_source(0, m), Layer::Upper);
+            assert_eq!(Synth::param_source(1, m), Layer::Lower);
+        }
+    }
+
+    /// A deterministic patch (noise off, sine LFO, chorus off) so two layers fed
+    /// identical params + notes render bit-for-bit identically.
+    fn deterministic(s: &mut Synth) {
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
+    }
+
+    #[test]
+    fn whole_two_identical_layers_sum_to_double_single() {
+        // ADR 0003 §3 Whole-equivalence: both layers read Upper's block, so two
+        // layers playing the same note = exactly twice one layer's output.
+        let mut one = Synth::new(48_000.0);
+        deterministic(&mut one);
+        one.note_on_layer(0, 69, 1.0);
+        let (single, _) = render(&mut one, 9600);
+
+        let mut two = Synth::new(48_000.0);
+        deterministic(&mut two);
+        two.note_on_layer(0, 69, 1.0);
+        two.note_on_layer(1, 69, 1.0);
+        let (both, _) = render(&mut two, 9600);
+
+        assert!(rms(&single) > 0.01, "reference layer was silent");
+        let max_err = single
+            .iter()
+            .zip(&both)
+            .map(|(a, b)| (2.0 * a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_err < 1e-4,
+            "two layers != 2x one layer: max_err {max_err}"
+        );
+    }
+
+    #[test]
+    fn dual_layers_superpose_two_independent_patches() {
+        // Dual: Upper a plain sine, Lower a saw an octave up. Each layer reads
+        // its own block; the two-layer sum equals the two layers rendered alone
+        // (superposition), and the two patches are audibly different.
+        fn configure(s: &mut Synth) {
+            deterministic(s);
+            s.set_key_mode(KeyMode::Dual);
+            // Upper: sine.
+            s.set_param(pp(PatchParam::Osc1Wave), 0.0);
+            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            // Lower: saw, +1 octave, its own (silent-by-default) noise off.
+            s.set_param(lo(PatchParam::Osc1Wave), 2.0);
+            s.set_param(lo(PatchParam::Osc1Octave), 1.0);
+            s.set_param(lo(PatchParam::LfoPitch), 0.0);
+            s.set_param(lo(PatchParam::NoiseLevel), 0.0);
+            s.set_param(lo(PatchParam::Env2Attack), 0.001);
+        }
+        let frames = 9600;
+        let mut up = Synth::new(48_000.0);
+        configure(&mut up);
+        up.note_on_layer(0, 57, 1.0);
+        let (upper_only, _) = render(&mut up, frames);
+
+        let mut lw = Synth::new(48_000.0);
+        configure(&mut lw);
+        lw.note_on_layer(1, 57, 1.0);
+        let (lower_only, _) = render(&mut lw, frames);
+
+        let mut both = Synth::new(48_000.0);
+        configure(&mut both);
+        both.note_on_layer(0, 57, 1.0);
+        both.note_on_layer(1, 57, 1.0);
+        let (combined, _) = render(&mut both, frames);
+
+        assert!(
+            rms(&upper_only) > 0.01 && rms(&lower_only) > 0.01,
+            "a layer was silent"
+        );
+        // Two different patches.
+        let diff = upper_only
+            .iter()
+            .zip(&lower_only)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / frames as f32;
+        assert!(
+            diff > 1e-3,
+            "the two layers are not distinguishable: {diff}"
+        );
+        // Sum of the two independent layers == the combined render.
+        let max_err = combined
+            .iter()
+            .zip(upper_only.iter().zip(&lower_only))
+            .map(|(c, (a, b))| (c - (a + b)).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_err < 1e-4, "layers do not superpose: max_err {max_err}");
+        assert!(combined.iter().all(|x| x.is_finite()), "non-finite sum");
+    }
+
+    #[test]
+    fn sixteen_notes_spread_across_both_layers_and_stay_finite() {
+        // Round-robin note-on (the interim Whole router) fills 8+8 = 16 channels.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(gp(GlobalParam::DelayOn), 1.0);
+        s.set_param(pp(PatchParam::Resonance), 1.0);
+        for n in 60..76 {
+            s.note_on(n, 1.0);
+        }
+        assert_eq!(
+            s.active_count(),
+            16,
+            "expected 16 channels across two layers"
+        );
+        let (l, r) = render(&mut s, 24_000);
+        assert!(
+            l.iter().chain(r.iter()).all(|x| x.is_finite()),
+            "non-finite output"
         );
     }
 }

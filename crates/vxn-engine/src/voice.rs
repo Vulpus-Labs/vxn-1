@@ -10,13 +10,15 @@
 //! evaluated per base frame (held across oversampled subframes).
 
 use vxn_dsp::{
-    AdsrCore, AdsrShape, LadderCoeffs, LadderVariant, MAX_VOICES, NoiseColor, PolyHpf, PolyLadder,
-    PolyNoise, PolyOscillator, Waveform, fast_exp2, note_to_hz,
+    AdsrCore, AdsrShape, CHANNELS_PER_LAYER, LadderCoeffs, LadderVariant, NoiseColor, PolyHpf,
+    PolyLadder, PolyNoise, PolyOscillator, Waveform, fast_exp2, note_to_hz,
 };
 
 use crate::modmatrix::{ModDest, ModMatrix, ModSource};
 
-const N: usize = MAX_VOICES;
+/// One [`VoiceBank`] is a single layer: its channels render together as a
+/// homogeneous group (ADR 0003 §10).
+const N: usize = CHANNELS_PER_LAYER;
 
 /// HPF cutoff at or below this (Hz) is treated as "off" and bypassed. Matches
 /// the `HpfCutoff` param minimum (its default, ≈ fully open).
@@ -132,11 +134,13 @@ pub struct VoiceBank {
 }
 
 impl VoiceBank {
-    pub fn new(sample_rate: f32) -> Self {
+    /// `noise_seed` differs per layer so two layers' noise generators are
+    /// decorrelated (no comb artefacts when two similar patches sum).
+    pub fn new(sample_rate: f32, noise_seed: u64) -> Self {
         Self {
             osc1: PolyOscillator::new(),
             osc2: PolyOscillator::new(),
-            noise: PolyNoise::new(0x9E37_79B9),
+            noise: PolyNoise::new(noise_seed),
             hpf: PolyHpf::new(),
             ladder: PolyLadder::new(),
             env1: std::array::from_fn(|_| AdsrCore::new(sample_rate)),

@@ -33,9 +33,14 @@ pub mod phase;
 pub mod poly;
 pub mod smoothing;
 
-/// Maximum polyphony. Fixed so per-voice arrays can live on the stack and the
+/// Channels (DSP voices) per layer. The poly kernels are sized to this: one
+/// homogeneous layer renders together, which is what the vectorised lane loop
+/// needs (ADR 0003 §10). Fixed so per-voice arrays live on the stack and the
 /// compiler can unroll/vectorise voice loops.
-pub const MAX_VOICES: usize = 16;
+pub const CHANNELS_PER_LAYER: usize = 8;
+
+/// Maximum total polyphony across both always-present layers (ADR 0003 §2).
+pub const MAX_VOICES: usize = 2 * CHANNELS_PER_LAYER;
 
 /// Maximum oversampling factor for the synthesis path. Bounds the size of the
 /// oversampled scratch buffer (`CONTROL_BLOCK * MAX_OVERSAMPLE`).
