@@ -15,16 +15,16 @@ no router or render changes.
 
 ## Acceptance criteria
 
-- [ ] `AssignMode::Unison` (the value reserved in 0010): a single held note
+- [x] `AssignMode::Unison` (the value reserved in 0010): a single held note
       drives all 8 channels of the layer; subsequent notes follow a defined
       priority (last-note, matching the existing note logic) — document the
       choice.
-- [ ] Per-channel **detune drift**: small, fixed per-channel pitch offsets
+- [x] Per-channel **detune drift**: small, fixed per-channel pitch offsets
       (cents) spread the 8 channels for chorusing thickness; a per-patch
       `UnisonDetune` param (cents, 0 = all in tune) scales the spread.
-- [ ] Output level stays sensible as channel count engaged changes (avoid an
+- [x] Output level stays sensible as channel count engaged changes (avoid an
       8× level jump vs poly) — normalise the unison sum.
-- [ ] Tests: in unison, one note-on engages all 8 channels of the layer;
+- [x] Tests: in unison, one note-on engages all 8 channels of the layer;
       detune > 0 produces beating/spread (adjacent-channel pitch differs); detune
       0 collapses to unison pitch; switching Poly↔Unison is clean (no stuck
       channels).

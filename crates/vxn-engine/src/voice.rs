@@ -131,8 +131,11 @@ pub struct VoiceBank {
     trigger_pending: [bool; N],
     alloc_tick: [u64; N],
     /// Per-channel detune (cents), added to both oscillators. Zero for Poly;
-    /// the Unison assign mode (0011) spreads channels with it.
+    /// the Unison assign mode spreads channels with it.
     detune_cents: [f32; N],
+    /// Output level compensation for the channel sum: 1.0 for Poly, ~1/√N for
+    /// Unison so stacking all channels on one note isn't an N× level jump.
+    level_comp: f32,
     /// LFO modulation fade-in after note-on (`ctx.lfo_delay`).
     lfo_fade: LfoFadeIn,
 }
@@ -156,6 +159,7 @@ impl VoiceBank {
             trigger_pending: [false; N],
             alloc_tick: [0; N],
             detune_cents: [0.0; N],
+            level_comp: 1.0,
             lfo_fade: LfoFadeIn::new(),
         }
     }
@@ -181,6 +185,7 @@ impl VoiceBank {
         self.active = [false; N];
         self.gate = [false; N];
         self.detune_cents = [0.0; N];
+        self.level_comp = 1.0;
         self.lfo_fade.reset();
     }
 
@@ -217,16 +222,34 @@ impl VoiceBank {
     /// transform before allocation* — it would turn held notes into a timed
     /// sequence and feed each step here as an ordinary `note_on`, so neither the
     /// event router (0009) nor the render path (0008) changes.
-    pub fn note_on(&mut self, mode: AssignMode, note: u8, velocity: f32, alloc_tick: u64) {
+    pub fn note_on(
+        &mut self,
+        mode: AssignMode,
+        note: u8,
+        velocity: f32,
+        alloc_tick: u64,
+        unison_detune: f32,
+    ) {
         match mode {
             AssignMode::Poly => {
                 let v = self.allocate(note);
                 self.trigger(v, note, velocity, alloc_tick, 0.0);
+                self.level_comp = 1.0;
             }
             AssignMode::Unison => {
+                // Last-note priority: every channel retriggers to the new note
+                // (the prior note is not stacked). Per-channel detune fans the 8
+                // copies out for chorusing thickness.
                 for v in 0..N {
-                    self.trigger(v, note, velocity, alloc_tick, unison_detune_cents(v));
+                    self.trigger(
+                        v,
+                        note,
+                        velocity,
+                        alloc_tick,
+                        unison_spread(v) * unison_detune,
+                    );
                 }
+                self.level_comp = 1.0 / (N as f32).sqrt();
             }
         }
     }
@@ -420,7 +443,7 @@ impl VoiceBank {
                 for v in 0..N {
                     sum += filt[v] * amp[v];
                 }
-                out[frame + k] += sum;
+                out[frame + k] += sum * self.level_comp;
             }
 
             // Advance the per-voice LFO fade-in one base frame (held at 1).
@@ -446,9 +469,14 @@ fn key_follow(note: u8) -> f32 {
     (note as f32 - 60.0) / 12.0
 }
 
-/// Per-channel detune (cents) for Unison. **0010 placeholder**: stacks the
-/// channels with no detune; the symmetric detune spread is ticket 0011.
+/// Fixed symmetric detune weight for unison channel `v`, in `[-1, 1]` across the
+/// layer's channels (scaled by the `UnisonDetune` cents param). Per-channel and
+/// constant — deterministic, not random per note — so it is testable.
 #[inline]
-fn unison_detune_cents(_channel: usize) -> f32 {
-    0.0
+fn unison_spread(v: usize) -> f32 {
+    if N <= 1 {
+        0.0
+    } else {
+        (v as f32 / (N - 1) as f32) * 2.0 - 1.0
+    }
 }

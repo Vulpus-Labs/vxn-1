@@ -193,10 +193,12 @@ pub enum PatchParam {
     // ── E003 (offsets stay stable above this line) ──
     /// Voice-assignment mode for this layer (Poly / Unison — ADR 0003 §4).
     AssignMode,
+    /// Unison per-channel detune spread (cents); 0 = all channels in tune.
+    UnisonDetune,
 }
 
 impl PatchParam {
-    pub const COUNT: usize = PatchParam::AssignMode as usize + 1;
+    pub const COUNT: usize = PatchParam::UnisonDetune as usize + 1;
 
     /// In-block offset of the first modulation-matrix parameter (`Env1Pitch`).
     pub const MATRIX_BASE: usize = PatchParam::Env1Pitch as usize;
@@ -582,6 +584,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     ),
     // ── E003 (offsets stay stable above this line) ──
     e("assign_mode", "Assign", ASSIGN_LABELS, 0.0),
+    f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", false),
 ];
 
 /// Global descriptor table; indexed by [`GlobalParam`].

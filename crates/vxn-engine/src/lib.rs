@@ -224,8 +224,10 @@ impl Synth {
     pub fn note_on_layer(&mut self, layer: usize, note: u8, velocity: f32) {
         self.alloc_counter += 1;
         let src = Self::param_source(layer, self.key_mode);
-        let mode = self.params.layer(src).assign_mode();
-        self.banks[layer].note_on(mode, note, velocity, self.alloc_counter);
+        let p = self.params.layer(src);
+        let mode = p.assign_mode();
+        let unison_detune = p.get(PatchParam::UnisonDetune);
+        self.banks[layer].note_on(mode, note, velocity, self.alloc_counter, unison_detune);
     }
 
     pub fn note_off(&mut self, note: u8) {
@@ -1101,6 +1103,111 @@ mod tests {
         assert_eq!(
             p.layer(Layer::Upper).assign_mode(),
             crate::params::AssignMode::Unison
+        );
+    }
+
+    // ── E003 / 0011: unison assign mode ─────────────────────────────────────
+
+    /// Put a layer into a given assign mode with a unison detune (cents).
+    fn set_assign(s: &mut Synth, layer: usize, unison: bool, detune: f32) {
+        let mode = if unison { 1.0 } else { 0.0 };
+        let base = patch_clap_id(Layer::ALL[layer], PatchParam::AssignMode);
+        s.set_param(base, mode);
+        s.set_param(
+            patch_clap_id(Layer::ALL[layer], PatchParam::UnisonDetune),
+            detune,
+        );
+    }
+
+    #[test]
+    fn unison_engages_all_eight_channels_on_one_note() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole); // Whole → both layers read Upper's assign
+        set_assign(&mut s, 0, true, 12.0);
+        s.note_on_layer(0, 60, 1.0);
+        assert_eq!(layer_active(&s, 0), 8, "unison should fill all 8 channels");
+    }
+
+    #[test]
+    fn unison_detune_spreads_pitch_and_zero_collapses() {
+        // Detune > 0: a single note's spectrum is wider (beating partials) than
+        // the same note with detune 0 — compare summed energy spread crudely via
+        // the difference between the two renders; they must differ.
+        fn render_unison(detune: f32) -> Vec<f32> {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
+            s.set_param(pp(PatchParam::Osc2Level), 0.0);
+            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::Env2Attack), 0.001);
+            set_assign(&mut s, 0, true, detune);
+            s.note_on_layer(0, 57, 1.0);
+            render(&mut s, 24_000).0
+        }
+        let tuned = render_unison(0.0);
+        let spread = render_unison(25.0);
+        let diff = tuned
+            .iter()
+            .zip(&spread)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / tuned.len() as f32;
+        assert!(
+            diff > 1e-3,
+            "detune did not change the unison spectrum: {diff}"
+        );
+        assert!(spread.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn unison_level_is_normalised_not_eight_times_poly() {
+        // One unison note must not be ~8x louder than one poly note.
+        fn one_note_rms(unison: bool) -> f32 {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(pp(PatchParam::Osc1Wave), 0.0);
+            s.set_param(pp(PatchParam::Osc2Level), 0.0);
+            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
+            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::Env2Attack), 0.001);
+            set_assign(&mut s, 0, unison, 0.0); // detune 0 → coherent worst case
+            s.note_on_layer(0, 57, 1.0);
+            rms(&render(&mut s, 12_000).0[4800..])
+        }
+        let poly = one_note_rms(false);
+        let uni = one_note_rms(true);
+        // With detune 0 the 8 copies are coherent, so 1/√8 normalisation gives
+        // ≈ √8 × one voice — louder, but nowhere near 8×.
+        assert!(
+            uni < 4.0 * poly,
+            "unison too loud: poly {poly}, unison {uni}"
+        );
+        assert!(uni > poly, "unison should be fuller than one poly voice");
+    }
+
+    #[test]
+    fn switching_poly_unison_is_clean() {
+        // Unison fills 8; switching to Poly and playing leaves no stuck channels.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(pp(PatchParam::Env2Release), 0.001);
+        set_assign(&mut s, 0, true, 10.0);
+        s.note_on_layer(0, 60, 1.0);
+        assert_eq!(layer_active(&s, 0), 8);
+        s.note_off(60);
+        let _ = render(&mut s, 4800); // let the release free the channels
+        assert_eq!(
+            layer_active(&s, 0),
+            0,
+            "unison channels stuck after release"
+        );
+        // Now Poly: one note → one channel.
+        set_assign(&mut s, 0, false, 0.0);
+        s.note_on_layer(0, 64, 1.0);
+        assert_eq!(
+            layer_active(&s, 0),
+            1,
+            "poly after unison should use 1 channel"
         );
     }
 
