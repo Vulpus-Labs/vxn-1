@@ -93,6 +93,98 @@ fn osc_sample(wave: Waveform, p: f32, pw: f32, dt: f32) -> f32 {
     }
 }
 
+/// Per-waveform oscillator arithmetic as a zero-sized type, so the coupled
+/// `process_sync` / `process_pm` kernels can be **monomorphised** per waveform
+/// (one instance per master×slave pair) instead of branching on a `Waveform`
+/// enum *inside* the lane loop. The runtime `match` then sits once outside the
+/// loop, leaving each lane body branch-free so it autovectorises like the
+/// independent fast path ([`PolyOscillator::process`]). `naive`/`sample` mirror
+/// [`naive_osc`]/[`osc_sample`] arithmetic exactly (the combined `process_pair`
+/// oracle still uses those, so the differential test pins them equal).
+trait WaveKind {
+    /// Raw, pre-BLEP value (sizes a sync reset's jump).
+    fn naive(p: f32, pw: f32) -> f32;
+    /// Band-limited value (own-wrap polyBLEP applied).
+    fn sample(p: f32, pw: f32, dt: f32) -> f32;
+}
+
+struct WSine;
+struct WTriangle;
+struct WSaw;
+struct WPulse;
+
+impl WaveKind for WSine {
+    #[inline(always)]
+    fn naive(p: f32, _pw: f32) -> f32 {
+        fast_sine(p)
+    }
+    #[inline(always)]
+    fn sample(p: f32, _pw: f32, _dt: f32) -> f32 {
+        fast_sine(p)
+    }
+}
+impl WaveKind for WTriangle {
+    #[inline(always)]
+    fn naive(p: f32, _pw: f32) -> f32 {
+        1.0 - 4.0 * (p - 0.5).abs()
+    }
+    #[inline(always)]
+    fn sample(p: f32, _pw: f32, _dt: f32) -> f32 {
+        1.0 - 4.0 * (p - 0.5).abs()
+    }
+}
+impl WaveKind for WSaw {
+    #[inline(always)]
+    fn naive(p: f32, _pw: f32) -> f32 {
+        2.0 * p - 1.0
+    }
+    #[inline(always)]
+    fn sample(p: f32, _pw: f32, dt: f32) -> f32 {
+        (2.0 * p - 1.0) - pblep(p, dt)
+    }
+}
+impl WaveKind for WPulse {
+    #[inline(always)]
+    fn naive(p: f32, pw: f32) -> f32 {
+        1.0 - 2.0 * (p >= pw) as u32 as f32
+    }
+    #[inline(always)]
+    fn sample(p: f32, pw: f32, dt: f32) -> f32 {
+        let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32; // +1 below pw, -1 above
+        let pf = {
+            let x = p - pw + 1.0;
+            x - x.floor()
+        };
+        naive + pblep(p, dt) - pblep(pf, dt)
+    }
+}
+
+/// Resolve a runtime [`Waveform`] to its [`WaveKind`] marker type, binding it to
+/// `$ty` for the block `$body`. Used once outside the lane loop to dispatch the
+/// monomorphised kernels; nest two calls for a master×slave pair.
+macro_rules! with_wave {
+    ($wave:expr, $ty:ident => $body:expr) => {
+        match $wave {
+            Waveform::Sine => {
+                type $ty = WSine;
+                $body
+            }
+            Waveform::Triangle => {
+                type $ty = WTriangle;
+                $body
+            }
+            Waveform::Saw => {
+                type $ty = WSaw;
+                $body
+            }
+            Waveform::Pulse => {
+                type $ty = WPulse;
+                $body
+            }
+        }
+    };
+}
+
 // ── PolyOscillator ────────────────────────────────────────────────────────
 
 /// 16-voice oscillator. Phase + increment per voice; pulse width per voice
@@ -318,6 +410,23 @@ impl PolyOscillator {
         o1: &mut [f32; N],
         o2: &mut [f32; N],
     ) {
+        // Resolve both waveforms to marker types once, outside the lane loop, so
+        // the loop body is monomorphised and branch-free (see [`WaveKind`]).
+        with_wave!(wave1, M => with_wave!(wave2, S => {
+            self.process_sync_w::<M, S>(slave, pw1, pw2, o1, o2)
+        }))
+    }
+
+    /// Monomorphised sync lane loop for master waveform `M`, slave waveform `S`.
+    #[inline(always)]
+    fn process_sync_w<M: WaveKind, S: WaveKind>(
+        &mut self,
+        slave: &mut PolyOscillator,
+        pw1: &[f32; N],
+        pw2: &[f32; N],
+        o1: &mut [f32; N],
+        o2: &mut [f32; N],
+    ) {
         for v in 0..N {
             let dt2 = slave.inc[v];
             let p2 = slave.phase[v];
@@ -325,14 +434,14 @@ impl PolyOscillator {
             // osc2 (slave): free value, or the deferred bare post-reset value on
             // the sample after a sub-sample sync reset (`sync_pending`).
             let pend = slave.sync_pending[v];
-            let free_val = osc_sample(wave2, p2, pw2[v], dt2);
-            let bare_val = naive_osc(wave2, p2, pw2[v]) + slave.sync_resid[v];
+            let free_val = S::sample(p2, pw2[v], dt2);
+            let bare_val = S::naive(p2, pw2[v]) + slave.sync_resid[v];
             let s2 = free_val * (1.0 - pend) + bare_val * pend;
             o2[v] = s2;
 
             // osc1 (master): no PM, so the read phase is the accumulator phase.
             let inc1 = self.inc[v];
-            o1[v] = osc_sample(wave1, self.phase[v], pw1[v], inc1);
+            o1[v] = M::sample(self.phase[v], pw1[v], inc1);
 
             // Advance the master, capturing the wrap and its sub-sample fraction.
             let np1 = self.phase[v] + inc1;
@@ -345,7 +454,7 @@ impl PolyOscillator {
             let post_phase = (1.0 - frac) * dt2;
             let pre_raw = p2 + frac * dt2;
             let pre_phase = pre_raw - (pre_raw >= 1.0) as u32 as f32;
-            let delta = naive_osc(wave2, pre_phase, pw2[v]) - naive_osc(wave2, post_phase, pw2[v]);
+            let delta = S::naive(pre_phase, pw2[v]) - S::naive(post_phase, pw2[v]);
             slave.sync_resid[v] = -pblep(post_phase, dt2) * 0.5 * delta;
             slave.sync_pending[v] = reset;
             let before_phase = 1.0 - frac * dt2;
@@ -382,6 +491,22 @@ impl PolyOscillator {
         o1: &mut [f32; N],
         o2: &mut [f32; N],
     ) {
+        with_wave!(wave1, M => with_wave!(wave2, S => {
+            self.process_pm_w::<M, S>(slave, pm_index, pw1, pw2, o1, o2)
+        }))
+    }
+
+    /// Monomorphised PM lane loop for master waveform `M`, slave waveform `S`.
+    #[inline(always)]
+    fn process_pm_w<M: WaveKind, S: WaveKind>(
+        &mut self,
+        slave: &mut PolyOscillator,
+        pm_index: f32,
+        pw1: &[f32; N],
+        pw2: &[f32; N],
+        o1: &mut [f32; N],
+        o2: &mut [f32; N],
+    ) {
         for v in 0..N {
             let dt2 = slave.inc[v];
             let p2 = slave.phase[v];
@@ -389,7 +514,7 @@ impl PolyOscillator {
             // osc2 (slave): free-running PM source. No sync ⇒ no deferred reset;
             // clear any `sync_pending` a prior sync block left so a later switch
             // back to sync starts clean.
-            let s2 = osc_sample(wave2, p2, pw2[v], dt2);
+            let s2 = S::sample(p2, pw2[v], dt2);
             o2[v] = s2;
             slave.sync_pending[v] = 0.0;
             let np2 = p2 + dt2;
@@ -403,7 +528,7 @@ impl PolyOscillator {
                 let x = self.phase[v] + pm_index * s2;
                 x - x.floor()
             };
-            o1[v] = osc_sample(wave1, read, pw1[v], inc1);
+            o1[v] = M::sample(read, pw1[v], inc1);
             self.phase[v] = advance(self.phase[v], inc1);
         }
     }

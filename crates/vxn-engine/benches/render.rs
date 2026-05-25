@@ -21,8 +21,10 @@ const SR: f32 = 48_000.0;
 const FRAMES: usize = 512;
 
 /// Build a synth with 16 voices held at sustain. `fx` toggles chorus + delay;
-/// `res` sets filter resonance; `os` is the oversampling factor (1/2/4).
-fn setup(fx: bool, res: f32, os: f32) -> Synth {
+/// `res` sets filter resonance; `os` is the oversampling factor (1/2/4). `xmod`
+/// selects the cross-mod kernel: 0 = off (vectorised fast osc path), 1 = hard
+/// sync, 2 = through-zero phase mod — so the coupled kernels are benchmarked.
+fn setup(fx: bool, res: f32, os: f32, xmod: f32) -> Synth {
     let mut s = Synth::new(SR);
     s.set_param(gp(GlobalParam::ChorusOn), if fx { 1.0 } else { 0.0 });
     s.set_param(gp(GlobalParam::DelayOn), if fx { 1.0 } else { 0.0 });
@@ -34,6 +36,14 @@ fn setup(fx: bool, res: f32, os: f32) -> Synth {
     s.set_param(pp(PatchParam::CutoffEnvDepth), 24.0);
     s.set_param(pp(PatchParam::PitchLfoSrc), 1.0); // LFO 1
     s.set_param(pp(PatchParam::PitchLfoDepth), 3.0);
+    // CrossModType: 1=Sync, 2=PM. Detune osc2 so the coupled path does real work.
+    s.set_param(pp(PatchParam::CrossModType), xmod);
+    if xmod != 0.0 {
+        s.set_param(pp(PatchParam::Osc2Coarse), 7.0);
+    }
+    if xmod == 2.0 {
+        s.set_param(pp(PatchParam::CrossModAmount), 0.5);
+    }
     for n in 48..64u8 {
         s.note_on(n, 1.0);
     }
@@ -52,15 +62,17 @@ fn bench(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(3));
     group.sample_size(60);
 
-    // os param value: 0.0=Off(1x), 1.0=2x, 2.0=4x.
-    for (name, fx, res, os) in [
-        ("dry_1x", false, 0.2, 0.0),
-        ("dry_2x", false, 0.2, 1.0),
-        ("dry_4x", false, 0.2, 2.0),
-        ("selfosc_4x", false, 1.0, 2.0),
-        ("with_fx_2x", true, 0.2, 1.0),
+    // os param value: 0.0=Off(1x), 1.0=2x, 2.0=4x. xmod: 0=off, 1=sync, 2=PM.
+    for (name, fx, res, os, xmod) in [
+        ("dry_1x", false, 0.2, 0.0, 0.0),
+        ("dry_2x", false, 0.2, 1.0, 0.0),
+        ("dry_4x", false, 0.2, 2.0, 0.0),
+        ("selfosc_4x", false, 1.0, 2.0, 0.0),
+        ("with_fx_2x", true, 0.2, 1.0, 0.0),
+        ("sync_4x", false, 0.2, 2.0, 1.0),
+        ("pm_4x", false, 0.2, 2.0, 2.0),
     ] {
-        let mut s = setup(fx, res, os);
+        let mut s = setup(fx, res, os, xmod);
         let mut l = vec![0.0; FRAMES];
         let mut r = vec![0.0; FRAMES];
         group.bench_function(name, |b| {
