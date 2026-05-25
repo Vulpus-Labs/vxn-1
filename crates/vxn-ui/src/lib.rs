@@ -37,9 +37,37 @@ use vizia::context::TreeProps;
 use vizia::prelude::*;
 use vizia::vg;
 use vxn_engine::{
-    GlobalParam, Layer, ParamKind, ParamRef, PatchParam, SharedParams, TOTAL_PARAMS,
+    GlobalParam, KeyMode, Layer, ParamKind, ParamRef, PatchParam, SharedParams, TOTAL_PARAMS,
     desc_for_clap_id, global_clap_id, param_ref, patch_clap_id,
 };
+
+/// Resolve a faceplate [`Entry`]'s baked (Upper) CLAP id to the layer currently
+/// being edited: per-patch entries re-point to `layer`'s block, global entries
+/// stay fixed. This is the binding indirection behind the Upper/Lower toggle
+/// (ADR 0003 §6) — a UI view switch, never a parameter change.
+fn resolve(entry_id: usize, layer: Layer) -> usize {
+    match param_ref(entry_id) {
+        Some(ParamRef::Patch(_, p)) => patch_clap_id(layer, p),
+        _ => entry_id,
+    }
+}
+
+/// Whether a panel's entries bind to a layer's per-patch block (so the panel
+/// follows the Upper/Lower toggle) rather than the fixed global block.
+fn is_layer_dependent(entries: &[Entry]) -> bool {
+    entries
+        .iter()
+        .any(|(id, _)| matches!(param_ref(*id), Some(ParamRef::Patch(..))))
+}
+
+/// MIDI note number → name (e.g. 60 → "C4"), for the split-point readout.
+fn note_name(n: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = n as i32 / 12 - 1;
+    format!("{}{}", NAMES[(n % 12) as usize], octave)
+}
 
 /// Handle to the live editor window. Call [`WindowHandle::close`] when the host
 /// destroys the GUI.
@@ -49,14 +77,16 @@ pub const EDITOR_WIDTH: u32 = 820;
 pub const EDITOR_HEIGHT: u32 = 470;
 
 /// A control entry: CLAP id plus a short faceplate label (the panel header
-/// supplies the context, so per-control labels stay terse). Per-patch entries
-/// resolve to the **Upper** layer for now; the Upper/Lower edit toggle is 0013.
+/// supplies the context, so per-control labels stay terse). Entries are baked
+/// against the **Upper** layer; [`resolve`] re-points per-patch entries to the
+/// layer chosen by the Upper/Lower edit toggle (global entries stay fixed).
 type Entry = (usize, &'static str);
 
 /// Faceplate layout: rows of panels, each panel a titled group of controls.
 /// Mod-matrix routes appear as dedicated faders in context (VCO Mod / Filter /
 /// Amp panels), not as a generic grid.
-/// Upper-layer per-patch CLAP id (the faceplate edits the Upper layer in 0007).
+/// Upper-layer per-patch CLAP id; [`resolve`] swaps it to Lower when that layer
+/// is the edit target.
 const fn u(p: PatchParam) -> usize {
     patch_clap_id(Layer::Upper, p)
 }
@@ -312,11 +342,23 @@ struct PollAutomation;
 struct UiModel {
     controls: Vec<Ctl>,
     shared: Arc<SharedParams>,
+    /// Mirrors of the non-automatable key-mode state, re-synced from the store so
+    /// the Keys panel tracks a state load (the UI is the only other writer).
+    key_mode: SyncSignal<usize>,
+    split: SyncSignal<f32>,
 }
 
 impl Model for UiModel {
     fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
         event.map(|_msg: &PollAutomation, _meta| {
+            let km = self.shared.key_mode() as usize;
+            if self.key_mode.get() != km {
+                self.key_mode.set(km);
+            }
+            let sp = self.shared.split_point() as f32;
+            if (self.split.get() - sp).abs() > f32::EPSILON {
+                self.split.set(sp);
+            }
             for ctl in &self.controls {
                 match *ctl {
                     Ctl::Fader(i, sig) => {
@@ -370,23 +412,55 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     cx.add_font_mem(include_bytes!("../fonts/IBMPlexSansCondensed-Medium.ttf"));
     let _ = cx.add_stylesheet(STYLE);
 
-    // One control per parameter (panels look them up by index; mod-matrix cells
-    // not surfaced on the faceplate stay engine-only but remain host-automatable).
-    // The model syncs every control from host automation on idle.
+    // One control per CLAP id, across both layers + global (panels look them up
+    // by resolved id; mod-matrix cells and per-layer params not on the faceplate
+    // stay engine-only but host-automatable). The model syncs them on idle.
     let controls: Vec<Ctl> = (0..TOTAL_PARAMS).map(|i| make_ctl(i, &shared)).collect();
+
+    // Key-mode UI state (ADR 0003 §6). `edit_layer` is pure view state; `key_mode`
+    // and `split` mirror the non-automatable shared state (set via the state path,
+    // not param gestures) and are re-synced from the store on idle.
+    let edit_layer = SyncSignal::new(0usize);
+    let key_mode = SyncSignal::new(shared.key_mode() as usize);
+    let split = SyncSignal::new(shared.split_point() as f32);
 
     UiModel {
         controls: controls.clone(),
         shared: Arc::clone(&shared),
+        key_mode,
+        split,
     }
     .build(cx);
 
+    let last_row = ROWS.len() - 1;
     ScrollView::new(cx, move |cx| {
         VStack::new(cx, |cx| {
-            for row in ROWS {
+            for (r, row) in ROWS.iter().enumerate() {
                 HStack::new(cx, |cx| {
                     for (title, entries) in *row {
-                        panel_view(cx, title, entries, &controls, &shared);
+                        if is_layer_dependent(entries) {
+                            // Build the panel for each layer; show only the one
+                            // matching the edit-target toggle (no structural rebuild).
+                            for layer in Layer::ALL {
+                                let li = layer as usize;
+                                let vis = edit_layer.map(move |l: &usize| *l == li);
+                                panel_view(
+                                    cx,
+                                    title,
+                                    entries,
+                                    layer,
+                                    &controls,
+                                    &shared,
+                                    Some(vis),
+                                );
+                            }
+                        } else {
+                            panel_view(cx, title, entries, Layer::Upper, &controls, &shared, None);
+                        }
+                    }
+                    // The key-mode panel rides in the last row.
+                    if r == last_row {
+                        keys_panel(cx, &shared, edit_layer, key_mode, split);
                     }
                 })
                 .height(Pixels(PANEL_H))
@@ -398,14 +472,105 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     });
 }
 
+/// The "Keys" panel: key-mode selector, Upper/Lower edit-target toggle (hidden
+/// in Whole), and split-point control (shown in Split). The mode and split write
+/// the **non-automatable** shared state directly (ADR 0003 §3/§8) — not param
+/// gestures — so they neither echo to the host as automation nor record a knob
+/// move; the edit toggle is pure view state.
+fn keys_panel(
+    cx: &mut Context,
+    shared: &Arc<SharedParams>,
+    edit_layer: SyncSignal<usize>,
+    key_mode: SyncSignal<usize>,
+    split: SyncSignal<f32>,
+) {
+    const MODES: [&str; 3] = ["Whole", "Dual", "Split"];
+    const EDIT: [&str; 2] = ["Upper", "Lower"];
+    VStack::new(cx, |cx| {
+        Label::new(cx, "Keys")
+            .class("panel-header")
+            .width(Stretch(1.0))
+            .height(Pixels(16.0))
+            .alignment(Alignment::Center);
+        VStack::new(cx, move |cx| {
+            // Key-mode selector. Choosing Whole snaps the edit target back to
+            // Upper (the toggle is hidden), so we never edit a hidden Lower.
+            let sh_mode = Arc::clone(shared);
+            ButtonGroup::new(cx, move |cx| {
+                for (n, label) in MODES.iter().enumerate() {
+                    let sh = Arc::clone(&sh_mode);
+                    ToggleButton::new(cx, key_mode.map(move |m: &usize| *m == n), move |cx| {
+                        Label::new(cx, *label)
+                    })
+                    .on_press(move |_cx| {
+                        key_mode.set(n);
+                        if n == 0 {
+                            edit_layer.set(0);
+                        }
+                        sh.set_key_mode_seeded(KeyMode::from_u8(n as u8));
+                    });
+                }
+            })
+            .class("ovsmp");
+
+            // Upper/Lower edit-target toggle — hidden in Whole (editing layer A).
+            let edit_vis = key_mode.map(|m: &usize| *m != 0);
+            ButtonGroup::new(cx, move |cx| {
+                for (n, label) in EDIT.iter().enumerate() {
+                    ToggleButton::new(cx, edit_layer.map(move |l: &usize| *l == n), move |cx| {
+                        Label::new(cx, *label)
+                    })
+                    .on_press(move |_cx| edit_layer.set(n));
+                }
+            })
+            .class("ovsmp")
+            .display(edit_vis);
+
+            // Split point — shown only in Split. A horizontal slider over the
+            // MIDI range with a note-name readout; writes the opaque split state.
+            let split_vis = key_mode.map(|m: &usize| *m == 2);
+            let sh_split = Arc::clone(shared);
+            VStack::new(cx, move |cx| {
+                Slider::new(cx, split.map(|n: &f32| *n / 127.0))
+                    .width(Pixels(70.0))
+                    .height(Pixels(14.0))
+                    .on_change(move |_cx, v| {
+                        let note = (v * 127.0).round().clamp(0.0, 127.0);
+                        split.set(note);
+                        sh_split.set_split_point(note as u8);
+                    });
+                Label::new(cx, split.map(|n: &f32| note_name(*n as u8)))
+                    .class("ctl-value")
+                    .height(Pixels(11.0));
+            })
+            .height(Auto)
+            .vertical_gap(Pixels(2.0))
+            .display(split_vis);
+        })
+        .height(Pixels(COL_H))
+        .vertical_gap(Pixels(8.0))
+        .alignment(Alignment::TopCenter);
+    })
+    .class("panel")
+    .height(Pixels(PANEL_H))
+    .padding(Pixels(5.0))
+    .vertical_gap(Pixels(4.0));
+}
+
+/// Build one faceplate panel. Per-patch entries resolve to `layer`'s block;
+/// `display` (when given) shows the panel only while it matches the edit layer,
+/// so a per-patch panel is built once per layer and toggled by the Upper/Lower
+/// switch without any structural rebuild.
 fn panel_view(
     cx: &mut Context,
     title: &'static str,
     entries: &'static [Entry],
+    layer: Layer,
     controls: &[Ctl],
     shared: &Arc<SharedParams>,
+    display: Option<Memo<bool>>,
 ) {
-    VStack::new(cx, |cx| {
+    let handle = VStack::new(cx, |cx| {
         Label::new(cx, title)
             .class("panel-header")
             .width(Stretch(1.0))
@@ -413,7 +578,8 @@ fn panel_view(
             .alignment(Alignment::Center);
         HStack::new(cx, |cx| {
             for (id, short) in entries {
-                let ctl = controls.iter().copied().find(|c| c.idx() == *id).unwrap();
+                let cid = resolve(*id, layer);
+                let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
                 control_view(cx, ctl, shared, short);
             }
         })
@@ -424,6 +590,9 @@ fn panel_view(
     .height(Pixels(PANEL_H))
     .padding(Pixels(5.0))
     .vertical_gap(Pixels(4.0));
+    if let Some(d) = display {
+        handle.display(d);
+    }
 }
 
 /// Polyline (in a `[0, 1]²` box, y down) approximating one cycle of a named
@@ -779,4 +948,40 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
     .height(Pixels(COL_H))
     .vertical_gap(Pixels(8.0))
     .alignment(Alignment::TopCenter);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_repoints_per_patch_entries_per_layer() {
+        // A per-patch entry (baked as the Upper id) re-points to the edit layer.
+        let upper = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
+        assert_eq!(resolve(upper, Layer::Upper), upper);
+        assert_eq!(
+            resolve(upper, Layer::Lower),
+            patch_clap_id(Layer::Lower, PatchParam::Cutoff)
+        );
+        // A global entry is fixed regardless of the edit layer.
+        let vol = global_clap_id(GlobalParam::MasterVolume);
+        assert_eq!(resolve(vol, Layer::Upper), vol);
+        assert_eq!(resolve(vol, Layer::Lower), vol);
+    }
+
+    #[test]
+    fn layer_dependence_classifies_panels() {
+        let patch: &[Entry] = &[(patch_clap_id(Layer::Upper, PatchParam::Cutoff), "C")];
+        let global: &[Entry] = &[(global_clap_id(GlobalParam::MasterVolume), "V")];
+        assert!(is_layer_dependent(patch));
+        assert!(!is_layer_dependent(global));
+    }
+
+    #[test]
+    fn note_names_are_correct() {
+        assert_eq!(note_name(60), "C4");
+        assert_eq!(note_name(69), "A4"); // A440
+        assert_eq!(note_name(0), "C-1");
+        assert_eq!(note_name(127), "G9");
+    }
 }

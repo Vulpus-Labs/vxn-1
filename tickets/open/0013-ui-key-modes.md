@@ -15,19 +15,19 @@ toggle picks which layer's params the controls bind to.
 
 ## Acceptance criteria
 
-- [ ] Key-mode selector (Whole / Dual / Split) writing the non-automatable
+- [x] Key-mode selector (Whole / Dual / Split) writing the non-automatable
       `KeyMode` shared state (0007), via the state path — **not** a param
       gesture (same mechanism as the split point below).
-- [ ] Upper/Lower toggle selects the edit target; faceplate controls bind to the
+- [x] Upper/Lower toggle selects the edit target; faceplate controls bind to the
       selected layer's per-patch ids, so a gesture writes that layer's **fixed**
       CLAP id (the host records the specific `Upper_*`/`Lower_*` param — ADR 0003
       §6). The toggle is hidden/disabled in Whole (editing layer A only).
-- [ ] A clear visual indication of which layer is being edited (and, in
+- [x] A clear visual indication of which layer is being edited (and, in
       Dual/Split, that the other layer is active but not shown).
-- [ ] Split-point control (note value) visible in Split mode, writing the opaque
+- [x] Split-point control (note value) visible in Split mode, writing the opaque
       split-point state (0009) via the appropriate host/state path (it is not an
       automatable param, so it is set through state, not a param gesture).
-- [ ] Switching the toggle re-points all faceplate bindings to the other layer's
+- [x] Switching the toggle re-points all faceplate bindings to the other layer's
       values without spurious automation writes (no echo, no gesture on mere
       view switch).
 

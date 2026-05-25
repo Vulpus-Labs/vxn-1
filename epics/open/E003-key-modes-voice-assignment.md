@@ -53,7 +53,7 @@ stops being mono-timbral. It also **absorbs Unison and Portamento** from ADR
 - [x] [0010 — Per-layer MIDI processor (poly)](../../tickets/open/0010-midi-processor-poly.md)
 - [x] [0011 — Unison assign mode](../../tickets/open/0011-unison.md)
 - [x] [0012 — Portamento](../../tickets/open/0012-portamento.md)
-- [ ] [0013 — Editor: key mode, layer toggle, split point](../../tickets/open/0013-ui-key-modes.md)
+- [x] [0013 — Editor: key mode, layer toggle, split point](../../tickets/open/0013-ui-key-modes.md)
 
 ## Dependency order
 
