@@ -61,7 +61,7 @@ modern addition (cf. the feature-roadmap divergences).
 
 ## Tickets
 
-- [ ] [0018 — Per-voice LFO 1 (phase/trigger + delay & fade)](../../tickets/open/0018-per-voice-lfo1.md)
+- [x] [0018 — Per-voice LFO 1 (phase/trigger + delay & fade)](../../tickets/closed/0018-per-voice-lfo1.md)
 - [ ] [0019 — Global instrument-wide LFO 2](../../tickets/open/0019-global-lfo2.md)
 
 ## Dependency order

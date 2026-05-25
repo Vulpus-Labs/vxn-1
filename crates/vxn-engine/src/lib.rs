@@ -22,7 +22,7 @@ pub use shared::SharedParams;
 use smoothing::ParamSmoother;
 pub use state::PluginState;
 
-use voice::{BlockCtx, VoiceBank};
+use voice::{BlockCtx, Lfo1Trigger, VoiceBank};
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, Smoothed, StereoChorus,
     StereoDelay, fast_exp2, note_to_hz,
@@ -50,9 +50,9 @@ pub use vxn_dsp::{ScopedFlushToZero, enable_flush_to_zero};
 /// Number of always-present layers (ADR 0003 §1). Indexed by [`Layer`].
 const LAYERS: usize = Layer::COUNT;
 
-/// Per-layer, per-LFO seeds (decorrelate the S&H shape between the two LFOs and
-/// across layers). `[layer][lfo]`.
-const LFO_SEEDS: [[u64; 2]; LAYERS] = [[0x51A7, 0x7E5D], [0xC0FF, 0x1CE9]];
+/// Per-layer LFO 2 seeds (decorrelate the S&H shape across layers). LFO 1 is now
+/// per-voice and seeded inside each [`VoiceBank`] (E005 / 0018).
+const LFO2_SEEDS: [u64; LAYERS] = [0x7E5D, 0x1CE9];
 /// Per-layer noise seeds (decorrelate the two layers' noise generators).
 const NOISE_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
 
@@ -66,9 +66,10 @@ pub struct Synth {
     /// Two always-present layers of 8 channels each (ADR 0003 §2). Each is a
     /// complete patch; both sum into the global FX bus.
     banks: [VoiceBank; LAYERS],
-    /// Per-layer LFOs (ADR 0003 §5): each layer has two independent full LFOs
-    /// (E004 / 0014), indexed `[layer][lfo]`.
-    lfos: [[LfoCore; 2]; LAYERS],
+    /// LFO 2 per layer (E004 / 0014). LFO 1 is now per-voice, living inside each
+    /// [`VoiceBank`] (E005 / 0018); LFO 2 stays shared here (E005 / 0019 makes it
+    /// a single instrument-wide LFO).
+    lfo2s: [LfoCore; LAYERS],
     chorus: StereoChorus,
     delay: StereoDelay,
     /// Anti-aliasing decimator for the oversampled synthesis path.
@@ -110,9 +111,7 @@ impl Synth {
             smoother: ParamSmoother::new(sample_rate, &params),
             params,
             banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, NOISE_SEEDS[i])),
-            lfos: std::array::from_fn(|i| {
-                std::array::from_fn(|j| LfoCore::new(control_rate, LFO_SEEDS[i][j]))
-            }),
+            lfo2s: std::array::from_fn(|i| LfoCore::new(control_rate, LFO2_SEEDS[i])),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
             oversampler: Oversampler::new(),
@@ -136,7 +135,7 @@ impl Synth {
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         for (i, bank) in self.banks.iter_mut().enumerate() {
             bank.set_sample_rate(sample_rate);
-            self.lfos[i] = std::array::from_fn(|j| LfoCore::new(control_rate, LFO_SEEDS[i][j]));
+            self.lfo2s[i] = LfoCore::new(control_rate, LFO2_SEEDS[i]);
         }
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
@@ -247,7 +246,14 @@ impl Synth {
         let p = self.params.layer(src);
         let mode = p.assign_mode();
         let unison_detune = p.get(PatchParam::UnisonDetune);
-        self.banks[layer].note_on(mode, note, velocity, self.alloc_counter, unison_detune);
+        // Per-voice LFO 1 (E005 / 0018): the bank retriggers the triggered
+        // channel(s)' LFO 1 phase to the shape's zero crossing at note-on, unless
+        // free-run is set.
+        let lfo1 = Lfo1Trigger {
+            shape: p.lfo_shape(),
+            free_run: p.bool(PatchParam::Lfo1FreeRun),
+        };
+        self.banks[layer].note_on(mode, note, velocity, self.alloc_counter, unison_detune, lfo1);
     }
 
     pub fn note_off(&mut self, note: u8) {
@@ -271,9 +277,7 @@ impl Synth {
     pub fn reset(&mut self) {
         for (i, bank) in self.banks.iter_mut().enumerate() {
             bank.reset_all();
-            for lfo in &mut self.lfos[i] {
-                lfo.reset();
-            }
+            self.lfo2s[i].reset();
         }
         self.chorus.clear();
         self.delay.clear();
@@ -410,12 +414,12 @@ impl Synth {
         let p = vals.layer(src);
         let g = vals.global();
         let tempo = self.tempo_bpm;
-        let lfo_val = self.lfos[layer][0].next(p.lfo_shape());
-        self.lfos[layer][0]
-            .set_rate(lfo_rate(p, PatchParam::LfoRate, PatchParam::LfoSync, tempo));
-        let lfo2_val = self.lfos[layer][1].next(p.lfo2_shape());
-        self.lfos[layer][1]
-            .set_rate(lfo_rate(p, PatchParam::Lfo2Rate, PatchParam::Lfo2Sync, tempo));
+        // LFO 1 is per-voice (E005 / 0018): the bank ticks each channel's phase.
+        // Resolve its shared rate (post host-sync) here and hand the bank LFO 1's
+        // shape + onset times. LFO 2 stays shared, sampled here.
+        let lfo1_rate_hz = lfo_rate(p, PatchParam::LfoRate, PatchParam::LfoSync, tempo);
+        let lfo2_val = self.lfo2s[layer].next(p.lfo2_shape());
+        self.lfo2s[layer].set_rate(lfo_rate(p, PatchParam::Lfo2Rate, PatchParam::Lfo2Sync, tempo));
 
         // Pull the depth params into the matrix via the layout's own index
         // mapping: iterating `ModSource::ALL` now picks up the Lfo2 row (6×4)
@@ -463,8 +467,10 @@ impl Synth {
             drive: p.get(PatchParam::Drive),
             variant: p.filter_variant(),
             base_semis: g.get(GlobalParam::MasterTune) + self.bend_semis,
-            lfo_val,
-            lfo_delay: p.get(PatchParam::LfoDelay),
+            lfo1_shape: p.lfo_shape(),
+            lfo1_rate_hz,
+            lfo1_delay_time: p.get(PatchParam::Lfo1DelayTime),
+            lfo1_fade: p.get(PatchParam::Lfo1Fade),
             lfo2_val,
             lfo2_delay: p.get(PatchParam::Lfo2Delay),
             sync: p.bool(PatchParam::OscSync),
@@ -678,42 +684,43 @@ mod tests {
     }
 
     #[test]
-    fn lfo_delay_fades_modulation_in() {
-        // Make LFO→Amp the *only* VCA route (zero ENV-2→Amp) and add a 1 s
-        // delay. Faded out the amp is ~0 (silent); faded in the LFO opens it.
+    fn lfo1_onset_holds_then_fades_modulation_in() {
+        // LFO 1→Amp is the only VCA route (zero ENV-2→Amp). With a 0.5 s delay
+        // then a 0.5 s fade, the amp is ~silent through the delay, low across the
+        // fade, and full once settled (E005 / 0018 two-stage onset).
         fn amp_swing(window: std::ops::Range<usize>) -> f32 {
             let mut s = Synth::new(48_000.0);
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_param(pp(PatchParam::Env2Amp), 0.0);
             s.set_param(pp(PatchParam::LfoRate), 4.0);
             s.set_param(pp(PatchParam::LfoAmp), 1.0);
-            s.set_param(pp(PatchParam::LfoDelay), 1.0);
+            s.set_param(pp(PatchParam::Lfo1DelayTime), 0.5);
+            s.set_param(pp(PatchParam::Lfo1Fade), 0.5);
             s.note_on(69, 1.0);
             let (l, _) = render(&mut s, 96_000);
             rms(&l[window])
         }
-        // 0.1–0.2 s after note-on (past the Env2Amp glide) vs a window past the
-        // 1 s fade.
-        let early = amp_swing(4800..9600);
-        let late = amp_swing(58_000..67_600);
+        // During the delay (≈0.2–0.4 s) vs settled past delay+fade (>1 s).
+        let during_delay = amp_swing(9600..19_200);
+        let settled = amp_swing(58_000..67_600);
         assert!(
-            early < 0.25 * late,
-            "LFO did not fade in: early {early}, late {late}"
+            during_delay < 0.1 * settled,
+            "LFO 1 onset did not hold then open: delay {during_delay}, settled {settled}"
         );
     }
 
     #[test]
-    fn lfo_delay_zero_matches_immediate_modulation() {
-        // With delay 0, the LFO is at full depth from the first block.
+    fn lfo1_onset_zero_matches_immediate_modulation() {
+        // Delay 0 + fade 0: LFO 1 is at full depth from the first block.
         let mut s = Synth::new(48_000.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::LfoRate), 6.0);
         s.set_param(pp(PatchParam::LfoAmp), 1.0);
-        s.set_param(pp(PatchParam::LfoDelay), 0.0);
+        s.set_param(pp(PatchParam::Lfo1DelayTime), 0.0);
+        s.set_param(pp(PatchParam::Lfo1Fade), 0.0);
         s.note_on(69, 1.0);
         let (l, _) = render(&mut s, 9600);
-        // Modulation present immediately (no quiet fade-in lead-in).
-        assert!(rms(&l[0..4800]) > 0.01, "delay 0 should modulate at once");
+        assert!(rms(&l[0..4800]) > 0.01, "0/0 onset should modulate at once");
     }
 
     #[test]
@@ -905,36 +912,66 @@ mod tests {
         );
     }
 
-    // ── E004 / 0014: second routable LFO ────────────────────────────────────
+    // ── E005 / 0018: per-voice LFO 1 ─────────────────────────────────────────
 
     #[test]
-    fn lfo2_modulates_identically_to_lfo1() {
-        // LFO 1 and LFO 2 are both free-running sine from phase 0, so routing
-        // either to the (linear) Amp destination at equal depth yields the same
-        // rendered output. Proves the LFO2 source + 6×4 matrix are wired through
-        // build_ctx exactly as LFO1 is. (Amp avoids the filter chaos that would
-        // amplify float noise on a cutoff route.) Both LFOs share one rate so the
-        // residual LFO1→Pitch vibrato (its 0.05 default glides to 0 over the
-        // first ~10 ms) is identical whichever LFO carries the amp route.
-        fn render_via(amp: PatchParam) -> Vec<f32> {
-            let mut s = pitched_synth(); // sine, LfoPitch target 0
-            s.set_param(pp(PatchParam::Env2Amp), 0.0); // VCA driven by the LFO alone
-            s.set_param(pp(PatchParam::LfoRate), 6.0);
-            s.set_param(pp(PatchParam::Lfo2Rate), 6.0);
-            s.set_param(pp(amp), 1.0); // full tremolo
-            s.note_on(57, 1.0);
-            render(&mut s, 24_000).0
-        }
-        let via1 = render_via(PatchParam::LfoAmp);
-        let via2 = render_via(PatchParam::Lfo2Amp);
-        assert!(rms(&via1) > 0.01, "LFO1→amp produced no sound");
-        let max_err = via1
-            .iter()
-            .zip(&via2)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(max_err < 1e-6, "LFO2 != LFO1 routing: max_err {max_err}");
+    fn per_voice_lfo1_retriggers_only_its_own_voice() {
+        // LFO 1 is per voice: a new note retriggers only its own channel's LFO 1
+        // (to the sine zero crossing = phase 0); a held voice's phase keeps
+        // running, undisturbed.
+        let mut s = pitched_synth(); // sine LFO 1
+        s.set_param(pp(PatchParam::LfoRate), 5.0);
+        s.note_on_layer(0, 60, 1.0); // → channel 0
+        let _ = render(&mut s, 6000); // advance channel 0's LFO 1 phase
+        let ch0_before = s.banks[0].lfo1_phase(0);
+        assert!(ch0_before > 0.01, "held voice should have advanced");
+        s.note_on_layer(0, 64, 1.0); // → channel 1, retriggers only its own LFO 1
+        assert_eq!(s.banks[0].lfo1_phase(1), 0.0, "new voice retriggers to zero");
+        assert_eq!(
+            s.banks[0].lfo1_phase(0),
+            ch0_before,
+            "held voice's LFO 1 must be undisturbed by another note"
+        );
     }
+
+    #[test]
+    fn per_voice_lfo1_retrigger_lands_on_zero_crossing() {
+        // The per-voice retrigger lands on each shape's zero crossing (sine 0,
+        // tri 0.25, saws 0.5; square/S&H at the boundary).
+        for (shape_idx, expected) in [(0.0, 0.0), (1.0, 0.25), (2.0, 0.5), (4.0, 0.0)] {
+            let mut s = pitched_synth();
+            s.set_param(pp(PatchParam::LfoShape), shape_idx);
+            s.set_param(pp(PatchParam::LfoRate), 5.0);
+            s.note_on_layer(0, 60, 1.0);
+            let _ = render(&mut s, 6000);
+            s.note_on_layer(0, 64, 1.0); // channel 1 freshly triggered
+            assert_eq!(
+                s.banks[0].lfo1_phase(1),
+                expected,
+                "shape {shape_idx} should retrigger to its zero crossing"
+            );
+        }
+    }
+
+    #[test]
+    fn lfo1_free_run_keeps_phase_across_note_ons() {
+        // Free-run on: re-triggering a channel does not reset its LFO 1 phase.
+        let mut s = pitched_synth();
+        s.set_param(pp(PatchParam::LfoRate), 5.0);
+        s.set_param(pp(PatchParam::Lfo1FreeRun), 1.0);
+        s.note_on_layer(0, 60, 1.0);
+        let _ = render(&mut s, 6000);
+        let before = s.banks[0].lfo1_phase(0);
+        assert!(before > 0.01);
+        s.note_on_layer(0, 60, 1.0); // reuses channel 0 (same note); no reset
+        assert_eq!(
+            s.banks[0].lfo1_phase(0),
+            before,
+            "free-run must not reset the per-voice phase"
+        );
+    }
+
+    // ── E004 / 0014: second routable LFO (LFO 2 still shared) ────────────────
 
     #[test]
     fn lfo2_zero_depth_matches_pre_change_output() {

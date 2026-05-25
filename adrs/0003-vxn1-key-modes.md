@@ -113,6 +113,20 @@ its own LFO and its own 5×4 (later 6×4) modulation matrix. VXN1's current sing
 global LFO becomes per-layer. This keeps the partition clean: **everything in a
 patch duplicates; only truly global state is shared (§6, §7).**
 
+> **Amended by E005 (per-voice & global LFO split).** The two LFOs became
+> asymmetric rather than uniformly per-layer:
+>
+> - **LFO 1 is per-voice** (E005 / 0018): each note runs its own phase,
+>   retriggered to the shape's zero crossing at note-on (or free-running), with a
+>   per-voice delay→fade onset. Its rate/shape/sync stay per-patch.
+> - **LFO 2 is a single instrument-wide global LFO** (E005 / 0019): one shared
+>   phase across both layers and all voices; its rate/shape/sync are global
+>   params, its matrix-routing depths stay per-patch.
+>
+> The modulation matrix stays per-layer (each layer routes both LFOs with its own
+> depths). The global LFO 2 is shared instrument state, **not** part of a
+> per-layer patch/preset.
+
 ### 6. Parameter model — two per-patch blocks + a small global block
 
 We accept parameter doubling. The flat `ParamId` table splits into:

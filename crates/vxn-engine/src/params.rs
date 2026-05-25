@@ -186,8 +186,14 @@ pub enum PatchParam {
     /// Per-oscillator octave offset, stacks with coarse/fine.
     Osc1Octave,
     Osc2Octave,
-    /// Per-voice fade-in of LFO modulation after note-on (s).
-    LfoDelay,
+    /// LFO 1 per-voice onset (E005 / 0018): hold modulation at zero for this
+    /// long after note-on, then ramp over `Lfo1Fade`.
+    Lfo1DelayTime,
+    /// LFO 1 per-voice fade-ramp duration (s) after the delay; 0 = snap to full.
+    Lfo1Fade,
+    /// LFO 1 free-run: when on, the per-voice phase persists across note-ons
+    /// instead of retriggering to the shape's zero crossing.
+    Lfo1FreeRun,
     /// Per-voice fade-in of LFO 2 modulation after note-on (s) — E004 / 0014.
     Lfo2Delay,
     // ── E002: oscillator interaction ──
@@ -594,7 +600,9 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", true),
     i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
     i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, 0.0, "oct"),
-    f("lfo_delay", "LFO 1 Delay", 0.0, 4.0, 0.0, "s", false),
+    f("lfo1_delay_time", "LFO 1 Delay", 0.0, 4.0, 0.0, "s", false),
+    f("lfo1_fade", "LFO 1 Fade", 0.0, 4.0, 0.0, "s", false),
+    b("lfo1_free_run", "LFO 1 Free", 0.0),
     f("lfo2_delay", "LFO 2 Delay", 0.0, 4.0, 0.0, "s", false),
     // ── E002 (offsets stay stable above this line) ──
     b("osc_sync", "Sync", 0.0),

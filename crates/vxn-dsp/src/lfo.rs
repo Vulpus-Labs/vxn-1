@@ -37,6 +37,22 @@ impl LfoShape {
             LfoShape::Random => "S&H",
         }
     }
+
+    /// Phase in `[0, 1)` at which this shape's output is zero — the clean
+    /// restart point so a (re)triggered LFO eases out of zero rather than
+    /// stepping to an extreme. Square and Random have no zero crossing, so they
+    /// restart at the cycle boundary (phase 0).
+    #[inline]
+    pub fn zero_crossing_phase(self) -> f32 {
+        match self {
+            LfoShape::Sine => 0.0,      // sin(0) = 0, rising
+            LfoShape::Triangle => 0.25, // -1 at 0, 0 at 0.25 rising, +1 at 0.5
+            LfoShape::SawUp => 0.5,     // 2p-1 = 0
+            LfoShape::SawDown => 0.5,   // 1-2p = 0
+            LfoShape::Square => 0.0,    // no zero crossing — start of the cycle
+            LfoShape::Random => 0.0,    // stepped — start of the cycle
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -59,8 +75,25 @@ impl LfoCore {
         }
     }
 
+    /// Reset phase to the cycle boundary (phase 0). Used for a full engine reset
+    /// where no note context applies.
     pub fn reset(&mut self) {
         self.phase = 0.0;
+    }
+
+    /// Retrigger to `shape`'s zero crossing (E005 / 0018) so a per-voice note-on
+    /// starts modulation from zero rather than stepping to an extreme. Square /
+    /// S&H have no zero crossing and restart at the cycle boundary.
+    #[inline]
+    pub fn retrigger(&mut self, shape: LfoShape) {
+        self.phase = shape.zero_crossing_phase();
+    }
+
+    /// Current phase in `[0, 1)`. Exposed so callers (and tests) can observe a
+    /// note-on retrigger.
+    #[inline]
+    pub fn phase(&self) -> f32 {
+        self.phase
     }
 
     /// Set rate in Hz (clamped to a musical LFO range).
@@ -119,6 +152,30 @@ mod tests {
         assert!(crossings.len() >= 2);
         let period = (crossings[1] - crossings[0]) as i64;
         assert!((period - 100).abs() <= 2, "period {period}");
+    }
+
+    #[test]
+    fn retrigger_starts_near_zero_for_crossing_shapes() {
+        // Sine / Triangle / Saws have a zero crossing: retriggering then taking
+        // the next sample yields ~0 (within one slow-rate phase increment), so
+        // modulation eases out of zero. Square / S&H restart at the boundary.
+        let sr = 48_000.0;
+        for shape in [
+            LfoShape::Sine,
+            LfoShape::Triangle,
+            LfoShape::SawUp,
+            LfoShape::SawDown,
+        ] {
+            let mut lfo = LfoCore::new(sr, 7);
+            lfo.set_rate(2.0); // slow → tiny increment per sample
+            for _ in 0..1234 {
+                lfo.next(shape);
+            }
+            lfo.retrigger(shape);
+            assert_eq!(lfo.phase(), shape.zero_crossing_phase());
+            let v = lfo.next(shape);
+            assert!(v.abs() < 0.01, "{shape:?} did not restart near zero: {v}");
+        }
     }
 
     #[test]

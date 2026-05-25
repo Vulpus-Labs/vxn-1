@@ -10,8 +10,9 @@
 //! evaluated per base frame (held across oversampled subframes).
 
 use vxn_dsp::{
-    AdsrCore, AdsrShape, CHANNELS_PER_LAYER, LadderCoeffs, LadderVariant, NoiseColor, PolyHpf,
-    PolyLadder, PolyNoise, PolyOscillator, Waveform, fast_exp2, note_to_hz,
+    AdsrCore, AdsrShape, CHANNELS_PER_LAYER, CONTROL_BLOCK, LadderCoeffs, LadderVariant, LfoCore,
+    LfoShape, NoiseColor, PolyHpf, PolyLadder, PolyNoise, PolyOscillator, Waveform, fast_exp2,
+    note_to_hz,
 };
 
 use crate::modmatrix::{ModDest, ModMatrix, ModSource};
@@ -27,8 +28,11 @@ const HPF_OFF_HZ: f32 = 20.0;
 
 /// Per-voice LFO modulation fade-in (the JP-8 "LFO delay"): each voice's gain
 /// ramps 0→1 over a settable time after note-on, scaling the LFO source seen by
-/// the matrix so every LFO-driven destination fades in together. One instance
-/// per LFO — a second LFO is a second `LfoFadeIn`, no new ramp logic.
+/// the matrix so the LFO-driven destinations fade in together.
+///
+/// Used by the **global LFO 2** (E005 / 0019 keeps LFO 2 shared; until then it
+/// is per layer). LFO 1 is per-voice (E005 / 0018) with its own two-stage onset
+/// — see [`Lfo1Onset`].
 #[derive(Clone)]
 struct LfoFadeIn {
     gain: [f32; N],
@@ -79,6 +83,65 @@ impl LfoFadeIn {
     }
 }
 
+/// Per-voice LFO 1 retrigger policy at a note-on (E005 / 0018): the shape (for
+/// the zero-crossing restart) and whether the phase free-runs instead.
+#[derive(Clone, Copy)]
+pub struct Lfo1Trigger {
+    pub shape: LfoShape,
+    pub free_run: bool,
+}
+
+/// Per-voice two-stage onset for the per-voice LFO 1 (E005 / 0018): after a
+/// voice's note-on, its LFO 1 depth is held at zero for `delay` seconds, then
+/// ramps 0→1 over `fade` seconds. `delay = fade = 0` pins depth to full
+/// immediately, reproducing the undelayed path. `t` is seconds since note-on,
+/// capped so it stays finite over long-held notes; untriggered voices sit at
+/// `f32::MAX` (settled at full depth).
+#[derive(Clone)]
+struct Lfo1Onset {
+    t: [f32; N],
+}
+
+impl Lfo1Onset {
+    fn new() -> Self {
+        Self { t: [f32::MAX; N] }
+    }
+
+    fn reset(&mut self) {
+        self.t = [f32::MAX; N];
+    }
+
+    /// Restart voice `v`'s onset from note-on.
+    #[inline]
+    fn retrigger(&mut self, v: usize) {
+        self.t[v] = 0.0;
+    }
+
+    /// Depth gain for voice `v` given the current `delay` / `fade` (s).
+    #[inline]
+    fn gain(&self, v: usize, delay: f32, fade: f32) -> f32 {
+        let t = self.t[v];
+        if t < delay {
+            0.0
+        } else if fade <= 0.0 {
+            1.0
+        } else {
+            ((t - delay) / fade).min(1.0)
+        }
+    }
+
+    /// Advance every voice by `dt` seconds, capped at `cap` (= delay + fade) so
+    /// `t` stays finite once a voice has fully faded in.
+    #[inline]
+    fn advance(&mut self, dt: f32, cap: f32) {
+        for t in &mut self.t {
+            if *t < cap {
+                *t = (*t + dt).min(cap);
+            }
+        }
+    }
+}
+
 /// Control-block context shared by all voices.
 pub struct BlockCtx {
     /// Oversampled sample rate (`base_rate * oversample`).
@@ -102,10 +165,16 @@ pub struct BlockCtx {
     pub drive: f32,
     pub variant: LadderVariant,
     pub base_semis: f32,
-    pub lfo_val: f32,
-    /// LFO 1 modulation fade-in time after note-on (s); 0 = no delay.
-    pub lfo_delay: f32,
-    /// LFO 2 sampled value this block (E004 / 0014).
+    /// LFO 1 is per-voice (E005 / 0018): the bank ticks its own phases, so the
+    /// block carries LFO 1's shape, resolved rate (Hz, post host-sync) and the
+    /// two-stage onset times rather than a single sampled value.
+    pub lfo1_shape: LfoShape,
+    pub lfo1_rate_hz: f32,
+    /// LFO 1 onset: hold modulation at zero for `lfo1_delay_time` s, then ramp
+    /// over `lfo1_fade` s. Both 0 = full depth immediately.
+    pub lfo1_delay_time: f32,
+    pub lfo1_fade: f32,
+    /// LFO 2 sampled value this block (still shared — E004 / 0014, E005 / 0019).
     pub lfo2_val: f32,
     /// LFO 2 modulation fade-in time after note-on (s); 0 = no delay.
     pub lfo2_delay: f32,
@@ -151,16 +220,32 @@ pub struct VoiceBank {
     /// Whether a channel has a previous pitch to glide *from*. False until its
     /// first note, so the first note never sweeps up from zero.
     glide_valid: [bool; N],
-    /// LFO 1 modulation fade-in after note-on (`ctx.lfo_delay`).
-    lfo_fade: LfoFadeIn,
-    /// LFO 2 modulation fade-in after note-on (`ctx.lfo2_delay`) — E004 / 0014.
+    /// Per-voice LFO 1 (E005 / 0018): one phase per channel, retriggered at that
+    /// channel's note-on, ticked once per control block.
+    lfo1: [LfoCore; N],
+    /// Per-voice LFO 1 two-stage onset (delay → fade).
+    lfo1_onset: Lfo1Onset,
+    /// Seed base for the per-channel LFO 1 cores; kept so they can be rebuilt at
+    /// the new control rate on a sample-rate change.
+    lfo1_seed: u64,
+    /// LFO 2 modulation fade-in after note-on (`ctx.lfo2_delay`) — still shared.
     lfo2_fade: LfoFadeIn,
+}
+
+/// Decorrelated per-channel LFO 1 seed from the layer's base seed.
+#[inline]
+fn lfo1_seed(base: u64, ch: usize) -> u64 {
+    base.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add((ch as u64 + 1).wrapping_mul(0x632B_E5A6))
 }
 
 impl VoiceBank {
     /// `noise_seed` differs per layer so two layers' noise generators are
     /// decorrelated (no comb artefacts when two similar patches sum).
     pub fn new(sample_rate: f32, noise_seed: u64) -> Self {
+        // The LFO ticks once per control block, so its cores run at the control
+        // rate (sr / CONTROL_BLOCK), matching the old per-layer LFO.
+        let control_rate = sample_rate / CONTROL_BLOCK as f32;
         Self {
             osc1: PolyOscillator::new(),
             osc2: PolyOscillator::new(),
@@ -179,7 +264,9 @@ impl VoiceBank {
             level_comp: 1.0,
             glide_semi: [0.0; N],
             glide_valid: [false; N],
-            lfo_fade: LfoFadeIn::new(),
+            lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(noise_seed, i))),
+            lfo1_onset: Lfo1Onset::new(),
+            lfo1_seed: noise_seed,
             lfo2_fade: LfoFadeIn::new(),
         }
     }
@@ -187,6 +274,9 @@ impl VoiceBank {
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.env1 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
         self.env2 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
+        let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        let seed = self.lfo1_seed;
+        self.lfo1 = std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(seed, i)));
         self.reset_all();
     }
 
@@ -208,12 +298,22 @@ impl VoiceBank {
         self.level_comp = 1.0;
         self.glide_semi = [0.0; N];
         self.glide_valid = [false; N];
-        self.lfo_fade.reset();
+        for lfo in &mut self.lfo1 {
+            lfo.reset();
+        }
+        self.lfo1_onset.reset();
         self.lfo2_fade.reset();
     }
 
     pub fn active_count(&self) -> usize {
         self.active.iter().filter(|&&a| a).count()
+    }
+
+    /// Channel `v`'s per-voice LFO 1 phase (E005 / 0018). Exposed for tests to
+    /// observe per-voice retrigger / free-run behaviour.
+    #[cfg(test)]
+    pub(crate) fn lfo1_phase(&self, v: usize) -> f32 {
+        self.lfo1[v].phase()
     }
 
     /// Apply envelope params to every voice (called by the engine only when an
@@ -252,11 +352,12 @@ impl VoiceBank {
         velocity: f32,
         alloc_tick: u64,
         unison_detune: f32,
+        lfo1: Lfo1Trigger,
     ) {
         match mode {
             AssignMode::Poly => {
                 let v = self.allocate(note);
-                self.trigger(v, note, velocity, alloc_tick, 0.0);
+                self.trigger(v, note, velocity, alloc_tick, 0.0, lfo1);
                 self.level_comp = 1.0;
             }
             AssignMode::Unison => {
@@ -264,13 +365,7 @@ impl VoiceBank {
                 // (the prior note is not stacked). Per-channel detune fans the 8
                 // copies out for chorusing thickness.
                 for v in 0..N {
-                    self.trigger(
-                        v,
-                        note,
-                        velocity,
-                        alloc_tick,
-                        unison_spread(v) * unison_detune,
-                    );
+                    self.trigger(v, note, velocity, alloc_tick, unison_spread(v) * unison_detune, lfo1);
                 }
                 self.level_comp = 1.0 / (N as f32).sqrt();
             }
@@ -280,7 +375,15 @@ impl VoiceBank {
     /// Trigger a specific channel: the lowest level of the assign seam. Poly hits
     /// one channel, Unison hits all; both route through here so per-channel state
     /// (gate, detune, phase reset) is set in exactly one place.
-    fn trigger(&mut self, v: usize, note: u8, velocity: f32, alloc_tick: u64, detune_cents: f32) {
+    fn trigger(
+        &mut self,
+        v: usize,
+        note: u8,
+        velocity: f32,
+        alloc_tick: u64,
+        detune_cents: f32,
+        lfo1: Lfo1Trigger,
+    ) {
         self.note[v] = note;
         self.velocity[v] = velocity;
         self.gate[v] = true;
@@ -288,7 +391,12 @@ impl VoiceBank {
         self.trigger_pending[v] = true;
         self.alloc_tick[v] = alloc_tick;
         self.detune_cents[v] = detune_cents;
-        self.lfo_fade.retrigger(v);
+        // Per-voice LFO 1: restart its onset, and (unless free-running) retrigger
+        // its phase to the shape's zero crossing so modulation eases out of zero.
+        self.lfo1_onset.retrigger(v);
+        if !lfo1.free_run {
+            self.lfo1[v].retrigger(lfo1.shape);
+        }
         self.lfo2_fade.retrigger(v);
         self.osc1.reset(v);
         self.osc2.reset(v);
@@ -327,10 +435,11 @@ impl VoiceBank {
     }
 
     /// Assemble the modulation source vector for voice `v`, in [`ModSource`]
-    /// order. The envelope levels are passed in because the two call sites
-    /// differ — block-start resolution reads the stored ENV level, the per-frame
-    /// amp path the just-ticked value — while velocity, key-follow and the
-    /// fade-scaled LFO are common to both. A new source is added in one place.
+    /// order. The envelope levels and the onset-scaled LFO 1 value are passed in
+    /// because the two call sites differ — block-start resolution reads the
+    /// stored ENV level and the block-start onset gain, the per-frame amp path
+    /// the just-ticked ENV and the per-frame onset gain — while velocity,
+    /// key-follow and the (shared, faded) LFO 2 are common to both.
     #[inline]
     fn mod_sources(
         &self,
@@ -338,11 +447,12 @@ impl VoiceBank {
         ctx: &BlockCtx,
         env1: f32,
         env2: f32,
+        lfo1: f32,
     ) -> [f32; ModSource::COUNT] {
         [
             env1,
             env2,
-            ctx.lfo_val * self.lfo_fade.gain(v),
+            lfo1,
             ctx.lfo2_val * self.lfo2_fade.gain(v),
             self.velocity[v],
             key_follow(self.note[v]),
@@ -355,8 +465,18 @@ impl VoiceBank {
         let os = ctx.os;
         let base_frames = out.len() / os;
         let base_rate = ctx.os_sample_rate / os as f32;
-        let lfo_gain_inc = self.lfo_fade.begin_block(ctx.lfo_delay, base_rate);
         let lfo2_gain_inc = self.lfo2_fade.begin_block(ctx.lfo2_delay, base_rate);
+
+        // Per-voice LFO 1: tick each channel's phase once for this block (held
+        // across the block's frames, like the old per-layer LFO). The onset gain
+        // (delay → fade) is applied at each read site, since it ramps per frame.
+        let mut lfo1_raw = [0.0f32; N];
+        for (lfo, raw) in self.lfo1.iter_mut().zip(lfo1_raw.iter_mut()) {
+            lfo.set_rate(ctx.lfo1_rate_hz);
+            *raw = lfo.next(ctx.lfo1_shape);
+        }
+        let onset_cap = ctx.lfo1_delay_time + ctx.lfo1_fade;
+        let onset_dt = 1.0 / base_rate;
 
         // Portamento glide coefficient for this block (one-pole toward the target
         // note). `dt` is the block's wall-clock duration, so the glide rate is
@@ -373,7 +493,8 @@ impl VoiceBank {
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         for v in 0..N {
-            let srcs = self.mod_sources(v, ctx, self.env1[v].level, self.env2[v].level);
+            let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
+            let srcs = self.mod_sources(v, ctx, self.env1[v].level, self.env2[v].level, lfo1);
             let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs);
             let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs);
             let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs);
@@ -446,7 +567,9 @@ impl VoiceBank {
                 let e1 = self.env1[v].tick(t, self.gate[v]);
                 let e2 = self.env2[v].tick(t, self.gate[v]);
                 amp[v] = if self.active[v] {
-                    let srcs = self.mod_sources(v, ctx, e1, e2);
+                    let lfo1 =
+                        lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
+                    let srcs = self.mod_sources(v, ctx, e1, e2, lfo1);
                     ctx.matrix.dest(ModDest::Amp, &srcs).max(0.0)
                 } else {
                     0.0
@@ -495,8 +618,8 @@ impl VoiceBank {
                 out[frame + k] += sum * self.level_comp;
             }
 
-            // Advance the per-voice LFO fade-ins one base frame (held at 1).
-            self.lfo_fade.advance(lfo_gain_inc);
+            // Advance the per-voice LFO 1 onset and the LFO 2 fade one base frame.
+            self.lfo1_onset.advance(onset_dt, onset_cap);
             self.lfo2_fade.advance(lfo2_gain_inc);
 
             // Free voices whose envelopes have fully released.
