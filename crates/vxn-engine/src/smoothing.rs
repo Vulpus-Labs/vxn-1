@@ -7,7 +7,7 @@
 //!
 //! - **Per-sample** ([`GlobalParam::MasterVolume`]): the final gain multiply
 //!   runs per output sample, so its smoother ticks per sample.
-//! - **Block-rate** (oscillator/noise levels, pulse width, mod-matrix depths):
+//! - **Block-rate** (oscillator/noise levels, pulse width, fixed-route depths):
 //!   read once per control block into [`crate::voice::BlockCtx`], so one glide
 //!   step per block (control rate = sr / `CONTROL_BLOCK` ≈ 1.5 kHz) is enough
 //!   to take the audible edge off automation steps.
@@ -41,17 +41,18 @@ enum Glide {
     PerSample,
 }
 
-/// Block-rate vs snap classification for a per-patch param.
+/// Block-rate vs snap classification for a per-patch param. Gain-like
+/// continuous values (levels, pulse widths, every fixed-route depth, the
+/// cross-mod amount) glide at block rate; selectors/bools/enums and downstream-
+/// smoothed params (cutoff/reso/drive) snap.
 #[inline]
 fn patch_glide(p: PatchParam) -> Glide {
     use PatchParam::*;
-    // All mod-matrix depth params glide at block rate, wherever they sit.
-    if PatchParam::is_matrix_param(p.index()) {
-        return Glide::Block;
-    }
     match p {
-        Osc1Level | Osc2Level | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth | CrossMod
-        | ModWheelDepth => Glide::Block,
+        Osc1Level | Osc2Level | RingLevel | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth
+        | CrossModAmount | PitchLfoDepth | PitchEnvDepth | PitchWheelDepth | PwmLfoDepth
+        | PwmEnvDepth | CutoffLfoDepth | CutoffEnvDepth | VelCutoffDepth | Osc2PitchEnvDepth
+        | ModWheelPwm | ModWheelCutoff | ModWheelReso | ModWheelOsc2Pitch => Glide::Block,
         _ => Glide::Snap,
     }
 }
@@ -203,9 +204,12 @@ mod tests {
     }
 
     #[test]
-    fn matrix_depths_are_block_smoothed() {
-        assert_eq!(patch_glide(PatchParam::LfoCutoff), Glide::Block);
-        assert_eq!(patch_glide(PatchParam::Env2Amp), Glide::Block);
+    fn route_depths_are_block_smoothed() {
+        assert_eq!(patch_glide(PatchParam::CutoffLfoDepth), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::PitchEnvDepth), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::RingLevel), Glide::Block);
+        // Selectors snap (discrete).
+        assert_eq!(patch_glide(PatchParam::CutoffLfoSrc), Glide::Snap);
     }
 
     #[test]

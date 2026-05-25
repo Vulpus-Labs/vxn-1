@@ -2,14 +2,33 @@
 //! (ADR 0003 §6).
 //!
 //! A **layer is a complete patch**: oscillators, noise, filter, envelopes, LFO
-//! and modulation matrix. Those live in [`PatchParam`] and are instantiated
-//! **twice** (Upper, Lower — see [`Layer`]), so each layer is independently
-//! automatable. Truly global state (master tune/volume, FX, oversample) lives
-//! once in [`GlobalParam`].
+//! and the fixed modulation routes. Those live in [`PatchParam`] and are
+//! instantiated **twice** (Upper, Lower — see [`Layer`]), so each layer is
+//! independently automatable. Truly global state (master tune/volume, FX,
+//! oversample, the global LFO 2) lives once in [`GlobalParam`].
+//!
+//! ## Fixed modulation routes (E006 / 0022, ADR 0004)
+//!
+//! The old generic 6×4 modulation matrix is gone. Modulation is now a small set
+//! of **fixed, labelled routes**, each carrying a per-channel source *selector*
+//! plus a depth:
+//!
+//! - **Pitch** (common, vibrato-scaled — moves *both* oscillators): an LFO
+//!   selector ({Off/LFO1/LFO2}) + depth, an Env selector ({Off/Env1/Env2}) +
+//!   depth, and a pitch-wheel depth.
+//! - **PWM**: LFO selector + depth, Env selector + depth.
+//! - **Cutoff**: LFO selector + depth, Env selector + depth, velocity depth.
+//! - **Osc 2 pitch** (wide, octave range — moves *osc2 only*, for sync/cross-mod
+//!   sweeps): Env selector + depth, fed also by the mod-wheel panel.
+//! - **Mod-wheel panel** (independent of the per-channel selectors): depths into
+//!   PWM, cutoff, resonance and the wide osc2 pitch.
+//! - **Filter key-track** (bool): exactly one octave of cutoff per octave of key
+//!   above C0.
+//! - The **VCA is hardwired to Env2** — there is no Amp route.
 //!
 //! ## CLAP id layout
 //!
-//! Every automatable parameter needs a stable integer id. The id space is three
+//! Every automatable parameter needs an integer id. The id space is three
 //! contiguous ranges:
 //!
 //! ```text
@@ -20,7 +39,8 @@
 //!
 //! [`patch_clap_id`] / [`global_clap_id`] map a typed param to its id;
 //! [`param_ref`] / [`desc_for_clap_id`] invert it for incoming automation and
-//! for the CLAP/UI metadata callbacks.
+//! for the CLAP/UI metadata callbacks. There is no CLAP id-stability constraint
+//! pre-release, so the table is laid out for clarity, not append-only.
 //!
 //! `KeyMode` and the split point are **not** in this table: they are
 //! non-automatable shared state (ADR 0003 §3, §8), carried as atomics in
@@ -29,13 +49,7 @@
 //! Values are stored as `f32` in *plain* units (Hz, seconds, semitones, …),
 //! matching CLAP's plain-value convention. Enum/bool params store the variant
 //! index / 0.0|1.0 and are read back through typed accessors.
-//!
-//! The 24 modulation-depth params (`Env1Pitch` … `KeyPwm`, 6 sources × 4 dests)
-//! are laid out source-major, destination-minor **within** the per-patch block so the engine
-//! can address them by `MATRIX_BASE + source*ModDest::COUNT + dest` (see
-//! [`crate::modmatrix`]).
 
-use crate::modmatrix::{ModDest, ModSource};
 use vxn_dsp::{AdsrShape, LadderVariant, LfoShape, NoiseColor, Waveform};
 
 /// Which of the two always-present patches a per-patch param belongs to.
@@ -111,6 +125,80 @@ impl AssignMode {
     }
 }
 
+/// Per-channel **LFO source** selector for a fixed modulation route (ADR 0004
+/// §4). Either LFO can feed any channel; there are no dedicated LFO-2 routes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(usize)]
+pub enum LfoSel {
+    #[default]
+    Off,
+    Lfo1,
+    Lfo2,
+}
+
+impl LfoSel {
+    pub const COUNT: usize = 3;
+    pub const ALL: [LfoSel; Self::COUNT] = [LfoSel::Off, LfoSel::Lfo1, LfoSel::Lfo2];
+
+    pub fn from_index(i: usize) -> LfoSel {
+        match i {
+            1 => LfoSel::Lfo1,
+            2 => LfoSel::Lfo2,
+            _ => LfoSel::Off,
+        }
+    }
+}
+
+/// Per-channel **envelope source** selector for a fixed modulation route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(usize)]
+pub enum EnvSel {
+    #[default]
+    Off,
+    Env1,
+    Env2,
+}
+
+impl EnvSel {
+    pub const COUNT: usize = 3;
+    pub const ALL: [EnvSel; Self::COUNT] = [EnvSel::Off, EnvSel::Env1, EnvSel::Env2];
+
+    pub fn from_index(i: usize) -> EnvSel {
+        match i {
+            1 => EnvSel::Env1,
+            2 => EnvSel::Env2,
+            _ => EnvSel::Off,
+        }
+    }
+}
+
+/// Oscillator-interaction type (ADR 0004 §3): the three modes are mutually
+/// exclusive. `Off` is the independent, vectorised fast path (bit-identical),
+/// `Sync` drives the band-limited hard sync (0020), `Pm` drives the through-zero
+/// phase modulation (0022) at [`PatchParam::CrossModAmount`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(usize)]
+pub enum CrossModType {
+    #[default]
+    Off,
+    Sync,
+    Pm,
+}
+
+impl CrossModType {
+    pub const COUNT: usize = 3;
+    pub const ALL: [CrossModType; Self::COUNT] =
+        [CrossModType::Off, CrossModType::Sync, CrossModType::Pm];
+
+    pub fn from_index(i: usize) -> CrossModType {
+        match i {
+            1 => CrossModType::Sync,
+            2 => CrossModType::Pm,
+            _ => CrossModType::Off,
+        }
+    }
+}
+
 /// Per-patch parameter ids. Discriminant = index into the per-patch block (and
 /// into [`PATCH_PARAMS`]). Instantiated once per [`Layer`]; the CLAP id is
 /// derived via [`patch_clap_id`].
@@ -121,15 +209,21 @@ pub enum PatchParam {
     Osc1Wave,
     Osc1Coarse,
     Osc1Fine,
+    Osc1Octave,
     Osc1Level,
     Osc1PulseWidth,
     // Oscillator 2
     Osc2Wave,
     Osc2Coarse,
     Osc2Fine,
+    Osc2Octave,
     Osc2Level,
     Osc2PulseWidth,
-    // Noise
+    // Oscillator interaction (type selector + amount; ADR 0004 §3/§7)
+    CrossModType,
+    CrossModAmount,
+    // Mixer
+    RingLevel,
     NoiseColor,
     NoiseLevel,
     // Filter (ladder VCF)
@@ -137,91 +231,68 @@ pub enum PatchParam {
     Resonance,
     Drive,
     FilterVariant,
-    // Envelope 1 (assignable — defaults unrouted)
+    /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
+    HpfCutoff,
+    /// Key-track on/off: cutoff shifts exactly 1 octave per key octave above C0.
+    FilterKeyTrack,
+    // Envelope 1 (assignable via the route selectors; defaults unrouted)
     Env1Attack,
     Env1Decay,
     Env1Sustain,
     Env1Release,
     Env1Shape,
-    // Envelope 2 (defaults to the VCA amp envelope)
+    // Envelope 2 (hardwired to the VCA amp)
     Env2Attack,
     Env2Decay,
     Env2Sustain,
     Env2Release,
     Env2Shape,
-    // ── Modulation matrix: source-major, dest-minor (Pitch, Cutoff, Amp, Pwm) ──
-    Env1Pitch,
-    Env1Cutoff,
-    Env1Amp,
-    Env1Pwm,
-    Env2Pitch,
-    Env2Cutoff,
-    Env2Amp,
-    Env2Pwm,
-    LfoPitch,
-    LfoCutoff,
-    LfoAmp,
-    LfoPwm,
-    Lfo2Pitch,
-    Lfo2Cutoff,
-    Lfo2Amp,
-    Lfo2Pwm,
-    VelPitch,
-    VelCutoff,
-    VelAmp,
-    VelPwm,
-    KeyPitch,
-    KeyCutoff,
-    KeyAmp,
-    KeyPwm,
-    // LFO 1 (per-voice — E005 / 0018). LFO 2's shape/rate/sync are global
-    // (instrument-wide LFO — E005 / 0019); only its matrix-routing depths
-    // (Lfo2Pitch … Lfo2Pwm, above) are per-patch.
+    // LFO 1 (per-voice — E005 / 0018). LFO 2's shape/rate/sync are global.
     LfoShape,
     LfoRate,
-    // ── Appended after v1 to keep earlier in-block offsets stable (E001) ──
-    /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
-    HpfCutoff,
-    /// Per-oscillator octave offset, stacks with coarse/fine.
-    Osc1Octave,
-    Osc2Octave,
-    /// LFO 1 per-voice onset (E005 / 0018): hold modulation at zero for this
-    /// long after note-on, then ramp over `Lfo1Fade`.
+    LfoSync,
+    /// LFO 1 per-voice onset (E005 / 0018): hold modulation at zero this long
+    /// after note-on, then ramp over `Lfo1Fade`.
     Lfo1DelayTime,
     /// LFO 1 per-voice fade-ramp duration (s) after the delay; 0 = snap to full.
     Lfo1Fade,
-    /// LFO 1 free-run: when on, the per-voice phase persists across note-ons
-    /// instead of retriggering to the shape's zero crossing.
+    /// LFO 1 free-run: when on, the per-voice phase persists across note-ons.
     Lfo1FreeRun,
-    // ── E002: oscillator interaction ──
-    /// Hard sync: osc2 (slave) phase resets each osc1 (master) cycle.
-    OscSync,
-    /// Cross-mod / linear FM depth: osc2 output modulates osc1 pitch.
-    CrossMod,
-    /// Mod-wheel (CC1) destination: Off / Cutoff / Osc2 Pitch.
-    ModWheelDest,
-    /// Mod-wheel modulation depth (semitone-domain: cutoff octaves or osc2 st).
-    ModWheelDepth,
-    // ── E003 (offsets stay stable above this line) ──
-    /// Voice-assignment mode for this layer (Poly / Unison — ADR 0003 §4).
+    // ── Pitch route (common, vibrato-scaled — both oscillators) ──
+    PitchLfoSrc,
+    PitchLfoDepth,
+    PitchEnvSrc,
+    PitchEnvDepth,
+    /// Pitch-wheel (MIDI bend) range, in vibrato-scaled semitones.
+    PitchWheelDepth,
+    // ── PWM route ──
+    PwmLfoSrc,
+    PwmLfoDepth,
+    PwmEnvSrc,
+    PwmEnvDepth,
+    // ── Cutoff route ──
+    CutoffLfoSrc,
+    CutoffLfoDepth,
+    CutoffEnvSrc,
+    CutoffEnvDepth,
+    VelCutoffDepth,
+    // ── Wide osc-2 pitch route (sync-sweep — osc2 only, octave range) ──
+    Osc2PitchEnvSrc,
+    Osc2PitchEnvDepth,
+    // ── Mod-wheel panel (independent of the per-channel selectors) ──
+    ModWheelPwm,
+    ModWheelCutoff,
+    ModWheelReso,
+    ModWheelOsc2Pitch,
+    // ── Voice assignment / glide (E003) ──
     AssignMode,
-    /// Unison per-channel detune spread (cents); 0 = all channels in tune.
     UnisonDetune,
-    /// Portamento (pitch glide) on/off for this layer (ADR 0003 §4).
     PortamentoOn,
-    /// Portamento glide time (s); 0 = instant (today's behaviour).
     PortamentoTime,
-    // ── E004 / 0015: LFO 1 host-tempo sync (LFO 2's sync is global) ──
-    /// LFO 1 host-sync on/off. When on, its rate knob selects a musical
-    /// subdivision locked to host tempo instead of free Hz.
-    LfoSync,
 }
 
 impl PatchParam {
-    pub const COUNT: usize = PatchParam::LfoSync as usize + 1;
-
-    /// In-block offset of the first modulation-matrix parameter (`Env1Pitch`).
-    pub const MATRIX_BASE: usize = PatchParam::Env1Pitch as usize;
+    pub const COUNT: usize = PatchParam::PortamentoTime as usize + 1;
 
     pub fn all() -> impl Iterator<Item = PatchParam> {
         (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
@@ -238,29 +309,6 @@ impl PatchParam {
         } else {
             None
         }
-    }
-
-    /// In-block offset where source `src`'s row of destination-depth params
-    /// begins. Single source of truth for the matrix layout — [`Self::matrix_index`],
-    /// [`Self::is_matrix_param`] and the engine's `build_ctx` all derive from it.
-    #[inline]
-    pub fn matrix_row_base(src: ModSource) -> usize {
-        Self::MATRIX_BASE + (src as usize) * ModDest::COUNT
-    }
-
-    /// In-block offset of the depth param for a `(source, destination)` route.
-    #[inline]
-    pub fn matrix_index(src: ModSource, dest: ModDest) -> usize {
-        Self::matrix_row_base(src) + (dest as usize)
-    }
-
-    /// Whether in-block offset `idx` is one of the modulation-depth params.
-    #[inline]
-    pub fn is_matrix_param(idx: usize) -> bool {
-        ModSource::ALL.iter().any(|&src| {
-            let base = Self::matrix_row_base(src);
-            (base..base + ModDest::COUNT).contains(&idx)
-        })
     }
 
     pub fn desc(self) -> &'static ParamDesc {
@@ -288,8 +336,9 @@ pub enum GlobalParam {
     DelayPingPong,
     // Quality
     Oversample,
-    // Global LFO 2 (E005 / 0019): a single instrument-wide LFO. Its routing
-    // depths (Lfo2Pitch … Lfo2Pwm) stay per-patch; shape/rate/sync are global.
+    // Global LFO 2 (E005 / 0019): a single instrument-wide LFO. It reaches the
+    // routes through the per-channel {Off/LFO1/LFO2} selectors; shape/rate/sync
+    // are global.
     Lfo2Shape,
     Lfo2Rate,
     Lfo2Sync,
@@ -456,8 +505,11 @@ const VARIANT_LABELS: &[&str] = &["Sharp", "Smooth"];
 const SHAPE_LABELS: &[&str] = &["Linear", "Exponential"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x"];
-const MOD_WHEEL_DEST_LABELS: &[&str] = &["Off", "Cutoff", "Osc2 Pitch"];
 const ASSIGN_LABELS: &[&str] = &["Poly", "Unison"];
+const LFO_SEL_LABELS: &[&str] = &["Off", "LFO 1", "LFO 2"];
+const ENV_SEL_LABELS: &[&str] = &["Off", "Env 1", "Env 2"];
+/// PM is labelled "FM" in the table — players expect that name (ADR 0004 §3).
+const CROSS_MOD_LABELS: &[&str] = &["Off", "Sync", "FM"];
 
 const fn f(
     name: &'static str,
@@ -519,109 +571,113 @@ const fn i(
         kind: ParamKind::Int { unit },
     }
 }
-/// Pitch-destination depth param (semitones). `default` lets LFO→Pitch seed a
-/// gentle default vibrato.
-const fn mp(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    f(name, label, -48.0, 48.0, default, "st", false)
+/// Vibrato-scaled pitch depth (semitones) for the common pitch channel: narrow
+/// range so the knob feel suits vibrato, not sweeps. `default` seeds the gentle
+/// always-on vibrato.
+const fn mp_vib(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    f(name, label, -12.0, 12.0, default, "st", false)
 }
-/// Cutoff-destination depth param (semitones of cutoff).
+/// Wide osc-2 pitch depth (semitones): octave range, for sync/cross-mod sweeps.
+const fn mp_wide(name: &'static str, label: &'static str) -> ParamDesc {
+    f(name, label, -48.0, 48.0, 0.0, "st", false)
+}
+/// Cutoff-destination depth (semitones of cutoff).
 const fn mc(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -96.0, 96.0, 0.0, "st", false)
 }
-/// Amp-destination depth param (gain). `default` lets ENV-2→Amp seed to 1.0.
-const fn ma(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    f(name, label, -1.0, 1.0, default, "", false)
-}
-/// PWM-destination depth param (pulse-width fraction).
+/// PWM-destination depth (pulse-width fraction).
 const fn mw(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -0.5, 0.5, 0.0, "", false)
+}
+/// LFO source selector.
+const fn lfosel(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    e(name, label, LFO_SEL_LABELS, default)
+}
+/// Env source selector.
+const fn envsel(name: &'static str, label: &'static str) -> ParamDesc {
+    e(name, label, ENV_SEL_LABELS, 0.0)
 }
 
 /// Per-patch descriptor table; indexed by [`PatchParam`] (= in-block offset).
 pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
+    // Oscillator 1
     e("osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
     i("osc1_coarse", "Osc 1 Coarse", -24.0, 24.0, 0.0, "st"),
     f("osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", false),
+    i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
     f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", false),
     f("osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", false),
+    // Oscillator 2
     e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
     i("osc2_coarse", "Osc 2 Coarse", -24.0, 24.0, -12.0, "st"),
     f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 7.0, "ct", false),
+    i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, 0.0, "oct"),
     f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", false),
     f("osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", false),
+    // Oscillator interaction
+    e("cross_mod_type", "Cross Mod", CROSS_MOD_LABELS, 0.0),
+    f("cross_mod_amount", "Cross Mod Amt", 0.0, 4.0, 0.0, "", false),
+    // Mixer
+    f("ring_level", "Ring Level", 0.0, 1.0, 0.0, "", false),
     e("noise_color", "Noise Color", NOISE_LABELS, 0.0),
     f("noise_level", "Noise Level", 0.0, 1.0, 0.0, "", false),
+    // Filter
     f("cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", false),
     f("drive", "Drive", 0.1, 4.0, 1.0, "", false),
     e("filter_variant", "Filter Type", VARIANT_LABELS, 0.0),
+    f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", true),
+    b("filter_key_track", "Key Track", 0.0),
+    // Envelope 1
     f("env1_attack", "Env 1 Attack", 0.001, 10.0, 0.005, "s", true),
     f("env1_decay", "Env 1 Decay", 0.001, 10.0, 0.3, "s", true),
     f("env1_sustain", "Env 1 Sustain", 0.0, 1.0, 0.0, "", false),
     f("env1_release", "Env 1 Release", 0.001, 10.0, 0.3, "s", true),
     e("env1_shape", "Env 1 Shape", SHAPE_LABELS, 0.0),
+    // Envelope 2 (VCA)
     f("env2_attack", "Env 2 Attack", 0.001, 10.0, 0.005, "s", true),
     f("env2_decay", "Env 2 Decay", 0.001, 10.0, 0.2, "s", true),
     f("env2_sustain", "Env 2 Sustain", 0.0, 1.0, 0.8, "", false),
     f("env2_release", "Env 2 Release", 0.001, 10.0, 0.3, "s", true),
     e("env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
-    // Modulation matrix (source-major, dest-minor). ENV-2→Amp seeds to 1.0.
-    mp("env1_pitch", "Env1→Pitch", 0.0),
-    mc("env1_cutoff", "Env1→Cutoff"),
-    ma("env1_amp", "Env1→Amp", 0.0),
-    mw("env1_pwm", "Env1→PWM"),
-    mp("env2_pitch", "Env2→Pitch", 0.0),
-    mc("env2_cutoff", "Env2→Cutoff"),
-    ma("env2_amp", "Env2→Amp", 1.0),
-    mw("env2_pwm", "Env2→PWM"),
-    // Gentle always-on vibrato by default (~5 cents at the 5 Hz LFO rate).
-    mp("lfo_pitch", "LFO1→Pitch", 0.05),
-    mc("lfo_cutoff", "LFO1→Cutoff"),
-    ma("lfo_amp", "LFO1→Amp", 0.0),
-    mw("lfo_pwm", "LFO1→PWM"),
-    // LFO 2 row (E004 / 0014) — all unrouted by default.
-    mp("lfo2_pitch", "LFO2→Pitch", 0.0),
-    mc("lfo2_cutoff", "LFO2→Cutoff"),
-    ma("lfo2_amp", "LFO2→Amp", 0.0),
-    mw("lfo2_pwm", "LFO2→PWM"),
-    mp("vel_pitch", "Vel→Pitch", 0.0),
-    mc("vel_cutoff", "Vel→Cutoff"),
-    ma("vel_amp", "Vel→Amp", 0.0),
-    mw("vel_pwm", "Vel→PWM"),
-    mp("key_pitch", "Key→Pitch", 0.0),
-    mc("key_cutoff", "Key→Cutoff"),
-    ma("key_amp", "Key→Amp", 0.0),
-    mw("key_pwm", "Key→PWM"),
+    // LFO 1
     e("lfo_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
     f("lfo_rate", "LFO 1 Rate", 0.01, 40.0, 5.0, "Hz", true),
-    // ── Appended after v1 (E001); in-block offsets stay stable above this line. ──
-    f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", true),
-    i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
-    i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, 0.0, "oct"),
+    b("lfo_sync", "LFO 1 Sync", 0.0),
     f("lfo1_delay_time", "LFO 1 Delay", 0.0, 4.0, 0.0, "s", false),
     f("lfo1_fade", "LFO 1 Fade", 0.0, 4.0, 0.0, "s", false),
     b("lfo1_free_run", "LFO 1 Free", 0.0),
-    // ── E002 (offsets stay stable above this line) ──
-    b("osc_sync", "Sync", 0.0),
-    f("cross_mod", "Cross Mod", 0.0, 1.0, 0.0, "", false),
-    e("mod_wheel_dest", "Mod Wheel", MOD_WHEEL_DEST_LABELS, 0.0),
-    f(
-        "mod_wheel_depth",
-        "Mod Wheel Depth",
-        -48.0,
-        48.0,
-        12.0,
-        "st",
-        false,
-    ),
-    // ── E003 (offsets stay stable above this line) ──
+    // Pitch route (common, vibrato-scaled). Default vibrato: LFO 1 → pitch at a
+    // gentle depth, so the default patch sounds as it did with the old matrix.
+    lfosel("pitch_lfo_src", "Pitch LFO", 1.0),
+    mp_vib("pitch_lfo_depth", "Pitch LFO Dep", 0.05),
+    envsel("pitch_env_src", "Pitch Env"),
+    mp_vib("pitch_env_depth", "Pitch Env Dep", 0.0),
+    f("pitch_wheel_depth", "Pitch Wheel", 0.0, 12.0, 2.0, "st", false),
+    // PWM route
+    lfosel("pwm_lfo_src", "PWM LFO", 0.0),
+    mw("pwm_lfo_depth", "PWM LFO Dep"),
+    envsel("pwm_env_src", "PWM Env"),
+    mw("pwm_env_depth", "PWM Env Dep"),
+    // Cutoff route
+    lfosel("cutoff_lfo_src", "Cutoff LFO", 0.0),
+    mc("cutoff_lfo_depth", "Cutoff LFO Dep"),
+    envsel("cutoff_env_src", "Cutoff Env"),
+    mc("cutoff_env_depth", "Cutoff Env Dep"),
+    mc("vel_cutoff_depth", "Vel→Cutoff"),
+    // Wide osc-2 pitch route
+    envsel("osc2_pitch_env_src", "Osc2 Pitch Env"),
+    mp_wide("osc2_pitch_env_depth", "Osc2 Pitch Dep"),
+    // Mod-wheel panel
+    mw("mod_wheel_pwm", "Wheel→PWM"),
+    mc("mod_wheel_cutoff", "Wheel→Cutoff"),
+    f("mod_wheel_reso", "Wheel→Reso", 0.0, 1.0, 0.0, "", false),
+    mp_wide("mod_wheel_osc2_pitch", "Wheel→Osc2"),
+    // Voice assignment / glide
     e("assign_mode", "Assign", ASSIGN_LABELS, 0.0),
     f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", false),
     b("portamento_on", "Glide", 0.0),
-    // Linear (not log) so 0 = instant is representable; range covers musical glides.
     f("portamento_time", "Glide Time", 0.0, 5.0, 0.0, "s", false),
-    // ── E004 / 0015: LFO 1 host-tempo sync (LFO 2's sync is global) ──
-    b("lfo_sync", "LFO 1 Sync", 0.0),
 ];
 
 /// Global descriptor table; indexed by [`GlobalParam`].
@@ -719,6 +775,24 @@ impl PatchValues {
 
     pub fn assign_mode(&self) -> AssignMode {
         AssignMode::from_index(enum_index(self.get(PatchParam::AssignMode), 1))
+    }
+
+    /// Read a per-channel LFO source selector.
+    pub fn lfo_sel(&self, p: PatchParam) -> LfoSel {
+        LfoSel::from_index(enum_index(self.get(p), LfoSel::COUNT - 1))
+    }
+
+    /// Read a per-channel envelope source selector.
+    pub fn env_sel(&self, p: PatchParam) -> EnvSel {
+        EnvSel::from_index(enum_index(self.get(p), EnvSel::COUNT - 1))
+    }
+
+    /// Read the oscillator-interaction type (Off / Sync / PM).
+    pub fn cross_mod_type(&self) -> CrossModType {
+        CrossModType::from_index(enum_index(
+            self.get(PatchParam::CrossModType),
+            CrossModType::COUNT - 1,
+        ))
     }
 
     pub fn env1_shape(&self) -> AdsrShape {
@@ -904,56 +978,31 @@ mod tests {
     }
 
     #[test]
-    fn matrix_layout_is_contiguous_and_ordered() {
-        // The 24 matrix params sit at MATRIX_BASE in source-major, dest-minor
-        // order within the per-patch block so matrix_index() addresses them.
-        assert_eq!(PatchParam::MATRIX_BASE, PatchParam::Env1Pitch.index());
-        assert_eq!(
-            PatchParam::matrix_index(ModSource::Env2, ModDest::Amp),
-            PatchParam::Env2Amp.index()
-        );
-        assert_eq!(
-            PatchParam::matrix_index(ModSource::KeyFollow, ModDest::Pwm),
-            PatchParam::KeyPwm.index()
-        );
-        assert_eq!(
-            PatchParam::matrix_index(ModSource::Lfo, ModDest::Cutoff),
-            PatchParam::LfoCutoff.index()
-        );
-        // LFO 2 is the 4th source row (E004 / 0014): its block is contiguous and
-        // ordered right after the LFO 1 row.
-        assert_eq!(
-            PatchParam::matrix_index(ModSource::Lfo2, ModDest::Pitch),
-            PatchParam::Lfo2Pitch.index()
-        );
-        assert_eq!(
-            PatchParam::matrix_index(ModSource::Lfo2, ModDest::Pwm),
-            PatchParam::Lfo2Pwm.index()
-        );
-        assert!(PatchParam::is_matrix_param(PatchParam::Lfo2Amp.index()));
-        assert!(PatchParam::is_matrix_param(PatchParam::Env1Pitch.index()));
-        assert!(!PatchParam::is_matrix_param(PatchParam::LfoShape.index()));
-        // ENV-2→Amp is the only route that defaults non-zero.
-        assert_eq!(PatchValues::default().get(PatchParam::Env2Amp), 1.0);
+    fn default_patch_keeps_gentle_vibrato() {
+        // The default patch routes LFO 1 → pitch at a gentle depth, so it sounds
+        // as it did under the old matrix.
+        let p = PatchValues::default();
+        assert_eq!(p.lfo_sel(PatchParam::PitchLfoSrc), LfoSel::Lfo1);
+        assert_eq!(p.get(PatchParam::PitchLfoDepth), 0.05);
+        // VCA is hardwired to Env2 (no Amp route to default non-zero).
+        assert_eq!(p.env_sel(PatchParam::PitchEnvSrc), EnvSel::Off);
     }
 
     #[test]
-    fn matrix_indexing_roundtrips_all_24_params() {
-        // 6 sources × 4 destinations, contiguous and source-major; every cell
-        // maps to a distinct in-block offset and back.
-        let mut seen = std::collections::BTreeSet::new();
-        for src in ModSource::ALL {
-            for dest in ModDest::ALL {
-                let idx = PatchParam::matrix_index(src, dest);
-                assert!(PatchParam::is_matrix_param(idx), "{src:?}->{dest:?} not flagged");
-                assert!(seen.insert(idx), "duplicate offset for {src:?}->{dest:?}");
-            }
+    fn route_selectors_roundtrip() {
+        let mut p = PatchValues::default();
+        p.set(PatchParam::CutoffLfoSrc, 2.0);
+        assert_eq!(p.lfo_sel(PatchParam::CutoffLfoSrc), LfoSel::Lfo2);
+        p.set(PatchParam::CutoffEnvSrc, 1.0);
+        assert_eq!(p.env_sel(PatchParam::CutoffEnvSrc), EnvSel::Env1);
+        for (idx, t) in [
+            (0.0, CrossModType::Off),
+            (1.0, CrossModType::Sync),
+            (2.0, CrossModType::Pm),
+        ] {
+            p.set(PatchParam::CrossModType, idx);
+            assert_eq!(p.cross_mod_type(), t);
         }
-        assert_eq!(seen.len(), ModSource::COUNT * ModDest::COUNT);
-        assert_eq!(seen.len(), 24);
-        // Contiguous run starting at MATRIX_BASE.
-        assert_eq!(*seen.iter().next().unwrap(), PatchParam::MATRIX_BASE);
-        assert_eq!(*seen.iter().last().unwrap(), PatchParam::MATRIX_BASE + 23);
     }
 
     #[test]

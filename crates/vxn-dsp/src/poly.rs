@@ -18,7 +18,7 @@
 
 use crate::CHANNELS_PER_LAYER;
 use crate::ladder::LadderCoeffs;
-use crate::math::{fast_exp2, fast_sine};
+use crate::math::fast_sine;
 use crate::noise::{NoiseColor, xorshift64};
 use crate::oscillator::Waveform;
 
@@ -180,13 +180,19 @@ impl PolyOscillator {
     }
 
     /// Coupled master(self=osc1)→slave(osc2) path carrying **hard sync** and
-    /// **cross-mod / linear FM** together (JP-8 VCO-2 sync + Cross Mod):
+    /// **through-zero phase modulation** (JP-8 VCO-2 sync + Cross Mod; ADR 0004
+    /// §7):
     ///
-    /// - **Cross-mod** (`xmod` = depth): osc2's current output modulates osc1's
-    ///   per-sample phase increment — `inc1 = base_inc1 * exp2(xmod * o2)`.
-    ///   Exponential (semitone-domain) FM keeps the perceived pitch centred as
-    ///   depth rises and matches the rest of the engine's pitch maths. At
-    ///   `xmod == 0`, `exp2(0) == 1.0` exactly, so the increment is untouched.
+    /// - **Phase mod** (`pm_index` = phase-deviation index, cycles): osc2's
+    ///   current output offsets osc1's **read phase** only — `o1 =
+    ///   osc_sample(wave1, frac(phase1 + pm_index·o2), …)` — while osc1's phase
+    ///   accumulator advances at its **unmodulated base increment**. The read
+    ///   uses a **two-sided wrap** (`x − x.floor()`) so the pointer can run
+    ///   backward through zero (through-zero PM); the carrier accumulator keeps
+    ///   its one-sided wrap. PM ≡ FM spectrally for these timbres but with no
+    ///   pitch drift and a constant `dt` (keeps polyBLEP valid and the sync
+    ///   master `dt` = base increment). At `pm_index == 0`, `read == phase1`
+    ///   exactly, so the output is untouched.
     /// - **Sync** (`sync`): when the master's phase wraps **sub-sample** at
     ///   fraction `frac ∈ (0,1]` into the sample, the slave resets to
     ///   `(1−frac)·inc` (the remainder of the current sample) instead of a hard
@@ -196,19 +202,21 @@ impl PolyOscillator {
     ///   the edge is BLEP-softened, cutting the aliasing the sample-accurate
     ///   reset sprayed.
     ///
-    /// osc2 is evaluated first because it is the FM source for osc1. This is the
-    /// slow path, taken only when `sync` is on **or** `xmod != 0`; plain patches
-    /// keep the vectorised [`process`](Self::process) fast path. The reset and
-    /// residual are mask-selected (not branched) so the lane loop still
-    /// vectorises. High-depth FM is still alias-prone; v1 leans on the engine's
-    /// oversampling for that.
+    /// Sync and PM are mutually exclusive at the engine (the `CrossModType`
+    /// selector picks one), but the kernel handles both at once and stays finite.
+    /// osc2 is evaluated first because it is the PM source for osc1. This is the
+    /// slow path, taken only when `sync` is on **or** `pm_index != 0`; plain
+    /// patches keep the vectorised [`process`](Self::process) fast path. The
+    /// reset and residual are mask-selected (not branched) so the lane loop still
+    /// vectorises. High-index PM is still alias-prone; v1 leans on the engine's
+    /// oversampling (and a sine-carrier bias) for that.
     #[inline]
     #[allow(clippy::too_many_arguments)] // two waves + two pw/out arrays is the coupled shape
     pub fn process_pair(
         &mut self,
         slave: &mut PolyOscillator,
         sync: bool,
-        xmod: f32,
+        pm_index: f32,
         wave1: Waveform,
         wave2: Waveform,
         pw1: &[f32; N],
@@ -221,7 +229,7 @@ impl PolyOscillator {
             let dt2 = slave.inc[v];
             let p2 = slave.phase[v];
 
-            // osc2 (slave) first — it is the FM source for osc1, and its output.
+            // osc2 (slave) first — it is the PM source for osc1, and its output.
             // On the sample *after* a sync reset (`sync_pending`), the slave sits
             // at the sub-sample reset phase, so emit the **bare** waveform value
             // plus the deferred polyBLEP residual rather than `osc_sample`'s
@@ -233,12 +241,18 @@ impl PolyOscillator {
             let s2 = free_val * (1.0 - pend) + bare_val * pend;
             o2[v] = s2;
 
-            // osc1 (master) increment modulated by osc2 (exponential FM). The
-            // modulated increment is also the polyblep `dt` and the master `dt`
-            // for the wrap-fraction maths, so band-limiting tracks the
-            // instantaneous frequency.
-            let inc1 = self.inc[v] * fast_exp2(xmod * s2);
-            o1[v] = osc_sample(wave1, self.phase[v], pw1[v], inc1);
+            // osc1 (master): through-zero phase modulation. The carrier advances
+            // at its base increment (also the polyBLEP `dt` and the master `dt`
+            // for the wrap maths); osc2 offsets only the read phase. The summed
+            // read wraps two-sided so it can run backward through zero, while the
+            // accumulator below keeps its one-sided wrap. `pm_index == 0` leaves
+            // `read == phase1`, so the fast path is reproduced bit-for-bit.
+            let inc1 = self.inc[v];
+            let read = {
+                let x = self.phase[v] + pm_index * s2;
+                x - x.floor()
+            };
+            o1[v] = osc_sample(wave1, read, pw1[v], inc1);
 
             // Advance the master, capturing the wrap and its sub-sample fraction:
             // when `np1 ≥ 1`, the wrap fell `frac ∈ (0,1]` into this sample,
@@ -281,6 +295,46 @@ impl PolyOscillator {
     }
 }
 
+// ── Ring modulator (Parker diode-bridge, DAFx-11) ──────────────────────────
+
+/// Half-wave diode with the Parker 5th-order I–V fit + tanh soft-clip, gain-
+/// compensated. Branchless: the `x > 0` clamp is a multiply mask (the reference
+/// early-returns 0 for non-positive inputs) so the lane loop vectorises. `gain` =
+/// `10^(drive_dB/20)`; low gain ≈ near-ideal multiply, high gain = harmonic
+/// colouring. Ported from `patches-modules::modulators::ring_mod::diode`.
+#[inline(always)]
+fn ring_diode(x: f32, gain: f32) -> f32 {
+    let i = x * gain;
+    let i2 = i * i;
+    let i3 = i2 * i;
+    let i4 = i3 * i;
+    let i5 = i4 * i;
+    let v = i5 * (-0.0025) + i4 * 0.0451 + i3 * (-0.3043) + i2 * 0.9589 + i * (-0.3828) + 0.0061;
+    let mask = (x > 0.0) as u32 as f32;
+    tanh_c(v) / gain * mask
+}
+
+/// Push-pull diode pair (full-wave): processes both polarities of `x`. Even in
+/// `x`, so `diode_block(c) == diode_block(-c)` — the property that silences a
+/// zero-signal input.
+#[inline(always)]
+fn ring_diode_block(x: f32, gain: f32) -> f32 {
+    ring_diode(x, gain) + ring_diode(-x, gain)
+}
+
+/// Parker diode-bridge ring modulator over a layer's voices (SoA, stateless):
+/// `out[v] = diode_block(o1 + ½·o2) − diode_block(o1 − ½·o2)`. Zero on either
+/// input ⇒ ~silence (a zero carrier makes the two blocks equal; the block is
+/// even, so a zero signal does too). `gain` is the diode operating point. The
+/// caller scales the result by `RingLevel` and sums it into the mixer.
+#[inline]
+pub fn poly_ring_mod(o1: &[f32; N], o2: &[f32; N], gain: f32, out: &mut [f32; N]) {
+    for v in 0..N {
+        let c = o2[v] * 0.5;
+        out[v] = ring_diode_block(o1[v] + c, gain) - ring_diode_block(o1[v] - c, gain);
+    }
+}
+
 // ── PolyNoise ─────────────────────────────────────────────────────────────
 
 /// 16-voice noise generator with per-voice PRNG + colour-shaping state.
@@ -290,7 +344,6 @@ pub struct PolyNoise {
     pink0: [f32; N],
     pink1: [f32; N],
     pink2: [f32; N],
-    brown: [f32; N],
 }
 
 impl PolyNoise {
@@ -302,7 +355,6 @@ impl PolyNoise {
             pink0: [0.0; N],
             pink1: [0.0; N],
             pink2: [0.0; N],
-            brown: [0.0; N],
         }
     }
 
@@ -310,7 +362,6 @@ impl PolyNoise {
         self.pink0 = [0.0; N];
         self.pink1 = [0.0; N];
         self.pink2 = [0.0; N];
-        self.brown = [0.0; N];
     }
 
     /// One sample per voice into `out`. `color` is global.
@@ -330,13 +381,6 @@ impl PolyNoise {
                     self.pink2[v] = 0.57000 * self.pink2[v] + white * 1.0526913;
                     out[v] =
                         (self.pink0[v] + self.pink1[v] + self.pink2[v] + white * 0.1848) * 0.11;
-                }
-            }
-            NoiseColor::Brown => {
-                for v in 0..N {
-                    let white = xorshift64(&mut self.state[v]);
-                    self.brown[v] = (self.brown[v] + white * 0.02).clamp(-1.0, 1.0);
-                    out[v] = self.brown[v];
                 }
             }
         }
@@ -799,8 +843,8 @@ mod tests {
 
     #[test]
     fn coupled_xmod_zero_matches_fast_path() {
-        // The coupled path with sync off and cross-mod 0 must be bit-identical to
-        // the independent fast path (`exp2(0) == 1`, no reset), so plain patches
+        // The coupled path with sync off and PM index 0 must be bit-identical to
+        // the independent fast path (`read == phase1`, no reset), so plain patches
         // selecting the fast path lose nothing.
         let mut a1 = PolyOscillator::new();
         let mut a2 = PolyOscillator::new();
@@ -886,6 +930,52 @@ mod tests {
             modulated > 10.0 * clean.max(1e-6),
             "cross-mod produced no sideband: clean {clean}, modulated {modulated}"
         );
+    }
+
+    /// Default ring drive gain (mirrors the engine's fixed operating point).
+    fn ring_gain() -> f32 {
+        10.0_f32.powf(1.0 / 20.0)
+    }
+
+    #[test]
+    fn ring_mod_zero_input_silences() {
+        // Zero carrier (o2) or zero signal (o1) ⇒ ~silence (mirrors patches'
+        // zero_carrier_silences_output / zero_signal_silences_output).
+        let g = ring_gain();
+        let mut out = [1.0; N];
+        // Zero carrier across all lanes.
+        poly_ring_mod(&[0.7; N], &[0.0; N], g, &mut out);
+        assert!(out.iter().all(|y| y.abs() < 1e-6), "zero carrier not silent");
+        // Zero signal across all lanes.
+        poly_ring_mod(&[0.0; N], &[0.7; N], g, &mut out);
+        assert!(out.iter().all(|y| y.abs() < 1e-6), "zero signal not silent");
+    }
+
+    #[test]
+    fn ring_mod_nonzero_inputs_produce_output() {
+        let mut out = [0.0; N];
+        poly_ring_mod(&[0.5; N], &[0.5; N], ring_gain(), &mut out);
+        assert!(out.iter().all(|y| y.abs() > 1e-4), "expected nonzero output");
+    }
+
+    #[test]
+    fn ring_mod_antisymmetric_and_finite() {
+        // Negating either input negates the output; all lanes (incl. a frozen
+        // zero lane) stay finite across a range of drives.
+        let mut a = [0.0; N];
+        let mut b = [0.0; N];
+        let sig: [f32; N] = std::array::from_fn(|v| 0.3 + v as f32 * 0.05);
+        let car: [f32; N] = std::array::from_fn(|v| 0.6 - v as f32 * 0.03);
+        let neg_sig: [f32; N] = std::array::from_fn(|v| -sig[v]);
+        for drive_db in [0.2_f32, 1.0, 6.0, 20.0] {
+            let g = 10.0_f32.powf(drive_db / 20.0);
+            poly_ring_mod(&sig, &car, g, &mut a);
+            poly_ring_mod(&neg_sig, &car, g, &mut b);
+            for v in 0..N {
+                assert!(a[v].is_finite() && b[v].is_finite(), "non-finite @ {drive_db}");
+                assert!((a[v] + b[v]).abs() < 1e-5, "not antisymmetric in signal");
+            }
+        }
     }
 
     #[test]

@@ -29,9 +29,11 @@ fn setup(fx: bool, res: f32, os: f32) -> Synth {
     s.set_param(gp(GlobalParam::Oversample), os);
     s.set_param(pp(PatchParam::Resonance), res);
     s.set_param(pp(PatchParam::NoiseLevel), 0.2);
-    // Route ENV-1 -> cutoff and LFO -> pitch so the matrix is doing real work.
-    s.set_param(pp(PatchParam::Env1Cutoff), 24.0);
-    s.set_param(pp(PatchParam::LfoPitch), 3.0);
+    // Route Env 1 -> cutoff and LFO 1 -> pitch so the fixed routes do real work.
+    s.set_param(pp(PatchParam::CutoffEnvSrc), 1.0); // Env 1
+    s.set_param(pp(PatchParam::CutoffEnvDepth), 24.0);
+    s.set_param(pp(PatchParam::PitchLfoSrc), 1.0); // LFO 1
+    s.set_param(pp(PatchParam::PitchLfoDepth), 3.0);
     for n in 48..64u8 {
         s.note_on(n, 1.0);
     }

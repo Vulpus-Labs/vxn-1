@@ -4,7 +4,6 @@
 //! in fixed control blocks. The CLAP layer drives it with note/param events
 //! and contiguous output slices; the UI reads and writes [`ParamValues`].
 
-pub mod modmatrix;
 pub mod params;
 pub mod shared;
 pub mod smoothing;
@@ -12,11 +11,11 @@ pub mod state;
 pub mod sync;
 pub mod voice;
 
-pub use modmatrix::{ModDest, ModMatrix, ModSource};
 pub use params::{
-    DEFAULT_SPLIT_POINT, GLOBAL_PARAMS, GlobalParam, GlobalValues, KeyMode, Layer, PATCH_PARAMS,
-    ParamDesc, ParamKind, ParamRef, ParamValues, PatchParam, PatchValues, TOTAL_PARAMS,
-    desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref, patch_clap_id,
+    CrossModType, DEFAULT_SPLIT_POINT, EnvSel, GLOBAL_PARAMS, GlobalParam, GlobalValues, KeyMode,
+    Layer, LfoSel, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, ParamValues, PatchParam,
+    PatchValues, TOTAL_PARAMS, desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref,
+    patch_clap_id,
 };
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;
@@ -25,7 +24,7 @@ pub use state::PluginState;
 use voice::{BlockCtx, Lfo1Trigger, VoiceBank};
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, Smoothed, StereoChorus,
-    StereoDelay, fast_exp2, note_to_hz,
+    StereoDelay, note_to_hz,
 };
 
 /// Mod-wheel (CC1) glide time (ms), applied at the control-block rate. Rounds
@@ -74,9 +73,9 @@ pub struct Synth {
     delay: StereoDelay,
     /// Anti-aliasing decimator for the oversampled synthesis path.
     oversampler: Oversampler,
-    /// Pitch bend in semitones (±2 by default range). Global value, applied per
-    /// layer (ADR 0003 §9).
-    bend_semis: f32,
+    /// Pitch bend in normalised `[-1, 1]`. Global value; each layer scales it by
+    /// its own `PitchWheelDepth` in `build_ctx` (ADR 0003 §9, ADR 0004 §5).
+    bend_norm: f32,
     /// Mod-wheel (CC1) position in `[0, 1]`, smoothed at the control rate.
     /// Global value; each layer applies it via its own routing params.
     mod_wheel: Smoothed,
@@ -115,7 +114,7 @@ impl Synth {
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
             oversampler: Oversampler::new(),
-            bend_semis: 0.0,
+            bend_norm: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
             key_mode: KeyMode::Whole,
             split_point: DEFAULT_SPLIT_POINT,
@@ -160,13 +159,15 @@ impl Synth {
         self.params.set_by_clap_id(index, value);
     }
 
-    /// Pitch bend in normalised `[-1, 1]`; mapped to ±2 semitones.
+    /// Pitch bend in normalised `[-1, 1]`. The semitone span is the layer's
+    /// `PitchWheelDepth` (default ±2 st), applied in `build_ctx`.
     pub fn set_pitch_bend(&mut self, normalized: f32) {
-        self.bend_semis = normalized.clamp(-1.0, 1.0) * 2.0;
+        self.bend_norm = normalized.clamp(-1.0, 1.0);
     }
 
-    /// Mod wheel (CC1) in normalised `[0, 1]`. Routed in `build_ctx` per
-    /// [`PatchParam::ModWheelDest`]; smoothed at the control rate.
+    /// Mod wheel (CC1) in normalised `[0, 1]`. Routed in `build_ctx` through the
+    /// mod-wheel panel depths (PWM / cutoff / reso / osc2 pitch); smoothed at the
+    /// control rate.
     pub fn set_mod_wheel(&mut self, normalized: f32) {
         self.mod_wheel.set_target(normalized.clamp(0.0, 1.0));
     }
@@ -441,30 +442,18 @@ impl Synth {
         // shape + onset times. LFO 2 is the global LFO, already sampled.
         let lfo1_rate_hz = lfo_rate(p, PatchParam::LfoRate, PatchParam::LfoSync, tempo);
 
-        // Pull the depth params into the matrix via the layout's own index
-        // mapping: iterating `ModSource::ALL` now picks up the Lfo2 row (6×4)
-        // with no special-casing here — only `PatchParam::matrix_row_base`.
-        let mut matrix = ModMatrix::new();
-        for (s, &mod_src) in ModSource::ALL.iter().enumerate() {
-            for (d, &dest) in ModDest::ALL.iter().enumerate() {
-                matrix.depth[s][d] = p.get_index(PatchParam::matrix_index(mod_src, dest));
-            }
-        }
+        // Cross-mod type selector → (sync flag, PM index). Off zeroes both, so
+        // the voice keeps the independent fast path; Sync and PM never coexist.
+        let (sync, pm_index) = match p.cross_mod_type() {
+            CrossModType::Off => (false, 0.0),
+            CrossModType::Sync => (true, 0.0),
+            CrossModType::Pm => (false, p.get(PatchParam::CrossModAmount)),
+        };
 
-        // Mod wheel (CC1): a global control applied here, not per-voice — like
-        // pitch bend riding `base_semis`. The semitone-domain amount feeds either
-        // the cutoff (octaves) or osc2 pitch per this layer's routing.
-        let mw_amount = wheel * p.get(PatchParam::ModWheelDepth);
-        let mw_dest = p.get(PatchParam::ModWheelDest).round() as i32;
-        let mut cutoff = p.get(PatchParam::Cutoff);
-        let mut osc2_semi = p.get(PatchParam::Osc2Octave) * 12.0
-            + p.get(PatchParam::Osc2Coarse)
-            + p.get(PatchParam::Osc2Fine) / 100.0;
-        match mw_dest {
-            1 => cutoff *= fast_exp2(mw_amount / 12.0), // Cutoff: semitone-domain scale
-            2 => osc2_semi += mw_amount,                // Osc2 Pitch: add semitones
-            _ => {}                                     // Off
-        }
+        // Mod wheel (CC1) is a global control applied once per block, folded into
+        // the route `*_extra` terms (and resonance) here rather than per voice.
+        let resonance =
+            (p.get(PatchParam::Resonance) + wheel * p.get(PatchParam::ModWheelReso)).clamp(0.0, 1.0);
 
         BlockCtx {
             os_sample_rate: self.sample_rate * os as f32,
@@ -473,30 +462,53 @@ impl Synth {
             osc2_wave: p.osc_wave(PatchParam::Osc2Wave),
             osc1_level: p.get(PatchParam::Osc1Level),
             osc2_level: p.get(PatchParam::Osc2Level),
+            ring_level: p.get(PatchParam::RingLevel),
             noise_level: p.get(PatchParam::NoiseLevel),
             osc1_pw: p.get(PatchParam::Osc1PulseWidth),
             osc2_pw: p.get(PatchParam::Osc2PulseWidth),
             osc1_semi: p.get(PatchParam::Osc1Octave) * 12.0
                 + p.get(PatchParam::Osc1Coarse)
                 + p.get(PatchParam::Osc1Fine) / 100.0,
-            osc2_semi,
+            osc2_semi: p.get(PatchParam::Osc2Octave) * 12.0
+                + p.get(PatchParam::Osc2Coarse)
+                + p.get(PatchParam::Osc2Fine) / 100.0,
             noise_color: p.noise_color(),
-            cutoff,
+            cutoff: p.get(PatchParam::Cutoff),
             hpf_cutoff: p.get(PatchParam::HpfCutoff),
-            resonance: p.get(PatchParam::Resonance),
+            resonance,
             drive: p.get(PatchParam::Drive),
             variant: p.filter_variant(),
-            base_semis: g.get(GlobalParam::MasterTune) + self.bend_semis,
+            base_semis: g.get(GlobalParam::MasterTune),
             lfo1_shape: p.lfo_shape(),
             lfo1_rate_hz,
             lfo1_delay_time: p.get(PatchParam::Lfo1DelayTime),
             lfo1_fade: p.get(PatchParam::Lfo1Fade),
             lfo2_val,
-            sync: p.bool(PatchParam::OscSync),
-            cross_mod: p.get(PatchParam::CrossMod),
+            sync,
+            pm_index,
             portamento_on: p.bool(PatchParam::PortamentoOn),
             portamento_time: p.get(PatchParam::PortamentoTime),
-            matrix,
+            // Fixed routes (ADR 0004 §4).
+            pitch_lfo_sel: p.lfo_sel(PatchParam::PitchLfoSrc),
+            pitch_lfo_depth: p.get(PatchParam::PitchLfoDepth),
+            pitch_env_sel: p.env_sel(PatchParam::PitchEnvSrc),
+            pitch_env_depth: p.get(PatchParam::PitchEnvDepth),
+            pitch_extra: self.bend_norm * p.get(PatchParam::PitchWheelDepth),
+            pwm_lfo_sel: p.lfo_sel(PatchParam::PwmLfoSrc),
+            pwm_lfo_depth: p.get(PatchParam::PwmLfoDepth),
+            pwm_env_sel: p.env_sel(PatchParam::PwmEnvSrc),
+            pwm_env_depth: p.get(PatchParam::PwmEnvDepth),
+            pwm_extra: wheel * p.get(PatchParam::ModWheelPwm),
+            cutoff_lfo_sel: p.lfo_sel(PatchParam::CutoffLfoSrc),
+            cutoff_lfo_depth: p.get(PatchParam::CutoffLfoDepth),
+            cutoff_env_sel: p.env_sel(PatchParam::CutoffEnvSrc),
+            cutoff_env_depth: p.get(PatchParam::CutoffEnvDepth),
+            cutoff_vel_depth: p.get(PatchParam::VelCutoffDepth),
+            cutoff_extra: wheel * p.get(PatchParam::ModWheelCutoff),
+            filter_key_track: p.bool(PatchParam::FilterKeyTrack),
+            osc2_pitch_env_sel: p.env_sel(PatchParam::Osc2PitchEnvSrc),
+            osc2_pitch_env_depth: p.get(PatchParam::Osc2PitchEnvDepth),
+            osc2_pitch_extra: wheel * p.get(PatchParam::ModWheelOsc2Pitch),
         }
     }
 }
@@ -611,20 +623,20 @@ mod tests {
     }
 
     #[test]
-    fn vca_is_driven_by_env2_to_amp_route() {
-        // Zeroing the ENV-2→Amp route should silence the voice even while held,
-        // proving the VCA gain comes from the modulation matrix. The depth is a
-        // block-rate-smoothed param, so it glides to zero over ~10 ms; assert on
-        // the settled tail rather than the glide transient.
+    fn vca_follows_env2() {
+        // The VCA is hardwired to Env2 (ADR 0004 §4): a held note with Env2
+        // sustain 0 and a fast decay settles to silence, proving the amp gain
+        // comes from Env2 directly.
         let mut s = Synth::new(48_000.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(pp(PatchParam::Env2Amp), 0.0);
+        s.set_param(pp(PatchParam::Env2Decay), 0.01);
+        s.set_param(pp(PatchParam::Env2Sustain), 0.0);
         s.note_on(69, 1.0);
         let (l, _) = render(&mut s, 48_000);
         let tail = &l[l.len() - 4800..];
         assert!(
             rms(tail) < 1e-6,
-            "Env2→Amp=0 should settle to silence, got {}",
+            "Env2 sustain 0 should settle to silence, got {}",
             rms(tail)
         );
     }
@@ -647,7 +659,7 @@ mod tests {
         s.set_param(pp(PatchParam::Osc1Wave), 0.0); // Sine
         s.set_param(pp(PatchParam::Osc2Level), 0.0);
         s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-        s.set_param(pp(PatchParam::LfoPitch), 0.0); // kill default vibrato
+        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0); // kill default vibrato
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
@@ -710,43 +722,112 @@ mod tests {
     }
 
     #[test]
-    fn lfo1_onset_holds_then_fades_modulation_in() {
-        // LFO 1→Amp is the only VCA route (zero ENV-2→Amp). With a 0.5 s delay
-        // then a 0.5 s fade, the amp is ~silent through the delay, low across the
-        // fade, and full once settled (E005 / 0018 two-stage onset).
-        fn amp_swing(window: std::ops::Range<usize>) -> f32 {
-            let mut s = Synth::new(48_000.0);
-            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-            s.set_param(pp(PatchParam::Env2Amp), 0.0);
-            s.set_param(pp(PatchParam::LfoRate), 4.0);
-            s.set_param(pp(PatchParam::LfoAmp), 1.0);
-            s.set_param(pp(PatchParam::Lfo1DelayTime), 0.5);
-            s.set_param(pp(PatchParam::Lfo1Fade), 0.5);
-            s.note_on(69, 1.0);
-            let (l, _) = render(&mut s, 96_000);
-            rms(&l[window])
+    fn ring_level_mixes_in_and_zero_is_inert() {
+        // RingLevel > 0 mixes the osc1×osc2 ring signal in alongside the oscs,
+        // changing the timbre and staying finite; RingLevel 0 is the inert
+        // fast path (its output matches a no-ring render exactly).
+        fn render_ring(level: f32) -> Vec<f32> {
+            let mut s = pitched_synth();
+            s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
+            s.set_param(pp(PatchParam::Osc2Wave), 0.0);
+            s.set_param(pp(PatchParam::Osc1Level), 0.5);
+            s.set_param(pp(PatchParam::Osc2Level), 0.5);
+            s.set_param(pp(PatchParam::Osc2Coarse), 5.0); // inharmonic vs osc1
+            s.set_param(pp(PatchParam::RingLevel), level);
+            s.note_on(45, 1.0);
+            render(&mut s, 12_000).0
         }
-        // During the delay (≈0.2–0.4 s) vs settled past delay+fade (>1 s).
-        let during_delay = amp_swing(9600..19_200);
-        let settled = amp_swing(58_000..67_600);
+        let dry = render_ring(0.0);
+        assert_eq!(dry, render_ring(0.0), "RingLevel 0 path not deterministic");
+        let wet = render_ring(0.8);
+        assert!(wet.iter().all(|x| x.is_finite()), "ring output not finite");
+        let diff = mean_abs_diff(&dry[4800..], &wet[4800..]);
+        assert!(diff > 1e-3, "RingLevel did not change the output: {diff}");
+    }
+
+    #[test]
+    fn filter_key_track_opens_cutoff_with_pitch() {
+        // Key-track on: a high note sits a fixed octave-per-octave higher in
+        // cutoff than with key-track off, so a saw plays brighter. Off: the note
+        // pitch has no influence on cutoff. (ADR 0004 §4.)
+        fn bright(key_track: bool) -> f32 {
+            let mut s = pitched_synth();
+            s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
+            s.set_param(pp(PatchParam::Cutoff), 300.0); // dark base
+            s.set_param(pp(PatchParam::Resonance), 0.0);
+            s.set_param(pp(PatchParam::FilterKeyTrack), if key_track { 1.0 } else { 0.0 });
+            s.note_on(72, 1.0); // a high note → large key-track shift when on
+            let (l, _) = render(&mut s, 24_000);
+            assert!(l.iter().all(|x| x.is_finite()), "key-track output not finite");
+            rms(&l[4800..])
+        }
+        let off = bright(false);
+        let on = bright(true);
         assert!(
-            during_delay < 0.1 * settled,
-            "LFO 1 onset did not hold then open: delay {during_delay}, settled {settled}"
+            on > 1.5 * off,
+            "key-track did not open the filter with pitch: off {off}, on {on}"
+        );
+    }
+
+    /// Render a saw with LFO 1 → cutoff at the given onset, capturing `window`.
+    /// `depth = 0` is the no-LFO baseline (the route contributes nothing).
+    fn lfo1_cutoff_render(
+        depth: f32,
+        delay: f32,
+        fade: f32,
+        rate: f32,
+        window: std::ops::Range<usize>,
+    ) -> Vec<f32> {
+        let mut s = pitched_synth();
+        s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
+        s.set_param(pp(PatchParam::Cutoff), 1000.0);
+        s.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
+        s.set_param(pp(PatchParam::CutoffLfoDepth), depth);
+        s.set_param(pp(PatchParam::LfoRate), rate);
+        s.set_param(pp(PatchParam::Lfo1DelayTime), delay);
+        s.set_param(pp(PatchParam::Lfo1Fade), fade);
+        s.note_on(69, 1.0);
+        let (l, _) = render(&mut s, 96_000);
+        l[window].to_vec()
+    }
+
+    fn mean_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32
+    }
+
+    #[test]
+    fn lfo1_onset_holds_then_fades_modulation_in() {
+        // With a 0.5 s delay then 0.5 s fade, LFO 1's value is gated to zero
+        // through the delay, so an LFO 1 → cutoff route contributes nothing and
+        // the output matches the no-LFO baseline; once settled the filter sweeps
+        // and the output diverges (E005 / 0018 two-stage onset).
+        let during = 9600..19_200;
+        let settled = 58_000..67_600;
+        let delay_diff = mean_abs_diff(
+            &lfo1_cutoff_render(0.0, 0.5, 0.5, 4.0, during.clone()),
+            &lfo1_cutoff_render(48.0, 0.5, 0.5, 4.0, during),
+        );
+        let settled_diff = mean_abs_diff(
+            &lfo1_cutoff_render(0.0, 0.5, 0.5, 4.0, settled.clone()),
+            &lfo1_cutoff_render(48.0, 0.5, 0.5, 4.0, settled),
+        );
+        assert!(delay_diff < 1e-6, "LFO 1 not held at zero in the delay: {delay_diff}");
+        assert!(
+            settled_diff > 1e-3,
+            "LFO 1 did not open after delay+fade: {settled_diff}"
         );
     }
 
     #[test]
     fn lfo1_onset_zero_matches_immediate_modulation() {
-        // Delay 0 + fade 0: LFO 1 is at full depth from the first block.
-        let mut s = Synth::new(48_000.0);
-        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(pp(PatchParam::LfoRate), 6.0);
-        s.set_param(pp(PatchParam::LfoAmp), 1.0);
-        s.set_param(pp(PatchParam::Lfo1DelayTime), 0.0);
-        s.set_param(pp(PatchParam::Lfo1Fade), 0.0);
-        s.note_on(69, 1.0);
-        let (l, _) = render(&mut s, 9600);
-        assert!(rms(&l[0..4800]) > 0.01, "0/0 onset should modulate at once");
+        // Delay 0 + fade 0: LFO 1 modulates at full depth from the first block,
+        // so the LFO 1 → cutoff route diverges from the no-LFO baseline at once.
+        let win = 0..4800;
+        let diff = mean_abs_diff(
+            &lfo1_cutoff_render(0.0, 0.0, 0.0, 6.0, win.clone()),
+            &lfo1_cutoff_render(48.0, 0.0, 0.0, 6.0, win),
+        );
+        assert!(diff > 1e-3, "0/0 onset should modulate at once: {diff}");
     }
 
     #[test]
@@ -759,7 +840,8 @@ mod tests {
         // (the synced formant), and every render stays finite.
         fn render_sync(sync: bool, osc2_coarse: f32) -> Vec<f32> {
             let mut s = pitched_synth();
-            s.set_param(pp(PatchParam::OscSync), if sync { 1.0 } else { 0.0 });
+            // CrossModType: Sync (1) engages the band-limited hard sync.
+            s.set_param(pp(PatchParam::CrossModType), if sync { 1.0 } else { 0.0 });
             s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw master
             s.set_param(pp(PatchParam::Osc2Wave), 2.0); // saw slave
             s.set_param(pp(PatchParam::Osc2Level), 0.8);
@@ -789,17 +871,22 @@ mod tests {
 
     #[test]
     fn cross_mod_adds_content_and_stays_finite() {
-        // Cross-mod with osc2 at an inharmonic interval injects a sideband at
-        // f(osc1)+f(osc2). Measure that bin via a single-bin DFT: ≈0 at depth 0,
-        // present at depth > 0, output finite throughout.
+        // Through-zero PM (CrossModType::Pm) with osc2 at an inharmonic interval
+        // injects a sideband at f(osc1)+f(osc2). Measure that bin via a single-bin
+        // DFT: ≈0 with PM off, present at index > 0, output finite throughout.
         let sr = 48_000.0;
         let f1 = note_to_hz(45.0); // A2 ≈ 110 Hz carrier
         let f2 = note_to_hz(45.0 + 5.0); // osc2 +5 st (inharmonic)
-        fn sideband(cross_mod: f32, side_hz: f32, sr: f32) -> (f32, bool) {
+        fn sideband(pm_index: f32, side_hz: f32, sr: f32) -> (f32, bool) {
             let mut s = pitched_synth();
             s.set_param(pp(PatchParam::Osc2Level), 0.0); // carrier audible alone
             s.set_param(pp(PatchParam::Osc2Coarse), 5.0); // inharmonic vs osc1
-            s.set_param(pp(PatchParam::CrossMod), cross_mod);
+            // PM mode when index > 0; Off (independent path) at index 0.
+            s.set_param(
+                pp(PatchParam::CrossModType),
+                if pm_index > 0.0 { 2.0 } else { 0.0 },
+            );
+            s.set_param(pp(PatchParam::CrossModAmount), pm_index);
             s.note_on(45, 1.0);
             let (l, _) = render(&mut s, 24_000);
             let finite = l.iter().all(|x| x.is_finite());
@@ -834,7 +921,7 @@ mod tests {
         s.set_param(pp(PatchParam::Osc2Coarse), 0.0);
         s.set_param(pp(PatchParam::Osc2Fine), 0.0);
         s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-        s.set_param(pp(PatchParam::LfoPitch), 0.0);
+        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
@@ -863,15 +950,14 @@ mod tests {
 
     #[test]
     fn mod_wheel_osc2_pitch_shifts_osc2() {
-        // dest = Osc2 Pitch, depth 12 st, wheel full → osc2 up an octave (×2).
+        // Wheel→Osc2 pitch depth 12 st, wheel full → osc2 up an octave (×2).
         let mut base = osc2_sine_synth();
         base.note_on(57, 1.0); // 220 Hz
         let (l0, _) = render(&mut base, 24_000);
         let f0 = dominant_hz(&l0[4800..], 48_000.0);
 
         let mut up = osc2_sine_synth();
-        up.set_param(pp(PatchParam::ModWheelDest), 2.0); // Osc2 Pitch
-        up.set_param(pp(PatchParam::ModWheelDepth), 12.0);
+        up.set_param(pp(PatchParam::ModWheelOsc2Pitch), 12.0);
         up.set_mod_wheel(1.0);
         up.note_on(57, 1.0);
         let (l1, _) = render(&mut up, 24_000);
@@ -884,16 +970,15 @@ mod tests {
     }
 
     #[test]
-    fn mod_wheel_off_is_inert() {
-        // dest = Off: a full wheel changes nothing, even with depth set.
+    fn mod_wheel_zero_depth_is_inert() {
+        // With every mod-wheel depth at zero (default), a full wheel changes
+        // nothing — the panel routes are independent and all start unrouted.
         let mut base = osc2_sine_synth();
         base.note_on(57, 1.0);
         let (l0, _) = render(&mut base, 24_000);
         let f0 = dominant_hz(&l0[4800..], 48_000.0);
 
         let mut off = osc2_sine_synth();
-        off.set_param(pp(PatchParam::ModWheelDest), 0.0); // Off
-        off.set_param(pp(PatchParam::ModWheelDepth), 12.0);
         off.set_mod_wheel(1.0);
         off.note_on(57, 1.0);
         let (l1, _) = render(&mut off, 24_000);
@@ -901,26 +986,25 @@ mod tests {
 
         assert!(
             (f1 / f0 - 1.0).abs() < 0.02,
-            "wheel Off shifted pitch: {f0} -> {f1}"
+            "zero-depth wheel shifted pitch: {f0} -> {f1}"
         );
     }
 
     #[test]
     fn mod_wheel_cutoff_moves_cutoff() {
-        // dest = Cutoff: a full wheel opens the filter, passing more saw
+        // Wheel→Cutoff: a full wheel opens the filter, passing more saw
         // harmonics → higher RMS than the dark baseline.
         fn bright(wheel: f32) -> f32 {
             let mut s = Synth::new(48_000.0);
             s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw (harmonic-rich)
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
             s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
             s.set_param(pp(PatchParam::Cutoff), 200.0); // dark base
             s.set_param(pp(PatchParam::Resonance), 0.0);
-            s.set_param(pp(PatchParam::ModWheelDest), 1.0); // Cutoff
-            s.set_param(pp(PatchParam::ModWheelDepth), 48.0); // ×2^4 = 16
+            s.set_param(pp(PatchParam::ModWheelCutoff), 48.0); // ×2^4 = 16
             s.set_mod_wheel(wheel);
             s.note_on(45, 1.0); // 110 Hz, many harmonics
             let (l, _) = render(&mut s, 24_000);
@@ -1001,17 +1085,18 @@ mod tests {
 
     #[test]
     fn lfo2_zero_depth_matches_pre_change_output() {
-        // With every LFO2 depth at 0, the engine reproduces the single-LFO output
-        // bit-for-bit — the global LFO 2 contributes nothing. (Its shape/rate are
-        // global params now.)
+        // No route selects LFO 2 (only LFO 1 → cutoff here), so ticking the
+        // global LFO 2 with a live rate/shape reproduces the output bit-for-bit.
         let mut a = pitched_synth();
-        a.set_param(pp(PatchParam::LfoCutoff), 24.0);
+        a.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
+        a.set_param(pp(PatchParam::CutoffLfoDepth), 24.0);
         a.note_on(57, 1.0);
         let (base, _) = render(&mut a, 12_000);
 
-        // Same patch, but tick the global LFO 2 with a live rate/shape (depths 0).
+        // Same patch, but tick the global LFO 2 with a live rate/shape (unrouted).
         let mut b = pitched_synth();
-        b.set_param(pp(PatchParam::LfoCutoff), 24.0);
+        b.set_param(pp(PatchParam::CutoffLfoSrc), 1.0);
+        b.set_param(pp(PatchParam::CutoffLfoDepth), 24.0);
         b.set_param(gp(GlobalParam::Lfo2Rate), 3.0);
         b.set_param(gp(GlobalParam::Lfo2Shape), 5.0); // S&H — exercises its PRNG
         b.note_on(57, 1.0);
@@ -1028,9 +1113,9 @@ mod tests {
     #[test]
     fn global_lfo2_is_shared_across_both_layers() {
         // The global LFO 2 reaches both layers from one shared phase: in Dual
-        // mode, routing LFO2→Amp on each layer and playing the same note on both
-        // yields the combined output = exactly twice one layer's (same LFO2 phase
-        // drives both). Proves a single instrument-wide source, not per-layer.
+        // mode, routing LFO2→pitch on each layer and playing the same note on
+        // both yields the combined output = exactly twice one layer's (same LFO2
+        // phase drives both). Proves a single instrument-wide source, not per-layer.
         fn configure(s: &mut Synth) {
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_key_mode(KeyMode::Dual);
@@ -1038,9 +1123,8 @@ mod tests {
                 s.set_param(patch_clap_id(layer, PatchParam::Osc1Wave), 0.0); // sine
                 s.set_param(patch_clap_id(layer, PatchParam::Osc2Level), 0.0);
                 s.set_param(patch_clap_id(layer, PatchParam::NoiseLevel), 0.0);
-                s.set_param(patch_clap_id(layer, PatchParam::LfoPitch), 0.0);
-                s.set_param(patch_clap_id(layer, PatchParam::Env2Amp), 0.0);
-                s.set_param(patch_clap_id(layer, PatchParam::Lfo2Amp), 1.0); // LFO2→VCA
+                s.set_param(patch_clap_id(layer, PatchParam::PitchLfoSrc), 2.0); // LFO 2
+                s.set_param(patch_clap_id(layer, PatchParam::PitchLfoDepth), 7.0);
             }
             s.set_param(gp(GlobalParam::Lfo2Rate), 5.0);
         }
@@ -1126,7 +1210,8 @@ mod tests {
         let mut s = pitched_synth();
         s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
         s.set_param(pp(PatchParam::Cutoff), 1200.0);
-        s.set_param(pp(PatchParam::LfoCutoff), 36.0);
+        s.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
+        s.set_param(pp(PatchParam::CutoffLfoDepth), 36.0);
         s.set_param(pp(PatchParam::LfoSync), 1.0);
         s.set_param(pp(PatchParam::LfoRate), rate_for_subdiv(9)); // 1/8
         s.set_tempo(128.0);
@@ -1207,11 +1292,11 @@ mod tests {
             s.set_key_mode(KeyMode::Dual);
             // Upper: sine.
             s.set_param(pp(PatchParam::Osc1Wave), 0.0);
-            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             // Lower: saw, +1 octave, its own (silent-by-default) noise off.
             s.set_param(lo(PatchParam::Osc1Wave), 2.0);
             s.set_param(lo(PatchParam::Osc1Octave), 1.0);
-            s.set_param(lo(PatchParam::LfoPitch), 0.0);
+            s.set_param(lo(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(lo(PatchParam::NoiseLevel), 0.0);
             s.set_param(lo(PatchParam::Env2Attack), 0.001);
         }
@@ -1417,7 +1502,7 @@ mod tests {
             s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
             s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
             set_assign(&mut s, 0, true, detune);
             s.note_on_layer(0, 57, 1.0);
@@ -1447,7 +1532,7 @@ mod tests {
             s.set_param(pp(PatchParam::Osc1Wave), 0.0);
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
             s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-            s.set_param(pp(PatchParam::LfoPitch), 0.0);
+            s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
             set_assign(&mut s, 0, unison, 0.0); // detune 0 → coherent worst case
             s.note_on_layer(0, 57, 1.0);
@@ -1497,7 +1582,7 @@ mod tests {
         s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
         s.set_param(pp(PatchParam::Osc2Level), 0.0);
         s.set_param(pp(PatchParam::NoiseLevel), 0.0);
-        s.set_param(pp(PatchParam::LfoPitch), 0.0);
+        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s.set_param(pp(PatchParam::PortamentoOn), 1.0);
@@ -1562,7 +1647,7 @@ mod tests {
             s.set_param(patch_clap_id(layer, PatchParam::Osc1Wave), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::Osc2Level), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::NoiseLevel), 0.0);
-            s.set_param(patch_clap_id(layer, PatchParam::LfoPitch), 0.0);
+            s.set_param(patch_clap_id(layer, PatchParam::PitchLfoDepth), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::Env2Attack), 0.001);
         }
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);

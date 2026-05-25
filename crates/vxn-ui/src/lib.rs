@@ -24,12 +24,11 @@
 //! Fader signals hold the *normalized* `[0, 1]` value; the shared store converts
 //! to/from plain units via the parameter descriptors.
 //!
-//! The 6×4 modulation matrix is surfaced economically: only the musically
-//! useful routes get dedicated faders, placed in context (filter mods in the
-//! Filter panel, vibrato/pitch-env/PWM in VCO Mod, velocity/tremolo in Amp).
-//! Both LFO rows ride this layout — LFO 1's routes plus the LFO 2 row's four
-//! per-patch depths (`Lfo2*`) sit beside their LFO 1 counterparts. The remaining
-//! cells stay engine-only but host-automatable.
+//! Modulation is the fixed-route model (ADR 0004 §4): each of the Pitch / PWM /
+//! Cutoff channels carries an LFO source selector + depth and an Env source
+//! selector + depth (dropdowns + faders), surfaced in the Osc Mod / Filter
+//! panels; the wide osc-2 pitch route and the mod-wheel panel sit alongside.
+//! (This is the interim wiring for 0022; 0023 redesigns the faceplate layout.)
 //!
 //! The two LFOs are asymmetric (E005): LFO 1 is per-voice with a delay→fade
 //! onset and a free-run toggle (its own panel), while LFO 2 is one global
@@ -118,6 +117,7 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(Osc1Wave), "Wave"),
                     (u(Osc1Coarse), "Coarse"),
                     (u(Osc1Fine), "Fine"),
+                    (u(Osc1Octave), "Oct"),
                     (u(Osc1Level), "Level"),
                     (u(Osc1PulseWidth), "PW"),
                 ],
@@ -128,22 +128,35 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(Osc2Wave), "Wave"),
                     (u(Osc2Coarse), "Coarse"),
                     (u(Osc2Fine), "Fine"),
+                    (u(Osc2Octave), "Oct"),
                     (u(Osc2Level), "Level"),
                     (u(Osc2PulseWidth), "PW"),
+                    (u(CrossModType), "X-Mod"),
+                    (u(CrossModAmount), "X-Amt"),
                 ],
             ),
             (
-                "Noise",
-                &[(u(NoiseColor), "Color"), (u(NoiseLevel), "Level")],
+                "Mixer",
+                &[
+                    (u(RingLevel), "Ring"),
+                    (u(NoiseColor), "Color"),
+                    (u(NoiseLevel), "Noise"),
+                ],
             ),
             (
-                "VCO Mod",
+                "Osc Mod",
                 &[
-                    (u(LfoPitch), "Vib"),
-                    (u(Lfo2Pitch), "Vib2"),
-                    (u(Env1Pitch), "P.Env"),
-                    (u(LfoPwm), "PWM"),
-                    (u(Lfo2Pwm), "PWM2"),
+                    (u(PitchLfoSrc), "P.LFO"),
+                    (u(PitchLfoDepth), "P.LFO.D"),
+                    (u(PitchEnvSrc), "P.Env"),
+                    (u(PitchEnvDepth), "P.Env.D"),
+                    (u(PitchWheelDepth), "P.Whl"),
+                    (u(PwmLfoSrc), "PW.LFO"),
+                    (u(PwmLfoDepth), "PW.LFO.D"),
+                    (u(PwmEnvSrc), "PW.Env"),
+                    (u(PwmEnvDepth), "PW.Env.D"),
+                    (u(Osc2PitchEnvSrc), "O2P.Env"),
+                    (u(Osc2PitchEnvDepth), "O2P.D"),
                 ],
             ),
         ],
@@ -154,12 +167,14 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(Cutoff), "Cutoff"),
                     (u(Resonance), "Reso"),
                     (u(Drive), "Drive"),
-                    (u(Env1Cutoff), "Env"),
-                    (u(KeyCutoff), "Key"),
-                    (u(LfoCutoff), "LFO"),
-                    (u(Lfo2Cutoff), "LFO2"),
-                    (u(VelCutoff), "Vel"),
+                    (u(HpfCutoff), "HPF"),
                     (u(FilterVariant), "Type"),
+                    (u(FilterKeyTrack), "KeyTrk"),
+                    (u(CutoffLfoSrc), "LFO"),
+                    (u(CutoffLfoDepth), "LFO.D"),
+                    (u(CutoffEnvSrc), "Env"),
+                    (u(CutoffEnvDepth), "Env.D"),
+                    (u(VelCutoffDepth), "Vel"),
                 ],
             ),
             (
@@ -199,8 +214,8 @@ const ROWS: &[&[(&str, &[Entry])]] = {
             ),
             (
                 // LFO 2 — one global instrument-wide oscillator (E005 / 0019);
-                // shape/rate/sync are global (its routing depths live in the
-                // VCO Mod / Filter / Amp panels as the LFO 2 matrix row).
+                // shape/rate/sync are global. It reaches the routes through the
+                // per-channel {Off/LFO1/LFO2} source selectors, not its own cells.
                 "LFO 2",
                 &[
                     (g(Lfo2Shape), "Shape"),
@@ -209,11 +224,12 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 ],
             ),
             (
-                "Amp",
+                "Mod Wheel",
                 &[
-                    (u(VelAmp), "Vel"),
-                    (u(LfoAmp), "Trem"),
-                    (u(Lfo2Amp), "Trem2"),
+                    (u(ModWheelPwm), "PWM"),
+                    (u(ModWheelCutoff), "Cutoff"),
+                    (u(ModWheelReso), "Reso"),
+                    (u(ModWheelOsc2Pitch), "O2 Pitch"),
                 ],
             ),
         ],
@@ -279,45 +295,15 @@ const PANEL_H: f32 = 124.0;
 /// arranged around its arc.
 const DIAL: f32 = 62.0;
 
-/// UI value range for a fader. Bipolar routes (env→cutoff, env→pitch) use the
-/// full descriptor range, centred at zero; the unipolar mod amounts
-/// (key/LFO/velocity→cutoff, LFO→PWM, velocity/LFO→amp — both LFO rows) are
-/// shown positive-only (`0..max`) even though the underlying depth param is
-/// bipolar. LFO→pitch is handled separately (see [`is_lfo_pitch`]).
+/// UI value range for a fader — the full descriptor range, centred at zero for
+/// the bipolar route depths. (The interim 0022 wiring uses plain faders for the
+/// route depths; 0023 revisits fader shaping per panel.)
 fn ui_range(idx: usize) -> (f32, f32) {
-    use PatchParam::*;
     let Some(d) = desc_for_clap_id(idx) else {
         return (0.0, 1.0);
     };
-    match param_ref(idx) {
-        Some(ParamRef::Patch(
-            _,
-            KeyCutoff | LfoCutoff | VelCutoff | LfoPwm | VelAmp | LfoAmp | Lfo2Cutoff | Lfo2Amp
-            | Lfo2Pwm,
-        )) => (0.0, d.max),
-        _ => (d.min, d.max),
-    }
+    (d.min, d.max)
 }
-
-/// LFO→pitch routes (`LfoPitch` / `Lfo2Pitch`) get a narrowed, curved fader for
-/// musical vibrato rather than the route's full ±48 st: it tops out at a whole
-/// semitone and bends so the half-way point sits at ~0.2 st, keeping the gentle
-/// useful range spread across most of the travel. The underlying depth param
-/// still spans ±48 st for automation/presets — this only shapes the editor fader.
-fn is_lfo_pitch(idx: usize) -> bool {
-    matches!(
-        param_ref(idx),
-        Some(ParamRef::Patch(
-            _,
-            PatchParam::LfoPitch | PatchParam::Lfo2Pitch
-        ))
-    )
-}
-
-/// Whole-semitone ceiling for the LFO→pitch faders.
-const LFO_PITCH_MAX: f32 = 1.0;
-/// Curve exponent placing the fader midpoint at ~0.2 st: `ln(0.2)/ln(0.5)`.
-const LFO_PITCH_CURVE: f32 = 2.321_928;
 
 /// Envelope time faders (attack / decay / release on both envelopes) get an
 /// exponential taper rather than the descriptor's linear 0.001..10 s, so the
@@ -344,11 +330,6 @@ const ADSR_A: f32 = 0.125;
 
 /// Plain value → fader position `[0, 1]` over the UI range.
 fn fader_to_ui(idx: usize, value: f32) -> f32 {
-    if is_lfo_pitch(idx) {
-        return (value / LFO_PITCH_MAX)
-            .clamp(0.0, 1.0)
-            .powf(1.0 / LFO_PITCH_CURVE);
-    }
     if is_adsr_time(idx) {
         // Inverse of `A·(e^(K·n) − 1)`.
         return ((value / ADSR_A + 1.0).ln() / ADSR_K).clamp(0.0, 1.0);
@@ -363,9 +344,6 @@ fn fader_to_ui(idx: usize, value: f32) -> f32 {
 
 /// Fader position `[0, 1]` → plain value over the UI range.
 fn fader_from_ui(idx: usize, n: f32) -> f32 {
-    if is_lfo_pitch(idx) {
-        return n.clamp(0.0, 1.0).powf(LFO_PITCH_CURVE) * LFO_PITCH_MAX;
-    }
     if is_adsr_time(idx) {
         return ADSR_A * ((ADSR_K * n.clamp(0.0, 1.0)).exp() - 1.0);
     }
@@ -1133,21 +1111,16 @@ mod tests {
     }
 
     #[test]
-    fn lfo_pitch_fader_is_curved_and_narrowed() {
-        let id = patch_clap_id(Layer::Upper, PatchParam::LfoPitch);
-        // Whole semitone at the top, silent at the bottom.
-        assert!((fader_from_ui(id, 1.0) - 1.0).abs() < 1e-4);
-        assert!(fader_from_ui(id, 0.0).abs() < 1e-6);
-        // Midpoint lands at ~0.2 st (the subtle-vibrato sweet spot).
-        assert!((fader_from_ui(id, 0.5) - 0.2).abs() < 1e-3);
-        // Round-trips within the narrowed range.
-        for n in [0.1, 0.5, 0.9, 1.0] {
+    fn route_depth_fader_uses_full_range() {
+        // Route-depth faders span the descriptor's full bipolar range (interim
+        // 0022 wiring): centre is zero, ends are ±max.
+        let id = patch_clap_id(Layer::Upper, PatchParam::CutoffLfoDepth);
+        let d = desc_for_clap_id(id).unwrap();
+        assert!((fader_from_ui(id, 0.0) - d.min).abs() < 1e-3);
+        assert!((fader_from_ui(id, 1.0) - d.max).abs() < 1e-3);
+        for n in [0.1, 0.5, 0.9] {
             assert!((fader_to_ui(id, fader_from_ui(id, n)) - n).abs() < 1e-4);
         }
-        // LFO 2's pitch route shares the curve.
-        let id2 = global_clap_id(GlobalParam::MasterTune); // sanity: not curved
-        assert!(!is_lfo_pitch(id2));
-        assert!(is_lfo_pitch(patch_clap_id(Layer::Lower, PatchParam::Lfo2Pitch)));
     }
 
     #[test]

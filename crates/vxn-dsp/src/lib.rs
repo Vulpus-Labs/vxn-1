@@ -60,10 +60,10 @@ pub use hpf::{HpfKernel, PolyHpf};
 pub use ladder::{LadderCoeffs, LadderKernel, LadderVariant};
 pub use lfo::{LfoCore, LfoShape};
 pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine};
-pub use noise::{BrownFilter, NoiseColor, NoiseSource, PinkFilter, xorshift64};
+pub use noise::{NoiseColor, NoiseSource, PinkFilter, xorshift64};
 pub use oscillator::{Oscillator, Waveform};
 pub use phase::{MonoPhaseAccumulator, polyblep};
-pub use poly::{PolyLadder, PolyNoise, PolyOscillator};
+pub use poly::{PolyLadder, PolyNoise, PolyOscillator, poly_ring_mod};
 pub use smoothing::{Smoothed, ms_to_samples, one_pole_coeff};
 
 /// Flush x86/ARM denormals-to-zero on the current thread, without restoring the

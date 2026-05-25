@@ -4,19 +4,22 @@
 //! tick at the base rate; the oscillators and ladder run at the oversampled
 //! rate.
 //!
-//! Modulation model (Jupiter-8-shaped, generalised): ENV-1, ENV-2, LFO 1, LFO 2,
-//! velocity and key-follow are sources; pitch, cutoff, amp and PWM are
-//! destinations. Pitch/cutoff/PWM are resolved once per control block; amp is
-//! evaluated per base frame (held across oversampled subframes).
+//! Modulation model (fixed routes — ADR 0004 §4): each of the Pitch / PWM /
+//! Cutoff channels picks one LFO source ({Off/LFO1/LFO2}) and one envelope
+//! source ({Off/Env1/Env2}), scaled by per-channel depths; the common pitch
+//! channel moves both oscillators (vibrato-scaled), a separate wide route moves
+//! osc2 only (sync sweeps). The VCA is hardwired to Env2. Cutoff also takes
+//! velocity, an optional 1-oct/oct key-track, and the mod-wheel panel
+//! contributions. Pitch/cutoff/PWM are resolved once per control block; the amp
+//! (Env2) is evaluated per base frame.
 
 use vxn_dsp::{
     AdsrCore, AdsrShape, CHANNELS_PER_LAYER, CONTROL_BLOCK, LadderCoeffs, LadderVariant, LfoCore,
     LfoShape, NoiseColor, PolyHpf, PolyLadder, PolyNoise, PolyOscillator, Waveform, fast_exp2,
-    note_to_hz,
+    note_to_hz, poly_ring_mod,
 };
 
-use crate::modmatrix::{ModDest, ModMatrix, ModSource};
-use crate::params::AssignMode;
+use crate::params::{AssignMode, EnvSel, LfoSel};
 
 /// One [`VoiceBank`] is a single layer: its channels render together as a
 /// homogeneous group (ADR 0003 §10).
@@ -25,6 +28,10 @@ const N: usize = CHANNELS_PER_LAYER;
 /// HPF cutoff at or below this (Hz) is treated as "off" and bypassed. Matches
 /// the `HpfCutoff` param minimum (its default, ≈ fully open).
 const HPF_OFF_HZ: f32 = 20.0;
+
+/// Fixed ring-modulator diode drive (dB). No panel knob in v1 (ADR 0004 panel
+/// list leaves it out); the operating point sits in the quasi-linear region.
+const RING_DRIVE_DB: f32 = 1.0;
 
 /// Per-voice LFO 1 retrigger policy at a note-on (E005 / 0018): the shape (for
 /// the zero-crossing restart) and whether the phase free-runs instead.
@@ -95,6 +102,8 @@ pub struct BlockCtx {
     pub osc2_wave: Waveform,
     pub osc1_level: f32,
     pub osc2_level: f32,
+    /// Ring-modulator (osc1×osc2) mix level (0021). 0 = the cheap no-op path.
+    pub ring_level: f32,
     pub noise_level: f32,
     pub osc1_pw: f32,
     pub osc2_pw: f32,
@@ -120,18 +129,50 @@ pub struct BlockCtx {
     /// Global LFO 2 sampled value this block (one instrument-wide LFO, sampled
     /// once and broadcast to both layers — E005 / 0019). Constant depth, no delay.
     pub lfo2_val: f32,
-    /// Hard sync on: osc2 (slave) phase resets each osc1 (master) cycle. Off
-    /// keeps the independent, vectorised osc fast path (E002 ticket 0004).
+    /// Hard sync on (`CrossModType::Sync`): osc2 (slave) phase resets each osc1
+    /// (master) cycle. Off keeps the independent, vectorised osc fast path.
     pub sync: bool,
-    /// Cross-mod / linear FM depth (osc2 → osc1 pitch). 0 = off. Engages the
-    /// coupled path alongside `sync` (E002 ticket 0005).
-    pub cross_mod: f32,
+    /// Through-zero phase-mod index (`CrossModType::Pm` ? amount : 0). 0 = off.
+    /// Engages the coupled osc path; mutually exclusive with `sync` at the engine.
+    pub pm_index: f32,
     /// Portamento (pitch glide) enabled for this layer.
     pub portamento_on: bool,
     /// Portamento glide time (s); 0 = instant. Glide is per channel, resolved at
-    /// control-block rate so it feeds osc pitch, sync and cross-mod consistently.
+    /// control-block rate so it feeds osc pitch, sync and PM consistently.
     pub portamento_time: f32,
-    pub matrix: ModMatrix,
+    // ── Fixed modulation routes (ADR 0004 §4). Depths are pre-smoothed; the
+    //    `*_extra` terms fold in the once-per-block global contributions
+    //    (pitch-wheel for pitch, mod-wheel panel elsewhere). ──
+    /// Common pitch channel (vibrato-scaled — moves both oscillators).
+    pub pitch_lfo_sel: LfoSel,
+    pub pitch_lfo_depth: f32,
+    pub pitch_env_sel: EnvSel,
+    pub pitch_env_depth: f32,
+    /// Pitch-wheel contribution (bend × wheel depth, semitones), both oscillators.
+    pub pitch_extra: f32,
+    /// PWM channel.
+    pub pwm_lfo_sel: LfoSel,
+    pub pwm_lfo_depth: f32,
+    pub pwm_env_sel: EnvSel,
+    pub pwm_env_depth: f32,
+    /// Mod-wheel → PWM contribution (fraction).
+    pub pwm_extra: f32,
+    /// Cutoff channel (semitones of cutoff).
+    pub cutoff_lfo_sel: LfoSel,
+    pub cutoff_lfo_depth: f32,
+    pub cutoff_env_sel: EnvSel,
+    pub cutoff_env_depth: f32,
+    pub cutoff_vel_depth: f32,
+    /// Mod-wheel → cutoff contribution (semitones).
+    pub cutoff_extra: f32,
+    /// Filter key-track: when on, cutoff shifts exactly 1 octave per key octave
+    /// above C0 (12 st cutoff per 12 st key).
+    pub filter_key_track: bool,
+    /// Wide osc-2 pitch channel (octave range — moves osc2 only).
+    pub osc2_pitch_env_sel: EnvSel,
+    pub osc2_pitch_env_depth: f32,
+    /// Mod-wheel → osc2 pitch contribution (semitones).
+    pub osc2_pitch_extra: f32,
 }
 
 /// All 16 voices in structure-of-arrays form.
@@ -371,31 +412,6 @@ impl VoiceBank {
         best
     }
 
-    /// Assemble the modulation source vector for voice `v`, in [`ModSource`]
-    /// order. The envelope levels and the onset-scaled LFO 1 value are passed in
-    /// because the two call sites differ — block-start resolution reads the
-    /// stored ENV level and the block-start onset gain, the per-frame amp path
-    /// the just-ticked ENV and the per-frame onset gain — while velocity,
-    /// key-follow and the shared global LFO 2 (constant depth) are common to both.
-    #[inline]
-    fn mod_sources(
-        &self,
-        v: usize,
-        ctx: &BlockCtx,
-        env1: f32,
-        env2: f32,
-        lfo1: f32,
-    ) -> [f32; ModSource::COUNT] {
-        [
-            env1,
-            env2,
-            lfo1,
-            ctx.lfo2_val,
-            self.velocity[v],
-            key_follow(self.note[v]),
-        ]
-    }
-
     /// Render one control block into the oversampled mono buffer `out`
     /// (length = `base_frames * ctx.os`), accumulating all voices.
     pub fn render_block(&mut self, out: &mut [f32], ctx: &BlockCtx) {
@@ -429,11 +445,32 @@ impl VoiceBank {
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         for v in 0..N {
+            let e1 = self.env1[v].level;
+            let e2 = self.env2[v].level;
             let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
-            let srcs = self.mod_sources(v, ctx, self.env1[v].level, self.env2[v].level, lfo1);
-            let pitch_mod = ctx.matrix.dest(ModDest::Pitch, &srcs);
-            let cutoff_mod = ctx.matrix.dest(ModDest::Cutoff, &srcs);
-            let pwm_mod = ctx.matrix.dest(ModDest::Pwm, &srcs);
+
+            // Fixed-route resolution: each channel sums its selected LFO × depth,
+            // its selected env × depth, and the channel's extra (ADR 0004 §4).
+            let pitch_mod = lfo_src(ctx.pitch_lfo_sel, lfo1, ctx.lfo2_val) * ctx.pitch_lfo_depth
+                + env_src(ctx.pitch_env_sel, e1, e2) * ctx.pitch_env_depth
+                + ctx.pitch_extra;
+            // Wide osc-2 pitch (sync sweeps): osc2 only, added on top of common pitch.
+            let osc2_pitch_mod = env_src(ctx.osc2_pitch_env_sel, e1, e2) * ctx.osc2_pitch_env_depth
+                + ctx.osc2_pitch_extra;
+            let pwm_mod = lfo_src(ctx.pwm_lfo_sel, lfo1, ctx.lfo2_val) * ctx.pwm_lfo_depth
+                + env_src(ctx.pwm_env_sel, e1, e2) * ctx.pwm_env_depth
+                + ctx.pwm_extra;
+            let key_track = if ctx.filter_key_track {
+                // 1 octave of cutoff per octave of key above C0 (note 12).
+                self.note[v] as f32 - 12.0
+            } else {
+                0.0
+            };
+            let cutoff_mod = lfo_src(ctx.cutoff_lfo_sel, lfo1, ctx.lfo2_val) * ctx.cutoff_lfo_depth
+                + env_src(ctx.cutoff_env_sel, e1, e2) * ctx.cutoff_env_depth
+                + self.velocity[v] * ctx.cutoff_vel_depth
+                + key_track
+                + ctx.cutoff_extra;
 
             // Portamento: glide each channel's pitch toward its target note. A
             // freshly triggered channel snaps to target when glide is off, the
@@ -450,7 +487,7 @@ impl VoiceBank {
             let nf = self.glide_semi[v];
             let detune = self.detune_cents[v] * 0.01; // cents → semitones (Unison)
             let s1 = ctx.base_semis + nf + ctx.osc1_semi + pitch_mod + detune;
-            let s2 = ctx.base_semis + nf + ctx.osc2_semi + pitch_mod + detune;
+            let s2 = ctx.base_semis + nf + ctx.osc2_semi + pitch_mod + osc2_pitch_mod + detune;
             self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
             pw1[v] = (ctx.osc1_pw + pwm_mod).clamp(0.05, 0.95);
@@ -491,37 +528,38 @@ impl VoiceBank {
         let mut o1 = [0.0f32; N];
         let mut o2 = [0.0f32; N];
         let mut nz = [0.0f32; N];
+        let mut ring = [0.0f32; N];
         let mut mix = [0.0f32; N];
         let mut hp = [0.0f32; N];
         let mut filt = [0.0f32; N];
         let mut amp = [0.0f32; N];
 
+        // Ring modulator (0021): osc1×osc2 through the Parker diode bridge, mixed
+        // by `ring_level`. Zero level skips the diode maths entirely (fast path).
+        let ring_on = ctx.ring_level != 0.0;
+        let ring_gain = 10.0f32.powf(RING_DRIVE_DB / 20.0);
+
         for base_i in 0..base_frames {
             // Envelopes + amp (base rate, scalar; gated to 0 for inactive voices).
+            // The VCA is hardwired to Env2 (ADR 0004 §4); Env1 still ticks so it
+            // can feed the modulation routes from its stored level.
             for v in 0..N {
                 let t = trig[v] && base_i == 0;
-                let e1 = self.env1[v].tick(t, self.gate[v]);
+                let _e1 = self.env1[v].tick(t, self.gate[v]);
                 let e2 = self.env2[v].tick(t, self.gate[v]);
-                amp[v] = if self.active[v] {
-                    let lfo1 =
-                        lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
-                    let srcs = self.mod_sources(v, ctx, e1, e2, lfo1);
-                    ctx.matrix.dest(ModDest::Amp, &srcs).max(0.0)
-                } else {
-                    0.0
-                };
+                amp[v] = if self.active[v] { e2.max(0.0) } else { 0.0 };
             }
 
             let frame = base_i * os;
             for k in 0..os {
-                // Coupled osc2→osc1 path when sync is engaged or cross-mod depth
-                // is non-zero; otherwise the independent, vectorised fast path —
+                // Coupled osc2→osc1 path when sync is engaged or the PM index is
+                // non-zero; otherwise the independent, vectorised fast path —
                 // no cost for plain patches.
-                if ctx.sync || ctx.cross_mod != 0.0 {
+                if ctx.sync || ctx.pm_index != 0.0 {
                     self.osc1.process_pair(
                         &mut self.osc2,
                         ctx.sync,
-                        ctx.cross_mod,
+                        ctx.pm_index,
                         ctx.osc1_wave,
                         ctx.osc2_wave,
                         &pw1,
@@ -537,6 +575,13 @@ impl VoiceBank {
                 for v in 0..N {
                     mix[v] =
                         o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
+                }
+                // Ring contribution (osc1×osc2), summed in alongside the oscs.
+                if ring_on {
+                    poly_ring_mod(&o1, &o2, ring_gain, &mut ring);
+                    for v in 0..N {
+                        mix[v] += ring[v] * ctx.ring_level;
+                    }
                 }
                 // Source Mixer → HPF → VCF → VCA (JP-8 topology). HPF bypassed
                 // when disengaged (default), feeding the mix straight to the VCF.
@@ -571,10 +616,25 @@ impl VoiceBank {
     }
 }
 
-/// Key-follow source value: octaves relative to middle C (note 60).
+/// Resolve a channel's LFO source selector to a value (per-voice LFO 1 is
+/// onset-scaled by the caller; LFO 2 is the global broadcast value).
 #[inline]
-fn key_follow(note: u8) -> f32 {
-    (note as f32 - 60.0) / 12.0
+fn lfo_src(sel: LfoSel, lfo1: f32, lfo2: f32) -> f32 {
+    match sel {
+        LfoSel::Off => 0.0,
+        LfoSel::Lfo1 => lfo1,
+        LfoSel::Lfo2 => lfo2,
+    }
+}
+
+/// Resolve a channel's envelope source selector to a value.
+#[inline]
+fn env_src(sel: EnvSel, env1: f32, env2: f32) -> f32 {
+    match sel {
+        EnvSel::Off => 0.0,
+        EnvSel::Env1 => env1,
+        EnvSel::Env2 => env2,
+    }
 }
 
 /// Fixed symmetric detune weight for unison channel `v`, in `[-1, 1]` across the

@@ -126,13 +126,24 @@ patch duplicates; only truly global state is shared (§6, §7).**
 > The modulation matrix stays per-layer (each layer routes both LFOs with its own
 > depths). The global LFO 2 is shared instrument state, **not** part of a
 > per-layer patch/preset.
+>
+> **Superseded by ADR 0004 / E006 0022 (fixed-panel modulation).** The generic
+> 6×4 modulation matrix (`ModSource`/`ModDest`/`ModMatrix`) is removed and
+> replaced with **fixed, labelled routes** carrying per-channel source selectors
+> ({Off/LFO1/LFO2} + depth, {Off/Env1/Env2} + depth) for Pitch / PWM / Cutoff,
+> plus a wide osc-2 pitch route, a mod-wheel panel, and a filter key-track toggle.
+> The VCA is hardwired to Env2 (no Amp destination). The routes are still
+> **per-layer** (each layer carries its own selectors/depths) and either LFO can
+> feed any channel, so the per-layer/global split above is unchanged — only the
+> matrix's generality is dropped. See ADR 0004 §4–§5.
 
 ### 6. Parameter model — two per-patch blocks + a small global block
 
 We accept parameter doubling. The flat `ParamId` table splits into:
 
-- A **per-patch block** (oscillators, noise, filter, envelopes, LFO, matrix,
-  PWM, etc.), instantiated **twice** — `Upper_*` and `Lower_*` — each fully and
+- A **per-patch block** (oscillators, noise, filter, envelopes, LFO, fixed
+  modulation routes, PWM, etc.; the generic matrix was replaced by ADR 0004's
+  fixed routes), instantiated **twice** — `Upper_*` and `Lower_*` — each fully and
   independently automatable with stable CLAP ids.
 - A **global block** (master tune, master volume, FX — §7 — key mode, split
   point — §8) that exists once.

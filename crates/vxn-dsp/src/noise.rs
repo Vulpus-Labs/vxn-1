@@ -10,22 +10,21 @@ pub fn xorshift64(state: &mut u64) -> f32 {
     (*state as i64 as f32) / (i64::MAX as f32)
 }
 
-/// Selectable noise colour for the mixer's noise source.
+/// Selectable noise colour for the mixer's noise source (White/Pink; brown was
+/// dropped in E006 / 0021 to match the two-button mixer selector).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoiseColor {
     White,
     Pink,
-    Brown,
 }
 
 impl NoiseColor {
-    pub const ALL: [NoiseColor; 3] = [NoiseColor::White, NoiseColor::Pink, NoiseColor::Brown];
+    pub const ALL: [NoiseColor; 2] = [NoiseColor::White, NoiseColor::Pink];
 
     pub fn label(self) -> &'static str {
         match self {
             NoiseColor::White => "White",
             NoiseColor::Pink => "Pink",
-            NoiseColor::Brown => "Brown",
         }
     }
 }
@@ -66,42 +65,12 @@ impl Default for PinkFilter {
     }
 }
 
-/// Leaky integrator for brown noise (−6 dB/oct), clamped to `[-1, 1]`.
-#[derive(Clone)]
-pub struct BrownFilter {
-    pub state: f32,
-}
-
-impl BrownFilter {
-    pub fn new() -> Self {
-        Self { state: 0.0 }
-    }
-
-    pub fn reset(&mut self) {
-        self.state = 0.0;
-    }
-
-    #[inline]
-    pub fn process(&mut self, input: f32) -> f32 {
-        self.state += input * 0.02;
-        self.state = self.state.clamp(-1.0, 1.0);
-        self.state
-    }
-}
-
-impl Default for BrownFilter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A complete noise generator: PRNG + colour shapers. One per voice (or one
 /// shared mono source — VXN1 uses one per voice for decorrelation).
 #[derive(Clone)]
 pub struct NoiseSource {
     state: u64,
     pink: PinkFilter,
-    brown: BrownFilter,
 }
 
 impl NoiseSource {
@@ -109,13 +78,11 @@ impl NoiseSource {
         Self {
             state: seed | 1,
             pink: PinkFilter::new(),
-            brown: BrownFilter::new(),
         }
     }
 
     pub fn reset(&mut self) {
         self.pink.reset();
-        self.brown.reset();
     }
 
     #[inline]
@@ -124,7 +91,6 @@ impl NoiseSource {
         match color {
             NoiseColor::White => white,
             NoiseColor::Pink => self.pink.process(white),
-            NoiseColor::Brown => self.brown.process(white),
         }
     }
 }
