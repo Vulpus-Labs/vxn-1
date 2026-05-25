@@ -50,9 +50,11 @@ selector + depth.
   `ModWheelReso`, and `ModWheelOsc2Pitch` (octave range — sync sweeps) depths.
 - **Filter key-track**: `FilterKeyTrack` (bool). When on, cutoff shifts exactly
   **1 octave per pitch octave above C0** (12 st cutoff per 12 st key).
-- **Oscillator interaction**: `CrossModType` enum {Off, Sync, FM} +
-  `CrossModAmount` (the old `cross_mod` range/curve). Off = independent fast
-  path; Sync drives 0020's band-limited sync; FM drives the exp2 cross-mod.
+- **Oscillator interaction**: `CrossModType` enum {Off, Sync, PM} +
+  `CrossModAmount` (phase-mod **index** — radians/cycles, not semitones). Off =
+  independent fast path; Sync drives 0020's band-limited sync; PM drives the
+  through-zero phase modulation (see "Cross-mod → PM" below and ADR 0004 §7).
+  (UI may still label it "FM" per ADR 0004 §3.)
 - **RingLevel** (0..1) for 0021.
 
 Reuse the existing depth ranges/units (pitch in st, cutoff in st, PWM fraction).
@@ -75,8 +77,30 @@ Keep the gentle default vibrato by seeding `PitchLfoSrc = LFO1`, `PitchLfoDepth 
 - VCA amp = Env2 directly (drop the Amp dest entirely).
 - Cutoff key-track applies as a hardwired oct/oct term gated by
   `FilterKeyTrack`, independent of the cutoff mod sum.
-- `sync` flag now reads `CrossModType == Sync`; `xmod` reads `CrossModType == FM
-  ? CrossModAmount : 0.0` (so Off zeroes both, preserving the fast path).
+- `sync` flag now reads `CrossModType == Sync`; the PM index reads
+  `CrossModType == PM ? CrossModAmount : 0.0` (so Off zeroes both, preserving the
+  fast path; Sync and PM never coexist).
+
+### Cross-mod → phase modulation (replaces exp2 FM — ADR 0004 §7)
+
+Replace E002's exponential FM (`inc1 = base · exp2(xmod·o2)`) in
+`vxn-dsp::poly::process_pair` with **through-zero phase modulation**: osc1's
+phase accumulator advances at its **base increment** (constant `dt`), and osc2
+offsets osc1's **read phase** only:
+
+```text
+o1 = osc_sample(wave1, frac(phase1 + index·o2), pw1, base_inc)
+phase1 = advance(phase1, base_inc)
+```
+
+- The modulated read uses a **two-sided wrap** (`x - x.floor()`) so the read
+  pointer can run backward through zero (through-zero PM); the carrier
+  accumulator keeps its existing one-sided wrap.
+- No `exp2`, no pitch drift, constant `dt` (keeps polyBLEP valid and leaves the
+  0020 sync master `dt` = base increment).
+- Since this lands after 0020, coordinate: 0020's coupled path currently derives
+  the master `dt` from the modulated `inc1`; once PM removes increment
+  modulation, that term becomes `self.inc[v]` and sync/PM are mutually exclusive.
 
 ## Acceptance criteria
 
@@ -84,8 +108,10 @@ Keep the gentle default vibrato by seeding `PitchLfoSrc = LFO1`, `PitchLfoDepth 
       references `matrix_index`/`MATRIX_BASE`.
 - [ ] Fixed routes resolve correctly: each channel's selected LFO/env × depth
       sums into its destination; Off selectors contribute nothing.
-- [ ] `CrossModType` Off/Sync/FM maps to (independent path / band-limited sync /
-      exp2 cross-mod at amount); Off is bit-identical to the fast path.
+- [ ] `CrossModType` Off/Sync/PM maps to (independent path / band-limited sync /
+      through-zero phase mod at index); Off is bit-identical to the fast path.
+- [ ] PM uses a two-sided wrap on the modulated read phase (through-zero); the
+      carrier advances at the base increment with no pitch drift vs the old exp2.
 - [ ] Mod-wheel panel routes (PWM/cutoff/reso/osc2-pitch) work independently of
       the per-channel LFO/env selectors.
 - [ ] Common pitch channel is vibrato-scaled and affects both oscs; the wide

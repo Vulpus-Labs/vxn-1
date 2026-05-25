@@ -25,8 +25,10 @@ were left rough:
   in `patches-dsp::oscillator` (`advance_wrap_frac` / `sync_reset(frac)` /
   `sync_blep_residual`) — VXN1's kernel was a stripped copy of it.
 - **No ring modulator**, and sync/cross-mod are exposed as a bool + a knob with
-  no clean "pick one" control. Cross-mod *depth* already works (exp2/semitone
-  FM); the type selector and ring mod are the gaps.
+  no clean "pick one" control. Cross-mod *depth* already works but as
+  **exponential FM** (`exp2`/semitone), which drifts pitch with depth; we move it
+  to through-zero phase modulation (decision 7). The type selector and ring mod
+  are the other gaps.
 
 Separately, the modulation UI is a generic **6-source × 4-dest matrix** (Env1,
 Env2, LFO1, LFO2, Vel, Key → Pitch, Cutoff, Amp, PWM = 24 depth params). It is
@@ -41,10 +43,12 @@ routes that match how players actually patch this kind of synth.
 Port the three `patches-dsp` primitives into `process_pair`: extract the
 master's sub-sample wrap fraction, reset the slave to `(1-frac)·inc` at that
 fractional instant, and add a polyBLEP residual across the reset edge. The
-master `dt` for the fraction maths is the **cross-mod-modulated** `inc1`. The
-polyBLEP residual *is* the mild analog "softening" of the reset edge; it is not
-a separate effect. Sync-off / xmod-0 stays bit-identical to the independent fast
-path.
+master `dt` for the fraction maths is simply the **base increment** — sync and
+the PM path are mutually exclusive (decision 3), and PM never modulates the
+increment anyway (decision 7), so the master phase always advances at its
+unmodulated rate. The polyBLEP residual *is* the mild analog "softening" of the
+reset edge; it is not a separate effect. Sync-off stays bit-identical to the
+independent fast path.
 
 ### 2. Ring modulator (0021)
 
@@ -53,16 +57,54 @@ Add osc1×osc2 ring modulation using the **Parker diode-bridge model**
 diode_block(sig−½c)`, with a diode I–V polynomial + tanh shaping whose `drive`
 sets near-linear vs harmonically-coloured behaviour. Ported to the SoA poly
 kernel, mixed by a new **RingLevel** alongside osc1/osc2/noise. Aliasing-prone
-like sync/FM; leans on the engine oversampling for v1.
+like sync/PM; leans on the engine oversampling for v1.
 
 ### 3. Cross-mod as a type selector
 
 Replace the independent `OscSync` (bool) + `CrossMod` (amount) with
-**`CrossModType` {Off, Sync, FM}** + **`CrossModAmount`**. The three modes are
+**`CrossModType` {Off, Sync, PM}** + **`CrossModAmount`**. The three modes are
 mutually exclusive: Off = independent fast path (bit-identical), Sync = the
-band-limited hard sync of decision 1, FM = the existing exp2 cross-mod at the
-set amount. We accept losing the (rarely useful) ability to run sync and FM
-simultaneously in exchange for a clearer control.
+band-limited hard sync of decision 1, PM = the through-zero phase modulation of
+decision 7 at the set index. (The UI may keep an "FM"-style label since players
+expect that name; the engine implements PM — see decision 7.) We accept losing
+the (rarely useful) ability to run sync and modulation simultaneously in
+exchange for a clearer control.
+
+### 7. Cross-mod is phase modulation, not exponential FM
+
+The cross-mod (`PM`) mode is implemented as **through-zero phase modulation**,
+replacing E002's exponential frequency modulation (`inc1 = base · exp2(xmod·o2)`).
+osc2 modulates osc1 by **offsetting osc1's read phase**, while osc1's phase
+accumulator advances at its unmodulated base increment:
+
+```text
+o1 = osc_sample(wave1, frac(phase1 + index·o2), pw1, base_inc)
+phase1 = advance(phase1, base_inc)      // unchanged, constant dt
+```
+
+Rationale (PM ≡ FM spectrally for the timbres we want, DX-style):
+
+- **No pitch drift.** Exponential FM of an asymmetric modulator (saw/pulse)
+  raises the average frequency (Jensen), detuning the note as depth rises. PM
+  adds a bounded phase offset that doesn't accumulate — pitch centre is stable.
+- **Stable `dt`.** The carrier advances at the base increment, so the polyBLEP
+  edge band-limiting stays valid/cheap and the sync maths (decision 1) never has
+  to reason about a moving master `dt`.
+- **Cheaper** — an add + wrap instead of `exp2` per sample.
+- **Through-zero by construction:** the modulator is a read-time offset, not an
+  integrated frequency that could clamp at the zero-frequency wall. The summed
+  read phase therefore needs a **two-sided wrap** (`x - x.floor()`, handling
+  negative excursions) so the read pointer can run backward through zero. The
+  carrier accumulator keeps its one-sided wrap; only the **modulated read** wraps
+  two-sided.
+
+Trade-offs accepted: the `amount` becomes a phase-deviation **index** (radians /
+cycles), not semitones; the timbre differs from the old exp2 cross-mod
+(pre-release, fine); PM of a hard-edge carrier is still phase distortion (Casio
+CZ) and aliases on the moving edge → **sine-carrier bias** + oversampling remain
+the aliasing levers. minBLEP for the modulation path is **not** pursued: it
+corrects discontinuities, not the FM/PM sideband foldback, so it is the wrong
+tool here.
 
 ### 4. Fixed-panel modulation (rip out the matrix)
 
@@ -108,7 +150,7 @@ selector). Brown noise and its filter state are removed.
 ## Panel layout
 
 - **Osc 1:** wave, octave/coarse/fine, PW.
-- **Osc 2:** wave, octave/coarse/fine, PW, cross-mod type {Off/Sync/FM} + amount.
+- **Osc 2:** wave, octave/coarse/fine, PW, cross-mod type {Off/Sync/PM} + amount.
 - **Osc mod:** Pitch (vibrato, both osc) ← LFO/env (+pitch-wheel); PWM ←
   LFO/env; Osc 2 pitch (wide) ← env.
 - **Mixer:** osc1 / osc2 / ring / noise levels + noise type (White/Pink, two
@@ -130,8 +172,10 @@ selector). Brown noise and its filter state are removed.
   per-channel resolution; the VCA/amp path and key-track become hardwired terms.
 - **ADR 0003 §5** (modulation matrix description) is superseded by the fixed
   routes here.
-- Sync/FM/ring all remain aliasing-prone at extremes and rely on oversampling;
-  minBLEP for the FM path itself stays deferred (0020 only band-limits sync).
+- Sync/PM/ring all remain aliasing-prone at extremes and rely on oversampling;
+  minBLEP is pursued **only** for sync (a discontinuity); it is the wrong tool
+  for PM/FM sideband foldback (decision 7), so PM leans on sine-carrier bias +
+  oversampling instead.
 
 ## Dependency order
 

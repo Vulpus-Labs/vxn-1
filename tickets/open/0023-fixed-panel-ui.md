@@ -18,7 +18,8 @@ Depends on **0022** (param model) and **0021** (RingLevel). Land last in E006.
 
 - **Osc 1:** wave selector, octave / coarse / fine, pulse width.
 - **Osc 2:** wave selector, octave / coarse / fine, pulse width, **cross-mod
-  type {Off / Sync / FM}** selector + **amount** knob.
+  type {Off / Sync / PM}** selector + **amount** knob. (PM = through-zero phase
+  mod, ADR 0004 §7; the on-panel label may read "FM" since players expect it.)
 - **Osc mod:**
   - Pitch (both oscs, vibrato scale) ← LFO source {Off/LFO1/LFO2} + depth, Env
     source {Off/Env1/Env2} + depth, pitch-wheel depth.
@@ -54,7 +55,8 @@ the channels.
 
 - [ ] All panels above render and bind to the 0022 params; every automatable
       param has exactly one control; no orphaned/dead controls.
-- [ ] Cross-mod type selector switches Off/Sync/FM; amount knob drives FM depth.
+- [ ] Cross-mod type selector switches Off/Sync/PM; amount knob drives the PM
+      index.
 - [ ] Mixer shows osc1/osc2/ring/noise + two-button noise selector.
 - [ ] Filter panel includes drive and key-track toggle; filter-mod panel shows
       velocity/LFO/env into cutoff; mod-wheel panel shows the three mod-wheel
