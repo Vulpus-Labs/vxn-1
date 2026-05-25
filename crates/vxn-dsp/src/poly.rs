@@ -56,6 +56,20 @@ fn advance(phase: f32, inc: f32) -> f32 {
     np - (np >= 1.0) as u32 as f32
 }
 
+/// Naive (pre-BLEP) oscillator value — the raw, discontinuous waveform. Used to
+/// size the value jump across a hard-sync reset; the polyBLEP residual then
+/// band-limits that jump. The slave's *own* wrap BLEP lives in [`osc_sample`],
+/// so the sync residual must see the bare jump, not a doubly-corrected one.
+#[inline(always)]
+fn naive_osc(wave: Waveform, p: f32, pw: f32) -> f32 {
+    match wave {
+        Waveform::Sine => fast_sine(p),
+        Waveform::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
+        Waveform::Saw => 2.0 * p - 1.0,
+        Waveform::Pulse => 1.0 - 2.0 * (p >= pw) as u32 as f32,
+    }
+}
+
 /// One oscillator sample from a phase, matching the per-waveform arithmetic of
 /// [`PolyOscillator::process`] exactly. Used by the coupled `process_pair_*`
 /// paths, where osc1 and osc2 can carry *different* waveforms within one lane
@@ -83,10 +97,21 @@ fn osc_sample(wave: Waveform, p: f32, pw: f32, dt: f32) -> f32 {
 
 /// 16-voice oscillator. Phase + increment per voice; pulse width per voice
 /// (PWM modulation differs per voice).
+///
+/// `sync_resid` / `sync_pending` carry hard-sync polyBLEP state across samples:
+/// when [`process_pair`](Self::process_pair) resets this oscillator (as the
+/// slave) sub-sample on sample *n*, the discontinuity falls between samples *n*
+/// and *n+1*, so the band-limited post-reset value is emitted on *n+1*. Unused
+/// (always 0) on the fast [`process`](Self::process) path.
 #[derive(Clone)]
 pub struct PolyOscillator {
     pub phase: [f32; N],
     pub inc: [f32; N],
+    /// Residual to add to the next sample's output for a deferred sync reset.
+    sync_resid: [f32; N],
+    /// 1.0 on the sample following a sync reset (emit the bare post value, not
+    /// the `osc_sample` free value), else 0.0.
+    sync_pending: [f32; N],
 }
 
 impl Default for PolyOscillator {
@@ -100,11 +125,15 @@ impl PolyOscillator {
         Self {
             phase: [0.0; N],
             inc: [0.0; N],
+            sync_resid: [0.0; N],
+            sync_pending: [0.0; N],
         }
     }
 
     #[inline]
     pub fn reset(&mut self, v: usize) {
+        self.sync_resid[v] = 0.0;
+        self.sync_pending[v] = 0.0;
         self.phase[v] = 0.0;
     }
 
@@ -158,17 +187,21 @@ impl PolyOscillator {
     ///   Exponential (semitone-domain) FM keeps the perceived pitch centred as
     ///   depth rises and matches the rest of the engine's pitch maths. At
     ///   `xmod == 0`, `exp2(0) == 1.0` exactly, so the increment is untouched.
-    /// - **Sync** (`sync`): when the master's phase wraps, the slave's phase
-    ///   resets to 0 so it relocks to the master's period.
+    /// - **Sync** (`sync`): when the master's phase wraps **sub-sample** at
+    ///   fraction `frac ∈ (0,1]` into the sample, the slave resets to
+    ///   `(1−frac)·inc` (the remainder of the current sample) instead of a hard
+    ///   0, and the slave's value jump across that reset is band-limited with a
+    ///   polyBLEP residual. This is the sub-sample path ported from
+    ///   `patches-dsp` — the reset lands at the exact fractional crossing and
+    ///   the edge is BLEP-softened, cutting the aliasing the sample-accurate
+    ///   reset sprayed.
     ///
     /// osc2 is evaluated first because it is the FM source for osc1. This is the
     /// slow path, taken only when `sync` is on **or** `xmod != 0`; plain patches
-    /// keep the vectorised [`process`](Self::process) fast path. The reset is
-    /// mask-selected (not branched) so the lane loop still vectorises. Both the
-    /// sync step and high-depth FM are alias-prone; v1 leans on the engine's
-    /// oversampling for control.
-    // TODO(E002 follow-up): band-limited (minBLEP) sync correction to suppress
-    // the reset discontinuity's aliasing — deferred, see epic E002 scope.
+    /// keep the vectorised [`process`](Self::process) fast path. The reset and
+    /// residual are mask-selected (not branched) so the lane loop still
+    /// vectorises. High-depth FM is still alias-prone; v1 leans on the engine's
+    /// oversampling for that.
     #[inline]
     #[allow(clippy::too_many_arguments)] // two waves + two pw/out arrays is the coupled shape
     pub fn process_pair(
@@ -185,26 +218,65 @@ impl PolyOscillator {
     ) {
         let sync_f = sync as u32 as f32;
         for v in 0..N {
-            // osc2 (slave) first — it is the FM source for osc1.
-            o2[v] = osc_sample(wave2, slave.phase[v], pw2[v], slave.inc[v]);
+            let dt2 = slave.inc[v];
+            let p2 = slave.phase[v];
+
+            // osc2 (slave) first — it is the FM source for osc1, and its output.
+            // On the sample *after* a sync reset (`sync_pending`), the slave sits
+            // at the sub-sample reset phase, so emit the **bare** waveform value
+            // plus the deferred polyBLEP residual rather than `osc_sample`'s
+            // free value (whose own-wrap BLEP assumes a 1→0 wrap of fixed height,
+            // not this reset). Otherwise the normal free-running value.
+            let pend = slave.sync_pending[v];
+            let free_val = osc_sample(wave2, p2, pw2[v], dt2);
+            let bare_val = naive_osc(wave2, p2, pw2[v]) + slave.sync_resid[v];
+            let s2 = free_val * (1.0 - pend) + bare_val * pend;
+            o2[v] = s2;
 
             // osc1 (master) increment modulated by osc2 (exponential FM). The
-            // modulated increment is also the polyblep `dt`, so the band-limiting
-            // tracks the instantaneous frequency.
-            let inc1 = self.inc[v] * fast_exp2(xmod * o2[v]);
+            // modulated increment is also the polyblep `dt` and the master `dt`
+            // for the wrap-fraction maths, so band-limiting tracks the
+            // instantaneous frequency.
+            let inc1 = self.inc[v] * fast_exp2(xmod * s2);
             o1[v] = osc_sample(wave1, self.phase[v], pw1[v], inc1);
 
-            // Advance the master with the modulated increment, capturing the wrap
-            // signal explicitly (the coupled path needs it; `advance` hides it).
+            // Advance the master, capturing the wrap and its sub-sample fraction:
+            // when `np1 ≥ 1`, the wrap fell `frac ∈ (0,1]` into this sample,
+            // `frac = 1 − (np1−1)/inc1`. The `.max` guard keeps `frac` finite on
+            // frozen lanes (`inc1 = 0`, which never wrap); the reset mask drops
+            // it there regardless.
             let np1 = self.phase[v] + inc1;
             let wrapped = (np1 >= 1.0) as u32 as f32;
             self.phase[v] = np1 - wrapped;
+            let frac = (1.0 - (np1 - 1.0) / inc1.max(1.0e-12)).clamp(f32::MIN_POSITIVE, 1.0);
 
-            // Advance the slave, then mask-reset to 0 only when sync is on *and*
-            // the master wrapped (cross-mod-only patches leave the slave free).
-            let np2 = slave.phase[v] + slave.inc[v];
+            // On a synced master wrap, reset the slave sub-sample to `(1−frac)·inc`
+            // (remainder of the current sample). The master wrapped *inside* this
+            // sample, so the discontinuity falls between this sample and the next:
+            // defer the band-limited post value to the next sample via
+            // `sync_pending` / `sync_resid`. `delta = pre − post` is the bare
+            // waveform jump across the reset — `pre` the slave value at the
+            // crossing instant (`p2 + frac·dt`), `post` the value at the reset
+            // phase. Mask-selected by `wrapped · sync`, so cross-mod-only patches
+            // leave the slave free and the fast path stays bit-identical.
             let reset = wrapped * sync_f;
-            slave.phase[v] = (np2 - (np2 >= 1.0) as u32 as f32) * (1.0 - reset);
+            let post_phase = (1.0 - frac) * dt2;
+            let pre_raw = p2 + frac * dt2;
+            let pre_phase = pre_raw - (pre_raw >= 1.0) as u32 as f32;
+            let delta = naive_osc(wave2, pre_phase, pw2[v]) - naive_osc(wave2, post_phase, pw2[v]);
+            slave.sync_resid[v] = -pblep(post_phase, dt2) * 0.5 * delta;
+            slave.sync_pending[v] = reset;
+            // Before-side polyBLEP on the current sample (the step falls `frac`
+            // into it; phase `1 − frac·dt` sits in pblep's falling region).
+            let before_phase = 1.0 - frac * dt2;
+            o2[v] -= pblep(before_phase, dt2) * 0.5 * delta * reset;
+
+            // Slave phase for the next sample: free advance, or the reset phase
+            // (un-advanced — the next sample reads it to emit the deferred post
+            // value, then advances normally).
+            let np2 = p2 + dt2;
+            let free_phase = np2 - (np2 >= 1.0) as u32 as f32;
+            slave.phase[v] = free_phase * (1.0 - reset) + post_phase * reset;
         }
     }
 }
@@ -552,10 +624,11 @@ mod tests {
 
     #[test]
     fn synced_slave_locks_to_master_period() {
-        // Master at an integer sample period (480); slave tuned well above and
-        // not a divisor of it. With sync, the slave resets at every master wrap,
-        // so its output is exactly periodic at the master's period.
-        let period = 480usize;
+        // Master at a power-of-two sample period (512, so 1/512 is exact in f32
+        // and the master wrap fraction repeats bit-exactly); slave tuned well
+        // above and not a divisor of it. With sync, the slave resets at every
+        // master wrap, so its output is exactly periodic at the master's period.
+        let period = 512usize;
         let mut osc1 = PolyOscillator::new();
         let mut osc2 = PolyOscillator::new();
         osc1.inc[0] = 1.0 / period as f32;
@@ -590,6 +663,108 @@ mod tests {
             max_diff < 1e-6,
             "slave not locked to master period: {max_diff}"
         );
+    }
+
+    /// Sub-sample polyBLEP sync sprays materially less aliasing than the old
+    /// sample-accurate hard reset. Modelled on
+    /// `patches-integration-tests/tests/hard_sync_aliasing.rs`: render a synced
+    /// saw both ways, take the magnitude spectrum (rectangular window — the
+    /// signal is periodic in the window by construction), and compare energy in
+    /// the upper eighth of the spectrum, which a BLEP-smoothed synced saw keeps
+    /// nearly empty while the boundary-rounded reset fills with broadband noise.
+    #[test]
+    fn subsample_sync_beats_sample_accurate_aliasing() {
+        const SR: f32 = 48_000.0;
+        const NFFT: usize = 4096;
+        // 40 cycles of the master fit exactly in the window (bin-aligned), so
+        // the synced output is periodic in NFFT and needs no window.
+        const K: usize = 40;
+        let f_master = K as f32 * SR / NFFT as f32; // 468.75 Hz
+        let f_slave = f_master * 1.5; // 3:2 sync
+
+        // Old sample-accurate path: hard reset to 0 on the master wrap, no
+        // residual. Mirrors the pre-0020 `process_pair` slave handling.
+        fn process_naive(
+            master: &mut PolyOscillator,
+            slave: &mut PolyOscillator,
+            o2: &mut [f32; N],
+        ) {
+            for v in 0..N {
+                o2[v] = osc_sample(Waveform::Saw, slave.phase[v], 0.5, slave.inc[v]);
+                let np1 = master.phase[v] + master.inc[v];
+                let wrapped = (np1 >= 1.0) as u32 as f32;
+                master.phase[v] = np1 - wrapped;
+                let np2 = slave.phase[v] + slave.inc[v];
+                slave.phase[v] = (np2 - (np2 >= 1.0) as u32 as f32) * (1.0 - wrapped);
+            }
+        }
+
+        fn render(subsample: bool, f_master: f32, f_slave: f32) -> Vec<f32> {
+            let mut m = PolyOscillator::new();
+            let mut s = PolyOscillator::new();
+            m.inc[0] = f_master / SR;
+            s.inc[0] = f_slave / SR;
+            let pw = [0.5; N];
+            let (mut o1, mut o2) = ([0.0; N], [0.0; N]);
+            // Warm up past the initial transient, then capture one window.
+            for _ in 0..NFFT {
+                if subsample {
+                    m.process_pair(
+                        &mut s, true, 0.0, Waveform::Saw, Waveform::Saw, &pw, &pw, &mut o1, &mut o2,
+                    );
+                } else {
+                    process_naive(&mut m, &mut s, &mut o2);
+                }
+            }
+            let mut out = Vec::with_capacity(NFFT);
+            for _ in 0..NFFT {
+                if subsample {
+                    m.process_pair(
+                        &mut s, true, 0.0, Waveform::Saw, Waveform::Saw, &pw, &pw, &mut o1, &mut o2,
+                    );
+                } else {
+                    process_naive(&mut m, &mut s, &mut o2);
+                }
+                out.push(o2[0]);
+            }
+            out
+        }
+
+        // Naive DFT magnitude sum over the upper eighth (bins 3N/8..N/2).
+        fn high_band_energy(x: &[f32]) -> f64 {
+            let n = x.len();
+            let start = 3 * n / 8;
+            let end = n / 2;
+            let mut total = 0.0f64;
+            for k in start..end {
+                let w = std::f64::consts::TAU * k as f64 / n as f64;
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (i, &s) in x.iter().enumerate() {
+                    let ph = w * i as f64;
+                    re += s as f64 * ph.cos();
+                    im -= s as f64 * ph.sin();
+                }
+                total += (re * re + im * im).sqrt();
+            }
+            total
+        }
+
+        let _ = f_slave;
+        // Several inharmonic ratios; the floor across them is ~1.5×, so require
+        // the sample-accurate reset to spray at least 1.4× the BLEP path's
+        // high-band energy (margin tuned with headroom against regressions).
+        for ratio in [1.5_f32, 1.618_034, 2.5, 3.5] {
+            let blep = render(true, f_master, f_master * ratio);
+            let naive = render(false, f_master, f_master * ratio);
+            assert!(blep.iter().all(|v| v.is_finite()), "ratio {ratio}: non-finite");
+            let blep_hi = high_band_energy(&blep);
+            let naive_hi = high_band_energy(&naive);
+            assert!(
+                naive_hi > blep_hi * 1.4,
+                "ratio {ratio}: expected sample-accurate aliasing ({naive_hi:.2}) to \
+                 exceed sub-sample BLEP ({blep_hi:.2}) by >1.4×"
+            );
+        }
     }
 
     #[test]

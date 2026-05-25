@@ -58,17 +58,34 @@ is `[f32; 16]`, so a small inline port is likely cleaner than a dependency.
 
 ## Acceptance criteria
 
-- [ ] Slave resets at the sub-sample fractional crossing (phase `(1-frac)·inc`),
+- [x] Slave resets at the sub-sample fractional crossing (phase `(1-frac)·inc`),
       not at the sample boundary.
-- [ ] polyBLEP residual is applied to the slave across the reset; measured
+- [x] polyBLEP residual is applied to the slave across the reset; measured
       aliasing (out-of-band energy) for a synced saw is materially lower than the
-      sample-accurate version at the same settings.
-- [ ] `synced_slave_locks_to_master_period` still holds (slave periodic at the
-      master period).
-- [ ] `coupled_xmod_zero_matches_fast_path` still bit-identical.
-- [ ] `synced_pair_all_lanes_finite` still passes (mixed waves, frozen lanes,
+      sample-accurate version at the same settings. `subsample_sync_beats_sample_accurate_aliasing`
+      measures 1.58×–2.01× lower high-band energy across four ratios (asserts >1.4×).
+- [x] `synced_slave_locks_to_master_period` still holds (slave periodic at the
+      master period). Retuned to a power-of-two master period (512) so the wrap
+      fraction repeats bit-exactly under sub-sample sync.
+- [x] `coupled_xmod_zero_matches_fast_path` still bit-identical.
+- [x] `synced_pair_all_lanes_finite` still passes (mixed waves, frozen lanes,
       sync + heavy xmod together).
-- [ ] No RT allocation; lane loop still vectorises.
+- [x] No RT allocation; lane loop still vectorises. Reset/residual are
+      mask-scaled by `wrapped · sync`; sub-sample state is two fixed `[f32; N]`
+      arrays on the slave.
+
+## Implementation notes
+
+- Inlined the maths rather than depending on `patches-dsp` (its poly variant is
+  `[f32; 16]`, ours is SoA `[f32; N]`): reused the existing branchless `pblep`
+  and added a `naive_osc` (pre-BLEP) helper to size the reset jump.
+- 2-point polyBLEP: the master wraps *inside* sample *n*, so the discontinuity
+  falls between *n* and *n+1*. The before-side residual is applied to sample
+  *n*'s output directly; the after-side (bare post value + residual) is deferred
+  one sample via per-voice `sync_resid` / `sync_pending` on the slave, so the
+  post sample bypasses `osc_sample`'s own-wrap BLEP (which assumes a fixed-height
+  1→0 wrap, not this reset).
+- Removed the `TODO(E002 follow-up)` minBLEP note in [poly.rs].
 
 ## Notes
 
