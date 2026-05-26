@@ -51,10 +51,26 @@ impl PluginGuiImpl for VxnMainThread<'_> {
     }
 
     fn set_parent(&mut self, window: Window) -> Result<(), PluginError> {
-        let nsview = window.as_cocoa_nsview().ok_or(PluginError::Message(
+        // The host hands us its native parent window for the current platform's
+        // GUI API (gated by `is_api_supported`/`get_preferred_api`). Pull out the
+        // raw handle pointer per platform; `vxn_ui::open_editor` wraps it in
+        // vizia's `ParentWindow`, which rebuilds the matching raw-window-handle
+        // for the same OS. Without the per-OS branch the accessor returns `None`
+        // off-macOS, so the editor never opens (the Windows "no UI" bug).
+        #[cfg(target_os = "macos")]
+        let parent = window.as_cocoa_nsview().ok_or(PluginError::Message(
             "Expected a Cocoa (NSView) parent window",
         ))?;
-        self.gui = Some(vxn_ui::open_editor(nsview, Arc::clone(&self.shared.params)));
+        #[cfg(target_os = "windows")]
+        let parent = window.as_win32_hwnd().ok_or(PluginError::Message(
+            "Expected a Win32 (HWND) parent window",
+        ))?;
+        #[cfg(target_os = "linux")]
+        let parent = window
+            .as_x11_handle()
+            .map(|h| h as *mut std::ffi::c_void)
+            .ok_or(PluginError::Message("Expected an X11 parent window"))?;
+        self.gui = Some(vxn_ui::open_editor(parent, Arc::clone(&self.shared.params)));
         Ok(())
     }
 
