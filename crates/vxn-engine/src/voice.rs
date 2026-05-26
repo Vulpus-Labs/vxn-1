@@ -1,5 +1,5 @@
 //! Structure-of-arrays voice bank: all 16 voices processed together so the
-//! oscillator/filter/noise hot path vectorises across voices (see
+//! oscillator/filter hot path vectorises across voices (see
 //! `vxn_dsp::poly`). Envelopes stay scalar (one [`AdsrCore`] per voice) and
 //! tick at the base rate; the oscillators and ladder run at the oversampled
 //! rate.
@@ -15,7 +15,7 @@
 
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, LadderCoeffs, LadderVariant,
-    LfoCore, LfoShape, NoiseColor, PolyHpf, PolyLadder, PolyNoise, PolyOscillator, Waveform,
+    LfoCore, LfoShape, PolyHpf, PolyLadder, PolyOscillator, Waveform,
     fast_exp2, note_to_hz, poly_ring_mod,
 };
 
@@ -104,12 +104,10 @@ pub struct BlockCtx {
     pub osc2_level: f32,
     /// Ring-modulator (osc1×osc2) mix level (0021). 0 = the cheap no-op path.
     pub ring_level: f32,
-    pub noise_level: f32,
     pub osc1_pw: f32,
     pub osc2_pw: f32,
     pub osc1_semi: f32,
     pub osc2_semi: f32,
-    pub noise_color: NoiseColor,
     pub cutoff: f32,
     /// Pre-VCF high-pass cutoff (Hz). 20 ≈ open / "off".
     pub hpf_cutoff: f32,
@@ -179,7 +177,6 @@ pub struct BlockCtx {
 pub struct VoiceBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
-    noise: PolyNoise,
     hpf: PolyHpf,
     ladder: PolyLadder,
     env1: [AdsrCore; N],
@@ -225,16 +222,15 @@ fn lfo1_seed(base: u64, ch: usize) -> u64 {
 }
 
 impl VoiceBank {
-    /// `noise_seed` differs per layer so two layers' noise generators are
-    /// decorrelated (no comb artefacts when two similar patches sum).
-    pub fn new(sample_rate: f32, noise_seed: u64) -> Self {
+    /// `rng_seed` differs per layer so the two layers' S&H LFO PRNGs are
+    /// decorrelated (no shared random sequence when two similar patches sum).
+    pub fn new(sample_rate: f32, rng_seed: u64) -> Self {
         // The LFO ticks once per control block, so its cores run at the control
         // rate (sr / CONTROL_BLOCK), matching the old per-layer LFO.
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         Self {
             osc1: PolyOscillator::new(),
             osc2: PolyOscillator::new(),
-            noise: PolyNoise::new(noise_seed),
             hpf: PolyHpf::new(),
             ladder: PolyLadder::new(),
             env1: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
@@ -250,9 +246,9 @@ impl VoiceBank {
             unison: false,
             glide_semi: [0.0; N],
             glide_valid: [false; N],
-            lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(noise_seed, i))),
+            lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(rng_seed, i))),
             lfo1_onset: Lfo1Onset::new(),
-            lfo1_seed: noise_seed,
+            lfo1_seed: rng_seed,
         }
     }
 
@@ -268,7 +264,6 @@ impl VoiceBank {
     pub fn reset_all(&mut self) {
         self.osc1 = PolyOscillator::new();
         self.osc2 = PolyOscillator::new();
-        self.noise.reset();
         self.hpf.reset();
         self.ladder.reset();
         for e in &mut self.env1 {
@@ -339,35 +334,24 @@ impl VoiceBank {
         unison_detune: f32,
         lfo1: Lfo1Trigger,
     ) {
-        match mode {
-            AssignMode::Poly => {
-                let v = self.allocate(note);
-                // DCO behaviour: phase resets to zero on every Poly note.
-                self.trigger(v, note, velocity, alloc_tick, 0.0, 0.0, lfo1);
-                self.level_comp = 1.0;
-                self.unison = false;
-            }
-            AssignMode::Unison => {
-                // Last-note priority: every channel retriggers to the new note
-                // (the prior note is not stacked). Per-channel detune fans the 8
-                // copies out, and a spread of start phases (rather than the Poly
-                // phase-0 reset) decorrelates the detuned copies' beating so they
-                // don't comb into synchronised nulls and thin the sound out.
-                for v in 0..N {
-                    self.trigger(
-                        v,
-                        note,
-                        velocity,
-                        alloc_tick,
-                        unison_spread(v) * unison_detune,
-                        unison_phase(v),
-                        lfo1,
-                    );
-                }
-                self.level_comp = 1.0 / (N as f32).sqrt();
-                self.unison = true;
-            }
+        // Decide *which* channels and their detune/phase purely from bookkeeping
+        // (`plan`), then apply the DSP effect (`trigger`) per assignment. The
+        // borrow in `alloc_view` ends when `plan` returns its owned result, so the
+        // mutating `trigger` calls below are free to touch the same arrays.
+        let plan = plan(mode, note, unison_detune, self.alloc_view());
+        for a in plan.iter() {
+            self.trigger(
+                a.channel,
+                note,
+                velocity,
+                alloc_tick,
+                a.detune_cents,
+                a.start_phase,
+                lfo1,
+            );
         }
+        self.level_comp = plan.level_comp;
+        self.unison = plan.unison;
     }
 
     /// Trigger a specific channel: the lowest level of the assign seam. Poly hits
@@ -417,37 +401,16 @@ impl VoiceBank {
         self.gate = [false; N];
     }
 
-    /// Pick a voice: re-use one already playing this note, else the free voice
-    /// whose last pitch sits nearest the new note, else steal the oldest.
-    ///
-    /// Choosing the *nearest* free voice (by its glide source `glide_semi`, the
-    /// pitch it would sweep from) keeps Poly glide musical: a new note slides the
-    /// shortest distance, and a free voice already at that pitch snaps cleanly
-    /// instead of some far-off voice sweeping across the keyboard.
-    fn allocate(&self, note: u8) -> usize {
-        if let Some(v) = (0..N).find(|&v| self.active[v] && self.note[v] == note) {
-            return v;
+    /// Read-only snapshot of the bookkeeping the allocation policy reads. Borrows
+    /// the relevant arrays so [`plan`] can run without touching DSP state.
+    #[inline]
+    fn alloc_view(&self) -> AllocView<'_> {
+        AllocView {
+            active: &self.active,
+            note: &self.note,
+            glide_semi: &self.glide_semi,
+            alloc_tick: &self.alloc_tick,
         }
-        if let Some(v) = (0..N)
-            .filter(|&v| !self.active[v])
-            .min_by(|&a, &b| {
-                let target = note as f32;
-                (self.glide_semi[a] - target)
-                    .abs()
-                    .total_cmp(&(self.glide_semi[b] - target).abs())
-            })
-        {
-            return v;
-        }
-        let mut best = 0;
-        let mut best_tick = u64::MAX;
-        for v in 0..N {
-            if self.alloc_tick[v] < best_tick {
-                best_tick = self.alloc_tick[v];
-                best = v;
-            }
-        }
-        best
     }
 
     /// Render one control block into the oversampled mono buffer `out`
@@ -507,8 +470,9 @@ impl VoiceBank {
                 + env_src(ctx.pwm_env_sel, e1, e2) * ctx.pwm_env_depth
                 + ctx.pwm_extra;
             let key_track = if ctx.filter_key_track {
-                // 1 octave of cutoff per octave of key above C0 (note 12).
-                self.note[v] as f32 - 12.0
+                // 1 octave of cutoff per octave of key relative to C4 (note 60):
+                // cutoff is unchanged at C4, rises above it, falls below it.
+                self.note[v] as f32 - 60.0
             } else {
                 0.0
             };
@@ -573,7 +537,6 @@ impl VoiceBank {
         // Scratch lane buffers.
         let mut o1 = [0.0f32; N];
         let mut o2 = [0.0f32; N];
-        let mut nz = [0.0f32; N];
         let mut ring = [0.0f32; N];
         let mut mix = [0.0f32; N];
         let mut hp = [0.0f32; N];
@@ -657,10 +620,8 @@ impl VoiceBank {
                     self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
                     self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
                 }
-                self.noise.process(ctx.noise_color, &mut nz);
                 for v in 0..N {
-                    mix[v] =
-                        o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level + nz[v] * ctx.noise_level;
+                    mix[v] = o1[v] * ctx.osc1_level + o2[v] * ctx.osc2_level;
                 }
                 // Ring contribution (osc1×osc2), summed in alongside the oscs.
                 if ring_on {
@@ -760,3 +721,208 @@ fn unison_phase(v: usize) -> f32 {
 /// stronger than one Poly voice, so its effective portamento time is cut to this
 /// fraction of the knob value for a subtle scoop rather than an audible slide.
 const UNISON_GLIDE_SCALE: f32 = 0.15;
+
+// ── Voice-allocation policy ──────────────────────────────────────────────────
+//
+// Pure functions that decide *which* channels a note-on lands on and the
+// per-channel detune / start-phase to stamp, given only the layer's bookkeeping.
+// No oscillators, filters, envelopes or sample rate — so the policy (steal order,
+// unison spread, future Solo/Twin modes) is unit-testable in isolation, and
+// `note_on` is left to apply the DSP effect (`trigger`).
+
+/// Read-only bookkeeping the allocation policy reads. Borrows the bank's arrays;
+/// constructed in tests directly from plain arrays.
+#[derive(Clone, Copy)]
+struct AllocView<'a> {
+    active: &'a [bool; N],
+    note: &'a [u8; N],
+    /// Per-channel glide source pitch — the pitch a free channel would sweep from
+    /// (drives nearest-free choice for musical Poly glide).
+    glide_semi: &'a [f32; N],
+    /// Per-channel allocation tick — lowest is oldest, stolen first.
+    alloc_tick: &'a [u64; N],
+}
+
+/// One channel assignment: which channel to trigger and the per-channel detune
+/// (cents) / start phase to stamp on it. Pure data — `trigger` applies it.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct Assign {
+    channel: usize,
+    detune_cents: f32,
+    start_phase: f32,
+}
+
+/// The outcome of a note-on policy: up to `N` channel assignments plus the
+/// derived level compensation and unison flag (both fall out of the assignment
+/// count — `1/√k` for a `k`-channel stack, `unison` set whenever `k > 1`).
+struct Plan {
+    assigns: [Assign; N],
+    len: usize,
+    level_comp: f32,
+    unison: bool,
+}
+
+impl Plan {
+    /// Build from the first `len` assignments; derives `level_comp` / `unison`.
+    fn new(assigns: [Assign; N], len: usize) -> Self {
+        Self {
+            assigns,
+            len,
+            level_comp: 1.0 / (len as f32).sqrt(),
+            unison: len > 1,
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Assign> + '_ {
+        self.assigns[..self.len].iter().copied()
+    }
+}
+
+/// Pick one channel: re-use one already playing this note, else the free channel
+/// whose glide source sits nearest the new note, else steal the oldest.
+///
+/// Choosing the *nearest* free channel (by `glide_semi`, the pitch it would sweep
+/// from) keeps Poly glide musical: a new note slides the shortest distance, and a
+/// free channel already at that pitch snaps cleanly instead of some far-off
+/// channel sweeping across the keyboard.
+fn allocate_one(note: u8, st: AllocView) -> usize {
+    if let Some(v) = (0..N).find(|&v| st.active[v] && st.note[v] == note) {
+        return v;
+    }
+    if let Some(v) = (0..N).filter(|&v| !st.active[v]).min_by(|&a, &b| {
+        let target = note as f32;
+        (st.glide_semi[a] - target)
+            .abs()
+            .total_cmp(&(st.glide_semi[b] - target).abs())
+    }) {
+        return v;
+    }
+    (0..N).min_by_key(|&v| st.alloc_tick[v]).unwrap_or(0)
+}
+
+/// Plan a note-on under `mode`: state in, channel assignments out. Pure.
+fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
+    let mut assigns = [Assign::default(); N];
+    match mode {
+        AssignMode::Poly => {
+            // DCO behaviour: phase resets to zero (start_phase 0), no detune.
+            assigns[0] = Assign {
+                channel: allocate_one(note, st),
+                detune_cents: 0.0,
+                start_phase: 0.0,
+            };
+            Plan::new(assigns, 1)
+        }
+        AssignMode::Unison => {
+            // Last-note priority: every channel retriggers to the new note (the
+            // prior note is not stacked). Per-channel detune fans the copies out,
+            // and a spread of start phases (rather than the Poly phase-0 reset)
+            // decorrelates their beating so they don't comb into synchronised
+            // nulls and thin the sound out.
+            for (v, a) in assigns.iter_mut().enumerate() {
+                *a = Assign {
+                    channel: v,
+                    detune_cents: unison_spread(v) * unison_detune,
+                    start_phase: unison_phase(v),
+                };
+            }
+            Plan::new(assigns, N)
+        }
+    }
+}
+
+#[cfg(test)]
+mod alloc_tests {
+    use super::*;
+
+    /// Bookkeeping arrays a view can borrow; mutate fields then call `.view()`.
+    struct St {
+        active: [bool; N],
+        note: [u8; N],
+        glide_semi: [f32; N],
+        alloc_tick: [u64; N],
+    }
+
+    impl St {
+        /// Empty layer: nothing active, every channel "free at pitch 0", tick 0.
+        fn empty() -> Self {
+            St {
+                active: [false; N],
+                note: [0; N],
+                glide_semi: [0.0; N],
+                alloc_tick: [0; N],
+            }
+        }
+
+        fn view(&self) -> AllocView<'_> {
+            AllocView {
+                active: &self.active,
+                note: &self.note,
+                glide_semi: &self.glide_semi,
+                alloc_tick: &self.alloc_tick,
+            }
+        }
+    }
+
+    #[test]
+    fn poly_plan_is_one_undetuned_channel() {
+        let st = St::empty();
+        let p = plan(AssignMode::Poly, 60, 25.0, st.view());
+        assert_eq!(p.len, 1);
+        assert_eq!(p.assigns[0].detune_cents, 0.0);
+        assert_eq!(p.assigns[0].start_phase, 0.0);
+        assert_eq!(p.level_comp, 1.0);
+        assert!(!p.unison);
+    }
+
+    #[test]
+    fn poly_reuses_channel_already_on_note() {
+        let mut st = St::empty();
+        st.active[5] = true;
+        st.note[5] = 60;
+        assert_eq!(allocate_one(60, st.view()), 5);
+    }
+
+    #[test]
+    fn poly_picks_nearest_free_by_glide() {
+        let mut st = St::empty();
+        // Channel 3's glide source sits closest to the new note (62).
+        st.glide_semi = [10.0; N];
+        st.glide_semi[3] = 61.0;
+        assert_eq!(allocate_one(62, st.view()), 3);
+    }
+
+    #[test]
+    fn poly_steals_oldest_when_full() {
+        let mut st = St::empty();
+        st.active = [true; N];
+        // All on other notes (no reuse), none free → steal lowest alloc_tick.
+        for v in 0..N {
+            st.note[v] = 40 + v as u8;
+            st.alloc_tick[v] = 100 + v as u64;
+        }
+        st.alloc_tick[6] = 1; // oldest
+        assert_eq!(allocate_one(72, st.view()), 6);
+    }
+
+    #[test]
+    fn unison_stacks_all_channels_symmetric() {
+        let st = St::empty();
+        let detune = 20.0;
+        let p = plan(AssignMode::Unison, 60, detune, st.view());
+        assert_eq!(p.len, N);
+        assert!(p.unison);
+        assert!((p.level_comp - 1.0 / (N as f32).sqrt()).abs() < 1e-6);
+        // Every channel used exactly once, in order.
+        for v in 0..N {
+            assert_eq!(p.assigns[v].channel, v);
+        }
+        // Detune fans out symmetrically: ends at ∓detune, midpoint ~0.
+        assert!((p.assigns[0].detune_cents + detune).abs() < 1e-6);
+        assert!((p.assigns[N - 1].detune_cents - detune).abs() < 1e-6);
+        let sum: f32 = p.iter().map(|a| a.detune_cents).sum();
+        assert!(sum.abs() < 1e-4, "spread should sum ~0, got {sum}");
+        // Start phases stay within the first half cycle.
+        assert!(p.iter().all(|a| (0.0..=0.5).contains(&a.start_phase)));
+    }
+}
