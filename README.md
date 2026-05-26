@@ -10,7 +10,7 @@ filter, and a vintage-flavoured chorus — packaged as a single `.clap` bundle.
 
 - **16-voice polyphony** with per-voice envelopes and a global LFO.
 - **Dual oscillators** with hard-sync and phase/cross-modulation, plus optional
-  8× oversampling as an anti-aliasing escape hatch for non-sine cross-mod.
+  anti-aliasing oversampling up to 8×.
 - **4-pole ladder VCF** (Moog-style), with a separate high-pass filter.
 - **Pitch envelope** alongside the amplitude and filter envelopes.
 - **Vintage bucket-brigade (BBD) chorus** — Juno-60-style "bright" voicing with
