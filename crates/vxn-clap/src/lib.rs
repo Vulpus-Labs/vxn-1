@@ -69,6 +69,7 @@ impl DefaultPluginFactory for VxnPlugin {
             shared,
             params: LocalParams::new(&shared.params),
             gui: None,
+            pending_parent: None,
         })
     }
 }
@@ -89,6 +90,10 @@ pub struct VxnMainThread<'a> {
     params: LocalParams,
     /// The live editor window, while the GUI is open.
     gui: Option<vxn_ui::EditorHandle>,
+    /// Raw host parent-window pointer captured in `set_parent`, opened lazily in
+    /// `show`. Stored as `usize` so the struct stays auto-trait-clean; cast back
+    /// to the per-OS handle when building the editor. See `gui::set_parent`.
+    pending_parent: Option<usize>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
