@@ -70,7 +70,36 @@ impl PluginGuiImpl for VxnMainThread<'_> {
             .as_x11_handle()
             .map(|h| h as *mut std::ffi::c_void)
             .ok_or(PluginError::Message("Expected an X11 parent window"))?;
-        self.gui = Some(vxn_ui::open_editor(parent, Arc::clone(&self.shared.params)));
+
+        // Pin the editor's HiDPI scale to the backing scale of the display the
+        // host window actually lives on. On macOS the OS hands us a HiDPI-aware
+        // NSView, but baseview's default `SystemScaleFactor` resolves the scale
+        // lazily and can latch the wrong screen on a mixed-DPI setup (Retina
+        // primary + 1× external), rendering the editor 2× and overflowing the
+        // 1× window. Reading `backingScaleFactor` here is the authoritative
+        // value for this window. Off-macOS the host drives scale via
+        // `set_scale`, so leave the policy as system-default (`None`).
+        #[cfg(target_os = "macos")]
+        let scale = unsafe {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+            let view = parent as *mut Object;
+            let host_window: *mut Object = msg_send![view, window];
+            if host_window.is_null() {
+                None
+            } else {
+                let s: f64 = msg_send![host_window, backingScaleFactor];
+                Some(s)
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let scale: Option<f64> = None;
+
+        self.gui = Some(vxn_ui::open_editor(
+            parent,
+            Arc::clone(&self.shared.params),
+            scale,
+        ));
         Ok(())
     }
 
