@@ -2506,7 +2506,6 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
- "objc",
  "vxn-engine",
  "vxn-ui",
 ]

@@ -24,10 +24,5 @@ clack-extensions = { workspace = true, features = [
     "clack-plugin",
 ] }
 
-# Read the host NSView's backing scale in the GUI extension (set_parent) to
-# pin the editor's HiDPI factor; macOS only.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc = "0.2"
-
 [dev-dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }

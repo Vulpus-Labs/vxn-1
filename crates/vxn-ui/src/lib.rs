@@ -649,29 +649,19 @@ impl Model for UiModel {
 
 /// Open the editor parented to `parent` (on macOS the host `NSView`).
 ///
-/// `scale` pins the HiDPI factor explicitly (`WindowScalePolicy::ScaleFactor`).
-/// Pass the backing scale of the *display the host window is on* — see
-/// `vxn-clap`'s `set_parent`. Without it, baseview's `SystemScaleFactor` only
-/// resolves the real scale lazily via the first `viewDidChangeBackingProperties`,
-/// which on a mixed-DPI Mac (Retina primary + 1× external) latches the wrong
-/// screen's scale: the editor then renders 2× on a 1× window and overflows
-/// while mouse hit-testing still maps correctly. `None` keeps the system policy
-/// (Windows/Linux, where the host drives scale via the `gui.set_scale` call).
-pub fn open_editor(
-    parent: *mut c_void,
-    shared: Arc<SharedParams>,
-    scale: Option<f64>,
-) -> EditorHandle {
+/// Uses baseview's default `WindowScalePolicy::SystemScaleFactor`: the HiDPI
+/// factor is resolved when our view is attached to the host window, via the
+/// `viewDidChangeBackingProperties` → `Resized` path that rebuilds the render
+/// surface against the live backing store. Pinning an explicit `ScaleFactor`
+/// suppresses that rebuild (equal pre/post-attach sizes) and the editor renders
+/// 1× into a 2× surface — see `vxn-clap`'s `set_parent`.
+pub fn open_editor(parent: *mut c_void, shared: Arc<SharedParams>) -> EditorHandle {
     let parent = ParentWindow(parent);
-    let app = Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
+    Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
         .on_idle(|cx| cx.emit(PollAutomation))
         .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
-        .title("VXN1");
-    let app = match scale {
-        Some(s) => app.with_scale_policy(WindowScalePolicy::ScaleFactor(s)),
-        None => app,
-    };
-    app.open_parented(&parent)
+        .title("VXN1")
+        .open_parented(&parent)
 }
 
 fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
