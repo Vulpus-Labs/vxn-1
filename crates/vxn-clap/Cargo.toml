@@ -31,3 +31,10 @@ objc = "0.2"
 
 [dev-dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
+
+[lints.rust]
+# The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to a deprecated
+# `#[cfg(feature = "cargo-clippy")]`, which trips `unexpected_cfgs` under
+# `cargo clippy`. We don't define that feature; declare it expected so the
+# noise from the macro expansion in gui.rs is silenced at source.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
