@@ -1,6 +1,6 @@
 # VXN1
 
-**VXN1** ("vixen 1") is a Jupiter-8-style analogue polysynth by [Vulpus Labs](https://github.com/Vulpus-Labs),
+**VXN1** ("vixen 1") is an 80s-style analogue polysynth by [Vulpus Labs](https://github.com/Vulpus-Labs),
 built in Rust as a [CLAP](https://cleveraudio.org/) plugin.
 
 16-voice polyphony, dual oscillators with cross-modulation, a 4-pole ladder
