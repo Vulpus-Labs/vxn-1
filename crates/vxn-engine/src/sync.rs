@@ -65,6 +65,17 @@ pub fn synced_hz(tempo_bpm: f32, index: usize) -> f32 {
     (tempo_bpm / 60.0) / beats
 }
 
+/// Resolve a subdivision (by index) at `tempo_bpm` to a **duration in seconds**
+/// (one cycle = `beats` quarter-notes). Used by the tempo-synced delay (E006):
+/// the period, not the rate. Caller clamps to the delay buffer's capacity — a
+/// slow subdivision at a slow tempo can exceed it.
+#[inline]
+pub fn synced_seconds(tempo_bpm: f32, index: usize) -> f32 {
+    let beats = SUBDIVISIONS[index.min(SUBDIVISIONS.len() - 1)].beats;
+    // beats/cycle ÷ beats/sec = sec/cycle.
+    beats / (tempo_bpm / 60.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +101,20 @@ mod tests {
             // Dotted is 1.5× longer → 2/3 the rate; triplet 2/3 longer → 1.5×.
             assert!((synced_hz(bpm, qd) - straight / 1.5).abs() < 1e-4, "dotted {bpm}");
             assert!((synced_hz(bpm, qt) - straight * 1.5).abs() < 1e-4, "triplet {bpm}");
+        }
+    }
+
+    #[test]
+    fn synced_seconds_is_the_period_of_synced_hz() {
+        // 1/4 at 120 BPM = one beat = 0.5 s; at 60 BPM = 1.0 s.
+        let q = SUBDIVISIONS.iter().position(|s| s.label == "1/4").unwrap();
+        assert!((synced_seconds(120.0, q) - 0.5).abs() < 1e-6);
+        assert!((synced_seconds(60.0, q) - 1.0).abs() < 1e-6);
+        // It's exactly 1/synced_hz for any subdivision/tempo.
+        for bpm in [60.0_f32, 128.0, 174.0] {
+            for idx in 0..SUBDIVISIONS.len() {
+                assert!((synced_seconds(bpm, idx) - 1.0 / synced_hz(bpm, idx)).abs() < 1e-4);
+            }
         }
     }
 

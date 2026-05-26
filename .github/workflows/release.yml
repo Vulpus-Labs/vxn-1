@@ -1,0 +1,59 @@
+name: Release
+
+# Build the CLAP plugin for macOS and Windows and attach the binaries to the
+# GitHub Release that triggered the run.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build universal CLAP bundle
+        run: cargo xtask bundle --release --universal
+
+      # The macOS .clap is a bundle directory; ditto zips it preserving the
+      # bundle structure (and resource forks) so it unpacks cleanly.
+      - name: Zip bundle
+        run: ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1-macOS-universal.clap.zip
+
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLAP bundle
+        run: cargo xtask bundle --release
+
+      # On Windows the .clap is a single shared library; rename for clarity and
+      # upload it directly.
+      - name: Rename artifact
+        run: Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1-windows-x64.clap

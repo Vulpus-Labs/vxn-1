@@ -409,7 +409,11 @@ impl Synth {
             g.get(GlobalParam::ChorusDepth),
             g.get(GlobalParam::ChorusMix),
         );
-        let t = g.get(GlobalParam::DelayTime);
+        let t = delay_time_seconds(
+            g.bool(GlobalParam::DelaySync),
+            g.get(GlobalParam::DelayTime),
+            self.tempo_bpm,
+        );
         self.delay.set_params(
             t,
             t,
@@ -520,8 +524,10 @@ impl Synth {
 #[inline]
 fn lfo_rate_from(desc: &ParamDesc, rate_value: f32, sync_on: bool, tempo_bpm: f32) -> f32 {
     if sync_on {
-        let norm = desc.to_normalized(rate_value);
-        sync::synced_hz(tempo_bpm, sync::index_from_norm(norm))
+        // Spread subdivisions linearly across the knob's travel (`to_fader`), not
+        // its tapered Hz value — even subdivision spacing with no midpoint skew.
+        let pos = desc.to_fader(rate_value);
+        sync::synced_hz(tempo_bpm, sync::index_from_norm(pos))
     } else {
         rate_value
     }
@@ -531,6 +537,25 @@ fn lfo_rate_from(desc: &ParamDesc, rate_value: f32, sync_on: bool, tempo_bpm: f3
 #[inline]
 fn lfo_rate(p: &PatchValues, rate: PatchParam, sync_flag: PatchParam, tempo_bpm: f32) -> f32 {
     lfo_rate_from(rate.desc(), p.get(rate), p.bool(sync_flag), tempo_bpm)
+}
+
+/// Resolve the delay time in seconds for this block (E006). Sync off: the Time
+/// knob is taken as literal seconds, exactly as before. Sync on: the knob's
+/// normalised position selects a musical subdivision locked to `tempo_bpm`
+/// (mirrors the LFO host-sync in [`lfo_rate_from`]). The knob's stored value is
+/// never mutated, so toggling sync off reads back as the same ms again. The
+/// returned value can still exceed the delay buffer; `StereoDelay::set_params`
+/// clamps it to capacity regardless of tempo.
+#[inline]
+fn delay_time_seconds(sync_on: bool, time_value: f32, tempo_bpm: f32) -> f32 {
+    if sync_on {
+        // Subdivisions spread linearly across the Time knob's travel (`to_fader`),
+        // matching the LFO sync — even spacing, no midpoint skew.
+        let pos = GlobalParam::DelayTime.desc().to_fader(time_value);
+        sync::synced_seconds(tempo_bpm, sync::index_from_norm(pos))
+    } else {
+        time_value
+    }
 }
 
 /// Convenience: A4 = 440 Hz reference, exposed for tests/tools.
@@ -1194,13 +1219,11 @@ mod tests {
 
     // ── E004 / 0015: host-tempo sync ────────────────────────────────────────
 
-    /// Set the rate knob so its normalised position lands exactly on
-    /// subdivision `idx` (the inverse of `sync::index_from_norm`).
+    /// Set the rate knob so its fader position lands exactly on subdivision `idx`
+    /// (the inverse of `to_fader` ∘ `sync::index_from_norm`).
     fn rate_for_subdiv(idx: usize) -> f32 {
         let last = (sync::SUBDIVISIONS.len() - 1) as f32;
-        PatchParam::LfoRate
-            .desc()
-            .from_normalized(idx as f32 / last)
+        PatchParam::LfoRate.desc().from_fader(idx as f32 / last)
     }
 
     #[test]
@@ -1234,6 +1257,43 @@ mod tests {
         assert!((resolve(&p, 140.0) - (140.0 / 60.0) / 1.5).abs() < 1e-4, "1/4. @140");
         p.set(PatchParam::LfoRate, rate_for_subdiv(qt));
         assert!((resolve(&p, 140.0) - (140.0 / 60.0) / (2.0 / 3.0)).abs() < 1e-4, "1/4T @140");
+    }
+
+    // ── E006: tempo-synced delay time ────────────────────────────────────────
+
+    /// Set the delay time knob so its fader position lands exactly on subdivision
+    /// `idx` (inverse of `to_fader` ∘ `sync::index_from_norm`).
+    fn delay_time_for_subdiv(idx: usize) -> f32 {
+        let last = (sync::SUBDIVISIONS.len() - 1) as f32;
+        GlobalParam::DelayTime.desc().from_fader(idx as f32 / last)
+    }
+
+    #[test]
+    fn delay_sync_off_is_literal_seconds() {
+        // Sync off: the Time knob is taken as literal seconds, tempo ignored.
+        assert_eq!(delay_time_seconds(false, 0.42, 120.0), 0.42);
+        assert_eq!(delay_time_seconds(false, 0.42, 60.0), 0.42);
+    }
+
+    #[test]
+    fn delay_sync_on_resolves_subdivision_from_tempo() {
+        let q = sync::SUBDIVISIONS.iter().position(|s| s.label == "1/4").unwrap();
+        let v = delay_time_for_subdiv(q);
+        // 1/4 = one beat: 0.5 s @120, 1.0 s @60.
+        assert!((delay_time_seconds(true, v, 120.0) - 0.5).abs() < 1e-4, "1/4 @120");
+        assert!((delay_time_seconds(true, v, 60.0) - 1.0).abs() < 1e-4, "1/4 @60");
+    }
+
+    #[test]
+    fn delay_synced_time_snaps_back_to_ms_when_sync_off() {
+        // A knob value that means a subdivision while synced must read back as
+        // the same literal seconds the instant sync is switched off (the stored
+        // param value is never mutated, only reinterpreted).
+        let v = delay_time_for_subdiv(3); // some arbitrary subdivision
+        let synced = delay_time_seconds(true, v, 100.0);
+        let unsynced = delay_time_seconds(false, v, 100.0);
+        assert_ne!(synced, unsynced, "sync should reinterpret the value");
+        assert_eq!(unsynced, v, "off must return the literal stored seconds");
     }
 
     #[test]

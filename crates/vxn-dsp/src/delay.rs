@@ -107,8 +107,12 @@ impl StereoDelay {
         mix: f32,
         ping_pong: bool,
     ) {
-        self.delay_samples_l = (time_l * self.sample_rate).max(1.0);
-        self.delay_samples_r = (time_r * self.sample_rate).max(1.0);
+        // Clamp to the buffer's usable span (its `read` clamps the same way).
+        // A tempo-synced time at a slow subdivision/tempo can exceed capacity;
+        // pin it here so the delay never wraps past its allocation.
+        let max = (self.left.capacity().min(self.right.capacity()) - 2) as f32;
+        self.delay_samples_l = (time_l * self.sample_rate).clamp(1.0, max);
+        self.delay_samples_r = (time_r * self.sample_rate).clamp(1.0, max);
         self.feedback = feedback.clamp(0.0, 0.99);
         self.damping = damping.clamp(0.0, 1.0);
         self.mix = mix.clamp(0.0, 1.0);
@@ -170,5 +174,23 @@ mod tests {
             peak = peak.max(l.abs());
         }
         assert!(peak < 5.0, "delay unstable: {peak}");
+    }
+
+    #[test]
+    fn delay_time_clamped_to_buffer_capacity() {
+        let sr = 48_000.0;
+        let mut d = StereoDelay::new(sr, 2.0);
+        // Ask for 60 s (e.g. 1/1 at a very slow synced tempo) — far past the
+        // 2 s buffer. It must clamp to the line's usable span, not wrap.
+        d.set_params(60.0, 60.0, 0.5, 0.3, 1.0, false);
+        let max = (d.left.capacity() - 2) as f32;
+        assert!(d.delay_samples_l <= max, "left not clamped: {}", d.delay_samples_l);
+        assert!(d.delay_samples_r <= max, "right not clamped: {}", d.delay_samples_r);
+        // Still produces finite output at the clamped time.
+        for i in 0..sr as usize {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            let (l, r) = d.process(x, x);
+            assert!(l.is_finite() && r.is_finite());
+        }
     }
 }

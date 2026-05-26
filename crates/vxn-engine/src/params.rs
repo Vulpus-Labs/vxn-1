@@ -346,6 +346,7 @@ pub enum GlobalParam {
     DelayFeedback,
     DelayMix,
     DelayPingPong,
+    DelaySync,
     // Quality
     Oversample,
     // Global LFO 2 (E005 / 0019): a single instrument-wide LFO. It reaches the
@@ -780,6 +781,7 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
     f("delay_feedback", "Delay FB", 0.0, 0.95, 0.4, "", Taper::Linear),
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
     b("delay_pingpong", "Ping-Pong", 1.0),
+    b("delay_sync", "Delay Sync", 0.0),
     e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
     // Global LFO 2 (E005 / 0019).
     e("lfo2_shape", "LFO 2 Shape", LFO_LABELS, 0.0),

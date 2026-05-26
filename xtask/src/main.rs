@@ -1,12 +1,14 @@
 //! Build tasks for VXN1.
 //!
 //! Usage:
-//!   cargo xtask bundle [--release] [--install]
+//!   cargo xtask bundle [--release] [--install] [--universal]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
 //! plugin. On macOS that is a bundle directory (`Contents/MacOS/VXN1` +
 //! `Info.plist`); on Linux/Windows the CLAP is just the shared library renamed
-//! to `.clap`. `--install` copies it to the user CLAP directory.
+//! to `.clap`. `--install` copies it to the user CLAP directory. `--universal`
+//! (macOS only) builds both `aarch64`/`x86_64` slices and `lipo`s them into a
+//! single fat binary, so one bundle loads on Apple Silicon and Intel hosts.
 
 use std::env;
 use std::fs;
@@ -22,16 +24,17 @@ fn main() {
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let release = args.iter().any(|a| a == "--release");
     let install = args.iter().any(|a| a == "--install");
+    let universal = args.iter().any(|a| a == "--universal");
 
     match cmd {
         "bundle" => {
-            if let Err(e) = bundle(release, install) {
+            if let Err(e) = bundle(release, install, universal) {
                 eprintln!("xtask: {e}");
                 std::process::exit(1);
             }
         }
         _ => {
-            eprintln!("usage: cargo xtask bundle [--release] [--install]");
+            eprintln!("usage: cargo xtask bundle [--release] [--install] [--universal]");
             std::process::exit(2);
         }
     }
@@ -45,29 +48,37 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn bundle(release: bool, install: bool) -> Result<(), String> {
+fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
 
-    // 1. Compile the cdylib.
-    let mut build = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    build
-        .current_dir(&root)
-        .args(["build", "--package", "vxn-clap"]);
-    if release {
-        build.arg("--release");
-    }
-    let status = build
-        .status()
-        .map_err(|e| format!("failed to run cargo: {e}"))?;
-    if !status.success() {
-        return Err("cargo build failed".into());
-    }
-
-    let lib = lib_path(&root.join("target").join(profile));
-    if !lib.exists() {
-        return Err(format!("built library not found at {}", lib.display()));
-    }
+    // 1. Compile the cdylib (a single fat dylib for a macOS universal build,
+    //    otherwise the host-target shared library).
+    let lib = if universal {
+        if !cfg!(target_os = "macos") {
+            return Err("--universal is macOS-only".into());
+        }
+        build_universal(&root, release)?
+    } else {
+        let mut build = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        build
+            .current_dir(&root)
+            .args(["build", "--package", "vxn-clap"]);
+        if release {
+            build.arg("--release");
+        }
+        let status = build
+            .status()
+            .map_err(|e| format!("failed to run cargo: {e}"))?;
+        if !status.success() {
+            return Err("cargo build failed".into());
+        }
+        let lib = lib_path(&root.join("target").join(profile));
+        if !lib.exists() {
+            return Err(format!("built library not found at {}", lib.display()));
+        }
+        lib
+    };
 
     // 2. Assemble the .clap bundle.
     let out_dir = root.join("target").join("bundled");
@@ -103,6 +114,52 @@ fn lib_path(profile_dir: &Path) -> PathBuf {
         ("lib", "so")
     };
     profile_dir.join(format!("{prefix}{LIB_NAME}.{ext}"))
+}
+
+/// Build both macOS slices and `lipo` them into one fat dylib; returns its path.
+/// Each target's dylib lands under `target/<triple>/<profile>/`; the combined
+/// binary is written to `target/universal/<profile>/`.
+fn build_universal(root: &Path, release: bool) -> Result<PathBuf, String> {
+    const TRIPLES: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+    let profile = if release { "release" } else { "debug" };
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+
+    let mut slices = Vec::new();
+    for triple in TRIPLES {
+        let mut build = Command::new(&cargo);
+        build
+            .current_dir(root)
+            .args(["build", "--package", "vxn-clap", "--target", triple]);
+        if release {
+            build.arg("--release");
+        }
+        let status = build
+            .status()
+            .map_err(|e| format!("failed to run cargo for {triple}: {e}"))?;
+        if !status.success() {
+            return Err(format!("cargo build failed for {triple}"));
+        }
+        let lib = lib_path(&root.join("target").join(triple).join(profile));
+        if !lib.exists() {
+            return Err(format!("{triple} library not found at {}", lib.display()));
+        }
+        slices.push(lib);
+    }
+
+    let out_dir = root.join("target").join("universal").join(profile);
+    fs::create_dir_all(&out_dir).map_err(io("create universal dir"))?;
+    let out = out_dir.join(format!("lib{LIB_NAME}.dylib"));
+    let status = Command::new("lipo")
+        .arg("-create")
+        .args(&slices)
+        .arg("-output")
+        .arg(&out)
+        .status()
+        .map_err(|e| format!("failed to run lipo: {e}"))?;
+    if !status.success() {
+        return Err("lipo failed".into());
+    }
+    Ok(out)
 }
 
 fn build_macos_bundle(clap_path: &Path, lib: &Path) -> Result<(), String> {

@@ -29,6 +29,25 @@ use vxn_dsp::{CONTROL_BLOCK, Smoothed, one_pole_coeff};
 const BLOCK_SMOOTH_MS: f32 = 10.0;
 /// Glide time for the per-sample master volume (ms).
 const VOLUME_SMOOTH_MS: f32 = 5.0;
+/// Distance below which a block-rate glide snaps to its target instead of
+/// crawling down the one-pole's asymptotic tail. Without this the smoothed
+/// value never reaches the target exactly, so a `!= 0.0` gate driven off it
+/// (ring mod, cross-mod amount) stays armed indefinitely after the param is
+/// dialled to zero — the expensive path keeps running and CPU never recovers.
+/// 1e-6 is ≈ −120 dB, inaudible for the gain/depth params this governs.
+const GLIDE_SNAP_EPS: f32 = 1.0e-6;
+
+/// One block-rate glide step: a one-pole move toward `tgt`, snapping to it once
+/// within [`GLIDE_SNAP_EPS`] so the value settles exactly (see the constant).
+#[inline]
+fn glide_step(cur: f32, tgt: f32, coeff: f32) -> f32 {
+    let next = cur + coeff * (tgt - cur);
+    if (tgt - next).abs() < GLIDE_SNAP_EPS {
+        tgt
+    } else {
+        next
+    }
+}
 
 /// How a parameter is smoothed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -119,8 +138,7 @@ impl ParamSmoother {
             for p in PatchParam::all() {
                 match patch_glide(p) {
                     Glide::Block => {
-                        let c = cur.get(p);
-                        cur.set(p, c + coeff * (tgt.get(p) - c));
+                        cur.set(p, glide_step(cur.get(p), tgt.get(p), coeff));
                     }
                     // Snap is the only other patch outcome.
                     _ => cur.set(p, tgt.get(p)),
@@ -136,8 +154,7 @@ impl ParamSmoother {
                     cur.set(g, tgt.get(g));
                 }
                 Glide::Block => {
-                    let c = cur.get(g);
-                    cur.set(g, c + coeff * (tgt.get(g) - c));
+                    cur.set(g, glide_step(cur.get(g), tgt.get(g), coeff));
                 }
                 Glide::Snap => cur.set(g, tgt.get(g)),
             }
@@ -190,6 +207,28 @@ mod tests {
                 .abs()
                 < 1e-3
         );
+    }
+
+    #[test]
+    fn block_param_settles_exactly_to_zero() {
+        // A block-rate glide must reach its target *exactly* in bounded time,
+        // not crawl down the one-pole tail forever. RingLevel / CrossModAmount
+        // gate expensive paths off `!= 0.0`, so a residual epsilon would keep
+        // them armed and CPU pinned after the param is zeroed.
+        let start = patch_target(PatchParam::RingLevel, 1.0);
+        let mut s = ParamSmoother::new(48_000.0, &start);
+        let zero = ParamValues::default(); // RingLevel target 0.0
+        let mut blocks = 0;
+        loop {
+            s.tick_block(&zero);
+            blocks += 1;
+            if s.values().layer(Layer::Upper).get(PatchParam::RingLevel) == 0.0 {
+                break;
+            }
+            assert!(blocks < 1000, "RingLevel never reached exactly 0.0");
+        }
+        // 10 ms time constant at the control rate settles well under 1000 blocks.
+        assert!(blocks < 1000);
     }
 
     #[test]
