@@ -46,8 +46,8 @@ use vizia::context::TreeProps;
 use vizia::prelude::*;
 use vizia::vg;
 use vxn_engine::{
-    GlobalParam, KeyMode, Layer, ParamKind, ParamRef, PatchParam, SharedParams, TOTAL_PARAMS,
-    desc_for_clap_id, global_clap_id, param_ref, patch_clap_id,
+    AssignMode, GlobalParam, KeyMode, Layer, ParamKind, ParamRef, PatchParam, SharedParams,
+    TOTAL_PARAMS, desc_for_clap_id, global_clap_id, param_ref, patch_clap_id,
 };
 
 /// Resolve a faceplate [`Entry`]'s baked (Upper) CLAP id to the layer currently
@@ -263,8 +263,10 @@ const ROWS: &[&[(&str, &[Entry])]] = {
             ),
             (
                 // Pitch-bend wheel range (vibrato-scaled, both oscillators), sat
-                // beside the mod wheel as the other performance-wheel control.
-                "Pitch Wheel",
+                // beside the mod wheel as the other performance-wheel control. A
+                // single fader, so the panel is narrowed (see `panel_view`) and
+                // titled "Bend" to free horizontal space in the row.
+                "Bend",
                 &[(u(PitchWheelDepth), "Range")],
             ),
         ],
@@ -283,8 +285,8 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 &[
                     (u(AssignMode), "Assign"),
                     (u(UnisonDetune), "Detune"),
-                    (u(PortamentoOn), "Glide"),
-                    (u(PortamentoTime), "Time"),
+                    // No glide on/off: the time fader is the whole control (0 = off).
+                    (u(PortamentoTime), "Glide"),
                 ],
             ),
             (
@@ -359,7 +361,7 @@ const STYLE: &str = r#"
 :root { background-color: #2b2b2b; font-family: "IBM Plex Sans Condensed Medium"; }
 label { font-size: 11; color: #d6d6d6; }
 .panel { background-color: #1c1c1c; border-width: 1px; border-color: #0e0e0e; corner-radius: 4px; }
-.panel-header { background-color: #d9701b; color: #141414; corner-radius: 2px; }
+.panel-header { background-color: #a7cfe2; color: #141414; corner-radius: 2px; }
 .ctl-label { font-size: 9; color: #aeaeae; }
 .ctl-value { font-size: 9; color: #d9701b; }
 .tg-list { gap: 1px; }
@@ -390,69 +392,57 @@ const PANEL_H: f32 = 156.0;
 /// arranged around its arc.
 const DIAL: f32 = 62.0;
 
-/// UI value range for a fader — the full descriptor range, centred at zero for
-/// the bipolar route depths. (The interim 0022 wiring uses plain faders for the
-/// route depths; 0023 revisits fader shaping per panel.)
-fn ui_range(idx: usize) -> (f32, f32) {
-    let Some(d) = desc_for_clap_id(idx) else {
-        return (0.0, 1.0);
-    };
-    (d.min, d.max)
-}
-
-/// Faders that get an exponential taper instead of a linear map, so a subtle low
-/// end isn't crammed into the bottom of the travel. The curve `v = A·(e^(K·n) − 1)`
-/// is pinned through two anchors — the **midpoint reads 1.0** and the **top reads
-/// the descriptor max** (bottom = 0): `x = max − 1`, `K = 2·ln x`, `A = 1/(x − 1)`.
-/// Returns `(A, K)`, or `None` for the plain linear faders.
-///
-/// Applies to the envelope time faders (attack / decay / release on both
-/// envelopes — 1 s mid, 10 s top) and the LFO→pitch depth (1 st mid, 12 st top:
-/// vibrato is mostly meant to be very subtle). Sustain (a level, not a time) and
-/// the bipolar route depths keep the plain linear map.
-fn exp_taper(idx: usize) -> Option<(f32, f32)> {
-    use PatchParam::*;
-    let tapered = matches!(
-        param_ref(idx),
-        Some(ParamRef::Patch(
-            _,
-            Env1Attack
-                | Env1Decay
-                | Env1Release
-                | Env2Attack
-                | Env2Decay
-                | Env2Release
-                | PitchLfoDepth
-        ))
-    );
-    if !tapered {
-        return None;
-    }
-    let x = desc_for_clap_id(idx)?.max - 1.0;
-    Some((1.0 / (x - 1.0), 2.0 * x.ln()))
-}
-
-/// Plain value → fader position `[0, 1]` over the UI range.
+/// Plain value → fader position `[0, 1]`. The whole mapping — range and any
+/// exponential taper — lives on the parameter descriptor ([`ParamDesc::to_fader`],
+/// driven by its [`Taper`]), so the editor fader, the descriptor's clamp on every
+/// write and the host's normalized range all agree from one definition. Unknown
+/// ids (none in practice) fall back to the bottom.
 fn fader_to_ui(idx: usize, value: f32) -> f32 {
-    if let Some((a, k)) = exp_taper(idx) {
-        // Inverse of `A·(e^(K·n) − 1)`.
-        return ((value / a + 1.0).ln() / k).clamp(0.0, 1.0);
-    }
-    let (lo, hi) = ui_range(idx);
-    if hi > lo {
-        ((value - lo) / (hi - lo)).clamp(0.0, 1.0)
-    } else {
-        0.0
+    desc_for_clap_id(idx).map_or(0.0, |d| d.to_fader(value))
+}
+
+/// Fader position `[0, 1]` → plain value (inverse of [`fader_to_ui`]).
+fn fader_from_ui(idx: usize, n: f32) -> f32 {
+    desc_for_clap_id(idx).map_or(n.clamp(0.0, 1.0), |d| d.from_fader(n))
+}
+
+/// Mode-dependent fader top for `UnisonDetune`: its *useful* detune differs by
+/// the layer's assign mode — a wide 50 ct in **Unison** (a lush chorus stack) vs
+/// a subtle 20 ct in **Twin** (a 2-voice spread). The stored value stays plain
+/// cents (descriptor max 50); only the fader's full-travel meaning changes, so
+/// the same control reads ergonomically in either mode. `None` for every other
+/// fader (they use the descriptor's own range + taper via `fader_to_ui`).
+fn detune_top(idx: usize, shared: &SharedParams) -> Option<f32> {
+    match param_ref(idx) {
+        Some(ParamRef::Patch(layer, PatchParam::UnisonDetune)) => {
+            let mode = shared
+                .get(patch_clap_id(layer, PatchParam::AssignMode))
+                .round() as usize;
+            Some(if mode == AssignMode::Unison as usize {
+                50.0
+            } else {
+                20.0
+            })
+        }
+        _ => None,
     }
 }
 
-/// Fader position `[0, 1]` → plain value over the UI range.
-fn fader_from_ui(idx: usize, n: f32) -> f32 {
-    if let Some((a, k)) = exp_taper(idx) {
-        return a * ((k * n.clamp(0.0, 1.0)).exp() - 1.0);
+/// [`fader_to_ui`] with the live `UnisonDetune` mode scaling applied; identical to
+/// the plain mapping for every other fader.
+fn fader_to_ui_dyn(idx: usize, value: f32, shared: &SharedParams) -> f32 {
+    match detune_top(idx, shared) {
+        Some(top) if top > 0.0 => (value / top).clamp(0.0, 1.0),
+        _ => fader_to_ui(idx, value),
     }
-    let (lo, hi) = ui_range(idx);
-    lo + n.clamp(0.0, 1.0) * (hi - lo)
+}
+
+/// [`fader_from_ui`] with the live `UnisonDetune` mode scaling applied.
+fn fader_from_ui_dyn(idx: usize, n: f32, shared: &SharedParams) -> f32 {
+    match detune_top(idx, shared) {
+        Some(top) => n.clamp(0.0, 1.0) * top,
+        None => fader_from_ui(idx, n),
+    }
 }
 
 /// The host-sync toggle paired with an LFO rate fader, if `idx` is one. With
@@ -540,7 +530,7 @@ fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
                 Ctl::Select(i, SyncSignal::new(Some(shared.get(i).round() as usize)))
             }
         }
-        _ => Ctl::Fader(i, SyncSignal::new(fader_to_ui(i, shared.get(i)))),
+        _ => Ctl::Fader(i, SyncSignal::new(fader_to_ui_dyn(i, shared.get(i), shared))),
     }
 }
 
@@ -572,7 +562,9 @@ impl Model for UiModel {
             for ctl in &self.controls {
                 match *ctl {
                     Ctl::Fader(i, sig) => {
-                        let n = fader_to_ui(i, self.shared.get(i));
+                        // `_dyn` so the detune fader re-maps when the assign mode
+                        // changes (its useful top is mode-dependent).
+                        let n = fader_to_ui_dyn(i, self.shared.get(i), &self.shared);
                         if (sig.get() - n).abs() > f32::EPSILON {
                             sig.set(n);
                         }
@@ -823,6 +815,8 @@ fn panel_view(
             // beneath); every other panel is a plain row of control cells.
             if title == "Cross Mod" {
                 cross_mod_panel(cx, layer, controls, shared);
+            } else if title == "LFO 1" {
+                lfo1_cells(cx, layer, controls, shared);
             } else if let Some(routes) = routes_for(title) {
                 for (head, src, depth) in routes {
                     mod_route_view(cx, head, *src, *depth, layer, controls, shared);
@@ -844,6 +838,12 @@ fn panel_view(
     .height(Pixels(PANEL_H))
     .padding(Pixels(5.0))
     .vertical_gap(Pixels(4.0));
+    // The single-fader Bend panel is narrowed to free row width.
+    let handle = if title == "Bend" {
+        handle.width(Pixels(54.0))
+    } else {
+        handle
+    };
     if let Some(d) = display {
         handle.display(d);
     }
@@ -997,7 +997,16 @@ fn toggle_row(
 
 /// The vertical fader + its hover/drag value popup, without any label — shared by
 /// a plain control cell and a mod-route column (where the column header labels it).
-fn fader_body(cx: &mut Context, i: usize, sig: SyncSignal<f32>, shared: &Arc<SharedParams>) {
+/// `disabled`, when set, drives the slider's `:disabled` state directly (not via
+/// parent inheritance) so a gated fader — the Cross Mod depth faders, dimmed while
+/// their selector is Off — reliably re-enables the instant the selector leaves Off.
+fn fader_body(
+    cx: &mut Context,
+    i: usize,
+    sig: SyncSignal<f32>,
+    shared: &Arc<SharedParams>,
+    disabled: Option<Memo<bool>>,
+) {
     let (hover, drag, show, posy) = (
         SyncSignal::new(false),
         SyncSignal::new(false),
@@ -1005,14 +1014,14 @@ fn fader_body(cx: &mut Context, i: usize, sig: SyncSignal<f32>, shared: &Arc<Sha
         SyncSignal::new(0.0f32),
     );
     let (sh_set, sh_down, sh_up) = (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
-    Slider::new(cx, sig)
+    let slider = Slider::new(cx, sig)
         .vertical(true)
         .class("fader")
         .width(Pixels(16.0))
         .height(Pixels(FADER_H))
         .on_change(move |_cx, v| {
             sig.set(v);
-            sh_set.set(i, fader_from_ui(i, v));
+            sh_set.set(i, fader_from_ui_dyn(i, v, &sh_set));
         })
         .on_over(move |cx| {
             posy.set(cursor_top(cx));
@@ -1034,6 +1043,9 @@ fn fader_body(cx: &mut Context, i: usize, sig: SyncSignal<f32>, shared: &Arc<Sha
             show.set(hover.get());
             sh_up.set_gesture(i, false);
         });
+    if let Some(d) = disabled {
+        slider.disabled(d);
+    }
     // A synced LFO rate reads as a musical subdivision; otherwise the descriptor's
     // own display (Hz, st, …). `sync_partner` is `None` for every non-rate fader,
     // so this collapses to the plain path.
@@ -1041,7 +1053,7 @@ fn fader_body(cx: &mut Context, i: usize, sig: SyncSignal<f32>, shared: &Arc<Sha
     value_popup(
         cx,
         sig.map(move |n: &f32| {
-            let plain = fader_from_ui(i, *n);
+            let plain = fader_from_ui_dyn(i, *n, &sh_pop);
             let desc = desc_for_clap_id(i).unwrap();
             if let Some(sid) = sync_partner(i) {
                 if sh_pop.get(sid) >= 0.5 {
@@ -1098,7 +1110,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
             .class("ctl-label")
             .height(Pixels(11.0));
         match ctl {
-            Ctl::Fader(i, sig) => fader_body(cx, i, sig, shared),
+            Ctl::Fader(i, sig) => fader_body(cx, i, sig, shared, None),
             Ctl::Rotary(i, sig) => {
                 let cnt = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants.len(),
@@ -1290,7 +1302,7 @@ fn mod_route_view(
                 }
             }
             if let Ctl::Fader(i, sig) = find(depth) {
-                fader_body(cx, i, sig, shared);
+                fader_body(cx, i, sig, shared, None);
             }
         })
         .height(Auto)
@@ -1299,6 +1311,52 @@ fn mod_route_view(
     })
     .height(Pixels(COL_H))
     .vertical_gap(Pixels(2.0))
+    .alignment(Alignment::TopCenter);
+}
+
+/// The LFO 1 panel, laid out by hand so the two bool toggles (**Sync** and
+/// **Free**) share a single column instead of taking one each — freeing a column
+/// of horizontal space. Order: Shape, Rate, [Sync / Free], Delay, Fade.
+fn lfo1_cells(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<SharedParams>) {
+    use PatchParam::{Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun, LfoRate, LfoShape, LfoSync};
+    let find = |p: PatchParam| {
+        controls
+            .iter()
+            .copied()
+            .find(|c| c.idx() == patch_clap_id(layer, p))
+            .unwrap()
+    };
+    control_view(cx, find(LfoShape), shared, "Shape");
+    control_view(cx, find(LfoRate), shared, "Rate");
+    switch_stack(cx, &[(find(LfoSync), "Sync"), (find(Lfo1FreeRun), "Free")], shared);
+    control_view(cx, find(Lfo1DelayTime), shared, "Delay");
+    control_view(cx, find(Lfo1Fade), shared, "Fade");
+}
+
+/// Stack several bool toggles vertically in one control-cell column (each its own
+/// small label + indicator box), so toggles that don't need a full fader-height
+/// column share one. Only the [`Ctl::Switch`] members are drawn.
+fn switch_stack(cx: &mut Context, items: &[(Ctl, &'static str)], shared: &Arc<SharedParams>) {
+    let items = items.to_vec();
+    VStack::new(cx, move |cx| {
+        for (ctl, label) in items {
+            let Ctl::Switch(i, sig) = ctl else { continue };
+            let sh = Arc::clone(shared);
+            VStack::new(cx, move |cx| {
+                Label::new(cx, label).class("ctl-label").height(Pixels(11.0));
+                toggle_row(cx, "", sig, move |_cx| {
+                    let on = !sig.get();
+                    sig.set(on);
+                    sh.set(i, if on { 1.0 } else { 0.0 });
+                });
+            })
+            .height(Auto)
+            .vertical_gap(Pixels(2.0))
+            .alignment(Alignment::TopCenter);
+        }
+    })
+    .height(Pixels(COL_H))
+    .vertical_gap(Pixels(12.0))
     .alignment(Alignment::TopCenter);
 }
 
@@ -1355,14 +1413,17 @@ fn xmod_pair(
         let fader = VStack::new(cx, |cx| {
             Label::new(cx, depth_label).class("ctl-label").height(Pixels(11.0));
             if let Ctl::Fader(i, sig) = depth_ctl {
-                fader_body(cx, i, sig, shared);
+                // Gate the slider itself (not just this column) so it re-enables
+                // the moment the selector leaves Off.
+                fader_body(cx, i, sig, shared, dim);
             }
         })
         .height(Auto)
         .vertical_gap(Pixels(2.0))
         .alignment(Alignment::TopCenter);
+        // Keep the column's visual dim; interactivity is gated on the slider above.
         if let Some(d) = dim {
-            fader.toggle_class("dimmed", d).disabled(d);
+            fader.toggle_class("dimmed", d);
         }
     })
     .height(Pixels(COL_H))
@@ -1373,6 +1434,7 @@ fn xmod_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vxn_engine::Taper;
 
     #[test]
     fn resolve_repoints_per_patch_entries_per_layer() {
@@ -1440,15 +1502,96 @@ mod tests {
     }
 
     #[test]
-    fn route_depth_fader_uses_full_range() {
-        // Route-depth faders span the descriptor's full bipolar range (interim
-        // 0022 wiring): centre is zero, ends are ±max.
-        let id = patch_clap_id(Layer::Upper, PatchParam::CutoffLfo1Depth);
+    fn env_depth_fader_is_bipolar_full_range() {
+        // Env/vel depths span the descriptor's full bipolar range: centre zero,
+        // ends ±max (inverting an env is musically meaningful).
+        let id = patch_clap_id(Layer::Upper, PatchParam::CutoffEnvDepth);
         let d = desc_for_clap_id(id).unwrap();
         assert!((fader_from_ui(id, 0.0) - d.min).abs() < 1e-3);
+        assert!((fader_from_ui(id, 0.5)).abs() < 1e-3); // centre = 0
         assert!((fader_from_ui(id, 1.0) - d.max).abs() < 1e-3);
         for n in [0.1, 0.5, 0.9] {
             assert!((fader_to_ui(id, fader_from_ui(id, n)) - n).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn lfo_depth_fader_is_unipolar() {
+        // LFO depths map 0 → max (bottom is no modulation, not −max).
+        for p in [
+            PatchParam::PwmLfoDepth,
+            PatchParam::CutoffLfo1Depth,
+            PatchParam::CutoffLfo2Depth,
+        ] {
+            let id = patch_clap_id(Layer::Upper, p);
+            let d = desc_for_clap_id(id).unwrap();
+            assert!(fader_from_ui(id, 0.0).abs() < 1e-4, "bottom should be 0");
+            assert!((fader_from_ui(id, 1.0) - d.max).abs() < 1e-3);
+            for n in [0.1, 0.5, 0.9] {
+                assert!((fader_to_ui(id, fader_from_ui(id, n)) - n).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn cutoff_and_rate_tapers_centre_correctly() {
+        // Filter cutoffs read 1 kHz at the midpoint; LFO rates read 5 Hz.
+        for p in [PatchParam::Cutoff, PatchParam::HpfCutoff] {
+            let id = patch_clap_id(Layer::Upper, p);
+            assert!((fader_from_ui(id, 0.5) - 1000.0).abs() < 1.0, "{p:?} mid");
+        }
+        let lfo1 = patch_clap_id(Layer::Upper, PatchParam::LfoRate);
+        assert!((fader_from_ui(lfo1, 0.5) - 5.0).abs() < 0.01);
+        let lfo2 = global_clap_id(GlobalParam::Lfo2Rate);
+        assert!((fader_from_ui(lfo2, 0.5) - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn automation_value_resolves_to_position_and_back() {
+        // The idle resync maps a host/automation value to a slider position via
+        // `fader_to_ui`; feeding that position back must recover the value (clamped
+        // to range). Holds for the non-linear (exp-tapered) faders too, since the
+        // mapping is the analytic inverse of the taper — not just for positions the
+        // fader itself produced. Sample arbitrary in-range automation values.
+        let cases: &[(usize, &[f32])] = &[
+            (
+                patch_clap_id(Layer::Upper, PatchParam::Cutoff),
+                &[20.0, 200.0, 1000.0, 5000.0, 18000.0],
+            ),
+            (
+                patch_clap_id(Layer::Upper, PatchParam::HpfCutoff),
+                &[20.0, 440.0, 3000.0],
+            ),
+            (
+                patch_clap_id(Layer::Upper, PatchParam::LfoRate),
+                &[0.01, 1.0, 5.0, 23.5, 40.0],
+            ),
+            (
+                global_clap_id(GlobalParam::Lfo2Rate),
+                &[0.5, 5.0, 40.0],
+            ),
+            (
+                patch_clap_id(Layer::Upper, PatchParam::PortamentoTime),
+                &[0.0, 0.05, 0.1, 0.37, 0.5],
+            ),
+            (
+                patch_clap_id(Layer::Upper, PatchParam::CutoffLfo1Depth),
+                &[0.0, 12.0, 48.0, 96.0],
+            ),
+        ];
+        for (id, values) in cases {
+            let d = desc_for_clap_id(*id).unwrap();
+            for &v in *values {
+                let pos = fader_to_ui(*id, v);
+                assert!((0.0..=1.0).contains(&pos), "pos {pos} out of range for {v}");
+                let back = fader_from_ui(*id, pos);
+                let want = v.clamp(d.min, d.max);
+                let tol = (want.abs() * 1e-3).max(1e-3);
+                assert!(
+                    (back - want).abs() <= tol,
+                    "value {v} → pos {pos} → {back}, expected {want}"
+                );
+            }
         }
     }
 
@@ -1463,7 +1606,7 @@ mod tests {
             PatchParam::Env2Release,
         ] {
             let id = patch_clap_id(Layer::Upper, p);
-            assert!(exp_taper(id).is_some());
+            assert!(matches!(desc_for_clap_id(id).unwrap().taper(), Taper::Exp { .. }));
             assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 s
             assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 s
             assert!((fader_from_ui(id, 1.0) - 10.0).abs() < 1e-3); // top = 10 s
@@ -1472,14 +1615,15 @@ mod tests {
             }
         }
         // Sustain is a level, not a time — stays linear.
-        assert!(exp_taper(patch_clap_id(Layer::Upper, PatchParam::Env1Sustain)).is_none());
+        let sus = patch_clap_id(Layer::Upper, PatchParam::Env1Sustain);
+        assert_eq!(desc_for_clap_id(sus).unwrap().taper(), Taper::Linear);
     }
 
     #[test]
     fn pitch_lfo_depth_fader_tapers_to_subtle_vibrato() {
         // 0..12 st, exp-tapered so the lower half of the travel is 0..1 st.
         let id = patch_clap_id(Layer::Upper, PatchParam::PitchLfoDepth);
-        assert!(exp_taper(id).is_some());
+        assert!(matches!(desc_for_clap_id(id).unwrap().taper(), Taper::Exp { .. }));
         assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 st
         assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 st
         assert!((fader_from_ui(id, 1.0) - 12.0).abs() < 1e-3); // top = 12 st
@@ -1487,7 +1631,8 @@ mod tests {
             assert!((fader_to_ui(id, fader_from_ui(id, n)) - n).abs() < 1e-4);
         }
         // The Env→pitch depth stays bipolar/linear — only the LFO depth tapers.
-        assert!(exp_taper(patch_clap_id(Layer::Upper, PatchParam::PitchEnvDepth)).is_none());
+        let env = patch_clap_id(Layer::Upper, PatchParam::PitchEnvDepth);
+        assert_eq!(desc_for_clap_id(env).unwrap().taper(), Taper::Linear);
     }
 
     /// Expand the faceplate `ROWS` into the set of CLAP ids each control binds:

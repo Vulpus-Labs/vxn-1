@@ -12,10 +12,10 @@ pub mod sync;
 pub mod voice;
 
 pub use params::{
-    CrossModType, DEFAULT_SPLIT_POINT, EnvSel, GLOBAL_PARAMS, GlobalParam, GlobalValues, KeyMode,
-    Layer, LfoSel, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, ParamValues, PatchParam,
-    PatchValues, TOTAL_PARAMS, desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref,
-    patch_clap_id,
+    AssignMode, CrossModType, DEFAULT_SPLIT_POINT, EnvSel, GLOBAL_PARAMS, GlobalParam,
+    GlobalValues, KeyMode, Layer, LfoSel, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef,
+    ParamValues, PatchParam, PatchValues, TOTAL_PARAMS, Taper, desc_for_clap_id, global_clap_id,
+    module_for_clap_id, param_ref, patch_clap_id,
 };
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;
@@ -487,7 +487,6 @@ impl Synth {
             lfo2_val,
             sync,
             pm_index,
-            portamento_on: p.bool(PatchParam::PortamentoOn),
             portamento_time: p.get(PatchParam::PortamentoTime),
             // Fixed routes (ADR 0004 §4).
             pitch_lfo_sel: p.lfo_sel(PatchParam::PitchLfoSrc),
@@ -1659,7 +1658,7 @@ mod tests {
         s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
-        s.set_param(pp(PatchParam::PortamentoOn), 1.0);
+        // Glide has no on/off: a non-zero time enables it (time 0 = off).
         s.set_param(pp(PatchParam::PortamentoTime), time);
         s
     }
@@ -1728,8 +1727,7 @@ mod tests {
         s.note_on_layer(1, 69, 1.0); // A4 = 440
         let (steady, _) = render(&mut s, 9600);
         let f_steady = dominant_hz(&steady[2400..9600], 48_000.0);
-        // Layer 0 (Upper): turn glide on and sweep; layer 1 keeps sounding.
-        s.set_param(patch_clap_id(Layer::Upper, PatchParam::PortamentoOn), 1.0);
+        // Layer 0 (Upper): turn glide on (non-zero time) and sweep; layer 1 sounds.
         s.set_param(patch_clap_id(Layer::Upper, PatchParam::PortamentoTime), 0.3);
         s.note_on_layer(0, 33, 1.0);
         let (_both, _) = render(&mut s, 9600);

@@ -133,9 +133,8 @@ pub struct BlockCtx {
     /// Through-zero phase-mod index (`CrossModType::Pm` ? amount : 0). 0 = off.
     /// Engages the coupled osc path; mutually exclusive with `sync` at the engine.
     pub pm_index: f32,
-    /// Portamento (pitch glide) enabled for this layer.
-    pub portamento_on: bool,
-    /// Portamento glide time (s); 0 = instant. Glide is per channel, resolved at
+    /// Portamento glide time (s); 0 = off/instant (no separate on/off). Per
+    /// channel, resolved at
     /// control-block rate so it feeds osc pitch, sync and PM consistently.
     pub portamento_time: f32,
     // ── Fixed modulation routes (ADR 0004 §4). Depths are pre-smoothed; the
@@ -433,13 +432,8 @@ impl VoiceBank {
 
         // Portamento glide coefficient for this block (one-pole toward the target
         // note); see `block_glide`. The glide is off / snaps when disabled.
-        let (glide, glide_coeff) = block_glide(
-            ctx.portamento_on,
-            ctx.portamento_time,
-            self.unison,
-            base_frames,
-            base_rate,
-        );
+        let (glide, glide_coeff) =
+            block_glide(ctx.portamento_time, self.unison, base_frames, base_rate);
 
         // ── Per-voice control-rate resolution (block start) ──
         let mut pw1 = [0.5f32; N];
@@ -732,17 +726,16 @@ fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
 /// (`base_frames / base_rate`), so the glide rate is independent of block size.
 /// `unison` scales the time down — the whole detuned stack slides together, so
 /// the same knob position reads far stronger than one Poly voice, and a subtle
-/// scoop is wanted rather than an audible stack slide. Glide off or time 0
+/// scoop is wanted rather than an audible stack slide. Time 0 is glide off and
 /// returns `(false, 1.0)`: the caller snaps straight to the target. Pure.
 #[inline]
 fn block_glide(
-    portamento_on: bool,
     portamento_time: f32,
     unison: bool,
     base_frames: usize,
     base_rate: f32,
 ) -> (bool, f32) {
-    if !(portamento_on && portamento_time > 0.0) {
+    if portamento_time <= 0.0 {
         return (false, 1.0);
     }
     let glide_time = if unison {
@@ -1189,7 +1182,6 @@ mod mod_tests {
             lfo2_val: 0.0,
             sync: false,
             pm_index: 0.0,
-            portamento_on: false,
             portamento_time: 0.0,
             pitch_lfo_sel: LfoSel::Off,
             pitch_lfo_depth: 0.0,
@@ -1341,21 +1333,16 @@ mod mod_tests {
     // ── block_glide ──
 
     #[test]
-    fn glide_off_snaps() {
-        assert_eq!(block_glide(false, 1.0, false, 64, 48_000.0), (false, 1.0));
-    }
-
-    #[test]
-    fn glide_on_zero_time_snaps() {
-        // Enabled but 0 time is still a snap, not a divide-by-zero.
-        assert_eq!(block_glide(true, 0.0, false, 64, 48_000.0), (false, 1.0));
+    fn glide_zero_time_snaps() {
+        // Time 0 is glide off (no separate on/off), and never a divide-by-zero.
+        assert_eq!(block_glide(0.0, false, 64, 48_000.0), (false, 1.0));
     }
 
     #[test]
     fn glide_coeff_is_block_size_independent() {
         // Same wall-clock duration via different (frames, rate) pairs → same coeff.
-        let (_, a) = block_glide(true, 0.2, false, 64, 48_000.0);
-        let (_, b) = block_glide(true, 0.2, false, 32, 24_000.0);
+        let (_, a) = block_glide(0.2, false, 64, 48_000.0);
+        let (_, b) = block_glide(0.2, false, 32, 24_000.0);
         assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         assert!(a > 0.0 && a < 1.0);
     }
@@ -1363,8 +1350,8 @@ mod mod_tests {
     #[test]
     fn unison_glides_slower_than_poly() {
         // Shorter effective time → larger coefficient (faster approach per block).
-        let (_, poly) = block_glide(true, 0.2, false, 64, 48_000.0);
-        let (_, uni) = block_glide(true, 0.2, true, 64, 48_000.0);
+        let (_, poly) = block_glide(0.2, false, 64, 48_000.0);
+        let (_, uni) = block_glide(0.2, true, 64, 48_000.0);
         assert!(uni > poly, "unison {uni} should exceed poly {poly}");
     }
 
