@@ -778,27 +778,69 @@ impl Plan {
     }
 }
 
-/// Pick one channel: re-use one already playing this note, else the free channel
-/// whose glide source sits nearest the new note, else steal the oldest.
+/// A channel index that can never match a real channel — "exclude nothing".
+const NO_SKIP: usize = usize::MAX;
+
+/// Pick one channel, skipping `skip`: re-use one already playing this note, else
+/// the free channel whose glide source sits nearest the new note, else steal the
+/// oldest.
 ///
 /// Choosing the *nearest* free channel (by `glide_semi`, the pitch it would sweep
-/// from) keeps Poly glide musical: a new note slides the shortest distance, and a
+/// from) keeps glide musical: a new note slides the shortest distance, and a
 /// free channel already at that pitch snaps cleanly instead of some far-off
-/// channel sweeping across the keyboard.
-fn allocate_one(note: u8, st: AllocView) -> usize {
-    if let Some(v) = (0..N).find(|&v| st.active[v] && st.note[v] == note) {
+/// channel sweeping across the keyboard. `skip` lets [`allocate_pair`] take a
+/// second, distinct channel by the same priority.
+fn allocate_excl(note: u8, st: AllocView, skip: usize) -> usize {
+    if let Some(v) = (0..N).find(|&v| v != skip && st.active[v] && st.note[v] == note) {
         return v;
     }
-    if let Some(v) = (0..N).filter(|&v| !st.active[v]).min_by(|&a, &b| {
-        let target = note as f32;
-        (st.glide_semi[a] - target)
-            .abs()
-            .total_cmp(&(st.glide_semi[b] - target).abs())
-    }) {
+    if let Some(v) = (0..N)
+        .filter(|&v| v != skip && !st.active[v])
+        .min_by(|&a, &b| {
+            let target = note as f32;
+            (st.glide_semi[a] - target)
+                .abs()
+                .total_cmp(&(st.glide_semi[b] - target).abs())
+        })
+    {
         return v;
     }
-    (0..N).min_by_key(|&v| st.alloc_tick[v]).unwrap_or(0)
+    (0..N)
+        .filter(|&v| v != skip)
+        .min_by_key(|&v| st.alloc_tick[v])
+        .unwrap_or(0)
 }
+
+/// Single-channel allocation (Poly): the common case, excluding nothing.
+#[inline]
+fn allocate_one(note: u8, st: AllocView) -> usize {
+    allocate_excl(note, st, NO_SKIP)
+}
+
+/// Two distinct channels for a Twin note: the top-priority channel, then the
+/// next by the same rule. Reuses both channels of a Twin pair already on this
+/// note; otherwise two nearest-free; otherwise the two oldest stolen.
+fn allocate_pair(note: u8, st: AllocView) -> (usize, usize) {
+    let a = allocate_excl(note, st, NO_SKIP);
+    let b = allocate_excl(note, st, a);
+    (a, b)
+}
+
+/// Monophonic allocation (Solo): keep sounding on the one already-active channel
+/// (legato glide carries through its `glide_semi`); fall back to channel 0 when
+/// nothing is playing.
+#[inline]
+fn allocate_mono(st: AllocView) -> usize {
+    (0..N).find(|&v| st.active[v]).unwrap_or(0)
+}
+
+/// Twin pitch spread reuses the Unison extremes (±`UnisonDetune` cents); the two
+/// channels sit at the opposite ends of that fan.
+const TWIN_SPREAD: f32 = 1.0;
+/// Twin start-phase offset for the second channel — a quarter cycle decorrelates
+/// the pair's beating without the anti-phase cancellation a half cycle would give
+/// at zero detune.
+const TWIN_PHASE: f32 = 0.25;
 
 /// Plan a note-on under `mode`: state in, channel assignments out. Pure.
 fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
@@ -827,6 +869,33 @@ fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
                 };
             }
             Plan::new(assigns, N)
+        }
+        AssignMode::Solo => {
+            // One sounding channel; DCO phase reset, no detune. Reusing the active
+            // channel gives legato glide (its glide source carries the last pitch).
+            assigns[0] = Assign {
+                channel: allocate_mono(st),
+                detune_cents: 0.0,
+                start_phase: 0.0,
+            };
+            Plan::new(assigns, 1)
+        }
+        AssignMode::Twin => {
+            // Two channels per note: opposite ends of the detune fan, with the
+            // second phase-decorrelated. `unison` falls out (len > 1) → the stack
+            // gets the gentler glide scaling, and level_comp = 1/√2.
+            let (a, b) = allocate_pair(note, st);
+            assigns[0] = Assign {
+                channel: a,
+                detune_cents: -TWIN_SPREAD * unison_detune,
+                start_phase: 0.0,
+            };
+            assigns[1] = Assign {
+                channel: b,
+                detune_cents: TWIN_SPREAD * unison_detune,
+                start_phase: TWIN_PHASE,
+            };
+            Plan::new(assigns, 2)
         }
     }
 }
@@ -924,5 +993,74 @@ mod alloc_tests {
         assert!(sum.abs() < 1e-4, "spread should sum ~0, got {sum}");
         // Start phases stay within the first half cycle.
         assert!(p.iter().all(|a| (0.0..=0.5).contains(&a.start_phase)));
+    }
+
+    #[test]
+    fn solo_keeps_one_channel_when_nothing_active() {
+        let st = St::empty();
+        let p = plan(AssignMode::Solo, 60, 25.0, st.view());
+        assert_eq!(p.len, 1);
+        assert_eq!(p.assigns[0].channel, 0);
+        assert_eq!(p.assigns[0].detune_cents, 0.0);
+        assert_eq!(p.level_comp, 1.0);
+        assert!(!p.unison);
+    }
+
+    #[test]
+    fn solo_reuses_the_sounding_channel_for_legato() {
+        let mut st = St::empty();
+        // A note is already sounding on channel 4 (e.g. carried from a prior note
+        // on a different pitch). Solo must take that same channel over, not a free
+        // one, so glide is legato.
+        st.active[4] = true;
+        st.note[4] = 48;
+        let p = plan(AssignMode::Solo, 72, 0.0, st.view());
+        assert_eq!(p.assigns[0].channel, 4);
+    }
+
+    #[test]
+    fn twin_uses_two_distinct_channels_spread_and_decorrelated() {
+        let st = St::empty();
+        let detune = 18.0;
+        let p = plan(AssignMode::Twin, 60, detune, st.view());
+        assert_eq!(p.len, 2);
+        assert!(p.unison);
+        assert!((p.level_comp - 1.0 / 2f32.sqrt()).abs() < 1e-6);
+        let (a, b) = (p.assigns[0], p.assigns[1]);
+        assert_ne!(a.channel, b.channel, "pair must be distinct channels");
+        // Opposite ends of the detune fan; phases decorrelated.
+        assert!((a.detune_cents + detune).abs() < 1e-6);
+        assert!((b.detune_cents - detune).abs() < 1e-6);
+        assert_ne!(a.start_phase, b.start_phase);
+    }
+
+    #[test]
+    fn twin_reuses_both_channels_already_on_note() {
+        let mut st = St::empty();
+        // A Twin pair (channels 2 and 5) is already sounding this note.
+        st.active[2] = true;
+        st.note[2] = 64;
+        st.active[5] = true;
+        st.note[5] = 64;
+        let (a, b) = allocate_pair(64, st.view());
+        let mut pair = [a, b];
+        pair.sort_unstable();
+        assert_eq!(pair, [2, 5]);
+    }
+
+    #[test]
+    fn twin_steals_two_distinct_oldest_when_full() {
+        let mut st = St::empty();
+        st.active = [true; N];
+        for v in 0..N {
+            st.note[v] = 40 + v as u8; // no reuse for the new note
+            st.alloc_tick[v] = 100 + v as u64;
+        }
+        st.alloc_tick[3] = 1; // oldest
+        st.alloc_tick[7] = 2; // next oldest
+        let (a, b) = allocate_pair(80, st.view());
+        let mut pair = [a, b];
+        pair.sort_unstable();
+        assert_eq!(pair, [3, 7]);
     }
 }

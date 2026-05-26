@@ -21,7 +21,7 @@
 
 use crate::CONTROL_BLOCK;
 use crate::bbd::{Interp, ModDelayLine};
-use crate::noise::xorshift64;
+use crate::math::xorshift64;
 
 /// Bright (Juno-60 reference) delay sweep, in seconds: 1.66–5.35 ms.
 const DELAY_MIN_S: f32 = 0.00166;

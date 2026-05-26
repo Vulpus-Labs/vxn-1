@@ -2,7 +2,7 @@
 //!
 //! Dual key mode → each layer reads its own params: Upper runs hard **sync**,
 //! Lower runs through-zero **phase mod**, both at 4× oversample with FX, high
-//! resonance, noise, and the fixed mod routes (Env→cutoff, LFO→pitch/PWM) all
+//! resonance and the fixed mod routes (Env→cutoff, LFO→pitch/PWM) all
 //! doing work. 16 voices held at sustain. Run under a sampler:
 //!
 //!   cargo build --release --example busy_profile -p vxn-engine
@@ -33,13 +33,12 @@ fn main() {
         s.set_param(id, v);
     }
 
-    // Common per-layer patch: high resonance, noise, both osc levels up, the
+    // Common per-layer patch: high resonance, both osc levels up, the
     // three fixed mod routes wired so they all evaluate every block.
     for layer in [Layer::Upper, Layer::Lower] {
         let pp = |p: PatchParam| patch_clap_id(layer, p);
         for (id, v) in [
             (pp(PatchParam::Resonance), 0.9),
-            (pp(PatchParam::NoiseLevel), 0.2),
             (pp(PatchParam::Osc1Level), 0.8),
             (pp(PatchParam::Osc2Level), 0.8),
             (pp(PatchParam::Osc2Coarse), 7.0), // detuned slave for sync/PM motion

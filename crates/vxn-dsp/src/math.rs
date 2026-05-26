@@ -3,6 +3,32 @@
 
 use std::f32::consts::TAU;
 
+/// Xorshift64 PRNG mapped to `[-1, 1]`. `state` must be non-zero (zero is a
+/// stuck fixed point); seed with `instance_id + 1`. Shared by the S&H LFO, the
+/// chorus noise floor, and the BBD companding dither.
+#[inline]
+pub fn xorshift64(state: &mut u64) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state as i64 as f32) / (i64::MAX as f32)
+}
+
+#[cfg(test)]
+mod rng_tests {
+    use super::xorshift64;
+
+    #[test]
+    fn white_variance_reasonable() {
+        let mut s = 42u64;
+        let n = 65536;
+        let xs: Vec<f32> = (0..n).map(|_| xorshift64(&mut s)).collect();
+        let mean = xs.iter().sum::<f32>() / n as f32;
+        let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n as f32;
+        assert!((0.2..=0.4).contains(&var), "variance {var}");
+    }
+}
+
 /// Rational (Padé degree-5/6) approximation to `tanh`, saturating to ±1 for
 /// `|x| ≥ 2.5`. Exact at 0, monotone, RMS error < 0.05 over [−3, 3].
 #[inline(always)]

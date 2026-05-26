@@ -19,7 +19,6 @@
 use crate::CHANNELS_PER_LAYER;
 use crate::ladder::LadderCoeffs;
 use crate::math::fast_sine;
-use crate::noise::{NoiseColor, xorshift64};
 use crate::oscillator::Waveform;
 
 const N: usize = CHANNELS_PER_LAYER;
@@ -571,58 +570,6 @@ pub fn poly_ring_mod(o1: &[f32; N], o2: &[f32; N], gain: f32, out: &mut [f32; N]
     for v in 0..N {
         let c = o2[v] * 0.5;
         out[v] = ring_diode_block(o1[v] + c, gain) - ring_diode_block(o1[v] - c, gain);
-    }
-}
-
-// ── PolyNoise ─────────────────────────────────────────────────────────────
-
-/// 16-voice noise generator with per-voice PRNG + colour-shaping state.
-#[derive(Clone)]
-pub struct PolyNoise {
-    state: [u64; N],
-    pink0: [f32; N],
-    pink1: [f32; N],
-    pink2: [f32; N],
-}
-
-impl PolyNoise {
-    pub fn new(seed: u64) -> Self {
-        let state =
-            std::array::from_fn(|v| (seed.wrapping_add(v as u64).wrapping_mul(2_654_435_761)) | 1);
-        Self {
-            state,
-            pink0: [0.0; N],
-            pink1: [0.0; N],
-            pink2: [0.0; N],
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.pink0 = [0.0; N];
-        self.pink1 = [0.0; N];
-        self.pink2 = [0.0; N];
-    }
-
-    /// One sample per voice into `out`. `color` is global.
-    #[inline]
-    pub fn process(&mut self, color: NoiseColor, out: &mut [f32; N]) {
-        match color {
-            NoiseColor::White => {
-                for v in 0..N {
-                    out[v] = xorshift64(&mut self.state[v]);
-                }
-            }
-            NoiseColor::Pink => {
-                for v in 0..N {
-                    let white = xorshift64(&mut self.state[v]);
-                    self.pink0[v] = 0.99765 * self.pink0[v] + white * 0.0990460;
-                    self.pink1[v] = 0.96300 * self.pink1[v] + white * 0.2965164;
-                    self.pink2[v] = 0.57000 * self.pink2[v] + white * 1.0526913;
-                    out[v] =
-                        (self.pink0[v] + self.pink1[v] + self.pink2[v] + white * 0.1848) * 0.11;
-                }
-            }
-        }
     }
 }
 
@@ -1282,21 +1229,6 @@ mod tests {
             for v in 0..N {
                 assert!(a[v].is_finite() && b[v].is_finite(), "non-finite @ {drive_db}");
                 assert!((a[v] + b[v]).abs() < 1e-5, "not antisymmetric in signal");
-            }
-        }
-    }
-
-    #[test]
-    fn poly_noise_colors_bounded() {
-        let mut n = PolyNoise::new(7);
-        let mut out = [0.0; N];
-        for color in NoiseColor::ALL {
-            for _ in 0..10_000 {
-                n.process(color, &mut out);
-                assert!(
-                    out.iter().all(|s| s.is_finite() && s.abs() <= 1.5),
-                    "{color:?}"
-                );
             }
         }
     }

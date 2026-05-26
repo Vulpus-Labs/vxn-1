@@ -1,7 +1,7 @@
 //! VXN1 parameter model — split into a per-patch block and a global block
 //! (ADR 0003 §6).
 //!
-//! A **layer is a complete patch**: oscillators, noise, filter, envelopes, LFO
+//! A **layer is a complete patch**: oscillators, filter, envelopes, LFO
 //! and the fixed modulation routes. Those live in [`PatchParam`] and are
 //! instantiated **twice** (Upper, Lower — see [`Layer`]), so each layer is
 //! independently automatable. Truly global state (master tune/volume, FX,
@@ -23,7 +23,7 @@
 //! - **Mod-wheel panel** (independent of the per-channel selectors): depths into
 //!   PWM, cutoff, resonance and the wide osc2 pitch.
 //! - **Filter key-track** (bool): exactly one octave of cutoff per octave of key
-//!   above C0.
+//!   relative to C4 (cutoff unchanged at C4, up above, down below).
 //! - The **VCA is hardwired to Env2** — there is no Amp route.
 //!
 //! ## CLAP id layout
@@ -50,7 +50,7 @@
 //! matching CLAP's plain-value convention. Enum/bool params store the variant
 //! index / 0.0|1.0 and are read back through typed accessors.
 
-use vxn_dsp::{AdsrShape, LadderVariant, LfoShape, NoiseColor, Waveform};
+use vxn_dsp::{AdsrShape, LadderVariant, LfoShape, Waveform};
 
 /// Which of the two always-present patches a per-patch param belongs to.
 /// Discriminant doubles as the index into [`ParamValues::layers`].
@@ -114,12 +114,25 @@ pub enum AssignMode {
     Poly,
     /// One note stacked across all 8 channels with per-channel detune (0011).
     Unison,
+    /// Monophonic: only one channel sounds per layer; a new note takes over the
+    /// sounding channel (last-note priority), so glide is legato.
+    Solo,
+    /// Each note is assigned to **two** channels with a pitch spread and phase
+    /// decorrelation — a fat 2-voice-per-note stack. Halves effective polyphony
+    /// (the pool is shared 2:1). Named to avoid clashing with the keyboard-level
+    /// `KeyMode::Dual` (note → both layers).
+    Twin,
 }
 
 impl AssignMode {
+    /// Number of assign modes; the enum param spans indices `0..COUNT`.
+    pub const COUNT: usize = AssignMode::Twin as usize + 1;
+
     pub fn from_index(i: usize) -> AssignMode {
         match i {
             1 => AssignMode::Unison,
+            2 => AssignMode::Solo,
+            3 => AssignMode::Twin,
             _ => AssignMode::Poly,
         }
     }
@@ -224,8 +237,6 @@ pub enum PatchParam {
     CrossModAmount,
     // Mixer
     RingLevel,
-    NoiseColor,
-    NoiseLevel,
     // Filter (ladder VCF)
     Cutoff,
     Resonance,
@@ -233,7 +244,8 @@ pub enum PatchParam {
     FilterVariant,
     /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
     HpfCutoff,
-    /// Key-track on/off: cutoff shifts exactly 1 octave per key octave above C0.
+    /// Key-track on/off: cutoff shifts exactly 1 octave per key octave relative
+    /// to C4 (unchanged at C4, up above it, down below it).
     FilterKeyTrack,
     // Envelope 1 (assignable via the route selectors; defaults unrouted)
     Env1Attack,
@@ -500,12 +512,11 @@ impl ParamDesc {
 }
 
 const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];
-const NOISE_LABELS: &[&str] = &["White", "Pink"];
 const VARIANT_LABELS: &[&str] = &["Sharp", "Smooth"];
-const SHAPE_LABELS: &[&str] = &["Linear", "Exponential"];
+const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x"];
-const ASSIGN_LABELS: &[&str] = &["Poly", "Unison"];
+const ASSIGN_LABELS: &[&str] = &["Poly", "Unison", "Solo", "Twin"];
 const LFO_SEL_LABELS: &[&str] = &["Off", "LFO 1", "LFO 2"];
 const ENV_SEL_LABELS: &[&str] = &["Off", "Env 1", "Env 2"];
 /// PM is labelled "FM" in the table — players expect that name (ADR 0004 §3).
@@ -577,6 +588,12 @@ const fn i(
 const fn mp_vib(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
     f(name, label, -12.0, 12.0, default, "st", false)
 }
+/// LFO→pitch vibrato depth: unipolar 0..12 st (the LFO is already bipolar, so a
+/// negative depth would only flip phase). The UI tapers it so the midpoint reads
+/// 1 st — vibrato is mostly meant to be very subtle.
+const fn mp_vib_lfo(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
+    f(name, label, 0.0, 12.0, default, "st", false)
+}
 /// Wide osc-2 pitch depth (semitones): octave range, for sync/cross-mod sweeps.
 const fn mp_wide(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -48.0, 48.0, 0.0, "st", false)
@@ -619,8 +636,6 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     f("cross_mod_amount", "Cross Mod Amt", 0.0, 4.0, 0.0, "", false),
     // Mixer
     f("ring_level", "Ring Level", 0.0, 1.0, 0.0, "", false),
-    e("noise_color", "Noise Color", NOISE_LABELS, 0.0),
-    f("noise_level", "Noise Level", 0.0, 1.0, 0.0, "", false),
     // Filter
     f("cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", true),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", false),
@@ -650,7 +665,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     // Pitch route (common, vibrato-scaled). Default vibrato: LFO 1 → pitch at a
     // gentle depth, so the default patch sounds as it did with the old matrix.
     lfosel("pitch_lfo_src", "Pitch LFO", 1.0),
-    mp_vib("pitch_lfo_depth", "Pitch LFO Dep", 0.05),
+    mp_vib_lfo("pitch_lfo_depth", "Pitch LFO Dep", 0.05),
     envsel("pitch_env_src", "Pitch Env"),
     mp_vib("pitch_env_depth", "Pitch Env Dep", 0.0),
     f("pitch_wheel_depth", "Pitch Wheel", 0.0, 12.0, 2.0, "st", false),
@@ -757,10 +772,6 @@ impl PatchValues {
         Waveform::ALL[enum_index(self.get(p), Waveform::ALL.len() - 1)]
     }
 
-    pub fn noise_color(&self) -> NoiseColor {
-        NoiseColor::ALL[enum_index(self.get(PatchParam::NoiseColor), NoiseColor::ALL.len() - 1)]
-    }
-
     pub fn filter_variant(&self) -> LadderVariant {
         if enum_index(self.get(PatchParam::FilterVariant), 1) == 0 {
             LadderVariant::Sharp
@@ -774,7 +785,7 @@ impl PatchValues {
     }
 
     pub fn assign_mode(&self) -> AssignMode {
-        AssignMode::from_index(enum_index(self.get(PatchParam::AssignMode), 1))
+        AssignMode::from_index(enum_index(self.get(PatchParam::AssignMode), AssignMode::COUNT - 1))
     }
 
     /// Read a per-channel LFO source selector.

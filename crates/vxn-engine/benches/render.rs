@@ -30,7 +30,6 @@ fn setup(fx: bool, res: f32, os: f32, xmod: f32) -> Synth {
     s.set_param(gp(GlobalParam::DelayOn), if fx { 1.0 } else { 0.0 });
     s.set_param(gp(GlobalParam::Oversample), os);
     s.set_param(pp(PatchParam::Resonance), res);
-    s.set_param(pp(PatchParam::NoiseLevel), 0.2);
     // Route Env 1 -> cutoff and LFO 1 -> pitch so the fixed routes do real work.
     s.set_param(pp(PatchParam::CutoffEnvSrc), 1.0); // Env 1
     s.set_param(pp(PatchParam::CutoffEnvDepth), 24.0);

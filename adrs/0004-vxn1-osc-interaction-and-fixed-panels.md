@@ -123,8 +123,8 @@ Consequences:
 
 - **VCA is hardwired to Env2** — the Amp destination disappears entirely.
 - **Key→cutoff** becomes a dedicated filter **key-track on/off**, defined as
-  exactly **1 octave of cutoff per octave of key above C0** (not a free matrix
-  depth).
+  exactly **1 octave of cutoff per octave of key relative to C4** — cutoff is
+  unchanged at C4, rises above it and falls below it (not a free matrix depth).
 - **LFO2's routing survives** purely through the per-channel {Off/LFO1/LFO2}
   selectors — no dedicated LFO2 cells. Either LFO can feed any channel.
 - The **mod-wheel is its own panel**, independent of the per-channel selectors:

@@ -52,8 +52,8 @@ const LAYERS: usize = Layer::COUNT;
 /// Seed for the single global LFO 2 (E005 / 0019). LFO 1 is per-voice and seeded
 /// inside each [`VoiceBank`] (E005 / 0018).
 const LFO2_SEED: u64 = 0x7E5D;
-/// Per-layer noise seeds (decorrelate the two layers' noise generators).
-const NOISE_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
+/// Per-layer RNG seeds (decorrelate the two layers' S&H LFO PRNGs).
+const RNG_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
 
 /// The complete VXN1 instrument.
 pub struct Synth {
@@ -109,7 +109,7 @@ impl Synth {
             sample_rate,
             smoother: ParamSmoother::new(sample_rate, &params),
             params,
-            banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, NOISE_SEEDS[i])),
+            banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, RNG_SEEDS[i])),
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
@@ -463,7 +463,6 @@ impl Synth {
             osc1_level: p.get(PatchParam::Osc1Level),
             osc2_level: p.get(PatchParam::Osc2Level),
             ring_level: p.get(PatchParam::RingLevel),
-            noise_level: p.get(PatchParam::NoiseLevel),
             osc1_pw: p.get(PatchParam::Osc1PulseWidth),
             osc2_pw: p.get(PatchParam::Osc2PulseWidth),
             // Octave and Coarse are integer-semitone params: hard-quantise them
@@ -475,7 +474,6 @@ impl Synth {
             osc2_semi: p.get(PatchParam::Osc2Octave).round() * 12.0
                 + p.get(PatchParam::Osc2Coarse).round()
                 + p.get(PatchParam::Osc2Fine) / 100.0,
-            noise_color: p.noise_color(),
             cutoff: p.get(PatchParam::Cutoff),
             hpf_cutoff: p.get(PatchParam::HpfCutoff),
             resonance,
@@ -546,7 +544,7 @@ pub fn a4_hz() -> f32 {
 mod tests {
     use super::*;
     use crate::params::{
-        GlobalParam, Layer, PatchParam, PatchValues, global_clap_id, patch_clap_id,
+        AssignMode, GlobalParam, Layer, PatchParam, PatchValues, global_clap_id, patch_clap_id,
     };
 
     /// Upper-layer per-patch CLAP id (tests drive the single render path = Upper).
@@ -611,7 +609,6 @@ mod tests {
     fn output_finite_under_stress() {
         let mut s = Synth::new(44_100.0);
         s.set_param(pp(PatchParam::Resonance), 1.0);
-        s.set_param(pp(PatchParam::NoiseLevel), 0.5);
         s.set_param(gp(GlobalParam::DelayOn), 1.0);
         for n in 60..76 {
             s.note_on(n, 1.0);
@@ -713,7 +710,6 @@ mod tests {
         // Single sine osc, no chorus/vibrato, fast attack — clean pitch readout.
         s.set_param(pp(PatchParam::Osc1Wave), 0.0); // Sine
         s.set_param(pp(PatchParam::Osc2Level), 0.0);
-        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
         s.set_param(pp(PatchParam::PitchLfoDepth), 0.0); // kill default vibrato
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
@@ -975,7 +971,6 @@ mod tests {
         s.set_param(pp(PatchParam::Osc2Level), 0.8);
         s.set_param(pp(PatchParam::Osc2Coarse), 0.0);
         s.set_param(pp(PatchParam::Osc2Fine), 0.0);
-        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
         s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
@@ -1053,7 +1048,6 @@ mod tests {
             let mut s = Synth::new(48_000.0);
             s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw (harmonic-rich)
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
-            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
             s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
@@ -1177,7 +1171,6 @@ mod tests {
             for layer in Layer::ALL {
                 s.set_param(patch_clap_id(layer, PatchParam::Osc1Wave), 0.0); // sine
                 s.set_param(patch_clap_id(layer, PatchParam::Osc2Level), 0.0);
-                s.set_param(patch_clap_id(layer, PatchParam::NoiseLevel), 0.0);
                 s.set_param(patch_clap_id(layer, PatchParam::PitchLfoSrc), 2.0); // LFO 2
                 s.set_param(patch_clap_id(layer, PatchParam::PitchLfoDepth), 7.0);
             }
@@ -1302,11 +1295,10 @@ mod tests {
         }
     }
 
-    /// A deterministic patch (noise off, sine LFO, chorus off) so two layers fed
+    /// A deterministic patch (sine LFO, chorus off) so two layers fed
     /// identical params + notes render bit-for-bit identically.
     fn deterministic(s: &mut Synth) {
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
     }
 
@@ -1348,11 +1340,10 @@ mod tests {
             // Upper: sine.
             s.set_param(pp(PatchParam::Osc1Wave), 0.0);
             s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
-            // Lower: saw, +1 octave, its own (silent-by-default) noise off.
+            // Lower: saw, +1 octave.
             s.set_param(lo(PatchParam::Osc1Wave), 2.0);
             s.set_param(lo(PatchParam::Osc1Octave), 1.0);
             s.set_param(lo(PatchParam::PitchLfoDepth), 0.0);
-            s.set_param(lo(PatchParam::NoiseLevel), 0.0);
             s.set_param(lo(PatchParam::Env2Attack), 0.001);
         }
         let frames = 9600;
@@ -1528,13 +1519,48 @@ mod tests {
 
     /// Put a layer into a given assign mode with a unison detune (cents).
     fn set_assign(s: &mut Synth, layer: usize, unison: bool, detune: f32) {
-        let mode = if unison { 1.0 } else { 0.0 };
-        let base = patch_clap_id(Layer::ALL[layer], PatchParam::AssignMode);
-        s.set_param(base, mode);
+        let mode = if unison {
+            AssignMode::Unison
+        } else {
+            AssignMode::Poly
+        };
+        set_assign_mode(s, layer, mode, detune);
+    }
+
+    fn set_assign_mode(s: &mut Synth, layer: usize, mode: AssignMode, detune: f32) {
+        s.set_param(
+            patch_clap_id(Layer::ALL[layer], PatchParam::AssignMode),
+            mode as usize as f32,
+        );
         s.set_param(
             patch_clap_id(Layer::ALL[layer], PatchParam::UnisonDetune),
             detune,
         );
+    }
+
+    #[test]
+    fn solo_is_monophonic_across_distinct_notes() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole); // Whole → layer reads Upper's assign
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        for n in [60, 64, 67, 72] {
+            s.note_on_layer(0, n, 1.0);
+            assert_eq!(layer_active(&s, 0), 1, "Solo must keep exactly one channel");
+        }
+    }
+
+    #[test]
+    fn twin_assigns_two_channels_per_note_and_stays_bounded() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Twin, 12.0);
+        s.note_on_layer(0, 60, 1.0);
+        assert_eq!(layer_active(&s, 0), 2, "Twin = two channels for one note");
+        // Four notes saturate the 8-channel layer; further notes steal, not grow.
+        for n in [62, 64, 65, 67] {
+            s.note_on_layer(0, n, 1.0);
+        }
+        assert_eq!(layer_active(&s, 0), 8, "Twin tops out at 8 channels (4 notes)");
     }
 
     #[test]
@@ -1556,7 +1582,6 @@ mod tests {
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
-            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
             s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
             set_assign(&mut s, 0, true, detune);
@@ -1586,7 +1611,6 @@ mod tests {
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
             s.set_param(pp(PatchParam::Osc1Wave), 0.0);
             s.set_param(pp(PatchParam::Osc2Level), 0.0);
-            s.set_param(pp(PatchParam::NoiseLevel), 0.0);
             s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
             s.set_param(pp(PatchParam::Env2Attack), 0.001);
             set_assign(&mut s, 0, unison, 0.0); // detune 0 → coherent worst case
@@ -1636,7 +1660,6 @@ mod tests {
         let mut s = Synth::new(48_000.0);
         s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
         s.set_param(pp(PatchParam::Osc2Level), 0.0);
-        s.set_param(pp(PatchParam::NoiseLevel), 0.0);
         s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
@@ -1701,7 +1724,6 @@ mod tests {
         for layer in Layer::ALL {
             s.set_param(patch_clap_id(layer, PatchParam::Osc1Wave), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::Osc2Level), 0.0);
-            s.set_param(patch_clap_id(layer, PatchParam::NoiseLevel), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::PitchLfoDepth), 0.0);
             s.set_param(patch_clap_id(layer, PatchParam::Env2Attack), 0.001);
         }

@@ -7,7 +7,7 @@
 //!
 //! - **Per-sample** ([`GlobalParam::MasterVolume`]): the final gain multiply
 //!   runs per output sample, so its smoother ticks per sample.
-//! - **Block-rate** (oscillator/noise levels, pulse width, fixed-route depths):
+//! - **Block-rate** (oscillator levels, pulse width, fixed-route depths):
 //!   read once per control block into [`crate::voice::BlockCtx`], so one glide
 //!   step per block (control rate = sr / `CONTROL_BLOCK` ≈ 1.5 kHz) is enough
 //!   to take the audible edge off automation steps.
@@ -49,7 +49,7 @@ enum Glide {
 fn patch_glide(p: PatchParam) -> Glide {
     use PatchParam::*;
     match p {
-        Osc1Level | Osc2Level | RingLevel | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth
+        Osc1Level | Osc2Level | RingLevel | Osc1PulseWidth | Osc2PulseWidth
         | CrossModAmount | PitchLfoDepth | PitchEnvDepth | PitchWheelDepth | PwmLfoDepth
         | PwmEnvDepth | CutoffLfoDepth | CutoffEnvDepth | VelCutoffDepth | Osc2PitchEnvDepth
         | ModWheelPwm | ModWheelCutoff | ModWheelReso | ModWheelOsc2Pitch => Glide::Block,

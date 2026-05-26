@@ -5,7 +5,7 @@
 //! frequencies). `Random` is a sample-and-hold updated once per cycle.
 
 use crate::math::lookup_sine;
-use crate::noise::xorshift64;
+use crate::math::xorshift64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {

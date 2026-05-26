@@ -26,9 +26,12 @@
 //!
 //! Modulation is the fixed-route model (ADR 0004 §4): each of the Pitch / PWM /
 //! Cutoff channels carries an LFO source selector + depth and an Env source
-//! selector + depth (dropdowns + faders), surfaced in the Osc Mod / Filter
-//! panels; the wide osc-2 pitch route and the mod-wheel panel sit alongside.
-//! (This is the interim wiring for 0022; 0023 redesigns the faceplate layout.)
+//! selector + depth (dropdowns + faders). Pitch / PWM / the wide osc-2 pitch
+//! route live on the **Pitch Mod** / **PWM Mod** / **Cross Mod** panels
+//! respectively; the Cutoff route is the **Filter Mod**
+//! panel; the **Mod Wheel** panel sits alongside. Mixer carries the
+//! osc1/osc2/ring levels; the **Voice**
+//! panel surfaces the per-layer assign-mode / unison / glide params (0023).
 //!
 //! The two LFOs are asymmetric (E005): LFO 1 is per-voice with a delay→fade
 //! onset and a free-run toggle (its own panel), while LFO 2 is one global
@@ -79,9 +82,9 @@ fn note_name(n: u8) -> String {
 /// destroys the GUI.
 pub type EditorHandle = WindowHandle;
 
-pub const EDITOR_WIDTH: u32 = 820;
+pub const EDITOR_WIDTH: u32 = 1024;
 /// Four panel rows now (LFO 1 / LFO 2 split out the effects onto their own row).
-pub const EDITOR_HEIGHT: u32 = 600;
+pub const EDITOR_HEIGHT: u32 = 700;
 
 /// A control entry: CLAP id plus a short faceplate label (the panel header
 /// supplies the context, so per-control labels stay terse). Entries are baked
@@ -115,10 +118,9 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 "Osc 1",
                 &[
                     (u(Osc1Wave), "Wave"),
+                    (u(Osc1Octave), "Oct"),
                     (u(Osc1Coarse), "Coarse"),
                     (u(Osc1Fine), "Fine"),
-                    (u(Osc1Octave), "Oct"),
-                    (u(Osc1Level), "Level"),
                     (u(Osc1PulseWidth), "PW"),
                 ],
             ),
@@ -126,37 +128,52 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 "Osc 2",
                 &[
                     (u(Osc2Wave), "Wave"),
+                    (u(Osc2Octave), "Oct"),
                     (u(Osc2Coarse), "Coarse"),
                     (u(Osc2Fine), "Fine"),
-                    (u(Osc2Octave), "Oct"),
-                    (u(Osc2Level), "Level"),
                     (u(Osc2PulseWidth), "PW"),
-                    (u(CrossModType), "X-Mod"),
-                    (u(CrossModAmount), "X-Amt"),
                 ],
             ),
             (
+                // osc1/osc2/ring levels (ADR 0004 §6 / "Panel layout").
                 "Mixer",
                 &[
+                    (u(Osc1Level), "Osc1"),
+                    (u(Osc2Level), "Osc2"),
                     (u(RingLevel), "Ring"),
-                    (u(NoiseColor), "Color"),
-                    (u(NoiseLevel), "Noise"),
                 ],
             ),
             (
-                "Osc Mod",
+                // Osc Mod split three ways (ADR 0004 §4 routes), labels simplified
+                // since the panel header now carries the destination.
+                "Pitch Mod",
                 &[
-                    (u(PitchLfoSrc), "P.LFO"),
-                    (u(PitchLfoDepth), "P.LFO.D"),
-                    (u(PitchEnvSrc), "P.Env"),
-                    (u(PitchEnvDepth), "P.Env.D"),
-                    (u(PitchWheelDepth), "P.Whl"),
-                    (u(PwmLfoSrc), "PW.LFO"),
-                    (u(PwmLfoDepth), "PW.LFO.D"),
-                    (u(PwmEnvSrc), "PW.Env"),
-                    (u(PwmEnvDepth), "PW.Env.D"),
-                    (u(Osc2PitchEnvSrc), "O2P.Env"),
-                    (u(Osc2PitchEnvDepth), "O2P.D"),
+                    (u(PitchLfoSrc), "LFO"),
+                    (u(PitchLfoDepth), "LFO.D"),
+                    (u(PitchEnvSrc), "Env"),
+                    (u(PitchEnvDepth), "Env.D"),
+                ],
+            ),
+            (
+                "PWM Mod",
+                &[
+                    (u(PwmLfoSrc), "LFO"),
+                    (u(PwmLfoDepth), "LFO.D"),
+                    (u(PwmEnvSrc), "Env"),
+                    (u(PwmEnvDepth), "Env.D"),
+                ],
+            ),
+            (
+                // Cross-mod type {Off/Sync/PM} + amount, alongside the wide
+                // osc2-only pitch route (octave range) that drives the sweep. Each
+                // selector sits beside its depth fader; the fader greys out while
+                // its selector is Off. Custom layout — see `cross_mod_panel`.
+                "Cross Mod",
+                &[
+                    (u(CrossModType), "Type"),
+                    (u(CrossModAmount), "Amt"),
+                    (u(Osc2PitchEnvSrc), "Src"),
+                    (u(Osc2PitchEnvDepth), "Mod"),
                 ],
             ),
         ],
@@ -164,17 +181,23 @@ const ROWS: &[&[(&str, &[Entry])]] = {
             (
                 "Filter",
                 &[
+                    (u(HpfCutoff), "HPF"),
                     (u(Cutoff), "Cutoff"),
                     (u(Resonance), "Reso"),
                     (u(Drive), "Drive"),
-                    (u(HpfCutoff), "HPF"),
                     (u(FilterVariant), "Type"),
                     (u(FilterKeyTrack), "KeyTrk"),
+                ],
+            ),
+            (
+                // Cutoff route (ADR 0004 §4): velocity / LFO / env into cutoff.
+                "Filter Mod",
+                &[
+                    (u(VelCutoffDepth), "Vel"),
                     (u(CutoffLfoSrc), "LFO"),
                     (u(CutoffLfoDepth), "LFO.D"),
                     (u(CutoffEnvSrc), "Env"),
                     (u(CutoffEnvDepth), "Env.D"),
-                    (u(VelCutoffDepth), "Vel"),
                 ],
             ),
             (
@@ -232,6 +255,25 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(ModWheelOsc2Pitch), "O2 Pitch"),
                 ],
             ),
+            (
+                // Pitch-bend wheel range (vibrato-scaled, both oscillators), sat
+                // beside the mod wheel as the other performance-wheel control.
+                "Pitch Wheel",
+                &[(u(PitchWheelDepth), "Range")],
+            ),
+            (
+                // Per-layer voice assignment + glide (E003): assign mode, unison
+                // detune, glide on/off + time. Not in ADR 0004's panel list, but
+                // these are live automatable params; the faceplate surfaces every
+                // such param (0023 acceptance), so they get a dedicated panel.
+                "Voice",
+                &[
+                    (u(AssignMode), "Assign"),
+                    (u(UnisonDetune), "Detune"),
+                    (u(PortamentoOn), "Glide"),
+                    (u(PortamentoTime), "Time"),
+                ],
+            ),
         ],
         &[
             (
@@ -265,6 +307,49 @@ const ROWS: &[&[(&str, &[Entry])]] = {
     ]
 };
 
+/// A modulation route as a faceplate column: a short column header, an optional
+/// source-selector param (the `{Off/LFO/Env}` picker, `None` for a fixed source
+/// like velocity or the pitch wheel), and the depth fader param. Rendered as the
+/// depth fader with the selector boxes stacked directly beneath it — pairing the
+/// "where from" and "how much" of one route in a single column.
+type Route = (&'static str, Option<usize>, usize);
+
+const PITCH_MOD_ROUTES: &[Route] = {
+    use PatchParam::*;
+    &[
+        ("LFO", Some(u(PitchLfoSrc)), u(PitchLfoDepth)),
+        ("Env", Some(u(PitchEnvSrc)), u(PitchEnvDepth)),
+    ]
+};
+
+const PWM_MOD_ROUTES: &[Route] = {
+    use PatchParam::*;
+    &[
+        ("LFO", Some(u(PwmLfoSrc)), u(PwmLfoDepth)),
+        ("Env", Some(u(PwmEnvSrc)), u(PwmEnvDepth)),
+    ]
+};
+
+const FILTER_MOD_ROUTES: &[Route] = {
+    use PatchParam::*;
+    &[
+        ("Vel", None, u(VelCutoffDepth)),
+        ("LFO", Some(u(CutoffLfoSrc)), u(CutoffLfoDepth)),
+        ("Env", Some(u(CutoffEnvSrc)), u(CutoffEnvDepth)),
+    ]
+};
+
+/// The route-column table for a mod panel, or `None` for a panel laid out as a
+/// plain row of control cells.
+fn routes_for(title: &str) -> Option<&'static [Route]> {
+    match title {
+        "Pitch Mod" => Some(PITCH_MOD_ROUTES),
+        "PWM Mod" => Some(PWM_MOD_ROUTES),
+        "Filter Mod" => Some(FILTER_MOD_ROUTES),
+        _ => None,
+    }
+}
+
 /// Stylesheet: dark faceplate, orange panel headers, small text.
 const STYLE: &str = r#"
 :root { background-color: #2b2b2b; font-family: "IBM Plex Sans Condensed Medium"; }
@@ -273,11 +358,16 @@ label { font-size: 11; color: #d6d6d6; }
 .panel-header { background-color: #d9701b; color: #141414; corner-radius: 2px; }
 .ctl-label { font-size: 9; color: #aeaeae; }
 .ctl-value { font-size: 9; color: #d9701b; }
-.vswitch { rotate: 270deg; top: 20px; }
-.ovsmp { gap: 2px; }
-.ovsmp toggle-button { background-color: #555555; padding: 3px; }
-.ovsmp toggle-button:checked { background-color: #2e9e3f; }
-.ovsmp toggle-button label { color: #ffffff; font-size: 9; }
+.tg-list { gap: 1px; }
+.tg-row { background-color: transparent; border-width: 0px; padding: 0px; }
+.tg-row:hover { background-color: transparent; }
+.tg-row:checked { background-color: transparent; }
+.tg-row:checked:hover { background-color: transparent; }
+.tg-box { width: 9px; height: 9px; background-color: #4a4a4a; border-width: 1px; border-color: #8a8a8a; corner-radius: 2px; }
+.tg-row:hover .tg-box { border-color: #c4c4c4; }
+.tg-row:checked .tg-box { background-color: #e23a2e; border-color: #ff8474; }
+.tg-lbl { font-size: 8; color: #9a9a9a; }
+.tg-row:checked .tg-lbl { color: #ececec; }
 .value-pop { background-color: #0e0e0e; border-width: 1px; border-color: #d9701b; corner-radius: 3px; padding-left: 4px; padding-right: 4px; font-size: 10; color: #f6f6f6; }
 .fader .track { background-color: #555555; width: 6px; corner-radius: 2px; }
 .fader .range { background-color: #d9701b; corner-radius: 2px; }
@@ -286,11 +376,12 @@ label { font-size: 11; color: #d6d6d6; }
 .wave-glyph.active { color: #e8902f; }
 .wave-txt { font-size: 8; color: #888888; }
 .wave-txt.active { color: #e8902f; }
+.dimmed { opacity: 0.35; }
 "#;
 
 const FADER_H: f32 = 66.0;
-const COL_H: f32 = 98.0;
-const PANEL_H: f32 = 124.0;
+const COL_H: f32 = 120.0;
+const PANEL_H: f32 = 156.0;
 /// Square area framing a selector knob, sized to fit the variant glyphs/labels
 /// arranged around its arc.
 const DIAL: f32 = 62.0;
@@ -305,34 +396,43 @@ fn ui_range(idx: usize) -> (f32, f32) {
     (d.min, d.max)
 }
 
-/// Envelope time faders (attack / decay / release on both envelopes) get an
-/// exponential taper rather than the descriptor's linear 0.001..10 s, so the
-/// busy short-time region isn't crammed into the bottom of the travel. The
-/// curve `t = A·(e^(K·n) − 1)` is pinned through two anchors: the fader midpoint
-/// reads **1 s** and the top reads **10 s** (the JP-8's full range) — i.e. the
-/// lower half spans 0–1 s, the upper half 1–10 s. Sustain (a level, not a time)
-/// keeps the plain linear map.
-fn is_adsr_time(idx: usize) -> bool {
+/// Faders that get an exponential taper instead of a linear map, so a subtle low
+/// end isn't crammed into the bottom of the travel. The curve `v = A·(e^(K·n) − 1)`
+/// is pinned through two anchors — the **midpoint reads 1.0** and the **top reads
+/// the descriptor max** (bottom = 0): `x = max − 1`, `K = 2·ln x`, `A = 1/(x − 1)`.
+/// Returns `(A, K)`, or `None` for the plain linear faders.
+///
+/// Applies to the envelope time faders (attack / decay / release on both
+/// envelopes — 1 s mid, 10 s top) and the LFO→pitch depth (1 st mid, 12 st top:
+/// vibrato is mostly meant to be very subtle). Sustain (a level, not a time) and
+/// the bipolar route depths keep the plain linear map.
+fn exp_taper(idx: usize) -> Option<(f32, f32)> {
     use PatchParam::*;
-    matches!(
+    let tapered = matches!(
         param_ref(idx),
         Some(ParamRef::Patch(
             _,
-            Env1Attack | Env1Decay | Env1Release | Env2Attack | Env2Decay | Env2Release
+            Env1Attack
+                | Env1Decay
+                | Env1Release
+                | Env2Attack
+                | Env2Decay
+                | Env2Release
+                | PitchLfoDepth
         ))
-    )
+    );
+    if !tapered {
+        return None;
+    }
+    let x = desc_for_clap_id(idx)?.max - 1.0;
+    Some((1.0 / (x - 1.0), 2.0 * x.ln()))
 }
-
-/// `K = 2·ln(9)`; with `A` below this puts the midpoint at 1 s and the top at 10 s.
-const ADSR_K: f32 = 4.394_449;
-/// `A = 1/(e^(K/2) − 1) = 1/8`.
-const ADSR_A: f32 = 0.125;
 
 /// Plain value → fader position `[0, 1]` over the UI range.
 fn fader_to_ui(idx: usize, value: f32) -> f32 {
-    if is_adsr_time(idx) {
+    if let Some((a, k)) = exp_taper(idx) {
         // Inverse of `A·(e^(K·n) − 1)`.
-        return ((value / ADSR_A + 1.0).ln() / ADSR_K).clamp(0.0, 1.0);
+        return ((value / a + 1.0).ln() / k).clamp(0.0, 1.0);
     }
     let (lo, hi) = ui_range(idx);
     if hi > lo {
@@ -344,8 +444,8 @@ fn fader_to_ui(idx: usize, value: f32) -> f32 {
 
 /// Fader position `[0, 1]` → plain value over the UI range.
 fn fader_from_ui(idx: usize, n: f32) -> f32 {
-    if is_adsr_time(idx) {
-        return ADSR_A * ((ADSR_K * n.clamp(0.0, 1.0)).exp() - 1.0);
+    if let Some((a, k)) = exp_taper(idx) {
+        return a * ((k * n.clamp(0.0, 1.0)).exp() - 1.0);
     }
     let (lo, hi) = ui_range(idx);
     lo + n.clamp(0.0, 1.0) * (hi - lo)
@@ -410,9 +510,16 @@ fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
             PatchParam::Osc1Wave | PatchParam::Osc2Wave | PatchParam::LfoShape
         )) | Some(ParamRef::Global(GlobalParam::Lfo2Shape))
     );
+    // Segmented button groups: Oversample, the three-way cross-mod type
+    // {Off/Sync/FM}, and the Poly/Unison assign mode — all read as labelled mode
+    // pickers rather than dials/switches.
     let is_buttons = matches!(
         param_ref(i),
         Some(ParamRef::Global(GlobalParam::Oversample))
+            | Some(ParamRef::Patch(
+                _,
+                PatchParam::CrossModType | PatchParam::AssignMode
+            ))
     );
     match desc.kind {
         ParamKind::Bool => Ctl::Switch(i, SyncSignal::new(shared.get(i) >= 0.5)),
@@ -563,7 +670,7 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
                     }
                 })
                 .height(Pixels(PANEL_H))
-                .horizontal_gap(Pixels(8.0));
+                .horizontal_gap(Pixels(6.0));
             }
         })
         .vertical_gap(Pixels(8.0))
@@ -592,16 +699,14 @@ fn keys_panel(
             .height(Pixels(16.0))
             .alignment(Alignment::Center);
         VStack::new(cx, move |cx| {
-            // Key-mode selector. Choosing Whole snaps the edit target back to
-            // Upper (the toggle is hidden), so we never edit a hidden Lower.
+            // Key-mode selector — same box-list style as every other picker.
+            // Choosing Whole snaps the edit target back to Upper (the toggle is
+            // hidden), so we never edit a hidden Lower.
             let sh_mode = Arc::clone(shared);
-            ButtonGroup::new(cx, move |cx| {
+            VStack::new(cx, move |cx| {
                 for (n, label) in MODES.iter().enumerate() {
                     let sh = Arc::clone(&sh_mode);
-                    ToggleButton::new(cx, key_mode.map(move |m: &usize| *m == n), move |cx| {
-                        Label::new(cx, *label)
-                    })
-                    .on_press(move |_cx| {
+                    toggle_row(cx, label, key_mode.map(move |m: &usize| *m == n), move |_cx| {
                         key_mode.set(n);
                         if n == 0 {
                             edit_layer.set(0);
@@ -610,19 +715,20 @@ fn keys_panel(
                     });
                 }
             })
-            .class("ovsmp");
+            .class("tg-list")
+            .height(Auto);
 
             // Upper/Lower edit-target toggle — hidden in Whole (editing layer A).
             let edit_vis = key_mode.map(|m: &usize| *m != 0);
-            ButtonGroup::new(cx, move |cx| {
+            VStack::new(cx, move |cx| {
                 for (n, label) in EDIT.iter().enumerate() {
-                    ToggleButton::new(cx, edit_layer.map(move |l: &usize| *l == n), move |cx| {
-                        Label::new(cx, *label)
-                    })
-                    .on_press(move |_cx| edit_layer.set(n));
+                    toggle_row(cx, label, edit_layer.map(move |l: &usize| *l == n), move |_cx| {
+                        edit_layer.set(n)
+                    });
                 }
             })
-            .class("ovsmp")
+            .class("tg-list")
+            .height(Auto)
             .display(edit_vis);
 
             // Split point — shown only in Split. A horizontal slider over the
@@ -676,14 +782,25 @@ fn panel_view(
             .height(Pixels(16.0))
             .alignment(Alignment::Center);
         HStack::new(cx, |cx| {
-            for (id, short) in entries {
-                let cid = resolve(*id, layer);
-                let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
-                control_view(cx, ctl, shared, short);
+            // Cross Mod is a custom pairing (selector beside fader, grey-when-Off);
+            // the other mod panels lay out by route (depth fader + source selector
+            // beneath); every other panel is a plain row of control cells.
+            if title == "Cross Mod" {
+                cross_mod_panel(cx, layer, controls, shared);
+            } else if let Some(routes) = routes_for(title) {
+                for (head, src, depth) in routes {
+                    mod_route_view(cx, head, *src, *depth, layer, controls, shared);
+                }
+            } else {
+                for (id, short) in entries {
+                    let cid = resolve(*id, layer);
+                    let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
+                    control_view(cx, ctl, shared, short);
+                }
             }
         })
         .height(Pixels(COL_H))
-        .horizontal_gap(Pixels(6.0));
+        .horizontal_gap(Pixels(4.0));
     })
     .class("panel")
     .height(Pixels(PANEL_H))
@@ -696,8 +813,8 @@ fn panel_view(
 
 /// Polyline (in a `[0, 1]²` box, y down) approximating one cycle of a named
 /// waveform, for the little icons drawn around a waveform selector knob. Returns
-/// empty for labels that aren't waveforms (e.g. noise colours), which fall back to
-/// text labels instead.
+/// empty for labels that aren't waveforms (e.g. oversample labels), which fall
+/// back to text labels instead.
 fn wave_points(label: &str) -> Vec<(f32, f32)> {
     match label {
         "Sine" => (0..=16)
@@ -815,75 +932,135 @@ fn value_popup<T: ToStringLocalized + 'static>(
         .display(show);
 }
 
+/// One row of a compact selector/toggle: a small grey indicator box that lights
+/// red while active (driven by the host `ToggleButton`'s `:checked` state via the
+/// stylesheet), with `label` text alongside. `label` is empty for a plain bool,
+/// which shows just the box. `active` tracks the on state; `press` commits it.
+fn toggle_row(
+    cx: &mut Context,
+    label: &'static str,
+    active: impl Res<bool> + Copy + 'static,
+    press: impl Fn(&mut EventContext) + Send + Sync + 'static,
+) {
+    ToggleButton::new(cx, active, move |cx| {
+        HStack::new(cx, move |cx| {
+            Element::new(cx).class("tg-box");
+            if !label.is_empty() {
+                Label::new(cx, label).class("tg-lbl");
+            }
+        })
+        .height(Auto)
+        .horizontal_gap(Pixels(4.0))
+        .alignment(Alignment::Left)
+    })
+    .class("tg-row")
+    .on_press(press);
+}
+
+/// The vertical fader + its hover/drag value popup, without any label — shared by
+/// a plain control cell and a mod-route column (where the column header labels it).
+fn fader_body(cx: &mut Context, i: usize, sig: SyncSignal<f32>, shared: &Arc<SharedParams>) {
+    let (hover, drag, show, posy) = (
+        SyncSignal::new(false),
+        SyncSignal::new(false),
+        SyncSignal::new(false),
+        SyncSignal::new(0.0f32),
+    );
+    let (sh_set, sh_down, sh_up) = (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
+    Slider::new(cx, sig)
+        .vertical(true)
+        .class("fader")
+        .width(Pixels(16.0))
+        .height(Pixels(FADER_H))
+        .on_change(move |_cx, v| {
+            sig.set(v);
+            sh_set.set(i, fader_from_ui(i, v));
+        })
+        .on_over(move |cx| {
+            posy.set(cursor_top(cx));
+            hover.set(true);
+            show.set(true);
+        })
+        .on_over_out(move |_cx| {
+            hover.set(false);
+            show.set(drag.get());
+        })
+        .on_mouse_down(move |cx, _btn| {
+            posy.set(cursor_top(cx));
+            drag.set(true);
+            show.set(true);
+            sh_down.set_gesture(i, true);
+        })
+        .on_mouse_up(move |_cx, _btn| {
+            drag.set(false);
+            show.set(hover.get());
+            sh_up.set_gesture(i, false);
+        });
+    // A synced LFO rate reads as a musical subdivision; otherwise the descriptor's
+    // own display (Hz, st, …). `sync_partner` is `None` for every non-rate fader,
+    // so this collapses to the plain path.
+    let sh_pop = Arc::clone(shared);
+    value_popup(
+        cx,
+        sig.map(move |n: &f32| {
+            let plain = fader_from_ui(i, *n);
+            let desc = desc_for_clap_id(i).unwrap();
+            if let Some(sid) = sync_partner(i) {
+                if sh_pop.get(sid) >= 0.5 {
+                    let norm = desc.to_normalized(plain);
+                    return vxn_engine::sync::SUBDIVISIONS[vxn_engine::sync::index_from_norm(norm)]
+                        .label
+                        .to_string();
+                }
+            }
+            desc.display(plain)
+        }),
+        show,
+        posy,
+        22.0,
+    );
+}
+
+/// A vertical exclusive box-list for an enum (the `Buttons`/`Select` controls):
+/// one [`toggle_row`] per variant, the box lit on the selected one. The single
+/// toggle style used everywhere — source selectors, oversample, cross-mod,
+/// assign mode, key modes.
+fn enum_list_body(
+    cx: &mut Context,
+    i: usize,
+    sig: SyncSignal<Option<usize>>,
+    shared: &Arc<SharedParams>,
+) {
+    let variants = match desc_for_clap_id(i).unwrap().kind {
+        ParamKind::Enum { variants } => variants,
+        _ => &[],
+    };
+    let sh = Arc::clone(shared);
+    VStack::new(cx, move |cx| {
+        for (n, label) in variants.iter().enumerate() {
+            let sh = Arc::clone(&sh);
+            toggle_row(
+                cx,
+                label,
+                sig.map(move |s: &Option<usize>| *s == Some(n)),
+                move |_cx| {
+                    sig.set(Some(n));
+                    sh.set(i, n as f32);
+                },
+            );
+        }
+    })
+    .class("tg-list")
+    .height(Auto);
+}
+
 fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &'static str) {
     VStack::new(cx, |cx| {
         Label::new(cx, short)
             .class("ctl-label")
             .height(Pixels(11.0));
         match ctl {
-            Ctl::Fader(i, sig) => {
-                let (hover, drag, show, posy) = (
-                    SyncSignal::new(false),
-                    SyncSignal::new(false),
-                    SyncSignal::new(false),
-                    SyncSignal::new(0.0f32),
-                );
-                let (sh_set, sh_down, sh_up) =
-                    (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
-                Slider::new(cx, sig)
-                    .vertical(true)
-                    .class("fader")
-                    .width(Pixels(16.0))
-                    .height(Pixels(FADER_H))
-                    .on_change(move |_cx, v| {
-                        sig.set(v);
-                        sh_set.set(i, fader_from_ui(i, v));
-                    })
-                    .on_over(move |cx| {
-                        posy.set(cursor_top(cx));
-                        hover.set(true);
-                        show.set(true);
-                    })
-                    .on_over_out(move |_cx| {
-                        hover.set(false);
-                        show.set(drag.get());
-                    })
-                    .on_mouse_down(move |cx, _btn| {
-                        posy.set(cursor_top(cx));
-                        drag.set(true);
-                        show.set(true);
-                        sh_down.set_gesture(i, true);
-                    })
-                    .on_mouse_up(move |_cx, _btn| {
-                        drag.set(false);
-                        show.set(hover.get());
-                        sh_up.set_gesture(i, false);
-                    });
-                // A synced LFO rate reads as a musical subdivision; otherwise the
-                // descriptor's own display (Hz, st, …). `sync_partner` is `None`
-                // for every non-rate fader, so this collapses to the plain path.
-                let sh_pop = Arc::clone(shared);
-                value_popup(
-                    cx,
-                    sig.map(move |n: &f32| {
-                        let plain = fader_from_ui(i, *n);
-                        let desc = desc_for_clap_id(i).unwrap();
-                        if let Some(sid) = sync_partner(i) {
-                            if sh_pop.get(sid) >= 0.5 {
-                                let norm = desc.to_normalized(plain);
-                                return vxn_engine::sync::SUBDIVISIONS
-                                    [vxn_engine::sync::index_from_norm(norm)]
-                                .label
-                                .to_string();
-                            }
-                        }
-                        desc.display(plain)
-                    }),
-                    show,
-                    posy,
-                    22.0,
-                );
-            }
+            Ctl::Fader(i, sig) => fader_body(cx, i, sig, shared),
             Ctl::Rotary(i, sig) => {
                 let cnt = match desc_for_clap_id(i).unwrap().kind {
                     ParamKind::Enum { variants } => variants.len(),
@@ -904,7 +1081,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     _ => &[][..],
                 };
                 // Waveform selectors get drawn glyphs around the arc; other enums
-                // (e.g. noise colour) get small text labels at the same positions.
+                // get small text labels at the same positions.
                 let use_glyphs =
                     !variants.is_empty() && variants.iter().all(|l| !wave_points(l).is_empty());
                 let (hover, drag, show, posy) = (
@@ -998,69 +1175,160 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                 .alignment(Alignment::Center);
             }
             Ctl::Switch(i, sig) => {
-                let sh = Arc::clone(shared);
-                Switch::new(cx, sig).class("vswitch").on_toggle(move |_cx| {
-                    let on = !sig.get();
-                    sig.set(on);
-                    sh.set(i, if on { 1.0 } else { 0.0 });
-                });
-                Label::new(
-                    cx,
-                    sig.map(move |b: &bool| {
-                        desc_for_clap_id(i)
-                            .unwrap()
-                            .display(if *b { 1.0 } else { 0.0 })
-                    }),
-                )
-                .class("ctl-value")
-                .height(Pixels(11.0));
-            }
-            Ctl::Buttons(i, sig) => {
-                let variants = match desc_for_clap_id(i).unwrap().kind {
-                    ParamKind::Enum { variants } => variants,
-                    _ => &[],
-                };
-                let shared = Arc::clone(shared);
-                ButtonGroup::new(cx, move |cx| {
-                    for (n, label) in variants.iter().enumerate() {
-                        let sh = Arc::clone(&shared);
-                        ToggleButton::new(
-                            cx,
-                            sig.map(move |s: &Option<usize>| *s == Some(n)),
-                            move |cx| Label::new(cx, *label),
-                        )
-                        .on_press(move |_cx| {
-                            sig.set(Some(n));
-                            sh.set(i, n as f32);
+                match desc_for_clap_id(i).unwrap().kind {
+                    // A named two-state enum (Sharp/Smooth, Linear/Exponential):
+                    // an exclusive two-row list so the state name stays visible.
+                    ParamKind::Enum { variants } => {
+                        let sh = Arc::clone(shared);
+                        VStack::new(cx, move |cx| {
+                            for (n, label) in variants.iter().enumerate() {
+                                let sh = Arc::clone(&sh);
+                                toggle_row(
+                                    cx,
+                                    label,
+                                    sig.map(move |b: &bool| *b as usize == n),
+                                    move |_cx| {
+                                        let on = n == 1;
+                                        sig.set(on);
+                                        sh.set(i, if on { 1.0 } else { 0.0 });
+                                    },
+                                );
+                            }
+                        })
+                        .class("tg-list")
+                        .height(Auto);
+                    }
+                    // Plain on/off bool: a single indicator box, lit when on.
+                    _ => {
+                        let sh = Arc::clone(shared);
+                        toggle_row(cx, "", sig, move |_cx| {
+                            let on = !sig.get();
+                            sig.set(on);
+                            sh.set(i, if on { 1.0 } else { 0.0 });
                         });
                     }
-                })
-                .class("ovsmp");
+                }
             }
-            Ctl::Select(i, sig) => {
-                let variants = match desc_for_clap_id(i).unwrap().kind {
-                    ParamKind::Enum { variants } => variants,
-                    _ => &[],
-                };
-                let options = Signal::new(
-                    variants
-                        .iter()
-                        .copied()
-                        .map(Localized::new)
-                        .collect::<Vec<_>>(),
-                );
-                let sh = Arc::clone(shared);
-                Select::new(cx, options, sig, true)
-                    .on_select(move |_cx, choice| {
-                        sig.set(Some(choice));
-                        sh.set(i, choice as f32);
-                    })
-                    .width(Pixels(62.0));
-            }
+            // All enum pickers — source selectors, oversample, cross-mod,
+            // assign — render as the same vertical box-list.
+            Ctl::Buttons(i, sig) | Ctl::Select(i, sig) => enum_list_body(cx, i, sig, shared),
         }
     })
     .height(Pixels(COL_H))
-    .vertical_gap(Pixels(8.0))
+    .vertical_gap(Pixels(6.0))
+    .alignment(Alignment::TopCenter);
+}
+
+/// One modulation-route column (ADR 0004 §4): the column header, then the
+/// source-selector box-list **beside** the depth fader (the selector is absent for
+/// a fixed source like velocity / pitch-wheel, leaving just the fader). Pairs the
+/// route's "where from" and "how much" so the mod panels read as routes rather
+/// than a flat cell row.
+fn mod_route_view(
+    cx: &mut Context,
+    header: &'static str,
+    src: Option<usize>,
+    depth: usize,
+    layer: Layer,
+    controls: &[Ctl],
+    shared: &Arc<SharedParams>,
+) {
+    let find = |id: usize| {
+        controls
+            .iter()
+            .copied()
+            .find(|c| c.idx() == resolve(id, layer))
+            .unwrap()
+    };
+    VStack::new(cx, |cx| {
+        Label::new(cx, header).class("ctl-label").height(Pixels(11.0));
+        HStack::new(cx, |cx| {
+            if let Some(s) = src {
+                match find(s) {
+                    Ctl::Buttons(i, sig) | Ctl::Select(i, sig) => {
+                        enum_list_body(cx, i, sig, shared)
+                    }
+                    _ => {}
+                }
+            }
+            if let Ctl::Fader(i, sig) = find(depth) {
+                fader_body(cx, i, sig, shared);
+            }
+        })
+        .height(Auto)
+        .horizontal_gap(Pixels(4.0))
+        .alignment(Alignment::TopCenter);
+    })
+    .height(Pixels(COL_H))
+    .vertical_gap(Pixels(2.0))
+    .alignment(Alignment::TopCenter);
+}
+
+/// The Cross Mod panel (ADR 0004 §3 + the wide osc-2 pitch route): two
+/// selector/fader pairs — the cross-mod **Type** {Off/Sync/PM} with its **Amt**
+/// fader, and the osc-2 pitch **Src** {Off/Env1/Env2} with its **Mod** fader.
+/// Unlike the route columns, the selector sits *beside* its fader; the fader
+/// dims and goes non-interactive while its selector is Off (it drives nothing).
+fn cross_mod_panel(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<SharedParams>) {
+    use PatchParam::*;
+    xmod_pair(cx, "Type", CrossModType, "Amt", CrossModAmount, layer, controls, shared);
+    xmod_pair(cx, "Src", Osc2PitchEnvSrc, "Mod", Osc2PitchEnvDepth, layer, controls, shared);
+}
+
+/// One Cross Mod selector/fader pair: the selector box-list on the left, the
+/// depth fader on the right, each under its own label. The fader column dims +
+/// disables while the selector reads its first variant (`Off`).
+#[allow(clippy::too_many_arguments)]
+fn xmod_pair(
+    cx: &mut Context,
+    sel_label: &'static str,
+    sel: PatchParam,
+    depth_label: &'static str,
+    depth: PatchParam,
+    layer: Layer,
+    controls: &[Ctl],
+    shared: &Arc<SharedParams>,
+) {
+    let find = |p: PatchParam| {
+        controls
+            .iter()
+            .copied()
+            .find(|c| c.idx() == patch_clap_id(layer, p))
+            .unwrap()
+    };
+    let sel_ctl = find(sel);
+    let depth_ctl = find(depth);
+    // Dim the fader while the selector is on its first variant (`Off`).
+    let dim = match sel_ctl {
+        Ctl::Buttons(_, sig) | Ctl::Select(_, sig) => Some(sig.map(|s: &Option<usize>| *s == Some(0))),
+        _ => None,
+    };
+    HStack::new(cx, |cx| {
+        VStack::new(cx, |cx| {
+            Label::new(cx, sel_label).class("ctl-label").height(Pixels(11.0));
+            if let Ctl::Buttons(i, sig) | Ctl::Select(i, sig) = sel_ctl {
+                enum_list_body(cx, i, sig, shared);
+            }
+        })
+        .height(Auto)
+        .vertical_gap(Pixels(2.0))
+        .alignment(Alignment::TopCenter);
+
+        let fader = VStack::new(cx, |cx| {
+            Label::new(cx, depth_label).class("ctl-label").height(Pixels(11.0));
+            if let Ctl::Fader(i, sig) = depth_ctl {
+                fader_body(cx, i, sig, shared);
+            }
+        })
+        .height(Auto)
+        .vertical_gap(Pixels(2.0))
+        .alignment(Alignment::TopCenter);
+        if let Some(d) = dim {
+            fader.toggle_class("dimmed", d).disabled(d);
+        }
+    })
+    .height(Pixels(COL_H))
+    .horizontal_gap(Pixels(4.0))
     .alignment(Alignment::TopCenter);
 }
 
@@ -1081,6 +1349,33 @@ mod tests {
         let vol = global_clap_id(GlobalParam::MasterVolume);
         assert_eq!(resolve(vol, Layer::Upper), vol);
         assert_eq!(resolve(vol, Layer::Lower), vol);
+    }
+
+    #[test]
+    fn mod_routes_cover_their_panel_entries() {
+        // The route tables drive the mod-panel layout but the ROWS entries
+        // still drive coverage; guard against the two drifting apart — every route
+        // id (source + depth) must appear in the panel's entries and vice-versa.
+        for (title, routes) in [
+            ("Pitch Mod", PITCH_MOD_ROUTES),
+            ("PWM Mod", PWM_MOD_ROUTES),
+            ("Filter Mod", FILTER_MOD_ROUTES),
+        ] {
+            let entries: &[Entry] = ROWS
+                .iter()
+                .flat_map(|row| row.iter())
+                .find(|(t, _)| *t == title)
+                .unwrap()
+                .1;
+            let mut entry_ids: Vec<usize> = entries.iter().map(|(id, _)| *id).collect();
+            let mut route_ids: Vec<usize> = routes
+                .iter()
+                .flat_map(|(_, src, depth)| src.into_iter().copied().chain([*depth]))
+                .collect();
+            entry_ids.sort_unstable();
+            route_ids.sort_unstable();
+            assert_eq!(entry_ids, route_ids, "{title} routes drifted from entries");
+        }
     }
 
     #[test]
@@ -1134,7 +1429,7 @@ mod tests {
             PatchParam::Env2Release,
         ] {
             let id = patch_clap_id(Layer::Upper, p);
-            assert!(is_adsr_time(id));
+            assert!(exp_taper(id).is_some());
             assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 s
             assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 s
             assert!((fader_from_ui(id, 1.0) - 10.0).abs() < 1e-3); // top = 10 s
@@ -1143,7 +1438,66 @@ mod tests {
             }
         }
         // Sustain is a level, not a time — stays linear.
-        assert!(!is_adsr_time(patch_clap_id(Layer::Upper, PatchParam::Env1Sustain)));
+        assert!(exp_taper(patch_clap_id(Layer::Upper, PatchParam::Env1Sustain)).is_none());
+    }
+
+    #[test]
+    fn pitch_lfo_depth_fader_tapers_to_subtle_vibrato() {
+        // 0..12 st, exp-tapered so the lower half of the travel is 0..1 st.
+        let id = patch_clap_id(Layer::Upper, PatchParam::PitchLfoDepth);
+        assert!(exp_taper(id).is_some());
+        assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 st
+        assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 st
+        assert!((fader_from_ui(id, 1.0) - 12.0).abs() < 1e-3); // top = 12 st
+        for n in [0.2, 0.5, 0.8, 1.0] {
+            assert!((fader_to_ui(id, fader_from_ui(id, n)) - n).abs() < 1e-4);
+        }
+        // The Env→pitch depth stays bipolar/linear — only the LFO depth tapers.
+        assert!(exp_taper(patch_clap_id(Layer::Upper, PatchParam::PitchEnvDepth)).is_none());
+    }
+
+    /// Expand the faceplate `ROWS` into the set of CLAP ids each control binds:
+    /// a per-patch entry (baked Upper) is built once per layer, so it covers both
+    /// layer ids; a global entry covers itself.
+    fn covered_ids() -> Vec<usize> {
+        let mut ids = Vec::new();
+        for row in ROWS {
+            for (_title, entries) in *row {
+                for (id, _) in *entries {
+                    match param_ref(*id) {
+                        Some(ParamRef::Patch(_, p)) => {
+                            for layer in Layer::ALL {
+                                ids.push(patch_clap_id(layer, p));
+                            }
+                        }
+                        _ => ids.push(*id),
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn every_automatable_param_has_exactly_one_control() {
+        // 0023 acceptance: every automatable param has exactly one faceplate
+        // control, and there are no orphaned (unbound) or duplicated controls.
+        // KeyMode / split point are non-automatable shared state (their own panel)
+        // and intentionally absent from the param table.
+        let covered = covered_ids();
+        for id in 0..TOTAL_PARAMS {
+            let n = covered.iter().filter(|c| **c == id).count();
+            let desc = desc_for_clap_id(id).unwrap();
+            assert_eq!(
+                n, 1,
+                "param {} ({}) has {} controls, expected exactly 1",
+                id, desc.name, n
+            );
+        }
+        // No entry binds an id outside the table.
+        for id in &covered {
+            assert!(*id < TOTAL_PARAMS, "control bound to out-of-range id {id}");
+        }
     }
 
     #[test]
