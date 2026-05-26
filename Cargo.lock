@@ -2506,6 +2506,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "objc",
  "vxn-engine",
  "vxn-ui",
 ]
@@ -2526,6 +2527,7 @@ dependencies = [
 name = "vxn-ui"
 version = "0.0.1"
 dependencies = [
+ "objc",
  "raw-window-handle",
  "vizia",
  "vxn-engine",

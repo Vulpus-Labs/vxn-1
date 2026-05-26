@@ -24,5 +24,10 @@ clack-extensions = { workspace = true, features = [
     "clack-plugin",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Temporary: query the host NSView's backing scale at attach time for HiDPI
+# diagnostics (see gui.rs `dbg_log`). Pinned to baseview's objc version.
+objc = "0.2"
+
 [dev-dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }

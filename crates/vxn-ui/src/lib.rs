@@ -653,19 +653,100 @@ impl Model for UiModel {
 
 /// Open the editor parented to `parent` (on macOS the host `NSView`).
 ///
-/// Uses baseview's default `WindowScalePolicy::SystemScaleFactor`: the HiDPI
-/// factor is resolved when our view is attached to the host window, via the
-/// `viewDidChangeBackingProperties` → `Resized` path that rebuilds the render
-/// surface against the live backing store. Pinning an explicit `ScaleFactor`
-/// suppresses that rebuild (equal pre/post-attach sizes) and the editor renders
-/// 1× into a 2× surface — see `vxn-clap`'s `set_parent`.
-pub fn open_editor(parent: *mut c_void, shared: Arc<SharedParams>) -> EditorHandle {
+/// `scale_override` pins the HiDPI factor when the caller already knows the true
+/// backing scale (macOS reads it from the parent `NSView`'s window). This
+/// sidesteps `WindowScalePolicy::SystemScaleFactor`, whose 1.25 placeholder is
+/// only corrected by a `viewDidChangeBackingProperties` → `Resized` event — and
+/// on a 1× display that event never fires (the backing scale never changes from
+/// what baseview already recorded), so the editor stays stuck at 1.25 and
+/// renders ~1.25× oversized with mouse hit-testing offset to match.
+///
+/// Because a pinned `ScaleFactor` makes vizia_baseview create the initial Skia
+/// surface at the *unscaled* logical size (it only rebuilds on a `Resized`,
+/// which a self-driven macOS resize doesn't emit), the idle callback emits one
+/// `SetUserScale(1.0)` on the first tick to force `apply_user_scale` to recreate
+/// the surface at `inner_size × scale` — required for the 2× (Retina) case.
+pub fn open_editor(
+    parent: *mut c_void,
+    shared: Arc<SharedParams>,
+    scale_override: Option<f64>,
+) -> EditorHandle {
+    // Temporary HiDPI probe: keep the raw NSView address (as `usize`, so the
+    // idle closure stays `Send`) to re-query the live backing scale.
+    #[cfg(target_os = "macos")]
+    let parent_addr = parent as usize;
     let parent = ParentWindow(parent);
-    Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
-        .on_idle(|cx| cx.emit(PollAutomation))
+
+    // Per-open idle tick counter (interior-mutable so the `Fn` idle closure can
+    // bump it). Process-static would leak across reopens and skip the one-time
+    // surface rebuild on the second window.
+    let tick = std::cell::Cell::new(0u32);
+
+    let mut app = Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
+        .on_idle(move |cx| {
+            cx.emit(PollAutomation);
+            let n = tick.get();
+            tick.set(n.saturating_add(1));
+            if n == 0 {
+                // Force the one-time surface rebuild at the correct physical size.
+                cx.emit(WindowEvent::SetUserScale(1.0));
+            }
+            #[cfg(target_os = "macos")]
+            if n == 60 {
+                scale_probe::log(cx, parent_addr);
+            }
+        })
         .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
-        .title("VXN1")
-        .open_parented(&parent)
+        .title("VXN1");
+
+    if let Some(scale) = scale_override.filter(|s| *s > 0.0) {
+        app = app.with_scale_policy(WindowScalePolicy::ScaleFactor(scale));
+    }
+
+    app.open_parented(&parent)
+}
+
+/// Temporary HiDPI double-size diagnostic: logs the scale factor vizia resolved
+/// for rendering/layout against the live NSView backing scale. Appends to the
+/// same file as `vxn-clap`'s `dbg_log`. Remove with that logger once verified.
+#[cfg(target_os = "macos")]
+mod scale_probe {
+    use vizia::prelude::*;
+
+    fn dbg_log(msg: &str) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/vxn-gui.log")
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+
+    fn live_backing_scale(nsview_addr: usize) -> f64 {
+        use objc::runtime::Object;
+        use objc::{msg_send, sel, sel_impl};
+        if nsview_addr == 0 {
+            return -1.0;
+        }
+        unsafe {
+            let view = nsview_addr as *mut Object;
+            let window: *mut Object = msg_send![view, window];
+            if !window.is_null() {
+                return msg_send![window, backingScaleFactor];
+            }
+            0.0
+        }
+    }
+
+    pub fn log(cx: &mut Context, nsview_addr: usize) {
+        dbg_log(&format!(
+            "scale_probe: vizia_scale_factor={} live_backing={}",
+            cx.scale_factor(),
+            live_backing_scale(nsview_addr),
+        ));
+    }
 }
 
 fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
