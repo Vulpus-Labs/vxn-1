@@ -119,6 +119,11 @@ selectors**:
 | Cutoff                    | {Off/LFO1/LFO2}+depth | {Off/Env1/Env2}+depth | Velocity depth    |
 | Osc 2 pitch (wide)        | —                     | {Off/Env1/Env2}+depth | mod-wheel         |
 
+> **The Cutoff row is amended by the E006 faceplate pass** — see the amendment at
+> the foot of this ADR. Its source selectors are dropped: velocity, LFO 1, LFO 2
+> and Env 1 each get their own fixed depth into cutoff. Pitch / PWM / Osc 2 pitch
+> keep their selectors.
+
 Consequences:
 
 - **VCA is hardwired to Env2** — the Amp destination disappears entirely.
@@ -156,7 +161,8 @@ selector). Brown noise and its filter state are removed.
 - **Mixer:** osc1 / osc2 / ring / noise levels + noise type (White/Pink, two
   buttons).
 - **Filter:** HP cutoff, LP cutoff, resonance, drive, key-track on/off.
-- **Filter mod:** Cutoff ← velocity / LFO / env.
+- **Filter mod:** Cutoff ← velocity / LFO 1 / LFO 2 / Env 1 (four fixed depths;
+  no source selectors — see amendment).
 - **Mod wheel:** mod→PWM / cutoff / reso / Osc2 pitch (octave range).
 
 ## Consequences
@@ -191,3 +197,41 @@ selector). Brown noise and its filter state are removed.
 - `patches-dsp::oscillator` — sub-sample wrap fraction + polyBLEP sync reset.
 - `patches-modules::modulators::ring_mod` — Parker DAFx-11 diode-bridge ring mod.
 - Epic E006 + tickets 0020–0023.
+
+## Amendment — 2026-05-26 (fixed-source cutoff route; faceplate reorg)
+
+The E006 faceplate reorg simplifies the **Cutoff** channel from §4's selector
+model to **fixed sources**. §4's Pitch / PWM / Osc 2 pitch routes stand
+unchanged (they keep their `{Off/LFO1/LFO2}` / `{Off/Env1/Env2}` selectors).
+
+### Cutoff route — fixed sources
+
+The Cutoff row of §4 loses both source selectors. Velocity, LFO 1, LFO 2 and
+Env 1 each carry their **own depth** into cutoff:
+
+```text
+cutoff_mod = lfo1·d_lfo1 + lfo2·d_lfo2 + env1·d_env + vel·d_vel + key_track + wheel
+```
+
+- **Env → cutoff is always Env 1.** Env 1 is the assignable mod env (and still
+  reaches its other destinations via their selectors); **Env 2 stays the VCA
+  env** (§4 consequence "VCA hardwired to Env2" is unchanged).
+- Params: `CutoffLfoSrc` / `CutoffEnvSrc` removed; `CutoffLfoDepth` splits into
+  `CutoffLfo1Depth` + `CutoffLfo2Depth`; `CutoffEnvDepth` / `VelCutoffDepth`
+  kept. The Filter Mod panel is now a plain four-fader row (Vel / LFO1 / LFO2 /
+  Env1), not a route-column layout.
+- **LFO 2's cutoff routing no longer rides §4's selector** — it has its own
+  dedicated cutoff depth instead. Its routing to Pitch / PWM still goes through
+  those channels' selectors.
+
+### Faceplate row order
+
+The panel rows are re-laid (UI only, no param change):
+
+1. LFO 1, LFO 2, Osc 1, Osc 2, Mixer
+2. Env 1, Env 2, Filter, Filter Mod
+3. Pitch Mod, PWM Mod, Cross Mod, Mod Wheel, Pitch Wheel
+4. Keys, Voice, Chorus, Delay, Master
+
+Chorus / Delay move their on/off into the panel header (a toggle on the orange
+title bar, left of the title) rather than a cell in the control row.

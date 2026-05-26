@@ -31,8 +31,7 @@ fn setup(fx: bool, res: f32, os: f32, xmod: f32) -> Synth {
     s.set_param(gp(GlobalParam::Oversample), os);
     s.set_param(pp(PatchParam::Resonance), res);
     // Route Env 1 -> cutoff and LFO 1 -> pitch so the fixed routes do real work.
-    s.set_param(pp(PatchParam::CutoffEnvSrc), 1.0); // Env 1
-    s.set_param(pp(PatchParam::CutoffEnvDepth), 24.0);
+    s.set_param(pp(PatchParam::CutoffEnvDepth), 24.0); // Env 1 -> cutoff (fixed source)
     s.set_param(pp(PatchParam::PitchLfoSrc), 1.0); // LFO 1
     s.set_param(pp(PatchParam::PitchLfoDepth), 3.0);
     // CrossModType: 1=Sync, 2=PM. Detune osc2 so the coupled path does real work.

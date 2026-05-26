@@ -24,14 +24,14 @@
 //! Fader signals hold the *normalized* `[0, 1]` value; the shared store converts
 //! to/from plain units via the parameter descriptors.
 //!
-//! Modulation is the fixed-route model (ADR 0004 §4): each of the Pitch / PWM /
-//! Cutoff channels carries an LFO source selector + depth and an Env source
-//! selector + depth (dropdowns + faders). Pitch / PWM / the wide osc-2 pitch
-//! route live on the **Pitch Mod** / **PWM Mod** / **Cross Mod** panels
-//! respectively; the Cutoff route is the **Filter Mod**
-//! panel; the **Mod Wheel** panel sits alongside. Mixer carries the
-//! osc1/osc2/ring levels; the **Voice**
-//! panel surfaces the per-layer assign-mode / unison / glide params (0023).
+//! Modulation is the fixed-route model (ADR 0004 §4): the Pitch / PWM channels
+//! each carry an LFO source selector + depth and an Env source selector + depth
+//! (dropdowns + faders), on the **Pitch Mod** / **PWM Mod** panels; the wide
+//! osc-2 pitch route lives on **Cross Mod**. The Cutoff route (**Filter Mod**)
+//! has fixed sources (E006) — velocity, LFO 1, LFO 2 and Env 1 each get their
+//! own depth fader, no selectors. The **Mod Wheel** panel sits alongside. Mixer
+//! carries the osc1/osc2/ring levels; the **Voice** panel surfaces the per-layer
+//! assign-mode / unison / glide params (0023).
 //!
 //! The two LFOs are asymmetric (E005): LFO 1 is per-voice with a delay→fade
 //! onset and a free-run toggle (its own panel), while LFO 2 is one global
@@ -83,7 +83,9 @@ fn note_name(n: u8) -> String {
 pub type EditorHandle = WindowHandle;
 
 pub const EDITOR_WIDTH: u32 = 1024;
-/// Four panel rows now (LFO 1 / LFO 2 split out the effects onto their own row).
+/// Four panel rows: (1) LFOs + oscillators + mixer, (2) envelopes + filter +
+/// filter mod, (3) the per-osc mod routes + performance wheels, (4) voice +
+/// master + keys + the two effects.
 pub const EDITOR_HEIGHT: u32 = 700;
 
 /// A control entry: CLAP id plus a short faceplate label (the panel header
@@ -113,7 +115,32 @@ const ROWS: &[&[(&str, &[Entry])]] = {
     };
     use PatchParam::*;
     &[
+        // Row 1 — modulation sources (the two LFOs) then the oscillators + mixer.
         &[
+            (
+                // LFO 1 — per-voice (E005 / 0018): shape/rate/sync plus the
+                // per-voice delay→fade onset and free-run toggle.
+                "LFO 1",
+                &[
+                    (u(LfoShape), "Shape"),
+                    (u(LfoRate), "Rate"),
+                    (u(LfoSync), "Sync"),
+                    (u(Lfo1DelayTime), "Delay"),
+                    (u(Lfo1Fade), "Fade"),
+                    (u(Lfo1FreeRun), "Free"),
+                ],
+            ),
+            (
+                // LFO 2 — one global instrument-wide oscillator (E005 / 0019);
+                // shape/rate/sync are global. It reaches the routes through the
+                // per-channel {Off/LFO1/LFO2} source selectors, not its own cells.
+                "LFO 2",
+                &[
+                    (g(Lfo2Shape), "Shape"),
+                    (g(Lfo2Rate), "Rate"),
+                    (g(Lfo2Sync), "Sync"),
+                ],
+            ),
             (
                 "Osc 1",
                 &[
@@ -143,6 +170,55 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(RingLevel), "Ring"),
                 ],
             ),
+        ],
+        // Row 2 — envelopes, filter, filter mod.
+        &[
+            (
+                "Env 1",
+                &[
+                    (u(Env1Attack), "A"),
+                    (u(Env1Decay), "D"),
+                    (u(Env1Sustain), "S"),
+                    (u(Env1Release), "R"),
+                    (u(Env1Shape), "Shape"),
+                ],
+            ),
+            (
+                "Env 2",
+                &[
+                    (u(Env2Attack), "A"),
+                    (u(Env2Decay), "D"),
+                    (u(Env2Sustain), "S"),
+                    (u(Env2Release), "R"),
+                    (u(Env2Shape), "Shape"),
+                ],
+            ),
+            (
+                "Filter",
+                &[
+                    (u(HpfCutoff), "HPF"),
+                    (u(Cutoff), "Cutoff"),
+                    (u(Resonance), "Reso"),
+                    (u(Drive), "Drive"),
+                    (u(FilterVariant), "Type"),
+                    (u(FilterKeyTrack), "KeyTrk"),
+                ],
+            ),
+            (
+                // Cutoff route (E006): four fixed-source depths into cutoff —
+                // velocity, both LFOs and Env 1 (Env→cutoff is always Env 1). No
+                // source selectors, so this is a plain four-fader row.
+                "Filter Mod",
+                &[
+                    (u(VelCutoffDepth), "Vel"),
+                    (u(CutoffLfo1Depth), "LFO1"),
+                    (u(CutoffLfo2Depth), "LFO2"),
+                    (u(CutoffEnvDepth), "Env1"),
+                ],
+            ),
+        ],
+        // Row 3 — the per-osc mod routes + performance wheels.
+        &[
             (
                 // Osc Mod split three ways (ADR 0004 §4 routes), labels simplified
                 // since the panel header now carries the destination.
@@ -176,76 +252,6 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(Osc2PitchEnvDepth), "Mod"),
                 ],
             ),
-        ],
-        &[
-            (
-                "Filter",
-                &[
-                    (u(HpfCutoff), "HPF"),
-                    (u(Cutoff), "Cutoff"),
-                    (u(Resonance), "Reso"),
-                    (u(Drive), "Drive"),
-                    (u(FilterVariant), "Type"),
-                    (u(FilterKeyTrack), "KeyTrk"),
-                ],
-            ),
-            (
-                // Cutoff route (ADR 0004 §4): velocity / LFO / env into cutoff.
-                "Filter Mod",
-                &[
-                    (u(VelCutoffDepth), "Vel"),
-                    (u(CutoffLfoSrc), "LFO"),
-                    (u(CutoffLfoDepth), "LFO.D"),
-                    (u(CutoffEnvSrc), "Env"),
-                    (u(CutoffEnvDepth), "Env.D"),
-                ],
-            ),
-            (
-                "Env 1",
-                &[
-                    (u(Env1Attack), "A"),
-                    (u(Env1Decay), "D"),
-                    (u(Env1Sustain), "S"),
-                    (u(Env1Release), "R"),
-                    (u(Env1Shape), "Shape"),
-                ],
-            ),
-            (
-                "Env 2",
-                &[
-                    (u(Env2Attack), "A"),
-                    (u(Env2Decay), "D"),
-                    (u(Env2Sustain), "S"),
-                    (u(Env2Release), "R"),
-                    (u(Env2Shape), "Shape"),
-                ],
-            ),
-        ],
-        &[
-            (
-                // LFO 1 — per-voice (E005 / 0018): shape/rate/sync plus the
-                // per-voice delay→fade onset and free-run toggle.
-                "LFO 1",
-                &[
-                    (u(LfoShape), "Shape"),
-                    (u(LfoRate), "Rate"),
-                    (u(LfoSync), "Sync"),
-                    (u(Lfo1DelayTime), "Delay"),
-                    (u(Lfo1Fade), "Fade"),
-                    (u(Lfo1FreeRun), "Free"),
-                ],
-            ),
-            (
-                // LFO 2 — one global instrument-wide oscillator (E005 / 0019);
-                // shape/rate/sync are global. It reaches the routes through the
-                // per-channel {Off/LFO1/LFO2} source selectors, not its own cells.
-                "LFO 2",
-                &[
-                    (g(Lfo2Shape), "Shape"),
-                    (g(Lfo2Rate), "Rate"),
-                    (g(Lfo2Sync), "Sync"),
-                ],
-            ),
             (
                 "Mod Wheel",
                 &[
@@ -261,6 +267,13 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 "Pitch Wheel",
                 &[(u(PitchWheelDepth), "Range")],
             ),
+        ],
+        // Row 4 — keys, voice, the two effects, then global master.
+        &[
+            // Keys leads the row. It has no plain entries — `build_editor`
+            // special-cases this title to `keys_panel`, since the mode/split write
+            // opaque (non-param) state.
+            ("Keys", &[]),
             (
                 // Per-layer voice assignment + glide (E003): assign mode, unison
                 // detune, glide on/off + time. Not in ADR 0004's panel list, but
@@ -274,17 +287,9 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (u(PortamentoTime), "Time"),
                 ],
             ),
-        ],
-        &[
             (
-                "Master",
-                &[
-                    (g(MasterTune), "Tune"),
-                    (g(MasterVolume), "Volume"),
-                    (g(Oversample), "OvSmp"),
-                ],
-            ),
-            (
+                // The On bool is lifted into the panel header (left of the title);
+                // `panel_view` drops it from the cell row. See `header_switch`.
                 "Chorus",
                 &[
                     (g(ChorusOn), "On"),
@@ -301,6 +306,14 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                     (g(DelayFeedback), "FB"),
                     (g(DelayMix), "Mix"),
                     (g(DelayPingPong), "Ping"),
+                ],
+            ),
+            (
+                "Master",
+                &[
+                    (g(MasterTune), "Tune"),
+                    (g(MasterVolume), "Volume"),
+                    (g(Oversample), "OvSmp"),
                 ],
             ),
         ],
@@ -330,22 +343,13 @@ const PWM_MOD_ROUTES: &[Route] = {
     ]
 };
 
-const FILTER_MOD_ROUTES: &[Route] = {
-    use PatchParam::*;
-    &[
-        ("Vel", None, u(VelCutoffDepth)),
-        ("LFO", Some(u(CutoffLfoSrc)), u(CutoffLfoDepth)),
-        ("Env", Some(u(CutoffEnvSrc)), u(CutoffEnvDepth)),
-    ]
-};
-
 /// The route-column table for a mod panel, or `None` for a panel laid out as a
-/// plain row of control cells.
+/// plain row of control cells. Filter Mod is *not* here (E006): its sources are
+/// fixed, so it renders as a plain four-fader row.
 fn routes_for(title: &str) -> Option<&'static [Route]> {
     match title {
         "Pitch Mod" => Some(PITCH_MOD_ROUTES),
         "PWM Mod" => Some(PWM_MOD_ROUTES),
-        "Filter Mod" => Some(FILTER_MOD_ROUTES),
         _ => None,
     }
 }
@@ -638,13 +642,17 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     }
     .build(cx);
 
-    let last_row = ROWS.len() - 1;
     ScrollView::new(cx, move |cx| {
         VStack::new(cx, |cx| {
-            for (r, row) in ROWS.iter().enumerate() {
+            for row in ROWS.iter() {
                 HStack::new(cx, |cx| {
                     for (title, entries) in *row {
-                        if is_layer_dependent(entries) {
+                        if *title == "Keys" {
+                            // Placeholder entry: the key-mode panel writes opaque
+                            // (non-param) state, so it's built directly rather than
+                            // from `entries`. Its row slot fixes its position.
+                            keys_panel(cx, &shared, edit_layer, key_mode, split);
+                        } else if is_layer_dependent(entries) {
                             // Build the panel for each layer; show only the one
                             // matching the edit-target toggle (no structural rebuild).
                             for layer in Layer::ALL {
@@ -663,10 +671,6 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
                         } else {
                             panel_view(cx, title, entries, Layer::Upper, &controls, &shared, None);
                         }
-                    }
-                    // The key-mode panel rides in the last row.
-                    if r == last_row {
-                        keys_panel(cx, &shared, edit_layer, key_mode, split);
                     }
                 })
                 .height(Pixels(PANEL_H))
@@ -775,12 +779,44 @@ fn panel_view(
     shared: &Arc<SharedParams>,
     display: Option<Memo<bool>>,
 ) {
+    // Chorus / Delay lift their leading On bool into the header (a toggle box on
+    // the left of the title bar); the cell row then skips that first entry.
+    let header_switch = matches!(title, "Chorus" | "Delay");
     let handle = VStack::new(cx, |cx| {
-        Label::new(cx, title)
+        if header_switch {
+            let on = controls
+                .iter()
+                .copied()
+                .find(|c| c.idx() == resolve(entries[0].0, layer));
+            HStack::new(cx, |cx| {
+                if let Some(Ctl::Switch(i, sig)) = on {
+                    let sh = Arc::clone(shared);
+                    toggle_row(cx, "", sig, move |_cx| {
+                        let v = !sig.get();
+                        sig.set(v);
+                        sh.set(i, if v { 1.0 } else { 0.0 });
+                    });
+                }
+                Label::new(cx, title)
+                    .class("panel-header")
+                    .width(Stretch(1.0))
+                    .height(Pixels(16.0))
+                    .alignment(Alignment::Center);
+            })
+            // Orange title-bar bg spans the whole header, so the toggle box sits on
+            // the same colour as the title rather than the dark panel.
             .class("panel-header")
-            .width(Stretch(1.0))
             .height(Pixels(16.0))
-            .alignment(Alignment::Center);
+            .horizontal_gap(Pixels(4.0))
+            .padding_left(Pixels(3.0))
+            .alignment(Alignment::Left);
+        } else {
+            Label::new(cx, title)
+                .class("panel-header")
+                .width(Stretch(1.0))
+                .height(Pixels(16.0))
+                .alignment(Alignment::Center);
+        }
         HStack::new(cx, |cx| {
             // Cross Mod is a custom pairing (selector beside fader, grey-when-Off);
             // the other mod panels lay out by route (depth fader + source selector
@@ -792,7 +828,9 @@ fn panel_view(
                     mod_route_view(cx, head, *src, *depth, layer, controls, shared);
                 }
             } else {
-                for (id, short) in entries {
+                // The On bool sits in the header for these panels, so drop it here.
+                let cells = if header_switch { &entries[1..] } else { entries };
+                for (id, short) in cells {
                     let cid = resolve(*id, layer);
                     let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
                     control_view(cx, ctl, shared, short);
@@ -1356,11 +1394,7 @@ mod tests {
         // The route tables drive the mod-panel layout but the ROWS entries
         // still drive coverage; guard against the two drifting apart — every route
         // id (source + depth) must appear in the panel's entries and vice-versa.
-        for (title, routes) in [
-            ("Pitch Mod", PITCH_MOD_ROUTES),
-            ("PWM Mod", PWM_MOD_ROUTES),
-            ("Filter Mod", FILTER_MOD_ROUTES),
-        ] {
+        for (title, routes) in [("Pitch Mod", PITCH_MOD_ROUTES), ("PWM Mod", PWM_MOD_ROUTES)] {
             let entries: &[Entry] = ROWS
                 .iter()
                 .flat_map(|row| row.iter())
@@ -1409,7 +1443,7 @@ mod tests {
     fn route_depth_fader_uses_full_range() {
         // Route-depth faders span the descriptor's full bipolar range (interim
         // 0022 wiring): centre is zero, ends are ±max.
-        let id = patch_clap_id(Layer::Upper, PatchParam::CutoffLfoDepth);
+        let id = patch_clap_id(Layer::Upper, PatchParam::CutoffLfo1Depth);
         let d = desc_for_clap_id(id).unwrap();
         assert!((fader_from_ui(id, 0.0) - d.min).abs() < 1e-3);
         assert!((fader_from_ui(id, 1.0) - d.max).abs() < 1e-3);

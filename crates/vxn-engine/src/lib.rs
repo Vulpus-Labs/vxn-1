@@ -500,9 +500,8 @@ impl Synth {
             pwm_env_sel: p.env_sel(PatchParam::PwmEnvSrc),
             pwm_env_depth: p.get(PatchParam::PwmEnvDepth),
             pwm_extra: wheel * p.get(PatchParam::ModWheelPwm),
-            cutoff_lfo_sel: p.lfo_sel(PatchParam::CutoffLfoSrc),
-            cutoff_lfo_depth: p.get(PatchParam::CutoffLfoDepth),
-            cutoff_env_sel: p.env_sel(PatchParam::CutoffEnvSrc),
+            cutoff_lfo1_depth: p.get(PatchParam::CutoffLfo1Depth),
+            cutoff_lfo2_depth: p.get(PatchParam::CutoffLfo2Depth),
             cutoff_env_depth: p.get(PatchParam::CutoffEnvDepth),
             cutoff_vel_depth: p.get(PatchParam::VelCutoffDepth),
             cutoff_extra: wheel * p.get(PatchParam::ModWheelCutoff),
@@ -832,8 +831,7 @@ mod tests {
         let mut s = pitched_synth();
         s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
         s.set_param(pp(PatchParam::Cutoff), 1000.0);
-        s.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
-        s.set_param(pp(PatchParam::CutoffLfoDepth), depth);
+        s.set_param(pp(PatchParam::CutoffLfo1Depth), depth); // LFO 1 → cutoff
         s.set_param(pp(PatchParam::LfoRate), rate);
         s.set_param(pp(PatchParam::Lfo1DelayTime), delay);
         s.set_param(pp(PatchParam::Lfo1Fade), fade);
@@ -1137,15 +1135,14 @@ mod tests {
         // No route selects LFO 2 (only LFO 1 → cutoff here), so ticking the
         // global LFO 2 with a live rate/shape reproduces the output bit-for-bit.
         let mut a = pitched_synth();
-        a.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
-        a.set_param(pp(PatchParam::CutoffLfoDepth), 24.0);
+        a.set_param(pp(PatchParam::CutoffLfo1Depth), 24.0); // LFO 1 → cutoff
         a.note_on(57, 1.0);
         let (base, _) = render(&mut a, 12_000);
 
-        // Same patch, but tick the global LFO 2 with a live rate/shape (unrouted).
+        // Same patch, but tick the global LFO 2 with a live rate/shape (unrouted —
+        // LFO 2's own cutoff depth stays zero).
         let mut b = pitched_synth();
-        b.set_param(pp(PatchParam::CutoffLfoSrc), 1.0);
-        b.set_param(pp(PatchParam::CutoffLfoDepth), 24.0);
+        b.set_param(pp(PatchParam::CutoffLfo1Depth), 24.0);
         b.set_param(gp(GlobalParam::Lfo2Rate), 3.0);
         b.set_param(gp(GlobalParam::Lfo2Shape), 5.0); // S&H — exercises its PRNG
         b.note_on(57, 1.0);
@@ -1258,8 +1255,7 @@ mod tests {
         let mut s = pitched_synth();
         s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
         s.set_param(pp(PatchParam::Cutoff), 1200.0);
-        s.set_param(pp(PatchParam::CutoffLfoSrc), 1.0); // LFO 1
-        s.set_param(pp(PatchParam::CutoffLfoDepth), 36.0);
+        s.set_param(pp(PatchParam::CutoffLfo1Depth), 36.0); // LFO 1 → cutoff
         s.set_param(pp(PatchParam::LfoSync), 1.0);
         s.set_param(pp(PatchParam::LfoRate), rate_for_subdiv(9)); // 1/8
         s.set_tempo(128.0);

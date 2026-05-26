@@ -155,10 +155,10 @@ pub struct BlockCtx {
     pub pwm_env_depth: f32,
     /// Mod-wheel → PWM contribution (fraction).
     pub pwm_extra: f32,
-    /// Cutoff channel (semitones of cutoff).
-    pub cutoff_lfo_sel: LfoSel,
-    pub cutoff_lfo_depth: f32,
-    pub cutoff_env_sel: EnvSel,
+    /// Cutoff channel (semitones of cutoff) — fixed sources (E006): each of LFO 1,
+    /// LFO 2, Env 1 and velocity has its own depth; no source selectors.
+    pub cutoff_lfo1_depth: f32,
+    pub cutoff_lfo2_depth: f32,
     pub cutoff_env_depth: f32,
     pub cutoff_vel_depth: f32,
     /// Mod-wheel → cutoff contribution (semitones).
@@ -432,60 +432,41 @@ impl VoiceBank {
         let onset_dt = 1.0 / base_rate;
 
         // Portamento glide coefficient for this block (one-pole toward the target
-        // note). `dt` is the block's wall-clock duration, so the glide rate is
-        // independent of block size. 0 (or glide off) means snap to target.
-        let glide = ctx.portamento_on && ctx.portamento_time > 0.0;
-        // The whole detuned Unison stack glides together, so the same knob
-        // position reads far stronger than one Poly voice — scale the time right
-        // down so Unison glide is a subtle scoop, not an audible stack slide.
-        let glide_time = if self.unison {
-            ctx.portamento_time * UNISON_GLIDE_SCALE
-        } else {
-            ctx.portamento_time
-        };
-        let glide_coeff = if glide {
-            let dt = base_frames as f32 / base_rate;
-            1.0 - (-dt / glide_time).exp()
-        } else {
-            1.0
-        };
+        // note); see `block_glide`. The glide is off / snaps when disabled.
+        let (glide, glide_coeff) = block_glide(
+            ctx.portamento_on,
+            ctx.portamento_time,
+            self.unison,
+            base_frames,
+            base_rate,
+        );
 
         // ── Per-voice control-rate resolution (block start) ──
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         for v in 0..N {
-            let e1 = self.env1[v].level;
-            let e2 = self.env2[v].level;
+            // LFO 1's onset gain ramps per frame, so it's applied here (reading the
+            // per-voice onset state) before handing a plain value to `resolve_mod`.
             let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
-
-            // Fixed-route resolution: each channel sums its selected LFO × depth,
-            // its selected env × depth, and the channel's extra (ADR 0004 §4).
-            let pitch_mod = lfo_src(ctx.pitch_lfo_sel, lfo1, ctx.lfo2_val) * ctx.pitch_lfo_depth
-                + env_src(ctx.pitch_env_sel, e1, e2) * ctx.pitch_env_depth
-                + ctx.pitch_extra;
-            // Wide osc-2 pitch (sync sweeps): osc2 only, added on top of common pitch.
-            let osc2_pitch_mod = env_src(ctx.osc2_pitch_env_sel, e1, e2) * ctx.osc2_pitch_env_depth
-                + ctx.osc2_pitch_extra;
-            let pwm_mod = lfo_src(ctx.pwm_lfo_sel, lfo1, ctx.lfo2_val) * ctx.pwm_lfo_depth
-                + env_src(ctx.pwm_env_sel, e1, e2) * ctx.pwm_env_depth
-                + ctx.pwm_extra;
-            let key_track = if ctx.filter_key_track {
-                // 1 octave of cutoff per octave of key relative to C4 (note 60):
-                // cutoff is unchanged at C4, rises above it, falls below it.
-                self.note[v] as f32 - 60.0
-            } else {
-                0.0
-            };
-            let cutoff_mod = lfo_src(ctx.cutoff_lfo_sel, lfo1, ctx.lfo2_val) * ctx.cutoff_lfo_depth
-                + env_src(ctx.cutoff_env_sel, e1, e2) * ctx.cutoff_env_depth
-                + self.velocity[v] * ctx.cutoff_vel_depth
-                + key_track
-                + ctx.cutoff_extra;
+            let m = resolve_mod(
+                ctx,
+                &ModSources {
+                    e1: self.env1[v].level,
+                    e2: self.env2[v].level,
+                    lfo1,
+                    lfo2: ctx.lfo2_val,
+                    velocity: self.velocity[v],
+                    note: self.note[v],
+                },
+            );
 
             // Portamento: glide each channel's pitch toward its target note. A
             // freshly triggered channel snaps to target when glide is off, the
             // time is 0, or it has no previous pitch (its first note); otherwise
             // it ramps from where it was, giving JP-8 polyphonic glide per voice.
+            // The glide is a stateful recurrence (and the osc/filter coefficient
+            // writes below are DSP application), so they stay inline; only the
+            // pure route maths is lifted into `resolve_mod`.
             let target = self.note[v] as f32;
             if self.trigger_pending[v] {
                 if !glide || !self.glide_valid[v] {
@@ -496,14 +477,14 @@ impl VoiceBank {
             self.glide_semi[v] += glide_coeff * (target - self.glide_semi[v]);
             let nf = self.glide_semi[v];
             let detune = self.detune_cents[v] * 0.01; // cents → semitones (Unison)
-            let s1 = ctx.base_semis + nf + ctx.osc1_semi + pitch_mod + detune;
-            let s2 = ctx.base_semis + nf + ctx.osc2_semi + pitch_mod + osc2_pitch_mod + detune;
+            let s1 = ctx.base_semis + nf + ctx.osc1_semi + m.pitch_mod + detune;
+            let s2 = ctx.base_semis + nf + ctx.osc2_semi + m.pitch_mod + m.osc2_pitch_mod + detune;
             self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
-            pw1[v] = (ctx.osc1_pw + pwm_mod).clamp(0.05, 0.95);
-            pw2[v] = (ctx.osc2_pw + pwm_mod).clamp(0.05, 0.95);
+            pw1[v] = (ctx.osc1_pw + m.pwm_mod).clamp(0.05, 0.95);
+            pw2[v] = (ctx.osc2_pw + m.pwm_mod).clamp(0.05, 0.95);
 
-            let cutoff_hz = ctx.cutoff * fast_exp2(cutoff_mod / 12.0);
+            let cutoff_hz = ctx.cutoff * fast_exp2(m.cutoff_mod / 12.0);
             self.ladder.set_coeffs(
                 v,
                 LadderCoeffs::new(
@@ -548,21 +529,12 @@ impl VoiceBank {
         let ring_on = ctx.ring_level != 0.0;
         let ring_gain = 10.0f32.powf(RING_DRIVE_DB / 20.0);
 
-        // Envelope block-skip: within a block the gate is constant and triggers
-        // fire only on frame 0, so if nothing triggers and every active voice
-        // holds *both* envelopes in Sustain (gate high), the env levels are
-        // constant for the whole block. Compute `amp` once and skip the per-frame
-        // tick and the free-check. Any trigger, or a voice mid attack/decay/
-        // release, falls back to the per-frame path. Bit-identical: a held
-        // Sustain tick is idempotent (`level = sustain`), so 0 ticks and `os·n`
-        // ticks leave the same state — and no Sustain/gate-high voice can free.
-        let env_static = trig.iter().all(|&t| !t)
-            && (0..N).all(|v| {
-                !self.active[v]
-                    || (self.gate[v]
-                        && self.env1[v].stage == AdsrStage::Sustain
-                        && self.env2[v].stage == AdsrStage::Sustain)
-            });
+        // Envelope block-skip (see `envelopes_static`): when nothing triggers and
+        // every active voice holds both envelopes in Sustain, the env levels are
+        // constant, so `amp` is computed once and the per-frame tick + free-check
+        // are skipped. Otherwise the per-frame path runs.
+        let env_static =
+            envelopes_static(&trig, &self.active, &self.gate, &self.env1, &self.env2);
         if env_static {
             for v in 0..N {
                 amp[v] = if self.active[v] {
@@ -686,6 +658,124 @@ fn env_src(sel: EnvSel, env1: f32, env2: f32) -> f32 {
         EnvSel::Env1 => env1,
         EnvSel::Env2 => env2,
     }
+}
+
+// ── Per-voice modulation resolution ──────────────────────────────────────────
+//
+// The fixed-route maths (ADR 0004 §4): sum each channel's selected LFO × depth,
+// selected env × depth, velocity / key-track / wheel extras into the four mod
+// destinations. Pure — sources in, offsets out, no `self`, no DSP, no sample
+// rate — so the routing table (selector → source, depth sign, key-track curve)
+// is unit-testable in isolation, like the allocation policy. `render_block`
+// keeps the stateful apply (glide recurrence, osc/filter coefficient writes).
+
+/// Read-only modulation sources for one channel at block start. Everything
+/// `resolve_mod` reads; constructed in tests directly from plain values.
+struct ModSources {
+    /// Env 1 level (feeds routes; the VCA is hardwired to env 2 elsewhere).
+    e1: f32,
+    /// Env 2 level.
+    e2: f32,
+    /// Per-voice LFO 1, already onset-scaled by the caller.
+    lfo1: f32,
+    /// Global LFO 2 broadcast value.
+    lfo2: f32,
+    /// Note velocity (cutoff route).
+    velocity: f32,
+    /// MIDI note, for the filter key-track curve.
+    note: u8,
+}
+
+/// Resolved per-channel mod offsets: pitch / osc2-pitch / cutoff in semitones,
+/// pwm as a pulse-width fraction.
+struct ModOut {
+    pitch_mod: f32,
+    osc2_pitch_mod: f32,
+    pwm_mod: f32,
+    cutoff_mod: f32,
+}
+
+/// Fixed-route resolution for one channel (ADR 0004 §4). Pure: no `self`, no
+/// state mutation, no sample rate.
+#[inline]
+fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
+    // 1 octave of cutoff per octave of key relative to C4 (note 60): cutoff is
+    // unchanged at C4, rises above it, falls below it.
+    let key_track = if ctx.filter_key_track {
+        s.note as f32 - 60.0
+    } else {
+        0.0
+    };
+    ModOut {
+        pitch_mod: lfo_src(ctx.pitch_lfo_sel, s.lfo1, s.lfo2) * ctx.pitch_lfo_depth
+            + env_src(ctx.pitch_env_sel, s.e1, s.e2) * ctx.pitch_env_depth
+            + ctx.pitch_extra,
+        // Wide osc-2 pitch (sync sweeps): osc2 only, added on top of common pitch.
+        osc2_pitch_mod: env_src(ctx.osc2_pitch_env_sel, s.e1, s.e2) * ctx.osc2_pitch_env_depth
+            + ctx.osc2_pitch_extra,
+        pwm_mod: lfo_src(ctx.pwm_lfo_sel, s.lfo1, s.lfo2) * ctx.pwm_lfo_depth
+            + env_src(ctx.pwm_env_sel, s.e1, s.e2) * ctx.pwm_env_depth
+            + ctx.pwm_extra,
+        // Fixed cutoff sources (E006): LFO 1, LFO 2 and Env 1 each by their own
+        // depth, plus velocity, key-track and the mod-wheel `extra`.
+        cutoff_mod: s.lfo1 * ctx.cutoff_lfo1_depth
+            + s.lfo2 * ctx.cutoff_lfo2_depth
+            + s.e1 * ctx.cutoff_env_depth
+            + s.velocity * ctx.cutoff_vel_depth
+            + key_track
+            + ctx.cutoff_extra,
+    }
+}
+
+/// Portamento glide for this block: `(active, coeff)`. The one-pole coefficient
+/// toward the target note is derived from the block's wall-clock duration
+/// (`base_frames / base_rate`), so the glide rate is independent of block size.
+/// `unison` scales the time down — the whole detuned stack slides together, so
+/// the same knob position reads far stronger than one Poly voice, and a subtle
+/// scoop is wanted rather than an audible stack slide. Glide off or time 0
+/// returns `(false, 1.0)`: the caller snaps straight to the target. Pure.
+#[inline]
+fn block_glide(
+    portamento_on: bool,
+    portamento_time: f32,
+    unison: bool,
+    base_frames: usize,
+    base_rate: f32,
+) -> (bool, f32) {
+    if !(portamento_on && portamento_time > 0.0) {
+        return (false, 1.0);
+    }
+    let glide_time = if unison {
+        portamento_time * UNISON_GLIDE_SCALE
+    } else {
+        portamento_time
+    };
+    let dt = base_frames as f32 / base_rate;
+    (true, 1.0 - (-dt / glide_time).exp())
+}
+
+/// Envelope block-skip predicate: true when no voice triggers this block and
+/// every active voice holds *both* envelopes in Sustain (gate high), so the env
+/// levels are constant across the block and the per-frame tick + free-check can
+/// be skipped. Bit-identical: a held Sustain tick is idempotent (`level =
+/// sustain`), so 0 ticks and `os·n` ticks leave the same state, and no
+/// Sustain/gate-high voice can free. Any trigger, or a voice mid attack / decay
+/// / release, forces the per-frame path. Pure.
+#[inline]
+fn envelopes_static(
+    trig: &[bool; N],
+    active: &[bool; N],
+    gate: &[bool; N],
+    env1: &[AdsrCore; N],
+    env2: &[AdsrCore; N],
+) -> bool {
+    trig.iter().all(|&t| !t)
+        && (0..N).all(|v| {
+            !active[v]
+                || (gate[v]
+                    && env1[v].stage == AdsrStage::Sustain
+                    && env2[v].stage == AdsrStage::Sustain)
+        })
 }
 
 /// Fixed symmetric detune weight for unison channel `v`, in `[-1, 1]` across the
@@ -1062,5 +1152,274 @@ mod alloc_tests {
         let mut pair = [a, b];
         pair.sort_unstable();
         assert_eq!(pair, [3, 7]);
+    }
+}
+
+#[cfg(test)]
+mod mod_tests {
+    use super::*;
+
+    /// Neutral block context: every route Off, every depth / extra 0, key-track
+    /// off. Non-route fields (waveforms, cutoff, …) carry harmless placeholders —
+    /// `resolve_mod` never reads them. Tests mutate only what they assert via
+    /// `ctx_with`, so the route under test isn't buried in fixture noise.
+    fn neutral_ctx() -> BlockCtx {
+        BlockCtx {
+            os_sample_rate: 48_000.0,
+            os: 1,
+            osc1_wave: Waveform::Saw,
+            osc2_wave: Waveform::Saw,
+            osc1_level: 1.0,
+            osc2_level: 1.0,
+            ring_level: 0.0,
+            osc1_pw: 0.5,
+            osc2_pw: 0.5,
+            osc1_semi: 0.0,
+            osc2_semi: 0.0,
+            cutoff: 1_000.0,
+            hpf_cutoff: 20.0,
+            resonance: 0.0,
+            drive: 1.0,
+            variant: LadderVariant::Sharp,
+            base_semis: 0.0,
+            lfo1_shape: LfoShape::Sine,
+            lfo1_rate_hz: 1.0,
+            lfo1_delay_time: 0.0,
+            lfo1_fade: 0.0,
+            lfo2_val: 0.0,
+            sync: false,
+            pm_index: 0.0,
+            portamento_on: false,
+            portamento_time: 0.0,
+            pitch_lfo_sel: LfoSel::Off,
+            pitch_lfo_depth: 0.0,
+            pitch_env_sel: EnvSel::Off,
+            pitch_env_depth: 0.0,
+            pitch_extra: 0.0,
+            pwm_lfo_sel: LfoSel::Off,
+            pwm_lfo_depth: 0.0,
+            pwm_env_sel: EnvSel::Off,
+            pwm_env_depth: 0.0,
+            pwm_extra: 0.0,
+            cutoff_lfo1_depth: 0.0,
+            cutoff_lfo2_depth: 0.0,
+            cutoff_env_depth: 0.0,
+            cutoff_vel_depth: 0.0,
+            cutoff_extra: 0.0,
+            filter_key_track: false,
+            osc2_pitch_env_sel: EnvSel::Off,
+            osc2_pitch_env_depth: 0.0,
+            osc2_pitch_extra: 0.0,
+        }
+    }
+
+    fn ctx_with(f: impl FnOnce(&mut BlockCtx)) -> BlockCtx {
+        let mut c = neutral_ctx();
+        f(&mut c);
+        c
+    }
+
+    /// Plain sources: env levels, LFO values, velocity and note all explicit.
+    fn src(e1: f32, e2: f32, lfo1: f32, lfo2: f32, velocity: f32, note: u8) -> ModSources {
+        ModSources { e1, e2, lfo1, lfo2, velocity, note }
+    }
+
+    #[test]
+    fn all_off_resolves_to_zero() {
+        let ctx = neutral_ctx();
+        let m = resolve_mod(&ctx, &src(1.0, 1.0, 1.0, 1.0, 1.0, 72));
+        assert_eq!(m.pitch_mod, 0.0);
+        assert_eq!(m.osc2_pitch_mod, 0.0);
+        assert_eq!(m.pwm_mod, 0.0);
+        assert_eq!(m.cutoff_mod, 0.0);
+    }
+
+    #[test]
+    fn off_selector_ignores_its_source() {
+        // Depth set, but selector Off → source must not leak through.
+        let ctx = ctx_with(|c| {
+            c.pitch_lfo_sel = LfoSel::Off;
+            c.pitch_lfo_depth = 5.0;
+        });
+        let m = resolve_mod(&ctx, &src(0.0, 0.0, 1.0, 1.0, 0.0, 60));
+        assert_eq!(m.pitch_mod, 0.0);
+    }
+
+    #[test]
+    fn pitch_route_picks_selected_lfo_and_scales_by_depth() {
+        let lfo1 = ctx_with(|c| {
+            c.pitch_lfo_sel = LfoSel::Lfo1;
+            c.pitch_lfo_depth = 2.0;
+        });
+        // LFO1 = 0.5 → +1 st; LFO2 (= 0.9) must be ignored under the Lfo1 selector.
+        let m = resolve_mod(&lfo1, &src(0.0, 0.0, 0.5, 0.9, 0.0, 60));
+        assert!((m.pitch_mod - 1.0).abs() < 1e-6);
+
+        let lfo2 = ctx_with(|c| {
+            c.pitch_lfo_sel = LfoSel::Lfo2;
+            c.pitch_lfo_depth = 2.0;
+        });
+        let m = resolve_mod(&lfo2, &src(0.0, 0.0, 0.5, 0.9, 0.0, 60));
+        assert!((m.pitch_mod - 1.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pitch_route_sums_lfo_env_and_wheel_extra() {
+        let ctx = ctx_with(|c| {
+            c.pitch_lfo_sel = LfoSel::Lfo1;
+            c.pitch_lfo_depth = 2.0; // 0.5 → +1.0
+            c.pitch_env_sel = EnvSel::Env1;
+            c.pitch_env_depth = 3.0; // 0.5 → +1.5
+            c.pitch_extra = 0.25; // pitch wheel
+        });
+        let m = resolve_mod(&ctx, &src(0.5, 0.0, 0.5, 0.0, 0.0, 60));
+        assert!((m.pitch_mod - 2.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn osc2_pitch_route_is_env_plus_extra_independent_of_common_pitch() {
+        let ctx = ctx_with(|c| {
+            c.osc2_pitch_env_sel = EnvSel::Env2;
+            c.osc2_pitch_env_depth = 12.0; // 0.5 → +6 st
+            c.osc2_pitch_extra = 1.0;
+            c.pitch_lfo_sel = LfoSel::Lfo1; // common-pitch route must not bleed in
+            c.pitch_lfo_depth = 10.0;
+        });
+        let m = resolve_mod(&ctx, &src(0.0, 0.5, 1.0, 0.0, 0.0, 60));
+        assert!((m.osc2_pitch_mod - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cutoff_velocity_route() {
+        let ctx = ctx_with(|c| c.cutoff_vel_depth = 24.0);
+        let m = resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.5, 60));
+        assert!((m.cutoff_mod - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cutoff_keytrack_pivots_at_c4_one_octave_per_octave() {
+        let ctx = ctx_with(|c| c.filter_key_track = true);
+        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod, 0.0);
+        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 72)).cutoff_mod, 12.0);
+        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 48)).cutoff_mod, -12.0);
+    }
+
+    #[test]
+    fn keytrack_off_ignores_note() {
+        let ctx = neutral_ctx(); // key-track off
+        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 96)).cutoff_mod, 0.0);
+    }
+
+    #[test]
+    fn negative_depth_inverts_route() {
+        let ctx = ctx_with(|c| {
+            c.pwm_lfo_sel = LfoSel::Lfo2;
+            c.pwm_lfo_depth = -0.4;
+        });
+        let m = resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 1.0, 0.0, 60));
+        assert!((m.pwm_mod + 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn routes_are_independent_no_cross_talk() {
+        // Every route wired to a distinct source; each destination must reflect
+        // only its own selection.
+        let ctx = ctx_with(|c| {
+            c.pitch_lfo_sel = LfoSel::Lfo1;
+            c.pitch_lfo_depth = 1.0;
+            c.pwm_env_sel = EnvSel::Env1;
+            c.pwm_env_depth = 1.0;
+            c.cutoff_lfo2_depth = 1.0; // fixed LFO 2 → cutoff
+        });
+        let m = resolve_mod(&ctx, &src(0.3, 0.0, 0.7, 0.2, 0.0, 60));
+        assert!((m.pitch_mod - 0.7).abs() < 1e-6);
+        assert!((m.pwm_mod - 0.3).abs() < 1e-6);
+        assert!((m.cutoff_mod - 0.2).abs() < 1e-6);
+        assert_eq!(m.osc2_pitch_mod, 0.0);
+    }
+
+    // ── block_glide ──
+
+    #[test]
+    fn glide_off_snaps() {
+        assert_eq!(block_glide(false, 1.0, false, 64, 48_000.0), (false, 1.0));
+    }
+
+    #[test]
+    fn glide_on_zero_time_snaps() {
+        // Enabled but 0 time is still a snap, not a divide-by-zero.
+        assert_eq!(block_glide(true, 0.0, false, 64, 48_000.0), (false, 1.0));
+    }
+
+    #[test]
+    fn glide_coeff_is_block_size_independent() {
+        // Same wall-clock duration via different (frames, rate) pairs → same coeff.
+        let (_, a) = block_glide(true, 0.2, false, 64, 48_000.0);
+        let (_, b) = block_glide(true, 0.2, false, 32, 24_000.0);
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        assert!(a > 0.0 && a < 1.0);
+    }
+
+    #[test]
+    fn unison_glides_slower_than_poly() {
+        // Shorter effective time → larger coefficient (faster approach per block).
+        let (_, poly) = block_glide(true, 0.2, false, 64, 48_000.0);
+        let (_, uni) = block_glide(true, 0.2, true, 64, 48_000.0);
+        assert!(uni > poly, "unison {uni} should exceed poly {poly}");
+    }
+
+    // ── envelopes_static ──
+
+    /// Per-voice env arrays with channel `v` parked in `stage`.
+    fn envs_all(stage: AdsrStage) -> ([AdsrCore; N], [AdsrCore; N]) {
+        let mut a = std::array::from_fn(|_| AdsrCore::new(48_000.0));
+        let mut b = std::array::from_fn(|_| AdsrCore::new(48_000.0));
+        for v in 0..N {
+            a[v].stage = stage;
+            b[v].stage = stage;
+        }
+        (a, b)
+    }
+
+    #[test]
+    fn static_when_all_sustain_gate_high_no_trigger() {
+        let (e1, e2) = envs_all(AdsrStage::Sustain);
+        assert!(envelopes_static(&[false; N], &[true; N], &[true; N], &e1, &e2));
+    }
+
+    #[test]
+    fn not_static_when_any_voice_triggers() {
+        let (e1, e2) = envs_all(AdsrStage::Sustain);
+        let mut trig = [false; N];
+        trig[3] = true;
+        assert!(!envelopes_static(&trig, &[true; N], &[true; N], &e1, &e2));
+    }
+
+    #[test]
+    fn not_static_when_a_voice_is_mid_attack() {
+        let (mut e1, e2) = envs_all(AdsrStage::Sustain);
+        e1[5].stage = AdsrStage::Attack; // env1 not settled
+        assert!(!envelopes_static(&[false; N], &[true; N], &[true; N], &e1, &e2));
+    }
+
+    #[test]
+    fn not_static_when_gate_released_but_active() {
+        let (e1, e2) = envs_all(AdsrStage::Sustain);
+        let mut gate = [true; N];
+        gate[2] = false; // releasing voice must take the per-frame path (can free)
+        assert!(!envelopes_static(&[false; N], &[true; N], &gate, &e1, &e2));
+    }
+
+    #[test]
+    fn inactive_voices_ignored() {
+        // An inactive voice in any stage / gate doesn't block the static path.
+        let (mut e1, mut e2) = envs_all(AdsrStage::Sustain);
+        e1[7].stage = AdsrStage::Release;
+        e2[7].stage = AdsrStage::Idle;
+        let mut active = [true; N];
+        active[7] = false;
+        let mut gate = [true; N];
+        gate[7] = false;
+        assert!(envelopes_static(&[false; N], &active, &gate, &e1, &e2));
     }
 }

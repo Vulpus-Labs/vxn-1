@@ -282,10 +282,11 @@ pub enum PatchParam {
     PwmLfoDepth,
     PwmEnvSrc,
     PwmEnvDepth,
-    // ── Cutoff route ──
-    CutoffLfoSrc,
-    CutoffLfoDepth,
-    CutoffEnvSrc,
+    // ── Cutoff route ── fixed sources (E006): velocity, both LFOs and Env 1 each
+    // get their own depth into cutoff (no source selectors). Env→cutoff is always
+    // Env 1; Env 2 is the VCA env.
+    CutoffLfo1Depth,
+    CutoffLfo2Depth,
     CutoffEnvDepth,
     VelCutoffDepth,
     // ── Wide osc-2 pitch route (sync-sweep — osc2 only, octave range) ──
@@ -674,10 +675,9 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     mw("pwm_lfo_depth", "PWM LFO Dep"),
     envsel("pwm_env_src", "PWM Env"),
     mw("pwm_env_depth", "PWM Env Dep"),
-    // Cutoff route
-    lfosel("cutoff_lfo_src", "Cutoff LFO", 0.0),
-    mc("cutoff_lfo_depth", "Cutoff LFO Dep"),
-    envsel("cutoff_env_src", "Cutoff Env"),
+    // Cutoff route — fixed sources (E006), one depth each.
+    mc("cutoff_lfo1_depth", "Cutoff LFO1 Dep"),
+    mc("cutoff_lfo2_depth", "Cutoff LFO2 Dep"),
     mc("cutoff_env_depth", "Cutoff Env Dep"),
     mc("vel_cutoff_depth", "Vel→Cutoff"),
     // Wide osc-2 pitch route
@@ -1002,10 +1002,10 @@ mod tests {
     #[test]
     fn route_selectors_roundtrip() {
         let mut p = PatchValues::default();
-        p.set(PatchParam::CutoffLfoSrc, 2.0);
-        assert_eq!(p.lfo_sel(PatchParam::CutoffLfoSrc), LfoSel::Lfo2);
-        p.set(PatchParam::CutoffEnvSrc, 1.0);
-        assert_eq!(p.env_sel(PatchParam::CutoffEnvSrc), EnvSel::Env1);
+        p.set(PatchParam::PwmLfoSrc, 2.0);
+        assert_eq!(p.lfo_sel(PatchParam::PwmLfoSrc), LfoSel::Lfo2);
+        p.set(PatchParam::PwmEnvSrc, 1.0);
+        assert_eq!(p.env_sel(PatchParam::PwmEnvSrc), EnvSel::Env1);
         for (idx, t) in [
             (0.0, CrossModType::Off),
             (1.0, CrossModType::Sync),

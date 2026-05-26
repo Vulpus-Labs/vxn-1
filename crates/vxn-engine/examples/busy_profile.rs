@@ -42,8 +42,7 @@ fn main() {
             (pp(PatchParam::Osc1Level), 0.8),
             (pp(PatchParam::Osc2Level), 0.8),
             (pp(PatchParam::Osc2Coarse), 7.0), // detuned slave for sync/PM motion
-            (pp(PatchParam::CutoffEnvSrc), 1.0), // Env 1 → cutoff
-            (pp(PatchParam::CutoffEnvDepth), 24.0),
+            (pp(PatchParam::CutoffEnvDepth), 24.0), // Env 1 → cutoff (fixed source)
             (pp(PatchParam::PitchLfoSrc), 1.0), // LFO 1 → pitch
             (pp(PatchParam::PitchLfoDepth), 3.0),
             (pp(PatchParam::PwmLfoSrc), 2.0), // LFO 2 → PWM

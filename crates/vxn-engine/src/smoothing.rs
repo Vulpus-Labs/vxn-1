@@ -51,8 +51,9 @@ fn patch_glide(p: PatchParam) -> Glide {
     match p {
         Osc1Level | Osc2Level | RingLevel | Osc1PulseWidth | Osc2PulseWidth
         | CrossModAmount | PitchLfoDepth | PitchEnvDepth | PitchWheelDepth | PwmLfoDepth
-        | PwmEnvDepth | CutoffLfoDepth | CutoffEnvDepth | VelCutoffDepth | Osc2PitchEnvDepth
-        | ModWheelPwm | ModWheelCutoff | ModWheelReso | ModWheelOsc2Pitch => Glide::Block,
+        | PwmEnvDepth | CutoffLfo1Depth | CutoffLfo2Depth | CutoffEnvDepth | VelCutoffDepth
+        | Osc2PitchEnvDepth | ModWheelPwm | ModWheelCutoff | ModWheelReso
+        | ModWheelOsc2Pitch => Glide::Block,
         _ => Glide::Snap,
     }
 }
@@ -205,11 +206,12 @@ mod tests {
 
     #[test]
     fn route_depths_are_block_smoothed() {
-        assert_eq!(patch_glide(PatchParam::CutoffLfoDepth), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::CutoffLfo1Depth), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::CutoffLfo2Depth), Glide::Block);
         assert_eq!(patch_glide(PatchParam::PitchEnvDepth), Glide::Block);
         assert_eq!(patch_glide(PatchParam::RingLevel), Glide::Block);
         // Selectors snap (discrete).
-        assert_eq!(patch_glide(PatchParam::CutoffLfoSrc), Glide::Snap);
+        assert_eq!(patch_glide(PatchParam::PitchLfoSrc), Glide::Snap);
     }
 
     #[test]
