@@ -13,7 +13,9 @@ filter, and a vintage-flavoured chorus — packaged as a single `.clap` bundle.
   8× oversampling as an anti-aliasing escape hatch for non-sine cross-mod.
 - **4-pole ladder VCF** (Moog-style), with a separate high-pass filter.
 - **Pitch envelope** alongside the amplitude and filter envelopes.
-- **Modulated-delay chorus** (authentic BBD bucket-brigade model planned).
+- **Vintage bucket-brigade (BBD) chorus** — Juno-60-style "bright" voicing with
+  bucket saturation, anti-image/reconstruction filter banks, and the
+  inverted-LFO mono-compatible stereo trick.
 - **Vizia** GUI embedded via CLAP's `gui` extension.
 
 ## Architecture
