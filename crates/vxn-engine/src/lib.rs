@@ -24,7 +24,7 @@ pub use state::PluginState;
 use voice::{BlockCtx, Lfo1Trigger, VoiceBank};
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, Smoothed, StereoChorus,
-    StereoDelay, note_to_hz,
+    StereoDelay, StereoLimiter, note_to_hz,
 };
 
 /// Mod-wheel (CC1) glide time (ms), applied at the control-block rate. Rounds
@@ -73,6 +73,12 @@ pub struct Synth {
     lfo2: LfoCore,
     chorus: StereoChorus,
     delay: StereoDelay,
+    /// Optional brickwall limiter on the master bus (last in the FX chain). Run
+    /// only when [`GlobalParam::LimiterOn`] is set; bypassed otherwise.
+    limiter: StereoLimiter,
+    /// Whether the limiter ran last block, so it can be reset on the off→on edge
+    /// (clears stale lookahead state instead of leaking a transient).
+    limiter_was_on: bool,
     /// Anti-aliasing decimator for the oversampled synthesis path.
     oversampler: Oversampler,
     /// Pitch bend in normalised `[-1, 1]`. Global value; each layer scales it by
@@ -115,6 +121,8 @@ impl Synth {
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
+            limiter: StereoLimiter::new(sample_rate),
+            limiter_was_on: false,
             oversampler: Oversampler::new(),
             bend_norm: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
@@ -140,6 +148,8 @@ impl Synth {
         self.lfo2 = LfoCore::new(control_rate, LFO2_SEED);
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
+        self.limiter = StereoLimiter::new(sample_rate);
+        self.limiter_was_on = false;
         self.oversampler.reset();
         self.mod_wheel.set_time(MOD_WHEEL_SMOOTH_MS, control_rate);
         self.smoother.set_sample_rate(sample_rate);
@@ -220,9 +230,22 @@ impl Synth {
     pub fn note_on(&mut self, note: u8, velocity: f32) {
         match self.key_mode {
             KeyMode::Whole => {
-                let layer = self.rr_layer;
-                self.rr_layer ^= 1;
-                self.note_on_layer(layer, note, velocity);
+                // Solo and Unison are monophonic per layer, so round-robining across
+                // both layers would give two simultaneous voices and split the
+                // held-note stack — each note would land on a different bank,
+                // defeating mono/legato. Pin them to one layer (Upper, whose block
+                // both layers read in Whole). Poly/Twin still spread 8+8.
+                let mono = matches!(
+                    self.params.layer(Layer::Upper).assign_mode(),
+                    AssignMode::Solo | AssignMode::Unison
+                );
+                if mono {
+                    self.note_on_layer(Layer::Upper as usize, note, velocity);
+                } else {
+                    let layer = self.rr_layer;
+                    self.rr_layer ^= 1;
+                    self.note_on_layer(layer, note, velocity);
+                }
             }
             KeyMode::Dual => {
                 self.note_on_layer(Layer::Upper as usize, note, velocity);
@@ -256,13 +279,44 @@ impl Synth {
             shape: p.lfo_shape(),
             free_run: p.bool(PatchParam::Lfo1FreeRun),
         };
-        self.banks[layer].note_on(mode, note, velocity, self.alloc_counter, unison_detune, lfo1);
+        let legato = p.legato();
+        self.banks[layer].note_on(
+            mode,
+            note,
+            velocity,
+            self.alloc_counter,
+            unison_detune,
+            lfo1,
+            legato,
+        );
     }
 
     pub fn note_off(&mut self, note: u8) {
-        // Broadcast: each layer releases the note only if it is holding it.
-        for bank in &mut self.banks {
-            bank.note_off(note);
+        // Broadcast: each layer releases the note only if it is holding it. Mono
+        // layers (Solo / Unison) run the stack path (revert to a still-held note);
+        // every other mode just gates the matching channels off.
+        self.alloc_counter += 1;
+        for layer in 0..self.banks.len() {
+            let src = Self::param_source(layer, self.key_mode);
+            let p = self.params.layer(src);
+            if matches!(p.assign_mode(), AssignMode::Solo | AssignMode::Unison) {
+                let lfo1 = Lfo1Trigger {
+                    shape: p.lfo_shape(),
+                    free_run: p.bool(PatchParam::Lfo1FreeRun),
+                };
+                let legato = p.legato();
+                let detune = p.get(PatchParam::UnisonDetune);
+                self.banks[layer].mono_note_off(
+                    p.assign_mode(),
+                    note,
+                    legato,
+                    self.alloc_counter,
+                    detune,
+                    lfo1,
+                );
+            } else {
+                self.banks[layer].note_off(note);
+            }
         }
     }
 
@@ -284,6 +338,8 @@ impl Synth {
         self.lfo2.reset();
         self.chorus.clear();
         self.delay.clear();
+        self.limiter.reset();
+        self.limiter_was_on = false;
         self.oversampler.reset();
         self.smoother.snap_all(&self.params);
         self.rr_layer = 0;
@@ -371,6 +427,17 @@ impl Synth {
                     r_out[i] = r;
                 }
             }
+
+            // Master limiter (last in the chain): clear stale lookahead state on
+            // the off→on edge so re-engaging it can't leak an old transient.
+            let limiter_on = self.params.global().bool(GlobalParam::LimiterOn);
+            if limiter_on {
+                if !self.limiter_was_on {
+                    self.limiter.reset();
+                }
+                self.limiter.process_block(l_out, r_out);
+            }
+            self.limiter_was_on = limiter_on;
             start += block;
         }
     }
@@ -1595,6 +1662,13 @@ mod tests {
         );
     }
 
+    fn set_legato(s: &mut Synth, layer: usize, on: bool) {
+        s.set_param(
+            patch_clap_id(Layer::ALL[layer], PatchParam::Legato),
+            on as u8 as f32,
+        );
+    }
+
     #[test]
     fn solo_is_monophonic_across_distinct_notes() {
         let mut s = Synth::new(48_000.0);
@@ -1604,6 +1678,136 @@ mod tests {
             s.note_on_layer(0, n, 1.0);
             assert_eq!(layer_active(&s, 0), 1, "Solo must keep exactly one channel");
         }
+    }
+
+    #[test]
+    fn whole_mode_solo_pins_to_one_layer_not_round_robin() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        // Two notes through the routing path: Poly would round-robin (one per
+        // layer); Solo must keep both on layer 0 so it stays one mono voice.
+        s.note_on(60, 1.0);
+        s.note_on(64, 1.0);
+        assert_eq!(layer_active(&s, 0), 1, "Solo stays one voice on layer 0");
+        assert_eq!(layer_active(&s, 1), 0, "Solo never spills to layer 1");
+        assert_eq!(s.banks[0].gated_note(0), Some(64));
+    }
+
+    #[test]
+    fn solo_pins_to_channel_zero_and_quiesces_others() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        // Leave a Poly chord ringing on several channels, then switch to Solo.
+        set_assign_mode(&mut s, 0, AssignMode::Poly, 0.0);
+        for n in [60, 64, 67] {
+            s.note_on_layer(0, n, 1.0);
+        }
+        assert_eq!(layer_active(&s, 0), 3);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        s.note_on_layer(0, 72, 1.0);
+        // The new note sounds on channel 0; every other channel is gated off (its
+        // tail releasing), so only one note is gated/sounding.
+        assert_eq!(s.banks[0].gated_note(0), Some(72));
+        let gated: Vec<u8> = (0..8).filter_map(|v| s.banks[0].gated_note(v)).collect();
+        assert_eq!(gated, vec![72], "Solo gates exactly one note, pinned to ch0");
+    }
+
+    #[test]
+    fn solo_stack_reverts_to_held_note_on_release() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        s.note_on_layer(0, 60, 1.0); // hold C
+        s.note_on_layer(0, 64, 1.0); // hold E on top — C still held underneath
+        assert_eq!(s.banks[0].gated_note(0), Some(64));
+        s.note_off(64); // release E → revert to the still-held C
+        assert_eq!(s.banks[0].gated_note(0), Some(60), "revert to held note");
+        s.note_off(60); // release C → nothing held, channel releases
+        assert_eq!(s.banks[0].gated_note(0), None);
+    }
+
+    #[test]
+    fn solo_release_of_non_top_note_keeps_sounding_note() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        s.note_on_layer(0, 60, 1.0);
+        s.note_on_layer(0, 64, 1.0); // E sounding, C held underneath
+        s.note_off(60); // release the underlying C — E must keep sounding
+        assert_eq!(s.banks[0].gated_note(0), Some(64));
+        s.note_off(64); // now release E → nothing left
+        assert_eq!(s.banks[0].gated_note(0), None);
+    }
+
+    #[test]
+    fn solo_legato_does_not_retrigger_while_a_note_is_held() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        set_legato(&mut s, 0, true);
+        s.note_on_layer(0, 60, 1.0);
+        assert!(s.banks[0].trigger_pending(0), "first note always triggers");
+        render(&mut s, 64); // consume the pending trigger
+        s.note_on_layer(0, 64, 1.0); // legato slur — pitch changes, no retrigger
+        assert_eq!(s.banks[0].gated_note(0), Some(64));
+        assert!(
+            !s.banks[0].trigger_pending(0),
+            "legato note must not retrigger the envelope/phase"
+        );
+    }
+
+    #[test]
+    fn unison_legato_slides_all_channels_without_retrigger() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Unison, 12.0);
+        set_legato(&mut s, 0, true);
+        s.note_on(60, 1.0);
+        assert_eq!(layer_active(&s, 0), 8, "Unison fills all 8 channels");
+        render(&mut s, 64); // consume the pending triggers
+        s.note_on(64, 1.0); // legato slur across the whole stack
+        assert_eq!(layer_active(&s, 0), 8, "still the same 8-channel voice");
+        for v in 0..8 {
+            assert_eq!(s.banks[0].gated_note(v), Some(64), "all channels follow");
+            assert!(
+                !s.banks[0].trigger_pending(v),
+                "legato Unison must not retrigger channel {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn unison_legato_reverts_to_held_note_on_release() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Unison, 12.0);
+        set_legato(&mut s, 0, true);
+        s.note_on(60, 1.0);
+        s.note_on(64, 1.0); // 64 sounding, 60 held underneath
+        s.note_off(64); // revert the whole stack to 60
+        assert_eq!(layer_active(&s, 0), 8);
+        for v in 0..8 {
+            assert_eq!(s.banks[0].gated_note(v), Some(60));
+        }
+        s.note_off(60); // nothing held → release
+        assert_eq!(layer_active(&s, 0), 8, "still releasing (gates off, not idle)");
+        assert_eq!(s.banks[0].gated_note(0), None, "gate cleared");
+    }
+
+    #[test]
+    fn solo_without_legato_retriggers_each_note() {
+        let mut s = Synth::new(48_000.0);
+        s.set_key_mode(KeyMode::Whole);
+        set_assign_mode(&mut s, 0, AssignMode::Solo, 0.0);
+        set_legato(&mut s, 0, false);
+        s.note_on_layer(0, 60, 1.0);
+        render(&mut s, 64);
+        s.note_on_layer(0, 64, 1.0); // no legato → fresh trigger
+        assert!(
+            s.banks[0].trigger_pending(0),
+            "non-legato Solo retriggers every note"
+        );
     }
 
     #[test]

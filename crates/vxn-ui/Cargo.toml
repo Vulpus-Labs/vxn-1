@@ -6,6 +6,12 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[features]
+# Compiles the standalone layout-probe tool (the `Probe` view + `run_layout_probe`
+# + `examples/layout_probe.rs`). Off by default so none of it reaches the plugin.
+# See the doc on `Probe` for usage.
+layout-probe = []
+
 [dependencies]
 vxn-engine.workspace = true
 

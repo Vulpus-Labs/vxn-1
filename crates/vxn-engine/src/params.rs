@@ -299,6 +299,11 @@ pub enum PatchParam {
     ModWheelOsc2Pitch,
     // ── Voice assignment / glide (E003) ── glide has no on/off: time 0 = off.
     AssignMode,
+    /// Solo legato: when on, a new Solo note arriving while another is still held
+    /// changes pitch without retriggering the envelope/phase (slurred), and
+    /// reverting to a held note on note-off is likewise un-retriggered. Off
+    /// retriggers on every note change. Only meaningful in `AssignMode::Solo`.
+    Legato,
     UnisonDetune,
     PortamentoTime,
 }
@@ -347,6 +352,8 @@ pub enum GlobalParam {
     DelayMix,
     DelayPingPong,
     DelaySync,
+    // Master limiter (brickwall on the output bus, off by default).
+    LimiterOn,
     // Quality
     Oversample,
     // Global LFO 2 (E005 / 0019): a single instrument-wide LFO. It reaches the
@@ -764,6 +771,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     mp_wide("mod_wheel_osc2_pitch", "Wheel→Osc2"),
     // Voice assignment / glide
     e("assign_mode", "Assign", ASSIGN_LABELS, 0.0),
+    b("legato", "Legato", 0.0),
     f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", Taper::Linear),
     f("portamento_time", "Glide Time", 0.0, 0.5, 0.0, "s", Taper::Exp { mid: 0.1 }),
 ];
@@ -782,6 +790,7 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
     b("delay_pingpong", "Ping-Pong", 1.0),
     b("delay_sync", "Delay Sync", 0.0),
+    b("limiter_on", "Limiter", 0.0),
     e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
     // Global LFO 2 (E005 / 0019).
     e("lfo2_shape", "LFO 2 Shape", LFO_LABELS, 0.0),
@@ -860,6 +869,11 @@ impl PatchValues {
 
     pub fn assign_mode(&self) -> AssignMode {
         AssignMode::from_index(enum_index(self.get(PatchParam::AssignMode), AssignMode::COUNT - 1))
+    }
+
+    /// Solo legato toggle (see [`PatchParam::Legato`]).
+    pub fn legato(&self) -> bool {
+        self.bool(PatchParam::Legato)
     }
 
     /// Read a per-channel LFO source selector.

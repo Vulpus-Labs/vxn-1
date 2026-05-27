@@ -212,7 +212,17 @@ pub struct VoiceBank {
     /// Seed base for the per-channel LFO 1 cores; kept so they can be rebuilt at
     /// the new control rate on a sample-rate change.
     lfo1_seed: u64,
+    /// Mono (Solo / Unison) held-note stack, newest on top. The voice sounds only
+    /// the top entry; on note-off the top is popped and the bank reverts to whatever
+    /// is still held (ADR 0003 §4 / 0010). Fixed-size — allocation free; an
+    /// overflowing key drops the oldest held note.
+    mono_stack: [u8; MONO_STACK],
+    mono_len: usize,
 }
+
+/// Capacity of the mono held-note stack. Far beyond ten fingers; an overflow
+/// drops the oldest held note rather than allocating.
+const MONO_STACK: usize = 32;
 
 /// Decorrelated per-channel LFO 1 seed from the layer's base seed.
 #[inline]
@@ -249,6 +259,8 @@ impl VoiceBank {
             lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(rng_seed, i))),
             lfo1_onset: Lfo1Onset::new(),
             lfo1_seed: rng_seed,
+            mono_stack: [0; MONO_STACK],
+            mono_len: 0,
         }
     }
 
@@ -283,6 +295,7 @@ impl VoiceBank {
             lfo.reset();
         }
         self.lfo1_onset.reset();
+        self.mono_len = 0;
     }
 
     pub fn active_count(&self) -> usize {
@@ -294,6 +307,20 @@ impl VoiceBank {
     #[cfg(test)]
     pub(crate) fn lfo1_phase(&self, v: usize) -> f32 {
         self.lfo1[v].phase()
+    }
+
+    /// Channel `v`'s gated note (`None` when the channel isn't sounding). Lets
+    /// tests assert which note a layer is voicing and on which channel.
+    #[cfg(test)]
+    pub(crate) fn gated_note(&self, v: usize) -> Option<u8> {
+        (self.active[v] && self.gate[v]).then_some(self.note[v])
+    }
+
+    /// Whether channel `v` has a pending retrigger this block. A legato re-pitch
+    /// leaves it false; a fresh trigger sets it — so tests can tell them apart.
+    #[cfg(test)]
+    pub(crate) fn trigger_pending(&self, v: usize) -> bool {
+        self.trigger_pending[v]
     }
 
     /// Apply envelope params to every voice (called by the engine only when an
@@ -325,6 +352,7 @@ impl VoiceBank {
     /// transform before allocation* — it would turn held notes into a timed
     /// sequence and feed each step here as an ordinary `note_on`, so neither the
     /// event router (0009) nor the render path (0008) changes.
+    #[allow(clippy::too_many_arguments)] // one coupled per-note param set, single caller
     pub fn note_on(
         &mut self,
         mode: AssignMode,
@@ -333,7 +361,22 @@ impl VoiceBank {
         alloc_tick: u64,
         unison_detune: f32,
         lfo1: Lfo1Trigger,
+        legato: bool,
     ) {
+        // Solo and Unison are monophonic in spirit — one logical note (Solo on one
+        // channel, Unison stacked across all, detuned) — so both run the stateful
+        // mono path: a held-note stack, legato re-pitch, and quiescing of unused
+        // channels. Poly/Twin take the pure `plan` policy below.
+        if matches!(mode, AssignMode::Solo | AssignMode::Unison) {
+            let was_sounding = self.mono_len > 0;
+            self.mono_push(note);
+            let slide = legato && was_sounding;
+            self.mono_voice(mode, note, velocity, alloc_tick, unison_detune, lfo1, slide);
+            return;
+        }
+        // Leaving a mono mode discards the held-note stack so a later return starts
+        // clean rather than reviving stale notes.
+        self.mono_len = 0;
         // Decide *which* channels and their detune/phase purely from bookkeeping
         // (`plan`), then apply the DSP effect (`trigger`) per assignment. The
         // borrow in `alloc_view` ends when `plan` returns its owned result, so the
@@ -352,6 +395,81 @@ impl VoiceBank {
         }
         self.level_comp = plan.level_comp;
         self.unison = plan.unison;
+    }
+
+    /// Reference channel for a mono voice — always sounding (Solo's single channel,
+    /// and channel 0 of the Unison stack), so it carries the voice's live velocity.
+    const MONO_REF_CH: usize = 0;
+
+    /// Voice a mono note (Solo / Unison): apply the mode's channel plan, then quiesce
+    /// every channel the plan doesn't use so the voice is strictly monophonic. With
+    /// `slide` (legato over a still-held note) the planned channels only change pitch
+    /// — no envelope/phase retrigger, so the glide carries them; otherwise they
+    /// retrigger. Solo plans one channel (pinned to 0); Unison plans all, detuned.
+    #[allow(clippy::too_many_arguments)] // one coupled per-note param set
+    fn mono_voice(
+        &mut self,
+        mode: AssignMode,
+        note: u8,
+        velocity: f32,
+        alloc_tick: u64,
+        unison_detune: f32,
+        lfo1: Lfo1Trigger,
+        slide: bool,
+    ) {
+        let plan = plan(mode, note, unison_detune, self.alloc_view());
+        let mut used = [false; N];
+        for a in plan.iter() {
+            used[a.channel] = true;
+            if slide {
+                self.repitch(a.channel, note, velocity, a.detune_cents);
+            } else {
+                self.trigger(
+                    a.channel,
+                    note,
+                    velocity,
+                    alloc_tick,
+                    a.detune_cents,
+                    a.start_phase,
+                    lfo1,
+                );
+            }
+        }
+        // Quiesce channels the voice doesn't use (Solo's other 7; tails left from a
+        // prior Poly chord or a mode switch).
+        for (v, &u) in used.iter().enumerate() {
+            if !u {
+                self.gate[v] = false;
+            }
+        }
+        self.level_comp = plan.level_comp;
+        self.unison = plan.unison;
+    }
+
+    /// Push a note onto the mono held-note stack, newest on top. A repeated note is
+    /// moved to the top rather than duplicated; an overflow drops the oldest.
+    fn mono_push(&mut self, note: u8) {
+        if let Some(i) = self.mono_stack[..self.mono_len].iter().position(|&n| n == note) {
+            self.mono_stack.copy_within(i + 1..self.mono_len, i);
+            self.mono_len -= 1;
+        } else if self.mono_len == MONO_STACK {
+            self.mono_stack.copy_within(1..MONO_STACK, 0);
+            self.mono_len -= 1;
+        }
+        self.mono_stack[self.mono_len] = note;
+        self.mono_len += 1;
+    }
+
+    /// Change channel `v`'s pitch without retriggering: keeps the envelope, LFO and
+    /// oscillator phases running and lets the block-rate glide slide to the new note
+    /// (legato). The channel must already be sounding. Detune is restamped (the same
+    /// fixed Unison spread) so the stack stays correctly fanned across a slur.
+    fn repitch(&mut self, v: usize, note: u8, velocity: f32, detune_cents: f32) {
+        self.note[v] = note;
+        self.velocity[v] = velocity;
+        self.detune_cents[v] = detune_cents;
+        self.gate[v] = true;
+        self.active[v] = true;
     }
 
     /// Trigger a specific channel: the lowest level of the assign seam. Poly hits
@@ -395,6 +513,53 @@ impl VoiceBank {
             if self.active[v] && self.gate[v] && self.note[v] == note {
                 self.gate[v] = false;
             }
+        }
+    }
+
+    /// Mono note-off (Solo / Unison, ADR 0003 §4): remove the key from the held-note
+    /// stack and release every channel sounding it. If it was the sounding (top)
+    /// note and others are still held, revert the voice to the newest of those —
+    /// `legato` reverts without retriggering (slurred), else the revealed note
+    /// retriggers. Releasing a held key that wasn't sounding just drops it from the
+    /// stack.
+    #[allow(clippy::too_many_arguments)] // mirrors the mono note-on param set
+    pub fn mono_note_off(
+        &mut self,
+        mode: AssignMode,
+        note: u8,
+        legato: bool,
+        alloc_tick: u64,
+        unison_detune: f32,
+        lfo1: Lfo1Trigger,
+    ) {
+        let was_top = self.mono_pop(note);
+        // Release every channel sounding this note: the mono voice itself, plus any
+        // stray channel left holding it from before a mode switch.
+        for v in 0..N {
+            if self.gate[v] && self.note[v] == note {
+                self.gate[v] = false;
+            }
+        }
+        if !was_top || self.mono_len == 0 {
+            return;
+        }
+        // Revert the voice to the newest still-held note (legato carries the slide).
+        let revealed = self.mono_stack[self.mono_len - 1];
+        let vel = self.velocity[Self::MONO_REF_CH];
+        self.mono_voice(mode, revealed, vel, alloc_tick, unison_detune, lfo1, legato);
+    }
+
+    /// Remove `note` from the mono stack; returns whether it was the top (sounding)
+    /// entry, so the caller knows whether the sounding note must change.
+    fn mono_pop(&mut self, note: u8) -> bool {
+        match self.mono_stack[..self.mono_len].iter().position(|&n| n == note) {
+            Some(i) => {
+                let was_top = i + 1 == self.mono_len;
+                self.mono_stack.copy_within(i + 1..self.mono_len, i);
+                self.mono_len -= 1;
+                was_top
+            }
+            None => false,
         }
     }
 
@@ -907,14 +1072,6 @@ fn allocate_pair(note: u8, st: AllocView) -> (usize, usize) {
     (a, b)
 }
 
-/// Monophonic allocation (Solo): keep sounding on the one already-active channel
-/// (legato glide carries through its `glide_semi`); fall back to channel 0 when
-/// nothing is playing.
-#[inline]
-fn allocate_mono(st: AllocView) -> usize {
-    (0..N).find(|&v| st.active[v]).unwrap_or(0)
-}
-
 /// Twin pitch spread reuses the Unison extremes (±`UnisonDetune` cents); the two
 /// channels sit at the opposite ends of that fan.
 const TWIN_SPREAD: f32 = 1.0;
@@ -952,10 +1109,13 @@ fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
             Plan::new(assigns, N)
         }
         AssignMode::Solo => {
-            // One sounding channel; DCO phase reset, no detune. Reusing the active
-            // channel gives legato glide (its glide source carries the last pitch).
+            // Monophonic, pinned to channel 0 (every other channel stays
+            // quiescent). The stateful stack / legato / retrigger decisions live in
+            // `VoiceBank::solo_note_on`; this pure arm only fixes the channel so the
+            // policy stays total and testable. `note`/`st` are unused here.
+            let _ = (note, st);
             assigns[0] = Assign {
-                channel: allocate_mono(st),
+                channel: 0,
                 detune_cents: 0.0,
                 start_phase: 0.0,
             };
@@ -1088,15 +1248,15 @@ mod alloc_tests {
     }
 
     #[test]
-    fn solo_reuses_the_sounding_channel_for_legato() {
+    fn solo_pins_to_channel_zero_regardless_of_active_channels() {
         let mut st = St::empty();
-        // A note is already sounding on channel 4 (e.g. carried from a prior note
-        // on a different pitch). Solo must take that same channel over, not a free
-        // one, so glide is legato.
+        // Even with another channel sounding (e.g. a tail from a prior chord), Solo
+        // is pinned to channel 0 so the mono voice is deterministic and every other
+        // channel is left to be quiesced by the bank.
         st.active[4] = true;
         st.note[4] = 48;
         let p = plan(AssignMode::Solo, 72, 0.0, st.view());
-        assert_eq!(p.assigns[0].channel, 4);
+        assert_eq!(p.assigns[0].channel, 0);
     }
 
     #[test]

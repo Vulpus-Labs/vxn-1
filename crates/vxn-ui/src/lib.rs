@@ -117,7 +117,7 @@ const fn g(p: GlobalParam) -> usize {
 const ROWS: &[&[(&str, &[Entry])]] = {
     use GlobalParam::{
         ChorusDepth, ChorusMix, ChorusOn, ChorusRate, DelayFeedback, DelayMix, DelayOn,
-        DelayPingPong, DelaySync, DelayTime, Lfo2Rate, Lfo2Shape, Lfo2Sync, MasterTune,
+        DelayPingPong, DelaySync, DelayTime, Lfo2Rate, Lfo2Shape, Lfo2Sync, LimiterOn, MasterTune,
         MasterVolume, Oversample,
     };
     use PatchParam::*;
@@ -291,6 +291,11 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 "Voice",
                 &[
                     (u(AssignMode), "Assign"),
+                    // Solo legato. Drawn inside the assign cell (beside the Solo
+                    // row), not as its own column — `panel_view` skips it in the
+                    // normal cell loop. Listed so it stays a tracked, automatable
+                    // control (0023 acceptance).
+                    (u(Legato), "Legato"),
                     (u(UnisonDetune), "Detune"),
                     // No glide on/off: the time fader is the whole control (0 = off).
                     (u(PortamentoTime), "Glide"),
@@ -323,6 +328,7 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 &[
                     (g(MasterTune), "Tune"),
                     (g(MasterVolume), "Volume"),
+                    (g(LimiterOn), "Limiter"),
                     (g(Oversample), "OvSmp"),
                 ],
             ),
@@ -666,6 +672,74 @@ impl Model for UiModel {
 /// which a self-driven macOS resize doesn't emit), the idle callback emits one
 /// `SetUserScale(1.0)` on the first tick to force `apply_user_scale` to recreate
 /// the surface at `inner_size × scale` — required for the 2× (Retina) case.
+/// Debug-only layout probe (feature `layout-probe`, off in shipped builds). A
+/// pass-through container that prints its own computed bounds — in **logical**
+/// pixels, after layout — to stderr each frame. Wrap any view to read where it
+/// actually lands:
+///
+/// ```ignore
+/// Probe::new(cx, "legato", |cx| toggle_row(cx, "Legato", sig, press))
+///     .width(Auto)
+///     .height(Auto);
+/// ```
+///
+/// Then run the standalone window (which renders/lays out off-screen, no screen
+/// capture or window-server access needed):
+///
+/// ```text
+/// cargo run -p vxn-ui --example layout_probe --features layout-probe \
+///   2>&1 | grep PROBE | sort -u
+/// ```
+///
+/// Notes: it prints every frame, so `sort -u` to dedupe. A `Stretch`-width child
+/// makes an `Auto`-width Probe collapse to 0 — give the Probe `Stretch(1.0)` to
+/// measure a stretchy cell's allotted width. Leave `Probe::new` wraps out of
+/// committed code; only the scaffolding here is permanent.
+#[cfg(feature = "layout-probe")]
+pub struct Probe(&'static str);
+
+#[cfg(feature = "layout-probe")]
+impl Probe {
+    pub fn new<'a>(
+        cx: &'a mut Context,
+        name: &'static str,
+        content: impl FnOnce(&mut Context),
+    ) -> Handle<'a, Self> {
+        Self(name).build(cx, content)
+    }
+}
+
+#[cfg(feature = "layout-probe")]
+impl View for Probe {
+    fn element(&self) -> Option<&'static str> {
+        Some("probe")
+    }
+    fn draw(&self, cx: &mut DrawContext, _canvas: &Canvas) {
+        let b = cx.bounds();
+        let s = cx.scale_factor().max(1.0);
+        eprintln!(
+            "PROBE {} x={:.1} y={:.1} w={:.1} h={:.1}",
+            self.0,
+            b.x / s,
+            b.y / s,
+            b.w / s,
+            b.h / s
+        );
+    }
+}
+
+/// Open the editor in a standalone window for layout inspection (feature
+/// `layout-probe`). Used by `examples/layout_probe.rs`; see [`Probe`].
+#[cfg(feature = "layout-probe")]
+pub fn run_layout_probe() {
+    let shared = std::sync::Arc::new(SharedParams::new());
+    Application::new(move |cx| build_editor(cx, std::sync::Arc::clone(&shared)))
+        .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
+        .title("VXN1 layout probe")
+        .run()
+        .expect("standalone layout-probe editor");
+}
+
 pub fn open_editor(
     parent: *mut c_void,
     shared: Arc<SharedParams>,
@@ -915,7 +989,10 @@ fn keys_panel(
                 .class("reset-btn")
                 .width(Stretch(1.0))
                 .cursor(CursorIcon::Hand)
-                .on_press(move |_cx| {
+                // PressDown, not Press: vizia drops Press if the cursor drifts off
+                // the button's rect between down and up (no click slop), so a small
+                // wobble eats the click. Firing on down sidesteps that entirely.
+                .on_press_down(move |_cx| {
                     if key_mode.get() == 0 {
                         sh_reset.reset_patch_to_defaults(Layer::Upper);
                         sh_reset.reset_patch_to_defaults(Layer::Lower);
@@ -1008,8 +1085,18 @@ fn panel_view(
                         continue;
                     }
                     let cid = resolve(*id, layer);
+                    // Legato is drawn in the Detune cell's 4th row, not its own column.
+                    if matches!(param_ref(cid), Some(ParamRef::Patch(_, PatchParam::Legato))) {
+                        continue;
+                    }
                     let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
-                    control_view(cx, ctl, shared, short);
+                    // The Voice panel's Detune fader carries the Legato toggle beneath
+                    // it (under the fader, level with the Solo selector's row).
+                    if matches!(param_ref(cid), Some(ParamRef::Patch(_, PatchParam::UnisonDetune))) {
+                        detune_legato_cell(cx, ctl, layer, controls, shared, short);
+                    } else {
+                        control_view(cx, ctl, shared, short);
+                    }
                 }
             }
         })
@@ -1222,7 +1309,10 @@ fn toggle_row(
     })
     .class("tg-row")
     .cursor(CursorIcon::Hand)
-    .on_press(press);
+    // PressDown, not Press: vizia emits Press only if the cursor is still over the
+    // same entity at release (no click slop), so a few px of drift on these small
+    // rows silently eats the click. Commit on down instead.
+    .on_press_down(press);
 }
 
 /// The vertical fader + its hover/drag value popup, without any label — shared by
@@ -1604,6 +1694,55 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
             // assign — render as the same vertical box-list.
             Ctl::Buttons(i, sig) | Ctl::Select(i, sig) => enum_list_body(cx, i, sig, shared),
         }
+    })
+    .height(Pixels(COL_H))
+    .vertical_gap(Pixels(10.0))
+    .alignment(Alignment::TopCenter);
+}
+
+/// The Voice panel's Detune column, carrying the **Legato** toggle in its 4th row
+/// (beneath the fader, level with the Solo selector in the assign column). The
+/// fader spans the first three rows; a fixed-height content box (matching the
+/// assign list's 4-row height) holds the fader on top and the toggle at the bottom,
+/// so this column stays the same width as a plain fader column. Legato applies to
+/// the mono modes (Solo / Unison); it stays visible/automatable always.
+fn detune_legato_cell(
+    cx: &mut Context,
+    detune: Ctl,
+    layer: Layer,
+    controls: &[Ctl],
+    shared: &Arc<SharedParams>,
+    short: &'static str,
+) {
+    let Ctl::Fader(fi, fsig) = detune else {
+        return;
+    };
+    let legato = controls
+        .iter()
+        .copied()
+        .find(|c| c.idx() == patch_clap_id(layer, PatchParam::Legato));
+    // Content box height = the assign list's 4 rows (4 × 24px + 3 × 1px gap), so the
+    // toggle's bottom row lines up with the Solo selector. Fader (74) + 1px gap +
+    // toggle (24) = 99, exactly that height.
+    const LIST_H: f32 = 4.0 * 24.0 + 3.0 * 1.0;
+    let sh = Arc::clone(shared);
+    let shf = Arc::clone(shared);
+    VStack::new(cx, move |cx| {
+        Label::new(cx, up(short)).class("ctl-label").height(Pixels(11.0));
+        VStack::new(cx, move |cx| {
+            fader_body(cx, fi, fsig, &shf, false);
+            if let Some(Ctl::Switch(li, lsig)) = legato {
+                let sh2 = Arc::clone(&sh);
+                toggle_row(cx, "Legato", lsig, move |_cx| {
+                    let v = !lsig.get();
+                    lsig.set(v);
+                    sh2.set(li, if v { 1.0 } else { 0.0 });
+                });
+            }
+        })
+        .height(Pixels(LIST_H))
+        .vertical_gap(Pixels(1.0))
+        .alignment(Alignment::TopCenter);
     })
     .height(Pixels(COL_H))
     .vertical_gap(Pixels(10.0))

@@ -24,10 +24,11 @@ const FRAMES: usize = 512;
 /// `res` sets filter resonance; `os` is the oversampling factor (1/2/4). `xmod`
 /// selects the cross-mod kernel: 0 = off (vectorised fast osc path), 1 = hard
 /// sync, 2 = through-zero phase mod — so the coupled kernels are benchmarked.
-fn setup(fx: bool, res: f32, os: f32, xmod: f32) -> Synth {
+fn setup(fx: bool, res: f32, os: f32, xmod: f32, lim: bool) -> Synth {
     let mut s = Synth::new(SR);
     s.set_param(gp(GlobalParam::ChorusOn), if fx { 1.0 } else { 0.0 });
     s.set_param(gp(GlobalParam::DelayOn), if fx { 1.0 } else { 0.0 });
+    s.set_param(gp(GlobalParam::LimiterOn), if lim { 1.0 } else { 0.0 });
     s.set_param(gp(GlobalParam::Oversample), os);
     s.set_param(pp(PatchParam::Resonance), res);
     // Route Env 1 -> cutoff and LFO 1 -> pitch so the fixed routes do real work.
@@ -61,16 +62,18 @@ fn bench(c: &mut Criterion) {
     group.sample_size(60);
 
     // os param value: 0.0=Off(1x), 1.0=2x, 2.0=4x. xmod: 0=off, 1=sync, 2=PM.
-    for (name, fx, res, os, xmod) in [
-        ("dry_1x", false, 0.2, 0.0, 0.0),
-        ("dry_2x", false, 0.2, 1.0, 0.0),
-        ("dry_4x", false, 0.2, 2.0, 0.0),
-        ("selfosc_4x", false, 1.0, 2.0, 0.0),
-        ("with_fx_2x", true, 0.2, 1.0, 0.0),
-        ("sync_4x", false, 0.2, 2.0, 1.0),
-        ("pm_4x", false, 0.2, 2.0, 2.0),
+    for (name, fx, res, os, xmod, lim) in [
+        ("dry_1x", false, 0.2, 0.0, 0.0, false),
+        ("dry_1x_lim", false, 0.2, 0.0, 0.0, true),
+        ("dry_2x", false, 0.2, 1.0, 0.0, false),
+        ("dry_4x", false, 0.2, 2.0, 0.0, false),
+        ("selfosc_4x", false, 1.0, 2.0, 0.0, false),
+        ("with_fx_2x", true, 0.2, 1.0, 0.0, false),
+        ("with_fx_lim_2x", true, 0.2, 1.0, 0.0, true),
+        ("sync_4x", false, 0.2, 2.0, 1.0, false),
+        ("pm_4x", false, 0.2, 2.0, 2.0, false),
     ] {
-        let mut s = setup(fx, res, os, xmod);
+        let mut s = setup(fx, res, os, xmod, lim);
         let mut l = vec![0.0; FRAMES];
         let mut r = vec![0.0; FRAMES];
         group.bench_function(name, |b| {
