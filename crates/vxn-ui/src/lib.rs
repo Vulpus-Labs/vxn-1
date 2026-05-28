@@ -328,7 +328,7 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 &[
                     (g(MasterTune), "Tune"),
                     (g(MasterVolume), "Volume"),
-                    (g(LimiterOn), "Limiter"),
+                    (g(LimiterOn), "Limit"),
                     (g(Oversample), "OvSmp"),
                 ],
             ),
@@ -397,9 +397,6 @@ label { font-size: 10; color: #d6d6d6; }
 .reset-btn:hover { background-color: #3a3a3a; border-color: #c4c4c4; }
 .reset-btn .tg-lbl { color: #b0b0b0; }
 .reset-btn:hover .tg-lbl { color: #ececec; }
-.fader .track { background-color: #555555; width: 6px; corner-radius: 2px; }
-.fader .range { background-color: #3a86cc; corner-radius: 2px; }
-.fader .thumb { background-color: #e8e8e8; border-width: 1px; border-color: #141414; corner-radius: 1px; width: 20px; height: 8px; }
 .wave-glyph { color: #888888; }
 .wave-glyph.active { color: #a7cfe2; }
 .wave-txt { font-size: 8; color: #888888; }
@@ -892,28 +889,34 @@ fn keys_panel(
                 .class("tg-list")
                 .height(Auto);
 
-                // Upper/Lower edit toggle (hidden in Whole).
-                let edit_vis = key_mode.map(|m: &usize| *m != 0);
-                VStack::new(cx, move |cx| {
-                    for (n, label) in EDIT.iter().enumerate() {
-                        toggle_row(cx, label, edit_layer.map(move |l: &usize| *l == n), move |_cx| {
-                            edit_layer.set(n)
-                        });
-                    }
-                })
-                .class("tg-list")
-                .height(Auto)
-                .display(edit_vis);
+                // Upper/Lower edit toggle: always shown, greyed + inert in Whole
+                // (only Dual / Split have a distinct Lower layer to edit).
+                Binding::new(cx, key_mode, move |cx| {
+                    let enabled = key_mode.get() != 0;
+                    VStack::new(cx, move |cx| {
+                        for (n, label) in EDIT.iter().enumerate() {
+                            gated_toggle_row(
+                                cx,
+                                label,
+                                enabled,
+                                edit_layer.map(move |l: &usize| *l == n),
+                                move |_cx| edit_layer.set(n),
+                            );
+                        }
+                    })
+                    .class("tg-list")
+                    .height(Auto);
+                });
             })
             .height(Auto)
             .horizontal_gap(Pixels(12.0))
             .alignment(Alignment::TopLeft);
 
-            // Split point — shown only in Split, spanning the full panel width below
-            // the mode/edit rows. A horizontal slider over the MIDI range; the note
-            // name shows as a tooltip pinned to the pointer's X, hovering above the
+            // Split point — always shown, spanning the full panel width below the
+            // mode/edit rows, but greyed + non-interactive unless the Split key mode
+            // is selected. A horizontal slider over the MIDI range; the note name
+            // shows as a tooltip pinned to the pointer's X, hovering above the
             // slider, on hover or drag. Writes the opaque split state.
-            let split_vis = key_mode.map(|m: &usize| *m == 2);
             let (hover, drag, show, posx) = (
                 SyncSignal::new(false),
                 SyncSignal::new(false),
@@ -921,63 +924,70 @@ fn keys_panel(
                 SyncSignal::new(0.0f32),
             );
             let (sh_change, sh_dbl) = (Arc::clone(shared), Arc::clone(shared));
-            VStack::new(cx, move |cx| {
-                Slider::new(
-                    cx,
-                    split.map(|n: &f32| {
-                        ((*n - SPLIT_MIN) / (SPLIT_MAX - SPLIT_MIN)).clamp(0.0, 1.0)
-                    }),
-                )
-                    .width(Stretch(1.0))
-                    .height(Pixels(14.0))
-                    .cursor(CursorIcon::Hand)
-                    .on_change(move |_cx, v| {
-                        // Map the slider over C0..C7 only (a narrower span than the
-                        // full MIDI range), so every semitone is easy to land on.
-                        let note = (SPLIT_MIN + v * (SPLIT_MAX - SPLIT_MIN))
-                            .round()
-                            .clamp(SPLIT_MIN, SPLIT_MAX);
-                        split.set(note);
-                        sh_change.set_split_point(note as u8);
-                    })
-                    .on_double_click(move |_cx, _btn| {
-                        split.set(DEFAULT_SPLIT_POINT as f32);
-                        sh_dbl.set_split_point(DEFAULT_SPLIT_POINT);
-                    })
-                    .on_hover(move |cx| {
-                        posx.set(cursor_left(cx));
-                        hover.set(true);
-                        show.set(true);
-                    })
-                    .on_hover_out(move |_cx| {
-                        hover.set(false);
-                        show.set(drag.get());
-                    })
-                    .on_mouse_down(move |cx, _btn| {
-                        posx.set(cursor_left(cx));
-                        drag.set(true);
-                        show.set(true);
-                    })
-                    .on_mouse_up(move |_cx, _btn| {
-                        drag.set(false);
-                        show.set(hover.get());
-                    });
-                // Note-name tooltip, pinned above the slider at the pointer X.
-                Label::new(cx, split.map(|n: &f32| note_name(*n as u8)))
-                    .class("value-pop")
-                    .position_type(PositionType::Absolute)
-                    .left(posx.map(|x: &f32| Pixels(*x)))
-                    .top(Pixels(-16.0))
-                    .width(Auto)
-                    .height(Auto)
-                    .translate((Pixels(-10.0), Pixels(0.0)))
-                    .z_index(100)
-                    .hoverable(false)
-                    .display(show);
-            })
-            .width(Stretch(1.0))
-            .height(Auto)
-            .display(split_vis);
+            Binding::new(cx, key_mode, move |cx| {
+                let enabled = key_mode.get() == 2;
+                let (sh_change, sh_dbl) = (Arc::clone(&sh_change), Arc::clone(&sh_dbl));
+                let col = VStack::new(cx, move |cx| {
+                    Slider::new(
+                        cx,
+                        split.map(|n: &f32| {
+                            ((*n - SPLIT_MIN) / (SPLIT_MAX - SPLIT_MIN)).clamp(0.0, 1.0)
+                        }),
+                    )
+                        .width(Stretch(1.0))
+                        .height(Pixels(14.0))
+                        .cursor(CursorIcon::Hand)
+                        .disabled(!enabled)
+                        .on_change(move |_cx, v| {
+                            // Map the slider over C0..C7 only (a narrower span than the
+                            // full MIDI range), so every semitone is easy to land on.
+                            let note = (SPLIT_MIN + v * (SPLIT_MAX - SPLIT_MIN))
+                                .round()
+                                .clamp(SPLIT_MIN, SPLIT_MAX);
+                            split.set(note);
+                            sh_change.set_split_point(note as u8);
+                        })
+                        .on_double_click(move |_cx, _btn| {
+                            split.set(DEFAULT_SPLIT_POINT as f32);
+                            sh_dbl.set_split_point(DEFAULT_SPLIT_POINT);
+                        })
+                        .on_hover(move |cx| {
+                            posx.set(cursor_left(cx));
+                            hover.set(true);
+                            show.set(true);
+                        })
+                        .on_hover_out(move |_cx| {
+                            hover.set(false);
+                            show.set(drag.get());
+                        })
+                        .on_mouse_down(move |cx, _btn| {
+                            posx.set(cursor_left(cx));
+                            drag.set(true);
+                            show.set(true);
+                        })
+                        .on_mouse_up(move |_cx, _btn| {
+                            drag.set(false);
+                            show.set(hover.get());
+                        });
+                    // Note-name tooltip, pinned above the slider at the pointer X.
+                    Label::new(cx, split.map(|n: &f32| note_name(*n as u8)))
+                        .class("value-pop")
+                        .position_type(PositionType::Absolute)
+                        .left(posx.map(|x: &f32| Pixels(*x)))
+                        .top(Pixels(-16.0))
+                        .width(Auto)
+                        .height(Auto)
+                        .translate((Pixels(-10.0), Pixels(0.0)))
+                        .z_index(100)
+                        .hoverable(false)
+                        .display(show);
+                })
+                .width(Stretch(1.0))
+                .height(Auto);
+                if !enabled {
+                    col.class("dimmed");
+                }
+            });
 
             // Reset the patch(es) currently being edited to plain defaults. In
             // Whole the two layers share one patch, so reset both; in Dual/Split
@@ -1094,6 +1104,11 @@ fn panel_view(
                     // it (under the fader, level with the Solo selector's row).
                     if matches!(param_ref(cid), Some(ParamRef::Patch(_, PatchParam::UnisonDetune))) {
                         detune_legato_cell(cx, ctl, layer, controls, shared, short);
+                    } else if matches!(param_ref(cid), Some(ParamRef::Global(GlobalParam::LimiterOn))) {
+                        // The limiter is a bare on/off option (a companion to Volume),
+                        // not a headed cell: its box sits with the "LIMIT" label beside
+                        // it and no column header above.
+                        limiter_cell(cx, ctl, shared, short);
                     } else {
                         control_view(cx, ctl, shared, short);
                     }
@@ -1270,20 +1285,32 @@ fn value_popup<T: ToStringLocalized + 'static>(
     posy: SyncSignal<f32>,
     x_off: f32,
 ) {
-    Label::new(cx, text)
-        .class("value-pop")
-        .position_type(PositionType::Absolute)
-        .top(posy.map(|y: &f32| Pixels(*y)))
-        .left(Stretch(1.0))
-        .right(Stretch(1.0))
-        .width(Auto)
-        .height(Auto)
-        // Nudge sideways (faders) so the readout sits beside the thumb rather than
-        // on top of it, keeping the thumb visible while dragging.
-        .translate((Pixels(x_off), Pixels(0.0)))
-        .z_index(100)
-        .hoverable(false)
-        .display(show);
+    // Only build the readout *while shown*, rather than keeping a hidden label whose
+    // text is bound to the live value. vizia's `text` modifier calls `needs_relayout`
+    // unconditionally on every text change (modifiers/text.rs), ignoring `display` —
+    // so a permanently-bound popup relayouts the whole tree each time an automated
+    // value's formatted string changes (even at Display::None), and vizia's
+    // post-relayout synthetic mouse-move then stomps interaction on other controls.
+    // A `Binding` node is layout-ignored, so the label's absolute positioning is
+    // unchanged; it just stops existing (and stops relayouting) when hidden.
+    Binding::new(cx, show, move |cx| {
+        if !show.get() {
+            return;
+        }
+        Label::new(cx, text.clone())
+            .class("value-pop")
+            .position_type(PositionType::Absolute)
+            .top(posy.map(|y: &f32| Pixels(*y)))
+            .left(Stretch(1.0))
+            .right(Stretch(1.0))
+            .width(Auto)
+            .height(Auto)
+            // Nudge sideways (faders) so the readout sits beside the thumb rather
+            // than on top of it, keeping the thumb visible while dragging.
+            .translate((Pixels(x_off), Pixels(0.0)))
+            .z_index(100)
+            .hoverable(false);
+    });
 }
 
 /// One row of a compact selector/toggle: a small grey indicator box that lights
@@ -1315,11 +1342,193 @@ fn toggle_row(
     .on_press_down(press);
 }
 
+/// A [`toggle_row`] that greys out (`dimmed`) and swallows its click when
+/// `enabled` is false — for controls that are only meaningful in certain modes
+/// (Legato in the mono assign modes; the Upper/Lower edit toggle outside Whole).
+/// Built inside a `Binding` on the gating signal so `enabled` is re-evaluated and
+/// the row rebuilt on each mode change.
+fn gated_toggle_row(
+    cx: &mut Context,
+    label: &'static str,
+    enabled: bool,
+    active: impl Res<bool> + Copy + 'static,
+    press: impl Fn(&mut EventContext) + Send + Sync + 'static,
+) {
+    let tb = ToggleButton::new(cx, active, move |cx| {
+        HStack::new(cx, move |cx| {
+            Element::new(cx).class("tg-box");
+            if !label.is_empty() {
+                Label::new(cx, up(label)).class("tg-lbl");
+            }
+        })
+        .height(Auto)
+        .horizontal_gap(Pixels(4.0))
+        .alignment(Alignment::Left)
+    })
+    .class("tg-row")
+    .cursor(if enabled { CursorIcon::Hand } else { CursorIcon::Arrow })
+    .on_press_down(move |cx| {
+        if enabled {
+            press(cx);
+        }
+    });
+    if !enabled {
+        tb.class("dimmed");
+    }
+}
+
+/// Logical thumb height (was the `.fader .thumb` CSS height); used both to draw
+/// the thumb and to inset the drag mapping so the thumb tracks the pointer without
+/// running off either end of the track.
+const FADER_THUMB_H: f32 = 8.0;
+
+/// A vertical fader drawn entirely in [`View::draw`] (track, fill, thumb) from its
+/// bound normalized value.
+///
+/// Why not vizia's built-in [`Slider`]: its fill is a `Percentage`-sized child, so
+/// every value change relayouts the whole tree. Under a continuous host-automation
+/// stream (a DAW LFO) that relayout fires every frame, and vizia injects a
+/// synthetic mouse-move after each relayout to refresh hover (`systems/layout.rs`),
+/// which stamps over any in-progress gesture on other controls — the faceplate goes
+/// dead while a value streams. Drawing the fill makes a value change a *redraw*, not
+/// a relayout, so the rest of the UI stays interactive.
+///
+/// The drag/gesture/popup wiring stays on the caller via generic action modifiers
+/// (`on_mouse_down`, `on_hover`, `on_double_click`, …); only the value mapping and
+/// painting live here. `on_change` fires on press (jump-to-click) and on drag.
+///
+/// A fader built `disabled` (a greyed-out, inert route — e.g. a Cross Mod depth
+/// whose selector is Off) freezes its drawn position to the value at build time and
+/// skips automation redraws, so host automation doesn't animate a control that does
+/// nothing. The Cross Mod faders are rebuilt when their selector toggles, so the
+/// frozen/live choice is re-made (and the thumb snaps to the live value) on re-enable.
+struct Fader {
+    value: SyncSignal<f32>,
+    /// `Some(v)` when built disabled: draw `v` and ignore the live value. `None`
+    /// when live (draw tracks `value`).
+    frozen: Option<f32>,
+    is_dragging: bool,
+    on_change: Box<dyn Fn(&mut EventContext, f32)>,
+}
+
+impl Fader {
+    fn new(
+        cx: &mut Context,
+        value: SyncSignal<f32>,
+        disabled: bool,
+        on_change: impl Fn(&mut EventContext, f32) + 'static,
+    ) -> Handle<'_, Self> {
+        let frozen = disabled.then(|| value.get());
+        let handle = Self { value, frozen, is_dragging: false, on_change: Box::new(on_change) }
+            .build(cx, |_| {});
+        // Redraw (not relayout) on value change — but only when live. A disabled
+        // fader ignores automation entirely, so it never asks for a redraw.
+        if frozen.is_none() {
+            handle.bind(value, |mut handle| handle.needs_redraw())
+        } else {
+            handle
+        }
+    }
+
+    /// Cursor Y → normalized `[0, 1]`, inset by half the thumb at each end so the
+    /// thumb centre tracks the pointer without clipping past the track.
+    fn value_from_cursor(&self, cx: &EventContext) -> f32 {
+        let b = cx.bounds();
+        let thumb = FADER_THUMB_H * cx.scale_factor();
+        let travel = b.h - thumb;
+        if travel <= 0.0 {
+            return 0.0;
+        }
+        ((b.h - (cx.mouse().cursor_y - b.y) - thumb / 2.0) / travel).clamp(0.0, 1.0)
+    }
+}
+
+impl View for Fader {
+    fn element(&self) -> Option<&'static str> {
+        Some("fader")
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, _meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                if cx.is_disabled() {
+                    return;
+                }
+                self.is_dragging = true;
+                cx.capture();
+                let v = self.value_from_cursor(cx);
+                (self.on_change)(cx, v);
+            }
+            WindowEvent::MouseMove(_, _) => {
+                if self.is_dragging && !cx.is_disabled() {
+                    let v = self.value_from_cursor(cx);
+                    (self.on_change)(cx, v);
+                }
+            }
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                if self.is_dragging {
+                    self.is_dragging = false;
+                    cx.release();
+                }
+            }
+            _ => {}
+        });
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        // Draw at full alpha: vizia wraps a dimmed subtree (`.dimmed`, the disabled
+        // Cross Mod columns) in an opacity `save_layer`, so applying opacity here too
+        // would double-dim.
+        let b = cx.bounds();
+        let s = cx.scale_factor();
+        // Frozen (disabled) faders draw their build-time value so automation can't
+        // animate an inert control even if something else triggers a redraw.
+        let n = self.frozen.unwrap_or_else(|| self.value.get()).clamp(0.0, 1.0);
+
+        let track_w = 6.0 * s;
+        let center_x = b.x + b.w / 2.0;
+        let track_x = center_x - track_w / 2.0;
+        let thumb_h = FADER_THUMB_H * s;
+        let thumb_top = b.y + (1.0 - n) * (b.h - thumb_h);
+        let fill_top = (thumb_top + thumb_h / 2.0).min(b.y + b.h);
+
+        let mut paint = vg::Paint::default();
+        paint.set_anti_alias(true);
+
+        // Track (full height), then the active fill rising from the bottom to the thumb.
+        paint.set_color(vg::Color::from_rgb(0x55, 0x55, 0x55));
+        canvas.draw_round_rect(vg::Rect::from_xywh(track_x, b.y, track_w, b.h), 2.0 * s, 2.0 * s, &paint);
+        paint.set_color(vg::Color::from_rgb(0x3a, 0x86, 0xcc));
+        canvas.draw_round_rect(
+            vg::Rect::from_xywh(track_x, fill_top, track_w, b.y + b.h - fill_top),
+            2.0 * s,
+            2.0 * s,
+            &paint,
+        );
+
+        // Thumb spans the full cell width and stays *within* the view bounds. A
+        // value change only dirties the view's own bounds, so a wider thumb that
+        // overhung the cell left an un-repainted 1px sliver on each side as it slid
+        // (the leftover trail). The border is drawn inset by half its width too, so
+        // the centred stroke can't bleed past the bounds at the very ends either.
+        let bw = 1.0 * s;
+        let thumb_rect = vg::Rect::from_xywh(b.x, thumb_top, b.w, thumb_h);
+        paint.set_color(vg::Color::from_rgb(0xe8, 0xe8, 0xe8));
+        canvas.draw_round_rect(thumb_rect, 1.0 * s, 1.0 * s, &paint);
+        let border_rect =
+            vg::Rect::from_xywh(b.x + bw / 2.0, thumb_top + bw / 2.0, b.w - bw, thumb_h - bw);
+        paint.set_color(vg::Color::from_rgb(0x14, 0x14, 0x14));
+        paint.set_style(vg::PaintStyle::Stroke);
+        paint.set_stroke_width(bw);
+        canvas.draw_round_rect(border_rect, 1.0 * s, 1.0 * s, &paint);
+    }
+}
+
 /// The vertical fader + its hover/drag value popup, without any label — shared by
 /// a plain control cell and a mod-route column (where the column header labels it).
-/// `disabled` (a build-time bool) blocks the slider's drag (vizia's `Slider`
-/// guards on `cx.is_disabled()`). The Cross Mod depth faders pass this from inside
-/// a [`Binding`] on their selector, so the column is rebuilt — and re-disabled or
+/// `disabled` (a build-time bool) blocks the [`Fader`]'s drag (it guards on
+/// `cx.is_disabled()`). The Cross Mod depth faders pass this from inside a
+/// [`Binding`] on their selector, so the column is rebuilt — and re-disabled or
 /// re-enabled — whenever the selector leaves/returns to Off.
 fn fader_body(
     cx: &mut Context,
@@ -1340,16 +1549,13 @@ fn fader_body(
         Arc::clone(shared),
         Arc::clone(shared),
     );
-    let slider = Slider::new(cx, sig)
-        .vertical(true)
-        .class("fader")
+    let fader = Fader::new(cx, sig, disabled, move |_cx, v| {
+        sig.set(v);
+        sh_set.set(i, fader_from_ui_dyn(i, v, &sh_set));
+    })
         .cursor(CursorIcon::Hand)
         .width(Pixels(16.0))
         .height(Pixels(FADER_H))
-        .on_change(move |_cx, v| {
-            sig.set(v);
-            sh_set.set(i, fader_from_ui_dyn(i, v, &sh_set));
-        })
         // Double-click resets the fader to its parameter default (bracketed by a
         // gesture so the host records the jump as one edit).
         .on_double_click(move |_cx, _btn| {
@@ -1379,7 +1585,7 @@ fn fader_body(
             show.set(hover.get());
             sh_up.set_gesture(i, false);
         });
-    slider.disabled(disabled);
+    fader.disabled(disabled);
     // A synced LFO rate reads as a musical subdivision; otherwise the descriptor's
     // own display (Hz, st, …). `sync_partner` is `None` for every non-rate fader,
     // so this collapses to the plain path.
@@ -1705,7 +1911,8 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
 /// fader spans the first three rows; a fixed-height content box (matching the
 /// assign list's 4-row height) holds the fader on top and the toggle at the bottom,
 /// so this column stays the same width as a plain fader column. Legato applies to
-/// the mono modes (Solo / Unison); it stays visible/automatable always.
+/// the mono modes (Solo / Unison); it greys out (but stays present/automatable)
+/// in Poly / Twin.
 fn detune_legato_cell(
     cx: &mut Context,
     detune: Ctl,
@@ -1721,6 +1928,16 @@ fn detune_legato_cell(
         .iter()
         .copied()
         .find(|c| c.idx() == patch_clap_id(layer, PatchParam::Legato));
+    // Legato is only meaningful in the mono assign modes; bind on the assign
+    // selector so the toggle greys out in Poly / Twin.
+    let assign_sig = controls
+        .iter()
+        .copied()
+        .find(|c| c.idx() == patch_clap_id(layer, PatchParam::AssignMode))
+        .and_then(|c| match c {
+            Ctl::Buttons(_, s) | Ctl::Select(_, s) => Some(s),
+            _ => None,
+        });
     // Content box height = the assign list's 4 rows (4 × 24px + 3 × 1px gap), so the
     // toggle's bottom row lines up with the Solo selector. Fader (74) + 1px gap +
     // toggle (24) = 99, exactly that height.
@@ -1731,18 +1948,46 @@ fn detune_legato_cell(
         Label::new(cx, up(short)).class("ctl-label").height(Pixels(11.0));
         VStack::new(cx, move |cx| {
             fader_body(cx, fi, fsig, &shf, false);
-            if let Some(Ctl::Switch(li, lsig)) = legato {
+            if let (Some(Ctl::Switch(li, lsig)), Some(asig)) = (legato, assign_sig) {
                 let sh2 = Arc::clone(&sh);
-                toggle_row(cx, "Legato", lsig, move |_cx| {
-                    let v = !lsig.get();
-                    lsig.set(v);
-                    sh2.set(li, if v { 1.0 } else { 0.0 });
+                Binding::new(cx, asig, move |cx| {
+                    // Unison = 1, Solo = 2 (the mono modes); grey out in Poly / Twin.
+                    let enabled = matches!(asig.get(), Some(1) | Some(2));
+                    let sh3 = Arc::clone(&sh2);
+                    gated_toggle_row(cx, "Legato", enabled, lsig, move |_cx| {
+                        let v = !lsig.get();
+                        lsig.set(v);
+                        sh3.set(li, if v { 1.0 } else { 0.0 });
+                    });
                 });
             }
         })
         .height(Pixels(LIST_H))
         .vertical_gap(Pixels(1.0))
         .alignment(Alignment::TopCenter);
+    })
+    .height(Pixels(COL_H))
+    .vertical_gap(Pixels(10.0))
+    .alignment(Alignment::TopCenter);
+}
+
+/// The Master panel's limiter toggle, rendered as a bare on/off option rather
+/// than a headed cell: a single toggle box with the "LIMIT" label beside it (an
+/// "on"-style companion to the Volume fader), no column header above. An empty
+/// header-height label keeps it vertically aligned with the headed cells beside it.
+fn limiter_cell(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &'static str) {
+    let Ctl::Switch(i, sig) = ctl else {
+        return;
+    };
+    let sh = Arc::clone(shared);
+    VStack::new(cx, move |cx| {
+        // No header text; keep the slot so the toggle lines up with neighbour cells.
+        Label::new(cx, "").class("ctl-label").height(Pixels(11.0));
+        toggle_row(cx, short, sig, move |_cx| {
+            let on = !sig.get();
+            sig.set(on);
+            sh.set(i, if on { 1.0 } else { 0.0 });
+        });
     })
     .height(Pixels(COL_H))
     .vertical_gap(Pixels(10.0))
