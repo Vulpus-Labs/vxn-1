@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn octave_and_coarse_combine_additively() {
-        // +1 octave & +7 st = +19 st. Compare against +19 st coarse alone.
+        // +1 octave & +7 st = +19 st. Compare against +2 octaves & -5 st (also +19 st).
         let mut a = pitched_synth();
         a.set_param(pp(PatchParam::Osc1Octave), 1.0);
         a.set_param(pp(PatchParam::Osc1Coarse), 7.0);
@@ -838,7 +838,8 @@ mod tests {
         let fa = dominant_hz(&la[4800..], 48_000.0);
 
         let mut b = pitched_synth();
-        b.set_param(pp(PatchParam::Osc1Coarse), 19.0);
+        b.set_param(pp(PatchParam::Osc1Octave), 2.0);
+        b.set_param(pp(PatchParam::Osc1Coarse), -5.0);
         b.note_on(45, 1.0);
         let (lb, _) = render(&mut b, 24_000);
         let fb = dominant_hz(&lb[4800..], 48_000.0);
@@ -996,9 +997,9 @@ mod tests {
         fn diff(a: &[f32], b: &[f32]) -> f32 {
             a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32
         }
-        let unsynced = render_sync(false, 7.0);
-        let synced_low = render_sync(true, 7.0);
-        let synced_high = render_sync(true, 19.0);
+        let unsynced = render_sync(false, -7.0);
+        let synced_low = render_sync(true, -7.0);
+        let synced_high = render_sync(true, 7.0);
         // Sync changes the timbre vs the independent path …
         assert!(
             diff(&unsynced, &synced_low) > 1e-3,
@@ -1866,27 +1867,52 @@ mod tests {
 
     #[test]
     fn unison_level_is_normalised_not_eight_times_poly() {
-        // One unison note must not be ~8x louder than one poly note.
-        fn one_note_rms(unison: bool) -> f32 {
-            let mut s = Synth::new(48_000.0);
-            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-            s.set_param(pp(PatchParam::Osc1Wave), 0.0);
-            s.set_param(pp(PatchParam::Osc2Level), 0.0);
-            s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
-            s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        // A unison note must not be ~8x louder than a poly note. The Unison stack's
+        // 8 copies get independent random start phases (0011), so at detune 0 they
+        // sum as a random walk (~√8), and `1/√8` normalisation keeps the RMS in the
+        // same ballpark as one voice — never the naive 8×. The per-trigger phases
+        // vary, so the lower bound is asserted on the mean over several triggers.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Osc1Wave), 0.0);
+        s.set_param(pp(PatchParam::Osc2Level), 0.0);
+        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        s.set_param(pp(PatchParam::Env2Release), 0.001);
+
+        // One fresh note's steady-state RMS, then release and silence so the next
+        // trigger starts clean (and, for Unison, redraws its random phases).
+        let mut one_note_rms = |unison: bool| -> f32 {
             set_assign(&mut s, 0, unison, 0.0); // detune 0 → coherent worst case
             s.note_on_layer(0, 57, 1.0);
-            rms(&render(&mut s, 12_000).0[4800..])
-        }
+            let r = rms(&render(&mut s, 12_000).0[4800..]);
+            s.note_off(57);
+            let _ = render(&mut s, 2_400); // let the release free the channels
+            r
+        };
+
         let poly = one_note_rms(false);
-        let uni = one_note_rms(true);
-        // With detune 0 the 8 copies are coherent, so 1/√8 normalisation gives
-        // ≈ √8 × one voice — louder, but nowhere near 8×.
+        // Average Unison over several triggers: any single trigger's random phases
+        // can cancel or reinforce, but the mean tracks the √N power normalisation.
+        let trials = 8;
+        let mut uni_sum = 0.0;
+        let mut uni_max: f32 = 0.0;
+        for _ in 0..trials {
+            let u = one_note_rms(true);
+            uni_sum += u;
+            uni_max = uni_max.max(u);
+        }
+        let uni_mean = uni_sum / trials as f32;
+        // Upper bound holds on every trigger: even all-aligned phases give only √8.
         assert!(
-            uni < 4.0 * poly,
-            "unison too loud: poly {poly}, unison {uni}"
+            uni_max < 4.0 * poly,
+            "unison too loud: poly {poly}, unison max {uni_max}"
         );
-        assert!(uni > poly, "unison should be fuller than one poly voice");
+        // Mean stays a fraction of a single voice (not silent, not boosted away).
+        assert!(
+            uni_mean > 0.4 * poly && uni_mean < 2.0 * poly,
+            "unison level off: poly {poly}, unison mean {uni_mean}"
+        );
     }
 
     #[test]

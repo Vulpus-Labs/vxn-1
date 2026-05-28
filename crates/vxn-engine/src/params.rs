@@ -585,7 +585,7 @@ const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];
 const SLOPE_LABELS: &[&str] = &["12 dB", "24 dB"];
 const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
-const OVERSAMPLE_LABELS: &[&str] = &["Off", "2x", "4x", "8x"];
+const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
 const ASSIGN_LABELS: &[&str] = &["Poly", "Unison", "Solo", "Twin"];
 const LFO_SEL_LABELS: &[&str] = &["Off", "LFO 1", "LFO 2"];
 const ENV_SEL_LABELS: &[&str] = &["Off", "Env 1", "Env 2"];
@@ -700,16 +700,18 @@ const fn envsel(name: &'static str, label: &'static str) -> ParamDesc {
 pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     // Oscillator 1
     e("osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
-    i("osc1_coarse", "Osc 1 Coarse", -24.0, 24.0, 0.0, "st"),
+    i("osc1_coarse", "Osc 1 Coarse", -7.0, 7.0, 0.0, "st"),
     f("osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", Taper::Linear),
     i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
     f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", Taper::Linear),
     f("osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
     // Oscillator 2
     e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
-    i("osc2_coarse", "Osc 2 Coarse", -24.0, 24.0, -12.0, "st"),
+    i("osc2_coarse", "Osc 2 Coarse", -7.0, 7.0, 0.0, "st"),
     f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 7.0, "ct", Taper::Linear),
-    i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, 0.0, "oct"),
+    // Default -1: osc2 sits an octave below osc1 (the old -12 st coarse default,
+    // moved here now that Coarse is ±7 st and can't reach a full octave).
+    i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, -1.0, "oct"),
     f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", Taper::Linear),
     f("osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
     // Oscillator interaction

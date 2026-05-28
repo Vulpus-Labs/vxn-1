@@ -16,7 +16,7 @@
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, LfoCore, LfoShape,
     OtaLadderCoeffs, OtaPoles, PolyHpf, PolyOscillator, PolyOtaLadder, Waveform,
-    fast_exp2, note_to_hz, poly_ring_mod,
+    fast_exp2, note_to_hz, poly_ring_mod, xorshift64,
 };
 
 use crate::params::{AssignMode, EnvSel, LfoSel};
@@ -212,6 +212,11 @@ pub struct VoiceBank {
     /// Seed base for the per-channel LFO 1 cores; kept so they can be rebuilt at
     /// the new control rate on a sample-rate change.
     lfo1_seed: u64,
+    /// Free-running PRNG state for Unison start-phase randomisation. Each Unison
+    /// note-on draws one fresh phase per channel from this, decorrelating the
+    /// stack's beating without a deterministic comb (0011). Seeded non-zero from
+    /// the layer's base seed and never reset, so repeated note-ons stay varied.
+    unison_rng: u64,
     /// Mono (Solo / Unison) held-note stack, newest on top. The voice sounds only
     /// the top entry; on note-off the top is popped and the bank reverts to whatever
     /// is still held (ADR 0003 §4 / 0010). Fixed-size — allocation free; an
@@ -229,6 +234,13 @@ const MONO_STACK: usize = 32;
 fn lfo1_seed(base: u64, ch: usize) -> u64 {
     base.wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add((ch as u64 + 1).wrapping_mul(0x632B_E5A6))
+}
+
+/// Unison phase-RNG seed from the layer's base seed, on a stream distinct from
+/// the LFO seeds and forced non-zero (xorshift64 sticks at zero).
+#[inline]
+fn unison_rng_seed(base: u64) -> u64 {
+    base.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1
 }
 
 impl VoiceBank {
@@ -259,6 +271,7 @@ impl VoiceBank {
             lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(rng_seed, i))),
             lfo1_onset: Lfo1Onset::new(),
             lfo1_seed: rng_seed,
+            unison_rng: unison_rng_seed(rng_seed),
             mono_stack: [0; MONO_STACK],
             mono_len: 0,
         }
@@ -381,7 +394,9 @@ impl VoiceBank {
         // (`plan`), then apply the DSP effect (`trigger`) per assignment. The
         // borrow in `alloc_view` ends when `plan` returns its owned result, so the
         // mutating `trigger` calls below are free to touch the same arrays.
-        let plan = plan(mode, note, unison_detune, self.alloc_view());
+        let mut rng = self.unison_rng;
+        let plan = plan(mode, note, unison_detune, self.alloc_view(), &mut rng);
+        self.unison_rng = rng;
         for a in plan.iter() {
             self.trigger(
                 a.channel,
@@ -417,7 +432,9 @@ impl VoiceBank {
         lfo1: Lfo1Trigger,
         slide: bool,
     ) {
-        let plan = plan(mode, note, unison_detune, self.alloc_view());
+        let mut rng = self.unison_rng;
+        let plan = plan(mode, note, unison_detune, self.alloc_view(), &mut rng);
+        self.unison_rng = rng;
         let mut used = [false; N];
         for a in plan.iter() {
             used[a.channel] = true;
@@ -946,21 +963,17 @@ fn unison_spread(v: usize) -> f32 {
     }
 }
 
-/// Fixed Unison start phase for channel `v`, spread across the first **half**
-/// cycle `[0, 0.5]`. Offsetting the start phases (rather than the Poly phase-0
-/// reset for all) staggers when each detuned ± pair reaches its beat trough, so
-/// they no longer comb into one synchronised null that thins the sound. A half
-/// cycle (not the full circle) is deliberate: a full even spread sums to zero for
-/// coherent copies (detune 0), gutting the level, whereas a half-cycle spread
-/// keeps a strong coherent sum while still decorrelating the beating. Deterministic
-/// per channel, so the unison sum is reproducible / testable.
+/// A fresh random Unison start phase in `[0, 1)` drawn from `rng` (xorshift64
+/// mapped from `[-1, 1]`). One draw per voice per trigger decorrelates the
+/// stack's beating. Random (not a fixed even spread) is deliberate: a full even
+/// spread sums to zero for coherent copies (detune 0), gutting the level, whereas
+/// independent random phases sum as a random walk (~`√N`) that `level_comp`'s
+/// `1/√N` normalises — no systematic comb null at any detune.
 #[inline]
-fn unison_phase(v: usize) -> f32 {
-    if N <= 1 {
-        0.0
-    } else {
-        0.5 * v as f32 / (N - 1) as f32
-    }
+fn random_phase(rng: &mut u64) -> f32 {
+    // `xorshift64` spans `[-1, 1]` inclusive; `.fract()` folds the lone 1.0
+    // endpoint back to 0.0 so the stamped phase never lands on the wrap point.
+    ((xorshift64(rng) + 1.0) * 0.5).fract()
 }
 
 /// Unison glide-time scaling: the detuned stack slides together and reads far
@@ -1080,8 +1093,11 @@ const TWIN_SPREAD: f32 = 1.0;
 /// at zero detune.
 const TWIN_PHASE: f32 = 0.25;
 
-/// Plan a note-on under `mode`: state in, channel assignments out. Pure.
-fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
+/// Plan a note-on under `mode`: state in, channel assignments out. Pure except
+/// for the Unison arm, which draws one random start phase per voice from `rng`
+/// (the only arm that touches it — other modes leave the stream untouched, so
+/// they stay fully deterministic).
+fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView, rng: &mut u64) -> Plan {
     let mut assigns = [Assign::default(); N];
     match mode {
         AssignMode::Poly => {
@@ -1096,14 +1112,14 @@ fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView) -> Plan {
         AssignMode::Unison => {
             // Last-note priority: every channel retriggers to the new note (the
             // prior note is not stacked). Per-channel detune fans the copies out,
-            // and a spread of start phases (rather than the Poly phase-0 reset)
-            // decorrelates their beating so they don't comb into synchronised
-            // nulls and thin the sound out.
+            // and a random start phase per voice on each trigger (rather than the
+            // Poly phase-0 reset, or a fixed even spread) decorrelates their
+            // beating so they don't comb into synchronised nulls and thin out.
             for (v, a) in assigns.iter_mut().enumerate() {
                 *a = Assign {
                     channel: v,
                     detune_cents: unison_spread(v) * unison_detune,
-                    start_phase: unison_phase(v),
+                    start_phase: random_phase(rng),
                 };
             }
             Plan::new(assigns, N)
@@ -1177,7 +1193,7 @@ mod alloc_tests {
     #[test]
     fn poly_plan_is_one_undetuned_channel() {
         let st = St::empty();
-        let p = plan(AssignMode::Poly, 60, 25.0, st.view());
+        let p = plan(AssignMode::Poly, 60, 25.0, st.view(), &mut 1);
         assert_eq!(p.len, 1);
         assert_eq!(p.assigns[0].detune_cents, 0.0);
         assert_eq!(p.assigns[0].start_phase, 0.0);
@@ -1219,7 +1235,8 @@ mod alloc_tests {
     fn unison_stacks_all_channels_symmetric() {
         let st = St::empty();
         let detune = 20.0;
-        let p = plan(AssignMode::Unison, 60, detune, st.view());
+        let mut rng = 0x1234_5678u64;
+        let p = plan(AssignMode::Unison, 60, detune, st.view(), &mut rng);
         assert_eq!(p.len, N);
         assert!(p.unison);
         assert!((p.level_comp - 1.0 / (N as f32).sqrt()).abs() < 1e-6);
@@ -1232,14 +1249,19 @@ mod alloc_tests {
         assert!((p.assigns[N - 1].detune_cents - detune).abs() < 1e-6);
         let sum: f32 = p.iter().map(|a| a.detune_cents).sum();
         assert!(sum.abs() < 1e-4, "spread should sum ~0, got {sum}");
-        // Start phases stay within the first half cycle.
-        assert!(p.iter().all(|a| (0.0..=0.5).contains(&a.start_phase)));
+        // Start phases are random in [0, 1) and decorrelated (not all equal).
+        assert!(p.iter().all(|a| (0.0..1.0).contains(&a.start_phase)));
+        let phases: Vec<f32> = p.iter().map(|a| a.start_phase).collect();
+        assert!(
+            phases.windows(2).any(|w| w[0] != w[1]),
+            "random phases should vary, got {phases:?}"
+        );
     }
 
     #[test]
     fn solo_keeps_one_channel_when_nothing_active() {
         let st = St::empty();
-        let p = plan(AssignMode::Solo, 60, 25.0, st.view());
+        let p = plan(AssignMode::Solo, 60, 25.0, st.view(), &mut 1);
         assert_eq!(p.len, 1);
         assert_eq!(p.assigns[0].channel, 0);
         assert_eq!(p.assigns[0].detune_cents, 0.0);
@@ -1255,7 +1277,7 @@ mod alloc_tests {
         // channel is left to be quiesced by the bank.
         st.active[4] = true;
         st.note[4] = 48;
-        let p = plan(AssignMode::Solo, 72, 0.0, st.view());
+        let p = plan(AssignMode::Solo, 72, 0.0, st.view(), &mut 1);
         assert_eq!(p.assigns[0].channel, 0);
     }
 
@@ -1263,7 +1285,7 @@ mod alloc_tests {
     fn twin_uses_two_distinct_channels_spread_and_decorrelated() {
         let st = St::empty();
         let detune = 18.0;
-        let p = plan(AssignMode::Twin, 60, detune, st.view());
+        let p = plan(AssignMode::Twin, 60, detune, st.view(), &mut 1);
         assert_eq!(p.len, 2);
         assert!(p.unison);
         assert!((p.level_comp - 1.0 / 2f32.sqrt()).abs() < 1e-6);
