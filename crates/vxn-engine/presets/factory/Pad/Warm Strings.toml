@@ -1,0 +1,29 @@
+schema = 1
+kind = "patch"
+
+[meta]
+name = "Warm Strings"
+author = "Vulpus Labs"
+category = "Pad"
+tags = ["pad", "strings", "unison"]
+comment = "Lush unison string pad — eight detuned voices, slow swell, gentle LFO 1 vibrato on pitch and the global LFO 2 drifting the cutoff."
+
+[patch]
+osc1_wave = "Saw"
+osc1_level = 0.8
+osc2_wave = "Saw"
+osc2_octave = 0
+osc2_fine = 8.0
+osc2_level = 0.8
+cutoff = 3200.0
+resonance = 0.15
+env2_attack = 0.6
+env2_decay = 2.0
+env2_sustain = 0.8
+env2_release = 1.2
+assign_mode = "Unison"
+unison_detune = 18.0
+pitch_lfo_src = "LFO 1"
+pitch_lfo_depth = 0.4
+lfo_rate = 4.5
+cutoff_lfo2_depth = 12.0

@@ -18,10 +18,14 @@
 
 use crate::CHANNELS_PER_LAYER;
 use crate::math::fast_sine;
-use crate::ota_ladder::{OtaLadderCoeffs, OtaPoles};
 use crate::oscillator::Waveform;
+use crate::ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
 
 const N: usize = CHANNELS_PER_LAYER;
+
+/// One layer's worth of noise channels — the [`crate::noise::PolyNoise`] SoA
+/// generator sized to the per-layer channel count.
+pub type PolyNoiseBank = crate::noise::PolyNoise<N>;
 
 /// Branchless PolyBLEP. `dt` is floored away from zero so frozen (inactive)
 /// voices can't produce NaNs; the comparison masks select the active branch.
@@ -586,9 +590,10 @@ pub fn poly_ring_mod(o1: &[f32; N], o2: &[f32; N], gain: f32, out: &mut [f32; N]
 /// piecewise-linear trajectory (no zipper/staircase).
 ///
 /// The nonlinearity is per-stage `tanh` and there is **no** `scale` term — the
-/// OTA design does not thin the bass under resonance. `poles` (12 vs 24 dB/oct
-/// output tap) is a *layer-wide* parameter, hoisted out of the lane loop; the
-/// feedback path is always the 4th stage so resonance is identical in both.
+/// OTA design does not thin the bass under resonance. `mode` (LP/BP/HP/Notch,
+/// see [`FilterMode`]) is a *layer-wide* parameter, hoisted out of the lane
+/// loop; the feedback path is always the 4th stage so resonance is identical in
+/// every mode.
 #[derive(Clone)]
 pub struct PolyOtaLadder {
     // Current (interpolated) coefficients, advanced each sample.
@@ -608,7 +613,8 @@ pub struct PolyOtaLadder {
     s2: [f32; N],
     s3: [f32; N],
     y4: [f32; N],
-    poles: OtaPoles,
+    mode: FilterMode,
+    slope: FilterSlope,
 }
 
 impl Default for PolyOtaLadder {
@@ -634,7 +640,8 @@ impl PolyOtaLadder {
             s2: [0.0; N],
             s3: [0.0; N],
             y4: [0.0; N],
-            poles: OtaPoles::Four,
+            mode: FilterMode::Lp,
+            slope: FilterSlope::Pole4,
         }
     }
 
@@ -646,14 +653,19 @@ impl PolyOtaLadder {
         self.y4 = [0.0; N];
     }
 
-    /// Set the output slope (layer-wide). Feedback path is unchanged.
+    /// Set the filter response + slope (layer-wide). Feedback path is unchanged.
     #[inline]
-    pub fn set_poles(&mut self, poles: OtaPoles) {
-        self.poles = poles;
+    pub fn set_response(&mut self, mode: FilterMode, slope: FilterSlope) {
+        self.mode = mode;
+        self.slope = slope;
     }
 
-    pub fn poles(&self) -> OtaPoles {
-        self.poles
+    pub fn mode(&self) -> FilterMode {
+        self.mode
+    }
+
+    pub fn slope(&self) -> FilterSlope {
+        self.slope
     }
 
     /// Set this block's *target* coefficients for voice `v`.
@@ -691,10 +703,11 @@ impl PolyOtaLadder {
         self.dd = [0.0; N];
     }
 
-    /// One sample per voice: `out[v] = ota_ladder(x[v])`, reading the slope tap.
+    /// One sample per voice: `out[v] = ota_ladder(x[v])`, mixed for the mode/slope.
     #[inline]
     pub fn process(&mut self, x: &[f32; N], out: &mut [f32; N]) {
-        let tap = self.poles.output_tap();
+        let mode = self.mode;
+        let slope = self.slope;
         for v in 0..N {
             let g = self.g[v];
             let fed = self.drive[v] * x[v] - self.k[v] * self.y4[v];
@@ -720,7 +733,7 @@ impl PolyOtaLadder {
             self.s3[v] = y3 + a3;
 
             self.y4[v] = y3;
-            out[v] = [y0, y1, y2, y3][tap];
+            out[v] = mode.mix(slope, fed, [y0, y1, y2, y3]);
 
             // Advance interpolated coefficients toward the block target.
             self.g[v] += self.dg[v];
@@ -842,13 +855,19 @@ mod tests {
                             (oa1[v] - ob1[v]).abs() < 1e-6 && (oa2[v] - ob2[v]).abs() < 1e-6,
                             "sync mismatch {wave1:?}/{wave2:?} lane {v} i {i}: \
                              o1 {} vs {}, o2 {} vs {}",
-                            oa1[v], ob1[v], oa2[v], ob2[v]
+                            oa1[v],
+                            ob1[v],
+                            oa2[v],
+                            ob2[v]
                         );
                         assert!(
                             (oc1[v] - od1[v]).abs() < 1e-6 && (oc2[v] - od2[v]).abs() < 1e-6,
                             "pm mismatch {wave1:?}/{wave2:?} lane {v} i {i}: \
                              o1 {} vs {}, o2 {} vs {}",
-                            oc1[v], od1[v], oc2[v], od2[v]
+                            oc1[v],
+                            od1[v],
+                            oc2[v],
+                            od2[v]
                         );
                     }
                 }
@@ -1005,7 +1024,15 @@ mod tests {
             for _ in 0..NFFT {
                 if subsample {
                     m.process_pair(
-                        &mut s, true, 0.0, Waveform::Saw, Waveform::Saw, &pw, &pw, &mut o1, &mut o2,
+                        &mut s,
+                        true,
+                        0.0,
+                        Waveform::Saw,
+                        Waveform::Saw,
+                        &pw,
+                        &pw,
+                        &mut o1,
+                        &mut o2,
                     );
                 } else {
                     process_naive(&mut m, &mut s, &mut o2);
@@ -1015,7 +1042,15 @@ mod tests {
             for _ in 0..NFFT {
                 if subsample {
                     m.process_pair(
-                        &mut s, true, 0.0, Waveform::Saw, Waveform::Saw, &pw, &pw, &mut o1, &mut o2,
+                        &mut s,
+                        true,
+                        0.0,
+                        Waveform::Saw,
+                        Waveform::Saw,
+                        &pw,
+                        &pw,
+                        &mut o1,
+                        &mut o2,
                     );
                 } else {
                     process_naive(&mut m, &mut s, &mut o2);
@@ -1051,7 +1086,10 @@ mod tests {
         for ratio in [1.5_f32, 1.618_034, 2.5, 3.5] {
             let blep = render(true, f_master, f_master * ratio);
             let naive = render(false, f_master, f_master * ratio);
-            assert!(blep.iter().all(|v| v.is_finite()), "ratio {ratio}: non-finite");
+            assert!(
+                blep.iter().all(|v| v.is_finite()),
+                "ratio {ratio}: non-finite"
+            );
             let blep_hi = high_band_energy(&blep);
             let naive_hi = high_band_energy(&naive);
             assert!(
@@ -1196,7 +1234,10 @@ mod tests {
         let mut out = [1.0; N];
         // Zero carrier across all lanes.
         poly_ring_mod(&[0.7; N], &[0.0; N], g, &mut out);
-        assert!(out.iter().all(|y| y.abs() < 1e-6), "zero carrier not silent");
+        assert!(
+            out.iter().all(|y| y.abs() < 1e-6),
+            "zero carrier not silent"
+        );
         // Zero signal across all lanes.
         poly_ring_mod(&[0.0; N], &[0.7; N], g, &mut out);
         assert!(out.iter().all(|y| y.abs() < 1e-6), "zero signal not silent");
@@ -1206,7 +1247,10 @@ mod tests {
     fn ring_mod_nonzero_inputs_produce_output() {
         let mut out = [0.0; N];
         poly_ring_mod(&[0.5; N], &[0.5; N], ring_gain(), &mut out);
-        assert!(out.iter().all(|y| y.abs() > 1e-4), "expected nonzero output");
+        assert!(
+            out.iter().all(|y| y.abs() > 1e-4),
+            "expected nonzero output"
+        );
     }
 
     #[test]
@@ -1223,7 +1267,10 @@ mod tests {
             poly_ring_mod(&sig, &car, g, &mut a);
             poly_ring_mod(&neg_sig, &car, g, &mut b);
             for v in 0..N {
-                assert!(a[v].is_finite() && b[v].is_finite(), "non-finite @ {drive_db}");
+                assert!(
+                    a[v].is_finite() && b[v].is_finite(),
+                    "non-finite @ {drive_db}"
+                );
                 assert!((a[v] + b[v]).abs() < 1e-5, "not antisymmetric in signal");
             }
         }

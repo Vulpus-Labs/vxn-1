@@ -184,8 +184,16 @@ mod tests {
         // 2 s buffer. It must clamp to the line's usable span, not wrap.
         d.set_params(60.0, 60.0, 0.5, 0.3, 1.0, false);
         let max = (d.left.capacity() - 2) as f32;
-        assert!(d.delay_samples_l <= max, "left not clamped: {}", d.delay_samples_l);
-        assert!(d.delay_samples_r <= max, "right not clamped: {}", d.delay_samples_r);
+        assert!(
+            d.delay_samples_l <= max,
+            "left not clamped: {}",
+            d.delay_samples_l
+        );
+        assert!(
+            d.delay_samples_r <= max,
+            "right not clamped: {}",
+            d.delay_samples_r
+        );
         // Still produces finite output at the clamped time.
         for i in 0..sr as usize {
             let x = if i == 0 { 1.0 } else { 0.0 };

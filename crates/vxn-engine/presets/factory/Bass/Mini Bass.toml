@@ -1,0 +1,32 @@
+schema = 1
+kind = "patch"
+
+[meta]
+name = "Mini Bass"
+author = "Vulpus Labs"
+category = "Bass"
+tags = ["bass", "mono"]
+comment = "Fat mono saw bass — Solo assign with a touch of glide, Env 1 sweeping the filter, key-track on so it stays punchy up the neck."
+
+[patch]
+osc1_wave = "Saw"
+osc1_level = 0.9
+osc2_wave = "Saw"
+osc2_octave = 0
+osc2_fine = -6.0
+osc2_level = 0.7
+cutoff = 480.0
+resonance = 0.45
+drive = 1.6
+filter_slope = "24"
+filter_key_track = true
+env1_decay = 0.35
+env1_sustain = 0.1
+cutoff_env_depth = 60.0
+env2_attack = 0.002
+env2_decay = 0.5
+env2_sustain = 0.4
+env2_release = 0.12
+assign_mode = "Solo"
+legato = true
+portamento_time = 0.04

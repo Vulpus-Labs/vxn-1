@@ -8,9 +8,7 @@
 //!   cargo build --release --example busy_profile -p vxn-engine
 //!   samply record ./target/release/examples/busy_profile
 
-use vxn_engine::{
-    GlobalParam, KeyMode, Layer, PatchParam, Synth, global_clap_id, patch_clap_id,
-};
+use vxn_engine::{GlobalParam, KeyMode, Layer, PatchParam, Synth, global_clap_id, patch_clap_id};
 
 const SR: f32 = 48_000.0;
 const FRAMES: usize = 512;

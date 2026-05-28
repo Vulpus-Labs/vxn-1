@@ -1,0 +1,26 @@
+schema = 1
+kind = "patch"
+
+[meta]
+name = "E-Piano"
+author = "Vulpus Labs"
+category = "Keys"
+tags = ["keys", "fm", "epiano"]
+comment = "Classic two-operator FM electric piano — sine-on-sine cross-mod, a noise transient for the hammer, plucky decay to silence."
+
+[patch]
+osc1_wave = "Sine"
+osc1_level = 0.9
+osc2_wave = "Sine"
+osc2_octave = 0
+osc2_level = 0.0
+cross_mod_type = "FM"
+cross_mod_amount = 1.2
+noise_level = 0.12
+noise_color = "White"
+cutoff = 8000.0
+resonance = 0.1
+env2_attack = 0.002
+env2_decay = 1.4
+env2_sustain = 0.0
+env2_release = 0.4

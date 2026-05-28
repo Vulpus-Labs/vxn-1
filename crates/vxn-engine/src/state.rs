@@ -33,7 +33,7 @@ pub const VERSION: u32 = 1;
 
 /// Everything that persists: the full parameter set plus the shared state that
 /// is *not* a CLAP parameter.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PluginState {
     pub params: ParamValues,
     pub key_mode: KeyMode,

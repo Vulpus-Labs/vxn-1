@@ -24,7 +24,9 @@
 //!   PWM, cutoff, resonance and the wide osc2 pitch.
 //! - **Filter key-track** (bool): exactly one octave of cutoff per octave of key
 //!   relative to C4 (cutoff unchanged at C4, up above, down below).
-//! - The **VCA is hardwired to Env2** — there is no Amp route.
+//! - **VCA** is driven by Env2 by default. A VCA route adds an LFO selector +
+//!   depth (tremolo, always applied) and an **env-bypass** switch — when on, the
+//!   VCA follows the bare note gate at full level instead of Env2's ADSR shape.
 //!
 //! ## CLAP id layout
 //!
@@ -50,7 +52,7 @@
 //! matching CLAP's plain-value convention. Enum/bool params store the variant
 //! index / 0.0|1.0 and are read back through typed accessors.
 
-use vxn_dsp::{AdsrShape, LfoShape, OtaPoles, Waveform};
+use vxn_dsp::{AdsrShape, FilterMode, FilterSlope, LfoShape, NoiseColor, Waveform};
 
 /// Which of the two always-present patches a per-patch param belongs to.
 /// Discriminant doubles as the index into [`ParamValues::layers`].
@@ -97,6 +99,13 @@ impl KeyMode {
             KeyMode::Dual => "Dual",
             KeyMode::Split => "Split",
         }
+    }
+
+    /// Inverse of [`label`](KeyMode::label) (case-insensitive) for preset parsing.
+    pub fn from_label(label: &str) -> Option<KeyMode> {
+        KeyMode::ALL
+            .into_iter()
+            .find(|m| m.label().eq_ignore_ascii_case(label))
     }
 }
 
@@ -237,10 +246,18 @@ pub enum PatchParam {
     CrossModAmount,
     // Mixer
     RingLevel,
+    /// Noise source level into the mixer (0 = the cheap no-op path).
+    NoiseLevel,
+    /// Noise colour (White / Pink).
+    NoiseColor,
     // Filter (ladder VCF)
     Cutoff,
     Resonance,
     Drive,
+    /// Filter response: LP / HP / BP / Notch ([`vxn_dsp::FilterMode`]).
+    FilterMode,
+    /// Filter slope: 12 vs 24 dB/oct (2- vs 4-pole variant of the mode). No-op
+    /// for Notch ([`vxn_dsp::FilterSlope`]).
     FilterSlope,
     /// Pre-VCF high-pass cutoff (Hz). 20 ≈ fully open / "off".
     HpfCutoff,
@@ -253,12 +270,17 @@ pub enum PatchParam {
     Env1Sustain,
     Env1Release,
     Env1Shape,
-    // Envelope 2 (hardwired to the VCA amp)
+    // Envelope 2 (the VCA amp envelope, unless bypassed below)
     Env2Attack,
     Env2Decay,
     Env2Sustain,
     Env2Release,
     Env2Shape,
+    // VCA modulation: an LFO source ({Off/LFO1/LFO2}) + depth for tremolo (always
+    // applied), and an env-bypass switch (VCA = bare note gate at full level).
+    AmpLfoSrc,
+    AmpLfoDepth,
+    AmpEnvBypass,
     // LFO 1 (per-voice — E005 / 0018). LFO 2's shape/rate/sync are global.
     LfoShape,
     LfoRate,
@@ -328,6 +350,14 @@ impl PatchParam {
         }
     }
 
+    /// Resolve a [`ParamDesc::name`] string to its param (preset key lookup).
+    pub fn from_name(name: &str) -> Option<PatchParam> {
+        PATCH_PARAMS
+            .iter()
+            .position(|d| d.name == name)
+            .and_then(Self::from_index)
+    }
+
     pub fn desc(self) -> &'static ParamDesc {
         &PATCH_PARAMS[self.index()]
     }
@@ -382,6 +412,14 @@ impl GlobalParam {
         } else {
             None
         }
+    }
+
+    /// Resolve a [`ParamDesc::name`] string to its param (preset key lookup).
+    pub fn from_name(name: &str) -> Option<GlobalParam> {
+        GLOBAL_PARAMS
+            .iter()
+            .position(|d| d.name == name)
+            .and_then(Self::from_index)
     }
 
     pub fn desc(self) -> &'static ParamDesc {
@@ -514,6 +552,22 @@ impl ParamDesc {
         self.min + n.clamp(0.0, 1.0) * (self.max - self.min)
     }
 
+    /// Resolve an enum **variant label** to its index (case-insensitive). The
+    /// inverse of the `Enum` arm of [`display`](ParamDesc::display), so the preset
+    /// parser and the value formatter can't drift. `None` for non-enum params or
+    /// an unmatched label.
+    ///
+    /// TODO(E007): if an enum label is ever renamed, add a per-param alias map
+    /// here so presets written against the old label still resolve.
+    pub fn variant_index(&self, label: &str) -> Option<usize> {
+        match self.kind {
+            ParamKind::Enum { variants } => {
+                variants.iter().position(|v| v.eq_ignore_ascii_case(label))
+            }
+            _ => None,
+        }
+    }
+
     /// This param's [`Taper`] (Linear for non-Float kinds).
     #[inline]
     pub fn taper(&self) -> Taper {
@@ -582,7 +636,9 @@ impl ParamDesc {
 }
 
 const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];
-const SLOPE_LABELS: &[&str] = &["12 dB", "24 dB"];
+const FILTER_MODE_LABELS: &[&str] = &["LP", "HP", "BP", "Notch"];
+const SLOPE_LABELS: &[&str] = &["12", "24"];
+const NOISE_LABELS: &[&str] = &["White", "Pink"];
 const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
@@ -662,7 +718,15 @@ const fn mp_vib(name: &'static str, label: &'static str, default: f32) -> ParamD
 /// negative depth would only flip phase). The UI tapers it so the midpoint reads
 /// 1 st — vibrato is mostly meant to be very subtle.
 const fn mp_vib_lfo(name: &'static str, label: &'static str, default: f32) -> ParamDesc {
-    f(name, label, 0.0, 12.0, default, "st", Taper::Exp { mid: 1.0 })
+    f(
+        name,
+        label,
+        0.0,
+        12.0,
+        default,
+        "st",
+        Taper::Exp { mid: 1.0 },
+    )
 }
 /// Wide osc-2 pitch depth (semitones): octave range, for sync/cross-mod sweeps.
 const fn mp_wide(name: &'static str, label: &'static str) -> ParamDesc {
@@ -701,48 +765,207 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     // Oscillator 1
     e("osc1_wave", "Osc 1 Wave", WAVE_LABELS, 2.0),
     i("osc1_coarse", "Osc 1 Coarse", -7.0, 7.0, 0.0, "st"),
-    f("osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", Taper::Linear),
+    f(
+        "osc1_fine",
+        "Osc 1 Fine",
+        -50.0,
+        50.0,
+        0.0,
+        "ct",
+        Taper::Linear,
+    ),
     i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
-    f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", Taper::Linear),
+    f(
+        "osc1_level",
+        "Osc 1 Level",
+        0.0,
+        1.0,
+        0.8,
+        "",
+        Taper::Linear,
+    ),
     f("osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
     // Oscillator 2
     e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
     i("osc2_coarse", "Osc 2 Coarse", -7.0, 7.0, 0.0, "st"),
-    f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 7.0, "ct", Taper::Linear),
+    f(
+        "osc2_fine",
+        "Osc 2 Fine",
+        -50.0,
+        50.0,
+        7.0,
+        "ct",
+        Taper::Linear,
+    ),
     // Default -1: osc2 sits an octave below osc1 (the old -12 st coarse default,
     // moved here now that Coarse is ±7 st and can't reach a full octave).
     i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, -1.0, "oct"),
-    f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", Taper::Linear),
+    f(
+        "osc2_level",
+        "Osc 2 Level",
+        0.0,
+        1.0,
+        0.6,
+        "",
+        Taper::Linear,
+    ),
     f("osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
     // Oscillator interaction
     e("cross_mod_type", "Cross Mod", CROSS_MOD_LABELS, 0.0),
-    f("cross_mod_amount", "Cross Mod Amt", 0.0, 4.0, 0.0, "", Taper::Linear),
+    f(
+        "cross_mod_amount",
+        "Cross Mod Amt",
+        0.0,
+        4.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
     // Mixer
     f("ring_level", "Ring Level", 0.0, 1.0, 0.0, "", Taper::Linear),
+    f(
+        "noise_level",
+        "Noise Level",
+        0.0,
+        1.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
+    e("noise_color", "Noise Colour", NOISE_LABELS, 0.0),
     // Filter
-    f("cutoff", "Cutoff", 20.0, 18000.0, 8000.0, "Hz", Taper::Exp { mid: 1000.0 }),
+    f(
+        "cutoff",
+        "Cutoff",
+        20.0,
+        18000.0,
+        8000.0,
+        "Hz",
+        Taper::Exp { mid: 1000.0 },
+    ),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", Taper::Linear),
     f("drive", "Drive", 0.1, 4.0, 1.0, "", Taper::Linear),
+    e("filter_mode", "Filter Mode", FILTER_MODE_LABELS, 0.0),
     e("filter_slope", "Filter Slope", SLOPE_LABELS, 1.0),
-    f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", Taper::Exp { mid: 1000.0 }),
+    f(
+        "hpf_cutoff",
+        "HPF Cutoff",
+        20.0,
+        18000.0,
+        20.0,
+        "Hz",
+        Taper::Exp { mid: 1000.0 },
+    ),
     b("filter_key_track", "Key Track", 0.0),
     // Envelope 1
-    f("env1_attack", "Env 1 Attack", 0.001, 10.0, 0.005, "s", Taper::Exp { mid: 1.0 }),
-    f("env1_decay", "Env 1 Decay", 0.001, 10.0, 0.3, "s", Taper::Exp { mid: 1.0 }),
-    f("env1_sustain", "Env 1 Sustain", 0.0, 1.0, 0.0, "", Taper::Linear),
-    f("env1_release", "Env 1 Release", 0.001, 10.0, 0.3, "s", Taper::Exp { mid: 1.0 }),
+    f(
+        "env1_attack",
+        "Env 1 Attack",
+        0.001,
+        10.0,
+        0.005,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
+    f(
+        "env1_decay",
+        "Env 1 Decay",
+        0.001,
+        10.0,
+        0.3,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
+    f(
+        "env1_sustain",
+        "Env 1 Sustain",
+        0.0,
+        1.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
+    f(
+        "env1_release",
+        "Env 1 Release",
+        0.001,
+        10.0,
+        0.3,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
     e("env1_shape", "Env 1 Shape", SHAPE_LABELS, 0.0),
     // Envelope 2 (VCA)
-    f("env2_attack", "Env 2 Attack", 0.001, 10.0, 0.005, "s", Taper::Exp { mid: 1.0 }),
-    f("env2_decay", "Env 2 Decay", 0.001, 10.0, 0.2, "s", Taper::Exp { mid: 1.0 }),
-    f("env2_sustain", "Env 2 Sustain", 0.0, 1.0, 0.8, "", Taper::Linear),
-    f("env2_release", "Env 2 Release", 0.001, 10.0, 0.3, "s", Taper::Exp { mid: 1.0 }),
+    f(
+        "env2_attack",
+        "Env 2 Attack",
+        0.001,
+        10.0,
+        0.005,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
+    f(
+        "env2_decay",
+        "Env 2 Decay",
+        0.001,
+        10.0,
+        0.2,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
+    f(
+        "env2_sustain",
+        "Env 2 Sustain",
+        0.0,
+        1.0,
+        0.8,
+        "",
+        Taper::Linear,
+    ),
+    f(
+        "env2_release",
+        "Env 2 Release",
+        0.001,
+        10.0,
+        0.3,
+        "s",
+        Taper::Exp { mid: 1.0 },
+    ),
     e("env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
+    // VCA modulation
+    lfosel("amp_lfo_src", "Amp LFO", 0.0),
+    f(
+        "amp_lfo_depth",
+        "Amp LFO Dep",
+        0.0,
+        1.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
+    b("amp_env_bypass", "Amp Gate", 0.0),
     // LFO 1
     e("lfo_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
-    f("lfo_rate", "LFO 1 Rate", 0.01, 40.0, 5.0, "Hz", Taper::Exp { mid: 5.0 }),
+    f(
+        "lfo_rate",
+        "LFO 1 Rate",
+        0.01,
+        40.0,
+        5.0,
+        "Hz",
+        Taper::Exp { mid: 5.0 },
+    ),
     b("lfo_sync", "LFO 1 Sync", 0.0),
-    f("lfo1_delay_time", "LFO 1 Delay", 0.0, 4.0, 0.0, "s", Taper::Linear),
+    f(
+        "lfo1_delay_time",
+        "LFO 1 Delay",
+        0.0,
+        4.0,
+        0.0,
+        "s",
+        Taper::Linear,
+    ),
     f("lfo1_fade", "LFO 1 Fade", 0.0, 4.0, 0.0, "s", Taper::Linear),
     b("lfo1_free_run", "LFO 1 Free", 0.0),
     // Pitch route (common, vibrato-scaled). Default vibrato: LFO 1 → pitch at a
@@ -751,7 +974,15 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     mp_vib_lfo("pitch_lfo_depth", "Pitch LFO Dep", 0.05),
     envsel("pitch_env_src", "Pitch Env"),
     mp_vib("pitch_env_depth", "Pitch Env Dep", 0.0),
-    f("pitch_wheel_depth", "Pitch Wheel", 0.0, 12.0, 2.0, "st", Taper::Linear),
+    f(
+        "pitch_wheel_depth",
+        "Pitch Wheel",
+        0.0,
+        12.0,
+        2.0,
+        "st",
+        Taper::Linear,
+    ),
     // PWM route
     lfosel("pwm_lfo_src", "PWM LFO", 0.0),
     mwu("pwm_lfo_depth", "PWM LFO Dep"),
@@ -769,26 +1000,90 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     // Mod-wheel panel
     mw("mod_wheel_pwm", "Wheel→PWM"),
     mc("mod_wheel_cutoff", "Wheel→Cutoff"),
-    f("mod_wheel_reso", "Wheel→Reso", 0.0, 1.0, 0.0, "", Taper::Linear),
+    f(
+        "mod_wheel_reso",
+        "Wheel→Reso",
+        0.0,
+        1.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
     mp_wide("mod_wheel_osc2_pitch", "Wheel→Osc2"),
     // Voice assignment / glide
     e("assign_mode", "Assign", ASSIGN_LABELS, 0.0),
     b("legato", "Legato", 0.0),
-    f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", Taper::Linear),
-    f("portamento_time", "Glide Time", 0.0, 0.5, 0.0, "s", Taper::Exp { mid: 0.1 }),
+    f(
+        "unison_detune",
+        "Detune",
+        0.0,
+        50.0,
+        12.0,
+        "ct",
+        Taper::Linear,
+    ),
+    f(
+        "portamento_time",
+        "Glide Time",
+        0.0,
+        0.5,
+        0.0,
+        "s",
+        Taper::Exp { mid: 0.1 },
+    ),
 ];
 
 /// Global descriptor table; indexed by [`GlobalParam`].
 pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
-    f("master_tune", "Master Tune", -12.0, 12.0, 0.0, "st", Taper::Linear),
+    f(
+        "master_tune",
+        "Master Tune",
+        -12.0,
+        12.0,
+        0.0,
+        "st",
+        Taper::Linear,
+    ),
     f("master_volume", "Volume", 0.0, 1.0, 0.7, "", Taper::Linear),
     b("chorus_on", "Chorus", 1.0),
-    f("chorus_rate", "Chorus Rate", 0.05, 8.0, 0.6, "Hz", Taper::Linear),
-    f("chorus_depth", "Chorus Depth", 0.0, 1.0, 0.5, "", Taper::Linear),
+    f(
+        "chorus_rate",
+        "Chorus Rate",
+        0.05,
+        8.0,
+        0.6,
+        "Hz",
+        Taper::Linear,
+    ),
+    f(
+        "chorus_depth",
+        "Chorus Depth",
+        0.0,
+        1.0,
+        0.5,
+        "",
+        Taper::Linear,
+    ),
     f("chorus_mix", "Chorus Mix", 0.0, 1.0, 0.4, "", Taper::Linear),
     b("delay_on", "Delay", 0.0),
-    f("delay_time", "Delay Time", 0.01, 2.0, 0.35, "s", Taper::Linear),
-    f("delay_feedback", "Delay FB", 0.0, 0.95, 0.4, "", Taper::Linear),
+    f(
+        "delay_time",
+        "Delay Time",
+        0.01,
+        2.0,
+        0.35,
+        "s",
+        Taper::Linear,
+    ),
+    f(
+        "delay_feedback",
+        "Delay FB",
+        0.0,
+        0.95,
+        0.4,
+        "",
+        Taper::Linear,
+    ),
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
     b("delay_pingpong", "Ping-Pong", 1.0),
     b("delay_sync", "Delay Sync", 0.0),
@@ -796,7 +1091,15 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
     e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
     // Global LFO 2 (E005 / 0019).
     e("lfo2_shape", "LFO 2 Shape", LFO_LABELS, 0.0),
-    f("lfo2_rate", "LFO 2 Rate", 0.01, 40.0, 5.0, "Hz", Taper::Exp { mid: 5.0 }),
+    f(
+        "lfo2_rate",
+        "LFO 2 Rate",
+        0.01,
+        40.0,
+        5.0,
+        "Hz",
+        Taper::Exp { mid: 5.0 },
+    ),
     b("lfo2_sync", "LFO 2 Sync", 0.0),
 ];
 
@@ -810,7 +1113,7 @@ fn enum_index(value: f32, max: usize) -> usize {
 /// One layer's worth of per-patch values (plain units). A **self-contained,
 /// serializable unit** (ADR 0003 §6 / ticket 0007): a future single-patch preset
 /// loads straight into one of these.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PatchValues {
     v: [f32; PatchParam::COUNT],
 }
@@ -857,12 +1160,20 @@ impl PatchValues {
         Waveform::ALL[enum_index(self.get(p), Waveform::ALL.len() - 1)]
     }
 
-    pub fn filter_poles(&self) -> OtaPoles {
+    pub fn filter_mode(&self) -> FilterMode {
+        FilterMode::ALL[enum_index(self.get(PatchParam::FilterMode), FilterMode::COUNT - 1)]
+    }
+
+    pub fn filter_slope(&self) -> FilterSlope {
         if enum_index(self.get(PatchParam::FilterSlope), 1) == 0 {
-            OtaPoles::Two
+            FilterSlope::Pole2
         } else {
-            OtaPoles::Four
+            FilterSlope::Pole4
         }
+    }
+
+    pub fn noise_color(&self) -> NoiseColor {
+        NoiseColor::ALL[enum_index(self.get(PatchParam::NoiseColor), NoiseColor::ALL.len() - 1)]
     }
 
     pub fn lfo_shape(&self) -> LfoShape {
@@ -870,7 +1181,10 @@ impl PatchValues {
     }
 
     pub fn assign_mode(&self) -> AssignMode {
-        AssignMode::from_index(enum_index(self.get(PatchParam::AssignMode), AssignMode::COUNT - 1))
+        AssignMode::from_index(enum_index(
+            self.get(PatchParam::AssignMode),
+            AssignMode::COUNT - 1,
+        ))
     }
 
     /// Solo legato toggle (see [`PatchParam::Legato`]).
@@ -914,7 +1228,7 @@ impl PatchValues {
 }
 
 /// The global value block (master, FX, oversample).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GlobalValues {
     v: [f32; GlobalParam::COUNT],
 }
@@ -976,7 +1290,7 @@ impl GlobalValues {
 /// The complete engine-side value set: two per-patch layers plus the global
 /// block. Addressed typed (per layer / global) by the engine, or by CLAP id at
 /// the host/UI boundary via [`Self::get_by_clap_id`] / [`Self::set_by_clap_id`].
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ParamValues {
     pub layers: [PatchValues; Layer::COUNT],
     pub global: GlobalValues,

@@ -14,9 +14,9 @@
 //! (Env2) is evaluated per base frame.
 
 use vxn_dsp::{
-    AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, LfoCore, LfoShape,
-    OtaLadderCoeffs, OtaPoles, PolyHpf, PolyOscillator, PolyOtaLadder, Waveform,
-    fast_exp2, note_to_hz, poly_ring_mod, xorshift64,
+    AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
+    LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
+    PolyOtaLadder, Waveform, fast_exp2, note_to_hz, poly_ring_mod, xorshift64,
 };
 
 use crate::params::{AssignMode, EnvSel, LfoSel};
@@ -104,6 +104,10 @@ pub struct BlockCtx {
     pub osc2_level: f32,
     /// Ring-modulator (osc1×osc2) mix level (0021). 0 = the cheap no-op path.
     pub ring_level: f32,
+    /// Noise source mix level. 0 = the cheap no-op path (no PRNG/pink work).
+    pub noise_level: f32,
+    /// Noise colour (White / Pink); layer-wide, so the branch hoists.
+    pub noise_color: NoiseColor,
     pub osc1_pw: f32,
     pub osc2_pw: f32,
     pub osc1_semi: f32,
@@ -113,8 +117,9 @@ pub struct BlockCtx {
     pub hpf_cutoff: f32,
     pub resonance: f32,
     pub drive: f32,
-    /// OTA filter output slope (12 vs 24 dB/oct).
-    pub poles: OtaPoles,
+    /// OTA filter response (LP / HP / BP / Notch) and slope (2- vs 4-pole).
+    pub filter_mode: FilterMode,
+    pub filter_slope: FilterSlope,
     pub base_semis: f32,
     /// LFO 1 is per-voice (E005 / 0018): the bank ticks its own phases, so the
     /// block carries LFO 1's shape, resolved rate (Hz, post host-sync) and the
@@ -171,12 +176,22 @@ pub struct BlockCtx {
     pub osc2_pitch_env_depth: f32,
     /// Mod-wheel → osc2 pitch contribution (semitones).
     pub osc2_pitch_extra: f32,
+    // ── VCA modulation ──
+    /// LFO source for amp tremolo ({Off/LFO1/LFO2}); always applied on top of the
+    /// amp envelope / gate.
+    pub amp_lfo_sel: LfoSel,
+    /// Tremolo depth (0..1): the LFO attenuates the VCA between `1-depth` and 1.
+    pub amp_lfo_depth: f32,
+    /// Env-bypass: when true the VCA follows the bare note gate at full level
+    /// instead of Env 2's ADSR shape (gate / organ mode). Tremolo still applies.
+    pub amp_env_bypass: bool,
 }
 
 /// All 16 voices in structure-of-arrays form.
 pub struct VoiceBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
+    noise: PolyNoiseBank,
     hpf: PolyHpf,
     ladder: PolyOtaLadder,
     env1: [AdsrCore; N],
@@ -253,6 +268,7 @@ impl VoiceBank {
         Self {
             osc1: PolyOscillator::new(),
             osc2: PolyOscillator::new(),
+            noise: PolyNoiseBank::new(rng_seed),
             hpf: PolyHpf::new(),
             ladder: PolyOtaLadder::new(),
             env1: std::array::from_fn(|_| AdsrCore::new(sample_rate)),
@@ -289,6 +305,7 @@ impl VoiceBank {
     pub fn reset_all(&mut self) {
         self.osc1 = PolyOscillator::new();
         self.osc2 = PolyOscillator::new();
+        self.noise.reset();
         self.hpf.reset();
         self.ladder.reset();
         for e in &mut self.env1 {
@@ -466,7 +483,10 @@ impl VoiceBank {
     /// Push a note onto the mono held-note stack, newest on top. A repeated note is
     /// moved to the top rather than duplicated; an overflow drops the oldest.
     fn mono_push(&mut self, note: u8) {
-        if let Some(i) = self.mono_stack[..self.mono_len].iter().position(|&n| n == note) {
+        if let Some(i) = self.mono_stack[..self.mono_len]
+            .iter()
+            .position(|&n| n == note)
+        {
             self.mono_stack.copy_within(i + 1..self.mono_len, i);
             self.mono_len -= 1;
         } else if self.mono_len == MONO_STACK {
@@ -569,7 +589,10 @@ impl VoiceBank {
     /// Remove `note` from the mono stack; returns whether it was the top (sounding)
     /// entry, so the caller knows whether the sounding note must change.
     fn mono_pop(&mut self, note: u8) -> bool {
-        match self.mono_stack[..self.mono_len].iter().position(|&n| n == note) {
+        match self.mono_stack[..self.mono_len]
+            .iter()
+            .position(|&n| n == note)
+        {
             Some(i) => {
                 let was_top = i + 1 == self.mono_len;
                 self.mono_stack.copy_within(i + 1..self.mono_len, i);
@@ -622,10 +645,17 @@ impl VoiceBank {
         // ── Per-voice control-rate resolution (block start) ──
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
+        // Amp tremolo gain per voice (block-rate): the selected LFO attenuates the
+        // VCA between `1 - depth` and 1. 1.0 = no tremolo (the common path).
+        let mut amp_trem = [1.0f32; N];
         for v in 0..N {
             // LFO 1's onset gain ramps per frame, so it's applied here (reading the
             // per-voice onset state) before handing a plain value to `resolve_mod`.
             let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
+            // Amp tremolo: attenuate-only, so the VCA can't exceed unity (lfo=+1 →
+            // gain 1, lfo=-1 → gain 1-depth). Reads the per-voice onset-scaled LFO1.
+            amp_trem[v] = 1.0
+                - ctx.amp_lfo_depth * 0.5 * (1.0 - lfo_src(ctx.amp_lfo_sel, lfo1, ctx.lfo2_val));
             let m = resolve_mod(
                 ctx,
                 &ModSources {
@@ -668,8 +698,8 @@ impl VoiceBank {
                 OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, ctx.resonance, ctx.drive),
             );
         }
-        // Output slope is layer-wide, not per voice.
-        self.ladder.set_poles(ctx.poles);
+        // Filter response is layer-wide, not per voice.
+        self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         // Pre-VCF high-pass. Cutoff is global (not a mod destination), so the
         // coefficient is computed once and broadcast. At the default low cutoff
@@ -693,6 +723,7 @@ impl VoiceBank {
         let mut o1 = [0.0f32; N];
         let mut o2 = [0.0f32; N];
         let mut ring = [0.0f32; N];
+        let mut noise = [0.0f32; N];
         let mut mix = [0.0f32; N];
         let mut hp = [0.0f32; N];
         let mut filt = [0.0f32; N];
@@ -702,34 +733,38 @@ impl VoiceBank {
         // by `ring_level`. Zero level skips the diode maths entirely (fast path).
         let ring_on = ctx.ring_level != 0.0;
         let ring_gain = 10.0f32.powf(RING_DRIVE_DB / 20.0);
+        // Noise source mixed into the source bus; zero level skips PRNG/pink work.
+        let noise_on = ctx.noise_level != 0.0;
 
         // Envelope block-skip (see `envelopes_static`): when nothing triggers and
         // every active voice holds both envelopes in Sustain, the env levels are
         // constant, so `amp` is computed once and the per-frame tick + free-check
         // are skipped. Otherwise the per-frame path runs.
-        let env_static =
-            envelopes_static(&trig, &self.active, &self.gate, &self.env1, &self.env2);
+        let env_static = envelopes_static(&trig, &self.active, &self.gate, &self.env1, &self.env2);
         if env_static {
             for (v, amp_v) in amp.iter_mut().enumerate() {
-                *amp_v = if self.active[v] {
-                    self.env2[v].level.max(0.0)
-                } else {
-                    0.0
-                };
+                *amp_v = amp_base(
+                    self.active[v],
+                    self.gate[v],
+                    ctx.amp_env_bypass,
+                    self.env2[v].level,
+                ) * amp_trem[v];
             }
         }
 
         for base_i in 0..base_frames {
             // Envelopes + amp (base rate, scalar; gated to 0 for inactive voices).
-            // The VCA is hardwired to Env2 (ADR 0004 §4); Env1 still ticks so it
-            // can feed the modulation routes from its stored level. Skipped when
-            // the block is envelope-static (see `env_static` above).
+            // The VCA follows Env2 unless `amp_env_bypass` (then the bare gate),
+            // times the block-rate tremolo gain. Env2 still ticks in bypass so the
+            // voice frees on release as usual; Env1 ticks to feed the mod routes.
+            // Skipped when the block is envelope-static (see `env_static` above).
             if !env_static {
                 for v in 0..N {
                     let t = trig[v] && base_i == 0;
                     let _e1 = self.env1[v].tick(t, self.gate[v]);
                     let e2 = self.env2[v].tick(t, self.gate[v]);
-                    amp[v] = if self.active[v] { e2.max(0.0) } else { 0.0 };
+                    amp[v] = amp_base(self.active[v], self.gate[v], ctx.amp_env_bypass, e2)
+                        * amp_trem[v];
                 }
             }
 
@@ -774,6 +809,13 @@ impl VoiceBank {
                     poly_ring_mod(&o1, &o2, ring_gain, &mut ring);
                     for v in 0..N {
                         mix[v] += ring[v] * ctx.ring_level;
+                    }
+                }
+                // Noise contribution: one decorrelated stream per voice, summed in.
+                if noise_on {
+                    self.noise.process(ctx.noise_color, &mut noise);
+                    for v in 0..N {
+                        mix[v] += noise[v] * ctx.noise_level;
                     }
                 }
                 // Source Mixer → HPF → VCF → VCA (JP-8 topology). HPF bypassed
@@ -831,6 +873,20 @@ fn env_src(sel: EnvSel, env1: f32, env2: f32) -> f32 {
         EnvSel::Off => 0.0,
         EnvSel::Env1 => env1,
         EnvSel::Env2 => env2,
+    }
+}
+
+/// VCA amp base level for one voice (before tremolo): 0 when inactive, the bare
+/// note gate at full level when `bypass` is on (gate / organ mode), else the
+/// Env 2 level clamped non-negative. The caller multiplies in the tremolo gain.
+#[inline]
+fn amp_base(active: bool, gate: bool, bypass: bool, env2_level: f32) -> f32 {
+    if !active {
+        0.0
+    } else if bypass {
+        if gate { 1.0 } else { 0.0 }
+    } else {
+        env2_level.max(0.0)
     }
 }
 
@@ -1345,6 +1401,8 @@ mod mod_tests {
             osc1_level: 1.0,
             osc2_level: 1.0,
             ring_level: 0.0,
+            noise_level: 0.0,
+            noise_color: NoiseColor::White,
             osc1_pw: 0.5,
             osc2_pw: 0.5,
             osc1_semi: 0.0,
@@ -1353,7 +1411,8 @@ mod mod_tests {
             hpf_cutoff: 20.0,
             resonance: 0.0,
             drive: 1.0,
-            poles: OtaPoles::Four,
+            filter_mode: FilterMode::Lp,
+            filter_slope: FilterSlope::Pole4,
             base_semis: 0.0,
             lfo1_shape: LfoShape::Sine,
             lfo1_rate_hz: 1.0,
@@ -1382,6 +1441,9 @@ mod mod_tests {
             osc2_pitch_env_sel: EnvSel::Off,
             osc2_pitch_env_depth: 0.0,
             osc2_pitch_extra: 0.0,
+            amp_lfo_sel: LfoSel::Off,
+            amp_lfo_depth: 0.0,
+            amp_env_bypass: false,
         }
     }
 
@@ -1393,7 +1455,14 @@ mod mod_tests {
 
     /// Plain sources: env levels, LFO values, velocity and note all explicit.
     fn src(e1: f32, e2: f32, lfo1: f32, lfo2: f32, velocity: f32, note: u8) -> ModSources {
-        ModSources { e1, e2, lfo1, lfo2, velocity, note }
+        ModSources {
+            e1,
+            e2,
+            lfo1,
+            lfo2,
+            velocity,
+            note,
+        }
     }
 
     #[test]
@@ -1471,15 +1540,27 @@ mod mod_tests {
     #[test]
     fn cutoff_keytrack_pivots_at_c4_one_octave_per_octave() {
         let ctx = ctx_with(|c| c.filter_key_track = true);
-        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod, 0.0);
-        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 72)).cutoff_mod, 12.0);
-        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 48)).cutoff_mod, -12.0);
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod,
+            0.0
+        );
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 72)).cutoff_mod,
+            12.0
+        );
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 48)).cutoff_mod,
+            -12.0
+        );
     }
 
     #[test]
     fn keytrack_off_ignores_note() {
         let ctx = neutral_ctx(); // key-track off
-        assert_eq!(resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 96)).cutoff_mod, 0.0);
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 96)).cutoff_mod,
+            0.0
+        );
     }
 
     #[test]
@@ -1551,7 +1632,13 @@ mod mod_tests {
     #[test]
     fn static_when_all_sustain_gate_high_no_trigger() {
         let (e1, e2) = envs_all(AdsrStage::Sustain);
-        assert!(envelopes_static(&[false; N], &[true; N], &[true; N], &e1, &e2));
+        assert!(envelopes_static(
+            &[false; N],
+            &[true; N],
+            &[true; N],
+            &e1,
+            &e2
+        ));
     }
 
     #[test]
@@ -1566,7 +1653,13 @@ mod mod_tests {
     fn not_static_when_a_voice_is_mid_attack() {
         let (mut e1, e2) = envs_all(AdsrStage::Sustain);
         e1[5].stage = AdsrStage::Attack; // env1 not settled
-        assert!(!envelopes_static(&[false; N], &[true; N], &[true; N], &e1, &e2));
+        assert!(!envelopes_static(
+            &[false; N],
+            &[true; N],
+            &[true; N],
+            &e1,
+            &e2
+        ));
     }
 
     #[test]

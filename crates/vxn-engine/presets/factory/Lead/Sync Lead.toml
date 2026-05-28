@@ -1,0 +1,32 @@
+schema = 1
+kind = "patch"
+
+[meta]
+name = "Sync Lead"
+author = "Vulpus Labs"
+category = "Lead"
+tags = ["lead", "sync", "twin"]
+comment = "Screaming hard-sync lead — Twin assign fattens each note across two detuned channels, Env 1 drives the sync sweep, pitch wheel set wide for dives."
+
+[patch]
+osc1_wave = "Saw"
+osc1_level = 0.9
+osc2_wave = "Saw"
+osc2_coarse = 7
+osc2_level = 0.6
+cross_mod_type = "Sync"
+osc2_pitch_env_src = "Env 1"
+osc2_pitch_env_depth = 12.0
+cutoff = 6000.0
+resonance = 0.3
+drive = 2.0
+env1_attack = 0.01
+env1_decay = 0.7
+env1_sustain = 0.3
+env2_attack = 0.01
+env2_decay = 0.3
+env2_sustain = 0.8
+env2_release = 0.2
+assign_mode = "Twin"
+unison_detune = 8.0
+pitch_wheel_depth = 7.0

@@ -99,8 +99,14 @@ mod tests {
         for bpm in [90.0_f32, 140.0] {
             let straight = synced_hz(bpm, q);
             // Dotted is 1.5× longer → 2/3 the rate; triplet 2/3 longer → 1.5×.
-            assert!((synced_hz(bpm, qd) - straight / 1.5).abs() < 1e-4, "dotted {bpm}");
-            assert!((synced_hz(bpm, qt) - straight * 1.5).abs() < 1e-4, "triplet {bpm}");
+            assert!(
+                (synced_hz(bpm, qd) - straight / 1.5).abs() < 1e-4,
+                "dotted {bpm}"
+            );
+            assert!(
+                (synced_hz(bpm, qt) - straight * 1.5).abs() < 1e-4,
+                "triplet {bpm}"
+            );
         }
     }
 

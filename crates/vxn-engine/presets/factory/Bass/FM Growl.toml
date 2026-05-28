@@ -1,0 +1,32 @@
+schema = 1
+kind = "patch"
+
+[meta]
+name = "FM Growl"
+author = "Vulpus Labs"
+category = "Bass"
+tags = ["bass", "fm", "ring"]
+comment = "Aggressive cross-mod (FM) bass — osc 2 modulates osc 1, ring and a dusting of pink noise add grit."
+
+[patch]
+osc1_wave = "Saw"
+osc1_level = 0.85
+osc2_wave = "Sine"
+osc2_octave = 0
+osc2_level = 0.0
+cross_mod_type = "FM"
+cross_mod_amount = 2.0
+ring_level = 0.3
+noise_level = 0.15
+noise_color = "Pink"
+cutoff = 900.0
+resonance = 0.5
+drive = 1.8
+filter_slope = "24"
+env1_decay = 0.25
+env1_sustain = 0.2
+cutoff_env_depth = 48.0
+env2_attack = 0.003
+env2_decay = 0.6
+env2_sustain = 0.5
+env2_release = 0.15

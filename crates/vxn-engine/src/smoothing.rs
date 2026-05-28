@@ -68,11 +68,11 @@ enum Glide {
 fn patch_glide(p: PatchParam) -> Glide {
     use PatchParam::*;
     match p {
-        Osc1Level | Osc2Level | RingLevel | Osc1PulseWidth | Osc2PulseWidth
+        Osc1Level | Osc2Level | RingLevel | NoiseLevel | Osc1PulseWidth | Osc2PulseWidth
         | CrossModAmount | PitchLfoDepth | PitchEnvDepth | PitchWheelDepth | PwmLfoDepth
         | PwmEnvDepth | CutoffLfo1Depth | CutoffLfo2Depth | CutoffEnvDepth | VelCutoffDepth
-        | Osc2PitchEnvDepth | ModWheelPwm | ModWheelCutoff | ModWheelReso
-        | ModWheelOsc2Pitch => Glide::Block,
+        | Osc2PitchEnvDepth | ModWheelPwm | ModWheelCutoff | ModWheelReso | ModWheelOsc2Pitch
+        | AmpLfoDepth => Glide::Block,
         _ => Glide::Snap,
     }
 }

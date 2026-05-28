@@ -155,7 +155,13 @@ struct LimiterCore {
 }
 
 impl LimiterCore {
-    fn new(sample_rate: f32, threshold: f32, attack_ms: f32, release_ms: f32, max_attack_ms: f32) -> Self {
+    fn new(
+        sample_rate: f32,
+        threshold: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        max_attack_ms: f32,
+    ) -> Self {
         let lookahead_samples = ms_to_samples(attack_ms, sample_rate);
         let max_lookahead = ms_to_samples(max_attack_ms, sample_rate);
         // Base-rate detection: one magnitude per sample, window = lookahead + 1.
@@ -328,10 +334,16 @@ mod tests {
         // Slam well past the ceiling; output must stay bounded by the threshold.
         for _ in 0..24_000 {
             let (l, r) = lim.process(2.0, 2.0);
-            assert!(l.abs() <= 1.0 && r.abs() <= 1.0, "output exceeds ±1: {l}, {r}");
+            assert!(
+                l.abs() <= 1.0 && r.abs() <= 1.0,
+                "output exceeds ±1: {l}, {r}"
+            );
         }
         let (l, _) = lim.process(2.0, 2.0);
-        assert!(l.abs() < 1.0, "settled output {l} should sit under the ceiling");
+        assert!(
+            l.abs() < 1.0,
+            "settled output {l} should sit under the ceiling"
+        );
     }
 
     #[test]
@@ -367,7 +379,10 @@ mod tests {
         // After a long release into silence, a quiet probe passes near unity.
         warmup(&mut lim, 0.3, 0.3, 256);
         let (l, _) = lim.process(0.3, 0.3);
-        assert!(l.abs() > 0.27, "probe over-attenuated ({l}); gain not recovered");
+        assert!(
+            l.abs() > 0.27,
+            "probe over-attenuated ({l}); gain not recovered"
+        );
     }
 
     #[test]

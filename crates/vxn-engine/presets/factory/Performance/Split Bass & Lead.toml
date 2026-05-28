@@ -1,0 +1,58 @@
+schema = 1
+kind = "performance"
+
+[meta]
+name = "Split Bass & Lead"
+author = "Vulpus Labs"
+category = "Performance"
+tags = ["split", "performance"]
+comment = "Keyboard split at C3 (MIDI 48): Solo bass in the Lower layer, mono sync-ish lead Upper. Global chorus and a touch of ping-pong delay glue it together."
+
+[performance]
+key_mode = "Split"
+split_point = 48
+
+[performance.global]
+master_volume = 0.75
+chorus_on = true
+chorus_mix = 0.5
+delay_on = true
+delay_time = 0.3
+delay_mix = 0.2
+delay_pingpong = true
+
+[performance.upper]
+osc1_wave = "Saw"
+osc1_level = 0.9
+osc2_wave = "Saw"
+osc2_fine = 6.0
+cutoff = 6000.0
+resonance = 0.35
+drive = 1.4
+assign_mode = "Solo"
+legato = true
+portamento_time = 0.03
+env2_attack = 0.01
+env2_decay = 0.4
+env2_sustain = 0.7
+env2_release = 0.3
+
+[performance.lower]
+osc1_wave = "Saw"
+osc1_level = 0.9
+osc2_wave = "Saw"
+osc2_octave = 0
+osc2_fine = -6.0
+cutoff = 500.0
+resonance = 0.4
+drive = 1.6
+filter_slope = "24"
+filter_key_track = true
+env1_decay = 0.3
+env1_sustain = 0.1
+cutoff_env_depth = 40.0
+env2_attack = 0.002
+env2_decay = 0.4
+env2_sustain = 0.3
+env2_release = 0.12
+assign_mode = "Solo"

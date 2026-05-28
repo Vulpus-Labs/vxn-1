@@ -169,12 +169,15 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 ],
             ),
             (
-                // osc1/osc2/ring levels (ADR 0004 §6 / "Panel layout").
+                // osc1/osc2/ring/noise levels (ADR 0004 §6 / "Panel layout"); the
+                // noise colour (White/Pink) picker sits in the bottom strip.
                 "Mixer",
                 &[
                     (u(Osc1Level), "Osc1"),
                     (u(Osc2Level), "Osc2"),
                     (u(RingLevel), "Ring"),
+                    (u(NoiseLevel), "Noise"),
+                    (u(NoiseColor), "Col"),
                 ],
             ),
         ],
@@ -201,14 +204,26 @@ const ROWS: &[&[(&str, &[Entry])]] = {
                 ],
             ),
             (
+                // VCA modulation: amp tremolo (LFO source + depth) and the
+                // env-bypass gate switch (in the bottom strip).
+                "VCA",
+                &[
+                    (u(AmpLfoSrc), "LFO"),
+                    (u(AmpLfoDepth), "Depth"),
+                    (u(AmpEnvBypass), "Gate"),
+                ],
+            ),
+            (
                 "Filter",
                 &[
                     (u(HpfCutoff), "HPF"),
                     (u(Cutoff), "Cutoff"),
                     (u(Resonance), "Reso"),
                     (u(Drive), "Drive"),
-                    (u(FilterKeyTrack), "KeyTrk"),
+                    (u(FilterMode), "Mode"),
+                    // Slope (12/24 dB) + key-track ride the bottom strip together.
                     (u(FilterSlope), "Slope"),
+                    (u(FilterKeyTrack), "KeyTrk"),
                 ],
             ),
             (
@@ -591,7 +606,10 @@ fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
                 Ctl::Select(i, SyncSignal::new(Some(shared.get(i).round() as usize)))
             }
         }
-        _ => Ctl::Fader(i, SyncSignal::new(fader_to_ui_dyn(i, shared.get(i), shared))),
+        _ => Ctl::Fader(
+            i,
+            SyncSignal::new(fader_to_ui_dyn(i, shared.get(i), shared)),
+        ),
     }
 }
 
@@ -877,13 +895,18 @@ fn keys_panel(
                 VStack::new(cx, move |cx| {
                     for (n, label) in MODES.iter().enumerate() {
                         let sh = Arc::clone(&sh_mode);
-                        toggle_row(cx, label, key_mode.map(move |m: &usize| *m == n), move |_cx| {
-                            key_mode.set(n);
-                            if n == 0 {
-                                edit_layer.set(0);
-                            }
-                            sh.set_key_mode_seeded(KeyMode::from_u8(n as u8));
-                        });
+                        toggle_row(
+                            cx,
+                            label,
+                            key_mode.map(move |m: &usize| *m == n),
+                            move |_cx| {
+                                key_mode.set(n);
+                                if n == 0 {
+                                    edit_layer.set(0);
+                                }
+                                sh.set_key_mode_seeded(KeyMode::from_u8(n as u8));
+                            },
+                        );
                     }
                 })
                 .class("tg-list")
@@ -934,41 +957,41 @@ fn keys_panel(
                             ((*n - SPLIT_MIN) / (SPLIT_MAX - SPLIT_MIN)).clamp(0.0, 1.0)
                         }),
                     )
-                        .width(Stretch(1.0))
-                        .height(Pixels(14.0))
-                        .cursor(CursorIcon::Hand)
-                        .disabled(!enabled)
-                        .on_change(move |_cx, v| {
-                            // Map the slider over C0..C7 only (a narrower span than the
-                            // full MIDI range), so every semitone is easy to land on.
-                            let note = (SPLIT_MIN + v * (SPLIT_MAX - SPLIT_MIN))
-                                .round()
-                                .clamp(SPLIT_MIN, SPLIT_MAX);
-                            split.set(note);
-                            sh_change.set_split_point(note as u8);
-                        })
-                        .on_double_click(move |_cx, _btn| {
-                            split.set(DEFAULT_SPLIT_POINT as f32);
-                            sh_dbl.set_split_point(DEFAULT_SPLIT_POINT);
-                        })
-                        .on_hover(move |cx| {
-                            posx.set(cursor_left(cx));
-                            hover.set(true);
-                            show.set(true);
-                        })
-                        .on_hover_out(move |_cx| {
-                            hover.set(false);
-                            show.set(drag.get());
-                        })
-                        .on_mouse_down(move |cx, _btn| {
-                            posx.set(cursor_left(cx));
-                            drag.set(true);
-                            show.set(true);
-                        })
-                        .on_mouse_up(move |_cx, _btn| {
-                            drag.set(false);
-                            show.set(hover.get());
-                        });
+                    .width(Stretch(1.0))
+                    .height(Pixels(14.0))
+                    .cursor(CursorIcon::Hand)
+                    .disabled(!enabled)
+                    .on_change(move |_cx, v| {
+                        // Map the slider over C0..C7 only (a narrower span than the
+                        // full MIDI range), so every semitone is easy to land on.
+                        let note = (SPLIT_MIN + v * (SPLIT_MAX - SPLIT_MIN))
+                            .round()
+                            .clamp(SPLIT_MIN, SPLIT_MAX);
+                        split.set(note);
+                        sh_change.set_split_point(note as u8);
+                    })
+                    .on_double_click(move |_cx, _btn| {
+                        split.set(DEFAULT_SPLIT_POINT as f32);
+                        sh_dbl.set_split_point(DEFAULT_SPLIT_POINT);
+                    })
+                    .on_hover(move |cx| {
+                        posx.set(cursor_left(cx));
+                        hover.set(true);
+                        show.set(true);
+                    })
+                    .on_hover_out(move |_cx| {
+                        hover.set(false);
+                        show.set(drag.get());
+                    })
+                    .on_mouse_down(move |cx, _btn| {
+                        posx.set(cursor_left(cx));
+                        drag.set(true);
+                        show.set(true);
+                    })
+                    .on_mouse_up(move |_cx, _btn| {
+                        drag.set(false);
+                        show.set(hover.get());
+                    });
                     // Note-name tooltip, pinned above the slider at the pointer X.
                     Label::new(cx, split.map(|n: &f32| note_name(*n as u8)))
                         .class("value-pop")
@@ -1007,8 +1030,11 @@ fn keys_panel(
                         sh_reset.reset_patch_to_defaults(Layer::Upper);
                         sh_reset.reset_patch_to_defaults(Layer::Lower);
                     } else {
-                        let layer =
-                            if edit_layer.get() == 0 { Layer::Upper } else { Layer::Lower };
+                        let layer = if edit_layer.get() == 0 {
+                            Layer::Upper
+                        } else {
+                            Layer::Lower
+                        };
                         sh_reset.reset_patch_to_defaults(layer);
                     }
                 });
@@ -1089,7 +1115,11 @@ fn panel_view(
             } else {
                 // The On bool sits in the header; strip controls drop to the bottom
                 // strip (below). Everything else is a column in the main row.
-                let cells = if header_switch { &entries[1..] } else { entries };
+                let cells = if header_switch {
+                    &entries[1..]
+                } else {
+                    entries
+                };
                 for (id, short) in cells {
                     if in_bottom_strip(*id) {
                         continue;
@@ -1102,9 +1132,15 @@ fn panel_view(
                     let ctl = controls.iter().copied().find(|c| c.idx() == cid).unwrap();
                     // The Voice panel's Detune fader carries the Legato toggle beneath
                     // it (under the fader, level with the Solo selector's row).
-                    if matches!(param_ref(cid), Some(ParamRef::Patch(_, PatchParam::UnisonDetune))) {
+                    if matches!(
+                        param_ref(cid),
+                        Some(ParamRef::Patch(_, PatchParam::UnisonDetune))
+                    ) {
                         detune_legato_cell(cx, ctl, layer, controls, shared, short);
-                    } else if matches!(param_ref(cid), Some(ParamRef::Global(GlobalParam::LimiterOn))) {
+                    } else if matches!(
+                        param_ref(cid),
+                        Some(ParamRef::Global(GlobalParam::LimiterOn))
+                    ) {
                         // The limiter is a bare on/off option (a companion to Volume),
                         // not a headed cell: its box sits with the "LIMIT" label beside
                         // it and no column header above.
@@ -1158,13 +1194,18 @@ fn panel_view(
     .padding(Pixels(5.0))
     .vertical_gap(Pixels(4.0));
     // Per-panel width share. Panels otherwise stretch equally across a row; the
-    // five-control Osc panels take a bigger share and the three-fader Mixer a
-    // smaller one, and the single-fader Bend panel is pinned narrow.
+    // five-control Osc panels take a bigger share, the single-fader Bend panel is
+    // pinned narrow, and the row-2 envelopes / LFO 2 are slimmed to free room for
+    // the noise (Mixer) and VCA-mod controls.
     let handle = match title {
         "Bend" => handle.width(Pixels(54.0)),
         "Osc 1" | "Osc 2" => handle.width(Stretch(1.2)),
         "LFO 1" => handle.width(Stretch(1.2)),
-        "Mixer" => handle.width(Stretch(0.8)),
+        "LFO 2" => handle.width(Stretch(0.7)),
+        "Mixer" => handle.width(Stretch(1.1)),
+        "Env 1" | "Env 2" => handle.width(Stretch(0.8)),
+        "VCA" => handle.width(Stretch(0.75)),
+        "Filter" => handle.width(Stretch(1.15)),
         _ => handle,
     };
     if let Some(d) = display {
@@ -1366,7 +1407,11 @@ fn gated_toggle_row(
         .alignment(Alignment::Left)
     })
     .class("tg-row")
-    .cursor(if enabled { CursorIcon::Hand } else { CursorIcon::Arrow })
+    .cursor(if enabled {
+        CursorIcon::Hand
+    } else {
+        CursorIcon::Arrow
+    })
     .on_press_down(move |cx| {
         if enabled {
             press(cx);
@@ -1419,8 +1464,13 @@ impl Fader {
         on_change: impl Fn(&mut EventContext, f32) + 'static,
     ) -> Handle<'_, Self> {
         let frozen = disabled.then(|| value.get());
-        let handle = Self { value, frozen, is_dragging: false, on_change: Box::new(on_change) }
-            .build(cx, |_| {});
+        let handle = Self {
+            value,
+            frozen,
+            is_dragging: false,
+            on_change: Box::new(on_change),
+        }
+        .build(cx, |_| {});
         // Redraw (not relayout) on value change — but only when live. A disabled
         // fader ignores automation entirely, so it never asks for a redraw.
         if frozen.is_none() {
@@ -1483,7 +1533,10 @@ impl View for Fader {
         let s = cx.scale_factor();
         // Frozen (disabled) faders draw their build-time value so automation can't
         // animate an inert control even if something else triggers a redraw.
-        let n = self.frozen.unwrap_or_else(|| self.value.get()).clamp(0.0, 1.0);
+        let n = self
+            .frozen
+            .unwrap_or_else(|| self.value.get())
+            .clamp(0.0, 1.0);
 
         let track_w = 6.0 * s;
         let center_x = b.x + b.w / 2.0;
@@ -1497,7 +1550,12 @@ impl View for Fader {
 
         // Track (full height), then the active fill rising from the bottom to the thumb.
         paint.set_color(vg::Color::from_rgb(0x55, 0x55, 0x55));
-        canvas.draw_round_rect(vg::Rect::from_xywh(track_x, b.y, track_w, b.h), 2.0 * s, 2.0 * s, &paint);
+        canvas.draw_round_rect(
+            vg::Rect::from_xywh(track_x, b.y, track_w, b.h),
+            2.0 * s,
+            2.0 * s,
+            &paint,
+        );
         paint.set_color(vg::Color::from_rgb(0x3a, 0x86, 0xcc));
         canvas.draw_round_rect(
             vg::Rect::from_xywh(track_x, fill_top, track_w, b.y + b.h - fill_top),
@@ -1553,38 +1611,38 @@ fn fader_body(
         sig.set(v);
         sh_set.set(i, fader_from_ui_dyn(i, v, &sh_set));
     })
-        .cursor(CursorIcon::Hand)
-        .width(Pixels(16.0))
-        .height(Pixels(FADER_H))
-        // Double-click resets the fader to its parameter default (bracketed by a
-        // gesture so the host records the jump as one edit).
-        .on_double_click(move |_cx, _btn| {
-            let d = desc_for_clap_id(i).map_or(0.0, |d| d.default);
-            sig.set(fader_to_ui_dyn(i, d, &sh_dbl));
-            sh_dbl.set_gesture(i, true);
-            sh_dbl.set(i, d);
-            sh_dbl.set_gesture(i, false);
-        })
-        .on_hover(move |cx| {
-            posy.set(cursor_top(cx));
-            hover.set(true);
-            show.set(true);
-        })
-        .on_hover_out(move |_cx| {
-            hover.set(false);
-            show.set(drag.get());
-        })
-        .on_mouse_down(move |cx, _btn| {
-            posy.set(cursor_top(cx));
-            drag.set(true);
-            show.set(true);
-            sh_down.set_gesture(i, true);
-        })
-        .on_mouse_up(move |_cx, _btn| {
-            drag.set(false);
-            show.set(hover.get());
-            sh_up.set_gesture(i, false);
-        });
+    .cursor(CursorIcon::Hand)
+    .width(Pixels(16.0))
+    .height(Pixels(FADER_H))
+    // Double-click resets the fader to its parameter default (bracketed by a
+    // gesture so the host records the jump as one edit).
+    .on_double_click(move |_cx, _btn| {
+        let d = desc_for_clap_id(i).map_or(0.0, |d| d.default);
+        sig.set(fader_to_ui_dyn(i, d, &sh_dbl));
+        sh_dbl.set_gesture(i, true);
+        sh_dbl.set(i, d);
+        sh_dbl.set_gesture(i, false);
+    })
+    .on_hover(move |cx| {
+        posy.set(cursor_top(cx));
+        hover.set(true);
+        show.set(true);
+    })
+    .on_hover_out(move |_cx| {
+        hover.set(false);
+        show.set(drag.get());
+    })
+    .on_mouse_down(move |cx, _btn| {
+        posy.set(cursor_top(cx));
+        drag.set(true);
+        show.set(true);
+        sh_down.set_gesture(i, true);
+    })
+    .on_mouse_up(move |_cx, _btn| {
+        drag.set(false);
+        show.set(hover.get());
+        sh_up.set_gesture(i, false);
+    });
     fader.disabled(disabled);
     // A synced LFO rate reads as a musical subdivision; otherwise the descriptor's
     // own display (Hz, st, …). `sync_partner` is `None` for every non-rate fader,
@@ -1619,12 +1677,22 @@ fn fader_body(
 /// typed param so it holds across both layers. The mod-route source selectors are
 /// deliberately *not* here — they stay vertical beside their faders.
 fn in_bottom_strip(idx: usize) -> bool {
-    use PatchParam::{Env1Shape, Env2Shape, FilterKeyTrack, FilterSlope, Lfo1FreeRun, LfoSync};
+    use PatchParam::{
+        AmpEnvBypass, Env1Shape, Env2Shape, FilterKeyTrack, FilterSlope, Lfo1FreeRun, LfoSync,
+        NoiseColor,
+    };
     matches!(
         param_ref(idx),
         Some(ParamRef::Patch(
             _,
-            LfoSync | Lfo1FreeRun | Env1Shape | Env2Shape | FilterSlope | FilterKeyTrack
+            LfoSync
+                | Lfo1FreeRun
+                | Env1Shape
+                | Env2Shape
+                | FilterSlope
+                | FilterKeyTrack
+                | NoiseColor
+                | AmpEnvBypass
         )) | Some(ParamRef::Global(
             GlobalParam::Lfo2Sync
                 | GlobalParam::DelaySync
@@ -1647,13 +1715,19 @@ fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &Arc<Shar
                 HStack::new(cx, move |cx| {
                     for (n, label) in variants.iter().enumerate() {
                         let sh = Arc::clone(&sh);
-                        toggle_row(cx, label, sig.map(move |b: &bool| *b as usize == n), move |_cx| {
-                            let on = n == 1;
-                            sig.set(on);
-                            sh.set(i, if on { 1.0 } else { 0.0 });
-                        });
+                        toggle_row(
+                            cx,
+                            label,
+                            sig.map(move |b: &bool| *b as usize == n),
+                            move |_cx| {
+                                let on = n == 1;
+                                sig.set(on);
+                                sh.set(i, if on { 1.0 } else { 0.0 });
+                            },
+                        );
                     }
                 })
+                .width(Auto)
                 .height(Auto)
                 .horizontal_gap(Pixels(6.0));
             }
@@ -1676,10 +1750,15 @@ fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &Arc<Shar
             HStack::new(cx, move |cx| {
                 for (n, label) in variants.iter().enumerate() {
                     let sh = Arc::clone(&sh);
-                    toggle_row(cx, label, sig.map(move |s: &Option<usize>| *s == Some(n)), move |_cx| {
-                        sig.set(Some(n));
-                        sh.set(i, n as f32);
-                    });
+                    toggle_row(
+                        cx,
+                        label,
+                        sig.map(move |s: &Option<usize>| *s == Some(n)),
+                        move |_cx| {
+                            sig.set(Some(n));
+                            sh.set(i, n as f32);
+                        },
+                    );
                 }
             })
             .height(Auto)
@@ -1707,8 +1786,10 @@ fn enum_list_body(
     // Display order: natural enum order, except the assign modes read Poly, Twin,
     // Unison, Solo (Twin sits by Poly as the other "thin" mode) — a view reorder
     // only; the stored value is still each variant's own index.
-    let order: Vec<usize> = if matches!(param_ref(i), Some(ParamRef::Patch(_, PatchParam::AssignMode)))
-    {
+    let order: Vec<usize> = if matches!(
+        param_ref(i),
+        Some(ParamRef::Patch(_, PatchParam::AssignMode))
+    ) {
         ASSIGN_DISPLAY_ORDER.to_vec()
     } else {
         (0..variants.len()).collect()
@@ -1945,7 +2026,9 @@ fn detune_legato_cell(
     let sh = Arc::clone(shared);
     let shf = Arc::clone(shared);
     VStack::new(cx, move |cx| {
-        Label::new(cx, up(short)).class("ctl-label").height(Pixels(11.0));
+        Label::new(cx, up(short))
+            .class("ctl-label")
+            .height(Pixels(11.0));
         VStack::new(cx, move |cx| {
             fader_body(cx, fi, fsig, &shf, false);
             if let (Some(Ctl::Switch(li, lsig)), Some(asig)) = (legato, assign_sig) {
@@ -2016,7 +2099,9 @@ fn mod_route_view(
             .unwrap()
     };
     VStack::new(cx, |cx| {
-        Label::new(cx, up(header)).class("ctl-label").height(Pixels(11.0));
+        Label::new(cx, up(header))
+            .class("ctl-label")
+            .height(Pixels(11.0));
         HStack::new(cx, |cx| {
             // Source selector then slider, kept as one tight content-width group
             // centred under the header label (not stretched apart to the column
@@ -2068,8 +2153,26 @@ fn lfo1_cells(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<Sha
 /// dims and goes non-interactive while its selector is Off (it drives nothing).
 fn cross_mod_panel(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<SharedParams>) {
     use PatchParam::*;
-    xmod_pair(cx, "Type", CrossModType, "Amt", CrossModAmount, layer, controls, shared);
-    xmod_pair(cx, "Src", Osc2PitchEnvSrc, "Mod", Osc2PitchEnvDepth, layer, controls, shared);
+    xmod_pair(
+        cx,
+        "Type",
+        CrossModType,
+        "Amt",
+        CrossModAmount,
+        layer,
+        controls,
+        shared,
+    );
+    xmod_pair(
+        cx,
+        "Src",
+        Osc2PitchEnvSrc,
+        "Mod",
+        Osc2PitchEnvDepth,
+        layer,
+        controls,
+        shared,
+    );
 }
 
 /// One Cross Mod selector/fader pair: the selector box-list on the left, the
@@ -2105,7 +2208,9 @@ fn xmod_pair(
     };
     HStack::new(cx, |cx| {
         VStack::new(cx, |cx| {
-            Label::new(cx, up(sel_label)).class("ctl-label").height(Pixels(11.0));
+            Label::new(cx, up(sel_label))
+                .class("ctl-label")
+                .height(Pixels(11.0));
             if let Ctl::Buttons(i, sig) | Ctl::Select(i, sig) = sel_ctl {
                 enum_list_body(cx, i, sig, shared);
             }
@@ -2126,7 +2231,9 @@ fn xmod_pair(
                     sel_sig.get() == Some(0)
                 };
                 let col = VStack::new(cx, |cx| {
-                    Label::new(cx, up(depth_label)).class("ctl-label").height(Pixels(11.0));
+                    Label::new(cx, up(depth_label))
+                        .class("ctl-label")
+                        .height(Pixels(11.0));
                     fader_body(cx, fi, fsig, &sh, off);
                 })
                 .height(Auto)
@@ -2237,8 +2344,14 @@ mod tests {
             Some(global_clap_id(GlobalParam::Lfo2Sync))
         );
         // Non-rate faders have no sync partner.
-        assert_eq!(sync_partner(patch_clap_id(Layer::Upper, PatchParam::Cutoff)), None);
-        assert_eq!(sync_partner(global_clap_id(GlobalParam::MasterVolume)), None);
+        assert_eq!(
+            sync_partner(patch_clap_id(Layer::Upper, PatchParam::Cutoff)),
+            None
+        );
+        assert_eq!(
+            sync_partner(global_clap_id(GlobalParam::MasterVolume)),
+            None
+        );
     }
 
     #[test]
@@ -2306,10 +2419,7 @@ mod tests {
                 patch_clap_id(Layer::Upper, PatchParam::LfoRate),
                 &[0.01, 1.0, 5.0, 23.5, 40.0],
             ),
-            (
-                global_clap_id(GlobalParam::Lfo2Rate),
-                &[0.5, 5.0, 40.0],
-            ),
+            (global_clap_id(GlobalParam::Lfo2Rate), &[0.5, 5.0, 40.0]),
             (
                 patch_clap_id(Layer::Upper, PatchParam::PortamentoTime),
                 &[0.0, 0.05, 0.1, 0.37, 0.5],
@@ -2346,7 +2456,10 @@ mod tests {
             PatchParam::Env2Release,
         ] {
             let id = patch_clap_id(Layer::Upper, p);
-            assert!(matches!(desc_for_clap_id(id).unwrap().taper(), Taper::Exp { .. }));
+            assert!(matches!(
+                desc_for_clap_id(id).unwrap().taper(),
+                Taper::Exp { .. }
+            ));
             assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 s
             assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 s
             assert!((fader_from_ui(id, 1.0) - 10.0).abs() < 1e-3); // top = 10 s
@@ -2363,7 +2476,10 @@ mod tests {
     fn pitch_lfo_depth_fader_tapers_to_subtle_vibrato() {
         // 0..12 st, exp-tapered so the lower half of the travel is 0..1 st.
         let id = patch_clap_id(Layer::Upper, PatchParam::PitchLfoDepth);
-        assert!(matches!(desc_for_clap_id(id).unwrap().taper(), Taper::Exp { .. }));
+        assert!(matches!(
+            desc_for_clap_id(id).unwrap().taper(),
+            Taper::Exp { .. }
+        ));
         assert!(fader_from_ui(id, 0.0).abs() < 1e-4); // ~0 st
         assert!((fader_from_ui(id, 0.5) - 1.0).abs() < 1e-3); // midpoint = 1 st
         assert!((fader_from_ui(id, 1.0) - 12.0).abs() < 1e-3); // top = 12 st

@@ -27,6 +27,7 @@ pub mod hpf;
 pub mod lfo;
 pub mod limiter;
 pub mod math;
+pub mod noise;
 pub mod oscillator;
 pub mod ota_ladder;
 pub mod phase;
@@ -60,10 +61,11 @@ pub use hpf::{HpfKernel, PolyHpf};
 pub use lfo::{LfoCore, LfoShape};
 pub use limiter::StereoLimiter;
 pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine, xorshift64};
+pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::{Oscillator, Waveform};
-pub use ota_ladder::{OtaLadderCoeffs, OtaLadderKernel, OtaPoles};
+pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel};
 pub use phase::{MonoPhaseAccumulator, polyblep};
-pub use poly::{PolyOscillator, PolyOtaLadder, poly_ring_mod};
+pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, poly_ring_mod};
 pub use smoothing::{Smoothed, ms_to_samples, one_pole_coeff};
 
 /// Flush x86/ARM denormals-to-zero on the current thread, without restoring the

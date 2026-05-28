@@ -4,7 +4,10 @@
 //! in fixed control blocks. The CLAP layer drives it with note/param events
 //! and contiguous output slices; the UI reads and writes [`ParamValues`].
 
+pub mod factory;
 pub mod params;
+pub mod preset;
+pub mod preset_io;
 pub mod shared;
 pub mod smoothing;
 pub mod state;
@@ -16,6 +19,12 @@ pub use params::{
     GlobalValues, KeyMode, Layer, LfoSel, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef,
     ParamValues, PatchParam, PatchValues, TOTAL_PARAMS, Taper, desc_for_clap_id, global_clap_id,
     module_for_clap_id, param_ref, patch_clap_id,
+};
+pub use factory::{FactoryPreset, factory};
+pub use preset::{Meta, Patch, Performance, Preset, PresetError};
+pub use preset_io::{
+    LoadError, UserPreset, ensure_user_dir, list_user_presets, load_preset_file, save_patch,
+    save_performance, user_preset_dir,
 };
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;
@@ -525,8 +534,8 @@ impl Synth {
 
         // Mod wheel (CC1) is a global control applied once per block, folded into
         // the route `*_extra` terms (and resonance) here rather than per voice.
-        let resonance =
-            (p.get(PatchParam::Resonance) + wheel * p.get(PatchParam::ModWheelReso)).clamp(0.0, 1.0);
+        let resonance = (p.get(PatchParam::Resonance) + wheel * p.get(PatchParam::ModWheelReso))
+            .clamp(0.0, 1.0);
 
         BlockCtx {
             os_sample_rate: self.sample_rate * os as f32,
@@ -536,6 +545,8 @@ impl Synth {
             osc1_level: p.get(PatchParam::Osc1Level),
             osc2_level: p.get(PatchParam::Osc2Level),
             ring_level: p.get(PatchParam::RingLevel),
+            noise_level: p.get(PatchParam::NoiseLevel),
+            noise_color: p.noise_color(),
             osc1_pw: p.get(PatchParam::Osc1PulseWidth),
             osc2_pw: p.get(PatchParam::Osc2PulseWidth),
             // Octave and Coarse are integer-semitone params: hard-quantise them
@@ -551,7 +562,8 @@ impl Synth {
             hpf_cutoff: p.get(PatchParam::HpfCutoff),
             resonance,
             drive: p.get(PatchParam::Drive),
-            poles: p.filter_poles(),
+            filter_mode: p.filter_mode(),
+            filter_slope: p.filter_slope(),
             base_semis: g.get(GlobalParam::MasterTune),
             lfo1_shape: p.lfo_shape(),
             lfo1_rate_hz,
@@ -581,6 +593,9 @@ impl Synth {
             osc2_pitch_env_sel: p.env_sel(PatchParam::Osc2PitchEnvSrc),
             osc2_pitch_env_depth: p.get(PatchParam::Osc2PitchEnvDepth),
             osc2_pitch_extra: wheel * p.get(PatchParam::ModWheelOsc2Pitch),
+            amp_lfo_sel: p.lfo_sel(PatchParam::AmpLfoSrc),
+            amp_lfo_depth: p.get(PatchParam::AmpLfoDepth),
+            amp_env_bypass: p.bool(PatchParam::AmpEnvBypass),
         }
     }
 }
@@ -734,6 +749,86 @@ mod tests {
     }
 
     #[test]
+    fn noise_level_produces_sound_with_oscillators_silenced() {
+        // With both oscillators at zero level, only the noise source can make
+        // sound — proving noise is wired into the mixer.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Osc1Level), 0.0);
+        s.set_param(pp(PatchParam::Osc2Level), 0.0);
+        s.set_param(pp(PatchParam::Env2Sustain), 1.0);
+        s.note_on(69, 1.0);
+        // Let the osc-level glide settle to 0, then a silent window (noise off).
+        render(&mut s, 9_600);
+        let (silent, _) = render(&mut s, 4_800);
+        s.set_param(pp(PatchParam::NoiseLevel), 0.8);
+        let (loud, _) = render(&mut s, 48_000);
+        assert!(
+            rms(&silent) < 1e-5,
+            "no source should be silent: {}",
+            rms(&silent)
+        );
+        let tail = &loud[loud.len() - 4800..];
+        assert!(
+            rms(tail) > 1e-3,
+            "noise should be audible, got {}",
+            rms(tail)
+        );
+    }
+
+    #[test]
+    fn amp_env_bypass_holds_full_level_ignoring_env2() {
+        // Gate-only VCA: with Env2 sustain 0 and fast decay (which would silence
+        // the enveloped VCA — see `vca_follows_env2`), bypass keeps a held note at
+        // full level because the amp follows the gate, not Env2.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(pp(PatchParam::Env2Decay), 0.01);
+        s.set_param(pp(PatchParam::Env2Sustain), 0.0);
+        s.set_param(pp(PatchParam::AmpEnvBypass), 1.0);
+        s.note_on(69, 1.0);
+        let (l, _) = render(&mut s, 48_000);
+        let tail = &l[l.len() - 4800..];
+        assert!(
+            rms(tail) > 1e-2,
+            "bypass should hold full level despite Env2 sustain 0, got {}",
+            rms(tail)
+        );
+    }
+
+    #[test]
+    fn amp_tremolo_attenuates_output() {
+        // A square-wave LFO into the amp at full depth chops the VCA between full
+        // and silence, so the windowed RMS varies far more than the un-tremoloed
+        // (steady-sustain) signal.
+        let setup = |trem: bool| {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(pp(PatchParam::Env2Sustain), 1.0);
+            s.set_param(pp(PatchParam::LfoShape), 4.0); // Square
+            s.set_param(pp(PatchParam::LfoRate), 8.0);
+            if trem {
+                s.set_param(pp(PatchParam::AmpLfoSrc), 1.0); // LFO 1
+                s.set_param(pp(PatchParam::AmpLfoDepth), 1.0);
+            }
+            s.note_on(57, 1.0);
+            let (l, _) = render(&mut s, 48_000);
+            l
+        };
+        // Window RMS over 480-sample frames; tremolo makes it swing, steady doesn't.
+        let spread = |l: &[f32]| {
+            let w: Vec<f32> = l.chunks(480).map(rms).filter(|r| *r > 0.0).collect();
+            let max = w.iter().cloned().fold(0.0f32, f32::max);
+            let min = w.iter().cloned().fold(f32::MAX, f32::min);
+            max - min
+        };
+        assert!(
+            spread(&setup(true)) > 3.0 * spread(&setup(false)),
+            "tremolo should swing the level far more than steady sustain"
+        );
+    }
+
+    #[test]
     fn env_block_skip_waits_for_amp_sustain() {
         // Envelope block-skip must engage only once Env2 (the VCA) actually
         // reaches Sustain. A held note with a long Env2 decay to a low sustain
@@ -750,8 +845,14 @@ mod tests {
         let early = rms(&l[w..2 * w]);
         let later = rms(&l[6 * w..7 * w]);
         let settled = rms(&l[9 * w..10 * w]);
-        assert!(later < early * 0.7, "amp decay stalled: early {early} later {later}");
-        assert!(settled < later, "amp kept falling toward sustain: {later} -> {settled}");
+        assert!(
+            later < early * 0.7,
+            "amp decay stalled: early {early} later {later}"
+        );
+        assert!(
+            settled < later,
+            "amp kept falling toward sustain: {later} -> {settled}"
+        );
     }
 
     #[test]
@@ -899,10 +1000,16 @@ mod tests {
             s.set_param(pp(PatchParam::Osc1Wave), 2.0); // saw
             s.set_param(pp(PatchParam::Cutoff), 300.0); // dark base
             s.set_param(pp(PatchParam::Resonance), 0.0);
-            s.set_param(pp(PatchParam::FilterKeyTrack), if key_track { 1.0 } else { 0.0 });
+            s.set_param(
+                pp(PatchParam::FilterKeyTrack),
+                if key_track { 1.0 } else { 0.0 },
+            );
             s.note_on(72, 1.0); // a high note → large key-track shift when on
             let (l, _) = render(&mut s, 24_000);
-            assert!(l.iter().all(|x| x.is_finite()), "key-track output not finite");
+            assert!(
+                l.iter().all(|x| x.is_finite()),
+                "key-track output not finite"
+            );
             rms(&l[4800..])
         }
         let off = bright(false);
@@ -954,7 +1061,10 @@ mod tests {
             &lfo1_cutoff_render(0.0, 0.5, 0.5, 4.0, settled.clone()),
             &lfo1_cutoff_render(48.0, 0.5, 0.5, 4.0, settled),
         );
-        assert!(delay_diff < 1e-6, "LFO 1 not held at zero in the delay: {delay_diff}");
+        assert!(
+            delay_diff < 1e-6,
+            "LFO 1 not held at zero in the delay: {delay_diff}"
+        );
         assert!(
             settled_diff > 1e-3,
             "LFO 1 did not open after delay+fade: {settled_diff}"
@@ -1177,7 +1287,11 @@ mod tests {
         let ch0_before = s.banks[0].lfo1_phase(0);
         assert!(ch0_before > 0.01, "held voice should have advanced");
         s.note_on_layer(0, 64, 1.0); // → channel 1, retriggers only its own LFO 1
-        assert_eq!(s.banks[0].lfo1_phase(1), 0.0, "new voice retriggers to zero");
+        assert_eq!(
+            s.banks[0].lfo1_phase(1),
+            0.0,
+            "new voice retriggers to zero"
+        );
         assert_eq!(
             s.banks[0].lfo1_phase(0),
             ch0_before,
@@ -1284,7 +1398,10 @@ mod tests {
             .zip(&both)
             .map(|(a, b)| (2.0 * a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(max_err < 1e-4, "global LFO2 not shared identically: {max_err}");
+        assert!(
+            max_err < 1e-4,
+            "global LFO2 not shared identically: {max_err}"
+        );
     }
 
     // ── E004 / 0015: host-tempo sync ────────────────────────────────────────
@@ -1310,13 +1427,23 @@ mod tests {
     #[test]
     fn lfo_sync_on_resolves_subdivision_from_tempo() {
         // Indices of the quarter-note family in the subdivision table.
-        let q = sync::SUBDIVISIONS.iter().position(|s| s.label == "1/4").unwrap();
-        let qd = sync::SUBDIVISIONS.iter().position(|s| s.label == "1/4.").unwrap();
-        let qt = sync::SUBDIVISIONS.iter().position(|s| s.label == "1/4T").unwrap();
+        let q = sync::SUBDIVISIONS
+            .iter()
+            .position(|s| s.label == "1/4")
+            .unwrap();
+        let qd = sync::SUBDIVISIONS
+            .iter()
+            .position(|s| s.label == "1/4.")
+            .unwrap();
+        let qt = sync::SUBDIVISIONS
+            .iter()
+            .position(|s| s.label == "1/4T")
+            .unwrap();
 
         let mut p = PatchValues::default();
         p.set(PatchParam::LfoSync, 1.0);
-        let resolve = |p: &PatchValues, bpm| lfo_rate(p, PatchParam::LfoRate, PatchParam::LfoSync, bpm);
+        let resolve =
+            |p: &PatchValues, bpm| lfo_rate(p, PatchParam::LfoRate, PatchParam::LfoSync, bpm);
 
         // Straight quarter: one cycle per beat.
         p.set(PatchParam::LfoRate, rate_for_subdiv(q));
@@ -1324,9 +1451,15 @@ mod tests {
         assert!((resolve(&p, 90.0) - 1.5).abs() < 1e-4, "1/4 @90");
         // Dotted (×1.5 length) and triplet (×2/3 length) at 140 BPM.
         p.set(PatchParam::LfoRate, rate_for_subdiv(qd));
-        assert!((resolve(&p, 140.0) - (140.0 / 60.0) / 1.5).abs() < 1e-4, "1/4. @140");
+        assert!(
+            (resolve(&p, 140.0) - (140.0 / 60.0) / 1.5).abs() < 1e-4,
+            "1/4. @140"
+        );
         p.set(PatchParam::LfoRate, rate_for_subdiv(qt));
-        assert!((resolve(&p, 140.0) - (140.0 / 60.0) / (2.0 / 3.0)).abs() < 1e-4, "1/4T @140");
+        assert!(
+            (resolve(&p, 140.0) - (140.0 / 60.0) / (2.0 / 3.0)).abs() < 1e-4,
+            "1/4T @140"
+        );
     }
 
     // ── E006: tempo-synced delay time ────────────────────────────────────────
@@ -1347,11 +1480,20 @@ mod tests {
 
     #[test]
     fn delay_sync_on_resolves_subdivision_from_tempo() {
-        let q = sync::SUBDIVISIONS.iter().position(|s| s.label == "1/4").unwrap();
+        let q = sync::SUBDIVISIONS
+            .iter()
+            .position(|s| s.label == "1/4")
+            .unwrap();
         let v = delay_time_for_subdiv(q);
         // 1/4 = one beat: 0.5 s @120, 1.0 s @60.
-        assert!((delay_time_seconds(true, v, 120.0) - 0.5).abs() < 1e-4, "1/4 @120");
-        assert!((delay_time_seconds(true, v, 60.0) - 1.0).abs() < 1e-4, "1/4 @60");
+        assert!(
+            (delay_time_seconds(true, v, 120.0) - 0.5).abs() < 1e-4,
+            "1/4 @120"
+        );
+        assert!(
+            (delay_time_seconds(true, v, 60.0) - 1.0).abs() < 1e-4,
+            "1/4 @60"
+        );
     }
 
     #[test]
@@ -1390,7 +1532,10 @@ mod tests {
         s.set_tempo(128.0);
         s.note_on(45, 1.0);
         let (l, _) = render(&mut s, 24_000);
-        assert!(l.iter().all(|x| x.is_finite()), "synced LFO output not finite");
+        assert!(
+            l.iter().all(|x| x.is_finite()),
+            "synced LFO output not finite"
+        );
         assert!(rms(&l) > 0.01, "synced LFO produced no sound");
     }
 
@@ -1711,7 +1856,11 @@ mod tests {
         // tail releasing), so only one note is gated/sounding.
         assert_eq!(s.banks[0].gated_note(0), Some(72));
         let gated: Vec<u8> = (0..8).filter_map(|v| s.banks[0].gated_note(v)).collect();
-        assert_eq!(gated, vec![72], "Solo gates exactly one note, pinned to ch0");
+        assert_eq!(
+            gated,
+            vec![72],
+            "Solo gates exactly one note, pinned to ch0"
+        );
     }
 
     #[test]
@@ -1792,7 +1941,11 @@ mod tests {
             assert_eq!(s.banks[0].gated_note(v), Some(60));
         }
         s.note_off(60); // nothing held → release
-        assert_eq!(layer_active(&s, 0), 8, "still releasing (gates off, not idle)");
+        assert_eq!(
+            layer_active(&s, 0),
+            8,
+            "still releasing (gates off, not idle)"
+        );
         assert_eq!(s.banks[0].gated_note(0), None, "gate cleared");
     }
 
@@ -1822,7 +1975,11 @@ mod tests {
         for n in [62, 64, 65, 67] {
             s.note_on_layer(0, n, 1.0);
         }
-        assert_eq!(layer_active(&s, 0), 8, "Twin tops out at 8 channels (4 notes)");
+        assert_eq!(
+            layer_active(&s, 0),
+            8,
+            "Twin tops out at 8 channels (4 notes)"
+        );
     }
 
     #[test]
