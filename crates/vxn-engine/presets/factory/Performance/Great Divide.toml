@@ -1,12 +1,10 @@
 schema = 1
-kind = "performance"
 
 [meta]
 name = "Great Divide"
 author = "Vulpus Labs"
-category = "Jovial Performances"
-tags = ["jp8", "split", "bass", "lead"]
-comment = "Keyboard split at C3 (MIDI 48): Solo sync lead up top (Upper), Solo bass below (Lower). Global ping-pong delay plus a raised Oversample for clean sync. Divergence: chorus off for authenticity."
+category = "Performance"
+comment = "Keyboard split at C3 (MIDI 48): Solo sync lead up top (Upper), Solo bass below (Lower). Global ping-pong delay plus raised Oversample for clean sync."
 
 [performance]
 key_mode = "Split"

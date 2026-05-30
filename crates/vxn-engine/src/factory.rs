@@ -10,7 +10,7 @@
 //! [`Meta::name`](crate::preset::Meta) is its display name. The browser (0027)
 //! consumes [`factory()`] without ever touching the filesystem.
 
-use crate::preset::{Preset, from_toml_str};
+use crate::preset::{Performance, from_toml_str};
 use include_dir::{Dir, include_dir};
 
 /// The embedded factory source tree.
@@ -24,7 +24,7 @@ use include_dir::{Dir, include_dir};
 static FACTORY: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/presets/factory");
 
 /// One embedded factory preset: its relative path, category (directory), display
-/// name, and the parsed [`Preset`].
+/// name, and the parsed [`Performance`].
 #[derive(Clone, Debug)]
 pub struct FactoryPreset {
     /// Path relative to the factory root, e.g. `"Bass/Mini Bass.toml"`.
@@ -33,7 +33,7 @@ pub struct FactoryPreset {
     pub category: String,
     /// Display name from `[meta] name`.
     pub name: String,
-    pub preset: Preset,
+    pub preset: Performance,
 }
 
 /// Walk the embedded tree, yielding `(relative_path, category, contents)` for
@@ -70,7 +70,7 @@ pub fn factory() -> Vec<FactoryPreset> {
         .into_iter()
         .filter_map(|(path, category, contents)| {
             let (preset, _warnings) = from_toml_str(contents).ok()?;
-            let name = preset.meta().name.clone();
+            let name = preset.meta.name.clone();
             Some(FactoryPreset {
                 path,
                 category,
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn every_factory_preset_parses_cleanly() {
         // The shippable contract: each embedded file parses with the current
-        // schema/kind and produces ZERO warnings (no unknown keys, no bad enum
+        // schema and produces ZERO warnings (no unknown keys, no bad enum
         // labels, no type mismatches). A malformed factory preset fails here.
         for (path, _category, contents) in factory_files() {
             match from_toml_str(contents) {
@@ -109,18 +109,13 @@ mod tests {
     }
 
     #[test]
-    fn covers_multiple_categories_and_a_performance() {
+    fn covers_multiple_categories() {
         let bank = factory();
         let categories: std::collections::BTreeSet<_> =
             bank.iter().map(|p| p.category.as_str()).collect();
         assert!(
             categories.len() >= 3,
             "expected presets across several categories, got {categories:?}"
-        );
-        assert!(
-            bank.iter()
-                .any(|p| matches!(p.preset, Preset::Performance(_))),
-            "starter bank should include at least one performance"
         );
     }
 }

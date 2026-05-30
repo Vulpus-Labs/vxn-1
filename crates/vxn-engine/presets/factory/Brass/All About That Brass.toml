@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
-name = "Brass Tacks"
+name = "All About That Brass"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "brass", "pwm"]
-comment = "Classic poly synth-brass stab (orig. 'Synth Brass') — a pulse/saw blend with slow PWM shimmer and an Env-1 filter bite. Divergence: PWM rides per-voice LFO 1, not the JP-8's per-section LFO."
+category = "Brass"
+comment = "Classic poly synth-brass stab — a pulse/saw blend with slow PWM shimmer and an Env-1 filter bite."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Pulse"
 osc1_pw = 0.45
 osc2_octave = 0

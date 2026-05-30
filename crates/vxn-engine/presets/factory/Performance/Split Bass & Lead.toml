@@ -1,11 +1,9 @@
 schema = 1
-kind = "performance"
 
 [meta]
 name = "Split Bass & Lead"
 author = "Vulpus Labs"
 category = "Performance"
-tags = ["split", "performance"]
 comment = "Keyboard split at C3 (MIDI 48): Solo bass in the Lower layer, mono sync-ish lead Upper. Global chorus and a touch of ping-pong delay glue it together."
 
 [performance]

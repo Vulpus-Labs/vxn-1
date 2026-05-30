@@ -1,0 +1,21 @@
+schema = 1
+
+[meta]
+name = "Pedal Pusher"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Sustained organ bass pedal — sine plus a sub triangle, instant attack, full sustain, quick release. A simple, solid sub for left-hand pedal parts."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
+osc1_wave = "Sine"
+osc2_wave = "Triangle"
+osc1_octave = -1
+osc2_fine = 0.0
+cutoff = 600.0
+env2_sustain = 1.0
+env2_release = 0.15
+assign_mode = "Solo"

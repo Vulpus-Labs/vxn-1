@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "Clean Sweep"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "sync", "pad"]
-comment = "Heavy sync-sweep pad (orig. 'Sync Sweep') — Env 1 drags osc 2's pitch under hard sync for a slow, glassy formant motion. Divergence: raise the global Oversample for the cleanest sync (a Patch can't carry it)."
+category = "Pad"
+comment = "Heavy sync-sweep pad — Env 1 drags osc 2's pitch under hard sync for a slow, glassy formant motion. Raise the global Oversample for the cleanest sync."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Pulse"
 osc1_pw = 0.35
 osc2_octave = 0

@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "FM Growl"
 author = "Vulpus Labs"
 category = "Bass"
-tags = ["bass", "fm", "ring"]
 comment = "Aggressive cross-mod (FM) bass — osc 2 modulates osc 1, ring and a dusting of pink noise add grit."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Saw"
 osc1_level = 0.85
 osc2_wave = "Sine"

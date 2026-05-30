@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "E-Piano"
 author = "Vulpus Labs"
 category = "Keys"
-tags = ["keys", "fm", "epiano"]
 comment = "Classic two-operator FM electric piano — sine-on-sine cross-mod, a noise transient for the hammer, plucky decay to silence."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Sine"
 osc1_level = 0.9
 osc2_wave = "Sine"

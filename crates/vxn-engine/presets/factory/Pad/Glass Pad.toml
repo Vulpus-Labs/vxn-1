@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "Glass Pad"
 author = "Vulpus Labs"
 category = "Pad"
-tags = ["pad", "sync"]
 comment = "Evolving sync pad — Env 1 sweeps osc 2's pitch under hard sync for a glassy formant motion, a whisper of noise on the attack."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Pulse"
 osc1_pw = 0.35
 osc1_level = 0.85

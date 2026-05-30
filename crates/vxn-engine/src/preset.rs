@@ -8,12 +8,10 @@
 //! that deviate from their descriptor default are written, so presets stay
 //! small, diffable, and auto-adopt improved defaults.
 //!
-//! Two kinds (ADR 0005 terminology):
-//!
-//! - **Patch** — one layer's sound ([`PatchValues`]); loads into Upper *or*
-//!   Lower, carries no global state.
-//! - **Performance** — the whole instrument ([`PluginState`]): both layers, the
-//!   global block, key mode and split point.
+//! There is exactly one preset kind: a **Performance** — the whole instrument
+//! ([`PluginState`]): both layers, the global block, key mode and split point.
+//! The earlier patch/performance split was collapsed; every preset captures the
+//! complete instrument state so loading is unambiguous.
 //!
 //! This module is the **pure** mapping between those engine types and the file
 //! format. No IO, no embedding, no clap, no UI, no host sync — that is 0025
@@ -35,10 +33,9 @@ use serde::{Deserialize, Serialize};
 /// for structural changes (ADR 0005 §2).
 pub const SCHEMA: u32 = 1;
 
-const KIND_PATCH: &str = "patch";
-const KIND_PERFORMANCE: &str = "performance";
-
 /// Free-form preset metadata (the `[meta]` table). Only `name` is required.
+/// Category is the **only** discriminator the browser groups on — there is no
+/// tag list. (Earlier drafts had `tags: Vec<String>`; dropped as overkill.)
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
     pub name: String,
@@ -47,17 +44,8 @@ pub struct Meta {
     /// Browser grouping (0027). Free-form string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
-}
-
-/// One layer's sound plus its metadata. Converts to/from [`PatchValues`].
-#[derive(Clone, Debug)]
-pub struct Patch {
-    pub meta: Meta,
-    pub values: PatchValues,
 }
 
 /// The whole instrument plus its metadata. Converts to/from [`PluginState`].
@@ -67,28 +55,15 @@ pub struct Performance {
     pub state: PluginState,
 }
 
-/// A parsed preset of either kind (the result of [`from_toml_str`]).
-// A `Performance` is larger than a `Patch`, but this is a main-thread parse
-// result handled once at load time — not boxing keeps the downstream load path
-// (0026) a plain match, with no runtime cost worth the indirection.
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug)]
-pub enum Preset {
-    Patch(Patch),
-    Performance(Performance),
-}
-
 /// Why a preset failed to parse. Unknown keys / bad enum labels do **not** land
 /// here — those are non-fatal warnings (see [`from_toml_str`]).
 #[derive(Debug)]
 pub enum PresetError {
-    /// The TOML did not parse, or required envelope fields (`schema`, `kind`,
-    /// `meta`, the body table) were missing or the wrong type.
+    /// The TOML did not parse, or required envelope fields (`schema`, `meta`,
+    /// the body table) were missing or the wrong type.
     Toml(toml::de::Error),
     /// `schema` is not a version this build understands.
     UnsupportedSchema { found: u32, expected: u32 },
-    /// `kind` is neither `"patch"` nor `"performance"`.
-    UnknownKind { found: String },
 }
 
 impl std::fmt::Display for PresetError {
@@ -97,9 +72,6 @@ impl std::fmt::Display for PresetError {
             PresetError::Toml(e) => write!(f, "invalid preset TOML: {e}"),
             PresetError::UnsupportedSchema { found, expected } => {
                 write!(f, "unsupported preset schema {found} (this build expects {expected})")
-            }
-            PresetError::UnknownKind { found } => {
-                write!(f, "unknown preset kind `{found}` (expected `patch` or `performance`)")
             }
         }
     }
@@ -121,18 +93,8 @@ impl From<toml::de::Error> for PresetError {
 // declared before any table field so TOML serialization is well-formed.
 
 #[derive(Serialize, Deserialize)]
-struct PatchFile {
-    schema: u32,
-    kind: String,
-    meta: Meta,
-    #[serde(default)]
-    patch: toml::Table,
-}
-
-#[derive(Serialize, Deserialize)]
 struct PerformanceFile {
     schema: u32,
-    kind: String,
     meta: Meta,
     performance: PerformanceBody,
 }
@@ -149,11 +111,11 @@ struct PerformanceBody {
     lower: toml::Table,
 }
 
-/// Just enough of the envelope to dispatch on before committing to a body shape.
+/// Just enough of the envelope to validate the schema before committing to a
+/// body shape.
 #[derive(Deserialize)]
 struct Header {
     schema: u32,
-    kind: String,
 }
 
 // ── Sparse write (engine values → TOML value) ───────────────────────────────
@@ -285,28 +247,12 @@ fn table_to_patch(table: &toml::Table, ctx: &str, warnings: &mut Vec<String>) ->
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-impl Patch {
-    /// Serialize to a sparse TOML preset (`kind = "patch"`).
-    pub fn to_toml_string(&self) -> String {
-        let file = PatchFile {
-            schema: SCHEMA,
-            kind: KIND_PATCH.to_string(),
-            meta: self.meta.clone(),
-            patch: patch_to_table(&self.values),
-        };
-        // Values are clamped to finite descriptor ranges, so serialization of
-        // this shape cannot fail.
-        toml::to_string_pretty(&file).expect("patch preset serialization is infallible")
-    }
-}
-
 impl Performance {
-    /// Serialize to a sparse TOML preset (`kind = "performance"`).
+    /// Serialize to a sparse TOML preset.
     pub fn to_toml_string(&self) -> String {
         let p = &self.state.params;
         let file = PerformanceFile {
             schema: SCHEMA,
-            kind: KIND_PERFORMANCE.to_string(),
             meta: self.meta.clone(),
             performance: PerformanceBody {
                 key_mode: self.state.key_mode.label().to_string(),
@@ -316,41 +262,17 @@ impl Performance {
                 lower: patch_to_table(&p.layers[1]),
             },
         };
+        // Values are clamped to finite descriptor ranges, so serialization of
+        // this shape cannot fail.
         toml::to_string_pretty(&file).expect("performance preset serialization is infallible")
     }
 }
 
-impl Preset {
-    /// Serialize whichever kind this is.
-    pub fn to_toml_string(&self) -> String {
-        match self {
-            Preset::Patch(p) => p.to_toml_string(),
-            Preset::Performance(p) => p.to_toml_string(),
-        }
-    }
-
-    /// The preset's metadata, regardless of kind (browser display).
-    pub fn meta(&self) -> &Meta {
-        match self {
-            Preset::Patch(p) => &p.meta,
-            Preset::Performance(p) => &p.meta,
-        }
-    }
-
-    /// `"patch"` or `"performance"` — the on-disk `kind`.
-    pub fn kind_str(&self) -> &'static str {
-        match self {
-            Preset::Patch(_) => KIND_PATCH,
-            Preset::Performance(_) => KIND_PERFORMANCE,
-        }
-    }
-}
-
-/// Parse a TOML preset of either kind. Returns the preset plus any non-fatal
+/// Parse a TOML preset. Returns the [`Performance`] plus any non-fatal
 /// **warnings** (unknown keys, bad enum labels, type mismatches — each fell back
 /// to the descriptor default rather than failing the load). Only a malformed
-/// envelope (`schema`/`kind`/structure) is a hard [`PresetError`].
-pub fn from_toml_str(s: &str) -> Result<(Preset, Vec<String>), PresetError> {
+/// envelope (`schema`/structure) is a hard [`PresetError`].
+pub fn from_toml_str(s: &str) -> Result<(Performance, Vec<String>), PresetError> {
     let header: Header = toml::from_str(s)?;
     if header.schema != SCHEMA {
         return Err(PresetError::UnsupportedSchema {
@@ -360,54 +282,36 @@ pub fn from_toml_str(s: &str) -> Result<(Preset, Vec<String>), PresetError> {
     }
 
     let mut warnings = Vec::new();
-    match header.kind.as_str() {
-        KIND_PATCH => {
-            let file: PatchFile = toml::from_str(s)?;
-            let values = table_to_patch(&file.patch, "patch", &mut warnings);
-            Ok((
-                Preset::Patch(Patch {
-                    meta: file.meta,
-                    values,
-                }),
-                warnings,
-            ))
-        }
-        KIND_PERFORMANCE => {
-            let file: PerformanceFile = toml::from_str(s)?;
-            let body = file.performance;
+    let file: PerformanceFile = toml::from_str(s)?;
+    let body = file.performance;
 
-            let key_mode = KeyMode::from_label(&body.key_mode).unwrap_or_else(|| {
-                warnings.push(format!(
-                    "performance.key_mode: unknown `{}` (using Whole)",
-                    body.key_mode
-                ));
-                KeyMode::Whole
-            });
+    let key_mode = KeyMode::from_label(&body.key_mode).unwrap_or_else(|| {
+        warnings.push(format!(
+            "performance.key_mode: unknown `{}` (using Whole)",
+            body.key_mode
+        ));
+        KeyMode::Whole
+    });
 
-            let mut global = GlobalValues::default();
-            apply_global_table(&body.global, "performance.global", &mut global, &mut warnings);
-            let upper = table_to_patch(&body.upper, "performance.upper", &mut warnings);
-            let lower = table_to_patch(&body.lower, "performance.lower", &mut warnings);
+    let mut global = GlobalValues::default();
+    apply_global_table(&body.global, "performance.global", &mut global, &mut warnings);
+    let upper = table_to_patch(&body.upper, "performance.upper", &mut warnings);
+    let lower = table_to_patch(&body.lower, "performance.lower", &mut warnings);
 
-            Ok((
-                Preset::Performance(Performance {
-                    meta: file.meta,
-                    state: PluginState {
-                        params: ParamValues {
-                            layers: [upper, lower],
-                            global,
-                        },
-                        key_mode,
-                        split_point: body.split_point,
-                    },
-                }),
-                warnings,
-            ))
-        }
-        other => Err(PresetError::UnknownKind {
-            found: other.to_string(),
-        }),
-    }
+    Ok((
+        Performance {
+            meta: file.meta,
+            state: PluginState {
+                params: ParamValues {
+                    layers: [upper, lower],
+                    global,
+                },
+                key_mode,
+                split_point: body.split_point,
+            },
+        },
+        warnings,
+    ))
 }
 
 #[cfg(test)]
@@ -457,25 +361,29 @@ mod tests {
 
     #[test]
     fn every_patch_param_round_trips() {
-        // Set every param to a distinct non-default value, then serialize/parse.
+        // Set every per-layer param in Upper to a distinct non-default value,
+        // then serialize/parse through the performance format.
         let mut pv = PatchValues::default();
         for p in PatchParam::all() {
             let want = non_default(p.desc());
             assert_ne!(want, p.desc().default, "{} test value is default", p.desc().name);
             pv.set(p, want);
         }
-        let patch = Patch {
+        let mut params = ParamValues::default();
+        *params.layer_mut(Layer::Upper) = pv.clone();
+        let perf = Performance {
             meta: meta("RT"),
-            values: pv.clone(),
+            state: PluginState {
+                params,
+                key_mode: KeyMode::Whole,
+                split_point: 60,
+            },
         };
-        let (parsed, warnings) = from_toml_str(&patch.to_toml_string()).unwrap();
+        let (back, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
         for p in PatchParam::all() {
             assert_eq!(
-                back.values.get(p),
+                back.state.params.layer(Layer::Upper).get(p),
                 pv.get(p),
                 "{} did not round-trip",
                 p.desc().name
@@ -500,11 +408,8 @@ mod tests {
             meta: meta("G"),
             state,
         };
-        let (parsed, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
+        let (back, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        let Preset::Performance(back) = parsed else {
-            panic!("expected a performance");
-        };
         for g in GlobalParam::all() {
             assert_eq!(
                 back.state.params.global.get(g),
@@ -516,28 +421,32 @@ mod tests {
     }
 
     #[test]
-    fn default_patch_is_sparse() {
-        let patch = Patch {
+    fn default_performance_is_sparse() {
+        let perf = Performance {
             meta: meta("Empty"),
-            values: PatchValues::default(),
+            state: PluginState {
+                params: ParamValues::default(),
+                key_mode: KeyMode::Whole,
+                split_point: 60,
+            },
         };
-        let s = patch.to_toml_string();
-        // The [patch] table carries no entries when nothing deviates from default.
+        let s = perf.to_toml_string();
+        // The body tables carry no entries when nothing deviates from default.
         let doc: toml::Table = toml::from_str(&s).unwrap();
-        let body = doc.get("patch").and_then(|v| v.as_table());
-        assert!(
-            body.map(|t| t.is_empty()).unwrap_or(true),
-            "default patch should serialize an empty body, got: {s}"
-        );
+        let body = doc.get("performance").and_then(|v| v.as_table()).unwrap();
+        for tbl in ["global", "upper", "lower"] {
+            let t = body.get(tbl).and_then(|v| v.as_table());
+            assert!(
+                t.map(|t| t.is_empty()).unwrap_or(true),
+                "default {tbl} should serialize empty, got: {s}"
+            );
+        }
         // And parsing an empty body yields exactly the defaults.
-        let (parsed, warnings) = from_toml_str(&s).unwrap();
+        let (back, warnings) = from_toml_str(&s).unwrap();
         assert!(warnings.is_empty());
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
         let def = PatchValues::default();
         for p in PatchParam::all() {
-            assert_eq!(back.values.get(p), def.get(p));
+            assert_eq!(back.state.params.layer(Layer::Upper).get(p), def.get(p));
         }
     }
 
@@ -545,40 +454,38 @@ mod tests {
     fn unknown_key_warns_and_skips() {
         let s = r#"
 schema = 1
-kind = "patch"
 [meta]
 name = "X"
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+[performance.upper]
 cutoff = 1234.0
 not_a_param = 5.0
 "#;
-        let (parsed, warnings) = from_toml_str(s).unwrap();
+        let (back, warnings) = from_toml_str(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("not_a_param"), "{warnings:?}");
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
-        assert_eq!(back.values.get(PatchParam::Cutoff), 1234.0);
+        assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Cutoff), 1234.0);
     }
 
     #[test]
     fn bad_enum_label_warns_and_defaults() {
         let s = r#"
 schema = 1
-kind = "patch"
 [meta]
 name = "X"
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+[performance.upper]
 osc1_wave = "Sawww"
 "#;
-        let (parsed, warnings) = from_toml_str(s).unwrap();
+        let (back, warnings) = from_toml_str(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Sawww"), "{warnings:?}");
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
         assert_eq!(
-            back.values.get(PatchParam::Osc1Wave),
+            back.state.params.layer(Layer::Upper).get(PatchParam::Osc1Wave),
             PatchParam::Osc1Wave.desc().default
         );
     }
@@ -587,36 +494,34 @@ osc1_wave = "Sawww"
     fn enum_label_is_case_insensitive() {
         let s = r#"
 schema = 1
-kind = "patch"
 [meta]
 name = "X"
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+[performance.upper]
 osc1_wave = "pulse"
 "#;
-        let (parsed, warnings) = from_toml_str(s).unwrap();
+        let (back, warnings) = from_toml_str(s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
         // "Pulse" is index 3 in WAVE_LABELS.
-        assert_eq!(back.values.get(PatchParam::Osc1Wave), 3.0);
+        assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Osc1Wave), 3.0);
     }
 
     #[test]
     fn value_clamps_on_read() {
         let s = r#"
 schema = 1
-kind = "patch"
 [meta]
 name = "X"
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+[performance.upper]
 resonance = 9.0
 "#;
-        let (parsed, _) = from_toml_str(s).unwrap();
-        let Preset::Patch(back) = parsed else {
-            panic!("expected a patch");
-        };
-        assert_eq!(back.values.get(PatchParam::Resonance), 1.0);
+        let (back, _) = from_toml_str(s).unwrap();
+        assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Resonance), 1.0);
     }
 
     #[test]
@@ -635,11 +540,8 @@ resonance = 9.0
             meta: meta("Perf"),
             state: state.clone(),
         };
-        let (parsed, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
+        let (back, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        let Preset::Performance(back) = parsed else {
-            panic!("expected a performance");
-        };
         assert_eq!(back.state.key_mode, KeyMode::Split);
         assert_eq!(back.state.split_point, 48);
         assert_eq!(
@@ -672,27 +574,12 @@ resonance = 9.0
     fn schema_mismatch_is_typed_error() {
         let s = r#"
 schema = 2
-kind = "patch"
 [meta]
 name = "X"
 "#;
         match from_toml_str(s) {
             Err(PresetError::UnsupportedSchema { found: 2, expected: 1 }) => {}
             other => panic!("expected UnsupportedSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unknown_kind_is_typed_error() {
-        let s = r#"
-schema = 1
-kind = "banana"
-[meta]
-name = "X"
-"#;
-        match from_toml_str(s) {
-            Err(PresetError::UnknownKind { found }) if found == "banana" => {}
-            other => panic!("expected UnknownKind, got {other:?}"),
         }
     }
 

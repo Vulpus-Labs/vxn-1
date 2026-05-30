@@ -24,8 +24,7 @@
 //! one definition without depending on each other.
 
 use crate::params::{
-    KeyMode, Layer, PATCH_COUNT, ParamValues, PatchParam, PatchValues, TOTAL_PARAMS,
-    desc_for_clap_id, patch_clap_id,
+    KeyMode, Layer, ParamValues, PatchParam, TOTAL_PARAMS, desc_for_clap_id, patch_clap_id,
 };
 use crate::state::PluginState;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -158,25 +157,7 @@ impl SharedParams {
 
     // ── Preset load (E007 / 0026) ─────────────────────────────────────────────
 
-    /// Load one layer's [`PatchValues`] into the store (preset **Patch** load).
-    /// Writes **only** that layer's params, each gesture-bracketed so the CLAP
-    /// layer echoes the jump to the host as a recorded edit — the bulk analogue
-    /// of a UI edit, the same path [`reset_patch_to_defaults`] uses. The global
-    /// block, the other layer, key mode and split point are left untouched, which
-    /// is what lets a factory Patch drop into one half of a Dual/Split setup.
-    ///
-    /// [`reset_patch_to_defaults`]: Self::reset_patch_to_defaults
-    pub fn load_patch(&self, values: &PatchValues, target: Layer) {
-        for p in 0..PATCH_COUNT {
-            let pp = PatchParam::from_index(p).unwrap();
-            let id = patch_clap_id(target, pp);
-            self.set_gesture(id, true);
-            self.set(id, values.get(pp));
-            self.set_gesture(id, false);
-        }
-    }
-
-    /// Load a whole [`PluginState`] into the store (preset **Performance** load):
+    /// Load a whole [`PluginState`] into the store (preset load):
     /// both layers and the global block written gesture-bracketed (so the host's
     /// automation/displayed values follow), plus the non-automatable key mode +
     /// split point applied directly — the same path the `state` blob uses.
@@ -324,33 +305,6 @@ mod tests {
         s.set_split_point(72);
         assert_eq!(s.key_mode(), KeyMode::Dual);
         assert_eq!(s.split_point(), 72);
-    }
-
-    #[test]
-    fn load_patch_touches_only_target_layer() {
-        let s = SharedParams::new();
-        // Snapshot the whole store before the load.
-        let before: Vec<f32> = (0..TOTAL_PARAMS).map(|i| s.get(i)).collect();
-
-        let mut patch = PatchValues::default();
-        patch.set(PatchParam::Cutoff, 1234.0);
-        patch.set(PatchParam::Resonance, 0.66);
-        s.load_patch(&patch, Layer::Lower);
-
-        // Lower got the values...
-        assert_eq!(s.get(patch_clap_id(Layer::Lower, PatchParam::Cutoff)), 1234.0);
-        assert_eq!(s.get(patch_clap_id(Layer::Lower, PatchParam::Resonance)), 0.66);
-
-        // ...and nothing outside the Lower block moved: Upper, global, key mode,
-        // split point are byte-identical to before.
-        for i in 0..TOTAL_PARAMS {
-            let is_lower = matches!(crate::params::param_ref(i), Some(crate::params::ParamRef::Patch(Layer::Lower, _)));
-            if !is_lower {
-                assert_eq!(s.get(i), before[i], "id {i} changed but shouldn't have");
-            }
-        }
-        assert_eq!(s.key_mode(), KeyMode::Whole);
-        assert_eq!(s.split_point(), crate::params::DEFAULT_SPLIT_POINT);
     }
 
     #[test]

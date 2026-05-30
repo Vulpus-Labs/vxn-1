@@ -1,0 +1,27 @@
+schema = 1
+
+[meta]
+name = "Boofy Bass"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Plucky upright/acoustic-style bass — saw + triangle, fast Env-1 filter pluck to no sustain, key-track for an even response."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
+osc2_wave = "Triangle"
+osc1_octave = -1
+osc2_fine = 0.0
+cutoff = 380.0
+resonance = 0.3
+filter_key_track = true
+env1_decay = 0.18
+cutoff_env_depth = 48.0
+env2_decay = 0.4
+env2_sustain = 0.2
+env2_release = 0.12
+assign_mode = "Solo"
+legato = true
+portamento_time = 0.02

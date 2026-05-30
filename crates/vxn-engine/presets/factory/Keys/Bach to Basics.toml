@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "Bach to Basics"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "keys", "pluck"]
-comment = "Harpsichord pluck (orig. 'Harpsichord') — bright narrow-pulse pair, fast decay, no sustain, slight detune for the dual-string jangle. Divergence: no physical jack/quill model; a pure subtractive pluck."
+category = "Keys"
+comment = "Harpsichord pluck — bright narrow-pulse pair, fast decay, no sustain, slight detune for the dual-string jangle."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc1_wave = "Pulse"
 osc1_pw = 0.2
 osc2_wave = "Pulse"

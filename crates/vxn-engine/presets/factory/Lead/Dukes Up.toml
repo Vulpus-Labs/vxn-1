@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "Dukes Up"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "lead", "mono"]
-comment = "Fat mono solo lead (orig. 'Duke Lead') — saw plus a detuned pulse, legato glide, wide pitch-bend for dives. Divergence: none major — mono Solo with portamento."
+category = "Lead"
+comment = "Fat mono solo lead — saw plus a detuned pulse, legato glide, wide pitch-bend for dives."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc2_wave = "Pulse"
 osc2_octave = 0
 osc2_fine = -5.0

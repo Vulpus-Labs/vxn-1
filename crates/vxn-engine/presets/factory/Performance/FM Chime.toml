@@ -1,12 +1,10 @@
 schema = 1
-kind = "performance"
 
 [meta]
-name = "Isao Tinkle"
+name = "FM Chime"
 author = "Vulpus Labs"
-category = "Jovial Performances"
-tags = ["jp8", "bell", "fm", "dual"]
-comment = "FM chime (orig. 'Tomita Chime') as a two-layer Dual: Upper = static FM bell (sine carrier + sine modulator at +7 st, modulator out of mix) for the metallic ring; Lower = a plain sine with an inverted Env-1 pitch ping (the chime 'ting'). The JP-8 did this in one panel with an inverted env on VCO frequency; VXN-1 splits the body and the transient across two layers so the FM ratio stays put. Chorus off; raise Oversample for cleanest FM."
+category = "Performance"
+comment = "FM chime as a two-layer Dual: Upper = static FM bell (sine carrier + sine modulator at +7 st, modulator out of mix) for the metallic ring; Lower = a plain sine with an inverted Env-1 pitch ping (the chime 'ting'). Body and transient split across the two layers so the FM ratio stays put. Chorus off; raise Oversample for cleanest FM."
 
 [performance]
 key_mode = "Dual"

@@ -1,12 +1,10 @@
 schema = 1
-kind = "performance"
 
 [meta]
 name = "Echo Chamber"
 author = "Vulpus Labs"
-category = "Jovial Performances"
-tags = ["jp8", "keys", "fm", "delay"]
-comment = "JP-8 'Echo Piano' — a tine-y FM electric piano with a slapback echo. The original faked the echo with envelope-mod trickery on release; VXN-1 uses the global delay, which a Patch can't carry, so this ships as a Whole Performance. Chorus off for authenticity."
+category = "Performance"
+comment = "Tine-y FM electric piano with a slapback echo via the global delay. Chorus off."
 
 [performance]
 key_mode = "Whole"

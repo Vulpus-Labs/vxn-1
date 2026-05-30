@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
 name = "Highly Strung"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "strings", "unison"]
-comment = "Bright unison strings (orig. 'Hi Strings') — eight detuned saws, slow bow-swell, high register. Divergence: ensemble width comes from unison detune (no onboard chorus — that's a Juno trait)."
+category = "Strings"
+comment = "Bright unison strings — eight detuned saws, slow bow-swell, high register. Ensemble width from unison detune."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc2_octave = 0
 osc2_fine = 9.0
 osc2_level = 0.8

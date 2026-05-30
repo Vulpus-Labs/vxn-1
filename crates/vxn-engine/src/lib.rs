@@ -21,10 +21,12 @@ pub use params::{
     module_for_clap_id, param_ref, patch_clap_id,
 };
 pub use factory::{FactoryPreset, factory};
-pub use preset::{Meta, Patch, Performance, Preset, PresetError};
+pub use preset::{Meta, Performance, PresetError};
 pub use preset_io::{
-    LoadError, UserPreset, ensure_user_dir, list_user_presets, load_preset_file, save_patch,
-    save_performance, user_preset_dir,
+    LoadError, UNCATEGORIZED, UserFolder, UserPreset, create_user_folder, delete_user_folder,
+    delete_user_preset, ensure_user_dir, list_user_presets, list_user_tree, load_preset_file,
+    move_user_preset, rename_user_folder, rename_user_preset, save_performance,
+    save_performance_in, user_preset_dir,
 };
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;

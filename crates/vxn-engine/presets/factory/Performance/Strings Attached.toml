@@ -1,12 +1,10 @@
 schema = 1
-kind = "performance"
 
 [meta]
 name = "Strings Attached"
 author = "Vulpus Labs"
-category = "Jovial Performances"
-tags = ["jp8", "dual", "brass", "strings"]
-comment = "The JP-8 orchestral layer — bright brass (Upper) stacked over unison strings (Lower) in Dual, so every note sounds both. The signature 'Jupiter' fanfare. Divergence: no chorus (a Juno trait); master trimmed for the stacked level."
+category = "Performance"
+comment = "Orchestral layer — bright brass (Upper) stacked over unison strings (Lower) in Dual, so every note sounds both. Master trimmed for the stacked level."
 
 [performance]
 key_mode = "Dual"

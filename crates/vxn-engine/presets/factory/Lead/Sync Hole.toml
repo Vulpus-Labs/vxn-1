@@ -1,14 +1,16 @@
 schema = 1
-kind = "patch"
 
 [meta]
-name = "Out of Sync"
+name = "Sync Hole"
 author = "Vulpus Labs"
-category = "Jovial Presets"
-tags = ["jp8", "sync", "lead", "twin"]
-comment = "Bright metallic sync lead for power solos (orig. 'Sync Lead'). Twin assign fattens each note across two detuned channels; Env 1 drives the sync sweep. Divergence: raise Oversample to tame sync alias."
+category = "Lead"
+comment = "Bright metallic sync lead for power solos. Twin assign fattens each note across two detuned channels; Env 1 drives the sync sweep. Raise Oversample to tame sync alias."
 
-[patch]
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.upper]
 osc2_coarse = 7
 osc2_octave = 0
 cross_mod_type = "Sync"
