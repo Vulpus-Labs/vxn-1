@@ -716,6 +716,32 @@ impl Model for UiModel {
     }
 }
 
+/// Sweeps a stale `delete_confirm` and its open context menu off the screen
+/// once the confirm window has elapsed. The first delete click queues a
+/// `DeleteConfirm`; this model's `PollAutomation` handler is the only place
+/// that *forgets* it if the user never clicks a second time. Without it, the
+/// row stays in its "Click to confirm" state and the menu remains open until
+/// the user clicks elsewhere.
+struct DeleteSweeper {
+    delete_confirm: SyncSignal<Option<DeleteConfirm>>,
+    context_menu: SyncSignal<Option<ContextMenu>>,
+}
+
+impl Model for DeleteSweeper {
+    fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
+        event.map(|_msg: &PollAutomation, _meta| {
+            let Some(dc) = self.delete_confirm.get() else {
+                return;
+            };
+            if dc.at.elapsed() < Duration::from_millis(DELETE_CONFIRM_MS) {
+                return;
+            }
+            self.delete_confirm.set(None);
+            self.context_menu.set(None);
+        });
+    }
+}
+
 /// Open the editor parented to `parent` (on macOS the host `NSView`).
 ///
 /// `scale_override` pins the HiDPI factor when the caller already knows the true
@@ -731,68 +757,106 @@ impl Model for UiModel {
 /// which a self-driven macOS resize doesn't emit), the idle callback emits one
 /// `SetUserScale(1.0)` on the first tick to force `apply_user_scale` to recreate
 /// the surface at `inner_size × scale` — required for the 2× (Retina) case.
-/// Debug-only layout probe (feature `layout-probe`, off in shipped builds). A
-/// pass-through container that prints its own computed bounds — in **logical**
-/// pixels, after layout — to stderr each frame. Wrap any view to read where it
-/// actually lands:
-///
-/// ```ignore
-/// Probe::new(cx, "legato", |cx| toggle_row(cx, "Legato", sig, press))
-///     .width(Auto)
-///     .height(Auto);
-/// ```
-///
-/// Then run the standalone window (which renders/lays out off-screen, no screen
-/// capture or window-server access needed):
-///
-/// ```text
-/// cargo run -p vxn-ui --example layout_probe --features layout-probe \
-///   2>&1 | grep PROBE | sort -u
-/// ```
-///
-/// Notes: it prints every frame, so `sort -u` to dedupe. A `Stretch`-width child
-/// makes an `Auto`-width Probe collapse to 0 — give the Probe `Stretch(1.0)` to
-/// measure a stretchy cell's allotted width. Leave `Probe::new` wraps out of
-/// committed code; only the scaffolding here is permanent.
-#[cfg(feature = "layout-probe")]
-pub struct Probe(&'static str);
-
-#[cfg(feature = "layout-probe")]
-impl Probe {
-    pub fn new<'a>(
-        cx: &'a mut Context,
-        name: &'static str,
-        content: impl FnOnce(&mut Context),
-    ) -> Handle<'a, Self> {
-        Self(name).build(cx, content)
-    }
+/// Tag a built Handle with a probe identifier when the `layout-probe` feature
+/// is on, drop it otherwise. The handle is taken by value (vizia's `.id` is
+/// `fn(mut self, ..) -> Self`), so this is the only way the probe annotations
+/// don't litter the call site with unused-variable noise off-feature.
+macro_rules! probe_id {
+    ($handle:expr, $name:expr) => {{
+        #[cfg(feature = "layout-probe")]
+        {
+            let _ = $handle.id($name);
+        }
+        #[cfg(not(feature = "layout-probe"))]
+        {
+            let _ = $handle;
+        }
+    }};
 }
 
+/// Debug-only layout probe (feature `layout-probe`, off in shipped builds).
+/// `.id("vxn:…")` identifiers picked up by the layout probe walk, dumped to
+/// JSONL on the first idle frame. List built once, in [`probed_ids`], so the
+/// probe targets stay grep-able from one place.
 #[cfg(feature = "layout-probe")]
-impl View for Probe {
-    fn element(&self) -> Option<&'static str> {
-        Some("probe")
+pub fn probed_ids() -> Vec<String> {
+    let mut v = vec![
+        "vxn:Banner".to_string(),
+        "vxn:PresetBar".to_string(),
+        "vxn:KeysPanel".to_string(),
+        "vxn:Row1".to_string(),
+        "vxn:Row2".to_string(),
+        "vxn:Row3".to_string(),
+        "vxn:Row4".to_string(),
+    ];
+    // Every named panel in ROWS gets `.id("vxn:Panel::{title}")` (or, for
+    // layer-dependent panels, the per-layer variants — only the visible one
+    // resolves; the hidden one's bounds are still computed).
+    for row in ROWS {
+        for (title, _) in *row {
+            v.push(format!("vxn:Panel::{title}"));
+            v.push(format!("vxn:Panel::{title}:Upper"));
+            v.push(format!("vxn:Panel::{title}:Lower"));
+        }
     }
-    fn draw(&self, cx: &mut DrawContext, _canvas: &Canvas) {
-        let b = cx.bounds();
-        let s = cx.scale_factor().max(1.0);
-        eprintln!(
-            "PROBE {} x={:.1} y={:.1} w={:.1} h={:.1}",
-            self.0,
+    v
+}
+
+/// Write the resolved bounds for every entity in [`probed_ids`] to the JSONL
+/// file at `VXN_PROBE_OUT` (defaults to `target/vxn-layout.jsonl`). One line
+/// per id: `{"name":..., "x":..., "y":..., "w":..., "h":...}` in logical px.
+#[cfg(feature = "layout-probe")]
+fn dump_layout(cx: &mut EventContext) {
+    use std::fs::File;
+    use std::io::Write;
+    let path = std::env::var("VXN_PROBE_OUT")
+        .unwrap_or_else(|_| "target/vxn-layout.jsonl".to_string());
+    let Ok(mut f) = File::create(&path) else {
+        eprintln!("layout-probe: cannot open {path}");
+        return;
+    };
+    let s = cx.scale_factor().max(1.0);
+    for name in probed_ids() {
+        let Some(entity) = cx.resolve_entity_identifier(&name) else {
+            continue;
+        };
+        let b = cx.with_current(entity, |c| c.bounds());
+        let _ = writeln!(
+            f,
+            "{{\"name\":\"{}\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}}}",
+            name,
             b.x / s,
             b.y / s,
             b.w / s,
             b.h / s
         );
     }
+    eprintln!("layout-probe: wrote {path}");
 }
 
 /// Open the editor in a standalone window for layout inspection (feature
-/// `layout-probe`). Used by `examples/layout_probe.rs`; see [`Probe`].
+/// `layout-probe`). Used by `examples/layout_probe.rs`. Dumps the resolved
+/// bounds of every [`probed_ids`] entry to `VXN_PROBE_OUT` on the third idle
+/// tick (one to build, one to lay out, one to read post-layout cache) then
+/// closes the window.
 #[cfg(feature = "layout-probe")]
 pub fn run_layout_probe() {
     let shared = std::sync::Arc::new(SharedParams::new());
+    let tick = std::cell::Cell::new(0u32);
     Application::new(move |cx| build_editor(cx, std::sync::Arc::clone(&shared)))
+        .on_idle(move |cx| {
+            let n = tick.get();
+            tick.set(n.saturating_add(1));
+            // Two idle ticks to let build + initial layout settle, then dump
+            // and exit. `on_idle` hands a `Context`, but bounds lookup needs an
+            // `EventContext`; bridge here. Exit hard — a one-shot tool, no need
+            // to wait for the window to drain its own event loop.
+            if n == 2 {
+                let mut ecx = EventContext::new(cx);
+                dump_layout(&mut ecx);
+                std::process::exit(0);
+            }
+        })
         .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
         .title("VXN1 layout probe")
         .run()
@@ -813,7 +877,15 @@ pub fn open_editor(
 
     let mut app = Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
         .on_idle(move |cx| {
-            cx.emit(PollAutomation);
+            // Broadcast to every model in the tree, not just root. `cx.emit`
+            // propagates `Up` from `cx.current` (root), so only root-attached
+            // models would see it — the browser panel's `DeleteSweeper` lives
+            // deeper than that.
+            cx.emit_custom(
+                Event::new(PollAutomation)
+                    .target(Entity::root())
+                    .propagate(Propagation::Subtree),
+            );
             let n = tick.get();
             tick.set(n.saturating_add(1));
             if n == 0 {
@@ -865,17 +937,19 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     ScrollView::new(cx, move |cx| {
         VStack::new(cx, |cx| {
             // Branding banner across the top, pushing the panel rows down.
-            Label::new(cx, "VULPUS LABS - VXN-1")
+            let banner = Label::new(cx, "VULPUS LABS - VXN-1")
                 .class("banner")
                 .width(Stretch(1.0))
                 .height(Pixels(26.0))
                 .alignment(Alignment::Center);
+            probe_id!(banner, "vxn:Banner");
             // Preset browser bar (0027): current name + prev/next, a grouped
             // Factory/User browse popup, the patch load-target selector, and
             // Save-As. Sits between the banner and the panel rows.
             preset_bar(cx, &shared);
-            for row in ROWS.iter() {
-                HStack::new(cx, |cx| {
+            for (row_idx, row) in ROWS.iter().enumerate() {
+                let _ = row_idx; // silenced off-feature; consumed by `probe_id!` below.
+                let row_handle = HStack::new(cx, |cx| {
                     for (title, entries) in *row {
                         if *title == "Keys" {
                             // Placeholder entry: the key-mode panel writes opaque
@@ -905,6 +979,7 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
                 })
                 .height(Pixels(PANEL_H))
                 .horizontal_gap(Pixels(6.0));
+                probe_id!(row_handle, format!("vxn:Row{}", row_idx + 1));
             }
         })
         .vertical_gap(Pixels(8.0))
@@ -1411,7 +1486,15 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
     let context_menu: SyncSignal<Option<ContextMenu>> = SyncSignal::new(None);
     let delete_confirm: SyncSignal<Option<DeleteConfirm>> = SyncSignal::new(None);
 
-    HStack::new(cx, move |cx| {
+    // Sweep stale confirm + open menu after the 3 s window — the click-time
+    // check in `delete_action` doesn't fire when the user never clicks again.
+    DeleteSweeper {
+        delete_confirm,
+        context_menu,
+    }
+    .build(cx);
+
+    let preset_bar_handle = HStack::new(cx, move |cx| {
         // ── Prev / current name / next ──
         let (b_prev, sh_prev) = (Arc::clone(&bank), Arc::clone(&shared));
         Button::new(cx, |cx| Label::new(cx, "<").class("tg-lbl"))
@@ -1462,9 +1545,15 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
         // ── Browse toggle + floating panel ──
         let (b_panel, sh_panel) = (Arc::clone(&bank), Arc::clone(&shared));
         VStack::new(cx, move |cx| {
+            // Lift the toggle above the panel (`z_index(200)`) so re-clicking
+            // Browse closes the panel reliably. Without this, the panel's
+            // hit-test footprint can shadow part of the button — the
+            // `position_type: Absolute` panel renders into the same VStack as
+            // the button, so the higher z_index wins in any overlap region.
             Button::new(cx, |cx| Label::new(cx, "Browse").class("tg-lbl"))
                 .class("pbar-btn")
                 .cursor(CursorIcon::Hand)
+                .z_index(250)
                 .on_press_down(move |_cx| browse_open.set(!browse_open.get()));
 
             Binding::new(cx, browse_open, move |cx| {
@@ -1507,6 +1596,7 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
     .height(Pixels(30.0))
     .horizontal_gap(Pixels(6.0))
     .alignment(Alignment::Left);
+    probe_id!(preset_bar_handle, "vxn:PresetBar");
 }
 
 /// Bundle of every browser signal a mutation handler needs (rename / delete /
@@ -1714,12 +1804,18 @@ fn folder_row(
         // (the wrapping `Binding`s are layout-ignored, so children are
         // re-parented up to the nearest non-ignored ancestor). Anchor in that
         // shared parent's coord system, not the button's.
+        //
+        // Convert physical-pixel offsets to logical — vizia's cursor coords
+        // and cache bounds are physical, but `Pixels(N)` is treated as logical
+        // and re-multiplied by the dpi factor at layout time. On a Retina
+        // display feeding physical anchors straight in lands the menu at 2×
+        // the cursor offset.
         let pb = cx.cache.get_bounds(cx.parent());
         let m = cx.mouse();
         sigs.context_menu.set(Some(ContextMenu {
             target: MenuTarget::UserFolder(n.clone()),
-            anchor_x: m.cursor_x - pb.x,
-            anchor_y: m.cursor_y - pb.y,
+            anchor_x: cx.physical_to_logical(m.cursor_x - pb.x),
+            anchor_y: cx.physical_to_logical(m.cursor_y - pb.y),
             submenu_open: false,
         }));
         sigs.delete_confirm.set(None);
@@ -1853,7 +1949,8 @@ fn preset_row(
             return;
         }
         let Some(p) = path_for_menu.clone() else { return };
-        // Anchor in the layout parent's coord system — see `folder_row`.
+        // Anchor in the layout parent's coord system (physical → logical
+        // conversion required) — see `folder_row`.
         let pb = cx.cache.get_bounds(cx.parent());
         let m = cx.mouse();
         sigs.context_menu.set(Some(ContextMenu {
@@ -1861,8 +1958,8 @@ fn preset_row(
                 path: p,
                 folder: folder_for_menu.clone(),
             },
-            anchor_x: m.cursor_x - pb.x,
-            anchor_y: m.cursor_y - pb.y,
+            anchor_x: cx.physical_to_logical(m.cursor_x - pb.x),
+            anchor_y: cx.physical_to_logical(m.cursor_y - pb.y),
             submenu_open: false,
         }));
         sigs.delete_confirm.set(None);
@@ -2080,9 +2177,11 @@ fn leak_label(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
-/// First press: queue a delete-confirm against `target` and write the
-/// confirmation prompt. Second press on the same target inside
-/// `DELETE_CONFIRM_MS` runs `commit` (which closes the menu and reseeds).
+/// First press: queue a delete-confirm against `target`. The menu item's own
+/// label flips to "Click to confirm" via its binding on `delete_confirm`, so
+/// the confirmation prompt lives inside the popup, not in the preset bar's
+/// status line. Second press on the same target inside `DELETE_CONFIRM_MS`
+/// runs `commit` (which closes the menu and reseeds).
 fn delete_action(
     target: MenuTarget,
     sigs: BrowserSignals,
@@ -2102,8 +2201,6 @@ fn delete_action(
             target,
             at: Instant::now(),
         }));
-        sigs.status
-            .set("Press Delete again to confirm".to_string());
     }
 }
 
@@ -2387,7 +2484,7 @@ fn keys_panel(
 ) {
     const MODES: [&str; 3] = ["Whole", "Dual", "Split"];
     const EDIT: [&str; 2] = ["Upper", "Lower"];
-    VStack::new(cx, |cx| {
+    let keys_handle = VStack::new(cx, |cx| {
         Label::new(cx, up("Keys"))
             .class("panel-header")
             .width(Stretch(1.0))
@@ -2556,6 +2653,7 @@ fn keys_panel(
     .height(Pixels(PANEL_H))
     .padding(Pixels(5.0))
     .vertical_gap(Pixels(4.0));
+    probe_id!(keys_handle, "vxn:KeysPanel");
 }
 
 /// Build one faceplate panel. Per-patch entries resolve to `layer`'s block;
@@ -2722,6 +2820,18 @@ fn panel_view(
         "VCA" => handle.width(Stretch(0.75)),
         "Filter" => handle.width(Stretch(1.15)),
         _ => handle,
+    };
+    #[cfg(feature = "layout-probe")]
+    let handle = {
+        let suffix = if display.is_some() {
+            match layer {
+                Layer::Upper => ":Upper",
+                Layer::Lower => ":Lower",
+            }
+        } else {
+            ""
+        };
+        handle.id(format!("vxn:Panel::{title}{suffix}"))
     };
     if let Some(d) = display {
         handle.display(d);
