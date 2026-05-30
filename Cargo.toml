@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/vxn-dsp",
     "crates/vxn-engine",
+    "crates/vxn-app",
     "crates/vxn-clap",
     "crates/vxn-ui",
     "xtask",
@@ -18,6 +19,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 vxn-dsp = { path = "crates/vxn-dsp" }
 vxn-engine = { path = "crates/vxn-engine" }
+vxn-app = { path = "crates/vxn-app" }
 vxn-ui = { path = "crates/vxn-ui" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of

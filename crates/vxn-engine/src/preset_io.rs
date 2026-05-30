@@ -17,10 +17,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Display label for the virtual root group: presets living directly under
-/// [`user_preset_dir`], not in a real subfolder (ADR 0006 §1). Not a real
-/// directory.
-pub const UNCATEGORIZED: &str = "Uncategorised";
+// `UNCATEGORIZED` (virtual root group label) lives in `vxn-app::domain` —
+// see [`crate::UNCATEGORIZED`] for the re-export.
 
 /// The per-OS directory VXN1 reads and writes user presets in (ADR 0005 §5).
 /// `None` only if the platform's home/appdata environment variable is unset.
@@ -137,6 +135,152 @@ fn load_err_to_io(e: LoadError) -> io::Error {
 /// `<name>.toml`. Shim over [`save_performance_in`] with `folder = None`.
 pub fn save_performance(perf: &Performance) -> io::Result<PathBuf> {
     save_performance_in(perf, None)
+}
+
+// ── PresetStore adapter ──────────────────────────────────────────────────────
+//
+// The controller talks to preset IO through `vxn_app::PresetStore`; this is
+// the engine-side adapter. Stateless — every call goes straight to the existing
+// module functions and the `factory()` bank. The conversions between engine
+// types (`Meta`, `Performance`, `UserPreset`, `UserFolder`) and the slim
+// vxn-app shapes happen here, so `vxn-app` stays free of preset-format code.
+
+pub struct EnginePresetStore;
+
+impl EnginePresetStore {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for EnginePresetStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn meta_to_app(m: &crate::preset::Meta) -> vxn_app::PresetMeta {
+    vxn_app::PresetMeta {
+        name: m.name.clone(),
+        author: m.author.clone(),
+        category: m.category.clone(),
+        comment: m.comment.clone(),
+    }
+}
+
+fn perf_to_load(perf: Performance, warnings: Vec<String>) -> Result<vxn_app::PresetLoad, String> {
+    let mut blob = Vec::with_capacity(256);
+    perf.state.write(&mut blob).map_err(|e| e.to_string())?;
+    Ok(vxn_app::PresetLoad {
+        meta: meta_to_app(&perf.meta),
+        blob,
+        warnings,
+    })
+}
+
+impl vxn_app::PresetStore for EnginePresetStore {
+    fn factory_len(&self) -> usize {
+        crate::factory::factory().len()
+    }
+
+    fn factory_load(&self, index: usize) -> Result<vxn_app::PresetLoad, String> {
+        let bank = crate::factory::factory();
+        let fp = bank.get(index).ok_or("factory index out of range")?;
+        // Factory presets carry a ready-made Performance — no warnings.
+        perf_to_load(fp.preset.clone(), Vec::new())
+    }
+
+    fn factory_meta(&self, index: usize) -> Option<vxn_app::PresetMeta> {
+        crate::factory::factory().get(index).map(|fp| vxn_app::PresetMeta {
+            // The browser groups factory presets by their directory category
+            // (the `FactoryPreset.category` field), not the optional
+            // `[meta] category` in the TOML. Override here so the
+            // controller-published corpus carries the same grouping the old
+            // `build_browser(&factory(), …)` produced.
+            name: fp.preset.meta.name.clone(),
+            author: fp.preset.meta.author.clone(),
+            category: Some(fp.category.clone()),
+            comment: fp.preset.meta.comment.clone(),
+        })
+    }
+
+    fn user_load(&self, path: &Path) -> Result<vxn_app::PresetLoad, String> {
+        let (perf, warnings) = load_preset_file(path).map_err(|e| e.to_string())?;
+        perf_to_load(perf, warnings)
+    }
+
+    fn user_save(
+        &self,
+        name: &str,
+        folder: Option<&str>,
+        meta: &vxn_app::PresetMeta,
+        blob: &[u8],
+    ) -> Result<PathBuf, String> {
+        let state = crate::state::PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
+        let perf = Performance {
+            meta: crate::preset::Meta {
+                name: name.to_string(),
+                author: meta.author.clone(),
+                category: meta.category.clone(),
+                comment: meta.comment.clone(),
+            },
+            state,
+        };
+        save_performance_in(&perf, folder).map_err(|e| e.to_string())
+    }
+
+    fn user_delete(&self, path: &Path) -> Result<(), String> {
+        delete_user_preset(path).map_err(|e| e.to_string())
+    }
+
+    fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
+        rename_user_preset(path, new_name).map_err(|e| e.to_string())
+    }
+
+    fn user_move(&self, path: &Path, dest_folder: Option<&str>) -> Result<PathBuf, String> {
+        move_user_preset(path, dest_folder).map_err(|e| e.to_string())
+    }
+
+    fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
+        create_user_folder(suggested).map_err(|e| e.to_string())
+    }
+
+    fn user_rename_folder(
+        &self,
+        old: &str,
+        new: &str,
+    ) -> Result<(PathBuf, String), String> {
+        rename_user_folder(old, new).map_err(|e| e.to_string())
+    }
+
+    fn user_delete_folder(&self, name: &str) -> Result<(), String> {
+        delete_user_folder(name).map_err(|e| e.to_string())
+    }
+
+    fn list_user_tree(&self) -> Vec<vxn_app::UserFolderEntry> {
+        // User presets surface only their display name in the corpus; full
+        // metadata (author/category/comment) lives in the file and is re-read
+        // by `user_load` when the user actually loads the preset.
+        list_user_tree()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| vxn_app::UserFolderEntry {
+                name: f.name.clone(),
+                presets: f
+                    .presets
+                    .into_iter()
+                    .map(|p| vxn_app::UserPresetEntry {
+                        path: p.path,
+                        meta: vxn_app::PresetMeta {
+                            name: p.name,
+                            ..Default::default()
+                        },
+                        folder: p.folder,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
 }
 
 /// Save a [`Performance`] under the user-root (`folder = None`) or into the

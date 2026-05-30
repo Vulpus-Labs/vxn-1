@@ -12,6 +12,7 @@ description = "VXN1 CLAP plugin shell (clack)."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+vxn-app = { workspace = true }
 vxn-engine = { workspace = true }
 vxn-ui = { workspace = true }
 clack-plugin = { workspace = true }

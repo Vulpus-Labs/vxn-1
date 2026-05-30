@@ -2569,6 +2569,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn-app"
+version = "0.0.4"
+
+[[package]]
 name = "vxn-clap"
 version = "0.0.4"
 dependencies = [
@@ -2576,6 +2580,7 @@ dependencies = [
  "clack-host",
  "clack-plugin",
  "objc",
+ "vxn-app",
  "vxn-engine",
  "vxn-ui",
 ]
@@ -2592,6 +2597,7 @@ dependencies = [
  "include_dir",
  "serde",
  "toml 0.8.23",
+ "vxn-app",
  "vxn-dsp",
 ]
 
@@ -2601,7 +2607,7 @@ version = "0.0.4"
 dependencies = [
  "raw-window-handle",
  "vizia",
- "vxn-engine",
+ "vxn-app",
 ]
 
 [[package]]

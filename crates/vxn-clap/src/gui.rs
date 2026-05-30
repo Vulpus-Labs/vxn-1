@@ -1,12 +1,12 @@
 //! CLAP `gui` extension: embeds the [`vxn_ui`] Vizia editor into the host's
-//! parent window. The editor talks to the engine purely through the shared
-//! parameter store (`vxn_engine::SharedParams`); see [`crate::local`] for how UI
-//! edits are echoed to the host.
+//! parent window. The editor talks to the engine through the controller
+//! (ADR 0007) — host echoes still go via [`crate::local`].
 
 use crate::VxnMainThread;
 use clack_extensions::gui::*;
 use clack_plugin::prelude::*;
 use std::sync::Arc;
+use vxn_app::ParamModel;
 
 /// Backing scale factor of the host's parent NSView, via its window (falling
 /// back to the main screen when the view isn't in a window yet). Used to pin the
@@ -117,9 +117,23 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         #[cfg(not(target_os = "macos"))]
         let scale_override = None;
 
+        // Build a `ControllerHandle` for UiEvent posts. Cloning is cheap (it
+        // wraps the channel sender). The view-event receiver + corpus + tick
+        // come straight from the main thread; the model is `SharedParams`
+        // erased to `dyn ParamModel` so the editor never needs the engine
+        // type.
+        let model: Arc<dyn ParamModel> = self.shared.params.clone();
+        let handle = crate::lock_mut(&self.controller).handle();
+        let view_rx = Arc::clone(&self.view_rx);
+        let corpus = Arc::clone(&self.corpus);
+        let tick = self.tick.clone();
         self.gui = Some(vxn_ui::open_editor(
             parent,
-            Arc::clone(&self.shared.params),
+            model,
+            handle,
+            view_rx,
+            corpus,
+            tick,
             scale_override,
         ));
         Ok(())

@@ -11,8 +11,11 @@ pub mod preset_io;
 pub mod shared;
 pub mod smoothing;
 pub mod state;
-pub mod sync;
 pub mod voice;
+
+// Host-tempo sync metadata (E004 / 0015) lives in vxn-app — pure data + pure
+// functions, shared with the editor without dragging engine internals in.
+pub use vxn_app::sync;
 
 pub use params::{
     AssignMode, CrossModType, DEFAULT_SPLIT_POINT, EnvSel, GLOBAL_PARAMS, GlobalParam,
@@ -23,11 +26,15 @@ pub use params::{
 pub use factory::{FactoryPreset, factory};
 pub use preset::{Meta, Performance, PresetError};
 pub use preset_io::{
-    LoadError, UNCATEGORIZED, UserFolder, UserPreset, create_user_folder, delete_user_folder,
+    EnginePresetStore, LoadError, UserFolder, UserPreset, create_user_folder, delete_user_folder,
     delete_user_preset, ensure_user_dir, list_user_presets, list_user_tree, load_preset_file,
     move_user_preset, rename_user_folder, rename_user_preset, save_performance,
     save_performance_in, user_preset_dir,
 };
+// UNCATEGORIZED moved to vxn-app::domain (ADR 0007). Engine re-exports it for
+// path continuity (the preset_io module still references it in its doc-strings
+// and the factory bank's category labels).
+pub use vxn_app::UNCATEGORIZED;
 pub use shared::SharedParams;
 use smoothing::ParamSmoother;
 pub use state::PluginState;

@@ -21,11 +21,25 @@ use clack_plugin::stream::{InputStream, OutputStream};
 use local::LocalParams;
 use std::ffi::CStr;
 use std::fmt::Write as _;
+use std::io::{Read, Write as _IoWrite};
 use std::sync::Arc;
-use vxn_engine::{
-    ParamDesc, ParamKind, PluginState as VxnState, SharedParams, Synth, TOTAL_PARAMS,
-    desc_for_clap_id, module_for_clap_id,
+use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
+use vxn_app::{
+    Controller, CorpusHandle, HostEvent, ParamId, ParamModel, Tick, ViewEvent,
 };
+use vxn_engine::{
+    EnginePresetStore, ParamDesc, ParamKind, SharedParams, Synth, TOTAL_PARAMS, desc_for_clap_id,
+    module_for_clap_id,
+};
+
+/// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
+/// Plugin code runs with `panic = unwind`, so a panic during `tick` could
+/// poison the controller's outer mutex; we don't want every subsequent flush
+/// to fail. The data is still valid (the panic happened mid-write at worst).
+fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Top-level plugin marker type.
 pub struct VxnPlugin;
@@ -65,9 +79,23 @@ impl DefaultPluginFactory for VxnPlugin {
         _host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
+        let (controller, view_rx, corpus) =
+            Controller::new(shared.params.clone(), Box::new(EnginePresetStore::new()));
+        let controller = Arc::new(Mutex::new(controller));
+        // The editor's `on_idle` drains view-events from `view_rx` and also
+        // pumps the controller via `tick` so UI-posted intents land before
+        // the next host flush.
+        let view_rx = Arc::new(Mutex::new(view_rx));
+        let tick: Tick = {
+            let c = Arc::clone(&controller);
+            Arc::new(move || lock_mut(&c).tick())
+        };
         Ok(VxnMainThread {
             shared,
-            params: LocalParams::new(&shared.params),
+            controller,
+            view_rx,
+            corpus,
+            tick,
             gui: None,
         })
     }
@@ -81,12 +109,28 @@ pub struct VxnShared {
 
 impl PluginShared<'_> for VxnShared {}
 
-/// Main-thread state (parameter queries, state save/restore). Holds a local
-/// parameter mirror used when the host flushes params while the plugin is
-/// inactive.
+/// Main-thread state. The [`Controller`] is the single arbiter of non-audio
+/// model mutation (ADR 0007) — host param events arriving on the main thread,
+/// state save/restore, and (after 0037) UI edits all funnel through it. The
+/// audio-thread still keeps its own [`LocalParams`] mirror for engine latency;
+/// see `VxnAudioProcessor`.
 pub struct VxnMainThread<'a> {
     shared: &'a VxnShared,
-    params: LocalParams,
+    /// Wrapped in `Arc<Mutex<...>>` so the editor's idle callback (via
+    /// [`Tick`]) and the host's `flush` paths share one controller without
+    /// either reaching across thread boundaries. Both sites are main-thread,
+    /// so there is no real contention.
+    controller: Arc<Mutex<Controller<SharedParams>>>,
+    /// View-bound events the controller emits. The editor's idle callback
+    /// drains this; when the GUI is closed it stays here and the bounded
+    /// channel drops on full (controller emits via `try_send`).
+    view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    /// Shared snapshot of the preset corpus the controller publishes for the
+    /// editor's browser. Refreshed by the controller after every disk op.
+    corpus: CorpusHandle,
+    /// Cheap-clone tick closure handed to the editor so its `on_idle` can
+    /// pump the controller without knowing about its concrete type.
+    tick: Tick,
     /// The live editor window, while the GUI is open.
     gui: Option<vxn_ui::EditorHandle>,
 }
@@ -363,12 +407,22 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     }
 
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
-        // Inactive-plugin param flush (main thread): fold host changes into the
-        // mirror and publish so `get_value`/the UI observe them.
+        // Inactive-plugin / main-thread param flush. Host param events become
+        // `HostEvent::ParamAutomation`; the controller folds them into
+        // `SharedParams` on tick (writing the same atomic the old `LocalParams`
+        // mirror used to publish to). The editor's idle drain consumes the
+        // emitted ViewEvents — we don't drop them here.
+        let host_tx = lock_mut(&self.controller).host_sender();
         for event in input {
-            self.params.apply_input(event);
+            if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
+                if let Some(pid) = e.param_id() {
+                    let id = ParamId::new(pid.get() as usize);
+                    let plain = e.value() as f32;
+                    let _ = host_tx.try_send(HostEvent::ParamAutomation { id, plain });
+                }
+            }
         }
-        self.params.publish(&self.shared.params);
+        lock_mut(&self.controller).tick();
     }
 }
 
@@ -387,18 +441,27 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        // One canonical serializer (both per-patch blocks + global + the
-        // non-automatable shared state); reused by future preset management.
-        self.shared
-            .params
-            .to_state()
-            .write(output)
+        // Snapshot via the `ParamModel` trait so the serialiser is whatever
+        // the model defines — same canonical blob as before (the engine's
+        // `PluginState` write) routed through the trait surface for symmetry
+        // with `load`.
+        let blob = ParamModel::snapshot_bytes(&*self.shared.params);
+        output
+            .write_all(&blob)
             .map_err(|_| PluginError::Message("state save failed"))
     }
 
     fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
-        let state = VxnState::read(input).map_err(|_| PluginError::Message("state load failed"))?;
-        self.shared.params.restore_from(&state);
+        // Read the whole blob, hand it to the controller; the controller's
+        // tick applies it through the model and emits the matching ViewEvents
+        // (the editor's idle drain picks them up).
+        let mut blob = Vec::new();
+        input
+            .read_to_end(&mut blob)
+            .map_err(|_| PluginError::Message("state read failed"))?;
+        let host_tx = lock_mut(&self.controller).host_sender();
+        let _ = host_tx.try_send(HostEvent::StateLoaded { blob });
+        lock_mut(&self.controller).tick();
         Ok(())
     }
 }

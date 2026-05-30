@@ -40,20 +40,22 @@
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use vizia::ParentWindow;
 use vizia::context::TreeProps;
 use vizia::prelude::*;
 use vizia::vg;
-use vxn_engine::{
-    AssignMode, CrossModType, DEFAULT_SPLIT_POINT, FactoryPreset, GlobalParam, KeyMode, Layer,
-    Meta, ParamKind, ParamRef, PatchParam, Performance, SharedParams, TOTAL_PARAMS, UNCATEGORIZED,
-    UserFolder, UserPreset, create_user_folder, delete_user_folder, delete_user_preset,
-    desc_for_clap_id, factory, global_clap_id, list_user_tree, load_preset_file, move_user_preset,
-    param_ref, patch_clap_id, rename_user_folder, rename_user_preset, save_performance_in,
+use vxn_app::{
+    AssignMode, ControllerHandle, CorpusHandle, CrossModType, DEFAULT_SPLIT_POINT, GlobalParam,
+    KeyMode, Layer, ParamDesc, ParamId, ParamKind, ParamModel, ParamRef, PatchParam, PresetCorpus,
+    PresetMeta, PresetSource, TOTAL_PARAMS, Tick, UNCATEGORIZED, UiEvent, UserPresetEntry,
+    ViewEvent, desc_for_clap_id, global_clap_id, param_ref, patch_clap_id,
 };
+#[cfg(test)]
+use vxn_app::UserFolderEntry;
 
 /// Resolve a faceplate [`Entry`]'s baked (Upper) CLAP id to the layer currently
 /// being edited: per-patch entries re-point to `layer`'s block, global entries
@@ -92,6 +94,88 @@ fn note_name(n: u8) -> String {
 /// Handle to the live editor window. Call [`WindowHandle::close`] when the host
 /// destroys the GUI.
 pub type EditorHandle = WindowHandle;
+
+/// The editor's read/write surface to the controller (ADR 0007). Reads go to
+/// the [`ParamModel`] (a cheap atomic read on the engine side); writes post a
+/// [`UiEvent`] for the controller to apply on its next tick. The audio thread
+/// never observes either side — it reads the model's atomics directly.
+///
+/// Cloning a context clones an `Arc` and a sender (the cost of two
+/// reference-count bumps); fine to clone into every move-closure that takes a
+/// fader callback.
+#[derive(Clone)]
+pub struct EditorCtx {
+    model: Arc<dyn ParamModel>,
+    ctrl: ControllerHandle,
+}
+
+impl EditorCtx {
+    pub fn new(model: Arc<dyn ParamModel>, ctrl: ControllerHandle) -> Self {
+        Self { model, ctrl }
+    }
+
+    // ── Reads (proxied to the model) ────────────────────────────────────────
+
+    #[inline]
+    fn pid(idx: usize) -> ParamId {
+        ParamId::new(idx)
+    }
+    pub fn get(&self, idx: usize) -> f32 {
+        self.model.get(Self::pid(idx))
+    }
+    pub fn get_normalized(&self, idx: usize) -> f32 {
+        self.model.get_normalized(Self::pid(idx))
+    }
+    pub fn gesture(&self, idx: usize) -> bool {
+        self.model.gesture(Self::pid(idx))
+    }
+    pub fn descriptor(&self, idx: usize) -> Option<&'static ParamDesc> {
+        self.model.descriptor(Self::pid(idx))
+    }
+    pub fn key_mode(&self) -> KeyMode {
+        self.model.key_mode()
+    }
+    pub fn split_point(&self) -> u8 {
+        self.model.split_point()
+    }
+
+    // ── Writes (posted as UiEvents) ─────────────────────────────────────────
+
+    /// Post a plain-value write. The controller writes the model on next tick
+    /// and echoes a `ParamChanged` view event.
+    pub fn set(&self, idx: usize, plain: f32) {
+        let _ = self.ctrl.post(UiEvent::SetParam {
+            id: Self::pid(idx),
+            plain,
+        });
+    }
+    pub fn set_normalized(&self, idx: usize, norm: f32) {
+        let _ = self.ctrl.post(UiEvent::SetParamNorm {
+            id: Self::pid(idx),
+            norm,
+        });
+    }
+    pub fn set_gesture(&self, idx: usize, on: bool) {
+        let id = Self::pid(idx);
+        let _ = self.ctrl.post(if on {
+            UiEvent::BeginGesture { id }
+        } else {
+            UiEvent::EndGesture { id }
+        });
+    }
+    pub fn set_key_mode_seeded(&self, mode: KeyMode) {
+        let _ = self.ctrl.post(UiEvent::SetKeyMode { mode });
+    }
+    pub fn set_split_point(&self, note: u8) {
+        let _ = self.ctrl.post(UiEvent::SetSplitPoint { note });
+    }
+    pub fn reset_patch_to_defaults(&self, layer: Layer) {
+        let _ = self.ctrl.post(UiEvent::ResetLayer { layer });
+    }
+    pub fn post(&self, ev: UiEvent) {
+        let _ = self.ctrl.post(ev);
+    }
+}
 
 pub const EDITOR_WIDTH: u32 = 1024;
 /// Four panel rows: (1) LFOs + oscillators + mixer, (2) envelopes + filter +
@@ -513,7 +597,7 @@ fn fader_from_ui(idx: usize, n: f32) -> f32 {
 /// cents (descriptor max 50); only the fader's full-travel meaning changes, so
 /// the same control reads ergonomically in either mode. `None` for every other
 /// fader (they use the descriptor's own range + taper via `fader_to_ui`).
-fn detune_top(idx: usize, shared: &SharedParams) -> Option<f32> {
+fn detune_top(idx: usize, shared: &EditorCtx) -> Option<f32> {
     match param_ref(idx) {
         Some(ParamRef::Patch(layer, PatchParam::UnisonDetune)) => {
             let mode = shared
@@ -534,7 +618,7 @@ fn detune_top(idx: usize, shared: &SharedParams) -> Option<f32> {
 /// 50 ct range would otherwise carry over as an out-of-character spread. No-op
 /// for any other param or target mode; the detune fader follows the store on the
 /// next idle poll.
-fn clamp_detune_on_twin(idx: usize, variant: usize, shared: &SharedParams) {
+fn clamp_detune_on_twin(idx: usize, variant: usize, shared: &EditorCtx) {
     if let Some(ParamRef::Patch(layer, PatchParam::AssignMode)) = param_ref(idx) {
         if variant == AssignMode::Twin as usize {
             let dt = patch_clap_id(layer, PatchParam::UnisonDetune);
@@ -545,7 +629,7 @@ fn clamp_detune_on_twin(idx: usize, variant: usize, shared: &SharedParams) {
 
 /// [`fader_to_ui`] with the live `UnisonDetune` mode scaling applied; identical to
 /// the plain mapping for every other fader.
-fn fader_to_ui_dyn(idx: usize, value: f32, shared: &SharedParams) -> f32 {
+fn fader_to_ui_dyn(idx: usize, value: f32, shared: &EditorCtx) -> f32 {
     match detune_top(idx, shared) {
         Some(top) if top > 0.0 => (value / top).clamp(0.0, 1.0),
         _ => fader_to_ui(idx, value),
@@ -553,7 +637,7 @@ fn fader_to_ui_dyn(idx: usize, value: f32, shared: &SharedParams) -> f32 {
 }
 
 /// [`fader_from_ui`] with the live `UnisonDetune` mode scaling applied.
-fn fader_from_ui_dyn(idx: usize, n: f32, shared: &SharedParams) -> f32 {
+fn fader_from_ui_dyn(idx: usize, n: f32, shared: &EditorCtx) -> f32 {
     match detune_top(idx, shared) {
         Some(top) => n.clamp(0.0, 1.0) * top,
         None => fader_from_ui(idx, n),
@@ -610,7 +694,7 @@ impl Ctl {
     }
 }
 
-fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
+fn make_ctl(i: usize, shared: &EditorCtx) -> Ctl {
     let Some(desc) = desc_for_clap_id(i) else {
         return Ctl::Fader(i, SyncSignal::new(0.0));
     };
@@ -657,58 +741,161 @@ fn make_ctl(i: usize, shared: &SharedParams) -> Ctl {
     }
 }
 
-/// Poll message emitted from `on_idle`: re-read the shared store into signals.
+/// Poll message emitted from `on_idle`: tick the controller, then drain its
+/// view-event queue into the editor's signals.
 struct PollAutomation;
 
 /// Bridges `on_idle` polling to the control signals so DAW automation playback
-/// moves the controls. Edits flow the other way directly via each callback.
+/// and preset loads repaint the controls. UI-side edits flow the other way
+/// through [`EditorCtx`], which posts `UiEvent`s for the controller to apply
+/// on its next tick.
 struct UiModel {
     controls: Vec<Ctl>,
-    shared: Arc<SharedParams>,
-    /// Mirrors of the non-automatable key-mode state, re-synced from the store so
-    /// the Keys panel tracks a state load (the UI is the only other writer).
+    /// Read-only handle for the editor (descriptor lookup + the `_dyn` detune
+    /// fader's mode-aware mapping needs the live assign-mode value).
+    shared: EditorCtx,
+    /// Receiver end of the controller's view-event channel. Wrapped in a Mutex
+    /// because the controller's Sender side is owned by `vxn-clap`'s main
+    /// thread and we only need exclusive access to drain on idle.
+    view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    /// Drain the controller's inbound queues on each tick so UI-posted intents
+    /// reach the model promptly (`vxn-clap`'s host-driven `flush` is the only
+    /// other tick site and isn't called continuously).
+    tick: Tick,
+    /// Live snapshot of the user preset corpus; reread on `PresetCorpusChanged`.
+    corpus: CorpusHandle,
+    /// Mirrors of the non-automatable key-mode state. Set on `KeyModeChanged`.
     key_mode: SyncSignal<usize>,
     split: SyncSignal<f32>,
+    /// Browser signals — repopulated on `PresetCorpusChanged`. Preset bar
+    /// receives `name` / `status` updates from `PresetLoaded` / `Status`.
+    name: SyncSignal<String>,
+    status: SyncSignal<String>,
+    folders: SyncSignal<Arc<Vec<FolderRow>>>,
+    entries: SyncSignal<Arc<Vec<BrowserEntry>>>,
+    current: SyncSignal<Option<usize>>,
+    selected_folder: SyncSignal<FolderKey>,
+    name_field: SyncSignal<String>,
+}
+
+impl UiModel {
+    /// Dispatch one ParamChanged: look up the bound `Ctl` for this id and
+    /// update its signal. Unbound ids (engine-only params with no faceplate
+    /// control) are silently dropped.
+    fn apply_param_changed(&self, id: ParamId, plain: f32, norm: f32) {
+        let idx = id.raw();
+        let ctl = self.controls.iter().copied().find(|c| c.idx() == idx);
+        let Some(ctl) = ctl else { return };
+        match ctl {
+            Ctl::Fader(i, sig) => {
+                let n = fader_to_ui_dyn(i, plain, &self.shared);
+                if (sig.get() - n).abs() > f32::EPSILON {
+                    sig.set(n);
+                }
+            }
+            Ctl::Rotary(_, sig) => {
+                if (sig.get() - norm).abs() > f32::EPSILON {
+                    sig.set(norm);
+                }
+            }
+            Ctl::Switch(_, sig) => {
+                let b = plain >= 0.5;
+                if sig.get() != b {
+                    sig.set(b);
+                }
+            }
+            Ctl::Buttons(_, sig) | Ctl::Select(_, sig) => {
+                let s = Some(plain.round() as usize);
+                if sig.get() != s {
+                    sig.set(s);
+                }
+            }
+        }
+    }
+
+    fn apply_corpus_changed(&self, follow: Option<&Path>) {
+        let snapshot = match self.corpus.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        };
+        let (rows, ents) = build_browser_from_corpus(&snapshot);
+        // Preserve selected folder if it still exists, else fall back to the
+        // first selectable folder.
+        let folder_key = self.selected_folder.get();
+        let alive = rows.iter().any(|r| match r {
+            FolderRow::Folder { key, .. } => key == &folder_key,
+            FolderRow::Header(_) => false,
+        });
+        if !alive {
+            self.selected_folder.set(default_folder_key(&rows));
+        }
+        // Repoint cursor to `follow` path when given, else preserve via the
+        // previously-selected user path, else clear.
+        let prev_path: Option<PathBuf> = self.current.get().and_then(|i| {
+            let es = self.entries.get();
+            es.get(i).and_then(|e| match &e.source {
+                EntrySource::User(p) => Some(p.clone()),
+                EntrySource::Factory(_) => None,
+            })
+        });
+        let target_path: Option<&Path> = follow.or(prev_path.as_deref());
+        let new_idx = target_path.and_then(|p| entry_index_for_user_path(&ents, p));
+        if let Some(idx) = new_idx {
+            if let Some(e) = ents.get(idx) {
+                self.name_field.set(e.name.clone());
+            }
+        }
+        self.folders.set(Arc::new(rows));
+        self.entries.set(Arc::new(ents));
+        self.current.set(new_idx);
+    }
 }
 
 impl Model for UiModel {
     fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
         event.map(|_msg: &PollAutomation, _meta| {
-            let km = self.shared.key_mode() as usize;
-            if self.key_mode.get() != km {
-                self.key_mode.set(km);
+            // Tick the controller first so any UI events posted since the last
+            // tick land in the model and their `ParamChanged` echoes arrive in
+            // the view queue we drain immediately below.
+            (self.tick)();
+            // Drain all pending ViewEvents.
+            let mut events: Vec<ViewEvent> = Vec::new();
+            if let Ok(rx) = self.view_rx.lock() {
+                while let Ok(ev) = rx.try_recv() {
+                    events.push(ev);
+                }
             }
-            let sp = self.shared.split_point() as f32;
-            if (self.split.get() - sp).abs() > f32::EPSILON {
-                self.split.set(sp);
-            }
-            for ctl in &self.controls {
-                match *ctl {
-                    Ctl::Fader(i, sig) => {
-                        // `_dyn` so the detune fader re-maps when the assign mode
-                        // changes (its useful top is mode-dependent).
-                        let n = fader_to_ui_dyn(i, self.shared.get(i), &self.shared);
-                        if (sig.get() - n).abs() > f32::EPSILON {
-                            sig.set(n);
+            for ev in events {
+                match ev {
+                    ViewEvent::ParamChanged { id, plain, norm, .. } => {
+                        self.apply_param_changed(id, plain, norm);
+                    }
+                    ViewEvent::PresetLoaded { meta, warnings, .. } => {
+                        if !meta.name.is_empty() {
+                            self.name.set(meta.name.clone());
+                            self.name_field.set(meta.name.clone());
+                        }
+                        let msg = match warnings.first() {
+                            None => format!("Loaded {}", meta.name),
+                            Some(w) => format!("Loaded {} — {w}", meta.name),
+                        };
+                        self.status.set(msg);
+                    }
+                    ViewEvent::PresetCorpusChanged { follow } => {
+                        self.apply_corpus_changed(follow.as_deref());
+                    }
+                    ViewEvent::KeyModeChanged { mode } => {
+                        let km = mode as usize;
+                        if self.key_mode.get() != km {
+                            self.key_mode.set(km);
+                        }
+                        let sp = self.shared.split_point() as f32;
+                        if (self.split.get() - sp).abs() > f32::EPSILON {
+                            self.split.set(sp);
                         }
                     }
-                    Ctl::Rotary(i, sig) => {
-                        let n = self.shared.get_normalized(i);
-                        if (sig.get() - n).abs() > f32::EPSILON {
-                            sig.set(n);
-                        }
-                    }
-                    Ctl::Switch(i, sig) => {
-                        let b = self.shared.get(i) >= 0.5;
-                        if sig.get() != b {
-                            sig.set(b);
-                        }
-                    }
-                    Ctl::Buttons(i, sig) | Ctl::Select(i, sig) => {
-                        let s = Some(self.shared.get(i).round() as usize);
-                        if sig.get() != s {
-                            sig.set(s);
-                        }
+                    ViewEvent::Status { line } => {
+                        self.status.set(line);
                     }
                 }
             }
@@ -802,6 +989,20 @@ pub fn probed_ids() -> Vec<String> {
     v
 }
 
+/// Standalone layout probe entry point.
+///
+/// After ADR 0007 the editor needs a controller + model to build, neither of
+/// which lives in `vxn-ui`. The standalone probe is therefore a no-op stub —
+/// run the probe by loading the plugin in a host with the `layout-probe`
+/// feature on (the running editor still writes `target/vxn-layout.jsonl`).
+#[cfg(feature = "layout-probe")]
+pub fn run_layout_probe() {
+    eprintln!(
+        "run_layout_probe is no longer self-hosting after ADR 0007 — load the \
+         plugin in a host with --features layout-probe to drive layout dumps."
+    );
+}
+
 /// Write the resolved bounds for every entity in [`probed_ids`] to the JSONL
 /// file at `VXN_PROBE_OUT` (defaults to `target/vxn-layout.jsonl`). One line
 /// per id: `{"name":..., "x":..., "y":..., "w":..., "h":...}` in logical px.
@@ -834,67 +1035,69 @@ fn dump_layout(cx: &mut EventContext) {
     eprintln!("layout-probe: wrote {path}");
 }
 
-/// Open the editor in a standalone window for layout inspection (feature
-/// `layout-probe`). Used by `examples/layout_probe.rs`. Dumps the resolved
-/// bounds of every [`probed_ids`] entry to `VXN_PROBE_OUT` on the third idle
-/// tick (one to build, one to lay out, one to read post-layout cache) then
-/// closes the window.
-#[cfg(feature = "layout-probe")]
-pub fn run_layout_probe() {
-    let shared = std::sync::Arc::new(SharedParams::new());
-    let tick = std::cell::Cell::new(0u32);
-    Application::new(move |cx| build_editor(cx, std::sync::Arc::clone(&shared)))
-        .on_idle(move |cx| {
-            let n = tick.get();
-            tick.set(n.saturating_add(1));
-            // Two idle ticks to let build + initial layout settle, then dump
-            // and exit. `on_idle` hands a `Context`, but bounds lookup needs an
-            // `EventContext`; bridge here. Exit hard — a one-shot tool, no need
-            // to wait for the window to drain its own event loop.
-            if n == 2 {
-                let mut ecx = EventContext::new(cx);
-                dump_layout(&mut ecx);
-                std::process::exit(0);
-            }
-        })
-        .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
-        .title("VXN1 layout probe")
-        .run()
-        .expect("standalone layout-probe editor");
-}
-
+/// Open the editor parented to `parent` (on macOS the host `NSView`).
+///
+/// The editor is now driven entirely through the controller (ADR 0007):
+///
+/// - `model` is read for descriptor lookup + the mode-aware UnisonDetune fader.
+/// - `ctrl` is the post handle for `UiEvent`s; every UI write goes through it.
+/// - `view_rx` is the controller → view channel; drained on idle.
+/// - `corpus` is the shared preset-corpus snapshot the browser reads.
+/// - `tick` is the controller's tick closure (`Controller::tick` wrapped in a
+///   Mutex by the clack shell), called on idle so UI-posted intents apply
+///   promptly rather than waiting for the host's `flush`.
+///
+/// `scale_override` pins the HiDPI factor — see the older doc for why
+/// `SystemScaleFactor` is unreliable on macOS.
 pub fn open_editor(
     parent: *mut c_void,
-    shared: Arc<SharedParams>,
+    model: Arc<dyn ParamModel>,
+    ctrl: ControllerHandle,
+    view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    corpus: CorpusHandle,
+    tick: Tick,
     scale_override: Option<f64>,
 ) -> EditorHandle {
     let parent = ParentWindow(parent);
+    let shared = EditorCtx::new(model, ctrl);
 
     // Per-open idle tick counter (interior-mutable so the `Fn` idle closure can
     // bump it). Process-static would leak across reopens and skip the one-time
     // surface rebuild on the second window.
-    let tick = std::cell::Cell::new(0u32);
+    let idle_tick = std::cell::Cell::new(0u32);
 
-    let mut app = Application::new(move |cx| build_editor(cx, Arc::clone(&shared)))
-        .on_idle(move |cx| {
-            // Broadcast to every model in the tree, not just root. `cx.emit`
-            // propagates `Up` from `cx.current` (root), so only root-attached
-            // models would see it — the browser panel's `DeleteSweeper` lives
-            // deeper than that.
-            cx.emit_custom(
-                Event::new(PollAutomation)
-                    .target(Entity::root())
-                    .propagate(Propagation::Subtree),
-            );
-            let n = tick.get();
-            tick.set(n.saturating_add(1));
-            if n == 0 {
-                // Force the one-time surface rebuild at the correct physical size.
-                cx.emit(WindowEvent::SetUserScale(1.0));
-            }
-        })
-        .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
-        .title("VXN1");
+    let build_shared = shared.clone();
+    let build_view_rx = view_rx.clone();
+    let build_corpus = corpus.clone();
+    let build_tick = tick.clone();
+    let mut app = Application::new(move |cx| {
+        build_editor(
+            cx,
+            build_shared.clone(),
+            build_view_rx.clone(),
+            build_corpus.clone(),
+            build_tick.clone(),
+        )
+    })
+    .on_idle(move |cx| {
+        // Broadcast to every model in the tree, not just root. `cx.emit`
+        // propagates `Up` from `cx.current` (root), so only root-attached
+        // models would see it — the browser panel's `DeleteSweeper` lives
+        // deeper than that.
+        cx.emit_custom(
+            Event::new(PollAutomation)
+                .target(Entity::root())
+                .propagate(Propagation::Subtree),
+        );
+        let n = idle_tick.get();
+        idle_tick.set(n.saturating_add(1));
+        if n == 0 {
+            // Force the one-time surface rebuild at the correct physical size.
+            cx.emit(WindowEvent::SetUserScale(1.0));
+        }
+    })
+    .inner_size((EDITOR_WIDTH, EDITOR_HEIGHT))
+    .title("VXN1");
 
     if let Some(scale) = scale_override.filter(|s| *s > 0.0) {
         app = app.with_scale_policy(WindowScalePolicy::ScaleFactor(scale));
@@ -903,10 +1106,14 @@ pub fn open_editor(
     app.open_parented(&parent)
 }
 
-fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
-    // Bundle the faceplate font so it renders identically on any host/OS. Each
-    // weight is its own family ("IBM Plex Sans Condensed {Thin|ExtraLight|
-    // Medium}"); referenced by name in STYLE.
+fn build_editor(
+    cx: &mut Context,
+    shared: EditorCtx,
+    view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    corpus: CorpusHandle,
+    tick: Tick,
+) {
+    // Bundle the faceplate font so it renders identically on any host/OS.
     cx.add_font_mem(include_bytes!("../fonts/IBMPlexSansCondensed-Thin.ttf"));
     cx.add_font_mem(include_bytes!(
         "../fonts/IBMPlexSansCondensed-ExtraLight.ttf"
@@ -919,18 +1126,46 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
     // stay engine-only but host-automatable). The model syncs them on idle.
     let controls: Vec<Ctl> = (0..TOTAL_PARAMS).map(|i| make_ctl(i, &shared)).collect();
 
-    // Key-mode UI state (ADR 0003 §6). `edit_layer` is pure view state; `key_mode`
-    // and `split` mirror the non-automatable shared state (set via the state path,
-    // not param gestures) and are re-synced from the store on idle.
+    // Key-mode UI state. `edit_layer` is pure view state; `key_mode` and `split`
+    // mirror non-automatable shared state, kept in sync via `KeyModeChanged`
+    // ViewEvents from the controller (state-load and UI-edit both go via it).
     let edit_layer = SyncSignal::new(0usize);
     let key_mode = SyncSignal::new(shared.key_mode() as usize);
     let split = SyncSignal::new(shared.split_point() as f32);
 
+    // Browser signals — initial values seeded from the corpus snapshot the
+    // controller already published; subsequent `PresetCorpusChanged` events
+    // rebuild from the same snapshot under its mutex.
+    let initial_snapshot = match corpus.lock() {
+        Ok(g) => g.clone(),
+        Err(p) => p.into_inner().clone(),
+    };
+    let (initial_rows, initial_entries) = build_browser_from_corpus(&initial_snapshot);
+    let default_folder = default_folder_key(&initial_rows);
+    let folders: SyncSignal<Arc<Vec<FolderRow>>> = SyncSignal::new(Arc::new(initial_rows));
+    let entries: SyncSignal<Arc<Vec<BrowserEntry>>> = SyncSignal::new(Arc::new(initial_entries));
+
+    let name = SyncSignal::new(String::from("\u{2014}"));
+    let status = SyncSignal::new(String::new());
+    let current: SyncSignal<Option<usize>> = SyncSignal::new(None);
+    let selected_folder: SyncSignal<FolderKey> = SyncSignal::new(default_folder);
+    let name_field = SyncSignal::new(String::new());
+
     UiModel {
         controls: controls.clone(),
-        shared: Arc::clone(&shared),
+        shared: shared.clone(),
+        view_rx: view_rx.clone(),
+        tick,
+        corpus: corpus.clone(),
         key_mode,
         split,
+        name,
+        status,
+        folders,
+        entries,
+        current,
+        selected_folder,
+        name_field,
     }
     .build(cx);
 
@@ -943,22 +1178,26 @@ fn build_editor(cx: &mut Context, shared: Arc<SharedParams>) {
                 .height(Pixels(26.0))
                 .alignment(Alignment::Center);
             probe_id!(banner, "vxn:Banner");
-            // Preset browser bar (0027): current name + prev/next, a grouped
-            // Factory/User browse popup, the patch load-target selector, and
-            // Save-As. Sits between the banner and the panel rows.
-            preset_bar(cx, &shared);
+            // Preset browser bar (0027). Built against the UiModel's signals so
+            // the controller's view-event drain populates everything.
+            preset_bar(
+                cx,
+                &shared,
+                folders,
+                entries,
+                name,
+                status,
+                current,
+                selected_folder,
+                name_field,
+            );
             for (row_idx, row) in ROWS.iter().enumerate() {
-                let _ = row_idx; // silenced off-feature; consumed by `probe_id!` below.
+                let _ = row_idx;
                 let row_handle = HStack::new(cx, |cx| {
                     for (title, entries) in *row {
                         if *title == "Keys" {
-                            // Placeholder entry: the key-mode panel writes opaque
-                            // (non-param) state, so it's built directly rather than
-                            // from `entries`. Its row slot fixes its position.
                             keys_panel(cx, &shared, edit_layer, key_mode, split);
                         } else if is_layer_dependent(entries) {
-                            // Build the panel for each layer; show only the one
-                            // matching the edit-target toggle (no structural rebuild).
                             for layer in Layer::ALL {
                                 let li = layer as usize;
                                 let vis = edit_layer.map(move |l: &usize| *l == li);
@@ -1097,28 +1336,6 @@ fn move_targets(rows: &[FolderRow], current: &FolderKey) -> Vec<(FolderKey, Stri
     out
 }
 
-/// Surface a `rename_*` IO result on the status line. Returns `true` when the
-/// rename committed (the caller closes the inline editor and reseeds the
-/// browser) and `false` when it failed (the inline editor stays open so the
-/// user can correct the name). Pulled out so the wiring is unit-testable
-/// without a vizia context.
-fn apply_rename_result<T, E: std::fmt::Display>(
-    result: Result<T, E>,
-    label: &str,
-    status: &mut String,
-) -> Option<T> {
-    match result {
-        Ok(v) => {
-            status.clear();
-            Some(v)
-        }
-        Err(e) => {
-            *status = format!("Rename {label} failed: {e}");
-            None
-        }
-    }
-}
-
 /// One row in the browser's combined Factory+User list. Folder is carried so
 /// the right-pane filter and the prev/next walker don't need to chase paths.
 #[derive(Clone)]
@@ -1157,42 +1374,49 @@ impl SearchQuery {
 /// — the prev/next walker — follows the same folder order, name-sorted within
 /// each folder. Factory `EntrySource::Factory(i)` indices point back into the
 /// unsorted bank.
-fn build_browser(
-    bank: &[FactoryPreset],
-    tree: &[UserFolder],
+/// Build the left-pane folder rows and the combined flat preset list from the
+/// controller's [`PresetCorpus`] snapshot. Pure function — same display order
+/// as the pre-controller version (factory categories alpha-sorted, then user
+/// folders with `Uncategorised` first), so the prev/next walker and the
+/// folder sort are unaffected by where the data is sourced.
+fn build_browser_from_corpus(
+    corpus: &PresetCorpus,
 ) -> (Vec<FolderRow>, Vec<BrowserEntry>) {
-    let mut indexed: Vec<(usize, &FactoryPreset)> = bank.iter().enumerate().collect();
+    // Factory: sort by (category, name); each `Factory(i)` index keeps
+    // pointing into the unsorted bank so `UiEvent::LoadPreset` round-trips.
+    let mut indexed: Vec<(usize, &PresetMeta)> = corpus.factory.iter().enumerate().collect();
     indexed.sort_by(|a, b| {
-        a.1.category
-            .to_lowercase()
-            .cmp(&b.1.category.to_lowercase())
+        let ca = a.1.category.as_deref().unwrap_or("");
+        let cb = b.1.category.as_deref().unwrap_or("");
+        ca.to_lowercase()
+            .cmp(&cb.to_lowercase())
             .then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()))
     });
 
     let mut factory_cats: Vec<String> = Vec::new();
     let mut entries: Vec<BrowserEntry> = Vec::new();
-    for (i, f) in indexed {
+    for (i, m) in indexed {
+        let cat = m.category.clone().unwrap_or_else(|| "Factory".to_string());
         if !factory_cats
             .last()
-            .map(|c: &String| c.eq_ignore_ascii_case(&f.category))
+            .map(|c: &String| c.eq_ignore_ascii_case(&cat))
             .unwrap_or(false)
         {
-            factory_cats.push(f.category.clone());
+            factory_cats.push(cat.clone());
         }
         entries.push(BrowserEntry {
-            name: f.name.clone(),
-            folder: FolderKey::Factory(f.category.clone()),
+            name: m.name.clone(),
+            folder: FolderKey::Factory(cat),
             source: EntrySource::Factory(i),
         });
     }
 
-    // User folders: pull the root group out (always shown first as
-    // `Uncategorised`), then alpha-sort subfolders by name. `list_user_tree`
-    // already produces this order in production, but sorting here lets the
-    // function take a hand-built tree and still produce the documented order.
-    let mut root_presets: &[UserPreset] = &[];
-    let mut subfolders: Vec<(&str, &[UserPreset])> = Vec::new();
-    for uf in tree {
+    // User folders: root group first, then subfolders alpha-sorted. The
+    // PresetStore impl already produces this order, but we re-sort defensively
+    // so a hand-built corpus (tests) lands in the documented shape too.
+    let mut root_presets: &[UserPresetEntry] = &[];
+    let mut subfolders: Vec<(&str, &[UserPresetEntry])> = Vec::new();
+    for uf in &corpus.user {
         match &uf.name {
             None => root_presets = &uf.presets,
             Some(name) => subfolders.push((name.as_str(), &uf.presets)),
@@ -1200,10 +1424,9 @@ fn build_browser(
     }
     subfolders.sort_by_key(|(n, _)| n.to_lowercase());
 
-    // User entries follow the same display order: root first, then subfolders.
     for p in root_presets {
         entries.push(BrowserEntry {
-            name: p.name.clone(),
+            name: p.meta.name.clone(),
             folder: FolderKey::UserRoot,
             source: EntrySource::User(p.path.clone()),
         });
@@ -1212,7 +1435,7 @@ fn build_browser(
         let key = FolderKey::User((*name).to_string());
         for p in *presets {
             entries.push(BrowserEntry {
-                name: p.name.clone(),
+                name: p.meta.name.clone(),
                 folder: key.clone(),
                 source: EntrySource::User(p.path.clone()),
             });
@@ -1269,125 +1492,11 @@ fn step_index(delta: isize, current: Option<usize>, len: usize) -> Option<usize>
     })
 }
 
-/// Load one browser entry into the shared store (the bulk write of ADR 0005 §6).
-/// Every preset is a Performance — both layers, the global block, key mode and
-/// split point all get replaced. Sets the current-name display and a status line;
-/// load warnings (unknown key / bad enum from 0026) are surfaced non-fatally
-/// rather than swallowed. Factory presets are pre-validated so they never warn;
-/// only user files can.
-fn load_into(
-    entry: &BrowserEntry,
-    bank: &[FactoryPreset],
-    shared: &SharedParams,
-    name: SyncSignal<String>,
-    status: SyncSignal<String>,
-) {
-    let loaded: Result<(Performance, Vec<String>), String> = match &entry.source {
-        EntrySource::Factory(i) => bank
-            .get(*i)
-            .map(|f| (f.preset.clone(), Vec::new()))
-            .ok_or_else(|| "factory preset missing".to_string()),
-        EntrySource::User(path) => load_preset_file(path).map_err(|e| e.to_string()),
-    };
-    match loaded {
-        Ok((preset, warnings)) => {
-            shared.load_performance(&preset.state);
-            name.set(entry.name.clone());
-            status.set(match warnings.first() {
-                None => format!("Loaded {}", entry.name),
-                Some(w) => format!("Loaded {} — {w}", entry.name),
-            });
-        }
-        Err(e) => status.set(format!("Load failed: {e}")),
-    }
-}
-
-/// Snapshot the live store + Name field and write to the user directory as a
-/// Performance (ADR 0005 §6). Folder = the panel's currently-selected user
-/// folder (`None` = user root). Category is the sole discriminator — meta
-/// carries no tags.
-fn save_from_form(
-    name_text: &str,
-    folder: Option<&str>,
-    shared: &SharedParams,
-) -> Result<PathBuf, String> {
-    let trimmed = name_text.trim();
-    if trimmed.is_empty() {
-        return Err("name the preset first".to_string());
-    }
-    let meta = Meta {
-        name: trimmed.to_string(),
-        ..Meta::default()
-    };
-    save_performance_in(
-        &Performance {
-            meta,
-            state: shared.to_state(),
-        },
-        folder,
-    )
-    .map_err(|e| e.to_string())
-}
-
 /// Locate one user preset's index in `entries` by on-disk path.
 fn entry_index_for_user_path(entries: &[BrowserEntry], path: &Path) -> Option<usize> {
     entries
         .iter()
         .position(|e| matches!(&e.source, EntrySource::User(p) if p == path))
-}
-
-/// Rebuild `folders` + `entries` from disk after a mutation (rename / delete /
-/// move / new folder / save). When `follow` is `Some`, the panel's `current`
-/// cursor and the save-form Name field are repointed at the entry now living
-/// at that path (matches the post-mutation file location). When `follow` is
-/// `None`, the cursor is preserved if the previously-selected user path still
-/// exists, otherwise cleared. Folder selection is preserved unless its key is
-/// no longer in the rebuilt row list, in which case the cursor falls back to
-/// the first selectable folder.
-#[allow(clippy::too_many_arguments)]
-fn reseed_browser(
-    bank: &[FactoryPreset],
-    folders: SyncSignal<Arc<Vec<FolderRow>>>,
-    entries: SyncSignal<Arc<Vec<BrowserEntry>>>,
-    current: SyncSignal<Option<usize>>,
-    selected_folder: SyncSignal<FolderKey>,
-    name_field: SyncSignal<String>,
-    follow: Option<&Path>,
-) {
-    let tree = list_user_tree().unwrap_or_default();
-    let (rebuilt_rows, rebuilt_entries) = build_browser(bank, &tree);
-
-    let prev_current_path: Option<PathBuf> = current.get().and_then(|i| {
-        let es = entries.get();
-        es.get(i).and_then(|e| match &e.source {
-            EntrySource::User(p) => Some(p.clone()),
-            EntrySource::Factory(_) => None,
-        })
-    });
-    let target_path: Option<&Path> = follow.or(prev_current_path.as_deref());
-    let new_idx = target_path.and_then(|p| entry_index_for_user_path(&rebuilt_entries, p));
-
-    // Keep the folder selection if it survived; else fall back to the first
-    // selectable folder (the post-delete row gone case).
-    let folder_key = selected_folder.get();
-    let folder_alive = rebuilt_rows.iter().any(|r| match r {
-        FolderRow::Folder { key, .. } => key == &folder_key,
-        FolderRow::Header(_) => false,
-    });
-    if !folder_alive {
-        selected_folder.set(default_folder_key(&rebuilt_rows));
-    }
-
-    // Repoint the Name field at the followed entry, when it's a user preset.
-    if let Some(idx) = new_idx {
-        if let Some(e) = rebuilt_entries.get(idx) {
-            name_field.set(e.name.clone());
-        }
-    }
-
-    folders.set(Arc::new(rebuilt_rows));
-    entries.set(Arc::new(rebuilt_entries));
-    current.set(new_idx);
 }
 
 /// Time window for the panel's "second press-down on the same row = load"
@@ -1397,8 +1506,8 @@ fn reseed_browser(
 const DOUBLE_PRESS_MS: u128 = 350;
 
 /// Populate the save-form Name field and the panel's `current` cursor from an
-/// entry. Does **not** load — used when single-clicking a row, so the user can
-/// edit the name before re-saving.
+/// entry. Does **not** load — used when single-clicking a row, so the user
+/// can edit the name before re-saving.
 fn select_entry(
     idx: usize,
     entry: &BrowserEntry,
@@ -1411,18 +1520,14 @@ fn select_entry(
     name_field.set(entry.name.clone());
 }
 
-/// Load the entry into the shared store (`load_into`) **and** refresh the
-/// panel state (`select_entry`). Used by prev/next, the Load button, and
-/// double-click; the panel is closed by the caller when appropriate (the
-/// double-click and Load paths dismiss it; prev/next leaves it as-is).
+/// Post a `LoadPreset` for the entry at `idx` and update the cursor/folder/
+/// name-field signals locally. The current preset name and status line are
+/// updated by the controller's view-event drain (`PresetLoaded`), not here.
 #[allow(clippy::too_many_arguments)]
 fn load_entry(
     idx: usize,
     entries: &[BrowserEntry],
-    bank: &[FactoryPreset],
-    shared: &SharedParams,
-    name: SyncSignal<String>,
-    status: SyncSignal<String>,
+    shared: &EditorCtx,
     current: SyncSignal<Option<usize>>,
     selected_folder: SyncSignal<FolderKey>,
     name_field: SyncSignal<String>,
@@ -1430,7 +1535,11 @@ fn load_entry(
     let Some(entry) = entries.get(idx) else {
         return;
     };
-    load_into(entry, bank, shared, name, status);
+    let source = match &entry.source {
+        EntrySource::Factory(i) => PresetSource::Factory { index: *i },
+        EntrySource::User(p) => PresetSource::User { path: p.clone() },
+    };
+    shared.post(UiEvent::LoadPreset { source });
     select_entry(idx, entry, current, selected_folder, name_field);
 }
 
@@ -1446,30 +1555,25 @@ fn load_entry(
 /// existing `PollAutomation` idle resync — a one-shot bulk load repaints every
 /// control on the next idle tick rather than continuous relayout, so it
 /// doesn't stomp input ([[vxn1-vizia-automation-relayout-input-stomp]]).
-fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
-    let shared = Arc::clone(shared);
-    let bank = Arc::new(factory());
-    let tree = list_user_tree().unwrap_or_default();
-    let (initial_rows, initial_entries) = build_browser(&bank, &tree);
-
-    let default_folder = default_folder_key(&initial_rows);
-    let folders: SyncSignal<Arc<Vec<FolderRow>>> = SyncSignal::new(Arc::new(initial_rows));
-    let entries: SyncSignal<Arc<Vec<BrowserEntry>>> = SyncSignal::new(Arc::new(initial_entries));
-
-    // Current preset name (em dash until something loads), a transient status
-    // line, and the browser cursor into `entries`.
-    let name = SyncSignal::new(String::from("\u{2014}"));
-    let status = SyncSignal::new(String::new());
-    let current: SyncSignal<Option<usize>> = SyncSignal::new(None);
+#[allow(clippy::too_many_arguments)]
+fn preset_bar(
+    cx: &mut Context,
+    shared: &EditorCtx,
+    folders: SyncSignal<Arc<Vec<FolderRow>>>,
+    entries: SyncSignal<Arc<Vec<BrowserEntry>>>,
+    name: SyncSignal<String>,
+    status: SyncSignal<String>,
+    current: SyncSignal<Option<usize>>,
+    selected_folder: SyncSignal<FolderKey>,
+    name_field: SyncSignal<String>,
+) {
+    let shared = shared.clone();
     let browse_open = SyncSignal::new(false);
 
-    // Panel state. `selected_folder` drives the right-pane list; `search`
-    // narrows it by name substring. The name field is the Save-As payload;
-    // selecting an existing user preset prefills it so editing then saving
-    // overwrites the same file.
-    let selected_folder: SyncSignal<FolderKey> = SyncSignal::new(default_folder);
+    // Panel state. `search` narrows the right pane; the name field is the
+    // Save-As payload (prefilled on selection so editing then saving
+    // overwrites the same file).
     let search = SyncSignal::new(String::new());
-    let name_field = SyncSignal::new(String::new());
 
     // Manual double-click tracking: a press-down on the same row inside the
     // window loads. Resets on row change.
@@ -1481,13 +1585,9 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
     let rename_target: SyncSignal<Option<RenameTarget>> = SyncSignal::new(None);
 
     // Open context menu (right-clicked user row) + pending delete confirmation.
-    // Both are panel-scoped but live here so they survive across panel rebuilds
-    // and so the same right-click dismissal logic can target either.
     let context_menu: SyncSignal<Option<ContextMenu>> = SyncSignal::new(None);
     let delete_confirm: SyncSignal<Option<DeleteConfirm>> = SyncSignal::new(None);
 
-    // Sweep stale confirm + open menu after the 3 s window — the click-time
-    // check in `delete_action` doesn't fire when the user never clicks again.
     DeleteSweeper {
         delete_confirm,
         context_menu,
@@ -1496,24 +1596,14 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
 
     let preset_bar_handle = HStack::new(cx, move |cx| {
         // ── Prev / current name / next ──
-        let (b_prev, sh_prev) = (Arc::clone(&bank), Arc::clone(&shared));
+        let sh_prev = shared.clone();
         Button::new(cx, |cx| Label::new(cx, "<").class("tg-lbl"))
             .class("pbar-btn")
             .cursor(CursorIcon::Hand)
             .on_press_down(move |_cx| {
                 let es = entries.get();
                 if let Some(ni) = step_index(-1, current.get(), es.len()) {
-                    load_entry(
-                        ni,
-                        &es,
-                        &b_prev,
-                        &sh_prev,
-                        name,
-                        status,
-                        current,
-                        selected_folder,
-                        name_field,
-                    );
+                    load_entry(ni, &es, &sh_prev, current, selected_folder, name_field);
                 }
             });
         Label::new(cx, name)
@@ -1521,35 +1611,20 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
             .width(Pixels(150.0))
             .height(Stretch(1.0))
             .alignment(Alignment::Left);
-        let (b_next, sh_next) = (Arc::clone(&bank), Arc::clone(&shared));
+        let sh_next = shared.clone();
         Button::new(cx, |cx| Label::new(cx, ">").class("tg-lbl"))
             .class("pbar-btn")
             .cursor(CursorIcon::Hand)
             .on_press_down(move |_cx| {
                 let es = entries.get();
                 if let Some(ni) = step_index(1, current.get(), es.len()) {
-                    load_entry(
-                        ni,
-                        &es,
-                        &b_next,
-                        &sh_next,
-                        name,
-                        status,
-                        current,
-                        selected_folder,
-                        name_field,
-                    );
+                    load_entry(ni, &es, &sh_next, current, selected_folder, name_field);
                 }
             });
 
         // ── Browse toggle + floating panel ──
-        let (b_panel, sh_panel) = (Arc::clone(&bank), Arc::clone(&shared));
+        let sh_panel = shared.clone();
         VStack::new(cx, move |cx| {
-            // Lift the toggle above the panel (`z_index(200)`) so re-clicking
-            // Browse closes the panel reliably. Without this, the panel's
-            // hit-test footprint can shadow part of the button — the
-            // `position_type: Absolute` panel renders into the same VStack as
-            // the button, so the higher z_index wins in any overlap region.
             Button::new(cx, |cx| Label::new(cx, "Browse").class("tg-lbl"))
                 .class("pbar-btn")
                 .cursor(CursorIcon::Hand)
@@ -1560,10 +1635,9 @@ fn preset_bar(cx: &mut Context, shared: &Arc<SharedParams>) {
                 if !browse_open.get() {
                     return;
                 }
-                let (b_panel, sh_panel) = (Arc::clone(&b_panel), Arc::clone(&sh_panel));
+                let sh_panel = sh_panel.clone();
                 browser_panel(
                     cx,
-                    b_panel,
                     sh_panel,
                     folders,
                     entries,
@@ -1610,139 +1684,74 @@ struct BrowserSignals {
     selected_folder: SyncSignal<FolderKey>,
     name_field: SyncSignal<String>,
     name: SyncSignal<String>,
+    /// Reserved for future direct-status writes; current code routes status
+    /// through controller `Status` events and `UiModel`'s drain.
+    #[allow(dead_code)]
     status: SyncSignal<String>,
     rename_target: SyncSignal<Option<RenameTarget>>,
     context_menu: SyncSignal<Option<ContextMenu>>,
     delete_confirm: SyncSignal<Option<DeleteConfirm>>,
 }
 
-/// Commit an inline folder rename. On success the inline editor closes and the
-/// browser reseeds (so the renamed row picks up its new label); on conflict
-/// the editor stays open and the status line shows the error so the user can
-/// correct it.
-fn commit_folder_rename(bank: &[FactoryPreset], old: &str, new: &str, sigs: BrowserSignals) {
-    let mut msg = String::new();
-    let result = rename_user_folder(old, new);
-    let outcome = apply_rename_result(result, "folder", &mut msg);
-    if !msg.is_empty() {
-        sigs.status.set(msg);
-    }
-    let Some((_path, final_name)) = outcome else {
-        return;
-    };
-    // Move the folder selection to the renamed folder when it was the one
-    // being edited, so the right pane keeps showing the same presets.
+/// Post a folder-rename intent. The controller does the IO and emits a
+/// `PresetCorpusChanged` view event; the editor's `UiModel` drain re-reads
+/// the corpus snapshot and the inline editor closes via `rename_target.set(None)`.
+fn commit_folder_rename(ctx: &EditorCtx, old: &str, new: &str, sigs: BrowserSignals) {
+    let trimmed = new.trim().to_string();
+    // Move the folder selection optimistically so the right pane keeps
+    // showing the same presets when the rename succeeds. (If it fails, the
+    // next corpus refresh will land it on the first selectable folder.)
     if sigs.selected_folder.get() == FolderKey::User(old.to_string()) {
-        sigs.selected_folder.set(FolderKey::User(final_name.clone()));
+        sigs.selected_folder.set(FolderKey::User(trimmed.clone()));
     }
     sigs.rename_target.set(None);
-    sigs.status.set(format!("Renamed folder to {final_name}"));
-    reseed_browser(
-        bank,
-        sigs.folders,
-        sigs.entries,
-        sigs.current,
-        sigs.selected_folder,
-        sigs.name_field,
-        None,
-    );
+    ctx.post(UiEvent::RenameFolder {
+        old_name: old.to_string(),
+        new_name: trimmed,
+    });
 }
 
-/// Commit an inline preset rename. On success the cursor follows the renamed
-/// file (its filename changed); on conflict the editor stays open.
-fn commit_preset_rename(bank: &[FactoryPreset], path: &Path, new: &str, sigs: BrowserSignals) {
-    let mut msg = String::new();
-    let result = rename_user_preset(path, new);
-    let outcome = apply_rename_result(result, "preset", &mut msg);
-    if !msg.is_empty() {
-        sigs.status.set(msg);
-    }
-    let Some(new_path) = outcome else {
-        return;
-    };
+/// Post a preset-rename intent. Cursor follows the renamed file via the
+/// `PresetCorpusChanged { follow }` event the controller emits.
+fn commit_preset_rename(ctx: &EditorCtx, path: &Path, new: &str, sigs: BrowserSignals) {
+    let trimmed = new.trim().to_string();
     sigs.rename_target.set(None);
-    sigs.name.set(new.trim().to_string());
-    sigs.status.set(format!("Renamed to {}", new.trim()));
-    reseed_browser(
-        bank,
-        sigs.folders,
-        sigs.entries,
-        sigs.current,
-        sigs.selected_folder,
-        sigs.name_field,
-        Some(&new_path),
-    );
+    sigs.name.set(trimmed.clone());
+    ctx.post(UiEvent::RenamePreset {
+        path: path.to_path_buf(),
+        new_name: trimmed,
+    });
 }
 
-/// Commit a folder delete (recursive). The selection falls back to the first
-/// selectable folder via `reseed_browser`'s `folder_alive` fallback.
-fn delete_folder(bank: &[FactoryPreset], name: &str, sigs: BrowserSignals) {
-    match delete_user_folder(name) {
-        Ok(()) => {
-            sigs.status.set(format!("Deleted folder {name}"));
-            reseed_browser(
-                bank,
-                sigs.folders,
-                sigs.entries,
-                sigs.current,
-                sigs.selected_folder,
-                sigs.name_field,
-                None,
-            );
-        }
-        Err(e) => sigs.status.set(format!("Delete folder failed: {e}")),
-    }
+/// Post a folder-delete intent (recursive). Selection falls back to the
+/// first selectable folder via the corpus drain.
+fn delete_folder(ctx: &EditorCtx, name: &str, _sigs: BrowserSignals) {
+    ctx.post(UiEvent::DeleteFolder {
+        name: name.to_string(),
+    });
 }
 
-/// Commit a preset delete. The cursor clears (the entry is gone) and the next
-/// reseed falls back via the path-not-found branch of `reseed_browser`.
-fn delete_preset(bank: &[FactoryPreset], path: &Path, sigs: BrowserSignals) {
-    match delete_user_preset(path) {
-        Ok(()) => {
-            sigs.status.set("Deleted".to_string());
-            reseed_browser(
-                bank,
-                sigs.folders,
-                sigs.entries,
-                sigs.current,
-                sigs.selected_folder,
-                sigs.name_field,
-                None,
-            );
-        }
-        Err(e) => sigs.status.set(format!("Delete failed: {e}")),
-    }
+/// Post a preset-delete intent.
+fn delete_preset(ctx: &EditorCtx, path: &Path, _sigs: BrowserSignals) {
+    ctx.post(UiEvent::DeletePreset {
+        path: path.to_path_buf(),
+    });
 }
 
-/// Commit a preset move into another user folder. The cursor follows the
-/// moved file (same filename, new parent).
-fn move_preset(
-    bank: &[FactoryPreset],
-    path: &Path,
-    dest: Option<&str>,
-    sigs: BrowserSignals,
-) {
-    match move_user_preset(path, dest) {
-        Ok(new_path) => {
-            // Match the destination folder so the right pane shows the moved
-            // entry without the user having to click the destination row.
-            sigs.selected_folder.set(match dest {
-                None => FolderKey::UserRoot,
-                Some(n) => FolderKey::User(n.to_string()),
-            });
-            sigs.status.set("Moved".to_string());
-            reseed_browser(
-                bank,
-                sigs.folders,
-                sigs.entries,
-                sigs.current,
-                sigs.selected_folder,
-                sigs.name_field,
-                Some(&new_path),
-            );
-        }
-        Err(e) => sigs.status.set(format!("Move failed: {e}")),
-    }
+/// Post a preset-move intent. The cursor follows the moved file (same
+/// filename, new parent) via the controller's `PresetCorpusChanged { follow }`
+/// event.
+fn move_preset(ctx: &EditorCtx, path: &Path, dest: Option<&str>, sigs: BrowserSignals) {
+    // Match the destination folder so the right pane shows the moved entry
+    // without the user having to click the destination row.
+    sigs.selected_folder.set(match dest {
+        None => FolderKey::UserRoot,
+        Some(n) => FolderKey::User(n.to_string()),
+    });
+    ctx.post(UiEvent::MovePreset {
+        path: path.to_path_buf(),
+        dest_folder: dest.map(str::to_string),
+    });
 }
 
 /// Dismiss the context menu and clear any pending delete-confirm. Called on
@@ -1760,7 +1769,7 @@ fn folder_row(
     key: FolderKey,
     label: String,
     sigs: BrowserSignals,
-    bank: Arc<Vec<FactoryPreset>>,
+    shared: EditorCtx,
 ) {
     let key_cmp = key.clone();
     let selected = sigs.selected_folder.map(move |s: &FolderKey| *s == key_cmp);
@@ -1826,7 +1835,7 @@ fn folder_row(
     // left-pane ScrollView's clip.
     if let FolderKey::User(n) = &key {
         let my_target = MenuTarget::UserFolder(n.clone());
-        let bank_menu = Arc::clone(&bank);
+        let shared_menu = shared.clone();
         Binding::new(cx, sigs.context_menu, move |cx| {
             let Some(menu) = sigs.context_menu.get() else {
                 return;
@@ -1834,7 +1843,7 @@ fn folder_row(
             if menu.target != my_target {
                 return;
             }
-            context_menu_view(cx, menu, sigs, Arc::clone(&bank_menu));
+            context_menu_view(cx, menu, sigs, shared_menu.clone());
         });
     }
 
@@ -1854,14 +1863,14 @@ fn folder_row(
             }
             let buf = SyncSignal::new(initial.clone());
             let old = old_name.clone();
-            let bank_for = Arc::clone(&bank);
+            let shared_for = shared.clone();
             Textbox::new(cx, buf)
                 .class("preset-field")
                 .width(Stretch(1.0))
                 .focused(true)
                 .on_edit(move |_cx, t| buf.set(t))
                 .on_submit(move |_cx, t: String, _success| {
-                    commit_folder_rename(&bank_for, &old, &t, sigs);
+                    commit_folder_rename(&shared_for, &old, &t, sigs);
                 })
                 .on_blur(move |_cx| sigs.rename_target.set(None))
                 .on_cancel(move |_cx| sigs.rename_target.set(None));
@@ -1878,8 +1887,7 @@ fn preset_row(
     i: usize,
     e: BrowserEntry,
     sigs: BrowserSignals,
-    bank: Arc<Vec<FactoryPreset>>,
-    shared: Arc<SharedParams>,
+    shared: EditorCtx,
     browse_open: SyncSignal<bool>,
     last_press: SyncSignal<Option<(usize, Instant)>>,
 ) {
@@ -1897,8 +1905,7 @@ fn preset_row(
     };
     let not_renaming = renaming_btn.map(|b: &bool| !b);
 
-    let b_click = Arc::clone(&bank);
-    let sh_click = Arc::clone(&shared);
+    let sh_click = shared.clone();
     let folder_for_menu = e.folder.clone();
     let path_for_menu = path_opt.clone();
     let label_for_btn = e.name.clone();
@@ -1928,10 +1935,7 @@ fn preset_row(
             load_entry(
                 i,
                 &es,
-                &b_click,
                 &sh_click,
-                sigs.name,
-                sigs.status,
                 sigs.current,
                 sigs.selected_folder,
                 sigs.name_field,
@@ -1968,7 +1972,7 @@ fn preset_row(
     // Context menu for this preset, anchored just below the row.
     if let Some(p) = path_opt.clone() {
         let folder_for_match = e.folder.clone();
-        let bank_menu = Arc::clone(&bank);
+        let shared_menu = shared.clone();
         Binding::new(cx, sigs.context_menu, move |cx| {
             let Some(menu) = sigs.context_menu.get() else {
                 return;
@@ -1983,7 +1987,7 @@ fn preset_row(
             if menu_path != &p || menu_folder != &folder_for_match {
                 return;
             }
-            context_menu_view(cx, menu, sigs, Arc::clone(&bank_menu));
+            context_menu_view(cx, menu, sigs, shared_menu.clone());
         });
     }
 
@@ -1999,14 +2003,14 @@ fn preset_row(
             }
             let buf = SyncSignal::new(initial.clone());
             let path_for = path.clone();
-            let bank_for = Arc::clone(&bank);
+            let shared_for = shared.clone();
             Textbox::new(cx, buf)
                 .class("preset-field")
                 .width(Stretch(1.0))
                 .focused(true)
                 .on_edit(move |_cx, t| buf.set(t))
                 .on_submit(move |_cx, t: String, _success| {
-                    commit_preset_rename(&bank_for, &path_for, &t, sigs);
+                    commit_preset_rename(&shared_for, &path_for, &t, sigs);
                 })
                 .on_blur(move |_cx| sigs.rename_target.set(None))
                 .on_cancel(move |_cx| sigs.rename_target.set(None));
@@ -2067,10 +2071,10 @@ fn context_menu_view(
     cx: &mut Context,
     menu: ContextMenu,
     sigs: BrowserSignals,
-    bank: Arc<Vec<FactoryPreset>>,
+    shared: EditorCtx,
 ) {
     let menu_for_body = menu.clone();
-    let bank_body = Arc::clone(&bank);
+    let shared_body = shared.clone();
     VStack::new(cx, move |cx| {
         match menu_for_body.target.clone() {
             MenuTarget::UserFolder(name) => {
@@ -2081,12 +2085,12 @@ fn context_menu_view(
                     close_menu(sigs);
                 });
                 let n_delete = name.clone();
-                let bank_del = Arc::clone(&bank_body);
+                let shared_del = shared_body.clone();
                 delete_item(
                     cx,
                     MenuTarget::UserFolder(n_delete.clone()),
                     sigs,
-                    move |sigs_inner| delete_folder(&bank_del, &n_delete, sigs_inner),
+                    move |sigs_inner| delete_folder(&shared_del, &n_delete, sigs_inner),
                 );
             }
             MenuTarget::UserPreset { path, folder } => {
@@ -2098,7 +2102,7 @@ fn context_menu_view(
                 });
                 let p_delete = path.clone();
                 let folder_delete = folder.clone();
-                let bank_del = Arc::clone(&bank_body);
+                let shared_del = shared_body.clone();
                 delete_item(
                     cx,
                     MenuTarget::UserPreset {
@@ -2106,7 +2110,7 @@ fn context_menu_view(
                         folder: folder_delete.clone(),
                     },
                     sigs,
-                    move |sigs_inner| delete_preset(&bank_del, &p_delete, sigs_inner),
+                    move |sigs_inner| delete_preset(&shared_del, &p_delete, sigs_inner),
                 );
                 // Move to ▸: toggle the submenu open via context_menu signal.
                 let menu_for_toggle = menu_for_body.clone();
@@ -2122,7 +2126,7 @@ fn context_menu_view(
                 if menu_for_body.submenu_open {
                     let path_move = path.clone();
                     let folder_current = folder.clone();
-                    let bank_move = Arc::clone(&bank_body);
+                    let shared_move = shared_body.clone();
                     VStack::new(cx, move |cx| {
                         let rows = sigs.folders.get();
                         let targets = move_targets(&rows, &folder_current);
@@ -2135,10 +2139,10 @@ fn context_menu_view(
                                 FolderKey::User(n) => Some(n),
                                 FolderKey::Factory(_) => continue,
                             };
-                            let bank_for = Arc::clone(&bank_move);
+                            let shared_for = shared_move.clone();
                             let path_for = path_move.clone();
                             menu_item(cx, leak_label(label), move |_cx| {
-                                move_preset(&bank_for, &path_for, dest.as_deref(), sigs);
+                                move_preset(&shared_for, &path_for, dest.as_deref(), sigs);
                                 close_menu(sigs);
                             });
                         }
@@ -2210,8 +2214,7 @@ fn delete_action(
 #[allow(clippy::too_many_arguments)]
 fn browser_panel(
     cx: &mut Context,
-    bank: Arc<Vec<FactoryPreset>>,
-    shared: Arc<SharedParams>,
+    shared: EditorCtx,
     folders: SyncSignal<Arc<Vec<FolderRow>>>,
     entries: SyncSignal<Arc<Vec<BrowserEntry>>>,
     name: SyncSignal<String>,
@@ -2238,11 +2241,8 @@ fn browser_panel(
         context_menu,
         delete_confirm,
     };
-    // Each row builder owns its own bank `Arc` so the move-into-closures
-    // pattern compiles cleanly. The right-pane preset rows also need an Arc
-    // for `load_into`. The row-owned context menus carry their own clones.
-    let bank_left = Arc::clone(&bank);
-    let bank_pre = Arc::clone(&bank);
+    let shared_left = shared.clone();
+    let shared_pre = shared.clone();
 
     VStack::new(cx, move |cx| {
         // ── Search row ──
@@ -2261,10 +2261,7 @@ fn browser_panel(
         .alignment(Alignment::Center);
 
         // ── Two-pane folders | presets ──
-        // Only the right pane needs `shared` (for loading on double-click).
-        // The left pane's bank Arc carries through commit handlers (rename of
-        // a user folder reseeds, which needs the bank to rebuild the entries).
-        let (b_right, sh_right) = (Arc::clone(&bank_pre), Arc::clone(&shared));
+        let sh_right = shared_pre.clone();
         HStack::new(cx, move |cx| {
             // Left: folder list.
             ScrollView::new(cx, move |cx| {
@@ -2278,7 +2275,7 @@ fn browser_panel(
                                     .height(Pixels(22.0));
                             }
                             FolderRow::Folder { key, label } => {
-                                folder_row(cx, key.clone(), label.clone(), sigs, Arc::clone(&bank_left));
+                                folder_row(cx, key.clone(), label.clone(), sigs, shared_left.clone());
                             }
                         }
                     }
@@ -2291,9 +2288,9 @@ fn browser_panel(
             // Right: presets in the selected folder, narrowed by search.
             ScrollView::new(cx, move |cx| {
                 Binding::new(cx, entries, move |cx| {
-                    let (b_right, sh_right) = (Arc::clone(&b_right), Arc::clone(&sh_right));
+                    let sh_right = sh_right.clone();
                     Binding::new(cx, selected_folder, move |cx| {
-                        let (b_right, sh_right) = (Arc::clone(&b_right), Arc::clone(&sh_right));
+                        let sh_right = sh_right.clone();
                         Binding::new(cx, search, move |cx| {
                             let es = entries.get();
                             let folder = selected_folder.get();
@@ -2312,8 +2309,7 @@ fn browser_panel(
                                     i,
                                     e.clone(),
                                     sigs,
-                                    Arc::clone(&b_right),
-                                    Arc::clone(&sh_right),
+                                    sh_right.clone(),
                                     browse_open,
                                     last_press,
                                 );
@@ -2333,12 +2329,10 @@ fn browser_panel(
         .horizontal_gap(Pixels(6.0));
 
         // ── Save form ──
-        let (b_save, sh_save) = (Arc::clone(&bank), Arc::clone(&shared));
-        let (b_load, sh_load) = (Arc::clone(&bank), Arc::clone(&shared));
+        let sh_save = shared.clone();
+        let sh_new = shared.clone();
+        let sh_load = shared.clone();
         VStack::new(cx, move |cx| {
-            // Disable Save and the editable Name field when a factory folder is
-            // selected (factory is immutable, ADR 0006 §5). Lensed so the
-            // disabled state tracks selected_folder live.
             let save_disabled = selected_folder.map(|f: &FolderKey| f.is_factory());
 
             // Name input.
@@ -2356,7 +2350,6 @@ fn browser_panel(
 
             // Save / New Folder / Load row.
             HStack::new(cx, move |cx| {
-                let bs = Arc::clone(&b_save);
                 Button::new(cx, |cx| Label::new(cx, "Save").class("tg-lbl"))
                     .class("pbar-btn")
                     .cursor(CursorIcon::Hand)
@@ -2368,45 +2361,31 @@ fn browser_panel(
                             return;
                         };
                         let name_text = name_field.get();
-                        let result =
-                            save_from_form(&name_text, folder_arg.as_deref(), &sh_save);
-                        match result {
-                            Ok(path) => {
-                                let saved_name = name_text.trim().to_string();
-                                let tree = list_user_tree().unwrap_or_default();
-                                let (rebuilt_rows, rebuilt_entries) =
-                                    build_browser(&bs, &tree);
-                                let idx =
-                                    entry_index_for_user_path(&rebuilt_entries, &path);
-                                folders.set(Arc::new(rebuilt_rows));
-                                entries.set(Arc::new(rebuilt_entries));
-                                current.set(idx);
-                                name.set(saved_name.clone());
-                                status.set(format!("Saved {saved_name}"));
-                            }
-                            Err(e) => status.set(format!("Save failed: {e}")),
+                        let trimmed = name_text.trim();
+                        if trimmed.is_empty() {
+                            status.set("Name the preset first".to_string());
+                            return;
                         }
+                        name.set(trimmed.to_string());
+                        sh_save.post(UiEvent::SavePreset {
+                            name: trimmed.to_string(),
+                            folder: folder_arg,
+                        });
                     });
 
-                let bn = Arc::clone(&b_save);
                 Button::new(cx, |cx| Label::new(cx, "New Folder").class("tg-lbl"))
                     .class("pbar-btn")
                     .cursor(CursorIcon::Hand)
-                    .on_press_down(move |_cx| match create_user_folder("New Folder") {
-                        Ok((_path, folder_name)) => {
-                            let tree = list_user_tree().unwrap_or_default();
-                            let (rebuilt_rows, rebuilt_entries) = build_browser(&bn, &tree);
-                            folders.set(Arc::new(rebuilt_rows));
-                            entries.set(Arc::new(rebuilt_entries));
-                            selected_folder.set(FolderKey::User(folder_name.clone()));
-                            // 0031 hook: tell the (future) inline-rename widget
-                            // to focus this folder. The widget itself ships in
-                            // 0031; setting the signal is the entry point this
-                            // ticket commits to.
-                            rename_target.set(Some(RenameTarget::Folder(folder_name.clone())));
-                            status.set(format!("Created {folder_name}"));
-                        }
-                        Err(e) => status.set(format!("New folder failed: {e}")),
+                    .on_press_down(move |_cx| {
+                        // The controller picks the unique folder name and
+                        // emits PresetCorpusChanged + Status. The view's
+                        // existing 0031 hook (focusing the inline-rename
+                        // widget on the freshly created folder) needs the
+                        // chosen name; we lose that here until the controller
+                        // exposes a `FolderCreated { name }` view event.
+                        sh_new.post(UiEvent::NewFolder {
+                            suggested: "New Folder".to_string(),
+                        });
                     });
 
                 Button::new(cx, |cx| Label::new(cx, "Load").class("tg-lbl"))
@@ -2419,10 +2398,7 @@ fn browser_panel(
                                 load_entry(
                                     idx,
                                     &es,
-                                    &b_load,
                                     &sh_load,
-                                    name,
-                                    status,
                                     current,
                                     selected_folder,
                                     name_field,
@@ -2477,7 +2453,7 @@ fn browser_panel(
 /// move; the edit toggle is pure view state.
 fn keys_panel(
     cx: &mut Context,
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
     edit_layer: SyncSignal<usize>,
     key_mode: SyncSignal<usize>,
     split: SyncSignal<f32>,
@@ -2494,13 +2470,13 @@ fn keys_panel(
             // Key-mode selector on the left; the Upper/Lower edit toggle and (under
             // it) the split-point control stacked on the right. Both are hidden
             // until a multi-layer mode reveals them.
-            let sh_mode = Arc::clone(shared);
+            let sh_mode = shared.clone();
             HStack::new(cx, move |cx| {
                 // Mode list. Choosing Whole snaps the edit target back to Upper (the
                 // toggle is hidden), so we never edit a hidden Lower.
                 VStack::new(cx, move |cx| {
                     for (n, label) in MODES.iter().enumerate() {
-                        let sh = Arc::clone(&sh_mode);
+                        let sh = sh_mode.clone();
                         toggle_row(
                             cx,
                             label,
@@ -2552,10 +2528,10 @@ fn keys_panel(
                 SyncSignal::new(false),
                 SyncSignal::new(0.0f32),
             );
-            let (sh_change, sh_dbl) = (Arc::clone(shared), Arc::clone(shared));
+            let (sh_change, sh_dbl) = (shared.clone(), shared.clone());
             Binding::new(cx, key_mode, move |cx| {
                 let enabled = key_mode.get() == 2;
-                let (sh_change, sh_dbl) = (Arc::clone(&sh_change), Arc::clone(&sh_dbl));
+                let (sh_change, sh_dbl) = (sh_change.clone(), sh_dbl.clone());
                 let col = VStack::new(cx, move |cx| {
                     Slider::new(
                         cx,
@@ -2623,7 +2599,7 @@ fn keys_panel(
             // reset only the layer the edit toggle points at. Globals, key mode and
             // split point are setup state, left untouched. The `on_idle` poll
             // re-syncs every control signal from the store afterwards.
-            let sh_reset = Arc::clone(shared);
+            let sh_reset = shared.clone();
             Button::new(cx, |cx| Label::new(cx, up("Reset")).class("tg-lbl"))
                 .class("reset-btn")
                 .width(Stretch(1.0))
@@ -2666,7 +2642,7 @@ fn panel_view(
     entries: &'static [Entry],
     layer: Layer,
     controls: &[Ctl],
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
     display: Option<Memo<bool>>,
 ) {
     // Chorus / Delay lift their leading On bool into the header (a toggle box on
@@ -2680,7 +2656,7 @@ fn panel_view(
                 .find(|c| c.idx() == resolve(entries[0].0, layer));
             HStack::new(cx, |cx| {
                 if let Some(Ctl::Switch(i, sig)) = on {
-                    let sh = Arc::clone(shared);
+                    let sh = shared.clone();
                     toggle_row(cx, "", sig, move |_cx| {
                         let v = !sig.get();
                         sig.set(v);
@@ -2774,8 +2750,16 @@ fn panel_view(
         });
 
         // Bottom strip: selector/toggle controls relocated into the clearance
-        // below the main row (frees a horizontal column up top). Absolutely placed
-        // so it sits in that empty space without growing the panel.
+        // below the main row (frees a horizontal column up top). Absolutely
+        // placed so it sits in that empty space without growing the panel.
+        //
+        // Sized to its content (`width: Auto`) so the stretched-empty-area
+        // overlap that used to eat clicks on the column above (Notch on the
+        // Filter panel, Lin/Exp ADSR shape rows on the envelopes, etc.) is
+        // avoided structurally. Previously this used `right: Stretch(1)` plus
+        // `.hoverable(false)` on the container; the latter propagates to
+        // children in this vizia rev, killing the cells' clicks too — which
+        // is the regression that left the whole strip row dead.
         if entries.iter().any(|(id, _)| in_bottom_strip(*id)) {
             HStack::new(cx, |cx| {
                 for (id, short) in entries {
@@ -2789,17 +2773,11 @@ fn panel_view(
             })
             .position_type(PositionType::Absolute)
             .left(Pixels(8.0))
-            .right(Stretch(1.0))
             .top(Stretch(1.0))
             .bottom(Pixels(7.0))
+            .width(Auto)
             .height(Auto)
-            .horizontal_gap(Pixels(12.0))
-            // `right: Stretch(1)` makes the HStack span panel_w - 8 rather than
-            // sizing to its content, so its empty right portion overlays the column
-            // above it — on the Filter panel that's the 4th row of the Mode
-            // selector (Notch), which then ate the click. The cells stay hoverable;
-            // only the empty container is transparent to pointer events.
-            .hoverable(false);
+            .horizontal_gap(Pixels(12.0));
         }
     })
     .class("panel")
@@ -3217,7 +3195,7 @@ fn fader_body(
     cx: &mut Context,
     i: usize,
     sig: SyncSignal<f32>,
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
     disabled: bool,
 ) {
     let (hover, drag, show, posy) = (
@@ -3227,10 +3205,10 @@ fn fader_body(
         SyncSignal::new(0.0f32),
     );
     let (sh_set, sh_down, sh_up, sh_dbl) = (
-        Arc::clone(shared),
-        Arc::clone(shared),
-        Arc::clone(shared),
-        Arc::clone(shared),
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
     );
     let fader = Fader::new(cx, sig, disabled, move |_cx, v| {
         sig.set(v);
@@ -3272,7 +3250,7 @@ fn fader_body(
     // A synced LFO rate reads as a musical subdivision; otherwise the descriptor's
     // own display (Hz, st, …). `sync_partner` is `None` for every non-rate fader,
     // so this collapses to the plain path.
-    let sh_pop = Arc::clone(shared);
+    let sh_pop = shared.clone();
     value_popup(
         cx,
         sig.map(move |n: &f32| {
@@ -3284,7 +3262,7 @@ fn fader_body(
                     // fader position), not the tapered Hz norm — even spacing, no
                     // midpoint skew. Matches the engine's `to_fader` resolve.
                     let pos = desc.to_fader(plain);
-                    return vxn_engine::sync::SUBDIVISIONS[vxn_engine::sync::index_from_norm(pos)]
+                    return vxn_app::sync::SUBDIVISIONS[vxn_app::sync::index_from_norm(pos)]
                         .label
                         .to_string();
                 }
@@ -3331,15 +3309,15 @@ fn in_bottom_strip(idx: usize) -> bool {
 /// labelled box; a small enum (Lin/Exp, 12/24 dB, the oversample modes) is a
 /// row of exclusive labelled boxes. The vertical [`enum_list_body`] equivalent for
 /// the strip.
-fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &Arc<SharedParams>) {
+fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &EditorCtx) {
     match ctl {
         Ctl::Switch(i, sig) => match desc_for_clap_id(i).unwrap().kind {
             // Two-state enum (Lin/Exp, 12/24 dB): both option boxes in a row.
             ParamKind::Enum { variants } => {
-                let sh = Arc::clone(shared);
+                let sh = shared.clone();
                 HStack::new(cx, move |cx| {
                     for (n, label) in variants.iter().enumerate() {
-                        let sh = Arc::clone(&sh);
+                        let sh = sh.clone();
                         toggle_row(
                             cx,
                             label,
@@ -3358,7 +3336,7 @@ fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &Arc<Shar
             }
             // Plain bool: a single box labelled with the control's short name.
             _ => {
-                let sh = Arc::clone(shared);
+                let sh = shared.clone();
                 toggle_row(cx, short, sig, move |_cx| {
                     let on = !sig.get();
                     sig.set(on);
@@ -3371,10 +3349,10 @@ fn strip_cell(cx: &mut Context, ctl: Ctl, short: &'static str, shared: &Arc<Shar
                 ParamKind::Enum { variants } => variants,
                 _ => &[],
             };
-            let sh = Arc::clone(shared);
+            let sh = shared.clone();
             HStack::new(cx, move |cx| {
                 for (n, label) in variants.iter().enumerate() {
-                    let sh = Arc::clone(&sh);
+                    let sh = sh.clone();
                     toggle_row(
                         cx,
                         label,
@@ -3402,7 +3380,7 @@ fn enum_list_body(
     cx: &mut Context,
     i: usize,
     sig: SyncSignal<Option<usize>>,
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
 ) {
     let variants = match desc_for_clap_id(i).unwrap().kind {
         ParamKind::Enum { variants } => variants,
@@ -3419,11 +3397,11 @@ fn enum_list_body(
     } else {
         (0..variants.len()).collect()
     };
-    let sh = Arc::clone(shared);
+    let sh = shared.clone();
     VStack::new(cx, move |cx| {
         for n in order {
             let label = variants[n];
-            let sh = Arc::clone(&sh);
+            let sh = sh.clone();
             toggle_row(
                 cx,
                 label,
@@ -3444,7 +3422,7 @@ fn enum_list_body(
     .height(Auto);
 }
 
-fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &'static str) {
+fn control_view(cx: &mut Context, ctl: Ctl, shared: &EditorCtx, short: &'static str) {
     VStack::new(cx, |cx| {
         Label::new(cx, up(short))
             .class("ctl-label")
@@ -3481,7 +3459,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     SyncSignal::new(0.0f32),
                 );
                 let (sh_set, sh_down, sh_up) =
-                    (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
+                    (shared.clone(), shared.clone(), shared.clone());
                 // Dial: knob centred, variant glyphs/labels arranged around its
                 // 300° sweep (value 0..1 -> -150°..+150°, gap at the bottom). The
                 // popup lives here too so its cursor-pinned offset shares the knob's
@@ -3572,10 +3550,10 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     // A named two-state enum (12/24 dB, Linear/Exponential):
                     // an exclusive two-row list so the state name stays visible.
                     ParamKind::Enum { variants } => {
-                        let sh = Arc::clone(shared);
+                        let sh = shared.clone();
                         VStack::new(cx, move |cx| {
                             for (n, label) in variants.iter().enumerate() {
-                                let sh = Arc::clone(&sh);
+                                let sh = sh.clone();
                                 toggle_row(
                                     cx,
                                     label,
@@ -3593,7 +3571,7 @@ fn control_view(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &
                     }
                     // Plain on/off bool: a single indicator box, lit when on.
                     _ => {
-                        let sh = Arc::clone(shared);
+                        let sh = shared.clone();
                         toggle_row(cx, "", sig, move |_cx| {
                             let on = !sig.get();
                             sig.set(on);
@@ -3624,7 +3602,7 @@ fn detune_legato_cell(
     detune: Ctl,
     layer: Layer,
     controls: &[Ctl],
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
     short: &'static str,
 ) {
     let Ctl::Fader(fi, fsig) = detune else {
@@ -3648,8 +3626,8 @@ fn detune_legato_cell(
     // toggle's bottom row lines up with the Solo selector. Fader (74) + 1px gap +
     // toggle (24) = 99, exactly that height.
     const LIST_H: f32 = 4.0 * 24.0 + 3.0 * 1.0;
-    let sh = Arc::clone(shared);
-    let shf = Arc::clone(shared);
+    let sh = shared.clone();
+    let shf = shared.clone();
     VStack::new(cx, move |cx| {
         Label::new(cx, up(short))
             .class("ctl-label")
@@ -3657,11 +3635,11 @@ fn detune_legato_cell(
         VStack::new(cx, move |cx| {
             fader_body(cx, fi, fsig, &shf, false);
             if let (Some(Ctl::Switch(li, lsig)), Some(asig)) = (legato, assign_sig) {
-                let sh2 = Arc::clone(&sh);
+                let sh2 = sh.clone();
                 Binding::new(cx, asig, move |cx| {
                     // Unison = 1, Solo = 2 (the mono modes); grey out in Poly / Twin.
                     let enabled = matches!(asig.get(), Some(1) | Some(2));
-                    let sh3 = Arc::clone(&sh2);
+                    let sh3 = sh2.clone();
                     gated_toggle_row(cx, "Legato", enabled, lsig, move |_cx| {
                         let v = !lsig.get();
                         lsig.set(v);
@@ -3683,11 +3661,11 @@ fn detune_legato_cell(
 /// than a headed cell: a single toggle box with the "LIMIT" label beside it (an
 /// "on"-style companion to the Volume fader), no column header above. An empty
 /// header-height label keeps it vertically aligned with the headed cells beside it.
-fn limiter_cell(cx: &mut Context, ctl: Ctl, shared: &Arc<SharedParams>, short: &'static str) {
+fn limiter_cell(cx: &mut Context, ctl: Ctl, shared: &EditorCtx, short: &'static str) {
     let Ctl::Switch(i, sig) = ctl else {
         return;
     };
-    let sh = Arc::clone(shared);
+    let sh = shared.clone();
     VStack::new(cx, move |cx| {
         // No header text; keep the slot so the toggle lines up with neighbour cells.
         Label::new(cx, "").class("ctl-label").height(Pixels(11.0));
@@ -3714,7 +3692,7 @@ fn mod_route_view(
     depth: usize,
     layer: Layer,
     controls: &[Ctl],
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
 ) {
     let find = |id: usize| {
         controls
@@ -3756,7 +3734,7 @@ fn mod_route_view(
 /// The LFO 1 panel's main row: Shape, Rate, Delay, Fade. The Sync and Free
 /// toggles drop to the bottom strip (see `in_bottom_strip`), so they're not
 /// columns here.
-fn lfo1_cells(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<SharedParams>) {
+fn lfo1_cells(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &EditorCtx) {
     use PatchParam::{Lfo1DelayTime, Lfo1Fade, LfoRate, LfoShape};
     let find = |p: PatchParam| {
         controls
@@ -3776,7 +3754,7 @@ fn lfo1_cells(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<Sha
 /// fader, and the osc-2 pitch **Src** {Off/Env1/Env2} with its **Mod** fader.
 /// Unlike the route columns, the selector sits *beside* its fader; the fader
 /// dims and goes non-interactive while its selector is Off (it drives nothing).
-fn cross_mod_panel(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &Arc<SharedParams>) {
+fn cross_mod_panel(cx: &mut Context, layer: Layer, controls: &[Ctl], shared: &EditorCtx) {
     use PatchParam::*;
     xmod_pair(
         cx,
@@ -3812,7 +3790,7 @@ fn xmod_pair(
     depth: PatchParam,
     layer: Layer,
     controls: &[Ctl],
-    shared: &Arc<SharedParams>,
+    shared: &EditorCtx,
 ) {
     let find = |p: PatchParam| {
         controls
@@ -3845,7 +3823,7 @@ fn xmod_pair(
         .alignment(Alignment::TopCenter);
 
         if let (Some(sel_sig), Ctl::Fader(fi, fsig)) = (sel_sig, depth_ctl) {
-            let sh = Arc::clone(shared);
+            let sh = shared.clone();
             Binding::new(cx, sel_sig, move |cx| {
                 // Cross-mod Amt only drives FM (PM depth); it's meaningless for
                 // Off/Sync, so enable it solely on FM (CrossModType::Pm). Every
@@ -3878,35 +3856,7 @@ fn xmod_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vxn_engine::Taper;
-
-    #[test]
-    fn switching_to_twin_clamps_detune() {
-        let s = SharedParams::new();
-        let dt = patch_clap_id(Layer::Upper, PatchParam::UnisonDetune);
-        let mode = patch_clap_id(Layer::Upper, PatchParam::AssignMode);
-
-        // Wide (Unison-range) detune, then switch to Twin: clamps to the ceiling.
-        s.set(dt, 50.0);
-        clamp_detune_on_twin(mode, AssignMode::Twin as usize, &s);
-        assert_eq!(s.get(dt), TWIN_DETUNE_CT);
-
-        // A value already within range is left alone.
-        s.set(dt, 8.0);
-        clamp_detune_on_twin(mode, AssignMode::Twin as usize, &s);
-        assert_eq!(s.get(dt), 8.0);
-
-        // Switching to a non-Twin mode never touches detune.
-        s.set(dt, 50.0);
-        clamp_detune_on_twin(mode, AssignMode::Unison as usize, &s);
-        assert_eq!(s.get(dt), 50.0);
-
-        // Only the assign-mode picker triggers it (not some other enum at index 3).
-        let other = patch_clap_id(Layer::Upper, PatchParam::CrossModType);
-        s.set(dt, 50.0);
-        clamp_detune_on_twin(other, AssignMode::Twin as usize, &s);
-        assert_eq!(s.get(dt), 50.0);
-    }
+    use vxn_app::Taper;
 
     #[test]
     fn resolve_repoints_per_patch_entries_per_layer() {
@@ -4170,32 +4120,24 @@ mod tests {
 
     // ── Preset browser helpers (0027 / 0030) ─────────────────────────────────
 
-    use vxn_engine::{ParamValues, PluginState};
-
-    fn fp(category: &str, name: &str) -> FactoryPreset {
-        FactoryPreset {
-            path: format!("{category}/{name}.toml"),
-            category: category.to_string(),
+    /// Build a factory `PresetMeta` for browser tests (just name + category;
+    /// the meta-only fields the corpus needs to display).
+    fn fp(category: &str, name: &str) -> PresetMeta {
+        PresetMeta {
             name: name.to_string(),
-            preset: Performance {
-                meta: Meta {
-                    name: name.to_string(),
-                    ..Default::default()
-                },
-                state: PluginState {
-                    params: ParamValues::default(),
-                    key_mode: KeyMode::Whole,
-                    split_point: DEFAULT_SPLIT_POINT,
-                },
-            },
+            category: Some(category.to_string()),
+            ..Default::default()
         }
     }
 
-    fn up_entry_in(name: &str, folder: Option<&str>) -> UserPreset {
+    fn up_entry_in(name: &str, folder: Option<&str>) -> UserPresetEntry {
         let parent = folder.unwrap_or("root");
-        UserPreset {
+        UserPresetEntry {
             path: PathBuf::from(format!("/tmp/{parent}/{name}.toml")),
-            name: name.to_string(),
+            meta: PresetMeta {
+                name: name.to_string(),
+                ..Default::default()
+            },
             folder: folder.map(str::to_string),
         }
     }
@@ -4212,33 +4154,29 @@ mod tests {
 
     #[test]
     fn build_browser_orders_factory_then_user_in_folder_order() {
-        // Factory presets sort by (category, name) lowercased; each `Factory(i)`
-        // index keeps pointing into the unsorted bank. User folders follow:
-        // root (`Uncategorised`) first, then subfolders alpha-sorted. The
-        // combined entries list — the prev/next walker — is folder-then-name.
-        let bank = vec![
-            fp("Pad", "Glass"),     // idx 0
-            fp("Bass", "Mini"),     // idx 1
-            fp("Bass", "FM Growl"), // idx 2
-        ];
-        let tree = vec![
-            UserFolder {
-                name: None,
-                presets: vec![up_entry_in("Loose", None)],
-            },
-            UserFolder {
-                name: Some("Drums".to_string()),
-                presets: vec![up_entry_in("Kick", Some("Drums"))],
-            },
-            UserFolder {
-                name: Some("Atmos".to_string()),
-                presets: vec![up_entry_in("Drone", Some("Atmos"))],
-            },
-        ];
-        let (rows, entries) = build_browser(&bank, &tree);
+        let corpus = PresetCorpus {
+            factory: vec![
+                fp("Pad", "Glass"),     // idx 0
+                fp("Bass", "Mini"),     // idx 1
+                fp("Bass", "FM Growl"), // idx 2
+            ],
+            user: vec![
+                UserFolderEntry {
+                    name: None,
+                    presets: vec![up_entry_in("Loose", None)],
+                },
+                UserFolderEntry {
+                    name: Some("Drums".to_string()),
+                    presets: vec![up_entry_in("Kick", Some("Drums"))],
+                },
+                UserFolderEntry {
+                    name: Some("Atmos".to_string()),
+                    presets: vec![up_entry_in("Drone", Some("Atmos"))],
+                },
+            ],
+        };
+        let (rows, entries) = build_browser_from_corpus(&corpus);
 
-        // Folder rows: Factory header + (Bass, Pad), User header + (Uncategorised,
-        // Atmos, Drums — alpha for subfolders; root before subfolders).
         let row_shape: Vec<String> = rows
             .iter()
             .map(|r| match r {
@@ -4259,9 +4197,6 @@ mod tests {
             ]
         );
 
-        // Entries: factory grouped by category (then name), then users in tree
-        // order — root first, subfolders as given (the tree is already
-        // alpha-sorted by `list_user_tree`).
         let entry_shape: Vec<(String, String)> = entries
             .iter()
             .map(|e| {
@@ -4294,9 +4229,8 @@ mod tests {
 
     #[test]
     fn build_browser_always_includes_user_root_even_with_no_tree() {
-        // Empty user dir: the `User → Uncategorised` row still appears so the
-        // first save has somewhere to land.
-        let (rows, entries) = build_browser(&[], &[]);
+        let corpus = PresetCorpus::default();
+        let (rows, entries) = build_browser_from_corpus(&corpus);
         assert!(entries.is_empty());
         let row_shape: Vec<&FolderRow> = rows.iter().collect();
         assert!(matches!(row_shape[0], FolderRow::Header(s) if s == "User"));
@@ -4374,30 +4308,16 @@ mod tests {
     }
 
     #[test]
-    fn rename_conflict_surfaces_on_status_and_keeps_editor_open() {
-        // Success: status is cleared and a value comes back so the caller can
-        // close the inline editor and reseed.
-        let mut status = String::from("stale");
-        let r: Result<i32, &str> = Ok(7);
-        assert_eq!(apply_rename_result(r, "folder", &mut status), Some(7));
-        assert!(status.is_empty());
-
-        // Conflict (AlreadyExists / any error): status surfaces the error,
-        // value is `None` so the caller leaves the editor open for retry.
-        let mut status = String::new();
-        let r: Result<i32, &str> = Err("already exists");
-        assert!(apply_rename_result(r, "preset", &mut status).is_none());
-        assert_eq!(status, "Rename preset failed: already exists");
-    }
-
-    #[test]
     fn search_query_matches_substring_on_name() {
-        let bank = vec![
-            fp("Pad", "Glass Pad"),
-            fp("Pad", "Warm Pad"),
-            fp("Bass", "Mini"),
-        ];
-        let (_, entries) = build_browser(&bank, &[]);
+        let corpus = PresetCorpus {
+            factory: vec![
+                fp("Pad", "Glass Pad"),
+                fp("Pad", "Warm Pad"),
+                fp("Bass", "Mini"),
+            ],
+            user: vec![],
+        };
+        let (_, entries) = build_browser_from_corpus(&corpus);
         let glass = entries.iter().find(|e| e.name == "Glass Pad").unwrap();
         let warm = entries.iter().find(|e| e.name == "Warm Pad").unwrap();
         let mini = entries.iter().find(|e| e.name == "Mini").unwrap();

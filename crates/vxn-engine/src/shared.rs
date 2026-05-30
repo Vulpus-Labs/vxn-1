@@ -219,6 +219,81 @@ impl SharedParams {
     }
 }
 
+// ── ParamModel trait (vxn-app) ───────────────────────────────────────────────
+//
+// The controller drives the parameter store through `ParamModel`; this is the
+// adaptor that lets it. Pure delegation — every method maps to an existing
+// inherent method on `SharedParams`. `SharedParams` itself stays trait-free for
+// the audio path; the trait surface is for the controller's generic seam.
+
+impl vxn_app::ParamModel for SharedParams {
+    fn total(&self) -> usize {
+        TOTAL_PARAMS
+    }
+
+    fn get(&self, id: vxn_app::ParamId) -> f32 {
+        SharedParams::get(self, id.raw())
+    }
+
+    fn set(&self, id: vxn_app::ParamId, plain: f32) {
+        SharedParams::set(self, id.raw(), plain);
+    }
+
+    fn get_normalized(&self, id: vxn_app::ParamId) -> f32 {
+        SharedParams::get_normalized(self, id.raw())
+    }
+
+    fn set_normalized(&self, id: vxn_app::ParamId, norm: f32) {
+        SharedParams::set_normalized(self, id.raw(), norm);
+    }
+
+    fn gesture(&self, id: vxn_app::ParamId) -> bool {
+        SharedParams::gesture(self, id.raw())
+    }
+
+    fn set_gesture(&self, id: vxn_app::ParamId, on: bool) {
+        SharedParams::set_gesture(self, id.raw(), on);
+    }
+
+    fn descriptor(&self, id: vxn_app::ParamId) -> Option<&'static vxn_app::ParamDesc> {
+        desc_for_clap_id(id.raw())
+    }
+
+    fn key_mode(&self) -> KeyMode {
+        SharedParams::key_mode(self)
+    }
+
+    fn set_key_mode(&self, mode: KeyMode) {
+        SharedParams::set_key_mode(self, mode);
+    }
+
+    fn set_key_mode_seeded(&self, mode: KeyMode) {
+        SharedParams::set_key_mode_seeded(self, mode);
+    }
+
+    fn split_point(&self) -> u8 {
+        SharedParams::split_point(self)
+    }
+
+    fn set_split_point(&self, note: u8) {
+        SharedParams::set_split_point(self, note);
+    }
+
+    fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        self.to_state()
+            .write(&mut buf)
+            .expect("PluginState::write into Vec is infallible");
+        buf
+    }
+
+    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
+        let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
+        self.restore_from(&state);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +401,35 @@ mod tests {
         assert_eq!(s.get(patch_clap_id(Layer::Lower, PatchParam::Cutoff)), 2222.0);
         assert_eq!(s.key_mode(), KeyMode::Split);
         assert_eq!(s.split_point(), 48);
+    }
+
+    #[test]
+    fn param_model_trait_roundtrips_through_arc_dyn() {
+        use std::sync::Arc;
+        use vxn_app::{ParamId, ParamModel};
+        let m: Arc<dyn ParamModel> = Arc::new(SharedParams::new());
+        let id = ParamId::new(patch_clap_id(Layer::Upper, PatchParam::Cutoff));
+        m.set(id, 1234.0);
+        assert_eq!(m.get(id), 1234.0);
+        m.set_gesture(id, true);
+        assert!(m.gesture(id));
+        m.set_gesture(id, false);
+        let desc = m.descriptor(id).expect("descriptor present");
+        assert!((desc.min..=desc.max).contains(&1234.0));
+        assert_eq!(m.total(), TOTAL_PARAMS);
+    }
+
+    #[test]
+    fn param_model_trait_writes_visible_to_concrete() {
+        use std::sync::Arc;
+        use vxn_app::{ParamId, ParamModel};
+        let shared = Arc::new(SharedParams::new());
+        let m: Arc<dyn ParamModel> = shared.clone();
+        let id = ParamId::new(global_clap_id(GlobalParam::MasterVolume));
+        m.set(id, 0.25);
+        // Concrete reader sees the trait writer's update — no orphan-rules
+        // duplication of the underlying atomic.
+        assert_eq!(shared.get(id.raw()), 0.25);
     }
 
     #[test]
