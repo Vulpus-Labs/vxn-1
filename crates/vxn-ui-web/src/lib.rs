@@ -22,8 +22,8 @@ use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle as RwhWindowHandle,
 };
 use vxn_app::{
-    ControllerHandle, EditorBackend, KeyMode, Layer, ParamDesc, ParamId, ParamKind, PresetSource,
-    TOTAL_PARAMS, UiEvent, ViewEvent, desc_for_clap_id,
+    ControllerHandle, EditorBackend, KeyMode, Layer, PATCH_COUNT, ParamDesc, ParamId, ParamKind,
+    PresetSource, TOTAL_PARAMS, UiEvent, ViewEvent, desc_for_clap_id,
 };
 use wry::{Rect, WebView, WebViewBuilder};
 use wry::dpi::{LogicalPosition, LogicalSize};
@@ -116,6 +116,7 @@ fn build_faceplate_html() -> String {
     PLACEHOLDER_HTML
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
+        .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
 }
 
 /// Tempo-sync subdivision labels (vxn_app::sync::SUBDIVISIONS), spliced into
@@ -322,6 +323,10 @@ fn view_event_to_json(ev: &ViewEvent) -> String {
         ViewEvent::KeyModeChanged { mode } => json!({
             "kind": "key_mode_changed",
             "mode": *mode as u8,
+        }),
+        ViewEvent::EditLayerChanged { layer } => json!({
+            "kind": "edit_layer_changed",
+            "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
         }),
         ViewEvent::Status { line } => json!({
             "kind": "status",
@@ -683,24 +688,143 @@ mod tests {
     }
 
     #[test]
-    fn control_tallies_match_row1_and_row2_panels() {
+    fn row3_mod_route_panels_have_expected_mounts() {
+        // 0044: Pitch Mod / PWM Mod each carry two route columns (depth
+        // fader + source buttongroup). Cross Mod is the wide custom panel
+        // (Type buttongroup + Amount fader, Src buttongroup + Mod fader).
+        // Mod Wheel = four cutoff/pwm/reso/pitch destination faders. Bend
+        // is the single-fader pinned-width panel. Names match the
+        // `ParamDesc.name` fields so a `PatchParam` enum reorder doesn't
+        // break the HTML.
+        for (kind, name, label) in [
+            // Pitch Mod
+            ("fader",       "pitch_lfo_depth", "Depth"),
+            ("buttongroup", "pitch_lfo_src",   "LFO"),
+            ("fader",       "pitch_env_depth", "Depth"),
+            ("buttongroup", "pitch_env_src",   "Env"),
+            // PWM Mod
+            ("fader",       "pwm_lfo_depth", "Depth"),
+            ("buttongroup", "pwm_lfo_src",   "LFO"),
+            ("fader",       "pwm_env_depth", "Depth"),
+            ("buttongroup", "pwm_env_src",   "Env"),
+            // Cross Mod
+            ("buttongroup", "cross_mod_type",       "Type"),
+            ("fader",       "cross_mod_amount",     "Amt"),
+            ("buttongroup", "osc2_pitch_env_src",   "Src"),
+            ("fader",       "osc2_pitch_env_depth", "Mod"),
+            // Mod Wheel
+            ("fader", "mod_wheel_pwm",        "PWM"),
+            ("fader", "mod_wheel_cutoff",     "Cutoff"),
+            ("fader", "mod_wheel_reso",       "Reso"),
+            ("fader", "mod_wheel_osc2_pitch", "O2 Pitch"),
+            // Bend
+            ("fader", "pitch_wheel_depth", "Range"),
+        ] {
+            let marker = format!(
+                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
+            );
+            assert!(
+                PLACEHOLDER_HTML.contains(&marker),
+                "Row 3 mount point missing: {marker}",
+            );
+        }
+    }
+
+    #[test]
+    fn row4_voice_master_fx_panels_have_expected_mounts() {
+        // 0045: Voice = AssignMode (with display-order 0,3,1,2 → Poly,
+        // Twin, Unison, Solo) + Detune-Legato composite + Glide fader.
+        // Master = Tune/Volume faders, Limit switch (header-less, like
+        // vizia's `limiter_cell`), Oversample buttongroup. Chorus + Delay
+        // each carry a header-switch (chorus_on / delay_on) plus their
+        // body faders; Delay's Sync + Ping-Pong drop to the strip per
+        // `vxn_ui_vizia::in_bottom_strip`. Names = descriptor names.
+        for (kind, name, label) in [
+            // Voice
+            ("buttongroup",   "assign_mode",     "Assign"),
+            ("detune-legato", "unison_detune",   "Detune"),
+            ("fader",         "portamento_time", "Glide"),
+            // Master
+            ("fader",       "master_tune",   "Tune"),
+            ("fader",       "master_volume", "Volume"),
+            ("switch",      "limiter_on",    "Limit"),
+            ("buttongroup", "oversample",    "OvSmp"),
+            // Chorus
+            ("header-switch", "chorus_on",    ""),
+            ("fader",         "chorus_rate",  "Rate"),
+            ("fader",         "chorus_depth", "Depth"),
+            ("fader",         "chorus_mix",   "Mix"),
+            // Delay
+            ("header-switch", "delay_on",       ""),
+            ("fader",         "delay_time",     "Time"),
+            ("fader",         "delay_feedback", "FB"),
+            ("fader",         "delay_mix",      "Mix"),
+            ("switch",        "delay_sync",     "Sync"),
+            ("switch",        "delay_pingpong", "P-Pong"),
+        ] {
+            // Header-switch slots carry no `data-label` attribute; assert
+            // on the kind+name pair instead.
+            let needle = if kind == "header-switch" {
+                format!(r#"data-control="{kind}" data-param="{name}""#)
+            } else {
+                format!(
+                    r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
+                )
+            };
+            assert!(
+                PLACEHOLDER_HTML.contains(&needle),
+                "Row 4 mount point missing: {needle}",
+            );
+        }
+        // Voice's AssignMode buttongroup carries the display permutation
+        // (descriptor order = Poly/Unison/Solo/Twin → display order =
+        // Poly/Twin/Unison/Solo). If the descriptor order changes, this
+        // attribute changes alongside; the test guards the wiring.
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"data-param="assign_mode" data-label="Assign" data-order="0,3,1,2""#),
+            "AssignMode missing display-order remap",
+        );
+        // Detune-Legato carries its two extra param-name dependencies so
+        // a layer rebind can re-resolve both alongside the primary param.
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"data-legato-param="legato""#),
+            "Detune-Legato missing data-legato-param",
+        );
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"data-mode-param="assign_mode""#),
+            "Detune-Legato missing data-mode-param",
+        );
+    }
+
+    #[test]
+    fn control_tallies_match_all_rows() {
         // Global mount-point tally — catches duplicate mounts / typos that
-        // accept a missing `<div>` somewhere else. Bumps as later rows land.
+        // accept a missing `<div>` somewhere else. Counts each control
+        // kind across all four rows.
         //
-        // Faders: 16 (Row 1: LFOs 3, Osc1 4, Osc2 4, Mixer 4, plus LFO1
-        //              Rate counted under LFO 1, totalling 16)
-        //       + 17 (Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 4)
-        //       = 33.
-        // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave) — Row 2 has no rotary waves.
-        // Switches: 4 (Row 1: LFO Sync x2, Lfo1Free, NoiseColor)
-        //         + 5 (Row 2: Env1Shape, Env2Shape, Gate, Slope, KeyTrk)
-        //         = 9.
-        // Button groups: 2 (Row 2: AmpLfoSrc, FilterMode — vizia renders
-        //   `Ctl::Select` via `enum_list_body`, same shape as Buttons).
+        // Faders:
+        //   Row 1: LFO1 3 (Rate/Delay/Fade), LFO2 1 (Rate), Osc1 4, Osc2 4, Mixer 4 = 16
+        //   Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 4              = 17
+        //   Row 3: PitchMod 2, PwmMod 2, CrossMod 2, ModWheel 4, Bend 1      = 11
+        //   Row 4: Voice 1 (Glide), Master 2, Chorus 3, Delay 3              =  9
+        //   Total = 53.
+        // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave).
+        // Switches:
+        //   Row 1: 4 (LfoSync, Lfo2Sync, Lfo1FreeRun, NoiseColor)
+        //   Row 2: 5 (Env1Shape, Env2Shape, Gate, Slope, KeyTrk)
+        //   Row 4: 3 (LimiterOn, DelaySync, DelayPingPong)
+        //   Total = 12.
+        // Button groups:
+        //   Row 2: 2 (AmpLfoSrc, FilterMode)
+        //   Row 3: 6 (Pitch/PWM LFO+Env sources, CrossModType, Osc2PitchEnvSrc)
+        //   Row 4: 2 (AssignMode, Oversample)
+        //   Total = 10.
+        // Header switches: 2 (Chorus, Delay).
+        // Detune-Legato composite: 1 (Voice).
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="fader""#).count(),
-            33,
-            "expected 33 fader cells across Row 1 + Row 2",
+            53,
+            "expected 53 fader cells across all four rows",
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="wave""#).count(),
@@ -709,19 +833,95 @@ mod tests {
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="switch""#).count(),
-            9,
-            "expected 9 switch cells across Row 1 + Row 2",
+            12,
+            "expected 12 switch cells (Row 1 + Row 2 + Row 4)",
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="buttongroup""#).count(),
-            2,
-            "expected 2 buttongroup cells (VCA AmpLfoSrc, Filter Mode)",
+            10,
+            "expected 10 buttongroup cells (Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="dropdown""#).count(),
             0,
-            "no dropdown cells expected in Row 1 + Row 2",
+            "no dropdown cells expected (all enums fit ButtonGroup)",
         );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="header-switch""#).count(),
+            2,
+            "expected 2 header-switch cells (Chorus, Delay)",
+        );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="detune-legato""#).count(),
+            1,
+            "expected 1 detune-legato composite (Voice)",
+        );
+    }
+
+    #[test]
+    fn cross_mod_dim_rules_present() {
+        // 0044: Cross Mod's Amount fader dims unless Type = FM (matches
+        // vxn_ui_vizia::xmod_pair's FM-only enable); Mod fader dims when
+        // Src = Off (same rule as the route-column source selectors).
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"data-dim-unless-fm="cross_mod_type""#),
+            "Cross Mod Amount missing data-dim-unless-fm wiring",
+        );
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"data-dim-when-src-off="osc2_pitch_env_src""#),
+            "Cross Mod depth missing data-dim-when-src-off wiring",
+        );
+        // Route-column source selectors carry the self-dim marker.
+        for name in ["pitch_lfo_src", "pitch_env_src", "pwm_lfo_src", "pwm_env_src"] {
+            assert!(
+                PLACEHOLDER_HTML.contains(&format!(
+                    r#"data-param="{name}" data-label="{}" data-no-label data-dim-when-zero"#,
+                    if name.contains("lfo") { "LFO" } else { "Env" },
+                )),
+                "route-col source {name} missing dim-when-zero marker",
+            );
+        }
+        // JS dispatch wires the generic dim rule into ParamChanged.
+        assert!(PLACEHOLDER_HTML.contains("applyDimRulesFor("));
+        assert!(PLACEHOLDER_HTML.contains("collectDimRuleSpecs"));
+    }
+
+    #[test]
+    fn edit_layer_rebind_wired() {
+        // 0045: EditLayerChanged ViewEvent dispatch + layer-rebind logic
+        // present. The actual rebind walks LAYERED_CELLS and re-resolves
+        // each per-patch name → id via paramIdByNameAtLayer using the
+        // patchCount splice.
+        assert!(PLACEHOLDER_HTML.contains("edit_layer_changed"));
+        assert!(PLACEHOLDER_HTML.contains("rebindAllForLayer"));
+        assert!(PLACEHOLDER_HTML.contains("paramIdByNameAtLayer"));
+        assert!(PLACEHOLDER_HTML.contains("__PATCH_COUNT__"));
+        // The splice replaces the placeholder at render time.
+        let html = build_faceplate_html();
+        assert!(!html.contains("__PATCH_COUNT__"), "patchCount placeholder must be replaced");
+        assert!(
+            html.contains(&format!("patchCount: {}", vxn_app::PATCH_COUNT)),
+            "patchCount splice value missing from rendered html",
+        );
+    }
+
+    #[test]
+    fn header_switch_primitive_wired() {
+        // 0045: Chorus + Delay carry a header-switch in
+        // `.panel-header-toggle-slot`; CSS provides the active palette.
+        assert!(PLACEHOLDER_HTML.contains("makeHeaderSwitch"));
+        assert!(PLACEHOLDER_HTML.contains(".panel-header-switch"));
+        assert!(PLACEHOLDER_HTML.contains(".panel-header-switch.active"));
+    }
+
+    #[test]
+    fn edit_layer_changed_serializes() {
+        // The web crate's view_event_to_json must encode the new variant
+        // for the JS dispatcher to ever see it.
+        let s = view_event_to_json(&ViewEvent::EditLayerChanged { layer: Layer::Lower });
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["kind"], "edit_layer_changed");
+        assert_eq!(v["layer"], "lower");
     }
 
     #[test]
@@ -742,7 +942,7 @@ mod tests {
             "missing strip dim selector (slope dim relies on it)",
         );
         assert!(PLACEHOLDER_HTML.contains("locateSlopeDimCells"));
-        assert!(PLACEHOLDER_HTML.contains("FILTER_MODE_ID = paramIdByName('filter_mode')"));
+        assert!(PLACEHOLDER_HTML.contains("FILTER_MODE_ID = paramIdByNameAtLayer('filter_mode'"));
         assert!(PLACEHOLDER_HTML.contains("variants.indexOf('Notch')"));
         assert!(PLACEHOLDER_HTML.contains("data-param=\"filter_slope\""));
         assert!(PLACEHOLDER_HTML.contains("ev.id === FILTER_MODE_ID"));

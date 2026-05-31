@@ -10,7 +10,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 
 use vxn_app::{
-    Controller, HostEvent, KeyMode, ParamDesc, ParamId, ParamKind, ParamModel, PresetLoad,
+    Controller, HostEvent, KeyMode, Layer, ParamDesc, ParamId, ParamKind, ParamModel, PresetLoad,
     PresetMeta, PresetSource, PresetStore, Taper, UiEvent, UserFolderEntry, UserPresetEntry,
     ViewEvent,
 };
@@ -521,6 +521,26 @@ fn preset_load_emits_per_param_view_events() {
             .iter()
             .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
         "missing KeyModeChanged in {events:?}"
+    );
+}
+
+#[test]
+fn set_edit_layer_echoes_as_view_event() {
+    // 0045: SetEditLayer is pure view state — controller mutates nothing,
+    // but echoes EditLayerChanged so editors that don't own the layer-toggle
+    // widget (HTML faceplate) can rebind per-patch panels.
+    let (mut ctrl, _model, view_rx) = build(2);
+    ctrl.ui_sender()
+        .send(UiEvent::SetEditLayer { layer: Layer::Lower })
+        .unwrap();
+    ctrl.tick();
+    let events = drain(&view_rx);
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            ViewEvent::EditLayerChanged { layer: Layer::Lower }
+        )),
+        "missing EditLayerChanged(Lower) in {events:?}"
     );
 }
 

@@ -88,6 +88,15 @@ pub enum ViewEvent {
     KeyModeChanged {
         mode: KeyMode,
     },
+    /// The view's edit-layer selection just changed (Upper ↔ Lower). Pure
+    /// view state — emitted in response to [`UiEvent::SetEditLayer`] so
+    /// editors that don't own the layer-toggle widget (e.g. the HTML
+    /// faceplate when its layer flipper sits elsewhere) can still rebind
+    /// per-patch panels to the new layer's CLAP ids. The vizia editor
+    /// tracks its own `edit_layer` signal locally and ignores this.
+    EditLayerChanged {
+        layer: Layer,
+    },
     Status {
         line: String,
     },

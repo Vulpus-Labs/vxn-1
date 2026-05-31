@@ -373,7 +373,74 @@ html, body {
    through so DAW automation echoes still move the thumb. Same selector
    covers both panel-body (`.ctl`) and panel-strip (`.ctl-strip`)
    mounts. */
-.ctl.dimmed, .ctl-strip.dimmed { opacity: 0.4; }
+.ctl.dimmed, .ctl-strip.dimmed, .route-col.dimmed { opacity: 0.4; }
+
+/* Mod-route column (0044): "fader on top, source selector beneath" — a
+   pair of cells stacked under a single column header. The route header
+   names the source (LFO/Env) so its child buttongroup omits its own
+   label (kept structurally for the variant rows). Each child cell ends
+   up looking like a thinner .ctl (header height is the route's, not the
+   ctl's own). */
+.route-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+  height: var(--col-h);
+  min-width: 0;
+}
+.route-col-head {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+}
+.route-col .ctl {
+  height: auto;
+}
+
+/* Header-switch slot (Chorus / Delay, 0045) — a small toggle box mounted
+   inside `.panel-header-toggle-slot`. Matches `.ctl-tg-box`'s palette but
+   sits on the orange header bar, so the inactive fill borrows the header
+   tint slightly to read as part of the header chrome. */
+.panel-header-switch {
+  width: 11px;
+  height: 11px;
+  background: #4a4a4a;
+  border: 1px solid #2c4a59;
+  border-radius: 2px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.panel-header-switch:hover { border-color: #141414; }
+.panel-header-switch.active {
+  background: #1f9cff;
+  border-color: #84cdff;
+  box-shadow: 0 0 6px #36b3ff;
+}
+
+/* Voice panel's Detune column — a normal fader on top with the Legato
+   toggle beneath it (level with the Solo row in the assign list), so the
+   whole column keeps the same width as a plain fader column (0045). */
+.ctl-detune {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+  height: var(--col-h);
+  min-width: 0;
+}
+.ctl-detune-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.ctl-detune-legato { margin-top: 4px; }
+.ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -533,55 +600,141 @@ html, body {
 
   <!-- Row 3 — per-osc mod routes + performance wheels (Bend is fixed-width). -->
   <div class="row row-3" data-row="3">
+    <!-- Pitch Mod (0044): two route columns (LFO depth+src, Env depth+src).
+         Source buttongroup carries `data-no-label` so the route header is
+         the only column label, and `data-dim-when-zero` so it dims grey
+         when the source reads Off (variant 0). -->
     <div class="panel" data-name="Pitch Mod" data-layered>
       <div class="panel-header">PITCH MOD</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="route-col">
+          <div class="route-col-head">LFO</div>
+          <div class="ctl" data-control="fader" data-param="pitch_lfo_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="buttongroup" data-param="pitch_lfo_src" data-label="LFO" data-no-label data-dim-when-zero></div>
+        </div>
+        <div class="route-col">
+          <div class="route-col-head">Env</div>
+          <div class="ctl" data-control="fader" data-param="pitch_env_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="buttongroup" data-param="pitch_env_src" data-label="Env" data-no-label data-dim-when-zero></div>
+        </div>
+      </div>
     </div>
     <div class="panel" data-name="PWM Mod" data-layered>
       <div class="panel-header">PWM MOD</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="route-col">
+          <div class="route-col-head">LFO</div>
+          <div class="ctl" data-control="fader" data-param="pwm_lfo_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="buttongroup" data-param="pwm_lfo_src" data-label="LFO" data-no-label data-dim-when-zero></div>
+        </div>
+        <div class="route-col">
+          <div class="route-col-head">Env</div>
+          <div class="ctl" data-control="fader" data-param="pwm_env_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="buttongroup" data-param="pwm_env_src" data-label="Env" data-no-label data-dim-when-zero></div>
+        </div>
+      </div>
     </div>
+    <!-- Cross Mod (0044): two selector/fader pairs. Type {Off/Sync/FM} sits
+         beside its Amount fader (Amount only drives FM/PM depth — dims for
+         anything other than FM, matching vxn-ui-vizia's xmod_pair); Src
+         {Off/Env1/Env2} sits beside its Mod depth fader (dims on Off, same
+         rule as the route columns).
+         The descriptor labels Pulse-Modulation as "FM" — players expect that
+         name (ADR 0004 §3); the ticket's "Off/Sync/PM" maps onto the same
+         three variants. -->
     <div class="panel" data-name="Cross Mod" data-layered>
       <div class="panel-header">CROSS MOD</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="buttongroup" data-param="cross_mod_type" data-label="Type"></div>
+        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="Amt" data-dim-unless-fm="cross_mod_type"></div>
+        <div class="ctl" data-control="buttongroup" data-param="osc2_pitch_env_src" data-label="Src"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_pitch_env_depth" data-label="Mod" data-dim-when-src-off="osc2_pitch_env_src"></div>
+      </div>
     </div>
     <div class="panel" data-name="Mod Wheel" data-layered>
       <div class="panel-header">MOD WHEEL</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="mod_wheel_pwm" data-label="PWM"></div>
+        <div class="ctl" data-control="fader" data-param="mod_wheel_cutoff" data-label="Cutoff"></div>
+        <div class="ctl" data-control="fader" data-param="mod_wheel_reso" data-label="Reso"></div>
+        <div class="ctl" data-control="fader" data-param="mod_wheel_osc2_pitch" data-label="O2 Pitch"></div>
+      </div>
     </div>
+    <!-- Bend (0044): single Range fader (vibrato-scaled semitone range for
+         the pitch wheel, both oscillators). Panel pinned to 54px via the
+         `.row-3 .panel[data-name="Bend"]` flex rule above. -->
     <div class="panel" data-name="Bend" data-layered>
       <div class="panel-header">BEND</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="pitch_wheel_depth" data-label="Range"></div>
+      </div>
     </div>
   </div>
 
   <!-- Row 4 — keys, voice, the two effects, master. Equal-width. -->
   <div class="row row-4" data-row="4">
+    <!-- Keys (E011): still rendered by vizia during the E010 → E011 transition;
+         the HTML faceplate just reserves the slot. -->
     <div class="panel" data-name="Keys">
       <div class="panel-header">KEYS</div>
       <div class="panel-body"></div>
     </div>
+    <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
+         descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
+         the display permutation via `data-order`); Detune with its mode-aware
+         top (50 ct Unison, 20 ct Twin) and the Legato toggle drawn beneath the
+         fader; Glide fader (0 = off). Legato is *not* its own column — the
+         detune-legato primitive handles both params. -->
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="buttongroup" data-param="assign_mode" data-label="Assign" data-order="0,3,1,2"></div>
+        <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="assign_mode"></div>
+        <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
+      </div>
     </div>
+    <!-- Chorus (0045): header switch (chorus_on) + Rate/Depth/Mix faders. -->
     <div class="panel" data-name="Chorus" data-header-toggle>
       <div class="panel-header">
-        <div class="panel-header-toggle-slot" aria-hidden="true"></div>
+        <div class="panel-header-toggle-slot" data-control="header-switch" data-param="chorus_on"></div>
         <div class="panel-header-title">CHORUS</div>
       </div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
+        <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
+        <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
+      </div>
     </div>
+    <!-- Delay (0045): header switch (delay_on); Time fader host-syncs the same
+         way the LFO rate fader does (sync_partner pairs delay_time/delay_sync),
+         FB + Mix faders; Sync + Ping-Pong drop to the strip per
+         `vxn_ui_vizia::in_bottom_strip`. -->
     <div class="panel" data-name="Delay" data-header-toggle>
       <div class="panel-header">
-        <div class="panel-header-toggle-slot" aria-hidden="true"></div>
+        <div class="panel-header-toggle-slot" data-control="header-switch" data-param="delay_on"></div>
         <div class="panel-header-title">DELAY</div>
       </div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+        <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
+        <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="delay_sync" data-label="Sync"></div>
+        <div class="ctl-strip" data-control="switch" data-param="delay_pingpong" data-label="P-Pong"></div>
+      </div>
     </div>
+    <!-- Master (0045): Tune/Volume faders, Limit (bare on/off — no column
+         header, like vxn-ui-vizia's `limiter_cell`), Oversample buttongroup
+         (descriptor labels: O/S OFF / 2x / 4x / 8x). -->
     <div class="panel" data-name="Master">
       <div class="panel-header">MASTER</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="master_tune" data-label="Tune"></div>
+        <div class="ctl" data-control="fader" data-param="master_volume" data-label="Volume"></div>
+        <div class="ctl" data-control="switch" data-param="limiter_on" data-label="Limit"></div>
+        <div class="ctl" data-control="buttongroup" data-param="oversample" data-label="OvSmp"></div>
+      </div>
     </div>
   </div>
 
@@ -619,6 +772,10 @@ window.vxn = {
   // descriptor's Hz formatting (0042 / 0015) — mirrors the vizia editor's
   // `sync_partner` override.
   subdivisions: __SUBDIVISIONS_JSON__,
+  // Per-patch slot count — used by layer rebinding (0045) to translate an
+  // Upper-side CLAP id into its Lower-side twin: Lower id = Upper id +
+  // patchCount, for any id under 2 × patchCount.
+  patchCount: __PATCH_COUNT__,
 };
 
 // ─── Floating value popup (single shared instance) ─────────────────────────
@@ -678,9 +835,18 @@ function glyphPath(label, w, h) {
 
 // ─── Control primitives ────────────────────────────────────────────────────
 
-// Per-control state, indexed by CLAP id. `update(plain, norm, display)` is
-// the entry point the ParamChanged dispatch calls. `el` is the cell root.
+// Per-control state, indexed by CLAP id. Each entry is an array — most ids
+// have one updater (the cell that owns the param), but composite cells
+// (detune-legato) register secondary watchers on related ids (e.g. the
+// Voice panel's detune-legato watches assign_mode alongside the dedicated
+// AssignMode buttongroup cell). Dispatch fans the ParamChanged out to
+// every updater on the id.
 const CONTROLS = new Map();
+function addCtl(id, ctl) {
+  let arr = CONTROLS.get(id);
+  if (!arr) CONTROLS.set(id, arr = []);
+  arr.push(ctl);
+}
 
 // Last (plain, norm, display) seen per param, indexed by CLAP id. Used by
 // the sync-partner refresh path: when an LFO rate's sync flips, we re-run
@@ -1086,33 +1252,50 @@ function makeSwitch(el, id, desc) {
 // `ButtonGroup(id, label, variants)` — for Oversample, CrossModType,
 // AssignMode. Vertical stack of labelled toggles under a column label
 // (matches vizia's `enum_list_body`).
+//
+// `data-no-label` — render no column header (used inside `.route-col`,
+// where the route header (LFO/Env) is the only column label).
+// `data-order` — comma-separated display permutation of the variant
+// indices (e.g. `0,3,1,2` for AssignMode → Poly/Twin/Unison/Solo); the
+// stored value stays each variant's own descriptor index. Mirrors
+// vxn-ui-vizia's `ASSIGN_DISPLAY_ORDER`.
 function makeButtonGroup(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
+  const noLabel = el.hasAttribute('data-no-label');
+  const orderRaw = (el.dataset.order || '').split(',')
+    .map((s) => parseInt(s, 10))
+    .filter((n) => !isNaN(n) && n >= 0 && n < variants.length);
+  const order = orderRaw.length === variants.length
+    ? orderRaw
+    : variants.map((_, i) => i);
   // Tag the cell so `.ctl-buttongroup .ctl-tg-rows { flex-direction: column }`
   // kicks in — without this the inline-flex `.ctl-tg-row` children flow
   // horizontally and overflow the column. The shape (vertical alongside
   // faders inside panel-body) matches vizia's `enum_list_body`.
   el.classList.add('ctl-buttongroup');
   el.innerHTML =
-    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
+    (noLabel ? '' : '<div class="ctl-label">' + label.toUpperCase() + '</div>') +
     '<div class="ctl-tg-rows"></div>';
   const rowsHost = el.querySelector('.ctl-tg-rows');
-  const rows = variants.map((name, i) => {
-    const row = tgRow(name);
+  // `rows[i]` corresponds to variant index `i` (not display position), so
+  // the update path can flip the active class by plain value directly.
+  const rows = new Array(variants.length);
+  for (const n of order) {
+    const row = tgRow(variants[n]);
     row.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       window.vxn.send({ op: 'begin_gesture', id });
-      window.vxn.send({ op: 'set_param', id, plain: i });
+      window.vxn.send({ op: 'set_param', id, plain: n });
       window.vxn.send({ op: 'end_gesture', id });
     });
     rowsHost.appendChild(row);
-    return row;
-  });
+    rows[n] = row;
+  }
   return {
     update(plain) {
       const p = Math.max(0, Math.min(variants.length - 1, Math.round(plain)));
-      rows.forEach((row, i) => row.classList.toggle('active', i === p));
+      rows.forEach((row, i) => row && row.classList.toggle('active', i === p));
     },
   };
 }
@@ -1147,8 +1330,191 @@ function makeDropdown(el, id, desc) {
   };
 }
 
+// ─── Header switch (Chorus / Delay, 0045) ──────────────────────────────────
+//
+// A single toggle box mounted into a panel header's `.panel-header-toggle-slot`.
+// Same wire shape as a plain bool `Switch` — gesture-bracketed `set_param`
+// on click; update() flips the `.active` class on echo.
+function makeHeaderSwitch(el, id, _desc) {
+  el.classList.add('panel-header-switch');
+  el.innerHTML = '';
+  el.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    const on = el.classList.contains('active') ? 0 : 1;
+    window.vxn.send({ op: 'begin_gesture', id });
+    window.vxn.send({ op: 'set_param', id, plain: on });
+    window.vxn.send({ op: 'end_gesture', id });
+  });
+  return {
+    update(plain) { el.classList.toggle('active', plain >= 0.5); },
+  };
+}
+
+// ─── Detune + Legato composite (Voice panel, 0045) ─────────────────────────
+//
+// Two params + one watch in a single column: the Detune fader on top and
+// the Legato toggle beneath it, both driven by Assign Mode for visual hints
+// (dim Legato in Poly/Twin) and behaviour (Detune fader's full-travel
+// meaning is 50 ct in Unison vs 20 ct in Twin — mirrors
+// `vxn_ui_vizia::detune_top`). Plain values stay in descriptor units (0–50
+// ct); only the fader's [0,1] → cents map changes per mode.
+//
+// `data-legato-param` / `data-mode-param` name the descriptor names this
+// cell pairs with; both are resolved per layer at bind time so a layer
+// rebind (0045) rebuilds the cell with the new ids.
+function makeDetuneLegato(el, ids, descs) {
+  const { detune, legato, mode } = ids;
+  const label = el.dataset.label || descs.detune.label;
+  el.classList.add('ctl-detune');
+  el.innerHTML =
+    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
+    '<div class="ctl-detune-body">' +
+      '<div class="ctl-fader">' +
+        '<div class="ctl-fader-track"></div>' +
+        '<div class="ctl-fader-thumb"></div>' +
+      '</div>' +
+      '<div class="ctl-detune-legato ctl-tg-row"></div>' +
+    '</div>';
+  const fader = el.querySelector('.ctl-fader');
+  const thumb = el.querySelector('.ctl-fader-thumb');
+  const legatoRow = el.querySelector('.ctl-detune-legato');
+  legatoRow.innerHTML =
+    '<div class="ctl-tg-box"></div>' +
+    '<div class="ctl-tg-lbl">LEGATO</div>';
+
+  // Twin's useful detune ceiling, mirrors vxn_ui_vizia::TWIN_DETUNE_CT.
+  const TWIN_TOP_CT = 20.0;
+  const DESC_TOP = descs.detune.max;
+  // Twin's variant index lives in the assign descriptor (current order:
+  // Poly, Unison, Solo, Twin → index 3). Look it up by name so a reorder
+  // in ASSIGN_LABELS doesn't desync.
+  const modeVariants = descs.mode.variants || [];
+  const TWIN_IDX = modeVariants.indexOf('Twin');
+  const MONO_IDXS = new Set();
+  // Mono assign modes (Legato applies in these): Unison, Solo. Found by
+  // name so an ASSIGN_LABELS reorder doesn't desync.
+  ['Unison', 'Solo'].forEach((n) => {
+    const i = modeVariants.indexOf(n);
+    if (i >= 0) MONO_IDXS.add(i);
+  });
+
+  let dragging = false;
+  let hovered = false;
+  let lastDetunePlain = 0;
+  let lastModePlain = 0;
+
+  function currentTop() {
+    return Math.round(lastModePlain) === TWIN_IDX ? TWIN_TOP_CT : DESC_TOP;
+  }
+  function setThumbFromPlain(plain) {
+    const top = currentTop();
+    const halfThumb = thumb.offsetHeight / 2;
+    const travel = fader.clientHeight - thumb.offsetHeight;
+    const norm = top > 0 ? Math.max(0, Math.min(1, plain / top)) : 0;
+    thumb.style.top = (halfThumb + (1 - norm) * travel) + 'px';
+  }
+  function pointerNorm(ev) {
+    const r = fader.getBoundingClientRect();
+    return Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height));
+  }
+
+  fader.addEventListener('pointerenter', (ev) => {
+    if (dragging) return;
+    hovered = true;
+    valuePop.show(lastDetunePlain.toFixed(1) + ' ct', ev.clientX, ev.clientY);
+  });
+  fader.addEventListener('pointerleave', () => {
+    hovered = false;
+    if (!dragging) valuePop.hide();
+  });
+  fader.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    dragging = true;
+    fader.classList.add('dragging');
+    fader.setPointerCapture(ev.pointerId);
+    window.vxn.send({ op: 'begin_gesture', id: detune });
+    const plain = pointerNorm(ev) * currentTop();
+    lastDetunePlain = plain;
+    setThumbFromPlain(plain);
+    window.vxn.send({ op: 'set_param', id: detune, plain });
+    valuePop.show(plain.toFixed(1) + ' ct', ev.clientX, ev.clientY);
+  });
+  fader.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const plain = pointerNorm(ev) * currentTop();
+    lastDetunePlain = plain;
+    setThumbFromPlain(plain);
+    window.vxn.send({ op: 'set_param', id: detune, plain });
+    valuePop.update(plain.toFixed(1) + ' ct');
+  });
+  const endDrag = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    fader.classList.remove('dragging');
+    try { fader.releasePointerCapture(ev.pointerId); } catch (e) {}
+    window.vxn.send({ op: 'end_gesture', id: detune });
+    if (!hovered) valuePop.hide();
+  };
+  fader.addEventListener('pointerup', endDrag);
+  fader.addEventListener('pointercancel', endDrag);
+
+  legatoRow.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    const on = legatoRow.classList.contains('active') ? 0 : 1;
+    window.vxn.send({ op: 'begin_gesture', id: legato });
+    window.vxn.send({ op: 'set_param', id: legato, plain: on });
+    window.vxn.send({ op: 'end_gesture', id: legato });
+  });
+  // Double-click resets the detune fader (descriptor default).
+  el.addEventListener('dblclick', (ev) => {
+    ev.preventDefault();
+    window.vxn.send({ op: 'begin_gesture', id: detune });
+    window.vxn.send({ op: 'set_param', id: detune, plain: descs.detune.default });
+    window.vxn.send({ op: 'end_gesture', id: detune });
+  });
+
+  function applyLegatoDim() {
+    legatoRow.classList.toggle('disabled', !MONO_IDXS.has(Math.round(lastModePlain)));
+  }
+
+  return {
+    // The composite registers three CONTROLS entries (detune, legato, mode)
+    // pointing at three updater closures returned here — `init()` then
+    // routes each ParamChanged into the matching closure.
+    detuneUpdate(plain, _norm, display) {
+      lastDetunePlain = plain;
+      setThumbFromPlain(plain);
+      if (hovered || dragging) {
+        valuePop.update(display || (plain.toFixed(1) + ' ct'));
+      }
+    },
+    legatoUpdate(plain) {
+      legatoRow.classList.toggle('active', plain >= 0.5);
+    },
+    modeUpdate(plain) {
+      const prevTwin = Math.round(lastModePlain) === TWIN_IDX;
+      lastModePlain = plain;
+      // On entering Twin, clamp the stored detune down to the Twin ceiling
+      // (mirrors `vxn_ui_vizia::clamp_detune_on_twin`). The engine doesn't
+      // enforce this — Twin's "useful" range is purely a view convention,
+      // so the editor that surfaces the mode is the one that has to clamp.
+      if (!prevTwin && Math.round(plain) === TWIN_IDX && lastDetunePlain > TWIN_TOP_CT) {
+        window.vxn.send({ op: 'begin_gesture', id: detune });
+        window.vxn.send({ op: 'set_param', id: detune, plain: TWIN_TOP_CT });
+        window.vxn.send({ op: 'end_gesture', id: detune });
+        lastDetunePlain = TWIN_TOP_CT;
+      }
+      setThumbFromPlain(lastDetunePlain);
+      applyLegatoDim();
+    },
+  };
+}
+
 // ─── Init + dispatch ───────────────────────────────────────────────────────
 
+// Lowest-id name lookup — for a per-patch param this is the Upper-layer id
+// (id < patchCount); for a global it's the global id directly. Layer
+// rebinding (0045) translates Upper → Lower with `+patchCount`.
 function paramIdByName(name) {
   for (const k in window.vxn.params) {
     if (window.vxn.params[k].name === name) return parseInt(k, 10);
@@ -1156,12 +1522,33 @@ function paramIdByName(name) {
   return null;
 }
 
+// Per-layer name → id lookup. Globals (id ≥ 2·patchCount) are layer-
+// independent and pass through unchanged. Per-patch ids translate from
+// Upper to Lower by adding `patchCount` (the slot offset that
+// `vxn_app::patch_clap_id` bakes in: lower_id = upper_id + PATCH_COUNT).
+function paramIdByNameAtLayer(name, layer) {
+  const upper = paramIdByName(name);
+  if (upper == null) return null;
+  const pc = window.vxn.patchCount;
+  if (upper >= 2 * pc) return upper;
+  return layer === 'lower' ? upper + pc : upper;
+}
+
+function isLayeredEl(el) {
+  return el.closest('[data-layered]') != null;
+}
+
+// Active edit layer. Mutated by EditLayerChanged dispatch (0045);
+// initial value matches the controller's default (Upper).
+let CURRENT_LAYER = 'upper';
+
 // Element references for the cells dimmed by the Free-run quirk (LFO 1
-// only). Looked up by descriptor name so a CLAP id reshuffle stays safe.
-function locateFreeRunCells() {
-  FREE_RUN_ID = paramIdByName('lfo1_free_run');
+// only). Resolved per current layer (LFO 1 is per-patch).
+function locateFreeRunCells(layer) {
+  FREE_RUN_ID = paramIdByNameAtLayer('lfo1_free_run', layer);
+  FREE_DIMMED_CELLS.length = 0;
   for (const name of ['lfo1_delay_time', 'lfo1_fade']) {
-    const id = paramIdByName(name);
+    const id = paramIdByNameAtLayer(name, layer);
     if (id == null) continue;
     const el = document.querySelector(`[data-param="${name}"]`);
     if (el) FREE_DIMMED_CELLS.push({ id, el });
@@ -1171,30 +1558,116 @@ function locateFreeRunCells() {
 // Resolve the Filter Mode param + the Notch variant's plain index, plus
 // the Slope cell that dims with it (0043). `variants` ships in the
 // descriptor JSON, so a `FILTER_MODE_LABELS` reorder doesn't break this.
-function locateSlopeDimCells() {
-  FILTER_MODE_ID = paramIdByName('filter_mode');
+function locateSlopeDimCells(layer) {
+  FILTER_MODE_ID = paramIdByNameAtLayer('filter_mode', layer);
   if (FILTER_MODE_ID != null) {
     const variants = window.vxn.params[FILTER_MODE_ID].variants || [];
     FILTER_NOTCH_INDEX = variants.indexOf('Notch');
   }
+  SLOPE_DIMMED_CELLS.length = 0;
   const slope = document.querySelector('[data-param="filter_slope"]');
   if (slope) SLOPE_DIMMED_CELLS.push(slope);
 }
 
-// Pair LFO rate faders with their sync-toggle partners (E004 / 0015).
-// Mirrors `vxn_ui_vizia::sync_partner`. Currently only the LFO rates use
-// this; the Delay panel will join when 0045 wires `delay_time/delay_sync`.
-function locateSyncPartners() {
+// Pair sync-able rate/time faders with their sync-toggle partners (E004 /
+// 0015). Mirrors `vxn_ui_vizia::sync_partner`: LFO 1 rate ↔ LFO 1 sync
+// (per-patch), LFO 2 rate ↔ LFO 2 sync (global), Delay Time ↔ Delay Sync
+// (global, 0045). Resolved per current layer.
+function locateSyncPartners(layer) {
+  SYNC_OF_RATE.clear();
+  RATE_OF_SYNC.clear();
   const pairs = [
-    ['lfo_rate',  'lfo_sync'],
-    ['lfo2_rate', 'lfo2_sync'],
+    ['lfo_rate',   'lfo_sync'],
+    ['lfo2_rate',  'lfo2_sync'],
+    ['delay_time', 'delay_sync'],
   ];
   for (const [rateName, syncName] of pairs) {
-    const r = paramIdByName(rateName);
-    const s = paramIdByName(syncName);
+    const r = paramIdByNameAtLayer(rateName, layer);
+    const s = paramIdByNameAtLayer(syncName, layer);
     if (r == null || s == null) continue;
     SYNC_OF_RATE.set(r, s);
     RATE_OF_SYNC.set(s, r);
+  }
+}
+
+// ─── Generic dim rules (0044) ──────────────────────────────────────────────
+//
+// Per-cell HTML markers register a dim rule resolved at bind time:
+//   `data-dim-when-zero` — dim self when self.value < 0.5 (source
+//     selector reads `Off`, the first variant of any `Off/...` enum).
+//   `data-dim-when-src-off="srcName"` — dim self when the named source
+//     selector reads `Off` (used for the Cross Mod depth fader paired
+//     with its Src selector).
+//   `data-dim-unless-fm="typeName"` — dim self unless the named type
+//     selector reads the `FM` variant. Cross Mod's Amount fader only
+//     drives PM (labelled FM, ADR 0004 §3), so it greys out for Off and
+//     Sync, matching `vxn_ui_vizia::xmod_pair`.
+//
+// One pass collects the specs from the DOM; resolution to current-layer
+// CLAP ids happens on every (re)bind so a layer flip rebuilds them
+// without touching the markup.
+const DIM_RULE_SPECS = [];   // [{ kind, watchName, target }]
+const DIM_RULES = [];        // [{ watchId, predicate, target }] — keyed by id
+
+function collectDimRuleSpecs() {
+  DIM_RULE_SPECS.length = 0;
+  document.querySelectorAll('[data-dim-when-zero]').forEach((el) => {
+    DIM_RULE_SPECS.push({
+      kind: 'zero',
+      watchName: el.dataset.param,
+      target: el,
+    });
+  });
+  document.querySelectorAll('[data-dim-when-src-off]').forEach((el) => {
+    DIM_RULE_SPECS.push({
+      kind: 'src-off',
+      watchName: el.dataset.dimWhenSrcOff,
+      target: el,
+    });
+  });
+  document.querySelectorAll('[data-dim-unless-fm]').forEach((el) => {
+    DIM_RULE_SPECS.push({
+      kind: 'unless-fm',
+      watchName: el.dataset.dimUnlessFm,
+      target: el,
+    });
+  });
+}
+
+function resolveDimRules(layer) {
+  DIM_RULES.length = 0;
+  for (const spec of DIM_RULE_SPECS) {
+    const watchId = paramIdByNameAtLayer(spec.watchName, layer);
+    if (watchId == null) continue;
+    let predicate;
+    if (spec.kind === 'zero' || spec.kind === 'src-off') {
+      predicate = (plain) => Math.round(plain) === 0;
+    } else if (spec.kind === 'unless-fm') {
+      const variants = window.vxn.params[watchId].variants || [];
+      const fmIdx = variants.indexOf('FM');
+      predicate = (plain) => fmIdx < 0 || Math.round(plain) !== fmIdx;
+    } else {
+      continue;
+    }
+    DIM_RULES.push({ watchId, predicate, target: spec.target });
+  }
+}
+
+function applyDimRulesFor(id, plain) {
+  for (const r of DIM_RULES) {
+    if (r.watchId !== id) continue;
+    r.target.classList.toggle('dimmed', r.predicate(plain));
+  }
+}
+
+// Re-apply every dim rule from cached last-known values. Called after a
+// layer rebind so the new layer's bindings reflect the correct dim state
+// before any fresh ParamChanged echoes arrive.
+function refreshAllDimRules() {
+  for (const r of DIM_RULES) {
+    const last = LAST_PARAM.get(r.watchId);
+    if (!last) continue;
+    r.target.classList.toggle('dimmed', r.predicate(last.plain));
   }
 }
 
@@ -1211,71 +1684,155 @@ function rateDisplayOverride(id) {
   };
 }
 
-function init() {
-  locateSyncPartners();
-  locateFreeRunCells();
-  locateSlopeDimCells();
+// Per-cell binding info, captured at init so a layer rebind can rebuild
+// each cell against its new (layer-translated) CLAP id without re-walking
+// the DOM. Composite cells (detune-legato) carry their secondary
+// descriptor-name dependencies alongside the primary param name.
+const LAYERED_CELLS = [];      // [{ el, kind, name, extras? }]
+const STATIC_CELLS = [];       // same shape, but layer-independent
 
-  // Walk every mount point and instantiate the right primitive. Selector
-  // covers both `.ctl` (vertical column inside `.panel-body`) and
-  // `.ctl-strip` (compact mount inside `.panel-strip`); the control kind
-  // is what determines render shape, not the mount class.
-  document.querySelectorAll('[data-control]').forEach((el) => {
-    const name = el.dataset.param;
-    const id = paramIdByName(name);
-    if (id == null) {
-      console.warn('vxn: no param descriptor for', name);
-      return;
+function bindCell(entry, layer) {
+  const { el, kind, name } = entry;
+  const id = paramIdByNameAtLayer(name, layer);
+  if (id == null) return null;
+  const desc = window.vxn.params[id];
+  let ctl = null;
+  switch (kind) {
+    case 'fader': {
+      const opts = { displayOverride: rateDisplayOverride(id) };
+      ctl = makeFader(el, id, desc, opts);
+      break;
     }
-    const desc = window.vxn.params[id];
-    let ctl = null;
-    switch (el.dataset.control) {
-      case 'fader': {
-        const opts = { displayOverride: rateDisplayOverride(id) };
-        ctl = makeFader(el, id, desc, opts);
-        break;
-      }
-      case 'wave':        ctl = makeWave(el, id, desc); break;
-      case 'switch':      ctl = makeSwitch(el, id, desc); break;
-      case 'buttongroup': ctl = makeButtonGroup(el, id, desc); break;
-      case 'dropdown':    ctl = makeDropdown(el, id, desc); break;
-      default:
-        console.warn('vxn: unknown control type', el.dataset.control);
-        return;
+    case 'wave':          ctl = makeWave(el, id, desc); break;
+    case 'switch':        ctl = makeSwitch(el, id, desc); break;
+    case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;
+    case 'dropdown':      ctl = makeDropdown(el, id, desc); break;
+    case 'header-switch': ctl = makeHeaderSwitch(el, id, desc); break;
+    case 'detune-legato': {
+      const legatoId = paramIdByNameAtLayer(entry.extras.legatoName, layer);
+      const modeId   = paramIdByNameAtLayer(entry.extras.modeName, layer);
+      if (legatoId == null || modeId == null) return null;
+      const composite = makeDetuneLegato(
+        el,
+        { detune: id, legato: legatoId, mode: modeId },
+        {
+          detune: desc,
+          legato: window.vxn.params[legatoId],
+          mode:   window.vxn.params[modeId],
+        },
+      );
+      // Fan composite updaters through CONTROLS by id. Mode is also bound
+      // by the AssignMode buttongroup cell — `addCtl` keeps both updaters
+      // alive on the same id so the buttongroup repaints and the detune-
+      // legato visuals (top-override, Legato dim, Twin clamp) follow the
+      // same echo.
+      addCtl(id,       { update: (p, n, d) => composite.detuneUpdate(p, n, d) });
+      addCtl(legatoId, { update: (p) => composite.legatoUpdate(p) });
+      addCtl(modeId,   { update: (p) => composite.modeUpdate(p) });
+      return { ids: [id, legatoId, modeId] };
     }
-    CONTROLS.set(id, ctl);
+    default:
+      console.warn('vxn: unknown control type', kind);
+      return null;
+  }
+  addCtl(id, ctl);
 
-    // Double-click resets the param to its descriptor default — mirrors
-    // the vizia editor's `.on_double_click` (bracketed by a gesture so
-    // the host records one edit). Wired on the cell root so it covers
-    // every primitive uniformly; the intermediate single-click value
-    // changes still fire and the reset lands last.
+  // Double-click resets the param to its descriptor default — mirrors
+  // the vizia editor's `.on_double_click` (bracketed by a gesture so
+  // the host records one edit). Wired on the cell root so it covers
+  // every primitive uniformly; the intermediate single-click value
+  // changes still fire and the reset lands last. (Header-switch is a
+  // bool toggle — double-clicking it would just toggle twice; skip.)
+  if (kind !== 'header-switch') {
     el.addEventListener('dblclick', (ev) => {
       ev.preventDefault();
       window.vxn.send({ op: 'begin_gesture', id });
       window.vxn.send({ op: 'set_param', id, plain: desc.default });
       window.vxn.send({ op: 'end_gesture', id });
     });
+  }
+  return { ids: [id] };
+}
+
+function rebindAllForLayer(layer) {
+  // Drop every prior binding — closures held the old ids; the only safe
+  // way to retarget is to start fresh. CONTROLS is the routing table for
+  // ParamChanged dispatch, so emptying it before re-bind avoids stale
+  // updates landing on the old (now-orphaned) primitives.
+  CONTROLS.clear();
+  for (const entry of LAYERED_CELLS) {
+    // Reset the cell so a re-init clears whatever the previous primitive
+    // dropped onto el (innerHTML / inline styles / classes specific to
+    // its kind). Easier than per-primitive teardown.
+    entry.el.innerHTML = '';
+    entry.el.removeAttribute('style');
+    entry.el.classList.remove(
+      'ctl-buttongroup', 'ctl-dropdown', 'ctl-detune', 'dimmed',
+    );
+    bindCell(entry, layer);
+  }
+  for (const entry of STATIC_CELLS) {
+    bindCell(entry, layer);
+  }
+  // The "watched id" of every quirk rule moves with the layer; re-resolve.
+  locateSyncPartners(layer);
+  locateFreeRunCells(layer);
+  locateSlopeDimCells(layer);
+  resolveDimRules(layer);
+  // Reseed the visual dim state from cached last-known values so a layer
+  // rebind reflects the new layer's state before any echo arrives.
+  refreshAllDimRules();
+  // Feed cached values into freshly-rebound controls (the new ids are
+  // already in LAST_PARAM from the editor-ready broadcast).
+  for (const [id, ctls] of CONTROLS) {
+    const last = LAST_PARAM.get(id);
+    if (!last) continue;
+    for (const c of ctls) c.update(last.plain, last.norm, last.display);
+  }
+}
+
+function init() {
+  // Categorize every mount point by descriptor name + kind, layer-
+  // agnostic. The actual id resolution + primitive instantiation happens
+  // in `rebindAllForLayer`, which is also what a layer flip calls.
+  document.querySelectorAll('[data-control]').forEach((el) => {
+    const name = el.dataset.param;
+    if (!name) return;
+    const kind = el.dataset.control;
+    const entry = { el, kind, name };
+    if (kind === 'detune-legato') {
+      entry.extras = {
+        legatoName: el.dataset.legatoParam,
+        modeName: el.dataset.modeParam,
+      };
+    }
+    (isLayeredEl(el) ? LAYERED_CELLS : STATIC_CELLS).push(entry);
   });
+  collectDimRuleSpecs();
+  rebindAllForLayer(CURRENT_LAYER);
 
   // Dispatch incoming ViewEvents from Rust. ParamChanged routes by id;
+  // EditLayerChanged triggers a full layered-cell rebind (0045);
   // anything else logged for now (0042+ wires status, key-mode, preset
   // events into their respective UI areas).
   const dispatch = function (ev) {
     if (ev.kind === 'param_changed') {
-      // Cache last-seen value so the sync-flip and free-run-flip refresh
-      // paths can reapply without waiting for the next echo.
+      // Cache last-seen value so the sync-flip / free-run-flip / layer-
+      // rebind reseed paths can reapply without waiting for the next echo.
       LAST_PARAM.set(ev.id, { plain: ev.plain, norm: ev.norm, display: ev.display });
-      const ctl = CONTROLS.get(ev.id);
-      if (ctl) ctl.update(ev.plain, ev.norm, ev.display);
-      // If this is an LFO sync toggle, the partnered rate fader's display
-      // label needs to flip Hz ↔ subdivision. Re-update the rate with its
-      // last-seen value — the fader's displayOverride will recompute.
+      const ctls = CONTROLS.get(ev.id);
+      if (ctls) for (const c of ctls) c.update(ev.plain, ev.norm, ev.display);
+      // If this is an LFO/Delay sync toggle, the partnered rate/time fader
+      // display label needs to flip Hz/s ↔ subdivision. Re-update the
+      // partner with its last-seen value — the fader's displayOverride
+      // will recompute.
       const rateId = RATE_OF_SYNC.get(ev.id);
       if (rateId != null) {
         const last = LAST_PARAM.get(rateId);
-        const rate = CONTROLS.get(rateId);
-        if (last && rate) rate.update(last.plain, last.norm, last.display);
+        const rateCtls = CONTROLS.get(rateId);
+        if (last && rateCtls) {
+          for (const c of rateCtls) c.update(last.plain, last.norm, last.display);
+        }
       }
       // Free-run toggle changes which Delay/Fade cells render dim.
       if (ev.id === FREE_RUN_ID) {
@@ -1287,6 +1844,15 @@ function init() {
         const dim = Math.round(ev.plain) === FILTER_NOTCH_INDEX;
         for (const el of SLOPE_DIMMED_CELLS) el.classList.toggle('dimmed', dim);
       }
+      // Generic dim rules (0044): source-Off, Cross Mod Type ≠ FM, etc.
+      applyDimRulesFor(ev.id, ev.plain);
+      return;
+    }
+    if (ev.kind === 'edit_layer_changed') {
+      const layer = ev.layer === 'lower' ? 'lower' : 'upper';
+      if (layer === CURRENT_LAYER) return;
+      CURRENT_LAYER = layer;
+      rebindAllForLayer(layer);
       return;
     }
     // Uncomment for verbose tracing during development:

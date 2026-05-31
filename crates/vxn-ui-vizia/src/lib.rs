@@ -894,6 +894,12 @@ impl Model for UiModel {
                             self.split.set(sp);
                         }
                     }
+                    ViewEvent::EditLayerChanged { .. } => {
+                        // Vizia owns its own `edit_layer` SyncSignal (set by
+                        // the Keys panel's toggle) and ignores the controller
+                        // echo. The HTML editor consumes this; we just drop
+                        // it here.
+                    }
                     ViewEvent::Status { line } => {
                         self.status.set(line);
                     }

@@ -239,9 +239,11 @@ impl<M: ParamModel> Controller<M> {
                 self.model.set_split_point(note);
                 self.send_status(format!("split point: {note}"));
             }
-            UiEvent::SetEditLayer { layer: _ } => {
-                // Opaque to the model — the view tracks the edit layer
-                // itself. Stub here; no model state to mutate.
+            UiEvent::SetEditLayer { layer } => {
+                // No model mutation — the edit layer is pure view state.
+                // Echo to the view so editors that don't own the toggle
+                // widget (HTML faceplate) can rebind per-patch panels.
+                self.send(ViewEvent::EditLayerChanged { layer });
             }
             UiEvent::EditorReady => {
                 // Editor has just finished its inline init and is now
