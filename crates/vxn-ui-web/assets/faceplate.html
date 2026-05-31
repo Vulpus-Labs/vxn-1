@@ -174,6 +174,7 @@ html, body {
 
 /* Common cell — a vertical stack of label, control, value. */
 .ctl {
+  position: relative;          /* anchor for the absolute .ctl-value popup */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -193,19 +194,24 @@ html, body {
 }
 
 .ctl-value {
+  /* Absolute-positioned so the readout text — which can swing from "0"
+     to "-4.321 ct" — never contributes to the cell's intrinsic width.
+     A `white-space: nowrap` flex child would otherwise inflate the
+     column's min-content and push neighbours sideways every automation
+     frame. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   font-size: 8px;
   color: var(--ctl-value);
   height: var(--ctl-value-h);
   line-height: var(--ctl-value-h);
-  /* Pin width so the cell doesn't shift when text length changes. */
-  width: 100%;
   text-align: center;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* Hidden by default — readouts pop only on hover / drag so a long
-     value string can't push the rest of the cell around. visibility
-     (not display:none) keeps the height reserved, no layout shift. */
+  overflow: visible;            /* let long values spill rather than ellipsis */
+  pointer-events: none;
+  /* Hidden by default — readouts pop only on hover / drag. */
   visibility: hidden;
 }
 .ctl:hover .ctl-value,
