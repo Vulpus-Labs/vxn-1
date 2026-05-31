@@ -205,15 +205,16 @@ html, body {
 }
 .browser-close:hover { color: #ececec; }
 .browser-search {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  position: relative;
   height: 22px;
   flex: 0 0 auto;
-  padding-right: 22px; /* keep the search clear button clear of the close-X */
+  /* Width matches the folders pane so the search box reads as a header
+     to the category list, not a panel-wide bar. Clear-X overlays the
+     input's right edge (see `.browser-search-clear`). */
+  width: 220px;
 }
 .browser-search input {
-  flex: 1 1 auto;
+  width: 100%;
   background: #0e0e0e;
   border: 1px solid #2a2a2a;
   border-radius: 2px;
@@ -221,11 +222,33 @@ html, body {
   font: inherit;
   font-size: 12px;
   height: 22px;
-  padding: 0 6px;
+  padding: 0 22px 0 6px; /* right padding leaves room for the in-box clear-X */
   box-sizing: border-box;
   outline: none;
 }
 .browser-search input:focus { border-color: var(--glyph-active); }
+.browser-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.browser-search-clear:hover { color: #ececec; }
 .browser-panes {
   flex: 1 1 auto;
   min-height: 0;
@@ -275,6 +298,22 @@ html, body {
 .browser-row.current {
   color: var(--ctl-value);
   font-weight: 600;
+}
+/* HTML5 DnD (0052). `.dragging` dims the source preset row while it's
+   being dragged; `.drag-over` highlights a valid drop target (user
+   folder, not the source); `.drag-blocked` dims the source folder when
+   hovered mid-drag so the user reads the no-op explicitly. Factory
+   folder rows get neither class because their handlers aren't wired —
+   default browser behaviour rejects the drop. */
+.browser-row.dragging { opacity: 0.5; }
+.browser-row.drag-over {
+  background: #2a2a2a;
+  color: #ececec;
+  box-shadow: inset 2px 0 0 var(--glyph-active);
+}
+.browser-row.drag-blocked {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 /* Search-mode rows lay out as `name + muted origin label` so cross-folder
    matches don't read as ambiguous duplicates ("Brassy" in Factory/Lead
@@ -915,7 +954,7 @@ html, body {
     <button class="browser-close" id="browser-close" type="button" aria-label="Close browser">&times;</button>
     <div class="browser-search">
       <input type="text" id="browser-search-input" placeholder="Search…" autocomplete="off" />
-      <button class="pbar-btn" id="browser-search-clear" type="button" aria-label="Clear search">x</button>
+      <button class="browser-search-clear" id="browser-search-clear" type="button" aria-label="Clear search">&times;</button>
     </div>
     <div class="browser-panes">
       <div class="browser-pane browser-pane-folders" id="browser-folders"></div>
@@ -1389,6 +1428,16 @@ const browserPanel = (() => {
   let menuEl = null;
   let modalEl = null;
 
+  // 0052: HTML5 DnD drag state. `dragSourcePath` is non-null while the
+  // user is dragging one of our user-preset rows; `dragSourceFolder` is
+  // the folder it came from (string for named folders, null for
+  // Uncategorised root). The external `dataTransfer` payload still uses
+  // the `vxn/preset` MIME so a stray drop on an external dropzone never
+  // delivers a path; the in-page logic reads these vars because
+  // `dataTransfer.getData` is not callable during `dragover`.
+  let dragSourcePath = null;
+  let dragSourceFolder = null;
+
   // Match the Vizia browser's section labels (vxn_ui_vizia `browser-section`).
   const FACTORY_HEADER = 'FACTORY';
   const USER_HEADER    = 'USER';
@@ -1486,6 +1535,37 @@ const browserPanel = (() => {
         openMenu(e, { kind: 'folder', name: key.name });
       });
     }
+    // 0052: every user folder (incl. Uncategorised root) is a drop
+    // target. Factory folders deliberately have no DnD listeners — the
+    // browser's default behaviour rejects the drop and no highlight is
+    // shown. The source folder mid-drag shows a `drag-blocked` style
+    // and does not preventDefault, so its drop is rejected too.
+    if (key.kind === 'user') {
+      r.addEventListener('dragover', (e) => {
+        if (dragSourcePath == null) return;
+        if (key.name === dragSourceFolder) {
+          r.classList.add('drag-blocked');
+          return;
+        }
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        r.classList.add('drag-over');
+      });
+      r.addEventListener('dragleave', () => {
+        r.classList.remove('drag-over', 'drag-blocked');
+      });
+      r.addEventListener('drop', (e) => {
+        e.preventDefault();
+        r.classList.remove('drag-over', 'drag-blocked');
+        if (dragSourcePath == null) return;
+        if (key.name === dragSourceFolder) return;
+        window.vxn.send({
+          op: 'move_preset',
+          path: dragSourcePath,
+          dest_folder: key.name,
+        });
+      });
+    }
     foldersEl.appendChild(r);
   }
   function findGroup() {
@@ -1522,10 +1602,14 @@ const browserPanel = (() => {
       });
       // Only user-side presets get a context menu. Factory is read-only.
       if (selectedFolder.kind === 'user') {
+        r.dataset.path = p.path;
         r.addEventListener('contextmenu', (e) => {
           e.preventDefault();
           openMenu(e, { kind: 'preset', path: p.path, name: p.name, folder: selectedFolder.name });
         });
+        // 0052: only user-side rows are drag sources. Factory rows are
+        // immutable and never originate a move.
+        wirePresetDragSource(r, p.path, selectedFolder.name);
       }
       presetsEl.appendChild(r);
     }
@@ -1584,6 +1668,7 @@ const browserPanel = (() => {
     // Move to), referencing the hit's own folder so Move-to's submenu
     // excludes the right one.
     if (h.source.kind === 'user') {
+      r.dataset.path = h.source.path;
       r.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         openMenu(e, {
@@ -1593,8 +1678,74 @@ const browserPanel = (() => {
           folder: h.source.folder,
         });
       });
+      // 0052: search hits also drag — source folder is the hit's own,
+      // not the panel's `selectedFolder` (search ignores the selection).
+      wirePresetDragSource(r, h.source.path, h.source.folder);
     }
     presetsEl.appendChild(r);
+  }
+  // 0052: shared dragstart/dragend wiring for any user-side preset row.
+  // The `vxn/preset` MIME guards against accidental external drops; the
+  // module-level `dragSourcePath` / `dragSourceFolder` carry the same
+  // values for in-page logic (dataTransfer payloads can't be read
+  // during `dragover`).
+  function wirePresetDragSource(row, path, folder) {
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      dragSourcePath = path;
+      dragSourceFolder = folder == null ? null : folder;
+      try { e.dataTransfer.setData('vxn/preset', path); } catch (_) {}
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      dragSourcePath = null;
+      dragSourceFolder = null;
+      row.classList.remove('dragging');
+      // Clear any stuck highlight if dragleave didn't fire (Safari has
+      // been known to swallow the final dragleave when the drop is
+      // cancelled by ESC mid-hover).
+      for (const el of foldersEl.querySelectorAll('.drag-over, .drag-blocked')) {
+        el.classList.remove('drag-over', 'drag-blocked');
+      }
+    });
+  }
+  // 0052: after a Move-induced corpus refresh, jump the panel to the
+  // folder the moved preset now lives in and scroll the row into view.
+  // No-op if the path doesn't match any user preset (e.g. a stale follow
+  // pointer from a racing op).
+  function followPath(pathStr) {
+    if (!pathStr) return;
+    for (const g of corpus.user) {
+      for (const p of g.presets) {
+        if (p.path !== pathStr) continue;
+        selectedFolder = { kind: 'user', name: g.name };
+        // Clear any active search so the moved row is actually rendered
+        // in the folder pane (search would still show it, but the
+        // ticket reads as "the panel scrolls to it" in folder view).
+        if (query) {
+          query = '';
+          inputEl.value = '';
+        }
+        renderFolders();
+        renderPresets();
+        const row = presetsEl.querySelector(
+          `.browser-row[data-path="${cssEscapePath(pathStr)}"]`,
+        );
+        if (row) {
+          try { row.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+        }
+        return;
+      }
+    }
+  }
+  // Path strings can contain quotes/backslashes/spaces — escape for a
+  // CSS attribute selector. `CSS.escape` is available in WKWebView.
+  function cssEscapePath(s) {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      return CSS.escape(s);
+    }
+    return s.replace(/(["\\])/g, '\\$1');
   }
   function isCurrentSource(src) {
     if (!currentSource || !src) return false;
@@ -2009,6 +2160,9 @@ const browserPanel = (() => {
     getSaveFolder,
     openSaveAs: openSaveAsModal,
     onOpenChange: (cb) => { onOpenChange = cb; },
+    // 0052: dispatcher calls this on `preset_corpus_changed` when
+    // `ev.follow` is set (Move / Rename emit a follow path).
+    followPath,
     // Exposed for in-page tests.
     _moveTargets: moveTargets,
   };
@@ -3152,9 +3306,13 @@ function init() {
     // 0050: corpus snapshot arrives via __vxn.applyPresetCorpus
     // (separate Rust→JS channel), not through this batch. The
     // PresetCorpusChanged ViewEvent is the trigger for that push, so
-    // the page-side render has already happened by the time we get
-    // here — nothing else to do unless we want to follow the
-    // `ev.follow` path (0051 territory).
+    // by the time we get here the corpus is already rendered.
+    // 0052: a non-null `follow` means a Move/Rename produced a new
+    // path — jump the panel to its new folder and scroll it into view.
+    if (ev.kind === 'preset_corpus_changed') {
+      if (ev.follow) browserPanel.followPath(ev.follow);
+      return;
+    }
     // key_mode_changed lands here too. Uncomment for verbose
     // tracing during development:
     // console.log('vxn:view', ev);

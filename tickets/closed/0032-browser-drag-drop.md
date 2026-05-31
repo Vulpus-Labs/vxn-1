@@ -4,7 +4,17 @@ title: Drag-and-drop preset → folder
 priority: low
 created: 2026-05-30
 epic: E008
+status: superseded
+superseded_by: "0052"
 ---
+
+## Status
+
+Superseded by [0052](../in-progress/0052-browser-drag-drop.md). The vizia
+implementation never built; the HTML5 drag-drop in the 0050 browser is
+the shipped version. Acceptance criteria below still apply in spirit
+(drag from user preset → user folder → controller `move_preset`); the
+HTML5 implementation rewords them in 0052.
 
 ## Summary
 

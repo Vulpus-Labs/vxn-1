@@ -1829,4 +1829,63 @@ mod tests {
         }
         assert!(seen_float && seen_int && seen_bool && seen_enum);
     }
+
+    #[test]
+    fn faceplate_browser_drag_drop_wired() {
+        // 0052: HTML5 DnD. Drag source = user-side preset rows (folder
+        // view + search view). Drop target = user folder rows (left
+        // pane). Factory rows have no DnD listeners on either side —
+        // gated by `selectedFolder.kind === 'user'` /
+        // `key.kind === 'user'`.
+        //
+        // Wire shape:
+        //   - `row.draggable = true` + `dragstart` sets
+        //     `dataTransfer.setData('vxn/preset', path)` (custom MIME
+        //     guards against external dropzones receiving a preset path)
+        //     plus module-level `dragSourcePath` / `dragSourceFolder`
+        //     (read during `dragover` because `dataTransfer.getData` is
+        //     not callable then).
+        //   - Drop target preventDefaults `dragover` only when source is
+        //     a vxn preset AND the target is not the source folder; the
+        //     source folder shows `.drag-blocked` instead.
+        //   - Drop posts `op: 'move_preset'` with the destination
+        //     folder name (or null for the virtual user root).
+        // The Move-to ▸ submenu (0051) shares the `move_preset` op
+        // string, so this test additionally asserts the DnD-specific
+        // bridge surface (drag listeners, MIME, drop CSS).
+        assert!(PLACEHOLDER_HTML.contains("'vxn/preset'"));
+        assert!(PLACEHOLDER_HTML.contains("wirePresetDragSource"));
+        assert!(PLACEHOLDER_HTML.contains("'dragstart'"));
+        assert!(PLACEHOLDER_HTML.contains("'dragover'"));
+        assert!(PLACEHOLDER_HTML.contains("'dragleave'"));
+        assert!(PLACEHOLDER_HTML.contains("'dragend'"));
+        // The drop handler shares the `move_preset` op with the Move-to
+        // submenu; the DnD-specific path passes `dragSourcePath` rather
+        // than the menu's `target.path`. The `dragSourcePath` identifier
+        // is used by both the dragstart write and the drop read — its
+        // mere presence proves the bridge is wired through.
+        assert!(PLACEHOLDER_HTML.contains("path: dragSourcePath"));
+        // Drop-target gating: factory rows must not get listeners. The
+        // `appendFolderRow` gate keys on `key.kind === 'user'`; assert
+        // the source folder no-op branch is present (key.name ===
+        // dragSourceFolder).
+        assert!(PLACEHOLDER_HTML.contains("key.name === dragSourceFolder"));
+        // CSS for drop-target highlight + source-folder block + drag-
+        // source dimming. `.drag-over` is the live drop highlight;
+        // `.drag-blocked` shows the source folder mid-drag.
+        assert!(PLACEHOLDER_HTML.contains(".browser-row.drag-over"));
+        assert!(PLACEHOLDER_HTML.contains(".browser-row.drag-blocked"));
+        assert!(PLACEHOLDER_HTML.contains(".browser-row.dragging"));
+        // Follow-path plumbing: PresetCorpusChanged carries an
+        // Option<PathBuf>; non-null means reselect the folder and
+        // scroll the moved row into view. Dispatcher branch + module
+        // method both present.
+        assert!(PLACEHOLDER_HTML.contains("ev.kind === 'preset_corpus_changed'"));
+        assert!(PLACEHOLDER_HTML.contains("browserPanel.followPath"));
+        assert!(PLACEHOLDER_HTML.contains("function followPath("));
+        // Rendered rows tag themselves with `data-path` so followPath
+        // can locate the moved row via a CSS attribute selector.
+        assert!(PLACEHOLDER_HTML.contains("r.dataset.path = p.path"));
+        assert!(PLACEHOLDER_HTML.contains("r.dataset.path = h.source.path"));
+    }
 }
