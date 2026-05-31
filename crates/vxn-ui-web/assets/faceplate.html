@@ -25,7 +25,7 @@
   --track-bg: #0e0e0e;
   --track-fill: #d9701b;
   --thumb-bg: #c4c4c4;
-  --thumb-border: #ffffff;
+  --thumb-border: #a7cfe2;       /* matches --glyph-active / --knob-indicator */
   --glyph: #888888;
   --glyph-active: #a7cfe2;
   --knob-face: #2a2a2a;
@@ -411,12 +411,21 @@ html, body {
 // in via the `__PARAMS_JSON__` placeholder below at editor-open time. Keys
 // are CLAP ids (numeric); the page builds a name → id index in `init()`.
 
+// Buffer ViewEvents that arrive before `init()` runs. The clack shell's
+// CLAP timer (vxn-clap `on_timer`) starts pushing `param_changed` events
+// as soon as `set_parent` registers it — that's often before the inline
+// `init()` call below has populated the CONTROLS map and rebound this
+// dispatcher. Without a buffer the first broadcast (which is the only
+// one for params that aren't being automated) is dropped on the floor
+// and `lastDisplay` on every fader stays empty until the user wiggles
+// something.
+const _earlyViewEvents = [];
 window.vxn = {
   send: function (msg) {
     try { window.ipc.postMessage(JSON.stringify(msg)); }
     catch (e) { console.warn('vxn.send failed', e); }
   },
-  onViewEvent: function (ev) { /* re-bound by init() below */ },
+  onViewEvent: function (ev) { _earlyViewEvents.push(ev); },
   params: __PARAMS_JSON__,
 };
 
@@ -501,10 +510,16 @@ function makeFader(el, id, desc) {
   let lastDisplay = '';
 
   function setThumb(norm) {
-    // Norm 0 = bottom, 1 = top. Track height = element height; thumb is
-    // positioned by `top` percentage with translateY(-50%) centring.
-    const pct = (1 - Math.max(0, Math.min(1, norm))) * 100;
-    thumb.style.top = pct + '%';
+    // Norm 0 = bottom, 1 = top. Clamp the thumb's centre so the thumb's
+    // *bounding box* stays inside `.ctl-fader` — using `top: <pct>%`
+    // with translateY(-50%) put the thumb's top edge 4 px above the
+    // fader at norm=1, which overlapped the label above. Pin in pixel
+    // space against the live element height instead so the clamp is
+    // exact at both ends regardless of --fader-h / --thumb-h tweaks.
+    const halfThumb = thumb.offsetHeight / 2;
+    const travel = fader.clientHeight - thumb.offsetHeight;
+    const yPx = halfThumb + (1 - Math.max(0, Math.min(1, norm))) * travel;
+    thumb.style.top = yPx + 'px';
   }
 
   function pointerNorm(ev) {
@@ -789,7 +804,7 @@ function init() {
   // Dispatch incoming ViewEvents from Rust. ParamChanged routes by id;
   // anything else logged for now (0042+ wires status, key-mode, preset
   // events into their respective UI areas).
-  window.vxn.onViewEvent = function (ev) {
+  const dispatch = function (ev) {
     if (ev.kind === 'param_changed') {
       const ctl = CONTROLS.get(ev.id);
       if (ctl) ctl.update(ev.plain, ev.norm, ev.display);
@@ -798,6 +813,10 @@ function init() {
     // Uncomment for verbose tracing during development:
     // console.log('vxn:view', ev);
   };
+  // Replay any events buffered between bootstrap and init.
+  for (const ev of _earlyViewEvents) dispatch(ev);
+  _earlyViewEvents.length = 0;
+  window.vxn.onViewEvent = dispatch;
 }
 
 if (document.readyState === 'loading') {
