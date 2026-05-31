@@ -243,6 +243,16 @@ impl<M: ParamModel> Controller<M> {
                 // Opaque to the model — the view tracks the edit layer
                 // itself. Stub here; no model state to mutate.
             }
+            UiEvent::EditorReady => {
+                // Editor has just finished its inline init and is now
+                // listening on `onViewEvent`. Push the full param table +
+                // key mode so any first-tick broadcast that landed before
+                // the JS dispatcher was wired (a real race on slow page
+                // loads — see vxn-ui-web's bootstrap notes) is replayed
+                // into a known-ready listener.
+                self.broadcast_all_params();
+                self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
+            }
         }
     }
 

@@ -260,6 +260,11 @@ fn parse_ui_event(body: &str) -> Option<UiEvent> {
         "set_edit_layer" => Some(UiEvent::SetEditLayer {
             layer: parse_layer(v.get("layer")?)?,
         }),
+        // Sent by the page's `init()` once the JS dispatcher is wired.
+        // Triggers a controller-side broadcast so any param/key-mode
+        // ViewEvents that raced ahead of the bootstrap script get re-sent
+        // into a known-ready listener.
+        "ready" => Some(UiEvent::EditorReady),
         _ => None,
     }
 }

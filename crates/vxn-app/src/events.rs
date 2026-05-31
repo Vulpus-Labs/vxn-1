@@ -40,6 +40,13 @@ pub enum UiEvent {
     SetKeyMode { mode: KeyMode },
     SetSplitPoint { note: u8 },
     SetEditLayer { layer: Layer },
+    /// Editor has finished its initial JS init and is ready to receive
+    /// view events. Triggers a full re-broadcast of every param, the key
+    /// mode, etc. so the page is correctly seeded even when the very
+    /// first timer-driven push raced ahead of the inline bootstrap script.
+    /// The vizia editor never sends this — its on_idle hook polls
+    /// `SharedParams` directly and doesn't need a re-broadcast.
+    EditorReady,
 }
 
 /// Event extracted from the host's CLAP stream and handed to the controller.

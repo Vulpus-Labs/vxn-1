@@ -819,6 +819,14 @@ function init() {
   for (const ev of _earlyViewEvents) dispatch(ev);
   _earlyViewEvents.length = 0;
   window.vxn.onViewEvent = dispatch;
+
+  // Tell the controller we're ready — it re-broadcasts every param + key
+  // mode so any first-tick `push_param_diffs` that ran before
+  // `window.vxn` even existed (real race against wry's HTML load) gets
+  // re-sent into a now-wired dispatcher. Without this, sliders that
+  // never received their seed `ParamChanged` show an empty hover popup
+  // until the user wiggles them.
+  window.vxn.send({ op: 'ready' });
 }
 
 if (document.readyState === 'loading') {
