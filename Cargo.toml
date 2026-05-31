@@ -5,7 +5,6 @@ members = [
     "crates/vxn-engine",
     "crates/vxn-app",
     "crates/vxn-clap",
-    "crates/vxn-ui-vizia",
     "crates/vxn-ui-web",
     "xtask",
 ]
@@ -21,11 +20,10 @@ rust-version = "1.85"
 vxn-dsp = { path = "crates/vxn-dsp" }
 vxn-engine = { path = "crates/vxn-engine" }
 vxn-app = { path = "crates/vxn-app" }
-vxn-ui-vizia = { path = "crates/vxn-ui-vizia" }
 vxn-ui-web = { path = "crates/vxn-ui-web" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
-# this API yet). baseview/vizia for the UI are pinned in vxn-ui-vizia.
+# this API yet).
 clack-plugin = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
 clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
 

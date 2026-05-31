@@ -27,8 +27,7 @@ VXN1 is a Cargo workspace:
 | `vxn-dsp`       | Framework-free, allocation-free DSP kernels (oscillators, filters, ADSR…). |
 | `vxn-engine`    | Parameter model, voice allocation, and block-rate render loop.             |
 | `vxn-app`       | Controller (MVC arbiter — ADR 0007); model trait, event types.             |
-| `vxn-ui-vizia`  | Vizia-based plugin GUI (default editor backend).                           |
-| `vxn-ui-web`    | wry-WebView plugin GUI (opt-in via `--webview`; E010).                     |
+| `vxn-ui-web`    | wry-WebView plugin GUI (HTML faceplate; E010/E011).                        |
 | `vxn-clap`      | [clack](https://github.com/prokopyl/clack) cdylib — the CLAP entry point.  |
 | `xtask`         | Bundler / build tooling.                                                   |
 

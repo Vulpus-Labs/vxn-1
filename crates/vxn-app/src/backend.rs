@@ -1,7 +1,6 @@
 //! Pluggable editor backend (ADR 0007 §2, §4).
 //!
-//! The clack shell talks only through this trait; whichever editor crate is
-//! compiled in (`vxn-ui-vizia` today, `vxn-ui-web` after E010) provides the
+//! The clack shell talks only through this trait; `vxn-ui-web` provides the
 //! impl. Parent-window type is associated so this crate stays free of any
 //! windowing dependency.
 

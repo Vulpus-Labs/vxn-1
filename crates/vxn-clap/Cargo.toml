@@ -11,20 +11,10 @@ description = "VXN1 CLAP plugin shell (clack)."
 # cdylib for the host-loadable plugin; rlib so integration tests can link it.
 crate-type = ["cdylib", "rlib"]
 
-[features]
-# Editor backend switch (ADR 0007 §2 / E010). Default is the vizia editor;
-# `webview` flips to the wry-backed `vxn-ui-web`. Mutually exclusive: the
-# cfg gating in gui.rs / lib.rs assumes exactly one is on; building both is
-# a configuration error that surfaces as conflicting `use` statements.
-default = ["vizia"]
-vizia = ["dep:vxn-ui-vizia", "dep:objc"]
-webview = ["dep:vxn-ui-web"]
-
 [dependencies]
 vxn-app = { workspace = true }
 vxn-engine = { workspace = true }
-vxn-ui-vizia = { workspace = true, optional = true }
-vxn-ui-web = { workspace = true, optional = true }
+vxn-ui-web = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",
@@ -36,17 +26,5 @@ clack-extensions = { workspace = true, features = [
     "clack-plugin",
 ] }
 
-# `parent_backing_scale` only runs under the vizia backend, so objc rides
-# the `vizia` feature flag.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc = { version = "0.2", optional = true }
-
 [dev-dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
-
-[lints.rust]
-# The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to a deprecated
-# `#[cfg(feature = "cargo-clippy")]`, which trips `unexpected_cfgs` under
-# `cargo clippy`. We don't define that feature; declare it expected so the
-# noise from the macro expansion in gui.rs is silenced at source.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

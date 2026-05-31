@@ -1,38 +1,17 @@
 //! VXN1 CLAP plugin shell (clack).
 //!
 //! Wires the framework-agnostic [`Synth`] engine to CLAP: a stereo output port,
-//! a CLAP note input, the full parameter set, state save/restore, and one of
-//! two editor backends via the `gui` extension. The backend is picked at
-//! compile time by the mutually-exclusive `vizia` (default) / `webview`
-//! features — `vxn_editor` re-aliases whichever crate is in scope so the
-//! rest of this shell never names the editor crate directly. Parameters
-//! bridge the engine, the host and the UI through `vxn_engine::SharedParams`;
+//! a CLAP note input, the full parameter set, state save/restore, and the
+//! HTML webview editor via the `gui` extension. Parameters bridge the
+//! engine, the host and the UI through `vxn_engine::SharedParams`;
 //! [`local::LocalParams`] diffs that store to echo UI edits to the host
 //! without echoing host automation back (see its module docs).
 
 mod gui;
 mod local;
 
-// One backend per build. The feature-gating in `Cargo.toml` makes these
-// mutually exclusive; enabling both surfaces here as a duplicate `vxn_editor`
-// alias — a clear-enough error.
-#[cfg(feature = "vizia")]
-use vxn_ui_vizia as vxn_editor;
-#[cfg(feature = "webview")]
-use vxn_ui_web as vxn_editor;
-
-#[cfg(not(any(feature = "vizia", feature = "webview")))]
-compile_error!(
-    "vxn-clap needs one editor backend: enable `vizia` (default) or `webview`"
-);
-#[cfg(all(feature = "vizia", feature = "webview"))]
-compile_error!(
-    "vxn-clap features `vizia` and `webview` are mutually exclusive; pick one"
-);
-
 use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
-#[cfg(feature = "webview")]
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::Match;
@@ -48,7 +27,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 use vxn_app::{
-    Controller, CorpusHandle, HostEvent, ParamId, ParamModel, Tick, ViewEvent,
+    Controller, CorpusHandle, HostEvent, ParamId, ParamModel, ViewEvent,
 };
 use vxn_engine::{
     EnginePresetStore, ParamDesc, ParamKind, SharedParams, Synth, TOTAL_PARAMS, desc_for_clap_id,
@@ -77,12 +56,8 @@ impl Plugin for VxnPlugin {
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
-            .register::<PluginGui>();
-        // Timer extension drives the webview's main-thread tick + view-event
-        // drain pump (0041). Vizia's editor has its own on_idle hook, so the
-        // extension is webview-only.
-        #[cfg(feature = "webview")]
-        builder.register::<PluginTimer>();
+            .register::<PluginGui>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -109,32 +84,15 @@ impl DefaultPluginFactory for VxnPlugin {
         let (controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(EnginePresetStore::new()));
         let controller = Arc::new(Mutex::new(controller));
-        // Vizia's `on_idle` drains view-events from `view_rx` and pumps the
-        // controller via `tick`; the webview backend does the same from its
-        // CLAP timer callback (`on_timer`).
         let view_rx = Arc::new(Mutex::new(view_rx));
-        let tick: Tick = {
-            let c = Arc::clone(&controller);
-            Arc::new(move || lock_mut(&c).tick())
-        };
-        // The host handle is needed to register the webview timer; under
-        // vizia it would just sit idle, but keep it stored uniformly for
-        // simplicity (and so vizia could opt into a timer later without a
-        // struct churn).
-        #[cfg(feature = "vizia")]
-        let _ = &host;
         Ok(VxnMainThread {
             shared,
             controller,
             view_rx,
             corpus,
-            tick,
             gui: None,
-            #[cfg(feature = "webview")]
             host,
-            #[cfg(feature = "webview")]
             timer: None,
-            #[cfg(feature = "webview")]
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
         })
     }
@@ -155,48 +113,37 @@ impl PluginShared<'_> for VxnShared {}
 /// see `VxnAudioProcessor`.
 pub struct VxnMainThread<'a> {
     shared: &'a VxnShared,
-    /// Wrapped in `Arc<Mutex<...>>` so the editor's idle callback (via
-    /// [`Tick`]) and the host's `flush` paths share one controller without
-    /// either reaching across thread boundaries. Both sites are main-thread,
-    /// so there is no real contention.
+    /// Wrapped in `Arc<Mutex<...>>` so the timer drain and the host's `flush`
+    /// paths share one controller without either reaching across thread
+    /// boundaries. Both sites are main-thread, so there is no real contention.
     controller: Arc<Mutex<Controller<SharedParams>>>,
-    /// View-bound events the controller emits. The editor's idle callback
-    /// (vizia) or the timer drain (webview) consumes this; when the GUI is
-    /// closed it stays here and the bounded channel drops on full
-    /// (controller emits via `try_send`).
+    /// View-bound events the controller emits. The timer drain consumes
+    /// these; when the GUI is closed they stay queued and the bounded
+    /// channel drops on full (controller emits via `try_send`).
     view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
     /// Shared snapshot of the preset corpus the controller publishes for the
     /// editor's browser. Refreshed by the controller after every disk op.
     corpus: CorpusHandle,
-    /// Cheap-clone tick closure handed to the editor so its idle hook can
-    /// pump the controller without knowing about its concrete type. The
-    /// webview backend will hook this from a main-thread timer in 0041+.
-    #[cfg_attr(feature = "webview", allow(dead_code))]
-    tick: Tick,
     /// The live editor window, while the GUI is open.
-    gui: Option<vxn_editor::EditorHandle>,
-    /// Host main-thread handle. The webview's `on_timer` uses it to call
+    gui: Option<vxn_ui_web::EditorHandle>,
+    /// Host main-thread handle. `on_timer` uses it to call
     /// `HostTimer::register_timer` / `unregister_timer`.
-    #[cfg(feature = "webview")]
     host: HostMainThreadHandle<'a>,
-    /// Webview editor's main-thread timer (id + the host's timer extension),
-    /// driving the view-event drain + controller tick. `None` when the GUI is
-    /// closed or the host doesn't support `timer-support`.
-    #[cfg(feature = "webview")]
+    /// Editor's main-thread timer (id + the host's timer extension), driving
+    /// the view-event drain + controller tick. `None` when the GUI is closed
+    /// or the host doesn't support `timer-support`.
     timer: Option<(HostTimer, TimerId)>,
-    /// Last param values seen by the webview's diff pump. Audio-thread
-    /// automation writes [`SharedParams`] directly without round-tripping
-    /// the controller, so the editor would otherwise never see it. On each
-    /// tick we diff the current values against this vector and push a
+    /// Last param values seen by the diff pump. Audio-thread automation
+    /// writes [`SharedParams`] directly without round-tripping the
+    /// controller, so the editor would otherwise never see it. On each tick
+    /// we diff the current values against this vector and push a
     /// `ParamChanged` for any drift. Seeded all-`NaN` so the first tick
     /// after open broadcasts the whole table to populate the page.
-    #[cfg(feature = "webview")]
     last_seen: Vec<f32>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
 
-#[cfg(feature = "webview")]
 impl<'a> VxnMainThread<'a> {
     /// Drain the controller's view-event queue and forward each event into
     /// the live WebView. Called from the timer tick; safe to call when there
@@ -216,8 +163,6 @@ impl<'a> VxnMainThread<'a> {
     /// audio-thread automation: `process()` writes `SharedParams` directly
     /// (via `LocalParams::publish`) without routing through the controller,
     /// so the controller's view-event queue stays empty for those changes.
-    /// The vizia editor handles this by polling `SharedParams` on idle;
-    /// here we centralize the equivalent in one diff loop.
     fn push_param_diffs(&mut self) {
         let Some(handle) = self.gui.as_ref() else {
             return;
@@ -247,7 +192,6 @@ impl<'a> VxnMainThread<'a> {
     }
 }
 
-#[cfg(feature = "webview")]
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
     fn on_timer(&mut self, _id: TimerId) {
         // Pull UI-posted intents into the model first so the ViewEvents they
