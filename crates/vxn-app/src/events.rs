@@ -113,6 +113,15 @@ pub enum ViewEvent {
     KeyModeChanged {
         mode: KeyMode,
     },
+    /// The Split key-mode's split point just changed. Like
+    /// [`Self::KeyModeChanged`], the split is non-automatable shared state
+    /// the vizia editor polls on idle, so vizia ignores this; the HTML
+    /// faceplate has no idle-poll loop and needs the echo to reseed its
+    /// slider after a `SetSplitPoint` write, preset load, state load, or
+    /// `EditorReady` re-broadcast.
+    SplitPointChanged {
+        note: u8,
+    },
     /// The view's edit-layer selection just changed (Upper ↔ Lower). Pure
     /// view state — emitted in response to [`UiEvent::SetEditLayer`] so
     /// editors that don't own the layer-toggle widget (e.g. the HTML

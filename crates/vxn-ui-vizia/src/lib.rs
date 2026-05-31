@@ -900,6 +900,12 @@ impl Model for UiModel {
                         // echo. The HTML editor consumes this; we just drop
                         // it here.
                     }
+                    ViewEvent::SplitPointChanged { .. } => {
+                        // 0053: same story as EditLayerChanged — Vizia's
+                        // Keys panel reads the split via the on-idle
+                        // poll path above (the KeyModeChanged arm also
+                        // reseeds it), so the controller echo is dropped.
+                    }
                     ViewEvent::Status { line } => {
                         self.status.set(line);
                     }

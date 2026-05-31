@@ -922,6 +922,92 @@ html, body {
 }
 .ctl-detune-legato { margin-top: 4px; }
 .ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
+
+/* Keys panel (0053): mode/edit toggle columns side by side, split slider
+   + note-name readout below, Reset button at the bottom. Mirrors the
+   vizia editor's `keys_panel` shape (mode column on the left, edit column
+   on the right, split slider spanning, Reset stretched full-width). The
+   edit column and the split row reserve their layout slot via
+   `visibility: hidden` rather than `display: none` so the Reset never
+   shifts when the mode flips. */
+.keys-body {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 4px 6px 4px 6px;
+}
+.keys-top {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+}
+.keys-tg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+}
+.keys-tg-list .ctl-tg-row { padding: 1px 0; }
+.keys-split-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.keys-split-slider {
+  flex: 1 1 auto;
+  height: 14px;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.keys-split-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--track-bg);
+  border-radius: 2px;
+}
+.keys-split-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  background: var(--thumb-bg);
+  border: 1px solid var(--thumb-border);
+  border-radius: 1px;
+  margin-top: -5px;
+}
+.keys-split-slider:focus { outline: none; }
+.keys-split-readout {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ctl-value);
+  letter-spacing: 0.5px;
+  min-width: 22px;
+  text-align: right;
+}
+.keys-reset {
+  height: 16px;
+  background: #333333;
+  color: #b0b0b0;
+  border: 1px solid #555555;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  margin-top: auto;
+}
+.keys-reset:hover {
+  background: #3a3a3a;
+  border-color: #c4c4c4;
+  color: #ececec;
+}
 </style>
 </head>
 <body>
@@ -1197,11 +1283,16 @@ html, body {
 
   <!-- Row 4 — keys, voice, the two effects, master. Equal-width. -->
   <div class="row row-4" data-row="4">
-    <!-- Keys (E011): still rendered by vizia during the E010 → E011 transition;
-         the HTML faceplate just reserves the slot. -->
+    <!-- Keys (0053 / E011): mode selector (Whole/Dual/Split), Upper/Lower
+         edit toggle (hidden in Whole), split-point slider over C0..C7 with
+         a note-name readout (shown in Split), Reset button. All three
+         widgets write non-automatable shared state directly (ADR 0003
+         §3/§8) — not param gestures — so they neither echo as automation
+         nor record a knob move. Custom JS layout (`keysPanel`), not the
+         generic `data-control` dispatcher: none of these are params. -->
     <div class="panel" data-name="Keys">
       <div class="panel-header">KEYS</div>
-      <div class="panel-body"></div>
+      <div class="panel-body keys-body"></div>
     </div>
     <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
          descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
@@ -2220,6 +2311,162 @@ const presetBar = (() => {
     saveEl.addEventListener('click', () => browserPanel.openSaveAs(currentName));
   }
   return { setName };
+})();
+
+// ─── Keys panel (0053) ────────────────────────────────────────────────────
+//
+// Mirrors `vxn_ui_vizia::keys_panel`: a 3-row mode selector (Whole / Dual /
+// Split), a 2-row Upper/Lower edit toggle, a split-point slider over the
+// C0..C7 MIDI window with a note-name readout, and a Reset button. The
+// mode / edit / split widgets all write *non-automatable* shared state
+// directly (ADR 0003 §3/§8) — no gestures, no host echo — and the
+// controller broadcasts back via `KeyModeChanged` / `EditLayerChanged` /
+// `SplitPointChanged` so the panel reseeds after a preset/state load.
+//
+// Visibility: the edit column hides in Whole and the split row hides
+// outside Split, both via `visibility: hidden` so the Reset stays pinned
+// to the same vertical position (matches the ticket's "keep the same
+// shape" note about reset placement).
+const KEY_MODE_NAMES = ['WHOLE', 'DUAL', 'SPLIT'];
+const KEY_LAYERS = [
+  { code: 'upper', label: 'UPPER' },
+  { code: 'lower', label: 'LOWER' },
+];
+// Match `DEFAULT_SPLIT_POINT` in vxn-app/src/domain.rs — C4.
+const KEYS_DEFAULT_SPLIT = 60;
+// Mirror `vxn_ui_vizia::SPLIT_MIN` / `SPLIT_MAX`: narrower than the full
+// MIDI range so every semitone is easy to land on.
+const KEYS_SPLIT_MIN = 12;
+const KEYS_SPLIT_MAX = 96;
+function keysNoteName(n) {
+  const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const octave = Math.floor(n / 12) - 1;
+  return NAMES[((n % 12) + 12) % 12] + octave;
+}
+const keysPanel = (() => {
+  const bodyEl = document.querySelector('.panel[data-name="Keys"] .panel-body');
+  if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {} };
+
+  // mode: 0 Whole, 1 Dual, 2 Split. layer: 'upper' | 'lower'. split: MIDI
+  // note in [KEYS_SPLIT_MIN, KEYS_SPLIT_MAX]. Controller-side defaults
+  // re-arrive on `EditorReady` so the cold-start seed gets overwritten;
+  // these initials just keep the markup valid until the first echo lands.
+  let mode = 0;
+  let layer = 'upper';
+  let split = KEYS_DEFAULT_SPLIT;
+
+  bodyEl.innerHTML = `
+    <div class="keys-top">
+      <div class="keys-tg-list" id="keys-mode-list"></div>
+      <div class="keys-tg-list" id="keys-edit-list"></div>
+    </div>
+    <div class="keys-split-row" id="keys-split-row">
+      <input type="range" class="keys-split-slider" id="keys-split-slider"
+             min="${KEYS_SPLIT_MIN}" max="${KEYS_SPLIT_MAX}" step="1" />
+      <div class="keys-split-readout" id="keys-split-readout"></div>
+    </div>
+    <button type="button" class="keys-reset" id="keys-reset">RESET</button>
+  `;
+  const modeListEl   = bodyEl.querySelector('#keys-mode-list');
+  const editListEl   = bodyEl.querySelector('#keys-edit-list');
+  const splitRowEl   = bodyEl.querySelector('#keys-split-row');
+  const splitSlider  = bodyEl.querySelector('#keys-split-slider');
+  const splitReadout = bodyEl.querySelector('#keys-split-readout');
+  const resetBtn     = bodyEl.querySelector('#keys-reset');
+
+  function renderModeList() {
+    modeListEl.innerHTML = '';
+    KEY_MODE_NAMES.forEach((label, i) => {
+      const row = document.createElement('div');
+      row.className = 'ctl-tg-row' + (i === mode ? ' active' : '');
+      row.innerHTML = `<div class="ctl-tg-box"></div><div class="ctl-tg-lbl">${label}</div>`;
+      // pointerdown not click: matches the no-click-slop fix the vizia
+      // toggles needed (a small wobble between down and up eats the
+      // click). Browsers don't drop clicks the same way, but pointerdown
+      // is still the more responsive surface.
+      row.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        if (i === mode) return;
+        window.vxn.send({ op: 'set_key_mode', mode: i });
+      });
+      modeListEl.appendChild(row);
+    });
+  }
+  function renderEditList() {
+    editListEl.innerHTML = '';
+    // Reserve the column slot in Whole so the layout (and therefore the
+    // Reset button's Y position) doesn't shift when the mode flips.
+    editListEl.style.visibility = mode === 0 ? 'hidden' : 'visible';
+    KEY_LAYERS.forEach(({ code, label }) => {
+      const row = document.createElement('div');
+      row.className = 'ctl-tg-row' + (code === layer ? ' active' : '');
+      row.innerHTML = `<div class="ctl-tg-box"></div><div class="ctl-tg-lbl">${label}</div>`;
+      row.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        if (code === layer) return;
+        window.vxn.send({ op: 'set_edit_layer', layer: code });
+      });
+      editListEl.appendChild(row);
+    });
+  }
+  function renderSplit() {
+    splitRowEl.style.visibility = mode === 2 ? 'visible' : 'hidden';
+    splitSlider.value = String(split);
+    splitReadout.textContent = keysNoteName(split);
+  }
+
+  splitSlider.addEventListener('input', () => {
+    const note = Math.max(
+      KEYS_SPLIT_MIN,
+      Math.min(KEYS_SPLIT_MAX, Math.round(Number(splitSlider.value))),
+    );
+    // Optimistic local repaint of the readout; the echo from
+    // `split_point_changed` will overwrite when it arrives.
+    splitReadout.textContent = keysNoteName(note);
+    window.vxn.send({ op: 'set_split_point', note });
+  });
+  splitSlider.addEventListener('dblclick', (ev) => {
+    ev.preventDefault();
+    window.vxn.send({ op: 'set_split_point', note: KEYS_DEFAULT_SPLIT });
+  });
+  resetBtn.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    // In Whole the two layers share one patch — reset both. In Dual /
+    // Split reset only the layer the edit toggle points at. Globals,
+    // key mode and split point are setup state, left untouched.
+    if (mode === 0) {
+      window.vxn.send({ op: 'reset_layer', layer: 'upper' });
+      window.vxn.send({ op: 'reset_layer', layer: 'lower' });
+    } else {
+      window.vxn.send({ op: 'reset_layer', layer });
+    }
+  });
+
+  renderModeList();
+  renderEditList();
+  renderSplit();
+
+  return {
+    setMode(m) {
+      if (m === mode) return;
+      mode = m;
+      renderModeList();
+      renderEditList();
+      renderSplit();
+    },
+    setLayer(l) {
+      if (l === layer) return;
+      layer = l;
+      renderEditList();
+    },
+    setSplit(n) {
+      if (n === split) return;
+      split = n;
+      // Only the slider/readout change — no mode/layer visibility flip.
+      splitSlider.value = String(split);
+      splitReadout.textContent = keysNoteName(split);
+    },
+  };
 })();
 
 // ─── Waveform glyph polylines ──────────────────────────────────────────────
@@ -3269,9 +3516,21 @@ function init() {
     }
     if (ev.kind === 'edit_layer_changed') {
       const layer = ev.layer === 'lower' ? 'lower' : 'upper';
+      // The Keys panel's Upper/Lower toggle always follows — it owns
+      // its own active-row paint regardless of whether the layer
+      // actually flipped (cheap idempotent setter).
+      keysPanel.setLayer(layer);
       if (layer === CURRENT_LAYER) return;
       CURRENT_LAYER = layer;
       rebindAllForLayer(layer);
+      return;
+    }
+    if (ev.kind === 'key_mode_changed') {
+      keysPanel.setMode(ev.mode);
+      return;
+    }
+    if (ev.kind === 'split_point_changed') {
+      keysPanel.setSplit(ev.note);
       return;
     }
     if (ev.kind === 'status') {

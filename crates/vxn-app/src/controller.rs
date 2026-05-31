@@ -245,6 +245,7 @@ impl<M: ParamModel> Controller<M> {
             }
             UiEvent::SetSplitPoint { note } => {
                 self.model.set_split_point(note);
+                self.send(ViewEvent::SplitPointChanged { note });
                 self.send_status(format!("split point: {note}"));
             }
             UiEvent::SetEditLayer { layer } => {
@@ -272,6 +273,7 @@ impl<M: ParamModel> Controller<M> {
                 // into a known-ready listener.
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
+                self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
                 // 0050 race fix: the webview backend's first corpus push
                 // can land before the page's bootstrap script has
                 // installed `__vxn.applyPresetCorpus`. The webview's
@@ -307,6 +309,7 @@ impl<M: ParamModel> Controller<M> {
                 });
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
+                self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
             }
             HostEvent::Tempo { bpm: _ } => {
                 // Routed through to the engine on a separate channel in a
@@ -334,6 +337,7 @@ impl<M: ParamModel> Controller<M> {
                 });
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
+                self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
             }
             Err(e) => self.send_status(format!("preset load failed: {e}")),
         }

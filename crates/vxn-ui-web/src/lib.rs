@@ -558,6 +558,10 @@ fn view_event_to_json(ev: &ViewEvent) -> String {
             "kind": "key_mode_changed",
             "mode": *mode as u8,
         }),
+        ViewEvent::SplitPointChanged { note } => json!({
+            "kind": "split_point_changed",
+            "note": *note,
+        }),
         ViewEvent::EditLayerChanged { layer } => json!({
             "kind": "edit_layer_changed",
             "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
@@ -1740,6 +1744,58 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["kind"], "edit_layer_changed");
         assert_eq!(v["layer"], "lower");
+    }
+
+    #[test]
+    fn split_point_changed_serializes() {
+        // 0053: HTML Keys panel needs the controller's split-point
+        // re-broadcast (preset / state-load / EditorReady) to reseed its
+        // slider, since the page has no idle-poll loop the vizia editor
+        // uses to read `SharedParams::split_point()` directly.
+        let s = view_event_to_json(&ViewEvent::SplitPointChanged { note: 72 });
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["kind"], "split_point_changed");
+        assert_eq!(v["note"], 72);
+    }
+
+    #[test]
+    fn keys_panel_wired() {
+        // 0053: Keys panel — mode/edit toggles, split slider with
+        // C0..C7 range, note-name readout, Reset button. UiEvent posts:
+        //   - set_key_mode (Whole / Dual / Split row)
+        //   - set_edit_layer (Upper / Lower row, hidden in Whole)
+        //   - set_split_point (slider, visible only in Split)
+        //   - reset_layer (Reset button — both layers in Whole, the
+        //     active layer otherwise)
+        // ViewEvent dispatch:
+        //   - key_mode_changed → keysPanel.setMode
+        //   - edit_layer_changed → keysPanel.setLayer (in addition to
+        //     the per-patch rebind)
+        //   - split_point_changed → keysPanel.setSplit
+        assert!(PLACEHOLDER_HTML.contains("const keysPanel = "));
+        assert!(PLACEHOLDER_HTML.contains("op: 'set_key_mode'"));
+        assert!(PLACEHOLDER_HTML.contains("op: 'set_edit_layer'"));
+        assert!(PLACEHOLDER_HTML.contains("op: 'set_split_point'"));
+        assert!(PLACEHOLDER_HTML.contains("op: 'reset_layer'"));
+        assert!(PLACEHOLDER_HTML.contains("ev.kind === 'key_mode_changed'"));
+        assert!(PLACEHOLDER_HTML.contains("ev.kind === 'split_point_changed'"));
+        assert!(PLACEHOLDER_HTML.contains("keysPanel.setMode"));
+        assert!(PLACEHOLDER_HTML.contains("keysPanel.setLayer"));
+        assert!(PLACEHOLDER_HTML.contains("keysPanel.setSplit"));
+        // Note-name readout: covers a C0..C7 span, matches the vizia
+        // editor's `note_name`.
+        assert!(PLACEHOLDER_HTML.contains("function keysNoteName("));
+        assert!(PLACEHOLDER_HTML.contains("KEYS_SPLIT_MIN = 12"));
+        assert!(PLACEHOLDER_HTML.contains("KEYS_SPLIT_MAX = 96"));
+        // Default split: matches DEFAULT_SPLIT_POINT (C4) so a
+        // double-click reset lands on the same plain value the vizia
+        // editor's `on_double_click` posts.
+        assert_eq!(vxn_app::DEFAULT_SPLIT_POINT, 60);
+        assert!(PLACEHOLDER_HTML.contains("KEYS_DEFAULT_SPLIT = 60"));
+        // The slot reserved by 0040 now carries real markup, not a
+        // bare placeholder. The vizia overlay note is gone.
+        assert!(PLACEHOLDER_HTML.contains("data-name=\"Keys\""));
+        assert!(!PLACEHOLDER_HTML.contains("still rendered by vizia"));
     }
 
     #[test]

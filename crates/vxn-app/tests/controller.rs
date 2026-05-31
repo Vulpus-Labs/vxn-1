@@ -522,6 +522,14 @@ fn preset_load_emits_per_param_view_events() {
             .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
         "missing KeyModeChanged in {events:?}"
     );
+    // 0053: the HTML keys panel needs the split-point echo so its
+    // slider reseeds after a preset/state load.
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { .. })),
+        "missing SplitPointChanged in {events:?}"
+    );
 }
 
 #[test]
@@ -852,11 +860,40 @@ fn editor_ready_replays_params_and_corpus() {
             .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
         "expected KeyModeChanged: {events:?}",
     );
+    // 0053: the HTML keys panel has no idle-poll loop, so EditorReady
+    // also re-broadcasts the split point.
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { .. })),
+        "expected SplitPointChanged: {events:?}",
+    );
     assert!(
         events
             .iter()
             .any(|ev| matches!(ev, ViewEvent::PresetCorpusChanged { follow: None })),
         "expected PresetCorpusChanged (corpus re-push trigger): {events:?}",
+    );
+}
+
+#[test]
+fn set_split_point_writes_model_and_echoes() {
+    // 0053: SetSplitPoint writes the (non-automatable) shared state and
+    // echoes SplitPointChanged so the HTML keys panel's slider reseeds
+    // — the vizia editor still poll-syncs from the model and ignores
+    // the echo.
+    let (mut ctrl, model, view_rx) = build(2);
+    ctrl.ui_sender()
+        .send(UiEvent::SetSplitPoint { note: 48 })
+        .unwrap();
+    ctrl.tick();
+    assert_eq!(model.split_point(), 48);
+    let events = drain(&view_rx);
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { note: 48 })),
+        "missing SplitPointChanged(48): {events:?}",
     );
 }
 
