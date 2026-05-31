@@ -3,6 +3,7 @@
 //! No vizia/wry/engine touched — just the trait surface from `vxn_app`.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
@@ -10,7 +11,8 @@ use std::sync::{Arc, RwLock};
 
 use vxn_app::{
     Controller, HostEvent, KeyMode, ParamDesc, ParamId, ParamKind, ParamModel, PresetLoad,
-    PresetMeta, PresetSource, PresetStore, Taper, UiEvent, UserFolderEntry, ViewEvent,
+    PresetMeta, PresetSource, PresetStore, Taper, UiEvent, UserFolderEntry, UserPresetEntry,
+    ViewEvent,
 };
 
 // ── Mock model ──────────────────────────────────────────────────────────────
@@ -203,6 +205,170 @@ impl PresetStore for MockPresetStore {
     }
 }
 
+// ── Tempdir-backed preset store ─────────────────────────────────────────────
+//
+// Exercises the controller's save → reseed → emit path against a real
+// filesystem (the engine's `EnginePresetStore` does the same shape, but pulls
+// vxn-engine into the test graph). Format is just the raw blob bytes under
+// `<root>/[folder/]<name>.preset`; meta beyond `name` is dropped on listing
+// since the round-trip test only cares about the corpus shape.
+
+struct TempPresetStore {
+    root: PathBuf,
+}
+
+impl TempPresetStore {
+    fn dir_for(&self, folder: Option<&str>) -> PathBuf {
+        match folder {
+            Some(f) => self.root.join(f),
+            None => self.root.clone(),
+        }
+    }
+}
+
+impl PresetStore for TempPresetStore {
+    fn factory_len(&self) -> usize {
+        0
+    }
+    fn factory_load(&self, _: usize) -> Result<PresetLoad, String> {
+        Err("no factory".into())
+    }
+    fn factory_meta(&self, _: usize) -> Option<PresetMeta> {
+        None
+    }
+
+    fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
+        let blob = fs::read(path).map_err(|e| e.to_string())?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(PresetLoad {
+            meta: PresetMeta {
+                name,
+                ..Default::default()
+            },
+            blob,
+            warnings: Vec::new(),
+        })
+    }
+
+    fn user_save(
+        &self,
+        name: &str,
+        folder: Option<&str>,
+        _meta: &PresetMeta,
+        blob: &[u8],
+    ) -> Result<PathBuf, String> {
+        let dir = self.dir_for(folder);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{name}.preset"));
+        fs::write(&path, blob).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
+    fn user_delete(&self, path: &Path) -> Result<(), String> {
+        fs::remove_file(path).map_err(|e| e.to_string())
+    }
+
+    fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
+        let parent = path.parent().ok_or("no parent")?;
+        let new_path = parent.join(format!("{new_name}.preset"));
+        fs::rename(path, &new_path).map_err(|e| e.to_string())?;
+        Ok(new_path)
+    }
+
+    fn user_move(&self, path: &Path, dest_folder: Option<&str>) -> Result<PathBuf, String> {
+        let dir = self.dir_for(dest_folder);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let name = path.file_name().ok_or("no name")?;
+        let new_path = dir.join(name);
+        fs::rename(path, &new_path).map_err(|e| e.to_string())?;
+        Ok(new_path)
+    }
+
+    fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
+        let p = self.root.join(suggested);
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok((p, suggested.to_string()))
+    }
+
+    fn user_rename_folder(
+        &self,
+        old: &str,
+        new: &str,
+    ) -> Result<(PathBuf, String), String> {
+        let from = self.root.join(old);
+        let to = self.root.join(new);
+        fs::rename(&from, &to).map_err(|e| e.to_string())?;
+        Ok((to, new.to_string()))
+    }
+
+    fn user_delete_folder(&self, name: &str) -> Result<(), String> {
+        fs::remove_dir_all(self.root.join(name)).map_err(|e| e.to_string())
+    }
+
+    fn list_user_tree(&self) -> Vec<UserFolderEntry> {
+        let mut root_presets: Vec<UserPresetEntry> = Vec::new();
+        let mut subs: Vec<(String, Vec<UserPresetEntry>)> = Vec::new();
+        let Ok(rd) = fs::read_dir(&self.root) else {
+            return vec![UserFolderEntry { name: None, presets: Vec::new() }];
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_file() {
+                if let Some(n) = p.file_stem().and_then(|s| s.to_str()) {
+                    root_presets.push(UserPresetEntry {
+                        path: p.clone(),
+                        meta: PresetMeta {
+                            name: n.to_string(),
+                            ..Default::default()
+                        },
+                        folder: None,
+                    });
+                }
+            } else if ft.is_dir() {
+                let Some(fname) = e.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                let mut presets = Vec::new();
+                if let Ok(srd) = fs::read_dir(&p) {
+                    for se in srd.flatten() {
+                        let sp = se.path();
+                        if let Some(n) = sp.file_stem().and_then(|s| s.to_str()) {
+                            presets.push(UserPresetEntry {
+                                path: sp.clone(),
+                                meta: PresetMeta {
+                                    name: n.to_string(),
+                                    ..Default::default()
+                                },
+                                folder: Some(fname.clone()),
+                            });
+                        }
+                    }
+                }
+                presets.sort_by_key(|p| p.meta.name.to_lowercase());
+                subs.push((fname, presets));
+            }
+        }
+        root_presets.sort_by_key(|p| p.meta.name.to_lowercase());
+        subs.sort_by_key(|s| s.0.to_lowercase());
+        let mut out = vec![UserFolderEntry {
+            name: None,
+            presets: root_presets,
+        }];
+        for (n, presets) in subs {
+            out.push(UserFolderEntry {
+                name: Some(n),
+                presets,
+            });
+        }
+        out
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn build(total: usize) -> (Controller<MockModel>, Arc<MockModel>, Receiver<ViewEvent>) {
@@ -355,5 +521,77 @@ fn preset_load_emits_per_param_view_events() {
             .iter()
             .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
         "missing KeyModeChanged in {events:?}"
+    );
+}
+
+#[test]
+fn controller_save_then_list_round_trip() {
+    // Real disk IO through `PresetStore` — proves the controller's
+    // SavePreset → refresh_user_corpus → PresetCorpusChanged path actually
+    // touches the filesystem the way the engine adapter expects.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = Box::new(TempPresetStore {
+        root: tmp.path().to_path_buf(),
+    });
+    let model = Arc::new(MockModel::new(3));
+    let (mut ctrl, view_rx, corpus) = Controller::new(model.clone(), store);
+
+    // Initial corpus: empty user side, root folder slot present.
+    {
+        let c = corpus.lock().unwrap();
+        assert_eq!(c.factory.len(), 0);
+        assert_eq!(c.user.len(), 1);
+        assert_eq!(c.user[0].name, None);
+        assert!(c.user[0].presets.is_empty());
+    }
+
+    // Save into root.
+    ctrl.ui_sender()
+        .send(UiEvent::SavePreset {
+            name: "Init".into(),
+            folder: None,
+        })
+        .unwrap();
+    // And one into a subfolder (creating it implicitly).
+    ctrl.ui_sender()
+        .send(UiEvent::SavePreset {
+            name: "Brassy".into(),
+            folder: Some("Lead".into()),
+        })
+        .unwrap();
+    ctrl.tick();
+
+    // Disk has both files.
+    assert!(tmp.path().join("Init.preset").is_file());
+    assert!(tmp.path().join("Lead/Brassy.preset").is_file());
+
+    // Corpus reseeded: root has Init, Lead has Brassy.
+    {
+        let c = corpus.lock().unwrap();
+        assert_eq!(c.user.len(), 2);
+        assert_eq!(c.user[0].name, None);
+        assert_eq!(c.user[0].presets.len(), 1);
+        assert_eq!(c.user[0].presets[0].meta.name, "Init");
+        assert_eq!(c.user[1].name.as_deref(), Some("Lead"));
+        assert_eq!(c.user[1].presets.len(), 1);
+        assert_eq!(c.user[1].presets[0].meta.name, "Brassy");
+    }
+
+    // One PresetCorpusChanged per save, each with a Some(follow) at the new
+    // path (the cursor target the view jumps to).
+    let events = drain(&view_rx);
+    let follows: Vec<PathBuf> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            ViewEvent::PresetCorpusChanged { follow } => follow.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        follows,
+        vec![
+            tmp.path().join("Init.preset"),
+            tmp.path().join("Lead/Brassy.preset"),
+        ]
     );
 }

@@ -9,3 +9,5 @@ description = "VXN1 controller: MVC arbiter between UI, host, and engine model (
 
 [dependencies]
 
+[dev-dependencies]
+tempfile = "3"

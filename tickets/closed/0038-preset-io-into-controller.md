@@ -16,19 +16,19 @@ new folder / save).
 
 ## Acceptance criteria
 
-- [ ] Controller has internal state for the browser corpus, refreshed
+- [x] Controller has internal state for the browser corpus, refreshed
       on start and after any mutation event.
-- [ ] `UiEvent::LoadPreset`, `SavePreset`, `RenamePreset`,
+- [x] `UiEvent::LoadPreset`, `SavePreset`, `RenamePreset`,
       `DeletePreset`, `MovePreset`, `NewFolder` all handled in the
       controller.
-- [ ] After every mutation the controller emits
+- [x] After every mutation the controller emits
       `ViewEvent::PresetCorpusChanged` with the new snapshot.
-- [ ] Vizia editor's `build_browser` / `reseed_browser` /
+- [x] Vizia editor's `build_browser` / `reseed_browser` /
       `entry_index_for_user_path` etc. are deleted (they live in the
       controller now); the view binds to the snapshot signal.
-- [ ] Existing preset integration tests pass; new test:
+- [x] Existing preset integration tests pass; new test:
       `controller_save_then_list_round_trip` against a tempdir.
-- [ ] `vxn-ui` has no `preset_io` import.
+- [x] `vxn-ui` has no `preset_io` import.
 
 ## Notes
 

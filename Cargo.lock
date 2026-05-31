@@ -2571,6 +2571,9 @@ dependencies = [
 [[package]]
 name = "vxn-app"
 version = "0.0.4"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "vxn-clap"
