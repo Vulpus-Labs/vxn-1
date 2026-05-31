@@ -11,10 +11,20 @@ description = "VXN1 CLAP plugin shell (clack)."
 # cdylib for the host-loadable plugin; rlib so integration tests can link it.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Editor backend switch (ADR 0007 §2 / E010). Default is the vizia editor;
+# `webview` flips to the wry-backed `vxn-ui-web`. Mutually exclusive: the
+# cfg gating in gui.rs / lib.rs assumes exactly one is on; building both is
+# a configuration error that surfaces as conflicting `use` statements.
+default = ["vizia"]
+vizia = ["dep:vxn-ui-vizia", "dep:objc"]
+webview = ["dep:vxn-ui-web"]
+
 [dependencies]
 vxn-app = { workspace = true }
 vxn-engine = { workspace = true }
-vxn-ui = { workspace = true }
+vxn-ui-vizia = { workspace = true, optional = true }
+vxn-ui-web = { workspace = true, optional = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",
@@ -25,10 +35,10 @@ clack-extensions = { workspace = true, features = [
     "clack-plugin",
 ] }
 
+# `parent_backing_scale` only runs under the vizia backend, so objc rides
+# the `vizia` feature flag.
 [target.'cfg(target_os = "macos")'.dependencies]
-# Query the host NSView's backing scale at attach time to pin the editor's
-# HiDPI factor (see gui.rs `parent_backing_scale`). Matches baseview's objc.
-objc = "0.2"
+objc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }

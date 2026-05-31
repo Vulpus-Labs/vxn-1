@@ -1,7 +1,7 @@
 //! Build tasks for VXN1.
 //!
 //! Usage:
-//!   cargo xtask bundle [--release] [--install] [--universal]
+//!   cargo xtask bundle [--release] [--install] [--universal] [--webview]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
 //! plugin. On macOS that is a bundle directory (`Contents/MacOS/VXN1` +
@@ -9,6 +9,8 @@
 //! to `.clap`. `--install` copies it to the user CLAP directory. `--universal`
 //! (macOS only) builds both `aarch64`/`x86_64` slices and `lipo`s them into a
 //! single fat binary, so one bundle loads on Apple Silicon and Intel hosts.
+//! `--webview` swaps the editor backend (`--no-default-features --features
+//! webview` on the vxn-clap build) — see 0047 / ADR 0007.
 
 use std::env;
 use std::fs;
@@ -25,16 +27,19 @@ fn main() {
     let release = args.iter().any(|a| a == "--release");
     let install = args.iter().any(|a| a == "--install");
     let universal = args.iter().any(|a| a == "--universal");
+    let webview = args.iter().any(|a| a == "--webview");
 
     match cmd {
         "bundle" => {
-            if let Err(e) = bundle(release, install, universal) {
+            if let Err(e) = bundle(release, install, universal, webview) {
                 eprintln!("xtask: {e}");
                 std::process::exit(1);
             }
         }
         _ => {
-            eprintln!("usage: cargo xtask bundle [--release] [--install] [--universal]");
+            eprintln!(
+                "usage: cargo xtask bundle [--release] [--install] [--universal] [--webview]"
+            );
             std::process::exit(2);
         }
     }
@@ -48,7 +53,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
+fn bundle(release: bool, install: bool, universal: bool, webview: bool) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
 
@@ -58,7 +63,7 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
         if !cfg!(target_os = "macos") {
             return Err("--universal is macOS-only".into());
         }
-        build_universal(&root, release)?
+        build_universal(&root, release, webview)?
     } else {
         let mut build = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
         build
@@ -67,6 +72,7 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
         if release {
             build.arg("--release");
         }
+        apply_backend_features(&mut build, webview);
         let status = build
             .status()
             .map_err(|e| format!("failed to run cargo: {e}"))?;
@@ -119,7 +125,7 @@ fn lib_path(profile_dir: &Path) -> PathBuf {
 /// Build both macOS slices and `lipo` them into one fat dylib; returns its path.
 /// Each target's dylib lands under `target/<triple>/<profile>/`; the combined
 /// binary is written to `target/universal/<profile>/`.
-fn build_universal(root: &Path, release: bool) -> Result<PathBuf, String> {
+fn build_universal(root: &Path, release: bool, webview: bool) -> Result<PathBuf, String> {
     const TRIPLES: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
     let profile = if release { "release" } else { "debug" };
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
@@ -133,6 +139,7 @@ fn build_universal(root: &Path, release: bool) -> Result<PathBuf, String> {
         if release {
             build.arg("--release");
         }
+        apply_backend_features(&mut build, webview);
         let status = build
             .status()
             .map_err(|e| format!("failed to run cargo for {triple}: {e}"))?;
@@ -235,4 +242,14 @@ fn info_plist() -> String {
 
 fn io(ctx: &'static str) -> impl Fn(std::io::Error) -> String {
     move |e| format!("{ctx}: {e}")
+}
+
+/// Forward the editor-backend selection to a `cargo build` invocation. Vizia
+/// is the default feature; webview is opt-in via `--no-default-features
+/// --features webview`. Both bundles install to the same path — the host
+/// loads whichever was built last.
+fn apply_backend_features(build: &mut Command, webview: bool) {
+    if webview {
+        build.args(["--no-default-features", "--features", "webview"]);
+    }
 }

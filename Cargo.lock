@@ -3825,7 +3825,8 @@ dependencies = [
  "objc",
  "vxn-app",
  "vxn-engine",
- "vxn-ui",
+ "vxn-ui-vizia",
+ "vxn-ui-web",
 ]
 
 [[package]]
@@ -3845,7 +3846,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vxn-ui"
+name = "vxn-ui-vizia"
 version = "0.0.4"
 dependencies = [
  "raw-window-handle 0.5.2",

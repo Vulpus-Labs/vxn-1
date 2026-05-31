@@ -8,8 +8,14 @@
 # shared library renamed, which xtask also handles.
 #
 # Usage:
-#   ./deploy.sh            # release build, bundle, and install
-#   ./deploy.sh --debug    # debug build instead of release
+#   ./deploy.sh                       # release build, vizia editor, install
+#   ./deploy.sh --debug               # debug build instead of release
+#   ./deploy.sh --webview             # swap to the wry-backed editor (E010)
+#   ./deploy.sh --debug --webview     # both flags compose
+#
+# `--webview` passes through to xtask, which builds vxn-clap with
+# `--no-default-features --features webview`. Both bundles install to the
+# same .clap path; the host loads whichever was built last.
 #
 # Install destinations (per OS, chosen by xtask):
 #   macOS    ~/Library/Audio/Plug-Ins/CLAP/VXN1.clap
@@ -22,11 +28,16 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PROFILE="--release"
-if [[ "${1:-}" == "--debug" ]]; then
-    PROFILE=""
-fi
+WEBVIEW=""
+for arg in "$@"; do
+    case "$arg" in
+        --debug)   PROFILE="" ;;
+        --webview) WEBVIEW="--webview" ;;
+        *) echo "deploy.sh: unknown flag '$arg'" >&2; exit 2 ;;
+    esac
+done
 
-echo "==> Building and installing VXN1.clap..."
-cargo xtask bundle ${PROFILE} --install
+echo "==> Building and installing VXN1.clap${WEBVIEW:+ (webview)}..."
+cargo xtask bundle ${PROFILE} --install ${WEBVIEW}
 
 echo "==> Done."

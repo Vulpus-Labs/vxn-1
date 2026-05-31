@@ -992,7 +992,7 @@ pub fn probed_ids() -> Vec<String> {
 /// Standalone layout probe entry point.
 ///
 /// After ADR 0007 the editor needs a controller + model to build, neither of
-/// which lives in `vxn-ui`. The standalone probe is therefore a no-op stub —
+/// which lives in `vxn-ui-vizia`. The standalone probe is therefore a no-op stub —
 /// run the probe by loading the plugin in a host with the `layout-probe`
 /// feature on (the running editor still writes `target/vxn-layout.jsonl`).
 #[cfg(feature = "layout-probe")]

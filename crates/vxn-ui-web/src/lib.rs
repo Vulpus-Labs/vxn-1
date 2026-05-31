@@ -28,7 +28,7 @@ use wry::{Rect, WebView, WebViewBuilder};
 use wry::dpi::{LogicalPosition, LogicalSize};
 
 /// Logical pixel dimensions of the editor. Matches the vizia editor's
-/// [`vxn_ui::EDITOR_WIDTH`] / `_HEIGHT` so swapping backends doesn't reflow
+/// [`vxn_ui_vizia::EDITOR_WIDTH`] / `_HEIGHT` so swapping backends doesn't reflow
 /// the host's plugin window.
 pub const EDITOR_WIDTH: u32 = 1024;
 pub const EDITOR_HEIGHT: u32 = 772;
@@ -49,6 +49,12 @@ impl EditorHandle {
         );
         let _ = self.webview.evaluate_script(&js);
     }
+
+    /// Marker for shape parity with vizia's `WindowHandle::close` — the
+    /// clack shell calls this from `gui.destroy()`. wry's `WebView::Drop`
+    /// already removes the subview from the parent NSView on macOS, so the
+    /// real teardown happens when the host drops the handle.
+    pub fn close(&mut self) {}
 }
 
 /// Zero-sized type that names this backend for trait-bounded code (the clack
@@ -383,7 +389,7 @@ mod tests {
 
     #[test]
     fn faceplate_panel_names_match_rows() {
-        // Same titles as `vxn_ui::ROWS`; reordering or rename would have to
+        // Same titles as `vxn_ui_vizia::ROWS`; reordering or rename would have to
         // happen here in lockstep.
         let expected: &[&[&str]] = &[
             &["LFO 1", "LFO 2", "Osc 1", "Osc 2", "Mixer"],
@@ -402,9 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn faceplate_layered_panels_match_vxn_ui() {
+    fn faceplate_layered_panels_match_vxn_ui_vizia() {
         // Layered = panel has at least one per-patch (Upper/Lower) entry in
-        // `vxn_ui::ROWS`. Mirror that list here so we notice if a panel's
+        // `vxn_ui_vizia::ROWS`. Mirror that list here so we notice if a panel's
         // entry mix changes upstream.
         let layered = [
             "LFO 1", "Osc 1", "Osc 2", "Mixer", "Env 1", "Env 2", "VCA",
@@ -429,7 +435,7 @@ mod tests {
 
     #[test]
     fn faceplate_reserves_chorus_delay_header_toggle() {
-        // Header switch lives on Chorus + Delay only (`vxn_ui::panel_view`,
+        // Header switch lives on Chorus + Delay only (`vxn_ui_vizia::panel_view`,
         // `header_switch` matcher). Reserve the slot now; widget arrives in
         // 0045.
         for name in ["Chorus", "Delay"] {
@@ -449,10 +455,10 @@ mod tests {
     }
 
     #[test]
-    fn faceplate_css_vars_match_vxn_ui_constants() {
+    fn faceplate_css_vars_match_vxn_ui_vizia_constants() {
         // Pixel literals live in CSS vars (ticket: "a future resize policy
         // should be one variable change"). Sanity check the load-bearing
-        // ones against `vxn_ui` constants.
+        // ones against `vxn_ui_vizia` constants.
         assert!(PLACEHOLDER_HTML.contains("--panel-h: 156px"));
         assert!(PLACEHOLDER_HTML.contains("--col-h: 120px"));
         assert!(PLACEHOLDER_HTML.contains("--fader-h: 74px"));
@@ -464,7 +470,7 @@ mod tests {
 
     #[test]
     fn faceplate_row_panel_widths_match_vizia() {
-        // Stretch shares from `vxn_ui::panel_view`'s `match title` block. If
+        // Stretch shares from `vxn_ui_vizia::panel_view`'s `match title` block. If
         // upstream tweaks a share, this fails — keeping the HTML pinned to
         // the vizia layout the user already approved.
         for (sel, share) in [

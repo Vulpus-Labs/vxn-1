@@ -20,8 +20,9 @@
 //! sound parameters, set discretely from the UI and persisted via
 //! [`crate::state`].
 //!
-//! Kept in `vxn-engine` (framework-free) so both `vxn-clap` and `vxn-ui` share
-//! one definition without depending on each other.
+//! Kept in `vxn-engine` (framework-free) so `vxn-clap` and either editor
+//! crate (`vxn-ui-vizia` / `vxn-ui-web`) share one definition without
+//! depending on each other.
 
 use crate::params::{
     KeyMode, Layer, ParamValues, PatchParam, TOTAL_PARAMS, desc_for_clap_id, patch_clap_id,

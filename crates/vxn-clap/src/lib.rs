@@ -1,14 +1,34 @@
 //! VXN1 CLAP plugin shell (clack).
 //!
 //! Wires the framework-agnostic [`Synth`] engine to CLAP: a stereo output port,
-//! a CLAP note input, the full parameter set, state save/restore, and the
-//! `vxn-ui` Vizia editor via the `gui` extension. Parameters bridge the engine,
-//! the host and the UI through `vxn_engine::SharedParams`; [`local::LocalParams`]
-//! diffs that store to echo UI edits to the host without echoing host
-//! automation back (see its module docs).
+//! a CLAP note input, the full parameter set, state save/restore, and one of
+//! two editor backends via the `gui` extension. The backend is picked at
+//! compile time by the mutually-exclusive `vizia` (default) / `webview`
+//! features — `vxn_editor` re-aliases whichever crate is in scope so the
+//! rest of this shell never names the editor crate directly. Parameters
+//! bridge the engine, the host and the UI through `vxn_engine::SharedParams`;
+//! [`local::LocalParams`] diffs that store to echo UI edits to the host
+//! without echoing host automation back (see its module docs).
 
 mod gui;
 mod local;
+
+// One backend per build. The feature-gating in `Cargo.toml` makes these
+// mutually exclusive; enabling both surfaces here as a duplicate `vxn_editor`
+// alias — a clear-enough error.
+#[cfg(feature = "vizia")]
+use vxn_ui_vizia as vxn_editor;
+#[cfg(feature = "webview")]
+use vxn_ui_web as vxn_editor;
+
+#[cfg(not(any(feature = "vizia", feature = "webview")))]
+compile_error!(
+    "vxn-clap needs one editor backend: enable `vizia` (default) or `webview`"
+);
+#[cfg(all(feature = "vizia", feature = "webview"))]
+compile_error!(
+    "vxn-clap features `vizia` and `webview` are mutually exclusive; pick one"
+);
 
 use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
@@ -123,16 +143,23 @@ pub struct VxnMainThread<'a> {
     controller: Arc<Mutex<Controller<SharedParams>>>,
     /// View-bound events the controller emits. The editor's idle callback
     /// drains this; when the GUI is closed it stays here and the bounded
-    /// channel drops on full (controller emits via `try_send`).
+    /// channel drops on full (controller emits via `try_send`). Webview
+    /// backend hasn't wired its drain pump yet (0041+) — kept here so the
+    /// controller still has somewhere to publish.
+    #[cfg_attr(feature = "webview", allow(dead_code))]
     view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
     /// Shared snapshot of the preset corpus the controller publishes for the
     /// editor's browser. Refreshed by the controller after every disk op.
+    /// Webview backend reads this once the browser HTML lands (0050).
+    #[cfg_attr(feature = "webview", allow(dead_code))]
     corpus: CorpusHandle,
-    /// Cheap-clone tick closure handed to the editor so its `on_idle` can
-    /// pump the controller without knowing about its concrete type.
+    /// Cheap-clone tick closure handed to the editor so its idle hook can
+    /// pump the controller without knowing about its concrete type. The
+    /// webview backend will hook this from a main-thread timer in 0041+.
+    #[cfg_attr(feature = "webview", allow(dead_code))]
     tick: Tick,
     /// The live editor window, while the GUI is open.
-    gui: Option<vxn_ui::EditorHandle>,
+    gui: Option<vxn_editor::EditorHandle>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}

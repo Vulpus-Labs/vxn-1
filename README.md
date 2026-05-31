@@ -22,13 +22,15 @@ filter, and a vintage-flavoured chorus — packaged as a single `.clap` bundle.
 
 VXN1 is a Cargo workspace:
 
-| Crate        | Role                                                                       |
-| ------------ | -------------------------------------------------------------------------- |
-| `vxn-dsp`    | Framework-free, allocation-free DSP kernels (oscillators, filters, ADSR…). |
-| `vxn-engine` | Parameter model, voice allocation, and block-rate render loop.             |
-| `vxn-ui`     | Vizia-based plugin GUI.                                                     |
-| `vxn-clap`   | [clack](https://github.com/prokopyl/clack) cdylib — the CLAP entry point.  |
-| `xtask`      | Bundler / build tooling.                                                   |
+| Crate           | Role                                                                       |
+| --------------- | -------------------------------------------------------------------------- |
+| `vxn-dsp`       | Framework-free, allocation-free DSP kernels (oscillators, filters, ADSR…). |
+| `vxn-engine`    | Parameter model, voice allocation, and block-rate render loop.             |
+| `vxn-app`       | Controller (MVC arbiter — ADR 0007); model trait, event types.             |
+| `vxn-ui-vizia`  | Vizia-based plugin GUI (default editor backend).                           |
+| `vxn-ui-web`    | wry-WebView plugin GUI (opt-in via `--webview`; E010).                     |
+| `vxn-clap`      | [clack](https://github.com/prokopyl/clack) cdylib — the CLAP entry point.  |
+| `xtask`         | Bundler / build tooling.                                                   |
 
 **Processing model:** DSP kernels run per-sample (the recurrences are serial and
 kept bit-faithful to their [`patches`](https://github.com/Vulpus-Labs) origins).
