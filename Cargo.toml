@@ -6,6 +6,7 @@ members = [
     "crates/vxn-app",
     "crates/vxn-clap",
     "crates/vxn-ui",
+    "crates/vxn-ui-web",
     "xtask",
 ]
 
@@ -21,6 +22,7 @@ vxn-dsp = { path = "crates/vxn-dsp" }
 vxn-engine = { path = "crates/vxn-engine" }
 vxn-app = { path = "crates/vxn-app" }
 vxn-ui = { path = "crates/vxn-ui" }
+vxn-ui-web = { path = "crates/vxn-ui-web" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). baseview/vizia for the UI are pinned in vxn-ui when added.

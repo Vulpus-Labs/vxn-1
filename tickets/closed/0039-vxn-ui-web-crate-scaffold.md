@@ -17,27 +17,30 @@ arrives in 0040–0045.
 
 ## Acceptance criteria
 
-- [ ] `crates/vxn-ui-web/` added; workspace member + dependency entry.
-- [ ] `EditorHandle`, `open_editor(parent, controller_handle) ->
+- [x] `crates/vxn-ui-web/` added; workspace member + dependency entry.
+- [x] `EditorHandle`, `open_editor(parent, controller_handle) ->
       EditorHandle` matching the `EditorBackend` trait surface from
-      vxn-app.
-- [ ] macOS: wry `WebViewBuilder::new_as_child` parented to the
+      vxn-app. (`WebEditor` is the ZST that names the impl.)
+- [x] macOS: wry `WebViewBuilder::new_as_child` parented to the
       host NSView, sized to `EDITOR_WIDTH × EDITOR_HEIGHT`.
-- [ ] Windows + Linux: cfg-gated `RawWindowHandle` construction
+- [x] Windows + Linux: cfg-gated `RawWindowHandle` construction
       (Win32, Xcb). Compile-only acceptance: `cargo check --target
-      x86_64-pc-windows-msvc` passes. (Runtime parity is a later
-      ticket.)
-- [ ] IPC bridge: JS posts JSON via `window.ipc.postMessage`; Rust IPC
-      handler parses and forwards to `controller.ui_sender()` as the
-      matching `UiEvent`.
-- [ ] Rust → JS push: `EditorBackend::push_view_event(handle, event)`
-      maps the ViewEvent to a JS call via `webview.evaluate_script`.
-      For 0039 the payload is just `console.log(eventJson)` — the
-      structured DOM updates land per-panel in 0041+.
-- [ ] Editor close: dropping `EditorHandle` removes the WebView from
-      the parent's subviews.
-- [ ] `cargo test -p vxn-ui-web` passes (no UI tests yet; smoke
-      ICompile only).
+      x86_64-pc-windows-msvc` passes.
+- [x] IPC bridge: JS posts JSON via `window.ipc.postMessage`; Rust IPC
+      handler parses and forwards to `ControllerHandle::post` as the
+      matching `UiEvent`. Opcode set is the minimum 0041+ needs
+      (set_param[_norm], begin/end_gesture, reset_layer, load_factory,
+      set_key_mode, set_split_point, set_edit_layer); path-based preset
+      mutations land in 0049–0051.
+- [x] Rust → JS push: `EditorHandle::push_view_event` (also reachable
+      via `EditorBackend::push_view_event`) maps the ViewEvent to a JS
+      call via `webview.evaluate_script`; the page logs it through
+      `window.vxn.onViewEvent` for now.
+- [x] Editor close: dropping `EditorHandle` removes the WebView from
+      the parent's subviews. (wry 0.45's `WebView::Drop` calls
+      `removeFromSuperview` on macOS; nothing to add here.)
+- [x] `cargo test -p vxn-ui-web` passes (7 unit tests cover IPC parse
+      + ViewEvent JSON serialization; no live-WebView tests).
 
 ## Notes
 
