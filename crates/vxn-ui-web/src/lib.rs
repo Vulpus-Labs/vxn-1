@@ -113,7 +113,21 @@ pub fn open_editor(parent: *mut c_void, ctrl: ControllerHandle) -> EditorHandle 
 /// generation is one place so a future schema bump (e.g. adding a `module`
 /// field) stays self-contained.
 fn build_faceplate_html() -> String {
-    PLACEHOLDER_HTML.replace("__PARAMS_JSON__", &build_params_json())
+    PLACEHOLDER_HTML
+        .replace("__PARAMS_JSON__", &build_params_json())
+        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
+}
+
+/// Tempo-sync subdivision labels (vxn_app::sync::SUBDIVISIONS), spliced into
+/// the page as `window.vxn.subdivisions`. The LFO-rate fader's display reads
+/// from this list when its sync partner is on (0042 / 0015) — matches the
+/// vizia editor's `sync_partner` override, which indexes the same table.
+fn build_subdivisions_json() -> String {
+    let labels: Vec<String> = vxn_app::sync::SUBDIVISIONS
+        .iter()
+        .map(|s| format!("\"{}\"", s.label))
+        .collect();
+    format!("[{}]", labels.join(","))
 }
 
 fn build_params_json() -> String {
@@ -567,39 +581,91 @@ mod tests {
         assert!(PLACEHOLDER_HTML.contains("onViewEvent"));
     }
 
-    // ── Osc 1 control mount points (0041) ──────────────────────────────────
+    // ── Row 1 control mount points (0041, 0041a, 0042) ─────────────────────
 
     #[test]
-    fn osc1_panel_has_five_control_cells() {
-        // Wave (rotary) + four faders. Param names are descriptor `name`s
-        // so a `PatchParam` enum reorder doesn't break the HTML.
+    fn row1_osc_mixer_panels_have_expected_mounts() {
+        // Wave + four faders per Osc panel; four level faders + one Col
+        // switch on the Mixer; LFO 1 (Shape/Rate/Delay/Fade up top, Sync +
+        // Free toggles in the strip) and LFO 2 (Shape/Rate, Sync in the
+        // strip). Param names are descriptor `name`s so a `PatchParam` enum
+        // reorder doesn't break the HTML.
         for (kind, name, label) in [
+            // LFO 1
+            ("wave",   "lfo_shape",       "Shape"),
+            ("fader",  "lfo_rate",        "Rate"),
+            ("fader",  "lfo1_delay_time", "Delay"),
+            ("fader",  "lfo1_fade",       "Fade"),
+            ("switch", "lfo_sync",        "Sync"),
+            ("switch", "lfo1_free_run",   "Free"),
+            // LFO 2
+            ("wave",   "lfo2_shape", "Shape"),
+            ("fader",  "lfo2_rate",  "Rate"),
+            ("switch", "lfo2_sync",  "Sync"),
+            // Osc 1
             ("wave",  "osc1_wave",   "Wave"),
             ("fader", "osc1_octave", "Oct"),
             ("fader", "osc1_coarse", "Semi"),
             ("fader", "osc1_fine",   "Fine"),
             ("fader", "osc1_pw",     "PW"),
+            // Osc 2
+            ("wave",  "osc2_wave",   "Wave"),
+            ("fader", "osc2_octave", "Oct"),
+            ("fader", "osc2_coarse", "Semi"),
+            ("fader", "osc2_fine",   "Fine"),
+            ("fader", "osc2_pw",     "PW"),
+            // Mixer
+            ("fader",  "osc1_level",  "Osc1"),
+            ("fader",  "osc2_level",  "Osc2"),
+            ("fader",  "ring_level",  "Ring"),
+            ("fader",  "noise_level", "Noise"),
+            ("switch", "noise_color", "Col"),
         ] {
             let marker = format!(
                 r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
             );
             assert!(
                 PLACEHOLDER_HTML.contains(&marker),
-                "Osc 1 mount point missing: {marker}",
+                "Row 1 mount point missing: {marker}",
             );
         }
-        // Total cells just inside Osc 1 — count occurrences of the unique
-        // panel root marker followed somewhere by data-control.
+        // Global tally guard — bumps when a new fader/wave/switch is added
+        // to the template (catches accidental duplicate mount points).
+        // 3 (LFO 1) + 1 (LFO 2) + 4 (Osc1) + 4 (Osc2) + 4 (Mixer) = 16 faders.
+        // 2 (LFO shapes) + 2 (Osc waves) = 4 waves.
+        // 2 (LFO 1 strip) + 1 (LFO 2 strip) + 1 (Mixer NoiseColor) = 4 switches.
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="fader""#).count(),
-            4,
-            "Osc 1 should have 4 fader cells",
+            16,
+            "expected 16 fader cells across Row 1 panels",
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="wave""#).count(),
-            1,
-            "Osc 1 should have 1 wave cell",
+            4,
+            "expected 4 wave cells (LFO 1, LFO 2, Osc 1, Osc 2)",
         );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="switch""#).count(),
+            4,
+            "expected 4 switch cells (LFO 1 Sync + Free, LFO 2 Sync, Mixer NoiseColor)",
+        );
+    }
+
+    #[test]
+    fn faceplate_has_subdivisions_json_placeholder() {
+        // SUBDIVISIONS table is spliced as a JSON array of labels; the LFO
+        // rate fader's displayOverride indexes it when sync is on (0042).
+        assert!(PLACEHOLDER_HTML.contains("__SUBDIVISIONS_JSON__"));
+        let html = build_faceplate_html();
+        assert!(!html.contains("__SUBDIVISIONS_JSON__"));
+        // Sanity check: array matches the Rust table 1:1.
+        let json = build_subdivisions_json();
+        let v: serde_json::Value = serde_json::from_str(&json).expect("subdivisions JSON");
+        let arr = v.as_array().expect("array root");
+        assert_eq!(arr.len(), vxn_app::sync::SUBDIVISIONS.len());
+        for (i, s) in vxn_app::sync::SUBDIVISIONS.iter().enumerate() {
+            assert_eq!(arr[i], s.label);
+        }
     }
 
     #[test]

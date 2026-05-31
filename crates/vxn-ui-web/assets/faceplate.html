@@ -50,8 +50,8 @@
   --row-hgap: 6px;
   --header-h: 16px;
   --header-toggle-slot: 16px; /* reserves the Chorus/Delay header switch (0045) */
-  --ctl-label-h: 10px;
-  --ctl-value-h: 10px;
+  --ctl-label-h: 12px;
+  --ctl-value-h: 12px;
   --ctl-gap: 2px;
   --fader-track-w: 4px;
   --thumb-w: 18px;
@@ -107,6 +107,7 @@ html, body {
 }
 
 .panel {
+  position: relative;             /* anchor for absolutely-placed .panel-strip */
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
@@ -192,7 +193,7 @@ html, body {
 }
 
 .ctl-label {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--ctl-label);
   text-transform: uppercase;
@@ -213,7 +214,7 @@ html, body {
   border: 1px solid var(--ctl-value);
   border-radius: 3px;
   padding: 2px 5px;
-  font-size: 9px;
+  font-size: 10px;
   color: #f6f6f6;
   white-space: nowrap;
   z-index: 1000;
@@ -279,6 +280,97 @@ html, body {
   touch-action: none;
 }
 .ctl-wave.dragging { cursor: grabbing; }
+
+/* Bottom strip — selector/toggle controls (NoiseColor, FilterSlope, etc.)
+   relocated into the panel's free clearance below the main column row.
+   Absolutely placed so it never grows the panel or competes with ctl
+   columns for flex space. Mirrors the vizia editor's strip placement
+   (left: 8px, bottom: 4px). */
+.panel-strip {
+  position: absolute;
+  left: 8px;
+  bottom: 4px;
+  right: 5px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;           /* empty space passes through to body */
+}
+.panel-strip > * { pointer-events: auto; }
+
+/* Toggle row — small box + inline label. Matches vizia .tg-row /
+   .tg-box / .tg-lbl exactly (#1f9cff active fill, 9×9 box, 7 px label). */
+.ctl-tg-row {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.ctl-tg-box {
+  width: 11px;
+  height: 11px;
+  background: #4a4a4a;
+  border: 1px solid #8a8a8a;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.ctl-tg-row:hover .ctl-tg-box { border-color: #c4c4c4; }
+.ctl-tg-row.active .ctl-tg-box {
+  background: #1f9cff;
+  border-color: #84cdff;
+  box-shadow: 0 0 6px #36b3ff;
+}
+.ctl-tg-lbl {
+  font-size: 9px;
+  color: #9a9a9a;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ctl-tg-row.active .ctl-tg-lbl { color: #ececec; }
+
+/* ButtonGroup — rendered exactly like a strip of toggles (same `.ctl-tg-row`
+   children) but inside a normal column with a label on top. Used for
+   Oversample / CrossModType / AssignMode. */
+.ctl-buttongroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+}
+.ctl-buttongroup .ctl-tg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+/* Dropdown — native <select> styled to match the dark palette. Fallback for
+   enums that don't fit ButtonGroup (too many variants, or a long name list). */
+.ctl-dropdown {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+}
+.ctl-dropdown select {
+  background: #1c1c1c;
+  color: var(--text);
+  border: 1px solid #444;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 4px;
+}
+.ctl-dropdown select:focus { outline: 1px solid var(--ctl-value); }
+
+/* Dimmed — applied to control cells whose param is gated by a sibling
+   (LFO 1's Delay/Fade dim while Free is on; mirrors vizia's `.dimmed`
+   class). Visual-only: pointer events still pass through so DAW
+   automation echoes still move the thumb. */
+.ctl.dimmed { opacity: 0.4; }
 </style>
 </head>
 <body>
@@ -290,13 +382,34 @@ html, body {
 
   <!-- Row 1 — LFOs, oscillators, mixer. -->
   <div class="row row-1" data-row="1">
+    <!-- LFO 1 (0042): per-voice. Shape (rotary) + Rate/Delay/Fade faders in
+         the main row; Sync + Free toggles in the bottom strip (matches the
+         vizia layout via `in_bottom_strip`). Free is a quirk — when on, it
+         keeps the LFO free-running and the Delay/Fade cells dim. -->
     <div class="panel" data-name="LFO 1" data-layered>
       <div class="panel-header">LFO 1</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="lfo_shape" data-label="Shape"></div>
+        <div class="ctl" data-control="fader" data-param="lfo_rate" data-label="Rate"></div>
+        <div class="ctl" data-control="fader" data-param="lfo1_delay_time" data-label="Delay"></div>
+        <div class="ctl" data-control="fader" data-param="lfo1_fade" data-label="Fade"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="lfo_sync" data-label="Sync"></div>
+        <div class="ctl-strip" data-control="switch" data-param="lfo1_free_run" data-label="Free"></div>
+      </div>
     </div>
+    <!-- LFO 2 (0042): one global oscillator. Shape + Rate up top, Sync in
+         the strip. Not layer-aware — params come from GLOBAL_PARAMS. -->
     <div class="panel" data-name="LFO 2">
       <div class="panel-header">LFO 2</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="lfo2_shape" data-label="Shape"></div>
+        <div class="ctl" data-control="fader" data-param="lfo2_rate" data-label="Rate"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="lfo2_sync" data-label="Sync"></div>
+      </div>
     </div>
     <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —
          the edit-layer toggle lands with the Voice panel in 0045. The faders
@@ -312,13 +425,31 @@ html, body {
         <div class="ctl" data-control="fader" data-param="osc1_pw" data-label="PW"></div>
       </div>
     </div>
+    <!-- Osc 2 (0041a): identical control set to Osc 1, different param IDs. -->
     <div class="panel" data-name="Osc 2" data-layered>
       <div class="panel-header">OSC 2</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="osc2_wave" data-label="Wave"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_octave" data-label="Oct"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_coarse" data-label="Semi"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_fine" data-label="Fine"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_pw" data-label="PW"></div>
+      </div>
     </div>
+    <!-- Mixer (0041a): four level faders + Col (White/Pink) switch in the
+         bottom strip. NoiseColor is a 2-variant enum; the Switch primitive
+         renders it as two exclusive labelled toggles. -->
     <div class="panel" data-name="Mixer" data-layered>
       <div class="panel-header">MIXER</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="osc1_level" data-label="Osc1"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_level" data-label="Osc2"></div>
+        <div class="ctl" data-control="fader" data-param="ring_level" data-label="Ring"></div>
+        <div class="ctl" data-control="fader" data-param="noise_level" data-label="Noise"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="noise_color" data-label="Col"></div>
+      </div>
     </div>
   </div>
 
@@ -429,6 +560,11 @@ window.vxn = {
   },
   onViewEvent: function (ev) { _earlyViewEvents.push(ev); },
   params: __PARAMS_JSON__,
+  // Tempo-sync subdivision labels (coarse → fine). When an LFO rate's sync
+  // partner is on, the fader's display reads from this list instead of the
+  // descriptor's Hz formatting (0042 / 0015) — mirrors the vizia editor's
+  // `sync_partner` override.
+  subdivisions: __SUBDIVISIONS_JSON__,
 };
 
 // ─── Floating value popup (single shared instance) ─────────────────────────
@@ -492,12 +628,35 @@ function glyphPath(label, w, h) {
 // the entry point the ParamChanged dispatch calls. `el` is the cell root.
 const CONTROLS = new Map();
 
+// Last (plain, norm, display) seen per param, indexed by CLAP id. Used by
+// the sync-partner refresh path: when an LFO rate's sync flips, we re-run
+// the rate's `update` with its cached value so the displayed label flips
+// between Hz and a subdivision (0042). Also lets the Free-run dim quirk
+// read the toggle's current state without subscribing to the model.
+const LAST_PARAM = new Map();
+
+// Map a rate-fader CLAP id to its sync-toggle CLAP id (and vice versa).
+// Built in `init()` from descriptor names so a CLAP-id reshuffle in the
+// `PatchParam` table doesn't desync the pairing. `Lfo1 rate ↔ Lfo1 sync`
+// is per-layer (currently Upper only — 0045 lands the layer toggle);
+// `Lfo2 rate ↔ Lfo2 sync` is global.
+const SYNC_OF_RATE = new Map();  // rateId -> syncId
+const RATE_OF_SYNC = new Map();  // syncId -> rateId
+
+// `lfo1_free_run` and the cells it dims. The Free toggle disables the
+// LFO's delay/fade onset (engine behaviour); the editor mirrors it as a
+// visual dim (ticket 0042: "visual feedback only … no client-side state
+// machine"). Looked up once in `init()`.
+let FREE_RUN_ID = null;
+const FREE_DIMMED_CELLS = [];  // [{ id, el }]
+
 // One detent = one variant step. The drag sensitivity: pixels of vertical
 // pointer travel per detent. ~30 feels close to hardware knobs.
 const PIXELS_PER_DETENT = 30;
 
-function makeFader(el, id, desc) {
+function makeFader(el, id, desc, opts) {
   const label = el.dataset.label || desc.label;
+  const displayOverride = (opts && opts.displayOverride) || null;
   el.innerHTML = `
     <div class="ctl-label">${label.toUpperCase()}</div>
     <div class="ctl-fader">
@@ -576,25 +735,47 @@ function makeFader(el, id, desc) {
       // converge on the same value, so the thumb stays glued to the
       // cursor without flicker.
       setThumb(norm);
-      lastDisplay = display;
-      if (hovered || dragging) valuePop.update(display);
+      // Synced LFO rates swap the Hz readout for a subdivision label
+      // (0042). The override is null for every other fader, so this
+      // collapses to the plain path.
+      let label = display;
+      if (displayOverride) {
+        const o = displayOverride(plain, norm, display);
+        if (o != null) label = o;
+      }
+      lastDisplay = label;
+      if (hovered || dragging) valuePop.update(label);
     },
   };
 }
 
+// Map a normalised fader position (linear `[0, 1]`) to the matching
+// subdivision label. The LFO rate fader's `norm` is the linear range
+// position (`get_normalized`, not the exp-tapered fader-position); since
+// `vxn_app::sync::index_from_norm` only ever takes the slider's `0..1`,
+// either convention agrees on the index — the table is just spread evenly
+// across the travel.
+function subdivisionLabel(norm) {
+  const t = window.vxn.subdivisions || [];
+  if (t.length === 0) return '';
+  const last = t.length - 1;
+  const n = Math.max(0, Math.min(1, norm));
+  return t[Math.max(0, Math.min(last, Math.round(n * last)))];
+}
+
 // ─── Rotary waveform knob ──────────────────────────────────────────────────
 //
-// Single SVG: knob face + rotating indicator + glyph labels at the four
-// corners (SW/NW/NE/SE) outside the rim. Drag rotation = vertical pointer
-// motion (up = CW, down = CCW), clamped at endpoints, snapped to the
-// nearest detent. Click a glyph for direct selection.
+// Single SVG: knob face + rotating indicator + glyph labels spread around
+// a 270° arc with the gap at the bottom (clamped knob, no wrap). Drag
+// rotation = vertical pointer motion (up = CW, down = CCW), clamped at
+// endpoints, snapped to the nearest detent. Click a glyph for direct
+// selection.
 //
-// Indicator angle is a strictly monotonic function of value:
-//   displayed = SW_DEG + value * STEP_DEG    (SW = 225°, STEP = +90° CW)
-// so CSS rotate transitions always travel along the populated arc and
-// never enter the dead bottom 90°. The "long way back" from the last
-// variant to the first (e.g. Pulse → Sine sweeps -270° CCW through NE,
-// NW) is correct here — it's the only legal path for a clamped knob.
+// Variant angles are evenly distributed across ARC_START..ARC_END, so the
+// 4-variant Osc knob still lands its glyphs at SW/NW/NE/SE (the corners
+// of -135°…+135° "from up CW") while the 6-variant LFO shape fits without
+// crowding the corners. Indicator angle is the same affine function of
+// value, so the CSS transition always sweeps along the populated arc.
 //
 // **Future**: when intermediate / cross-fade waveforms ship, this becomes
 // a continuous `[0, N)` knob with wrap-around. The angle math already
@@ -613,14 +794,16 @@ function makeWave(el, id, desc) {
   const glyphR = 26;
   const glyphW = 14, glyphH = 10;
 
-  // Glyph positions: SW, NW, NE, SE — corners of the dial, with the
-  // first variant (typically Sine) at SW. 90° per step, CW.
-  const VARIANT_DEG = [225, 315, 45, 135];
-  const SW_DEG = VARIANT_DEG[0];
-  const STEP_DEG = 90;
+  // 270° arc with a 90° gap at the bottom. Angles measured in degrees CW
+  // from "straight up" (0°), so -135° = SW corner, +135° = SE.
+  const ARC_START = -135;
+  const ARC_SWEEP = 270;
+  const N = variants.length;
+  const STEP_DEG = N > 1 ? ARC_SWEEP / (N - 1) : 0;
+  const variantDeg = (i) => ARC_START + i * STEP_DEG;
 
   let value = 0;
-  let displayedAngle = SW_DEG;
+  let displayedAngle = variantDeg(0);
   let dragging = false;
   let hovered = false;
   let dragStartY = 0;
@@ -634,10 +817,10 @@ function makeWave(el, id, desc) {
   svg.classList.add('ctl-wave');
   el.appendChild(svg);
 
-  // Glyph labels at the corners. Transparent rect behind the path makes
+  // Glyph labels along the arc. Transparent rect behind the path makes
   // the whole label area clickable, not just the stroked pixels.
   const glyphEls = variants.map((name, i) => {
-    const a = (VARIANT_DEG[i % VARIANT_DEG.length]) * Math.PI / 180;
+    const a = variantDeg(i) * Math.PI / 180;
     const gx = cx + glyphR * Math.sin(a);
     const gy = cy - glyphR * Math.cos(a);
     const g = document.createElementNS(SVG_NS, 'g');
@@ -751,7 +934,7 @@ function makeWave(el, id, desc) {
 
   function applyValue(v, display) {
     value = v;
-    displayedAngle = SW_DEG + v * STEP_DEG;
+    displayedAngle = variantDeg(v);
     indicatorG.setAttribute('transform', `rotate(${displayedAngle.toFixed(2)})`);
     glyphEls.forEach((g, i) => {
       g.path.setAttribute('stroke',
@@ -773,6 +956,127 @@ function makeWave(el, id, desc) {
   };
 }
 
+// ─── Switch / ButtonGroup / Dropdown ──────────────────────────────────────
+//
+// All three share the same write semantics: a click sends
+// `begin_gesture` → `set_param` → `end_gesture` so the host records a
+// single discrete edit (zero gesture-less writes would otherwise drop on
+// some hosts that only commit between brackets). No drag, no popup —
+// these are point-and-click variant pickers.
+
+function tgRow(name) {
+  const row = document.createElement('div');
+  row.className = 'ctl-tg-row';
+  row.innerHTML =
+    '<div class="ctl-tg-box"></div>' +
+    '<div class="ctl-tg-lbl">' + name.toUpperCase() + '</div>';
+  return row;
+}
+
+// `Switch(id, label)` — vertical toggle for bools; also handles 2-variant
+// enums (NoiseColor, FilterSlope, LfoSync, …) the way vizia's
+// `Ctl::Switch` does, by rendering one toggle per variant in a row.
+function makeSwitch(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  const isEnum = desc.kind === 'enum';
+  const entries = isEnum
+    ? (desc.variants || []).map((name, i) => ({ idx: i, name }))
+    : [{ idx: 1, name: label }];
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  el.style.flexDirection = 'row';
+  el.style.gap = '12px';
+  el.style.alignItems = 'center';
+
+  const rows = entries.map(({ idx, name }) => {
+    const row = tgRow(name);
+    row.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      let plain;
+      if (isEnum) {
+        plain = idx;
+      } else {
+        // Bool: toggle current. `row.classList.contains('active')` is the
+        // local truth; the round-trip echo will reconcile if the engine
+        // refuses (clamped, gated).
+        plain = row.classList.contains('active') ? 0 : 1;
+      }
+      window.vxn.send({ op: 'begin_gesture', id });
+      window.vxn.send({ op: 'set_param', id, plain });
+      window.vxn.send({ op: 'end_gesture', id });
+    });
+    el.appendChild(row);
+    return { row, idx };
+  });
+
+  return {
+    update(plain) {
+      const p = isEnum
+        ? Math.max(0, Math.min(entries.length - 1, Math.round(plain)))
+        : (plain >= 0.5 ? 1 : 0);
+      rows.forEach(({ row, idx }) => row.classList.toggle('active', idx === p));
+    },
+  };
+}
+
+// `ButtonGroup(id, label, variants)` — for Oversample, CrossModType,
+// AssignMode. Vertical stack of labelled toggles under a column label
+// (matches vizia's `enum_list_body`).
+function makeButtonGroup(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  const variants = desc.variants || [];
+  el.innerHTML =
+    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
+    '<div class="ctl-tg-rows"></div>';
+  const rowsHost = el.querySelector('.ctl-tg-rows');
+  const rows = variants.map((name, i) => {
+    const row = tgRow(name);
+    row.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      window.vxn.send({ op: 'begin_gesture', id });
+      window.vxn.send({ op: 'set_param', id, plain: i });
+      window.vxn.send({ op: 'end_gesture', id });
+    });
+    rowsHost.appendChild(row);
+    return row;
+  });
+  return {
+    update(plain) {
+      const p = Math.max(0, Math.min(variants.length - 1, Math.round(plain)));
+      rows.forEach((row, i) => row.classList.toggle('active', i === p));
+    },
+  };
+}
+
+// `Dropdown(id, label, variants)` — native <select> fallback. Used when
+// the variant list is too long for a row of toggles to fit the cell.
+function makeDropdown(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  const variants = desc.variants || [];
+  el.innerHTML =
+    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
+    '<select></select>';
+  const select = el.querySelector('select');
+  variants.forEach((v, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = v;
+    select.appendChild(opt);
+  });
+  select.addEventListener('change', () => {
+    const i = parseInt(select.value, 10);
+    window.vxn.send({ op: 'begin_gesture', id });
+    window.vxn.send({ op: 'set_param', id, plain: i });
+    window.vxn.send({ op: 'end_gesture', id });
+  });
+  return {
+    update(plain) {
+      const p = Math.max(0, Math.min(variants.length - 1, Math.round(plain)));
+      select.value = String(p);
+    },
+  };
+}
+
 // ─── Init + dispatch ───────────────────────────────────────────────────────
 
 function paramIdByName(name) {
@@ -782,9 +1086,57 @@ function paramIdByName(name) {
   return null;
 }
 
+// Element references for the cells dimmed by the Free-run quirk (LFO 1
+// only). Looked up by descriptor name so a CLAP id reshuffle stays safe.
+function locateFreeRunCells() {
+  FREE_RUN_ID = paramIdByName('lfo1_free_run');
+  for (const name of ['lfo1_delay_time', 'lfo1_fade']) {
+    const id = paramIdByName(name);
+    if (id == null) continue;
+    const el = document.querySelector(`[data-param="${name}"]`);
+    if (el) FREE_DIMMED_CELLS.push({ id, el });
+  }
+}
+
+// Pair LFO rate faders with their sync-toggle partners (E004 / 0015).
+// Mirrors `vxn_ui_vizia::sync_partner`. Currently only the LFO rates use
+// this; the Delay panel will join when 0045 wires `delay_time/delay_sync`.
+function locateSyncPartners() {
+  const pairs = [
+    ['lfo_rate',  'lfo_sync'],
+    ['lfo2_rate', 'lfo2_sync'],
+  ];
+  for (const [rateName, syncName] of pairs) {
+    const r = paramIdByName(rateName);
+    const s = paramIdByName(syncName);
+    if (r == null || s == null) continue;
+    SYNC_OF_RATE.set(r, s);
+    RATE_OF_SYNC.set(s, r);
+  }
+}
+
+// Returns the `displayOverride` callback for `id` if it's a rate fader
+// whose sync partner is currently on. The fader's `update` runs this
+// before settling on a popup label.
+function rateDisplayOverride(id) {
+  const syncId = SYNC_OF_RATE.get(id);
+  if (syncId == null) return null;
+  return (plain, norm, display) => {
+    const last = LAST_PARAM.get(syncId);
+    if (last && last.plain >= 0.5) return subdivisionLabel(norm);
+    return null;
+  };
+}
+
 function init() {
-  // Walk every mount point and instantiate the right primitive.
-  document.querySelectorAll('.ctl[data-control]').forEach((el) => {
+  locateSyncPartners();
+  locateFreeRunCells();
+
+  // Walk every mount point and instantiate the right primitive. Selector
+  // covers both `.ctl` (vertical column inside `.panel-body`) and
+  // `.ctl-strip` (compact mount inside `.panel-strip`); the control kind
+  // is what determines render shape, not the mount class.
+  document.querySelectorAll('[data-control]').forEach((el) => {
     const name = el.dataset.param;
     const id = paramIdByName(name);
     if (id == null) {
@@ -794,13 +1146,32 @@ function init() {
     const desc = window.vxn.params[id];
     let ctl = null;
     switch (el.dataset.control) {
-      case 'fader': ctl = makeFader(el, id, desc); break;
-      case 'wave':  ctl = makeWave(el, id, desc); break;
+      case 'fader': {
+        const opts = { displayOverride: rateDisplayOverride(id) };
+        ctl = makeFader(el, id, desc, opts);
+        break;
+      }
+      case 'wave':        ctl = makeWave(el, id, desc); break;
+      case 'switch':      ctl = makeSwitch(el, id, desc); break;
+      case 'buttongroup': ctl = makeButtonGroup(el, id, desc); break;
+      case 'dropdown':    ctl = makeDropdown(el, id, desc); break;
       default:
         console.warn('vxn: unknown control type', el.dataset.control);
         return;
     }
     CONTROLS.set(id, ctl);
+
+    // Double-click resets the param to its descriptor default — mirrors
+    // the vizia editor's `.on_double_click` (bracketed by a gesture so
+    // the host records one edit). Wired on the cell root so it covers
+    // every primitive uniformly; the intermediate single-click value
+    // changes still fire and the reset lands last.
+    el.addEventListener('dblclick', (ev) => {
+      ev.preventDefault();
+      window.vxn.send({ op: 'begin_gesture', id });
+      window.vxn.send({ op: 'set_param', id, plain: desc.default });
+      window.vxn.send({ op: 'end_gesture', id });
+    });
   });
 
   // Dispatch incoming ViewEvents from Rust. ParamChanged routes by id;
@@ -808,8 +1179,25 @@ function init() {
   // events into their respective UI areas).
   const dispatch = function (ev) {
     if (ev.kind === 'param_changed') {
+      // Cache last-seen value so the sync-flip and free-run-flip refresh
+      // paths can reapply without waiting for the next echo.
+      LAST_PARAM.set(ev.id, { plain: ev.plain, norm: ev.norm, display: ev.display });
       const ctl = CONTROLS.get(ev.id);
       if (ctl) ctl.update(ev.plain, ev.norm, ev.display);
+      // If this is an LFO sync toggle, the partnered rate fader's display
+      // label needs to flip Hz ↔ subdivision. Re-update the rate with its
+      // last-seen value — the fader's displayOverride will recompute.
+      const rateId = RATE_OF_SYNC.get(ev.id);
+      if (rateId != null) {
+        const last = LAST_PARAM.get(rateId);
+        const rate = CONTROLS.get(rateId);
+        if (last && rate) rate.update(last.plain, last.norm, last.display);
+      }
+      // Free-run toggle changes which Delay/Fade cells render dim.
+      if (ev.id === FREE_RUN_ID) {
+        const on = ev.plain >= 0.5;
+        for (const c of FREE_DIMMED_CELLS) c.el.classList.toggle('dimmed', on);
+      }
       return;
     }
     // Uncomment for verbose tracing during development:

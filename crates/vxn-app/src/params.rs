@@ -595,7 +595,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         "Osc 2 Fine",
         -50.0,
         50.0,
-        7.0,
+        0.0,
         "ct",
         Taper::Linear,
     ),
