@@ -581,7 +581,7 @@ mod tests {
         assert!(PLACEHOLDER_HTML.contains("onViewEvent"));
     }
 
-    // ── Row 1 control mount points (0041, 0041a, 0042) ─────────────────────
+    // ── Row 1 + Row 2 control mount points (0041, 0041a, 0042, 0043) ────
 
     #[test]
     fn row1_osc_mixer_panels_have_expected_mounts() {
@@ -629,15 +629,77 @@ mod tests {
                 "Row 1 mount point missing: {marker}",
             );
         }
-        // Global tally guard — bumps when a new fader/wave/switch is added
-        // to the template (catches accidental duplicate mount points).
-        // 3 (LFO 1) + 1 (LFO 2) + 4 (Osc1) + 4 (Osc2) + 4 (Mixer) = 16 faders.
-        // 2 (LFO shapes) + 2 (Osc waves) = 4 waves.
-        // 2 (LFO 1 strip) + 1 (LFO 2 strip) + 1 (Mixer NoiseColor) = 4 switches.
+    }
+
+    #[test]
+    fn row2_env_filter_panels_have_expected_mounts() {
+        // Env 1/2: ADSR faders + Shape switch in the bottom strip (Vizia
+        // maps the 2-variant Lin/Exp enum to a switch via `in_bottom_strip`).
+        // VCA: AmpLfoSrc dropdown + Depth fader; AmpEnvBypass in strip.
+        // Filter: HPF/Cutoff/Reso/Drive faders + Mode dropdown; Slope (12/24
+        // dB enum) and KeyTrk (bool) ride the strip. Filter Mod: four fixed
+        // depths into cutoff (E006), no source selectors. Names match the
+        // `ParamDesc.name` fields so a `PatchParam` enum reorder doesn't
+        // break the HTML.
+        for (kind, name, label) in [
+            // Env 1
+            ("fader",  "env1_attack",  "A"),
+            ("fader",  "env1_decay",   "D"),
+            ("fader",  "env1_sustain", "S"),
+            ("fader",  "env1_release", "R"),
+            ("switch", "env1_shape",   "Shape"),
+            // Env 2
+            ("fader",  "env2_attack",  "A"),
+            ("fader",  "env2_decay",   "D"),
+            ("fader",  "env2_sustain", "S"),
+            ("fader",  "env2_release", "R"),
+            ("switch", "env2_shape",   "Shape"),
+            // VCA
+            ("dropdown", "amp_lfo_src",    "LFO"),
+            ("fader",    "amp_lfo_depth",  "Depth"),
+            ("switch",   "amp_env_bypass", "Gate"),
+            // Filter
+            ("fader",    "hpf_cutoff",       "HPF"),
+            ("fader",    "cutoff",           "Cutoff"),
+            ("fader",    "resonance",        "Reso"),
+            ("fader",    "drive",            "Drive"),
+            ("dropdown", "filter_mode",      "Mode"),
+            ("switch",   "filter_slope",     "Slope"),
+            ("switch",   "filter_key_track", "KeyTrk"),
+            // Filter Mod
+            ("fader", "vel_cutoff_depth",  "Vel"),
+            ("fader", "cutoff_lfo1_depth", "LFO1"),
+            ("fader", "cutoff_lfo2_depth", "LFO2"),
+            ("fader", "cutoff_env_depth",  "Env1"),
+        ] {
+            let marker = format!(
+                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
+            );
+            assert!(
+                PLACEHOLDER_HTML.contains(&marker),
+                "Row 2 mount point missing: {marker}",
+            );
+        }
+    }
+
+    #[test]
+    fn control_tallies_match_row1_and_row2_panels() {
+        // Global mount-point tally — catches duplicate mounts / typos that
+        // accept a missing `<div>` somewhere else. Bumps as later rows land.
+        //
+        // Faders: 16 (Row 1: LFOs 3, Osc1 4, Osc2 4, Mixer 4, plus LFO1
+        //              Rate counted under LFO 1, totalling 16)
+        //       + 17 (Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 4)
+        //       = 33.
+        // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave) — Row 2 has no rotary waves.
+        // Switches: 4 (Row 1: LFO Sync x2, Lfo1Free, NoiseColor)
+        //         + 5 (Row 2: Env1Shape, Env2Shape, Gate, Slope, KeyTrk)
+        //         = 9.
+        // Dropdowns: 2 (Row 2: AmpLfoSrc, FilterMode).
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="fader""#).count(),
-            16,
-            "expected 16 fader cells across Row 1 panels",
+            33,
+            "expected 33 fader cells across Row 1 + Row 2",
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="wave""#).count(),
@@ -646,8 +708,13 @@ mod tests {
         );
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="switch""#).count(),
-            4,
-            "expected 4 switch cells (LFO 1 Sync + Free, LFO 2 Sync, Mixer NoiseColor)",
+            9,
+            "expected 9 switch cells across Row 1 + Row 2",
+        );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="dropdown""#).count(),
+            2,
+            "expected 2 dropdown cells (VCA AmpLfoSrc, Filter Mode)",
         );
     }
 

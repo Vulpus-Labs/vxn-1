@@ -455,25 +455,75 @@ html, body {
 
   <!-- Row 2 — envelopes, filter, filter mod. -->
   <div class="row row-2" data-row="2">
+    <!-- Env 1 (0043): ADSR + Shape (Lin/Exp) in the strip. Vizia maps the
+         2-variant Shape enum to a switch and routes it through the bottom
+         strip alongside FilterSlope etc. -->
     <div class="panel" data-name="Env 1" data-layered>
       <div class="panel-header">ENV 1</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="env1_attack" data-label="A"></div>
+        <div class="ctl" data-control="fader" data-param="env1_decay" data-label="D"></div>
+        <div class="ctl" data-control="fader" data-param="env1_sustain" data-label="S"></div>
+        <div class="ctl" data-control="fader" data-param="env1_release" data-label="R"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="env1_shape" data-label="Shape"></div>
+      </div>
     </div>
     <div class="panel" data-name="Env 2" data-layered>
       <div class="panel-header">ENV 2</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="env2_attack" data-label="A"></div>
+        <div class="ctl" data-control="fader" data-param="env2_decay" data-label="D"></div>
+        <div class="ctl" data-control="fader" data-param="env2_sustain" data-label="S"></div>
+        <div class="ctl" data-control="fader" data-param="env2_release" data-label="R"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="env2_shape" data-label="Shape"></div>
+      </div>
     </div>
+    <!-- VCA (0043): AmpLfoSrc selects the tremolo source (multi-variant enum
+         → dropdown, matching vizia's `Ctl::Select`), Depth scales it. Gate
+         (AmpEnvBypass) drops to the strip. -->
     <div class="panel" data-name="VCA" data-layered>
       <div class="panel-header">VCA</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="dropdown" data-param="amp_lfo_src" data-label="LFO"></div>
+        <div class="ctl" data-control="fader" data-param="amp_lfo_depth" data-label="Depth"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="amp_env_bypass" data-label="Gate"></div>
+      </div>
     </div>
+    <!-- Filter (0043): HPF/Cutoff/Reso/Drive faders + Mode dropdown (vizia
+         maps the multi-variant FilterMode to a Select, not a rotary — the
+         ticket text said rotary but the descriptor + vizia disagree, so we
+         follow the code). Slope (12/24 dB) and KeyTrk (bool) are strip
+         switches per `in_bottom_strip`. -->
     <div class="panel" data-name="Filter" data-layered>
       <div class="panel-header">FILTER</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="hpf_cutoff" data-label="HPF"></div>
+        <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
+        <div class="ctl" data-control="fader" data-param="resonance" data-label="Reso"></div>
+        <div class="ctl" data-control="fader" data-param="drive" data-label="Drive"></div>
+        <div class="ctl" data-control="dropdown" data-param="filter_mode" data-label="Mode"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>
+        <div class="ctl-strip" data-control="switch" data-param="filter_key_track" data-label="KeyTrk"></div>
+      </div>
     </div>
+    <!-- Filter Mod (0043): four fixed-source depths into cutoff (E006: no
+         source selectors). Plain four-fader row. -->
     <div class="panel" data-name="Filter Mod" data-layered>
       <div class="panel-header">FILTER MOD</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="vel_cutoff_depth" data-label="Vel"></div>
+        <div class="ctl" data-control="fader" data-param="cutoff_lfo1_depth" data-label="LFO1"></div>
+        <div class="ctl" data-control="fader" data-param="cutoff_lfo2_depth" data-label="LFO2"></div>
+        <div class="ctl" data-control="fader" data-param="cutoff_env_depth" data-label="Env1"></div>
+      </div>
     </div>
   </div>
 
