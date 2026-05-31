@@ -7,11 +7,19 @@
 
 use crate::{VxnMainThread, vxn_editor};
 use clack_extensions::gui::*;
+#[cfg(feature = "webview")]
+use clack_extensions::timer::HostTimer;
 use clack_plugin::prelude::*;
 #[cfg(feature = "vizia")]
 use std::sync::Arc;
 #[cfg(feature = "vizia")]
 use vxn_app::ParamModel;
+
+/// 16 ms ≈ 60 Hz — fast enough to feel responsive on automation echo, slow
+/// enough that hosts won't clamp it. CLAP spec asks hosts to support at least
+/// 30 Hz, so this stays inside the supported envelope.
+#[cfg(feature = "webview")]
+const WEBVIEW_TIMER_PERIOD_MS: u32 = 16;
 
 /// Backing scale factor of the host's parent NSView, via its window (falling
 /// back to the main screen when the view isn't in a window yet). Used to pin
@@ -63,6 +71,13 @@ impl PluginGuiImpl for VxnMainThread<'_> {
     }
 
     fn destroy(&mut self) {
+        #[cfg(feature = "webview")]
+        if let Some((host_timer, id)) = self.timer.take() {
+            // Best-effort: a host that lost track of the timer between
+            // register and unregister isn't worth a panic — the editor is
+            // tearing down anyway.
+            let _ = host_timer.unregister_timer(&mut self.host, id);
+        }
         if let Some(mut handle) = self.gui.take() {
             handle.close();
         }
@@ -138,11 +153,25 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         #[cfg(feature = "webview")]
         {
             // The webview backend only needs the parent and a controller
-            // handle — model reads / view drain / tick all wait for the
-            // panel-binding tickets (0041+). For 0047 the placeholder HTML
-            // renders structure-only, so the bridge alone is enough.
-            let handle = crate::lock_mut(&self.controller).handle();
-            self.gui = Some(vxn_editor::open_editor(parent, handle));
+            // handle. View-event drain + controller tick are driven from the
+            // host's main-thread timer (registered below) instead of an
+            // editor-internal idle hook.
+            let ctrl_handle = crate::lock_mut(&self.controller).handle();
+            self.gui = Some(vxn_editor::open_editor(parent, ctrl_handle));
+
+            // Register a periodic main-thread timer so `on_timer` can drain
+            // ViewEvents into the WebView. Hosts without `timer-support`
+            // leave the editor static — UI gestures still flow (they post
+            // straight to the controller's channel), but DAW automation
+            // won't echo to the page until a tick lands. We don't fail
+            // GUI creation over it; it's a degraded mode, not a broken one.
+            if let Some(host_timer) = self.host.shared().info().get_extension::<HostTimer>() {
+                if let Ok(id) =
+                    host_timer.register_timer(&mut self.host, WEBVIEW_TIMER_PERIOD_MS)
+                {
+                    self.timer = Some((host_timer, id));
+                }
+            }
         }
         Ok(())
     }

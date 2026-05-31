@@ -11,7 +11,7 @@
    constants so the mapping stays obvious; pixel literals stay out of
    selectors so a future resize policy is one variable change. */
 :root {
-  /* Palette (matches vxn-ui's STYLE block). */
+  /* Palette (matches vxn-ui-vizia's STYLE block). */
   --face-bg: #2b2b2b;
   --panel-bg: #1c1c1c;
   --panel-border: #0e0e0e;
@@ -20,23 +20,37 @@
   --header-fg: #141414;
   --banner-fg: #a7cfe2;
   --text: #d6d6d6;
+  --ctl-label: #aeaeae;
+  --ctl-value: #d9701b;          /* orange readout — Vizia .ctl-value */
+  --track-bg: #0e0e0e;
+  --track-fill: #d9701b;
+  --thumb-bg: #c4c4c4;
+  --thumb-border: #ffffff;
+  --glyph: #888888;
+  --glyph-active: #a7cfe2;
 
-  /* Geometry (matches vxn-ui's PANEL_H / FADER_H / COL_H / DIAL plus
+  /* Geometry (matches vxn-ui-vizia's PANEL_H / FADER_H / COL_H / DIAL plus
      row + chrome heights derived from `target/vxn-layout.jsonl`). */
   --editor-w: 1024px;
   --pad-outer: 10px;
   --banner-h: 26px;
   --preset-bar-h: 30px;
-  --panel-h: 156px;          /* PANEL_H */
-  --col-h: 120px;            /* COL_H — per-control column inside a panel */
-  --fader-h: 74px;           /* FADER_H — fader travel */
-  --dial: 62px;              /* DIAL — selector-knob box */
+  --panel-h: 156px;           /* PANEL_H */
+  --col-h: 120px;             /* COL_H — per-control column inside a panel */
+  --fader-h: 74px;            /* FADER_H — fader travel */
+  --dial: 62px;               /* DIAL — selector-knob box */
   --panel-pad: 5px;
   --panel-vgap: 4px;
   --row-vgap: 8px;
   --row-hgap: 6px;
   --header-h: 16px;
   --header-toggle-slot: 16px; /* reserves the Chorus/Delay header switch (0045) */
+  --ctl-label-h: 10px;
+  --ctl-value-h: 10px;
+  --ctl-gap: 2px;
+  --fader-track-w: 4px;
+  --thumb-w: 18px;
+  --thumb-h: 8px;
 }
 
 html, body {
@@ -71,7 +85,6 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Vizia uses an em-dash via the .banner class on a Label; keep parity. */
 }
 
 /* Empty slot. The vizia editor's preset bar overlays this during the
@@ -95,18 +108,15 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: var(--panel-vgap);
-  min-width: 0; /* let flex shrink override intrinsic content width */
-  flex: 1 1 0;  /* default: equal share */
+  min-width: 0;
+  flex: 1 1 0;
   box-sizing: border-box;
 }
 
-/* Layered panels switch their per-patch controls between Upper / Lower at
-   the edit-layer toggle (0041+ wires it). Marked here so the JS panel
-   modules can find them by attribute. */
 .panel[data-layered] {}
 
 /* Per-row stretch shares — pulled from `panel_view`'s `match title` block
-   in `crates/vxn-ui/src/lib.rs:2791`. flex-basis is 0 so `flex-grow`
+   in `crates/vxn-ui-vizia/src/lib.rs`. flex-basis is 0 so `flex-grow`
    gives a pure ratio. Bend is the only fixed-width panel. */
 .row-1 .panel[data-name="LFO 1"]  { flex-grow: 1.2; }
 .row-1 .panel[data-name="LFO 2"]  { flex-grow: 0.7; }
@@ -120,12 +130,7 @@ html, body {
 .row-2 .panel[data-name="Filter"]     { flex-grow: 1.15; }
 .row-2 .panel[data-name="Filter Mod"] { flex-grow: 1.0; }
 
-/* Row 3: four equal stretchers + a fixed-width Bend. */
-.row-3 .panel[data-name="Bend"] {
-  flex: 0 0 54px;
-}
-
-/* Row 4 is all-equal (Keys, Voice, Chorus, Delay, Master). Default share. */
+.row-3 .panel[data-name="Bend"] { flex: 0 0 54px; }
 
 .panel-header {
   height: var(--header-h);
@@ -138,12 +143,8 @@ html, body {
   align-items: center;
   justify-content: center;
   text-transform: uppercase;
-  /* `text-transform` mirrors vxn-ui's `up()` helper — source strings stay
-     mixed-case for matching / readability. */
 }
 
-/* Chorus / Delay lift their On bool into the header (0045 wires the
-   widget). Reserve the slot now so the grid doesn't shift later. */
 .panel[data-header-toggle] .panel-header {
   justify-content: flex-start;
   padding-left: 3px;
@@ -157,14 +158,136 @@ html, body {
 .panel[data-header-toggle] .panel-header-title {
   flex: 1 1 auto;
   text-align: center;
-  /* Pull title back to optical center despite the leading toggle slot. */
   margin-right: var(--header-toggle-slot);
 }
 
 .panel-body {
   flex: 1 1 auto;
   min-height: 0;
-  /* 0041+ populates with per-control columns (faders, dials, switches). */
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+  justify-content: space-evenly;
+}
+
+/* ── Control primitives (0041) ──────────────────────────────────────────── */
+
+/* Common cell — a vertical stack of label, control, value. */
+.ctl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--ctl-gap);
+  height: var(--col-h);
+  min-width: 0;
+}
+
+.ctl-label {
+  font-size: 8px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+}
+
+.ctl-value {
+  font-size: 8px;
+  color: var(--ctl-value);
+  height: var(--ctl-value-h);
+  line-height: var(--ctl-value-h);
+  /* Pin width so the cell doesn't jitter when text length changes. */
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Fader — vertical track + thumb. Pointer ops issue Begin/EndGesture
+   brackets so the host's automation lane records as one event, not a
+   pixel storm. */
+.ctl-fader {
+  position: relative;
+  width: var(--thumb-w);
+  height: var(--fader-h);
+  cursor: ns-resize;
+  /* Hit area extends slightly past the track so a near-miss still grabs. */
+  touch-action: none;
+}
+.ctl-fader-track {
+  position: absolute;
+  left: calc((var(--thumb-w) - var(--fader-track-w)) / 2);
+  top: 0;
+  width: var(--fader-track-w);
+  height: 100%;
+  background: var(--track-bg);
+  border-radius: 2px;
+  /* Centre tick — useful on bipolar params (coarse, fine, etc.) but harmless
+     on unipolar (the tick lands exactly at 0.5 either way). */
+}
+.ctl-fader-track::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  top: 50%;
+  height: 1px;
+  background: #3a3a3a;
+}
+.ctl-fader-thumb {
+  position: absolute;
+  left: 0;
+  width: var(--thumb-w);
+  height: var(--thumb-h);
+  background: var(--thumb-bg);
+  border: 1px solid var(--thumb-border);
+  border-radius: 1px;
+  transform: translateY(-50%);
+  top: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.15);
+}
+.ctl-fader.dragging .ctl-fader-thumb {
+  box-shadow: 0 0 6px var(--ctl-value);
+}
+
+/* Waveform selector — square dial with N glyphs arranged on the arc. Click a
+   glyph to select. Port of vxn-ui-vizia's wave-glyph layout (selector knob). */
+.ctl-wave {
+  position: relative;
+  width: var(--dial);
+  height: var(--dial);
+}
+.ctl-wave-glyph {
+  position: absolute;
+  width: 16px;
+  height: 12px;
+  /* Position resolved per-variant by `--gx` / `--gy` set in JS via inline
+     style — keeps the glyph layout one place to change. */
+  left: calc(var(--gx) - 8px);
+  top: calc(var(--gy) - 6px);
+  color: var(--glyph);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ctl-wave-glyph.active {
+  color: var(--glyph-active);
+}
+.ctl-wave-glyph svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.ctl-wave-glyph svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 </style>
 </head>
@@ -185,9 +308,19 @@ html, body {
       <div class="panel-header">LFO 2</div>
       <div class="panel-body"></div>
     </div>
+    <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —
+         the edit-layer toggle lands with the Voice panel in 0045. The faders
+         resolve by descriptor name, not CLAP id, so a `vxn_app::PatchParam`
+         reorder doesn't desync the HTML. -->
     <div class="panel" data-name="Osc 1" data-layered>
       <div class="panel-header">OSC 1</div>
-      <div class="panel-body"></div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="osc1_wave" data-label="Wave"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_octave" data-label="Oct"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_coarse" data-label="Semi"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_fine" data-label="Fine"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_pw" data-label="PW"></div>
+      </div>
     </div>
     <div class="panel" data-name="Osc 2" data-layered>
       <div class="panel-header">OSC 2</div>
@@ -280,17 +413,218 @@ html, body {
 </div>
 
 <script>
-  // Bridge object: pages call window.vxn.send({op:'...',...}) to post a
-  // UiEvent at the controller; Rust pushes ViewEvents back by calling
-  // window.vxn.onViewEvent(ev). For 0040 the page is structure-only — 0041+
-  // attaches per-panel handlers.
-  window.vxn = {
-    send: function (msg) {
-      try { window.ipc.postMessage(JSON.stringify(msg)); }
-      catch (e) { console.warn('vxn.send failed', e); }
-    },
-    onViewEvent: function (ev) { console.log('vxn:view', ev); },
+// ─── Bridge bootstrap ──────────────────────────────────────────────────────
+//
+// `window.vxn.send({op,...})` posts a UiEvent at the controller through wry's
+// IPC handler; `window.vxn.onViewEvent(ev)` is the entry point Rust calls
+// via `webview.evaluate_script` for each ViewEvent the controller emits.
+//
+// `window.vxn.params` is the param descriptor table — Rust splices its JSON
+// in via the `__PARAMS_JSON__` placeholder below at editor-open time. Keys
+// are CLAP ids (numeric); the page builds a name → id index in `init()`.
+
+window.vxn = {
+  send: function (msg) {
+    try { window.ipc.postMessage(JSON.stringify(msg)); }
+    catch (e) { console.warn('vxn.send failed', e); }
+  },
+  onViewEvent: function (ev) { /* re-bound by init() below */ },
+  params: __PARAMS_JSON__,
+};
+
+// ─── Waveform glyphs ───────────────────────────────────────────────────────
+//
+// Polylines in a [0, 1]² box (y down). Ported from `wave_points` in
+// vxn-ui-vizia/src/lib.rs — coordinates only, no SVG-specific tweaks.
+const WAVE_GLYPHS = {
+  'Sine': (() => {
+    const pts = [];
+    for (let k = 0; k <= 16; k++) {
+      const t = k / 16;
+      pts.push([t, 0.5 - 0.38 * Math.sin(t * Math.PI * 2)]);
+    }
+    return pts;
+  })(),
+  'Triangle': [[0, 0.85], [0.5, 0.15], [1, 0.85]],
+  'Tri':      [[0, 0.85], [0.5, 0.15], [1, 0.85]],
+  'Saw':      [[0, 0.85], [0.5, 0.15], [0.5, 0.85], [1, 0.15]],
+  'Saw+':     [[0, 0.85], [0.5, 0.15], [0.5, 0.85], [1, 0.15]],
+  'Saw-':     [[0, 0.15], [0.5, 0.85], [0.5, 0.15], [1, 0.85]],
+  'Pulse':    [[0, 0.85], [0, 0.15], [0.5, 0.15], [0.5, 0.85], [1, 0.85]],
+  'Square':   [[0, 0.85], [0, 0.15], [0.5, 0.15], [0.5, 0.85], [1, 0.85]],
+  'S&H':      [[0, 0.6], [0.28, 0.6], [0.28, 0.2], [0.56, 0.2], [0.56, 0.8], [0.82, 0.8], [0.82, 0.45], [1, 0.45]],
+};
+
+function glyphSvg(label) {
+  const pts = WAVE_GLYPHS[label];
+  if (!pts) return label; // fall back to text label for non-waveform enums
+  const d = pts.map((p, i) => (i === 0 ? 'M' : 'L') + (p[0] * 100).toFixed(1) + ' ' + (p[1] * 100).toFixed(1)).join(' ');
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none"><path d="${d}"/></svg>`;
+}
+
+// ─── Control primitives ────────────────────────────────────────────────────
+
+// Per-control state, indexed by CLAP id. `update(plain, norm, display)` is
+// the entry point the ParamChanged dispatch calls. `el` is the cell root.
+const CONTROLS = new Map();
+
+function makeFader(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  el.innerHTML = `
+    <div class="ctl-label">${label.toUpperCase()}</div>
+    <div class="ctl-fader">
+      <div class="ctl-fader-track"></div>
+      <div class="ctl-fader-thumb"></div>
+    </div>
+    <div class="ctl-value">—</div>
+  `;
+  const fader = el.querySelector('.ctl-fader');
+  const thumb = el.querySelector('.ctl-fader-thumb');
+  const valueEl = el.querySelector('.ctl-value');
+  let dragging = false;
+
+  function setThumb(norm) {
+    // Norm 0 = bottom, 1 = top. Track height = element height; thumb is
+    // positioned by `top` percentage with translateY(-50%) centring.
+    const pct = (1 - Math.max(0, Math.min(1, norm))) * 100;
+    thumb.style.top = pct + '%';
+  }
+
+  function pointerNorm(ev) {
+    const r = fader.getBoundingClientRect();
+    return 1 - (ev.clientY - r.top) / r.height;
+  }
+
+  fader.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    dragging = true;
+    fader.classList.add('dragging');
+    fader.setPointerCapture(ev.pointerId);
+    window.vxn.send({ op: 'begin_gesture', id });
+    const n = Math.max(0, Math.min(1, pointerNorm(ev)));
+    window.vxn.send({ op: 'set_param_norm', id, norm: n });
+  });
+  fader.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const n = Math.max(0, Math.min(1, pointerNorm(ev)));
+    window.vxn.send({ op: 'set_param_norm', id, norm: n });
+  });
+  const endDrag = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    fader.classList.remove('dragging');
+    try { fader.releasePointerCapture(ev.pointerId); } catch (e) {}
+    window.vxn.send({ op: 'end_gesture', id });
   };
+  fader.addEventListener('pointerup', endDrag);
+  fader.addEventListener('pointercancel', endDrag);
+
+  return {
+    update(plain, norm, display) {
+      if (!dragging) setThumb(norm);
+      valueEl.textContent = display;
+    },
+  };
+}
+
+function makeWave(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  const variants = desc.variants || [];
+  el.innerHTML = `
+    <div class="ctl-label">${label.toUpperCase()}</div>
+    <div class="ctl-wave"></div>
+    <div class="ctl-value">—</div>
+  `;
+  const dial = el.querySelector('.ctl-wave');
+  const valueEl = el.querySelector('.ctl-value');
+
+  // Arrange glyphs on an arc around the dial centre. 0 at top, going
+  // clockwise. Radius slightly inside the dial box so glyph edges stay
+  // inside the bounds.
+  const radius = 22;
+  const cx = 31, cy = 31;
+  const glyphEls = variants.map((v, i) => {
+    const t = variants.length === 1 ? 0 : (i / (variants.length - 1));
+    // Spread across (-120°..120°) so the glyphs span the bottom of the dial,
+    // matching the Vizia wave selector's arc.
+    const angle = (-120 + 240 * t) * Math.PI / 180;
+    const gx = cx + radius * Math.sin(angle);
+    const gy = cy - radius * Math.cos(angle);
+    const g = document.createElement('div');
+    g.className = 'ctl-wave-glyph';
+    g.style.setProperty('--gx', gx + 'px');
+    g.style.setProperty('--gy', gy + 'px');
+    g.innerHTML = glyphSvg(v);
+    g.title = v;
+    g.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      // Bracket the discrete write so the host records one edit, not zero.
+      window.vxn.send({ op: 'begin_gesture', id });
+      window.vxn.send({ op: 'set_param', id, plain: i });
+      window.vxn.send({ op: 'end_gesture', id });
+    });
+    dial.appendChild(g);
+    return g;
+  });
+
+  return {
+    update(plain, norm, display) {
+      const idx = Math.round(plain);
+      glyphEls.forEach((g, i) => g.classList.toggle('active', i === idx));
+      valueEl.textContent = display;
+    },
+  };
+}
+
+// ─── Init + dispatch ───────────────────────────────────────────────────────
+
+function paramIdByName(name) {
+  for (const k in window.vxn.params) {
+    if (window.vxn.params[k].name === name) return parseInt(k, 10);
+  }
+  return null;
+}
+
+function init() {
+  // Walk every mount point and instantiate the right primitive.
+  document.querySelectorAll('.ctl[data-control]').forEach((el) => {
+    const name = el.dataset.param;
+    const id = paramIdByName(name);
+    if (id == null) {
+      console.warn('vxn: no param descriptor for', name);
+      return;
+    }
+    const desc = window.vxn.params[id];
+    let ctl = null;
+    switch (el.dataset.control) {
+      case 'fader': ctl = makeFader(el, id, desc); break;
+      case 'wave':  ctl = makeWave(el, id, desc); break;
+      default:
+        console.warn('vxn: unknown control type', el.dataset.control);
+        return;
+    }
+    CONTROLS.set(id, ctl);
+  });
+
+  // Dispatch incoming ViewEvents from Rust. ParamChanged routes by id;
+  // anything else logged for now (0042+ wires status, key-mode, preset
+  // events into their respective UI areas).
+  window.vxn.onViewEvent = function (ev) {
+    if (ev.kind === 'param_changed') {
+      const ctl = CONTROLS.get(ev.id);
+      if (ctl) ctl.update(ev.plain, ev.norm, ev.display);
+      return;
+    }
+    // Uncomment for verbose tracing during development:
+    // console.log('vxn:view', ev);
+  };
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 </script>
 </body>
 </html>

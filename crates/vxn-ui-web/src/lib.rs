@@ -22,7 +22,8 @@ use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle as RwhWindowHandle,
 };
 use vxn_app::{
-    ControllerHandle, EditorBackend, KeyMode, Layer, ParamId, PresetSource, UiEvent, ViewEvent,
+    ControllerHandle, EditorBackend, KeyMode, Layer, ParamDesc, ParamId, ParamKind, PresetSource,
+    TOTAL_PARAMS, UiEvent, ViewEvent, desc_for_clap_id,
 };
 use wry::{Rect, WebView, WebViewBuilder};
 use wry::dpi::{LogicalPosition, LogicalSize};
@@ -85,12 +86,13 @@ impl EditorBackend for WebEditor {
 }
 
 /// Build the WebView under `parent`, wire the IPC handler to `ctrl`, and load
-/// the placeholder page. `parent` is the same raw pointer the host hands the
+/// the faceplate page. `parent` is the same raw pointer the host hands the
 /// clack shell in `gui::set_parent` (NSView / HWND / xcb-window-id).
 pub fn open_editor(parent: *mut c_void, ctrl: ControllerHandle) -> EditorHandle {
     let parent = ParentWindow { raw: build_raw(parent) };
+    let html = build_faceplate_html();
     let webview = WebViewBuilder::new_as_child(&parent)
-        .with_html(PLACEHOLDER_HTML)
+        .with_html(html)
         .with_bounds(Rect {
             position: LogicalPosition::new(0i32, 0i32).into(),
             size: LogicalSize::new(EDITOR_WIDTH, EDITOR_HEIGHT).into(),
@@ -103,6 +105,62 @@ pub fn open_editor(parent: *mut c_void, ctrl: ControllerHandle) -> EditorHandle 
         .build()
         .expect("wry WebView build failed");
     EditorHandle { webview }
+}
+
+/// Splice the runtime param-descriptor JSON into the faceplate template. The
+/// page reads it as `window.vxn.params = {...}`, a CLAP-id-keyed map of
+/// `{name, label, kind, min, max, default, taper, unit, variants?}`. JSON
+/// generation is one place so a future schema bump (e.g. adding a `module`
+/// field) stays self-contained.
+fn build_faceplate_html() -> String {
+    PLACEHOLDER_HTML.replace("__PARAMS_JSON__", &build_params_json())
+}
+
+fn build_params_json() -> String {
+    let entries: Vec<String> = (0..TOTAL_PARAMS)
+        .filter_map(|id| desc_for_clap_id(id).map(|d| (id, d)))
+        .map(|(id, d)| format!(r#""{id}":{}"#, descriptor_to_json(d)))
+        .collect();
+    format!("{{{}}}", entries.join(","))
+}
+
+fn descriptor_to_json(d: &ParamDesc) -> String {
+    use serde_json::json;
+    let mut v = json!({
+        "name": d.name,
+        "label": d.label,
+        "min": d.min,
+        "max": d.max,
+        "default": d.default,
+    });
+    let obj = v.as_object_mut().expect("json object");
+    match d.kind {
+        ParamKind::Float { unit, taper } => {
+            obj.insert("kind".into(), json!("float"));
+            obj.insert("unit".into(), json!(unit));
+            obj.insert("taper".into(), json!(taper_to_json(taper)));
+        }
+        ParamKind::Int { unit } => {
+            obj.insert("kind".into(), json!("int"));
+            obj.insert("unit".into(), json!(unit));
+        }
+        ParamKind::Bool => {
+            obj.insert("kind".into(), json!("bool"));
+        }
+        ParamKind::Enum { variants } => {
+            obj.insert("kind".into(), json!("enum"));
+            obj.insert("variants".into(), json!(variants));
+        }
+    }
+    v.to_string()
+}
+
+fn taper_to_json(t: vxn_app::Taper) -> serde_json::Value {
+    use serde_json::json;
+    match t {
+        vxn_app::Taper::Linear => json!({"kind": "linear"}),
+        vxn_app::Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
+    }
 }
 
 // ── Parent-window adapter ───────────────────────────────────────────────────
@@ -502,5 +560,87 @@ mod tests {
         assert!(PLACEHOLDER_HTML.contains("window.vxn"));
         assert!(PLACEHOLDER_HTML.contains("window.ipc.postMessage"));
         assert!(PLACEHOLDER_HTML.contains("onViewEvent"));
+    }
+
+    // ── Osc 1 control mount points (0041) ──────────────────────────────────
+
+    #[test]
+    fn osc1_panel_has_five_control_cells() {
+        // Wave (rotary) + four faders. Param names are descriptor `name`s
+        // so a `PatchParam` enum reorder doesn't break the HTML.
+        for (kind, name, label) in [
+            ("wave",  "osc1_wave",   "Wave"),
+            ("fader", "osc1_octave", "Oct"),
+            ("fader", "osc1_coarse", "Semi"),
+            ("fader", "osc1_fine",   "Fine"),
+            ("fader", "osc1_pw",     "PW"),
+        ] {
+            let marker = format!(
+                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
+            );
+            assert!(
+                PLACEHOLDER_HTML.contains(&marker),
+                "Osc 1 mount point missing: {marker}",
+            );
+        }
+        // Total cells just inside Osc 1 — count occurrences of the unique
+        // panel root marker followed somewhere by data-control.
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="fader""#).count(),
+            4,
+            "Osc 1 should have 4 fader cells",
+        );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="wave""#).count(),
+            1,
+            "Osc 1 should have 1 wave cell",
+        );
+    }
+
+    #[test]
+    fn faceplate_has_params_json_placeholder() {
+        // The template carries `__PARAMS_JSON__` for runtime descriptor
+        // injection; build_faceplate_html() splices it.
+        assert!(PLACEHOLDER_HTML.contains("__PARAMS_JSON__"));
+        let html = build_faceplate_html();
+        assert!(!html.contains("__PARAMS_JSON__"), "placeholder must be replaced");
+        // Page references the bridge property; sanity check the rendered HTML
+        // still contains the field literal.
+        assert!(html.contains("params:"));
+        // Splice the params JSON directly and prove its shape.
+        let json = build_params_json();
+        let v: serde_json::Value = serde_json::from_str(&json).expect("descriptor JSON");
+        // Upper Osc1Wave is CLAP id 0.
+        assert_eq!(v["0"]["name"], "osc1_wave");
+        assert_eq!(v["0"]["kind"], "enum");
+        assert_eq!(v["0"]["variants"][0], "Sine");
+    }
+
+    #[test]
+    fn descriptor_json_covers_every_kind() {
+        // Walk every descriptor and confirm `kind` is one of the four expected
+        // discriminants. Catches a future ParamKind variant slipping through
+        // without a JSON-side handler.
+        let v: serde_json::Value = serde_json::from_str(&build_params_json()).expect("params JSON");
+        let obj = v.as_object().expect("object root");
+        let mut seen_float = false;
+        let mut seen_int = false;
+        let mut seen_bool = false;
+        let mut seen_enum = false;
+        for (_id, desc) in obj {
+            let kind = desc["kind"].as_str().unwrap_or("");
+            assert!(
+                matches!(kind, "float" | "int" | "bool" | "enum"),
+                "unknown kind \"{kind}\" in {desc}",
+            );
+            match kind {
+                "float" => seen_float = true,
+                "int" => seen_int = true,
+                "bool" => seen_bool = true,
+                "enum" => seen_enum = true,
+                _ => {}
+            }
+        }
+        assert!(seen_float && seen_int && seen_bool && seen_enum);
     }
 }

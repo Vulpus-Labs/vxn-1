@@ -32,6 +32,8 @@ compile_error!(
 
 use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
+#[cfg(feature = "webview")]
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::Match;
 use clack_plugin::events::event_types::TransportFlags;
@@ -76,6 +78,11 @@ impl Plugin for VxnPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginGui>();
+        // Timer extension drives the webview's main-thread tick + view-event
+        // drain pump (0041). Vizia's editor has its own on_idle hook, so the
+        // extension is webview-only.
+        #[cfg(feature = "webview")]
+        builder.register::<PluginTimer>();
     }
 }
 
@@ -96,20 +103,26 @@ impl DefaultPluginFactory for VxnPlugin {
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
         let (controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(EnginePresetStore::new()));
         let controller = Arc::new(Mutex::new(controller));
-        // The editor's `on_idle` drains view-events from `view_rx` and also
-        // pumps the controller via `tick` so UI-posted intents land before
-        // the next host flush.
+        // Vizia's `on_idle` drains view-events from `view_rx` and pumps the
+        // controller via `tick`; the webview backend does the same from its
+        // CLAP timer callback (`on_timer`).
         let view_rx = Arc::new(Mutex::new(view_rx));
         let tick: Tick = {
             let c = Arc::clone(&controller);
             Arc::new(move || lock_mut(&c).tick())
         };
+        // The host handle is needed to register the webview timer; under
+        // vizia it would just sit idle, but keep it stored uniformly for
+        // simplicity (and so vizia could opt into a timer later without a
+        // struct churn).
+        #[cfg(feature = "vizia")]
+        let _ = &host;
         Ok(VxnMainThread {
             shared,
             controller,
@@ -117,6 +130,10 @@ impl DefaultPluginFactory for VxnPlugin {
             corpus,
             tick,
             gui: None,
+            #[cfg(feature = "webview")]
+            host,
+            #[cfg(feature = "webview")]
+            timer: None,
         })
     }
 }
@@ -160,9 +177,45 @@ pub struct VxnMainThread<'a> {
     tick: Tick,
     /// The live editor window, while the GUI is open.
     gui: Option<vxn_editor::EditorHandle>,
+    /// Host main-thread handle. The webview's `on_timer` uses it to call
+    /// `HostTimer::register_timer` / `unregister_timer`.
+    #[cfg(feature = "webview")]
+    host: HostMainThreadHandle<'a>,
+    /// Webview editor's main-thread timer (id + the host's timer extension),
+    /// driving the view-event drain + controller tick. `None` when the GUI is
+    /// closed or the host doesn't support `timer-support`.
+    #[cfg(feature = "webview")]
+    timer: Option<(HostTimer, TimerId)>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
+
+#[cfg(feature = "webview")]
+impl<'a> VxnMainThread<'a> {
+    /// Drain the controller's view-event queue and forward each event into
+    /// the live WebView. Called from the timer tick; safe to call when there
+    /// is no GUI (just no-ops).
+    fn drain_view_events(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let rx = lock_mut(&self.view_rx);
+        while let Ok(ev) = rx.try_recv() {
+            handle.push_view_event(ev);
+        }
+    }
+}
+
+#[cfg(feature = "webview")]
+impl<'a> PluginTimerImpl for VxnMainThread<'a> {
+    fn on_timer(&mut self, _id: TimerId) {
+        // Pull UI-posted intents into the model first so the ViewEvents they
+        // generate land in `view_rx` before we drain it — saves a tick of
+        // round-trip latency on a knob drag.
+        lock_mut(&self.controller).tick();
+        self.drain_view_events();
+    }
+}
 
 /// Audio-thread processor: owns the synth engine, a local parameter mirror and
 /// render scratch.
