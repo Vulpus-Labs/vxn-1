@@ -28,6 +28,11 @@
   --thumb-border: #ffffff;
   --glyph: #888888;
   --glyph-active: #a7cfe2;
+  --knob-face: #2a2a2a;
+  --knob-rim: #444444;
+  --knob-dimple: #222222;
+  --knob-dimple-rim: #333333;
+  --knob-indicator: #a7cfe2;       /* matches --glyph-active */
 
   /* Geometry (matches vxn-ui-vizia's PANEL_H / FADER_H / COL_H / DIAL plus
      row + chrome heights derived from `target/vxn-layout.jsonl`). */
@@ -51,6 +56,7 @@
   --fader-track-w: 4px;
   --thumb-w: 18px;
   --thumb-h: 8px;
+  --wave-knob-size: 64px;     /* matches the prototype's "Compact" variant */
 }
 
 html, body {
@@ -193,30 +199,22 @@ html, body {
   line-height: var(--ctl-label-h);
 }
 
-.ctl-value {
-  /* Absolute-positioned so the readout text — which can swing from "0"
-     to "-4.321 ct" — never contributes to the cell's intrinsic width.
-     A `white-space: nowrap` flex child would otherwise inflate the
-     column's min-content and push neighbours sideways every automation
-     frame. */
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  font-size: 8px;
-  color: var(--ctl-value);
-  height: var(--ctl-value-h);
-  line-height: var(--ctl-value-h);
-  text-align: center;
-  white-space: nowrap;
-  overflow: visible;            /* let long values spill rather than ellipsis */
+/* Floating value popup — one shared <div> across every control, anchored
+   at the pointer's entry / grab point in fixed coords so it floats above
+   the layout and can never push siblings around. Style matches the vizia
+   editor's `.value-pop` (dark fill, orange border). */
+.value-pop {
+  position: fixed;
+  display: none;
   pointer-events: none;
-  /* Hidden by default — readouts pop only on hover / drag. */
-  visibility: hidden;
-}
-.ctl:hover .ctl-value,
-.ctl.ctl-active .ctl-value {
-  visibility: visible;
+  background: #0e0e0e;
+  border: 1px solid var(--ctl-value);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 9px;
+  color: #f6f6f6;
+  white-space: nowrap;
+  z-index: 1000;
 }
 
 /* Fader — vertical track + thumb. Pointer ops issue Begin/EndGesture
@@ -267,48 +265,18 @@ html, body {
   box-shadow: 0 0 6px var(--ctl-value);
 }
 
-/* Waveform selector — square dial with N glyphs arranged on the arc. Click a
-   glyph to select. Port of vxn-ui-vizia's wave-glyph layout (selector knob). */
+/* Rotary waveform selector (0041). SVG-based: knob face + rotating
+   indicator + glyph labels arranged at the corners (SW/NW/NE/SE) outside
+   the rim. All visuals + hit-testing live in the SVG; no DOM children to
+   reflow. Layout stability comes for free — the dial occupies a fixed
+   square (--wave-knob-size) regardless of state. */
 .ctl-wave {
-  position: relative;
-  width: var(--dial);
-  height: var(--dial);
-  /* Faint outline keeps the dial's footprint discoverable even with no
-     glyphs lit — empty wave columns used to read as a missing control. */
-  border: 1px solid #2a2a2a;
-  border-radius: 50%;
-  box-sizing: border-box;
+  width: var(--wave-knob-size);
+  height: var(--wave-knob-size);
+  cursor: grab;
+  touch-action: none;
 }
-.ctl-wave-glyph {
-  position: absolute;
-  width: 22px;
-  height: 16px;
-  /* Position resolved per-variant by `--gx` / `--gy` set in JS via inline
-     style — keeps the glyph layout one place to change. */
-  left: calc(var(--gx) - 11px);
-  top: calc(var(--gy) - 8px);
-  color: var(--glyph);
-  cursor: pointer;
-}
-.ctl-wave-glyph.active {
-  color: var(--glyph-active);
-}
-/* Explicit width/height on the SVG element (not just CSS) — some WebKit
-   versions ignore CSS sizing on inline SVG and render at the 300×150
-   intrinsic default, overflowing the glyph box. */
-.ctl-wave-glyph svg {
-  width: 22px;
-  height: 16px;
-  display: block;
-  overflow: visible;
-}
-.ctl-wave-glyph svg path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
+.ctl-wave.dragging { cursor: grabbing; }
 </style>
 </head>
 <body>
@@ -452,9 +420,33 @@ window.vxn = {
   params: __PARAMS_JSON__,
 };
 
-// ─── Waveform glyphs ───────────────────────────────────────────────────────
+// ─── Floating value popup (single shared instance) ─────────────────────────
 //
-// Polylines in a [0, 1]² box (y down). Ported from `wave_points` in
+// One <div> per page, used by every control. Show/update/hide as the
+// pointer enters / drags / leaves. Anchored at the pointer's first
+// relevant position (entry for hover, grab for drag) so the popup stays
+// put while the indicator moves — matches the vizia editor's grabbed-cell
+// behaviour. `fixed` positioning + body-level mount means it can't push
+// any layout around or be clipped by a panel's overflow.
+const valuePop = (() => {
+  const el = document.createElement('div');
+  el.className = 'value-pop';
+  document.body.appendChild(el);
+  return {
+    show(text, clientX, clientY) {
+      el.textContent = text;
+      el.style.left = (clientX + 12) + 'px';
+      el.style.top  = (clientY - 8)  + 'px';
+      el.style.display = 'block';
+    },
+    update(text) { el.textContent = text; },
+    hide() { el.style.display = 'none'; },
+  };
+})();
+
+// ─── Waveform glyph polylines ──────────────────────────────────────────────
+//
+// In a [0, 1]² box (y down). Ported from `wave_points` in
 // vxn-ui-vizia/src/lib.rs — coordinates only, no SVG-specific tweaks.
 const WAVE_GLYPHS = {
   'Sine': (() => {
@@ -475,15 +467,12 @@ const WAVE_GLYPHS = {
   'S&H':      [[0, 0.6], [0.28, 0.6], [0.28, 0.2], [0.56, 0.2], [0.56, 0.8], [0.82, 0.8], [0.82, 0.45], [1, 0.45]],
 };
 
-function glyphSvg(label) {
+function glyphPath(label, w, h) {
   const pts = WAVE_GLYPHS[label];
-  if (!pts) {
-    // Fall back to a text label for non-waveform enums (Filter Mode, etc.)
-    // so the dial isn't silently empty.
-    return `<span style="font-size:8px;color:inherit">${label}</span>`;
-  }
-  const d = pts.map((p, i) => (i === 0 ? 'M' : 'L') + (p[0] * 22).toFixed(1) + ' ' + (p[1] * 16).toFixed(1)).join(' ');
-  return `<svg width="22" height="16" viewBox="0 0 22 16"><path d="${d}"/></svg>`;
+  if (!pts) return null;
+  return pts.map((p, i) =>
+    (i === 0 ? 'M' : 'L') + (p[0] * w).toFixed(2) + ' ' + (p[1] * h).toFixed(2)
+  ).join(' ');
 }
 
 // ─── Control primitives ────────────────────────────────────────────────────
@@ -491,6 +480,10 @@ function glyphSvg(label) {
 // Per-control state, indexed by CLAP id. `update(plain, norm, display)` is
 // the entry point the ParamChanged dispatch calls. `el` is the cell root.
 const CONTROLS = new Map();
+
+// One detent = one variant step. The drag sensitivity: pixels of vertical
+// pointer travel per detent. ~30 feels close to hardware knobs.
+const PIXELS_PER_DETENT = 30;
 
 function makeFader(el, id, desc) {
   const label = el.dataset.label || desc.label;
@@ -500,12 +493,12 @@ function makeFader(el, id, desc) {
       <div class="ctl-fader-track"></div>
       <div class="ctl-fader-thumb"></div>
     </div>
-    <div class="ctl-value">—</div>
   `;
   const fader = el.querySelector('.ctl-fader');
   const thumb = el.querySelector('.ctl-fader-thumb');
-  const valueEl = el.querySelector('.ctl-value');
   let dragging = false;
+  let hovered = false;
+  let lastDisplay = '';
 
   function setThumb(norm) {
     // Norm 0 = bottom, 1 = top. Track height = element height; thumb is
@@ -519,16 +512,27 @@ function makeFader(el, id, desc) {
     return Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height));
   }
 
+  fader.addEventListener('pointerenter', (ev) => {
+    if (dragging) return;
+    hovered = true;
+    valuePop.show(lastDisplay, ev.clientX, ev.clientY);
+  });
+  fader.addEventListener('pointerleave', () => {
+    hovered = false;
+    if (!dragging) valuePop.hide();
+  });
+
   fader.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
     dragging = true;
     fader.classList.add('dragging');
-    el.classList.add('ctl-active'); // pin the value readout open while dragging
     fader.setPointerCapture(ev.pointerId);
     window.vxn.send({ op: 'begin_gesture', id });
     const n = pointerNorm(ev);
     setThumb(n);                                          // local: no round-trip wait
     window.vxn.send({ op: 'set_param_norm', id, norm: n });
+    // Re-anchor the popup at the grab point.
+    valuePop.show(lastDisplay, ev.clientX, ev.clientY);
   });
   fader.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
@@ -540,9 +544,9 @@ function makeFader(el, id, desc) {
     if (!dragging) return;
     dragging = false;
     fader.classList.remove('dragging');
-    el.classList.remove('ctl-active');
     try { fader.releasePointerCapture(ev.pointerId); } catch (e) {}
     window.vxn.send({ op: 'end_gesture', id });
+    if (!hovered) valuePop.hide();
   };
   fader.addEventListener('pointerup', endDrag);
   fader.addEventListener('pointercancel', endDrag);
@@ -555,55 +559,199 @@ function makeFader(el, id, desc) {
       // converge on the same value, so the thumb stays glued to the
       // cursor without flicker.
       setThumb(norm);
-      valueEl.textContent = display;
+      lastDisplay = display;
+      if (hovered || dragging) valuePop.update(display);
     },
   };
 }
 
+// ─── Rotary waveform knob ──────────────────────────────────────────────────
+//
+// Single SVG: knob face + rotating indicator + glyph labels at the four
+// corners (SW/NW/NE/SE) outside the rim. Drag rotation = vertical pointer
+// motion (up = CW, down = CCW), clamped at endpoints, snapped to the
+// nearest detent. Click a glyph for direct selection.
+//
+// Indicator angle is a strictly monotonic function of value:
+//   displayed = SW_DEG + value * STEP_DEG    (SW = 225°, STEP = +90° CW)
+// so CSS rotate transitions always travel along the populated arc and
+// never enter the dead bottom 90°. The "long way back" from the last
+// variant to the first (e.g. Pulse → Sine sweeps -270° CCW through NE,
+// NW) is correct here — it's the only legal path for a clamped knob.
+//
+// **Future**: when intermediate / cross-fade waveforms ship, this becomes
+// a continuous `[0, N)` knob with wrap-around. The angle math already
+// works for fractional values; only the drag clamp + glyph-active logic
+// need a `wrap: true` branch.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 function makeWave(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
-  el.innerHTML = `
-    <div class="ctl-label">${label.toUpperCase()}</div>
-    <div class="ctl-wave"></div>
-    <div class="ctl-value">—</div>
-  `;
-  const dial = el.querySelector('.ctl-wave');
-  const valueEl = el.querySelector('.ctl-value');
+  el.innerHTML = `<div class="ctl-label">${label.toUpperCase()}</div>`;
 
-  // Arrange glyphs evenly around the dial, first at top (0°), going
-  // clockwise. For 4 waves that lands them at top / right / bottom / left;
-  // for 6 (LFO shapes) it spreads them around the circle without overlap.
-  // Radius is sized so a 22-wide glyph at the cardinal extremes stays just
-  // inside the 62 px dial bounds.
-  const radius = 19;
-  const cx = 31, cy = 31;
-  const glyphEls = variants.map((v, i) => {
-    const angle = (i / variants.length) * Math.PI * 2;
-    const gx = cx + radius * Math.sin(angle);
-    const gy = cy - radius * Math.cos(angle);
-    const g = document.createElement('div');
-    g.className = 'ctl-wave-glyph';
-    g.style.setProperty('--gx', gx + 'px');
-    g.style.setProperty('--gy', gy + 'px');
-    g.innerHTML = glyphSvg(v);
-    g.title = v;
+  const size = 64;
+  const cx = size / 2, cy = size / 2;
+  const knobR = 13;
+  const glyphR = 26;
+  const glyphW = 14, glyphH = 10;
+
+  // Glyph positions: SW, NW, NE, SE — corners of the dial, with the
+  // first variant (typically Sine) at SW. 90° per step, CW.
+  const VARIANT_DEG = [225, 315, 45, 135];
+  const SW_DEG = VARIANT_DEG[0];
+  const STEP_DEG = 90;
+
+  let value = 0;
+  let displayedAngle = SW_DEG;
+  let dragging = false;
+  let hovered = false;
+  let dragStartY = 0;
+  let dragStartValue = 0;
+  let lastDisplay = variants[0] || '';
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('width', size);
+  svg.setAttribute('height', size);
+  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+  svg.classList.add('ctl-wave');
+  el.appendChild(svg);
+
+  // Glyph labels at the corners. Transparent rect behind the path makes
+  // the whole label area clickable, not just the stroked pixels.
+  const glyphEls = variants.map((name, i) => {
+    const a = (VARIANT_DEG[i % VARIANT_DEG.length]) * Math.PI / 180;
+    const gx = cx + glyphR * Math.sin(a);
+    const gy = cy - glyphR * Math.cos(a);
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.setAttribute('transform',
+      `translate(${(gx - glyphW / 2).toFixed(2)} ${(gy - glyphH / 2).toFixed(2)})`);
+    g.setAttribute('cursor', 'pointer');
+
+    const hit = document.createElementNS(SVG_NS, 'rect');
+    hit.setAttribute('x', -3); hit.setAttribute('y', -3);
+    hit.setAttribute('width',  glyphW + 6);
+    hit.setAttribute('height', glyphH + 6);
+    hit.setAttribute('fill', 'transparent');
+    g.appendChild(hit);
+
+    const path = document.createElementNS(SVG_NS, 'path');
+    const d = glyphPath(name, glyphW, glyphH);
+    if (d) {
+      path.setAttribute('d', d);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke-width', 1.4);
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+    }
+    g.appendChild(path);
+
     g.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
-      // Bracket the discrete write so the host records one edit, not zero.
+      ev.stopPropagation();
       window.vxn.send({ op: 'begin_gesture', id });
       window.vxn.send({ op: 'set_param', id, plain: i });
       window.vxn.send({ op: 'end_gesture', id });
     });
-    dial.appendChild(g);
-    return g;
+
+    svg.appendChild(g);
+    return { g, path, name };
   });
+
+  // Knob face: rim + inner dimple, both purely visual.
+  const rim = document.createElementNS(SVG_NS, 'circle');
+  rim.setAttribute('cx', cx); rim.setAttribute('cy', cy);
+  rim.setAttribute('r', knobR);
+  rim.setAttribute('fill', 'var(--knob-face)');
+  rim.setAttribute('stroke', 'var(--knob-rim)');
+  rim.setAttribute('stroke-width', 1);
+  svg.appendChild(rim);
+
+  const dimple = document.createElementNS(SVG_NS, 'circle');
+  dimple.setAttribute('cx', cx); dimple.setAttribute('cy', cy);
+  dimple.setAttribute('r', knobR * 0.62);
+  dimple.setAttribute('fill', 'var(--knob-dimple)');
+  dimple.setAttribute('stroke', 'var(--knob-dimple-rim)');
+  dimple.setAttribute('stroke-width', 0.5);
+  svg.appendChild(dimple);
+
+  // Rotating indicator — a line from centre to rim, rotated by a <g>.
+  // CSS transition smooths automation moves between detents.
+  const indicatorG = document.createElementNS(SVG_NS, 'g');
+  indicatorG.setAttribute('transform-origin', `${cx} ${cy}`);
+  indicatorG.style.transition = 'transform 120ms ease-out';
+  const indicator = document.createElementNS(SVG_NS, 'line');
+  indicator.setAttribute('x1', cx); indicator.setAttribute('y1', cy);
+  indicator.setAttribute('x2', cx); indicator.setAttribute('y2', cy - knobR + 2);
+  indicator.setAttribute('stroke', 'var(--knob-indicator)');
+  indicator.setAttribute('stroke-width', 2);
+  indicator.setAttribute('stroke-linecap', 'round');
+  indicatorG.appendChild(indicator);
+  svg.appendChild(indicatorG);
+
+  // ── Hover + drag popup ─────────────────────────────────────────────────
+  svg.addEventListener('pointerenter', (ev) => {
+    if (dragging) return;
+    hovered = true;
+    valuePop.show(lastDisplay, ev.clientX, ev.clientY);
+  });
+  svg.addEventListener('pointerleave', () => {
+    hovered = false;
+    if (!dragging) valuePop.hide();
+  });
+
+  // ── Vertical-drag rotation (no wrap) ───────────────────────────────────
+  svg.addEventListener('pointerdown', (ev) => {
+    // Glyph hits stopPropagation; the knob face falls through to here.
+    ev.preventDefault();
+    dragging = true;
+    dragStartY = ev.clientY;
+    dragStartValue = value;
+    svg.classList.add('dragging');
+    svg.setPointerCapture(ev.pointerId);
+    window.vxn.send({ op: 'begin_gesture', id });
+    valuePop.show(lastDisplay, ev.clientX, ev.clientY);
+  });
+  svg.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const dy = dragStartY - ev.clientY;
+    const raw = dragStartValue + dy / PIXELS_PER_DETENT;
+    const v = Math.max(0, Math.min(variants.length - 1, Math.round(raw)));
+    if (v !== value) {
+      window.vxn.send({ op: 'set_param', id, plain: v });
+    }
+  });
+  const endDrag = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    svg.classList.remove('dragging');
+    try { svg.releasePointerCapture(ev.pointerId); } catch (e) {}
+    window.vxn.send({ op: 'end_gesture', id });
+    if (!hovered) valuePop.hide();
+  };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  function applyValue(v, display) {
+    value = v;
+    displayedAngle = SW_DEG + v * STEP_DEG;
+    indicatorG.setAttribute('transform', `rotate(${displayedAngle.toFixed(2)})`);
+    glyphEls.forEach((g, i) => {
+      g.path.setAttribute('stroke',
+        i === v ? 'var(--glyph-active)' : 'var(--glyph)');
+    });
+    lastDisplay = display;
+    if (hovered || dragging) valuePop.update(display);
+  }
+
+  // Seed the initial pose so the indicator + active-glyph state are right
+  // before the first ParamChanged echo lands.
+  applyValue(0, variants[0] || '');
 
   return {
     update(plain, norm, display) {
-      const idx = Math.round(plain);
-      glyphEls.forEach((g, i) => g.classList.toggle('active', i === idx));
-      valueEl.textContent = display;
+      const v = Math.max(0, Math.min(variants.length - 1, Math.round(plain)));
+      applyValue(v, display);
     },
   };
 }
