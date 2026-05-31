@@ -485,24 +485,25 @@ html, body {
         <div class="ctl-strip" data-control="switch" data-param="env2_shape" data-label="Shape"></div>
       </div>
     </div>
-    <!-- VCA (0043): AmpLfoSrc selects the tremolo source (multi-variant enum
-         → dropdown, matching vizia's `Ctl::Select`), Depth scales it. Gate
+    <!-- VCA (0043): AmpLfoSrc selects the tremolo source — vizia renders
+         `Ctl::Select` via `enum_list_body` (vertical stack of labelled
+         toggles), same shape as `Ctl::Buttons` (Oversample, AssignMode).
+         Map to our `buttongroup` primitive. Depth scales the source. Gate
          (AmpEnvBypass) drops to the strip. -->
     <div class="panel" data-name="VCA" data-layered>
       <div class="panel-header">VCA</div>
       <div class="panel-body">
-        <div class="ctl" data-control="dropdown" data-param="amp_lfo_src" data-label="LFO"></div>
+        <div class="ctl" data-control="buttongroup" data-param="amp_lfo_src" data-label="LFO"></div>
         <div class="ctl" data-control="fader" data-param="amp_lfo_depth" data-label="Depth"></div>
       </div>
       <div class="panel-strip">
         <div class="ctl-strip" data-control="switch" data-param="amp_env_bypass" data-label="Gate"></div>
       </div>
     </div>
-    <!-- Filter (0043): HPF/Cutoff/Reso/Drive faders + Mode dropdown (vizia
-         maps the multi-variant FilterMode to a Select, not a rotary — the
-         ticket text said rotary but the descriptor + vizia disagree, so we
-         follow the code). Slope (12/24 dB) and KeyTrk (bool) are strip
-         switches per `in_bottom_strip`. -->
+    <!-- Filter (0043): HPF/Cutoff/Reso/Drive faders + Mode button group
+         (vizia's `Ctl::Select` for FilterMode renders as a labelled-toggle
+         stack via `enum_list_body`). Slope (12/24 dB) and KeyTrk (bool)
+         are strip switches per `in_bottom_strip`. -->
     <div class="panel" data-name="Filter" data-layered>
       <div class="panel-header">FILTER</div>
       <div class="panel-body">
@@ -510,7 +511,7 @@ html, body {
         <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
         <div class="ctl" data-control="fader" data-param="resonance" data-label="Reso"></div>
         <div class="ctl" data-control="fader" data-param="drive" data-label="Drive"></div>
-        <div class="ctl" data-control="dropdown" data-param="filter_mode" data-label="Mode"></div>
+        <div class="ctl" data-control="buttongroup" data-param="filter_mode" data-label="Mode"></div>
       </div>
       <div class="panel-strip">
         <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>

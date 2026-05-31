@@ -655,17 +655,17 @@ mod tests {
             ("fader",  "env2_release", "R"),
             ("switch", "env2_shape",   "Shape"),
             // VCA
-            ("dropdown", "amp_lfo_src",    "LFO"),
-            ("fader",    "amp_lfo_depth",  "Depth"),
-            ("switch",   "amp_env_bypass", "Gate"),
+            ("buttongroup", "amp_lfo_src",    "LFO"),
+            ("fader",       "amp_lfo_depth",  "Depth"),
+            ("switch",      "amp_env_bypass", "Gate"),
             // Filter
-            ("fader",    "hpf_cutoff",       "HPF"),
-            ("fader",    "cutoff",           "Cutoff"),
-            ("fader",    "resonance",        "Reso"),
-            ("fader",    "drive",            "Drive"),
-            ("dropdown", "filter_mode",      "Mode"),
-            ("switch",   "filter_slope",     "Slope"),
-            ("switch",   "filter_key_track", "KeyTrk"),
+            ("fader",       "hpf_cutoff",       "HPF"),
+            ("fader",       "cutoff",           "Cutoff"),
+            ("fader",       "resonance",        "Reso"),
+            ("fader",       "drive",            "Drive"),
+            ("buttongroup", "filter_mode",      "Mode"),
+            ("switch",      "filter_slope",     "Slope"),
+            ("switch",      "filter_key_track", "KeyTrk"),
             // Filter Mod
             ("fader", "vel_cutoff_depth",  "Vel"),
             ("fader", "cutoff_lfo1_depth", "LFO1"),
@@ -695,7 +695,8 @@ mod tests {
         // Switches: 4 (Row 1: LFO Sync x2, Lfo1Free, NoiseColor)
         //         + 5 (Row 2: Env1Shape, Env2Shape, Gate, Slope, KeyTrk)
         //         = 9.
-        // Dropdowns: 2 (Row 2: AmpLfoSrc, FilterMode).
+        // Button groups: 2 (Row 2: AmpLfoSrc, FilterMode — vizia renders
+        //   `Ctl::Select` via `enum_list_body`, same shape as Buttons).
         assert_eq!(
             PLACEHOLDER_HTML.matches(r#"data-control="fader""#).count(),
             33,
@@ -712,9 +713,14 @@ mod tests {
             "expected 9 switch cells across Row 1 + Row 2",
         );
         assert_eq!(
-            PLACEHOLDER_HTML.matches(r#"data-control="dropdown""#).count(),
+            PLACEHOLDER_HTML.matches(r#"data-control="buttongroup""#).count(),
             2,
-            "expected 2 dropdown cells (VCA AmpLfoSrc, Filter Mode)",
+            "expected 2 buttongroup cells (VCA AmpLfoSrc, Filter Mode)",
+        );
+        assert_eq!(
+            PLACEHOLDER_HTML.matches(r#"data-control="dropdown""#).count(),
+            0,
+            "no dropdown cells expected in Row 1 + Row 2",
         );
     }
 
