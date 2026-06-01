@@ -25,7 +25,7 @@
 //! sibling [`crate::poly::PolyOtaLadder`] additionally ramps them per sample.
 
 use crate::math::fast_tanh;
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_4, PI};
 
 /// Filter response (lowpass / highpass / bandpass / notch). The actual tap-mix
 /// also depends on [`FilterSlope`] (2- vs 4-pole); see [`FilterMode::mix`].
@@ -101,10 +101,25 @@ fn sanitize(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
+/// TPT one-pole stage gain. The four-stage ladder self-oscillates at the
+/// cutoff frequency *in continuous time*, but the explicit `z⁻¹` on the
+/// resonance feedback path (`y4_prev` in [`OtaLadderKernel::tick`]) adds a
+/// `2π·fc/fs` phase lag around the loop. The four cascaded one-poles absorb
+/// that deficit by oscillating *below* their corner — observably flat by a
+/// few semitones in the kHz band at base sample rate, and dependent on the
+/// oversampling ratio.
+///
+/// To pin self-oscillation at the nominal cutoff regardless of `fs`, detune
+/// the prewarped pole upward by the inverse of the per-pole phase shift:
+/// each of the four poles must contribute `π·fc/(2fs)` less lag, i.e.
+/// `atan(fc / fc_pole) = π/4 − π·fc/(2fs)`, giving
+/// `fc_pole = fc / tan(π/4 − π·fc/(2fs))`. One extra `tan` per coeff update.
 #[inline]
 pub(crate) fn compute_g(cutoff_hz: f32, sample_rate: f32) -> f32 {
     let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
-    let wd = (PI * fc / sample_rate).tan();
+    let denom = (FRAC_PI_4 - PI * fc / (2.0 * sample_rate)).tan();
+    let fc_adj = (fc / denom).min(sample_rate * 0.49);
+    let wd = (PI * fc_adj / sample_rate).tan();
     (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
 }
 

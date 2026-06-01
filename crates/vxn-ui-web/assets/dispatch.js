@@ -3,7 +3,7 @@
 // Lowest-id name lookup — for a per-patch param this is the Upper-layer id
 // (id < patchCount); for a global it's the global id directly. Layer
 // rebinding (0045) translates Upper → Lower with `+patchCount`.
-function paramIdByName(name) {
+export function paramIdByName(name) {
   for (const k in window.vxn.params) {
     if (window.vxn.params[k].name === name) return parseInt(k, 10);
   }
@@ -14,7 +14,7 @@ function paramIdByName(name) {
 // independent and pass through unchanged. Per-patch ids translate from
 // Upper to Lower by adding `patchCount` (the slot offset that
 // `vxn_app::patch_clap_id` bakes in: lower_id = upper_id + PATCH_COUNT).
-function paramIdByNameAtLayer(name, layer) {
+export function paramIdByNameAtLayer(name, layer) {
   const upper = paramIdByName(name);
   if (upper == null) return null;
   const pc = window.vxn.patchCount;
@@ -25,21 +25,21 @@ function paramIdByNameAtLayer(name, layer) {
 // Look up a variant's plain index on an enum param at the current
 // layer. Returns -1 if either the param or the variant name is
 // unknown — callers treat that as "rule does not apply".
-function variantIdx(paramName, variantName, layer) {
+export function variantIdx(paramName, variantName, layer) {
   const id = paramIdByNameAtLayer(paramName, layer);
   if (id == null) return -1;
   const variants = window.vxn.params[id].variants || [];
   return variants.indexOf(variantName);
 }
 
-function isLayeredEl(el) {
+export function isLayeredEl(el) {
   return el.closest('[data-layered]') != null;
 }
 
 // Per-tick mutable state the dispatcher owns. Grouped here so the module
 // reads as "init builds the model; dispatch reads + mutates it" rather
 // than a dozen free-floating globals.
-const model = {
+export const model = {
   // ParamChanged routing: id → [updater closures]. Composite cells
   // (detune-legato) register secondary watchers on related ids; dispatch
   // fans each echo out to every updater on the id.
@@ -62,7 +62,7 @@ const model = {
   cells: [],
 };
 
-function addCtl(id, ctl) {
+export function addCtl(id, ctl) {
   let arr = model.controls.get(id);
   if (!arr) model.controls.set(id, arr = []);
   arr.push(ctl);
@@ -72,7 +72,7 @@ function addCtl(id, ctl) {
 // 0015). Mirrors `vxn_ui_vizia::sync_partner`: LFO 1 rate ↔ LFO 1 sync
 // (per-patch), LFO 2 rate ↔ LFO 2 sync (global), Delay Time ↔ Delay Sync
 // (global, 0045). Resolved per current layer.
-function locateSyncPartners(layer) {
+export function locateSyncPartners(layer) {
   model.syncOfRate.clear();
   model.rateOfSync.clear();
   const pairs = [
@@ -113,7 +113,7 @@ function locateSyncPartners(layer) {
 // share one `watchId` and `predicate`.
 //   - `free-run`: LFO 1's delay/fade dim when Free toggles on (0042).
 //   - `filter-notch`: Slope strip dims when Filter Mode = Notch (0043).
-const BUILTIN_DIM_SPECS = [
+export const BUILTIN_DIM_SPECS = [
   {
     kind: 'free-run',
     watch: 'lfo1_free_run',
@@ -131,7 +131,7 @@ const BUILTIN_DIM_SPECS = [
   },
 ];
 
-function collectDimRuleSpecs() {
+export function collectDimRuleSpecs() {
   model.dimRuleSpecs.length = 0;
   document.querySelectorAll('[data-dim-when-src-off]').forEach((el) => {
     model.dimRuleSpecs.push({
@@ -149,7 +149,7 @@ function collectDimRuleSpecs() {
   });
 }
 
-function rebuildDimRules(layer) {
+export function rebuildDimRules(layer) {
   model.dimRules.length = 0;
   for (const spec of model.dimRuleSpecs) {
     const watchId = paramIdByNameAtLayer(spec.watchName, layer);
@@ -176,7 +176,7 @@ function rebuildDimRules(layer) {
   }
 }
 
-function applyDimRulesFor(id, plain) {
+export function applyDimRulesFor(id, plain) {
   for (const r of model.dimRules) {
     if (r.watchId !== id) continue;
     r.target.classList.toggle('dimmed', r.predicate(plain));
@@ -186,7 +186,7 @@ function applyDimRulesFor(id, plain) {
 // Re-apply every dim rule from cached last-known values. Called after a
 // layer rebind so the new layer's bindings reflect the correct dim state
 // before any fresh ParamChanged echoes arrive.
-function refreshAllDimRules() {
+export function refreshAllDimRules() {
   for (const r of model.dimRules) {
     const last = model.lastParam.get(r.watchId);
     if (!last) continue;
@@ -197,7 +197,7 @@ function refreshAllDimRules() {
 // Returns the `displayOverride` callback for `id` if it's a rate fader
 // whose sync partner is currently on. The fader's `update` runs this
 // before settling on a popup label.
-function rateDisplayOverride(id) {
+export function rateDisplayOverride(id) {
   const syncId = model.syncOfRate.get(id);
   if (syncId == null) return null;
   return (plain, norm, display) => {
@@ -207,7 +207,7 @@ function rateDisplayOverride(id) {
   };
 }
 
-function bindCell(entry, layer) {
+export function bindCell(entry, layer) {
   const { el, kind, name } = entry;
   const id = paramIdByNameAtLayer(name, layer);
   if (id == null) return null;
@@ -270,7 +270,7 @@ function bindCell(entry, layer) {
   return { ids: [id] };
 }
 
-function rebindAllForLayer(layer) {
+export function rebindAllForLayer(layer) {
   // Drop every prior binding — closures held the old ids; the only safe
   // way to retarget is to start fresh. `model.controls` is the routing
   // table for ParamChanged dispatch, so emptying it before re-bind
@@ -306,7 +306,7 @@ function rebindAllForLayer(layer) {
   }
 }
 
-function init() {
+export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
   // in `rebindAllForLayer`, which is also what a layer flip calls.
@@ -438,8 +438,13 @@ function init() {
   window.vxn.send.ready();
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
+// E015 / 0077: skip the auto-bootstrap when this module is loaded headless
+// under Node (no faceplate DOM mounted, no bridge.js side-effects, no
+// `window.vxn`). The pure-helper test suite must not trigger `init`.
+if (typeof document !== 'undefined' && document.getElementById('faceplate')) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 }

@@ -74,17 +74,22 @@ impl SharedParams {
         }
     }
 
-    /// Read by normalized `[0, 1]` position (UI convenience).
+    /// Read the param as a fader position in `[0, 1]`. For `Exp`-tapered
+    /// params this returns the warped position (so thumb-at-midpoint reflects
+    /// the declared `mid` value, not the linear midpoint of `[min, max]`).
+    /// Linear params return the plain linear mapping.
     #[inline]
     pub fn get_normalized(&self, index: usize) -> f32 {
-        desc_for_clap_id(index).map_or(0.0, |d| d.to_normalized(self.get(index)))
+        desc_for_clap_id(index).map_or(0.0, |d| d.to_fader(self.get(index)))
     }
 
-    /// Write from a normalized `[0, 1]` position (UI convenience).
+    /// Write from a fader position in `[0, 1]`. Inverse of `get_normalized`:
+    /// applies the param's taper so the UI's linear pointer travel maps to
+    /// the declared Exp curve.
     #[inline]
     pub fn set_normalized(&self, index: usize, n: f32) {
         if let Some(d) = desc_for_clap_id(index) {
-            self.set(index, d.from_normalized(n));
+            self.set(index, d.from_fader(n));
         }
     }
 

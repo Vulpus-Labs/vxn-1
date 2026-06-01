@@ -241,13 +241,45 @@ pub fn open_editor(
 fn build_faceplate_html() -> String {
     PLACEHOLDER_HTML
         .replace("__CSS__", FACEPLATE_CSS)
-        .replace("__BRIDGE_JS__", BRIDGE_JS)
-        .replace("__BROWSER_JS__", BROWSER_JS)
-        .replace("__PANELS_JS__", PANELS_JS)
-        .replace("__DISPATCH_JS__", DISPATCH_JS)
+        .replace("__BRIDGE_JS__", &strip_esm_exports(BRIDGE_JS))
+        .replace("__BROWSER_JS__", &strip_esm_exports(BROWSER_JS))
+        .replace("__PANELS_JS__", &strip_esm_exports(PANELS_JS))
+        .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
+}
+
+/// Drop ESM module syntax from every line of `src`. The four faceplate JS
+/// modules carry `export` markers (and a couple of cross-module `import`s
+/// since E015 / 0079) so Node can load them for the test suite; the splice
+/// loader concatenates them into one inline `<script>` where module syntax
+/// is illegal, so we strip per line before splicing. `export const X = …`
+/// becomes `const X = …` (bare declaration — exactly what these files were
+/// before E015); `import { ... } from '...';` becomes an empty line (the
+/// splice already puts every binding in one shared scope, so cross-module
+/// refs resolve without the import).
+fn strip_esm_exports(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for (i, line) in src.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        // Imports drop to blank lines to keep line counts stable for
+        // stack traces — concat-side scope already has the bindings.
+        if line.starts_with("import ") {
+            continue;
+        }
+        let stripped = line
+            .strip_prefix("export default ")
+            .or_else(|| line.strip_prefix("export "))
+            .unwrap_or(line);
+        out.push_str(stripped);
+    }
+    if src.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Tempo-sync subdivision labels (vxn_app::sync::SUBDIVISIONS), spliced into
@@ -1142,6 +1174,46 @@ mod tests {
     }
 
     #[test]
+    fn faceplate_esm_exports_stripped() {
+        // 0076: the four asset files declare ESM `export` markers so Node
+        // can `import` them for the E015 test suite, but wry's inline
+        // `<script>` slot can't take module syntax. `strip_esm_exports`
+        // peels the prefix per line during splice; the assembled HTML
+        // must contain no `export ` markers, and the load-bearing
+        // declarations (`window.vxn = {`, `function init()`) survive
+        // intact under their bare names.
+        assert!(
+            !assembled().contains("export "),
+            "strip_esm_exports left an `export ` marker in the assembled HTML",
+        );
+        // E015 / 0079: cross-module `import { ... } from './...';` lines
+        // must also drop. The strip leaves the line blank so concat-side
+        // scope still owns the binding.
+        assert!(
+            !assembled().contains("import "),
+            "strip_esm_exports left an `import ` line in the assembled HTML",
+        );
+        assert!(assembled().contains("function init()"));
+        assert!(assembled().contains("window.vxn = {"));
+    }
+
+    #[test]
+    fn strip_esm_exports_drops_prefix_per_line() {
+        let src = "export const X = 1;\nexport function f() {}\nexport default 7;\nconst Y = 2;\n";
+        let out = strip_esm_exports(src);
+        assert_eq!(
+            out,
+            "const X = 1;\nfunction f() {}\n7;\nconst Y = 2;\n",
+        );
+        // Non-prefix lines pass through; trailing-newline shape preserved.
+        let no_trailing = "export const X = 1;";
+        assert_eq!(strip_esm_exports(no_trailing), "const X = 1;");
+        // E015 / 0079: imports drop to empty lines.
+        let with_import = "import { foo } from './bar.js';\nconst X = 1;\n";
+        assert_eq!(strip_esm_exports(with_import), "\nconst X = 1;\n");
+    }
+
+    #[test]
     fn faceplate_text_input_bridge_wired() {
         // 0048: faceplate exposes `window.vxn.promptText(title, initial,
         // cb)` and the dispatcher routes `text_input_result` back to the
@@ -1287,7 +1359,9 @@ mod tests {
         // attach one — the JS gates by selectedFolder.kind / key.kind).
         assert!(assembled().contains("'contextmenu'"));
         // Move-to submenu helper present; mirrors `vxn_ui_vizia::move_targets`.
-        assert!(assembled().contains("moveTargets(currentName)"));
+        // 0077 lifted `moveTargets` to module scope (so the Node test
+        // suite can import it pure) and added `corpus` as an explicit arg.
+        assert!(assembled().contains("moveTargets(currentName, corpus)"));
         assert!(assembled().contains(".browser-menu"));
         assert!(assembled().contains(".browser-submenu"));
         assert!(assembled().contains(".browser-new-folder"));
@@ -1991,5 +2065,33 @@ mod tests {
         // can locate the moved row via a CSS attribute selector.
         assert!(assembled().contains("r.dataset.path = p.path"));
         assert!(assembled().contains("r.dataset.path = h.source.path"));
+    }
+
+    // ── JS suite gate (E015 / 0078) ─────────────────────────────────────
+    //
+    // The Vitest + jsdom suite under `assets/__tests__/` is the
+    // behavioural net for the four faceplate JS modules. We shell `npm
+    // test` from a `#[test]` so `cargo test -p vxn-ui-web` is still the
+    // single command a contributor runs locally. The env-gate keeps the
+    // default `cargo test` Rust-only (no Node dep) — set `VXN_JS_TESTS=1`
+    // to opt in. CI (when one lands) sets the var so the gate is real.
+    #[test]
+    fn js_suite_passes() {
+        if std::env::var("VXN_JS_TESTS").is_err() {
+            // No-op skip rather than `#[ignore]`: a build-script `cfg`
+            // would work, but a runtime check keeps the gate one place
+            // and matches the ticket-spec'd alternative.
+            eprintln!(
+                "VXN_JS_TESTS unset; skipping JS suite. \
+                 Run `VXN_JS_TESTS=1 cargo test -p vxn-ui-web` to enable."
+            );
+            return;
+        }
+        let status = std::process::Command::new("npm")
+            .args(["test", "--silent"])
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
+            .status()
+            .expect("npm not found — install Node 20+ or unset VXN_JS_TESTS");
+        assert!(status.success(), "JS suite failed under `npm test`");
     }
 }

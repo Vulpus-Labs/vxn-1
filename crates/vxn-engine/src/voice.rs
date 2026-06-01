@@ -1014,7 +1014,10 @@ struct ModOut {
 #[inline]
 fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
     // 1 octave of cutoff per octave of key relative to C4 (note 60): cutoff is
-    // unchanged at C4, rises above it, falls below it.
+    // unchanged at C4, rises above it, falls below it. The cutoff slider's
+    // taper is pinned to C4 at fader-midpoint so a double-click default
+    // settles the filter on C4 — playing C4 with keytrack on then resonates
+    // at the played pitch exactly.
     let key_track = if ctx.filter_key_track {
         s.note as f32 - 60.0
     } else {

@@ -14,8 +14,76 @@
 // modal "Delete X?" confirm for the irreversible op (the Vizia version's
 // two-click row-armed pattern was unreadable here — the right-click menu
 // obscured the row text).
-const browserPanel = (() => {
+// Label shown for the virtual user-root folder (presets with `name: null`).
+// Lifted to module scope so the pure helpers below can be imported by the
+// E015 test suite without instantiating the IIFE — they reach this directly.
+export const UNCATEGORISED = 'Uncategorised';
+
+// Map a folder name to the `<select>` value used in the Save As modal. The
+// virtual root has no real name; we sentinel it as `__root__` so the option
+// can carry the human-readable "Uncategorised" label without colliding with
+// a real user folder of that name.
+export function folderValue(name) {
+  return name == null ? '__root__' : name;
+}
+
+// Build the dropdown option list for the Save As folder selector. Always
+// surfaces the virtual root first (so the first-save case has a target
+// even when the corpus hasn't seeded any user-root presets yet), then
+// alpha-sorted named user folders, case-insensitive.
+export function folderOptions(corpus) {
+  const named = [];
+  for (const g of (corpus && corpus.user) || []) {
+    if (g.name == null) continue;
+    named.push(g.name);
+  }
+  named.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const out = [{ value: '__root__', label: UNCATEGORISED }];
+  for (const n of named) out.push({ value: n, label: n });
+  return out;
+}
+
+// Move-target list for the user-preset context menu. Mirrors
+// `vxn_ui_vizia::move_targets`: Uncategorised first if the corpus has a
+// root group and `currentName` isn't already root (moving root → root is a
+// no-op), then alpha-sorted named user folders excluding the current one.
+export function moveTargets(currentName, corpus) {
+  const out = [];
+  let hasRoot = false;
+  const named = [];
+  for (const g of (corpus && corpus.user) || []) {
+    if (g.name == null) { hasRoot = true; continue; }
+    named.push(g.name);
+  }
+  named.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  if (hasRoot && currentName !== null) {
+    out.push({ name: null, label: UNCATEGORISED });
+  }
+  for (const n of named) {
+    if (n === currentName) continue;
+    out.push({ name: n, label: n });
+  }
+  return out;
+}
+
+export const browserPanel = (() => {
   const panelEl    = document.getElementById('browser-panel');
+  // E015 / 0077: under Node ESM `import` (no faceplate DOM) bail out with a
+  // shape-matching stub so pure-helper test imports (`moveTargets`,
+  // `folderValue`, `folderOptions`) don't crash on the addEventListener
+  // wiring below — every entry point is a no-op in that environment.
+  if (!panelEl) {
+    return {
+      setCorpus()        {},
+      setCurrentSource() {},
+      setOpen()          {},
+      isOpen()           { return false; },
+      getSaveFolder()    { return null; },
+      openSaveAs()       {},
+      onOpenChange()     {},
+      followPath()       {},
+    };
+  }
   const backdropEl = document.getElementById('browser-backdrop');
   const foldersEl  = document.getElementById('browser-folders');
   const presetsEl  = document.getElementById('browser-presets');
@@ -49,7 +117,6 @@ const browserPanel = (() => {
   // Match the Vizia browser's section labels (vxn_ui_vizia `browser-section`).
   const FACTORY_HEADER = 'FACTORY';
   const USER_HEADER    = 'USER';
-  const UNCATEGORISED  = 'Uncategorised';
 
   function setCorpus(snap) {
     corpus = snap || { factory: [], user: [] };
@@ -471,7 +538,7 @@ const browserPanel = (() => {
     item.textContent = 'Move to';
     const sub = document.createElement('div');
     sub.className = 'browser-submenu';
-    const targets = moveTargets(target.folder);
+    const targets = moveTargets(target.folder, corpus);
     if (targets.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'browser-submenu-empty';
@@ -494,29 +561,6 @@ const browserPanel = (() => {
     parent.appendChild(item);
     return item;
   }
-  // Move targets order matches the left-pane order: Uncategorised first
-  // (the virtual user-root, `name: null`), then alpha-sorted named user
-  // folders. The current folder is suppressed (moving to the current
-  // folder is a no-op). Mirrors `vxn_ui_vizia::move_targets`.
-  function moveTargets(currentName) {
-    const out = [];
-    let hasRoot = false;
-    const named = [];
-    for (const g of corpus.user) {
-      if (g.name == null) { hasRoot = true; continue; }
-      named.push(g.name);
-    }
-    named.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-    if (hasRoot && currentName !== null) {
-      out.push({ name: null, label: UNCATEGORISED });
-    }
-    for (const n of named) {
-      if (n === currentName) continue;
-      out.push({ name: n, label: n });
-    }
-    return out;
-  }
-
   // ── Modal confirm (0051) ─────────────────────────────────────────────
   //
   // Click Delete in the context menu → menu closes → modal opens, centred
@@ -691,7 +735,7 @@ const browserPanel = (() => {
     folderRow.appendChild(folderLab);
     const select = document.createElement('select');
     select.className = 'save-as-select';
-    for (const opt of folderOptions()) {
+    for (const opt of folderOptions(corpus)) {
       const o = document.createElement('option');
       o.value = opt.value;
       o.textContent = opt.label;
@@ -706,24 +750,6 @@ const browserPanel = (() => {
 
     gateOk();
     try { ok.focus(); } catch (_) {}
-  }
-  function folderValue(name) {
-    return name == null ? '__root__' : name;
-  }
-  function folderOptions() {
-    const named = [];
-    let hasRoot = false;
-    for (const g of corpus.user) {
-      if (g.name == null) { hasRoot = true; continue; }
-      named.push(g.name);
-    }
-    named.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-    const out = [];
-    // Always offer the root, even if the snapshot didn't include the
-    // virtual folder yet (corpus seeds it lazily on first save).
-    out.push({ value: '__root__', label: UNCATEGORISED });
-    for (const n of named) out.push({ value: n, label: n });
-    return out;
   }
 
   inputEl.addEventListener('input', () => {
@@ -767,14 +793,16 @@ const browserPanel = (() => {
     // 0052: dispatcher calls this on `preset_corpus_changed` when
     // `ev.follow` is set (Move / Rename emit a follow path).
     followPath,
-    // Exposed for in-page tests.
-    _moveTargets: moveTargets,
   };
 })();
 // Replace the bootstrap stub so future Rust pushes go straight to the
-// panel; drain any snapshot that arrived during bootstrap.
-window.__vxn.applyPresetCorpus = (snap) => browserPanel.setCorpus(snap);
-if (_earlyPresetCorpus) {
-  browserPanel.setCorpus(_earlyPresetCorpus);
-  _earlyPresetCorpus = null;
+// panel; drain any snapshot that arrived during bootstrap. The
+// `window.__vxn` / `_earlyPresetCorpus` guards short-circuit cleanly under
+// Node ESM imports (E015 / 0077) where the bridge bootstrap hasn't run.
+if (typeof window !== 'undefined' && window.__vxn) {
+  window.__vxn.applyPresetCorpus = (snap) => browserPanel.setCorpus(snap);
+  if (typeof _earlyPresetCorpus !== 'undefined' && _earlyPresetCorpus) {
+    browserPanel.setCorpus(_earlyPresetCorpus);
+    _earlyPresetCorpus = null;
+  }
 }

@@ -561,7 +561,7 @@ const fn mc(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -96.0, 96.0, 0.0, "st", Taper::Linear)
 }
 const fn mcu(name: &'static str, label: &'static str) -> ParamDesc {
-    f(name, label, 0.0, 96.0, 0.0, "st", Taper::Linear)
+    f(name, label, 0.0, 48.0, 0.0, "st", Taper::Exp { mid: 2.0 })
 }
 const fn mw(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -0.5, 0.5, 0.0, "", Taper::Linear)
@@ -645,11 +645,11 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     f(
         "cutoff",
         "Cutoff",
-        20.0,
+        16.3516,
         18000.0,
-        8000.0,
+        261.6256,
         "Hz",
-        Taper::Exp { mid: 1000.0 },
+        Taper::Exp { mid: 261.6256 },
     ),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", Taper::Linear),
     f("drive", "Drive", 0.1, 4.0, 1.0, "", Taper::Linear),

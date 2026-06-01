@@ -90,7 +90,7 @@ window.__vxn = {
 
 // Status-pill visibility window. Re-fired messages reset the timer so a
 // rapid burst stays readable; the CSS fade transition handles the dismount.
-const STATUS_PILL_FLASH_MS = 3000;
+export const STATUS_PILL_FLASH_MS = 3000;
 
 // ─── Floating text-input popup bridge (0048) ───────────────────────────────
 //
@@ -117,7 +117,7 @@ window.vxn.promptText = function (title, initial, cb) {
 // put while the indicator moves — matches the vizia editor's grabbed-cell
 // behaviour. `fixed` positioning + body-level mount means it can't push
 // any layout around or be clipped by a panel's overflow.
-const valuePop = (() => {
+export const valuePop = (() => {
   const el = document.createElement('div');
   el.className = 'value-pop';
   document.body.appendChild(el);
@@ -140,7 +140,7 @@ const valuePop = (() => {
 // JS-built; this IIFE just binds and exposes a `.flash(text)` API.
 // `Status { line }` ViewEvents flash for ~3s then fade (CSS transition).
 // Re-fired messages reset the timer so a rapid burst stays readable.
-const statusPill = (() => {
+export const statusPill = (() => {
   const el = document.getElementById('pbar-status');
   let timer = null;
   return {

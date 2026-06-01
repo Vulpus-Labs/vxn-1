@@ -2,3 +2,4 @@
 **/*.rs.bk
 *.clap
 .DS_Store
+crates/vxn-ui-web/**/node_modules/

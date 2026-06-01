@@ -1,3 +1,10 @@
+// E015 / 0079: `valuePop` is consumed by `attachValuePop` below. The
+// splice loader drops this line for the inline wry `<script>` (the
+// concat-time `valuePop` const from bridge.js is already in scope there);
+// under Node ESM the binding resolves through bridge.js so the
+// drag-and-popup tests can exercise the helper without re-mocking.
+import { valuePop } from './bridge.js';
+
 // ─── Preset bar wiring (0049 / 0050) ───────────────────────────────────────
 //
 // Prev/next post `step_preset` with a signed delta — the controller walks
@@ -10,8 +17,12 @@
 // the browser panel's currently-selected user folder as the destination
 // (factory selections collapse to user root — there's no write target
 // inside the factory bank).
-const presetBar = (() => {
+export const presetBar = (() => {
   const nameEl   = document.getElementById('pbar-name');
+  // E015 / 0077: under Node ESM `import` (no faceplate DOM, no concatenated
+  // `browserPanel` global), bail out with a stub so pure-helper test
+  // imports don't crash on `browserPanel.onOpenChange(...)` below.
+  if (!nameEl) return { setName() {} };
   const prevEl   = document.getElementById('pbar-prev');
   const nextEl   = document.getElementById('pbar-next');
   const browseEl = document.getElementById('pbar-browse');
@@ -59,23 +70,23 @@ const presetBar = (() => {
 // outside Split, both via `visibility: hidden` so the Reset stays pinned
 // to the same vertical position (matches the ticket's "keep the same
 // shape" note about reset placement).
-const KEY_MODE_NAMES = ['WHOLE', 'DUAL', 'SPLIT'];
-const KEY_LAYERS = [
+export const KEY_MODE_NAMES = ['WHOLE', 'DUAL', 'SPLIT'];
+export const KEY_LAYERS = [
   { code: 'upper', label: 'UPPER' },
   { code: 'lower', label: 'LOWER' },
 ];
 // Match `DEFAULT_SPLIT_POINT` in vxn-app/src/domain.rs — C4.
-const KEYS_DEFAULT_SPLIT = 60;
+export const KEYS_DEFAULT_SPLIT = 60;
 // Mirror `vxn_ui_vizia::SPLIT_MIN` / `SPLIT_MAX`: narrower than the full
 // MIDI range so every semitone is easy to land on.
-const KEYS_SPLIT_MIN = 12;
-const KEYS_SPLIT_MAX = 96;
-function keysNoteName(n) {
+export const KEYS_SPLIT_MIN = 12;
+export const KEYS_SPLIT_MAX = 96;
+export function keysNoteName(n) {
   const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const octave = Math.floor(n / 12) - 1;
   return NAMES[((n % 12) + 12) % 12] + octave;
 }
-const keysPanel = (() => {
+export const keysPanel = (() => {
   const bodyEl = document.querySelector('.panel[data-name="Keys"] .panel-body');
   if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {} };
 
@@ -203,7 +214,7 @@ const keysPanel = (() => {
 //
 // In a [0, 1]² box (y down). Ported from `wave_points` in
 // vxn-ui-vizia/src/lib.rs — coordinates only, no SVG-specific tweaks.
-const WAVE_GLYPHS = {
+export const WAVE_GLYPHS = {
   'Sine': (() => {
     const pts = [];
     for (let k = 0; k <= 16; k++) {
@@ -222,7 +233,7 @@ const WAVE_GLYPHS = {
   'S&H':      [[0, 0.6], [0.28, 0.6], [0.28, 0.2], [0.56, 0.2], [0.56, 0.8], [0.82, 0.8], [0.82, 0.45], [1, 0.45]],
 };
 
-function glyphPath(label, w, h) {
+export function glyphPath(label, w, h) {
   const pts = WAVE_GLYPHS[label];
   if (!pts) return null;
   return pts.map((p, i) =>
@@ -237,19 +248,19 @@ function glyphPath(label, w, h) {
 
 // One detent = one variant step. The drag sensitivity: pixels of vertical
 // pointer travel per detent. ~30 feels close to hardware knobs.
-const PIXELS_PER_DETENT = 30;
+export const PIXELS_PER_DETENT = 30;
 
 // Smoothing transition on the wave-knob indicator. Long enough that
 // automation moves don't strobe between detents; short enough that drag
 // still feels responsive.
-const KNOB_INDICATOR_TRANSITION_MS = 120;
+export const KNOB_INDICATOR_TRANSITION_MS = 120;
 
 // Detune ceiling in Twin assign mode (cents). Twin's "useful" range is
 // purely a view convention — the engine doesn't enforce it, so the
 // editor that surfaces the mode is the one that has to clamp. Mirrors
 // vxn_ui_vizia::TWIN_DETUNE_CT (retired in 0054 but the value is still
 // load-bearing).
-const TWIN_TOP_CT = 20.0;
+export const TWIN_TOP_CT = 20.0;
 
 // Wires the vertical-drag protocol shared by every fader-shaped control.
 // Callbacks fire in order:
@@ -262,7 +273,7 @@ const TWIN_TOP_CT = 20.0;
 //   onLeave()               — hover ends (not during drag).
 // Returns { isDragging, isHovered } getters for callers whose
 // ParamChanged echoes need to know whether to update the popup.
-function wireFaderDrag(fader, { onEnter, onDown, onMove, onUp, onLeave }) {
+export function wireFaderDrag(fader, { onEnter, onDown, onMove, onUp, onLeave }) {
   let dragging = false;
   let hovered = false;
   const norm = (ev) => {
@@ -311,7 +322,7 @@ function wireFaderDrag(fader, { onEnter, onDown, onMove, onUp, onLeave }) {
 // ParamChanged echo. `host` is any object with `isHovered()` and
 // `isDragging()` getters (the `wireFaderDrag` return value, or a shim
 // over makeWave's local vars).
-function attachValuePop(host, getLabel) {
+export function attachValuePop(host, getLabel) {
   return {
     markEntered(ev) {
       if (host.isDragging()) return;
@@ -334,7 +345,7 @@ function attachValuePop(host, getLabel) {
   };
 }
 
-function makeFader(el, id, desc, opts) {
+export function makeFader(el, id, desc, opts) {
   const label = el.dataset.label || desc.label;
   const displayOverride = (opts && opts.displayOverride) || null;
   el.innerHTML = `
@@ -415,7 +426,7 @@ function makeFader(el, id, desc, opts) {
 // `vxn_app::sync::index_from_norm` only ever takes the slider's `0..1`,
 // either convention agrees on the index — the table is just spread evenly
 // across the travel.
-function subdivisionLabel(norm) {
+export function subdivisionLabel(norm) {
   const t = window.vxn.subdivisions || [];
   if (t.length === 0) return '';
   const last = t.length - 1;
@@ -441,9 +452,9 @@ function subdivisionLabel(norm) {
 // a continuous `[0, N)` knob with wrap-around. The angle math already
 // works for fractional values; only the drag clamp + glyph-active logic
 // need a `wrap: true` branch.
-const SVG_NS = 'http://www.w3.org/2000/svg';
+export const SVG_NS = 'http://www.w3.org/2000/svg';
 
-function makeWave(el, id, desc) {
+export function makeWave(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
   el.innerHTML = `<div class="ctl-label">${label.toUpperCase()}</div>`;
@@ -629,11 +640,11 @@ function makeWave(el, id, desc) {
 // Plain → variant index clamp. Round to nearest, clamp to [0, len - 1].
 // The four enum-shaped primitives (Switch, ButtonGroup, Dropdown, Wave-
 // knob drag) all need exactly this.
-function clampVariant(plain, variants) {
+export function clampVariant(plain, variants) {
   return Math.max(0, Math.min(variants.length - 1, Math.round(plain)));
 }
 
-function tgRow(name) {
+export function tgRow(name) {
   const row = document.createElement('div');
   row.className = 'ctl-tg-row';
   row.innerHTML =
@@ -645,7 +656,7 @@ function tgRow(name) {
 // `Switch(id, label)` — vertical toggle for bools; also handles 2-variant
 // enums (NoiseColor, FilterSlope, LfoSync, …) the way vizia's
 // `Ctl::Switch` does, by rendering one toggle per variant in a row.
-function makeSwitch(el, id, desc) {
+export function makeSwitch(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const isEnum = desc.kind === 'enum';
   const entries = isEnum
@@ -696,7 +707,7 @@ function makeSwitch(el, id, desc) {
 // indices (e.g. `0,3,1,2` for AssignMode → Poly/Twin/Unison/Solo); the
 // stored value stays each variant's own descriptor index. Mirrors
 // vxn-ui-vizia's `ASSIGN_DISPLAY_ORDER`.
-function makeButtonGroup(el, id, desc) {
+export function makeButtonGroup(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
   const noLabel = el.hasAttribute('data-no-label');
@@ -737,7 +748,7 @@ function makeButtonGroup(el, id, desc) {
 
 // `Dropdown(id, label, variants)` — native <select> fallback. Used when
 // the variant list is too long for a row of toggles to fit the cell.
-function makeDropdown(el, id, desc) {
+export function makeDropdown(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
   el.classList.add('ctl-dropdown');
@@ -771,7 +782,7 @@ function makeDropdown(el, id, desc) {
 // class on echo. The box is a child of the slot rather than the slot
 // itself so the 16 px slot keeps its layout reservation while the visible
 // box stays small enough to sit inside the header bar.
-function makeHeaderSwitch(el, id, _desc) {
+export function makeHeaderSwitch(el, id, _desc) {
   el.innerHTML = '<div class="panel-header-switch"></div>';
   const box = el.querySelector('.panel-header-switch');
   el.addEventListener('pointerdown', (ev) => {
@@ -796,7 +807,7 @@ function makeHeaderSwitch(el, id, _desc) {
 // `data-legato-param` / `data-mode-param` name the descriptor names this
 // cell pairs with; both are resolved per layer at bind time so a layer
 // rebind (0045) rebuilds the cell with the new ids.
-function makeDetuneLegato(el, ids, descs, modeName, layer) {
+export function makeDetuneLegato(el, ids, descs, modeName, layer) {
   const { detune, legato, mode } = ids;
   const label = el.dataset.label || descs.detune.label;
   el.classList.add('ctl-detune');

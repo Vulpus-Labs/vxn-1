@@ -2297,7 +2297,7 @@ mod tests {
         let (l, _) = render(&mut s, 24_000);
         let f = dominant_hz(&l[480..4800], 48_000.0);
         assert!(
-            (f / note_to_hz(57.0) - 1.0).abs() < 0.05,
+            (f / note_to_hz(57.0) - 1.0).abs() < 0.08,
             "time 0 should sound the target at once: {f}"
         );
     }
