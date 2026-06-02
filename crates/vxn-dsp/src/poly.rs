@@ -655,6 +655,107 @@ pub fn poly_ring_mod(o1: &[f32; N], o2: &[f32; N], gain: f32, out: &mut [f32; N]
     }
 }
 
+// ── Ladder mode/slope as zero-sized markers ───────────────────────────────────
+
+/// Mix the ladder's input node + four stage outputs into the active filter
+/// response, as a zero-sized type so the `process` lane loop can be
+/// monomorphised per (mode, slope) instead of branching on a `FilterMode` enum
+/// inside the loop. Mirrors [`WaveKind`] for the oscillator kernels. Bodies
+/// match [`FilterMode::mix`] exactly (that scalar fn stays as the readable
+/// reference).
+trait LadderMix {
+    fn mix(e: f32, y: [f32; 4]) -> f32;
+}
+
+struct MLp2;
+struct MLp4;
+struct MHp2;
+struct MHp4;
+struct MBp2;
+struct MBp4;
+struct MNotch;
+
+impl LadderMix for MLp2 {
+    #[inline(always)]
+    fn mix(_e: f32, y: [f32; 4]) -> f32 {
+        y[1]
+    }
+}
+impl LadderMix for MLp4 {
+    #[inline(always)]
+    fn mix(_e: f32, y: [f32; 4]) -> f32 {
+        y[3]
+    }
+}
+impl LadderMix for MHp2 {
+    #[inline(always)]
+    fn mix(e: f32, y: [f32; 4]) -> f32 {
+        e - 2.0 * y[0] + y[1]
+    }
+}
+impl LadderMix for MHp4 {
+    #[inline(always)]
+    fn mix(e: f32, y: [f32; 4]) -> f32 {
+        e - 4.0 * y[0] + 6.0 * y[1] - 4.0 * y[2] + y[3]
+    }
+}
+impl LadderMix for MBp2 {
+    #[inline(always)]
+    fn mix(_e: f32, y: [f32; 4]) -> f32 {
+        2.0 * (y[0] - y[1])
+    }
+}
+impl LadderMix for MBp4 {
+    #[inline(always)]
+    fn mix(_e: f32, y: [f32; 4]) -> f32 {
+        4.0 * (y[1] - y[3])
+    }
+}
+impl LadderMix for MNotch {
+    #[inline(always)]
+    fn mix(e: f32, y: [f32; 4]) -> f32 {
+        e - 2.0 * y[0] + 2.0 * y[1]
+    }
+}
+
+/// Resolve a runtime `(FilterMode, FilterSlope)` pair to its marker type once,
+/// outside the lane loop, binding it to `$m` for `$body`. Notch's slope switch
+/// is a no-op (its 2-pole zero is exact), so both slopes map to the same marker.
+macro_rules! with_mix {
+    ($mode:expr, $slope:expr, $m:ident => $body:expr) => {
+        match ($mode, $slope) {
+            (FilterMode::Lp, FilterSlope::Pole2) => {
+                type $m = MLp2;
+                $body
+            }
+            (FilterMode::Lp, FilterSlope::Pole4) => {
+                type $m = MLp4;
+                $body
+            }
+            (FilterMode::Hp, FilterSlope::Pole2) => {
+                type $m = MHp2;
+                $body
+            }
+            (FilterMode::Hp, FilterSlope::Pole4) => {
+                type $m = MHp4;
+                $body
+            }
+            (FilterMode::Bp, FilterSlope::Pole2) => {
+                type $m = MBp2;
+                $body
+            }
+            (FilterMode::Bp, FilterSlope::Pole4) => {
+                type $m = MBp4;
+                $body
+            }
+            (FilterMode::Notch, _) => {
+                type $m = MNotch;
+                $body
+            }
+        }
+    };
+}
+
 // ── PolyOtaLadder ─────────────────────────────────────────────────────────────
 
 /// 16-voice OTA-C ladder lowpass (R3109/IR3109-style, Juno-flavoured). Poly
@@ -799,11 +900,16 @@ impl PolyOtaLadder {
 
     /// One sample per voice: `out[v] = ota_ladder(x[v])`, mixed for the mode/slope.
     /// Coefficients are constant within the call — the caller advances them at
-    /// the base rate via [`tick_coeffs`].
+    /// the base rate via [`tick_coeffs`]. Dispatches once to the
+    /// monomorphised body so the lane loop is branch-free.
     #[inline]
     pub fn process(&mut self, x: &[f32; N], out: &mut [f32; N]) {
-        let mode = self.mode;
-        let slope = self.slope;
+        with_mix!(self.mode, self.slope, M => self.process_w::<M>(x, out));
+    }
+
+    /// Monomorphised ladder lane loop. `M` is the mode×slope mix marker.
+    #[inline(always)]
+    fn process_w<M: LadderMix>(&mut self, x: &[f32; N], out: &mut [f32; N]) {
         for v in 0..N {
             let g = self.g[v];
             let fed = self.drive[v] * x[v] - self.k[v] * self.y4[v];
@@ -829,7 +935,7 @@ impl PolyOtaLadder {
             self.s3[v] = y3 + a3;
 
             self.y4[v] = y3;
-            out[v] = mode.mix(slope, fed, [y0, y1, y2, y3]);
+            out[v] = M::mix(fed, [y0, y1, y2, y3]);
         }
     }
 }
@@ -962,6 +1068,28 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn ladder_mix_markers_match_scalar_oracle() {
+        // The 7 specialised `LadderMix` markers used inside `process_w` must
+        // match the scalar `FilterMode::mix` reference exactly across every
+        // (mode, slope) pair. Both slopes for Notch share `MNotch` because the
+        // 2-pole notch is exact (zero at cutoff regardless of resonance) — the
+        // scalar oracle returns the same value for both slopes there too.
+        use crate::ota_ladder::{FilterMode, FilterSlope};
+        let e = 0.37;
+        let y = [0.11, -0.42, 0.83, -0.19];
+        for &mode in &FilterMode::ALL {
+            for &slope in &[FilterSlope::Pole2, FilterSlope::Pole4] {
+                let oracle = mode.mix(slope, e, y);
+                let marker = with_mix!(mode, slope, M => M::mix(e, y));
+                assert!(
+                    (oracle - marker).abs() < 1e-7,
+                    "{mode:?}/{slope:?}: oracle {oracle} vs marker {marker}"
+                );
             }
         }
     }
