@@ -41,16 +41,16 @@ fn pblep(t: f32, dt: f32) -> f32 {
     rise * m_rise + fall * m_fall
 }
 
-/// Branchless `tanh` approximation: clamp to ±2.5 (where the Padé form peaks,
-/// ≈0.972) then evaluate. Monotone and bounded without the early-return
-/// branches of `fast_tanh`, so it vectorises.
+/// Branchless `tanh` approximation: Padé(3,3) `x(15 + x²) / (15 + 6x²)` clamped
+/// to ±2 (where it peaks ≈0.974, monotone). One third the polynomial work of
+/// the Padé(7,6) form; max error ~1.1 % vs true `tanh` on `[-2, 2]`, which is
+/// well below the audible threshold for the saturating non-linearity in the OTA
+/// ladder feedback / drive path and the diode ring's gain stage.
 #[inline(always)]
 fn tanh_c(x: f32) -> f32 {
-    let x = x.clamp(-2.5, 2.5);
+    let x = x.clamp(-2.0, 2.0);
     let x2 = x * x;
-    let x4 = x2 * x2;
-    let x6 = x4 * x2;
-    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
+    x * (15.0 + x2) / (15.0 + 6.0 * x2)
 }
 
 /// Naive (pre-BLEP) oscillator value — the raw, discontinuous waveform. Used to
