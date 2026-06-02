@@ -122,6 +122,13 @@ html, body {
   user-select: none;
 }
 .pbar-btn:hover { border-color: var(--glyph-active); color: #ececec; }
+.pbar-btn:disabled,
+.pbar-btn:disabled:hover {
+  opacity: 0.4;
+  cursor: default;
+  border-color: #444;
+  color: var(--ctl-label);
+}
 .pbar-btn.active {
   background: #1f9cff;
   border-color: #84cdff;

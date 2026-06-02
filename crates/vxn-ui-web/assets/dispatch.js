@@ -435,6 +435,9 @@ export function init() {
       // through the status chip — they belong with the load result,
       // not in the corner.
       presetBar.setName(ev.name);
+      // 0094: also seeds the Save (overwrite) button — enabled iff the
+      // source is a user preset AND a later write marks the patch dirty.
+      presetBar.setSource(ev.source || null);
       // 0050: feed the browser panel's "currently loaded" highlight
       // from the same event. `source` is null on host state-load
       // (no on-disk anchor) — the panel just clears the highlight.

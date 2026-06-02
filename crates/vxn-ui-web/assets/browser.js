@@ -74,14 +74,15 @@ export const browserPanel = (() => {
   // wiring below — every entry point is a no-op in that environment.
   if (!panelEl) {
     return {
-      setCorpus()        {},
-      setCurrentSource() {},
-      setOpen()          {},
-      isOpen()           { return false; },
-      getSaveFolder()    { return null; },
-      openSaveAs()       {},
-      onOpenChange()     {},
-      followPath()       {},
+      setCorpus()           {},
+      setCurrentSource()    {},
+      setOpen()             {},
+      isOpen()              { return false; },
+      getSaveFolder()       { return null; },
+      folderForUserPath()   { return null; },
+      openSaveAs()          {},
+      onOpenChange()        {},
+      followPath()          {},
     };
   }
   const backdropEl = document.getElementById('browser-backdrop');
@@ -467,6 +468,18 @@ export const browserPanel = (() => {
     if (selectedFolder.kind !== 'user') return null;
     return selectedFolder.name;
   }
+  // 0094: Save (overwrite) needs the folder of the currently-loaded user
+  // preset. Lookup by absolute path; returns the folder name (null for
+  // user root) or `undefined` if the path isn't in the user corpus.
+  function folderForUserPath(pathStr) {
+    if (!pathStr || !corpus.user) return undefined;
+    for (const g of corpus.user) {
+      for (const p of g.presets) {
+        if (p.path === pathStr) return g.name;
+      }
+    }
+    return undefined;
+  }
 
   // ── Context menu (0051) ──────────────────────────────────────────────
   //
@@ -787,6 +800,7 @@ export const browserPanel = (() => {
     setOpen,
     isOpen: () => isOpen,
     getSaveFolder,
+    folderForUserPath,
     openSaveAs: openSaveAsModal,
     onOpenChange: (cb) => { onOpenChange = cb; },
     // 0052: dispatcher calls this on `preset_corpus_changed` when
