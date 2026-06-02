@@ -2372,14 +2372,14 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vxn-app"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "vxn-clap"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -2391,11 +2391,11 @@ dependencies = [
 
 [[package]]
 name = "vxn-dsp"
-version = "0.0.4"
+version = "0.0.5"
 
 [[package]]
 name = "vxn-engine"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "criterion",
  "include_dir",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-ui-web"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "objc",
  "raw-window-handle",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.4"
+version = "0.0.5"
 
 [[package]]
 name = "zerocopy"
