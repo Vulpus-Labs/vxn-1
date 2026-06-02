@@ -419,29 +419,44 @@ impl ParamDesc {
     }
 
     #[inline]
-    fn exp_coeffs(&self) -> Option<(f32, f32)> {
-        match self.taper() {
-            Taper::Exp { mid } => {
-                let r = self.max / mid - 1.0; // = e^(K/2)
-                Some((mid / (r - 1.0), 2.0 * r.ln()))
-            }
-            Taper::Linear => None,
-        }
-    }
-
-    #[inline]
     pub fn to_fader(&self, value: f32) -> f32 {
-        match self.exp_coeffs() {
-            Some((a, k)) => ((value / a + 1.0).ln() / k).clamp(0.0, 1.0),
-            None => self.to_normalized(value),
+        let Taper::Exp { mid } = self.taper() else {
+            return self.to_normalized(value);
+        };
+        if !(self.min > 0.0 && mid > self.min && self.max > mid) {
+            // min == 0 (or degenerate): single exponential pinned at
+            // (0, 0), (0.5, mid), (1, max). Preserves the historical
+            // shape for params whose floor is genuinely zero.
+            let r = self.max / mid - 1.0;
+            let a = mid / (r - 1.0);
+            let k = 2.0 * r.ln();
+            return ((value / a + 1.0).ln() / k).clamp(0.0, 1.0);
+        }
+        let v = value.clamp(self.min, self.max);
+        if v <= mid {
+            0.5 * (v / self.min).ln() / (mid / self.min).ln()
+        } else {
+            0.5 + 0.5 * (v / mid).ln() / (self.max / mid).ln()
         }
     }
 
     #[inline]
     pub fn from_fader(&self, n: f32) -> f32 {
-        match self.exp_coeffs() {
-            Some((a, k)) => a * ((k * n.clamp(0.0, 1.0)).exp() - 1.0),
-            None => self.from_normalized(n),
+        let Taper::Exp { mid } = self.taper() else {
+            return self.from_normalized(n);
+        };
+        let n = n.clamp(0.0, 1.0);
+        if !(self.min > 0.0 && mid > self.min && self.max > mid) {
+            let r = self.max / mid - 1.0;
+            let a = mid / (r - 1.0);
+            let k = 2.0 * r.ln();
+            return a * ((k * n).exp() - 1.0);
+        }
+        // Piecewise log/exp pinning (0, min), (0.5, mid), (1, max).
+        if n <= 0.5 {
+            self.min * (mid / self.min).powf(2.0 * n)
+        } else {
+            mid * (self.max / mid).powf(2.0 * n - 1.0)
         }
     }
 
@@ -646,7 +661,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         "cutoff",
         "Cutoff",
         16.3516,
-        18000.0,
+        20000.0,
         261.6256,
         "Hz",
         Taper::Exp { mid: 261.6256 },
@@ -909,6 +924,40 @@ mod tests {
     fn tables_len_match_counts() {
         assert_eq!(PATCH_PARAMS.len(), PatchParam::COUNT);
         assert_eq!(GLOBAL_PARAMS.len(), GlobalParam::COUNT);
+    }
+
+    #[test]
+    fn exp_taper_pins_min_mid_max_when_min_positive() {
+        // Cutoff: C0..20kHz with C4 at midpoint.
+        let cutoff = PatchParam::Cutoff.desc();
+        assert!((cutoff.from_fader(0.0) - cutoff.min).abs() < 1e-3);
+        assert!((cutoff.from_fader(0.5) - 261.6256).abs() < 1e-3);
+        assert!((cutoff.from_fader(1.0) - cutoff.max).abs() < 1e-1);
+        // HPF: 20..18000 with 1000 at midpoint.
+        let hpf = PatchParam::HpfCutoff.desc();
+        assert!((hpf.from_fader(0.0) - 20.0).abs() < 1e-3);
+        assert!((hpf.from_fader(0.5) - 1000.0).abs() < 1e-3);
+        assert!((hpf.from_fader(1.0) - 18000.0).abs() < 1e-2);
+        // Round-trip the pinned points.
+        for v in [cutoff.min, 261.6256, cutoff.max] {
+            let n = cutoff.to_fader(v);
+            assert!((cutoff.from_fader(n) - v).abs() < 1e-2, "v={v} n={n}");
+        }
+        for v in [20.0_f32, 1000.0, 18000.0] {
+            let n = hpf.to_fader(v);
+            assert!((hpf.from_fader(n) - v).abs() < 1e-2, "v={v} n={n}");
+        }
+    }
+
+    #[test]
+    fn exp_taper_with_zero_min_keeps_legacy_pin_at_zero() {
+        // Params whose floor is genuinely zero (e.g. portamento time:
+        // 0..0.5, mid 0.1) must still bottom out at 0, not at min — so
+        // the legacy single-exponential branch applies.
+        let porta = PatchParam::PortamentoTime.desc();
+        assert!(porta.from_fader(0.0).abs() < 1e-6);
+        assert!((porta.from_fader(0.5) - 0.1).abs() < 1e-4);
+        assert!((porta.from_fader(1.0) - porta.max).abs() < 1e-4);
     }
 
     #[test]

@@ -914,29 +914,20 @@ html, body {
 .route-col .ctl {
   height: auto;
 }
-/* Depth fader + Mod switch (0063): the switch lives directly below its
-   depth fader, centred so the toggle box reads as belonging to the
-   slider above it (Pitch LFO Mod / Pitch Env Mod divert their route to
-   the cross-mod modulator). The wrapping column sits in the same row
-   as the source buttongroup. */
-.route-col-stack {
+/* Source buttongroup + detached Mod switch (Pitch Mod, 0063): the Mod
+   switch sits at the bottom of the source selector stack (Pitch LFO Mod
+   / Pitch Env Mod divert their route to the cross-mod modulator). It's
+   a separate child of `.route-col-src` rather than a buttongroup row so
+   its semantics stay distinct, and an extra top margin inserts a blank-
+   row-sized gap above it to read as "not part of the selection group". */
+.route-col-src {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: var(--ctl-gap);
+  align-items: flex-start;
+  gap: 6px;
 }
-/* Mod switch under a depth fader: float the label out of layout flow so
-   the toggle box itself sits on the column's centre axis — i.e. directly
-   under the slider thumb above it — rather than the [box+label] pair
-   centring as a whole (which left the box biased to the left of axis). */
-.route-col-stack .ctl-tg-row { position: relative; }
-.route-col-stack .ctl-tg-lbl {
-  position: absolute;
-  left: 100%;
-  margin-left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  white-space: nowrap;
+.route-col-src > .ctl[data-control="switch"] {
+  margin-top: 17px;
 }
 
 /* Header-switch box (Chorus / Delay, 0045) — a small toggle child of
@@ -961,10 +952,15 @@ html, body {
   box-shadow: 0 0 6px #36b3ff;
 }
 
-/* Voice panel's Detune column — a normal fader on top with the Legato
-   toggle beneath it (level with the Solo row in the assign list), so the
-   whole column keeps the same width as a plain fader column (0045). */
+/* Voice panel's Detune column — a normal fader column. The Legato toggle
+   is created inside the cell by `makeDetuneLegato` but absolute-positioned
+   to the panel's bottom-left corner, so the detune column itself reads as
+   a plain fader column width-wise (0045). `position: static` overrides the
+   `.ctl` base's `position: relative` so the absolute legato child escapes
+   up to `.panel` (the nearest remaining positioned ancestor) instead of
+   anchoring to this cell. */
 .ctl-detune {
+  position: static;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -978,7 +974,11 @@ html, body {
   align-items: center;
   gap: 1px;
 }
-.ctl-detune-legato { margin-top: 4px; }
+.ctl-detune-legato {
+  position: absolute;
+  bottom: var(--panel-pad);
+  left: var(--panel-pad);
+}
 .ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
 
 /* Keys panel (0053): mode/edit toggle columns side by side, split slider

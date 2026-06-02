@@ -553,6 +553,107 @@ fn set_edit_layer_echoes_as_view_event() {
 }
 
 #[test]
+fn preset_load_snaps_edit_layer_to_upper_in_whole() {
+    // Whole-mode preset load while the view sits on Lower would otherwise
+    // leave the faceplate bound to Lower CLAP ids that the engine ignores
+    // (engine reads Upper-only in Whole). Controller must echo
+    // EditLayerChanged{Upper} to snap the view back.
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&3u32.to_le_bytes());
+    for v in [0.1_f32, 0.2, 0.3] {
+        blob.extend_from_slice(&v.to_le_bytes());
+    }
+    let meta = PresetMeta {
+        name: "Whole Preset".into(),
+        ..Default::default()
+    };
+    let store = Box::new(MockPresetStore::with_factory(vec![(meta, blob)]));
+    let (mut ctrl, model, view_rx) = build_with(3, store);
+    model.set_key_mode(KeyMode::Whole);
+
+    ctrl.ui_sender()
+        .send(UiEvent::LoadPreset {
+            source: PresetSource::Factory { index: 0 },
+        })
+        .unwrap();
+    ctrl.tick();
+    let events = drain(&view_rx);
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            ViewEvent::EditLayerChanged { layer: Layer::Upper }
+        )),
+        "missing EditLayerChanged(Upper) snap after Whole-mode preset load: {events:?}"
+    );
+}
+
+#[test]
+fn preset_load_in_dual_mode_does_not_snap_edit_layer() {
+    // In Dual/Split the user's edit-layer choice is theirs — controller
+    // must not force it.
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&3u32.to_le_bytes());
+    for v in [0.1_f32, 0.2, 0.3] {
+        blob.extend_from_slice(&v.to_le_bytes());
+    }
+    let store = Box::new(MockPresetStore::with_factory(vec![(
+        PresetMeta::default(),
+        blob,
+    )]));
+    let (mut ctrl, model, view_rx) = build_with(3, store);
+    model.set_key_mode(KeyMode::Dual);
+
+    ctrl.ui_sender()
+        .send(UiEvent::LoadPreset {
+            source: PresetSource::Factory { index: 0 },
+        })
+        .unwrap();
+    ctrl.tick();
+    let events = drain(&view_rx);
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, ViewEvent::EditLayerChanged { .. })),
+        "unexpected EditLayerChanged in Dual-mode preset load: {events:?}"
+    );
+}
+
+#[test]
+fn set_key_mode_to_whole_snaps_edit_layer_to_upper() {
+    let (mut ctrl, model, view_rx) = build(2);
+    model.set_key_mode(KeyMode::Dual);
+    ctrl.ui_sender()
+        .send(UiEvent::SetKeyMode { mode: KeyMode::Whole })
+        .unwrap();
+    ctrl.tick();
+    let events = drain(&view_rx);
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            ViewEvent::EditLayerChanged { layer: Layer::Upper }
+        )),
+        "missing EditLayerChanged(Upper) on entry to Whole: {events:?}"
+    );
+}
+
+#[test]
+fn set_key_mode_to_dual_does_not_snap_edit_layer() {
+    let (mut ctrl, model, view_rx) = build(2);
+    model.set_key_mode(KeyMode::Whole);
+    ctrl.ui_sender()
+        .send(UiEvent::SetKeyMode { mode: KeyMode::Dual })
+        .unwrap();
+    ctrl.tick();
+    let events = drain(&view_rx);
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, ViewEvent::EditLayerChanged { .. })),
+        "unexpected EditLayerChanged on entry to Dual: {events:?}"
+    );
+}
+
+#[test]
 fn request_text_input_relays_to_open_text_input() {
     // 0048: faceplate posts `RequestTextInput`; controller relays
     // verbatim as `OpenTextInput` for the editor backend to intercept

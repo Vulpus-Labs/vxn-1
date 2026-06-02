@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use crate::domain::{Layer, PresetMeta};
+use crate::domain::{KeyMode, Layer, PresetMeta};
 use crate::events::{HostEvent, PresetSource, UiEvent, ViewEvent};
 use crate::model::{ParamId, ParamModel};
 use crate::params::{PATCH_COUNT, PatchParam, desc_for_clap_id, patch_clap_id};
@@ -242,6 +242,7 @@ impl<M: ParamModel> Controller<M> {
                 // Lower-layer params may have just been seeded from Upper —
                 // republish them so the editor's signals follow.
                 self.broadcast_all_params();
+                self.snap_to_upper_if_whole();
             }
             UiEvent::SetSplitPoint { note } => {
                 self.model.set_split_point(note);
@@ -274,6 +275,7 @@ impl<M: ParamModel> Controller<M> {
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
                 self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
+                self.snap_to_upper_if_whole();
                 // 0050 race fix: the webview backend's first corpus push
                 // can land before the page's bootstrap script has
                 // installed `__vxn.applyPresetCorpus`. The webview's
@@ -310,6 +312,7 @@ impl<M: ParamModel> Controller<M> {
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
                 self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
+                self.snap_to_upper_if_whole();
             }
             HostEvent::Tempo { bpm: _ } => {
                 // Routed through to the engine on a separate channel in a
@@ -338,6 +341,7 @@ impl<M: ParamModel> Controller<M> {
                 self.broadcast_all_params();
                 self.send(ViewEvent::KeyModeChanged { mode: self.model.key_mode() });
                 self.send(ViewEvent::SplitPointChanged { note: self.model.split_point() });
+                self.snap_to_upper_if_whole();
             }
             Err(e) => self.send_status(format!("preset load failed: {e}")),
         }
@@ -447,6 +451,19 @@ impl<M: ParamModel> Controller<M> {
             norm,
             display,
         });
+    }
+
+    /// In `Whole` the engine reads only Upper-side params
+    /// ([`vxn_engine`] `param_source`), so the view's edit layer must point
+    /// at Upper too — otherwise UI writes land on Lower CLAP ids the audio
+    /// path ignores and the faceplate paints a mix of Upper (audible) and
+    /// Lower (stale) values. Called after any path that can leave the
+    /// model in `Whole` with a stale view-side edit layer: `SetKeyMode →
+    /// Whole`, preset load, host state load, editor-ready re-broadcast.
+    fn snap_to_upper_if_whole(&self) {
+        if self.model.key_mode() == KeyMode::Whole {
+            self.send(ViewEvent::EditLayerChanged { layer: Layer::Upper });
+        }
     }
 
     fn broadcast_all_params(&self) {
