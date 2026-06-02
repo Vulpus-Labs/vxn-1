@@ -54,20 +54,6 @@ fn ensure_webview2_data_dir() {
     let dir = base.join("VulpusLabs").join("VXN1").join("WebView2");
     let _ = std::fs::create_dir_all(&dir);
     unsafe { std::env::set_var(ENV, &dir) };
-    log_line(&format!("[vxn] WebView2 user-data dir = {}", dir.display()));
-}
-
-/// Append one line to `vxn.log` next to the host's temp dir. Windows GUI
-/// hosts (Reaper, etc.) detach stderr so `eprintln!` is invisible; file
-/// logging is the diagnostic channel. Best-effort: any IO error is dropped
-/// — we don't want a logging failure to surface as a plugin crash.
-fn log_line(msg: &str) {
-    use std::io::Write;
-    let path = std::env::temp_dir().join("vxn.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{msg}");
-    }
-    eprintln!("{msg}");
 }
 
 /// Logical pixel dimensions of the editor. Matches the vizia editor's
@@ -238,10 +224,6 @@ pub fn open_editor(
     let parent_wrap = ParentWindow { raw: build_raw(parent_raw) };
     let html = build_faceplate_html();
     let ipc_ctrl = ctrl.clone();
-    log_line(&format!(
-        "[vxn] open_editor parent={parent_raw:?} html_bytes={}",
-        html.len()
-    ));
     #[cfg(target_os = "windows")]
     ensure_webview2_data_dir();
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
@@ -250,18 +232,13 @@ pub fn open_editor(
             position: LogicalPosition::new(0i32, 0i32).into(),
             size: LogicalSize::new(EDITOR_WIDTH, EDITOR_HEIGHT).into(),
         })
-        .with_devtools(true)
         .with_ipc_handler(move |req| {
             if let Some(ev) = parse_ui_event(req.body()) {
                 let _ = ipc_ctrl.post(ev);
             }
         })
         .build()
-        .unwrap_or_else(|e| {
-            log_line(&format!("[vxn] wry build err: {e:?}"));
-            panic!("wry WebView build failed: {e:?}");
-        });
-    log_line("[vxn] webview built ok");
+        .expect("wry WebView build failed");
     EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),
