@@ -660,9 +660,9 @@ fn corpus_snapshot_json(corpus: &PresetCorpus) -> String {
             .push((i, m.name.as_str()));
     }
     let mut factory: Vec<(String, Vec<(usize, &str)>)> = factory_groups.into_iter().collect();
-    factory.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    factory.sort_by_cached_key(|a| a.0.to_lowercase());
     for g in factory.iter_mut() {
-        g.1.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        g.1.sort_by_cached_key(|a| a.1.to_lowercase());
     }
     let factory_v: Vec<Value> = factory
         .into_iter()
@@ -686,7 +686,7 @@ fn corpus_snapshot_json(corpus: &PresetCorpus) -> String {
         .into_iter()
         .map(|f| {
             let mut presets = f.presets;
-            presets.sort_by(|a, b| a.meta.name.to_lowercase().cmp(&b.meta.name.to_lowercase()));
+            presets.sort_by_cached_key(|a| a.meta.name.to_lowercase());
             let entries: Vec<Value> = presets
                 .into_iter()
                 .map(|p| {
@@ -1768,38 +1768,41 @@ mod tests {
         //   Total = 9.
         // Header switches: 3 (Chorus, Delay, Reverb).
         // Detune-Legato composite: 1 (Voice).
+        // Leading space disambiguates DOM mounts (` data-control="X"`) from
+        // CSS attribute selectors (`[data-control="X"]`) that the splice
+        // bundles into the same assembled string.
         assert_eq!(
-            assembled().matches(r#"data-control="fader""#).count(),
+            assembled().matches(r#" data-control="fader""#).count(),
             54,
             "expected 54 fader cells across all four rows",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="wave""#).count(),
+            assembled().matches(r#" data-control="wave""#).count(),
             4,
             "expected 4 wave cells (LFO 1, LFO 2, Osc 1, Osc 2)",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="switch""#).count(),
+            assembled().matches(r#" data-control="switch""#).count(),
             15,
             "expected 15 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="buttongroup""#).count(),
+            assembled().matches(r#" data-control="buttongroup""#).count(),
             9,
             "expected 9 buttongroup cells (Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="dropdown""#).count(),
+            assembled().matches(r#" data-control="dropdown""#).count(),
             0,
             "no dropdown cells expected (all enums fit ButtonGroup)",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="header-switch""#).count(),
+            assembled().matches(r#" data-control="header-switch""#).count(),
             3,
             "expected 3 header-switch cells (Chorus, Delay, Reverb)",
         );
         assert_eq!(
-            assembled().matches(r#"data-control="detune-legato""#).count(),
+            assembled().matches(r#" data-control="detune-legato""#).count(),
             1,
             "expected 1 detune-legato composite (Voice)",
         );

@@ -383,13 +383,13 @@ impl<M: ParamModel> Controller<M> {
             Err(_) => return Vec::new(),
         };
         let mut factory: Vec<(usize, &PresetMeta)> = corpus.factory.iter().enumerate().collect();
-        factory.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+        factory.sort_by_cached_key(|a| a.1.name.to_lowercase());
         let mut user: Vec<&crate::preset::UserPresetEntry> = corpus
             .user
             .iter()
             .flat_map(|f| f.presets.iter())
             .collect();
-        user.sort_by(|a, b| a.meta.name.to_lowercase().cmp(&b.meta.name.to_lowercase()));
+        user.sort_by_cached_key(|a| a.meta.name.to_lowercase());
         let mut out: Vec<PresetSource> = Vec::with_capacity(factory.len() + user.len());
         for (i, _) in factory {
             out.push(PresetSource::Factory { index: i });

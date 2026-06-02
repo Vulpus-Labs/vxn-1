@@ -130,10 +130,12 @@ impl ParamModel for MockModel {
 
 // ── Mock preset store ───────────────────────────────────────────────────────
 
+type SaveRecord = (String, Option<String>, PresetMeta, Vec<u8>);
+
 #[derive(Default)]
 struct MockPresetStore {
     factory: Vec<(PresetMeta, Vec<u8>)>,
-    saves: Mutex<Vec<(String, Option<String>, PresetMeta, Vec<u8>)>>,
+    saves: Mutex<Vec<SaveRecord>>,
 }
 
 impl MockPresetStore {

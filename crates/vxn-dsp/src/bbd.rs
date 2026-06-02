@@ -987,16 +987,16 @@ mod reverb_tests {
         let mut r = [0.0_f32; 64];
         let mut t = 0;
         for _ in 0..(40_000 / 64 + 1) {
-            for i in 0..64 {
+            for d in dry.iter_mut() {
                 let s = (t as f32) / SR;
-                dry[i] = 0.5 * (TAU * 440.0 * s).sin();
+                *d = 0.5 * (TAU * 440.0 * s).sin();
                 t += 1;
             }
             rev.process_block(&dry, &mut l, &mut r);
-            for i in 0..64 {
+            for (li, ri) in l.iter().zip(r.iter()) {
                 assert!(
-                    l[i].is_finite() && r[i].is_finite() && l[i].abs() < 5.0 && r[i].abs() < 5.0,
-                    "diverged at t={t}: l={} r={}", l[i], r[i]
+                    li.is_finite() && ri.is_finite() && li.abs() < 5.0 && ri.abs() < 5.0,
+                    "diverged at t={t}: l={li} r={ri}"
                 );
             }
         }
@@ -1087,12 +1087,12 @@ mod reverb_tests {
             let mut taken = 1;
             while taken < total {
                 rev.process_block(&dry, &mut l, &mut r);
-                for i in 0..64 {
+                for &li in l.iter() {
                     if taken >= total { break; }
-                    if (prev >= 0.0) != (l[i] >= 0.0) {
+                    if (prev >= 0.0) != (li >= 0.0) {
                         crossings += 1;
                     }
-                    prev = l[i];
+                    prev = li;
                     taken += 1;
                 }
             }
@@ -1125,16 +1125,16 @@ mod reverb_tests {
         let mut r = [0.0_f32; 64];
         let mut t = 0;
         for _ in 0..(40_000 / 64 + 1) {
-            for i in 0..64 {
+            for d in dry.iter_mut() {
                 let s = (t as f32) / SR;
-                dry[i] = 0.5 * (TAU * 440.0 * s).sin();
+                *d = 0.5 * (TAU * 440.0 * s).sin();
                 t += 1;
             }
             rev.process_block(&dry, &mut l, &mut r);
-            for i in 0..64 {
+            for (li, ri) in l.iter().zip(r.iter()) {
                 assert!(
-                    l[i].is_finite() && r[i].is_finite() && l[i].abs() < 5.0 && r[i].abs() < 5.0,
-                    "diverged at t={t}: l={} r={}", l[i], r[i]
+                    li.is_finite() && ri.is_finite() && li.abs() < 5.0 && ri.abs() < 5.0,
+                    "diverged at t={t}: l={li} r={ri}"
                 );
             }
         }
