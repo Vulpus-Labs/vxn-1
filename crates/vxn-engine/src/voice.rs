@@ -764,10 +764,15 @@ impl VoiceBank {
         if hpf_active {
             self.hpf.set_cutoff_all(ctx.hpf_cutoff, ctx.os_sample_rate);
         }
-        // Ramp the ladder coefficients across this block's `base_frames * os`
-        // samples so block-rate cutoff/LFO/envelope steps become a smooth
-        // piecewise-linear coefficient trajectory (no zipper / staircase).
-        self.ladder.prepare_ramp(base_frames * os);
+        // Ramp the ladder coefficients across this block's `base_frames` base
+        // samples (not OS-samples) so block-rate cutoff/LFO/envelope steps
+        // become a smooth piecewise-linear coefficient trajectory. The
+        // coefficient tick fires once per base frame in the render loop below;
+        // within a base frame the `os` filter calls see constant `g/k/drive`,
+        // which is harmless — modulators only move at block rate, and 48 kHz
+        // coefficient stepping is far above the audio band so the integrator
+        // smooths it.
+        self.ladder.prepare_ramp(base_frames);
 
         let mut trig = [false; N];
         trig.iter_mut()
@@ -910,6 +915,11 @@ impl VoiceBank {
                 }
                 out[frame + k] += sum * self.level_comp;
             }
+
+            // Step the ladder coefficients one base sample toward this block's
+            // target. Hoisted out of the OS loop above — modulators move at
+            // block rate, so per-OS interpolation was redundant.
+            self.ladder.tick_coeffs();
 
             // Advance the per-voice LFO 1 onset one base frame.
             self.lfo1_onset.advance(onset_dt, onset_cap);

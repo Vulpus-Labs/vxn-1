@@ -781,7 +781,25 @@ impl PolyOtaLadder {
         self.dd = [0.0; N];
     }
 
+    /// Step the ramped coefficients one base-sample toward the block target.
+    /// Hoisted out of [`process`] so it ticks at the base rate (once per base
+    /// frame) rather than the oversampled rate (once per OS sample) — the
+    /// modulators that move the targets only update at block rate, so per-OS
+    /// interpolation was redundant. The caller pairs this with
+    /// `prepare_ramp(base_frames)` (not `base_frames * os`) so the per-step
+    /// slope matches the new tick rate.
+    #[inline]
+    pub fn tick_coeffs(&mut self) {
+        for v in 0..N {
+            self.g[v] += self.dg[v];
+            self.k[v] += self.dk[v];
+            self.drive[v] += self.dd[v];
+        }
+    }
+
     /// One sample per voice: `out[v] = ota_ladder(x[v])`, mixed for the mode/slope.
+    /// Coefficients are constant within the call — the caller advances them at
+    /// the base rate via [`tick_coeffs`].
     #[inline]
     pub fn process(&mut self, x: &[f32; N], out: &mut [f32; N]) {
         let mode = self.mode;
@@ -812,11 +830,6 @@ impl PolyOtaLadder {
 
             self.y4[v] = y3;
             out[v] = mode.mix(slope, fed, [y0, y1, y2, y3]);
-
-            // Advance interpolated coefficients toward the block target.
-            self.g[v] += self.dg[v];
-            self.k[v] += self.dk[v];
-            self.drive[v] += self.dd[v];
         }
     }
 }
@@ -977,7 +990,9 @@ mod tests {
     #[test]
     fn ladder_coeffs_interpolate_across_block() {
         // prepare_ramp must land the current coefficients exactly on target
-        // after `steps` process calls, ramping linearly (no jump on sample 0).
+        // after `steps` tick_coeffs calls, ramping linearly (no jump on
+        // sample 0). The caller drives the tick at base rate; `process`
+        // itself is constant-coefficient within a tick.
         let sr = 48_000.0;
         let mut lad = PolyOtaLadder::new();
         // Start settled at a low cutoff, then target a high one.
@@ -992,19 +1007,17 @@ mod tests {
         }
         let steps = 32;
         lad.prepare_ramp(steps);
-        let x = [0.0; N];
-        let mut out = [0.0; N];
-        // After one step the coefficient has moved only a fraction of the way.
-        lad.process(&x, &mut out);
+        // After one tick the coefficient has moved only a fraction of the way.
+        lad.tick_coeffs();
         let after_one = lad.g[0];
         assert!(
             after_one > g_start && after_one < target.g,
             "no mid-ramp value: start {g_start}, after1 {after_one}, target {}",
             target.g
         );
-        // Remaining steps land on (≈) the target.
+        // Remaining ticks land on (≈) the target.
         for _ in 1..steps {
-            lad.process(&x, &mut out);
+            lad.tick_coeffs();
         }
         assert!(
             (lad.g[0] - target.g).abs() < 1e-5,
