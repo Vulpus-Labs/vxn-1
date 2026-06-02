@@ -652,6 +652,8 @@ impl VoiceBank {
         // Per-voice LFO 1: tick each channel's phase once for this block (held
         // across the block's frames, like the old per-layer LFO). The onset gain
         // (delay → fade) is applied at each read site, since it ramps per frame.
+        // LFOs tick even on silent blocks so free-run phase keeps drifting
+        // between notes (skipping below the LFO tick would freeze free-run).
         let mut lfo1_raw = [0.0f32; N];
         for (lfo, raw) in self.lfo1.iter_mut().zip(lfo1_raw.iter_mut()) {
             lfo.set_rate(ctx.lfo1_rate_hz);
@@ -659,6 +661,20 @@ impl VoiceBank {
         }
         let onset_cap = ctx.lfo1_delay_time + ctx.lfo1_fade;
         let onset_dt = 1.0 / base_rate;
+
+        // Silent layer fast path: no voices active and no incoming trigger.
+        // Voices are only freed once both envelopes hit `is_idle`, so the
+        // condition implies no release tail either. The mono buffer is the
+        // caller's `+=` accumulator (fresh-zeroed per block in `Synth::process`),
+        // so leaving it untouched contributes silence. Still advances the
+        // per-voice LFO 1 onset and the LFO 1 phase tick above so free-run
+        // patches keep their phase relationship across silent gaps.
+        if !self.active.iter().any(|&a| a)
+            && !self.trigger_pending.iter().any(|&t| t)
+        {
+            self.lfo1_onset.advance(onset_dt * base_frames as f32, onset_cap);
+            return;
+        }
 
         // Portamento glide coefficient for this block (one-pole toward the target
         // note); see `block_glide`. The glide is off / snaps when disabled.

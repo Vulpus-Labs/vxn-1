@@ -80,6 +80,26 @@ fn bench(c: &mut Criterion) {
             b.iter(|| s.process(black_box(&mut l), black_box(&mut r)));
         });
     }
+
+    // Idle buffer: no notes held, both layers' VoiceBanks should take the
+    // silent fast path in `render_block`. Measures the cost a host pays in
+    // between events when the synth is loaded but quiet.
+    {
+        let mut s = Synth::new(SR);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        s.set_param(gp(GlobalParam::DelayOn), 0.0);
+        // Render a few blocks first to settle any startup transients into
+        // is_idle, so the silent-skip predicate fires from block 0 onward.
+        let mut l = vec![0.0; FRAMES];
+        let mut r = vec![0.0; FRAMES];
+        for _ in 0..16 {
+            s.process(&mut l, &mut r);
+        }
+        group.bench_function("idle_no_voices", |b| {
+            b.iter(|| s.process(black_box(&mut l), black_box(&mut r)));
+        });
+    }
+
     group.finish();
 }
 
