@@ -201,19 +201,25 @@ pub fn open_editor(
     let parent_wrap = ParentWindow { raw: build_raw(parent_raw) };
     let html = build_faceplate_html();
     let ipc_ctrl = ctrl.clone();
+    eprintln!("[vxn] open_editor parent={parent_raw:?} html_bytes={}", html.len());
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
         .with_html(html)
         .with_bounds(Rect {
             position: LogicalPosition::new(0i32, 0i32).into(),
             size: LogicalSize::new(EDITOR_WIDTH, EDITOR_HEIGHT).into(),
         })
+        .with_devtools(true)
         .with_ipc_handler(move |req| {
             if let Some(ev) = parse_ui_event(req.body()) {
                 let _ = ipc_ctrl.post(ev);
             }
         })
         .build()
-        .expect("wry WebView build failed");
+        .unwrap_or_else(|e| {
+            eprintln!("[vxn] wry build err: {e:?}");
+            panic!("wry WebView build failed: {e:?}");
+        });
+    eprintln!("[vxn] webview built ok");
     EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),

@@ -1,0 +1,26 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLAP bundle
+        run: cargo xtask bundle --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VXN1-windows-x64
+          path: target/bundled/VXN1.clap
+          if-no-files-found: error
