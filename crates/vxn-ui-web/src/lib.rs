@@ -33,6 +33,30 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 
 mod text_input;
 
+/// Redirect WebView2's user-data folder to a user-writable location.
+/// Default is `<host_exe_dir>\<exe_name>.WebView2`, which inside
+/// `C:\Program Files\REAPER\` is admin-only and fails the WebView2 env
+/// init with `E_ACCESSDENIED` (0x80070005). The WebView2 SDK honours
+/// `WEBVIEW2_USER_DATA_FOLDER` if set before the environment is created,
+/// so plant it once per process at `%LOCALAPPDATA%\VulpusLabs\VXN1\WebView2`.
+///
+/// Idempotent: if the user (or another plugin instance) already set the
+/// var we leave it alone.
+#[cfg(target_os = "windows")]
+fn ensure_webview2_data_dir() {
+    const ENV: &str = "WEBVIEW2_USER_DATA_FOLDER";
+    if std::env::var_os(ENV).is_some() {
+        return;
+    }
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("VulpusLabs").join("VXN1").join("WebView2");
+    let _ = std::fs::create_dir_all(&dir);
+    unsafe { std::env::set_var(ENV, &dir) };
+    log_line(&format!("[vxn] WebView2 user-data dir = {}", dir.display()));
+}
+
 /// Append one line to `vxn.log` next to the host's temp dir. Windows GUI
 /// hosts (Reaper, etc.) detach stderr so `eprintln!` is invisible; file
 /// logging is the diagnostic channel. Best-effort: any IO error is dropped
@@ -218,6 +242,8 @@ pub fn open_editor(
         "[vxn] open_editor parent={parent_raw:?} html_bytes={}",
         html.len()
     ));
+    #[cfg(target_os = "windows")]
+    ensure_webview2_data_dir();
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
         .with_html(html)
         .with_bounds(Rect {
