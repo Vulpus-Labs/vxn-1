@@ -1,32 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { wireDrag } from '../panels.js';
+import { mountEl, pointerEvt } from './_helpers.js';
 
 // `wireFaderDrag` (a thin wrapper around `wireDrag`) gets its own focused
 // coverage in wire-fader-drag.test.js. This suite exercises the
 // generalisation: the delta-based `pointerToValue` path that the wave knob
 // relies on, and the hover-during-drag suppression contract shared by both.
 
-function makeEl() {
-  const el = document.createElement('div');
-  document.body.appendChild(el);
-  el.setPointerCapture = vi.fn();
-  el.releasePointerCapture = vi.fn();
-  return el;
-}
-
-function pointerEvt(type, { clientY = 0, pointerId = 11 } = {}) {
-  const ev = new MouseEvent(type, { bubbles: true, cancelable: true });
-  Object.defineProperty(ev, 'pointerId', { value: pointerId });
-  Object.defineProperty(ev, 'clientY', { value: clientY });
-  return ev;
-}
-
 describe('wireDrag — delta-based map (wave-knob style)', () => {
   let el, onDown, onMove, onUp, downContext, pointerToValue, drag;
 
   beforeEach(() => {
     document.body.innerHTML = '';
-    el = makeEl();
+    el = mountEl();
     onDown = vi.fn();
     onMove = vi.fn();
     onUp   = vi.fn();
@@ -72,7 +58,7 @@ describe('wireDrag — delta-based map (wave-knob style)', () => {
 
   it('downContext is optional — drags with no start-state work too', () => {
     document.body.innerHTML = '';
-    const el2 = makeEl();
+    const el2 = mountEl();
     const ptv = vi.fn(() => 7);
     const onDown2 = vi.fn();
     wireDrag(el2, { pointerToValue: ptv }, { onDown: onDown2 });
@@ -105,7 +91,7 @@ describe('wireDrag — hover-during-drag suppression', () => {
 
   beforeEach(() => {
     document.body.innerHTML = '';
-    el = makeEl();
+    el = mountEl();
     onEnter = vi.fn();
     onLeave = vi.fn();
     wireDrag(el, { pointerToValue: () => 0 }, { onEnter, onLeave });

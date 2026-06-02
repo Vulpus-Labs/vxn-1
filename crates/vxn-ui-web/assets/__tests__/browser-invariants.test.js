@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import {
+  browserDOM,
+  installVxn,
+  loadBrowserPanel,
+} from './_helpers.js';
 
 // Per the E015 / 0080 ticket: each test mounts a fresh fixture DOM,
 // `vi.resetModules()` to force re-eval of `browser.js`, then dynamic
@@ -6,48 +11,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // element refs at evaluation time, so the markup must exist before the
 // import — and a stale prior-test panel cannot be reused.
 
-function browserDOM() {
-  return `
-    <div id="faceplate">
-      <div id="browser-panel" hidden>
-        <div id="browser-folders"></div>
-        <div id="browser-presets"></div>
-        <input id="browser-search-input" type="text" />
-        <button id="browser-search-clear" type="button"></button>
-        <button id="browser-close" type="button"></button>
-      </div>
-      <div id="browser-backdrop" hidden></div>
-    </div>
-  `;
-}
+const BROWSER_OPCODES = [
+  'stepPreset', 'loadFactory', 'loadUser',
+  'renamePreset', 'deletePreset', 'movePreset',
+  'renameFolder', 'deleteFolder', 'newFolder',
+  'savePreset',
+];
 
 let sendCalls;
-
-function installVxn(promptValue) {
-  sendCalls = [];
-  const send = {};
-  const opcodes = [
-    'stepPreset', 'loadFactory', 'loadUser',
-    'renamePreset', 'deletePreset', 'movePreset',
-    'renameFolder', 'deleteFolder', 'newFolder',
-    'savePreset',
-  ];
-  for (const op of opcodes) {
-    send[op] = (...args) => sendCalls.push([op, ...args]);
-  }
-  globalThis.window.vxn = {
-    send,
-    // Synchronous shim: invokes the callback with the seeded value.
-    promptText: (title, initial, cb) => cb(promptValue),
-  };
-  return send;
-}
-
-async function loadPanel() {
-  vi.resetModules();
-  const { browserPanel } = await import('../browser.js');
-  return browserPanel;
-}
 
 function folderRowByText(text) {
   const folders = document.getElementById('browser-folders');
@@ -57,12 +28,12 @@ function folderRowByText(text) {
 
 beforeEach(() => {
   document.body.innerHTML = browserDOM();
-  installVxn('Pad 1');
+  ({ sendCalls } = installVxn(BROWSER_OPCODES, { promptValue: 'Pad 1' }));
 });
 
 describe('browserPanel.setCorpus', () => {
   it('collapses selection to user root when the prior folder vanishes', async () => {
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({
       factory: [],
@@ -89,7 +60,7 @@ describe('browserPanel.setCorpus', () => {
   });
 
   it('preserves an in-flight search query across a setCorpus call', async () => {
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({ factory: [], user: [{ name: 'Bass', presets: [] }] });
     const input = document.getElementById('browser-search-input');
@@ -108,7 +79,7 @@ describe('browserPanel.followPath', () => {
     const scrollSpy = vi.fn();
     Element.prototype.scrollIntoView = scrollSpy;
 
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({
       factory: [],
@@ -135,7 +106,7 @@ describe('browserPanel.followPath', () => {
   });
 
   it('is a no-op for an unknown path', async () => {
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({
       factory: [],
@@ -147,7 +118,7 @@ describe('browserPanel.followPath', () => {
 
 describe('browserPanel.setCurrentSource', () => {
   it('clears the .current class on every preset row when called with null', async () => {
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({
       factory: [{ category: 'Bass', presets: [{ name: 'A', index: 0 }] }],
@@ -163,8 +134,8 @@ describe('browserPanel.setCurrentSource', () => {
 
 describe('browserPanel.openSaveAs', () => {
   it('disables Save while the name is empty; flips once promptText commits one', async () => {
-    installVxn(null);
-    const panel = await loadPanel();
+    ({ sendCalls } = installVxn(BROWSER_OPCODES));
+    const panel = await loadBrowserPanel();
     panel.openSaveAs('');
     const okBtn = document.querySelector(
       '.browser-modal-actions .browser-modal-btn:last-child',
@@ -182,7 +153,7 @@ describe('browserPanel.openSaveAs', () => {
   });
 
   it('uses the currently-selected user folder as the save target', async () => {
-    const panel = await loadPanel();
+    const panel = await loadBrowserPanel();
     panel.setOpen(true);
     panel.setCorpus({
       factory: [],
