@@ -33,6 +33,19 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 
 mod text_input;
 
+/// Append one line to `vxn.log` next to the host's temp dir. Windows GUI
+/// hosts (Reaper, etc.) detach stderr so `eprintln!` is invisible; file
+/// logging is the diagnostic channel. Best-effort: any IO error is dropped
+/// — we don't want a logging failure to surface as a plugin crash.
+fn log_line(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("vxn.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{msg}");
+    }
+    eprintln!("{msg}");
+}
+
 /// Logical pixel dimensions of the editor. Matches the vizia editor's
 /// [`vxn_ui_vizia::EDITOR_WIDTH`] / `_HEIGHT` so swapping backends doesn't reflow
 /// the host's plugin window.
@@ -201,7 +214,10 @@ pub fn open_editor(
     let parent_wrap = ParentWindow { raw: build_raw(parent_raw) };
     let html = build_faceplate_html();
     let ipc_ctrl = ctrl.clone();
-    eprintln!("[vxn] open_editor parent={parent_raw:?} html_bytes={}", html.len());
+    log_line(&format!(
+        "[vxn] open_editor parent={parent_raw:?} html_bytes={}",
+        html.len()
+    ));
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
         .with_html(html)
         .with_bounds(Rect {
@@ -216,10 +232,10 @@ pub fn open_editor(
         })
         .build()
         .unwrap_or_else(|e| {
-            eprintln!("[vxn] wry build err: {e:?}");
+            log_line(&format!("[vxn] wry build err: {e:?}"));
             panic!("wry WebView build failed: {e:?}");
         });
-    eprintln!("[vxn] webview built ok");
+    log_line("[vxn] webview built ok");
     EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),
