@@ -1,0 +1,1515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VXN-2 — UI mockup</title>
+<style>
+:root {
+  --face-bg: #2b2b2b;
+  --panel-bg: #1c1c1c;
+  --panel-border: #0e0e0e;
+  --panel-corner: 4px;
+  --header-bg: #a7cfe2;
+  --header-fg: #141414;
+  --banner-fg: #a7cfe2;
+  --text: #d6d6d6;
+  --ctl-label: #aeaeae;
+  --ctl-value: #d9701b;
+  --track-bg: #0e0e0e;
+  --track-fill: #d9701b;
+  --thumb-bg: #87afb2;
+  --thumb-border: #a7cfe2;
+  --glyph: #888888;
+  --glyph-active: #a7cfe2;
+  --carrier: #d9701b;
+  --modulator: #87afb2;
+
+  --editor-w: 1024px;
+  --pad-outer: 10px;
+  --banner-h: 26px;
+  --preset-bar-h: 30px;
+  --row-vgap: 8px;
+  --row-hgap: 6px;
+  --panel-pad: 5px;
+  --panel-vgap: 4px;
+  --header-h: 16px;
+  --ctl-label-h: 12px;
+  --ctl-value-h: 12px;
+  --fader-track-w: 4px;
+  --thumb-w: 18px;
+  --thumb-h: 6px;
+  --fader-h: 74px;
+  --dial: 56px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--face-bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans Condensed", -apple-system, system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  font-size: 11px;
+}
+
+.faceplate {
+  width: var(--editor-w);
+  box-sizing: border-box;
+  padding: var(--pad-outer);
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-vgap);
+  position: relative;
+  margin: 0 auto;
+}
+
+.banner {
+  height: var(--banner-h);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  color: var(--banner-fg);
+  font-size: 16px;
+  letter-spacing: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preset-bar {
+  height: var(--preset-bar-h);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 6px;
+  box-sizing: border-box;
+}
+.pbar-btn {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  height: 18px;
+  cursor: pointer;
+}
+.pbar-btn:hover { border-color: var(--glyph-active); color: #ececec; }
+.pbar-name {
+  font-size: 12px;
+  color: var(--ctl-value);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  min-width: 200px;
+}
+.pbar-spacer { flex: 1 1 auto; }
+
+.row {
+  display: flex;
+  gap: var(--row-hgap);
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.panel-header {
+  height: var(--header-h);
+  background: var(--header-bg);
+  color: var(--header-fg);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-align: center;
+  border-radius: var(--panel-corner) var(--panel-corner) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel-body {
+  padding: var(--panel-pad);
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ===== OP ROW ===== */
+
+.op-row {
+  height: 196px;
+}
+
+.algo-block {
+  width: 160px;
+  flex: 0 0 160px;
+}
+.algo-block .panel-body {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px;
+  gap: 6px;
+}
+.algo-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.algo-current-label {
+  font-size: 10px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.algo-num {
+  font-size: 18px;
+  color: var(--ctl-value);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.algo-pick {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.algo-pick:hover { border-color: var(--glyph-active); color: #ececec; }
+
+.algo-diagram {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #111;
+  border: 1px solid #0a0a0a;
+  border-radius: 3px;
+  position: relative;
+}
+.algo-diagram svg { width: 100%; height: 100%; display: block; }
+
+.algo-op {
+  cursor: pointer;
+}
+.algo-op-box {
+  stroke: #666;
+  stroke-width: 1.5;
+  fill: #1c1c1c;
+}
+.algo-op.carrier .algo-op-box {
+  stroke: var(--carrier);
+}
+.algo-op.modulator .algo-op-box {
+  stroke: var(--modulator);
+}
+.algo-op.selected .algo-op-box {
+  fill: #2a2a2a;
+  stroke-width: 2.5;
+}
+.algo-op-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+.algo-edge {
+  stroke: #555;
+  stroke-width: 1;
+  fill: none;
+}
+.algo-fb-loop {
+  stroke: var(--ctl-value);
+  stroke-width: 1.2;
+  fill: none;
+}
+
+/* op detail block */
+.op-detail-block {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.op-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner) var(--panel-corner) 0 0;
+  padding: 3px;
+  height: 32px;
+  box-sizing: border-box;
+}
+.op-tab {
+  flex: 1 1 0;
+  background: #232323;
+  border: 1px solid #333;
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--ctl-label);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  position: relative;
+}
+.op-tab:hover { color: #ececec; border-color: var(--glyph-active); }
+.op-tab.active {
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-color: var(--header-bg);
+}
+.op-tab.carrier::after {
+  content: "";
+  position: absolute;
+  top: 2px; right: 4px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--carrier);
+}
+.op-tab.modulator::after {
+  content: "";
+  position: absolute;
+  top: 2px; right: 4px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--modulator);
+}
+.op-tab-level {
+  height: 3px;
+  width: 70%;
+  margin-top: 3px;
+  background: var(--track-bg);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.op-tab-level-fill {
+  height: 100%;
+  background: var(--ctl-value);
+}
+
+.op-detail {
+  flex: 1 1 auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-top: none;
+  border-radius: 0 0 var(--panel-corner) var(--panel-corner);
+  padding: 6px;
+  display: flex;
+  gap: 8px;
+  min-height: 0;
+}
+
+.op-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.op-col-title {
+  font-size: 9px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  text-align: center;
+  font-weight: 700;
+}
+
+/* fader */
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 28px;
+}
+.fader-label {
+  font-size: 9px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+}
+.fader-track {
+  width: var(--fader-track-w);
+  height: var(--fader-h);
+  background: var(--track-bg);
+  border-radius: 1px;
+  position: relative;
+  margin: 4px 0;
+}
+.fader-track-fill {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: var(--track-fill);
+  border-radius: 1px;
+}
+.fader-thumb {
+  position: absolute;
+  width: var(--thumb-w);
+  height: var(--thumb-h);
+  left: 50%;
+  transform: translate(-50%, 50%);
+  background: var(--thumb-bg);
+  border: 1px solid var(--thumb-border);
+  border-radius: 1px;
+  cursor: ns-resize;
+}
+.fader-value {
+  font-size: 9px;
+  color: var(--ctl-value);
+  font-variant-numeric: tabular-nums;
+  height: var(--ctl-value-h);
+  line-height: var(--ctl-value-h);
+  visibility: hidden;
+}
+.fader:hover .fader-value,
+.fader.dragging .fader-value {
+  visibility: visible;
+}
+
+/* wave-shape rotary knob (ported from vxn-1) */
+.wave-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.wave-knob-label {
+  font-size: 9px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+}
+.wave-knob svg { cursor: pointer; }
+.wave-knob .knob-face { fill: #2a2a2a; stroke: #444; }
+.wave-knob .knob-dimple { fill: #222; stroke: #333; }
+.wave-knob .knob-indicator-line { stroke: #a7cfe2; stroke-width: 2; stroke-linecap: round; transition: transform 120ms ease-out; }
+.wave-knob .wave-glyph { fill: none; stroke: #888; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.wave-knob .wave-glyph.active { stroke: #a7cfe2; }
+.wave-knob .wave-hit { fill: transparent; cursor: pointer; }
+
+/* segmented buttongroup */
+.bgrp {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bgrp-row {
+  display: flex;
+  gap: 2px;
+}
+.bgrp-btn {
+  background: #232323;
+  border: 1px solid #333;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  flex: 1 1 0;
+}
+.bgrp-btn.active {
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-color: var(--header-bg);
+}
+
+/* EG + KS graph widgets */
+.graph {
+  background: #0e0e0e;
+  border: 1px solid #0a0a0a;
+  border-radius: 2px;
+  position: relative;
+}
+.graph svg { width: 100%; height: 100%; display: block; }
+.graph-curve {
+  stroke: var(--ctl-value);
+  stroke-width: 1.5;
+  fill: none;
+}
+.graph-curve-fill {
+  fill: rgba(217, 112, 27, 0.15);
+}
+.graph-grid {
+  stroke: #2a2a2a;
+  stroke-width: 1;
+}
+.graph-axis {
+  stroke: #444;
+  stroke-width: 1;
+}
+.graph-handle {
+  fill: var(--thumb-bg);
+  stroke: var(--thumb-border);
+  stroke-width: 1.5;
+  cursor: grab;
+}
+.graph-handle:hover { fill: var(--glyph-active); }
+.graph-bp-line {
+  stroke: var(--glyph-active);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+/* ===== global mod row ===== */
+
+.gmod-row { height: 144px; }
+
+/* generic control column */
+.cgrp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+}
+.cgrp-label {
+  font-size: 9px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.lfo-panel { flex: 1 1 0; }
+.peg-panel { flex: 1 1 0; }
+.moenv-panel { flex: 1 1 0; }
+
+/* mod matrix slot list */
+.mm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  overflow-y: auto;
+  font-size: 10px;
+}
+.mm-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 26px;
+  gap: 3px;
+  align-items: center;
+  background: #0e0e0e;
+  border: 1px solid #1a1a1a;
+  border-radius: 2px;
+  padding: 2px 4px;
+}
+.mm-cell {
+  font-size: 10px;
+  color: var(--ctl-label);
+}
+.mm-cell.depth { color: var(--ctl-value); text-align: right; font-variant-numeric: tabular-nums; }
+.mm-cell.src { color: var(--glyph-active); }
+.mm-cell.dst { color: var(--text); }
+.mm-cell.curve {
+  text-align: center;
+  font-size: 9px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+}
+.mm-add {
+  background: #232323;
+  border: 1px dashed #444;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font: inherit;
+  font-size: 9px;
+  padding: 2px;
+  cursor: pointer;
+  text-align: center;
+}
+.mm-add:hover { color: #ececec; border-color: var(--glyph-active); }
+
+/* ===== bottom row ===== */
+
+.perf-row { height: 130px; }
+
+.voice-panel { flex: 1.2 1 0; }
+.stack-panel { flex: 1.5 1 0; }
+.delay-panel { flex: 1 1 0; }
+.reverb-panel { flex: 1 1 0; }
+.master-panel { flex: 0.9 1 0; }
+
+/* header toggle */
+.panel.toggle-on > .panel-header { background: var(--header-bg); }
+.panel.toggle-off > .panel-header { background: #444; color: #aaa; }
+.panel.toggle-off .panel-body { opacity: 0.4; }
+.panel-header.toggleable { cursor: pointer; }
+
+/* ===== algo overlay ===== */
+
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.overlay-backdrop.open { display: flex; }
+.overlay-panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--ctl-value);
+  border-radius: var(--panel-corner);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  padding: 12px;
+  max-width: 980px;
+  max-height: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.overlay-title {
+  color: var(--banner-fg);
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.overlay-close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  color: var(--ctl-label);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.algo-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 110px);
+  gap: 6px;
+}
+.algo-grid-cell {
+  width: 110px;
+  height: 110px;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  cursor: pointer;
+  position: relative;
+}
+.algo-grid-cell:hover { border-color: var(--glyph-active); }
+.algo-grid-cell.active { border-color: var(--ctl-value); background: #1f1815; }
+.algo-grid-cell svg { width: 100%; height: 100%; display: block; }
+.algo-grid-num {
+  position: absolute;
+  top: 2px; left: 4px;
+  font-size: 10px;
+  color: var(--ctl-label);
+  font-weight: 700;
+}
+
+/* mod matrix overlay */
+.mm-overlay {
+  width: 760px;
+  max-height: 540px;
+}
+.mm-overlay-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+.mm-overlay-row {
+  display: grid;
+  grid-template-columns: 30px 1.4fr 1.4fr 1fr 60px 60px 24px;
+  gap: 6px;
+  align-items: center;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 2px;
+  padding: 5px 6px;
+}
+.mm-overlay-row select,
+.mm-overlay-row input {
+  background: #0e0e0e;
+  border: 1px solid #333;
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+.mm-overlay-idx { color: var(--ctl-label); font-variant-numeric: tabular-nums; font-size: 10px; }
+
+</style>
+</head>
+<body>
+<div class="faceplate" id="faceplate">
+
+  <div class="banner">VULPUS LABS &mdash; VXN-2</div>
+
+  <div class="preset-bar">
+    <button class="pbar-btn">&lt;</button>
+    <div class="pbar-name">Init</div>
+    <button class="pbar-btn">&gt;</button>
+    <button class="pbar-btn">Browse</button>
+    <button class="pbar-btn">Save</button>
+    <button class="pbar-btn">Save As</button>
+    <div class="pbar-spacer"></div>
+    <button class="pbar-btn" id="mm-open">Mod Matrix · <span id="mm-count">8</span></button>
+  </div>
+
+  <!-- ===== OP ROW ===== -->
+  <div class="row op-row">
+
+    <!-- algo block: current algo + always-visible diagram (clickable ops) -->
+    <div class="panel algo-block">
+      <div class="panel-header">ALGORITHM</div>
+      <div class="panel-body">
+        <div class="algo-current">
+          <div>
+            <div class="algo-current-label">Algo</div>
+            <div class="algo-num" id="algo-num">5</div>
+          </div>
+          <button class="algo-pick" id="algo-pick">Pick…</button>
+        </div>
+        <div class="algo-diagram">
+          <svg id="algo-svg" viewBox="0 0 200 220" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- op detail block -->
+    <div class="op-detail-block">
+      <div class="op-tabs" id="op-tabs"></div>
+      <div class="op-detail" id="op-detail">
+        <!-- columns drawn in JS -->
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== GLOBAL MOD ROW ===== -->
+  <div class="row gmod-row">
+
+    <div class="panel lfo-panel">
+      <div class="panel-header">LFO 1 — GLOBAL</div>
+      <div class="panel-body">
+        <div class="wave-knob" id="lfo1-shape" data-shape="0"></div>
+        <div class="fader"><div class="fader-label">Rate</div><div class="fader-track"><div class="fader-track-fill" style="height:45%"></div><div class="fader-thumb" style="bottom:45%"></div></div><div class="fader-value">2.4 Hz</div></div>
+        <div class="fader"><div class="fader-label">Depth</div><div class="fader-track"><div class="fader-track-fill" style="height:30%"></div><div class="fader-thumb" style="bottom:30%"></div></div><div class="fader-value">0.30</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Free</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Sync</button></div>
+          </div>
+          <div class="cgrp-label">Mode</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel lfo-panel">
+      <div class="panel-header">LFO 2 — PER-VOICE</div>
+      <div class="panel-body">
+        <div class="wave-knob" id="lfo2-shape" data-shape="2"></div>
+        <div class="fader"><div class="fader-label">Rate</div><div class="fader-track"><div class="fader-track-fill" style="height:55%"></div><div class="fader-thumb" style="bottom:55%"></div></div><div class="fader-value">5.1 Hz</div></div>
+        <div class="fader"><div class="fader-label">Delay</div><div class="fader-track"><div class="fader-track-fill" style="height:25%"></div><div class="fader-thumb" style="bottom:25%"></div></div><div class="fader-value">180 ms</div></div>
+        <div class="fader"><div class="fader-label">Fade</div><div class="fader-track"><div class="fader-track-fill" style="height:35%"></div><div class="fader-thumb" style="bottom:35%"></div></div><div class="fader-value">320 ms</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Free</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Key</button></div>
+          </div>
+          <div class="cgrp-label">Trig</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel peg-panel">
+      <div class="panel-header">PITCH EG</div>
+      <div class="panel-body" style="padding: 6px;">
+        <div class="graph" id="peg-graph" style="flex: 1 1 auto; min-width: 0;">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="none" id="peg-svg"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel moenv-panel">
+      <div class="panel-header">MOD ENV</div>
+      <div class="panel-body">
+        <div class="fader"><div class="fader-label">A</div><div class="fader-track"><div class="fader-track-fill" style="height:10%"></div><div class="fader-thumb" style="bottom:10%"></div></div><div class="fader-value">2 ms</div></div>
+        <div class="fader"><div class="fader-label">D</div><div class="fader-track"><div class="fader-track-fill" style="height:50%"></div><div class="fader-thumb" style="bottom:50%"></div></div><div class="fader-value">320 ms</div></div>
+        <div class="fader"><div class="fader-label">S</div><div class="fader-track"><div class="fader-track-fill" style="height:60%"></div><div class="fader-thumb" style="bottom:60%"></div></div><div class="fader-value">0.60</div></div>
+        <div class="fader"><div class="fader-label">R</div><div class="fader-track"><div class="fader-track-fill" style="height:40%"></div><div class="fader-thumb" style="bottom:40%"></div></div><div class="fader-value">180 ms</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Lin</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Exp</button></div>
+          </div>
+          <div class="cgrp-label">Shape</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== PERF / FX / OUT ROW ===== -->
+  <div class="row perf-row">
+
+    <div class="panel voice-panel">
+      <div class="panel-header">VOICE</div>
+      <div class="panel-body">
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Poly</button><button class="bgrp-btn">Solo</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Whole</button><button class="bgrp-btn active">Layer</button><button class="bgrp-btn">Split</button></div>
+          </div>
+          <div class="cgrp-label">Mode</div>
+        </div>
+        <div class="fader"><div class="fader-label">Glide</div><div class="fader-track"><div class="fader-track-fill" style="height:10%"></div><div class="fader-thumb" style="bottom:10%"></div></div><div class="fader-value">12 ms</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Off</button><button class="bgrp-btn">On</button></div>
+          </div>
+          <div class="cgrp-label">Legato</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel stack-panel">
+      <div class="panel-header">VOICE STACK</div>
+      <div class="panel-body">
+        <div class="fader"><div class="fader-label">Density</div><div class="fader-track"><div class="fader-track-fill" style="height:40%"></div><div class="fader-thumb" style="bottom:40%"></div></div><div class="fader-value">4</div></div>
+        <div class="fader"><div class="fader-label">Detune</div><div class="fader-track"><div class="fader-track-fill" style="height:25%"></div><div class="fader-thumb" style="bottom:25%"></div></div><div class="fader-value">8 ct</div></div>
+        <div class="fader"><div class="fader-label">Spread</div><div class="fader-track"><div class="fader-track-fill" style="height:60%"></div><div class="fader-thumb" style="bottom:60%"></div></div><div class="fader-value">0.60</div></div>
+        <div class="fader"><div class="fader-label">Phase</div><div class="fader-track"><div class="fader-track-fill" style="height:50%"></div><div class="fader-thumb" style="bottom:50%"></div></div><div class="fader-value">0.50</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Lin</button><button class="bgrp-btn">Geom</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Rand</button></div>
+          </div>
+          <div class="cgrp-label">Distrib</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel delay-panel toggle-on" id="delay-panel">
+      <div class="panel-header toggleable" data-toggle="delay">DELAY</div>
+      <div class="panel-body">
+        <div class="fader"><div class="fader-label">Time</div><div class="fader-track"><div class="fader-track-fill" style="height:30%"></div><div class="fader-thumb" style="bottom:30%"></div></div><div class="fader-value">3/8</div></div>
+        <div class="fader"><div class="fader-label">FB</div><div class="fader-track"><div class="fader-track-fill" style="height:45%"></div><div class="fader-thumb" style="bottom:45%"></div></div><div class="fader-value">0.45</div></div>
+        <div class="fader"><div class="fader-label">Mix</div><div class="fader-track"><div class="fader-track-fill" style="height:25%"></div><div class="fader-thumb" style="bottom:25%"></div></div><div class="fader-value">0.25</div></div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row"><button class="bgrp-btn active">Sync</button></div>
+            <div class="bgrp-row"><button class="bgrp-btn">Ping</button></div>
+          </div>
+          <div class="cgrp-label">Opt</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel reverb-panel toggle-on" id="reverb-panel">
+      <div class="panel-header toggleable" data-toggle="reverb">REVERB (FDN)</div>
+      <div class="panel-body">
+        <div class="fader"><div class="fader-label">Size</div><div class="fader-track"><div class="fader-track-fill" style="height:55%"></div><div class="fader-thumb" style="bottom:55%"></div></div><div class="fader-value">0.55</div></div>
+        <div class="fader"><div class="fader-label">Decay</div><div class="fader-track"><div class="fader-track-fill" style="height:60%"></div><div class="fader-thumb" style="bottom:60%"></div></div><div class="fader-value">2.4 s</div></div>
+        <div class="fader"><div class="fader-label">Damp</div><div class="fader-track"><div class="fader-track-fill" style="height:50%"></div><div class="fader-thumb" style="bottom:50%"></div></div><div class="fader-value">0.50</div></div>
+        <div class="fader"><div class="fader-label">Mix</div><div class="fader-track"><div class="fader-track-fill" style="height:20%"></div><div class="fader-thumb" style="bottom:20%"></div></div><div class="fader-value">0.20</div></div>
+      </div>
+    </div>
+
+    <div class="panel master-panel">
+      <div class="panel-header">MASTER</div>
+      <div class="panel-body">
+        <div class="fader"><div class="fader-label">Tune</div><div class="fader-track"><div class="fader-track-fill" style="height:50%"></div><div class="fader-thumb" style="bottom:50%"></div></div><div class="fader-value">±0</div></div>
+        <div class="fader"><div class="fader-label">Vol</div><div class="fader-track"><div class="fader-track-fill" style="height:70%"></div><div class="fader-thumb" style="bottom:70%"></div></div><div class="fader-value">−6 dB</div></div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- algo picker overlay -->
+<div class="overlay-backdrop" id="algo-overlay">
+  <div class="overlay-panel" style="position: relative;">
+    <button class="overlay-close" id="algo-overlay-close">&times;</button>
+    <div class="overlay-title">Algorithm</div>
+    <div class="algo-grid" id="algo-grid"></div>
+  </div>
+</div>
+
+<!-- mod matrix overlay -->
+<div class="overlay-backdrop" id="mm-overlay">
+  <div class="overlay-panel mm-overlay" style="position: relative;">
+    <button class="overlay-close" id="mm-overlay-close">&times;</button>
+    <div class="overlay-title">Mod Matrix</div>
+    <div class="mm-overlay-list" id="mm-overlay-list"></div>
+  </div>
+</div>
+
+<script>
+// ===== Wave-shape glyphs (ported from vxn-1 panels.js) =====
+const WAVE_GLYPHS = {
+  Sine: (() => {
+    const pts = [];
+    for (let k = 0; k <= 16; k++) {
+      const t = k / 16;
+      pts.push([t, 0.5 - 0.38 * Math.sin(t * Math.PI * 2)]);
+    }
+    return pts;
+  })(),
+  Tri:   [[0, 0.85], [0.5, 0.15], [1, 0.85]],
+  "Saw+":[[0, 0.85], [0.5, 0.15], [0.5, 0.85], [1, 0.15]],
+  "Saw-":[[0, 0.15], [0.5, 0.85], [0.5, 0.15], [1, 0.85]],
+  Pulse: [[0, 0.85], [0, 0.15], [0.5, 0.15], [0.5, 0.85], [1, 0.85]],
+  "S&H": [[0, 0.6], [0.28, 0.6], [0.28, 0.2], [0.56, 0.2], [0.56, 0.8], [0.82, 0.8], [0.82, 0.45], [1, 0.45]],
+};
+function glyphPath(name, w, h) {
+  const pts = WAVE_GLYPHS[name];
+  if (!pts) return null;
+  return pts.map((p, i) =>
+    (i === 0 ? "M" : "L") + (p[0]*w).toFixed(2) + " " + (p[1]*h).toFixed(2)
+  ).join(" ");
+}
+
+// Build a wave-shape rotary knob into `el`. Variants laid out on a 270° arc
+// (gap at bottom). Click a glyph to select; indicator rotates to it.
+function makeWaveKnob(el, variants, currentIdx, onPick) {
+  const size = 64, cx = size/2, cy = size/2;
+  const knobR = 13, glyphR = 26, glyphW = 14, glyphH = 10;
+  const ARC_START = -135, ARC_SWEEP = 270;
+  const N = variants.length;
+  const stepDeg = N > 1 ? ARC_SWEEP / (N-1) : 0;
+  const variantDeg = i => ARC_START + i * stepDeg;
+
+  let svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
+  // knob face + dimple
+  svg += `<circle class="knob-face" cx="${cx}" cy="${cy}" r="${knobR}" />`;
+  svg += `<circle class="knob-dimple" cx="${cx}" cy="${cy}" r="${(knobR*0.62).toFixed(2)}" />`;
+  // glyphs around arc
+  variants.forEach((name, i) => {
+    const a = variantDeg(i) * Math.PI / 180;
+    const gx = cx + glyphR * Math.sin(a);
+    const gy = cy - glyphR * Math.cos(a);
+    const tx = (gx - glyphW/2).toFixed(2);
+    const ty = (gy - glyphH/2).toFixed(2);
+    const d = glyphPath(name, glyphW, glyphH);
+    const cls = i === currentIdx ? "wave-glyph active" : "wave-glyph";
+    svg += `<g transform="translate(${tx} ${ty})" data-variant="${i}">`;
+    svg += `<rect class="wave-hit" x="-3" y="-3" width="${glyphW+6}" height="${glyphH+6}" />`;
+    if (d) svg += `<path class="${cls}" d="${d}" />`;
+    svg += `</g>`;
+  });
+  // indicator (rotating)
+  const ang = variantDeg(currentIdx).toFixed(2);
+  svg += `<g class="knob-indicator-g" transform="rotate(${ang} ${cx} ${cy})">`;
+  svg += `<line class="knob-indicator-line" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy - knobR + 2}" />`;
+  svg += `</g>`;
+  svg += `</svg>`;
+
+  el.innerHTML = `<div class="wave-knob-label">Shape</div>${svg}`;
+
+  // wire glyph clicks
+  el.querySelectorAll("g[data-variant]").forEach(g => {
+    g.addEventListener("click", () => {
+      const i = parseInt(g.getAttribute("data-variant"), 10);
+      el.setAttribute("data-shape", i);
+      makeWaveKnob(el, variants, i, onPick);
+      if (onPick) onPick(i);
+    });
+  });
+}
+
+const LFO_VARIANTS = ["Sine", "Tri", "Saw+", "Saw-", "Pulse", "S&H"];
+
+// ===== DX7-style algorithm graph data =====
+// Each algo: list of ops (1..6), edges modulator→carrier, feedback op, carriers (output sinks).
+// Compact subset; full 32 would be done at impl time. Picker shows placeholders for the rest.
+const ALGOS = {
+  1:  { name: "1",  edges: [[2,1],[4,3],[5,4],[6,5]],         carriers:[1,3], fb:6 },
+  2:  { name: "2",  edges: [[2,1],[4,3],[5,4],[6,5]],         carriers:[1,3], fb:2 },
+  3:  { name: "3",  edges: [[2,1],[4,3],[5,4],[6,5]],         carriers:[1,3], fb:6 },
+  4:  { name: "4",  edges: [[2,1],[3,1],[5,4],[6,5]],         carriers:[1,4], fb:4 },
+  5:  { name: "5",  edges: [[2,1],[4,3],[6,5]],                carriers:[1,3,5], fb:6 },
+  6:  { name: "6",  edges: [[2,1],[4,3],[6,5]],                carriers:[1,3,5], fb:5 },
+  7:  { name: "7",  edges: [[2,1],[4,3],[5,3],[6,5]],         carriers:[1,3], fb:6 },
+  8:  { name: "8",  edges: [[2,1],[4,3],[5,3],[6,5]],         carriers:[1,3], fb:4 },
+  // … remaining 32 algos elided for mockup. Picker fills cells 9–32 with placeholders.
+};
+
+let state = {
+  algo: 5,
+  selectedOp: 1,
+  ops: Array.from({length: 6}, (_, i) => ({
+    idx: i+1,
+    ratio: i === 0 ? 1.00 : (i === 1 ? 14.00 : (i === 2 ? 1.00 : (i === 3 ? 1.00 : (i === 4 ? 1.00 : 3.50)))),
+    fine: 0,
+    detune: 0,
+    fixed: false,
+    level: i === 0 ? 99 : (i === 1 ? 86 : 75),  // 0–99 DX7-style
+    velSens: 3,
+    ampSens: 0,
+    pan: 0,
+    fb: 0,
+    // EG: 4 rates + 4 levels (DX7 model)
+    eg: { r: [99, 50, 35, 60], l: [99, 70, 50, 0] },
+    // KS level: break point note (MIDI), L/R depth (0–99), L/R curve (lin±, exp±)
+    ks: { bp: 60, lDepth: 0, rDepth: 30, lCurve: "-lin", rCurve: "-exp" },
+    // KS rate (single 0–7)
+    ksRate: 2,
+  })),
+  modMatrix: [
+    { src: "voice_idx",    dst: "op2 ratio",  depth: +0.020, curve: "lin" },
+    { src: "voice_spread", dst: "op4 detune", depth: +12.0,  curve: "lin" },
+    { src: "voice_spread", dst: "pan",        depth: +0.80,  curve: "lin" },
+    { src: "voice_rand",   dst: "lfo2 phase", depth: 1.00,   curve: "lin" },
+    { src: "lfo1",         dst: "op2 level",  depth: +0.15,  curve: "lin" },
+    { src: "lfo2",         dst: "global pitch",depth: +0.05, curve: "lin" },
+    { src: "mod wheel",    dst: "op6 level",  depth: +0.40,  curve: "lin" },
+    { src: "pitch eg",     dst: "global pitch",depth: +1.00, curve: "lin" },
+  ],
+};
+
+// ===== algorithm diagram =====
+
+function isCarrier(opIdx, algo) {
+  return algo.carriers.includes(opIdx);
+}
+
+function renderAlgoDiagram(svgEl, algoNum, opts={}) {
+  const algo = ALGOS[algoNum] || { edges: [], carriers: [1], fb: 0 };
+  // simple layout: stack ops by "depth from carrier"
+  const W = 200, H = 220;
+  svgEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  // Build depth map: carriers at bottom (depth 0), each mod one higher than the max carrier it reaches.
+  const depth = {};
+  algo.carriers.forEach(c => depth[c] = 0);
+  // crude topo: iterate until stable
+  for (let it = 0; it < 8; it++) {
+    algo.edges.forEach(([m, c]) => {
+      if (depth[c] !== undefined) {
+        const d = depth[c] + 1;
+        if (depth[m] === undefined || depth[m] < d) depth[m] = d;
+      }
+    });
+  }
+  // gather ops by depth
+  const byDepth = {};
+  for (let op = 1; op <= 6; op++) {
+    const d = depth[op] ?? 0;
+    if (!byDepth[d]) byDepth[d] = [];
+    byDepth[d].push(op);
+  }
+  // layout
+  const depths = Object.keys(byDepth).map(Number).sort((a,b)=>a-b);
+  const maxD = depths[depths.length-1] || 0;
+  const rowH = (H - 30) / (maxD + 1);
+  const positions = {};
+  depths.forEach(d => {
+    const ops = byDepth[d];
+    const y = H - 20 - d * rowH - rowH/2;
+    const slotW = W / (ops.length + 1);
+    ops.forEach((op, i) => {
+      positions[op] = { x: slotW * (i+1), y };
+    });
+  });
+
+  // build svg
+  let svg = "";
+  // edges
+  algo.edges.forEach(([m, c]) => {
+    const pm = positions[m], pc = positions[c];
+    if (!pm || !pc) return;
+    svg += `<line class="algo-edge" x1="${pm.x}" y1="${pm.y+12}" x2="${pc.x}" y2="${pc.y-12}" />`;
+  });
+  // feedback loop: U-shape arc starting at op's right side, curving up and
+  // back down into op's top with an arrowhead. Plus "fb" label.
+  if (algo.fb && positions[algo.fb]) {
+    const p = positions[algo.fb];
+    svg += `<path class="algo-fb-loop" d="M ${p.x+14} ${p.y-6}
+      C ${p.x+28} ${p.y-6}, ${p.x+28} ${p.y-22}, ${p.x+4} ${p.y-22}
+      C ${p.x-8} ${p.y-22}, ${p.x-2} ${p.y-12}, ${p.x+1} ${p.y-13}"
+      marker-end="url(#fb-arrow)" />`;
+    svg += `<text x="${p.x+30}" y="${p.y-15}" fill="#d9701b" font-size="8" font-weight="700">FB</text>`;
+  }
+  // ops
+  for (let op = 1; op <= 6; op++) {
+    const p = positions[op];
+    if (!p) continue;
+    const isCar = isCarrier(op, algo);
+    const sel = (op === state.selectedOp) ? "selected" : "";
+    const role = isCar ? "carrier" : "modulator";
+    svg += `<g class="algo-op ${role} ${sel}" data-op="${op}">
+      <rect class="algo-op-box" x="${p.x-14}" y="${p.y-12}" width="28" height="24" rx="3" />
+      <text class="algo-op-label" x="${p.x}" y="${p.y+1}">${op}</text>
+    </g>`;
+  }
+  // sink arrows from carriers
+  algo.carriers.forEach(c => {
+    const p = positions[c];
+    if (!p) return;
+    svg += `<line class="algo-edge" x1="${p.x}" y1="${p.y+12}" x2="${p.x}" y2="${H-4}" stroke="${'#d9701b'}" />`;
+  });
+  // arrow marker
+  svg = `<defs><marker id="fb-arrow" viewBox="0 0 6 6" refX="3" refY="3" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#d9701b"/></marker></defs>` + svg;
+
+  svgEl.innerHTML = svg;
+
+  // bind clicks
+  svgEl.querySelectorAll(".algo-op").forEach(g => {
+    g.addEventListener("click", () => {
+      state.selectedOp = parseInt(g.getAttribute("data-op"), 10);
+      renderAll();
+    });
+  });
+}
+
+// ===== op tabs =====
+
+function renderOpTabs() {
+  const algo = ALGOS[state.algo] || { carriers: [1], edges: [], fb: 0 };
+  const tabs = document.getElementById("op-tabs");
+  tabs.innerHTML = "";
+  for (let i = 1; i <= 6; i++) {
+    const op = state.ops[i-1];
+    const role = isCarrier(i, algo) ? "carrier" : "modulator";
+    const active = (i === state.selectedOp) ? "active" : "";
+    const lvl = op.level;
+    const tab = document.createElement("div");
+    tab.className = `op-tab ${role} ${active}`;
+    tab.innerHTML = `OP ${i}
+      <div class="op-tab-level"><div class="op-tab-level-fill" style="width:${lvl}%"></div></div>`;
+    tab.addEventListener("click", () => {
+      state.selectedOp = i;
+      renderAll();
+    });
+    tabs.appendChild(tab);
+  }
+}
+
+// ===== op detail panel =====
+
+function renderOpDetail() {
+  const op = state.ops[state.selectedOp - 1];
+  const algo = ALGOS[state.algo] || { carriers: [1] };
+  const role = isCarrier(op.idx, algo) ? "carrier" : "modulator";
+  const detail = document.getElementById("op-detail");
+  detail.innerHTML = `
+    <div class="op-col" style="width: 120px; flex: 0 0 120px;">
+      <div class="op-col-title">Tuning</div>
+      <div class="cgrp">
+        <div class="bgrp">
+          <div class="bgrp-row"><button class="bgrp-btn ${!op.fixed?'active':''}">Ratio</button><button class="bgrp-btn ${op.fixed?'active':''}">Fixed</button></div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px; justify-content: center;">
+        <div class="fader"><div class="fader-label">${op.fixed ? 'Hz' : 'Ratio'}</div><div class="fader-track"><div class="fader-track-fill" style="height:${Math.min(op.ratio/14*100, 100)}%"></div><div class="fader-thumb" style="bottom:${Math.min(op.ratio/14*100, 100)}%"></div></div><div class="fader-value">${op.ratio.toFixed(2)}</div></div>
+        <div class="fader"><div class="fader-label">Fine</div><div class="fader-track"><div class="fader-track-fill" style="height:${(op.fine+50)}%"></div><div class="fader-thumb" style="bottom:${(op.fine+50)}%"></div></div><div class="fader-value">${op.fine}</div></div>
+        <div class="fader"><div class="fader-label">Det</div><div class="fader-track"><div class="fader-track-fill" style="height:${(op.detune+7)/14*100}%"></div><div class="fader-thumb" style="bottom:${(op.detune+7)/14*100}%"></div></div><div class="fader-value">${op.detune>=0?'+':''}${op.detune}</div></div>
+      </div>
+    </div>
+
+    <div class="op-col" style="flex: 1.4 1 0; min-width: 180px;">
+      <div class="op-col-title">Envelope (rates + levels)</div>
+      <div class="graph" id="eg-graph" style="height: 122px;">
+        <svg viewBox="0 0 240 120" preserveAspectRatio="none" id="eg-svg"></svg>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--ctl-label); padding: 0 2px;">
+        <span>R1 ${op.eg.r[0]}</span><span>R2 ${op.eg.r[1]}</span><span>R3 ${op.eg.r[2]}</span><span>R4 ${op.eg.r[3]}</span>
+      </div>
+    </div>
+
+    <div class="op-col" style="flex: 1.4 1 0; min-width: 180px;">
+      <div class="op-col-title">Key scaling — level</div>
+      <div class="graph" id="ks-graph" style="height: 122px;">
+        <svg viewBox="0 0 240 100" preserveAspectRatio="none" id="ks-svg"></svg>
+      </div>
+      <div style="display: flex; gap: 4px; align-items: center; justify-content: space-between; font-size: 9px;">
+        <span style="color: var(--ctl-label);">BP ${midiName(op.ks.bp)}</span>
+        <span style="color: var(--ctl-label);">L ${op.ks.lCurve} ${op.ks.lDepth}</span>
+        <span style="color: var(--ctl-label);">R ${op.ks.rCurve} ${op.ks.rDepth}</span>
+      </div>
+    </div>
+
+    <div class="op-col" style="width: 230px; flex: 0 0 230px;">
+      <div style="display: flex; gap: 10px;">
+        <div style="flex: 0 0 96px;">
+          <div class="op-col-title">Sensitivity</div>
+          <div style="display:flex; gap:4px; justify-content: center;">
+            <div class="fader"><div class="fader-label">Vel</div><div class="fader-track"><div class="fader-track-fill" style="height:${op.velSens/7*100}%"></div><div class="fader-thumb" style="bottom:${op.velSens/7*100}%"></div></div><div class="fader-value">${op.velSens}</div></div>
+            <div class="fader"><div class="fader-label">AMS</div><div class="fader-track"><div class="fader-track-fill" style="height:${op.ampSens/3*100}%"></div><div class="fader-thumb" style="bottom:${op.ampSens/3*100}%"></div></div><div class="fader-value">${op.ampSens}</div></div>
+            <div class="fader"><div class="fader-label">KsRt</div><div class="fader-track"><div class="fader-track-fill" style="height:${op.ksRate/7*100}%"></div><div class="fader-thumb" style="bottom:${op.ksRate/7*100}%"></div></div><div class="fader-value">${op.ksRate}</div></div>
+          </div>
+        </div>
+        <div style="flex: 0 0 1px; background: #2a2a2a;"></div>
+        <div style="flex: 1 1 auto;">
+          <div class="op-col-title">Output</div>
+          <div style="display:flex; gap:4px; justify-content: center;">
+            <div class="fader"><div class="fader-label">Out</div><div class="fader-track"><div class="fader-track-fill" style="height:${op.level}%"></div><div class="fader-thumb" style="bottom:${op.level}%"></div></div><div class="fader-value">${op.level}</div></div>
+            <div class="fader"><div class="fader-label">Pan</div><div class="fader-track"><div class="fader-track-fill" style="height:${(op.pan+1)*50}%"></div><div class="fader-thumb" style="bottom:${(op.pan+1)*50}%"></div></div><div class="fader-value">${op.pan===0?'C':(op.pan>0?'R':'L')}${op.pan===0?'':Math.round(Math.abs(op.pan)*99)}</div></div>
+            <div class="fader"><div class="fader-label">FB</div><div class="fader-track"><div class="fader-track-fill" style="height:${op.fb/7*100}%"></div><div class="fader-thumb" style="bottom:${op.fb/7*100}%"></div></div><div class="fader-value">${op.fb}</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  drawEgGraph(op);
+  drawKsGraph(op);
+}
+
+function midiName(m) {
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  return names[m%12] + (Math.floor(m/12) - 1);
+}
+
+// ===== EG graph =====
+function drawEgGraph(op) {
+  const svg = document.getElementById("eg-svg");
+  if (!svg) return;
+  const W = 240, H = 120;
+  // map rates 0..99 to segment widths (lower rate = longer segment).
+  // We treat seg widths roughly inverse: w_i = (100 - r_i) + 6
+  const widths = op.eg.r.map(r => (100 - r) + 10);
+  const totalW = widths.reduce((a,b)=>a+b, 0) + 25; // tail for release start
+  const xs = [0];
+  widths.forEach((w, i) => xs.push(xs[xs.length-1] + w));
+  const scale = (W - 12) / totalW;
+  const ptsX = xs.map(x => 6 + x * scale);
+  // levels: L1..L4. Curve starts at 0, hits L1 after R1, L2 after R2, L3 (sustain) after R3, releases to L4 after R4
+  // But DX7: actually L4 is the floor / start point. For visualisation: start at L4, ramp to L1 over R1, to L2 over R2, to L3 over R3, sustain at L3, release to L4 over R4 (note off).
+  const lvls = op.eg.l;
+  const ptsY = [
+    H - 6 - (lvls[3]/99)*(H-14),
+    H - 6 - (lvls[0]/99)*(H-14),
+    H - 6 - (lvls[1]/99)*(H-14),
+    H - 6 - (lvls[2]/99)*(H-14),
+    H - 6 - (lvls[3]/99)*(H-14),
+  ];
+
+  let path = `M ${ptsX[0]} ${ptsY[0]}`;
+  for (let i = 1; i < ptsY.length; i++) {
+    path += ` L ${ptsX[i]} ${ptsY[i]}`;
+  }
+  let fill = path + ` L ${ptsX[ptsY.length-1]} ${H-6} L ${ptsX[0]} ${H-6} Z`;
+
+  // sustain segment (between R3 endpoint and R4 start) — show as dashed horizontal
+  const susX1 = ptsX[3], susX2 = ptsX[3] + 40 * scale;
+  // gridlines + axis
+  let grid = "";
+  for (let i = 1; i < 4; i++) {
+    const y = 6 + i * (H-12)/4;
+    grid += `<line class="graph-grid" x1="6" y1="${y}" x2="${W-6}" y2="${y}" />`;
+  }
+  grid += `<line class="graph-axis" x1="6" y1="${H-6}" x2="${W-6}" y2="${H-6}" />`;
+
+  // handles at the 4 EG points (L1, L2, L3, L4-release)
+  let handles = "";
+  for (let i = 1; i < ptsY.length; i++) {
+    handles += `<circle class="graph-handle" cx="${ptsX[i]}" cy="${ptsY[i]}" r="4" data-eg-pt="${i-1}" />`;
+  }
+  // sustain dashed line from L3 horizontal
+  const susLine = `<line class="graph-bp-line" x1="${ptsX[3]}" y1="${ptsY[3]}" x2="${W-6}" y2="${ptsY[3]}" />`;
+
+  svg.innerHTML = `${grid}<path class="graph-curve-fill" d="${fill}" /><path class="graph-curve" d="${path}" />${susLine}${handles}`;
+}
+
+// ===== KS graph =====
+function drawKsGraph(op) {
+  const svg = document.getElementById("ks-svg");
+  if (!svg) return;
+  const W = 240, H = 100;
+  // x = MIDI 0..127 mapped to 6..W-6
+  const xAt = m => 6 + (m/127) * (W-12);
+  // BP line
+  const bpX = xAt(op.ks.bp);
+  // curve generator: at note n, output level scaled by f(n)
+  // f(bp) = 0 (no scaling). f(0) = lDepth * curve shape. f(127) = rDepth * curve shape.
+  // For display: y = H - 6 - (1 + scale_db / 24) * (H/2 - 6)?
+  // simpler: vertical centre = no scaling, +depth pushes up, -depth pushes down.
+  const cy = H/2;
+  function shape(curve, t) {
+    // t in [0,1]; returns signed magnitude in [-1, +1] depending on curve
+    // curves: +lin, -lin, +exp, -exp
+    const m = t;
+    const e = Math.pow(t, 2.2);
+    if (curve === "+lin") return m;
+    if (curve === "-lin") return -m;
+    if (curve === "+exp") return e;
+    if (curve === "-exp") return -e;
+    return 0;
+  }
+  let path = `M ${bpX} ${cy}`;
+  // left side: from BP down to MIDI 0
+  const lpts = [];
+  for (let m = op.ks.bp; m >= 0; m -= 4) {
+    const t = (op.ks.bp - m) / Math.max(op.ks.bp, 1);
+    const s = shape(op.ks.lCurve, t) * (op.ks.lDepth / 99);
+    lpts.push([xAt(m), cy - s * (H/2 - 8)]);
+  }
+  // right side: from BP up to 127
+  const rpts = [];
+  for (let m = op.ks.bp; m <= 127; m += 4) {
+    const t = (m - op.ks.bp) / Math.max(127 - op.ks.bp, 1);
+    const s = shape(op.ks.rCurve, t) * (op.ks.rDepth / 99);
+    rpts.push([xAt(m), cy - s * (H/2 - 8)]);
+  }
+  let leftPath = `M ${bpX} ${cy}`;
+  for (const [x,y] of lpts) leftPath += ` L ${x} ${y}`;
+  let rightPath = `M ${bpX} ${cy}`;
+  for (const [x,y] of rpts) rightPath += ` L ${x} ${y}`;
+
+  // grid: octave lines at C-1,C0,...C8
+  let grid = "";
+  for (let oct = 0; oct < 11; oct++) {
+    const x = xAt(oct * 12);
+    grid += `<line class="graph-grid" x1="${x}" y1="6" x2="${x}" y2="${H-6}" />`;
+  }
+  grid += `<line class="graph-axis" x1="6" y1="${cy}" x2="${W-6}" y2="${cy}" />`;
+  // BP vertical
+  grid += `<line class="graph-bp-line" x1="${bpX}" y1="6" x2="${bpX}" y2="${H-6}" />`;
+
+  // handles: BP, left endpoint (MIDI 0), right endpoint (MIDI 127)
+  const leftEnd = lpts[lpts.length-1] || [xAt(0), cy];
+  const rightEnd = rpts[rpts.length-1] || [xAt(127), cy];
+  const handles = `
+    <circle class="graph-handle" cx="${bpX}" cy="${cy}" r="4" data-ks-pt="bp" />
+    <circle class="graph-handle" cx="${leftEnd[0]}" cy="${leftEnd[1]}" r="4" data-ks-pt="l" />
+    <circle class="graph-handle" cx="${rightEnd[0]}" cy="${rightEnd[1]}" r="4" data-ks-pt="r" />
+  `;
+
+  svg.innerHTML = `${grid}<path class="graph-curve" d="${leftPath}" /><path class="graph-curve" d="${rightPath}" />${handles}`;
+}
+
+// ===== pitch EG graph =====
+function drawPitchEg() {
+  const svg = document.getElementById("peg-svg");
+  if (!svg) return;
+  const W = 200, H = 90;
+  // simple 4-point envelope, fixed for demo
+  const pts = [[10, H/2], [50, 18], [100, H/2], [160, H/2-6], [W-10, H/2]];
+  let path = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length; i++) path += ` L ${pts[i][0]} ${pts[i][1]}`;
+  let grid = `<line class="graph-axis" x1="6" y1="${H/2}" x2="${W-6}" y2="${H/2}" />`;
+  for (let i = 1; i < 4; i++) {
+    grid += `<line class="graph-grid" x1="${6 + i*(W-12)/4}" y1="6" x2="${6 + i*(W-12)/4}" y2="${H-6}" />`;
+  }
+  let handles = "";
+  for (let i = 0; i < pts.length; i++) {
+    handles += `<circle class="graph-handle" cx="${pts[i][0]}" cy="${pts[i][1]}" r="3" />`;
+  }
+  svg.innerHTML = `${grid}<path class="graph-curve" d="${path}" />${handles}`;
+}
+
+// ===== mod matrix list (collapsed view in row 2) =====
+function renderMmList() {
+  const list = document.getElementById("mm-list");
+  list.innerHTML = "";
+  state.modMatrix.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "mm-row";
+    row.innerHTML = `
+      <div class="mm-cell src">${r.src}</div>
+      <div class="mm-cell dst">→ ${r.dst}</div>
+      <div class="mm-cell curve">${r.curve}</div>
+      <div class="mm-cell depth">${r.depth>=0?'+':''}${r.depth.toFixed(2)}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+// ===== mod matrix overlay (full editor) =====
+function renderMmOverlay() {
+  const list = document.getElementById("mm-overlay-list");
+  list.innerHTML = "";
+  const SRCS = ["lfo1","lfo2","pitch eg","mod env","mod wheel","aftertouch","velocity","key","voice_idx","voice_spread","voice_rand"];
+  const DSTS = ["op1 ratio","op2 ratio","op3 ratio","op4 ratio","op5 ratio","op6 ratio",
+                "op1 level","op2 level","op3 level","op4 level","op5 level","op6 level",
+                "op1 detune","op2 detune","op3 detune","op4 detune","op5 detune","op6 detune",
+                "pan","global pitch","cutoff","fx wet","lfo1 rate","lfo2 phase","feedback"];
+  state.modMatrix.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "mm-overlay-row";
+    const srcSel = SRCS.map(s => `<option ${s===r.src?'selected':''}>${s}</option>`).join("");
+    const dstSel = DSTS.map(d => `<option ${d===r.dst?'selected':''}>${d}</option>`).join("");
+    row.innerHTML = `
+      <div class="mm-overlay-idx">${i+1}</div>
+      <select>${srcSel}</select>
+      <select>${dstSel}</select>
+      <select><option>lin</option><option>exp</option><option>log</option><option>bipolar</option></select>
+      <input type="number" step="0.01" value="${r.depth.toFixed(2)}" />
+      <select><option>—</option><option>vel</option><option>key</option></select>
+      <button class="overlay-close" style="position: static; font-size: 14px;">&times;</button>
+    `;
+    list.appendChild(row);
+  });
+  // empty slot prompt
+  if (state.modMatrix.length < 16) {
+    const add = document.createElement("button");
+    add.className = "mm-add";
+    add.textContent = "+ Add route";
+    list.appendChild(add);
+  }
+}
+
+// ===== algo grid overlay =====
+function renderAlgoGrid() {
+  const grid = document.getElementById("algo-grid");
+  grid.innerHTML = "";
+  for (let n = 1; n <= 32; n++) {
+    const cell = document.createElement("div");
+    cell.className = "algo-grid-cell" + (n === state.algo ? " active" : "");
+    const algo = ALGOS[n];
+    const svgInner = (algo) ? buildMiniAlgoSvg(n) : `<text x="55" y="58" fill="#444" text-anchor="middle" font-size="10">algo ${n}</text>`;
+    cell.innerHTML = `<div class="algo-grid-num">${n}</div><svg viewBox="0 0 110 110">${svgInner}</svg>`;
+    cell.addEventListener("click", () => {
+      state.algo = n;
+      document.getElementById("algo-overlay").classList.remove("open");
+      renderAll();
+    });
+    grid.appendChild(cell);
+  }
+}
+
+function buildMiniAlgoSvg(n) {
+  const algo = ALGOS[n];
+  if (!algo) return "";
+  // similar layout to main diagram but compact (110x110)
+  const W = 110, H = 100;
+  const depth = {};
+  algo.carriers.forEach(c => depth[c] = 0);
+  for (let it = 0; it < 8; it++) {
+    algo.edges.forEach(([m, c]) => {
+      if (depth[c] !== undefined) {
+        const d = depth[c] + 1;
+        if (depth[m] === undefined || depth[m] < d) depth[m] = d;
+      }
+    });
+  }
+  const byDepth = {};
+  for (let op = 1; op <= 6; op++) {
+    const d = depth[op] ?? 0;
+    if (!byDepth[d]) byDepth[d] = [];
+    byDepth[d].push(op);
+  }
+  const depths = Object.keys(byDepth).map(Number).sort((a,b)=>a-b);
+  const maxD = depths[depths.length-1] || 0;
+  const rowH = (H - 20) / (maxD + 1);
+  const positions = {};
+  depths.forEach(d => {
+    const ops = byDepth[d];
+    const y = H - 12 - d * rowH - rowH/2;
+    const slotW = W / (ops.length + 1);
+    ops.forEach((op, i) => positions[op] = { x: slotW * (i+1), y });
+  });
+  let svg = "";
+  algo.edges.forEach(([m, c]) => {
+    const pm = positions[m], pc = positions[c];
+    if (!pm || !pc) return;
+    svg += `<line stroke="#666" stroke-width="1" x1="${pm.x}" y1="${pm.y+8}" x2="${pc.x}" y2="${pc.y-8}" />`;
+  });
+  if (algo.fb && positions[algo.fb]) {
+    const p = positions[algo.fb];
+    svg += `<path stroke="#d9701b" stroke-width="1" fill="none" d="M ${p.x+8} ${p.y-6} Q ${p.x+18} ${p.y-14} ${p.x+8} ${p.y-9}" />`;
+  }
+  for (let op = 1; op <= 6; op++) {
+    const p = positions[op];
+    if (!p) continue;
+    const isCar = isCarrier(op, algo);
+    const stroke = isCar ? "#d9701b" : "#87afb2";
+    svg += `<rect x="${p.x-9}" y="${p.y-8}" width="18" height="16" rx="2" fill="#1c1c1c" stroke="${stroke}" stroke-width="1.2" />
+            <text x="${p.x}" y="${p.y+3}" fill="#d6d6d6" text-anchor="middle" font-size="9" font-weight="700">${op}</text>`;
+  }
+  algo.carriers.forEach(c => {
+    const p = positions[c];
+    if (!p) return;
+    svg += `<line stroke="#d9701b" stroke-width="1" x1="${p.x}" y1="${p.y+8}" x2="${p.x}" y2="${H-2}" />`;
+  });
+  return svg;
+}
+
+// ===== glue =====
+function renderAll() {
+  document.getElementById("algo-num").textContent = state.algo;
+  renderAlgoDiagram(document.getElementById("algo-svg"), state.algo);
+  renderOpTabs();
+  renderOpDetail();
+  drawPitchEg();
+  document.getElementById("mm-count").textContent = state.modMatrix.length;
+}
+
+document.getElementById("algo-pick").addEventListener("click", () => {
+  renderAlgoGrid();
+  document.getElementById("algo-overlay").classList.add("open");
+});
+document.getElementById("algo-overlay-close").addEventListener("click", () => {
+  document.getElementById("algo-overlay").classList.remove("open");
+});
+document.getElementById("algo-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "algo-overlay") {
+    document.getElementById("algo-overlay").classList.remove("open");
+  }
+});
+document.getElementById("mm-open").addEventListener("click", () => {
+  renderMmOverlay();
+  document.getElementById("mm-overlay").classList.add("open");
+});
+document.getElementById("mm-overlay-close").addEventListener("click", () => {
+  document.getElementById("mm-overlay").classList.remove("open");
+});
+document.getElementById("mm-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "mm-overlay") {
+    document.getElementById("mm-overlay").classList.remove("open");
+  }
+});
+
+// FX header toggles
+document.querySelectorAll(".panel-header.toggleable").forEach(h => {
+  h.addEventListener("click", () => {
+    const panel = h.closest(".panel");
+    if (panel.classList.contains("toggle-on")) {
+      panel.classList.remove("toggle-on");
+      panel.classList.add("toggle-off");
+    } else {
+      panel.classList.add("toggle-on");
+      panel.classList.remove("toggle-off");
+    }
+  });
+});
+
+renderAll();
+
+// Initialise wave-shape knobs (LFO1 default Sine=0, LFO2 default Saw+=2)
+makeWaveKnob(document.getElementById("lfo1-shape"), LFO_VARIANTS, 0);
+makeWaveKnob(document.getElementById("lfo2-shape"), LFO_VARIANTS, 2);
+</script>
+</body>
+</html>
