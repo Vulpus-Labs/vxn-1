@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Vulpus Labs"]
+rust-version = "1.85"
+
+# Release profile tuned for real-time audio DSP.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
