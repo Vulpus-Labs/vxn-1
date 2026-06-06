@@ -3,8 +3,18 @@ id: "0006"
 title: vxn-1 migration onto vxn-core-* + E003 unblock
 priority: high
 created: 2026-06-06
+closed: 2026-06-06
 epic: E001
+status: split
+splits_into: ["0007", "0008", "0009", "0010"]
 ---
+
+> **Closed as split.** The vxn-dsp re-exports and the bit-identical
+> leaf-type dedup in vxn-app shipped under this ticket. The remaining
+> scope is split into 0007 (event-Custom rewire — unblocks the rest),
+> 0008 (vxn-clap migration), 0009 (vxn-ui-web migration), and 0010
+> (audio baseline diff harness vs `pre-vxn-core-extraction`). See
+> those tickets for the residual acceptance criteria.
 
 ## Summary
 

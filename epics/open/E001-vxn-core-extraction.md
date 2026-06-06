@@ -89,7 +89,11 @@ differentiator and forced abstraction there is pure cost.
 - [x] [0003 — vxn-core-app (ParamModel, Controller, events, backend)](../../tickets/closed/0003-vxn-core-app.md)
 - [x] [0004 — vxn-core-ui-web (wry shell, IPC bridge, text-input popup)](../../tickets/closed/0004-vxn-core-ui-web.md)
 - [x] [0005 — vxn-core-clap (clack scaffold, event dispatch, state I/O)](../../tickets/closed/0005-vxn-core-clap.md)
-- [ ] [0006 — vxn-1 migration + E003 unblock](../../tickets/open/0006-vxn-1-migration.md) *(partial — see below)*
+- [x] [0006 — vxn-1 migration + E003 unblock](../../tickets/closed/0006-vxn-1-migration.md) *(split, see 0007–0010)*
+- [ ] [0007 — vxn-1 event-Custom rewire](../../tickets/open/0007-vxn-1-event-custom-rewire.md)
+- [ ] [0008 — vxn-1 vxn-clap onto vxn-core-clap helpers](../../tickets/open/0008-vxn-1-clap-migrate.md)
+- [ ] [0009 — vxn-1 vxn-ui-web onto vxn-core-ui-web](../../tickets/open/0009-vxn-1-ui-web-migrate.md)
+- [ ] [0010 — Audio baseline diff harness](../../tickets/open/0010-audio-baseline-diff.md)
 
 ## Status — 2026-06-06
 
