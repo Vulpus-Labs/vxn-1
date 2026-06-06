@@ -37,18 +37,26 @@ epic on top of this one (vxn-1 `E007` lineage). This epic carries only the
 
 **In:**
 
-- `vxn2-app` crate: `Controller`, `ControllerHandle`, `UiEvent`, `ViewEvent`,
-  `ParamDesc`, `ParamId`, `Layer`, `KeyMode` enums. Owns the main-thread
-  state machine that turns JS messages into `SharedParams` writes and engine
-  echoes into `ViewEvent`s. Mirrors `vxn-1/crates/vxn-app` in shape but
-  scoped to the VXN2 parameter set + voicing model.
-- `vxn2-ui-web` crate: `cdylib`-free library, `wry` WebView child, IPC handler,
-  bundled HTML / CSS / JS asset tree, native text-input popup. Implements an
-  `EditorBackend` trait the CLAP shell holds. macOS-first; Windows / Linux
-  popup paths stubbed.
+- `vxn2-app` crate: implement `vxn_core_app::ParamModel` for the VXN2 param
+  table (380 params, mod matrix, etc.); compose `vxn_core_app::Controller`
+  with a synth-specific `Custom` event handler for VXN2-only events
+  (mod-matrix row edits, op-tab change, etc.). VXN2's `Layer` / `KeyMode`
+  analogues — if any — ride `UiEvent::Custom` / `ViewEvent::Custom`. No
+  Controller / event-loop reimplementation; the E001 epic landed the shared
+  surface in `vxn-core-app`.
+- `vxn2-ui-web` crate: thin HTML / CSS / JS asset bundler. Splices the
+  faceplate sources into a single HTML string, passes it to
+  `vxn_core_ui_web::open_editor` with a `WebEditorConfig` carrying VXN2's
+  `parse_custom_ui` + `serialise_custom_view` closures. WebView lifecycle,
+  IPC bridge, batched view-event sink, corpus snapshot JSON, and the
+  macOS native text-input popup all come from `vxn-core-ui-web` — no
+  reimplementation.
 - `vxn2-clap` extensions: register the CLAP `gui` extension, mount the
-  `WebEditor` on `gui_create`, run a `timer` extension that drives the UI-echo
-  publish + `ViewEvent` flush at ~60 Hz, tear down on `gui_destroy`.
+  shared `vxn_core_ui_web::WebEditor` (via `open_editor`) on `gui_create`,
+  run a `timer` extension that drives the UI-echo publish + `ViewEvent`
+  flush at ~60 Hz, tear down on `gui_destroy`. Event dispatch + state
+  save/load + gesture-bracket emit + `LocalParams` mirror come from
+  `vxn-core-clap` helpers.
 - HTML/CSS faceplate port from `ui-mockup/index.html`: banner, preset bar,
   op-row (algorithm + op tabs + op detail), gmod-row (LFO1, LFO2, Pitch EG,
   Mod Env), perf-row (Voice, Voice Stack, Delay, Reverb, Master), algorithm

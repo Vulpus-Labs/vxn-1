@@ -11,5 +11,6 @@ description = "VXN1 block-processing DSP kernels (oscillators, envelopes, filter
 # rlib only — pure DSP, no plugin surface.
 
 [dependencies]
+vxn-core-utils = { workspace = true }
 
 [dev-dependencies]

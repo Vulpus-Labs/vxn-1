@@ -13,7 +13,6 @@ pub mod domain;
 pub mod events;
 pub mod model;
 pub mod params;
-pub mod preset;
 pub mod sync;
 
 pub use backend::EditorBackend;
@@ -27,4 +26,11 @@ pub use params::{
     TOTAL_PARAMS, Taper, desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref,
     patch_clap_id,
 };
-pub use preset::{PresetCorpus, PresetLoad, PresetStore, UserFolderEntry, UserPresetEntry};
+
+// PresetStore / PresetCorpus / PresetLoad / UserFolderEntry / UserPresetEntry
+// live in `vxn-core-app` post-E001/0006. EditorBackend stays vxn-1-local
+// for now: its method signatures carry the vxn-1-specific ViewEvent +
+// ControllerHandle, and the synth-specific event rewire is deferred.
+pub use vxn_core_app::{
+    PresetCorpus, PresetLoad, PresetStore, UserFolderEntry, UserPresetEntry,
+};

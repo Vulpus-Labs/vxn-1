@@ -8,6 +8,8 @@ rust-version.workspace = true
 description = "VXN1 controller: MVC arbiter between UI, host, and engine model (ADR 0007)."
 
 [dependencies]
+vxn-core-app = { workspace = true }
+vxn-core-utils = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -2376,6 +2376,8 @@ name = "vxn-app"
 version = "0.0.6"
 dependencies = [
  "tempfile",
+ "vxn-core-app",
+ "vxn-core-utils",
 ]
 
 [[package]]
@@ -2427,6 +2429,9 @@ version = "0.0.6"
 [[package]]
 name = "vxn-dsp"
 version = "0.0.6"
+dependencies = [
+ "vxn-core-utils",
+]
 
 [[package]]
 name = "vxn-engine"

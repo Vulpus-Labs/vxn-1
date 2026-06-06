@@ -6,33 +6,9 @@
 use crate::domain::KeyMode;
 use crate::params::ParamDesc;
 
-/// Stable id for a parameter — the CLAP id, newtyped. Indexes the model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ParamId(pub usize);
-
-impl ParamId {
-    #[inline]
-    pub const fn new(raw: usize) -> Self {
-        Self(raw)
-    }
-
-    #[inline]
-    pub const fn raw(self) -> usize {
-        self.0
-    }
-}
-
-impl From<usize> for ParamId {
-    fn from(raw: usize) -> Self {
-        Self(raw)
-    }
-}
-
-impl From<ParamId> for usize {
-    fn from(id: ParamId) -> Self {
-        id.0
-    }
-}
+// `ParamId` lives in `vxn-core-app` post-E001/0006. Re-export so existing
+// `vxn_app::ParamId` call sites keep working.
+pub use vxn_core_app::ParamId;
 
 /// The live parameter store. Audio-thread safe (`Send + Sync`); writes from
 /// the controller and reads from the audio thread cross here without locks.

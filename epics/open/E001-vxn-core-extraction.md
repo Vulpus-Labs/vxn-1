@@ -84,12 +84,41 @@ differentiator and forced abstraction there is pure cost.
 
 ## Tickets
 
-- [ ] [0001 — Root workspace bootstrap + skeleton crates](../../tickets/open/0001-workspace-bootstrap.md)
-- [ ] [0002 — vxn-core-utils (FTZ, smoother, note utils, host-sync)](../../tickets/open/0002-vxn-core-utils.md)
-- [ ] [0003 — vxn-core-app (ParamModel, Controller, events, backend)](../../tickets/open/0003-vxn-core-app.md)
-- [ ] [0004 — vxn-core-ui-web (wry shell, IPC bridge, text-input popup)](../../tickets/open/0004-vxn-core-ui-web.md)
-- [ ] [0005 — vxn-core-clap (clack scaffold, event dispatch, state I/O)](../../tickets/open/0005-vxn-core-clap.md)
-- [ ] [0006 — vxn-1 migration + E003 unblock](../../tickets/open/0006-vxn-1-migration.md)
+- [x] [0001 — Root workspace bootstrap + skeleton crates](../../tickets/closed/0001-workspace-bootstrap.md)
+- [x] [0002 — vxn-core-utils (FTZ, smoother, note utils, host-sync)](../../tickets/closed/0002-vxn-core-utils.md)
+- [x] [0003 — vxn-core-app (ParamModel, Controller, events, backend)](../../tickets/closed/0003-vxn-core-app.md)
+- [x] [0004 — vxn-core-ui-web (wry shell, IPC bridge, text-input popup)](../../tickets/closed/0004-vxn-core-ui-web.md)
+- [x] [0005 — vxn-core-clap (clack scaffold, event dispatch, state I/O)](../../tickets/closed/0005-vxn-core-clap.md)
+- [ ] [0006 — vxn-1 migration + E003 unblock](../../tickets/open/0006-vxn-1-migration.md) *(partial — see below)*
+
+## Status — 2026-06-06
+
+Tickets 0001–0005 closed. Shared crates ship and are tested:
+55 unit + integration tests across `vxn-core-utils` (16),
+`vxn-core-app` (11), `vxn-core-ui-web` (11), `vxn-core-clap` (10),
+plus 6 `vxn-core-app` taper-math tests.
+
+0006 partial: vxn-1 consumes the bit-identical leaf types
+(`ParamDesc` / `ParamKind` / `Taper` / `ParamId` / `PresetMeta` /
+`PresetStore` / `PresetCorpus` / `PresetLoad` / `UserPresetEntry` /
+`UserFolderEntry`) and DSP utilities (`ScopedFlushToZero` /
+`Smoothed`) from `vxn-core-*`. The full event-Custom rewire (vxn-1's
+`UiEvent::SetKeyMode` / `SetSplitPoint` / `SetEditLayer` /
+`ResetLayer` and the matching `ViewEvent` variants riding
+`UiEvent::Custom` / `ViewEvent::Custom`) is deferred — it would touch
+~40 call sites across `vxn-app` / `vxn-clap` / `vxn-ui-web` and
+requires:
+
+- a `Vxn1Params` extension trait carrying `key_mode` / `split_point`
+- `Vxn1UiCustom` / `Vxn1ViewCustom` enums to ride the `Custom`
+  payloads
+- `parse_custom_ui` / `serialise_custom_view` closures wired into
+  `vxn-core-ui-web::open_editor`
+- the audio baseline diff harness (1e-6 RMS gate) per ticket 0006
+
+All 5 deferred bullets live under 0006 still — the ticket stays
+open. vxn-2's `E003-faceplate` epic is updated to depend on the
+shared crates instead of re-implementing.
 
 ## Dependency order
 

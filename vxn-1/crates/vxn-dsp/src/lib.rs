@@ -32,7 +32,7 @@ pub mod oscillator;
 pub mod ota_ladder;
 pub mod phase;
 pub mod poly;
-pub mod smoothing;
+// `smoothing` lifted to `vxn-core-utils`; re-exported below for back-compat.
 
 /// Channels (DSP voices) per layer. The poly kernels are sized to this: one
 /// homogeneous layer renders together, which is what the vectorised lane loop
@@ -67,7 +67,9 @@ pub use oscillator::{Oscillator, Waveform};
 pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel};
 pub use phase::{MonoPhaseAccumulator, polyblep};
 pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, poly_ring_mod, poly_sub_square};
-pub use smoothing::{Smoothed, ms_to_samples, one_pole_coeff};
+pub use vxn_core_utils::smoothing::{self as smoothing, Smoothed, ms_to_samples, one_pole_coeff};
+pub use vxn_core_utils::ScopedFlushToZero;
+pub use vxn_core_utils::ftz::flush_denormal;
 
 /// Flush x86/ARM denormals-to-zero on the current thread, without restoring the
 /// previous mode. Denormal arithmetic can cost 100× and silently wreck
@@ -94,89 +96,9 @@ pub fn enable_flush_to_zero() {
     }
 }
 
-/// RAII guard that enables flush-to-zero (and denormals-are-zero on x86) for the
-/// current thread, restoring the previous FP control word on drop.
-///
-/// Construct it at the top of every audio `process()` call and hold it for the
-/// block's duration:
-///
-/// ```ignore
-/// let _ftz = ScopedFlushToZero::new();
-/// // … render the block; all SSE/NEON ops run flush-to-zero …
-/// ```
-///
-/// Setting per-process (rather than once in `activate`) is the robust choice:
-/// the FP control word is thread-local, and a host may legitimately call
-/// `process` on a different thread than `activate`. Restoring on drop keeps us
-/// from changing the FP mode seen by the host or other plugins after we return.
-#[must_use = "FTZ is restored when the guard drops; bind it for the whole block"]
-pub struct ScopedFlushToZero {
-    #[cfg(target_arch = "x86_64")]
-    prev: u32,
-    #[cfg(target_arch = "aarch64")]
-    prev: u64,
-}
-
-impl ScopedFlushToZero {
-    #[inline]
-    pub fn new() -> Self {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use std::arch::x86_64::{
-                _MM_FLUSH_ZERO_ON, _MM_GET_FLUSH_ZERO_MODE, _MM_SET_FLUSH_ZERO_MODE,
-            };
-            // Save the FTZ mode, then enable it. (FTZ flushes denormal results,
-            // which is all our filter state needs — same scope as the bare
-            // `enable_flush_to_zero` setter.)
-            let prev = unsafe { _MM_GET_FLUSH_ZERO_MODE() };
-            unsafe { _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON) };
-            Self { prev }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // Save FPCR, then set FZ (bit 24).
-            let prev: u64;
-            unsafe {
-                std::arch::asm!("mrs {}, fpcr", out(reg) prev, options(nomem, nostack));
-                std::arch::asm!("msr fpcr, {}", in(reg) prev | (1 << 24), options(nomem, nostack));
-            }
-            Self { prev }
-        }
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            // No portable denormal-flush control; nothing to save or restore.
-            Self {}
-        }
-    }
-}
-
-impl Default for ScopedFlushToZero {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for ScopedFlushToZero {
-    #[inline]
-    fn drop(&mut self) {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            std::arch::x86_64::_MM_SET_FLUSH_ZERO_MODE(self.prev);
-        }
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            std::arch::asm!("msr fpcr, {}", in(reg) self.prev, options(nomem, nostack));
-        }
-    }
-}
-
-/// Flush a single denormal `f32` to zero. Per-sample guard for filter/delay
-/// feedback state that decays into the denormal range, complementing the
-/// thread-wide [`enable_flush_to_zero`] (which not every host honours).
-#[inline]
-pub fn flush_denormal(x: f32) -> f32 {
-    if !x.is_normal() && x != 0.0 { 0.0 } else { x }
-}
+// `ScopedFlushToZero` + `flush_denormal` lifted to `vxn-core-utils`; the
+// re-export above keeps existing `vxn_dsp::ScopedFlushToZero` callsites
+// working without touching them.
 
 /// Reference frequency for V/oct: MIDI note 0 (C-1) ≈ 8.1758 Hz.
 pub const MIDI_0_HZ: f32 = 8.175_799;

@@ -10,7 +10,7 @@ use crate::domain::{KeyMode, Layer, PresetMeta};
 use crate::events::{HostEvent, PresetSource, UiEvent, ViewEvent};
 use crate::model::{ParamId, ParamModel};
 use crate::params::{PATCH_COUNT, PatchParam, desc_for_clap_id, patch_clap_id};
-use crate::preset::{PresetCorpus, PresetStore};
+use vxn_core_app::{PresetCorpus, PresetStore};
 
 /// Shared snapshot of the preset corpus the controller publishes for the view.
 /// Read on idle when the controller emits [`ViewEvent::PresetCorpusChanged`];
@@ -384,7 +384,7 @@ impl<M: ParamModel> Controller<M> {
         };
         let mut factory: Vec<(usize, &PresetMeta)> = corpus.factory.iter().enumerate().collect();
         factory.sort_by_cached_key(|a| a.1.name.to_lowercase());
-        let mut user: Vec<&crate::preset::UserPresetEntry> = corpus
+        let mut user: Vec<&vxn_core_app::UserPresetEntry> = corpus
             .user
             .iter()
             .flat_map(|f| f.presets.iter())

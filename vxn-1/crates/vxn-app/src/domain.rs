@@ -64,13 +64,5 @@ pub const DEFAULT_SPLIT_POINT: u8 = 60;
 /// living directly under the user preset dir, not in a real subfolder.
 pub const UNCATEGORIZED: &str = "Uncategorised";
 
-/// Slim preset metadata the controller hands to the view. The engine's
-/// serde-derived `Meta` lives next to the format; this is the view-facing
-/// projection (the editor doesn't need the serde derive or the file shape).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PresetMeta {
-    pub name: String,
-    pub author: Option<String>,
-    pub category: Option<String>,
-    pub comment: Option<String>,
-}
+// `PresetMeta` lives in `vxn-core-app` post-E001/0006.
+pub use vxn_core_app::PresetMeta;
