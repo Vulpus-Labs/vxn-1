@@ -6,8 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-vxn2-dsp = { path = "../vxn2-dsp" }
-vxn2-engine = { path = "../vxn2-engine" }
+vxn2-dsp = { workspace = true }
+vxn2-engine = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

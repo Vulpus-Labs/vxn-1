@@ -13,7 +13,7 @@ description = "VXN2 CLAP plugin shell (clack)."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-vxn2-engine = { path = "../vxn2-engine" }
+vxn2-engine = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",

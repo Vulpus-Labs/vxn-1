@@ -1,0 +1,12 @@
+[package]
+name = "vxn-core-utils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared low-level utilities for VXN synth plugins (denormal/FTZ guard, smoother, note utils, host sync)."
+
+[dependencies]
+
+[dev-dependencies]

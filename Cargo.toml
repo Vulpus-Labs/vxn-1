@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    # Shared core (E001 extraction target).
+    "crates/vxn-core-utils",
+    "crates/vxn-core-app",
+    "crates/vxn-core-ui-web",
+    "crates/vxn-core-clap",
+
+    # vxn-1 (synth #1).
+    "vxn-1/crates/vxn-dsp",
+    "vxn-1/crates/vxn-engine",
+    "vxn-1/crates/vxn-app",
+    "vxn-1/crates/vxn-clap",
+    "vxn-1/crates/vxn-ui-web",
+    "vxn-1/xtask",
+
+    # vxn-2 (synth #2, in-flight).
+    "vxn-2/crates/vxn2-dsp",
+    "vxn-2/crates/vxn2-engine",
+    "vxn-2/crates/vxn2-clap",
+    "vxn-2/crates/vxn2-osc-bench",
+    "vxn-2/xtask",
+]
+
+[workspace.package]
+version = "0.0.6"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Vulpus Labs"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Shared core (path).
+vxn-core-utils = { path = "crates/vxn-core-utils" }
+vxn-core-app = { path = "crates/vxn-core-app" }
+vxn-core-ui-web = { path = "crates/vxn-core-ui-web" }
+vxn-core-clap = { path = "crates/vxn-core-clap" }
+
+# vxn-1 (path).
+vxn-dsp = { path = "vxn-1/crates/vxn-dsp" }
+vxn-engine = { path = "vxn-1/crates/vxn-engine" }
+vxn-app = { path = "vxn-1/crates/vxn-app" }
+vxn-ui-web = { path = "vxn-1/crates/vxn-ui-web" }
+
+# vxn-2 (path).
+vxn2-dsp = { path = "vxn-2/crates/vxn2-dsp" }
+vxn2-engine = { path = "vxn-2/crates/vxn2-engine" }
+
+# clack — pinned to a known-good main commit (no compatible crates.io release of
+# this API yet). Single source of truth across all consumers.
+clack-plugin = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
+clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
+clack-host = { git = "https://github.com/prokopyl/clack", rev = "f874e858ad576c601367b3038af5088a4e671744" }
+
+# Release profile tuned for real-time audio DSP.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"   # ADR-style: plugins must unwind, never abort.

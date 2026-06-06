@@ -1,10 +1,12 @@
 [package]
-name = "vxn2-xtask"
+name = "vxn-core-ui-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish = false
+description = "Shared wry WebView editor shell and JS-Rust IPC bridge for VXN synth plugins."
 
 [dependencies]
+
+[dev-dependencies]

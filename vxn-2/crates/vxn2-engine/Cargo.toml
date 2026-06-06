@@ -6,6 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-vxn2-dsp = { path = "../vxn2-dsp" }
+vxn2-dsp = { workspace = true }
 
 [dev-dependencies]
