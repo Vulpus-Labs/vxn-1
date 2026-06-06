@@ -2401,6 +2401,12 @@ dependencies = [
 [[package]]
 name = "vxn-core-clap"
 version = "0.0.6"
+dependencies = [
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "vxn-core-app",
+]
 
 [[package]]
 name = "vxn-core-ui-web"

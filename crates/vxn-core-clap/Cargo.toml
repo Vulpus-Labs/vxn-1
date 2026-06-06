@@ -5,8 +5,19 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Shared CLAP plugin scaffold (clack) for VXN synth plugins (3-thread shape, event dispatch, state I/O)."
+description = "Shared clack scaffold helpers for VXN synth plugins (event dispatch, LocalParams, state I/O, gesture emit, transport)."
 
 [dependencies]
+vxn-core-app = { workspace = true }
+clack-plugin = { workspace = true }
+clack-extensions = { workspace = true, features = [
+    "audio-ports",
+    "note-ports",
+    "params",
+    "state",
+    "clack-plugin",
+] }
 
 [dev-dependencies]
+clack-host = { workspace = true }
+clack-extensions = { workspace = true, features = ["params", "state", "clack-host"] }
