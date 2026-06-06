@@ -73,6 +73,39 @@ describe('wireFxTabs (E018 / 0098)', () => {
     expect(panel.matches('[data-active-tab="phaser"]')).toBe(false);
   });
 
+  it('repaints faders in the activated pane', async () => {
+    // The bug: faders mounted inside a `display: none` pane paint with
+    // `clientHeight = 0` at editor-ready, so their thumbs pin to zero.
+    // When the pane becomes visible, `wireFxTabs` must re-run `paintFader`
+    // so thumbs jump to their cached `--fader-norm` position.
+    const panel = document.querySelector('.panel[data-name="FX"]');
+    // Stash a fader inside the hidden Reverb pane with a known norm cached
+    // in the CSS var (this is what `update()` would have set).
+    const pane = document.createElement('div');
+    pane.className = 'fx-pane fx-pane-reverb';
+    pane.innerHTML = `
+      <div class="ctl">
+        <div class="ctl-fader" style="--fader-norm: 0.75; height: 100px;">
+          <div class="ctl-fader-thumb" style="height: 10px;"></div>
+        </div>
+      </div>
+    `;
+    panel.querySelector('.panel-body').appendChild(pane);
+
+    const fader = pane.querySelector('.ctl-fader');
+    const thumb = pane.querySelector('.ctl-fader-thumb');
+    // Before activation: jsdom returns `clientHeight = 0` for hidden panes,
+    // so any earlier paintFader would have left `thumb.style.top` empty.
+    expect(thumb.style.top).toBe('');
+
+    // Activate the reverb tab. The repaint reads `--fader-norm = 0.75`
+    // and calls paintFader, which sets `thumb.style.top`. jsdom doesn't
+    // run CSS layout, so `clientHeight`/`offsetHeight` come from the
+    // inline `height` style — enough for paintFader's math.
+    panel.querySelector('.fx-tab[data-tab="reverb"]').click();
+    expect(thumb.style.top).not.toBe('');
+  });
+
   it('click on the per-tab switch does NOT swap the active tab', () => {
     // The on/off switch lives inside each tab button (revised 0098). The
     // tab-click handler must bail when the event originated inside the

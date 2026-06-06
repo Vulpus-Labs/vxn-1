@@ -869,6 +869,24 @@ export function wireFxTabs() {
       for (const b of buttons) {
         b.classList.toggle('active', b.dataset.tab === name);
       }
+      // Re-paint faders in the newly-visible pane. While the pane was
+      // `display: none`, `paintFader` saw `fader.clientHeight = 0` and
+      // pinned every thumb to the top. The cached `--fader-norm` CSS var
+      // still holds the correct value from that earlier echo, so re-running
+      // `paintFader` with the now-real height puts thumbs back where they
+      // belong. (Other primitives — switches, the per-tab header switch —
+      // don't depend on element height, so they don't need this dance.)
+      const pane = panel.querySelector(`.fx-pane-${name}`);
+      if (pane) {
+        pane.querySelectorAll('.ctl-fader').forEach((fader) => {
+          const thumb = fader.querySelector('.ctl-fader-thumb');
+          if (!thumb) return;
+          const n = parseFloat(
+            getComputedStyle(fader).getPropertyValue('--fader-norm'),
+          );
+          if (!Number.isNaN(n)) paintFader(fader, thumb, n);
+        });
+      }
     };
 
     for (const btn of buttons) {
