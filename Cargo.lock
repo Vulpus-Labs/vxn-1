@@ -2405,6 +2405,14 @@ version = "0.0.6"
 [[package]]
 name = "vxn-core-ui-web"
 version = "0.0.6"
+dependencies = [
+ "objc",
+ "raw-window-handle",
+ "serde_json",
+ "vxn-core-app",
+ "windows-sys 0.61.2",
+ "wry",
+]
 
 [[package]]
 name = "vxn-core-utils"
