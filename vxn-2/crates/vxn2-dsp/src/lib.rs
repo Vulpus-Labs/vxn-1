@@ -5,6 +5,7 @@
 //! voice / algorithm / matrix work lives in `vxn2-engine` (next epics).
 
 pub mod algo;
+pub mod cleanup;
 pub mod delay;
 pub mod eg;
 pub mod envelope;

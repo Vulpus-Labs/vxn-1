@@ -49,6 +49,10 @@ name = "delay"
 harness = false
 
 [[bench]]
+name = "cleanup"
+harness = false
+
+[[bench]]
 name = "reverb"
 harness = false
 

@@ -5,6 +5,7 @@ members = [
     "crates/vxn2-dsp",
     "crates/vxn2-engine",
     "crates/vxn2-osc-bench",
+    "xtask",
 ]
 
 [workspace.package]

@@ -59,13 +59,25 @@ use crate::voicing::{LayerParams, Patch, VoicingMode, VoicingParams};
 /// Errors returned by [`ParamModel::load_bytes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamLoadError {
-    /// Wire payload length did not match `TOTAL_PARAMS * 4`.
+    /// First 4 bytes were not `b"VXN2"`.
+    MagicMismatch,
+    /// Version field exceeds the highest supported version (v1 today).
+    UnsupportedVersion(u16),
+    /// Header count differs from [`TOTAL_PARAMS`]. v1 demands exact match;
+    /// future versions may relax this.
+    CountMismatch { expected: u16, got: u16 },
+    /// Payload length not equal to `8 + count × 4` (header + values).
     LengthMismatch { expected: usize, got: usize },
 }
 
 impl std::fmt::Display for ParamLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MagicMismatch => write!(f, "param blob magic mismatch"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported param blob version {v}"),
+            Self::CountMismatch { expected, got } => {
+                write!(f, "param count {got} (expected {expected})")
+            }
             Self::LengthMismatch { expected, got } => {
                 write!(f, "param payload length {got} (expected {expected})")
             }
@@ -74,6 +86,13 @@ impl std::fmt::Display for ParamLoadError {
 }
 
 impl std::error::Error for ParamLoadError {}
+
+/// Magic prefix on every VXN2 host-state blob.
+pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
+/// Highest blob version this build can read.
+pub const BLOB_VERSION: u16 = 1;
+/// Header byte length: 4 magic + 2 version + 2 count.
+pub const BLOB_HEADER_LEN: usize = 8;
 
 /// Indexed read access into a param store, keyed by CLAP id.
 ///
@@ -110,10 +129,12 @@ impl Default for SharedParams {
 }
 
 impl SharedParams {
-    /// Initialise every slot to its descriptor default.
+    /// Initialise every slot to its illustrative default-patch value
+    /// (see [`crate::default_patch::default_param_values`]).
     pub fn new() -> Self {
+        let defaults = crate::default_patch::default_param_values();
         Self {
-            values: std::array::from_fn(|i| AtomicU32::new(PARAMS[i].default.to_bits())),
+            values: std::array::from_fn(|i| AtomicU32::new(defaults[i].to_bits())),
         }
     }
 
@@ -149,10 +170,12 @@ impl SharedParams {
         }
     }
 
-    /// Restore every slot to its descriptor default.
+    /// Restore every slot to its illustrative default-patch value
+    /// (see [`crate::default_patch::default_param_values`]).
     pub fn reset_to_defaults(&self) {
+        let defaults = crate::default_patch::default_param_values();
         for i in 0..TOTAL_PARAMS {
-            self.values[i].store(PARAMS[i].default.to_bits(), Ordering::Relaxed);
+            self.values[i].store(defaults[i].to_bits(), Ordering::Relaxed);
         }
     }
 }
@@ -173,12 +196,25 @@ impl ParamModel for SharedParams {
         SharedParams::get_normalised(self, id)
     }
 
-    /// Serialise every slot as raw `f32` bits, little-endian. 4 bytes per id;
-    /// total `TOTAL_PARAMS * 4`. Allocation is unavoidable (the trait returns
-    /// `Vec<u8>`), but the call site is the host's state-save path — main
-    /// thread, not audio.
+    /// Serialise the param table as a host-state blob.
+    ///
+    /// Wire format (little-endian):
+    ///
+    /// | offset | bytes | content                          |
+    /// |-------:|------:|----------------------------------|
+    /// |   0    |   4   | magic `b"VXN2"`                  |
+    /// |   4    |   2   | version `u16` (= [`BLOB_VERSION`])|
+    /// |   6    |   2   | param count `u16` ([`TOTAL_PARAMS`])|
+    /// |   8    | 4 × N | raw `f32` bits, indexed by CLAP id|
+    ///
+    /// No per-id framing, no name strings — this is the binary host blob,
+    /// not the user-facing preset format (which lands with the preset epic
+    /// and carries the matrix source/dest/curve slots the blob omits).
     fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(TOTAL_PARAMS * 4);
+        let mut buf = Vec::with_capacity(BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
+        buf.extend_from_slice(BLOB_MAGIC);
+        buf.extend_from_slice(&BLOB_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(TOTAL_PARAMS as u16).to_le_bytes());
         for i in 0..TOTAL_PARAMS {
             let bits = self.values[i].load(Ordering::Relaxed);
             buf.extend_from_slice(&bits.to_le_bytes());
@@ -186,10 +222,31 @@ impl ParamModel for SharedParams {
         buf
     }
 
-    /// Inverse of [`snapshot_bytes`]. Writes bits unmodified — no descriptor
-    /// clamp — so a snapshot round-trip is bit-identical.
+    /// Inverse of [`snapshot_bytes`]. Validates magic / version / count /
+    /// length, then writes value bits unmodified — no descriptor clamp — so
+    /// a snapshot round-trip is bit-identical.
     fn load_bytes(&self, bytes: &[u8]) -> Result<(), ParamLoadError> {
-        let expected = TOTAL_PARAMS * 4;
+        if bytes.len() < BLOB_HEADER_LEN {
+            return Err(ParamLoadError::LengthMismatch {
+                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
+                got: bytes.len(),
+            });
+        }
+        if &bytes[0..4] != BLOB_MAGIC {
+            return Err(ParamLoadError::MagicMismatch);
+        }
+        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+        if version > BLOB_VERSION {
+            return Err(ParamLoadError::UnsupportedVersion(version));
+        }
+        let count = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if count as usize != TOTAL_PARAMS {
+            return Err(ParamLoadError::CountMismatch {
+                expected: TOTAL_PARAMS as u16,
+                got: count,
+            });
+        }
+        let expected = BLOB_HEADER_LEN + (count as usize) * 4;
         if bytes.len() != expected {
             return Err(ParamLoadError::LengthMismatch {
                 expected,
@@ -197,7 +254,7 @@ impl ParamModel for SharedParams {
             });
         }
         for i in 0..TOTAL_PARAMS {
-            let off = i * 4;
+            let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
                 bytes[off],
                 bytes[off + 1],
@@ -482,17 +539,21 @@ mod tests {
     use crate::params::id_of;
 
     #[test]
-    fn shared_params_defaults_match_descriptor_defaults() {
+    fn shared_params_seed_from_default_patch() {
+        // Every slot starts at the illustrative-patch value, not the bare
+        // descriptor default. Spot-checks both — divergences (e.g. voicing
+        // mode = Whole, lfo1-rate = 0.6 Hz) and pass-throughs (master
+        // volume).
         let s = SharedParams::new();
+        let expected = crate::default_patch::default_param_values();
         for i in 0..TOTAL_PARAMS {
-            assert_eq!(
-                s.get(i),
-                PARAMS[i].default,
-                "default mismatch at {}: id={}",
-                i,
-                PARAMS[i].id
-            );
+            assert_eq!(s.get(i), expected[i], "slot {} ({})", i, PARAMS[i].id);
         }
+        assert_eq!(s.get(crate::params::id_of("voicing-mode").unwrap()), 0.0);
+        assert!((s.get(crate::params::id_of("lfo1-rate").unwrap()) - 0.6).abs() < 1e-6);
+        assert!(
+            (s.get(crate::params::id_of("master-volume").unwrap()) - (-6.0)).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -522,7 +583,7 @@ mod tests {
         let s = SharedParams::new();
         let e = EngineParams::from_shared(&s);
         assert!((e.master.volume_db - (-6.0)).abs() < 1e-6);
-        assert_eq!(e.patch.voicing.mode, VoicingMode::Layer);
+        assert_eq!(e.patch.voicing.mode, VoicingMode::Whole);
         assert!((e.reverb.size - 0.55).abs() < 1e-6);
         assert!((e.delay.time_ms - 375.0).abs() < 1e-6);
         assert_eq!(e.patch.upper.voice.master_tune_cents, 0.0);
@@ -580,7 +641,13 @@ mod tests {
         src.values[nan_id].store(pattern, Ordering::Relaxed);
 
         let bytes = src.snapshot_bytes();
-        assert_eq!(bytes.len(), TOTAL_PARAMS * 4);
+        assert_eq!(bytes.len(), BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
+        assert_eq!(&bytes[0..4], BLOB_MAGIC);
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
+        assert_eq!(
+            u16::from_le_bytes([bytes[6], bytes[7]]) as usize,
+            TOTAL_PARAMS
+        );
 
         let dst = SharedParams::new();
         dst.load_bytes(&bytes).unwrap();
@@ -596,16 +663,76 @@ mod tests {
     }
 
     #[test]
-    fn load_bytes_rejects_wrong_length() {
+    fn load_bytes_rejects_short_buffer() {
         let s = SharedParams::new();
         let err = s.load_bytes(&[0u8; 4]).unwrap_err();
         assert_eq!(
             err,
             ParamLoadError::LengthMismatch {
-                expected: TOTAL_PARAMS * 4,
+                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
                 got: 4,
             }
         );
+    }
+
+    #[test]
+    fn load_bytes_rejects_bad_magic() {
+        let s = SharedParams::new();
+        let mut bytes = s.snapshot_bytes();
+        bytes[0] = b'X';
+        assert_eq!(s.load_bytes(&bytes).unwrap_err(), ParamLoadError::MagicMismatch);
+    }
+
+    #[test]
+    fn load_bytes_rejects_future_version() {
+        let s = SharedParams::new();
+        let mut bytes = s.snapshot_bytes();
+        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(
+            s.load_bytes(&bytes).unwrap_err(),
+            ParamLoadError::UnsupportedVersion(2)
+        );
+    }
+
+    #[test]
+    fn load_bytes_rejects_wrong_count() {
+        let s = SharedParams::new();
+        let mut bytes = s.snapshot_bytes();
+        let wrong = (TOTAL_PARAMS as u16) - 1;
+        bytes[6..8].copy_from_slice(&wrong.to_le_bytes());
+        assert_eq!(
+            s.load_bytes(&bytes).unwrap_err(),
+            ParamLoadError::CountMismatch {
+                expected: TOTAL_PARAMS as u16,
+                got: wrong,
+            }
+        );
+    }
+
+    #[test]
+    fn load_bytes_rejects_truncated_payload() {
+        let s = SharedParams::new();
+        let mut bytes = s.snapshot_bytes();
+        bytes.truncate(bytes.len() - 4);
+        assert_eq!(
+            s.load_bytes(&bytes).unwrap_err(),
+            ParamLoadError::LengthMismatch {
+                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
+                got: bytes.len(),
+            }
+        );
+    }
+
+    /// Two consecutive saves with no intervening param changes produce
+    /// byte-for-byte identical blobs. Hosts rely on this for change detection.
+    #[test]
+    fn snapshot_bytes_is_stable_across_saves() {
+        let s = SharedParams::new();
+        s.set(id_of("master-volume").unwrap(), -3.0);
+        s.set(id_of("reverb-decay").unwrap(), 4.5);
+        let a = s.snapshot_bytes();
+        let b = s.snapshot_bytes();
+        assert_eq!(a, b);
     }
 
     #[test]

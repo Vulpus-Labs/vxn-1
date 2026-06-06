@@ -21,10 +21,12 @@ use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::io::{Read, Write as _IoWrite};
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
-    ParamDesc, ParamKind, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id,
+    ParamDesc, ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id,
+    module_for_clap_id,
 };
 
 use crate::local::LocalParams;
@@ -417,15 +419,23 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
     }
 }
 
-// ── State (stub: 0017 wires the real save/restore) ──────────────────────────
+// ── State save / restore ────────────────────────────────────────────────────
 
 impl PluginStateImpl for VxnMainThread<'_> {
-    fn save(&mut self, _output: &mut OutputStream) -> Result<(), PluginError> {
-        Ok(())
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let blob = ParamModel::snapshot_bytes(&*self.shared.params);
+        output
+            .write_all(&blob)
+            .map_err(|_| PluginError::Message("state save failed"))
     }
 
-    fn load(&mut self, _input: &mut InputStream) -> Result<(), PluginError> {
-        Ok(())
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let mut blob = Vec::new();
+        input
+            .read_to_end(&mut blob)
+            .map_err(|_| PluginError::Message("state read failed"))?;
+        ParamModel::load_bytes(&*self.shared.params, &blob)
+            .map_err(|_| PluginError::Message("state read failed"))
     }
 }
 
@@ -749,5 +759,124 @@ mod tests {
         let mut audio = mk_audio(&shared);
         audio.engine.set_tempo(140.0);
         assert!((audio.engine.tempo_bpm - 140.0).abs() < 1e-6);
+    }
+
+    // ── State extension ────────────────────────────────────────────────────
+
+    /// `save` → `load` on a fresh `SharedParams` reproduces every slot.
+    #[test]
+    fn plugin_state_save_load_round_trips_every_param() {
+        let shared = mk_shared();
+        // Spread non-default values across the table.
+        for (name, v) in [
+            ("upper-op1-ratio", 3.25_f32),
+            ("upper-op6-level", 88.0),
+            ("lower-op4-pan", -0.7),
+            ("upper-mtx1-depth", 0.4),
+            ("lower-mtx8-depth", -0.7),
+            ("master-volume", -3.0),
+            ("reverb-decay", 4.5),
+            ("delay-time", 250.0),
+            ("upper-assign-mode", 1.0),
+            ("upper-glide-time", 200.0),
+        ] {
+            let id = id_of(name).unwrap();
+            shared.params.set(id, v);
+        }
+
+        let mut main = mk_main(&shared);
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut out = OutputStream::from_writer(&mut buf);
+            main.save(&mut out).unwrap();
+        }
+
+        let restored = mk_shared();
+        let mut restored_main = mk_main(&restored);
+        let mut reader: &[u8] = &buf;
+        {
+            let mut input = InputStream::from_reader(&mut reader);
+            restored_main.load(&mut input).unwrap();
+        }
+        for i in 0..TOTAL_PARAMS {
+            assert_eq!(
+                shared.params.get(i),
+                restored.params.get(i),
+                "slot {i} differs"
+            );
+        }
+    }
+
+    /// Two consecutive `save` calls on an unchanged plugin produce identical
+    /// blobs — hosts rely on this for project-dirty detection.
+    #[test]
+    fn plugin_state_save_is_bit_identical_across_calls() {
+        let shared = mk_shared();
+        shared.params.set(id_of("master-volume").unwrap(), -3.0);
+        let mut main = mk_main(&shared);
+
+        let mut a: Vec<u8> = Vec::new();
+        {
+            let mut out = OutputStream::from_writer(&mut a);
+            main.save(&mut out).unwrap();
+        }
+        let mut b: Vec<u8> = Vec::new();
+        {
+            let mut out = OutputStream::from_writer(&mut b);
+            main.save(&mut out).unwrap();
+        }
+        assert_eq!(a, b);
+    }
+
+    /// A value written via host automation mid-block (folded into the audio
+    /// mirror and republished to the shared store via `publish`) is visible
+    /// to a subsequent `save` — no stale mirror.
+    #[test]
+    fn plugin_state_save_sees_post_publish_automation() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        let decay = id_of("reverb-decay").unwrap();
+
+        let mut buf = EventBuffer::with_capacity(2);
+        buf.push(&ParamValueEvent::new(
+            0,
+            ClapId::new(decay as u32),
+            Pckn::match_all(),
+            4.5,
+            Cookie::empty(),
+        ));
+        let mut sink = EventBuffer::with_capacity(0);
+        audio.flush(&buf.as_input(), &mut sink.as_output());
+
+        let mut main = mk_main(&shared);
+        let mut blob: Vec<u8> = Vec::new();
+        {
+            let mut out = OutputStream::from_writer(&mut blob);
+            main.save(&mut out).unwrap();
+        }
+
+        let restored = mk_shared();
+        let mut restored_main = mk_main(&restored);
+        let mut reader: &[u8] = &blob;
+        {
+            let mut input = InputStream::from_reader(&mut reader);
+            restored_main.load(&mut input).unwrap();
+        }
+        assert!((restored.params.get(decay) - 4.5).abs() < 1e-5);
+    }
+
+    /// Corrupt blobs surface as `PluginError::Message("state read failed")`.
+    #[test]
+    fn plugin_state_load_rejects_bad_magic() {
+        let shared = mk_shared();
+        let mut main = mk_main(&shared);
+        let blob = vec![b'X', b'X', b'X', b'X'];
+        let mut reader: &[u8] = &blob;
+        let mut input = InputStream::from_reader(&mut reader);
+        let err = main.load(&mut input).unwrap_err();
+        match err {
+            PluginError::Message(m) => assert_eq!(m, "state read failed"),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

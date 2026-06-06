@@ -99,6 +99,7 @@ source = "git+https://github.com/prokopyl/clack?rev=f874e858ad576c601367b3038af5
 dependencies = [
  "bitflags",
  "clack-common",
+ "clack-host",
  "clack-plugin",
  "clap-sys",
 ]
@@ -524,6 +525,10 @@ checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
 ]
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
 
 [[package]]
 name = "zerocopy"

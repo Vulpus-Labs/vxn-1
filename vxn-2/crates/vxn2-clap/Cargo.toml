@@ -25,3 +25,12 @@ clack-extensions = { workspace = true, features = [
 
 [dev-dependencies]
 clack-host = { workspace = true }
+# The integration smoke test (0020) drives the plugin via clack-host and
+# reaches into the host side of `params` + `state`. Re-declare the
+# extensions crate here with `clack-host` so those host-side methods (e.g.
+# `PluginState::save`/`load`, `PluginParams::get_value`) compile.
+clack-extensions = { workspace = true, features = [
+    "params",
+    "state",
+    "clack-host",
+] }
