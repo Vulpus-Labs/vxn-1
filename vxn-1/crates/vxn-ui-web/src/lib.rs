@@ -31,7 +31,8 @@ use vxn_app::{
 use wry::{Rect, WebView, WebViewBuilder};
 use wry::dpi::{LogicalPosition, LogicalSize};
 
-mod text_input;
+// text_input lifted to `vxn-core-ui-web::text_input` post-E001/0009.
+use vxn_core_ui_web::prompt_text;
 
 /// Redirect WebView2's user-data folder to a user-writable location.
 /// Default is `<host_exe_dir>\<exe_name>.WebView2`, which inside
@@ -116,7 +117,7 @@ impl EditorHandle {
 
     fn open_text_input(&self, id: String, title: String, initial: String) {
         let ctrl = self.ctrl.clone();
-        text_input::prompt_text(self.parent, &title, &initial, move |value| {
+        prompt_text(self.parent, &title, &initial, move |value| {
             // Channel-full / disconnected: nothing useful to do — the
             // popup is already torn down. Drop silently.
             let _ = ctrl.post(UiEvent::TextInputResult { id, value });
@@ -429,84 +430,20 @@ fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
 /// (save / rename / move / delete) join in 0049–0051 once the browser HTML
 /// lands.
 fn parse_ui_event(body: &str) -> Option<UiEvent> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let op = v.get("op")?.as_str()?;
+    vxn_core_ui_web::parse_ui_event(body, Some(&PARSE_CUSTOM))
+}
+
+/// Parse a VXN1-specific opcode into the matching `UiEvent::Custom`
+/// payload. Called by `vxn_core_ui_web::parse_ui_event` after its
+/// shared-vocabulary table returns `None`.
+fn parse_vxn1_custom_ui(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
     match op {
-        "set_param" => Some(UiEvent::SetParam {
-            id: ParamId::new(v.get("id")?.as_u64()? as usize),
-            plain: v.get("plain")?.as_f64()? as f32,
-        }),
-        "set_param_norm" => Some(UiEvent::SetParamNorm {
-            id: ParamId::new(v.get("id")?.as_u64()? as usize),
-            norm: v.get("norm")?.as_f64()? as f32,
-        }),
-        "begin_gesture" => Some(UiEvent::BeginGesture {
-            id: ParamId::new(v.get("id")?.as_u64()? as usize),
-        }),
-        "end_gesture" => Some(UiEvent::EndGesture {
-            id: ParamId::new(v.get("id")?.as_u64()? as usize),
-        }),
         "reset_layer" => Some(
             vxn_app::Vxn1UiCustom::ResetLayer {
                 layer: parse_layer(v.get("layer")?)?,
             }
             .into_event(),
         ),
-        "load_factory" => Some(UiEvent::LoadPreset {
-            source: PresetSource::Factory {
-                index: v.get("index")?.as_u64()? as usize,
-            },
-        }),
-        // 0050: browser panel posts this when the user clicks a user-side
-        // preset row. `path` is the absolute on-disk path the corpus
-        // snapshot ships (`p.path` in `corpus_snapshot_json`).
-        "load_user" => Some(UiEvent::LoadPreset {
-            source: PresetSource::User {
-                path: std::path::PathBuf::from(v.get("path")?.as_str()?.to_owned()),
-            },
-        }),
-        // 0051: user-side mutation ops. Paths round-trip as strings the
-        // controller maps back to `PathBuf`; the controller is the only
-        // place that touches disk (refreshes the corpus and re-emits
-        // `PresetCorpusChanged` after each).
-        "rename_preset" => Some(UiEvent::RenamePreset {
-            path: std::path::PathBuf::from(v.get("path")?.as_str()?.to_owned()),
-            new_name: v.get("new_name")?.as_str()?.to_owned(),
-        }),
-        "delete_preset" => Some(UiEvent::DeletePreset {
-            path: std::path::PathBuf::from(v.get("path")?.as_str()?.to_owned()),
-        }),
-        "move_preset" => Some(UiEvent::MovePreset {
-            path: std::path::PathBuf::from(v.get("path")?.as_str()?.to_owned()),
-            // `dest_folder: null` moves to user root; any string names the
-            // destination subfolder.
-            dest_folder: v
-                .get("dest_folder")
-                .and_then(|x| x.as_str())
-                .map(str::to_owned),
-        }),
-        "rename_folder" => Some(UiEvent::RenameFolder {
-            old_name: v.get("old_name")?.as_str()?.to_owned(),
-            new_name: v.get("new_name")?.as_str()?.to_owned(),
-        }),
-        "delete_folder" => Some(UiEvent::DeleteFolder {
-            name: v.get("name")?.as_str()?.to_owned(),
-        }),
-        "new_folder" => Some(UiEvent::NewFolder {
-            suggested: v.get("suggested")?.as_str()?.to_owned(),
-        }),
-        // 0049: prev/next walker. `delta` is signed; the controller wraps
-        // against the combined Factory + User list it publishes.
-        "step_preset" => Some(UiEvent::StepPreset {
-            delta: v.get("delta")?.as_i64()? as i32,
-        }),
-        // 0049: Save As — name from the floating popup, folder from the
-        // browser panel's selection (0050+). For 0049 the page sends
-        // `folder: null` unconditionally → saves to user root.
-        "save_preset" => Some(UiEvent::SavePreset {
-            name: v.get("name")?.as_str()?.to_owned(),
-            folder: v.get("folder").and_then(|x| x.as_str()).map(str::to_owned),
-        }),
         "set_key_mode" => Some(
             vxn_app::Vxn1UiCustom::SetKeyMode {
                 mode: parse_key_mode(v.get("mode")?)?,
@@ -525,29 +462,12 @@ fn parse_ui_event(body: &str) -> Option<UiEvent> {
             }
             .into_event(),
         ),
-        // Sent by the page's `init()` once the JS dispatcher is wired.
-        // Triggers a controller-side broadcast so any param/key-mode
-        // ViewEvents that raced ahead of the bootstrap script get re-sent
-        // into a known-ready listener.
-        "ready" => Some(UiEvent::EditorReady),
-        // 0048: faceplate asks for the floating text-input popup. The
-        // controller relays this as `ViewEvent::OpenTextInput`; the
-        // editor backend intercepts and pops the native window.
-        "request_text_input" => Some(UiEvent::RequestTextInput {
-            id: v.get("id")?.as_str()?.to_owned(),
-            title: v.get("title")?.as_str()?.to_owned(),
-            initial: v.get("initial")?.as_str().unwrap_or("").to_owned(),
-        }),
-        // Reserved for direct page-side posts (in-page tests, or a future
-        // platform where the popup lives JS-side). Production flow on
-        // macOS routes through the native popup → `ctrl.post` instead.
-        "text_input_result" => Some(UiEvent::TextInputResult {
-            id: v.get("id")?.as_str()?.to_owned(),
-            value: v.get("value").and_then(|x| x.as_str()).map(|s| s.to_owned()),
-        }),
         _ => None,
     }
 }
+
+static PARSE_CUSTOM: std::sync::LazyLock<vxn_core_ui_web::ParseCustomUi> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(parse_vxn1_custom_ui));
 
 fn parse_layer(v: &serde_json::Value) -> Option<Layer> {
     match v.as_str()? {
@@ -563,200 +483,52 @@ fn parse_key_mode(v: &serde_json::Value) -> Option<KeyMode> {
 
 // ── ViewEvent → JSON batches ────────────────────────────────────────────────
 
-/// Dedupe `ParamChanged` events by id (latest value wins, preserves the
-/// position of the last occurrence relative to non-`ParamChanged` events).
-/// Other variants pass through unchanged. Bounded at `events.len()`; the
-/// hashmap is reused across calls is not worth it here — buffers are short.
-fn dedup_param_changes(events: &[ViewEvent]) -> Vec<&ViewEvent> {
-    let mut latest_for_id: HashMap<usize, usize> = HashMap::new();
-    for (i, ev) in events.iter().enumerate() {
-        if let ViewEvent::ParamChanged { id, .. } = ev {
-            latest_for_id.insert(id.raw(), i);
-        }
-    }
-    events
-        .iter()
-        .enumerate()
-        .filter(|(i, ev)| match ev {
-            ViewEvent::ParamChanged { id, .. } => latest_for_id.get(&id.raw()) == Some(i),
-            _ => true,
-        })
-        .map(|(_, ev)| ev)
-        .collect()
-}
-
-/// Build one or more JSON-array literals from a tick batch. Each chunk is a
-/// `[...]` string ≤ `max_bytes` (a single event larger than `max_bytes`
-/// still ships on its own — splitting inside a JSON object would corrupt
-/// the page).
+/// Build one or more JSON-array literals from a tick batch. Delegates
+/// to [`vxn_core_ui_web::batch_chunks`] with the VXN1 custom-serialise
+/// hook so per-synth `Vxn1ViewCustom` payloads keep their existing
+/// JSON shape on the wire.
 fn batch_chunks(events: &[ViewEvent], max_bytes: usize) -> Vec<String> {
-    let deduped = dedup_param_changes(events);
-    let mut chunks: Vec<String> = Vec::new();
-    let mut current = String::from("[");
-    let mut first_in_chunk = true;
-    for ev in deduped {
-        let s = view_event_to_json(ev);
-        let projected = current.len() + s.len() + if first_in_chunk { 1 } else { 2 };
-        if !first_in_chunk && projected > max_bytes {
-            current.push(']');
-            chunks.push(std::mem::replace(&mut current, String::from("[")));
-            first_in_chunk = true;
-        }
-        if !first_in_chunk {
-            current.push(',');
-        }
-        current.push_str(&s);
-        first_in_chunk = false;
-    }
-    current.push(']');
-    if current != "[]" {
-        chunks.push(current);
-    }
-    chunks
+    vxn_core_ui_web::batch_chunks(events, max_bytes, Some(&SERIALISE_CUSTOM))
 }
 
-/// Serialize a [`ViewEvent`] to a JSON value the page can read. Mirror of
-/// [`parse_ui_event`]'s opcode shape: `{ "kind": "...", ...fields }`.
+/// Serialise a [`ViewEvent`] to a JSON string the page can read. Thin
+/// wrapper around [`vxn_core_ui_web::view_event_to_json`] with the
+/// VXN1 custom hook. Only used by the test suite — `flush_view_events`
+/// uses `batch_chunks` directly.
+#[allow(dead_code)]
 fn view_event_to_json(ev: &ViewEvent) -> String {
-    use serde_json::json;
-    let v = match ev {
-        ViewEvent::ParamChanged { id, plain, norm, display } => json!({
-            "kind": "param_changed",
-            "id": id.raw(),
-            "plain": plain,
-            "norm": norm,
-            "display": display,
-        }),
-        ViewEvent::PresetLoaded { meta, source, warnings } => json!({
-            "kind": "preset_loaded",
-            "name": meta.name,
-            "source": preset_source_json(source.as_ref()),
-            "warnings": warnings,
-        }),
-        ViewEvent::PresetCorpusChanged { follow } => json!({
-            "kind": "preset_corpus_changed",
-            "follow": follow.as_ref().map(|p| p.display().to_string()),
-        }),
-        ViewEvent::Status { line } => json!({
-            "kind": "status",
-            "line": line,
-        }),
-        // OpenTextInput is intercepted in `push_view_event` before
-        // batching, so this arm is unreachable on the happy path. Serialize
-        // a benign marker rather than `panic!` so a future refactor that
-        // leaks it into the buffer fails closed (JS dispatcher ignores
-        // unknown `kind`s).
-        ViewEvent::OpenTextInput { id, title, initial } => json!({
-            "kind": "open_text_input",
-            "id": id,
-            "title": title,
-            "initial": initial,
-        }),
-        ViewEvent::TextInputResult { id, value } => json!({
-            "kind": "text_input_result",
-            "id": id,
-            "value": value,
-        }),
-        ViewEvent::Custom(payload) => {
-            // VXN1-specific view events ride `Custom`. Downcast to
-            // `Vxn1ViewCustom` and emit the same JSON shape the JS
-            // bridge has always seen (kind: "key_mode_changed",
-            // "split_point_changed", "edit_layer_changed").
-            if let Some(custom) = payload.downcast_ref::<vxn_app::Vxn1ViewCustom>() {
-                match custom {
-                    vxn_app::Vxn1ViewCustom::KeyModeChanged { mode } => json!({
-                        "kind": "key_mode_changed",
-                        "mode": *mode as u8,
-                    }),
-                    vxn_app::Vxn1ViewCustom::SplitPointChanged { note } => json!({
-                        "kind": "split_point_changed",
-                        "note": *note,
-                    }),
-                    vxn_app::Vxn1ViewCustom::EditLayerChanged { layer } => json!({
-                        "kind": "edit_layer_changed",
-                        "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
-                    }),
-                }
-            } else {
-                // Unknown custom payload — emit a benign marker the JS
-                // dispatcher ignores rather than dropping the event.
-                json!({ "kind": "unknown_custom" })
-            }
-        }
-    };
-    v.to_string()
+    vxn_core_ui_web::view_event_to_json(ev, Some(&SERIALISE_CUSTOM)).unwrap_or_default()
 }
 
-/// Serialize a [`PresetCorpus`] for the JS browser panel (0050). Factory
-/// presets are grouped by `meta.category` (presets without a category fall
-/// into [`UNCATEGORIZED`]); user folders preserve their `Option<String>`
-/// shape so the page can show "Uncategorised" first then sorted named
-/// folders. Within each group, presets are alpha-sorted by name
-/// (case-insensitive) — same order the prev/next walker uses.
+/// VXN1's `Vxn1ViewCustom` → JSON. Wired into the shared
+/// `batch_chunks` / `view_event_to_json` via [`SERIALISE_CUSTOM`].
+fn serialise_vxn1_view_custom(payload: &dyn std::any::Any) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let custom = payload.downcast_ref::<vxn_app::Vxn1ViewCustom>()?;
+    Some(match custom {
+        vxn_app::Vxn1ViewCustom::KeyModeChanged { mode } => json!({
+            "kind": "key_mode_changed",
+            "mode": *mode as u8,
+        }),
+        vxn_app::Vxn1ViewCustom::SplitPointChanged { note } => json!({
+            "kind": "split_point_changed",
+            "note": *note,
+        }),
+        vxn_app::Vxn1ViewCustom::EditLayerChanged { layer } => json!({
+            "kind": "edit_layer_changed",
+            "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
+        }),
+    })
+}
+
+static SERIALISE_CUSTOM: std::sync::LazyLock<vxn_core_ui_web::SerialiseCustomView> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(serialise_vxn1_view_custom));
+
+/// Serialise a [`PresetCorpus`] for the JS browser panel. Thin wrapper
+/// around [`vxn_core_ui_web::corpus_snapshot_json`] with VXN1's
+/// `UNCATEGORIZED` label.
 fn corpus_snapshot_json(corpus: &PresetCorpus) -> String {
-    use serde_json::{Value, json};
-
-    let mut factory_groups: HashMap<String, Vec<(usize, &str)>> = HashMap::new();
-    for (i, m) in corpus.factory.iter().enumerate() {
-        let cat = m
-            .category
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(UNCATEGORIZED)
-            .to_string();
-        factory_groups
-            .entry(cat)
-            .or_default()
-            .push((i, m.name.as_str()));
-    }
-    let mut factory: Vec<(String, Vec<(usize, &str)>)> = factory_groups.into_iter().collect();
-    factory.sort_by_cached_key(|a| a.0.to_lowercase());
-    for g in factory.iter_mut() {
-        g.1.sort_by_cached_key(|a| a.1.to_lowercase());
-    }
-    let factory_v: Vec<Value> = factory
-        .into_iter()
-        .map(|(category, presets)| {
-            let entries: Vec<Value> = presets
-                .into_iter()
-                .map(|(idx, name)| json!({"name": name, "index": idx}))
-                .collect();
-            json!({"category": category, "presets": entries})
-        })
-        .collect();
-
-    let mut user = corpus.user.clone();
-    user.sort_by(|a, b| match (&a.name, &b.name) {
-        (None, None) => std::cmp::Ordering::Equal,
-        (None, _) => std::cmp::Ordering::Less,
-        (_, None) => std::cmp::Ordering::Greater,
-        (Some(x), Some(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
-    });
-    let user_v: Vec<Value> = user
-        .into_iter()
-        .map(|f| {
-            let mut presets = f.presets;
-            presets.sort_by_cached_key(|a| a.meta.name.to_lowercase());
-            let entries: Vec<Value> = presets
-                .into_iter()
-                .map(|p| {
-                    json!({"name": p.meta.name, "path": p.path.display().to_string()})
-                })
-                .collect();
-            json!({"name": f.name, "presets": entries})
-        })
-        .collect();
-    json!({"factory": factory_v, "user": user_v}).to_string()
-}
-
-fn preset_source_json(src: Option<&PresetSource>) -> serde_json::Value {
-    use serde_json::json;
-    match src {
-        None => serde_json::Value::Null,
-        Some(PresetSource::Factory { index }) => json!({"kind": "factory", "index": index}),
-        Some(PresetSource::User { path }) => json!({"kind": "user", "path": path.display().to_string()}),
-    }
+    vxn_core_ui_web::corpus_snapshot_json(corpus, UNCATEGORIZED)
 }
 
 // ── Faceplate page ──────────────────────────────────────────────────────────
@@ -957,6 +729,8 @@ mod tests {
     #[test]
     fn dedup_keeps_latest_param_per_id() {
         // Three writes to id 1 in a tick → only the last one ships.
+        // Dedup lives in `vxn-core-ui-web::batch_chunks` post-0009; we
+        // verify the behaviour by inspecting the batched output.
         let events = vec![
             param_changed(1, 0.1),
             param_changed(2, 0.2),
@@ -965,20 +739,17 @@ mod tests {
             ViewEvent::Status { line: "ok".into() },
             param_changed(2, 0.5),
         ];
-        let kept: Vec<f32> = dedup_param_changes(&events)
-            .into_iter()
-            .filter_map(|ev| match ev {
-                ViewEvent::ParamChanged { plain, .. } => Some(*plain),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(kept, vec![0.4, 0.5]);
-        // Non-ParamChanged variants survive untouched.
-        let kinds: Vec<_> = dedup_param_changes(&events)
-            .into_iter()
-            .map(|ev| matches!(ev, ViewEvent::Status { .. }))
-            .collect();
-        assert!(kinds.iter().any(|x| *x), "Status must be kept");
+        let chunks = batch_chunks(&events, 100_000);
+        assert_eq!(chunks.len(), 1);
+        let payload = &chunks[0];
+        // Each id appears exactly once with its last value.
+        assert!(payload.contains("\"id\":1") && payload.contains("0.4"));
+        assert!(payload.contains("\"id\":2") && payload.contains("0.5"));
+        // Earlier values dropped.
+        assert!(!payload.contains("0.1"));
+        assert!(!payload.contains("0.3"));
+        // Status survives.
+        assert!(payload.contains("\"kind\":\"status\""));
     }
 
     #[test]
