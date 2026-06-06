@@ -39,9 +39,9 @@ pitch_wheel_depth = 7.0
 [performance.lower]
 osc1_octave = -1
 osc2_fine = 0.0
-cutoff = 420.0
+cutoff = 26.0
 resonance = 0.3
-filter_key_track = true
+filter_key_track = 1.0
 env1_decay = 0.25
 env1_sustain = 0.1
 cutoff_env_depth = 44.0

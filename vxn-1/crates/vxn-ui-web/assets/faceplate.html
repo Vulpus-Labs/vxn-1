@@ -181,11 +181,12 @@ __CSS__
       </div>
       <div class="panel-strip">
         <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>
-        <div class="ctl-strip" data-control="switch" data-param="filter_key_track" data-label="KeyTrk"></div>
       </div>
     </div>
-    <!-- Filter Mod (0043): four fixed-source depths into cutoff (E006: no
-         source selectors). Plain four-fader row. -->
+    <!-- Filter Mod (0043 / 0100): four fixed-source depths into cutoff
+         (E006: no source selectors) plus the new Key-Track amount fader
+         (0100), which lifted out of the Filter bottom strip when the
+         boolean switch became a 0..1 amount knob referenced to C0. -->
     <div class="panel" data-name="Filter Mod" data-layered>
       <div class="panel-header">FILTER MOD</div>
       <div class="panel-body">
@@ -193,6 +194,7 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="cutoff_lfo1_depth" data-label="LFO1"></div>
         <div class="ctl" data-control="fader" data-param="cutoff_lfo2_depth" data-label="LFO2"></div>
         <div class="ctl" data-control="fader" data-param="cutoff_env_depth" data-label="Env1"></div>
+        <div class="ctl" data-control="fader" data-param="filter_key_track" data-label="Key"></div>
       </div>
     </div>
   </div>
@@ -314,49 +316,60 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
       </div>
     </div>
-    <!-- Chorus (0045): header switch (chorus_on) + Rate/Depth/Mix faders. -->
-    <div class="panel" data-name="Chorus" data-header-toggle>
-      <div class="panel-header">
-        <div class="panel-header-toggle-slot" data-control="header-switch" data-param="chorus_on"></div>
-        <div class="panel-header-title">CHORUS</div>
-      </div>
-      <div class="panel-body">
-        <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
-        <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
-        <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
-      </div>
-    </div>
-    <!-- Delay (0045): header switch (delay_on); Time fader host-syncs the same
-         way the LFO rate fader does (sync_partner pairs delay_time/delay_sync),
-         FB + Mix faders; Sync + Ping-Pong drop to the strip per
-         `vxn_ui_vizia::in_bottom_strip`. -->
-    <div class="panel" data-name="Delay" data-header-toggle>
-      <div class="panel-header">
-        <div class="panel-header-toggle-slot" data-control="header-switch" data-param="delay_on"></div>
-        <div class="panel-header-title">DELAY</div>
-      </div>
-      <div class="panel-body">
-        <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
-        <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
-        <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
-      </div>
-      <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="delay_sync" data-label="Sync"></div>
-        <div class="ctl-strip" data-control="switch" data-param="delay_pingpong" data-label="P-Pong"></div>
-      </div>
-    </div>
-    <!-- Reverb (E012 / 0058): MN3011-style BBD tap-comb. Macro UI — Type
-         (Plate/Room/Hall/Large) + Depth + Mix. Header switch matches the
-         Chorus/Delay idiom. See epic E012 for the macro mapping. -->
-    <div class="panel" data-name="Reverb" data-header-toggle>
-      <div class="panel-header">
-        <div class="panel-header-toggle-slot" data-control="header-switch" data-param="reverb_on"></div>
-        <div class="panel-header-title">REVERB</div>
-      </div>
-      <div class="panel-body">
-        <div class="ctl" data-control="buttongroup" data-param="reverb_type" data-label="Type"></div>
-        <div class="ctl" data-control="fader" data-param="reverb_depth" data-label="Depth"></div>
-        <div class="ctl" data-control="fader" data-param="reverb_mix" data-label="Mix"></div>
+    <!-- FX (E018 / 0098): Phaser / Chorus / Delay / Reverb behind a left
+         vertical tab strip. One panel for the four time-domain effects.
+         Each tab gets its own header-switch (phaser_on / chorus_on /
+         delay_on / reverb_on); only the active tab's switch is visible,
+         driven by the `data-active-tab` attribute on the panel root. Tab
+         buttons themselves are not params — `wireFxTabs` in panels.js
+         handles the click → swap. -->
+    <div class="panel" data-name="FX" data-active-tab="phaser">
+      <div class="panel-header">FX</div>
+      <div class="panel-body fx-body">
+        <div class="fx-tabs">
+          <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="phaser_on"></span>
+            <span class="fx-tab-label">PHASER</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-chorus" data-tab="chorus">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="chorus_on"></span>
+            <span class="fx-tab-label">CHORUS</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-delay" data-tab="delay">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="delay_on"></span>
+            <span class="fx-tab-label">DELAY</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-reverb" data-tab="reverb">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="reverb_on"></span>
+            <span class="fx-tab-label">REVERB</span>
+          </button>
+        </div>
+        <div class="fx-pane fx-pane-phaser">
+          <div class="ctl" data-control="fader" data-param="phaser_rate" data-label="Rate"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_fb" data-label="FB"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_mix" data-label="Mix"></div>
+        </div>
+        <div class="fx-pane fx-pane-chorus">
+          <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
+          <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
+        </div>
+        <div class="fx-pane fx-pane-delay">
+          <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+          <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
+          <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
+          <div class="ctl fx-delay-switches">
+            <div class="ctl-strip" data-control="switch" data-param="delay_sync" data-label="Sync"></div>
+            <div class="ctl-strip" data-control="switch" data-param="delay_pingpong" data-label="P-Pong"></div>
+          </div>
+        </div>
+        <div class="fx-pane fx-pane-reverb">
+          <div class="ctl" data-control="fader" data-param="reverb_size" data-label="Size"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_decay" data-label="Decay"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_damp" data-label="Damp"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_mix" data-label="Mix"></div>
+        </div>
       </div>
     </div>
     <!-- Master (0045): Tune/Volume faders in the body; Oversample (4 enum
@@ -371,6 +384,7 @@ __CSS__
       <div class="panel-body">
         <div class="ctl" data-control="fader" data-param="master_tune" data-label="Tune"></div>
         <div class="ctl" data-control="fader" data-param="master_volume" data-label="Volume"></div>
+        <div class="ctl" data-control="fader" data-param="master_drift" data-label="Drift"></div>
       </div>
       <div class="panel-strip master-strip">
         <div class="ctl-strip" data-control="switch" data-param="oversample" data-label="OvSmp"></div>

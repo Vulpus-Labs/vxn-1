@@ -871,21 +871,22 @@ mod tests {
                 "missing data-row=\"{r}\"",
             );
         }
-        // Rows 1-3 = 5 panels each; row 4 = 6 panels (E012 / 0058 added Reverb).
-        // 5+5+5+6 = 21. Catches an accidental row collapse or duplicate emit.
-        assert_eq!(count(r#"class="panel""#), 21, "panel count drift");
+        // Rows 1-3 = 5 panels each; row 4 = 4 panels (E018 / 0098 folded
+        // Chorus/Delay/Reverb into a single tabbed FX panel). 5+5+5+4 = 19.
+        // Catches an accidental row collapse or duplicate emit.
+        assert_eq!(count(r#"class="panel""#), 19, "panel count drift");
     }
 
     #[test]
     fn faceplate_panel_names_match_rows() {
         // Same titles as `vxn_ui_vizia::ROWS`; reordering or rename would have to
-        // happen here in lockstep. Reverb (E012 / 0058) lives in row 4 between
-        // Delay and Master.
+        // happen here in lockstep. Row 4's FX panel (E018 / 0098) folded the
+        // prior Chorus/Delay/Reverb trio behind a left vertical tab strip.
         let expected: &[&[&str]] = &[
             &["LFO 1", "LFO 2", "Osc 1", "Osc 2", "Mixer"],
             &["Env 1", "Env 2", "VCA", "Filter", "Filter Mod"],
             &["Pitch Mod", "PWM Mod", "Cross Mod", "Mod Wheel", "Bend"],
-            &["Keys", "Voice", "Chorus", "Delay", "Reverb", "Master"],
+            &["Keys", "Voice", "FX", "Master"],
         ];
         for row in expected {
             for name in *row {
@@ -924,22 +925,30 @@ mod tests {
     }
 
     #[test]
-    fn faceplate_reserves_fx_header_toggles() {
-        // Header switch idiom: Chorus + Delay (0045), Reverb (E012 / 0058).
-        for name in ["Chorus", "Delay", "Reverb"] {
+    fn fx_panel_hosts_per_tab_header_switches() {
+        // E018 / 0098 (revised): the FX panel no longer uses the panel-
+        // header `data-header-toggle` idiom — each tab carries its own
+        // on/off switch inline. Confirm no panel div emits the attribute
+        // (`data-header-toggle ` with trailing space — followed by
+        // another attribute on the same tag). The bare token still
+        // appears inside CSS `[data-header-toggle]` selectors that the
+        // splice bundles in, so a substring count on the raw token
+        // overcounts. Each `.fx-tab` button hosts a `header-switch` slot
+        // bound to its `*_on` param.
+        assert_eq!(
+            count("data-header-toggle "),
+            0,
+            "no panel div should still emit data-header-toggle after 0098 (tab-hosted switches)",
+        );
+        for param in ["phaser_on", "chorus_on", "delay_on", "reverb_on"] {
+            let needle = format!(
+                r#"<span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="{param}""#,
+            );
             assert!(
-                assembled()
-                    .contains(&format!(r#"data-name="{name}" data-header-toggle"#)),
-                "{name} missing data-header-toggle",
+                assembled().contains(&needle),
+                "FX tab missing in-tab header-switch for {param}",
             );
         }
-        // `data-header-toggle>` matches the panel-div attribute only;
-        // CSS `[data-header-toggle]` selectors don't have the closing `>`.
-        assert_eq!(
-            count("data-header-toggle>"),
-            3,
-            "header-toggle expected on Chorus + Delay + Reverb only",
-        );
     }
 
     #[test]
@@ -1421,12 +1430,12 @@ mod tests {
             ("fader",       "drive",            "Drive"),
             ("buttongroup", "filter_mode",      "Mode"),
             ("switch",      "filter_slope",     "Slope"),
-            ("switch",      "filter_key_track", "KeyTrk"),
             // Filter Mod
             ("fader", "vel_cutoff_depth",  "Vel"),
             ("fader", "cutoff_lfo1_depth", "LFO1"),
             ("fader", "cutoff_lfo2_depth", "LFO2"),
             ("fader", "cutoff_env_depth",  "Env1"),
+            ("fader", "filter_key_track",  "Key"),
         ] {
             let marker = format!(
                 r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
@@ -1500,13 +1509,14 @@ mod tests {
 
     #[test]
     fn row4_voice_master_fx_panels_have_expected_mounts() {
-        // 0045: Voice = AssignMode (with display-order 0,3,1,2 → Poly,
-        // Twin, Unison, Solo) + Detune-Legato composite + Glide fader.
-        // Master = Tune/Volume faders, Limit switch (header-less, like
-        // vizia's `limiter_cell`), Oversample buttongroup. Chorus + Delay
-        // each carry a header-switch (chorus_on / delay_on) plus their
-        // body faders; Delay's Sync + Ping-Pong drop to the strip per
-        // `vxn_ui_vizia::in_bottom_strip`. Names = descriptor names.
+        // E018 / 0098: Voice / FX (tabbed Phaser/Chorus/Delay/Reverb) /
+        // Master. Voice carries AssignMode (display-order 0,3,1,2 →
+        // Poly/Twin/Unison/Solo) + Detune-Legato + Glide. Master is
+        // Tune/Volume/Drift faders with Oversample + Limit toggles in the
+        // bottom strip. The FX panel hosts four tab panes — every effect's
+        // header-switch is mounted (CSS hides the inactive ones), and
+        // every fader/switch behind each tab is bound normally. Names =
+        // descriptor names.
         for (kind, name, label) in [
             // Voice
             ("buttongroup",   "assign_mode",     "Assign"),
@@ -1515,24 +1525,32 @@ mod tests {
             // Master
             ("fader",  "master_tune",   "Tune"),
             ("fader",  "master_volume", "Volume"),
+            ("fader",  "master_drift",  "Drift"),
             ("switch", "oversample",    "OvSmp"),
             ("switch", "limiter_on",    "Limit"),
-            // Chorus
+            // FX → Phaser tab
+            ("header-switch", "phaser_on",    ""),
+            ("fader",         "phaser_rate",  "Rate"),
+            ("fader",         "phaser_depth", "Depth"),
+            ("fader",         "phaser_fb",    "FB"),
+            ("fader",         "phaser_mix",   "Mix"),
+            // FX → Chorus tab
             ("header-switch", "chorus_on",    ""),
             ("fader",         "chorus_rate",  "Rate"),
             ("fader",         "chorus_depth", "Depth"),
             ("fader",         "chorus_mix",   "Mix"),
-            // Delay
+            // FX → Delay tab
             ("header-switch", "delay_on",       ""),
             ("fader",         "delay_time",     "Time"),
             ("fader",         "delay_feedback", "FB"),
             ("fader",         "delay_mix",      "Mix"),
             ("switch",        "delay_sync",     "Sync"),
             ("switch",        "delay_pingpong", "P-Pong"),
-            // Reverb (E012 / 0058)
+            // FX → Reverb tab (FDN — four direct knobs).
             ("header-switch", "reverb_on",    ""),
-            ("buttongroup",   "reverb_type",  "Type"),
-            ("fader",         "reverb_depth", "Depth"),
+            ("fader",         "reverb_size",  "Size"),
+            ("fader",         "reverb_decay", "Decay"),
+            ("fader",         "reverb_damp",  "Damp"),
             ("fader",         "reverb_mix",   "Mix"),
         ] {
             // Header-switch slots carry no `data-label` attribute; assert
@@ -1577,35 +1595,40 @@ mod tests {
         //
         // Faders:
         //   Row 1: LFO1 3 (Rate/Delay/Fade), LFO2 1 (Rate), Osc1 4, Osc2 4, Mixer 3 = 15
-        //   Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 4              = 17
+        //   Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 5 (+ KeyTrk) = 18
         //   Row 3: PitchMod 2, PwmMod 2, CrossMod 1, ModWheel 4, Bend 1      = 10
-        //   Row 4: Voice 1 (Glide), Master 2, Chorus 3, Delay 3,
-        //          Reverb 2 (Depth/Mix)                                      = 11
-        //   Total = 53.
+        //   Row 4: Voice 1 (Glide), Master 3 (Tune/Volume/Drift),
+        //          FX → Phaser 4 (Rate/Depth/FB/Mix),
+        //          FX → Chorus 3 (Rate/Depth/Mix),
+        //          FX → Delay 3 (Time/FB/Mix),
+        //          FX → Reverb 4 (Size/Decay/Damp/Mix)                       = 18
+        //   Total = 61.
         // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave).
         // Switches:
         //   Row 1: 4 (LfoSync, Lfo2Sync, Lfo1FreeRun, NoiseColor)
-        //   Row 2: 5 (Env1Shape, Env2Shape, Gate, Slope, KeyTrk)
+        //   Row 2: 4 (Env1Shape, Env2Shape, Gate, Slope) — 0100 moved KeyTrk
+        //          out (bool switch → amount fader, lives in Filter Mod now)
         //   Row 3: 2 (PitchLfoModOnly, PitchEnvModOnly)
         //   Row 4: 4 (Oversample as multi-toggle row, LimiterOn,
         //            DelaySync, DelayPingPong)
-        //   Total = 15.
+        //   Total = 14.
         // Button groups:
         //   Row 2: 2 (AmpLfoSrc, FilterMode)
         //   Row 3: 5 (Pitch/PWM LFO+Env sources, CrossModType)
-        //   Row 4: 2 (AssignMode, ReverbType) — Oversample renders as a
-        //     horizontal switch row at the bottom of Master, not a vertical
-        //     buttongroup column.
-        //   Total = 9.
-        // Header switches: 3 (Chorus, Delay, Reverb).
+        //   Row 4: 1 (AssignMode) — Oversample renders as a horizontal switch
+        //     row at the bottom of Master, not a vertical buttongroup column.
+        //   Total = 8.
+        // Header switches: 4 (Phaser, Chorus, Delay, Reverb) — all four are
+        // mounted (one per `*_on` param); the FX panel's `data-active-tab`
+        // CSS hides the inactive three.
         // Detune-Legato composite: 1 (Voice).
         // Leading space disambiguates DOM mounts (` data-control="X"`) from
         // CSS attribute selectors (`[data-control="X"]`) that the splice
         // bundles into the same assembled string.
         assert_eq!(
             assembled().matches(r#" data-control="fader""#).count(),
-            54,
-            "expected 54 fader cells across all four rows",
+            62,
+            "expected 62 fader cells across all four rows",
         );
         assert_eq!(
             assembled().matches(r#" data-control="wave""#).count(),
@@ -1614,13 +1637,13 @@ mod tests {
         );
         assert_eq!(
             assembled().matches(r#" data-control="switch""#).count(),
-            15,
-            "expected 15 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
+            14,
+            "expected 14 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="buttongroup""#).count(),
-            9,
-            "expected 9 buttongroup cells (Row 2 + Row 3 + Row 4)",
+            8,
+            "expected 8 buttongroup cells (Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="dropdown""#).count(),
@@ -1629,8 +1652,8 @@ mod tests {
         );
         assert_eq!(
             assembled().matches(r#" data-control="header-switch""#).count(),
-            3,
-            "expected 3 header-switch cells (Chorus, Delay, Reverb)",
+            4,
+            "expected 4 header-switch cells (Phaser, Chorus, Delay, Reverb)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="detune-legato""#).count(),

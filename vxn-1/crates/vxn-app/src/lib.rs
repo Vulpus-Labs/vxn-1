@@ -20,7 +20,7 @@ pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1
 pub use model::{ParamId, ParamModel, Vxn1Params};
 pub use params::{
     AssignMode, CrossModType, EnvSel, GLOBAL_PARAMS, GLOBAL_COUNT, GlobalParam, LfoSel,
-    PATCH_COUNT, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, PatchParam, REVERB_TYPE_LABELS,
+    PATCH_COUNT, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, PatchParam,
     TOTAL_PARAMS, Taper, desc_for_clap_id, global_clap_id, module_for_clap_id, param_ref,
     patch_clap_id,
 };

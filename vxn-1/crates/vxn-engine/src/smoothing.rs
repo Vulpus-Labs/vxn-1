@@ -78,13 +78,21 @@ fn patch_glide(p: PatchParam) -> Glide {
 }
 
 /// Classification for a global param. Master volume is glided per-sample by the
-/// dedicated [`Smoothed`]; reverb mix / depth glide at block rate because the
-/// engine reads them straight into a per-sample blend; the rest snap.
+/// dedicated [`Smoothed`]; reverb knobs glide at block rate because the engine
+/// reads them straight into FDN's per-sample blend / coefficients; the rest
+/// snap.
 #[inline]
 fn global_glide(g: GlobalParam) -> Glide {
     match g {
         GlobalParam::MasterVolume => Glide::PerSample,
-        GlobalParam::ReverbMix | GlobalParam::ReverbDepth => Glide::Block,
+        GlobalParam::ReverbMix
+        | GlobalParam::ReverbSize
+        | GlobalParam::ReverbDecay
+        | GlobalParam::ReverbDamp
+        | GlobalParam::PhaserRate
+        | GlobalParam::PhaserDepth
+        | GlobalParam::PhaserFB
+        | GlobalParam::PhaserMix => Glide::Block,
         _ => Glide::Snap,
     }
 }

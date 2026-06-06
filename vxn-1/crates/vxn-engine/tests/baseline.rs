@@ -32,7 +32,13 @@ const BLOCK: usize = 64;
 /// SHA-style stable hash of the rendered samples. Computed once after
 /// E001/0007–0009 lands; subsequent refactors must preserve it (or
 /// update intentionally with `UPDATE_GOLDEN=1`).
-const GOLDEN_HASH: u64 = 0x7cb90afbbbc02d78;
+// Regenerated 2026-06-07 (0100): cutoff descriptor retuned to Jupiter-8 range
+// (20..16000 Hz, mid 800), and `filter_key_track` flipped from bool→f32 0..1
+// amount referenced to C0. Default patch had `filter_key_track = false` (0)
+// before, so the KBT contribution is still zero in the baseline render — the
+// hash drift is entirely the cutoff-slider default moving from 261.6 Hz to
+// 1000 Hz (descriptor default), making the dry tail brighter.
+const GOLDEN_HASH: u64 = 0xd3b0c00e2ef2940e;
 
 #[test]
 fn baseline_render_is_stable() {

@@ -33,6 +33,21 @@ const HPF_OFF_HZ: f32 = 20.0;
 /// list leaves it out); the operating point sits in the quasi-linear region.
 const RING_DRIVE_DB: f32 = 1.0;
 
+/// Default per-voice oscillator pitch-drift amount, `[0.0, 1.0]`. Drives the
+/// bounded random walks inside each [`PolyOscillator`]: at full depth the walks
+/// wander ±~25 cents; `0.15` keeps the wobble subliminal (±~4 cents max,
+/// sub-Hz rate), giving JP-8-flavoured per-voice "live" detune without ever
+/// sounding out-of-tune. Hidden default for v1 (no panel knob); can be
+/// promoted to a `PatchParam` once the depth is tuned by ear. Synth carries
+/// the live value so equivalence tests can opt out by setting it to 0.
+pub const DEFAULT_DRIFT_AMOUNT: f32 = 0.15;
+
+/// Salts mixed into the layer's RNG seed to give osc1 and osc2 *independent*
+/// drift streams. Without distinct salts the two oscillators within a voice
+/// would wander together (correlated detune), which audibly defeats the point.
+const OSC1_DRIFT_SALT: u64 = 0xA1F7_0501;
+const OSC2_DRIFT_SALT: u64 = 0xB2E8_0502;
+
 /// Per-voice LFO 1 retrigger policy at a note-on (E005 / 0018): the shape (for
 /// the zero-crossing restart) and whether the phase free-runs instead.
 #[derive(Clone, Copy)]
@@ -192,9 +207,10 @@ pub struct BlockCtx {
     pub cutoff_vel_depth: f32,
     /// Mod-wheel → cutoff contribution (semitones).
     pub cutoff_extra: f32,
-    /// Filter key-track: when on, cutoff shifts exactly 1 octave per key octave
-    /// above C0 (12 st cutoff per 12 st key).
-    pub filter_key_track: bool,
+    /// Filter key-track amount in `[0, 1]` (0100). Cutoff shifts
+    /// `amt · (note − 12)` semitones — i.e. 1 oct/oct at `amt = 1.0`,
+    /// referenced to C0 (MIDI 12). `amt = 0.0` disables (no shift).
+    pub filter_key_track: f32,
     /// Mod-wheel → sweep contribution (semitones). Target depends on cross-mod
     /// mode: Off → both oscs, Sync → osc1 (slave/carrier whose pitch creates the
     /// sync sweep), PM → osc2 (modulator whose pitch sets the FM index/spectrum).
@@ -208,6 +224,13 @@ pub struct BlockCtx {
     /// Env-bypass: when true the VCA follows the bare note gate at full level
     /// instead of Env 2's ADSR shape (gate / organ mode). Tremolo still applies.
     pub amp_env_bypass: bool,
+    /// Per-voice oscillator pitch-drift amount in `[0.0, 1.0]`. Drives the
+    /// bounded random walks inside each [`PolyOscillator`] (see
+    /// [`PolyOscillator::tick_drift`]) so each lane wanders at a sub-Hz rate,
+    /// giving the JP-8-flavoured "live" detune. `0.0` short-circuits the walk
+    /// entirely — used by the equivalence tests where two layers must sum to
+    /// exactly twice one (the drift would decorrelate them otherwise).
+    pub drift_amount: f32,
 }
 
 /// All 16 voices in structure-of-arrays form.
@@ -288,9 +311,16 @@ impl VoiceBank {
         // The LFO ticks once per control block, so its cores run at the control
         // rate (sr / CONTROL_BLOCK), matching the old per-layer LFO.
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        let mut osc1 = PolyOscillator::new();
+        let mut osc2 = PolyOscillator::new();
+        // Seed each oscillator's drift walks from the layer seed + a per-osc
+        // salt so osc1 and osc2 wander independently — correlated drift would
+        // collapse the audible "live" detune.
+        osc1.set_drift_seed(rng_seed.wrapping_add(OSC1_DRIFT_SALT) as u32);
+        osc2.set_drift_seed(rng_seed.wrapping_add(OSC2_DRIFT_SALT) as u32);
         Self {
-            osc1: PolyOscillator::new(),
-            osc2: PolyOscillator::new(),
+            osc1,
+            osc2,
             noise: PolyNoiseBank::new(rng_seed),
             hpf: PolyHpf::new(),
             ladder: PolyOtaLadder::new(),
@@ -328,6 +358,12 @@ impl VoiceBank {
     pub fn reset_all(&mut self) {
         self.osc1 = PolyOscillator::new();
         self.osc2 = PolyOscillator::new();
+        // Re-seed drift on the fresh oscillators so a host reset doesn't
+        // collapse both back to the default (osc1-and-osc2-identical) walk.
+        self.osc1
+            .set_drift_seed(self.lfo1_seed.wrapping_add(OSC1_DRIFT_SALT) as u32);
+        self.osc2
+            .set_drift_seed(self.lfo1_seed.wrapping_add(OSC2_DRIFT_SALT) as u32);
         self.noise.reset();
         self.hpf.reset();
         self.ladder.reset();
@@ -399,7 +435,9 @@ impl VoiceBank {
     /// (ADR 0003 §4). **Poly** allocates one channel (first-free / oldest-steal
     /// across the layer's 8). **Unison** stacks the note across all channels with
     /// per-channel detune (0011 fills the spread; here it stacks undetuned).
-    /// Phases reset (DCO behaviour); envelopes retrigger from their current level.
+    /// Phases reset to a stable per-channel offset (so chord-note retriggers
+    /// don't snap every voice to a shared phase 0 — the VCO-flavoured "live"
+    /// attack); envelopes retrigger from their current level.
     ///
     /// Arp hook (deferred, ADR 0003 §4): a future arpeggiator is a *stream
     /// transform before allocation* — it would turn held notes into a timed
@@ -659,6 +697,13 @@ impl VoiceBank {
             lfo.set_rate(ctx.lfo1_rate_hz);
             *raw = lfo.next(ctx.lfo1_shape);
         }
+        // Per-voice oscillator drift: independent slow random walks per voice,
+        // ported from patches `PolyOsc`. Advanced once per block (the walks
+        // themselves only step every `DRIFT_BLOCK_PERIOD` blocks for sub-Hz
+        // wander); kept ticking on silent blocks too so a held drone resumes
+        // with the right phase of the walk rather than snapping after silence.
+        self.osc1.tick_drift(ctx.drift_amount);
+        self.osc2.tick_drift(ctx.drift_amount);
         let onset_cap = ctx.lfo1_delay_time + ctx.lfo1_fade;
         let onset_dt = 1.0 / base_rate;
 
@@ -750,14 +795,16 @@ impl VoiceBank {
                 + m.pitch_mod
                 + mod_only_to_osc1
                 + sweep_to_osc1
-                + detune;
+                + detune
+                + self.osc1.drift_value[v];
             let s2 = ctx.base_semis
                 + nf
                 + ctx.osc2_semi
                 + m.pitch_mod
                 + mod_only_to_osc2
                 + sweep_to_osc2
-                + detune;
+                + detune
+                + self.osc2.drift_value[v];
             self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
             pw1[v] = (ctx.osc1_pw + m.pwm_mod).clamp(0.05, 0.95);
@@ -1039,16 +1086,13 @@ struct ModOut {
 /// state mutation, no sample rate.
 #[inline]
 fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
-    // 1 octave of cutoff per octave of key relative to C4 (note 60): cutoff is
-    // unchanged at C4, rises above it, falls below it. The cutoff slider's
-    // taper is pinned to C4 at fader-midpoint so a double-click default
-    // settles the filter on C4 — playing C4 with keytrack on then resonates
-    // at the played pitch exactly.
-    let key_track = if ctx.filter_key_track {
-        s.note as f32 - 60.0
-    } else {
-        0.0
-    };
+    // Filter key-track (0100): cutoff shifts `amt · (note − 12)` semitones,
+    // referenced to C0 (MIDI 12). At `amt = 1.0` this is the textbook
+    // "1 octave of cutoff per octave of key", with the VCF opening as you
+    // go up the keyboard (the Jupiter-8 100%-track shape). At `amt = 0.0`
+    // the multiplication zeroes the contribution out cleanly. The cutoff
+    // slider's taper is no longer pinned to C4 — see `params::Cutoff`.
+    let key_track = (s.note as f32 - 12.0) * ctx.filter_key_track;
     // LFO→pitch and Env→pitch are each split: diverted to the cross-mod
     // "modulator" channel when their "Mod" switch is on, else joining the
     // common-pitch channel (both oscs). Pitch-wheel always moves both oscs.
@@ -1271,24 +1315,32 @@ fn allocate_pair(note: u8, st: AllocView) -> (usize, usize) {
 /// Twin pitch spread reuses the Unison extremes (±`UnisonDetune` cents); the two
 /// channels sit at the opposite ends of that fan.
 const TWIN_SPREAD: f32 = 1.0;
-/// Twin start-phase offset for the second channel — a quarter cycle decorrelates
-/// the pair's beating without the anti-phase cancellation a half cycle would give
-/// at zero detune.
-const TWIN_PHASE: f32 = 0.25;
+
+/// Deterministic start phase keyed off the allocated channel — a golden-ratio
+/// walk well-separates the 8 channels' phases so a chord's voices land on
+/// decorrelated transients (the JP-8-style "live" attack) rather than every
+/// voice snapping to a shared phase 0 (sterile, sums into a comb). Stable
+/// per channel, so two identical Poly layers still sum to exactly 2× one layer
+/// (the ADR 0003 §3 whole-mode equivalence — would not survive a per-call rng).
+#[inline]
+fn channel_phase(channel: usize) -> f32 {
+    const GOLDEN: f32 = 0.6180339887;
+    ((channel as f32 + 1.0) * GOLDEN).fract()
+}
 
 /// Plan a note-on under `mode`: state in, channel assignments out. Pure except
 /// for the Unison arm, which draws one random start phase per voice from `rng`
 /// (the only arm that touches it — other modes leave the stream untouched, so
-/// they stay fully deterministic).
+/// they stay fully deterministic and preserve the whole-mode equivalence).
 fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView, rng: &mut u64) -> Plan {
     let mut assigns = [Assign::default(); N];
     match mode {
         AssignMode::Poly => {
-            // DCO behaviour: phase resets to zero (start_phase 0), no detune.
+            let channel = allocate_one(note, st);
             assigns[0] = Assign {
-                channel: allocate_one(note, st),
+                channel,
                 detune_cents: 0.0,
-                start_phase: 0.0,
+                start_phase: channel_phase(channel),
             };
             Plan::new(assigns, 1)
         }
@@ -1321,19 +1373,20 @@ fn plan(mode: AssignMode, note: u8, unison_detune: f32, st: AllocView, rng: &mut
             Plan::new(assigns, 1)
         }
         AssignMode::Twin => {
-            // Two channels per note: opposite ends of the detune fan, with the
-            // second phase-decorrelated. `unison` falls out (len > 1) → the stack
-            // gets the gentler glide scaling, and level_comp = 1/√2.
+            // Two channels per note: opposite ends of the detune fan, each with
+            // a channel-keyed start phase so the pair lands on decorrelated
+            // transients. `unison` falls out (len > 1) → the stack gets the
+            // gentler glide scaling, and level_comp = 1/√2.
             let (a, b) = allocate_pair(note, st);
             assigns[0] = Assign {
                 channel: a,
                 detune_cents: -TWIN_SPREAD * unison_detune,
-                start_phase: 0.0,
+                start_phase: channel_phase(a),
             };
             assigns[1] = Assign {
                 channel: b,
                 detune_cents: TWIN_SPREAD * unison_detune,
-                start_phase: TWIN_PHASE,
+                start_phase: channel_phase(b),
             };
             Plan::new(assigns, 2)
         }
@@ -1379,9 +1432,31 @@ mod alloc_tests {
         let p = plan(AssignMode::Poly, 60, 25.0, st.view(), &mut 1);
         assert_eq!(p.len, 1);
         assert_eq!(p.assigns[0].detune_cents, 0.0);
-        assert_eq!(p.assigns[0].start_phase, 0.0);
+        // Start phase is keyed off the allocated channel — stable across
+        // calls, decorrelated across channels.
+        assert_eq!(
+            p.assigns[0].start_phase,
+            channel_phase(p.assigns[0].channel)
+        );
         assert_eq!(p.level_comp, 1.0);
         assert!(!p.unison);
+    }
+
+    #[test]
+    fn channel_phase_is_distinct_across_all_channels() {
+        // The golden-ratio walk must give a unique phase per channel so a
+        // chord's voices land on decorrelated transients, not just a single
+        // pair like the old TWIN_PHASE/0 split.
+        let phases: Vec<f32> = (0..N).map(channel_phase).collect();
+        for (i, &p) in phases.iter().enumerate() {
+            assert!((0.0..1.0).contains(&p));
+            for (j, &q) in phases.iter().enumerate().skip(i + 1) {
+                assert!(
+                    (p - q).abs() > 1e-3,
+                    "channels {i} and {j} share phase {p}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1568,11 +1643,12 @@ mod mod_tests {
             cutoff_env_depth: 0.0,
             cutoff_vel_depth: 0.0,
             cutoff_extra: 0.0,
-            filter_key_track: false,
+            filter_key_track: 0.0,
             sweep_extra: 0.0,
             amp_lfo_sel: LfoSel::Off,
             amp_lfo_depth: 0.0,
             amp_env_bypass: false,
+            drift_amount: 0.0,
         }
     }
 
@@ -1729,19 +1805,36 @@ mod mod_tests {
     }
 
     #[test]
-    fn cutoff_keytrack_pivots_at_c4_one_octave_per_octave() {
-        let ctx = ctx_with(|c| c.filter_key_track = true);
+    fn cutoff_keytrack_pivots_at_c0_one_octave_per_octave() {
+        // 0100: full amt (1.0) gives 1 oct/oct from C0 (MIDI 12). C0 itself
+        // produces no shift; every semitone above adds one cutoff semitone.
+        let ctx = ctx_with(|c| c.filter_key_track = 1.0);
         assert_eq!(
-            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod,
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 12)).cutoff_mod,
             0.0
         );
         assert_eq!(
-            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 72)).cutoff_mod,
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 24)).cutoff_mod,
             12.0
         );
         assert_eq!(
-            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 48)).cutoff_mod,
-            -12.0
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod,
+            48.0
+        );
+    }
+
+    #[test]
+    fn cutoff_keytrack_scales_linearly_with_amt() {
+        // 0100: half amt = half the shift; this is the new amount knob.
+        let ctx = ctx_with(|c| c.filter_key_track = 0.5);
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod,
+            24.0
+        );
+        let ctx = ctx_with(|c| c.filter_key_track = 0.0);
+        assert_eq!(
+            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 60)).cutoff_mod,
+            0.0
         );
     }
 

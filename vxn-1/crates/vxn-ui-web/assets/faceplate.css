@@ -587,15 +587,14 @@ html, body {
 .row-3 .panel[data-name="Mod Wheel"] { flex-grow: 1.2; }
 .row-3 .panel[data-name="Bend"] { flex: 0 0 54px; }
 
-/* Row 4 — six panels (Keys / Voice / Chorus / Delay / Reverb / Master).
-   Tuned shares so the new Reverb panel doesn't crush the rest; nudge later
-   once seen on the running editor. */
+/* Row 4 — four panels (Keys / Voice / FX / Master). The single FX panel
+   (E018 / 0098) replaces the prior Chorus/Delay/Reverb trio behind a
+   left vertical tab strip, so it claims roughly the sum of their old
+   shares (0.80 + 0.90 + 0.95 ≈ 2.65). */
 .row-4 .panel[data-name="Keys"]   { flex-grow: 1.00; }
 .row-4 .panel[data-name="Voice"]  { flex-grow: 0.85; }
-.row-4 .panel[data-name="Chorus"] { flex-grow: 0.80; }
-.row-4 .panel[data-name="Delay"]  { flex-grow: 0.90; }
-.row-4 .panel[data-name="Reverb"] { flex-grow: 0.95; }
-.row-4 .panel[data-name="Master"] { flex-grow: 1.25; }
+.row-4 .panel[data-name="FX"]     { flex-grow: 2.65; }
+.row-4 .panel[data-name="Master"] { flex-grow: 1.35; }
 
 .panel-header {
   height: var(--header-h);
@@ -810,6 +809,97 @@ html, body {
   align-items: flex-start;
   gap: 3px;
 }
+
+/* ── FX panel (E018 / 0098) — tabbed Phaser/Chorus/Delay/Reverb ──────── */
+
+/* Body layout: vertical tab strip on the left, active pane on the right.
+   `.panel-body` default `space-evenly` would distribute the strip + four
+   panes; flex-start keeps the strip at the left edge and lets the active
+   pane take the remaining space. */
+.panel[data-name="FX"] .fx-body {
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* Four tab buttons stacked vertically. Each tab carries its own on/off
+   switch inside the button (left slot) — clicking the switch toggles
+   the *_on param; clicking elsewhere on the tab swaps the active pane.
+   Width tuned to fit "REVERB" + the switch slot. */
+.panel[data-name="FX"] .fx-tabs {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  flex: 0 0 52px;
+}
+.panel[data-name="FX"] .fx-tab {
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  color: #9b9b9b;
+  font: 700 7px/1 inherit;
+  letter-spacing: 0.6px;
+  padding: 0 4px;
+  border-radius: 2px;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-height: 0;
+  text-transform: uppercase;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+.panel[data-name="FX"] .fx-tab:hover { color: #d4d4d4; border-color: #4a4a4a; }
+.panel[data-name="FX"] .fx-tab.active {
+  background: #2a2a2a;
+  border-color: #84cdff;
+  color: #ffffff;
+}
+.panel[data-name="FX"] .fx-tab-switch {
+  /* Override `.panel[data-header-toggle] .panel-header-toggle-slot`'s
+     header-sized box — the in-tab switch is smaller and sits flush in
+     the tab's left padding. */
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel[data-name="FX"] .fx-tab-label {
+  flex: 1 1 auto;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Tab panes: each lays out like a normal `.panel-body` (row of `.ctl`
+   columns). Hidden by default; the parent panel's `data-active-tab`
+   reveals the matching one. */
+.panel[data-name="FX"] .fx-pane {
+  display: none;
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: space-evenly;
+  gap: 4px;
+  min-width: 0;
+}
+.panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: flex; }
+.panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: flex; }
+.panel[data-name="FX"][data-active-tab="delay"]  .fx-pane-delay  { display: flex; }
+.panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: flex; }
+
+/* Delay's Sync + Ping-Pong sit in a small stacked column at the right
+   of the delay pane (replaces the old absolute-positioned panel-strip,
+   which would have shown for every tab). */
+.panel[data-name="FX"] .fx-delay-switches {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
 
 /* Toggle row — small box + inline label. Matches vizia .tg-row /
    .tg-box / .tg-lbl exactly (#1f9cff active fill, 9×9 box, 7 px label). */

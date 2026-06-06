@@ -359,6 +359,12 @@ export function init() {
     }
     model.cells.push(entry);
   });
+  // FX tab wiring (E018 / 0098). The tab buttons aren't params (no
+  // data-control) so dispatch wouldn't touch them; wire their click ↔
+  // `data-active-tab` swap here. Header-switches inside the panel are
+  // normal `data-control="header-switch"` mounts and get bound below by
+  // `rebindAllForLayer`.
+  wireFxTabs();
   collectDimRuleSpecs();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).

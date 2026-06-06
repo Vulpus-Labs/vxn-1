@@ -236,31 +236,44 @@ impl PatchParam {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum GlobalParam {
+    // Master
     MasterTune,
     MasterVolume,
+    MasterDrift,
+    LimiterOn,
+    Oversample,
+    // LFO 2
+    Lfo2Shape,
+    Lfo2Rate,
+    Lfo2Sync,
+    // Phaser (FX bus, pre-chorus)
+    PhaserOn,
+    PhaserRate,
+    PhaserDepth,
+    PhaserFB,
+    PhaserMix,
+    // Chorus
     ChorusOn,
     ChorusRate,
     ChorusDepth,
     ChorusMix,
+    // Delay
     DelayOn,
     DelayTime,
     DelayFeedback,
     DelayMix,
     DelayPingPong,
     DelaySync,
+    // Reverb (FDN)
     ReverbOn,
-    ReverbType,
-    ReverbDepth,
+    ReverbSize,
+    ReverbDecay,
+    ReverbDamp,
     ReverbMix,
-    LimiterOn,
-    Oversample,
-    Lfo2Shape,
-    Lfo2Rate,
-    Lfo2Sync,
 }
 
 impl GlobalParam {
-    pub const COUNT: usize = GlobalParam::Lfo2Sync as usize + 1;
+    pub const COUNT: usize = GlobalParam::ReverbMix as usize + 1;
 
     pub fn all() -> impl Iterator<Item = GlobalParam> {
         (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
@@ -367,7 +380,6 @@ const NOISE_LABELS: &[&str] = &["White", "Pink"];
 const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
-pub const REVERB_TYPE_LABELS: &[&str] = &["Plate", "Room", "Hall", "Large"];
 const ASSIGN_LABELS: &[&str] = &["Poly", "Unison", "Solo", "Twin"];
 const LFO_SEL_LABELS: &[&str] = &["Off", "LFO 1", "LFO 2"];
 const ENV_SEL_LABELS: &[&str] = &["Off", "Env 1", "Env 2"];
@@ -539,11 +551,11 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     f(
         "cutoff",
         "Cutoff",
-        16.3516,
-        20000.0,
-        261.6256,
+        20.0,
+        16000.0,
+        1000.0,
         "Hz",
-        Taper::Exp { mid: 261.6256 },
+        Taper::Exp { mid: 800.0 },
     ),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", Taper::Linear),
     f("drive", "Drive", 0.1, 4.0, 1.0, "", Taper::Linear),
@@ -558,7 +570,15 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         "Hz",
         Taper::Exp { mid: 1000.0 },
     ),
-    b("filter_key_track", "Key Track", 0.0),
+    f(
+        "filter_key_track",
+        "Key Track",
+        0.0,
+        1.0,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
     f(
         "env1_attack",
         "Env 1 Attack",
@@ -724,6 +744,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
 ];
 
 pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
+    // Master
     f(
         "master_tune",
         "Master Tune",
@@ -734,6 +755,52 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
         Taper::Linear,
     ),
     f("master_volume", "Volume", 0.0, 1.0, 0.7, "", Taper::Linear),
+    f("master_drift", "Drift", 0.0, 1.0, 0.0, "", Taper::Linear),
+    b("limiter_on", "Limiter", 0.0),
+    e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
+    // LFO 2
+    e("lfo2_shape", "LFO 2 Shape", LFO_LABELS, 0.0),
+    f(
+        "lfo2_rate",
+        "LFO 2 Rate",
+        0.01,
+        40.0,
+        5.0,
+        "Hz",
+        Taper::Exp { mid: 5.0 },
+    ),
+    b("lfo2_sync", "LFO 2 Sync", 0.0),
+    // Phaser
+    b("phaser_on", "Phaser", 0.0),
+    f(
+        "phaser_rate",
+        "Phaser Rate",
+        0.05,
+        10.0,
+        0.5,
+        "Hz",
+        Taper::Exp { mid: 1.0 },
+    ),
+    f(
+        "phaser_depth",
+        "Phaser Depth",
+        0.0,
+        1.0,
+        0.7,
+        "",
+        Taper::Linear,
+    ),
+    f(
+        "phaser_fb",
+        "Phaser FB",
+        -0.9,
+        0.9,
+        0.0,
+        "",
+        Taper::Linear,
+    ),
+    f("phaser_mix", "Phaser Mix", 0.0, 1.0, 0.5, "", Taper::Linear),
+    // Chorus
     b("chorus_on", "Chorus", 1.0),
     f(
         "chorus_rate",
@@ -754,6 +821,7 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
         Taper::Linear,
     ),
     f("chorus_mix", "Chorus Mix", 0.0, 1.0, 0.4, "", Taper::Linear),
+    // Delay
     b("delay_on", "Delay", 0.0),
     f(
         "delay_time",
@@ -776,23 +844,20 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
     b("delay_pingpong", "Ping-Pong", 1.0),
     b("delay_sync", "Delay Sync", 0.0),
+    // Reverb (FDN)
     b("reverb_on", "Reverb", 0.0),
-    e("reverb_type", "Reverb Type", REVERB_TYPE_LABELS, 0.0),
-    f("reverb_depth", "Reverb Depth", 0.0, 1.0, 0.5, "", Taper::Linear),
-    f("reverb_mix", "Reverb Mix", 0.0, 1.0, 0.3, "", Taper::Linear),
-    b("limiter_on", "Limiter", 0.0),
-    e("oversample", "Oversample", OVERSAMPLE_LABELS, 1.0),
-    e("lfo2_shape", "LFO 2 Shape", LFO_LABELS, 0.0),
+    f("reverb_size", "Reverb Size", 0.0, 1.0, 0.5, "", Taper::Linear),
     f(
-        "lfo2_rate",
-        "LFO 2 Rate",
-        0.01,
-        40.0,
-        5.0,
-        "Hz",
-        Taper::Exp { mid: 5.0 },
+        "reverb_decay",
+        "Reverb Decay",
+        0.2,
+        10.0,
+        2.5,
+        "s",
+        Taper::Exp { mid: 2.0 },
     ),
-    b("lfo2_sync", "LFO 2 Sync", 0.0),
+    f("reverb_damp", "Reverb Damp", 0.0, 1.0, 0.4, "", Taper::Linear),
+    f("reverb_mix", "Reverb Mix", 0.0, 1.0, 0.3, "", Taper::Linear),
 ];
 
 #[cfg(test)]
@@ -807,10 +872,14 @@ mod tests {
 
     #[test]
     fn exp_taper_pins_min_mid_max_when_min_positive() {
-        // Cutoff: C0..20kHz with C4 at midpoint.
+        // Cutoff (0100): Jupiter-8 convention — 20..16000 Hz, 800 Hz at
+        // midpoint. The C4 pin from the prior taper went away when KBT
+        // moved its reference note to C0 (0100): the cutoff slider is
+        // now a flat sound-design control, not coupled to a "playing C4
+        // with keytrack on resonates at the slider value" coincidence.
         let cutoff = PatchParam::Cutoff.desc();
         assert!((cutoff.from_fader(0.0) - cutoff.min).abs() < 1e-3);
-        assert!((cutoff.from_fader(0.5) - 261.6256).abs() < 1e-3);
+        assert!((cutoff.from_fader(0.5) - 800.0).abs() < 1e-3);
         assert!((cutoff.from_fader(1.0) - cutoff.max).abs() < 1e-1);
         // HPF: 20..18000 with 1000 at midpoint.
         let hpf = PatchParam::HpfCutoff.desc();
@@ -818,7 +887,7 @@ mod tests {
         assert!((hpf.from_fader(0.5) - 1000.0).abs() < 1e-3);
         assert!((hpf.from_fader(1.0) - 18000.0).abs() < 1e-2);
         // Round-trip the pinned points.
-        for v in [cutoff.min, 261.6256, cutoff.max] {
+        for v in [cutoff.min, 800.0, cutoff.max] {
             let n = cutoff.to_fader(v);
             assert!((cutoff.from_fader(n) - v).abs() < 1e-2, "v={v} n={n}");
         }

@@ -8,7 +8,6 @@ pub mod factory;
 pub mod params;
 pub mod preset;
 pub mod preset_io;
-pub mod reverb_macro;
 pub mod shared;
 pub mod smoothing;
 pub mod state;
@@ -26,7 +25,6 @@ pub use params::{
 };
 pub use factory::{FactoryPreset, factory};
 pub use preset::{Meta, Performance, PresetError};
-pub use reverb_macro::{ReverbType, ReverbVoicing, reverb_macro};
 pub use preset_io::{
     EnginePresetStore, LoadError, UserFolder, UserPreset, create_user_folder, delete_user_folder,
     delete_user_preset, ensure_user_dir, list_user_presets, list_user_tree, load_preset_file,
@@ -43,8 +41,8 @@ pub use state::PluginState;
 
 use voice::{BlockCtx, Lfo1Trigger, VoiceBank};
 use vxn_dsp::{
-    AdsrShape, CONTROL_BLOCK, LfoCore, MAX_OVERSAMPLE, Oversampler, Smoothed, StereoChorus,
-    StereoDelay, StereoLimiter, StereoVReverb, note_to_hz,
+    AdsrShape, CONTROL_BLOCK, FdnReverb, FdnReverbParams, LfoCore, MAX_OVERSAMPLE, Oversampler,
+    Smoothed, StereoChorus, StereoDelay, StereoLimiter, StereoPhaser, note_to_hz,
 };
 
 /// Mod-wheel (CC1) glide time (ms), applied at the control-block rate. Rounds
@@ -77,10 +75,6 @@ const LFO2_SEED: u64 = 0x7E5D;
 /// Per-layer RNG seeds (decorrelate the two layers' S&H LFO PRNGs).
 const RNG_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
 
-/// Stable seed for the reverb's BBD clock jitter walk (parked off in v1 but
-/// the engine still wants a deterministic init).
-const REVERB_SEED: u32 = 0xBBD0_0040;
-
 /// The complete VXN1 instrument.
 pub struct Synth {
     sample_rate: f32,
@@ -95,14 +89,16 @@ pub struct Synth {
     /// layers and all voices: sampled once per block and broadcast. LFO 1 is
     /// per-voice, living inside each [`VoiceBank`] (E005 / 0018).
     lfo2: LfoCore,
+    /// Stereo allpass phaser. First in the FX chain (pre-chorus) so its
+    /// resonant peaks survive the chorus's chorale; runs only when
+    /// [`GlobalParam::PhaserOn`] is set.
+    phaser: StereoPhaser,
     chorus: StereoChorus,
     delay: StereoDelay,
-    /// MN3011-style BBD tap-comb reverb. Sits post-delay, pre-limiter in the
-    /// FX chain; runs only when [`GlobalParam::ReverbOn`] is set.
-    reverb: StereoVReverb,
-    /// Voicing type used last block; on change, `reverb.reset()` clears the tail
-    /// before the next process so a Plate's ring can't bleed into a Hall.
-    reverb_was_type: Option<ReverbType>,
+    /// 8-line FDN reverb (Jot-style, Hadamard feedback). Sits post-delay,
+    /// pre-limiter in the FX chain; runs only when [`GlobalParam::ReverbOn`]
+    /// is set.
+    reverb: FdnReverb,
     /// Optional brickwall limiter on the master bus (last in the FX chain). Run
     /// only when [`GlobalParam::LimiterOn`] is set; bypassed otherwise.
     limiter: StereoLimiter,
@@ -135,6 +131,10 @@ pub struct Synth {
     last_env: [Option<EnvSnapshot>; LAYERS],
     /// Oversampling factor in effect last block; a change resets the decimator.
     last_os: usize,
+    /// Per-voice oscillator drift amount, broadcast into each block's
+    /// [`BlockCtx`]. Defaults to [`DEFAULT_DRIFT_AMOUNT`]; tests that assert
+    /// bit-equal two-layer equivalence set it to 0.
+    drift_amount: f32,
 }
 
 impl Synth {
@@ -149,10 +149,10 @@ impl Synth {
             params,
             banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, RNG_SEEDS[i])),
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
+            phaser: StereoPhaser::new(sample_rate),
             chorus: StereoChorus::new(sample_rate),
             delay: StereoDelay::new(sample_rate, 2.0),
-            reverb: StereoVReverb::new(sample_rate, REVERB_SEED),
-            reverb_was_type: None,
+            reverb: FdnReverb::new(sample_rate),
             limiter: StereoLimiter::new(sample_rate),
             limiter_was_on: false,
             oversampler: Oversampler::new(),
@@ -165,7 +165,16 @@ impl Synth {
             rr_layer: 0,
             last_env: [None; LAYERS],
             last_os: 1,
+            drift_amount: voice::DEFAULT_DRIFT_AMOUNT,
         }
+    }
+
+    /// Override the per-voice oscillator drift amount (`[0.0, 1.0]`). Default
+    /// is [`voice::DEFAULT_DRIFT_AMOUNT`]. Set to 0 to make two identical
+    /// layers' renders bit-equal — the equivalence tests in this module rely
+    /// on that, but typical playback wants drift on for the "live" detune.
+    pub fn set_drift_amount(&mut self, amount: f32) {
+        self.drift_amount = amount.clamp(0.0, 1.0);
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
@@ -178,10 +187,10 @@ impl Synth {
             bank.set_sample_rate(sample_rate);
         }
         self.lfo2 = LfoCore::new(control_rate, LFO2_SEED);
+        self.phaser = StereoPhaser::new(sample_rate);
         self.chorus = StereoChorus::new(sample_rate);
         self.delay = StereoDelay::new(sample_rate, 2.0);
-        self.reverb = StereoVReverb::new(sample_rate, REVERB_SEED);
-        self.reverb_was_type = None;
+        self.reverb = FdnReverb::new(sample_rate);
         self.limiter = StereoLimiter::new(sample_rate);
         self.limiter_was_on = false;
         self.oversampler.reset();
@@ -370,8 +379,10 @@ impl Synth {
             bank.reset_all();
         }
         self.lfo2.reset();
+        self.phaser.clear();
         self.chorus.clear();
         self.delay.clear();
+        self.reverb.reset();
         self.limiter.reset();
         self.limiter_was_on = false;
         self.oversampler.reset();
@@ -448,11 +459,30 @@ impl Synth {
 
             let l_out = &mut out_l[start..start + block];
             let r_out = &mut out_r[start..start + block];
-            if chorus_on {
-                self.chorus.process_block(dry, l_out, r_out);
+
+            // Phaser (first in FX chain, pre-chorus). Mono dry → stereo wet.
+            // Skipped when off so the engine stays sample-exact against a
+            // build with phaser absent. When chorus is also on, the phaser's
+            // stereo image is collapsed back to mono before chorus (which
+            // produces its own L/R via the inverted-LFO trick).
+            let phaser_on = self.params.global().bool(GlobalParam::PhaserOn);
+            if phaser_on {
+                self.phaser.process_block(dry, l_out, r_out);
             } else {
                 l_out.copy_from_slice(dry);
                 r_out.copy_from_slice(dry);
+            }
+
+            if chorus_on {
+                // Chorus is mono-in / stereo-out. Sum the (possibly stereo)
+                // phaser bus back to mono in a scratch buffer; when phaser is
+                // off this scratch equals `dry` bit-for-bit.
+                let mut chorus_in = [0.0f32; CONTROL_BLOCK];
+                let chorus_in = &mut chorus_in[..block];
+                for i in 0..block {
+                    chorus_in[i] = 0.5 * (l_out[i] + r_out[i]);
+                }
+                self.chorus.process_block(chorus_in, l_out, r_out);
             }
             if delay_on {
                 for i in 0..block {
@@ -462,29 +492,18 @@ impl Synth {
                 }
             }
 
-            // Reverb (post-delay): wet from the line, blend with smoothed mix.
-            // Skipped when off so the engine stays sample-exact against a build
-            // with reverb absent.
+            // Reverb (post-delay): FDN takes the stereo bus as input and
+            // applies its own internal dry/wet crossfade. Skipped when off so
+            // the engine stays sample-exact against a build with reverb
+            // absent.
             let reverb_on = self.params.global().bool(GlobalParam::ReverbOn);
             if reverb_on {
-                let mut dry_in = [0f32; CONTROL_BLOCK];
-                let dry_in = &mut dry_in[..block];
-                for i in 0..block {
-                    dry_in[i] = 0.5 * (l_out[i] + r_out[i]);
-                }
                 let mut wet_l = [0f32; CONTROL_BLOCK];
                 let mut wet_r = [0f32; CONTROL_BLOCK];
                 let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
-                self.reverb.process_block(dry_in, wl, wr);
-                let mix = self
-                    .smoother
-                    .values()
-                    .global()
-                    .get(GlobalParam::ReverbMix);
-                for i in 0..block {
-                    l_out[i] += mix * (wl[i] - l_out[i]);
-                    r_out[i] += mix * (wr[i] - r_out[i]);
-                }
+                self.reverb.process_block(l_out, r_out, wl, wr);
+                l_out.copy_from_slice(wl);
+                r_out.copy_from_slice(wr);
             }
 
             // Master limiter (last in the chain): clear stale lookahead state on
@@ -532,6 +551,12 @@ impl Synth {
 
     fn update_effects(&mut self) {
         let g = self.smoother.values().global();
+        self.phaser.set_params(
+            g.get(GlobalParam::PhaserRate),
+            g.get(GlobalParam::PhaserDepth),
+            g.get(GlobalParam::PhaserFB),
+            g.get(GlobalParam::PhaserMix),
+        );
         self.chorus.set_params(
             g.get(GlobalParam::ChorusRate),
             g.get(GlobalParam::ChorusDepth),
@@ -551,20 +576,25 @@ impl Synth {
             g.bool(GlobalParam::DelayPingPong),
         );
 
-        // Reverb: resolve the macro UI (Type + Depth) into the six underlying
-        // knobs and push to the engine. Type lives unsmoothed (it's a discrete
-        // switch), so read from `params` rather than the smoother. On a Type
-        // change clear the tail so the previous voicing doesn't bleed.
-        let t = self.params.global().reverb_type();
-        if self.reverb_was_type != Some(t) {
-            self.reverb.reset();
-            self.reverb_was_type = Some(t);
-        }
-        let depth = g.get(GlobalParam::ReverbDepth);
-        let v = reverb_macro::reverb_macro(t, depth);
-        self.reverb
-            .set_params(v.size, v.decay, v.damping, v.mod_rate, v.mod_depth, 0.0);
-        self.reverb.set_diffusion(v.diffusion);
+        // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come
+        // through the smoother. On is unsmoothed (it's a discrete switch).
+        let on = self.params.global().bool(GlobalParam::ReverbOn);
+        self.reverb.set_params(&FdnReverbParams {
+            on,
+            size: g.get(GlobalParam::ReverbSize),
+            decay_secs: g.get(GlobalParam::ReverbDecay),
+            damp: g.get(GlobalParam::ReverbDamp),
+            mix: g.get(GlobalParam::ReverbMix),
+        });
+
+        // Drift: the per-voice oscillator pitch jitter amount, broadcast into
+        // every voice's BlockCtx. Direct read (no smoother — drift is a slow
+        // creative param, sub-audio).
+        self.drift_amount = self
+            .params
+            .global()
+            .get(GlobalParam::MasterDrift)
+            .clamp(0.0, 1.0);
     }
 
     /// Build one layer's control-block context from its param source (§3) and the
@@ -660,11 +690,12 @@ impl Synth {
             cutoff_env_depth: p.get(PatchParam::CutoffEnvDepth),
             cutoff_vel_depth: p.get(PatchParam::VelCutoffDepth),
             cutoff_extra: wheel * p.get(PatchParam::ModWheelCutoff),
-            filter_key_track: p.bool(PatchParam::FilterKeyTrack),
+            filter_key_track: p.get(PatchParam::FilterKeyTrack),
             sweep_extra: wheel * p.get(PatchParam::ModWheelCrossModSweep),
             amp_lfo_sel: p.lfo_sel(PatchParam::AmpLfoSrc),
             amp_lfo_depth: p.get(PatchParam::AmpLfoDepth),
             amp_env_bypass: p.bool(PatchParam::AmpEnvBypass),
+            drift_amount: self.drift_amount,
         }
     }
 }
@@ -1516,6 +1547,9 @@ mod tests {
         // phase drives both). Proves a single instrument-wide source, not per-layer.
         fn configure(s: &mut Synth) {
             s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            // Drift is per-voice random — would decorrelate the two layers and
+            // sink the bit-equal sum check below.
+            s.set_drift_amount(0.0);
             s.set_key_mode(KeyMode::Dual);
             for layer in Layer::ALL {
                 s.set_param(patch_clap_id(layer, PatchParam::Osc1Wave), 0.0); // sine
@@ -1709,11 +1743,14 @@ mod tests {
         }
     }
 
-    /// A deterministic patch (sine LFO, chorus off) so two layers fed
-    /// identical params + notes render bit-for-bit identically.
+    /// A deterministic patch (sine LFO, chorus off, drift off) so two layers
+    /// fed identical params + notes render bit-for-bit identically. Drift is
+    /// per-voice random by design, so it must be silenced for any test
+    /// asserting cross-layer bit-equality.
     fn deterministic(s: &mut Synth) {
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        s.set_drift_amount(0.0);
     }
 
     #[test]
@@ -2365,70 +2402,81 @@ mod tests {
     }
 
     #[test]
+    fn phaser_off_passes_dry_unchanged() {
+        // With phaser_on=0 the phaser branch must keep the engine sample-
+        // exact against a build with the phaser absent. The phaser knobs
+        // must have no effect when the switch is off.
+        let mut a = Synth::new(48_000.0);
+        a.set_param(gp(GlobalParam::PhaserOn), 0.0);
+        a.set_param(gp(GlobalParam::PhaserRate), 0.05);
+        a.set_param(gp(GlobalParam::PhaserDepth), 0.0);
+        a.set_param(gp(GlobalParam::PhaserFB), 0.0);
+        a.set_param(gp(GlobalParam::PhaserMix), 0.0);
+        let (al, ar) = render_short_note(&mut a, 4800);
+
+        let mut b = Synth::new(48_000.0);
+        b.set_param(gp(GlobalParam::PhaserOn), 0.0);
+        b.set_param(gp(GlobalParam::PhaserRate), 8.0);
+        b.set_param(gp(GlobalParam::PhaserDepth), 1.0);
+        b.set_param(gp(GlobalParam::PhaserFB), 0.8);
+        b.set_param(gp(GlobalParam::PhaserMix), 1.0);
+        let (bl, br) = render_short_note(&mut b, 4800);
+
+        assert_eq!(al, bl, "phaser_off path is not dry-pass on L");
+        assert_eq!(ar, br, "phaser_off path is not dry-pass on R");
+    }
+
+    #[test]
+    fn phaser_on_audibly_changes_output() {
+        // With phaser_on=1 and a non-zero mix, the output must diverge from
+        // the phaser-off baseline. Chorus off so the only stereo-active stage
+        // is the phaser itself.
+        let mut a = Synth::new(48_000.0);
+        a.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        a.set_param(gp(GlobalParam::PhaserOn), 0.0);
+        let (al, _ar) = render_short_note(&mut a, 4800);
+
+        let mut b = Synth::new(48_000.0);
+        b.set_param(gp(GlobalParam::ChorusOn), 0.0);
+        b.set_param(gp(GlobalParam::PhaserOn), 1.0);
+        b.set_param(gp(GlobalParam::PhaserRate), 1.0);
+        b.set_param(gp(GlobalParam::PhaserDepth), 0.9);
+        b.set_param(gp(GlobalParam::PhaserFB), 0.6);
+        b.set_param(gp(GlobalParam::PhaserMix), 0.7);
+        let (bl, _br) = render_short_note(&mut b, 4800);
+
+        let mut diverged = false;
+        for i in 0..al.len().min(bl.len()) {
+            if (al[i] - bl[i]).abs() > 1.0e-4 {
+                diverged = true;
+                break;
+            }
+        }
+        assert!(diverged, "phaser_on should perturb the output vs phaser_off");
+    }
+
+    #[test]
     fn reverb_off_passes_dry_unchanged() {
         // With reverb_on=0 the reverb branch is gated off, so the dry chain
-        // output must not depend on reverb_type / depth / mix. Compare two
-        // runs that differ only in those three knobs.
+        // output must not depend on size / decay / damp / mix. Compare two
+        // runs that differ in every reverb knob.
         let mut a = Synth::new(48_000.0);
         a.set_param(gp(GlobalParam::ReverbOn), 0.0);
-        a.set_param(gp(GlobalParam::ReverbType), 0.0); // Plate
-        a.set_param(gp(GlobalParam::ReverbDepth), 0.0);
+        a.set_param(gp(GlobalParam::ReverbSize), 0.0);
+        a.set_param(gp(GlobalParam::ReverbDecay), 0.5);
+        a.set_param(gp(GlobalParam::ReverbDamp), 0.0);
         a.set_param(gp(GlobalParam::ReverbMix), 0.0);
         let (al, ar) = render_short_note(&mut a, 4800);
 
         let mut b = Synth::new(48_000.0);
         b.set_param(gp(GlobalParam::ReverbOn), 0.0);
-        b.set_param(gp(GlobalParam::ReverbType), 3.0); // Large
-        b.set_param(gp(GlobalParam::ReverbDepth), 1.0);
+        b.set_param(gp(GlobalParam::ReverbSize), 1.0);
+        b.set_param(gp(GlobalParam::ReverbDecay), 8.0);
+        b.set_param(gp(GlobalParam::ReverbDamp), 1.0);
         b.set_param(gp(GlobalParam::ReverbMix), 1.0);
         let (bl, br) = render_short_note(&mut b, 4800);
 
         assert_eq!(al, bl, "reverb_off path is not dry-pass on L");
         assert_eq!(ar, br, "reverb_off path is not dry-pass on R");
-    }
-
-    #[test]
-    fn reverb_type_switch_resets_tail() {
-        // Charge a Plate tail with high decay (Large in the macro table),
-        // then switch the Type and assert the engine's reset clears the
-        // line — silent input post-switch produces silent output for the
-        // first block, where previously it would have rung out.
-        let mut s = Synth::new(48_000.0);
-        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(gp(GlobalParam::DelayOn), 0.0);
-        s.set_param(gp(GlobalParam::ReverbOn), 1.0);
-        s.set_param(gp(GlobalParam::ReverbType), 3.0); // Large = longest decay
-        s.set_param(gp(GlobalParam::ReverbDepth), 1.0);
-        s.set_param(gp(GlobalParam::ReverbMix), 1.0);
-        s.set_param(pp(PatchParam::Env2Attack), 0.001);
-        s.set_param(pp(PatchParam::Env2Release), 0.01);
-        // Excite the line with a short note, then release fully.
-        s.note_on(69, 1.0);
-        let _ = render(&mut s, 9600);
-        s.note_off(69);
-        let _ = render(&mut s, 9600);
-
-        // Tail is non-trivial at this point — confirm by capturing one block.
-        let (tail_l, tail_r) = render(&mut s, 256);
-        let tail_peak = tail_l
-            .iter()
-            .chain(tail_r.iter())
-            .fold(0.0_f32, |m, &x| m.max(x.abs()));
-        assert!(
-            tail_peak > 1e-4,
-            "test precondition failed: tail too quiet ({tail_peak}) — won't detect a reset regression"
-        );
-
-        // Switch Type — engine should reset() before the next block.
-        s.set_param(gp(GlobalParam::ReverbType), 1.0); // Room
-        let (post_l, post_r) = render(&mut s, 256);
-        let post_peak = post_l
-            .iter()
-            .chain(post_r.iter())
-            .fold(0.0_f32, |m, &x| m.max(x.abs()));
-        assert!(
-            post_peak < 1e-5,
-            "Type switch did not reset reverb tail: peak={post_peak}, was tail_peak={tail_peak}"
-        );
     }
 }

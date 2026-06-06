@@ -850,6 +850,45 @@ export function makeHeaderSwitch(el, id, _desc) {
   };
 }
 
+// ─── FX panel tabs (E018 / 0098) ──────────────────────────────────────────
+//
+// Pure DOM wiring: click a `.fx-tab` button → set the parent panel's
+// `data-active-tab` and toggle the `.active` class on the buttons. CSS does
+// the visibility — the panel's `data-active-tab="…"` attribute selectors
+// pick which `.fx-pane-…` and `.fx-header-…` show. Nothing here touches
+// params or the controls table; every header-switch / fader inside the FX
+// panel is bound normally by `dispatch.bindCell`, and the inactive tabs'
+// primitives stay live (just hidden) so DAW automation still echoes them.
+export function wireFxTabs() {
+  document.querySelectorAll('[data-name="FX"]').forEach((panel) => {
+    const buttons = Array.from(panel.querySelectorAll('.fx-tab'));
+    if (buttons.length === 0) return;
+
+    const setActive = (name) => {
+      panel.dataset.activeTab = name;
+      for (const b of buttons) {
+        b.classList.toggle('active', b.dataset.tab === name);
+      }
+    };
+
+    for (const btn of buttons) {
+      btn.addEventListener('click', (ev) => {
+        // Each tab now hosts its own on/off switch (a `.fx-tab-switch`
+        // header-switch primitive). The switch fires on `pointerdown` —
+        // the bubbled `click` would still reach the tab and swap the
+        // pane. Skip the swap when the click originates inside the
+        // switch slot.
+        if (ev.target.closest('.fx-tab-switch')) return;
+        ev.preventDefault();
+        setActive(btn.dataset.tab);
+      });
+    }
+    // Seed the active class from whatever `data-active-tab` was authored
+    // into the HTML (phaser by default per faceplate.html).
+    setActive(panel.dataset.activeTab || buttons[0].dataset.tab);
+  });
+}
+
 // ─── Detune + Legato composite (Voice panel, 0045) ─────────────────────────
 //
 // Two params + one watch in a single column: the Detune fader on top and
