@@ -41,9 +41,11 @@ fn main() {
 }
 
 fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR points at xtask/; the workspace root is its parent.
+    // CARGO_MANIFEST_DIR is .../vxn-1/xtask/. The flat workspace root sits two
+    // levels up (E001 promoted the repo root to a single workspace).
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(Path::parent)
         .unwrap()
         .to_path_buf()
 }
