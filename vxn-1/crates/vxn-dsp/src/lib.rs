@@ -57,6 +57,7 @@ pub const MAX_OVERSAMPLE: usize = 8;
 pub const CONTROL_BLOCK: usize = 32;
 
 pub use adsr::{AdsrCore, AdsrShape, AdsrStage};
+pub use bbd::StereoVReverb;
 pub use chorus::StereoChorus;
 pub use delay::{DelayLine, StereoDelay};
 pub use fdn_reverb::{FdnReverb, FdnReverbParams};
