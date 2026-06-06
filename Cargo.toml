@@ -18,6 +18,8 @@ members = [
     # vxn-2 (synth #2, in-flight).
     "vxn-2/crates/vxn2-dsp",
     "vxn-2/crates/vxn2-engine",
+    "vxn-2/crates/vxn2-app",
+    "vxn-2/crates/vxn2-ui-web",
     "vxn-2/crates/vxn2-clap",
     "vxn-2/crates/vxn2-osc-bench",
     "vxn-2/xtask",
@@ -46,6 +48,8 @@ vxn-ui-web = { path = "vxn-1/crates/vxn-ui-web" }
 # vxn-2 (path).
 vxn2-dsp = { path = "vxn-2/crates/vxn2-dsp" }
 vxn2-engine = { path = "vxn-2/crates/vxn2-engine" }
+vxn2-app = { path = "vxn-2/crates/vxn2-app" }
+vxn2-ui-web = { path = "vxn-2/crates/vxn2-ui-web" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). Single source of truth across all consumers.

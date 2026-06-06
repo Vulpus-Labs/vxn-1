@@ -14,12 +14,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 vxn2-engine = { workspace = true }
+vxn2-app = { workspace = true }
+vxn2-ui-web = { workspace = true }
+vxn-core-app = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",
     "note-ports",
     "params",
     "state",
+    "gui",
+    "timer",
     "clack-plugin",
 ] }
 

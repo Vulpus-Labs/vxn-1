@@ -2462,13 +2462,24 @@ name = "vxn1-xtask"
 version = "0.0.6"
 
 [[package]]
+name = "vxn2-app"
+version = "0.0.6"
+dependencies = [
+ "vxn-core-app",
+ "vxn2-engine",
+]
+
+[[package]]
 name = "vxn2-clap"
 version = "0.0.6"
 dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "vxn-core-app",
+ "vxn2-app",
  "vxn2-engine",
+ "vxn2-ui-web",
 ]
 
 [[package]]
@@ -2479,6 +2490,8 @@ version = "0.0.6"
 name = "vxn2-engine"
 version = "0.0.6"
 dependencies = [
+ "vxn-core-app",
+ "vxn2-app",
  "vxn2-dsp",
 ]
 
@@ -2488,6 +2501,17 @@ version = "0.0.6"
 dependencies = [
  "criterion",
  "vxn2-dsp",
+ "vxn2-engine",
+]
+
+[[package]]
+name = "vxn2-ui-web"
+version = "0.0.6"
+dependencies = [
+ "serde_json",
+ "vxn-core-app",
+ "vxn-core-ui-web",
+ "vxn2-app",
  "vxn2-engine",
 ]
 

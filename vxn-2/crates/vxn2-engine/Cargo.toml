@@ -7,5 +7,7 @@ publish = false
 
 [dependencies]
 vxn2-dsp = { workspace = true }
+vxn-core-app = { workspace = true }
+vxn2-app = { workspace = true }
 
 [dev-dependencies]

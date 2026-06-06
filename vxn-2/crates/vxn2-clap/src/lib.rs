@@ -10,7 +10,9 @@
 //! / `AudioProcessor` split, same `declare_extensions` shape — minus the
 //! `Controller` / `ViewEvent` / GUI / timer machinery.
 
+use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::event_types::TransportFlags;
 use clack_plugin::events::spaces::CoreEventSpace;
@@ -19,19 +21,31 @@ use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
 use std::fmt::Write as _;
-use std::ops::Bound;
-use std::sync::Arc;
 use std::io::{Read, Write as _IoWrite};
+use std::ops::Bound;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+use vxn2_app::{NoopPresetStore, tick_vxn2};
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
     ParamDesc, ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id,
     module_for_clap_id,
 };
+use vxn_core_app::{Controller, CorpusHandle, ViewEvent};
 
 use crate::local::LocalParams;
 
+pub mod gui;
 pub mod local;
+
+/// Lock a mutex by extracting the inner value instead of unwrapping.
+/// Plugin code runs with `panic = unwind`, so a panic during `tick` could
+/// poison the controller mutex; we still want subsequent flushes to make
+/// progress. The data is valid (the panic happened mid-write at worst).
+pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Engine control-block size in samples. The audio-thread loop in 0016 will
 /// slice host buffers into chunks of at most this size before driving
@@ -50,7 +64,9 @@ impl Plugin for VxnPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
-            .register::<PluginState>();
+            .register::<PluginState>()
+            .register::<PluginGui>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -71,10 +87,21 @@ impl DefaultPluginFactory for VxnPlugin {
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        Ok(VxnMainThread { shared })
+        let (controller, view_rx, corpus) =
+            Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+        Ok(VxnMainThread {
+            shared,
+            controller: Arc::new(Mutex::new(controller)),
+            view_rx: Arc::new(Mutex::new(view_rx)),
+            corpus,
+            gui: None,
+            host: Some(host),
+            timer: None,
+            last_seen: vec![f32::NAN; TOTAL_PARAMS],
+        })
     }
 }
 
@@ -89,9 +116,86 @@ impl PluginShared<'_> for VxnShared {}
 
 pub struct VxnMainThread<'a> {
     shared: &'a VxnShared,
+    /// Wrapped in `Arc<Mutex<...>>` so the timer drain and the host
+    /// `params::flush` paths share one controller without crossing
+    /// threads. Both sites are main-thread, so there is no real
+    /// contention.
+    pub(crate) controller: Arc<Mutex<Controller<SharedParams>>>,
+    /// View-bound events the controller emits. The timer drain consumes
+    /// these; when the GUI is closed they stay queued and the bounded
+    /// channel drops on full.
+    pub(crate) view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    /// Shared snapshot of the preset corpus. Empty until the preset
+    /// epic lands; the controller still publishes
+    /// `ViewEvent::PresetCorpusChanged` events the page can ignore.
+    pub(crate) corpus: CorpusHandle,
+    /// Live editor handle while the GUI is open.
+    pub(crate) gui: Option<vxn2_ui_web::EditorHandle>,
+    /// Host main-thread handle. `gui::set_parent` uses it to register
+    /// the host timer; `gui::destroy` to unregister. `None` only in
+    /// unit-test contexts that construct a `VxnMainThread` without a
+    /// real CLAP host — the GUI extension is then inert.
+    pub(crate) host: Option<HostMainThreadHandle<'a>>,
+    /// Editor's main-thread timer (id + the host's timer extension).
+    /// `None` when the GUI is closed or the host doesn't support
+    /// `timer-support`.
+    pub(crate) timer: Option<(HostTimer, TimerId)>,
+    /// Last param values seen by the diff pump (0031). Audio-thread
+    /// automation writes `SharedParams` directly without round-tripping
+    /// the controller, so the editor would otherwise never see it. On
+    /// each tick `push_param_diffs` (0031) compares current values
+    /// against this vector and pushes a `ParamChanged` for any drift.
+    /// Seeded all-`NaN` so the first tick after open broadcasts the
+    /// whole table.
+    #[allow(dead_code, reason = "Field wired by 0031.")]
+    pub(crate) last_seen: Vec<f32>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
+
+impl<'a> VxnMainThread<'a> {
+    /// Drain the controller's view-event queue into the live WebView.
+    /// No-op when the GUI is closed.
+    fn drain_view_events(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let rx = lock_mut(&self.view_rx);
+        while let Ok(ev) = rx.try_recv() {
+            handle.push_view_event(ev);
+        }
+    }
+
+    /// Diff the shared param store against `last_seen` and push a
+    /// `ParamChanged` for any drift. Body lands in ticket 0031 — the
+    /// call site is wired here so the timer ticks against the right
+    /// shape.
+    fn push_param_diffs(&mut self) {
+        // 0031 — implementation deferred.
+    }
+}
+
+impl<'a> PluginTimerImpl for VxnMainThread<'a> {
+    fn on_timer(&mut self, _id: TimerId) {
+        // Pull UI-posted intents into the model first so the ViewEvents
+        // they generate land in `view_rx` before we drain it — saves a
+        // tick of round-trip latency on a knob drag.
+        {
+            let mut ctrl = lock_mut(&self.controller);
+            tick_vxn2(&mut ctrl);
+        }
+        self.drain_view_events();
+        // Catch any audio-thread automation the controller never saw.
+        // Body in 0031; call site here so the tick shape is final.
+        self.push_param_diffs();
+        // One `evaluate_script` per tick. Both pushes above only
+        // buffered into the EditorHandle; this is the single bridge
+        // call.
+        if let Some(handle) = self.gui.as_ref() {
+            handle.flush_view_events();
+        }
+    }
+}
 
 pub struct VxnAudioProcessor<'a> {
     engine: Engine,
@@ -451,7 +555,18 @@ mod tests {
     use vxn2_engine::params::id_of;
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
-        VxnMainThread { shared }
+        let (controller, view_rx, corpus) =
+            Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+        VxnMainThread {
+            shared,
+            controller: Arc::new(Mutex::new(controller)),
+            view_rx: Arc::new(Mutex::new(view_rx)),
+            corpus,
+            gui: None,
+            host: None,
+            timer: None,
+            last_seen: vec![f32::NAN; TOTAL_PARAMS],
+        }
     }
 
     fn mk_audio<'a>(shared: &'a VxnShared) -> VxnAudioProcessor<'a> {

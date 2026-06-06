@@ -96,9 +96,9 @@ epic on top of this one (vxn-1 `E007` lineage). This epic carries only the
 
 ## Tickets
 
-- [ ] [0022 — vxn2-app crate scaffold (Controller, ParamDesc, UiEvent / ViewEvent)](../../tickets/open/0022-vxn2-app-scaffold.md)
-- [ ] [0023 — vxn2-ui-web crate scaffold (wry child WebView + IPC bridge)](../../tickets/open/0023-vxn2-ui-web-scaffold.md)
-- [ ] [0024 — CLAP gui + timer extensions, editor mount / teardown](../../tickets/open/0024-clap-gui-extension.md)
+- [x] [0022 — vxn2-app crate scaffold (Controller, ParamDesc, UiEvent / ViewEvent)](../../tickets/closed/0022-vxn2-app-scaffold.md)
+- [x] [0023 — vxn2-ui-web crate scaffold (wry child WebView + IPC bridge)](../../tickets/closed/0023-vxn2-ui-web-scaffold.md)
+- [x] [0024 — CLAP gui + timer extensions, editor mount / teardown](../../tickets/closed/0024-clap-gui-extension.md)
 - [ ] [0025 — Faceplate HTML/CSS port from mockup](../../tickets/open/0025-faceplate-html-css.md)
 - [ ] [0026 — Panels JS: wave-knob / fader / button-group + section renderers](../../tickets/open/0026-panels-js.md)
 - [ ] [0027 — Op row: algorithm picker overlay + op tabs + op detail](../../tickets/open/0027-op-row.md)

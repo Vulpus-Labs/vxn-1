@@ -1,0 +1,14 @@
+[package]
+name = "vxn2-ui-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "VXN2 HTML faceplate backend: thin wrapper over vxn-core-ui-web that bundles VXN2 assets + custom event hooks."
+
+[dependencies]
+vxn-core-app = { workspace = true }
+vxn-core-ui-web = { workspace = true }
+vxn2-app = { workspace = true }
+vxn2-engine = { workspace = true }
+serde_json = "1"

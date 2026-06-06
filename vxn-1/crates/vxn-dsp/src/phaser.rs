@@ -34,6 +34,10 @@ const CONTROL_INTERVAL: u32 = 16;
 const STAGE_SPREAD: f32 = 0.03;
 /// Centre of the swept band, Hz. Mid-band — sits between vocal and presence.
 const CENTER_HZ: f32 = 600.0;
+/// Bell-shaped wet-only makeup `1 + K·mix·(1−mix)`. Compensates the
+/// ~3 dB broadband loss at mix=0.5 where dry+wet notches cancel, while
+/// keeping mix=0 (dry-pass) and mix=1 (full-wet) unscaled.
+const WET_MAKEUP_K: f32 = 1.5;
 
 // ── Triangle LFO ────────────────────────────────────────────────────────────
 
@@ -222,6 +226,7 @@ pub struct StereoPhaser {
     depth: f32,
     feedback: f32,
     mix: f32,
+    wet_gain: f32,
 }
 
 impl StereoPhaser {
@@ -243,6 +248,7 @@ impl StereoPhaser {
             depth: 0.7,
             feedback: 0.0,
             mix: 0.5,
+            wet_gain: 0.5 * (1.0 + WET_MAKEUP_K * 0.5 * (1.0 - 0.5)),
         }
     }
 
@@ -265,6 +271,7 @@ impl StereoPhaser {
         self.depth = depth.clamp(0.0, 1.0);
         self.feedback = feedback.clamp(-FB_MAX, FB_MAX);
         self.mix = mix.clamp(0.0, 1.0);
+        self.wet_gain = self.mix * (1.0 + WET_MAKEUP_K * self.mix * (1.0 - self.mix));
         self.lfo.set_rate(self.rate_hz, self.sample_rate);
     }
 
@@ -287,7 +294,7 @@ impl StereoPhaser {
         let wet_l = self.left.process(in_l, self.feedback);
         let wet_r = self.right.process(in_r, self.feedback);
         let dry_gain = 1.0 - self.mix;
-        let wet_gain = self.mix;
+        let wet_gain = self.wet_gain;
         (
             dry_gain * in_l + wet_gain * wet_l,
             dry_gain * in_r + wet_gain * wet_r,
@@ -303,6 +310,7 @@ impl StereoPhaser {
         let feedback = self.feedback;
         let mix = self.mix;
         let dry_gain = 1.0 - mix;
+        let wet_gain = self.wet_gain;
         let nyq = self.nyquist_guard;
 
         for i in 0..n {
@@ -320,8 +328,8 @@ impl StereoPhaser {
             let x = dry[i];
             let wet_l = self.left.process(x, feedback);
             let wet_r = self.right.process(x, feedback);
-            out_l[i] = dry_gain * x + mix * wet_l;
-            out_r[i] = dry_gain * x + mix * wet_r;
+            out_l[i] = dry_gain * x + wet_gain * wet_l;
+            out_r[i] = dry_gain * x + wet_gain * wet_r;
         }
     }
 }

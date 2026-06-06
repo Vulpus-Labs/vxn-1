@@ -1,0 +1,45 @@
+/* VXN2 faceplate CSS — placeholder shell.
+ * Full ruleset (banner + preset bar + op-row + gmod-row + perf-row +
+ * overlays) lands in 0025. */
+
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0d0f12;
+  color: #d6dae0;
+  user-select: none;
+}
+
+.vxn-faceplate {
+  width: 1024px;
+  height: 772px;
+  display: flex;
+  flex-direction: column;
+}
+
+.vxn-banner {
+  height: 36px;
+  background: #16191e;
+  color: #f0a020;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid #25292f;
+}
+
+.vxn-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #8b9098;
+}

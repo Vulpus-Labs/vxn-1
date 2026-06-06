@@ -20,6 +20,7 @@ use crate::CHANNELS_PER_LAYER;
 use crate::math::fast_sine;
 use crate::oscillator::Waveform;
 use crate::ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
+use crate::random_walk::{BoundedRandomWalk, OSCILLATOR_DRIFT_STEP};
 
 const N: usize = CHANNELS_PER_LAYER;
 
@@ -188,6 +189,18 @@ macro_rules! with_wave {
 
 // ── PolyOscillator ────────────────────────────────────────────────────────
 
+/// Max pitch deviation a fully-engaged drift walk produces, in semitones —
+/// `drift_value[v] = walk · DRIFT_MAX_SEMITONES · amount`. patches uses
+/// `HALF_SEMITONE_VOCT * 0.5 = 1/48 v/oct ≈ 25 cents`; the same here so a
+/// `drift = 1.0` patch wanders at most ±a quarter-semitone.
+const DRIFT_MAX_SEMITONES: f32 = 0.25;
+
+/// Update the local drift walk every `DRIFT_BLOCK_PERIOD` control blocks. At
+/// the default `CONTROL_BLOCK = 32` and base SR = 48 kHz this gives one
+/// advance every ~1.3 ms (≈ 750 Hz), matching the patches design which
+/// advances every 64 audio samples.
+const DRIFT_BLOCK_PERIOD: u8 = 2;
+
 /// 16-voice oscillator. Phase + increment per voice; pulse width per voice
 /// (PWM modulation differs per voice).
 ///
@@ -211,6 +224,21 @@ pub struct PolyOscillator {
     /// the sync path. Stored as `f32` so the lane loop stays branchless and
     /// vectorises (matches `sync_pending`). Read by [`poly_sub_square`].
     pub sub_flipflop: [f32; N],
+    /// Per-voice slow random walk driving pitch drift. Seeded per voice so
+    /// each lane wanders independently — the "live" decorrelation a real
+    /// analog poly synth's per-voice opamp tolerances produce. Free-running:
+    /// not reset on note-on, so the voice's drift is a property of its lane,
+    /// not of when you played a note. Ported from patches `PolyOsc`.
+    drift_walks: [BoundedRandomWalk; N],
+    /// Counts control blocks since the last walk advance — every
+    /// `DRIFT_BLOCK_PERIOD` blocks the walks all step and `drift_value` is
+    /// recomputed.
+    drift_counter: u8,
+    /// Cached per-voice drift offset in semitones, summed into the pitch
+    /// before `note_to_hz` by the engine. Read every block, updated only when
+    /// the walks advance (so the value lattices into the inter-update plateau,
+    /// matching patches).
+    pub drift_value: [f32; N],
 }
 
 impl Default for PolyOscillator {
@@ -227,6 +255,11 @@ impl PolyOscillator {
             sync_resid: [0.0; N],
             sync_pending: [0.0; N],
             sub_flipflop: [0.0; N],
+            drift_walks: std::array::from_fn(|i| {
+                BoundedRandomWalk::new(0xD1F7_0001_u32.wrapping_add(i as u32), OSCILLATOR_DRIFT_STEP)
+            }),
+            drift_counter: 0,
+            drift_value: [0.0; N],
         }
     }
 
@@ -236,6 +269,41 @@ impl PolyOscillator {
         self.sync_pending[v] = 0.0;
         self.sub_flipflop[v] = 0.0;
         self.phase[v] = 0.0;
+    }
+
+    /// Re-seed the per-voice drift walks. Engine calls this at layer init so
+    /// the two layers' oscillators (and osc1/osc2 within each layer) drift
+    /// independently rather than sharing a wander sequence.
+    pub fn set_drift_seed(&mut self, base: u32) {
+        // `| 1` so the LCG never starts on the zero fixed point.
+        let base = base | 1;
+        self.drift_walks = std::array::from_fn(|i| {
+            BoundedRandomWalk::new(base.wrapping_add(i as u32), OSCILLATOR_DRIFT_STEP)
+        });
+        self.drift_counter = 0;
+        self.drift_value = [0.0; N];
+    }
+
+    /// Advance the drift state by one control block. Called once per block by
+    /// the engine before per-voice pitch is summed. The walks only advance
+    /// every `DRIFT_BLOCK_PERIOD` blocks (the patches cadence — sub-Hz
+    /// wander); other calls are a cheap counter bump. `amount` is the unit
+    /// drift parameter (`0.0` disables and short-circuits, `1.0` lets the
+    /// walk produce its full `±DRIFT_MAX_SEMITONES` deviation).
+    pub fn tick_drift(&mut self, amount: f32) {
+        if amount <= 0.0 {
+            self.drift_value = [0.0; N];
+            return;
+        }
+        self.drift_counter = self.drift_counter.wrapping_add(1);
+        if self.drift_counter < DRIFT_BLOCK_PERIOD {
+            return;
+        }
+        self.drift_counter = 0;
+        let scale = DRIFT_MAX_SEMITONES * amount;
+        for v in 0..N {
+            self.drift_value[v] = self.drift_walks[v].advance() * scale;
+        }
     }
 
     /// Produce one sample per voice into `out`, advancing all phases. `wave` is

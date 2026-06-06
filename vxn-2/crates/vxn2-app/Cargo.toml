@@ -1,0 +1,13 @@
+[package]
+name = "vxn2-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "VXN2 controller composition: ParamModel bridge, custom event types, and the tick driver wiring vxn_core_app::Controller to vxn2_engine::SharedParams."
+
+[dependencies]
+vxn-core-app = { workspace = true }
+
+[dev-dependencies]
+vxn2-engine = { workspace = true }

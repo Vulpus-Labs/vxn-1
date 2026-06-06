@@ -1,8 +1,9 @@
 ---
 id: E002
 title: VXN2 CLAP shell + UI-less playable plugin
-status: open
+status: closed
 created: 2026-06-05
+closed: 2026-06-06
 ---
 
 ## Goal

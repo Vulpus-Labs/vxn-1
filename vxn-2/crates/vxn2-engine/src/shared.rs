@@ -33,7 +33,7 @@
 //! `AllocParams`. Lower's entries remain in the store (visible to host
 //! automation) but inert until the allocator is refactored.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use vxn2_dsp::delay::StereoDelayParams;
 use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
@@ -50,7 +50,7 @@ use crate::modulation::PatchModParams;
 use crate::params::{
     LOWER_BASE, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_LFO1, OFF_LFO2, OFF_MASTER,
     OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, OFF_VOICING, PARAMS, PATCH_BASE,
-    TOTAL_PARAMS,
+    TOTAL_PARAMS, core_desc_for_clap_id,
 };
 use crate::voicing::{LayerParams, Patch, VoicingMode, VoicingParams};
 
@@ -116,10 +116,39 @@ pub trait ParamModel: ParamView {
 
 // ── SharedParams ────────────────────────────────────────────────────────────
 
+/// Number of mod-matrix slots per layer (CLAP-automatable + patch state).
+pub const N_MATRIX_SLOTS: usize = 16;
+/// CLAP-automatable matrix slots per layer. The remaining
+/// `N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS` are patch state — their depth
+/// rides [`SharedParams::matrix_extra_depth`].
+pub const N_MATRIX_CLAP_SLOTS: usize = 8;
+/// Gesture bitset word count (one `AtomicU64` per 64 params, rounded up).
+const GESTURE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
+
 /// Lock-free param store. Sized to [`TOTAL_PARAMS`] (343 in v1). Cheap to
-/// share via `Arc` — every field is an `AtomicU32`.
+/// share via `Arc` — every field is an atomic.
+///
+/// Beyond the CLAP-automatable `values` array the store also holds the
+/// non-CLAP shared state the controller (ticket 0022) needs to read /
+/// write: per-param gesture flags, per-layer matrix-row topology
+/// (source / dest / curve / active), per-layer slot 9-16 depths, and the
+/// editor's view-state `edit_layer` cursor.
 pub struct SharedParams {
     values: [AtomicU32; TOTAL_PARAMS],
+    /// Bitset (one bit per CLAP id): set while the editor is mid-gesture
+    /// on that param. Host automation arriving while the bit is set is
+    /// applied to `values` but not echoed back to the page (the page is
+    /// the source of truth during a drag — see
+    /// `vxn_core_app::Controller::handle_host`).
+    gestures: [AtomicU64; GESTURE_WORDS],
+    /// Per-layer per-slot packed `(source, dest, curve, active)` as
+    /// `source << 24 | dest << 16 | curve << 8 | active`.
+    matrix_meta: [[AtomicU32; N_MATRIX_SLOTS]; 2],
+    /// Per-layer slot 9-16 depth (`f32` bits). Slots 1-8 depth lives in
+    /// the CLAP `values` table (see [`OFF_MTX`]).
+    matrix_extra_depth: [[AtomicU32; N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS]; 2],
+    /// Editor view-state cursor: 0 = Upper, 1 = Lower. Not a CLAP param.
+    edit_layer: AtomicU8,
 }
 
 impl Default for SharedParams {
@@ -135,6 +164,14 @@ impl SharedParams {
         let defaults = crate::default_patch::default_param_values();
         Self {
             values: std::array::from_fn(|i| AtomicU32::new(defaults[i].to_bits())),
+            gestures: std::array::from_fn(|_| AtomicU64::new(0)),
+            matrix_meta: std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicU32::new(0))
+            }),
+            matrix_extra_depth: std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicU32::new(0))
+            }),
+            edit_layer: AtomicU8::new(0),
         }
     }
 
@@ -178,6 +215,113 @@ impl SharedParams {
             self.values[i].store(defaults[i].to_bits(), Ordering::Relaxed);
         }
     }
+
+    // ── Gesture flags ───────────────────────────────────────────────────────
+
+    #[inline]
+    pub fn gesture(&self, id: usize) -> bool {
+        if id >= TOTAL_PARAMS {
+            return false;
+        }
+        let (w, b) = (id / 64, id % 64);
+        (self.gestures[w].load(Ordering::Relaxed) >> b) & 1 != 0
+    }
+
+    #[inline]
+    pub fn set_gesture(&self, id: usize, on: bool) {
+        if id >= TOTAL_PARAMS {
+            return;
+        }
+        let (w, b) = (id / 64, id % 64);
+        let mask = 1u64 << b;
+        if on {
+            self.gestures[w].fetch_or(mask, Ordering::Relaxed);
+        } else {
+            self.gestures[w].fetch_and(!mask, Ordering::Relaxed);
+        }
+    }
+
+    // ── Matrix-row storage ──────────────────────────────────────────────────
+
+    /// Read the packed `(source, dest, curve, active, depth)` for a
+    /// matrix slot on the given layer. Slot index is `0..N_MATRIX_SLOTS`;
+    /// layer is `0` (Upper) or `1` (Lower). Out-of-range returns a
+    /// zeroed-default row.
+    pub fn matrix_row_raw(&self, layer: usize, slot: usize) -> MatrixRowRaw {
+        if layer >= 2 || slot >= N_MATRIX_SLOTS {
+            return MatrixRowRaw::default();
+        }
+        let packed = self.matrix_meta[layer][slot].load(Ordering::Relaxed);
+        let depth = if slot < N_MATRIX_CLAP_SLOTS {
+            let clap_id = if layer == 0 {
+                OFF_MTX + slot
+            } else {
+                LOWER_BASE + OFF_MTX + slot
+            };
+            self.get(clap_id)
+        } else {
+            f32::from_bits(
+                self.matrix_extra_depth[layer][slot - N_MATRIX_CLAP_SLOTS]
+                    .load(Ordering::Relaxed),
+            )
+        };
+        MatrixRowRaw {
+            source: ((packed >> 24) & 0xFF) as u8,
+            dest: ((packed >> 16) & 0xFF) as u8,
+            curve: ((packed >> 8) & 0xFF) as u8,
+            active: (packed & 0x01) != 0,
+            depth,
+        }
+    }
+
+    /// Write a matrix row. For slot indices `< N_MATRIX_CLAP_SLOTS`,
+    /// `depth` also writes the matching CLAP param so host automation
+    /// stays in sync.
+    pub fn set_matrix_row_raw(&self, layer: usize, slot: usize, row: MatrixRowRaw) {
+        if layer >= 2 || slot >= N_MATRIX_SLOTS {
+            return;
+        }
+        let packed = ((row.source as u32) << 24)
+            | ((row.dest as u32) << 16)
+            | ((row.curve as u32) << 8)
+            | (row.active as u32);
+        self.matrix_meta[layer][slot].store(packed, Ordering::Relaxed);
+        if slot < N_MATRIX_CLAP_SLOTS {
+            let clap_id = if layer == 0 {
+                OFF_MTX + slot
+            } else {
+                LOWER_BASE + OFF_MTX + slot
+            };
+            self.set(clap_id, row.depth);
+        } else {
+            self.matrix_extra_depth[layer][slot - N_MATRIX_CLAP_SLOTS]
+                .store(row.depth.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    // ── Edit-layer cursor ───────────────────────────────────────────────────
+
+    #[inline]
+    pub fn edit_layer_raw(&self) -> u8 {
+        self.edit_layer.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_edit_layer_raw(&self, v: u8) {
+        self.edit_layer.store(v.min(1), Ordering::Relaxed);
+    }
+}
+
+/// Wire-shape mirror of [`vxn2_app::MatrixRow`] without taking a dep on
+/// `vxn2-app` for the inherent methods — the `Vxn2Params` impl below
+/// converts between the two.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MatrixRowRaw {
+    pub source: u8,
+    pub dest: u8,
+    pub curve: u8,
+    pub active: bool,
+    pub depth: f32,
 }
 
 impl ParamView for SharedParams {
@@ -264,6 +408,92 @@ impl ParamModel for SharedParams {
             self.values[i].store(bits, Ordering::Relaxed);
         }
         Ok(())
+    }
+}
+
+// ── vxn_core_app::ParamModel + Vxn2Params bridges ───────────────────────────
+//
+// The local [`ParamModel`] above is the audio-thread / state-extension
+// surface; the bridges below are the controller surface (ticket 0022).
+// Method shapes differ — `ParamId` newtype, `normalized` spelling,
+// gesture flags, `descriptor` returning core-app's `ParamDesc`, and
+// `restore_from_bytes` returning `Result<(), String>` rather than the
+// engine's typed error.
+
+impl vxn_core_app::ParamModel for SharedParams {
+    fn total(&self) -> usize {
+        TOTAL_PARAMS
+    }
+
+    fn get(&self, id: vxn_core_app::ParamId) -> f32 {
+        SharedParams::get(self, id.raw())
+    }
+
+    fn set(&self, id: vxn_core_app::ParamId, plain: f32) {
+        SharedParams::set(self, id.raw(), plain);
+    }
+
+    fn get_normalized(&self, id: vxn_core_app::ParamId) -> f32 {
+        SharedParams::get_normalised(self, id.raw())
+    }
+
+    fn set_normalized(&self, id: vxn_core_app::ParamId, norm: f32) {
+        SharedParams::set_normalised(self, id.raw(), norm);
+    }
+
+    fn gesture(&self, id: vxn_core_app::ParamId) -> bool {
+        SharedParams::gesture(self, id.raw())
+    }
+
+    fn set_gesture(&self, id: vxn_core_app::ParamId, on: bool) {
+        SharedParams::set_gesture(self, id.raw(), on);
+    }
+
+    fn descriptor(&self, id: vxn_core_app::ParamId) -> Option<&'static vxn_core_app::ParamDesc> {
+        core_desc_for_clap_id(id.raw())
+    }
+
+    fn snapshot_bytes(&self) -> Vec<u8> {
+        ParamModel::snapshot_bytes(self)
+    }
+
+    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
+        ParamModel::load_bytes(self, blob).map_err(|e| e.to_string())
+    }
+}
+
+impl vxn2_app::Vxn2Params for SharedParams {
+    fn matrix_row(&self, layer: vxn2_app::Layer, slot: u8) -> vxn2_app::MatrixRow {
+        let raw = self.matrix_row_raw(layer.raw() as usize, slot as usize);
+        vxn2_app::MatrixRow {
+            source: raw.source,
+            dest: raw.dest,
+            curve: raw.curve,
+            active: raw.active,
+            depth: raw.depth,
+        }
+    }
+
+    fn set_matrix_row(&self, layer: vxn2_app::Layer, slot: u8, row: vxn2_app::MatrixRow) {
+        self.set_matrix_row_raw(
+            layer.raw() as usize,
+            slot as usize,
+            MatrixRowRaw {
+                source: row.source,
+                dest: row.dest,
+                curve: row.curve,
+                active: row.active,
+                depth: row.depth,
+            },
+        );
+    }
+
+    fn edit_layer(&self) -> vxn2_app::Layer {
+        vxn2_app::Layer::from_u8(self.edit_layer_raw())
+    }
+
+    fn set_edit_layer(&self, layer: vxn2_app::Layer) {
+        self.set_edit_layer_raw(layer.raw());
     }
 }
 

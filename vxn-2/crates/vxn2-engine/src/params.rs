@@ -686,6 +686,67 @@ fn module_for_patch(off: usize) -> &'static str {
     }
 }
 
+// ── Core-app ParamDesc bridge ───────────────────────────────────────────────
+//
+// `vxn_core_app::ParamDesc` is the shape the controller / editor surface
+// programs against (ticket 0022). Field-by-field same layout as the local
+// `ParamDesc` above with one rename: engine's `id` (kebab-case machine id)
+// → core-app's `name`, and engine's `name` (display label) → core-app's
+// `label`. Built as a const at compile time so `descriptor()` lookups stay
+// O(1) with no allocation.
+
+const fn to_core(d: &ParamDesc) -> vxn_core_app::ParamDesc {
+    let kind = match d.kind {
+        ParamKind::Float { unit, taper } => vxn_core_app::ParamKind::Float {
+            unit,
+            taper: match taper {
+                Taper::Linear => vxn_core_app::Taper::Linear,
+                Taper::Exp { mid } => vxn_core_app::Taper::Exp { mid },
+            },
+        },
+        ParamKind::Int { unit } => vxn_core_app::ParamKind::Int { unit },
+        ParamKind::Bool => vxn_core_app::ParamKind::Bool,
+        ParamKind::Enum { variants } => vxn_core_app::ParamKind::Enum { variants },
+    };
+    vxn_core_app::ParamDesc {
+        name: d.id,
+        label: d.name,
+        min: d.min,
+        max: d.max,
+        default: d.default,
+        kind,
+    }
+}
+
+const CORE_PLACEHOLDER: vxn_core_app::ParamDesc = vxn_core_app::ParamDesc {
+    name: "",
+    label: "",
+    min: 0.0,
+    max: 0.0,
+    default: 0.0,
+    kind: vxn_core_app::ParamKind::Bool,
+};
+
+/// Mirror of [`PARAMS`] in [`vxn_core_app::ParamDesc`] shape. Same length,
+/// same index ordering; only `name` ↔ `label` differs in field semantics
+/// (engine's `id` becomes core-app's `name`).
+pub const CORE_PARAMS: [vxn_core_app::ParamDesc; TOTAL_PARAMS] = {
+    let mut out = [CORE_PLACEHOLDER; TOTAL_PARAMS];
+    let mut i = 0;
+    while i < TOTAL_PARAMS {
+        out[i] = to_core(&PARAMS[i]);
+        i += 1;
+    }
+    out
+};
+
+/// Core-app descriptor for `idx` — the lookup the `ParamModel::descriptor`
+/// impl (ticket 0022) wires to.
+#[inline]
+pub fn core_desc_for_clap_id(idx: usize) -> Option<&'static vxn_core_app::ParamDesc> {
+    CORE_PARAMS.get(idx)
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

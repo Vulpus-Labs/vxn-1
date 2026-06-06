@@ -4,7 +4,12 @@ title: Factory presets — reverb defaults + per-type tasting pass
 priority: medium
 created: 2026-06-01
 epic: E012
+status: superseded
 ---
+
+> **Superseded by [0099](0099-factory-preset-fdn-audit.md).** The BBD reverb this
+> ticket was tasting against is gone (E018 / 0095 replaced it with the FDN); any
+> further factory audition rides 0099's framing, not this one's.
 
 ## Summary
 
