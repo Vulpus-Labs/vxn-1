@@ -780,7 +780,7 @@ impl LadderMix for MBp2 {
 impl LadderMix for MBp4 {
     #[inline(always)]
     fn mix(_e: f32, y: [f32; 4]) -> f32 {
-        4.0 * (y[1] - y[3])
+        4.0 * y[1] - 8.0 * y[2] + 4.0 * y[3]
     }
 }
 impl LadderMix for MNotch {

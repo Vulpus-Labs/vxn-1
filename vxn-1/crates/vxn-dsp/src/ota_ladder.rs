@@ -90,7 +90,7 @@ impl FilterMode {
             (FilterMode::Hp, Pole2) => e - 2.0 * y[0] + y[1],
             (FilterMode::Hp, Pole4) => e - 4.0 * y[0] + 6.0 * y[1] - 4.0 * y[2] + y[3],
             (FilterMode::Bp, Pole2) => 2.0 * (y[0] - y[1]),
-            (FilterMode::Bp, Pole4) => 4.0 * (y[1] - y[3]),
+            (FilterMode::Bp, Pole4) => 4.0 * y[1] - 8.0 * y[2] + 4.0 * y[3],
             (FilterMode::Notch, _) => e - 2.0 * y[0] + 2.0 * y[1],
         }
     }
