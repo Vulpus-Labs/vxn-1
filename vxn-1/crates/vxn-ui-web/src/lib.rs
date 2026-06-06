@@ -446,9 +446,12 @@ fn parse_ui_event(body: &str) -> Option<UiEvent> {
         "end_gesture" => Some(UiEvent::EndGesture {
             id: ParamId::new(v.get("id")?.as_u64()? as usize),
         }),
-        "reset_layer" => Some(UiEvent::ResetLayer {
-            layer: parse_layer(v.get("layer")?)?,
-        }),
+        "reset_layer" => Some(
+            vxn_app::Vxn1UiCustom::ResetLayer {
+                layer: parse_layer(v.get("layer")?)?,
+            }
+            .into_event(),
+        ),
         "load_factory" => Some(UiEvent::LoadPreset {
             source: PresetSource::Factory {
                 index: v.get("index")?.as_u64()? as usize,
@@ -504,15 +507,24 @@ fn parse_ui_event(body: &str) -> Option<UiEvent> {
             name: v.get("name")?.as_str()?.to_owned(),
             folder: v.get("folder").and_then(|x| x.as_str()).map(str::to_owned),
         }),
-        "set_key_mode" => Some(UiEvent::SetKeyMode {
-            mode: parse_key_mode(v.get("mode")?)?,
-        }),
-        "set_split_point" => Some(UiEvent::SetSplitPoint {
-            note: v.get("note")?.as_u64()? as u8,
-        }),
-        "set_edit_layer" => Some(UiEvent::SetEditLayer {
-            layer: parse_layer(v.get("layer")?)?,
-        }),
+        "set_key_mode" => Some(
+            vxn_app::Vxn1UiCustom::SetKeyMode {
+                mode: parse_key_mode(v.get("mode")?)?,
+            }
+            .into_event(),
+        ),
+        "set_split_point" => Some(
+            vxn_app::Vxn1UiCustom::SetSplitPoint {
+                note: v.get("note")?.as_u64()? as u8,
+            }
+            .into_event(),
+        ),
+        "set_edit_layer" => Some(
+            vxn_app::Vxn1UiCustom::SetEditLayer {
+                layer: parse_layer(v.get("layer")?)?,
+            }
+            .into_event(),
+        ),
         // Sent by the page's `init()` once the JS dispatcher is wired.
         // Triggers a controller-side broadcast so any param/key-mode
         // ViewEvents that raced ahead of the bootstrap script get re-sent
@@ -625,18 +637,6 @@ fn view_event_to_json(ev: &ViewEvent) -> String {
             "kind": "preset_corpus_changed",
             "follow": follow.as_ref().map(|p| p.display().to_string()),
         }),
-        ViewEvent::KeyModeChanged { mode } => json!({
-            "kind": "key_mode_changed",
-            "mode": *mode as u8,
-        }),
-        ViewEvent::SplitPointChanged { note } => json!({
-            "kind": "split_point_changed",
-            "note": *note,
-        }),
-        ViewEvent::EditLayerChanged { layer } => json!({
-            "kind": "edit_layer_changed",
-            "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
-        }),
         ViewEvent::Status { line } => json!({
             "kind": "status",
             "line": line,
@@ -657,6 +657,32 @@ fn view_event_to_json(ev: &ViewEvent) -> String {
             "id": id,
             "value": value,
         }),
+        ViewEvent::Custom(payload) => {
+            // VXN1-specific view events ride `Custom`. Downcast to
+            // `Vxn1ViewCustom` and emit the same JSON shape the JS
+            // bridge has always seen (kind: "key_mode_changed",
+            // "split_point_changed", "edit_layer_changed").
+            if let Some(custom) = payload.downcast_ref::<vxn_app::Vxn1ViewCustom>() {
+                match custom {
+                    vxn_app::Vxn1ViewCustom::KeyModeChanged { mode } => json!({
+                        "kind": "key_mode_changed",
+                        "mode": *mode as u8,
+                    }),
+                    vxn_app::Vxn1ViewCustom::SplitPointChanged { note } => json!({
+                        "kind": "split_point_changed",
+                        "note": *note,
+                    }),
+                    vxn_app::Vxn1ViewCustom::EditLayerChanged { layer } => json!({
+                        "kind": "edit_layer_changed",
+                        "layer": match layer { Layer::Upper => "upper", Layer::Lower => "lower" },
+                    }),
+                }
+            } else {
+                // Unknown custom payload — emit a benign marker the JS
+                // dispatcher ignores rather than dropping the event.
+                json!({ "kind": "unknown_custom" })
+            }
+        }
     };
     v.to_string()
 }
@@ -857,10 +883,20 @@ mod tests {
 
     #[test]
     fn parses_layer_and_key_mode() {
+        use vxn_app::Vxn1UiCustom;
         let ev = parse_ui_event(r#"{"op":"set_edit_layer","layer":"lower"}"#).unwrap();
-        assert!(matches!(ev, UiEvent::SetEditLayer { layer: Layer::Lower }));
+        let UiEvent::Custom(payload) = ev else {
+            panic!("expected Custom");
+        };
+        let custom = *payload.downcast::<Vxn1UiCustom>().expect("downcast");
+        assert!(matches!(custom, Vxn1UiCustom::SetEditLayer { layer: Layer::Lower }));
+
         let ev = parse_ui_event(r#"{"op":"set_key_mode","mode":2}"#).unwrap();
-        assert!(matches!(ev, UiEvent::SetKeyMode { mode: KeyMode::Split }));
+        let UiEvent::Custom(payload) = ev else {
+            panic!("expected Custom");
+        };
+        let custom = *payload.downcast::<Vxn1UiCustom>().expect("downcast");
+        assert!(matches!(custom, Vxn1UiCustom::SetKeyMode { mode: KeyMode::Split }));
     }
 
     #[test]
@@ -1917,7 +1953,9 @@ mod tests {
     fn edit_layer_changed_serializes() {
         // The web crate's view_event_to_json must encode the new variant
         // for the JS dispatcher to ever see it.
-        let s = view_event_to_json(&ViewEvent::EditLayerChanged { layer: Layer::Lower });
+        let s = view_event_to_json(
+            &vxn_app::Vxn1ViewCustom::EditLayerChanged { layer: Layer::Lower }.into_event(),
+        );
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["kind"], "edit_layer_changed");
         assert_eq!(v["layer"], "lower");
@@ -1929,7 +1967,9 @@ mod tests {
         // re-broadcast (preset / state-load / EditorReady) to reseed its
         // slider, since the page has no idle-poll loop the vizia editor
         // uses to read `SharedParams::split_point()` directly.
-        let s = view_event_to_json(&ViewEvent::SplitPointChanged { note: 72 });
+        let s = view_event_to_json(
+            &vxn_app::Vxn1ViewCustom::SplitPointChanged { note: 72 }.into_event(),
+        );
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["kind"], "split_point_changed");
         assert_eq!(v["note"], 72);

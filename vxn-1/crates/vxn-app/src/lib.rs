@@ -7,7 +7,6 @@
 //!
 //! Scaffold only; handlers fill in across tickets 0034–0038.
 
-pub mod backend;
 pub mod controller;
 pub mod domain;
 pub mod events;
@@ -15,11 +14,10 @@ pub mod model;
 pub mod params;
 pub mod sync;
 
-pub use backend::EditorBackend;
 pub use controller::{CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, Tick};
 pub use domain::{DEFAULT_SPLIT_POINT, KeyMode, Layer, PresetMeta, UNCATEGORIZED};
-pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent};
-pub use model::{ParamId, ParamModel};
+pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1ViewCustom};
+pub use model::{ParamId, ParamModel, Vxn1Params};
 pub use params::{
     AssignMode, CrossModType, EnvSel, GLOBAL_PARAMS, GLOBAL_COUNT, GlobalParam, LfoSel,
     PATCH_COUNT, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, PatchParam, REVERB_TYPE_LABELS,
@@ -27,10 +25,10 @@ pub use params::{
     patch_clap_id,
 };
 
-// PresetStore / PresetCorpus / PresetLoad / UserFolderEntry / UserPresetEntry
-// live in `vxn-core-app` post-E001/0006. EditorBackend stays vxn-1-local
-// for now: its method signatures carry the vxn-1-specific ViewEvent +
-// ControllerHandle, and the synth-specific event rewire is deferred.
+// EditorBackend + PresetStore + PresetCorpus + PresetLoad +
+// UserFolderEntry + UserPresetEntry all live in `vxn-core-app`
+// post-E001/0007. Their signatures now use the shared `UiEvent` /
+// `ViewEvent`, so the re-exports are drop-in for vxn-1 callers.
 pub use vxn_core_app::{
-    PresetCorpus, PresetLoad, PresetStore, UserFolderEntry, UserPresetEntry,
+    EditorBackend, PresetCorpus, PresetLoad, PresetStore, UserFolderEntry, UserPresetEntry,
 };

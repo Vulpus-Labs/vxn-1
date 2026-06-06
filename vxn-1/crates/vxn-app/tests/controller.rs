@@ -12,8 +12,41 @@ use std::sync::{Arc, RwLock};
 use vxn_app::{
     Controller, HostEvent, KeyMode, Layer, ParamDesc, ParamId, ParamKind, ParamModel, PresetLoad,
     PresetMeta, PresetSource, PresetStore, Taper, UiEvent, UserFolderEntry, UserPresetEntry,
-    ViewEvent,
+    ViewEvent, Vxn1Params, Vxn1UiCustom, Vxn1ViewCustom,
 };
+
+// ── Test helpers ────────────────────────────────────────────────────────────
+//
+// Vxn1ViewCustom payloads ride `ViewEvent::Custom(Box<dyn Any + Send>)`.
+// `matches!` can't downcast, so these wrappers match the common shapes.
+
+fn as_vxn1_view(ev: &ViewEvent) -> Option<&Vxn1ViewCustom> {
+    if let ViewEvent::Custom(p) = ev {
+        p.downcast_ref::<Vxn1ViewCustom>()
+    } else {
+        None
+    }
+}
+
+fn is_keymode_changed(ev: &ViewEvent) -> bool {
+    matches!(as_vxn1_view(ev), Some(Vxn1ViewCustom::KeyModeChanged { .. }))
+}
+
+fn is_splitpoint_changed(ev: &ViewEvent) -> bool {
+    matches!(as_vxn1_view(ev), Some(Vxn1ViewCustom::SplitPointChanged { .. }))
+}
+
+fn is_splitpoint_changed_with(ev: &ViewEvent, want: u8) -> bool {
+    matches!(as_vxn1_view(ev), Some(Vxn1ViewCustom::SplitPointChanged { note }) if *note == want)
+}
+
+fn is_editlayer_changed_any(ev: &ViewEvent) -> bool {
+    matches!(as_vxn1_view(ev), Some(Vxn1ViewCustom::EditLayerChanged { .. }))
+}
+
+fn is_editlayer_changed(ev: &ViewEvent, want: Layer) -> bool {
+    matches!(as_vxn1_view(ev), Some(Vxn1ViewCustom::EditLayerChanged { layer }) if *layer == want)
+}
 
 // ── Mock model ──────────────────────────────────────────────────────────────
 
@@ -83,22 +116,6 @@ impl ParamModel for MockModel {
     fn descriptor(&self, id: ParamId) -> Option<&'static ParamDesc> {
         MOCK_DESCS.get(id.raw())
     }
-    fn key_mode(&self) -> KeyMode {
-        *self.key_mode.read().unwrap()
-    }
-    fn set_key_mode(&self, mode: KeyMode) {
-        *self.key_mode.write().unwrap() = mode;
-    }
-    fn set_key_mode_seeded(&self, mode: KeyMode) {
-        // Mock: no upper→lower seed; just set.
-        *self.key_mode.write().unwrap() = mode;
-    }
-    fn split_point(&self) -> u8 {
-        *self.split_point.read().unwrap()
-    }
-    fn set_split_point(&self, note: u8) {
-        *self.split_point.write().unwrap() = note;
-    }
     fn snapshot_bytes(&self) -> Vec<u8> {
         // Trivial format: [total: u32 le] then total × f32 le.
         let vals = self.values.read().unwrap();
@@ -125,6 +142,25 @@ impl ParamModel for MockModel {
             vals.insert(ParamId::new(i), v);
         }
         Ok(())
+    }
+}
+
+impl Vxn1Params for MockModel {
+    fn key_mode(&self) -> KeyMode {
+        *self.key_mode.read().unwrap()
+    }
+    fn set_key_mode(&self, mode: KeyMode) {
+        *self.key_mode.write().unwrap() = mode;
+    }
+    fn set_key_mode_seeded(&self, mode: KeyMode) {
+        // Mock: no upper→lower seed; just set.
+        *self.key_mode.write().unwrap() = mode;
+    }
+    fn split_point(&self) -> u8 {
+        *self.split_point.read().unwrap()
+    }
+    fn set_split_point(&self, note: u8) {
+        *self.split_point.write().unwrap() = note;
     }
 }
 
@@ -446,8 +482,7 @@ fn host_automation_echo_suppressed_during_gesture() {
     // …but the view doesn't, until the gesture ends.
     let mid_events = drain(&view_rx);
     assert!(
-        !mid_events.iter().any(|ev| matches!(
-            ev,
+        !mid_events.iter().any(|ev| matches!(ev,
             ViewEvent::ParamChanged { id: i, .. } if *i == id
         )),
         "ParamChanged echoed mid-gesture: {mid_events:?}"
@@ -465,8 +500,7 @@ fn host_automation_echo_suppressed_during_gesture() {
     assert_eq!(model.get(id), 0.9);
     let post_events = drain(&view_rx);
     assert!(
-        post_events.iter().any(|ev| matches!(
-            ev,
+        post_events.iter().any(|ev| matches!(ev,
             ViewEvent::ParamChanged { id: i, plain, .. } if *i == id && *plain == 0.9
         )),
         "expected resumed echo after gesture end: {post_events:?}"
@@ -521,7 +555,7 @@ fn preset_load_emits_per_param_view_events() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
+            .any(|ev| is_keymode_changed(ev)),
         "missing KeyModeChanged in {events:?}"
     );
     // 0053: the HTML keys panel needs the split-point echo so its
@@ -529,7 +563,7 @@ fn preset_load_emits_per_param_view_events() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { .. })),
+            .any(|ev| is_splitpoint_changed(ev)),
         "missing SplitPointChanged in {events:?}"
     );
 }
@@ -541,15 +575,12 @@ fn set_edit_layer_echoes_as_view_event() {
     // widget (HTML faceplate) can rebind per-patch panels.
     let (mut ctrl, _model, view_rx) = build(2);
     ctrl.ui_sender()
-        .send(UiEvent::SetEditLayer { layer: Layer::Lower })
+        .send(Vxn1UiCustom::SetEditLayer { layer: Layer::Lower }.into_event())
         .unwrap();
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
-            ViewEvent::EditLayerChanged { layer: Layer::Lower }
-        )),
+        events.iter().any(|ev| is_editlayer_changed(ev, Layer::Lower)),
         "missing EditLayerChanged(Lower) in {events:?}"
     );
 }
@@ -581,10 +612,7 @@ fn preset_load_snaps_edit_layer_to_upper_in_whole() {
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
-            ViewEvent::EditLayerChanged { layer: Layer::Upper }
-        )),
+        events.iter().any(|ev| is_editlayer_changed(ev, Layer::Upper)),
         "missing EditLayerChanged(Upper) snap after Whole-mode preset load: {events:?}"
     );
 }
@@ -615,7 +643,7 @@ fn preset_load_in_dual_mode_does_not_snap_edit_layer() {
     assert!(
         !events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::EditLayerChanged { .. })),
+            .any(|ev| is_editlayer_changed_any(ev)),
         "unexpected EditLayerChanged in Dual-mode preset load: {events:?}"
     );
 }
@@ -625,15 +653,12 @@ fn set_key_mode_to_whole_snaps_edit_layer_to_upper() {
     let (mut ctrl, model, view_rx) = build(2);
     model.set_key_mode(KeyMode::Dual);
     ctrl.ui_sender()
-        .send(UiEvent::SetKeyMode { mode: KeyMode::Whole })
+        .send(Vxn1UiCustom::SetKeyMode { mode: KeyMode::Whole }.into_event())
         .unwrap();
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
-            ViewEvent::EditLayerChanged { layer: Layer::Upper }
-        )),
+        events.iter().any(|ev| is_editlayer_changed(ev, Layer::Upper)),
         "missing EditLayerChanged(Upper) on entry to Whole: {events:?}"
     );
 }
@@ -643,14 +668,14 @@ fn set_key_mode_to_dual_does_not_snap_edit_layer() {
     let (mut ctrl, model, view_rx) = build(2);
     model.set_key_mode(KeyMode::Whole);
     ctrl.ui_sender()
-        .send(UiEvent::SetKeyMode { mode: KeyMode::Dual })
+        .send(Vxn1UiCustom::SetKeyMode { mode: KeyMode::Dual }.into_event())
         .unwrap();
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
         !events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::EditLayerChanged { .. })),
+            .any(|ev| is_editlayer_changed_any(ev)),
         "unexpected EditLayerChanged on entry to Dual: {events:?}"
     );
 }
@@ -671,8 +696,7 @@ fn request_text_input_relays_to_open_text_input() {
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
+        events.iter().any(|ev| matches!(ev,
             ViewEvent::OpenTextInput { id, title, initial }
                 if id == "ti7" && title == "Rename Preset" && initial == "Pad 1"
         )),
@@ -700,16 +724,14 @@ fn text_input_result_relays_back_to_page() {
     ctrl.tick();
     let events = drain(&view_rx);
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
+        events.iter().any(|ev| matches!(ev,
             ViewEvent::TextInputResult { id, value: Some(v) }
                 if id == "ti7" && v == "Pad 2"
         )),
         "missing commit echo: {events:?}"
     );
     assert!(
-        events.iter().any(|ev| matches!(
-            ev,
+        events.iter().any(|ev| matches!(ev,
             ViewEvent::TextInputResult { id, value: None } if id == "ti8"
         )),
         "missing cancel echo: {events:?}"
@@ -960,7 +982,7 @@ fn editor_ready_replays_params_and_corpus() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::KeyModeChanged { .. })),
+            .any(|ev| is_keymode_changed(ev)),
         "expected KeyModeChanged: {events:?}",
     );
     // 0053: the HTML keys panel has no idle-poll loop, so EditorReady
@@ -968,7 +990,7 @@ fn editor_ready_replays_params_and_corpus() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { .. })),
+            .any(|ev| is_splitpoint_changed(ev)),
         "expected SplitPointChanged: {events:?}",
     );
     assert!(
@@ -987,7 +1009,7 @@ fn set_split_point_writes_model_and_echoes() {
     // the echo.
     let (mut ctrl, model, view_rx) = build(2);
     ctrl.ui_sender()
-        .send(UiEvent::SetSplitPoint { note: 48 })
+        .send(Vxn1UiCustom::SetSplitPoint { note: 48 }.into_event())
         .unwrap();
     ctrl.tick();
     assert_eq!(model.split_point(), 48);
@@ -995,7 +1017,7 @@ fn set_split_point_writes_model_and_echoes() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, ViewEvent::SplitPointChanged { note: 48 })),
+            .any(|ev| is_splitpoint_changed_with(ev, 48)),
         "missing SplitPointChanged(48): {events:?}",
     );
 }

@@ -1,54 +1,27 @@
-//! Generic parameter model the controller programs against (ADR 0007 §4).
+//! Parameter store traits.
 //!
-//! `vxn-engine`'s `SharedParams` implements [`ParamModel`]. The trait exists so
-//! a future VXN-2 plugs in its own atomic store without changes here.
+//! The generic surface ([`ParamModel`]) lives in `vxn-core-app`. VXN1
+//! adds [`Vxn1Params`] for the non-automatable shared state that
+//! travels in the state blob rather than the CLAP param table —
+//! key mode + split point.
 
 use crate::domain::KeyMode;
-use crate::params::ParamDesc;
 
-// `ParamId` lives in `vxn-core-app` post-E001/0006. Re-export so existing
-// `vxn_app::ParamId` call sites keep working.
-pub use vxn_core_app::ParamId;
+// `ParamId` and `ParamModel` live in `vxn-core-app` post-E001/0007.
+pub use vxn_core_app::{ParamId, ParamModel};
 
-/// The live parameter store. Audio-thread safe (`Send + Sync`); writes from
-/// the controller and reads from the audio thread cross here without locks.
-///
-/// Beyond the param array, the trait also surfaces non-automatable shared
-/// state (key mode, split point) and an opaque save/restore byte channel
-/// (state blob), so the controller can serve host save/load without knowing
-/// the engine's internal format.
-pub trait ParamModel: Send + Sync + 'static {
-    fn total(&self) -> usize;
-
-    fn get(&self, id: ParamId) -> f32;
-    fn set(&self, id: ParamId, plain: f32);
-
-    fn get_normalized(&self, id: ParamId) -> f32;
-    fn set_normalized(&self, id: ParamId, norm: f32);
-
-    fn gesture(&self, id: ParamId) -> bool;
-    fn set_gesture(&self, id: ParamId, on: bool);
-
-    /// Static descriptor for a param id (range, formatting, fader mapping).
-    fn descriptor(&self, id: ParamId) -> Option<&'static ParamDesc>;
-
-    // ── Non-automatable shared state ─────────────────────────────────────────
-
+/// VXN1-specific extension trait: non-automatable shared state (key
+/// mode + split point) and the discrete-edit `set_key_mode_seeded`
+/// path that performs Whole → non-Whole one-shot Upper → Lower copy.
+pub trait Vxn1Params: ParamModel {
     fn key_mode(&self) -> KeyMode;
     fn set_key_mode(&self, mode: KeyMode);
-    /// Set the key mode from a **discrete UI edit**, performing any one-shot
-    /// seed-on-entry copy (e.g. Whole → non-Whole seeds Lower from Upper).
-    /// Distinct from [`set_key_mode`] which is used by state load (no seeding).
+    /// Set the key mode from a **discrete UI edit**, performing any
+    /// one-shot seed-on-entry copy (e.g. Whole → non-Whole seeds
+    /// Lower from Upper). Distinct from [`Self::set_key_mode`] which
+    /// is used by state load (no seeding).
     fn set_key_mode_seeded(&self, mode: KeyMode);
 
     fn split_point(&self) -> u8;
     fn set_split_point(&self, note: u8);
-
-    // ── State blob (CLAP state save/load) ────────────────────────────────────
-
-    /// Serialize the entire store to bytes for host `state.save`.
-    fn snapshot_bytes(&self) -> Vec<u8>;
-
-    /// Apply a previously-saved blob.
-    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String>;
 }

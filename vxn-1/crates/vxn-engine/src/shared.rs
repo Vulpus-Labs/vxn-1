@@ -264,6 +264,22 @@ impl vxn_app::ParamModel for SharedParams {
         desc_for_clap_id(id.raw())
     }
 
+    fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        self.to_state()
+            .write(&mut buf)
+            .expect("PluginState::write into Vec is infallible");
+        buf
+    }
+
+    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
+        let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
+        self.restore_from(&state);
+        Ok(())
+    }
+}
+
+impl vxn_app::Vxn1Params for SharedParams {
     fn key_mode(&self) -> KeyMode {
         SharedParams::key_mode(self)
     }
@@ -282,20 +298,6 @@ impl vxn_app::ParamModel for SharedParams {
 
     fn set_split_point(&self, note: u8) {
         SharedParams::set_split_point(self, note);
-    }
-
-    fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-        self.to_state()
-            .write(&mut buf)
-            .expect("PluginState::write into Vec is infallible");
-        buf
-    }
-
-    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
-        let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
-        self.restore_from(&state);
-        Ok(())
     }
 }
 
