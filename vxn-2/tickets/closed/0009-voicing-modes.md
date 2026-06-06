@@ -22,26 +22,26 @@ in Layer / Split modes.
 
 ## Acceptance criteria
 
-- [ ] `Patch` holds either one parameter set (Whole) or two (Layer / Split).
+- [x] `Patch` holds either one parameter set (Whole) or two (Layer / Split).
       Use the same `PatchParams` struct shape, just held singly or in pairs.
-- [ ] `note_on(note, vel)` dispatches:
+- [x] `note_on(note, vel)` dispatches:
       - Whole: one allocation per note
       - Layer: two allocations per note (one per layer set), both gated
         identically
       - Split: one allocation per note, layer chosen by note vs split_point
-- [ ] Voice cap (16 voices) applies to the *total* in-flight voices across
+- [x] Voice cap (16 voices) applies to the *total* in-flight voices across
       layers. In Layer mode, polyphony is effectively halved.
-- [ ] `split_point` is a MIDI note (0..127). Notes equal to or above the
+- [x] `split_point` is a MIDI note (0..127). Notes equal to or above the
       split go to Upper; below go to Lower.
-- [ ] Mod matrix slots are per-layer: the Upper and Lower layers each have
+- [x] Mod matrix slots are per-layer: the Upper and Lower layers each have
       their own 16-slot matrix.
-- [ ] FX (delay, reverb) are *patch-level*, not per-layer — both layers feed
+- [x] FX (delay, reverb) are *patch-level*, not per-layer — both layers feed
       the same FX chain.
-- [ ] LFOs: LFO1 is patch-level (shared). LFO2 is per-voice (so each layer's
+- [x] LFOs: LFO1 is patch-level (shared). LFO2 is per-voice (so each layer's
       voices have their own LFO2 instances).
-- [ ] Mode change in the middle of playback: existing voices play out;
+- [x] Mode change in the middle of playback: existing voices play out;
       new note-ons honour the new mode.
-- [ ] Test: Layer mode with two contrasting patches plays both on every
+- [x] Test: Layer mode with two contrasting patches plays both on every
       note. Split mode with split_point=60 plays Upper on C4 and above,
       Lower on B3 and below.
 

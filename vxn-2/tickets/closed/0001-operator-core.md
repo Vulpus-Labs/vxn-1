@@ -21,27 +21,27 @@ exercise a precursor.
 
 ## Acceptance criteria
 
-- [ ] `OpParams` struct holds all per-op runtime values from `PARAMETERS.md`.
-- [ ] `OpState` holds Q32 phase + EG state + KS-cached level scaler + per-op FB
+- [x] `OpParams` struct holds all per-op runtime values from `PARAMETERS.md`.
+- [x] `OpState` holds Q32 phase + EG state + KS-cached level scaler + per-op FB
       memory.
-- [ ] `op_tick(state, params, modulation_input, key) -> f32` runs branch-free,
+- [x] `op_tick(state, params, modulation_input, key) -> f32` runs branch-free,
       auto-vectorises in the same SoA pattern as VXN1 (verified via asm dump).
-- [ ] EG: 4 rates (R1..R4) × 4 levels (L1..L4), exact DX7-spec curve shape
+- [x] EG: 4 rates (R1..R4) × 4 levels (L1..L4), exact DX7-spec curve shape
       (per https://www.chipple.net/dx7/fig01-04.gif reference table).
-- [ ] Note-on / note-off transitions: attack from L4, gate-off jumps to release
+- [x] Note-on / note-off transitions: attack from L4, gate-off jumps to release
       segment, release falls to L4.
-- [ ] Key scaling level: at `ks_break_pt` no scaling; left of BP, scales by
+- [x] Key scaling level: at `ks_break_pt` no scaling; left of BP, scales by
       `ks_l_depth` shaped by `ks_l_curve`; right by `ks_r_depth`/`ks_r_curve`.
       All four curve types (+lin, −lin, +exp, −exp) implemented.
-- [ ] Key scaling rate: scales all four EG rates by `ks_rate × note_delta`.
-- [ ] Velocity sensitivity (`vel_sens`, 0..7) attenuates `level` proportional to
+- [x] Key scaling rate: scales all four EG rates by `ks_rate × note_delta`.
+- [x] Velocity sensitivity (`vel_sens`, 0..7) attenuates `level` proportional to
       note-on velocity per DX7 table.
-- [ ] Amp sensitivity (`amp_sens`, 0..3) attenuates LFO depth applied to
+- [x] Amp sensitivity (`amp_sens`, 0..3) attenuates LFO depth applied to
       `level` per DX7 table (matrix-driven; this is the receive coefficient).
-- [ ] Per-op feedback: a `feedback` value > 0 adds the op's own previous output
+- [x] Per-op feedback: a `feedback` value > 0 adds the op's own previous output
       (averaged with one-sample-back to suppress aliasing per DX7 convention)
       to its phase input, scaled by `feedback` (DX7 scaling table).
-- [ ] Bench `vxn2-osc-bench` extended with `op_voice_steady` and
+- [x] Bench `vxn2-osc-bench` extended with `op_voice_steady` and
       `op_voice_attack` — single-op cost, idle and active.
 
 ## Notes

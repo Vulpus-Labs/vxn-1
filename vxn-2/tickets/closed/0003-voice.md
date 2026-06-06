@@ -19,23 +19,23 @@ allocate, 0005 will stack).
 
 ## Acceptance criteria
 
-- [ ] `Voice` struct holds: 6× `OpState` (0001), played note, velocity,
+- [x] `Voice` struct holds: 6× `OpState` (0001), played note, velocity,
       gate, current pitch (note + bend + glide), stack-instance metadata
       (`voice_idx`, `voice_spread`, `voice_rand` — populated by 0005,
       defaulted in this ticket).
-- [ ] `voice_tick(voice, patch, modulation) -> f32` returns one sample.
+- [x] `voice_tick(voice, patch, modulation) -> f32` returns one sample.
       `modulation` is a per-block resolved struct (mod matrix output; stubbed
       for now).
-- [ ] Note-on: resets EG to attack segment for all ops, captures velocity,
+- [x] Note-on: resets EG to attack segment for all ops, captures velocity,
       sets `voice_rand`.
-- [ ] Note-off: gates all op EGs to release.
-- [ ] Per-op pan: voice produces mono in this ticket; a separate stereo
+- [x] Note-off: gates all op EGs to release.
+- [x] Per-op pan: voice produces mono in this ticket; a separate stereo
       summing pass (`voice_tick_stereo`) consumes the per-op pan parameters
       and produces L/R from the per-op outputs. Both paths exposed; stereo
       is the default once 0005 lands.
-- [ ] Voice produces zero output when all op EGs are at L4=0 in release
+- [x] Voice produces zero output when all op EGs are at L4=0 in release
       (steady-state idle). Used by the allocator (0004) to free voices.
-- [ ] Bench: `voice_steady` (sustained note, all 6 ops active) and
+- [x] Bench: `voice_steady` (sustained note, all 6 ops active) and
       `voice_release` (note-off tail) added to `vxn2-osc-bench`.
 
 ## Notes

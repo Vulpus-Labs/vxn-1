@@ -14,22 +14,22 @@ between consecutive notes in Solo (optional in Poly via legato).
 
 ## Acceptance criteria
 
-- [ ] `PolyAlloc` holds a fixed array of 16 `Voice` slots (no dyn alloc).
-- [ ] `note_on(note, vel)` finds an idle voice (EG in release with output
+- [x] `PolyAlloc` holds a fixed array of 16 `Voice` slots (no dyn alloc).
+- [x] `note_on(note, vel)` finds an idle voice (EG in release with output
       below silence threshold) or, failing that, steals the oldest still-
       gated voice.
-- [ ] `note_off(note)` gates all voices currently sounding that note (handles
+- [x] `note_off(note)` gates all voices currently sounding that note (handles
       duplicate triggers).
-- [ ] Solo mode: a new note-on while another is held re-uses the same voice,
+- [x] Solo mode: a new note-on while another is held re-uses the same voice,
       retriggers EG (unless `legato` is on, in which case EG continues and
       pitch glides).
-- [ ] Glide: linear pitch ramp over `glide_time` ms between consecutive
+- [x] Glide: linear pitch ramp over `glide_time` ms between consecutive
       notes (Solo always; Poly only with `legato` on and notes overlapping).
-- [ ] Pitch bend: applied at the voice level, not the allocator — but the
+- [x] Pitch bend: applied at the voice level, not the allocator — but the
       allocator forwards `set_bend(value)` to every voice.
-- [ ] Oldest-steal heuristic: the voice whose note-on timestamp is earliest
+- [x] Oldest-steal heuristic: the voice whose note-on timestamp is earliest
       AND whose EG is at or past sustain. Ties broken by lowest played note.
-- [ ] Bench: `alloc_held_chord` (8 notes held, render N seconds) and
+- [x] Bench: `alloc_held_chord` (8 notes held, render N seconds) and
       `alloc_steal_churn` (rapid note-on/off cycling beyond polyphony cap).
 
 ## Notes

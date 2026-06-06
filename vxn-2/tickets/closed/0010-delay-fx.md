@@ -12,28 +12,30 @@ Stereo delay line. BPM-syncable to subdivisions, feedback path, wet/dry mix,
 ping-pong toggle. "Clean" — no tape, no filter on the feedback path beyond a
 soft DC blocker. Character lives in the synth, not the FX (ADR §7).
 
+Refer to patches/patches-modules for StereoDelay implementation built on delay line with cubic interpolation
+
 ## Acceptance criteria
 
-- [ ] Stereo `DelayLine` with two independent delay-line buffers (L and R).
+- [x] Stereo `DelayLine` with two independent delay-line buffers (L and R).
       Buffer size sufficient for max delay time (4000 ms at 96 kHz =
       384k samples per side). Allocated once; no realloc on parameter change.
-- [ ] `delay_time` mapped to delay length in samples. When `delay_sync` is
+- [x] `delay_time` mapped to delay length in samples. When `delay_sync` is
       on, snap to the BPM-subdivision table (reuse VXN1's
       `vxn_app::sync::subdivisions` directly).
-- [ ] Feedback path: `out_sample → buffer[next_write]` mixed with input.
+- [x] Feedback path: `out_sample → buffer[next_write]` mixed with input.
       Feedback capped at 0.95 (parameter range) to prevent runaway.
-- [ ] DC blocker (single one-pole highpass at ~10 Hz) on the feedback path,
+- [x] DC blocker (single one-pole highpass at ~10 Hz) on the feedback path,
       no other filtering.
-- [ ] Ping-pong: when on, L input feeds R buffer with delay, R input feeds
+- [x] Ping-pong: when on, L input feeds R buffer with delay, R input feeds
       L buffer with delay (full crossfeed). When off, each side is
       independent.
-- [ ] Wet/dry mix: `out = (1 - mix) × dry + mix × wet`. Equal-gain crossfade
+- [x] Wet/dry mix: `out = (1 - mix) × dry + mix × wet`. Equal-gain crossfade
       at 0.5.
-- [ ] Bypass (`delay_on = false`): pass-through, zero CPU on the delay
+- [x] Bypass (`delay_on = false`): pass-through, zero CPU on the delay
       kernel itself. Bypass output is bit-identical to input.
-- [ ] Smoothing: delay time changes glide over ~100 ms to avoid pitch
+- [x] Smoothing: delay time changes glide over ~100 ms to avoid pitch
       artefacts (changing read position abruptly = pitch-shift click).
-- [ ] Bench: `delay_steady` (active) and `delay_bypassed`.
+- [x] Bench: `delay_steady` (active) and `delay_bypassed`.
 
 ## Notes
 

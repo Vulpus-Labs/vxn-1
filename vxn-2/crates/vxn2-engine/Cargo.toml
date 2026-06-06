@@ -1,0 +1,11 @@
+[package]
+name = "vxn2-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vxn2-dsp = { path = "../vxn2-dsp" }
+
+[dev-dependencies]

@@ -13,9 +13,24 @@ Notation:
   descriptors when built).
 - **Per-op** parameters repeat 6× with prefix `op1_`…`op6_`. Listed once.
 
+## Scope: per-layer vs patch-level
+
+Per ADR §8 / ticket 0009, a patch is one of three voicing modes
+(Whole / Layer / Split). Layer + Split require two parameter sets (Upper,
+Lower); Whole uses one. Each section below is tagged:
+
+- **(per-layer)**: exists once per layer. Exposed via CLAP as both
+  `upper_*` and `lower_*` regardless of `voicing_mode` (CLAP params can't
+  appear/disappear at runtime). In Whole mode the engine drives all voices
+  from the Upper set; Lower params are inert but still automatable.
+- **(patch-level)**: single instance shared across layers. Exposed once.
+
+This means every per-layer param costs two CLAP slots. The total CLAP-
+exposed count at the bottom reflects this doubling.
+
 ---
 
-## Per-operator (6×)
+## Per-operator (6×) *(per-layer)*
 
 For each operator `op{1..6}`:
 
@@ -48,7 +63,7 @@ faceplate is manageable despite the parameter count.
 
 ---
 
-## Algorithm
+## Algorithm *(per-layer)*
 
 | Param  | Type | Range  | Default | Purpose                                                                       |
 |--------|------|--------|---------|-------------------------------------------------------------------------------|
@@ -61,7 +76,7 @@ on algo change.
 
 ---
 
-## LFO 1 (global)
+## LFO 1 (global) *(patch-level)*
 
 | Param          | Type | Range                          | Default | Purpose                                                                  |
 |----------------|------|--------------------------------|---------|--------------------------------------------------------------------------|
@@ -76,7 +91,7 @@ song-synced sweeps).
 
 ---
 
-## LFO 2 (per-voice)
+## LFO 2 (per-voice) *(per-layer)*
 
 | Param           | Type | Range                          | Default | Purpose                                                                  |
 |-----------------|------|--------------------------------|---------|--------------------------------------------------------------------------|
@@ -93,7 +108,7 @@ phase across a stack via `voice_rand → lfo2 phase` matrix routing is the
 
 ---
 
-## Pitch EG (global)
+## Pitch EG *(per-layer)*
 
 | Param          | Type | Range          | Default | Purpose                                                                  |
 |----------------|------|----------------|---------|--------------------------------------------------------------------------|
@@ -106,7 +121,7 @@ pitch-shaped destination.
 
 ---
 
-## Mod Env (global)
+## Mod Env *(per-layer)*
 
 | Param           | Type | Range          | Default | Purpose                                                                  |
 |-----------------|------|----------------|---------|--------------------------------------------------------------------------|
@@ -121,20 +136,30 @@ retrigger on note-on.
 
 ---
 
-## Voice & assignment
+## Assignment *(per-layer)*
 
 | Param            | Type | Range                       | Default | Purpose                                                                  |
 |------------------|------|-----------------------------|---------|--------------------------------------------------------------------------|
-| `assign_mode`    | e    | {Poly, Solo}                | Poly    | Poly = up to 16 voices. Solo = monophonic. |
+| `assign_mode`    | e    | {Poly, Solo}                | Poly    | Poly = up to 16 voices. Solo = monophonic. Per-layer so a Split can have mono bass + poly lead. |
 | `legato`         | b    | off / on                    | off     | Solo only: legato (no retrigger on overlapped notes). |
 | `glide_time`     | f    | 0 .. 2000 ms                | 12 ms   | Portamento time between consecutive notes (always in Solo, optional in Poly per legato). |
-| `voicing_mode`   | e    | {Whole, Layer, Split}       | Layer   | Whole = single patch. Layer = two parallel patches summed. Split = keyboard-split patches. |
-| `split_point`    | i    | 0 .. 127 (MIDI)             | 60 (C4) | Note at/above which the Upper layer plays in Split mode. |
-| `edit_layer`     | e    | {Upper, Lower}              | Upper   | Which layer the op-detail panel edits. Non-automatable. |
+
+Voice cap (16) is a patch-level constraint enforced by the allocator across
+both layers' assignments — see ticket 0009 AC.
 
 ---
 
-## Voice stacking
+## Voicing *(patch-level)*
+
+| Param            | Type | Range                       | Default | Purpose                                                                  |
+|------------------|------|-----------------------------|---------|--------------------------------------------------------------------------|
+| `voicing_mode`   | e    | {Whole, Layer, Split}       | Layer   | Whole = single patch (Upper params drive engine). Layer = two parallel patches summed. Split = keyboard-split patches. |
+| `split_point`    | i    | 0 .. 127 (MIDI)             | 60 (C4) | Note at/above which the Upper layer plays in Split mode. |
+| `edit_layer`     | e    | {Upper, Lower}              | Upper   | Which layer the op-detail panel edits. Non-automatable view state — *not* a CLAP param. |
+
+---
+
+## Voice stacking *(per-layer)*
 
 | Param         | Type | Range                       | Default | Purpose                                                                  |
 |---------------|------|-----------------------------|---------|--------------------------------------------------------------------------|
@@ -150,9 +175,10 @@ users can additionally route those sources via the matrix.
 
 ---
 
-## Mod matrix
+## Mod matrix *(per-layer)*
 
-The matrix is a 16-slot table; each slot has:
+The matrix is a 16-slot table *per layer* (Upper + Lower each have their own
+16 slots). Each slot has:
 
 | Field      | Type | Notes                                                                                            |
 |------------|------|--------------------------------------------------------------------------------------------------|
@@ -168,15 +194,22 @@ The matrix is a 16-slot table; each slot has:
 - Stacking macros (matrix can override): `stack_detune`, `stack_spread`
 - FX: `delay_mix`, `reverb_mix`
 
-Matrix slots aren't individual CLAP params in v1 — they're patch state
-serialised as a sub-table. (This deviates from VXN1's all-CLAP-param model.
-Reason: 16 slots × 4 fields = 64 params just for matrix, mostly meaningless
-to automate. Slot 1 source choice not automatable; depth *is* matrix-style
-modulatable. Revisit if DAW automation of matrix becomes a user ask.)
+**CLAP exposure**: slots **1–8 `depth`** are CLAP params per layer
+(`upper_mtx1_depth` … `upper_mtx8_depth` + lower equivalents = 16 CLAP
+params). Slots 9–16 `depth` and *all* slot `source` / `dest` / `curve`
+fields are patch state only, not CLAP-automatable. Rationale: 16 slots × 4
+fields × 2 layers = 128 params is mostly meaningless to automate (source /
+dest are topology selectors), but users do want a few automatable depths
+for expressive macros. 8 slots is the compromise — enough for a couple of
+performance macros per layer without bloating the param table. UI cue:
+slots 1–8 render with an "automatable" badge so users park their
+DAW-driven routings there.
 
 ---
 
-## Effects
+## Effects *(patch-level)*
+
+Both layers feed the same FX chain — see ticket 0009 AC.
 
 ### Delay (clean)
 
@@ -201,7 +234,7 @@ modulatable. Revisit if DAW automation of matrix becomes a user ask.)
 
 ---
 
-## Master
+## Master *(patch-level)*
 
 | Param           | Type | Range          | Default | Purpose                                              |
 |-----------------|------|----------------|---------|------------------------------------------------------|
@@ -215,21 +248,52 @@ limit if needed.)
 
 ## Parameter count summary
 
-| Section            | Count                                  |
-|--------------------|----------------------------------------|
-| Per-op (×6)        | 21 params × 6 = 126                    |
-| Algorithm          | 1                                      |
-| LFO 1              | 4                                      |
-| LFO 2              | 5                                      |
-| Pitch EG           | 9                                      |
-| Mod Env            | 5                                      |
-| Voice + assignment | 6                                      |
-| Stacking           | 5                                      |
-| Mod matrix         | (16 slots × 4 fields, not CLAP params) |
-| Delay              | 6                                      |
-| Reverb             | 5                                      |
-| Master             | 2                                      |
-| **Total (CLAP)**   | **174 automatable + matrix slots**     |
+### Per-layer (×2 in CLAP — `upper_*` + `lower_*`)
+
+| Section            | Count                |
+|--------------------|----------------------|
+| Per-op (×6)        | 21 × 6 = 126         |
+| Algorithm          | 1                    |
+| LFO 2              | 5                    |
+| Pitch EG           | 9                    |
+| Mod Env            | 5                    |
+| Assignment         | 3                    |
+| Stacking           | 5                    |
+| Mod matrix slots 1–8 depth | 8            |
+| **Per-layer subtotal** | **162**          |
+
+### Patch-level (×1 in CLAP)
+
+| Section            | Count |
+|--------------------|-------|
+| LFO 1              | 4     |
+| Voicing            | 2 (`edit_layer` is view state, not CLAP) |
+| Delay              | 6     |
+| Reverb             | 5     |
+| Master             | 2     |
+| **Patch-level subtotal** | **19** |
+
+### CLAP totals
+
+| Quantity                | Value          |
+|-------------------------|----------------|
+| Per-layer × 2 + patch   | 2 × 162 + 19 = **343** |
+| Mod matrix non-CLAP fields (per layer) | source + dest + curve × 16 slots + depth × slots 9–16 = 56 fields × 2 layers = 112 fields (patch sub-table, not CLAP) |
+
+Every per-layer param is exposed under both `upper_` and `lower_` prefixes
+regardless of `voicing_mode`. CLAP host param lists are static; the engine
+gates which set drives voices according to `voicing_mode` (Whole = Upper
+only; Layer = both summed; Split = Upper above `split_point`, Lower below).
+Lower params remain automatable in Whole mode even though they're inert —
+this keeps the param table stable across mode changes mid-session.
+
+Mod matrix slot `source`, `dest`, `curve` are excluded from CLAP because
+they're topology selectors (changing them mid-automation rewires routing,
+not a useful continuous control). Slot `depth` is the modulatable quantity:
+slots **1–8** depth is CLAP-automatable per layer; slots 9–16 depth is
+patch state only. Users park automation targets in slots 1–8 (UI flags
+them). Revisit if 8 proves too few in practice.
 
 Compares to DX7's ~155 (no per-op feedback, no second envelope class, no
-voice stacking, no FX). The increment is intentional and load-bearing.
+voice stacking, no FX, no layers). The increment is intentional and
+load-bearing.

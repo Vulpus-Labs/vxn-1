@@ -16,30 +16,32 @@ damping for HF rolloff. Macros: `reverb_size`, `reverb_decay`, `reverb_damp`,
 Chosen over Schroeder (less tunable), convolution (CPU + IR storage), plate /
 spring (character emulation, excluded by "clean" requirement).
 
+Refer to patches/patches-modules for existing implementation
+
 ## Acceptance criteria
 
-- [ ] 8-channel FDN: 8 delay lines with mutually-prime base lengths (in
+- [x] 8-channel FDN: 8 delay lines with mutually-prime base lengths (in
       samples). Lengths derived from `reverb_size` (range maps to a
       base-length set scaled by size).
-- [ ] Hadamard 8×8 mixing matrix on the feedback path. Applied as
+- [x] Hadamard 8×8 mixing matrix on the feedback path. Applied as
       multiplications by ±1 (Hadamard structure makes this branch-free).
-- [ ] Per-channel damping: a one-pole lowpass on each delay-line output,
+- [x] Per-channel damping: a one-pole lowpass on each delay-line output,
       coefficient driven by `reverb_damp`. Higher damp = lower cutoff =
       faster HF decay.
-- [ ] Decay control: feedback matrix gain set such that RT60 ≈ `reverb_decay`
+- [x] Decay control: feedback matrix gain set such that RT60 ≈ `reverb_decay`
       seconds. Use the standard FDN gain formula:
       `g = 10^(-3 × L_avg / (decay × sr))` where `L_avg` is mean delay
       length.
-- [ ] Stereo output: channels 0..3 sum to L, 4..7 sum to R, with
+- [x] Stereo output: channels 0..3 sum to L, 4..7 sum to R, with
       cross-feedback through the Hadamard matrix providing stereo image.
-- [ ] Input: dry signal is split into the 8 channels via an input gain
+- [x] Input: dry signal is split into the 8 channels via an input gain
       vector (random ±1 sign pattern, fixed seed for determinism).
-- [ ] Wet/dry mix: same equal-gain crossfade idiom as the delay.
-- [ ] Bypass (`reverb_on = false`): pass-through, bit-identical.
-- [ ] Smoothing: size changes (which would re-derive delay lengths) only
+- [x] Wet/dry mix: same equal-gain crossfade idiom as the delay.
+- [x] Bypass (`reverb_on = false`): pass-through, bit-identical.
+- [x] Smoothing: size changes (which would re-derive delay lengths) only
       take effect at the next note-silent moment OR crossfade between old
       and new lengths over ~500 ms. Decay and damp smooth continuously.
-- [ ] Bench: `reverb_steady` (active) and `reverb_bypassed`.
+- [x] Bench: `reverb_steady` (active) and `reverb_bypassed`.
 
 ## Notes
 

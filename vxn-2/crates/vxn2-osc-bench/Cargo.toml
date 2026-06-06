@@ -6,6 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+vxn2-dsp = { path = "../vxn2-dsp" }
+vxn2-engine = { path = "../vxn2-engine" }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
@@ -16,4 +18,40 @@ harness = false
 
 [[bench]]
 name = "algo3"
+harness = false
+
+[[bench]]
+name = "op_voice"
+harness = false
+
+[[bench]]
+name = "voice"
+harness = false
+
+[[bench]]
+name = "alloc"
+harness = false
+
+[[bench]]
+name = "stack"
+harness = false
+
+[[bench]]
+name = "lfo"
+harness = false
+
+[[bench]]
+name = "matrix"
+harness = false
+
+[[bench]]
+name = "delay"
+harness = false
+
+[[bench]]
+name = "reverb"
+harness = false
+
+[[bench]]
+name = "master_chain"
 harness = false

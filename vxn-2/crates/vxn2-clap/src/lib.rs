@@ -12,11 +12,14 @@
 
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
+use clack_plugin::events::event_types::TransportFlags;
 use clack_plugin::events::spaces::CoreEventSpace;
+use clack_plugin::events::{Match, UnknownEvent};
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
 use std::fmt::Write as _;
+use std::ops::Bound;
 use std::sync::Arc;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
@@ -88,7 +91,6 @@ pub struct VxnMainThread<'a> {
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
 
-#[allow(dead_code)] // engine + scratch_r wired in 0016 (process loop)
 pub struct VxnAudioProcessor<'a> {
     engine: Engine,
     shared: &'a VxnShared,
@@ -118,14 +120,29 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
-        _events: Events,
+        events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         // FTZ for this block. Set per-process (not in `activate`) — the FP
         // control word is thread-local and the host may run `process` on a
         // different thread.
         let _ftz = ScopedFlushToZero::new();
+
+        // Fold any UI edits made since the last block (no-op for E002 — the
+        // UI write path lands in a later epic) into the local mirror, then
+        // push the authoritative param set into the engine.
+        self.local.fetch_ui_changes(&self.shared.params);
+        self.local.write_to(self.engine.params_mut());
+        self.engine.apply_block_params();
+
+        // Host transport → engine tempo for LFO1 sync + delay sync. Read on
+        // every block so BPM changes track without waiting for a reset.
+        if let Some(t) = process.transport {
+            if t.flags.contains(TransportFlags::HAS_TEMPO) {
+                self.engine.set_tempo(t.tempo as f32);
+            }
+        }
 
         let mut output_port = audio
             .output_port(0)
@@ -137,26 +154,121 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         let frames = (out.frames_count() as usize).min(self.scratch_l.len());
         let nch = out.channel_count() as usize;
+        if nch == 0 {
+            return Err(PluginError::Message("Expected ≥1 output channel"));
+        }
 
-        // 0016 will drive the engine and copy real samples here. For now,
-        // zero the host's channels so the plugin loads cleanly and emits
-        // silence rather than whatever garbage the host buffer arrived with.
+        // Disjoint field borrows so the event dispatcher and the renderer can
+        // coexist inside the batch loop.
+        let engine = &mut self.engine;
+        let local = &mut self.local;
+        let l = &mut self.scratch_l[..frames];
+        let r = &mut self.scratch_r[..frames];
+
+        for event_batch in events.input.batch() {
+            for event in event_batch.events() {
+                dispatch_event(engine, local, event);
+            }
+            let (start, end) = batch_range(event_batch.sample_bounds(), frames);
+            if start < end {
+                engine.process_block(&mut l[start..end], &mut r[start..end]);
+            }
+        }
+
+        // Copy stereo scratch into host channels. Mono hosts get L only —
+        // an instrument port is stereo per ADR §1 / §9, so a 1-channel host
+        // is out-of-spec; a naïve L+R downmix would peak.
         if let Some(ch) = out.channel_mut(0) {
             let n = ch.len().min(frames);
-            ch[..n].fill(0.0);
+            ch[..n].copy_from_slice(&self.scratch_l[..n]);
         }
         if nch >= 2 {
             if let Some(ch) = out.channel_mut(1) {
                 let n = ch.len().min(frames);
-                ch[..n].fill(0.0);
+                ch[..n].copy_from_slice(&self.scratch_r[..n]);
             }
         }
+
+        // Echo host automation back to the shared store + emit any UI edits
+        // (no-op for E002; the path stays so 0014's emit stub keeps shape).
+        self.local.publish(&self.shared.params);
+        self.local
+            .emit(&self.shared.params, events.output, frames as u32);
 
         Ok(ProcessStatus::Continue)
     }
 
     fn reset(&mut self) {
-        // Engine reset lands when the real driver does (0016).
+        self.engine.reset();
+    }
+}
+
+/// Convert a clack event-batch `[start, end)` sample range into concrete
+/// frame offsets, capped to the host's frame count. Mirrors VXN1's bound
+/// extraction — `Unbounded` means "from start" / "to end" of the host block.
+fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usize, usize) {
+    let (sb, eb) = bounds;
+    let start = match sb {
+        Bound::Included(n) => n,
+        Bound::Excluded(n) => n + 1,
+        Bound::Unbounded => 0,
+    }
+    .min(frames);
+    let end = match eb {
+        Bound::Included(n) => n + 1,
+        Bound::Excluded(n) => n,
+        Bound::Unbounded => frames,
+    }
+    .min(frames);
+    (start, end)
+}
+
+/// Per-event dispatch: notes go straight to the engine, param-value events
+/// fold into the local mirror (the engine reads from the mirror at the next
+/// `write_to` boundary), raw MIDI feeds bend / mod-wheel / aftertouch.
+fn dispatch_event(engine: &mut Engine, local: &mut LocalParams, event: &UnknownEvent) {
+    match event.as_core_event() {
+        Some(CoreEventSpace::NoteOn(e)) => {
+            if let Match::Specific(key) = e.key() {
+                let vel = ((e.velocity() * 127.0) as i32).clamp(1, 127) as u8;
+                engine.note_on(key as u8, vel);
+            }
+        }
+        Some(CoreEventSpace::NoteOff(e)) => {
+            if let Match::Specific(key) = e.key() {
+                engine.note_off(key as u8);
+            }
+        }
+        Some(CoreEventSpace::ParamValue(_)) => {
+            // Mirror-only: the engine re-snapshots from `LocalParams` at the
+            // top of the next block (and at every block boundary), so per-
+            // event engine writes are redundant. Sub-block accuracy at event
+            // boundaries lands with the UI epic when `Engine::set_param`
+            // (per-id) is exposed.
+            let _ = local.apply_input(event);
+        }
+        Some(CoreEventSpace::Midi(e)) => {
+            let [status, d1, d2] = e.data();
+            match status & 0xF0 {
+                0xE0 => {
+                    // 14-bit bend, centre 8192 → normalised [-1, 1].
+                    let raw = ((d2 as u16) << 7) | d1 as u16;
+                    engine.set_pitch_bend((raw as f32 - 8192.0) / 8192.0);
+                }
+                0xB0 if d1 == 1 => {
+                    // CC1 mod wheel. Deadzone the bottom LSB — hardware
+                    // wheels rarely rest clean at 0 (mirrors VXN1).
+                    let wheel = if d2 <= 1 { 0.0 } else { d2 as f32 / 127.0 };
+                    engine.set_mod_wheel(wheel);
+                }
+                0xD0 => {
+                    // Channel aftertouch: single data byte in [0, 127].
+                    engine.set_aftertouch(d1 as f32 / 127.0);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
 
@@ -427,5 +539,215 @@ mod tests {
             PluginMainThreadParams::count(&mut main) as usize,
             TOTAL_PARAMS
         );
+    }
+
+    // ── batch_range ────────────────────────────────────────────────────────
+
+    #[test]
+    fn batch_range_unbounded_covers_full_block() {
+        let (s, e) = batch_range((Bound::Unbounded, Bound::Unbounded), 256);
+        assert_eq!((s, e), (0, 256));
+    }
+
+    #[test]
+    fn batch_range_included_then_excluded_is_half_open() {
+        let (s, e) = batch_range((Bound::Included(0), Bound::Excluded(200)), 256);
+        assert_eq!((s, e), (0, 200));
+    }
+
+    #[test]
+    fn batch_range_excluded_start_steps_one_sample_in() {
+        let (s, _) = batch_range((Bound::Excluded(100), Bound::Unbounded), 256);
+        assert_eq!(s, 101);
+    }
+
+    #[test]
+    fn batch_range_included_end_is_inclusive() {
+        let (_, e) = batch_range((Bound::Unbounded, Bound::Included(99)), 256);
+        assert_eq!(e, 100);
+    }
+
+    #[test]
+    fn batch_range_clamps_to_frame_count() {
+        let (s, e) = batch_range((Bound::Included(300), Bound::Excluded(500)), 256);
+        assert_eq!((s, e), (256, 256));
+    }
+
+    // ── dispatch_event ─────────────────────────────────────────────────────
+
+    use clack_plugin::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent};
+
+    fn pckn_for(key: u16) -> Pckn {
+        Pckn::new(0_u8, 0_u8, key as u8, 0_u8)
+    }
+
+    #[test]
+    fn dispatch_note_on_starts_a_voice() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        let buf = EventBuffer::with_capacity(2);
+        // Borrow the event into the same `UnknownEvent` shape `process()` sees.
+        let mut b = buf;
+        b.push(&NoteOnEvent::new(0, pckn_for(60), 0.78));
+        let evt = b.iter().next().unwrap();
+        dispatch_event(&mut audio.engine, &mut audio.local, evt);
+        let any_gated = audio.engine.alloc.stacks.iter().any(|s| s.gate);
+        assert!(any_gated, "note-on did not gate a stack");
+    }
+
+    #[test]
+    fn dispatch_note_off_releases_gated_voice() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        audio.engine.note_on(60, 100);
+        let mut b = EventBuffer::with_capacity(2);
+        b.push(&NoteOffEvent::new(0, pckn_for(60), 0.0));
+        dispatch_event(
+            &mut audio.engine,
+            &mut audio.local,
+            b.iter().next().unwrap(),
+        );
+        // Stack stays in release tail but gate clears.
+        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.gate));
+    }
+
+    #[test]
+    fn dispatch_midi_pitch_bend_updates_engine() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        // Centre + 4096 → +0.5 of bend range (≈+1 st with ±2 default).
+        let raw: u16 = 8192 + 4096;
+        let d1 = (raw & 0x7F) as u8;
+        let d2 = ((raw >> 7) & 0x7F) as u8;
+        let mut b = EventBuffer::with_capacity(2);
+        b.push(&MidiEvent::new(0, 0, [0xE0, d1, d2]));
+        dispatch_event(
+            &mut audio.engine,
+            &mut audio.local,
+            b.iter().next().unwrap(),
+        );
+        assert!((audio.engine.alloc.bend() - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dispatch_midi_mod_wheel_and_aftertouch() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        let mut b = EventBuffer::with_capacity(4);
+        b.push(&MidiEvent::new(0, 0, [0xB0, 1, 64])); // CC1 = 64
+        b.push(&MidiEvent::new(0, 0, [0xD0, 32, 0])); // aftertouch = 32
+        for evt in b.iter() {
+            dispatch_event(&mut audio.engine, &mut audio.local, evt);
+        }
+        assert!((audio.engine.mod_wheel - 64.0 / 127.0).abs() < 1e-6);
+        assert!((audio.engine.aftertouch - 32.0 / 127.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dispatch_param_value_lands_in_mirror() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        let decay = id_of("reverb-decay").unwrap();
+        let mut b = EventBuffer::with_capacity(2);
+        b.push(&ParamValueEvent::new(
+            0,
+            ClapId::new(decay as u32),
+            Pckn::match_all(),
+            7.5,
+            Cookie::empty(),
+        ));
+        dispatch_event(
+            &mut audio.engine,
+            &mut audio.local,
+            b.iter().next().unwrap(),
+        );
+        assert!((audio.local.get(decay) - 7.5).abs() < 1e-5);
+    }
+
+    // ── process loop end-to-end ────────────────────────────────────────────
+
+    /// Mirrors the ticket's integration scenario: note-on at sample 0,
+    /// note-off at sample 200, in a 256-sample block. Drives the engine via
+    /// the two split batches and checks finite + non-silent attack +
+    /// decaying release tail.
+    #[test]
+    fn process_loop_two_batch_render_is_finite_and_non_silent() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        let frames = 256;
+        audio.scratch_l = vec![0.0; frames];
+        audio.scratch_r = vec![0.0; frames];
+
+        // Block N: note-on at 0, note-off at 200 (two batches: 0..200, 200..256).
+        audio.engine.note_on(60, 100);
+        audio.engine.process_block(
+            &mut audio.scratch_l[0..200],
+            &mut audio.scratch_r[0..200],
+        );
+        let attack_peak = audio.scratch_l[..200]
+            .iter()
+            .chain(audio.scratch_r[..200].iter())
+            .fold(0.0_f32, |a, &x| a.max(x.abs()));
+        assert!(
+            attack_peak > 1e-3,
+            "attack region silent: peak={attack_peak}"
+        );
+        for &v in audio.scratch_l[..200].iter().chain(&audio.scratch_r[..200]) {
+            assert!(v.is_finite(), "non-finite attack sample");
+        }
+
+        audio.engine.note_off(60);
+        audio.engine.process_block(
+            &mut audio.scratch_l[200..frames],
+            &mut audio.scratch_r[200..frames],
+        );
+        for &v in audio.scratch_l[200..frames]
+            .iter()
+            .chain(&audio.scratch_r[200..frames])
+        {
+            assert!(v.is_finite(), "non-finite release sample");
+        }
+
+        // Render ~1 second more to confirm the tail eventually decays.
+        let blocks = 48_000 / CONTROL_BLOCK;
+        let mut last_peak = 0.0_f32;
+        let mut l = vec![0.0_f32; CONTROL_BLOCK];
+        let mut r = vec![0.0_f32; CONTROL_BLOCK];
+        for _ in 0..blocks {
+            audio.engine.process_block(&mut l, &mut r);
+        }
+        for i in 0..CONTROL_BLOCK {
+            last_peak = last_peak.max(l[i].abs()).max(r[i].abs());
+        }
+        assert!(last_peak < 0.05, "tail still audible: {last_peak}");
+    }
+
+    #[test]
+    fn reset_silences_held_voice() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        audio.engine.note_on(60, 100);
+        // Render a bit so smoothers and FX wind up.
+        audio.engine.process_block(&mut audio.scratch_l, &mut audio.scratch_r);
+        audio.reset();
+        // After reset: no gated stacks.
+        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.gate));
+        // And one block of silence should now be near-zero.
+        audio.engine.process_block(&mut audio.scratch_l, &mut audio.scratch_r);
+        let peak = audio
+            .scratch_l
+            .iter()
+            .chain(audio.scratch_r.iter())
+            .fold(0.0_f32, |a, &x| a.max(x.abs()));
+        assert!(peak < 1e-3, "reset left audible state: {peak}");
+    }
+
+    /// Host transport tempo flows into the engine via `set_tempo`.
+    #[test]
+    fn set_tempo_propagates_to_engine() {
+        let shared = mk_shared();
+        let mut audio = mk_audio(&shared);
+        audio.engine.set_tempo(140.0);
+        assert!((audio.engine.tempo_bpm - 140.0).abs() < 1e-6);
     }
 }

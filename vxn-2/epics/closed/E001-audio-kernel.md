@@ -1,7 +1,7 @@
 ---
 id: E001
 title: VXN2 audio kernel
-status: open
+status: closed
 created: 2026-06-05
 ---
 
@@ -50,18 +50,18 @@ defaults come from `PARAMETERS.md`.
 
 ## Tickets
 
-- [ ] [0001 — Operator core (osc + EG + level + KS)](../../tickets/open/0001-operator-core.md)
-- [ ] [0002 — Algorithm router (32 algos, carriers, modulators, feedback)](../../tickets/open/0002-algorithm-router.md)
-- [ ] [0003 — Voice (6 ops + voice-level state, mono signal path)](../../tickets/open/0003-voice.md)
-- [ ] [0004 — Polyphony allocator (16 voices, oldest steal)](../../tickets/open/0004-polyphony-allocator.md)
-- [ ] [0005 — Voice stacking (density / detune / spread / phase / distrib)](../../tickets/open/0005-voice-stacking.md)
-- [ ] [0006 — LFO1 global + LFO2 per-voice (delay + fade + key-sync)](../../tickets/open/0006-lfos.md)
-- [ ] [0007 — Pitch EG + Mod Env](../../tickets/open/0007-extra-envelopes.md)
-- [ ] [0008 — Mod matrix engine (sources, destinations, smoothing)](../../tickets/open/0008-mod-matrix.md)
-- [ ] [0009 — Voicing modes (Whole / Layer / Split)](../../tickets/open/0009-voicing-modes.md)
-- [ ] [0010 — Delay FX (BPM sync, ping-pong)](../../tickets/open/0010-delay-fx.md)
-- [ ] [0011 — FDN reverb](../../tickets/open/0011-fdn-reverb.md)
-- [ ] [0012 — Master out + parameter table assembly](../../tickets/open/0012-master-and-params.md)
+- [x] [0001 — Operator core (osc + EG + level + KS)](../../tickets/closed/0001-operator-core.md)
+- [x] [0002 — Algorithm router (32 algos, carriers, modulators, feedback)](../../tickets/closed/0002-algorithm-router.md)
+- [x] [0003 — Voice (6 ops + voice-level state, mono signal path)](../../tickets/closed/0003-voice.md)
+- [x] [0004 — Polyphony allocator (16 voices, oldest steal)](../../tickets/closed/0004-polyphony-allocator.md)
+- [x] [0005 — Voice stacking (density / detune / spread / phase / distrib)](../../tickets/closed/0005-voice-stacking.md)
+- [x] [0006 — LFO1 global + LFO2 per-voice (delay + fade + key-sync)](../../tickets/closed/0006-lfos.md)
+- [x] [0007 — Pitch EG + Mod Env](../../tickets/closed/0007-extra-envelopes.md)
+- [x] [0008 — Mod matrix engine (sources, destinations, smoothing)](../../tickets/closed/0008-mod-matrix.md)
+- [x] [0009 — Voicing modes (Whole / Layer / Split)](../../tickets/closed/0009-voicing-modes.md)
+- [x] [0010 — Delay FX (BPM sync, ping-pong)](../../tickets/closed/0010-delay-fx.md)
+- [x] [0011 — FDN reverb](../../tickets/closed/0011-fdn-reverb.md)
+- [x] [0012 — Master out + parameter table assembly](../../tickets/closed/0012-master-and-params.md)
 
 ## Dependency order
 

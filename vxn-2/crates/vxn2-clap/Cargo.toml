@@ -1,0 +1,27 @@
+[package]
+name = "vxn2-clap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN2 CLAP plugin shell (clack)."
+
+[lib]
+# cdylib for the host-loadable plugin; rlib so integration tests (0020) can
+# link the plugin in-process without dlopen and get real panic backtraces.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vxn2-engine = { path = "../vxn2-engine" }
+clack-plugin = { workspace = true }
+clack-extensions = { workspace = true, features = [
+    "audio-ports",
+    "note-ports",
+    "params",
+    "state",
+    "clack-plugin",
+] }
+
+[dev-dependencies]
+clack-host = { workspace = true }
