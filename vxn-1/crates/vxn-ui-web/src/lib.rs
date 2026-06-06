@@ -17,15 +17,14 @@
 //! the contract a future shell programs against.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle as RwhWindowHandle,
 };
 use vxn_app::{
-    ControllerHandle, CorpusHandle, EditorBackend, KeyMode, Layer, PATCH_COUNT, ParamDesc, ParamId,
-    ParamKind, PresetCorpus, PresetSource, TOTAL_PARAMS, UNCATEGORIZED, UiEvent, ViewEvent,
+    ControllerHandle, CorpusHandle, EditorBackend, KeyMode, Layer, PATCH_COUNT, ParamDesc,
+    ParamKind, PresetCorpus, TOTAL_PARAMS, UNCATEGORIZED, UiEvent, ViewEvent,
     desc_for_clap_id,
 };
 use wry::{Rect, WebView, WebViewBuilder};
@@ -565,7 +564,7 @@ const DISPATCH_JS: &str = include_str!("../assets/dispatch.js");
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use vxn_app::PresetMeta;
+    use vxn_app::{ParamId, PresetMeta, PresetSource};
 
     #[test]
     fn parses_set_param_norm() {

@@ -24,16 +24,44 @@ pub struct ScopedFlushToZero {
     prev: u64,
 }
 
+/// MXCSR bit 15 — flush-to-zero (FTZ). Anything denormal in an SSE/AVX
+/// result becomes a zero with this set.
+#[cfg(target_arch = "x86_64")]
+const MXCSR_FTZ: u32 = 0x8000;
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn read_mxcsr() -> u32 {
+    let mut mxcsr: u32 = 0;
+    unsafe {
+        std::arch::asm!(
+            "stmxcsr [{}]",
+            in(reg) &mut mxcsr,
+            options(nostack, preserves_flags),
+        );
+    }
+    mxcsr
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn write_mxcsr(mxcsr: u32) {
+    unsafe {
+        std::arch::asm!(
+            "ldmxcsr [{}]",
+            in(reg) &mxcsr,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 impl ScopedFlushToZero {
     #[inline]
     pub fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            use std::arch::x86_64::{
-                _MM_FLUSH_ZERO_ON, _MM_GET_FLUSH_ZERO_MODE, _MM_SET_FLUSH_ZERO_MODE,
-            };
-            let prev = unsafe { _MM_GET_FLUSH_ZERO_MODE() };
-            unsafe { _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON) };
+            let prev = unsafe { read_mxcsr() };
+            unsafe { write_mxcsr(prev | MXCSR_FTZ) };
             Self { prev }
         }
         #[cfg(target_arch = "aarch64")]
@@ -64,7 +92,7 @@ impl Drop for ScopedFlushToZero {
     fn drop(&mut self) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            std::arch::x86_64::_MM_SET_FLUSH_ZERO_MODE(self.prev);
+            write_mxcsr(self.prev);
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -92,12 +120,11 @@ mod tests {
         // before/after to match.
         #[cfg(target_arch = "x86_64")]
         {
-            use std::arch::x86_64::_MM_GET_FLUSH_ZERO_MODE;
-            let before = unsafe { _MM_GET_FLUSH_ZERO_MODE() };
+            let before = unsafe { read_mxcsr() };
             {
                 let _ftz = ScopedFlushToZero::new();
             }
-            let after = unsafe { _MM_GET_FLUSH_ZERO_MODE() };
+            let after = unsafe { read_mxcsr() };
             assert_eq!(before, after);
         }
         #[cfg(target_arch = "aarch64")]

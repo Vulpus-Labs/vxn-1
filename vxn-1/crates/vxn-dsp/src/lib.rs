@@ -22,6 +22,7 @@ pub mod adsr;
 pub mod bbd;
 pub mod chorus;
 pub mod delay;
+pub mod fdn_reverb;
 pub mod halfband;
 pub mod hpf;
 pub mod lfo;
@@ -31,7 +32,9 @@ pub mod noise;
 pub mod oscillator;
 pub mod ota_ladder;
 pub mod phase;
+pub mod phaser;
 pub mod poly;
+pub mod random_walk;
 // `smoothing` lifted to `vxn-core-utils`; re-exported below for back-compat.
 
 /// Channels (DSP voices) per layer. The poly kernels are sized to this: one
@@ -54,9 +57,9 @@ pub const MAX_OVERSAMPLE: usize = 8;
 pub const CONTROL_BLOCK: usize = 32;
 
 pub use adsr::{AdsrCore, AdsrShape, AdsrStage};
-pub use bbd::StereoVReverb;
 pub use chorus::StereoChorus;
 pub use delay::{DelayLine, StereoDelay};
+pub use fdn_reverb::{FdnReverb, FdnReverbParams};
 pub use halfband::{HalfbandFir, Oversampler};
 pub use hpf::{HpfKernel, PolyHpf};
 pub use lfo::{LfoCore, LfoShape};
@@ -66,6 +69,7 @@ pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::{Oscillator, Waveform};
 pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel};
 pub use phase::{MonoPhaseAccumulator, polyblep};
+pub use phaser::StereoPhaser;
 pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, poly_ring_mod, poly_sub_square};
 pub use vxn_core_utils::smoothing::{self as smoothing, Smoothed, ms_to_samples, one_pole_coeff};
 pub use vxn_core_utils::ScopedFlushToZero;
@@ -83,8 +87,11 @@ pub use vxn_core_utils::ftz::flush_denormal;
 pub fn enable_flush_to_zero() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        use std::arch::x86_64::{_MM_FLUSH_ZERO_ON, _MM_SET_FLUSH_ZERO_MODE};
-        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+        // MXCSR bit 15 (FTZ): flush denormal SSE/AVX results to zero.
+        let mut mxcsr: u32 = 0;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack, preserves_flags));
+        mxcsr |= 0x8000;
+        std::arch::asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
