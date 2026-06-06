@@ -1,9 +1,18 @@
 ---
 id: E001
 title: vxn-core-* shared crate extraction
-status: open
+status: closed
 created: 2026-06-06
+closed: 2026-06-06
 ---
+
+> **Closed.** Tickets 0001–0010 all landed. Shared `vxn-core-{utils,
+> app,ui-web,clap}` crates ship with 54 tests of their own. vxn-1
+> consumes them throughout. Bit-identical audio verified against the
+> `pre-vxn-core-extraction` tag via the 0010 tripwire test; `post-
+> vxn-core-extraction` tag set at this epic's close. vxn-2's E003
+> faceplate epic depends on the shared crates rather than
+> re-implementing.
 
 ## Goal
 
