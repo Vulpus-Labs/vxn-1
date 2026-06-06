@@ -2393,6 +2393,10 @@ dependencies = [
 [[package]]
 name = "vxn-core-app"
 version = "0.0.6"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "vxn-core-clap"
