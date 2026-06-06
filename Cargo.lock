@@ -2388,6 +2388,7 @@ dependencies = [
  "clack-host",
  "clack-plugin",
  "vxn-app",
+ "vxn-core-clap",
  "vxn-engine",
  "vxn-ui-web",
 ]

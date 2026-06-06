@@ -26,13 +26,15 @@ pub trait EngineProcess {
     fn set_tempo(&mut self, _bpm: f32) {}
 }
 
-/// MIDI / CLAP-note surface.
+/// MIDI / CLAP-note surface. Pitch-bend / mod-wheel / aftertouch have
+/// default no-op impls — synths that don't wire those still satisfy
+/// the trait.
 pub trait EngineNotes {
     fn note_on(&mut self, key: u8, velocity: f32);
     fn note_off(&mut self, key: u8);
-    fn pitch_bend(&mut self, value: f32);
-    fn mod_wheel(&mut self, value: f32);
-    fn aftertouch(&mut self, value: f32);
+    fn pitch_bend(&mut self, _value: f32) {}
+    fn mod_wheel(&mut self, _value: f32) {}
+    fn aftertouch(&mut self, _value: f32) {}
 }
 
 /// Lock-free shared parameter store. The audio thread reads through

@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 vxn-app = { workspace = true }
 vxn-engine = { workspace = true }
 vxn-ui-web = { workspace = true }
+vxn-core-clap = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",

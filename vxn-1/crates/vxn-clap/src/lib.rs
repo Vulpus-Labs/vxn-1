@@ -14,15 +14,13 @@ use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
-use clack_plugin::events::Match;
-use clack_plugin::events::event_types::TransportFlags;
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use local::LocalParams;
 use std::ffi::CStr;
 use std::fmt::Write as _;
-use std::io::{Read, Write as _IoWrite};
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
@@ -40,6 +38,31 @@ use vxn_engine::{
 /// to fail. The data is still valid (the panic happened mid-write at worst).
 fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Thin adapter that lets `vxn_engine::Synth` satisfy
+/// `vxn_core_clap::EngineNotes` without crossing the orphan rule
+/// (Synth and the trait both live in foreign crates).
+struct SynthNotes<'a>(&'a mut vxn_engine::Synth);
+
+impl vxn_core_clap::EngineNotes for SynthNotes<'_> {
+    #[inline]
+    fn note_on(&mut self, key: u8, velocity: f32) {
+        self.0.note_on(key, velocity);
+    }
+    #[inline]
+    fn note_off(&mut self, key: u8) {
+        self.0.note_off(key);
+    }
+    #[inline]
+    fn pitch_bend(&mut self, value: f32) {
+        self.0.set_pitch_bend(value);
+    }
+    #[inline]
+    fn mod_wheel(&mut self, value: f32) {
+        self.0.set_mod_wheel(value);
+    }
+    // aftertouch: default no-op — VXN1 doesn't route it (yet).
 }
 
 /// Top-level plugin marker type.
@@ -283,8 +306,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // BPM only when the transport actually carries a tempo; otherwise the
         // engine keeps its sane default (never NaN).
         if let Some(t) = process.transport {
-            if t.flags.contains(TransportFlags::HAS_TEMPO) {
-                self.synth.set_tempo(t.tempo as f32);
+            if let Some(bpm) = vxn_core_clap::tempo_from_transport(t) {
+                self.synth.set_tempo(bpm as f32);
             }
         }
 
@@ -307,46 +330,20 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         for event_batch in events.input.batch() {
             for event in event_batch.events() {
-                match event.as_core_event() {
-                    Some(CoreEventSpace::NoteOn(e)) => {
-                        if let Match::Specific(key) = e.key() {
-                            synth.note_on(key as u8, e.velocity() as f32);
-                        }
+                // ParamValue is intercepted here so the immediate
+                // `synth.set_param` call (sub-block accuracy at the
+                // event boundary) can run alongside the local-mirror
+                // fold. Notes + MIDI go through the shared dispatcher.
+                if let Some(CoreEventSpace::ParamValue(_)) = event.as_core_event() {
+                    if let Some((idx, value)) = local.apply_input(event) {
+                        synth.set_param(idx, value);
                     }
-                    Some(CoreEventSpace::NoteOff(e)) => {
-                        if let Match::Specific(key) = e.key() {
-                            synth.note_off(key as u8);
-                        }
-                    }
-                    Some(CoreEventSpace::ParamValue(_)) => {
-                        // Host automation: fold into the mirror and the engine.
-                        if let Some((idx, value)) = local.apply_input(event) {
-                            synth.set_param(idx, value);
-                        }
-                    }
-                    Some(CoreEventSpace::Midi(e)) => {
-                        // Raw MIDI 1.0: pitch bend (0xE0) → pitch; CC1 (mod wheel)
-                        // → routable destination. Channel nibble ignored (global).
-                        let [status, d1, d2] = e.data();
-                        match status & 0xF0 {
-                            0xE0 => {
-                                // 14-bit bend, centre 8192 → normalised [-1, 1].
-                                let raw = ((d2 as u16) << 7) | d1 as u16;
-                                synth.set_pitch_bend((raw as f32 - 8192.0) / 8192.0);
-                            }
-                            0xB0 if d1 == 1 => {
-                                // Deadzone the bottom LSB: a hardware wheel
-                                // rarely rests clean at 0 and 1 LSB is already
-                                // a large step on a wide pitch route (±48 st →
-                                // 0.76 st/LSB), so jitter at rest reads as a
-                                // wandering pitch. Floor low values to 0.
-                                let wheel = if d2 <= 1 { 0.0 } else { d2 as f32 / 127.0 };
-                                synth.set_mod_wheel(wheel);
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {}
+                } else {
+                    vxn_core_clap::dispatch_event(
+                        &mut SynthNotes(synth),
+                        &mut |_| {},
+                        event,
+                    );
                 }
             }
             let (sb, eb) = event_batch.sample_bounds();
@@ -566,9 +563,7 @@ impl PluginStateImpl for VxnMainThread<'_> {
         // the model defines — same canonical blob as before (the engine's
         // `PluginState` write) routed through the trait surface for symmetry
         // with `load`.
-        let blob = ParamModel::snapshot_bytes(&*self.shared.params);
-        output
-            .write_all(&blob)
+        vxn_core_clap::state::save_blob(&*self.shared.params, output)
             .map_err(|_| PluginError::Message("state save failed"))
     }
 
