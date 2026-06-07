@@ -16,9 +16,9 @@ chorus_on = false
 [performance.upper]
 osc2_fine = 14.3
 osc2_level = 0.8
-cutoff = 107.2
+cutoff = 228.5
 filter_slope = "12"
-cutoff_env_depth = 93.2
+cutoff_env_depth = 46.6
 env1_attack = 0.0145
 env1_decay = 0.164
 env1_sustain = 0.34
