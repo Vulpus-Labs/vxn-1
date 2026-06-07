@@ -1,0 +1,37 @@
+schema = 1
+
+[meta]
+name = "Cello"
+author = "Vulpus Labs"
+category = "Jovian Solo"
+comment = "JP-8 ROM patch 84 \"Cello\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Pulse"
+osc2_wave = "Pulse"
+osc2_fine = 7.3
+osc2_level = 0.8
+cross_mod_type = "Sync"
+pwm_env_src = "Env 1"
+pwm_env_depth = 0.171
+cutoff = 1065.5
+resonance = 0.0
+filter_slope = "12"
+cutoff_env_depth = 63.2
+env1_attack = 1.0024
+env1_decay = 0.216
+env1_sustain = 0.49
+env1_release = 0.191
+env2_attack = 0.0924
+env2_decay = 1.036
+env2_sustain = 0.63
+env2_release = 0.095
+lfo_rate = 1.43
+lfo1_delay_time = 2.28

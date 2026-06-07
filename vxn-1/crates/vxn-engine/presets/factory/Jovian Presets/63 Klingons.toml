@@ -1,0 +1,41 @@
+schema = 1
+
+[meta]
+name = "Klingons"
+author = "Vulpus Labs"
+category = "Jovian FX"
+comment = "JP-8 ROM patch 63 \"Klingons\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Triangle"
+osc2_wave = "Pulse"
+osc2_octave = 0
+osc2_fine = 7.3
+osc1_level = 1.0
+osc2_level = 0.0
+cross_mod_type = "FM"
+cross_mod_amount = 4.0
+cutoff = 1704.1
+resonance = 0.24
+filter_slope = "12"
+filter_key_track = 1.0
+env1_attack = 0.001
+env1_decay = 0.001
+env1_sustain = 0.17
+env1_release = 1.258
+env2_attack = 0.001
+env2_decay = 10.0
+env2_sustain = 1.0
+env2_release = 10.0
+lfo_rate = 0.84
+lfo_shape = "Saw+"
+pitch_env_src = "Env 1"
+pitch_env_depth = -6.22
+pitch_env_mod_only = true

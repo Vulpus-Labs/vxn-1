@@ -1,0 +1,35 @@
+schema = 1
+
+[meta]
+name = "Clav"
+author = "Vulpus Labs"
+category = "Jovian Keys"
+comment = "JP-8 ROM patch 21 \"Clav\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Pulse"
+osc2_wave = "Pulse"
+osc2_fine = 3.5
+osc2_level = 0.8
+pwm_lfo_src = "LFO 1"
+pwm_lfo_depth = 0.4
+cutoff = 5340.9
+resonance = 0.0
+filter_key_track = 1.0
+cutoff_env_depth = 23.6
+env1_attack = 1.0282
+env1_decay = 0.231
+env1_sustain = 0.79
+env1_release = 0.017
+env2_attack = 0.001
+env2_decay = 1.002
+env2_sustain = 0.02
+env2_release = 0.007
+lfo_rate = 10.0

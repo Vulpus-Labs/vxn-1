@@ -1,0 +1,36 @@
+schema = 1
+
+[meta]
+name = "Choir Voice"
+author = "Vulpus Labs"
+category = "Jovian Vocal"
+comment = "JP-8 ROM patch 56 \"Choir Voice\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Pulse"
+osc1_octave = -2
+osc2_wave = "Pulse"
+osc2_octave = -3
+osc2_fine = 15.4
+osc2_level = 0.8
+pwm_env_src = "Env 1"
+pwm_env_depth = 0.258
+cutoff = 1259.0
+resonance = 0.66
+cutoff_env_depth = 56.3
+env1_attack = 0.8655
+env1_decay = 2.589
+env1_sustain = 0.38
+env1_release = 1.623
+env2_attack = 0.0368
+env2_decay = 4.72
+env2_sustain = 1.0
+env2_release = 0.415
+lfo_rate = 1.35

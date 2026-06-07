@@ -1,0 +1,37 @@
+schema = 1
+
+[meta]
+name = "Hammer Lead"
+author = "Vulpus Labs"
+category = "Jovian Lead"
+comment = "JP-8 ROM patch 17 \"Hammer Lead\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Pulse"
+osc2_wave = "Pulse"
+osc2_fine = 10.8
+osc2_level = 0.8
+cross_mod_type = "Sync"
+cutoff = 22.4
+resonance = 0.37
+filter_key_track = 0.95
+cutoff_env_depth = 89.9
+env1_attack = 0.001
+env1_decay = 0.04
+env1_sustain = 0.88
+env1_release = 0.074
+env2_attack = 0.001
+env2_decay = 10.0
+env2_sustain = 1.0
+env2_release = 0.007
+lfo_rate = 0.89
+assign_mode = "Solo"
+legato = true
+portamento_time = 0.03

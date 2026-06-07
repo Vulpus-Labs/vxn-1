@@ -1,0 +1,39 @@
+schema = 1
+
+[meta]
+name = "Gong"
+author = "Vulpus Labs"
+category = "Jovian FX"
+comment = "JP-8 ROM patch 58 \"Gong\" — transliterated to VXN-1 from the TAL J-8 community port of the Roland factory sheets. No FX (JP-8 had none)."
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+
+[performance.upper]
+osc1_wave = "Pulse"
+osc1_octave = 1
+osc2_wave = "Triangle"
+osc2_octave = -2
+osc2_fine = 7.3
+osc2_level = 0.8
+cross_mod_type = "FM"
+cross_mod_amount = 2.06
+pwm_lfo_src = "LFO 1"
+pwm_lfo_depth = 0.231
+cutoff = 3018.0
+resonance = 0.6
+cutoff_env_depth = 26.7
+env1_attack = 0.001
+env1_decay = 1.06
+env1_sustain = 0.44
+env1_release = 9.919
+env2_attack = 0.001
+env2_decay = 0.001
+env2_sustain = 1.0
+env2_release = 2.635
+lfo_rate = 0.21
+lfo1_delay_time = 2.28
