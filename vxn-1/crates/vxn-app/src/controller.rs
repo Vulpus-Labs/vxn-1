@@ -78,6 +78,15 @@ impl<M: ParamModel + Vxn1Params> Controller<M> {
             &mut handle_ui_custom::<M>,
             &mut |_, _| {}, // no synth-specific host events
         );
+        // A fresh editor attach (incl. webview page reload while the plugin
+        // stays alive) re-fires UiEvent::EditorReady; rearm `first_tick` so
+        // `publish_keymode_split_diffs` republishes KeyMode / EditLayer /
+        // SplitPoint. Without this the keys panel reopens stuck on its
+        // cold-start defaults (Whole / Upper / C4) even when the model
+        // already holds Dual/Split.
+        if self.inner.take_editor_ready_flag() {
+            self.first_tick = true;
+        }
         self.publish_keymode_split_diffs();
     }
 

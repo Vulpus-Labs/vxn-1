@@ -52,11 +52,25 @@ pub struct Controller<M: ParamModel> {
     /// walker: `UiEvent::StepPreset` resolves this against the combined
     /// ordered list and advances by `delta`.
     current_source: Option<PresetSource>,
+    /// Optional synthetic "no preset loaded yet" meta the controller
+    /// emits as a [`ViewEvent::PresetLoaded`] on every [`UiEvent::EditorReady`]
+    /// while `current_source` is `None`. Lets a synth seed its preset bar
+    /// with a labelled default (e.g. vxn-2's "Init") before the preset
+    /// epic ships.
+    init_preset_meta: Option<PresetMeta>,
     ui_tx: SyncSender<UiEvent>,
     ui_rx: Receiver<UiEvent>,
     host_tx: SyncSender<HostEvent>,
     host_rx: Receiver<HostEvent>,
     view_tx: SyncSender<ViewEvent>,
+    /// Set when `handle_ui` processes a [`UiEvent::EditorReady`]; consumed by
+    /// callers via [`Self::take_editor_ready_flag`]. Wrapper controllers
+    /// (vxn-1 / vxn-2) use this to detect a re-attached editor and force a
+    /// republish of their non-param view state (key mode, split point,
+    /// edit layer) — the editor's web page can reload without tearing down
+    /// the plugin, so the per-instance state needs reseeding even though
+    /// nothing in the model changed.
+    editor_ready_pending: bool,
 }
 
 impl<M: ParamModel> Controller<M> {
@@ -80,13 +94,24 @@ impl<M: ParamModel> Controller<M> {
             presets,
             corpus: corpus.clone(),
             current_source: None,
+            init_preset_meta: None,
             ui_tx,
             ui_rx,
             host_tx,
             host_rx,
             view_tx,
+            editor_ready_pending: false,
         };
         (ctrl, view_rx, corpus)
+    }
+
+    /// Consume the pending-EditorReady flag. `true` means an
+    /// [`UiEvent::EditorReady`] was processed since the last call;
+    /// wrappers use this to reseed non-param view state on every editor
+    /// attach (including page reloads inside a long-lived plugin
+    /// instance).
+    pub fn take_editor_ready_flag(&mut self) -> bool {
+        std::mem::take(&mut self.editor_ready_pending)
     }
 
     pub fn handle(&self) -> ControllerHandle {
@@ -111,6 +136,16 @@ impl<M: ParamModel> Controller<M> {
 
     pub fn corpus_handle(&self) -> CorpusHandle {
         self.corpus.clone()
+    }
+
+    /// Register a synthetic "no preset loaded yet" meta. While no preset
+    /// has been loaded, every [`UiEvent::EditorReady`] emits a
+    /// [`ViewEvent::PresetLoaded`] with this meta before the param
+    /// re-broadcast, so the editor's preset bar paints the configured
+    /// label (e.g. "Init") immediately on first open. Pass `None` to
+    /// clear.
+    pub fn set_init_preset_meta(&mut self, meta: Option<PresetMeta>) {
+        self.init_preset_meta = meta;
     }
 
     /// Re-read the user-side corpus from disk and refresh the shared
@@ -243,6 +278,25 @@ impl<M: ParamModel> Controller<M> {
                 self.push_view_event(ViewEvent::TextInputResult { id, value });
             }
             UiEvent::EditorReady => {
+                // Flag the attach for wrapper controllers (vxn-1's
+                // KeyMode/Split republish, etc). Consumed via
+                // `take_editor_ready_flag()` after `tick()` returns.
+                self.editor_ready_pending = true;
+                // Seed the preset bar with the configured init meta
+                // (e.g. vxn-2 "Init") before the param broadcast so the
+                // name display paints in the same tick the controls
+                // hydrate. Skipped once a preset has actually been
+                // loaded — the live `PresetLoaded` from `load_preset`
+                // is the authoritative label after that.
+                if self.current_source.is_none() {
+                    if let Some(meta) = self.init_preset_meta.clone() {
+                        self.push_view_event(ViewEvent::PresetLoaded {
+                            meta,
+                            source: None,
+                            warnings: Vec::new(),
+                        });
+                    }
+                }
                 self.broadcast_all_params();
                 // 0050 race fix: the webview backend's first corpus push
                 // can land before the page's bootstrap script has
@@ -329,6 +383,7 @@ impl<M: ParamModel> Controller<M> {
     ) {
         let list = self.combined_preset_list();
         if list.is_empty() {
+            self.send_status("No presets available".into());
             return;
         }
         let cur_idx = self
