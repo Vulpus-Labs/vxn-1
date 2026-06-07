@@ -15,9 +15,9 @@ chorus_on = false
 
 [performance.upper]
 osc1_wave = "Pulse"
-osc1_octave = -2
+osc1_octave = 2
 osc2_wave = "Pulse"
-osc2_octave = -3
+osc2_octave = 1
 osc2_fine = 15.4
 osc2_level = 0.8
 pwm_env_src = "Env 1"

@@ -15,7 +15,7 @@ chorus_on = false
 
 [performance.upper]
 osc1_wave = "Pulse"
-osc1_octave = -1
+osc1_octave = 1
 osc2_wave = "Pulse"
 osc2_octave = 0
 osc2_fine = 11.7

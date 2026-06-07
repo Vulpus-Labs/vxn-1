@@ -15,8 +15,8 @@ chorus_on = false
 
 [performance.upper]
 osc1_wave = "Triangle"
-osc1_octave = -2
-osc2_octave = -3
+osc1_octave = 2
+osc2_octave = 1
 osc2_fine = -9.9
 osc1_level = 0.58
 osc2_level = 1.0
