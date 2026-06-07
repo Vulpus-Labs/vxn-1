@@ -558,7 +558,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         Taper::Exp { mid: 800.0 },
     ),
     f("resonance", "Resonance", 0.0, 1.0, 0.2, "", Taper::Linear),
-    f("drive", "Drive", 0.1, 4.0, 1.0, "", Taper::Linear),
+    f("drive", "Drive", 0.1, 4.0, 1.0, "", Taper::Exp { mid: 1.0 }),
     e("filter_mode", "Filter Mode", FILTER_MODE_LABELS, 0.0),
     e("filter_slope", "Filter Slope", SLOPE_LABELS, 1.0),
     f(
