@@ -4,18 +4,22 @@ schema = 1
 name = "Sync Lead"
 author = "Vulpus Labs"
 category = "Lead"
-comment = "Screaming hard-sync lead — Twin assign fattens each note across two detuned channels, Env 1 drives the sync sweep, pitch wheel set wide for dives."
+comment = "Screaming hard-sync lead — Twin assign across two detuned channels, Env 1 drives the sync sweep, subtle chorus widens. 4x oversample for clean sync."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+oversample = "4x"
+chorus_rate = 0.5
+chorus_depth = 0.4
+chorus_mix = 0.3
+
 [performance.upper]
-# osc1 = slave/carrier (audible sync sound); osc2 = master.
-osc1_wave = "Saw"
 osc1_coarse = 7
+osc1_octave = 0
 osc1_level = 0.6
-osc2_wave = "Saw"
 osc2_level = 0.9
 cross_mod_type = "Sync"
 pitch_env_src = "Env 1"
@@ -29,7 +33,6 @@ env1_decay = 0.7
 env1_sustain = 0.3
 env2_attack = 0.01
 env2_decay = 0.3
-env2_sustain = 0.8
 env2_release = 0.2
 assign_mode = "Twin"
 unison_detune = 8.0

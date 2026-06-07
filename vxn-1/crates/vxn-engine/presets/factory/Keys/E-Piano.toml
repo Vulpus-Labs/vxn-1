@@ -4,11 +4,21 @@ schema = 1
 name = "E-Piano"
 author = "Vulpus Labs"
 category = "Keys"
-comment = "Classic two-operator FM electric piano — sine-on-sine cross-mod, a noise transient for the hammer, plucky decay to silence."
+comment = "Two-op FM Rhodes — sine-on-sine PM, noise hammer transient, velocity opens the cutoff. Chorus + small room."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
+
+[performance.global]
+chorus_rate = 0.45
+chorus_depth = 0.4
+chorus_mix = 0.35
+reverb_on = true
+reverb_size = 0.3
+reverb_decay = 1.2
+reverb_damp = 0.45
+reverb_mix = 0.15
 
 [performance.upper]
 osc1_wave = "Sine"
@@ -17,12 +27,12 @@ osc2_wave = "Sine"
 osc2_octave = 0
 osc2_level = 0.0
 cross_mod_type = "FM"
-cross_mod_amount = 1.2
-noise_level = 0.12
-noise_color = "White"
-cutoff = 8000.0
+cross_mod_amount = 1.0
+noise_level = 0.1
+cutoff = 7000.0
 resonance = 0.1
 env2_attack = 0.002
-env2_decay = 1.4
+env2_decay = 1.6
 env2_sustain = 0.0
 env2_release = 0.4
+vel_cutoff_depth = 24.0

@@ -4,21 +4,24 @@ schema = 1
 name = "Great Divide"
 author = "Vulpus Labs"
 category = "Performance"
-comment = "Keyboard split at C3 (MIDI 48): Solo sync lead up top (Upper), Solo bass below (Lower). Global ping-pong delay plus raised Oversample for clean sync."
+comment = "Split at C3 (MIDI 48): Solo sync lead Upper, Solo bass Lower. Chorus widens the lead, medium reverb pulls them into one room. 4x oversample for clean sync."
 
 [performance]
 key_mode = "Split"
 split_point = 48
 
 [performance.global]
-chorus_on = false
-delay_on = true
-delay_time = 0.3
-delay_mix = 0.18
 oversample = "4x"
+chorus_rate = 0.5
+chorus_depth = 0.5
+chorus_mix = 0.35
+reverb_on = true
+reverb_size = 0.5
+reverb_decay = 2.5
+reverb_damp = 0.4
+reverb_mix = 0.22
 
 [performance.upper]
-# osc1 = slave/carrier (audible sync sound); osc2 = master.
 osc1_coarse = 7
 osc1_octave = 0
 cross_mod_type = "Sync"
@@ -28,6 +31,9 @@ pitch_env_mod_only = true
 cutoff = 6000.0
 resonance = 0.3
 drive = 1.5
+env1_attack = 0.01
+env1_decay = 0.5
+env1_sustain = 0.3
 env2_attack = 0.01
 env2_decay = 0.3
 env2_release = 0.25
@@ -38,17 +44,20 @@ pitch_wheel_depth = 7.0
 
 [performance.lower]
 osc1_octave = -1
-osc2_fine = 0.0
-cutoff = 26.0
-resonance = 0.3
-filter_key_track = 1.0
-env1_decay = 0.25
-env1_sustain = 0.1
-cutoff_env_depth = 44.0
-env2_attack = 0.002
+osc2_octave = 0
+osc2_fine = -5.0
+osc2_level = 0.7
+sub_level = 0.4
+cutoff = 50.0
+resonance = 0.45
+drive = 1.5
+filter_key_track = 0.7
+env1_decay = 0.3
+cutoff_env_depth = 54.0
+env2_attack = 0.003
 env2_decay = 0.4
-env2_sustain = 0.3
-env2_release = 0.12
+env2_sustain = 0.5
+env2_release = 0.15
 assign_mode = "Solo"
 legato = true
 portamento_time = 0.03

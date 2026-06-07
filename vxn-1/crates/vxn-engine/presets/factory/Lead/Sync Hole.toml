@@ -4,16 +4,25 @@ schema = 1
 name = "Sync Hole"
 author = "Vulpus Labs"
 category = "Lead"
-comment = "Bright metallic sync lead for power solos. Twin assign fattens each note across two detuned channels; Env 1 drives the sync sweep. Raise Oversample to tame sync alias."
+comment = "Bright metallic sync lead with a long sustained sweep into reverb space. Twin assign fattens each note. 4x oversample for clean sync."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+chorus_on = false
+oversample = "4x"
+reverb_on = true
+reverb_size = 0.6
+reverb_decay = 4.0
+reverb_damp = 0.4
+reverb_mix = 0.28
+
 [performance.upper]
-# osc1 = slave/carrier (audible sync sound); osc2 = master.
 osc1_coarse = 7
 osc1_octave = 0
+osc1_level = 0.85
 cross_mod_type = "Sync"
 pitch_env_src = "Env 1"
 pitch_env_depth = 12.0
@@ -26,7 +35,9 @@ env1_decay = 0.7
 env1_sustain = 0.3
 env2_attack = 0.01
 env2_decay = 0.3
-env2_release = 0.2
+env2_sustain = 0.8
+env2_release = 0.5
 assign_mode = "Twin"
 unison_detune = 8.0
 pitch_wheel_depth = 7.0
+mod_wheel_cross_mod_sweep = 24.0

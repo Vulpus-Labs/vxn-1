@@ -4,22 +4,30 @@ schema = 1
 name = "Power Bottom"
 author = "Vulpus Labs"
 category = "Bass"
-comment = "Power-fifth bass — osc 2 a fifth (+7 st) above, Twin assign for the 'fat' stack."
+comment = "Power-fifth bass — Osc 2 a fifth above, Twin assign stacks two detuned channels per note. Snappy filter snap. Dry."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+chorus_on = false
+
 [performance.upper]
-osc1_octave = -1
+osc1_level = 0.85
 osc2_coarse = 7
-osc2_fine = 0.0
-cutoff = 900.0
+osc2_octave = 0
+osc2_level = 0.7
+sub_level = 0.4
+cutoff = 65.0
+resonance = 0.45
+drive = 1.5
+filter_key_track = 0.6
 env1_decay = 0.3
-env1_sustain = 0.1
-cutoff_env_depth = 40.0
-env2_decay = 0.5
-env2_sustain = 0.6
+cutoff_env_depth = 60.0
+env2_attack = 0.002
+env2_decay = 0.4
+env2_sustain = 0.55
 env2_release = 0.15
 assign_mode = "Twin"
 unison_detune = 10.0

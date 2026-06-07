@@ -4,23 +4,43 @@ schema = 1
 name = "Mellow Drama"
 author = "Vulpus Labs"
 category = "Strings"
-comment = "Soft, dark string pad — lower cutoff, lazier swell, gentle vibrato. Width from unison detune."
+comment = "Soft, dark string pad — lower cutoff, lazier swell, gentle vibrato. Chorus widens, medium hall blooms."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+master_drift = 0.2
+chorus_rate = 0.45
+chorus_depth = 0.7
+chorus_mix = 0.45
+reverb_on = true
+reverb_size = 0.6
+reverb_decay = 3.5
+reverb_damp = 0.5
+reverb_mix = 0.3
+
 [performance.upper]
+osc1_wave = "Triangle"
+osc1_level = 0.6
 osc2_octave = 0
-osc2_fine = 8.0
-osc2_level = 0.8
-cutoff = 2200.0
-resonance = 0.12
+osc2_fine = 6.0
+osc2_level = 0.65
+cutoff = 1800.0
+resonance = 0.15
+filter_key_track = 0.4
+env1_attack = 0.8
+env1_decay = 1.5
+env1_sustain = 0.5
+env1_release = 1.5
+cutoff_env_depth = 12.0
 env2_attack = 0.8
-env2_decay = 2.2
+env2_decay = 2.0
 env2_sustain = 0.85
-env2_release = 1.3
+env2_release = 1.8
+pitch_lfo_depth = 0.14
+lfo_rate = 3.8
+lfo1_free_run = true
 assign_mode = "Unison"
 unison_detune = 14.0
-pitch_lfo_depth = 0.15
-lfo_rate = 4.0

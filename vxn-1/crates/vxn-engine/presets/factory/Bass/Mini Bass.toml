@@ -4,23 +4,24 @@ schema = 1
 name = "Mini Bass"
 author = "Vulpus Labs"
 category = "Bass"
-comment = "Fat mono saw bass — Solo assign with a touch of glide, Env 1 sweeping the filter, key-track on so it stays punchy up the neck."
+comment = "Mini-Moog three-oscillator-ish: two saws + sub, ladder-style snap, full key-track. Dry."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+chorus_on = false
+
 [performance.upper]
-osc1_wave = "Saw"
 osc1_level = 0.9
-osc2_wave = "Saw"
 osc2_octave = 0
-osc2_fine = -6.0
+osc2_fine = -7.0
 osc2_level = 0.7
-cutoff = 30.0
+sub_level = 0.55
+cutoff = 35.0
 resonance = 0.45
 drive = 1.6
-filter_slope = "24"
 filter_key_track = 1.0
 env1_decay = 0.35
 env1_sustain = 0.1

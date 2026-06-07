@@ -4,30 +4,35 @@ schema = 1
 name = "FM Growl"
 author = "Vulpus Labs"
 category = "Bass"
-comment = "Aggressive cross-mod (FM) bass — osc 2 modulates osc 1, with a dusting of pink noise adding grit."
+comment = "Aggressive PM bass — Osc 2 sine modulates Osc 1, pink noise adds grit, ladder bite from Env 1. Dry, Solo."
 
 [performance]
 key_mode = "Whole"
 split_point = 60
 
+[performance.global]
+chorus_on = false
+
 [performance.upper]
-osc1_wave = "Saw"
 osc1_level = 0.85
 osc2_wave = "Sine"
+osc2_coarse = 5
 osc2_octave = 0
 osc2_level = 0.0
 cross_mod_type = "FM"
-cross_mod_amount = 2.0
-noise_level = 0.15
+cross_mod_amount = 1.8
+noise_level = 0.12
 noise_color = "Pink"
-cutoff = 900.0
-resonance = 0.5
-drive = 1.8
-filter_slope = "24"
-env1_decay = 0.25
-env1_sustain = 0.2
-cutoff_env_depth = 48.0
+cutoff = 80.0
+resonance = 0.55
+drive = 1.6
+filter_key_track = 0.5
+env1_decay = 0.45
+cutoff_env_depth = 66.0
 env2_attack = 0.003
-env2_decay = 0.6
-env2_sustain = 0.5
-env2_release = 0.15
+env2_decay = 0.55
+env2_sustain = 0.55
+env2_release = 0.18
+assign_mode = "Solo"
+legato = true
+portamento_time = 0.03
