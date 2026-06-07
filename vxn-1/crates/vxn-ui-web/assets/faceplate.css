@@ -835,13 +835,14 @@ html, body {
   flex: 0 0 52px;
 }
 .panel[data-name="FX"] .fx-tab {
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  color: #9b9b9b;
-  font: 700 7px/1 inherit;
-  letter-spacing: 0.6px;
-  padding: 0 4px;
-  border-radius: 2px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--ctl-label);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 0 4px 0 6px;
   cursor: pointer;
   flex: 1 1 0;
   min-height: 0;
@@ -851,11 +852,10 @@ html, body {
   align-items: center;
   gap: 4px;
 }
-.panel[data-name="FX"] .fx-tab:hover { color: #d4d4d4; border-color: #4a4a4a; }
+.panel[data-name="FX"] .fx-tab:hover { color: #d4d4d4; }
 .panel[data-name="FX"] .fx-tab.active {
-  background: #2a2a2a;
-  border-color: #84cdff;
-  color: #ffffff;
+  border-left-color: #84cdff;
+  color: #ececec;
 }
 .panel[data-name="FX"] .fx-tab-switch {
   /* Override `.panel[data-header-toggle] .panel-header-toggle-slot`'s
@@ -883,11 +883,21 @@ html, body {
   display: none;
   flex: 1 1 auto;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: 1fr 18px;
+  grid-template-rows: 1fr 16px;
   column-gap: 6px;
   row-gap: 2px;
   min-width: 0;
+  min-height: 0;
   position: relative;
+}
+/* `.ctl` defaults to a fixed 120 px column height that would push the
+   bottom strip row outside the FX panel's body clearance. Inside the
+   FX pane the cells size to their natural label+fader stack and pin
+   to the top of their grid row, so the reserved strip row stays
+   visible below. */
+.panel[data-name="FX"] .fx-pane > .ctl {
+  height: auto;
+  align-self: start;
 }
 .panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: grid; }
 .panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: grid; }
@@ -1120,6 +1130,21 @@ html, body {
   flex-direction: row;
   align-items: center;
   gap: 6px;
+}
+.keys-split-label {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--ctl-label);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+/* `.dimmed` already greys via opacity (shared rule). Block pointer ops on
+   the parked Keys controls so a click in Whole/Dual can't move the split
+   slider or flip the edit-layer toggle. */
+.keys-tg-list.dimmed,
+.keys-split-row.dimmed {
+  opacity: 0.4;
+  pointer-events: none;
 }
 .keys-split-slider {
   flex: 1 1 auto;

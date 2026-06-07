@@ -79,6 +79,10 @@ export const model = {
   // resolved per layer in rebindAllForLayer.
   syncOfRate: new Map(),
   rateOfSync: new Map(),
+  // Cutoff ↔ Tuned pairing (per layer). When Tuned flips the cutoff
+  // fader must re-paint with a different norm + display.
+  tunedOfCutoff: new Map(),
+  cutoffOfTuned: new Map(),
   // Active edit layer ('upper' | 'lower'). EditLayerChanged mutates.
   currentLayer: 'upper',
   // Dim-rule specs collected from HTML attributes + builtins (0066).
@@ -114,6 +118,14 @@ export function locateSyncPartners(layer) {
     if (r == null || s == null) continue;
     model.syncOfRate.set(r, s);
     model.rateOfSync.set(s, r);
+  }
+  model.tunedOfCutoff.clear();
+  model.cutoffOfTuned.clear();
+  const cutoffId = paramIdByNameAtLayer('cutoff', layer);
+  const tunedId  = paramIdByNameAtLayer('cutoff_tuned', layer);
+  if (cutoffId != null && tunedId != null) {
+    model.tunedOfCutoff.set(cutoffId, tunedId);
+    model.cutoffOfTuned.set(tunedId, cutoffId);
   }
 }
 
@@ -235,6 +247,35 @@ export function rateDisplayOverride(id) {
   };
 }
 
+// Cutoff fader overrides (per Filter Cutoff "Tuned" toggle). When tuned:
+//   - drag maps norm linearly to MIDI 12..60, snaps to int, sends Hz
+//   - thumb position derives from the (snapped) Hz of the current value
+//   - display reads as a note name (e.g. "C2") instead of Hz
+// Tuned off: return null, default fader behaviour kicks in.
+function cutoffTunedOn(id) {
+  const tunedId = model.tunedOfCutoff.get(id);
+  if (tunedId == null) return false;
+  const last = model.lastParam.get(tunedId);
+  return !!(last && last.plain >= 0.5);
+}
+export function cutoffInteractionOverride(id) {
+  if (model.tunedOfCutoff.get(id) == null) return null;
+  return (rawNorm) => {
+    if (!cutoffTunedOn(id)) return null;
+    const hz = cutoffTunedNormToHz(rawNorm);
+    return { plain: hz, norm: cutoffTunedHzToNorm(hz) };
+  };
+}
+export function cutoffNormOverride(id) {
+  if (model.tunedOfCutoff.get(id) == null) return null;
+  return (plain) => (cutoffTunedOn(id) ? cutoffTunedHzToNorm(plain) : null);
+}
+export function cutoffDisplayOverride(id) {
+  if (model.tunedOfCutoff.get(id) == null) return null;
+  return (plain, norm, display) =>
+    cutoffTunedOn(id) ? cutoffTunedNoteName(plain) : null;
+}
+
 export function bindCell(entry, layer) {
   const { el, kind, name } = entry;
   const id = paramIdByNameAtLayer(name, layer);
@@ -243,7 +284,14 @@ export function bindCell(entry, layer) {
   let ctl = null;
   switch (kind) {
     case 'fader': {
-      const opts = { displayOverride: rateDisplayOverride(id) };
+      // Cutoff fader: tuned mode replaces both the drag mapping and the
+      // popup display. Other faders share the existing rate/sync display
+      // override path.
+      const opts = {
+        displayOverride: cutoffDisplayOverride(id) || rateDisplayOverride(id),
+        normOverride: cutoffNormOverride(id),
+        interactionOverride: cutoffInteractionOverride(id),
+      };
       ctl = makeFader(el, id, desc, opts);
       break;
     }
@@ -395,6 +443,17 @@ export function init() {
         const rateCtls = model.controls.get(rateId);
         if (last && rateCtls) {
           for (const c of rateCtls) c.update(last.plain, last.norm, last.display);
+        }
+      }
+      // Cutoff Tuned toggled: refresh the cutoff fader so its norm + popup
+      // pick up the new mode (linear MIDI map + note-name display, or
+      // exp-Hz default).
+      const cutoffId = model.cutoffOfTuned.get(ev.id);
+      if (cutoffId != null) {
+        const last = model.lastParam.get(cutoffId);
+        const cutoffCtls = model.controls.get(cutoffId);
+        if (last && cutoffCtls) {
+          for (const c of cutoffCtls) c.update(last.plain, last.norm, last.display);
         }
       }
       // Unified dim rules: source-Off / Cross Mod Type ≠ FM (0044) plus

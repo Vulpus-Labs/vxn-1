@@ -143,6 +143,37 @@ export function keysNoteName(n) {
   const octave = Math.floor(n / 12) - 1;
   return NAMES[((n % 12) + 12) % 12] + octave;
 }
+
+// Filter Cutoff Tuned mode: fader range = MIDI C0..C4 (12..60), C2 at the
+// midpoint. Hz <-> MIDI helpers; the fader stores Hz like the untuned
+// path so DAW automation reads the same param value.
+export const CUTOFF_TUNED_MIDI_MIN = 12;   // C0
+export const CUTOFF_TUNED_MIDI_MAX = 60;   // C4
+export function midiToHz(m) {
+  return 440 * Math.pow(2, (m - 69) / 12);
+}
+export function hzToMidi(hz) {
+  return 69 + 12 * Math.log2(Math.max(1e-6, hz) / 440);
+}
+export function cutoffTunedNormToHz(norm) {
+  const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
+  const midi = Math.round(CUTOFF_TUNED_MIDI_MIN + Math.max(0, Math.min(1, norm)) * span);
+  return midiToHz(midi);
+}
+export function cutoffTunedHzToNorm(hz) {
+  const midi = Math.max(
+    CUTOFF_TUNED_MIDI_MIN,
+    Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))),
+  );
+  return (midi - CUTOFF_TUNED_MIDI_MIN) / (CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN);
+}
+export function cutoffTunedNoteName(hz) {
+  const midi = Math.max(
+    CUTOFF_TUNED_MIDI_MIN,
+    Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))),
+  );
+  return keysNoteName(midi);
+}
 export const keysPanel = (() => {
   const bodyEl = document.querySelector('.panel[data-name="Keys"] .panel-body');
   if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {} };
@@ -161,6 +192,7 @@ export const keysPanel = (() => {
       <div class="keys-tg-list" id="keys-edit-list"></div>
     </div>
     <div class="keys-split-row" id="keys-split-row">
+      <span class="keys-split-label">Split</span>
       <input type="range" class="keys-split-slider" id="keys-split-slider"
              min="${KEYS_SPLIT_MIN}" max="${KEYS_SPLIT_MAX}" step="1" />
       <div class="keys-split-readout" id="keys-split-readout"></div>
@@ -193,9 +225,10 @@ export const keysPanel = (() => {
   }
   function renderEditList() {
     editListEl.innerHTML = '';
-    // Reserve the column slot in Whole so the layout (and therefore the
-    // Reset button's Y position) doesn't shift when the mode flips.
-    editListEl.style.visibility = mode === 0 ? 'hidden' : 'visible';
+    // In Whole the edit toggle is meaningless (both layers share one patch);
+    // keep it visible but dim so the layout doesn't shift and the user sees
+    // what control is parked. `.dimmed` greys it out and blocks clicks.
+    editListEl.classList.toggle('dimmed', mode === 0);
     KEY_LAYERS.forEach(({ code, label }) => {
       const row = tgRow(label);
       if (code === layer) row.classList.add('active');
@@ -208,7 +241,9 @@ export const keysPanel = (() => {
     });
   }
   function renderSplit() {
-    splitRowEl.style.visibility = mode === 2 ? 'visible' : 'hidden';
+    // Only meaningful in Split (mode 2). Dim in Whole/Dual so the layout
+    // is stable and the user sees that the slider exists but is parked.
+    splitRowEl.classList.toggle('dimmed', mode !== 2);
     splitSlider.value = String(split);
     splitReadout.textContent = keysNoteName(split);
   }
@@ -436,6 +471,14 @@ export function makeFader(el, id, desc, opts) {
   const noLabel = el.hasAttribute('data-no-label');
   const label = el.dataset.label || desc.label;
   const displayOverride = (opts && opts.displayOverride) || null;
+  // Optional hooks for faders whose mapping/display swap with a partner
+  // toggle (LFO rate ↔ sync, Cutoff ↔ Tuned). `interactionOverride(n)`
+  // returns `{plain, norm}` to swap the drag-write path (sends plain Hz
+  // instead of raw norm); `normOverride(plain)` returns a thumb norm
+  // computed from the param's plain value, bypassing the descriptor
+  // taper. Both return null to fall through to the default behaviour.
+  const interactionOverride = (opts && opts.interactionOverride) || null;
+  const normOverride = (opts && opts.normOverride) || null;
   el.innerHTML = `
     ${noLabel ? '' : `<div class="ctl-label">${label.toUpperCase()}</div>`}
     <div class="ctl-fader">
@@ -447,6 +490,17 @@ export function makeFader(el, id, desc, opts) {
   const thumb = el.querySelector('.ctl-fader-thumb');
   let lastDisplay = '';
 
+  const writeFromDrag = (rawNorm) => {
+    const o = interactionOverride && interactionOverride(rawNorm);
+    if (o) {
+      paintFader(fader, thumb, o.norm);
+      window.vxn.send.setParam(id, o.plain);
+    } else {
+      paintFader(fader, thumb, rawNorm);
+      window.vxn.send.setParamNorm(id, rawNorm);
+    }
+  };
+
   let drag;
   const pop = attachValuePop({
     isHovered:  () => drag.isHovered(),
@@ -457,14 +511,10 @@ export function makeFader(el, id, desc, opts) {
     onLeave: () => pop.markLeft(),
     onDown: (ev, n) => {
       window.vxn.send.beginGesture(id);
-      paintFader(fader, thumb, n);                        // local: no round-trip wait
-      window.vxn.send.setParamNorm(id, n);
+      writeFromDrag(n);
       pop.markGrabbed(ev);                                // re-anchor at the grab point
     },
-    onMove: (_ev, n) => {
-      paintFader(fader, thumb, n);                        // local feedback every frame
-      window.vxn.send.setParamNorm(id, n);
-    },
+    onMove: (_ev, n) => writeFromDrag(n),
     onUp: () => {
       window.vxn.send.endGesture(id);
       pop.markReleased();
@@ -478,7 +528,8 @@ export function makeFader(el, id, desc, opts) {
       // drag the local pointermove `paintFader` and the round-trip echo
       // converge on the same value, so the thumb stays glued to the
       // cursor without flicker.
-      paintFader(fader, thumb, norm);
+      const overriddenNorm = normOverride && normOverride(plain);
+      paintFader(fader, thumb, overriddenNorm != null ? overriddenNorm : norm);
       // Synced LFO rates swap the Hz readout for a subdivision label
       // (0042). The override is null for every other fader, so this
       // collapses to the plain path.

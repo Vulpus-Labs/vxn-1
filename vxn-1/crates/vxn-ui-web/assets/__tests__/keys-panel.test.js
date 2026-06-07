@@ -56,27 +56,27 @@ describe('Keys panel — edit-layer rows', () => {
   });
 });
 
-describe('Keys panel — visibility', () => {
-  it('edit-layer list is hidden in Whole, visible in Dual/Split', async () => {
+describe('Keys panel — dim state', () => {
+  it('edit-layer list is dimmed in Whole, live in Dual/Split', async () => {
     const keysPanel = await loadKeysPanel();
     const editList = document.getElementById('keys-edit-list');
-    expect(editList.style.visibility).toBe('hidden');    // Whole (initial)
+    expect(editList.classList.contains('dimmed')).toBe(true);  // Whole (initial)
     keysPanel.setMode(1);
-    expect(editList.style.visibility).toBe('visible');
+    expect(editList.classList.contains('dimmed')).toBe(false);
     keysPanel.setMode(2);
-    expect(editList.style.visibility).toBe('visible');
+    expect(editList.classList.contains('dimmed')).toBe(false);
     keysPanel.setMode(0);
-    expect(editList.style.visibility).toBe('hidden');
+    expect(editList.classList.contains('dimmed')).toBe(true);
   });
 
-  it('split row is visible only in Split mode', async () => {
+  it('split row is live only in Split mode, dimmed elsewhere', async () => {
     const keysPanel = await loadKeysPanel();
     const row = document.getElementById('keys-split-row');
-    expect(row.style.visibility).toBe('hidden');         // Whole
+    expect(row.classList.contains('dimmed')).toBe(true);   // Whole
     keysPanel.setMode(1);
-    expect(row.style.visibility).toBe('hidden');         // Dual
+    expect(row.classList.contains('dimmed')).toBe(true);   // Dual
     keysPanel.setMode(2);
-    expect(row.style.visibility).toBe('visible');        // Split
+    expect(row.classList.contains('dimmed')).toBe(false);  // Split
   });
 });
 

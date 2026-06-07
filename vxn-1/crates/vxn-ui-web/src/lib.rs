@@ -1430,6 +1430,7 @@ mod tests {
             ("fader",       "drive",            "Drive"),
             ("buttongroup", "filter_mode",      "Mode"),
             ("switch",      "filter_slope",     "Slope"),
+            ("switch",      "cutoff_tuned",     "Tuned"),
             // Filter Mod
             ("fader", "vel_cutoff_depth",  "Vel"),
             ("fader", "cutoff_lfo1_depth", "LFO1"),
@@ -1605,12 +1606,14 @@ mod tests {
         // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave).
         // Switches:
         //   Row 1: 4 (LfoSync, Lfo2Sync, Lfo1FreeRun, NoiseColor)
-        //   Row 2: 4 (Env1Shape, Env2Shape, Gate, Slope) — 0100 moved KeyTrk
-        //          out (bool switch → amount fader, lives in Filter Mod now)
+        //   Row 2: 5 (Env1Shape, Env2Shape, Gate, Slope, CutoffTuned) —
+        //          0100 moved KeyTrk out (bool switch → amount fader,
+        //          lives in Filter Mod now); CutoffTuned added in the
+        //          Filter panel strip.
         //   Row 3: 2 (PitchLfoModOnly, PitchEnvModOnly)
         //   Row 4: 3 (Oversample as multi-toggle row, LimiterOn,
         //            DelaySync)
-        //   Total = 13.
+        //   Total = 14.
         // Button groups:
         //   Row 2: 2 (AmpLfoSrc, FilterMode)
         //   Row 3: 5 (Pitch/PWM LFO+Env sources, CrossModType)
@@ -1636,8 +1639,8 @@ mod tests {
         );
         assert_eq!(
             assembled().matches(r#" data-control="switch""#).count(),
-            13,
-            "expected 13 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
+            14,
+            "expected 14 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="buttongroup""#).count(),
