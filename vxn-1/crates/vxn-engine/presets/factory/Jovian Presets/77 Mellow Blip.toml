@@ -33,4 +33,3 @@ lfo_rate = 0.21
 lfo1_delay_time = 0.45
 pitch_env_src = "Env 1"
 pitch_env_depth = -4.4
-pitch_env_mod_only = true

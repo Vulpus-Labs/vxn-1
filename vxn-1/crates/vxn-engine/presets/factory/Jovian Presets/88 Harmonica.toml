@@ -14,10 +14,10 @@ split_point = 60
 chorus_on = false
 
 [performance.upper]
-osc1_wave = "Pulse"
-osc1_octave = 1
-osc2_octave = 1
-osc2_fine = 7.3
+osc1_octave = 2
+osc2_wave = "Pulse"
+osc2_octave = 0
+osc1_fine = 7.3
 osc2_level = 0.8
 cross_mod_type = "Sync"
 cutoff = 480.1

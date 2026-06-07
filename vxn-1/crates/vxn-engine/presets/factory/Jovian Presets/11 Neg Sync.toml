@@ -15,11 +15,11 @@ chorus_on = false
 
 [performance.upper]
 osc1_wave = "Pulse"
+osc1_octave = 2
 osc2_wave = "Pulse"
-osc2_octave = 1
-osc2_fine = 12.8
-osc1_level = 0.48
-osc2_level = 1.0
+osc1_fine = 12.8
+osc1_level = 1.0
+osc2_level = 0.48
 cross_mod_type = "Sync"
 pwm_lfo_src = "LFO 1"
 pwm_lfo_depth = 0.309

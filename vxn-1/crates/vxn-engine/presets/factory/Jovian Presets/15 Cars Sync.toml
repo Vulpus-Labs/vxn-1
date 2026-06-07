@@ -15,10 +15,10 @@ chorus_on = false
 
 [performance.upper]
 osc1_wave = "Pulse"
+osc1_octave = 1
 osc2_wave = "Pulse"
-osc2_octave = 0
-osc1_level = 0.0
-osc2_level = 1.0
+osc1_level = 1.0
+osc2_level = 0.0
 cross_mod_type = "Sync"
 cutoff = 534.1
 filter_key_track = 0.69

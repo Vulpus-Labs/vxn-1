@@ -38,4 +38,3 @@ pitch_lfo_src = "LFO 1"
 pitch_lfo_depth = 5.434
 pitch_env_src = "Env 1"
 pitch_env_depth = 9.64
-pitch_env_mod_only = true

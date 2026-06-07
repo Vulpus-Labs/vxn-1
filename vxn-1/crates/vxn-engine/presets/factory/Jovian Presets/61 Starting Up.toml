@@ -35,4 +35,3 @@ env2_release = 2.142
 lfo_rate = 0.41
 pitch_env_src = "Env 1"
 pitch_env_depth = 7.57
-pitch_env_mod_only = true

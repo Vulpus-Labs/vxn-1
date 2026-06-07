@@ -38,4 +38,3 @@ lfo_rate = 0.84
 lfo_shape = "Saw+"
 pitch_env_src = "Env 1"
 pitch_env_depth = -6.22
-pitch_env_mod_only = true

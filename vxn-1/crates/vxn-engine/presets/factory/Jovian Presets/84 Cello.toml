@@ -16,7 +16,7 @@ chorus_on = false
 [performance.upper]
 osc1_wave = "Pulse"
 osc2_wave = "Pulse"
-osc2_fine = 7.3
+osc1_fine = 7.3
 osc2_level = 0.8
 cross_mod_type = "Sync"
 pwm_env_src = "Env 1"
