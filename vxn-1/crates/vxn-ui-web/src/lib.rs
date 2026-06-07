@@ -1545,7 +1545,6 @@ mod tests {
             ("fader",         "delay_feedback", "FB"),
             ("fader",         "delay_mix",      "Mix"),
             ("switch",        "delay_sync",     "Sync"),
-            ("switch",        "delay_pingpong", "P-Pong"),
             // FX → Reverb tab (FDN — four direct knobs).
             ("header-switch", "reverb_on",    ""),
             ("fader",         "reverb_size",  "Size"),
@@ -1609,9 +1608,9 @@ mod tests {
         //   Row 2: 4 (Env1Shape, Env2Shape, Gate, Slope) — 0100 moved KeyTrk
         //          out (bool switch → amount fader, lives in Filter Mod now)
         //   Row 3: 2 (PitchLfoModOnly, PitchEnvModOnly)
-        //   Row 4: 4 (Oversample as multi-toggle row, LimiterOn,
-        //            DelaySync, DelayPingPong)
-        //   Total = 14.
+        //   Row 4: 3 (Oversample as multi-toggle row, LimiterOn,
+        //            DelaySync)
+        //   Total = 13.
         // Button groups:
         //   Row 2: 2 (AmpLfoSrc, FilterMode)
         //   Row 3: 5 (Pitch/PWM LFO+Env sources, CrossModType)
@@ -1637,8 +1636,8 @@ mod tests {
         );
         assert_eq!(
             assembled().matches(r#" data-control="switch""#).count(),
-            14,
-            "expected 14 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
+            13,
+            "expected 13 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="buttongroup""#).count(),

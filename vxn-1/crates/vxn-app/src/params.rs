@@ -262,7 +262,6 @@ pub enum GlobalParam {
     DelayTime,
     DelayFeedback,
     DelayMix,
-    DelayPingPong,
     DelaySync,
     // Reverb (FDN)
     ReverbOn,
@@ -842,7 +841,6 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
         Taper::Linear,
     ),
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
-    b("delay_pingpong", "Ping-Pong", 1.0),
     b("delay_sync", "Delay Sync", 0.0),
     // Reverb (FDN)
     b("reverb_on", "Reverb", 0.0),

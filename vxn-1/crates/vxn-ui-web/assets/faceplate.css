@@ -587,14 +587,14 @@ html, body {
 .row-3 .panel[data-name="Mod Wheel"] { flex-grow: 1.2; }
 .row-3 .panel[data-name="Bend"] { flex: 0 0 54px; }
 
-/* Row 4 — four panels (Keys / Voice / FX / Master). The single FX panel
-   (E018 / 0098) replaces the prior Chorus/Delay/Reverb trio behind a
-   left vertical tab strip, so it claims roughly the sum of their old
-   shares (0.80 + 0.90 + 0.95 ≈ 2.65). */
-.row-4 .panel[data-name="Keys"]   { flex-grow: 1.00; }
-.row-4 .panel[data-name="Voice"]  { flex-grow: 0.85; }
-.row-4 .panel[data-name="FX"]     { flex-grow: 2.65; }
-.row-4 .panel[data-name="Master"] { flex-grow: 1.35; }
+/* Row 4 — four panels (Keys / Voice / FX / Master). FX hosts at most one
+   tabbed pane (4 faders + tab strip) at a time, so narrowing it from its
+   original tri-panel share (2.65) lets Keys / Voice / Master claim the
+   freed space proportionally. */
+.row-4 .panel[data-name="Keys"]   { flex-grow: 1.25; }
+.row-4 .panel[data-name="Voice"]  { flex-grow: 1.05; }
+.row-4 .panel[data-name="FX"]     { flex-grow: 1.80; }
+.row-4 .panel[data-name="Master"] { flex-grow: 1.75; }
 
 .panel-header {
   height: var(--header-h);
@@ -874,30 +874,40 @@ html, body {
   pointer-events: none;
 }
 
-/* Tab panes: each lays out like a normal `.panel-body` (row of `.ctl`
-   columns). Hidden by default; the parent panel's `data-active-tab`
-   reveals the matching one. */
+/* Tab panes: 4-column grid so a fader's horizontal slot is the same
+   across tabs (cells don't shift when the active tab changes). Row 1
+   holds the fader columns; row 2 is reserved for per-pane strip
+   controls (delay's Sync sits under Time). Last column carries the Mix
+   fader on every tab that has one, so Mix lines up too. */
 .panel[data-name="FX"] .fx-pane {
   display: none;
   flex: 1 1 auto;
-  flex-direction: row;
-  align-items: stretch;
-  justify-content: space-evenly;
-  gap: 4px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: 1fr 18px;
+  column-gap: 6px;
+  row-gap: 2px;
   min-width: 0;
+  position: relative;
 }
-.panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: flex; }
-.panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: flex; }
-.panel[data-name="FX"][data-active-tab="delay"]  .fx-pane-delay  { display: flex; }
-.panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: flex; }
+.panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: grid; }
+.panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: grid; }
+.panel[data-name="FX"][data-active-tab="delay"]  .fx-pane-delay  { display: grid; }
+.panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
 
-/* Delay's Sync + Ping-Pong sit in a small stacked column at the right
-   of the delay pane (replaces the old absolute-positioned panel-strip,
-   which would have shown for every tab). */
-.panel[data-name="FX"] .fx-delay-switches {
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
+/* Mix always rides the rightmost column so the Mix fader sits in the
+   same x-slot across all four tabs (chorus/delay have one gap before
+   it; phaser/reverb fill the gap with FB/Damp). */
+.panel[data-name="FX"] .fx-pane-chorus > [data-param="chorus_mix"],
+.panel[data-name="FX"] .fx-pane-delay  > [data-param="delay_mix"] {
+  grid-column: 4;
+}
+
+/* Delay Sync rides row 2, column 1 — directly below the Time fader,
+   matching the LFO panels' "fader on top, sync below" layout. */
+.panel[data-name="FX"] .fx-pane-delay > [data-param="delay_sync"] {
+  grid-row: 2;
+  grid-column: 1;
+  justify-self: center;
 }
 
 

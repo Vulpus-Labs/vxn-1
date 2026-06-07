@@ -106,16 +106,16 @@ describe('wireFxTabs (E018 / 0098)', () => {
     expect(thumb.style.top).not.toBe('');
   });
 
-  it('click on the per-tab switch does NOT swap the active tab', () => {
-    // The on/off switch lives inside each tab button (revised 0098). The
-    // tab-click handler must bail when the event originated inside the
-    // switch slot so the param toggle doesn't double-fire a pane swap.
+  it('click on the per-tab switch also swaps to that tab', () => {
+    // Toggling an effect on/off also brings its pane into view, so the user
+    // sees the controls of the effect they just enabled (req. matched: the
+    // header-switch click bubbles to the tab button, which calls setActive).
     const panel = document.querySelector('.panel[data-name="FX"]');
     expect(panel.dataset.activeTab).toBe('phaser');
     const reverbSwitch = panel.querySelector(
       '.fx-tab[data-tab="reverb"] .fx-tab-switch',
     );
     reverbSwitch.click();
-    expect(panel.dataset.activeTab).toBe('phaser');
+    expect(panel.dataset.activeTab).toBe('reverb');
   });
 });

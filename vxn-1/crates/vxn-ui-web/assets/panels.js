@@ -891,12 +891,11 @@ export function wireFxTabs() {
 
     for (const btn of buttons) {
       btn.addEventListener('click', (ev) => {
-        // Each tab now hosts its own on/off switch (a `.fx-tab-switch`
-        // header-switch primitive). The switch fires on `pointerdown` —
-        // the bubbled `click` would still reach the tab and swap the
-        // pane. Skip the swap when the click originates inside the
-        // switch slot.
-        if (ev.target.closest('.fx-tab-switch')) return;
+        // Each tab hosts its own on/off switch (a `.fx-tab-switch`
+        // header-switch primitive). The switch fires on `pointerdown`
+        // and toggles the param; the bubbled `click` then swaps the
+        // active pane so flipping an effect on/off also brings its
+        // controls into view.
         ev.preventDefault();
         setActive(btn.dataset.tab);
       });

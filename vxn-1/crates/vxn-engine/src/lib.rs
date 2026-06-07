@@ -573,7 +573,6 @@ impl Synth {
             g.get(GlobalParam::DelayFeedback),
             0.3,
             g.get(GlobalParam::DelayMix),
-            g.bool(GlobalParam::DelayPingPong),
         );
 
         // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come

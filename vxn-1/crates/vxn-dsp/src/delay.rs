@@ -54,7 +54,7 @@ impl DelayLine {
 }
 
 /// Stereo feedback delay with a one-pole HF damping in the feedback path and a
-/// dry/wet mix. Optional ping-pong cross-feeds the channels.
+/// dry/wet mix. Feedback always cross-feeds (ping-pong) between channels.
 #[derive(Clone)]
 pub struct StereoDelay {
     sample_rate: f32,
@@ -68,7 +68,6 @@ pub struct StereoDelay {
     feedback: f32,
     damping: f32,
     mix: f32,
-    ping_pong: bool,
 }
 
 impl StereoDelay {
@@ -85,7 +84,6 @@ impl StereoDelay {
             feedback: 0.4,
             damping: 0.3,
             mix: 0.25,
-            ping_pong: false,
         }
     }
 
@@ -105,7 +103,6 @@ impl StereoDelay {
         feedback: f32,
         damping: f32,
         mix: f32,
-        ping_pong: bool,
     ) {
         // Clamp to the buffer's usable span (its `read` clamps the same way).
         // A tempo-synced time at a slow subdivision/tempo can exceed capacity;
@@ -116,7 +113,6 @@ impl StereoDelay {
         self.feedback = feedback.clamp(0.0, 0.99);
         self.damping = damping.clamp(0.0, 1.0);
         self.mix = mix.clamp(0.0, 1.0);
-        self.ping_pong = ping_pong;
     }
 
     /// Process one stereo sample.
@@ -133,13 +129,8 @@ impl StereoDelay {
         let fb_l = self.fb_lp_l * self.feedback;
         let fb_r = self.fb_lp_r * self.feedback;
 
-        if self.ping_pong {
-            self.left.write(in_l + fb_r);
-            self.right.write(in_r + fb_l);
-        } else {
-            self.left.write(in_l + fb_l);
-            self.right.write(in_r + fb_r);
-        }
+        self.left.write(in_l + fb_r);
+        self.right.write(in_r + fb_l);
 
         let m = self.mix;
         (in_l * (1.0 - m) + wet_l * m, in_r * (1.0 - m) + wet_r * m)
@@ -165,7 +156,7 @@ mod tests {
     fn stereo_delay_decays_and_is_finite() {
         let sr = 48_000.0;
         let mut d = StereoDelay::new(sr, 2.0);
-        d.set_params(0.01, 0.01, 0.5, 0.3, 1.0, false);
+        d.set_params(0.01, 0.01, 0.5, 0.3, 1.0);
         let mut peak = 0.0f32;
         for i in 0..sr as usize {
             let x = if i == 0 { 1.0 } else { 0.0 };
@@ -182,7 +173,7 @@ mod tests {
         let mut d = StereoDelay::new(sr, 2.0);
         // Ask for 60 s (e.g. 1/1 at a very slow synced tempo) — far past the
         // 2 s buffer. It must clamp to the line's usable span, not wrap.
-        d.set_params(60.0, 60.0, 0.5, 0.3, 1.0, false);
+        d.set_params(60.0, 60.0, 0.5, 0.3, 1.0);
         let max = (d.left.capacity() - 2) as f32;
         assert!(
             d.delay_samples_l <= max,
