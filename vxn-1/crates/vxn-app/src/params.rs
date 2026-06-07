@@ -198,10 +198,11 @@ pub enum PatchParam {
     UnisonDetune,
     PortamentoTime,
     CutoffTuned,
+    LayerLevel,
 }
 
 impl PatchParam {
-    pub const COUNT: usize = PatchParam::CutoffTuned as usize + 1;
+    pub const COUNT: usize = PatchParam::LayerLevel as usize + 1;
 
     pub fn all() -> impl Iterator<Item = PatchParam> {
         (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
@@ -551,7 +552,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     f(
         "cutoff",
         "Cutoff",
-        20.0,
+        16.3516,
         16000.0,
         1000.0,
         "Hz",
@@ -742,6 +743,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         Taper::Exp { mid: 0.1 },
     ),
     b("cutoff_tuned", "Tuned", 0.0),
+    f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
 ];
 
 pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [

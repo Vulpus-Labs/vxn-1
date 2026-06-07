@@ -231,6 +231,11 @@ pub struct BlockCtx {
     /// entirely — used by the equivalence tests where two layers must sum to
     /// exactly twice one (the drift would decorrelate them otherwise).
     pub drift_amount: f32,
+    /// Per-layer pre-FX output gain. Lets the user balance Upper vs Lower
+    /// independently before both layers sum into the shared FX bus. `1.0`
+    /// is unity; the param defaults to `1.0` so the prior single-level
+    /// behaviour holds for untouched patches.
+    pub layer_level: f32,
 }
 
 /// All 16 voices in structure-of-arrays form.
@@ -976,7 +981,7 @@ impl VoiceBank {
                 for v in 0..N {
                     sum += filt[v] * amp[v];
                 }
-                out[frame + k] += sum * self.level_comp;
+                out[frame + k] += sum * self.level_comp * ctx.layer_level;
             }
 
             // Step the ladder coefficients one base sample toward this block's
@@ -1649,6 +1654,7 @@ mod mod_tests {
             amp_lfo_depth: 0.0,
             amp_env_bypass: false,
             drift_amount: 0.0,
+            layer_level: 1.0,
         }
     }
 

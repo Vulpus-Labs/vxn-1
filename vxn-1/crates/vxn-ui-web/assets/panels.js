@@ -4,6 +4,13 @@
 // under Node ESM the binding resolves through bridge.js so the
 // drag-and-popup tests can exercise the helper without re-mocking.
 import { valuePop } from './bridge.js';
+// `paramIdByNameAtLayer` + `addCtl` are imported for ESM-mode tests; in the
+// inline-bundled production script the splice loader drops `import` lines
+// and the bindings come from the concat-time function declarations in
+// dispatch.js (loaded after panels.js, but only referenced from
+// `wireLayerLevels()` which runs at editor-ready time when both modules are
+// in scope).
+import { paramIdByNameAtLayer, addCtl } from './dispatch.js';
 
 // ─── Preset bar wiring (0049 / 0050) ───────────────────────────────────────
 //
@@ -176,7 +183,7 @@ export function cutoffTunedNoteName(hz) {
 }
 export const keysPanel = (() => {
   const bodyEl = document.querySelector('.panel[data-name="Keys"] .panel-body');
-  if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {} };
+  if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {}, wireLayerLevels() {} };
 
   // mode: 0 Whole, 1 Dual, 2 Split. layer: 'upper' | 'lower'. split: MIDI
   // note in [KEYS_SPLIT_MIN, KEYS_SPLIT_MAX]. Controller-side defaults
@@ -196,6 +203,18 @@ export const keysPanel = (() => {
       <input type="range" class="keys-split-slider" id="keys-split-slider"
              min="${KEYS_SPLIT_MIN}" max="${KEYS_SPLIT_MAX}" step="1" />
       <div class="keys-split-readout" id="keys-split-readout"></div>
+    </div>
+    <div class="keys-level-row" data-layer="upper">
+      <span class="keys-level-lbl">Upper</span>
+      <div class="keys-level-track">
+        <div class="keys-level-thumb"></div>
+      </div>
+    </div>
+    <div class="keys-level-row" data-layer="lower">
+      <span class="keys-level-lbl">Lower</span>
+      <div class="keys-level-track">
+        <div class="keys-level-thumb"></div>
+      </div>
     </div>
     <button type="button" class="keys-reset" id="keys-reset">RESET</button>
   `;
@@ -279,6 +298,77 @@ export const keysPanel = (() => {
   renderEditList();
   renderSplit();
 
+  // Per-layer level sliders (Upper/Lower) — wired by dispatch from
+  // `rebindAllForLayer` (NOT init alone). Each row paints its own thumb at
+  // `norm * 100 %` along the track; the param is per-patch so each layer
+  // has its own fixed CLAP id (these rows don't follow the edit-layer
+  // toggle). No popup readout — the slider's position is the display.
+  //
+  // `rebindAllForLayer` clears `model.controls`, so we MUST re-register
+  // the `addCtl` subscribers on every call — otherwise our echo updaters
+  // would be wiped between the init-time wire and the first ParamChanged
+  // burst. DOM event listeners attach exactly once per layer, guarded by
+  // `levelEventsWired`.
+  const levelEventsWired = { upper: false, lower: false };
+  function wireLayerLevels() {
+    const paint = (thumb, norm) => {
+      const n = Math.max(0, Math.min(1, norm));
+      thumb.style.left = (n * 100) + '%';
+    };
+    for (const which of ['upper', 'lower']) {
+      const id = paramIdByNameAtLayer('layer_level', which);
+      if (id == null) continue;
+      const row = bodyEl.querySelector(`.keys-level-row[data-layer="${which}"]`);
+      if (!row) continue;
+      const track = row.querySelector('.keys-level-track');
+      const thumb = row.querySelector('.keys-level-thumb');
+      if (!track || !thumb) continue;
+
+      // Subscriber — re-registered on every call so the layer-level
+      // sliders survive a `rebindAllForLayer` `model.controls.clear()`.
+      addCtl(id, { update: (_plain, norm) => paint(thumb, norm) });
+
+      if (levelEventsWired[which]) continue;
+      levelEventsWired[which] = true;
+
+      const pointerToNorm = (ev) => {
+        const r = track.getBoundingClientRect();
+        return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+      };
+      let dragging = false;
+      track.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        dragging = true;
+        track.setPointerCapture(ev.pointerId);
+        window.vxn.send.beginGesture(id);
+        const n = pointerToNorm(ev);
+        paint(thumb, n);
+        window.vxn.send.setParamNorm(id, n);
+      });
+      track.addEventListener('pointermove', (ev) => {
+        if (!dragging) return;
+        const n = pointerToNorm(ev);
+        paint(thumb, n);
+        window.vxn.send.setParamNorm(id, n);
+      });
+      const up = (ev) => {
+        if (!dragging) return;
+        dragging = false;
+        try { track.releasePointerCapture(ev.pointerId); } catch (e) {}
+        window.vxn.send.endGesture(id);
+      };
+      track.addEventListener('pointerup', up);
+      track.addEventListener('pointercancel', up);
+      track.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        // Default = unity (1.0). Wrap in a gesture so it lands as one edit.
+        window.vxn.send.beginGesture(id);
+        window.vxn.send.setParamNorm(id, 1.0);
+        window.vxn.send.endGesture(id);
+      });
+    }
+  }
+
   return {
     setMode(m) {
       if (m === mode) return;
@@ -299,6 +389,7 @@ export const keysPanel = (() => {
       splitSlider.value = String(split);
       splitReadout.textContent = keysNoteName(split);
     },
+    wireLayerLevels,
   };
 })();
 

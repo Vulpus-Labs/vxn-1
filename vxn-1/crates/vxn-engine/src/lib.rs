@@ -695,6 +695,7 @@ impl Synth {
             amp_lfo_depth: p.get(PatchParam::AmpLfoDepth),
             amp_env_bypass: p.bool(PatchParam::AmpEnvBypass),
             drift_amount: self.drift_amount,
+            layer_level: p.get(PatchParam::LayerLevel),
         }
     }
 }

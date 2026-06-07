@@ -833,6 +833,7 @@ html, body {
   align-items: stretch;
   gap: 3px;
   flex: 0 0 52px;
+  padding-top: 8px;
 }
 .panel[data-name="FX"] .fx-tab {
   background: transparent;
@@ -883,7 +884,7 @@ html, body {
   display: none;
   flex: 1 1 auto;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: 1fr 16px;
+  grid-template-rows: 1fr 22px;
   column-gap: 6px;
   row-gap: 2px;
   min-width: 0;
@@ -913,11 +914,15 @@ html, body {
 }
 
 /* Delay Sync rides row 2, column 1 — directly below the Time fader,
-   matching the LFO panels' "fader on top, sync below" layout. */
+   matching the LFO panels' "fader on top, sync below" layout.
+   `align-self: start` pins it to row 2's top so it sits level with the
+   bottom (Reverb) tab in the left tab strip instead of dropping to the
+   panel floor. */
 .panel[data-name="FX"] .fx-pane-delay > [data-param="delay_sync"] {
   grid-row: 2;
   grid-column: 1;
   justify-self: center;
+  align-self: start;
 }
 
 
@@ -1137,6 +1142,50 @@ html, body {
   color: var(--ctl-label);
   letter-spacing: 0.5px;
   text-transform: uppercase;
+}
+/* Per-layer level sliders (Upper / Lower). One label + a horizontal
+   track with a draggable thumb. The thumb's `left` is set in px from
+   norm by the panel JS, so the track defines both the visual band and
+   the hit area for the drag. */
+.keys-level-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.keys-level-lbl {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--ctl-label);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  width: 32px;
+  flex: 0 0 32px;
+}
+.keys-level-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 12px;
+  background: var(--track-bg);
+  border-radius: 2px;
+  cursor: pointer;
+  touch-action: none;
+}
+.keys-level-thumb {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 14px;
+  background: var(--thumb-bg);
+  border: 2px solid var(--thumb-border);
+  border-radius: 1px;
+  box-sizing: border-box;
+  transform: translate(-50%, -50%);
+  /* `left` (in %) is written by `wireLayerLevels` so the thumb follows
+     param echoes — including DAW automation. Initial 100 % = unity. */
+  left: 100%;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.15);
 }
 /* `.dimmed` already greys via opacity (shared rule). Block pointer ops on
    the parked Keys controls so a click in Whole/Dual can't move the split

@@ -378,6 +378,12 @@ export function rebindAllForLayer(layer) {
     }
     bindCell(entry, layer);
   }
+  // Non-cell control subscribers (Keys panel's per-layer Level sliders)
+  // re-register here so the model.controls clear above doesn't strand
+  // them — without this they'd miss every ParamChanged echo after the
+  // first rebind. DOM event listeners are guarded inside `wireLayerLevels`
+  // and only attach once per layer.
+  keysPanel.wireLayerLevels();
   // Reseed the visual dim state from cached last-known values so a layer
   // rebind reflects the new layer's state before any echo arrives.
   refreshAllDimRules();
