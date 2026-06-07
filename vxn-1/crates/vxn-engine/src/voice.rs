@@ -870,6 +870,23 @@ impl VoiceBank {
         // osc1 otherwise (Off/Ring/FM). Zero level skips the kernel.
         let sub_on = ctx.sub_level != 0.0;
 
+        // Block-level osc skip: when an oscillator's mix level is zero and it
+        // plays no cross-mod / ring / sub role, the whole kernel is skipped for
+        // every OS-sample in this block — `o1`/`o2` stay at the zero they were
+        // initialised to, so the mix line contributes nothing for that osc.
+        // Sync and PM run both oscs through a paired kernel, so neither can be
+        // skipped under those modes. Sub uses osc1.phase + flipflop on the
+        // non-sync paths, so osc1 must run when sub is on.
+        let osc1_runs = ctx.sync
+            || ctx.pm_index != 0.0
+            || ring_on
+            || ctx.osc1_level != 0.0
+            || sub_on;
+        let osc2_runs = ctx.sync
+            || ctx.pm_index != 0.0
+            || ring_on
+            || ctx.osc2_level != 0.0;
+
         // Envelope block-skip (see `envelopes_static`): when nothing triggers and
         // every active voice holds both envelopes in Sustain, the env levels are
         // constant, so `amp` is computed once and the per-frame tick + free-check
@@ -932,8 +949,12 @@ impl VoiceBank {
                         &mut o2,
                     );
                 } else {
-                    self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
-                    self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
+                    if osc1_runs {
+                        self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);
+                    }
+                    if osc2_runs {
+                        self.osc2.process(ctx.osc2_wave, &pw2, &mut o2);
+                    }
                 }
                 // Ring displaces osc1 in the mixer slot when engaged — osc1_level
                 // then controls the ring's loudness; osc2 stays independently mixable.

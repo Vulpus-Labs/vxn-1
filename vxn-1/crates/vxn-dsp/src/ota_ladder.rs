@@ -96,11 +96,6 @@ impl FilterMode {
     }
 }
 
-#[inline]
-fn sanitize(v: f32) -> f32 {
-    if v.is_finite() { v } else { 0.0 }
-}
-
 /// TPT one-pole stage gain. The four-stage ladder self-oscillates at the
 /// cutoff frequency *in continuous time*, but the explicit `z⁻¹` on the
 /// resonance feedback path (`y4_prev` in [`OtaLadderKernel::tick`]) adds a
@@ -213,11 +208,11 @@ impl OtaLadderKernel {
             let u = fast_tanh(input);
             let v = (u - self.s[i]) * g;
             let yn = v + self.s[i];
-            self.s[i] = sanitize(yn + v);
+            self.s[i] = yn + v;
             *stage = yn;
             input = yn;
         }
-        self.y4_prev = sanitize(stages[3]);
+        self.y4_prev = stages[3];
         self.mode.mix(self.slope, fed, stages)
     }
 }

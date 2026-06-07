@@ -15,11 +15,6 @@ use std::f32::consts::PI;
 
 const N: usize = CHANNELS_PER_LAYER;
 
-#[inline]
-fn sanitize(v: f32) -> f32 {
-    if v.is_finite() { v } else { 0.0 }
-}
-
 /// Map a cutoff in Hz to the TPT one-pole coefficient `a = g/(1+g)`.
 #[inline]
 fn coeff(cutoff_hz: f32, sample_rate: f32) -> f32 {
@@ -55,7 +50,7 @@ impl HpfKernel {
     pub fn tick(&mut self, x: f32) -> f32 {
         let v = (x - self.s) * self.a;
         let lp = v + self.s;
-        self.s = sanitize(lp + v);
+        self.s = lp + v;
         x - lp
     }
 }
@@ -115,7 +110,7 @@ impl PolyHpf {
             let a = self.a[v];
             let vv = (x[v] - self.s[v]) * a;
             let lp = vv + self.s[v];
-            self.s[v] = sanitize(lp + vv);
+            self.s[v] = lp + vv;
             out[v] = x[v] - lp;
         }
     }

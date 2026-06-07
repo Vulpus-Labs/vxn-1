@@ -22,3 +22,12 @@ criterion = "0.5"
 [[bench]]
 name = "render"
 harness = false
+
+[[bench]]
+name = "whistle"
+harness = false
+
+[[bench]]
+name = "whistle_solo"
+harness = false
+test = false
