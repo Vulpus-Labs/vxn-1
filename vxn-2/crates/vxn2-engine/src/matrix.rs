@@ -101,6 +101,39 @@ impl SourceId {
     }
 }
 
+/// Source machine id (kebab-case, stable wire name). Index matches
+/// `SourceId as u8` — `None` at index 0, then `Lfo1`..`VoiceRand`.
+pub const SOURCE_NAMES: [&str; N_SOURCES + 1] = [
+    "none",
+    "lfo1",
+    "lfo2",
+    "pitch-eg",
+    "mod-env",
+    "mod-wheel",
+    "aftertouch",
+    "velocity",
+    "key",
+    "voice-idx",
+    "voice-spread",
+    "voice-rand",
+];
+
+/// Source display label. Same indexing as [`SOURCE_NAMES`].
+pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
+    "—",
+    "LFO 1",
+    "LFO 2",
+    "Pitch EG",
+    "Mod Env",
+    "Mod Wheel",
+    "Aftertouch",
+    "Velocity",
+    "Key",
+    "Voice Idx",
+    "Voice Spread",
+    "Voice Rand",
+];
+
 // --- Destination enum -----------------------------------------------------
 
 /// Modulation destination. `None` is the "empty slot" sentinel.
@@ -131,6 +164,45 @@ pub enum DestId {
 
 /// Count of non-sentinel destinations.
 pub const N_DESTS: usize = 38;
+
+/// Destination machine id (kebab-case wire name). Index matches
+/// `DestId as u8` — `None` at index 0, then `Op1Ratio`..`ReverbMix`.
+pub const DEST_NAMES: [&str; N_DESTS + 1] = [
+    "none",
+    "op1-ratio", "op1-level", "op1-detune", "op1-pan", "op1-feedback",
+    "op2-ratio", "op2-level", "op2-detune", "op2-pan", "op2-feedback",
+    "op3-ratio", "op3-level", "op3-detune", "op3-pan", "op3-feedback",
+    "op4-ratio", "op4-level", "op4-detune", "op4-pan", "op4-feedback",
+    "op5-ratio", "op5-level", "op5-detune", "op5-pan", "op5-feedback",
+    "op6-ratio", "op6-level", "op6-detune", "op6-pan", "op6-feedback",
+    "global-pitch",
+    "lfo1-rate",
+    "lfo2-rate",
+    "lfo2-phase",
+    "stack-detune",
+    "stack-spread",
+    "delay-mix",
+    "reverb-mix",
+];
+
+/// Destination display label. Same indexing as [`DEST_NAMES`].
+pub const DEST_LABELS: [&str; N_DESTS + 1] = [
+    "—",
+    "Op 1 Ratio", "Op 1 Level", "Op 1 Detune", "Op 1 Pan", "Op 1 Feedback",
+    "Op 2 Ratio", "Op 2 Level", "Op 2 Detune", "Op 2 Pan", "Op 2 Feedback",
+    "Op 3 Ratio", "Op 3 Level", "Op 3 Detune", "Op 3 Pan", "Op 3 Feedback",
+    "Op 4 Ratio", "Op 4 Level", "Op 4 Detune", "Op 4 Pan", "Op 4 Feedback",
+    "Op 5 Ratio", "Op 5 Level", "Op 5 Detune", "Op 5 Pan", "Op 5 Feedback",
+    "Op 6 Ratio", "Op 6 Level", "Op 6 Detune", "Op 6 Pan", "Op 6 Feedback",
+    "Global Pitch",
+    "LFO 1 Rate",
+    "LFO 2 Rate",
+    "LFO 2 Phase",
+    "Stack Detune",
+    "Stack Spread",
+    "Delay Mix",
+    "Reverb Mix",
+];
 
 impl DestId {
     #[inline]
@@ -205,6 +277,15 @@ pub enum CurveKind {
     Log,
     Bipolar,
 }
+
+/// Count of curve variants.
+pub const N_CURVES: usize = 4;
+
+/// Curve machine id. Index matches `CurveKind as u8`.
+pub const CURVE_NAMES: [&str; N_CURVES] = ["lin", "exp", "log", "bipolar"];
+
+/// Curve display label. Same indexing as [`CURVE_NAMES`].
+pub const CURVE_LABELS: [&str; N_CURVES] = ["Lin", "Exp", "Log", "Bipolar"];
 
 // --- Slot / Table ---------------------------------------------------------
 
@@ -794,6 +875,23 @@ mod tests {
         }
         s.snap_to(&tgt);
         assert_eq!(s.current()[0][0], 0.75);
+    }
+
+    #[test]
+    fn source_dest_curve_label_tables_match_enum_widths() {
+        assert_eq!(SOURCE_NAMES.len(), N_SOURCES + 1);
+        assert_eq!(SOURCE_LABELS.len(), N_SOURCES + 1);
+        assert_eq!(DEST_NAMES.len(), N_DESTS + 1);
+        assert_eq!(DEST_LABELS.len(), N_DESTS + 1);
+        assert_eq!(CURVE_NAMES.len(), N_CURVES);
+        assert_eq!(CURVE_LABELS.len(), N_CURVES);
+        // Sentinel entries first.
+        assert_eq!(SOURCE_NAMES[0], "none");
+        assert_eq!(DEST_NAMES[0], "none");
+        // Spot-check that machine names track the enum order.
+        assert_eq!(SOURCE_NAMES[SourceId::Lfo1 as usize], "lfo1");
+        assert_eq!(DEST_NAMES[DestId::ReverbMix as usize], "reverb-mix");
+        assert_eq!(CURVE_NAMES[CurveKind::Bipolar as usize], "bipolar");
     }
 
     #[test]

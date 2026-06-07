@@ -39,3 +39,6 @@ clack-extensions = { workspace = true, features = [
     "state",
     "clack-host",
 ] }
+# editor_smoke (0032) reuses the shared IPC parser to drive the
+# controller pipeline without instantiating a WebView.
+vxn-core-ui-web = { workspace = true }

@@ -58,6 +58,11 @@ pub enum Vxn2UiCustom {
         slot: u8,
         row: MatrixRow,
     },
+
+    /// Page-side seed: the page asks the controller to push the full
+    /// 16 × 2 matrix snapshot. Dispatched from JS right after
+    /// `EditorReady` so the overlay can render from a known state.
+    RequestMatrixSnapshot,
 }
 
 /// VXN2-only view echoes.
@@ -69,5 +74,13 @@ pub enum Vxn2ViewCustom {
         layer: Layer,
         slot: u8,
         row: MatrixRow,
+    },
+    /// Full 16 × 2 matrix snapshot. Emitted on
+    /// `Vxn2UiCustom::RequestMatrixSnapshot` and on
+    /// `Vxn2UiCustom::SetEditLayer` so the overlay can render the
+    /// now-current layer's rows without polling.
+    MatrixSnapshot {
+        upper: [MatrixRow; 16],
+        lower: [MatrixRow; 16],
     },
 }

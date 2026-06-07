@@ -27,12 +27,13 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn2_app::{NoopPresetStore, tick_vxn2};
 use vxn2_engine::engine::Engine;
+use vxn2_engine::params::id_of;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
-    ParamDesc, ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id,
-    module_for_clap_id,
+    ParamDesc, ParamKind, ParamModel, SUBDIVISIONS, ScopedFlushToZero, TOTAL_PARAMS,
+    desc_for_clap_id, index_from_norm, module_for_clap_id,
 };
-use vxn_core_app::{Controller, CorpusHandle, ViewEvent};
+use vxn_core_app::{Controller, CorpusHandle, ParamId, ViewEvent};
 
 use crate::local::LocalParams;
 
@@ -90,8 +91,14 @@ impl DefaultPluginFactory for VxnPlugin {
         host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        let (controller, view_rx, corpus) =
+        let (mut controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+        // Seed the preset bar with the synthetic "Init" label until the
+        // preset epic (E007 lineage) ships a real factory bank.
+        controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
+            name: "Init".into(),
+            ..Default::default()
+        }));
         Ok(VxnMainThread {
             shared,
             controller: Arc::new(Mutex::new(controller)),
@@ -167,12 +174,140 @@ impl<'a> VxnMainThread<'a> {
     }
 
     /// Diff the shared param store against `last_seen` and push a
-    /// `ParamChanged` for any drift. Body lands in ticket 0031 — the
-    /// call site is wired here so the timer ticks against the right
-    /// shape.
+    /// `ParamChanged` for any drift. Catches audio-thread automation
+    /// the controller never saw (`LocalParams::publish` writes
+    /// `SharedParams` directly without routing through the controller).
+    ///
+    /// NaN-aware: `f32 == NaN` is always false, so the all-NaN seed in
+    /// `new_main_thread` forces a full-table broadcast on the first
+    /// tick after open. Gesture suppression: skip any id the page is
+    /// mid-drag on. Sync flips (`lfo1-sync`, `delay-sync`) re-emit
+    /// their rate partner's display in a second pass so the readout
+    /// switches from `"1/4"` to `"2.40 Hz"` (or vice versa) even
+    /// though the rate's plain value didn't change.
     fn push_param_diffs(&mut self) {
-        // 0031 — implementation deferred.
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        for ev in collect_param_diffs(&self.shared.params, &mut self.last_seen) {
+            handle.push_view_event(ev);
+        }
     }
+}
+
+/// Diff `params` against `last_seen` and return the `ParamChanged`
+/// events that the editor handle should receive this tick. Mutates
+/// `last_seen` in place. Pulled out of [`VxnMainThread::push_param_diffs`]
+/// so it can be unit-tested without a live WebView.
+fn collect_param_diffs(params: &SharedParams, last_seen: &mut [f32]) -> Vec<ViewEvent> {
+    let n = TOTAL_PARAMS.min(last_seen.len());
+    let mut out: Vec<ViewEvent> = Vec::new();
+    let mut emitted = vec![false; n];
+    let mut force_rate_refresh: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let plain = params.get(i);
+        if plain == last_seen[i] {
+            continue;
+        }
+        last_seen[i] = plain;
+        if params.gesture(i) {
+            continue;
+        }
+        let norm = params.get_normalised(i);
+        let display = sync_aware_display(params, i, plain);
+        out.push(ViewEvent::ParamChanged {
+            id: ParamId::new(i),
+            plain,
+            norm,
+            display,
+        });
+        emitted[i] = true;
+        if let Some(rate_id) = rate_partner_clap_id(i) {
+            force_rate_refresh.push(rate_id);
+        }
+    }
+    // Refresh sync-partner rate displays only when the partner wasn't
+    // already emitted in the main pass — both the rate and its sync
+    // toggle can drift in the same tick (notably on the NaN-seed first
+    // tick), and we don't want a duplicate ParamChanged for the rate.
+    for rate_id in force_rate_refresh {
+        if rate_id >= n || emitted[rate_id] || params.gesture(rate_id) {
+            continue;
+        }
+        let plain = params.get(rate_id);
+        let norm = params.get_normalised(rate_id);
+        let display = sync_aware_display(params, rate_id, plain);
+        out.push(ViewEvent::ParamChanged {
+            id: ParamId::new(rate_id),
+            plain,
+            norm,
+            display,
+        });
+        emitted[rate_id] = true;
+    }
+    out
+}
+
+/// Sync-toggle CLAP id for a rate/time param — returns the matching
+/// sync flag's id when `id` is `lfo1-rate` or `delay-time`. LFO2 has
+/// no sync in VXN2; reverb / master don't sync either.
+fn sync_partner_clap_id(id: usize) -> Option<usize> {
+    let (lfo1_rate, lfo1_sync, delay_time, delay_sync) = sync_ids();
+    if id == lfo1_rate {
+        Some(lfo1_sync)
+    } else if id == delay_time {
+        Some(delay_sync)
+    } else {
+        None
+    }
+}
+
+/// Inverse of [`sync_partner_clap_id`]: given a sync flag's CLAP id,
+/// returns its rate / time partner. Used to refresh a synced rate
+/// fader's display when its sync toggle flips while the rate value
+/// itself hasn't changed.
+fn rate_partner_clap_id(id: usize) -> Option<usize> {
+    let (lfo1_rate, lfo1_sync, delay_time, delay_sync) = sync_ids();
+    if id == lfo1_sync {
+        Some(lfo1_rate)
+    } else if id == delay_sync {
+        Some(delay_time)
+    } else {
+        None
+    }
+}
+
+/// Sync-aware display string for a CLAP param. When `id` is a
+/// rate / time param whose sync partner is on, returns the matching
+/// subdivision label; otherwise the descriptor's normal unit-formatted
+/// display.
+fn sync_aware_display(params: &SharedParams, id: usize, value: f32) -> String {
+    let Some(desc) = desc_for_clap_id(id) else {
+        return String::new();
+    };
+    if let Some(sync_id) = sync_partner_clap_id(id) {
+        if params.get(sync_id) >= 0.5 {
+            return SUBDIVISIONS[index_from_norm(desc.to_normalised(value))]
+                .label
+                .to_string();
+        }
+    }
+    desc.display(value)
+}
+
+/// Resolve the four sync CLAP ids once and cache. `id_of` is a linear
+/// scan over `PARAMS`; doing it per-tick × per-id would be O(N²).
+fn sync_ids() -> (usize, usize, usize, usize) {
+    use std::sync::OnceLock;
+    static IDS: OnceLock<(usize, usize, usize, usize)> = OnceLock::new();
+    *IDS.get_or_init(|| {
+        (
+            id_of("lfo1-rate").expect("lfo1-rate"),
+            id_of("lfo1-sync").expect("lfo1-sync"),
+            id_of("delay-time").expect("delay-time"),
+            id_of("delay-sync").expect("delay-sync"),
+        )
+    })
 }
 
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
@@ -555,8 +690,12 @@ mod tests {
     use vxn2_engine::params::id_of;
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
-        let (controller, view_rx, corpus) =
+        let (mut controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+        controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
+            name: "Init".into(),
+            ..Default::default()
+        }));
         VxnMainThread {
             shared,
             controller: Arc::new(Mutex::new(controller)),
@@ -993,5 +1132,183 @@ mod tests {
             PluginError::Message(m) => assert_eq!(m, "state read failed"),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // ── push_param_diffs (0031) ────────────────────────────────────────────
+
+    fn changed_ids(evs: &[ViewEvent]) -> Vec<usize> {
+        evs.iter()
+            .filter_map(|e| match e {
+                ViewEvent::ParamChanged { id, .. } => Some(id.raw()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn changed_for(evs: &[ViewEvent], target: usize) -> Option<&ViewEvent> {
+        evs.iter().find(|e| match e {
+            ViewEvent::ParamChanged { id, .. } => id.raw() == target,
+            _ => false,
+        })
+    }
+
+    /// First tick after open: every id changes against an all-NaN seed, so
+    /// the diff pump broadcasts the full table.
+    #[test]
+    fn diffs_nan_seed_broadcasts_every_id_on_first_tick() {
+        let shared = mk_shared();
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        assert_eq!(evs.len(), TOTAL_PARAMS);
+        // Second call against the now-seeded vector: no drift, no events.
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        assert!(evs.is_empty(), "expected no diffs after seed: {evs:?}");
+    }
+
+    /// A single audio-thread write surfaces as exactly one ParamChanged.
+    #[test]
+    fn diffs_single_change_emits_one_event() {
+        let shared = mk_shared();
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        // Prime `last_seen` to the current store so subsequent diffs only
+        // see deltas we make below.
+        let _ = collect_param_diffs(&shared.params, &mut seen);
+
+        let decay = id_of("reverb-decay").unwrap();
+        shared.params.set(decay, 7.5);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        assert_eq!(changed_ids(&evs), vec![decay]);
+        match &evs[0] {
+            ViewEvent::ParamChanged { plain, display, .. } => {
+                assert!((*plain - 7.5).abs() < 1e-5);
+                assert!(display.contains("7.50"), "got display {display:?}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// Mid-gesture params take the audio-thread write into `last_seen` but
+    /// do not echo back — the page is the source of truth during a drag.
+    #[test]
+    fn diffs_skip_ids_under_gesture() {
+        let shared = mk_shared();
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        let _ = collect_param_diffs(&shared.params, &mut seen);
+
+        let decay = id_of("reverb-decay").unwrap();
+        shared.params.set_gesture(decay, true);
+        shared.params.set(decay, 7.5);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        assert!(changed_for(&evs, decay).is_none(), "gesture not skipped");
+        // `last_seen` still advanced, so when the gesture clears with no
+        // further audio-thread drift no spurious event fires.
+        shared.params.set_gesture(decay, false);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        assert!(evs.is_empty(), "expected no diffs after gesture clear");
+    }
+
+    /// Flipping `lfo1-sync` re-emits `lfo1-rate` in the same tick even
+    /// though the rate's plain value didn't change — the display label
+    /// switches from Hz to a subdivision.
+    #[test]
+    fn diffs_lfo1_sync_flip_refreshes_rate_partner() {
+        let shared = mk_shared();
+        let rate = id_of("lfo1-rate").unwrap();
+        let sync = id_of("lfo1-sync").unwrap();
+        // Default LFO1 sync is off; rate display is `"2.40 Hz"`.
+        shared.params.set(sync, 0.0);
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        let _ = collect_param_diffs(&shared.params, &mut seen);
+
+        // Flip sync on without touching the rate.
+        shared.params.set(sync, 1.0);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let ids = changed_ids(&evs);
+        assert!(ids.contains(&sync), "sync flag missing from diffs: {ids:?}");
+        assert!(ids.contains(&rate), "rate partner missing from diffs: {ids:?}");
+
+        match changed_for(&evs, rate).unwrap() {
+            ViewEvent::ParamChanged { display, .. } => {
+                // Any subdivision label from the table — `/` is the
+                // distinguishing character (`1/4`, `1/8.`, etc.).
+                assert!(
+                    display.contains('/'),
+                    "expected subdivision label, got {display:?}"
+                );
+                assert!(
+                    !display.contains("Hz"),
+                    "expected synced label, got Hz: {display:?}"
+                );
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+
+        // Flip back off: rate refreshes to the Hz form.
+        shared.params.set(sync, 0.0);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let r = changed_for(&evs, rate).expect("rate re-emit on sync off");
+        match r {
+            ViewEvent::ParamChanged { display, .. } => {
+                assert!(display.contains("Hz"), "expected Hz label, got {display:?}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// Same pattern for the delay's sync flag.
+    #[test]
+    fn diffs_delay_sync_flip_refreshes_time_partner() {
+        let shared = mk_shared();
+        let time = id_of("delay-time").unwrap();
+        let sync = id_of("delay-sync").unwrap();
+        shared.params.set(sync, 0.0);
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        let _ = collect_param_diffs(&shared.params, &mut seen);
+
+        shared.params.set(sync, 1.0);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let r = changed_for(&evs, time).expect("time partner re-emitted");
+        match r {
+            ViewEvent::ParamChanged { display, .. } => {
+                assert!(display.contains('/'), "expected subdivision: {display:?}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// `sync_aware_display` formats a synced rate as a subdivision label
+    /// matching the fader-position → SUBDIVISIONS mapping the engine uses.
+    #[test]
+    fn sync_aware_display_picks_subdivision_when_synced() {
+        let shared = mk_shared();
+        let sync = id_of("lfo1-sync").unwrap();
+        let rate = id_of("lfo1-rate").unwrap();
+        // Sync off: plain Hz display.
+        shared.params.set(sync, 0.0);
+        let s = sync_aware_display(&shared.params, rate, 2.4);
+        assert!(s.contains("Hz"), "got {s:?}");
+        // Sync on: subdivision label at this fader position.
+        shared.params.set(sync, 1.0);
+        let s = sync_aware_display(&shared.params, rate, 2.4);
+        assert!(s.contains('/'), "expected subdivision, got {s:?}");
+        // Sanity: a non-sync-pairable id falls through to the descriptor's
+        // own display regardless of any sync flags.
+        let vol = id_of("master-volume").unwrap();
+        let s = sync_aware_display(&shared.params, vol, -6.0);
+        assert!(s.contains("dB"), "got {s:?}");
+    }
+
+    /// Diff pump is no-op when the GUI is closed (`gui = None`), even
+    /// across audio-thread writes. The first open broadcasts the table.
+    #[test]
+    fn push_param_diffs_noop_when_gui_closed() {
+        let shared = mk_shared();
+        let mut main = mk_main(&shared);
+        shared.params.set(id_of("reverb-decay").unwrap(), 7.5);
+        // No panic, no mutation, no allocation we can observe.
+        main.push_param_diffs();
+        assert!(main.gui.is_none());
+        // `last_seen` is untouched: a later open still broadcasts on first tick.
+        assert!(main.last_seen.iter().all(|x| x.is_nan()));
     }
 }

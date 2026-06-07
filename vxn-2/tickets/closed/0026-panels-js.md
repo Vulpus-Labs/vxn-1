@@ -3,6 +3,7 @@ id: "0026"
 title: "Panels JS: wave-knob / fader / button-group + section renderers"
 priority: high
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 

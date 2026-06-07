@@ -3,6 +3,7 @@ id: "0025"
 title: Faceplate HTML/CSS port from mockup
 priority: high
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 

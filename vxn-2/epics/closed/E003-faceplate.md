@@ -1,8 +1,9 @@
 ---
 id: E003
 title: VXN2 HTML faceplate editor
-status: open
+status: closed
 created: 2026-06-06
+closed: 2026-06-07
 ---
 
 ## Goal
@@ -99,14 +100,14 @@ epic on top of this one (vxn-1 `E007` lineage). This epic carries only the
 - [x] [0022 — vxn2-app crate scaffold (Controller, ParamDesc, UiEvent / ViewEvent)](../../tickets/closed/0022-vxn2-app-scaffold.md)
 - [x] [0023 — vxn2-ui-web crate scaffold (wry child WebView + IPC bridge)](../../tickets/closed/0023-vxn2-ui-web-scaffold.md)
 - [x] [0024 — CLAP gui + timer extensions, editor mount / teardown](../../tickets/closed/0024-clap-gui-extension.md)
-- [ ] [0025 — Faceplate HTML/CSS port from mockup](../../tickets/open/0025-faceplate-html-css.md)
-- [ ] [0026 — Panels JS: wave-knob / fader / button-group + section renderers](../../tickets/open/0026-panels-js.md)
-- [ ] [0027 — Op row: algorithm picker overlay + op tabs + op detail](../../tickets/open/0027-op-row.md)
-- [ ] [0028 — Mod matrix overlay (16 slots, source / dest / depth / smoothing)](../../tickets/open/0028-mod-matrix-overlay.md)
-- [ ] [0029 — Preset bar wiring (Init round-trip; Save / SaveAs / Browse stubs)](../../tickets/open/0029-preset-bar.md)
-- [ ] [0030 — Native numeric-entry popup (macOS NSTextField subclass)](../../tickets/open/0030-text-input-popup.md)
-- [ ] [0031 — UI-echo: LocalParams publish + ViewEvent::Set diff loop](../../tickets/open/0031-ui-echo.md)
-- [ ] [0032 — Bundle assets into vxn2.clap + end-to-end editor smoke test](../../tickets/open/0032-bundle-and-smoke.md)
+- [x] [0025 — Faceplate HTML/CSS port from mockup](../../tickets/closed/0025-faceplate-html-css.md)
+- [x] [0026 — Panels JS: wave-knob / fader / button-group + section renderers](../../tickets/closed/0026-panels-js.md)
+- [x] [0027 — Op row: algorithm picker overlay + op tabs + op detail](../../tickets/closed/0027-op-row.md)
+- [x] [0028 — Mod matrix overlay (16 slots, source / dest / depth / smoothing)](../../tickets/closed/0028-mod-matrix-overlay.md)
+- [x] [0029 — Preset bar wiring (Init round-trip; Save / SaveAs / Browse stubs)](../../tickets/closed/0029-preset-bar.md)
+- [x] [0030 — Native numeric-entry popup (macOS NSTextField subclass)](../../tickets/closed/0030-text-input-popup.md)
+- [x] [0031 — UI-echo: LocalParams publish + ViewEvent::Set diff loop](../../tickets/closed/0031-ui-echo.md)
+- [x] [0032 — Bundle assets into vxn2.clap + end-to-end editor smoke test](../../tickets/closed/0032-bundle-and-smoke.md)
 
 ## Dependency order
 

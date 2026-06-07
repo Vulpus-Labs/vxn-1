@@ -3,6 +3,7 @@ id: "0027"
 title: "Op row: algorithm picker overlay + op tabs + op detail"
 priority: high
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 

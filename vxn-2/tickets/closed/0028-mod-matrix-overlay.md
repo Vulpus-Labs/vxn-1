@@ -3,6 +3,7 @@ id: "0028"
 title: Mod matrix overlay (16 slots, source / dest / depth / smoothing)
 priority: high
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 

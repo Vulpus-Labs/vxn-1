@@ -13,8 +13,26 @@ use vxn_core_app::{
     Controller, PresetLoad, PresetMeta, PresetStore, UserFolderEntry, ViewEvent,
 };
 
-use crate::events::{Vxn2UiCustom, Vxn2ViewCustom};
-use crate::model::Vxn2Params;
+use crate::events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
+use crate::model::{Layer, Vxn2Params};
+
+/// Read all 16 matrix rows of `layer` from the model. Helper for the
+/// snapshot push paths below.
+fn snapshot_layer<M: Vxn2Params>(model: &M, layer: Layer) -> [MatrixRow; 16] {
+    let mut out = [MatrixRow::default(); 16];
+    for slot in 0..16u8 {
+        out[slot as usize] = model.matrix_row(layer, slot);
+    }
+    out
+}
+
+fn push_matrix_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
+    let upper = snapshot_layer(ctrl.model().as_ref(), Layer::Upper);
+    let lower = snapshot_layer(ctrl.model().as_ref(), Layer::Lower);
+    ctrl.push_view_event(ViewEvent::Custom(Box::new(
+        Vxn2ViewCustom::MatrixSnapshot { upper, lower },
+    )));
+}
 
 /// Drain inbound queues against `controller` and apply the VXN2 custom-
 /// event handlers. Call once per host timer tick.
@@ -29,6 +47,10 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
                     Vxn2ViewCustom::EditLayerChanged { layer },
                 )));
+                // Re-seed the page-side matrix table on every layer
+                // toggle so the overlay always renders the
+                // now-current layer's rows without polling.
+                push_matrix_snapshot(ctrl);
             }
             Vxn2UiCustom::SetOpTab { layer, op } => {
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
@@ -36,10 +58,18 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
                 )));
             }
             Vxn2UiCustom::SetMatrixRow { layer, slot, row } => {
+                // Single source of truth: SharedParams::set_matrix_row_raw
+                // also writes the CLAP depth for slots 1-8, so depth has
+                // two on-the-wire paths (this Custom + the plain
+                // SetParam from the UI). CLAP wins during automation;
+                // see PARAMETERS.md §"CLAP exposure".
                 ctrl.model().set_matrix_row(layer, slot, row);
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
                     Vxn2ViewCustom::MatrixRowChanged { layer, slot, row },
                 )));
+            }
+            Vxn2UiCustom::RequestMatrixSnapshot => {
+                push_matrix_snapshot(ctrl);
             }
         }
     };
@@ -75,7 +105,11 @@ impl PresetStore for NoopPresetStore {
         _meta: &PresetMeta,
         _blob: &[u8],
     ) -> Result<PathBuf, String> {
-        Err("save not supported in this build".into())
+        // The preset epic on top of E003 wires a real `PresetStore`.
+        // Until then both Save and Save As land here — the controller
+        // wraps this into a `save failed: …` status the preset bar
+        // displays as a toast.
+        Err("Save not yet supported in this build".into())
     }
     fn user_delete(&self, _path: &Path) -> Result<(), String> {
         Err("delete not supported".into())

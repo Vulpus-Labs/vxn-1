@@ -3,6 +3,7 @@ id: "0030"
 title: Native numeric-entry popup (macOS NSTextField subclass)
 priority: medium
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 
@@ -23,7 +24,7 @@ wiring + JS pending-callback registry, NOT a reimplementation.
 
 ## Acceptance criteria
 
-- [ ] `assets/main.js` (or a new `assets/text-input.js` module)
+- [x] `assets/main.js` (or a new `assets/text-input.js` module)
       maintains a `pendingTextInput: Map<string, (value:
       string|null) => void>` registry. `dispatchTextInput(title,
       initial)` returns a Promise; under the hood it picks a UUID,
@@ -31,25 +32,25 @@ wiring + JS pending-callback registry, NOT a reimplementation.
       title, initial }`, and resolves the promise when
       `applyViewEvents` delivers `text_input_result { id,
       value }`.
-- [ ] Double-click on any wave-knob / fader (0026) calls
+- [x] Double-click on any wave-knob / fader (0026) calls
       `dispatchTextInput(desc.label, desc.display(currentValue))`;
       on commit, parses the numeric token (strips unit suffix
       same as `vxn2-clap::text_to_value`), clamps via
       `desc.clamp`, and dispatches
       `set_param { id, plain: <parsed> }` bracketed by
       `begin_gesture` / `end_gesture`.
-- [ ] Save As popup (0029) reuses the same primitive — no
+- [x] Save As popup (0029) reuses the same primitive — no
       special-case path; the `id` field distinguishes which
       callback to fire.
-- [ ] Escape / focus-loss cancels (`value: None`), Return
+- [x] Escape / focus-loss cancels (`value: None`), Return
       commits, the popup centres over the parent NSView (the
       `vxn-core-ui-web::text_input` primitive does this already;
       this ticket just verifies the path).
-- [ ] Manual smoke on macOS: in Bitwig (or Reaper), right-click
+- [x] Manual smoke on macOS: in Bitwig (or Reaper), right-click
       a fader (or double-click — whichever the mockup
       specifies), type a value, press Return; the engine's
       audible output reflects the new value within one tick.
-- [ ] Windows / Linux: dispatchTextInput falls back to an
+- [x] Windows / Linux: dispatchTextInput falls back to an
       in-page `<dialog>` element styled to look native-ish
       until the platform popup ships. The fallback ALSO fires
       `request_text_input`; the core's `prompt_text` is

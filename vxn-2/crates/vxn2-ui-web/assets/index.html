@@ -6,16 +6,411 @@
 <style>__CSS__</style>
 </head>
 <body>
-<div id="vxn-faceplate" class="vxn-faceplate" data-vxn-section="placeholder">
-  <!-- Full faceplate markup lands in 0025. This placeholder lets 0023
-       prove the WebView opens, the IPC bridge is wired, and the page can
-       report ready. -->
-  <header class="vxn-banner">VXN2</header>
-  <main class="vxn-placeholder">
-    <p>VXN2 editor placeholder.</p>
-    <p>Faceplate markup ships in ticket 0025; panels JS in 0026.</p>
-  </main>
+<div class="vxn-faceplate" data-vxn-section="faceplate">
+
+  <div class="banner">VULPUS LABS &mdash; VXN-2</div>
+
+  <div class="preset-bar" data-vxn-section="preset-bar">
+    <button class="pbar-btn" data-vxn-custom="preset_prev">&lt;</button>
+    <div class="pbar-name" data-vxn-section="preset-name"></div>
+    <button class="pbar-btn" data-vxn-custom="preset_next">&gt;</button>
+    <button class="pbar-btn" data-vxn-custom="preset_browse">Browse</button>
+    <button class="pbar-btn" data-vxn-custom="preset_save">Save</button>
+    <button class="pbar-btn" data-vxn-custom="preset_save_as">Save As</button>
+    <div class="pbar-spacer"></div>
+    <div class="vxn-toast" data-vxn-section="toast" aria-live="polite"></div>
+    <button class="pbar-btn" data-vxn-custom="open_mod_matrix">Mod Matrix &middot; <span data-vxn-section="mm-count"></span></button>
+  </div>
+
+  <!-- ===== OP ROW ===== -->
+  <div class="row op-row">
+
+    <!-- algo block: current algo + always-visible diagram (clickable ops) -->
+    <div class="panel algo-block" data-vxn-section="algo-block">
+      <div class="panel-header">
+        <span>ALGORITHM</span>
+        <div class="edit-layer-toggle" data-vxn-section="edit-layer-toggle">
+          <button class="elt-btn" data-vxn-edit-layer="upper">UPPER</button>
+          <button class="elt-btn" data-vxn-edit-layer="lower">LOWER</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="algo-current">
+          <div>
+            <div class="algo-current-label">Algo</div>
+            <div class="algo-num" data-vxn-param="algo"></div>
+          </div>
+          <button class="algo-pick" data-vxn-custom="open_algo_picker">Pick&hellip;</button>
+        </div>
+        <div class="algo-diagram" data-vxn-section="algo-diagram">
+          <svg data-vxn-section="algo-svg" viewBox="0 0 200 220" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- op detail block: tabs + per-op editor (filled by 0027) -->
+    <div class="op-detail-block">
+      <div class="op-tabs" data-vxn-section="op-tabs"></div>
+      <div class="op-detail" data-vxn-section="op-detail"></div>
+    </div>
+
+  </div>
+
+  <!-- ===== GLOBAL MOD ROW ===== -->
+  <div class="row gmod-row">
+
+    <div class="panel lfo-panel" data-vxn-section="lfo1">
+      <div class="panel-header">LFO 1 &mdash; GLOBAL</div>
+      <div class="panel-body">
+        <div class="wave-knob" data-vxn-param="lfo1-shape"></div>
+        <div class="fader" data-vxn-param="lfo1-rate">
+          <div class="fader-label">Rate</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="lfo1-depth">
+          <div class="fader-label">Depth</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="lfo1-sync">
+              <button class="bgrp-btn" data-vxn-value="0">Free</button>
+              <button class="bgrp-btn" data-vxn-value="1">Sync</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Mode</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel lfo-panel" data-vxn-section="lfo2">
+      <div class="panel-header">LFO 2 &mdash; PER-VOICE</div>
+      <div class="panel-body">
+        <div class="wave-knob" data-vxn-param="lfo2-shape"></div>
+        <div class="fader" data-vxn-param="lfo2-rate">
+          <div class="fader-label">Rate</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="lfo2-delay">
+          <div class="fader-label">Delay</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="lfo2-fade">
+          <div class="fader-label">Fade</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="lfo2-trig">
+              <button class="bgrp-btn" data-vxn-value="0">Free</button>
+              <button class="bgrp-btn" data-vxn-value="1">Key</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Trig</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel peg-panel" data-vxn-section="pitch-eg">
+      <div class="panel-header">PITCH EG</div>
+      <div class="panel-body">
+        <div class="graph" data-vxn-section="peg-graph">
+          <svg data-vxn-section="peg-svg" viewBox="0 0 200 90" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel moenv-panel" data-vxn-section="mod-env">
+      <div class="panel-header">MOD ENV</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="mod-env-a">
+          <div class="fader-label">A</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="mod-env-d">
+          <div class="fader-label">D</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="mod-env-s">
+          <div class="fader-label">S</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="mod-env-r">
+          <div class="fader-label">R</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="mod-env-shape">
+              <button class="bgrp-btn" data-vxn-value="0">Lin</button>
+              <button class="bgrp-btn" data-vxn-value="1">Exp</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Shape</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== PERF / FX / OUT ROW ===== -->
+  <div class="row perf-row">
+
+    <div class="panel voice-panel" data-vxn-section="voice">
+      <div class="panel-header">VOICE</div>
+      <div class="panel-body">
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="assign-mode">
+              <button class="bgrp-btn" data-vxn-value="0">Poly</button>
+              <button class="bgrp-btn" data-vxn-value="1">Solo</button>
+            </div>
+            <div class="bgrp-row" data-vxn-param="voicing-mode">
+              <button class="bgrp-btn" data-vxn-value="0">Whole</button>
+              <button class="bgrp-btn" data-vxn-value="1">Layer</button>
+              <button class="bgrp-btn" data-vxn-value="2">Split</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Mode</div>
+        </div>
+        <div class="fader" data-vxn-param="glide-time">
+          <div class="fader-label">Glide</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="legato">
+              <button class="bgrp-btn" data-vxn-value="0">Off</button>
+              <button class="bgrp-btn" data-vxn-value="1">On</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Legato</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel stack-panel" data-vxn-section="stack">
+      <div class="panel-header">VOICE STACK</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="stack-density">
+          <div class="fader-label">Density</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="stack-detune">
+          <div class="fader-label">Detune</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="stack-spread">
+          <div class="fader-label">Spread</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="stack-phase">
+          <div class="fader-label">Phase</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="stack-distrib">
+              <button class="bgrp-btn" data-vxn-value="0">Lin</button>
+              <button class="bgrp-btn" data-vxn-value="1">Geom</button>
+              <button class="bgrp-btn" data-vxn-value="2">Rand</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Distrib</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel delay-panel" data-vxn-section="delay">
+      <div class="panel-header toggleable" data-vxn-param="delay-on">DELAY</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="delay-time">
+          <div class="fader-label">Time</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="delay-feedback">
+          <div class="fader-label">FB</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="delay-mix">
+          <div class="fader-label">Mix</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="cgrp">
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="delay-sync">
+              <button class="bgrp-btn" data-vxn-value="0">Free</button>
+              <button class="bgrp-btn" data-vxn-value="1">Sync</button>
+            </div>
+            <div class="bgrp-row" data-vxn-param="delay-pingpong">
+              <button class="bgrp-btn" data-vxn-value="0">Stereo</button>
+              <button class="bgrp-btn" data-vxn-value="1">Ping</button>
+            </div>
+          </div>
+          <div class="cgrp-label">Opt</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel reverb-panel" data-vxn-section="reverb">
+      <div class="panel-header toggleable" data-vxn-param="reverb-on">REVERB (FDN)</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="reverb-size">
+          <div class="fader-label">Size</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="reverb-decay">
+          <div class="fader-label">Decay</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="reverb-damp">
+          <div class="fader-label">Damp</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="reverb-mix">
+          <div class="fader-label">Mix</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel master-panel" data-vxn-section="master">
+      <div class="panel-header">MASTER</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="master-tune">
+          <div class="fader-label">Tune</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+        <div class="fader" data-vxn-param="master-volume">
+          <div class="fader-label">Vol</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+          <div class="fader-value"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
 </div>
+
+<!-- algo picker overlay (0027 populates the grid) -->
+<div class="overlay-backdrop" data-vxn-section="algo-overlay" hidden>
+  <div class="overlay-panel">
+    <button class="overlay-close" data-vxn-custom="close_algo_picker">&times;</button>
+    <div class="overlay-title">Algorithm</div>
+    <div class="algo-grid" data-vxn-section="algo-grid"></div>
+  </div>
+</div>
+
+<!-- mod matrix overlay (0028 populates the row list) -->
+<div class="overlay-backdrop" data-vxn-section="mod-matrix" data-vxn-role="mm-overlay-backdrop" hidden>
+  <div class="overlay-panel mm-overlay">
+    <button class="overlay-close" data-vxn-custom="close_mod_matrix" data-vxn-role="mm-overlay-close">&times;</button>
+    <div class="overlay-title">Mod Matrix</div>
+    <div class="mm-overlay-list" data-vxn-section="mm-overlay-list"></div>
+  </div>
+</div>
+
+<!-- preset browse (ticket 0029): stub modal until the preset epic ships -->
+<dialog class="vxn-browse-dialog" data-vxn-section="browse-dialog" aria-label="Browse Presets">
+  <header class="vxn-browse-header">
+    <h2>Browse Presets</h2>
+    <button class="vxn-browse-close" type="button" aria-label="Close">&times;</button>
+  </header>
+  <p class="vxn-browse-empty">No presets yet.</p>
+</dialog>
+
 <script>
 __BOOTSTRAP_JS__
 </script>

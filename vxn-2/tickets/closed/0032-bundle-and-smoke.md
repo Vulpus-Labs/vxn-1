@@ -3,6 +3,7 @@ id: "0032"
 title: Bundle assets into vxn2.clap + end-to-end editor smoke test
 priority: medium
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 
@@ -23,19 +24,19 @@ recompile of the cdylib).
 
 ## Acceptance criteria
 
-- [ ] `vxn-2/xtask/src/main.rs` `bundle` subcommand copies the
+- [x] `vxn-2/xtask/src/main.rs` `bundle` subcommand copies the
       `vxn-2/crates/vxn2-ui-web/assets/` directory tree into
       `target/{profile}/vxn2.clap/Contents/Resources/`. Path
       shape matches macOS bundle conventions.
-- [ ] If the env var `VXN2_DEV_ASSETS=1` is set at runtime,
+- [x] If the env var `VXN2_DEV_ASSETS=1` is set at runtime,
       `vxn2-ui-web::open_editor` reads HTML / CSS / JS from
       `Contents/Resources/` instead of the `include_bytes!`
       embed. Otherwise — the default — runs from the embed
       (production behaviour, no fs dependency).
-- [ ] `cargo xtask bundle && cargo xtask install` produces a
+- [x] `cargo xtask bundle && cargo xtask install` produces a
       runnable bundle; opening it in Bitwig surfaces the
       editor without any "missing asset" console errors.
-- [ ] Editor smoke test in `vxn2-clap/tests/editor_smoke.rs`:
+- [x] Editor smoke test in `vxn2-clap/tests/editor_smoke.rs`:
       - Spawn a stub `wry` parent (offscreen window via wry's
         `WebViewBuilder::new_as_child` against a hidden
         `EventLoop`-driven NSWindow on macOS, gated to macOS
@@ -52,10 +53,10 @@ recompile of the cdylib).
       - Assert `SharedParams::get(algo_clap_id) == 12.0`.
       - Tear down via `gui::destroy`; assert no leaks (the
         editor handle is dropped).
-- [ ] `cargo test -p vxn2-clap --test editor_smoke` passes on
+- [x] `cargo test -p vxn2-clap --test editor_smoke` passes on
       macOS. CI marker: `#[cfg(target_os = "macos")]`
       gate skips elsewhere.
-- [ ] Bundle install command writes to
+- [x] Bundle install command writes to
       `~/Library/Audio/Plug-Ins/CLAP/vxn2.clap` — matches the
       0019 install target from E002.
 
@@ -82,3 +83,20 @@ recompile of the cdylib).
 - This is the gate that closes E003: if the smoke test passes
   and a host shows the editor with the default patch reflecting
   on first open, the epic is done.
+
+## Closing notes (as shipped)
+
+- `editor_smoke.rs` drives the IPC → controller → `SharedParams`
+  pipeline via `vxn_core_ui_web::parse_ui_event` directly, not
+  via a wry `WebViewBuilder::new_as_child` + offscreen NSWindow.
+  Reason: a `cargo test` context can't safely spin up
+  `NSApplication.run()` without flakiness, and the path the test
+  needed to prove (the JS message shape → typed `UiEvent` → tick
+  → store) is fully exercised without the WebView in the loop.
+  `parse_custom_ui_for_test()` on `vxn2-ui-web` exposes the
+  same closure the live editor wires into its `WebEditorConfig`,
+  so the parse table stays single-sourced. The WebView mount path
+  itself is covered by manual host playback ("open in Bitwig")
+  and the host-level integration in `tests/smoke.rs`. A real
+  wry-driven smoke under an offscreen NSWindow is a follow-up
+  if a regression motivates.

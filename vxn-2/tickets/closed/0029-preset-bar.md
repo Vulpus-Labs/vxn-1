@@ -3,6 +3,7 @@ id: "0029"
 title: Preset bar wiring (Init round-trip; Save / SaveAs / Browse stubs)
 priority: medium
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 

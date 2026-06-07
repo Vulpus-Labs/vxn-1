@@ -122,6 +122,26 @@ fn bundle() -> Result<PathBuf, String> {
         .map_err(io("write Info.plist"))?;
     fs::write(bundle.join("Contents").join("PkgInfo"), "BNDL????")
         .map_err(io("write PkgInfo"))?;
+
+    // Stage the HTML faceplate assets into Contents/Resources/ so a
+    // developer can iterate on CSS / JS without rebuilding the cdylib:
+    // with VXN2_DEV_ASSETS=1 set in the host's environment, the editor
+    // reads from the bundle path instead of its `include_str!` embed.
+    // Production users never set the env var and run from the embed.
+    let assets_src = workspace_root()
+        .join("vxn-2")
+        .join("crates")
+        .join("vxn2-ui-web")
+        .join("assets");
+    if !assets_src.is_dir() {
+        return Err(format!(
+            "expected ui-web assets at {}, but the directory is missing",
+            assets_src.display()
+        ));
+    }
+    let resources_dir = bundle.join("Contents").join("Resources");
+    copy_dir_recursive(&assets_src, &resources_dir)?;
+
     Ok(bundle)
 }
 

@@ -3,6 +3,7 @@ id: "0031"
 title: "UI-echo: LocalParams publish + ViewEvent::Set diff loop"
 priority: high
 created: 2026-06-06
+closed: 2026-06-07
 epic: E003
 ---
 
@@ -23,37 +24,37 @@ The diff pump is the `push_param_diffs` body 0024 stubbed in
 
 ## Acceptance criteria
 
-- [ ] `vxn2-clap::VxnMainThread::push_param_diffs` implemented:
+- [x] `vxn2-clap::VxnMainThread::push_param_diffs` implemented:
       iterate every CLAP id; for each, fetch `plain` via
       `ParamModel::get`, compare against `last_seen[i]`. NaN-
       aware so the initial all-NaN seed broadcasts the table on
       first tick (matches VXN1's pattern).
-- [ ] For each drifted id: compute `norm` via
+- [x] For each drifted id: compute `norm` via
       `ParamModel::get_normalized`, build a `display` string via
       a `sync_aware_display(params, id, plain)` helper, push
       `ViewEvent::ParamChanged { id, plain, norm, display }`
       directly onto the editor handle (NOT through the
       controller — those updates aren't gestures, just echoes).
-- [ ] Sync-aware display: when `id` is `lfo1_rate` and
+- [x] Sync-aware display: when `id` is `lfo1_rate` and
       `lfo1_sync` is on, render the matching subdivision label;
       same for `delay_time` / `delay_sync`. A 4-entry static
       lookup is enough (LFO2 isn't synced in VXN2;
       reverb / master aren't synced).
-- [ ] When a sync flip (`lfo1_sync` or `delay_sync`) crosses the
+- [x] When a sync flip (`lfo1_sync` or `delay_sync`) crosses the
       diff, the rate / time partner's display label re-emits
       even if its plain value didn't change — same trick
       `vxn-clap`'s `force_rate_refresh` uses.
-- [ ] Gesture suppression: if `ParamModel::gesture(id)` is true
+- [x] Gesture suppression: if `ParamModel::gesture(id)` is true
       (the page is actively dragging this fader), skip the diff
       emit for that id. Host automation can still drive the
       param's value into `SharedParams`; the page won't get
       yanked back until the gesture ends.
-- [ ] Manual smoke: in a host with a written automation curve
+- [x] Manual smoke: in a host with a written automation curve
       on `lfo1_rate`, open the editor — the LFO1 rate fader
       moves smoothly during playback. Flip the sync toggle off
       during playback; the rate fader's readout switches from
       "1/4" to "2.40 Hz" within one tick.
-- [ ] No allocations in `push_param_diffs` beyond the
+- [x] No allocations in `push_param_diffs` beyond the
       `String::new()` for the display (small + amortised — VXN1
       runs the same shape at 60 Hz without issue).
 
