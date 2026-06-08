@@ -592,9 +592,9 @@ html, body {
    original tri-panel share (2.65) lets Keys / Voice / Master claim the
    freed space proportionally. */
 .row-4 .panel[data-name="Keys"]   { flex-grow: 1.25; }
-.row-4 .panel[data-name="Voice"]  { flex-grow: 1.05; }
-.row-4 .panel[data-name="FX"]     { flex-grow: 1.80; }
-.row-4 .panel[data-name="Master"] { flex-grow: 1.75; }
+.row-4 .panel[data-name="Voice"]  { flex-grow: 1.25; }
+.row-4 .panel[data-name="FX"]     { flex-grow: 1.70; }
+.row-4 .panel[data-name="Master"] { flex-grow: 1.65; }
 
 .panel-header {
   height: var(--header-h);

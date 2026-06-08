@@ -301,11 +301,22 @@ impl StereoPhaser {
         )
     }
 
-    /// Block process: mono `dry` in, stereo out. Pre-FX bus shape (matches
-    /// [`StereoChorus::process_block`](crate::chorus::StereoChorus::process_block)).
-    pub fn process_block(&mut self, dry: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
-        let n = dry.len().min(out_l.len()).min(out_r.len());
-        // Hoist what's constant across the block.
+    /// Block process: stereo in, stereo out. Each channel runs its own allpass
+    /// cascade; the LFO is shared with the same anti-phase L/R offset as the
+    /// mono-in path, so the modulation still decorrelates on top of any
+    /// stereo content already present in the input.
+    pub fn process_block_stereo(
+        &mut self,
+        l_in: &[f32],
+        r_in: &[f32],
+        l_out: &mut [f32],
+        r_out: &mut [f32],
+    ) {
+        let n = l_in
+            .len()
+            .min(r_in.len())
+            .min(l_out.len())
+            .min(r_out.len());
         let depth = self.depth;
         let feedback = self.feedback;
         let mix = self.mix;
@@ -325,11 +336,12 @@ impl StereoPhaser {
             self.left.advance_ramp();
             self.right.advance_ramp();
 
-            let x = dry[i];
-            let wet_l = self.left.process(x, feedback);
-            let wet_r = self.right.process(x, feedback);
-            out_l[i] = dry_gain * x + wet_gain * wet_l;
-            out_r[i] = dry_gain * x + wet_gain * wet_r;
+            let xl = l_in[i];
+            let xr = r_in[i];
+            let wet_l = self.left.process(xl, feedback);
+            let wet_r = self.right.process(xr, feedback);
+            l_out[i] = dry_gain * xl + wet_gain * wet_l;
+            r_out[i] = dry_gain * xr + wet_gain * wet_r;
         }
     }
 }
@@ -426,7 +438,7 @@ mod tests {
                 let phase = ((blk * CONTROL_BLOCK + i) as f32 * 330.0 / SR).fract();
                 *d = lookup_sine(phase);
             }
-            b.process_block(&dry, &mut bl, &mut br);
+            b.process_block_stereo(&dry, &dry, &mut bl, &mut br);
             for (i, &d) in dry.iter().enumerate() {
                 let (l, r) = a.process(d, d);
                 assert!(
@@ -475,5 +487,38 @@ mod tests {
         }
         let corr = num / (dl * dr).sqrt();
         assert!(corr < 0.9, "L/R should decorrelate under anti-phase sweep: corr {corr}");
+    }
+
+    #[test]
+    fn stereo_block_independent_channels() {
+        // Impulse on L only, R silent. R output must stay at zero: the right
+        // cascade sees only zeros at its input and zero in its feedback state,
+        // so it can never produce non-zero. L must produce a non-zero tail.
+        crate::enable_flush_to_zero();
+        let mut ph = StereoPhaser::new(SR);
+        ph.set_params(0.6, 0.7, 0.5, 0.5);
+
+        let mut l_in = [0.0f32; CONTROL_BLOCK];
+        let r_in = [0.0f32; CONTROL_BLOCK];
+        let mut l_out = [0.0f32; CONTROL_BLOCK];
+        let mut r_out = [0.0f32; CONTROL_BLOCK];
+        l_in[0] = 1.0;
+
+        let mut any_l = false;
+        for _ in 0..16 {
+            ph.process_block_stereo(&l_in, &r_in, &mut l_out, &mut r_out);
+            for i in 0..CONTROL_BLOCK {
+                assert!(
+                    r_out[i].abs() < 1.0e-20,
+                    "R should be exact zero with zero R input: r_out[{i}]={}",
+                    r_out[i],
+                );
+                if l_out[i].abs() > 1.0e-6 {
+                    any_l = true;
+                }
+            }
+            l_in[0] = 0.0;
+        }
+        assert!(any_l, "L output should respond to the L-only impulse");
     }
 }

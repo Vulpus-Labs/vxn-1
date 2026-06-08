@@ -72,6 +72,13 @@ const LAYERS: usize = Layer::COUNT;
 /// Seed for the single global LFO 2 (E005 / 0019). LFO 1 is per-voice and seeded
 /// inside each [`VoiceBank`] (E005 / 0018).
 const LFO2_SEED: u64 = 0x7E5D;
+
+/// Consecutive silent blocks before the decimator skip kicks in.
+/// `HalfbandFir` is 33 taps; at OS = 8 the worst-case cascaded drain is
+/// well under one block of OS samples, so 4 base blocks is heavily
+/// conservative — guarantees the FIR state has flushed to zero before we
+/// start zero-filling the output (0106).
+const DECIMATOR_DRAIN_BLOCKS: u32 = 4;
 /// Per-layer RNG seeds (decorrelate the two layers' S&H LFO PRNGs).
 const RNG_SEEDS: [u64; LAYERS] = [0x9E37_79B9, 0x2545_F491];
 
@@ -105,8 +112,22 @@ pub struct Synth {
     /// Whether the limiter ran last block, so it can be reset on the off→on edge
     /// (clears stale lookahead state instead of leaking a transient).
     limiter_was_on: bool,
-    /// Anti-aliasing decimator for the oversampled synthesis path.
+    /// Anti-aliasing decimators for the oversampled synthesis path —
+    /// one per stereo channel. Both stay phase-aligned: at spread = 0
+    /// the L and R input streams are identical, so the filter states
+    /// evolve in lock-step and `r` outputs match `l` sample-for-sample.
+    /// `spread_zero_last_block` tracks whether the R decimator was
+    /// skipped last block; the mono→stereo transition needs to seed
+    /// the R decimator from L's converged state to avoid a click
+    /// (0107).
     oversampler: Oversampler,
+    oversampler_r: Oversampler,
+    spread_zero_last_block: bool,
+    /// Consecutive blocks both banks took the silent fast path. Once it
+    /// exceeds [`DECIMATOR_DRAIN_BLOCKS`] the L decimator's FIR state has
+    /// fully drained to zero, so the `decimate()` call is skipped and the
+    /// base-rate output is zero-filled until a bank wakes back up (0106).
+    silent_blocks: u32,
     /// Pitch bend in normalised `[-1, 1]`. Global value; each layer scales it by
     /// its own `PitchWheelDepth` in `build_ctx` (ADR 0003 §9, ADR 0004 §5).
     bend_norm: f32,
@@ -156,6 +177,9 @@ impl Synth {
             limiter: StereoLimiter::new(sample_rate),
             limiter_was_on: false,
             oversampler: Oversampler::new(),
+            oversampler_r: Oversampler::new(),
+            spread_zero_last_block: true,
+            silent_blocks: 0,
             bend_norm: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
             key_mode: KeyMode::Whole,
@@ -194,6 +218,9 @@ impl Synth {
         self.limiter = StereoLimiter::new(sample_rate);
         self.limiter_was_on = false;
         self.oversampler.reset();
+        self.oversampler_r.reset();
+        self.spread_zero_last_block = true;
+        self.silent_blocks = 0;
         self.mod_wheel.set_time(MOD_WHEEL_SMOOTH_MS, control_rate);
         self.smoother.set_sample_rate(sample_rate);
         self.smoother.snap_all(&self.params);
@@ -386,6 +413,9 @@ impl Synth {
         self.limiter.reset();
         self.limiter_was_on = false;
         self.oversampler.reset();
+        self.oversampler_r.reset();
+        self.spread_zero_last_block = true;
+        self.silent_blocks = 0;
         self.smoother.snap_all(&self.params);
         self.rr_layer = 0;
     }
@@ -403,6 +433,7 @@ impl Synth {
         let os = self.params.global().oversample_factor();
         if os != self.last_os {
             self.oversampler.reset();
+            self.oversampler_r.reset();
             self.last_os = os;
         }
 
@@ -431,58 +462,118 @@ impl Synth {
             let lfo2_val = self.lfo2.next(lfo2_shape);
             self.lfo2.set_rate(lfo2_rate);
 
-            // Both layers render (summed) into one oversampled mono mix, then
+            // Both layers render (summed) into oversampled stereo buses, then
             // decimated back to the base rate before the global FX bus (§7).
-            let mut mono_os = [0.0f32; CONTROL_BLOCK * MAX_OVERSAMPLE];
-            let mono_os = &mut mono_os[..block * os];
+            // `PatchParam::Spread` distributes voice slots across L/R inside
+            // each bank's `render_block`; spread = 0 collapses every lane to
+            // centre so L = R bit-for-bit. When BOTH layers' source patches
+            // hold spread = 0 (the common default), the R decimator is
+            // skipped and `r_dec` is filled from `l_dec`; the mono→stereo
+            // transition seeds the R decimator from L's converged state to
+            // avoid a click (0107).
+            let spread_zero = {
+                let vals = self.smoother.values();
+                vals.layer(Self::param_source(0, key_mode))
+                    .get(PatchParam::Spread)
+                    == 0.0
+                    && vals
+                        .layer(Self::param_source(1, key_mode))
+                        .get(PatchParam::Spread)
+                        == 0.0
+            };
+
+            let mut l_os_buf = [0.0f32; CONTROL_BLOCK * MAX_OVERSAMPLE];
+            let mut r_os_buf = [0.0f32; CONTROL_BLOCK * MAX_OVERSAMPLE];
+            let l_os = &mut l_os_buf[..block * os];
+            let r_os = &mut r_os_buf[..block * os];
             for layer in 0..LAYERS {
                 let ctx = self.build_ctx(layer, key_mode, os, wheel, lfo2_val);
-                self.banks[layer].render_block(mono_os, &ctx);
+                self.banks[layer].render_block(l_os, r_os, &ctx);
             }
 
-            let mut mono = [0.0f32; CONTROL_BLOCK];
-            let mono = &mut mono[..block];
-            self.oversampler.decimate(mono_os, mono, os);
+            // Silent-skip predicate (0106): if both banks took the silent
+            // fast path the OS bus is zero. Track consecutive silent blocks
+            // — once the decimator's FIR state has drained, skip it and
+            // zero-fill the base-rate buffer.
+            let both_silent = self.banks[0].is_silent() && self.banks[1].is_silent();
+            if both_silent {
+                self.silent_blocks = self.silent_blocks.saturating_add(1);
+            } else {
+                self.silent_blocks = 0;
+            }
+            let skip_decimator = self.silent_blocks > DECIMATOR_DRAIN_BLOCKS;
+
+            let mut l_dec = [0.0f32; CONTROL_BLOCK];
+            let mut r_dec = [0.0f32; CONTROL_BLOCK];
+            let l_dec = &mut l_dec[..block];
+            let r_dec = &mut r_dec[..block];
+
+            // Mono→stereo transition: seed R from L BEFORE L decimates this
+            // block. L's current state reflects "having processed L=R input
+            // through the previous block"; that's exactly the state R should
+            // be in to start this first stereo block. Doing the clone after
+            // L's decimate would put R one block ahead and pop on the edge.
+            if !spread_zero && self.spread_zero_last_block {
+                self.oversampler_r.clone_state_from(&self.oversampler);
+            }
+
+            if skip_decimator {
+                l_dec.fill(0.0);
+            } else {
+                self.oversampler.decimate(l_os, l_dec, os);
+            }
+            if spread_zero {
+                r_dec.copy_from_slice(l_dec);
+            } else if skip_decimator {
+                r_dec.fill(0.0);
+            } else {
+                self.oversampler_r.decimate(r_os, r_dec, os);
+            }
+            self.spread_zero_last_block = spread_zero;
 
             // Effects (stereo), then write out.
             let chorus_on = self.params.global().bool(GlobalParam::ChorusOn);
             let delay_on = self.params.global().bool(GlobalParam::DelayOn);
             self.update_effects();
 
-            // Apply the per-sample master-volume glide into a dry mono block,
-            // then run the stereo effects a block at a time.
-            let mut dry_buf = [0.0f32; CONTROL_BLOCK];
-            let dry = &mut dry_buf[..block];
-            for (d, &m) in dry.iter_mut().zip(mono.iter()) {
-                *d = m * self.smoother.next_volume();
+            // Apply the per-sample master-volume glide into the dry stereo
+            // bus, then run the stereo effects a block at a time.
+            let mut dry_l_buf = [0.0f32; CONTROL_BLOCK];
+            let mut dry_r_buf = [0.0f32; CONTROL_BLOCK];
+            let dry_l = &mut dry_l_buf[..block];
+            let dry_r = &mut dry_r_buf[..block];
+            for i in 0..block {
+                let vol = self.smoother.next_volume();
+                dry_l[i] = l_dec[i] * vol;
+                dry_r[i] = r_dec[i] * vol;
             }
 
             let l_out = &mut out_l[start..start + block];
             let r_out = &mut out_r[start..start + block];
 
-            // Phaser (first in FX chain, pre-chorus). Mono dry → stereo wet.
-            // Skipped when off so the engine stays sample-exact against a
-            // build with phaser absent. When chorus is also on, the phaser's
-            // stereo image is collapsed back to mono before chorus (which
-            // produces its own L/R via the inverted-LFO trick).
+            // Phaser (first in FX chain, pre-chorus). Stereo-in / stereo-out
+            // via parallel L/R allpass cascades sharing one anti-phase LFO
+            // (0101). When off, the dry stereo bus passes through unchanged.
             let phaser_on = self.params.global().bool(GlobalParam::PhaserOn);
             if phaser_on {
-                self.phaser.process_block(dry, l_out, r_out);
+                self.phaser.process_block_stereo(dry_l, dry_r, l_out, r_out);
             } else {
-                l_out.copy_from_slice(dry);
-                r_out.copy_from_slice(dry);
+                l_out.copy_from_slice(dry_l);
+                r_out.copy_from_slice(dry_r);
             }
 
             if chorus_on {
-                // Chorus is mono-in / stereo-out. Sum the (possibly stereo)
-                // phaser bus back to mono in a scratch buffer; when phaser is
-                // off this scratch equals `dry` bit-for-bit.
-                let mut chorus_in = [0.0f32; CONTROL_BLOCK];
-                let chorus_in = &mut chorus_in[..block];
-                for i in 0..block {
-                    chorus_in[i] = 0.5 * (l_out[i] + r_out[i]);
-                }
-                self.chorus.process_block(chorus_in, l_out, r_out);
+                // Chorus is stereo-in / stereo-out via parallel L/R delay
+                // lines sharing the inverted-per-line LFO setup (0102). The
+                // phaser output bus feeds straight in — no mono collapse.
+                let mut chorus_in_l = [0.0f32; CONTROL_BLOCK];
+                let mut chorus_in_r = [0.0f32; CONTROL_BLOCK];
+                let chorus_in_l = &mut chorus_in_l[..block];
+                let chorus_in_r = &mut chorus_in_r[..block];
+                chorus_in_l.copy_from_slice(l_out);
+                chorus_in_r.copy_from_slice(r_out);
+                self.chorus
+                    .process_block_stereo(chorus_in_l, chorus_in_r, l_out, r_out);
             }
             if delay_on {
                 for i in 0..block {
@@ -696,6 +787,7 @@ impl Synth {
             amp_env_bypass: p.bool(PatchParam::AmpEnvBypass),
             drift_amount: self.drift_amount,
             layer_level: p.get(PatchParam::LayerLevel),
+            spread: p.get(PatchParam::Spread),
         }
     }
 }

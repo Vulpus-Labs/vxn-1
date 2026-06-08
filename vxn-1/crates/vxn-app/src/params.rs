@@ -199,10 +199,11 @@ pub enum PatchParam {
     PortamentoTime,
     CutoffTuned,
     LayerLevel,
+    Spread,
 }
 
 impl PatchParam {
-    pub const COUNT: usize = PatchParam::LayerLevel as usize + 1;
+    pub const COUNT: usize = PatchParam::Spread as usize + 1;
 
     pub fn all() -> impl Iterator<Item = PatchParam> {
         (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
@@ -744,6 +745,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     ),
     b("cutoff_tuned", "Tuned", 0.0),
     f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
+    f("spread", "Spread", 0.0, 1.0, 0.0, "", Taper::Linear),
 ];
 
 pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [

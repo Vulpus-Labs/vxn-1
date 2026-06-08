@@ -48,6 +48,14 @@ pub const DEFAULT_DRIFT_AMOUNT: f32 = 0.15;
 const OSC1_DRIFT_SALT: u64 = 0xA1F7_0501;
 const OSC2_DRIFT_SALT: u64 = 0xB2E8_0502;
 
+/// Fixed per-slot pan positions in `[-1.0, +1.0]`, evenly spread across the
+/// lane index. Both layers use the same table; `ctx.spread` scales the
+/// effective position toward centre. Stable across note-ons — slot 0 is
+/// always leftmost, slot N-1 always rightmost.
+const PAN_POSITIONS: [f32; N] = [
+    -1.0, -5.0 / 7.0, -3.0 / 7.0, -1.0 / 7.0, 1.0 / 7.0, 3.0 / 7.0, 5.0 / 7.0, 1.0,
+];
+
 /// Per-voice LFO 1 retrigger policy at a note-on (E005 / 0018): the shape (for
 /// the zero-crossing restart) and whether the phase free-runs instead.
 #[derive(Clone, Copy)]
@@ -236,6 +244,11 @@ pub struct BlockCtx {
     /// is unity; the param defaults to `1.0` so the prior single-level
     /// behaviour holds for untouched patches.
     pub layer_level: f32,
+    /// Per-voice stereo spread amount in `[0.0, 1.0]`. Scales the fixed
+    /// per-slot pan positions (`PAN_POSITIONS`). `0.0` → every voice pans
+    /// to centre (L=R), bit-identical to the pre-E019 mono sum after the
+    /// L=R input passes through the stereo FX chain.
+    pub spread: f32,
 }
 
 /// All 16 voices in structure-of-arrays form.
@@ -394,6 +407,14 @@ impl VoiceBank {
 
     pub fn active_count(&self) -> usize {
         self.active.iter().filter(|&&a| a).count()
+    }
+
+    /// True when no voice is sounding and no trigger is pending — i.e.
+    /// `render_block` would take its silent fast path and leave the
+    /// oversampled output buffer untouched. Used by the engine to gate
+    /// the decimator-skip optimisation (0106).
+    pub fn is_silent(&self) -> bool {
+        !self.active.iter().any(|&a| a) && !self.trigger_pending.iter().any(|&t| t)
     }
 
     /// Channel `v`'s per-voice LFO 1 phase (E005 / 0018). Exposed for tests to
@@ -685,11 +706,16 @@ impl VoiceBank {
         }
     }
 
-    /// Render one control block into the oversampled mono buffer `out`
-    /// (length = `base_frames * ctx.os`), accumulating all voices.
-    pub fn render_block(&mut self, out: &mut [f32], ctx: &BlockCtx) {
+    /// Render one control block into the oversampled stereo buffers
+    /// `out_l` / `out_r` (each length = `base_frames * ctx.os`),
+    /// accumulating all voices. Per-slot equal-power pan coefficients
+    /// derived from `ctx.spread` distribute each lane across the field
+    /// (slot 0 leftmost, slot N-1 rightmost). `spread = 0` collapses
+    /// every lane to centre (gL = gR = 1/√2), so `out_l` and `out_r`
+    /// accumulate identical content.
+    pub fn render_block(&mut self, out_l: &mut [f32], out_r: &mut [f32], ctx: &BlockCtx) {
         let os = ctx.os;
-        let base_frames = out.len() / os;
+        let base_frames = out_l.len() / os;
         let base_rate = ctx.os_sample_rate / os as f32;
 
         // Per-voice LFO 1: tick each channel's phase once for this block (held
@@ -858,6 +884,22 @@ impl VoiceBank {
         let mut filt = [0.0f32; N];
         let mut amp = [0.0f32; N];
 
+        // Per-slot linear pan coefficients for this block. Position
+        // `pos = PAN_POSITIONS[v] * spread` lies in [-1, +1]; the (gL, gR)
+        // pair sums to 2.0 in amplitude at every position, so the mono
+        // downmix (L+R) is invariant to spread. Centre is (1, 1), not the
+        // equal-power 1/√2 — this is deliberate: at spread = 0 every lane
+        // sums identical content into L and R, matching the pre-E019 mono
+        // sum bit-for-bit through the stereo FX chain. Hard pan puts 2.0
+        // into one channel; the master limiter handles that case.
+        let mut pan_l = [0.0f32; N];
+        let mut pan_r = [0.0f32; N];
+        for v in 0..N {
+            let pos = PAN_POSITIONS[v] * ctx.spread;
+            pan_l[v] = 1.0 - pos;
+            pan_r[v] = 1.0 + pos;
+        }
+
         // Ring modulator (0021, 0061): osc1×osc2 through the Parker diode bridge,
         // routed into the osc1 mixer slot when `CrossModType::Ring` is engaged.
         // Off (any other cross-mod mode) skips the diode maths entirely.
@@ -998,11 +1040,16 @@ impl VoiceBank {
                     &mix
                 };
                 self.ladder.process(ladder_in, &mut filt);
-                let mut sum = 0.0;
+                let mut sum_l = 0.0;
+                let mut sum_r = 0.0;
                 for v in 0..N {
-                    sum += filt[v] * amp[v];
+                    let s = filt[v] * amp[v];
+                    sum_l += s * pan_l[v];
+                    sum_r += s * pan_r[v];
                 }
-                out[frame + k] += sum * self.level_comp * ctx.layer_level;
+                let gain = self.level_comp * ctx.layer_level;
+                out_l[frame + k] += sum_l * gain;
+                out_r[frame + k] += sum_r * gain;
             }
 
             // Step the ladder coefficients one base sample toward this block's
@@ -1676,6 +1723,7 @@ mod mod_tests {
             amp_env_bypass: false,
             drift_amount: 0.0,
             layer_level: 1.0,
+            spread: 0.0,
         }
     }
 

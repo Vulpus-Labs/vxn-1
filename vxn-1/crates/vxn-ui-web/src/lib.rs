@@ -1629,8 +1629,8 @@ mod tests {
         // bundles into the same assembled string.
         assert_eq!(
             assembled().matches(r#" data-control="fader""#).count(),
-            62,
-            "expected 62 fader cells across all four rows",
+            63,
+            "expected 63 fader cells across all four rows",
         );
         assert_eq!(
             assembled().matches(r#" data-control="wave""#).count(),

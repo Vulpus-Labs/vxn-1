@@ -148,13 +148,22 @@ impl StereoChorus {
         self.right.set_jitter_amount(amount);
     }
 
-    /// Block-level process: `dry` is the mono input; `out_l`/`out_r` receive the
-    /// dry/wet mix. All three slices share the block length. Each delay line is
-    /// run as a contiguous pass to keep its state cache-resident.
-    pub fn process_block(&mut self, dry: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
-        let n = dry.len().min(out_l.len()).min(out_r.len());
+    /// Stereo-in block variant for Stereo routing mode: the FX bus carries true
+    /// L/R rather than a mono sum, so each delay line takes its own channel as
+    /// input. The single LFO (inverted for R) and wet/dry law are unchanged.
+    pub fn process_block_stereo(
+        &mut self,
+        l_in: &[f32],
+        r_in: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
+        let n = l_in
+            .len()
+            .min(r_in.len())
+            .min(out_l.len())
+            .min(out_r.len());
 
-        // ── Control-rate constants, hoisted out of the sample loops. ──
         let center = center_s();
         let swing = swing_s() * self.depth;
         let min_d = (center - swing_s()).max(1.0e-4);
@@ -164,8 +173,6 @@ impl StereoChorus {
         let wet_gain = WET_GAIN * mix;
         let floor = HISS_FLOOR * self.hiss_amount;
 
-        // Per-sample modulation + hiss, computed once and shared by both
-        // channels (right reads the inverted LFO). Scratch lives on the stack.
         let mut dl = [0.0f32; CONTROL_BLOCK];
         let mut dr = [0.0f32; CONTROL_BLOCK];
         let mut nl = [0.0f32; CONTROL_BLOCK];
@@ -176,18 +183,16 @@ impl StereoChorus {
             dr[i] = (center - swing * lfo).clamp(min_d, max_d);
             nl[i] = xorshift64(&mut self.noise_state) * floor;
             nr[i] = xorshift64(&mut self.noise_state) * floor;
-            // Seed the dry contribution; the wet is added per channel below.
-            out_l[i] = dry[i] * dry_gain;
-            out_r[i] = dry[i] * dry_gain;
+            out_l[i] = l_in[i] * dry_gain;
+            out_r[i] = r_in[i] * dry_gain;
         }
 
-        // Left channel pass, then right — each keeps its line's banks hot.
         for i in 0..n {
-            let wet = self.left.process(dry[i] + nl[i], dl[i]);
+            let wet = self.left.process(l_in[i] + nl[i], dl[i]);
             out_l[i] += wet_gain * wet;
         }
         for i in 0..n {
-            let wet = self.right.process(dry[i] + nr[i], dr[i]);
+            let wet = self.right.process(r_in[i] + nr[i], dr[i]);
             out_r[i] += wet_gain * wet;
         }
     }
@@ -262,7 +267,7 @@ mod tests {
                 let phase = ((blk * CONTROL_BLOCK + i) as f32 * 330.0 / sr).fract();
                 *d = lookup_sine(phase);
             }
-            b.process_block(&dry, &mut bl, &mut br);
+            b.process_block_stereo(&dry, &dry, &mut bl, &mut br);
             for (i, &d) in dry.iter().enumerate() {
                 let (l, r) = a.process(d, d);
                 assert!(
@@ -277,6 +282,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stereo_in_processes_channels_independently() {
+        // Sine on L, silence on R: L output must carry the signal, R must be
+        // essentially silent. The R line still ticks the noise/LFO machinery
+        // but with zero input + zero hiss it contributes nothing audible.
+        crate::enable_flush_to_zero();
+        let sr = 48_000.0;
+        let mut c = StereoChorus::new(sr);
+        c.set_params(1.0, 0.7, 0.5);
+
+        let mut l_in = [0.0f32; CONTROL_BLOCK];
+        let r_in = [0.0f32; CONTROL_BLOCK];
+        let mut l_out = [0.0f32; CONTROL_BLOCK];
+        let mut r_out = [0.0f32; CONTROL_BLOCK];
+        let mut l_energy = 0.0f32;
+        let mut r_energy = 0.0f32;
+        let blocks = 48_000 / CONTROL_BLOCK;
+        for blk in 0..blocks {
+            for (i, d) in l_in.iter_mut().enumerate() {
+                let phase = ((blk * CONTROL_BLOCK + i) as f32 * 220.0 / sr).fract();
+                *d = lookup_sine(phase);
+            }
+            c.process_block_stereo(&l_in, &r_in, &mut l_out, &mut r_out);
+            for i in 0..CONTROL_BLOCK {
+                assert!(l_out[i].is_finite() && r_out[i].is_finite());
+                l_energy += l_out[i].abs();
+                r_energy += r_out[i].abs();
+            }
+        }
+        assert!(l_energy > 100.0, "L should carry the sine plus wet");
+        assert!(
+            r_energy < 1.0e-3,
+            "R should be silent with zero input and zero hiss; got {r_energy}"
+        );
     }
 
     #[test]

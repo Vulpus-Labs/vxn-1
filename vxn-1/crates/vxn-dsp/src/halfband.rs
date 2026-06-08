@@ -57,6 +57,16 @@ impl HalfbandFir {
         self.pos = 0;
     }
 
+    /// Copy the tap-delay buffer and write position from `src` into `self`,
+    /// leaving the (immutable) tap coefficients alone. Used to warm-start a
+    /// parallel filter instance from a converged sibling — see
+    /// [`Oversampler::clone_state_from`] for the engine-level motivation.
+    pub fn clone_state_from(&mut self, src: &Self) {
+        debug_assert_eq!(self.delay.len(), src.delay.len());
+        self.delay.copy_from_slice(&src.delay);
+        self.pos = src.pos;
+    }
+
     /// Decimate two oversampled input samples into one output sample.
     #[inline]
     pub fn process(&mut self, first: f32, second: f32) -> f32 {
@@ -126,6 +136,16 @@ impl Oversampler {
         self.stage_a.reset();
         self.stage_b.reset();
         self.stage_c.reset();
+    }
+
+    /// Copy the FIR state of every stage from `src`. Used to seed a
+    /// dormant R-channel decimator from its converged L-channel sibling
+    /// on the `spread = 0` → `spread > 0` transition, so R starts
+    /// bit-identical to L instead of from cold state.
+    pub fn clone_state_from(&mut self, src: &Self) {
+        self.stage_a.clone_state_from(&src.stage_a);
+        self.stage_b.clone_state_from(&src.stage_b);
+        self.stage_c.clone_state_from(&src.stage_c);
     }
 
     /// Decimate `input` (length `output.len() * factor`) into `output`.
