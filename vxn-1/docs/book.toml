@@ -1,0 +1,16 @@
+[book]
+title = "VXN1 Manual"
+authors = ["Vulpus Labs"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/Vulpus-Labs/vxn-1"
+edit-url-template = "https://github.com/Vulpus-Labs/vxn-1/edit/main/vxn-1/docs/src/{path}"
+
+[output.pandoc]
+optional = true
+
+[output.pandoc.profile.pdf]
+output-file = "vxn1-manual.pdf"
+pdf-engine = "tectonic"
