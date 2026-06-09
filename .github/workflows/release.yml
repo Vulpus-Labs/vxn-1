@@ -22,7 +22,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: vxn-1
+          workspaces: .
 
       - name: Build universal CLAP bundle
         working-directory: vxn-1
@@ -31,7 +31,7 @@ jobs:
       # The macOS .clap is a bundle directory; ditto zips it preserving the
       # bundle structure (and resource forks) so it unpacks cleanly.
       - name: Zip bundle
-        run: ditto -c -k --keepParent vxn-1/target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
+        run: ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
@@ -48,7 +48,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: vxn-1
+          workspaces: .
 
       - name: Build CLAP bundle
         working-directory: vxn-1
@@ -57,7 +57,7 @@ jobs:
       # On Windows the .clap is a single shared library; rename for clarity and
       # upload it directly.
       - name: Rename artifact
-        run: Copy-Item vxn-1/target/bundled/VXN1.clap VXN1-windows-x64.clap
+        run: Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
