@@ -6,7 +6,7 @@ VXN1 is a classical subtractive synth with a few intentional deviations from the
 
 ```mermaid
 flowchart TD
-    subgraph voice ["Per voice (oversampled 1× / 2× / 4× / 8×)"]
+    subgraph voice ["Per voice"]
         direction TB
         osc1[Osc 1]
         osc2[Osc 2]
