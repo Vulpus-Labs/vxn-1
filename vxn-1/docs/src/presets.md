@@ -92,7 +92,7 @@ The preset browser opens from the **Browse** button on the preset bar at the top
 - **Preset list** on the right.
 - **Search box** above the list — substring match on preset name.
 - **Context menu** on each preset: Rename, Delete, Move to ▸.
-- **Drag-drop** — drag a preset onto a folder to move (best-effort; context menu is the fallback).
+- **Drag-drop** — drag a user-preset row onto a user folder in the left pane to move it into that folder. Factory folders are not drop targets; the source folder is rejected too. The context menu's "Move to ▸" is the fallback.
 
 Factory presets have read-only flags — you can't rename or delete them, but you can save a modified copy via **Save As**.
 

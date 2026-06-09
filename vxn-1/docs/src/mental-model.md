@@ -73,10 +73,4 @@ Per layer (the [Voice & assign panel](panels/voice.md)):
 
 Glide (`PortamentoTime`) is per-voice and applies in all modes.
 
-## Parameter atomicity
-
-All parameters are stored in a flat, index-addressed table (`SharedParams`) of atomics. The audio thread reads atomics directly; the main thread (UI, host automation, preset loads) mediates writes through structured event channels. No locks, no contention on the audio path. See [MVC layering](internals/mvc.md) for the full architecture.
-
----
-
 With this in hand, the [faceplate reference](panels/overview.md) is mostly a walk through which knob does what within each box.
