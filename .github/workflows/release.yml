@@ -63,3 +63,31 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: VXN1-windows-x64.clap
+
+  manual:
+    name: Manual (PDF)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook and mdbook-pandoc
+        run: cargo install mdbook mdbook-pandoc --locked
+
+      - name: Install Pandoc
+        run: |
+          curl -sSL https://github.com/jgm/pandoc/releases/download/3.2/pandoc-3.2-linux-amd64.tar.gz \
+            | tar -xz --strip-components=2 --directory /usr/local/bin pandoc-3.2/bin/pandoc
+
+      - name: Install Tectonic
+        run: |
+          curl -sSL https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.15.0/tectonic-0.15.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz --directory /usr/local/bin
+
+      - name: Build manual
+        working-directory: vxn-1/docs
+        run: mdbook build
+
+      - name: Attach PDF to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vxn-1/docs/book/pandoc/pdf/vxn1-manual.pdf
