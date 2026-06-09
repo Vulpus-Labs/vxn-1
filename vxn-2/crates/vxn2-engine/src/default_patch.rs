@@ -71,11 +71,13 @@ pub fn default_param_values() -> [f32; TOTAL_PARAMS] {
     // Stack — density 4, mild detune + spread.
     set(&mut out, "stack-detune", 7.0);
     set(&mut out, "stack-spread", 0.55);
-    // Matrix CLAP-automatable depths (slots 1..=4 active per `default_matrix`).
+    // Matrix CLAP-automatable depths (slots 1..=6 active per `default_matrix`).
     set(&mut out, "mtx1-depth", 0.03);
     set(&mut out, "mtx2-depth", 1.0);
     set(&mut out, "mtx3-depth", 0.45);
     set(&mut out, "mtx4-depth", 0.6);
+    set(&mut out, "mtx5-depth", 1.0);
+    set(&mut out, "mtx6-depth", 1.0);
 
     // ── Patch-level ────────────────────────────────────────────────────────
     set(&mut out, "lfo1-rate", 0.6);
@@ -122,6 +124,22 @@ pub fn default_matrix() -> MatrixTable {
         depth: 0.6,
         curve: CurveKind::Lin,
     };
+    // Lane spread → per-carrier pan. The auto pan-spread path was removed —
+    // wire it explicitly through the matrix so the macro is one of many
+    // possible spread → pan curves users can dial in. Depth 1.0 + Lin
+    // reproduces the old `spread * voice_spread[k]` behaviour exactly.
+    t.slots[4] = MatrixSlot {
+        source: SourceId::VoiceSpread,
+        dest: DestId::Op1Pan,
+        depth: 1.0,
+        curve: CurveKind::Lin,
+    };
+    t.slots[5] = MatrixSlot {
+        source: SourceId::VoiceSpread,
+        dest: DestId::Op3Pan,
+        depth: 1.0,
+        curve: CurveKind::Lin,
+    };
     t
 }
 
@@ -151,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn matrix_seeds_four_active_slots() {
+    fn matrix_seeds_six_active_slots() {
         let m = default_matrix();
         assert_eq!(m.slots[0].source, SourceId::Lfo2);
         assert_eq!(m.slots[0].dest, DestId::GlobalPitch);
@@ -162,7 +180,13 @@ mod tests {
         assert_eq!(m.slots[2].curve, CurveKind::Exp);
         assert_eq!(m.slots[3].source, SourceId::ModWheel);
         assert_eq!(m.slots[3].dest, DestId::Lfo1Rate);
-        for slot in &m.slots[4..] {
+        // Slots 5/6: VoiceSpread → carrier-op pan, the explicit replacement
+        // for the dropped auto pan-spread path.
+        assert_eq!(m.slots[4].source, SourceId::VoiceSpread);
+        assert_eq!(m.slots[4].dest, DestId::Op1Pan);
+        assert_eq!(m.slots[5].source, SourceId::VoiceSpread);
+        assert_eq!(m.slots[5].dest, DestId::Op3Pan);
+        for slot in &m.slots[6..] {
             assert_eq!(slot.source, SourceId::None);
             assert_eq!(slot.dest, DestId::None);
         }
@@ -179,5 +203,7 @@ mod tests {
         assert_eq!(v[id_of("mtx2-depth").unwrap()], m.slots[1].depth);
         assert_eq!(v[id_of("mtx3-depth").unwrap()], m.slots[2].depth);
         assert_eq!(v[id_of("mtx4-depth").unwrap()], m.slots[3].depth);
+        assert_eq!(v[id_of("mtx5-depth").unwrap()], m.slots[4].depth);
+        assert_eq!(v[id_of("mtx6-depth").unwrap()], m.slots[5].depth);
     }
 }

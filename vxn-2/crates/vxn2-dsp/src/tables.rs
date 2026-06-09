@@ -26,17 +26,25 @@ pub fn amp_sens_coef(amp_sens: u8) -> f32 {
     AMP_SENS_TABLE[amp_sens.min(3) as usize]
 }
 
-/// Per-op feedback (0..7). Maps to a multiplier applied to the 2-sample-
-/// averaged feedback signal before it's mixed into the phase-modulation input.
-/// Below ~1.0 = warm saw; above ~1.0 heads toward noise. DX7's table tops out
-/// around enough to make a sawtooth from a single op.
+/// Layer-level feedback (continuous, `[0.0, 7.0]`). Maps to a multiplier
+/// applied to the 2-sample-averaged feedback signal before it's mixed into
+/// the phase-modulation input. Below ~1.0 = warm saw; above ~1.0 heads
+/// toward noise. DX7's discrete steps land on the integer positions so
+/// existing presets sound identical; intermediate values linearly interpolate
+/// the quasi-log curve.
 pub const FB_SCALE_TABLE: [f32; 8] = [
     0.0, 0.075, 0.150, 0.300, 0.600, 1.200, 2.000, 3.000,
 ];
 
 #[inline]
-pub fn fb_scale(feedback: u8) -> f32 {
-    FB_SCALE_TABLE[feedback.min(7) as usize]
+pub fn fb_scale(feedback: f32) -> f32 {
+    let x = feedback.clamp(0.0, 7.0);
+    let lo = x.floor() as usize;
+    if lo >= 7 {
+        return FB_SCALE_TABLE[7];
+    }
+    let frac = x - lo as f32;
+    FB_SCALE_TABLE[lo] + (FB_SCALE_TABLE[lo + 1] - FB_SCALE_TABLE[lo]) * frac
 }
 
 #[cfg(test)]
@@ -60,11 +68,30 @@ mod tests {
     #[test]
     fn fb_scale_monotone() {
         let mut prev = -1.0;
-        for i in 0..8u8 {
-            let v = fb_scale(i);
+        for i in 0..8u32 {
+            let v = fb_scale(i as f32);
             assert!(v > prev, "fb_scale({i}) = {v} ≤ {prev}");
             prev = v;
         }
     }
 
+    #[test]
+    fn fb_scale_integer_inputs_match_table() {
+        for i in 0..8 {
+            assert!((fb_scale(i as f32) - FB_SCALE_TABLE[i]).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn fb_scale_interpolates_between_steps() {
+        // Halfway between step 3 (0.300) and step 4 (0.600) → 0.450.
+        let v = fb_scale(3.5);
+        assert!((v - 0.45).abs() < 1e-5, "fb_scale(3.5) = {v}");
+    }
+
+    #[test]
+    fn fb_scale_clamps_out_of_range() {
+        assert_eq!(fb_scale(-1.0), 0.0);
+        assert_eq!(fb_scale(99.0), FB_SCALE_TABLE[7]);
+    }
 }

@@ -33,10 +33,12 @@ use crate::op::{OpParams, OpState, op_eg_tick, op_tick};
 pub struct VoiceParams {
     pub ops: [OpParams; N_OPS],
     pub algo: u8,
-    /// Layer-level feedback amount (0..=7). Routed by note-on / live update
-    /// onto the algorithm's `structural_fb_op` only; all other ops get
-    /// `fb_scale = 0`. Replaces the 6 dropped per-op feedback CLAP ids.
-    pub feedback: u8,
+    /// Layer-level feedback amount, continuous in `[0.0, 7.0]`. Routed by
+    /// note-on / live update onto the algorithm's `structural_fb_op` only;
+    /// all other ops get `fb_scale = 0`. Integer positions still land on the
+    /// DX7-style table values so existing patches sound the same; intermediate
+    /// values interpolate.
+    pub feedback: f32,
     pub master_tune_cents: f32,
     pub lfo2: Lfo2Params,
     pub pitch_eg: PitchEgParams,
@@ -52,7 +54,7 @@ impl Default for VoiceParams {
         Self {
             ops: [OpParams::default(); N_OPS],
             algo: 1,
-            feedback: 0,
+            feedback: 0.0,
             master_tune_cents: 0.0,
             lfo2: Lfo2Params::default(),
             pitch_eg: PitchEgParams::default(),

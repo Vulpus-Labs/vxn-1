@@ -34,7 +34,7 @@ use vxn2_dsp::voice::VoiceParams;
 
 use crate::alloc::{AllocParams, AssignMode};
 use crate::master::MasterParams;
-use crate::matrix::N_CLAP_DEPTH_SLOTS;
+use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
     N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1, OFF_LFO2, OFF_MASTER,
@@ -89,17 +89,39 @@ impl std::error::Error for ParamLoadError {}
 /// Magic prefix on every VXN2 host-state blob.
 pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 /// Highest blob version this build can read.
-pub const BLOB_VERSION: u16 = 1;
+///
+/// - v1: header + `f32` values for every CLAP id.
+/// - v2: appends mod-matrix topology (16 × packed `u32` meta) and the
+///   non-automatable slot depths (8 × `f32`). Older v1 blobs still load and
+///   leave the matrix at default-patch topology.
+pub const BLOB_VERSION: u16 = 2;
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
+/// Trailing matrix-meta byte length appended at v2:
+/// `N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4`.
+pub const BLOB_MATRIX_LEN: usize =
+    N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4;
 
 /// Indexed read access into a param store, keyed by CLAP id.
 ///
 /// Internal supertrait of [`ParamModel`]; both the atomic store and the
 /// audio-thread mirror in `vxn2-clap::local` implement it so the section
 /// readers below (and [`EngineParams::snapshot_from`]) can drive either.
+///
+/// `matrix_row_raw` carries the non-CLAP topology fields (source / dest /
+/// curve / active) plus the depth — slots 1..=N_MATRIX_CLAP_SLOTS take depth
+/// from the CLAP `values` table, slots past that ride a parallel
+/// non-automatable depth field. Default impl returns an inert row so callers
+/// that don't need topology (older test fixtures) compile unchanged.
 pub trait ParamView {
     fn get(&self, id: usize) -> f32;
+    /// Read the matrix row at `slot`. Out-of-range → zeroed row (source/dest
+    /// = None, depth = 0). Override in stores that carry topology; default is
+    /// inert so [`EngineParams::snapshot_from`] callers that don't need
+    /// topology don't have to implement it.
+    fn matrix_row_raw(&self, _slot: usize) -> MatrixRowRaw {
+        MatrixRowRaw::default()
+    }
 }
 
 /// Main-thread parameter-model surface bound by the CLAP params extension
@@ -158,11 +180,27 @@ impl SharedParams {
     /// (see [`crate::default_patch::default_param_values`]).
     pub fn new() -> Self {
         let defaults = crate::default_patch::default_param_values();
+        let default_matrix = crate::default_patch::default_matrix();
         Self {
             values: std::array::from_fn(|i| AtomicU32::new(defaults[i].to_bits())),
             gestures: std::array::from_fn(|_| AtomicU64::new(0)),
-            matrix_meta: std::array::from_fn(|_| AtomicU32::new(0)),
-            matrix_extra_depth: std::array::from_fn(|_| AtomicU32::new(0)),
+            matrix_meta: std::array::from_fn(|s| {
+                let slot = default_matrix.slots[s];
+                let active = slot.source != crate::matrix::SourceId::None
+                    && slot.dest != crate::matrix::DestId::None;
+                AtomicU32::new(pack_matrix_meta(
+                    slot.source as u8,
+                    slot.dest as u8,
+                    slot.curve as u8,
+                    active,
+                ))
+            }),
+            matrix_extra_depth: std::array::from_fn(|s| {
+                // Slots past the CLAP-automatable range take depth from this
+                // array; the default matrix leaves them inert (zeroed).
+                let slot_idx = s + N_MATRIX_CLAP_SLOTS;
+                AtomicU32::new(default_matrix.slots[slot_idx].depth.to_bits())
+            }),
         }
     }
 
@@ -204,6 +242,25 @@ impl SharedParams {
         let defaults = crate::default_patch::default_param_values();
         for i in 0..TOTAL_PARAMS {
             self.values[i].store(defaults[i].to_bits(), Ordering::Relaxed);
+        }
+        let default_matrix = crate::default_patch::default_matrix();
+        for s in 0..N_MATRIX_SLOTS {
+            let slot = default_matrix.slots[s];
+            let active = slot.source != crate::matrix::SourceId::None
+                && slot.dest != crate::matrix::DestId::None;
+            let packed = pack_matrix_meta(
+                slot.source as u8,
+                slot.dest as u8,
+                slot.curve as u8,
+                active,
+            );
+            self.matrix_meta[s].store(packed, Ordering::Relaxed);
+        }
+        for s in 0..(N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) {
+            self.matrix_extra_depth[s].store(
+                default_matrix.slots[s + N_MATRIX_CLAP_SLOTS].depth.to_bits(),
+                Ordering::Relaxed,
+            );
         }
     }
 
@@ -265,10 +322,7 @@ impl SharedParams {
         if slot >= N_MATRIX_SLOTS {
             return;
         }
-        let packed = ((row.source as u32) << 24)
-            | ((row.dest as u32) << 16)
-            | ((row.curve as u32) << 8)
-            | (row.active as u32);
+        let packed = pack_matrix_meta(row.source, row.dest, row.curve, row.active);
         self.matrix_meta[slot].store(packed, Ordering::Relaxed);
         if slot < N_MATRIX_CLAP_SLOTS {
             self.set(OFF_MTX + slot, row.depth);
@@ -291,10 +345,20 @@ pub struct MatrixRowRaw {
     pub depth: f32,
 }
 
+#[inline]
+pub(crate) fn pack_matrix_meta(source: u8, dest: u8, curve: u8, active: bool) -> u32 {
+    ((source as u32) << 24) | ((dest as u32) << 16) | ((curve as u32) << 8) | (active as u32)
+}
+
 impl ParamView for SharedParams {
     #[inline]
     fn get(&self, id: usize) -> f32 {
         SharedParams::get(self, id)
+    }
+
+    #[inline]
+    fn matrix_row_raw(&self, slot: usize) -> MatrixRowRaw {
+        SharedParams::matrix_row_raw(self, slot)
     }
 }
 
@@ -322,12 +386,21 @@ impl ParamModel for SharedParams {
     /// not the user-facing preset format (which lands with the preset epic
     /// and carries the matrix source/dest/curve slots the blob omits).
     fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
+        let mut buf = Vec::with_capacity(BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN);
         buf.extend_from_slice(BLOB_MAGIC);
         buf.extend_from_slice(&BLOB_VERSION.to_le_bytes());
         buf.extend_from_slice(&(TOTAL_PARAMS as u16).to_le_bytes());
         for i in 0..TOTAL_PARAMS {
             let bits = self.values[i].load(Ordering::Relaxed);
+            buf.extend_from_slice(&bits.to_le_bytes());
+        }
+        // v2 trailer — matrix topology + non-automatable slot depths.
+        for s in 0..N_MATRIX_SLOTS {
+            let packed = self.matrix_meta[s].load(Ordering::Relaxed);
+            buf.extend_from_slice(&packed.to_le_bytes());
+        }
+        for s in 0..(N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) {
+            let bits = self.matrix_extra_depth[s].load(Ordering::Relaxed);
             buf.extend_from_slice(&bits.to_le_bytes());
         }
         buf
@@ -357,7 +430,11 @@ impl ParamModel for SharedParams {
                 got: count,
             });
         }
-        let expected = BLOB_HEADER_LEN + (count as usize) * 4;
+        let values_len = BLOB_HEADER_LEN + (count as usize) * 4;
+        let expected = match version {
+            1 => values_len,
+            _ => values_len + BLOB_MATRIX_LEN,
+        };
         if bytes.len() != expected {
             return Err(ParamLoadError::LengthMismatch {
                 expected,
@@ -373,6 +450,29 @@ impl ParamModel for SharedParams {
                 bytes[off + 3],
             ]);
             self.values[i].store(bits, Ordering::Relaxed);
+        }
+        if version >= 2 {
+            let mut off = values_len;
+            for s in 0..N_MATRIX_SLOTS {
+                let packed = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                self.matrix_meta[s].store(packed, Ordering::Relaxed);
+                off += 4;
+            }
+            for s in 0..(N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) {
+                let bits = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                self.matrix_extra_depth[s].store(bits, Ordering::Relaxed);
+                off += 4;
+            }
         }
         Ok(())
     }
@@ -473,6 +573,12 @@ pub struct EngineParams {
     /// Patch-level LFO1 depth macro multiplier (matrix multiplies LFO1
     /// output by this at source-eval time).
     pub lfo1_depth: f32,
+    /// Mod-matrix slot topology + depth, fanned out from the param store at
+    /// snapshot time. The engine's [`crate::matrix::MatrixTable`] is rebuilt
+    /// from this array each block in
+    /// [`crate::engine::Engine::apply_block_params`] — that's the only path
+    /// matrix UI / preset edits reach the audio renderer.
+    pub matrix_rows: [MatrixRowRaw; N_MATRIX_SLOTS],
 }
 
 impl Default for EngineParams {
@@ -502,6 +608,7 @@ impl EngineParams {
             master: MasterParams::default(),
             mtx_depths: [0.0; N_CLAP_DEPTH_SLOTS],
             lfo1_depth: 0.30,
+            matrix_rows: [MatrixRowRaw::default(); N_MATRIX_SLOTS],
         };
         e.snapshot_from(p);
         e
@@ -520,6 +627,17 @@ impl EngineParams {
         // Matrix CLAP-automatable depths.
         for s in 0..N_CLAP_DEPTH_SLOTS {
             self.mtx_depths[s] = shared.get(OFF_MTX + s);
+        }
+
+        // Mod-matrix topology. The engine rebuilds its `MatrixTable` from
+        // these each block — they're the only path UI / preset matrix edits
+        // reach the audio renderer.
+        debug_assert_eq!(
+            N_MATRIX_SLOTS, N_MATRIX_RUNTIME_SLOTS,
+            "shared / matrix slot counts diverged",
+        );
+        for s in 0..N_MATRIX_SLOTS {
+            self.matrix_rows[s] = shared.matrix_row_raw(s);
         }
 
         // Patch-level block.
@@ -575,7 +693,7 @@ fn read_patch<P: ParamView>(s: &P) -> Patch {
     let voice = VoiceParams {
         ops,
         algo: s.get(OFF_ALGO).clamp(1.0, 32.0) as u8,
-        feedback: s.get(OFF_FEEDBACK).round().clamp(0.0, 7.0) as u8,
+        feedback: s.get(OFF_FEEDBACK).clamp(0.0, 7.0),
         master_tune_cents: 0.0, // overwritten with patch-level value post-snap
         lfo2: read_lfo2(s, OFF_LFO2),
         pitch_eg: read_peg(s, OFF_PEG),
@@ -811,7 +929,10 @@ mod tests {
         src.values[nan_id].store(pattern, Ordering::Relaxed);
 
         let bytes = src.snapshot_bytes();
-        assert_eq!(bytes.len(), BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
+        assert_eq!(
+            bytes.len(),
+            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN
+        );
         assert_eq!(&bytes[0..4], BLOB_MAGIC);
         assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
         assert_eq!(
@@ -857,10 +978,11 @@ mod tests {
     fn load_bytes_rejects_future_version() {
         let s = SharedParams::new();
         let mut bytes = s.snapshot_bytes();
-        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        let future = BLOB_VERSION + 1;
+        bytes[4..6].copy_from_slice(&future.to_le_bytes());
         assert_eq!(
             s.load_bytes(&bytes).unwrap_err(),
-            ParamLoadError::UnsupportedVersion(2)
+            ParamLoadError::UnsupportedVersion(future)
         );
     }
 
@@ -883,18 +1005,79 @@ mod tests {
     fn load_bytes_rejects_truncated_payload() {
         let s = SharedParams::new();
         let mut bytes = s.snapshot_bytes();
-        bytes.truncate(bytes.len() - 4);
+        let full_len = bytes.len();
+        bytes.truncate(full_len - 4);
         assert_eq!(
             s.load_bytes(&bytes).unwrap_err(),
             ParamLoadError::LengthMismatch {
-                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
-                got: bytes.len(),
+                expected: full_len,
+                got: full_len - 4,
             }
         );
     }
 
     /// Two consecutive saves with no intervening param changes produce
     /// byte-for-byte identical blobs. Hosts rely on this for change detection.
+    /// Matrix topology (source / dest / curve / active) round-trips through a
+    /// blob save/load just like CLAP-automatable params. Regression for the
+    /// bug where matrix edits silently vanished on patch reload.
+    #[test]
+    fn snapshot_bytes_round_trips_matrix_meta() {
+        let src = SharedParams::new();
+        // Stomp slot 0 (default-seeded) with a fresh row plus a non-CLAP slot
+        // (9) whose depth rides matrix_extra_depth.
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: 4,    // ModEnv
+                dest: 2,      // Op1Level
+                curve: 1,     // Exp
+                active: true,
+                depth: 0.42,
+            },
+        );
+        src.set_matrix_row_raw(
+            9,
+            MatrixRowRaw {
+                source: 5,    // ModWheel
+                dest: 27,     // Lfo2Rate
+                curve: 0,
+                active: true,
+                depth: -0.6,
+            },
+        );
+
+        let bytes = src.snapshot_bytes();
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+
+        let r0 = dst.matrix_row_raw(0);
+        assert_eq!(r0.source, 4);
+        assert_eq!(r0.dest, 2);
+        assert_eq!(r0.curve, 1);
+        assert!(r0.active);
+        assert!((r0.depth - 0.42).abs() < 1e-6);
+
+        let r9 = dst.matrix_row_raw(9);
+        assert_eq!(r9.source, 5);
+        assert_eq!(r9.dest, 27);
+        assert!(r9.active);
+        assert!((r9.depth - (-0.6)).abs() < 1e-6);
+    }
+
+    /// A v1 blob (no matrix trailer) still loads cleanly — older project
+    /// files just leave the matrix at its current topology.
+    #[test]
+    fn load_bytes_accepts_legacy_v1_blob() {
+        let src = SharedParams::new();
+        let mut bytes = src.snapshot_bytes();
+        // Strip the v2 trailer and rewrite the version word.
+        bytes.truncate(BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
+        bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v1 blob loads");
+    }
+
     #[test]
     fn snapshot_bytes_is_stable_across_saves() {
         let s = SharedParams::new();

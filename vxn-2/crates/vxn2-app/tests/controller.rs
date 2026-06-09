@@ -195,9 +195,11 @@ fn matrix_row_slot_9_uses_extra_depth_storage() {
     let got = Vxn2Params::matrix_row(&*model, 10);
     assert_eq!(got, row);
     // No CLAP id is affected by a slot 9-16 write — spot-check against
-    // mtx5-depth which the default patch leaves at descriptor default 0.0.
-    let mtx5 = id_of("mtx5-depth").unwrap();
-    assert_eq!(model.get(mtx5), 0.0);
+    // mtx7-depth which the default patch leaves at descriptor default 0.0
+    // (mtx5/mtx6 are now seeded for the default VoiceSpread → OpNPan
+    // routings).
+    let mtx7 = id_of("mtx7-depth").unwrap();
+    assert_eq!(model.get(mtx7), 0.0);
 }
 
 /// Ticket 0029: when the page reports ready, the controller emits a

@@ -97,6 +97,26 @@ impl SourceId {
             _ => Some(self as usize - 1),
         }
     }
+
+    /// Decode a wire-format `u8`. Out-of-range → [`SourceId::None`] so a
+    /// corrupt patch blob degrades to an inert slot rather than panicking.
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => SourceId::Lfo1,
+            2 => SourceId::Lfo2,
+            3 => SourceId::PitchEg,
+            4 => SourceId::ModEnv,
+            5 => SourceId::ModWheel,
+            6 => SourceId::Aftertouch,
+            7 => SourceId::Velocity,
+            8 => SourceId::Key,
+            9 => SourceId::VoiceIdx,
+            10 => SourceId::VoiceSpread,
+            11 => SourceId::VoiceRand,
+            _ => SourceId::None,
+        }
+    }
 }
 
 /// Source machine id (kebab-case, stable wire name). Index matches
@@ -138,7 +158,9 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 ///
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
 /// …). 6 ops × 4 dests each = 24 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX = 32 total. (Per-op feedback was dropped; feedback is layer-level.)
+/// 2 FX, plus a single layer-level `Feedback` dest = 33 total. (Per-op
+/// feedback was dropped; feedback is layer-level and modulates the
+/// algorithm's structural FB op only.)
 ///
 /// ## Audio wiring status
 ///
@@ -177,10 +199,11 @@ pub enum DestId {
     StackSpread,
     DelayMix,
     ReverbMix,
+    Feedback,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 32;
+pub const N_DESTS: usize = 33;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Ratio`..`ReverbMix`.
@@ -200,6 +223,7 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "stack-spread",
     "delay-mix",
     "reverb-mix",
+    "feedback",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -219,6 +243,7 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Stack Spread",
     "Delay Mix",
     "Reverb Mix",
+    "Feedback",
 ];
 
 impl DestId {
@@ -227,6 +252,48 @@ impl DestId {
         match self {
             DestId::None => None,
             _ => Some(self as usize - 1),
+        }
+    }
+
+    /// Decode a wire-format `u8`. Out-of-range → [`DestId::None`] so a corrupt
+    /// patch blob degrades to an inert slot rather than panicking.
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => DestId::Op1Ratio,
+            2 => DestId::Op1Level,
+            3 => DestId::Op1Detune,
+            4 => DestId::Op1Pan,
+            5 => DestId::Op2Ratio,
+            6 => DestId::Op2Level,
+            7 => DestId::Op2Detune,
+            8 => DestId::Op2Pan,
+            9 => DestId::Op3Ratio,
+            10 => DestId::Op3Level,
+            11 => DestId::Op3Detune,
+            12 => DestId::Op3Pan,
+            13 => DestId::Op4Ratio,
+            14 => DestId::Op4Level,
+            15 => DestId::Op4Detune,
+            16 => DestId::Op4Pan,
+            17 => DestId::Op5Ratio,
+            18 => DestId::Op5Level,
+            19 => DestId::Op5Detune,
+            20 => DestId::Op5Pan,
+            21 => DestId::Op6Ratio,
+            22 => DestId::Op6Level,
+            23 => DestId::Op6Detune,
+            24 => DestId::Op6Pan,
+            25 => DestId::GlobalPitch,
+            26 => DestId::Lfo1Rate,
+            27 => DestId::Lfo2Rate,
+            28 => DestId::Lfo2Phase,
+            29 => DestId::StackDetune,
+            30 => DestId::StackSpread,
+            31 => DestId::DelayMix,
+            32 => DestId::ReverbMix,
+            33 => DestId::Feedback,
+            _ => DestId::None,
         }
     }
 
@@ -303,6 +370,19 @@ pub const CURVE_NAMES: [&str; N_CURVES] = ["lin", "exp", "log", "bipolar"];
 
 /// Curve display label. Same indexing as [`CURVE_NAMES`].
 pub const CURVE_LABELS: [&str; N_CURVES] = ["Lin", "Exp", "Log", "Bipolar"];
+
+impl CurveKind {
+    /// Decode a wire-format `u8`. Out-of-range → [`CurveKind::Lin`].
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => CurveKind::Exp,
+            2 => CurveKind::Log,
+            3 => CurveKind::Bipolar,
+            _ => CurveKind::Lin,
+        }
+    }
+}
 
 // --- Slot / Table ---------------------------------------------------------
 
@@ -382,7 +462,11 @@ pub struct LaneSources {
     /// Lane index normalised to `[0, 1]`. Matrix consumers expect normalised
     /// shapes; the raw `u8` index lives on the stack for other consumers.
     pub voice_idx: [f32; STACK_LANES],
-    /// Lane-symmetric position in `[-1, +1]`.
+    /// Lane-symmetric position pre-scaled by the stack-spread macro: the raw
+    /// `[-1, +1]` lane position is multiplied by `Stack::cached_spread` so
+    /// matrix slots see a wider source as the spread fader opens. At
+    /// `spread = 0` every lane reads zero — the spread macro is the matrix
+    /// source's gain.
     pub voice_spread: [f32; STACK_LANES],
     /// Per-lane note-on random in `[0, 1)`.
     pub voice_rand: [f32; STACK_LANES],
@@ -585,7 +669,7 @@ mod tests {
     fn dest_idx_skips_none_and_packs_others() {
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Op1Ratio.idx(), Some(0));
-        assert_eq!(DestId::ReverbMix.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Feedback.idx(), Some(N_DESTS - 1));
     }
 
     #[test]

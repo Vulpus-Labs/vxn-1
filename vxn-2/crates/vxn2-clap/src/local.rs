@@ -29,7 +29,9 @@ use clack_plugin::prelude::*;
 use clack_plugin::utils::Cookie;
 
 use vxn2_engine::params::PARAMS;
-use vxn2_engine::{EngineParams, ParamView, SharedParams, TOTAL_PARAMS};
+use vxn2_engine::{
+    EngineParams, MatrixRowRaw, N_MATRIX_SLOTS, ParamView, SharedParams, TOTAL_PARAMS,
+};
 
 /// Per-thread parameter mirror. Lives on the audio thread alongside the
 /// engine; carries the same flat shape as [`SharedParams`] but in plain
@@ -44,6 +46,12 @@ pub struct LocalParams {
     /// concurrent UI bulk writes (a preset load) and silently revert them;
     /// the per-slot flag keeps `publish` to the slots host events touched.
     host_changed: [bool; TOTAL_PARAMS],
+    /// Mirror of the shared store's mod-matrix topology + slot 9-16 depths.
+    /// Refreshed by [`fetch_ui_changes`] and exposed to the engine through
+    /// [`ParamView::matrix_row_raw`] so block-time snapshots see the latest
+    /// UI / preset edits. Matrix meta isn't CLAP-automatable, so there's no
+    /// host→shared publish path for it.
+    matrix_rows: [MatrixRowRaw; N_MATRIX_SLOTS],
 }
 
 impl LocalParams {
@@ -52,11 +60,17 @@ impl LocalParams {
             values: std::array::from_fn(|i| shared.get(i)),
             ui_changed: [false; TOTAL_PARAMS],
             host_changed: [false; TOTAL_PARAMS],
+            matrix_rows: std::array::from_fn(|s| shared.matrix_row_raw(s)),
         }
     }
 
     /// Pull UI-originated writes from `shared` into the mirror, flagging them
     /// for echo to the host. Returns whether anything changed.
+    ///
+    /// Also refreshes the mod-matrix topology mirror — matrix meta isn't
+    /// CLAP-automatable, but UI / preset edits still need to reach the audio
+    /// thread before the next `write_to`. Topology drift never sets
+    /// `ui_changed`; there's no host CLAP id to echo to.
     pub fn fetch_ui_changes(&mut self, shared: &SharedParams) -> bool {
         let mut any = false;
         for i in 0..TOTAL_PARAMS {
@@ -64,6 +78,13 @@ impl LocalParams {
             if sv != self.values[i] {
                 self.values[i] = sv;
                 self.ui_changed[i] = true;
+                any = true;
+            }
+        }
+        for s in 0..N_MATRIX_SLOTS {
+            let row = shared.matrix_row_raw(s);
+            if row != self.matrix_rows[s] {
+                self.matrix_rows[s] = row;
                 any = true;
             }
         }
@@ -141,6 +162,15 @@ impl ParamView for LocalParams {
             self.values[id]
         } else {
             0.0
+        }
+    }
+
+    #[inline]
+    fn matrix_row_raw(&self, slot: usize) -> MatrixRowRaw {
+        if slot < N_MATRIX_SLOTS {
+            self.matrix_rows[slot]
+        } else {
+            MatrixRowRaw::default()
         }
     }
 }

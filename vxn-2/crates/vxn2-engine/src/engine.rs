@@ -41,8 +41,9 @@ use crate::alloc::{N_STACKS, PolyAlloc};
 use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
-    DestId, LaneSourceVals, LaneSources, MatrixTable, N_CLAP_DEPTH_SLOTS, N_DESTS, N_SOURCES,
-    PatchSources, StackScalarSources, eval_dests, eval_sources,
+    CurveKind, DestId, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
+    N_DESTS, N_SLOTS, N_SOURCES, PatchSources, SourceId, StackScalarSources, eval_dests,
+    eval_sources,
 };
 use crate::modulation::PatchMod;
 use crate::shared::{EngineParams, SharedParams};
@@ -178,8 +179,31 @@ impl Engine {
         self.delay.set_params(&self.params.delay, self.tempo_bpm);
         self.reverb.set_params(&self.params.reverb);
         self.master.refresh(&self.params.master);
-        for s in 0..N_CLAP_DEPTH_SLOTS {
-            self.matrix.slots[s].depth = self.params.mtx_depths[s];
+        // Rebuild the matrix table from the snapshot rows so UI / preset
+        // topology edits (source / dest / curve / active) actually reach the
+        // audio render. Depth for slots 0..N_CLAP_DEPTH_SLOTS comes from the
+        // CLAP-automatable depths so host automation still wins; slots past
+        // that take the raw row depth (non-automatable patch state).
+        for s in 0..N_SLOTS {
+            let row = self.params.matrix_rows[s];
+            let depth = if s < N_CLAP_DEPTH_SLOTS {
+                self.params.mtx_depths[s]
+            } else {
+                row.depth
+            };
+            // Inactive slot: zero the source so eval_dests skips without
+            // having to also check an "active" flag.
+            let source = if row.active {
+                SourceId::from_u8(row.source)
+            } else {
+                SourceId::None
+            };
+            self.matrix.slots[s] = MatrixSlot {
+                source,
+                dest: DestId::from_u8(row.dest),
+                depth,
+                curve: CurveKind::from_u8(row.curve),
+            };
         }
         // Live-swap each stack's algorithm + patch-level feedback so a
         // picker change or feedback-fader move repatches a held note on the
@@ -258,6 +282,8 @@ impl Engine {
         let global_pitch_idx = DestId::GlobalPitch.idx().unwrap();
         let delay_mix_idx = DestId::DelayMix.idx().unwrap();
         let reverb_mix_idx = DestId::ReverbMix.idx().unwrap();
+        let feedback_idx = DestId::Feedback.idx().unwrap();
+        let patch_feedback = voice.feedback;
 
         let mut fx_delay_mix_sum = 0.0_f32;
         let mut fx_reverb_mix_sum = 0.0_f32;
@@ -282,6 +308,18 @@ impl Engine {
                 velocity: (stack.velocity as f32) * (1.0 / 127.0),
                 key: (stack.note as f32) * (1.0 / 127.0),
             };
+            // `voice_spread` is the raw symmetric lane position in [-1, +1].
+            // We scale by `cached_spread` (the stack-spread macro captured at
+            // note-on) before exposing it to the matrix so the spread fader
+            // gates how widely matrix slots see the lanes. spread = 0 → all
+            // lanes read 0 from the VoiceSpread source.
+            let scaled_voice_spread = {
+                let mut a = [0.0_f32; STACK_LANES];
+                for k in 0..STACK_LANES {
+                    a[k] = stack.cached_spread * stack.voice_spread[k];
+                }
+                a
+            };
             let lane_inputs = LaneSources {
                 lfo2: lfo2_lanes,
                 voice_idx: {
@@ -292,7 +330,7 @@ impl Engine {
                     }
                     a
                 },
-                voice_spread: stack.voice_spread,
+                voice_spread: scaled_voice_spread,
                 voice_rand: stack.voice_rand,
             };
             eval_sources(
@@ -329,6 +367,14 @@ impl Engine {
             }
             for k in 0..STACK_LANES {
                 stack.global_pitch_mod_st[k] = self.dest_vals[i][k][global_pitch_idx];
+            }
+            // Layer-level feedback is single-valued per stack. Read lane 0 of
+            // the matrix accumulator and add to the patch's feedback value;
+            // re-apply through `set_feedback_live` so the algorithm's FB op
+            // sees the modulated `fb_scale` for this block.
+            let fb_mod = self.dest_vals[i][0][feedback_idx];
+            if fb_mod != 0.0 {
+                stack.set_feedback_live((patch_feedback + fb_mod).clamp(0.0, 7.0));
             }
             // Refresh pitch + pan from the new offsets so the per-sample
             // loop reads phase_inc / pan_l / pan_r that include this block's
@@ -728,6 +774,99 @@ mod tests {
             diff > 1e-2,
             "DelayMix matrix slot produced no audible delta (diff={diff})"
         );
+    }
+
+    /// UI / preset edits to a matrix slot land in `SharedParams::matrix_meta`;
+    /// the engine must pick them up on the next `snapshot_params` call.
+    /// Regression for the bug where matrix topology lived only in
+    /// `SharedParams` and was never read by the engine, so the matrix UI was
+    /// silently inert.
+    #[test]
+    fn shared_matrix_meta_writes_reach_engine_matrix() {
+        use crate::matrix::{CurveKind, DestId, SourceId};
+        use crate::shared::MatrixRowRaw;
+
+        let shared = SharedParams::new();
+        // Route ModEnv → Op1Level into a non-CLAP slot (9) so we exercise the
+        // matrix_extra_depth path too.
+        shared.set_matrix_row_raw(
+            9,
+            MatrixRowRaw {
+                source: SourceId::ModEnv as u8,
+                dest: DestId::Op1Level as u8,
+                curve: CurveKind::Lin as u8,
+                active: true,
+                depth: 0.5,
+            },
+        );
+
+        let mut e = Engine::new(SR, BLK);
+        e.snapshot_params(&shared);
+        let slot = e.matrix.slots[9];
+        assert_eq!(slot.source, SourceId::ModEnv);
+        assert_eq!(slot.dest, DestId::Op1Level);
+        assert_eq!(slot.curve, CurveKind::Lin);
+        assert!((slot.depth - 0.5).abs() < 1e-6);
+    }
+
+    /// Matrix dest `Feedback` mods the layer-level feedback amount each
+    /// block. With a `ModWheel → Feedback` slot at depth 4.0 and wheel = 1.0,
+    /// the structural FB op's `fb_scale` should land on `fb_scale(4.0)`.
+    #[test]
+    fn matrix_mod_wheel_to_feedback_updates_fb_scale() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use vxn2_dsp::algo::spec_of;
+        use vxn2_dsp::tables::fb_scale;
+
+        let mut e = Engine::new(SR, BLK);
+        // Patch feedback stays at 0; matrix supplies the whole amount.
+        e.params.patch.voice.feedback = 0.0;
+        e.apply_block_params();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Feedback,
+            depth: 4.0,
+            curve: CurveKind::Lin,
+        };
+        e.set_mod_wheel(1.0);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+
+        let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
+        let fb_op = spec_of(e.alloc.stacks[s].algo).structural_fb_op as usize;
+        let got = e.alloc.stacks[s].ops[fb_op - 1].fb_scale;
+        let want = fb_scale(4.0);
+        assert!(
+            (got - want).abs() < 1e-5,
+            "matrix Feedback did not land: got {got} want {want}",
+        );
+    }
+
+    /// Clearing a slot by writing `active: false` (or source/dest = None)
+    /// must remove the modulation on the next snapshot. The engine projects
+    /// `active=false` to `SourceId::None`, which `eval_dests` short-circuits.
+    #[test]
+    fn shared_matrix_meta_inactive_slot_clears_engine_routing() {
+        use crate::matrix::SourceId;
+        use crate::shared::MatrixRowRaw;
+
+        let shared = SharedParams::new();
+        // Default slot 0 = Lfo2 → GlobalPitch (active). Mute it.
+        shared.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: SourceId::Lfo2 as u8,
+                dest: 25, // GlobalPitch
+                curve: 0,
+                active: false,
+                depth: 0.03,
+            },
+        );
+        let mut e = Engine::new(SR, BLK);
+        e.snapshot_params(&shared);
+        assert_eq!(e.matrix.slots[0].source, SourceId::None);
     }
 
     #[test]

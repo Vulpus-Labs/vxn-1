@@ -238,7 +238,7 @@ mod tests {
             let params = OpParams::default();
             let mut state = OpState::default();
             state.cook(&params, key, vel, 48_000.0);
-            state.fb_scale = fb_scale(7);
+            state.fb_scale = fb_scale(7.0);
             state.eg.note_on();
             let dt_block = 64.0 / 48_000.0;
             for blk in 0..(48_000 / 64) {
@@ -330,11 +330,11 @@ mod tests {
         let params = OpParams::default();
         let mut a = OpState::default();
         a.cook(&params, 60, 100, 48_000.0);
-        a.fb_scale = fb_scale(0);
+        a.fb_scale = fb_scale(0.0);
         a.force_sustain(0.7);
         let mut b = OpState::default();
         b.cook(&params, 60, 100, 48_000.0);
-        b.fb_scale = fb_scale(6);
+        b.fb_scale = fb_scale(6.0);
         b.force_sustain(0.7);
         let mut differ = 0;
         for _ in 0..4096 {
@@ -345,5 +345,38 @@ mod tests {
             }
         }
         assert!(differ > 100, "feedback had no audible effect");
+    }
+
+    #[test]
+    fn feedback_fractional_value_distinct_from_neighbours() {
+        // Continuous feedback: fb_scale(3.5) sits between fb_scale(3) and (4).
+        // Run identical ops at the three settings; the 3.5 output must differ
+        // from both integer neighbours.
+        let params = OpParams::default();
+        let mut a = OpState::default();
+        let mut b = OpState::default();
+        let mut c = OpState::default();
+        for s in [&mut a, &mut b, &mut c] {
+            s.cook(&params, 60, 100, 48_000.0);
+            s.force_sustain(0.7);
+        }
+        a.fb_scale = fb_scale(3.0);
+        b.fb_scale = fb_scale(3.5);
+        c.fb_scale = fb_scale(4.0);
+        let mut diff_ab = 0;
+        let mut diff_bc = 0;
+        for _ in 0..2048 {
+            let sa = op_tick(&mut a, 0.0);
+            let sb = op_tick(&mut b, 0.0);
+            let sc = op_tick(&mut c, 0.0);
+            if (sa - sb).abs() > 1e-3 {
+                diff_ab += 1;
+            }
+            if (sb - sc).abs() > 1e-3 {
+                diff_bc += 1;
+            }
+        }
+        assert!(diff_ab > 50, "fb 3.0 vs 3.5 produced identical signal");
+        assert!(diff_bc > 50, "fb 3.5 vs 4.0 produced identical signal");
     }
 }

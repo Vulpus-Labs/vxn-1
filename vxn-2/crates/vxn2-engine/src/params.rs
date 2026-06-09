@@ -390,7 +390,7 @@ macro_rules! per_patch_rest_arr {
     () => {
         [
             it("algo", "Algorithm", 1, 32, 5, ""),
-            it("feedback", "Feedback", 0, 7, 0, ""),
+            fl("feedback", "Feedback", 0.0, 7.0, 0.0, ""),
             en("lfo2-shape", "LFO2 Shape", LFO_SHAPES, 2),
             flx("lfo2-rate", "LFO2 Rate", 0.01, 50.0, 5.1, "Hz", 2.0),
             flx("lfo2-delay", "LFO2 Delay", 0.0, 4000.0, 180.0, "ms", 100.0),

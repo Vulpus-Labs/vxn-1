@@ -22,6 +22,7 @@ pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_fo
 /// display path (ticket 0031). Canonical source lives in `vxn2-dsp::lfo`.
 pub use vxn2_dsp::lfo::{SUBDIVISIONS, Subdivision, index_from_norm};
 pub use shared::{
-    BLOB_HEADER_LEN, BLOB_MAGIC, BLOB_VERSION, EngineParams, ParamLoadError, ParamModel,
-    ParamView, Patch, SharedParams,
+    BLOB_HEADER_LEN, BLOB_MAGIC, BLOB_MATRIX_LEN, BLOB_VERSION, EngineParams, MatrixRowRaw,
+    N_MATRIX_CLAP_SLOTS, N_MATRIX_SLOTS, ParamLoadError, ParamModel, ParamView, Patch,
+    SharedParams,
 };

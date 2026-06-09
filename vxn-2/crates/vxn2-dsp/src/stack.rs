@@ -325,12 +325,13 @@ impl Stack {
         self.route_fn = resolve_lane_route(algo);
     }
 
-    /// Apply a layer-level feedback amount (0..=7). Writes `fb_scale` onto
-    /// the algorithm's structural FB op only; every other op's `fb_scale`
-    /// is zeroed. Called from `note_on` and from `Engine::apply_block_params`
-    /// each block so picker / fader changes propagate to a held note.
+    /// Apply a layer-level feedback amount, continuous `[0.0, 7.0]`. Writes
+    /// `fb_scale` onto the algorithm's structural FB op only; every other
+    /// op's `fb_scale` is zeroed. Called from `note_on` and from
+    /// `Engine::apply_block_params` each block so picker / fader changes
+    /// propagate to a held note.
     #[inline]
-    pub fn set_feedback_live(&mut self, feedback: u8) {
+    pub fn set_feedback_live(&mut self, feedback: f32) {
         let scale = fb_scale(feedback);
         let fb_op = spec_of(self.algo).structural_fb_op;
         for i in 0..N_OPS {
@@ -392,12 +393,14 @@ impl Stack {
         self.apply_pitch_mult();
         self.apply_phase_offsets(stack_params.phase);
         // Cache pan inputs so `refresh_pan_with_mod` can re-run the equal-
-        // power curve every block without a fresh params handle.
+        // power curve every block without a fresh params handle. `cached_spread`
+        // no longer affects panning directly; it's the gain on the matrix's
+        // `VoiceSpread` source — see `eval_sources`.
         self.cached_spread = stack_params.spread;
         for i in 0..N_OPS {
             self.cached_op_pans[i] = voice_params.ops[i].pan;
         }
-        self.recompute_pan(stack_params.spread, &voice_params.ops);
+        self.recompute_pan(&voice_params.ops);
         self.prev_outs = [[0.0_f32; STACK_LANES]; N_OPS];
         // Matrix writes block-rate; until the first block runs, hold zero.
         self.op_level_mod = [[0.0_f32; STACK_LANES]; N_OPS];
@@ -479,25 +482,27 @@ impl Stack {
         }
     }
 
-    /// Re-run the equal-power pan curve using cached `spread` + base op pans
-    /// plus the matrix `OpNPan` per-lane offset. Called by the engine each
-    /// block after the matrix eval so a pan-routed slot moves the lane gains
-    /// without re-deriving `voice_spread` or `density`.
+    /// Re-run the equal-power pan curve using base op pans + the matrix
+    /// `OpNPan` per-lane offset. Called by the engine each block after the
+    /// matrix eval so a pan-routed slot moves the lane gains without
+    /// re-deriving `voice_spread` or `density`.
+    ///
+    /// Stack-spread no longer auto-pans lanes — wire `VoiceSpread → OpNPan`
+    /// through the matrix when you want it. `cached_spread` survives because
+    /// the matrix's `VoiceSpread` source multiplies the raw lane position by
+    /// it, so the spread macro still gates how wide the matrix sees the
+    /// lanes.
     pub fn refresh_pan_with_mod(&mut self) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
         let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
-        let mut lane_pan = [0.0_f32; STACK_LANES];
-        for k in 0..STACK_LANES {
-            lane_pan[k] = self.cached_spread * self.voice_spread[k];
-        }
         for i in 0..N_OPS {
             let is_carrier = (spec.carriers >> i) & 1 == 1;
             let op_pan = self.cached_op_pans[i];
             for k in 0..STACK_LANES {
                 let active = is_carrier && k < density;
                 if active {
-                    let total = (op_pan + lane_pan[k] + self.op_pan_mod[i][k]).clamp(-1.0, 1.0);
+                    let total = (op_pan + self.op_pan_mod[i][k]).clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
                     self.pan_l[i][k] = c * inv_sqrt_density;
@@ -619,24 +624,20 @@ impl Stack {
         }
     }
 
-    fn recompute_pan(&mut self, spread: f32, op_params: &[OpParams; N_OPS]) {
+    fn recompute_pan(&mut self, op_params: &[OpParams; N_OPS]) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        // Decorrelated lanes (voice_spread + per-lane phase scatter at note-on)
-        // sum to ~√N amplitude. Bake 1/√density into the pan tables so density
-        // 1..8 are level-matched without a per-sample multiply.
+        // Decorrelated lanes sum to ~√N amplitude. Bake 1/√density into the
+        // pan tables so density 1..8 are level-matched without a per-sample
+        // multiply.
         let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
-        let mut lane_pan = [0.0_f32; STACK_LANES];
-        for k in 0..STACK_LANES {
-            lane_pan[k] = spread * self.voice_spread[k];
-        }
         for i in 0..N_OPS {
             let is_carrier = (spec.carriers >> i) & 1 == 1;
             let op_pan = op_params[i].pan;
             for k in 0..STACK_LANES {
                 let active = is_carrier && k < density;
                 if active {
-                    let total = (op_pan + lane_pan[k]).clamp(-1.0, 1.0);
+                    let total = op_pan.clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
                     self.pan_l[i][k] = c * inv_sqrt_density;
@@ -911,7 +912,11 @@ mod tests {
     }
 
     #[test]
-    fn density_2_spreads_left_right() {
+    fn stack_spread_does_not_auto_pan_without_matrix() {
+        // Auto pan-spread was dropped — `stack-spread` × `voice_spread[k]` is
+        // no longer baked into `pan_l/pan_r`. With no matrix `VoiceSpread →
+        // OpNPan` slot active, every lane sits at the op's base pan (centre
+        // here), regardless of the spread macro.
         let mut stack = Stack::default();
         let sp = StackParams {
             density: 2,
@@ -922,14 +927,23 @@ mod tests {
         };
         let vp = carrier_friendly_patch();
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
-        // Lane 0 → spread −1 → fully left; lane 1 → spread +1 → fully right.
-        // pan values are scaled by 1/√density for level compensation, so the
-        // hard-panned channel sits at 1/√2 ≈ 0.7071 rather than 1.0.
-        let inv_sqrt2 = 1.0 / 2.0_f32.sqrt();
-        assert!((stack.pan_l[0][0] - inv_sqrt2).abs() < 1e-4);
-        assert!(stack.pan_r[0][0] < 0.01);
-        assert!(stack.pan_l[0][1] < 0.01);
-        assert!((stack.pan_r[0][1] - inv_sqrt2).abs() < 1e-4);
+        // Both lanes centred → pan_l == pan_r per lane, scaled by 1/√density.
+        let centre = (core::f32::consts::FRAC_PI_4).cos() / 2.0_f32.sqrt();
+        for k in 0..2 {
+            assert!(
+                (stack.pan_l[0][k] - centre).abs() < 1e-4,
+                "lane {k} pan_l {} not centred (want {centre})",
+                stack.pan_l[0][k],
+            );
+            assert!(
+                (stack.pan_r[0][k] - centre).abs() < 1e-4,
+                "lane {k} pan_r {} not centred (want {centre})",
+                stack.pan_r[0][k],
+            );
+        }
+        // `cached_spread` is still captured — the matrix uses it to scale the
+        // `VoiceSpread` source.
+        assert!((stack.cached_spread - 1.0).abs() < 1e-6);
     }
 
     #[test]

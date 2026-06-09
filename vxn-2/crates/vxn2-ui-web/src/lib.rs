@@ -724,11 +724,12 @@ mod tests {
         let s = build_matrix_lists_json();
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        assert_eq!(v["dests"].as_array().unwrap().len(), 33);
+        assert_eq!(v["dests"].as_array().unwrap().len(), 34);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
         assert_eq!(v["dests"][32]["name"], "reverb-mix");
+        assert_eq!(v["dests"][33]["name"], "feedback");
         assert_eq!(v["curves"][3]["name"], "bipolar");
     }
 
