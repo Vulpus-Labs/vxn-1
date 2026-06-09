@@ -18,14 +18,16 @@ const VOICES: usize = 32;
 const SR: f32 = 48_000.0;
 
 fn build_voices() -> [OpState; VOICES] {
-    let mut params = OpParams::default();
-    params.feedback = 4; // mid feedback exercises the FB averaging path.
+    let params = OpParams::default();
     let mut voices = [OpState::default(); VOICES];
     for (i, v) in voices.iter_mut().enumerate() {
         // Spread keys across 4 octaves so phase increments differ per voice
         // and the EG cook isn't a uniform broadcast.
         let key = 48 + (i as u8 * 2) % 48;
         v.cook(&params, key, 100, SR);
+        // Mid feedback exercises the FB averaging path. Feedback is now
+        // layer-level; the bench harness writes it onto the op directly.
+        v.fb_scale = vxn2_dsp::tables::fb_scale(4);
         // Decorrelate phase so the optimiser can't collapse the loop.
         v.phase = (i as u32).wrapping_mul(0x1234_5678);
     }

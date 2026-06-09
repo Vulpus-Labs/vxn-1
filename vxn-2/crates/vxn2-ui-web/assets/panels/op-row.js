@@ -1,23 +1,20 @@
 // VXN2 op-row binder (ticket 0027).
 //
-// Owns three interacting widgets sharing the active (layer, algo, op)
-// cursor:
+// Owns four interacting widgets sharing the active (algo, op) cursor:
 //   1. Algorithm picker overlay — 32 4x8 cells, each a mini algo
-//      diagram. Click writes the layer-prefixed `algo` CLAP id and
-//      closes the overlay.
+//      diagram. Click writes the `algo` CLAP id and closes the overlay.
 //   2. Op-row badge SVG — full algo diagram rendered into the
 //      always-visible block, repainted on algo / op change.
 //   3. Op-tabs strip (op1..op6) — discrete view-only selection;
 //      dispatches the `set_op_tab` custom UI event. Each tab carries
 //      a carrier / modulator badge sourced from ALGO_CARRIERS.
-//   4. Op-detail panel — 21 layer-prefixed per-op CLAP params (ratio /
+//   4. Op-detail panel — 22 per-op CLAP params (num / denom /
 //      fixed-hz / fine / detune / level / vel-sens / amp-sens / EG
-//      r1..r4 + l1..l4 / KS bp+l-depth+r-depth+rate / pan / feedback).
-//      Re-rendered on layer or op flip; primitives are un-registered
-//      from `boundById` before the new set binds.
-//   5. Edit-layer toggle — sits in the algo-block panel header.
-//      Dispatches the `set_edit_layer` custom UI event; greys out when
-//      voicing-mode == Whole (still editable, just visually muted).
+//      r1..r4 + l1..l4 / KS bp+l-depth+r-depth+rate / pan).
+//      Re-rendered on op flip; primitives are un-registered from
+//      `boundById` before the new set binds.
+//
+// Per [ADR 0002] dual-layer voicing is gone — every param id is flat.
 //
 // ALGO_CARRIERS is the 32 x 6 boolean carrier table. Source of truth
 // is `vxn2_dsp::algo::ALGOS` — drift is caught by the
@@ -25,6 +22,15 @@
 
 (function () {
   const vxn = window.__vxn;
+
+  // 1-indexed op that carries the algorithm's structural feedback loop, by
+  // algo number (1-indexed). Mirrors `AlgoSpec::structural_fb_op` in
+  // `vxn2_dsp::algo::ALGOS`. Drift is caught by the
+  // `op_row_fb_ops_match_engine_table` Rust test in lib.rs.
+  const ALGO_FB_OPS = [
+    6, 2, 6, 4, 6, 5, 6, 4, 2, 3, 6, 2, 6, 6, 2, 6,
+    2, 3, 6, 3, 6, 6, 6, 6, 6, 6, 3, 5, 6, 5, 6, 6,
+  ];
 
   // 32 algos x 6 ops; true if op (1-indexed) is a carrier in algo
   // (1-indexed). Mirrors the carrier mask of `vxn2_dsp::algo::ALGOS`.
@@ -95,12 +101,9 @@
     [true,  true,  true,  true,  true,  true ],
   ];
 
-  // The 21 per-op param machine-id suffixes, in render order. Layer
-  // prefix + "op{N}-" is added by makeCtx() inside main.js's
-  // resolveParamId, via the existing editLayer fallback. Here we build
-  // the full unprefixed-from-main-js name explicitly per op tab.
   const OP_PARAMS = {
-    ratio:    { kind: "fader" },
+    num:      { kind: "fader" },
+    denom:    { kind: "fader" },
     "fixed-hz":{ kind: "fader" },
     fine:     { kind: "fader" },
     detune:   { kind: "fader" },
@@ -131,13 +134,8 @@
 
   function bind(root, ctx) {
     // ── State ──
-    let currentLayer = vxn.editLayer || "upper";
     let currentOp = 1;
     let currentAlgo = 1;
-    let voicingMode = 0;
-    // Primitives bound by the op-detail re-render. Cleared on next
-    // re-render via unregister() so boundById doesn't accumulate stale
-    // entries across op / layer flips.
     let opDetailPrims = [];
 
     const algoSvg = root.querySelector('[data-vxn-section="algo-svg"]');
@@ -146,14 +144,14 @@
     const algoOverlay = root.querySelector('[data-vxn-section="algo-overlay"]');
     const opTabsEl = root.querySelector('[data-vxn-section="op-tabs"]');
     const opDetailEl = root.querySelector('[data-vxn-section="op-detail"]');
-    const layerToggleEl = root.querySelector('[data-vxn-section="edit-layer-toggle"]');
+    const fbTargetNumEl = root.querySelector('[data-vxn-section="fb-target-num"]');
 
-    // ── Algo CLAP id resolution (layer-prefixed) ──
-    function algoParamForLayer(layer) {
-      return vxn.paramsByName[layer + "-algo"] || null;
+    function paintFbTarget() {
+      if (fbTargetNumEl) {
+        fbTargetNumEl.textContent = String(ALGO_FB_OPS[currentAlgo - 1]);
+      }
     }
 
-    // ── Op-row badge SVG ──
     function paintAlgoBadge() {
       if (algoSvg && vxn.panels.algoDiagram) {
         vxn.panels.algoDiagram.renderFull(algoSvg, currentAlgo, currentOp);
@@ -161,7 +159,22 @@
       if (algoNumEl) algoNumEl.textContent = String(currentAlgo);
     }
 
-    // ── Algorithm picker overlay ──
+    function wireAlgoBadgeClicks() {
+      if (!algoSvg) return;
+      algoSvg.addEventListener("click", function (ev) {
+        const target = ev.target instanceof Element ? ev.target.closest("[data-op]") : null;
+        if (!target) return;
+        ev.preventDefault();
+        const op = parseInt(target.getAttribute("data-op"), 10);
+        if (!Number.isFinite(op) || op < 1 || op > 6 || op === currentOp) return;
+        currentOp = op;
+        paintOpTabs();
+        paintAlgoBadge();
+        renderOpDetail();
+        ctx.dispatch("set_op_tab", { op: op });
+      });
+    }
+
     function paintAlgoGrid() {
       if (!algoGrid) return;
       let html = "";
@@ -173,7 +186,6 @@
           + '</div>';
       }
       algoGrid.innerHTML = html;
-      // Render mini diagrams + bind clicks.
       const cells = algoGrid.querySelectorAll("[data-algo-pick]");
       for (let i = 0; i < cells.length; i++) {
         const cell = cells[i];
@@ -184,13 +196,13 @@
         }
         cell.addEventListener("click", function (ev) {
           ev.preventDefault();
-          const desc = algoParamForLayer(currentLayer);
+          const desc = vxn.paramsByName["algo"];
           if (!desc) return;
-          // Optimistic local update; host echo confirms.
           currentAlgo = n;
           paintAlgoBadge();
           paintAlgoGrid();
           paintOpTabs();
+          paintFbTarget();
           ctx.dispatch("set_param", { id: desc.id, plain: n });
           closeOverlay();
         });
@@ -199,15 +211,18 @@
 
     function openOverlay() {
       paintAlgoGrid();
-      if (algoOverlay) algoOverlay.removeAttribute("hidden");
+      if (algoOverlay) {
+        algoOverlay.removeAttribute("hidden");
+        algoOverlay.classList.add("open");
+      }
     }
     function closeOverlay() {
-      if (algoOverlay) algoOverlay.setAttribute("hidden", "");
+      if (algoOverlay) {
+        algoOverlay.setAttribute("hidden", "");
+        algoOverlay.classList.remove("open");
+      }
     }
 
-    // Replace main.js's stub open/close handlers — the openers in the
-    // op-row need to repaint the grid first so the current-algo
-    // highlight is right.
     function wireOverlayButtons() {
       const openers = root.querySelectorAll('[data-vxn-custom="open_algo_picker"]');
       for (let i = 0; i < openers.length; i++) {
@@ -225,7 +240,6 @@
           closeOverlay();
         }, true);
       }
-      // Escape closes.
       document.addEventListener("keydown", function (ev) {
         if (ev.key === "Escape" && algoOverlay && !algoOverlay.hasAttribute("hidden")) {
           ev.preventDefault();
@@ -234,7 +248,6 @@
       });
     }
 
-    // ── Op tabs ──
     function paintOpTabs() {
       if (!opTabsEl) return;
       let html = "";
@@ -255,39 +268,11 @@
           paintOpTabs();
           paintAlgoBadge();
           renderOpDetail();
-          ctx.dispatch("set_op_tab", { layer: currentLayer, op: op });
+          ctx.dispatch("set_op_tab", { op: op });
         });
       }
     }
 
-    // ── Edit-layer toggle ──
-    function paintLayerToggle() {
-      if (!layerToggleEl) return;
-      const btns = layerToggleEl.querySelectorAll("[data-vxn-edit-layer]");
-      for (let i = 0; i < btns.length; i++) {
-        const layer = btns[i].getAttribute("data-vxn-edit-layer");
-        btns[i].classList.toggle("active", layer === currentLayer);
-      }
-      // Whole voicing = visual mute (lower edits still apply).
-      layerToggleEl.classList.toggle("muted", voicingMode === 0);
-    }
-    function wireLayerToggle() {
-      if (!layerToggleEl) return;
-      const btns = layerToggleEl.querySelectorAll("[data-vxn-edit-layer]");
-      for (let i = 0; i < btns.length; i++) {
-        const btn = btns[i];
-        const layer = btn.getAttribute("data-vxn-edit-layer");
-        btn.addEventListener("click", function (ev) {
-          ev.preventDefault();
-          if (layer === currentLayer) return;
-          ctx.dispatch("set_edit_layer", { layer: layer });
-          // Optimistic — server will echo edit_layer_changed which our
-          // handler will then no-op (already in sync).
-        });
-      }
-    }
-
-    // ── Op-detail re-render ──
     function clearOpDetailPrims() {
       for (let i = 0; i < opDetailPrims.length; i++) {
         ctx.unregister(opDetailPrims[i].id, opDetailPrims[i].prim);
@@ -297,42 +282,35 @@
 
     function makeFader(parent, label, opUnprefixed) {
       const name = "op" + currentOp + "-" + opUnprefixed;
-      const desc = vxn.paramsByName[currentLayer + "-" + name];
-      if (!desc) return;
+      const desc = vxn.paramsByName[name];
+      if (!desc) return null;
       const wrap = document.createElement("div");
       wrap.className = "fader";
-      wrap.setAttribute("data-vxn-param", currentLayer + "-" + name);
+      wrap.setAttribute("data-vxn-param", name);
       wrap.innerHTML =
         '<div class="fader-label">' + label + '</div>' +
-        '<div class="fader-track"><div class="fader-track-fill"></div><div class="fader-thumb"></div></div>' +
-        '<div class="fader-value"></div>';
+        '<div class="fader-track"><div class="fader-track-fill"></div><div class="fader-thumb"></div></div>';
       parent.appendChild(wrap);
       const localCtx = ctx.makeCtxForId(desc, desc.id);
       const prim = vxn.panels.fader.create(wrap, localCtx);
       ctx.register(desc.id, prim);
       opDetailPrims.push({ id: desc.id, prim: prim });
+      return wrap;
     }
 
     function makeRatioButtonGroup(parent) {
-      // Ratio / Fixed Hz selector — no CLAP id behind it; pure local
-      // visual flag for now. Drives which of the two faders shows. In
-      // 0027 we render both faders side-by-side; a future ticket can
-      // collapse them into one column with a toggle.
       const cgrp = document.createElement("div");
       cgrp.className = "cgrp";
       cgrp.innerHTML =
-        '<div class="bgrp"><div class="bgrp-row"><button class="bgrp-btn active" data-op-tuning="ratio">Ratio</button><button class="bgrp-btn" data-op-tuning="fixed">Fixed</button></div></div>' +
-        '<div class="cgrp-label">Tune</div>';
+        '<div class="bgrp"><div class="bgrp-row"><button class="bgrp-btn active" data-op-tuning="ratio">Ratio</button><button class="bgrp-btn" data-op-tuning="fixed">Fixed</button></div></div>';
       parent.appendChild(cgrp);
     }
 
     function makeEgGraph(parent) {
-      // EG segment graph — re-uses panels.graph with the 4 rate / 4
-      // level CLAP ids from the current (layer, op).
       const rateNames = ["eg-r1", "eg-r2", "eg-r3", "eg-r4"]
-        .map(function (s) { return currentLayer + "-op" + currentOp + "-" + s; });
+        .map(function (s) { return "op" + currentOp + "-" + s; });
       const levelNames = ["eg-l1", "eg-l2", "eg-l3", "eg-l4"]
-        .map(function (s) { return currentLayer + "-op" + currentOp + "-" + s; });
+        .map(function (s) { return "op" + currentOp + "-" + s; });
       const rateDescs = rateNames.map(function (n) { return vxn.paramsByName[n] || null; });
       const levelDescs = levelNames.map(function (n) { return vxn.paramsByName[n] || null; });
       if (rateDescs.indexOf(null) >= 0 || levelDescs.indexOf(null) >= 0) return;
@@ -364,13 +342,10 @@
     }
 
     function makeKsGraph(parent) {
-      // KS graph: BP + L-depth + R-depth + Rate; rendered as a single
-      // svg with three drag handles (BP horizontal, L-end y, R-end y).
-      // Backed by 4 int CLAP params, all writable from the same widget.
-      const bpName = currentLayer + "-op" + currentOp + "-ks-break-pt";
-      const lDepthName = currentLayer + "-op" + currentOp + "-ks-l-depth";
-      const rDepthName = currentLayer + "-op" + currentOp + "-ks-r-depth";
-      const rateName = currentLayer + "-op" + currentOp + "-ks-rate";
+      const bpName = "op" + currentOp + "-ks-break-pt";
+      const lDepthName = "op" + currentOp + "-ks-l-depth";
+      const rDepthName = "op" + currentOp + "-ks-r-depth";
+      const rateName = "op" + currentOp + "-ks-rate";
       const bpDesc = vxn.paramsByName[bpName];
       const lDesc = vxn.paramsByName[lDepthName];
       const rDesc = vxn.paramsByName[rDepthName];
@@ -388,34 +363,58 @@
       let lDepth = lDesc.default;
       let rDepth = rDesc.default;
 
-      function paint() {
-        const W = 240, H = 108;
-        const cy = H / 2;
-        const xAt = function (m) { return 6 + (m / 127) * (W - 12); };
-        const bpX = xAt(bp);
-        // Crude linear approximation of the KS curve — final visual
-        // tweaks (curve shape parity with the engine) land with the
-        // engine-side KS implementation in a later ticket.
-        const lEndX = xAt(0);
-        const lEndY = cy + (lDepth / 99) * (H / 2 - 8);
-        const rEndX = xAt(127);
-        const rEndY = cy - (rDepth / 99) * (H / 2 - 8);
+      let bpLineEl = null, leftPathEl = null, rightPathEl = null;
+      let bpHandle = null, lHandle = null, rHandle = null;
+      let built = false;
+      const W = 240, H = 108;
+      const cy = H / 2;
+      function xAt(m) { return 6 + (m / 127) * (W - 12); }
 
+      function build() {
         let grid = "";
         for (let oct = 0; oct < 11; oct++) {
           const x = xAt(oct * 12);
           grid += '<line class="graph-grid" x1="' + x + '" y1="6" x2="' + x + '" y2="' + (H - 6) + '" />';
         }
         grid += '<line class="graph-axis" x1="6" y1="' + cy + '" x2="' + (W - 6) + '" y2="' + cy + '" />';
-        grid += '<line class="graph-bp-line" x1="' + bpX + '" y1="6" x2="' + bpX + '" y2="' + (H - 6) + '" />';
-        const leftPath = 'M ' + bpX + ' ' + cy + ' L ' + lEndX + ' ' + lEndY;
-        const rightPath = 'M ' + bpX + ' ' + cy + ' L ' + rEndX + ' ' + rEndY;
-        const handles =
-          '<circle class="graph-handle" cx="' + bpX + '" cy="' + cy + '" r="4" data-ks-pt="bp" />' +
-          '<circle class="graph-handle" cx="' + lEndX + '" cy="' + lEndY + '" r="4" data-ks-pt="l" />' +
-          '<circle class="graph-handle" cx="' + rEndX + '" cy="' + rEndY + '" r="4" data-ks-pt="r" />';
-        svg.innerHTML = grid + '<path class="graph-curve" d="' + leftPath + '" /><path class="graph-curve" d="' + rightPath + '" />' + handles;
+        svg.innerHTML =
+          grid +
+          '<line class="graph-bp-line" data-ks-bp-line />' +
+          '<path class="graph-curve" data-ks-left />' +
+          '<path class="graph-curve" data-ks-right />' +
+          '<circle class="graph-handle" r="4" data-ks-pt="bp" />' +
+          '<circle class="graph-handle" r="4" data-ks-pt="l" />' +
+          '<circle class="graph-handle" r="4" data-ks-pt="r" />';
+        bpLineEl = svg.querySelector("[data-ks-bp-line]");
+        leftPathEl = svg.querySelector("[data-ks-left]");
+        rightPathEl = svg.querySelector("[data-ks-right]");
+        bpHandle = svg.querySelector('[data-ks-pt="bp"]');
+        lHandle = svg.querySelector('[data-ks-pt="l"]');
+        rHandle = svg.querySelector('[data-ks-pt="r"]');
         bindKsHandles();
+        built = true;
+      }
+
+      function paint() {
+        if (!built) build();
+        const bpX = xAt(bp);
+        const lEndX = xAt(0);
+        const lEndY = cy + (lDepth / 99) * (H / 2 - 8);
+        const rEndX = xAt(127);
+        const rEndY = cy - (rDepth / 99) * (H / 2 - 8);
+
+        bpLineEl.setAttribute("x1", bpX);
+        bpLineEl.setAttribute("y1", 6);
+        bpLineEl.setAttribute("x2", bpX);
+        bpLineEl.setAttribute("y2", H - 6);
+        leftPathEl.setAttribute("d", "M " + bpX + " " + cy + " L " + lEndX + " " + lEndY);
+        rightPathEl.setAttribute("d", "M " + bpX + " " + cy + " L " + rEndX + " " + rEndY);
+        bpHandle.setAttribute("cx", bpX);
+        bpHandle.setAttribute("cy", cy);
+        lHandle.setAttribute("cx", lEndX);
+        lHandle.setAttribute("cy", lEndY);
+        rHandle.setAttribute("cx", rEndX);
+        rHandle.setAttribute("cy", rEndY);
       }
 
       function bindKsHandles() {
@@ -452,7 +451,7 @@
               bp = Math.max(0, Math.min(127, Math.round(startVal + dx)));
               ctx.dispatch("set_param", { id: id, plain: bp });
             } else if (which === "l") {
-              const dy = (startY - ev.clientY) * sens * 0.5;
+              const dy = (ev.clientY - startY) * sens * 0.5;
               lDepth = Math.max(0, Math.min(99, Math.round(startVal + dy)));
               ctx.dispatch("set_param", { id: id, plain: lDepth });
             } else {
@@ -497,19 +496,20 @@
       clearOpDetailPrims();
       opDetailEl.innerHTML = "";
 
-      // Column 1: Tuning (Ratio/Fixed toggle + ratio + fine + detune)
+      // Column 1: Tuning
       const col1 = document.createElement("div");
       col1.className = "op-col";
-      col1.style.cssText = "width: 130px; flex: 0 0 130px;";
+      col1.style.cssText = "width: 160px; flex: 0 0 160px;";
       col1.innerHTML = '<div class="op-col-title">Tuning</div>';
       makeRatioButtonGroup(col1);
       const tRow = document.createElement("div");
       tRow.className = "op-col-row";
       col1.appendChild(tRow);
-      makeFader(tRow, "Ratio", "ratio");
+      makeFader(tRow, "Num", "num");
+      makeFader(tRow, "Den", "denom");
       makeFader(tRow, "Hz", "fixed-hz");
       makeFader(tRow, "Fine", "fine");
-      makeFader(tRow, "Det", "detune");
+      makeFader(tRow, "Cents", "detune");
       opDetailEl.appendChild(col1);
 
       // Column 2: EG graph
@@ -531,12 +531,13 @@
       // Column 4: Sensitivity + Output
       const col4 = document.createElement("div");
       col4.className = "op-col";
-      col4.style.cssText = "width: 240px; flex: 0 0 240px; flex-direction: row; gap: 8px;";
+      col4.style.cssText = "width: 188px; flex: 0 0 188px; flex-direction: row; gap: 6px;";
       const sens = document.createElement("div");
-      sens.style.cssText = "flex: 0 0 110px;";
+      sens.style.cssText = "flex: 0 0 104px;";
       sens.innerHTML = '<div class="op-col-title">Sensitivity</div>';
       const sRow = document.createElement("div");
       sRow.className = "op-col-row";
+      sRow.style.cssText = "justify-content: flex-start;";
       sens.appendChild(sRow);
       makeFader(sRow, "Vel", "vel-sens");
       makeFader(sRow, "AMS", "amp-sens");
@@ -547,15 +548,20 @@
       out.innerHTML = '<div class="op-col-title">Output</div>';
       const oRow = document.createElement("div");
       oRow.className = "op-col-row";
+      oRow.style.cssText = "justify-content: flex-start;";
       out.appendChild(oRow);
       makeFader(oRow, "Out", "level");
-      makeFader(oRow, "Pan", "pan");
-      makeFader(oRow, "FB", "feedback");
+      // Pan is carrier-only — FM is mono in the engine, so modulator pan
+      // has no audible effect (see PARAMETERS.md). Disable when the
+      // current op isn't a carrier under the current algorithm.
+      const panWrap = makeFader(oRow, "Pan", "pan");
+      if (panWrap) {
+        panWrap.classList.toggle("disabled", !isCarrier(currentAlgo, currentOp));
+      }
       col4.appendChild(out);
       opDetailEl.appendChild(col4);
     }
 
-    // ── View-event subscribers ──
     function onAlgoChanged(plain) {
       const n = Math.round(plain);
       if (n === currentAlgo) return;
@@ -563,57 +569,45 @@
       paintAlgoBadge();
       paintAlgoGrid();
       paintOpTabs();
+      paintFbTarget();
+      updatePanDisabled();
     }
-    function onLayerChanged(layer) {
-      if (layer === currentLayer) return;
-      currentLayer = layer;
-      vxn.editLayer = layer;
-      paintLayerToggle();
-      // Algo cursor is per-layer — re-resolve from the new layer's
-      // CLAP id (default if no echo yet).
-      const desc = algoParamForLayer(currentLayer);
-      if (desc) currentAlgo = Math.round(desc.default);
-      paintAlgoBadge();
-      paintOpTabs();
-      renderOpDetail();
+
+    function updatePanDisabled() {
+      if (!opDetailEl) return;
+      const panWrap = opDetailEl.querySelector(
+        '[data-vxn-param="op' + currentOp + '-pan"]'
+      );
+      if (panWrap) {
+        panWrap.classList.toggle("disabled", !isCarrier(currentAlgo, currentOp));
+      }
     }
-    function onOpTabChanged(layer, op) {
-      if (layer !== currentLayer || op === currentOp) return;
+
+    function onOpTabChanged(op) {
+      if (op === currentOp) return;
       currentOp = op;
       paintOpTabs();
       paintAlgoBadge();
       renderOpDetail();
     }
-    function onVoicingModeChanged(plain) {
-      voicingMode = Math.round(plain);
-      paintLayerToggle();
-    }
 
-    // Expose subscriber hooks back to main.js's applyEvent path.
     vxn._opRow = {
       onAlgoChanged: onAlgoChanged,
-      onLayerChanged: onLayerChanged,
       onOpTabChanged: onOpTabChanged,
-      onVoicingModeChanged: onVoicingModeChanged,
-      currentLayer: function () { return currentLayer; },
       currentAlgo: function () { return currentAlgo; },
       currentOp: function () { return currentOp; },
     };
 
-    // ── Initial paint ──
-    // Pick up the layer's algo default if hydrated.
-    const algoDesc = algoParamForLayer(currentLayer);
+    const algoDesc = vxn.paramsByName["algo"];
     if (algoDesc) currentAlgo = Math.round(algoDesc.default);
-    const vmDesc = vxn.paramsByName["voicing-mode"];
-    if (vmDesc) voicingMode = Math.round(vmDesc.default);
 
     paintAlgoBadge();
     paintAlgoGrid();
     paintOpTabs();
-    paintLayerToggle();
+    paintFbTarget();
     renderOpDetail();
     wireOverlayButtons();
-    wireLayerToggle();
+    wireAlgoBadgeClicks();
   }
 
   window.__vxn.panels.opRow = {

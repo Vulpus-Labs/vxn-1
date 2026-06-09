@@ -14,23 +14,20 @@ use vxn_core_app::{
 };
 
 use crate::events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
-use crate::model::{Layer, Vxn2Params};
+use crate::model::Vxn2Params;
 
-/// Read all 16 matrix rows of `layer` from the model. Helper for the
-/// snapshot push paths below.
-fn snapshot_layer<M: Vxn2Params>(model: &M, layer: Layer) -> [MatrixRow; 16] {
+fn snapshot_rows<M: Vxn2Params>(model: &M) -> [MatrixRow; 16] {
     let mut out = [MatrixRow::default(); 16];
     for slot in 0..16u8 {
-        out[slot as usize] = model.matrix_row(layer, slot);
+        out[slot as usize] = model.matrix_row(slot);
     }
     out
 }
 
 fn push_matrix_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
-    let upper = snapshot_layer(ctrl.model().as_ref(), Layer::Upper);
-    let lower = snapshot_layer(ctrl.model().as_ref(), Layer::Lower);
+    let rows = snapshot_rows(ctrl.model().as_ref());
     ctrl.push_view_event(ViewEvent::Custom(Box::new(
-        Vxn2ViewCustom::MatrixSnapshot { upper, lower },
+        Vxn2ViewCustom::MatrixSnapshot { rows },
     )));
 }
 
@@ -42,30 +39,20 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
             return;
         };
         match *boxed {
-            Vxn2UiCustom::SetEditLayer { layer } => {
-                ctrl.model().set_edit_layer(layer);
+            Vxn2UiCustom::SetOpTab { op } => {
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
-                    Vxn2ViewCustom::EditLayerChanged { layer },
-                )));
-                // Re-seed the page-side matrix table on every layer
-                // toggle so the overlay always renders the
-                // now-current layer's rows without polling.
-                push_matrix_snapshot(ctrl);
-            }
-            Vxn2UiCustom::SetOpTab { layer, op } => {
-                ctrl.push_view_event(ViewEvent::Custom(Box::new(
-                    Vxn2ViewCustom::OpTabChanged { layer, op },
+                    Vxn2ViewCustom::OpTabChanged { op },
                 )));
             }
-            Vxn2UiCustom::SetMatrixRow { layer, slot, row } => {
+            Vxn2UiCustom::SetMatrixRow { slot, row } => {
                 // Single source of truth: SharedParams::set_matrix_row_raw
                 // also writes the CLAP depth for slots 1-8, so depth has
                 // two on-the-wire paths (this Custom + the plain
                 // SetParam from the UI). CLAP wins during automation;
                 // see PARAMETERS.md §"CLAP exposure".
-                ctrl.model().set_matrix_row(layer, slot, row);
+                ctrl.model().set_matrix_row(slot, row);
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
-                    Vxn2ViewCustom::MatrixRowChanged { layer, slot, row },
+                    Vxn2ViewCustom::MatrixRowChanged { slot, row },
                 )));
             }
             Vxn2UiCustom::RequestMatrixSnapshot => {

@@ -11,6 +11,7 @@
 (function () {
   const PARAMS = __PARAMS_JSON__;
   const MATRIX_LISTS = __MATRIX_LISTS_JSON__;
+  const DEFAULT_PATCH = __DEFAULT_PATCH_JSON__;
   const byName = Object.create(null);
   for (let i = 0; i < PARAMS.length; i++) {
     byName[PARAMS[i].name] = PARAMS[i];
@@ -37,14 +38,13 @@
   window.__vxn = {
     params: PARAMS,
     paramsByName: byName,
+    defaultPatch: DEFAULT_PATCH,
     matrix: {
       sources: (MATRIX_LISTS && MATRIX_LISTS.sources) || [],
       dests: (MATRIX_LISTS && MATRIX_LISTS.dests) || [],
       curves: (MATRIX_LISTS && MATRIX_LISTS.curves) || [],
-      upper: emptyTable(),
-      lower: emptyTable(),
+      rows: emptyTable(),
     },
-    editLayer: "upper",
     dispatch: dispatch,
     panels: Object.create(null),
     primitives: [],

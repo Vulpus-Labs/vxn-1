@@ -1,10 +1,8 @@
 //! Mod matrix engine (ticket 0008) — the central modulation router.
 //!
 //! Per ADR §6 this is the **only** mechanism for dynamic parameter modulation
-//! in VXN2; no hard-wired routes. Each layer holds a fixed 16-slot table
-//! (`MatrixTable`) of `MatrixSlot { source, dest, depth, curve }`. The
-//! [`PatchMatrix`] wrapper carries one table per layer (Upper + Lower); in
-//! Whole mode the engine drives all voices from the Upper table.
+//! in VXN2; no hard-wired routes. The patch holds a fixed 16-slot
+//! [`MatrixTable`] of `MatrixSlot { source, dest, depth, curve }`.
 //!
 //! ## Source granularity
 //!
@@ -44,25 +42,25 @@
 //!
 //! ## CLAP exposure
 //!
-//! Slots 1–8 `depth` per layer are CLAP-automatable (16 params total across
-//! Upper + Lower); slots 9–16 `depth` and all slot `source` / `dest` / `curve`
-//! fields are patch state only. Topology (source/dest/curve) isn't a
-//! continuous control. See [`N_CLAP_DEPTH_SLOTS`] and the wire-up in ticket
-//! 0012 (Master & Params). Slot depth, even when CLAP-automatable, is treated
-//! as a per-block constant by the matrix engine — matrix-routing a slot's
-//! depth via the matrix itself isn't supported in v1 (sidesteps cycle
-//! detection per ticket Notes).
+//! Slots 1–8 `depth` are CLAP-automatable; slots 9–16 `depth` and all slot
+//! `source` / `dest` / `curve` fields are patch state only. Topology
+//! (source/dest/curve) isn't a continuous control. See
+//! [`N_CLAP_DEPTH_SLOTS`] and the wire-up in ticket 0012 (Master & Params).
+//! Slot depth, even when CLAP-automatable, is treated as a per-block
+//! constant by the matrix engine — matrix-routing a slot's depth via the
+//! matrix itself isn't supported in v1 (sidesteps cycle detection per
+//! ticket Notes).
 
 use vxn2_dsp::smoother::one_pole_coeff;
 use vxn2_dsp::stack::STACK_LANES;
 
 use crate::modulation::ModBlock;
 
-/// Slot count per layer table. ADR §6 sets this at 16 for v1.
+/// Slot count per patch. ADR §6 sets this at 16 for v1.
 pub const N_SLOTS: usize = 16;
 
-/// Number of CLAP-automatable depth slots per layer (slots 1..=N). Slots past
-/// this count are patch-state only.
+/// Number of CLAP-automatable depth slots (slots 1..=N). Slots past this
+/// count are patch-state only.
 pub const N_CLAP_DEPTH_SLOTS: usize = 8;
 
 // --- Source enum ----------------------------------------------------------
@@ -139,19 +137,38 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 /// Modulation destination. `None` is the "empty slot" sentinel.
 ///
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
-/// …). 6 ops × 5 dests each = 30 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX = 38 total.
+/// …). 6 ops × 4 dests each = 24 op dests. Plus 4 global, 2 stack-macro,
+/// 2 FX = 32 total. (Per-op feedback was dropped; feedback is layer-level.)
+///
+/// ## Audio wiring status
+///
+/// Live (consumed by [`crate::engine::Engine::process_block`]):
+/// - `Op{1..6}Level` — additive per-lane offset on EG level pre-sine.
+/// - `Op{1..6}Ratio` / `Op{1..6}Detune` — both treated as semitones, summed
+///   into the per-op per-lane pitch shift before `phase_inc` recompute.
+/// - `Op{1..6}Pan` — added to the equal-power pan curve per lane.
+/// - `GlobalPitch` — per-lane semitones added to the stack pitch sum.
+/// - `DelayMix` / `ReverbMix` — averaged at lane 0 across active stacks
+///   and pushed to the FX param surface each block.
+///
+/// Routable in the matrix UI but NOT yet consumed in audio:
+/// - `Lfo2Phase` — would need per-lane LFO2 phase reset/offset.
+/// - `Lfo1Rate` / `Lfo2Rate` — ordering issue (modulating a source's own
+///   rate inside the same block) deferred to a one-block-latency pass.
+/// - `StackDetune` / `StackSpread` — these set per-lane cooked offsets at
+///   note-on; per-block modulation would require re-cooking the stack
+///   inside the audio loop. Deferred.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum DestId {
     #[default]
     None = 0,
-    Op1Ratio = 1, Op1Level, Op1Detune, Op1Pan, Op1Feedback,
-    Op2Ratio, Op2Level, Op2Detune, Op2Pan, Op2Feedback,
-    Op3Ratio, Op3Level, Op3Detune, Op3Pan, Op3Feedback,
-    Op4Ratio, Op4Level, Op4Detune, Op4Pan, Op4Feedback,
-    Op5Ratio, Op5Level, Op5Detune, Op5Pan, Op5Feedback,
-    Op6Ratio, Op6Level, Op6Detune, Op6Pan, Op6Feedback,
+    Op1Ratio = 1, Op1Level, Op1Detune, Op1Pan,
+    Op2Ratio, Op2Level, Op2Detune, Op2Pan,
+    Op3Ratio, Op3Level, Op3Detune, Op3Pan,
+    Op4Ratio, Op4Level, Op4Detune, Op4Pan,
+    Op5Ratio, Op5Level, Op5Detune, Op5Pan,
+    Op6Ratio, Op6Level, Op6Detune, Op6Pan,
     GlobalPitch,
     Lfo1Rate,
     Lfo2Rate,
@@ -163,18 +180,18 @@ pub enum DestId {
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 38;
+pub const N_DESTS: usize = 32;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Ratio`..`ReverbMix`.
 pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "none",
-    "op1-ratio", "op1-level", "op1-detune", "op1-pan", "op1-feedback",
-    "op2-ratio", "op2-level", "op2-detune", "op2-pan", "op2-feedback",
-    "op3-ratio", "op3-level", "op3-detune", "op3-pan", "op3-feedback",
-    "op4-ratio", "op4-level", "op4-detune", "op4-pan", "op4-feedback",
-    "op5-ratio", "op5-level", "op5-detune", "op5-pan", "op5-feedback",
-    "op6-ratio", "op6-level", "op6-detune", "op6-pan", "op6-feedback",
+    "op1-ratio", "op1-level", "op1-detune", "op1-pan",
+    "op2-ratio", "op2-level", "op2-detune", "op2-pan",
+    "op3-ratio", "op3-level", "op3-detune", "op3-pan",
+    "op4-ratio", "op4-level", "op4-detune", "op4-pan",
+    "op5-ratio", "op5-level", "op5-detune", "op5-pan",
+    "op6-ratio", "op6-level", "op6-detune", "op6-pan",
     "global-pitch",
     "lfo1-rate",
     "lfo2-rate",
@@ -188,12 +205,12 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
 /// Destination display label. Same indexing as [`DEST_NAMES`].
 pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "—",
-    "Op 1 Ratio", "Op 1 Level", "Op 1 Detune", "Op 1 Pan", "Op 1 Feedback",
-    "Op 2 Ratio", "Op 2 Level", "Op 2 Detune", "Op 2 Pan", "Op 2 Feedback",
-    "Op 3 Ratio", "Op 3 Level", "Op 3 Detune", "Op 3 Pan", "Op 3 Feedback",
-    "Op 4 Ratio", "Op 4 Level", "Op 4 Detune", "Op 4 Pan", "Op 4 Feedback",
-    "Op 5 Ratio", "Op 5 Level", "Op 5 Detune", "Op 5 Pan", "Op 5 Feedback",
-    "Op 6 Ratio", "Op 6 Level", "Op 6 Detune", "Op 6 Pan", "Op 6 Feedback",
+    "Op 1 Ratio", "Op 1 Level", "Op 1 Detune", "Op 1 Pan",
+    "Op 2 Ratio", "Op 2 Level", "Op 2 Detune", "Op 2 Pan",
+    "Op 3 Ratio", "Op 3 Level", "Op 3 Detune", "Op 3 Pan",
+    "Op 4 Ratio", "Op 4 Level", "Op 4 Detune", "Op 4 Pan",
+    "Op 5 Ratio", "Op 5 Level", "Op 5 Detune", "Op 5 Pan",
+    "Op 6 Ratio", "Op 6 Level", "Op 6 Detune", "Op 6 Pan",
     "Global Pitch",
     "LFO 1 Rate",
     "LFO 2 Rate",
@@ -317,43 +334,6 @@ impl Default for MatrixTable {
     fn default() -> Self {
         Self {
             slots: [MatrixSlot::default(); N_SLOTS],
-        }
-    }
-}
-
-/// Layer enum stub. Per ADR §8 a patch has two layer tables (Upper, Lower);
-/// in Whole mode the engine drives all voices from Upper. Ticket 0009 lands
-/// the voicing-mode logic that gates which table feeds which stack — this
-/// enum exists so the matrix API can carry the discriminator today.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Layer {
-    #[default]
-    Upper,
-    Lower,
-}
-
-/// One matrix table per layer. Whole mode reads Upper; Layer/Split mode
-/// dispatches per-stack by which layer the stack belongs to.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PatchMatrix {
-    pub upper: MatrixTable,
-    pub lower: MatrixTable,
-}
-
-impl PatchMatrix {
-    #[inline]
-    pub fn table(&self, layer: Layer) -> &MatrixTable {
-        match layer {
-            Layer::Upper => &self.upper,
-            Layer::Lower => &self.lower,
-        }
-    }
-
-    #[inline]
-    pub fn table_mut(&mut self, layer: Layer) -> &mut MatrixTable {
-        match layer {
-            Layer::Upper => &mut self.upper,
-            Layer::Lower => &mut self.lower,
         }
     }
 }
@@ -894,12 +874,4 @@ mod tests {
         assert_eq!(CURVE_NAMES[CurveKind::Bipolar as usize], "bipolar");
     }
 
-    #[test]
-    fn patch_matrix_dispatches_by_layer() {
-        let mut pm = PatchMatrix::default();
-        pm.upper.slots[0] = full_slot(SourceId::Lfo1, DestId::GlobalPitch, 0.5, CurveKind::Lin);
-        pm.lower.slots[0] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Lin);
-        assert_eq!(pm.table(Layer::Upper).slots[0].source, SourceId::Lfo1);
-        assert_eq!(pm.table(Layer::Lower).slots[0].source, SourceId::ModWheel);
-    }
 }

@@ -22,11 +22,9 @@ const SR: f32 = 48_000.0;
 fn build_voices(algo: u8) -> [Voice; VOICES] {
     let mut params = VoiceParams::default();
     params.algo = algo;
-    // Pump up modulator levels so the FM index isn't 0 (default OpParams
-    // has level=99 on every op, which is carrier-friendly).
-    for op in &mut params.ops {
-        op.feedback = 2;
-    }
+    // Mid feedback (now layer-level) exercises the FB averaging path on the
+    // algorithm's structural FB op.
+    params.feedback = 2;
     let mut voices = [Voice::default(); VOICES];
     for (i, v) in voices.iter_mut().enumerate() {
         let key = 48 + (i as u8 * 2) % 48;

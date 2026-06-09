@@ -148,6 +148,12 @@ Toggle each effect on/off via header switch (VXN1 idiom: header colour change
 
 ### 8. Voicing modes — Whole / Layer / Split
 
+> **Superseded by [ADR 0002 — Drop dual-layer voicing](0002-drop-dual-layer.md).**
+> Whole / Layer / Split is gone. A patch is one parameter set. The operator
+> graph + algorithm + mod matrix combinatorics replace what Layer was for;
+> keyboard splits are host territory (DAW MIDI ranges). The §8 text below
+> is retained as the original record.
+
 Inherited from VXN1's two-layer model but extended:
 
 - **Whole**: one patch, whole keyboard.
@@ -202,9 +208,12 @@ arc layout. New widgets introduced for VXN2:
 ### 11. Parameter model
 
 Per-op parameters are repeated 6× with a per-op index suffix
-(`op1_ratio`, `op2_ratio`, …). Globals are named directly. Total parameter
-count ~155 (matches DX7 ballpark, slightly higher with per-op FB + extra
-envelopes). See `vxn-2/PARAMETERS.md` for the full enumeration.
+(`op1_ratio`, `op2_ratio`, …). Globals are named directly. Total CLAP
+parameter count is **180** (was 345 pre-[ADR 0002]; the drop comes from
+collapsing the Upper/Lower pair into a single set and removing
+`voicing_mode` + `split_point`). Sits slightly above DX7's ~155, the
+increment carried by per-op FB + extra envelopes + stacking + matrix
+depths. See `vxn-2/PARAMETERS.md` for the full enumeration.
 
 The CLAP `params` table follows VXN1's ADR 0007 pattern: stable IDs are *not*
 a binding constraint (per memory: `vxn1-id-stability-dropped`). The patch

@@ -25,13 +25,11 @@ const SR: f32 = 48_000.0;
 const BLOCK_DT: f32 = BLOCK as f32 / SR;
 
 fn patch(algo: u8) -> VoiceParams {
-    let mut ops = [OpParams::default(); N_OPS];
-    for op in &mut ops {
-        op.feedback = 2;
-    }
+    let ops = [OpParams::default(); N_OPS];
     VoiceParams {
         ops,
         algo,
+        feedback: 2,
         ..VoiceParams::default()
     }
 }

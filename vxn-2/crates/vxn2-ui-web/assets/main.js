@@ -2,11 +2,9 @@
 // primitives, installs the real applyViewEvents dispatcher, and posts
 // `ready` once binding is done.
 //
-// Resolution model:
-//   - data-vxn-param="<machine-id>" -> resolveParamId() -> CLAP id.
-//     Patch-level ids (lfo1-rate, delay-time, master-volume, ...) match
-//     directly. Per-layer ids (lfo2-rate, op1-level, mod-env-a, ...) are
-//     prefixed with the current edit layer (`upper-` / `lower-`).
+// Resolution model (post ADR 0002: single patch surface):
+//   - data-vxn-param="<machine-id>" -> resolveParamId() -> CLAP id. Ids are
+//     flat and unprefixed; no per-layer demux.
 //   - data-vxn-section="<name>" -> top-level renderer dispatch (for
 //     panels whose binding is more than just "wire each child fader").
 //   - data-vxn-custom="<key>" -> fires the matching IPC opcode. Most are
@@ -139,17 +137,13 @@
   }
 
   // ── Param-id resolution ──
-  function resolveParamId(unprefixedName) {
-    const direct = vxn.paramsByName[unprefixedName];
-    if (direct) return direct.id;
-    const layered = vxn.paramsByName[vxn.editLayer + "-" + unprefixedName];
-    return layered ? layered.id : -1;
+  function resolveParamId(name) {
+    const desc = vxn.paramsByName[name];
+    return desc ? desc.id : -1;
   }
 
-  function resolveDesc(unprefixedName) {
-    return vxn.paramsByName[unprefixedName]
-      || vxn.paramsByName[vxn.editLayer + "-" + unprefixedName]
-      || null;
+  function resolveDesc(name) {
+    return vxn.paramsByName[name] || null;
   }
 
   // ── Bound primitives, indexed by CLAP id ──
@@ -157,10 +151,27 @@
   // a future layout duplicates it; today it's always <= 1 but no point
   // hard-coding that).
   const boundById = Object.create(null);
+  // Last-known plain value per CLAP id. Populated by param_changed events
+  // so newly-registered primitives (e.g. after an op-tab switch rebuilds
+  // op-detail DOM) can hydrate to the current value instead of `default`.
+  // Pre-seeded from `vxn.defaultPatch` (the engine's `default_patch`
+  // table). In the running plugin the engine's NaN-diff snapshot at boot
+  // overwrites these with authoritative values; in the offline HTML dump
+  // the seed is the only source of per-op variation.
+  const livePlain = Object.create(null);
+  if (vxn.defaultPatch && vxn.defaultPatch.length) {
+    for (let i = 0; i < vxn.defaultPatch.length; i++) {
+      livePlain[i] = vxn.defaultPatch[i];
+    }
+  }
   function register(id, primitive) {
     if (id < 0 || !primitive) return;
     if (!boundById[id]) boundById[id] = [];
     boundById[id].push(primitive);
+    if (id in livePlain) {
+      try { primitive.set(livePlain[id]); }
+      catch (e) { console.error("vxn2 hydrate set() failed", e); }
+    }
   }
   function unregister(id, primitive) {
     if (id < 0 || !primitive) return;
@@ -242,6 +253,18 @@
     }
   }
 
+  function bindBoolToggles(root) {
+    const btns = root.querySelectorAll(".bgrp-toggle[data-vxn-param]");
+    for (let i = 0; i < btns.length; i++) {
+      const el = btns[i];
+      const name = el.getAttribute("data-vxn-param");
+      const ctx = makeCtx(name);
+      if (!ctx.desc) continue;
+      const prim = panels.buttonGroup.createBoolToggle(el, ctx);
+      register(ctx.id, prim);
+    }
+  }
+
   function bindToggleHeaders(root) {
     const headers = root.querySelectorAll(".panel-header.toggleable[data-vxn-param]");
     for (let i = 0; i < headers.length; i++) {
@@ -312,22 +335,22 @@
         const payload = CUSTOM_PAYLOAD[key];
         if (key === "open_algo_picker") {
           const overlay = document.querySelector('[data-vxn-section="algo-overlay"]');
-          if (overlay) overlay.removeAttribute("hidden");
+          if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }
           return;
         }
         if (key === "close_algo_picker") {
           const overlay = document.querySelector('[data-vxn-section="algo-overlay"]');
-          if (overlay) overlay.setAttribute("hidden", "");
+          if (overlay) { overlay.setAttribute("hidden", ""); overlay.classList.remove("open"); }
           return;
         }
         if (key === "open_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
-          if (overlay) overlay.removeAttribute("hidden");
+          if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }
           return;
         }
         if (key === "close_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
-          if (overlay) overlay.setAttribute("hidden", "");
+          if (overlay) { overlay.setAttribute("hidden", ""); overlay.classList.remove("open"); }
           return;
         }
         dispatch(opcode, payload);
@@ -339,19 +362,14 @@
   function applyEvent(ev) {
     if (!ev || !ev.kind) return;
     if (ev.kind === "param_changed") {
+      livePlain[ev.id] = ev.plain;
       const bound = boundById[ev.id];
-      // Also notify op-row for algo / voicing-mode tracking even if the
-      // patch-level toggle handler already updated its local state.
+      // Notify op-row for algo tracking even if the patch-level toggle
+      // handler already updated its local state.
       if (vxn._opRow) {
         const desc = vxn.params[ev.id];
-        if (desc) {
-          if (desc.name === "upper-algo" && vxn._opRow.currentLayer() === "upper") {
-            vxn._opRow.onAlgoChanged(ev.plain);
-          } else if (desc.name === "lower-algo" && vxn._opRow.currentLayer() === "lower") {
-            vxn._opRow.onAlgoChanged(ev.plain);
-          } else if (desc.name === "voicing-mode") {
-            vxn._opRow.onVoicingModeChanged(ev.plain);
-          }
+        if (desc && desc.name === "algo") {
+          vxn._opRow.onAlgoChanged(ev.plain);
         }
       }
       if (!bound) return;
@@ -375,39 +393,27 @@
       }
       return;
     }
-    if (ev.kind === "edit_layer_changed") {
-      vxn.editLayer = ev.layer;
-      if (vxn._opRow) vxn._opRow.onLayerChanged(ev.layer);
-      if (panels.modMatrix && panels.modMatrix.onEditLayerChanged) {
-        panels.modMatrix.onEditLayerChanged(ev.layer);
-      }
-      return;
-    }
     if (ev.kind === "op_tab_changed") {
-      if (vxn._opRow) vxn._opRow.onOpTabChanged(ev.layer, ev.op);
+      if (vxn._opRow) vxn._opRow.onOpTabChanged(ev.op);
       return;
     }
     if (ev.kind === "matrix_snapshot") {
-      if (Array.isArray(ev.upper)) vxn.matrix.upper = ev.upper.slice(0, 16);
-      if (Array.isArray(ev.lower)) vxn.matrix.lower = ev.lower.slice(0, 16);
+      if (Array.isArray(ev.rows)) vxn.matrix.rows = ev.rows.slice(0, 16);
       if (panels.modMatrix && panels.modMatrix.onSnapshot) panels.modMatrix.onSnapshot();
       return;
     }
     if (ev.kind === "matrix_row_changed") {
-      if ((ev.layer === "upper" || ev.layer === "lower") && ev.row) {
+      if (ev.row) {
         const slot = ev.slot | 0;
         if (slot >= 0 && slot < 16) {
-          vxn.matrix[ev.layer][slot] = ev.row;
+          vxn.matrix.rows[slot] = ev.row;
           if (panels.modMatrix && panels.modMatrix.onRowChanged) {
-            panels.modMatrix.onRowChanged(ev.layer, slot, ev.row);
+            panels.modMatrix.onRowChanged(slot, ev.row);
           }
         }
       }
       return;
     }
-    // Cascade edit-layer to mod-matrix in addition to the op-row routing
-    // above. Done as a fallthrough so the existing edit_layer_changed
-    // arm's `return` doesn't skip it — moved inline above.
   }
 
   // Clamp a parsed plain value to the descriptor's [min, max], with
@@ -467,11 +473,12 @@
     bindFaders(root);
     bindWaveKnobs(root);
     bindButtonGroups(root);
+    bindBoolToggles(root);
     bindToggleHeaders(root);
     bindPitchEg(root);
     bindCustoms(root);
 
-    // Op-row binding (algo picker, op tabs, op detail, edit-layer toggle).
+    // Op-row binding (algo picker, op tabs, op detail).
     if (panels.opRow) {
       panels.opRow.bind(root, {
         dispatch: dispatch,

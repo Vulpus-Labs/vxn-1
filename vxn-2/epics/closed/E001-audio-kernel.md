@@ -58,7 +58,7 @@ defaults come from `PARAMETERS.md`.
 - [x] [0006 — LFO1 global + LFO2 per-voice (delay + fade + key-sync)](../../tickets/closed/0006-lfos.md)
 - [x] [0007 — Pitch EG + Mod Env](../../tickets/closed/0007-extra-envelopes.md)
 - [x] [0008 — Mod matrix engine (sources, destinations, smoothing)](../../tickets/closed/0008-mod-matrix.md)
-- [x] [0009 — Voicing modes (Whole / Layer / Split)](../../tickets/closed/0009-voicing-modes.md)
+- [x] [0009 — Voicing modes (Whole / Layer / Split)](../../tickets/closed/0009-voicing-modes.md) (superseded by [ADR 0002](../../adrs/0002-drop-dual-layer.md))
 - [x] [0010 — Delay FX (BPM sync, ping-pong)](../../tickets/closed/0010-delay-fx.md)
 - [x] [0011 — FDN reverb](../../tickets/closed/0011-fdn-reverb.md)
 - [x] [0012 — Master out + parameter table assembly](../../tickets/closed/0012-master-and-params.md)

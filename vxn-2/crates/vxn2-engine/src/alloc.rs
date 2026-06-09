@@ -36,8 +36,7 @@ use vxn2_dsp::eg::EgStage;
 use vxn2_dsp::stack::{Stack, StackParams};
 use vxn2_dsp::voice::VoiceParams;
 
-use crate::matrix::Layer;
-use crate::voicing::{Patch, VoicingMode};
+use crate::shared::Patch;
 
 /// Fixed polyphony cap. ADR §3 sets this at 16 stacks for v1.
 pub const N_STACKS: usize = 16;
@@ -83,11 +82,6 @@ pub struct PolyAlloc {
     pub stacks: [Stack; N_STACKS],
     /// Monotonic note-on counter per slot; `IDLE_SEQ` when free.
     seq: [u64; N_STACKS],
-    /// Per-slot voicing-layer tag (ticket 0009). Captured at note-on; the
-    /// engine's matrix step reads this to route each stack through the right
-    /// per-layer [`crate::matrix::MatrixTable`]. Untouched until the slot is
-    /// re-allocated.
-    layers: [Layer; N_STACKS],
     next_seq: u64,
     sample_rate: f32,
     glides: [Option<GlideState>; N_STACKS],
@@ -104,7 +98,6 @@ impl PolyAlloc {
         Self {
             stacks: [Stack::default(); N_STACKS],
             seq: [IDLE_SEQ; N_STACKS],
-            layers: [Layer::Upper; N_STACKS],
             next_seq: 0,
             sample_rate,
             glides: [None; N_STACKS],
@@ -113,15 +106,6 @@ impl PolyAlloc {
             held_len: 0,
             solo_active: false,
         }
-    }
-
-    /// Voicing layer of the stack at `slot`. The matrix step uses this to
-    /// pick the per-layer [`crate::matrix::MatrixTable`] when fanning sources
-    /// into destinations. Reads from idle slots are still valid — they hold
-    /// the last-assigned layer until reuse.
-    #[inline]
-    pub fn stack_layer(&self, slot: usize) -> Layer {
-        self.layers[slot]
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -139,25 +123,18 @@ impl PolyAlloc {
         match params.assign_mode {
             AssignMode::Solo => {
                 self.note_on_solo(params, stack_params, voice_params, note, velocity);
-                self.layers[SOLO_SLOT] = Layer::Upper;
             }
             AssignMode::Poly => {
-                let slot = self.note_on_poly(params, stack_params, voice_params, note, velocity);
-                self.layers[slot] = Layer::Upper;
+                let _ = self.note_on_poly(params, stack_params, voice_params, note, velocity);
             }
         }
     }
 
-    /// Voicing-aware note-on (ticket 0009). Reads `patch.voicing.mode` and
-    /// dispatches one or two allocations:
-    ///
-    /// - **Whole** — single Upper allocation.
-    /// - **Layer** — Upper + Lower allocations, both gated identically.
-    /// - **Split** — single allocation, layer chosen by `note` vs
-    ///   `voicing.split_point`.
-    ///
-    /// Layer / Split routes through the Poly path regardless of
-    /// `params.assign_mode` (see module docs on Solo × Layer).
+    /// Patch-driven note-on. After [ADR 0002] dropped Whole / Layer / Split
+    /// voicing this is a single-path allocation that defers to the assign
+    /// mode in `params`. Kept as a distinct entry point so the engine's
+    /// note dispatch reads against the live `Patch` snapshot rather than
+    /// re-shaping the stack + voice pair at every call site.
     pub fn note_on_patch(
         &mut self,
         params: &AllocParams,
@@ -165,43 +142,11 @@ impl PolyAlloc {
         note: u8,
         velocity: u8,
     ) {
-        match patch.voicing.mode {
-            VoicingMode::Whole => {
-                self.note_on(params, &patch.upper.stack, &patch.upper.voice, note, velocity);
-            }
-            VoicingMode::Layer => {
-                let u = self.note_on_poly(
-                    params,
-                    &patch.upper.stack,
-                    &patch.upper.voice,
-                    note,
-                    velocity,
-                );
-                self.layers[u] = Layer::Upper;
-                let l = self.note_on_poly(
-                    params,
-                    &patch.lower.stack,
-                    &patch.lower.voice,
-                    note,
-                    velocity,
-                );
-                self.layers[l] = Layer::Lower;
-            }
-            VoicingMode::Split => {
-                let layer = patch.split_layer(note);
-                let lp = patch.layer(layer);
-                let slot = self.note_on_poly(params, &lp.stack, &lp.voice, note, velocity);
-                self.layers[slot] = layer;
-            }
-        }
+        self.note_on(params, &patch.stack, &patch.voice, note, velocity);
     }
 
-    /// Voicing-aware note-off. Releases every gated stack whose `note`
-    /// matches — covers both layers under Layer mode (same note, both
-    /// stacks) and the single allocation under Whole / Split.
+    /// Patch-driven note-off — gates every stack holding `note`.
     pub fn note_off_patch(&mut self, _patch: &Patch, note: u8) {
-        // Behaviour is layer-independent: gate any stack holding this note.
-        // Stack's captured layer tag remains valid through release tail.
         self.note_off_poly(note);
     }
 
@@ -802,211 +747,6 @@ mod tests {
         let active = alloc.stacks.iter().filter(|s| s.gate).count();
         assert_eq!(active, 1);
         assert_eq!(alloc.stacks[0].density, 8);
-    }
-
-    // --- ticket 0009: voicing modes ---------------------------------------
-
-    use crate::voicing::{LayerParams, Patch, VoicingMode, VoicingParams};
-
-    fn patch_whole() -> Patch {
-        Patch {
-            voicing: VoicingParams::default(),
-            upper: LayerParams {
-                stack: density1(),
-                voice: fast_patch(),
-            },
-            lower: LayerParams::default(),
-        }
-    }
-
-    fn patch_layer() -> Patch {
-        Patch {
-            voicing: VoicingParams {
-                mode: VoicingMode::Layer,
-                split_point: 60,
-            },
-            upper: LayerParams {
-                stack: density1(),
-                voice: fast_patch(),
-            },
-            lower: LayerParams {
-                stack: density1(),
-                voice: fast_patch(),
-            },
-        }
-    }
-
-    fn patch_split(split_point: u8) -> Patch {
-        Patch {
-            voicing: VoicingParams {
-                mode: VoicingMode::Split,
-                split_point,
-            },
-            upper: LayerParams {
-                stack: density1(),
-                voice: fast_patch(),
-            },
-            lower: LayerParams {
-                stack: density1(),
-                voice: fast_patch(),
-            },
-        }
-    }
-
-    #[test]
-    fn whole_mode_single_allocation_tagged_upper() {
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_whole();
-        alloc.note_on_patch(&params, &patch, 60, 100);
-        let active: Vec<usize> = alloc.stacks.iter().enumerate()
-            .filter(|(_, s)| s.gate).map(|(i, _)| i).collect();
-        assert_eq!(active.len(), 1);
-        assert_eq!(alloc.stack_layer(active[0]), Layer::Upper);
-    }
-
-    #[test]
-    fn layer_mode_two_allocations_per_note() {
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_layer();
-        alloc.note_on_patch(&params, &patch, 60, 100);
-        let active: Vec<usize> = alloc.stacks.iter().enumerate()
-            .filter(|(_, s)| s.gate).map(|(i, _)| i).collect();
-        assert_eq!(active.len(), 2, "Layer mode should gate two stacks");
-        // One should be Upper, one Lower.
-        let mut layers: Vec<Layer> = active.iter().map(|&i| alloc.stack_layer(i)).collect();
-        layers.sort_by_key(|l| match l { Layer::Upper => 0u8, Layer::Lower => 1 });
-        assert_eq!(layers, vec![Layer::Upper, Layer::Lower]);
-        // Both share the same note.
-        for &i in &active {
-            assert_eq!(alloc.stacks[i].note, 60);
-        }
-    }
-
-    #[test]
-    fn split_mode_routes_high_to_upper_low_to_lower() {
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_split(60);
-        alloc.note_on_patch(&params, &patch, 72, 100); // C5 → Upper
-        alloc.note_on_patch(&params, &patch, 48, 100); // C3 → Lower
-        let mut upper_notes = vec![];
-        let mut lower_notes = vec![];
-        for i in 0..N_STACKS {
-            if alloc.stacks[i].gate {
-                match alloc.stack_layer(i) {
-                    Layer::Upper => upper_notes.push(alloc.stacks[i].note),
-                    Layer::Lower => lower_notes.push(alloc.stacks[i].note),
-                }
-            }
-        }
-        assert_eq!(upper_notes, vec![72]);
-        assert_eq!(lower_notes, vec![48]);
-    }
-
-    #[test]
-    fn split_point_boundary_inclusive_for_upper() {
-        // Note == split_point goes to Upper (>= semantics).
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_split(60);
-        alloc.note_on_patch(&params, &patch, 60, 100); // exactly C4
-        alloc.note_on_patch(&params, &patch, 59, 100); // B3
-        let mut upper_notes = vec![];
-        let mut lower_notes = vec![];
-        for i in 0..N_STACKS {
-            if alloc.stacks[i].gate {
-                match alloc.stack_layer(i) {
-                    Layer::Upper => upper_notes.push(alloc.stacks[i].note),
-                    Layer::Lower => lower_notes.push(alloc.stacks[i].note),
-                }
-            }
-        }
-        assert_eq!(upper_notes, vec![60]);
-        assert_eq!(lower_notes, vec![59]);
-    }
-
-    #[test]
-    fn layer_mode_voice_cap_halves_polyphony() {
-        // 16 stacks total, 2 per note → 8 simultaneous Layer-mode notes
-        // fit without stealing.
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_layer();
-        for n in 60u8..68 {
-            alloc.note_on_patch(&params, &patch, n, 100);
-        }
-        let active = alloc.stacks.iter().filter(|s| s.gate).count();
-        assert_eq!(active, 16, "8 Layer notes × 2 layers = 16 stacks");
-    }
-
-    #[test]
-    fn layer_note_off_releases_both_layers() {
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_layer();
-        alloc.note_on_patch(&params, &patch, 60, 100);
-        alloc.note_off_patch(&patch, 60);
-        let still_gated = alloc.stacks.iter().filter(|s| s.gate).count();
-        assert_eq!(still_gated, 0);
-    }
-
-    #[test]
-    fn mode_change_during_playback_held_voice_plays_out() {
-        // Start in Whole, hold a note; switch to Layer; new note-ons honour
-        // Layer while the held Whole-mode stack stays gated until released.
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let mut patch = patch_whole();
-        alloc.note_on_patch(&params, &patch, 60, 100);
-        let held_count = alloc.stacks.iter().filter(|s| s.gate).count();
-        assert_eq!(held_count, 1);
-
-        patch.voicing.mode = VoicingMode::Layer;
-        patch.lower = patch.upper;
-        alloc.note_on_patch(&params, &patch, 64, 100);
-        let gated_notes: Vec<u8> = alloc.stacks.iter()
-            .filter(|s| s.gate).map(|s| s.note).collect();
-        // 60 still held (1) + 64 layered (2) = 3 gated stacks.
-        assert_eq!(gated_notes.len(), 3);
-        assert!(gated_notes.contains(&60));
-        assert_eq!(gated_notes.iter().filter(|&&n| n == 64).count(), 2);
-    }
-
-    #[test]
-    fn layer_mode_renders_both_layers_audibly() {
-        // Drive a Layer-mode patch through a sustained render and check that
-        // both Upper- and Lower-tagged stacks produced non-zero output.
-        let mut alloc = PolyAlloc::new(SR);
-        let params = AllocParams::default();
-        let patch = patch_layer();
-        alloc.note_on_patch(&params, &patch, 60, 100);
-        // Force every active stack into sustain at a known level for
-        // deterministic audibility.
-        for s in &mut alloc.stacks {
-            if s.gate {
-                s.force_sustain(0.4);
-            }
-        }
-        let mut upper_peak = 0.0_f32;
-        let mut lower_peak = 0.0_f32;
-        for _ in 0..16 {
-            for i in 0..N_STACKS {
-                if !alloc.stacks[i].gate {
-                    continue;
-                }
-                for _ in 0..BLK {
-                    let s = stack_tick_mono(&mut alloc.stacks[i]).abs();
-                    match alloc.stack_layer(i) {
-                        Layer::Upper => if s > upper_peak { upper_peak = s; },
-                        Layer::Lower => if s > lower_peak { lower_peak = s; },
-                    }
-                }
-            }
-        }
-        assert!(upper_peak > 0.05, "Upper layer silent ({upper_peak})");
-        assert!(lower_peak > 0.05, "Lower layer silent ({lower_peak})");
     }
 
     #[test]

@@ -378,19 +378,19 @@ fn state_round_trip_preserves_every_param() {
     let mut processor = activate_started(&mut instance, MAX_FRAMES);
     let mut steady = 0u64;
 
-    // Mix of float / int / enum / bool ids spanning Upper / Lower / master /
+    // Mix of float / int / enum / bool ids spanning per-op / master /
     // matrix / FX. Each value sits inside the descriptor's range.
     let edits: &[(&str, f64)] = &[
         ("master-volume", -3.0),
         ("master-tune", 5.0),
-        ("upper-op1-ratio", 3.25),
-        ("upper-op6-level", 88.0),
-        ("lower-op4-pan", -0.7),
-        ("upper-mtx1-depth", 0.4),
-        ("lower-mtx8-depth", -0.7),
+        ("op1-num", 3.0),
+        ("op6-level", 88.0),
+        ("op4-pan", -0.7),
+        ("mtx1-depth", 0.4),
+        ("mtx8-depth", -0.7),
         ("reverb-decay", 4.5),
         ("delay-time", 250.0),
-        ("upper-assign-mode", 1.0),
+        ("assign-mode", 1.0),
     ];
     let mut buf = EventBuffer::with_capacity(edits.len());
     for &(name, v) in edits {

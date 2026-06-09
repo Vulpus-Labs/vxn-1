@@ -14,30 +14,19 @@
 //!
 //! ## Snapshot
 //!
-//! [`EngineParams`] is the audio-side mirror: one [`Patch`] (voicing + Upper
-//! + Lower), patch-mod params (LFO1), delay + reverb + master + a single
-//! [`AllocParams`] derived from Upper's assignment block (see note below),
-//! and the per-layer 8-slot CLAP-automatable matrix depths.
+//! [`EngineParams`] is the audio-side mirror: one [`Patch`], patch-mod params
+//! (LFO1), delay + reverb + master + a single [`AllocParams`] derived from the
+//! assignment block, and the 8-slot CLAP-automatable matrix depths.
 //!
 //! [`EngineParams::snapshot_from`] walks the flat store once per control
 //! block and routes each id into the matching field — straight indexed
 //! reads, no allocation.
-//!
-//! ### Per-layer assignment in v1
-//!
-//! The param table exposes `upper-assign-mode` / `lower-assign-mode` (and
-//! the companion legato + glide-time) per layer for forward compatibility —
-//! the UI expects Split-mode bass-mono / lead-poly setups to round-trip.
-//! The current [`crate::alloc::PolyAlloc`] takes a single [`AllocParams`]
-//! per note-on; v1 reads Upper's assignment block into the engine's live
-//! `AllocParams`. Lower's entries remain in the store (visible to host
-//! automation) but inert until the allocator is refactored.
 
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use vxn2_dsp::delay::StereoDelayParams;
 use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
-use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, Lfo2Trig, LfoShape};
+use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, LfoShape};
 use vxn2_dsp::op::{OpParams, RatioMode};
 use vxn2_dsp::reverb::FdnReverbParams;
 use vxn2_dsp::stack::{StackDistrib, StackParams};
@@ -48,11 +37,21 @@ use crate::master::MasterParams;
 use crate::matrix::N_CLAP_DEPTH_SLOTS;
 use crate::modulation::PatchModParams;
 use crate::params::{
-    LOWER_BASE, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_LFO1, OFF_LFO2, OFF_MASTER,
-    OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, OFF_VOICING, PARAMS, PATCH_BASE,
-    TOTAL_PARAMS, core_desc_for_clap_id,
+    N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1, OFF_LFO2, OFF_MASTER,
+    OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, PARAMS, PATCH_BASE, TOTAL_PARAMS,
+    core_desc_for_clap_id,
 };
-use crate::voicing::{LayerParams, Patch, VoicingMode, VoicingParams};
+
+// ── Patch ───────────────────────────────────────────────────────────────────
+
+/// A complete patch parameter set. Per [ADR 0002] dual-layer voicing is gone
+/// — a patch is one stack + voice pair. The matrix slot table lives next to
+/// the engine (one [`crate::matrix::MatrixTable`] per patch).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Patch {
+    pub stack: StackParams,
+    pub voice: VoiceParams,
+}
 
 // ── ParamModel trait surface ────────────────────────────────────────────────
 
@@ -116,23 +115,22 @@ pub trait ParamModel: ParamView {
 
 // ── SharedParams ────────────────────────────────────────────────────────────
 
-/// Number of mod-matrix slots per layer (CLAP-automatable + patch state).
+/// Number of mod-matrix slots (CLAP-automatable + patch state).
 pub const N_MATRIX_SLOTS: usize = 16;
-/// CLAP-automatable matrix slots per layer. The remaining
+/// CLAP-automatable matrix slots. The remaining
 /// `N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS` are patch state — their depth
 /// rides [`SharedParams::matrix_extra_depth`].
 pub const N_MATRIX_CLAP_SLOTS: usize = 8;
 /// Gesture bitset word count (one `AtomicU64` per 64 params, rounded up).
 const GESTURE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
 
-/// Lock-free param store. Sized to [`TOTAL_PARAMS`] (343 in v1). Cheap to
+/// Lock-free param store. Sized to [`TOTAL_PARAMS`] (180 in v1). Cheap to
 /// share via `Arc` — every field is an atomic.
 ///
 /// Beyond the CLAP-automatable `values` array the store also holds the
 /// non-CLAP shared state the controller (ticket 0022) needs to read /
-/// write: per-param gesture flags, per-layer matrix-row topology
-/// (source / dest / curve / active), per-layer slot 9-16 depths, and the
-/// editor's view-state `edit_layer` cursor.
+/// write: per-param gesture flags, matrix-row topology (source / dest /
+/// curve / active), slot 9-16 depths.
 pub struct SharedParams {
     values: [AtomicU32; TOTAL_PARAMS],
     /// Bitset (one bit per CLAP id): set while the editor is mid-gesture
@@ -141,14 +139,12 @@ pub struct SharedParams {
     /// the source of truth during a drag — see
     /// `vxn_core_app::Controller::handle_host`).
     gestures: [AtomicU64; GESTURE_WORDS],
-    /// Per-layer per-slot packed `(source, dest, curve, active)` as
+    /// Per-slot packed `(source, dest, curve, active)` as
     /// `source << 24 | dest << 16 | curve << 8 | active`.
-    matrix_meta: [[AtomicU32; N_MATRIX_SLOTS]; 2],
-    /// Per-layer slot 9-16 depth (`f32` bits). Slots 1-8 depth lives in
-    /// the CLAP `values` table (see [`OFF_MTX`]).
-    matrix_extra_depth: [[AtomicU32; N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS]; 2],
-    /// Editor view-state cursor: 0 = Upper, 1 = Lower. Not a CLAP param.
-    edit_layer: AtomicU8,
+    matrix_meta: [AtomicU32; N_MATRIX_SLOTS],
+    /// Slot 9-16 depth (`f32` bits). Slots 1-8 depth lives in the CLAP
+    /// `values` table (see [`OFF_MTX`]).
+    matrix_extra_depth: [AtomicU32; N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS],
 }
 
 impl Default for SharedParams {
@@ -165,13 +161,8 @@ impl SharedParams {
         Self {
             values: std::array::from_fn(|i| AtomicU32::new(defaults[i].to_bits())),
             gestures: std::array::from_fn(|_| AtomicU64::new(0)),
-            matrix_meta: std::array::from_fn(|_| {
-                std::array::from_fn(|_| AtomicU32::new(0))
-            }),
-            matrix_extra_depth: std::array::from_fn(|_| {
-                std::array::from_fn(|_| AtomicU32::new(0))
-            }),
-            edit_layer: AtomicU8::new(0),
+            matrix_meta: std::array::from_fn(|_| AtomicU32::new(0)),
+            matrix_extra_depth: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
 
@@ -244,25 +235,18 @@ impl SharedParams {
     // ── Matrix-row storage ──────────────────────────────────────────────────
 
     /// Read the packed `(source, dest, curve, active, depth)` for a
-    /// matrix slot on the given layer. Slot index is `0..N_MATRIX_SLOTS`;
-    /// layer is `0` (Upper) or `1` (Lower). Out-of-range returns a
-    /// zeroed-default row.
-    pub fn matrix_row_raw(&self, layer: usize, slot: usize) -> MatrixRowRaw {
-        if layer >= 2 || slot >= N_MATRIX_SLOTS {
+    /// matrix slot. Slot index is `0..N_MATRIX_SLOTS`; out-of-range returns
+    /// a zeroed-default row.
+    pub fn matrix_row_raw(&self, slot: usize) -> MatrixRowRaw {
+        if slot >= N_MATRIX_SLOTS {
             return MatrixRowRaw::default();
         }
-        let packed = self.matrix_meta[layer][slot].load(Ordering::Relaxed);
+        let packed = self.matrix_meta[slot].load(Ordering::Relaxed);
         let depth = if slot < N_MATRIX_CLAP_SLOTS {
-            let clap_id = if layer == 0 {
-                OFF_MTX + slot
-            } else {
-                LOWER_BASE + OFF_MTX + slot
-            };
-            self.get(clap_id)
+            self.get(OFF_MTX + slot)
         } else {
             f32::from_bits(
-                self.matrix_extra_depth[layer][slot - N_MATRIX_CLAP_SLOTS]
-                    .load(Ordering::Relaxed),
+                self.matrix_extra_depth[slot - N_MATRIX_CLAP_SLOTS].load(Ordering::Relaxed),
             )
         };
         MatrixRowRaw {
@@ -277,38 +261,21 @@ impl SharedParams {
     /// Write a matrix row. For slot indices `< N_MATRIX_CLAP_SLOTS`,
     /// `depth` also writes the matching CLAP param so host automation
     /// stays in sync.
-    pub fn set_matrix_row_raw(&self, layer: usize, slot: usize, row: MatrixRowRaw) {
-        if layer >= 2 || slot >= N_MATRIX_SLOTS {
+    pub fn set_matrix_row_raw(&self, slot: usize, row: MatrixRowRaw) {
+        if slot >= N_MATRIX_SLOTS {
             return;
         }
         let packed = ((row.source as u32) << 24)
             | ((row.dest as u32) << 16)
             | ((row.curve as u32) << 8)
             | (row.active as u32);
-        self.matrix_meta[layer][slot].store(packed, Ordering::Relaxed);
+        self.matrix_meta[slot].store(packed, Ordering::Relaxed);
         if slot < N_MATRIX_CLAP_SLOTS {
-            let clap_id = if layer == 0 {
-                OFF_MTX + slot
-            } else {
-                LOWER_BASE + OFF_MTX + slot
-            };
-            self.set(clap_id, row.depth);
+            self.set(OFF_MTX + slot, row.depth);
         } else {
-            self.matrix_extra_depth[layer][slot - N_MATRIX_CLAP_SLOTS]
+            self.matrix_extra_depth[slot - N_MATRIX_CLAP_SLOTS]
                 .store(row.depth.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
         }
-    }
-
-    // ── Edit-layer cursor ───────────────────────────────────────────────────
-
-    #[inline]
-    pub fn edit_layer_raw(&self) -> u8 {
-        self.edit_layer.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn set_edit_layer_raw(&self, v: u8) {
-        self.edit_layer.store(v.min(1), Ordering::Relaxed);
     }
 }
 
@@ -463,8 +430,8 @@ impl vxn_core_app::ParamModel for SharedParams {
 }
 
 impl vxn2_app::Vxn2Params for SharedParams {
-    fn matrix_row(&self, layer: vxn2_app::Layer, slot: u8) -> vxn2_app::MatrixRow {
-        let raw = self.matrix_row_raw(layer.raw() as usize, slot as usize);
+    fn matrix_row(&self, slot: u8) -> vxn2_app::MatrixRow {
+        let raw = self.matrix_row_raw(slot as usize);
         vxn2_app::MatrixRow {
             source: raw.source,
             dest: raw.dest,
@@ -474,9 +441,8 @@ impl vxn2_app::Vxn2Params for SharedParams {
         }
     }
 
-    fn set_matrix_row(&self, layer: vxn2_app::Layer, slot: u8, row: vxn2_app::MatrixRow) {
+    fn set_matrix_row(&self, slot: u8, row: vxn2_app::MatrixRow) {
         self.set_matrix_row_raw(
-            layer.raw() as usize,
             slot as usize,
             MatrixRowRaw {
                 source: row.source,
@@ -486,14 +452,6 @@ impl vxn2_app::Vxn2Params for SharedParams {
                 depth: row.depth,
             },
         );
-    }
-
-    fn edit_layer(&self) -> vxn2_app::Layer {
-        vxn2_app::Layer::from_u8(self.edit_layer_raw())
-    }
-
-    fn set_edit_layer(&self, layer: vxn2_app::Layer) {
-        self.set_edit_layer_raw(layer.raw());
     }
 }
 
@@ -510,9 +468,8 @@ pub struct EngineParams {
     pub delay: StereoDelayParams,
     pub reverb: FdnReverbParams,
     pub master: MasterParams,
-    /// Per-layer CLAP-automatable matrix slot depths
-    /// (`[upper][slot]`, `[lower][slot]`).
-    pub mtx_depths: [[f32; N_CLAP_DEPTH_SLOTS]; 2],
+    /// CLAP-automatable matrix slot depths.
+    pub mtx_depths: [f32; N_CLAP_DEPTH_SLOTS],
     /// Patch-level LFO1 depth macro multiplier (matrix multiplies LFO1
     /// output by this at source-eval time).
     pub lfo1_depth: f32,
@@ -543,7 +500,7 @@ impl EngineParams {
             delay: StereoDelayParams::default(),
             reverb: FdnReverbParams::default(),
             master: MasterParams::default(),
-            mtx_depths: [[0.0; N_CLAP_DEPTH_SLOTS]; 2],
+            mtx_depths: [0.0; N_CLAP_DEPTH_SLOTS],
             lfo1_depth: 0.30,
         };
         e.snapshot_from(p);
@@ -554,14 +511,15 @@ impl EngineParams {
     /// No allocation; no per-id branching beyond what the section readers
     /// need (enum decode, clamp). Call once per control block.
     pub fn snapshot_from<P: ParamView>(&mut self, shared: &P) {
-        // Per-layer blocks.
-        self.patch.upper = read_layer(shared, 0);
-        self.patch.lower = read_layer(shared, LOWER_BASE);
+        // LFO2 sync_index is patch state (not CLAP), so preserve it across
+        // the snapshot like LFO1 / delay do below.
+        let prev_lfo2_idx = self.patch.voice.lfo2.sync_index;
+        self.patch = read_patch(shared);
+        self.patch.voice.lfo2.sync_index = prev_lfo2_idx;
 
-        // Per-layer matrix CLAP-automatable depths.
+        // Matrix CLAP-automatable depths.
         for s in 0..N_CLAP_DEPTH_SLOTS {
-            self.mtx_depths[0][s] = shared.get(OFF_MTX + s);
-            self.mtx_depths[1][s] = shared.get(LOWER_BASE + OFF_MTX + s);
+            self.mtx_depths[s] = shared.get(OFF_MTX + s);
         }
 
         // Patch-level block.
@@ -574,11 +532,6 @@ impl EngineParams {
             sync_index: self.mod_params.lfo1.sync_index, // patch state (not CLAP)
         };
         self.lfo1_depth = shared.get(pb + OFF_LFO1 + 2);
-
-        self.patch.voicing = VoicingParams {
-            mode: voicing_mode_from(shared.get(pb + OFF_VOICING) as i32),
-            split_point: shared.get(pb + OFF_VOICING + 1).clamp(0.0, 127.0) as u8,
-        };
 
         self.delay = StereoDelayParams {
             on: shared.get(pb + OFF_DELAY) >= 0.5,
@@ -603,34 +556,34 @@ impl EngineParams {
             volume_db: shared.get(pb + OFF_MASTER + 1),
         };
 
-        // Master tune cascades into both layers (DSP path bakes
-        // `master_tune_cents` into each op's phase_inc at note-on).
-        self.patch.upper.voice.master_tune_cents = self.master.tune_cents;
-        self.patch.lower.voice.master_tune_cents = self.master.tune_cents;
+        // Master tune bakes into the patch's per-op `base_phase_inc` at
+        // note-on via `VoiceParams::master_tune_cents`.
+        self.patch.voice.master_tune_cents = self.master.tune_cents;
 
-        // Allocator reads Upper's assignment for v1; see module doc.
-        self.alloc = read_assign(shared, 0);
+        // Allocator reads the patch-level assignment block.
+        self.alloc = read_assign(shared);
     }
 }
 
 // ── Section readers ────────────────────────────────────────────────────────
 
-fn read_layer<P: ParamView>(s: &P, base: usize) -> LayerParams {
+fn read_patch<P: ParamView>(s: &P) -> Patch {
     let mut ops = [OpParams::default(); 6];
     for i in 0..6 {
-        ops[i] = read_op(s, base + i * N_PER_OP);
+        ops[i] = read_op(s, i * N_PER_OP);
     }
     let voice = VoiceParams {
         ops,
-        algo: s.get(base + OFF_ALGO).clamp(1.0, 32.0) as u8,
+        algo: s.get(OFF_ALGO).clamp(1.0, 32.0) as u8,
+        feedback: s.get(OFF_FEEDBACK).round().clamp(0.0, 7.0) as u8,
         master_tune_cents: 0.0, // overwritten with patch-level value post-snap
-        lfo2: read_lfo2(s, base + OFF_LFO2),
-        pitch_eg: read_peg(s, base + OFF_PEG),
-        peg_depth: s.get(base + OFF_PEG + 8),
-        mod_env: read_mod_env(s, base + OFF_MOD_ENV),
+        lfo2: read_lfo2(s, OFF_LFO2),
+        pitch_eg: read_peg(s, OFF_PEG),
+        peg_depth: s.get(OFF_PEG + 8),
+        mod_env: read_mod_env(s, OFF_MOD_ENV),
     };
-    let stack = read_stack(s, base + OFF_STACK);
-    LayerParams { stack, voice }
+    let stack = read_stack(s, OFF_STACK);
+    Patch { stack, voice }
 }
 
 fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
@@ -638,35 +591,35 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
     let i = |off| s.get(base + off).round() as i32;
     OpParams {
         ratio_mode: RatioMode::Ratio, // not CLAP — preset state
-        ratio: f(0),
-        fixed_hz: f(1),
-        fine: f(2),
-        detune: i(3).clamp(-7, 7) as i8,
-        level: i(4).clamp(0, 99) as u8,
-        vel_sens: i(5).clamp(0, 7) as u8,
-        amp_sens: i(6).clamp(0, 3) as u8,
+        num: i(0).clamp(1, 32) as u8,
+        denom: i(1).clamp(1, 8) as u8,
+        fixed_hz: f(2),
+        fine: i(3).clamp(-100, 100) as i8,
+        detune: i(4).clamp(-100, 100) as i8,
+        level: i(5).clamp(0, 99) as u8,
+        vel_sens: i(6).clamp(0, 7) as u8,
+        amp_sens: i(7).clamp(0, 3) as u8,
         eg: vxn2_dsp::eg::EgParams {
             r: [
-                i(7).clamp(0, 99) as u8,
                 i(8).clamp(0, 99) as u8,
                 i(9).clamp(0, 99) as u8,
                 i(10).clamp(0, 99) as u8,
+                i(11).clamp(0, 99) as u8,
             ],
             l: [
-                i(11).clamp(0, 99) as u8,
                 i(12).clamp(0, 99) as u8,
                 i(13).clamp(0, 99) as u8,
                 i(14).clamp(0, 99) as u8,
+                i(15).clamp(0, 99) as u8,
             ],
         },
-        ks_break_pt: i(15).clamp(0, 127) as u8,
-        ks_l_depth: i(16).clamp(0, 99) as u8,
-        ks_r_depth: i(17).clamp(0, 99) as u8,
+        ks_break_pt: i(16).clamp(0, 127) as u8,
+        ks_l_depth: i(17).clamp(0, 99) as u8,
+        ks_r_depth: i(18).clamp(0, 99) as u8,
         ks_l_curve: vxn2_dsp::ks::KsCurve::NegLin, // not CLAP — preset state
         ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp, // not CLAP — preset state
-        ks_rate: i(18).clamp(0, 7) as u8,
-        pan: f(19),
-        feedback: i(20).clamp(0, 7) as u8,
+        ks_rate: i(19).clamp(0, 7) as u8,
+        pan: f(20),
     }
 }
 
@@ -676,10 +629,10 @@ fn read_lfo2<P: ParamView>(s: &P, base: usize) -> Lfo2Params {
         rate_hz: s.get(base + 1),
         delay_ms: s.get(base + 2),
         fade_ms: s.get(base + 3),
-        trig: match s.get(base + 4).round() as i32 {
-            0 => Lfo2Trig::Free,
-            _ => Lfo2Trig::KeySync,
-        },
+        sync: s.get(base + 4) >= 0.5,
+        // Overwritten by the caller from the prior snapshot — see
+        // [`EngineParams::snapshot_from`].
+        sync_index: 6,
     }
 }
 
@@ -728,8 +681,8 @@ fn read_stack<P: ParamView>(s: &P, base: usize) -> StackParams {
     }
 }
 
-fn read_assign<P: ParamView>(s: &P, layer_base: usize) -> AllocParams {
-    let off = layer_base + OFF_ASSIGN;
+fn read_assign<P: ParamView>(s: &P) -> AllocParams {
+    let off = OFF_ASSIGN;
     AllocParams {
         assign_mode: match s.get(off).round() as i32 {
             0 => AssignMode::Poly,
@@ -754,15 +707,6 @@ fn lfo_shape_from(i: i32) -> LfoShape {
     }
 }
 
-#[inline]
-fn voicing_mode_from(i: i32) -> VoicingMode {
-    match i {
-        0 => VoicingMode::Whole,
-        1 => VoicingMode::Layer,
-        _ => VoicingMode::Split,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,15 +715,12 @@ mod tests {
     #[test]
     fn shared_params_seed_from_default_patch() {
         // Every slot starts at the illustrative-patch value, not the bare
-        // descriptor default. Spot-checks both — divergences (e.g. voicing
-        // mode = Whole, lfo1-rate = 0.6 Hz) and pass-throughs (master
-        // volume).
+        // descriptor default.
         let s = SharedParams::new();
         let expected = crate::default_patch::default_param_values();
         for i in 0..TOTAL_PARAMS {
             assert_eq!(s.get(i), expected[i], "slot {} ({})", i, PARAMS[i].id);
         }
-        assert_eq!(s.get(crate::params::id_of("voicing-mode").unwrap()), 0.0);
         assert!((s.get(crate::params::id_of("lfo1-rate").unwrap()) - 0.6).abs() < 1e-6);
         assert!(
             (s.get(crate::params::id_of("master-volume").unwrap()) - (-6.0)).abs() < 1e-6
@@ -813,40 +754,39 @@ mod tests {
         let s = SharedParams::new();
         let e = EngineParams::from_shared(&s);
         assert!((e.master.volume_db - (-6.0)).abs() < 1e-6);
-        assert_eq!(e.patch.voicing.mode, VoicingMode::Whole);
         assert!((e.reverb.size - 0.55).abs() < 1e-6);
         assert!((e.delay.time_ms - 375.0).abs() < 1e-6);
-        assert_eq!(e.patch.upper.voice.master_tune_cents, 0.0);
-        assert_eq!(e.patch.lower.voice.master_tune_cents, 0.0);
+        assert_eq!(e.patch.voice.master_tune_cents, 0.0);
     }
 
     #[test]
-    fn snapshot_master_tune_cascades_to_both_layers() {
+    fn snapshot_master_tune_cascades_into_voice() {
         let s = SharedParams::new();
         s.set(id_of("master-tune").unwrap(), 25.0);
         let e = EngineParams::from_shared(&s);
-        assert_eq!(e.patch.upper.voice.master_tune_cents, 25.0);
-        assert_eq!(e.patch.lower.voice.master_tune_cents, 25.0);
+        assert_eq!(e.patch.voice.master_tune_cents, 25.0);
     }
 
     #[test]
     fn snapshot_resolves_per_op_block() {
         let s = SharedParams::new();
-        s.set(id_of("upper-op3-ratio").unwrap(), 7.5);
-        s.set(id_of("lower-op6-level").unwrap(), 42.0);
+        s.set(id_of("op3-num").unwrap(), 7.0);
+        s.set(id_of("op3-denom").unwrap(), 2.0);
+        s.set(id_of("op6-level").unwrap(), 42.0);
         let e = EngineParams::from_shared(&s);
-        assert!((e.patch.upper.voice.ops[2].ratio - 7.5).abs() < 1e-5);
-        assert_eq!(e.patch.lower.voice.ops[5].level, 42);
+        assert_eq!(e.patch.voice.ops[2].num, 7);
+        assert_eq!(e.patch.voice.ops[2].denom, 2);
+        assert_eq!(e.patch.voice.ops[5].level, 42);
     }
 
     #[test]
     fn snapshot_resolves_mtx_depths() {
         let s = SharedParams::new();
-        s.set(id_of("upper-mtx1-depth").unwrap(), 0.4);
-        s.set(id_of("lower-mtx8-depth").unwrap(), -0.7);
+        s.set(id_of("mtx1-depth").unwrap(), 0.4);
+        s.set(id_of("mtx8-depth").unwrap(), -0.7);
         let e = EngineParams::from_shared(&s);
-        assert!((e.mtx_depths[0][0] - 0.4).abs() < 1e-6);
-        assert!((e.mtx_depths[1][7] - (-0.7)).abs() < 1e-6);
+        assert!((e.mtx_depths[0] - 0.4).abs() < 1e-6);
+        assert!((e.mtx_depths[7] - (-0.7)).abs() < 1e-6);
     }
 
     #[test]
@@ -854,9 +794,9 @@ mod tests {
         let src = SharedParams::new();
         // Touch a spread of slots so we exercise per-id positions.
         for (name, v) in [
-            ("upper-op1-ratio", 3.25_f32),
-            ("upper-op6-level", 88.0),
-            ("lower-op4-pan", -0.7),
+            ("op1-num", 3.0_f32),
+            ("op6-level", 88.0),
+            ("op4-pan", -0.7),
             ("master-volume", -3.0),
             ("reverb-decay", 4.5),
             ("delay-time", 250.0),
@@ -866,7 +806,7 @@ mod tests {
         }
         // Stuff a NaN bit pattern into a slot we don't care about — load_bytes
         // must preserve it bit-for-bit so the round-trip is unambiguous.
-        let nan_id = id_of("lower-op2-fine").unwrap();
+        let nan_id = id_of("op2-fine").unwrap();
         let pattern = 0x7fc0_dead_u32;
         src.values[nan_id].store(pattern, Ordering::Relaxed);
 
@@ -966,12 +906,11 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_uses_upper_assignment() {
+    fn snapshot_uses_assignment_block() {
         let s = SharedParams::new();
-        s.set(id_of("upper-assign-mode").unwrap(), 1.0);
-        s.set(id_of("upper-legato").unwrap(), 1.0);
-        s.set(id_of("upper-glide-time").unwrap(), 200.0);
-        s.set(id_of("lower-assign-mode").unwrap(), 0.0);
+        s.set(id_of("assign-mode").unwrap(), 1.0);
+        s.set(id_of("legato").unwrap(), 1.0);
+        s.set(id_of("glide-time").unwrap(), 200.0);
         let e = EngineParams::from_shared(&s);
         assert_eq!(e.alloc.assign_mode, AssignMode::Solo);
         assert!(e.alloc.legato);

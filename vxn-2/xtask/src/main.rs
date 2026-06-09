@@ -62,8 +62,12 @@ Subcommands:
 }
 
 fn workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR is .../vxn-1/vxn-2/xtask/. The flat workspace
+    // root sits two levels up (E001 promoted the repo root to a single
+    // workspace). The target/ dir + asset paths key off this.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(Path::parent)
         .unwrap()
         .to_path_buf()
 }
@@ -149,14 +153,11 @@ fn install() -> Result<(), String> {
     let dest = install_dest()?;
     let src = bundle_path();
 
-    let needs_build = match (mtime(&src), mtime(&dylib_path())) {
-        (None, _) => true,
-        (Some(_), None) => true,
-        (Some(b), Some(d)) => b < d,
-    };
-    if needs_build {
-        bundle()?;
-    }
+    // Always re-bundle. Cargo's own freshness check makes the build a
+    // no-op when nothing has changed; the bundle copy after it is cheap.
+    // The previous mtime gate compared bundle vs dylib, but those are
+    // created together — so source edits never propagated to the install.
+    bundle()?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(io("create install parent"))?;
@@ -176,10 +177,6 @@ fn uninstall() -> Result<(), String> {
         println!("nothing to uninstall at {}", dest.display());
     }
     Ok(())
-}
-
-fn mtime(path: &Path) -> Option<std::time::SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {

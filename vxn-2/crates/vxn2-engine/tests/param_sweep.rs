@@ -11,8 +11,8 @@
 //!
 //! Per parameter the sweep visits five points: `min`, `25%`, `50%`, `75%`,
 //! `max` (linear in normalised space — taper-aware via the descriptor).
-//! That's coarser than every 1% but exhaustive across 343 params with 1 s
-//! of render each is already over five minutes of audio — the coarser grid
+//! That's coarser than every 1% but exhaustive across 180 params with 1 s
+//! of render each is already several minutes of audio — the coarser grid
 //! keeps CI time manageable while still exercising the dynamic range.
 
 use vxn2_engine::engine::Engine;
@@ -49,8 +49,7 @@ fn sweep(blocks_per_point: usize, points: &[f32]) {
     let mut e = Engine::new(SR, BLK);
     e.snapshot_params(&s);
 
-    // Hold a chord so per-op / FX paths get exercised. Four notes covers
-    // Layer-mode polyphony × two layers without hitting the 16-stack cap.
+    // Hold a chord so per-op / FX paths get exercised.
     let notes: [u8; 4] = [48, 55, 60, 64];
     for &n in &notes {
         e.note_on(n, 100);
@@ -155,13 +154,11 @@ fn algo_sweep_every_algo_renders_finite() {
     // single-stack tests in `vxn2-dsp` would miss when summed across 16
     // stacks + the FX chain.
     let s = SharedParams::new();
-    let upper_algo = id_of("upper-algo").unwrap();
-    let lower_algo = id_of("lower-algo").unwrap();
+    let algo_id = id_of("algo").unwrap();
     let mut e = Engine::new(SR, BLK);
 
     for algo in 1..=32 {
-        s.set(upper_algo, algo as f32);
-        s.set(lower_algo, algo as f32);
+        s.set(algo_id, algo as f32);
         e.snapshot_params(&s);
         // Refresh the held notes so the new algo gates take effect.
         e.note_off(60);

@@ -19,9 +19,12 @@
 use crate::eg::{EgParams, EgState};
 use crate::ks::{KsCurve, ks_level_mult, ks_rate_mult};
 use crate::sine;
-use crate::tables::{amp_sens_coef, detune_cents, fb_scale, vel_factor};
+use crate::tables::{amp_sens_coef, vel_factor};
+#[cfg(test)]
+use crate::tables::fb_scale;
 
-/// Whether `ratio` or `fixed_hz` drives the operator's frequency.
+/// Whether the rational ratio (`num`/`denom`) or `fixed_hz` drives the
+/// operator's frequency.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum RatioMode {
     #[default]
@@ -32,9 +35,10 @@ pub enum RatioMode {
 #[derive(Clone, Copy, Debug)]
 pub struct OpParams {
     pub ratio_mode: RatioMode,
-    pub ratio: f32,
+    pub num: u8,
+    pub denom: u8,
     pub fixed_hz: f32,
-    pub fine: f32,
+    pub fine: i8,
     pub detune: i8,
     pub level: u8,
     pub vel_sens: u8,
@@ -47,7 +51,6 @@ pub struct OpParams {
     pub ks_r_curve: KsCurve,
     pub ks_rate: u8,
     pub pan: f32,
-    pub feedback: u8,
 }
 
 impl Default for OpParams {
@@ -56,9 +59,10 @@ impl Default for OpParams {
     fn default() -> Self {
         Self {
             ratio_mode: RatioMode::Ratio,
-            ratio: 1.0,
+            num: 1,
+            denom: 1,
             fixed_hz: 440.0,
-            fine: 0.0,
+            fine: 0,
             detune: 0,
             level: 99,
             vel_sens: 3,
@@ -74,7 +78,6 @@ impl Default for OpParams {
             ks_r_curve: KsCurve::NegExp,
             ks_rate: 2,
             pan: 0.0,
-            feedback: 0,
         }
     }
 }
@@ -109,9 +112,10 @@ impl OpState {
     pub fn cook(&mut self, params: &OpParams, key: u8, velocity: u8, sample_rate: f32) {
         let base_hz = match params.ratio_mode {
             RatioMode::Ratio => {
-                let cents = detune_cents(params.detune);
-                let detune_factor = 2_f32.powf(cents / 1200.0);
-                midi_to_hz(key) * (params.ratio + params.fine) * detune_factor
+                let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
+                let denom = params.denom.max(1) as f32;
+                let cents = params.detune as f32;
+                midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
             }
             RatioMode::Fixed => params.fixed_hz,
         };
@@ -131,7 +135,9 @@ impl OpState {
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         self.eg.cook(&params.eg, max_amp, rate_mult);
 
-        self.fb_scale = fb_scale(params.feedback);
+        // Feedback is now layer-level: stack/voice note_on (and the engine's
+        // per-block live update) writes `fb_scale` directly onto the
+        // algorithm's structural FB op only. Leave it alone here.
         self.amp_sens_coef = amp_sens_coef(params.amp_sens);
     }
 
@@ -229,12 +235,10 @@ mod tests {
         // Smoke: 1 second at A3 (220) and at C8 (highest reasonable note),
         // varying modulation aggressively. No NaN, no overflow trap.
         for &(key, vel) in &[(57u8, 100u8), (108, 127)] {
-            let params = OpParams {
-                feedback: 7,
-                ..OpParams::default()
-            };
+            let params = OpParams::default();
             let mut state = OpState::default();
             state.cook(&params, key, vel, 48_000.0);
+            state.fb_scale = fb_scale(7);
             state.eg.note_on();
             let dt_block = 64.0 / 48_000.0;
             for blk in 0..(48_000 / 64) {
@@ -246,6 +250,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cook_rational_ratio_three_halves_at_a4() {
+        // num=3, denom=2, fine=0, detune=0 → 1.5 × 440 = 660 Hz.
+        let params = OpParams {
+            num: 3,
+            denom: 2,
+            ..OpParams::default()
+        };
+        let mut state = OpState::default();
+        state.cook(&params, 69, 100, 48_000.0);
+        let want = ((660.0 / 48_000.0) * PM_SCALE_Q32) as u32;
+        assert!(state.phase_inc.abs_diff(want) <= 1, "{} vs {want}", state.phase_inc);
+    }
+
+    #[test]
+    fn cook_fine_adds_hundredth_of_numerator() {
+        // num=2, denom=1, fine=+50 → (2 + 0.5)/1 = 2.5 × 440 = 1100 Hz.
+        let params = OpParams {
+            num: 2,
+            denom: 1,
+            fine: 50,
+            ..OpParams::default()
+        };
+        let mut state = OpState::default();
+        state.cook(&params, 69, 100, 48_000.0);
+        let want = ((1100.0 / 48_000.0) * PM_SCALE_Q32) as u32;
+        assert!(state.phase_inc.abs_diff(want) <= 1, "{} vs {want}", state.phase_inc);
+    }
+
+    #[test]
+    fn cook_detune_is_cents_one_for_one() {
+        // detune=+100 ct → 1 semitone up → 440 × 2^(1/12) ≈ 466.164 Hz.
+        let params = OpParams {
+            detune: 100,
+            ..OpParams::default()
+        };
+        let mut state = OpState::default();
+        state.cook(&params, 69, 100, 48_000.0);
+        let want_hz = 440.0 * 2_f32.powf(100.0 / 1200.0);
+        let want = ((want_hz / 48_000.0) * PM_SCALE_Q32) as u32;
+        assert!(state.phase_inc.abs_diff(want) <= 2, "{} vs {want}", state.phase_inc);
     }
 
     #[test]
@@ -278,19 +325,16 @@ mod tests {
     #[test]
     fn feedback_alters_output_vs_no_feedback() {
         // Same note, same modulation; with FB the output should diverge.
-        let params_no_fb = OpParams {
-            feedback: 0,
-            ..OpParams::default()
-        };
-        let params_fb = OpParams {
-            feedback: 6,
-            ..OpParams::default()
-        };
+        // Feedback is now layer-level; write `fb_scale` directly to match
+        // how stack/voice note_on does it for the structural FB op.
+        let params = OpParams::default();
         let mut a = OpState::default();
-        a.cook(&params_no_fb, 60, 100, 48_000.0);
+        a.cook(&params, 60, 100, 48_000.0);
+        a.fb_scale = fb_scale(0);
         a.force_sustain(0.7);
         let mut b = OpState::default();
-        b.cook(&params_fb, 60, 100, 48_000.0);
+        b.cook(&params, 60, 100, 48_000.0);
+        b.fb_scale = fb_scale(6);
         b.force_sustain(0.7);
         let mut differ = 0;
         for _ in 0..4096 {

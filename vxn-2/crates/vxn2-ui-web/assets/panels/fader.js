@@ -83,6 +83,25 @@
     }
   }
 
+  // ── Shared value-pop singleton ──
+  let popEl = null;
+  function ensurePop() {
+    if (popEl) return popEl;
+    popEl = document.createElement("div");
+    popEl.className = "value-pop";
+    document.body.appendChild(popEl);
+    return popEl;
+  }
+  function showPop(text, x, y) {
+    const el = ensurePop();
+    el.textContent = text;
+    el.style.left = (x + 12) + "px";
+    el.style.top  = (y - 8)  + "px";
+    el.style.display = "block";
+  }
+  function updatePop(text) { if (popEl) popEl.textContent = text; }
+  function hidePop() { if (popEl) popEl.style.display = "none"; }
+
   // ── Primitive ──
   function create(el, ctx) {
     const desc = ctx.desc;
@@ -90,17 +109,18 @@
 
     const fill = el.querySelector(".fader-track-fill");
     const thumb = el.querySelector(".fader-thumb");
-    const valueEl = el.querySelector(".fader-value");
     let currentPlain = desc.default;
     let currentNorm = paramToNorm(desc, currentPlain);
+    let hovered = false;
 
     function paint() {
       const pct = (currentNorm * 100).toFixed(2) + "%";
       if (fill) fill.style.height = pct;
       if (thumb) thumb.style.bottom = pct;
-      if (valueEl) valueEl.textContent = formatDisplay(desc, currentPlain);
+      if (hovered || dragging) {
+        updatePop(formatDisplay(desc, currentPlain));
+      }
     }
-    paint();
 
     // ── Gesture ──
     let dragging = false;
@@ -109,6 +129,8 @@
     let startNorm = 0;
     let pendingNorm = null;
     let rafScheduled = false;
+
+    paint();
 
     function postNorm(n) {
       const clamped = n < 0 ? 0 : n > 1 ? 1 : n;
@@ -126,6 +148,15 @@
       }
     }
 
+    function onPointerEnter(ev) {
+      hovered = true;
+      if (!dragging) showPop(formatDisplay(desc, currentPlain), ev.clientX, ev.clientY);
+    }
+    function onPointerLeave() {
+      hovered = false;
+      if (!dragging) hidePop();
+    }
+
     function onPointerDown(ev) {
       if (ev.button !== undefined && ev.button !== 0) return;
       ev.preventDefault();
@@ -137,6 +168,7 @@
       if (el.setPointerCapture && pointerId !== undefined) {
         try { el.setPointerCapture(pointerId); } catch (_) {}
       }
+      showPop(formatDisplay(desc, currentPlain), ev.clientX, ev.clientY);
       ctx.beginGesture();
     }
 
@@ -167,6 +199,7 @@
       if (el.releasePointerCapture && pointerId !== undefined) {
         try { el.releasePointerCapture(pointerId); } catch (_) {}
       }
+      if (!hovered) hidePop();
       ctx.endGesture();
       pointerId = null;
     }
@@ -176,6 +209,8 @@
       ctx.requestTextInput(formatDisplay(desc, currentPlain));
     }
 
+    el.addEventListener("pointerenter", onPointerEnter);
+    el.addEventListener("pointerleave", onPointerLeave);
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);

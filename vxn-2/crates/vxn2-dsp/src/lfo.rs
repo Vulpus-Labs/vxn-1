@@ -281,24 +281,25 @@ impl Lfo1 {
 }
 
 // --- LFO2 (per-voice, lane-packed) ------------------------------------------
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Lfo2Trig {
-    /// LFO keeps phase across notes; delay + fade bypassed.
-    #[default]
-    Free,
-    /// LFO retriggers to the shape's zero-crossing on each note-on; delay +
-    /// fade restart from zero.
-    KeySync,
-}
+//
+// LFO2 is always key-triggered: on every note-on the lane phases retrigger to
+// the shape's zero crossing and delay+fade restart from zero. The free-running
+// variant tracked by an earlier `Lfo2Trig` enum was removed when the UI
+// dropped the Trig switch in favour of a host-tempo Sync toggle (matching
+// VXN1's per-voice LFO behaviour).
 
 #[derive(Clone, Copy, Debug)]
 pub struct Lfo2Params {
     pub shape: LfoShape,
+    /// Free-running Hz. Used when `sync = false`.
     pub rate_hz: f32,
     pub delay_ms: f32,
     pub fade_ms: f32,
-    pub trig: Lfo2Trig,
+    /// When true, `rate_hz` is ignored and the rate is taken from
+    /// `sync_index` against host tempo (see [`SUBDIVISIONS`]).
+    pub sync: bool,
+    /// Subdivision index when `sync = true`.
+    pub sync_index: usize,
 }
 
 impl Default for Lfo2Params {
@@ -308,7 +309,8 @@ impl Default for Lfo2Params {
             rate_hz: 5.1,
             delay_ms: 180.0,
             fade_ms: 320.0,
-            trig: Lfo2Trig::KeySync,
+            sync: false,
+            sync_index: 6, // 1/4
         }
     }
 }
@@ -360,30 +362,32 @@ impl Lfo2Stack {
         }
     }
 
-    /// Note-on handling. `KeySync`: all lanes' phase → shape's zero crossing,
-    /// delay+fade timer reset. `Free`: phase preserved, timer set so envelope
-    /// reads full depth (delay+fade are bypassed in Free mode).
+    /// Note-on handling. All lanes' phase → shape's zero crossing, delay+fade
+    /// timer reset. LFO2 is always key-triggered.
     pub fn note_on(&mut self, params: &Lfo2Params) {
-        match params.trig {
-            Lfo2Trig::KeySync => {
-                let q = params.shape.zero_crossing_q32();
-                for k in 0..STACK_LANES {
-                    self.phase[k] = q;
-                }
-                self.secs_since_on = 0.0;
-            }
-            Lfo2Trig::Free => {
-                self.secs_since_on = f32::INFINITY;
-            }
+        let q = params.shape.zero_crossing_q32();
+        for k in 0..STACK_LANES {
+            self.phase[k] = q;
         }
+        self.secs_since_on = 0.0;
     }
 
     /// Advance one control block; return per-lane bipolar outputs post-delay,
     /// post-fade. Lanes whose delay hasn't elapsed read 0; lanes in the fade
     /// window are linearly ramped from 0 → full.
     #[inline]
-    pub fn eval(&mut self, params: &Lfo2Params, block_secs: f32) -> [f32; STACK_LANES] {
-        let inc = phase_inc_q32(params.rate_hz, block_secs);
+    pub fn eval(
+        &mut self,
+        params: &Lfo2Params,
+        tempo_bpm: f32,
+        block_secs: f32,
+    ) -> [f32; STACK_LANES] {
+        let hz = if params.sync {
+            synced_hz(tempo_bpm, params.sync_index)
+        } else {
+            params.rate_hz
+        };
+        let inc = phase_inc_q32(hz, block_secs);
         // Advance secs_since_on, saturating to keep f32 finite.
         if self.secs_since_on.is_finite() {
             self.secs_since_on += block_secs;
@@ -401,12 +405,9 @@ impl Lfo2Stack {
         out
     }
 
-    /// Current delay+fade envelope in `[0, 1]`. Free mode = 1.0 always.
+    /// Current delay+fade envelope in `[0, 1]`.
     #[inline]
     fn envelope(&self, params: &Lfo2Params) -> f32 {
-        if params.trig == Lfo2Trig::Free {
-            return 1.0;
-        }
         let t_ms = self.secs_since_on * 1000.0;
         if t_ms < params.delay_ms {
             0.0
@@ -564,7 +565,7 @@ mod tests {
     ) -> Vec<[f32; STACK_LANES]> {
         let mut out = Vec::with_capacity(blocks);
         for _ in 0..blocks {
-            out.push(lfo.eval(params, BLK));
+            out.push(lfo.eval(params, 120.0, BLK));
         }
         out
     }
@@ -577,7 +578,8 @@ mod tests {
             rate_hz: 10.0,
             delay_ms: 50.0,
             fade_ms: 50.0,
-            trig: Lfo2Trig::KeySync,
+            sync: false,
+            sync_index: 0,
         };
         lfo.note_on(&params);
         // BLK ≈ 1.333 ms; 38 blocks ≈ 50.6 ms (just past delay end).
@@ -596,21 +598,22 @@ mod tests {
     }
 
     #[test]
-    fn lfo2_free_bypasses_delay() {
+    fn lfo2_zero_delay_outputs_signal_immediately() {
         let mut lfo = Lfo2Stack::default();
         let params = Lfo2Params {
             shape: LfoShape::SawUp,
             rate_hz: 10.0,
-            delay_ms: 1000.0,
-            fade_ms: 1000.0,
-            trig: Lfo2Trig::Free,
+            delay_ms: 0.0,
+            fade_ms: 0.0,
+            sync: false,
+            sync_index: 0,
         };
         lfo.note_on(&params);
-        let out = lfo.eval(&params, BLK);
-        // SawUp at phase 0 starts at -1. Free → envelope = 1.0, so values
-        // should already be in [-1, +1] range, not gated to zero.
+        let out = lfo.eval(&params, 120.0, BLK);
+        // SawUp at phase 0 starts at −1; with zero delay+fade the envelope is
+        // already full so a non-zero sample must reach the output on tick 1.
         let any_nonzero = out.iter().any(|v| v.abs() > 0.001);
-        assert!(any_nonzero, "Free mode should bypass delay, got {out:?}");
+        assert!(any_nonzero, "expected non-zero with zero delay, got {out:?}");
     }
 
     #[test]
@@ -621,12 +624,13 @@ mod tests {
             rate_hz: 4.0,
             delay_ms: 0.0,
             fade_ms: 0.0,
-            trig: Lfo2Trig::KeySync,
+            sync: false,
+            sync_index: 0,
         };
         // Run a while to scramble phase.
         lfo.note_on(&params);
         for _ in 0..200 {
-            lfo.eval(&params, BLK);
+            lfo.eval(&params, 120.0, BLK);
         }
         lfo.note_on(&params);
         let expected = LfoShape::Triangle.zero_crossing_q32();
@@ -636,39 +640,23 @@ mod tests {
     }
 
     #[test]
-    fn lfo2_free_preserves_phase_on_note_on() {
-        let mut lfo = Lfo2Stack::default();
-        let params = Lfo2Params {
-            shape: LfoShape::SawUp,
-            rate_hz: 4.0,
-            delay_ms: 0.0,
-            fade_ms: 0.0,
-            trig: Lfo2Trig::Free,
-        };
-        for _ in 0..100 {
-            lfo.eval(&params, BLK);
-        }
-        let phases_before = lfo.phase;
-        lfo.note_on(&params);
-        assert_eq!(lfo.phase, phases_before, "Free mode altered phase");
-    }
-
-    #[test]
     fn lfo2_lanes_with_distinct_phases_produce_distinct_outputs() {
-        // Simulates what 0008's `voice_rand → lfo2_phase` will do: poke
-        // per-lane starting phases and observe outputs decorrelate.
+        // Simulates `voice_rand → lfo2_phase` (matrix slot): poke per-lane
+        // starting phases after note_on and observe outputs decorrelate.
         let mut lfo = Lfo2Stack::default();
         let params = Lfo2Params {
             shape: LfoShape::Sine,
             rate_hz: 4.0,
             delay_ms: 0.0,
             fade_ms: 0.0,
-            trig: Lfo2Trig::Free,
+            sync: false,
+            sync_index: 0,
         };
+        lfo.note_on(&params);
         for k in 0..STACK_LANES {
             lfo.phase[k] = (k as u32) * (u32::MAX / STACK_LANES as u32);
         }
-        let out = lfo.eval(&params, BLK);
+        let out = lfo.eval(&params, 120.0, BLK);
         let mut distinct = std::collections::HashSet::new();
         for v in out {
             distinct.insert(v.to_bits());
@@ -688,11 +676,12 @@ mod tests {
                 rate_hz: 5.0,
                 delay_ms: 0.0,
                 fade_ms: 0.0,
-                trig: Lfo2Trig::Free,
+                sync: false,
+                sync_index: 0,
             };
             lfo.note_on(&params);
             for _ in 0..2000 {
-                let out = lfo.eval(&params, BLK);
+                let out = lfo.eval(&params, 120.0, BLK);
                 for v in out {
                     assert!(v.is_finite() && v.abs() <= 1.001, "{shape:?} {v}");
                 }
@@ -708,20 +697,49 @@ mod tests {
             rate_hz: 4.0,
             delay_ms: 0.0,
             fade_ms: 0.0,
-            trig: Lfo2Trig::Free,
+            sync: false,
+            sync_index: 0,
         };
         lfo.note_on(&params);
         // First eval initialises sh_value from the wrap on advance.
-        let _ = lfo.eval(&params, BLK);
+        let _ = lfo.eval(&params, 120.0, BLK);
         let initial = lfo.sh_value[0];
         // Run many blocks; observe sh_value changes for lane 0.
         let mut distinct = std::collections::HashSet::new();
         distinct.insert(initial.to_bits());
         for _ in 0..1000 {
-            lfo.eval(&params, BLK);
+            lfo.eval(&params, 120.0, BLK);
             distinct.insert(lfo.sh_value[0].to_bits());
         }
         assert!(distinct.len() > 5, "S&H lane 0 produced too few values: {}", distinct.len());
+    }
+
+    #[test]
+    fn lfo2_sync_overrides_free_rate() {
+        // 1/4 @ 120 BPM = 2 Hz, regardless of free rate_hz.
+        let q_idx = SUBDIVISIONS.iter().position(|s| s.label == "1/4").unwrap();
+        let mut lfo = Lfo2Stack::default();
+        let params = Lfo2Params {
+            shape: LfoShape::Sine,
+            rate_hz: 99.0, // ignored when sync on
+            delay_ms: 0.0,
+            fade_ms: 0.0,
+            sync: true,
+            sync_index: q_idx,
+        };
+        lfo.note_on(&params);
+        let mut crossings = vec![];
+        let mut prev = lfo.eval(&params, 120.0, BLK)[0];
+        for i in 1..1500 {
+            let v = lfo.eval(&params, 120.0, BLK)[0];
+            if prev < 0.0 && v >= 0.0 {
+                crossings.push(i);
+            }
+            prev = v;
+        }
+        // 2 Hz at 64-sample blocks @ 48 kHz = 375 blocks per cycle.
+        let period = (crossings[1] - crossings[0]) as i32;
+        assert!((period - 375).abs() <= 3, "synced period {period}, want ≈375");
     }
 
     #[test]

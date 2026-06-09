@@ -22,7 +22,7 @@
   // ─ Segment-graph layout (mirror of mockup drawEgGraph) ─
   function layout(W, H, rateNorms) {
     const widths = rateNorms.map(function (rn) { return (1.0 - rn) * 100 + 10; });
-    const total = widths.reduce(function (a, b) { return a + b; }, 0) + 25;
+    const total = widths.reduce(function (a, b) { return a + b; }, 0);
     const xs = [0];
     widths.forEach(function (w) { xs.push(xs[xs.length - 1] + w); });
     const scale = (W - 12) / total;
@@ -51,7 +51,36 @@
       return { x: parts[0] || 0, y: parts[1] || 0, w: parts[2] || 200, h: parts[3] || 90 };
     }
 
+    // SVG skeleton (grid + axis + path + handles) is built once; subsequent
+    // paint()s only update attributes. Rewriting innerHTML mid-drag would
+    // destroy the pointer-captured handle and kill the gesture.
+    let pathEl = null;
+    let handleEls = [];
+    let built = false;
+
+    function build() {
+      const { w: W, h: H } = viewBox();
+      let grid = "";
+      for (let i = 1; i < 4; i++) {
+        const y = 6 + i * (H - 12) / 4;
+        grid += '<line class="graph-grid" x1="6" y1="' + y.toFixed(2) + '" x2="' + (W - 6).toFixed(2) + '" y2="' + y.toFixed(2) + '" />';
+      }
+      grid += '<line class="graph-axis" x1="6" y1="' + (H - 6).toFixed(2) + '" x2="' + (W - 6).toFixed(2) + '" y2="' + (H - 6).toFixed(2) + '" />';
+
+      let handles = "";
+      for (let i = 0; i < 4; i++) {
+        handles += '<circle class="graph-handle" r="3" data-eg-pt="' + i + '" />';
+      }
+
+      svg.innerHTML = grid + '<path class="graph-curve" d="" />' + handles;
+      pathEl = svg.querySelector(".graph-curve");
+      handleEls = svg.querySelectorAll("[data-eg-pt]");
+      bindHandles();
+      built = true;
+    }
+
     function paint() {
+      if (!built) build();
       const { w: W, h: H } = viewBox();
       const ptsX = layout(W, H, rateNorms);
       // The displayed curve uses 4 points starting from the floor (L4),
@@ -70,21 +99,11 @@
       for (let i = 1; i < ptsY.length; i++) {
         path += " L " + ptsX[i].toFixed(2) + " " + ptsY[i].toFixed(2);
       }
-
-      let grid = "";
-      for (let i = 1; i < 4; i++) {
-        const y = 6 + i * (H - 12) / 4;
-        grid += '<line class="graph-grid" x1="6" y1="' + y.toFixed(2) + '" x2="' + (W - 6).toFixed(2) + '" y2="' + y.toFixed(2) + '" />';
+      pathEl.setAttribute("d", path);
+      for (let i = 0; i < handleEls.length; i++) {
+        handleEls[i].setAttribute("cx", ptsX[i + 1].toFixed(2));
+        handleEls[i].setAttribute("cy", ptsY[i + 1].toFixed(2));
       }
-      grid += '<line class="graph-axis" x1="6" y1="' + (H - 6).toFixed(2) + '" x2="' + (W - 6).toFixed(2) + '" y2="' + (H - 6).toFixed(2) + '" />';
-
-      let handles = "";
-      for (let i = 1; i < ptsY.length; i++) {
-        handles += '<circle class="graph-handle" cx="' + ptsX[i].toFixed(2) + '" cy="' + ptsY[i].toFixed(2) + '" r="3" data-eg-pt="' + (i - 1) + '" />';
-      }
-
-      svg.innerHTML = grid + '<path class="graph-curve" d="' + path + '" />' + handles;
-      bindHandles();
     }
 
     // ─ Per-handle drag ─
@@ -129,9 +148,12 @@
       if (activeIdx < 0) return;
       ev.preventDefault();
       const sens = ev.shiftKey ? 0.1 : 1.0;
+      // Rate is "speed" — higher rate ⇒ shorter segment ⇒ handle further
+      // LEFT. So dragging right must lower the rate to make the handle
+      // track the cursor.
       const dx = (ev.clientX - startClientX) / 200 * sens;
       const dy = (startClientY - ev.clientY) / 200 * sens;
-      pendingRate = clamp01(startRateNorm + dx);
+      pendingRate = clamp01(startRateNorm - dx);
       pendingLevel = clamp01(startLevelNorm + dy);
       if (!raf) {
         raf = true;

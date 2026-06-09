@@ -249,17 +249,16 @@ fn collect_param_diffs(params: &SharedParams, last_seen: &mut [f32]) -> Vec<View
 }
 
 /// Sync-toggle CLAP id for a rate/time param — returns the matching
-/// sync flag's id when `id` is `lfo1-rate` or `delay-time`. LFO2 has
-/// no sync in VXN2; reverb / master don't sync either.
+/// sync flag's id when `id` is `lfo1-rate`, `delay-time`, or
+/// `lfo2-rate`. Reverb / master don't sync.
 fn sync_partner_clap_id(id: usize) -> Option<usize> {
-    let (lfo1_rate, lfo1_sync, delay_time, delay_sync) = sync_ids();
-    if id == lfo1_rate {
-        Some(lfo1_sync)
-    } else if id == delay_time {
-        Some(delay_sync)
-    } else {
-        None
+    let pairs = sync_pairs();
+    for (rate, sync) in pairs {
+        if id == *rate {
+            return Some(*sync);
+        }
     }
+    None
 }
 
 /// Inverse of [`sync_partner_clap_id`]: given a sync flag's CLAP id,
@@ -267,14 +266,13 @@ fn sync_partner_clap_id(id: usize) -> Option<usize> {
 /// fader's display when its sync toggle flips while the rate value
 /// itself hasn't changed.
 fn rate_partner_clap_id(id: usize) -> Option<usize> {
-    let (lfo1_rate, lfo1_sync, delay_time, delay_sync) = sync_ids();
-    if id == lfo1_sync {
-        Some(lfo1_rate)
-    } else if id == delay_sync {
-        Some(delay_time)
-    } else {
-        None
+    let pairs = sync_pairs();
+    for (rate, sync) in pairs {
+        if id == *sync {
+            return Some(*rate);
+        }
     }
+    None
 }
 
 /// Sync-aware display string for a CLAP param. When `id` is a
@@ -295,19 +293,30 @@ fn sync_aware_display(params: &SharedParams, id: usize, value: f32) -> String {
     desc.display(value)
 }
 
-/// Resolve the four sync CLAP ids once and cache. `id_of` is a linear
-/// scan over `PARAMS`; doing it per-tick × per-id would be O(N²).
-fn sync_ids() -> (usize, usize, usize, usize) {
+/// Resolve the rate/sync CLAP-id pairs once and cache. `id_of` is a
+/// linear scan over `PARAMS`; doing it per-tick × per-id would be O(N²).
+/// Each entry is `(rate_or_time_id, sync_flag_id)`.
+fn sync_pairs() -> &'static [(usize, usize)] {
     use std::sync::OnceLock;
-    static IDS: OnceLock<(usize, usize, usize, usize)> = OnceLock::new();
-    *IDS.get_or_init(|| {
-        (
-            id_of("lfo1-rate").expect("lfo1-rate"),
-            id_of("lfo1-sync").expect("lfo1-sync"),
-            id_of("delay-time").expect("delay-time"),
-            id_of("delay-sync").expect("delay-sync"),
-        )
-    })
+    static PAIRS: OnceLock<Vec<(usize, usize)>> = OnceLock::new();
+    PAIRS
+        .get_or_init(|| {
+            vec![
+                (
+                    id_of("lfo1-rate").expect("lfo1-rate"),
+                    id_of("lfo1-sync").expect("lfo1-sync"),
+                ),
+                (
+                    id_of("delay-time").expect("delay-time"),
+                    id_of("delay-sync").expect("delay-sync"),
+                ),
+                (
+                    id_of("lfo2-rate").expect("lfo2-rate"),
+                    id_of("lfo2-sync").expect("lfo2-sync"),
+                ),
+            ]
+        })
+        .as_slice()
 }
 
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
@@ -1023,16 +1032,16 @@ mod tests {
         let shared = mk_shared();
         // Spread non-default values across the table.
         for (name, v) in [
-            ("upper-op1-ratio", 3.25_f32),
-            ("upper-op6-level", 88.0),
-            ("lower-op4-pan", -0.7),
-            ("upper-mtx1-depth", 0.4),
-            ("lower-mtx8-depth", -0.7),
+            ("op1-num", 3.0_f32),
+            ("op6-level", 88.0),
+            ("op4-pan", -0.7),
+            ("mtx1-depth", 0.4),
+            ("mtx8-depth", -0.7),
             ("master-volume", -3.0),
             ("reverb-decay", 4.5),
             ("delay-time", 250.0),
-            ("upper-assign-mode", 1.0),
-            ("upper-glide-time", 200.0),
+            ("assign-mode", 1.0),
+            ("glide-time", 200.0),
         ] {
             let id = id_of(name).unwrap();
             shared.params.set(id, v);
@@ -1271,6 +1280,29 @@ mod tests {
         match r {
             ViewEvent::ParamChanged { display, .. } => {
                 assert!(display.contains('/'), "expected subdivision: {display:?}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// LFO2 sync flip behaves like LFO1 / delay — flipping the flag re-emits
+    /// the rate fader so its display switches between Hz and a subdivision
+    /// label.
+    #[test]
+    fn diffs_lfo2_sync_flip_refreshes_rate_partner() {
+        let shared = mk_shared();
+        let rate = id_of("lfo2-rate").unwrap();
+        let sync = id_of("lfo2-sync").unwrap();
+        shared.params.set(sync, 0.0);
+        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
+        let _ = collect_param_diffs(&shared.params, &mut seen);
+
+        shared.params.set(sync, 1.0);
+        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let r = changed_for(&evs, rate).expect("rate partner missing");
+        match r {
+            ViewEvent::ParamChanged { display, .. } => {
+                assert!(display.contains('/'), "expected subdivision, got {display:?}");
             }
             other => panic!("unexpected event {other:?}"),
         }

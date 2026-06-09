@@ -43,6 +43,30 @@
     };
   }
 
+  // Single-button bool toggle (rate-fader Sync sub-button).
+  // Click flips 0 ↔ 1 on the button's `data-vxn-param`. Active state
+  // paints via the same `.active` class as bgrp-btn.
+  function createBoolToggle(btnEl, ctx) {
+    let currentPlain = ctx.desc ? ctx.desc.default : 0;
+    function paint() {
+      btnEl.classList.toggle("active", currentPlain >= 0.5);
+    }
+    paint();
+    btnEl.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      const next = currentPlain >= 0.5 ? 0 : 1;
+      ctx.setParam(next);
+      currentPlain = next;
+      paint();
+    });
+    return {
+      set: function (plain) {
+        currentPlain = plain;
+        paint();
+      },
+    };
+  }
+
   function createToggleHeader(headerEl, ctx) {
     const panel = headerEl.closest(".panel");
     let currentPlain = ctx.desc ? ctx.desc.default : 0;
@@ -74,6 +98,7 @@
 
   window.__vxn.panels.buttonGroup = {
     createRow: createRow,
+    createBoolToggle: createBoolToggle,
     createToggleHeader: createToggleHeader,
   };
 })();

@@ -9,8 +9,6 @@
 //! row (source / dest / curve / active flag; depths 9-16) is non-CLAP and
 //! rides Custom.
 
-use crate::model::Layer;
-
 /// Single mod-matrix row. Source / dest are opaque u8 indices into the
 /// engine's `matrix::SourceId` / `matrix::DestId` enums; the engine's
 /// `Vxn2Params` impl decodes them at storage time. `curve` is an index
@@ -39,28 +37,19 @@ impl Default for MatrixRow {
 /// VXN2-only UI intents.
 #[derive(Clone, Debug)]
 pub enum Vxn2UiCustom {
-    /// Editor-side cursor switch: which layer the op-row + matrix overlays
-    /// edit. View-state only — never a CLAP param. Persists via the
-    /// preset blob so a re-open lands on the layer the user was on.
-    SetEditLayer { layer: Layer },
-
     /// Per-page state: which operator the op-detail panel is showing.
     /// Pure view state on the page; the controller forwards as a
     /// [`Vxn2ViewCustom::OpTabChanged`] echo so the page can re-render
     /// against the controller-owned mirror (matters when host-driven
     /// state load needs to seed the page's op cursor).
-    SetOpTab { layer: Layer, op: u8 },
+    SetOpTab { op: u8 },
 
     /// Write a matrix row's topology + active flag (and depth for slots
     /// 9-16; slots 1-8 depth flows through the CLAP `SetParam` path).
-    SetMatrixRow {
-        layer: Layer,
-        slot: u8,
-        row: MatrixRow,
-    },
+    SetMatrixRow { slot: u8, row: MatrixRow },
 
     /// Page-side seed: the page asks the controller to push the full
-    /// 16 × 2 matrix snapshot. Dispatched from JS right after
+    /// 16-row matrix snapshot. Dispatched from JS right after
     /// `EditorReady` so the overlay can render from a known state.
     RequestMatrixSnapshot,
 }
@@ -68,19 +57,10 @@ pub enum Vxn2UiCustom {
 /// VXN2-only view echoes.
 #[derive(Clone, Debug)]
 pub enum Vxn2ViewCustom {
-    EditLayerChanged { layer: Layer },
-    OpTabChanged { layer: Layer, op: u8 },
-    MatrixRowChanged {
-        layer: Layer,
-        slot: u8,
-        row: MatrixRow,
-    },
-    /// Full 16 × 2 matrix snapshot. Emitted on
-    /// `Vxn2UiCustom::RequestMatrixSnapshot` and on
-    /// `Vxn2UiCustom::SetEditLayer` so the overlay can render the
-    /// now-current layer's rows without polling.
-    MatrixSnapshot {
-        upper: [MatrixRow; 16],
-        lower: [MatrixRow; 16],
-    },
+    OpTabChanged { op: u8 },
+    MatrixRowChanged { slot: u8, row: MatrixRow },
+    /// Full 16-row matrix snapshot. Emitted on
+    /// `Vxn2UiCustom::RequestMatrixSnapshot` so the overlay can render
+    /// without polling.
+    MatrixSnapshot { rows: [MatrixRow; 16] },
 }

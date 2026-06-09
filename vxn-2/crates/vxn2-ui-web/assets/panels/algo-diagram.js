@@ -10,21 +10,45 @@
 // here as a compact table.
 
 (function () {
-  // Compact subset of DX7 algorithm topologies. Each entry:
+  // Full 32-entry DX7 algorithm table. Each entry:
   //   edges: [modOp, carOp] pairs (modulator → carrier).
   //   carriers: ops whose output sums into the algo's bus.
   //   fb: op carrying the algorithm-wide feedback loop (0 = none).
-  // 0027 will fill in the remaining algos as needed; cells without an
-  // entry render as a placeholder.
+  // Sourced from `vxn2-dsp::algo::ALGOS` — keep this in lock-step with
+  // that table; the Rust side is authoritative.
   const ALGOS = {
-    1:  { edges: [[2,1],[4,3],[5,4],[6,5]],         carriers: [1, 3],    fb: 6 },
-    2:  { edges: [[2,1],[4,3],[5,4],[6,5]],         carriers: [1, 3],    fb: 2 },
-    3:  { edges: [[2,1],[4,3],[5,4],[6,5]],         carriers: [1, 3],    fb: 6 },
-    4:  { edges: [[2,1],[3,1],[5,4],[6,5]],         carriers: [1, 4],    fb: 4 },
-    5:  { edges: [[2,1],[4,3],[6,5]],               carriers: [1, 3, 5], fb: 6 },
-    6:  { edges: [[2,1],[4,3],[6,5]],               carriers: [1, 3, 5], fb: 5 },
-    7:  { edges: [[2,1],[4,3],[5,3],[6,5]],         carriers: [1, 3],    fb: 6 },
-    8:  { edges: [[2,1],[4,3],[5,3],[6,5]],         carriers: [1, 3],    fb: 4 },
+    1:  { edges: [[2,1],[4,3],[5,4],[6,5]],          carriers: [1, 3],          fb: 6 },
+    2:  { edges: [[2,1],[4,3],[5,4],[6,5]],          carriers: [1, 3],          fb: 2 },
+    3:  { edges: [[2,1],[3,2],[5,4],[6,5]],          carriers: [1, 4],          fb: 6 },
+    4:  { edges: [[2,1],[3,2],[5,4],[6,5]],          carriers: [1, 4],          fb: 4 },
+    5:  { edges: [[2,1],[4,3],[6,5]],                carriers: [1, 3, 5],       fb: 6 },
+    6:  { edges: [[2,1],[4,3],[6,5]],                carriers: [1, 3, 5],       fb: 5 },
+    7:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 6 },
+    8:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 4 },
+    9:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 2 },
+    10: { edges: [[2,1],[3,2],[5,4],[6,4]],          carriers: [1, 4],          fb: 3 },
+    11: { edges: [[2,1],[3,2],[5,4],[6,4]],          carriers: [1, 4],          fb: 6 },
+    12: { edges: [[2,1],[4,3],[5,3],[6,3]],          carriers: [1, 3],          fb: 2 },
+    13: { edges: [[2,1],[4,3],[5,3],[6,3]],          carriers: [1, 3],          fb: 6 },
+    14: { edges: [[2,1],[4,3],[5,4],[6,4]],          carriers: [1, 3],          fb: 6 },
+    15: { edges: [[2,1],[4,3],[5,4],[6,4]],          carriers: [1, 3],          fb: 2 },
+    16: { edges: [[2,1],[3,1],[4,3],[5,3],[6,5]],    carriers: [1],             fb: 6 },
+    17: { edges: [[2,1],[3,1],[4,3],[5,3],[6,5]],    carriers: [1],             fb: 2 },
+    18: { edges: [[2,1],[3,1],[4,3],[5,4],[6,4]],    carriers: [1],             fb: 3 },
+    19: { edges: [[2,1],[3,2],[6,4],[6,5]],          carriers: [1, 4, 5],       fb: 6 },
+    20: { edges: [[3,1],[3,2],[5,4],[6,4]],          carriers: [1, 2, 4],       fb: 3 },
+    21: { edges: [[3,1],[3,2],[6,4],[6,5]],          carriers: [1, 2, 4, 5],    fb: 6 },
+    22: { edges: [[2,1],[6,3],[6,4],[6,5]],          carriers: [1, 3, 4, 5],    fb: 6 },
+    23: { edges: [[3,2],[6,4],[6,5]],                carriers: [1, 2, 4, 5],    fb: 6 },
+    24: { edges: [[6,3],[6,4],[6,5]],                carriers: [1, 2, 3, 4, 5], fb: 6 },
+    25: { edges: [[6,4],[6,5]],                      carriers: [1, 2, 3, 4, 5], fb: 6 },
+    26: { edges: [[3,2],[5,4],[6,4]],                carriers: [1, 2, 4],       fb: 6 },
+    27: { edges: [[3,2],[5,4],[6,4]],                carriers: [1, 2, 4],       fb: 3 },
+    28: { edges: [[2,1],[4,3],[5,4]],                carriers: [1, 3, 6],       fb: 5 },
+    29: { edges: [[4,3],[6,5]],                      carriers: [1, 2, 3, 5],    fb: 6 },
+    30: { edges: [[4,3],[5,4]],                      carriers: [1, 2, 3, 6],    fb: 5 },
+    31: { edges: [[6,5]],                            carriers: [1, 2, 3, 4, 5], fb: 6 },
+    32: { edges: [],                                 carriers: [1, 2, 3, 4, 5, 6], fb: 6 },
   };
 
   function isCarrier(op, algo) {

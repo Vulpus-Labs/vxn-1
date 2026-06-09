@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use vxn2_app::{
-    Controller, Layer, MatrixRow, NoopPresetStore, ParamId, PresetMeta, UiEvent, ViewEvent,
-    Vxn2Params, Vxn2UiCustom, Vxn2ViewCustom, tick_vxn2,
+    Controller, MatrixRow, NoopPresetStore, ParamId, PresetMeta, UiEvent, ViewEvent, Vxn2Params,
+    Vxn2UiCustom, Vxn2ViewCustom, tick_vxn2,
 };
 use vxn2_engine::SharedParams;
 use vxn2_engine::params::id_of;
@@ -23,7 +23,6 @@ fn build_controller() -> (
     (ctrl, view_rx, model)
 }
 
-/// Drain the view rx into a Vec for easier assertion.
 /// Build a controller seeded the same way `vxn2-clap::new_main_thread`
 /// does: "Init" as the synthetic preset name until the preset epic
 /// ships.
@@ -97,7 +96,6 @@ fn matrix_row_custom_event_writes_model_and_echoes_view() {
     let handle = ctrl.handle();
     handle
         .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetMatrixRow {
-            layer: Layer::Upper,
             slot: 3,
             row,
         })))
@@ -106,12 +104,12 @@ fn matrix_row_custom_event_writes_model_and_echoes_view() {
     tick_vxn2(&mut ctrl);
 
     // Model: row written through.
-    let got = Vxn2Params::matrix_row(&*model, Layer::Upper, 3);
+    let got = Vxn2Params::matrix_row(&*model, 3);
     assert_eq!(got, row);
 
     // Slot 3 is within the CLAP-automatable range (0..8), so depth also
-    // landed in the CLAP table (upper-mtx4-depth, 1-based mtx# = slot+1).
-    let clap_id = id_of("upper-mtx4-depth").expect("upper-mtx4-depth present");
+    // landed in the CLAP table (mtx4-depth, 1-based mtx# = slot+1).
+    let clap_id = id_of("mtx4-depth").expect("mtx4-depth present");
     assert!((model.get(clap_id) - 0.42).abs() < 1e-5);
 
     // View: MatrixRowChanged echo present, with same payload.
@@ -120,12 +118,7 @@ fn matrix_row_custom_event_writes_model_and_echoes_view() {
     for ev in events {
         if let ViewEvent::Custom(payload) = ev {
             if let Ok(custom) = payload.downcast::<Vxn2ViewCustom>() {
-                if let Vxn2ViewCustom::MatrixRowChanged {
-                    layer: Layer::Upper,
-                    slot: 3,
-                    row: r,
-                } = *custom
-                {
+                if let Vxn2ViewCustom::MatrixRowChanged { slot: 3, row: r } = *custom {
                     assert_eq!(r, row);
                     saw = true;
                 }
@@ -136,54 +129,27 @@ fn matrix_row_custom_event_writes_model_and_echoes_view() {
 }
 
 #[test]
-fn edit_layer_custom_event_writes_and_echoes() {
-    let (mut ctrl, view_rx, model) = build_controller();
-    assert_eq!(Vxn2Params::edit_layer(&*model), Layer::Upper);
-
-    ctrl.handle()
-        .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetEditLayer {
-            layer: Layer::Lower,
-        })))
-        .unwrap();
-
-    tick_vxn2(&mut ctrl);
-
-    assert_eq!(Vxn2Params::edit_layer(&*model), Layer::Lower);
-
-    let saw_change = drain(&view_rx).into_iter().any(|ev| match ev {
-        ViewEvent::Custom(p) => matches!(
-            p.downcast::<Vxn2ViewCustom>().map(|b| *b),
-            Ok(Vxn2ViewCustom::EditLayerChanged {
-                layer: Layer::Lower
-            })
-        ),
-        _ => false,
-    });
-    assert!(saw_change, "EditLayerChanged echo not seen");
-}
-
-#[test]
-fn request_matrix_snapshot_emits_full_16x2_table() {
+fn request_matrix_snapshot_emits_full_16_row_table() {
     let (mut ctrl, view_rx, model) = build_controller();
 
     // Seed a couple of distinct rows so the snapshot has something to
     // assert against.
-    let upper_row = MatrixRow {
+    let row_a = MatrixRow {
         source: 1,
         dest: 4,
         curve: 0,
         active: true,
         depth: 0.1,
     };
-    let lower_row = MatrixRow {
+    let row_b = MatrixRow {
         source: 7,
         dest: 12,
         curve: 2,
         active: false,
         depth: -0.25,
     };
-    Vxn2Params::set_matrix_row(&*model, Layer::Upper, 2, upper_row);
-    Vxn2Params::set_matrix_row(&*model, Layer::Lower, 9, lower_row);
+    Vxn2Params::set_matrix_row(&*model, 2, row_a);
+    Vxn2Params::set_matrix_row(&*model, 9, row_b);
 
     ctrl.handle()
         .post(UiEvent::Custom(Box::new(
@@ -196,44 +162,16 @@ fn request_matrix_snapshot_emits_full_16x2_table() {
     for ev in drain(&view_rx) {
         if let ViewEvent::Custom(payload) = ev {
             if let Ok(custom) = payload.downcast::<Vxn2ViewCustom>() {
-                if let Vxn2ViewCustom::MatrixSnapshot { upper, lower } = *custom {
-                    got = Some((upper, lower));
+                if let Vxn2ViewCustom::MatrixSnapshot { rows } = *custom {
+                    got = Some(rows);
                 }
             }
         }
     }
-    let (upper, lower) = got.expect("MatrixSnapshot not emitted");
-    assert_eq!(upper.len(), 16);
-    assert_eq!(lower.len(), 16);
-    assert_eq!(upper[2], upper_row);
-    assert_eq!(lower[9], lower_row);
-}
-
-#[test]
-fn set_edit_layer_also_pushes_matrix_snapshot() {
-    let (mut ctrl, view_rx, _model) = build_controller();
-    ctrl.handle()
-        .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetEditLayer {
-            layer: Layer::Lower,
-        })))
-        .unwrap();
-    tick_vxn2(&mut ctrl);
-
-    let mut saw_snapshot = false;
-    let mut saw_layer = false;
-    for ev in drain(&view_rx) {
-        if let ViewEvent::Custom(payload) = ev {
-            if let Ok(custom) = payload.downcast::<Vxn2ViewCustom>() {
-                match *custom {
-                    Vxn2ViewCustom::EditLayerChanged { layer: Layer::Lower } => saw_layer = true,
-                    Vxn2ViewCustom::MatrixSnapshot { .. } => saw_snapshot = true,
-                    _ => {}
-                }
-            }
-        }
-    }
-    assert!(saw_layer, "EditLayerChanged not seen");
-    assert!(saw_snapshot, "MatrixSnapshot not pushed alongside layer change");
+    let rows = got.expect("MatrixSnapshot not emitted");
+    assert_eq!(rows.len(), 16);
+    assert_eq!(rows[2], row_a);
+    assert_eq!(rows[9], row_b);
 }
 
 #[test]
@@ -248,18 +186,18 @@ fn matrix_row_slot_9_uses_extra_depth_storage() {
     };
     ctrl.handle()
         .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetMatrixRow {
-            layer: Layer::Lower,
             slot: 10, // past the 0..8 CLAP-automatable range
             row,
         })))
         .unwrap();
     tick_vxn2(&mut ctrl);
 
-    let got = Vxn2Params::matrix_row(&*model, Layer::Lower, 10);
+    let got = Vxn2Params::matrix_row(&*model, 10);
     assert_eq!(got, row);
-    // No CLAP id is affected by a slot 9-16 write — spot-check.
-    let mtx1 = id_of("lower-mtx1-depth").unwrap();
-    assert_eq!(model.get(mtx1), 0.0);
+    // No CLAP id is affected by a slot 9-16 write — spot-check against
+    // mtx5-depth which the default patch leaves at descriptor default 0.0.
+    let mtx5 = id_of("mtx5-depth").unwrap();
+    assert_eq!(model.get(mtx5), 0.0);
 }
 
 /// Ticket 0029: when the page reports ready, the controller emits a

@@ -33,6 +33,10 @@ use crate::op::{OpParams, OpState, op_eg_tick, op_tick};
 pub struct VoiceParams {
     pub ops: [OpParams; N_OPS],
     pub algo: u8,
+    /// Layer-level feedback amount (0..=7). Routed by note-on / live update
+    /// onto the algorithm's `structural_fb_op` only; all other ops get
+    /// `fb_scale = 0`. Replaces the 6 dropped per-op feedback CLAP ids.
+    pub feedback: u8,
     pub master_tune_cents: f32,
     pub lfo2: Lfo2Params,
     pub pitch_eg: PitchEgParams,
@@ -48,6 +52,7 @@ impl Default for VoiceParams {
         Self {
             ops: [OpParams::default(); N_OPS],
             algo: 1,
+            feedback: 0,
             master_tune_cents: 0.0,
             lfo2: Lfo2Params::default(),
             pitch_eg: PitchEgParams::default(),
@@ -149,10 +154,13 @@ impl Voice {
         self.algo = params.algo;
         self.route_fn = resolve_route(params.algo);
         let master_mult = 2_f32.powf(params.master_tune_cents / 1200.0);
+        let fb_op = spec_of(params.algo).structural_fb_op;
+        let fb = crate::tables::fb_scale(params.feedback);
         for i in 0..N_OPS {
             self.ops[i].cook(&params.ops[i], note, velocity, sample_rate);
             let base = (self.ops[i].phase_inc as f64 * master_mult as f64) as u32;
             self.base_phase_inc[i] = base;
+            self.ops[i].fb_scale = if (i + 1) as u8 == fb_op { fb } else { 0.0 };
             self.ops[i].eg.note_on();
         }
         self.pitch_eg.cook(&params.pitch_eg, params.peg_depth, 1.0);

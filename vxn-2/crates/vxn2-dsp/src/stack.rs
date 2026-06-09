@@ -42,7 +42,7 @@ use crate::ks::{ks_level_mult, ks_rate_mult};
 use crate::lfo::Lfo2Stack;
 use crate::op::{OpParams, PM_SCALE_Q32, RatioMode, midi_to_hz};
 use crate::sine::scalar::fast_sine_q32;
-use crate::tables::{amp_sens_coef, detune_cents, fb_scale, vel_factor};
+use crate::tables::{amp_sens_coef, fb_scale, vel_factor};
 use crate::voice::VoiceParams;
 
 /// Fixed packed-lane width. All stack DSP runs over 8 lanes; `density < 8`
@@ -227,6 +227,29 @@ pub struct Stack {
     /// Patch-wide Mod Env (ticket 0007). Matrix-only source; ticks alongside
     /// the per-op EGs so 0008 can read its level without per-block coupling.
     pub mod_env: ModEnvState,
+    /// Per-op × per-lane additive level offset, written by the mod matrix at
+    /// block start and read by [`stack_tick_stereo`] / [`stack_tick_mono`].
+    /// Effective level per sample is `(op.eg.level + op_level_mod[i][k])
+    /// .clamp(0.0, 1.0)`. Zero when no matrix slot targets `OpNLevel`.
+    pub op_level_mod: [[f32; STACK_LANES]; N_OPS],
+    /// Per-lane pitch offset in semitones from matrix `GlobalPitch`. Summed
+    /// with `bend_st + glide_st + pitch_eg.level_st` in
+    /// [`Self::apply_pitch_mult`].
+    pub global_pitch_mod_st: [f32; STACK_LANES],
+    /// Per-op × per-lane pitch offset in semitones (sum of matrix `OpNRatio`
+    /// + `OpNDetune` contributions). Both routes are semitone-shaped for
+    /// matrix purposes — see DestId docs.
+    pub op_pitch_mod_st: [[f32; STACK_LANES]; N_OPS],
+    /// Per-op × per-lane pan offset, added to the cached base pan before the
+    /// equal-power curve. Applied by [`Self::refresh_pan_with_mod`].
+    pub op_pan_mod: [[f32; STACK_LANES]; N_OPS],
+    /// Cached stack-macro spread, captured at note-on so the per-block pan
+    /// refresh doesn't need a fresh `StackParams` handle.
+    pub cached_spread: f32,
+    /// Cached per-op static pan values from voice params at note-on. Source of
+    /// truth for [`Self::refresh_pan_with_mod`]; never overwritten between
+    /// note-ons.
+    pub cached_op_pans: [f32; N_OPS],
 }
 
 impl Default for Stack {
@@ -250,6 +273,12 @@ impl Default for Stack {
             lfo2: Lfo2Stack::default(),
             pitch_eg: PitchEgState::default(),
             mod_env: ModEnvState::default(),
+            op_level_mod: [[0.0_f32; STACK_LANES]; N_OPS],
+            global_pitch_mod_st: [0.0_f32; STACK_LANES],
+            op_pitch_mod_st: [[0.0_f32; STACK_LANES]; N_OPS],
+            op_pan_mod: [[0.0_f32; STACK_LANES]; N_OPS],
+            cached_spread: 0.0,
+            cached_op_pans: [0.0_f32; N_OPS],
         }
     }
 }
@@ -283,6 +312,32 @@ pub fn stack_seed(note: u8, velocity: u8, counter: u64) -> u64 {
 }
 
 impl Stack {
+    /// Live algorithm swap. Called every block from `Engine::apply_block_params`
+    /// so a user-driven algo change in the picker re-routes the held note's
+    /// op summing on the next block — without waiting for the next note-on
+    /// to re-cook routing. No-op when the algo hasn't moved.
+    #[inline]
+    pub fn set_algo_live(&mut self, algo: u8) {
+        if self.algo == algo {
+            return;
+        }
+        self.algo = algo;
+        self.route_fn = resolve_lane_route(algo);
+    }
+
+    /// Apply a layer-level feedback amount (0..=7). Writes `fb_scale` onto
+    /// the algorithm's structural FB op only; every other op's `fb_scale`
+    /// is zeroed. Called from `note_on` and from `Engine::apply_block_params`
+    /// each block so picker / fader changes propagate to a held note.
+    #[inline]
+    pub fn set_feedback_live(&mut self, feedback: u8) {
+        let scale = fb_scale(feedback);
+        let fb_op = spec_of(self.algo).structural_fb_op;
+        for i in 0..N_OPS {
+            self.ops[i].fb_scale = if (i + 1) as u8 == fb_op { scale } else { 0.0 };
+        }
+    }
+
     /// Note-on: populate per-lane offsets from `stack_params`, recook every op
     /// against `voice_params`, reset phase to lane-decorrelated offsets,
     /// trigger EG attack on every op.
@@ -327,6 +382,7 @@ impl Stack {
             );
             self.ops[i].eg.note_on();
         }
+        self.set_feedback_live(voice_params.feedback);
         self.pitch_eg
             .cook(&voice_params.pitch_eg, voice_params.peg_depth, 1.0);
         self.pitch_eg.note_on();
@@ -335,8 +391,19 @@ impl Stack {
         self.glide_st = 0.0;
         self.apply_pitch_mult();
         self.apply_phase_offsets(stack_params.phase);
+        // Cache pan inputs so `refresh_pan_with_mod` can re-run the equal-
+        // power curve every block without a fresh params handle.
+        self.cached_spread = stack_params.spread;
+        for i in 0..N_OPS {
+            self.cached_op_pans[i] = voice_params.ops[i].pan;
+        }
         self.recompute_pan(stack_params.spread, &voice_params.ops);
         self.prev_outs = [[0.0_f32; STACK_LANES]; N_OPS];
+        // Matrix writes block-rate; until the first block runs, hold zero.
+        self.op_level_mod = [[0.0_f32; STACK_LANES]; N_OPS];
+        self.global_pitch_mod_st = [0.0_f32; STACK_LANES];
+        self.op_pitch_mod_st = [[0.0_f32; STACK_LANES]; N_OPS];
+        self.op_pan_mod = [[0.0_f32; STACK_LANES]; N_OPS];
     }
 
     /// Solo-legato retarget: re-cook EG targets/rates and per-lane phase
@@ -394,17 +461,51 @@ impl Stack {
     }
 
     /// Recompute per-lane `phase_inc` from `base_phase_inc` × the current
-    /// pitch sum: bend + glide + `pitch_eg.level_st` (semitones). Call after
-    /// mutating bend / glide, or once per control tick after [`Self::eg_tick`]
-    /// so the per-sample loop sees the freshly ticked Pitch EG offset.
+    /// pitch sum: bend + glide + `pitch_eg.level_st` + matrix `GlobalPitch` +
+    /// matrix `OpNRatio`/`OpNDetune` (all semitones). Call after mutating
+    /// bend / glide, or once per control tick after [`Self::eg_tick`] so the
+    /// per-sample loop sees the freshly ticked Pitch EG offset plus the
+    /// freshly evaluated matrix block.
     #[inline]
     pub fn apply_pitch_mult(&mut self) {
-        let total_st = self.bend_st + self.glide_st + self.pitch_eg.level_st;
-        let mult = 2_f32.powf(total_st / 12.0) as f64;
+        let base_st = self.bend_st + self.glide_st + self.pitch_eg.level_st;
         for i in 0..N_OPS {
             for k in 0..STACK_LANES {
+                let st = base_st + self.global_pitch_mod_st[k] + self.op_pitch_mod_st[i][k];
+                let mult = 2_f32.powf(st / 12.0) as f64;
                 self.ops[i].phase_inc[k] =
                     (self.ops[i].base_phase_inc[k] as f64 * mult) as u32;
+            }
+        }
+    }
+
+    /// Re-run the equal-power pan curve using cached `spread` + base op pans
+    /// plus the matrix `OpNPan` per-lane offset. Called by the engine each
+    /// block after the matrix eval so a pan-routed slot moves the lane gains
+    /// without re-deriving `voice_spread` or `density`.
+    pub fn refresh_pan_with_mod(&mut self) {
+        let spec = spec_of(self.algo);
+        let density = self.density as usize;
+        let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
+        let mut lane_pan = [0.0_f32; STACK_LANES];
+        for k in 0..STACK_LANES {
+            lane_pan[k] = self.cached_spread * self.voice_spread[k];
+        }
+        for i in 0..N_OPS {
+            let is_carrier = (spec.carriers >> i) & 1 == 1;
+            let op_pan = self.cached_op_pans[i];
+            for k in 0..STACK_LANES {
+                let active = is_carrier && k < density;
+                if active {
+                    let total = (op_pan + lane_pan[k] + self.op_pan_mod[i][k]).clamp(-1.0, 1.0);
+                    let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
+                    let (s, c) = theta.sin_cos();
+                    self.pan_l[i][k] = c * inv_sqrt_density;
+                    self.pan_r[i][k] = s * inv_sqrt_density;
+                } else {
+                    self.pan_l[i][k] = 0.0;
+                    self.pan_r[i][k] = 0.0;
+                }
             }
         }
     }
@@ -468,9 +569,10 @@ impl Stack {
     ) {
         let base_hz = match params.ratio_mode {
             RatioMode::Ratio => {
-                let cents = detune_cents(params.detune);
-                let detune_factor = 2_f32.powf(cents / 1200.0);
-                midi_to_hz(key) * (params.ratio + params.fine) * detune_factor
+                let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
+                let denom = params.denom.max(1) as f32;
+                let cents = params.detune as f32;
+                midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
             }
             RatioMode::Fixed => params.fixed_hz,
         };
@@ -495,7 +597,9 @@ impl Stack {
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         self.ops[i].eg.cook(&params.eg, max_amp, rate_mult);
 
-        self.ops[i].fb_scale = fb_scale(params.feedback);
+        // Feedback is no longer per-op: see `set_feedback_live`. cook_op
+        // leaves `fb_scale` alone; note_on calls the live setter after the
+        // cook loop, and the engine refreshes it each block.
         self.ops[i].amp_sens_coef = amp_sens_coef(params.amp_sens);
     }
 
@@ -518,6 +622,10 @@ impl Stack {
     fn recompute_pan(&mut self, spread: f32, op_params: &[OpParams; N_OPS]) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
+        // Decorrelated lanes (voice_spread + per-lane phase scatter at note-on)
+        // sum to ~√N amplitude. Bake 1/√density into the pan tables so density
+        // 1..8 are level-matched without a per-sample multiply.
+        let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
         let mut lane_pan = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             lane_pan[k] = spread * self.voice_spread[k];
@@ -531,8 +639,8 @@ impl Stack {
                     let total = (op_pan + lane_pan[k]).clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
-                    self.pan_l[i][k] = c;
-                    self.pan_r[i][k] = s;
+                    self.pan_l[i][k] = c * inv_sqrt_density;
+                    self.pan_r[i][k] = s * inv_sqrt_density;
                 } else {
                     self.pan_l[i][k] = 0.0;
                     self.pan_r[i][k] = 0.0;
@@ -578,6 +686,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
     let (mi, _cs) = (stack.route_fn)(&stack.prev_outs);
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
+        let lvl_mod = stack.op_level_mod[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -588,11 +697,13 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
             let total_mod = mi[i][k] + fb_avg * fbs;
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
-        // Stage 2: read sine at modulated phase, scale by EG level.
+        // Stage 2: read sine at modulated phase, scale by EG level plus the
+        // mod-matrix per-lane offset (clamped — additive on a [0,1] base).
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            sines[k] = fast_sine_q32(phase_mod) * lvl;
+            let lvl_k = (lvl + lvl_mod[k]).clamp(0.0, 1.0);
+            sines[k] = fast_sine_q32(phase_mod) * lvl_k;
         }
         // Stage 3: advance phase + rotate feedback memory.
         for k in 0..STACK_LANES {
@@ -623,6 +734,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
     let (mi, _cs_lane) = (stack.route_fn)(&stack.prev_outs);
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
+        let lvl_mod = stack.op_level_mod[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -635,7 +747,8 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            sines[k] = fast_sine_q32(phase_mod) * lvl;
+            let lvl_k = (lvl + lvl_mod[k]).clamp(0.0, 1.0);
+            sines[k] = fast_sine_q32(phase_mod) * lvl_k;
         }
         for k in 0..STACK_LANES {
             new_outs[i][k] = sines[k];
@@ -654,6 +767,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
             }
         }
     }
+    sum *= 1.0 / (density.max(1) as f32).sqrt();
     stack.prev_outs = new_outs;
     sum
 }
@@ -809,12 +923,13 @@ mod tests {
         let vp = carrier_friendly_patch();
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
         // Lane 0 → spread −1 → fully left; lane 1 → spread +1 → fully right.
-        // pan_l[0][0] ≈ 1.0 (cos(0)); pan_r[0][0] ≈ 0.0; pan_l[0][1] ≈ 0.0;
-        // pan_r[0][1] ≈ 1.0.
-        assert!(stack.pan_l[0][0] > 0.99);
+        // pan values are scaled by 1/√density for level compensation, so the
+        // hard-panned channel sits at 1/√2 ≈ 0.7071 rather than 1.0.
+        let inv_sqrt2 = 1.0 / 2.0_f32.sqrt();
+        assert!((stack.pan_l[0][0] - inv_sqrt2).abs() < 1e-4);
         assert!(stack.pan_r[0][0] < 0.01);
         assert!(stack.pan_l[0][1] < 0.01);
-        assert!(stack.pan_r[0][1] > 0.99);
+        assert!((stack.pan_r[0][1] - inv_sqrt2).abs() < 1e-4);
     }
 
     #[test]

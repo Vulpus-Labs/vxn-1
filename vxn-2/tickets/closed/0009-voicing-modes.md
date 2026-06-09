@@ -6,6 +6,12 @@ created: 2026-06-05
 epic: E001
 ---
 
+> **SUPERSEDED** by [ADR 0002 — Drop dual-layer voicing](../../adrs/0002-drop-dual-layer.md)
+> and [E004 — Single-layer collapse](../../epics/open/E004-single-layer-collapse.md).
+> Voicing-mode infrastructure has been removed. The acceptance criteria
+> below describe a feature that no longer ships; the body is retained as a
+> historical record.
+
 ## Summary
 
 Per ADR §8: a patch can be one of three voicing modes.

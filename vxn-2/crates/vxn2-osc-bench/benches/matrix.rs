@@ -78,7 +78,7 @@ fn full_table() -> MatrixTable {
         DestId::Op2Ratio,
         DestId::Op2Detune,
         DestId::Op3Pan,
-        DestId::Op4Feedback,
+        DestId::Op4Pan,
         DestId::Op5Level,
         DestId::Op6Ratio,
         DestId::GlobalPitch,

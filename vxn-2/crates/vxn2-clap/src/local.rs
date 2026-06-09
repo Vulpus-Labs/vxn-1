@@ -236,15 +236,15 @@ mod tests {
 
         // Diverge the mirror: pretend a host event came through.
         let vol = id_of("master-volume").unwrap();
-        let upper_op3_ratio = id_of("upper-op3-ratio").unwrap();
+        let op3_num = id_of("op3-num").unwrap();
         local.values[vol] = 0.0;
-        local.values[upper_op3_ratio] = 2.5;
+        local.values[op3_num] = 5.0;
 
         // Shared store still at defaults.
         let mut engine = EngineParams::default();
         local.write_to(&mut engine);
 
         assert!((engine.master.volume_db - 0.0).abs() < 1e-6);
-        assert!((engine.patch.upper.voice.ops[2].ratio - 2.5).abs() < 1e-6);
+        assert_eq!(engine.patch.voice.ops[2].num, 5);
     }
 }

@@ -158,10 +158,35 @@ html, body {
   width: 160px;
   flex: 0 0 160px;
 }
-.algo-block .panel-header {
-  justify-content: space-between;
-  padding: 0 6px;
+
+.fb-panel {
+  width: 78px;
+  flex: 0 0 78px;
+}
+.fb-body {
+  flex-direction: column;
+  align-items: center;
   gap: 4px;
+  padding: 6px 4px;
+}
+.fb-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1;
+}
+.fb-target-label {
+  font-size: 8px;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.fb-target-num {
+  font-size: 16px;
+  color: var(--ctl-value);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 .algo-block .panel-body {
   flex-direction: column;
@@ -200,33 +225,6 @@ html, body {
   cursor: pointer;
 }
 .algo-pick:hover { border-color: var(--glyph-active); color: #ececec; }
-
-.edit-layer-toggle {
-  display: flex;
-  gap: 2px;
-}
-.elt-btn {
-  background: #232323;
-  border: 1px solid #333;
-  border-radius: 2px;
-  color: var(--ctl-label);
-  font: inherit;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 1px 4px;
-  cursor: pointer;
-  text-transform: uppercase;
-  line-height: 12px;
-}
-.elt-btn.active {
-  background: var(--ctl-value);
-  color: var(--header-fg);
-  border-color: var(--ctl-value);
-}
-.edit-layer-toggle.muted .elt-btn {
-  opacity: 0.5;
-}
 
 .algo-diagram {
   flex: 1 1 auto;
@@ -420,17 +418,57 @@ html, body {
   border-radius: 1px;
   cursor: ns-resize;
 }
-.fader-value {
-  font-size: 9px;
-  color: var(--ctl-value);
+.fader.disabled { opacity: 0.35; pointer-events: none; }
+/* Shared value-pop tooltip — sits at body level, follows pointer on
+ * hover/drag. Replaces the per-fader inline value readout. */
+.value-pop {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  background: #0e0e0e;
+  border: 1px solid var(--ctl-value);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: #f6f6f6;
   font-variant-numeric: tabular-nums;
-  height: var(--ctl-value-h);
-  line-height: var(--ctl-value-h);
-  visibility: hidden;
+  white-space: nowrap;
+  z-index: 1000;
 }
-.fader:hover .fader-value,
-.fader.dragging .fader-value {
-  visibility: visible;
+
+/* fader with a sub-toggle button (rate fader + tempo-sync button). */
+.fader-with-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 28px;
+}
+.fader-with-toggle .fader { width: 100%; }
+.bgrp-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid #4a4a4a;
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  margin: 0;
+  cursor: pointer;
+  line-height: 10px;
+}
+.bgrp-toggle:hover { color: #ececec; border-color: #c4c4c4; }
+.bgrp-toggle.active {
+  background: var(--header-bg);
+  border-color: var(--header-bg);
+  color: var(--header-fg);
+  box-shadow: 0 0 4px rgba(167, 207, 226, 0.6);
 }
 
 /* wave-shape rotary knob (ported from vxn-1) */
@@ -456,34 +494,53 @@ html, body {
 .wave-knob .wave-glyph.active { stroke: #a7cfe2; }
 .wave-knob .wave-hit { fill: transparent; cursor: pointer; }
 
-/* segmented buttongroup */
+/* vertical checkbox-style buttongroup (vxn-1 style):
+ * each option is a small box + label, stacked top-to-bottom. */
 .bgrp {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bgrp-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.bgrp-row {
-  display: flex;
-  gap: 2px;
-}
 .bgrp-btn {
-  background: #232323;
-  border: 1px solid #333;
-  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
   color: var(--ctl-label);
   font: inherit;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.5px;
-  padding: 3px 6px;
-  cursor: pointer;
   text-transform: uppercase;
-  flex: 1 1 0;
+  text-align: left;
+  line-height: 12px;
+  cursor: pointer;
 }
-.bgrp-btn.active {
+.bgrp-btn::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  background: #2a2a2a;
+  border: 1px solid #4a4a4a;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+}
+.bgrp-btn:hover { color: #ececec; }
+.bgrp-btn:hover::before { border-color: #c4c4c4; }
+.bgrp-btn.active { color: #ececec; }
+.bgrp-btn.active::before {
   background: var(--header-bg);
-  color: var(--header-fg);
   border-color: var(--header-bg);
+  box-shadow: 0 0 4px rgba(167, 207, 226, 0.6);
 }
 
 /* EG + KS graph widgets */
@@ -527,12 +584,12 @@ html, body {
 
 .gmod-row { height: 144px; }
 
-/* generic control column */
+/* generic control column: label on top, control(s) below */
 .cgrp {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 3px;
   padding: 0 2px;
 }
 .cgrp-label {
@@ -540,6 +597,8 @@ html, body {
   color: var(--ctl-label);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
 }
 
 .lfo-panel { flex: 1 1 0; }
@@ -548,6 +607,11 @@ html, body {
 
 .peg-panel .panel-body { padding: 6px; }
 .peg-panel .graph { flex: 1 1 auto; min-width: 0; }
+
+.moenv-body { flex-direction: column; gap: 4px; }
+.moenv-faders { display: flex; flex-direction: row; gap: 6px; flex: 1 1 auto; justify-content: center; }
+.moenv-shape { display: flex; justify-content: center; padding-bottom: 2px; }
+.moenv-shape .bgrp-row { flex-direction: row; gap: 6px; }
 
 /* mod matrix slot list */
 .mm-list {
@@ -596,13 +660,13 @@ html, body {
 
 /* ===== bottom row ===== */
 
-.perf-row { height: 130px; }
+.perf-row { height: 150px; }
 
-.voice-panel { flex: 1.2 1 0; }
-.stack-panel { flex: 1.5 1 0; }
-.delay-panel { flex: 1 1 0; }
-.reverb-panel { flex: 1 1 0; }
-.master-panel { flex: 0.9 1 0; }
+.voice-panel { flex: 1.8 1 0; }
+.stack-panel { flex: 1.4 1 0; }
+.delay-panel { flex: 1.4 1 0; }
+.reverb-panel { flex: 1.0 1 0; }
+.master-panel { flex: 0.6 1 0; }
 
 /* header toggle */
 .panel.toggle-on > .panel-header { background: var(--header-bg); }

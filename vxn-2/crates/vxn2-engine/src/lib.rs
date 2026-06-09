@@ -15,7 +15,6 @@ pub mod matrix;
 pub mod modulation;
 pub mod params;
 pub mod shared;
-pub mod voicing;
 
 pub use ftz::ScopedFlushToZero;
 pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id};
@@ -24,5 +23,5 @@ pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_fo
 pub use vxn2_dsp::lfo::{SUBDIVISIONS, Subdivision, index_from_norm};
 pub use shared::{
     BLOB_HEADER_LEN, BLOB_MAGIC, BLOB_VERSION, EngineParams, ParamLoadError, ParamModel,
-    ParamView, SharedParams,
+    ParamView, Patch, SharedParams,
 };

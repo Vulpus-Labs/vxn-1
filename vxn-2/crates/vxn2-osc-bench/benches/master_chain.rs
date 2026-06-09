@@ -1,9 +1,8 @@
 //! Full master chain (ticket 0012).
 //!
 //! Drives the assembled engine through its steady-state hot path: 16 held
-//! voices, density 4 (so 64 op-voice instances in flight), Layer-mode
-//! voicing (each note allocates two stacks → 8 notes × 2 layers = 16), full
-//! FX (delay + reverb on), master volume + tune applied.
+//! voices, density 4 (so 64 op-voice instances in flight), full FX (delay
+//! + reverb on), master volume + tune applied.
 //!
 //! Throughput = stereo samples rendered per call. RT factor = `thrpt / SR`.
 //!
@@ -20,16 +19,14 @@ use vxn2_engine::shared::SharedParams;
 
 const SR: f32 = 48_000.0;
 const BLK: usize = 256;
-const N_NOTES: usize = 8;
+const N_NOTES: usize = 16;
 
-/// 8 notes × Layer-mode = 16 stacks. Density 4 → 16 stacks × 4 lanes = 64
-/// op-voice instances in flight.
+/// 16 notes × single-layer = 16 stacks. Density 4 → 16 stacks × 4 lanes
+/// = 64 op-voice instances in flight.
 fn build_engine(fx_on: bool) -> Engine {
     let s = SharedParams::new();
     // Density 4 is the ticket-AC baseline.
-    s.set(id_of("upper-stack-density").unwrap(), 4.0);
-    s.set(id_of("lower-stack-density").unwrap(), 4.0);
-    // Default voicing is Layer; keep it.
+    s.set(id_of("stack-density").unwrap(), 4.0);
     if !fx_on {
         s.set(id_of("delay-on").unwrap(), 0.0);
         s.set(id_of("reverb-on").unwrap(), 0.0);
@@ -37,8 +34,8 @@ fn build_engine(fx_on: bool) -> Engine {
     let mut e = Engine::new(SR, BLK);
     e.snapshot_params(&s);
 
-    // Hold a sustained 8-note chord across the keyboard.
-    let notes: [u8; N_NOTES] = [40, 47, 52, 55, 60, 64, 67, 72];
+    // Hold a sustained 16-note chord across the keyboard.
+    let notes: [u8; N_NOTES] = [36, 40, 43, 47, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72, 74, 76];
     for &n in &notes {
         e.note_on(n, 100);
     }

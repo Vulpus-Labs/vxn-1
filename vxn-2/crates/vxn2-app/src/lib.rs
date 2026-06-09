@@ -5,11 +5,10 @@
 //! - Declares VXN2-specific `UiEvent::Custom` / `ViewEvent::Custom` payloads
 //!   ([`Vxn2UiCustom`] / [`Vxn2ViewCustom`]) for things the shared
 //!   vocabulary doesn't cover: mod-matrix row edits (source / dest / curve /
-//!   active — `depth` rides the normal `SetParam` path for slots 1-8),
-//!   op-tab switches, edit-layer toggle.
+//!   active — `depth` rides the normal `SetParam` path for slots 1-8) and
+//!   op-tab switches.
 //! - Extends the `ParamModel` surface via [`Vxn2Params`] for the non-CLAP
-//!   shared state the controller needs to read / write (matrix rows,
-//!   edit-layer view).
+//!   shared state the controller needs to read / write (matrix rows).
 //! - Exposes [`tick_vxn2`], the per-tick driver `vxn2-clap`'s timer extension
 //!   calls. It wires the `(on_custom_ui, on_custom_host)` closure pair
 //!   `Controller::tick` requires, translating `Vxn2UiCustom` into model
@@ -25,7 +24,7 @@ pub mod model;
 
 pub use controller::{NoopPresetStore, tick_vxn2};
 pub use events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
-pub use model::{Layer, Vxn2Params};
+pub use model::Vxn2Params;
 
 pub use vxn_core_app::{
     CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, EditorBackend, HostEvent,

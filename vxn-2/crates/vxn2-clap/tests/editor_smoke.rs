@@ -71,7 +71,7 @@ fn set_param_round_trips_into_shared_params() {
 #[test]
 fn gesture_bracketed_set_param_lands_and_clears_gesture() {
     let (mut controller, shared) = build_controller();
-    let algo = id_of("upper-algo").unwrap();
+    let algo = id_of("algo").unwrap();
     simulate_ipc(
         &mut controller,
         &format!(r#"{{"op":"begin_gesture","id":{algo}}}"#),
@@ -116,20 +116,19 @@ fn set_param_norm_round_trips_via_descriptor() {
 }
 
 /// VXN2-specific opcode: `set_matrix_row` rides `UiEvent::Custom` and
-/// the vxn2 controller's tick handler applies it to the per-layer
+/// the vxn2 controller's tick handler applies it to the per-patch
 /// matrix table on `SharedParams`.
 #[test]
 fn custom_set_matrix_row_routes_through_controller() {
     let (mut controller, shared) = build_controller();
     let body = r#"{
         "op": "set_matrix_row",
-        "layer": "upper",
         "slot": 3,
         "row": {"source": 5, "dest": 17, "curve": 1, "active": true, "depth": 0.5}
     }"#;
     simulate_ipc(&mut controller, body);
     tick_vxn2(&mut controller);
-    let row = shared.matrix_row_raw(0, 3);
+    let row = shared.matrix_row_raw(3);
     assert_eq!(row.source, 5);
     assert_eq!(row.dest, 17);
     assert!(row.active);

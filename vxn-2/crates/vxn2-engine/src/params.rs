@@ -6,18 +6,14 @@
 //! CLAP ids are a stable, flat index space:
 //!
 //! ```text
-//!   0 .. 162   Upper per-layer  (126 op + 1 algo + 5 LFO2 + 9 PEG +
-//!                                5 mod-env + 3 assign + 5 stack + 8 mtx)
-//! 162 .. 324   Lower per-layer  (same shape — every per-layer param is
-//!                                doubled per ADR §8 / PARAMETERS.md "Scope")
-//! 324 .. 343   Patch-level      (4 LFO1 + 2 voicing + 6 delay + 5 reverb +
-//!                                2 master)
+//!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
+//!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
+//!                                8 mtx)
+//! 163 .. 180   Patch-level      (4 LFO1 + 6 delay + 5 reverb + 2 master)
 //! ```
 //!
-//! Total 343. The summary in PARAMETERS.md and the older count of 174 from
-//! the ticket body both reflect the same enumeration: the ticket's 174 counts
-//! a single layer plus patch-level; doubling per-layer gives the 343 surfaced
-//! here.
+//! Total 180. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! is gone — a patch is one parameter set.
 //!
 //! ## What is *not* in the table
 //!
@@ -28,8 +24,7 @@
 //! - Mod-matrix `source` / `dest` / `curve` and slots 9..=16 `depth`:
 //!   matrix topology + extra depths. Slots 1..=8 `depth` are CLAP-automatable
 //!   per [`crate::matrix::N_CLAP_DEPTH_SLOTS`]; the rest is patch state.
-//! - `edit_layer`: editor-side view state, not a sound parameter.
-//! - Mod-matrix slot table itself: see [`crate::matrix::PatchMatrix`].
+//! - Mod-matrix slot table itself: see [`crate::matrix::MatrixTable`].
 //!
 //! ## Stable IDs?
 //!
@@ -49,18 +44,15 @@
 //! macros — the same const-slice approach VXN1's `vxn-engine::params` ships,
 //! avoiding a build script.
 
-pub const N_OPS_PER_LAYER: usize = 6;
+pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 21;
-pub const N_PER_LAYER_REST: usize = 36;
-pub const N_PER_LAYER: usize = N_OPS_PER_LAYER * N_PER_OP + N_PER_LAYER_REST; // 162
-pub const N_LAYERS: usize = 2;
-pub const N_PATCH_LEVEL: usize = 19;
-pub const TOTAL_PARAMS: usize = N_PER_LAYER * N_LAYERS + N_PATCH_LEVEL; // 343
+pub const N_PER_PATCH_REST: usize = 37;
+pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
+pub const N_PATCH_LEVEL: usize = 17;
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 180
 
-/// Start of the Lower-layer block in the flat CLAP id space.
-pub const LOWER_BASE: usize = N_PER_LAYER;
 /// Start of the patch-level block in the flat CLAP id space.
-pub const PATCH_BASE: usize = N_PER_LAYER * N_LAYERS;
+pub const PATCH_BASE: usize = N_PER_PATCH;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -356,85 +348,84 @@ const fn en(
 // ── Variant tables ──────────────────────────────────────────────────────────
 
 pub const LFO_SHAPES: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Pulse", "S&H"];
-pub const LFO2_TRIGS: &[&str] = &["Free", "KeySync"];
 pub const STACK_DISTRIBS: &[&str] = &["Linear", "Geometric", "Random"];
 pub const ADSR_SHAPES: &[&str] = &["Lin", "Exp"];
-pub const VOICING_MODES: &[&str] = &["Whole", "Layer", "Split"];
 pub const ASSIGN_MODES: &[&str] = &["Poly", "Solo"];
 
 // ── Macros (each yields a single array literal) ─────────────────────────────
 //
 // macro_rules! expansions are parsed as a single expression in expression
 // context, so each macro here returns one `[ParamDesc; N]` array; the section
-// arrays are then flattened by `concat_per_layer` / `concat_all` const fns.
+// arrays are then flattened by `concat_per_patch` const fn.
 
 macro_rules! op_block_arr {
-    ($prefix:literal, $disp:literal, $n:literal) => {
+    ($n:literal) => {
         [
-            fl(concat!($prefix, "op", $n, "-ratio"), concat!($disp, "Op ", $n, " Ratio"), 0.5, 31.0, 1.0, ""),
-            flx(concat!($prefix, "op", $n, "-fixed-hz"), concat!($disp, "Op ", $n, " Fixed Hz"), 1.0, 9772.0, 440.0, "Hz", 100.0),
-            fl(concat!($prefix, "op", $n, "-fine"), concat!($disp, "Op ", $n, " Fine"), 0.0, 0.99, 0.0, ""),
-            it(concat!($prefix, "op", $n, "-detune"), concat!($disp, "Op ", $n, " Detune"), -7, 7, 0, ""),
-            it(concat!($prefix, "op", $n, "-level"), concat!($disp, "Op ", $n, " Level"), 0, 99, 99, ""),
-            it(concat!($prefix, "op", $n, "-vel-sens"), concat!($disp, "Op ", $n, " Vel Sens"), 0, 7, 3, ""),
-            it(concat!($prefix, "op", $n, "-amp-sens"), concat!($disp, "Op ", $n, " Amp Sens"), 0, 3, 0, ""),
-            it(concat!($prefix, "op", $n, "-eg-r1"), concat!($disp, "Op ", $n, " EG R1"), 0, 99, 99, ""),
-            it(concat!($prefix, "op", $n, "-eg-r2"), concat!($disp, "Op ", $n, " EG R2"), 0, 99, 50, ""),
-            it(concat!($prefix, "op", $n, "-eg-r3"), concat!($disp, "Op ", $n, " EG R3"), 0, 99, 35, ""),
-            it(concat!($prefix, "op", $n, "-eg-r4"), concat!($disp, "Op ", $n, " EG R4"), 0, 99, 60, ""),
-            it(concat!($prefix, "op", $n, "-eg-l1"), concat!($disp, "Op ", $n, " EG L1"), 0, 99, 99, ""),
-            it(concat!($prefix, "op", $n, "-eg-l2"), concat!($disp, "Op ", $n, " EG L2"), 0, 99, 70, ""),
-            it(concat!($prefix, "op", $n, "-eg-l3"), concat!($disp, "Op ", $n, " EG L3"), 0, 99, 50, ""),
-            it(concat!($prefix, "op", $n, "-eg-l4"), concat!($disp, "Op ", $n, " EG L4"), 0, 99, 0, ""),
-            it(concat!($prefix, "op", $n, "-ks-break-pt"), concat!($disp, "Op ", $n, " KS Break"), 0, 127, 60, ""),
-            it(concat!($prefix, "op", $n, "-ks-l-depth"), concat!($disp, "Op ", $n, " KS L Depth"), 0, 99, 0, ""),
-            it(concat!($prefix, "op", $n, "-ks-r-depth"), concat!($disp, "Op ", $n, " KS R Depth"), 0, 99, 30, ""),
-            it(concat!($prefix, "op", $n, "-ks-rate"), concat!($disp, "Op ", $n, " KS Rate"), 0, 7, 2, ""),
-            fl(concat!($prefix, "op", $n, "-pan"), concat!($disp, "Op ", $n, " Pan"), -1.0, 1.0, 0.0, ""),
-            it(concat!($prefix, "op", $n, "-feedback"), concat!($disp, "Op ", $n, " Feedback"), 0, 7, 0, ""),
+            it(concat!("op", $n, "-num"), concat!("Op ", $n, " Num"), 1, 32, 1, ""),
+            it(concat!("op", $n, "-denom"), concat!("Op ", $n, " Denom"), 1, 8, 1, ""),
+            flx(concat!("op", $n, "-fixed-hz"), concat!("Op ", $n, " Fixed Hz"), 1.0, 9772.0, 440.0, "Hz", 100.0),
+            it(concat!("op", $n, "-fine"), concat!("Op ", $n, " Fine"), -100, 100, 0, ""),
+            it(concat!("op", $n, "-detune"), concat!("Op ", $n, " Detune"), -100, 100, 0, "ct"),
+            it(concat!("op", $n, "-level"), concat!("Op ", $n, " Level"), 0, 99, 99, ""),
+            it(concat!("op", $n, "-vel-sens"), concat!("Op ", $n, " Vel Sens"), 0, 7, 3, ""),
+            it(concat!("op", $n, "-amp-sens"), concat!("Op ", $n, " Amp Sens"), 0, 3, 0, ""),
+            it(concat!("op", $n, "-eg-r1"), concat!("Op ", $n, " EG R1"), 0, 99, 99, ""),
+            it(concat!("op", $n, "-eg-r2"), concat!("Op ", $n, " EG R2"), 0, 99, 50, ""),
+            it(concat!("op", $n, "-eg-r3"), concat!("Op ", $n, " EG R3"), 0, 99, 35, ""),
+            it(concat!("op", $n, "-eg-r4"), concat!("Op ", $n, " EG R4"), 0, 99, 60, ""),
+            it(concat!("op", $n, "-eg-l1"), concat!("Op ", $n, " EG L1"), 0, 99, 99, ""),
+            it(concat!("op", $n, "-eg-l2"), concat!("Op ", $n, " EG L2"), 0, 99, 70, ""),
+            it(concat!("op", $n, "-eg-l3"), concat!("Op ", $n, " EG L3"), 0, 99, 50, ""),
+            it(concat!("op", $n, "-eg-l4"), concat!("Op ", $n, " EG L4"), 0, 99, 0, ""),
+            it(concat!("op", $n, "-ks-break-pt"), concat!("Op ", $n, " KS Break"), 0, 127, 60, ""),
+            it(concat!("op", $n, "-ks-l-depth"), concat!("Op ", $n, " KS L Depth"), 0, 99, 0, ""),
+            it(concat!("op", $n, "-ks-r-depth"), concat!("Op ", $n, " KS R Depth"), 0, 99, 30, ""),
+            it(concat!("op", $n, "-ks-rate"), concat!("Op ", $n, " KS Rate"), 0, 7, 2, ""),
+            fl(concat!("op", $n, "-pan"), concat!("Op ", $n, " Pan"), -1.0, 1.0, 0.0, ""),
         ]
     };
 }
 
-macro_rules! per_layer_rest_arr {
-    ($prefix:literal, $disp:literal) => {
+macro_rules! per_patch_rest_arr {
+    () => {
         [
-            it(concat!($prefix, "algo"), concat!($disp, "Algorithm"), 1, 32, 5, ""),
-            en(concat!($prefix, "lfo2-shape"), concat!($disp, "LFO2 Shape"), LFO_SHAPES, 2),
-            flx(concat!($prefix, "lfo2-rate"), concat!($disp, "LFO2 Rate"), 0.01, 50.0, 5.1, "Hz", 2.0),
-            flx(concat!($prefix, "lfo2-delay"), concat!($disp, "LFO2 Delay"), 0.0, 4000.0, 180.0, "ms", 100.0),
-            flx(concat!($prefix, "lfo2-fade"), concat!($disp, "LFO2 Fade"), 0.0, 4000.0, 320.0, "ms", 100.0),
-            en(concat!($prefix, "lfo2-trig"), concat!($disp, "LFO2 Trig"), LFO2_TRIGS, 1),
-            it(concat!($prefix, "peg-r1"), concat!($disp, "PEG R1"), 0, 99, 99, ""),
-            it(concat!($prefix, "peg-r2"), concat!($disp, "PEG R2"), 0, 99, 50, ""),
-            it(concat!($prefix, "peg-r3"), concat!($disp, "PEG R3"), 0, 99, 35, ""),
-            it(concat!($prefix, "peg-r4"), concat!($disp, "PEG R4"), 0, 99, 60, ""),
-            it(concat!($prefix, "peg-l1"), concat!($disp, "PEG L1"), -99, 99, 0, ""),
-            it(concat!($prefix, "peg-l2"), concat!($disp, "PEG L2"), -99, 99, 0, ""),
-            it(concat!($prefix, "peg-l3"), concat!($disp, "PEG L3"), -99, 99, 0, ""),
-            it(concat!($prefix, "peg-l4"), concat!($disp, "PEG L4"), -99, 99, 0, ""),
-            fl(concat!($prefix, "peg-depth"), concat!($disp, "PEG Depth"), 0.0, 1.0, 1.0, ""),
-            flx(concat!($prefix, "mod-env-a"), concat!($disp, "Mod Env A"), 0.0, 4000.0, 2.0, "ms", 50.0),
-            flx(concat!($prefix, "mod-env-d"), concat!($disp, "Mod Env D"), 0.0, 4000.0, 320.0, "ms", 100.0),
-            fl(concat!($prefix, "mod-env-s"), concat!($disp, "Mod Env S"), 0.0, 1.0, 0.60, ""),
-            flx(concat!($prefix, "mod-env-r"), concat!($disp, "Mod Env R"), 0.0, 4000.0, 180.0, "ms", 100.0),
-            en(concat!($prefix, "mod-env-shape"), concat!($disp, "Mod Env Shape"), ADSR_SHAPES, 0),
-            en(concat!($prefix, "assign-mode"), concat!($disp, "Assign"), ASSIGN_MODES, 0),
-            bl(concat!($prefix, "legato"), concat!($disp, "Legato"), false),
-            flx(concat!($prefix, "glide-time"), concat!($disp, "Glide"), 0.0, 2000.0, 12.0, "ms", 100.0),
-            it(concat!($prefix, "stack-density"), concat!($disp, "Stack Density"), 1, 8, 4, ""),
-            fl(concat!($prefix, "stack-detune"), concat!($disp, "Stack Detune"), 0.0, 100.0, 8.0, "ct"),
-            fl(concat!($prefix, "stack-spread"), concat!($disp, "Stack Spread"), 0.0, 1.0, 0.60, ""),
-            fl(concat!($prefix, "stack-phase"), concat!($disp, "Stack Phase"), 0.0, 1.0, 0.50, ""),
-            en(concat!($prefix, "stack-distrib"), concat!($disp, "Stack Distrib"), STACK_DISTRIBS, 0),
-            fl(concat!($prefix, "mtx1-depth"), concat!($disp, "Mtx 1 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx2-depth"), concat!($disp, "Mtx 2 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx3-depth"), concat!($disp, "Mtx 3 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx4-depth"), concat!($disp, "Mtx 4 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx5-depth"), concat!($disp, "Mtx 5 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx6-depth"), concat!($disp, "Mtx 6 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx7-depth"), concat!($disp, "Mtx 7 Depth"), -1.0, 1.0, 0.0, ""),
-            fl(concat!($prefix, "mtx8-depth"), concat!($disp, "Mtx 8 Depth"), -1.0, 1.0, 0.0, ""),
+            it("algo", "Algorithm", 1, 32, 5, ""),
+            it("feedback", "Feedback", 0, 7, 0, ""),
+            en("lfo2-shape", "LFO2 Shape", LFO_SHAPES, 2),
+            flx("lfo2-rate", "LFO2 Rate", 0.01, 50.0, 5.1, "Hz", 2.0),
+            flx("lfo2-delay", "LFO2 Delay", 0.0, 4000.0, 180.0, "ms", 100.0),
+            flx("lfo2-fade", "LFO2 Fade", 0.0, 4000.0, 320.0, "ms", 100.0),
+            bl("lfo2-sync", "LFO2 Sync", false),
+            it("peg-r1", "PEG R1", 0, 99, 99, ""),
+            it("peg-r2", "PEG R2", 0, 99, 50, ""),
+            it("peg-r3", "PEG R3", 0, 99, 35, ""),
+            it("peg-r4", "PEG R4", 0, 99, 60, ""),
+            it("peg-l1", "PEG L1", -99, 99, 0, ""),
+            it("peg-l2", "PEG L2", -99, 99, 0, ""),
+            it("peg-l3", "PEG L3", -99, 99, 0, ""),
+            it("peg-l4", "PEG L4", -99, 99, 0, ""),
+            fl("peg-depth", "PEG Depth", 0.0, 1.0, 1.0, ""),
+            flx("mod-env-a", "Mod Env A", 0.0, 4000.0, 2.0, "ms", 50.0),
+            flx("mod-env-d", "Mod Env D", 0.0, 4000.0, 320.0, "ms", 100.0),
+            fl("mod-env-s", "Mod Env S", 0.0, 1.0, 0.60, ""),
+            flx("mod-env-r", "Mod Env R", 0.0, 4000.0, 180.0, "ms", 100.0),
+            en("mod-env-shape", "Mod Env Shape", ADSR_SHAPES, 0),
+            en("assign-mode", "Assign", ASSIGN_MODES, 0),
+            bl("legato", "Legato", false),
+            flx("glide-time", "Glide", 0.0, 2000.0, 12.0, "ms", 100.0),
+            it("stack-density", "Stack Density", 1, 8, 4, ""),
+            fl("stack-detune", "Stack Detune", 0.0, 100.0, 8.0, "ct"),
+            fl("stack-spread", "Stack Spread", 0.0, 1.0, 0.60, ""),
+            fl("stack-phase", "Stack Phase", 0.0, 1.0, 0.50, ""),
+            en("stack-distrib", "Stack Distrib", STACK_DISTRIBS, 0),
+            fl("mtx1-depth", "Mtx 1 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx2-depth", "Mtx 2 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx3-depth", "Mtx 3 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx4-depth", "Mtx 4 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx5-depth", "Mtx 5 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx6-depth", "Mtx 6 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx7-depth", "Mtx 7 Depth", -1.0, 1.0, 0.0, ""),
+            fl("mtx8-depth", "Mtx 8 Depth", -1.0, 1.0, 0.0, ""),
         ]
     };
 }
@@ -450,14 +441,14 @@ const PLACEHOLDER: ParamDesc = ParamDesc {
     kind: ParamKind::Bool,
 };
 
-const fn concat_per_layer(
-    ops: [[ParamDesc; N_PER_OP]; N_OPS_PER_LAYER],
-    rest: [ParamDesc; N_PER_LAYER_REST],
-) -> [ParamDesc; N_PER_LAYER] {
-    let mut out = [PLACEHOLDER; N_PER_LAYER];
+const fn concat_per_patch(
+    ops: [[ParamDesc; N_PER_OP]; N_OPS],
+    rest: [ParamDesc; N_PER_PATCH_REST],
+) -> [ParamDesc; N_PER_PATCH] {
+    let mut out = [PLACEHOLDER; N_PER_PATCH];
     let mut k = 0;
     let mut i = 0;
-    while i < N_OPS_PER_LAYER {
+    while i < N_OPS {
         let mut j = 0;
         while j < N_PER_OP {
             out[k] = ops[i][j];
@@ -467,7 +458,7 @@ const fn concat_per_layer(
         i += 1;
     }
     let mut j = 0;
-    while j < N_PER_LAYER_REST {
+    while j < N_PER_PATCH_REST {
         out[k] = rest[j];
         k += 1;
         j += 1;
@@ -476,21 +467,14 @@ const fn concat_per_layer(
 }
 
 const fn concat_all(
-    upper: [ParamDesc; N_PER_LAYER],
-    lower: [ParamDesc; N_PER_LAYER],
+    per_patch: [ParamDesc; N_PER_PATCH],
     patch: [ParamDesc; N_PATCH_LEVEL],
 ) -> [ParamDesc; TOTAL_PARAMS] {
     let mut out = [PLACEHOLDER; TOTAL_PARAMS];
     let mut k = 0;
     let mut i = 0;
-    while i < N_PER_LAYER {
-        out[k] = upper[i];
-        k += 1;
-        i += 1;
-    }
-    let mut i = 0;
-    while i < N_PER_LAYER {
-        out[k] = lower[i];
+    while i < N_PER_PATCH {
+        out[k] = per_patch[i];
         k += 1;
         i += 1;
     }
@@ -503,28 +487,16 @@ const fn concat_all(
     out
 }
 
-const UPPER: [ParamDesc; N_PER_LAYER] = concat_per_layer(
+const PER_PATCH: [ParamDesc; N_PER_PATCH] = concat_per_patch(
     [
-        op_block_arr!("upper-", "U ", "1"),
-        op_block_arr!("upper-", "U ", "2"),
-        op_block_arr!("upper-", "U ", "3"),
-        op_block_arr!("upper-", "U ", "4"),
-        op_block_arr!("upper-", "U ", "5"),
-        op_block_arr!("upper-", "U ", "6"),
+        op_block_arr!("1"),
+        op_block_arr!("2"),
+        op_block_arr!("3"),
+        op_block_arr!("4"),
+        op_block_arr!("5"),
+        op_block_arr!("6"),
     ],
-    per_layer_rest_arr!("upper-", "U "),
-);
-
-const LOWER: [ParamDesc; N_PER_LAYER] = concat_per_layer(
-    [
-        op_block_arr!("lower-", "L ", "1"),
-        op_block_arr!("lower-", "L ", "2"),
-        op_block_arr!("lower-", "L ", "3"),
-        op_block_arr!("lower-", "L ", "4"),
-        op_block_arr!("lower-", "L ", "5"),
-        op_block_arr!("lower-", "L ", "6"),
-    ],
-    per_layer_rest_arr!("lower-", "L "),
+    per_patch_rest_arr!(),
 );
 
 const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
@@ -532,8 +504,6 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     flx("lfo1-rate", "LFO1 Rate", 0.01, 50.0, 2.4, "Hz", 2.0),
     fl("lfo1-depth", "LFO1 Depth", 0.0, 1.0, 0.30, ""),
     bl("lfo1-sync", "LFO1 Sync", false),
-    en("voicing-mode", "Voicing", VOICING_MODES, 1),
-    it("split-point", "Split", 0, 127, 60, ""),
     bl("delay-on", "Delay On", true),
     flx("delay-time", "Delay Time", 1.0, 4000.0, 375.0, "ms", 100.0),
     bl("delay-sync", "Delay Sync", true),
@@ -552,9 +522,9 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[Upper × 162, Lower × 162, patch × 19]` — same flat ordering described in
+/// `[per-patch × 163, patch × 17]` — same flat ordering described in
 /// the module-level layout block.
-pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(UPPER, LOWER, PATCH);
+pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
 /// Lookup by stable CLAP id. Const, just a bounds check + slice index.
 #[inline]
@@ -575,106 +545,85 @@ pub fn id_of(name: &str) -> Option<usize> {
     PARAMS.iter().position(|p| p.id == name)
 }
 
-// ── Section offsets (per-layer + patch) ─────────────────────────────────────
+// ── Section offsets (per-patch + patch) ─────────────────────────────────────
 //
 // Sourced here, not in `shared.rs`, because they describe the layout of the
 // param table itself — `module_for_clap_id` and `EngineParams::snapshot_from`
 // both read them.
 
-pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS_PER_LAYER; // 126
+pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 126
 pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 126
-pub(crate) const OFF_LFO2: usize = OFF_ALGO + 1;      // 127
-pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 132
-pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 141
-pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 146
-pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 149
-pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 154
+pub(crate) const OFF_FEEDBACK: usize = OFF_ALGO + 1;  // 127 (patch-level FB applied to algo's structural FB op)
+pub(crate) const OFF_LFO2: usize = OFF_FEEDBACK + 1;  // 128
+pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 133
+pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 142
+pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 147
+pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 150
+pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 155
 
 pub(crate) const OFF_LFO1: usize = 0;
-pub(crate) const OFF_VOICING: usize = 4;
-pub(crate) const OFF_DELAY: usize = 6;
-pub(crate) const OFF_REVERB: usize = 12;
-pub(crate) const OFF_MASTER: usize = 17;
+pub(crate) const OFF_DELAY: usize = 4;
+pub(crate) const OFF_REVERB: usize = 10;
+pub(crate) const OFF_MASTER: usize = 15;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
-/// the host renders nested folders. Per-layer ids resolve to e.g. `Upper /
-/// Op 3`, `Lower / LFO 2`; patch-level ids to `Global / Delay` etc.
+/// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
+/// `LFO 2`; patch-level ids to `Global / Delay` etc.
 ///
 /// Strings are `&'static` — no allocation in the hot CLAP path.
 pub fn module_for_clap_id(idx: usize) -> &'static str {
-    if idx < LOWER_BASE {
-        module_for_layer(idx, false)
-    } else if idx < PATCH_BASE {
-        module_for_layer(idx - LOWER_BASE, true)
+    if idx < PATCH_BASE {
+        module_for_per_patch(idx)
     } else {
         module_for_patch(idx - PATCH_BASE)
     }
 }
 
-const UPPER_MODULES: [&str; 13] = [
-    "Upper / Op 1",
-    "Upper / Op 2",
-    "Upper / Op 3",
-    "Upper / Op 4",
-    "Upper / Op 5",
-    "Upper / Op 6",
-    "Upper / Algorithm",
-    "Upper / LFO 2",
-    "Upper / PEG",
-    "Upper / Mod Env",
-    "Upper / Assign",
-    "Upper / Stack",
-    "Upper / Matrix",
+const PER_PATCH_MODULES: [&str; 14] = [
+    "Op 1",
+    "Op 2",
+    "Op 3",
+    "Op 4",
+    "Op 5",
+    "Op 6",
+    "Algorithm",
+    "Feedback",
+    "LFO 2",
+    "PEG",
+    "Mod Env",
+    "Assign",
+    "Stack",
+    "Matrix",
 ];
 
-const LOWER_MODULES: [&str; 13] = [
-    "Lower / Op 1",
-    "Lower / Op 2",
-    "Lower / Op 3",
-    "Lower / Op 4",
-    "Lower / Op 5",
-    "Lower / Op 6",
-    "Lower / Algorithm",
-    "Lower / LFO 2",
-    "Lower / PEG",
-    "Lower / Mod Env",
-    "Lower / Assign",
-    "Lower / Stack",
-    "Lower / Matrix",
-];
-
-fn module_for_layer(off: usize, lower: bool) -> &'static str {
+fn module_for_per_patch(off: usize) -> &'static str {
     let section = if off < N_OP_BLOCK {
         off / N_PER_OP
     } else if off == OFF_ALGO {
         6
-    } else if off < OFF_PEG {
+    } else if off == OFF_FEEDBACK {
         7
-    } else if off < OFF_MOD_ENV {
+    } else if off < OFF_PEG {
         8
-    } else if off < OFF_ASSIGN {
+    } else if off < OFF_MOD_ENV {
         9
-    } else if off < OFF_STACK {
+    } else if off < OFF_ASSIGN {
         10
-    } else if off < OFF_MTX {
+    } else if off < OFF_STACK {
         11
-    } else if off < N_PER_LAYER {
+    } else if off < OFF_MTX {
         12
+    } else if off < N_PER_PATCH {
+        13
     } else {
         return "";
     };
-    if lower {
-        LOWER_MODULES[section]
-    } else {
-        UPPER_MODULES[section]
-    }
+    PER_PATCH_MODULES[section]
 }
 
 fn module_for_patch(off: usize) -> &'static str {
-    if off < OFF_VOICING {
+    if off < OFF_DELAY {
         "Global / LFO 1"
-    } else if off < OFF_DELAY {
-        "Global / Voicing"
     } else if off < OFF_REVERB {
         "Global / Delay"
     } else if off < OFF_MASTER {
@@ -756,8 +705,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        // 162 * 2 + 19 = 343.
-        assert_eq!(TOTAL_PARAMS, 343);
+        assert_eq!(TOTAL_PARAMS, 180);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -777,13 +725,10 @@ mod tests {
     }
 
     #[test]
-    fn upper_lower_have_matching_suffix_ids() {
-        for i in 0..N_PER_LAYER {
-            let u = PARAMS[i].id;
-            let l = PARAMS[LOWER_BASE + i].id;
-            assert!(u.starts_with("upper-"), "{u}");
-            assert!(l.starts_with("lower-"), "{l}");
-            assert_eq!(&u[6..], &l[6..], "upper / lower id mismatch at {i}");
+    fn no_upper_or_lower_prefix() {
+        for d in PARAMS.iter() {
+            assert!(!d.id.starts_with("upper-"), "stale upper- prefix: {}", d.id);
+            assert!(!d.id.starts_with("lower-"), "stale lower- prefix: {}", d.id);
         }
     }
 
@@ -803,8 +748,6 @@ mod tests {
 
     #[test]
     fn normalised_round_trips_at_endpoints_and_default() {
-        // Endpoints + default must survive plain → norm → plain without drift
-        // worth caring about (1e-3 for Exp tapers; 1e-6 for linear).
         for d in PARAMS.iter() {
             let eps = match d.kind {
                 ParamKind::Float {
@@ -867,12 +810,6 @@ mod tests {
     }
 
     #[test]
-    fn enum_variants_resolved_via_descriptor() {
-        let voicing = desc(id_of("voicing-mode").expect("voicing-mode present")).unwrap();
-        assert_eq!(voicing.variants(), VOICING_MODES);
-    }
-
-    #[test]
     fn master_section_is_at_table_tail() {
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
@@ -888,8 +825,6 @@ mod tests {
 
     #[test]
     fn desc_for_clap_id_is_o1_and_total_bounded() {
-        // O(1) bounds + slice indexing — no scan. Just sanity-check both
-        // ends + an out-of-range miss.
         assert!(desc_for_clap_id(0).is_some());
         assert!(desc_for_clap_id(TOTAL_PARAMS - 1).is_some());
         assert!(desc_for_clap_id(TOTAL_PARAMS).is_none());
@@ -898,19 +833,17 @@ mod tests {
     #[test]
     fn module_for_clap_id_routes_each_section() {
         let cases = [
-            ("upper-op1-ratio", "Upper / Op 1"),
-            ("upper-op6-feedback", "Upper / Op 6"),
-            ("upper-algo", "Upper / Algorithm"),
-            ("upper-lfo2-shape", "Upper / LFO 2"),
-            ("upper-peg-r1", "Upper / PEG"),
-            ("upper-mod-env-a", "Upper / Mod Env"),
-            ("upper-assign-mode", "Upper / Assign"),
-            ("upper-stack-density", "Upper / Stack"),
-            ("upper-mtx1-depth", "Upper / Matrix"),
-            ("lower-op3-pan", "Lower / Op 3"),
-            ("lower-stack-distrib", "Lower / Stack"),
+            ("op1-num", "Op 1"),
+            ("op6-pan", "Op 6"),
+            ("algo", "Algorithm"),
+            ("feedback", "Feedback"),
+            ("lfo2-shape", "LFO 2"),
+            ("peg-r1", "PEG"),
+            ("mod-env-a", "Mod Env"),
+            ("assign-mode", "Assign"),
+            ("stack-density", "Stack"),
+            ("mtx1-depth", "Matrix"),
             ("lfo1-shape", "Global / LFO 1"),
-            ("voicing-mode", "Global / Voicing"),
             ("delay-time", "Global / Delay"),
             ("reverb-decay", "Global / Reverb"),
             ("master-volume", "Global / Master"),
@@ -932,40 +865,48 @@ mod tests {
         assert_eq!(vol.display(-6.0), "-6.00 dB");
         assert_eq!(vol.display(0.0), "0.00 dB");
 
-        let algo = desc(id_of("upper-algo").unwrap()).unwrap();
+        let algo = desc(id_of("algo").unwrap()).unwrap();
         assert_eq!(algo.display(5.0), "5");
         assert_eq!(algo.display(32.4), "32");
 
         let lfo1 = desc(id_of("lfo1-shape").unwrap()).unwrap();
         assert_eq!(lfo1.display(0.0), "Sine");
         assert_eq!(lfo1.display(4.0), "Pulse");
-        // Out-of-range clamps to the last variant rather than panicking.
         assert_eq!(lfo1.display(99.0), "S&H");
 
-        let legato = desc(id_of("upper-legato").unwrap()).unwrap();
+        let legato = desc(id_of("legato").unwrap()).unwrap();
         assert_eq!(legato.display(0.0), "Off");
         assert_eq!(legato.display(1.0), "On");
 
-        let detune = desc(id_of("upper-op1-detune").unwrap()).unwrap();
-        assert_eq!(detune.display(0.0), "0");
+        let detune = desc(id_of("op1-detune").unwrap()).unwrap();
+        assert_eq!(detune.display(0.0), "0 ct");
+        assert_eq!(detune.display(-50.0), "-50 ct");
 
-        let stack_detune = desc(id_of("upper-stack-detune").unwrap()).unwrap();
+        let stack_detune = desc(id_of("stack-detune").unwrap()).unwrap();
         assert_eq!(stack_detune.display(8.0), "8.00 ct");
 
-        let fine = desc(id_of("upper-op1-fine").unwrap()).unwrap();
-        // Float with empty unit → 3-decimal bare format.
-        assert_eq!(fine.display(0.0), "0.000");
+        let fine = desc(id_of("op1-fine").unwrap()).unwrap();
+        assert_eq!(fine.display(0.0), "0");
+        assert_eq!(fine.display(50.0), "50");
+
+        let num = desc(id_of("op1-num").unwrap()).unwrap();
+        assert_eq!(num.display(1.0), "1");
+        assert_eq!(num.display(32.0), "32");
+
+        let denom = desc(id_of("op1-denom").unwrap()).unwrap();
+        assert_eq!(denom.display(1.0), "1");
+        assert_eq!(denom.display(8.0), "8");
     }
 
     #[test]
     fn range_fidelity_spot_checks() {
-        // One descriptor per ParamKind shape per PARAMETERS.md.
         let cases: &[(&str, f32, f32, f32)] = &[
-            ("upper-op3-ratio", 0.5, 31.0, 1.0),
-            ("upper-algo", 1.0, 32.0, 5.0),
-            ("upper-lfo2-shape", 0.0, 5.0, 2.0),
-            ("upper-mod-env-shape", 0.0, 1.0, 0.0),
-            ("upper-stack-distrib", 0.0, 2.0, 0.0),
+            ("op3-num", 1.0, 32.0, 1.0),
+            ("op3-denom", 1.0, 8.0, 1.0),
+            ("algo", 1.0, 32.0, 5.0),
+            ("lfo2-shape", 0.0, 5.0, 2.0),
+            ("mod-env-shape", 0.0, 1.0, 0.0),
+            ("stack-distrib", 0.0, 2.0, 0.0),
             ("master-volume", -60.0, 6.0, -6.0),
         ];
         for (id, min, max, default) in cases {

@@ -3,7 +3,7 @@
 // Renders 16 rows × {source, dest, depth, curve, active} into the
 // [data-vxn-section="mm-overlay-list"] container, wires each row's
 // field changes back to the controller, and re-renders rows in
-// response to matrix_row_changed / matrix_snapshot / edit_layer_changed.
+// response to matrix_row_changed / matrix_snapshot.
 //
 // Depth seam: slots 1-8 are CLAP-automatable. Their depth widget
 // dispatches BOTH `set_matrix_row` (the topology+depth source of
@@ -57,12 +57,12 @@
     return sel;
   }
 
-  // Resolve "upper-mtxN-depth" / "lower-mtxN-depth" → CLAP id via the
-  // hydrated params model. Returns null if not found (slot >= 8 or
-  // ParamModel not populated yet); the dispatch path checks for that.
-  function depthClapId(layer, slot) {
+  // Resolve "mtxN-depth" → CLAP id via the hydrated params model.
+  // Returns null if not found (slot >= 8 or ParamModel not populated
+  // yet); the dispatch path checks for that.
+  function depthClapId(slot) {
     if (slot >= CLAP_SLOT_COUNT) return null;
-    var name = (layer === "lower" ? "lower" : "upper") + "-mtx" + (slot + 1) + "-depth";
+    var name = "mtx" + (slot + 1) + "-depth";
     var desc = window.__vxn.paramsByName && window.__vxn.paramsByName[name];
     if (!desc || typeof desc.id !== "number") return null;
     return desc.id;
@@ -82,14 +82,11 @@
     var destsList = window.__vxn.matrix.dests;
     var curvesList = window.__vxn.matrix.curves;
 
-    // Row DOM cache keyed by slot. Each entry: { node, source, dest,
-    // depth, curve, active }. Built lazily on first render — letting
-    // the overlay open before the snapshot arrives shows greyed rows.
+    // Row DOM cache keyed by slot.
     var rows = new Array(SLOT_COUNT);
 
     function dispatchRow(slot, partial) {
-      var layer = window.__vxn.editLayer || "upper";
-      var current = window.__vxn.matrix[layer][slot] || {
+      var current = window.__vxn.matrix.rows[slot] || {
         source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
       };
       var next = {
@@ -101,12 +98,12 @@
       };
       // Local optimistic update so the UI doesn't flash before the
       // controller echoes back.
-      window.__vxn.matrix[layer][slot] = next;
-      window.__vxn.dispatch("set_matrix_row", { layer: layer, slot: slot, row: next });
+      window.__vxn.matrix.rows[slot] = next;
+      window.__vxn.dispatch("set_matrix_row", { slot: slot, row: next });
       // CLAP depth side-path (slot 1-8 only). Plain value in the
       // descriptor's [min, max] = [-1, 1].
       if (partial.depth != null) {
-        var clapId = depthClapId(layer, slot);
+        var clapId = depthClapId(slot);
         if (clapId != null) {
           window.__vxn.dispatch("set_param", { id: clapId, plain: next.depth });
         }
@@ -167,8 +164,6 @@
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
       });
-      // Use 'input' for the depth fader so drags are live; the
-      // controller dedupes via the gesture path in ParamModel.
       depth.addEventListener("input", function () {
         var v = parseFloat(depth.value);
         if (!isFinite(v)) v = 0.0;
@@ -195,7 +190,6 @@
 
     function paintRow(slot, row) {
       var r = ensureRowDom(slot);
-      // Don't stomp a control the user is dragging.
       if (document.activeElement !== r.source) {
         r.source.value = String((row.source | 0));
       }
@@ -215,8 +209,7 @@
     }
 
     function renderAll() {
-      var layer = window.__vxn.editLayer || "upper";
-      var table = window.__vxn.matrix[layer];
+      var table = window.__vxn.matrix.rows;
       for (var i = 0; i < SLOT_COUNT; i++) {
         var row = (table && table[i]) || {
           source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
@@ -233,8 +226,6 @@
       if (overlay) overlay.setAttribute("hidden", "");
     }
 
-    // Escape closes the overlay. Window-level so the handler works even
-    // if focus is on a row control.
     function onKeyDown(e) {
       if (!isOpen()) return;
       if (e.key === "Escape" || e.keyCode === 27) {
@@ -244,9 +235,6 @@
     }
     window.addEventListener("keydown", onKeyDown);
 
-    // Backdrop click closes. The backdrop element is the overlay's
-    // direct child with [data-vxn-role="mm-overlay-backdrop"] — click
-    // events on inner content shouldn't close.
     if (overlay) {
       var backdrop = overlay.querySelector('[data-vxn-role="mm-overlay-backdrop"]');
       if (backdrop) {
@@ -265,16 +253,11 @@
     var api = {
       renderAll: renderAll,
       onSnapshot: function () { renderAll(); },
-      onRowChanged: function (layer, slot, row) {
-        var cur = window.__vxn.editLayer || "upper";
-        if (layer !== cur) return;
+      onRowChanged: function (slot, row) {
         paintRow(slot, row);
       },
-      onEditLayerChanged: function (_layer) { renderAll(); },
     };
 
-    // Initial paint from whatever's already in window.__vxn.matrix
-    // (may be empty placeholder rows; the snapshot will repopulate).
     renderAll();
 
     return api;

@@ -10,7 +10,7 @@
 //! figure (LFOs are control-rate, so the cost is amortised across the block).
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use vxn2_dsp::lfo::{Lfo1, Lfo1Params, Lfo2Params, Lfo2Stack, Lfo2Trig, LfoShape};
+use vxn2_dsp::lfo::{Lfo1, Lfo1Params, Lfo2Params, Lfo2Stack, LfoShape};
 
 const SR: f32 = 48_000.0;
 const BLK: usize = 256;
@@ -32,7 +32,8 @@ fn build_lfo2_stacks() -> ([Lfo2Stack; N_STACKS], Lfo2Params) {
         rate_hz: 5.1,
         delay_ms: 0.0,
         fade_ms: 0.0,
-        trig: Lfo2Trig::Free,
+        sync: false,
+        sync_index: 0,
     };
     let mut stacks = [Lfo2Stack::default(); N_STACKS];
     for (i, lfo) in stacks.iter_mut().enumerate() {
@@ -51,7 +52,7 @@ fn render(
 ) -> f32 {
     let mut acc = lfo1.eval(lfo1_p, 120.0, block_secs);
     for s in stacks.iter_mut() {
-        let lanes = s.eval(lfo2_p, block_secs);
+        let lanes = s.eval(lfo2_p, 120.0, block_secs);
         for v in lanes {
             acc += v;
         }

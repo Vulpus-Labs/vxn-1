@@ -15,7 +15,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
-use vxn2_app::{Layer, MatrixRow, UiEvent, Vxn2UiCustom, Vxn2ViewCustom};
+use vxn2_app::{MatrixRow, UiEvent, Vxn2UiCustom, Vxn2ViewCustom};
 use vxn_core_app::{ControllerHandle, CorpusHandle};
 
 pub use vxn_core_ui_web::{EditorHandle, prompt_text};
@@ -85,9 +85,11 @@ fn build_faceplate_html() -> String {
     let params_json = build_params_json();
     let matrix_lists_json = build_matrix_lists_json();
     let dev = dev_assets_dir();
+    let default_patch_json = build_default_patch_json();
     let bootstrap = asset(dev.as_deref(), "bootstrap.js", BOOTSTRAP_JS)
         .replace("__PARAMS_JSON__", &params_json)
-        .replace("__MATRIX_LISTS_JSON__", &matrix_lists_json);
+        .replace("__MATRIX_LISTS_JSON__", &matrix_lists_json)
+        .replace("__DEFAULT_PATCH_JSON__", &default_patch_json);
     let js_bundle = [
         bootstrap,
         asset(dev.as_deref(), "panels/knob.js", PANEL_KNOB_JS),
@@ -188,26 +190,14 @@ pub fn parse_custom_ui_for_test() -> vxn_core_ui_web::ParseCustomUi {
 /// opcodes — `vxn_core_ui_web::parse_ui_event` falls through and drops.
 fn parse_custom_ui(op: &str, v: &JsonValue) -> Option<UiEvent> {
     match op {
-        "set_edit_layer" => {
-            let layer = layer_from_json(v.get("layer")?)?;
-            Some(UiEvent::Custom(Box::new(Vxn2UiCustom::SetEditLayer {
-                layer,
-            })))
-        }
         "set_op_tab" => {
-            let layer = layer_from_json(v.get("layer")?)?;
             let op = v.get("op")?.as_u64()? as u8;
-            Some(UiEvent::Custom(Box::new(Vxn2UiCustom::SetOpTab {
-                layer,
-                op,
-            })))
+            Some(UiEvent::Custom(Box::new(Vxn2UiCustom::SetOpTab { op })))
         }
         "set_matrix_row" => {
-            let layer = layer_from_json(v.get("layer")?)?;
             let slot = v.get("slot")?.as_u64()? as u8;
             let row = matrix_row_from_json(v.get("row")?)?;
             Some(UiEvent::Custom(Box::new(Vxn2UiCustom::SetMatrixRow {
-                layer,
                 slot,
                 row,
             })))
@@ -225,42 +215,20 @@ fn parse_custom_ui(op: &str, v: &JsonValue) -> Option<UiEvent> {
 fn serialise_custom_view(payload: &dyn std::any::Any) -> Option<JsonValue> {
     let custom = payload.downcast_ref::<Vxn2ViewCustom>()?;
     Some(match custom {
-        Vxn2ViewCustom::EditLayerChanged { layer } => serde_json::json!({
-            "kind": "edit_layer_changed",
-            "layer": layer_to_str(*layer),
-        }),
-        Vxn2ViewCustom::OpTabChanged { layer, op } => serde_json::json!({
+        Vxn2ViewCustom::OpTabChanged { op } => serde_json::json!({
             "kind": "op_tab_changed",
-            "layer": layer_to_str(*layer),
             "op": op,
         }),
-        Vxn2ViewCustom::MatrixRowChanged { layer, slot, row } => serde_json::json!({
+        Vxn2ViewCustom::MatrixRowChanged { slot, row } => serde_json::json!({
             "kind": "matrix_row_changed",
-            "layer": layer_to_str(*layer),
             "slot": slot,
             "row": matrix_row_to_json(*row),
         }),
-        Vxn2ViewCustom::MatrixSnapshot { upper, lower } => serde_json::json!({
+        Vxn2ViewCustom::MatrixSnapshot { rows } => serde_json::json!({
             "kind": "matrix_snapshot",
-            "upper": upper.iter().map(|r| matrix_row_to_json(*r)).collect::<Vec<_>>(),
-            "lower": lower.iter().map(|r| matrix_row_to_json(*r)).collect::<Vec<_>>(),
+            "rows": rows.iter().map(|r| matrix_row_to_json(*r)).collect::<Vec<_>>(),
         }),
     })
-}
-
-fn layer_from_json(v: &JsonValue) -> Option<Layer> {
-    match v.as_str()? {
-        "upper" | "Upper" => Some(Layer::Upper),
-        "lower" | "Lower" => Some(Layer::Lower),
-        _ => None,
-    }
-}
-
-fn layer_to_str(layer: Layer) -> &'static str {
-    match layer {
-        Layer::Upper => "upper",
-        Layer::Lower => "lower",
-    }
 }
 
 fn matrix_row_from_json(v: &JsonValue) -> Option<MatrixRow> {
@@ -345,33 +313,28 @@ pub fn build_params_json() -> String {
     serde_json::Value::Array(entries).to_string()
 }
 
+/// Plain-value-per-CLAP-id array from `default_patch::default_param_values`.
+/// Spliced into bootstrap as `__DEFAULT_PATCH_JSON__` so the UI can seed
+/// its live-value cache. In the running plugin this is overwritten by the
+/// engine's NaN-diff snapshot at boot; in the offline HTML dump it's the
+/// only source of values that vary per-op.
+pub fn build_default_patch_json() -> String {
+    let values = vxn2_engine::default_patch::default_param_values();
+    serde_json::Value::Array(values.iter().map(|v| serde_json::json!(*v)).collect())
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_custom_set_edit_layer() {
-        let v = serde_json::json!({ "op": "set_edit_layer", "layer": "lower" });
-        let ev = parse_custom_ui("set_edit_layer", &v).expect("parsed");
-        match ev {
-            UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
-                Ok(Vxn2UiCustom::SetEditLayer { layer: Layer::Lower }) => {}
-                other => panic!("unexpected payload: {other:?}"),
-            },
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[test]
     fn parse_custom_set_op_tab() {
-        let v = serde_json::json!({ "op": "set_op_tab", "layer": "upper", "op": 3 });
+        let v = serde_json::json!({ "op": "set_op_tab", "op": 3 });
         let ev = parse_custom_ui("set_op_tab", &v).expect("parsed");
         match ev {
             UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
-                Ok(Vxn2UiCustom::SetOpTab {
-                    layer: Layer::Upper,
-                    op: 3,
-                }) => {}
+                Ok(Vxn2UiCustom::SetOpTab { op: 3 }) => {}
                 other => panic!("unexpected payload: {other:?}"),
             },
             other => panic!("unexpected event: {other:?}"),
@@ -382,7 +345,6 @@ mod tests {
     fn parse_custom_set_matrix_row() {
         let v = serde_json::json!({
             "op": "set_matrix_row",
-            "layer": "lower",
             "slot": 7,
             "row": {
                 "source": 2, "dest": 17, "curve": 1, "active": true, "depth": 0.5
@@ -391,11 +353,7 @@ mod tests {
         let ev = parse_custom_ui("set_matrix_row", &v).expect("parsed");
         match ev {
             UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
-                Ok(Vxn2UiCustom::SetMatrixRow {
-                    layer: Layer::Lower,
-                    slot: 7,
-                    row,
-                }) => {
+                Ok(Vxn2UiCustom::SetMatrixRow { slot: 7, row }) => {
                     assert_eq!(row.source, 2);
                     assert_eq!(row.dest, 17);
                     assert_eq!(row.curve, 1);
@@ -417,7 +375,6 @@ mod tests {
     #[test]
     fn serialise_view_matrix_row_changed_round_trip_shape() {
         let payload = Vxn2ViewCustom::MatrixRowChanged {
-            layer: Layer::Upper,
             slot: 4,
             row: MatrixRow {
                 source: 1,
@@ -429,7 +386,6 @@ mod tests {
         };
         let v = serialise_custom_view(&payload).expect("serialised");
         assert_eq!(v["kind"], "matrix_row_changed");
-        assert_eq!(v["layer"], "upper");
         assert_eq!(v["slot"], 4);
         assert_eq!(v["row"]["dest"], 2);
         assert!((v["row"]["depth"].as_f64().unwrap() - (-0.3)).abs() < 1e-5);
@@ -485,12 +441,12 @@ mod tests {
         }
         for id in [
             "algo", "lfo1-rate", "lfo1-depth", "lfo1-shape", "lfo1-sync",
-            "lfo2-rate", "lfo2-trig",
+            "lfo2-rate", "lfo2-sync",
             "mod-env-a", "mod-env-r", "mod-env-shape",
-            "voicing-mode", "assign-mode", "glide-time", "legato",
+            "assign-mode", "glide-time", "legato",
             "stack-density", "stack-distrib",
             "delay-on", "delay-time", "delay-feedback", "delay-mix",
-            "delay-sync", "delay-pingpong",
+            "delay-sync",
             "reverb-on", "reverb-size", "reverb-mix",
             "master-tune", "master-volume",
         ] {
@@ -527,17 +483,6 @@ mod tests {
         );
     }
 
-    /// 0027 AC: the algo-block panel header carries the edit-layer
-    /// toggle the op-row binder reads. The toggle dispatches
-    /// `set_edit_layer` via `data-vxn-edit-layer="upper" | "lower"`.
-    #[test]
-    fn faceplate_html_shell_carries_edit_layer_toggle() {
-        let html = HTML_TEMPLATE;
-        assert!(html.contains("data-vxn-section=\"edit-layer-toggle\""));
-        assert!(html.contains("data-vxn-edit-layer=\"upper\""));
-        assert!(html.contains("data-vxn-edit-layer=\"lower\""));
-    }
-
     /// CSS file carries the viewport dims + structural rules ported from
     /// the mockup.
     #[test]
@@ -551,7 +496,6 @@ mod tests {
         assert!(FACEPLATE_CSS.contains(".overlay-backdrop"));
         assert!(FACEPLATE_CSS.contains(".algo-grid"));
         assert!(FACEPLATE_CSS.contains(".mm-overlay"));
-        assert!(FACEPLATE_CSS.contains(".edit-layer-toggle"));
     }
 
     /// Bootstrap declares the surface main.js + panels.js attach to;
@@ -629,9 +573,9 @@ mod tests {
         assert!(html.contains("__vxn.panels.algoDiagram"));
         assert!(html.contains("__vxn.panels.opRow"));
         assert!(html.contains("dispatch(\"ready\")"));
-        // Params JSON spliced — first descriptor's machine id from
-        // PARAMETERS.md is `upper-op1-ratio`. Cheap structural canary.
-        assert!(html.contains("\"upper-op1-ratio\""));
+        // Params JSON spliced — first descriptor's machine id is `op1-num`
+        // post-flatten. Cheap structural canary.
+        assert!(html.contains("\"op1-num\""));
         assert!(html.contains("\"lfo1-rate\""));
         assert!(html.contains("\"master-volume\""));
     }
@@ -706,6 +650,44 @@ mod tests {
         }
     }
 
+    /// Parity check for `ALGO_FB_OPS` in `op-row.js`. Mirrors
+    /// `AlgoSpec::structural_fb_op` across the 32 algorithms — drift would
+    /// silently disable the wrong op's feedback fader.
+    #[test]
+    fn op_row_fb_ops_match_engine_table() {
+        let js = PANEL_OP_ROW_JS;
+        let start = js.find("const ALGO_FB_OPS = [")
+            .expect("ALGO_FB_OPS declaration");
+        let body_start = start + "const ALGO_FB_OPS = [".len();
+        let body_rest = &js[body_start..];
+        let body_end = body_rest.find("];").expect("close of array");
+        let body = &body_rest[..body_end];
+
+        let mut vals: Vec<u8> = Vec::new();
+        for tok in body.split(',') {
+            let t = tok.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if let Ok(n) = t.parse::<u8>() {
+                vals.push(n);
+            }
+        }
+        assert_eq!(
+            vals.len(),
+            vxn2_dsp::algo::N_ALGOS,
+            "ALGO_FB_OPS count must match engine N_ALGOS",
+        );
+        for (i, v) in vals.iter().enumerate() {
+            assert_eq!(
+                *v,
+                vxn2_dsp::algo::ALGOS[i].structural_fb_op,
+                "ALGO_FB_OPS mismatch at algo {} (1-indexed)",
+                i + 1,
+            );
+        }
+    }
+
     #[test]
     fn parse_custom_request_matrix_snapshot() {
         let v = serde_json::json!({ "op": "request_matrix_snapshot" });
@@ -728,19 +710,13 @@ mod tests {
             active: true,
             depth: 0.25,
         };
-        let payload = Vxn2ViewCustom::MatrixSnapshot {
-            upper: [row; 16],
-            lower: [MatrixRow::default(); 16],
-        };
+        let payload = Vxn2ViewCustom::MatrixSnapshot { rows: [row; 16] };
         let v = serialise_custom_view(&payload).expect("serialised");
         assert_eq!(v["kind"], "matrix_snapshot");
-        let upper = v["upper"].as_array().expect("upper array");
-        let lower = v["lower"].as_array().expect("lower array");
-        assert_eq!(upper.len(), 16);
-        assert_eq!(lower.len(), 16);
-        assert_eq!(upper[0]["dest"], 5);
-        assert_eq!(upper[15]["source"], 3);
-        assert_eq!(lower[0]["source"], 0);
+        let rows = v["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 16);
+        assert_eq!(rows[0]["dest"], 5);
+        assert_eq!(rows[15]["source"], 3);
     }
 
     #[test]
@@ -748,11 +724,11 @@ mod tests {
         let s = build_matrix_lists_json();
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        assert_eq!(v["dests"].as_array().unwrap().len(), 39);
+        assert_eq!(v["dests"].as_array().unwrap().len(), 33);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
-        assert_eq!(v["dests"][38]["name"], "reverb-mix");
+        assert_eq!(v["dests"][32]["name"], "reverb-mix");
         assert_eq!(v["curves"][3]["name"], "bipolar");
     }
 

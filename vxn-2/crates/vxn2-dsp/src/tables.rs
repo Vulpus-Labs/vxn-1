@@ -39,15 +39,6 @@ pub fn fb_scale(feedback: u8) -> f32 {
     FB_SCALE_TABLE[feedback.min(7) as usize]
 }
 
-/// Detune (-7..+7). DX7's detune step is roughly 1.7 cents at A4, slightly
-/// pitch-dependent in the original ROM. We use a flat 1.7 cents/step — close
-/// enough; the detune knob is about thickening, not tuning.
-#[inline]
-pub fn detune_cents(detune: i8) -> f32 {
-    let d = detune.clamp(-7, 7) as f32;
-    d * 1.7
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,9 +67,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn detune_zero_centered() {
-        assert!((detune_cents(0)).abs() < 1e-6);
-        assert!((detune_cents(7) + detune_cents(-7)).abs() < 1e-6);
-    }
 }
