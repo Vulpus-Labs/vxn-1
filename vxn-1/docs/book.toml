@@ -7,7 +7,6 @@ src = "src"
 [output.html]
 git-repository-url = "https://github.com/Vulpus-Labs/vxn-1"
 edit-url-template = "https://github.com/Vulpus-Labs/vxn-1/edit/main/vxn-1/docs/src/{path}"
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.pandoc]
 optional = true
@@ -15,8 +14,3 @@ optional = true
 [output.pandoc.profile.pdf]
 output-file = "vxn1-manual.pdf"
 pdf-engine = "tectonic"
-
-[preprocessor]
-
-[preprocessor.mermaid]
-command = "mdbook-mermaid"
