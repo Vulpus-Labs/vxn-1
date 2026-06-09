@@ -14,7 +14,7 @@ The goals:
 
 The audio-readable state.
 
-- **`SharedParams`** — flat, index-addressed atomic table of every automatable parameter (156 entries for VXN1). The audio thread reads atomics directly; the main thread mediates writes.
+- **`SharedParams`** — flat, index-addressed atomic table of every automatable parameter (165 entries for VXN1: 2 × 69 per-layer + 27 global). The audio thread reads atomics directly; the main thread mediates writes.
 - **Non-automatable state** — Key Mode, Split Point, Layer Switcher selection. Stored in plugin state but not exposed as parameters.
 
 The audio thread has read-only access to non-automatable state via a copy passed at activation time (or via an atomic for fields that can change mid-run, like Key Mode).
@@ -48,34 +48,40 @@ GUI ──UiEvent──► Controller ◄──HostEvent── CLAP host
                 SharedParams ──► Audio thread (reads atomically)
 ```
 
+The base enums live in `vxn-core-app::events`; VXN1-specific payloads sit inside `UiEvent::Custom(Box<Vxn1UiCustom>)` and `ViewEvent::Custom(Box<Vxn1ViewCustom>)`.
+
 ### `UiEvent`
 
 What the user did in the GUI:
 
-- `ParamChanged(id, value)` — knob turned, value entered.
-- `PresetLoad(path, target)` — load preset into Upper / Lower / both.
-- `PresetSave(meta)` — save current state as preset with metadata.
-- `KeyModeChanged(mode)`.
-- `SplitPointChanged(note)`.
-- `LayerSelected(layer)` — Layer switcher state change.
+- `SetParam { id, plain }` / `SetParamNorm { id, norm }` — knob turned, value entered.
+- `BeginGesture { id }` / `EndGesture { id }` — host-visible automation gesture bounds.
+- `LoadPreset { source }` / `StepPreset { delta }` — preset navigation.
+- `SavePreset { name, folder }` / `RenamePreset` / `DeletePreset` / `MovePreset`.
+- `NewFolder` / `RenameFolder` / `DeleteFolder` — preset directory mutations.
+- `EditorReady` — GUI handshake.
+- `RequestTextInput` / `TextInputResult` — text-entry round-trip for save/rename dialogs.
+- `Custom(Box<dyn Any + Send>)` — VXN1 uses this to carry `Vxn1UiCustom::SetKeyMode { mode }`, `SetSplitPoint { note }`, `SetEditLayer { layer }`, `ResetLayer { layer }`.
 
 ### `HostEvent`
 
 What the host did:
 
-- `AutomationChanged(id, value)`.
-- `MidiCC(cc, value)` — handled by the engine, but the Controller may snoop for routing.
-- `ActivateSampleRate(sr)` — triggers engine reactivation.
+- `ParamAutomation { id, plain }`.
+- `StateLoaded { blob }` — project reload.
+- `Tempo { bpm }` — host tempo change.
+- `Custom(...)` — extensions; MIDI CCs are handled inside the engine, not surfaced here.
 
 ### `ViewEvent`
 
 What the GUI needs to redraw:
 
-- `ParamUpdated(id, value)` — refresh knob position.
-- `PresetLoaded(meta)` — repopulate display, refresh all knobs.
-- `PresetListChanged` — file watcher detected user preset directory change.
-- `KeyModeChanged(mode)`.
-- `Error(message)` — display an error toast.
+- `ParamChanged { id, plain, norm, display }` — knob position + display string refresh.
+- `PresetLoaded { ... }` — repopulate display, refresh all knobs.
+- `PresetCorpusChanged { follow }` — file watcher detected user preset directory change.
+- `Status { line }` — status-bar / error toast text.
+- `OpenTextInput` / `TextInputResult` — text-entry dialog lifecycle.
+- `Custom(...)` — VXN1 receives `Vxn1ViewCustom::KeyModeChanged { mode }`, `SplitPointChanged { note }`, `EditLayerChanged { layer }`.
 
 ## Bounded channels
 

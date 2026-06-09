@@ -13,7 +13,7 @@ Each layer has **8 channels**. Assign Mode picks how those channels are spent.
 | **Solo** | 1 | 1 | One channel, last-note priority. With Legato on, the envelope doesn't retrigger when you slur. |
 | **Twin** | 2 | 4 | Two channels per note at ±`Unison Detune` and a 90° phase offset; 1/√2 level compensation. Effectively halves polyphony to thicken each note. |
 
-In **Whole** key mode (16-voice mono-timbral), the layer counts double — Poly becomes 16-voice, Twin becomes 8-note. In **Dual** and **Split**, each layer is independent: you can have Upper in Solo for the melody and Lower in Poly for the chord, for instance.
+In **Whole** key mode, **Poly** spreads notes across both layers (16-voice round-robin) and **Twin** doubles to 8-note. **Unison** and **Solo** are inherently mono and run on the Upper layer only — the second layer's channels are idle. In **Dual** and **Split**, each layer is independent: you can have Upper in Solo for the melody and Lower in Poly for the chord, for instance.
 
 ## Glide (Portamento)
 

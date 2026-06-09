@@ -9,7 +9,7 @@ VXN1's filter section is a two-stage chain:
 
 Single knob: **HPF Cutoff** (20 Hz – 18 kHz, exp taper). Set it just above the fundamental of your lowest played note to remove rumble without thinning the body.
 
-The HPF is fixed-slope (12 dB/oct) and has no resonance. It sits *before* the main filter, so resonant peaks from the HPF are tamed by the ladder.
+The HPF is a 1-pole (6 dB/oct) topology-preserving design with no resonance. It sits *before* the main filter, so the ladder receives an already-trimmed signal.
 
 ## Main filter (VCF)
 
@@ -17,7 +17,7 @@ The HPF is fixed-slope (12 dB/oct) and has no resonance. It sits *before* the ma
 
 **Resonance** (0–1, linear) increases feedback around the cutoff. The ladder will self-oscillate cleanly at the top of the range; settings around 0.5–0.7 give the characteristic emphasised cutoff peak without howl.
 
-**Drive** (0.1–4, exp taper, default 1.0) saturates the input to the ladder. Below 1 the filter behaves cleaner / softer; above 1 the input clips into the resonant peak and the ladder's tanh saturator pushes harmonic content. Useful for adding bite without raising master volume.
+**Drive** (0.1–4, exp taper, default 1.0) saturates the input to the ladder. Below 1 the filter behaves cleaner / softer; above 1 the input clips into the per-stage `tanh` saturators (rational Padé(5,6) approximation, applied at each integrator input) and harmonic content blooms around the cutoff. Useful for adding bite without raising master volume.
 
 **Filter Mode** selects which point on the ladder is tapped:
 
@@ -32,9 +32,9 @@ The HPF is fixed-slope (12 dB/oct) and has no resonance. It sits *before* the ma
 
 ## Key Track
 
-**Key Track** is a binary on/off switch (not a depth knob). When on, the cutoff frequency rises one octave per octave of key relative to C4 — i.e. the filter behaves as if it tracks the played note 100%. When off, cutoff stays fixed regardless of key.
+**Key Track** (0–1) is a continuous depth knob. At 1.0 the cutoff rises one octave per octave of key relative to C4 (the played note's pitch tracks 1:1 into the filter). At 0 the cutoff stays fixed regardless of key. Intermediate values give proportional tracking — 0.5 is half-tracking, etc.
 
-Most analog synths offer continuous key-track depth (0 / 1/3 / 2/3 / full). VXN1 picks one practical setting and exposes only the on/off choice (ADR 0004). If you need partial tracking, use the velocity-to-cutoff or LFO-to-cutoff routes to add per-key modulation.
+Set this to 1.0 for a filter that follows the keyboard fully; use lower values when you want bass notes to be darker than treble notes without going all the way to neutral.
 
 ## Modulation
 
@@ -60,4 +60,5 @@ Plus from the [Mod Wheel panel](modulation.md#mod-wheel-routes):
 | Drive | 0.1–4 | 1.0 | linear | Exp taper (mid 1.0) |
 | Filter Mode | LP / HP / BP / Notch | LP | enum | Ladder output selector |
 | Filter Slope | 12 dB / 24 dB | 24 dB | enum | 2-pole or 4-pole |
-| Key Track | Off / On | Off | bool | 100% per octave when on |
+| Key Track | 0–1 | 0 | linear | 1.0 = 1 octave cutoff / octave key |
+| Tuned | Off / On | Off | bool | Reserved for future cutoff-tuned-to-key offset behaviour; currently inactive |

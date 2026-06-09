@@ -1,6 +1,6 @@
 # Parameter reference
 
-The complete VXN1 parameter table, grouped by panel. **156 parameters total** = `2 × 64` per-layer + `28` global (per ADR 0001).
+The complete VXN1 parameter table, grouped by panel. **165 parameters total** = `2 × 69` per-layer + `27` global.
 
 Per-layer parameters are exposed twice to the host — once for Upper, once for Lower — and described once below.
 
@@ -46,7 +46,8 @@ Per-layer parameters are exposed twice to the host — once for Upper, once for 
 | Drive | 0.1–4 | 1.0 | linear |
 | Filter Mode | LP / HP / BP / Notch | LP | enum |
 | Filter Slope | 12 dB / 24 dB | 24 dB | enum |
-| Key Track | Off / On | Off | bool |
+| Key Track | 0–1 | 0 | linear |
+| Tuned | Off / On | Off | bool |
 
 ## Envelope 1 (Modulation)
 
@@ -112,13 +113,6 @@ Per-layer parameters are exposed twice to the host — once for Upper, once for 
 | Cutoff Env Dep | −96 to +96 | 0 | st |
 | Vel→Cutoff | −96 to +96 | 0 | st |
 
-## Cross-Mod Sweep
-
-| Parameter | Range | Default | Unit |
-| --- | --- | --- | --- |
-| X-Mod Sweep Env | Off / Env 1 / Env 2 | Off | enum |
-| X-Mod Sweep Env Dep | −48 to +48 | 0 | st |
-
 ## Mod Wheel routes
 
 | Parameter | Range | Default | Unit |
@@ -126,7 +120,9 @@ Per-layer parameters are exposed twice to the host — once for Upper, once for 
 | Wheel→PWM | −0.5 to +0.5 | 0 | linear |
 | Wheel→Cutoff | −96 to +96 | 0 | st |
 | Wheel→Reso | 0–1 | 0 | linear |
-| Wheel→X-Mod Sweep | −48 to +48 | 0 | st |
+| Wheel→X-Mod | −48 to +48 | 0 | st |
+
+> Wide cross-mod *sweeps* are built from the [Pitch Env Mod switch](panels/modulation.md#pitch-modulation) plus Pitch Env Dep — there is no dedicated sweep envelope route in the parameter table.
 
 ## Voice & assign
 

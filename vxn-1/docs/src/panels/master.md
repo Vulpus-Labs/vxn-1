@@ -9,9 +9,9 @@ Global, instrument-wide controls. All parameters here are shared across both lay
 
 ## Drift
 
-**Master Drift** (0–1, default 0) introduces small per-voice oscillator phase offsets, modelling analogue tuning instability. At 0 every voice's oscillator starts in phase with the others (clinical); at 1 voices are heavily decorrelated (broader stereo image, less coherent transients).
+**Master Drift** (0–1, default 0) drives a slow random walk on every active oscillator's tuning, modelling analogue tuning instability. At 0 every voice tracks its nominal pitch exactly; at 1 voices wander noticeably, broadening the stereo image and softening transients.
 
-Drift is sampled once per voice allocation, so a given note's drift stays constant for that note's lifetime — repeated notes get fresh drift values.
+The drift is *continuous*, not a per-note snapshot — pitch keeps wandering for the whole lifetime of a held note. Two repeats of the same note will sound slightly different from each other and may not stay in tune with each other for long sustains.
 
 ## Limiter
 
@@ -30,7 +30,7 @@ The limiter is post-volume, so cranking Master Volume into the limiter is a vali
 | **4×** | Bright sync leads, ring modulation with non-sine sources, heavy resonance. |
 | **8×** | Worst-case anti-aliasing; clean PM with non-sine modulators. CPU-heavy. |
 
-Changing the oversample setting is real-time safe — no clicks, no allocations, no reload required.
+Changing the oversample setting at runtime is real-time safe (no allocations, no reload), but the decimator FIR state is reset on the switch — expect a brief dropout on any sounding note. Make the change between notes if you can.
 
 ## Parameters
 

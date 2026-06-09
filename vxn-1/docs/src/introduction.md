@@ -1,6 +1,6 @@
 # Introduction
 
-**VXN1** ("vixen 1") is an 80s-style analogue polysynth by [Vulpus Labs](https://github.com/Vulpus-Labs), built in Rust as a [CLAP](https://cleveraudio.org/) plugin (with VST3 distribution via clap-wrapper).
+**VXN1** ("vixen 1") is an 80s-style analogue polysynth by [Vulpus Labs](https://github.com/Vulpus-Labs), built in Rust as a [CLAP](https://cleveraudio.org/) plugin. A VST3 build via [`clap-wrapper`](https://github.com/free-audio/clap-wrapper) is on the roadmap (see [Distribution](internals/distribution.md)).
 
 This manual covers installation, the faceplate panel-by-panel, performance features (key modes, presets, MIDI), and engine internals. Read top-to-bottom for an end-to-end tour, or jump to the [Parameter reference](parameter-reference.md) and [Glossary](appendix/glossary.md) for lookups.
 

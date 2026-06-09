@@ -35,7 +35,7 @@ Both LFOs share the same six shapes:
 
 **Fade** (0–4 s) is the ramp-up time once the delay expires — the LFO's output amplitude crossfades from 0 to its target over this interval. Combined with Delay Time, this gives the classic "vibrato that grows" voice mannerism.
 
-LFO 1 has no delay / fade for cases where Free-Run is on — the LFO is continuous, so delay / fade has no anchor point.
+Delay and Fade are clocked from note-on. With **Free-Run on** they have no per-note anchor and are effectively bypassed for held notes — use Free-Run off if you want the delay/fade behaviour to be predictable.
 
 ## LFO 2 specifics
 

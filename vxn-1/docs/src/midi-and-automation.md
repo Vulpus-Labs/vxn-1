@@ -24,13 +24,13 @@ Three parameters honour host tempo when their **Sync** toggle is on:
 
 - **LFO 1 Sync**
 - **LFO 2 Sync**
-- **Delay Sync** (planned; not yet routed)
+- **Delay Sync**
 
 With sync on, the rate knob steps through beat subdivisions (1/1 down to 1/32, including triplet and dotted variants). With sync off, the rate is free-running in Hz.
 
 ## Parameter automation
 
-All 156 parameters are exposed to CLAP and VST3 automation. The full list lives in the [Parameter reference](parameter-reference.md). A few notes on automation behaviour:
+All 165 parameters are exposed to CLAP automation (and to VST3 once the wrapper build lands; see [Distribution](internals/distribution.md)). The full list lives in the [Parameter reference](parameter-reference.md). A few notes on automation behaviour:
 
 - **Per-layer parameters** are exposed twice — once for Upper, once for Lower. Their CLAP IDs are derived from a per-layer offset.
 - **Key Mode** and **Split Point** are *not* automatable. They live in plugin state and can be saved / loaded with the project but can't be moved by an automation lane (ADR 0003).

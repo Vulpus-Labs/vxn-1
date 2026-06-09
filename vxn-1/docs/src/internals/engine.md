@@ -3,7 +3,7 @@
 The engine is the bridge between the parameter table and the audio buffer. Its job, per host buffer:
 
 1. Receive parameter snapshots from `SharedParams`.
-2. Receive note events from the host (translated via the key-mode router).
+2. Receive note events from the host (translated via the key-mode router; 165 params total in `SharedParams`).
 3. Allocate / steal voice channels per assign mode.
 4. For each control block (32 samples), recompute modulation, envelope, LFO, filter coefficients.
 5. For each sample in the block, run per-voice DSP and mix into the output.
@@ -62,13 +62,13 @@ A few hot-path subtleties:
 | **Oscillators** | polyBLEP-band-limited saw / pulse. Sine and triangle are unaliased. PM / Sync / Ring routed through dedicated kernel variants for the SoA-friendly fast path. |
 | **Sub** | Square wave at Osc 1's frequency / 2. Band-limited. |
 | **Noise** | White: `Xorshift32`. Pink: 4-octave Voss-McCartney summing. |
-| **Ladder filter** | OTA-C transistor-ladder. Padé(3,3) saturator in the feedback path. Per-block coefficient recompute, per-sample state advance. Mode (LP/HP/BP/Notch) is a const-selected tap. |
-| **HPF** | 1-pole high-pass, fixed slope. |
+| **Ladder filter** | OTA-C transistor-ladder. `tanh` saturator at each integrator input (rational Padé(5,6) approximation from `vxn-dsp::math`), not in the feedback path. Per-block coefficient recompute, per-sample state advance. Mode (LP/HP/BP/Notch) is a const-selected tap. |
+| **HPF** | 1-pole (6 dB/oct) topology-preserving high-pass. |
 | **Envelope** | ADSR with linear or exponential segments. Branch-free per-sample step; segment transitions are one branch per gate event. |
 | **LFO** | Six shapes (sine, tri, saw+, saw−, sq, S&H). Phase accumulator with optional host-tempo sync. |
 | **Phaser** | 4-stage all-pass with LFO-modulated centre. |
 | **Chorus** | BBD model with bucket saturation, reconstruction filter, inverted-LFO stereo. |
-| **Delay** | Stereo delay line, soft-clipped feedback. |
+| **Delay** | Stereo delay line, one-pole high-frequency damping on the feedback path. |
 | **Reverb** | FDN, 8-channel, with damping on each loop. |
 
 ## Sample-rate handling

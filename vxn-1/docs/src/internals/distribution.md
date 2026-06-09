@@ -1,8 +1,6 @@
 # CLAP & VST3 distribution
 
-VXN1 ships **CLAP as the canonical format** and **VST3 via [`clap-wrapper`](https://github.com/free-audio/clap-wrapper)** (MIT-licensed). There is no separate VST3 source tree — the VST3 binary wraps the same CLAP cdylib.
-
-ADR 0008 has the full rationale. This page covers the build, packaging, and identifier-stability rules.
+VXN1 currently ships **CLAP** only. **VST3 via [`clap-wrapper`](https://github.com/free-audio/clap-wrapper)** is the committed distribution path (ADR 0008), but the wrapper integration has not yet landed in `xtask` and there is no `vendor/clap-wrapper` submodule in the workspace. Treat the VST3 section below as the target state, not the current build.
 
 ## CLAP build
 
@@ -21,37 +19,37 @@ VXN1.clap/
 
 Windows and Linux ship the cdylib as a flat `VXN1.clap` file with no bundle wrapper.
 
-## VST3 build
+## VST3 build (planned, not yet shipping)
 
-`xtask` invokes the vendored `clap-wrapper` build via CMake. The submodules `vendor/clap-wrapper` and `vendor/vst3sdk` (pinned to VST3 3.8 — MIT licensed since October 2025) are checked into the workspace.
+The committed plan (ADR 0008) is for `xtask` to invoke a vendored `clap-wrapper` build via CMake, with `vendor/clap-wrapper` and `vendor/vst3sdk` (pinned to VST3 3.8 — MIT-licensed since October 2025) as workspace submodules. The build will produce a **single-binary bundled VST3** with the CLAP cdylib statically linked.
 
-The build produces a **single-binary bundled VST3** — the CLAP cdylib is statically linked into the `.vst3` bundle. The VST3 file has no external `.clap` dependency at runtime.
-
-Requirements:
+Planned requirements:
 
 - CMake ≥ 3.21.
 - A C++17 compiler (clang, MSVC, GCC).
 
-VST3 build options:
+Planned xtask invocations (none of these flags are accepted today):
 
 ```sh
-# VST3 only
+# VST3 only (planned)
 cargo xtask bundle --release --format vst3
 
-# Both formats in one shot
+# Both formats in one shot (planned)
 cargo xtask bundle --release --format clap,vst3
 
-# macOS universal binary (arm64 + x86_64)
+# macOS universal binary (planned)
 cargo xtask bundle --release --universal --format vst3
 ```
 
+For the actual shipping CLAP build, see [Installing VXN1](../install.md).
+
 ## Install locations
 
-| OS | CLAP | VST3 |
+| OS | CLAP (shipping) | VST3 (planned) |
 | --- | --- | --- |
 | **macOS** | `~/Library/Audio/Plug-Ins/CLAP/VXN1.clap` | `~/Library/Audio/Plug-Ins/VST3/VXN1.vst3` |
 | **Windows** | `%LOCALAPPDATA%\Programs\Common\CLAP\VXN1.clap` | `%LOCALAPPDATA%\Programs\Common\VST3\VXN1.vst3` |
-| **Linux** | `~/.clap/VXN1.clap` | _not yet shipped_ |
+| **Linux** | `~/.clap/VXN1.clap` | _not planned for the first VST3 cut_ |
 
 Bundle identifier: `labs.vulpus.vxn1`.
 

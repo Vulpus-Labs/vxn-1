@@ -32,6 +32,8 @@ env2_sustain = 0.9
 chorus_mix = 0.6
 ```
 
+The `[meta]` table currently carries `name`, `author`, and `category`. Free-text tags were specced in early drafts but dropped from the format — there is no `tags` field on disk.
+
 For Performances, the structure splits across multiple tables:
 
 ```toml
@@ -70,7 +72,7 @@ Factory presets are **embedded in the binary** at compile time via `include_dir!
 
 ## Factory bank
 
-Eight categories ship in the factory bank:
+Seven categories ship in the factory bank:
 
 - Bass
 - Brass
@@ -79,7 +81,6 @@ Eight categories ship in the factory bank:
 - Pad
 - Performance
 - Strings
-- (the **Jovian Presets** subfolder, holding 64 best-effort JP-8 ROM transliterations sourced from the TAL J-8 community port — see `vxn-1/crates/vxn-engine/presets/factory/Jovian Presets/`)
 
 The Performance category specifically holds full-instrument states (Dual layered patches, Split keyboards) — patches with `kind = "performance"`.
 
@@ -89,8 +90,8 @@ The preset browser is reached from the faceplate header. It shows:
 
 - **Folder tree** on the left (categories + your subfolders).
 - **Preset list** on the right.
-- **Search box** above the list — substring match on preset name + `#tag` AND-filter.
-- **Context menu** on each preset: Rename, Delete, Move to ▸, Edit tags.
+- **Search box** above the list — substring match on preset name.
+- **Context menu** on each preset: Rename, Delete, Move to ▸.
 - **Drag-drop** — drag a preset onto a folder to move (best-effort; context menu is the fallback).
 
 Factory presets have read-only flags — you can't rename or delete them, but you can save a modified copy via **Save As**.
@@ -109,6 +110,5 @@ The **Save As** dialog asks for:
 - **Name** — required. Used as the filename (with extension `.toml`).
 - **Author** — optional, persists to `[meta] author`.
 - **Category** — picks the folder. Pre-filled with the current category or empty for a new one.
-- **Tags** — comma- or whitespace-separated free-text tags. Stored in `[meta] tags` if you populate them; the field is editable later via the context menu.
 
 Saves to user storage only; factory presets are read-only.

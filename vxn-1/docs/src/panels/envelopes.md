@@ -19,7 +19,7 @@ Both envelopes have the same parameter shape: A / D / S / R + Shape.
 The **Shape** parameter picks between linear and exponential segments:
 
 - **Linear** — each stage interpolates straight from start value to end. Constant rate of change.
-- **Exponential** — each stage curves: rapid initial motion, asymptotic approach to target. Smoother on the ear, especially for the amplitude envelope.
+- **Exponential** — each stage curves. Decay and Release approach their target asymptotically. Attack overshoots — it aims at a target of 1.2 and clamps at 1.0, giving the characteristic "snappy" front edge of an analog amp envelope. Smoother on the ear than linear, especially for amplitude.
 
 Env 1 defaults to **Linear** (predictable for modulation). Env 2 defaults to **Exponential** (smoother for amplitude).
 

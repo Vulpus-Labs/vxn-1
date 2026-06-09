@@ -1,43 +1,36 @@
 # Installing VXN1
 
-VXN1 ships as a single binary in two plugin formats:
-
-- **CLAP** — canonical format, statically linked, no external runtime dependencies.
-- **VST3** — produced by wrapping the CLAP via [`clap-wrapper`](https://github.com/free-audio/clap-wrapper). Single-binary bundled package; no separate `.clap` dependency at runtime.
+VXN1 currently ships as a **CLAP** plugin (canonical format, statically linked, no external runtime dependencies). VST3 distribution via `clap-wrapper` is planned (see ADR 0008 and [Distribution](internals/distribution.md)) but not yet wired into the build.
 
 ## Prerequisites
 
 - Rust **1.85+** (edition 2024).
-- For VST3 builds: **CMake ≥ 3.21**.
 - macOS, Windows (x86_64), or Linux. Apple Silicon is the primary target; universal builds (arm64 + x86_64) are supported on macOS.
 
 ## Build & install from source
 
-From the workspace root (`vxn-1/vxn-1/`):
+From the workspace root (`vxn-1/`):
 
 ```sh
-# CLAP only
+# CLAP, install to user directory
 cargo xtask bundle --release --install
 
-# VST3 only
-cargo xtask bundle --release --format vst3 --install
+# CLAP, no install (bundle stays in target/)
+cargo xtask bundle --release
 
-# Both
-cargo xtask bundle --release --format clap,vst3 --install
-
-# macOS universal (arm64 + x86_64)
+# macOS universal (arm64 + x86_64), installed
 cargo xtask bundle --release --universal --install
 ```
 
-Without `--install`, bundles are written to `target/bundled/VXN1.clap` and `target/bundled/VXN1.vst3` and can be copied by hand.
+The available xtask flags are `--release`, `--install`, and `--universal`. Without `--install`, the `.clap` bundle is written under `target/` and can be copied by hand.
 
 ## Install locations
 
-| OS | CLAP | VST3 |
-| --- | --- | --- |
-| **macOS** | `~/Library/Audio/Plug-Ins/CLAP/VXN1.clap` | `~/Library/Audio/Plug-Ins/VST3/VXN1.vst3` |
-| **Windows** | `%LOCALAPPDATA%\Programs\Common\CLAP\VXN1.clap` | `%LOCALAPPDATA%\Programs\Common\VST3\VXN1.vst3` |
-| **Linux** | `~/.clap/VXN1.clap` | _not currently shipped_ |
+| OS | CLAP |
+| --- | --- |
+| **macOS** | `~/Library/Audio/Plug-Ins/CLAP/VXN1.clap` |
+| **Windows** | `%LOCALAPPDATA%\Programs\Common\CLAP\VXN1.clap` |
+| **Linux** | `~/.clap/VXN1.clap` |
 
 Bundle identifier: `labs.vulpus.vxn1`.
 
@@ -49,10 +42,6 @@ Bundle identifier: `labs.vulpus.vxn1`.
 
 If the plugin doesn't appear:
 
-- Check the install path matches the DAW's plugin search paths.
+- Check the install path matches the DAW's CLAP search paths.
 - On macOS, see [Unsigned binaries](install-unsigned.md) for Gatekeeper quarantine.
-- Confirm format support: VST3 requires the host to support VST3 3.7+; some legacy hosts are VST2-only.
-
-## Distribution notes (ADR 0008)
-
-CLAP is the canonical format. The VST3 build is *produced* from the same CLAP binary via `clap-wrapper`; there is no separate VST3 source tree. Parameter IDs in VST3 are derived from CLAP IDs by hashing — renaming a CLAP ID would break VST3 automation in saved projects, so identifier stability is a soft guarantee post-ship.
+- Confirm the host supports CLAP. Most modern hosts (Bitwig, Reaper, recent FL Studio / Ableton) do; some still need a CLAP plugin to be enabled in settings.

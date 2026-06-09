@@ -4,11 +4,10 @@ Pre-release VXN1 builds are not yet code-signed or notarised. The OS will block 
 
 ## macOS
 
-After copying `VXN1.clap` or `VXN1.vst3` into the install location, clear the Gatekeeper quarantine attribute:
+After copying `VXN1.clap` into the install location, clear the Gatekeeper quarantine attribute:
 
 ```sh
 xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/VXN1.clap
-xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/VXN1.vst3
 ```
 
 Restart the DAW after running these commands. If the plugin still doesn't load, check the host's plugin scan log — some hosts (Logic, Ableton Live) cache scan failures and need an explicit rescan after the quarantine flag is cleared.

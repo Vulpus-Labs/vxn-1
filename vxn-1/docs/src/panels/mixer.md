@@ -11,7 +11,7 @@ All four sources sum into a single stereo mix before the high-pass and ladder fi
 
 ## Sub-oscillator
 
-The sub is a square wave at Osc 1's frequency divided by two. It tracks Osc 1's tuning (including modulation), is not affected by Osc 1's **Cross-Mod Type**, and is band-limited.
+The sub is a square wave one octave below the carrier oscillator. By default that's Osc 1; under **Cross-Mod Type = Sync** the sub follows Osc 2 instead (since Osc 1 is then a sync slave of Osc 2). Otherwise the sub tracks Osc 1's tuning, including pitch modulation, and is band-limited.
 
 A common move: pull Osc 1 Level to ~0.5, raise Sub Level to ~0.7 for a fat bass that retains its top-octave brightness from Osc 2.
 
