@@ -51,7 +51,7 @@ Both oscillators are at full saw, and Env 2 (the amplitude envelope) is hardwire
 
 ## Save your patch
 
-Right-click any knob to access automation. The **Preset Browser** (faceplate top-right) handles save/load. New user presets land in:
+The **preset bar** at the top of the faceplate (between the banner and the first row of controls) handles save/load: `< name >` walks through the combined factory + user list, **Browse** opens the folder/preset panel, **Save** overwrites the current user preset, **Save As** opens a name/folder dialog. New user presets land in:
 
 - **macOS**: `~/Library/Audio/Presets/Vulpus Labs/VXN1/`
 - **Windows**: `%APPDATA%\Vulpus Labs\VXN1\Presets`

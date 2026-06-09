@@ -86,7 +86,7 @@ The Performance category specifically holds full-instrument states (Dual layered
 
 ## Browser
 
-The preset browser is reached from the faceplate header. It shows:
+The preset browser opens from the **Browse** button on the preset bar at the top of the faceplate. It shows:
 
 - **Folder tree** on the left (categories + your subfolders).
 - **Preset list** on the right.
