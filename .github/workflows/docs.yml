@@ -26,8 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install mdBook and mdbook-pandoc
-        run: cargo install mdbook mdbook-pandoc --locked
+      - name: Install mdBook, mdbook-pandoc and mdbook-mermaid
+        run: cargo install mdbook mdbook-pandoc mdbook-mermaid --locked
 
       - name: Install Pandoc
         run: |

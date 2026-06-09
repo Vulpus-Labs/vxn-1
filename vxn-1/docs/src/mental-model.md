@@ -4,13 +4,35 @@ VXN1 is a classical subtractive synth with a few intentional deviations from the
 
 ## Signal path
 
-```
-┌─ Osc 1 ──┐
-├─ Osc 2 ──┤
-├─ Sub  ───┤── mix ──► HPF ──► VCF (LP/HP/BP/Notch) ──► VCA ─┐
-└─ Noise ──┘                                                  │
-                                                              ▼
-                                   ┌── Phaser ──► Chorus ──► Delay ──► Reverb ──► Master ──► out
+```mermaid
+flowchart TD
+    subgraph voice ["Per voice (oversampled 1× / 2× / 4× / 8×)"]
+        direction TB
+        osc1[Osc 1]
+        osc2[Osc 2]
+        sub[Sub]
+        noise[Noise]
+        mix([Mixer])
+        hpf[HPF]
+        vcf["VCF<br/>LP / HP / BP / Notch"]
+        vca[VCA]
+        osc1 --> mix
+        osc2 --> mix
+        sub --> mix
+        noise --> mix
+        mix --> hpf --> vcf --> vca
+    end
+    subgraph inst ["Instrument bus (host sample rate)"]
+        direction TB
+        phaser[Phaser]
+        chorus["BBD Chorus"]
+        delay["Stereo Delay"]
+        reverb["FDN Reverb"]
+        master["Master<br/>(volume + optional limiter)"]
+        phaser --> chorus --> delay --> reverb --> master
+    end
+    voice -- "voice mix" --> phaser
+    master --> out([Stereo out])
 ```
 
 - Per-voice path: oscillators → mixer → HPF → VCF → VCA. Runs at synthesis sample rate (optionally oversampled 1× / 2× / 4× / 8×).
