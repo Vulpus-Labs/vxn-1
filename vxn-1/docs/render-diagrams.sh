@@ -21,7 +21,7 @@ fi
 
 shopt -s nullglob
 for src in "$DIAGRAMS"/*.mmd; do
-  out="${src%.mmd}.svg"
+  out="${src%.mmd}.png"
   echo "render $(basename "$src") → $(basename "$out")"
-  mmdc -i "$src" -o "$out" --backgroundColor transparent "${EXTRA[@]}"
+  mmdc -i "$src" -o "$out" --backgroundColor transparent --scale 2 ${EXTRA[@]+"${EXTRA[@]}"}
 done

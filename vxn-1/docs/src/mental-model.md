@@ -4,11 +4,10 @@ VXN1 is a classical subtractive synth with a few intentional deviations from the
 
 ## Signal path
 
-![Signal path](diagrams/signal-path.svg)
+![Signal path](diagrams/signal-path.png)
 
-<!-- Source: diagrams/signal-path.mmd. Re-render with:
-       mmdc -i diagrams/signal-path.mmd -o diagrams/signal-path.svg --backgroundColor transparent
-     CI runs the same step before mdbook build. -->
+<!-- Source: diagrams/signal-path.mmd. Re-render via docs/render-diagrams.sh
+     (needs @mermaid-js/mermaid-cli). CI runs it before mdbook build. -->
 
 - Per-voice path: oscillators → mixer → HPF → VCF → VCA. Runs at synthesis sample rate (optionally oversampled 1× / 2× / 4× / 8×).
 - Instrument-level path (post voice-mix): phaser → BBD chorus → stereo delay → FDN reverb → master volume → limiter (optional).
