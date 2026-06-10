@@ -162,9 +162,10 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 ///
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
 /// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX, plus a single layer-level `Feedback` dest = 27 total. (Per-op
-/// feedback was dropped; feedback is layer-level and modulates the
-/// algorithm's structural FB op only.)
+/// 2 FX, plus a single `Feedback` dest = 27 total. (Per-op feedback was
+/// dropped; feedback modulates the algorithm's structural FB op only, but
+/// applies per lane — it's a voice property, unlike the post-mixdown FX
+/// dests.)
 ///
 /// ## Audio wiring status
 ///
@@ -177,7 +178,9 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 /// - `GlobalPitch` — per-lane semitones added to the stack pitch sum.
 /// - `DelayMix` / `ReverbMix` — averaged at lane 0 across active stacks
 ///   and pushed to the FX param surface each block.
-/// - `Feedback` — added to the layer feedback before `set_feedback_live`.
+/// - `Feedback` — per-lane: each lane's accumulated amount is added to the
+///   patch feedback and cooked via `set_feedback_live_lanes`, so per-lane
+///   sources (VoiceSpread, LFO2, …) give each unison lane its own growl.
 ///
 /// Routable in the matrix UI but NOT yet consumed in audio:
 /// - `Lfo2Phase` — would need per-lane LFO2 phase reset/offset.

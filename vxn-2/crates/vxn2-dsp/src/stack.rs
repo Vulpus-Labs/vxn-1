@@ -17,9 +17,9 @@
 //!
 //! ## SoA layout
 //!
-//! Per stack op: `phase[8]`, `phase_inc[8]`, `fb_prev1[8]`, `fb_prev2[8]` as
-//! contiguous arrays LLVM lowers to 2× NEON 4-wide registers on AArch64.
-//! Per-op scalars (EG, `fb_scale`, `amp_sens_coef`) live alongside, shared
+//! Per stack op: `phase[8]`, `phase_inc[8]`, `fb_prev1[8]`, `fb_prev2[8]`,
+//! `fb_scale[8]` as contiguous arrays LLVM lowers to 2× NEON 4-wide registers
+//! on AArch64. Per-op scalars (EG, `amp_sens_coef`) live alongside, shared
 //! across the 8 lanes.
 //!
 //! ## Algorithm routing
@@ -189,7 +189,10 @@ pub struct StackOp {
     pub base_phase_inc: [u32; STACK_LANES],
     /// Per-op envelope; shared across lanes (one EG, one level per op).
     pub eg: crate::eg::EgState,
-    pub fb_scale: f32,
+    /// Cooked feedback gain per lane. Non-zero only on the algorithm's
+    /// structural FB op; per-lane because the matrix `Feedback` dest is a
+    /// voice property (each lane can carry its own modulated amount).
+    pub fb_scale: [f32; STACK_LANES],
     pub amp_sens_coef: f32,
 }
 
@@ -328,17 +331,37 @@ impl Stack {
         self.route_fn = resolve_lane_route(algo);
     }
 
-    /// Apply a layer-level feedback amount, continuous `[0.0, 7.0]`. Writes
-    /// `fb_scale` onto the algorithm's structural FB op only; every other
-    /// op's `fb_scale` is zeroed. Called from `note_on` and from
+    /// Apply a uniform feedback amount, continuous `[0.0, 7.0]`, to every
+    /// lane. Writes `fb_scale` onto the algorithm's structural FB op only;
+    /// every other op's `fb_scale` is zeroed. Called from `note_on` and from
     /// `Engine::apply_block_params` each block so picker / fader changes
     /// propagate to a held note.
     #[inline]
     pub fn set_feedback_live(&mut self, feedback: f32) {
-        let scale = fb_scale(feedback);
+        self.write_fb_scales([fb_scale(feedback); STACK_LANES]);
+    }
+
+    /// Per-lane variant: one feedback amount (`[0.0, 7.0]`) per lane. Used by
+    /// the engine when the matrix `Feedback` dest carries per-lane modulation
+    /// (e.g. VoiceSpread → Feedback giving each unison lane its own growl).
+    #[inline]
+    pub fn set_feedback_live_lanes(&mut self, feedback: &[f32; STACK_LANES]) {
+        let mut scales = [0.0_f32; STACK_LANES];
+        for k in 0..STACK_LANES {
+            scales[k] = fb_scale(feedback[k]);
+        }
+        self.write_fb_scales(scales);
+    }
+
+    #[inline]
+    fn write_fb_scales(&mut self, scales: [f32; STACK_LANES]) {
         let fb_op = spec_of(self.algo).structural_fb_op;
         for i in 0..N_OPS {
-            self.ops[i].fb_scale = if (i + 1) as u8 == fb_op { scale } else { 0.0 };
+            self.ops[i].fb_scale = if (i + 1) as u8 == fb_op {
+                scales
+            } else {
+                [0.0; STACK_LANES]
+            };
         }
     }
 
@@ -698,7 +721,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
         let mut pm_q32 = [0u32; STACK_LANES];
         for k in 0..STACK_LANES {
             let fb_avg = 0.5 * (op.fb_prev1[k] + op.fb_prev2[k]);
-            let total_mod = mi[i][k] + fb_avg * fbs;
+            let total_mod = mi[i][k] + fb_avg * fbs[k];
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
         // Stage 2: read sine at modulated phase, scale by EG level plus the
@@ -745,7 +768,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
         let mut pm_q32 = [0u32; STACK_LANES];
         for k in 0..STACK_LANES {
             let fb_avg = 0.5 * (op.fb_prev1[k] + op.fb_prev2[k]);
-            let total_mod = mi[i][k] + fb_avg * fbs;
+            let total_mod = mi[i][k] + fb_avg * fbs[k];
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
         let mut sines = [0.0_f32; STACK_LANES];

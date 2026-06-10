@@ -425,11 +425,19 @@ impl Engine {
             project_pitch_state(stack, self.pitch_smoothers[i].current());
             // Layer-level feedback is single-valued per stack. Read lane 0 of
             // the matrix accumulator and add to the patch's feedback value;
-            // re-apply through `set_feedback_live` so the algorithm's FB op
-            // sees the modulated `fb_scale` for this block.
-            let fb_mod = self.dest_vals[i][0][FEEDBACK_IDX];
-            if fb_mod != 0.0 {
-                stack.set_feedback_live((patch_feedback + fb_mod).clamp(0.0, 7.0));
+            // re-apply through `set_feedback_live_lanes` so the algorithm's
+            // FB op sees the modulated `fb_scale` for this block. Feedback is
+            // a voice property — each lane carries its own modulated amount
+            // (unlike the FX dests below, which apply post-mixdown).
+            let mut fb_lanes = [0.0_f32; STACK_LANES];
+            let mut fb_any = false;
+            for k in 0..STACK_LANES {
+                let m = self.dest_vals[i][k][FEEDBACK_IDX];
+                fb_any |= m != 0.0;
+                fb_lanes[k] = (patch_feedback + m).clamp(0.0, 7.0);
+            }
+            if fb_any {
+                stack.set_feedback_live_lanes(&fb_lanes);
             }
             // Refresh pitch + pan from the new offsets so the per-sample
             // loop reads phase_inc / pan_l / pan_r that include this block's
@@ -1142,12 +1150,53 @@ mod tests {
 
         let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
         let fb_op = spec_of(e.alloc.stacks[s].algo).structural_fb_op as usize;
-        let got = e.alloc.stacks[s].ops[fb_op - 1].fb_scale;
         let want = fb_scale(4.0);
-        assert!(
-            (got - want).abs() < 1e-5,
-            "matrix Feedback did not land: got {got} want {want}",
-        );
+        // ModWheel is a patch-level source: every lane gets the same amount.
+        for (k, got) in e.alloc.stacks[s].ops[fb_op - 1].fb_scale.iter().enumerate() {
+            assert!(
+                (got - want).abs() < 1e-5,
+                "matrix Feedback did not land on lane {k}: got {got} want {want}",
+            );
+        }
+    }
+
+    /// Feedback is a per-lane (voice) dest: a per-lane source like
+    /// VoiceSpread must give each unison lane its own feedback amount —
+    /// outer-left lane below the patch value, outer-right above, symmetric.
+    #[test]
+    fn matrix_voice_spread_to_feedback_is_per_lane() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use vxn2_dsp::algo::spec_of;
+        use vxn2_dsp::tables::fb_scale;
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.voice.feedback = 3.0;
+        e.params.patch.stack.density = 4;
+        e.params.patch.stack.spread = 1.0;
+        e.apply_block_params();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::VoiceSpread,
+            dest: DestId::Feedback,
+            depth: 2.0 / 7.0, // ±2.0 native feedback units at full spread
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+
+        let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
+        let fb_op = spec_of(e.alloc.stacks[s].algo).structural_fb_op as usize;
+        let got = e.alloc.stacks[s].ops[fb_op - 1].fb_scale;
+        // Density 4, linear distrib: lane spread = -1, -1/3, +1/3, +1.
+        for (k, spread) in [-1.0_f32, -1.0 / 3.0, 1.0 / 3.0, 1.0].iter().enumerate() {
+            let want = fb_scale(3.0 + 2.0 * spread);
+            assert!(
+                (got[k] - want).abs() < 1e-4,
+                "lane {k}: got {} want {want}",
+                got[k],
+            );
+        }
     }
 
     /// Clearing a slot by writing `active: false` (or source/dest = None)
