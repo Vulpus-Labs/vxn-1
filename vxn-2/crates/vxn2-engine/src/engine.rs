@@ -114,9 +114,22 @@ pub struct Engine {
     /// Block-rate smoother targets, captured per active stack.
     pitch_targets: [[[f32; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
     /// Allocation generation last seen per slot — a change means a fresh
-    /// note-on reused the slot, so its smoother snaps instead of gliding in
-    /// from the previous voice's offset.
-    pitch_seq: [u64; N_STACKS],
+    /// note-on reused the slot, so every smoothing/ramp state (pitch
+    /// smoother, level + pan ramps) snaps instead of gliding in from the
+    /// previous voice's modulation.
+    mod_seq: [u64; N_STACKS],
+    /// Per-stack per-sample increments ramping `stack.op_level_mod` and the
+    /// folded pan gains `stack.pan_l` / `pan_r` linearly to each block's
+    /// matrix targets (ticket 0074 — kills block-edge zipper on level/pan
+    /// routes). Engine-owned so the `stack_tick_*` hot path stays untouched;
+    /// the render loop advances them once per sample while live.
+    level_mod_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
+    pan_l_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
+    pan_r_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
+    /// Which slots carry a live ramp this block; `any_ramp_live` is the
+    /// whole-engine OR so a static patch pays one branch per sample.
+    ramp_live: [bool; N_STACKS],
+    any_ramp_live: bool,
 }
 
 impl Engine {
@@ -145,7 +158,12 @@ impl Engine {
                 sample_rate / PITCH_SMOOTH_QUANTUM as f32,
             ); N_STACKS],
             pitch_targets: [[[0.0; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
-            pitch_seq: [u64::MAX; N_STACKS],
+            mod_seq: [u64::MAX; N_STACKS],
+            level_mod_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            pan_l_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            pan_r_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            ramp_live: [false; N_STACKS],
+            any_ramp_live: false,
         };
         e.apply_block_params();
         e
@@ -200,8 +218,10 @@ impl Engine {
         for i in 0..N_STACKS {
             self.pitch_smoothers[i].snap_to(&zero);
             self.pitch_targets[i] = zero;
-            self.pitch_seq[i] = u64::MAX;
+            self.mod_seq[i] = u64::MAX;
+            self.ramp_live[i] = false;
         }
+        self.any_ramp_live = false;
         self.apply_block_params();
     }
 
@@ -341,6 +361,7 @@ impl Engine {
 
         for i in 0..self.alloc.stacks.len() {
             if self.alloc.stacks[i].is_idle() {
+                self.ramp_live[i] = false;
                 continue;
             }
             // LFO2 is per-voice (per-stack, lane-packed). Tick it once per
@@ -395,31 +416,60 @@ impl Engine {
                 &mut self.dest_vals[i],
             );
 
-            // Project per-op level + pan destinations into the stack's
-            // per-lane mod buffers. Indices: OpiLevel=i*3+1, OpiPan=i*3+2.
-            // Pitch-shaped destinations do NOT project here — they ramp via
-            // the per-stack PitchSmoother inside the render loop (0063).
+            // Project per-op level + pan destinations into the stack.
+            // Indices: OpiLevel=i*3+1, OpiPan=i*3+2. Neither applies as a
+            // block constant: level ramps linearly to this block's target
+            // via per-sample increments, and pan ramps the folded equal-
+            // power gains the same way (ticket 0074). Pitch-shaped
+            // destinations ride the per-stack PitchSmoother instead (0063).
+            let mut level_targets = [[0.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
             let stack = &mut self.alloc.stacks[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 let level_idx = op_i * 3 + 1;
                 let pan_idx = op_i * 3 + 2;
                 for k in 0..STACK_LANES {
-                    stack.op_level_mod[op_i][k] = self.dest_vals[i][k][level_idx];
+                    level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
                     stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                 }
             }
             // Capture this block's pitch-dest targets. A slot whose
             // allocation generation changed since the last block carries a
-            // fresh note — snap its smoother so the new voice doesn't glide
-            // in from the previous voice's pitch offset.
+            // fresh note — snap every smoothing/ramp state (pitch smoother,
+            // level + pan ramps) so the new voice doesn't glide in from the
+            // previous voice's modulation.
             self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
             let seq = self.alloc.slot_seq(i);
-            if seq != self.pitch_seq[i] {
-                self.pitch_seq[i] = seq;
+            let fresh = seq != self.mod_seq[i];
+            if fresh {
+                self.mod_seq[i] = seq;
                 self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
             }
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, self.pitch_smoothers[i].current());
+            if fresh {
+                stack.op_level_mod = level_targets;
+                stack.refresh_pan_with_mod();
+                self.ramp_live[i] = false;
+            } else {
+                let inv = 1.0 / n as f32;
+                let (pan_l_t, pan_r_t) = stack.pan_targets();
+                let mut any = false;
+                let lvl_inc = &mut self.level_mod_inc[i];
+                let pl_inc = &mut self.pan_l_inc[i];
+                let pr_inc = &mut self.pan_r_inc[i];
+                for op_i in 0..vxn2_dsp::algo::N_OPS {
+                    for k in 0..STACK_LANES {
+                        let dl = (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                        let pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
+                        let pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
+                        lvl_inc[op_i][k] = dl;
+                        pl_inc[op_i][k] = pl;
+                        pr_inc[op_i][k] = pr;
+                        any |= dl != 0.0 || pl != 0.0 || pr != 0.0;
+                    }
+                }
+                self.ramp_live[i] = any;
+            }
             // Layer-level feedback is single-valued per stack. Read lane 0 of
             // the matrix accumulator and add to the patch's feedback value;
             // re-apply through `set_feedback_live_lanes` so the algorithm's
@@ -436,12 +486,11 @@ impl Engine {
             if fb_any {
                 stack.set_feedback_live_lanes(&fb_lanes);
             }
-            // Refresh pitch + pan from the new offsets so the per-sample
-            // loop reads phase_inc / pan_l / pan_r that include this block's
-            // matrix output. Cost: per active stack 6×8 powf for pitch and
-            // 6×8 sin_cos for pan — affordable at ≤16 stacks.
+            // Refresh pitch from the new offsets so the per-sample loop
+            // reads phase_inc that includes this block's matrix output.
+            // Cost: per active stack 6×8 powf — affordable at ≤16 stacks.
+            // (Pan gains are handled by the ramp above — ticket 0074.)
             stack.apply_pitch_mult();
-            stack.refresh_pan_with_mod();
 
             // FX dests aggregate at lane 0 across active stacks. Lane 0
             // sees patch-source contributions exactly once; per-stack
@@ -451,6 +500,8 @@ impl Engine {
             fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
             fx_active += 1;
         }
+
+        self.any_ramp_live = self.ramp_live.iter().any(|&b| b);
 
         if fx_active > 0 {
             let inv = 1.0 / fx_active as f32;
@@ -486,12 +537,38 @@ impl Engine {
                     dry_r += sr;
                 }
             }
+            if self.any_ramp_live {
+                self.advance_mod_ramps();
+            }
             let (cl, cr) = self.cleanup.process(dry_l, dry_r);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
             let (l, r) = self.master.apply(l, r);
             out_l[sample] = l;
             out_r[sample] = r;
+        }
+    }
+
+    /// Advance the live level/pan ramps one sample (ticket 0074): straight
+    /// lane-strided adds into the stacks' `op_level_mod` / `pan_l` / `pan_r`.
+    /// Lives engine-side so the `stack_tick_*` hot path keeps its exact
+    /// pre-0074 shape; only ramping slots pay anything.
+    fn advance_mod_ramps(&mut self) {
+        for i in 0..N_STACKS {
+            if !self.ramp_live[i] {
+                continue;
+            }
+            let stack = &mut self.alloc.stacks[i];
+            let lvl_inc = &self.level_mod_inc[i];
+            let pl_inc = &self.pan_l_inc[i];
+            let pr_inc = &self.pan_r_inc[i];
+            for op_i in 0..vxn2_dsp::algo::N_OPS {
+                for k in 0..STACK_LANES {
+                    stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
+                    stack.pan_l[op_i][k] += pl_inc[op_i][k];
+                    stack.pan_r[op_i][k] += pr_inc[op_i][k];
+                }
+            }
         }
     }
 
@@ -748,6 +825,82 @@ mod tests {
         assert!(
             diff_sum > 1e-3,
             "modulated render identical to baseline (diff_sum = {diff_sum}) — matrix not applied to audio"
+        );
+    }
+
+    /// Level + pan matrix routes ramp to each block's target instead of
+    /// stepping at block edges (ticket 0074): after every `process_block`
+    /// the stack's level mod has converged on that block's accumulator
+    /// value, the ramp flag is live while the LFO moves, and a static
+    /// patch keeps the flag off entirely.
+    #[test]
+    fn level_pan_mod_ramps_converge_each_block() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.mod_params.lfo1.rate_hz = 6.0;
+        e.params.patch.stack.density = 4; // give pan spread lanes to move
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::Op1Level,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.matrix.slots[1] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Op1Pan,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.set_mod_wheel(0.7);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r); // fresh-note block snaps
+
+        let slot = (0..N_STACKS)
+            .find(|&i| !e.alloc.stacks[i].is_idle())
+            .expect("note is held");
+        let level_idx = DestId::Op1Level.idx().unwrap();
+        let mut saw_ramp = false;
+        for _ in 0..30 {
+            e.process_block(&mut l, &mut r);
+            saw_ramp |= e.ramp_live[slot];
+            for k in 0..STACK_LANES {
+                let target = self::tests_dest_val(&e, slot, k, level_idx);
+                let got = e.alloc.stacks[slot].op_level_mod[0][k];
+                assert!(
+                    (got - target).abs() < 1e-3,
+                    "lane {k}: level mod {got} hasn't converged on block target {target}"
+                );
+            }
+        }
+        assert!(saw_ramp, "moving LFO must keep the ramp flag live");
+    }
+
+    /// Helper: read the block dest accumulator (private field access from
+    /// the test module).
+    fn tests_dest_val(e: &Engine, slot: usize, lane: usize, dest_idx: usize) -> f32 {
+        e.dest_vals[slot][lane][dest_idx]
+    }
+
+    /// The default patch has no moving level/pan route — the ramp flag must
+    /// stay off so the per-sample advance is never paid.
+    #[test]
+    fn static_patch_keeps_mod_ramps_inactive() {
+        let mut e = Engine::new(SR, BLK);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..10 {
+            e.process_block(&mut l, &mut r);
+        }
+        let slot = (0..N_STACKS)
+            .find(|&i| !e.alloc.stacks[i].is_idle())
+            .expect("note is held");
+        assert!(
+            !e.ramp_live[slot] && !e.any_ramp_live,
+            "static patch must not pay the per-sample ramp"
         );
     }
 

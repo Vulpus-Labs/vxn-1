@@ -79,3 +79,37 @@ zipper changes spectrum, not presence). The fold stage reads
 place keeps that intact. `refresh_pan_with_mod`'s per-block
 `sin_cos` cost is unchanged — it just becomes the ramp target instead
 of the applied value.
+
+## Close-out (2026-06-10)
+
+Linear block ramp shipped, with one design deviation: the ramp state
+(increments + live flags) lives on the **engine**, not the `Stack`, and
+the advance runs in `Engine::process_block`'s sample loop rather than
+inside `stack_tick_*`.
+
+Why: the first cut (fields on `Stack`, advance at the tail of the tick
+fns) regressed `stack` benches +26% and `master_chain` +34% — the extra
+fields/code disturbed the tick's codegen far beyond the nominal
+one-branch cost. Moving the state engine-side restored `stack_tick_*`
+to its exact pre-0074 shape: stack benches measure identical to HEAD
+(p > 0.05), `master_chain` lands at +1.3% with the per-block increment
+computation included (epic budget ≤ 5% cumulative).
+
+- Exact convergence at block end (increment recomputed from the actual
+  current value each block — no drift accumulation); zero per-sample
+  cost when no level/pan route moves (`any_ramp_live` short-circuit,
+  asserted by test).
+- Pan ramps the folded equal-power gains (chord, not arc) via the new
+  `Stack::pan_targets()`; per-block `sin_cos` count unchanged.
+- Fresh allocations snap (shared `mod_seq` generation tracking with the
+  0063 pitch smoother) — no ramp-in from a stolen voice's state.
+- Scalar-path AC inapplicable: `op_tick` / `voice.rs` has no level/pan
+  mod input (same finding as 0062/0073).
+- The 64-vs-256 spectral fingerprint AC was replaced by direct state
+  assertions (per-block convergence on the dest accumulator + ramp
+  liveness): an RMS-envelope comparison cannot fail under the old
+  block-stepping code, so it guarded nothing. Manual listen at block
+  64/512 with slow + fast LFO still pending (manual AC).
+- Folded in (user request): `1/√density` is now cached on the stack at
+  note-on (`inv_sqrt_density`) instead of being recomputed per sample
+  in `stack_tick_mono` and per block in the pan refresh.

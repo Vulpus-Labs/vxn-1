@@ -205,6 +205,10 @@ pub struct Stack {
     pub velocity: u8,
     pub gate: bool,
     pub density: u8,
+    /// Cached `1 / √density` — decorrelated lanes sum to ~√N amplitude, so
+    /// this level-matches density 1..8. Recomputed only when `density`
+    /// changes (note-on); consumed by the mono fold and the pan tables.
+    pub inv_sqrt_density: f32,
     /// Lane-instance index (0..density−1 in active lanes, 0 in trailing).
     pub voice_idx: [u8; STACK_LANES],
     /// Symmetric stack position per lane in `[-1, +1]`.
@@ -263,6 +267,7 @@ impl Default for Stack {
             velocity: 0,
             gate: false,
             density: 1,
+            inv_sqrt_density: 1.0,
             voice_idx: [0; STACK_LANES],
             voice_spread: [0.0; STACK_LANES],
             voice_rand: [0.0; STACK_LANES],
@@ -380,6 +385,7 @@ impl Stack {
         self.velocity = velocity;
         self.gate = true;
         self.density = stack_params.density.clamp(1, STACK_LANES as u8);
+        self.inv_sqrt_density = 1.0 / (self.density as f32).sqrt();
         self.algo = voice_params.algo;
         self.route_fn = resolve_lane_route(voice_params.algo);
 
@@ -515,9 +521,26 @@ impl Stack {
     /// it, so the spread macro still gates how wide the matrix sees the
     /// lanes.
     pub fn refresh_pan_with_mod(&mut self) {
+        let (l, r) = self.pan_targets();
+        self.pan_l = l;
+        self.pan_r = r;
+    }
+
+    /// Equal-power pan gains for the current base pans + matrix `OpNPan`
+    /// offsets, with the carrier / active-lane mask folded in. Public so
+    /// the engine can use them as ramp targets (ticket 0074) without
+    /// re-deriving the curve.
+    pub fn pan_targets(
+        &self,
+    ) -> (
+        [[f32; STACK_LANES]; N_OPS],
+        [[f32; STACK_LANES]; N_OPS],
+    ) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
+        let inv_sqrt_density = self.inv_sqrt_density;
+        let mut out_l = [[0.0_f32; STACK_LANES]; N_OPS];
+        let mut out_r = [[0.0_f32; STACK_LANES]; N_OPS];
         for i in 0..N_OPS {
             let is_carrier = (spec.carriers >> i) & 1 == 1;
             let op_pan = self.cached_op_pans[i];
@@ -527,14 +550,12 @@ impl Stack {
                     let total = (op_pan + self.op_pan_mod[i][k]).clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
-                    self.pan_l[i][k] = c * inv_sqrt_density;
-                    self.pan_r[i][k] = s * inv_sqrt_density;
-                } else {
-                    self.pan_l[i][k] = 0.0;
-                    self.pan_r[i][k] = 0.0;
+                    out_l[i][k] = c * inv_sqrt_density;
+                    out_r[i][k] = s * inv_sqrt_density;
                 }
             }
         }
+        (out_l, out_r)
     }
 
     /// Advance every op's EG + the patch envelopes (Pitch EG + Mod Env) one
@@ -648,10 +669,9 @@ impl Stack {
     fn recompute_pan(&mut self, op_params: &[OpParams; N_OPS]) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        // Decorrelated lanes sum to ~√N amplitude. Bake 1/√density into the
-        // pan tables so density 1..8 are level-matched without a per-sample
-        // multiply.
-        let inv_sqrt_density = 1.0 / (density.max(1) as f32).sqrt();
+        // 1/√density is baked into the pan tables so density 1..8 are
+        // level-matched without a per-sample multiply.
+        let inv_sqrt_density = self.inv_sqrt_density;
         for i in 0..N_OPS {
             let is_carrier = (spec.carriers >> i) & 1 == 1;
             let op_pan = op_params[i].pan;
@@ -789,7 +809,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
             }
         }
     }
-    sum *= 1.0 / (density.max(1) as f32).sqrt();
+    sum *= stack.inv_sqrt_density;
     stack.prev_outs = new_outs;
     sum
 }
