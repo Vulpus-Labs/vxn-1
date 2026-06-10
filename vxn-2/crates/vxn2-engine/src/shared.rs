@@ -983,7 +983,9 @@ mod tests {
         for i in 0..TOTAL_PARAMS {
             assert_eq!(s.get(i), expected[i], "slot {} ({})", i, PARAMS[i].id);
         }
-        assert!((s.get(crate::params::id_of("lfo1-rate").unwrap()) - 0.6).abs() < 1e-6);
+        // Feedback 6.0 comes from the E.PIANO 1 patch, not the descriptor
+        // default (0.0) — proves seeding goes through default_patch.
+        assert!((s.get(crate::params::id_of("feedback").unwrap()) - 6.0).abs() < 1e-6);
         assert!(
             (s.get(crate::params::id_of("master-volume").unwrap()) - (-6.0)).abs() < 1e-6
         );

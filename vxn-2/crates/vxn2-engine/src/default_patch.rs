@@ -1,9 +1,23 @@
-//! Illustrative default patch (ticket 0018).
+//! Default patch (ticket 0018): DX7 ROM1A "E.PIANO 1" transcription.
 //!
-//! Hand-tuned values that fill the parameter table and the matrix table so a
-//! fresh instance sounds like an intentional voice on its first note rather
-//! than a single sine carrier — DX-EP-flavoured electric piano with a slow
-//! vibrato breath and a wide, decorrelated stack.
+//! Values decoded from the ROM1A 32-voice bulk sysex (voice 11), mapped onto
+//! this engine's parameter semantics:
+//!
+//! - **Levels** (output levels and EG levels): the DX7 level scale is
+//!   ~0.75 dB/step; our [`vxn2_dsp::eg::level_to_amp`] is quadratic
+//!   `(v/99)²`. Converted via `v = 99 · 2^(0.75·(L−99)/12)` so the resulting
+//!   amplitude / modulation index matches the original
+//!   (e.g. OL 58 → 17, 89 → 64, 79 → 42; EG L 95 → 83, 75 → 35).
+//! - **Rates**, **vel-sens** (KVS), **KS rate scaling**, **algorithm**,
+//!   **feedback**: same 0-based scales, copied verbatim.
+//! - **Detune**: DX7 steps (±7) ≈ ±5 cents here (op1 +3 → +2 ct,
+//!   op5 −7 → −5 ct, op6 +7 → +5 ct).
+//! - **KS break point**: DX7 BP 41 = MIDI 62 (op6); right-curve −LIN is
+//!   approximated by the engine's fixed NegExp right curve.
+//! - DX7 PMD is 0 (vibrato comes from the wheel on hardware), so the
+//!   LFO2 → pitch matrix slot ships at depth 0 — wired, ready to dial in.
+//! - No stack, no FX: the DX7 is a single dry voice (density 1, delay and
+//!   reverb bypassed).
 //!
 //! [`default_param_values`] is the source of truth for [`crate::SharedParams::new`]
 //! and the future preset epic (it will load this same patch from disk as
@@ -31,67 +45,115 @@ pub fn default_param_values() -> [f32; TOTAL_PARAMS] {
     };
 
     // ── Per-op ─────────────────────────────────────────────────────────────
-    // Op 1 — carrier; bell attack tail shaped by Op 2.
-    set(&mut out, "op1-vel-sens", 4.0);
-    set(&mut out, "op1-eg-l2", 80.0);
-    set(&mut out, "op1-eg-l3", 70.0);
-    set(&mut out, "op1-pan", -0.2);
-    // Op 2 — bell-attack modulator → Op 1; fast decay, hard vel-sens.
+    // ROM1A E.PIANO 1, algo 5: three 2-stacks (2→1), (4→3), (6→5), fb op6.
+    // DX7 source values quoted in trailing comments where converted.
+    // Op 1 — carrier (pair A body).
+    set(&mut out, "op1-detune", 2.0); // DX7 +3 steps
+    set(&mut out, "op1-vel-sens", 2.0);
+    set(&mut out, "op1-eg-r1", 96.0);
+    set(&mut out, "op1-eg-r2", 25.0);
+    set(&mut out, "op1-eg-r3", 25.0);
+    set(&mut out, "op1-eg-r4", 67.0);
+    set(&mut out, "op1-eg-l2", 35.0); // DX7 L2 75
+    set(&mut out, "op1-eg-l3", 0.0);
+    set(&mut out, "op1-ks-r-depth", 0.0);
+    set(&mut out, "op1-ks-rate", 3.0);
+    // Op 2 — tine modulator → Op 1; ratio 14, hard vel-sens.
     set(&mut out, "op2-num", 14.0);
-    set(&mut out, "op2-level", 72.0);
-    set(&mut out, "op2-vel-sens", 6.0);
-    set(&mut out, "op2-eg-r2", 80.0);
-    set(&mut out, "op2-eg-r3", 20.0);
-    set(&mut out, "op2-eg-r4", 70.0);
-    set(&mut out, "op2-eg-l2", 50.0);
+    set(&mut out, "op2-level", 17.0); // DX7 OL 58
+    set(&mut out, "op2-vel-sens", 7.0);
+    set(&mut out, "op2-eg-r1", 95.0);
+    set(&mut out, "op2-eg-r4", 78.0);
+    set(&mut out, "op2-eg-l2", 35.0); // DX7 L2 75
     set(&mut out, "op2-eg-l3", 0.0);
-    // Op 3 — carrier; warmer body, longer sustain.
-    set(&mut out, "op3-level", 88.0);
-    set(&mut out, "op3-eg-l2", 80.0);
-    set(&mut out, "op3-eg-l3", 78.0);
-    set(&mut out, "op3-pan", 0.2);
+    set(&mut out, "op2-ks-r-depth", 0.0);
+    set(&mut out, "op2-ks-rate", 3.0);
+    // Op 3 — carrier (pair B body).
+    set(&mut out, "op3-vel-sens", 2.0);
+    set(&mut out, "op3-eg-r1", 95.0);
+    set(&mut out, "op3-eg-r2", 20.0);
+    set(&mut out, "op3-eg-r3", 20.0);
+    set(&mut out, "op3-eg-r4", 50.0);
+    set(&mut out, "op3-eg-l2", 83.0); // DX7 L2 95
+    set(&mut out, "op3-eg-l3", 0.0);
+    set(&mut out, "op3-ks-r-depth", 0.0);
+    set(&mut out, "op3-ks-rate", 3.0);
     // Op 4 — modulator → Op 3.
-    set(&mut out, "op4-level", 64.0);
-    set(&mut out, "op4-vel-sens", 5.0);
-    set(&mut out, "op4-eg-r2", 60.0);
-    set(&mut out, "op4-eg-r3", 30.0);
-    set(&mut out, "op4-eg-l3", 40.0);
-    // Op 5 / Op 6 — algo 5's third carrier pair, muted to taste.
-    set(&mut out, "op5-level", 0.0);
-    set(&mut out, "op6-level", 0.0);
-    // LFO 2 (per-voice) — Sine, slow breath; always key-triggered.
+    set(&mut out, "op4-level", 64.0); // DX7 OL 89
+    set(&mut out, "op4-vel-sens", 6.0);
+    set(&mut out, "op4-eg-r1", 95.0);
+    set(&mut out, "op4-eg-r2", 29.0);
+    set(&mut out, "op4-eg-r3", 20.0);
+    set(&mut out, "op4-eg-r4", 50.0);
+    set(&mut out, "op4-eg-l2", 83.0); // DX7 L2 95
+    set(&mut out, "op4-eg-l3", 0.0);
+    set(&mut out, "op4-ks-r-depth", 0.0);
+    set(&mut out, "op4-ks-rate", 3.0);
+    // Op 5 — carrier (pair C body), detuned against Op 1 for chorusing.
+    set(&mut out, "op5-detune", -5.0); // DX7 −7 steps
+    set(&mut out, "op5-vel-sens", 0.0);
+    set(&mut out, "op5-eg-r1", 95.0);
+    set(&mut out, "op5-eg-r2", 20.0);
+    set(&mut out, "op5-eg-r3", 20.0);
+    set(&mut out, "op5-eg-r4", 50.0);
+    set(&mut out, "op5-eg-l2", 83.0); // DX7 L2 95
+    set(&mut out, "op5-eg-l3", 0.0);
+    set(&mut out, "op5-ks-r-depth", 0.0);
+    set(&mut out, "op5-ks-rate", 3.0);
+    // Op 6 — modulator → Op 5, carries the structural feedback loop;
+    // level fades above D4 (KS break 62, right depth 19).
+    set(&mut out, "op6-detune", 5.0); // DX7 +7 steps
+    set(&mut out, "op6-level", 42.0); // DX7 OL 79
+    set(&mut out, "op6-vel-sens", 6.0);
+    set(&mut out, "op6-eg-r1", 95.0);
+    set(&mut out, "op6-eg-r2", 29.0);
+    set(&mut out, "op6-eg-r3", 20.0);
+    set(&mut out, "op6-eg-r4", 50.0);
+    set(&mut out, "op6-eg-l2", 83.0); // DX7 L2 95
+    set(&mut out, "op6-eg-l3", 0.0);
+    set(&mut out, "op6-ks-break-pt", 62.0); // DX7 BP 41 = D4
+    set(&mut out, "op6-ks-r-depth", 19.0);
+    set(&mut out, "op6-ks-rate", 3.0);
+
+    // ── Patch-level ────────────────────────────────────────────────────────
+    // Algo 5 is the descriptor default; feedback 6 on op6 per the ROM voice.
+    set(&mut out, "feedback", 6.0);
+    // LFO 2 (per-voice) — DX7 LFO: sine, speed 34 (~5.6 Hz), delay 33,
+    // PMD/AMD 0. Pitch depth lives in Mtx slot 1, shipped at 0.
     set(&mut out, "lfo2-shape", 0.0); // Sine
-    set(&mut out, "lfo2-delay", 240.0);
-    // Pitch EG — levels stay zero (descriptor default); rates kept reachable.
-    // Mod Env — long-ish bell tail for matrix routing room.
-    set(&mut out, "mod-env-d", 480.0);
-    set(&mut out, "mod-env-r", 320.0);
+    set(&mut out, "lfo2-rate", 5.6);
+    set(&mut out, "lfo2-delay", 400.0);
+    // Pitch EG — DX7 rates 94/67/95/60; levels all 50 (center) → 0 here.
+    set(&mut out, "peg-r1", 94.0);
+    set(&mut out, "peg-r2", 67.0);
+    set(&mut out, "peg-r3", 95.0);
+    set(&mut out, "peg-r4", 60.0);
     // Assign — Poly default; no glide.
     set(&mut out, "glide-time", 0.0);
-    // Stack — density 4, mild detune + spread.
-    set(&mut out, "stack-detune", 7.0);
-    set(&mut out, "stack-spread", 0.55);
-    // Matrix CLAP-automatable depths (slots 1..=6 active per `default_matrix`).
-    set(&mut out, "mtx1-depth", 0.03);
+    // Stack — single dry voice like the hardware.
+    set(&mut out, "stack-density", 1.0);
+    // Matrix CLAP-automatable depths (slots 1..=6 active per `default_matrix`;
+    // slots 1 and 3 ship at 0 — see `default_matrix` docs).
     set(&mut out, "mtx2-depth", 1.0);
-    set(&mut out, "mtx3-depth", 0.45);
     set(&mut out, "mtx4-depth", 0.6);
     set(&mut out, "mtx5-depth", 1.0);
     set(&mut out, "mtx6-depth", 1.0);
-
-    // ── Patch-level ────────────────────────────────────────────────────────
-    set(&mut out, "lfo1-rate", 0.6);
-    set(&mut out, "delay-feedback", 0.30);
-    set(&mut out, "delay-mix", 0.18);
-    set(&mut out, "delay-pingpong", 1.0);
-    set(&mut out, "reverb-mix", 0.18);
+    // FX — bypassed; the DX7 voice is dry.
+    set(&mut out, "delay-on", 0.0);
+    set(&mut out, "reverb-on", 0.0);
 
     out
 }
 
-/// Matrix table seeded at engine init. Slots 1..=4 carry the illustrative
-/// routings (subtle vibrato, decorrelated stack LFO2, bell-attack velocity
-/// boost, mod-wheel-driven vibrato rate); rest stay `None`.
+/// Matrix table seeded at engine init. Slots 1..=6 keep the standard
+/// routings wired but two ship at depth 0 to match the DX7 voice:
+///
+/// - Slot 1 (LFO2 → pitch): the ROM voice has PMD 0 — vibrato came from the
+///   mod wheel on hardware. Depth 0; dial up for vibrato.
+/// - Slot 3 (velocity → Op 2 level): the tine's velocity response is fully
+///   carried by op2-vel-sens 7. Depth 0; dial up for extra bite.
+///
+/// Rest stay `None`.
 ///
 /// Slot depths are also stored in the param table — [`crate::engine::Engine::apply_block_params`]
 /// overwrites slots 1..=8 depth from the CLAP-automatable mtx params each
@@ -102,7 +164,7 @@ pub fn default_matrix() -> MatrixTable {
     t.slots[0] = MatrixSlot {
         source: SourceId::Lfo2,
         dest: DestId::GlobalPitch,
-        depth: 0.03,
+        depth: 0.0,
         curve: CurveKind::Lin,
     };
     t.slots[1] = MatrixSlot {
@@ -114,7 +176,7 @@ pub fn default_matrix() -> MatrixTable {
     t.slots[2] = MatrixSlot {
         source: SourceId::Velocity,
         dest: DestId::Op2Level,
-        depth: 0.45,
+        depth: 0.0,
         curve: CurveKind::Exp,
     };
     t.slots[3] = MatrixSlot {
