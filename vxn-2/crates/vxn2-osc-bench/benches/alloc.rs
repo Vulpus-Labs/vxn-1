@@ -29,7 +29,7 @@ fn patch(algo: u8) -> VoiceParams {
     VoiceParams {
         ops,
         algo,
-        feedback: 2,
+        feedback: 2.0,
         ..VoiceParams::default()
     }
 }

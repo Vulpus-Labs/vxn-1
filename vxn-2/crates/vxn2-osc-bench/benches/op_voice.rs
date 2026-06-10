@@ -27,7 +27,7 @@ fn build_voices() -> [OpState; VOICES] {
         v.cook(&params, key, 100, SR);
         // Mid feedback exercises the FB averaging path. Feedback is now
         // layer-level; the bench harness writes it onto the op directly.
-        v.fb_scale = vxn2_dsp::tables::fb_scale(4);
+        v.fb_scale = vxn2_dsp::tables::fb_scale(4.0);
         // Decorrelate phase so the optimiser can't collapse the loop.
         v.phase = (i as u32).wrapping_mul(0x1234_5678);
     }

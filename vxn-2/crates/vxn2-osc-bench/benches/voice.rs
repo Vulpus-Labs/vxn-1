@@ -24,7 +24,7 @@ fn build_voices(algo: u8) -> [Voice; VOICES] {
     params.algo = algo;
     // Mid feedback (now layer-level) exercises the FB averaging path on the
     // algorithm's structural FB op.
-    params.feedback = 2;
+    params.feedback = 2.0;
     let mut voices = [Voice::default(); VOICES];
     for (i, v) in voices.iter_mut().enumerate() {
         let key = 48 + (i as u8 * 2) % 48;
