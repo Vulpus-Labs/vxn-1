@@ -48,3 +48,22 @@ domain logic stranded in the CLAP shell and would be duplicated by a
 future non-CLAP frontend. Moving them to `vxn2-engine` (next to
 `ParamDesc`) is in-scope here if the move is mechanical; if it snags,
 leave a `// TODO(E006)` and move on — the display fix is the point.
+
+## Close-out (2026-06-10)
+
+- `value_to_text` now writes `sync_aware_display(...)` — same path as
+  the view pump, so host automation lanes and the editor agree on
+  subdivision labels. Stale "slots in here in the UI epic" comment and
+  the `format_value` shim deleted.
+- `text_to_value` stays Hz/ms-only, documented at the function: a
+  subdivision string ("1/8") parses as 1.0 via the leading-numeric
+  token rule; hosts use value_to_text for display and pass plain
+  values for edits.
+- The optional move landed: `sync_pairs` / `sync_partner_clap_id` /
+  `rate_partner_clap_id` / `sync_aware_display` now live in
+  `vxn2_engine::sync` (re-exported at the crate root); `vxn2-clap`
+  imports them. Per-pair unit tests (lfo1, delay, lfo2 + unpaired
+  fallthrough) live next to the moved code.
+- `value_to_text` itself is untestable off-host (`ParamDisplayWriter`
+  has no public constructor); the seam under test is
+  `sync_aware_display`, which the method now delegates to verbatim.

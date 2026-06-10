@@ -27,11 +27,10 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn2_app::{NoopPresetStore, matrix_snapshot_event, tick_vxn2};
 use vxn2_engine::engine::Engine;
-use vxn2_engine::params::id_of;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
-    ParamDesc, ParamKind, ParamModel, SUBDIVISIONS, ScopedFlushToZero, TOTAL_PARAMS,
-    desc_for_clap_id, index_from_norm, module_for_clap_id,
+    ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id,
+    module_for_clap_id, rate_partner_clap_id, sync_aware_display,
 };
 use vxn_core_app::{Controller, CorpusHandle, ParamId, ViewEvent};
 
@@ -246,77 +245,6 @@ fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
         out.push(matrix_snapshot_event(params));
     }
     out
-}
-
-/// Sync-toggle CLAP id for a rate/time param — returns the matching
-/// sync flag's id when `id` is `lfo1-rate`, `delay-time`, or
-/// `lfo2-rate`. Reverb / master don't sync.
-fn sync_partner_clap_id(id: usize) -> Option<usize> {
-    let pairs = sync_pairs();
-    for (rate, sync) in pairs {
-        if id == *rate {
-            return Some(*sync);
-        }
-    }
-    None
-}
-
-/// Inverse of [`sync_partner_clap_id`]: given a sync flag's CLAP id,
-/// returns its rate / time partner. Used to refresh a synced rate
-/// fader's display when its sync toggle flips while the rate value
-/// itself hasn't changed.
-fn rate_partner_clap_id(id: usize) -> Option<usize> {
-    let pairs = sync_pairs();
-    for (rate, sync) in pairs {
-        if id == *sync {
-            return Some(*rate);
-        }
-    }
-    None
-}
-
-/// Sync-aware display string for a CLAP param. When `id` is a
-/// rate / time param whose sync partner is on, returns the matching
-/// subdivision label; otherwise the descriptor's normal unit-formatted
-/// display.
-fn sync_aware_display(params: &SharedParams, id: usize, value: f32) -> String {
-    let Some(desc) = desc_for_clap_id(id) else {
-        return String::new();
-    };
-    if let Some(sync_id) = sync_partner_clap_id(id) {
-        if params.get(sync_id) >= 0.5 {
-            return SUBDIVISIONS[index_from_norm(desc.to_normalised(value))]
-                .label
-                .to_string();
-        }
-    }
-    desc.display(value)
-}
-
-/// Resolve the rate/sync CLAP-id pairs once and cache. `id_of` is a
-/// linear scan over `PARAMS`; doing it per-tick × per-id would be O(N²).
-/// Each entry is `(rate_or_time_id, sync_flag_id)`.
-fn sync_pairs() -> &'static [(usize, usize)] {
-    use std::sync::OnceLock;
-    static PAIRS: OnceLock<Vec<(usize, usize)>> = OnceLock::new();
-    PAIRS
-        .get_or_init(|| {
-            vec![
-                (
-                    id_of("lfo1-rate").expect("lfo1-rate"),
-                    id_of("lfo1-sync").expect("lfo1-sync"),
-                ),
-                (
-                    id_of("delay-time").expect("delay-time"),
-                    id_of("delay-sync").expect("delay-sync"),
-                ),
-                (
-                    id_of("lfo2-rate").expect("lfo2-rate"),
-                    id_of("lfo2-sync").expect("lfo2-sync"),
-                ),
-            ]
-        })
-        .as_slice()
 }
 
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
@@ -572,18 +500,6 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
 
 // ── Parameters ──────────────────────────────────────────────────────────────
 
-/// Format `value` through the descriptor and write it via the host's display
-/// writer. Sync-aware substitution (delay time as `1/8` when `delay_sync` is
-/// on) slots in here in the UI epic — intercept before falling through to
-/// `desc.display`.
-fn format_value(
-    desc: &ParamDesc,
-    value: f64,
-    writer: &mut ParamDisplayWriter,
-) -> std::fmt::Result {
-    write!(writer, "{}", desc.display(value as f32))
-}
-
 impl PluginMainThreadParams for VxnMainThread<'_> {
     fn count(&mut self) -> u32 {
         TOTAL_PARAMS as u32
@@ -626,17 +542,28 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
+        // Same sync-aware path as the view pump (ticket 0066): a synced
+        // rate shows its subdivision label in the host's automation lane,
+        // matching the editor, instead of the raw Hz/ms value.
         let id = param_id.get() as usize;
-        let Some(desc) = desc_for_clap_id(id) else {
+        if desc_for_clap_id(id).is_none() {
             return Err(std::fmt::Error);
-        };
-        format_value(desc, value, writer)
+        }
+        write!(
+            writer,
+            "{}",
+            sync_aware_display(&self.shared.params, id, value as f32)
+        )
     }
 
     fn text_to_value(&mut self, _param_id: ClapId, text: &CStr) -> Option<f64> {
         let s = text.to_str().ok()?;
         // Take the leading numeric token; ignore unit suffix the host hands
-        // back through this field (e.g. "-6.0 dB"). Matches VXN1.
+        // back through this field (e.g. "-6.0 dB"). Matches VXN1. Text input
+        // stays Hz/ms-only: subdivision strings ("1/8") are not parsed —
+        // "1/8" reads as 1.0 here, which is the documented trade-off
+        // (ticket 0066); hosts use value_to_text for display and pass plain
+        // values for edits.
         let num: String = s
             .trim()
             .chars()

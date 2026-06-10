@@ -15,8 +15,10 @@ pub mod matrix;
 pub mod modulation;
 pub mod params;
 pub mod shared;
+pub mod sync;
 
 pub use ftz::ScopedFlushToZero;
+pub use sync::{rate_partner_clap_id, sync_aware_display, sync_pairs, sync_partner_clap_id};
 pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id};
 /// Tempo-sync subdivisions re-exported for the CLAP shell's sync-aware
 /// display path (ticket 0031). Canonical source lives in `vxn2-dsp::lfo`.
