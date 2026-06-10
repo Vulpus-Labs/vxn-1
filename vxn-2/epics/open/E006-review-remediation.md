@@ -53,6 +53,10 @@ The param, its fader, and its doc trail all go.
   audible param changes output between min and max — the mechanical
   guard that would have caught `lfo1-depth` and `AmpSens`.
 - CI job running `cargo test` over the vxn2-* crates.
+- Smooth `OpNLevel` / `OpNPan` matrix destinations: linear ramp across
+  the block so LFO routes to level/pan stop zippering (found by ear
+  2026-06-10; same block-stepping class as the PitchSmoother fix, but
+  level/pan get exact linear tracking instead of the one-pole quantum).
 - DSP hygiene: dedupe the base-Hz computation (`op.rs` / `stack.rs`),
   dedupe `xorshift_step` (`stack.rs` / `lfo.rs`), annotate `voice.rs`
   as bench/reference-only and fix its stale doc comments.
@@ -89,6 +93,7 @@ The param, its fader, and its doc trail all go.
 | 10 | [0070 — CI for vxn-2 crates](../../tickets/open/0070-vxn2-ci.md) | high |
 | 11 | [0071 — DSP hygiene dedup pass](../../tickets/open/0071-dsp-hygiene.md) | low |
 | 12 | [0072 — Docs and dead-code cleanup](../../tickets/open/0072-docs-dead-code-cleanup.md) | low |
+| 13 | [0074 — Smooth level/pan matrix modulation](../../tickets/open/0074-level-pan-mod-smoothing.md) | high |
 
 Dependency order: 0061 and 0062 land before 0069 (the sweep test
 would fail against the inert params). 0067 depends on nothing but
@@ -108,6 +113,8 @@ without the echo noise. Everything else is independent.
   with an LFO1→op-level matrix route active.
 - LFO1→GlobalPitch at block size 256 produces no audible stepping
   (verified by the smoothing test in 0063, plus manual listen).
+- LFO1→Op1Level and LFO1→Op1Pan at block size 256 produce no audible
+  zipper (verified by the ramp test in 0074, plus manual listen).
 - In solo mode, note-off with another key held falls back to the held
   note (audible + test).
 - Recording knob automation in Reaper/Bitwig produces a correctly
