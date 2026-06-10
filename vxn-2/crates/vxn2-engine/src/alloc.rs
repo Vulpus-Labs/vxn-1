@@ -112,6 +112,15 @@ impl PolyAlloc {
         self.sample_rate
     }
 
+    /// Allocation generation for slot `i` (`u64::MAX` when free). The engine
+    /// compares generations across blocks to detect a fresh note-on in a
+    /// reused slot — e.g. to snap its pitch smoother instead of gliding in
+    /// from the previous voice's offset (ticket 0063).
+    #[inline]
+    pub(crate) fn slot_seq(&self, i: usize) -> u64 {
+        self.seq[i]
+    }
+
     pub fn note_on(
         &mut self,
         params: &AllocParams,

@@ -28,11 +28,15 @@
 //!   non-zipper-sensitive destination is summed into a per-lane accumulator
 //!   once per control block. Engine reads the accumulator at block start and
 //!   applies it before the per-sample render.
-//! - **Per sample** ([`PitchSmoother`]): pitch-shaped destinations (global
-//!   pitch, per-op ratio, per-op detune, lfo2_phase) get one-pole smoothing
-//!   from the block accumulator down to per-sample so the audio loop sees a
-//!   ramp, not a step. Time constant matches one control block — same idiom
-//!   as VXN1's [`vxn2_dsp::smoother::Smoothed`].
+//! - **Sub-block** ([`PitchSmoother`]): pitch-shaped destinations (global
+//!   pitch, per-op pitch, lfo2_phase) get one-pole smoothing from the block
+//!   accumulator down to a 16-sample quantum (engine's
+//!   `PITCH_SMOOTH_QUANTUM`) so the audio loop sees a ramp, not a step.
+//!   True per-sample smoothing would re-cook every op's `phase_inc`
+//!   (48 `powf` per stack) each sample; at the quantum a 256-sample host
+//!   block gets 16 interpolation points, which removes audible stepping.
+//!   Time constant matches one control block — same idiom as VXN1's
+//!   [`vxn2_dsp::smoother::Smoothed`].
 //!
 //! ## Vectorisation note
 //!
@@ -91,7 +95,7 @@ pub const N_SOURCES: usize = 11;
 impl SourceId {
     /// Index into the per-lane source lookup, or `None` for the sentinel.
     #[inline]
-    pub fn idx(self) -> Option<usize> {
+    pub const fn idx(self) -> Option<usize> {
         match self {
             SourceId::None => None,
             _ => Some(self as usize - 1),
@@ -268,7 +272,7 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
 
 impl DestId {
     #[inline]
-    pub fn idx(self) -> Option<usize> {
+    pub const fn idx(self) -> Option<usize> {
         match self {
             DestId::None => None,
             _ => Some(self as usize - 1),
@@ -663,6 +667,20 @@ impl PitchSmoother {
     /// Snap state to `target` without smoothing (preset load, voice steal).
     pub fn snap_to(&mut self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS]) {
         self.state = *target;
+    }
+
+    /// True when every lane state is within `eps` of its target — the
+    /// engine skips the tick + pitch recook entirely once a smoother has
+    /// settled (the common case: no active pitch-shaped matrix route).
+    pub fn converged(&self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS], eps: f32) -> bool {
+        for i in 0..N_PITCH_DESTS {
+            for k in 0..STACK_LANES {
+                if (self.state[i][k] - target[i][k]).abs() > eps {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     pub fn current(&self) -> &[[f32; STACK_LANES]; N_PITCH_DESTS] {

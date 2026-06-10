@@ -65,3 +65,24 @@ of `process_block`
 ([engine.rs:277-284](../../crates/vxn2-engine/src/engine.rs#L277))
 should become module-level `const`s while you're in the function —
 review nit, zero-cost, kills live `unwrap()`s in the hot path.
+
+## Close-out (2026-06-10)
+
+Granularity decision: **16-sample quantum**, not per-sample — per-sample
+would re-cook every op's `phase_inc` (48 `powf` per stack) each sample.
+At the quantum a 256-sample host block gets 16 interpolation points
+(~0.33 ms apart); the smoothing test bounds the worst per-quantum step
+at < 4 cents for a ±1-octave 0.5 Hz vibrato whose unsmoothed staircase
+was ~20 cents per block. Documented in the matrix module doc.
+
+- Converged smoothers (no active pitch route — the default patch) skip
+  both the tick and the recook, so idle cost is a few compares per
+  quantum. `master_chain` bench: +1.3% vs pre-change baseline (budget
+  ≤ 5%; same-machine noise ±4%).
+- Snap-on-fresh-note keyed off `PolyAlloc` slot generations (new
+  `slot_seq` accessor); `Engine::reset` zeroes all smoother state.
+- `DestId::*.idx()` made `const fn`; the hot-path dest indices are now
+  module-level consts with a compile-time layout assertion (review nit
+  folded in per the ticket).
+- `Lfo2Phase` is smoothed (it sits in `PITCH_DESTS`) but still not
+  projected anywhere — deferred v1 destination, unchanged scope.

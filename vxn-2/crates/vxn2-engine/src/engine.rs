@@ -42,11 +42,37 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     CurveKind, DestId, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
-    N_DESTS, N_SLOTS, N_SOURCES, PatchSources, SourceId, StackScalarSources, eval_dests,
-    eval_sources,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, SourceId,
+    StackScalarSources, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
 use crate::shared::{EngineParams, SharedParams};
+
+// Matrix dest-accumulator indices, resolved at compile time (review nit from
+// E006: no live `unwrap()` in the hot path). The op-major stride-3 layout
+// (Pitch, Level, Pan per op) is asserted alongside.
+const DELAY_MIX_IDX: usize = DestId::DelayMix.idx().unwrap();
+const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
+const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
+const _: () = {
+    assert!(DestId::Op1Pitch.idx().unwrap() == 0);
+    assert!(DestId::Op1Level.idx().unwrap() == 1);
+    assert!(DestId::Op1Pan.idx().unwrap() == 2);
+    assert!(DestId::Op6Level.idx().unwrap() == 16);
+};
+
+/// Pitch-shaped matrix destinations interpolate from block rate down to this
+/// sub-block quantum (in samples). True per-sample smoothing would re-cook
+/// every op's `phase_inc` (48 `powf` per stack) each sample — not affordable.
+/// At 16 samples a 256-sample host block gets 16 interpolation points
+/// (≈ 0.33 ms apart at 48 kHz), which removes audible stepping; smoothers
+/// that have converged skip the recook entirely (ticket 0063).
+const PITCH_SMOOTH_QUANTUM: usize = 16;
+
+/// Convergence threshold for the pitch smoothers, in semitones. 1e-4 st is
+/// one hundredth of a cent — far below audibility; once within this band the
+/// per-quantum tick + recook is skipped.
+const PITCH_SMOOTH_EPS_ST: f32 = 1e-4;
 
 /// Top-level audio engine. Owns every sub-engine plus the per-block
 /// parameter snapshot.
@@ -80,6 +106,17 @@ pub struct Engine {
     /// lane scalar into a `[lane][source]` table so [`eval_dests`] reads a
     /// contiguous matrix per slot.
     lane_sources: LaneSourceVals,
+    /// Per-stack pitch-dest smoothers (ticket 0063). Targets refresh at
+    /// block rate from `dest_vals`; state advances every
+    /// [`PITCH_SMOOTH_QUANTUM`] samples inside the render loop and is
+    /// projected into the stack pitch-mod fields before `apply_pitch_mult`.
+    pitch_smoothers: [PitchSmoother; N_STACKS],
+    /// Block-rate smoother targets, captured per active stack.
+    pitch_targets: [[[f32; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
+    /// Allocation generation last seen per slot — a change means a fresh
+    /// note-on reused the slot, so its smoother snaps instead of gliding in
+    /// from the previous voice's offset.
+    pitch_seq: [u64; N_STACKS],
 }
 
 impl Engine {
@@ -101,6 +138,14 @@ impl Engine {
             aftertouch: 0.0,
             dest_vals: vec![[[0.0_f32; N_DESTS]; STACK_LANES]; N_STACKS],
             lane_sources: [[0.0_f32; N_SOURCES]; STACK_LANES],
+            // Smoothers tick once per quantum, so the coeff is derived from
+            // the quantum rate; tau stays ≈ one control block.
+            pitch_smoothers: [PitchSmoother::new(
+                block_size as f32 / sample_rate,
+                sample_rate / PITCH_SMOOTH_QUANTUM as f32,
+            ); N_STACKS],
+            pitch_targets: [[[0.0; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
+            pitch_seq: [u64::MAX; N_STACKS],
         };
         e.apply_block_params();
         e
@@ -149,6 +194,14 @@ impl Engine {
         self.reverb.reset();
         self.master = MasterState::default();
         self.patch_mod.on_transport_restart();
+        // Zero the pitch smoothers — a voice played after reset must not
+        // glide in from pre-reset modulation state.
+        let zero = [[0.0; STACK_LANES]; N_PITCH_DESTS];
+        for i in 0..N_STACKS {
+            self.pitch_smoothers[i].snap_to(&zero);
+            self.pitch_targets[i] = zero;
+            self.pitch_seq[i] = u64::MAX;
+        }
         self.apply_block_params();
     }
 
@@ -272,16 +325,9 @@ impl Engine {
         // StackSpread (re-cook required, defer).
         let patch_sources = PatchSources::from_modblock(&mb, self.mod_wheel, self.aftertouch);
         let voice = &self.params.patch.voice;
-        // Pre-compute dest indices once; layout is op-major (Pitch, Level,
-        // Pan per op — stride 3), then global pitch / lfo / stack / FX.
-        debug_assert_eq!(DestId::Op1Pitch.idx().unwrap(), 0);
-        debug_assert_eq!(DestId::Op1Level.idx().unwrap(), 1);
-        debug_assert_eq!(DestId::Op1Pan.idx().unwrap(), 2);
-        debug_assert_eq!(DestId::Op6Level.idx().unwrap(), 16);
-        let global_pitch_idx = DestId::GlobalPitch.idx().unwrap();
-        let delay_mix_idx = DestId::DelayMix.idx().unwrap();
-        let reverb_mix_idx = DestId::ReverbMix.idx().unwrap();
-        let feedback_idx = DestId::Feedback.idx().unwrap();
+        // Dest indices are module-level consts (`GLOBAL_PITCH_IDX` etc.);
+        // layout is op-major (Pitch, Level, Pan per op — stride 3), then
+        // global pitch / lfo / stack / FX, asserted at compile time.
         let patch_feedback = voice.feedback;
 
         let mut fx_delay_mix_sum = 0.0_f32;
@@ -344,12 +390,12 @@ impl Engine {
                 &mut self.dest_vals[i],
             );
 
-            // Project per-op destinations + global pitch into the stack's
-            // per-lane mod buffers. Indices: OpiPitch=i*3, OpiLevel=i*3+1,
-            // OpiPan=i*3+2.
+            // Project per-op level + pan destinations into the stack's
+            // per-lane mod buffers. Indices: OpiLevel=i*3+1, OpiPan=i*3+2.
+            // Pitch-shaped destinations do NOT project here — they ramp via
+            // the per-stack PitchSmoother inside the render loop (0063).
             let stack = &mut self.alloc.stacks[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let pitch_idx = op_i * 3;
                 let level_idx = op_i * 3 + 1;
                 let pan_idx = op_i * 3 + 2;
                 // AmpSens is the op's receive coefficient for incoming level
@@ -361,18 +407,26 @@ impl Engine {
                 for k in 0..STACK_LANES {
                     stack.op_level_mod[op_i][k] =
                         self.dest_vals[i][k][level_idx] * amp_sens;
-                    stack.op_pitch_mod_st[op_i][k] = self.dest_vals[i][k][pitch_idx];
                     stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                 }
             }
-            for k in 0..STACK_LANES {
-                stack.global_pitch_mod_st[k] = self.dest_vals[i][k][global_pitch_idx];
+            // Capture this block's pitch-dest targets. A slot whose
+            // allocation generation changed since the last block carries a
+            // fresh note — snap its smoother so the new voice doesn't glide
+            // in from the previous voice's pitch offset.
+            self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
+            let seq = self.alloc.slot_seq(i);
+            if seq != self.pitch_seq[i] {
+                self.pitch_seq[i] = seq;
+                self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
             }
+            let stack = &mut self.alloc.stacks[i];
+            project_pitch_state(stack, self.pitch_smoothers[i].current());
             // Layer-level feedback is single-valued per stack. Read lane 0 of
             // the matrix accumulator and add to the patch's feedback value;
             // re-apply through `set_feedback_live` so the algorithm's FB op
             // sees the modulated `fb_scale` for this block.
-            let fb_mod = self.dest_vals[i][0][feedback_idx];
+            let fb_mod = self.dest_vals[i][0][FEEDBACK_IDX];
             if fb_mod != 0.0 {
                 stack.set_feedback_live((patch_feedback + fb_mod).clamp(0.0, 7.0));
             }
@@ -387,8 +441,8 @@ impl Engine {
             // sees patch-source contributions exactly once; per-stack
             // sources (velocity, mod env, …) average naturally across the
             // active stacks below.
-            fx_delay_mix_sum += self.dest_vals[i][0][delay_mix_idx];
-            fx_reverb_mix_sum += self.dest_vals[i][0][reverb_mix_idx];
+            fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
+            fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
             fx_active += 1;
         }
 
@@ -409,8 +463,14 @@ impl Engine {
         }
 
         // Per-sample render: sum every active stack into the dry bus, then
-        // through delay + reverb + master gain.
+        // through delay + reverb + master gain. Every PITCH_SMOOTH_QUANTUM
+        // samples the pitch smoothers advance one step toward this block's
+        // targets and the affected stacks re-cook `phase_inc` — converged
+        // smoothers (no active pitch route) skip the recook entirely.
         for sample in 0..n {
+            if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                self.advance_pitch_smoothers();
+            }
             let mut dry_l = 0.0_f32;
             let mut dry_r = 0.0_f32;
             for s in &mut self.alloc.stacks {
@@ -426,6 +486,43 @@ impl Engine {
             let (l, r) = self.master.apply(l, r);
             out_l[sample] = l;
             out_r[sample] = r;
+        }
+    }
+
+    /// Advance every active stack's pitch smoother one quantum step toward
+    /// the block targets and re-cook its `phase_inc`. Converged smoothers
+    /// skip both the tick and the recook — with no active pitch-shaped
+    /// route this is a handful of float compares per quantum.
+    fn advance_pitch_smoothers(&mut self) {
+        for i in 0..N_STACKS {
+            if self.alloc.stacks[i].is_idle() {
+                continue;
+            }
+            if self.pitch_smoothers[i].converged(&self.pitch_targets[i], PITCH_SMOOTH_EPS_ST) {
+                continue;
+            }
+            let st = self.pitch_smoothers[i].tick(&self.pitch_targets[i]);
+            let stack = &mut self.alloc.stacks[i];
+            project_pitch_state(stack, st);
+            stack.apply_pitch_mult();
+        }
+    }
+}
+
+/// Copy a smoother's current pitch state into the stack's per-lane pitch-mod
+/// fields. [`crate::matrix::PITCH_DESTS`] order: `[GlobalPitch, Lfo2Phase,
+/// Op1Pitch .. Op6Pitch]` — `Lfo2Phase` is a deferred v1 destination, so it
+/// is smoothed but not projected anywhere yet.
+fn project_pitch_state(
+    stack: &mut vxn2_dsp::stack::Stack,
+    st: &[[f32; STACK_LANES]; N_PITCH_DESTS],
+) {
+    for k in 0..STACK_LANES {
+        stack.global_pitch_mod_st[k] = st[0][k];
+    }
+    for op_i in 0..vxn2_dsp::algo::N_OPS {
+        for k in 0..STACK_LANES {
+            stack.op_pitch_mod_st[op_i][k] = st[2 + op_i][k];
         }
     }
 }
@@ -650,6 +747,100 @@ mod tests {
         assert!(
             diff_sum > 1e-3,
             "modulated render identical to baseline (diff_sum = {diff_sum}) — matrix not applied to audio"
+        );
+    }
+
+    /// LFO1 → GlobalPitch at block size 256 must ramp, not step (ticket
+    /// 0063). The block-rate target jump `|t − s0|` is what the audio would
+    /// have received per block before the smoother was wired in; the largest
+    /// per-quantum step the smoothed path produces is `a·|t − s0|`. Assert
+    /// the staircase would have been audible (> 10 cents) while the smoothed
+    /// steps stay inaudible (< 4 cents).
+    #[test]
+    fn pitch_smoother_removes_block_rate_stepping() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use vxn2_dsp::smoother::one_pole_coeff;
+
+        const BIG_BLK: usize = 256;
+        let mut e = Engine::new(SR, BIG_BLK);
+        // Pitch dests sweep ±2 octaves at full depth; 0.5 Hz at depth 0.5
+        // (±1 octave) is a fast-but-musical vibrato that steps ~20 cents
+        // per 256-sample block unsmoothed.
+        e.params.mod_params.lfo1.rate_hz = 0.5;
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::GlobalPitch,
+            depth: 0.5,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BIG_BLK];
+        let mut r = [0.0_f32; BIG_BLK];
+        // First block snaps (fresh note) — not a smoothing step; skip it.
+        e.process_block(&mut l, &mut r);
+
+        let a = one_pole_coeff(
+            (BIG_BLK as f32 / SR) * 1000.0,
+            SR / PITCH_SMOOTH_QUANTUM as f32,
+        );
+        let mut max_block_jump = 0.0_f32;
+        let mut max_quantum_step = 0.0_f32;
+        // ~2 s — one full LFO cycle.
+        for _ in 0..(2 * SR as usize) / BIG_BLK {
+            // The active stack: slot whose generation is live.
+            let slot = (0..N_STACKS)
+                .find(|&i| !e.alloc.stacks[i].is_idle())
+                .expect("note is held");
+            let s0 = e.pitch_smoothers[slot].current()[0][0];
+            e.process_block(&mut l, &mut r);
+            let t = e.pitch_targets[slot][0][0];
+            max_block_jump = max_block_jump.max((t - s0).abs());
+            max_quantum_step = max_quantum_step.max((a * (t - s0)).abs());
+        }
+        assert!(
+            max_block_jump > 0.10,
+            "fixture too tame: unsmoothed staircase only {max_block_jump} st per block"
+        );
+        assert!(
+            max_quantum_step < 0.04,
+            "smoothed per-quantum step {max_quantum_step} st exceeds ~4 cents"
+        );
+    }
+
+    /// A fresh note in a reused slot snaps its pitch smoother to the new
+    /// block's target instead of gliding in from the previous voice's
+    /// offset (ticket 0063).
+    #[test]
+    fn pitch_smoother_snaps_on_fresh_note() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        // Constant full-scale pitch offset: mod wheel pinned at 1.0.
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::GlobalPitch,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.set_mod_wheel(1.0);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+        let slot = (0..N_STACKS)
+            .find(|&i| !e.alloc.stacks[i].is_idle())
+            .expect("note is held");
+        let state = e.pitch_smoothers[slot].current()[0][0];
+        let target = e.pitch_targets[slot][0][0];
+        assert!(target > 0.5, "fixture: mod wheel must drive the target");
+        assert!(
+            (state - target).abs() < 1e-5,
+            "first block of a fresh note must snap, not glide: state {state}, target {target}"
+        );
+        // The stack's pitch field carries the snapped value too.
+        assert!(
+            (e.alloc.stacks[slot].global_pitch_mod_st[0] - target).abs() < 1e-5,
+            "snapped state must be projected into the stack"
         );
     }
 
