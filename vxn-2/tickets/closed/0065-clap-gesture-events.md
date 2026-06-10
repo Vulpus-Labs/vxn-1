@@ -60,3 +60,29 @@ emit-side consumption in its `local.rs`. Port that pattern.
 Most pressing host-facing gap from the review. Land before 0067 (echo
 removal) so gesture behaviour is testable while the view event flow is
 otherwise stable.
+
+## Close-out (2026-06-10)
+
+VXN-1 `vxn-clap` pattern ported into `LocalParams::emit`: per-param
+last-seen gesture bools on the audio-thread mirror, 0→1 edge pushes
+`ParamGestureBeginEvent` before the value, 1→0 pushes
+`ParamGestureEndEvent` after it (at `frame_count − 1`), and a bare
+value change with no surrounding gesture wraps itself in its own
+begin/end. The previously reserved `_shared` / `_frame_count` params
+are now used. Gesture reads are lock-free atomic loads; no allocation.
+
+Deviations / notes:
+
+- Tests live in `local.rs` (unit level) rather than the clack-host
+  smoke harness: the smoke host has no UI-intent path — gesture state
+  is injected via `SharedParams::set_gesture`, the same surface the
+  controller drives, matching the existing lib.rs test precedent.
+  Order, bare-wrap, host-echo-silence and bracket-without-value all
+  asserted.
+- Found upstream: the pinned clack rev's `CoreEventSpace::from_unknown`
+  is missing the two gesture TYPE_ID match arms, so `as_core_event()`
+  never yields the gesture variants. Wire events are spec-correct;
+  tests decode via typed `as_event::<E>()`. Worth an upstream report.
+- Host-driven automation cannot echo back bracketed by construction:
+  `apply_input` touches neither `ui_changed` nor the gesture bitset.
+- Manual Reaper/Bitwig write-arm check still pending (manual AC).

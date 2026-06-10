@@ -15,11 +15,15 @@
 //! 3. [`write_to`](LocalParams::write_to) pushes the whole mirror into
 //!    the engine's working [`EngineParams`] at the top of each block.
 //! 4. [`emit`](LocalParams::emit) sends UI edits back to the host as
-//!    `ParamValue` events. `ui_changed` survives — different consumer
-//!    (plugin → host gesture brackets); ADR 0003 §"What survives".
+//!    `ParamValue` events bracketed by `ParamGestureBegin` / `End`
+//!    (driven by the `SharedParams.gestures` bitset the controller
+//!    populates — ticket 0065). `ui_changed` survives — different
+//!    consumer (plugin → host echo); ADR 0003 §"What survives".
 
 use clack_plugin::events::Pckn;
-use clack_plugin::events::event_types::ParamValueEvent;
+use clack_plugin::events::event_types::{
+    ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::utils::Cookie;
@@ -45,6 +49,12 @@ pub struct LocalParams {
     /// UI / preset edits. Matrix meta isn't CLAP-automatable, so there's no
     /// host→shared publish path for it.
     matrix_rows: [MatrixRowRaw; N_MATRIX_SLOTS],
+    /// Last-seen UI gesture state per param. [`emit`](Self::emit) compares
+    /// against `SharedParams.gestures` (populated by the controller on
+    /// `BeginGesture` / `EndGesture` UI intents) to push CLAP
+    /// `param_gesture_begin` / `param_gesture_end` brackets on the 0→1 / 1→0
+    /// transitions (ticket 0065; same pattern as VXN-1's `vxn-clap`).
+    gesture: [bool; TOTAL_PARAMS],
 }
 
 impl LocalParams {
@@ -53,6 +63,7 @@ impl LocalParams {
             values: std::array::from_fn(|i| shared.get(i)),
             ui_changed: [false; TOTAL_PARAMS],
             matrix_rows: std::array::from_fn(|s| shared.matrix_row_raw(s)),
+            gesture: [false; TOTAL_PARAMS],
         }
     }
 
@@ -118,31 +129,62 @@ impl LocalParams {
         engine.snapshot_from(self);
     }
 
-    /// Emit UI-originated changes to the host. Walks `ui_changed` (still
-    /// flagged by [`fetch_ui_changes`] for UI / preset writes that drifted
-    /// the mirror) and emits one `ParamValueEvent` per flagged id. Gesture
-    /// brackets ride a different path (the controller's `set_gesture`);
-    /// this is the value-echo only. `frame_count` reserves the
-    /// gesture-end sample offset for that path.
+    /// Emit UI-originated changes to the host, bracketed by CLAP gesture
+    /// events (ticket 0065). Per id and block:
+    ///
+    /// - gesture bit 0→1: push `ParamGestureBeginEvent` before any value;
+    /// - `ui_changed` (flagged by [`fetch_ui_changes`](Self::fetch_ui_changes)
+    ///   for UI / preset writes): push one `ParamValueEvent`;
+    /// - gesture bit 1→0: push `ParamGestureEndEvent` after the last value,
+    ///   at sample offset `frame_count.saturating_sub(1)` so the bracket
+    ///   closes at the end of the block that released it;
+    /// - a bare value change with no surrounding gesture (preset load,
+    ///   text-entry) gets wrapped in its own begin/end pair so conformant
+    ///   hosts record it as a single point edit.
+    ///
+    /// Host-driven automation never lands here: [`apply_input`](Self::apply_input)
+    /// touches neither `ui_changed` nor the gesture bitset, so the host's
+    /// own events are not echoed back wrapped in brackets. Gesture state is
+    /// read from `SharedParams.gestures` with lock-free atomic loads; no
+    /// allocation on this path.
     pub fn emit(
         &mut self,
-        _shared: &SharedParams,
+        shared: &SharedParams,
         out: &mut OutputEvents,
-        _frame_count: u32,
+        frame_count: u32,
     ) {
+        let end_time = frame_count.saturating_sub(1);
         for i in 0..TOTAL_PARAMS {
-            if !self.ui_changed[i] {
+            let prev = self.gesture[i];
+            let cur = shared.gesture(i);
+            self.gesture[i] = cur;
+            let changed = self.ui_changed[i];
+            self.ui_changed[i] = false;
+
+            if !changed && cur == prev {
                 continue;
             }
-            self.ui_changed[i] = false;
+            // A held gesture brackets a burst of values; a bare value change
+            // (no sustained gesture) is wrapped in its own begin/end.
+            let bare = changed && !cur && !prev;
+            let begin = (cur && !prev) || bare;
+            let end = (!cur && prev) || bare;
             let id = ClapId::new(i as u32);
-            let _ = out.try_push(ParamValueEvent::new(
-                0,
-                id,
-                Pckn::match_all(),
-                self.values[i] as f64,
-                Cookie::empty(),
-            ));
+            if begin {
+                let _ = out.try_push(ParamGestureBeginEvent::new(0, id));
+            }
+            if changed {
+                let _ = out.try_push(ParamValueEvent::new(
+                    0,
+                    id,
+                    Pckn::match_all(),
+                    self.values[i] as f64,
+                    Cookie::empty(),
+                ));
+            }
+            if end {
+                let _ = out.try_push(ParamGestureEndEvent::new(end_time, id));
+            }
         }
     }
 }
@@ -279,6 +321,135 @@ mod tests {
         let shared = SharedParams::new();
         let mut local = LocalParams::new(&shared);
         assert!(!local.fetch_ui_changes(&shared));
+    }
+
+    /// Render the event buffer as compact `(kind, id, time)` tuples for
+    /// order assertions. Kind: "begin" / "value" / "end".
+    ///
+    /// Decodes via typed [`UnknownEvent::as_event`] rather than
+    /// `as_core_event()` — the pinned clack rev's `CoreEventSpace::
+    /// from_unknown` match table is missing the two gesture TYPE_ID arms
+    /// (the enum variants exist; the decoder never produces them). The wire
+    /// events are spec-correct regardless — real hosts parse the raw CLAP
+    /// structs.
+    fn event_log(buf: &EventBuffer) -> Vec<(&'static str, u32, u32)> {
+        buf.iter()
+            .filter_map(|ev| {
+                if let Some(e) = ev.as_event::<ParamGestureBeginEvent>() {
+                    Some(("begin", e.param_id().unwrap().get(), e.header().time()))
+                } else if let Some(e) = ev.as_event::<ParamValueEvent>() {
+                    Some(("value", e.param_id().unwrap().get(), e.header().time()))
+                } else if let Some(e) = ev.as_event::<ParamGestureEndEvent>() {
+                    Some(("end", e.param_id().unwrap().get(), e.header().time()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// A UI drag emits, in order: `gesture_begin` → `value`×N → `gesture_end`
+    /// across the blocks the drag spans (ticket 0065). The end lands at the
+    /// last sample of its block.
+    #[test]
+    fn emit_brackets_ui_drag_with_gesture_events() {
+        let shared = SharedParams::new();
+        let mut local = LocalParams::new(&shared);
+        let id = id_of("reverb-decay").unwrap();
+
+        // Block 1: controller saw BeginGesture + first drag value.
+        shared.set_gesture(id, true);
+        shared.set(id, 3.0);
+        local.fetch_ui_changes(&shared);
+        let mut b1 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b1.as_output(), 256);
+        assert_eq!(
+            event_log(&b1),
+            vec![("begin", id as u32, 0), ("value", id as u32, 0)]
+        );
+
+        // Block 2: drag continues — value only, no new bracket.
+        shared.set(id, 4.0);
+        local.fetch_ui_changes(&shared);
+        let mut b2 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b2.as_output(), 256);
+        assert_eq!(event_log(&b2), vec![("value", id as u32, 0)]);
+
+        // Block 3: EndGesture, no further value change.
+        shared.set_gesture(id, false);
+        local.fetch_ui_changes(&shared);
+        let mut b3 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b3.as_output(), 256);
+        assert_eq!(event_log(&b3), vec![("end", id as u32, 255)]);
+
+        // Block 4: silence.
+        let mut b4 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b4.as_output(), 256);
+        assert!(event_log(&b4).is_empty());
+    }
+
+    /// A bare UI value change (preset load, text entry — no sustained
+    /// gesture) is wrapped in its own begin/end pair.
+    #[test]
+    fn emit_wraps_bare_value_change_in_begin_end() {
+        let shared = SharedParams::new();
+        let mut local = LocalParams::new(&shared);
+        let id = id_of("master-volume").unwrap();
+
+        shared.set(id, -3.0);
+        local.fetch_ui_changes(&shared);
+        let mut buf = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut buf.as_output(), 128);
+        assert_eq!(
+            event_log(&buf),
+            vec![
+                ("begin", id as u32, 0),
+                ("value", id as u32, 0),
+                ("end", id as u32, 127),
+            ]
+        );
+    }
+
+    /// Host-driven automation must not echo back wrapped in brackets:
+    /// `apply_input` touches neither `ui_changed` nor the gesture bitset.
+    #[test]
+    fn emit_is_silent_for_host_driven_automation() {
+        let shared = SharedParams::new();
+        let mut local = LocalParams::new(&shared);
+        let id = id_of("delay-feedback").unwrap();
+
+        let mut input = EventBuffer::with_capacity(1);
+        push_param_event(&mut input, id, 0.8);
+        for ev in input.iter() {
+            let _ = local.apply_input(&shared, ev);
+        }
+        let mut out = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut out.as_output(), 256);
+        assert!(
+            event_log(&out).is_empty(),
+            "host automation echoed back: {:?}",
+            event_log(&out)
+        );
+    }
+
+    /// A gesture bracket with no value change still emits begin and end —
+    /// the host needs the bracket even if the knob never left its value
+    /// (touch automation).
+    #[test]
+    fn emit_brackets_gesture_without_value_change() {
+        let shared = SharedParams::new();
+        let mut local = LocalParams::new(&shared);
+        let id = id_of("reverb-size").unwrap();
+
+        shared.set_gesture(id, true);
+        let mut b1 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b1.as_output(), 64);
+        assert_eq!(event_log(&b1), vec![("begin", id as u32, 0)]);
+
+        shared.set_gesture(id, false);
+        let mut b2 = EventBuffer::with_capacity(4);
+        local.emit(&shared, &mut b2.as_output(), 64);
+        assert_eq!(event_log(&b2), vec![("end", id as u32, 63)]);
     }
 
     /// `write_to` pushes the mirror through the same section readers as
