@@ -276,7 +276,8 @@ impl Engine {
     }
 
     pub fn note_off(&mut self, note: u8) {
-        self.alloc.note_off_patch(&self.params.patch, note);
+        let alloc = self.params.alloc;
+        self.alloc.note_off_patch(&alloc, &self.params.patch, note);
     }
 
     pub fn set_bend(&mut self, semitones: f32) {
@@ -748,6 +749,52 @@ mod tests {
             diff_sum > 1e-3,
             "modulated render identical to baseline (diff_sum = {diff_sum}) — matrix not applied to audio"
         );
+    }
+
+    /// Solo-mode note-off with another key held must fall back to the held
+    /// note — and it must do so through `Engine::note_off`, which pre-E006
+    /// hardwired the poly path and made `note_off_solo` unreachable
+    /// (ticket 0064). The alloc-level tests call `alloc.note_off` directly
+    /// and never caught it.
+    #[test]
+    fn solo_note_off_falls_back_to_held_note_via_engine() {
+        use crate::alloc::AssignMode;
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.alloc.assign_mode = AssignMode::Solo;
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+
+        e.note_on(60, 100);
+        e.process_block(&mut l, &mut r);
+        e.note_on(64, 90);
+        e.process_block(&mut l, &mut r);
+        assert_eq!(e.alloc.stacks[0].note, 64, "solo slot plays the new note");
+        assert!(e.alloc.stacks[0].gate);
+
+        // Release the top note while 60 is still held → fallback.
+        e.note_off(64);
+        e.process_block(&mut l, &mut r);
+        assert_eq!(
+            e.alloc.stacks[0].note, 60,
+            "released solo note must fall back to the held note"
+        );
+        assert!(e.alloc.stacks[0].gate, "fallback note keeps sounding");
+
+        // It is audibly sounding, not a gated corpse.
+        let mut peak = 0.0_f32;
+        for _ in 0..(SR as usize) / 10 / BLK {
+            e.process_block(&mut l, &mut r);
+            for i in 0..BLK {
+                peak = peak.max(l[i].abs()).max(r[i].abs());
+            }
+        }
+        assert!(peak > 1e-3, "fallback note silent (peak = {peak})");
+
+        // Releasing the last note finally gates the voice off.
+        e.note_off(60);
+        e.process_block(&mut l, &mut r);
+        assert!(!e.alloc.stacks[0].gate, "all keys up → voice released");
     }
 
     /// LFO1 → GlobalPitch at block size 256 must ramp, not step (ticket

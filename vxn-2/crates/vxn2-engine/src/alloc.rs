@@ -154,9 +154,13 @@ impl PolyAlloc {
         self.note_on(params, &patch.stack, &patch.voice, note, velocity);
     }
 
-    /// Patch-driven note-off — gates every stack holding `note`.
-    pub fn note_off_patch(&mut self, _patch: &Patch, note: u8) {
-        self.note_off_poly(note);
+    /// Patch-driven note-off. Mirrors [`Self::note_on_patch`]: defers to the
+    /// assign-mode dispatch in [`Self::note_off`] so Solo gets its held-note
+    /// fallback / legato re-pitch and Poly gates every stack holding `note`.
+    /// (Pre-E006 this hardwired `note_off_poly`, leaving the entire solo
+    /// note-off path unreachable from the engine — ticket 0064.)
+    pub fn note_off_patch(&mut self, params: &AllocParams, patch: &Patch, note: u8) {
+        self.note_off(params, &patch.stack, &patch.voice, note);
     }
 
     pub fn note_off(
@@ -352,6 +356,11 @@ impl PolyAlloc {
             } else {
                 0.0
             };
+            // Fallback reuses the sounding stack's velocity (the note being
+            // released) rather than the held note's original strike — `held`
+            // stores notes only. Intentional: classic mono-synth behaviour,
+            // and it keeps the fallback dynamically continuous with the
+            // phrase being played (ticket 0064 Notes).
             let vel = self.stacks[SOLO_SLOT].velocity;
             let counter = self.bump_seq();
             if params.legato {
@@ -363,6 +372,11 @@ impl PolyAlloc {
             self.seq[SOLO_SLOT] = counter;
             if glide_from != 0.0 {
                 self.start_glide(SOLO_SLOT, glide_from, params.glide_time_ms / 1000.0);
+            } else {
+                // Symmetric with note_on_solo: a fallback without glide must
+                // also clear any in-flight glide ramp.
+                self.glides[SOLO_SLOT] = None;
+                self.stacks[SOLO_SLOT].set_glide(0.0);
             }
         } else {
             self.stacks[SOLO_SLOT].note_off();

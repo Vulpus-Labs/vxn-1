@@ -62,3 +62,19 @@ leave with a comment:
 - Solo fallback re-triggers the held note with the *released* note's
   velocity (`held` stores notes only). Decide: store velocities in
   `held`, or document the current behaviour as intentional.
+
+## Close-out (2026-06-10)
+
+- `note_off_patch` now takes `AllocParams` (mirroring `note_on_patch`)
+  and delegates to the dispatching `note_off`; `Engine::note_off`
+  passes its alloc snapshot through. No other callers existed.
+- Both adjacent findings swept up:
+  - glide-clear symmetry: the no-glide fallback branch in
+    `note_off_solo` now clears any in-flight glide, matching
+    `note_on_solo`.
+  - fallback velocity: documented as intentional — the fallback reuses
+    the sounding stack's velocity (classic mono-synth behaviour);
+    `held` keeps storing notes only.
+- Regression test `solo_note_off_falls_back_to_held_note_via_engine`
+  goes through `Engine::note_off` (held-note fallback + audible output
+  + final release), exactly the gap the review identified.
