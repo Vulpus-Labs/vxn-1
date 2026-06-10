@@ -9,7 +9,7 @@
 //      dispatches the `set_op_tab` custom UI event. Each tab carries
 //      a carrier / modulator badge sourced from ALGO_CARRIERS.
 //   4. Op-detail panel — 22 per-op CLAP params (num / denom /
-//      fixed-hz / fine / detune / level / vel-sens / amp-sens / EG
+//      fixed-hz / fine / detune / level / vel-sens / EG
 //      r1..r4 + l1..l4 / KS bp+l-depth+r-depth+rate / pan).
 //      Re-rendered on op flip; primitives are un-registered from
 //      `boundById` before the new set binds.
@@ -109,7 +109,6 @@
     detune:   { kind: "fader" },
     level:    { kind: "fader" },
     "vel-sens":{ kind: "fader" },
-    "amp-sens":{ kind: "fader" },
     pan:      { kind: "fader" },
     feedback: { kind: "fader" },
     "eg-r1":  { kind: "eg-rate", idx: 0 },
@@ -545,7 +544,6 @@
       sRow.style.cssText = "justify-content: flex-start;";
       sens.appendChild(sRow);
       makeFader(sRow, "Vel", "vel-sens");
-      makeFader(sRow, "AMS", "amp-sens");
       makeFader(sRow, "KsRt", "ks-rate");
       col4.appendChild(sens);
       const out = document.createElement("div");

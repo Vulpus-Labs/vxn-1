@@ -27,8 +27,8 @@ checks finiteness, not effect).
   diff) — assert the fingerprints differ beyond epsilon.
 - The hard part is the **per-param context**: many params are inaudible
   under the default patch (a modulator's level when its algo doesn't
-  route it; delay-feedback with delay-mix at 0; amp-sens with no
-  level-mod route). The test needs a small table of context overrides:
+  route it; delay-feedback with delay-mix at 0). The test needs a small
+  table of context overrides:
   `param → (patch tweaks, note, render length)` that put the param in
   a position to matter. Build the table incrementally — start with
   everything under a context-rich patch (algo 1, matrix routes from
@@ -46,11 +46,11 @@ checks finiteness, not effect).
 
 ## Acceptance criteria
 
-- [ ] Test enumerates the full param table (179 post-0061) — new
+- [ ] Test enumerates the full param table (173 post-0073) — new
   params are swept automatically; adding a param without audibility
   context fails the test rather than passing silently.
 - [ ] Test fails when any wired param is severed (verify once by
-  hand: comment out the AmpSens multiply from 0062, watch it fail,
+  hand: comment out a matrix projection multiply, watch it fail,
   restore).
 - [ ] Exclusion list ≤ ~10 entries, each with a reason.
 - [ ] Runs in CI (ticket 0070) within budget.

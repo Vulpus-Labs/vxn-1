@@ -6,13 +6,13 @@
 //! CLAP ids are a stable, flat index space:
 //!
 //! ```text
-//!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
+//!   0 .. 157   Per-patch        (120 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 163 .. 179   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
+//! 157 .. 173   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
 //! ```
 //!
-//! Total 179. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 173. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set.
 //!
 //! ## What is *not* in the table
@@ -45,11 +45,11 @@
 //! avoiding a build script.
 
 pub const N_OPS: usize = 6;
-pub const N_PER_OP: usize = 21;
+pub const N_PER_OP: usize = 20;
 pub const N_PER_PATCH_REST: usize = 37;
-pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
+pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 157
 pub const N_PATCH_LEVEL: usize = 16;
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 179
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 173
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -368,7 +368,6 @@ macro_rules! op_block_arr {
             it(concat!("op", $n, "-detune"), concat!("Op ", $n, " Detune"), -100, 100, 0, "ct"),
             it(concat!("op", $n, "-level"), concat!("Op ", $n, " Level"), 0, 99, 99, ""),
             it(concat!("op", $n, "-vel-sens"), concat!("Op ", $n, " Vel Sens"), 0, 7, 3, ""),
-            it(concat!("op", $n, "-amp-sens"), concat!("Op ", $n, " Amp Sens"), 0, 3, 0, ""),
             it(concat!("op", $n, "-eg-r1"), concat!("Op ", $n, " EG R1"), 0, 99, 99, ""),
             it(concat!("op", $n, "-eg-r2"), concat!("Op ", $n, " EG R2"), 0, 99, 50, ""),
             it(concat!("op", $n, "-eg-r3"), concat!("Op ", $n, " EG R3"), 0, 99, 35, ""),
@@ -521,7 +520,7 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 163, patch × 16]` — same flat ordering described in
+/// `[per-patch × 157, patch × 16]` — same flat ordering described in
 /// the module-level layout block.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
@@ -550,15 +549,15 @@ pub fn id_of(name: &str) -> Option<usize> {
 // param table itself — `module_for_clap_id` and `EngineParams::snapshot_from`
 // both read them.
 
-pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 126
-pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 126
-pub(crate) const OFF_FEEDBACK: usize = OFF_ALGO + 1;  // 127 (patch-level FB applied to algo's structural FB op)
-pub(crate) const OFF_LFO2: usize = OFF_FEEDBACK + 1;  // 128
-pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 133
-pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 142
-pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 147
-pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 150
-pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 155
+pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 120
+pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 120
+pub(crate) const OFF_FEEDBACK: usize = OFF_ALGO + 1;  // 121 (patch-level FB applied to algo's structural FB op)
+pub(crate) const OFF_LFO2: usize = OFF_FEEDBACK + 1;  // 122
+pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 127
+pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 136
+pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 141
+pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 144
+pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 149
 
 pub(crate) const OFF_LFO1: usize = 0;
 pub(crate) const OFF_DELAY: usize = 3;
@@ -704,7 +703,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 179);
+        assert_eq!(TOTAL_PARAMS, 173);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 

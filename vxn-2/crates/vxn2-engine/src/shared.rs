@@ -37,9 +37,9 @@ use crate::master::MasterParams;
 use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
-    N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1, OFF_LFO2, OFF_MASTER,
-    OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, PARAMS, PATCH_BASE, TOTAL_PARAMS,
-    core_desc_for_clap_id,
+    N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
+    OFF_LFO2, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, PARAMS,
+    PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
 // ── Patch ───────────────────────────────────────────────────────────────────
@@ -102,12 +102,41 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   and every patch-level id after it shifts down by one. Older blobs
 ///   migrate on load by skipping the stored depth value and remapping the
 ///   later ids.
-pub const BLOB_VERSION: u16 = 4;
+/// - v5: drops the six `opN-amp-sens` params (the AmpSens receive gate is
+///   gone; matrix slot depth is the only level-mod attenuator) — param
+///   count 179 → 173, per-op block 21 → 20 params. Older blobs migrate on
+///   load by skipping the stored amp-sens values and remapping the later
+///   ids.
+pub const BLOB_VERSION: u16 = 5;
+/// Param count in v4 blobs (before the v5 `opN-amp-sens` removal).
+const LEGACY_V4_PARAM_COUNT: usize = TOTAL_PARAMS + N_OPS;
 /// Param count in v≤3 blobs (before the v4 `lfo1-depth` removal).
-const LEGACY_V3_PARAM_COUNT: usize = TOTAL_PARAMS + 1;
-/// CLAP id `lfo1-depth` held in v≤3 blobs (`PATCH_BASE + 2`, between
-/// `lfo1-rate` and `lfo1-sync`). Values at this index are dropped on load.
-const LEGACY_LFO1_DEPTH_ID: usize = PATCH_BASE + 2;
+const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1;
+/// Per-op param count in v≤4 blobs (`amp-sens` still present).
+const LEGACY_V4_N_PER_OP: usize = N_PER_OP + 1;
+/// Per-op index of `amp-sens` in v≤4 blobs (after `vel-sens`).
+const LEGACY_AMP_SENS_IDX: usize = 7;
+/// CLAP id `lfo1-depth` held in v≤3 blobs (v4-space `PATCH_BASE + 2`,
+/// between `lfo1-rate` and `lfo1-sync`). Values at this index are dropped
+/// on load.
+const LEGACY_LFO1_DEPTH_ID: usize = LEGACY_V4_PARAM_COUNT - N_PATCH_LEVEL + 2;
+
+/// v4-space CLAP id → live id. `None` for the dropped `opN-amp-sens` slots;
+/// op-block ids compress 21 → 20 per op, later ids shift down by `N_OPS`.
+fn migrate_v4_id(id: usize) -> Option<usize> {
+    const LEGACY_V4_OP_BLOCK: usize = LEGACY_V4_N_PER_OP * N_OPS;
+    if id < LEGACY_V4_OP_BLOCK {
+        let op = id / LEGACY_V4_N_PER_OP;
+        let idx = id % LEGACY_V4_N_PER_OP;
+        match idx.cmp(&LEGACY_AMP_SENS_IDX) {
+            std::cmp::Ordering::Less => Some(op * N_PER_OP + idx),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(op * N_PER_OP + idx - 1),
+        }
+    } else {
+        Some(id - N_OPS)
+    }
+}
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
 /// Trailing matrix-meta byte length appended at v2:
@@ -537,12 +566,12 @@ impl ParamModel for SharedParams {
             return Err(ParamLoadError::UnsupportedVersion(version));
         }
         let count = u16::from_le_bytes([bytes[6], bytes[7]]);
-        // v≤3 blobs carry the since-removed `lfo1-depth` (id 165), so their
-        // count is one higher than the live table's.
-        let expected_count = if version <= 3 {
-            LEGACY_V3_PARAM_COUNT
-        } else {
-            TOTAL_PARAMS
+        // v≤4 blobs carry the six since-removed `opN-amp-sens` params; v≤3
+        // additionally carry `lfo1-depth` (v4-space id 165).
+        let expected_count = match version {
+            ..=3 => LEGACY_V3_PARAM_COUNT,
+            4 => LEGACY_V4_PARAM_COUNT,
+            _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
             return Err(ParamLoadError::CountMismatch {
@@ -563,8 +592,8 @@ impl ParamModel for SharedParams {
         }
         for i in 0..count as usize {
             // v3 → v4 id remap: drop the stored lfo1-depth value, shift
-            // every later id down one. v4 blobs map 1:1.
-            let id = if version <= 3 {
+            // every later id down one.
+            let v4_id = if version <= 3 {
                 match i.cmp(&LEGACY_LFO1_DEPTH_ID) {
                     std::cmp::Ordering::Less => i,
                     std::cmp::Ordering::Equal => continue,
@@ -572,6 +601,16 @@ impl ParamModel for SharedParams {
                 }
             } else {
                 i
+            };
+            // v4 → v5 id remap: drop the six stored amp-sens values,
+            // compress the op blocks. v5 blobs map 1:1.
+            let id = if version <= 4 {
+                match migrate_v4_id(v4_id) {
+                    Some(id) => id,
+                    None => continue,
+                }
+            } else {
+                v4_id
             };
             let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
@@ -860,28 +899,27 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
         detune: i(4).clamp(-100, 100) as i8,
         level: i(5).clamp(0, 99) as u8,
         vel_sens: i(6).clamp(0, 7) as u8,
-        amp_sens: i(7).clamp(0, 3) as u8,
         eg: vxn2_dsp::eg::EgParams {
             r: [
+                i(7).clamp(0, 99) as u8,
                 i(8).clamp(0, 99) as u8,
                 i(9).clamp(0, 99) as u8,
                 i(10).clamp(0, 99) as u8,
-                i(11).clamp(0, 99) as u8,
             ],
             l: [
+                i(11).clamp(0, 99) as u8,
                 i(12).clamp(0, 99) as u8,
                 i(13).clamp(0, 99) as u8,
                 i(14).clamp(0, 99) as u8,
-                i(15).clamp(0, 99) as u8,
             ],
         },
-        ks_break_pt: i(16).clamp(0, 127) as u8,
-        ks_l_depth: i(17).clamp(0, 99) as u8,
-        ks_r_depth: i(18).clamp(0, 99) as u8,
+        ks_break_pt: i(15).clamp(0, 127) as u8,
+        ks_l_depth: i(16).clamp(0, 99) as u8,
+        ks_r_depth: i(17).clamp(0, 99) as u8,
         ks_l_curve: vxn2_dsp::ks::KsCurve::NegLin, // not CLAP — preset state
         ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp, // not CLAP — preset state
-        ks_rate: i(19).clamp(0, 7) as u8,
-        pan: f(20),
+        ks_rate: i(18).clamp(0, 7) as u8,
+        pan: f(19),
     }
 }
 
@@ -1211,27 +1249,86 @@ mod tests {
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
     }
 
-    /// Rewrite a freshly saved v4 blob into the v≤3 layout: re-insert a
-    /// 4-byte value slot at the legacy `lfo1-depth` id, restore the legacy
+    /// Rewrite a freshly saved v5 blob into the v4 layout: re-insert a
+    /// 4-byte value slot at each legacy `opN-amp-sens` id, restore the v4
     /// param count and stamp `version`.
-    fn rewrite_as_legacy(bytes: &[u8], version: u16, lfo1_depth_bits: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(bytes.len() + 4);
+    fn rewrite_as_v4(bytes: &[u8], version: u16, amp_sens_bits: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len() + 4 * N_OPS);
         out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
         out[4..6].copy_from_slice(&version.to_le_bytes());
-        out[6..8].copy_from_slice(&(LEGACY_V3_PARAM_COUNT as u16).to_le_bytes());
-        let depth_off = BLOB_HEADER_LEN + LEGACY_LFO1_DEPTH_ID * 4;
-        out.extend_from_slice(&bytes[BLOB_HEADER_LEN..depth_off]);
-        out.extend_from_slice(&lfo1_depth_bits.to_le_bytes());
-        out.extend_from_slice(&bytes[depth_off..]);
+        out[6..8].copy_from_slice(&(LEGACY_V4_PARAM_COUNT as u16).to_le_bytes());
+        let mut off = BLOB_HEADER_LEN;
+        for op in 0..N_OPS {
+            // Insertion point in live (v5) layout: per-op index 7, between
+            // vel-sens and eg-r1.
+            let split = BLOB_HEADER_LEN + (op * N_PER_OP + LEGACY_AMP_SENS_IDX) * 4;
+            out.extend_from_slice(&bytes[off..split]);
+            out.extend_from_slice(&amp_sens_bits.to_le_bytes());
+            off = split;
+        }
+        out.extend_from_slice(&bytes[off..]);
         out
     }
 
-    /// A v3 blob (param count 180, `lfo1-depth` at id 165) loads under v4
-    /// code: the stored depth value is silently dropped and every later
-    /// param lands on its shifted id. Values either side of the removed
-    /// slot survive bit-exact (E006 / ticket 0061).
+    /// Rewrite a freshly saved v5 blob into the v≤3 layout: the v4 amp-sens
+    /// slots plus a 4-byte value slot at the legacy `lfo1-depth` id, legacy
+    /// param count, stamped `version`.
+    fn rewrite_as_legacy(bytes: &[u8], version: u16, lfo1_depth_bits: u32) -> Vec<u8> {
+        let v4 = rewrite_as_v4(bytes, version, 0);
+        let mut out = Vec::with_capacity(v4.len() + 4);
+        out.extend_from_slice(&v4[..BLOB_HEADER_LEN]);
+        out[6..8].copy_from_slice(&(LEGACY_V3_PARAM_COUNT as u16).to_le_bytes());
+        let depth_off = BLOB_HEADER_LEN + LEGACY_LFO1_DEPTH_ID * 4;
+        out.extend_from_slice(&v4[BLOB_HEADER_LEN..depth_off]);
+        out.extend_from_slice(&lfo1_depth_bits.to_le_bytes());
+        out.extend_from_slice(&v4[depth_off..]);
+        out
+    }
+
+    /// A v4 blob (param count 179, `amp-sens` at per-op index 7) loads under
+    /// v5 code: the six stored amp-sens values are silently dropped and
+    /// every later param lands on its compressed id. Values either side of
+    /// the removed slots survive bit-exact.
     #[test]
-    fn load_bytes_migrates_v3_param_layout_to_v4() {
+    fn load_bytes_migrates_v4_param_layout() {
+        assert!(
+            id_of("op1-amp-sens").is_none(),
+            "param must be gone from the table"
+        );
+        let non_defaults: &[(&str, f32)] = &[
+            ("op1-vel-sens", 5.0),   // immediately before the removed slot
+            ("op1-eg-r1", 42.0),     // immediately after — shifts down one
+            ("op6-pan", -0.7),       // last op-block param
+            ("algo", 17.0),          // first post-op-block param — shifts by 6
+            ("master-volume", -3.0), // last param in the table
+        ];
+        let src = SharedParams::new();
+        for &(name, v) in non_defaults {
+            src.set(id_of(name).unwrap(), v);
+        }
+        let bytes = rewrite_as_v4(&src.snapshot_bytes(), 4, 3.0f32.to_bits());
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v4 blob loads under v5");
+        for &(name, v) in non_defaults {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+        for i in 0..TOTAL_PARAMS {
+            assert_eq!(
+                src.values[i].load(Ordering::Relaxed),
+                dst.values[i].load(Ordering::Relaxed),
+                "id {i} ({}) differs after v4 → v5 migration",
+                PARAMS[i].id
+            );
+        }
+    }
+
+    /// A v3 blob (param count 180, `lfo1-depth` at v4-space id 165) loads
+    /// under current code: the stored depth and amp-sens values are silently
+    /// dropped and every later param lands on its shifted id. Values either
+    /// side of the removed slots survive bit-exact (E006 / ticket 0061).
+    #[test]
+    fn load_bytes_migrates_v3_param_layout() {
         assert!(id_of("lfo1-depth").is_none(), "param must be gone from the table");
         let non_defaults: &[(&str, f32)] = &[
             ("lfo1-rate", 7.5),      // immediately before the removed id
@@ -1248,7 +1345,7 @@ mod tests {
         let bytes = rewrite_as_legacy(&src.snapshot_bytes(), 3, 0.42f32.to_bits());
 
         let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v3 blob loads under v4");
+        dst.load_bytes(&bytes).expect("v3 blob loads under v5");
         for &(name, v) in non_defaults {
             assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
         }
@@ -1256,7 +1353,7 @@ mod tests {
             assert_eq!(
                 src.values[i].load(Ordering::Relaxed),
                 dst.values[i].load(Ordering::Relaxed),
-                "id {i} ({}) differs after v3 → v4 migration",
+                "id {i} ({}) differs after v3 → v5 migration",
                 PARAMS[i].id
             );
         }
@@ -1311,9 +1408,9 @@ mod tests {
         // in u32 → little-endian on wire means byte index +1 from start).
         // packed = source<<24 | dest<<16 | curve<<8 | active, stored LE →
         // bytes: [active, curve, dest, source]. Dest at +2.
-        bytes[trailer_off + 0 * 4 + 2] = 3; // Op1Detune (v2)
-        bytes[trailer_off + 1 * 4 + 2] = 5; // Op2Ratio (v2)
-        bytes[trailer_off + 2 * 4 + 2] = 25; // GlobalPitch (v2)
+        for (slot, v2_dest) in [(0usize, 3u8), (1, 5), (2, 25)] {
+            bytes[trailer_off + slot * 4 + 2] = v2_dest;
+        }
 
         let dst = SharedParams::new();
         dst.load_bytes(&bytes).unwrap();

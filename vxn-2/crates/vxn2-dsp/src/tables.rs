@@ -16,19 +16,6 @@ pub fn vel_factor(vs: u8, velocity: u8) -> f32 {
     1.0 - vs * (1.0 - v_curve)
 }
 
-/// Amp sensitivity (0..3): the op's receive coefficient for incoming
-/// mod-matrix level modulation. The engine multiplies the matrix's op-level
-/// destination value by this coefficient at the block-rate write into
-/// `Stack::op_level_mod` (ticket 0062). Mapping: 0 → 0.0 (op ignores level
-/// modulation entirely), 1 → 0.4, 2 → 0.7, 3 → 1.0 (full receptivity).
-/// Approximate DX7 amp-mod sens table.
-pub const AMP_SENS_TABLE: [f32; 4] = [0.0, 0.4, 0.7, 1.0];
-
-#[inline]
-pub fn amp_sens_coef(amp_sens: u8) -> f32 {
-    AMP_SENS_TABLE[amp_sens.min(3) as usize]
-}
-
 /// Layer-level feedback (continuous, `[0.0, 7.0]`). Maps to a multiplier
 /// applied to the 2-sample-averaged feedback signal before it's mixed into
 /// the phase-modulation input. Below ~1.0 = warm saw; above ~1.0 heads

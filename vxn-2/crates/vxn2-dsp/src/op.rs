@@ -42,7 +42,6 @@ pub struct OpParams {
     pub detune: i8,
     pub level: u8,
     pub vel_sens: u8,
-    pub amp_sens: u8,
     pub eg: EgParams,
     pub ks_break_pt: u8,
     pub ks_l_depth: u8,
@@ -66,7 +65,6 @@ impl Default for OpParams {
             detune: 0,
             level: 99,
             vel_sens: 3,
-            amp_sens: 0,
             eg: EgParams {
                 r: [99, 50, 35, 60],
                 l: [99, 70, 50, 0],
@@ -105,7 +103,7 @@ pub fn midi_to_hz(note: u8) -> f32 {
 
 impl OpState {
     /// Note-on / param-change cook. Re-derives `phase_inc`, EG targets/rates,
-    /// FB scale, and amp-sens coef from `params + key + velocity + sample_rate`.
+    /// and FB scale from `params + key + velocity + sample_rate`.
     /// Leaves `phase`, `fb_prev*` alone — caller can reset those separately
     /// if a clean note-on is wanted (see [`Self::reset_phase`]).
     pub fn cook(&mut self, params: &OpParams, key: u8, velocity: u8, sample_rate: f32) {
@@ -137,11 +135,6 @@ impl OpState {
         // Feedback is now layer-level: stack/voice note_on (and the engine's
         // per-block live update) writes `fb_scale` directly onto the
         // algorithm's structural FB op only. Leave it alone here.
-        //
-        // `params.amp_sens` is not cooked here: the scalar voice path has no
-        // matrix level-mod input, so the receive coefficient only exists on
-        // `StackOp` (applied by the engine at the `op_level_mod` write site
-        // — ticket 0062).
     }
 
     /// Reset phase + feedback memory. Call on a clean note-on if the patch

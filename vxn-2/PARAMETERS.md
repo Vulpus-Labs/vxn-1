@@ -34,7 +34,6 @@ For each operator `op{1..6}`:
 | `detune`        | i    | −100 .. +100   | 0       | Per-op detune in cents (±1 semitone). Log-domain offset on top of the rational ratio — use for thickening, beating, microtuning. Independent of `num`/`denom`. |
 | `level`         | i    | 0 .. 99        | 99 (carriers) / 0 (mods) | Operator output level. For carriers this is amp; for modulators this drives FM index. DX7's primary timbre control. |
 | `vel_sens`      | i    | 0 .. 7         | 3       | Velocity sensitivity for `level`. Higher = louder/brighter on hard hits. DX7-style 0-7 scale. |
-| `amp_sens`      | i    | 0 .. 3         | 0       | LFO amplitude-modulation sensitivity for this op (lets LFO tremolo apply per-op). |
 | `eg_r1..r4`     | i    | 0 .. 99        | 99,50,35,60 | EG rates. R1 = attack speed, R2 = decay-to-sustain, R3 = sustain decay (slow drift), R4 = release. Higher = faster. |
 | `eg_l1..l4`     | i    | 0 .. 99        | 99,70,50,0  | EG levels. L1 = peak after attack, L2 = decay target, L3 = sustain level, L4 = release floor (and pre-attack start). Carriers usually L4=0. |
 | `ks_break_pt`   | i    | 0 .. 127       | 60 (C4) | Keyboard break point (MIDI note). At this note, key-scaling applies zero offset to `level`. |
@@ -242,7 +241,7 @@ limit if needed.)
 
 | Section                       | Count                |
 |-------------------------------|----------------------|
-| Per-op (×6)                   | 21 × 6 = 126         |
+| Per-op (×6)                   | 20 × 6 = 120         |
 | Algorithm + Feedback          | 2                    |
 | LFO 2                         | 5                    |
 | Pitch EG                      | 9                    |
@@ -250,7 +249,7 @@ limit if needed.)
 | Assignment                    | 3                    |
 | Stacking                      | 5                    |
 | Mod matrix slots 1–8 depth    | 8                    |
-| **Per-patch subtotal**        | **163**              |
+| **Per-patch subtotal**        | **157**              |
 
 ### Patch-level
 
@@ -266,7 +265,7 @@ limit if needed.)
 
 | Quantity                | Value          |
 |-------------------------|----------------|
-| Per-patch + patch       | 163 + 16 = **179** |
+| Per-patch + patch       | 157 + 16 = **173** |
 | Mod matrix non-CLAP fields | source + dest + curve × 16 slots + depth × slots 9–16 = 56 fields (patch sub-table, not CLAP) |
 
 Mod matrix slot `source`, `dest`, `curve` are excluded from CLAP because

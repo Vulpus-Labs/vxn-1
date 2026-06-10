@@ -19,7 +19,7 @@
 //!
 //! Per stack op: `phase[8]`, `phase_inc[8]`, `fb_prev1[8]`, `fb_prev2[8]`,
 //! `fb_scale[8]` as contiguous arrays LLVM lowers to 2× NEON 4-wide registers
-//! on AArch64. Per-op scalars (EG, `amp_sens_coef`) live alongside, shared
+//! on AArch64. Per-op scalars (EG) live alongside, shared
 //! across the 8 lanes.
 //!
 //! ## Algorithm routing
@@ -42,7 +42,7 @@ use crate::ks::{ks_level_mult, ks_rate_mult};
 use crate::lfo::Lfo2Stack;
 use crate::op::{OpParams, PM_SCALE_Q32, RatioMode, midi_to_hz};
 use crate::sine::scalar::fast_sine_q32;
-use crate::tables::{amp_sens_coef, fb_scale, vel_factor};
+use crate::tables::{fb_scale, vel_factor};
 use crate::voice::VoiceParams;
 
 /// Fixed packed-lane width. All stack DSP runs over 8 lanes; `density < 8`
@@ -193,7 +193,6 @@ pub struct StackOp {
     /// structural FB op; per-lane because the matrix `Feedback` dest is a
     /// voice property (each lane can carry its own modulated amount).
     pub fb_scale: [f32; STACK_LANES],
-    pub amp_sens_coef: f32,
 }
 
 /// One voice stack — six lane-packed ops + per-stack metadata.
@@ -234,9 +233,6 @@ pub struct Stack {
     /// block start and read by [`stack_tick_stereo`] / [`stack_tick_mono`].
     /// Effective level per sample is `(op.eg.level + op_level_mod[i][k])
     /// .clamp(0.0, 1.0)`. Zero when no matrix slot targets `OpNLevel`.
-    /// The engine pre-multiplies the matrix value by the op's
-    /// [`StackOp::amp_sens_coef`] at the write site (ticket 0062), so the
-    /// per-sample loop never touches the receive coefficient.
     pub op_level_mod: [[f32; STACK_LANES]; N_OPS],
     /// Per-lane pitch offset in semitones from matrix `GlobalPitch`. Summed
     /// with `bend_st + glide_st + pitch_eg.level_st` in
@@ -631,7 +627,6 @@ impl Stack {
         // Feedback is no longer per-op: see `set_feedback_live`. cook_op
         // leaves `fb_scale` alone; note_on calls the live setter after the
         // cook loop, and the engine refreshes it each block.
-        self.ops[i].amp_sens_coef = amp_sens_coef(params.amp_sens);
     }
 
     fn apply_phase_offsets(&mut self, phase_amount: f32) {
