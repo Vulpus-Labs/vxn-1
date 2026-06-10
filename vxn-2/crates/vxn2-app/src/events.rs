@@ -52,6 +52,13 @@ pub enum Vxn2UiCustom {
     /// 16-row matrix snapshot. Dispatched from JS right after
     /// `EditorReady` so the overlay can render from a known state.
     RequestMatrixSnapshot,
+
+    /// Page-side seed: flip every dirty bit on the Model so the next
+    /// main-thread tick re-broadcasts the full table (every
+    /// `ParamChanged` + one `MatrixSnapshot`). The page fires this once
+    /// it has finished binding primitives so it doesn't depend on the
+    /// initial `SharedParams::new` seed surviving until after bind.
+    RequestFullRebroadcast,
 }
 
 /// VXN2-only view echoes.

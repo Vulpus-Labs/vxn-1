@@ -157,8 +157,8 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 /// Modulation destination. `None` is the "empty slot" sentinel.
 ///
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
-/// …). 6 ops × 4 dests each = 24 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX, plus a single layer-level `Feedback` dest = 33 total. (Per-op
+/// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
+/// 2 FX, plus a single layer-level `Feedback` dest = 27 total. (Per-op
 /// feedback was dropped; feedback is layer-level and modulates the
 /// algorithm's structural FB op only.)
 ///
@@ -166,12 +166,14 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 ///
 /// Live (consumed by [`crate::engine::Engine::process_block`]):
 /// - `Op{1..6}Level` — additive per-lane offset on EG level pre-sine.
-/// - `Op{1..6}Ratio` / `Op{1..6}Detune` — both treated as semitones, summed
-///   into the per-op per-lane pitch shift before `phase_inc` recompute.
+/// - `Op{1..6}Pitch` — per-lane semitones added to the op pitch sum before
+///   `phase_inc` recompute. Replaces the old Ratio + Detune split (both
+///   were semitones into the same accumulator).
 /// - `Op{1..6}Pan` — added to the equal-power pan curve per lane.
 /// - `GlobalPitch` — per-lane semitones added to the stack pitch sum.
 /// - `DelayMix` / `ReverbMix` — averaged at lane 0 across active stacks
 ///   and pushed to the FX param surface each block.
+/// - `Feedback` — added to the layer feedback before `set_feedback_live`.
 ///
 /// Routable in the matrix UI but NOT yet consumed in audio:
 /// - `Lfo2Phase` — would need per-lane LFO2 phase reset/offset.
@@ -185,12 +187,12 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 pub enum DestId {
     #[default]
     None = 0,
-    Op1Ratio = 1, Op1Level, Op1Detune, Op1Pan,
-    Op2Ratio, Op2Level, Op2Detune, Op2Pan,
-    Op3Ratio, Op3Level, Op3Detune, Op3Pan,
-    Op4Ratio, Op4Level, Op4Detune, Op4Pan,
-    Op5Ratio, Op5Level, Op5Detune, Op5Pan,
-    Op6Ratio, Op6Level, Op6Detune, Op6Pan,
+    Op1Pitch = 1, Op1Level, Op1Pan,
+    Op2Pitch, Op2Level, Op2Pan,
+    Op3Pitch, Op3Level, Op3Pan,
+    Op4Pitch, Op4Level, Op4Pan,
+    Op5Pitch, Op5Level, Op5Pan,
+    Op6Pitch, Op6Level, Op6Pan,
     GlobalPitch,
     Lfo1Rate,
     Lfo2Rate,
@@ -203,18 +205,18 @@ pub enum DestId {
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 33;
+pub const N_DESTS: usize = 27;
 
 /// Destination machine id (kebab-case wire name). Index matches
-/// `DestId as u8` — `None` at index 0, then `Op1Ratio`..`ReverbMix`.
+/// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
 pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "none",
-    "op1-ratio", "op1-level", "op1-detune", "op1-pan",
-    "op2-ratio", "op2-level", "op2-detune", "op2-pan",
-    "op3-ratio", "op3-level", "op3-detune", "op3-pan",
-    "op4-ratio", "op4-level", "op4-detune", "op4-pan",
-    "op5-ratio", "op5-level", "op5-detune", "op5-pan",
-    "op6-ratio", "op6-level", "op6-detune", "op6-pan",
+    "op1-pitch", "op1-level", "op1-pan",
+    "op2-pitch", "op2-level", "op2-pan",
+    "op3-pitch", "op3-level", "op3-pan",
+    "op4-pitch", "op4-level", "op4-pan",
+    "op5-pitch", "op5-level", "op5-pan",
+    "op6-pitch", "op6-level", "op6-pan",
     "global-pitch",
     "lfo1-rate",
     "lfo2-rate",
@@ -229,12 +231,12 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
 /// Destination display label. Same indexing as [`DEST_NAMES`].
 pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "—",
-    "Op 1 Ratio", "Op 1 Level", "Op 1 Detune", "Op 1 Pan",
-    "Op 2 Ratio", "Op 2 Level", "Op 2 Detune", "Op 2 Pan",
-    "Op 3 Ratio", "Op 3 Level", "Op 3 Detune", "Op 3 Pan",
-    "Op 4 Ratio", "Op 4 Level", "Op 4 Detune", "Op 4 Pan",
-    "Op 5 Ratio", "Op 5 Level", "Op 5 Detune", "Op 5 Pan",
-    "Op 6 Ratio", "Op 6 Level", "Op 6 Detune", "Op 6 Pan",
+    "Op 1 Pitch", "Op 1 Level", "Op 1 Pan",
+    "Op 2 Pitch", "Op 2 Level", "Op 2 Pan",
+    "Op 3 Pitch", "Op 3 Level", "Op 3 Pan",
+    "Op 4 Pitch", "Op 4 Level", "Op 4 Pan",
+    "Op 5 Pitch", "Op 5 Level", "Op 5 Pan",
+    "Op 6 Pitch", "Op 6 Level", "Op 6 Pan",
     "Global Pitch",
     "LFO 1 Rate",
     "LFO 2 Rate",
@@ -245,6 +247,24 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Reverb Mix",
     "Feedback",
 ];
+
+/// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets
+/// run a unitless [-1, 1]; the gain table converts to the destination's
+/// native unit so the audible range matches user expectation across
+/// kinds. Pitch dests sweep ±2 octaves at full depth; feedback covers its
+/// full 0..7 clamp range; everything else stays at 1.0.
+pub const DEST_GAIN: [f32; N_DESTS + 1] = {
+    let mut g = [1.0_f32; N_DESTS + 1];
+    g[DestId::Op1Pitch as usize] = 24.0;
+    g[DestId::Op2Pitch as usize] = 24.0;
+    g[DestId::Op3Pitch as usize] = 24.0;
+    g[DestId::Op4Pitch as usize] = 24.0;
+    g[DestId::Op5Pitch as usize] = 24.0;
+    g[DestId::Op6Pitch as usize] = 24.0;
+    g[DestId::GlobalPitch as usize] = 24.0;
+    g[DestId::Feedback as usize] = 7.0;
+    g
+};
 
 impl DestId {
     #[inline]
@@ -260,30 +280,63 @@ impl DestId {
     #[inline]
     pub fn from_u8(v: u8) -> Self {
         match v {
-            1 => DestId::Op1Ratio,
+            1 => DestId::Op1Pitch,
             2 => DestId::Op1Level,
-            3 => DestId::Op1Detune,
+            3 => DestId::Op1Pan,
+            4 => DestId::Op2Pitch,
+            5 => DestId::Op2Level,
+            6 => DestId::Op2Pan,
+            7 => DestId::Op3Pitch,
+            8 => DestId::Op3Level,
+            9 => DestId::Op3Pan,
+            10 => DestId::Op4Pitch,
+            11 => DestId::Op4Level,
+            12 => DestId::Op4Pan,
+            13 => DestId::Op5Pitch,
+            14 => DestId::Op5Level,
+            15 => DestId::Op5Pan,
+            16 => DestId::Op6Pitch,
+            17 => DestId::Op6Level,
+            18 => DestId::Op6Pan,
+            19 => DestId::GlobalPitch,
+            20 => DestId::Lfo1Rate,
+            21 => DestId::Lfo2Rate,
+            22 => DestId::Lfo2Phase,
+            23 => DestId::StackDetune,
+            24 => DestId::StackSpread,
+            25 => DestId::DelayMix,
+            26 => DestId::ReverbMix,
+            27 => DestId::Feedback,
+            _ => DestId::None,
+        }
+    }
+
+    /// Translate a v2 blob `DestId` discriminant to the v3 layout.
+    /// v2 had per-op stride 4 (Ratio, Level, Detune, Pan); v3 collapses
+    /// Ratio+Detune into a single Pitch dest with stride 3.
+    /// Both old Ratio and old Detune map to the new Pitch dest.
+    pub fn from_u8_v2(v: u8) -> Self {
+        match v {
+            // op block: old indices 1..=24, new 1..=18
+            1 | 3 => DestId::Op1Pitch,
+            2 => DestId::Op1Level,
             4 => DestId::Op1Pan,
-            5 => DestId::Op2Ratio,
+            5 | 7 => DestId::Op2Pitch,
             6 => DestId::Op2Level,
-            7 => DestId::Op2Detune,
             8 => DestId::Op2Pan,
-            9 => DestId::Op3Ratio,
+            9 | 11 => DestId::Op3Pitch,
             10 => DestId::Op3Level,
-            11 => DestId::Op3Detune,
             12 => DestId::Op3Pan,
-            13 => DestId::Op4Ratio,
+            13 | 15 => DestId::Op4Pitch,
             14 => DestId::Op4Level,
-            15 => DestId::Op4Detune,
             16 => DestId::Op4Pan,
-            17 => DestId::Op5Ratio,
+            17 | 19 => DestId::Op5Pitch,
             18 => DestId::Op5Level,
-            19 => DestId::Op5Detune,
             20 => DestId::Op5Pan,
-            21 => DestId::Op6Ratio,
+            21 | 23 => DestId::Op6Pitch,
             22 => DestId::Op6Level,
-            23 => DestId::Op6Detune,
             24 => DestId::Op6Pan,
+            // global block shifts down by 6 (drop 6 Detune variants).
             25 => DestId::GlobalPitch,
             26 => DestId::Lfo1Rate,
             27 => DestId::Lfo2Rate,
@@ -305,18 +358,12 @@ impl DestId {
             self,
             DestId::GlobalPitch
                 | DestId::Lfo2Phase
-                | DestId::Op1Ratio
-                | DestId::Op2Ratio
-                | DestId::Op3Ratio
-                | DestId::Op4Ratio
-                | DestId::Op5Ratio
-                | DestId::Op6Ratio
-                | DestId::Op1Detune
-                | DestId::Op2Detune
-                | DestId::Op3Detune
-                | DestId::Op4Detune
-                | DestId::Op5Detune
-                | DestId::Op6Detune
+                | DestId::Op1Pitch
+                | DestId::Op2Pitch
+                | DestId::Op3Pitch
+                | DestId::Op4Pitch
+                | DestId::Op5Pitch
+                | DestId::Op6Pitch
         )
     }
 }
@@ -326,21 +373,15 @@ impl DestId {
 pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = [
     DestId::GlobalPitch,
     DestId::Lfo2Phase,
-    DestId::Op1Ratio,
-    DestId::Op2Ratio,
-    DestId::Op3Ratio,
-    DestId::Op4Ratio,
-    DestId::Op5Ratio,
-    DestId::Op6Ratio,
-    DestId::Op1Detune,
-    DestId::Op2Detune,
-    DestId::Op3Detune,
-    DestId::Op4Detune,
-    DestId::Op5Detune,
-    DestId::Op6Detune,
+    DestId::Op1Pitch,
+    DestId::Op2Pitch,
+    DestId::Op3Pitch,
+    DestId::Op4Pitch,
+    DestId::Op5Pitch,
+    DestId::Op6Pitch,
 ];
 
-pub const N_PITCH_DESTS: usize = 14;
+pub const N_PITCH_DESTS: usize = 8;
 
 // --- Curve ----------------------------------------------------------------
 
@@ -528,7 +569,10 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
         if slot.depth == 0.0 {
             continue;
         }
-        let depth = slot.depth;
+        // Pre-scale depth by the destination's native-unit gain. Pitch
+        // dests sweep ±2 octaves at full depth; feedback covers its 0..7
+        // range; everything else uses 1.0 (depth = native units).
+        let depth = slot.depth * DEST_GAIN[slot.dest as usize];
         match slot.curve {
             CurveKind::Lin => {
                 for k in 0..STACK_LANES {
@@ -668,7 +712,7 @@ mod tests {
     #[test]
     fn dest_idx_skips_none_and_packs_others() {
         assert_eq!(DestId::None.idx(), None);
-        assert_eq!(DestId::Op1Ratio.idx(), Some(0));
+        assert_eq!(DestId::Op1Pitch.idx(), Some(0));
         assert_eq!(DestId::Feedback.idx(), Some(N_DESTS - 1));
     }
 
@@ -716,21 +760,23 @@ mod tests {
 
     #[test]
     fn single_lin_slot_writes_only_target_dest() {
+        // Use a gain=1 dest (Op1Pan) so the numerical check covers the
+        // accumulator + curve math without the per-dest gain table mixing in.
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::GlobalPitch, 0.5, CurveKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, CurveKind::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
-        let pitch_idx = DestId::GlobalPitch.idx().unwrap();
+        let dest_idx = DestId::Op1Pan.idx().unwrap();
         for k in 0..STACK_LANES {
-            // Lfo1 = 0.5, depth = 0.5, lin → 0.25 across every lane.
+            // Lfo1 = 0.5, depth = 0.5, lin, gain = 1 → 0.25 across every lane.
             assert!(
-                (out[k][pitch_idx] - 0.25).abs() < 1e-6,
+                (out[k][dest_idx] - 0.25).abs() < 1e-6,
                 "lane {k} got {}",
-                out[k][pitch_idx]
+                out[k][dest_idx]
             );
             for d in 0..N_DESTS {
-                if d == pitch_idx {
+                if d == dest_idx {
                     continue;
                 }
                 assert_eq!(out[k][d], 0.0, "lane {k} non-target dest {d}");
@@ -741,14 +787,45 @@ mod tests {
     #[test]
     fn two_slots_into_same_dest_accumulate() {
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::GlobalPitch, 0.5, CurveKind::Lin);
-        table.slots[1] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, CurveKind::Lin);
+        table.slots[1] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, CurveKind::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
         let want = 0.5 * 0.5 + 1.0 * 0.3;
         for k in 0..STACK_LANES {
-            assert!((out[k][DestId::GlobalPitch.idx().unwrap()] - want).abs() < 1e-6);
+            assert!((out[k][DestId::Op1Pan.idx().unwrap()] - want).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn pitch_dest_gain_scales_depth() {
+        // Pitch dests sweep ±2 octaves at full depth: depth × source × 24.
+        let mut table = MatrixTable::default();
+        table.slots[0] =
+            full_slot(SourceId::Lfo1, DestId::GlobalPitch, 1.0, CurveKind::Lin);
+        let sources = default_lane_sources();
+        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        eval_dests(&table, &sources, &mut out);
+        let di = DestId::GlobalPitch.idx().unwrap();
+        // Lfo1 = 0.5, depth = 1, gain = 24 → 12 semitones.
+        for k in 0..STACK_LANES {
+            assert!((out[k][di] - 12.0).abs() < 1e-4, "lane {k} got {}", out[k][di]);
+        }
+    }
+
+    #[test]
+    fn feedback_dest_gain_scales_depth() {
+        let mut table = MatrixTable::default();
+        table.slots[0] =
+            full_slot(SourceId::ModWheel, DestId::Feedback, 1.0, CurveKind::Lin);
+        let sources = default_lane_sources();
+        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        eval_dests(&table, &sources, &mut out);
+        let di = DestId::Feedback.idx().unwrap();
+        // ModWheel = 0.3, depth = 1, gain = 7 → 2.1.
+        for k in 0..STACK_LANES {
+            assert!((out[k][di] - 2.1).abs() < 1e-4, "lane {k} got {}", out[k][di]);
         }
     }
 
@@ -773,7 +850,7 @@ mod tests {
         let mut table = MatrixTable::default();
         table.slots[0] = MatrixSlot {
             source: SourceId::None,
-            dest: DestId::GlobalPitch,
+            dest: DestId::Op1Pan,
             depth: 99.0,
             curve: CurveKind::Lin,
         };
@@ -781,7 +858,7 @@ mod tests {
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][DestId::GlobalPitch.idx().unwrap()], 0.0);
+            assert_eq!(out[k][DestId::Op1Pan.idx().unwrap()], 0.0);
         }
     }
 
@@ -807,12 +884,12 @@ mod tests {
     #[test]
     fn zero_depth_short_circuits() {
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::GlobalPitch, 0.0, CurveKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.0, CurveKind::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][DestId::GlobalPitch.idx().unwrap()], 0.0);
+            assert_eq!(out[k][DestId::Op1Pan.idx().unwrap()], 0.0);
         }
     }
 
@@ -822,15 +899,15 @@ mod tests {
         // for |v| < 1, but characterised by the signed-square shape, not by
         // gain). Just verify it's different from lin.
         let mut lin_t = MatrixTable::default();
-        lin_t.slots[0] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Lin);
+        lin_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, CurveKind::Lin);
         let mut exp_t = MatrixTable::default();
-        exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Exp);
+        exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, CurveKind::Exp);
         let sources = default_lane_sources();
         let mut lin_out = [[0.0; N_DESTS]; STACK_LANES];
         let mut exp_out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&lin_t, &sources, &mut lin_out);
         eval_dests(&exp_t, &sources, &mut exp_out);
-        let pi = DestId::GlobalPitch.idx().unwrap();
+        let pi = DestId::Op1Pan.idx().unwrap();
         assert!(
             (lin_out[0][pi] - 0.3).abs() < 1e-6,
             "lin {} != 0.3",
@@ -846,24 +923,24 @@ mod tests {
     #[test]
     fn curve_log_compresses_toward_zero() {
         let mut log_t = MatrixTable::default();
-        log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Log);
+        log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, CurveKind::Log);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&log_t, &sources, &mut out);
         // ModWheel = 0.3, sqrt(0.3) ≈ 0.5477.
         let want = (0.3_f32).sqrt();
-        assert!((out[0][DestId::GlobalPitch.idx().unwrap()] - want).abs() < 1e-6);
+        assert!((out[0][DestId::Op1Pan.idx().unwrap()] - want).abs() < 1e-6);
     }
 
     #[test]
     fn curve_bipolar_shifts_unipolar_source() {
         let mut bp_t = MatrixTable::default();
-        bp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::GlobalPitch, 1.0, CurveKind::Bipolar);
+        bp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, CurveKind::Bipolar);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&bp_t, &sources, &mut out);
         // ModWheel = 0.3 → 2*0.3 - 1 = -0.4.
-        assert!((out[0][DestId::GlobalPitch.idx().unwrap()] - (-0.4)).abs() < 1e-6);
+        assert!((out[0][DestId::Op1Pan.idx().unwrap()] - (-0.4)).abs() < 1e-6);
     }
 
     #[test]
@@ -879,10 +956,10 @@ mod tests {
         eval_sources(&patch, &stack, &lanes, &mut sources);
         for curve in [CurveKind::Lin, CurveKind::Exp, CurveKind::Log] {
             let mut table = MatrixTable::default();
-            table.slots[0] = full_slot(SourceId::VoiceSpread, DestId::GlobalPitch, 1.0, curve);
+            table.slots[0] = full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, curve);
             let mut out = [[0.0; N_DESTS]; STACK_LANES];
             eval_dests(&table, &sources, &mut out);
-            let v = out[0][DestId::GlobalPitch.idx().unwrap()];
+            let v = out[0][DestId::Op1Pan.idx().unwrap()];
             assert!(v < 0.0, "{curve:?} dropped sign: {v}");
         }
     }
@@ -893,15 +970,15 @@ mod tests {
     fn smoother_targets_from_picks_pitch_dest_columns() {
         let mut dest = [[0.0; N_DESTS]; STACK_LANES];
         let pitch_idx = DestId::GlobalPitch.idx().unwrap();
-        let ratio_idx = DestId::Op1Ratio.idx().unwrap();
+        let op_pitch_idx = DestId::Op1Pitch.idx().unwrap();
         for k in 0..STACK_LANES {
             dest[k][pitch_idx] = 1.0;
-            dest[k][ratio_idx] = 0.25;
+            dest[k][op_pitch_idx] = 0.25;
         }
         let s = PitchSmoother::default();
         let tgt = s.targets_from(&dest);
         let pidx = PITCH_DESTS.iter().position(|&d| d == DestId::GlobalPitch).unwrap();
-        let ridx = PITCH_DESTS.iter().position(|&d| d == DestId::Op1Ratio).unwrap();
+        let ridx = PITCH_DESTS.iter().position(|&d| d == DestId::Op1Pitch).unwrap();
         for k in 0..STACK_LANES {
             assert_eq!(tgt[pidx][k], 1.0);
             assert_eq!(tgt[ridx][k], 0.25);

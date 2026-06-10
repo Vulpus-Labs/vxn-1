@@ -16,7 +16,10 @@ use vxn_core_app::{
 use crate::events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
 use crate::model::Vxn2Params;
 
-fn snapshot_rows<M: Vxn2Params>(model: &M) -> [MatrixRow; 16] {
+/// Read all 16 matrix rows from `model`. Used by both the controller-
+/// scoped push and the CLAP shell's dirty-bitset pump (ADR 0003) so they
+/// build the same snapshot shape.
+pub fn matrix_snapshot_rows<M: Vxn2Params>(model: &M) -> [MatrixRow; 16] {
     let mut out = [MatrixRow::default(); 16];
     for slot in 0..16u8 {
         out[slot as usize] = model.matrix_row(slot);
@@ -24,11 +27,22 @@ fn snapshot_rows<M: Vxn2Params>(model: &M) -> [MatrixRow; 16] {
     out
 }
 
-fn push_matrix_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
-    let rows = snapshot_rows(ctrl.model().as_ref());
-    ctrl.push_view_event(ViewEvent::Custom(Box::new(
-        Vxn2ViewCustom::MatrixSnapshot { rows },
-    )));
+/// Build a `Vxn2ViewCustom::MatrixSnapshot` view event from `model` without
+/// the controller wrapper. The CLAP shell's pump (ADR 0003) calls this
+/// when `SharedParams.dirty_matrix` is non-zero on a tick drain so it can
+/// push directly to the editor handle without re-entering the controller.
+pub fn matrix_snapshot_event<M: Vxn2Params>(model: &M) -> ViewEvent {
+    ViewEvent::Custom(Box::new(Vxn2ViewCustom::MatrixSnapshot {
+        rows: matrix_snapshot_rows(model),
+    }))
+}
+
+/// Push a fresh `MatrixSnapshot` view event into the controller's queue.
+/// Used by the UI on `RequestMatrixSnapshot` so the page never displays
+/// stale rows after an explicit refresh request.
+pub fn push_matrix_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
+    let event = matrix_snapshot_event(ctrl.model().as_ref());
+    ctrl.push_view_event(event);
 }
 
 /// Drain inbound queues against `controller` and apply the VXN2 custom-
@@ -40,23 +54,29 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
         };
         match *boxed {
             Vxn2UiCustom::SetOpTab { op } => {
+                // Pure UI mode state — no Model backing, so the
+                // dirty-bitset pump (ADR 0003) doesn't carry it. The
+                // echo is the only path; keep it.
                 ctrl.push_view_event(ViewEvent::Custom(Box::new(
                     Vxn2ViewCustom::OpTabChanged { op },
                 )));
             }
             Vxn2UiCustom::SetMatrixRow { slot, row } => {
-                // Single source of truth: SharedParams::set_matrix_row_raw
-                // also writes the CLAP depth for slots 1-8, so depth has
-                // two on-the-wire paths (this Custom + the plain
-                // SetParam from the UI). CLAP wins during automation;
-                // see PARAMETERS.md §"CLAP exposure".
+                // Write the Model and stop. The dirty-bitset pump
+                // catches the matrix-slot bit on the next tick and
+                // pushes a `MatrixSnapshot`. The optimistic UI paint
+                // in `dispatchRow` covers the one-tick latency.
                 ctrl.model().set_matrix_row(slot, row);
-                ctrl.push_view_event(ViewEvent::Custom(Box::new(
-                    Vxn2ViewCustom::MatrixRowChanged { slot, row },
-                )));
             }
             Vxn2UiCustom::RequestMatrixSnapshot => {
                 push_matrix_snapshot(ctrl);
+            }
+            Vxn2UiCustom::RequestFullRebroadcast => {
+                // Flip every dirty bit on the Model; the CLAP shell's
+                // main-thread tick drains them next time round and the
+                // editor handle receives a full table broadcast plus a
+                // MatrixSnapshot. No view event from this handler.
+                ctrl.model().mark_all_dirty();
             }
         }
     };

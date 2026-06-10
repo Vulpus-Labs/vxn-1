@@ -83,7 +83,7 @@ fn set_param_round_trips_through_controller() {
 }
 
 #[test]
-fn matrix_row_custom_event_writes_model_and_echoes_view() {
+fn matrix_row_custom_event_writes_model_no_echo() {
     let (mut ctrl, view_rx, model) = build_controller();
 
     let row = MatrixRow {
@@ -112,20 +112,20 @@ fn matrix_row_custom_event_writes_model_and_echoes_view() {
     let clap_id = id_of("mtx4-depth").expect("mtx4-depth present");
     assert!((model.get(clap_id) - 0.42).abs() < 1e-5);
 
-    // View: MatrixRowChanged echo present, with same payload.
+    // Per ADR 0003 / E005 the SetMatrixRow handler no longer echoes:
+    // the dirty bitset on SharedParams catches the drift and the CLAP
+    // shell's pump pushes a fresh MatrixSnapshot. The controller test
+    // doesn't run that pump, so no matrix view event lands here.
     let events = drain(&view_rx);
-    let mut saw = false;
-    for ev in events {
-        if let ViewEvent::Custom(payload) = ev {
-            if let Ok(custom) = payload.downcast::<Vxn2ViewCustom>() {
-                if let Vxn2ViewCustom::MatrixRowChanged { slot: 3, row: r } = *custom {
-                    assert_eq!(r, row);
-                    saw = true;
-                }
-            }
-        }
-    }
-    assert!(saw, "MatrixRowChanged echo not seen on view rx");
+    let echoed = events.iter().any(|ev| match ev {
+        ViewEvent::Custom(payload) => matches!(
+            payload.downcast_ref::<Vxn2ViewCustom>(),
+            Some(Vxn2ViewCustom::MatrixRowChanged { .. })
+                | Some(Vxn2ViewCustom::MatrixSnapshot { .. })
+        ),
+        _ => false,
+    });
+    assert!(!echoed, "SetMatrixRow handler must not push view events");
 }
 
 #[test]

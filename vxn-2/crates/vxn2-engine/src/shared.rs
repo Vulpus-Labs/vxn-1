@@ -94,7 +94,11 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 /// - v2: appends mod-matrix topology (16 × packed `u32` meta) and the
 ///   non-automatable slot depths (8 × `f32`). Older v1 blobs still load and
 ///   leave the matrix at default-patch topology.
-pub const BLOB_VERSION: u16 = 2;
+/// - v3: collapses per-op Ratio + Detune mod-matrix dests into a single
+///   per-op Pitch dest (was 4 dests per op, now 3). Older v2 blobs migrate
+///   on load by rewriting the packed `dest` discriminant — both old Ratio
+///   and old Detune routes map to the new Pitch dest.
+pub const BLOB_VERSION: u16 = 3;
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
 /// Trailing matrix-meta byte length appended at v2:
@@ -145,6 +149,33 @@ pub const N_MATRIX_SLOTS: usize = 16;
 pub const N_MATRIX_CLAP_SLOTS: usize = 8;
 /// Gesture bitset word count (one `AtomicU64` per 64 params, rounded up).
 const GESTURE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
+/// Dirty-bitset word count for the value table. One bit per CLAP id;
+/// flipped on every `set` / `set_normalised` / `set_matrix_row_raw` write
+/// and drained by the main-thread tick (ADR 0003 / epic E005).
+pub const N_DIRTY_VALUE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
+
+/// Mask of the valid bits in dirty-value word `w` (out-of-range bits in
+/// the last word stay zero so a full re-broadcast doesn't emit phantom
+/// ids past [`TOTAL_PARAMS`]).
+#[inline]
+const fn dirty_values_full_word(w: usize) -> u64 {
+    let start = w * 64;
+    if start >= TOTAL_PARAMS {
+        0
+    } else {
+        let n = TOTAL_PARAMS - start;
+        if n >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << n) - 1
+        }
+    }
+}
+
+/// All matrix-slot dirty bits set (16-bit fully-occupied mask). Used to
+/// force a whole-table `MatrixSnapshot` after a bulk store (state load,
+/// reset to defaults, first tick post-init).
+const DIRTY_MATRIX_ALL: u64 = (1u64 << N_MATRIX_SLOTS) - 1;
 
 /// Lock-free param store. Sized to [`TOTAL_PARAMS`] (180 in v1). Cheap to
 /// share via `Arc` — every field is an atomic.
@@ -167,6 +198,24 @@ pub struct SharedParams {
     /// Slot 9-16 depth (`f32` bits). Slots 1-8 depth lives in the CLAP
     /// `values` table (see [`OFF_MTX`]).
     matrix_extra_depth: [AtomicU32; N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS],
+    /// Dirty bitset for the value table — the canonical Model → View
+    /// change channel (ADR 0003). Every `set` / `set_normalised` /
+    /// `set_matrix_row_raw` write site flips the matching bit with
+    /// `fetch_or(Release)`; the main-thread tick drains via
+    /// `take_dirty_values` (`swap(Acquire)`). The Release/Acquire pair
+    /// guarantees a reader that observes the bit sees the value the
+    /// writer stored before flipping it.
+    ///
+    /// Seeded with every valid bit set so the first tick after open
+    /// broadcasts the whole table — equivalent to the all-NaN
+    /// `last_seen` seed in the prior polling pump.
+    dirty_values: [AtomicU64; N_DIRTY_VALUE_WORDS],
+    /// Dirty bitset for matrix-slot topology (one bit per slot). Any
+    /// non-zero word triggers a whole-table `MatrixSnapshot` push on the
+    /// next tick. Slot bits cover both meta drift and the slot-9-16
+    /// depth side-table; slot 1-8 depth drift also rides
+    /// [`dirty_values`] (its CLAP id lives in [`OFF_MTX`]).
+    dirty_matrix: AtomicU64,
 }
 
 impl Default for SharedParams {
@@ -201,6 +250,11 @@ impl SharedParams {
                 let slot_idx = s + N_MATRIX_CLAP_SLOTS;
                 AtomicU32::new(default_matrix.slots[slot_idx].depth.to_bits())
             }),
+            // Full-broadcast seed: first tick after open pushes every id
+            // + a MatrixSnapshot, hydrating the editor with current
+            // state without a bespoke push from the caller.
+            dirty_values: std::array::from_fn(|w| AtomicU64::new(dirty_values_full_word(w))),
+            dirty_matrix: AtomicU64::new(DIRTY_MATRIX_ALL),
         }
     }
 
@@ -210,11 +264,16 @@ impl SharedParams {
     }
 
     /// Store `value` clamped to the descriptor's plain range.
+    ///
+    /// Flips the matching `dirty_values` bit with `fetch_or(Release)`
+    /// after the value store so the main-thread tick observes the
+    /// change on its next drain.
     #[inline]
     pub fn set(&self, id: usize, value: f32) {
         if id < TOTAL_PARAMS {
             let d = &PARAMS[id];
             self.values[id].store(d.clamp(value).to_bits(), Ordering::Relaxed);
+            self.dirty_values[id / 64].fetch_or(1u64 << (id % 64), Ordering::Release);
         }
     }
 
@@ -237,7 +296,9 @@ impl SharedParams {
     }
 
     /// Restore every slot to its illustrative default-patch value
-    /// (see [`crate::default_patch::default_param_values`]).
+    /// (see [`crate::default_patch::default_param_values`]). Triggers a
+    /// full Model → View re-broadcast on the next tick by flipping all
+    /// dirty bits.
     pub fn reset_to_defaults(&self) {
         let defaults = crate::default_patch::default_param_values();
         for i in 0..TOTAL_PARAMS {
@@ -262,6 +323,43 @@ impl SharedParams {
                 Ordering::Relaxed,
             );
         }
+        self.mark_all_dirty();
+    }
+
+    /// Set every valid dirty bit (values + matrix). Used by bulk-store
+    /// paths (`reset_to_defaults`, `load_bytes`) and the initial seed in
+    /// [`Self::new`] to force a full re-broadcast on the next tick.
+    /// Also exposed through `Vxn2Params::mark_all_dirty` so the page can
+    /// re-seed itself on demand (e.g. after late-binding primitives).
+    pub fn mark_all_dirty(&self) {
+        for w in 0..N_DIRTY_VALUE_WORDS {
+            self.dirty_values[w].fetch_or(dirty_values_full_word(w), Ordering::Release);
+        }
+        self.dirty_matrix.fetch_or(DIRTY_MATRIX_ALL, Ordering::Release);
+    }
+
+    // ── Dirty bitset drain ──────────────────────────────────────────────────
+
+    /// Drain the value dirty bitset, returning a snapshot of the bits
+    /// that were set since the last drain. Single-reader contract: only
+    /// the main-thread tick calls this; concurrent readers would race
+    /// each other on the per-word `swap`. Writers are unrestricted.
+    ///
+    /// `swap(Acquire)` pairs with each writer's `fetch_or(Release)` so
+    /// a subsequent `get(id)` for a popped bit sees the value the
+    /// writer stored before flipping the bit.
+    pub fn take_dirty_values(&self) -> [u64; N_DIRTY_VALUE_WORDS] {
+        let mut out = [0u64; N_DIRTY_VALUE_WORDS];
+        for w in 0..N_DIRTY_VALUE_WORDS {
+            out[w] = self.dirty_values[w].swap(0, Ordering::Acquire);
+        }
+        out
+    }
+
+    /// Drain the matrix dirty bitset. Same contract as
+    /// [`Self::take_dirty_values`]: single reader on the main thread.
+    pub fn take_dirty_matrix(&self) -> u64 {
+        self.dirty_matrix.swap(0, Ordering::Acquire)
     }
 
     // ── Gesture flags ───────────────────────────────────────────────────────
@@ -318,6 +416,11 @@ impl SharedParams {
     /// Write a matrix row. For slot indices `< N_MATRIX_CLAP_SLOTS`,
     /// `depth` also writes the matching CLAP param so host automation
     /// stays in sync.
+    ///
+    /// Flips the slot bit in `dirty_matrix` (whole-table snapshot
+    /// trigger). For slot 1-8 the inner `set()` also flips the matching
+    /// `dirty_values` bit so the depth fader follows automation through
+    /// the standard primitive bind.
     pub fn set_matrix_row_raw(&self, slot: usize, row: MatrixRowRaw) {
         if slot >= N_MATRIX_SLOTS {
             return;
@@ -330,6 +433,7 @@ impl SharedParams {
             self.matrix_extra_depth[slot - N_MATRIX_CLAP_SLOTS]
                 .store(row.depth.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
         }
+        self.dirty_matrix.fetch_or(1u64 << slot, Ordering::Release);
     }
 }
 
@@ -460,6 +564,15 @@ impl ParamModel for SharedParams {
                     bytes[off + 2],
                     bytes[off + 3],
                 ]);
+                // v2 → v3: rewrite the `dest` byte through the v2 enum map
+                // so old Ratio/Detune routes land on the new Pitch dest.
+                let packed = if version < 3 {
+                    let old_dest = ((packed >> 16) & 0xFF) as u8;
+                    let new_dest = crate::matrix::DestId::from_u8_v2(old_dest) as u8;
+                    (packed & 0xFF00_FFFF) | ((new_dest as u32) << 16)
+                } else {
+                    packed
+                };
                 self.matrix_meta[s].store(packed, Ordering::Relaxed);
                 off += 4;
             }
@@ -474,6 +587,11 @@ impl ParamModel for SharedParams {
                 off += 4;
             }
         }
+        // Bulk store bypassed `set` / `set_matrix_row_raw`; flip every
+        // dirty bit so the next main-thread tick re-broadcasts the full
+        // table (ADR 0003). State load no longer needs a bespoke push
+        // from the caller.
+        self.mark_all_dirty();
         Ok(())
     }
 }
@@ -552,6 +670,10 @@ impl vxn2_app::Vxn2Params for SharedParams {
                 depth: row.depth,
             },
         );
+    }
+
+    fn mark_all_dirty(&self) {
+        SharedParams::mark_all_dirty(self);
     }
 }
 
@@ -1040,7 +1162,7 @@ mod tests {
             9,
             MatrixRowRaw {
                 source: 5,    // ModWheel
-                dest: 27,     // Lfo2Rate
+                dest: 21,     // Lfo2Rate (v3 numbering)
                 curve: 0,
                 active: true,
                 depth: -0.6,
@@ -1060,9 +1182,74 @@ mod tests {
 
         let r9 = dst.matrix_row_raw(9);
         assert_eq!(r9.source, 5);
-        assert_eq!(r9.dest, 27);
+        assert_eq!(r9.dest, 21);
         assert!(r9.active);
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
+    }
+
+    /// A v2 blob's per-op Ratio (= old dest 1) and Detune (= old dest 3)
+    /// both map to the new per-op Pitch dest (= new dest 1) on load.
+    /// Global-tier dests shift down by 6 (drop the six Detune variants).
+    #[test]
+    fn load_bytes_migrates_v2_matrix_dests_to_v3() {
+        let src = SharedParams::new();
+        // Build a v3 blob, then rewrite the dest bytes back to the v2
+        // encoding so we can re-load it as v2 and verify the migration.
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: 4,
+                dest: crate::matrix::DestId::Op1Pitch as u8,
+                curve: 0,
+                active: true,
+                depth: 0.5,
+            },
+        );
+        src.set_matrix_row_raw(
+            1,
+            MatrixRowRaw {
+                source: 4,
+                dest: crate::matrix::DestId::Op2Pitch as u8,
+                curve: 0,
+                active: true,
+                depth: 0.25,
+            },
+        );
+        src.set_matrix_row_raw(
+            2,
+            MatrixRowRaw {
+                source: 5,
+                dest: crate::matrix::DestId::GlobalPitch as u8,
+                curve: 0,
+                active: true,
+                depth: 0.1,
+            },
+        );
+        let mut bytes = src.snapshot_bytes();
+        // Stomp version to v2.
+        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        // Rewrite dest bytes in the matrix trailer to v2 codes:
+        //   slot 0 → 3 (old Op1Detune) — both Ratio/Detune now collapse to Pitch
+        //   slot 1 → 5 (old Op2Ratio)
+        //   slot 2 → 25 (old GlobalPitch — shifts from 25 down to 19)
+        let trailer_off = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        // Each meta is 4 bytes; dest is at byte offset 1 (big-endian packing
+        // in u32 → little-endian on wire means byte index +1 from start).
+        // packed = source<<24 | dest<<16 | curve<<8 | active, stored LE →
+        // bytes: [active, curve, dest, source]. Dest at +2.
+        bytes[trailer_off + 0 * 4 + 2] = 3; // Op1Detune (v2)
+        bytes[trailer_off + 1 * 4 + 2] = 5; // Op2Ratio (v2)
+        bytes[trailer_off + 2 * 4 + 2] = 25; // GlobalPitch (v2)
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+
+        let r0 = dst.matrix_row_raw(0);
+        assert_eq!(r0.dest, crate::matrix::DestId::Op1Pitch as u8);
+        let r1 = dst.matrix_row_raw(1);
+        assert_eq!(r1.dest, crate::matrix::DestId::Op2Pitch as u8);
+        let r2 = dst.matrix_row_raw(2);
+        assert_eq!(r2.dest, crate::matrix::DestId::GlobalPitch as u8);
     }
 
     /// A v1 blob (no matrix trailer) still loads cleanly — older project
@@ -1086,6 +1273,153 @@ mod tests {
         let a = s.snapshot_bytes();
         let b = s.snapshot_bytes();
         assert_eq!(a, b);
+    }
+
+    // ── Dirty bitset (ADR 0003 / ticket 0055) ──────────────────────────────
+
+    fn drain_total(words: &[u64; N_DIRTY_VALUE_WORDS]) -> u32 {
+        words.iter().map(|w| w.count_ones()).sum()
+    }
+
+    /// Fresh `SharedParams` carries an all-ones seed (full re-broadcast
+    /// on the first tick). Matches the prior `last_seen = NaN` discipline.
+    #[test]
+    fn new_seeds_all_dirty_bits_for_full_broadcast() {
+        let s = SharedParams::new();
+        let values = s.take_dirty_values();
+        assert_eq!(drain_total(&values), TOTAL_PARAMS as u32);
+        // Last word only carries the in-range bits.
+        let last_word = values[N_DIRTY_VALUE_WORDS - 1];
+        let expected_last = dirty_values_full_word(N_DIRTY_VALUE_WORDS - 1);
+        assert_eq!(last_word, expected_last);
+        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL);
+    }
+
+    /// Writing one id sets exactly one value bit; other bits stay zero.
+    #[test]
+    fn set_flips_exactly_one_value_bit() {
+        let s = SharedParams::new();
+        // Drain the seed so we start from a clean bitset.
+        let _ = s.take_dirty_values();
+        let _ = s.take_dirty_matrix();
+
+        let id = id_of("master-volume").unwrap();
+        s.set(id, -3.0);
+        let bits = s.take_dirty_values();
+        assert_eq!(drain_total(&bits), 1);
+        assert_eq!(bits[id / 64], 1u64 << (id % 64));
+        // Matrix bitset untouched by a plain value write.
+        assert_eq!(s.take_dirty_matrix(), 0);
+    }
+
+    /// Out-of-range `set` does not flip any bit (preserves the original
+    /// short-circuit and avoids index-out-of-bounds in the bitset).
+    #[test]
+    fn set_out_of_range_flips_no_bit() {
+        let s = SharedParams::new();
+        let _ = s.take_dirty_values();
+        s.set(TOTAL_PARAMS + 5, 0.0);
+        let bits = s.take_dirty_values();
+        assert_eq!(drain_total(&bits), 0);
+    }
+
+    /// `set_normalised` routes through `set`, so the bit flips too.
+    #[test]
+    fn set_normalised_flips_value_bit() {
+        let s = SharedParams::new();
+        let _ = s.take_dirty_values();
+        let id = id_of("reverb-decay").unwrap();
+        s.set_normalised(id, 0.5);
+        let bits = s.take_dirty_values();
+        assert_eq!(drain_total(&bits), 1);
+        assert!(bits[id / 64] & (1u64 << (id % 64)) != 0);
+    }
+
+    /// Writing one matrix slot sets exactly one matrix bit; other slot
+    /// bits stay zero.
+    #[test]
+    fn set_matrix_row_raw_flips_exactly_one_matrix_bit_for_extra_slot() {
+        let s = SharedParams::new();
+        let _ = s.take_dirty_values();
+        let _ = s.take_dirty_matrix();
+        s.set_matrix_row_raw(
+            9,
+            MatrixRowRaw { source: 4, dest: 2, curve: 0, active: true, depth: 0.3 },
+        );
+        // Slot 9 lives past N_MATRIX_CLAP_SLOTS; depth doesn't touch a
+        // CLAP id, so the value bitset stays empty.
+        assert_eq!(drain_total(&s.take_dirty_values()), 0);
+        assert_eq!(s.take_dirty_matrix(), 1u64 << 9);
+    }
+
+    /// For a CLAP-automatable slot (1-8), `set_matrix_row_raw` flips
+    /// both the matrix slot bit AND the matching depth value bit so the
+    /// fader follows through the standard primitive bind.
+    #[test]
+    fn set_matrix_row_raw_clap_slot_flips_both_matrix_and_value_bits() {
+        let s = SharedParams::new();
+        let _ = s.take_dirty_values();
+        let _ = s.take_dirty_matrix();
+        s.set_matrix_row_raw(
+            0,
+            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.5 },
+        );
+        assert_eq!(s.take_dirty_matrix(), 1u64 << 0);
+        let bits = s.take_dirty_values();
+        assert_eq!(drain_total(&bits), 1);
+        let depth_id = OFF_MTX + 0;
+        assert!(bits[depth_id / 64] & (1u64 << (depth_id % 64)) != 0);
+    }
+
+    /// `take_dirty_*` clears the bits — a second drain with no
+    /// intervening writes returns all zeros.
+    #[test]
+    fn take_dirty_clears_the_bits() {
+        let s = SharedParams::new();
+        // First drain pops the all-ones seed.
+        let first_values = s.take_dirty_values();
+        assert!(drain_total(&first_values) > 0);
+        let first_matrix = s.take_dirty_matrix();
+        assert_ne!(first_matrix, 0);
+        // Second drain with no intervening writes — both bitsets empty.
+        let second_values = s.take_dirty_values();
+        assert_eq!(drain_total(&second_values), 0);
+        assert_eq!(s.take_dirty_matrix(), 0);
+    }
+
+    /// `load_bytes` round-trip leaves both bitsets non-zero — state
+    /// load is observable to the main-thread tick without any bespoke
+    /// push from the caller.
+    #[test]
+    fn load_bytes_marks_full_table_dirty() {
+        let src = SharedParams::new();
+        src.set(id_of("master-volume").unwrap(), -3.0);
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.42 },
+        );
+        let bytes = src.snapshot_bytes();
+
+        let dst = SharedParams::new();
+        let _ = dst.take_dirty_values();
+        let _ = dst.take_dirty_matrix();
+        dst.load_bytes(&bytes).unwrap();
+
+        let values = dst.take_dirty_values();
+        assert_eq!(drain_total(&values), TOTAL_PARAMS as u32);
+        assert_eq!(dst.take_dirty_matrix(), DIRTY_MATRIX_ALL);
+    }
+
+    /// `reset_to_defaults` flips every dirty bit so the next tick
+    /// re-broadcasts the full table.
+    #[test]
+    fn reset_to_defaults_marks_all_dirty() {
+        let s = SharedParams::new();
+        let _ = s.take_dirty_values();
+        let _ = s.take_dirty_matrix();
+        s.reset_to_defaults();
+        assert_eq!(drain_total(&s.take_dirty_values()), TOTAL_PARAMS as u32);
+        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL);
     }
 
     #[test]

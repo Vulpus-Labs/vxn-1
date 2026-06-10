@@ -25,7 +25,7 @@ use std::io::{Read, Write as _IoWrite};
 use std::ops::Bound;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use vxn2_app::{NoopPresetStore, tick_vxn2};
+use vxn2_app::{NoopPresetStore, matrix_snapshot_event, tick_vxn2};
 use vxn2_engine::engine::Engine;
 use vxn2_engine::params::id_of;
 use vxn2_engine::shared::SharedParams;
@@ -107,7 +107,6 @@ impl DefaultPluginFactory for VxnPlugin {
             gui: None,
             host: Some(host),
             timer: None,
-            last_seen: vec![f32::NAN; TOTAL_PARAMS],
         })
     }
 }
@@ -147,15 +146,6 @@ pub struct VxnMainThread<'a> {
     /// `None` when the GUI is closed or the host doesn't support
     /// `timer-support`.
     pub(crate) timer: Option<(HostTimer, TimerId)>,
-    /// Last param values seen by the diff pump (0031). Audio-thread
-    /// automation writes `SharedParams` directly without round-tripping
-    /// the controller, so the editor would otherwise never see it. On
-    /// each tick `push_param_diffs` (0031) compares current values
-    /// against this vector and pushes a `ParamChanged` for any drift.
-    /// Seeded all-`NaN` so the first tick after open broadcasts the
-    /// whole table.
-    #[allow(dead_code, reason = "Field wired by 0031.")]
-    pub(crate) last_seen: Vec<f32>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
@@ -173,65 +163,69 @@ impl<'a> VxnMainThread<'a> {
         }
     }
 
-    /// Diff the shared param store against `last_seen` and push a
-    /// `ParamChanged` for any drift. Catches audio-thread automation
-    /// the controller never saw (`LocalParams::publish` writes
-    /// `SharedParams` directly without routing through the controller).
+    /// Drain `SharedParams`' dirty bitsets and push the resulting view
+    /// events to the live editor handle. The bitset is the canonical
+    /// Model → View change channel (ADR 0003): every write site —
+    /// UI knob, host automation via `LocalParams::apply_input`, state
+    /// load, preset load — flips a bit; this tick pops them.
     ///
-    /// NaN-aware: `f32 == NaN` is always false, so the all-NaN seed in
-    /// `new_main_thread` forces a full-table broadcast on the first
-    /// tick after open. Gesture suppression: skip any id the page is
-    /// mid-drag on. Sync flips (`lfo1-sync`, `delay-sync`) re-emit
-    /// their rate partner's display in a second pass so the readout
-    /// switches from `"1/4"` to `"2.40 Hz"` (or vice versa) even
-    /// though the rate's plain value didn't change.
-    fn push_param_diffs(&mut self) {
+    /// The pump is source-agnostic and dumb: it pushes every drift. The
+    /// view's `bindGestureGated` helper (ticket 0060) drops echoes for
+    /// widgets the user is currently dragging. `SharedParams.gestures`
+    /// still drives plugin → host CLAP gesture brackets — different
+    /// direction, separate concern. Sync flips re-emit their rate
+    /// partner's display in a second pass.
+    fn push_model_diffs(&mut self) {
         let Some(handle) = self.gui.as_ref() else {
             return;
         };
-        for ev in collect_param_diffs(&self.shared.params, &mut self.last_seen) {
+        for ev in drain_dirty_bits(&self.shared.params) {
             handle.push_view_event(ev);
         }
     }
 }
 
-/// Diff `params` against `last_seen` and return the `ParamChanged`
-/// events that the editor handle should receive this tick. Mutates
-/// `last_seen` in place. Pulled out of [`VxnMainThread::push_param_diffs`]
-/// so it can be unit-tested without a live WebView.
-fn collect_param_diffs(params: &SharedParams, last_seen: &mut [f32]) -> Vec<ViewEvent> {
-    let n = TOTAL_PARAMS.min(last_seen.len());
+/// Drain the dirty bitsets on `params` and return the view events the
+/// editor handle should receive this tick (ADR 0003). One
+/// `ParamChanged` per popped value bit, one `MatrixSnapshot` if any
+/// matrix bit was set. The pump is source-agnostic — mid-gesture
+/// suppression lives in the view's `bindGestureGated` helper (ticket
+/// 0060). Sync flips re-emit their rate partner's display.
+fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     let mut out: Vec<ViewEvent> = Vec::new();
-    let mut emitted = vec![false; n];
+    let value_bits = params.take_dirty_values();
+    let mut emitted = vec![false; TOTAL_PARAMS];
     let mut force_rate_refresh: Vec<usize> = Vec::new();
-    for i in 0..n {
-        let plain = params.get(i);
-        if plain == last_seen[i] {
-            continue;
-        }
-        last_seen[i] = plain;
-        if params.gesture(i) {
-            continue;
-        }
-        let norm = params.get_normalised(i);
-        let display = sync_aware_display(params, i, plain);
-        out.push(ViewEvent::ParamChanged {
-            id: ParamId::new(i),
-            plain,
-            norm,
-            display,
-        });
-        emitted[i] = true;
-        if let Some(rate_id) = rate_partner_clap_id(i) {
-            force_rate_refresh.push(rate_id);
+    for (w, mut bits) in value_bits.iter().copied().enumerate() {
+        while bits != 0 {
+            let b = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let id = w * 64 + b;
+            if id >= TOTAL_PARAMS {
+                continue;
+            }
+            let plain = params.get(id);
+            let norm = params.get_normalised(id);
+            let display = sync_aware_display(params, id, plain);
+            out.push(ViewEvent::ParamChanged {
+                id: ParamId::new(id),
+                plain,
+                norm,
+                display,
+            });
+            emitted[id] = true;
+            if let Some(rate_id) = rate_partner_clap_id(id) {
+                force_rate_refresh.push(rate_id);
+            }
         }
     }
     // Refresh sync-partner rate displays only when the partner wasn't
     // already emitted in the main pass — both the rate and its sync
-    // toggle can drift in the same tick (notably on the NaN-seed first
-    // tick), and we don't want a duplicate ParamChanged for the rate.
+    // toggle can drift in the same tick (notably on the all-ones seed
+    // first tick), and we don't want a duplicate ParamChanged for the
+    // rate.
     for rate_id in force_rate_refresh {
-        if rate_id >= n || emitted[rate_id] || params.gesture(rate_id) {
+        if rate_id >= TOTAL_PARAMS || emitted[rate_id] {
             continue;
         }
         let plain = params.get(rate_id);
@@ -244,6 +238,12 @@ fn collect_param_diffs(params: &SharedParams, last_seen: &mut [f32]) -> Vec<View
             display,
         });
         emitted[rate_id] = true;
+    }
+    // Whole-table matrix snapshot when any slot bit was set. 16 rows
+    // serialises cheaper than 16 row events and the view-side renderer
+    // already collapses to one path.
+    if params.take_dirty_matrix() != 0 {
+        out.push(matrix_snapshot_event(params));
     }
     out
 }
@@ -329,9 +329,11 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
             tick_vxn2(&mut ctrl);
         }
         self.drain_view_events();
-        // Catch any audio-thread automation the controller never saw.
-        // Body in 0031; call site here so the tick shape is final.
-        self.push_param_diffs();
+        // Drain SharedParams' dirty bitsets — the canonical Model → View
+        // change channel (ADR 0003 / E005). Catches audio-thread
+        // automation, host state load, preset load, and any UI write
+        // that landed since the last tick under one discipline.
+        self.push_model_diffs();
         // One `evaluate_script` per tick. Both pushes above only
         // buffered into the EditorHandle; this is the single bridge
         // call.
@@ -412,12 +414,13 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // coexist inside the batch loop.
         let engine = &mut self.engine;
         let local = &mut self.local;
+        let shared = &self.shared.params;
         let l = &mut self.scratch_l[..frames];
         let r = &mut self.scratch_r[..frames];
 
         for event_batch in events.input.batch() {
             for event in event_batch.events() {
-                dispatch_event(engine, local, event);
+                dispatch_event(engine, local, shared, event);
             }
             let (start, end) = batch_range(event_batch.sample_bounds(), frames);
             if start < end {
@@ -439,9 +442,10 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             }
         }
 
-        // Echo host automation back to the shared store + emit any UI edits
-        // (no-op for E002; the path stays so 0014's emit stub keeps shape).
-        self.local.publish(&self.shared.params);
+        // Host automation already wrote through to the shared store inside
+        // `dispatch_event` (one shared store + dirty-bit flip per event —
+        // see [`LocalParams::apply_input`] / ADR 0003). Emit any UI edits
+        // back to the host as ParamValue events.
         self.local
             .emit(&self.shared.params, events.output, frames as u32);
 
@@ -474,9 +478,15 @@ fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usize, u
 }
 
 /// Per-event dispatch: notes go straight to the engine, param-value events
-/// fold into the local mirror (the engine reads from the mirror at the next
-/// `write_to` boundary), raw MIDI feeds bend / mod-wheel / aftertouch.
-fn dispatch_event(engine: &mut Engine, local: &mut LocalParams, event: &UnknownEvent) {
+/// fold into the local mirror AND write through to the shared store (so the
+/// dirty bitset catches host automation), raw MIDI feeds bend / mod-wheel /
+/// aftertouch.
+fn dispatch_event(
+    engine: &mut Engine,
+    local: &mut LocalParams,
+    shared: &SharedParams,
+    event: &UnknownEvent,
+) {
     match event.as_core_event() {
         Some(CoreEventSpace::NoteOn(e)) => {
             if let Match::Specific(key) = e.key() {
@@ -490,12 +500,12 @@ fn dispatch_event(engine: &mut Engine, local: &mut LocalParams, event: &UnknownE
             }
         }
         Some(CoreEventSpace::ParamValue(_)) => {
-            // Mirror-only: the engine re-snapshots from `LocalParams` at the
-            // top of the next block (and at every block boundary), so per-
-            // event engine writes are redundant. Sub-block accuracy at event
-            // boundaries lands with the UI epic when `Engine::set_param`
-            // (per-id) is exposed.
-            let _ = local.apply_input(event);
+            // Mirror + shared store: the engine re-snapshots from `LocalParams`
+            // at the top of the next block, and the shared write flips a
+            // dirty bit the main-thread tick will drain into a ParamChanged.
+            // Sub-block accuracy at event boundaries lands with the UI epic
+            // when `Engine::set_param` (per-id) is exposed.
+            let _ = local.apply_input(shared, event);
         }
         Some(CoreEventSpace::Midi(e)) => {
             let [status, d1, d2] = e.data();
@@ -657,13 +667,12 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
         // No render happens during `flush`; VXN2's engine refreshes from
         // `LocalParams` at the top of each `process()` (ticket 0016), so a
         // per-event engine setter (the VXN1 `synth.set_param` pattern) would
-        // be redundant here. Fold into the mirror, then republish flagged
-        // slots to the shared store so the host's next `get_value` poll
-        // reflects the automation it just sent.
+        // be redundant here. `apply_input` writes through to the shared
+        // store (ADR 0003), so the host's next `get_value` poll reflects
+        // the automation without a separate publish pass.
         for event in input {
-            let _ = self.local.apply_input(event);
+            let _ = self.local.apply_input(&self.shared.params, event);
         }
-        self.local.publish(&self.shared.params);
     }
 }
 
@@ -683,7 +692,11 @@ impl PluginStateImpl for VxnMainThread<'_> {
             .read_to_end(&mut blob)
             .map_err(|_| PluginError::Message("state read failed"))?;
         ParamModel::load_bytes(&*self.shared.params, &blob)
-            .map_err(|_| PluginError::Message("state read failed"))
+            .map_err(|_| PluginError::Message("state read failed"))?;
+        // `load_bytes` flips every dirty bit (values + matrix) so the
+        // main-thread tick pumps a full re-broadcast — no bespoke push
+        // from this site (ADR 0003 / E005).
+        Ok(())
     }
 }
 
@@ -713,7 +726,6 @@ mod tests {
             gui: None,
             host: None,
             timer: None,
-            last_seen: vec![f32::NAN; TOTAL_PARAMS],
         }
     }
 
@@ -863,7 +875,7 @@ mod tests {
         let mut b = buf;
         b.push(&NoteOnEvent::new(0, pckn_for(60), 0.78));
         let evt = b.iter().next().unwrap();
-        dispatch_event(&mut audio.engine, &mut audio.local, evt);
+        dispatch_event(&mut audio.engine, &mut audio.local, &shared.params, evt);
         let any_gated = audio.engine.alloc.stacks.iter().any(|s| s.gate);
         assert!(any_gated, "note-on did not gate a stack");
     }
@@ -878,6 +890,7 @@ mod tests {
         dispatch_event(
             &mut audio.engine,
             &mut audio.local,
+            &shared.params,
             b.iter().next().unwrap(),
         );
         // Stack stays in release tail but gate clears.
@@ -897,6 +910,7 @@ mod tests {
         dispatch_event(
             &mut audio.engine,
             &mut audio.local,
+            &shared.params,
             b.iter().next().unwrap(),
         );
         assert!((audio.engine.alloc.bend() - 1.0).abs() < 1e-3);
@@ -910,14 +924,14 @@ mod tests {
         b.push(&MidiEvent::new(0, 0, [0xB0, 1, 64])); // CC1 = 64
         b.push(&MidiEvent::new(0, 0, [0xD0, 32, 0])); // aftertouch = 32
         for evt in b.iter() {
-            dispatch_event(&mut audio.engine, &mut audio.local, evt);
+            dispatch_event(&mut audio.engine, &mut audio.local, &shared.params, evt);
         }
         assert!((audio.engine.mod_wheel - 64.0 / 127.0).abs() < 1e-6);
         assert!((audio.engine.aftertouch - 32.0 / 127.0).abs() < 1e-6);
     }
 
     #[test]
-    fn dispatch_param_value_lands_in_mirror() {
+    fn dispatch_param_value_lands_in_mirror_and_shared() {
         let shared = mk_shared();
         let mut audio = mk_audio(&shared);
         let decay = id_of("reverb-decay").unwrap();
@@ -932,9 +946,13 @@ mod tests {
         dispatch_event(
             &mut audio.engine,
             &mut audio.local,
+            &shared.params,
             b.iter().next().unwrap(),
         );
         assert!((audio.local.get(decay) - 7.5).abs() < 1e-5);
+        // `apply_input` writes through to the shared store — no separate
+        // publish pass is needed.
+        assert!((shared.params.get(decay) - 7.5).abs() < 1e-5);
     }
 
     // ── process loop end-to-end ────────────────────────────────────────────
@@ -1143,7 +1161,7 @@ mod tests {
         }
     }
 
-    // ── push_param_diffs (0031) ────────────────────────────────────────────
+    // ── drain_dirty_bits (E005 / ADR 0003) ────────────────────────────────
 
     fn changed_ids(evs: &[ViewEvent]) -> Vec<usize> {
         evs.iter()
@@ -1161,31 +1179,57 @@ mod tests {
         })
     }
 
-    /// First tick after open: every id changes against an all-NaN seed, so
-    /// the diff pump broadcasts the full table.
-    #[test]
-    fn diffs_nan_seed_broadcasts_every_id_on_first_tick() {
-        let shared = mk_shared();
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        let evs = collect_param_diffs(&shared.params, &mut seen);
-        assert_eq!(evs.len(), TOTAL_PARAMS);
-        // Second call against the now-seeded vector: no drift, no events.
-        let evs = collect_param_diffs(&shared.params, &mut seen);
-        assert!(evs.is_empty(), "expected no diffs after seed: {evs:?}");
+    fn matrix_snapshot_count(evs: &[ViewEvent]) -> usize {
+        evs.iter()
+            .filter(|e| match e {
+                ViewEvent::Custom(b) => matches!(
+                    b.downcast_ref::<vxn2_app::Vxn2ViewCustom>(),
+                    Some(vxn2_app::Vxn2ViewCustom::MatrixSnapshot { .. })
+                ),
+                _ => false,
+            })
+            .count()
     }
 
-    /// A single audio-thread write surfaces as exactly one ParamChanged.
+    fn assert_drains_just(params: &SharedParams, expected: &[usize]) {
+        let evs = drain_dirty_bits(params);
+        let mut got = changed_ids(&evs);
+        let mut want = expected.to_vec();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "drain ids mismatch");
+    }
+
+    /// First tick after open: dirty bitset is seeded all-ones, so the
+    /// pump broadcasts the full table (every CLAP id) plus one matrix
+    /// snapshot. Parallels the all-NaN `last_seen` seed of the prior
+    /// polling pump.
     #[test]
-    fn diffs_single_change_emits_one_event() {
+    fn drain_full_broadcast_on_fresh_shared_params() {
         let shared = mk_shared();
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        // Prime `last_seen` to the current store so subsequent diffs only
-        // see deltas we make below.
-        let _ = collect_param_diffs(&shared.params, &mut seen);
+        let evs = drain_dirty_bits(&shared.params);
+        let ids = changed_ids(&evs);
+        assert_eq!(ids.len(), TOTAL_PARAMS, "expected full-table broadcast");
+        assert_eq!(matrix_snapshot_count(&evs), 1);
+        // Second drain with no intervening writes: empty.
+        let evs = drain_dirty_bits(&shared.params);
+        assert!(evs.is_empty(), "expected no events after seed drain: {evs:?}");
+    }
+
+    /// A single audio-thread write surfaces as exactly one
+    /// `ParamChanged`. Coalescing semantics: writing the same id five
+    /// times between drains still emits one event carrying the latest
+    /// value.
+    #[test]
+    fn drain_single_change_emits_one_event_coalescing() {
+        let shared = mk_shared();
+        let _ = drain_dirty_bits(&shared.params); // pop the seed
 
         let decay = id_of("reverb-decay").unwrap();
-        shared.params.set(decay, 7.5);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
+        for v in [1.0_f32, 2.0, 3.0, 4.0, 7.5] {
+            shared.params.set(decay, v);
+        }
+        let evs = drain_dirty_bits(&shared.params);
         assert_eq!(changed_ids(&evs), vec![decay]);
         match &evs[0] {
             ViewEvent::ParamChanged { plain, display, .. } => {
@@ -1196,65 +1240,74 @@ mod tests {
         }
     }
 
-    /// Mid-gesture params take the audio-thread write into `last_seen` but
-    /// do not echo back — the page is the source of truth during a drag.
+    /// Writing a matrix slot meta returns one `MatrixSnapshot`, not 16
+    /// individual row events. (Slot 9 → extra-depth table only, so no
+    /// CLAP `mtxN-depth` bit fires.)
     #[test]
-    fn diffs_skip_ids_under_gesture() {
+    fn drain_matrix_write_emits_one_snapshot() {
         let shared = mk_shared();
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        let _ = collect_param_diffs(&shared.params, &mut seen);
+        let _ = drain_dirty_bits(&shared.params); // pop the seed
+
+        shared.params.set_matrix_row_raw(
+            9,
+            vxn2_engine::MatrixRowRaw {
+                source: 4, dest: 2, curve: 0, active: true, depth: 0.3,
+            },
+        );
+        let evs = drain_dirty_bits(&shared.params);
+        assert_eq!(matrix_snapshot_count(&evs), 1);
+        assert_drains_just(&shared.params, &[]); // already drained
+    }
+
+    /// Per ADR 0003 / ticket 0060 the pump is source-agnostic and does
+    /// NOT consult `SharedParams.gestures` — mid-drag suppression lives
+    /// in the view's `bindGestureGated` helper. Writes under gesture
+    /// flow through the drain like any other write.
+    #[test]
+    fn drain_emits_ids_under_gesture_pump_is_source_agnostic() {
+        let shared = mk_shared();
+        let _ = drain_dirty_bits(&shared.params);
 
         let decay = id_of("reverb-decay").unwrap();
         shared.params.set_gesture(decay, true);
         shared.params.set(decay, 7.5);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
-        assert!(changed_for(&evs, decay).is_none(), "gesture not skipped");
-        // `last_seen` still advanced, so when the gesture clears with no
-        // further audio-thread drift no spurious event fires.
-        shared.params.set_gesture(decay, false);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
-        assert!(evs.is_empty(), "expected no diffs after gesture clear");
+        let evs = drain_dirty_bits(&shared.params);
+        let r = changed_for(&evs, decay).expect("pump should emit even under gesture");
+        match r {
+            ViewEvent::ParamChanged { plain, .. } => {
+                assert!((*plain - 7.5).abs() < 1e-5);
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
     }
 
     /// Flipping `lfo1-sync` re-emits `lfo1-rate` in the same tick even
     /// though the rate's plain value didn't change — the display label
     /// switches from Hz to a subdivision.
     #[test]
-    fn diffs_lfo1_sync_flip_refreshes_rate_partner() {
+    fn drain_lfo1_sync_flip_refreshes_rate_partner() {
         let shared = mk_shared();
         let rate = id_of("lfo1-rate").unwrap();
         let sync = id_of("lfo1-sync").unwrap();
-        // Default LFO1 sync is off; rate display is `"2.40 Hz"`.
         shared.params.set(sync, 0.0);
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        let _ = collect_param_diffs(&shared.params, &mut seen);
+        let _ = drain_dirty_bits(&shared.params);
 
-        // Flip sync on without touching the rate.
         shared.params.set(sync, 1.0);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let evs = drain_dirty_bits(&shared.params);
         let ids = changed_ids(&evs);
-        assert!(ids.contains(&sync), "sync flag missing from diffs: {ids:?}");
-        assert!(ids.contains(&rate), "rate partner missing from diffs: {ids:?}");
+        assert!(ids.contains(&sync), "sync flag missing from drain: {ids:?}");
+        assert!(ids.contains(&rate), "rate partner missing from drain: {ids:?}");
 
         match changed_for(&evs, rate).unwrap() {
             ViewEvent::ParamChanged { display, .. } => {
-                // Any subdivision label from the table — `/` is the
-                // distinguishing character (`1/4`, `1/8.`, etc.).
-                assert!(
-                    display.contains('/'),
-                    "expected subdivision label, got {display:?}"
-                );
-                assert!(
-                    !display.contains("Hz"),
-                    "expected synced label, got Hz: {display:?}"
-                );
+                assert!(display.contains('/'), "expected subdivision, got {display:?}");
+                assert!(!display.contains("Hz"), "expected synced label, got {display:?}");
             }
             other => panic!("unexpected event {other:?}"),
         }
 
-        // Flip back off: rate refreshes to the Hz form.
         shared.params.set(sync, 0.0);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let evs = drain_dirty_bits(&shared.params);
         let r = changed_for(&evs, rate).expect("rate re-emit on sync off");
         match r {
             ViewEvent::ParamChanged { display, .. } => {
@@ -1266,16 +1319,15 @@ mod tests {
 
     /// Same pattern for the delay's sync flag.
     #[test]
-    fn diffs_delay_sync_flip_refreshes_time_partner() {
+    fn drain_delay_sync_flip_refreshes_time_partner() {
         let shared = mk_shared();
         let time = id_of("delay-time").unwrap();
         let sync = id_of("delay-sync").unwrap();
         shared.params.set(sync, 0.0);
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        let _ = collect_param_diffs(&shared.params, &mut seen);
+        let _ = drain_dirty_bits(&shared.params);
 
         shared.params.set(sync, 1.0);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let evs = drain_dirty_bits(&shared.params);
         let r = changed_for(&evs, time).expect("time partner re-emitted");
         match r {
             ViewEvent::ParamChanged { display, .. } => {
@@ -1289,16 +1341,15 @@ mod tests {
     /// the rate fader so its display switches between Hz and a subdivision
     /// label.
     #[test]
-    fn diffs_lfo2_sync_flip_refreshes_rate_partner() {
+    fn drain_lfo2_sync_flip_refreshes_rate_partner() {
         let shared = mk_shared();
         let rate = id_of("lfo2-rate").unwrap();
         let sync = id_of("lfo2-sync").unwrap();
         shared.params.set(sync, 0.0);
-        let mut seen = vec![f32::NAN; TOTAL_PARAMS];
-        let _ = collect_param_diffs(&shared.params, &mut seen);
+        let _ = drain_dirty_bits(&shared.params);
 
         shared.params.set(sync, 1.0);
-        let evs = collect_param_diffs(&shared.params, &mut seen);
+        let evs = drain_dirty_bits(&shared.params);
         let r = changed_for(&evs, rate).expect("rate partner missing");
         match r {
             ViewEvent::ParamChanged { display, .. } => {
@@ -1330,17 +1381,19 @@ mod tests {
         assert!(s.contains("dB"), "got {s:?}");
     }
 
-    /// Diff pump is no-op when the GUI is closed (`gui = None`), even
-    /// across audio-thread writes. The first open broadcasts the table.
+    /// Diff pump is no-op when the GUI is closed (`gui = None`). The
+    /// dirty bits stay set, so the next open's first tick broadcasts the
+    /// full table (the all-ones seed semantics carry over).
     #[test]
-    fn push_param_diffs_noop_when_gui_closed() {
+    fn push_model_diffs_noop_when_gui_closed() {
         let shared = mk_shared();
         let mut main = mk_main(&shared);
         shared.params.set(id_of("reverb-decay").unwrap(), 7.5);
         // No panic, no mutation, no allocation we can observe.
-        main.push_param_diffs();
+        main.push_model_diffs();
         assert!(main.gui.is_none());
-        // `last_seen` is untouched: a later open still broadcasts on first tick.
-        assert!(main.last_seen.iter().all(|x| x.is_nan()));
+        // Dirty bits still present — next open's first tick will broadcast.
+        let bits = shared.params.take_dirty_values();
+        assert!(bits.iter().any(|w| *w != 0), "expected dirty bits to survive");
     }
 }

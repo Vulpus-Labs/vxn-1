@@ -22,7 +22,10 @@ pub mod controller;
 pub mod events;
 pub mod model;
 
-pub use controller::{NoopPresetStore, tick_vxn2};
+pub use controller::{
+    NoopPresetStore, matrix_snapshot_event, matrix_snapshot_rows, push_matrix_snapshot,
+    tick_vxn2,
+};
 pub use events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
 pub use model::Vxn2Params;
 

@@ -155,21 +155,66 @@
   // so newly-registered primitives (e.g. after an op-tab switch rebuilds
   // op-detail DOM) can hydrate to the current value instead of `default`.
   // Pre-seeded from `vxn.defaultPatch` (the engine's `default_patch`
-  // table). In the running plugin the engine's NaN-diff snapshot at boot
-  // overwrites these with authoritative values; in the offline HTML dump
-  // the seed is the only source of per-op variation.
+  // table). In the running plugin the engine's all-ones dirty-bitset
+  // broadcast at boot overwrites these with authoritative values; in the
+  // offline HTML dump the seed is the only source of per-op variation.
   const livePlain = Object.create(null);
   if (vxn.defaultPatch && vxn.defaultPatch.length) {
     for (let i = 0; i < vxn.defaultPatch.length; i++) {
       livePlain[i] = vxn.defaultPatch[i];
     }
   }
-  function register(id, primitive) {
+
+  // ── Mid-drag suppression (ADR 0003 / ticket 0060) ──
+  // The dirty-bitset pump is dumb: it pushes every drift. The view
+  // filters per-widget. While the user is focused on / dragging a
+  // primitive, drop the incoming `set` — the page is the source of
+  // truth for that widget until the gesture releases.
+  //
+  // `bindGestureGated(gateEl, setFn)` wraps `setFn` so it's dropped
+  // when either:
+  //   - `document.activeElement === gateEl` (focused range input,
+  //     <input>, <select>, etc.), OR
+  //   - `gateEl.dataset.dragging === "1"` (pointer-drag widgets that
+  //     don't take focus — fader, knob).
+  // Widgets in the second class flip the dataset flag on their own
+  // pointerdown / pointerup handlers.
+  function bindGestureGated(gateEl, setFn) {
+    if (!gateEl || typeof setFn !== "function") return setFn;
+    return function (plain, norm, display) {
+      if (document.activeElement === gateEl) return;
+      if (gateEl.dataset && gateEl.dataset.dragging === "1") return;
+      return setFn(plain, norm, display);
+    };
+  }
+  vxn.bindGestureGated = bindGestureGated;
+
+  function register(id, primitive, gateEl) {
     if (id < 0 || !primitive) return;
+    let entry = primitive;
+    if (gateEl && typeof primitive.set === "function") {
+      // Wrap once at registration time so every drain-pump update for
+      // this id is gated by the same predicate. Preserves any other
+      // methods on the primitive (e.g. `setRate` on the pitch-EG
+      // graph) by copying own keys onto a surrogate.
+      const inner = primitive.set.bind(primitive);
+      const wrapped = bindGestureGated(gateEl, inner);
+      const ownKeys = Object.keys(primitive);
+      const surrogate = {};
+      for (let i = 0; i < ownKeys.length; i++) {
+        const k = ownKeys[i];
+        surrogate[k] = primitive[k];
+      }
+      surrogate.set = wrapped;
+      // `_original` lets `unregister(id, primitive)` find the surrogate
+      // even when the caller only holds the pre-wrap reference.
+      surrogate._original = primitive;
+      entry = surrogate;
+    }
     if (!boundById[id]) boundById[id] = [];
-    boundById[id].push(primitive);
+    boundById[id].push(entry);
     if (id in livePlain) {
-      try { primitive.set(livePlain[id]); }
+      try { entry.set(livePlain[id]); }
       catch (e) { console.error("vxn2 hydrate set() failed", e); }
     }
   }
@@ -177,8 +222,13 @@
     if (id < 0 || !primitive) return;
     const list = boundById[id];
     if (!list) return;
-    const i = list.indexOf(primitive);
-    if (i >= 0) list.splice(i, 1);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const entry = list[i];
+      if (entry === primitive || entry._original === primitive) {
+        list.splice(i, 1);
+        break;
+      }
+    }
     if (list.length === 0) delete boundById[id];
   }
 
@@ -225,7 +275,7 @@
       const ctx = makeCtx(name);
       if (!ctx.desc) continue;
       const prim = panels.fader.create(el, ctx);
-      register(ctx.id, prim);
+      register(ctx.id, prim, el);
     }
   }
 
@@ -237,7 +287,7 @@
       const ctx = makeCtx(name);
       if (!ctx.desc) continue;
       const prim = panels.knob.create(el, ctx);
-      register(ctx.id, prim);
+      register(ctx.id, prim, el);
     }
   }
 
@@ -249,7 +299,7 @@
       const ctx = makeCtx(name);
       if (!ctx.desc) continue;
       const prim = panels.buttonGroup.createRow(el, ctx);
-      register(ctx.id, prim);
+      register(ctx.id, prim, el);
     }
   }
 
@@ -261,7 +311,7 @@
       const ctx = makeCtx(name);
       if (!ctx.desc) continue;
       const prim = panels.buttonGroup.createBoolToggle(el, ctx);
-      register(ctx.id, prim);
+      register(ctx.id, prim, el);
     }
   }
 
@@ -273,7 +323,7 @@
       const ctx = makeCtx(name);
       if (!ctx.desc) continue;
       const prim = panels.buttonGroup.createToggleHeader(el, ctx);
-      register(ctx.id, prim);
+      register(ctx.id, prim, el);
     }
   }
 
@@ -298,8 +348,16 @@
     const parent = svg.closest(".graph") || svg.parentNode;
     const prim = panels.graph.create(parent, graphCtx);
     for (let i = 0; i < 4; i++) {
-      register(rateIds[i], { set: (function (idx) { return function (plain) { prim.setRate(idx, plain); }; })(i) });
-      register(levelIds[i], { set: (function (idx) { return function (plain) { prim.setLevel(idx, plain); }; })(i) });
+      register(
+        rateIds[i],
+        { set: (function (idx) { return function (plain) { prim.setRate(idx, plain); }; })(i) },
+        parent,
+      );
+      register(
+        levelIds[i],
+        { set: (function (idx) { return function (plain) { prim.setLevel(idx, plain); }; })(i) },
+        parent,
+      );
     }
   }
 
@@ -346,6 +404,10 @@
         if (key === "open_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
           if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }
+          // Pull a fresh snapshot — host state restore / CLAP automation
+          // can move matrix rows out from under the page's local cache
+          // between opens. Keeps the overlay display in lockstep.
+          dispatch("request_matrix_snapshot");
           return;
         }
         if (key === "close_mod_matrix") {
@@ -511,8 +573,12 @@
     }
 
     dispatch("ready");
-    // Seed the mod-matrix overlay with the initial 16 × 2 row state.
-    dispatch("request_matrix_snapshot");
+    // Ask the engine to flip every dirty bit so the next main-thread
+    // tick re-broadcasts the full param table + a fresh MatrixSnapshot.
+    // The page binds primitives before this point, so the broadcast
+    // populates every fader + the mod-matrix overlay without depending
+    // on the initial SharedParams::new seed surviving until after bind.
+    dispatch("request_full_rebroadcast");
   }
 
   if (document.readyState === "loading") {

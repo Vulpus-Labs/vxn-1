@@ -73,14 +73,14 @@ fn full_table() -> MatrixTable {
         SourceId::ModWheel,
     ];
     let dests = [
-        DestId::Op1Ratio,
+        DestId::Op1Pitch,
         DestId::Op1Level,
-        DestId::Op2Ratio,
-        DestId::Op2Detune,
+        DestId::Op2Pitch,
+        DestId::Op2Level,
         DestId::Op3Pan,
         DestId::Op4Pan,
         DestId::Op5Level,
-        DestId::Op6Ratio,
+        DestId::Op6Pitch,
         DestId::GlobalPitch,
         DestId::Lfo1Rate,
         DestId::Lfo2Rate,

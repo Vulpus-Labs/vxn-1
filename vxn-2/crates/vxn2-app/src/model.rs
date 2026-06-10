@@ -21,4 +21,10 @@ pub trait Vxn2Params: ParamModel {
 
     /// Write a single matrix row. Out-of-range slots silently no-op.
     fn set_matrix_row(&self, slot: u8, row: MatrixRow);
+
+    /// Force every dirty bit on the Model. The next main-thread tick's
+    /// drain will re-broadcast the full table (every `ParamChanged` +
+    /// one `MatrixSnapshot`). Used by the page on boot to re-seed itself
+    /// after late-binding primitives miss the initial broadcast.
+    fn mark_all_dirty(&self);
 }

@@ -1,15 +1,22 @@
-// Mod-matrix overlay panel (ticket 0028).
+// Mod-matrix overlay panel (ticket 0028; depth-dispatch collapsed
+// by ticket 0059 / ADR 0003).
 //
 // Renders 16 rows × {source, dest, depth, curve, active} into the
 // [data-vxn-section="mm-overlay-list"] container, wires each row's
 // field changes back to the controller, and re-renders rows in
-// response to matrix_row_changed / matrix_snapshot.
+// response to matrix_snapshot (pushed by the dirty-bitset pump on the
+// next tick).
 //
-// Depth seam: slots 1-8 are CLAP-automatable. Their depth widget
-// dispatches BOTH `set_matrix_row` (the topology+depth source of
-// truth for the page) AND `set_param { id: <…mtxN-depth> }` so host
-// automation reads the same value. Slots 9-16 only fire
-// `set_matrix_row`. PARAMETERS.md §"CLAP exposure" / ticket 0028 AC.
+// Depth seam (one opcode per slot range, never both — ADR 0003):
+//   - Slots 1-8 depth-only edit  → `set_param { id: mtxN-depth }`
+//     The CLAP id exists, host automation rides this path, and
+//     `set_matrix_row_raw` on the engine side mirrors depth into the
+//     CLAP `values[OFF_MTX + slot]` anyway.
+//   - Slots 9-16 depth-only edit → `set_matrix_row { row }`
+//     No CLAP id; depth lives in the engine's `matrix_extra_depth`.
+//   - Topology edit (source, dest, curve, active) on any slot →
+//     `set_matrix_row { row }` with depth riding inside `row`.
+// PARAMETERS.md §"CLAP exposure" / E005.
 
 (function () {
   var SLOT_COUNT = 16;
@@ -97,15 +104,33 @@
         depth: partial.depth != null ? partial.depth : current.depth,
       };
       // Local optimistic update so the UI doesn't flash before the
-      // controller echoes back.
+      // pump's next-tick MatrixSnapshot lands.
       window.__vxn.matrix.rows[slot] = next;
-      window.__vxn.dispatch("set_matrix_row", { slot: slot, row: next });
-      // CLAP depth side-path (slot 1-8 only). Plain value in the
-      // descriptor's [min, max] = [-1, 1].
+
+      var topologyChanged = partial.source != null
+        || partial.dest != null
+        || partial.curve != null
+        || partial.active != null;
+
+      if (topologyChanged) {
+        // Any topology field carries the whole row (depth included).
+        // For slot 1-8 the engine mirrors depth into the CLAP
+        // values[OFF_MTX + slot] inside set_matrix_row_raw, so we don't
+        // need a chaser set_param. (See ADR 0003 §"Removed".)
+        window.__vxn.dispatch("set_matrix_row", { slot: slot, row: next });
+        return;
+      }
+
+      // Depth-only edit: pick the path that matches the slot range.
       if (partial.depth != null) {
         var clapId = depthClapId(slot);
         if (clapId != null) {
+          // Slot 1-8: ride the CLAP id so host automation + gesture
+          // brackets + the per-id dirty bit all flow through one path.
           window.__vxn.dispatch("set_param", { id: clapId, plain: next.depth });
+        } else {
+          // Slot 9-16: no CLAP id — write through the custom opcode.
+          window.__vxn.dispatch("set_matrix_row", { slot: slot, row: next });
         }
       }
     }
@@ -257,6 +282,14 @@
         paintRow(slot, row);
       },
     };
+
+    // Expose api on the panel singleton so main.js applyEvent's
+    // `panels.modMatrix.onSnapshot` / `onRowChanged` lookups resolve.
+    // Without this the matrix_snapshot handler silently no-ops and the
+    // overlay stays at the boot-time empty render.
+    window.__vxn.panels.modMatrix.onSnapshot = api.onSnapshot;
+    window.__vxn.panels.modMatrix.onRowChanged = api.onRowChanged;
+    window.__vxn.panels.modMatrix.renderAll = api.renderAll;
 
     renderAll();
 

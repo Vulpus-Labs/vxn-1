@@ -293,7 +293,7 @@
       parent.appendChild(wrap);
       const localCtx = ctx.makeCtxForId(desc, desc.id);
       const prim = vxn.panels.fader.create(wrap, localCtx);
-      ctx.register(desc.id, prim);
+      ctx.register(desc.id, prim, wrap);
       opDetailPrims.push({ id: desc.id, prim: prim });
       return wrap;
     }
@@ -334,8 +334,8 @@
       for (let i = 0; i < 4; i++) {
         const setRate = (function (idx) { return { set: function (plain) { prim.setRate(idx, plain); } }; })(i);
         const setLevel = (function (idx) { return { set: function (plain) { prim.setLevel(idx, plain); } }; })(i);
-        ctx.register(rateIds[i], setRate);
-        ctx.register(levelIds[i], setLevel);
+        ctx.register(rateIds[i], setRate, wrap);
+        ctx.register(levelIds[i], setLevel, wrap);
         opDetailPrims.push({ id: rateIds[i], prim: setRate });
         opDetailPrims.push({ id: levelIds[i], prim: setLevel });
       }
@@ -440,6 +440,10 @@
             if (h.setPointerCapture) {
               try { h.setPointerCapture(ev.pointerId); } catch (_) {}
             }
+            // Bind-helper gate: while the wrap is "dragging", the
+            // gated `set` callbacks drop incoming param_changed echoes
+            // so the live drag value isn't overwritten by the pump.
+            wrap.dataset.dragging = "1";
             ctx.dispatch("begin_gesture", { id: id });
           });
           h.addEventListener("pointermove", function (ev) {
@@ -468,6 +472,7 @@
             if (h.releasePointerCapture) {
               try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
             }
+            delete wrap.dataset.dragging;
             ctx.dispatch("end_gesture", { id: id });
           }
           h.addEventListener("pointerup", up);
@@ -479,10 +484,10 @@
       const setL = { set: function (plain) { lDepth = plain; paint(); } };
       const setR = { set: function (plain) { rDepth = plain; paint(); } };
       const setRate = { set: function (_plain) { /* rate has no visual; numeric label could surface */ } };
-      ctx.register(bpDesc.id, setBp);
-      ctx.register(lDesc.id, setL);
-      ctx.register(rDesc.id, setR);
-      ctx.register(rateDesc.id, setRate);
+      ctx.register(bpDesc.id, setBp, wrap);
+      ctx.register(lDesc.id, setL, wrap);
+      ctx.register(rDesc.id, setR, wrap);
+      ctx.register(rateDesc.id, setRate, wrap);
       opDetailPrims.push({ id: bpDesc.id, prim: setBp });
       opDetailPrims.push({ id: lDesc.id, prim: setL });
       opDetailPrims.push({ id: rDesc.id, prim: setR });

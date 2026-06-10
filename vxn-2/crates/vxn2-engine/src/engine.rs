@@ -272,13 +272,12 @@ impl Engine {
         // StackSpread (re-cook required, defer).
         let patch_sources = PatchSources::from_modblock(&mb, self.mod_wheel, self.aftertouch);
         let voice = &self.params.patch.voice;
-        // Pre-compute dest indices once; layout is op-major (Ratio, Level,
-        // Detune, Pan per op), then global pitch / lfo / stack / FX.
-        debug_assert_eq!(DestId::Op1Ratio.idx().unwrap(), 0);
+        // Pre-compute dest indices once; layout is op-major (Pitch, Level,
+        // Pan per op — stride 3), then global pitch / lfo / stack / FX.
+        debug_assert_eq!(DestId::Op1Pitch.idx().unwrap(), 0);
         debug_assert_eq!(DestId::Op1Level.idx().unwrap(), 1);
-        debug_assert_eq!(DestId::Op1Detune.idx().unwrap(), 2);
-        debug_assert_eq!(DestId::Op1Pan.idx().unwrap(), 3);
-        debug_assert_eq!(DestId::Op6Level.idx().unwrap(), 21);
+        debug_assert_eq!(DestId::Op1Pan.idx().unwrap(), 2);
+        debug_assert_eq!(DestId::Op6Level.idx().unwrap(), 16);
         let global_pitch_idx = DestId::GlobalPitch.idx().unwrap();
         let delay_mix_idx = DestId::DelayMix.idx().unwrap();
         let reverb_mix_idx = DestId::ReverbMix.idx().unwrap();
@@ -346,22 +345,16 @@ impl Engine {
             );
 
             // Project per-op destinations + global pitch into the stack's
-            // per-lane mod buffers. Indices: OpiRatio=i*4, OpiLevel=i*4+1,
-            // OpiDetune=i*4+2, OpiPan=i*4+3.
+            // per-lane mod buffers. Indices: OpiPitch=i*3, OpiLevel=i*3+1,
+            // OpiPan=i*3+2.
             let stack = &mut self.alloc.stacks[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let ratio_idx = op_i * 4;
-                let level_idx = op_i * 4 + 1;
-                let detune_idx = op_i * 4 + 2;
-                let pan_idx = op_i * 4 + 3;
+                let pitch_idx = op_i * 3;
+                let level_idx = op_i * 3 + 1;
+                let pan_idx = op_i * 3 + 2;
                 for k in 0..STACK_LANES {
                     stack.op_level_mod[op_i][k] = self.dest_vals[i][k][level_idx];
-                    // Ratio + Detune both feed pitch in semitones — the
-                    // matrix doesn't distinguish them functionally; they're
-                    // separate dest names so users have two independent slots
-                    // and curve choices.
-                    stack.op_pitch_mod_st[op_i][k] =
-                        self.dest_vals[i][k][ratio_idx] + self.dest_vals[i][k][detune_idx];
+                    stack.op_pitch_mod_st[op_i][k] = self.dest_vals[i][k][pitch_idx];
                     stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                 }
             }
@@ -810,8 +803,9 @@ mod tests {
     }
 
     /// Matrix dest `Feedback` mods the layer-level feedback amount each
-    /// block. With a `ModWheel → Feedback` slot at depth 4.0 and wheel = 1.0,
-    /// the structural FB op's `fb_scale` should land on `fb_scale(4.0)`.
+    /// block. With a `ModWheel → Feedback` slot at unitised depth 4/7 and
+    /// wheel = 1.0, the gain-table boost (×7) takes the contribution back to
+    /// 4.0, and the structural FB op's `fb_scale` should land on `fb_scale(4.0)`.
     #[test]
     fn matrix_mod_wheel_to_feedback_updates_fb_scale() {
         use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
@@ -825,7 +819,7 @@ mod tests {
         e.matrix.slots[0] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::Feedback,
-            depth: 4.0,
+            depth: 4.0 / 7.0,
             curve: CurveKind::Lin,
         };
         e.set_mod_wheel(1.0);
@@ -858,7 +852,7 @@ mod tests {
             0,
             MatrixRowRaw {
                 source: SourceId::Lfo2 as u8,
-                dest: 25, // GlobalPitch
+                dest: crate::matrix::DestId::GlobalPitch as u8,
                 curve: 0,
                 active: false,
                 depth: 0.03,

@@ -165,6 +165,10 @@
       startY = ev.clientY;
       startNorm = currentNorm;
       el.classList.add("dragging");
+      // Bind-helper gate (ADR 0003 / 0060): `bindGestureGated` reads
+      // this dataset flag to drop incoming param_changed echoes for
+      // the duration of the drag — the page is the source of truth.
+      el.dataset.dragging = "1";
       if (el.setPointerCapture && pointerId !== undefined) {
         try { el.setPointerCapture(pointerId); } catch (_) {}
       }
@@ -196,6 +200,7 @@
       }
       dragging = false;
       el.classList.remove("dragging");
+      delete el.dataset.dragging;
       if (el.releasePointerCapture && pointerId !== undefined) {
         try { el.releasePointerCapture(pointerId); } catch (_) {}
       }
