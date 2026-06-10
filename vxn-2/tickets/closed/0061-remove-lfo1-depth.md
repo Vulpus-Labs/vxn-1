@@ -66,3 +66,18 @@ relied on default depth 0.30 now receive full-scale LFO1. The default
 patch's matrix depths may need re-tasting — check
 `default_patch.rs` for routes sourced from LFO1 and scale their slot
 depths by 0.30 to preserve the shipped sound.
+
+## Close-out (2026-06-10)
+
+All acceptance criteria met. Notes:
+
+- The grep-clean criterion is satisfied for live code; the remaining
+  `lfo1-depth` mentions in `vxn-2/crates/` are the v3→v4 blob migration
+  (`LEGACY_LFO1_DEPTH_ID` + its tests) and doc comments explaining the
+  removal — both necessarily reference the historical param.
+- Default patch needed **no** depth re-tasting: the review-confirmed bug
+  means the depth multiply never executed, so LFO1 already entered the
+  matrix at full scale and the shipped sound is unchanged. The default
+  matrix also has no LFO1-sourced route.
+- v3 fixture is built programmatically (`rewrite_as_legacy` test helper)
+  rather than as a binary file, matching the v2→v3 test pattern.

@@ -75,12 +75,15 @@ feedback loop of whichever op the algorithm designates as its FB op.
 |----------------|------|--------------------------------|---------|--------------------------------------------------------------------------|
 | `lfo1_shape`   | e    | {Sine, Tri, Saw+, Saw−, Pulse, S&H} | Sine | Output waveform. Sine is the default for vibrato/tremolo; S&H for stepped textures. |
 | `lfo1_rate`    | f    | 0.01 .. 50.0 Hz (or BPM-sync table) | 2.4 Hz | LFO frequency. When sync is on, snaps to host-tempo subdivisions (1/1, 1/2, ..., 1/64, dotted, triplet). |
-| `lfo1_depth`   | f    | 0.0 .. 1.0                     | 0.30    | Overall depth scaler. Matrix slots routing FROM LFO1 multiply against this. Lets a single fader gate the entire LFO1 contribution. |
 | `lfo1_sync`    | b    | off / on                       | off     | When on, `lfo1_rate` snaps to BPM subdivisions and resets phase on transport restart. |
 
 LFO 1 is shared across all voices — single phase accumulator, evaluated once
 per control block. Per ADR §4: use for patch-wide effects (locked chorus,
 song-synced sweeps).
+
+LFO 1 has no global depth macro: per-route send level is the mod-matrix
+slot depth column (a redundant `lfo1_depth` scaler was removed in E006 /
+ticket 0061). LFO 1 enters the matrix at full bipolar scale.
 
 ---
 
@@ -253,17 +256,17 @@ limit if needed.)
 
 | Section            | Count |
 |--------------------|-------|
-| LFO 1              | 4     |
+| LFO 1              | 3     |
 | Delay              | 6     |
 | Reverb             | 5     |
 | Master             | 2     |
-| **Patch-level subtotal** | **17** |
+| **Patch-level subtotal** | **16** |
 
 ### CLAP totals
 
 | Quantity                | Value          |
 |-------------------------|----------------|
-| Per-patch + patch       | 163 + 17 = **180** |
+| Per-patch + patch       | 163 + 16 = **179** |
 | Mod matrix non-CLAP fields | source + dest + curve × 16 slots + depth × slots 9–16 = 56 fields (patch sub-table, not CLAP) |
 
 Mod matrix slot `source`, `dest`, `curve` are excluded from CLAP because

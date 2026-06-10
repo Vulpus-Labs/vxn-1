@@ -98,7 +98,16 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   per-op Pitch dest (was 4 dests per op, now 3). Older v2 blobs migrate
 ///   on load by rewriting the packed `dest` discriminant — both old Ratio
 ///   and old Detune routes map to the new Pitch dest.
-pub const BLOB_VERSION: u16 = 3;
+/// - v4: drops `lfo1-depth` (E006 / ticket 0061) — param count 180 → 179
+///   and every patch-level id after it shifts down by one. Older blobs
+///   migrate on load by skipping the stored depth value and remapping the
+///   later ids.
+pub const BLOB_VERSION: u16 = 4;
+/// Param count in v≤3 blobs (before the v4 `lfo1-depth` removal).
+const LEGACY_V3_PARAM_COUNT: usize = TOTAL_PARAMS + 1;
+/// CLAP id `lfo1-depth` held in v≤3 blobs (`PATCH_BASE + 2`, between
+/// `lfo1-rate` and `lfo1-sync`). Values at this index are dropped on load.
+const LEGACY_LFO1_DEPTH_ID: usize = PATCH_BASE + 2;
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
 /// Trailing matrix-meta byte length appended at v2:
@@ -177,7 +186,7 @@ const fn dirty_values_full_word(w: usize) -> u64 {
 /// reset to defaults, first tick post-init).
 const DIRTY_MATRIX_ALL: u64 = (1u64 << N_MATRIX_SLOTS) - 1;
 
-/// Lock-free param store. Sized to [`TOTAL_PARAMS`] (180 in v1). Cheap to
+/// Lock-free param store. Sized to [`TOTAL_PARAMS`]. Cheap to
 /// share via `Arc` — every field is an atomic.
 ///
 /// Beyond the CLAP-automatable `values` array the store also holds the
@@ -528,9 +537,16 @@ impl ParamModel for SharedParams {
             return Err(ParamLoadError::UnsupportedVersion(version));
         }
         let count = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if count as usize != TOTAL_PARAMS {
+        // v≤3 blobs carry the since-removed `lfo1-depth` (id 165), so their
+        // count is one higher than the live table's.
+        let expected_count = if version <= 3 {
+            LEGACY_V3_PARAM_COUNT
+        } else {
+            TOTAL_PARAMS
+        };
+        if count as usize != expected_count {
             return Err(ParamLoadError::CountMismatch {
-                expected: TOTAL_PARAMS as u16,
+                expected: expected_count as u16,
                 got: count,
             });
         }
@@ -545,7 +561,18 @@ impl ParamModel for SharedParams {
                 got: bytes.len(),
             });
         }
-        for i in 0..TOTAL_PARAMS {
+        for i in 0..count as usize {
+            // v3 → v4 id remap: drop the stored lfo1-depth value, shift
+            // every later id down one. v4 blobs map 1:1.
+            let id = if version <= 3 {
+                match i.cmp(&LEGACY_LFO1_DEPTH_ID) {
+                    std::cmp::Ordering::Less => i,
+                    std::cmp::Ordering::Equal => continue,
+                    std::cmp::Ordering::Greater => i - 1,
+                }
+            } else {
+                i
+            };
             let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
                 bytes[off],
@@ -553,7 +580,7 @@ impl ParamModel for SharedParams {
                 bytes[off + 2],
                 bytes[off + 3],
             ]);
-            self.values[i].store(bits, Ordering::Relaxed);
+            self.values[id].store(bits, Ordering::Relaxed);
         }
         if version >= 2 {
             let mut off = values_len;
@@ -692,9 +719,6 @@ pub struct EngineParams {
     pub master: MasterParams,
     /// CLAP-automatable matrix slot depths.
     pub mtx_depths: [f32; N_CLAP_DEPTH_SLOTS],
-    /// Patch-level LFO1 depth macro multiplier (matrix multiplies LFO1
-    /// output by this at source-eval time).
-    pub lfo1_depth: f32,
     /// Mod-matrix slot topology + depth, fanned out from the param store at
     /// snapshot time. The engine's [`crate::matrix::MatrixTable`] is rebuilt
     /// from this array each block in
@@ -729,7 +753,6 @@ impl EngineParams {
             reverb: FdnReverbParams::default(),
             master: MasterParams::default(),
             mtx_depths: [0.0; N_CLAP_DEPTH_SLOTS],
-            lfo1_depth: 0.30,
             matrix_rows: [MatrixRowRaw::default(); N_MATRIX_SLOTS],
         };
         e.snapshot_from(p);
@@ -768,10 +791,9 @@ impl EngineParams {
         self.mod_params.lfo1 = Lfo1Params {
             shape: lfo_shape_from(shared.get(pb + OFF_LFO1) as i32),
             rate_hz: shared.get(pb + OFF_LFO1 + 1),
-            sync: shared.get(pb + OFF_LFO1 + 3) >= 0.5,
+            sync: shared.get(pb + OFF_LFO1 + 2) >= 0.5,
             sync_index: self.mod_params.lfo1.sync_index, // patch state (not CLAP)
         };
-        self.lfo1_depth = shared.get(pb + OFF_LFO1 + 2);
 
         self.delay = StereoDelayParams {
             on: shared.get(pb + OFF_DELAY) >= 0.5,
@@ -1187,6 +1209,57 @@ mod tests {
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
     }
 
+    /// Rewrite a freshly saved v4 blob into the v≤3 layout: re-insert a
+    /// 4-byte value slot at the legacy `lfo1-depth` id, restore the legacy
+    /// param count and stamp `version`.
+    fn rewrite_as_legacy(bytes: &[u8], version: u16, lfo1_depth_bits: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len() + 4);
+        out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
+        out[4..6].copy_from_slice(&version.to_le_bytes());
+        out[6..8].copy_from_slice(&(LEGACY_V3_PARAM_COUNT as u16).to_le_bytes());
+        let depth_off = BLOB_HEADER_LEN + LEGACY_LFO1_DEPTH_ID * 4;
+        out.extend_from_slice(&bytes[BLOB_HEADER_LEN..depth_off]);
+        out.extend_from_slice(&lfo1_depth_bits.to_le_bytes());
+        out.extend_from_slice(&bytes[depth_off..]);
+        out
+    }
+
+    /// A v3 blob (param count 180, `lfo1-depth` at id 165) loads under v4
+    /// code: the stored depth value is silently dropped and every later
+    /// param lands on its shifted id. Values either side of the removed
+    /// slot survive bit-exact (E006 / ticket 0061).
+    #[test]
+    fn load_bytes_migrates_v3_param_layout_to_v4() {
+        assert!(id_of("lfo1-depth").is_none(), "param must be gone from the table");
+        let non_defaults: &[(&str, f32)] = &[
+            ("lfo1-rate", 7.5),      // immediately before the removed id
+            ("lfo1-sync", 1.0),      // immediately after — shifts 166 → 165
+            ("delay-time", 250.0),
+            ("delay-feedback", 0.66),
+            ("reverb-decay", 4.5),
+            ("master-volume", -3.0), // last param in the table
+        ];
+        let src = SharedParams::new();
+        for &(name, v) in non_defaults {
+            src.set(id_of(name).unwrap(), v);
+        }
+        let bytes = rewrite_as_legacy(&src.snapshot_bytes(), 3, 0.42f32.to_bits());
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v3 blob loads under v4");
+        for &(name, v) in non_defaults {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+        for i in 0..TOTAL_PARAMS {
+            assert_eq!(
+                src.values[i].load(Ordering::Relaxed),
+                dst.values[i].load(Ordering::Relaxed),
+                "id {i} ({}) differs after v3 → v4 migration",
+                PARAMS[i].id
+            );
+        }
+    }
+
     /// A v2 blob's per-op Ratio (= old dest 1) and Detune (= old dest 3)
     /// both map to the new per-op Pitch dest (= new dest 1) on load.
     /// Global-tier dests shift down by 6 (drop the six Detune variants).
@@ -1225,14 +1298,13 @@ mod tests {
                 depth: 0.1,
             },
         );
-        let mut bytes = src.snapshot_bytes();
-        // Stomp version to v2.
-        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        // Rewrite to the v2 layout (legacy param count incl. lfo1-depth).
+        let mut bytes = rewrite_as_legacy(&src.snapshot_bytes(), 2, 0.30f32.to_bits());
         // Rewrite dest bytes in the matrix trailer to v2 codes:
         //   slot 0 → 3 (old Op1Detune) — both Ratio/Detune now collapse to Pitch
         //   slot 1 → 5 (old Op2Ratio)
         //   slot 2 → 25 (old GlobalPitch — shifts from 25 down to 19)
-        let trailer_off = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let trailer_off = BLOB_HEADER_LEN + LEGACY_V3_PARAM_COUNT * 4;
         // Each meta is 4 bytes; dest is at byte offset 1 (big-endian packing
         // in u32 → little-endian on wire means byte index +1 from start).
         // packed = source<<24 | dest<<16 | curve<<8 | active, stored LE →
@@ -1257,10 +1329,9 @@ mod tests {
     #[test]
     fn load_bytes_accepts_legacy_v1_blob() {
         let src = SharedParams::new();
-        let mut bytes = src.snapshot_bytes();
-        // Strip the v2 trailer and rewrite the version word.
-        bytes.truncate(BLOB_HEADER_LEN + TOTAL_PARAMS * 4);
-        bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+        // Rewrite to the v1 layout: legacy param count, no matrix trailer.
+        let mut bytes = rewrite_as_legacy(&src.snapshot_bytes(), 1, 0.30f32.to_bits());
+        bytes.truncate(BLOB_HEADER_LEN + LEGACY_V3_PARAM_COUNT * 4);
         let dst = SharedParams::new();
         dst.load_bytes(&bytes).expect("v1 blob loads");
     }

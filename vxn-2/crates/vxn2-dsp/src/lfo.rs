@@ -23,9 +23,10 @@
 //!
 //! ## Depth lives in the mod matrix
 //!
-//! Per the ticket: LFO depth is *not* part of the LFO struct. The faceplate
-//! `lfo1_depth` / `lfo2_depth` knobs are macro multipliers applied at
-//! matrix-source-eval time. The LFO produces raw bipolar `[-1, +1]` output.
+//! Per the ticket: LFO depth is *not* part of the LFO struct. Per-route
+//! send level is the matrix slot's depth column (there is no global depth
+//! macro — `lfo1-depth` was removed in E006 / ticket 0061). The LFO
+//! produces raw bipolar `[-1, +1]` output.
 //!
 //! ## S&H — sample-and-hold on cycle boundary
 //!

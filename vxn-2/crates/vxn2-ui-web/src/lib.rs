@@ -443,7 +443,7 @@ mod tests {
             assert!(html.contains(&needle), "missing section: {section}");
         }
         for id in [
-            "algo", "lfo1-rate", "lfo1-depth", "lfo1-shape", "lfo1-sync",
+            "algo", "lfo1-rate", "lfo1-shape", "lfo1-sync",
             "lfo2-rate", "lfo2-sync",
             "mod-env-a", "mod-env-r", "mod-env-shape",
             "assign-mode", "glide-time", "legato",

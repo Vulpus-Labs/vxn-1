@@ -71,8 +71,9 @@ pub struct PatchModParams {
 }
 
 /// Patch-global modulation snapshot for one control block. The mod matrix
-/// reads from this. LFO1 output is bipolar `[-1, +1]`; the matrix applies
-/// the `lfo1_depth` macro multiplier at source-eval time.
+/// reads from this. LFO1 output is bipolar `[-1, +1]` and enters the matrix
+/// at full scale; per-route send level is the slot depth column's job
+/// (the `lfo1-depth` macro was removed in E006 / ticket 0061).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ModBlock {
     pub lfo1: f32,

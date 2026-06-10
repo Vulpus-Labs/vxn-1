@@ -1,7 +1,7 @@
 //! VXN2-specific extension trait: non-CLAP shared state the controller
 //! reads / writes alongside the parameter table.
 //!
-//! The CLAP-automatable params (180 ids, see PARAMETERS.md) live in
+//! The CLAP-automatable params (179 ids, see PARAMETERS.md) live in
 //! [`vxn_core_app::ParamModel`]; the matrix-row topology + active flags +
 //! slots 9-16 depth ride here.
 //!

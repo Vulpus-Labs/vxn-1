@@ -9,10 +9,10 @@
 //!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 163 .. 180   Patch-level      (4 LFO1 + 6 delay + 5 reverb + 2 master)
+//! 163 .. 179   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
 //! ```
 //!
-//! Total 180. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 179. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set.
 //!
 //! ## What is *not* in the table
@@ -48,8 +48,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 21;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
-pub const N_PATCH_LEVEL: usize = 17;
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 180
+pub const N_PATCH_LEVEL: usize = 16;
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 179
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -502,7 +502,6 @@ const PER_PATCH: [ParamDesc; N_PER_PATCH] = concat_per_patch(
 const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     en("lfo1-shape", "LFO1 Shape", LFO_SHAPES, 0),
     flx("lfo1-rate", "LFO1 Rate", 0.01, 50.0, 2.4, "Hz", 2.0),
-    fl("lfo1-depth", "LFO1 Depth", 0.0, 1.0, 0.30, ""),
     bl("lfo1-sync", "LFO1 Sync", false),
     bl("delay-on", "Delay On", true),
     flx("delay-time", "Delay Time", 1.0, 4000.0, 375.0, "ms", 100.0),
@@ -522,7 +521,7 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 163, patch × 17]` — same flat ordering described in
+/// `[per-patch × 163, patch × 16]` — same flat ordering described in
 /// the module-level layout block.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
@@ -562,9 +561,9 @@ pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 150
 pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 155
 
 pub(crate) const OFF_LFO1: usize = 0;
-pub(crate) const OFF_DELAY: usize = 4;
-pub(crate) const OFF_REVERB: usize = 10;
-pub(crate) const OFF_MASTER: usize = 15;
+pub(crate) const OFF_DELAY: usize = 3;
+pub(crate) const OFF_REVERB: usize = 9;
+pub(crate) const OFF_MASTER: usize = 14;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
 /// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
@@ -705,7 +704,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 180);
+        assert_eq!(TOTAL_PARAMS, 179);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 

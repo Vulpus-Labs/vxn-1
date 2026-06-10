@@ -81,7 +81,6 @@ pub fn default_param_values() -> [f32; TOTAL_PARAMS] {
 
     // ── Patch-level ────────────────────────────────────────────────────────
     set(&mut out, "lfo1-rate", 0.6);
-    set(&mut out, "lfo1-depth", 0.40);
     set(&mut out, "delay-feedback", 0.30);
     set(&mut out, "delay-mix", 0.18);
     set(&mut out, "delay-pingpong", 1.0);
