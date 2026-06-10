@@ -260,6 +260,9 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
 /// native unit so the audible range matches user expectation across
 /// kinds. Pitch dests sweep ±2 octaves at full depth; feedback covers its
 /// full 0..7 clamp range; everything else stays at 1.0.
+///
+/// Semitone dests additionally take a cubic taper on the stored depth
+/// before the gain — see [`DestId::cook_depth`].
 pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     let mut g = [1.0_f32; N_DESTS + 1];
     g[DestId::Op1Pitch as usize] = 24.0;
@@ -354,6 +357,26 @@ impl DestId {
             32 => DestId::ReverbMix,
             33 => DestId::Feedback,
             _ => DestId::None,
+        }
+    }
+
+    /// Cubic depth taper for the ±24 st semitone dests. Linear depth puts
+    /// vibrato-scale amounts (≤ 0.5 st) inside the bottom 2% of widget
+    /// travel; `d³` keeps the sign and the full ±2 oct reach while widening
+    /// the musical low end (25% travel ≈ ±0.4 st, 50% ≈ ±3 st). Applied at
+    /// slot-cook time (block rate), never in the per-sample path. Non-pitch
+    /// dests pass through untouched — `Lfo2Phase` (gain 1.0) included.
+    #[inline]
+    pub fn cook_depth(self, depth: f32) -> f32 {
+        match self {
+            DestId::GlobalPitch
+            | DestId::Op1Pitch
+            | DestId::Op2Pitch
+            | DestId::Op3Pitch
+            | DestId::Op4Pitch
+            | DestId::Op5Pitch
+            | DestId::Op6Pitch => depth * depth * depth,
+            _ => depth,
         }
     }
 
@@ -746,6 +769,21 @@ mod tests {
         assert!(!DestId::Op1Level.is_pitch_shaped());
         assert!(!DestId::DelayMix.is_pitch_shaped());
         assert!(!DestId::StackDetune.is_pitch_shaped());
+    }
+
+    #[test]
+    fn cook_depth_tapers_semitone_dests_only() {
+        // Cubic taper: sign and endpoints kept, low end widened.
+        assert_eq!(DestId::GlobalPitch.cook_depth(1.0), 1.0);
+        assert_eq!(DestId::GlobalPitch.cook_depth(-1.0), -1.0);
+        assert_eq!(DestId::GlobalPitch.cook_depth(0.0), 0.0);
+        assert!((DestId::GlobalPitch.cook_depth(0.25) - 0.015625).abs() < 1e-7);
+        assert_eq!(DestId::Op3Pitch.cook_depth(-0.5), -0.125);
+        // Pitch-shaped but gain 1.0: passthrough.
+        assert_eq!(DestId::Lfo2Phase.cook_depth(0.5), 0.5);
+        // Non-pitch dests: passthrough.
+        assert_eq!(DestId::Op1Level.cook_depth(0.5), 0.5);
+        assert_eq!(DestId::Feedback.cook_depth(0.5), 0.5);
     }
 
     #[test]

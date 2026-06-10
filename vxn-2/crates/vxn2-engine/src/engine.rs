@@ -251,10 +251,14 @@ impl Engine {
             } else {
                 SourceId::None
             };
+            let dest = DestId::from_u8(row.dest);
             self.matrix.slots[s] = MatrixSlot {
                 source,
-                dest: DestId::from_u8(row.dest),
-                depth,
+                dest,
+                // Stored / CLAP depth stays linear; semitone dests get the
+                // cubic taper here so host automation and the UI widget see
+                // the same response.
+                depth: dest.cook_depth(depth),
                 curve: CurveKind::from_u8(row.curve),
             };
         }
@@ -532,7 +536,6 @@ fn project_pitch_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::id_of;
 
     const SR: f32 = 48_000.0;
     const BLK: usize = 64;
@@ -1046,6 +1049,49 @@ mod tests {
         assert_eq!(slot.dest, DestId::Op1Level);
         assert_eq!(slot.curve, CurveKind::Lin);
         assert!((slot.depth - 0.5).abs() < 1e-6);
+    }
+
+    /// Semitone-dest depths take the cubic taper at slot-cook time, on both
+    /// depth sources (CLAP `mtx_depths` for slots 0..N_CLAP_DEPTH_SLOTS,
+    /// raw row depth above). Non-pitch dests stay linear.
+    #[test]
+    fn apply_block_params_tapers_semitone_depths() {
+        use crate::matrix::{DestId, SourceId};
+        use crate::shared::MatrixRowRaw;
+
+        let mut e = Engine::new(SR, BLK);
+        // CLAP-automatable slot: depth comes from mtx_depths.
+        e.params.matrix_rows[0] = MatrixRowRaw {
+            source: SourceId::Lfo1 as u8,
+            dest: DestId::GlobalPitch as u8,
+            curve: 0,
+            active: true,
+            depth: 0.0,
+        };
+        e.params.mtx_depths[0] = 0.5;
+        // Non-pitch dest at the same depth: passthrough.
+        e.params.matrix_rows[1] = MatrixRowRaw {
+            source: SourceId::Lfo1 as u8,
+            dest: DestId::Op1Level as u8,
+            curve: 0,
+            active: true,
+            depth: 0.0,
+        };
+        e.params.mtx_depths[1] = 0.5;
+        // Non-CLAP slot: depth rides in the row.
+        let hi = N_CLAP_DEPTH_SLOTS;
+        e.params.matrix_rows[hi] = MatrixRowRaw {
+            source: SourceId::ModWheel as u8,
+            dest: DestId::Op2Pitch as u8,
+            curve: 0,
+            active: true,
+            depth: -0.5,
+        };
+        e.apply_block_params();
+
+        assert!((e.matrix.slots[0].depth - 0.125).abs() < 1e-7);
+        assert!((e.matrix.slots[1].depth - 0.5).abs() < 1e-7);
+        assert!((e.matrix.slots[hi].depth - -0.125).abs() < 1e-7);
     }
 
     /// Matrix dest `Feedback` mods the layer-level feedback amount each

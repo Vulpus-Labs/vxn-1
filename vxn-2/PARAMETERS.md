@@ -178,6 +178,12 @@ The matrix is a 16-slot table per patch. Each slot has:
 - Stacking macros (matrix can override): `stack_detune`, `stack_spread`
 - FX: `delay_mix`, `reverb_mix`
 
+**Depth taper**: semitone dests (`op{N}_ratio`, `op{N}_detune`,
+`global_pitch`) apply a cubic taper (`d³`) to the stored depth before the
+±24 st range, so vibrato-scale amounts (≤ 0.5 st) occupy usable widget
+travel (25% ≈ ±0.4 st, 50% ≈ ±3 st, 100% = ±24 st). The stored / CLAP
+value stays linear; the engine cooks the taper at block rate.
+
 **CLAP exposure**: slots **1–8 `depth`** are CLAP params
 (`mtx1_depth` … `mtx8_depth` = 8 CLAP params). Slots 9–16 `depth` and
 *all* slot `source` / `dest` / `curve` fields are patch state only, not
