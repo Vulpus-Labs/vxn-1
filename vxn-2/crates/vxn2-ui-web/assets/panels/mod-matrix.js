@@ -151,12 +151,23 @@
 
       var active = el("input", {
         type: "checkbox",
+        title: "Enable slot",
+        "aria-label": "Enable slot",
         dataset: { field: "active" },
       });
 
+      // Slot 1-8 carry the CLAP badge; slot 9-16 emit an empty placeholder
+      // so the bin button below lands in the same grid column on every row.
       var badge = slot < CLAP_SLOT_COUNT
         ? el("span", { class: "vxn-mm-badge", title: "CLAP-automatable depth" }, ["automatable"])
-        : null;
+        : el("span", { class: "vxn-mm-badge-spacer" }, []);
+
+      var bin = el("button", {
+        type: "button",
+        class: "vxn-mm-bin",
+        title: "Clear slot",
+        "aria-label": "Clear slot",
+      }, ["✕"]);
 
       var slotLabel = el("span", { class: "vxn-mm-slot-num" }, [String(slot + 1)]);
 
@@ -174,11 +185,22 @@
           depth,
           curveSel,
           badge,
+          bin,
         ]
       );
 
       sourceSel.addEventListener("change", function () {
-        dispatchRow(slot, { source: parseInt(sourceSel.value, 10) | 0 });
+        var newSource = parseInt(sourceSel.value, 10) | 0;
+        var current = window.__vxn.matrix.rows[slot];
+        var partial = { source: newSource };
+        // First-time source select: bare row sat at source=None inactive;
+        // user picks a real source → auto-activate so the slot routes
+        // without a second click. Only fires on the None→non-None edge so
+        // a manually disabled slot stays disabled when retuned.
+        if (newSource !== 0 && current && current.source === 0 && !current.active) {
+          partial.active = true;
+        }
+        dispatchRow(slot, partial);
       });
       destSel.addEventListener("change", function () {
         dispatchRow(slot, { dest: parseInt(destSel.value, 10) | 0 });
@@ -193,6 +215,14 @@
         var v = parseFloat(depth.value);
         if (!isFinite(v)) v = 0.0;
         dispatchRow(slot, { depth: clamp(v, -1.0, 1.0) });
+      });
+      bin.addEventListener("click", function () {
+        // Clear in place: slot resets to defaults, rows below stay put.
+        // Avoids silently re-binding host automation lanes that point at
+        // mtxN-depth CLAP ids on slots 1-8.
+        dispatchRow(slot, {
+          source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
+        });
       });
 
       return {
