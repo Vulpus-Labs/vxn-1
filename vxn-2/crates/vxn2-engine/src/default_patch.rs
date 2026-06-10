@@ -132,6 +132,10 @@ pub fn default_param_values() -> [f32; TOTAL_PARAMS] {
     set(&mut out, "glide-time", 0.0);
     // Stack — single dry voice like the hardware.
     set(&mut out, "stack-density", 1.0);
+    // Op 2 receives the slot-3 Velocity → Op2Level route; AmpSens gates
+    // incoming level modulation per op (0 = ignore, ticket 0062), so open
+    // it fully — the route ships at depth 0 but must work when dialed up.
+    set(&mut out, "op2-amp-sens", 3.0);
     // Matrix CLAP-automatable depths (slots 1..=6 active per `default_matrix`;
     // slots 1 and 3 ship at 0 — see `default_matrix` docs).
     set(&mut out, "mtx2-depth", 1.0);

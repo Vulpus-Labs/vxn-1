@@ -231,6 +231,9 @@ pub struct Stack {
     /// block start and read by [`stack_tick_stereo`] / [`stack_tick_mono`].
     /// Effective level per sample is `(op.eg.level + op_level_mod[i][k])
     /// .clamp(0.0, 1.0)`. Zero when no matrix slot targets `OpNLevel`.
+    /// The engine pre-multiplies the matrix value by the op's
+    /// [`StackOp::amp_sens_coef`] at the write site (ticket 0062), so the
+    /// per-sample loop never touches the receive coefficient.
     pub op_level_mod: [[f32; STACK_LANES]; N_OPS],
     /// Per-lane pitch offset in semitones from matrix `GlobalPitch`. Summed
     /// with `bend_st + glide_st + pitch_eg.level_st` in

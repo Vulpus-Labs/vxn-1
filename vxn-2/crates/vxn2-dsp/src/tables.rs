@@ -16,9 +16,12 @@ pub fn vel_factor(vs: u8, velocity: u8) -> f32 {
     1.0 - vs * (1.0 - v_curve)
 }
 
-/// Amp sensitivity (0..3). Coefficient applied to incoming LFO depth when the
-/// matrix routes LFO→op level. The matrix multiplies its `depth` against this
-/// receive coefficient. Approximate DX7 amp-mod sens table.
+/// Amp sensitivity (0..3): the op's receive coefficient for incoming
+/// mod-matrix level modulation. The engine multiplies the matrix's op-level
+/// destination value by this coefficient at the block-rate write into
+/// `Stack::op_level_mod` (ticket 0062). Mapping: 0 → 0.0 (op ignores level
+/// modulation entirely), 1 → 0.4, 2 → 0.7, 3 → 1.0 (full receptivity).
+/// Approximate DX7 amp-mod sens table.
 pub const AMP_SENS_TABLE: [f32; 4] = [0.0, 0.4, 0.7, 1.0];
 
 #[inline]

@@ -352,8 +352,15 @@ impl Engine {
                 let pitch_idx = op_i * 3;
                 let level_idx = op_i * 3 + 1;
                 let pan_idx = op_i * 3 + 2;
+                // AmpSens is the op's receive coefficient for incoming level
+                // modulation (DX7-style): 0 → the op ignores level mod
+                // entirely, 3 → full receptivity. Applied here at the
+                // block-rate write site so the per-sample lane loop in
+                // `stack_tick_*` stays untouched (ticket 0062).
+                let amp_sens = stack.ops[op_i].amp_sens_coef;
                 for k in 0..STACK_LANES {
-                    stack.op_level_mod[op_i][k] = self.dest_vals[i][k][level_idx];
+                    stack.op_level_mod[op_i][k] =
+                        self.dest_vals[i][k][level_idx] * amp_sens;
                     stack.op_pitch_mod_st[op_i][k] = self.dest_vals[i][k][pitch_idx];
                     stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                 }
@@ -593,6 +600,9 @@ mod tests {
         let mut modulated = Engine::new(SR, BLK);
         // Make sure LFO1 has motion: bump rate to ~5 Hz and amplitude full.
         modulated.params.mod_params.lfo1.rate_hz = 5.0;
+        // Open op 1's level-mod receive gate (AmpSens defaults to 0 =
+        // ignore level modulation — ticket 0062).
+        modulated.params.patch.voice.ops[0].amp_sens = 3;
         modulated.matrix.slots[0] = MatrixSlot {
             source: SourceId::Lfo1,
             dest: DestId::Op1Level,
@@ -603,6 +613,7 @@ mod tests {
 
         let mut baseline = Engine::new(SR, BLK);
         baseline.params.mod_params.lfo1.rate_hz = 5.0;
+        baseline.params.patch.voice.ops[0].amp_sens = 3;
         baseline.note_on(60, 100);
 
         let mut lm = [0.0_f32; BLK];
@@ -639,6 +650,69 @@ mod tests {
         assert!(
             diff_sum > 1e-3,
             "modulated render identical to baseline (diff_sum = {diff_sum}) — matrix not applied to audio"
+        );
+    }
+
+    /// AmpSens gates incoming matrix level modulation per op (ticket 0062):
+    /// with an LFO1 → Op1Level route active, `op1-amp-sens = 0` must produce
+    /// no level modulation (op_level_mod stays zero, output amplitude steady)
+    /// and `= 3` must produce clear tremolo. Regression test for the review
+    /// finding that `amp_sens_coef` was cooked but never read.
+    #[test]
+    fn amp_sens_gates_matrix_level_modulation() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        // Render ~400 ms of audio (post-attack) with the route active and
+        // the given receive sensitivity. Identically-constructed engines
+        // share RNG state, so any divergence is the amp-sens gate.
+        let render = |amp_sens: u8| -> (Vec<f32>, bool) {
+            let mut e = Engine::new(SR, BLK);
+            e.params.mod_params.lfo1.rate_hz = 8.0;
+            e.params.patch.voice.ops[0].amp_sens = amp_sens;
+            e.matrix.slots[0] = MatrixSlot {
+                source: SourceId::Lfo1,
+                dest: DestId::Op1Level,
+                depth: 1.0,
+                curve: CurveKind::Lin,
+            };
+            e.note_on(60, 100);
+            let mut l = [0.0_f32; BLK];
+            let mut r = [0.0_f32; BLK];
+            let mut out = Vec::new();
+            let mut saw_level_mod = false;
+            for _ in 0..((SR * 0.4) as usize) / BLK {
+                e.process_block(&mut l, &mut r);
+                for s in &e.alloc.stacks {
+                    if !s.is_idle() {
+                        for k in 0..STACK_LANES {
+                            if s.op_level_mod[0][k].abs() > 1e-6 {
+                                saw_level_mod = true;
+                            }
+                        }
+                    }
+                }
+                out.extend_from_slice(&l);
+            }
+            (out, saw_level_mod)
+        };
+
+        let (out_closed, mod_closed) = render(0);
+        let (out_open, mod_open) = render(3);
+
+        assert!(
+            !mod_closed,
+            "amp-sens 0 must zero op_level_mod at the projection site"
+        );
+        assert!(mod_open, "amp-sens 3 must pass level mod through");
+        let diff: f64 = out_closed
+            .iter()
+            .zip(&out_open)
+            .map(|(a, b)| (a - b).abs() as f64)
+            .sum();
+        let energy: f64 = out_closed.iter().map(|a| a.abs() as f64).sum();
+        assert!(
+            diff > energy * 0.05,
+            "amp-sens 0 vs 3 output barely differs (diff = {diff}, energy = {energy})"
         );
     }
 

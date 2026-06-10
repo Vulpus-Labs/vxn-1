@@ -63,3 +63,28 @@ Velocity sensitivity (`vel_factor`) already works and is separate —
 don't conflate. The review also flagged that no test asserts AmpSens
 audibility; ticket 0069's sweep test will guard the whole param table,
 but this ticket should land its own targeted test regardless.
+
+## Close-out (2026-06-10)
+
+Wired at the engine write site (`Engine::process_block` projection into
+`stack.op_level_mod`), per the ticket's preferred option — the NEON lane
+loop in `stack_tick_*` is untouched, so no asm/bench risk (stack bench
+unaffected by construction; nothing in the per-sample path changed).
+
+Deviations from the ticket text, with reasons:
+
+- Param max is **3**, not 7 (`op{N}-amp-sens` is 0..3, DX7-style); the
+  ticket's "= 7" examples read as 0..7 vel-sens conflation.
+- "Same multiply in the scalar reference path": not applicable — the
+  scalar voice path (`op_tick` / `voice.rs`) has no matrix level-mod
+  input at all, so there is nothing to gate. `OpState.amp_sens_coef`
+  (cooked-but-unread) was **removed** instead, which is what satisfies
+  the "no cooked-but-unread state" criterion; `StackOp.amp_sens_coef`
+  is now read by the engine.
+- Default patch sets `op2-amp-sens = 3` so the shipped (depth-0)
+  Velocity → Op2Level route works when dialed up; with the gate in
+  place an op at the default sensitivity 0 ignores level mod entirely.
+
+Tests: `amp_sens_gates_matrix_level_modulation` (op_level_mod zeroed at
+0, passes at 3, output waveforms diverge >5% of signal energy);
+`matrix_lfo1_to_op_level_modulates_audio` updated to open the gate.

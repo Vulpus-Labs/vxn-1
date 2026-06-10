@@ -19,7 +19,7 @@
 use crate::eg::{EgParams, EgState};
 use crate::ks::{KsCurve, ks_level_mult, ks_rate_mult};
 use crate::sine;
-use crate::tables::{amp_sens_coef, vel_factor};
+use crate::tables::vel_factor;
 #[cfg(test)]
 use crate::tables::fb_scale;
 
@@ -90,7 +90,6 @@ pub struct OpState {
     pub fb_prev2: f32,
     pub fb_scale: f32,
     pub eg: EgState,
-    pub amp_sens_coef: f32,
 }
 
 /// 2^32 — scales an f32 modulator in [-1, +1] to a Q32 phase offset (unit
@@ -138,7 +137,11 @@ impl OpState {
         // Feedback is now layer-level: stack/voice note_on (and the engine's
         // per-block live update) writes `fb_scale` directly onto the
         // algorithm's structural FB op only. Leave it alone here.
-        self.amp_sens_coef = amp_sens_coef(params.amp_sens);
+        //
+        // `params.amp_sens` is not cooked here: the scalar voice path has no
+        // matrix level-mod input, so the receive coefficient only exists on
+        // `StackOp` (applied by the engine at the `op_level_mod` write site
+        // — ticket 0062).
     }
 
     /// Reset phase + feedback memory. Call on a clean note-on if the patch
