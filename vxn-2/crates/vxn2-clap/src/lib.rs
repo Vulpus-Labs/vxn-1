@@ -25,7 +25,8 @@ use std::io::{Read, Write as _IoWrite};
 use std::ops::Bound;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use vxn2_app::{NoopPresetStore, matrix_snapshot_event, tick_vxn2};
+use vxn2_app::{matrix_snapshot_event, tick_vxn2};
+use vxn2_engine::Vxn2PresetStore;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
@@ -102,7 +103,7 @@ impl DefaultPluginFactory for VxnPlugin {
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
         let (mut controller, view_rx, corpus) =
-            Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
         // Seed the preset bar with the synthetic "Init" label until the
         // preset epic (E007 lineage) ships a real factory bank.
         controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
@@ -651,7 +652,7 @@ mod tests {
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
         let (mut controller, view_rx, corpus) =
-            Controller::new(shared.params.clone(), Box::new(NoopPresetStore));
+            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
         controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
             name: "Init".into(),
             ..Default::default()

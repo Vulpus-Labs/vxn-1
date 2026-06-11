@@ -1,0 +1,94 @@
+schema = 1
+
+[meta]
+name = "Analog Brass"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "FM brass section: algo 1, a 4-op modulator chain into op3 plus op2 into op1, medium attack swell, op6 feedback edge. Mod wheel opens brightness."
+
+[params]
+algo = 1
+feedback = 3.0
+
+# Carrier Op 1 — medium attack so the section blares in, high sustain.
+op1-eg-r1 = 76
+op1-eg-l2 = 92
+op1-eg-l3 = 88
+op1-eg-r4 = 58
+
+# Op 2 -> Op 1 modulator.
+op2-level = 78
+op2-eg-r1 = 70
+op2-eg-l2 = 88
+op2-eg-l3 = 82
+op2-eg-r4 = 58
+
+# Carrier Op 3.
+op3-eg-r1 = 76
+op3-eg-l2 = 92
+op3-eg-l3 = 88
+op3-eg-r4 = 58
+
+# Modulator chain Op 6 -> Op 5 -> Op 4 -> Op 3.
+op4-level = 74
+op4-eg-r1 = 68
+op4-eg-l2 = 86
+op4-eg-l3 = 80
+op4-eg-r4 = 58
+
+op5-level = 62
+op5-eg-r1 = 68
+op5-eg-l2 = 84
+op5-eg-l3 = 76
+op5-eg-r4 = 58
+
+op6-level = 55
+op6-eg-r1 = 68
+op6-eg-l2 = 84
+op6-eg-l3 = 74
+op6-eg-r4 = 58
+
+# Gentle delayed vibrato.
+lfo2-shape = "Sine"
+lfo2-rate = 5.0
+lfo2-delay = 350.0
+lfo2-fade = 250.0
+
+# Small analog-style unison.
+stack-density = 2
+stack-detune = 7.0
+stack-spread = 0.35
+
+reverb-size = 0.45
+reverb-mix = 0.18
+delay-on = false
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.05
+
+# Mod wheel opens the section's brightness via the inner modulator.
+[[matrix]]
+slot = 1
+source = "mod-wheel"
+dest = "op4-level"
+curve = "lin"
+depth = 0.3
+
+# Lane spread -> per-carrier pan for unison width.
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = 1.0

@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use vxn2_app::{NoopPresetStore, tick_vxn2};
+use vxn2_engine::Vxn2PresetStore;
 use vxn2_engine::params::id_of;
 use vxn2_engine::shared::SharedParams;
 use vxn_core_app::Controller;
@@ -133,6 +134,45 @@ fn custom_set_matrix_row_routes_through_controller() {
     assert_eq!(row.dest, 17);
     assert!(row.active);
     assert!((row.depth - 0.5).abs() < 1e-5, "depth {} (want 0.5)", row.depth);
+}
+
+/// Full preset-load path: JS dispatches `{op:"load_factory", index}`; the
+/// shared backend parses it, the controller loads the factory blob through
+/// `Vxn2PresetStore` and restores it into the model. After one tick the
+/// store reflects the factory preset's params. Factory index 0 is
+/// `Brass/Analog Brass` (categories sort alpha) which uses algo 1, distinct
+/// from the default patch's algo 5 — a clean witness that the preset landed.
+#[test]
+fn load_factory_round_trips_into_shared_params() {
+    let shared = Arc::new(SharedParams::new());
+    let (mut controller, _view_rx, corpus) =
+        Controller::new(shared.clone(), Box::new(Vxn2PresetStore::new()));
+    // The published corpus carries the embedded factory bank.
+    {
+        let c = corpus.lock().unwrap();
+        assert!(c.factory.len() >= 5, "factory corpus too small: {}", c.factory.len());
+        assert_eq!(c.factory[0].category.as_deref(), Some("Brass"));
+    }
+
+    let algo = id_of("algo").unwrap();
+    assert_eq!(shared.get(algo), 5.0, "default patch should be algo 5");
+
+    simulate_ipc(&mut controller, r#"{"op":"load_factory","index":0}"#);
+    tick_vxn2(&mut controller);
+
+    assert_eq!(
+        shared.get(algo),
+        1.0,
+        "Analog Brass (factory 0) should load algo 1, got {}",
+        shared.get(algo)
+    );
+    // feedback 3.0 is part of that preset; the default patch is feedback 6.0.
+    let fb = id_of("feedback").unwrap();
+    assert!(
+        (shared.get(fb) - 3.0).abs() < 1e-4,
+        "feedback {} (want 3.0)",
+        shared.get(fb)
+    );
 }
 
 /// Unknown opcode is silently dropped — host/page version skew can't

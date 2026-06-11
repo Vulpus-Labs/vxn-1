@@ -453,6 +453,19 @@
       if (panels.presetBar && panels.presetBar.onView) {
         panels.presetBar.onView(ev);
       }
+      if (ev.kind === "preset_loaded" && panels.presetBrowser &&
+          panels.presetBrowser.setCurrentSource) {
+        panels.presetBrowser.setCurrentSource(ev.source || null);
+      }
+      return;
+    }
+    if (ev.kind === "preset_corpus_changed") {
+      // The corpus itself rides a separate `applyPresetCorpus` call the
+      // backend fires alongside this event. After a move/rename the backend
+      // sets `follow` to the preset's new path; jump the browser to it.
+      if (ev.follow && panels.presetBrowser && panels.presetBrowser.followPath) {
+        panels.presetBrowser.followPath(ev.follow);
+      }
       return;
     }
     if (ev.kind === "op_tab_changed") {
@@ -529,6 +542,18 @@
     }
   };
 
+  // Real corpus handler (overrides the bootstrap stub). The backend pushes
+  // this on first flush and after every disk-mutating preset op; forward it
+  // to the browser panel. Pushes that arrive before the panel binds are
+  // retained inside the panel (its setCorpus stores then renders on bind).
+  vxn.applyPresetCorpus = function (corpus) {
+    if (panels.presetBrowser && panels.presetBrowser.setCorpus) {
+      panels.presetBrowser.setCorpus(corpus);
+    } else {
+      vxn._lastCorpus = corpus;
+    }
+  };
+
   // ── Boot ──
   function boot() {
     const root = document;
@@ -563,6 +588,17 @@
     // (removed from CUSTOM_OPS above).
     if (panels.presetBar && panels.presetBar.bind) {
       panels.presetBar.bind(root, { dispatch: dispatch });
+    }
+
+    // Preset browser: renders the corpus list into the same browse <dialog>
+    // and dispatches load_factory / load_user + the user-management opcodes.
+    if (panels.presetBrowser && panels.presetBrowser.bind) {
+      panels.presetBrowser.bind(root, { dispatch: dispatch });
+    }
+    // Replay any corpus snapshot the bootstrap stub captured before bind.
+    if (vxn._lastCorpus) {
+      vxn.applyPresetCorpus(vxn._lastCorpus);
+      vxn._lastCorpus = null;
     }
 
     // Flush any view events that arrived between bootstrap and main.

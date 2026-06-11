@@ -41,6 +41,7 @@ const PANEL_ALGO_DIAGRAM_JS: &str = include_str!("../assets/panels/algo-diagram.
 const PANEL_OP_ROW_JS: &str = include_str!("../assets/panels/op-row.js");
 const PANEL_MOD_MATRIX_JS: &str = include_str!("../assets/panels/mod-matrix.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
+const PANEL_PRESET_BROWSER_JS: &str = include_str!("../assets/panels/preset-browser.js");
 const MAIN_JS: &str = include_str!("../assets/main.js");
 
 /// Open the VXN2 editor under `parent`. Wraps
@@ -100,11 +101,20 @@ fn build_faceplate_html() -> String {
         asset(dev.as_deref(), "panels/op-row.js", PANEL_OP_ROW_JS),
         asset(dev.as_deref(), "panels/mod-matrix.js", PANEL_MOD_MATRIX_JS),
         asset(dev.as_deref(), "panels/preset-bar.js", PANEL_PRESET_BAR_JS),
+        // Shared two-pane preset browser (vxn-core-ui-web), ESM markers
+        // stripped, spliced immediately before its VXN2 glue (which calls
+        // the `createPresetBrowser` it defines).
+        vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
+        asset(dev.as_deref(), "panels/preset-browser.js", PANEL_PRESET_BROWSER_JS),
         asset(dev.as_deref(), "main.js", MAIN_JS),
     ]
     .join("\n;\n");
     let html_tpl = asset(dev.as_deref(), "index.html", HTML_TEMPLATE);
-    let css = asset(dev.as_deref(), "style.css", FACEPLATE_CSS);
+    let css = format!(
+        "{}\n{}",
+        asset(dev.as_deref(), "style.css", FACEPLATE_CSS),
+        vxn_core_ui_web::PRESET_BROWSER_CSS,
+    );
     html_tpl
         .replace("__CSS__", &css)
         .replace("__BOOTSTRAP_JS__", &js_bundle)
@@ -788,5 +798,69 @@ mod tests {
             html.contains("vxn.dispatchTextInput = dispatchTextInput"),
             "dispatchTextInput not installed on vxn",
         );
+    }
+
+    /// Preset browser (two-pane, ported from VXN1): panel JS + floating
+    /// folders/presets markup must be in the served HTML, and main.js must
+    /// forward the corpus, highlight the loaded preset, and follow moves.
+    #[test]
+    fn build_faceplate_html_includes_preset_browser() {
+        let html = build_faceplate_html();
+        assert!(
+            html.contains("__vxn.panels.presetBrowser"),
+            "presetBrowser panel missing from bundle",
+        );
+        // Shared module spliced (the glue calls the factory it defines) and
+        // its ESM markers stripped so the inline <script> stays valid.
+        assert!(
+            html.contains("function createPresetBrowser"),
+            "shared preset-browser module not spliced into the bundle",
+        );
+        assert!(
+            html.contains("createPresetBrowser({"),
+            "glue does not instantiate the shared browser",
+        );
+        assert!(
+            !html.contains("export function createPresetBrowser"),
+            "ESM export marker leaked into the inline script",
+        );
+        // Floating two-pane markup (VXN1 ids).
+        for id in [
+            "id=\"browser-panel\"",
+            "id=\"browser-backdrop\"",
+            "id=\"browser-folders\"",
+            "id=\"browser-presets\"",
+            "id=\"browser-search-input\"",
+            "id=\"browser-search-clear\"",
+            "id=\"browser-close\"",
+        ] {
+            assert!(html.contains(id), "browser markup missing: {id}");
+        }
+        // main.js installs the real corpus handler + load-highlight +
+        // follow-path routes.
+        assert!(
+            html.contains("vxn.applyPresetCorpus = function"),
+            "main.js does not install applyPresetCorpus handler",
+        );
+        assert!(
+            html.contains("presetBrowser.setCurrentSource"),
+            "main.js does not route preset_loaded source to the browser",
+        );
+        assert!(
+            html.contains("presetBrowser.followPath"),
+            "main.js does not route preset_corpus_changed follow to the browser",
+        );
+        // The browser dispatches the full opcode set the shared backend parses.
+        for op in [
+            "load_factory", "load_user", "rename_preset", "delete_preset",
+            "move_preset", "rename_folder", "delete_folder", "new_folder",
+            "save_preset",
+        ] {
+            assert!(html.contains(op), "browser missing {op} dispatch");
+        }
+        // Two-pane / DnD / context-menu CSS ported.
+        assert!(html.contains(".browser-panes"), "two-pane CSS missing");
+        assert!(html.contains(".browser-submenu"), "move-to submenu CSS missing");
+        assert!(html.contains(".browser-row.dragging"), "drag-and-drop CSS missing");
     }
 }

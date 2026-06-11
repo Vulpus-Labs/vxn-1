@@ -264,10 +264,20 @@ pub fn open_editor(
 /// browser/preset/keys UI against that bridge, dispatch wires `init()` and
 /// the ViewEvent fan-out last.
 fn build_faceplate_html() -> String {
+    // The browser logic is shared (vxn-core-ui-web); splice it (ESM markers
+    // stripped) immediately before VXN1's `browser.js` glue, which calls the
+    // `createPresetBrowser` it defines. Its CSS is appended to the faceplate
+    // sheet.
+    let browser_js = format!(
+        "{}\n;\n{}",
+        strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
+        strip_esm_exports(BROWSER_JS),
+    );
+    let css = format!("{}\n{}", FACEPLATE_CSS, vxn_core_ui_web::PRESET_BROWSER_CSS);
     PLACEHOLDER_HTML
-        .replace("__CSS__", FACEPLATE_CSS)
+        .replace("__CSS__", &css)
         .replace("__BRIDGE_JS__", &strip_esm_exports(BRIDGE_JS))
-        .replace("__BROWSER_JS__", &strip_esm_exports(BROWSER_JS))
+        .replace("__BROWSER_JS__", &browser_js)
         .replace("__PANELS_JS__", &strip_esm_exports(PANELS_JS))
         .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
@@ -285,26 +295,11 @@ fn build_faceplate_html() -> String {
 /// splice already puts every binding in one shared scope, so cross-module
 /// refs resolve without the import).
 fn strip_esm_exports(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    for (i, line) in src.lines().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        // Imports drop to blank lines to keep line counts stable for
-        // stack traces — concat-side scope already has the bindings.
-        if line.starts_with("import ") {
-            continue;
-        }
-        let stripped = line
-            .strip_prefix("export default ")
-            .or_else(|| line.strip_prefix("export "))
-            .unwrap_or(line);
-        out.push_str(stripped);
-    }
-    if src.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+    // Single source of truth lives in the shared crate now (both synths and
+    // the shared preset-browser asset strip identically). Kept as a thin
+    // local alias so the four splice call sites + the unit test below read
+    // unchanged.
+    vxn_core_ui_web::strip_esm_exports(src)
 }
 
 /// Tempo-sync subdivision labels (vxn_app::sync::SUBDIVISIONS), spliced into
@@ -1213,15 +1208,18 @@ mod tests {
         // popup for spacebar-safe entry) + a folder dropdown over user
         // folders. The modal posts `save_preset { name, folder }`.
         assert!(assembled().contains("openSaveAsModal"));
-        // The name field reuses `promptText` so Space and friends still
-        // route through the native NSWindow on macOS.
-        assert!(assembled().contains("window.vxn.promptText('Preset name'"));
+        // The name field reuses the injected `promptText` (VXN1's glue wires
+        // it to `window.vxn.promptText`) so Space and friends still route
+        // through the native NSWindow on macOS.
+        assert!(assembled().contains("promptText('Preset name'"));
         // Folder choices come from a `<select>` populated from the corpus.
         assert!(assembled().contains("folderOptions"));
         assert!(assembled().contains(".save-as-select"));
-        // Modal anchors over the faceplate, not the browser panel — so
-        // Save As works whether the browser is open or not.
-        assert!(assembled().contains("getElementById('faceplate').appendChild(wrap)"));
+        // Modal anchors over the faceplate root (injected by the glue), not
+        // the browser panel — so Save As works whether the browser is open
+        // or not.
+        assert!(assembled().contains("faceplateRoot().appendChild(wrap)"));
+        assert!(assembled().contains("faceplateRoot: () => document.getElementById('faceplate')"));
         // Save button is disabled until the name field is non-empty
         // (gateOk toggles the disabled attribute directly).
         assert!(assembled().contains("gateOk"));

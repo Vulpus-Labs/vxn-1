@@ -9,5 +9,11 @@ publish = false
 vxn2-dsp = { workspace = true }
 vxn-core-app = { workspace = true }
 vxn2-app = { workspace = true }
+# Preset format (E007 lineage): name-keyed TOML, sparse-vs-descriptor-default.
+# Main-thread only — the audio path never touches serde/toml. `include_dir`
+# bakes the factory bank into the binary at compile time.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+include_dir = "0.7"
 
 [dev-dependencies]

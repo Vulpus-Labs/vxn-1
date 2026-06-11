@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { folderOptions, UNCATEGORISED } from '../browser.js';
+import { folderOptions, UNCATEGORISED } from '../../../../../crates/vxn-core-ui-web/assets/preset-browser.js';
 
 // `folderOptions(corpus)` populates the Save As folder dropdown: always
 // leads with the virtual root sentinel, followed by alpha-insensitive

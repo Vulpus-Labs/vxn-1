@@ -1,0 +1,106 @@
+schema = 1
+
+[meta]
+name = "FM Strings"
+author = "Vulpus Labs"
+category = "Strings"
+comment = "Lush ensemble strings: algo 22 (four carriers fanned from op6, op2->op1), slow bowed attack, 8-voice detuned unison, big hall reverb. Slow auto-vibrato."
+
+[params]
+algo = 22
+feedback = 2.0
+
+# Carrier Op 1 — slow bowed swell, high sustain, slow release, full keyboard.
+op1-eg-r1 = 46
+op1-eg-l2 = 92
+op1-eg-l3 = 90
+op1-eg-r4 = 34
+op1-ks-r-depth = 0
+
+# Op 2 -> Op 1 modulator.
+op2-level = 64
+op2-eg-r1 = 44
+op2-eg-l2 = 88
+op2-eg-l3 = 84
+op2-eg-r4 = 34
+
+# Carrier Op 3.
+op3-eg-r1 = 46
+op3-eg-l2 = 92
+op3-eg-l3 = 90
+op3-eg-r4 = 34
+op3-ks-r-depth = 0
+
+# Carrier Op 4.
+op4-eg-r1 = 46
+op4-eg-l2 = 92
+op4-eg-l3 = 90
+op4-eg-r4 = 34
+op4-ks-r-depth = 0
+
+# Carrier Op 5.
+op5-eg-r1 = 46
+op5-eg-l2 = 92
+op5-eg-l3 = 90
+op5-eg-r4 = 34
+op5-ks-r-depth = 0
+
+# Op 6 -> fans into carriers 3, 4, 5; carries feedback.
+op6-level = 55
+op6-eg-r1 = 44
+op6-eg-l2 = 86
+op6-eg-l3 = 82
+op6-eg-r4 = 34
+
+# Slow, deep unison-y auto-vibrato.
+lfo2-shape = "Sine"
+lfo2-rate = 4.5
+lfo2-delay = 600.0
+lfo2-fade = 800.0
+
+# Wide 8-voice detuned ensemble.
+stack-density = 8
+stack-detune = 18.0
+stack-spread = 0.85
+
+# Big hall.
+reverb-size = 0.8
+reverb-decay = 4.5
+reverb-mix = 0.4
+delay-on = false
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.03
+
+# Lane spread -> per-carrier pan for ensemble width.
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = -1.0

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { folderValue } from '../browser.js';
+import { folderValue } from '../../../../../crates/vxn-core-ui-web/assets/preset-browser.js';
 
 // `folderValue` is the inverse of the Save As `<select>` value → folder
 // name mapping. The virtual user-root has no name; we sentinel it as

@@ -2491,6 +2491,9 @@ version = "0.0.8"
 name = "vxn2-engine"
 version = "0.0.8"
 dependencies = [
+ "include_dir",
+ "serde",
+ "toml",
  "vxn-core-app",
  "vxn2-app",
  "vxn2-dsp",

@@ -1,0 +1,70 @@
+schema = 1
+
+[meta]
+name = "Solo Lead"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "Mono FM lead: solo + legato + glide, algo 1 with a bright 2:1 modulator and op6 feedback. Auto-vibrato swells in on held notes; mod wheel adds bite. Slap delay."
+
+[params]
+algo = 1
+feedback = 5.0
+
+# Mono, legato, with glide for expressive playing.
+assign-mode = "Solo"
+legato = true
+glide-time = 40.0
+stack-density = 1
+
+# Carrier Op 1 — fast attack (default), high sustain.
+op1-eg-l2 = 94
+op1-eg-l3 = 88
+
+# Op 2 -> Op 1: 2:1 for a bright, hollow lead.
+op2-num = 2
+op2-level = 82
+op2-eg-l2 = 90
+op2-eg-l3 = 82
+
+# Carrier Op 3.
+op3-eg-l2 = 94
+op3-eg-l3 = 88
+
+# Modulator chain Op 6 -> Op 5 -> Op 4 -> Op 3.
+op4-level = 70
+op4-eg-l2 = 88
+op4-eg-l3 = 80
+op5-level = 65
+op5-eg-l2 = 86
+op5-eg-l3 = 78
+op6-level = 60
+op6-eg-l2 = 84
+op6-eg-l3 = 76
+
+# Auto-vibrato: sine, delayed + faded so it blooms on sustain.
+lfo2-shape = "Sine"
+lfo2-rate = 5.5
+lfo2-delay = 350.0
+lfo2-fade = 200.0
+
+# Slap delay, small room.
+delay-time = 250.0
+delay-sync = false
+delay-feedback = 0.32
+delay-mix = 0.16
+reverb-size = 0.3
+reverb-mix = 0.12
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.06
+
+[[matrix]]
+slot = 1
+source = "mod-wheel"
+dest = "op4-level"
+curve = "lin"
+depth = 0.35

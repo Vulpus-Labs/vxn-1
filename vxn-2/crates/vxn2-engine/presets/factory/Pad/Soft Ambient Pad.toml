@@ -1,0 +1,124 @@
+schema = 1
+
+[meta]
+name = "Soft Ambient Pad"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "Slow, breathing FM pad: algo 5 with gentle modulators, very slow attack/release, 6-voice wide unison. Mod-env opens harmonics; LFO2 shimmer; huge reverb + ping-pong delay."
+
+# Algo 5 is the default; gentle op6 feedback.
+[params]
+feedback = 1.0
+
+# Carrier Op 1 — very slow attack, near-full sustain, long release, full range.
+op1-eg-r1 = 28
+op1-eg-l2 = 95
+op1-eg-l3 = 92
+op1-eg-r4 = 22
+op1-ks-r-depth = 0
+
+# Op 2 -> Op 1: soft modulator (low index), slowly opened by the mod-env.
+op2-level = 35
+op2-eg-r1 = 28
+op2-eg-l2 = 88
+op2-eg-l3 = 84
+op2-eg-r4 = 22
+
+# Carrier Op 3.
+op3-eg-r1 = 28
+op3-eg-l2 = 95
+op3-eg-l3 = 92
+op3-eg-r4 = 22
+op3-ks-r-depth = 0
+
+# Op 4 -> Op 3.
+op4-level = 38
+op4-eg-r1 = 28
+op4-eg-l2 = 88
+op4-eg-l3 = 84
+op4-eg-r4 = 22
+
+# Carrier Op 5, detuned for chorusing.
+op5-detune = -4
+op5-eg-r1 = 28
+op5-eg-l2 = 95
+op5-eg-l3 = 92
+op5-eg-r4 = 22
+op5-ks-r-depth = 0
+
+# Op 6 -> Op 5: soft modulator, carries feedback.
+op6-detune = 4
+op6-level = 35
+op6-eg-r1 = 28
+op6-eg-l2 = 88
+op6-eg-l3 = 84
+op6-eg-r4 = 22
+
+# Slow drift LFO.
+lfo2-shape = "Sine"
+lfo2-rate = 0.8
+lfo2-fade = 1200.0
+
+# Slow mod-env to gradually open the harmonics (routed below).
+mod-env-a = 1500.0
+mod-env-d = 2000.0
+mod-env-s = 0.8
+mod-env-r = 1400.0
+
+# Wide, soft 6-voice unison.
+stack-density = 6
+stack-detune = 12.0
+stack-spread = 0.9
+
+# Huge ambient tail + ping-pong delay.
+reverb-size = 0.85
+reverb-decay = 6.0
+reverb-mix = 0.45
+delay-feedback = 0.55
+delay-mix = 0.22
+delay-pingpong = true
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.02
+
+# Mod-env slowly opens the inner modulator -> evolving timbre.
+[[matrix]]
+slot = 1
+source = "mod-env"
+dest = "op2-level"
+curve = "lin"
+depth = 0.35
+
+# LFO2 shimmer on a second modulator.
+[[matrix]]
+slot = 2
+source = "lfo2"
+dest = "op4-level"
+curve = "lin"
+depth = 0.15
+
+# Lane spread -> per-carrier pan for stereo width.
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 1.0

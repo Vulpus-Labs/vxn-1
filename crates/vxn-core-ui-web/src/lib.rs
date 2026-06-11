@@ -32,6 +32,51 @@ pub use text_input::prompt_text;
 /// a giant string. 100 KB is a sane cap.
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 100_000;
 
+/// Shared preset browser ES module (two-pane folders/presets panel,
+/// search, context menu, drag-and-drop, modals, follow-path). Synth-
+/// agnostic: each synth splices this (after [`strip_esm_exports`]) into
+/// its inline `<script>`, then a tiny glue calls `createPresetBrowser(cfg)`
+/// with its own bridge adapter. The ESM `export` markers exist so the
+/// Node/vitest suite can `import` the pure helpers + the factory; they are
+/// stripped at splice time (module syntax is illegal in an inline script).
+pub const PRESET_BROWSER_JS: &str = include_str!("../assets/preset-browser.js");
+
+/// Stylesheet for the shared preset browser. Spliced into each synth's
+/// faceplate `<style>`; uses CSS custom properties (`--panel-bg`,
+/// `--ctl-value`, `--ctl-label`, `--panel-corner`, `--glyph-active`,
+/// `--text`, `--pad-outer`, `--banner-h`, `--preset-bar-h`, `--row-vgap`,
+/// `--editor-w`) that both synths define.
+pub const PRESET_BROWSER_CSS: &str = include_str!("../assets/preset-browser.css");
+
+/// Drop ESM module syntax from every line of `src` so an ESM-authored
+/// asset can be inlined into a single `<script>` (where `export` / `import`
+/// are syntax errors). `export const X = …` / `export function X …` become
+/// bare declarations; `import …;` lines drop to blank lines (kept as blanks
+/// so line numbers — hence stack traces — line up). The splice already puts
+/// every binding in one shared script scope, so cross-module references
+/// resolve without the import. Shared so both synth faceplate crates and
+/// any other ESM-authored shared asset strip identically.
+pub fn strip_esm_exports(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for (i, line) in src.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.starts_with("import ") {
+            continue;
+        }
+        let stripped = line
+            .strip_prefix("export default ")
+            .or_else(|| line.strip_prefix("export "))
+            .unwrap_or(line);
+        out.push_str(stripped);
+    }
+    if src.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 /// User-supplied parse hook for `UiEvent::Custom` payloads. Called from
 /// the WebView IPC handler when [`parse_ui_event_default`] returns
 /// `None`. The hook receives the already-parsed JSON value and the

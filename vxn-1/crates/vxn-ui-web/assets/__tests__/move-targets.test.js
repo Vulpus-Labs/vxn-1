@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { moveTargets, UNCATEGORISED } from '../browser.js';
+import { moveTargets, UNCATEGORISED } from '../../../../../crates/vxn-core-ui-web/assets/preset-browser.js';
 
 // `moveTargets(currentName, corpus)` builds the user-side context-menu
 // "Move to ▸" list. Root (`name: null`) leads when present and the user is

@@ -849,47 +849,6 @@ html, body {
 }
 .vxn-toast.vxn-toast-visible { opacity: 1; }
 
-/* Browse-preset stub <dialog> (ticket 0029). Empty-state shell until
- * the preset epic ships. */
-.vxn-browse-dialog {
-  background: #16191e;
-  color: var(--text);
-  border: 1px solid #2a2e35;
-  border-radius: 4px;
-  padding: 0;
-  min-width: 320px;
-  max-width: 560px;
-}
-.vxn-browse-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
-.vxn-browse-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid #2a2e35;
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  color: var(--banner-fg);
-}
-.vxn-browse-header h2 { margin: 0; font-size: 12px; font-weight: 600; }
-.vxn-browse-close {
-  background: transparent;
-  color: inherit;
-  border: none;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
-}
-.vxn-browse-close:hover { color: var(--banner-fg); }
-.vxn-browse-empty {
-  margin: 0;
-  padding: 16px;
-  color: var(--ctl-label);
-  text-align: center;
-  font-size: 13px;
-}
-
 /* In-page text-input fallback (ticket 0030). Used on Linux, where the
  * native NSWindow / WS_POPUP primitive isn't available. Sized like the
  * native popups (320 × 84) so a faceplate that double-clicks doesn't

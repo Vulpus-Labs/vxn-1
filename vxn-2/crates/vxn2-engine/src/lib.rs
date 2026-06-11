@@ -9,15 +9,19 @@
 pub mod alloc;
 pub mod default_patch;
 pub mod engine;
+pub mod factory;
 pub mod ftz;
 pub mod master;
 pub mod matrix;
 pub mod modulation;
 pub mod params;
+pub mod preset;
+pub mod preset_io;
 pub mod shared;
 pub mod sync;
 
 pub use ftz::ScopedFlushToZero;
+pub use preset_io::Vxn2PresetStore;
 pub use sync::{rate_partner_clap_id, sync_aware_display, sync_pairs, sync_partner_clap_id};
 pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id};
 /// Tempo-sync subdivisions re-exported for the CLAP shell's sync-aware

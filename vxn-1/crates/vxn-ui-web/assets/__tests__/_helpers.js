@@ -67,8 +67,29 @@ export function installVxn(opcodes, { promptValue = null } = {}) {
   return { send, sendCalls };
 }
 
+// The browser logic now lives in the shared crate; `browser.js` is just the
+// runtime glue (it reads `window.vxn` at load, so it isn't importable in
+// isolation). Tests drive the shared factory directly with a VXN1-shaped
+// adapter built from the `window.vxn` stub `installVxn` set up — the same
+// code path the glue wires at runtime.
 export async function loadBrowserPanel() {
   vi.resetModules();
-  const { browserPanel } = await import('../browser.js');
-  return browserPanel;
+  // Literal specifier (not a variable) so vite can statically resolve the
+  // cross-crate import; the path is allow-listed via server.fs in
+  // vitest.config.js.
+  const { createPresetBrowser } = await import(
+    '../../../../../crates/vxn-core-ui-web/assets/preset-browser.js'
+  );
+  // Late-bind through `window.vxn` so tests that reassign `send` /
+  // `promptText` after the panel exists are honoured — matching VXN1's
+  // original live `window.vxn.*` references.
+  const panel = createPresetBrowser({
+    send: new Proxy({}, {
+      get: (_t, op) => (...args) => globalThis.window.vxn.send[op](...args),
+    }),
+    promptText: (title, initial, cb) => globalThis.window.vxn.promptText(title, initial, cb),
+    faceplateRoot: () => document.getElementById('faceplate'),
+  });
+  panel.bind();
+  return panel;
 }
