@@ -123,6 +123,7 @@
     "ks-l-depth":  { kind: "ks-l-depth" },
     "ks-r-depth":  { kind: "ks-r-depth" },
     "ks-rate":     { kind: "ks-rate" },
+    "ratio-mode":  { kind: "button-group" },
   };
 
   function isCarrier(algoNum, op) {
@@ -297,12 +298,52 @@
       return wrap;
     }
 
-    function makeRatioButtonGroup(parent) {
+    // Ratio / Fixed tuning selector for the current op. Bound to the
+    // `op{n}-ratio-mode` CLAP enum (0 = Ratio, 1 = Fixed). `faders` carries
+    // the wraps to grey per mode: `.ratio` (Hz) inert in Ratio mode,
+    // `.fixed` (num/den/fine/cents) inert in Fixed mode.
+    function makeRatioButtonGroup(parent, faders) {
+      const name = "op" + currentOp + "-ratio-mode";
+      const desc = vxn.paramsByName[name];
       const cgrp = document.createElement("div");
-      cgrp.className = "cgrp";
+      cgrp.className = "op-tuning-mode";
       cgrp.innerHTML =
-        '<div class="bgrp"><div class="bgrp-row"><button class="bgrp-btn active" data-op-tuning="ratio">Ratio</button><button class="bgrp-btn" data-op-tuning="fixed">Fixed</button></div></div>';
+        '<div class="bgrp"><div class="bgrp-row op-tuning-mode-row">' +
+        '<button class="bgrp-btn" data-op-tuning="0">Ratio</button>' +
+        '<button class="bgrp-btn" data-op-tuning="1">Fixed</button>' +
+        '</div></div>';
       parent.appendChild(cgrp);
+      const btns = cgrp.querySelectorAll("[data-op-tuning]");
+
+      function apply(modeIdx) {
+        for (let i = 0; i < btns.length; i++) {
+          const idx = parseInt(btns[i].getAttribute("data-op-tuning"), 10);
+          btns[i].classList.toggle("active", idx === modeIdx);
+        }
+        const fixed = modeIdx === 1;
+        for (let i = 0; i < faders.ratio.length; i++) {
+          if (faders.ratio[i]) faders.ratio[i].classList.toggle("disabled", !fixed);
+        }
+        for (let i = 0; i < faders.fixed.length; i++) {
+          if (faders.fixed[i]) faders.fixed[i].classList.toggle("disabled", fixed);
+        }
+      }
+
+      if (!desc) { apply(0); return; }
+      const localCtx = ctx.makeCtxForId(desc, desc.id);
+      for (let i = 0; i < btns.length; i++) {
+        const b = btns[i];
+        b.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          const idx = parseInt(b.getAttribute("data-op-tuning"), 10);
+          localCtx.setParam(idx);
+          apply(idx); // optimistic; host echo confirms via the registered prim
+        });
+      }
+      const prim = { set: function (plain) { apply(Math.round(plain) === 1 ? 1 : 0); } };
+      ctx.register(desc.id, prim, cgrp);
+      opDetailPrims.push({ id: desc.id, prim: prim });
+      apply(Math.round(desc.default) === 1 ? 1 : 0);
     }
 
     function makeEgGraph(parent) {
@@ -500,20 +541,26 @@
       clearOpDetailPrims();
       opDetailEl.innerHTML = "";
 
-      // Column 1: Tuning
+      // Column 1: Tuning. Sliders on top (Hz rightmost, greyed in Ratio
+      // mode); the Ratio/Fixed selector sits below them. Slider tracks are
+      // tall enough (.op-tuning-row) that their bottoms line up with the
+      // envelope graph's bottom in the next column.
       const col1 = document.createElement("div");
-      col1.className = "op-col";
+      col1.className = "op-col op-tuning";
       col1.style.cssText = "width: 160px; flex: 0 0 160px;";
       col1.innerHTML = '<div class="op-col-title">Tuning</div>';
-      makeRatioButtonGroup(col1);
       const tRow = document.createElement("div");
-      tRow.className = "op-col-row";
+      tRow.className = "op-col-row op-tuning-row";
       col1.appendChild(tRow);
-      makeFader(tRow, "Num", "num");
-      makeFader(tRow, "Den", "denom");
-      makeFader(tRow, "Hz", "fixed-hz");
-      makeFader(tRow, "Fine", "fine");
-      makeFader(tRow, "Cents", "detune");
+      const numW = makeFader(tRow, "Num", "num");
+      const denW = makeFader(tRow, "Den", "denom");
+      const fineW = makeFader(tRow, "Fine", "fine");
+      const centsW = makeFader(tRow, "Cents", "detune");
+      const hzW = makeFader(tRow, "Hz", "fixed-hz");
+      makeRatioButtonGroup(col1, {
+        ratio: [hzW], // inert in Ratio mode
+        fixed: [numW, denW, fineW, centsW], // inert in Fixed mode
+      });
       opDetailEl.appendChild(col1);
 
       // Column 2: EG graph
