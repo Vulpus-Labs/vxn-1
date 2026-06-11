@@ -12,6 +12,7 @@
   const PARAMS = __PARAMS_JSON__;
   const MATRIX_LISTS = __MATRIX_LISTS_JSON__;
   const DEFAULT_PATCH = __DEFAULT_PATCH_JSON__;
+  const SUBDIVISIONS = __SUBDIVISIONS_JSON__;
   const byName = Object.create(null);
   for (let i = 0; i < PARAMS.length; i++) {
     byName[PARAMS[i].name] = PARAMS[i];
@@ -39,6 +40,9 @@
     params: PARAMS,
     paramsByName: byName,
     defaultPatch: DEFAULT_PATCH,
+    // Tempo-sync subdivision labels (coarse→fine). A synced rate/time fader
+    // maps its normalised position into this list while dragging.
+    subdivisions: SUBDIVISIONS,
     matrix: {
       sources: (MATRIX_LISTS && MATRIX_LISTS.sources) || [],
       dests: (MATRIX_LISTS && MATRIX_LISTS.dests) || [],

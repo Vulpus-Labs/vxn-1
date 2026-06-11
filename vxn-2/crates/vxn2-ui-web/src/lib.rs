@@ -90,7 +90,8 @@ fn build_faceplate_html() -> String {
     let bootstrap = asset(dev.as_deref(), "bootstrap.js", BOOTSTRAP_JS)
         .replace("__PARAMS_JSON__", &params_json)
         .replace("__MATRIX_LISTS_JSON__", &matrix_lists_json)
-        .replace("__DEFAULT_PATCH_JSON__", &default_patch_json);
+        .replace("__DEFAULT_PATCH_JSON__", &default_patch_json)
+        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json());
     let js_bundle = [
         bootstrap,
         asset(dev.as_deref(), "panels/knob.js", PANEL_KNOB_JS),
@@ -335,6 +336,19 @@ pub fn build_default_patch_json() -> String {
     let values = vxn2_engine::default_patch::default_param_values();
     serde_json::Value::Array(values.iter().map(|v| serde_json::json!(*v)).collect())
         .to_string()
+}
+
+/// Tempo-sync subdivision labels (`vxn2_dsp::lfo::SUBDIVISIONS`, coarse→fine)
+/// spliced into bootstrap as `__SUBDIVISIONS_JSON__`. A synced rate/time
+/// fader reads this list while dragging to show the division its position
+/// selects — the same mapping `sync_aware_display` uses on the Rust side, so
+/// the live drag label and the engine echo agree. See `panels/fader.js`.
+pub fn build_subdivisions_json() -> String {
+    let labels: Vec<JsonValue> = vxn2_engine::SUBDIVISIONS
+        .iter()
+        .map(|s| serde_json::json!(s.label))
+        .collect();
+    serde_json::Value::Array(labels).to_string()
 }
 
 #[cfg(test)]

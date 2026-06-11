@@ -9,7 +9,7 @@ comment = "DX7 ROM1A E.PIANO-style tine electric piano: algo 5, op6 feedback, ve
 # Algo 5 (three 2-op stacks: 2->1, 4->3, 6->5) is the descriptor default, so
 # it is omitted. feedback rides op6 (the algo's structural FB op).
 [params]
-feedback = 6.0
+feedback = 2.5
 
 # Op 1 — carrier (pair A body).
 op1-detune = 2

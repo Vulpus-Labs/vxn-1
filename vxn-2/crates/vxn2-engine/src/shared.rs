@@ -849,11 +849,7 @@ impl EngineParams {
     /// No allocation; no per-id branching beyond what the section readers
     /// need (enum decode, clamp). Call once per control block.
     pub fn snapshot_from<P: ParamView>(&mut self, shared: &P) {
-        // LFO2 sync_index is patch state (not CLAP), so preserve it across
-        // the snapshot like LFO1 / delay do below.
-        let prev_lfo2_idx = self.patch.voice.lfo2.sync_index;
         self.patch = read_patch(shared);
-        self.patch.voice.lfo2.sync_index = prev_lfo2_idx;
 
         // Matrix CLAP-automatable depths.
         for s in 0..N_CLAP_DEPTH_SLOTS {
@@ -874,18 +870,28 @@ impl EngineParams {
         // Patch-level block.
         let pb = PATCH_BASE;
 
+        // Sync subdivision is derived from the rate / time fader's own
+        // position (the fader *is* the selector, matching VXN1) via the same
+        // helper the display uses — so dragging the slider while sync is on
+        // walks the subdivisions. `sync_index` is unused while sync is off.
         self.mod_params.lfo1 = Lfo1Params {
             shape: lfo_shape_from(shared.get(pb + OFF_LFO1) as i32),
             rate_hz: shared.get(pb + OFF_LFO1 + 1),
             sync: shared.get(pb + OFF_LFO1 + 2) >= 0.5,
-            sync_index: self.mod_params.lfo1.sync_index, // patch state (not CLAP)
+            sync_index: crate::sync::sync_index_for(
+                pb + OFF_LFO1 + 1,
+                shared.get(pb + OFF_LFO1 + 1),
+            ),
         };
 
         self.delay = StereoDelayParams {
             on: shared.get(pb + OFF_DELAY) >= 0.5,
             time_ms: shared.get(pb + OFF_DELAY + 1),
             sync: shared.get(pb + OFF_DELAY + 2) >= 0.5,
-            sync_index: self.delay.sync_index, // patch state (not CLAP)
+            sync_index: crate::sync::sync_index_for(
+                pb + OFF_DELAY + 1,
+                shared.get(pb + OFF_DELAY + 1),
+            ),
             feedback: shared.get(pb + OFF_DELAY + 3),
             mix: shared.get(pb + OFF_DELAY + 4),
             pingpong: shared.get(pb + OFF_DELAY + 5) >= 0.5,
@@ -983,9 +989,9 @@ fn read_lfo2<P: ParamView>(s: &P, base: usize) -> Lfo2Params {
         delay_ms: s.get(base + 2),
         fade_ms: s.get(base + 3),
         sync: s.get(base + 4) >= 0.5,
-        // Overwritten by the caller from the prior snapshot — see
-        // [`EngineParams::snapshot_from`].
-        sync_index: 6,
+        // Derived from the rate fader's position, same as LFO1 / delay — the
+        // slider selects the subdivision while sync is on.
+        sync_index: crate::sync::sync_index_for(base + 1, s.get(base + 1)),
     }
 }
 

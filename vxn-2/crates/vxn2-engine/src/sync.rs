@@ -35,6 +35,18 @@ pub fn rate_partner_clap_id(id: usize) -> Option<usize> {
     None
 }
 
+/// Subdivision index a synced rate / time fader selects at its current
+/// `value`. The fader *is* the subdivision selector (matching VXN1): its
+/// normalised position maps linearly across [`SUBDIVISIONS`]. Shared by the
+/// engine snapshot (which resolves it to Hz / seconds at audio rate) and
+/// [`sync_aware_display`] (which resolves it to a label) so the two can never
+/// disagree about which division the slider is on.
+pub fn sync_index_for(rate_id: usize, value: f32) -> usize {
+    crate::params::desc(rate_id)
+        .map(|d| index_from_norm(d.to_normalised(value)))
+        .unwrap_or(0)
+}
+
 /// Sync-aware display string for a CLAP param. When `id` is a
 /// rate / time param whose sync partner is on, returns the matching
 /// subdivision label; otherwise the descriptor's normal unit-formatted
@@ -45,9 +57,7 @@ pub fn sync_aware_display(params: &SharedParams, id: usize, value: f32) -> Strin
     };
     if let Some(sync_id) = sync_partner_clap_id(id) {
         if params.get(sync_id) >= 0.5 {
-            return SUBDIVISIONS[index_from_norm(desc.to_normalised(value))]
-                .label
-                .to_string();
+            return SUBDIVISIONS[sync_index_for(id, value)].label.to_string();
         }
     }
     desc.display(value)

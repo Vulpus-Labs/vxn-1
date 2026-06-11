@@ -146,6 +146,34 @@
     return vxn.paramsByName[name] || null;
   }
 
+  // ── Tempo-sync rate/time faders ──
+  // Mirror of `vxn2_engine::sync::sync_pairs`: each rate/time param and its
+  // sync-toggle partner. While the partner is on, the fader *is* the
+  // subdivision selector (matching VXN1) — its position picks a division and
+  // the readout shows that label instead of Hz/ms. The engine derives the
+  // same index from the same normalised position, so audio and label agree.
+  const SYNC_PAIR_NAMES = [
+    ["lfo1-rate", "lfo1-sync"],
+    ["delay-time", "delay-sync"],
+    ["lfo2-rate", "lfo2-sync"],
+  ];
+  // rate CLAP id → sync-toggle CLAP id.
+  const syncPartnerByRateId = Object.create(null);
+  for (let i = 0; i < SYNC_PAIR_NAMES.length; i++) {
+    const rateId = resolveParamId(SYNC_PAIR_NAMES[i][0]);
+    const syncId = resolveParamId(SYNC_PAIR_NAMES[i][1]);
+    if (rateId >= 0 && syncId >= 0) syncPartnerByRateId[rateId] = syncId;
+  }
+
+  // Subdivision label a normalised [0,1] fader position selects. Mirrors
+  // `vxn2_dsp::lfo::index_from_norm`: round(norm * (N-1)).
+  function subdivisionLabel(norm) {
+    const t = vxn.subdivisions || [];
+    if (!t.length) return "";
+    const n = norm < 0 ? 0 : norm > 1 ? 1 : norm;
+    return t[Math.round(n * (t.length - 1))];
+  }
+
   // ── Bound primitives, indexed by CLAP id ──
   // Each entry is an array (a param can drive several DOM controls if
   // a future layout duplicates it; today it's always <= 1 but no point
@@ -237,9 +265,17 @@
   // id, and the gesture helpers. Centralised so the throttle / bracket
   // protocol stays consistent.
   function makeCtxForId(desc, id) {
+    const syncId = syncPartnerByRateId[id];
     return {
       desc: desc,
       id: id,
+      // Returns the subdivision label for `norm` when this is a rate/time
+      // fader whose sync toggle is currently on; otherwise null (caller
+      // falls back to the descriptor's unit display). Reads `livePlain` so
+      // it tracks the toggle without re-binding.
+      syncLabel: syncId == null ? null : function (norm) {
+        return (livePlain[syncId] || 0) >= 0.5 ? subdivisionLabel(norm) : null;
+      },
       beginGesture: function () { if (id >= 0) dispatch("begin_gesture", { id: id }); },
       setNorm: function (n) { if (id >= 0) dispatch("set_param_norm", { id: id, norm: n }); },
       setParam: function (plain) { if (id >= 0) dispatch("set_param", { id: id, plain: plain }); },

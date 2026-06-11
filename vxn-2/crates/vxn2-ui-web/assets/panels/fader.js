@@ -113,12 +113,24 @@
     let currentNorm = paramToNorm(desc, currentPlain);
     let hovered = false;
 
+    // Display text for the value popup. When this is a synced rate/time
+    // fader (ctx.syncLabel returns a label) the readout is the subdivision
+    // its position selects — computed locally so it walks the divisions live
+    // during a drag, when no engine echo arrives. Otherwise unit-formatted.
+    function displayText() {
+      if (ctx.syncLabel) {
+        const lbl = ctx.syncLabel(currentNorm);
+        if (lbl != null) return lbl;
+      }
+      return formatDisplay(desc, currentPlain);
+    }
+
     function paint() {
       const pct = (currentNorm * 100).toFixed(2) + "%";
       if (fill) fill.style.height = pct;
       if (thumb) thumb.style.bottom = pct;
       if (hovered || dragging) {
-        updatePop(formatDisplay(desc, currentPlain));
+        updatePop(displayText());
       }
     }
 
@@ -150,7 +162,7 @@
 
     function onPointerEnter(ev) {
       hovered = true;
-      if (!dragging) showPop(formatDisplay(desc, currentPlain), ev.clientX, ev.clientY);
+      if (!dragging) showPop(displayText(), ev.clientX, ev.clientY);
     }
     function onPointerLeave() {
       hovered = false;
@@ -172,7 +184,7 @@
       if (el.setPointerCapture && pointerId !== undefined) {
         try { el.setPointerCapture(pointerId); } catch (_) {}
       }
-      showPop(formatDisplay(desc, currentPlain), ev.clientX, ev.clientY);
+      showPop(displayText(), ev.clientX, ev.clientY);
       ctx.beginGesture();
     }
 
