@@ -47,10 +47,21 @@ pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Engine control-block size in samples. The audio-thread loop in 0016 will
-/// slice host buffers into chunks of at most this size before driving
-/// `Engine::process_block`.
+/// Engine control-block size in samples. The audio-thread loop slices host
+/// buffers into chunks of at most this size before driving
+/// `Engine::process_block` — block-rate state (LFO sampling, matrix eval,
+/// EG ticks) must advance at this rate regardless of host buffer size, or
+/// the 0074 level/pan ramps interpolate too coarsely and zipper returns at
+/// large buffers (ticket 0075).
 const CONTROL_BLOCK: usize = 32;
+
+/// Subdivide `[start, end)` into chunks of at most [`CONTROL_BLOCK`]
+/// samples. The tail chunk may be shorter; an empty range yields nothing.
+fn control_chunks(start: usize, end: usize) -> impl Iterator<Item = (usize, usize)> {
+    (start..end)
+        .step_by(CONTROL_BLOCK)
+        .map(move |p| (p, (p + CONTROL_BLOCK).min(end)))
+}
 
 pub struct VxnPlugin;
 
@@ -351,8 +362,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
                 dispatch_event(engine, local, shared, event);
             }
             let (start, end) = batch_range(event_batch.sample_bounds(), frames);
-            if start < end {
-                engine.process_block(&mut l[start..end], &mut r[start..end]);
+            for (a, b) in control_chunks(start, end) {
+                engine.process_block(&mut l[a..b], &mut r[a..b]);
             }
         }
 
@@ -751,6 +762,30 @@ mod tests {
             PluginMainThreadParams::count(&mut main) as usize,
             TOTAL_PARAMS
         );
+    }
+
+    // ── control_chunks ─────────────────────────────────────────────────────
+
+    /// Render slicing (ticket 0075): every chunk is at most CONTROL_BLOCK
+    /// long, chunks tile the range exactly, the ragged tail is preserved,
+    /// and an empty batch range yields no chunks.
+    #[test]
+    fn control_chunks_tile_range_with_ragged_tail() {
+        let chunks: Vec<_> = control_chunks(0, 512).collect();
+        assert_eq!(chunks.len(), 512 / CONTROL_BLOCK);
+        let mut expect = 0;
+        for &(a, b) in &chunks {
+            assert_eq!(a, expect);
+            assert!(b - a <= CONTROL_BLOCK);
+            expect = b;
+        }
+        assert_eq!(expect, 512);
+
+        // Ragged: event at sample 100 splits the batch mid-chunk.
+        let chunks: Vec<_> = control_chunks(100, 171).collect();
+        assert_eq!(chunks, vec![(100, 132), (132, 164), (164, 171)]);
+
+        assert_eq!(control_chunks(37, 37).count(), 0);
     }
 
     // ── batch_range ────────────────────────────────────────────────────────

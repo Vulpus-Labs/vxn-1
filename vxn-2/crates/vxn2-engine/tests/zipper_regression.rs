@@ -1,0 +1,90 @@
+//! Audio-domain zipper regression for LFO → OpNLevel / OpNPan matrix
+//! routes (tickets 0074 + 0075). The state-convergence tests in
+//! `engine.rs` assert the ramp's bookkeeping; this asserts the rendered
+//! audio. Detector: mean |second difference| of the output at
+//! block-edge sample offsets vs the block interior. A stepped (or too
+//! coarsely interpolated) control leaves d² impulses at block edges; a
+//! correct per-sample ramp at the 32-sample control rate leaves
+//! edge ≈ interior (measured ~1.08 at the time of writing; bound 1.5).
+//!
+//! The render is driven the way the CLAP shell drives the engine after
+//! ticket 0075: 32-sample control blocks with `apply_block_params`
+//! re-applied per process cycle, regardless of host buffer size.
+
+use vxn2_engine::MatrixRowRaw;
+use vxn2_engine::engine::Engine;
+
+const SR: f32 = 48_000.0;
+const BLK: usize = 32;
+const MAX_EDGE_RATIO: f64 = 1.5;
+
+fn edge_interior_ratio(dest: u8) -> (f64, f64) {
+    let mut e = Engine::new(SR, BLK);
+    // Dry render: FX tails would only dilute the detector.
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    e.params.mod_params.lfo1.rate_hz = 5.0;
+    e.params.patch.stack.density = 4; // give the pan fold moving lanes
+    e.params.matrix_rows[0] = MatrixRowRaw {
+        source: 1, // Lfo1
+        dest,
+        curve: 0,
+        active: true,
+        depth: 1.0,
+    };
+    e.params.mtx_depths[0] = 1.0;
+    e.apply_block_params();
+    e.note_on(60, 100);
+
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    // Warm 0.5 s past the attack so EG motion doesn't pollute the
+    // measurement window, then capture 1 s.
+    for _ in 0..(SR as usize / 2 / BLK) {
+        e.apply_block_params();
+        e.process_block(&mut l, &mut r);
+    }
+    let nblocks = SR as usize / BLK;
+    let mut buf_l = Vec::with_capacity(nblocks * BLK);
+    let mut buf_r = Vec::with_capacity(nblocks * BLK);
+    for _ in 0..nblocks {
+        e.apply_block_params();
+        e.process_block(&mut l, &mut r);
+        buf_l.extend_from_slice(&l);
+        buf_r.extend_from_slice(&r);
+    }
+
+    let ratio = |buf: &[f32]| {
+        let mut sum = [0.0_f64; BLK];
+        let mut cnt = [0u64; BLK];
+        for i in 1..buf.len() - 1 {
+            sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
+            cnt[i % BLK] += 1;
+        }
+        let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
+        let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
+        let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
+        edge / interior
+    };
+    (ratio(&buf_l), ratio(&buf_r))
+}
+
+#[test]
+fn lfo_level_route_leaves_no_block_edge_zipper() {
+    let (l, r) = edge_interior_ratio(2); // Op1Level
+    assert!(
+        l < MAX_EDGE_RATIO && r < MAX_EDGE_RATIO,
+        "level-route block-edge d² ratio L={l:.2} R={r:.2} (want < {MAX_EDGE_RATIO})"
+    );
+}
+
+#[test]
+fn lfo_pan_route_leaves_no_block_edge_zipper() {
+    let (l, r) = edge_interior_ratio(3); // Op1Pan
+    assert!(
+        l < MAX_EDGE_RATIO && r < MAX_EDGE_RATIO,
+        "pan-route block-edge d² ratio L={l:.2} R={r:.2} (want < {MAX_EDGE_RATIO})"
+    );
+}
