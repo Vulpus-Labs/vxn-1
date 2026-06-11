@@ -32,6 +32,7 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 
 // text_input lifted to `vxn-core-ui-web::text_input` post-E001/0009.
 use vxn_core_ui_web::prompt_text;
+pub use vxn_core_ui_web::OpenEditorError;
 
 /// Redirect WebView2's user-data folder to a user-writable location.
 /// Default is `<host_exe_dir>\<exe_name>.WebView2`, which inside
@@ -53,6 +54,15 @@ fn ensure_webview2_data_dir() {
         .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("VulpusLabs").join("VXN1").join("WebView2");
     let _ = std::fs::create_dir_all(&dir);
+    // SAFETY (0115): `set_var` is unsound if another thread reads the
+    // process environment concurrently. This runs on the host's main
+    // thread inside `gui.set_parent`, *before* the WebView2 environment
+    // (and its worker threads) is created, which is the single-threaded-
+    // at-init window the WebView2 SDK itself requires for this variable
+    // to take effect. A host that reads env vars from another thread
+    // during GUI creation could race — accepted: wry exposes no
+    // per-environment user-data-folder argument, so the env var is the
+    // only channel.
     unsafe { std::env::set_var(ENV, &dir) };
 }
 
@@ -192,8 +202,8 @@ impl EditorBackend for WebEditor {
         parent: Self::ParentWindow,
         ctrl: ControllerHandle,
         corpus: CorpusHandle,
-    ) -> Self::Handle {
-        open_editor(parent, ctrl, corpus)
+    ) -> Result<Self::Handle, Box<dyn std::error::Error>> {
+        Ok(open_editor(parent, ctrl, corpus)?)
     }
 
     fn close(handle: &mut Self::Handle) {
@@ -215,13 +225,17 @@ impl EditorBackend for WebEditor {
 /// Build the WebView under `parent`, wire the IPC handler to `ctrl`, and load
 /// the faceplate page. `parent` is the same raw pointer the host hands the
 /// clack shell in `gui::set_parent` (NSView / HWND / xcb-window-id).
+///
+/// Errors (never panics — 0115) on a null parent handle or a wry build
+/// failure; the clack shell maps it to `PluginError` in `set_parent` so
+/// no unwind crosses the C ABI and the plugin keeps rendering.
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
-) -> EditorHandle {
+) -> Result<EditorHandle, OpenEditorError> {
     let parent_raw = parent;
-    let parent_wrap = ParentWindow { raw: build_raw(parent_raw) };
+    let parent_wrap = ParentWindow { raw: build_raw(parent_raw)? };
     let html = build_faceplate_html();
     let ipc_ctrl = ctrl.clone();
     #[cfg(target_os = "windows")]
@@ -238,15 +252,15 @@ pub fn open_editor(
             }
         })
         .build()
-        .expect("wry WebView build failed");
-    EditorHandle {
+        .map_err(OpenEditorError::WebViewBuild)?;
+    Ok(EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),
         parent: parent_raw,
         ctrl,
         corpus,
         corpus_seeded: Cell::new(false),
-    }
+    })
 }
 
 /// Splice the runtime param-descriptor JSON into the faceplate template. The
@@ -331,6 +345,8 @@ fn descriptor_to_json(d: &ParamDesc) -> String {
         "max": d.max,
         "default": d.default,
     });
+    // Statically unreachable panic (0115 audit): `v` is the `json!({...})`
+    // object literal just above — always `Value::Object`.
     let obj = v.as_object_mut().expect("json object");
     match d.kind {
         ParamKind::Float { unit, taper } => {
@@ -387,29 +403,32 @@ impl HasWindowHandle for ParentWindow {
 }
 
 #[cfg(target_os = "macos")]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::AppKitWindowHandle;
     use std::ptr::NonNull;
-    let ns_view = NonNull::new(ptr).expect("parent NSView is null");
-    RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view))
+    let ns_view =
+        NonNull::new(ptr).ok_or(OpenEditorError::BadParent("parent NSView is null"))?;
+    Ok(RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view)))
 }
 
 #[cfg(target_os = "windows")]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::Win32WindowHandle;
     use std::num::NonZeroIsize;
-    let hwnd = NonZeroIsize::new(ptr as isize).expect("parent HWND is zero");
-    RawWindowHandle::Win32(Win32WindowHandle::new(hwnd))
+    let hwnd = NonZeroIsize::new(ptr as isize)
+        .ok_or(OpenEditorError::BadParent("parent HWND is zero"))?;
+    Ok(RawWindowHandle::Win32(Win32WindowHandle::new(hwnd)))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::XcbWindowHandle;
     use std::num::NonZeroU32;
     // The clack shell hands us the xcb window id zero-extended into a pointer
     // slot; truncate back to u32. Matches `gui::set_parent`.
-    let win = NonZeroU32::new(ptr as usize as u32).expect("parent xcb window is zero");
-    RawWindowHandle::Xcb(XcbWindowHandle::new(win))
+    let win = NonZeroU32::new(ptr as usize as u32)
+        .ok_or(OpenEditorError::BadParent("parent xcb window is zero"))?;
+    Ok(RawWindowHandle::Xcb(XcbWindowHandle::new(win)))
 }
 
 // ── IPC inbound: JSON → UiEvent ─────────────────────────────────────────────
@@ -560,6 +579,17 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use vxn_app::{ParamId, PresetMeta, PresetSource};
+
+    #[test]
+    fn build_raw_null_parent_is_err_not_panic() {
+        // 0115: a host handing a null/zero parent used to panic inside
+        // `gui.set_parent` — an unwind across the C ABI. It must now be
+        // an Err the shell maps to PluginError.
+        assert!(matches!(
+            build_raw(std::ptr::null_mut()),
+            Err(OpenEditorError::BadParent(_)),
+        ));
+    }
 
     #[test]
     fn parses_set_param_norm() {

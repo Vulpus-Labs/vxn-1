@@ -134,6 +134,39 @@ impl WebEditorConfig {
     }
 }
 
+/// Why [`open_editor`] failed. Returned instead of panicking — the call
+/// sits on the CLAP `gui.set_parent` path, where an unwind would cross
+/// the host's `extern "C"` frame (UB with `panic = "unwind"`). The clack
+/// shell maps this into a `PluginError` (`impl std::error::Error` + the
+/// blanket `From` make `?` work); the plugin instance stays alive, audio
+/// keeps rendering, and the host may retry `set_parent` later.
+#[derive(Debug)]
+pub enum OpenEditorError {
+    /// The host handed a null / zero native parent handle.
+    BadParent(&'static str),
+    /// wry failed to construct the WebView under the parent (missing
+    /// WebView2 runtime, webkit2gtk init failure, …).
+    WebViewBuild(wry::Error),
+}
+
+impl std::fmt::Display for OpenEditorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadParent(what) => write!(f, "invalid parent window handle: {what}"),
+            Self::WebViewBuild(e) => write!(f, "WebView construction failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenEditorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WebViewBuild(e) => Some(e),
+            Self::BadParent(_) => None,
+        }
+    }
+}
+
 /// Redirect WebView2's user-data folder to a user-writable location.
 /// Default is `<host_exe_dir>\<exe_name>.WebView2`, which inside
 /// `C:\Program Files\<host>\` is admin-only and fails the WebView2 env
@@ -154,6 +187,15 @@ fn ensure_webview2_data_dir(vendor: &str, product: &str) {
         .unwrap_or_else(std::env::temp_dir);
     let dir = base.join(vendor).join(product).join("WebView2");
     let _ = std::fs::create_dir_all(&dir);
+    // SAFETY (0115): `set_var` is unsound if another thread reads the
+    // process environment concurrently. This runs on the host's main
+    // thread inside `gui.set_parent`, *before* the WebView2 environment
+    // (and its worker threads) is created, which is the single-threaded-
+    // at-init window the WebView2 SDK itself requires for this variable
+    // to take effect. A host that reads env vars from another thread
+    // during GUI creation could race — accepted: wry exposes no
+    // per-environment user-data-folder argument, so the env var is the
+    // only channel.
     unsafe { std::env::set_var(ENV, &dir) };
 }
 
@@ -288,14 +330,12 @@ impl EditorBackend for WebEditor {
         _parent: Self::ParentWindow,
         _ctrl: ControllerHandle,
         _corpus: CorpusHandle,
-    ) -> Self::Handle {
+    ) -> Result<Self::Handle, Box<dyn std::error::Error>> {
         // The shared trait surface has no room for a config payload, so
         // synth shells call [`open_editor`] directly with their config
-        // rather than going through `WebEditor::open`. This impl panics
-        // to make accidental use loud.
-        unimplemented!(
-            "vxn-core-ui-web::WebEditor::open: call open_editor(parent, ctrl, corpus, config) directly so the synth can supply its faceplate HTML + custom hooks"
-        )
+        // rather than going through `WebEditor::open`. Erroring (not
+        // panicking — 0115) keeps accidental use loud without an unwind.
+        Err("vxn-core-ui-web::WebEditor::open: call open_editor(parent, ctrl, corpus, config) directly so the synth can supply its faceplate HTML + custom hooks".into())
     }
 
     fn close(handle: &mut Self::Handle) {
@@ -315,12 +355,15 @@ impl EditorBackend for WebEditor {
 /// and load the supplied HTML. `parent` is the same raw pointer the
 /// host hands the clack shell in `gui::set_parent` (NSView / HWND /
 /// xcb-window-id).
+///
+/// Errors (never panics) on a null parent handle or a wry build
+/// failure — see [`OpenEditorError`].
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
     config: WebEditorConfig,
-) -> EditorHandle {
+) -> Result<EditorHandle, OpenEditorError> {
     let WebEditorConfig {
         html,
         width,
@@ -333,7 +376,7 @@ pub fn open_editor(
         serialise_custom_view,
     } = config;
     let parent_raw = parent;
-    let parent_wrap = ParentWindow { raw: build_raw(parent_raw) };
+    let parent_wrap = ParentWindow { raw: build_raw(parent_raw)? };
     if let (Some(v), Some(p)) = (webview2_vendor, webview2_product) {
         ensure_webview2_data_dir(v, p);
     }
@@ -351,8 +394,8 @@ pub fn open_editor(
             }
         })
         .build()
-        .expect("wry WebView build failed");
-    EditorHandle {
+        .map_err(OpenEditorError::WebViewBuild)?;
+    Ok(EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),
         parent: parent_raw,
@@ -362,7 +405,7 @@ pub fn open_editor(
         uncategorised_label,
         max_batch_bytes,
         serialise_custom: serialise_custom_view,
-    }
+    })
 }
 
 // ── Parent-window adapter ───────────────────────────────────────────────────
@@ -385,27 +428,30 @@ impl HasWindowHandle for ParentWindow {
 }
 
 #[cfg(target_os = "macos")]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::AppKitWindowHandle;
     use std::ptr::NonNull;
-    let ns_view = NonNull::new(ptr).expect("parent NSView is null");
-    RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view))
+    let ns_view =
+        NonNull::new(ptr).ok_or(OpenEditorError::BadParent("parent NSView is null"))?;
+    Ok(RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view)))
 }
 
 #[cfg(target_os = "windows")]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::Win32WindowHandle;
     use std::num::NonZeroIsize;
-    let hwnd = NonZeroIsize::new(ptr as isize).expect("parent HWND is zero");
-    RawWindowHandle::Win32(Win32WindowHandle::new(hwnd))
+    let hwnd = NonZeroIsize::new(ptr as isize)
+        .ok_or(OpenEditorError::BadParent("parent HWND is zero"))?;
+    Ok(RawWindowHandle::Win32(Win32WindowHandle::new(hwnd)))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn build_raw(ptr: *mut c_void) -> RawWindowHandle {
+fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
     use raw_window_handle::XcbWindowHandle;
     use std::num::NonZeroU32;
-    let win = NonZeroU32::new(ptr as usize as u32).expect("parent xcb window is zero");
-    RawWindowHandle::Xcb(XcbWindowHandle::new(win))
+    let win = NonZeroU32::new(ptr as usize as u32)
+        .ok_or(OpenEditorError::BadParent("parent xcb window is zero"))?;
+    Ok(RawWindowHandle::Xcb(XcbWindowHandle::new(win)))
 }
 
 // ── IPC inbound: JSON → UiEvent ─────────────────────────────────────────────
@@ -696,6 +742,8 @@ pub fn descriptor_to_json(d: &ParamDesc) -> serde_json::Value {
         "max": d.max,
         "default": d.default,
     });
+    // Statically unreachable panic (0115 audit): `v` is the `json!({...})`
+    // object literal four lines up — always `Value::Object`.
     let obj = v.as_object_mut().expect("json object");
     match d.kind {
         ParamKind::Float { unit, taper } => {
@@ -724,5 +772,29 @@ pub fn taper_to_json(t: Taper) -> serde_json::Value {
     match t {
         Taper::Linear => json!({"kind": "linear"}),
         Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_raw_null_parent_is_err_not_panic() {
+        // 0115: a host handing a null/zero parent used to panic inside
+        // `gui.set_parent` — an unwind across the C ABI. It must now be
+        // an Err the shell can map to PluginError.
+        let res = build_raw(std::ptr::null_mut());
+        match res {
+            Err(OpenEditorError::BadParent(_)) => {}
+            other => panic!("expected BadParent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_editor_error_display_and_source() {
+        let e = OpenEditorError::BadParent("parent NSView is null");
+        assert!(e.to_string().contains("parent NSView is null"));
+        assert!(std::error::Error::source(&e).is_none());
     }
 }

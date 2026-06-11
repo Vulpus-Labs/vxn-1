@@ -84,7 +84,11 @@ impl PluginGuiImpl for VxnMainThread<'_> {
 
         let ctrl_handle = lock_mut(&self.controller).handle();
         let corpus = Arc::clone(&self.corpus);
-        self.gui = Some(vxn2_ui_web::open_editor(parent, ctrl_handle, corpus));
+        // Construction failure (bad parent, wry build error) surfaces as
+        // PluginError via clack's blanket `From<E: Error>` — never a
+        // panic across the host's C ABI (vxn-1 ticket 0115, shared fix).
+        // The plugin stays alive; the host may retry set_parent.
+        self.gui = Some(vxn2_ui_web::open_editor(parent, ctrl_handle, corpus)?);
 
         // Register the main-thread timer so `on_timer` can drain
         // ViewEvents into the WebView. Hosts without `timer-support`

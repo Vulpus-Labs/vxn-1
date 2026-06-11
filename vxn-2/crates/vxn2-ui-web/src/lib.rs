@@ -18,7 +18,7 @@ use serde_json::Value as JsonValue;
 use vxn2_app::{MatrixRow, UiEvent, Vxn2UiCustom, Vxn2ViewCustom};
 use vxn_core_app::{ControllerHandle, CorpusHandle};
 
-pub use vxn_core_ui_web::{EditorHandle, prompt_text};
+pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 
 use vxn_core_ui_web::{
     DEFAULT_MAX_BATCH_BYTES, WebEditorConfig, descriptor_to_json, open_editor as core_open_editor,
@@ -50,11 +50,15 @@ const MAIN_JS: &str = include_str!("../assets/main.js");
 ///
 /// `parent` is the same raw pointer the clack shell extracts from the
 /// host's `gui::set_parent` (NSView / HWND / xcb window id).
+///
+/// Errors (never panics — vxn-1 ticket 0115, fixed in the shared crate)
+/// on a null parent handle or a wry build failure; the clack shell maps
+/// it to `PluginError` in `set_parent`.
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
-) -> EditorHandle {
+) -> Result<EditorHandle, OpenEditorError> {
     let html = build_faceplate_html();
     let mut config = WebEditorConfig::new(html, EDITOR_WIDTH, EDITOR_HEIGHT);
     config.uncategorised_label = "Uncategorised";

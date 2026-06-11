@@ -131,8 +131,17 @@ mod macos {
     unsafe fn ensure_class() -> &'static Class {
         REGISTER.call_once(|| {
             let superclass = class!(NSWindow);
-            let mut decl = ClassDecl::new("VxnPromptWindow", superclass)
-                .expect("declare VxnPromptWindow");
+            // The ObjC class registry is process-global but this `Once`
+            // is per-dylib: with two VXN plugins loaded in one host
+            // (vxn-1 + vxn-2 both statically link this crate), the
+            // second dylib's registration finds the name taken and
+            // `ClassDecl::new` returns `None`. Fall through — the
+            // `Class::get` below picks up the copy the first dylib
+            // registered (same crate, same layout). Panicking here
+            // would unwind into the host's timer callback (0115).
+            let Some(mut decl) = ClassDecl::new("VxnPromptWindow", superclass) else {
+                return;
+            };
             decl.add_ivar::<*mut c_void>(IVAR_CALLBACK);
             decl.add_ivar::<*mut c_void>(IVAR_FIELD);
             decl.add_method(
@@ -153,6 +162,9 @@ mod macos {
             );
             decl.register();
         });
+        // Statically unreachable panic (0115 audit): either the
+        // `call_once` above registered the class, or another dylib's
+        // copy of this crate already had — `Class::get` cannot miss.
         Class::get("VxnPromptWindow").expect("VxnPromptWindow registered")
     }
 
