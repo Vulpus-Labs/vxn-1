@@ -18,12 +18,25 @@ pub fn vel_factor(vs: u8, velocity: u8) -> f32 {
 
 /// Layer-level feedback (continuous, `[0.0, 7.0]`). Maps to a multiplier
 /// applied to the 2-sample-averaged feedback signal before it's mixed into
-/// the phase-modulation input. Below ~1.0 = warm saw; above ~1.0 heads
-/// toward noise. DX7's discrete steps land on the integer positions so
-/// existing presets sound identical; intermediate values linearly interpolate
-/// the quasi-log curve.
+/// the phase-modulation input. DX7 feedback is shift-based — exactly ×2 per
+/// step — so the table is a pure doubling ladder topping out at ~1.0, the
+/// sawtooth edge of the feedback loop's stable region (ticket 0079).
+///
+/// The previous table extended to 3.0: past ~1.0 the loop runs chaotic, and
+/// an op EG releasing through the stability boundary collapses the
+/// oscillation mode within a couple of samples — an unsmoothable click on
+/// every note-off (heard on the default E.PIANO, whose ROM FB=6 mapped to
+/// 2.0). DX7 ROM voices now land on DX7-equivalent loop gains verbatim;
+/// intermediate values linearly interpolate.
 pub const FB_SCALE_TABLE: [f32; 8] = [
-    0.0, 0.075, 0.150, 0.300, 0.600, 1.200, 2.000, 3.000,
+    0.0,
+    1.0 / 64.0,
+    1.0 / 32.0,
+    1.0 / 16.0,
+    1.0 / 8.0,
+    1.0 / 4.0,
+    1.0 / 2.0,
+    1.0,
 ];
 
 #[inline]
@@ -74,9 +87,9 @@ mod tests {
 
     #[test]
     fn fb_scale_interpolates_between_steps() {
-        // Halfway between step 3 (0.300) and step 4 (0.600) → 0.450.
+        // Halfway between step 3 (1/16) and step 4 (1/8) → 3/32.
         let v = fb_scale(3.5);
-        assert!((v - 0.45).abs() < 1e-5, "fb_scale(3.5) = {v}");
+        assert!((v - 3.0 / 32.0).abs() < 1e-5, "fb_scale(3.5) = {v}");
     }
 
     #[test]

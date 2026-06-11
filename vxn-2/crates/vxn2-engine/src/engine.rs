@@ -74,6 +74,12 @@ const PITCH_SMOOTH_QUANTUM: usize = 16;
 /// per-quantum tick + recook is skipped.
 const PITCH_SMOOTH_EPS_ST: f32 = 1e-4;
 
+/// Per-sample ramp snap band (per-block increment, level/gain units). A
+/// converged ramp sits within f32 rounding of its target, never exactly on
+/// it — increments below this band snap the state onto the target and count
+/// as inactive, so a settled sound releases the per-sample advance.
+const RAMP_SNAP_EPS: f32 = 1e-9;
+
 /// Top-level audio engine. Owns every sub-engine plus the per-block
 /// parameter snapshot.
 pub struct Engine {
@@ -126,8 +132,16 @@ pub struct Engine {
     level_mod_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
     pan_l_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
     pan_r_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
+    /// Each op's EG level as seen by the previous block's ramp targets
+    /// (ticket 0077). The ramp interpolates the *combined* effective level
+    /// `eg + mod`; when the EG marches at the block edge, `op_level_mod` is
+    /// rebased by `prev_eg - eg` so the sum the tick reads stays continuous,
+    /// and the EG's block delta rides the same per-lane ramp as the matrix
+    /// mod — one ramp, no separate EG staircase.
+    prev_eg_level: Vec<[f32; vxn2_dsp::algo::N_OPS]>,
     /// Which slots carry a live ramp this block; `any_ramp_live` is the
-    /// whole-engine OR so a static patch pays one branch per sample.
+    /// whole-engine OR so a patch with static effective levels pays one
+    /// branch per sample.
     ramp_live: [bool; N_STACKS],
     any_ramp_live: bool,
 }
@@ -162,6 +176,7 @@ impl Engine {
             level_mod_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_l_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_r_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            prev_eg_level: vec![[0.0; vxn2_dsp::algo::N_OPS]; N_STACKS],
             ramp_live: [false; N_STACKS],
             any_ramp_live: false,
         };
@@ -220,6 +235,7 @@ impl Engine {
             self.pitch_targets[i] = zero;
             self.mod_seq[i] = u64::MAX;
             self.ramp_live[i] = false;
+            self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
         }
         self.any_ramp_live = false;
         self.apply_block_params();
@@ -446,6 +462,51 @@ impl Engine {
             }
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, self.pitch_smoothers[i].current());
+            // Level modulation is MULTIPLICATIVE on the EG (ticket 0078):
+            // effective level = `clamp(eg · (1 + m), 0, 1)`, with `m` the
+            // matrix accumulator. The tick reads `eg + op_level_mod`, so the
+            // engine projects the multiplicative target into that additive
+            // offset: `op_level_mod_target = clamp(eg·(1+m), 0, 1) − eg`.
+            //
+            // Why multiplicative (vs the additive `eg + m` it replaced):
+            // `eg = 0` forces eff = 0, so a RELEASED op always closes —
+            // additive mod could refill what release drains and leave a voice
+            // droning until the allocator cut it at full amplitude (a click).
+            // A full-depth sine gates through silence at its trough, where the
+            // LFO's own slope is zero, so tremolo gating is C¹-smooth — no
+            // bottom corner to round, which is why the 0076 target one-pole
+            // measured zero effect and was removed.
+            //
+            // The block-rate `clamp(…, 0, 1)` is the ONE bound for the whole
+            // path: it absorbs boost overflow (`eg·(1+m) > 1` when eg > 0.5)
+            // and multi-route `m` overflow (several slots summing into one
+            // level dest) alike. Because both the ramp's start point (the
+            // previous block's in-range effective level, carried by the EG
+            // rebase below) and its end point (this clamped target) give
+            // `eff ∈ [0, 1]`, the per-sample linear ramp stays in range too —
+            // so `stack_tick_*` needs no per-sample clamp.
+            //
+            // The EG marches once per block (0077); `op_level_mod` is rebased
+            // by the block delta so the sum the tick reads stays continuous
+            // across the edge, then ramps to the new target — the EG's motion
+            // rides the same per-lane ramp as the matrix mod (no block-rate EG
+            // staircase). Static patches with settled EGs pass through
+            // bit-exact: m = 0 → target offset 0, rebase +0.
+            let prev_eg = &mut self.prev_eg_level[i];
+            for op_i in 0..vxn2_dsp::algo::N_OPS {
+                let eg = stack.ops[op_i].eg.level;
+                for k in 0..STACK_LANES {
+                    let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
+                    level_targets[op_i][k] = eff - eg;
+                    if !fresh {
+                        // Keep `eg + op_level_mod` continuous across the EG's
+                        // block-edge march; the delta is folded into this
+                        // block's ramp instead.
+                        stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
+                    }
+                }
+                prev_eg[op_i] = eg;
+            }
             if fresh {
                 stack.op_level_mod = level_targets;
                 stack.refresh_pan_with_mod();
@@ -459,9 +520,26 @@ impl Engine {
                 let pr_inc = &mut self.pan_r_inc[i];
                 for op_i in 0..vxn2_dsp::algo::N_OPS {
                     for k in 0..STACK_LANES {
-                        let dl = (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
-                        let pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
-                        let pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
+                        // A ramp lands within f32 rounding of its target, so
+                        // a settled value never compares exactly equal — snap
+                        // inside RAMP_SNAP_EPS (≈ −120 dB) so a static sound
+                        // releases the per-sample advance.
+                        let mut dl =
+                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                        if dl.abs() < RAMP_SNAP_EPS {
+                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            dl = 0.0;
+                        }
+                        let mut pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
+                        if pl.abs() < RAMP_SNAP_EPS {
+                            stack.pan_l[op_i][k] = pan_l_t[op_i][k];
+                            pl = 0.0;
+                        }
+                        let mut pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
+                        if pr.abs() < RAMP_SNAP_EPS {
+                            stack.pan_r[op_i][k] = pan_r_t[op_i][k];
+                            pr = 0.0;
+                        }
                         lvl_inc[op_i][k] = dl;
                         pl_inc[op_i][k] = pl;
                         pr_inc[op_i][k] = pr;
@@ -730,9 +808,13 @@ mod tests {
         let _ = render_and_rms(&mut e, ((SR * 0.1) as usize) / BLK);
         let (_, attack_db, attack_peak) = render_and_rms(&mut e, blocks_per_window);
         assert!(attack_peak < 1.0, "default patch clipping: peak {attack_peak}");
+        // Upper bound loosened -9 → -8 dBFS with the 0079 feedback
+        // recalibration: FB 6 dropped from the chaotic zone (scale 2.0) to a
+        // stable 0.5, which concentrates op6's energy tonally and lifts the
+        // patch ~1 dB.
         assert!(
-            (-24.0..=-9.0).contains(&attack_db),
-            "early-sustain RMS {attack_db} dBFS outside [-24, -9]"
+            (-24.0..=-8.0).contains(&attack_db),
+            "early-sustain RMS {attack_db} dBFS outside [-24, -8]"
         );
 
         // Mid-sustain near t ≈ 1.0 s.
@@ -741,8 +823,8 @@ mod tests {
         let _ = render_and_rms(&mut e, target_blocks.saturating_sub(blocks_so_far));
         let (_, sustain_db, _) = render_and_rms(&mut e, blocks_per_window);
         assert!(
-            (-24.0..=-9.0).contains(&sustain_db),
-            "sustain RMS {sustain_db} dBFS outside [-24, -9]"
+            (-24.0..=-8.0).contains(&sustain_db),
+            "sustain RMS {sustain_db} dBFS outside [-24, -8]"
         );
 
         // Hold to t = 2 s, release, then run to t = 3.5 s.
@@ -862,16 +944,26 @@ mod tests {
             .find(|&i| !e.alloc.stacks[i].is_idle())
             .expect("note is held");
         let level_idx = DestId::Op1Level.idx().unwrap();
+        // Replicate the engine's multiplicative projection (ticket 0078):
+        // `target = clamp(eg·(1+m), 0, 1) − eg`, taken against the op's
+        // post-tick EG level (0077), which is what `eg.level` holds after
+        // `process_block` returns. The ramp must converge each block on this
+        // target — no smoothing.
+        let target = |e: &Engine, k: usize| {
+            let eg = e.alloc.stacks[slot].ops[0].eg.level;
+            let m = self::tests_dest_val(e, slot, k, level_idx);
+            (eg * (1.0 + m)).clamp(0.0, 1.0) - eg
+        };
         let mut saw_ramp = false;
         for _ in 0..30 {
             e.process_block(&mut l, &mut r);
             saw_ramp |= e.ramp_live[slot];
             for k in 0..STACK_LANES {
-                let target = self::tests_dest_val(&e, slot, k, level_idx);
                 let got = e.alloc.stacks[slot].op_level_mod[0][k];
                 assert!(
-                    (got - target).abs() < 1e-3,
-                    "lane {k}: level mod {got} hasn't converged on block target {target}"
+                    (got - target(&e, k)).abs() < 1e-3,
+                    "lane {k}: level mod {got} hasn't converged on target {}",
+                    target(&e, k)
                 );
             }
         }
@@ -884,15 +976,24 @@ mod tests {
         e.dest_vals[slot][lane][dest_idx]
     }
 
-    /// The default patch has no moving level/pan route — the ramp flag must
-    /// stay off so the per-sample advance is never paid.
+    /// With no moving level/pan route and settled EGs the ramp flag must
+    /// clear so a static sound doesn't pay the per-sample advance. The
+    /// combined ramp (0077) legitimately runs while any EG marches — the
+    /// default E.PIANO's modulator tails decay for ~10 s — so this test
+    /// pins every EG to a flat sustain instead.
     #[test]
     fn static_patch_keeps_mod_ramps_inactive() {
         let mut e = Engine::new(SR, BLK);
+        for op in &mut e.params.patch.voice.ops {
+            op.eg.r = [99, 99, 99, 99];
+            op.eg.l = [99, 99, 99, 0];
+        }
         e.note_on(60, 100);
         let mut l = [0.0_f32; BLK];
         let mut r = [0.0_f32; BLK];
-        for _ in 0..10 {
+        // Rate-99 attacks land on their targets within milliseconds; after
+        // 0.5 s every EG sits exactly on its sustain level.
+        for _ in 0..(SR as usize / 2 / BLK) {
             e.process_block(&mut l, &mut r);
         }
         let slot = (0..N_STACKS)
@@ -900,7 +1001,55 @@ mod tests {
             .expect("note is held");
         assert!(
             !e.ramp_live[slot] && !e.any_ramp_live,
-            "static patch must not pay the per-sample ramp"
+            "static patch must not pay the per-sample ramp once EGs settle"
+        );
+    }
+
+    /// Multiplicative level mod (ticket 0078): a released voice must decay
+    /// to silence even with a full-depth positive LFO on a carrier level.
+    /// Under the old additive semantics the LFO refilled what release
+    /// drained — the voice droned at the LFO level until the allocator's
+    /// idle detection cut it at full amplitude (a loud click on every
+    /// chord release, found in a DAW bounce).
+    #[test]
+    fn released_voice_closes_under_positive_level_mod() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.delay.on = false;
+        e.params.delay.mix = 0.0;
+        e.params.reverb.on = false;
+        e.params.reverb.mix = 0.0;
+        e.params.mod_params.lfo1.rate_hz = 5.0;
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::Op1Level,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..(SR as usize / 4 / BLK) {
+            e.process_block(&mut l, &mut r);
+        }
+        e.note_off(60);
+        // 0.5 s after release: well past every op's release tail. The voice
+        // must be silent (no LFO-held zombie) and the render must contain no
+        // idle-cut step.
+        let mut peak_tail = 0.0_f32;
+        let blocks = SR as usize / 2 / BLK;
+        for b in 0..blocks {
+            e.process_block(&mut l, &mut r);
+            if b > blocks / 2 {
+                for &x in &l {
+                    peak_tail = peak_tail.max(x.abs());
+                }
+            }
+        }
+        assert!(
+            peak_tail < 1e-3,
+            "released voice still audible under positive level mod: peak {peak_tail}"
         );
     }
 

@@ -94,6 +94,11 @@ The param, its fader, and its doc trail all go.
 | 11 | [0071 — DSP hygiene dedup pass](../../tickets/open/0071-dsp-hygiene.md) | low |
 | 12 | [0072 — Docs and dead-code cleanup](../../tickets/open/0072-docs-dead-code-cleanup.md) | low |
 | 13 | [0074 — Smooth level/pan matrix modulation](../../tickets/open/0074-level-pan-mod-smoothing.md) | high |
+| 14 | [0075 — CONTROL_BLOCK render slicing in the CLAP shell](../../tickets/open/0075-control-block-slicing.md) | high |
+| 15 | [0076 — Round the level-mod clamp corner](../../tickets/open/0076-level-clamp-corner-smoothing.md) | high |
+| 16 | [0077 — Combined effective-level ramp](../../tickets/open/0077-combined-level-ramp.md) | high |
+| 17 | [0078 — Multiplicative level modulation](../../tickets/open/0078-multiplicative-level-mod.md) | high |
+| 18 | [0079 — DX7 feedback-scale recalibration](../../tickets/open/0079-fb-scale-recalibration.md) | high |
 
 Dependency order: 0061 and 0062 land before 0069 (the sweep test
 would fail against the inert params). 0067 depends on nothing but
@@ -114,7 +119,8 @@ without the echo noise. Everything else is independent.
 - LFO1→GlobalPitch at block size 256 produces no audible stepping
   (verified by the smoothing test in 0063, plus manual listen).
 - LFO1→Op1Level and LFO1→Op1Pan at block size 256 produce no audible
-  zipper (verified by the ramp test in 0074, plus manual listen).
+  zipper (engine ramp in 0074 + CONTROL_BLOCK render slicing in 0075,
+  verified by the zipper regression test, plus manual listen).
 - In solo mode, note-off with another key held falls back to the held
   note (audible + test).
 - Recording knob automation in Reaper/Bitwig produces a correctly

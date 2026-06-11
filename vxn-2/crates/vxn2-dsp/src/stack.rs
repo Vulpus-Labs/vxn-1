@@ -233,10 +233,18 @@ pub struct Stack {
     /// Patch-wide Mod Env (ticket 0007). Matrix-only source; ticks alongside
     /// the per-op EGs so 0008 can read its level without per-block coupling.
     pub mod_env: ModEnvState,
-    /// Per-op × per-lane additive level offset, written by the mod matrix at
-    /// block start and read by [`stack_tick_stereo`] / [`stack_tick_mono`].
-    /// Effective level per sample is `(op.eg.level + op_level_mod[i][k])
-    /// .clamp(0.0, 1.0)`. Zero when no matrix slot targets `OpNLevel`.
+    /// Per-op × per-lane level offset, written by the engine at block start
+    /// and ramped per sample; read by [`stack_tick_stereo`] /
+    /// [`stack_tick_mono`] as the effective level `op.eg.level +
+    /// op_level_mod[i][k]` (no clamp — the engine keeps the sum in [0, 1]).
+    /// The OFFSET form is a projection of rail-targeting level modulation
+    /// (ticket 0078): for matrix value `m` clamped to [−1, 1] the engine
+    /// writes `m·(rail − eg)` with `rail = 1` for m≥0 else `0`, so the
+    /// effective level is `eg + m(1−eg) ∈ [eg,1]` on boost and `eg(1+m) ∈
+    /// [0,eg]` on cut — bounded by construction, and `eg = 0` forces silence
+    /// so a released voice always closes. The engine also folds the EG's own
+    /// block delta into the same ramp (ticket 0077). Zero when no matrix slot
+    /// targets `OpNLevel` and the EG is settled.
     pub op_level_mod: [[f32; STACK_LANES]; N_OPS],
     /// Per-lane pitch offset in semitones from matrix `GlobalPitch`. Summed
     /// with `bend_st + glide_st + pitch_eg.level_st` in
@@ -740,11 +748,14 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
         // Stage 2: read sine at modulated phase, scale by EG level plus the
-        // mod-matrix per-lane offset (clamped — additive on a [0,1] base).
+        // engine-ramped per-lane level offset. `eg + lvl_mod` is the effective
+        // level; the engine guarantees it stays in [0, 1] by construction
+        // (rail-targeting projection of bounded mod — see `op_level_mod`), so
+        // no per-sample clamp is needed here.
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            let lvl_k = (lvl + lvl_mod[k]).clamp(0.0, 1.0);
+            let lvl_k = lvl + lvl_mod[k];
             sines[k] = fast_sine_q32(phase_mod) * lvl_k;
         }
         // Stage 3: advance phase + rotate feedback memory.
@@ -789,7 +800,9 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            let lvl_k = (lvl + lvl_mod[k]).clamp(0.0, 1.0);
+            // See `stack_tick_stereo`: effective level is bounded engine-side,
+            // no per-sample clamp.
+            let lvl_k = lvl + lvl_mod[k];
             sines[k] = fast_sine_q32(phase_mod) * lvl_k;
         }
         for k in 0..STACK_LANES {
