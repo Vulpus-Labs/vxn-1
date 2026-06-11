@@ -62,6 +62,10 @@ impl vxn_core_clap::EngineNotes for SynthNotes<'_> {
     fn mod_wheel(&mut self, value: f32) {
         self.0.set_mod_wheel(value);
     }
+    #[inline]
+    fn sustain(&mut self, on: bool) {
+        self.0.sustain(on);
+    }
     // aftertouch: default no-op — VXN1 doesn't route it (yet).
 }
 

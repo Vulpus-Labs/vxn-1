@@ -465,6 +465,10 @@ fn dispatch_event(
                     // Channel aftertouch: single data byte in [0, 127].
                     engine.set_aftertouch(d1 as f32 / 127.0);
                 }
+                0xB0 if d1 == 64 => {
+                    // CC64 sustain (damper) pedal. MIDI convention: >= 64 on.
+                    engine.set_sustain(d2 >= 64);
+                }
                 _ => {}
             }
         }

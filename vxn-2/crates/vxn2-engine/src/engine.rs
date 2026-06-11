@@ -324,6 +324,12 @@ impl Engine {
         self.alloc.set_bend(semitones);
     }
 
+    /// Sustain pedal (CC64). Poly-only: while held, a poly note-off is
+    /// deferred until release. Solo mode keeps last-note-priority unchanged.
+    pub fn set_sustain(&mut self, on: bool) {
+        self.alloc.set_sustain(on);
+    }
+
     /// Reset host transport — realigns LFO1 phase to the bar grid.
     pub fn on_transport_restart(&mut self) {
         self.patch_mod.on_transport_restart();

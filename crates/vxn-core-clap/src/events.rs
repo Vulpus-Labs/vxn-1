@@ -35,8 +35,8 @@ pub fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usiz
 ///
 /// - NoteOn / NoteOff: forwarded to `engine`. CLAP velocity is `[0, 1]`
 ///   float; we forward it as-is (the engine decides the mapping).
-/// - Raw MIDI: pitch-bend (0xE0), CC1 mod wheel (0xB0), channel
-///   aftertouch (0xD0) forwarded.
+/// - Raw MIDI: pitch-bend (0xE0), CC1 mod wheel (0xB0), CC64 sustain
+///   pedal (0xB0), channel aftertouch (0xD0) forwarded.
 /// - `ParamValue`: routed to `on_param` (the synth folds into its
 ///   audio-thread mirror).
 /// - Anything else: silently ignored.
@@ -76,6 +76,10 @@ where
                 0xD0 => {
                     // Channel aftertouch: single data byte in [0, 127].
                     engine.aftertouch(d1 as f32 / 127.0);
+                }
+                0xB0 if d1 == 64 => {
+                    // CC64 sustain (damper) pedal. MIDI convention: >= 64 on.
+                    engine.sustain(d2 >= 64);
                 }
                 _ => {}
             }

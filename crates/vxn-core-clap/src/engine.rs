@@ -35,6 +35,10 @@ pub trait EngineNotes {
     fn pitch_bend(&mut self, _value: f32) {}
     fn mod_wheel(&mut self, _value: f32) {}
     fn aftertouch(&mut self, _value: f32) {}
+    /// Sustain pedal (MIDI CC64 / damper). `on` true while the pedal is
+    /// pressed: note-offs received while held are deferred until release.
+    /// Default no-op for engines that don't implement pedal hold.
+    fn sustain(&mut self, _on: bool) {}
 }
 
 /// Lock-free shared parameter store. The audio thread reads through

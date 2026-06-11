@@ -390,6 +390,16 @@ impl Synth {
         }
     }
 
+    /// Sustain pedal (CC64). Channel-wide: broadcast to every layer's bank.
+    /// Poly-only — mono modes (Solo / Unison) ignore the held flag and keep
+    /// last-note-priority. Releasing the pedal gates off every note whose key
+    /// was lifted while it was down.
+    pub fn sustain(&mut self, on: bool) {
+        for bank in &mut self.banks {
+            bank.set_sustain(on);
+        }
+    }
+
     pub fn all_notes_off(&mut self) {
         for bank in &mut self.banks {
             bank.all_notes_off();
@@ -1984,6 +1994,40 @@ mod tests {
         s.set_param(lo(PatchParam::Env2Release), 0.001);
         let (l, _) = render(&mut s, 4800);
         assert!(rms(&l[2400..]) < 1e-4, "note did not release");
+    }
+
+    #[test]
+    fn sustain_pedal_defers_poly_release() {
+        let mut s = Synth::new(48_000.0);
+        // Fast release on both envelopes so a released voice deactivates within
+        // the render window; a pedal-held voice keeps its gate high regardless.
+        for set in [pp, lo] {
+            s.set_param(set(PatchParam::Env1Release), 0.001);
+            s.set_param(set(PatchParam::Env2Release), 0.001);
+        }
+        s.note_on(60, 1.0);
+        s.sustain(true);
+        s.note_off(60); // pedal down → release deferred
+        let _ = render(&mut s, 4800);
+        assert_eq!(s.active_count(), 1, "pedal held: voice must keep sounding");
+        s.sustain(false); // pedal up → deferred release fires
+        let _ = render(&mut s, 4800);
+        assert_eq!(s.active_count(), 0, "pedal up: voice must release");
+    }
+
+    #[test]
+    fn sustain_pedal_off_with_key_still_down_keeps_note() {
+        let mut s = Synth::new(48_000.0);
+        for set in [pp, lo] {
+            s.set_param(set(PatchParam::Env1Release), 0.001);
+            s.set_param(set(PatchParam::Env2Release), 0.001);
+        }
+        s.note_on(60, 1.0);
+        s.sustain(true);
+        // Key never released; pedal-up must not gate a still-held key off.
+        s.sustain(false);
+        let _ = render(&mut s, 4800);
+        assert_eq!(s.active_count(), 1, "held key must survive pedal-up");
     }
 
     #[test]

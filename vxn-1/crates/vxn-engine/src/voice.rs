@@ -302,6 +302,13 @@ pub struct VoiceBank {
     /// overflowing key drops the oldest held note.
     mono_stack: [u8; MONO_STACK],
     mono_len: usize,
+    /// Sustain pedal (CC64) state. While true, a poly note-off marks the
+    /// channel `sustained` instead of gating it; releasing the pedal gates
+    /// every sustained channel off. Poly-only — the mono path ignores it.
+    sustain: bool,
+    /// Per-channel "key released while the pedal was down" flag. Set by a
+    /// poly note-off under sustain, cleared on pedal release or retrigger.
+    sustained: [bool; N],
 }
 
 /// Capacity of the mono held-note stack. Far beyond ten fingers; an overflow
@@ -361,6 +368,8 @@ impl VoiceBank {
             unison_rng: unison_rng_seed(rng_seed),
             mono_stack: [0; MONO_STACK],
             mono_len: 0,
+            sustain: false,
+            sustained: [false; N],
         }
     }
 
@@ -403,6 +412,8 @@ impl VoiceBank {
         }
         self.lfo1_onset.reset();
         self.mono_len = 0;
+        self.sustain = false;
+        self.sustained = [false; N];
     }
 
     pub fn active_count(&self) -> usize {
@@ -614,6 +625,7 @@ impl VoiceBank {
         self.velocity[v] = velocity;
         self.gate[v] = true;
         self.active[v] = true;
+        self.sustained[v] = false;
         self.trigger_pending[v] = true;
         self.alloc_tick[v] = alloc_tick;
         self.detune_cents[v] = detune_cents;
@@ -635,7 +647,27 @@ impl VoiceBank {
     pub fn note_off(&mut self, note: u8) {
         for v in 0..N {
             if self.active[v] && self.gate[v] && self.note[v] == note {
-                self.gate[v] = false;
+                if self.sustain {
+                    // Pedal held: hold the gate, defer release to pedal-up.
+                    self.sustained[v] = true;
+                } else {
+                    self.gate[v] = false;
+                }
+            }
+        }
+    }
+
+    /// Sustain pedal (CC64). While held, [`Self::note_off`] defers a poly
+    /// release by flagging the channel `sustained` and keeping its gate high.
+    /// Releasing the pedal gates off every channel flagged while it was down.
+    pub fn set_sustain(&mut self, on: bool) {
+        self.sustain = on;
+        if !on {
+            for v in 0..N {
+                if self.sustained[v] {
+                    self.gate[v] = false;
+                    self.sustained[v] = false;
+                }
             }
         }
     }
@@ -692,6 +724,7 @@ impl VoiceBank {
 
     pub fn all_notes_off(&mut self) {
         self.gate = [false; N];
+        self.sustained = [false; N];
     }
 
     /// Read-only snapshot of the bookkeeping the allocation policy reads. Borrows

@@ -91,6 +91,12 @@ pub struct PolyAlloc {
     held_len: usize,
     /// True when `SOLO_SLOT` is currently playing a held note.
     solo_active: bool,
+    /// Sustain pedal (CC64) state. While true, a poly note-off flags the
+    /// matching stacks `held_by_pedal` instead of gating them; releasing the
+    /// pedal gates every flagged stack off. Poly-only — Solo ignores it.
+    sustain: bool,
+    /// Per-slot "key released while the pedal was down" flag.
+    held_by_pedal: [bool; N_STACKS],
 }
 
 impl PolyAlloc {
@@ -105,6 +111,8 @@ impl PolyAlloc {
             held: [0; N_STACKS],
             held_len: 0,
             solo_active: false,
+            sustain: false,
+            held_by_pedal: [false; N_STACKS],
         }
     }
 
@@ -205,6 +213,7 @@ impl PolyAlloc {
             }
             if self.stacks[i].is_idle() {
                 self.seq[i] = IDLE_SEQ;
+                self.held_by_pedal[i] = false;
                 if i == SOLO_SLOT {
                     self.solo_active = false;
                 }
@@ -229,6 +238,7 @@ impl PolyAlloc {
         };
         let slot = self.pick_slot();
         self.glides[slot] = None;
+        self.held_by_pedal[slot] = false;
         let counter = self.bump_seq();
         self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
         self.stacks[slot].set_bend(self.bend_st);
@@ -242,7 +252,27 @@ impl PolyAlloc {
     fn note_off_poly(&mut self, note: u8) {
         for i in 0..N_STACKS {
             if self.stacks[i].gate && self.stacks[i].note == note {
-                self.stacks[i].note_off();
+                if self.sustain {
+                    // Pedal held: defer the release to pedal-up.
+                    self.held_by_pedal[i] = true;
+                } else {
+                    self.stacks[i].note_off();
+                }
+            }
+        }
+    }
+
+    /// Sustain pedal (CC64). Poly-only. While held, [`Self::note_off_poly`]
+    /// flags matching stacks `held_by_pedal` and keeps their gate high;
+    /// releasing the pedal releases every flagged stack.
+    pub fn set_sustain(&mut self, on: bool) {
+        self.sustain = on;
+        if !on {
+            for i in 0..N_STACKS {
+                if self.held_by_pedal[i] {
+                    self.stacks[i].note_off();
+                    self.held_by_pedal[i] = false;
+                }
             }
         }
     }
@@ -520,6 +550,39 @@ mod tests {
         alloc.note_on(&params, &sp, &vp, 60, 100);
         alloc.note_off(&params, &sp, &vp, 60);
         assert!(!alloc.stacks[0].gate);
+    }
+
+    #[test]
+    fn sustain_pedal_defers_poly_release() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+        alloc.set_sustain(true);
+        alloc.note_off(&params, &sp, &vp, 60);
+        // Pedal held: gate stays high, the stack keeps ringing.
+        assert!(alloc.stacks[0].gate);
+        run_blocks(&mut alloc, (SR as usize) / 10 / BLK);
+        assert!(!alloc.stacks[0].is_idle(), "held by pedal, must not free");
+        // Pedal up: the deferred release fires and the tail frees the stack.
+        alloc.set_sustain(false);
+        assert!(!alloc.stacks[0].gate);
+        run_blocks(&mut alloc, (SR as usize) / 10 / BLK);
+        assert!(alloc.stacks[0].is_idle());
+    }
+
+    #[test]
+    fn sustain_pedal_off_with_key_still_down_keeps_note() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+        alloc.set_sustain(true);
+        // Key never released; pedal-up must not gate a held key off.
+        alloc.set_sustain(false);
+        assert!(alloc.stacks[0].gate);
     }
 
     #[test]
