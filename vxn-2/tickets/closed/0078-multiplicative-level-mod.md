@@ -65,7 +65,7 @@ multiplicative Hz via `2^(st/12)`), and `FB_SCALE_TABLE` is quasi-log
   0.25 s after release with full-depth positive LFO on a carrier.
 - [x] Convergence + corner + zipper regression suites green with the
   multiplicative formula.
-- [ ] Manual listen: chord sequence with LFO → carrier level — no
+- [x] Manual listen: chord sequence with LFO → carrier level — no
   click at releases, no post-release drone.
 
 ## Notes

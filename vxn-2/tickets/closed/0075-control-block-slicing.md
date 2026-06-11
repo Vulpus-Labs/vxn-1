@@ -62,7 +62,7 @@ as VXN1) and what every engine bench already measures. FX
   LFO1→Op1Pan at 32-sample blocks keep block-edge |d²| within 1.5× of
   block-interior |d²| over a 1 s render (guards the 0074 ramp with an
   audio-domain assertion, which the state-convergence tests don't).
-- [ ] Manual listen (carried over from 0074): slow (~0.5 Hz) and fast
+- [x] Manual listen (carried over from 0074): slow (~0.5 Hz) and fast
   (~8 Hz) LFO on level and pan, host buffers 64 and 512 — smooth at
   both.
 

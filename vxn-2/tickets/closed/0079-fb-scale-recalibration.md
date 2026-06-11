@@ -46,5 +46,5 @@ the render test's RMS ceiling moved −9 → −8 dBFS.
 - [x] `fb_scale` unit tests updated to the doubling ladder.
 - [x] Full vxn-2 suite green (default-patch RMS window adjusted, see
   above).
-- [ ] Manual listen: chord sequence releases clean; FB 7 still gives
+- [x] Manual listen: chord sequence releases clean; FB 7 still gives
   the full saw growl.

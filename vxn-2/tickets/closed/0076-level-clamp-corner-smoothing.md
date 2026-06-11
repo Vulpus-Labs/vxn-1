@@ -72,7 +72,7 @@ instead of one 0.67 ms ramp).
   the test).
 - [x] Static patch keeps `ramp_live` off (existing test still green —
   smoother snap prevents asymptotic creep).
-- [ ] Manual listen: full-depth sine LFO ~5 Hz on a carrier level,
+- [x] Manual listen: full-depth sine LFO ~5 Hz on a carrier level,
   patch where the sum gates to silence — no tick at the gate
   boundaries or at LFO extremes.
 
