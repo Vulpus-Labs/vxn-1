@@ -375,6 +375,21 @@ html, body {
   justify-content: center;
 }
 
+/* Tuning column: taller slider tracks so their bottoms line up with the
+ * adjacent envelope graph (108px), and a horizontal Ratio/Fixed selector
+ * tucked underneath. 12px label + 4px+88px+4px track = 108px. */
+.op-tuning-row .fader-track { height: 88px; }
+.op-tuning-mode {
+  display: flex;
+  justify-content: center;
+  margin-top: 6px;
+}
+.op-tuning-mode .bgrp-row.op-tuning-mode-row {
+  flex-direction: row;
+  gap: 12px;
+  justify-content: center;
+}
+
 /* fader */
 .fader {
   display: flex;

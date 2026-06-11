@@ -107,13 +107,26 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   count 179 → 173, per-op block 21 → 20 params. Older blobs migrate on
 ///   load by skipping the stored amp-sens values and remapping the later
 ///   ids.
-pub const BLOB_VERSION: u16 = 5;
+/// - v6: adds a trailing `opN-ratio-mode` enum to each op block (the
+///   Ratio/Fixed tuning selector, formerly patch-only) — param count
+///   173 → 179, per-op block 20 → 21 params. Older blobs migrate on load by
+///   spreading the op blocks (later ids shift up by `N_OPS`) and seeding the
+///   six new ratio-mode slots to their default (Ratio).
+pub const BLOB_VERSION: u16 = 6;
+/// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition).
+/// Anchored to history, not the live `TOTAL_PARAMS`, so future table
+/// changes don't silently shift the legacy migration arithmetic.
+const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS; // 173
+/// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
+const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 1; // 20
+/// Per-op index of `ratio-mode` in the live (v6) op block (trailing slot).
+const LIVE_RATIO_MODE_IDX: usize = N_PER_OP - 1; // 20
 /// Param count in v4 blobs (before the v5 `opN-amp-sens` removal).
-const LEGACY_V4_PARAM_COUNT: usize = TOTAL_PARAMS + N_OPS;
+const LEGACY_V4_PARAM_COUNT: usize = LEGACY_V5_PARAM_COUNT + N_OPS; // 179
 /// Param count in v≤3 blobs (before the v4 `lfo1-depth` removal).
-const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1;
+const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1; // 180
 /// Per-op param count in v≤4 blobs (`amp-sens` still present).
-const LEGACY_V4_N_PER_OP: usize = N_PER_OP + 1;
+const LEGACY_V4_N_PER_OP: usize = LEGACY_V5_N_PER_OP + 1; // 21
 /// Per-op index of `amp-sens` in v≤4 blobs (after `vel-sens`).
 const LEGACY_AMP_SENS_IDX: usize = 7;
 /// CLAP id `lfo1-depth` held in v≤3 blobs (v4-space `PATCH_BASE + 2`,
@@ -121,20 +134,36 @@ const LEGACY_AMP_SENS_IDX: usize = 7;
 /// on load.
 const LEGACY_LFO1_DEPTH_ID: usize = LEGACY_V4_PARAM_COUNT - N_PATCH_LEVEL + 2;
 
-/// v4-space CLAP id → live id. `None` for the dropped `opN-amp-sens` slots;
-/// op-block ids compress 21 → 20 per op, later ids shift down by `N_OPS`.
+/// v4-space CLAP id → v5-space id. `None` for the dropped `opN-amp-sens`
+/// slots; op-block ids compress 21 → 20 per op, later ids shift down by
+/// `N_OPS`. (Stops at v5 space — the v5 → v6 spread is `migrate_v5_id`.)
 fn migrate_v4_id(id: usize) -> Option<usize> {
     const LEGACY_V4_OP_BLOCK: usize = LEGACY_V4_N_PER_OP * N_OPS;
     if id < LEGACY_V4_OP_BLOCK {
         let op = id / LEGACY_V4_N_PER_OP;
         let idx = id % LEGACY_V4_N_PER_OP;
         match idx.cmp(&LEGACY_AMP_SENS_IDX) {
-            std::cmp::Ordering::Less => Some(op * N_PER_OP + idx),
+            std::cmp::Ordering::Less => Some(op * LEGACY_V5_N_PER_OP + idx),
             std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Greater => Some(op * N_PER_OP + idx - 1),
+            std::cmp::Ordering::Greater => Some(op * LEGACY_V5_N_PER_OP + idx - 1),
         }
     } else {
         Some(id - N_OPS)
+    }
+}
+
+/// v5-space CLAP id → live (v6) id. Op blocks grow 20 → 21 (the new
+/// trailing `ratio-mode` slot is *not* a target here — it's seeded to its
+/// default separately), so op-block ids re-base on `N_PER_OP` and every
+/// later id shifts up by `N_OPS`. Total maps 1:1 (no v5 id is dropped).
+fn migrate_v5_id(id: usize) -> usize {
+    const V5_OP_BLOCK: usize = LEGACY_V5_N_PER_OP * N_OPS;
+    if id < V5_OP_BLOCK {
+        let op = id / LEGACY_V5_N_PER_OP;
+        let idx = id % LEGACY_V5_N_PER_OP;
+        op * N_PER_OP + idx
+    } else {
+        id + N_OPS
     }
 }
 /// Header byte length: 4 magic + 2 version + 2 count.
@@ -571,6 +600,7 @@ impl ParamModel for SharedParams {
         let expected_count = match version {
             ..=3 => LEGACY_V3_PARAM_COUNT,
             4 => LEGACY_V4_PARAM_COUNT,
+            5 => LEGACY_V5_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -603,14 +633,22 @@ impl ParamModel for SharedParams {
                 i
             };
             // v4 → v5 id remap: drop the six stored amp-sens values,
-            // compress the op blocks. v5 blobs map 1:1.
-            let id = if version <= 4 {
+            // compress the op blocks. v5 blobs map 1:1 here.
+            let v5_id = if version <= 4 {
                 match migrate_v4_id(v4_id) {
                     Some(id) => id,
                     None => continue,
                 }
             } else {
                 v4_id
+            };
+            // v5 → v6 id remap: spread the op blocks for the new trailing
+            // `ratio-mode` slot (later ids shift up by N_OPS). v6 blobs map
+            // 1:1. The new ratio-mode slots themselves are seeded below.
+            let id = if version <= 5 {
+                migrate_v5_id(v5_id)
+            } else {
+                v5_id
             };
             let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
@@ -620,6 +658,15 @@ impl ParamModel for SharedParams {
                 bytes[off + 3],
             ]);
             self.values[id].store(bits, Ordering::Relaxed);
+        }
+        // v≤5 blobs predate `opN-ratio-mode`; seed each op's new trailing
+        // slot to its descriptor default (Ratio) so a load can't leave it at
+        // a stale value carried over from the store's prior contents.
+        if version <= 5 {
+            for op in 0..N_OPS {
+                let id = op * N_PER_OP + LIVE_RATIO_MODE_IDX;
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
         }
         if version >= 2 {
             let mut off = values_len;
@@ -891,7 +938,13 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
     let f = |off| s.get(base + off);
     let i = |off| s.get(base + off).round() as i32;
     OpParams {
-        ratio_mode: RatioMode::Ratio, // not CLAP — preset state
+        // `op{n}-ratio-mode` is the trailing enum in each op block (index 20):
+        // 0 = Ratio, 1 = Fixed. Mirrors `RatioMode`'s discriminant order.
+        ratio_mode: if i(20) == 1 {
+            RatioMode::Fixed
+        } else {
+            RatioMode::Ratio
+        },
         num: i(0).clamp(1, 32) as u8,
         denom: i(1).clamp(1, 8) as u8,
         fixed_hz: f(2),
@@ -1249,24 +1302,45 @@ mod tests {
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
     }
 
-    /// Rewrite a freshly saved v5 blob into the v4 layout: re-insert a
-    /// 4-byte value slot at each legacy `opN-amp-sens` id, restore the v4
-    /// param count and stamp `version`.
-    fn rewrite_as_v4(bytes: &[u8], version: u16, amp_sens_bits: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(bytes.len() + 4 * N_OPS);
+    /// Rewrite a freshly saved v6 blob into the v5 layout: drop the trailing
+    /// per-op `ratio-mode` slot from each op block, restore the v5 param
+    /// count and stamp `version`. Matrix trailer copies through verbatim.
+    fn rewrite_as_v5(bytes: &[u8], version: u16) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
         out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
         out[4..6].copy_from_slice(&version.to_le_bytes());
+        out[6..8].copy_from_slice(&(LEGACY_V5_PARAM_COUNT as u16).to_le_bytes());
+        for op in 0..N_OPS {
+            // Keep the first 20 params of each 21-param op block, dropping the
+            // trailing `ratio-mode` slot at live index `LIVE_RATIO_MODE_IDX`.
+            let start = BLOB_HEADER_LEN + (op * N_PER_OP) * 4;
+            let keep_end = start + LEGACY_V5_N_PER_OP * 4;
+            out.extend_from_slice(&bytes[start..keep_end]);
+        }
+        // Post-op-block params + matrix trailer copy verbatim.
+        let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
+        out.extend_from_slice(&bytes[rest..]);
+        out
+    }
+
+    /// Rewrite a freshly saved v6 blob into the v4 layout: strip to v5 first,
+    /// then re-insert a 4-byte value slot at each legacy `opN-amp-sens` id,
+    /// restore the v4 param count and stamp `version`.
+    fn rewrite_as_v4(bytes: &[u8], version: u16, amp_sens_bits: u32) -> Vec<u8> {
+        let v5 = rewrite_as_v5(bytes, version);
+        let mut out = Vec::with_capacity(v5.len() + 4 * N_OPS);
+        out.extend_from_slice(&v5[..BLOB_HEADER_LEN]);
         out[6..8].copy_from_slice(&(LEGACY_V4_PARAM_COUNT as u16).to_le_bytes());
         let mut off = BLOB_HEADER_LEN;
         for op in 0..N_OPS {
-            // Insertion point in live (v5) layout: per-op index 7, between
+            // Insertion point in v5 layout: per-op index 7, between
             // vel-sens and eg-r1.
-            let split = BLOB_HEADER_LEN + (op * N_PER_OP + LEGACY_AMP_SENS_IDX) * 4;
-            out.extend_from_slice(&bytes[off..split]);
+            let split = BLOB_HEADER_LEN + (op * LEGACY_V5_N_PER_OP + LEGACY_AMP_SENS_IDX) * 4;
+            out.extend_from_slice(&v5[off..split]);
             out.extend_from_slice(&amp_sens_bits.to_le_bytes());
             off = split;
         }
-        out.extend_from_slice(&bytes[off..]);
+        out.extend_from_slice(&v5[off..]);
         out
     }
 
@@ -1320,6 +1394,38 @@ mod tests {
                 "id {i} ({}) differs after v4 → v5 migration",
                 PARAMS[i].id
             );
+        }
+    }
+
+    /// A v5 blob (param count 173, op block 20) loads under v6 code: the op
+    /// blocks spread for the new trailing `ratio-mode` slot, every later id
+    /// shifts up by `N_OPS`, and the six new slots seed to their default
+    /// (Ratio). A non-default ratio-mode in the saving store must *not* leak
+    /// through — v5 blobs carry no such field.
+    #[test]
+    fn load_bytes_migrates_v5_param_layout() {
+        let non_defaults: &[(&str, f32)] = &[
+            ("op1-pan", -0.5),       // last continuous op-block param
+            ("op6-num", 7.0),        // op-block param, late op
+            ("algo", 19.0),          // first post-op-block param — shifts up 6
+            ("master-volume", -2.0), // last param in the table
+        ];
+        let src = SharedParams::new();
+        for &(name, v) in non_defaults {
+            src.set(id_of(name).unwrap(), v);
+        }
+        // This must be dropped on the way to v5 and reseeded to default.
+        src.set(id_of("op3-ratio-mode").unwrap(), 1.0);
+        let bytes = rewrite_as_v5(&src.snapshot_bytes(), 5);
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v5 blob loads under v6");
+        for &(name, v) in non_defaults {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+        for op in 1..=6 {
+            let id = id_of(&format!("op{op}-ratio-mode")).unwrap();
+            assert_eq!(dst.get(id), 0.0, "op{op} ratio-mode must seed to default");
         }
     }
 

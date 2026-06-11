@@ -6,21 +6,23 @@
 //! CLAP ids are a stable, flat index space:
 //!
 //! ```text
-//!   0 .. 157   Per-patch        (120 op + 1 algo + 1 feedback + 5 LFO2 +
+//!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 157 .. 173   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
+//! 163 .. 179   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
 //! ```
 //!
-//! Total 173. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
-//! is gone — a patch is one parameter set.
+//! Total 179. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! is gone — a patch is one parameter set. Each op block is 21 params: the
+//! 20 continuous controls plus a trailing `ratio-mode` enum (Ratio / Fixed).
 //!
 //! ## What is *not* in the table
 //!
-//! - Per-op `ratio_mode`, `ks_l_curve`, `ks_r_curve`: discrete topology
-//!   selectors. Useful in patches and presets, but automating them mid-note
-//!   would re-cook the operator's pitch / KS shape — not a continuous control.
-//!   Set via patch state only.
+//! - Per-op `ks_l_curve`, `ks_r_curve`: discrete topology selectors.
+//!   Automating them mid-note would re-cook the operator's KS shape — not a
+//!   continuous control. Set via patch state only.
+//!   (`ratio_mode` was in this group per [ADR 0002] but is now a CLAP enum —
+//!   `opN-ratio-mode` — so the editor's Ratio/Fixed selector can drive it.)
 //! - Mod-matrix `source` / `dest` / `curve` and slots 9..=16 `depth`:
 //!   matrix topology + extra depths. Slots 1..=8 `depth` are CLAP-automatable
 //!   per [`crate::matrix::N_CLAP_DEPTH_SLOTS`]; the rest is patch state.
@@ -45,11 +47,11 @@
 //! avoiding a build script.
 
 pub const N_OPS: usize = 6;
-pub const N_PER_OP: usize = 20;
+pub const N_PER_OP: usize = 21;
 pub const N_PER_PATCH_REST: usize = 37;
-pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 157
+pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
 pub const N_PATCH_LEVEL: usize = 16;
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 173
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 179
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -348,6 +350,9 @@ const fn en(
 // ── Variant tables ──────────────────────────────────────────────────────────
 
 pub const LFO_SHAPES: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Pulse", "S&H"];
+/// Per-op tuning mode. Index order matches `vxn2_dsp::op::RatioMode`
+/// (`Ratio` = 0, `Fixed` = 1).
+pub const RATIO_MODES: &[&str] = &["Ratio", "Fixed"];
 pub const STACK_DISTRIBS: &[&str] = &["Linear", "Geometric", "Random"];
 pub const ADSR_SHAPES: &[&str] = &["Lin", "Exp"];
 pub const ASSIGN_MODES: &[&str] = &["Poly", "Solo"];
@@ -381,6 +386,11 @@ macro_rules! op_block_arr {
             it(concat!("op", $n, "-ks-r-depth"), concat!("Op ", $n, " KS R Depth"), 0, 99, 30, ""),
             it(concat!("op", $n, "-ks-rate"), concat!("Op ", $n, " KS Rate"), 0, 7, 2, ""),
             fl(concat!("op", $n, "-pan"), concat!("Op ", $n, " Pan"), -1.0, 1.0, 0.0, ""),
+            // Tuning mode (Ratio / Fixed). Per ADR 0002 this was patch-only
+            // "discrete topology"; exposed as a CLAP enum so the editor's
+            // Ratio/Fixed selector can drive it. Appended at the end of the
+            // op block so the existing per-op offsets (read_op) are unchanged.
+            en(concat!("op", $n, "-ratio-mode"), concat!("Op ", $n, " Ratio Mode"), RATIO_MODES, 0),
         ]
     };
 }
@@ -549,15 +559,15 @@ pub fn id_of(name: &str) -> Option<usize> {
 // param table itself — `module_for_clap_id` and `EngineParams::snapshot_from`
 // both read them.
 
-pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 120
-pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 120
-pub(crate) const OFF_FEEDBACK: usize = OFF_ALGO + 1;  // 121 (patch-level FB applied to algo's structural FB op)
-pub(crate) const OFF_LFO2: usize = OFF_FEEDBACK + 1;  // 122
-pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 127
-pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 136
-pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 141
-pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 144
-pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 149
+pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 126
+pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 126
+pub(crate) const OFF_FEEDBACK: usize = OFF_ALGO + 1;  // 127 (patch-level FB applied to algo's structural FB op)
+pub(crate) const OFF_LFO2: usize = OFF_FEEDBACK + 1;  // 128
+pub(crate) const OFF_PEG: usize = OFF_LFO2 + 5;       // 133
+pub(crate) const OFF_MOD_ENV: usize = OFF_PEG + 9;    // 142
+pub(crate) const OFF_ASSIGN: usize = OFF_MOD_ENV + 5; // 147
+pub(crate) const OFF_STACK: usize = OFF_ASSIGN + 3;   // 150
+pub(crate) const OFF_MTX: usize = OFF_STACK + 5;      // 155
 
 pub(crate) const OFF_LFO1: usize = 0;
 pub(crate) const OFF_DELAY: usize = 3;
@@ -703,7 +713,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 173);
+        assert_eq!(TOTAL_PARAMS, 179);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
