@@ -124,6 +124,50 @@ pub(crate) fn compute_g(cutoff_hz: f32, sample_rate: f32) -> f32 {
     (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
 }
 
+/// Cutoff-tracked feedback ceiling — the cutoff-dependent resonance damping
+/// (sound-design fix, 2026-06-12). The discrete ladder's self-oscillation
+/// threshold *falls* as cutoff rises (the `z⁻¹` resonance-feedback lag, see
+/// [`compute_g`]): the largest feedback `k` whose ring still decays is ≈3.5 at
+/// 1 kHz but only ≈1.0 by 12 kHz (measured). With the flat `k = 4·resonance`
+/// that means a high (often matrix-modulated) cutoff self-oscillates at low
+/// resonance settings and parks a screaming peak on the dense *inharmonic* HF
+/// that FM produces — the reported "doesn't sound musical".
+///
+/// So we cap the effective feedback to a ceiling that tracks ~15 % under that
+/// measured threshold above a knee, while leaving low/mid cutoff at the full
+/// `k = 4` (self-oscillation preserved). The cap is a `min`, so moderate
+/// resonance — already below the ceiling — is untouched; only the top of the
+/// resonance range at high cutoff is tamed (resonates but decays instead of
+/// sustaining). Breakpoints are absolute cutoff Hz (not the oversampled
+/// Nyquist) so the taming is musically uniform at every oversample factor;
+/// linear interpolation between, flat outside.
+const K_CAP_BREAKS: [(f32, f32); 5] = [
+    (3_000.0, 4.0),  // ≤3 kHz: full self-oscillation
+    (5_000.0, 2.0),
+    (7_000.0, 1.4),
+    (9_000.0, 1.1),
+    (12_000.0, 0.9), // ≥12 kHz: decays even at resonance = 1
+];
+
+#[inline]
+pub(crate) fn k_cap(cutoff_hz: f32) -> f32 {
+    let b = &K_CAP_BREAKS;
+    let last = b.len() - 1;
+    if cutoff_hz <= b[0].0 {
+        return b[0].1;
+    }
+    if cutoff_hz >= b[last].0 {
+        return b[last].1;
+    }
+    let mut i = 0;
+    while cutoff_hz > b[i + 1].0 {
+        i += 1;
+    }
+    let (x0, y0) = b[i];
+    let (x1, y1) = b[i + 1];
+    y0 + (y1 - y0) * (cutoff_hz - x0) / (x1 - x0)
+}
+
 /// Frozen OTA-ladder coefficients for one control block.
 #[derive(Copy, Clone, Debug)]
 pub struct OtaLadderCoeffs {
@@ -144,7 +188,11 @@ impl OtaLadderCoeffs {
     pub fn new(cutoff_hz: f32, sample_rate: f32, resonance: f32, drive: f32) -> Self {
         Self {
             g: compute_g(cutoff_hz, sample_rate),
-            k: 4.0 * resonance.clamp(0.0, 1.0),
+            // Cutoff-tracked ceiling keeps the feedback below the (falling)
+            // self-osc threshold as cutoff climbs into the inharmonic-HF danger
+            // zone, while leaving low/mid cutoff and moderate resonance
+            // untouched (see `k_cap`).
+            k: (4.0 * resonance.clamp(0.0, 1.0)).min(k_cap(cutoff_hz)),
             drive: drive.max(0.0),
         }
     }
@@ -355,6 +403,72 @@ mod tests {
             peak = peak.max(y.abs());
         }
         assert!(peak < 10.0, "self-osc blew up: {peak}");
+    }
+
+    #[test]
+    fn k_cap_full_low_tamed_high_monotonic() {
+        assert_eq!(k_cap(500.0), 4.0, "low cutoff must allow full self-osc feedback");
+        assert_eq!(k_cap(3_000.0), 4.0);
+        assert_eq!(k_cap(20_000.0), 0.9, "top must clamp to the tamed ceiling");
+        // Monotonic non-increasing across the audible range.
+        let mut prev = 4.0;
+        let mut f = 500.0;
+        while f <= 20_000.0 {
+            let c = k_cap(f);
+            assert!(c <= prev + 1e-6, "k_cap not monotonic at {f}: {c} > {prev}");
+            prev = c;
+            f += 200.0;
+        }
+        // The cap must sit under the measured self-osc threshold above ~5 kHz
+        // (so resonance = 1 decays there) but above it at 2 kHz (self-osc kept).
+        assert!(k_cap(2_000.0) >= 3.0, "self-osc lost at 2 kHz");
+        assert!(k_cap(8_000.0) < 1.6, "8 kHz cap above the self-osc threshold");
+        assert!(k_cap(12_000.0) < 1.0, "12 kHz cap above the self-osc threshold");
+    }
+
+    /// AC for the high-resonance fix: at a *low* cutoff, resonance = 1 still
+    /// self-oscillates (the limit cycle sustains on silence) — the feature is
+    /// intact. At a *high* cutoff the cutoff-tracked damping caps `k` below the
+    /// self-osc threshold, so the same resonance decays away instead of parking
+    /// a screaming peak on inharmonic HF. This is what stops FM's dense HF
+    /// content from being self-oscillated unmusically.
+    #[test]
+    fn high_cutoff_resonance_decays_while_low_cutoff_sustains() {
+        const EPS: f32 = 1.0e-5;
+        let sr = 48_000.0;
+
+        // Low cutoff (below the damp onset): self-oscillation sustains.
+        let mut lo = OtaLadderKernel::new();
+        lo.set_coeffs(OtaLadderCoeffs::new(1500.0, sr, 1.0, 1.0));
+        for _ in 0..500 {
+            lo.tick(0.5);
+        }
+        let mut lo_min = f32::INFINITY;
+        for _ in 0..(sr as usize) {
+            lo.tick(0.0);
+            lo_min = lo_min.min(lo.state_abs_max());
+        }
+        assert!(lo_min > EPS, "low-cutoff self-osc wrongly decayed: {lo_min}");
+
+        // High cutoff (past the damp floor): same resonance now decays.
+        let mut hi = OtaLadderKernel::new();
+        hi.set_coeffs(OtaLadderCoeffs::new(14_000.0, sr, 1.0, 1.0));
+        for _ in 0..500 {
+            hi.tick(0.5);
+        }
+        let mut settled = None;
+        for i in 0..(sr as usize) {
+            hi.tick(0.0);
+            if hi.state_abs_max() < EPS {
+                settled = Some(i);
+                break;
+            }
+        }
+        assert!(
+            settled.is_some(),
+            "high-cutoff resonance still self-oscillated (state {})",
+            hi.state_abs_max(),
+        );
     }
 
     /// Quiescence gate (ticket 0085). A non-resonant ladder, once its input goes
