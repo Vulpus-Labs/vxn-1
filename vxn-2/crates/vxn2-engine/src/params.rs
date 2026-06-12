@@ -9,10 +9,11 @@
 //!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 163 .. 179   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master)
+//! 163 .. 186   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
+//!                                7 filter)
 //! ```
 //!
-//! Total 179. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 186. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set. Each op block is 21 params: the
 //! 20 continuous controls plus a trailing `ratio-mode` enum (Ratio / Fixed).
 //!
@@ -50,8 +51,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 21;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
-pub const N_PATCH_LEVEL: usize = 16;
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 179
+pub const N_PATCH_LEVEL: usize = 23; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 7 filter
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 186
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -356,6 +357,15 @@ pub const RATIO_MODES: &[&str] = &["Ratio", "Fixed"];
 pub const STACK_DISTRIBS: &[&str] = &["Linear", "Geometric", "Random"];
 pub const ADSR_SHAPES: &[&str] = &["Lin", "Exp"];
 pub const ASSIGN_MODES: &[&str] = &["Poly", "Solo"];
+/// Filter response. Index order matches `vxn2_dsp::filter::FilterMode`
+/// (`Lp` = 0, `Hp`, `Bp`, `Notch`).
+pub const FILTER_MODES: &[&str] = &["LP", "HP", "BP", "Notch"];
+/// Filter slope. Index order matches `vxn2_dsp::filter::FilterSlope`
+/// (`Pole2` = 0, `Pole4` = 1).
+pub const FILTER_SLOPES: &[&str] = &["2-Pole", "4-Pole"];
+/// Filter oversample factor (1× / 2× / 4× / 8×); the enum index maps to the
+/// factor `1 << idx` in the render path (ticket 0084).
+pub const FILTER_OVERSAMPLE: &[&str] = &["1×", "2×", "4×", "8×"];
 
 // ── Macros (each yields a single array literal) ─────────────────────────────
 //
@@ -525,12 +535,26 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("reverb-mix", "Reverb Mix", 0.0, 1.0, 0.20, ""),
     fl("master-tune", "Master Tune", -100.0, 100.0, 0.0, "ct"),
     fl("master-volume", "Master Vol", -60.0, 6.0, -6.0, "dB"),
+    // ── Filter (E007 / ADR 0004) ──────────────────────────────────────────
+    // Optional per-voice oversampled OTA-C ladder, off by default so an
+    // unchanged patch stays bit-identical. `enable`/`mode`/`slope`/`oversample`
+    // are structural selectors — automatable like `delay-on`/`algo`/`lfo2-shape`
+    // (the codebase has no non-automatable flag), but they reconfigure topology
+    // rather than sweeping. `cutoff`/`resonance` are matrix dests
+    // (`DestId::Cutoff` / `DestId::Resonance`).
+    bl("filter-enable", "Filter Enable", false),
+    flx("filter-cutoff", "Filter Cutoff", 20.0, 20000.0, 12000.0, "Hz", 1000.0),
+    fl("filter-resonance", "Filter Reso", 0.0, 1.0, 0.0, ""),
+    en("filter-mode", "Filter Mode", FILTER_MODES, 0),
+    en("filter-slope", "Filter Slope", FILTER_SLOPES, 1),
+    flx("filter-drive", "Filter Drive", 0.1, 16.0, 1.0, "", 1.0),
+    en("filter-oversample", "Filter OS", FILTER_OVERSAMPLE, 2),
 ];
 
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 157, patch × 16]` — same flat ordering described in
+/// `[per-patch × 163, patch × 23]` — same flat ordering described in
 /// the module-level layout block.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
@@ -573,6 +597,7 @@ pub(crate) const OFF_LFO1: usize = 0;
 pub(crate) const OFF_DELAY: usize = 3;
 pub(crate) const OFF_REVERB: usize = 9;
 pub(crate) const OFF_MASTER: usize = 14;
+pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
 /// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
@@ -636,8 +661,10 @@ fn module_for_patch(off: usize) -> &'static str {
         "Global / Delay"
     } else if off < OFF_MASTER {
         "Global / Reverb"
-    } else if off < N_PATCH_LEVEL {
+    } else if off < OFF_FILTER {
         "Global / Master"
+    } else if off < N_PATCH_LEVEL {
+        "Global / Filter"
     } else {
         ""
     }
@@ -713,7 +740,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 179);
+        assert_eq!(TOTAL_PARAMS, 186);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -818,11 +845,22 @@ mod tests {
     }
 
     #[test]
-    fn master_section_is_at_table_tail() {
+    fn filter_section_is_at_table_tail() {
+        // The Filter section (7 params, E007) is appended after Master at the
+        // very end of the flat space, so blob v6→v7 migration is a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 2);
-        assert_eq!(vol, TOTAL_PARAMS - 1);
+        assert_eq!(tune, TOTAL_PARAMS - 9);
+        assert_eq!(vol, TOTAL_PARAMS - 8);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 7));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 6));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 5));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 4));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 3));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 2));
+        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 1));
+        // `filter-enable` defaults off → migrated patches stay bit-identical.
+        assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
     }
 
     #[test]

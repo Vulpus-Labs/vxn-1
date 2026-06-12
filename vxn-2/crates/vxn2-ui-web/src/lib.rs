@@ -464,7 +464,7 @@ mod tests {
             "preset-bar", "algo-block", "algo-diagram", "algo-svg",
             "op-tabs", "op-detail",
             "lfo1", "lfo2", "pitch-eg", "peg-svg", "mod-env",
-            "voice", "stack", "delay", "reverb", "master",
+            "voice", "stack", "filter", "delay", "reverb", "master",
             "algo-overlay", "algo-grid", "mod-matrix", "mm-overlay-list",
         ] {
             let needle = format!("data-vxn-section=\"{section}\"");
@@ -480,6 +480,9 @@ mod tests {
             "delay-sync",
             "reverb-on", "reverb-size", "reverb-mix",
             "master-tune", "master-volume",
+            // Filter section (E007 / ticket 0088): every param reachable.
+            "filter-enable", "filter-cutoff", "filter-resonance",
+            "filter-mode", "filter-slope", "filter-drive", "filter-oversample",
         ] {
             let needle = format!("data-vxn-param=\"{id}\"");
             assert!(html.contains(&needle), "missing param: {id}");
@@ -755,12 +758,15 @@ mod tests {
         let s = build_matrix_lists_json();
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        assert_eq!(v["dests"].as_array().unwrap().len(), 28);
+        // None + 29 dests (E007 appended Cutoff + Resonance after Feedback).
+        assert_eq!(v["dests"].as_array().unwrap().len(), 30);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
         assert_eq!(v["dests"][26]["name"], "reverb-mix");
         assert_eq!(v["dests"][27]["name"], "feedback");
+        assert_eq!(v["dests"][28]["name"], "cutoff");
+        assert_eq!(v["dests"][29]["name"], "resonance");
         assert_eq!(v["curves"][3]["name"], "bipolar");
     }
 

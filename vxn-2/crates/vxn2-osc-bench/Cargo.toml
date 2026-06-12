@@ -59,3 +59,7 @@ harness = false
 [[bench]]
 name = "master_chain"
 harness = false
+
+[[bench]]
+name = "filter_path"
+harness = false

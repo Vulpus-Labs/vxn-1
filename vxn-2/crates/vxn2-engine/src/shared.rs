@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use vxn2_dsp::delay::StereoDelayParams;
 use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
+use vxn2_dsp::filter::{FilterMode, FilterSlope};
 use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, LfoShape};
 use vxn2_dsp::op::{OpParams, RatioMode};
 use vxn2_dsp::reverb::FdnReverbParams;
@@ -38,8 +39,8 @@ use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
     N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
-    OFF_LFO2, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK, PARAMS,
-    PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
+    OFF_FILTER, OFF_LFO2, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK,
+    PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
 // ── Patch ───────────────────────────────────────────────────────────────────
@@ -112,7 +113,16 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   173 → 179, per-op block 20 → 21 params. Older blobs migrate on load by
 ///   spreading the op blocks (later ids shift up by `N_OPS`) and seeding the
 ///   six new ratio-mode slots to their default (Ratio).
-pub const BLOB_VERSION: u16 = 6;
+/// - v7: appends the 7-param Filter section (E007 / ADR 0004) at the very end
+///   of the flat space (after `master-volume`) — param count 179 → 186. The
+///   section sits past every existing id, so older blobs map 1:1 with no
+///   remap; the 7 new filter ids are seeded to their descriptor defaults
+///   (`filter-enable` off → an unchanged patch stays bit-identical).
+pub const BLOB_VERSION: u16 = 7;
+/// Number of params in the v7 Filter section (the trailing block).
+const N_FILTER_PARAMS: usize = 7;
+/// Param count in v6 blobs (before the v7 Filter section was appended).
+const LEGACY_V6_PARAM_COUNT: usize = TOTAL_PARAMS - N_FILTER_PARAMS; // 179
 /// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition).
 /// Anchored to history, not the live `TOTAL_PARAMS`, so future table
 /// changes don't silently shift the legacy migration arithmetic.
@@ -601,6 +611,7 @@ impl ParamModel for SharedParams {
             ..=3 => LEGACY_V3_PARAM_COUNT,
             4 => LEGACY_V4_PARAM_COUNT,
             5 => LEGACY_V5_PARAM_COUNT,
+            6 => LEGACY_V6_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -665,6 +676,15 @@ impl ParamModel for SharedParams {
         if version <= 5 {
             for op in 0..N_OPS {
                 let id = op * N_PER_OP + LIVE_RATIO_MODE_IDX;
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        // v≤6 blobs predate the Filter section (the trailing `N_FILTER_PARAMS`
+        // ids). They map 1:1 above; seed the new ids to their defaults so a
+        // load can't leave them at stale store contents. `filter-enable`
+        // defaults off, keeping a migrated patch bit-identical.
+        if version <= 6 {
+            for id in (TOTAL_PARAMS - N_FILTER_PARAMS)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -790,6 +810,58 @@ impl vxn2_app::Vxn2Params for SharedParams {
     }
 }
 
+// ── Filter params (E007 / ADR 0004) ─────────────────────────────────────────
+
+/// Engine-native shape of the optional per-voice filter section. Mirrors the
+/// seven `filter-*` CLAP params (ticket 0083) decoded into render-ready types.
+/// `enable` off ⇒ the engine takes the unchanged sample-major path and ignores
+/// every other field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterParams {
+    pub enable: bool,
+    /// Base cutoff in Hz (matrix `Cutoff` adds octaves on top, per stack).
+    pub cutoff_hz: f32,
+    /// Base resonance in `[0, 1]` (matrix `Resonance` adds on top, per stack).
+    pub resonance: f32,
+    pub mode: FilterMode,
+    pub slope: FilterSlope,
+    pub drive: f32,
+    /// Oversample factor: 1, 2, 4 or 8 (decoded from the enum index `1 << idx`).
+    pub oversample: usize,
+}
+
+impl Default for FilterParams {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            cutoff_hz: 12_000.0,
+            resonance: 0.0,
+            mode: FilterMode::Lp,
+            slope: FilterSlope::Pole4,
+            drive: 1.0,
+            oversample: 4,
+        }
+    }
+}
+
+/// Decode the `filter-mode` enum index into a [`FilterMode`].
+fn filter_mode_from(idx: i32) -> FilterMode {
+    match idx {
+        1 => FilterMode::Hp,
+        2 => FilterMode::Bp,
+        3 => FilterMode::Notch,
+        _ => FilterMode::Lp,
+    }
+}
+
+/// Decode the `filter-slope` enum index into a [`FilterSlope`].
+fn filter_slope_from(idx: i32) -> FilterSlope {
+    match idx {
+        0 => FilterSlope::Pole2,
+        _ => FilterSlope::Pole4,
+    }
+}
+
 // ── Engine params (audio-side mirror) ───────────────────────────────────────
 
 /// Mirror of [`SharedParams`] in engine-native shapes. Refreshed once per
@@ -803,6 +875,7 @@ pub struct EngineParams {
     pub delay: StereoDelayParams,
     pub reverb: FdnReverbParams,
     pub master: MasterParams,
+    pub filter: FilterParams,
     /// CLAP-automatable matrix slot depths.
     pub mtx_depths: [f32; N_CLAP_DEPTH_SLOTS],
     /// Mod-matrix slot topology + depth, fanned out from the param store at
@@ -838,6 +911,7 @@ impl EngineParams {
             delay: StereoDelayParams::default(),
             reverb: FdnReverbParams::default(),
             master: MasterParams::default(),
+            filter: FilterParams::default(),
             mtx_depths: [0.0; N_CLAP_DEPTH_SLOTS],
             matrix_rows: [MatrixRowRaw::default(); N_MATRIX_SLOTS],
         };
@@ -908,6 +982,20 @@ impl EngineParams {
         self.master = MasterParams {
             tune_cents: shared.get(pb + OFF_MASTER),
             volume_db: shared.get(pb + OFF_MASTER + 1),
+        };
+
+        // Filter section (E007 / ADR 0004). Order matches the `filter-*`
+        // descriptors appended after Master in `params.rs`.
+        let fb = pb + OFF_FILTER;
+        self.filter = FilterParams {
+            enable: shared.get(fb) >= 0.5,
+            cutoff_hz: shared.get(fb + 1),
+            resonance: shared.get(fb + 2),
+            mode: filter_mode_from(shared.get(fb + 3).round() as i32),
+            slope: filter_slope_from(shared.get(fb + 4).round() as i32),
+            drive: shared.get(fb + 5),
+            // `filter-oversample` enum index 0..3 → factor 1/2/4/8.
+            oversample: 1usize << (shared.get(fb + 6).round().clamp(0.0, 3.0) as usize),
         };
 
         // Master tune bakes into the patch's per-op `base_phase_inc` at
@@ -1363,6 +1451,66 @@ mod tests {
         out.extend_from_slice(&lfo1_depth_bits.to_le_bytes());
         out.extend_from_slice(&v4[depth_off..]);
         out
+    }
+
+    /// Rewrite a freshly saved v7 blob into the v6 layout: drop the trailing
+    /// `N_FILTER_PARAMS` Filter value slots (they sit at the very end, before
+    /// the matrix trailer), restore the v6 param count and stamp `version`.
+    fn rewrite_as_v6(bytes: &[u8], version: u16) -> Vec<u8> {
+        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let v6_values_end = BLOB_HEADER_LEN + LEGACY_V6_PARAM_COUNT * 4;
+        let mut out = Vec::with_capacity(bytes.len() - N_FILTER_PARAMS * 4);
+        out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
+        out[4..6].copy_from_slice(&version.to_le_bytes());
+        out[6..8].copy_from_slice(&(LEGACY_V6_PARAM_COUNT as u16).to_le_bytes());
+        // Keep all values up to the Filter section, drop the trailing 7…
+        out.extend_from_slice(&bytes[BLOB_HEADER_LEN..v6_values_end]);
+        // …then re-attach the matrix trailer that followed the value section.
+        out.extend_from_slice(&bytes[values_end..]);
+        out
+    }
+
+    /// A v6 blob (param count 179, no Filter section) loads under v7 code: the
+    /// 179 stored values land 1:1 (Filter is appended at the tail, so nothing
+    /// shifts) and the 7 new filter ids seed to their descriptor defaults. A
+    /// non-default filter value in the saving store must NOT leak through —
+    /// v6 blobs carry no such field.
+    #[test]
+    fn load_bytes_migrates_v6_param_layout() {
+        let non_defaults: &[(&str, f32)] = &[
+            ("op1-pan", -0.4),
+            ("algo", 11.0),
+            ("reverb-mix", 0.33),
+            ("master-tune", 25.0),
+            ("master-volume", -4.0), // last v6 param (id 178)
+        ];
+        let src = SharedParams::new();
+        for &(name, v) in non_defaults {
+            src.set(id_of(name).unwrap(), v);
+        }
+        // These must be dropped on the way to v6 and reseeded to default.
+        src.set(id_of("filter-enable").unwrap(), 1.0);
+        src.set(id_of("filter-cutoff").unwrap(), 440.0);
+        let bytes = rewrite_as_v6(&src.snapshot_bytes(), 6);
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v6 blob loads under v7");
+        for &(name, v) in non_defaults {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+        // Filter ids must seed to defaults (enable off), not the saved values.
+        for name in [
+            "filter-enable",
+            "filter-cutoff",
+            "filter-resonance",
+            "filter-mode",
+            "filter-slope",
+            "filter-drive",
+            "filter-oversample",
+        ] {
+            let id = id_of(name).unwrap();
+            assert_eq!(dst.get(id), PARAMS[id].default, "{name} must seed to default");
+        }
     }
 
     /// A v4 blob (param count 179, `amp-sens` at per-op index 7) loads under

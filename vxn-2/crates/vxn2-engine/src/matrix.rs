@@ -162,10 +162,10 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 ///
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
 /// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX, plus a single `Feedback` dest = 27 total. (Per-op feedback was
-/// dropped; feedback modulates the algorithm's structural FB op only, but
-/// applies per lane — it's a voice property, unlike the post-mixdown FX
-/// dests.)
+/// 2 FX, a single `Feedback` dest, plus 2 filter dests (`Cutoff`,
+/// `Resonance`) = 29 total. (Per-op feedback was dropped; feedback modulates
+/// the algorithm's structural FB op only, but applies per lane — it's a voice
+/// property, unlike the post-mixdown FX dests.)
 ///
 /// ## Audio wiring status
 ///
@@ -189,6 +189,11 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 /// - `StackDetune` / `StackSpread` — these set per-lane cooked offsets at
 ///   note-on; per-block modulation would require re-cooking the stack
 ///   inside the audio loop. Deferred.
+/// - `Cutoff` / `Resonance` — the optional per-voice filter dests (E007).
+///   Surfaced here (ticket 0083) but consumed by the filter render path in
+///   ticket 0084: both collapse to a per-stack scalar (lane-0). `Cutoff` is in
+///   octaves (log domain, gain 8.0); `Resonance` is an additive `[0, 1]`
+///   offset.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum DestId {
@@ -209,10 +214,12 @@ pub enum DestId {
     DelayMix,
     ReverbMix,
     Feedback,
+    Cutoff,
+    Resonance,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 27;
+pub const N_DESTS: usize = 29;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
@@ -233,6 +240,8 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "delay-mix",
     "reverb-mix",
     "feedback",
+    "cutoff",
+    "resonance",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -253,6 +262,8 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Delay Mix",
     "Reverb Mix",
     "Feedback",
+    "Cutoff",
+    "Resonance",
 ];
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets
@@ -273,6 +284,11 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     g[DestId::Op6Pitch as usize] = 24.0;
     g[DestId::GlobalPitch as usize] = 24.0;
     g[DestId::Feedback as usize] = 7.0;
+    // Cutoff modulates in the log/octave domain so a fixed depth is musically
+    // uniform across the 20 Hz..20 kHz range (ADR 0004 §7): the dest value is
+    // in *octaves*; the consumer (ticket 0084) applies `cutoff · 2^value`. Full
+    // depth = ±8 octaves. Resonance is a plain `[0, 1]` additive offset (1.0).
+    g[DestId::Cutoff as usize] = 8.0;
     g
 };
 
@@ -317,6 +333,8 @@ impl DestId {
             25 => DestId::DelayMix,
             26 => DestId::ReverbMix,
             27 => DestId::Feedback,
+            28 => DestId::Cutoff,
+            29 => DestId::Resonance,
             _ => DestId::None,
         }
     }
@@ -757,7 +775,13 @@ mod tests {
     fn dest_idx_skips_none_and_packs_others() {
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Op1Pitch.idx(), Some(0));
-        assert_eq!(DestId::Feedback.idx(), Some(N_DESTS - 1));
+        // Filter dests (Cutoff, Resonance) are appended after Feedback.
+        assert_eq!(DestId::Feedback.idx(), Some(N_DESTS - 3));
+        assert_eq!(DestId::Cutoff.idx(), Some(N_DESTS - 2));
+        assert_eq!(DestId::Resonance.idx(), Some(N_DESTS - 1));
+        // Wire-discriminant round-trip for the new dests.
+        assert_eq!(DestId::from_u8(28), DestId::Cutoff);
+        assert_eq!(DestId::from_u8(29), DestId::Resonance);
     }
 
     #[test]

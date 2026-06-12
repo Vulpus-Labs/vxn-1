@@ -253,6 +253,70 @@
       </div>
     </div>
 
+    <!-- optional per-voice filter (E007): post-synth / pre-FX, header-toggle
+         like the FX so "optional like the FX" reads visually. -->
+    <div class="panel filter-panel" data-vxn-section="filter">
+      <div class="panel-header toggleable" data-vxn-param="filter-enable">FILTER</div>
+      <div class="panel-body filter-body">
+        <div class="filter-faders">
+          <div class="fader" data-vxn-param="filter-cutoff">
+            <div class="fader-label">Cutoff</div>
+            <div class="fader-track">
+              <div class="fader-track-fill"></div>
+              <div class="fader-thumb"></div>
+            </div>
+          </div>
+          <div class="fader" data-vxn-param="filter-resonance">
+            <div class="fader-label">Reso</div>
+            <div class="fader-track">
+              <div class="fader-track-fill"></div>
+              <div class="fader-thumb"></div>
+            </div>
+          </div>
+          <div class="fader" data-vxn-param="filter-drive">
+            <div class="fader-label">Drive</div>
+            <div class="fader-track">
+              <div class="fader-track-fill"></div>
+              <div class="fader-thumb"></div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-selectors">
+          <div class="cgrp">
+            <div class="cgrp-label">Mode</div>
+            <div class="bgrp">
+              <div class="bgrp-row" data-vxn-param="filter-mode">
+                <button class="bgrp-btn" data-vxn-value="0">LP</button>
+                <button class="bgrp-btn" data-vxn-value="1">HP</button>
+                <button class="bgrp-btn" data-vxn-value="2">BP</button>
+                <button class="bgrp-btn" data-vxn-value="3">Notch</button>
+              </div>
+            </div>
+          </div>
+          <div class="cgrp">
+            <div class="cgrp-label">Slope</div>
+            <div class="bgrp">
+              <div class="bgrp-row" data-vxn-param="filter-slope">
+                <button class="bgrp-btn" data-vxn-value="0">2P</button>
+                <button class="bgrp-btn" data-vxn-value="1">4P</button>
+              </div>
+            </div>
+          </div>
+          <div class="cgrp">
+            <div class="cgrp-label">Oversample</div>
+            <div class="bgrp">
+              <div class="bgrp-row" data-vxn-param="filter-oversample">
+                <button class="bgrp-btn" data-vxn-value="0">1&times;</button>
+                <button class="bgrp-btn" data-vxn-value="1">2&times;</button>
+                <button class="bgrp-btn" data-vxn-value="2">4&times;</button>
+                <button class="bgrp-btn" data-vxn-value="3">8&times;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel delay-panel" data-vxn-section="delay">
       <div class="panel-header toggleable" data-vxn-param="delay-on">DELAY</div>
       <div class="panel-body">

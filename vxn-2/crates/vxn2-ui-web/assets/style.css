@@ -677,11 +677,25 @@ html, body {
 
 .perf-row { height: 150px; }
 
-.voice-panel { flex: 1.8 1 0; }
-.stack-panel { flex: 1.4 1 0; }
-.delay-panel { flex: 1.4 1 0; }
+.voice-panel { flex: 1.5 1 0; }
+.stack-panel { flex: 1.3 1 0; }
+.filter-panel { flex: 1.9 1 0; }
+.delay-panel { flex: 1.3 1 0; }
 .reverb-panel { flex: 1.0 1 0; }
 .master-panel { flex: 0.6 1 0; }
+
+/* filter: faders row + a column of structural selectors (E007) */
+.filter-body { flex-direction: row; gap: 8px; }
+.filter-faders { display: flex; flex-direction: row; gap: 6px; flex: 0 0 auto; }
+.filter-selectors {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+.filter-selectors .bgrp-row { flex-direction: row; gap: 4px; flex-wrap: wrap; }
 
 /* header toggle */
 .panel.toggle-on > .panel-header { background: var(--header-bg); }

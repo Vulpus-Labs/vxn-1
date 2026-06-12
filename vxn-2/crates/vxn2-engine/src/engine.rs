@@ -34,6 +34,8 @@
 
 use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::delay::StereoDelay;
+use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
+use vxn2_dsp::halfband::{Interpolator, Oversampler};
 use vxn2_dsp::reverb::FdnReverb;
 use vxn2_dsp::stack::{STACK_LANES, stack_tick_stereo};
 
@@ -54,6 +56,11 @@ use crate::shared::{EngineParams, SharedParams};
 const DELAY_MIX_IDX: usize = DestId::DelayMix.idx().unwrap();
 const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
 const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
+const CUTOFF_IDX: usize = DestId::Cutoff.idx().unwrap();
+const RESONANCE_IDX: usize = DestId::Resonance.idx().unwrap();
+/// Largest oversample factor the filter path supports (`filter-oversample`
+/// tops out at 8×). Sizes the per-voice OS scratch and OS bus buffers.
+const MAX_OVERSAMPLE: usize = 8;
 const _: () = {
     assert!(DestId::Op1Pitch.idx().unwrap() == 0);
     assert!(DestId::Op1Level.idx().unwrap() == 1);
@@ -144,6 +151,31 @@ pub struct Engine {
     /// branch per sample.
     ramp_live: [bool; N_STACKS],
     any_ramp_live: bool,
+
+    // ── Optional per-voice filter (E007 / ADR 0004) ──────────────────────
+    // Two scalar OTA-C ladder kernels per stack (L/R) — the filter runs on a
+    // stack's summed stereo pair. Plus one interpolating resampler per stack
+    // (per-voice upsample, stateful) and a single shared decimator per channel
+    // (deferred decimation past the voice-sum). All allocated once; untouched
+    // while `filter-enable` is off.
+    filter_l: Vec<OtaLadderKernel>,
+    filter_r: Vec<OtaLadderKernel>,
+    interp_l: Vec<Interpolator>,
+    interp_r: Vec<Interpolator>,
+    decim_l: Oversampler,
+    decim_r: Oversampler,
+    /// Base-rate per-voice render scratch (`block_size`).
+    base_l: Vec<f32>,
+    base_r: Vec<f32>,
+    /// Oversampled per-voice scratch (`block_size * MAX_OVERSAMPLE`).
+    os_l: Vec<f32>,
+    os_r: Vec<f32>,
+    /// Oversampled voice-sum bus (`block_size * MAX_OVERSAMPLE`).
+    bus_l: Vec<f32>,
+    bus_r: Vec<f32>,
+    /// Decimated dry result fed to the FX chain (`block_size`).
+    dry_l: Vec<f32>,
+    dry_r: Vec<f32>,
 }
 
 impl Engine {
@@ -179,6 +211,20 @@ impl Engine {
             prev_eg_level: vec![[0.0; vxn2_dsp::algo::N_OPS]; N_STACKS],
             ramp_live: [false; N_STACKS],
             any_ramp_live: false,
+            filter_l: vec![OtaLadderKernel::new(); N_STACKS],
+            filter_r: vec![OtaLadderKernel::new(); N_STACKS],
+            interp_l: vec![Interpolator::new(); N_STACKS],
+            interp_r: vec![Interpolator::new(); N_STACKS],
+            decim_l: Oversampler::new(),
+            decim_r: Oversampler::new(),
+            base_l: vec![0.0; block_size],
+            base_r: vec![0.0; block_size],
+            os_l: vec![0.0; block_size * MAX_OVERSAMPLE],
+            os_r: vec![0.0; block_size * MAX_OVERSAMPLE],
+            bus_l: vec![0.0; block_size * MAX_OVERSAMPLE],
+            bus_r: vec![0.0; block_size * MAX_OVERSAMPLE],
+            dry_l: vec![0.0; block_size],
+            dry_r: vec![0.0; block_size],
         };
         e.apply_block_params();
         e
@@ -236,7 +282,13 @@ impl Engine {
             self.mod_seq[i] = u64::MAX;
             self.ramp_live[i] = false;
             self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
+            self.filter_l[i].reset();
+            self.filter_r[i].reset();
+            self.interp_l[i].reset();
+            self.interp_r[i].reset();
         }
+        self.decim_l.reset();
+        self.decim_r.reset();
         self.any_ramp_live = false;
         self.apply_block_params();
     }
@@ -347,6 +399,10 @@ impl Engine {
             return;
         }
         let dt = n as f32 / self.sample_rate;
+        // Block-rate dispatch: the filter-enable flag selects one of two render
+        // bodies (ADR 0004 §5) — no per-sample branch. Read once here so the
+        // matrix loop can reset filter state on fresh notes.
+        let filter_enabled = self.params.filter.enable;
 
         // Per-block control-rate work.
         self.alloc.block_tick(dt);
@@ -465,6 +521,16 @@ impl Engine {
             if fresh {
                 self.mod_seq[i] = seq;
                 self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
+                // A re-used slot carries a fresh note — clear its filter state
+                // (kernels + interpolators) so the new voice starts clean
+                // (ADR 0004: `reset()` on note-on). Only when the filter is on;
+                // off, the state is inert anyway.
+                if filter_enabled {
+                    self.filter_l[i].reset();
+                    self.filter_r[i].reset();
+                    self.interp_l[i].reset();
+                    self.interp_r[i].reset();
+                }
             }
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, self.pitch_smoothers[i].current());
@@ -603,33 +669,193 @@ impl Engine {
             }
         }
 
-        // Per-sample render: sum every active stack into the dry bus, then
-        // through delay + reverb + master gain. Every PITCH_SMOOTH_QUANTUM
-        // samples the pitch smoothers advance one step toward this block's
-        // targets and the affected stacks re-cook `phase_inc` — converged
-        // smoothers (no active pitch route) skip the recook entirely.
-        for sample in 0..n {
-            if sample % PITCH_SMOOTH_QUANTUM == 0 {
-                self.advance_pitch_smoothers();
+        if filter_enabled {
+            // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
+            self.render_block_filtered(out_l, out_r, n);
+        } else {
+            // OFF path — the tuned sample-major loop, byte-for-byte unchanged.
+            // Per-sample: sum every active stack into the dry bus, then through
+            // delay + reverb + master gain. Every PITCH_SMOOTH_QUANTUM samples
+            // the pitch smoothers advance one step toward this block's targets
+            // and the affected stacks re-cook `phase_inc` — converged smoothers
+            // (no active pitch route) skip the recook entirely.
+            for sample in 0..n {
+                if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                    self.advance_pitch_smoothers();
+                }
+                let mut dry_l = 0.0_f32;
+                let mut dry_r = 0.0_f32;
+                for s in &mut self.alloc.stacks {
+                    if !s.is_idle() {
+                        let (sl, sr) = stack_tick_stereo(s);
+                        dry_l += sl;
+                        dry_r += sr;
+                    }
+                }
+                if self.any_ramp_live {
+                    self.advance_mod_ramps();
+                }
+                let (cl, cr) = self.cleanup.process(dry_l, dry_r);
+                let (l, r) = self.delay.process(cl, cr);
+                let (l, r) = self.reverb.process(l, r);
+                let (l, r) = self.master.apply(l, r);
+                out_l[sample] = l;
+                out_r[sample] = r;
             }
-            let mut dry_l = 0.0_f32;
-            let mut dry_r = 0.0_f32;
-            for s in &mut self.alloc.stacks {
-                if !s.is_idle() {
-                    let (sl, sr) = stack_tick_stereo(s);
-                    dry_l += sl;
-                    dry_r += sr;
+        }
+    }
+
+    /// ON-path render (ADR 0004 §3–§5): stack-major, oversampled per-voice
+    /// filter with a single shared decimation deferred past the voice-sum.
+    ///
+    /// For each active stack we render its whole base-rate block (advancing
+    /// *that stack's* pitch smoother every quantum and its mod-ramp every
+    /// sample — licensed because every per-sample control field is already
+    /// per-stack, so the stack-major reorder reproduces the OFF path's
+    /// per-voice output exactly), upsample it, run its L/R ladder at the
+    /// oversampled rate, and accumulate into the oversampled bus. After all
+    /// stacks, one shared decimator brings the bus back to base rate; the FX
+    /// chain then runs per sample exactly as in the OFF path.
+    ///
+    /// Factored so ticket 0085 can drop a per-stack quiescence-skip in front
+    /// of the inner render and 0086 can read the resampler group delay.
+    fn render_block_filtered(&mut self, out_l: &mut [f32], out_r: &mut [f32], n: usize) {
+        let fp = self.params.filter;
+        let f = fp.oversample.clamp(1, MAX_OVERSAMPLE);
+
+        if f == 1 {
+            // Fused unity-rate path: ladder runs directly on each stack's
+            // stereo pair and accumulates straight into the dry bus — no
+            // resamplers, no OS scratch/bus, no extra buffer passes. This is
+            // the "sum + ladder → FX" shape the 1× setting should cost. (No
+            // oversampling ⇒ no anti-alias filtering and no added latency; the
+            // ladder's `tanh` aliases — the documented 1× tradeoff.)
+            self.dry_l[..n].fill(0.0);
+            self.dry_r[..n].fill(0.0);
+            let os_rate = self.sample_rate;
+            for i in 0..N_STACKS {
+                if self.alloc.stacks[i].is_idle() {
+                    continue;
+                }
+                self.set_stack_filter_coeffs(i, os_rate, fp);
+                for sample in 0..n {
+                    if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                        self.advance_pitch_smoother_one(i);
+                    }
+                    let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    self.dry_l[sample] += self.filter_l[i].tick(sl);
+                    self.dry_r[sample] += self.filter_r[i].tick(sr);
+                    if self.ramp_live[i] {
+                        self.advance_mod_ramp_one(i);
+                    }
                 }
             }
-            if self.any_ramp_live {
-                self.advance_mod_ramps();
+        } else {
+            // Oversampled path: per-voice upsample → ladder@F → accumulate into
+            // the OS bus, then ONE shared decimation past the voice-sum.
+            let osn = n * f;
+            debug_assert!(osn <= self.bus_l.len(), "OS bus overflow: {osn}");
+            let os_rate = self.sample_rate * f as f32;
+            self.bus_l[..osn].fill(0.0);
+            self.bus_r[..osn].fill(0.0);
+
+            for i in 0..N_STACKS {
+                if self.alloc.stacks[i].is_idle() {
+                    continue;
+                }
+                self.set_stack_filter_coeffs(i, os_rate, fp);
+
+                // 1. Render this stack's whole block to base-rate scratch.
+                for sample in 0..n {
+                    if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                        self.advance_pitch_smoother_one(i);
+                    }
+                    let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    self.base_l[sample] = sl;
+                    self.base_r[sample] = sr;
+                    if self.ramp_live[i] {
+                        self.advance_mod_ramp_one(i);
+                    }
+                }
+
+                // 2. Upsample (mandatory anti-image LP) → per-voice OS scratch.
+                self.interp_l[i].interpolate(&self.base_l[..n], &mut self.os_l[..osn], f);
+                self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
+
+                // 3 + 4. Ladder at the oversampled rate, accumulate into the bus.
+                for j in 0..osn {
+                    self.bus_l[j] += self.filter_l[i].tick(self.os_l[j]);
+                    self.bus_r[j] += self.filter_r[i].tick(self.os_r[j]);
+                }
             }
-            let (cl, cr) = self.cleanup.process(dry_l, dry_r);
+
+            // 5. One shared decimation past the voice-sum (linear ⇒ exact).
+            self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
+            self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
+        }
+
+        // FX chain per sample, exactly as the OFF path.
+        for sample in 0..n {
+            let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
             let (l, r) = self.master.apply(l, r);
             out_l[sample] = l;
             out_r[sample] = r;
+        }
+    }
+
+    /// Compute + install this block's frozen ladder coefficients for stack `i`
+    /// (ADR 0004 §7). Cutoff modulates in the log/octave domain
+    /// (`base · 2^(matrix octaves)`); resonance is an additive `[0, 1]` offset;
+    /// both collapse to a per-stack scalar via lane 0. Computed at the
+    /// `os_rate` actually used so `compute_g`'s fs-dependent pole detune stays
+    /// correct at every oversample factor.
+    #[inline]
+    fn set_stack_filter_coeffs(&mut self, i: usize, os_rate: f32, fp: crate::shared::FilterParams) {
+        let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX];
+        let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(20.0, 20_000.0);
+        let resonance = (fp.resonance + self.dest_vals[i][0][RESONANCE_IDX]).clamp(0.0, 1.0);
+        let coeffs = OtaLadderCoeffs::new(cutoff_hz, os_rate, resonance, fp.drive);
+        self.filter_l[i].set_coeffs(coeffs);
+        self.filter_r[i].set_coeffs(coeffs);
+        self.filter_l[i].set_response(fp.mode, fp.slope);
+        self.filter_r[i].set_response(fp.mode, fp.slope);
+    }
+
+    /// Single-stack pitch-smoother advance — the body of
+    /// [`Self::advance_pitch_smoothers`] for one slot, used by the stack-major
+    /// filter path so each stack advances inside its own block loop. Per-stack
+    /// smoother state is independent, so this reproduces the OFF path's
+    /// per-voice result exactly.
+    #[inline]
+    fn advance_pitch_smoother_one(&mut self, i: usize) {
+        if self.alloc.stacks[i].is_idle() {
+            return;
+        }
+        if self.pitch_smoothers[i].converged(&self.pitch_targets[i], PITCH_SMOOTH_EPS_ST) {
+            return;
+        }
+        let st = self.pitch_smoothers[i].tick(&self.pitch_targets[i]);
+        let stack = &mut self.alloc.stacks[i];
+        project_pitch_state(stack, st);
+        stack.apply_pitch_mult();
+    }
+
+    /// Single-stack mod-ramp advance — the body of
+    /// [`Self::advance_mod_ramps`] for one slot (stack-major filter path).
+    #[inline]
+    fn advance_mod_ramp_one(&mut self, i: usize) {
+        let stack = &mut self.alloc.stacks[i];
+        let lvl_inc = &self.level_mod_inc[i];
+        let pl_inc = &self.pan_l_inc[i];
+        let pr_inc = &self.pan_r_inc[i];
+        for op_i in 0..vxn2_dsp::algo::N_OPS {
+            for k in 0..STACK_LANES {
+                stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
+                stack.pan_l[op_i][k] += pl_inc[op_i][k];
+                stack.pan_r[op_i][k] += pr_inc[op_i][k];
+            }
         }
     }
 
@@ -1524,5 +1750,202 @@ mod tests {
             last_peak = last_peak.max(l[i].abs()).max(r[i].abs());
         }
         assert!(last_peak < 0.05, "long tail still audible: {last_peak}");
+    }
+
+    // ── E007 filter render path (ticket 0084) ────────────────────────────
+
+    use crate::shared::FilterParams;
+    use vxn2_dsp::filter::{FilterMode, FilterSlope};
+
+    /// Render `blocks` blocks of a held middle-C and return summed L+R energy.
+    fn render_energy(e: &mut Engine, blocks: usize) -> f64 {
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        let mut energy = 0.0_f64;
+        for _ in 0..blocks {
+            e.process_block(&mut l, &mut r);
+            for i in 0..BLK {
+                energy += (l[i] as f64) * (l[i] as f64) + (r[i] as f64) * (r[i] as f64);
+            }
+        }
+        energy
+    }
+
+    /// With the filter OFF the render path is unchanged: cutoff / mode / drive
+    /// must have zero effect on the output (bit-identical to a default engine).
+    #[test]
+    fn filter_off_ignores_filter_params() {
+        let mut baseline = Engine::new(SR, BLK);
+        baseline.note_on(60, 100);
+
+        let mut tweaked = Engine::new(SR, BLK);
+        tweaked.params_mut().filter = FilterParams {
+            enable: false,
+            cutoff_hz: 120.0,
+            resonance: 0.9,
+            mode: FilterMode::Hp,
+            slope: FilterSlope::Pole2,
+            drive: 8.0,
+            oversample: 8,
+        };
+        tweaked.note_on(60, 100);
+
+        let (mut bl, mut br) = ([0.0_f32; BLK], [0.0_f32; BLK]);
+        let (mut tl, mut tr) = ([0.0_f32; BLK], [0.0_f32; BLK]);
+        for _ in 0..40 {
+            baseline.process_block(&mut bl, &mut br);
+            tweaked.process_block(&mut tl, &mut tr);
+            for i in 0..BLK {
+                assert_eq!(bl[i], tl[i], "filter-off L diverged at block sample {i}");
+                assert_eq!(br[i], tr[i], "filter-off R diverged");
+            }
+        }
+    }
+
+    /// A low-cutoff lowpass removes energy relative to a wide-open cutoff, for
+    /// every oversample factor (the ladder is actually in the signal path).
+    #[test]
+    fn filter_on_lowpass_attenuates() {
+        for f in [1usize, 2, 4, 8] {
+            let mk = |cutoff: f32| {
+                let mut e = Engine::new(SR, BLK);
+                e.params_mut().filter = FilterParams {
+                    enable: true,
+                    cutoff_hz: cutoff,
+                    resonance: 0.0,
+                    mode: FilterMode::Lp,
+                    slope: FilterSlope::Pole4,
+                    drive: 1.0,
+                    oversample: f,
+                };
+                e.note_on(60, 110);
+                e
+            };
+            let mut open = mk(20_000.0);
+            let mut shut = mk(150.0);
+            let e_open = render_energy(&mut open, 60);
+            let e_shut = render_energy(&mut shut, 60);
+            assert!(
+                e_shut < 0.5 * e_open,
+                "{f}× LP@150 ({e_shut:.4}) not clearly darker than LP@20k ({e_open:.4})"
+            );
+        }
+    }
+
+    /// Self-oscillation at resonance = 1 stays finite and bounded at every
+    /// oversample factor (the `tanh` saturator caps the loop).
+    #[test]
+    fn filter_on_self_osc_is_bounded() {
+        for f in [1usize, 2, 4, 8] {
+            let mut e = Engine::new(SR, BLK);
+            e.params_mut().filter = FilterParams {
+                enable: true,
+                cutoff_hz: 1500.0,
+                resonance: 1.0,
+                mode: FilterMode::Lp,
+                slope: FilterSlope::Pole4,
+                drive: 2.0,
+                oversample: f,
+            };
+            e.note_on(60, 127);
+            let mut l = [0.0_f32; BLK];
+            let mut r = [0.0_f32; BLK];
+            let mut peak = 0.0_f32;
+            for _ in 0..((SR as usize) / 2 / BLK) {
+                e.process_block(&mut l, &mut r);
+                for i in 0..BLK {
+                    assert!(l[i].is_finite() && r[i].is_finite(), "{f}× non-finite output");
+                    peak = peak.max(l[i].abs()).max(r[i].abs());
+                }
+            }
+            assert!(peak < 100.0, "{f}× self-osc blew up: peak {peak}");
+        }
+    }
+
+    /// Every mode × slope produces finite, non-trivial output on a held note.
+    #[test]
+    fn filter_on_all_modes_render() {
+        for mode in FilterMode::ALL {
+            for slope in [FilterSlope::Pole2, FilterSlope::Pole4] {
+                let mut e = Engine::new(SR, BLK);
+                e.params_mut().filter = FilterParams {
+                    enable: true,
+                    cutoff_hz: 2000.0,
+                    resonance: 0.3,
+                    mode,
+                    slope,
+                    drive: 1.0,
+                    oversample: 4,
+                };
+                e.note_on(60, 110);
+                let energy = render_energy(&mut e, 60);
+                assert!(energy.is_finite(), "{mode:?}/{slope:?} non-finite");
+                assert!(energy > 1e-6, "{mode:?}/{slope:?} produced silence");
+            }
+        }
+    }
+
+    /// A matrix `Cutoff` route audibly changes the filtered output: mod wheel
+    /// at 0 vs 1 (driving Cutoff up many octaves) yields different energy.
+    #[test]
+    fn matrix_cutoff_modulates_filter() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        let mk = |wheel: f32| {
+            let mut e = Engine::new(SR, BLK);
+            e.params_mut().filter = FilterParams {
+                enable: true,
+                cutoff_hz: 200.0, // low base so upward modulation has room
+                resonance: 0.0,
+                mode: FilterMode::Lp,
+                slope: FilterSlope::Pole4,
+                drive: 1.0,
+                oversample: 4,
+            };
+            e.matrix.slots[0] = MatrixSlot {
+                source: SourceId::ModWheel,
+                dest: DestId::Cutoff,
+                depth: 1.0,
+                curve: CurveKind::Lin,
+            };
+            e.set_mod_wheel(wheel);
+            e.note_on(60, 110);
+            e
+        };
+        let mut closed = mk(0.0);
+        let mut open = mk(1.0);
+        let e_closed = render_energy(&mut closed, 60);
+        let e_open = render_energy(&mut open, 60);
+        // Opening the cutoff (mod wheel up) passes more energy.
+        assert!(
+            e_open > 1.5 * e_closed,
+            "Cutoff route had no effect: closed {e_closed:.5}, open {e_open:.5}"
+        );
+    }
+
+    /// No allocation / panic across a filtered block with several voices and a
+    /// non-power-of-two block length (resamplers tolerate any `n`).
+    #[test]
+    fn filtered_render_handles_odd_block_len() {
+        let mut e = Engine::new(SR, 100);
+        e.params_mut().filter = FilterParams {
+            enable: true,
+            cutoff_hz: 4000.0,
+            resonance: 0.5,
+            mode: FilterMode::Bp,
+            slope: FilterSlope::Pole4,
+            drive: 1.5,
+            oversample: 8,
+        };
+        e.note_on(60, 100);
+        e.note_on(64, 100);
+        e.note_on(67, 100);
+        let mut l = [0.0_f32; 100];
+        let mut r = [0.0_f32; 100];
+        for _ in 0..50 {
+            e.process_block(&mut l, &mut r);
+            for i in 0..100 {
+                assert!(l[i].is_finite() && r[i].is_finite());
+            }
+        }
     }
 }

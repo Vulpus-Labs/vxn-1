@@ -171,12 +171,18 @@ The matrix is a 16-slot table per patch. Each slot has:
 | `depth`    | f    | −1.0 .. +1.0 (normalised; multiplied by dest-specific range to get plain offset).                |
 | `curve`    | e    | {lin, exp, log, bipolar}.                                                                        |
 
-**Destinations** (v1 set):
+**Destinations** (29 total):
 
-- Per-op: `op{N}_ratio`, `op{N}_level`, `op{N}_detune`, `op{N}_pan` (6 ops × 4 dests = 24)
+- Per-op: `op{N}_pitch`, `op{N}_level`, `op{N}_pan` (6 ops × 3 dests = 18; v3
+  collapsed the old Ratio + Detune dests into one Pitch dest)
 - Global: `global_pitch`, `lfo1_rate`, `lfo2_rate`, `lfo2_phase`
 - Stacking macros (matrix can override): `stack_detune`, `stack_spread`
 - FX: `delay_mix`, `reverb_mix`
+- Feedback: `feedback`
+- Filter (E007 / ADR 0004): `cutoff`, `resonance` — per-voice, collapse to a
+  per-stack scalar (lane-0). `cutoff` modulates in the log/octave domain
+  (gain 8 octaves at full depth); `resonance` is an additive `[0, 1]` offset.
+  Inert until `filter-enable` is on.
 
 **Depth taper**: semitone dests (`op{N}_ratio`, `op{N}_detune`,
 `global_pitch`) apply a cubic taper (`d³`) to the stored depth before the
@@ -241,13 +247,37 @@ limit if needed.)
 
 ---
 
+## Filter (optional, per-voice — E007 / ADR 0004)
+
+An optional per-voice oversampled OTA-C ladder, post-stack-sum / pre-voice-sum.
+**Off by default**: with `filter_enable` off the render path is the unchanged
+sample-major loop and output is bit-identical to a filterless patch. `cutoff`
+and `resonance` are mod-matrix destinations (`Cutoff` / `Resonance`).
+
+| Param               | Type | Range            | Default | Purpose                                                        |
+|---------------------|------|------------------|---------|----------------------------------------------------------------|
+| `filter_enable`     | b    | off / on         | off     | Master toggle. Off ⇒ zero added cost, bit-identical output.    |
+| `filter_cutoff`     | f    | 20 .. 20000 Hz   | 12000   | Corner frequency, exp taper. Matrix dest `Cutoff` (log domain).|
+| `filter_resonance`  | f    | 0.0 .. 1.0       | 0.0     | Feedback amount; self-oscillates at 1.0. Matrix dest `Resonance`.|
+| `filter_mode`       | e    | LP / HP / BP / Notch | LP  | Response tap-mix.                                              |
+| `filter_slope`      | e    | 2-Pole / 4-Pole  | 4-Pole  | 12 vs 24 dB/oct.                                               |
+| `filter_drive`      | f    | 0.1 .. 16.0      | 1.0     | Pre-`tanh` input drive into stage 0.                          |
+| `filter_oversample` | e    | 1× / 2× / 4× / 8× | 4×     | Oversample factor localised to the filter.                    |
+
+`filter_enable`, `filter_mode`, `filter_slope`, `filter_oversample` are
+structural selectors — like `delay_on`/`algo`/`lfo2_shape` they are CLAP
+params (the codebase has no non-automatable flag) but reconfigure topology
+rather than sweeping. `cutoff`/`resonance`/`drive` are continuous.
+
+---
+
 ## Parameter count summary
 
 ### Per-patch
 
 | Section                       | Count                |
 |-------------------------------|----------------------|
-| Per-op (×6)                   | 20 × 6 = 120         |
+| Per-op (×6)                   | 21 × 6 = 126         |
 | Algorithm + Feedback          | 2                    |
 | LFO 2                         | 5                    |
 | Pitch EG                      | 9                    |
@@ -255,7 +285,7 @@ limit if needed.)
 | Assignment                    | 3                    |
 | Stacking                      | 5                    |
 | Mod matrix slots 1–8 depth    | 8                    |
-| **Per-patch subtotal**        | **157**              |
+| **Per-patch subtotal**        | **163**              |
 
 ### Patch-level
 
@@ -265,13 +295,14 @@ limit if needed.)
 | Delay              | 6     |
 | Reverb             | 5     |
 | Master             | 2     |
-| **Patch-level subtotal** | **16** |
+| Filter (E007)      | 7     |
+| **Patch-level subtotal** | **23** |
 
 ### CLAP totals
 
 | Quantity                | Value          |
 |-------------------------|----------------|
-| Per-patch + patch       | 157 + 16 = **173** |
+| Per-patch + patch       | 163 + 23 = **186** |
 | Mod matrix non-CLAP fields | source + dest + curve × 16 slots + depth × slots 9–16 = 56 fields (patch sub-table, not CLAP) |
 
 Mod matrix slot `source`, `dest`, `curve` are excluded from CLAP because
