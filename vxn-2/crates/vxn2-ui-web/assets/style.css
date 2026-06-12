@@ -616,6 +616,7 @@ html, body {
   line-height: var(--ctl-label-h);
 }
 
+.voice-panel { flex: 0.9 1 0; } /* moved up into the global-mod row, far left */
 .lfo-panel { flex: 1 1 0; }
 .peg-panel { flex: 1 1 0; }
 .moenv-panel { flex: 1 1 0; }
@@ -677,25 +678,28 @@ html, body {
 
 .perf-row { height: 150px; }
 
-.voice-panel { flex: 1.5 1 0; }
-.stack-panel { flex: 1.3 1 0; }
-.filter-panel { flex: 1.9 1 0; }
-.delay-panel { flex: 1.3 1 0; }
+/* Voice moved up into the global-mod row (far left); Voice Stack now leads the
+   bottom row and Filter takes the freed width (E007 cutoff/keytrack/tuned). */
+.stack-panel { flex: 1.0 1 0; }
+.filter-panel { flex: 2.6 1 0; }
+.delay-panel { flex: 1.2 1 0; }
 .reverb-panel { flex: 1.0 1 0; }
 .master-panel { flex: 0.6 1 0; }
 
-/* filter: faders row + a column of structural selectors (E007) */
+/* filter: faders row + selector columns. Mode / Slope / Oversample read as
+   labelled vertical button stacks, same column shape as the faders (E007). */
 .filter-body { flex-direction: row; gap: 8px; }
 .filter-faders { display: flex; flex-direction: row; gap: 6px; flex: 0 0 auto; }
 .filter-selectors {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
   flex: 1 1 auto;
   min-width: 0;
-  justify-content: center;
 }
-.filter-selectors .bgrp-row { flex-direction: row; gap: 4px; flex-wrap: wrap; }
+/* each selector group: header label on top, buttons stacked vertically */
+.filter-selectors .bgrp-row { flex-direction: column; gap: 4px; }
 
 /* header toggle */
 .panel.toggle-on > .panel-header { background: var(--header-bg); }

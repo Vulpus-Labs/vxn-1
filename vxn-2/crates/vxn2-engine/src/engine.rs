@@ -58,6 +58,35 @@ const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
 const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
 const CUTOFF_IDX: usize = DestId::Cutoff.idx().unwrap();
 const RESONANCE_IDX: usize = DestId::Resonance.idx().unwrap();
+/// Lowest cutoff the ladder is driven to — C0 (MIDI 12), ≈16.35 Hz (VXN-1
+/// parity). Lets a fully key-tracked, C0-based cutoff reach bass pitches.
+const CUTOFF_MIN_HZ: f32 = 16.3516;
+/// Highest cutoff the ladder is driven to (the `filter-cutoff` param ceiling).
+const CUTOFF_MAX_HZ: f32 = 20_000.0;
+/// Key-tracking centre note — C0 (MIDI 12). At full key-track the cutoff shifts
+/// `(note − 12)/12` octaves, so a C0-floored cutoff tracks the played pitch.
+const KEYTRACK_CENTRE_NOTE: f32 = 12.0;
+
+/// Filter saturator headroom / gain-staging. VXN-2 filters the post-stack-sum,
+/// which runs far hotter (rms ≈ 1.6, peaks ≈ 4–5) than VXN-1's per-voice input,
+/// so the ladder's per-stage `tanh` compresses deep into its knee — ≈ −7 dB at
+/// default drive even at density 1. We trim the signal into the saturator's
+/// near-linear region and make it up after, so `drive = 1` is ≈ transparent at
+/// the passband (cutoff open) and `drive` stays the knob that pushes into
+/// saturation. Equivalent to a `tanh` headroom of `1/TRIM`; self-oscillation
+/// stays bounded (the kernel limit cycle is ±~1, scaled by the make-up). Lives
+/// engine-side so the ported kernel and its unit tests are untouched.
+const FILTER_IN_TRIM: f32 = 0.2;
+const FILTER_OUT_MAKEUP: f32 = 1.0 / FILTER_IN_TRIM;
+
+/// Key-tracking cutoff offset in octaves: `(note − 12)/12 × amount`, centred on
+/// C0 (`amount` ∈ [0,1]). With the base cutoff at the [`CUTOFF_MIN_HZ`] C0
+/// floor, `amount = 1` makes the resulting `CUTOFF_MIN_HZ · 2^offset` equal the
+/// played note's pitch (`midi_to_hz`), i.e. the cutoff tracks the keyboard 1:1.
+#[inline]
+fn keytrack_octaves(note: u8, amount: f32) -> f32 {
+    (note as f32 - KEYTRACK_CENTRE_NOTE) / 12.0 * amount
+}
 /// Largest oversample factor the filter path supports (`filter-oversample`
 /// tops out at 8×). Sizes the per-voice OS scratch and OS bus buffers.
 const MAX_OVERSAMPLE: usize = 8;
@@ -760,8 +789,8 @@ impl Engine {
                     // naturally instead of being clipped. No stack tick / pitch
                     // / mod advance — all frozen until the next note-on.
                     for sample in 0..n {
-                        self.dry_l[sample] += self.filter_l[i].tick(0.0);
-                        self.dry_r[sample] += self.filter_r[i].tick(0.0);
+                        self.dry_l[sample] += self.filter_l[i].tick(0.0) * FILTER_OUT_MAKEUP;
+                        self.dry_r[sample] += self.filter_r[i].tick(0.0) * FILTER_OUT_MAKEUP;
                     }
                     continue;
                 }
@@ -770,8 +799,10 @@ impl Engine {
                         self.advance_pitch_smoother_one(i);
                     }
                     let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
-                    self.dry_l[sample] += self.filter_l[i].tick(sl);
-                    self.dry_r[sample] += self.filter_r[i].tick(sr);
+                    self.dry_l[sample] +=
+                        self.filter_l[i].tick(sl * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                    self.dry_r[sample] +=
+                        self.filter_r[i].tick(sr * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
                     if self.ramp_live[i] {
                         self.advance_mod_ramp_one(i);
                     }
@@ -825,9 +856,13 @@ impl Engine {
                 self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
 
                 // 3 + 4. Ladder at the oversampled rate, accumulate into the bus.
+                //         Trim into the saturator's linear region + make up after
+                //         (gain-staging, see `FILTER_IN_TRIM`).
                 for j in 0..osn {
-                    self.bus_l[j] += self.filter_l[i].tick(self.os_l[j]);
-                    self.bus_r[j] += self.filter_r[i].tick(self.os_r[j]);
+                    self.bus_l[j] += self.filter_l[i].tick(self.os_l[j] * FILTER_IN_TRIM)
+                        * FILTER_OUT_MAKEUP;
+                    self.bus_r[j] += self.filter_r[i].tick(self.os_r[j] * FILTER_IN_TRIM)
+                        * FILTER_OUT_MAKEUP;
                 }
             }
 
@@ -867,8 +902,11 @@ impl Engine {
     /// correct at every oversample factor.
     #[inline]
     fn set_stack_filter_coeffs(&mut self, i: usize, os_rate: f32, fp: crate::shared::FilterParams) {
-        let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX];
-        let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(20.0, 20_000.0);
+        // Dedicated key-tracking (VXN-1 `FilterKeyTrack`), added to the matrix
+        // cutoff modulation (both in octaves).
+        let keytrack_oct = keytrack_octaves(self.alloc.stacks[i].note, fp.keytrack);
+        let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX] + keytrack_oct;
+        let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(CUTOFF_MIN_HZ, CUTOFF_MAX_HZ);
         let resonance = (fp.resonance + self.dest_vals[i][0][RESONANCE_IDX]).clamp(0.0, 1.0);
         let coeffs = OtaLadderCoeffs::new(cutoff_hz, os_rate, resonance, fp.drive);
         self.filter_l[i].set_coeffs(coeffs);
@@ -980,6 +1018,25 @@ mod tests {
 
     const SR: f32 = 48_000.0;
     const BLK: usize = 64;
+
+    /// Full key-tracking + a C0-floored base cutoff lands the cutoff exactly on
+    /// the played note's pitch (VXN-1 parity): `CUTOFF_MIN_HZ · 2^offset ==
+    /// midi_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
+    /// amount.
+    #[test]
+    fn keytrack_full_lands_cutoff_on_note_pitch() {
+        for note in [24u8, 36, 48, 60, 72, 96] {
+            let cutoff = CUTOFF_MIN_HZ * keytrack_octaves(note, 1.0).exp2();
+            let pitch = vxn2_dsp::op::midi_to_hz(note);
+            assert!(
+                (cutoff - pitch).abs() / pitch < 1e-3,
+                "note {note}: key-tracked cutoff {cutoff} ≠ pitch {pitch}",
+            );
+        }
+        assert_eq!(keytrack_octaves(12, 1.0), 0.0, "not centred on C0");
+        assert!((keytrack_octaves(24, 0.5) - 0.5).abs() < 1e-6, "amount not linear");
+        assert_eq!(keytrack_octaves(60, 0.0), 0.0, "zero amount must not track");
+    }
 
     #[test]
     fn fresh_engine_renders_silence() {
@@ -1841,6 +1898,7 @@ mod tests {
             slope: FilterSlope::Pole2,
             drive: 8.0,
             oversample: 8,
+            keytrack: 0.0,
         };
         tweaked.note_on(60, 100);
 
@@ -1871,6 +1929,7 @@ mod tests {
                     slope: FilterSlope::Pole4,
                     drive: 1.0,
                     oversample: f,
+                    keytrack: 0.0,
                 };
                 e.note_on(60, 110);
                 e
@@ -1900,6 +1959,7 @@ mod tests {
                 slope: FilterSlope::Pole4,
                 drive: 2.0,
                 oversample: f,
+                keytrack: 0.0,
             };
             e.note_on(60, 127);
             let mut l = [0.0_f32; BLK];
@@ -1930,6 +1990,7 @@ mod tests {
                     slope,
                     drive: 1.0,
                     oversample: 4,
+                    keytrack: 0.0,
                 };
                 e.note_on(60, 110);
                 let energy = render_energy(&mut e, 60);
@@ -1954,6 +2015,7 @@ mod tests {
                 slope: FilterSlope::Pole4,
                 drive: 1.0,
                 oversample: 4,
+                keytrack: 0.0,
             };
             e.matrix.slots[0] = MatrixSlot {
                 source: SourceId::ModWheel,
@@ -1989,6 +2051,7 @@ mod tests {
             slope: FilterSlope::Pole4,
             drive: 1.5,
             oversample: 8,
+            keytrack: 0.0,
         };
         e.note_on(60, 100);
         e.note_on(64, 100);
@@ -2035,6 +2098,7 @@ mod tests {
                 slope: FilterSlope::Pole4,
                 drive: 1.0,
                 oversample: 2,
+                keytrack: 0.0,
             };
             e.apply_block_params();
             e.note_on(60, 110);
@@ -2075,6 +2139,7 @@ mod tests {
             slope: FilterSlope::Pole4,
             drive: 2.0,
             oversample: 2,
+            keytrack: 0.0,
         };
         e.apply_block_params();
         e.note_on(60, 127);
@@ -2113,6 +2178,7 @@ mod tests {
             slope: FilterSlope::Pole4,
             drive: 1.0,
             oversample: 4,
+            keytrack: 0.0,
         };
         e.apply_block_params();
         e.note_on(60, 110);

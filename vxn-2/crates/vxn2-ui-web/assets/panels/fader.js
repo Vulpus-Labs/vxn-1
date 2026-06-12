@@ -109,8 +109,19 @@
 
     const fill = el.querySelector(".fader-track-fill");
     const thumb = el.querySelector(".fader-thumb");
+
+    // ── Cutoff "Tuned" override (E007 / VXN-1 parity) ──
+    // When `ctx.tuned` is present and active, the fader maps its position to a
+    // semitone-snapped note instead of the descriptor taper, and stores Hz via
+    // `set_param` (not the normalised position) so the DSP/automation see the
+    // same Hz value as untuned. Plain faders leave `ctx.tuned` null → no-op.
+    function tunedOn() { return !!(ctx.tuned && ctx.tuned.active()); }
+    function plainToNormM(plain) {
+      return tunedOn() ? ctx.tuned.toNorm(plain) : paramToNorm(desc, plain);
+    }
+
     let currentPlain = desc.default;
-    let currentNorm = paramToNorm(desc, currentPlain);
+    let currentNorm = plainToNormM(currentPlain);
     let hovered = false;
 
     // Display text for the value popup. When this is a synced rate/time
@@ -118,6 +129,7 @@
     // its position selects — computed locally so it walks the divisions live
     // during a drag, when no engine echo arrives. Otherwise unit-formatted.
     function displayText() {
+      if (tunedOn()) return ctx.tuned.display(currentPlain);
       if (ctx.syncLabel) {
         const lbl = ctx.syncLabel(currentNorm);
         if (lbl != null) return lbl;
@@ -146,9 +158,19 @@
 
     function postNorm(n) {
       const clamped = n < 0 ? 0 : n > 1 ? 1 : n;
-      ctx.setNorm(clamped);
-      currentNorm = clamped;
-      currentPlain = normToParam(desc, clamped);
+      if (tunedOn()) {
+        // Tuned: snap to a semitone, send the resulting Hz as a plain value
+        // (not the raw norm — the engine's exp-Hz taper would un-snap it), and
+        // re-derive the norm so the thumb lands on the semitone.
+        const plain = ctx.tuned.fromNorm(clamped);
+        ctx.setParam(plain);
+        currentPlain = plain;
+        currentNorm = ctx.tuned.toNorm(plain);
+      } else {
+        ctx.setNorm(clamped);
+        currentNorm = clamped;
+        currentPlain = normToParam(desc, clamped);
+      }
       paint();
     }
 
@@ -238,7 +260,7 @@
       set: function (plain) {
         if (dragging) return; // user gesture wins
         currentPlain = plain;
-        currentNorm = paramToNorm(desc, plain);
+        currentNorm = plainToNormM(plain);
         paint();
       },
     };

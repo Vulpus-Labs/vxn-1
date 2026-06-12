@@ -285,10 +285,13 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     g[DestId::GlobalPitch as usize] = 24.0;
     g[DestId::Feedback as usize] = 7.0;
     // Cutoff modulates in the log/octave domain so a fixed depth is musically
-    // uniform across the 20 Hz..20 kHz range (ADR 0004 §7): the dest value is
-    // in *octaves*; the consumer (ticket 0084) applies `cutoff · 2^value`. Full
-    // depth = ±8 octaves. Resonance is a plain `[0, 1]` additive offset (1.0).
-    g[DestId::Cutoff as usize] = 8.0;
+    // uniform across the cutoff range (ADR 0004 §7): the dest value is in
+    // *octaves*; the consumer (ticket 0084) applies `cutoff · 2^value`. Full
+    // depth = ±4 octaves — so e.g. mod-env [0,1] at full depth sweeps cutoff up
+    // four octaves (×16), matching VXN-1's env→cutoff range. (Key-tracking is a
+    // dedicated engine control, not a matrix route.) Resonance is a plain
+    // `[0, 1]` additive offset (1.0).
+    g[DestId::Cutoff as usize] = 4.0;
     g
 };
 

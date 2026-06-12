@@ -118,9 +118,18 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   section sits past every existing id, so older blobs map 1:1 with no
 ///   remap; the 7 new filter ids are seeded to their descriptor defaults
 ///   (`filter-enable` off → an unchanged patch stays bit-identical).
-pub const BLOB_VERSION: u16 = 7;
-/// Number of params in the v7 Filter section (the trailing block).
-const N_FILTER_PARAMS: usize = 7;
+/// - v8: appends `filter-keytrack` + `filter-cutoff-tuned` to the Filter
+///   section (dedicated key-tracking + the Tuned display toggle) — param
+///   count 186 → 188. Both sit past every existing id, so older blobs map
+///   1:1; the 2 new ids are seeded to their defaults (keytrack 0, tuned off
+///   → an unchanged patch stays bit-identical).
+pub const BLOB_VERSION: u16 = 8;
+/// Number of params in the Filter section (the trailing block).
+const N_FILTER_PARAMS: usize = 9;
+/// Number of filter params appended in v8 (key-track + cutoff-tuned).
+const N_FILTER_PARAMS_V8: usize = 2;
+/// Param count in v7 blobs (before the v8 filter additions).
+const LEGACY_V7_PARAM_COUNT: usize = TOTAL_PARAMS - N_FILTER_PARAMS_V8; // 186
 /// Param count in v6 blobs (before the v7 Filter section was appended).
 const LEGACY_V6_PARAM_COUNT: usize = TOTAL_PARAMS - N_FILTER_PARAMS; // 179
 /// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition).
@@ -612,6 +621,7 @@ impl ParamModel for SharedParams {
             4 => LEGACY_V4_PARAM_COUNT,
             5 => LEGACY_V5_PARAM_COUNT,
             6 => LEGACY_V6_PARAM_COUNT,
+            7 => LEGACY_V7_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -685,6 +695,15 @@ impl ParamModel for SharedParams {
         // defaults off, keeping a migrated patch bit-identical.
         if version <= 6 {
             for id in (TOTAL_PARAMS - N_FILTER_PARAMS)..TOTAL_PARAMS {
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        // v≤7 blobs predate `filter-keytrack` + `filter-cutoff-tuned` (the two
+        // trailing filter ids). They map 1:1 above; seed the new ids to their
+        // defaults (keytrack 0, tuned off → a migrated patch stays
+        // bit-identical). v≤6 already covered these via the wider block above.
+        if version <= 7 {
+            for id in (TOTAL_PARAMS - N_FILTER_PARAMS_V8)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -813,7 +832,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
 // ── Filter params (E007 / ADR 0004) ─────────────────────────────────────────
 
 /// Engine-native shape of the optional per-voice filter section. Mirrors the
-/// seven `filter-*` CLAP params (ticket 0083) decoded into render-ready types.
+/// `filter-*` CLAP params (ticket 0083) decoded into render-ready types.
 /// `enable` off ⇒ the engine takes the unchanged sample-major path and ignores
 /// every other field.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -828,6 +847,10 @@ pub struct FilterParams {
     pub drive: f32,
     /// Oversample factor: 1, 2, 4 or 8 (decoded from the enum index `1 << idx`).
     pub oversample: usize,
+    /// Key-tracking amount in `[0, 1]`. The engine shifts cutoff by
+    /// `(note − 12)/12 × keytrack` octaves (centred on C0); 1.0 tracks the
+    /// played pitch exactly.
+    pub keytrack: f32,
 }
 
 impl Default for FilterParams {
@@ -840,6 +863,7 @@ impl Default for FilterParams {
             slope: FilterSlope::Pole4,
             drive: 1.0,
             oversample: 4,
+            keytrack: 0.0,
         }
     }
 }
@@ -862,7 +886,7 @@ impl FilterParams {
     }
 }
 
-/// Decode the seven `filter-*` CLAP params out of any [`ParamView`] into the
+/// Decode the `filter-*` CLAP params out of any [`ParamView`] into the
 /// engine-native [`FilterParams`], without building a whole [`EngineParams`]
 /// snapshot. Used both by `EngineParams::snapshot_from` (audio thread, per
 /// control block) and the CLAP latency extension (main thread, on every host
@@ -879,6 +903,9 @@ pub fn filter_params_of<P: ParamView>(p: &P) -> FilterParams {
         drive: p.get(fb + 5),
         // `filter-oversample` enum index 0..3 → factor 1/2/4/8.
         oversample: 1usize << (p.get(fb + 6).round().clamp(0.0, 3.0) as usize),
+        keytrack: p.get(fb + 7).clamp(0.0, 1.0),
+        // `filter-cutoff-tuned` (fb + 8) is UI-only — the stored cutoff is Hz
+        // regardless, so the engine never reads it.
     }
 }
 

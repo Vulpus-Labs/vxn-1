@@ -174,6 +174,48 @@
     return t[Math.round(n * (t.length - 1))];
   }
 
+  // ── Filter cutoff "Tuned" toggle (VXN-1 parity) ──
+  // When `filter-cutoff-tuned` is on, the cutoff fader is read/displayed as a
+  // musical note over C0..C4 (MIDI 12..60, semitone-snapped) instead of Hz. The
+  // stored param stays Hz — only the fader's norm↔value map and readout change —
+  // so the DSP and DAW automation are unaffected (the engine never reads the
+  // toggle). Mirrors VXN-1's `panels.js` cutoff-tuned helpers.
+  const CUTOFF_TUNED_MIDI_MIN = 12; // C0
+  const CUTOFF_TUNED_MIDI_MAX = 60; // C4
+  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  function midiToHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+  function hzToMidi(hz) { return 69 + 12 * Math.log2(Math.max(1e-6, hz) / 440); }
+  function noteName(m) {
+    const n = Math.round(m);
+    return NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+  }
+  // norm [0,1] → MIDI 12..60 (semitone-snapped) → Hz.
+  function cutoffTunedNormToHz(norm) {
+    const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
+    const c = norm < 0 ? 0 : norm > 1 ? 1 : norm;
+    return midiToHz(Math.round(CUTOFF_TUNED_MIDI_MIN + c * span));
+  }
+  function cutoffTunedHzToNorm(hz) {
+    const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
+    const c = (Math.round(hzToMidi(hz)) - CUTOFF_TUNED_MIDI_MIN) / span;
+    return c < 0 ? 0 : c > 1 ? 1 : c;
+  }
+  function cutoffTunedNoteName(hz) {
+    const m = Math.max(CUTOFF_TUNED_MIDI_MIN, Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))));
+    return noteName(m);
+  }
+  // cutoff CLAP id → tuned-toggle CLAP id, and the inverse.
+  const tunedToggleByCutoffId = Object.create(null);
+  const cutoffByTunedToggleId = Object.create(null);
+  {
+    const cutoffId = resolveParamId("filter-cutoff");
+    const tunedId = resolveParamId("filter-cutoff-tuned");
+    if (cutoffId >= 0 && tunedId >= 0) {
+      tunedToggleByCutoffId[cutoffId] = tunedId;
+      cutoffByTunedToggleId[tunedId] = cutoffId;
+    }
+  }
+
   // ── Bound primitives, indexed by CLAP id ──
   // Each entry is an array (a param can drive several DOM controls if
   // a future layout duplicates it; today it's always <= 1 but no point
@@ -275,6 +317,16 @@
       // it tracks the toggle without re-binding.
       syncLabel: syncId == null ? null : function (norm) {
         return (livePlain[syncId] || 0) >= 0.5 ? subdivisionLabel(norm) : null;
+      },
+      // Cutoff "Tuned" override: when the toggle is on, the fader maps its
+      // position to a semitone-snapped note (C0..C4) and reads out the note
+      // name, while still storing/sending Hz so the DSP is unaffected. `null`
+      // for every fader except `filter-cutoff`.
+      tuned: tunedToggleByCutoffId[id] == null ? null : {
+        active: function () { return (livePlain[tunedToggleByCutoffId[id]] || 0) >= 0.5; },
+        toNorm: cutoffTunedHzToNorm,
+        fromNorm: cutoffTunedNormToHz,
+        display: cutoffTunedNoteName,
       },
       beginGesture: function () { if (id >= 0) dispatch("begin_gesture", { id: id }); },
       setNorm: function (n) { if (id >= 0) dispatch("set_param_norm", { id: id, norm: n }); },
@@ -468,6 +520,16 @@
         const desc = vxn.params[ev.id];
         if (desc && desc.name === "algo") {
           vxn._opRow.onAlgoChanged(ev.plain);
+        }
+      }
+      // Cutoff "Tuned" toggled: repaint the partner cutoff fader so it picks
+      // up the new mode (note-name readout + semitone map, or Hz default). The
+      // fader isn't bound to the toggle id, so it needs an explicit nudge.
+      const cutoffId = cutoffByTunedToggleId[ev.id];
+      if (cutoffId != null && boundById[cutoffId] && cutoffId in livePlain) {
+        const cf = boundById[cutoffId];
+        for (let i = 0; i < cf.length; i++) {
+          try { cf[i].set(livePlain[cutoffId]); } catch (_) {}
         }
       }
       if (!bound) return;

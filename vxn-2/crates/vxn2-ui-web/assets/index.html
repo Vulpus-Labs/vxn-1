@@ -72,6 +72,37 @@
   <!-- ===== GLOBAL MOD ROW ===== -->
   <div class="row gmod-row">
 
+    <div class="panel voice-panel" data-vxn-section="voice">
+      <div class="panel-header">VOICE</div>
+      <div class="panel-body">
+        <div class="cgrp">
+          <div class="cgrp-label">Assign</div>
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="assign-mode">
+              <button class="bgrp-btn" data-vxn-value="0">Poly</button>
+              <button class="bgrp-btn" data-vxn-value="1">Solo</button>
+            </div>
+          </div>
+        </div>
+        <div class="cgrp">
+          <div class="cgrp-label">Legato</div>
+          <div class="bgrp">
+            <div class="bgrp-row" data-vxn-param="legato">
+              <button class="bgrp-btn" data-vxn-value="0">Off</button>
+              <button class="bgrp-btn" data-vxn-value="1">On</button>
+            </div>
+          </div>
+        </div>
+        <div class="fader" data-vxn-param="glide-time">
+          <div class="fader-label">Glide</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel lfo-panel" data-vxn-section="lfo1">
       <div class="panel-header">LFO 1 &mdash; GLOBAL</div>
       <div class="panel-body">
@@ -178,37 +209,6 @@
   <!-- ===== PERF / FX / OUT ROW ===== -->
   <div class="row perf-row">
 
-    <div class="panel voice-panel" data-vxn-section="voice">
-      <div class="panel-header">VOICE</div>
-      <div class="panel-body">
-        <div class="cgrp">
-          <div class="cgrp-label">Assign</div>
-          <div class="bgrp">
-            <div class="bgrp-row" data-vxn-param="assign-mode">
-              <button class="bgrp-btn" data-vxn-value="0">Poly</button>
-              <button class="bgrp-btn" data-vxn-value="1">Solo</button>
-            </div>
-          </div>
-        </div>
-        <div class="cgrp">
-          <div class="cgrp-label">Legato</div>
-          <div class="bgrp">
-            <div class="bgrp-row" data-vxn-param="legato">
-              <button class="bgrp-btn" data-vxn-value="0">Off</button>
-              <button class="bgrp-btn" data-vxn-value="1">On</button>
-            </div>
-          </div>
-        </div>
-        <div class="fader" data-vxn-param="glide-time">
-          <div class="fader-label">Glide</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <div class="panel stack-panel" data-vxn-section="stack">
       <div class="panel-header">VOICE STACK</div>
       <div class="panel-body">
@@ -259,12 +259,15 @@
       <div class="panel-header toggleable" data-vxn-param="filter-enable">FILTER</div>
       <div class="panel-body filter-body">
         <div class="filter-faders">
-          <div class="fader" data-vxn-param="filter-cutoff">
-            <div class="fader-label">Cutoff</div>
-            <div class="fader-track">
-              <div class="fader-track-fill"></div>
-              <div class="fader-thumb"></div>
+          <div class="fader-with-toggle">
+            <div class="fader" data-vxn-param="filter-cutoff">
+              <div class="fader-label">Cutoff</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
             </div>
+            <button class="bgrp-toggle" data-vxn-param="filter-cutoff-tuned">Tuned</button>
           </div>
           <div class="fader" data-vxn-param="filter-resonance">
             <div class="fader-label">Reso</div>
@@ -275,6 +278,13 @@
           </div>
           <div class="fader" data-vxn-param="filter-drive">
             <div class="fader-label">Drive</div>
+            <div class="fader-track">
+              <div class="fader-track-fill"></div>
+              <div class="fader-thumb"></div>
+            </div>
+          </div>
+          <div class="fader" data-vxn-param="filter-keytrack">
+            <div class="fader-label">KeyTrk</div>
             <div class="fader-track">
               <div class="fader-track-fill"></div>
               <div class="fader-thumb"></div>

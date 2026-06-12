@@ -9,11 +9,11 @@
 //!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 163 .. 186   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
-//!                                7 filter)
+//! 163 .. 188   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
+//!                                9 filter)
 //! ```
 //!
-//! Total 186. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 188. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set. Each op block is 21 params: the
 //! 20 continuous controls plus a trailing `ratio-mode` enum (Ratio / Fixed).
 //!
@@ -51,8 +51,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 21;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
-pub const N_PATCH_LEVEL: usize = 23; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 7 filter
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 186
+pub const N_PATCH_LEVEL: usize = 25; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 188
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -433,7 +433,7 @@ macro_rules! per_patch_rest_arr {
             bl("legato", "Legato", false),
             flx("glide-time", "Glide", 0.0, 2000.0, 12.0, "ms", 100.0),
             it("stack-density", "Stack Density", 1, 8, 4, ""),
-            fl("stack-detune", "Stack Detune", 0.0, 100.0, 8.0, "ct"),
+            flx("stack-detune", "Stack Detune", 0.0, 50.0, 8.0, "ct", 10.0),
             fl("stack-spread", "Stack Spread", 0.0, 1.0, 0.60, ""),
             fl("stack-phase", "Stack Phase", 0.0, 1.0, 0.50, ""),
             en("stack-distrib", "Stack Distrib", STACK_DISTRIBS, 0),
@@ -543,12 +543,23 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     // rather than sweeping. `cutoff`/`resonance` are matrix dests
     // (`DestId::Cutoff` / `DestId::Resonance`).
     bl("filter-enable", "Filter Enable", false),
-    flx("filter-cutoff", "Filter Cutoff", 20.0, 20000.0, 12000.0, "Hz", 1000.0),
+    flx("filter-cutoff", "Filter Cutoff", 16.3516, 20000.0, 12000.0, "Hz", 1000.0),
     fl("filter-resonance", "Filter Reso", 0.0, 1.0, 0.0, ""),
     en("filter-mode", "Filter Mode", FILTER_MODES, 0),
     en("filter-slope", "Filter Slope", FILTER_SLOPES, 1),
     flx("filter-drive", "Filter Drive", 0.1, 16.0, 1.0, "", 1.0),
     en("filter-oversample", "Filter OS", FILTER_OVERSAMPLE, 2),
+    // Dedicated filter key-tracking amount (VXN-1 `FilterKeyTrack`): cutoff
+    // shifts `(note − 12)/12 × amount` octaves, centred on C0 (MIDI 12). At
+    // 1.0 the cutoff tracks the played pitch exactly (1 oct/oct); with the
+    // cutoff fader at its C0 floor, 100 % key-track lands cutoff on the note
+    // pitch. Applied engine-side, not via the matrix. Appended at the very
+    // end of the flat space so the blob v7→v8 migration stays a 1:1 prefix.
+    fl("filter-keytrack", "Filter KeyTrk", 0.0, 1.0, 0.0, ""),
+    // Cutoff "Tuned" toggle (VXN-1 parity): UI-only. When on, the cutoff
+    // fader is read/displayed as a musical note (C0..C4, semitone-snapped);
+    // the stored value stays Hz, so the DSP and automation are unaffected.
+    bl("filter-cutoff-tuned", "Cutoff Tuned", false),
 ];
 
 // ── The table ───────────────────────────────────────────────────────────────
@@ -740,7 +751,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 186);
+        assert_eq!(TOTAL_PARAMS, 188);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -850,15 +861,17 @@ mod tests {
         // very end of the flat space, so blob v6→v7 migration is a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 9);
-        assert_eq!(vol, TOTAL_PARAMS - 8);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 7));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 6));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 5));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 4));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 3));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 2));
-        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 1));
+        assert_eq!(tune, TOTAL_PARAMS - 11);
+        assert_eq!(vol, TOTAL_PARAMS - 10);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 9));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 8));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 7));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 6));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 5));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 4));
+        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 3));
+        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 2));
+        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 1));
         // `filter-enable` defaults off → migrated patches stay bit-identical.
         assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
     }
