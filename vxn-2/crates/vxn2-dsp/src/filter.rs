@@ -204,6 +204,22 @@ impl OtaLadderKernel {
         self.y4_prev = 0.0;
     }
 
+    /// Largest absolute value across all internal state (the four ladder stage
+    /// integrators plus the feedback-tap memory). Ticket 0085 keys its
+    /// quiescence-skip on this: a stack whose input is zero *and* whose filter
+    /// state has fallen below an audibility floor can be skipped, because its
+    /// future output is bounded by this magnitude. A self-oscillating filter
+    /// (resonance → 1) sustains large state forever, so it never reads as
+    /// quiescent and is never wrongly skipped.
+    #[inline]
+    pub fn state_abs_max(&self) -> f32 {
+        let mut m = self.y4_prev.abs();
+        for &v in &self.s {
+            m = m.max(v.abs());
+        }
+        m
+    }
+
     /// Run one sample, return the selected mode's output mix.
     #[inline]
     pub fn tick(&mut self, x: f32) -> f32 {
@@ -339,5 +355,55 @@ mod tests {
             peak = peak.max(y.abs());
         }
         assert!(peak < 10.0, "self-osc blew up: {peak}");
+    }
+
+    /// Quiescence gate (ticket 0085). A non-resonant ladder, once its input goes
+    /// silent, settles below the engine's −100 dBFS skip floor in finite time —
+    /// so a released voice eventually reads quiescent and can be skipped. A
+    /// self-oscillating ladder (resonance → 1) sustains its limit cycle on zero
+    /// input forever, so `state_abs_max` never falls below the floor and the
+    /// voice is never wrongly skipped while it rings.
+    #[test]
+    fn state_decays_below_floor_then_self_osc_never_does() {
+        const EPS: f32 = 1.0e-5;
+        let sr = 48_000.0;
+
+        // Low resonance: excite with a step, then feed silence. State must fall
+        // below the floor within ~0.5 s (well inside a release tail).
+        let mut k = OtaLadderKernel::new();
+        k.set_coeffs(OtaLadderCoeffs::new(1000.0, sr, 0.2, 1.0));
+        for _ in 0..500 {
+            k.tick(0.3);
+        }
+        let mut settled = None;
+        for i in 0..(sr as usize / 2) {
+            k.tick(0.0);
+            if k.state_abs_max() < EPS {
+                settled = Some(i);
+                break;
+            }
+        }
+        assert!(
+            settled.is_some(),
+            "non-resonant ladder never settled below floor: {}",
+            k.state_abs_max()
+        );
+
+        // Self-oscillation: same silence, but the limit cycle sustains — state
+        // stays above the floor for a full second, so it is never skipped.
+        let mut osc = OtaLadderKernel::new();
+        osc.set_coeffs(OtaLadderCoeffs::new(2000.0, sr, 1.0, 1.0));
+        for _ in 0..500 {
+            osc.tick(0.5);
+        }
+        let mut min_state = f32::INFINITY;
+        for _ in 0..(sr as usize) {
+            osc.tick(0.0);
+            min_state = min_state.min(osc.state_abs_max());
+        }
+        assert!(
+            min_state > EPS,
+            "self-oscillating ladder dipped below skip floor: {min_state}"
+        );
     }
 }

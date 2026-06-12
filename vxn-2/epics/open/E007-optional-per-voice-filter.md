@@ -57,7 +57,7 @@ sample-major hot loop with zero added cost. Design is fixed by
 - [x] [0082 — Build halfband interpolation (upsampling) stage](../../tickets/closed/0082-halfband-interpolator.md)
 - [x] [0083 — Filter params + Cutoff/Resonance matrix destinations](../../tickets/closed/0083-filter-params-and-matrix-dests.md)
 - [x] [0084 — Per-stack filter state + stack-major oversampled render path, gated bypass](../../tickets/closed/0084-per-stack-filter-render-path.md)
-- [ ] [0085 — Quiescence-skip per stack + state/coeff-ramp freeze](../../tickets/open/0085-quiescence-skip.md)
+- [x] [0085 — Quiescence-skip per stack + state/coeff-ramp freeze](../../tickets/closed/0085-quiescence-skip.md)
 - [ ] [0086 — Host latency reporting for the oversampled filter path](../../tickets/open/0086-latency-reporting.md)
 - [ ] [0087 — Filter benchmarks + tests: cost, bypass bit-identity, aliasing, quiescence](../../tickets/open/0087-filter-benches-and-tests.md)
 - [x] [0088 — Filter faceplate panel: controls + FX-style enable toggle](../../tickets/closed/0088-filter-faceplate-panel.md)

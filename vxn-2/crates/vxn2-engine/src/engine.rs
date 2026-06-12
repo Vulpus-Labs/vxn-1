@@ -61,6 +61,17 @@ const RESONANCE_IDX: usize = DestId::Resonance.idx().unwrap();
 /// Largest oversample factor the filter path supports (`filter-oversample`
 /// tops out at 8×). Sizes the per-voice OS scratch and OS bus buffers.
 const MAX_OVERSAMPLE: usize = 8;
+
+/// Quiescence floor for the per-stack filter skip (ticket 0085), in ladder
+/// state magnitude. An idle stack feeds the filter exact zero, so once *every*
+/// ladder state (both L/R kernels) is below this, the filter's remaining output
+/// is bounded by ≈ this value — about −100 dBFS, inaudible — and the
+/// upsample + ladder + accumulate for that stack can be skipped exactly.
+/// Deliberately *not* a denormal floor: it must sit below audibility yet above
+/// the level a resonant tail rings through, so a ringing release is preserved
+/// (it keeps re-filtering until truly settled) while a self-oscillating filter
+/// — whose state never decays — is never wrongly skipped.
+const FILTER_QUIESCENT_EPS: f32 = 1.0e-5;
 const _: () = {
     assert!(DestId::Op1Pitch.idx().unwrap() == 0);
     assert!(DestId::Op1Level.idx().unwrap() == 1);
@@ -734,10 +745,26 @@ impl Engine {
             self.dry_r[..n].fill(0.0);
             let os_rate = self.sample_rate;
             for i in 0..N_STACKS {
-                if self.alloc.stacks[i].is_idle() {
+                let idle = self.alloc.stacks[i].is_idle();
+                // Quiescence-skip (0085): an idle stack feeds the filter exact
+                // zero; once its ladder has rung out, skipping the tick is
+                // exact (zero contribution). State + frozen coeffs are left
+                // untouched so re-entry on the next note is glitch-free.
+                if idle && self.stack_filter_quiescent(i) {
                     continue;
                 }
                 self.set_stack_filter_coeffs(i, os_rate, fp);
+                if idle {
+                    // Ring-out: voice is silent but the resonant tail is still
+                    // ringing. Pump zeros through the ladder so the tail decays
+                    // naturally instead of being clipped. No stack tick / pitch
+                    // / mod advance — all frozen until the next note-on.
+                    for sample in 0..n {
+                        self.dry_l[sample] += self.filter_l[i].tick(0.0);
+                        self.dry_r[sample] += self.filter_r[i].tick(0.0);
+                    }
+                    continue;
+                }
                 for sample in 0..n {
                     if sample % PITCH_SMOOTH_QUANTUM == 0 {
                         self.advance_pitch_smoother_one(i);
@@ -760,21 +787,36 @@ impl Engine {
             self.bus_r[..osn].fill(0.0);
 
             for i in 0..N_STACKS {
-                if self.alloc.stacks[i].is_idle() {
+                let idle = self.alloc.stacks[i].is_idle();
+                // Quiescence-skip (0085): skip the upsample + ladder for an idle
+                // stack only once its filter has settled. The interp FIR history
+                // self-flushes within tap-length zero-input samples, so by the
+                // time the ladder reads quiescent the resampler tail is gone too
+                // — skipping is exact (zero contribution to the OS bus).
+                if idle && self.stack_filter_quiescent(i) {
                     continue;
                 }
                 self.set_stack_filter_coeffs(i, os_rate, fp);
 
                 // 1. Render this stack's whole block to base-rate scratch.
-                for sample in 0..n {
-                    if sample % PITCH_SMOOTH_QUANTUM == 0 {
-                        self.advance_pitch_smoother_one(i);
-                    }
-                    let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
-                    self.base_l[sample] = sl;
-                    self.base_r[sample] = sr;
-                    if self.ramp_live[i] {
-                        self.advance_mod_ramp_one(i);
+                //    Idle-but-ringing stacks feed zeros — the resonant tail
+                //    still rings out through the interpolator + ladder rather
+                //    than being clipped, while stack / pitch / mod state stays
+                //    frozen until the next note-on.
+                if idle {
+                    self.base_l[..n].fill(0.0);
+                    self.base_r[..n].fill(0.0);
+                } else {
+                    for sample in 0..n {
+                        if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                            self.advance_pitch_smoother_one(i);
+                        }
+                        let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                        self.base_l[sample] = sl;
+                        self.base_r[sample] = sr;
+                        if self.ramp_live[i] {
+                            self.advance_mod_ramp_one(i);
+                        }
                     }
                 }
 
@@ -803,6 +845,18 @@ impl Engine {
             out_l[sample] = l;
             out_r[sample] = r;
         }
+    }
+
+    /// True when stack `i`'s filter has rung out — both L/R ladder kernels'
+    /// state magnitudes sit below [`FILTER_QUIESCENT_EPS`]. Only meaningful for
+    /// an idle stack (one feeding the filter exact zero): the caller pairs this
+    /// with `is_idle()` so the skip keys on the *filter* settling, not the input
+    /// going silent (VXN1's `silent-skip-filter-state` lesson — silent ≠
+    /// quiescent at high resonance).
+    #[inline]
+    fn stack_filter_quiescent(&self, i: usize) -> bool {
+        self.filter_l[i].state_abs_max() < FILTER_QUIESCENT_EPS
+            && self.filter_r[i].state_abs_max() < FILTER_QUIESCENT_EPS
     }
 
     /// Compute + install this block's frozen ladder coefficients for stack `i`
@@ -1946,6 +2000,149 @@ mod tests {
             for i in 0..100 {
                 assert!(l[i].is_finite() && r[i].is_finite());
             }
+        }
+    }
+
+    // ── E007 quiescence-skip (ticket 0085) ───────────────────────────────
+
+    /// Per-block stereo peak, for tracking a release tail.
+    fn block_peak(e: &mut Engine, l: &mut [f32; BLK], r: &mut [f32; BLK]) -> f32 {
+        e.process_block(l, r);
+        let mut p = 0.0_f32;
+        for i in 0..BLK {
+            assert!(l[i].is_finite() && r[i].is_finite());
+            p = p.max(l[i].abs()).max(r[i].abs());
+        }
+        p
+    }
+
+    /// A resonant filter keeps ringing after the amp envelope hits zero. The
+    /// quiescence-skip rings that tail *out* (feeding zeros through the ladder)
+    /// rather than clipping it at idle — so a high-resonance release outlasts a
+    /// low-resonance one. If the ring were cut at idle both would die together
+    /// on the amp release. FX are silenced so we measure the filter, not reverb.
+    #[test]
+    fn resonant_release_tail_outlasts_non_resonant() {
+        let tail_blocks = |resonance: f32| -> usize {
+            let mut e = Engine::new(SR, BLK);
+            e.params_mut().reverb.mix = 0.0;
+            e.params_mut().delay.mix = 0.0;
+            e.params_mut().filter = FilterParams {
+                enable: true,
+                cutoff_hz: 180.0,
+                resonance,
+                mode: FilterMode::Lp,
+                slope: FilterSlope::Pole4,
+                drive: 1.0,
+                oversample: 2,
+            };
+            e.apply_block_params();
+            e.note_on(60, 110);
+            let (mut l, mut r) = ([0.0_f32; BLK], [0.0_f32; BLK]);
+            for _ in 0..60 {
+                block_peak(&mut e, &mut l, &mut r);
+            }
+            e.note_off(60);
+            let mut last_audible = 0;
+            for b in 0..6000 {
+                if block_peak(&mut e, &mut l, &mut r) > 1e-4 {
+                    last_audible = b;
+                }
+            }
+            last_audible
+        };
+        let hi = tail_blocks(0.98);
+        let lo = tail_blocks(0.0);
+        assert!(
+            hi > lo + 60,
+            "resonant tail ({hi} blocks) not clearly longer than non-resonant ({lo})"
+        );
+    }
+
+    /// A self-oscillating voice (resonance = 1) must never be skipped while it
+    /// rings: its ladder state never decays, so `stack_filter_quiescent` stays
+    /// false and the limit cycle keeps sounding long after note-off.
+    #[test]
+    fn self_oscillation_survives_note_off() {
+        let mut e = Engine::new(SR, BLK);
+        e.params_mut().reverb.mix = 0.0;
+        e.params_mut().delay.mix = 0.0;
+        e.params_mut().filter = FilterParams {
+            enable: true,
+            cutoff_hz: 1500.0,
+            resonance: 1.0,
+            mode: FilterMode::Lp,
+            slope: FilterSlope::Pole4,
+            drive: 2.0,
+            oversample: 2,
+        };
+        e.apply_block_params();
+        e.note_on(60, 127);
+        let (mut l, mut r) = ([0.0_f32; BLK], [0.0_f32; BLK]);
+        for _ in 0..60 {
+            block_peak(&mut e, &mut l, &mut r);
+        }
+        e.note_off(60);
+        // Render ~0.5 s past note-off, then sample the very tail.
+        for _ in 0..((SR as usize) / 2 / BLK) {
+            block_peak(&mut e, &mut l, &mut r);
+        }
+        let mut tail = 0.0_f32;
+        for _ in 0..40 {
+            tail = tail.max(block_peak(&mut e, &mut l, &mut r));
+        }
+        assert!(
+            tail > 1e-3,
+            "self-oscillation silenced after note-off (tail peak {tail}) — wrongly skipped"
+        );
+    }
+
+    /// Re-entry after a skip is click-free: a fully-settled stack is skipped
+    /// (state frozen ≈ 0), and note-on resets it, so the re-triggered note
+    /// attacks from silence with no discontinuous spike on the first block.
+    #[test]
+    fn retrigger_after_skip_is_click_free() {
+        let mut e = Engine::new(SR, BLK);
+        e.params_mut().reverb.mix = 0.0;
+        e.params_mut().delay.mix = 0.0;
+        e.params_mut().filter = FilterParams {
+            enable: true,
+            cutoff_hz: 800.0,
+            resonance: 0.6,
+            mode: FilterMode::Lp,
+            slope: FilterSlope::Pole4,
+            drive: 1.0,
+            oversample: 4,
+        };
+        e.apply_block_params();
+        e.note_on(60, 110);
+        let (mut l, mut r) = ([0.0_f32; BLK], [0.0_f32; BLK]);
+        for _ in 0..40 {
+            block_peak(&mut e, &mut l, &mut r);
+        }
+        e.note_off(60);
+        // Run well past release so the stack settles and the skip engages.
+        let mut settled = false;
+        for _ in 0..4000 {
+            if block_peak(&mut e, &mut l, &mut r) < 1e-4 {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "stack never settled below the skip floor");
+
+        // Re-trigger: the new note must attack from silence — the first block
+        // carries no click (no large first sample from stale filter state).
+        e.note_on(60, 110);
+        e.process_block(&mut l, &mut r);
+        assert!(
+            l[0].abs() < 0.05 && r[0].abs() < 0.05,
+            "click on re-trigger: first sample L={} R={}",
+            l[0],
+            r[0]
+        );
+        for i in 0..BLK {
+            assert!(l[i].is_finite() && r[i].is_finite());
         }
     }
 }
