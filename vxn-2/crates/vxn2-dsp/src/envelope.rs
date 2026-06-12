@@ -219,7 +219,17 @@ impl ModEnvState {
 
     #[inline]
     pub fn note_on(&mut self) {
+        // Restart the attack from zero. The cooked Lin attack slope (`1/a_s`)
+        // and the Exp attack tau are both sized for a full 0 → 1 traversal, so
+        // a retrigger must reset the level: otherwise the attack marches from
+        // the residual level (e.g. sustain) and finishes in a fraction of the
+        // set time — the "attack does nothing on repeated notes" bug. This is a
+        // *time*-based env (knobs in ms), unlike the rate-based op amp EG which
+        // deliberately continues from the current level for click-free
+        // retrigger. Legato continuation skips note_on entirely (see alloc.rs),
+        // so this only fires on real retriggers.
         self.stage = AdsrStage::Attack;
+        self.level = 0.0;
     }
 
     #[inline]
@@ -552,5 +562,55 @@ mod tests {
         };
         env.cook(&params);
         assert_eq!(env.shape, AdsrShape::Exp);
+    }
+
+    /// Retrigger must restart the attack from zero. The cooked Lin slope is
+    /// sized for a full 0 → 1 sweep, so a `note_on` from a residual level (here
+    /// the sustain plateau) must reset to 0 — otherwise the second attack
+    /// marches from sustain and finishes almost instantly, the "attack does
+    /// nothing on repeated notes" bug. We assert (a) the level snaps to 0 on
+    /// retrigger and (b) the second attack takes essentially the full time
+    /// again, matching the first.
+    #[test]
+    fn mod_env_retrigger_restarts_attack_from_zero() {
+        let params = ModEnvParams {
+            a_ms: 200.0,
+            d_ms: 50.0,
+            s: 0.8, // high sustain ⇒ big residual to retrigger from
+            r_ms: 100.0,
+            shape: AdsrShape::Lin,
+        };
+
+        // Time (in ticks) for the attack to first cross 0.5, from a fresh env.
+        let ticks_to_half = |env: &mut ModEnvState| {
+            let mut n = 0;
+            while env.level < 0.5 && n < 100_000 {
+                env.tick(DT);
+                n += 1;
+            }
+            n
+        };
+
+        let mut env = ModEnvState::default();
+        env.cook(&params);
+        env.note_on();
+        let first = ticks_to_half(&mut env);
+
+        // Run it up to the sustain plateau.
+        for _ in 0..5_000 {
+            env.tick(DT);
+        }
+        assert!(env.level > 0.7, "did not reach sustain: {}", env.level);
+
+        // Retrigger without going idle.
+        env.note_on();
+        assert_eq!(env.level, 0.0, "retrigger did not reset level to 0");
+
+        let second = ticks_to_half(&mut env);
+        // Same attack time on retrigger as on the first note (within a tick).
+        assert!(
+            (first as i64 - second as i64).abs() <= 1,
+            "retrigger attack {second} ticks vs first {first} — not restarted from 0",
+        );
     }
 }
