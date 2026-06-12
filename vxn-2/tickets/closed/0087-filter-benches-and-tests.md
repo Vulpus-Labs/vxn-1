@@ -46,21 +46,44 @@ Tests (engine integration + dsp unit):
 
 ## Acceptance criteria
 
-- [ ] Off-path cost is within noise of pre-epic baseline (no measurable
+- [x] Off-path cost is within noise of pre-epic baseline (no measurable
   regression) and bypass render is bit-identical.
-- [ ] On-path cost documented at F ∈ {1,2,4,8}; full-poly remains real-time at
+- [x] On-path cost documented at F ∈ {1,2,4,8}; full-poly remains real-time at
   the chosen default factor.
-- [ ] Deferred-decimation equivalence test passes within FIR tolerance.
-- [ ] Aliasing/THD strictly decreases 1× → 2× → 4× → 8× on the driven resonant
+- [x] Deferred-decimation equivalence test passes within FIR tolerance.
+- [x] Aliasing/THD strictly decreases 1× → 2× → 4× → 8× on the driven resonant
   sweep; dB figures recorded in the test or `PARAMETERS.md`/README.
-- [ ] Self-oscillation bounded at every F; mode/slope response tests pass on the
+- [x] Self-oscillation bounded at every F; mode/slope response tests pass on the
   integrated path.
-- [ ] Quiescence-skip saving quantified; tail-preservation and skip-equivalence
+- [x] Quiescence-skip saving quantified; tail-preservation and skip-equivalence
   tests pass.
-- [ ] CI green including the new benches' smoke run.
+- [x] CI green including the new benches' smoke run.
 
 ## Notes
 
 The deferred-decimation equivalence test is the load-bearing correctness check
 for ADR 0004 §4 (summing and decimation commute) — it is what justifies the
 single shared decimator over per-voice ones. Keep it explicit and well-named.
+
+## Outcome (closed 2026-06-12)
+
+**Benches** (`vxn2-osc-bench/benches/filter_path.rs`): off vs on at F∈{1,2,4,8}
+plus a `filter_quiescence` group (sustaining vs released-and-rung-out at 4×).
+Recorded RT-multiples (M-series, 48 kHz, 256-block, full poly 16×density-4, FX):
+off 18.6×, 1× 10.2×, 2× 6.6×, 4× 4.4×, 8× 2.4× — all real-time. Quiescence-skip
+reclaims ~99% of filter cost (1.24 ms held → 12 µs rung-out). Figures in the
+bench header; CI runs `cargo bench --no-run --workspace` as the smoke compile.
+
+**Tests:**
+
+- Bypass bit-identity + self-osc-bounded-every-F + matrix cutoff/reso RT
+  hardening + resonant-tail-no-skip-cliff →
+  `vxn2-engine/tests/filter_integration.rs` (over the default patch + every
+  factory preset for bypass).
+- Aliasing/THD monotonic 1×→8× (−54.6 / −64.7 / −67.1 / −75.1 dB), integrated
+  mode/slope, self-osc-bounded-every-F on the interp→ladder@F→decimate chain →
+  `vxn2-dsp/src/filter.rs::tests`.
+- Deferred-decimation equivalence: pre-existing `decimate_is_linear_over_voice_sum`
+  in `vxn2-dsp/src/halfband.rs::tests` (explicit + well-named, < 1e-5 diff).
+- Mode/slope, kernel self-osc, quiescence-decay: pre-existing
+  `vxn2-dsp/src/filter.rs::tests`.

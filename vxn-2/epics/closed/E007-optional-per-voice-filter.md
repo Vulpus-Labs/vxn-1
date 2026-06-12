@@ -1,8 +1,9 @@
 ---
 id: E007
 title: Optional per-voice oversampled OTA filter — post-stack/pre-voice, cutoff+reso matrix targets
-status: open
+status: closed
 created: 2026-06-12
+closed: 2026-06-12
 ---
 
 ## Goal
@@ -59,7 +60,7 @@ sample-major hot loop with zero added cost. Design is fixed by
 - [x] [0084 — Per-stack filter state + stack-major oversampled render path, gated bypass](../../tickets/closed/0084-per-stack-filter-render-path.md)
 - [x] [0085 — Quiescence-skip per stack + state/coeff-ramp freeze](../../tickets/closed/0085-quiescence-skip.md)
 - [x] [0086 — Host latency reporting for the oversampled filter path](../../tickets/closed/0086-latency-reporting.md)
-- [ ] [0087 — Filter benchmarks + tests: cost, bypass bit-identity, aliasing, quiescence](../../tickets/open/0087-filter-benches-and-tests.md)
+- [x] [0087 — Filter benchmarks + tests: cost, bypass bit-identity, aliasing, quiescence](../../tickets/closed/0087-filter-benches-and-tests.md)
 - [x] [0088 — Filter faceplate panel: controls + FX-style enable toggle](../../tickets/closed/0088-filter-faceplate-panel.md)
 
 ## Dependency order

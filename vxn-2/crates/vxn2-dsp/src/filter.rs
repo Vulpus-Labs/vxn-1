@@ -406,4 +406,159 @@ mod tests {
             "self-oscillating ladder dipped below skip floor: {min_state}"
         );
     }
+
+    // ---- Integrated per-voice path (E007 ticket 0087) -------------------
+    //
+    // The "integrated path" is interpolate → ladder@F → decimate (the actual
+    // per-voice filter chain the engine runs), not the bare kernel. These
+    // exercise the whole chain so oversampling's effect is observable.
+
+    use crate::halfband::{Interpolator, Oversampler};
+
+    /// Run `input` (base-rate) through the per-voice oversampled chain at
+    /// `factor`: upsample → ladder at the oversampled rate → decimate.
+    fn osc_chain(
+        mode: FilterMode,
+        slope: FilterSlope,
+        cutoff: f32,
+        reso: f32,
+        drive: f32,
+        factor: usize,
+        input: &[f32],
+    ) -> Vec<f32> {
+        let sr = 48_000.0;
+        let os_rate = sr * factor as f32;
+        let mut k = OtaLadderKernel::new();
+        k.set_coeffs(OtaLadderCoeffs::new(cutoff, os_rate, reso, drive));
+        k.set_response(mode, slope);
+
+        let n = input.len();
+        let osn = n * factor;
+        let mut up = vec![0.0f32; osn];
+        Interpolator::new().interpolate(input, &mut up, factor);
+        for s in up.iter_mut() {
+            *s = k.tick(*s);
+        }
+        let mut down = vec![0.0f32; n];
+        Oversampler::new().decimate(&up, &mut down, factor);
+        down
+    }
+
+    /// `|X(f)|²` of a real signal via Goertzel (DFT bin magnitude squared).
+    fn goertzel_mag2(x: &[f32], f: f32, fs: f32) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * f as f64 / fs as f64;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in x {
+            let s0 = v as f64 + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        s1 * s1 + s2 * s2 - coeff * s1 * s2
+    }
+
+    /// Fraction of in-band energy that is *inharmonic* — i.e. aliasing + noise
+    /// folded onto non-harmonic bins. `f0` is chosen so the analysis window
+    /// holds an integer number of periods of every harmonic (leakage-free
+    /// Goertzel), so anything not at `k·f0` is genuine aliasing.
+    fn inharmonic_fraction(factor: usize) -> f64 {
+        let sr = 48_000.0_f32;
+        let win = 4096usize;
+        // f0 = sr · 200 / 4096 ≈ 2343.75 Hz: exactly 200 periods per window,
+        // each harmonic k·f0 lands on bin 200·k (integer ≤ 2048 for k ≤ 10).
+        let f0 = sr * 200.0 / win as f32;
+        let n = 3 * win; // settle the chain, analyse the tail window
+        let input: Vec<f32> = (0..n)
+            .map(|i| 0.8 * (2.0 * PI * f0 * i as f32 / sr).sin())
+            .collect();
+
+        // Resonant, driven low-pass with the fundamental in-band: the ladder's
+        // saturator generates harmonics that, at low F, alias back in-band.
+        let out = osc_chain(FilterMode::Lp, FilterSlope::Pole4, 4000.0, 0.8, 6.0, factor, &input);
+        let tail = &out[n - win..];
+
+        let total: f64 = tail.iter().map(|&v| (v as f64) * (v as f64)).sum();
+        // Parseval: per-bin time-energy = (2/N)·|X|² for a positive-freq bin.
+        let nyq = sr / 2.0;
+        let max_k = (nyq / f0) as usize;
+        let mut harmonic = 0.0f64;
+        for k in 1..=max_k {
+            harmonic += (2.0 / win as f64) * goertzel_mag2(tail, k as f32 * f0, sr);
+        }
+        ((total - harmonic) / total).max(0.0)
+    }
+
+    /// AC 4 — oversampling strictly reduces aliasing/THD of a driven, resonant
+    /// sweep. The inharmonic (aliased) energy fraction must fall monotonically
+    /// 1× → 2× → 4× → 8×. dB figures are printed for the record.
+    ///
+    /// Recorded (driven LP4, cutoff 4 kHz, reso 0.8, drive 6×, f0 ≈ 2.34 kHz):
+    /// 1× = −54.6 dB, 2× = −64.7 dB, 4× = −67.1 dB, 8× = −75.1 dB inharmonic
+    /// energy — a ~20 dB alias reduction from 1× to 8×.
+    #[test]
+    fn aliasing_decreases_monotonically_with_oversampling() {
+        let mut prev = f64::INFINITY;
+        let mut db = Vec::new();
+        for &factor in &[1usize, 2, 4, 8] {
+            let frac = inharmonic_fraction(factor);
+            db.push((factor, 10.0 * frac.log10()));
+            assert!(
+                frac < prev,
+                "{factor}×: inharmonic fraction {frac:.6} did not drop below {prev:.6}",
+            );
+            prev = frac;
+        }
+        // Recorded for the ticket / README; visible with `cargo test -- --nocapture`.
+        for (f, d) in &db {
+            println!("aliasing {f}×: inharmonic energy {d:.1} dB");
+        }
+    }
+
+    /// Steady-state energy of an `f`-Hz sine through the integrated chain.
+    fn chain_energy(mode: FilterMode, slope: FilterSlope, cutoff: f32, f: f32, factor: usize) -> f64 {
+        let sr = 48_000.0_f32;
+        let n = 8192usize;
+        let input: Vec<f32> = (0..n)
+            .map(|i| 0.1 * (2.0 * PI * f * i as f32 / sr).sin())
+            .collect();
+        let out = osc_chain(mode, slope, cutoff, 0.0, 1.0, factor, &input);
+        out[n / 2..].iter().map(|&v| (v as f64) * (v as f64)).sum()
+    }
+
+    /// AC 5 — the mode/slope response holds on the *integrated* path, not just
+    /// the bare kernel: a 12 dB/oct low-pass passes more HF than 24 dB/oct after
+    /// the resampler round-trip.
+    #[test]
+    fn mode_slope_response_holds_on_oversampled_path() {
+        use FilterSlope::{Pole2, Pole4};
+        for &factor in &[2usize, 4, 8] {
+            let lp12 = chain_energy(FilterMode::Lp, Pole2, 1000.0, 6000.0, factor);
+            let lp24 = chain_energy(FilterMode::Lp, Pole4, 1000.0, 6000.0, factor);
+            assert!(
+                lp12 > 4.0 * lp24,
+                "{factor}×: LP12 ({lp12:.3e}) not brighter than LP24 ({lp24:.3e})",
+            );
+        }
+    }
+
+    /// AC 5 — resonance = 1 stays finite and bounded across the cutoff range at
+    /// every factor on the integrated chain (impulse + silence excitation).
+    #[test]
+    fn self_oscillation_bounded_every_factor_on_chain() {
+        for &factor in &[1usize, 2, 4, 8] {
+            for &cutoff in &[500.0f32, 2000.0, 8000.0] {
+                let n = 24_000usize;
+                let mut input = vec![0.0f32; n];
+                input[0] = 1.0;
+                let out =
+                    osc_chain(FilterMode::Lp, FilterSlope::Pole4, cutoff, 1.0, 1.0, factor, &input);
+                let mut peak = 0.0f32;
+                for &v in &out {
+                    assert!(v.is_finite(), "{factor}× cutoff {cutoff}: non-finite");
+                    peak = peak.max(v.abs());
+                }
+                assert!(peak < 10.0, "{factor}× cutoff {cutoff}: self-osc blew up ({peak})");
+            }
+        }
+    }
 }
