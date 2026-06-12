@@ -50,3 +50,14 @@ tests only.
 Land early in the epic: 0117's smoothing tests, 0118's JS
 tests and 0121's new unit tests all gain value from running
 in CI from the moment they merge.
+
+## Closure (2026-06-12)
+
+Added `.github/workflows/test.yml`: macOS runner,
+`cargo test --workspace` (VXN_JS_TESTS=1 un-gates the vxn-ui-web
+Vitest suite via `npm ci` in the assets dir), plus
+`cargo bench --no-run --workspace`. Triggers on push + PR to main,
+`Swatinem/rust-cache` for caching. One workflow satisfies both this
+ticket and vxn-2 0070 — `--workspace` runs vxn-core-*, vxn-1 and
+vxn-2 crates together, so shared-core edits exercise vxn-2 tests
+without a path filter. Closes 0070.

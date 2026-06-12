@@ -1,0 +1,53 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (e.g. force-push to a PR branch).
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Workspace tests (macOS)
+    # macOS is the primary dev/runtime target: NEON paths compile and run,
+    # the xtask bundler is macOS-only, and editor_smoke.rs is macOS-gated.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      # Node for the vxn-1 faceplate Vitest suite (jsdom). vxn-2 ui-web has
+      # no JS test suite yet, so only vxn-1 assets need npm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: vxn-1/crates/vxn-ui-web/assets/package-lock.json
+
+      - name: Install JS deps
+        working-directory: vxn-1/crates/vxn-ui-web/assets
+        run: npm ci
+
+      # `--workspace` covers vxn-core-*, all vxn-1 and all vxn-2 crates in a
+      # single invocation (flat workspace, E001). VXN_JS_TESTS=1 un-gates the
+      # `js_suite_passes` test in vxn-ui-web, which shells `npm test` (Vitest).
+      - name: cargo test --workspace
+        env:
+          VXN_JS_TESTS: "1"
+        run: cargo test --workspace
+
+      # Bench code is compile-checked only — running criterion in CI is noise,
+      # but bit-rotted bench code should fail the build (vxn-2 ticket 0070).
+      - name: cargo bench --no-run
+        run: cargo bench --no-run --workspace
