@@ -844,6 +844,44 @@ impl Default for FilterParams {
     }
 }
 
+impl FilterParams {
+    /// Host-visible plugin latency, in base-rate samples, for this filter
+    /// configuration (ticket 0086). Zero when the filter is off — the render
+    /// path is then the unchanged sample-major bypass — or when running at 1×
+    /// (no resampling); otherwise the interpolate → decimate round-trip group
+    /// delay derived from the halfband cascade in
+    /// [`vxn2_dsp::halfband::roundtrip_latency_base_samples`]. Reported to the
+    /// host through the CLAP latency extension for plugin-delay compensation
+    /// (ADR 0004 §8).
+    pub fn reported_latency_samples(&self) -> u32 {
+        if self.enable {
+            vxn2_dsp::halfband::roundtrip_latency_base_samples(self.oversample)
+        } else {
+            0
+        }
+    }
+}
+
+/// Decode the seven `filter-*` CLAP params out of any [`ParamView`] into the
+/// engine-native [`FilterParams`], without building a whole [`EngineParams`]
+/// snapshot. Used both by `EngineParams::snapshot_from` (audio thread, per
+/// control block) and the CLAP latency extension (main thread, on every host
+/// latency query and per-block change check — ticket 0086) so the param decode
+/// lives in exactly one place.
+pub fn filter_params_of<P: ParamView>(p: &P) -> FilterParams {
+    let fb = PATCH_BASE + OFF_FILTER;
+    FilterParams {
+        enable: p.get(fb) >= 0.5,
+        cutoff_hz: p.get(fb + 1),
+        resonance: p.get(fb + 2),
+        mode: filter_mode_from(p.get(fb + 3).round() as i32),
+        slope: filter_slope_from(p.get(fb + 4).round() as i32),
+        drive: p.get(fb + 5),
+        // `filter-oversample` enum index 0..3 → factor 1/2/4/8.
+        oversample: 1usize << (p.get(fb + 6).round().clamp(0.0, 3.0) as usize),
+    }
+}
+
 /// Decode the `filter-mode` enum index into a [`FilterMode`].
 fn filter_mode_from(idx: i32) -> FilterMode {
     match idx {
@@ -984,19 +1022,9 @@ impl EngineParams {
             volume_db: shared.get(pb + OFF_MASTER + 1),
         };
 
-        // Filter section (E007 / ADR 0004). Order matches the `filter-*`
-        // descriptors appended after Master in `params.rs`.
-        let fb = pb + OFF_FILTER;
-        self.filter = FilterParams {
-            enable: shared.get(fb) >= 0.5,
-            cutoff_hz: shared.get(fb + 1),
-            resonance: shared.get(fb + 2),
-            mode: filter_mode_from(shared.get(fb + 3).round() as i32),
-            slope: filter_slope_from(shared.get(fb + 4).round() as i32),
-            drive: shared.get(fb + 5),
-            // `filter-oversample` enum index 0..3 → factor 1/2/4/8.
-            oversample: 1usize << (shared.get(fb + 6).round().clamp(0.0, 3.0) as usize),
-        };
+        // Filter section (E007 / ADR 0004). Decoded by `filter_params_of` so
+        // the same path feeds the audio render and the CLAP latency report.
+        self.filter = filter_params_of(shared);
 
         // Master tune bakes into the patch's per-op `base_phase_inc` at
         // note-on via `VoiceParams::master_tune_cents`.

@@ -11,6 +11,7 @@
 //! `Controller` / `ViewEvent` / GUI / timer machinery.
 
 use clack_extensions::gui::PluginGui;
+use clack_extensions::latency::{HostLatency, PluginLatency, PluginLatencyImpl};
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
@@ -23,6 +24,7 @@ use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::{Read, Write as _IoWrite};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn2_app::{matrix_snapshot_event, tick_vxn2};
@@ -30,7 +32,7 @@ use vxn2_engine::Vxn2PresetStore;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{
-    ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id,
+    ParamKind, ParamModel, ScopedFlushToZero, TOTAL_PARAMS, desc_for_clap_id, filter_params_of,
     module_for_clap_id, rate_partner_clap_id, sync_aware_display,
 };
 use vxn_core_app::{Controller, CorpusHandle, ParamId, ViewEvent};
@@ -78,7 +80,8 @@ impl Plugin for VxnPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginGui>()
-            .register::<PluginTimer>();
+            .register::<PluginTimer>()
+            .register::<PluginLatency>();
     }
 }
 
@@ -95,6 +98,7 @@ impl DefaultPluginFactory for VxnPlugin {
     fn new_shared(_host: HostSharedHandle) -> Result<VxnShared, PluginError> {
         Ok(VxnShared {
             params: Arc::new(SharedParams::new()),
+            reported_latency: AtomicU32::new(0),
         })
     }
 
@@ -127,6 +131,13 @@ impl DefaultPluginFactory for VxnPlugin {
 /// clone without reaching across the audio boundary.
 pub struct VxnShared {
     params: Arc<SharedParams>,
+    /// Filter latency (base-rate samples) the host last read via the CLAP
+    /// latency extension (ticket 0086). Both threads touch it: the audio
+    /// thread compares the live figure against it each block to spot a
+    /// `filter-enable` / `filter-oversample` automation change and flag a
+    /// main-thread callback; `get()` and the main-thread notifier write the
+    /// authoritative value. Filter defaults off ⇒ 0.
+    reported_latency: AtomicU32,
 }
 
 impl PluginShared<'_> for VxnShared {}
@@ -159,9 +170,45 @@ pub struct VxnMainThread<'a> {
     pub(crate) timer: Option<(HostTimer, TimerId)>,
 }
 
-impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
+impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {
+    /// Host-requested main-thread callback. The audio thread flags one (via
+    /// `request_callback`) when it sees `filter-enable` / `filter-oversample`
+    /// automation that moves the reported latency; here we issue the CLAP
+    /// `latency.changed()` + restart so plugin-delay compensation re-queries
+    /// `get()` (ticket 0086).
+    fn on_main_thread(&mut self) {
+        self.notify_latency_if_changed();
+    }
+}
 
 impl<'a> VxnMainThread<'a> {
+    /// Re-query the filter's host latency and, if it changed since the host
+    /// last read it, notify the host through the CLAP latency extension so
+    /// plugin-delay compensation re-queries `get()` (ticket 0086). Per CLAP the
+    /// reported latency may only change across an `activate` boundary, so we
+    /// also request a restart; the host deactivates/reactivates and re-reads.
+    ///
+    /// Idempotent: comparing the freshly-decoded figure against the last
+    /// reported value means a no-op edit (or a 1× enable, which adds no
+    /// latency) emits nothing.
+    fn notify_latency_if_changed(&mut self) {
+        let current = filter_params_of(&*self.shared.params).reported_latency_samples();
+        if current == self.shared.reported_latency.load(Ordering::Relaxed) {
+            return;
+        }
+        self.shared.reported_latency.store(current, Ordering::Relaxed);
+        if let Some(host) = self.host.as_mut() {
+            // CLAP allows the reported latency to change only across an
+            // `activate` boundary, so when active we ask for a restart first,
+            // then flag the value stale; the host deactivates, reactivates and
+            // re-reads `get()`.
+            host.shared().request_restart();
+            if let Some(ext) = host.shared().info().get_extension::<HostLatency>() {
+                ext.changed(host);
+            }
+        }
+    }
+
     /// Drain the controller's view-event queue into the live WebView.
     /// No-op when the GUI is closed.
     fn drain_view_events(&mut self) {
@@ -280,6 +327,10 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         if let Some(handle) = self.gui.as_ref() {
             handle.flush_view_events();
         }
+        // A UI edit of the filter enable/oversample selector lands in the model
+        // via `tick_vxn2` above; re-report host latency if it moved (ticket
+        // 0086). Cheap when unchanged (one decode + atomic compare).
+        self.notify_latency_if_changed();
     }
 }
 
@@ -289,13 +340,19 @@ pub struct VxnAudioProcessor<'a> {
     /// Audio-thread parameter mirror. Host param events fold into it; 0016
     /// pushes the mirror into the engine at the top of each block.
     local: LocalParams,
+    /// Thread-safe host handle, kept so the audio thread can `request_callback`
+    /// when a filter automation change moves the reported latency (ticket
+    /// 0086). The actual `latency.changed()` happens main-thread in
+    /// `on_main_thread`. `None` only in unit tests that build a processor
+    /// without a real CLAP host.
+    host: Option<HostSharedHandle<'a>>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
 }
 
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut VxnMainThread,
         shared: &'a VxnShared,
         audio_config: PluginAudioConfiguration,
@@ -304,6 +361,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         Ok(Self {
             engine: Engine::new(audio_config.sample_rate as f32, CONTROL_BLOCK),
             local: LocalParams::new(&shared.params),
+            host: Some(host.shared()),
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
@@ -389,11 +447,32 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         self.local
             .emit(&self.shared.params, events.output, frames as u32);
 
+        // Spot a `filter-enable` / `filter-oversample` automation change that
+        // moves the reported PDC latency and schedule the main-thread
+        // notification (ticket 0086).
+        self.flag_latency_if_changed();
+
         Ok(ProcessStatus::Continue)
     }
 
     fn reset(&mut self) {
         self.engine.reset();
+    }
+}
+
+impl VxnAudioProcessor<'_> {
+    /// If the live filter config implies a different host latency than the host
+    /// last read, ask the host to schedule an `on_main_thread` callback — the
+    /// audio thread can't call `latency.changed()` itself (ticket 0086). Cheap:
+    /// one filter decode + atomic load; `request_callback` fires only on an
+    /// actual change, not every block.
+    fn flag_latency_if_changed(&self) {
+        let want = filter_params_of(&self.local).reported_latency_samples();
+        if want != self.shared.reported_latency.load(Ordering::Relaxed) {
+            if let Some(host) = self.host {
+                host.request_callback();
+            }
+        }
     }
 }
 
@@ -516,6 +595,20 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
 
 // ── Parameters ──────────────────────────────────────────────────────────────
 
+impl PluginLatencyImpl for VxnMainThread<'_> {
+    /// Report the filter path's latency to the host for PDC (ticket 0086):
+    /// `0` with the filter off (the render path is the unchanged sample-major
+    /// bypass) or at 1×, else the halfband interp+decimate round-trip group
+    /// delay derived in `vxn2_dsp::halfband`. Recording the returned value as
+    /// `reported_latency` keeps the audio thread's per-block change check from
+    /// re-flagging what the host already knows.
+    fn get(&mut self) -> u32 {
+        let latency = filter_params_of(&*self.shared.params).reported_latency_samples();
+        self.shared.reported_latency.store(latency, Ordering::Relaxed);
+        latency
+    }
+}
+
 impl PluginMainThreadParams for VxnMainThread<'_> {
     fn count(&mut self) -> u32 {
         TOTAL_PARAMS as u32
@@ -602,6 +695,10 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
                 }
             }
         }
+        // A main-thread (inactive-plugin) automation flush of `filter-enable` /
+        // `filter-oversample` shifts the reported latency; we're already on the
+        // main thread, so notify directly (ticket 0086).
+        self.notify_latency_if_changed();
     }
 }
 
@@ -616,6 +713,9 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
         for event in input {
             let _ = self.local.apply_input(&self.shared.params, event);
         }
+        // Automation can flip the filter selectors during an audio-thread
+        // flush too; flag a latency re-report if so (ticket 0086).
+        self.flag_latency_if_changed();
     }
 }
 
@@ -676,6 +776,7 @@ mod tests {
         VxnAudioProcessor {
             engine: Engine::new(48_000.0, CONTROL_BLOCK),
             local: LocalParams::new(&shared.params),
+            host: None,
             shared,
             scratch_l: vec![0.0; 64],
             scratch_r: vec![0.0; 64],
@@ -685,6 +786,7 @@ mod tests {
     fn mk_shared() -> VxnShared {
         VxnShared {
             params: Arc::new(SharedParams::new()),
+            reported_latency: AtomicU32::new(0),
         }
     }
 

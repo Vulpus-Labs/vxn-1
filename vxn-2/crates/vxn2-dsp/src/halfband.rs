@@ -108,6 +108,34 @@ impl Default for HalfbandFir {
     }
 }
 
+/// Base-rate-referred latency, in samples, of the interpolate → filter →
+/// decimate round-trip at oversample `factor` ∈ {1, 2, 4, 8} (ticket 0086).
+///
+/// Both the up and the down cascade are symmetric: each is `log2(factor)`
+/// halfband stages, stage *i* running at `2ⁱ×` base rate and contributing
+/// [`HalfbandFir::GROUP_DELAY_OVERSAMPLED`] samples *at its own rate*. Summing
+/// `GROUP_DELAY / 2ⁱ` over the cascade is the geometric series
+/// `GROUP_DELAY · (1 − 1/factor)` base-rate samples per direction, so the
+/// round-trip is twice that:
+///
+/// ```text
+/// latency(factor) = 2 · GROUP_DELAY_OVERSAMPLED · (factor − 1) / factor
+/// ```
+///
+/// which is exact integer division for every power-of-two factor
+/// (32·1/2 = 16, 32·3/4 = 24, 32·7/8 = 28). 1× is a passthrough copy with no
+/// filtering and reports 0. The figure is *derived* from the cascade's
+/// group-delay constant, never hardcoded twice (ticket 0086 acceptance).
+pub const fn roundtrip_latency_base_samples(factor: usize) -> u32 {
+    match factor {
+        2 | 4 | 8 => {
+            let g = HalfbandFir::GROUP_DELAY_OVERSAMPLED as u32;
+            (2 * g * (factor as u32 - 1)) / factor as u32
+        }
+        _ => 0,
+    }
+}
+
 /// 2× / 4× / 8× oversampling decimator. Holds three cascaded halfband stages,
 /// each a 2:1 step run at successively lower rates: 8× runs stage A (8→4),
 /// stage B (4→2), stage C (2→1); 4× uses A (4→2) then B (2→1); 2× uses A only.
@@ -482,6 +510,51 @@ mod tests {
                 max_diff = max_diff.max((dsum[i] - (da[i] + db[i])).abs());
             }
             assert!(max_diff < 1e-5, "{factor}× decimate non-linear: max diff {max_diff}");
+        }
+    }
+
+    #[test]
+    fn roundtrip_latency_values() {
+        assert_eq!(roundtrip_latency_base_samples(1), 0);
+        assert_eq!(roundtrip_latency_base_samples(2), 16);
+        assert_eq!(roundtrip_latency_base_samples(4), 24);
+        assert_eq!(roundtrip_latency_base_samples(8), 28);
+        // Any factor outside {1,2,4,8} is treated as the 1× passthrough.
+        assert_eq!(roundtrip_latency_base_samples(3), 0);
+        // Derived from the group-delay constant, not a hardcoded number.
+        let g = HalfbandFir::GROUP_DELAY_OVERSAMPLED as u32;
+        for f in [2u32, 4, 8] {
+            assert_eq!(roundtrip_latency_base_samples(f as usize), 2 * g * (f - 1) / f);
+        }
+    }
+
+    /// Acceptance criterion 2: an impulse through interp → decimate (the filter
+    /// sitting between them is identity at low frequency) peaks at the reported
+    /// base-rate latency, so the PDC number is honest, not merely
+    /// self-consistent. The composite cascade is linear-phase, so the dominant
+    /// centre lands right at the summed group delay.
+    #[test]
+    fn impulse_peaks_at_reported_latency() {
+        for factor in [2usize, 4, 8] {
+            let mut ip = Interpolator::new();
+            let mut os = Oversampler::new();
+            let n = 256;
+            let mut input = vec![0.0f32; n];
+            let impulse_at = 64;
+            input[impulse_at] = 1.0;
+            let mut up = vec![0.0f32; n * factor];
+            let mut down = vec![0.0f32; n];
+            ip.interpolate(&input, &mut up, factor);
+            os.decimate(&up, &mut down, factor);
+
+            let (peak_idx, _) = down.iter().enumerate().fold((0, 0.0f32), |acc, (i, &v)| {
+                if v.abs() > acc.1 { (i, v.abs()) } else { acc }
+            });
+            let expected = impulse_at + roundtrip_latency_base_samples(factor) as usize;
+            assert!(
+                (peak_idx as isize - expected as isize).unsigned_abs() <= 2,
+                "{factor}×: round-trip impulse peaks at {peak_idx}, expected ≈ {expected}",
+            );
         }
     }
 

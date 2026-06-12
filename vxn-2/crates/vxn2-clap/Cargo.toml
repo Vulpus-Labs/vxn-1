@@ -25,6 +25,7 @@ clack-extensions = { workspace = true, features = [
     "state",
     "gui",
     "timer",
+    "latency",
     "clack-plugin",
 ] }
 
@@ -37,6 +38,7 @@ clack-host = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "params",
     "state",
+    "latency",
     "clack-host",
 ] }
 # editor_smoke (0032) reuses the shared IPC parser to drive the
