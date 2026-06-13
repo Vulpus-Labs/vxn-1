@@ -59,6 +59,12 @@ struct EnvSnapshot {
     env1_shape: AdsrShape,
     env2: (f32, f32, f32, f32),
     env2_shape: AdsrShape,
+    /// Shared "analog" amount (E022 / 0124): folded into the gate so a drift
+    /// change re-applies the per-voice envelope trims even when no envelope knob
+    /// moved. Uses the prior block's value (set in `update_effects`, after
+    /// `sync_envelopes`), so a drift move lands one block later — inaudible for
+    /// a sub-audio creative param.
+    drift_amount: f32,
 }
 
 /// Re-export so the plugin shell can flush denormals without depending on
@@ -642,11 +648,18 @@ impl Synth {
                 p.get(PatchParam::Env2Release),
             ),
             env2_shape: p.env2_shape(),
+            drift_amount: self.drift_amount,
         };
         if self.last_env[layer] == Some(snap) {
             return;
         }
-        self.banks[layer].set_envelopes(snap.env1, snap.env1_shape, snap.env2, snap.env2_shape);
+        self.banks[layer].set_envelopes(
+            snap.env1,
+            snap.env1_shape,
+            snap.env2,
+            snap.env2_shape,
+            snap.drift_amount,
+        );
         self.last_env[layer] = Some(snap);
     }
 

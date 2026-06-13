@@ -38,7 +38,13 @@ const BLOCK: usize = 64;
 // before, so the KBT contribution is still zero in the baseline render — the
 // hash drift is entirely the cutoff-slider default moving from 261.6 Hz to
 // 1000 Hz (descriptor default), making the dry tail brighter.
-const GOLDEN_HASH: u64 = 0xd3b0c00e2ef2940e;
+//
+// 2026-06-13 (E022): re-baselined for the fixed per-voice variance (0124).
+// With `MasterDrift` at its non-zero default, the three chord voices now carry
+// constant cutoff/resonance/envelope tolerance offsets, so each voice's tail
+// differs slightly — an intended audio change. (0123's drift-tracked keytrack
+// contributes nothing here: the default patch still has `filter_key_track = 0`.)
+const GOLDEN_HASH: u64 = 0xdf0361b13e355aab;
 
 #[test]
 fn baseline_render_is_stable() {

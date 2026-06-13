@@ -48,6 +48,83 @@ pub const DEFAULT_DRIFT_AMOUNT: f32 = 0.15;
 const OSC1_DRIFT_SALT: u64 = 0xA1F7_0501;
 const OSC2_DRIFT_SALT: u64 = 0xB2E8_0502;
 
+/// Fixed per-voice component-tolerance variance (E022 / 0124). Unlike the drift
+/// *walk* above, these are constant per-lane offsets — frozen at construction
+/// like a real synth's power-on calibration spread — applied to envelope times,
+/// sustain, base cutoff and resonance. Each is a normalised `[-1, 1]` draw
+/// (`trim_draw`) scaled by `drift_amount` (the shared "analog" amount) and the
+/// per-target magnitude below, so `drift_amount = 0` collapses every voice back
+/// to bit-identical shared params (the equivalence-test contract).
+///
+/// Magnitudes are the *max* fractional deviation at `drift_amount = 1.0`:
+/// envelope A/D/R ±12%, sustain ±3%, resonance ±7% (component tolerance), and
+/// base cutoff a deliberately tiny ±3 cents — large enough for gentle beating
+/// between voices, small enough that self-oscillating "whistle" tones never
+/// read as out of tune (0124 constraint).
+const TRIM_ENV_TIME: f32 = 0.12;
+const TRIM_SUSTAIN: f32 = 0.03;
+const TRIM_RESO: f32 = 0.07;
+const TRIM_CUTOFF_CENTS: f32 = 3.0;
+
+/// Salts selecting the four independent trim streams from the layer seed.
+const TRIM_ENV_SALT: u64 = 0xC3D9_0601;
+const TRIM_SUS_SALT: u64 = 0xD4EA_0602;
+const TRIM_CUT_SALT: u64 = 0xE5FB_0603;
+const TRIM_RESO_SALT: u64 = 0xF60C_0604;
+
+/// One deterministic per-voice trim draw in `[-1, 1]`. A SplitMix64 finaliser
+/// over `base ⊕ salt ⊕ channel` — no state, no walk, reproducible for the
+/// baseline tests. Distinct salts decorrelate the four targets (and the pitch
+/// drift) so a voice's bright filter doesn't imply a long decay.
+#[inline]
+fn trim_draw(base: u64, salt: u64, ch: usize) -> f32 {
+    let mut z = base
+        .wrapping_add(salt)
+        .wrapping_add((ch as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Top 24 bits → [0,1), then map to [-1, 1].
+    let unit = (z >> 40) as f32 / (1u64 << 24) as f32;
+    unit * 2.0 - 1.0
+}
+
+/// Fixed per-voice trim table (E022 / 0124). One normalised `[-1, 1]` draw per
+/// lane per target, generated once from the layer seed and never reset on
+/// note-on — a property of the lane, mirroring the drift seed. Scaled at apply
+/// time by `drift_amount` and the per-target magnitude.
+#[derive(Clone, Copy)]
+struct VoiceTrim {
+    /// Multiplies envelope attack/decay/release per voice.
+    env_time: [f32; N],
+    /// Multiplies envelope sustain level per voice.
+    sustain: [f32; N],
+    /// Base-cutoff offset per voice, in normalised units (× `TRIM_CUTOFF_CENTS`).
+    cutoff: [f32; N],
+    /// Multiplies resonance per voice.
+    reso: [f32; N],
+}
+
+/// Cutoff key-track contribution from a voice's *drifted* pitch (E022 / 0123).
+/// osc1/osc2 drift independently, so the voice's effective pitch drift is their
+/// mean; the VCF tracks it at the same `key_track` amount applied to the static
+/// note term. `key_track = 0` zeroes it exactly (no tracking, no coupling).
+#[inline]
+fn drift_keytrack(drift1: f32, drift2: f32, key_track: f32) -> f32 {
+    0.5 * (drift1 + drift2) * key_track
+}
+
+impl VoiceTrim {
+    fn new(base: u64) -> Self {
+        Self {
+            env_time: std::array::from_fn(|i| trim_draw(base, TRIM_ENV_SALT, i)),
+            sustain: std::array::from_fn(|i| trim_draw(base, TRIM_SUS_SALT, i)),
+            cutoff: std::array::from_fn(|i| trim_draw(base, TRIM_CUT_SALT, i)),
+            reso: std::array::from_fn(|i| trim_draw(base, TRIM_RESO_SALT, i)),
+        }
+    }
+}
+
 /// Fixed per-slot pan positions in `[-1.0, +1.0]`, evenly spread across the
 /// lane index. Both layers use the same table; `ctx.spread` scales the
 /// effective position toward centre. Stable across note-ons — slot 0 is
@@ -309,6 +386,9 @@ pub struct VoiceBank {
     /// Per-channel "key released while the pedal was down" flag. Set by a
     /// poly note-off under sustain, cleared on pedal release or retrigger.
     sustained: [bool; N],
+    /// Fixed per-voice component-tolerance trims (E022 / 0124). Frozen at
+    /// construction from the layer seed; not reset on note-on.
+    trim: VoiceTrim,
 }
 
 /// Capacity of the mono held-note stack. Far beyond ten fingers; an overflow
@@ -370,6 +450,7 @@ impl VoiceBank {
             mono_len: 0,
             sustain: false,
             sustained: [false; N],
+            trim: VoiceTrim::new(rng_seed),
         }
     }
 
@@ -450,20 +531,34 @@ impl VoiceBank {
     }
 
     /// Apply envelope params to every voice (called by the engine only when an
-    /// envelope param changed).
+    /// envelope param or `drift_amount` changed).
+    ///
+    /// `drift_amount` scales the fixed per-voice trims (E022 / 0124): each
+    /// voice's A/D/R times and sustain get a constant multiplicative nudge from
+    /// `self.trim`, so a held chord's voices breathe at subtly different rates
+    /// like real per-voice analog tolerance. At `drift_amount = 0` every factor
+    /// is exactly `1.0`, so all voices receive bit-identical params (the
+    /// equivalence-test contract).
     pub fn set_envelopes(
         &mut self,
         env1: (f32, f32, f32, f32),
         env1_shape: AdsrShape,
         env2: (f32, f32, f32, f32),
         env2_shape: AdsrShape,
+        drift_amount: f32,
     ) {
-        for e in &mut self.env1 {
-            e.set_params(env1.0, env1.1, env1.2, env1.3);
+        let time_mag = TRIM_ENV_TIME * drift_amount;
+        let sus_mag = TRIM_SUSTAIN * drift_amount;
+        for (v, e) in self.env1.iter_mut().enumerate() {
+            let t = 1.0 + self.trim.env_time[v] * time_mag;
+            let s = (env1.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
+            e.set_params(env1.0 * t, env1.1 * t, s, env1.3 * t);
             e.set_shape(env1_shape);
         }
-        for e in &mut self.env2 {
-            e.set_params(env2.0, env2.1, env2.2, env2.3);
+        for (v, e) in self.env2.iter_mut().enumerate() {
+            let t = 1.0 + self.trim.env_time[v] * time_mag;
+            let s = (env2.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
+            e.set_params(env2.0 * t, env2.1 * t, s, env2.3 * t);
             e.set_shape(env2_shape);
         }
     }
@@ -874,10 +969,32 @@ impl VoiceBank {
             pw1[v] = (ctx.osc1_pw + m.pwm_mod).clamp(0.05, 0.95);
             pw2[v] = (ctx.osc2_pw + m.pwm_mod).clamp(0.05, 0.95);
 
-            let cutoff_hz = ctx.cutoff * fast_exp2(m.cutoff_mod / 12.0);
+            // Filter key-track follows the voice's *drifted* pitch (E022 /
+            // 0123): the keyboard CV that a real VCF tracks carries the VCO's
+            // drift, so the tracked cutoff wanders with it. osc1/osc2 drift
+            // independently, so the voice's effective pitch drift is their mean,
+            // scaled by the same key-track amount that `m.cutoff_mod` already
+            // applied to the static `note − 12` term. Plus the fixed per-voice
+            // cutoff tolerance (0124): a tiny constant offset, ±TRIM_CUTOFF_CENTS
+            // at full drift — enough for gentle inter-voice beating, never
+            // enough to detune a self-oscillating whistle.
+            let drift_keytrack = drift_keytrack(
+                self.osc1.drift_value[v],
+                self.osc2.drift_value[v],
+                ctx.filter_key_track,
+            );
+            let cutoff_trim_semi =
+                self.trim.cutoff[v] * (TRIM_CUTOFF_CENTS / 100.0) * ctx.drift_amount;
+            let cutoff_hz =
+                ctx.cutoff * fast_exp2((m.cutoff_mod + drift_keytrack + cutoff_trim_semi) / 12.0);
+            // Fixed per-voice resonance tolerance (0124): voices cross the
+            // self-oscillation threshold at slightly different settings, so near
+            // the edge one can whistle while a neighbour stays quiet. The OTA
+            // coeff builder clamps `resonance` to `[0, 1]` internally.
+            let resonance = ctx.resonance * (1.0 + self.trim.reso[v] * TRIM_RESO * ctx.drift_amount);
             self.ladder.set_coeffs(
                 v,
-                OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, ctx.resonance, ctx.drive),
+                OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
             );
         }
         // Filter response is layer-wide, not per voice.
@@ -2073,5 +2190,90 @@ mod mod_tests {
         let mut gate = [true; N];
         gate[7] = false;
         assert!(envelopes_static(&[false; N], &active, &gate, &e1, &e2));
+    }
+
+    // ── E022: per-voice analog variance (0123 + 0124) ──
+
+    #[test]
+    fn trim_draws_are_bounded_and_varied() {
+        // Every draw stays in [-1, 1], and the lanes are not all identical —
+        // the whole point is per-voice spread.
+        let t = VoiceTrim::new(0x1234_5678);
+        for arr in [&t.env_time, &t.sustain, &t.cutoff, &t.reso] {
+            for &x in arr {
+                assert!((-1.0..=1.0).contains(&x), "draw {x} out of [-1,1]");
+            }
+            let first = arr[0];
+            assert!(
+                arr.iter().any(|&x| (x - first).abs() > 1e-3),
+                "all lanes identical — no variance"
+            );
+        }
+    }
+
+    #[test]
+    fn trim_is_deterministic_per_seed() {
+        // Same seed → identical table (baseline reproducibility); different
+        // seed → different table (layers/instances decorrelate).
+        let a = VoiceTrim::new(0xABCD);
+        let b = VoiceTrim::new(0xABCD);
+        assert_eq!(a.cutoff, b.cutoff);
+        assert_eq!(a.env_time, b.env_time);
+        let c = VoiceTrim::new(0xABCE);
+        assert!(c.cutoff != a.cutoff, "distinct seeds must decorrelate");
+    }
+
+    #[test]
+    fn trim_streams_decorrelated() {
+        // The four targets draw from distinct salts, so they must not be the
+        // same sequence (a bright filter must not imply a long decay).
+        let t = VoiceTrim::new(0x0F0F_0F0F);
+        assert!(t.env_time != t.cutoff);
+        assert!(t.cutoff != t.reso);
+        assert!(t.sustain != t.env_time);
+    }
+
+    #[test]
+    fn cutoff_trim_stays_in_tune() {
+        // 0124 constraint: base-cutoff variance must beat gently, never detune a
+        // self-osc whistle. Worst-case offset = max|draw|(=1) × cents, at full
+        // drift, must stay within ±5 cents (we target ±3).
+        assert!(
+            TRIM_CUTOFF_CENTS <= 5.0,
+            "cutoff variance {TRIM_CUTOFF_CENTS} cents would sound out of tune"
+        );
+        let t = VoiceTrim::new(0x55AA_55AA);
+        let worst = t
+            .cutoff
+            .iter()
+            .map(|&x| (x * TRIM_CUTOFF_CENTS * 1.0).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(worst <= 5.0, "voice cutoff offset {worst} cents too large");
+    }
+
+    #[test]
+    fn zero_drift_is_bit_exact_env() {
+        // drift_amount = 0 → every per-voice env factor collapses to exactly
+        // 1.0, so all voices get bit-identical params (equivalence contract).
+        let mut bank = VoiceBank::new(48_000.0, 0xDEAD_BEEF);
+        let e = (0.01_f32, 0.2, 0.6, 0.3);
+        bank.set_envelopes(e, AdsrShape::Linear, e, AdsrShape::Linear, 0.0);
+        // With zero drift the multiplicative factor is 1.0 for every lane,
+        // independent of the trim draw — assert the math, not just lane 0.
+        for v in 0..N {
+            assert_eq!(1.0 + bank.trim.env_time[v] * TRIM_ENV_TIME * 0.0, 1.0);
+            assert_eq!(1.0 + bank.trim.sustain[v] * TRIM_SUSTAIN * 0.0, 1.0);
+        }
+    }
+
+    #[test]
+    fn drift_keytrack_is_mean_scaled() {
+        // 0123: keytrack follows the *mean* of the two oscillators' drift,
+        // scaled by the track amount; zero track → no coupling.
+        assert_eq!(drift_keytrack(0.2, 0.4, 1.0), 0.3); // mean of 0.2,0.4
+        assert_eq!(drift_keytrack(0.2, 0.4, 0.5), 0.15);
+        assert_eq!(drift_keytrack(0.2, 0.4, 0.0), 0.0);
+        // Symmetric drift cancels: opposite wanders leave cutoff untracked.
+        assert_eq!(drift_keytrack(0.3, -0.3, 1.0), 0.0);
     }
 }
