@@ -51,3 +51,18 @@ If const-evaluating `sin` proves awkward (f32 transcendentals in const
 context), an `include!`-ed generated literal beats pulling in a const
 math crate — the table is 1024 floats, ~12 KB of source, generated
 once by a small `#[test]`-gated writer or xtask subcommand.
+
+## Close-out (2026-06-13)
+
+- `PolyAlloc::clear(&mut self)` added (alloc.rs); `Engine::reset` now calls it
+  instead of `PolyAlloc::new` — no construction, no heap on the audio thread.
+  Resets every field `new` sets, preserves `sample_rate`. Test
+  `alloc::tests::clear_matches_fresh_and_next_note_identical`: plays notes,
+  clears, asserts observable state == fresh instance and next note-on identical.
+- `SINE_TABLE` is now a const-initialised `static [f32; 1024]` (`include!`d
+  `sine_table.rs`), no `LazyLock`. Bit-identical to the runtime table —
+  `sine::tests::const_table_matches_computed` compares to_bits per entry.
+  Regenerator: ignored `generate_sine_table` test.
+- Grep sweep: no `LazyLock`/`OnceLock`/`OnceCell`/`lazy_static` remain in
+  vxn2-dsp (only doc-comment mentions). No alloc/lock/lazy-init primitives
+  reachable from `process_block` / `stack_tick_*`. Review's finding still holds.

@@ -116,6 +116,27 @@ impl PolyAlloc {
         }
     }
 
+    /// Reset every field to its post-[`Self::new`] state in place — no
+    /// struct construction, no heap traffic. `Engine::reset` is a CLAP
+    /// audio-thread method, so it must not allocate; this zeroes each field
+    /// exactly as `new` would (all on-stack, fixed-size arrays) and preserves
+    /// `sample_rate` (the one input `new` takes and `reset` keeps).
+    ///
+    /// Invariant: every field `new` sets is reset here. A field added to the
+    /// struct without a line below is a reset-leak bug.
+    pub fn clear(&mut self) {
+        self.stacks = [Stack::default(); N_STACKS];
+        self.seq = [IDLE_SEQ; N_STACKS];
+        self.next_seq = 0;
+        self.glides = [None; N_STACKS];
+        self.bend_st = 0.0;
+        self.held = [0; N_STACKS];
+        self.held_len = 0;
+        self.solo_active = false;
+        self.sustain = false;
+        self.held_by_pedal = [false; N_STACKS];
+    }
+
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
     }
@@ -511,6 +532,53 @@ mod tests {
         let alloc = PolyAlloc::new(SR);
         for s in &alloc.stacks {
             assert!(s.is_idle());
+        }
+    }
+
+    #[test]
+    fn clear_matches_fresh_and_next_note_identical() {
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+
+        // Perturb: gate several notes, advance, leave live state behind.
+        let mut a = PolyAlloc::new(SR);
+        a.set_sustain(true);
+        for &n in &[48u8, 55, 60, 67] {
+            a.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut a, 4);
+        a.set_bend(1.5);
+        assert!(a.stacks.iter().any(|s| !s.is_idle()), "precondition: voices live");
+
+        a.clear();
+
+        // Observable allocator state equals a fresh instance's.
+        let fresh = PolyAlloc::new(SR);
+        assert_eq!(a.sample_rate, fresh.sample_rate, "sample_rate preserved");
+        assert_eq!(a.seq, fresh.seq);
+        assert_eq!(a.next_seq, fresh.next_seq);
+        assert_eq!(a.bend_st, fresh.bend_st);
+        assert_eq!(a.held, fresh.held);
+        assert_eq!(a.held_len, fresh.held_len);
+        assert_eq!(a.solo_active, fresh.solo_active);
+        assert_eq!(a.sustain, fresh.sustain);
+        assert_eq!(a.held_by_pedal, fresh.held_by_pedal);
+        assert!(a.glides.iter().all(|g| g.is_none()));
+        for (s, f) in a.stacks.iter().zip(fresh.stacks.iter()) {
+            assert!(s.is_idle());
+            assert_eq!(s.gate, f.gate);
+            assert_eq!(s.note, f.note);
+        }
+
+        // Next note-on after clear behaves identically to a fresh instance's.
+        let mut b = PolyAlloc::new(SR);
+        a.note_on(&params, &sp, &vp, 64, 100);
+        b.note_on(&params, &sp, &vp, 64, 100);
+        assert_eq!(a.seq, b.seq, "slot pick / seq after clear matches fresh");
+        for (s, f) in a.stacks.iter().zip(b.stacks.iter()) {
+            assert_eq!(s.gate, f.gate);
+            assert_eq!(s.note, f.note);
         }
     }
 

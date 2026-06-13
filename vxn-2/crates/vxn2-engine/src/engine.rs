@@ -351,7 +351,7 @@ impl Engine {
     /// host on transport restart / plugin reset. Preserves params, tempo,
     /// and performance controllers (bend / wheel / aftertouch).
     pub fn reset(&mut self) {
-        self.alloc = PolyAlloc::new(self.sample_rate);
+        self.alloc.clear();
         self.cleanup.reset();
         self.delay.reset();
         self.reverb.reset();
