@@ -260,6 +260,16 @@ pub struct Stack {
     /// Cached stack-macro spread, captured at note-on so the per-block pan
     /// refresh doesn't need a fresh `StackParams` handle.
     pub cached_spread: f32,
+    /// Max per-lane detune (cents) captured at note-on — the gain on the
+    /// symmetric `voice_spread` position that produced the note-on
+    /// `base_phase_inc`. The matrix `stack-detune` route (E008 0093)
+    /// re-derives a per-lane detune offset from this each block.
+    pub detune_cents_max: f32,
+    /// Per-lane extra detune (semitones) from the matrix `stack-detune` route,
+    /// added into the pitch sum by [`Self::apply_pitch_mult`]. Zero when the
+    /// dest is un-routed → the pitch path stays bit-identical. Set block-rate
+    /// via [`Self::set_detune_mod`].
+    pub detune_mod_st: [f32; STACK_LANES],
     /// Cached per-op static pan values from voice params at note-on. Source of
     /// truth for [`Self::refresh_pan_with_mod`]; never overwritten between
     /// note-ons.
@@ -293,6 +303,8 @@ impl Default for Stack {
             op_pitch_mod_st: [[0.0_f32; STACK_LANES]; N_OPS],
             op_pan_mod: [[0.0_f32; STACK_LANES]; N_OPS],
             cached_spread: 0.0,
+            detune_cents_max: 0.0,
+            detune_mod_st: [0.0_f32; STACK_LANES],
             cached_op_pans: [0.0_f32; N_OPS],
         }
     }
@@ -433,6 +445,8 @@ impl Stack {
         // no longer affects panning directly; it's the gain on the matrix's
         // `VoiceSpread` source — see `eval_sources`.
         self.cached_spread = stack_params.spread;
+        self.detune_cents_max = stack_params.detune_cents_max;
+        self.detune_mod_st = [0.0; STACK_LANES];
         for i in 0..N_OPS {
             self.cached_op_pans[i] = voice_params.ops[i].pan;
         }
@@ -458,6 +472,7 @@ impl Stack {
     ) {
         self.note = note;
         self.velocity = velocity;
+        self.detune_cents_max = stack_params.detune_cents_max;
         let master_mult = 2_f32.powf(voice_params.master_tune_cents / 1200.0);
         for i in 0..N_OPS {
             self.cook_op(
@@ -510,11 +525,31 @@ impl Stack {
         let base_st = self.bend_st + self.glide_st + self.pitch_eg.level_st;
         for i in 0..N_OPS {
             for k in 0..STACK_LANES {
-                let st = base_st + self.global_pitch_mod_st[k] + self.op_pitch_mod_st[i][k];
+                // `detune_mod_st` is the matrix `stack-detune` per-lane offset
+                // (E008 0093); 0 when un-routed → `+ 0.0` is bit-identical.
+                let st = base_st
+                    + self.global_pitch_mod_st[k]
+                    + self.op_pitch_mod_st[i][k]
+                    + self.detune_mod_st[k];
                 let mult = 2_f32.powf(st / 12.0) as f64;
                 self.ops[i].phase_inc[k] =
                     (self.ops[i].base_phase_inc[k] as f64 * mult) as u32;
             }
+        }
+    }
+
+    /// Re-derive the per-lane `stack-detune` offset (E008 0093) from the
+    /// note-on detune width and the modulation amount. `mod_amt` *scales* the
+    /// per-lane detune: effective lane detune = `detune_cents_max ·
+    /// voice_spread[k] · (1 + mod_amt)`. The base term is already baked into
+    /// `base_phase_inc`, so this stores only the extra `· mod_amt` part as
+    /// semitones for [`Self::apply_pitch_mult`]. `mod_amt = 0` → zeros, leaving
+    /// the note-on detune untouched.
+    #[inline]
+    pub fn set_detune_mod(&mut self, mod_amt: f32) {
+        let scale = self.detune_cents_max * mod_amt * (1.0 / 100.0);
+        for k in 0..STACK_LANES {
+            self.detune_mod_st[k] = self.voice_spread[k] * scale;
         }
     }
 

@@ -184,11 +184,59 @@ The matrix is a 16-slot table per patch. Each slot has:
   (gain 8 octaves at full depth); `resonance` is an additive `[0, 1]` offset.
   Inert until `filter-enable` is on.
 
-**Depth taper**: semitone dests (`op{N}_ratio`, `op{N}_detune`,
-`global_pitch`) apply a cubic taper (`d³`) to the stored depth before the
-±24 st range, so vibrato-scale amounts (≤ 0.5 st) occupy usable widget
-travel (25% ≈ ±0.4 st, 50% ≈ ±3 st, 100% = ±24 st). The stored / CLAP
-value stays linear; the engine cooks the taper at block rate.
+**Granularity tiers & coherence** (E008): every source and dest has a
+granularity tier — how many independent values it carries:
+
+| Tier | Sources | Destinations |
+| --- | --- | --- |
+| **patch-global** (1/patch) | `lfo1`, `mod_wheel`, `aftertouch` | `lfo1_rate`, `delay_mix`, `reverb_mix` |
+| **per-stack** (1/voice) | `pitch_eg`, `mod_env`, `velocity`, `key` | `lfo2_rate`, `stack_detune`, `stack_spread`, `cutoff`, `resonance` |
+| **per-lane** (1/unison lane) | `lfo2`, `voice_idx`, `voice_spread`, `voice_rand` | `op{N}_{pitch,level,pan}`, `global_pitch`, `feedback`, `lfo2_phase` |
+
+A routing is **coherent** iff the source tier is coarser-or-equal to the dest
+tier: a coarser source broadcasts unambiguously to a finer dest; a finer
+source into a coarser dest is a lossy collapse to lane 0 (which lane wins?).
+The matrix UI renders incoherent routings in red with a tooltip but still
+lets them be set (old patches load). Two special cases on top of the tier
+rule: an LFO into **its own** rate (`lfo1→lfo1_rate`, `lfo2→lfo2_rate`) is
+self-referential; `voice_idx` into a lane-0-collapsed dest (`cutoff`,
+`resonance`, `delay_mix`, `reverb_mix`) is degenerate (`voice_idx[0]` is
+always 0 → constant, no effect). The predicate (`matrix::coherence`) is the
+single source of truth, exported in the matrix descriptor the UI reads.
+
+**Units & depth full-scale** (E008 0094): every source emits a normalized
+shape — bipolar `[-1, 1]` (`lfo1`, `lfo2`, `voice_spread`, **`pitch_eg`**) or
+unipolar `[0, 1]` (`mod_wheel`, `aftertouch`, `velocity`, `key`, `mod_env`,
+`voice_idx`, `voice_rand`). `pitch_eg` is the EG *shape* (`level_st /
+peg_depth`), **not** raw semitones — so the pitch dest's ±24 st gain sets the
+excursion and there is no hidden 24× re-scale (the old double-scale bug). Each
+dest's gain converts `depth × shape` to its native unit at `depth = 1`:
+
+| Dest | `depth = 1` full-scale |
+| --- | --- |
+| `op{N}_pitch`, `global_pitch` | ±24 st (±2 oct) |
+| `op{N}_level` | full multiplicative tremolo on the EG |
+| `op{N}_pan` | hard L↔R |
+| `feedback` | the 0..7 feedback range |
+| `cutoff`, `lfo1_rate`, `lfo2_rate` | ±4 octaves (log domain) |
+| `resonance`, `delay_mix`, `reverb_mix` | additive `[0, 1]` offset |
+| `stack_detune`, `stack_spread` | scales the macro by `(1 + v)` (0→2×) |
+| `lfo2_phase` | ±1 full LFO2 cycle (per-lane offset) |
+
+**Depth taper**: the 7 semitone pitch dests (`global_pitch`, `op{N}_pitch`)
+apply a cubic taper (`d³`) to the stored depth before the ±24 st gain, so
+vibrato-scale amounts (≤ 0.5 st) occupy usable widget travel (25% ≈ ±0.4 st,
+50% ≈ ±3 st, 100% = ±24 st). The stored / CLAP value stays linear; the engine
+cooks the taper at block rate. All other dests stay **linear** — the log-domain
+rate/cutoff gains and the `(1 + v)`-scale stack macros are already shaped, so a
+taper would double-bend them (0094 decision).
+
+**Migration** (0094): patches routing `pitch_eg → *_pitch` change audibly —
+the old path swung `peg_depth × 24 ×` the EG; the fix swings `±24 st ×` the EG
+*shape* at depth 1. Re-scale such slots' depths to restore the authored
+excursion (the factory re-audit is [ticket 0097]). No blob-version bump:
+depths are stored normalized and unchanged — only the runtime source
+interpretation shifted.
 
 **CLAP exposure**: slots **1–8 `depth`** are CLAP params
 (`mtx1_depth` … `mtx8_depth` = 8 CLAP params). Slots 9–16 `depth` and

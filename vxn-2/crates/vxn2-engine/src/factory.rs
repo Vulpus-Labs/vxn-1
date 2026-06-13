@@ -111,6 +111,39 @@ mod tests {
         }
     }
 
+    /// E008 0097 durable guard: every routed slot in every factory preset must
+    /// be coherent (per the 0090 predicate) and point at a *consumed* dest. A
+    /// future preset that reintroduces an incoherent route (finer source into a
+    /// coarser dest, an LFO into its own rate, or a degenerate `voice-idx`
+    /// collapse) — or that ever pointed at a now-removed dest — fails CI here.
+    /// This is the keystone test: it keeps the matrix honest as presets grow.
+    #[test]
+    fn no_factory_preset_routes_incoherently() {
+        use crate::matrix::{coherence, Coherence, DestId, SourceId};
+        use crate::preset::read_preset;
+
+        for (category, contents) in factory_files() {
+            let (meta, _params, matrix, _warnings) =
+                read_preset(contents).expect("factory preset parses");
+            for (slot, row) in matrix.iter().enumerate() {
+                if !row.active {
+                    continue;
+                }
+                let src = SourceId::from_u8(row.source);
+                let dst = DestId::from_u8(row.dest);
+                let verdict = coherence(src, dst);
+                assert_eq!(
+                    verdict,
+                    Coherence::Ok,
+                    "factory preset `{}/{}` slot {slot} routes {src:?} → {dst:?} \
+                     incoherently ({verdict:?}); repoint to a coherent pair",
+                    category,
+                    meta.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn covers_multiple_categories() {
         let bank = factory();

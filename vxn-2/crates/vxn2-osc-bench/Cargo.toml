@@ -63,3 +63,7 @@ harness = false
 [[bench]]
 name = "filter_path"
 harness = false
+
+[[bench]]
+name = "matrix_gated"
+harness = false

@@ -20,6 +20,7 @@
   --glyph-active: #a7cfe2;
   --carrier: #d9701b;
   --modulator: #87afb2;
+  --vxn-error: #e0564b;
 
   --editor-w: 1024px;
   --editor-h: 772px;
@@ -822,6 +823,31 @@ html, body {
   color: #6f7780;
 }
 .vxn-mm-row[data-active="1"] { color: var(--text); }
+/* Bipolar depth fader (E008 0096): a compact center-origin fader in the row's
+ * depth column. Center tick marks 0; the shared fill grows signed from it. */
+.vxn-mm-depth {
+  min-width: 0;
+  justify-content: center;
+  margin: 0 auto;
+}
+.vxn-mm-depth .fader-track {
+  height: 24px;
+  margin: 0 auto;
+}
+.vxn-mm-depth-center {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  top: 50%;
+  height: 1px;
+  background: var(--glyph);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+/* Incoherent routing (E008 0095): source/dest text red, depth/curve/active
+ * untouched — the routing is what's invalid, not the amount. The hover
+ * tooltip on the selects carries the reason. */
+.vxn-mm-invalid select { color: var(--vxn-error); }
 .vxn-mm-slot-num {
   text-align: right;
   font-variant-numeric: tabular-nums;

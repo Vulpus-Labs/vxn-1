@@ -38,6 +38,26 @@
 //!   Time constant matches one control block — same idiom as VXN1's
 //!   [`vxn2_dsp::smoother::Smoothed`].
 //!
+//! ## Granularity tiers & coherence (E008)
+//!
+//! Every source and dest has a [`Tier`] — `PatchGlobal` (1 value/patch),
+//! `PerStack` (1/voice), or `PerLane` (1/unison lane):
+//!
+//! | Tier | Sources | Destinations |
+//! |---|---|---|
+//! | patch-global | `lfo1`, `mod-wheel`, `aftertouch` | `lfo1-rate`, `delay-mix`, `reverb-mix` |
+//! | per-stack | `pitch-eg`, `mod-env`, `velocity`, `key` | `lfo2-rate`, `stack-detune`, `stack-spread`, `cutoff`, `resonance` |
+//! | per-lane | `lfo2`, `voice-idx`, `voice-spread`, `voice-rand` | `op{1..6}-{pitch,level,pan}`, `global-pitch`, `feedback`, `lfo2-phase` |
+//!
+//! A routing is **coherent** iff the source tier is coarser-or-equal to the
+//! dest tier — a coarser source broadcasts unambiguously to a finer dest; a
+//! finer source into a coarser dest is a lossy collapse to lane 0. Plus two
+//! special cases: an LFO into its own rate ([`Coherence::SelfRate`]) and
+//! `voice-idx` into a lane-0-collapsed dest ([`Coherence::Degenerate`],
+//! constant 0). [`coherence`] is the canonical predicate; it is exported in
+//! the matrix descriptor so the UI flags incoherent rows without re-deriving
+//! the rule.
+//!
 //! ## Vectorisation note
 //!
 //! Per-slot inner loops walk 8 lanes. Curve dispatch happens once per slot
@@ -67,6 +87,98 @@ pub const N_SLOTS: usize = 16;
 /// count are patch-state only.
 pub const N_CLAP_DEPTH_SLOTS: usize = 8;
 
+// --- Granularity tier (E008 0090) -----------------------------------------
+
+/// Granularity tier of a source or destination — how many independent values
+/// it carries per patch. Coarse → fine, and the discriminant order *is* the
+/// coarseness order (used by [`coherence`]).
+///
+/// - `PatchGlobal` — one value per patch (e.g. `lfo1`, `delay-mix`).
+/// - `PerStack` — one value per played voice/stack (e.g. `velocity`,
+///   `cutoff`). Broadcast across the stack's 8 unison lanes.
+/// - `PerLane` — one value per unison lane (e.g. `lfo2`, `op1-pitch`).
+///
+/// A routing is **coherent** iff the source tier is coarser-or-equal to the
+/// dest tier: a coarser source broadcasts unambiguously to a finer dest; a
+/// finer source into a coarser dest is a lossy collapse (which lane wins?).
+/// See [`coherence`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Tier {
+    PatchGlobal = 0,
+    PerStack = 1,
+    PerLane = 2,
+}
+
+/// Why a routing is degenerate/incoherent, or [`Coherence::Ok`] if it sounds.
+/// Single source of truth shared by the wiring (which sources to honour per
+/// dest), the table validator ([0095]), and the docs. Exported into the
+/// matrix descriptor so the UI reads the verdict rather than re-deriving the
+/// rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Coherence {
+    /// Coherent — source tier coarser-or-equal to dest tier (or an empty slot).
+    Ok = 0,
+    /// Finer source into a coarser dest: the per-lane/-stack value collapses
+    /// to a single lane (lane 0) — lossy, ambiguous.
+    TierCollapse = 1,
+    /// An LFO modulating its own rate (`lfo1→lfo1-rate`, `lfo2→lfo2-rate`):
+    /// self-referential.
+    SelfRate = 2,
+    /// `voice-idx` into a lane-0-collapsed dest: `voice_idx[0]` is always 0
+    /// ([`vxn2_dsp::stack`]), so the route is a constant zero — no effect.
+    Degenerate = 3,
+}
+
+impl Coherence {
+    /// Machine name for the descriptor export / tooltips. Index-stable.
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Coherence::Ok => "ok",
+            Coherence::TierCollapse => "tier-collapse",
+            Coherence::SelfRate => "self-rate",
+            Coherence::Degenerate => "degenerate",
+        }
+    }
+}
+
+/// Coherence verdict for a `source → dest` routing, per the E008 coherence
+/// rule. Empty slots (`None` source or dest) are always [`Coherence::Ok`].
+///
+/// Precedence: self-rate and degenerate special cases are checked **before**
+/// the generic tier-collapse so they get the more specific tooltip even when
+/// the tiers would also flag a collapse.
+pub fn coherence(src: SourceId, dst: DestId) -> Coherence {
+    // Empty slot — nothing to flag.
+    if src == SourceId::None || dst == DestId::None {
+        return Coherence::Ok;
+    }
+    // Self-rate: an LFO into its own rate. Tier-legal (both same tier) but
+    // self-referential.
+    if matches!(
+        (src, dst),
+        (SourceId::Lfo1, DestId::Lfo1Rate) | (SourceId::Lfo2, DestId::Lfo2Rate)
+    ) {
+        return Coherence::SelfRate;
+    }
+    // Degenerate: voice-idx into any lane-0-collapsed dest reads constant 0.
+    if src == SourceId::VoiceIdx
+        && matches!(
+            dst,
+            DestId::Cutoff | DestId::Resonance | DestId::DelayMix | DestId::ReverbMix
+        )
+    {
+        return Coherence::Degenerate;
+    }
+    // Generic rule: finer source into coarser dest is a lossy collapse.
+    if (src.tier() as u8) > (dst.tier() as u8) {
+        return Coherence::TierCollapse;
+    }
+    Coherence::Ok
+}
+
 // --- Source enum ----------------------------------------------------------
 
 /// Modulation source. `None` is the "empty slot" sentinel — slots whose
@@ -93,6 +205,24 @@ pub enum SourceId {
 pub const N_SOURCES: usize = 11;
 
 impl SourceId {
+    /// Granularity tier of this source (E008 0090). Exhaustive — a new source
+    /// forces a tier decision at compile time. `None` reports the coarsest
+    /// tier (it is inert; [`coherence`] short-circuits `None` before reading
+    /// tiers, so the value is never consulted for a real verdict).
+    #[inline]
+    pub const fn tier(self) -> Tier {
+        match self {
+            SourceId::None => Tier::PatchGlobal,
+            SourceId::Lfo1 | SourceId::ModWheel | SourceId::Aftertouch => Tier::PatchGlobal,
+            SourceId::PitchEg | SourceId::ModEnv | SourceId::Velocity | SourceId::Key => {
+                Tier::PerStack
+            }
+            SourceId::Lfo2 | SourceId::VoiceIdx | SourceId::VoiceSpread | SourceId::VoiceRand => {
+                Tier::PerLane
+            }
+        }
+    }
+
     /// Index into the per-lane source lookup, or `None` for the sentinel.
     #[inline]
     pub const fn idx(self) -> Option<usize> {
@@ -182,13 +312,24 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 ///   patch feedback and cooked via `set_feedback_live_lanes`, so per-lane
 ///   sources (VoiceSpread, LFO2, …) give each unison lane its own growl.
 ///
+/// Live (continued):
+/// - `Lfo2Phase` — per-lane LFO2 phase offset (E008 0091). The smoothed
+///   per-lane value is applied as a wrapping Q32 phase add to each stack's
+///   LFO2 before its next-block `eval` (one-block latency). `voice-rand →
+///   lfo2-phase` is the canonical supersaw-shimmer route.
+/// - `Lfo1Rate` (patch-global) / `Lfo2Rate` (per-stack) — log-domain rate
+///   offset (E008 0092): the accumulator is in *octaves*, applied as
+///   `rate · 2^oct`. Computed from the previous block's accumulator
+///   (one-block latency) to sidestep rate-on-self ordering, and gated so an
+///   un-targeted dest leaves the LFO tick bit-identical.
+/// - `StackDetune` (per-stack) — scales the per-lane note-on detune by
+///   `(1 + mod)`, folded into the block-rate `apply_pitch_mult` recompute
+///   (E008 0093). Fresh notes snap; dynamic motion is one-pole smoothed.
+/// - `StackSpread` (per-stack) — scales the `VoiceSpread` matrix source's
+///   width by `(1 + mod)` (one-block latency; auto-pan was dropped so this is
+///   the macro's sole effect now). E008 0093.
+///
 /// Routable in the matrix UI but NOT yet consumed in audio:
-/// - `Lfo2Phase` — would need per-lane LFO2 phase reset/offset.
-/// - `Lfo1Rate` / `Lfo2Rate` — ordering issue (modulating a source's own
-///   rate inside the same block) deferred to a one-block-latency pass.
-/// - `StackDetune` / `StackSpread` — these set per-lane cooked offsets at
-///   note-on; per-block modulation would require re-cooking the stack
-///   inside the audio loop. Deferred.
 /// - `Cutoff` / `Resonance` — the optional per-voice filter dests (E007).
 ///   Surfaced here (ticket 0083) but consumed by the filter render path in
 ///   ticket 0084: both collapse to a per-stack scalar (lane-0). `Cutoff` is in
@@ -266,14 +407,33 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Resonance",
 ];
 
-/// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets
-/// run a unitless [-1, 1]; the gain table converts to the destination's
-/// native unit so the audible range matches user expectation across
-/// kinds. Pitch dests sweep ±2 octaves at full depth; feedback covers its
-/// full 0..7 clamp range; everything else stays at 1.0.
+/// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
+/// a unitless `[-1, 1]`; each source is a normalized shape (E008 0094), and
+/// this table converts `depth × shape` to the dest's native unit so a fixed
+/// depth is musically comparable across dest kinds.
 ///
-/// Semitone dests additionally take a cubic taper on the stored depth
-/// before the gain — see [`DestId::cook_depth`].
+/// **Unit table (`depth = 1` full-scale, per dest):**
+///
+/// | Dest | Gain | Native unit @ depth 1 |
+/// |---|---|---|
+/// | `op{N}-pitch`, `global-pitch` | 24.0 | ±24 semitones (±2 oct) |
+/// | `op{N}-level` | 1.0 | full multiplicative tremolo on the EG |
+/// | `op{N}-pan` | 1.0 | hard L↔R |
+/// | `feedback` | 7.0 | the 0..7 feedback clamp range |
+/// | `cutoff` | 4.0 | ±4 octaves (log domain, `cutoff · 2^v`) |
+/// | `resonance` | 1.0 | additive `[0, 1]` offset |
+/// | `lfo1-rate`, `lfo2-rate` | 4.0 | ±4 octaves (log domain, `rate · 2^v`) |
+/// | `stack-detune` | 1.0 | scales the note-on detune by `(1 + v)` (0→2×) |
+/// | `stack-spread` | 1.0 | scales the VoiceSpread width by `(1 + v)` |
+/// | `delay-mix`, `reverb-mix` | 1.0 | additive `[0, 1]` mix offset |
+/// | `lfo2-phase` | 1.0 | ±1 full LFO2 cycle of per-lane phase offset |
+///
+/// **Cubic taper:** the 7 semitone pitch dests (`global-pitch`, `op{N}-pitch`)
+/// additionally take a `d³` taper on the stored depth before the gain (see
+/// [`DestId::cook_depth`]) to widen the musical low end. All other dests —
+/// including the log-domain rate/cutoff and the `[-1,1]`-scale stack macros —
+/// stay **linear**: their gain is already log/ratio-shaped, so a depth taper
+/// would double-bend the response (0094 decision).
 pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     let mut g = [1.0_f32; N_DESTS + 1];
     g[DestId::Op1Pitch as usize] = 24.0;
@@ -292,10 +452,62 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     // dedicated engine control, not a matrix route.) Resonance is a plain
     // `[0, 1]` additive offset (1.0).
     g[DestId::Cutoff as usize] = 4.0;
+    // LFO-rate dests modulate in the log/octave domain (E008 0092): the dest
+    // value is in *octaves*; the consumer applies `rate · 2^value`. Full depth
+    // = ±4 octaves, matching the cutoff span (a fixed depth is musically
+    // uniform across the rate range). Confirmed at ±4 oct in 0094.
+    g[DestId::Lfo1Rate as usize] = 4.0;
+    g[DestId::Lfo2Rate as usize] = 4.0;
+    // stack-detune / stack-spread (E008 0093) are multiplicative scale factors
+    // `(1 + depth·shape)`; gain 1.0 means depth 1 doubles the macro (0→2×).
+    // Left at the table default of 1.0 — listed here so the audit is explicit.
     g
 };
 
 impl DestId {
+    /// Granularity tier of this dest (E008 0090). Exhaustive — a new dest
+    /// forces a tier decision at compile time. `None` reports the finest tier
+    /// (inert; [`coherence`] short-circuits `None`).
+    ///
+    /// Per-op dests, `global-pitch`, `feedback`, `lfo2-phase` are **per-lane**
+    /// (applied per unison lane). `lfo2-rate`, `stack-detune`, `stack-spread`,
+    /// `cutoff`, `resonance` are **per-stack** (one value per voice; filter +
+    /// LFO2 rate are stack-scalar). `lfo1-rate`, `delay-mix`, `reverb-mix` are
+    /// **patch-global**.
+    #[inline]
+    pub const fn tier(self) -> Tier {
+        match self {
+            DestId::None => Tier::PerLane,
+            DestId::Lfo1Rate | DestId::DelayMix | DestId::ReverbMix => Tier::PatchGlobal,
+            DestId::Lfo2Rate
+            | DestId::StackDetune
+            | DestId::StackSpread
+            | DestId::Cutoff
+            | DestId::Resonance => Tier::PerStack,
+            DestId::Op1Pitch
+            | DestId::Op1Level
+            | DestId::Op1Pan
+            | DestId::Op2Pitch
+            | DestId::Op2Level
+            | DestId::Op2Pan
+            | DestId::Op3Pitch
+            | DestId::Op3Level
+            | DestId::Op3Pan
+            | DestId::Op4Pitch
+            | DestId::Op4Level
+            | DestId::Op4Pan
+            | DestId::Op5Pitch
+            | DestId::Op5Level
+            | DestId::Op5Pan
+            | DestId::Op6Pitch
+            | DestId::Op6Level
+            | DestId::Op6Pan
+            | DestId::GlobalPitch
+            | DestId::Feedback
+            | DestId::Lfo2Phase => Tier::PerLane,
+        }
+    }
+
     #[inline]
     pub const fn idx(self) -> Option<usize> {
         match self {
@@ -535,10 +747,19 @@ impl PatchSources {
 }
 
 /// Per-stack scalar sources. Broadcast across the stack's 8 lanes.
+///
+/// All fields are **normalized shapes** (E008 0094): every source emits a
+/// documented `[-1, 1]` (bipolar) or `[0, 1]` (unipolar) range, and the dest's
+/// [`DEST_GAIN`] converts that shape to the dest's native unit. No source
+/// carries hidden units a dest then re-scales.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StackScalarSources {
-    /// Pitch EG output in semitones (raw — depth already applied by the EG).
-    pub pitch_eg_st: f32,
+    /// Pitch EG output normalized to `[-1, 1]` — the EG *shape*, not absolute
+    /// semitones. The engine divides the raw `level_st` by the configured
+    /// `peg_depth` (its full-scale swing) so a pitch dest's gain (±24 st) sets
+    /// the actual excursion; previously this carried raw semitones and the
+    /// pitch dest re-multiplied by 24, double-scaling (E008 0094 fix).
+    pub pitch_eg: f32,
     /// Mod env output in `[0, 1]`.
     pub mod_env: f32,
     /// Velocity normalised to `[0, 1]`.
@@ -587,7 +808,7 @@ pub fn eval_sources(
         let v = &mut out[k];
         v[(SourceId::Lfo1 as usize) - 1] = patch.lfo1;
         v[(SourceId::Lfo2 as usize) - 1] = lanes.lfo2[k];
-        v[(SourceId::PitchEg as usize) - 1] = stack.pitch_eg_st;
+        v[(SourceId::PitchEg as usize) - 1] = stack.pitch_eg;
         v[(SourceId::ModEnv as usize) - 1] = stack.mod_env;
         v[(SourceId::ModWheel as usize) - 1] = patch.mod_wheel;
         v[(SourceId::Aftertouch as usize) - 1] = patch.aftertouch;
@@ -750,7 +971,7 @@ mod tests {
             aftertouch: 0.1,
         };
         let stack = StackScalarSources {
-            pitch_eg_st: 1.5,
+            pitch_eg: 0.75,
             mod_env: 0.7,
             velocity: 0.9,
             key: 0.45,
@@ -820,7 +1041,7 @@ mod tests {
         for k in 0..STACK_LANES {
             assert_eq!(sources[k][SourceId::Lfo1.idx().unwrap()], 0.5);
             assert_eq!(sources[k][SourceId::ModWheel.idx().unwrap()], 0.3);
-            assert_eq!(sources[k][SourceId::PitchEg.idx().unwrap()], 1.5);
+            assert_eq!(sources[k][SourceId::PitchEg.idx().unwrap()], 0.75);
             assert_eq!(sources[k][SourceId::Velocity.idx().unwrap()], 0.9);
         }
         // Lane-strided sources differ.
@@ -1102,6 +1323,133 @@ mod tests {
         }
         s.snap_to(&tgt);
         assert_eq!(s.current()[0][0], 0.75);
+    }
+
+    // --- Tier + coherence (E008 0090) ------------------------------------
+
+    /// Every non-None source/dest, by wire discriminant, for grid walks.
+    fn all_sources() -> Vec<SourceId> {
+        (0..=N_SOURCES as u8).map(SourceId::from_u8).collect()
+    }
+    fn all_dests() -> Vec<DestId> {
+        (0..=N_DESTS as u8).map(DestId::from_u8).collect()
+    }
+
+    #[test]
+    fn source_tiers_cover_all_and_match_table() {
+        use SourceId::*;
+        for (s, want) in [
+            (Lfo1, Tier::PatchGlobal),
+            (ModWheel, Tier::PatchGlobal),
+            (Aftertouch, Tier::PatchGlobal),
+            (PitchEg, Tier::PerStack),
+            (ModEnv, Tier::PerStack),
+            (Velocity, Tier::PerStack),
+            (Key, Tier::PerStack),
+            (Lfo2, Tier::PerLane),
+            (VoiceIdx, Tier::PerLane),
+            (VoiceSpread, Tier::PerLane),
+            (VoiceRand, Tier::PerLane),
+        ] {
+            assert_eq!(s.tier(), want, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn dest_tiers_cover_all_and_match_table() {
+        use DestId::*;
+        for (d, want) in [
+            (Lfo1Rate, Tier::PatchGlobal),
+            (DelayMix, Tier::PatchGlobal),
+            (ReverbMix, Tier::PatchGlobal),
+            (Lfo2Rate, Tier::PerStack),
+            (StackDetune, Tier::PerStack),
+            (StackSpread, Tier::PerStack),
+            (Cutoff, Tier::PerStack),
+            (Resonance, Tier::PerStack),
+            (Op1Pitch, Tier::PerLane),
+            (Op6Pan, Tier::PerLane),
+            (GlobalPitch, Tier::PerLane),
+            (Feedback, Tier::PerLane),
+            (Lfo2Phase, Tier::PerLane),
+        ] {
+            assert_eq!(d.tier(), want, "{d:?}");
+        }
+    }
+
+    #[test]
+    fn coherence_none_slots_always_ok() {
+        for d in all_dests() {
+            assert_eq!(coherence(SourceId::None, d), Coherence::Ok, "none→{d:?}");
+        }
+        for s in all_sources() {
+            assert_eq!(coherence(s, DestId::None), Coherence::Ok, "{s:?}→none");
+        }
+    }
+
+    #[test]
+    fn coherence_self_rate() {
+        assert_eq!(coherence(SourceId::Lfo1, DestId::Lfo1Rate), Coherence::SelfRate);
+        assert_eq!(coherence(SourceId::Lfo2, DestId::Lfo2Rate), Coherence::SelfRate);
+        // Cross-LFO rate is fine (lfo1 patch-global into lfo2-rate per-stack).
+        assert_eq!(coherence(SourceId::Lfo1, DestId::Lfo2Rate), Coherence::Ok);
+    }
+
+    #[test]
+    fn coherence_degenerate_voice_idx_into_lane0_dests() {
+        for d in [DestId::Cutoff, DestId::Resonance, DestId::DelayMix, DestId::ReverbMix] {
+            assert_eq!(coherence(SourceId::VoiceIdx, d), Coherence::Degenerate, "{d:?}");
+        }
+        // voice-idx into a per-lane dest is a clean per-lane write, not degenerate.
+        assert_eq!(coherence(SourceId::VoiceIdx, DestId::Op1Pan), Coherence::Ok);
+    }
+
+    #[test]
+    fn coherence_grid_matches_tier_rule_with_special_cases() {
+        for s in all_sources() {
+            for d in all_dests() {
+                let got = coherence(s, d);
+                let want = if s == SourceId::None || d == DestId::None {
+                    Coherence::Ok
+                } else if matches!(
+                    (s, d),
+                    (SourceId::Lfo1, DestId::Lfo1Rate) | (SourceId::Lfo2, DestId::Lfo2Rate)
+                ) {
+                    Coherence::SelfRate
+                } else if s == SourceId::VoiceIdx
+                    && matches!(
+                        d,
+                        DestId::Cutoff
+                            | DestId::Resonance
+                            | DestId::DelayMix
+                            | DestId::ReverbMix
+                    ) {
+                    Coherence::Degenerate
+                } else if (s.tier() as u8) > (d.tier() as u8) {
+                    Coherence::TierCollapse
+                } else {
+                    Coherence::Ok
+                };
+                assert_eq!(got, want, "{s:?}→{d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn coherence_representative_pairs() {
+        // The pairs 0095's UI test pins.
+        assert_eq!(coherence(SourceId::VoiceRand, DestId::Lfo2Rate), Coherence::TierCollapse);
+        assert_eq!(coherence(SourceId::VoiceRand, DestId::Lfo2Phase), Coherence::Ok);
+        assert_eq!(coherence(SourceId::Velocity, DestId::Cutoff), Coherence::Ok);
+        assert_eq!(coherence(SourceId::VoiceIdx, DestId::Cutoff), Coherence::Degenerate);
+    }
+
+    #[test]
+    fn coherence_name_strings_stable() {
+        assert_eq!(Coherence::Ok.name(), "ok");
+        assert_eq!(Coherence::TierCollapse.name(), "tier-collapse");
+        assert_eq!(Coherence::SelfRate.name(), "self-rate");
+        assert_eq!(Coherence::Degenerate.name(), "degenerate");
     }
 
     #[test]

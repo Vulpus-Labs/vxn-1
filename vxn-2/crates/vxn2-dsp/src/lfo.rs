@@ -124,12 +124,22 @@ fn eval_shape(shape: LfoShape, phase: u32, sh_value: f32) -> f32 {
     }
 }
 
+/// Q32 phase units per full cycle (2^32). One LFO cycle wraps the `u32` phase.
+pub const U32_PER_CYCLE: f64 = 4_294_967_296.0;
+
+/// Clamp for a matrix-modulated LFO rate (Hz). The `*→lfo{1,2}-rate` routes
+/// (E008 0092) apply `rate · 2^oct` in the log domain; this keeps the result
+/// finite and out of the denormal floor. Only applied when a rate multiplier
+/// is in play (≠ 1.0), so un-modulated rates pass through bit-identically.
+pub const LFO_RATE_HZ_MIN: f32 = 0.001;
+pub const LFO_RATE_HZ_MAX: f32 = 400.0;
+
 /// Q32 phase increment per block for `hz` at `block_secs`. Computed in `f64`
 /// to keep precision for slow rates; truncates to `u32` so multi-cycle blocks
 /// drop the integer-cycle component (control-rate one-update-per-block).
 #[inline]
 fn phase_inc_q32(hz: f32, block_secs: f32) -> u32 {
-    let inc = (hz as f64) * (block_secs as f64) * 4_294_967_296.0;
+    let inc = (hz as f64) * (block_secs as f64) * U32_PER_CYCLE;
     inc as u64 as u32
 }
 
@@ -235,6 +245,10 @@ pub struct Lfo1 {
     pub phase: u32,
     pub sh_state: u64,
     pub sh_value: f32,
+    /// Rate multiplier from the matrix `*→lfo1-rate` route (E008 0092). The
+    /// engine sets this to `2^octaves` (one-block latency); `1.0` = no
+    /// modulation, which keeps `eval` bit-identical to the un-wired path.
+    pub rate_mult: f32,
 }
 
 impl Default for Lfo1 {
@@ -243,6 +257,7 @@ impl Default for Lfo1 {
             phase: 0,
             sh_state: 0xA5A5_5A5A_DEAD_BEEF,
             sh_value: 0.0,
+            rate_mult: 1.0,
         }
     }
 }
@@ -253,6 +268,7 @@ impl Lfo1 {
             phase: 0,
             sh_state: if seed == 0 { 0xDEAD_BEEF_DEAD_BEEF } else { seed },
             sh_value: 0.0,
+            rate_mult: 1.0,
         }
     }
 
@@ -270,6 +286,14 @@ impl Lfo1 {
             synced_hz(tempo_bpm, params.sync_index)
         } else {
             params.rate_hz
+        };
+        // Matrix rate modulation (log domain). Only touch `hz` when a
+        // multiplier is active so the un-modulated path is bit-identical
+        // (incl. a deliberate `rate_hz = 0` freeze).
+        let hz = if self.rate_mult != 1.0 {
+            (hz * self.rate_mult).clamp(LFO_RATE_HZ_MIN, LFO_RATE_HZ_MAX)
+        } else {
+            hz
         };
         let inc = phase_inc_q32(hz, block_secs);
         let (new_phase, wrapped) = self.phase.overflowing_add(inc);
@@ -318,9 +342,11 @@ impl Default for Lfo2Params {
 
 /// LFO2 lane-packed across the [`STACK_LANES`] of one [`crate::stack::Stack`].
 /// All eight lanes share `Lfo2Params` + delay/fade state, but each has its
-/// own phase and S&H. Matrix `voice_rand → lfo2_phase` (ticket 0008) writes
-/// per-lane phase offsets to scatter them — that's where the supersaw
-/// shimmer comes from.
+/// own phase and S&H. Matrix `voice_rand → lfo2_phase` (E008 0091) scatters
+/// the per-lane phases via [`Lfo2Stack::add_phase_offset`] for the supersaw
+/// shimmer route. (Op-level shimmer also comes from the `stack-phase` macro ×
+/// `voice_rand` op-phase scatter in [`crate::stack`]; this route adds a
+/// per-lane *LFO2* phase scatter on top, modulatable from any coarser source.)
 #[derive(Clone, Copy, Debug)]
 pub struct Lfo2Stack {
     pub phase: [u32; STACK_LANES],
@@ -329,6 +355,11 @@ pub struct Lfo2Stack {
     /// Seconds since the most recent note-on (KeySync) — drives delay+fade.
     /// In Free mode this stays at a large value so the envelope is full.
     pub secs_since_on: f32,
+    /// Per-stack rate multiplier from the matrix `*→lfo2-rate` route (E008
+    /// 0092). The engine sets this to `2^octaves` for the stack (one-block
+    /// latency); `1.0` = no modulation, keeping `eval` bit-identical. Shared
+    /// across the stack's 8 lanes — `lfo2-rate` is a per-stack dest.
+    pub rate_mult: f32,
 }
 
 impl Default for Lfo2Stack {
@@ -345,6 +376,7 @@ impl Default for Lfo2Stack {
             sh_value: [0.0; STACK_LANES],
             // Free-mode default: envelope already past delay+fade.
             secs_since_on: f32::INFINITY,
+            rate_mult: 1.0,
         }
     }
 }
@@ -371,6 +403,20 @@ impl Lfo2Stack {
             self.phase[k] = q;
         }
         self.secs_since_on = 0.0;
+        // Drop any inherited rate modulation; the engine re-derives it from
+        // this voice's matrix accumulator at block rate (E008 0092).
+        self.rate_mult = 1.0;
+    }
+
+    /// Apply a per-lane phase offset as a wrapping Q32 add. `frac` is a
+    /// fraction of a cycle (`[-1, 1]` = ±1 full cycle); the matrix
+    /// `*→lfo2_phase` route (E008 0091) calls this to scatter lanes. The
+    /// caller passes a *delta* vs the offset it last applied, so a static
+    /// offset settles to a fixed scatter rather than accumulating each block.
+    #[inline]
+    pub fn add_phase_offset(&mut self, lane: usize, frac: f32) {
+        let q = (frac as f64 * U32_PER_CYCLE) as i64 as u32;
+        self.phase[lane] = self.phase[lane].wrapping_add(q);
     }
 
     /// Advance one control block; return per-lane bipolar outputs post-delay,
@@ -387,6 +433,13 @@ impl Lfo2Stack {
             synced_hz(tempo_bpm, params.sync_index)
         } else {
             params.rate_hz
+        };
+        // Matrix per-stack rate modulation (log domain); bit-identical when
+        // un-modulated (`rate_mult == 1.0`).
+        let hz = if self.rate_mult != 1.0 {
+            (hz * self.rate_mult).clamp(LFO_RATE_HZ_MIN, LFO_RATE_HZ_MAX)
+        } else {
+            hz
         };
         let inc = phase_inc_q32(hz, block_secs);
         // Advance secs_since_on, saturating to keep f32 finite.
@@ -638,6 +691,40 @@ mod tests {
         for k in 0..STACK_LANES {
             assert_eq!(lfo.phase[k], expected, "lane {k} not retriggered");
         }
+    }
+
+    #[test]
+    fn lfo1_rate_mult_scales_rate_and_stays_bit_identical_at_unity() {
+        let params = Lfo1Params {
+            shape: LfoShape::Sine,
+            rate_hz: 4.0,
+            sync: false,
+            sync_index: 0,
+        };
+        // rate_mult == 1.0 → bit-identical to an un-modulated LFO.
+        let mut a = Lfo1::default();
+        let mut b = Lfo1::default();
+        b.rate_mult = 1.0;
+        for _ in 0..50 {
+            assert_eq!(
+                a.eval(&params, 120.0, BLK),
+                b.eval(&params, 120.0, BLK),
+                "rate_mult 1.0 not bit-identical"
+            );
+        }
+        // rate_mult 2.0 advances phase faster (≈2× from phase 0 over one block).
+        let mut slow = Lfo1::default();
+        let mut fast = Lfo1::default();
+        fast.rate_mult = 2.0;
+        slow.eval(&params, 120.0, BLK);
+        fast.eval(&params, 120.0, BLK);
+        assert!(fast.phase > slow.phase, "rate_mult 2.0 did not speed up LFO1");
+        let ratio = fast.phase as f64 / slow.phase as f64;
+        assert!((ratio - 2.0).abs() < 0.01, "expected ≈2× phase advance, got {ratio}");
+        // Extreme multiplier clamps — finite output, no NaN/denormal blowup.
+        let mut huge = Lfo1::default();
+        huge.rate_mult = 1e30;
+        assert!(huge.eval(&params, 120.0, BLK).is_finite());
     }
 
     #[test]

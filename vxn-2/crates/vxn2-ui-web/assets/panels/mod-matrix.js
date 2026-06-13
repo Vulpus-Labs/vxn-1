@@ -88,9 +88,44 @@
     var sourcesList = window.__vxn.matrix.sources;
     var destsList = window.__vxn.matrix.dests;
     var curvesList = window.__vxn.matrix.curves;
+    // Flat coherence[srcId][dstId] verdict table exported by the engine
+    // (E008 0090). The UI reads the verdict — it never re-derives the rule,
+    // so engine and faceplate can't drift. "ok" (and any missing entry) is
+    // coherent; the others flag the row red with a reason tooltip.
+    var coherenceTable = window.__vxn.matrix.coherence || [];
+    var COHERENCE_REASON = {
+      "tier-collapse":
+        "per-lane/-stack source can't drive a coarser target — value collapses to lane 0",
+      "self-rate": "an LFO can't modulate its own rate",
+      "degenerate": "voice-idx reads 0 at the collapsed lane — no effect",
+    };
 
     // Row DOM cache keyed by slot.
     var rows = new Array(SLOT_COUNT);
+
+    // Look up the engine's coherence verdict for a source/dest pair.
+    // Empty/unknown → "ok". Empty slots (source or dest = none, id 0) are
+    // never flagged — the table reports "ok" for them, but guard anyway.
+    function verdictFor(source, dest) {
+      if (!source || !dest) return "ok";
+      var srcRow = coherenceTable[source | 0];
+      if (!srcRow) return "ok";
+      return srcRow[dest | 0] || "ok";
+    }
+
+    // Toggle the red-text flag + reason tooltip for a row's current pairing.
+    // Reads the exported verdict (never recomputes the rule). Does not block
+    // the edit — the slot still dispatches; only the visual flag changes.
+    function validateRow(slot, row) {
+      var r = rows[slot];
+      if (!r) return;
+      var reason = COHERENCE_REASON[verdictFor(row.source | 0, row.dest | 0)];
+      var invalid = !!reason;
+      r.node.classList.toggle("vxn-mm-invalid", invalid);
+      var title = invalid ? reason : "";
+      r.source.title = title;
+      r.dest.title = title;
+    }
 
     function dispatchRow(slot, partial) {
       var current = window.__vxn.matrix.rows[slot] || {
@@ -106,6 +141,9 @@
       // Local optimistic update so the UI doesn't flash before the
       // pump's next-tick MatrixSnapshot lands.
       window.__vxn.matrix.rows[slot] = next;
+      // Re-validate immediately on the edit (source/dest change, bin clear)
+      // rather than waiting for the snapshot echo.
+      validateRow(slot, next);
 
       var topologyChanged = partial.source != null
         || partial.dest != null
@@ -140,13 +178,39 @@
       var destSel = buildSelect(destsList, "dest");
       var curveSel = buildSelect(curvesList, "curve");
 
-      var depth = el("input", {
-        type: "range",
-        min: "-1",
-        max: "1",
-        step: "0.001",
-        value: "0",
-        dataset: { field: "depth" },
+      // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop
+      // readout, double-click numeric entry, shift-drag fine — built on the
+      // shared fader primitive (`createBipolar`) so it matches every other
+      // slider. Replaces the bare `<input type=range>`.
+      var depth = el("div", { class: "fader vxn-mm-depth", dataset: { field: "depth" } }, [
+        el("div", { class: "fader-track" }, [
+          el("div", { class: "vxn-mm-depth-center" }, []),
+          el("div", { class: "fader-track-fill" }, []),
+          el("div", { class: "fader-thumb" }, []),
+        ]),
+      ]);
+      var depthFader = window.__vxn.panels.fader.createBipolar(depth, {
+        value: function () {
+          var cur = window.__vxn.matrix.rows[slot];
+          return cur ? (+cur.depth || 0) : 0;
+        },
+        commit: function (d) {
+          dispatchRow(slot, { depth: clamp(d, -1.0, 1.0) });
+        },
+        format: function (d) {
+          return (d >= 0 ? "+" : "") + d.toFixed(2);
+        },
+        requestText: function () {
+          if (!window.__vxn.dispatchTextInput) return;
+          var cur = (window.__vxn.matrix.rows[slot] || {}).depth || 0;
+          var initial = (cur >= 0 ? "+" : "") + (+cur).toFixed(2);
+          window.__vxn.dispatchTextInput("Depth", initial).then(function (raw) {
+            if (raw == null) return;
+            var v = parseFloat(raw);
+            if (!isFinite(v)) return;
+            dispatchRow(slot, { depth: clamp(v, -1.0, 1.0) });
+          });
+        },
       });
 
       var active = el("input", {
@@ -211,11 +275,7 @@
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
       });
-      depth.addEventListener("input", function () {
-        var v = parseFloat(depth.value);
-        if (!isFinite(v)) v = 0.0;
-        dispatchRow(slot, { depth: clamp(v, -1.0, 1.0) });
-      });
+      // Depth edits flow through the bipolar fader's `commit` callback above.
       bin.addEventListener("click", function () {
         // Clear in place: slot resets to defaults, rows below stay put.
         // Avoids silently re-binding host automation lanes that point at
@@ -230,6 +290,7 @@
         source: sourceSel,
         dest: destSel,
         depth: depth,
+        depthFader: depthFader,
         curve: curveSel,
         active: active,
       };
@@ -254,13 +315,16 @@
       if (document.activeElement !== r.curve) {
         r.curve.value = String((row.curve | 0));
       }
-      if (document.activeElement !== r.depth) {
-        r.depth.value = String(clamp(+row.depth || 0, -1, 1));
-      }
+      // The bipolar fader's `set` no-ops while its own drag-gate is active,
+      // so a snapshot echo can't stomp an in-progress depth drag.
+      r.depthFader.set(clamp(+row.depth || 0, -1, 1));
       if (document.activeElement !== r.active) {
         r.active.checked = !!row.active;
       }
       r.node.dataset.active = row.active ? "1" : "0";
+      // Flag incoherent routings on every repaint (snapshot echo, preset
+      // load, initial renderAll) so a loaded patch shows red immediately.
+      validateRow(slot, row);
     }
 
     function renderAll() {

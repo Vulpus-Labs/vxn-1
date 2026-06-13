@@ -44,7 +44,7 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     CurveKind, DestId, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
-    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, SourceId,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, SourceId,
     StackScalarSources, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -58,6 +58,25 @@ const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
 const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
 const CUTOFF_IDX: usize = DestId::Cutoff.idx().unwrap();
 const RESONANCE_IDX: usize = DestId::Resonance.idx().unwrap();
+const LFO1_RATE_IDX: usize = DestId::Lfo1Rate.idx().unwrap();
+const LFO2_RATE_IDX: usize = DestId::Lfo2Rate.idx().unwrap();
+const STACK_DETUNE_IDX: usize = DestId::StackDetune.idx().unwrap();
+const STACK_SPREAD_IDX: usize = DestId::StackSpread.idx().unwrap();
+/// Per-block one-pole factor smoothing *dynamic* stack-detune/spread changes
+/// (E008 0093). Fresh notes snap (immediate, zipper-free for static sources
+/// like key/velocity); only block-to-block motion from a moving source
+/// (mod-env, LFO) is ramped, keeping the re-cooked detune zipper-free at
+/// musical rates. ~0.5 ⇒ converges within a few blocks (~ms).
+const STACK_MACRO_SMOOTH: f32 = 0.5;
+/// Row of `Lfo2Phase` inside the per-stack `PitchSmoother` (the smoother's
+/// row order is `PITCH_DESTS`: `[GlobalPitch, Lfo2Phase, Op1..Op6]`). The
+/// matrix `*→lfo2_phase` route (E008 0091) reads this smoother row and applies
+/// it as a per-lane LFO2 phase offset.
+const LFO2_PHASE_SMOOTHER_ROW: usize = 1;
+const _: () = assert!(matches!(
+    PITCH_DESTS[LFO2_PHASE_SMOOTHER_ROW],
+    DestId::Lfo2Phase
+));
 /// Lowest cutoff the ladder is driven to — C0 (MIDI 12), ≈16.35 Hz (VXN-1
 /// parity). Lets a fully key-tracked, C0-based cutoff reach bass pitches.
 const CUTOFF_MIN_HZ: f32 = 16.3516;
@@ -171,6 +190,27 @@ pub struct Engine {
     /// smoother, level + pan ramps) snaps instead of gliding in from the
     /// previous voice's modulation.
     mod_seq: [u64; N_STACKS],
+    /// Per-stack × per-lane LFO2 phase offset (fraction of a cycle) last
+    /// applied by the matrix `*→lfo2_phase` route (E008 0091). Each block the
+    /// engine adds the *delta* vs this value to `lfo2.phase[k]` so a static
+    /// offset settles to a fixed scatter (no runaway); on a fresh note it
+    /// resets to 0 (note_on already zeroed the per-lane phases) so the offset
+    /// snaps in with the note rather than gliding from the previous voice.
+    prev_lfo2_phase_off: [[f32; STACK_LANES]; N_STACKS],
+    /// LFO1 rate offset (octaves) aggregated from the matrix `*→lfo1-rate`
+    /// route at the end of the previous block, applied to this block's LFO1
+    /// `eval` as `2^oct` (E008 0092, one-block latency). `lfo1-rate` is a
+    /// patch-global dest; the value is averaged at lane 0 across active stacks
+    /// exactly like the FX-mix dests. 0 when un-targeted → multiplier 1.0.
+    lfo1_rate_oct: f32,
+    /// Per-stack smoothed `stack-detune` / `stack-spread` modulation amounts
+    /// (E008 0093). Detune is applied this block (folded into
+    /// `apply_pitch_mult`); spread feeds *next* block's `VoiceSpread` source
+    /// scaling (one-block latency, since the source is evaluated before the
+    /// matrix). Both snap on a fresh note and one-pole toward the target
+    /// otherwise; 0 when un-targeted → bit-identical off-path.
+    stack_detune_mod: [f32; N_STACKS],
+    stack_spread_mod: [f32; N_STACKS],
     /// Per-stack per-sample increments ramping `stack.op_level_mod` and the
     /// folded pan gains `stack.pan_l` / `pan_r` linearly to each block's
     /// matrix targets (ticket 0074 — kills block-edge zipper on level/pan
@@ -245,6 +285,10 @@ impl Engine {
             ); N_STACKS],
             pitch_targets: [[[0.0; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
             mod_seq: [u64::MAX; N_STACKS],
+            prev_lfo2_phase_off: [[0.0; STACK_LANES]; N_STACKS],
+            lfo1_rate_oct: 0.0,
+            stack_detune_mod: [0.0; N_STACKS],
+            stack_spread_mod: [0.0; N_STACKS],
             level_mod_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_l_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_r_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
@@ -313,6 +357,10 @@ impl Engine {
         self.reverb.reset();
         self.master = MasterState::default();
         self.patch_mod.on_transport_restart();
+        // Drop any matrix LFO-rate modulation (E008 0092); a fresh patch
+        // re-derives it from the matrix accumulator.
+        self.patch_mod.lfo1.rate_mult = 1.0;
+        self.lfo1_rate_oct = 0.0;
         // Zero the pitch smoothers — a voice played after reset must not
         // glide in from pre-reset modulation state.
         let zero = [[0.0; STACK_LANES]; N_PITCH_DESTS];
@@ -320,6 +368,9 @@ impl Engine {
             self.pitch_smoothers[i].snap_to(&zero);
             self.pitch_targets[i] = zero;
             self.mod_seq[i] = u64::MAX;
+            self.prev_lfo2_phase_off[i] = [0.0; STACK_LANES];
+            self.stack_detune_mod[i] = 0.0;
+            self.stack_spread_mod[i] = 0.0;
             self.ramp_live[i] = false;
             self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
             self.filter_l[i].reset();
@@ -427,6 +478,17 @@ impl Engine {
         self.patch_mod.on_transport_restart();
     }
 
+    /// True if any active matrix slot drives `dest` (source set + nonzero
+    /// depth). Block-rate gate for the deferred rate/re-cook dests (E008) so an
+    /// un-targeted dest pays no extra math and the LFO tick stays bit-identical.
+    #[inline]
+    fn dest_targeted(&self, dest: DestId) -> bool {
+        self.matrix
+            .slots
+            .iter()
+            .any(|s| s.dest == dest && s.source != SourceId::None && s.depth != 0.0)
+    }
+
     /// Render one control block. `out_l.len() == out_r.len()` is the block
     /// length; the engine advances its own block-rate state once per call.
     /// Block-rate dt is derived from `n / sample_rate` so the CLAP shell can
@@ -446,6 +508,25 @@ impl Engine {
 
         // Per-block control-rate work.
         self.alloc.block_tick(dt);
+
+        // LFO-rate matrix routes (E008 0092), gated by a block-rate scan so
+        // the un-targeted path is free + bit-identical. LFO1 rate is
+        // patch-global: apply last block's aggregated octave offset as `2^oct`
+        // *before* `eval_block` (one-block latency sidesteps rate-on-self).
+        let lfo1_rate_targeted = self.dest_targeted(DestId::Lfo1Rate);
+        let lfo2_rate_targeted = self.dest_targeted(DestId::Lfo2Rate);
+        self.patch_mod.lfo1.rate_mult = if lfo1_rate_targeted {
+            self.lfo1_rate_oct.exp2()
+        } else {
+            1.0
+        };
+
+        // Stack-macro routes (E008 0093), gated so the un-targeted path skips
+        // the re-cook and stays bit-identical. Detune is applied this block;
+        // spread feeds next block's VoiceSpread source (one-block latency).
+        let stack_detune_targeted = self.dest_targeted(DestId::StackDetune);
+        let stack_spread_targeted = self.dest_targeted(DestId::StackSpread);
+
         let mb = self
             .patch_mod
             .eval_block(&self.params.mod_params, self.tempo_bpm, dt);
@@ -463,9 +544,15 @@ impl Engine {
         // sources include per-stack scalars (velocity, mod env, …). The
         // aggregation policy is: average across active stacks at lane 0.
         //
-        // Not yet wired: Lfo2Phase (would need per-lane LFO2 phase offset),
-        // Lfo1Rate / Lfo2Rate (rate-on-rate ordering, defer), StackDetune /
-        // StackSpread (re-cook required, defer).
+        // Lfo2Phase is wired (E008 0091): the smoothed per-lane value is
+        // applied as a wrapping Q32 phase offset to each stack's LFO2 after
+        // `apply_pitch_mult` below (one-block latency). Lfo1Rate / Lfo2Rate
+        // are wired (E008 0092): octave offsets applied as `rate · 2^oct` with
+        // one-block latency — LFO1 (patch-global) aggregated below like the FX
+        // mixes, LFO2 (per-stack) stashed on the stack in the loop.
+        // StackDetune / StackSpread are wired (E008 0093): gated per-block
+        // re-cook of the per-lane detune (folded into apply_pitch_mult) and the
+        // VoiceSpread source width (one-block latency).
         let patch_sources = PatchSources::from_modblock(&mb, self.mod_wheel, self.aftertouch);
         let voice = &self.params.patch.voice;
         // Dest indices are module-level consts (`GLOBAL_PITCH_IDX` etc.);
@@ -475,6 +562,7 @@ impl Engine {
 
         let mut fx_delay_mix_sum = 0.0_f32;
         let mut fx_reverb_mix_sum = 0.0_f32;
+        let mut lfo1_rate_oct_sum = 0.0_f32;
         let mut fx_active = 0u32;
 
         for i in 0..self.alloc.stacks.len() {
@@ -482,6 +570,18 @@ impl Engine {
                 self.ramp_live[i] = false;
                 continue;
             }
+            // Fresh-note detection up front (E008 0093 needs it before the
+            // VoiceSpread source is built so the spread-mod doesn't glide in
+            // from the previous voice on a reused stack). A bumped allocation
+            // generation means a new note reused this slot.
+            let seq = self.alloc.slot_seq(i);
+            let fresh = seq != self.mod_seq[i];
+            if fresh {
+                self.mod_seq[i] = seq;
+                self.stack_detune_mod[i] = 0.0;
+                self.stack_spread_mod[i] = 0.0;
+            }
+
             // LFO2 is per-voice (per-stack, lane-packed). Tick it once per
             // block here — note_on initialises phase/env but nothing else
             // advanced it.
@@ -491,8 +591,21 @@ impl Engine {
                     .eval(&voice.lfo2, self.tempo_bpm, dt);
 
             let stack = &self.alloc.stacks[i];
+            // Pitch EG → normalized [-1, 1] shape (E008 0094): divide the raw
+            // semitone output by its full-scale swing (`peg_depth`) so the
+            // pitch dest's ±24 st gain sets the excursion — no hidden 24×
+            // re-scale of absolute semitones. peg_depth ≈ 0 ⇒ EG output is 0
+            // anyway, so the source reads 0.
+            let pitch_eg = {
+                let depth = voice.peg_depth;
+                if depth.abs() > 1e-6 {
+                    stack.pitch_eg.level_st / depth
+                } else {
+                    0.0
+                }
+            };
             let stack_scalars = StackScalarSources {
-                pitch_eg_st: stack.pitch_eg.level_st,
+                pitch_eg,
                 mod_env: stack.mod_env.level,
                 velocity: (stack.velocity as f32) * (1.0 / 127.0),
                 key: (stack.note as f32) * (1.0 / 127.0),
@@ -501,11 +614,14 @@ impl Engine {
             // We scale by `cached_spread` (the stack-spread macro captured at
             // note-on) before exposing it to the matrix so the spread fader
             // gates how widely matrix slots see the lanes. spread = 0 → all
-            // lanes read 0 from the VoiceSpread source.
+            // lanes read 0 from the VoiceSpread source. The matrix `stack-spread`
+            // route (E008 0093) further scales this by `(1 + spread_mod)` using
+            // last block's smoothed amount (one-block latency).
+            let spread_gain = stack.cached_spread * (1.0 + self.stack_spread_mod[i]);
             let scaled_voice_spread = {
                 let mut a = [0.0_f32; STACK_LANES];
                 for k in 0..STACK_LANES {
-                    a[k] = stack.cached_spread * stack.voice_spread[k];
+                    a[k] = spread_gain * stack.voice_spread[k];
                 }
                 a
             };
@@ -556,10 +672,7 @@ impl Engine {
             // level + pan ramps) so the new voice doesn't glide in from the
             // previous voice's modulation.
             self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
-            let seq = self.alloc.slot_seq(i);
-            let fresh = seq != self.mod_seq[i];
             if fresh {
-                self.mod_seq[i] = seq;
                 self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
                 // A re-used slot carries a fresh note — clear its filter state
                 // (kernels + interpolators) so the new voice starts clean
@@ -676,11 +789,87 @@ impl Engine {
             if fb_any {
                 stack.set_feedback_live_lanes(&fb_lanes);
             }
+            // Stack-detune (E008 0093): re-derive the per-lane detune offset
+            // from this block's lane-0 accumulator and fold it into the pitch
+            // sum below. Snap on a fresh note (static sources like key/velocity
+            // land immediately, zipper-free); one-pole the block-to-block
+            // motion of a dynamic source otherwise. Gated: when un-targeted,
+            // zero the offset once so the pitch path stays bit-identical.
+            if stack_detune_targeted {
+                let target = self.dest_vals[i][0][STACK_DETUNE_IDX];
+                self.stack_detune_mod[i] = if fresh {
+                    target
+                } else {
+                    self.stack_detune_mod[i]
+                        + STACK_MACRO_SMOOTH * (target - self.stack_detune_mod[i])
+                };
+                stack.set_detune_mod(self.stack_detune_mod[i]);
+            } else if self.stack_detune_mod[i] != 0.0 {
+                self.stack_detune_mod[i] = 0.0;
+                stack.set_detune_mod(0.0);
+            }
+
             // Refresh pitch from the new offsets so the per-sample loop
             // reads phase_inc that includes this block's matrix output.
             // Cost: per active stack 6×8 powf — affordable at ≤16 stacks.
             // (Pan gains are handled by the ramp above — ticket 0074.)
             stack.apply_pitch_mult();
+
+            // LFO2 phase offset (E008 0091, `*→lfo2_phase`). The smoothed
+            // per-lane Lfo2Phase value rides the same PitchSmoother as the
+            // pitch dests (it is `is_pitch_shaped`); read its row and apply
+            // the *delta* vs last block as a wrapping Q32 add to each lane's
+            // LFO2 phase. Delta-not-absolute so a static offset settles to a
+            // fixed scatter instead of running away. This lands *after* this
+            // block's `lfo2.eval` (top of loop), so it takes effect on the
+            // next block — a one-block latency, consistent with the other
+            // deferred dests and inaudible at musical rates (LFO2's note-on
+            // delay/fade covers the onset). The guard keeps the off-path
+            // bit-identical: with no `lfo2-phase` slot the smoother row stays
+            // 0, every delta is 0, and `lfo2.phase` is never touched.
+            let lfo2_off_tgt = self.pitch_smoothers[i].current()[LFO2_PHASE_SMOOTHER_ROW];
+            let prev = &mut self.prev_lfo2_phase_off[i];
+            if fresh {
+                // note_on reset every lane's phase to the shape zero-crossing
+                // (no offset baked in); drop tracking to 0 so the full target
+                // offset snaps onto the fresh phase rather than gliding from
+                // the previous voice on the reused stack.
+                *prev = [0.0; STACK_LANES];
+            }
+            let lfo2 = &mut self.alloc.stacks[i].lfo2;
+            for k in 0..STACK_LANES {
+                let target = lfo2_off_tgt[k];
+                let delta = target - prev[k];
+                if delta != 0.0 {
+                    lfo2.add_phase_offset(k, delta);
+                }
+                prev[k] = target;
+            }
+            // LFO2 per-stack rate (E008 0092). `lfo2-rate` is a per-stack dest;
+            // read this block's lane-0 accumulator (in octaves) and stash the
+            // multiplier for *next* block's `eval` (one-block latency). Gated:
+            // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
+            lfo2.rate_mult = if lfo2_rate_targeted {
+                self.dest_vals[i][0][LFO2_RATE_IDX].exp2()
+            } else {
+                1.0
+            };
+
+            // Stack-spread (E008 0093): update the per-stack smoothed amount
+            // for *next* block's VoiceSpread source scaling (one-block latency
+            // — the source is built before the matrix eval). Snap on fresh,
+            // one-pole otherwise; zero when un-targeted.
+            if stack_spread_targeted {
+                let target = self.dest_vals[i][0][STACK_SPREAD_IDX];
+                self.stack_spread_mod[i] = if fresh {
+                    target
+                } else {
+                    self.stack_spread_mod[i]
+                        + STACK_MACRO_SMOOTH * (target - self.stack_spread_mod[i])
+                };
+            } else {
+                self.stack_spread_mod[i] = 0.0;
+            }
 
             // FX dests aggregate at lane 0 across active stacks. Lane 0
             // sees patch-source contributions exactly once; per-stack
@@ -688,8 +877,20 @@ impl Engine {
             // active stacks below.
             fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
             fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
+            // LFO1 rate is patch-global — aggregate at lane 0 like the FX mixes
+            // and cache for next block (E008 0092, one-block latency).
+            lfo1_rate_oct_sum += self.dest_vals[i][0][LFO1_RATE_IDX];
             fx_active += 1;
         }
+
+        // Cache the LFO1-rate octave offset for next block. Reset to 0 when no
+        // slot targets it or no stack is active, so a released note + held
+        // mod-wheel doesn't leave a stale rate.
+        self.lfo1_rate_oct = if lfo1_rate_targeted && fx_active > 0 {
+            lfo1_rate_oct_sum / fx_active as f32
+        } else {
+            0.0
+        };
 
         self.any_ramp_live = self.ramp_live.iter().any(|&b| b);
 
@@ -996,8 +1197,9 @@ impl Engine {
 
 /// Copy a smoother's current pitch state into the stack's per-lane pitch-mod
 /// fields. [`crate::matrix::PITCH_DESTS`] order: `[GlobalPitch, Lfo2Phase,
-/// Op1Pitch .. Op6Pitch]` — `Lfo2Phase` is a deferred v1 destination, so it
-/// is smoothed but not projected anywhere yet.
+/// Op1Pitch .. Op6Pitch]` — `Lfo2Phase` (row 1) is *not* projected here: it
+/// is consumed directly in `process_block` as a per-lane LFO2 phase offset
+/// (E008 0091), so this fn skips row 1 and projects only the pitch dests.
 fn project_pitch_state(
     stack: &mut vxn2_dsp::stack::Stack,
     st: &[[f32; STACK_LANES]; N_PITCH_DESTS],
@@ -1574,6 +1776,588 @@ mod tests {
             }
         }
         assert!(diverged, "GlobalPitch matrix slot did not shift phase_inc");
+    }
+
+    // --- Lfo2Phase dest (E008 0091) --------------------------------------
+
+    fn active_stack(e: &Engine) -> usize {
+        e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap()
+    }
+
+    /// `voice-rand → lfo2-phase` (depth > 0) scatters the 8 lanes' LFO2
+    /// phases — the canonical supersaw-shimmer route. `voice_rand[k]` is
+    /// seeded distinct per lane at note-on, so the per-lane offsets decorrelate.
+    #[test]
+    fn matrix_voice_rand_to_lfo2_phase_decorrelates_lanes() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::VoiceRand,
+            dest: DestId::Lfo2Phase,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        // One-block latency: offset applied end of block 1, visible from 2.
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        let phases = e.alloc.stacks[a].lfo2.phase;
+        let mut distinct = std::collections::HashSet::new();
+        for p in phases {
+            distinct.insert(p);
+        }
+        assert!(
+            distinct.len() >= STACK_LANES - 1,
+            "lfo2 phases not scattered: {phases:?}"
+        );
+    }
+
+    /// Off-path bit-identity: with no `lfo2-phase` slot, note-on locks all
+    /// lanes to the shape zero-crossing and the shared `inc` advances them
+    /// in lock-step — the offset code never touches `lfo2.phase`.
+    #[test]
+    fn matrix_no_lfo2_phase_slot_keeps_lanes_phase_locked() {
+        let mut e = Engine::new(SR, BLK);
+        // The default patch ships a `voice-rand → lfo2-phase` slot (now live);
+        // clear the table so this asserts the genuine off-path.
+        e.matrix = crate::matrix::MatrixTable::default();
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        let phases = e.alloc.stacks[a].lfo2.phase;
+        for k in 1..STACK_LANES {
+            assert_eq!(phases[k], phases[0], "lane {k} drifted without a slot");
+        }
+    }
+
+    /// A static `lfo2-phase` mod holds a fixed per-lane scatter across blocks
+    /// — the delta-not-absolute application means the offset settles, it
+    /// doesn't accumulate. The inter-lane phase differences (all lanes share
+    /// `inc`) must be identical early and late.
+    #[test]
+    fn matrix_lfo2_phase_static_offset_does_not_run_away() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::VoiceRand,
+            dest: DestId::Lfo2Phase,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..5 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        let early: [u32; STACK_LANES] = std::array::from_fn(|k| {
+            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+        });
+        for _ in 0..40 {
+            e.process_block(&mut l, &mut r);
+        }
+        let late: [u32; STACK_LANES] = std::array::from_fn(|k| {
+            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+        });
+        assert_eq!(early, late, "static lfo2-phase offset ran away over blocks");
+    }
+
+    /// A coarser (patch-global) source into `lfo2-phase` is coherent: it
+    /// broadcasts the *same* offset to every lane (no decorrelation), shifting
+    /// the whole stack's LFO2 phase off the no-slot baseline. mod-wheel = 1.0
+    /// × depth 0.25 = a quarter-cycle (0x4000_0000) Q32 shift, applied once.
+    #[test]
+    fn matrix_mod_wheel_to_lfo2_phase_broadcasts_equal_offset() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut modulated = Engine::new(SR, BLK);
+        // Clear the default `voice-rand → lfo2-phase` slot so only the
+        // patch-global broadcast route is in play.
+        modulated.matrix = MatrixTable::default();
+        modulated.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Lfo2Phase,
+            depth: 0.25,
+            curve: CurveKind::Lin,
+        };
+        modulated.set_mod_wheel(1.0);
+        modulated.note_on(60, 100);
+
+        let mut baseline = Engine::new(SR, BLK);
+        baseline.matrix = MatrixTable::default();
+        baseline.note_on(60, 100);
+
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..4 {
+            modulated.process_block(&mut l, &mut r);
+            baseline.process_block(&mut l, &mut r);
+        }
+        let am = active_stack(&modulated);
+        let ab = active_stack(&baseline);
+        let mp = modulated.alloc.stacks[am].lfo2.phase;
+        let bp = baseline.alloc.stacks[ab].lfo2.phase;
+        // Broadcast: every lane carries the same offset.
+        for k in 1..STACK_LANES {
+            assert_eq!(mp[k], mp[0], "lane {k} decorrelated under a patch-global source");
+        }
+        // …and that offset is a quarter cycle off the baseline.
+        assert_eq!(mp[0].wrapping_sub(bp[0]), 0x4000_0000, "expected +¼ cycle shift");
+    }
+
+    /// Fresh note on a reused stack snaps the offset tracking to 0 (note-on
+    /// re-locks the phases) so it doesn't glide in from the previous voice;
+    /// after retrigger the scatter is stable, finite, and re-derived.
+    #[test]
+    fn matrix_lfo2_phase_fresh_note_snaps_offset() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::VoiceRand,
+            dest: DestId::Lfo2Phase,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.note_on(60, 100);
+        for _ in 0..6 {
+            e.process_block(&mut l, &mut r);
+        }
+        // Retrigger the same note → reused stack slot hits the `fresh` branch.
+        e.note_off(60);
+        e.process_block(&mut l, &mut r);
+        e.note_on(60, 100);
+        for _ in 0..6 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        // Static offset stable after retrigger (no accumulation across notes).
+        let d1: [u32; STACK_LANES] = std::array::from_fn(|k| {
+            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+        });
+        for _ in 0..20 {
+            e.process_block(&mut l, &mut r);
+        }
+        let d2: [u32; STACK_LANES] = std::array::from_fn(|k| {
+            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+        });
+        assert_eq!(d1, d2, "offset unstable after fresh retrigger");
+        // Phases remain finite (no NaN propagation) — trivially true for u32,
+        // but assert the scatter survived the retrigger.
+        let mut distinct = std::collections::HashSet::new();
+        for p in e.alloc.stacks[a].lfo2.phase {
+            distinct.insert(p);
+        }
+        assert!(distinct.len() >= STACK_LANES - 1, "scatter lost after retrigger");
+    }
+
+    // --- Lfo1Rate / Lfo2Rate dests (E008 0092) ---------------------------
+
+    /// `mod-wheel → lfo1-rate` sweeps LFO1 speed in the log domain: depth 1 ×
+    /// mod-wheel 1.0 × gain 4 = +4 octaves → `rate_mult ≈ 16`. Patch-global,
+    /// one-block latency, and only live while a voice plays (the accumulator
+    /// is aggregated across active stacks like the FX mixes).
+    #[test]
+    fn matrix_mod_wheel_to_lfo1_rate_sweeps_log_domain() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Lfo1Rate,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.set_mod_wheel(1.0);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        // Block 1 aggregates the offset; block 2 applies it (one-block latency).
+        for _ in 0..3 {
+            e.process_block(&mut l, &mut r);
+        }
+        let m = e.patch_mod.lfo1.rate_mult;
+        assert!(
+            (m - 16.0).abs() < 0.5,
+            "lfo1 rate_mult {m} not ≈ 16 (+4 oct)"
+        );
+    }
+
+    /// `velocity → lfo2-rate` sweeps each voice's LFO2 speed per-stack: two
+    /// voices at different velocities get different `rate_mult` (per-stack
+    /// independence).
+    #[test]
+    fn matrix_velocity_to_lfo2_rate_is_per_stack() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Velocity,
+            dest: DestId::Lfo2Rate,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 30);
+        e.note_on(67, 120);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..3 {
+            e.process_block(&mut l, &mut r);
+        }
+        let mults: Vec<f32> = e
+            .alloc
+            .stacks
+            .iter()
+            .filter(|s| !s.is_idle())
+            .map(|s| s.lfo2.rate_mult)
+            .collect();
+        assert!(mults.len() >= 2, "expected two active voices, got {}", mults.len());
+        // The two velocities map to distinct octave offsets → distinct mults.
+        let mut distinct = std::collections::HashSet::new();
+        for m in &mults {
+            distinct.insert(m.to_bits());
+        }
+        assert!(distinct.len() >= 2, "per-stack lfo2 rate not independent: {mults:?}");
+        // Both swept up from unity (positive velocity → positive octaves).
+        for m in &mults {
+            assert!(*m > 1.0, "rate_mult {m} not swept up");
+        }
+    }
+
+    /// Gated + bit-identical: with no rate slot, both LFO rate multipliers
+    /// stay exactly 1.0 (the eval path takes its un-modulated branch).
+    #[test]
+    fn matrix_no_lfo_rate_slot_keeps_rate_mult_unity() {
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = crate::matrix::MatrixTable::default();
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        assert_eq!(e.patch_mod.lfo1.rate_mult, 1.0);
+        let a = active_stack(&e);
+        assert_eq!(e.alloc.stacks[a].lfo2.rate_mult, 1.0);
+    }
+
+    /// Self-rate feedback (`lfo1 → lfo1-rate`, flagged incoherent by 0090) is
+    /// well-defined under the one-block latency — it must stay finite and
+    /// bounded by the Hz clamp, never run away or NaN.
+    #[test]
+    fn matrix_lfo1_self_rate_feedback_is_bounded() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::Lfo1Rate,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..200 {
+            e.process_block(&mut l, &mut r);
+            let m = e.patch_mod.lfo1.rate_mult;
+            assert!(m.is_finite() && m > 0.0, "lfo1 rate_mult diverged: {m}");
+        }
+    }
+
+    // --- Unit sanification (E008 0094) -----------------------------------
+
+    /// `pitch-eg → global-pitch` no longer double-scales: a full-scale EG at
+    /// unity depth reaches ±24 st (the dest's gain), NOT `peg_depth × 24`. With
+    /// `peg_depth = 2`, the old raw-semitone path gave 48 st; the normalized
+    /// source gives 24.
+    #[test]
+    fn matrix_pitch_eg_into_pitch_no_double_scale() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let gp_idx = DestId::GlobalPitch.idx().unwrap();
+        let run = |peg_l: i8| -> f32 {
+            let mut e = Engine::new(SR, BLK);
+            e.matrix = crate::matrix::MatrixTable::default();
+            e.matrix.slots[0] = MatrixSlot {
+                source: SourceId::PitchEg,
+                dest: DestId::GlobalPitch,
+                depth: 1.0,
+                curve: CurveKind::Lin,
+            };
+            // Full-scale EG, fast rates, and a 2-semitone configured swing.
+            e.params.patch.voice.peg_depth = 2.0;
+            e.params.patch.voice.pitch_eg.l = [peg_l, peg_l, peg_l, peg_l];
+            e.params.patch.voice.pitch_eg.r = [99, 99, 99, 99];
+            e.note_on(60, 100);
+            let mut l = [0.0_f32; BLK];
+            let mut r = [0.0_f32; BLK];
+            for _ in 0..40 {
+                e.process_block(&mut l, &mut r);
+            }
+            let a = active_stack(&e);
+            e.dest_vals[a][0][gp_idx]
+        };
+        // Full positive EG (shape +1) → +24 st (±2 oct), not +48.
+        let pos = run(99);
+        assert!(
+            (pos - 24.0).abs() < 1.0,
+            "pitch-eg→global-pitch = {pos} st, expected ≈24 (not 48 = double-scale)"
+        );
+        // Full negative EG (shape −1) → −24 st — sign preserved, normalized.
+        let neg = run(-99);
+        assert!((neg + 24.0).abs() < 1.0, "negative EG = {neg} st, expected ≈ −24");
+    }
+
+    /// The normalized pitch-EG source stays within `[-1, 1]` even at a large
+    /// configured `peg_depth` — the shape is unit-bounded; the dest gain owns
+    /// the excursion.
+    #[test]
+    fn pitch_eg_source_is_normalized_shape() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        // Route into a gain-1 dest (op1-pan) so the dest accumulator reads the
+        // raw source shape, undistorted by a gain.
+        let pan_idx = DestId::Op1Pan.idx().unwrap();
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = crate::matrix::MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::PitchEg,
+            dest: DestId::Op1Pan,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.params.patch.voice.peg_depth = 7.0; // large swing
+        e.params.patch.voice.pitch_eg.l = [99, 99, 99, 99];
+        e.params.patch.voice.pitch_eg.r = [99, 99, 99, 99];
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        let mut peak = 0.0_f32;
+        for _ in 0..40 {
+            e.process_block(&mut l, &mut r);
+            let a = active_stack(&e);
+            peak = peak.max(e.dest_vals[a][0][pan_idx].abs());
+        }
+        assert!(peak <= 1.0 + 1e-4, "pitch-eg source not normalized: peak {peak}");
+        assert!(peak > 0.9, "pitch-eg source did not reach full shape: peak {peak}");
+    }
+
+    // --- StackDetune / StackSpread dests (E008 0093) ---------------------
+
+    /// Spin up a stacked voice (density 4, real detune + spread) so the
+    /// `stack-detune`/`stack-spread` macros have something to scale.
+    fn stacked_engine() -> Engine {
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.stack.density = 4;
+        e.params.patch.stack.detune_cents_max = 30.0;
+        e.params.patch.stack.spread = 0.5;
+        e.matrix = crate::matrix::MatrixTable::default();
+        e
+    }
+
+    fn phase_incs(e: &Engine, slot: usize) -> [[u32; STACK_LANES]; vxn2_dsp::algo::N_OPS] {
+        std::array::from_fn(|op| std::array::from_fn(|k| e.alloc.stacks[slot].ops[op].phase_inc[k]))
+    }
+
+    /// `key → stack-detune` re-cooks the per-lane detune → `phase_inc` shifts
+    /// off the un-routed baseline (keytrack detune). Static source ⇒ snaps on
+    /// the fresh note.
+    #[test]
+    fn matrix_key_to_stack_detune_shifts_phase_inc() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut modulated = stacked_engine();
+        modulated.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Key,
+            dest: DestId::StackDetune,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        modulated.note_on(72, 100);
+
+        let mut baseline = stacked_engine();
+        baseline.note_on(72, 100);
+
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..3 {
+            modulated.process_block(&mut l, &mut r);
+            baseline.process_block(&mut l, &mut r);
+        }
+        let am = active_stack(&modulated);
+        let ab = active_stack(&baseline);
+        assert_ne!(
+            phase_incs(&modulated, am),
+            phase_incs(&baseline, ab),
+            "stack-detune did not re-cook phase_inc"
+        );
+    }
+
+    /// `velocity → stack-spread` widens the `VoiceSpread` source: a
+    /// `voice-spread → op1-pan` slot reading it pans wider than with the
+    /// spread route absent (the AC's "source tracks the modulated spread").
+    #[test]
+    fn matrix_velocity_to_stack_spread_widens_voice_spread_source() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let pan_span = |e: &Engine| -> f32 {
+            let a = active_stack(e);
+            let pans = e.alloc.stacks[a].pan_l[0];
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for k in 0..4 {
+                lo = lo.min(pans[k]);
+                hi = hi.max(pans[k]);
+            }
+            hi - lo
+        };
+
+        let mut modulated = stacked_engine();
+        modulated.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Velocity,
+            dest: DestId::StackSpread,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        modulated.matrix.slots[1] = MatrixSlot {
+            source: SourceId::VoiceSpread,
+            dest: DestId::Op1Pan,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        modulated.note_on(60, 120);
+
+        let mut baseline = stacked_engine();
+        baseline.matrix.slots[1] = MatrixSlot {
+            source: SourceId::VoiceSpread,
+            dest: DestId::Op1Pan,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        baseline.note_on(60, 120);
+
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..6 {
+            modulated.process_block(&mut l, &mut r);
+            baseline.process_block(&mut l, &mut r);
+        }
+        assert!(
+            pan_span(&modulated) > pan_span(&baseline) + 1e-4,
+            "stack-spread did not widen the VoiceSpread source (mod={}, base={})",
+            pan_span(&modulated),
+            pan_span(&baseline)
+        );
+    }
+
+    /// Gated/bit-identical: with no stack-macro slot, `phase_inc` matches the
+    /// baseline exactly and the per-stack mod state stays 0 (no extra powf).
+    #[test]
+    fn matrix_no_stack_macro_slot_is_bit_identical() {
+        let mut e = stacked_engine();
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        assert_eq!(e.stack_detune_mod[a], 0.0);
+        assert_eq!(e.stack_spread_mod[a], 0.0);
+        for k in 0..STACK_LANES {
+            assert_eq!(e.alloc.stacks[a].detune_mod_st[k], 0.0);
+        }
+    }
+
+    /// Per-stack independence: two notes at different keys get different
+    /// `stack-detune` amounts.
+    #[test]
+    fn matrix_stack_detune_is_per_stack() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = stacked_engine();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Key,
+            dest: DestId::StackDetune,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(36, 100);
+        e.note_on(96, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..3 {
+            e.process_block(&mut l, &mut r);
+        }
+        let mods: Vec<f32> = (0..N_STACKS)
+            .filter(|&i| !e.alloc.stacks[i].is_idle())
+            .map(|i| e.stack_detune_mod[i])
+            .collect();
+        assert!(mods.len() >= 2, "expected two voices");
+        let mut distinct = std::collections::HashSet::new();
+        for m in &mods {
+            distinct.insert(m.to_bits());
+        }
+        assert!(distinct.len() >= 2, "stack-detune not per-stack: {mods:?}");
+    }
+
+    /// Smoothing: a dynamic source change ramps the detune amount over blocks
+    /// rather than stepping the full target in one — the documented zipper
+    /// guard. Static (fresh) sources still snap (covered above).
+    #[test]
+    fn matrix_stack_detune_dynamic_change_is_ramped() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = stacked_engine();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::StackDetune,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.set_mod_wheel(0.0);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        assert_eq!(e.stack_detune_mod[a], 0.0, "should settle at 0 with wheel down");
+        // Jump the wheel mid-note: the amount must ramp, not snap.
+        e.set_mod_wheel(1.0);
+        e.process_block(&mut l, &mut r);
+        let after_one = e.stack_detune_mod[a];
+        assert!(
+            after_one > 0.0 && after_one < 1.0,
+            "dynamic detune not ramped (got {after_one}, expected partway to 1.0)"
+        );
+        for _ in 0..20 {
+            e.process_block(&mut l, &mut r);
+        }
+        assert!(
+            (e.stack_detune_mod[a] - 1.0).abs() < 1e-2,
+            "detune did not converge to target"
+        );
     }
 
     /// Op1Pan dest must move the equal-power pan curve. After block-rate

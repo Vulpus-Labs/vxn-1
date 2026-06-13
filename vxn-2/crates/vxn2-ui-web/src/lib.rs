@@ -294,19 +294,29 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
 /// never invents indices; it picks from this table.
 pub fn build_matrix_lists_json() -> String {
     use vxn2_engine::matrix::{
-        CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, SOURCE_LABELS, SOURCE_NAMES,
+        coherence, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES,
+        SOURCE_LABELS, SOURCE_NAMES,
     };
+    // `id` is the wire discriminant; `tier` is the granularity tier (0090):
+    // 0 = patch-global, 1 = per-stack, 2 = per-lane. The UI reads `tier` and
+    // the `coherence` table below rather than re-deriving the rule.
     let sources: Vec<JsonValue> = SOURCE_NAMES
         .iter()
         .zip(SOURCE_LABELS.iter())
         .enumerate()
-        .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
+        .map(|(i, (n, l))| {
+            let tier = SourceId::from_u8(i as u8).tier() as u8;
+            serde_json::json!({ "id": i, "name": n, "label": l, "tier": tier })
+        })
         .collect();
     let dests: Vec<JsonValue> = DEST_NAMES
         .iter()
         .zip(DEST_LABELS.iter())
         .enumerate()
-        .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
+        .map(|(i, (n, l))| {
+            let tier = DestId::from_u8(i as u8).tier() as u8;
+            serde_json::json!({ "id": i, "name": n, "label": l, "tier": tier })
+        })
         .collect();
     let curves: Vec<JsonValue> = CURVE_NAMES
         .iter()
@@ -314,7 +324,24 @@ pub fn build_matrix_lists_json() -> String {
         .enumerate()
         .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
         .collect();
-    serde_json::json!({ "sources": sources, "dests": dests, "curves": curves }).to_string()
+    // Flat `coherence[srcId][dstId]` verdict table — the canonical engine
+    // predicate baked in so the validator (0095) never drifts from the rule.
+    // Values are the machine-name strings ("ok", "tier-collapse", …).
+    let coherence_table: Vec<Vec<&str>> = (0..SOURCE_NAMES.len())
+        .map(|si| {
+            let src = SourceId::from_u8(si as u8);
+            (0..DEST_NAMES.len())
+                .map(|di| coherence(src, DestId::from_u8(di as u8)).name())
+                .collect()
+        })
+        .collect();
+    serde_json::json!({
+        "sources": sources,
+        "dests": dests,
+        "curves": curves,
+        "coherence": coherence_table,
+    })
+    .to_string()
 }
 
 pub fn build_params_json() -> String {
@@ -768,6 +795,101 @@ mod tests {
         assert_eq!(v["dests"][28]["name"], "cutoff");
         assert_eq!(v["dests"][29]["name"], "resonance");
         assert_eq!(v["curves"][3]["name"], "bipolar");
+    }
+
+    #[test]
+    fn build_matrix_lists_json_carries_tiers_and_coherence() {
+        let s = build_matrix_lists_json();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        // Tiers: lfo1 = patch-global (0), velocity = per-stack (1),
+        // voice-rand = per-lane (2); lfo2-phase dest = per-lane (2).
+        assert_eq!(v["sources"][1]["name"], "lfo1");
+        assert_eq!(v["sources"][1]["tier"], 0);
+        assert_eq!(v["sources"][7]["name"], "velocity");
+        assert_eq!(v["sources"][7]["tier"], 1);
+        assert_eq!(v["sources"][11]["name"], "voice-rand");
+        assert_eq!(v["sources"][11]["tier"], 2);
+        assert_eq!(v["dests"][22]["name"], "lfo2-phase");
+        assert_eq!(v["dests"][22]["tier"], 2);
+        // Coherence table: read the exported verdict, not a re-derivation.
+        // voice-rand(11) → lfo2-rate(21) collapses; → lfo2-phase(22) is ok.
+        let coh = &v["coherence"];
+        assert_eq!(coh[11][21], "tier-collapse");
+        assert_eq!(coh[11][22], "ok");
+        // lfo2(2) → lfo2-rate(21) is self-rate; voice-idx(9) → cutoff(28)
+        // is degenerate (a verdict only the engine table knows).
+        assert_eq!(coh[2][21], "self-rate");
+        assert_eq!(coh[9][28], "degenerate");
+        // empty slots never flag.
+        assert_eq!(coh[0][5], "ok");
+    }
+
+    #[test]
+    fn mod_matrix_panel_wires_coherence_validation() {
+        // 0095: the panel reads the exported coherence table (not a JS
+        // re-derivation) and flags incoherent rows with the shared class +
+        // reason tooltips.
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("matrix.coherence"),
+            "panel must consume the exported coherence table"
+        );
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("vxn-mm-invalid"),
+            "panel must toggle the invalid-row class"
+        );
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("validateRow"),
+            "panel must validate rows on edit + repaint"
+        );
+        // Reason tooltips for each non-ok verdict.
+        for reason in ["self-rate", "tier-collapse", "degenerate"] {
+            assert!(
+                PANEL_MOD_MATRIX_JS.contains(reason),
+                "missing reason mapping for {reason}"
+            );
+        }
+        // Red-text rule + the error token it resolves.
+        assert!(
+            FACEPLATE_CSS.contains(".vxn-mm-invalid select"),
+            "stylesheet missing invalid-row red-text rule"
+        );
+        assert!(
+            FACEPLATE_CSS.contains("--vxn-error"),
+            "stylesheet missing error color token"
+        );
+    }
+
+    #[test]
+    fn mod_matrix_depth_is_bipolar_fader() {
+        // 0096: depth control is the shared bipolar fader, not a bare range
+        // input; routed through the existing dispatchRow depth path.
+        assert!(
+            PANEL_FADER_JS.contains("createBipolar"),
+            "fader primitive must export the bipolar variant"
+        );
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("createBipolar"),
+            "matrix depth must use the bipolar fader"
+        );
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("vxn-mm-depth"),
+            "matrix depth fader markup missing"
+        );
+        // No leftover native range input for depth.
+        assert!(
+            !PANEL_MOD_MATRIX_JS.contains("type: \"range\""),
+            "bare range input should be replaced by the bipolar fader"
+        );
+        // Center-tick + signed fill styling present.
+        assert!(
+            FACEPLATE_CSS.contains(".vxn-mm-depth-center"),
+            "center-tick style missing"
+        );
+        // Dispatch still flows through the depth path (CLAP slot 1-8 / opcode).
+        assert!(
+            PANEL_MOD_MATRIX_JS.contains("dispatchRow(slot, { depth:"),
+            "depth must still route through dispatchRow"
+        );
     }
 
     #[test]

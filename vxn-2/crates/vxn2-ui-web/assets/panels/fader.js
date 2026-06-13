@@ -266,8 +266,146 @@
     };
   }
 
+  // ── Bipolar variant (E008 0096) ──
+  // A center-origin fader for a raw bipolar value in `[-1, 1]` (0 = no
+  // modulation) — the mod-matrix depth control. Shares the value-pop
+  // singleton and the same vertical-drag / RAF-throttle / shift-fine /
+  // drag-gate idiom as `create`, but is value-based (no param descriptor /
+  // taper) and fills from the center toward the thumb. Kept a thin sibling of
+  // `create` rather than a flag on it so the descriptor-bound param path stays
+  // untouched. `ctx`:
+  //   value():  current depth `[-1, 1]`
+  //   commit(d): dispatch a new depth (does the optimistic update)
+  //   format(d): readout string (e.g. "+0.42")
+  //   requestText(): open numeric entry (double-click)
+  function createBipolar(el, ctx) {
+    const fill = el.querySelector(".fader-track-fill");
+    const thumb = el.querySelector(".fader-thumb");
+
+    function clampDepth(d) { return d < -1 ? -1 : d > 1 ? 1 : d; }
+    function depthToNorm(d) { return (d + 1) * 0.5; }
+    function normToDepth(n) { return n * 2 - 1; }
+
+    let current = clampDepth(ctx.value());
+    let hovered = false;
+    let dragging = false;
+    let pointerId = null;
+    let startY = 0;
+    let startNorm = 0;
+    let pendingNorm = null;
+    let rafScheduled = false;
+
+    function paint() {
+      const norm = depthToNorm(current);
+      const pct = norm * 100;
+      // Signed fill grown from the 50% center toward the thumb.
+      if (fill) {
+        if (current >= 0) {
+          fill.style.bottom = "50%";
+          fill.style.height = (pct - 50) + "%";
+        } else {
+          fill.style.bottom = pct + "%";
+          fill.style.height = (50 - pct) + "%";
+        }
+      }
+      if (thumb) thumb.style.bottom = pct + "%";
+      if (hovered || dragging) updatePop(ctx.format(current));
+    }
+    paint();
+
+    function postNorm(n) {
+      const clamped = n < 0 ? 0 : n > 1 ? 1 : n;
+      current = normToDepth(clamped);
+      ctx.commit(current);
+      paint();
+    }
+    function flushPending() {
+      rafScheduled = false;
+      if (pendingNorm !== null) {
+        postNorm(pendingNorm);
+        pendingNorm = null;
+      }
+    }
+
+    function onPointerEnter(ev) {
+      hovered = true;
+      if (!dragging) showPop(ctx.format(current), ev.clientX, ev.clientY);
+    }
+    function onPointerLeave() {
+      hovered = false;
+      if (!dragging) hidePop();
+    }
+    function onPointerDown(ev) {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      ev.preventDefault();
+      dragging = true;
+      pointerId = ev.pointerId;
+      startY = ev.clientY;
+      startNorm = depthToNorm(current);
+      el.classList.add("dragging");
+      // Drag-gate flag the matrix repaint honours so a snapshot echo can't
+      // stomp an in-progress drag.
+      el.dataset.dragging = "1";
+      if (el.setPointerCapture && pointerId !== undefined) {
+        try { el.setPointerCapture(pointerId); } catch (_) {}
+      }
+      showPop(ctx.format(current), ev.clientX, ev.clientY);
+    }
+    function onPointerMove(ev) {
+      if (!dragging) return;
+      ev.preventDefault();
+      const dy = startY - ev.clientY;
+      const range = 200;
+      const sens = ev.shiftKey ? 0.1 : 1.0;
+      const next = startNorm + (dy / range) * sens;
+      pendingNorm = next < 0 ? 0 : next > 1 ? 1 : next;
+      if (!rafScheduled) {
+        rafScheduled = true;
+        window.requestAnimationFrame(flushPending);
+      }
+    }
+    function onPointerUp(ev) {
+      if (!dragging) return;
+      ev.preventDefault();
+      if (pendingNorm !== null) {
+        postNorm(pendingNorm);
+        pendingNorm = null;
+      }
+      dragging = false;
+      el.classList.remove("dragging");
+      delete el.dataset.dragging;
+      if (el.releasePointerCapture && pointerId !== undefined) {
+        try { el.releasePointerCapture(pointerId); } catch (_) {}
+      }
+      if (!hovered) hidePop();
+      pointerId = null;
+    }
+    function onDoubleClick(ev) {
+      ev.preventDefault();
+      ctx.requestText();
+    }
+
+    el.addEventListener("pointerenter", onPointerEnter);
+    el.addEventListener("pointerleave", onPointerLeave);
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointermove", onPointerMove);
+    el.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("pointercancel", onPointerUp);
+    el.addEventListener("dblclick", onDoubleClick);
+
+    return {
+      set: function (depth) {
+        if (dragging) return; // gesture / drag-gate wins over echoes
+        current = clampDepth(depth);
+        paint();
+      },
+      isDragging: function () { return dragging; },
+    };
+  }
+
   window.__vxn.panels.fader = {
     create: create,
+    createBipolar: createBipolar,
     paramToNorm: paramToNorm,
     normToParam: normToParam,
     formatDisplay: formatDisplay,
