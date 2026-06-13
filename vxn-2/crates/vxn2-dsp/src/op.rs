@@ -101,21 +101,32 @@ pub fn midi_to_hz(note: u8) -> f32 {
     440.0 * 2_f32.powf((n - 69.0) / 12.0)
 }
 
+/// Operator base frequency (Hz) from its ratio/fixed mode and the played key,
+/// *before* any per-lane stack detune. Ratio mode: `midi_to_hz(key)` times the
+/// effective ratio (`num + fine/100` over `denom`) and the detune-cents factor;
+/// Fixed mode: the literal `fixed_hz`. Single definition shared by
+/// [`OpState::cook`] (scalar reference path) and `Stack::cook_op` (the
+/// production per-lane path, which multiplies lane detune on top) — ticket 0071.
+#[inline]
+pub fn compute_base_hz(params: &OpParams, key: u8) -> f32 {
+    match params.ratio_mode {
+        RatioMode::Ratio => {
+            let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
+            let denom = params.denom.max(1) as f32;
+            let cents = params.detune as f32;
+            midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
+        }
+        RatioMode::Fixed => params.fixed_hz,
+    }
+}
+
 impl OpState {
     /// Note-on / param-change cook. Re-derives `phase_inc`, EG targets/rates,
     /// and FB scale from `params + key + velocity + sample_rate`.
     /// Leaves `phase`, `fb_prev*` alone — caller can reset those separately
     /// if a clean note-on is wanted (see [`Self::reset_phase`]).
     pub fn cook(&mut self, params: &OpParams, key: u8, velocity: u8, sample_rate: f32) {
-        let base_hz = match params.ratio_mode {
-            RatioMode::Ratio => {
-                let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
-                let denom = params.denom.max(1) as f32;
-                let cents = params.detune as f32;
-                midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
-            }
-            RatioMode::Fixed => params.fixed_hz,
-        };
+        let base_hz = compute_base_hz(params, key);
         self.phase_inc = ((base_hz / sample_rate) * PM_SCALE_Q32) as u32;
 
         let ks_lvl = ks_level_mult(

@@ -68,3 +68,23 @@ provable by existing tests passing unchanged.
 Explicitly OUT (review judged not worth churn): `eg.rs`/`envelope.rs`
 merge, the duplicate `EgStage`/`EnvStage4` enums, reverb's f32-phase
 idiom. Leave them unless item 5 makes one trivial.
+
+## Close-out (2026-06-13)
+
+1. **Base-Hz dedup** — `op::compute_base_hz(params, key)` extracted; `OpState::cook`
+   and `Stack::cook_op` both call it (stack multiplies per-lane detune on top).
+   One match definition remains.
+2. **xorshift dedup** — new `rng` module, `pub(crate) fn xorshift_step`; stack's
+   `xorshift_f32` and lfo's `xorshift_bipolar`/`reseed` call it. One definition.
+3. **voice.rs annotation** — module doc rewritten "scalar reference + bench path;
+   production is stack.rs"; `VoiceMod` doc states its actual role (reference-path
+   modulation hook, unread by the tick, kept as the bench's public signature).
+4. **set_algo_live doc** — now states feedback must be refreshed separately via
+   `set_feedback_live` (engine does both each block).
+5. **Bhaskara third copy** — `sine::scalar::fast_sine_01(p)` extracted;
+   `fast_sine_q32` and the reverb LFO both call it (was a hand-inlined copy).
+
+`cargo test --workspace` (dsp+engine) green, zero test modifications — pure
+refactor. Bench not re-run: extracted fns are `#[inline]`/`#[inline(always)]`
+and `compute_base_hz` sits on the note-on cook path, not the per-sample tick.
+Out (per Notes): eg/envelope merge, EgStage/EnvStage4 dup, reverb f32-phase idiom.

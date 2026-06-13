@@ -16,6 +16,7 @@ pub mod lfo;
 pub mod math;
 pub mod op;
 pub mod reverb;
+pub mod rng;
 pub mod sine;
 pub mod smoother;
 pub mod stack;

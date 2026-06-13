@@ -280,11 +280,9 @@ impl FdnReverb {
         // ── Read taps with LFO-modulated offsets ─────────────────────────
         let mut tap = [0.0_f32; LINES];
         for i in 0..LINES {
-            // Bhaskara-style sine of 2π·phase via piecewise polynomial,
-            // matched to the patches reference. Phase in [0, 1).
-            let p = self.lfo_phase[i] - 0.5;
-            let s1 = p * 16.0 * (p.abs() - 0.5);
-            let s = s1 + 0.225 * s1 * (s1.abs() - 1.0);
+            // Bhaskara+Moser sine of the [0, 1) phase fraction — shared with
+            // the operator core (ticket 0071, was a hand-inlined copy here).
+            let s = crate::sine::scalar::fast_sine_01(self.lfo_phase[i]);
             let off = (self.base_samps[i] * scale + LFO_DEPTH_SAMP * s).clamp(1.0, max_off);
             tap[i] = self.ring.read_linear(i, off);
 

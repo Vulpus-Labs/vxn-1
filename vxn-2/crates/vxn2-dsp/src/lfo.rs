@@ -143,20 +143,11 @@ fn phase_inc_q32(hz: f32, block_secs: f32) -> u32 {
     inc as u64 as u32
 }
 
-#[inline]
-fn xorshift_step(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-}
-
-/// Bipolar `[-1, +1)` from the top 24 bits of a xorshift step.
+/// Bipolar `[-1, +1)` from the top 24 bits of the shared xorshift64* step
+/// ([`crate::rng`]).
 #[inline]
 fn xorshift_bipolar(state: &mut u64) -> f32 {
-    let u = (xorshift_step(state) >> 40) as f32 * (1.0 / (1u64 << 24) as f32);
+    let u = (crate::rng::xorshift_step(state) >> 40) as f32 * (1.0 / (1u64 << 24) as f32);
     u * 2.0 - 1.0
 }
 
@@ -390,7 +381,7 @@ impl Lfo2Stack {
             seed = 0xDEAD_BEEF_DEAD_BEEF;
         }
         for slot in &mut self.sh_state {
-            xorshift_step(&mut seed);
+            crate::rng::xorshift_step(&mut seed);
             *slot = if seed == 0 { 0xDEAD_BEEF_DEAD_BEEF } else { seed };
         }
     }

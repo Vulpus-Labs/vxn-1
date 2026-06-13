@@ -1,18 +1,20 @@
 //! One voice = 6 operators + a DX7 algorithm graph + voice-level state
 //! (played note, velocity, gate, pitch, stack metadata).
 //!
-//! Ticket 0003 deliverables. Stack metadata (`voice_idx`, `voice_spread`,
-//! `voice_rand`) is stored here so the stacking pass (0005) populates it at
-//! allocation time without refactoring the tick path. Per-block resolved
-//! modulation arrives via [`VoiceMod`] — a stub until 0008 lands the matrix.
+//! Ticket 0003 deliverables. **This is the scalar reference + bench path, not
+//! the production path** — since 0005 landed, the engine renders through the
+//! SoA `Stack` ([`crate::stack`]), which carries 8 lanes and the full matrix.
+//! `Voice` is retained as the single-lane, easy-to-read oracle that
+//! `vxn2-osc-bench` and the unit tests run against. Stack metadata
+//! (`voice_idx`, `voice_spread`, `voice_rand`) lives here so the layouts match.
 //!
 //! Two tick paths exposed:
 //!
-//! - [`voice_tick`] — mono sum of carrier outputs. Cheapest; suitable for
-//!   the polyphony allocator's idle-detection pass and for benches.
+//! - [`voice_tick`] — mono sum of carrier outputs. Cheapest; the allocator's
+//!   idle-detection oracle and the mono bench.
 //! - [`voice_tick_stereo`] — applies the per-op `pan` parameter to each
-//!   carrier and returns `(L, R)`. Becomes the default path once stacking
-//!   (0005) lands and `voice_spread` needs to write into pan.
+//!   carrier and returns `(L, R)`. The stereo reference; production stereo is
+//!   `stack_tick_stereo`.
 //!
 //! ## Sample-delay convention
 //!
@@ -64,9 +66,13 @@ impl Default for VoiceParams {
     }
 }
 
-/// Per-block resolved modulation input. Stubbed for ticket 0003; the mod
-/// matrix (0008) will fill it in. Fields are placeholders — present so the
-/// `voice_tick` signature is stable and 0008 plugs in without API churn.
+/// Per-block resolved modulation input to the reference [`voice_tick`] path.
+/// The production renderer applies modulation inside `stack.rs` (per-lane,
+/// from the matrix); this struct is the reference path's modulation hook and
+/// is currently *unread* by the tick (`_modulation`) — the benches pass
+/// [`VoiceMod::default`]. Kept (not deleted) because it is the public tick
+/// signature `vxn2-osc-bench` builds against; populate it here if the scalar
+/// path ever needs to mirror a matrix result for an A/B against the stack.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VoiceMod {
     pub pitch_offset_st: f32,

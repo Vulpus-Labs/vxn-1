@@ -40,7 +40,7 @@ use crate::eg::EgStage;
 use crate::envelope::{ModEnvState, PitchEgState};
 use crate::ks::{ks_level_mult, ks_rate_mult};
 use crate::lfo::Lfo2Stack;
-use crate::op::{OpParams, PM_SCALE_Q32, RatioMode, midi_to_hz};
+use crate::op::{OpParams, PM_SCALE_Q32, compute_base_hz};
 use crate::sine::scalar::fast_sine_q32;
 use crate::tables::{fb_scale, vel_factor};
 use crate::voice::VoiceParams;
@@ -310,21 +310,11 @@ impl Default for Stack {
     }
 }
 
-/// xorshift64* — single u64 state, produces `[0, 1)` f32s.
-#[inline]
-fn xorshift_step(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-}
-
+/// `[0, 1)` f32 from the shared xorshift64* step ([`crate::rng`]).
 #[inline]
 fn xorshift_f32(state: &mut u64) -> f32 {
     // Top 24 bits → [0, 1) — avoids the well-known low-bit weakness.
-    (xorshift_step(state) >> 40) as f32 * (1.0 / (1u64 << 24) as f32)
+    (crate::rng::xorshift_step(state) >> 40) as f32 * (1.0 / (1u64 << 24) as f32)
 }
 
 /// Stable seed for an allocation: derived from note + velocity + counter so
@@ -343,6 +333,12 @@ impl Stack {
     /// so a user-driven algo change in the picker re-routes the held note's
     /// op summing on the next block — without waiting for the next note-on
     /// to re-cook routing. No-op when the algo hasn't moved.
+    ///
+    /// Routes only; feedback is *not* refreshed here. The new algorithm has its
+    /// own `structural_fb_op`, so the caller must follow this with
+    /// [`Self::set_feedback_live`] (or `_lanes`) to move the FB scale onto the
+    /// new op. `Engine::apply_block_params` calls both every block, so the
+    /// contract holds for the production path; any other caller must do the same.
     #[inline]
     pub fn set_algo_live(&mut self, algo: u8) {
         if self.algo == algo {
@@ -658,15 +654,7 @@ impl Stack {
         master_mult: f32,
         detune_cents_max: f32,
     ) {
-        let base_hz = match params.ratio_mode {
-            RatioMode::Ratio => {
-                let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
-                let denom = params.denom.max(1) as f32;
-                let cents = params.detune as f32;
-                midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
-            }
-            RatioMode::Fixed => params.fixed_hz,
-        };
+        let base_hz = compute_base_hz(params, key);
         let base_inc = ((base_hz * master_mult / sample_rate) * PM_SCALE_Q32) as f64;
         for k in 0..STACK_LANES {
             let lane_cents = detune_cents_max * self.voice_spread[k];
