@@ -11,10 +11,12 @@
 //!   Stored linearly to avoid an `exp10` in the per-sample loop. Applied as
 //!   the very last multiplier before the engine returns its stereo pair.
 //!
-//! Per ADR §10 review (and confirmed by the ticket AC) there is no output
-//! limiter. The default `master_volume = −6 dB` gives ~6 dB of headroom for
-//! typical patches; over-cooked patches clip into the host bus, which is the
-//! user's responsibility (and the DAW's chance to limit).
+//! The default `master_volume = −6 dB` gives ~6 dB of headroom for typical
+//! patches. An optional brickwall safety limiter (VXN1 parity, `limiter_on`,
+//! off by default) sits last in the FX chain after this gain; when off,
+//! over-cooked patches clip into the host bus as before. The limiter DSP
+//! object itself lives on the engine — this module only owns the on/off flag
+//! alongside the master scalars.
 
 /// `master_tune` range in cents.
 pub const MASTER_TUNE_MIN_CT: f32 = -100.0;
@@ -38,6 +40,10 @@ pub fn db_to_lin(db: f32) -> f32 {
 pub struct MasterParams {
     pub tune_cents: f32,
     pub volume_db: f32,
+    /// Brickwall safety limiter on the master bus (VXN1 parity). Off by
+    /// default so an unchanged patch stays bit-identical; the limiter object
+    /// lives on the engine and only runs when this is set.
+    pub limiter_on: bool,
 }
 
 impl Default for MasterParams {
@@ -45,6 +51,7 @@ impl Default for MasterParams {
         Self {
             tune_cents: 0.0,
             volume_db: MASTER_VOL_DEFAULT_DB,
+            limiter_on: false,
         }
     }
 }
@@ -107,6 +114,7 @@ mod tests {
         s.refresh(&MasterParams {
             tune_cents: 9999.0,
             volume_db: 100.0,
+            limiter_on: false,
         });
         assert!((s.gain - db_to_lin(MASTER_VOL_MAX_DB)).abs() < 1e-6);
         assert_eq!(s.tune_cents, MASTER_TUNE_MAX_CT);
@@ -114,6 +122,7 @@ mod tests {
         s.refresh(&MasterParams {
             tune_cents: -9999.0,
             volume_db: -200.0,
+            limiter_on: false,
         });
         assert!((s.gain - db_to_lin(MASTER_VOL_MIN_DB)).abs() < 1e-6);
         assert_eq!(s.tune_cents, MASTER_TUNE_MIN_CT);

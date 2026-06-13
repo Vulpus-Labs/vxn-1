@@ -51,7 +51,7 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 21;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
-pub const N_PATCH_LEVEL: usize = 25; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter
+pub const N_PATCH_LEVEL: usize = 26; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter
 pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 188
 
 /// Start of the patch-level block in the flat CLAP id space.
@@ -560,12 +560,17 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     // fader is read/displayed as a musical note (C0..C4, semitone-snapped);
     // the stored value stays Hz, so the DSP and automation are unaffected.
     bl("filter-cutoff-tuned", "Cutoff Tuned", false),
+    // Master brickwall safety limiter (VXN1 parity). Appended at the very end
+    // of the flat space (after the Filter section) so the blob v8→v9 migration
+    // stays a 1:1 prefix; off by default → an unchanged patch is bit-identical.
+    // UI groups it in the Master panel (its module label is overridden below).
+    bl("limiter-on", "Limiter", false),
 ];
 
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 163, patch × 23]` — same flat ordering described in
+/// `[per-patch × 163, patch × 26]` — same flat ordering described in
 /// the module-level layout block.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
@@ -609,6 +614,7 @@ pub(crate) const OFF_DELAY: usize = 3;
 pub(crate) const OFF_REVERB: usize = 9;
 pub(crate) const OFF_MASTER: usize = 14;
 pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
+pub(crate) const OFF_LIMITER: usize = 25; // trailing append, after the 9-param Filter section
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
 /// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
@@ -674,8 +680,12 @@ fn module_for_patch(off: usize) -> &'static str {
         "Global / Reverb"
     } else if off < OFF_FILTER {
         "Global / Master"
-    } else if off < N_PATCH_LEVEL {
+    } else if off < OFF_LIMITER {
         "Global / Filter"
+    } else if off == OFF_LIMITER {
+        // `limiter-on` is appended past the Filter section for blob-prefix
+        // stability, but belongs to the Master section in the host tree.
+        "Global / Master"
     } else {
         ""
     }
@@ -751,7 +761,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 188);
+        assert_eq!(TOTAL_PARAMS, 189);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -857,23 +867,27 @@ mod tests {
 
     #[test]
     fn filter_section_is_at_table_tail() {
-        // The Filter section (7 params, E007) is appended after Master at the
-        // very end of the flat space, so blob v6→v7 migration is a 1:1 prefix.
+        // The Filter section (9 params, E007/v8) sits after Master, then the
+        // single `limiter-on` (v9) is appended at the very end of the flat
+        // space — so each blob migration stays a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 11);
-        assert_eq!(vol, TOTAL_PARAMS - 10);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 9));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 8));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 7));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 6));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 5));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 4));
-        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 3));
-        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 2));
-        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 1));
-        // `filter-enable` defaults off → migrated patches stay bit-identical.
+        assert_eq!(tune, TOTAL_PARAMS - 12);
+        assert_eq!(vol, TOTAL_PARAMS - 11);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 10));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 9));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 8));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 7));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 6));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 5));
+        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 4));
+        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 3));
+        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 2));
+        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 1));
+        // `filter-enable` and `limiter-on` default off → migrated patches stay
+        // bit-identical.
         assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
+        assert_eq!(PARAMS[id_of("limiter-on").unwrap()].default, 0.0);
     }
 
     #[test]

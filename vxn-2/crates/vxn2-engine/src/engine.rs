@@ -34,6 +34,7 @@
 
 use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::delay::StereoDelay;
+use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler};
 use vxn2_dsp::reverb::FdnReverb;
@@ -156,6 +157,13 @@ pub struct Engine {
     pub delay: StereoDelay,
     pub reverb: FdnReverb,
     pub master: MasterState,
+    /// Optional brickwall limiter on the master bus (last in the FX chain).
+    /// Run only when `master.limiter_on` is set; bypassed otherwise (VXN1
+    /// parity).
+    pub limiter: StereoLimiter,
+    /// Whether the limiter ran last block, so it can be reset on the off→on
+    /// edge (clears stale lookahead instead of leaking an old transient).
+    limiter_was_on: bool,
     pub params: EngineParams,
     sample_rate: f32,
     block_size: usize,
@@ -268,6 +276,8 @@ impl Engine {
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
             master: MasterState::default(),
+            limiter: StereoLimiter::new(sample_rate),
+            limiter_was_on: false,
             params: EngineParams::default(),
             sample_rate,
             block_size,
@@ -356,6 +366,8 @@ impl Engine {
         self.delay.reset();
         self.reverb.reset();
         self.master = MasterState::default();
+        self.limiter.reset();
+        self.limiter_was_on = false;
         self.patch_mod.on_transport_restart();
         // Drop any matrix LFO-rate modulation (E008 0092); a fresh patch
         // re-derives it from the matrix accumulator.
@@ -944,6 +956,20 @@ impl Engine {
                 out_r[sample] = r;
             }
         }
+
+        // Master limiter — last in the chain, after master gain, applied to the
+        // finished block on both render paths (VXN1 parity). Clear stale
+        // lookahead on the off→on edge so re-engaging can't leak an old
+        // transient. Off by default → an unchanged patch is bit-identical.
+        let limiter_on = self.params.master.limiter_on;
+        if limiter_on {
+            if !self.limiter_was_on {
+                self.limiter.reset();
+            }
+            self.limiter
+                .process_block(&mut out_l[..n], &mut out_r[..n]);
+        }
+        self.limiter_was_on = limiter_on;
     }
 
     /// ON-path render (ADR 0004 §3–§5): stack-major, oversampled per-voice

@@ -39,7 +39,8 @@ use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
     N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
-    OFF_FILTER, OFF_LFO2, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB, OFF_STACK,
+    OFF_FILTER, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB,
+    OFF_STACK,
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
@@ -123,19 +124,29 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   count 186 → 188. Both sit past every existing id, so older blobs map
 ///   1:1; the 2 new ids are seeded to their defaults (keytrack 0, tuned off
 ///   → an unchanged patch stays bit-identical).
-pub const BLOB_VERSION: u16 = 8;
+/// - v9: appends `limiter-on` (master brickwall safety limiter, VXN1 parity)
+///   at the very end of the flat space — param count 188 → 189. It sits past
+///   every existing id, so older blobs map 1:1; the new id is seeded to its
+///   default (off → an unchanged patch stays bit-identical).
+pub const BLOB_VERSION: u16 = 9;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
 const N_FILTER_PARAMS_V8: usize = 2;
-/// Param count in v7 blobs (before the v8 filter additions).
-const LEGACY_V7_PARAM_COUNT: usize = TOTAL_PARAMS - N_FILTER_PARAMS_V8; // 186
+/// Number of params appended in v9 (`limiter-on`).
+const N_LIMITER_PARAMS_V9: usize = 1;
+/// Param count in v8 blobs (before the v9 `limiter-on` addition).
+const LEGACY_V8_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9; // 188
+/// Param count in v7 blobs (before the v8 filter additions). Anchored to
+/// history via the live total minus every param appended since.
+const LEGACY_V7_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS_V8; // 186
 /// Param count in v6 blobs (before the v7 Filter section was appended).
-const LEGACY_V6_PARAM_COUNT: usize = TOTAL_PARAMS - N_FILTER_PARAMS; // 179
+const LEGACY_V6_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS; // 179
 /// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition).
-/// Anchored to history, not the live `TOTAL_PARAMS`, so future table
-/// changes don't silently shift the legacy migration arithmetic.
-const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS; // 173
+/// Tracks the live total minus the op-block spread — the v5/v4/v3 test
+/// rewrites keep the (later-appended) trailing patch params and only shrink
+/// the op blocks, so this must grow with `TOTAL_PARAMS`.
+const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS;
 /// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
 const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 1; // 20
 /// Per-op index of `ratio-mode` in the live (v6) op block (trailing slot).
@@ -622,6 +633,7 @@ impl ParamModel for SharedParams {
             5 => LEGACY_V5_PARAM_COUNT,
             6 => LEGACY_V6_PARAM_COUNT,
             7 => LEGACY_V7_PARAM_COUNT,
+            8 => LEGACY_V8_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -694,16 +706,25 @@ impl ParamModel for SharedParams {
         // load can't leave them at stale store contents. `filter-enable`
         // defaults off, keeping a migrated patch bit-identical.
         if version <= 6 {
-            for id in (TOTAL_PARAMS - N_FILTER_PARAMS)..TOTAL_PARAMS {
+            for id in (TOTAL_PARAMS - N_FILTER_PARAMS - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
         // v≤7 blobs predate `filter-keytrack` + `filter-cutoff-tuned` (the two
-        // trailing filter ids). They map 1:1 above; seed the new ids to their
-        // defaults (keytrack 0, tuned off → a migrated patch stays
-        // bit-identical). v≤6 already covered these via the wider block above.
+        // trailing filter ids). They map 1:1 above; seed those plus the v9
+        // `limiter-on` id to their defaults (keytrack 0, tuned off, limiter off
+        // → a migrated patch stays bit-identical). v≤6 already covered these via
+        // the wider block above.
         if version <= 7 {
-            for id in (TOTAL_PARAMS - N_FILTER_PARAMS_V8)..TOTAL_PARAMS {
+            for id in (TOTAL_PARAMS - N_FILTER_PARAMS_V8 - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        // v≤8 blobs predate `limiter-on` (the single trailing v9 id). They map
+        // 1:1 above; seed it to its default (off → a migrated patch stays
+        // bit-identical). v≤7 already covered it via the wider block above.
+        if version <= 8 {
+            for id in (TOTAL_PARAMS - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -1047,6 +1068,10 @@ impl EngineParams {
         self.master = MasterParams {
             tune_cents: shared.get(pb + OFF_MASTER),
             volume_db: shared.get(pb + OFF_MASTER + 1),
+            // `limiter-on` is appended at the very end of the flat space (past
+            // the Filter section) for blob-prefix stability, not adjacent to
+            // the other master ids.
+            limiter_on: shared.get(pb + OFF_LIMITER) >= 0.5,
         };
 
         // Filter section (E007 / ADR 0004). Decoded by `filter_params_of` so

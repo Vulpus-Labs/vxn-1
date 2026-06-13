@@ -12,25 +12,33 @@ depends: []
 First ticket of [E010](../../epics/open/E010-standalone-builds.md).
 Bring in [`free-audio/clap-wrapper`](https://github.com/free-audio/clap-wrapper)
 and stand up a minimal CMake project that can invoke
-`target_add_standalone_wrapper` against a built `.clap`.
+`target_add_standalone_wrapper` against a CLAP **static archive**
+(bundled mode).
+
+**Shares scaffold with vxn-1 E020 (VST3).** E020 0109/0110 vendor the
+same `vendor/clap-wrapper` submodule + author `wrapper/CMakeLists.txt`
+for VST3. If E020 lands first, this ticket shrinks to "extend the shared
+scaffold to the standalone target + add `vxn2-clap` staticlib." Do not
+vendor a second copy.
 
 ## Design
 
-- Vendor clap-wrapper as a git submodule or via CMake `FetchContent`
-  (pin a commit). It transitively fetches RtAudio / RtMidi.
-- Author a small `standalone/CMakeLists.txt` that:
-  - references clap-wrapper,
-  - calls `target_add_standalone_wrapper(...)` with `HOSTED_CLAP_NAME` /
-    `MACOS_EMBEDDED_CLAP_LOCATION` (and the Windows equivalent) pointing
-    at a built `.clap` — **embedded/hosted mode**, so no Rust changes
-    and no `staticlib` crate-type.
+- Vendor clap-wrapper as a git submodule (pinned tag), shared with
+  E020. It transitively fetches RtAudio / RtMidi.
+- Add `crate-type = ["cdylib", "rlib", "staticlib"]` to `vxn2-clap` and
+  smoke-link that clack's entry macro exports `clap_entry` from the
+  archive (mirrors E020 0108 for `vxn-clap`).
+- Author / extend the shared `wrapper/CMakeLists.txt` so it can invoke
+  `target_add_standalone_wrapper(...)` against the static archive in
+  **bundled / single-binary mode** (no runtime `.clap` to locate).
 - Confirm the CMake configures and the standalone target type resolves
   on macOS first (the proving ground is 0104).
 - Document the toolchain prereqs (CMake ≥ 3.21, a C++ compiler).
 
 ## Acceptance
 
-- clap-wrapper vendored at a pinned rev.
+- clap-wrapper vendored at a pinned rev (shared with E020).
+- `vxn2-clap` exposes a `staticlib` whose `clap_entry` symbol links.
 - `cmake` configures the standalone scaffold without error on macOS.
-- README/notes capture the toolchain prereqs and the
-  embedded-clap-location contract.
+- README/notes capture the toolchain prereqs and the static-link
+  contract.

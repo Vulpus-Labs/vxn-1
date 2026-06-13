@@ -10,6 +10,18 @@ depends-on: E009
 > which E009 produces and verifies. The macOS standalone can start as
 > soon as this epic opens. Note: this epic spans **both** synths — vxn-1
 > is already Windows-capable, vxn-2 becomes so via E009.
+>
+> **Coordination with vxn-1 E020 (VST3 via clap-wrapper, ADR 0008).**
+> E020 already adopts clap-wrapper in **bundled / single-binary
+> (static-link) mode** to ship VST3, and already plans the
+> `vendor/clap-wrapper` submodule + `wrapper/CMakeLists.txt` (E020
+> 0109/0110) and the `staticlib` crate-type on `vxn-clap` (E020 0108).
+> This epic **reuses all three** rather than duplicating them, and
+> reconciles to the same static link mode (see "Why static, not
+> embedded" below). E020's "Standalone format — no demand" out-of-scope
+> line is superseded by this epic. If E020's scaffold lands first, 0103
+> here becomes a thin "extend the shared scaffold to standalone +
+> vxn2-clap staticlib" ticket.
 
 ## Goal
 
@@ -20,11 +32,11 @@ output, MIDI input, and the HTML editor, **without a host or DAW**.
 Use [`free-audio/clap-wrapper`](https://github.com/free-audio/clap-wrapper)'s
 standalone target. clap-wrapper *is* a CLAP host: it provides audio I/O
 (RtAudio), MIDI in (RtMidi), an OS window + menu, and drives the
-plugin's `gui` extension exactly as a DAW does. It hosts the
-already-built `.clap` via its embedded/hosted-clap mode
-(`MACOS_EMBEDDED_CLAP_LOCATION` / `HOSTED_CLAP_NAME`), so **no Rust
-changes to either plugin are required** — the cdylib's standard
-`clap_entry` symbol is enough.
+plugin's `gui` extension exactly as a DAW does. It links the CLAP in
+**bundled / single-binary (static) mode** — the same mode vxn-1's E020
+uses for VST3 — so the standalone is self-contained with no runtime
+`.clap` file to locate. This needs each plugin's clap crate to expose a
+`staticlib` archive (see "Why static, not embedded").
 
 When this epic closes:
 
@@ -49,17 +61,43 @@ per OS. clap-wrapper already ships all three, battle-tested across
 shipping products. The cost is a CMake + C++ build step layered on top
 of the existing `cargo xtask` flow.
 
+### Why static, not embedded
+
+clap-wrapper can either **embed** a `.clap` file inside the artifact and
+load it at runtime, or **statically link** the CLAP archive into the
+standalone binary (bundled mode). This epic uses **static**, matching
+vxn-1 E020's VST3 decision (ADR 0008), because:
+
+- **One Rust-side pattern for both formats.** E020 already adds
+  `staticlib` to `vxn-clap` (0108) and smoke-tests that clack's entry
+  macro exports `clap_entry` from the archive. Standalone reuses that;
+  vxn-2 gets the same `staticlib` addition to `vxn2-clap`. No separate
+  embedded-path plumbing.
+- **Self-contained, no path resolution.** No bundled `.clap` to locate
+  relative to the `.app`/`.exe` at launch — the code is in the binary.
+- **Shared scaffold.** The same `vendor/clap-wrapper` submodule and
+  `wrapper/CMakeLists.txt` serve VST3 and standalone.
+
+Trade-off: this epic is **no longer "zero Rust change"** — `vxn2-clap`
+must gain `crate-type = ["cdylib", "rlib", "staticlib"]` (vxn-clap is
+covered by E020 0108). That change is small and isolated to the clap
+crate's manifest + an entry-symbol smoke link.
+
 ## Scope
 
 **In:**
 
-- Vendor clap-wrapper (git submodule or CMake `FetchContent`) plus a
-  minimal CMake project that invokes `target_add_standalone_wrapper`
-  against each synth's built `.clap` (embedded/hosted mode).
-- An `xtask standalone` subcommand per synth that builds the `.clap`
-  (reusing `bundle`), then runs CMake to assemble the standalone app.
+- Add `staticlib` to `vxn2-clap`'s crate-type and smoke-link the
+  `clap_entry` export from the archive (vxn-clap is covered by E020
+  0108). Reuse / share E020's `vendor/clap-wrapper` submodule +
+  `wrapper/CMakeLists.txt` rather than vendoring a second copy.
+- A minimal CMake project that invokes `target_add_standalone_wrapper`
+  against each synth's CLAP **static archive** (bundled / single-binary
+  mode).
+- An `xtask standalone` subcommand per synth that builds the staticlib
+  slice(s), then runs CMake to assemble the standalone app.
 - macOS standalone for vxn-1 and vxn-2 (`.app` bundles): RtAudio out,
-  RtMidi in, embedded window hosting the wry editor.
+  RtMidi in, window hosting the wry editor.
 - Windows standalone for vxn-1 and vxn-2 (`.exe`): RtAudio / RtMidi /
   WebView2.
 - CI jobs that produce the standalone artifacts (mac + win) for both
@@ -71,8 +109,9 @@ of the existing `cargo xtask` flow.
 
 - Linux standalone (clap-wrapper supports x11/gtk, but no Linux plugin
   CI exists yet — defer with the Linux plugin work).
-- AU / VST3 wrapping (clap-wrapper can also do these; separate epic if
-  ever wanted).
+- VST3 wrapping — already its own epic (vxn-1 E020 / ADR 0008); shares
+  this epic's wrapper scaffold + static link mode. AU (AUv2/AUv3) is a
+  later follow-up off the same wrapper.
 - Standalone-specific features (built-in sequencer, audio recording,
   preset I/O beyond what the plugin already does).
 - Any change to the plugins' DSP, params, or editor.
@@ -129,10 +168,12 @@ of the existing `cargo xtask` flow.
   surface. The standalone's window is clap-wrapper's HWND rather than a
   DAW's; the editor and `WS_POPUP` text-input popup must anchor to it
   correctly. Verify after E009, not before.
-- **Embedded-clap path resolution.** The standalone must find the
-  `.clap` it hosts — embed it inside the `.app`/next to the `.exe` and
-  point `MACOS_EMBEDDED_CLAP_LOCATION` / the Windows equivalent at the
-  bundled copy, not a dev install path.
+- **staticlib entry-symbol export.** Static mode requires clack's entry
+  macro to emit `clap_entry` from the `.a`/`.lib` archive, not just the
+  cdylib. E020 0108 smoke-tests this for `vxn-clap`; confirm the same
+  for `vxn2-clap` before wiring CMake. (Static link removes the
+  embedded-`.clap` path-resolution risk entirely — nothing to locate at
+  runtime.)
 - **Universal macOS.** vxn-1 ships a `lipo` universal `.clap`; confirm
   clap-wrapper's standalone packaging carries both slices (or build the
   standalone per-arch and `lipo` after).

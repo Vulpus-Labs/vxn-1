@@ -13,6 +13,7 @@ pub mod filter;
 pub mod halfband;
 pub mod ks;
 pub mod lfo;
+pub mod limiter;
 pub mod math;
 pub mod op;
 pub mod reverb;

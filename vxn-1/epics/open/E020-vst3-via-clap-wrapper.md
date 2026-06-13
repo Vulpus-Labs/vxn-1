@@ -16,6 +16,17 @@ distribution artifact derived from the same source.
 
 Per ADR 0008.
 
+> **Coordination with vxn-2 E010 (standalone builds, 2026-06-13).**
+> Both epics drive free-audio/clap-wrapper in **bundled / single-binary
+> (static-link) mode** and both need the same `vendor/clap-wrapper`
+> submodule + a shared `wrapper/CMakeLists.txt`. Land the vendor + CMake
+> scaffold **once** (here in 0109/0110, or E010's 0103 — whichever lands
+> first) and have the other reuse it. The `staticlib` crate-type change
+> (0108) is the same change E010 needs for `vxn2-clap`; the link mode is
+> reconciled to static across both formats and both synths, so one
+> Rust-side pattern serves VST3 and standalone. The "Standalone format
+> (no demand)" line under Out of scope below is **superseded** by E010.
+
 ## Background
 
 VXN1 ships today as a CLAP only. ADR 0001 §1 pinned us to
@@ -71,7 +82,10 @@ path; the CLAP path is unaffected.
 
 - AUv2 / AUv3 (follow-up — same wrapper, separate ADR/epic
   once VST3 is stable).
-- Standalone format (clap-wrapper supports; no demand).
+- ~~Standalone format (clap-wrapper supports; no demand).~~
+  **Superseded 2026-06-13** — standalone is now its own epic, vxn-2
+  E010 (covering vxn-1 + vxn-2). Shares this epic's wrapper/CMake
+  scaffold and `staticlib` link mode.
 - Linux VST3 (trivial follow-up; same CMake).
 - VST3 GUI features beyond what the CLAP `gui` extension
   exposes. Wrapper translates verbatim.
