@@ -63,3 +63,39 @@ that the epic exists to remove. The deferred matrix destinations
 (`Lfo2Phase`, `Lfo1Rate`, `Lfo2Rate`, `StackDetune`, `StackSpread`)
 are dest-enum entries, not params, so they don't trip this test — but
 note them in the test header as known-inert UI surface.
+
+## Close-out (2026-06-13)
+
+New test `crates/vxn2-engine/tests/param_audibility.rs`.
+
+**Mechanism.** Each param is rendered twice under a deterministic context (two
+fresh engines, identical note script, fixed RNG seeds) — param at min, param at
+max — capturing the full L+R buffer across attack → sustain → release. A
+relative-L1 fingerprint compares them; a *severed* param yields a bit-identical
+pair (rel-diff exactly 0), a *wired* one moves the output. Threshold 1e-4 (the
+smallest real effect — a transient EG attack-stage level — sits at ≈3e-4, an
+order of magnitude above; severed = 0).
+
+**Context.** Rich base patch (algo 32 = six parallel carriers, eight active
+matrix routes, FX engaged, moving EG/mod-env/pitch-EG) makes most params
+audible; `context_override` handles the stragglers — Fixed-mode for op fixed-hz,
+side-isolated KS with distant notes, zig-zag EGs reaching every stage, a
+VoiceSpread route for `stack-spread` (it is the gain on that source, not a
+direct knob), stereo panning for `delay-pingpong` (a no-op on a mono sum),
+filter-in-circuit for filter params, long windows for FX tails / LFO2 fade.
+
+**Acceptance.**
+- Enumerates the full 188-param table (TOTAL_PARAMS) — a new param with no
+  context fails rather than passing silently.
+- Teeth verified by hand: forcing `depth = 0.0 * mtx_depths[s]` in engine.rs
+  made it fail (mtx1-8-depth, stack-spread, + the LFO2/mod-env params routed
+  through those slots), passing again on restore. Documented in the test.
+- Exclusions = 4 (≤10), each with a reason: `assign-mode`, `legato`,
+  `glide-time` (all need overlapping-note scripts), `filter-cutoff-tuned`
+  (UI-only — engine never reads it, shared.rs `read_filter`).
+- Fast run ≈ 9 s (under the ~10 s budget); `#[ignore]`d 3× thorough variant
+  also green. CI wiring is ticket 0070's scope.
+
+Deferred matrix dests (`Lfo2Phase`/`Lfo1Rate`/`Lfo2Rate`/`StackDetune`/
+`StackSpread`) are dest-enum entries, not params (and now wired via E008), so
+they don't trip the sweep — noted in the test header.
