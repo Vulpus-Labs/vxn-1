@@ -763,25 +763,47 @@ html, body {
   color: #6f7780;
 }
 .vxn-mm-row[data-active="1"] { color: var(--text); }
-/* Bipolar depth fader (E008 0096): a compact center-origin fader in the row's
- * depth column. Center tick marks 0; the shared fill grows signed from it. */
+/* Bipolar depth fader (E008 0096): a compact center-origin HORIZONTAL fader in
+ * the row's depth column. Center tick marks 0; the shared fill grows signed
+ * left/right from it. */
 .vxn-mm-depth {
   min-width: 0;
   justify-content: center;
-  margin: 0 auto;
+  width: 100%;
 }
 .vxn-mm-depth .fader-track {
-  height: 24px;
+  width: 120px;
+  height: 4px;
   margin: 0 auto;
 }
-.vxn-mm-depth-center {
-  position: absolute;
-  left: -3px;
-  right: -3px;
+.vxn-mm-depth .fader-track-fill {
+  /* horizontal fill: span full height, JS drives left/width from center */
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  right: auto;
+  width: 0;
+  height: auto;
+}
+.vxn-mm-depth .fader-thumb {
+  /* horizontal thumb: tall+narrow, slides along x */
+  width: var(--thumb-h);
+  height: var(--thumb-w);
+  left: 50%;
   top: 50%;
-  height: 1px;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  cursor: ew-resize;
+}
+.vxn-mm-depth-center {
+  /* vertical center tick at the 0 position */
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 50%;
+  width: 1px;
   background: var(--glyph);
-  transform: translateY(-50%);
+  transform: translateX(-50%);
   pointer-events: none;
 }
 /* Incoherent routing (E008 0095): source/dest text red, depth/curve/active

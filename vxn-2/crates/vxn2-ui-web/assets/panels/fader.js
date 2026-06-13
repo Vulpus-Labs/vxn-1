@@ -269,11 +269,11 @@
   // ── Bipolar variant (E008 0096) ──
   // A center-origin fader for a raw bipolar value in `[-1, 1]` (0 = no
   // modulation) — the mod-matrix depth control. Shares the value-pop
-  // singleton and the same vertical-drag / RAF-throttle / shift-fine /
-  // drag-gate idiom as `create`, but is value-based (no param descriptor /
-  // taper) and fills from the center toward the thumb. Kept a thin sibling of
-  // `create` rather than a flag on it so the descriptor-bound param path stays
-  // untouched. `ctx`:
+  // singleton and the same RAF-throttle / shift-fine / drag-gate idiom as
+  // `create`, but drags HORIZONTALLY (left = -1, right = +1), is value-based
+  // (no param descriptor / taper), and fills from the center toward the thumb.
+  // Kept a thin sibling of `create` rather than a flag on it so the
+  // descriptor-bound param path stays untouched. `ctx`:
   //   value():  current depth `[-1, 1]`
   //   commit(d): dispatch a new depth (does the optimistic update)
   //   format(d): readout string (e.g. "+0.42")
@@ -290,7 +290,7 @@
     let hovered = false;
     let dragging = false;
     let pointerId = null;
-    let startY = 0;
+    let startX = 0;
     let startNorm = 0;
     let pendingNorm = null;
     let rafScheduled = false;
@@ -298,17 +298,17 @@
     function paint() {
       const norm = depthToNorm(current);
       const pct = norm * 100;
-      // Signed fill grown from the 50% center toward the thumb.
+      // Signed fill grown horizontally from the 50% center toward the thumb.
       if (fill) {
         if (current >= 0) {
-          fill.style.bottom = "50%";
-          fill.style.height = (pct - 50) + "%";
+          fill.style.left = "50%";
+          fill.style.width = (pct - 50) + "%";
         } else {
-          fill.style.bottom = pct + "%";
-          fill.style.height = (50 - pct) + "%";
+          fill.style.left = pct + "%";
+          fill.style.width = (50 - pct) + "%";
         }
       }
-      if (thumb) thumb.style.bottom = pct + "%";
+      if (thumb) thumb.style.left = pct + "%";
       if (hovered || dragging) updatePop(ctx.format(current));
     }
     paint();
@@ -340,7 +340,7 @@
       ev.preventDefault();
       dragging = true;
       pointerId = ev.pointerId;
-      startY = ev.clientY;
+      startX = ev.clientX;
       startNorm = depthToNorm(current);
       el.classList.add("dragging");
       // Drag-gate flag the matrix repaint honours so a snapshot echo can't
@@ -354,10 +354,10 @@
     function onPointerMove(ev) {
       if (!dragging) return;
       ev.preventDefault();
-      const dy = startY - ev.clientY;
-      const range = 200;
+      const dx = ev.clientX - startX;
+      const range = 200; // px for full -1..+1 travel
       const sens = ev.shiftKey ? 0.1 : 1.0;
-      const next = startNorm + (dy / range) * sens;
+      const next = startNorm + (dx / range) * sens;
       pendingNorm = next < 0 ? 0 : next > 1 ? 1 : next;
       if (!rafScheduled) {
         rafScheduled = true;
