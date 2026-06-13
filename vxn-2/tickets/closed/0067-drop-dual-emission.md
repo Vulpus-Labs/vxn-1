@@ -64,3 +64,30 @@ Mid-drag host-automation suppression is wholly the view's job now
 (`bindGestureGated`, ticket 0060) — the gesture suppression in
 `handle_host` is bypassed by the pump regardless; if this ticket's
 investigation finds it fully dead for VXN-2, fold its removal in.
+
+## Close-out (2026-06-13)
+
+**Investigation:** vxn-core-app is shared by vxn-1 and vxn-2. vxn-2's CLAP shell
+runs the dirty-bitset pump (`push_model_diffs` / `drain_dirty_bits`) as the
+single Model→View emitter. vxn-1's shell has *no* pump but **does** have its own
+value-diff poll (`push_param_diffs`, `last_seen` vector) — its own code comment
+notes the controller echo + diff poll already double-emit and the WebView
+dedupes on the wire. So the echo is redundant in vxn-1 too (option 2 was
+viable), but vxn-1's poll has no gesture gating and relies on the controller's
+echo timing/gesture-suppression for the host-automation path. Chose **option 1
+(config flag)** for minimal blast radius: vxn-1 behaviour is byte-identical.
+
+**Change:** `Controller::echo_param_writes: bool` (default `true`), setter
+`set_echo_param_writes`. Gates the two named echo paths only — `SetParam`/
+`SetParamNorm` `emit_param_changed` and `StateLoaded` `broadcast_all_params`.
+vxn-2 sets it `false` at both construction sites. `SetOpTab`,
+`RequestMatrixSnapshot`, preset/corpus, and the gesture-gated `ParamAutomation`
+echo are untouched. vxn-2 never routes `HostEvent::ParamAutomation` through the
+controller (host param events fold into the audio thread + pump), so that path
+is already inert for vxn-2 — nothing to fold in per Notes.
+
+**Tests (vxn2-clap):** `ui_set_param_emits_exactly_one_param_changed` and
+`state_load_emits_one_param_changed_per_param_and_one_snapshot` assert counts
+across both channels. `cargo test --workspace` green (vxn-1 included). ADR 0003
+§Removed corrected: `push_matrix_snapshot` retained for `RequestMatrixSnapshot`;
+new bullet documents the echo gating.

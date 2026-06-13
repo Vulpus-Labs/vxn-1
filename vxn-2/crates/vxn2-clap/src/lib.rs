@@ -108,6 +108,10 @@ impl DefaultPluginFactory for VxnPlugin {
     ) -> Result<VxnMainThread<'a>, PluginError> {
         let (mut controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
+        // The dirty-bitset pump (`push_model_diffs`) is vxn-2's single
+        // Model→View emitter; suppress the controller's redundant echo so a
+        // UI write / state load isn't broadcast twice (ticket 0067).
+        controller.set_echo_param_writes(false);
         // Seed the preset bar with the synthetic "Init" label until the
         // preset epic (E007 lineage) ships a real factory bank.
         controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
@@ -757,6 +761,8 @@ mod tests {
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
         let (mut controller, view_rx, corpus) =
             Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
+        // Match production: pump is the single emitter (ticket 0067).
+        controller.set_echo_param_writes(false);
         controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
             name: "Init".into(),
             ..Default::default()
@@ -1348,6 +1354,77 @@ mod tests {
             }
             other => panic!("unexpected event {other:?}"),
         }
+    }
+
+    // ── Single-emitter discipline (ticket 0067) ───────────────────────────
+    // With `echo_param_writes` off (set by `mk_main` to match production) the
+    // dirty-bitset pump is the only Model→View emitter. These guard the
+    // double-emission the E006 review found: a UI write echoed by the
+    // controller *and* re-broadcast by the pump.
+
+    /// One UI `SetParam` intent + one pump drain → exactly one `ParamChanged`
+    /// for that id across both channels (controller view queue + pump),
+    /// not two.
+    #[test]
+    fn ui_set_param_emits_exactly_one_param_changed() {
+        use vxn_core_app::UiEvent;
+        let shared = mk_shared();
+        let (mut controller, view_rx, _corpus) =
+            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
+        controller.set_echo_param_writes(false);
+        let _ = drain_dirty_bits(&shared.params); // pop the all-ones seed
+
+        let decay = id_of("reverb-decay").unwrap();
+        controller
+            .ui_sender()
+            .send(UiEvent::SetParam { id: ParamId::new(decay), plain: 7.5 })
+            .unwrap();
+        tick_vxn2(&mut controller);
+
+        let ctrl_evs: Vec<ViewEvent> = std::iter::from_fn(|| view_rx.try_recv().ok()).collect();
+        let pump_evs = drain_dirty_bits(&shared.params);
+
+        let mut all = changed_ids(&ctrl_evs);
+        all.extend(changed_ids(&pump_evs));
+        let count = all.iter().filter(|&&id| id == decay).count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one ParamChanged for the write (ctrl={:?} pump={:?})",
+            changed_ids(&ctrl_evs),
+            changed_ids(&pump_evs)
+        );
+    }
+
+    /// One `StateLoaded` + one pump drain → exactly one `ParamChanged` per
+    /// param (no duplicates) and exactly one `MatrixSnapshot`, across both
+    /// channels — not the ~360 events of the pre-0067 broadcast + pump overlap.
+    #[test]
+    fn state_load_emits_one_param_changed_per_param_and_one_snapshot() {
+        use vxn_core_app::HostEvent;
+        let shared = mk_shared();
+        let (mut controller, view_rx, _corpus) =
+            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
+        controller.set_echo_param_writes(false);
+        let _ = drain_dirty_bits(&shared.params); // pop the all-ones seed
+
+        let blob = ParamModel::snapshot_bytes(&*shared.params);
+        controller
+            .host_sender()
+            .send(HostEvent::StateLoaded { blob })
+            .unwrap();
+        tick_vxn2(&mut controller);
+
+        let ctrl_evs: Vec<ViewEvent> = std::iter::from_fn(|| view_rx.try_recv().ok()).collect();
+        let pump_evs = drain_dirty_bits(&shared.params);
+
+        let mut all = changed_ids(&ctrl_evs);
+        all.extend(changed_ids(&pump_evs));
+        assert_eq!(all.len(), TOTAL_PARAMS, "one ParamChanged per param, no overlap");
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), TOTAL_PARAMS, "ids must be distinct (no param emitted twice)");
+        let snaps = matrix_snapshot_count(&ctrl_evs) + matrix_snapshot_count(&pump_evs);
+        assert_eq!(snaps, 1, "exactly one MatrixSnapshot on state load");
     }
 
     /// Flipping `lfo1-sync` re-emits `lfo1-rate` in the same tick even

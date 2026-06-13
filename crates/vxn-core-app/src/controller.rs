@@ -71,6 +71,17 @@ pub struct Controller<M: ParamModel> {
     /// the plugin, so the per-instance state needs reseeding even though
     /// nothing in the model changed.
     editor_ready_pending: bool,
+    /// Whether `handle_ui`'s `SetParam`/`SetParamNorm` and `handle_host`'s
+    /// `StateLoaded` automatically echo `ParamChanged`/full-table view events.
+    /// `true` (default) for vxn-1, whose CLAP shell has no dirty-bitset pump
+    /// and depends on this echo (plus its own value-diff poll, which dedupes
+    /// the overlap on the wire). `false` for vxn-2: its shell runs the
+    /// dirty-bitset pump (ADR 0003 / E005) as the single Model→View emitter, so
+    /// the echo would double every UI write and re-broadcast all params on a
+    /// state load (ticket 0067). Gates only the model-backed echoes —
+    /// `SetOpTab`, `RequestMatrixSnapshot`, preset/corpus, and gesture-gated
+    /// `ParamAutomation` are untouched.
+    echo_param_writes: bool,
 }
 
 impl<M: ParamModel> Controller<M> {
@@ -101,6 +112,7 @@ impl<M: ParamModel> Controller<M> {
             host_rx,
             view_tx,
             editor_ready_pending: false,
+            echo_param_writes: true,
         };
         (ctrl, view_rx, corpus)
     }
@@ -146,6 +158,16 @@ impl<M: ParamModel> Controller<M> {
     /// clear.
     pub fn set_init_preset_meta(&mut self, meta: Option<PresetMeta>) {
         self.init_preset_meta = meta;
+    }
+
+    /// Disable the automatic `ParamChanged` echo on UI param writes and the
+    /// full-table re-broadcast on state load. A synth whose CLAP shell owns a
+    /// dirty-bitset pump (vxn-2 — the pump is the single Model→View emitter,
+    /// ADR 0003 / E005) calls this with `false` at construction so the echo
+    /// doesn't double every write. Defaults to `true` (vxn-1, no pump). See
+    /// [`Self::echo_param_writes`].
+    pub fn set_echo_param_writes(&mut self, echo: bool) {
+        self.echo_param_writes = echo;
     }
 
     /// Re-read the user-side corpus from disk and refresh the shared
@@ -195,11 +217,17 @@ impl<M: ParamModel> Controller<M> {
         match ev {
             UiEvent::SetParam { id, plain } => {
                 self.model.set(id, plain);
-                self.emit_param_changed(id);
+                // vxn-2's dirty-bitset pump re-emits this from the bit the
+                // write just flipped; only echo when there's no pump (0067).
+                if self.echo_param_writes {
+                    self.emit_param_changed(id);
+                }
             }
             UiEvent::SetParamNorm { id, norm } => {
                 self.model.set_normalized(id, norm);
-                self.emit_param_changed(id);
+                if self.echo_param_writes {
+                    self.emit_param_changed(id);
+                }
             }
             UiEvent::BeginGesture { id } => {
                 self.model.set_gesture(id, true);
@@ -335,7 +363,12 @@ impl<M: ParamModel> Controller<M> {
                     source: None,
                     warnings: Vec::new(),
                 });
-                self.broadcast_all_params();
+                // `restore_from_bytes` flips every dirty bit; vxn-2's pump
+                // re-broadcasts the whole table next tick, so the explicit
+                // broadcast here would double ~360 events on a load (0067).
+                if self.echo_param_writes {
+                    self.broadcast_all_params();
+                }
             }
             HostEvent::Tempo { bpm: _ } => {
                 // Routed to the engine on a separate channel per-synth.

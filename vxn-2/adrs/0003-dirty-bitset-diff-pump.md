@@ -199,10 +199,21 @@ write handler; no shadow snapshot; one discipline.
   view event push) — the bitset catches it next tick. (The event variant
   itself stays in `Vxn2ViewCustom` for the row-level repaint API; the snapshot
   may also emit per-row events in dev builds for diagnostic clarity.)
-- The bespoke `push_matrix_snapshot` call inside `PluginStateImpl::load`
-  (added in the load-time hotfix commit).
+- The bespoke `push_matrix_snapshot` *call inside `PluginStateImpl::load`*
+  (added in the load-time hotfix commit). **Scope (ticket 0067):** only that
+  load-path call went — `push_matrix_snapshot` / `matrix_snapshot_event` are
+  retained, and are still the body of the `RequestMatrixSnapshot` handler (an
+  explicit UI-initiated query the pump does not serve). The earlier blanket
+  wording read as if the helper itself was deleted; it is not.
 - The `mod-matrix.js dispatchRow` dual-dispatch on depth widget (only one
   path survives per slot range).
+- The shared controller's automatic `ParamChanged` echo on UI `SetParam` /
+  `SetParamNorm` and the full-table `broadcast_all_params` on `StateLoaded`
+  (ticket 0067) — for vxn-2 the pump re-emits both from the dirty bits the
+  write/load flipped, so the echo doubled view traffic (~2× per write, ~360
+  events per load). Gated off via `Controller::set_echo_param_writes(false)`;
+  vxn-1 (no pump) keeps the echo. `SetOpTab` and `RequestMatrixSnapshot` are
+  *not* model-backed and keep their echo.
 
 ### Added
 
