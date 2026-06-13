@@ -1,14 +1,15 @@
 //! VXN2 CLAP plugin shell (clack).
 //!
-//! Scaffolds the host-loadable plugin: descriptor, audio + note ports,
-//! parameter/state extension registration, and an empty `process()` that
-//! returns silence. Later tickets in epic E002 attach the real param table
-//! (0014/0015), the event + render loop (0016) and state save/restore
-//! (0017). The GUI surface lives in its own epic.
+//! The host-loadable plugin: descriptor, audio + note ports, param + state
+//! extensions, the event + render loop (`process()` drives [`Engine`]), and
+//! the GUI surface — a webview faceplate driven through `vxn-core-app`'s
+//! `Controller` plus the dirty-bitset pump (`push_model_diffs`, ADR 0003).
 //!
 //! Structurally mirrors `vxn-1/crates/vxn-clap`: same `Shared` / `MainThread`
-//! / `AudioProcessor` split, same `declare_extensions` shape — minus the
-//! `Controller` / `ViewEvent` / GUI / timer machinery.
+//! / `AudioProcessor` split and `declare_extensions` shape, and the same
+//! `Controller` / `ViewEvent` / GUI / timer machinery — vxn-2 differs in
+//! using the dirty-bitset pump as the single Model→View emitter (ticket 0067)
+//! where vxn-1 runs a value-diff poll.
 
 use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{HostLatency, PluginLatency, PluginLatencyImpl};

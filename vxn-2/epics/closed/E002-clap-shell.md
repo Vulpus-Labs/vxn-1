@@ -77,14 +77,14 @@ the `SharedParams` surface this epic establishes.
 
 ## Tickets
 
-- [ ] [0013 — vxn2-clap crate scaffold + plugin entry + ports](../../tickets/open/0013-clap-scaffold.md)
-- [ ] [0014 — SharedParams + LocalParams (atomic store, mirror)](../../tickets/open/0014-shared-params.md)
-- [ ] [0015 — CLAP params extension wired to ParamTable](../../tickets/open/0015-clap-params.md)
-- [ ] [0016 — Audio process: notes, MIDI, transport, render](../../tickets/open/0016-process-loop.md)
-- [ ] [0017 — State save/restore](../../tickets/open/0017-state-extension.md)
-- [ ] [0018 — Default illustrative patch](../../tickets/open/0018-default-patch.md)
-- [ ] [0019 — Plugin bundling xtask](../../tickets/open/0019-bundle-xtask.md)
-- [ ] [0020 — End-to-end smoke test via clack-host](../../tickets/open/0020-clack-host-smoke.md)
+- [ ] [0013 — vxn2-clap crate scaffold + plugin entry + ports](../../tickets/closed/0013-clap-scaffold.md)
+- [ ] [0014 — SharedParams + LocalParams (atomic store, mirror)](../../tickets/closed/0014-shared-params.md)
+- [ ] [0015 — CLAP params extension wired to ParamTable](../../tickets/closed/0015-clap-params.md)
+- [ ] [0016 — Audio process: notes, MIDI, transport, render](../../tickets/closed/0016-process-loop.md)
+- [ ] [0017 — State save/restore](../../tickets/closed/0017-state-extension.md)
+- [ ] [0018 — Default illustrative patch](../../tickets/closed/0018-default-patch.md)
+- [ ] [0019 — Plugin bundling xtask](../../tickets/closed/0019-bundle-xtask.md)
+- [ ] [0020 — End-to-end smoke test via clack-host](../../tickets/closed/0020-clack-host-smoke.md)
 
 ## Dependency order
 

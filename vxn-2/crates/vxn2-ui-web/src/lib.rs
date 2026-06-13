@@ -237,11 +237,6 @@ fn serialise_custom_view(payload: &dyn std::any::Any) -> Option<JsonValue> {
             "kind": "op_tab_changed",
             "op": op,
         }),
-        Vxn2ViewCustom::MatrixRowChanged { slot, row } => serde_json::json!({
-            "kind": "matrix_row_changed",
-            "slot": slot,
-            "row": matrix_row_to_json(*row),
-        }),
         Vxn2ViewCustom::MatrixSnapshot { rows } => serde_json::json!({
             "kind": "matrix_snapshot",
             "rows": rows.iter().map(|r| matrix_row_to_json(*r)).collect::<Vec<_>>(),
@@ -388,7 +383,11 @@ mod tests {
 
     #[test]
     fn parse_custom_set_op_tab() {
-        let v = serde_json::json!({ "op": "set_op_tab", "op": 3 });
+        // The opcode is the first arg ("set_op_tab"); inside the payload `"op"`
+        // is the operator-tab index. (The earlier fixture also carried a
+        // shadowed `"op": "set_op_tab"` string that serde_json silently
+        // dropped — removed so the fixture reads as the wire shape.)
+        let v = serde_json::json!({ "op": 3 });
         let ev = parse_custom_ui("set_op_tab", &v).expect("parsed");
         match ev {
             UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
@@ -428,25 +427,6 @@ mod tests {
     fn parse_custom_unknown_opcode_returns_none() {
         let v = serde_json::json!({ "op": "explode" });
         assert!(parse_custom_ui("explode", &v).is_none());
-    }
-
-    #[test]
-    fn serialise_view_matrix_row_changed_round_trip_shape() {
-        let payload = Vxn2ViewCustom::MatrixRowChanged {
-            slot: 4,
-            row: MatrixRow {
-                source: 1,
-                dest: 2,
-                curve: 0,
-                active: true,
-                depth: -0.3,
-            },
-        };
-        let v = serialise_custom_view(&payload).expect("serialised");
-        assert_eq!(v["kind"], "matrix_row_changed");
-        assert_eq!(v["slot"], 4);
-        assert_eq!(v["row"]["dest"], 2);
-        assert!((v["row"]["depth"].as_f64().unwrap() - (-0.3)).abs() < 1e-5);
     }
 
     #[test]

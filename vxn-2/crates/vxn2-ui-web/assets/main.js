@@ -575,18 +575,6 @@
       if (panels.modMatrix && panels.modMatrix.onSnapshot) panels.modMatrix.onSnapshot();
       return;
     }
-    if (ev.kind === "matrix_row_changed") {
-      if (ev.row) {
-        const slot = ev.slot | 0;
-        if (slot >= 0 && slot < 16) {
-          vxn.matrix.rows[slot] = ev.row;
-          if (panels.modMatrix && panels.modMatrix.onRowChanged) {
-            panels.modMatrix.onRowChanged(slot, ev.row);
-          }
-        }
-      }
-      return;
-    }
   }
 
   // Clamp a parsed plain value to the descriptor's [min, max], with

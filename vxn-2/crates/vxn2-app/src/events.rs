@@ -65,7 +65,6 @@ pub enum Vxn2UiCustom {
 #[derive(Clone, Debug)]
 pub enum Vxn2ViewCustom {
     OpTabChanged { op: u8 },
-    MatrixRowChanged { slot: u8, row: MatrixRow },
     /// Full 16-row matrix snapshot. Emitted on
     /// `Vxn2UiCustom::RequestMatrixSnapshot` so the overlay can render
     /// without polling.

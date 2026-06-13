@@ -241,6 +241,11 @@ re-routes. Revisit post-v1 if user demand surfaces.
   workspaces. Shared crates (CLAP shell helpers, preset I/O primitives,
   faceplate JS bridge) are candidates for a third top-level workspace once
   divergence stabilises — not yet, premature consolidation risk.
+  > **Update (flat-workspace migration, commit `46ddddf`):** there is now one
+  > workspace at the repo root. vxn-1 and vxn-2 are *not* sibling workspaces;
+  > the shared crates (`vxn-core-app`, preset I/O, the JS bridge) live in the
+  > root `crates/` and both synths depend on them directly — the "third
+  > workspace once divergence stabilises" never happened and isn't planned.
 - The UI mockup at `vxn-2/ui-mockup/index.html` is the *living layout
   reference* until the production HTML faceplate ships. Treat it as
   source-of-truth for visual/interaction decisions during the kernel build.

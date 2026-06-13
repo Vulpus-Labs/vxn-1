@@ -330,18 +330,6 @@ html, body {
   border-radius: 50%;
   background: var(--modulator);
 }
-.op-tab-level {
-  height: 3px;
-  width: 70%;
-  margin-top: 3px;
-  background: var(--track-bg);
-  border-radius: 1px;
-  overflow: hidden;
-}
-.op-tab-level-fill {
-  height: 100%;
-  background: var(--ctl-value);
-}
 
 .op-detail {
   flex: 1 1 auto;
@@ -572,9 +560,6 @@ html, body {
   stroke-width: 1.5;
   fill: none;
 }
-.graph-curve-fill {
-  fill: rgba(217, 112, 27, 0.15);
-}
 .graph-grid {
   stroke: #2a2a2a;
   stroke-width: 1;
@@ -629,51 +614,6 @@ html, body {
 .moenv-faders { display: flex; flex-direction: row; gap: 6px; flex: 1 1 auto; justify-content: center; }
 .moenv-shape { display: flex; justify-content: center; padding-bottom: 2px; }
 .moenv-shape .bgrp-row { flex-direction: row; gap: 6px; }
-
-/* mod matrix slot list */
-.mm-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  overflow-y: auto;
-  font-size: 10px;
-}
-.mm-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 26px;
-  gap: 3px;
-  align-items: center;
-  background: #0e0e0e;
-  border: 1px solid #1a1a1a;
-  border-radius: 2px;
-  padding: 2px 4px;
-}
-.mm-cell {
-  font-size: 10px;
-  color: var(--ctl-label);
-}
-.mm-cell.depth { color: var(--ctl-value); text-align: right; font-variant-numeric: tabular-nums; }
-.mm-cell.src { color: var(--glyph-active); }
-.mm-cell.dst { color: var(--text); }
-.mm-cell.curve {
-  text-align: center;
-  font-size: 9px;
-  color: var(--ctl-label);
-  text-transform: uppercase;
-}
-.mm-add {
-  background: #232323;
-  border: 1px dashed #444;
-  border-radius: 2px;
-  color: var(--ctl-label);
-  font: inherit;
-  font-size: 9px;
-  padding: 2px;
-  cursor: pointer;
-  text-align: center;
-}
-.mm-add:hover { color: #ececec; border-color: var(--glyph-active); }
 
 /* ===== bottom row ===== */
 

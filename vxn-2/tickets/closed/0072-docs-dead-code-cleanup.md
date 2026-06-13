@@ -85,3 +85,41 @@ normalisation in mod-matrix.js/preset-bar.js — are real but
 behaviour-touching; they belong in a UI-focused pass, not this doc
 sweep. Listed here so they aren't lost: pull them into their own
 ticket if/when the next UI epic opens.
+
+## Close-out (2026-06-13)
+
+**Docs**
+1. ✅ README rewritten — current state (kernel + CLAP + faceplate shipped, 7
+   epics closed), links all four ADRs + PARAMETERS.md.
+2. ✅ ADR 0001 §11 — forward-note added (flat-workspace migration `46ddddf`;
+   not sibling workspaces; shared crates in root `crates/`).
+3. ✅ E002 ticket links repointed `tickets/open/` → `tickets/closed/` (8 links;
+   all 8 targets verified present in closed/).
+4. ➖ Already current — PARAMETERS.md dest list is the v3 set (29 dests, 18 op
+   pitch/level/pan, `Feedback` present, v2 ratio/detune collapse noted). Done
+   by E008 (0090–0097) before this ticket ran.
+5. ✅ Numbering convention documented in `vxn-2/tickets/README.md` + README.
+
+**Dead code**
+6. ✅ Deleted `.mm-list`/`.mm-row`/`.mm-cell.*`/`.mm-add`, `.op-tab-level`/
+   `-fill`, `.graph-curve-fill` (all 0 non-CSS refs). `.vxn-mm-badge-spacer`:
+   confirmed grid-column sizing makes a rule unnecessary; span retained — it
+   occupies the 80px badge track on slots 9–16 so the bin button stays aligned
+   (deleting it would misalign, not the right move).
+7. ✅ `Vxn2ViewCustom::MatrixRowChanged` removed — variant, serialise arm, its
+   round-trip test, the controller-test match arm (kept MatrixSnapshot), and
+   the `main.js` handler (the stale-render hazard) all deleted.
+8. ✅ vxn2-clap module doc rewritten — it *does* have Controller/ViewEvent/GUI/
+   timer; differs from vxn-1 in the dirty-bitset pump (0067).
+9. ✅ Duplicate `"op"` key in the `set_op_tab` fixture removed; comment states
+   opcode is the first arg, payload `"op"` is the tab index.
+10. ➖ `vxn-2/target/` does not exist — already clean (no untracked artifacts).
+11. ➖ STALE — `makeRatioButtonGroup` is no longer dead: it binds
+    `op{n}-ratio-mode`, has click listeners → `setParam`, a registered prim,
+    and fader greying. Wired after the ticket was filed. Left as-is.
+
+`cargo test -p vxn2-app -p vxn2-ui-web -p vxn2-clap` green. No automated HTML
+golden test exists; CSS deletions safe by construction (zero references). Greps
+clean: no `MatrixRowChanged`, no `forthcoming` in README, no `mm-row` in CSS.
+JS findings in Notes (opRow side-channel, var→const, rAF coalescing) left for a
+future UI epic as the ticket directs.

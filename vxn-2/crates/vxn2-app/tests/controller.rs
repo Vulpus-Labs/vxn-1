@@ -120,8 +120,7 @@ fn matrix_row_custom_event_writes_model_no_echo() {
     let echoed = events.iter().any(|ev| match ev {
         ViewEvent::Custom(payload) => matches!(
             payload.downcast_ref::<Vxn2ViewCustom>(),
-            Some(Vxn2ViewCustom::MatrixRowChanged { .. })
-                | Some(Vxn2ViewCustom::MatrixSnapshot { .. })
+            Some(Vxn2ViewCustom::MatrixSnapshot { .. })
         ),
         _ => false,
     });
