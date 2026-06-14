@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VXN1 SAB event-ring spike (0035)</title>
+    <style>
+      body { font: 16px system-ui; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+      button { font-size: 1.1rem; padding: 0.5rem 1.2rem; margin: 0.2rem 0.4rem 0.2rem 0; }
+      #log { white-space: pre-wrap; color: #444; margin-top: 1.5rem; font: 13px ui-monospace, monospace; }
+      .ok { color: #0a0; } .bad { color: #c00; }
+    </style>
+  </head>
+  <body>
+    <h1>VXN1 → SAB event-ring → AudioWorklet (0035)</h1>
+    <p>Lock-free SPSC ring + CLAP-style block-slicing. Needs COOP/COEP
+       (serve via <code>node serve-coep.mjs</code>).</p>
+    <p id="iso"></p>
+    <button id="start">Start audio</button>
+    <button id="note" disabled>Hold A4 (ring note-on @ offset 0)</button>
+    <button id="arp" disabled>Burst: 8 note-ons across the next quantum</button>
+    <div id="log"></div>
+
+    <script type="module">
+      import { createRingSAB, EventRing, DEFAULT_CAPACITY } from "./event-ring.mjs";
+
+      const log = (m) => (document.getElementById("log").textContent += m + "\n");
+
+      // --- isolation check (acceptance criterion) ---
+      const iso = document.getElementById("iso");
+      const isolated = self.crossOriginIsolated === true;
+      let sabOk = false;
+      try { new SharedArrayBuffer(8); sabOk = true; } catch {}
+      iso.innerHTML =
+        `crossOriginIsolated = <b class="${isolated ? "ok" : "bad"}">${isolated}</b> · ` +
+        `SharedArrayBuffer constructible = <b class="${sabOk ? "ok" : "bad"}">${sabOk}</b>`;
+      if (!isolated || !sabOk) {
+        log("NOT cross-origin isolated — serve with COOP/COEP headers (serve-coep.mjs).");
+      }
+
+      let ctx, node, ring;
+
+      document.getElementById("start").onclick = async () => {
+        ctx = new AudioContext();
+        const sab = createRingSAB(DEFAULT_CAPACITY);
+        ring = new EventRing(sab, DEFAULT_CAPACITY);
+        const [wasmBytes] = await Promise.all([
+          fetch("./vxn_wasm.wasm").then((r) => r.arrayBuffer()),
+          ctx.audioWorklet.addModule("./vxn-processor-0035.js"),
+        ]);
+        node = new AudioWorkletNode(ctx, "vxn-ring-processor", {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          processorOptions: { wasmBytes, sab, capacity: DEFAULT_CAPACITY, mode: "sliced" },
+        });
+        node.connect(ctx.destination);
+        await ctx.resume();
+        log(`audio started @ ${ctx.sampleRate} Hz; ring capacity ${DEFAULT_CAPACITY} slots`);
+        document.getElementById("note").disabled = false;
+        document.getElementById("arp").disabled = false;
+        document.getElementById("start").disabled = true;
+      };
+
+      const NOTE = 69; // A4
+      const noteBtn = document.getElementById("note");
+      noteBtn.addEventListener("mousedown", () => { ring.pushNoteOn(0, NOTE, 1.0); log("ring <- noteOn A4 @0"); });
+      const up = () => { if (node) ring.pushNoteOff(0, NOTE); };
+      noteBtn.addEventListener("mouseup", up);
+      noteBtn.addEventListener("mouseleave", up);
+
+      // Write 8 note-ons spread across the 128-frame quantum to exercise the
+      // slice loop (each lands at its own offset inside one process() call).
+      document.getElementById("arp").onclick = () => {
+        for (let i = 0; i < 8; i++) ring.pushNoteOn(i * 16, 60 + i * 2, 0.8);
+        log("ring <- 8 note-ons at offsets 0,16,...,112");
+      };
+    </script>
+  </body>
+</html>

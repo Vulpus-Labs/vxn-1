@@ -81,3 +81,40 @@ Decide and record for downstream tickets:
   reference loop, `vxn-core-clap` `dispatch_event`.
 - Out of scope: the binary codec proper (0037), the permanent audio-host
   (0038), input sources (E017).
+
+## Close-out (2026-06-14)
+
+- **SPSC SAB ring + drain.** Lock-free ring over a `SharedArrayBuffer`
+  (monotonic slot counters masked to a power-of-two index, `Atomics`
+  release-store-after-write / acquire-load-before-read, **no `Atomics.wait`
+  on the render thread**) in
+  [event-ring.mjs](../../vxn-1/crates/vxn-wasm/web/event-ring.mjs), imported
+  verbatim by both the worklet
+  ([vxn-processor-0035.js](../../vxn-1/crates/vxn-wasm/web/vxn-processor-0035.js))
+  and the Node harness — one code path. Framing: fixed **16-byte slots**,
+  capacity **1024 slots = 16 KiB** (~8 quanta headroom).
+- **Worklet block-slicing = CLAP parity.** Added
+  `vxn_process_slice(ptr,start,end)` + `vxn_set_param(ptr,idx,value)` to
+  [lib.rs](../../vxn-1/crates/vxn-wasm/src/lib.rs) (existing exports kept,
+  engine untouched). Drain → apply-at-offset → render sub-slice mirrors
+  [vxn-clap/src/lib.rs:335-369](../../vxn-1/crates/vxn-clap/src/lib.rs#L335-L369).
+  Harness proves **0-frame onset error at every offset 0…127** — exact
+  sample accuracy.
+- **Jitter measured vs block-start (postMessage-equiv):** sliced 0 µs vs
+  block-start **up to 127 frames = 2645.8 µs** @ 48 kHz. Slicing-fidelity
+  decision: **full per-event slicing** (the gap justifies the negligible
+  CPU cost). Overflow policy: **block-writer, never drop** (musical events
+  must not be lost). Dense-stream stress: 48 000 events, 0 dropped / 0
+  reordered; forced overflow refuses then recovers.
+- **Isolation: GO.** COOP `same-origin` + COEP `require-corp` (+ CORP
+  `same-origin`) via [serve-coep.mjs](../../vxn-1/crates/vxn-wasm/serve-coep.mjs)
+  flips `crossOriginIsolated` to `true` and makes `SharedArrayBuffer`
+  constructible. Fallback if ever unavailable: `postMessage` block-start,
+  budgeted ~2.65 ms onset jitter.
+- **Writeup:** [SPIKE-0035-findings.md](../../vxn-1/crates/vxn-wasm/SPIKE-0035-findings.md)
+  records framing / slicing / overflow / isolation decisions feeding
+  0037/0038. Headless Node proof
+  ([harness-0035.mjs](../../vxn-1/crates/vxn-wasm/harness-0035.mjs)): all
+  checks pass, ~50× realtime at 8 sliced events/quantum. Browser audibility
+  ([index-0035.html](../../vxn-1/crates/vxn-wasm/web/index-0035.html)) is a
+  manual check (this env is headless).

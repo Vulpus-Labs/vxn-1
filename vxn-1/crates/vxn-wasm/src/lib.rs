@@ -74,6 +74,47 @@ pub unsafe extern "C" fn vxn_process(ptr: *mut Instance) {
     }
 }
 
+// --- ticket 0035: sub-block slicing + mid-block param events ---------------
+//
+// `Synth::process` renders contiguous slices only; sample-accuracy is owned by
+// the host — exactly the CLAP shell's contract (vxn-clap/src/lib.rs:335-369).
+// The worklet drains the SAB event ring, applies each event at its sample
+// offset, and renders `[prev..k)` between events. These exports give the JS
+// host the primitives to do that with no change to the engine.
+
+/// Render the sub-range `[start, end)` of the current quantum into the
+/// instance's output buffers. The worklet calls this once per slice between
+/// applied events, mirroring `synth.process(&mut l[start..end], ...)` in the
+/// CLAP loop. `start`/`end` are clamped to `[0, QUANTUM]`; a non-positive span
+/// is a no-op (matches the `if start < end` guard in the plugin).
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn_process_slice(ptr: *mut Instance, start: u32, end: u32) {
+    if let Some(inst) = unsafe { ptr.as_mut() } {
+        let s = (start as usize).min(QUANTUM);
+        let e = (end as usize).min(QUANTUM);
+        if s < e {
+            inst.synth
+                .process(&mut inst.out_l[s..e], &mut inst.out_r[s..e]);
+        }
+    }
+}
+
+/// Set a parameter by CLAP id, effective on the next rendered slice. Mirrors
+/// the `synth.set_param(idx, value)` the CLAP shell makes inside the event
+/// batch, before rendering the slice that follows it.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn_set_param(ptr: *mut Instance, index: u32, value: f32) {
+    if let Some(inst) = unsafe { ptr.as_mut() } {
+        inst.synth.set_param(index as usize, value);
+    }
+}
+
 /// Pointer to the left-channel output buffer (`QUANTUM` f32s) in linear
 /// memory. JS copies from here after each [`vxn_process`].
 ///
