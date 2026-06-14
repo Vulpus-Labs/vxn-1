@@ -2,7 +2,7 @@
 id: E015
 product: vxn-2
 title: "vxn-1 web port — event-driven core (audio-thread event model)"
-status: open
+status: closed
 created: 2026-06-14
 depends-on: null
 ---
