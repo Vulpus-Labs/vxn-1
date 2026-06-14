@@ -1,29 +1,34 @@
 ---
 name: open-ticket
-description: Scaffold a new vxn-2 ticket — next id, frontmatter, and the Summary/Acceptance-criteria/Notes skeleton. Use when the user says "open a ticket", "new ticket", "/open-ticket", or asks to file a vxn-2 ticket.
+description: Scaffold a new worklist ticket — next id, frontmatter (incl. product), and the Summary/Acceptance-criteria/Notes skeleton. Use when the user says "open a ticket", "new ticket", "/open-ticket", or asks to file a ticket.
 ---
 
-# Open a new vxn-2 ticket
+# Open a new ticket
 
-Create a ticket in `vxn-2/tickets/open/`. Gather the topic from the user's request; ask for anything essential that's missing (at minimum a title and what the work is).
+Create a ticket in the unified worklist at repo root `tickets/open/`. The worklist spans both products — every ticket carries a `product:` field (`vxn-1` or `vxn-2`). Gather the topic from the user's request; ask for anything essential that's missing (at minimum a title, which product, and what the work is).
 
 ## Steps
 
-1. **Next id.** Scan both `vxn-2/tickets/open/` and `vxn-2/tickets/closed/` filenames, take the highest 4-digit prefix, add 1, zero-pad to 4 digits:
+1. **Next id.** Single global counter across the whole worklist. Scan `tickets/open/` (and `tickets/closed/` if it exists), take the highest 4-digit prefix, add 1, zero-pad to 4 digits:
 
    ```bash
-   ls vxn-2/tickets/open vxn-2/tickets/closed | grep -oE '^[0-9]{4}' | sort -n | tail -1
+   ls tickets/open tickets/closed 2>/dev/null | grep -oE '^[0-9]{4}' | sort -n | tail -1
    ```
 
-2. **Slug.** Kebab-case the title, trimmed to something short. Filename = `NNNN-<slug>.md`.
+   Ids are not per-product — the next number follows the global max regardless of product.
 
-3. **Epic.** If the work belongs to an open epic (`vxn-2/epics/open/EXXX-*.md`), set `epic:` to that id and link it from the Summary. Otherwise `epic: null`.
+2. **Product.** Determine whether the work is `vxn-1` or `vxn-2` (ask if unclear). This sets the `product:` field and the relative paths to source.
 
-4. **Write the file** with this skeleton (match existing tickets' style — file-referenced, specific, DSP-vs-UX called out where relevant):
+3. **Slug.** Kebab-case the title, trimmed to something short. Filename = `NNNN-<slug>.md`.
+
+4. **Epic.** If the work belongs to an open epic (`epics/open/EXXX-*.md` — match on the epic's own `product:`), set `epic:` to that id and link it from the Summary. Otherwise `epic: null`.
+
+5. **Write the file** with this skeleton (match existing tickets' style — file-referenced, specific, DSP-vs-UX called out where relevant):
 
    ```markdown
    ---
    id: "NNNN"
+   product: <vxn-1 or vxn-2>
    title: "<full descriptive title>"
    priority: medium
    created: YYYY-MM-DD
@@ -34,8 +39,8 @@ Create a ticket in `vxn-2/tickets/open/`. Gather the topic from the user's reque
    ## Summary
 
    <What's wrong / what's needed and why. Reference real code with
-   [file.rs:line](../../crates/.../file.rs#L42) links. If it belongs to an
-   epic, link it: Nth ticket of [EXXX](../../epics/open/EXXX-name.md).>
+   [file.rs:line](../../<product>/crates/.../file.rs#L42) links. If it belongs to
+   an epic, link it: Nth ticket of [EXXX](../../epics/open/EXXX-name.md).>
 
    ## Acceptance criteria
 
@@ -49,9 +54,10 @@ Create a ticket in `vxn-2/tickets/open/`. Gather the topic from the user's reque
 
    Use today's date (check the environment's current date). Include a `## Design` section between Summary and Acceptance criteria when the approach isn't obvious from the Summary.
 
-5. **Don't commit** unless asked — a freshly-opened ticket is usually staged alongside its first work commit.
+6. **Don't commit** unless asked — a freshly-opened ticket is usually staged alongside its first work commit.
 
 ## Notes
 
+- `product:` is required — it determines source paths (`../../<product>/crates/...`) and the commit scope used when the ticket is closed.
 - `depends:` lists ticket ids this one blocks on; leave `[]` if none.
 - `priority:` is `low`/`medium`/`high` — default `medium` unless the user says otherwise.

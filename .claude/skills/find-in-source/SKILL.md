@@ -19,8 +19,12 @@ crates/
   vxn2-osc-bench/ oscillator benchmark harness.
 xtask/            build/bundle/install automation (see [[vxn2-xtask-flat-workspace]]).
 PARAMETERS.md     canonical param-table reference.
-adrs/  epics/  tickets/   design records + work tracking.
+adrs/             vxn-2 design records (ADRs stay per-product under vxn-2/).
 ```
+
+Work tracking lives in the **unified worklist at repo root**, not under `vxn-2/`:
+`tickets/{open,closed}/` and `epics/{open,closed}/` cover both products; each item's
+`product:` frontmatter field (`vxn-1`/`vxn-2`) says which synth it belongs to.
 
 ## DSP — `crates/vxn2-dsp/src/`
 
