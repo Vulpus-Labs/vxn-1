@@ -11,6 +11,11 @@
 
 use vxn_engine::Synth;
 
+// 0037: binary event codec (Rust half). Typed encode/decode over the 0035
+// 16-byte slot framing, plus `apply(event, &mut Synth)` with dispatch parity
+// to vxn-core-clap::dispatch_event. The JS half is web/event-codec.mjs.
+pub mod codec;
+
 /// Web Audio render-quantum size. AudioWorklet always calls `process()`
 /// with 128-frame planar buffers.
 const QUANTUM: usize = 128;

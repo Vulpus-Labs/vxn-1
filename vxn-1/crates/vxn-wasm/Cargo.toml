@@ -14,3 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 vxn-engine = { workspace = true }
+# 0037: single source of truth for the 165-id CLAP param layout + KeyMode.
+# Proven wasm-clean by the 0036 probe (ADR 0009). Used for id-layout constants,
+# patch/global_clap_id, KeyMode, and norm->plain conversion in the decoder.
+vxn-app = { workspace = true }

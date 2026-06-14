@@ -2468,6 +2468,7 @@ dependencies = [
 name = "vxn-wasm"
 version = "0.0.8"
 dependencies = [
+ "vxn-app",
  "vxn-engine",
 ]
 

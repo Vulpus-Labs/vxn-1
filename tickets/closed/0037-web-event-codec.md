@@ -66,3 +66,42 @@ the web path applies events to `Synth` identically to the plugin.
   render loop) and the input adapters in E017 (encoders).
 - Out of scope: the ring buffer itself (0035→0038), param-store atomics
   (0039).
+
+## Close-out (2026-06-14)
+
+- **One layout, two implementations** over the frozen 0035 16-byte LE
+  fixed-slot framing (byte-for-byte, no new layout invented).
+  - Rust: [codec.rs](../../vxn-1/crates/vxn-wasm/src/codec.rs) — typed
+    `Event` enum, zero-copy `decode(&[u8])`, alloc-free
+    `encode`/`encode_into([u8;16])`, `apply(event,&mut Synth)`,
+    `decode_and_apply`; wired into [lib.rs](../../vxn-1/crates/vxn-wasm/src/lib.rs).
+  - JS: [event-codec.mjs](../../vxn-1/crates/vxn-wasm/web/event-codec.mjs) —
+    `encodeInto`/`encode`/`decode`, typed `ev.*` constructors, and the
+    exported id-layout constants (now the single source of truth that
+    [param-store.mjs](../../vxn-1/crates/vxn-wasm/web/param-store.mjs)
+    imports).
+- **Event set + tags:** note_on(1)/note_off(2)/param(3)/pitch_bend(4)/
+  mod_wheel(5)/sustain(6)/key_mode(7)/split_point(8) (the 0035 reserved
+  set) + gesture_begin(9)/gesture_end(10). **norm vs plain:** one EV_PARAM
+  tag, `flag = PARAM_FLAG_NORM(1)` selects norm; decoder converts norm→plain
+  via `ParamDesc::from_normalized` (engine + SAB carry plain, ADR 0009 §2).
+  **gestures** round-trip but `apply()` no-ops them on the Synth (a
+  controller/host-echo concern, not rendering). key_mode/split_point ride in
+  `flag` as non-automatable shared state.
+- **Dispatch parity:** `apply()` replicates `vxn_core_clap::dispatch_event`
+  and the `SynthNotes` adapter
+  ([events.rs](../../crates/vxn-core-clap/src/events.rs)). 14-bit-bend /
+  CC1 / CC64 MIDI decoding stays encoder-side (Web MIDI adapter, E017); the
+  codec carries already-normalized values. Test
+  `codec::tests::dispatch_parity_with_clap_reference` decodes a 9-event
+  stream, applies via codec, and asserts identical output across 5 quanta vs
+  the hand-written CLAP-reference calls.
+- **Addressing pulled from vxn-app** (not hardcoded): added `vxn-app` dep to
+  the `vxn-wasm` crate; `id_layout_matches_vxn_app` asserts 165 = 69×2 + 27.
+  Adding the dep kept the wasm build clean (confirms 0036's wasm-clean
+  finding).
+- **Tests:** `cargo test -p vxn-wasm` 9/9 (golden encode + decode,
+  round-trip, unknown-tag/short-buffer→None, id-layout, gesture no-op,
+  norm→plain, dispatch parity); `node web/event-codec.test.mjs` 6/6 (same
+  golden byte table as the Rust side, non-zero slot base, forward-compat);
+  `cargo build … --target wasm32-unknown-unknown --release` clean.
