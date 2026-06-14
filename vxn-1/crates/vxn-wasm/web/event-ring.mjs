@@ -103,6 +103,9 @@ export class EventRing {
     this.mask = capacity - 1;
     this.ctrl = new Int32Array(sab, 0, CTRL_I32);
     this.data = new DataView(sab, CTRL_BYTES);
+    // Byte view over the same data region, cached for drainRawInto so the render
+    // thread allocates nothing per quantum.
+    this.bytes = new Uint8Array(sab, CTRL_BYTES);
     this._seq = 0; // producer-local monotonic counter (for drop detection)
   }
 
@@ -189,6 +192,31 @@ export class EventRing {
     }
     Atomics.store(this.ctrl, I_READ, w); // release: slots reclaimed
     return out;
+  }
+
+  // Drain raw wire bytes (the 16-byte slots verbatim, arrival order, wrap
+  // handled) into `dstU8` — a byte view, e.g. over wasm linear memory. Returns
+  // the record COUNT copied. This is the 0038 audio-host path: the ring's bytes
+  // ARE the codec's input, so we copy them straight into the wasm decode scratch
+  // with no per-record JS object churn. Caps at dstU8's record capacity; only
+  // the records actually copied are reclaimed (the rest stay for next drain), so
+  // a too-small destination degrades gracefully rather than dropping events.
+  // Acquire-load writer first; release-store reader after — same SPSC discipline
+  // as drainInto, no Atomics.wait.
+  drainRawInto(dstU8) {
+    const w = Atomics.load(this.ctrl, I_WRITE); // acquire
+    let r = Atomics.load(this.ctrl, I_READ);
+    const maxRecs = (dstU8.length / SLOT_BYTES) | 0;
+    const src = this.bytes;
+    let count = 0;
+    while (r !== w && count < maxRecs) {
+      const sbase = (r & this.mask) * SLOT_BYTES;
+      dstU8.set(src.subarray(sbase, sbase + SLOT_BYTES), count * SLOT_BYTES);
+      r++;
+      count++;
+    }
+    Atomics.store(this.ctrl, I_READ, r); // release: reclaim only what we copied
+    return count;
   }
 }
 
