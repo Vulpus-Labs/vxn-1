@@ -1,0 +1,3 @@
+# Build artifact — produced by `cargo build -p vxn-wasm --target wasm32-...`
+# and copied in by the run steps in README.md. Not source.
+web/vxn_wasm.wasm

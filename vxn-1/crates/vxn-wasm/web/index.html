@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VXN1 WASM spike (0034)</title>
+    <style>
+      body { font: 16px system-ui; max-width: 36rem; margin: 4rem auto; padding: 0 1rem; }
+      button { font-size: 1.2rem; padding: 0.6rem 1.4rem; margin-right: 0.5rem; }
+      #log { white-space: pre-wrap; color: #555; margin-top: 1.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>VXN1 → WASM → AudioWorklet</h1>
+    <p>Feasibility spike for ticket 0034. Click to start audio, then hold a note.</p>
+    <button id="start">Start audio</button>
+    <button id="note" disabled>Hold A4 (note on)</button>
+    <div id="log"></div>
+
+    <script type="module">
+      const log = (m) => (document.getElementById("log").textContent += m + "\n");
+      let ctx, node;
+
+      document.getElementById("start").onclick = async () => {
+        ctx = new AudioContext();
+        // Main thread fetches the wasm + worklet module; the worklet scope can't.
+        const [wasmBytes] = await Promise.all([
+          fetch("./vxn_wasm.wasm").then((r) => r.arrayBuffer()),
+          ctx.audioWorklet.addModule("./vxn-processor.js"),
+        ]);
+        node = new AudioWorkletNode(ctx, "vxn-processor", {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          processorOptions: { wasmBytes },
+        });
+        node.connect(ctx.destination);
+        await ctx.resume();
+        log(`audio started @ ${ctx.sampleRate} Hz`);
+        document.getElementById("note").disabled = false;
+        document.getElementById("start").disabled = true;
+      };
+
+      const noteBtn = document.getElementById("note");
+      const NOTE = 69; // A4
+      const down = () => { node.port.postMessage({ type: "noteOn", note: NOTE, velocity: 1.0 }); log("note on"); };
+      const up = () => { node.port.postMessage({ type: "noteOff", note: NOTE }); log("note off"); };
+      noteBtn.addEventListener("mousedown", down);
+      noteBtn.addEventListener("mouseup", up);
+      noteBtn.addEventListener("mouseleave", up);
+    </script>
+  </body>
+</html>

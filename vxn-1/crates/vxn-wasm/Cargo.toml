@@ -1,0 +1,16 @@
+# Throwaway WASM spike (ticket 0034). Raw C-ABI cdylib — no wasm-bindgen —
+# so the module instantiates cleanly inside an AudioWorklet scope.
+[package]
+name = "vxn-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1 WASM/browser feasibility spike: Synth::process exposed over a C ABI."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vxn-engine = { workspace = true }

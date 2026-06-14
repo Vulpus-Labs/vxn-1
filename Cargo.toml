@@ -13,6 +13,7 @@ members = [
     "vxn-1/crates/vxn-app",
     "vxn-1/crates/vxn-clap",
     "vxn-1/crates/vxn-ui-web",
+    "vxn-1/crates/vxn-wasm",
     "vxn-1/xtask",
 
     # vxn-2 (synth #2, in-flight).
