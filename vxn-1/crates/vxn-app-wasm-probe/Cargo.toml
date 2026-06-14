@@ -1,0 +1,19 @@
+# Throwaway probe (ticket 0036). Forces the whole `vxn-app` + `vxn-core-app`
+# controller dependency tree through `wasm32-unknown-unknown` to answer the
+# controller-placement fork in ADR 0009. NOT shipped — exists only to gauge
+# build feasibility + size. Raw C-ABI cdylib, no wasm-bindgen (mirrors 0034).
+[package]
+name = "vxn-app-wasm-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "0036 probe: compile vxn-app's MVC Controller to wasm32-unknown-unknown."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vxn-app = { workspace = true }
