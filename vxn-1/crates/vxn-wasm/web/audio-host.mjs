@@ -54,6 +54,23 @@ export class AudioHost {
     this.splitPoint = note & 0xff;
   }
 
+  // Rebuild the engine at a new sample rate (context sample-rate change, 0040).
+  setSampleRate(sr) {
+    this.x.vxn_host_set_sample_rate(this.host, sr);
+  }
+
+  // All-notes-off / clear voices without touching ring or store (0040): used on
+  // resume-after-suspend and on re-init recovery to avoid stuck notes.
+  reset() {
+    this.x.vxn_host_reset(this.host);
+  }
+
+  // Test hook (0040): arm a forced wasm trap on the next process(), so the trap-
+  // safety boundary can be exercised headlessly. No-op in production paths.
+  armTrap() {
+    this._armTrap = true;
+  }
+
   // Byte view over the wasm event scratch. Re-derived each quantum because a
   // wasm memory growth detaches any cached typed array — the same reason the
   // 0034/0035 code re-derives its output views every process().
@@ -68,6 +85,13 @@ export class AudioHost {
   // Render one quantum into `outL`/`outR` (Float32Array, length Q). Returns the
   // number of events drained this quantum (instrumentation).
   process(outL, outR) {
+    // Test hook: trigger a render-thread trap so the worklet boundary's catch +
+    // recovery path can be proven (0040). The trap throws out of process().
+    if (this._armTrap) {
+      this._armTrap = false;
+      this.x.vxn_host_force_trap();
+    }
+
     // (1) Param store fold: apply current-value drift to the engine block-start.
     if (this.store) applyStoreToEngine(this.store, this.engine, this.workletSeen);
 

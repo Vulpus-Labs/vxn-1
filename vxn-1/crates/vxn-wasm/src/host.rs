@@ -160,6 +160,41 @@ pub unsafe extern "C" fn vxn_host_set_param(ptr: *mut Host, index: u32, value: f
     }
 }
 
+/// Rebuild the engine at a new sample rate (context sample-rate change). The
+/// AudioWorklet `sampleRate` is fixed per context, so in practice this is hit by
+/// a context teardown/rebuild or offline render; wired for completeness (0040).
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn_host_set_sample_rate(ptr: *mut Host, sample_rate: f32) {
+    if let Some(h) = unsafe { ptr.as_mut() } {
+        h.synth.set_sample_rate(sample_rate);
+    }
+}
+
+/// All-notes-off / clear voice state without freeing the host or touching the
+/// ring/store. The worklet calls this on resume-after-suspend to avoid stuck
+/// notes (0040), and on re-init recovery.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn_host_reset(ptr: *mut Host) {
+    if let Some(h) = unsafe { ptr.as_mut() } {
+        h.synth.reset();
+    }
+}
+
+/// **Test-only**: force a wasm trap (Rust panic → `unreachable` on wasm →
+/// `WebAssembly.RuntimeError` in JS). Exists so the 0040 trap-safety harness can
+/// prove the worklet boundary catches a render-thread trap and recovers. Never
+/// called in production.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn_host_force_trap() {
+    panic!("forced trap (0040 trap-safety test)");
+}
+
 /// Render one quantum: apply `key_mode`/`split_point` once, then slice the block
 /// at the offsets of the first `n_events` records in the scratch and render each
 /// slice. Output lands in the buffers exposed by [`vxn_host_out_l`] /
@@ -354,6 +389,47 @@ mod tests {
         host.render(0, 0, 60);
         assert!(host.out_l.iter().all(|&s| s == 0.0));
         assert!(host.out_r.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn reset_clears_sounding_voices() {
+        // A held note then reset must silence the engine — proves the lifecycle
+        // reset (resume-after-suspend / re-init) clears voice state.
+        let mut host = Host::new(48_000.0);
+        load(
+            &mut host,
+            &[Event::NoteOn {
+                offset: 0,
+                note: 60,
+                velocity: 1.0,
+            }],
+        );
+        host.render(1, 0, 60);
+        assert!(onset(&host.out_l).is_some(), "note should sound before reset");
+        host.synth.reset();
+        host.render(0, 0, 60);
+        assert!(
+            host.out_l.iter().all(|&s| s == 0.0),
+            "reset did not clear the sounding voice"
+        );
+    }
+
+    #[test]
+    fn set_sample_rate_keeps_rendering() {
+        // Changing sample rate must leave the host renderable (no panic, audio
+        // still produced) — the engine rebuilds its rate-dependent state.
+        let mut host = Host::new(48_000.0);
+        host.synth.set_sample_rate(44_100.0);
+        load(
+            &mut host,
+            &[Event::NoteOn {
+                offset: 0,
+                note: 60,
+                velocity: 1.0,
+            }],
+        );
+        host.render(1, 0, 60);
+        assert!(onset(&host.out_l).is_some(), "no audio after sample-rate change");
     }
 
     #[test]

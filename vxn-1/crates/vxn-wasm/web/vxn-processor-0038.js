@@ -1,50 +1,57 @@
-// AudioWorkletProcessor for the production audio-host (ticket 0038).
+// AudioWorkletProcessor for the production audio-host (tickets 0038 + 0040).
 //
-// The 0035 worklet drove the slice loop from JS (renderQuantumSliced) with a
-// per-slice/per-event call back into wasm. This one hands the whole quantum to
-// the Rust host (vxn_host_render) via the shared AudioHost driver — one wasm
-// boundary crossing per quantum. The drain + decode + slice + render now live in
-// wasm; this file is just the lifecycle + buffer plumbing.
+// 0038 built the render loop (one vxn_host_render per quantum); 0040 wraps it in
+// the lifecycle runner (host-runner.mjs): instantiate-from-bytes, silence-until-
+// ready, sample-rate, suspend/resume reset, teardown, and render-thread trap
+// safety. This file is just the worklet shell around that shared runner.
 //
 // AudioWorklet module scope supports static ESM imports (resolved by
 // audioWorklet.addModule) but has no fetch: the main thread hands us the wasm
 // bytes plus the ring/store SABs through processorOptions. Instantiation is the
-// raw WebAssembly.instantiate from 0034 — no wasm-bindgen, which keeps the
-// module clean in the worklet scope.
+// raw WebAssembly.instantiate from 0034 — no wasm-bindgen.
 
-import { AudioHost } from "./audio-host.mjs";
+import { WorkletHostRunner } from "./host-runner.mjs";
 
 class VxnHostProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    this.ready = false;
-    this.host = null;
+    this.alive = true;
 
     const opts = options.processorOptions;
-    // Controller -> worklet messages: non-automatable shared state (key mode,
-    // split point). Params/notes flow over the ring, not the port.
+    this.runner = new WorkletHostRunner({
+      wasmBytes: opts.wasmBytes,
+      ringSab: opts.ringSab,
+      storeSab: opts.storeSab, // optional
+      sampleRate, // worklet global
+      capacity: opts.capacity,
+      // Surface lifecycle to the main thread (E016/E018 react to these).
+      onReady: () => this.port.postMessage({ type: "ready" }),
+      onTrap: (e, count) =>
+        this.port.postMessage({ type: "trap", message: String(e && e.message || e), count }),
+    });
+
+    // Controller -> worklet lifecycle + shared-state messages. Params/notes flow
+    // over the ring, not the port. Messages sent before ready are still honoured:
+    // the runner buffers key-mode/split and applies them on instantiate.
     this.port.onmessage = (e) => {
       const m = e.data;
-      if (!this.host) return;
-      if (m.type === "keyMode") this.host.setKeyMode(m.value);
-      else if (m.type === "splitPoint") this.host.setSplitPoint(m.value);
+      switch (m.type) {
+        case "keyMode": this.runner.setKeyMode(m.value); break;
+        case "splitPoint": this.runner.setSplitPoint(m.value); break;
+        case "sampleRate": this.runner.setSampleRate(m.value); break;
+        case "reset": this.runner.reset(); break; // resume-after-suspend
+        case "destroy": this.runner.destroy(); this.alive = false; break;
+        default: break;
+      }
     };
 
-    WebAssembly.instantiate(opts.wasmBytes, {}).then(({ instance }) => {
-      this.host = new AudioHost(instance.exports, {
-        ringSab: opts.ringSab,
-        storeSab: opts.storeSab, // optional: omit to run without the param store
-        sampleRate, // worklet global
-        capacity: opts.capacity,
-      });
-      this.ready = true;
-    });
+    this.runner.init(); // async; process() renders silence until it resolves
   }
 
   process(_inputs, outputs) {
+    if (!this.alive) return false; // teardown: let the node be collected
     const out = outputs[0];
-    if (!this.ready) return true; // silence until wasm is live
-    this.host.process(out[0], out[1]);
+    this.runner.process(out[0], out[1]); // silence-until-ready + trap-safe
     return true;
   }
 }
