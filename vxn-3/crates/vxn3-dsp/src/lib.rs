@@ -1,7 +1,12 @@
 //! VXN3 DSP kernels — framework-free synthesis primitives.
 //!
-//! Deliberately empty at the 0046 skeleton stage. The `Kick/Tone` (poly),
-//! `Metal` (modal resonator), and `Noise` engine kernels land in 0047 / 0049
-//! (epic E021). This crate exists now so the workspace split
-//! (`dsp` → `engine` → `clap`) mirrors vxn-1 / vxn-2 and every later slice has
-//! somewhere to land.
+//! Lane-parallel SoA kernels live in the engine layer (`vxn3-engine`); this
+//! crate carries the shared math they build on: the Q32 phase oscillator
+//! ([`sine`]) and the branchless drum-envelope coefficients ([`env`]). The
+//! `Metal` (modal resonator) and `Noise` primitives land in 0049.
+
+pub mod env;
+pub mod sine;
+
+pub use env::{SILENCE_EPS, attack_coef, decay_coef};
+pub use sine::{PHASE_SCALE, fast_sine_01, fast_sine_q32, note_to_freq, phase_inc_hz};
