@@ -180,7 +180,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     processors stay out of the shipped bundle. The production worklet
     //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 8] = [
+    const MODULES: [(&str, &str); 11] = [
         ("event-ring.mjs", "event-ring.mjs"),
         ("event-codec.mjs", "event-codec.mjs"),
         ("param-store.mjs", "param-store.mjs"),
@@ -192,6 +192,12 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // The controller wasm glue (ticket 0044): instantiates the controller
         // module, posts UiEvent opcodes, drains ViewEvents, mirrors the SAB.
         ("controller.mjs", "controller.mjs"),
+        // E017 input adapters (tickets 0053-0056): browser input → E015 ring
+        // producers. The faceplate (E018) imports attachMidi / attachKeyboard /
+        // attachKeyMode. .test.mjs suites stay out of the bundle as usual.
+        ("midi-input.mjs", "midi-input.mjs"),
+        ("keyboard-input.mjs", "keyboard-input.mjs"),
+        ("key-mode.mjs", "key-mode.mjs"),
     ];
     for (src, dest) in MODULES {
         let from = web_src.join(src);
