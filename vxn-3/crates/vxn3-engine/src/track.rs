@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use crate::engines::KickTone;
-use crate::sequencer::{Pattern, STEP_BEATS};
+use crate::lane::Hit;
+use crate::sequencer::Pattern;
 use crate::swap::EngineSwap;
 use crate::track_engine::TrackEngine;
 
@@ -51,40 +52,23 @@ impl Track {
         (self.gain * angle.cos(), self.gain * angle.sin())
     }
 
-    /// Render this track for the block into its mono scratch, scheduling trigs
-    /// sample-accurately by slicing the block at the 16th-note boundaries that
-    /// fall inside it. `engine`, `pattern`, and `mono` are disjoint fields so we
-    /// borrow them independently. Allocation-free.
-    pub fn render_block(&mut self, beat0: f64, bps: f64, playing: bool, frames: usize) {
+    /// Render this track for the block into its mono scratch, applying the
+    /// pre-scheduled `hits` sample-accurately by slicing the render at each hit's
+    /// frame offset. `hits` are frame-ordered and clamped to `[0, frames]` by the
+    /// scheduler ([`crate::lane`]). Allocation-free.
+    pub fn render_with_hits(&mut self, hits: &[Hit], frames: usize) {
         let frames = frames.min(self.mono.len());
         let engine: &mut dyn TrackEngine = &mut *self.engine;
-        let pattern = &self.pattern;
         let mono = &mut self.mono[..frames];
 
         let mut pos = 0usize;
-        if playing && bps > 0.0 {
-            let beat_end = beat0 + frames as f64 * bps;
-            // First 16th boundary at or after the block start. The half-open
-            // interval [beat0, beat_end) means a boundary on the block edge
-            // fires in exactly one block — no double trigs across boundaries.
-            let mut i = (beat0 / STEP_BEATS).ceil() as i64;
-            loop {
-                let bb = i as f64 * STEP_BEATS;
-                if bb >= beat_end {
-                    break;
-                }
-                let frame =
-                    (((bb - beat0) / bps).round() as i64).clamp(0, frames as i64) as usize;
-                if frame > pos {
-                    engine.render(&mut mono[pos..frame]);
-                    pos = frame;
-                }
-                let step = pattern.step_at(i);
-                if step.active {
-                    engine.on_trig(step.note, step.velocity);
-                }
-                i += 1;
+        for h in hits {
+            let f = h.frame.min(frames);
+            if f > pos {
+                engine.render(&mut mono[pos..f]);
+                pos = f;
             }
+            engine.on_trig(h.note, h.velocity);
         }
         engine.render(&mut mono[pos..frames]);
     }

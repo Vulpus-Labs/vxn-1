@@ -1,22 +1,81 @@
-//! The step sequencer — per-track step grid (ADR 0001 §2).
+//! The step sequencer data model (ADR 0001 §2).
 //!
-//! 0047 is the basic case: a fixed 16-step grid of plain on/off trigs at a
-//! 16th-note resolution, each step carrying a note + velocity. Per-track *length*
-//! (polymeter), probability, and retrig n-over-m land in 0048 — `Pattern::len`
-//! is already per-track so polymeter is a small extension, not a rewrite.
+//! A pattern is **one track's** independent lane: its own step count *and* its
+//! own lane-local tick (step duration in beats), so tracks with different
+//! lengths/divisors phase against each other — polymeter "for free". The grid is
+//! pure data; the stateful per-block resolution (phase, probability, retrig,
+//! transport-jump resync) lives in [`crate::lane`].
 //!
-//! The grid is *position*, not time: the instrument engine maps the host beat
-//! clock onto step indices and schedules trigs sample-accurately (see
-//! [`crate::engine`]). The sequencer here is pure data.
+//! Trig **attributes** (probability, retrig n/m/curve/velocity ramp) live on the
+//! step — they have no base to revert to. Continuous params that *do* have a
+//! base get p-locked in 0050; that split is deliberate (ADR 0001 §3a).
 
-/// Steps per quarter-note beat. 16th-note grid.
-pub const STEPS_PER_BEAT: f64 = 4.0;
-/// Length of one step in beats.
-pub const STEP_BEATS: f64 = 1.0 / STEPS_PER_BEAT;
-/// Maximum steps in a pattern (the storage ceiling; `len` may be shorter).
+/// One step in a 16th-note's worth of a beat (a common lane-local tick).
+pub const SIXTEENTH: f64 = 0.25;
+/// One step = one straight 8th note.
+pub const EIGHTH: f64 = 0.5;
+/// One step = one 8th-note triplet (3 per beat → triplet feel).
+pub const EIGHTH_TRIPLET: f64 = 1.0 / 3.0;
+/// Maximum steps in a pattern (storage ceiling; `len` may be shorter).
 pub const MAX_STEPS: usize = 16;
 
-/// One step. `active` gates the trig; `note`/`velocity` shape it.
+/// Retrig timing curve — how the `n` hits are spaced across the window.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum RetrigCurve {
+    /// Evenly spaced.
+    #[default]
+    Even,
+    /// Speeding up — gaps shrink over the window (a roll into the next hit).
+    Accel,
+    /// Slowing down — gaps grow over the window.
+    Decel,
+}
+
+impl RetrigCurve {
+    /// Map a normalised index `u = j/n ∈ [0, 1)` to a normalised position in the
+    /// window `[0, 1)`. `pos(0) = 0` always (first hit at the window start).
+    #[inline]
+    pub fn position(self, u: f64) -> f64 {
+        match self {
+            RetrigCurve::Even => u,
+            RetrigCurve::Accel => u.sqrt(), // gaps shrink
+            RetrigCurve::Decel => u * u,    // gaps grow
+        }
+    }
+}
+
+/// Retrig macro on a trig: fire `n` hits across `m` steps (ADR 0001 §2).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Retrig {
+    /// Hit count. `1` (or `0`) = no retrig, a single hit.
+    pub n: u8,
+    /// Window span in lane steps.
+    pub m: u8,
+    /// Timing curve across the window.
+    pub curve: RetrigCurve,
+    /// Velocity at the last hit (the first uses the step's velocity); a ramp.
+    pub vel_end: f32,
+}
+
+impl Default for Retrig {
+    fn default() -> Self {
+        Self {
+            n: 1,
+            m: 1,
+            curve: RetrigCurve::Even,
+            vel_end: 1.0,
+        }
+    }
+}
+
+impl Retrig {
+    #[inline]
+    pub fn is_retrig(&self) -> bool {
+        self.n >= 2 && self.m >= 1
+    }
+}
+
+/// One step: a gated trig plus its attributes.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Step {
     pub active: bool,
@@ -24,6 +83,9 @@ pub struct Step {
     pub note: f32,
     /// 0..1.
     pub velocity: f32,
+    /// Fire probability per pass: `>= 1.0` always, `<= 0.0` never.
+    pub probability: f32,
+    pub retrig: Retrig,
 }
 
 impl Default for Step {
@@ -32,16 +94,21 @@ impl Default for Step {
             active: false,
             note: 36.0, // C2
             velocity: 1.0,
+            probability: 1.0,
+            retrig: Retrig::default(),
         }
     }
 }
 
-/// A track's step grid.
+/// A track's lane: step grid + length + lane-local tick.
 #[derive(Copy, Clone, Debug)]
 pub struct Pattern {
     pub steps: [Step; MAX_STEPS],
-    /// Active length in steps (≤ [`MAX_STEPS`]). Per-track → polymeter in 0048.
+    /// Active length in steps (≤ [`MAX_STEPS`]). Different per track → polymeter.
     pub len: usize,
+    /// Lane-local tick: duration of one step in quarter-note beats. Different per
+    /// track → tracks run at different rates and phase.
+    pub step_beats: f64,
 }
 
 impl Default for Pattern {
@@ -49,19 +116,35 @@ impl Default for Pattern {
         Self {
             steps: [Step::default(); MAX_STEPS],
             len: MAX_STEPS,
+            step_beats: SIXTEENTH,
         }
     }
 }
 
 impl Pattern {
-    /// Enable a step with the given note/velocity (no-op if out of range).
+    /// Enable a step with note/velocity (probability 1.0, no retrig).
     pub fn set(&mut self, index: usize, note: f32, velocity: f32) {
         if index < MAX_STEPS {
-            self.steps[index] = Step {
-                active: true,
-                note,
-                velocity,
-            };
+            let s = &mut self.steps[index];
+            s.active = true;
+            s.note = note;
+            s.velocity = velocity;
+        }
+    }
+
+    /// Set a step's fire probability (enables it).
+    pub fn set_probability(&mut self, index: usize, probability: f32) {
+        if index < MAX_STEPS {
+            self.steps[index].active = true;
+            self.steps[index].probability = probability;
+        }
+    }
+
+    /// Set a step's retrig macro (enables it).
+    pub fn set_retrig(&mut self, index: usize, retrig: Retrig) {
+        if index < MAX_STEPS {
+            self.steps[index].active = true;
+            self.steps[index].retrig = retrig;
         }
     }
 
@@ -72,10 +155,12 @@ impl Pattern {
         }
     }
 
-    /// The step at a global 16th index, wrapped into this pattern's length.
+    /// The step at a global lane index, wrapped into this pattern's length.
+    /// `len` is clamped to `[1, MAX_STEPS]` so an out-of-range `len` can't index
+    /// past the storage.
     #[inline]
     pub fn step_at(&self, global_index: i64) -> Step {
-        let len = self.len.max(1) as i64;
+        let len = self.len.clamp(1, MAX_STEPS) as i64;
         self.steps[global_index.rem_euclid(len) as usize]
     }
 }

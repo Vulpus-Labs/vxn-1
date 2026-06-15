@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::lane::{Hit, LaneState};
 use crate::sequencer::Pattern;
 use crate::swap::EngineSwap;
 use crate::track::Track;
@@ -19,10 +20,21 @@ use crate::transport::Transport;
 /// Fixed track count (ADR 0001 — eight tracks for the minimal-techno kit).
 pub const N_TRACKS: usize = 8;
 
+/// Per-track per-block hit-buffer capacity. Generous vs. the realistic worst
+/// case (a fast lane + a dense retrig in one block); the scheduler drops beyond
+/// this rather than allocate.
+const HIT_CAPACITY: usize = 256;
+
 pub struct Engine {
     sample_rate: f32,
     transport: Transport,
     tracks: Vec<Track>,
+    /// Per-track sequencer state (polymeter phase, probability RNG, in-flight
+    /// retrig). Parallel to `tracks`.
+    lanes: Vec<LaneState>,
+    /// Reused per-track scratch for one block's scheduled hits — pre-allocated,
+    /// cleared (not freed) each use, so scheduling never allocates.
+    hits: Vec<Hit>,
     /// Beat position used when the host exposes no beats timeline — advanced by
     /// the block length each playing block so the sequencer free-runs.
     free_run_beats: f64,
@@ -34,10 +46,13 @@ impl Engine {
         let tracks = (0..N_TRACKS)
             .map(|_| Track::new(sample_rate, max_block))
             .collect();
+        let lanes = (0..N_TRACKS).map(LaneState::new).collect();
         Self {
             sample_rate,
             transport: Transport::default(),
             tracks,
+            lanes,
+            hits: Vec::with_capacity(HIT_CAPACITY),
             free_run_beats: 0.0,
         }
     }
@@ -99,9 +114,19 @@ impl Engine {
             self.free_run_beats
         };
 
-        for t in &mut self.tracks {
-            t.render_block(beat0, bps, playing, frames);
-            t.mix_into(&mut left[..frames], &mut right[..frames], frames);
+        for t in 0..self.tracks.len() {
+            // Schedule this track's hits (lane state + pattern + hit scratch are
+            // disjoint fields), then render + mix.
+            self.lanes[t].schedule(
+                &self.tracks[t].pattern,
+                beat0,
+                bps,
+                frames,
+                playing,
+                &mut self.hits,
+            );
+            self.tracks[t].render_with_hits(&self.hits, frames);
+            self.tracks[t].mix_into(&mut left[..frames], &mut right[..frames], frames);
         }
 
         if playing {
@@ -109,11 +134,14 @@ impl Engine {
         }
     }
 
-    /// Drop voices / decaying state on every track and rewind the free-run
-    /// clock.
+    /// Drop voices / decaying state on every track, reset lane phase, and rewind
+    /// the free-run clock.
     pub fn reset(&mut self) {
         for t in &mut self.tracks {
             t.reset();
+        }
+        for l in &mut self.lanes {
+            l.reset();
         }
         self.free_run_beats = 0.0;
     }
