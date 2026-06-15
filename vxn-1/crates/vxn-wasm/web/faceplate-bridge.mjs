@@ -288,7 +288,12 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   //    Start affordance drives it — but the controller + bridge can run before
   //    audio is live (param edits just land in the store, applied on first
   //    sound).
-  const host = new WebHost({});
+  // A little render-load meter, bottom-left below the faceplate. The worklet
+  // posts its per-quantum DSP load up the port; WebHost forwards it via onCpu.
+  const cpuMeter = createCpuMeter(document);
+  const host = new WebHost({
+    onCpu: (load, peak) => cpuMeter.update(load, peak),
+  });
 
   // 1b. E017 input adapters → the WebHost producer surface (ring). Web MIDI +
   //     computer keyboard both write notes/CC into the same E015 ring the
@@ -363,6 +368,56 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   // Expose for the page's Start button + E017 input adapters.
   window.__vxnWeb = { host, controller, bridge, start: unlock, input };
   return window.__vxnWeb;
+}
+
+// ---- CPU (render-load) meter -----------------------------------------------
+//
+// A small fixed badge at the bottom-left, below the faceplate: a bar + percent
+// showing the audio thread's per-quantum DSP load (1.0 == the whole deadline).
+// Fed by the worklet's `cpu` port messages via WebHost.onCpu. Self-contained
+// (inline styles, no external CSS) and created once per boot; idempotent if the
+// element already exists (e.g. a re-boot reuses it).
+export function createCpuMeter(doc = globalThis.document) {
+  if (!doc || !doc.body) return { update() {}, el: null };
+  const ID = "vxn-cpu-meter";
+  let el = doc.getElementById(ID);
+  if (!el) {
+    el = doc.createElement("div");
+    el.id = ID;
+    el.style.cssText =
+      "position:fixed;left:10px;bottom:10px;z-index:9999;display:flex;" +
+      "align-items:center;gap:6px;font:11px/1 system-ui,sans-serif;" +
+      "color:#cfd3d8;background:rgba(20,22,26,.78);padding:4px 7px;" +
+      "border-radius:5px;user-select:none;pointer-events:none;";
+    const label = doc.createElement("span");
+    label.textContent = "CPU";
+    label.style.cssText = "opacity:.7;letter-spacing:.04em;";
+    const track = doc.createElement("span");
+    track.style.cssText =
+      "position:relative;width:54px;height:6px;border-radius:3px;" +
+      "background:rgba(255,255,255,.14);overflow:hidden;";
+    const fill = doc.createElement("span");
+    fill.style.cssText =
+      "position:absolute;left:0;top:0;bottom:0;width:0%;background:#46c46e;" +
+      "transition:width .1s linear,background .2s linear;";
+    track.appendChild(fill);
+    const pct = doc.createElement("span");
+    pct.textContent = "—";
+    pct.style.cssText = "min-width:28px;text-align:right;font-variant-numeric:tabular-nums;";
+    el.append(label, track, pct);
+    doc.body.appendChild(el);
+    el._fill = fill;
+    el._pct = pct;
+  }
+  const update = (load, peak) => {
+    const f = el._fill, p = el._pct;
+    const v = Math.max(0, Math.min(1.5, load || 0));
+    f.style.width = `${Math.min(100, v * 100).toFixed(0)}%`;
+    // green < 0.7, amber < 0.9, red beyond — the usual xrun-headroom bands.
+    f.style.background = v < 0.7 ? "#46c46e" : v < 0.9 ? "#e0b341" : "#e0564b";
+    p.textContent = `${Math.round((load || 0) * 100)}%`;
+  };
+  return { update, el };
 }
 
 // ---- DOM text-input popup (0061) -------------------------------------------

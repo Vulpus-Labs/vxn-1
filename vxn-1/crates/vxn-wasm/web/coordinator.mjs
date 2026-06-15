@@ -81,6 +81,7 @@ export class WebHost {
     onReady = () => {},
     onTrap = () => {},
     onState = () => {},
+    onCpu = () => {},
     AudioContextClass = globalThis.AudioContext,
     AudioWorkletNodeClass = globalThis.AudioWorkletNode,
     fetchImpl = globalThis.fetch,
@@ -93,6 +94,7 @@ export class WebHost {
     this._onReady = onReady;
     this._onTrap = onTrap;
     this._onState = onState;
+    this._onCpu = onCpu; // render-load meter: (load, peak) fractions of budget
     this._AudioContext = AudioContextClass;
     this._AudioWorkletNode = AudioWorkletNodeClass;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
@@ -330,6 +332,11 @@ export class WebHost {
         this.ready = false;
         this.trapCount = m.count != null ? m.count : this.trapCount + 1;
         this._onTrap(m.message, this.trapCount);
+        break;
+      case "cpu":
+        // Audio render load (fractions of the per-quantum budget); drives the
+        // CPU meter. Cheap, fire-and-forget — no engine state.
+        this._onCpu(m.load, m.peak);
         break;
       default:
         break;
