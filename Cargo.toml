@@ -32,6 +32,7 @@ members = [
     "vxn-3/crates/vxn3-app",
     "vxn-3/crates/vxn3-ui-web",
     "vxn-3/crates/vxn3-clap",
+    "vxn-3/xtask",
 ]
 
 [workspace.package]
