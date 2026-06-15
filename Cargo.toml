@@ -25,6 +25,10 @@ members = [
     "vxn-2/crates/vxn2-clap",
     "vxn-2/crates/vxn2-osc-bench",
     "vxn-2/xtask",
+
+    # vxn-3 (synth #3, design phase — see vxn-3/adrs/0001). No crates yet.
+    # "vxn-3/crates/vxn3-dsp",
+    # "vxn-3/crates/vxn3-engine",
 ]
 
 [workspace.package]
