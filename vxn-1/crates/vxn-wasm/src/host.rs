@@ -160,6 +160,24 @@ pub unsafe extern "C" fn vxn_host_set_param(ptr: *mut Host, index: u32, value: f
     }
 }
 
+/// Read a param's current PLAIN value by CLAP id. The main-thread coordinator
+/// (ticket 0042) snapshots all 165 of these off a throwaway host to SEED the
+/// 0039 param store with the engine's defaults before the worklet starts —
+/// otherwise the store's zero-initialised slots would fold zeros over every
+/// param on the first quantum (silencing the voice). The real controller wasm
+/// (0044) owns defaults via vxn-app's descriptors; this getter is the headless/
+/// pre-controller seam that keeps the store honest.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn_host_get_param(ptr: *mut Host, index: u32) -> f32 {
+    match unsafe { ptr.as_ref() } {
+        Some(h) => h.synth.params().get_by_clap_id(index as usize),
+        None => 0.0,
+    }
+}
+
 /// Rebuild the engine at a new sample rate (context sample-rate change). The
 /// AudioWorklet `sampleRate` is fixed per context, so in practice this is hit by
 /// a context teardown/rebuild or offline render; wired for completeness (0040).

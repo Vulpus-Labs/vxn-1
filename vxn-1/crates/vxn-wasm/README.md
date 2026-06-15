@@ -31,6 +31,23 @@ cd vxn-1/crates/vxn-wasm/web && python3 -m http.server 8080
 # open http://localhost:8080 -> "Start audio" -> hold "A4"
 ```
 
+## Main-thread coordinator (ticket 0042)
+
+`web/coordinator.mjs` — `class WebHost`, the main-side half of E015: it creates
+the `AudioContext`, loads the worklet, allocates the event-ring + param-store
+SABs, seeds the store with the engine's defaults (so the worklet's first fold
+doesn't zero every param), hands the worklet its wasm bytes, and exposes the
+producer surface (`noteOn`/`noteOff`/`setParam`/…). `vxn_host_get_param` was
+added to the C-ABI so the coordinator can snapshot defaults pre-controller.
+
+```bash
+# headless proof (fake AudioContext runs the REAL runner over the same SABs)
+node vxn-1/crates/vxn-wasm/harness-0042.mjs
+
+# browser: cargo xtask web bundles coordinator.mjs + a booting index.html into
+# target/web-dist/ — serve it with COOP/COEP (ticket 0045), click Start, hold A4.
+```
+
 ## Findings
 
 | Question | Result |

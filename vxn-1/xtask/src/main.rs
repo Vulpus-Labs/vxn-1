@@ -188,13 +188,15 @@ fn web(release: bool) -> Result<(), String> {
     //     processors stay out of the shipped bundle. The production worklet
     //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 6] = [
+    const MODULES: [(&str, &str); 7] = [
         ("event-ring.mjs", "event-ring.mjs"),
         ("event-codec.mjs", "event-codec.mjs"),
         ("param-store.mjs", "param-store.mjs"),
         ("audio-host.mjs", "audio-host.mjs"),
         ("host-runner.mjs", "host-runner.mjs"),
         ("vxn-processor-0038.js", "vxn-processor.js"),
+        // The main-thread coordinator (ticket 0042): the page imports WebHost.
+        ("coordinator.mjs", "coordinator.mjs"),
     ];
     for (src, dest) in MODULES {
         let from = web_src.join(src);
@@ -204,9 +206,10 @@ fn web(release: bool) -> Result<(), String> {
         fs::copy(&from, dist.join(dest)).map_err(io("copy web module"))?;
     }
 
-    // 2c. A generated page. The real AudioContext/coordinator boot is ticket
-    //     0042; until then this documents the bundle + the isolation
-    //     requirement so a stray open() doesn't look broken.
+    // 2c. A generated page that BOOTS the coordinator (ticket 0042): a Start
+    //     gesture constructs WebHost → "audio live", and a Hold button drives a
+    //     test note through the ring. The faceplate (E018) replaces this; the
+    //     COOP/COEP server that makes the SABs available is 0045.
     fs::write(dist.join("index.html"), web_index_html()).map_err(io("write index.html"))?;
 
     println!("web bundle → {}", dist.display());
@@ -228,20 +231,53 @@ fn web_index_html() -> String {
     <style>
       body {{ font: 16px system-ui; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }}
       code {{ background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; }}
+      button {{ font-size: 1.1rem; padding: 0.55rem 1.3rem; margin-right: 0.5rem; }}
       #iso {{ font-weight: 600; }}
+      #log {{ white-space: pre-wrap; color: #555; margin-top: 1.25rem; }}
     </style>
   </head>
   <body>
     <h1>VXN1 → WASM</h1>
-    <p>Build bundle from <code>cargo xtask web</code> (ticket 0041). The
-      AudioContext boot (ticket 0042) and faceplate (E018) land on top of these
-      assets.</p>
+    <p>Bundle from <code>cargo xtask web</code> (0041); coordinator boot is
+      ticket 0042. Click <em>Start</em> on a user gesture, then hold the note.</p>
     <p>cross-origin isolated: <span id="iso">checking…</span></p>
+    <button id="start">Start audio</button>
+    <button id="note" disabled>Hold A4</button>
+    <div id="log"></div>
     <script type="module">
-      const el = document.getElementById("iso");
-      el.textContent = self.crossOriginIsolated ? "yes — SharedArrayBuffer available"
+      import {{ WebHost }} from "./coordinator.mjs";
+
+      const iso = document.getElementById("iso");
+      iso.textContent = self.crossOriginIsolated ? "yes — SharedArrayBuffer available"
         : "no — serve with COOP/COEP (ticket 0045)";
-      el.style.color = self.crossOriginIsolated ? "green" : "crimson";
+      iso.style.color = self.crossOriginIsolated ? "green" : "crimson";
+
+      const log = (m) => (document.getElementById("log").textContent += m + "\n");
+      const startBtn = document.getElementById("start");
+      const noteBtn = document.getElementById("note");
+      let host;
+
+      startBtn.onclick = async () => {{
+        startBtn.disabled = true;
+        host = new WebHost({{
+          onReady: () => {{ log("audio live"); noteBtn.disabled = false; }},
+          onTrap: (msg, n) => log(`trap #${{n}}: ${{msg}}`),
+        }});
+        try {{
+          await host.start();
+          log(`context @ ${{host.ctx.sampleRate}} Hz — waiting for worklet…`);
+        }} catch (e) {{
+          log(`start failed: ${{e.message}}`);
+          startBtn.disabled = false;
+        }}
+      }};
+
+      const NOTE = 69; // A4
+      const down = () => host && host.noteOn(NOTE, 1.0);
+      const up = () => host && host.noteOff(NOTE);
+      noteBtn.addEventListener("mousedown", down);
+      noteBtn.addEventListener("mouseup", up);
+      noteBtn.addEventListener("mouseleave", up);
     </script>
   </body>
 </html>
