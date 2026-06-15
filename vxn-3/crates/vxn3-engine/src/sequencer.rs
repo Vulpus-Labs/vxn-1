@@ -110,10 +110,12 @@ pub enum LockParam {
     Decay,
     Tone,
     Pitch,
+    /// Delay send amount — p-locking this high on a step is the dub throw (0051).
+    Send,
 }
 
 /// Number of lockable params; the lock table and resolver are sized to it.
-pub const N_LOCK_PARAMS: usize = 5;
+pub const N_LOCK_PARAMS: usize = 6;
 
 impl LockParam {
     #[inline]
@@ -124,6 +126,7 @@ impl LockParam {
             LockParam::Decay => 2,
             LockParam::Tone => 3,
             LockParam::Pitch => 4,
+            LockParam::Send => 5,
         }
     }
 }

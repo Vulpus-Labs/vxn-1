@@ -107,6 +107,9 @@
     knobs.appendChild(makeKnob("Pan", -1, 1, 0.01, 0.0, function (v) {
       send("set_pan", { track: t, pan: v });
     }));
+    knobs.appendChild(makeKnob("Send", 0, 1, 0.01, 0.0, function (v) {
+      send("set_send", { track: t, amount: v });
+    }));
     var len = document.createElement("div"); len.className = "len";
     var ll = document.createElement("label"); ll.textContent = "Len";
     var li = document.createElement("input");
@@ -125,6 +128,28 @@
   }
 
   for (var t2 = 0; t2 < NT; t2++) buildTrack(t2);
+
+  // Master strip: the dub delay + (always-on) limiter.
+  (function buildMaster() {
+    var m = document.getElementById("master");
+    var label = document.createElement("span");
+    label.className = "master-label";
+    label.textContent = "DELAY";
+    m.appendChild(label);
+    m.appendChild(makeKnob("Time", 0.125, 1.5, 0.005, 0.75, function (v) {
+      send("set_delay_sync", { beats: v });
+    }));
+    m.appendChild(makeKnob("Fbk", 0, 1.25, 0.01, 0.5, function (v) {
+      send("set_delay_feedback", { value: v });
+    }));
+    m.appendChild(makeKnob("Return", 0, 1, 0.01, 0.35, function (v) {
+      send("set_delay_return", { value: v });
+    }));
+    var lim = document.createElement("span");
+    lim.className = "master-label limiter-on";
+    lim.textContent = "LIMITER ●";
+    m.appendChild(lim);
+  })();
 
   // Playhead + view-event sink (the core calls window.__vxn.applyViewEvents).
   var lastPlay = new Array(NT).fill(-1);

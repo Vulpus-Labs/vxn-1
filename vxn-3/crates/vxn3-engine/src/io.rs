@@ -52,6 +52,14 @@ pub enum EngineCommand {
         step: u8,
         param: LockParam,
     },
+    /// Set a track's delay-send amount (0..1).
+    SetSend { track: u8, amount: f32 },
+    /// Master delay feedback (0..~1.3; >1 self-oscillates).
+    SetDelayFeedback { value: f32 },
+    /// Master delay time as a tempo-synced subdivision in beats.
+    SetDelaySyncBeats { beats: f32 },
+    /// Master delay return level into the mix (0..1).
+    SetDelayReturn { value: f32 },
 }
 
 /// SPSC ring capacity. UI edits are human-paced; a tick's worth fits easily.

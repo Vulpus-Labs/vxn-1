@@ -17,7 +17,7 @@ pub mod track;
 pub mod track_engine;
 pub mod transport;
 
-pub use engine::{Engine, N_TRACKS};
+pub use engine::{Engine, LIMITER_LOOKAHEAD, N_TRACKS};
 pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch, make};
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState};
 pub use lane::{Hit, LaneState};

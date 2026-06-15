@@ -36,8 +36,8 @@ impl Track {
             engine: Box::new(KickTone::with_default_patch(sample_rate)),
             swap,
             pattern: Pattern::default(),
-            // gain 1, pan 0, knobs at midpoint (matches the faceplate defaults).
-            base: [1.0, 0.0, 0.5, 0.5, 0.5],
+            // gain 1, pan 0, knobs at midpoint, send 0 (matches faceplate defaults).
+            base: [1.0, 0.0, 0.5, 0.5, 0.5, 0.0],
             applied: [f32::NAN; N_LOCK_PARAMS],
             mono: vec![0.0; max_block],
         }
@@ -57,7 +57,8 @@ impl Track {
             if eff != self.applied[p] {
                 self.applied[p] = eff;
                 match p {
-                    0 | 1 => {} // gain / pan: read from `applied` in pan_gains
+                    // gain / pan / send: read from `applied` in the mix
+                    0 | 1 | 5 => {}
                     2 => self.engine.set_knob(Knob::Decay, eff),
                     3 => self.engine.set_knob(Knob::Tone, eff),
                     4 => self.engine.set_knob(Knob::Pitch, eff),
@@ -103,15 +104,33 @@ impl Track {
         engine.render(&mut mono[pos..frames]);
     }
 
-    /// Mix the rendered mono scratch into the stereo bus with gain/pan.
+    /// Mix the rendered mono scratch into the dry stereo bus (gain/pan) and the
+    /// stereo delay-send bus (centred, scaled by the effective send amount — the
+    /// p-lockable dub throw).
     #[inline]
-    pub fn mix_into(&self, out_l: &mut [f32], out_r: &mut [f32], frames: usize) {
-        let frames = frames.min(self.mono.len()).min(out_l.len()).min(out_r.len());
+    pub fn mix_into(
+        &self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        send_l: &mut [f32],
+        send_r: &mut [f32],
+        frames: usize,
+    ) {
+        let frames = frames
+            .min(self.mono.len())
+            .min(out_l.len())
+            .min(out_r.len())
+            .min(send_l.len())
+            .min(send_r.len());
         let (gl, gr) = self.pan_gains();
+        let send = self.applied[5]; // effective send amount (override ?? base)
         for f in 0..frames {
             let s = self.mono[f];
             out_l[f] += s * gl;
             out_r[f] += s * gr;
+            let snd = s * send;
+            send_l[f] += snd;
+            send_r[f] += snd;
         }
     }
 

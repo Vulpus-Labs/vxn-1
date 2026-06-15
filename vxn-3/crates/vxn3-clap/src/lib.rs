@@ -16,6 +16,7 @@ use clack_extensions::audio_ports::{
     PluginAudioPortsImpl,
 };
 use clack_extensions::gui::PluginGui;
+use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::event_types::{TransportEvent, TransportFlags};
 use clack_plugin::prelude::*;
@@ -48,7 +49,8 @@ impl Plugin for VxnPlugin {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginGui>()
-            .register::<PluginTimer>();
+            .register::<PluginTimer>()
+            .register::<PluginLatency>();
     }
 }
 
@@ -160,6 +162,13 @@ impl PluginTimerImpl for VxnMainThread<'_> {
         if let Some(handle) = self.gui.as_ref() {
             handle.flush_view_events();
         }
+    }
+}
+
+impl PluginLatencyImpl for VxnMainThread<'_> {
+    /// The master limiter look-ahead — constant, always-on (PDC).
+    fn get(&mut self) -> u32 {
+        vxn3_engine::LIMITER_LOOKAHEAD
     }
 }
 

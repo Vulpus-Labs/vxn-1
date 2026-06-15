@@ -36,6 +36,14 @@ pub const N_TRACKS: usize = 8;
 /// this rather than allocate.
 const HIT_CAPACITY: usize = 256;
 
+/// Master limiter look-ahead in samples — the plugin's reported latency (PDC).
+/// Constant, so the CLAP shell reports it once.
+pub const LIMITER_LOOKAHEAD: u32 = 64;
+/// Master limiter ceiling (linear).
+const LIMITER_CEILING: f32 = 0.95;
+/// Max delay time the send bus pre-allocates for.
+const DELAY_MAX_SECONDS: f32 = 2.0;
+
 pub struct Engine {
     sample_rate: f32,
     transport: Transport,
@@ -53,6 +61,21 @@ pub struct Engine {
     /// Beat position used when the host exposes no beats timeline — advanced by
     /// the block length each playing block so the sequencer free-runs.
     free_run_beats: f64,
+
+    // ── master FX (0051) ──
+    /// Stereo delay send bus (the dub throw).
+    delay: vxn3_dsp::Delay,
+    /// Terminal master limiter.
+    limiter: vxn3_dsp::Limiter,
+    /// Delay return level into the master mix.
+    return_level: f32,
+    /// Delay time as a tempo-synced subdivision in beats.
+    delay_sync_beats: f64,
+    /// Pre-allocated send / wet scratch (avoids per-block alloc).
+    send_l: Vec<f32>,
+    send_r: Vec<f32>,
+    wet_l: Vec<f32>,
+    wet_r: Vec<f32>,
 }
 
 impl Engine {
@@ -79,6 +102,14 @@ impl Engine {
             io,
             playhead_scratch: [PlayheadState::STOPPED; N_TRACKS],
             free_run_beats: 0.0,
+            delay: vxn3_dsp::Delay::new(sample_rate, DELAY_MAX_SECONDS),
+            limiter: vxn3_dsp::Limiter::new(sample_rate, LIMITER_LOOKAHEAD as usize, LIMITER_CEILING),
+            return_level: 0.35,
+            delay_sync_beats: 0.75, // dotted-8th — a classic dub time
+            send_l: vec![0.0; max_block],
+            send_r: vec![0.0; max_block],
+            wet_l: vec![0.0; max_block],
+            wet_r: vec![0.0; max_block],
         }
     }
 
@@ -96,6 +127,11 @@ impl Engine {
         for t in &mut self.tracks {
             t.set_sample_rate(sample_rate);
         }
+        // Rebuild rate-dependent FX (not on the audio path — activate builds a
+        // fresh engine; this only fires from tests / explicit reconfig).
+        self.delay = vxn3_dsp::Delay::new(sample_rate, DELAY_MAX_SECONDS);
+        self.limiter =
+            vxn3_dsp::Limiter::new(sample_rate, LIMITER_LOOKAHEAD as usize, LIMITER_CEILING);
     }
 
     pub fn set_transport(&mut self, transport: Transport) {
@@ -126,9 +162,11 @@ impl Engine {
     /// Render `left.len().min(right.len())` frames of stereo audio.
     /// Allocation-free.
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let frames = left.len().min(right.len());
+        let frames = left.len().min(right.len()).min(self.send_l.len());
         left[..frames].fill(0.0);
         right[..frames].fill(0.0);
+        self.send_l[..frames].fill(0.0);
+        self.send_r[..frames].fill(0.0);
 
         // 1. Apply queued UI edits, then install any pending engine swaps
         //    (both alloc-free on the audio thread).
@@ -179,8 +217,33 @@ impl Engine {
             );
             self.tracks[t].apply_effective(&self.lanes[t]);
             self.tracks[t].render_with_hits(&self.hits, frames);
-            self.tracks[t].mix_into(&mut left[..frames], &mut right[..frames], frames);
+            self.tracks[t].mix_into(
+                &mut left[..frames],
+                &mut right[..frames],
+                &mut self.send_l[..frames],
+                &mut self.send_r[..frames],
+                frames,
+            );
         }
+
+        // 5. Delay send bus → return into the master, then the terminal limiter.
+        //    Delay time tracks host tempo (synced subdivision). Runs even when
+        //    stopped so tails / self-oscillation ring out.
+        if bps > 0.0 {
+            let samps = (self.delay_sync_beats / bps).round() as usize;
+            self.delay.set_delay_samples(samps);
+        }
+        self.delay.process(
+            &self.send_l[..frames],
+            &self.send_r[..frames],
+            &mut self.wet_l[..frames],
+            &mut self.wet_r[..frames],
+        );
+        for f in 0..frames {
+            left[f] += self.wet_l[f] * self.return_level;
+            right[f] += self.wet_r[f] * self.return_level;
+        }
+        self.limiter.process(&mut left[..frames], &mut right[..frames]);
 
         if playing {
             self.free_run_beats = beat0 + frames as f64 * bps;
@@ -190,6 +253,22 @@ impl Engine {
     /// Apply one UI edit command to the addressed track. Bounds-checked; an
     /// out-of-range track is ignored. Allocation-free.
     fn apply_command(&mut self, cmd: EngineCommand) {
+        // Master-bus commands carry no track.
+        match cmd {
+            EngineCommand::SetDelayFeedback { value } => {
+                self.delay.set_feedback(value);
+                return;
+            }
+            EngineCommand::SetDelaySyncBeats { beats } => {
+                self.delay_sync_beats = beats.max(0.001) as f64;
+                return;
+            }
+            EngineCommand::SetDelayReturn { value } => {
+                self.return_level = value.clamp(0.0, 1.0);
+                return;
+            }
+            _ => {}
+        }
         let t = match &cmd {
             EngineCommand::ToggleStep { track, .. }
             | EngineCommand::SetStep { track, .. }
@@ -201,7 +280,12 @@ impl Engine {
             | EngineCommand::SetPan { track, .. }
             | EngineCommand::SetKnob { track, .. }
             | EngineCommand::SetLock { track, .. }
-            | EngineCommand::ClearLock { track, .. } => *track as usize,
+            | EngineCommand::ClearLock { track, .. }
+            | EngineCommand::SetSend { track, .. } => *track as usize,
+            // Master commands handled above.
+            EngineCommand::SetDelayFeedback { .. }
+            | EngineCommand::SetDelaySyncBeats { .. }
+            | EngineCommand::SetDelayReturn { .. } => return,
         };
         let Some(track) = self.tracks.get_mut(t) else {
             return;
@@ -243,6 +327,13 @@ impl Engine {
             EngineCommand::ClearLock { step, param, .. } => {
                 track.pattern.clear_lock(step as usize, param)
             }
+            EngineCommand::SetSend { amount, .. } => {
+                track.set_base(LockParam::Send, amount.clamp(0.0, 1.0))
+            }
+            // Master commands were dispatched above.
+            EngineCommand::SetDelayFeedback { .. }
+            | EngineCommand::SetDelaySyncBeats { .. }
+            | EngineCommand::SetDelayReturn { .. } => {}
         }
     }
 
@@ -255,6 +346,14 @@ impl Engine {
         for l in &mut self.lanes {
             l.reset();
         }
+        self.delay.reset();
+        self.limiter.reset();
         self.free_run_beats = 0.0;
+    }
+
+    /// The plugin's reported processing latency in samples (the master limiter
+    /// look-ahead). Constant — the CLAP shell reports it once.
+    pub fn latency_samples(&self) -> u32 {
+        LIMITER_LOOKAHEAD
     }
 }

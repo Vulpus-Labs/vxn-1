@@ -18,7 +18,7 @@ use vxn3_engine::track_engine::{EngineKind, Knob};
 use vxn3_engine::{EngineCommand, MAX_STEPS, N_TRACKS};
 
 pub const EDITOR_WIDTH: u32 = 900;
-pub const EDITOR_HEIGHT: u32 = 360;
+pub const EDITOR_HEIGHT: u32 = 420;
 
 const HTML_TEMPLATE: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
@@ -98,8 +98,31 @@ fn edit(cmd: EngineCommand) -> UiEvent {
 /// Map a faceplate opcode to a [`Vxn3UiCustom`] UI event. Unknown opcodes return
 /// `None` (the core then tries its built-in vocabulary).
 fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
+    // Master-bus ops carry no track.
+    match op {
+        "set_delay_feedback" => {
+            return Some(edit(EngineCommand::SetDelayFeedback {
+                value: f32_at(v, "value")?,
+            }));
+        }
+        "set_delay_sync" => {
+            return Some(edit(EngineCommand::SetDelaySyncBeats {
+                beats: f32_at(v, "beats")?,
+            }));
+        }
+        "set_delay_return" => {
+            return Some(edit(EngineCommand::SetDelayReturn {
+                value: f32_at(v, "value")?,
+            }));
+        }
+        _ => {}
+    }
     let track = u8_at(v, "track")?;
     match op {
+        "set_send" => Some(edit(EngineCommand::SetSend {
+            track,
+            amount: f32_at(v, "amount")?,
+        })),
         "toggle_step" => Some(edit(EngineCommand::ToggleStep {
             track,
             step: u8_at(v, "step")?,
