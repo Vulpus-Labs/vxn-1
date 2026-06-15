@@ -5,7 +5,9 @@ make *interesting rhythmic patterns* accessible, and to play pitched hits as
 readily as drum sounds. Third instrument in the Vulpus Labs line (after VXN1
 subtractive polysynth, VXN2 6-op FM).
 
-Status: **design** — ADR 0001 drafted, no crates yet.
+Status: **MVP in-flight** (epic E021) — CLAP shell, three engines, pattern
+engine (polymeter / probability / retrig), p-locks, and the HTML faceplate are
+built; delay send + limiter (0051) remain. Deploy with `./deploy.sh`.
 
 ## Premises
 
@@ -34,6 +36,7 @@ licensing only (MIT / Apache-2.0).
 
 - [ADR 0001 — overall design](adrs/0001-vxn3-overall-design.md)
 - [ADR 0002 — FX architecture & routing](adrs/0002-vxn3-fx-architecture.md)
+- [ADR 0003 — host parameter model](adrs/0003-vxn3-host-param-model.md)
 
 ## Tickets
 
