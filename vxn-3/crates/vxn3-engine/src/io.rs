@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::N_TRACKS;
-use crate::sequencer::Retrig;
+use crate::sequencer::{Lock, LockParam, Retrig};
 use crate::track_engine::Knob;
 
 /// A data-only edit from the UI to the engine. `Copy` so the queue is a plain
@@ -39,6 +39,19 @@ pub enum EngineCommand {
     SetPan { track: u8, pan: f32 },
     /// Set one of a track engine's generic knobs (0..1).
     SetKnob { track: u8, knob: Knob, value: f32 },
+    /// Set a per-step p-lock on a continuous param.
+    SetLock {
+        track: u8,
+        step: u8,
+        param: LockParam,
+        lock: Lock,
+    },
+    /// Clear a per-step p-lock.
+    ClearLock {
+        track: u8,
+        step: u8,
+        param: LockParam,
+    },
 }
 
 /// SPSC ring capacity. UI edits are human-paced; a tick's worth fits easily.

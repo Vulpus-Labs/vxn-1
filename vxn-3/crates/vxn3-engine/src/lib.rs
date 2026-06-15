@@ -22,7 +22,8 @@ pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch,
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
-    EIGHTH, EIGHTH_TRIPLET, MAX_STEPS, Pattern, Retrig, RetrigCurve, SIXTEENTH, Step,
+    EIGHTH, EIGHTH_TRIPLET, Lock, LockParam, MAX_STEPS, N_LOCK_PARAMS, Pattern, Retrig,
+    RetrigCurve, SIXTEENTH, Step, Termination,
 };
 pub use swap::EngineSwap;
 pub use track::Track;

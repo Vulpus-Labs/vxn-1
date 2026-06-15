@@ -9,7 +9,7 @@
 //! Output is a flat list of sample-accurate [`Hit`]s for the block; the engine
 //! slices the track's render at those offsets.
 
-use crate::sequencer::{Pattern, RetrigCurve};
+use crate::sequencer::{N_LOCK_PARAMS, Pattern, RetrigCurve, Termination};
 
 /// A scheduled trig within a block: a sample offset + note + velocity.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -40,6 +40,13 @@ pub struct LaneState {
     rt_note: f32,
     rt_vel0: f32,
     rt_vel1: f32,
+
+    // ── p-lock resolver (per lockable param) ──
+    /// Active override value, or `None` when the param falls back to base.
+    override_val: [Option<f32>; N_LOCK_PARAMS],
+    /// Lane-local ticks left on a `Revert` hold (`0` = not reverting; a latched
+    /// override also sits at `0` but keeps a `Some` override_val).
+    revert_ticks: [u32; N_LOCK_PARAMS],
 }
 
 impl LaneState {
@@ -59,15 +66,49 @@ impl LaneState {
             rt_note: 0.0,
             rt_vel0: 0.0,
             rt_vel1: 0.0,
+            override_val: [None; N_LOCK_PARAMS],
+            revert_ticks: [0; N_LOCK_PARAMS],
         }
     }
 
-    /// Reset transport-derived phase + in-flight retrig (transport stop / engine
-    /// reset). The PRNG stream is left running.
+    /// Reset transport-derived phase + in-flight retrig + p-lock overrides
+    /// (transport stop / engine reset). The PRNG stream is left running.
     pub fn reset(&mut self) {
         self.expected_beat = f64::NEG_INFINITY;
         self.last_index = i64::MIN;
         self.rt_active = false;
+        self.override_val = [None; N_LOCK_PARAMS];
+        self.revert_ticks = [0; N_LOCK_PARAMS];
+    }
+
+    /// The active p-lock override for `param_index`, or `None` to use base.
+    #[inline]
+    pub fn override_value(&self, param_index: usize) -> Option<f32> {
+        self.override_val[param_index]
+    }
+
+    /// Advance + apply p-locks for one crossed lane boundary at `global_index`.
+    /// Existing reverts tick down first (so a lock set this boundary isn't
+    /// decremented this boundary); then this step's locks apply, superseding any
+    /// in-flight hold (preemption, no queue).
+    fn process_locks(&mut self, pattern: &Pattern, global_index: i64) {
+        for p in 0..N_LOCK_PARAMS {
+            if self.revert_ticks[p] > 0 {
+                self.revert_ticks[p] -= 1;
+                if self.revert_ticks[p] == 0 {
+                    self.override_val[p] = None;
+                }
+            }
+        }
+        for p in 0..N_LOCK_PARAMS {
+            if let Some(lock) = pattern.lock_at(global_index, p) {
+                self.override_val[p] = Some(lock.value);
+                self.revert_ticks[p] = match lock.termination {
+                    Termination::Revert { n } => n.max(1) as u32,
+                    Termination::Latch => 0,
+                };
+            }
+        }
     }
 
     #[inline]
@@ -120,6 +161,9 @@ impl LaneState {
         if (beat0 - self.expected_beat).abs() > sb * 0.5 {
             self.rt_active = false;
             self.last_index = (beat0 / sb).floor() as i64 - 1;
+            // A seek discards in-flight p-lock holds — re-establish cold.
+            self.override_val = [None; N_LOCK_PARAMS];
+            self.revert_ticks = [0; N_LOCK_PARAMS];
         }
         self.expected_beat = beat_end;
 
@@ -135,6 +179,8 @@ impl LaneState {
                 break;
             }
             self.last_index = i;
+            // p-locks resolve at every crossed boundary, independent of trigs.
+            self.process_locks(pattern, i);
             let step = pattern.step_at(i);
             if step.active && self.fires(step.probability) {
                 if step.retrig.is_retrig() {
@@ -209,5 +255,90 @@ fn push_hit(out: &mut Vec<Hit>, frame: usize, note: f32, velocity: f32) {
             note,
             velocity,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sequencer::{Lock, LockParam, Pattern, Termination};
+
+    const BPS: f64 = 120.0 / 60.0 / 48_000.0; // beats per sample @120/48k
+    const STEP_FRAMES: usize = 6_000; // one 16th at 120/48k
+    const G: usize = 0; // LockParam::Gain.index()
+
+    /// Advance the lane by exactly one step (boundary `k`), returning the gain
+    /// override after that step.
+    fn step(lane: &mut LaneState, pat: &Pattern, k: i64) -> Option<f32> {
+        let mut hits = Vec::with_capacity(8);
+        lane.schedule(pat, k as f64 * 0.25, BPS, STEP_FRAMES, true, &mut hits);
+        lane.override_value(G)
+    }
+
+    #[test]
+    fn revert_n1_holds_one_tick() {
+        let mut pat = Pattern::default();
+        pat.set_lock(2, LockParam::Gain, Lock { value: 0.3, termination: Termination::Revert { n: 1 } });
+        let mut lane = LaneState::new(0);
+        assert_eq!(step(&mut lane, &pat, 0), None);
+        assert_eq!(step(&mut lane, &pat, 1), None);
+        assert_eq!(step(&mut lane, &pat, 2), Some(0.3), "fires at its step");
+        assert_eq!(step(&mut lane, &pat, 3), None, "released after 1 tick");
+    }
+
+    #[test]
+    fn revert_n2_holds_then_releases() {
+        let mut pat = Pattern::default();
+        pat.set_lock(2, LockParam::Gain, Lock { value: 0.3, termination: Termination::Revert { n: 2 } });
+        let mut lane = LaneState::new(0);
+        for k in 0..2 {
+            assert_eq!(step(&mut lane, &pat, k), None);
+        }
+        assert_eq!(step(&mut lane, &pat, 2), Some(0.3));
+        assert_eq!(step(&mut lane, &pat, 3), Some(0.3), "still held at tick 2");
+        assert_eq!(step(&mut lane, &pat, 4), None, "released after N=2 ticks");
+    }
+
+    #[test]
+    fn latch_holds_until_next_lock_and_across_wrap() {
+        // Short loop so we cross the wrap quickly.
+        let mut pat = Pattern {
+            len: 4,
+            ..Default::default()
+        };
+        pat.set_lock(1, LockParam::Gain, Lock { value: 0.6, termination: Termination::Latch });
+        let mut lane = LaneState::new(0);
+        assert_eq!(step(&mut lane, &pat, 0), None);
+        assert_eq!(step(&mut lane, &pat, 1), Some(0.6));
+        assert_eq!(step(&mut lane, &pat, 2), Some(0.6), "latched");
+        assert_eq!(step(&mut lane, &pat, 3), Some(0.6));
+        // Loop wrap (step 4 == lane index 0): latch persists.
+        assert_eq!(step(&mut lane, &pat, 4), Some(0.6), "persists across wrap");
+        assert_eq!(step(&mut lane, &pat, 5), Some(0.6));
+    }
+
+    #[test]
+    fn new_lock_preempts_in_flight_hold() {
+        let mut pat = Pattern::default();
+        pat.set_lock(1, LockParam::Gain, Lock { value: 0.2, termination: Termination::Revert { n: 8 } });
+        pat.set_lock(2, LockParam::Gain, Lock { value: 0.9, termination: Termination::Latch });
+        let mut lane = LaneState::new(0);
+        assert_eq!(step(&mut lane, &pat, 0), None);
+        assert_eq!(step(&mut lane, &pat, 1), Some(0.2), "revert begins");
+        assert_eq!(step(&mut lane, &pat, 2), Some(0.9), "preempted by latch");
+        assert_eq!(step(&mut lane, &pat, 3), Some(0.9), "held (not the old revert)");
+    }
+
+    #[test]
+    fn transport_jump_clears_holds() {
+        let mut pat = Pattern::default();
+        pat.set_lock(1, LockParam::Gain, Lock { value: 0.5, termination: Termination::Latch });
+        let mut lane = LaneState::new(0);
+        step(&mut lane, &pat, 0);
+        assert_eq!(step(&mut lane, &pat, 1), Some(0.5));
+        // Jump far away (no lock there): the latch is dropped, re-established cold.
+        let mut hits = Vec::with_capacity(8);
+        lane.schedule(&pat, 40.0, BPS, STEP_FRAMES, true, &mut hits);
+        assert_eq!(lane.override_value(G), None, "seek clears in-flight holds");
     }
 }

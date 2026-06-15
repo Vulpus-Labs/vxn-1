@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use crate::engines::KickTone;
-use crate::lane::Hit;
-use crate::sequencer::Pattern;
+use crate::lane::{Hit, LaneState};
+use crate::sequencer::{LockParam, N_LOCK_PARAMS, Pattern};
 use crate::swap::EngineSwap;
-use crate::track_engine::TrackEngine;
+use crate::track_engine::{Knob, TrackEngine};
 
 pub struct Track {
     /// The single active engine. Swapped off-thread via [`Track::swap`].
@@ -15,12 +15,15 @@ pub struct Track {
     /// Main↔audio swap mailbox; clone the `Arc` to drive swaps from the main
     /// thread.
     pub swap: Arc<EngineSwap>,
-    /// Step grid.
+    /// Step grid + p-lock table.
     pub pattern: Pattern,
-    /// Linear output gain.
-    pub gain: f32,
-    /// Stereo pan, -1 (left) .. +1 (right).
-    pub pan: f32,
+    /// Base values of the lockable params (UI-set), indexed by
+    /// [`LockParam::index`]: `[gain, pan, decay, tone, pitch]`. p-locks override
+    /// these per step; `effective = override ?? base` (ADR 0001 §3a).
+    base: [f32; N_LOCK_PARAMS],
+    /// Last applied effective value per param, so knob re-cooks only fire on a
+    /// real change. Seeded to NaN so the first block applies the base.
+    applied: [f32; N_LOCK_PARAMS],
     /// Pre-allocated mono render scratch (sized at construction).
     mono: Vec<f32>,
 }
@@ -33,9 +36,34 @@ impl Track {
             engine: Box::new(KickTone::with_default_patch(sample_rate)),
             swap,
             pattern: Pattern::default(),
-            gain: 1.0,
-            pan: 0.0,
+            // gain 1, pan 0, knobs at midpoint (matches the faceplate defaults).
+            base: [1.0, 0.0, 0.5, 0.5, 0.5],
+            applied: [f32::NAN; N_LOCK_PARAMS],
             mono: vec![0.0; max_block],
+        }
+    }
+
+    /// Set a lockable param's base value (from a UI command).
+    pub fn set_base(&mut self, param: LockParam, value: f32) {
+        self.base[param.index()] = value;
+    }
+
+    /// Resolve this block's effective params (`override ?? base`) and apply any
+    /// that changed: gain/pan feed [`Track::pan_gains`]; knob changes re-cook the
+    /// engine. Called once per block before render. Allocation-free.
+    pub fn apply_effective(&mut self, lane: &LaneState) {
+        for p in 0..N_LOCK_PARAMS {
+            let eff = lane.override_value(p).unwrap_or(self.base[p]);
+            if eff != self.applied[p] {
+                self.applied[p] = eff;
+                match p {
+                    0 | 1 => {} // gain / pan: read from `applied` in pan_gains
+                    2 => self.engine.set_knob(Knob::Decay, eff),
+                    3 => self.engine.set_knob(Knob::Tone, eff),
+                    4 => self.engine.set_knob(Knob::Pitch, eff),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -46,11 +74,12 @@ impl Track {
         self.swap.try_install(&mut self.engine)
     }
 
-    /// Equal-power pan gains `(left, right)`, scaled by `gain`.
+    /// Equal-power pan gains `(left, right)`, from the effective gain/pan.
     #[inline]
     pub fn pan_gains(&self) -> (f32, f32) {
-        let angle = (self.pan.clamp(-1.0, 1.0) * 0.5 + 0.5) * std::f32::consts::FRAC_PI_2;
-        (self.gain * angle.cos(), self.gain * angle.sin())
+        let gain = self.applied[0];
+        let angle = (self.applied[1].clamp(-1.0, 1.0) * 0.5 + 0.5) * std::f32::consts::FRAC_PI_2;
+        (gain * angle.cos(), gain * angle.sin())
     }
 
     /// Render this track for the block into its mono scratch, applying the

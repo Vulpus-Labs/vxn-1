@@ -13,10 +13,20 @@ use std::sync::Arc;
 
 use crate::io::{EngineCommand, EngineIo, PlayheadState};
 use crate::lane::{Hit, LaneState};
-use crate::sequencer::Pattern;
+use crate::sequencer::{LockParam, Pattern};
 use crate::swap::EngineSwap;
 use crate::track::Track;
+use crate::track_engine::Knob;
 use crate::transport::Transport;
+
+/// Map a faceplate knob to its lockable-param slot.
+fn knob_to_lock_param(knob: Knob) -> LockParam {
+    match knob {
+        Knob::Decay => LockParam::Decay,
+        Knob::Tone => LockParam::Tone,
+        Knob::Pitch => LockParam::Pitch,
+    }
+}
 
 /// Fixed track count (ADR 0001 — eight tracks for the minimal-techno kit).
 pub const N_TRACKS: usize = 8;
@@ -156,8 +166,9 @@ impl Engine {
         self.io.playhead.publish(&self.playhead_scratch, playing);
 
         for t in 0..self.tracks.len() {
-            // Schedule this track's hits (lane state + pattern + hit scratch are
-            // disjoint fields), then render + mix.
+            // Schedule this track's hits + advance its p-lock resolver (lane
+            // state + pattern + hit scratch are disjoint fields), resolve the
+            // effective params, then render + mix.
             self.lanes[t].schedule(
                 &self.tracks[t].pattern,
                 beat0,
@@ -166,6 +177,7 @@ impl Engine {
                 playing,
                 &mut self.hits,
             );
+            self.tracks[t].apply_effective(&self.lanes[t]);
             self.tracks[t].render_with_hits(&self.hits, frames);
             self.tracks[t].mix_into(&mut left[..frames], &mut right[..frames], frames);
         }
@@ -187,7 +199,9 @@ impl Engine {
             | EngineCommand::SetStepBeats { track, .. }
             | EngineCommand::SetGain { track, .. }
             | EngineCommand::SetPan { track, .. }
-            | EngineCommand::SetKnob { track, .. } => *track as usize,
+            | EngineCommand::SetKnob { track, .. }
+            | EngineCommand::SetLock { track, .. }
+            | EngineCommand::ClearLock { track, .. } => *track as usize,
         };
         let Some(track) = self.tracks.get_mut(t) else {
             return;
@@ -214,9 +228,21 @@ impl Engine {
             EngineCommand::SetStepBeats { beats, .. } => {
                 track.pattern.step_beats = beats.max(1e-4) as f64
             }
-            EngineCommand::SetGain { gain, .. } => track.gain = gain.max(0.0),
-            EngineCommand::SetPan { pan, .. } => track.pan = pan.clamp(-1.0, 1.0),
-            EngineCommand::SetKnob { knob, value, .. } => track.engine.set_knob(knob, value),
+            EngineCommand::SetGain { gain, .. } => {
+                track.set_base(LockParam::Gain, gain.max(0.0))
+            }
+            EngineCommand::SetPan { pan, .. } => {
+                track.set_base(LockParam::Pan, pan.clamp(-1.0, 1.0))
+            }
+            EngineCommand::SetKnob { knob, value, .. } => {
+                track.set_base(knob_to_lock_param(knob), value)
+            }
+            EngineCommand::SetLock {
+                step, param, lock, ..
+            } => track.pattern.set_lock(step as usize, param, lock),
+            EngineCommand::ClearLock { step, param, .. } => {
+                track.pattern.clear_lock(step as usize, param)
+            }
         }
     }
 
