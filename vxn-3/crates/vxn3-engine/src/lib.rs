@@ -17,7 +17,7 @@ pub mod track_engine;
 pub mod transport;
 
 pub use engine::{Engine, N_TRACKS};
-pub use engines::{KickTone, KickTonePatch};
+pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch, make};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
     EIGHTH, EIGHTH_TRIPLET, MAX_STEPS, Pattern, Retrig, RetrigCurve, SIXTEENTH, Step,
