@@ -190,10 +190,11 @@ macro_rules! with_wave {
 // ── PolyOscillator ────────────────────────────────────────────────────────
 
 /// Max pitch deviation a fully-engaged drift walk produces, in semitones —
-/// `drift_value[v] = walk · DRIFT_MAX_SEMITONES · amount`. patches uses
-/// `HALF_SEMITONE_VOCT * 0.5 = 1/48 v/oct ≈ 25 cents`; the same here so a
-/// `drift = 1.0` patch wanders at most ±a quarter-semitone.
-const DRIFT_MAX_SEMITONES: f32 = 0.25;
+/// `drift_value[v] = walk · DRIFT_MAX_SEMITONES · amount`. So a `drift = 1.0`
+/// patch wanders at most ±12.5 cents (an eighth-semitone). Halved from the
+/// original ±25 cents: the tuning impact at any given drift amount was too
+/// strong by ear, reading as out-of-tune rather than as live analog detune.
+const DRIFT_MAX_SEMITONES: f32 = 0.125;
 
 /// Update the local drift walk every `DRIFT_BLOCK_PERIOD` control blocks. At
 /// the default `CONTROL_BLOCK = 32` and base SR = 48 kHz this gives one
