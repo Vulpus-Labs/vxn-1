@@ -1,8 +1,8 @@
 ---
 id: E016
-product: vxn-2
+product: vxn-1
 title: "vxn-1 web port — host shell & build pipeline"
-status: open
+status: closed
 created: 2026-06-14
 depends-on: E015
 ---
