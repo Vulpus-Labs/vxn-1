@@ -51,3 +51,33 @@ document the production recipe.
   `SPIKE-0035-findings.md`.
 - Out of scope: CI deploy automation (E020); cross-browser SAB/isolation
   coverage matrix (E020).
+
+## Close-out (2026-06-15)
+
+(Frontmatter says `product: vxn-2` but the work is all in `vxn-1` — the web build
+lives there; treat the label as a mislabel.)
+
+- **`cargo xtask web --serve [--port N]`** added —
+  [main.rs](../../vxn-1/xtask/src/main.rs): new `--serve`/`--port` parsing
+  (`arg_value` helper), `serve_dist()` hands `target/web-dist/` to
+  [serve-coep.mjs](../../vxn-1/crates/vxn-wasm/serve-coep.mjs) (already promoted
+  from the 0035 spike). Verified live: `curl -I` on the served document and the
+  `.wasm` subresource both return COOP `same-origin` + COEP `require-corp` (+CORP
+  `same-origin`), wasm as `application/wasm` — the precondition for
+  `crossOriginIsolated === true` + constructible SAB (flag proven to flip under
+  exactly these headers in SPIKE-0035-findings.md; the booting `index.html`
+  reports it inline).
+- **Production hosting doc** —
+  [WEB-HOSTING.md](../../vxn-1/crates/vxn-wasm/WEB-HOSTING.md): the two headers,
+  the `require-corp` CORP/CORS implication for cross-origin subresources, the
+  COOP iframe/popup embedding caveat, and per-host recipes (Netlify/CF Pages
+  `_headers`, nginx, Caddy, S3+CloudFront). Linked from the crate
+  [README.md](../../vxn-1/crates/vxn-wasm/README.md). `cargo xtask web` also
+  emits a Netlify `_headers` into the bundle (`web_dist_headers()` in main.rs).
+- **Validated on a real static host** — deployed the bundle to
+  `vulpuslabs.com/products/vxn-1/web/` (Netlify, separate `vulpus-labs-site`
+  repo) via the new
+  [deploy-web.sh](../../vxn-1/crates/vxn-wasm/deploy-web.sh) (build → copy →
+  scoped root `_headers` → commit → push). Confirmed live: `curl -sI` shows all
+  three isolation headers on both the document and `vxn_wasm.wasm` at the real
+  origin, not just localhost.

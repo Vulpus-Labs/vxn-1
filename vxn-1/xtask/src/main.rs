@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //!   cargo xtask bundle [--release] [--install] [--universal]
-//!   cargo xtask web [--debug]
+//!   cargo xtask web [--debug] [--serve] [--port N]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
 //! plugin. On macOS that is a bundle directory (`Contents/MacOS/VXN1` +
@@ -14,8 +14,12 @@
 //! `web` (ticket 0041) compiles the wasm crate(s) for `wasm32-unknown-unknown`
 //! (release + SIMD128 by default) and assembles a self-contained, servable
 //! `target/web-dist/`: the `.wasm`, the E015 JS transport modules, the worklet,
-//! and the page assets. `--debug` builds a debug wasm. The COOP/COEP dev server
-//! that serves it is ticket 0045.
+//! and the page assets. `--debug` builds a debug wasm. `--serve` (ticket 0045)
+//! then serves the bundle with the COOP/COEP cross-origin-isolation headers
+//! `SharedArrayBuffer` requires, via `serve-coep.mjs` (default port 8080,
+//! `--port N` overrides). Production hosting is documented in the crate's
+//! `WEB-HOSTING.md`; the bundle also drops a Netlify `_headers` file so a
+//! static-host deploy carries the same two headers.
 
 use std::env;
 use std::fs;
@@ -42,20 +46,31 @@ fn main() {
         }
         "web" => {
             // `web` defaults to release (a real deploy ships release+SIMD);
-            // `--debug` opts into a debug wasm.
+            // `--debug` opts into a debug wasm. `--serve` then serves the bundle
+            // with COOP/COEP; `--port N` overrides the default 8080.
             let debug = args.iter().any(|a| a == "--debug");
-            if let Err(e) = web(!debug) {
+            let serve = args.iter().any(|a| a == "--serve");
+            let port = arg_value(&args, "--port");
+            if let Err(e) = web(!debug, serve, port.as_deref()) {
                 eprintln!("xtask: {e}");
                 std::process::exit(1);
             }
         }
         _ => {
             eprintln!(
-                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug]"
+                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug] [--serve] [--port N]"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// Value of a `--flag value` pair (e.g. `--port 9000` → `Some("9000")`).
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn workspace_root() -> PathBuf {
@@ -132,9 +147,10 @@ const WASM_ARTIFACT: &str = "vxn_wasm.wasm";
 ///
 /// One command → a servable directory: the engine `.wasm` (release + SIMD128 by
 /// default), the E015 transport JS modules, the production worklet, and a page.
-/// The COOP/COEP server that serves it is ticket 0045; the AudioContext boot
-/// that drives it is 0042.
-fn web(release: bool) -> Result<(), String> {
+/// `serve` then hands the bundle to `serve-coep.mjs` with the COOP/COEP headers
+/// `SharedArrayBuffer` needs (ticket 0045); the AudioContext boot that drives it
+/// is 0042.
+fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
 
@@ -212,11 +228,56 @@ fn web(release: bool) -> Result<(), String> {
     //     COOP/COEP server that makes the SABs available is 0045.
     fs::write(dist.join("index.html"), web_index_html()).map_err(io("write index.html"))?;
 
+    // 2d. A Netlify-style `_headers` file so dropping dist/ onto a static host
+    //     (Netlify / Cloudflare Pages, both read `_headers`) carries the same
+    //     two isolation headers the dev server sets — no extra config. The dev
+    //     server (serve-coep.mjs) ignores it; it's purely the prod recipe baked
+    //     into the artifact (ticket 0045 / WEB-HOSTING.md).
+    fs::write(dist.join("_headers"), web_dist_headers()).map_err(io("write _headers"))?;
+
     println!("web bundle → {}", dist.display());
+
+    if serve {
+        return serve_dist(&root, &dist, port);
+    }
     println!(
         "  note: SharedArrayBuffer needs cross-origin isolation — serve with \
-         COOP/COEP (ticket 0045)"
+         COOP/COEP (`cargo xtask web --serve`, ticket 0045)"
     );
+    Ok(())
+}
+
+/// Netlify/Cloudflare-Pages `_headers`: applies the COOP/COEP (+CORP) headers to
+/// every path so the served document is cross-origin isolated and SAB is
+/// constructible. Same three headers `serve-coep.mjs` sets locally.
+fn web_dist_headers() -> &'static str {
+    "/*\n  \
+     Cross-Origin-Opener-Policy: same-origin\n  \
+     Cross-Origin-Embedder-Policy: require-corp\n  \
+     Cross-Origin-Resource-Policy: same-origin\n"
+}
+
+/// Serve the built bundle with COOP/COEP via the crate's `serve-coep.mjs`
+/// (ticket 0045). Requires `node` on PATH. Blocks until the server is killed.
+fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String> {
+    let server = root.join("vxn-1/crates/vxn-wasm/serve-coep.mjs");
+    if !server.exists() {
+        return Err(format!("serve-coep.mjs not found at {}", server.display()));
+    }
+    let port = port.unwrap_or("8080");
+    let mut cmd = Command::new("node");
+    cmd.current_dir(root)
+        .arg(&server)
+        .arg(port)
+        .arg(dist);
+    let status = cmd.status().map_err(|e| {
+        format!("failed to run node (is it on PATH?): {e}")
+    })?;
+    // The server runs until Ctrl-C; a non-success exit (e.g. port in use) is an
+    // error worth surfacing.
+    if !status.success() {
+        return Err("serve-coep.mjs exited with an error".into());
+    }
     Ok(())
 }
 

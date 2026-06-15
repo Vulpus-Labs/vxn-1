@@ -48,6 +48,24 @@ node vxn-1/crates/vxn-wasm/harness-0042.mjs
 # target/web-dist/ — serve it with COOP/COEP (ticket 0045), click Start, hold A4.
 ```
 
+## Serving with cross-origin isolation (ticket 0045)
+
+`SharedArrayBuffer` (the whole E015 transport) needs the page to be cross-origin
+isolated, i.e. served with `Cross-Origin-Opener-Policy: same-origin` +
+`Cross-Origin-Embedder-Policy: require-corp`. One command builds and serves with
+both set:
+
+```bash
+cargo xtask web --serve            # build + serve on http://localhost:8080
+cargo xtask web --serve --port N   # pick a port
+```
+
+This hands `target/web-dist/` to `serve-coep.mjs` (needs `node`). The build also
+drops a Netlify/Cloudflare-Pages `_headers` file into the bundle so a static-host
+deploy carries the same headers. Production hosting (nginx/Caddy/S3+CloudFront,
+the `require-corp` CORP/CORS implications, and the iframe/embedding caveat) is
+documented in [`WEB-HOSTING.md`](WEB-HOSTING.md).
+
 ## Findings
 
 | Question | Result |
