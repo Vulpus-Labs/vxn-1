@@ -260,10 +260,10 @@ export class FaceplateBridge {
 // page dispatcher. Skipped under Node (no document) so the test imports the pure
 // FaceplateBridge without side effects.
 //
-// E017 HOOK: a concurrent epic adds Web MIDI / computer-keyboard input. Once it
-// lands, call `attachMidi(host)` / `attachKeyboard(host)` right after `host`
-// boots below (both take the WebHost producer surface). Left as a marked seam so
-// the two epics merge cleanly.
+// E017 input (Web MIDI + computer keyboard) is wired below, right after `host`
+// boots: both attach to the WebHost producer surface and write into the E015
+// ring. Dynamic-imported so the headless import guard above keeps this file
+// pure under Node.
 export async function bootFaceplate({ WebHostClass } = {}) {
   if (typeof document === "undefined") return null; // headless import guard
 
@@ -289,6 +289,27 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   //    audio is live (param edits just land in the store, applied on first
   //    sound).
   const host = new WebHost({});
+
+  // 1b. E017 input adapters → the WebHost producer surface (ring). Web MIDI +
+  //     computer keyboard both write notes/CC into the same E015 ring the
+  //     worklet drains; events written before audio is live buffer in the ring
+  //     and apply on first sound. Dynamic-imported so the headless test (which
+  //     returns at the document guard above) never pulls the browser-only
+  //     adapters. MIDI is best-effort: no device / denied permission is fine,
+  //     the keyboard is the fallback.
+  let input = { midi: null, keyboard: null };
+  try {
+    const [{ attachKeyboard }, { attachMidi }] = await Promise.all([
+      import("./keyboard-input.mjs"),
+      import("./midi-input.mjs"),
+    ]);
+    input.keyboard = attachKeyboard(host, {});
+    input.midi = await attachMidi(host, {
+      onError: (e) => console.info("vxn: Web MIDI unavailable", e && e.message),
+    });
+  } catch (e) {
+    console.warn("vxn: input adapters failed to attach", e);
+  }
 
   // 2. Controller over the SAME param store SAB the worklet folds. Its
   //    ViewEvents feed the page; its model mirror writes the store.
@@ -340,7 +361,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   window.addEventListener("keydown", unlock, true);
 
   // Expose for the page's Start button + E017 input adapters.
-  window.__vxnWeb = { host, controller, bridge, start: unlock };
+  window.__vxnWeb = { host, controller, bridge, start: unlock, input };
   return window.__vxnWeb;
 }
 
