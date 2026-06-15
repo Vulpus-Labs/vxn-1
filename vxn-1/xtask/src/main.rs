@@ -143,6 +143,11 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
 const WASM_PKG: &str = "vxn-wasm";
 const WASM_ARTIFACT: &str = "vxn_wasm.wasm";
 
+// 0044: the main-thread controller wasm — a SECOND module (engine runs in the
+// worklet, controller on main; ADR 0009 §1). Built into the same web bundle.
+const CONTROLLER_PKG: &str = "vxn-web-controller";
+const CONTROLLER_ARTIFACT: &str = "vxn_web_controller.wasm";
+
 /// Build the wasm and assemble a self-contained `target/web-dist/` (ticket 0041).
 ///
 /// One command → a servable directory: the engine `.wasm` (release + SIMD128 by
@@ -154,57 +159,28 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
 
-    // 1. Compile the engine wasm crate for wasm32-unknown-unknown.
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let mut build = Command::new(&cargo);
-    build.current_dir(&root).args([
-        "build",
-        "--package",
-        WASM_PKG,
-        "--target",
-        "wasm32-unknown-unknown",
-    ]);
-    if release {
-        build.arg("--release");
-    }
-    // SIMD128: perf measurement is E020, but the flag belongs in the pipeline.
-    // Append so we don't clobber a caller's RUSTFLAGS.
-    let existing = env::var("RUSTFLAGS").unwrap_or_default();
-    let rustflags = if existing.trim().is_empty() {
-        "-C target-feature=+simd128".to_string()
-    } else {
-        format!("{existing} -C target-feature=+simd128")
-    };
-    build.env("RUSTFLAGS", rustflags);
-    let status = build
-        .status()
-        .map_err(|e| format!("failed to run cargo: {e}"))?;
-    if !status.success() {
-        return Err("wasm build failed".into());
-    }
-
-    let wasm = root
-        .join("target/wasm32-unknown-unknown")
-        .join(profile)
-        .join(WASM_ARTIFACT);
-    if !wasm.exists() {
-        return Err(format!("built wasm not found at {}", wasm.display()));
-    }
+    // 1. Compile BOTH wasm crates for wasm32-unknown-unknown (ADR 0009 §1):
+    //    the engine (runs in the worklet) and the main-thread controller (0044).
+    let wasm = build_wasm(&root, WASM_PKG, WASM_ARTIFACT, release, profile)?;
+    let controller_wasm =
+        build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, profile)?;
 
     // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
     let dist = root.join("target").join("web-dist");
     let _ = fs::remove_dir_all(&dist);
     fs::create_dir_all(&dist).map_err(io("create web-dist"))?;
 
-    // 2a. The engine wasm.
-    fs::copy(&wasm, dist.join(WASM_ARTIFACT)).map_err(io("copy wasm"))?;
+    // 2a. Both wasm modules.
+    fs::copy(&wasm, dist.join(WASM_ARTIFACT)).map_err(io("copy engine wasm"))?;
+    fs::copy(&controller_wasm, dist.join(CONTROLLER_ARTIFACT))
+        .map_err(io("copy controller wasm"))?;
 
     // 2b. The E015 production transport modules + worklet. Curated by hand: the
     //     *.test.mjs suites, the Node harnesses, and the 0034/0035 spike
     //     processors stay out of the shipped bundle. The production worklet
     //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 7] = [
+    const MODULES: [(&str, &str); 8] = [
         ("event-ring.mjs", "event-ring.mjs"),
         ("event-codec.mjs", "event-codec.mjs"),
         ("param-store.mjs", "param-store.mjs"),
@@ -213,6 +189,9 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         ("vxn-processor-0038.js", "vxn-processor.js"),
         // The main-thread coordinator (ticket 0042): the page imports WebHost.
         ("coordinator.mjs", "coordinator.mjs"),
+        // The controller wasm glue (ticket 0044): instantiates the controller
+        // module, posts UiEvent opcodes, drains ViewEvents, mirrors the SAB.
+        ("controller.mjs", "controller.mjs"),
     ];
     for (src, dest) in MODULES {
         let from = web_src.join(src);
@@ -281,6 +260,54 @@ fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String
     Ok(())
 }
 
+/// Compile one wasm crate for `wasm32-unknown-unknown` (release + SIMD128 by
+/// default) and return the path to its `.wasm` artifact. Shared by the engine
+/// and the 0044 controller builds so both go through the same flags.
+fn build_wasm(
+    root: &Path,
+    package: &str,
+    artifact: &str,
+    release: bool,
+    profile: &str,
+) -> Result<PathBuf, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut build = Command::new(&cargo);
+    build.current_dir(root).args([
+        "build",
+        "--package",
+        package,
+        "--target",
+        "wasm32-unknown-unknown",
+    ]);
+    if release {
+        build.arg("--release");
+    }
+    // SIMD128: perf measurement is E020, but the flag belongs in the pipeline.
+    // Append so we don't clobber a caller's RUSTFLAGS.
+    let existing = env::var("RUSTFLAGS").unwrap_or_default();
+    let rustflags = if existing.trim().is_empty() {
+        "-C target-feature=+simd128".to_string()
+    } else {
+        format!("{existing} -C target-feature=+simd128")
+    };
+    build.env("RUSTFLAGS", rustflags);
+    let status = build
+        .status()
+        .map_err(|e| format!("failed to run cargo for {package}: {e}"))?;
+    if !status.success() {
+        return Err(format!("wasm build failed for {package}"));
+    }
+
+    let wasm = root
+        .join("target/wasm32-unknown-unknown")
+        .join(profile)
+        .join(artifact);
+    if !wasm.exists() {
+        return Err(format!("built wasm not found at {}", wasm.display()));
+    }
+    Ok(wasm)
+}
+
 fn web_index_html() -> String {
     format!(
         r#"<!doctype html>
@@ -302,8 +329,10 @@ fn web_index_html() -> String {
     <p>Bundle from <code>cargo xtask web</code> (0041); coordinator boot is
       ticket 0042. Click <em>Start</em> on a user gesture, then hold the note.</p>
     <p>cross-origin isolated: <span id="iso">checking…</span></p>
+    <p>gate: <span id="gate">idle</span></p>
     <button id="start">Start audio</button>
     <button id="note" disabled>Hold A4</button>
+    <button id="stop" disabled>Stop audio</button>
     <div id="log"></div>
     <script type="module">
       import {{ WebHost }} from "./coordinator.mjs";
@@ -314,23 +343,42 @@ fn web_index_html() -> String {
       iso.style.color = self.crossOriginIsolated ? "green" : "crimson";
 
       const log = (m) => (document.getElementById("log").textContent += m + "\n");
+      const gate = document.getElementById("gate");
       const startBtn = document.getElementById("start");
       const noteBtn = document.getElementById("note");
+      const stopBtn = document.getElementById("stop");
       let host;
+
+      // 0043 gate-state hook: the UI renders entirely off onState. A faceplate
+      // (E018) replaces this minimal button row; the lifecycle API is the same.
+      const onState = (s) => {{
+        gate.textContent = s;
+        startBtn.disabled = s !== "idle" && s !== "closed";
+        stopBtn.disabled = s === "idle" || s === "closed";
+      }};
 
       startBtn.onclick = async () => {{
         startBtn.disabled = true;
         host = new WebHost({{
+          onState,
           onReady: () => {{ log("audio live"); noteBtn.disabled = false; }},
           onTrap: (msg, n) => log(`trap #${{n}}: ${{msg}}`),
         }});
         try {{
-          await host.start();
+          await host.start(); // autoplay unlock — this click IS the gesture
           log(`context @ ${{host.ctx.sampleRate}} Hz — waiting for worklet…`);
         }} catch (e) {{
           log(`start failed: ${{e.message}}`);
           startBtn.disabled = false;
         }}
+      }};
+
+      // 0043 teardown: close the context, free the worklet engine, drop SABs. A
+      // fresh Start afterwards constructs a new WebHost and boots clean.
+      stopBtn.onclick = async () => {{
+        noteBtn.disabled = true;
+        if (host) await host.teardown();
+        log("audio stopped (teardown)");
       }};
 
       const NOTE = 69; // A4

@@ -1,0 +1,25 @@
+# Main-thread controller wasm module (ticket 0044). Promotes the throwaway
+# 0036 probe into the real web controller: a raw C-ABI cdylib — no
+# wasm-bindgen — that reuses `vxn-app` / `vxn-core-app` VERBATIM as the single
+# off-audio model mutator (ADR 0009 §1). Instantiated on the main thread by
+# controller.mjs and driven over a narrow opcode surface (UiEvent in, ViewEvent
+# out, tick). The engine wasm (vxn-wasm) runs in the worklet; the two share the
+# 0039 param SAB, not linear memory.
+[package]
+name = "vxn-web-controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1 web main-thread controller: vxn-app's MVC Controller over a C-ABI opcode surface."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The whole controller dependency tree (vxn-app -> vxn-core-app -> vxn-core-utils),
+# reused with NO controller-logic changes — one source of truth for model
+# mutation across native + web (ADR 0007 / 0009). Proven wasm-clean by 0036.
+vxn-app = { workspace = true }

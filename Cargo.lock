@@ -2381,13 +2381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vxn-app-wasm-probe"
-version = "0.0.8"
-dependencies = [
- "vxn-app",
-]
-
-[[package]]
 name = "vxn-clap"
 version = "0.0.8"
 dependencies = [
@@ -2470,6 +2463,13 @@ version = "0.0.8"
 dependencies = [
  "vxn-app",
  "vxn-engine",
+]
+
+[[package]]
+name = "vxn-web-controller"
+version = "0.0.8"
+dependencies = [
+ "vxn-app",
 ]
 
 [[package]]
