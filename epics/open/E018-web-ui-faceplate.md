@@ -18,8 +18,13 @@ depends-on: E015
 
 Run the existing vxn-1 faceplate in the browser, talking to the controller
 through the same opcode vocabulary it uses today, with no wry. Parameter
-edits, gestures, and value displays work; the UI sees audio-thread
-automation via the E015 diff readback.
+edits, gestures, and value displays work; `ViewEvent`s flow from the
+controller's own model mutations (param edit, preset load), not a SAB
+readback. **Scope correction (0044 follow-up):** standalone Web Audio has no
+host, so there is no audio-thread param writer to echo — the E015 diff
+readback / rAF pump is dormant and is NOT wired here. The readback SAB region
+stays allocated-but-unpolled; revive only if an audio-side param writer is
+ever added. See 0044 "diff-pump dormant in standalone web".
 
 When this epic closes:
 
@@ -54,7 +59,9 @@ opcode contract and the faceplate code stay.
   wry IPC; controller→JS by calling the page dispatcher directly instead
   of `evaluate_script`. Same JSON opcode shapes.
 - `ViewEvent` push path: param-changed / preset-loaded → DOM updates,
-  fed by the E015 audio→main diff readback (the param-diff pump analogue).
+  driven by the controller's own model mutations (a `set_param` edit and
+  the preset-load fan-out both emit `ViewEvent`s directly). NOT fed by the
+  diff readback — dormant in standalone web (0044).
 - Gesture brackets and value popups at parity with the plugin.
 - The text-input popup (rename/save) re-homed to DOM (the wry/objc/
   windows-sys floating input is desktop-only and dropped).
@@ -73,7 +80,7 @@ opcode contract and the faceplate code stay.
 - [ ] Serve + mount faceplate assets in the page.
 - [ ] Bridge: JS→controller over transport (replace `window.ipc`).
 - [ ] Bridge: controller→JS dispatch (replace `evaluate_script` batch),
-      fed by the diff readback.
+      fed by the controller's own `ViewEvent` drain (NOT the diff readback).
 - [ ] Gesture brackets + value popups parity.
 - [ ] DOM text-input popup (replace desktop floating input).
 
@@ -92,7 +99,8 @@ opcode contract and the faceplate code stay.
 
 - The faceplate renders and controls the synth in the browser: param
   edits, gestures, layer controls, preset load all function.
-- Audio-thread automation updates the matching UI controls (via diff
-  readback).
+- Controller-originated changes (param edits, preset loads) update the
+  matching UI controls via the `ViewEvent` drain. (No audio-thread param
+  writer exists in standalone web, so the diff readback is dormant — 0044.)
 - The JSON opcode vocabulary is byte-compatible with the plugin's.
 - No wry / native webview dependency remains on the web path.
