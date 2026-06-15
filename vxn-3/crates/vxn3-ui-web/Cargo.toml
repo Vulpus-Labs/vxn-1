@@ -1,0 +1,15 @@
+[package]
+name = "vxn3-ui-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN3 HTML faceplate: assets + custom-event hooks over vxn-core-ui-web."
+
+[dependencies]
+vxn-core-ui-web = { workspace = true }
+vxn-core-app = { workspace = true }
+vxn3-app = { workspace = true }
+vxn3-engine = { workspace = true }
+serde_json = "1"

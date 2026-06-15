@@ -125,8 +125,13 @@ impl Engine {
         while let Some(cmd) = self.io.edits.pop() {
             self.apply_command(cmd);
         }
+        let sr = self.sample_rate;
         for t in &mut self.tracks {
-            t.poll_swap();
+            // A freshly swapped-in engine may have been built at a stale sample
+            // rate on the main thread; re-cook it for ours on install.
+            if t.poll_swap() {
+                t.engine.set_sample_rate(sr);
+            }
         }
 
         // 2/3/4. Sequence + render + mix per track.

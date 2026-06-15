@@ -1,34 +1,54 @@
 //! VXN3 CLAP plugin shell (clack).
 //!
-//! 0046 skeleton: a host-loadable CLAP plugin that reports a stereo output
-//! port, reads the host transport each block, and renders silence. It reuses
-//! `vxn-core-clap` for transport extraction and keeps its own `Plugin` impl
-//! (per that crate's design note — generalising `clack_plugin::Plugin` over a
-//! synth-specific engine isn't worth it).
+//! Host-loadable plugin: stereo output port, host-transport sync, the audible
+//! engine (0047/0048/0049), and the HTML faceplate (0052) — a `vxn3-ui-web`
+//! webview driven through `vxn-core-app`'s `Controller`. UI edits flow to the
+//! audio engine over the shared [`EngineIo`] command queue / swap mailboxes;
+//! the playhead flows back to the page on the GUI timer.
 //!
-//! Structurally mirrors `vxn-2/crates/vxn2-clap` (same `Shared` / `MainThread`
-//! / `AudioProcessor` split and `declare_extensions` shape) but stripped to the
-//! empty vessel: no params, notes, GUI, state, or sequencer yet — those land in
-//! later E021 slices.
+//! Structurally mirrors `vxn-2/crates/vxn2-clap`, but vxn-3 carries no flat
+//! CLAP params (its UI state is the structured sequencer), so there is no
+//! params/state extension or dirty-bitset pump — edits are custom events and
+//! the only Model→View push is the playhead.
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
     PluginAudioPortsImpl,
 };
+use clack_extensions::gui::PluginGui;
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::event_types::{TransportEvent, TransportFlags};
 use clack_plugin::prelude::*;
-use vxn3_engine::{Engine, Transport};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+use vxn_core_app::{Controller, CorpusHandle, ViewEvent};
+use vxn3_app::{NullStore, Vxn3Model, Vxn3ViewCustom, tick_vxn3};
+use vxn3_engine::io::{EngineIo, PlayheadState};
+use vxn3_engine::{Engine, N_TRACKS, Transport};
 use vxn_core_clap::tempo_from_transport;
+
+pub mod gui;
+
+/// Lock a mutex by extracting the inner value rather than unwrapping — a panic
+/// under `panic = unwind` could poison it, but subsequent main-thread ticks
+/// should still make progress.
+pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub struct VxnPlugin;
 
 impl Plugin for VxnPlugin {
     type AudioProcessor<'a> = VxnAudioProcessor;
     type Shared<'a> = VxnShared;
-    type MainThread<'a> = VxnMainThread;
+    type MainThread<'a> = VxnMainThread<'a>;
 
     fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: Option<&VxnShared>) {
-        builder.register::<PluginAudioPorts>();
+        builder
+            .register::<PluginAudioPorts>()
+            .register::<PluginGui>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -43,27 +63,107 @@ impl DefaultPluginFactory for VxnPlugin {
     }
 
     fn new_shared(_host: HostSharedHandle) -> Result<VxnShared, PluginError> {
-        Ok(VxnShared)
+        Ok(VxnShared {
+            io: EngineIo::new(),
+            sample_rate: AtomicU32::new(48_000.0_f32.to_bits()),
+        })
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
-        _shared: &'a VxnShared,
-    ) -> Result<VxnMainThread, PluginError> {
-        Ok(VxnMainThread)
+        host: HostMainThreadHandle<'a>,
+        shared: &'a VxnShared,
+    ) -> Result<VxnMainThread<'a>, PluginError> {
+        let (controller, view_rx, corpus) =
+            Controller::new(Arc::new(Vxn3Model), Box::new(NullStore));
+        Ok(VxnMainThread {
+            shared,
+            io: shared.io.clone(),
+            controller: Arc::new(Mutex::new(controller)),
+            view_rx: Arc::new(Mutex::new(view_rx)),
+            corpus,
+            gui: None,
+            host: Some(host),
+            timer: None,
+        })
     }
 }
 
-/// Data shared between threads. Empty at 0046 — the lock-free param store lands
-/// with the param table in a later slice.
-pub struct VxnShared;
+/// Cross-thread shared state: the main↔audio I/O bundle (edit queue, playhead,
+/// swap mailboxes) and the activated sample rate (published by the audio thread,
+/// read by the main thread when it builds a freshly selected engine).
+pub struct VxnShared {
+    io: EngineIo,
+    sample_rate: AtomicU32, // f32 bits
+}
+
+impl VxnShared {
+    fn sample_rate(&self) -> f32 {
+        f32::from_bits(self.sample_rate.load(Ordering::Relaxed))
+    }
+}
+
 impl PluginShared<'_> for VxnShared {}
 
-/// Main-thread state. Empty vessel for 0046 (no controller / GUI / timer yet).
-pub struct VxnMainThread;
-impl PluginMainThread<'_, VxnShared> for VxnMainThread {}
+pub struct VxnMainThread<'a> {
+    shared: &'a VxnShared,
+    /// Clone of the shared I/O (same inner `Arc`s) so `tick_vxn3` can post edits.
+    io: EngineIo,
+    pub(crate) controller: Arc<Mutex<Controller<Vxn3Model>>>,
+    pub(crate) view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    pub(crate) corpus: CorpusHandle,
+    pub(crate) gui: Option<vxn3_ui_web::EditorHandle>,
+    pub(crate) host: Option<HostMainThreadHandle<'a>>,
+    pub(crate) timer: Option<(HostTimer, TimerId)>,
+}
 
-impl PluginAudioPortsImpl for VxnMainThread {
+impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
+
+impl VxnMainThread<'_> {
+    /// Drain the controller's view-event queue into the live WebView.
+    fn drain_view_events(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let rx = lock_mut(&self.view_rx);
+        while let Ok(ev) = rx.try_recv() {
+            handle.push_view_event(ev);
+        }
+    }
+
+    /// Push the current per-lane playhead to the page (the only Model→View push
+    /// vxn-3 has — no flat params).
+    fn push_playhead(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let mut steps = [PlayheadState::STOPPED; N_TRACKS];
+        for (t, s) in steps.iter_mut().enumerate() {
+            *s = self.io.playhead.step(t);
+        }
+        let playing = self.io.playhead.playing();
+        handle.push_view_event(ViewEvent::Custom(Box::new(Vxn3ViewCustom::Playhead {
+            steps,
+            playing,
+        })));
+    }
+}
+
+impl PluginTimerImpl for VxnMainThread<'_> {
+    fn on_timer(&mut self, _id: TimerId) {
+        // Translate queued UI edits into engine commands / swaps.
+        {
+            let mut ctrl = lock_mut(&self.controller);
+            tick_vxn3(&mut ctrl, &self.io, self.shared.sample_rate());
+        }
+        self.drain_view_events();
+        self.push_playhead();
+        if let Some(handle) = self.gui.as_ref() {
+            handle.flush_view_events();
+        }
+    }
+}
+
+impl PluginAudioPortsImpl for VxnMainThread<'_> {
     fn count(&mut self, is_input: bool) -> u32 {
         if is_input { 0 } else { 1 }
     }
@@ -82,9 +182,7 @@ impl PluginAudioPortsImpl for VxnMainThread {
     }
 }
 
-/// Map a CLAP transport event (or its absence) into the engine's clock. Pure so
-/// it can be unit-tested without a host. The host supplies the transport as
-/// `Option`: hosts may run `process` with no transport (offline render, freewheel).
+/// Map a CLAP transport event (or its absence) into the engine's clock.
 fn read_transport(t: Option<&TransportEvent>) -> Transport {
     match t {
         Some(t) => Transport {
@@ -105,16 +203,19 @@ pub struct VxnAudioProcessor {
     scratch_r: Vec<f32>,
 }
 
-impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread> for VxnAudioProcessor {
+impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor {
     fn activate(
         _host: HostAudioProcessorHandle<'a>,
-        _main_thread: &mut VxnMainThread,
-        _shared: &'a VxnShared,
+        _main_thread: &mut VxnMainThread<'a>,
+        shared: &'a VxnShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let max = audio_config.max_frames_count as usize;
+        let sr = audio_config.sample_rate as f32;
+        // Publish the rate so the main thread builds swapped-in engines at it.
+        shared.sample_rate.store(sr.to_bits(), Ordering::Relaxed);
         Ok(Self {
-            engine: Engine::new(audio_config.sample_rate as f32, max),
+            engine: Engine::with_io(sr, max, shared.io.clone()),
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
         })
@@ -126,9 +227,6 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread> for VxnAudioProcesso
         mut audio: Audio,
         _events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Host transport → engine clock. Read every block so tempo / play-state
-        // changes track without waiting for a reset. The sequencer (0048) will
-        // consume it; 0046 just proves the clock reaches the engine layer.
         self.engine.set_transport(read_transport(process.transport));
 
         let mut output_port = audio
@@ -145,8 +243,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread> for VxnAudioProcesso
             return Err(PluginError::Message("Expected ≥1 output channel"));
         }
 
-        // 0046 renders silence into pre-allocated scratch (no per-block alloc);
-        // later slices drive the sequencer + voice engines here.
+        // Drains UI edits, installs swaps, sequences + renders + publishes the
+        // playhead — all allocation-free.
         self.engine
             .process_block(&mut self.scratch_l[..frames], &mut self.scratch_r[..frames]);
 

@@ -29,6 +29,8 @@ members = [
     # vxn-3 (synth #3, MVP in-flight — see vxn-3/adrs/0001, epic E021).
     "vxn-3/crates/vxn3-dsp",
     "vxn-3/crates/vxn3-engine",
+    "vxn-3/crates/vxn3-app",
+    "vxn-3/crates/vxn3-ui-web",
     "vxn-3/crates/vxn3-clap",
 ]
 
@@ -61,6 +63,8 @@ vxn2-ui-web = { path = "vxn-2/crates/vxn2-ui-web" }
 # vxn-3 (path).
 vxn3-dsp = { path = "vxn-3/crates/vxn3-dsp" }
 vxn3-engine = { path = "vxn-3/crates/vxn3-engine" }
+vxn3-app = { path = "vxn-3/crates/vxn3-app" }
+vxn3-ui-web = { path = "vxn-3/crates/vxn3-ui-web" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). Single source of truth across all consumers.

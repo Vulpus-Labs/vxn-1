@@ -2540,14 +2540,25 @@ name = "vxn2-xtask"
 version = "0.0.8"
 
 [[package]]
+name = "vxn3-app"
+version = "0.0.8"
+dependencies = [
+ "vxn-core-app",
+ "vxn3-engine",
+]
+
+[[package]]
 name = "vxn3-clap"
 version = "0.0.8"
 dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "vxn-core-app",
  "vxn-core-clap",
+ "vxn3-app",
  "vxn3-engine",
+ "vxn3-ui-web",
 ]
 
 [[package]]
@@ -2559,6 +2570,17 @@ name = "vxn3-engine"
 version = "0.0.8"
 dependencies = [
  "vxn3-dsp",
+]
+
+[[package]]
+name = "vxn3-ui-web"
+version = "0.0.8"
+dependencies = [
+ "serde_json",
+ "vxn-core-app",
+ "vxn-core-ui-web",
+ "vxn3-app",
+ "vxn3-engine",
 ]
 
 [[package]]

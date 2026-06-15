@@ -1,0 +1,12 @@
+[package]
+name = "vxn3-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN3 controller glue: zero-param model + structured faceplate events."
+
+[dependencies]
+vxn-core-app = { workspace = true }
+vxn3-engine = { workspace = true }
