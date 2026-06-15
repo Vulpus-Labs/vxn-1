@@ -2,7 +2,7 @@
 id: E017
 product: vxn-2
 title: "vxn-1 web port — input (Web MIDI + computer keyboard)"
-status: open
+status: closed
 created: 2026-06-14
 depends-on: E015
 ---

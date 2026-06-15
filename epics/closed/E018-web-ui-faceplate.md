@@ -2,7 +2,7 @@
 id: E018
 product: vxn-2
 title: "vxn-1 web port — UI faceplate (reuse opcodes, drop wry)"
-status: open
+status: closed
 created: 2026-06-14
 depends-on: E015
 ---
