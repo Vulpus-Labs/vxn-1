@@ -177,6 +177,17 @@ export class WebController {
     }
   }
 
+  // Force the NEXT tick's mirror pass to re-write EVERY param into the store SAB
+  // (re-seed the NaN sentinel). E018 calls this after the audio coordinator's
+  // `start()` runs — `_seedStoreFromDefaults` (coordinator.mjs) does a `writeBulk`
+  // of engine defaults into the SAME store, which would otherwise clobber any
+  // value the controller already mirrored (e.g. an edit made on the unlock
+  // gesture). Re-mirroring restores the controller's authoritative values
+  // (ADR 0009: controller is the single source of truth on main).
+  remirrorStore() {
+    this._mirrored.fill(NaN);
+  }
+
   // ---- diff pump: audio-thread readback → ParamChanged --------------------
   //
   // Port of vxn-clap push_param_diffs. Copy the worklet's readback region (the
