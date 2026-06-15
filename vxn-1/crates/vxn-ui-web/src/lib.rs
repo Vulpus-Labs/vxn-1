@@ -299,6 +299,105 @@ fn build_faceplate_html() -> String {
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
 }
 
+/// Web boot head (E018 / 0057). Spliced into the assembled faceplate page
+/// just BEFORE the inlined faceplate `<script>` so it runs first.
+///
+/// On the web there is no wry IPC: the faceplate posts opcodes via
+/// `window.ipc.postMessage(json)`, so this installs a SYNCHRONOUS queuing stub
+/// for `window.ipc` (and `__VXN_PARAMS__`/`__VXN_SUBDIVISIONS__`/`__VXN_PATCH_COUNT__`
+/// fallbacks the shared bridge.js reads when the `__*_JSON__` placeholders are
+/// left unspliced). The faceplate's `init()` fires a `ready` opcode during page
+/// parse — before the async controller boot finishes — so the stub buffers every
+/// opcode in `__VXN_UI_QUEUE__` until `faceplate-bridge.mjs` drains it. The
+/// faceplate splice ALWAYS replaces the `__*_JSON__` placeholders here (so the
+/// descriptor table is byte-identical to the plugin), so the globals below are a
+/// belt-and-braces echo of the same data for the bridge module to read without
+/// re-parsing the page.
+const WEB_BOOT_HEAD: &str = r#"<style>
+/* E018 / 0061 DOM text-input popup (replaces the desktop floating NSWindow). */
+.vxn-ti-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.vxn-ti-box {
+  background: #1b1b1f; color: #eee; padding: 16px 18px; border-radius: 8px;
+  min-width: 240px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  font: 13px system-ui, sans-serif;
+}
+.vxn-ti-title { margin-bottom: 8px; opacity: 0.85; }
+.vxn-ti-input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 14px;
+  background: #0e0e10; color: #fff; border: 1px solid #444; border-radius: 4px;
+}
+.vxn-ti-input:focus { outline: none; border-color: #6a8; }
+</style>
+<script>
+// E018 web transport shim. No wry IPC here: buffer faceplate opcodes until the
+// controller wasm is live, then faceplate-bridge.mjs drains the queue.
+(function () {
+  var q = (window.__VXN_UI_QUEUE__ = window.__VXN_UI_QUEUE__ || []);
+  // `window.ipc` is what bridge.js `_post` calls. Install a queuing stub now
+  // (synchronous, before the faceplate <script> runs init()); the bridge
+  // module replaces `.postMessage` with the live router once booted and flushes
+  // the queue.
+  if (!window.ipc) {
+    window.ipc = { postMessage: function (json) { q.push(json); } };
+  }
+  // Descriptor data the bridge module reads (params already spliced into the
+  // faceplate too; this is a redundant, structured copy so the module need not
+  // scrape the page).
+  window.__VXN_PARAMS__ = __PARAMS_JSON__;
+  window.__VXN_SUBDIVISIONS__ = __SUBDIVISIONS_JSON__;
+  window.__VXN_PATCH_COUNT__ = __PATCH_COUNT__;
+})();
+</script>
+"#;
+
+/// Module-loader tag (E018 / 0057) appended after the faceplate `<script>`: it
+/// boots `WebHost` + `WebController` and runs the bridge. Deferred (module
+/// scripts always are), so it runs after the faceplate's synchronous `init()`.
+const WEB_BOOT_LOADER: &str = "<script type=\"module\" src=\"./faceplate-bridge.mjs\"></script>\n";
+
+/// Assemble the faceplate page for the STANDALONE WEB build (E018). Reuses the
+/// exact native splice ([`build_faceplate_html`]) so the markup, CSS, JS, and —
+/// critically — the param-descriptor JSON are byte-identical to the plugin's
+/// faceplate; the only difference is the transport head. The wry IPC bridge is
+/// replaced by a queuing `window.ipc` stub + the `faceplate-bridge.mjs` module
+/// loader, both injected around the inlined faceplate `<script>`.
+///
+/// Used by the `gen-web-page` bin, which `cargo xtask web` runs to write
+/// `target/web-dist/index.html`. Kept here (not in xtask) so the JSON-shaping
+/// stays single-sourced and xtask carries no wry-pulling dependency.
+pub fn build_web_faceplate_html() -> String {
+    let native = build_faceplate_html();
+    // The web boot head carries the same `__*_JSON__` placeholders as bridge.js;
+    // splice them here (the native pass already ran on the body, not on this
+    // string). Same generators -> byte-identical descriptor data.
+    let boot_head = WEB_BOOT_HEAD
+        .replace("__PARAMS_JSON__", &build_params_json())
+        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
+        .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string());
+    // The faceplate template has exactly one inlined `<script>` (faceplate.html
+    // end-of-body). Inject the web boot head right before it and the module
+    // loader right after its close. Splitting on the first `<script>` is robust:
+    // the CSS/markup above contain no `<script>` tag.
+    let marker = "<script>\n";
+    let split = native
+        .find(marker)
+        .expect("faceplate template must contain an inlined <script>");
+    let (head, tail) = native.split_at(split);
+    // `tail` starts at `<script>\n…</script>\n</body></html>`. Insert the loader
+    // after the closing `</script>` of that block.
+    let close = "</script>";
+    let close_at = tail
+        .find(close)
+        .expect("faceplate <script> must be closed")
+        + close.len();
+    let (script_block, after) = tail.split_at(close_at);
+    format!("{head}{boot_head}{script_block}\n{WEB_BOOT_LOADER}{after}")
+}
+
 /// Drop ESM module syntax from every line of `src`. The four faceplate JS
 /// modules carry `export` markers (and a couple of cross-module `import`s
 /// since E015 / 0079) so Node can load them for the test suite; the splice
@@ -1896,6 +1995,53 @@ mod tests {
         assert_eq!(v["0"]["name"], "osc1_wave");
         assert_eq!(v["0"]["kind"], "enum");
         assert_eq!(v["0"]["variants"][0], "Sine");
+    }
+
+    #[test]
+    fn web_page_splices_clean_and_wires_boot() {
+        // E018 / 0057: the standalone-web page reuses the native splice but
+        // swaps the wry IPC head for the web boot head + module loader.
+        let page = build_web_faceplate_html();
+        // No unreplaced placeholders leak (params/subdivisions/patchCount + the
+        // JS/CSS markers must all be spliced — including inside the boot head).
+        for ph in [
+            "__PARAMS_JSON__",
+            "__SUBDIVISIONS_JSON__",
+            "__PATCH_COUNT__",
+            "__BRIDGE_JS__",
+            "__DISPATCH_JS__",
+            "__PANELS_JS__",
+            "__BROWSER_JS__",
+            "__CSS__",
+        ] {
+            assert!(!page.contains(ph), "web page leaks placeholder {ph}");
+        }
+        // The web boot head (queuing `window.ipc` stub) and the module loader
+        // are both present.
+        assert!(page.contains("__VXN_UI_QUEUE__"), "boot head queue missing");
+        assert!(
+            page.contains(r#"<script type="module" src="./faceplate-bridge.mjs">"#),
+            "faceplate-bridge module loader missing",
+        );
+        // The DOM text-input popup CSS (0061) is injected.
+        assert!(page.contains("vxn-ti-backdrop"), "text-input popup CSS missing");
+        // The faceplate markup itself is intact (the mount root the bridge keys
+        // off + a known control mount).
+        assert!(page.contains(r#"id="faceplate""#));
+        assert!(page.contains(r#"data-param="cutoff""#));
+    }
+
+    #[test]
+    fn web_page_params_are_byte_identical_to_native() {
+        // E018: the whole point of the reuse — the web page's descriptor JSON
+        // must be the exact same `build_params_json` output the plugin splices.
+        // Both pages carry it as `params:<json>` inside bridge.js; extract and
+        // compare the literal so a future divergence in the web path is caught.
+        let json = build_params_json();
+        let native = build_faceplate_html();
+        let web = build_web_faceplate_html();
+        assert!(native.contains(&json), "native page must carry params JSON");
+        assert!(web.contains(&json), "web page must carry the SAME params JSON");
     }
 
     #[test]
