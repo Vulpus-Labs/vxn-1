@@ -1,0 +1,27 @@
+[package]
+name = "vxn3-clap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN3 CLAP plugin shell (clack)."
+
+[lib]
+# cdylib for the host-loadable plugin; rlib so in-process tests link the shell
+# without dlopen.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vxn3-engine = { workspace = true }
+vxn-core-clap = { workspace = true }
+clack-plugin = { workspace = true }
+clack-extensions = { workspace = true, features = [
+    "audio-ports",
+    "clack-plugin",
+] }
+
+[dev-dependencies]
+# In-process smoke test (0046) drives the plugin through the real CLAP
+# lifecycle via clack-host without dlopen, so panics surface with backtraces.
+clack-host = { workspace = true }

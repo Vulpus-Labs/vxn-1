@@ -2540,6 +2540,28 @@ name = "vxn2-xtask"
 version = "0.0.8"
 
 [[package]]
+name = "vxn3-clap"
+version = "0.0.8"
+dependencies = [
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "vxn-core-clap",
+ "vxn3-engine",
+]
+
+[[package]]
+name = "vxn3-dsp"
+version = "0.0.8"
+
+[[package]]
+name = "vxn3-engine"
+version = "0.0.8"
+dependencies = [
+ "vxn3-dsp",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

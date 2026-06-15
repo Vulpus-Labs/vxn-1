@@ -26,9 +26,10 @@ members = [
     "vxn-2/crates/vxn2-osc-bench",
     "vxn-2/xtask",
 
-    # vxn-3 (synth #3, design phase — see vxn-3/adrs/0001). No crates yet.
-    # "vxn-3/crates/vxn3-dsp",
-    # "vxn-3/crates/vxn3-engine",
+    # vxn-3 (synth #3, MVP in-flight — see vxn-3/adrs/0001, epic E021).
+    "vxn-3/crates/vxn3-dsp",
+    "vxn-3/crates/vxn3-engine",
+    "vxn-3/crates/vxn3-clap",
 ]
 
 [workspace.package]
@@ -56,6 +57,10 @@ vxn2-dsp = { path = "vxn-2/crates/vxn2-dsp" }
 vxn2-engine = { path = "vxn-2/crates/vxn2-engine" }
 vxn2-app = { path = "vxn-2/crates/vxn2-app" }
 vxn2-ui-web = { path = "vxn-2/crates/vxn2-ui-web" }
+
+# vxn-3 (path).
+vxn3-dsp = { path = "vxn-3/crates/vxn3-dsp" }
+vxn3-engine = { path = "vxn-3/crates/vxn3-engine" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). Single source of truth across all consumers.

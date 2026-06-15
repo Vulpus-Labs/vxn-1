@@ -1,0 +1,10 @@
+[package]
+name = "vxn3-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN3 DSP kernels — framework-free synthesis primitives."
+
+[dependencies]
