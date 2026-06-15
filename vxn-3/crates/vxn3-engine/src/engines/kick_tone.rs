@@ -13,7 +13,7 @@
 
 use vxn3_dsp::{SILENCE_EPS, attack_coef, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
-use crate::track_engine::{EngineKind, LANES, TrackEngine};
+use crate::track_engine::{EngineKind, Knob, LANES, TrackEngine};
 
 /// Patch parameters for the `Kick/Tone` engine. Cooked into per-sample
 /// coefficients at [`KickTone::set_sample_rate`] / construction.
@@ -174,6 +174,16 @@ impl TrackEngine for KickTone {
 
     fn kind(&self) -> EngineKind {
         EngineKind::KickTone
+    }
+
+    fn set_knob(&mut self, knob: Knob, value: f32) {
+        let v = value.clamp(0.0, 1.0);
+        match knob {
+            Knob::Decay => self.patch.amp_decay_s = 0.05 + v * 1.45, // 50 ms .. 1.5 s
+            Knob::Pitch => self.patch.pitch_depth_st = v * 48.0,     // 0 .. 4 octaves
+            Knob::Tone => {}
+        }
+        self.cook();
     }
 }
 

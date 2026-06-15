@@ -9,6 +9,7 @@
 
 pub mod engine;
 pub mod engines;
+pub mod io;
 pub mod lane;
 pub mod sequencer;
 pub mod swap;
@@ -18,11 +19,12 @@ pub mod transport;
 
 pub use engine::{Engine, N_TRACKS};
 pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch, make};
+pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
     EIGHTH, EIGHTH_TRIPLET, MAX_STEPS, Pattern, Retrig, RetrigCurve, SIXTEENTH, Step,
 };
 pub use swap::EngineSwap;
 pub use track::Track;
-pub use track_engine::{EngineKind, LANES, TrackEngine};
+pub use track_engine::{EngineKind, Knob, LANES, TrackEngine};
 pub use transport::Transport;

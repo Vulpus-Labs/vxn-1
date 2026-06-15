@@ -26,11 +26,12 @@ pub struct Track {
 }
 
 impl Track {
-    /// A track defaulting to a `Kick/Tone` engine and an empty pattern.
-    pub fn new(sample_rate: f32, max_block: usize) -> Self {
+    /// A track defaulting to a `Kick/Tone` engine and an empty pattern, using
+    /// the given (shared) swap mailbox so the main thread can hand it engines.
+    pub fn new(sample_rate: f32, max_block: usize, swap: Arc<EngineSwap>) -> Self {
         Self {
             engine: Box::new(KickTone::with_default_patch(sample_rate)),
-            swap: EngineSwap::new(),
+            swap,
             pattern: Pattern::default(),
             gain: 1.0,
             pan: 0.0,

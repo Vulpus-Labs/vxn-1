@@ -16,7 +16,7 @@
 
 use vxn3_dsp::decay_coef;
 
-use crate::track_engine::{EngineKind, TrackEngine};
+use crate::track_engine::{EngineKind, Knob, TrackEngine};
 
 /// Modal partial count (the engine-declared lane budget). Two NEON `f32x4`.
 pub const METAL_MODES: usize = 8;
@@ -157,6 +157,16 @@ impl TrackEngine for Metal {
 
     fn kind(&self) -> EngineKind {
         EngineKind::Metal
+    }
+
+    fn set_knob(&mut self, knob: Knob, value: f32) {
+        let v = value.clamp(0.0, 1.0);
+        match knob {
+            Knob::Decay => self.patch.open_decay_s = 0.1 + v * 2.9, // 100 ms .. 3 s ring
+            Knob::Pitch => self.patch.base_hz = 400.0 + v * 2_600.0, // body pitch
+            Knob::Tone => {}
+        }
+        self.cook();
     }
 }
 

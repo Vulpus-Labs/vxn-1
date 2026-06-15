@@ -11,7 +11,7 @@
 
 use vxn3_dsp::{SILENCE_EPS, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
-use crate::track_engine::{EngineKind, LANES, TrackEngine};
+use crate::track_engine::{EngineKind, Knob, LANES, TrackEngine};
 
 #[derive(Copy, Clone, Debug)]
 pub struct NoisePatch {
@@ -173,6 +173,16 @@ impl TrackEngine for Noise {
 
     fn kind(&self) -> EngineKind {
         EngineKind::Noise
+    }
+
+    fn set_knob(&mut self, knob: Knob, value: f32) {
+        let v = value.clamp(0.0, 1.0);
+        match knob {
+            Knob::Tone => self.patch.tone_mix = v,                   // noise ↔ body
+            Knob::Decay => self.patch.noise_decay_s = 0.02 + v * 0.48, // 20 ms .. 0.5 s
+            Knob::Pitch => {}
+        }
+        self.cook();
     }
 }
 

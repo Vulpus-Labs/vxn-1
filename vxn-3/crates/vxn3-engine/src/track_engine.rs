@@ -43,6 +43,22 @@ pub trait TrackEngine: Send {
     /// A short identifier for the active engine kind (UI / introspection / swap
     /// assertions). Stable across instances of the same engine.
     fn kind(&self) -> EngineKind;
+
+    /// Set one of the small set of generic faceplate knobs (0..1 normalised).
+    /// Each engine maps the knobs it cares about and ignores the rest; the
+    /// default is a no-op. Keeps the UI knob surface uniform without a
+    /// per-engine param table (deferred breadth).
+    fn set_knob(&mut self, _knob: Knob, _value: f32) {}
+}
+
+/// The generic faceplate knobs exposed per track. Each engine interprets these
+/// against its own patch (e.g. `Decay` → amp decay for `Kick/Tone`, ring decay
+/// for `Metal`); unmapped knobs are ignored.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Knob {
+    Decay,
+    Tone,
+    Pitch,
 }
 
 /// The closed engine roster (ADR 0001 §6). `Metal` / `Noise` land in 0049.

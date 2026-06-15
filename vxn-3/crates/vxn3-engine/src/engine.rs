@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::io::{EngineCommand, EngineIo, PlayheadState};
 use crate::lane::{Hit, LaneState};
 use crate::sequencer::Pattern;
 use crate::swap::EngineSwap;
@@ -35,16 +36,28 @@ pub struct Engine {
     /// Reused per-track scratch for one block's scheduled hits — pre-allocated,
     /// cleared (not freed) each use, so scheduling never allocates.
     hits: Vec<Hit>,
+    /// Shared main↔audio I/O: edit-command queue, playhead, engine-swap mailboxes.
+    io: EngineIo,
+    /// Scratch for publishing per-lane playhead positions (avoids per-block alloc).
+    playhead_scratch: [u32; N_TRACKS],
     /// Beat position used when the host exposes no beats timeline — advanced by
     /// the block length each playing block so the sequencer free-runs.
     free_run_beats: f64,
 }
 
 impl Engine {
+    /// Build an engine with its own private I/O (tests / standalone use).
     pub fn new(sample_rate: f32, block_size: usize) -> Self {
+        Self::with_io(sample_rate, block_size, EngineIo::new())
+    }
+
+    /// Build an engine sharing the given I/O handles with the main thread (the
+    /// CLAP shell path): the edit queue, playhead, and per-track swap mailboxes
+    /// are the same `Arc`s the UI drives.
+    pub fn with_io(sample_rate: f32, block_size: usize, io: EngineIo) -> Self {
         let max_block = block_size.max(1);
         let tracks = (0..N_TRACKS)
-            .map(|_| Track::new(sample_rate, max_block))
+            .map(|t| Track::new(sample_rate, max_block, io.swaps[t].clone()))
             .collect();
         let lanes = (0..N_TRACKS).map(LaneState::new).collect();
         Self {
@@ -53,8 +66,15 @@ impl Engine {
             tracks,
             lanes,
             hits: Vec::with_capacity(HIT_CAPACITY),
+            io,
+            playhead_scratch: [PlayheadState::STOPPED; N_TRACKS],
             free_run_beats: 0.0,
         }
+    }
+
+    /// The shared I/O handle set (clone for the main thread to drive the UI).
+    pub fn io(&self) -> EngineIo {
+        self.io.clone()
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -100,7 +120,11 @@ impl Engine {
         left[..frames].fill(0.0);
         right[..frames].fill(0.0);
 
-        // 1. Install any pending off-thread engine swaps (alloc-free).
+        // 1. Apply queued UI edits, then install any pending engine swaps
+        //    (both alloc-free on the audio thread).
+        while let Some(cmd) = self.io.edits.pop() {
+            self.apply_command(cmd);
+        }
         for t in &mut self.tracks {
             t.poll_swap();
         }
@@ -113,6 +137,18 @@ impl Engine {
         } else {
             self.free_run_beats
         };
+
+        // Publish each lane's current step for the UI playhead.
+        for t in 0..self.tracks.len() {
+            self.playhead_scratch[t] = if playing {
+                let sb = self.tracks[t].pattern.step_beats.max(1e-9);
+                let len = self.tracks[t].pattern.len.clamp(1, crate::sequencer::MAX_STEPS) as i64;
+                ((beat0 / sb).floor() as i64).rem_euclid(len) as u32
+            } else {
+                PlayheadState::STOPPED
+            };
+        }
+        self.io.playhead.publish(&self.playhead_scratch, playing);
 
         for t in 0..self.tracks.len() {
             // Schedule this track's hits (lane state + pattern + hit scratch are
@@ -131,6 +167,51 @@ impl Engine {
 
         if playing {
             self.free_run_beats = beat0 + frames as f64 * bps;
+        }
+    }
+
+    /// Apply one UI edit command to the addressed track. Bounds-checked; an
+    /// out-of-range track is ignored. Allocation-free.
+    fn apply_command(&mut self, cmd: EngineCommand) {
+        let t = match &cmd {
+            EngineCommand::ToggleStep { track, .. }
+            | EngineCommand::SetStep { track, .. }
+            | EngineCommand::SetProbability { track, .. }
+            | EngineCommand::SetRetrig { track, .. }
+            | EngineCommand::SetLength { track, .. }
+            | EngineCommand::SetStepBeats { track, .. }
+            | EngineCommand::SetGain { track, .. }
+            | EngineCommand::SetPan { track, .. }
+            | EngineCommand::SetKnob { track, .. } => *track as usize,
+        };
+        let Some(track) = self.tracks.get_mut(t) else {
+            return;
+        };
+        match cmd {
+            EngineCommand::ToggleStep { step, .. } => {
+                let s = step as usize;
+                if s < crate::sequencer::MAX_STEPS {
+                    track.pattern.steps[s].active = !track.pattern.steps[s].active;
+                }
+            }
+            EngineCommand::SetStep {
+                step, note, velocity, ..
+            } => track.pattern.set(step as usize, note, velocity),
+            EngineCommand::SetProbability { step, probability, .. } => {
+                track.pattern.set_probability(step as usize, probability)
+            }
+            EngineCommand::SetRetrig { step, retrig, .. } => {
+                track.pattern.set_retrig(step as usize, retrig)
+            }
+            EngineCommand::SetLength { len, .. } => {
+                track.pattern.len = (len as usize).clamp(1, crate::sequencer::MAX_STEPS)
+            }
+            EngineCommand::SetStepBeats { beats, .. } => {
+                track.pattern.step_beats = beats.max(1e-4) as f64
+            }
+            EngineCommand::SetGain { gain, .. } => track.gain = gain.max(0.0),
+            EngineCommand::SetPan { pan, .. } => track.pan = pan.clamp(-1.0, 1.0),
+            EngineCommand::SetKnob { knob, value, .. } => track.engine.set_knob(knob, value),
         }
     }
 
