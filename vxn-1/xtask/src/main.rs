@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   cargo xtask bundle [--release] [--install] [--universal]
+//!   cargo xtask web [--debug]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
 //! plugin. On macOS that is a bundle directory (`Contents/MacOS/VXN1` +
@@ -9,6 +10,12 @@
 //! to `.clap`. `--install` copies it to the user CLAP directory. `--universal`
 //! (macOS only) builds both `aarch64`/`x86_64` slices and `lipo`s them into a
 //! single fat binary, so one bundle loads on Apple Silicon and Intel hosts.
+//!
+//! `web` (ticket 0041) compiles the wasm crate(s) for `wasm32-unknown-unknown`
+//! (release + SIMD128 by default) and assembles a self-contained, servable
+//! `target/web-dist/`: the `.wasm`, the E015 JS transport modules, the worklet,
+//! and the page assets. `--debug` builds a debug wasm. The COOP/COEP dev server
+//! that serves it is ticket 0045.
 
 use std::env;
 use std::fs;
@@ -33,8 +40,19 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "web" => {
+            // `web` defaults to release (a real deploy ships release+SIMD);
+            // `--debug` opts into a debug wasm.
+            let debug = args.iter().any(|a| a == "--debug");
+            if let Err(e) = web(!debug) {
+                eprintln!("xtask: {e}");
+                std::process::exit(1);
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask bundle [--release] [--install] [--universal]");
+            eprintln!(
+                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug]"
+            );
             std::process::exit(2);
         }
     }
@@ -105,6 +123,131 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
         println!("installed → {}", dest.display());
     }
     Ok(())
+}
+
+const WASM_PKG: &str = "vxn-wasm";
+const WASM_ARTIFACT: &str = "vxn_wasm.wasm";
+
+/// Build the wasm and assemble a self-contained `target/web-dist/` (ticket 0041).
+///
+/// One command → a servable directory: the engine `.wasm` (release + SIMD128 by
+/// default), the E015 transport JS modules, the production worklet, and a page.
+/// The COOP/COEP server that serves it is ticket 0045; the AudioContext boot
+/// that drives it is 0042.
+fn web(release: bool) -> Result<(), String> {
+    let root = workspace_root();
+    let profile = if release { "release" } else { "debug" };
+
+    // 1. Compile the engine wasm crate for wasm32-unknown-unknown.
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut build = Command::new(&cargo);
+    build.current_dir(&root).args([
+        "build",
+        "--package",
+        WASM_PKG,
+        "--target",
+        "wasm32-unknown-unknown",
+    ]);
+    if release {
+        build.arg("--release");
+    }
+    // SIMD128: perf measurement is E020, but the flag belongs in the pipeline.
+    // Append so we don't clobber a caller's RUSTFLAGS.
+    let existing = env::var("RUSTFLAGS").unwrap_or_default();
+    let rustflags = if existing.trim().is_empty() {
+        "-C target-feature=+simd128".to_string()
+    } else {
+        format!("{existing} -C target-feature=+simd128")
+    };
+    build.env("RUSTFLAGS", rustflags);
+    let status = build
+        .status()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !status.success() {
+        return Err("wasm build failed".into());
+    }
+
+    let wasm = root
+        .join("target/wasm32-unknown-unknown")
+        .join(profile)
+        .join(WASM_ARTIFACT);
+    if !wasm.exists() {
+        return Err(format!("built wasm not found at {}", wasm.display()));
+    }
+
+    // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
+    let dist = root.join("target").join("web-dist");
+    let _ = fs::remove_dir_all(&dist);
+    fs::create_dir_all(&dist).map_err(io("create web-dist"))?;
+
+    // 2a. The engine wasm.
+    fs::copy(&wasm, dist.join(WASM_ARTIFACT)).map_err(io("copy wasm"))?;
+
+    // 2b. The E015 production transport modules + worklet. Curated by hand: the
+    //     *.test.mjs suites, the Node harnesses, and the 0034/0035 spike
+    //     processors stay out of the shipped bundle. The production worklet
+    //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
+    let web_src = root.join("vxn-1/crates/vxn-wasm/web");
+    const MODULES: [(&str, &str); 6] = [
+        ("event-ring.mjs", "event-ring.mjs"),
+        ("event-codec.mjs", "event-codec.mjs"),
+        ("param-store.mjs", "param-store.mjs"),
+        ("audio-host.mjs", "audio-host.mjs"),
+        ("host-runner.mjs", "host-runner.mjs"),
+        ("vxn-processor-0038.js", "vxn-processor.js"),
+    ];
+    for (src, dest) in MODULES {
+        let from = web_src.join(src);
+        if !from.exists() {
+            return Err(format!("missing web module {}", from.display()));
+        }
+        fs::copy(&from, dist.join(dest)).map_err(io("copy web module"))?;
+    }
+
+    // 2c. A generated page. The real AudioContext/coordinator boot is ticket
+    //     0042; until then this documents the bundle + the isolation
+    //     requirement so a stray open() doesn't look broken.
+    fs::write(dist.join("index.html"), web_index_html()).map_err(io("write index.html"))?;
+
+    println!("web bundle → {}", dist.display());
+    println!(
+        "  note: SharedArrayBuffer needs cross-origin isolation — serve with \
+         COOP/COEP (ticket 0045)"
+    );
+    Ok(())
+}
+
+fn web_index_html() -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VXN1 web (v{version})</title>
+    <style>
+      body {{ font: 16px system-ui; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }}
+      code {{ background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; }}
+      #iso {{ font-weight: 600; }}
+    </style>
+  </head>
+  <body>
+    <h1>VXN1 → WASM</h1>
+    <p>Build bundle from <code>cargo xtask web</code> (ticket 0041). The
+      AudioContext boot (ticket 0042) and faceplate (E018) land on top of these
+      assets.</p>
+    <p>cross-origin isolated: <span id="iso">checking…</span></p>
+    <script type="module">
+      const el = document.getElementById("iso");
+      el.textContent = self.crossOriginIsolated ? "yes — SharedArrayBuffer available"
+        : "no — serve with COOP/COEP (ticket 0045)";
+      el.style.color = self.crossOriginIsolated ? "green" : "crimson";
+    </script>
+  </body>
+</html>
+"#,
+        version = env!("CARGO_PKG_VERSION"),
+    )
 }
 
 fn lib_path(profile_dir: &Path) -> PathBuf {
