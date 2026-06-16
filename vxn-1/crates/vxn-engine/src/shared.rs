@@ -265,17 +265,15 @@ impl vxn_app::ParamModel for SharedParams {
     }
 
     fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-        self.to_state()
-            .write(&mut buf)
-            .expect("PluginState::write into Vec is infallible");
-        buf
+        // Delegate to the shared `vxn-app` codec — one source of truth for the
+        // wire format across native CLAP state and the web controller (E019 /
+        // 0062). Byte-identical to the historical `PluginState::write` (guarded
+        // by `codec_matches_legacy_plugin_state`).
+        vxn_app::write_state_bytes(self)
     }
 
     fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
-        let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
-        self.restore_from(&state);
-        Ok(())
+        vxn_app::read_state_into(self, blob)
     }
 }
 
@@ -451,6 +449,39 @@ mod tests {
         let s2 = SharedParams::new();
         s2.restore_from(&state);
         assert_eq!(s2.get(up), 4321.0);
+        assert_eq!(s2.key_mode(), KeyMode::Split);
+        assert_eq!(s2.split_point(), 48);
+    }
+
+    /// Drift guard (E019 / 0062): the shared `vxn-app` codec must produce bytes
+    /// **byte-identical** to the historical engine `PluginState::write`, so
+    /// existing host-state blobs and baked factory presets stay readable after
+    /// the engine's `ParamModel` impl was switched to delegate to it.
+    #[test]
+    fn codec_matches_legacy_plugin_state() {
+        let s = SharedParams::new();
+        // Touch a value in every block so a mis-ordered codec would diverge.
+        s.set(global_clap_id(GlobalParam::MasterVolume), 0.25);
+        s.set(patch_clap_id(Layer::Upper, PatchParam::Cutoff), 1234.0);
+        s.set(patch_clap_id(Layer::Lower, PatchParam::Cutoff), 5678.0);
+        s.set_key_mode(KeyMode::Split);
+        s.set_split_point(48);
+
+        // Legacy path: build a PluginState and write it the old way.
+        let mut legacy = Vec::new();
+        s.to_state().write(&mut legacy).unwrap();
+
+        // New shared codec, addressing the same store by CLAP id.
+        let codec = vxn_app::write_state_bytes(&s);
+
+        assert_eq!(codec, legacy, "shared codec drifted from PluginState::write");
+
+        // And the shared codec round-trips back through the trait surface.
+        let s2 = SharedParams::new();
+        vxn_app::read_state_into(&s2, &codec).unwrap();
+        assert_eq!(s2.get(global_clap_id(GlobalParam::MasterVolume)), 0.25);
+        assert_eq!(s2.get(patch_clap_id(Layer::Upper, PatchParam::Cutoff)), 1234.0);
+        assert_eq!(s2.get(patch_clap_id(Layer::Lower, PatchParam::Cutoff)), 5678.0);
         assert_eq!(s2.key_mode(), KeyMode::Split);
         assert_eq!(s2.split_point(), 48);
     }

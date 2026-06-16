@@ -116,21 +116,13 @@ impl ParamModel for WebModel {
         desc_for_clap_id(id.raw())
     }
     fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(TOTAL_PARAMS * 4);
-        for v in &self.vals {
-            out.extend_from_slice(&v.load(Ordering::Relaxed).to_le_bytes());
-        }
-        out
+        // Canonical VXN1 state blob via the shared `vxn-app` codec — the same
+        // format native CLAP host state and factory presets use, so blobs
+        // round-trip across native and wasm (E019 / 0062).
+        vxn_app::write_state_bytes(self)
     }
     fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
-        if blob.len() != TOTAL_PARAMS * 4 {
-            return Err("bad blob len".into());
-        }
-        for (i, chunk) in blob.chunks_exact(4).enumerate() {
-            let bits = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            self.vals[i].store(bits, Ordering::Relaxed);
-        }
-        Ok(())
+        vxn_app::read_state_into(self, blob)
     }
 }
 
