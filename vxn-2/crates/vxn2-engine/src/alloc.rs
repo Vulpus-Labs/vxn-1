@@ -31,6 +31,14 @@
 //! Linear pitch ramp in semitones over `glide_time_ms`, applied via
 //! [`vxn2_dsp::stack::Stack::set_glide`]. Block-rate ramp (one update per
 //! `block_tick`).
+//!
+//! Glide is true portamento in both modes (vxn-1 parity, ticket 0125): every
+//! note after the first slides from the previous sounding pitch regardless of
+//! note overlap, and independent of `legato` (which controls EG retrigger
+//! only). In Poly each reused/stolen voice glides from its own previous pitch;
+//! a new note prefers the free slot nearest in pitch (see [`Self::pick_slot`])
+//! so glides stay short and musical. Glide is off only when `glide_time_ms`
+//! is 0 or the chosen slot has never sounded.
 
 use vxn2_dsp::eg::EgStage;
 use vxn2_dsp::stack::{Stack, StackParams};
@@ -55,7 +63,9 @@ pub enum AssignMode {
 #[derive(Clone, Copy, Debug)]
 pub struct AllocParams {
     pub assign_mode: AssignMode,
-    /// Solo: skip EG retrigger on note change. Poly: enables overlap-glide.
+    /// Solo: skip EG retrigger on a slurred note change. No effect in Poly,
+    /// and never gates glide in either mode (glide is governed by
+    /// `glide_time_ms` alone — ticket 0125).
     pub legato: bool,
     /// Portamento time in milliseconds. 0 disables glide regardless of mode.
     pub glide_time_ms: f32,
@@ -91,6 +101,17 @@ pub struct PolyAlloc {
     held_len: usize,
     /// True when `SOLO_SLOT` is currently playing a held note.
     solo_active: bool,
+    /// True once Solo has sounded at least one note since the last
+    /// [`Self::clear`]. Unlike `solo_active` it survives note-off, so a *new*
+    /// Solo note glides from the previous pitch even when the prior key was
+    /// already released (vxn-1 portamento semantics: glide is governed by
+    /// glide-time alone, not by note overlap or legato — ticket 0125).
+    solo_voiced: bool,
+    /// Per-slot "has sounded a note since the last [`Self::clear`]" flag.
+    /// Survives note-off/free so a reused Poly slot glides from its previous
+    /// pitch (always-glide, vxn-1 parity) and so the nearest-pitch slot pick
+    /// only considers slots with a meaningful last pitch (ticket 0125).
+    voiced: [bool; N_STACKS],
     /// Sustain pedal (CC64) state. While true, a poly note-off flags the
     /// matching stacks `held_by_pedal` instead of gating them; releasing the
     /// pedal gates every flagged stack off. Poly-only — Solo ignores it.
@@ -111,6 +132,8 @@ impl PolyAlloc {
             held: [0; N_STACKS],
             held_len: 0,
             solo_active: false,
+            solo_voiced: false,
+            voiced: [false; N_STACKS],
             sustain: false,
             held_by_pedal: [false; N_STACKS],
         }
@@ -133,6 +156,8 @@ impl PolyAlloc {
         self.held = [0; N_STACKS];
         self.held_len = 0;
         self.solo_active = false;
+        self.solo_voiced = false;
+        self.voiced = [false; N_STACKS];
         self.sustain = false;
         self.held_by_pedal = [false; N_STACKS];
     }
@@ -233,11 +258,7 @@ impl PolyAlloc {
                 }
             }
             if self.stacks[i].is_idle() {
-                self.seq[i] = IDLE_SEQ;
-                self.held_by_pedal[i] = false;
-                if i == SOLO_SLOT {
-                    self.solo_active = false;
-                }
+                self.free_slot(i);
             }
         }
     }
@@ -252,18 +273,23 @@ impl PolyAlloc {
         note: u8,
         velocity: u8,
     ) -> usize {
-        let glide_from = if params.legato && params.glide_time_ms > 0.0 {
-            self.most_recent_gated_pitch(note)
+        let slot = self.pick_slot(note);
+        // Always-glide (vxn-1 parity, ticket 0125): a reused or stolen voice
+        // slides from its previous sounding pitch (note + any in-flight glide
+        // offset) to the new note, independent of overlap or `legato`. A slot
+        // that has never sounded snaps. Computed before `note_on` resets the
+        // stack's pitch.
+        let glide_from = if self.voiced[slot] && params.glide_time_ms > 0.0 {
+            let cur_pitch = self.stacks[slot].note as f32 + self.stacks[slot].glide_st;
+            cur_pitch - note as f32
         } else {
             0.0
         };
-        let slot = self.pick_slot();
-        self.glides[slot] = None;
-        self.held_by_pedal[slot] = false;
         let counter = self.bump_seq();
+        self.claim_slot(slot, counter);
         self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
         self.stacks[slot].set_bend(self.bend_st);
-        self.seq[slot] = counter;
+        self.voiced[slot] = true;
         if glide_from != 0.0 {
             self.start_glide(slot, glide_from, params.glide_time_ms / 1000.0);
         }
@@ -291,20 +317,47 @@ impl PolyAlloc {
         if !on {
             for i in 0..N_STACKS {
                 if self.held_by_pedal[i] {
-                    self.stacks[i].note_off();
-                    self.held_by_pedal[i] = false;
+                    self.release_pedal_held(i);
                 }
             }
         }
     }
 
-    /// Pick the destination slot. Priority: idle slot → oldest at/past
-    /// Sustain (ties broken by lowest note) → globally oldest.
-    fn pick_slot(&self) -> usize {
+    /// Pick the destination slot for a new note. Priority:
+    ///
+    /// 1. A free (idle) slot. Among idle slots, vxn-1's rule (ticket 0125):
+    ///    take the *voiced* one whose last sounding pitch is nearest the new
+    ///    note, so always-glide slides over a short, musical interval. If no
+    ///    idle slot has sounded yet, take the first unvoiced idle slot (it
+    ///    snaps — nothing to glide from).
+    /// 2. Steal the oldest at/past Sustain (ties broken by lowest note).
+    /// 3. Globally oldest.
+    fn pick_slot(&self, note: u8) -> usize {
+        let mut nearest_voiced: Option<(usize, f32)> = None;
+        let mut first_unvoiced_idle: Option<usize> = None;
         for i in 0..N_STACKS {
-            if self.stacks[i].is_idle() {
-                return i;
+            if !self.stacks[i].is_idle() {
+                continue;
             }
+            if self.voiced[i] {
+                let last_pitch = self.stacks[i].note as f32 + self.stacks[i].glide_st;
+                let dist = (last_pitch - note as f32).abs();
+                let better = match nearest_voiced {
+                    Some((_, bd)) => dist < bd,
+                    None => true,
+                };
+                if better {
+                    nearest_voiced = Some((i, dist));
+                }
+            } else if first_unvoiced_idle.is_none() {
+                first_unvoiced_idle = Some(i);
+            }
+        }
+        if let Some((i, _)) = nearest_voiced {
+            return i;
+        }
+        if let Some(i) = first_unvoiced_idle {
+            return i;
         }
         let mut best: Option<(usize, u64, u8)> = None;
         for i in 0..N_STACKS {
@@ -335,24 +388,6 @@ impl PolyAlloc {
         min_i
     }
 
-    fn most_recent_gated_pitch(&self, new_note: u8) -> f32 {
-        let mut best: Option<(u64, u8)> = None;
-        for i in 0..N_STACKS {
-            if self.stacks[i].gate {
-                let cand = (self.seq[i], self.stacks[i].note);
-                best = Some(match best {
-                    None => cand,
-                    Some(b) if cand.0 > b.0 => cand,
-                    Some(b) => b,
-                });
-            }
-        }
-        match best {
-            Some((_, n)) => n as f32 - new_note as f32,
-            None => 0.0,
-        }
-    }
-
     // --- Solo internals -----------------------------------------------------
 
     fn note_on_solo(
@@ -363,8 +398,14 @@ impl PolyAlloc {
         note: u8,
         velocity: u8,
     ) {
-        let glide_from = if self.solo_active && params.glide_time_ms > 0.0 {
-            self.stacks[SOLO_SLOT].note as f32 - note as f32
+        // Portamento glides from the *current sounding pitch* (the previous
+        // note plus any still-in-flight glide offset) to the new note —
+        // regardless of whether the previous key is still held. Gated only by
+        // glide-time and `solo_voiced` (so the very first note snaps). `legato`
+        // governs EG retrigger below, never the glide (ticket 0125).
+        let glide_from = if self.solo_voiced && params.glide_time_ms > 0.0 {
+            let cur_pitch = self.stacks[SOLO_SLOT].note as f32 + self.stacks[SOLO_SLOT].glide_st;
+            cur_pitch - note as f32
         } else {
             0.0
         };
@@ -377,12 +418,12 @@ impl PolyAlloc {
             self.stacks[SOLO_SLOT].set_bend(self.bend_st);
         }
         self.solo_active = true;
+        self.solo_voiced = true;
         self.seq[SOLO_SLOT] = counter;
         if glide_from != 0.0 {
             self.start_glide(SOLO_SLOT, glide_from, params.glide_time_ms / 1000.0);
         } else {
-            self.glides[SOLO_SLOT] = None;
-            self.stacks[SOLO_SLOT].set_glide(0.0);
+            self.clear_glide(SOLO_SLOT);
         }
     }
 
@@ -401,7 +442,7 @@ impl PolyAlloc {
             return;
         }
         if let Some(prev) = self.most_recent_held() {
-            let cur = self.stacks[SOLO_SLOT].note as f32;
+            let cur = self.stacks[SOLO_SLOT].note as f32 + self.stacks[SOLO_SLOT].glide_st;
             let glide_from = if params.glide_time_ms > 0.0 {
                 cur - prev as f32
             } else {
@@ -426,8 +467,7 @@ impl PolyAlloc {
             } else {
                 // Symmetric with note_on_solo: a fallback without glide must
                 // also clear any in-flight glide ramp.
-                self.glides[SOLO_SLOT] = None;
-                self.stacks[SOLO_SLOT].set_glide(0.0);
+                self.clear_glide(SOLO_SLOT);
             }
         } else {
             self.stacks[SOLO_SLOT].note_off();
@@ -450,6 +490,44 @@ impl PolyAlloc {
             time_total_s: time_s,
         });
         self.stacks[slot].set_glide(from_st);
+    }
+
+    /// Cancel an in-flight glide on `slot`: drop the ramp state and snap the
+    /// stack's glide offset back to zero. Inverse of [`Self::start_glide`].
+    fn clear_glide(&mut self, slot: usize) {
+        self.glides[slot] = None;
+        self.stacks[slot].set_glide(0.0);
+    }
+
+    /// Stamp a freshly picked slot's allocation metadata: assign its
+    /// generation and clear any leftover glide / pedal-hold from a prior
+    /// tenant. Owns only the side arrays — the caller drives the `Stack`
+    /// note-on separately.
+    fn claim_slot(&mut self, slot: usize, counter: u64) {
+        self.glides[slot] = None;
+        self.held_by_pedal[slot] = false;
+        self.seq[slot] = counter;
+    }
+
+    /// Release a slot's allocation metadata back to idle: reset its
+    /// generation, drop any in-flight glide, and clear the pedal-hold flag.
+    /// Solo's "active" latch follows when `SOLO_SLOT` frees; `solo_voiced`
+    /// deliberately survives (it tracks ever-voiced across note-offs). Does
+    /// not touch the `Stack` — the EG-idle check that gated this already did.
+    fn free_slot(&mut self, slot: usize) {
+        self.seq[slot] = IDLE_SEQ;
+        self.glides[slot] = None;
+        self.held_by_pedal[slot] = false;
+        if slot == SOLO_SLOT {
+            self.solo_active = false;
+        }
+    }
+
+    /// Fire a deferred (pedal-held) release: gate the stack off and clear its
+    /// pedal-hold flag.
+    fn release_pedal_held(&mut self, slot: usize) {
+        self.stacks[slot].note_off();
+        self.held_by_pedal[slot] = false;
     }
 
     fn push_held(&mut self, note: u8) {
@@ -787,8 +865,78 @@ mod tests {
         );
     }
 
+    /// vxn-1 portamento parity (ticket 0125): in Solo mode glide fires on a
+    /// *detached* note — previous key fully released and the slot idled before
+    /// the next strike — not only on overlapping/slurred notes. Glide is
+    /// governed by glide-time alone, independent of `legato`.
     #[test]
-    fn poly_legato_overlap_glides_new_stack() {
+    fn solo_glide_on_detached_notes() {
+        for legato in [false, true] {
+            let mut alloc = PolyAlloc::new(SR);
+            let params = AllocParams {
+                assign_mode: AssignMode::Solo,
+                legato,
+                glide_time_ms: 200.0,
+            };
+            let sp = density1();
+            let vp = fast_patch();
+            // First note: snaps (no previous pitch to glide from).
+            alloc.note_on(&params, &sp, &vp, 72, 100);
+            run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
+            assert!(alloc.stacks[0].glide_st.abs() < 1e-3, "first note must snap");
+            // Release it and let the voice idle (slot frees, solo_active clears).
+            alloc.note_off(&params, &sp, &vp, 72);
+            run_blocks(&mut alloc, SR as usize / BLK);
+            assert!(!alloc.solo_active, "fixture: detached gap must idle the slot");
+            // Next note (no overlap) must still glide from the previous pitch.
+            alloc.note_on(&params, &sp, &vp, 60, 100);
+            assert!(
+                (alloc.stacks[0].glide_st - 12.0).abs() < 1e-3,
+                "detached note (legato={legato}) must glide: glide_st={}",
+                alloc.stacks[0].glide_st
+            );
+        }
+    }
+
+    /// Poly always-glide is per-voice (vxn-1 parity, ticket 0125): a *reused*
+    /// voice slides from its own previous pitch, regardless of `legato`. Play a
+    /// note, release it so the slot idles, then play another — the nearest-pitch
+    /// picker reuses the same slot and it glides from the old note.
+    #[test]
+    fn poly_reused_voice_glides() {
+        for legato in [false, true] {
+            let mut alloc = PolyAlloc::new(SR);
+            let params = AllocParams {
+                assign_mode: AssignMode::Poly,
+                legato,
+                glide_time_ms: 100.0,
+            };
+            let sp = density1();
+            let vp = fast_patch();
+            alloc.note_on(&params, &sp, &vp, 60, 100);
+            run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
+            assert!(alloc.stacks[0].glide_st.abs() < 1e-3, "first note must snap");
+            alloc.note_off(&params, &sp, &vp, 60);
+            run_blocks(&mut alloc, SR as usize / BLK);
+            alloc.note_on(&params, &sp, &vp, 72, 100);
+            let slot = alloc
+                .stacks
+                .iter()
+                .position(|s| s.gate && s.note == 72)
+                .expect("new note not allocated");
+            assert_eq!(slot, 0, "nearest-pitch pick must reuse the freed voice");
+            assert!(
+                (alloc.stacks[slot].glide_st - (-12.0)).abs() < 1e-3,
+                "reused voice (legato={legato}) must glide: glide_st={}",
+                alloc.stacks[slot].glide_st
+            );
+        }
+    }
+
+    /// Overlapping distinct notes (a chord) take *fresh* voices and must not
+    /// glide between each other — only same-voice reuse glides (ticket 0125).
+    #[test]
+    fn poly_overlapping_chord_notes_do_not_glide() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Poly,
@@ -805,24 +953,28 @@ mod tests {
             .iter()
             .position(|s| s.gate && s.note == 72)
             .expect("new note not allocated");
+        assert_ne!(new_slot, 0, "overlapping note must take a fresh voice");
         assert!(
-            (alloc.stacks[new_slot].glide_st - (-12.0)).abs() < 1e-3,
-            "expected glide_st=-12, got {}",
+            alloc.stacks[new_slot].glide_st.abs() < 1e-3,
+            "fresh voice must not glide from another voice: glide_st={}",
             alloc.stacks[new_slot].glide_st
         );
     }
 
+    /// Glide-time 0 disables glide entirely, even on a reused voice.
     #[test]
-    fn poly_no_legato_no_glide() {
+    fn poly_zero_glide_time_never_glides() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Poly,
             legato: false,
-            glide_time_ms: 100.0,
+            glide_time_ms: 0.0,
         };
         let sp = density1();
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
+        alloc.note_off(&params, &sp, &vp, 60);
+        run_blocks(&mut alloc, SR as usize / BLK);
         alloc.note_on(&params, &sp, &vp, 72, 100);
         for s in &alloc.stacks {
             assert_eq!(s.glide_st, 0.0);
