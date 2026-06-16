@@ -36,10 +36,20 @@
     }
   }
 
+  // MIDI note number → name (e.g. 60 → "C4"). Shared util; mirrors the
+  // copy in main.js so panels (KS graph) can label keyboard axes without
+  // reaching into main's IIFE.
+  var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  function noteName(m) {
+    var n = Math.round(m);
+    return NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+  }
+
   window.__vxn = {
     params: PARAMS,
     paramsByName: byName,
     defaultPatch: DEFAULT_PATCH,
+    noteName: noteName,
     // Tempo-sync subdivision labels (coarse→fine). A synced rate/time fader
     // maps its normalised position into this list while dragging.
     subdivisions: SUBDIVISIONS,

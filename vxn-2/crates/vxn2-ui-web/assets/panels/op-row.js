@@ -395,9 +395,15 @@
       const wrap = document.createElement("div");
       wrap.className = "graph op-ks-graph";
       wrap.style.height = "108px";
-      wrap.innerHTML = '<svg viewBox="0 0 240 108" preserveAspectRatio="none"></svg>';
+      wrap.innerHTML =
+        '<svg viewBox="0 0 240 108" preserveAspectRatio="none"></svg>' +
+        '<div class="op-ks-overlay" data-ks-overlay></div>' +
+        '<div class="op-ks-readout" data-ks-readout></div>' +
+        '<div class="op-ks-legend">LEVEL · boost ↑ cut ↓ · curves fixed (lin/exp cut)</div>';
       parent.appendChild(wrap);
       const svg = wrap.querySelector("svg");
+      const overlay = wrap.querySelector("[data-ks-overlay]");
+      const readout = wrap.querySelector("[data-ks-readout]");
 
       let bp = bpDesc.default;
       let lDepth = lDesc.default;
@@ -408,7 +414,40 @@
       let built = false;
       const W = 240, H = 108;
       const cy = H / 2;
+      const halfH = H / 2 - 8;
+      // Rate scaling pivots at A3 (MIDI 57) — independent of the level break
+      // point, and hardcoded in the DSP (ks::ks_rate_mult). Drawn so the panel
+      // doesn't hide the second, differently-pivoted mechanism.
+      const RATE_PIVOT = 57;
       function xAt(m) { return 6 + (m / 127) * (W - 12); }
+      function pctAt(m) { return (xAt(m) / W) * 100; }
+
+      // The two per-op KS curves are frozen in the engine (read_op hardcodes
+      // left = NegLin, right = NegExp — see shared.rs). Mirror that exact shape
+      // here so the graph depicts the real response, not a stand-in straight
+      // line. Port of ks::ks_level_mult with those fixed curves.
+      function ksLevelMult(key, breakPt, lDep, rDep) {
+        const semis = key - breakPt;
+        const d = Math.min(Math.abs(semis) / 12.0, 4.0);
+        const t = d / 4.0;
+        let mult;
+        if (semis >= 0) {
+          // right = NegExp: cut, quadratic.
+          mult = 1.0 - (rDep / 99.0) * (t * t);
+        } else {
+          // left = NegLin: cut, linear.
+          mult = 1.0 - (lDep / 99.0) * t;
+        }
+        return mult < 0 ? 0 : mult;
+      }
+      // multiplier (≈[0,2], 1 = unity at BP) → graph Y. Boost above centre,
+      // cut below.
+      function yAtMult(mult) { return cy - (mult - 1.0) * halfH; }
+      function dbStr(mult) {
+        if (mult <= 0.0001) return "−∞ dB";
+        const db = 20 * Math.log10(mult);
+        return (db >= 0 ? "+" : "−") + Math.abs(db).toFixed(1) + " dB";
+      }
 
       function build() {
         let grid = "";
@@ -417,6 +456,8 @@
           grid += '<line class="graph-grid" x1="' + x + '" y1="6" x2="' + x + '" y2="' + (H - 6) + '" />';
         }
         grid += '<line class="graph-axis" x1="6" y1="' + cy + '" x2="' + (W - 6) + '" y2="' + cy + '" />';
+        const rpX = xAt(RATE_PIVOT);
+        grid += '<line class="graph-rate-pivot" x1="' + rpX + '" y1="6" x2="' + rpX + '" y2="' + (H - 6) + '" />';
         svg.innerHTML =
           grid +
           '<line class="graph-bp-line" data-ks-bp-line />' +
@@ -431,30 +472,61 @@
         bpHandle = svg.querySelector('[data-ks-pt="bp"]');
         lHandle = svg.querySelector('[data-ks-pt="l"]');
         rHandle = svg.querySelector('[data-ks-pt="r"]');
+        // Octave note-name labels (every other octave, to stay legible) plus
+        // the A3 rate-pivot tag. HTML overlay so text isn't stretched by the
+        // svg's non-uniform preserveAspectRatio.
+        let labels = "";
+        for (let oct = 0; oct < 11; oct += 2) {
+          labels += '<span class="op-ks-oct" style="left:' + pctAt(oct * 12).toFixed(2) +
+            '%">' + vxn.noteName(oct * 12) + "</span>";
+        }
+        labels += '<span class="op-ks-rate-tag" style="left:' + pctAt(RATE_PIVOT).toFixed(2) +
+          '%">RATE ▸ A3</span>';
+        overlay.innerHTML = labels;
         bindKsHandles();
         built = true;
+      }
+
+      // Sample a side of the curve into an SVG polyline path so exponential
+      // (right/NegExp) shows its real bend rather than a straight chord.
+      function sidePath(fromKey, toKey) {
+        const step = (toKey - fromKey) / 16;
+        let d = "";
+        for (let i = 0; i <= 16; i++) {
+          const k = fromKey + step * i;
+          const x = xAt(Math.max(0, Math.min(127, k)));
+          const y = yAtMult(ksLevelMult(k, bp, lDepth, rDepth));
+          d += (i === 0 ? "M " : " L ") + x.toFixed(2) + " " + y.toFixed(2);
+        }
+        return d;
+      }
+
+      function setReadout(html) { readout.innerHTML = html || defaultReadout(); }
+      function defaultReadout() { return "BP " + vxn.noteName(bp); }
+      // Live drag readout: break point shows the note it lands on; the L/R
+      // handles show the resulting level multiplier (dB) at the keyboard
+      // extreme they govern.
+      function liveReadout(which) {
+        if (which === "bp") return "BP " + vxn.noteName(bp);
+        if (which === "l") return "L " + dbStr(ksLevelMult(0, bp, lDepth, rDepth)) + " @ " + vxn.noteName(0);
+        return "R " + dbStr(ksLevelMult(127, bp, lDepth, rDepth)) + " @ " + vxn.noteName(127);
       }
 
       function paint() {
         if (!built) build();
         const bpX = xAt(bp);
-        const lEndX = xAt(0);
-        const lEndY = cy + (lDepth / 99) * (H / 2 - 8);
-        const rEndX = xAt(127);
-        const rEndY = cy - (rDepth / 99) * (H / 2 - 8);
-
         bpLineEl.setAttribute("x1", bpX);
         bpLineEl.setAttribute("y1", 6);
         bpLineEl.setAttribute("x2", bpX);
         bpLineEl.setAttribute("y2", H - 6);
-        leftPathEl.setAttribute("d", "M " + bpX + " " + cy + " L " + lEndX + " " + lEndY);
-        rightPathEl.setAttribute("d", "M " + bpX + " " + cy + " L " + rEndX + " " + rEndY);
+        leftPathEl.setAttribute("d", sidePath(bp, 0));
+        rightPathEl.setAttribute("d", sidePath(bp, 127));
         bpHandle.setAttribute("cx", bpX);
         bpHandle.setAttribute("cy", cy);
-        lHandle.setAttribute("cx", lEndX);
-        lHandle.setAttribute("cy", lEndY);
-        rHandle.setAttribute("cx", rEndX);
-        rHandle.setAttribute("cy", rEndY);
+        lHandle.setAttribute("cx", xAt(0));
+        lHandle.setAttribute("cy", yAtMult(ksLevelMult(0, bp, lDepth, rDepth)));
+        rHandle.setAttribute("cx", xAt(127));
+        rHandle.setAttribute("cy", yAtMult(ksLevelMult(127, bp, lDepth, rDepth)));
       }
 
       function bindKsHandles() {
@@ -484,6 +556,7 @@
             // gated `set` callbacks drop incoming param_changed echoes
             // so the live drag value isn't overwritten by the pump.
             wrap.dataset.dragging = "1";
+            setReadout(liveReadout(which));
             ctx.dispatch("begin_gesture", { id: id });
           });
           h.addEventListener("pointermove", function (ev) {
@@ -504,6 +577,7 @@
               ctx.dispatch("set_param", { id: id, plain: rDepth });
             }
             paint();
+            setReadout(liveReadout(which));
           });
           function up(ev) {
             if (!dragging) return;
@@ -513,6 +587,7 @@
               try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
             }
             delete wrap.dataset.dragging;
+            setReadout();
             ctx.dispatch("end_gesture", { id: id });
           }
           h.addEventListener("pointerup", up);
@@ -520,10 +595,12 @@
         }
       }
 
-      const setBp = { set: function (plain) { bp = plain; paint(); } };
+      const setBp = { set: function (plain) { bp = plain; paint(); if (!wrap.dataset.dragging) setReadout(); } };
       const setL = { set: function (plain) { lDepth = plain; paint(); } };
       const setR = { set: function (plain) { rDepth = plain; paint(); } };
-      const setRate = { set: function (_plain) { /* rate has no visual; numeric label could surface */ } };
+      // Rate has its own fader (KsRt) and its A3 pivot is drawn on the graph;
+      // no per-value redraw needed here.
+      const setRate = { set: function (_plain) {} };
       ctx.register(bpDesc.id, setBp, wrap);
       ctx.register(lDesc.id, setL, wrap);
       ctx.register(rDesc.id, setR, wrap);
@@ -534,6 +611,7 @@
       opDetailPrims.push({ id: rateDesc.id, prim: setRate });
 
       paint();
+      setReadout();
     }
 
     function renderOpDetail() {
@@ -591,7 +669,12 @@
       sRow.style.cssText = "justify-content: flex-start;";
       sens.appendChild(sRow);
       makeFader(sRow, "Vel", "vel-sens");
-      makeFader(sRow, "KsRt", "ks-rate");
+      const ksRtW = makeFader(sRow, "KsRt", "ks-rate");
+      if (ksRtW) {
+        // KsRt scales EG *speed* (not level) and pivots independently at A3 —
+        // the level graph in col 3 carries an A3 marker to make this visible.
+        ksRtW.title = "Rate scaling — envelope speed, pivots A3";
+      }
       col4.appendChild(sens);
       const out = document.createElement("div");
       out.style.cssText = "flex: 1 1 auto;";
