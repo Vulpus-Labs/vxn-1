@@ -44,3 +44,33 @@ idiom.
 - Polish, theming, and full p-lock/automation editing UI are post-MVP. This is
   the minimum to play the instrument without a host's generic knob panel.
 - Design: `vxn-3/adrs/0001` (overall); reuse `vxn-core-ui-web`.
+
+## Close-out (2026-06-18)
+
+Verified in a DAW (user confirmed the faceplate loads, programs, plays, and the
+dub throw works). All automated coverage green; live render confirmed manually.
+
+- **Loads in the plugin window.** `vxn3-ui-web` reuses `vxn-core-ui-web`'s wry
+  host; `gui` + `timer` extensions in
+  [vxn3-clap](../../vxn-3/crates/vxn3-clap/src/gui.rs). `clap-validator` passes
+  with the `gui` extension present; confirmed rendering in-DAW.
+- **Program a pattern + play.** 8-track grid in
+  [app.js](../../vxn-3/crates/vxn3-ui-web/assets/app.js) — click toggles trigs,
+  shift-click cycles probability, alt-click retrig, per-track length; edits flow
+  over the `EngineIo` command queue (0052 backend). Engine-level coverage:
+  `faceplate_io::edit_command_programs_a_trig`.
+- **Engine selection + knobs.** Per-track selector (Kick/Tone/Metal/Noise) swaps
+  via the shared mailbox (`faceplate_io::engine_selection_swaps_via_shared_mailbox`);
+  Decay/Tone/Gain/Pan + length knobs. *(The generic knob set is the MVP cut;
+  ADR 0003 + ticket 0053 record the proper per-engine/macro model.)*
+- **Delay send knob + p-lockable round-trip.** Per-track Send knob lands with
+  0051; send amount is `LockParam::Send` so locks round-trip
+  (`fx::send_plock_throws_a_hit_into_the_delay`). Master strip: delay
+  time/feedback/return + limiter indicator.
+- **Per-lane playhead.** Audio thread publishes lane step indices to atomics; the
+  GUI timer pushes them to JS (`faceplate_io::playhead_reflects_each_lanes_position`,
+  showing polymetric divergence). Confirmed tracking in-DAW.
+- **Plumbing.** Reuses the `vxn-core-app` Controller + `UiEvent::Custom` opcode
+  surface; controller→engine wiring tested end to end
+  (`vxn3_app::tests::edit_event_reaches_the_command_queue`).
+- 69 vxn3 tests green; vxn3 crates clippy-clean; `clap-validator` 0 failures.
