@@ -2,7 +2,7 @@
 id: E005
 product: vxn-1
 title: WebView synth control panel (Phase B of MVC migration)
-status: open
+status: closed
 created: 2026-05-30
 ---
 

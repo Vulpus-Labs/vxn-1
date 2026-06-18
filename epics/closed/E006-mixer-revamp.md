@@ -2,7 +2,7 @@
 id: E006
 product: vxn-1
 title: Mixer revamp — ring into cross-mod, sub osc into mixer
-status: open
+status: closed
 created: 2026-06-01
 ---
 

@@ -2,7 +2,7 @@
 id: E007
 product: vxn-1
 title: Faceplate JS cleanup — duplication, domain entities, declutter
-status: open
+status: closed
 created: 2026-06-01
 ---
 

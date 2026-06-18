@@ -2,7 +2,7 @@
 id: E004
 product: vxn-1
 title: MVC controller architecture (vxn-app crate, event channels, behaviour-preserving cutover)
-status: open
+status: closed
 created: 2026-05-30
 ---
 
