@@ -2,9 +2,19 @@
 id: E021
 product: vxn-3
 title: "vxn-3 MVP — synthesis drum machine groove proof"
-status: open
+status: closed
 created: 2026-06-15
+closed: 2026-06-18
 ---
+
+> **Closed 2026-06-18.** All seven tickets (0046–0052) shipped. vxn-3 loads as a
+> CLAP plugin, syncs transport, and plays a programmable 8-track loop across
+> three engines with polymeter / probability / retrig, step p-locks, a dub
+> delay throw, and a master limiter, programmed from an HTML faceplate — verified
+> in a DAW. The two load-bearing risks (the engine-defined voicing trait over a
+> shared SoA block, and sample-accurate polymeter/retrig) are de-risked. Deferred
+> breadth captured: ADR 0003 + ticket 0053 (host param model). 69 vxn3 unit/
+> integration tests; `clap-validator` 0 failures.
 
 > **First vxn-3 epic.** Design is fixed in `vxn-3/adrs/0001` (overall) and
 > `vxn-3/adrs/0002` (FX). This epic is the *MVP cut* — the smallest build that
