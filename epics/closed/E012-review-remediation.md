@@ -2,7 +2,7 @@
 id: E012
 product: vxn-2
 title: Structural-review remediation — fix inert features, harden CLAP boundary, cleanup pass
-status: open
+status: closed
 created: 2026-06-10
 ---
 
