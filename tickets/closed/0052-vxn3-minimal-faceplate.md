@@ -62,7 +62,7 @@ dub throw works). All automated coverage green; live render confirmed manually.
 - **Engine selection + knobs.** Per-track selector (Kick/Tone/Metal/Noise) swaps
   via the shared mailbox (`faceplate_io::engine_selection_swaps_via_shared_mailbox`);
   Decay/Tone/Gain/Pan + length knobs. *(The generic knob set is the MVP cut;
-  ADR 0003 + ticket 0053 record the proper per-engine/macro model.)*
+  ADR 0003 + ticket 0067 record the proper per-engine/macro model.)*
 - **Delay send knob + p-lockable round-trip.** Per-track Send knob lands with
   0051; send amount is `LockParam::Send` so locks round-trip
   (`fx::send_plock_throws_a_hit_into_the_delay`). Master strip: delay

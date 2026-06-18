@@ -1,5 +1,5 @@
 ---
-id: "0053"
+id: "0067"
 product: vxn-3
 title: "vxn-3 host param table — fixed mix + per-track macro slots (engine reinterpretation)"
 priority: medium
