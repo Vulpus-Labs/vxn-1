@@ -293,7 +293,8 @@ pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
 /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
 /// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
 /// 2 FX, a single `Feedback` dest, plus 2 filter dests (`Cutoff`,
-/// `Resonance`) = 29 total. (Per-op feedback was dropped; feedback modulates
+/// `Resonance`), plus 6 per-op stack-pitch dests (`OpNStackPitch`, E022) =
+/// 35 total. (Per-op feedback was dropped; feedback modulates
 /// the algorithm's structural FB op only, but applies per lane — it's a voice
 /// property, unlike the post-mixdown FX dests.)
 ///
@@ -357,10 +358,21 @@ pub enum DestId {
     Feedback,
     Cutoff,
     Resonance,
+    // Stack-pitch dests (E022 0068): a pitch route to `OpNStackPitch` bends
+    // op N *and its whole ratio-coherent FM stack* by the same semitone delta
+    // (cook-time scatter, ticket 0069). Appended after `Resonance` so the blob
+    // dest space stays a 1:1 prefix for older patches. Same per-lane pitch
+    // semantics as `OpNPitch`; inert until 0069 wires the scatter.
+    Op1StackPitch,
+    Op2StackPitch,
+    Op3StackPitch,
+    Op4StackPitch,
+    Op5StackPitch,
+    Op6StackPitch,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 29;
+pub const N_DESTS: usize = 35;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
@@ -383,6 +395,8 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "feedback",
     "cutoff",
     "resonance",
+    "op1-stack-pitch", "op2-stack-pitch", "op3-stack-pitch",
+    "op4-stack-pitch", "op5-stack-pitch", "op6-stack-pitch",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -405,6 +419,8 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Feedback",
     "Cutoff",
     "Resonance",
+    "Op 1 Stack Pitch", "Op 2 Stack Pitch", "Op 3 Stack Pitch",
+    "Op 4 Stack Pitch", "Op 5 Stack Pitch", "Op 6 Stack Pitch",
 ];
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
@@ -443,6 +459,14 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     g[DestId::Op5Pitch as usize] = 24.0;
     g[DestId::Op6Pitch as usize] = 24.0;
     g[DestId::GlobalPitch as usize] = 24.0;
+    // Stack-pitch dests carry the same ±24 st semitone span as per-op pitch —
+    // the scatter (0069) adds this delta into every component op's pitch.
+    g[DestId::Op1StackPitch as usize] = 24.0;
+    g[DestId::Op2StackPitch as usize] = 24.0;
+    g[DestId::Op3StackPitch as usize] = 24.0;
+    g[DestId::Op4StackPitch as usize] = 24.0;
+    g[DestId::Op5StackPitch as usize] = 24.0;
+    g[DestId::Op6StackPitch as usize] = 24.0;
     g[DestId::Feedback as usize] = 7.0;
     // Cutoff modulates in the log/octave domain so a fixed depth is musically
     // uniform across the cutoff range (ADR 0004 §7): the dest value is in
@@ -504,7 +528,13 @@ impl DestId {
             | DestId::Op6Pan
             | DestId::GlobalPitch
             | DestId::Feedback
-            | DestId::Lfo2Phase => Tier::PerLane,
+            | DestId::Lfo2Phase
+            | DestId::Op1StackPitch
+            | DestId::Op2StackPitch
+            | DestId::Op3StackPitch
+            | DestId::Op4StackPitch
+            | DestId::Op5StackPitch
+            | DestId::Op6StackPitch => Tier::PerLane,
         }
     }
 
@@ -550,6 +580,12 @@ impl DestId {
             27 => DestId::Feedback,
             28 => DestId::Cutoff,
             29 => DestId::Resonance,
+            30 => DestId::Op1StackPitch,
+            31 => DestId::Op2StackPitch,
+            32 => DestId::Op3StackPitch,
+            33 => DestId::Op4StackPitch,
+            34 => DestId::Op5StackPitch,
+            35 => DestId::Op6StackPitch,
             _ => DestId::None,
         }
     }
@@ -608,7 +644,13 @@ impl DestId {
             | DestId::Op3Pitch
             | DestId::Op4Pitch
             | DestId::Op5Pitch
-            | DestId::Op6Pitch => depth * depth * depth,
+            | DestId::Op6Pitch
+            | DestId::Op1StackPitch
+            | DestId::Op2StackPitch
+            | DestId::Op3StackPitch
+            | DestId::Op4StackPitch
+            | DestId::Op5StackPitch
+            | DestId::Op6StackPitch => depth * depth * depth,
             _ => depth,
         }
     }
@@ -999,13 +1041,18 @@ mod tests {
     fn dest_idx_skips_none_and_packs_others() {
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Op1Pitch.idx(), Some(0));
-        // Filter dests (Cutoff, Resonance) are appended after Feedback.
-        assert_eq!(DestId::Feedback.idx(), Some(N_DESTS - 3));
-        assert_eq!(DestId::Cutoff.idx(), Some(N_DESTS - 2));
-        assert_eq!(DestId::Resonance.idx(), Some(N_DESTS - 1));
+        // Filter dests sit after Feedback; the 6 stack-pitch dests (E022)
+        // are appended after Resonance, so they now hold the tail indices.
+        assert_eq!(DestId::Feedback.idx(), Some(26));
+        assert_eq!(DestId::Cutoff.idx(), Some(27));
+        assert_eq!(DestId::Resonance.idx(), Some(28));
+        assert_eq!(DestId::Op1StackPitch.idx(), Some(29));
+        assert_eq!(DestId::Op6StackPitch.idx(), Some(N_DESTS - 1));
         // Wire-discriminant round-trip for the new dests.
         assert_eq!(DestId::from_u8(28), DestId::Cutoff);
         assert_eq!(DestId::from_u8(29), DestId::Resonance);
+        assert_eq!(DestId::from_u8(30), DestId::Op1StackPitch);
+        assert_eq!(DestId::from_u8(35), DestId::Op6StackPitch);
     }
 
     #[test]
@@ -1442,6 +1489,49 @@ mod tests {
         assert_eq!(coherence(SourceId::VoiceRand, DestId::Lfo2Phase), Coherence::Ok);
         assert_eq!(coherence(SourceId::Velocity, DestId::Cutoff), Coherence::Ok);
         assert_eq!(coherence(SourceId::VoiceIdx, DestId::Cutoff), Coherence::Degenerate);
+    }
+
+    #[test]
+    fn stack_pitch_dests_cohere_like_per_op_pitch() {
+        // Same per-lane tier as OpNPitch → identical coherence verdicts.
+        for (op_pitch, stack_pitch) in [
+            (DestId::Op1Pitch, DestId::Op1StackPitch),
+            (DestId::Op6Pitch, DestId::Op6StackPitch),
+        ] {
+            assert_eq!(stack_pitch.tier(), Tier::PerLane);
+            for s in all_sources() {
+                assert_eq!(
+                    coherence(s, stack_pitch),
+                    coherence(s, op_pitch),
+                    "{s:?}: stack-pitch coherence diverged from per-op pitch"
+                );
+            }
+            // Cubic taper + ±24 st gain match per-op pitch exactly.
+            assert_eq!(stack_pitch.cook_depth(0.5), op_pitch.cook_depth(0.5));
+            assert_eq!(
+                DEST_GAIN[stack_pitch as usize],
+                DEST_GAIN[op_pitch as usize]
+            );
+        }
+    }
+
+    #[test]
+    fn stack_pitch_route_evals_inert_no_panic() {
+        // Until 0069 wires the scatter, a stack-pitch route is harmless: it
+        // writes its own accumulator column (no panic) and nothing else.
+        let mut table = MatrixTable::default();
+        table.slots[0] =
+            full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, CurveKind::Lin);
+        let sources = default_lane_sources();
+        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        eval_dests(&table, &sources, &mut out);
+        let di = DestId::Op3StackPitch.idx().unwrap();
+        // Lfo1 = 0.5, depth 1, gain 24 → 12 st in its own column.
+        for k in 0..STACK_LANES {
+            assert!((out[k][di] - 12.0).abs() < 1e-4);
+            // No per-op pitch column was touched (scatter is 0069).
+            assert_eq!(out[k][DestId::Op3Pitch.idx().unwrap()], 0.0);
+        }
     }
 
     #[test]

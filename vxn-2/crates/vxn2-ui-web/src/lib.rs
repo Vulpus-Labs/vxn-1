@@ -765,8 +765,9 @@ mod tests {
         let s = build_matrix_lists_json();
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        // None + 29 dests (E007 appended Cutoff + Resonance after Feedback).
-        assert_eq!(v["dests"].as_array().unwrap().len(), 30);
+        // None + 35 dests (E007 appended Cutoff + Resonance after Feedback;
+        // E022 appended the six op{N}-stack-pitch dests after Resonance).
+        assert_eq!(v["dests"].as_array().unwrap().len(), 36);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
@@ -774,6 +775,8 @@ mod tests {
         assert_eq!(v["dests"][27]["name"], "feedback");
         assert_eq!(v["dests"][28]["name"], "cutoff");
         assert_eq!(v["dests"][29]["name"], "resonance");
+        assert_eq!(v["dests"][30]["name"], "op1-stack-pitch");
+        assert_eq!(v["dests"][35]["name"], "op6-stack-pitch");
         assert_eq!(v["curves"][3]["name"], "bipolar");
     }
 
