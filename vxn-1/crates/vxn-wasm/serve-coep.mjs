@@ -1,8 +1,13 @@
 // Minimal static server that sets the cross-origin-isolation headers required
-// for SharedArrayBuffer (ticket 0035). Serves the web/ directory.
+// for SharedArrayBuffer (tickets 0035/0045). Serves the `cargo xtask web`
+// bundle (target/web-dist/) — the production page that boots WebHost (0042).
 //
-//   node serve-coep.mjs [port]      (default 8080)
-//   open http://localhost:8080/index-0035.html
+//   cargo xtask web                 (build the bundle first)
+//   node serve-coep.mjs [port] [dir]   (default 8080, target/web-dist)
+//   open http://localhost:8080/       -> Start -> hold A4
+//
+// This is the LOCAL mirror of the two headers a real deploy sets at the CDN
+// edge (Netlify _headers / netlify.toml, scoped to the synth subpath).
 //
 // The two headers below are the WHOLE isolation story for SAB:
 //   Cross-Origin-Opener-Policy:   same-origin
@@ -18,8 +23,12 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "web");
+// Default to the built bundle (repo target/web-dist); override with arg 2.
+const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PORT = Number(process.argv[2] ?? 8080);
+const ROOT = process.argv[3]
+  ? normalize(process.argv[3])
+  : normalize(join(HERE, "../../../target/web-dist"));
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -36,7 +45,7 @@ createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
 
   let path = decodeURIComponent(new URL(req.url, "http://x").pathname);
-  if (path === "/") path = "/index-0035.html";
+  if (path === "/") path = "/index.html";
   const file = normalize(join(ROOT, path));
   if (!file.startsWith(ROOT)) {
     res.writeHead(403).end("forbidden");
@@ -51,5 +60,5 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`serving ${ROOT} on http://localhost:${PORT} with COOP/COEP`);
-  console.log(`open  http://localhost:${PORT}/index-0035.html`);
+  console.log(`open  http://localhost:${PORT}/`);
 });

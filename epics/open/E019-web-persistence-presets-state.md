@@ -69,14 +69,19 @@ isolating.
 
 ## Planned tickets
 
-> Ids assigned at scaffold time. Provisional set:
+> Scaffolded 2026-06-15.
 
-- [ ] Verify embedded factory bank under wasm.
-- [ ] Choose + implement browser-storage `PresetStore` (IndexedDB/OPFS).
-- [ ] Async-storage ↔ sync-controller bridge (boot hydration + deferred
+- [ ] [0062](../../tickets/open/0062-web-verify-factory-bank-wasm.md) — Verify
+      embedded factory bank under wasm.
+- [ ] [0063](../../tickets/open/0063-web-browser-storage-presetstore.md) —
+      Choose + implement browser-storage `PresetStore` (IndexedDB/OPFS).
+- [ ] [0064](../../tickets/open/0064-web-async-storage-sync-controller-bridge.md)
+      — Async-storage ↔ sync-controller bridge (boot hydration + deferred
       writes).
-- [ ] Full-state autosave/restore on reload.
-- [ ] Patch export/import (file + URL share link).
+- [ ] [0065](../../tickets/open/0065-web-full-state-autosave-restore.md) —
+      Full-state autosave/restore on reload.
+- [ ] [0066](../../tickets/open/0066-web-patch-export-import.md) — Patch
+      export/import (file + URL share link).
 
 ## Risks
 

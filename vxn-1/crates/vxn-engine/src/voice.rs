@@ -35,7 +35,7 @@ const RING_DRIVE_DB: f32 = 1.0;
 
 /// Default per-voice oscillator pitch-drift amount, `[0.0, 1.0]`. Drives the
 /// bounded random walks inside each [`PolyOscillator`]: at full depth the walks
-/// wander ±~25 cents; `0.15` keeps the wobble subliminal (±~4 cents max,
+/// wander ±~12.5 cents; `0.15` keeps the wobble subliminal (±~2 cents max,
 /// sub-Hz rate), giving JP-8-flavoured per-voice "live" detune without ever
 /// sounding out-of-tune. Hidden default for v1 (no panel knob); can be
 /// promoted to a `PatchParam` once the depth is tuned by ear. Synth carries

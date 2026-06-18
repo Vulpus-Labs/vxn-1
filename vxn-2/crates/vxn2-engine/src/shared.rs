@@ -1143,8 +1143,11 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
         ks_break_pt: i(15).clamp(0, 127) as u8,
         ks_l_depth: i(16).clamp(0, 99) as u8,
         ks_r_depth: i(17).clamp(0, 99) as u8,
-        ks_l_curve: vxn2_dsp::ks::KsCurve::NegLin, // not CLAP — preset state
-        ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp, // not CLAP — preset state
+        // Frozen defaults — KS curve shape has no control and is persisted
+        // nowhere (see ticket 0089 deferred sub-task). The UI draws these exact
+        // fixed shapes (left = linear cut, right = exponential cut).
+        ks_l_curve: vxn2_dsp::ks::KsCurve::NegLin,
+        ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp,
         ks_rate: i(18).clamp(0, 7) as u8,
         pan: f(19),
     }

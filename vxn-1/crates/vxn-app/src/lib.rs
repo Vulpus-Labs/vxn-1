@@ -12,12 +12,14 @@ pub mod domain;
 pub mod events;
 pub mod model;
 pub mod params;
+pub mod state;
 pub mod sync;
 
 pub use controller::{CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, Tick};
 pub use domain::{DEFAULT_SPLIT_POINT, KeyMode, Layer, PresetMeta, UNCATEGORIZED};
 pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1ViewCustom};
 pub use model::{ParamId, ParamModel, Vxn1Params};
+pub use state::{BLOB_LEN, MAGIC, VERSION, read_state_into, write_state_bytes};
 pub use params::{
     AssignMode, CrossModType, EnvSel, GLOBAL_PARAMS, GLOBAL_COUNT, GlobalParam, LfoSel,
     PATCH_COUNT, PATCH_PARAMS, ParamDesc, ParamKind, ParamRef, PatchParam,

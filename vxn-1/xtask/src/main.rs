@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //!   cargo xtask bundle [--release] [--install] [--universal]
-//!   cargo xtask web [--debug]
+//!   cargo xtask web [--debug] [--serve] [--port N]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
 //! plugin. On macOS that is a bundle directory (`Contents/MacOS/VXN1` +
@@ -14,8 +14,12 @@
 //! `web` (ticket 0041) compiles the wasm crate(s) for `wasm32-unknown-unknown`
 //! (release + SIMD128 by default) and assembles a self-contained, servable
 //! `target/web-dist/`: the `.wasm`, the E015 JS transport modules, the worklet,
-//! and the page assets. `--debug` builds a debug wasm. The COOP/COEP dev server
-//! that serves it is ticket 0045.
+//! and the page assets. `--debug` builds a debug wasm. `--serve` (ticket 0045)
+//! then serves the bundle with the COOP/COEP cross-origin-isolation headers
+//! `SharedArrayBuffer` requires, via `serve-coep.mjs` (default port 8080,
+//! `--port N` overrides). Production hosting is documented in the crate's
+//! `WEB-HOSTING.md`; the bundle also drops a Netlify `_headers` file so a
+//! static-host deploy carries the same two headers.
 
 use std::env;
 use std::fs;
@@ -42,20 +46,31 @@ fn main() {
         }
         "web" => {
             // `web` defaults to release (a real deploy ships release+SIMD);
-            // `--debug` opts into a debug wasm.
+            // `--debug` opts into a debug wasm. `--serve` then serves the bundle
+            // with COOP/COEP; `--port N` overrides the default 8080.
             let debug = args.iter().any(|a| a == "--debug");
-            if let Err(e) = web(!debug) {
+            let serve = args.iter().any(|a| a == "--serve");
+            let port = arg_value(&args, "--port");
+            if let Err(e) = web(!debug, serve, port.as_deref()) {
                 eprintln!("xtask: {e}");
                 std::process::exit(1);
             }
         }
         _ => {
             eprintln!(
-                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug]"
+                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug] [--serve] [--port N]"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// Value of a `--flag value` pair (e.g. `--port 9000` → `Some("9000")`).
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn workspace_root() -> PathBuf {
@@ -128,23 +143,181 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
 const WASM_PKG: &str = "vxn-wasm";
 const WASM_ARTIFACT: &str = "vxn_wasm.wasm";
 
+// 0044: the main-thread controller wasm — a SECOND module (engine runs in the
+// worklet, controller on main; ADR 0009 §1). Built into the same web bundle.
+const CONTROLLER_PKG: &str = "vxn-web-controller";
+const CONTROLLER_ARTIFACT: &str = "vxn_web_controller.wasm";
+
 /// Build the wasm and assemble a self-contained `target/web-dist/` (ticket 0041).
 ///
 /// One command → a servable directory: the engine `.wasm` (release + SIMD128 by
 /// default), the E015 transport JS modules, the production worklet, and a page.
-/// The COOP/COEP server that serves it is ticket 0045; the AudioContext boot
-/// that drives it is 0042.
-fn web(release: bool) -> Result<(), String> {
+/// `serve` then hands the bundle to `serve-coep.mjs` with the COOP/COEP headers
+/// `SharedArrayBuffer` needs (ticket 0045); the AudioContext boot that drives it
+/// is 0042.
+fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
 
-    // 1. Compile the engine wasm crate for wasm32-unknown-unknown.
+    // 1. Compile BOTH wasm crates for wasm32-unknown-unknown (ADR 0009 §1):
+    //    the engine (runs in the worklet) and the main-thread controller (0044).
+    let wasm = build_wasm(&root, WASM_PKG, WASM_ARTIFACT, release, profile)?;
+    let controller_wasm =
+        build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, profile)?;
+
+    // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
+    let dist = root.join("target").join("web-dist");
+    let _ = fs::remove_dir_all(&dist);
+    fs::create_dir_all(&dist).map_err(io("create web-dist"))?;
+
+    // 2a. Both wasm modules.
+    fs::copy(&wasm, dist.join(WASM_ARTIFACT)).map_err(io("copy engine wasm"))?;
+    fs::copy(&controller_wasm, dist.join(CONTROLLER_ARTIFACT))
+        .map_err(io("copy controller wasm"))?;
+
+    // 2b. The E015 production transport modules + worklet. Curated by hand: the
+    //     *.test.mjs suites, the Node harnesses, and the 0034/0035 spike
+    //     processors stay out of the shipped bundle. The production worklet
+    //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
+    let web_src = root.join("vxn-1/crates/vxn-wasm/web");
+    const MODULES: [(&str, &str); 12] = [
+        ("event-ring.mjs", "event-ring.mjs"),
+        ("event-codec.mjs", "event-codec.mjs"),
+        ("param-store.mjs", "param-store.mjs"),
+        ("audio-host.mjs", "audio-host.mjs"),
+        ("host-runner.mjs", "host-runner.mjs"),
+        ("vxn-processor-0038.js", "vxn-processor.js"),
+        // The main-thread coordinator (ticket 0042): the page imports WebHost.
+        ("coordinator.mjs", "coordinator.mjs"),
+        // The controller wasm glue (ticket 0044): instantiates the controller
+        // module, posts UiEvent opcodes, drains ViewEvents, mirrors the SAB.
+        ("controller.mjs", "controller.mjs"),
+        // E017 input adapters (tickets 0053-0056): browser input → E015 ring
+        // producers. The faceplate (E018) imports attachMidi / attachKeyboard /
+        // attachKeyMode. .test.mjs suites stay out of the bundle as usual.
+        ("midi-input.mjs", "midi-input.mjs"),
+        ("keyboard-input.mjs", "keyboard-input.mjs"),
+        ("key-mode.mjs", "key-mode.mjs"),
+        // The faceplate transport bridge (E018 / 0057-0061): boots WebHost +
+        // WebController, routes opcodes <-> ViewEvents, runs the DOM text input.
+        ("faceplate-bridge.mjs", "faceplate-bridge.mjs"),
+    ];
+    for (src, dest) in MODULES {
+        let from = web_src.join(src);
+        if !from.exists() {
+            return Err(format!("missing web module {}", from.display()));
+        }
+        fs::copy(&from, dist.join(dest)).map_err(io("copy web module"))?;
+    }
+
+    // 2c. The faceplate page (E018 / 0057). Generated by the `gen-web-page` bin
+    //     in `vxn-ui-web`, which assembles the SAME splice the plugin uses
+    //     (markup + CSS + JS + byte-identical param-descriptor JSON) with the wry
+    //     IPC swapped for the web boot head + `faceplate-bridge.mjs` loader. Run
+    //     as a subprocess so xtask carries no wry-pulling dependency and the
+    //     JSON-shaping stays single-sourced. The 0042 coordinator-smoke page
+    //     (`web_index_html`) is retired by this.
+    let page = gen_faceplate_page(&root)?;
+    fs::write(dist.join("index.html"), page).map_err(io("write index.html"))?;
+
+    // 2d. A Netlify-style `_headers` file so dropping dist/ onto a static host
+    //     (Netlify / Cloudflare Pages, both read `_headers`) carries the same
+    //     two isolation headers the dev server sets — no extra config. The dev
+    //     server (serve-coep.mjs) ignores it; it's purely the prod recipe baked
+    //     into the artifact (ticket 0045 / WEB-HOSTING.md).
+    fs::write(dist.join("_headers"), web_dist_headers()).map_err(io("write _headers"))?;
+
+    println!("web bundle → {}", dist.display());
+
+    if serve {
+        return serve_dist(&root, &dist, port);
+    }
+    println!(
+        "  note: SharedArrayBuffer needs cross-origin isolation — serve with \
+         COOP/COEP (`cargo xtask web --serve`, ticket 0045)"
+    );
+    Ok(())
+}
+
+/// Generate the faceplate `index.html` by running `vxn-ui-web`'s `gen-web-page`
+/// bin and capturing its stdout (E018 / 0057). The bin assembles the page via
+/// `vxn_ui_web::build_web_faceplate_html` — the same splice the plugin's wry
+/// editor uses, so the markup/CSS/JS and the param-descriptor JSON are byte-
+/// identical; only the transport head differs. Running it as a subprocess keeps
+/// xtask free of the (wry-pulling) `vxn-ui-web` dependency.
+fn gen_faceplate_page(root: &Path) -> Result<String, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(&cargo)
+        .current_dir(root)
+        .args([
+            "run",
+            "--quiet",
+            "--package",
+            "vxn-ui-web",
+            "--bin",
+            "gen-web-page",
+        ])
+        .output()
+        .map_err(|e| format!("failed to run gen-web-page: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "gen-web-page failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("gen-web-page emitted non-UTF8: {e}"))
+}
+
+/// Netlify/Cloudflare-Pages `_headers`: applies the COOP/COEP (+CORP) headers to
+/// every path so the served document is cross-origin isolated and SAB is
+/// constructible. Same three headers `serve-coep.mjs` sets locally.
+fn web_dist_headers() -> &'static str {
+    "/*\n  \
+     Cross-Origin-Opener-Policy: same-origin\n  \
+     Cross-Origin-Embedder-Policy: require-corp\n  \
+     Cross-Origin-Resource-Policy: same-origin\n"
+}
+
+/// Serve the built bundle with COOP/COEP via the crate's `serve-coep.mjs`
+/// (ticket 0045). Requires `node` on PATH. Blocks until the server is killed.
+fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String> {
+    let server = root.join("vxn-1/crates/vxn-wasm/serve-coep.mjs");
+    if !server.exists() {
+        return Err(format!("serve-coep.mjs not found at {}", server.display()));
+    }
+    let port = port.unwrap_or("8080");
+    let mut cmd = Command::new("node");
+    cmd.current_dir(root)
+        .arg(&server)
+        .arg(port)
+        .arg(dist);
+    let status = cmd.status().map_err(|e| {
+        format!("failed to run node (is it on PATH?): {e}")
+    })?;
+    // The server runs until Ctrl-C; a non-success exit (e.g. port in use) is an
+    // error worth surfacing.
+    if !status.success() {
+        return Err("serve-coep.mjs exited with an error".into());
+    }
+    Ok(())
+}
+
+/// Compile one wasm crate for `wasm32-unknown-unknown` (release + SIMD128 by
+/// default) and return the path to its `.wasm` artifact. Shared by the engine
+/// and the 0044 controller builds so both go through the same flags.
+fn build_wasm(
+    root: &Path,
+    package: &str,
+    artifact: &str,
+    release: bool,
+    profile: &str,
+) -> Result<PathBuf, String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut build = Command::new(&cargo);
-    build.current_dir(&root).args([
+    build.current_dir(root).args([
         "build",
         "--package",
-        WASM_PKG,
+        package,
         "--target",
         "wasm32-unknown-unknown",
     ]);
@@ -162,128 +335,19 @@ fn web(release: bool) -> Result<(), String> {
     build.env("RUSTFLAGS", rustflags);
     let status = build
         .status()
-        .map_err(|e| format!("failed to run cargo: {e}"))?;
+        .map_err(|e| format!("failed to run cargo for {package}: {e}"))?;
     if !status.success() {
-        return Err("wasm build failed".into());
+        return Err(format!("wasm build failed for {package}"));
     }
 
     let wasm = root
         .join("target/wasm32-unknown-unknown")
         .join(profile)
-        .join(WASM_ARTIFACT);
+        .join(artifact);
     if !wasm.exists() {
         return Err(format!("built wasm not found at {}", wasm.display()));
     }
-
-    // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
-    let dist = root.join("target").join("web-dist");
-    let _ = fs::remove_dir_all(&dist);
-    fs::create_dir_all(&dist).map_err(io("create web-dist"))?;
-
-    // 2a. The engine wasm.
-    fs::copy(&wasm, dist.join(WASM_ARTIFACT)).map_err(io("copy wasm"))?;
-
-    // 2b. The E015 production transport modules + worklet. Curated by hand: the
-    //     *.test.mjs suites, the Node harnesses, and the 0034/0035 spike
-    //     processors stay out of the shipped bundle. The production worklet
-    //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
-    let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 7] = [
-        ("event-ring.mjs", "event-ring.mjs"),
-        ("event-codec.mjs", "event-codec.mjs"),
-        ("param-store.mjs", "param-store.mjs"),
-        ("audio-host.mjs", "audio-host.mjs"),
-        ("host-runner.mjs", "host-runner.mjs"),
-        ("vxn-processor-0038.js", "vxn-processor.js"),
-        // The main-thread coordinator (ticket 0042): the page imports WebHost.
-        ("coordinator.mjs", "coordinator.mjs"),
-    ];
-    for (src, dest) in MODULES {
-        let from = web_src.join(src);
-        if !from.exists() {
-            return Err(format!("missing web module {}", from.display()));
-        }
-        fs::copy(&from, dist.join(dest)).map_err(io("copy web module"))?;
-    }
-
-    // 2c. A generated page that BOOTS the coordinator (ticket 0042): a Start
-    //     gesture constructs WebHost → "audio live", and a Hold button drives a
-    //     test note through the ring. The faceplate (E018) replaces this; the
-    //     COOP/COEP server that makes the SABs available is 0045.
-    fs::write(dist.join("index.html"), web_index_html()).map_err(io("write index.html"))?;
-
-    println!("web bundle → {}", dist.display());
-    println!(
-        "  note: SharedArrayBuffer needs cross-origin isolation — serve with \
-         COOP/COEP (ticket 0045)"
-    );
-    Ok(())
-}
-
-fn web_index_html() -> String {
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VXN1 web (v{version})</title>
-    <style>
-      body {{ font: 16px system-ui; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }}
-      code {{ background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; }}
-      button {{ font-size: 1.1rem; padding: 0.55rem 1.3rem; margin-right: 0.5rem; }}
-      #iso {{ font-weight: 600; }}
-      #log {{ white-space: pre-wrap; color: #555; margin-top: 1.25rem; }}
-    </style>
-  </head>
-  <body>
-    <h1>VXN1 → WASM</h1>
-    <p>Bundle from <code>cargo xtask web</code> (0041); coordinator boot is
-      ticket 0042. Click <em>Start</em> on a user gesture, then hold the note.</p>
-    <p>cross-origin isolated: <span id="iso">checking…</span></p>
-    <button id="start">Start audio</button>
-    <button id="note" disabled>Hold A4</button>
-    <div id="log"></div>
-    <script type="module">
-      import {{ WebHost }} from "./coordinator.mjs";
-
-      const iso = document.getElementById("iso");
-      iso.textContent = self.crossOriginIsolated ? "yes — SharedArrayBuffer available"
-        : "no — serve with COOP/COEP (ticket 0045)";
-      iso.style.color = self.crossOriginIsolated ? "green" : "crimson";
-
-      const log = (m) => (document.getElementById("log").textContent += m + "\n");
-      const startBtn = document.getElementById("start");
-      const noteBtn = document.getElementById("note");
-      let host;
-
-      startBtn.onclick = async () => {{
-        startBtn.disabled = true;
-        host = new WebHost({{
-          onReady: () => {{ log("audio live"); noteBtn.disabled = false; }},
-          onTrap: (msg, n) => log(`trap #${{n}}: ${{msg}}`),
-        }});
-        try {{
-          await host.start();
-          log(`context @ ${{host.ctx.sampleRate}} Hz — waiting for worklet…`);
-        }} catch (e) {{
-          log(`start failed: ${{e.message}}`);
-          startBtn.disabled = false;
-        }}
-      }};
-
-      const NOTE = 69; // A4
-      const down = () => host && host.noteOn(NOTE, 1.0);
-      const up = () => host && host.noteOff(NOTE);
-      noteBtn.addEventListener("mousedown", down);
-      noteBtn.addEventListener("mouseup", up);
-      noteBtn.addEventListener("mouseleave", up);
-    </script>
-  </body>
-</html>
-"#,
-        version = env!("CARGO_PKG_VERSION"),
-    )
+    Ok(wasm)
 }
 
 fn lib_path(profile_dir: &Path) -> PathBuf {

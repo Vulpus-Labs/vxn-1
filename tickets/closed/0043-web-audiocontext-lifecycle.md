@@ -1,6 +1,6 @@
 ---
 id: "0043"
-product: vxn-2
+product: vxn-1
 title: "AudioContext lifecycle: autoplay unlock, suspend/resume, device change, teardown"
 priority: medium
 created: 2026-06-15
@@ -52,3 +52,33 @@ to 0040's worklet-side lifecycle.
   are the full lifecycle story (worklet render-thread + context owner).
 - Out of scope: the worklet-side lifecycle (0040, done); persistence of state
   across reloads (E019).
+
+## Close-out (2026-06-15)
+
+- AudioContext lifecycle state machine layered onto the 0042 `WebHost` in
+  [coordinator.mjs](../../vxn-1/crates/vxn-wasm/web/coordinator.mjs): `gateState`
+  (`idle → starting → running → suspended → closed`) with an `onState` observer
+  the UI renders from. `start()` is the autoplay-unlock entry (gesture-driven,
+  context starts `suspended` → `running`). Verified by `coordinator-lifecycle.test.mjs`
+  ("gate starts idle and reaches running only after start()").
+- Suspend/resume via an `AudioContext` `statechange` listener (+ programmatic
+  `suspend()`/`resume()`). **Resume voice-flush:** the main thread posts the
+  worklet `reset` (0040) on resume so a long suspend can't leave stuck notes,
+  WITHOUT touching the ring/store — transport state survives. Verified
+  ("suspend then resume flushes voices and keeps transport", "flush once",
+  "no flush from non-suspended").
+- Device change: `devicechange` listener; `setSink(sinkId)` re-routes via
+  `setSinkId` without rebuilding (false where unsupported); `rebuild()` tears
+  down + re-boots over the SAME SABs for a sample-rate change (engine rebuilds
+  at the new rate via the 0040 `sampleRate` path). Verified ("setSink re-routes
+  without rebuilding", "rebuild makes a new context over the same SABs").
+- Teardown: `teardown()` (alias `dispose()` for 0042 back-compat) posts worklet
+  `destroy` (0040), detaches listeners + node, closes the context, drops SAB
+  refs; a fresh `WebHost` boots clean afterward. Verified ("teardown closes...
+  drops SAB refs", "a fresh WebHost boots cleanly after teardown").
+- Generated page [xtask/src/main.rs](../../vxn-1/xtask/src/main.rs) `web_index_html()`
+  renders off the gate hook with a Stop/teardown button. Full suite: 12/12
+  lifecycle + 6 event-codec + 1 param-store node tests pass; 0042/0040 harnesses
+  still green. Browser-event wiring (real gesture/statechange/devicechange/
+  `setSinkId`) needs manual DAW-less browser confirmation; the logic those events
+  drive is unit-covered via a mock AudioContext.
