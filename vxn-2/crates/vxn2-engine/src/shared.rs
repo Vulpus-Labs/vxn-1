@@ -128,7 +128,16 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   at the very end of the flat space — param count 188 → 189. It sits past
 ///   every existing id, so older blobs map 1:1; the new id is seeded to its
 ///   default (off → an unchanged patch stays bit-identical).
-pub const BLOB_VERSION: u16 = 9;
+/// - v10: widens the mod-matrix dest space with the six `opN-stack-pitch`
+///   dests (E022 0068). The byte layout is **unchanged** — dest is a `u8` in
+///   the matrix trailer, param count is unchanged (no new CLAP params), so a
+///   v10 blob is byte-identical to v9 except the version field, and older
+///   v≤9 blobs decode 1:1 with no remap. The bump exists purely as a
+///   forward-compat guard: a patch that *uses* a stack-pitch dest (dest byte
+///   30..=35) would silently lose the route on a pre-0068 build, so stamping
+///   v10 makes those builds reject it (`version > BLOB_VERSION`) rather than
+///   degrade quietly.
+pub const BLOB_VERSION: u16 = 10;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
@@ -1477,6 +1486,36 @@ mod tests {
         assert_eq!(r9.dest, 21);
         assert!(r9.active);
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
+    }
+
+    /// E022: a stack-pitch route (dest in the appended 30..=35 band) saves and
+    /// reloads through the snapshot blob unchanged.
+    #[test]
+    fn snapshot_round_trips_stack_pitch_route() {
+        use crate::matrix::DestId;
+        let dest = DestId::Op3StackPitch as u8; // 32
+        let src = SharedParams::new();
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: 1, // Lfo1
+                dest,
+                curve: 0,
+                active: true,
+                depth: 0.5,
+            },
+        );
+        let bytes = src.snapshot_bytes();
+        // The widened dest space does not change the param count or byte layout.
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+        let r0 = dst.matrix_row_raw(0);
+        assert_eq!(r0.dest, dest);
+        assert_eq!(DestId::from_u8(r0.dest), DestId::Op3StackPitch);
+        assert!(r0.active);
+        assert!((r0.depth - 0.5).abs() < 1e-6);
     }
 
     /// Rewrite a freshly saved v6 blob into the v5 layout: drop the trailing

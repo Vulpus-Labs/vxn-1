@@ -33,8 +33,10 @@
 //! typically use master_tune — a per-song setup, not a performance gesture).
 
 use vxn2_dsp::cleanup::CleanupFilter;
+use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
 use vxn2_dsp::limiter::StereoLimiter;
+use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler};
 use vxn2_dsp::reverb::FdnReverb;
@@ -63,6 +65,9 @@ const LFO1_RATE_IDX: usize = DestId::Lfo1Rate.idx().unwrap();
 const LFO2_RATE_IDX: usize = DestId::Lfo2Rate.idx().unwrap();
 const STACK_DETUNE_IDX: usize = DestId::StackDetune.idx().unwrap();
 const STACK_SPREAD_IDX: usize = DestId::StackSpread.idx().unwrap();
+/// Accumulator column of `Op1StackPitch`; the six stack-pitch dests are
+/// contiguous from here (E022 0069). `OpNStackPitch` column = base + (N-1).
+const OP_STACK_PITCH_BASE_IDX: usize = DestId::Op1StackPitch.idx().unwrap();
 /// Per-block one-pole factor smoothing *dynamic* stack-detune/spread changes
 /// (E008 0093). Fresh notes snap (immediate, zipper-free for static sources
 /// like key/velocity); only block-to-block motion from a moving source
@@ -240,6 +245,18 @@ pub struct Engine {
     ramp_live: [bool; N_STACKS],
     any_ramp_live: bool,
 
+    /// Stack-pitch component masks (E022 0069): `stack_pitch_masks[n]` is the
+    /// 6-bit op set an `Op(n+1)StackPitch` route bends — op n+1 plus its whole
+    /// ratio-coherent FM component, with fixed-freq ops walled off
+    /// ([`vxn2_dsp::algo::pitch_stack_component`]). Pure function of
+    /// `(algo, wall_mask)`; recomputed only when that key changes (gated by
+    /// `stack_pitch_key`), so a ratio *value* tweak — same key — never
+    /// re-resolves. Masks are 6 bytes; reused across every lane/sample.
+    stack_pitch_masks: [u8; vxn2_dsp::algo::N_OPS],
+    /// Cache key `(algo, wall_mask)` guarding `stack_pitch_masks`. The
+    /// `(u8::MAX, u8::MAX)` sentinel forces a first-cook recompute.
+    stack_pitch_key: (u8, u8),
+
     // ── Optional per-voice filter (E007 / ADR 0004) ──────────────────────
     // Two scalar OTA-C ladder kernels per stack (L/R) — the filter runs on a
     // stack's summed stereo pair. Plus one interpolating resampler per stack
@@ -305,6 +322,8 @@ impl Engine {
             prev_eg_level: vec![[0.0; vxn2_dsp::algo::N_OPS]; N_STACKS],
             ramp_live: [false; N_STACKS],
             any_ramp_live: false,
+            stack_pitch_masks: [0; vxn2_dsp::algo::N_OPS],
+            stack_pitch_key: (u8::MAX, u8::MAX),
             filter_l: vec![OtaLadderKernel::new(); N_STACKS],
             filter_r: vec![OtaLadderKernel::new(); N_STACKS],
             interp_l: vec![Interpolator::new(); N_STACKS],
@@ -462,6 +481,54 @@ impl Engine {
             self.alloc.stacks[i].set_algo_live(voice.algo);
             self.alloc.stacks[i].set_feedback_live(voice.feedback);
         }
+        // Re-resolve the stack-pitch component masks if the algorithm or any
+        // op's Ratio/Fixed mode changed (E022 0069). Folded into the same cook
+        // that live-swaps the algo above; gated on the `(algo, wall_mask)` key
+        // so a ratio-*value* tweak (mode unchanged) leaves the masks alone.
+        self.recompute_stack_pitch_masks();
+    }
+
+    /// Rebuild [`Self::stack_pitch_masks`] from the current algorithm and the
+    /// per-op Ratio/Fixed modes, but only when the `(algo, wall_mask)` key
+    /// actually changed. A wall bit marks a fixed-frequency op: it does not
+    /// track key, so it is excluded from every component and severs traversal
+    /// ([`pitch_stack_component`]). Pure integer work — safe in the cook.
+    fn recompute_stack_pitch_masks(&mut self) {
+        let voice = &self.params.patch.voice;
+        let algo = voice.algo;
+        let mut wall_mask = 0u8;
+        for (op, p) in voice.ops.iter().enumerate() {
+            if p.ratio_mode == RatioMode::Fixed {
+                wall_mask |= 1 << op;
+            }
+        }
+        let key = (algo, wall_mask);
+        if key == self.stack_pitch_key {
+            return;
+        }
+        self.stack_pitch_key = key;
+        for n in 0..vxn2_dsp::algo::N_OPS {
+            self.stack_pitch_masks[n] = pitch_stack_component(algo, wall_mask, (n + 1) as u8);
+        }
+    }
+
+    /// True if any active matrix slot drives one of the six stack-pitch dests.
+    /// Block-rate gate (mirrors [`Self::dest_targeted`]) so the un-targeted
+    /// scatter is skipped entirely and the off-path stays bit-identical.
+    #[inline]
+    fn stack_pitch_targeted(&self) -> bool {
+        self.matrix.slots.iter().any(|s| {
+            matches!(
+                s.dest,
+                DestId::Op1StackPitch
+                    | DestId::Op2StackPitch
+                    | DestId::Op3StackPitch
+                    | DestId::Op4StackPitch
+                    | DestId::Op5StackPitch
+                    | DestId::Op6StackPitch
+            ) && s.source != SourceId::None
+                && s.depth != 0.0
+        })
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8) {
@@ -538,6 +605,9 @@ impl Engine {
         // spread feeds next block's VoiceSpread source (one-block latency).
         let stack_detune_targeted = self.dest_targeted(DestId::StackDetune);
         let stack_spread_targeted = self.dest_targeted(DestId::StackSpread);
+        // Stack-pitch scatter gate (E022 0069): skip the whole scatter when no
+        // route targets a stack-pitch dest, keeping the off-path bit-identical.
+        let stack_pitch_targeted = self.stack_pitch_targeted();
 
         let mb = self
             .patch_mod
@@ -661,6 +731,13 @@ impl Engine {
                 &self.lane_sources,
                 &mut self.dest_vals[i],
             );
+            // Fan each stack-pitch accumulator across its ratio-coherent
+            // component into the per-op pitch columns (E022 0069), before the
+            // smoother captures pitch targets below. Gated so the common
+            // (no stack-pitch route) path is untouched.
+            if stack_pitch_targeted {
+                scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
+            }
 
             // Project per-op level + pan destinations into the stack.
             // Indices: OpiLevel=i*3+1, OpiPan=i*3+2. Neither applies as a
@@ -1217,6 +1294,41 @@ impl Engine {
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, st);
             stack.apply_pitch_mult();
+        }
+    }
+}
+
+/// Scatter each `OpNStackPitch` accumulator into the per-op pitch columns of
+/// every op in component N (E022 0069). The **same** semitone delta is added
+/// to every member — no depth scaling — so the FM ratios within the branch are
+/// preserved: pitch moves, timbre holds. Runs in the cook (per stack, per
+/// block) *before* the pitch smoother reads the per-op pitch columns, so the
+/// scattered value rides the existing smoothing + `project_pitch_state` with
+/// no audio-inner-loop change ([[vxn2-stack-soa]] packing untouched). A zero
+/// mask (walled / fixed target → empty component) is a clean no-op.
+#[inline]
+fn scatter_stack_pitch(
+    dest_vals: &mut [[f32; N_DESTS]; STACK_LANES],
+    masks: &[u8; vxn2_dsp::algo::N_OPS],
+) {
+    for n in 0..vxn2_dsp::algo::N_OPS {
+        let mask = masks[n];
+        if mask == 0 {
+            continue;
+        }
+        let src_col = OP_STACK_PITCH_BASE_IDX + n;
+        for k in 0..STACK_LANES {
+            let delta = dest_vals[k][src_col];
+            if delta == 0.0 {
+                continue;
+            }
+            let mut m = mask;
+            while m != 0 {
+                let op = m.trailing_zeros() as usize;
+                // Per-op pitch column is op-major stride 3 (Pitch, Level, Pan).
+                dest_vals[k][op * 3] += delta;
+                m &= m - 1;
+            }
         }
     }
 }
@@ -3019,6 +3131,252 @@ mod tests {
         );
         for i in 0..BLK {
             assert!(l[i].is_finite() && r[i].is_finite());
+        }
+    }
+
+    // --- Stack-pitch scatter + mask gating (E022 0069) -------------------
+
+    /// Per-op pitch accumulator column (op-major stride 3).
+    fn op_pitch_col(op_1indexed: usize) -> usize {
+        (op_1indexed - 1) * 3
+    }
+
+    /// Drive one block with a `ModWheel → Op{target}StackPitch` route at the
+    /// given algo / wall set, and return the active stack's per-lane dest
+    /// accumulator (post-scatter). `mod_wheel = 0.5`, depth 1.0, Lin → each
+    /// targeted op's pitch column gains `0.5 × 24 = 12` semitones.
+    fn run_stack_pitch(
+        algo: u8,
+        fixed_ops: &[usize],
+        target_op: usize,
+    ) -> [[f32; N_DESTS]; STACK_LANES] {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        let dest = DestId::from_u8(DestId::Op1StackPitch as u8 + (target_op as u8 - 1));
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.voice.algo = algo;
+        for &op in fixed_ops {
+            e.params.patch.voice.ops[op - 1].ratio_mode = RatioMode::Fixed;
+        }
+        // Cook masks from the voice params *before* installing the matrix
+        // (apply_block_params rebuilds the table from rows, so set it after).
+        e.apply_block_params();
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.mod_wheel = 0.5;
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+        e.dest_vals[active_stack(&e)]
+    }
+
+    /// Algo 1 chain (6→5→4→3): a stack-pitch route on op3 bends the whole
+    /// component {3,4,5,6} by an identical 12 st; the separate (2→1) pair is
+    /// untouched.
+    #[test]
+    fn stack_pitch_scatters_equal_delta_across_component() {
+        let dv = run_stack_pitch(1, &[], 3);
+        for k in 0..STACK_LANES {
+            for op in [3, 4, 5, 6] {
+                assert!(
+                    (dv[k][op_pitch_col(op)] - 12.0).abs() < 1e-3,
+                    "op{op} pitch {} != 12",
+                    dv[k][op_pitch_col(op)]
+                );
+            }
+            // Ops outside the component get no bend.
+            assert_eq!(dv[k][op_pitch_col(1)], 0.0);
+            assert_eq!(dv[k][op_pitch_col(2)], 0.0);
+        }
+    }
+
+    /// The scatter is additive with an existing per-op pitch route: an
+    /// `Op4Pitch` route stacks on top of the bend on op4 only.
+    #[test]
+    fn stack_pitch_additive_with_per_op_pitch() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.voice.algo = 1;
+        e.apply_block_params();
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Op3StackPitch,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        // Per-op pitch on op4, gain 24, but cubic-tapered depth 1.0 → 1.0.
+        e.matrix.slots[1] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Op4Pitch,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.mod_wheel = 0.5;
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+        let dv = e.dest_vals[active_stack(&e)];
+        for k in 0..STACK_LANES {
+            // op4 = stack bend (12) + per-op pitch (12) = 24.
+            assert!((dv[k][op_pitch_col(4)] - 24.0).abs() < 1e-3);
+            // op3/5/6 only the stack bend.
+            assert!((dv[k][op_pitch_col(3)] - 12.0).abs() < 1e-3);
+            assert!((dv[k][op_pitch_col(5)] - 12.0).abs() < 1e-3);
+        }
+    }
+
+    /// A fixed op mid-chain walls the graph: a bend on op3 (algo 1) with op5
+    /// fixed reaches op4 but not across op5; op6 is severed.
+    #[test]
+    fn stack_pitch_wall_splits_component() {
+        let dv = run_stack_pitch(1, &[5], 3);
+        for k in 0..STACK_LANES {
+            assert!((dv[k][op_pitch_col(3)] - 12.0).abs() < 1e-3);
+            assert!((dv[k][op_pitch_col(4)] - 12.0).abs() < 1e-3);
+            // op5 walled (excluded), op6 severed past the wall.
+            assert_eq!(dv[k][op_pitch_col(5)], 0.0);
+            assert_eq!(dv[k][op_pitch_col(6)], 0.0);
+        }
+    }
+
+    /// A stack-pitch route whose target op is itself fixed → empty component →
+    /// no pitch change anywhere (the accumulator scatters nothing).
+    #[test]
+    fn stack_pitch_fixed_target_is_noop() {
+        let dv = run_stack_pitch(1, &[3], 3);
+        for k in 0..STACK_LANES {
+            for op in 1..=6 {
+                assert_eq!(
+                    dv[k][op_pitch_col(op)], 0.0,
+                    "op{op} bent despite fixed target"
+                );
+            }
+        }
+    }
+
+    /// Masks re-resolve on a Ratio↔Fixed toggle and on an algo change, but a
+    /// ratio-*value* tweak (same modes) does NOT re-resolve — the cache key is
+    /// unchanged and the masks are byte-identical (E022 0069 acceptance).
+    #[test]
+    fn stack_pitch_masks_recook_gating() {
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.voice.algo = 1;
+        e.apply_block_params();
+        let key0 = e.stack_pitch_key;
+        let masks0 = e.stack_pitch_masks;
+
+        // Ratio-value tweak: change op4's num — mode unchanged → no re-resolve.
+        e.params.patch.voice.ops[3].num = 7;
+        e.apply_block_params();
+        assert_eq!(e.stack_pitch_key, key0, "ratio-value tweak re-resolved");
+        assert_eq!(e.stack_pitch_masks, masks0);
+
+        // Ratio↔Fixed toggle on op5: re-resolves (op5 becomes a wall).
+        e.params.patch.voice.ops[4].ratio_mode = RatioMode::Fixed;
+        e.apply_block_params();
+        assert_ne!(e.stack_pitch_key, key0, "ratio-mode toggle did not re-cook");
+        assert_ne!(e.stack_pitch_masks, masks0);
+        let key1 = e.stack_pitch_key;
+
+        // Algo change: re-resolves.
+        e.params.patch.voice.algo = 22;
+        e.apply_block_params();
+        assert_ne!(e.stack_pitch_key, key1, "algo change did not re-cook");
+    }
+
+    // --- E022 0071: render-level ratio-lock + shared-modulator spread ----
+    //
+    // Wall-split, fixed-target no-op, and recook gating are asserted in the
+    // 0069 block above (they exercise the same cook + render path). These two
+    // add the frequency-domain ratio-lock proof and the shared-modulator case.
+
+    /// Render a harmonic algo-1 patch (ops 4/5/6 at ratios 2/3/4) until the
+    /// pitch smoother settles, optionally with a `ModWheel → Op{target}
+    /// StackPitch` route (depth 1.0, mod_wheel 0.5 → +12 st = one octave).
+    /// Returns each op's settled lane-0 `phase_inc` (∝ frequency).
+    fn harmonic_phase_incs(stack_pitch_target: Option<usize>) -> [u32; 6] {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.voice.algo = 1;
+        e.params.patch.voice.ops[3].num = 2;
+        e.params.patch.voice.ops[4].num = 3;
+        e.params.patch.voice.ops[5].num = 4;
+        e.apply_block_params();
+        e.matrix = MatrixTable::default();
+        if let Some(t) = stack_pitch_target {
+            let dest = DestId::from_u8(DestId::Op1StackPitch as u8 + (t as u8 - 1));
+            e.matrix.slots[0] = MatrixSlot {
+                source: SourceId::ModWheel,
+                dest,
+                depth: 1.0,
+                curve: CurveKind::Lin,
+            };
+            e.mod_wheel = 0.5;
+        }
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..80 {
+            e.process_block(&mut l, &mut r);
+        }
+        let a = active_stack(&e);
+        let mut out = [0u32; 6];
+        for op in 0..6 {
+            out[op] = e.alloc.stacks[a].ops[op].phase_inc[0];
+        }
+        out
+    }
+
+    /// Ratio-lock: a static stack-pitch bend scales every op in the branch by
+    /// the *same* frequency factor (one octave ≈ ×2), so the FM ratios are
+    /// invariant — pitch moves, timbre holds. Ops outside the component are
+    /// untouched.
+    #[test]
+    fn stack_pitch_ratio_lock_preserves_fm_ratios() {
+        let base = harmonic_phase_incs(None);
+        let bent = harmonic_phase_incs(Some(3)); // bend op3's component {3,4,5,6}
+        let mut factors = Vec::new();
+        for op in [3usize, 4, 5, 6] {
+            let f = bent[op - 1] as f64 / base[op - 1] as f64;
+            factors.push(f);
+            assert!((f - 2.0).abs() < 0.02, "op{op} factor {f} not ~2.0 (octave)");
+        }
+        // Identical factor across the component ⇒ ratios preserved.
+        for w in factors.windows(2) {
+            assert!(
+                (w[0] - w[1]).abs() < 1e-3,
+                "ratio drift across branch: {factors:?}"
+            );
+        }
+        // The separate (2→1) component is unbent.
+        for op in [1usize, 2] {
+            let f = bent[op - 1] as f64 / base[op - 1] as f64;
+            assert!((f - 1.0).abs() < 1e-3, "op{op} bent unexpectedly: {f}");
+        }
+    }
+
+    /// Shared-modulator spread: algo 22's op6 fans into carriers {3,4,5}, so a
+    /// stack-pitch route on op6 legitimately bends the whole {3,4,5,6}
+    /// component (documented large component); the separate (2→1) pair stays.
+    #[test]
+    fn stack_pitch_shared_modulator_spreads_to_all_carriers() {
+        let dv = run_stack_pitch(22, &[], 6);
+        for k in 0..STACK_LANES {
+            for op in [3, 4, 5, 6] {
+                assert!(
+                    (dv[k][op_pitch_col(op)] - 12.0).abs() < 1e-3,
+                    "shared-mod op{op} not bent"
+                );
+            }
+            assert_eq!(dv[k][op_pitch_col(1)], 0.0);
+            assert_eq!(dv[k][op_pitch_col(2)], 0.0);
         }
     }
 }

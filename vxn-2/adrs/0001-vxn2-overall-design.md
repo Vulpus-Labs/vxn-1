@@ -131,6 +131,11 @@ route is a matrix slot, with the panel UI hooking into specific slot indices
 when one-knob macros are exposed (per VXN1 pattern: macros write into hidden
 parameter cells).
 
+> **Addendum (E022):** a pitch route can target an operator's whole
+> ratio-coherent FM stack, not just one op — see
+> [ADR 0005 — Stack pitch modulation](0005-stack-pitch-mod.md). It is a
+> target fan-out over this same matrix, not a new routing mechanism.
+
 ### 7. Effects — clean delay + FDN reverb, no character
 
 Serial chain: synth → delay → reverb → master. Both effects "clean": no

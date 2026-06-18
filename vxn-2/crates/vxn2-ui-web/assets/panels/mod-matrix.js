@@ -51,6 +51,29 @@
     return node;
   }
 
+  // Display order for the dest dropdown (E022 0070): keep each
+  // "opN-stack-pitch" immediately after its "opN-pitch" so the per-op vs
+  // whole-stack pitch relationship reads at a glance. Option *values* stay the
+  // engine wire id (entry.id) — only DOM order changes, so the route-edit
+  // opcode is unaffected. Everything else keeps the engine's enum order.
+  function destDisplayOrder(list) {
+    var stackByOp = {};
+    var rest = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      var m = /^op([1-6])-stack-pitch$/.exec(e.name || "");
+      if (m) stackByOp[m[1]] = e;
+      else rest.push(e);
+    }
+    var out = [];
+    for (var j = 0; j < rest.length; j++) {
+      out.push(rest[j]);
+      var pm = /^op([1-6])-pitch$/.exec(rest[j].name || "");
+      if (pm && stackByOp[pm[1]]) out.push(stackByOp[pm[1]]);
+    }
+    return out;
+  }
+
   function buildSelect(list, idAttr) {
     var sel = document.createElement("select");
     if (idAttr) sel.dataset.field = idAttr;
@@ -175,7 +198,7 @@
 
     function buildRow(slot) {
       var sourceSel = buildSelect(sourcesList, "source");
-      var destSel = buildSelect(destsList, "dest");
+      var destSel = buildSelect(destDisplayOrder(destsList), "dest");
       var curveSel = buildSelect(curvesList, "curve");
 
       // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop

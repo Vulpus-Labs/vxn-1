@@ -272,6 +272,71 @@ pub fn spec_of(algo: u8) -> &'static AlgoSpec {
     &ALGOS[idx]
 }
 
+/// Resolve the **pitch-coherent component** of `target_op` in algorithm
+/// `algo`'s modulation graph: every op reachable from `target_op` when
+/// `edges` are treated as **undirected** (modulation propagates pitch both
+/// up to modulators and down to carriers), excluding walls.
+///
+/// `wall_mask` is a 6-bit op mask; bit `i` set means op `(i + 1)` is a wall
+/// (fixed-frequency). A wall does not track key, so tuning coherence stops
+/// there: it is removed as a graph *node* — excluded from the result AND
+/// traversal cannot cross it. A fixed op mid-chain therefore splits the
+/// graph into independent components.
+///
+/// Returns a 6-bit op mask (bit `i` set = op `(i + 1)` is in the component).
+/// If `target_op` is itself a wall (or out of range), returns `0` — the
+/// stack route no-ops (E022 design).
+///
+/// Self-feedback (`AlgoSpec::structural_fb_op`) is not a modulation edge and
+/// is irrelevant to connectivity; it is not consulted here.
+///
+/// Pure, allocation-free, `const` integer graph walk — safe from the cook
+/// path. `algo` is 1-indexed (out-of-range saturates to algo 1); `target_op`
+/// is 1-indexed (1..=6).
+pub const fn pitch_stack_component(algo: u8, wall_mask: u8, target_op: u8) -> u8 {
+    // Out-of-range or walled target → empty component (route no-ops).
+    if target_op < 1 || target_op > N_OPS as u8 {
+        return 0;
+    }
+    let target_bit = 1u8 << (target_op - 1);
+    if wall_mask & target_bit != 0 {
+        return 0;
+    }
+
+    // Saturate out-of-range algo IDs to algo 1, matching `resolve_route`.
+    let idx = if algo >= 1 && algo <= N_ALGOS as u8 {
+        (algo - 1) as usize
+    } else {
+        0
+    };
+    let spec = &ALGOS[idx];
+
+    // Flood-fill from the target over surviving (non-wall) nodes. Each round
+    // propagates one hop; N_OPS rounds reach a 6-node fixpoint (longest
+    // possible chain is 5 hops). Undirected: an edge whose endpoints are both
+    // non-wall pulls both endpoints in if either is already visited.
+    let mut visited = target_bit;
+    let mut round = 0;
+    while round < N_OPS {
+        let mut e = 0;
+        while e < spec.n_edges as usize {
+            let (m, c) = spec.edges[e];
+            let mbit = 1u8 << (m - 1);
+            let cbit = 1u8 << (c - 1);
+            // An edge touching a wall is severed — cannot cross it.
+            if wall_mask & mbit == 0
+                && wall_mask & cbit == 0
+                && (visited & mbit != 0 || visited & cbit != 0)
+            {
+                visited |= mbit | cbit;
+            }
+            e += 1;
+        }
+        round += 1;
+    }
+    visited
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +513,98 @@ mod tests {
         let _ = resolve_route(0);
         let _ = resolve_route(33);
         let _ = resolve_route(255);
+    }
+
+    // ---- pitch_stack_component (ticket 0067) ----------------------------
+
+    /// 1-indexed op list → 6-bit mask, for readable expected values.
+    fn mask(ops: &[u8]) -> u8 {
+        ops.iter().fold(0u8, |m, &op| m | (1 << (op - 1)))
+    }
+
+    /// Linear stack: algo 1's chart is (6→5→4→3) + (2→1), carriers {1,3}.
+    /// The whole chain feeding carrier 3 is one component; carrier 1's pair
+    /// is independent.
+    #[test]
+    fn component_linear_stack() {
+        // Target the carrier of the 4-op chain.
+        assert_eq!(pitch_stack_component(1, 0, 3), mask(&[3, 4, 5, 6]));
+        // Targeting any mid-chain op gives the same component (undirected).
+        assert_eq!(pitch_stack_component(1, 0, 5), mask(&[3, 4, 5, 6]));
+        // The (2→1) pair is a separate component.
+        assert_eq!(pitch_stack_component(1, 0, 1), mask(&[1, 2]));
+        assert_eq!(pitch_stack_component(1, 0, 2), mask(&[1, 2]));
+    }
+
+    /// Shared modulator: algo 22 chart is (2→1) + op6 fanning to carriers
+    /// {3,4,5}. Targeting the shared modulator (or any of its carriers)
+    /// pulls the whole fan-out into one component — large by design.
+    #[test]
+    fn component_shared_modulator_spread() {
+        let fan = mask(&[3, 4, 5, 6]);
+        assert_eq!(pitch_stack_component(22, 0, 6), fan); // the shared mod
+        assert_eq!(pitch_stack_component(22, 0, 3), fan); // via op6
+        assert_eq!(pitch_stack_component(22, 0, 4), fan);
+        // op1/op2 stay independent of the fan-out.
+        assert_eq!(pitch_stack_component(22, 0, 1), mask(&[1, 2]));
+    }
+
+    /// A wall mid-chain severs the graph. Algo 1 chain (6→5→4→3) with op5
+    /// fixed: op3 reaches op4 but not across op5; op6 is isolated past it.
+    #[test]
+    fn component_wall_splits_chain() {
+        let wall5 = mask(&[5]);
+        assert_eq!(pitch_stack_component(1, wall5, 3), mask(&[3, 4]));
+        assert_eq!(pitch_stack_component(1, wall5, 6), mask(&[6]));
+        // The unrelated (2→1) pair is untouched by the wall.
+        assert_eq!(pitch_stack_component(1, wall5, 1), mask(&[1, 2]));
+    }
+
+    /// A walled target itself → empty component (route no-ops).
+    #[test]
+    fn component_walled_target_empty() {
+        assert_eq!(pitch_stack_component(1, mask(&[3]), 3), 0);
+        assert_eq!(pitch_stack_component(22, mask(&[6]), 6), 0);
+    }
+
+    /// An op with no surviving edges → just itself. Algo 32 has no edges, so
+    /// every op is isolated; a walled neighbour likewise isolates.
+    #[test]
+    fn component_isolated_op_is_self() {
+        for op in 1..=N_OPS as u8 {
+            assert_eq!(pitch_stack_component(32, 0, op), mask(&[op]));
+        }
+        // Algo 1 op1 with its sole partner (op2) walled → {1}.
+        assert_eq!(pitch_stack_component(1, mask(&[2]), 1), mask(&[1]));
+    }
+
+    /// The component never includes a wall, and is always a subset of the
+    /// non-wall ops, for every algo / target / single-wall combination.
+    #[test]
+    fn component_excludes_walls_exhaustive() {
+        for algo in 1..=N_ALGOS as u8 {
+            for wall in 1..=N_OPS as u8 {
+                let wm = mask(&[wall]);
+                for target in 1..=N_OPS as u8 {
+                    let comp = pitch_stack_component(algo, wm, target);
+                    assert_eq!(comp & wm, 0, "algo {algo}: wall {wall} leaked");
+                    if target == wall {
+                        assert_eq!(comp, 0, "algo {algo}: walled target {target}");
+                    } else {
+                        assert!(comp & mask(&[target]) != 0,
+                            "algo {algo}: target {target} missing from own component");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Out-of-range target → empty; out-of-range algo saturates to algo 1.
+    #[test]
+    fn component_range_guards() {
+        assert_eq!(pitch_stack_component(1, 0, 0), 0);
+        assert_eq!(pitch_stack_component(1, 0, 7), 0);
+        assert_eq!(pitch_stack_component(0, 0, 3), pitch_stack_component(1, 0, 3));
+        assert_eq!(pitch_stack_component(99, 0, 3), pitch_stack_component(1, 0, 3));
     }
 }
