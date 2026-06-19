@@ -16,7 +16,8 @@
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
     LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
-    PolyOtaLadder, Waveform, fast_exp2, note_to_hz, poly_ring_mod, poly_sub_square, xorshift64,
+    PolyOtaLadder, Waveform, fast_exp2, note_to_hz, one_pole_coeff, poly_ring_mod, poly_sub_square,
+    xorshift64,
 };
 
 use crate::params::{AssignMode, CrossModType, EnvSel, LfoSel};
@@ -32,6 +33,19 @@ const HPF_OFF_HZ: f32 = 20.0;
 /// Fixed ring-modulator diode drive (dB). No panel knob in v1 (ADR 0004 panel
 /// list leaves it out); the operating point sits in the quasi-linear region.
 const RING_DRIVE_DB: f32 = 1.0;
+
+/// Amp-tremolo (VCA LFO) gain declick time constant (ms). The amp LFO resolves
+/// its VCA gain once per control block, so a square LFO snaps the gain by the
+/// full `depth` at a block boundary — an instant step that clicks the VCA. The
+/// *applied* gain is one-poled toward the block target at base rate over this
+/// time, turning the step into an inaudible ramp while still tracking fast
+/// tremolo (sine/triangle gain barely lags). See `VoiceBank::amp_trem_z`.
+const TREM_SMOOTH_MS: f32 = 2.0;
+
+/// Distance below which the tremolo declick snaps to its block target, so the
+/// gain settles exactly and the next block can resume the envelope-static fast
+/// path instead of crawling the one-pole tail (mirrors `smoothing`'s snap eps).
+const TREM_SNAP_EPS: f32 = 1.0e-6;
 
 /// Default per-voice oscillator pitch-drift amount, `[0.0, 1.0]`. Drives the
 /// bounded random walks inside each [`PolyOscillator`]: at full depth the walks
@@ -365,6 +379,10 @@ pub struct VoiceBank {
     lfo1: [LfoCore; N],
     /// Per-voice LFO 1 two-stage onset (delay → fade).
     lfo1_onset: Lfo1Onset,
+    /// Per-voice smoothed amp-tremolo (VCA LFO) gain. The tremolo target is set
+    /// at block rate; this one-poles toward it at base rate so a square LFO's
+    /// step doesn't click the VCA. 1.0 = unity (no tremolo). See `TREM_SMOOTH_MS`.
+    amp_trem_z: [f32; N],
     /// Seed base for the per-channel LFO 1 cores; kept so they can be rebuilt at
     /// the new control rate on a sample-rate change.
     lfo1_seed: u64,
@@ -444,6 +462,7 @@ impl VoiceBank {
             glide_valid: [false; N],
             lfo1: std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(rng_seed, i))),
             lfo1_onset: Lfo1Onset::new(),
+            amp_trem_z: [1.0; N],
             lfo1_seed: rng_seed,
             unison_rng: unison_rng_seed(rng_seed),
             mono_stack: [0; MONO_STACK],
@@ -492,6 +511,7 @@ impl VoiceBank {
             lfo.reset();
         }
         self.lfo1_onset.reset();
+        self.amp_trem_z = [1.0; N];
         self.mono_len = 0;
         self.sustain = false;
         self.sustained = [false; N];
@@ -1081,33 +1101,68 @@ impl VoiceBank {
 
         // Envelope block-skip (see `envelopes_static`): when nothing triggers and
         // every active voice holds both envelopes in Sustain, the env levels are
-        // constant, so `amp` is computed once and the per-frame tick + free-check
-        // are skipped. Otherwise the per-frame path runs.
+        // constant, so the VCA-envelope base is computed once and the per-frame
+        // tick + free-check are skipped. Otherwise the per-frame path runs.
         let env_static = envelopes_static(&trig, &self.active, &self.gate, &self.env1, &self.env2);
+
+        // Tremolo declick: the amp LFO sets `amp_trem` once per block, so a
+        // square LFO snaps it by `depth` at a block boundary. One-pole the
+        // *applied* gain (`amp_trem_z`) toward that target at base rate so the
+        // step becomes a short ramp instead of a click. The tremolo is "settled"
+        // when every voice's smoothed gain already sits on its block target (no
+        // amp LFO, or a stationary one between updates) — then the gain is
+        // constant across the block and the per-frame ramp is skipped, so the
+        // common no-tremolo patch keeps the cheap static fast path.
+        let trem_coeff = one_pole_coeff(TREM_SMOOTH_MS, base_rate);
+        let trem_settled =
+            (0..N).all(|v| (amp_trem[v] - self.amp_trem_z[v]).abs() <= TREM_SNAP_EPS);
+
+        // VCA-envelope base per voice (before tremolo). Constant across the block
+        // when the envelopes are static; otherwise recomputed per frame from the
+        // ticked Env 2 below.
+        let mut amp_env = [0.0f32; N];
         if env_static {
-            for (v, amp_v) in amp.iter_mut().enumerate() {
-                *amp_v = amp_base(
-                    self.active[v],
-                    self.gate[v],
-                    ctx.amp_env_bypass,
-                    self.env2[v].level,
-                ) * amp_trem[v];
+            for (v, amp_e) in amp_env.iter_mut().enumerate() {
+                *amp_e =
+                    amp_base(self.active[v], self.gate[v], ctx.amp_env_bypass, self.env2[v].level);
+            }
+            if trem_settled {
+                // Both factors constant for the whole block: amp computed once.
+                for (v, amp_v) in amp.iter_mut().enumerate() {
+                    self.amp_trem_z[v] = amp_trem[v];
+                    *amp_v = amp_env[v] * amp_trem[v];
+                }
             }
         }
 
         for base_i in 0..base_frames {
-            // Envelopes + amp (base rate, scalar; gated to 0 for inactive voices).
+            // Recompute the VCA amp whenever a factor moves this block: tick the
+            // envelopes (non-static), and/or ramp the tremolo gain toward target.
             // The VCA follows Env2 unless `amp_env_bypass` (then the bare gate),
-            // times the block-rate tremolo gain. Env2 still ticks in bypass so the
+            // times the declicked tremolo gain. Env2 still ticks in bypass so the
             // voice frees on release as usual; Env1 ticks to feed the mod routes.
-            // Skipped when the block is envelope-static (see `env_static` above).
-            if !env_static {
+            // Skipped only when the block is both envelope-static and tremolo-
+            // settled (amp constant — computed once above).
+            if !env_static || !trem_settled {
                 for v in 0..N {
-                    let t = trig[v] && base_i == 0;
-                    let _e1 = self.env1[v].tick(t, self.gate[v]);
-                    let e2 = self.env2[v].tick(t, self.gate[v]);
-                    amp[v] = amp_base(self.active[v], self.gate[v], ctx.amp_env_bypass, e2)
-                        * amp_trem[v];
+                    let amp_e = if env_static {
+                        amp_env[v]
+                    } else {
+                        let t = trig[v] && base_i == 0;
+                        let _e1 = self.env1[v].tick(t, self.gate[v]);
+                        let e2 = self.env2[v].tick(t, self.gate[v]);
+                        amp_base(self.active[v], self.gate[v], ctx.amp_env_bypass, e2)
+                    };
+                    // One-pole the applied tremolo gain toward the block target,
+                    // snapping once within eps so it settles exactly (and the next
+                    // block can resume the static fast path).
+                    let z = self.amp_trem_z[v] + trem_coeff * (amp_trem[v] - self.amp_trem_z[v]);
+                    self.amp_trem_z[v] = if (amp_trem[v] - z).abs() < TREM_SNAP_EPS {
+                        amp_trem[v]
+                    } else {
+                        z
+                    };
+                    amp[v] = amp_e * self.amp_trem_z[v];
                 }
             }
 

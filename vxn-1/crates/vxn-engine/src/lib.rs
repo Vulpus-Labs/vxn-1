@@ -1044,6 +1044,46 @@ mod tests {
     }
 
     #[test]
+    fn square_amp_tremolo_is_declicked() {
+        // A square amp LFO snaps the VCA gain by `depth` at each half-cycle. The
+        // gain resolves at block rate, so without smoothing that step lands in a
+        // single sample and clicks. With a sine *carrier* (bounded per-sample
+        // slope) the only way the output can jump sharply is the gain step, so
+        // the max sample-to-sample difference of the tremoloed signal must stay
+        // close to the un-tremoloed one — a click would dwarf it.
+        let setup = |trem: bool| {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(gp(GlobalParam::ChorusOn), 0.0);
+            s.set_param(gp(GlobalParam::ReverbOn), 0.0);
+            s.set_param(gp(GlobalParam::PhaserOn), 0.0);
+            s.set_param(pp(PatchParam::Osc1Wave), 0.0); // Sine carrier
+            s.set_param(pp(PatchParam::Osc2Level), 0.0); // osc1 only
+            s.set_param(pp(PatchParam::Env2Sustain), 1.0);
+            s.set_param(pp(PatchParam::Env2Attack), 0.001);
+            s.set_param(pp(PatchParam::LfoShape), 4.0); // Square
+            s.set_param(pp(PatchParam::LfoRate), 8.0);
+            if trem {
+                s.set_param(pp(PatchParam::AmpLfoSrc), 1.0); // LFO 1
+                s.set_param(pp(PatchParam::AmpLfoDepth), 1.0); // full depth
+            }
+            s.note_on(45, 1.0); // low note → small per-sample sine slope
+            let (l, _) = render(&mut s, 48_000);
+            l
+        };
+        let max_step = |l: &[f32]| {
+            l.windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let steady = max_step(&setup(false));
+        let trem = max_step(&setup(true));
+        assert!(
+            trem < steady * 3.0,
+            "square tremolo clicks: max step {trem} vs steady {steady}"
+        );
+    }
+
+    #[test]
     fn env_block_skip_waits_for_amp_sustain() {
         // Envelope block-skip must engage only once Env2 (the VCA) actually
         // reaches Sustain. A held note with a long Env2 decay to a low sustain
