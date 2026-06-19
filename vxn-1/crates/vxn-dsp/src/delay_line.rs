@@ -1,4 +1,8 @@
-//! Bucket-brigade-device (BBD) modelling primitives.
+//! Bucket-brigade-device (BBD) modelled delay line — the chorus primitive.
+//!
+//! Sole consumer is [`crate::chorus`]; the BBD reverb that once shared this
+//! module was retired with the FDN port (E009 — see [`crate::fdn_reverb`]), so
+//! what remains is the modulated delay line and the support types it needs.
 //!
 //! Ported from `patches-bundles::patches-vintage` — the continuous-time
 //! complex-pole filter banks, the host-rate modulated delay line, and the

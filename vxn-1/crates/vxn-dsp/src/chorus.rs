@@ -20,7 +20,7 @@
 //! state stay hot in cache for the whole block.
 
 use crate::CONTROL_BLOCK;
-use crate::bbd::{Interp, ModDelayLine};
+use crate::delay_line::{Interp, ModDelayLine};
 use crate::math::xorshift64;
 
 /// Bright (Juno-60 reference) delay sweep, in seconds: 1.66–5.35 ms.

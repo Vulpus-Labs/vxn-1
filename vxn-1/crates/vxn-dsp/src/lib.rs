@@ -19,9 +19,9 @@
 //! Nothing here depends on the plugin framework or the UI.
 
 pub mod adsr;
-pub mod bbd;
 pub mod chorus;
 pub mod delay;
+pub mod delay_line;
 pub mod fdn_reverb;
 pub mod halfband;
 pub mod hpf;

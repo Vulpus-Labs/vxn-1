@@ -2,8 +2,9 @@
 id: E009
 product: vxn-1
 title: FX tab panel + phaser + FDN reverb + master drift
-status: open
+status: closed
 created: 2026-06-06
+closed: 2026-06-19
 ---
 
 ## Goal
@@ -152,3 +153,36 @@ new DSP types' param shapes.
   current "live" detune.
 - `bbd.rs` is gone; `grep -r 'StereoVReverb\|use crate::bbd' vxn-1/crates`
   returns nothing.
+
+## Close-out (2026-06-19)
+
+All substance shipped — the epic was executed under the **E018** FX-redesign
+commit (`96dec2c`, "FX redesign + KBT amount", tickets 0094–0098 + 0100) and
+the factory-bank rebuild (`19eb627`, 0099). This file was the original plan
+and simply never got flipped closed.
+
+Per-phase outcome:
+
+- **0094** `vxn-dsp::phaser::StereoPhaser` ported (Rate/Depth/FB/Mix, stages=4,
+  anti-phase sweep, mid-band centre). Pre-chorus bus slot; `phaser_on=0` keeps
+  the bus sample-exact.
+- **0095** `vxn-dsp::fdn_reverb::FdnReverb` ported from vxn-2 (8 prime lines,
+  8×8 Hadamard, per-line LP damp + LFO).
+- **0096** `GlobalParam` rewritten in section order: dropped `ReverbType` /
+  `ReverbDepth`; added `MasterDrift`, `Phaser{On,Rate,Depth,FB,Mix}`,
+  `Reverb{Size,Decay,Damp}`. Smoothing block-glide list covers the new knobs.
+- **0097** Phaser wired pre-chorus; `MasterDrift` reads straight into
+  `Engine::drift_amount`; `Synth::reset` clears phaser + reverb tail.
+- **0098** Row 4 collapsed to Keys / Voice / FX / Master; left vertical tab
+  strip (`wireFxTabs`), per-tab inline on/off switch, Drift fader in Master,
+  `fx-tabs.test.js` guards the click-swap contract.
+- **0099** Factory bank re-saved against the new param set.
+
+**Acceptance deviation — `bbd.rs` deletion.** The epic's "no other consumer"
+assumption was wrong: `chorus` depends on the BBD-modelled `ModDelayLine` /
+`Interp` (and their `Complex32` / `ContinuousPoleBank` recon banks). E018
+trimmed the module to those chorus primitives instead of deleting it. Closing
+this epic (2026-06-19) the now-misnamed `bbd.rs` was renamed to **`delay_line.rs`**
+(it houses a delay line, not a reverb) and consumers updated, so the
+`use crate::bbd` grep is now clean. `cargo test -p vxn-dsp -p vxn-engine -p
+vxn-app` green (278 tests).
