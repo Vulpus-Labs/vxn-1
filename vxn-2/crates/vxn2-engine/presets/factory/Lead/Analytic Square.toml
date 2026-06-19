@@ -1,0 +1,75 @@
+schema = 1
+
+[meta]
+name = "Analytic Square"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "E023 analytic-shape demo. Algo 32 (six parallel carriers) summed into a bandlimited square: odd ratios 1,3,5,7,9,11 at ~1/n levels, all phase 0 — a square is phase-deaf so no flip is needed (unlike the saw). Six odd partials reach the 11th harmonic, hollow and mellow; the detuned + phase-decorrelated stack supplies the body. Bandlimited by construction and kept alias-clean on upward sweeps by the 0073 Nyquist fade."
+
+[params]
+algo = 32
+feedback = 0.0
+
+# Six carriers at odd harmonic ratios 1,3,5,7,9,11, amplitudes ~1/n (textbook
+# square rolloff). All phase 0 — a square's even-harmonic-free spectrum sums to
+# the right shape with every partial in phase. EG sustains flat (l2 = l3 = 99).
+op1-num = 1
+op1-level = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+
+op2-num = 3
+op2-level = 33
+op2-eg-l2 = 99
+op2-eg-l3 = 99
+
+op3-num = 5
+op3-level = 20
+op3-eg-l2 = 99
+op3-eg-l3 = 99
+
+op4-num = 7
+op4-level = 14
+op4-eg-l2 = 99
+op4-eg-l3 = 99
+
+op5-num = 9
+op5-level = 11
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+
+op6-num = 11
+op6-level = 9
+op6-eg-l2 = 99
+op6-eg-l3 = 99
+
+# Stack for body — squares are thinner than saws, so lean on density harder.
+stack-density = 8
+stack-detune = 14.0
+stack-spread = 0.70
+stack-phase = 0.65
+
+reverb-size = 0.45
+reverb-mix = 0.18
+
+# Lane spread → per-carrier pan for stereo width.
+[[matrix]]
+slot = 0
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 1.0

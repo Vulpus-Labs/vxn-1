@@ -6,16 +6,17 @@
 //! CLAP ids are a stable, flat index space:
 //!
 //! ```text
-//!   0 .. 163   Per-patch        (126 op + 1 algo + 1 feedback + 5 LFO2 +
+//!   0 .. 169   Per-patch        (132 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 163 .. 188   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
+//! 169 .. 195   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
 //!                                9 filter)
 //! ```
 //!
-//! Total 188. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
-//! is gone — a patch is one parameter set. Each op block is 21 params: the
-//! 20 continuous controls plus a trailing `ratio-mode` enum (Ratio / Fixed).
+//! Total 195. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! is gone — a patch is one parameter set. Each op block is 22 params: the
+//! 20 continuous controls, a trailing `ratio-mode` enum (Ratio / Fixed), and
+//! a per-op `phase` float (ticket 0074).
 //!
 //! ## What is *not* in the table
 //!
@@ -48,11 +49,11 @@
 //! avoiding a build script.
 
 pub const N_OPS: usize = 6;
-pub const N_PER_OP: usize = 21;
+pub const N_PER_OP: usize = 22;
 pub const N_PER_PATCH_REST: usize = 37;
-pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 163
+pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 169
 pub const N_PATCH_LEVEL: usize = 26; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 188
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 195
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -401,6 +402,10 @@ macro_rules! op_block_arr {
             // Ratio/Fixed selector can drive it. Appended at the end of the
             // op block so the existing per-op offsets (read_op) are unchanged.
             en(concat!("op", $n, "-ratio-mode"), concat!("Op ", $n, " Ratio Mode"), RATIO_MODES, 0),
+            // Per-op note-on phase offset, fraction of a cycle [0, 1) (ticket
+            // 0074). Appended after ratio-mode so existing read_op offsets are
+            // unchanged; this is index 21 in the op block.
+            fl(concat!("op", $n, "-phase"), concat!("Op ", $n, " Phase"), 0.0, 1.0, 0.0, ""),
         ]
     };
 }
@@ -570,7 +575,7 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
 // ── The table ───────────────────────────────────────────────────────────────
 
 /// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 163, patch × 26]` — same flat ordering described in
+/// `[per-patch × 169, patch × 26]` — same flat ordering described in
 /// the module-level layout block.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
@@ -761,7 +766,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 189);
+        assert_eq!(TOTAL_PARAMS, 195);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 

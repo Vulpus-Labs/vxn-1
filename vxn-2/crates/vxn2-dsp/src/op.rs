@@ -50,6 +50,13 @@ pub struct OpParams {
     pub ks_r_curve: KsCurve,
     pub ks_rate: u8,
     pub pan: f32,
+    /// Per-operator note-on phase offset, a fraction of one cycle in `[0, 1)`
+    /// (1.0 = 2π). Composes additively (wrapping Q32) with the per-lane stack
+    /// decorrelation offset at note-on so the six carriers of algo 32 can sum
+    /// into specific analytic shapes (saw flips even harmonics by π = 0.5).
+    /// Stack-path only — the scalar reference path does not reset phase, so the
+    /// offset would wash out there. Ticket 0074.
+    pub phase: f32,
 }
 
 impl Default for OpParams {
@@ -76,6 +83,7 @@ impl Default for OpParams {
             ks_r_curve: KsCurve::NegExp,
             ks_rate: 2,
             pan: 0.0,
+            phase: 0.0,
         }
     }
 }

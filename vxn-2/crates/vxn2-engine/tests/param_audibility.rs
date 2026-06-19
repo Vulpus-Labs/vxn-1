@@ -166,6 +166,16 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
     // under test (zero the other), put the played note far onto that side, and
     // drive the depth hard so the level swing dominates the op.
     if let Some(op) = parse_op(name) {
+        // KS tests play high notes (96) for strong R-side scaling. The default
+        // patch gives op2 a ratio-14 tine modulator, which at note 96 runs at
+        // ~29 kHz — above Nyquist. With the 0073 Nyquist fade that op is muted
+        // (correctly: it would otherwise alias), masking the KS effect under
+        // test. Pin the op to ratio 1 so its fundamental stays in-band and the
+        // KS level/rate change is the only audible mover.
+        if name.ends_with("-ks-r-depth") || name.ends_with("-ks-rate") {
+            set(&format!("op{op}-num"), 1.0);
+            set(&format!("op{op}-denom"), 1.0);
+        }
         if name.ends_with("-ks-r-depth") {
             set(&format!("op{op}-ks-l-depth"), 0.0);
             set(&format!("op{op}-ks-break-pt"), 48.0);
@@ -315,6 +325,17 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("filter-cutoff-tuned", "UI-only cutoff display mode (Hz vs note-tuned \
         readout); the engine never reads it — the stored cutoff is always Hz \
         (shared.rs `read_filter`)."),
+    // Per-op phase (0074) is cyclic: a fraction of one cycle, so min 0.0 and
+    // max 1.0 are the *same* phase by construction → a min→max sweep is a no-op
+    // by definition (the Q32 conversion wraps 1.0 → 0). The param is genuinely
+    // audible at intermediate offsets (see stack.rs `per_op_phase_shifts_waveform`);
+    // the extremes just happen to coincide. Excluded from the min→max guard only.
+    ("op1-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    ("op2-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    ("op3-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    ("op4-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    ("op5-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    ("op6-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
 ];
 
 /// Render the configured patch through the capture script, returning the

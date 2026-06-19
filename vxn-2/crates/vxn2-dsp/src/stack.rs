@@ -274,6 +274,19 @@ pub struct Stack {
     /// truth for [`Self::refresh_pan_with_mod`]; never overwritten between
     /// note-ons.
     pub cached_op_pans: [f32; N_OPS],
+    /// Per-op × per-lane Nyquist-approach level fade (ticket 0073). Recomputed
+    /// block-rate in [`Self::apply_pitch_mult`] as a pure function of the
+    /// freshly-derived `phase_inc[k]` (= `running_hz/fs`): 1.0 well below
+    /// Nyquist, ramping to 0.0 as a lane's running frequency crosses
+    /// [`NYQUIST_FADE_LO`]..[`NYQUIST_FADE_HI`]·fs. Multiplied into the
+    /// effective level in the hot loop so a swept-up additive (algo 32) patch
+    /// fades high partials out instead of folding them back down. Honest
+    /// bandlimit for carriers only — FM sidebands are an oversampling concern.
+    /// 1.0 for every modulator and every in-band carrier, so the hot-loop
+    /// multiply is a no-op (×1.0) in the common case and the loop stays
+    /// vectorised — a data-driven fade is far cheaper here than a per-lane
+    /// branch, which defeats autovectorisation (measured ~50% slower).
+    pub op_nyquist_fade: [[f32; STACK_LANES]; N_OPS],
 }
 
 impl Default for Stack {
@@ -306,8 +319,34 @@ impl Default for Stack {
             detune_cents_max: 0.0,
             detune_mod_st: [0.0_f32; STACK_LANES],
             cached_op_pans: [0.0_f32; N_OPS],
+            op_nyquist_fade: [[1.0_f32; STACK_LANES]; N_OPS],
         }
     }
+}
+
+/// Lower edge of the Nyquist level fade as a fraction of the sample rate. Below
+/// `LO·fs` a lane is at full level (fade = 1.0). Chosen high enough (≈21.6 kHz
+/// at 48 k, ≈19.85 kHz at 44.1 k) not to dull normal bright patches; only swept
+/// or extreme-pitch partials reach it. Ticket 0073.
+pub const NYQUIST_FADE_LO: f32 = 0.45;
+/// Upper edge of the Nyquist level fade. At `HI·fs` (just under Nyquist, 0.5)
+/// the lane is fully muted (fade = 0.0) before its running frequency can fold.
+pub const NYQUIST_FADE_HI: f32 = 0.49;
+
+/// `running_hz / fs` per Q32 increment: `phase_inc / 2^32`.
+const INV_PM_SCALE_Q32: f32 = 1.0 / PM_SCALE_Q32;
+
+/// Level fade factor for a lane whose running frequency is `f_over_fs` of the
+/// sample rate. 1.0 below [`NYQUIST_FADE_LO`], smoothstep down to 0.0 at
+/// [`NYQUIST_FADE_HI`]. Pure, branch-light, no transcendental — cheap enough to
+/// run per op × lane once per block. Ticket 0073.
+#[inline]
+pub fn nyquist_fade(f_over_fs: f32) -> f32 {
+    // Normalised position across the fade window, clamped to [0, 1].
+    let t = ((f_over_fs - NYQUIST_FADE_LO) / (NYQUIST_FADE_HI - NYQUIST_FADE_LO))
+        .clamp(0.0, 1.0);
+    // Hermite smoothstep, then invert (1 below the window, 0 above it).
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 /// `[0, 1)` f32 from the shared xorshift64* step ([`crate::rng`]).
@@ -435,7 +474,7 @@ impl Stack {
         self.mod_env.note_on();
         self.glide_st = 0.0;
         self.apply_pitch_mult();
-        self.apply_phase_offsets(stack_params.phase);
+        self.apply_phase_offsets(stack_params.phase, &voice_params.ops);
         // Cache pan inputs so `refresh_pan_with_mod` can re-run the equal-
         // power curve every block without a fresh params handle. `cached_spread`
         // no longer affects panning directly; it's the gain on the matrix's
@@ -519,7 +558,17 @@ impl Stack {
     #[inline]
     pub fn apply_pitch_mult(&mut self) {
         let base_st = self.bend_st + self.glide_st + self.pitch_eg.level_st;
+        // Nyquist fade is carrier-only (0073). A carrier's output is heard
+        // directly, so a partial crossing Nyquist must fade or it folds back as
+        // alias garbage — for algo 32 (all carriers) this is a genuine
+        // bandlimit. A *modulator* is never heard directly; fading it would
+        // just thin the FM index as the modulator rises (e.g. mute a ratio-14
+        // tine on a high note — musically wrong), and its sidebands alias
+        // regardless of its own level (oversampling territory, not this fade).
+        // So non-carrier ops keep fade = 1.0.
+        let carriers = spec_of(self.algo).carriers;
         for i in 0..N_OPS {
+            let is_carrier = (carriers >> i) & 1 == 1;
             for k in 0..STACK_LANES {
                 // `detune_mod_st` is the matrix `stack-detune` per-lane offset
                 // (E008 0093); 0 when un-routed → `+ 0.0` is bit-identical.
@@ -528,8 +577,16 @@ impl Stack {
                     + self.op_pitch_mod_st[i][k]
                     + self.detune_mod_st[k];
                 let mult = 2_f32.powf(st / 12.0) as f64;
-                self.ops[i].phase_inc[k] =
-                    (self.ops[i].base_phase_inc[k] as f64 * mult) as u32;
+                let inc = (self.ops[i].base_phase_inc[k] as f64 * mult) as u32;
+                self.ops[i].phase_inc[k] = inc;
+                // Carrier fade is a pure function of the increment we just set
+                // (`phase_inc/2^32 = running_hz/fs`); modulators stay at 1.0.
+                // Block-rate; folded into the effective level by the hot loop.
+                self.op_nyquist_fade[i][k] = if is_carrier {
+                    nyquist_fade(inc as f32 * INV_PM_SCALE_Q32)
+                } else {
+                    1.0
+                };
             }
         }
     }
@@ -681,16 +738,23 @@ impl Stack {
         // cook loop, and the engine refreshes it each block.
     }
 
-    fn apply_phase_offsets(&mut self, phase_amount: f32) {
-        // Per-lane Q32 offset shared across all six ops at note-on.
+    fn apply_phase_offsets(&mut self, phase_amount: f32, op_params: &[OpParams; N_OPS]) {
+        // Per-lane Q32 offset shared across all six ops at note-on (stack
+        // decorrelation → supersaw width).
         let mut lane_offset = [0u32; STACK_LANES];
         for k in 0..STACK_LANES {
             let frac = (phase_amount * self.voice_rand[k]).clamp(0.0, 1.0);
             lane_offset[k] = (frac as f64 * PM_SCALE_Q32 as f64) as u32;
         }
         for i in 0..N_OPS {
+            // Per-op shape offset (0074), continuous fraction of a cycle.
+            // `rem_euclid` keeps it in [0, 1) before the Q32 conversion; it
+            // composes with the per-lane offset by a wrapping add so both the
+            // decorrelation and the analytic-shape phase stack.
+            let op_off =
+                (op_params[i].phase.rem_euclid(1.0) as f64 * PM_SCALE_Q32 as f64) as u32;
             for k in 0..STACK_LANES {
-                self.ops[i].phase[k] = lane_offset[k];
+                self.ops[i].phase[k] = lane_offset[k].wrapping_add(op_off);
                 self.ops[i].fb_prev1[k] = 0.0;
                 self.ops[i].fb_prev2[k] = 0.0;
             }
@@ -760,6 +824,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
         let lvl_mod = stack.op_level_mod[i];
+        let fade = stack.op_nyquist_fade[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -771,15 +836,16 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
         // Stage 2: read sine at modulated phase, scale by EG level plus the
-        // engine-ramped per-lane level offset. `eg + lvl_mod` is the effective
-        // level; the engine guarantees it stays in [0, 1] by construction
-        // (rail-targeting projection of bounded mod — see `op_level_mod`), so
-        // no per-sample clamp is needed here.
+        // engine-ramped per-lane level offset, times the per-lane Nyquist fade
+        // (0073, 1.0 except for carriers near Nyquist). `eg + lvl_mod` is the
+        // effective level; the engine guarantees it stays in [0, 1] by
+        // construction (rail-targeting projection of bounded mod — see
+        // `op_level_mod`), so no per-sample clamp is needed. The fade multiply
+        // stays in the vectorised lane loop (a branch here measured ~50% slower).
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            let lvl_k = lvl + lvl_mod[k];
-            sines[k] = fast_sine_q32(phase_mod) * lvl_k;
+            sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
         }
         // Stage 3: advance phase + rotate feedback memory.
         for k in 0..STACK_LANES {
@@ -811,6 +877,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
         let lvl_mod = stack.op_level_mod[i];
+        let fade = stack.op_nyquist_fade[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -820,13 +887,13 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
             let total_mod = mi[i][k] + fb_avg * fbs[k];
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
+        // See `stack_tick_stereo`: effective level is bounded engine-side, no
+        // per-sample clamp; the per-lane 0073 fade multiply stays in the
+        // vectorised lane loop (1.0 except for carriers near Nyquist).
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
-            // See `stack_tick_stereo`: effective level is bounded engine-side,
-            // no per-sample clamp.
-            let lvl_k = lvl + lvl_mod[k];
-            sines[k] = fast_sine_q32(phase_mod) * lvl_k;
+            sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
         }
         for k in 0..STACK_LANES {
             new_outs[i][k] = sines[k];
@@ -1312,6 +1379,203 @@ mod tests {
             crate::envelope::AdsrStage::Idle,
             "mod env never returned to idle"
         );
+    }
+
+    // --- ticket 0073: Nyquist-approach level fade -------------------------
+
+    #[test]
+    fn nyquist_fade_curve_is_unity_low_zero_high_monotone() {
+        // Unity well below the window, fully muted at/above HI, strictly
+        // decreasing across the window.
+        assert_eq!(nyquist_fade(0.0), 1.0);
+        assert_eq!(nyquist_fade(0.10), 1.0);
+        assert_eq!(nyquist_fade(NYQUIST_FADE_LO), 1.0);
+        assert_eq!(nyquist_fade(NYQUIST_FADE_HI), 0.0);
+        assert_eq!(nyquist_fade(0.50), 0.0);
+        let mid = nyquist_fade(0.5 * (NYQUIST_FADE_LO + NYQUIST_FADE_HI));
+        assert!(mid > 0.0 && mid < 1.0, "midpoint fade {mid} not in (0,1)");
+        // Monotone non-increasing across the window.
+        let mut prev = 1.0;
+        let mut x = NYQUIST_FADE_LO;
+        while x <= NYQUIST_FADE_HI {
+            let f = nyquist_fade(x);
+            assert!(f <= prev + 1e-6, "fade not monotone at {x}: {f} > {prev}");
+            prev = f;
+            x += 0.002;
+        }
+    }
+
+    #[test]
+    fn fade_is_unity_at_normal_pitch() {
+        // A mid-range note: every op's running frequency is far below the
+        // fade window, so the fade leaves levels untouched (1.0).
+        let mut stack = Stack::default();
+        let sp = StackParams { density: 4, ..StackParams::default() };
+        let vp = carrier_friendly_patch();
+        stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+        for i in 0..N_OPS {
+            for k in 0..STACK_LANES {
+                assert_eq!(
+                    stack.op_nyquist_fade[i][k], 1.0,
+                    "op {i} lane {k} faded at normal pitch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fade_silences_partials_swept_past_nyquist() {
+        // Algo 32, density 1: six carriers at ratio 1. At note 60 they sound;
+        // bend up far enough that their running frequency crosses Nyquist and
+        // the fade mutes them — the carrier additive shape goes silent instead
+        // of folding back down as alias garbage.
+        let mut stack = Stack::default();
+        let sp = StackParams {
+            density: 1,
+            detune_cents_max: 0.0,
+            spread: 0.0,
+            phase: 0.0,
+            distrib: StackDistrib::Linear,
+        };
+        let vp = carrier_friendly_patch();
+        stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+        stack.force_sustain(0.5);
+
+        let mut peak_lo = 0.0_f32;
+        for _ in 0..512 {
+            peak_lo = peak_lo.max(stack_tick_mono(&mut stack).abs());
+        }
+        assert!(peak_lo > 0.1, "baseline carrier silent, peak {peak_lo}");
+
+        // +84 semitones ≈ ×128: 261.6 Hz → ~33.5 kHz, well past Nyquist at 48 k.
+        stack.set_bend(84.0);
+        assert!(
+            stack.op_nyquist_fade[0][0] < 1.0,
+            "fade did not engage at extreme pitch"
+        );
+        // Flush the 1-sample-delayed `prev_outs` still holding the loud
+        // pre-bend samples, then measure the faded steady state.
+        for _ in 0..8 {
+            stack_tick_mono(&mut stack);
+        }
+        let mut peak_hi = 0.0_f32;
+        for _ in 0..512 {
+            peak_hi = peak_hi.max(stack_tick_mono(&mut stack).abs());
+        }
+        assert!(
+            peak_hi < peak_lo * 0.01,
+            "partials past Nyquist not faded: peak_hi {peak_hi} vs lo {peak_lo}"
+        );
+    }
+
+    #[test]
+    fn fade_is_carrier_only_modulators_unattenuated() {
+        // Algo 1: carriers are ops 1 & 3; op 2 modulates op 1. Push the op-2
+        // modulator far above Nyquist (high ratio + high note) and confirm it
+        // is *not* faded — fading a modulator would thin the FM index (e.g.
+        // mute a high tine), which 0073 explicitly avoids. The carrier path is
+        // covered by `fade_silences_partials_swept_past_nyquist`.
+        let mut ops = [OpParams::default(); N_OPS];
+        for op in &mut ops {
+            op.eg.r[3] = 99;
+        }
+        ops[1].num = 32; // op 2 (modulator) at ratio 32
+        let vp = VoiceParams { ops, algo: 1, ..VoiceParams::default() };
+        let sp = StackParams {
+            density: 1,
+            detune_cents_max: 0.0,
+            spread: 0.0,
+            phase: 0.0,
+            distrib: StackDistrib::Linear,
+        };
+        let mut stack = Stack::default();
+        stack.note_on(&sp, &vp, 108, 100, 48_000.0, 0); // C8 × 32 ≫ Nyquist
+        // op index 1 is the modulator → never faded, even far past Nyquist.
+        assert_eq!(
+            stack.op_nyquist_fade[1][0], 1.0,
+            "modulator was faded; fade must be carrier-only"
+        );
+        // Sanity: it really is above the fade window (so a carrier there would
+        // have faded), confirming the guard — not just an in-band coincidence.
+        let f_over_fs = stack.ops[1].phase_inc[0] as f32 * INV_PM_SCALE_Q32;
+        assert!(
+            nyquist_fade(f_over_fs) < 1.0,
+            "test modulator not actually past the fade window (f/fs {f_over_fs})"
+        );
+    }
+
+    // --- ticket 0074: per-operator phase offset ---------------------------
+
+    #[test]
+    fn per_op_phase_shifts_starting_phase_and_waveform() {
+        // No stack decorrelation (phase=0) and no detune, density 1, so the
+        // only phase difference is the per-op offset under test.
+        let sp = StackParams {
+            density: 1,
+            detune_cents_max: 0.0,
+            spread: 0.0,
+            phase: 0.0,
+            distrib: StackDistrib::Linear,
+        };
+        let base = carrier_friendly_patch();
+        let mut shifted = base;
+        shifted.ops[0].phase = 0.25; // quarter cycle on op 0
+
+        let mut a = Stack::default();
+        let mut b = Stack::default();
+        a.note_on(&sp, &base, 60, 100, 48_000.0, 0);
+        b.note_on(&sp, &shifted, 60, 100, 48_000.0, 0);
+
+        // Starting phase of op 0 lane 0: a at 0, b at ¼ cycle = 2^30.
+        assert_eq!(a.ops[0].phase[0], 0);
+        let want = (0.25_f64 * PM_SCALE_Q32 as f64) as u32;
+        assert_eq!(b.ops[0].phase[0], want);
+
+        // Rendered waveforms differ sample-by-sample.
+        a.force_sustain(0.5);
+        b.force_sustain(0.5);
+        let mut differ = 0;
+        for _ in 0..512 {
+            let sa = stack_tick_mono(&mut a);
+            let sb = stack_tick_mono(&mut b);
+            if (sa - sb).abs() > 1e-3 {
+                differ += 1;
+            }
+        }
+        assert!(differ > 50, "per-op phase offset did not change the waveform");
+    }
+
+    #[test]
+    fn per_op_phase_composes_with_lane_decorrelation() {
+        // With both stack-phase decorrelation and a per-op offset active, the
+        // op's starting phase is the wrapping sum of the two.
+        let sp = StackParams {
+            density: 4,
+            detune_cents_max: 0.0,
+            spread: 0.0,
+            phase: 1.0,
+            distrib: StackDistrib::Linear,
+        };
+        let mut vp = carrier_friendly_patch();
+        vp.ops[1].phase = 0.5; // half cycle on op 1
+
+        // Reference with no per-op offset to recover the pure lane offsets.
+        let mut ref_stack = Stack::default();
+        ref_stack.note_on(&sp, &carrier_friendly_patch(), 60, 100, 48_000.0, 9);
+        let mut stack = Stack::default();
+        stack.note_on(&sp, &vp, 60, 100, 48_000.0, 9);
+
+        let op_off = (0.5_f64 * PM_SCALE_Q32 as f64) as u32;
+        for k in 0..4 {
+            let lane = ref_stack.ops[1].phase[k];
+            assert_eq!(
+                stack.ops[1].phase[k],
+                lane.wrapping_add(op_off),
+                "lane {k}: per-op offset did not compose with decorrelation"
+            );
+            // Op 0 (offset 0) is untouched relative to the reference.
+            assert_eq!(stack.ops[0].phase[k], ref_stack.ops[0].phase[k]);
+        }
     }
 
     #[test]

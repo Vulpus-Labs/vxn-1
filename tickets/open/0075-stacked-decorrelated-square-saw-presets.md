@@ -44,3 +44,21 @@ by the existing per-lane stack decorrelation.
   voice. Flag in the preset description.
 - Amplitudes `1/n` give the textbook rolloff; tune by ear — a slightly
   brighter-than-`1/n` saw may read better given only six partials.
+
+## Implementation status (code complete; manual listen pending)
+
+- Two factory presets under `presets/factory/Lead/`:
+  - **Analytic Square** — algo 32, ratios 1,3,5,7,9,11 at ~1/n levels, all
+    phase 0 (square is phase-deaf). Density 8, detune 14 ct, spread 0.70,
+    phase 0.65.
+  - **Analytic Saw Supersaw** — algo 32, ratios 1-6 at ~1/n, even harmonics
+    (ops 2/4/6) phase 0.5 = π for a true saw shape. Density 8, detune 18 ct,
+    spread 0.80, phase 0.70.
+  - Both: EG held flat (`eg-l2 = eg-l3 = 99`) so the level ratios alone set the
+    spectrum; `voice-spread → opN-pan` matrix routes for stereo width; light
+    reverb. Comments flag the six-partial ceiling and that fill comes from
+    density.
+- Load verified by `factory_store_loads_every_preset` /
+  `covers_multiple_categories`. **Sound/scope/anti-alias-sweep verification is
+  manual in a DAW** (per verify-audio-in-reaper) — pending.
+- Depends on 0073 (clean sweep) + 0074 (saw phase flip), both code-complete.

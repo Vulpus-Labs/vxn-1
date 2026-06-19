@@ -137,33 +137,47 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   30..=35) would silently lose the route on a pre-0068 build, so stamping
 ///   v10 makes those builds reject it (`version > BLOB_VERSION`) rather than
 ///   degrade quietly.
-pub const BLOB_VERSION: u16 = 10;
+/// - v11: appends a trailing `opN-phase` float to each op block (the per-op
+///   note-on phase offset, ticket 0074) — per-op block 21 → 22 params, param
+///   count 189 → 195. Structurally identical to the v6 `ratio-mode` spread:
+///   older blobs migrate on load by spreading the op blocks (later ids shift
+///   up by `N_OPS`) and seeding the six new phase slots to their default
+///   (0.0 → an unchanged patch stays bit-identical).
+pub const BLOB_VERSION: u16 = 11;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
 const N_FILTER_PARAMS_V8: usize = 2;
 /// Number of params appended in v9 (`limiter-on`).
 const N_LIMITER_PARAMS_V9: usize = 1;
+/// Per-op param count in v≤10 blobs (before `opN-phase` was appended) —
+/// `ratio-mode` trailing, no `phase`. One narrower than the live op block.
+const LEGACY_V10_N_PER_OP: usize = N_PER_OP - 1; // 21
+/// Param count in v9/v10 blobs (before the v11 `opN-phase` addition). The
+/// legacy counts are live-relative: each is the live total minus the cumulative
+/// op-block spread + trailing appends since that version. `phase` is one
+/// op-block spread (`N_OPS`) below the live total.
+const LEGACY_V10_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS; // 189
 /// Param count in v8 blobs (before the v9 `limiter-on` addition).
-const LEGACY_V8_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9; // 188
-/// Param count in v7 blobs (before the v8 filter additions). Anchored to
-/// history via the live total minus every param appended since.
-const LEGACY_V7_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS_V8; // 186
+const LEGACY_V8_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9; // 188
+/// Param count in v7 blobs (before the v8 filter additions).
+const LEGACY_V7_PARAM_COUNT: usize = LEGACY_V8_PARAM_COUNT - N_FILTER_PARAMS_V8; // 186
 /// Param count in v6 blobs (before the v7 Filter section was appended).
-const LEGACY_V6_PARAM_COUNT: usize = TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS; // 179
-/// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition).
-/// Tracks the live total minus the op-block spread — the v5/v4/v3 test
-/// rewrites keep the (later-appended) trailing patch params and only shrink
-/// the op blocks, so this must grow with `TOTAL_PARAMS`.
-const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS;
+const LEGACY_V6_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS; // 179
+/// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition). Two
+/// op-block spreads (`ratio-mode` + `phase`) below the live total.
+const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - 2 * N_OPS;
 /// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
-const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 1; // 20
-/// Per-op index of `ratio-mode` in the live (v6) op block (trailing slot).
-const LIVE_RATIO_MODE_IDX: usize = N_PER_OP - 1; // 20
+const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 2; // 20
+/// Per-op index of `ratio-mode` in the live op block (second-from-last, before
+/// the trailing `phase` slot).
+const LIVE_RATIO_MODE_IDX: usize = N_PER_OP - 2; // 20
+/// Per-op index of `phase` in the live op block (trailing slot, ticket 0074).
+const LIVE_PHASE_IDX: usize = N_PER_OP - 1; // 21
 /// Param count in v4 blobs (before the v5 `opN-amp-sens` removal).
-const LEGACY_V4_PARAM_COUNT: usize = LEGACY_V5_PARAM_COUNT + N_OPS; // 179
+const LEGACY_V4_PARAM_COUNT: usize = LEGACY_V5_PARAM_COUNT + N_OPS; // 189
 /// Param count in v≤3 blobs (before the v4 `lfo1-depth` removal).
-const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1; // 180
+const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1; // 190
 /// Per-op param count in v≤4 blobs (`amp-sens` still present).
 const LEGACY_V4_N_PER_OP: usize = LEGACY_V5_N_PER_OP + 1; // 21
 /// Per-op index of `amp-sens` in v≤4 blobs (after `vel-sens`).
@@ -191,15 +205,31 @@ fn migrate_v4_id(id: usize) -> Option<usize> {
     }
 }
 
-/// v5-space CLAP id → live (v6) id. Op blocks grow 20 → 21 (the new
-/// trailing `ratio-mode` slot is *not* a target here — it's seeded to its
-/// default separately), so op-block ids re-base on `N_PER_OP` and every
-/// later id shifts up by `N_OPS`. Total maps 1:1 (no v5 id is dropped).
+/// v5-space CLAP id → v10-space id. Op blocks grow 20 → 21 for the new
+/// trailing `ratio-mode` slot (not a target here — seeded separately), so
+/// op-block ids re-base on `LEGACY_V10_N_PER_OP` and every later id shifts up
+/// by `N_OPS`. Stops at v10 space — the v10 → live `phase` spread is
+/// `migrate_v10_id`.
 fn migrate_v5_id(id: usize) -> usize {
     const V5_OP_BLOCK: usize = LEGACY_V5_N_PER_OP * N_OPS;
     if id < V5_OP_BLOCK {
         let op = id / LEGACY_V5_N_PER_OP;
         let idx = id % LEGACY_V5_N_PER_OP;
+        op * LEGACY_V10_N_PER_OP + idx
+    } else {
+        id + N_OPS
+    }
+}
+
+/// v10-space CLAP id → live (v11) id. Op blocks grow 21 → 22 for the new
+/// trailing `opN-phase` slot (not a target here — seeded separately), so
+/// op-block ids re-base on `N_PER_OP` and every later id shifts up by `N_OPS`.
+/// Total maps 1:1 (no v10 id is dropped). Ticket 0074.
+fn migrate_v10_id(id: usize) -> usize {
+    const V10_OP_BLOCK: usize = LEGACY_V10_N_PER_OP * N_OPS;
+    if id < V10_OP_BLOCK {
+        let op = id / LEGACY_V10_N_PER_OP;
+        let idx = id % LEGACY_V10_N_PER_OP;
         op * N_PER_OP + idx
     } else {
         id + N_OPS
@@ -643,6 +673,7 @@ impl ParamModel for SharedParams {
             6 => LEGACY_V6_PARAM_COUNT,
             7 => LEGACY_V7_PARAM_COUNT,
             8 => LEGACY_V8_PARAM_COUNT,
+            9 | 10 => LEGACY_V10_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -685,12 +716,21 @@ impl ParamModel for SharedParams {
                 v4_id
             };
             // v5 → v6 id remap: spread the op blocks for the new trailing
-            // `ratio-mode` slot (later ids shift up by N_OPS). v6 blobs map
-            // 1:1. The new ratio-mode slots themselves are seeded below.
-            let id = if version <= 5 {
+            // `ratio-mode` slot (later ids shift up by N_OPS). v6..v10 blobs map
+            // 1:1 here (already v10-space). The new ratio-mode slots are seeded
+            // below.
+            let v10_id = if version <= 5 {
                 migrate_v5_id(v5_id)
             } else {
                 v5_id
+            };
+            // v10 → v11 id remap: spread the op blocks again for the new
+            // trailing `opN-phase` slot (later ids shift up by N_OPS). v11 blobs
+            // map 1:1. The new phase slots are seeded below.
+            let id = if version <= 10 {
+                migrate_v10_id(v10_id)
+            } else {
+                v10_id
             };
             let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
@@ -707,6 +747,16 @@ impl ParamModel for SharedParams {
         if version <= 5 {
             for op in 0..N_OPS {
                 let id = op * N_PER_OP + LIVE_RATIO_MODE_IDX;
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        // v≤10 blobs predate `opN-phase` (ticket 0074); seed each op's new
+        // trailing slot to its descriptor default (0.0) so a load can't leave it
+        // at a stale value carried over from the store's prior contents. Default
+        // 0.0 keeps a migrated patch bit-identical.
+        if version <= 10 {
+            for op in 0..N_OPS {
+                let id = op * N_PER_OP + LIVE_PHASE_IDX;
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -1159,6 +1209,9 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
         ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp,
         ks_rate: i(18).clamp(0, 7) as u8,
         pan: f(19),
+        // index 20 is `op{n}-ratio-mode` (read above); phase is the trailing
+        // float at index 21 (ticket 0074).
+        phase: f(21),
     }
 }
 
@@ -1518,24 +1571,46 @@ mod tests {
         assert!((r0.depth - 0.5).abs() < 1e-6);
     }
 
-    /// Rewrite a freshly saved v6 blob into the v5 layout: drop the trailing
-    /// per-op `ratio-mode` slot from each op block, restore the v5 param
-    /// count and stamp `version`. Matrix trailer copies through verbatim.
-    fn rewrite_as_v5(bytes: &[u8], version: u16) -> Vec<u8> {
+    /// Rewrite a freshly saved live (v11) blob into the v10 layout: drop the
+    /// trailing per-op `phase` slot from each op block (op block 22 → 21),
+    /// restore the v10 param count and stamp `version`. Matrix trailer copies
+    /// through verbatim. The base every older-version rewriter builds on.
+    fn rewrite_as_v10(bytes: &[u8], version: u16) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len());
         out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
         out[4..6].copy_from_slice(&version.to_le_bytes());
-        out[6..8].copy_from_slice(&(LEGACY_V5_PARAM_COUNT as u16).to_le_bytes());
+        out[6..8].copy_from_slice(&(LEGACY_V10_PARAM_COUNT as u16).to_le_bytes());
         for op in 0..N_OPS {
-            // Keep the first 20 params of each 21-param op block, dropping the
-            // trailing `ratio-mode` slot at live index `LIVE_RATIO_MODE_IDX`.
+            // Keep the first 21 params of each 22-param op block, dropping the
+            // trailing `phase` slot at live index `LIVE_PHASE_IDX`.
             let start = BLOB_HEADER_LEN + (op * N_PER_OP) * 4;
-            let keep_end = start + LEGACY_V5_N_PER_OP * 4;
+            let keep_end = start + LEGACY_V10_N_PER_OP * 4;
             out.extend_from_slice(&bytes[start..keep_end]);
         }
         // Post-op-block params + matrix trailer copy verbatim.
         let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
         out.extend_from_slice(&bytes[rest..]);
+        out
+    }
+
+    /// Rewrite a freshly saved live blob into the v5 layout: strip to the v10
+    /// layout first (drop `phase`), then drop the trailing per-op `ratio-mode`
+    /// slot from each op block, restore the v5 param count and stamp `version`.
+    fn rewrite_as_v5(bytes: &[u8], version: u16) -> Vec<u8> {
+        let v10 = rewrite_as_v10(bytes, version);
+        let mut out = Vec::with_capacity(v10.len());
+        out.extend_from_slice(&v10[..BLOB_HEADER_LEN]);
+        out[6..8].copy_from_slice(&(LEGACY_V5_PARAM_COUNT as u16).to_le_bytes());
+        for op in 0..N_OPS {
+            // Keep the first 20 params of each 21-param v10 op block, dropping
+            // the trailing `ratio-mode` slot.
+            let start = BLOB_HEADER_LEN + (op * LEGACY_V10_N_PER_OP) * 4;
+            let keep_end = start + LEGACY_V5_N_PER_OP * 4;
+            out.extend_from_slice(&v10[start..keep_end]);
+        }
+        // Post-op-block params + matrix trailer copy verbatim.
+        let rest = BLOB_HEADER_LEN + (N_OPS * LEGACY_V10_N_PER_OP) * 4;
+        out.extend_from_slice(&v10[rest..]);
         out
     }
 
@@ -1579,17 +1654,53 @@ mod tests {
     /// `N_FILTER_PARAMS` Filter value slots (they sit at the very end, before
     /// the matrix trailer), restore the v6 param count and stamp `version`.
     fn rewrite_as_v6(bytes: &[u8], version: u16) -> Vec<u8> {
-        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        // Strip to the v10 layout first (drop `phase`, op blocks 22 → 21), then
+        // drop the trailing Filter + limiter sections that v6 predates.
+        let v10 = rewrite_as_v10(bytes, version);
+        let values_end = BLOB_HEADER_LEN + LEGACY_V10_PARAM_COUNT * 4;
         let v6_values_end = BLOB_HEADER_LEN + LEGACY_V6_PARAM_COUNT * 4;
-        let mut out = Vec::with_capacity(bytes.len() - N_FILTER_PARAMS * 4);
-        out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
-        out[4..6].copy_from_slice(&version.to_le_bytes());
+        let mut out = Vec::with_capacity(v6_values_end + BLOB_MATRIX_LEN);
+        out.extend_from_slice(&v10[..BLOB_HEADER_LEN]);
         out[6..8].copy_from_slice(&(LEGACY_V6_PARAM_COUNT as u16).to_le_bytes());
-        // Keep all values up to the Filter section, drop the trailing 7…
-        out.extend_from_slice(&bytes[BLOB_HEADER_LEN..v6_values_end]);
+        // Keep all values up to the Filter section, drop the trailing
+        // filter + limiter params…
+        out.extend_from_slice(&v10[BLOB_HEADER_LEN..v6_values_end]);
         // …then re-attach the matrix trailer that followed the value section.
-        out.extend_from_slice(&bytes[values_end..]);
+        out.extend_from_slice(&v10[values_end..]);
         out
+    }
+
+    /// A v10 blob (op block 21, no `opN-phase`) loads under v11 code: the op
+    /// blocks spread for the new trailing `phase` slot, every later id shifts up
+    /// by `N_OPS`, and the six new slots seed to their default (0.0). A
+    /// non-default phase in the saving store must *not* leak through — v10 blobs
+    /// carry no such field. Mirrors the v5 → v6 `ratio-mode` migration.
+    #[test]
+    fn load_bytes_migrates_v10_param_layout() {
+        let non_defaults: &[(&str, f32)] = &[
+            ("op1-ratio-mode", 1.0), // last param of op 1 in v10 layout (Fixed)
+            ("op6-num", 7.0),        // op-block param, late op
+            ("algo", 19.0),          // first post-op-block param — shifts up 6
+            ("filter-cutoff", 880.0),// trailing append, present in v10
+            ("master-volume", -2.0), // last param in the table
+        ];
+        let src = SharedParams::new();
+        for &(name, v) in non_defaults {
+            src.set(id_of(name).unwrap(), v);
+        }
+        // This must be dropped on the way to v10 and reseeded to default.
+        src.set(id_of("op3-phase").unwrap(), 0.5);
+        let bytes = rewrite_as_v10(&src.snapshot_bytes(), 10);
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).expect("v10 blob loads under v11");
+        for &(name, v) in non_defaults {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+        for op in 1..=6 {
+            let id = id_of(&format!("op{op}-phase")).unwrap();
+            assert_eq!(dst.get(id), 0.0, "op{op} phase must seed to default");
+        }
     }
 
     /// A v6 blob (param count 179, no Filter section) loads under v7 code: the

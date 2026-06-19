@@ -43,6 +43,7 @@ For each operator `op{1..6}`:
 | `ks_r_curve`    | e    | {+lin, −lin, +exp, −exp} | −exp | Shape of level scaling right of break point. |
 | `ks_rate`       | i    | 0 .. 7         | 2       | Keyboard rate scaling. Speeds up EG rates as note pitch rises (mimics decay of plucked strings, etc.). Single value applies to all 4 EG rates. |
 | `pan`           | f    | −1.0 .. +1.0   | 0.0     | Stereo pan for the op's output contribution to the stereo bus. **Carrier-only** — FM is mono in the engine, so modulator pan has no audible effect. UI disables this control when the selected op is a modulator under the current algorithm. |
+| `phase`         | f    | 0.0 .. 1.0     | 0.0     | Per-op note-on phase offset as a fraction of one cycle (1.0 = 2π; cyclic, so 1.0 ≡ 0.0). Composes additively with the per-lane stack-phase decorrelation. A lone steady carrier is phase-deaf (magnitude spectrum unchanged), so this is inaudible in isolation — it matters for (a) the time-domain shape of additive sums on algo 32 (a saw flips even harmonics by 0.5 = π), (b) an op used as an FM modulator (the carrier sees the shifted phase), and (c) the attack transient. **Stack-path only** — the scalar reference/bench path does not reset phase at note-on, so the offset would wash out there. |
 
 **Why so many per-op params**: FM sound design lives in modulator EG + KS
 configuration. Hidden / merged controls make patches sound flat. Per the ADR,

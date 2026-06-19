@@ -110,6 +110,7 @@
     level:    { kind: "fader" },
     "vel-sens":{ kind: "fader" },
     pan:      { kind: "fader" },
+    phase:    { kind: "fader" },
     feedback: { kind: "fader" },
     "eg-r1":  { kind: "eg-rate", idx: 0 },
     "eg-r2":  { kind: "eg-rate", idx: 1 },
@@ -690,6 +691,14 @@
       const panWrap = makeFader(oRow, "Pan", "pan");
       if (panWrap) {
         panWrap.classList.toggle("disabled", !isCarrier(currentAlgo, currentOp));
+      }
+      // Per-op note-on phase offset (0074): a fraction of a cycle. Shapes the
+      // additive sum (algo 32) — set even harmonics to 0.5 for a saw. Inaudible
+      // on a lone steady carrier (phase-deaf), so most useful on stacked/additive
+      // patches; left enabled for all ops since it also affects modulator phase.
+      const phaseW = makeFader(oRow, "Phase", "phase");
+      if (phaseW) {
+        phaseW.title = "Note-on phase offset (fraction of a cycle); shapes additive sums";
       }
       col4.appendChild(out);
       opDetailEl.appendChild(col4);
