@@ -14,7 +14,11 @@
 //! * Per-stage `tanh`, not a single global pre-feedback `tanh`.
 //! * **No** resonance-dependent input attenuation — Juno-style filters don't
 //!   thin the bass under high resonance, so there is no `scale` term and no
-//!   Sharp/Smooth voicing axis.
+//!   Sharp/Smooth voicing axis. There is also **no** resonance gain
+//!   compensation: this is a Juno emulation, so the `1/(1+k)` passband loss
+//!   under resonance is left intact as part of the authentic OTA character.
+//!   ([`k_cap`] still tames high-cutoff self-oscillation — a stability fix, not
+//!   a level restore.)
 //! * Selectable response ([`FilterMode`]): 24 / 12 dB lowpass, band-pass,
 //!   high-pass and notch, all formed as the classic analogue-ladder linear
 //!   combination of the four stage outputs and the ladder input node. The
