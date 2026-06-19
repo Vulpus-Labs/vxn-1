@@ -50,6 +50,20 @@ const PROCESSOR_NAME = "vxn-host-processor";
 const DEFAULT_WORKLET_URL = "./vxn-processor.js";
 const DEFAULT_WASM_URL = "./vxn_wasm.wasm";
 
+// Apple WebKit (Safari) runs the AudioWorklet with ~one quantum of output
+// headroom (baseLatency ≈ 128/sr) and no FP flush-to-zero — so it has almost no
+// slack, and any per-quantum work on the render thread risks tipping a quantum
+// late → audible glitches. The CPU meter's per-quantum timing + periodic
+// postMessage is exactly such work, and its date-clock reading on Safari was
+// junk anyway. So we disable the meter there. Chromium has ample slack and a
+// usable clock — it keeps the meter.
+function isAppleWebKit() {
+  if (typeof navigator === "undefined") return false; // Node harness
+  const ua = navigator.userAgent || "";
+  const vendor = navigator.vendor || "";
+  return /Apple/.test(vendor) && !/CriOS|FxiOS|EdgiOS|Chrome|Chromium|Edg|Android/.test(ua);
+}
+
 export class WebHost {
   // Construct cheaply (no audio side-effects); the AudioContext is created in
   // start(), which MUST be called from a user-gesture handler (autoplay policy —
@@ -160,6 +174,10 @@ export class WebHost {
     if (!this._AudioContext) throw new Error("no AudioContext available");
 
     this._setGate("starting");
+    // NB: Safari ignores latencyHint (verified: baseLatency stays at one quantum,
+    // ~128/sr, even under "playback"), so we can't buy output-buffer headroom to
+    // absorb heavy-quantum variance there. The only lever left is cutting the
+    // per-quantum cost itself (see _cpuMeterEnabled / voice + oversample limits).
     this.ctx = new this._AudioContext();
 
     // Observe the context's own lifecycle. The browser flips state on tab
@@ -190,6 +208,9 @@ export class WebHost {
     // Construct the node over our SABs. sampleRate is NOT passed: the worklet
     // reads it from its own global (vxn-processor-0038.js), which is the context
     // rate — passing it would risk a mismatch. capacity MUST match our ring.
+    // Disable the worklet's per-quantum render-load timing on Safari (no slack /
+    // postMessage is glitchy there); keep it on Chromium.
+    this._cpuMeterEnabled = !isAppleWebKit();
     this.node = new this._AudioWorkletNode(this.ctx, PROCESSOR_NAME, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -199,6 +220,7 @@ export class WebHost {
         ringSab: this.ringSab,
         storeSab: this.storeSab,
         capacity: this.capacity,
+        cpuMeter: this._cpuMeterEnabled,
       },
     });
 
@@ -207,6 +229,8 @@ export class WebHost {
     this.node.port.onmessage = (e) => this._onPortMessage(e.data);
 
     this.node.connect(this.ctx.destination);
+    // No render-load source on Safari → show the badge as n/a, not a frozen "—".
+    if (!this._cpuMeterEnabled) this._onCpu(null, null);
     // Autoplay unlock: the context starts `suspended`; resume() MUST be inside a
     // user-gesture call stack (start()'s contract). On success it reaches
     // `running`; the statechange listener also fires and sets the gate, but we
@@ -334,8 +358,13 @@ export class WebHost {
         this._onTrap(m.message, this.trapCount);
         break;
       case "cpu":
-        // Audio render load (fractions of the per-quantum budget); drives the
-        // CPU meter. Cheap, fire-and-forget — no engine state.
+        // Worklet render load (mean + peak fractions of the per-quantum budget);
+        // drives the CPU meter. Cheap, fire-and-forget — no engine state. The
+        // first message tags which worklet clock won (performance vs date).
+        if (m.clock && !this._cpuClockLogged) {
+          console.info(`vxn: CPU meter clock = ${m.clock}`);
+          this._cpuClockLogged = true;
+        }
         this._onCpu(m.load, m.peak);
         break;
       default:

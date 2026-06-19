@@ -211,7 +211,11 @@ export class EventRing {
     let count = 0;
     while (r !== w && count < maxRecs) {
       const sbase = (r & this.mask) * SLOT_BYTES;
-      dstU8.set(src.subarray(sbase, sbase + SLOT_BYTES), count * SLOT_BYTES);
+      const dbase = count * SLOT_BYTES;
+      // Direct 16-byte copy, not src.subarray(...) → dst.set(...): subarray
+      // allocates a fresh view per event on the audio thread, churning the GC
+      // (Safari's JSC stalls the render thread on collection → audible blips).
+      for (let k = 0; k < SLOT_BYTES; k++) dstU8[dbase + k] = src[sbase + k];
       r++;
       count++;
     }

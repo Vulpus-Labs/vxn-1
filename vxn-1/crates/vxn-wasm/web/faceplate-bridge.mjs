@@ -295,6 +295,11 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     onCpu: (load, peak) => cpuMeter.update(load, peak),
   });
 
+  // First-run welcome card: what this is + how to play + a link to the manual.
+  // Web-only (this module never loads in the native plugin); dismissed by its
+  // Close button. Self-contained, same inline-style pattern as the CPU meter.
+  createWelcome(document);
+
   // 1b. E017 input adapters → the WebHost producer surface (ring). Web MIDI +
   //     computer keyboard both write notes/CC into the same E015 ring the
   //     worklet drains; events written before audio is live buffer in the ring
@@ -411,13 +416,123 @@ export function createCpuMeter(doc = globalThis.document) {
   }
   const update = (load, peak) => {
     const f = el._fill, p = el._pct;
-    const v = Math.max(0, Math.min(1.5, load || 0));
-    f.style.width = `${Math.min(100, v * 100).toFixed(0)}%`;
+    // null load == "no measurement". Show n/a so a missing reading is distinct
+    // from a real 0% (and from the initial "—", "wired up, no sample yet").
+    if (load == null) {
+      f.style.width = "0%";
+      p.textContent = "n/a";
+      return;
+    }
+    // Bar tracks peak (the worklet posts mean + per-window peak; peak shows
+    // transient spikes the mean smooths away).
+    const pk = Math.max(0, Math.min(1.5, Math.max(load, peak || 0)));
+    f.style.width = `${Math.min(100, pk * 100).toFixed(0)}%`;
     // green < 0.7, amber < 0.9, red beyond — the usual xrun-headroom bands.
-    f.style.background = v < 0.7 ? "#46c46e" : v < 0.9 ? "#e0b341" : "#e0564b";
-    p.textContent = `${Math.round((load || 0) * 100)}%`;
+    f.style.background = pk < 0.7 ? "#46c46e" : pk < 0.9 ? "#e0b341" : "#e0564b";
+    // One decimal under 10% so a live-but-light load (e.g. 0.0% vs frozen "—")
+    // is still legible despite the 1% quantization floor.
+    const a = Math.max(0, load) * 100;
+    p.textContent = a < 10 ? `${a.toFixed(1)}%` : `${Math.round(a)}%`;
   };
   return { update, el };
+}
+
+// ---- welcome card ----------------------------------------------------------
+//
+// A centred modal shown on load: a one-line "what is this", a "how to play"
+// note, a link to the GitHub Pages manual (new tab), and a Close button.
+// Self-contained (inline styles, no external CSS); idempotent if it already
+// exists. Returns { el, close }. Web-only — bootFaceplate is the sole caller and
+// never runs in the native plugin.
+const MANUAL_URL = "https://vulpus-labs.github.io/vxn-1/";
+
+// True on Apple WebKit (Safari), where the AudioWorklet is glitch-prone — used
+// only to show a low-key heads-up in the welcome card. Mirrors coordinator.mjs's
+// isAppleWebKit; kept local so this module has no cross-import for one predicate.
+function isAppleWebKitUA(doc = globalThis.document) {
+  const nav = (doc && doc.defaultView && doc.defaultView.navigator) || globalThis.navigator;
+  if (!nav) return false;
+  const ua = nav.userAgent || "";
+  const vendor = nav.vendor || "";
+  return /Apple/.test(vendor) && !/CriOS|FxiOS|EdgiOS|Chrome|Chromium|Edg|Android/.test(ua);
+}
+
+export function createWelcome(doc = globalThis.document) {
+  if (!doc || !doc.body) return { el: null, close() {} };
+  const ID = "vxn-welcome";
+  if (doc.getElementById(ID)) return { el: doc.getElementById(ID), close() {} };
+
+  const backdrop = doc.createElement("div");
+  backdrop.id = ID;
+  backdrop.style.cssText =
+    "position:fixed;inset:0;z-index:10000;display:flex;align-items:center;" +
+    "justify-content:center;background:rgba(8,9,11,.62);" +
+    "font:14px/1.5 system-ui,sans-serif;color:#e6e9ee;";
+
+  const card = doc.createElement("div");
+  card.style.cssText =
+    "max-width:30rem;margin:1rem;padding:22px 24px;border-radius:10px;" +
+    "background:#1b1e24;border:1px solid rgba(255,255,255,.10);" +
+    "box-shadow:0 14px 48px rgba(0,0,0,.55);";
+
+  const h = doc.createElement("h2");
+  h.textContent = "VXN-1";
+  h.style.cssText = "margin:0 0 .6rem;font-size:1.35rem;letter-spacing:.04em;";
+
+  const intro = doc.createElement("p");
+  intro.style.cssText = "margin:0 0 .8rem;";
+  intro.textContent =
+    "A WebAssembly port of the VXN-1 analogue synthesizer by Vulpus Labs.";
+
+  const how = doc.createElement("p");
+  how.style.cssText = "margin:0 0 .8rem;";
+  how.textContent =
+    "Play it with your computer keyboard or a connected MIDI device.";
+
+  const manual = doc.createElement("p");
+  manual.style.cssText = "margin:0 0 1.2rem;";
+  const link = doc.createElement("a");
+  link.href = MANUAL_URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer"; // opens the manual in a new tab, safely
+  link.textContent = "Read the manual";
+  link.style.cssText = "color:#6db7ff;text-decoration:underline;";
+  manual.append(link, doc.createTextNode(" (opens in a new tab)."));
+
+  // Safari-only heads-up: its AudioWorklet runs with a single render quantum of
+  // output buffer and ignores latencyHint, so its realtime audio thread is prone
+  // to occasional dropouts no matter how cheap our render is. Chrome/Edge don't
+  // have this. Keep it low-key and only show it where it applies.
+  let note = null;
+  if (isAppleWebKitUA(doc)) {
+    note = doc.createElement("p");
+    note.style.cssText =
+      "margin:0 0 1.2rem;padding:8px 10px;border-radius:6px;font-size:12px;" +
+      "background:rgba(224,179,65,.12);color:#e0b341;";
+    note.textContent =
+      "For the smoothest audio, use Chrome or Edge — Safari may produce occasional clicks.";
+  }
+
+  const close = doc.createElement("button");
+  close.type = "button";
+  close.textContent = "Close";
+  close.style.cssText =
+    "display:block;margin-left:auto;padding:7px 18px;border:0;border-radius:6px;" +
+    "background:#46c46e;color:#0c0e10;font:600 14px system-ui,sans-serif;cursor:pointer;";
+
+  const dismiss = () => backdrop.remove();
+  close.addEventListener("click", dismiss);
+  // Click outside the card or press Escape also dismisses.
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) dismiss(); });
+  const onKey = (e) => {
+    if (e.key === "Escape") { dismiss(); doc.removeEventListener("keydown", onKey); }
+  };
+  doc.addEventListener("keydown", onKey);
+
+  card.append(h, intro, how, manual, ...(note ? [note] : []), close);
+  backdrop.appendChild(card);
+  doc.body.appendChild(backdrop);
+  return { el: backdrop, close: dismiss };
 }
 
 // ---- DOM text-input popup (0061) -------------------------------------------
