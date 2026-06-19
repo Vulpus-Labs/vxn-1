@@ -2,9 +2,16 @@
 id: E002
 product: vxn-1
 title: Preset system + Jupiter-8 factory port
-status: open
+status: closed
+resolution: wont-do
 created: 2026-05-28
 ---
+
+> **Closed won't-do (2026-06-19).** The preset *system* strands (format,
+> factory infra, load/save, browser UI) all shipped via other work and are
+> live in the tree; only the curated **Jupiter-8 factory port (0028)** strand
+> was outstanding, and it is dropped — not pursued. No further work planned
+> under this epic.
 
 ## Goal
 
