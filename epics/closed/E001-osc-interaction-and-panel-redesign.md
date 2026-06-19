@@ -2,7 +2,7 @@
 id: E001
 product: vxn-1
 title: Osc interaction polish + fixed-panel UI redesign
-status: open
+status: closed
 created: 2026-05-25
 ---
 

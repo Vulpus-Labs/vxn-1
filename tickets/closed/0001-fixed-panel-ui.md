@@ -91,3 +91,20 @@ the channels.
 
 - Validation: build the plugin, load in a host, exercise each control; confirm
   automation round-trips (`value_to_text` / gesture). `cargo test -p vxn-ui`.
+
+## Close-out (2026-06-19)
+
+- All fixed panels ship in the webview faceplate (Osc 1/2, Osc Mod, Mixer,
+  Filter, Filter Mod, Mod Wheel + a Voice panel for E003 params). Param model
+  from 0022 surfaced: `CrossModType {Off,Sync,Pm,Ring}` at
+  [params.rs:101](../../vxn-1/crates/vxn-app/src/params.rs#L101); 24-cell matrix
+  gone (no `MATRIX_BASE`/`ModSource`/`ModDest`), routing via `resolve_mod`
+  ([voice.rs:1366](../../vxn-1/crates/vxn-engine/src/voice.rs#L1366)).
+- Every automatable param bound exactly once — enforced by
+  `every_automatable_param_has_exactly_one_control`.
+- Mixer ring/noise + White/Pink button group; brown noise dropped (0021).
+- Manual DAW validation done (Reaper): controls exercised, automation
+  round-trips, layout settled.
+- Deferred (cosmetic, non-blocking): Osc Mod source selectors render as
+  dropdowns rather than segmented 3-way groups — functionally complete and
+  automation-synced.
