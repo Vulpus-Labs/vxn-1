@@ -70,3 +70,14 @@ factory-side hiding of all mutating actions. Builds on the engine IO
   next entry or none).
 - Verify in a host — same as 0002 (no screen capture without asking;
   `vxn1-vizia-no-click-slop`).
+
+## Close-out (won't-do — superseded)
+
+Closed **won't-do 2026-06-19**. Targets the **vizia editor** (inline
+`Textbox` rename, `Binding`-gated absolute context menu, vizia outside-click
+idiom). Vizia editor retired; HTML faceplate ships instead.
+
+Edit affordances (rename / delete / move / tag edit) are re-homed to the HTML
+browser panel → [0005](0005-html-preset-browser-panel.md) (epic E011), over
+the same engine IO (0029) and browser-storage persistence
+([0063](../open/0063-web-browser-storage-presetstore.md), epic E019).

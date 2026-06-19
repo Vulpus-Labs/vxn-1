@@ -80,3 +80,21 @@ shape.
 - Verify in a host with real folders and presets. Don't ship without a
   live test (`vxn1-vizia-no-click-slop`, `vxn1-vizia-automation-relayout-input-stomp`).
   Ask before screen capture (`ask-before-screen-capture`).
+
+## Close-out (won't-do — superseded)
+
+Closed **won't-do 2026-06-19**. This ticket targets the **vizia editor**
+(floating `position_type: Absolute` panel, `Textbox`/`Label` widgets, vizia
+mouse-model caveats). The vizia editor was retired; the HTML faceplate ships
+in its place.
+
+The functionality is re-homed, not dropped:
+
+- HTML preset bar → [0004](0004-html-preset-bar.md) (epic E011).
+- HTML two-pane browser panel (folders / presets + search) →
+  [0005](0005-html-preset-browser-panel.md) (epic E011).
+- Browser-storage user-preset persistence → [0063](../open/0063-web-browser-storage-presetstore.md) (epic E019).
+
+The engine IO this ticket sat on (0029 — `list_user_tree`, folder/preset
+rename/delete/move, path guard, `parse_tags`) shipped and remains valid; the
+web UI calls the same surface.

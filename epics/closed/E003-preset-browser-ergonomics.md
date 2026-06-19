@@ -4,7 +4,33 @@ product: vxn-1
 title: Preset browser ergonomics (folders, search, tag editing, rename/move/delete)
 status: open
 created: 2026-05-30
+status: closed
+closed: 2026-06-19
 ---
+
+## Close-out (won't-do — superseded)
+
+Closed **won't-do 2026-06-19**. This epic was specced against the **vizia
+editor** (floating absolute panels, `Textbox`/`Label` widgets, vizia
+mouse-model caveats). The vizia editor was retired; the HTML faceplate ships
+in its place, so the two UI tickets here can't be built as written.
+
+The browser ergonomics are **re-homed, not dropped**:
+
+- HTML preset bar → 0004 (epic E011).
+- HTML two-pane browser panel (folders / presets + search) → 0005 (epic E011).
+- Browser-storage user-preset persistence → 0063 (epic E019).
+
+What this epic actually delivered stands: **0029** (engine IO —
+`list_user_tree`, folder + preset rename/delete/move, path-safety guard,
+`UNCATEGORIZED`, `parse_tags`) shipped and is UI-agnostic; the HTML browser
+calls the same surface. ADR 0006's chosen *behaviours* (one-level folders,
+substring + `#tag` search, Uncategorised group, factory read-only) carry over
+to the web UI unchanged — only the vizia mechanics are dropped.
+
+The "0032 — drag-and-drop" line below is a **stale id**: ticket 0032 was
+later reused for standalone-ci. Drag-drop was never built and folds into the
+0005 HTML panel as best-effort (Move-to menu is the fallback).
 
 ## Goal
 
@@ -71,9 +97,9 @@ best-effort with the menu as the fallback.
 ## Tickets
 
 - [x] 0029 — User folder support (engine)
-- [ ] [0002 — Browser panel UI](../../tickets/open/0002-browser-panel-ui.md)
-- [ ] [0003 — Edit affordances: rename, delete, move, tag editor](../../tickets/open/0003-browser-edit-affordances.md)
-- [ ] 0032 — Drag-and-drop preset → folder
+- [~] [0002 — Browser panel UI](../../tickets/closed/0002-browser-panel-ui.md) — won't-do (vizia); → 0004/0005 (E011)
+- [~] [0003 — Edit affordances: rename, delete, move, tag editor](../../tickets/closed/0003-browser-edit-affordances.md) — won't-do (vizia); → 0005 (E011)
+- [~] 0032 — Drag-and-drop preset → folder — never built; stale id (reused for standalone-ci); folds into 0005
 
 ## Dependency order
 
