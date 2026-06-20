@@ -111,8 +111,47 @@ stops implying wiring that doesn't exist.
 - [ ] The straight-line draw is either made accurate (curve sub-task done) or
   annotated as the fixed default so it doesn't misrepresent the response.
 - [ ] No DSP behaviour change for items 1-2 (pure UI).
-- [ ] (Sub-task, if pursued) KS curves round-trip through preset + host state;
-  old blobs migrate to legacy defaults; `read_op` no longer hardcodes them.
+- [x] (Sub-task) KS curves round-trip through preset + host state; old blobs
+  migrate to legacy defaults; `read_op` no longer hardcodes them.
+
+## Curve sub-task — implemented 2026-06-20
+
+Two design decisions (owner-confirmed):
+
+1. **Full DX7 4-curve model.** Each side independently selects `{Neg,Pos} ×
+   {Lin,Exp}` — bidirectional (boost *or* cut), the DSP already supported all
+   four signs. This also fixed the reported bug: dragging the right handle up
+   moved the curve *down*, because the side was frozen `NegExp` (cut-only) so
+   the depth slider only ever deepened the cut. Now the handle drag is signed —
+   **up = boost (above the unity midline), down = cut** — and crossing the
+   midline flips the curve's sign bit.
+2. **Non-CLAP, mod-matrix-style persistence** (not automatable CLAP params).
+   12 selectors (6 ops × 2 sides × 2 bits) packed into one `AtomicU32`
+   (`ks_curve_meta`) beside `matrix_meta`; `BLOB_VERSION` 11→12 appends a
+   4-byte trailer; v≤11 blobs seed the legacy `NegLin`/`NegExp` default
+   (migrated patch stays bit-identical). Sparse name-keyed `op{n}-ks-{l,r}-curve`
+   string labels in the preset `params` table.
+
+Wiring landed across the stack:
+- **engine/shared.rs**: `ks_curve_meta` + `ks_curve_raw`/`set_ks_curve_raw` +
+  `dirty_ks_curve`; `ParamView::ks_curve` threaded into `read_op` (no more
+  hardcode); blob trailer; `Vxn2Params::{ks_curves,set_ks_curve,
+  take_dirty_ks_curve}`.
+- **clap/local.rs**: `ks_curves` mirror so the audio thread sees UI/preset edits.
+- **preset.rs**: curves round-trip the blob + sparse TOML labels.
+- **vxn2-app**: `SetKsCurve` / `RequestKsCurveSnapshot` UI intents,
+  `KsCurveSnapshot` view echo, controller handlers + CLAP dirty-pump push.
+- **op-row.js**: signed L/R handle drag (up=boost/down=cut), per-side Lin/Exp
+  toggle buttons, real-shape curve draw from live curves, `set_ks_curve`
+  dispatch, `ks_curve_snapshot` repaint. `vxn.ksCurves` cache in bootstrap.js;
+  controls-row CSS.
+
+Tests: engine blob + legacy-v11 migration round-trips, preset text round-trip,
+`snapshot_params` op-param threading, ui-web IPC parse/serialise. `ks_l_curve`/
+`ks_r_curve` consumed by `ks_level_mult` in dsp `op.rs`/`stack.rs` unchanged.
+
+Still open on this ticket: legibility items 1-3 (note-name labels, level/rate
+annotation) and manual DAW verification of the new curves.
 
 ## Notes
 

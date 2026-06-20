@@ -620,16 +620,40 @@ html, body {
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
-.op-ks-legend {
+.op-ks-controls {
   position: absolute;
   bottom: 1px;
+  left: 4px;
   right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  pointer-events: none;
+}
+.op-ks-legend {
   font-size: 8px;
   color: var(--ctl-label);
   opacity: 0.6;
   pointer-events: none;
   white-space: nowrap;
 }
+/* Per-side Lin/Exp shape toggle. Interactive, so it opts back into pointer
+   events the controls row disables for the legend. */
+.op-ks-shape {
+  pointer-events: auto;
+  cursor: pointer;
+  font-size: 8px;
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--ctl-value);
+  background: var(--ctl-bg, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--ctl-border, rgba(255, 255, 255, 0.15));
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.op-ks-shape:hover { background: rgba(255, 255, 255, 0.12); }
 
 /* ===== global mod row ===== */
 
@@ -672,7 +696,9 @@ html, body {
 /* Voice moved up into the global-mod row (far left); Voice Stack now leads the
    bottom row and Filter takes the freed width (E007 cutoff/keytrack/tuned). */
 .stack-panel { flex: 1.0 1 0; }
-.filter-panel { flex: 2.6 1 0; }
+/* static HP stage: a single Cutoff slider, sits just left of the Filter. */
+.hp-panel { flex: 0.4 1 0; }
+.filter-panel { flex: 2.4 1 0; }
 .delay-panel { flex: 1.2 1 0; }
 .reverb-panel { flex: 1.0 1 0; }
 .master-panel { flex: 0.6 1 0; }
@@ -694,6 +720,11 @@ html, body {
 }
 /* each selector group: header label on top, buttons stacked vertically */
 .filter-selectors .bgrp-row { flex-direction: column; gap: 4px; }
+/* Mode + Slope share one column (Slope below Mode, label dropped) so the
+   selector block is narrower; a small gap separates the two button groups and
+   keeps the 2P/4P row up inside the section. */
+.filter-sel-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+.filter-sel-stack .cgrp-gap { height: 6px; }
 
 /* header toggle */
 .panel.toggle-on > .panel-header { background: var(--header-bg); }

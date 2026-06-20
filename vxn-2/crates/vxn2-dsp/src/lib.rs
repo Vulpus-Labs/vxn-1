@@ -11,6 +11,7 @@ pub mod eg;
 pub mod envelope;
 pub mod filter;
 pub mod halfband;
+pub mod hpf;
 pub mod ks;
 pub mod lfo;
 pub mod limiter;

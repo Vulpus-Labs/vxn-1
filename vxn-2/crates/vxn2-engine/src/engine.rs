@@ -39,6 +39,7 @@ use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler};
+use vxn2_dsp::hpf::HpfKernel;
 use vxn2_dsp::reverb::FdnReverb;
 use vxn2_dsp::stack::{STACK_LANES, stack_tick_stereo};
 
@@ -232,6 +233,11 @@ pub struct Engine {
     level_mod_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
     pan_l_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
     pan_r_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
+    /// Per-stack per-sample signed Q32 increments ramping
+    /// `stack.op_phase_mod_q32` linearly to each block's matrix `Op{N}Phase`
+    /// target (E023). Integer (wrapping) so the ramp is exact and click-free on
+    /// the cyclic phase; advanced alongside the level/pan ramps while live.
+    phase_mod_inc: Vec<[[i32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
     /// Each op's EG level as seen by the previous block's ramp targets
     /// (ticket 0077). The ramp interpolates the *combined* effective level
     /// `eg + mod`; when the EG marches at the block edge, `op_level_mod` is
@@ -265,6 +271,15 @@ pub struct Engine {
     // while `filter-enable` is off.
     filter_l: Vec<OtaLadderKernel>,
     filter_r: Vec<OtaLadderKernel>,
+    // ── Static high-pass stage (v13) ─────────────────────────────────────
+    // Two scalar one-pole HP kernels per stack (L/R), run on each stack's
+    // summed stereo pair at base rate (never oversampled) *ahead* of the
+    // musical filter. Global cutoff (not a mod dest), so the coefficient is
+    // computed once per block and broadcast. Bypassed (untouched) while the
+    // cutoff sits at its 20 Hz floor — the default — so the common case pays
+    // nothing.
+    hp_l: Vec<HpfKernel>,
+    hp_r: Vec<HpfKernel>,
     interp_l: Vec<Interpolator>,
     interp_r: Vec<Interpolator>,
     decim_l: Oversampler,
@@ -319,6 +334,7 @@ impl Engine {
             level_mod_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_l_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             pan_r_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            phase_mod_inc: vec![[[0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
             prev_eg_level: vec![[0.0; vxn2_dsp::algo::N_OPS]; N_STACKS],
             ramp_live: [false; N_STACKS],
             any_ramp_live: false,
@@ -326,6 +342,8 @@ impl Engine {
             stack_pitch_key: (u8::MAX, u8::MAX),
             filter_l: vec![OtaLadderKernel::new(); N_STACKS],
             filter_r: vec![OtaLadderKernel::new(); N_STACKS],
+            hp_l: vec![HpfKernel::new(); N_STACKS],
+            hp_r: vec![HpfKernel::new(); N_STACKS],
             interp_l: vec![Interpolator::new(); N_STACKS],
             interp_r: vec![Interpolator::new(); N_STACKS],
             decim_l: Oversampler::new(),
@@ -406,6 +424,8 @@ impl Engine {
             self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
             self.filter_l[i].reset();
             self.filter_r[i].reset();
+            self.hp_l[i].reset();
+            self.hp_r[i].reset();
             self.interp_l[i].reset();
             self.interp_r[i].reset();
         }
@@ -746,13 +766,23 @@ impl Engine {
             // power gains the same way (ticket 0074). Pitch-shaped
             // destinations ride the per-stack PitchSmoother instead (0063).
             let mut level_targets = [[0.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
+            // E023 phase dests: read the per-op phase offset (cycles) and fold to
+            // a Q32 target. The dests are appended after the contiguous
+            // pitch/level/pan block, so they index off `Op1Phase`, not `op_i*3`.
+            let mut phase_targets_q32 = [[0_u32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
+            let phase_base = DestId::Op1Phase.idx().unwrap();
             let stack = &mut self.alloc.stacks[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 let level_idx = op_i * 3 + 1;
                 let pan_idx = op_i * 3 + 2;
+                let phase_idx = phase_base + op_i;
                 for k in 0..STACK_LANES {
                     level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
                     stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
+                    // Wrap the (possibly multi-route) cycle offset into [0,1) and
+                    // scale to Q32; `as u32` wraps cleanly at the cycle boundary.
+                    let pcyc = self.dest_vals[i][k][phase_idx].rem_euclid(1.0);
+                    phase_targets_q32[op_i][k] = (pcyc * vxn2_dsp::op::PM_SCALE_Q32) as u32;
                 }
             }
             // Capture this block's pitch-dest targets. A slot whose
@@ -773,6 +803,11 @@ impl Engine {
                     self.interp_l[i].reset();
                     self.interp_r[i].reset();
                 }
+                // HP stage is independent of the musical filter — clear it on a
+                // fresh note too so the new voice doesn't inherit the previous
+                // one's one-pole state. Inert (cheap) while the HP is bypassed.
+                self.hp_l[i].reset();
+                self.hp_r[i].reset();
             }
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, self.pitch_smoothers[i].current());
@@ -823,6 +858,7 @@ impl Engine {
             }
             if fresh {
                 stack.op_level_mod = level_targets;
+                stack.op_phase_mod_q32 = phase_targets_q32;
                 stack.refresh_pan_with_mod();
                 self.ramp_live[i] = false;
             } else {
@@ -832,6 +868,7 @@ impl Engine {
                 let lvl_inc = &mut self.level_mod_inc[i];
                 let pl_inc = &mut self.pan_l_inc[i];
                 let pr_inc = &mut self.pan_r_inc[i];
+                let ph_inc = &mut self.phase_mod_inc[i];
                 for op_i in 0..vxn2_dsp::algo::N_OPS {
                     for k in 0..STACK_LANES {
                         // A ramp lands within f32 rounding of its target, so
@@ -854,10 +891,25 @@ impl Engine {
                             stack.pan_r[op_i][k] = pan_r_t[op_i][k];
                             pr = 0.0;
                         }
+                        // Phase ramp (E023): shortest-arc Q32 delta to the new
+                        // target, split linearly across the block. `wrapping_sub
+                        // as i32` picks the ≤ half-cycle direction so a small
+                        // matrix move never wraps the long way round. A whole
+                        // block of `delta / n` steps lands within `n` LSB of the
+                        // target; the next block re-derives from the current
+                        // value, so residue self-corrects (no drift).
+                        let delta =
+                            phase_targets_q32[op_i][k].wrapping_sub(stack.op_phase_mod_q32[op_i][k])
+                                as i32;
+                        let pq = delta / n as i32;
+                        if pq == 0 {
+                            stack.op_phase_mod_q32[op_i][k] = phase_targets_q32[op_i][k];
+                        }
                         lvl_inc[op_i][k] = dl;
                         pl_inc[op_i][k] = pl;
                         pr_inc[op_i][k] = pr;
-                        any |= dl != 0.0 || pl != 0.0 || pr != 0.0;
+                        ph_inc[op_i][k] = pq;
+                        any |= dl != 0.0 || pl != 0.0 || pr != 0.0 || pq != 0;
                     }
                 }
                 self.ramp_live[i] = any;
@@ -999,28 +1051,51 @@ impl Engine {
             }
         }
 
+        // Static high-pass stage (v13): a global cutoff, so one coefficient is
+        // computed at the base sample rate (the HP is deliberately *not*
+        // oversampled) and broadcast to every stack's L/R kernel. Bypassed
+        // entirely while the cutoff sits at its 20 Hz floor (the default) — the
+        // common case touches nothing. Applied per stack ahead of the musical
+        // filter in both render bodies.
+        let hp_active = self.params.hp.active();
+        if hp_active {
+            let cutoff = self.params.hp.cutoff_hz;
+            for i in 0..N_STACKS {
+                self.hp_l[i].set_cutoff(cutoff, self.sample_rate);
+                self.hp_r[i].set_cutoff(cutoff, self.sample_rate);
+            }
+        }
+
         if filter_enabled {
             // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
-            self.render_block_filtered(out_l, out_r, n);
+            self.render_block_filtered(out_l, out_r, n, hp_active);
         } else {
-            // OFF path — the tuned sample-major loop, byte-for-byte unchanged.
-            // Per-sample: sum every active stack into the dry bus, then through
-            // delay + reverb + master gain. Every PITCH_SMOOTH_QUANTUM samples
-            // the pitch smoothers advance one step toward this block's targets
-            // and the affected stacks re-cook `phase_inc` — converged smoothers
-            // (no active pitch route) skip the recook entirely.
+            // OFF path — the tuned sample-major loop. With the HP bypassed
+            // (default) this is byte-for-byte the original sum loop; when the HP
+            // is engaged each active stack's stereo pair is high-passed before
+            // it folds into the dry bus. Per-sample: sum every active stack into
+            // the dry bus, then through delay + reverb + master gain. Every
+            // PITCH_SMOOTH_QUANTUM samples the pitch smoothers advance one step
+            // toward this block's targets and the affected stacks re-cook
+            // `phase_inc` — converged smoothers (no active pitch route) skip the
+            // recook entirely.
             for sample in 0..n {
                 if sample % PITCH_SMOOTH_QUANTUM == 0 {
                     self.advance_pitch_smoothers();
                 }
                 let mut dry_l = 0.0_f32;
                 let mut dry_r = 0.0_f32;
-                for s in &mut self.alloc.stacks {
-                    if !s.is_idle() {
-                        let (sl, sr) = stack_tick_stereo(s);
-                        dry_l += sl;
-                        dry_r += sr;
+                for i in 0..N_STACKS {
+                    if self.alloc.stacks[i].is_idle() {
+                        continue;
                     }
+                    let (mut sl, mut sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    if hp_active {
+                        sl = self.hp_l[i].tick(sl);
+                        sr = self.hp_r[i].tick(sr);
+                    }
+                    dry_l += sl;
+                    dry_r += sr;
                 }
                 if self.any_ramp_live {
                     self.advance_mod_ramps();
@@ -1063,7 +1138,13 @@ impl Engine {
     ///
     /// Factored so ticket 0085 can drop a per-stack quiescence-skip in front
     /// of the inner render and 0086 can read the resampler group delay.
-    fn render_block_filtered(&mut self, out_l: &mut [f32], out_r: &mut [f32], n: usize) {
+    fn render_block_filtered(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        n: usize,
+        hp_active: bool,
+    ) {
         let fp = self.params.filter;
         let f = fp.oversample.clamp(1, MAX_OVERSAMPLE);
 
@@ -1102,7 +1183,13 @@ impl Engine {
                     if sample % PITCH_SMOOTH_QUANTUM == 0 {
                         self.advance_pitch_smoother_one(i);
                     }
-                    let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    let (mut sl, mut sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    // HP ahead of the musical filter, at base rate (the ladder
+                    // runs at base rate here too — this is the 1× path).
+                    if hp_active {
+                        sl = self.hp_l[i].tick(sl);
+                        sr = self.hp_r[i].tick(sr);
+                    }
                     self.dry_l[sample] +=
                         self.filter_l[i].tick(sl * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
                     self.dry_r[sample] +=
@@ -1151,6 +1238,16 @@ impl Engine {
                         self.base_r[sample] = sr;
                         if self.ramp_live[i] {
                             self.advance_mod_ramp_one(i);
+                        }
+                    }
+                    // HP runs on the base-rate scratch *before* the upsample, so
+                    // the high-pass itself is never oversampled (its design
+                    // intent — a static one-pole at the host rate). Idle stacks
+                    // feed silence and don't tick the HP, matching the OFF path.
+                    if hp_active {
+                        for sample in 0..n {
+                            self.base_l[sample] = self.hp_l[i].tick(self.base_l[sample]);
+                            self.base_r[sample] = self.hp_r[i].tick(self.base_r[sample]);
                         }
                     }
                 }
@@ -1246,11 +1343,14 @@ impl Engine {
         let lvl_inc = &self.level_mod_inc[i];
         let pl_inc = &self.pan_l_inc[i];
         let pr_inc = &self.pan_r_inc[i];
+        let ph_inc = &self.phase_mod_inc[i];
         for op_i in 0..vxn2_dsp::algo::N_OPS {
             for k in 0..STACK_LANES {
                 stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
                 stack.pan_l[op_i][k] += pl_inc[op_i][k];
                 stack.pan_r[op_i][k] += pr_inc[op_i][k];
+                stack.op_phase_mod_q32[op_i][k] =
+                    stack.op_phase_mod_q32[op_i][k].wrapping_add(ph_inc[op_i][k] as u32);
             }
         }
     }
@@ -1268,11 +1368,14 @@ impl Engine {
             let lvl_inc = &self.level_mod_inc[i];
             let pl_inc = &self.pan_l_inc[i];
             let pr_inc = &self.pan_r_inc[i];
+            let ph_inc = &self.phase_mod_inc[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 for k in 0..STACK_LANES {
                     stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
                     stack.pan_l[op_i][k] += pl_inc[op_i][k];
                     stack.pan_r[op_i][k] += pr_inc[op_i][k];
+                    stack.op_phase_mod_q32[op_i][k] =
+                        stack.op_phase_mod_q32[op_i][k].wrapping_add(ph_inc[op_i][k] as u32);
                 }
             }
         }
@@ -1590,6 +1693,64 @@ mod tests {
         assert!(
             diff_sum > 1e-3,
             "modulated render identical to baseline (diff_sum = {diff_sum}) — matrix not applied to audio"
+        );
+    }
+
+    /// Wiring sanity for the E023 per-op phase dests. A matrix slot routing
+    /// LFO1 → Op1Phase should write a non-zero, ramping `op_phase_mod_q32`
+    /// after a few blocks, and the render should diverge from a baseline with
+    /// no phase route. (A carrier's steady magnitude spectrum is phase-deaf,
+    /// but the time-domain samples shift with the offset, so the buffers
+    /// differ.)
+    #[test]
+    fn matrix_lfo1_to_op_phase_modulates_audio() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut modulated = Engine::new(SR, BLK);
+        modulated.params.mod_params.lfo1.rate_hz = 5.0;
+        modulated.matrix.slots[0] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::Op1Phase,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        modulated.note_on(60, 100);
+
+        let mut baseline = Engine::new(SR, BLK);
+        baseline.params.mod_params.lfo1.rate_hz = 5.0;
+        baseline.note_on(60, 100);
+
+        let mut lm = [0.0_f32; BLK];
+        let mut rm = [0.0_f32; BLK];
+        let mut lb = [0.0_f32; BLK];
+        let mut rb = [0.0_f32; BLK];
+
+        let blocks = (SR as usize) / 5 / BLK;
+        let mut diff_sum = 0.0_f64;
+        let mut found_nonzero_phase_mod = false;
+        for _ in 0..blocks {
+            modulated.process_block(&mut lm, &mut rm);
+            baseline.process_block(&mut lb, &mut rb);
+            for s in &modulated.alloc.stacks {
+                if !s.is_idle() {
+                    for k in 0..STACK_LANES {
+                        if s.op_phase_mod_q32[0][k] != 0 {
+                            found_nonzero_phase_mod = true;
+                        }
+                    }
+                }
+            }
+            for i in 0..BLK {
+                diff_sum += ((lm[i] - lb[i]).abs() + (rm[i] - rb[i]).abs()) as f64;
+            }
+        }
+        assert!(
+            found_nonzero_phase_mod,
+            "matrix never populated op_phase_mod_q32 — phase-dest wiring broken"
+        );
+        assert!(
+            diff_sum > 1e-3,
+            "phase-modulated render identical to baseline (diff_sum = {diff_sum}) — phase dest not applied to audio"
         );
     }
 
@@ -2616,6 +2777,30 @@ mod tests {
         assert_eq!(slot.dest, DestId::Op1Level);
         assert_eq!(slot.curve, CurveKind::Lin);
         assert!((slot.depth - 0.5).abs() < 1e-6);
+    }
+
+    /// A non-CLAP KS-curve write on the shared store threads through
+    /// `snapshot_params` → `read_op` into the per-op DSP params the audio
+    /// path reads, so the curve actually changes the level response.
+    #[test]
+    fn shared_ks_curve_writes_reach_engine_op_params() {
+        use vxn2_dsp::ks::KsCurve;
+
+        let shared = SharedParams::new();
+        // Default is left NegLin / right NegExp; flip op3 (index 2) to the
+        // boost variants.
+        shared.set_ks_curve_raw(2, 0, KsCurve::PosLin as u8);
+        shared.set_ks_curve_raw(2, 1, KsCurve::PosExp as u8);
+
+        let mut e = Engine::new(SR, BLK);
+        e.snapshot_params(&shared);
+        let op = e.params.patch.voice.ops[2];
+        assert_eq!(op.ks_l_curve, KsCurve::PosLin);
+        assert_eq!(op.ks_r_curve, KsCurve::PosExp);
+        // An untouched op keeps the legacy frozen default.
+        let op0 = e.params.patch.voice.ops[0];
+        assert_eq!(op0.ks_l_curve, KsCurve::NegLin);
+        assert_eq!(op0.ks_r_curve, KsCurve::NegExp);
     }
 
     /// Semitone-dest depths take the cubic taper at slot-cook time, on both

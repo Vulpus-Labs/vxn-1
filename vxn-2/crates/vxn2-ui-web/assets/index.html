@@ -253,6 +253,22 @@
       </div>
     </div>
 
+    <!-- Static high-pass (v13): a fixed one-pole tone-shaping stage ahead of
+         the musical filter (Juno-HP role). Single Cutoff slider; always-on
+         (transparent at its 20 Hz floor), so no header toggle. -->
+    <div class="panel hp-panel" data-vxn-section="hp">
+      <div class="panel-header">HP</div>
+      <div class="panel-body">
+        <div class="fader" data-vxn-param="hp-cutoff">
+          <div class="fader-label">Cutoff</div>
+          <div class="fader-track">
+            <div class="fader-track-fill"></div>
+            <div class="fader-thumb"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- optional per-voice filter (E007): post-synth / pre-FX, header-toggle
          like the FX so "optional like the FX" reads visually. -->
     <div class="panel filter-panel" data-vxn-section="filter">
@@ -292,23 +308,27 @@
           </div>
         </div>
         <div class="filter-selectors">
-          <div class="cgrp">
-            <div class="cgrp-label">Mode</div>
-            <div class="bgrp">
-              <div class="bgrp-row" data-vxn-param="filter-mode">
-                <button class="bgrp-btn" data-vxn-value="0">LP</button>
-                <button class="bgrp-btn" data-vxn-value="1">HP</button>
-                <button class="bgrp-btn" data-vxn-value="2">BP</button>
-                <button class="bgrp-btn" data-vxn-value="3">Notch</button>
+          <!-- Mode + Slope stacked in one column (Slope below Mode, with a
+               one-button gap) so the selector block is narrower. -->
+          <div class="filter-sel-stack">
+            <div class="cgrp">
+              <div class="cgrp-label">Mode</div>
+              <div class="bgrp">
+                <div class="bgrp-row" data-vxn-param="filter-mode">
+                  <button class="bgrp-btn" data-vxn-value="0">LP</button>
+                  <button class="bgrp-btn" data-vxn-value="1">HP</button>
+                  <button class="bgrp-btn" data-vxn-value="2">BP</button>
+                  <button class="bgrp-btn" data-vxn-value="3">Notch</button>
+                </div>
               </div>
             </div>
-          </div>
-          <div class="cgrp">
-            <div class="cgrp-label">Slope</div>
-            <div class="bgrp">
-              <div class="bgrp-row" data-vxn-param="filter-slope">
-                <button class="bgrp-btn" data-vxn-value="0">2P</button>
-                <button class="bgrp-btn" data-vxn-value="1">4P</button>
+            <div class="cgrp-gap"></div>
+            <div class="cgrp">
+              <div class="bgrp">
+                <div class="bgrp-row" data-vxn-param="filter-slope">
+                  <button class="bgrp-btn" data-vxn-value="0">2P</button>
+                  <button class="bgrp-btn" data-vxn-value="1">4P</button>
+                </div>
               </div>
             </div>
           </div>

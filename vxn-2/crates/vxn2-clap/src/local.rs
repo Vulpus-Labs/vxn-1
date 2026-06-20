@@ -30,7 +30,8 @@ use clack_plugin::utils::Cookie;
 
 use vxn2_engine::params::PARAMS;
 use vxn2_engine::{
-    EngineParams, MatrixRowRaw, N_MATRIX_SLOTS, ParamView, SharedParams, TOTAL_PARAMS,
+    EngineParams, KsCurve, MatrixRowRaw, N_KS_CURVES, N_MATRIX_SLOTS, ParamView, SharedParams,
+    TOTAL_PARAMS,
 };
 
 /// Per-thread parameter mirror. Lives on the audio thread alongside the
@@ -49,6 +50,11 @@ pub struct LocalParams {
     /// UI / preset edits. Matrix meta isn't CLAP-automatable, so there's no
     /// host→shared publish path for it.
     matrix_rows: [MatrixRowRaw; N_MATRIX_SLOTS],
+    /// Mirror of the shared store's per-side KS level-curve selectors,
+    /// indexed `op * 2 + side`. Non-CLAP like the matrix topology; refreshed
+    /// by [`fetch_ui_changes`] and read by the engine through
+    /// [`ParamView::ks_curve`] so block-time snapshots see UI / preset edits.
+    ks_curves: [KsCurve; N_KS_CURVES],
     /// Last-seen UI gesture state per param. [`emit`](Self::emit) compares
     /// against `SharedParams.gestures` (populated by the controller on
     /// `BeginGesture` / `EndGesture` UI intents) to push CLAP
@@ -63,6 +69,7 @@ impl LocalParams {
             values: std::array::from_fn(|i| shared.get(i)),
             ui_changed: [false; TOTAL_PARAMS],
             matrix_rows: std::array::from_fn(|s| shared.matrix_row_raw(s)),
+            ks_curves: std::array::from_fn(|k| ParamView::ks_curve(shared, k / 2, k % 2)),
             gesture: [false; TOTAL_PARAMS],
         }
     }
@@ -88,6 +95,13 @@ impl LocalParams {
             let row = shared.matrix_row_raw(s);
             if row != self.matrix_rows[s] {
                 self.matrix_rows[s] = row;
+                any = true;
+            }
+        }
+        for k in 0..N_KS_CURVES {
+            let curve = ParamView::ks_curve(shared, k / 2, k % 2);
+            if curve != self.ks_curves[k] {
+                self.ks_curves[k] = curve;
                 any = true;
             }
         }
@@ -205,6 +219,18 @@ impl ParamView for LocalParams {
             self.matrix_rows[slot]
         } else {
             MatrixRowRaw::default()
+        }
+    }
+
+    #[inline]
+    fn ks_curve(&self, op: usize, side: usize) -> KsCurve {
+        let k = op * 2 + side;
+        if k < N_KS_CURVES {
+            self.ks_curves[k]
+        } else if side == 0 {
+            KsCurve::NegLin
+        } else {
+            KsCurve::NegExp
         }
     }
 }

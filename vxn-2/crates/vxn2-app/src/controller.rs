@@ -45,6 +45,22 @@ pub fn push_matrix_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
     ctrl.push_view_event(event);
 }
 
+/// Build a `Vxn2ViewCustom::KsCurveSnapshot` from `model`. Shared by the
+/// controller-scoped push and the CLAP pump (ADR 0003) so both produce the
+/// same shape, the KS-curve analogue of [`matrix_snapshot_event`].
+pub fn ks_curve_snapshot_event<M: Vxn2Params>(model: &M) -> ViewEvent {
+    ViewEvent::Custom(Box::new(Vxn2ViewCustom::KsCurveSnapshot {
+        curves: model.ks_curves(),
+    }))
+}
+
+/// Push a fresh `KsCurveSnapshot` into the controller's queue (UI
+/// `RequestKsCurveSnapshot` path).
+pub fn push_ks_curve_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
+    let event = ks_curve_snapshot_event(ctrl.model().as_ref());
+    ctrl.push_view_event(event);
+}
+
 /// Drain inbound queues against `controller` and apply the VXN2 custom-
 /// event handlers. Call once per host timer tick.
 pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
@@ -70,6 +86,16 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
             }
             Vxn2UiCustom::RequestMatrixSnapshot => {
                 push_matrix_snapshot(ctrl);
+            }
+            Vxn2UiCustom::SetKsCurve { op, side, curve } => {
+                // Write the Model and stop. The dirty-bitset pump catches
+                // the KS-curve dirty flag on the next tick and pushes a
+                // `KsCurveSnapshot`; the op-row graph paints optimistically
+                // in the meantime.
+                ctrl.model().set_ks_curve(op, side, curve);
+            }
+            Vxn2UiCustom::RequestKsCurveSnapshot => {
+                push_ks_curve_snapshot(ctrl);
             }
             Vxn2UiCustom::RequestFullRebroadcast => {
                 // Flip every dirty bit on the Model; the CLAP shell's

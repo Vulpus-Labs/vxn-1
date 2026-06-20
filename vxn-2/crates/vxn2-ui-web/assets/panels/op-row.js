@@ -138,6 +138,9 @@
     let currentOp = 1;
     let currentAlgo = 1;
     let opDetailPrims = [];
+    // Live KS graph hook for the current op (set by makeKsGraph, cleared on
+    // each op-detail re-render). Lets KsCurveSnapshot repaint without a param.
+    let ksGraphApi = null;
 
     const algoSvg = root.querySelector('[data-vxn-section="algo-svg"]');
     const algoNumEl = root.querySelector('[data-vxn-param="algo"]');
@@ -400,19 +403,57 @@
         '<svg viewBox="0 0 240 108" preserveAspectRatio="none"></svg>' +
         '<div class="op-ks-overlay" data-ks-overlay></div>' +
         '<div class="op-ks-readout" data-ks-readout></div>' +
-        '<div class="op-ks-legend">LEVEL · boost ↑ cut ↓ · curves fixed (lin/exp cut)</div>';
+        '<div class="op-ks-controls">' +
+          '<button type="button" class="op-ks-shape" data-ks-shape="l"></button>' +
+          '<span class="op-ks-legend">LEVEL · drag ↑ boost · ↓ cut</span>' +
+          '<button type="button" class="op-ks-shape" data-ks-shape="r"></button>' +
+        '</div>';
       parent.appendChild(wrap);
       const svg = wrap.querySelector("svg");
       const overlay = wrap.querySelector("[data-ks-overlay]");
       const readout = wrap.querySelector("[data-ks-readout]");
 
+      const opIdx = currentOp - 1; // snapshot/curve cache is 0-based
       let bp = bpDesc.default;
       let lDepth = lDesc.default;
       let rDepth = rDesc.default;
+      // Per-side curve selectors (KsCurve discriminant: bit0 = sign,
+      // 1 = boost / 0 = cut; bit1 = shape, 1 = exp / 0 = lin). Seeded from
+      // the cached snapshot (default left NegLin=0, right NegExp=2) and kept
+      // live by onKsCurveSnapshot.
+      function cachedCurves() {
+        const c = (vxn.ksCurves && vxn.ksCurves[opIdx]) || [0, 2];
+        return [c[0] | 0, c[1] | 0];
+      }
+      let lCurve = cachedCurves()[0];
+      let rCurve = cachedCurves()[1];
 
       let bpLineEl = null, leftPathEl = null, rightPathEl = null;
       let bpHandle = null, lHandle = null, rHandle = null;
+      let lShapeBtn = null, rShapeBtn = null;
       let built = false;
+
+      // Apply a new curve discriminant to a side: update local + shared cache,
+      // repaint the shape toggles, and tell the engine (non-CLAP opcode).
+      function setSideCurve(side, curve) {
+        if (side === 0) lCurve = curve; else rCurve = curve;
+        if (vxn.ksCurves && vxn.ksCurves[opIdx]) vxn.ksCurves[opIdx][side] = curve;
+        ctx.dispatch("set_ks_curve", { op: opIdx, side: side, curve: curve });
+        paintControls();
+      }
+      // Update the Lin/Exp toggle labels to the live shape bit.
+      function paintControls() {
+        if (lShapeBtn) lShapeBtn.textContent = "L " + ((lCurve & 2) ? "exp" : "lin");
+        if (rShapeBtn) rShapeBtn.textContent = "R " + ((rCurve & 2) ? "exp" : "lin");
+      }
+      // Re-seed the curves from the shared cache (KsCurveSnapshot landed).
+      function applyCurvesFromCache() {
+        const c = cachedCurves();
+        lCurve = c[0]; rCurve = c[1];
+        paintControls();
+        paint();
+        if (!wrap.dataset.dragging) setReadout();
+      }
       const W = 240, H = 108;
       const cy = H / 2;
       const halfH = H / 2 - 8;
@@ -423,21 +464,20 @@
       function xAt(m) { return 6 + (m / 127) * (W - 12); }
       function pctAt(m) { return (xAt(m) / W) * 100; }
 
-      // The two per-op KS curves are frozen in the engine (read_op hardcodes
-      // left = NegLin, right = NegExp — see shared.rs). Mirror that exact shape
-      // here so the graph depicts the real response, not a stand-in straight
-      // line. Port of ks::ks_level_mult with those fixed curves.
+      // Port of ks::ks_level_mult with the live per-side curves. The curve
+      // discriminant carries sign (bit0: 1 = boost, 0 = cut) and shape
+      // (bit1: 1 = exp/quadratic, 0 = lin). Boost lifts the curve above the
+      // unity midline; cut drops it below.
+      function curveShape(curve, t) { return (curve & 2) ? t * t : t; }
+      function curveSign(curve) { return (curve & 1) ? 1.0 : -1.0; }
       function ksLevelMult(key, breakPt, lDep, rDep) {
         const semis = key - breakPt;
-        const d = Math.min(Math.abs(semis) / 12.0, 4.0);
-        const t = d / 4.0;
+        const t = Math.min(Math.abs(semis) / 12.0, 4.0) / 4.0;
         let mult;
         if (semis >= 0) {
-          // right = NegExp: cut, quadratic.
-          mult = 1.0 - (rDep / 99.0) * (t * t);
+          mult = 1.0 + curveSign(rCurve) * (rDep / 99.0) * curveShape(rCurve, t);
         } else {
-          // left = NegLin: cut, linear.
-          mult = 1.0 - (lDep / 99.0) * t;
+          mult = 1.0 + curveSign(lCurve) * (lDep / 99.0) * curveShape(lCurve, t);
         }
         return mult < 0 ? 0 : mult;
       }
@@ -485,6 +525,18 @@
           '%">RATE ▸ A3</span>';
         overlay.innerHTML = labels;
         bindKsHandles();
+        // Per-side Lin/Exp shape toggles (the curve's bit1). Sign is set by
+        // the handle drag; shape is this explicit pick — together they cover
+        // all four DX7 curves per side.
+        lShapeBtn = wrap.querySelector('[data-ks-shape="l"]');
+        rShapeBtn = wrap.querySelector('[data-ks-shape="r"]');
+        if (lShapeBtn) lShapeBtn.addEventListener("click", function () {
+          setSideCurve(0, lCurve ^ 2); paint();
+        });
+        if (rShapeBtn) rShapeBtn.addEventListener("click", function () {
+          setSideCurve(1, rCurve ^ 2); paint();
+        });
+        paintControls();
         built = true;
       }
 
@@ -546,9 +598,12 @@
             if (which === "bp") {
               startVal = bp; id = bpDesc.id;
             } else if (which === "l") {
-              startVal = lDepth; id = lDesc.id;
+              // Drag works in *signed* depth (sign = boost/cut) so the handle
+              // tracks the cursor across the midline; magnitude is the depth
+              // param, sign is the curve's bit0.
+              startVal = (lCurve & 1 ? 1 : -1) * lDepth; id = lDesc.id;
             } else {
-              startVal = rDepth; id = rDesc.id;
+              startVal = (rCurve & 1 ? 1 : -1) * rDepth; id = rDesc.id;
             }
             if (h.setPointerCapture) {
               try { h.setPointerCapture(ev.pointerId); } catch (_) {}
@@ -568,14 +623,25 @@
               const dx = (ev.clientX - startX) * sens * 0.5;
               bp = Math.max(0, Math.min(127, Math.round(startVal + dx)));
               ctx.dispatch("set_param", { id: id, plain: bp });
-            } else if (which === "l") {
-              const dy = (ev.clientY - startY) * sens * 0.5;
-              lDepth = Math.max(0, Math.min(99, Math.round(startVal + dy)));
-              ctx.dispatch("set_param", { id: id, plain: lDepth });
             } else {
-              const dy = (startY - ev.clientY) * sens * 0.5;
-              rDepth = Math.max(0, Math.min(99, Math.round(startVal + dy)));
-              ctx.dispatch("set_param", { id: id, plain: rDepth });
+              // Up = boost (positive), down = cut. `signed` carries the sign;
+              // crossing the midline flips the curve's sign bit (bit0) while
+              // preserving its shape bit (bit1 lin/exp).
+              const up = (startY - ev.clientY) * sens * 0.5;
+              const signed = Math.max(-99, Math.min(99, startVal + up));
+              const depth = Math.round(Math.abs(signed));
+              const posBit = signed >= 0 ? 1 : 0;
+              if (which === "l") {
+                const nc = (lCurve & 2) | posBit;
+                if (nc !== lCurve) { setSideCurve(0, nc); }
+                lDepth = depth;
+                ctx.dispatch("set_param", { id: id, plain: lDepth });
+              } else {
+                const nc = (rCurve & 2) | posBit;
+                if (nc !== rCurve) { setSideCurve(1, nc); }
+                rDepth = depth;
+                ctx.dispatch("set_param", { id: id, plain: rDepth });
+              }
             }
             paint();
             setReadout(liveReadout(which));
@@ -611,6 +677,10 @@
       opDetailPrims.push({ id: rDesc.id, prim: setR });
       opDetailPrims.push({ id: rateDesc.id, prim: setRate });
 
+      // Expose to the snapshot dispatcher so a KsCurveSnapshot (boot,
+      // preset load, host state restore) repaints the live graph.
+      ksGraphApi = { applyCurves: applyCurvesFromCache };
+
       paint();
       setReadout();
     }
@@ -618,6 +688,7 @@
     function renderOpDetail() {
       if (!opDetailEl) return;
       clearOpDetailPrims();
+      ksGraphApi = null;
       opDetailEl.innerHTML = "";
 
       // Column 1: Tuning. Sliders on top (Hz rightmost, greyed in Ratio
@@ -736,9 +807,16 @@
       renderOpDetail();
     }
 
+    function onKsCurveSnapshot() {
+      // The cache (vxn.ksCurves) is updated by main.js before this call;
+      // repaint the current op's graph if it's live.
+      if (ksGraphApi) ksGraphApi.applyCurves();
+    }
+
     vxn._opRow = {
       onAlgoChanged: onAlgoChanged,
       onOpTabChanged: onOpTabChanged,
+      onKsCurveSnapshot: onKsCurveSnapshot,
       currentAlgo: function () { return currentAlgo; },
       currentOp: function () { return currentOp; },
     };

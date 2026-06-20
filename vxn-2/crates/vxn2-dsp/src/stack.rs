@@ -287,6 +287,13 @@ pub struct Stack {
     /// vectorised — a data-driven fade is far cheaper here than a per-lane
     /// branch, which defeats autovectorisation (measured ~50% slower).
     pub op_nyquist_fade: [[f32; STACK_LANES]; N_OPS],
+    /// Per-op × per-lane continuous phase offset (Q32), added at the sine read
+    /// on top of the note-on static `op{n}-phase` and the FM phase mod. Driven
+    /// by the matrix `Op{N}Phase` dests (E023): the engine ramps it per sample
+    /// (integer Q32, click-free) toward each block's target, parallel to the
+    /// level/pan ramps. Zero when no phase route is active → `wrapping_add(0)`
+    /// is a no-op that stays vectorised.
+    pub op_phase_mod_q32: [[u32; STACK_LANES]; N_OPS],
 }
 
 impl Default for Stack {
@@ -320,6 +327,7 @@ impl Default for Stack {
             detune_mod_st: [0.0_f32; STACK_LANES],
             cached_op_pans: [0.0_f32; N_OPS],
             op_nyquist_fade: [[1.0_f32; STACK_LANES]; N_OPS],
+            op_phase_mod_q32: [[0_u32; STACK_LANES]; N_OPS],
         }
     }
 }
@@ -492,6 +500,7 @@ impl Stack {
         self.global_pitch_mod_st = [0.0_f32; STACK_LANES];
         self.op_pitch_mod_st = [[0.0_f32; STACK_LANES]; N_OPS];
         self.op_pan_mod = [[0.0_f32; STACK_LANES]; N_OPS];
+        self.op_phase_mod_q32 = [[0_u32; STACK_LANES]; N_OPS];
     }
 
     /// Solo-legato retarget: re-cook EG targets/rates and per-lane phase
@@ -825,6 +834,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
     for i in 0..N_OPS {
         let lvl_mod = stack.op_level_mod[i];
         let fade = stack.op_nyquist_fade[i];
+        let ph_mod = stack.op_phase_mod_q32[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -835,7 +845,8 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
             let total_mod = mi[i][k] + fb_avg * fbs[k];
             pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
         }
-        // Stage 2: read sine at modulated phase, scale by EG level plus the
+        // Stage 2: read sine at modulated phase (accumulator + FM mod + the
+        // engine-ramped matrix phase offset, E023), scaled by EG level plus the
         // engine-ramped per-lane level offset, times the per-lane Nyquist fade
         // (0073, 1.0 except for carriers near Nyquist). `eg + lvl_mod` is the
         // effective level; the engine guarantees it stays in [0, 1] by
@@ -844,7 +855,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
         // stays in the vectorised lane loop (a branch here measured ~50% slower).
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
-            let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
+            let phase_mod = op.phase[k].wrapping_add(pm_q32[k]).wrapping_add(ph_mod[k]);
             sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
         }
         // Stage 3: advance phase + rotate feedback memory.
@@ -878,6 +889,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
     for i in 0..N_OPS {
         let lvl_mod = stack.op_level_mod[i];
         let fade = stack.op_nyquist_fade[i];
+        let ph_mod = stack.op_phase_mod_q32[i];
         let op = &mut stack.ops[i];
         let lvl = op.eg.level;
         let fbs = op.fb_scale;
@@ -889,10 +901,11 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
         }
         // See `stack_tick_stereo`: effective level is bounded engine-side, no
         // per-sample clamp; the per-lane 0073 fade multiply stays in the
-        // vectorised lane loop (1.0 except for carriers near Nyquist).
+        // vectorised lane loop (1.0 except for carriers near Nyquist), and the
+        // E023 matrix phase offset is a wrapping Q32 add at the sine read.
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
-            let phase_mod = op.phase[k].wrapping_add(pm_q32[k]);
+            let phase_mod = op.phase[k].wrapping_add(pm_q32[k]).wrapping_add(ph_mod[k]);
             sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
         }
         for k in 0..STACK_LANES {

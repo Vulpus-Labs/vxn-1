@@ -220,6 +220,19 @@ fn parse_custom_ui(op: &str, v: &JsonValue) -> Option<UiEvent> {
         "request_matrix_snapshot" => Some(UiEvent::Custom(Box::new(
             Vxn2UiCustom::RequestMatrixSnapshot,
         ))),
+        "set_ks_curve" => {
+            let op = v.get("op")?.as_u64()? as u8;
+            let side = v.get("side")?.as_u64()? as u8;
+            let curve = v.get("curve")?.as_u64()? as u8;
+            Some(UiEvent::Custom(Box::new(Vxn2UiCustom::SetKsCurve {
+                op,
+                side,
+                curve,
+            })))
+        }
+        "request_ks_curve_snapshot" => Some(UiEvent::Custom(Box::new(
+            Vxn2UiCustom::RequestKsCurveSnapshot,
+        ))),
         "request_full_rebroadcast" => Some(UiEvent::Custom(Box::new(
             Vxn2UiCustom::RequestFullRebroadcast,
         ))),
@@ -240,6 +253,11 @@ fn serialise_custom_view(payload: &dyn std::any::Any) -> Option<JsonValue> {
         Vxn2ViewCustom::MatrixSnapshot { rows } => serde_json::json!({
             "kind": "matrix_snapshot",
             "rows": rows.iter().map(|r| matrix_row_to_json(*r)).collect::<Vec<_>>(),
+        }),
+        Vxn2ViewCustom::KsCurveSnapshot { curves } => serde_json::json!({
+            "kind": "ks_curve_snapshot",
+            // [[l, r]; 6] — outer index is op (0-based), inner is side.
+            "curves": curves.iter().map(|s| s.to_vec()).collect::<Vec<_>>(),
         }),
     })
 }
@@ -740,6 +758,47 @@ mod tests {
             },
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_custom_set_ks_curve() {
+        let v = serde_json::json!({ "op": 2, "side": 1, "curve": 3 });
+        let ev = parse_custom_ui("set_ks_curve", &v).expect("parsed");
+        match ev {
+            UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
+                Ok(Vxn2UiCustom::SetKsCurve { op, side, curve }) => {
+                    assert_eq!((op, side, curve), (2, 1, 3));
+                }
+                other => panic!("unexpected payload: {other:?}"),
+            },
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_custom_request_ks_curve_snapshot() {
+        let v = serde_json::json!({ "op": "request_ks_curve_snapshot" });
+        let ev = parse_custom_ui("request_ks_curve_snapshot", &v).expect("parsed");
+        match ev {
+            UiEvent::Custom(p) => match p.downcast::<Vxn2UiCustom>().map(|b| *b) {
+                Ok(Vxn2UiCustom::RequestKsCurveSnapshot) => {}
+                other => panic!("unexpected payload: {other:?}"),
+            },
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serialise_view_ks_curve_snapshot_shape() {
+        let curves = [[0u8, 2u8], [1, 3], [0, 2], [0, 2], [0, 2], [3, 0]];
+        let payload = Vxn2ViewCustom::KsCurveSnapshot { curves };
+        let v = serialise_custom_view(&payload).expect("serialised");
+        assert_eq!(v["kind"], "ks_curve_snapshot");
+        let rows = v["curves"].as_array().expect("curves array");
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[1][0], 1);
+        assert_eq!(rows[1][1], 3);
+        assert_eq!(rows[5][0], 3);
     }
 
     #[test]

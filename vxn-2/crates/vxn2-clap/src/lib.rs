@@ -26,7 +26,7 @@ use std::io::{Read, Write as _IoWrite};
 use std::ops::Bound;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use vxn2_app::{matrix_snapshot_event, tick_vxn2};
+use vxn2_app::{ks_curve_snapshot_event, matrix_snapshot_event, tick_vxn2};
 use vxn2_engine::Vxn2PresetStore;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
@@ -260,6 +260,12 @@ fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     // already collapses to one path.
     if params.take_dirty_matrix() != 0 {
         out.push(matrix_snapshot_event(params));
+    }
+    // Whole KS-curve snapshot when the curve dirty flag was set (UI edit,
+    // preset / state load). Same rationale as the matrix snapshot — one
+    // event, view-side renderer collapses to one path.
+    if vxn2_app::Vxn2Params::take_dirty_ks_curve(params) {
+        out.push(ks_curve_snapshot_event(params));
     }
     out
 }

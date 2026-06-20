@@ -9,11 +9,11 @@
 //!   0 .. 169   Per-patch        (132 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 169 .. 195   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
-//!                                9 filter)
+//! 169 .. 196   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
+//!                                9 filter + 1 limiter + 1 HP)
 //! ```
 //!
-//! Total 195. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 196. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set. Each op block is 22 params: the
 //! 20 continuous controls, a trailing `ratio-mode` enum (Ratio / Fixed), and
 //! a per-op `phase` float (ticket 0074).
@@ -52,8 +52,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 22;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 169
-pub const N_PATCH_LEVEL: usize = 26; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 195
+pub const N_PATCH_LEVEL: usize = 27; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter + 1 HP
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 196
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -570,6 +570,14 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     // stays a 1:1 prefix; off by default → an unchanged patch is bit-identical.
     // UI groups it in the Master panel (its module label is overridden below).
     bl("limiter-on", "Limiter", false),
+    // Static high-pass stage (Juno-HP style), one-pole, pre the musical filter
+    // and *not* oversampled. Cleans low rumble / clicks; a fixed tone-shaping
+    // tool, so it's deliberately *not* a mod-matrix dest — but still
+    // automatable like any fader. Appended at the very end of the flat space
+    // (after `limiter-on`) so the blob v12→v13 migration stays a 1:1 prefix;
+    // its 20 Hz floor default ("off"/transparent) keeps an unchanged patch
+    // bit-identical. Range / taper mirror VXN1's `hpf-cutoff`.
+    flx("hp-cutoff", "HP Cutoff", 20.0, 18000.0, 20.0, "Hz", 1000.0),
 ];
 
 // ── The table ───────────────────────────────────────────────────────────────
@@ -620,6 +628,7 @@ pub(crate) const OFF_REVERB: usize = 9;
 pub(crate) const OFF_MASTER: usize = 14;
 pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
 pub(crate) const OFF_LIMITER: usize = 25; // trailing append, after the 9-param Filter section
+pub(crate) const OFF_HP: usize = 26; // trailing append, after `limiter-on`
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
 /// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
@@ -691,6 +700,10 @@ fn module_for_patch(off: usize) -> &'static str {
         // `limiter-on` is appended past the Filter section for blob-prefix
         // stability, but belongs to the Master section in the host tree.
         "Global / Master"
+    } else if off == OFF_HP {
+        // `hp-cutoff` is appended past the limiter for blob-prefix stability;
+        // its own section in the host tree (a pre-filter tone-shaping stage).
+        "Global / HP"
     } else {
         ""
     }
@@ -766,7 +779,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 195);
+        assert_eq!(TOTAL_PARAMS, 196);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -873,26 +886,29 @@ mod tests {
     #[test]
     fn filter_section_is_at_table_tail() {
         // The Filter section (9 params, E007/v8) sits after Master, then the
-        // single `limiter-on` (v9) is appended at the very end of the flat
-        // space — so each blob migration stays a 1:1 prefix.
+        // single `limiter-on` (v9) and finally `hp-cutoff` (v13) are each
+        // appended at the very end of the flat space — so each blob migration
+        // stays a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 12);
-        assert_eq!(vol, TOTAL_PARAMS - 11);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 10));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 9));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 8));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 7));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 6));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 5));
-        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 4));
-        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 3));
-        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 2));
-        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 1));
-        // `filter-enable` and `limiter-on` default off → migrated patches stay
-        // bit-identical.
+        assert_eq!(tune, TOTAL_PARAMS - 13);
+        assert_eq!(vol, TOTAL_PARAMS - 12);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 11));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 10));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 9));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 8));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 7));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 6));
+        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 5));
+        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 4));
+        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 3));
+        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 2));
+        assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 1));
+        // `filter-enable` and `limiter-on` default off, `hp-cutoff` defaults to
+        // its 20 Hz floor ("off") → migrated patches stay bit-identical.
         assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
         assert_eq!(PARAMS[id_of("limiter-on").unwrap()].default, 0.0);
+        assert_eq!(PARAMS[id_of("hp-cutoff").unwrap()].default, 20.0);
     }
 
     #[test]

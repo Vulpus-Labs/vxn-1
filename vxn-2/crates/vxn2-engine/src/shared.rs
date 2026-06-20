@@ -39,8 +39,8 @@ use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
     N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
-    OFF_FILTER, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG, OFF_REVERB,
-    OFF_STACK,
+    OFF_FILTER, OFF_HP, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG,
+    OFF_REVERB, OFF_STACK,
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
@@ -149,9 +149,16 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   block + param count are unchanged and v≤11 blobs decode 1:1; the new
 ///   trailer is seeded to [`default_ks_curve_meta`] (left NegLin / right
 ///   NegExp → an unchanged patch stays bit-identical to the old frozen shapes).
-pub const BLOB_VERSION: u16 = 12;
+/// - v13: appends `hp-cutoff` (static one-pole high-pass stage, pre the musical
+///   filter) at the very end of the flat space — param count 195 → 196. It sits
+///   past every existing id, so older blobs map 1:1; the new id is seeded to its
+///   default (20 Hz floor = "off"/transparent → an unchanged patch stays
+///   bit-identical).
+pub const BLOB_VERSION: u16 = 13;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
+/// Number of params appended in v13 (`hp-cutoff`).
+const N_HP_PARAMS_V13: usize = 1;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
 const N_FILTER_PARAMS_V8: usize = 2;
 /// Number of params appended in v9 (`limiter-on`).
@@ -159,11 +166,15 @@ const N_LIMITER_PARAMS_V9: usize = 1;
 /// Per-op param count in v≤10 blobs (before `opN-phase` was appended) —
 /// `ratio-mode` trailing, no `phase`. One narrower than the live op block.
 const LEGACY_V10_N_PER_OP: usize = N_PER_OP - 1; // 21
+/// Param count in v11/v12 blobs (before the v13 `hp-cutoff` addition). The
+/// live total minus the single trailing `hp-cutoff` append.
+const LEGACY_V12_PARAM_COUNT: usize = TOTAL_PARAMS - N_HP_PARAMS_V13; // 195
 /// Param count in v9/v10 blobs (before the v11 `opN-phase` addition). The
 /// legacy counts are live-relative: each is the live total minus the cumulative
 /// op-block spread + trailing appends since that version. `phase` is one
-/// op-block spread (`N_OPS`) below the live total.
-const LEGACY_V10_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS; // 189
+/// op-block spread (`N_OPS`) below the live total, `hp-cutoff` one trailing
+/// append below that.
+const LEGACY_V10_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS - N_HP_PARAMS_V13; // 189
 /// Param count in v8 blobs (before the v9 `limiter-on` addition).
 const LEGACY_V8_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9; // 188
 /// Param count in v7 blobs (before the v8 filter additions).
@@ -171,8 +182,9 @@ const LEGACY_V7_PARAM_COUNT: usize = LEGACY_V8_PARAM_COUNT - N_FILTER_PARAMS_V8;
 /// Param count in v6 blobs (before the v7 Filter section was appended).
 const LEGACY_V6_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS; // 179
 /// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition). Two
-/// op-block spreads (`ratio-mode` + `phase`) below the live total.
-const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - 2 * N_OPS;
+/// op-block spreads (`ratio-mode` + `phase`) plus the trailing `hp-cutoff`
+/// append below the live total.
+const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - 2 * N_OPS - N_HP_PARAMS_V13;
 /// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
 const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 2; // 20
 /// Per-op index of `ratio-mode` in the live op block (second-from-last, before
@@ -790,6 +802,7 @@ impl ParamModel for SharedParams {
             7 => LEGACY_V7_PARAM_COUNT,
             8 => LEGACY_V8_PARAM_COUNT,
             9 | 10 => LEGACY_V10_PARAM_COUNT,
+            11 | 12 => LEGACY_V12_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -882,7 +895,9 @@ impl ParamModel for SharedParams {
         // load can't leave them at stale store contents. `filter-enable`
         // defaults off, keeping a migrated patch bit-identical.
         if version <= 6 {
-            for id in (TOTAL_PARAMS - N_FILTER_PARAMS - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
+            for id in
+                (TOTAL_PARAMS - N_FILTER_PARAMS - N_LIMITER_PARAMS_V9 - N_HP_PARAMS_V13)..TOTAL_PARAMS
+            {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -892,15 +907,29 @@ impl ParamModel for SharedParams {
         // → a migrated patch stays bit-identical). v≤6 already covered these via
         // the wider block above.
         if version <= 7 {
-            for id in (TOTAL_PARAMS - N_FILTER_PARAMS_V8 - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
+            for id in (TOTAL_PARAMS
+                - N_FILTER_PARAMS_V8
+                - N_LIMITER_PARAMS_V9
+                - N_HP_PARAMS_V13)..TOTAL_PARAMS
+            {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
-        // v≤8 blobs predate `limiter-on` (the single trailing v9 id). They map
-        // 1:1 above; seed it to its default (off → a migrated patch stays
-        // bit-identical). v≤7 already covered it via the wider block above.
+        // v≤8 blobs predate `limiter-on` (the single trailing v9 id) and the
+        // v13 `hp-cutoff`. They map 1:1 above; seed both to their defaults (off
+        // / 20 Hz floor → a migrated patch stays bit-identical). v≤7 already
+        // covered these via the wider block above.
         if version <= 8 {
-            for id in (TOTAL_PARAMS - N_LIMITER_PARAMS_V9)..TOTAL_PARAMS {
+            for id in (TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_HP_PARAMS_V13)..TOTAL_PARAMS {
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        // v≤12 blobs predate `hp-cutoff` (the single trailing v13 id). They map
+        // 1:1 above; seed it to its default (20 Hz floor = "off" → a migrated
+        // patch stays bit-identical). v≤8 already covered it via the wider
+        // blocks above.
+        if version <= 12 {
+            for id in (TOTAL_PARAMS - N_HP_PARAMS_V13)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -1036,6 +1065,23 @@ impl vxn2_app::Vxn2Params for SharedParams {
         );
     }
 
+    fn ks_curves(&self) -> [[u8; 2]; 6] {
+        std::array::from_fn(|op| {
+            [
+                SharedParams::ks_curve_raw(self, op, 0),
+                SharedParams::ks_curve_raw(self, op, 1),
+            ]
+        })
+    }
+
+    fn set_ks_curve(&self, op: u8, side: u8, curve: u8) {
+        SharedParams::set_ks_curve_raw(self, op as usize, side as usize, curve);
+    }
+
+    fn take_dirty_ks_curve(&self) -> bool {
+        SharedParams::take_dirty_ks_curve(self)
+    }
+
     fn mark_all_dirty(&self) {
         SharedParams::mark_all_dirty(self);
     }
@@ -1130,6 +1176,44 @@ fn filter_slope_from(idx: i32) -> FilterSlope {
     }
 }
 
+// ── HP params (static pre-filter high-pass, v13) ─────────────────────────────
+
+/// Cutoff in Hz at / below which the HP stage is bypassed (its 20 Hz floor =
+/// "off", transparent). Mirrors VXN1's `HPF_OFF_HZ`.
+pub const HP_OFF_HZ: f32 = 20.0;
+
+/// Engine-native shape of the static high-pass stage (`hp-cutoff`). A one-pole
+/// tone-shaping filter ahead of the musical filter — deliberately *not* a
+/// mod-matrix dest (fixed tone shaping), so a bare cutoff is all it carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HpParams {
+    /// Base cutoff in Hz. `<= `[`HP_OFF_HZ`] ⇒ the engine bypasses the stage.
+    pub cutoff_hz: f32,
+}
+
+impl Default for HpParams {
+    fn default() -> Self {
+        Self {
+            cutoff_hz: HP_OFF_HZ,
+        }
+    }
+}
+
+impl HpParams {
+    /// True when the stage is engaged (cutoff lifted off its floor).
+    #[inline]
+    pub fn active(&self) -> bool {
+        self.cutoff_hz > HP_OFF_HZ
+    }
+}
+
+/// Decode the `hp-cutoff` CLAP param out of any [`ParamView`].
+pub fn hp_params_of<P: ParamView>(p: &P) -> HpParams {
+    HpParams {
+        cutoff_hz: p.get(PATCH_BASE + OFF_HP),
+    }
+}
+
 // ── Engine params (audio-side mirror) ───────────────────────────────────────
 
 /// Mirror of [`SharedParams`] in engine-native shapes. Refreshed once per
@@ -1144,6 +1228,7 @@ pub struct EngineParams {
     pub reverb: FdnReverbParams,
     pub master: MasterParams,
     pub filter: FilterParams,
+    pub hp: HpParams,
     /// CLAP-automatable matrix slot depths.
     pub mtx_depths: [f32; N_CLAP_DEPTH_SLOTS],
     /// Mod-matrix slot topology + depth, fanned out from the param store at
@@ -1180,6 +1265,7 @@ impl EngineParams {
             reverb: FdnReverbParams::default(),
             master: MasterParams::default(),
             filter: FilterParams::default(),
+            hp: HpParams::default(),
             mtx_depths: [0.0; N_CLAP_DEPTH_SLOTS],
             matrix_rows: [MatrixRowRaw::default(); N_MATRIX_SLOTS],
         };
@@ -1259,6 +1345,10 @@ impl EngineParams {
         // Filter section (E007 / ADR 0004). Decoded by `filter_params_of` so
         // the same path feeds the audio render and the CLAP latency report.
         self.filter = filter_params_of(shared);
+
+        // Static high-pass stage (v13) — a single cutoff, applied per stack
+        // ahead of the musical filter, at base rate (never oversampled).
+        self.hp = hp_params_of(shared);
 
         // Master tune bakes into the patch's per-op `base_phase_inc` at
         // note-on via `VoiceParams::master_tune_cents`.
@@ -1534,7 +1624,7 @@ mod tests {
         let bytes = src.snapshot_bytes();
         assert_eq!(
             bytes.len(),
-            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN
+            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN
         );
         assert_eq!(&bytes[0..4], BLOB_MAGIC);
         assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
@@ -1668,6 +1758,87 @@ mod tests {
         assert!((r9.depth - (-0.6)).abs() < 1e-6);
     }
 
+    #[test]
+    fn ks_curve_default_is_legacy_frozen_shapes() {
+        let s = SharedParams::new();
+        for op in 0..N_OPS {
+            assert_eq!(s.ks_curve_raw(op, 0), 0, "op{op} left default = NegLin");
+            assert_eq!(s.ks_curve_raw(op, 1), 2, "op{op} right default = NegExp");
+            assert_eq!(
+                ParamView::ks_curve(&s, op, 0),
+                vxn2_dsp::ks::KsCurve::NegLin
+            );
+            assert_eq!(
+                ParamView::ks_curve(&s, op, 1),
+                vxn2_dsp::ks::KsCurve::NegExp
+            );
+        }
+    }
+
+    #[test]
+    fn set_ks_curve_raw_is_independent_per_field() {
+        let s = SharedParams::new();
+        // Flip every field to a distinct value and confirm no field stomps a
+        // neighbour (2-bit packing correctness).
+        for op in 0..N_OPS {
+            s.set_ks_curve_raw(op, 0, (op as u8) % 4);
+            s.set_ks_curve_raw(op, 1, ((op as u8) + 1) % 4);
+        }
+        for op in 0..N_OPS {
+            assert_eq!(s.ks_curve_raw(op, 0), (op as u8) % 4);
+            assert_eq!(s.ks_curve_raw(op, 1), ((op as u8) + 1) % 4);
+        }
+    }
+
+    #[test]
+    fn snapshot_bytes_round_trips_ks_curves() {
+        let src = SharedParams::new();
+        src.set_ks_curve_raw(0, 0, 3); // PosExp
+        src.set_ks_curve_raw(0, 1, 1); // PosLin
+        src.set_ks_curve_raw(5, 1, 3); // PosExp
+
+        let bytes = src.snapshot_bytes();
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+
+        assert_eq!(dst.ks_curve_raw(0, 0), 3);
+        assert_eq!(dst.ks_curve_raw(0, 1), 1);
+        assert_eq!(dst.ks_curve_raw(5, 1), 3);
+        // Untouched fields keep their legacy default.
+        assert_eq!(dst.ks_curve_raw(3, 0), 0);
+        assert_eq!(dst.ks_curve_raw(3, 1), 2);
+    }
+
+    /// A v11 blob (no KS-curve trailer) loads and seeds the legacy frozen
+    /// shapes, leaving the migrated patch's KS response bit-identical.
+    #[test]
+    fn v11_blob_seeds_legacy_ks_curves() {
+        let src = SharedParams::new();
+        // Mutate curves away from default, snapshot, then rewrite the version
+        // field to v11 and strip the trailer to simulate an old blob.
+        src.set_ks_curve_raw(2, 1, 3);
+        let full = src.snapshot_bytes();
+        // A v11 blob: drop the v12 KS trailer and the trailing v13 `hp-cutoff`
+        // value, restore the v11 param count and stamp the version.
+        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let matrix_end = full.len() - BLOB_KS_CURVE_LEN;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
+        bytes[4..6].copy_from_slice(&11u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(LEGACY_V12_PARAM_COUNT as u16).to_le_bytes());
+        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - N_HP_PARAMS_V13 * 4]);
+        bytes.extend_from_slice(&full[values_end..matrix_end]);
+
+        let dst = SharedParams::new();
+        // Pre-dirty dst with a non-default curve to prove the seed overwrites.
+        dst.set_ks_curve_raw(2, 1, 1);
+        dst.load_bytes(&bytes).unwrap();
+        for op in 0..N_OPS {
+            assert_eq!(dst.ks_curve_raw(op, 0), 0);
+            assert_eq!(dst.ks_curve_raw(op, 1), 2);
+        }
+    }
+
     /// E022: a stack-pitch route (dest in the appended 30..=35 band) saves and
     /// reloads through the snapshot blob unchanged.
     #[test]
@@ -1714,9 +1885,14 @@ mod tests {
             let keep_end = start + LEGACY_V10_N_PER_OP * 4;
             out.extend_from_slice(&bytes[start..keep_end]);
         }
-        // Post-op-block params + matrix trailer copy verbatim.
+        // Post-op-block value params + matrix trailer copy through — but drop
+        // the trailing v13 `hp-cutoff` value (no v≤12 blob carries it) and the
+        // v12 KS-curve trailer (no v≤11 blob carries it).
         let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
-        out.extend_from_slice(&bytes[rest..]);
+        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN;
+        out.extend_from_slice(&bytes[rest..values_end - N_HP_PARAMS_V13 * 4]);
+        out.extend_from_slice(&bytes[values_end..matrix_end]);
         out
     }
 

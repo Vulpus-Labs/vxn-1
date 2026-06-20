@@ -369,10 +369,22 @@ pub enum DestId {
     Op4StackPitch,
     Op5StackPitch,
     Op6StackPitch,
+    // Per-op note-on phase offset dests (E023 0074): a continuous, ramped
+    // per-lane phase offset added at the sine read, on top of the static
+    // note-on `op{n}-phase`. Appended after the stack-pitch block so the blob
+    // dest space stays a 1:1 prefix for older patches. Per-lane, linear (no
+    // cubic taper), gain 1.0 = ±1 cycle. Applied via the level/pan-style ramp,
+    // not the pitch smoother — it's a phase offset, not a frequency.
+    Op1Phase,
+    Op2Phase,
+    Op3Phase,
+    Op4Phase,
+    Op5Phase,
+    Op6Phase,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 35;
+pub const N_DESTS: usize = 41;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
@@ -397,6 +409,8 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "resonance",
     "op1-stack-pitch", "op2-stack-pitch", "op3-stack-pitch",
     "op4-stack-pitch", "op5-stack-pitch", "op6-stack-pitch",
+    "op1-phase", "op2-phase", "op3-phase",
+    "op4-phase", "op5-phase", "op6-phase",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -421,6 +435,8 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Resonance",
     "Op 1 Stack Pitch", "Op 2 Stack Pitch", "Op 3 Stack Pitch",
     "Op 4 Stack Pitch", "Op 5 Stack Pitch", "Op 6 Stack Pitch",
+    "Op 1 Phase", "Op 2 Phase", "Op 3 Phase",
+    "Op 4 Phase", "Op 5 Phase", "Op 6 Phase",
 ];
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
@@ -443,6 +459,7 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
 /// | `stack-spread` | 1.0 | scales the VoiceSpread width by `(1 + v)` |
 /// | `delay-mix`, `reverb-mix` | 1.0 | additive `[0, 1]` mix offset |
 /// | `lfo2-phase` | 1.0 | ±1 full LFO2 cycle of per-lane phase offset |
+/// | `op{N}-phase` | 1.0 | ±1 full carrier cycle of per-lane phase offset |
 ///
 /// **Cubic taper:** the 7 semitone pitch dests (`global-pitch`, `op{N}-pitch`)
 /// additionally take a `d³` taper on the stored depth before the gain (see
@@ -534,7 +551,13 @@ impl DestId {
             | DestId::Op3StackPitch
             | DestId::Op4StackPitch
             | DestId::Op5StackPitch
-            | DestId::Op6StackPitch => Tier::PerLane,
+            | DestId::Op6StackPitch
+            | DestId::Op1Phase
+            | DestId::Op2Phase
+            | DestId::Op3Phase
+            | DestId::Op4Phase
+            | DestId::Op5Phase
+            | DestId::Op6Phase => Tier::PerLane,
         }
     }
 
@@ -586,6 +609,12 @@ impl DestId {
             33 => DestId::Op4StackPitch,
             34 => DestId::Op5StackPitch,
             35 => DestId::Op6StackPitch,
+            36 => DestId::Op1Phase,
+            37 => DestId::Op2Phase,
+            38 => DestId::Op3Phase,
+            39 => DestId::Op4Phase,
+            40 => DestId::Op5Phase,
+            41 => DestId::Op6Phase,
             _ => DestId::None,
         }
     }
@@ -1047,12 +1076,18 @@ mod tests {
         assert_eq!(DestId::Cutoff.idx(), Some(27));
         assert_eq!(DestId::Resonance.idx(), Some(28));
         assert_eq!(DestId::Op1StackPitch.idx(), Some(29));
-        assert_eq!(DestId::Op6StackPitch.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Op6StackPitch.idx(), Some(34));
+        // The 6 per-op phase dests (E023) are appended after the stack-pitch
+        // block, so they now hold the tail indices.
+        assert_eq!(DestId::Op1Phase.idx(), Some(35));
+        assert_eq!(DestId::Op6Phase.idx(), Some(N_DESTS - 1));
         // Wire-discriminant round-trip for the new dests.
         assert_eq!(DestId::from_u8(28), DestId::Cutoff);
         assert_eq!(DestId::from_u8(29), DestId::Resonance);
         assert_eq!(DestId::from_u8(30), DestId::Op1StackPitch);
         assert_eq!(DestId::from_u8(35), DestId::Op6StackPitch);
+        assert_eq!(DestId::from_u8(36), DestId::Op1Phase);
+        assert_eq!(DestId::from_u8(41), DestId::Op6Phase);
     }
 
     #[test]

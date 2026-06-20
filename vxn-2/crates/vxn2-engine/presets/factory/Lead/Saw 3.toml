@@ -1,0 +1,88 @@
+schema = 1
+
+[meta]
+name = "Saw 3"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "Analytic supersaw variant. Algo 32 (six parallel carriers) summed into a bandlimited saw: ratios 1-6 at ~1/sqrt(n) levels, even harmonics phase-flipped (0.5 = π). Here the 4th harmonic sits on op6, the algo-32 FB op, so feedback ladders 4, 8, 12, 16... — octave-stacked brightness with a hollow/clarinet edge, no fifth emphasis. Eight detuned + phase-decorrelated stack lanes fatten it. The 0073 Nyquist fade keeps upward sweeps alias-clean."
+
+[params]
+algo = 32
+# op6 is the algo-32 structural FB op. Ratio 4 is parked there so feedback
+# ladders 4, 8, 12, 16... — octave-stacked (hollow/clarinet), no pitch bias
+# beyond the octave. Tune by ear.
+feedback = 2.5
+
+# Six carriers, harmonic ratios 1..6 at ~1/sqrt(n). Op->ratio NOT slot-ordered:
+# the 4th harmonic moves to op6 (the FB op); the 6th harmonic takes op4's
+# vacated slot. Even harmonics (2, 4, 6) carry phase 0.5 = π so the sum stays
+# saw-like.
+op1-num = 1
+op1-level = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+
+op2-num = 2
+op2-level = 70
+op2-phase = 0.5
+op2-eg-l2 = 99
+op2-eg-l3 = 99
+
+op3-num = 3
+op3-level = 57
+op3-eg-l2 = 99
+op3-eg-l3 = 99
+
+op4-num = 6
+op4-level = 40
+op4-phase = 0.5
+op4-eg-l2 = 99
+op4-eg-l3 = 99
+
+op5-num = 5
+op5-level = 44
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+
+op6-num = 4
+op6-level = 50
+op6-phase = 0.5
+op6-eg-l2 = 99
+op6-eg-l3 = 99
+
+# Supersaw: eight decorrelated lanes. Detune + per-lane phase scatter give width.
+stack-density = 8
+stack-detune = 18.0
+stack-spread = 0.80
+stack-phase = 0.70
+
+# A little space so the width reads.
+reverb-size = 0.5
+reverb-mix = 0.20
+
+# Six stacked carriers x 8 lanes runs hot. Master -12 dB (6 below the -6 default)
+# + brickwall limiter on for safety.
+master-volume = -12.0
+limiter-on = true
+
+# Lane spread -> per-carrier pan for stereo width.
+[[matrix]]
+slot = 0
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 1.0

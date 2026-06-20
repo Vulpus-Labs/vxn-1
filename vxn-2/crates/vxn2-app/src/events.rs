@@ -53,6 +53,16 @@ pub enum Vxn2UiCustom {
     /// `EditorReady` so the overlay can render from a known state.
     RequestMatrixSnapshot,
 
+    /// Write op `op`'s `side` (0 = left/below BP, 1 = right/above BP) KS
+    /// level-curve selector (`curve` = `ks::KsCurve` discriminant 0..=3).
+    /// Non-CLAP patch state — see [`MatrixRow`] for the parallel mechanism.
+    SetKsCurve { op: u8, side: u8, curve: u8 },
+
+    /// Page-side seed: ask the controller to push the full KS-curve
+    /// snapshot. Dispatched alongside `RequestMatrixSnapshot` so the op-row
+    /// graphs render their real per-side shapes from a known state.
+    RequestKsCurveSnapshot,
+
     /// Page-side seed: flip every dirty bit on the Model so the next
     /// main-thread tick re-broadcasts the full table (every
     /// `ParamChanged` + one `MatrixSnapshot`). The page fires this once
@@ -69,4 +79,9 @@ pub enum Vxn2ViewCustom {
     /// `Vxn2UiCustom::RequestMatrixSnapshot` so the overlay can render
     /// without polling.
     MatrixSnapshot { rows: [MatrixRow; 16] },
+    /// Full KS-curve snapshot: per op (outer, 0..6), per side (inner, [L, R])
+    /// curve discriminant. Emitted on `RequestKsCurveSnapshot` and whenever
+    /// the model's curve state drifts (preset load), so each op-row graph
+    /// paints its real shapes without polling.
+    KsCurveSnapshot { curves: [[u8; 2]; 6] },
 }

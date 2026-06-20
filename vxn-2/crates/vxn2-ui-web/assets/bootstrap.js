@@ -59,6 +59,10 @@
       curves: (MATRIX_LISTS && MATRIX_LISTS.curves) || [],
       rows: emptyTable(),
     },
+    // Per-op [left, right] KS level-curve discriminants (KsCurve: 0 NegLin,
+    // 1 PosLin, 2 NegExp, 3 PosExp). Seeded to the legacy frozen default;
+    // a KsCurveSnapshot from the engine overwrites it at boot / preset load.
+    ksCurves: [[0, 2], [0, 2], [0, 2], [0, 2], [0, 2], [0, 2]],
     dispatch: dispatch,
     panels: Object.create(null),
     primitives: [],

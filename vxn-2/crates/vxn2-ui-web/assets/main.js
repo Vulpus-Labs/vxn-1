@@ -575,6 +575,15 @@
       if (panels.modMatrix && panels.modMatrix.onSnapshot) panels.modMatrix.onSnapshot();
       return;
     }
+    if (ev.kind === "ks_curve_snapshot") {
+      // [[l, r]; 6] per-side KS curve discriminants. Cache for the op-row
+      // graph (which may not be built yet) and repaint the live op.
+      if (Array.isArray(ev.curves)) {
+        vxn.ksCurves = ev.curves.map(function (s) { return [s[0] | 0, s[1] | 0]; });
+      }
+      if (vxn._opRow && vxn._opRow.onKsCurveSnapshot) vxn._opRow.onKsCurveSnapshot();
+      return;
+    }
   }
 
   // Clamp a parsed plain value to the descriptor's [min, max], with

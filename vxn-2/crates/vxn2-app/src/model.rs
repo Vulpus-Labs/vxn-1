@@ -22,6 +22,19 @@ pub trait Vxn2Params: ParamModel {
     /// Write a single matrix row. Out-of-range slots silently no-op.
     fn set_matrix_row(&self, slot: u8, row: MatrixRow);
 
+    /// Read every op's per-side KS level-curve selector as `[[L, R]; 6]`
+    /// discriminants (`ks::KsCurve` 0..=3).
+    fn ks_curves(&self) -> [[u8; 2]; 6];
+
+    /// Write op `op`'s `side` (0 = left, 1 = right) KS curve selector.
+    /// Out-of-range op / side silently no-op.
+    fn set_ks_curve(&self, op: u8, side: u8, curve: u8);
+
+    /// Drain the KS-curve dirty flag (set on any `set_ks_curve` / bulk
+    /// store). `true` means the controller should push a fresh
+    /// `KsCurveSnapshot` this tick.
+    fn take_dirty_ks_curve(&self) -> bool;
+
     /// Force every dirty bit on the Model. The next main-thread tick's
     /// drain will re-broadcast the full table (every `ParamChanged` +
     /// one `MatrixSnapshot`). Used by the page on boot to re-seed itself
