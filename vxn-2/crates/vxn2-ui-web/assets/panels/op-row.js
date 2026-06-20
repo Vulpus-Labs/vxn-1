@@ -663,7 +663,10 @@
       col4.className = "op-col";
       col4.style.cssText = "width: 188px; flex: 0 0 188px; flex-direction: row; gap: 6px;";
       const sens = document.createElement("div");
-      sens.style.cssText = "flex: 0 0 104px;";
+      // Sensitivity holds two faders (Vel / KsRt); give the Output sub-column
+      // the slack so its three faders (Out / Pan / Phase) fit without spilling
+      // past the op section's right edge. col4's total width is unchanged.
+      sens.style.cssText = "flex: 0 0 78px;";
       sens.innerHTML = '<div class="op-col-title">Sensitivity</div>';
       const sRow = document.createElement("div");
       sRow.className = "op-col-row";
