@@ -22,7 +22,7 @@
 //! block and routes each id into the matching field — straight indexed
 //! reads, no allocation.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use vxn2_dsp::delay::StereoDelayParams;
 use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
@@ -143,7 +143,13 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   older blobs migrate on load by spreading the op blocks (later ids shift
 ///   up by `N_OPS`) and seeding the six new phase slots to their default
 ///   (0.0 → an unchanged patch stays bit-identical).
-pub const BLOB_VERSION: u16 = 11;
+/// - v12: appends a 4-byte KS-curve trailer (one `u32` packing all
+///   `N_OPS * 2` per-side level-curve selectors, 2 bits each — ticket 0021
+///   sub-task) after the matrix trailer. No new CLAP params, so the value
+///   block + param count are unchanged and v≤11 blobs decode 1:1; the new
+///   trailer is seeded to [`default_ks_curve_meta`] (left NegLin / right
+///   NegExp → an unchanged patch stays bit-identical to the old frozen shapes).
+pub const BLOB_VERSION: u16 = 12;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
@@ -242,6 +248,47 @@ pub const BLOB_HEADER_LEN: usize = 8;
 pub const BLOB_MATRIX_LEN: usize =
     N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4;
 
+/// KS-curve trailer byte length appended at v12: one `u32` packing all
+/// `N_OPS * 2` per-side curve selectors (2 bits each — see
+/// [`SharedParams::ks_curve_meta`]).
+pub const BLOB_KS_CURVE_LEN: usize = 4;
+
+/// Number of independently-set KS level-curve fields: one per op, per side.
+pub const N_KS_CURVES: usize = N_OPS * 2;
+
+/// Bit offset of op `op`'s `side` (0 = left/below BP, 1 = right/above BP)
+/// curve selector within the packed `ks_curve_meta` word. 2 bits per field.
+#[inline]
+const fn ks_curve_shift(op: usize, side: usize) -> u32 {
+    ((op * 2 + side) * 2) as u32
+}
+
+/// Default packed `ks_curve_meta`: every left side = `NegLin` (0), every
+/// right side = `NegExp` (2) — the historical frozen shapes, so a v≤11 blob
+/// or a fresh store reproduces the legacy response bit-for-bit.
+const fn default_ks_curve_meta() -> u32 {
+    let mut packed = 0u32;
+    let mut op = 0;
+    while op < N_OPS {
+        // left stays NegLin (0); right = NegExp (discriminant 2).
+        packed |= 2u32 << ks_curve_shift(op, 1);
+        op += 1;
+    }
+    packed
+}
+
+/// Decode a 2-bit curve field to [`vxn2_dsp::ks::KsCurve`].
+#[inline]
+fn ks_curve_from_bits(bits: u8) -> vxn2_dsp::ks::KsCurve {
+    use vxn2_dsp::ks::KsCurve::*;
+    match bits & 0b11 {
+        0 => NegLin,
+        1 => PosLin,
+        2 => NegExp,
+        _ => PosExp,
+    }
+}
+
 /// Indexed read access into a param store, keyed by CLAP id.
 ///
 /// Internal supertrait of [`ParamModel`]; both the atomic store and the
@@ -261,6 +308,16 @@ pub trait ParamView {
     /// topology don't have to implement it.
     fn matrix_row_raw(&self, _slot: usize) -> MatrixRowRaw {
         MatrixRowRaw::default()
+    }
+    /// Read op `op`'s `side` (0 = left, 1 = right) KS level curve. Default
+    /// returns the legacy frozen shapes (left `NegLin`, right `NegExp`) so
+    /// stores that don't carry curve state (older fixtures) behave as before.
+    fn ks_curve(&self, _op: usize, side: usize) -> vxn2_dsp::ks::KsCurve {
+        if side == 0 {
+            vxn2_dsp::ks::KsCurve::NegLin
+        } else {
+            vxn2_dsp::ks::KsCurve::NegExp
+        }
     }
 }
 
@@ -352,6 +409,16 @@ pub struct SharedParams {
     /// depth side-table; slot 1-8 depth drift also rides
     /// [`dirty_values`] (its CLAP id lives in [`OFF_MTX`]).
     dirty_matrix: AtomicU64,
+    /// Per-op, per-side KS level-curve selectors packed 2 bits each
+    /// (`N_OPS * 2` fields). Non-CLAP / non-automatable patch state —
+    /// persisted in the blob trailer (v12) and the preset `params` table,
+    /// mirrored into the audio thread via [`ParamView::ks_curve`]. Field
+    /// layout: [`ks_curve_shift`]; values: [`vxn2_dsp::ks::KsCurve`]
+    /// discriminants. Default [`default_ks_curve_meta`].
+    ks_curve_meta: AtomicU32,
+    /// Set by `set_ks_curve_raw`; drained by the main-thread tick
+    /// ([`take_dirty_ks_curve`]) to push a `KsCurveSnapshot` to the page.
+    dirty_ks_curve: AtomicBool,
 }
 
 impl Default for SharedParams {
@@ -391,6 +458,10 @@ impl SharedParams {
             // state without a bespoke push from the caller.
             dirty_values: std::array::from_fn(|w| AtomicU64::new(dirty_values_full_word(w))),
             dirty_matrix: AtomicU64::new(DIRTY_MATRIX_ALL),
+            ks_curve_meta: AtomicU32::new(default_ks_curve_meta()),
+            // Seed dirty so the first tick pushes a KsCurveSnapshot alongside
+            // the full value + matrix re-broadcast.
+            dirty_ks_curve: AtomicBool::new(true),
         }
     }
 
@@ -459,6 +530,7 @@ impl SharedParams {
                 Ordering::Relaxed,
             );
         }
+        self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
         self.mark_all_dirty();
     }
 
@@ -472,6 +544,7 @@ impl SharedParams {
             self.dirty_values[w].fetch_or(dirty_values_full_word(w), Ordering::Release);
         }
         self.dirty_matrix.fetch_or(DIRTY_MATRIX_ALL, Ordering::Release);
+        self.dirty_ks_curve.store(true, Ordering::Release);
     }
 
     // ── Dirty bitset drain ──────────────────────────────────────────────────
@@ -496,6 +569,40 @@ impl SharedParams {
     /// [`Self::take_dirty_values`]: single reader on the main thread.
     pub fn take_dirty_matrix(&self) -> u64 {
         self.dirty_matrix.swap(0, Ordering::Acquire)
+    }
+
+    /// Drain the KS-curve dirty flag. Same single-reader contract as
+    /// [`Self::take_dirty_matrix`]; `true` means a `KsCurveSnapshot` should
+    /// be pushed to the page this tick.
+    pub fn take_dirty_ks_curve(&self) -> bool {
+        self.dirty_ks_curve.swap(false, Ordering::Acquire)
+    }
+
+    // ── KS level-curve storage ──────────────────────────────────────────────
+
+    /// Read op `op`'s `side` (0 = left, 1 = right) level-curve discriminant
+    /// (0..=3 → `NegLin`/`PosLin`/`NegExp`/`PosExp`). Out-of-range → legacy
+    /// default (left `NegLin`, right `NegExp`).
+    pub fn ks_curve_raw(&self, op: usize, side: usize) -> u8 {
+        if op >= N_OPS || side > 1 {
+            return if side == 0 { 0 } else { 2 };
+        }
+        let packed = self.ks_curve_meta.load(Ordering::Relaxed);
+        ((packed >> ks_curve_shift(op, side)) & 0b11) as u8
+    }
+
+    /// Write op `op`'s `side` level-curve selector. Single-writer (main
+    /// thread); flips `dirty_ks_curve` so the next tick re-pushes the
+    /// snapshot.
+    pub fn set_ks_curve_raw(&self, op: usize, side: usize, curve: u8) {
+        if op >= N_OPS || side > 1 {
+            return;
+        }
+        let shift = ks_curve_shift(op, side);
+        let cur = self.ks_curve_meta.load(Ordering::Relaxed);
+        let next = (cur & !(0b11 << shift)) | (((curve as u32) & 0b11) << shift);
+        self.ks_curve_meta.store(next, Ordering::Relaxed);
+        self.dirty_ks_curve.store(true, Ordering::Release);
     }
 
     // ── Gesture flags ───────────────────────────────────────────────────────
@@ -600,6 +707,11 @@ impl ParamView for SharedParams {
     fn matrix_row_raw(&self, slot: usize) -> MatrixRowRaw {
         SharedParams::matrix_row_raw(self, slot)
     }
+
+    #[inline]
+    fn ks_curve(&self, op: usize, side: usize) -> vxn2_dsp::ks::KsCurve {
+        ks_curve_from_bits(SharedParams::ks_curve_raw(self, op, side))
+    }
 }
 
 impl ParamModel for SharedParams {
@@ -626,7 +738,9 @@ impl ParamModel for SharedParams {
     /// not the user-facing preset format (which lands with the preset epic
     /// and carries the matrix source/dest/curve slots the blob omits).
     fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN);
+        let mut buf = Vec::with_capacity(
+            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
+        );
         buf.extend_from_slice(BLOB_MAGIC);
         buf.extend_from_slice(&BLOB_VERSION.to_le_bytes());
         buf.extend_from_slice(&(TOTAL_PARAMS as u16).to_le_bytes());
@@ -643,6 +757,8 @@ impl ParamModel for SharedParams {
             let bits = self.matrix_extra_depth[s].load(Ordering::Relaxed);
             buf.extend_from_slice(&bits.to_le_bytes());
         }
+        // v12 trailer — packed per-side KS level-curve selectors.
+        buf.extend_from_slice(&self.ks_curve_meta.load(Ordering::Relaxed).to_le_bytes());
         buf
     }
 
@@ -685,7 +801,8 @@ impl ParamModel for SharedParams {
         let values_len = BLOB_HEADER_LEN + (count as usize) * 4;
         let expected = match version {
             1 => values_len,
-            _ => values_len + BLOB_MATRIX_LEN,
+            2..=11 => values_len + BLOB_MATRIX_LEN,
+            _ => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
         };
         if bytes.len() != expected {
             return Err(ParamLoadError::LengthMismatch {
@@ -819,6 +936,21 @@ impl ParamModel for SharedParams {
                 off += 4;
             }
         }
+        // v12 KS-curve trailer. v≤11 blobs predate per-side curve control —
+        // seed the legacy frozen shapes (left NegLin / right NegExp) so a
+        // migrated patch reproduces the old response exactly.
+        if version >= 12 {
+            let off = values_len + BLOB_MATRIX_LEN;
+            let packed = u32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]);
+            self.ks_curve_meta.store(packed, Ordering::Relaxed);
+        } else {
+            self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
+        }
         // Bulk store bypassed `set` / `set_matrix_row_raw`; flip every
         // dirty bit so the next main-thread tick re-broadcasts the full
         // table (ADR 0003). State load no longer needs a bespoke push
@@ -948,23 +1080,14 @@ impl Default for FilterParams {
     }
 }
 
-impl FilterParams {
-    /// Host-visible plugin latency, in base-rate samples, for this filter
-    /// configuration (ticket 0086). Zero when the filter is off — the render
-    /// path is then the unchanged sample-major bypass — or when running at 1×
-    /// (no resampling); otherwise the interpolate → decimate round-trip group
-    /// delay derived from the halfband cascade in
-    /// [`vxn2_dsp::halfband::roundtrip_latency_base_samples`]. Reported to the
-    /// host through the CLAP latency extension for plugin-delay compensation
-    /// (ADR 0004 §8).
-    pub fn reported_latency_samples(&self) -> u32 {
-        if self.enable {
-            vxn2_dsp::halfband::roundtrip_latency_base_samples(self.oversample)
-        } else {
-            0
-        }
-    }
-}
+// The filter's interp+decimate path adds a real group delay
+// (`vxn2_dsp::halfband::roundtrip_latency_base_samples`, ≤28 base samples at
+// 8×), but VXN2 deliberately does **not** report it to the host: declaring it
+// forces a host restart on every `filter-oversample` change (CLAP only lets the
+// reported latency move across an `activate` boundary), which is an audible
+// dropout. We trade sample-accurate PDC for glitch-free oversample switching —
+// ticket 0086 reverted. The latency truth + its tests still live in the
+// halfband helper for reference.
 
 /// Decode the `filter-*` CLAP params out of any [`ParamView`] into the
 /// engine-native [`FilterParams`], without building a whole [`EngineParams`]
@@ -1170,6 +1293,9 @@ fn read_patch<P: ParamView>(s: &P) -> Patch {
 fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
     let f = |off| s.get(base + off);
     let i = |off| s.get(base + off).round() as i32;
+    // Op blocks are `N_PER_OP`-strided from id 0; recover the op index for the
+    // non-CLAP KS-curve lookup (which isn't part of the flat value block).
+    let op = base / N_PER_OP;
     OpParams {
         // `op{n}-ratio-mode` is the trailing enum in each op block (index 20):
         // 0 = Ratio, 1 = Fixed. Mirrors `RatioMode`'s discriminant order.
@@ -1202,11 +1328,12 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
         ks_break_pt: i(15).clamp(0, 127) as u8,
         ks_l_depth: i(16).clamp(0, 99) as u8,
         ks_r_depth: i(17).clamp(0, 99) as u8,
-        // Frozen defaults — KS curve shape has no control and is persisted
-        // nowhere (see ticket 0089 deferred sub-task). The UI draws these exact
-        // fixed shapes (left = linear cut, right = exponential cut).
-        ks_l_curve: vxn2_dsp::ks::KsCurve::NegLin,
-        ks_r_curve: vxn2_dsp::ks::KsCurve::NegExp,
+        // Per-side curve selectors (ticket 0021 sub-task): non-CLAP patch
+        // state read through `ParamView::ks_curve`, persisted in the blob
+        // trailer + preset table. Default (left NegLin / right NegExp) matches
+        // the historical frozen shapes.
+        ks_l_curve: s.ks_curve(op, 0),
+        ks_r_curve: s.ks_curve(op, 1),
         ks_rate: i(18).clamp(0, 7) as u8,
         pan: f(19),
         // index 20 is `op{n}-ratio-mode` (read above); phase is the trailing

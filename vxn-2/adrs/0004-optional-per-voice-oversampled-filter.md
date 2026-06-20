@@ -166,17 +166,29 @@ prove audible as zipper noise under fast modulation, a per-block coeff ramp
 (two-endpoint, like the level-mod ramp in ticket 0077) is the escape hatch — not
 in v1.
 
-### 8. Latency reporting
+### 8. Latency reporting — **reverted, VXN2 reports no latency**
 
 The up/down halfband cascade has group delay (16 oversampled samples per stage;
 `HalfbandFir::GROUP_DELAY_OVERSAMPLED`). The filter path therefore adds a fixed,
-factor-dependent latency that the dry bypass path does not. VXN2 currently
-reports `latency: 0` to the host (`vxn2-clap`). When the filter is enabled, the
-plugin must report the combined interpolation + decimation group delay (referred
-to the base rate) via the CLAP latency extension, and re-report on
-enable/disable and OS-factor change. Internal alignment between the dry-when-off
-and filtered-when-on paths is not required (they are mutually exclusive per
-block), but the host-visible figure must be correct for PDC.
+factor-dependent latency that the dry bypass path does not (≤28 base samples /
+~0.6 ms at 8×; `roundtrip_latency_base_samples`).
+
+This was originally reported to the host via the CLAP latency extension and
+re-reported on enable/disable and OS-factor change. **That was reverted.** CLAP
+only permits the reported latency to change across an `activate` boundary, so
+every `filter-oversample` change forced a `host.request_restart()` —
+deactivate/reactivate cuts all sounding voices, an audible dropout that returns
+only on the next note-on. Reporting the figure correctly and switching OS
+glitch-free are mutually exclusive.
+
+VXN2 chooses glitch-free OS switching: it registers **no** latency extension and
+reports `latency: 0` (matching vxn-1, which never reported its decimator delay).
+The cost is ≤0.6 ms of uncompensated, OS-setting-dependent delay on the filter
+path — inaudible solo, only relevant to phase-coherent layering. The latency
+*truth* (and its tests) stays in `vxn2_dsp::halfband::roundtrip_latency_base_samples`
+for reference; nothing consumes it. Worth reporting again only if a future host
+gains seamless latency changes, or if we pad shorter factors to a constant delay
+so the reported figure never moves.
 
 ### 9. Filter parameters
 
@@ -210,9 +222,9 @@ matrix-targetable (cutoff/reso) continuous controls.
 - Quiescence-skip is what keeps held-chord-with-released-tails affordable; its
   correctness hinges on the resonance-aware `eps`, which must be validated at the
   self-oscillation boundary.
-- Host PDC now depends on filter enable + OS factor. Automating `filter-enable`
-  mid-project changes reported latency — acceptable (it is a structural selector,
-  not a continuous control) but must be documented.
+- Host PDC does not see the filter path: VXN2 reports `latency: 0` (see §8). The
+  filter adds ≤0.6 ms of uncompensated delay, traded for glitch-free OS switching
+  — changing `filter-oversample` no longer restarts the plugin.
 - `vxn2-dsp` gains `filter.rs` + `math.rs` (`fast_tanh`) + halfband
   interpolation, all ported/dependency-free. The crate's no-dependency invariant
   holds.

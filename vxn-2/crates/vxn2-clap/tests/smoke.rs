@@ -585,60 +585,24 @@ fn pitch_bend_and_mod_wheel_stay_finite() {
     }
 }
 
-// ── 6. Filter latency reporting (ticket 0086) ───────────────────────────────
+// ── 6. No latency reporting (ticket 0086 reverted) ──────────────────────────
 
-/// The CLAP latency extension reports 0 with the filter off (the render path
-/// is the unchanged sample-major bypass) and the halfband interp+decimate
-/// round-trip group delay — derived in `vxn2_dsp::halfband` — at each
-/// oversample factor when on. Filter params are pushed through the host's
-/// main-thread (inactive) param flush, exactly the structural-edit path PDC
-/// re-reads `get()` after.
+/// VXN2 deliberately exposes **no** CLAP latency extension. The filter's
+/// interp+decimate path adds a real but tiny group delay (≤28 base samples /
+/// ~0.6 ms at 8×), but reporting it forces a host restart on every
+/// `filter-oversample` change — CLAP only allows the reported latency to move
+/// across an `activate` boundary — which is an audible dropout. We trade
+/// sample-accurate PDC for glitch-free oversample switching (matches vxn-1),
+/// so the extension must stay unregistered regardless of the filter config.
 #[test]
-fn latency_extension_reports_filter_group_delay() {
+fn no_latency_extension_is_exposed() {
     let entry = load_entry();
     let mut instance = instantiate(&entry);
-
-    let enable = id_of("filter-enable").expect("filter-enable");
-    let os = id_of("filter-oversample").expect("filter-oversample");
-
-    // Push one param edit via the inactive main-thread flush.
-    let set = |instance: &mut PluginInstance<TestHost>, id: usize, value: f64| {
-        let params = instance
+    assert!(
+        instance
             .plugin_handle()
-            .get_extension::<PluginParams>()
-            .expect("params extension");
-        let mut buf = EventBuffer::with_capacity(1);
-        buf.push(&param_event(0, id, value));
-        let mut out = EventBuffer::with_capacity(0);
-        let mut inactive = instance
-            .inactive_plugin_handle()
-            .expect("plugin is inactive");
-        params.flush(&mut inactive, &buf.as_input(), &mut out.as_output());
-    };
-
-    let latency = |instance: &mut PluginInstance<TestHost>| -> u32 {
-        let mut handle = instance.plugin_handle();
-        let ext = handle
             .get_extension::<PluginLatency>()
-            .expect("latency extension");
-        ext.get(&mut handle)
-    };
-
-    // Filter off by default → no added latency.
-    assert_eq!(latency(&mut instance), 0, "filter off");
-
-    // Enabled: enum index → factor 1/2/4/8 → round-trip base-rate latency.
-    set(&mut instance, enable, 1.0);
-    for (idx, want) in [(0u32, 0u32), (1, 16), (2, 24), (3, 28)] {
-        set(&mut instance, os, idx as f64);
-        assert_eq!(
-            latency(&mut instance),
-            want,
-            "filter on, oversample idx {idx}"
-        );
-    }
-
-    // Disabling returns to 0 even with the oversample selector left at 8×.
-    set(&mut instance, enable, 0.0);
-    assert_eq!(latency(&mut instance), 0, "filter off again");
+            .is_none(),
+        "VXN2 must not register the CLAP latency extension"
+    );
 }
