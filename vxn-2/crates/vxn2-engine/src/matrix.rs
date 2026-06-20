@@ -167,7 +167,11 @@ pub fn coherence(src: SourceId, dst: DestId) -> Coherence {
     if src == SourceId::VoiceIdx
         && matches!(
             dst,
-            DestId::Cutoff | DestId::Resonance | DestId::DelayMix | DestId::ReverbMix
+            DestId::Cutoff
+                | DestId::Resonance
+                | DestId::FilterDrive
+                | DestId::DelayMix
+                | DestId::ReverbMix
         )
     {
         return Coherence::Degenerate;
@@ -381,10 +385,16 @@ pub enum DestId {
     Op4Phase,
     Op5Phase,
     Op6Phase,
+    // Filter drive dest (E007): scales the OTA ladder pre-gain. Per-stack
+    // scalar like cutoff/resonance (collapses to lane 0). Appended after the
+    // phase block so the blob dest space stays a 1:1 prefix for older patches.
+    // Log/octave domain (gain 4.0 = ±4 oct), consumer applies `drive · 2^value`
+    // then clamps to the [0.1, 16] param range.
+    FilterDrive,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 41;
+pub const N_DESTS: usize = 42;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
@@ -411,6 +421,7 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "op4-stack-pitch", "op5-stack-pitch", "op6-stack-pitch",
     "op1-phase", "op2-phase", "op3-phase",
     "op4-phase", "op5-phase", "op6-phase",
+    "filter-drive",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -437,6 +448,7 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Op 4 Stack Pitch", "Op 5 Stack Pitch", "Op 6 Stack Pitch",
     "Op 1 Phase", "Op 2 Phase", "Op 3 Phase",
     "Op 4 Phase", "Op 5 Phase", "Op 6 Phase",
+    "Filter Drive",
 ];
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
@@ -499,6 +511,12 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     // uniform across the rate range). Confirmed at ±4 oct in 0094.
     g[DestId::Lfo1Rate as usize] = 4.0;
     g[DestId::Lfo2Rate as usize] = 4.0;
+    // Filter drive modulates in the log/octave domain like cutoff (E007): the
+    // dest value is in *octaves*; the consumer applies `drive · 2^value` then
+    // clamps to the [0.1, 16] param range. The drive param's own taper is
+    // exponential around 1.0, so a log-domain mod is musically uniform. Full
+    // depth = ±4 octaves (×16 / ÷16), spanning the whole drive range.
+    g[DestId::FilterDrive as usize] = 4.0;
     // stack-detune / stack-spread (E008 0093) are multiplicative scale factors
     // `(1 + depth·shape)`; gain 1.0 means depth 1 doubles the macro (0→2×).
     // Left at the table default of 1.0 — listed here so the audit is explicit.
@@ -524,7 +542,8 @@ impl DestId {
             | DestId::StackDetune
             | DestId::StackSpread
             | DestId::Cutoff
-            | DestId::Resonance => Tier::PerStack,
+            | DestId::Resonance
+            | DestId::FilterDrive => Tier::PerStack,
             DestId::Op1Pitch
             | DestId::Op1Level
             | DestId::Op1Pan
@@ -615,6 +634,7 @@ impl DestId {
             39 => DestId::Op4Phase,
             40 => DestId::Op5Phase,
             41 => DestId::Op6Phase,
+            42 => DestId::FilterDrive,
             _ => DestId::None,
         }
     }
@@ -1080,7 +1100,9 @@ mod tests {
         // The 6 per-op phase dests (E023) are appended after the stack-pitch
         // block, so they now hold the tail indices.
         assert_eq!(DestId::Op1Phase.idx(), Some(35));
-        assert_eq!(DestId::Op6Phase.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Op6Phase.idx(), Some(40));
+        // FilterDrive (E007) is appended after the phase block, holding the tail.
+        assert_eq!(DestId::FilterDrive.idx(), Some(N_DESTS - 1));
         // Wire-discriminant round-trip for the new dests.
         assert_eq!(DestId::from_u8(28), DestId::Cutoff);
         assert_eq!(DestId::from_u8(29), DestId::Resonance);
@@ -1088,6 +1110,7 @@ mod tests {
         assert_eq!(DestId::from_u8(35), DestId::Op6StackPitch);
         assert_eq!(DestId::from_u8(36), DestId::Op1Phase);
         assert_eq!(DestId::from_u8(41), DestId::Op6Phase);
+        assert_eq!(DestId::from_u8(42), DestId::FilterDrive);
     }
 
     #[test]
@@ -1479,7 +1502,13 @@ mod tests {
 
     #[test]
     fn coherence_degenerate_voice_idx_into_lane0_dests() {
-        for d in [DestId::Cutoff, DestId::Resonance, DestId::DelayMix, DestId::ReverbMix] {
+        for d in [
+            DestId::Cutoff,
+            DestId::Resonance,
+            DestId::FilterDrive,
+            DestId::DelayMix,
+            DestId::ReverbMix,
+        ] {
             assert_eq!(coherence(SourceId::VoiceIdx, d), Coherence::Degenerate, "{d:?}");
         }
         // voice-idx into a per-lane dest is a clean per-lane write, not degenerate.
@@ -1503,6 +1532,7 @@ mod tests {
                         d,
                         DestId::Cutoff
                             | DestId::Resonance
+                            | DestId::FilterDrive
                             | DestId::DelayMix
                             | DestId::ReverbMix
                     ) {

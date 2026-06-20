@@ -62,6 +62,7 @@ const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
 const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
 const CUTOFF_IDX: usize = DestId::Cutoff.idx().unwrap();
 const RESONANCE_IDX: usize = DestId::Resonance.idx().unwrap();
+const FILTER_DRIVE_IDX: usize = DestId::FilterDrive.idx().unwrap();
 const LFO1_RATE_IDX: usize = DestId::Lfo1Rate.idx().unwrap();
 const LFO2_RATE_IDX: usize = DestId::Lfo2Rate.idx().unwrap();
 const STACK_DETUNE_IDX: usize = DestId::StackDetune.idx().unwrap();
@@ -1309,7 +1310,11 @@ impl Engine {
         let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX] + keytrack_oct;
         let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(CUTOFF_MIN_HZ, CUTOFF_MAX_HZ);
         let resonance = (fp.resonance + self.dest_vals[i][0][RESONANCE_IDX]).clamp(0.0, 1.0);
-        let coeffs = OtaLadderCoeffs::new(cutoff_hz, os_rate, resonance, fp.drive);
+        // Drive modulates in the log/octave domain (matrix gain 4.0 → ±4 oct),
+        // matching the param's exponential taper; clamp to the [0.1, 16] range.
+        let drive =
+            (fp.drive * self.dest_vals[i][0][FILTER_DRIVE_IDX].exp2()).clamp(0.1, 16.0);
+        let coeffs = OtaLadderCoeffs::new(cutoff_hz, os_rate, resonance, drive);
         self.filter_l[i].set_coeffs(coeffs);
         self.filter_r[i].set_coeffs(coeffs);
         self.filter_l[i].set_response(fp.mode, fp.slope);
