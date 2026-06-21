@@ -6,6 +6,7 @@
 //! shared snapshot ([`crate::CorpusHandle`]) after every disk-mutating
 //! op.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -90,4 +91,72 @@ pub trait PresetStore: Send + 'static {
     fn user_delete_folder(&self, name: &str) -> Result<(), String>;
 
     fn list_user_tree(&self) -> Vec<UserFolderEntry>;
+}
+
+/// Serialise a [`PresetCorpus`] for the JS browser panel. Factory
+/// presets are grouped by `meta.category` (presets without a category
+/// fall into `uncategorised_label`); user folders preserve their
+/// `Option<String>` shape so the page can show the root group first
+/// then sorted named folders. Within each group, presets are
+/// alpha-sorted by name (case-insensitive) — same order the prev/next
+/// walker uses.
+///
+/// Lives here (model layer) rather than in `vxn-core-ui-web` so both the
+/// desktop wry editor and the wasm web controller (which deps only
+/// `vxn-app`, never wry — ADR 0009) build a byte-identical payload.
+pub fn corpus_snapshot_json(corpus: &PresetCorpus, uncategorised_label: &str) -> String {
+    use serde_json::{Value, json};
+
+    let mut factory_groups: HashMap<String, Vec<(usize, &str)>> = HashMap::new();
+    for (i, m) in corpus.factory.iter().enumerate() {
+        let cat = m
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(uncategorised_label)
+            .to_string();
+        factory_groups
+            .entry(cat)
+            .or_default()
+            .push((i, m.name.as_str()));
+    }
+    let mut factory: Vec<(String, Vec<(usize, &str)>)> = factory_groups.into_iter().collect();
+    factory.sort_by_cached_key(|a| a.0.to_lowercase());
+    for g in factory.iter_mut() {
+        g.1.sort_by_cached_key(|a| a.1.to_lowercase());
+    }
+    let factory_v: Vec<Value> = factory
+        .into_iter()
+        .map(|(category, presets)| {
+            let entries: Vec<Value> = presets
+                .into_iter()
+                .map(|(idx, name)| json!({"name": name, "index": idx}))
+                .collect();
+            json!({"category": category, "presets": entries})
+        })
+        .collect();
+
+    let mut user = corpus.user.clone();
+    user.sort_by(|a, b| match (&a.name, &b.name) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, _) => std::cmp::Ordering::Less,
+        (_, None) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
+    });
+    let user_v: Vec<Value> = user
+        .into_iter()
+        .map(|f| {
+            let mut presets = f.presets;
+            presets.sort_by_cached_key(|a| a.meta.name.to_lowercase());
+            let entries: Vec<Value> = presets
+                .into_iter()
+                .map(|p| {
+                    json!({"name": p.meta.name, "path": p.path.display().to_string()})
+                })
+                .collect();
+            json!({"name": f.name, "presets": entries})
+        })
+        .collect();
+    json!({"factory": factory_v, "user": user_v}).to_string()
 }

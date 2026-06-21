@@ -35,4 +35,5 @@ pub use params::{
 // `ViewEvent`, so the re-exports are drop-in for vxn-1 callers.
 pub use vxn_core_app::{
     EditorBackend, PresetCorpus, PresetLoad, PresetStore, UserFolderEntry, UserPresetEntry,
+    corpus_snapshot_json,
 };

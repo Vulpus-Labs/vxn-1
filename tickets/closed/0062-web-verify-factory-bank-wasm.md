@@ -119,3 +119,45 @@ so getting it right here pays forward.
   (hoist shared serializer) — see Design "Blocker found". This choice also
   fixes the format 0065 uses, so decide before coding restore.
 - Out of scope: any user-preset storage (0063), the async bridge (0064).
+
+## Close-out (2026-06-21)
+
+- **Shared corpus codec hoisted (decision B, completed).** `corpus_snapshot_json`
+  moved from the wry-bound `vxn-core-ui-web` to `vxn-core-app`
+  ([preset.rs](../../crates/vxn-core-app/src/preset.rs), +`serde_json` dep),
+  re-exported from `vxn-core-ui-web` and `vxn-app`. The web controller (deps only
+  `vxn-app`, ADR 0009) now builds the byte-identical browser payload native does.
+  The shared `PluginState` codec (step 1) had already landed in `vxn-app::state`
+  (commit b6fa038); `WebModel::snapshot_bytes`/`restore_from_bytes` delegate to it.
+- **Factory source = build-time baked asset (step 2, completed b6fa038 + wired).**
+  `vxn-engine`'s `bake-factory` bin serializes the bank through `EnginePresetStore`
+  into the flat VXFB asset (`vxn-app::factory_asset`); xtask's `web` target now runs
+  it and emits `target/web-dist/factory.bin`
+  ([xtask main.rs `bake_factory_bin`](../../vxn-1/xtask/src/main.rs)). Verified: 29
+  presets baked (matches the desktop bank), 24 422 bytes.
+- **Read path wired in the controller (step 3).** `NullStore` → `WebPresetStore`
+  (`Arc<Mutex<Vec<FactoryEntry>>>`, factory read-only; user ops inert) in
+  [vxn-web-controller lib.rs](../../vxn-1/crates/vxn-web-controller/src/lib.rs).
+  New opcodes: `vxnc_factory_buf_reserve` / `vxnc_load_factory` /
+  `vxnc_corpus_json_ptr`+`_len` / `vxnc_ui_load_factory`; `refresh_factory_corpus`
+  added to core + `vxn-app` `Controller` (the bank arrives async, after construction).
+  `VE_PRESET_LOADED` transport arm (name + source + warnings) so the preset bar /
+  browser highlight bind.
+- **JS boot wiring.** [controller.mjs](../../vxn-1/crates/vxn-wasm/web/controller.mjs)
+  `loadFactoryAsset` / `corpusJson` / `loadFactory` + `VE_PRESET_LOADED` decode;
+  [faceplate-bridge.mjs](../../vxn-1/crates/vxn-wasm/web/faceplate-bridge.mjs) wires
+  the `load_factory` opcode (user ops still inert), translates `PresetLoaded` →
+  `preset_loaded`, and on boot fetches `factory.bin` → `applyPresetCorpus`.
+- **AC1** ✓ `cargo build -p vxn-web-controller --target wasm32-unknown-unknown`
+  links clean (no `fs` symbols; controller deps only `vxn-app`).
+- **AC3** ✓ user-preset opcodes (`save_preset`, `step_preset`, …) remain inert
+  until 0063 — faceplate-bridge.mjs swallows them; test "user preset opcodes route
+  without throwing".
+- **AC4** ✓ Rust `vxn_web_controller::tests::load_factory_populates_store_and_corpus`
+  (+ `load_factory_rejects_garbage`) assert `factory_len() > 0` through the full
+  `vxnc_load_factory` core; JS `faceplate-bridge.test.mjs` round-trips a baked
+  asset (corpus groups + `load_factory` → `preset_loaded` + param fan-out).
+- **AC2** transport headless-proven (bridge round-trip test); live browser display
+  (`cargo xtask web --serve`) is the standing manual UI check.
+- Tests green: Rust (2 new + 156 engine + touched crates), node bridge/controller
+  suites, 143 vitest, full `xtask web` bundle.

@@ -44,14 +44,15 @@
 //! approach as the 0034 engine spike, so the module stays scope-clean.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use vxn_app::{
-    Controller, KeyMode, Layer, ParamDesc, ParamId, ParamModel, PresetLoad, PresetMeta,
-    PresetStore, TOTAL_PARAMS, UiEvent, UserFolderEntry, ViewEvent, Vxn1Params, Vxn1UiCustom,
-    desc_for_clap_id,
+    Controller, CorpusHandle, FactoryEntry, KeyMode, Layer, ParamDesc, ParamId, ParamModel,
+    PresetLoad, PresetMeta, PresetSource, PresetStore, TOTAL_PARAMS, UNCATEGORIZED, UiEvent,
+    UserFolderEntry, ViewEvent, Vxn1Params, Vxn1UiCustom, corpus_snapshot_json, desc_for_clap_id,
+    factory_asset,
 };
 
 // ===========================================================================
@@ -156,20 +157,35 @@ impl Vxn1Params for WebModel {
     }
 }
 
-/// No-op preset store. The web `PresetStore` (IndexedDB-backed) is E019; until
-/// then the controller runs with this null store and preset ops are inert
-/// (ADR 0009 §1). Identical to the probe's `NullStore`.
-struct NullStore;
+/// Web preset store. The factory bank is baked at build time and fetched as a
+/// flat asset at boot (E019 / 0062), parsed into `factory` *after* the
+/// controller is constructed — so the entries live behind a shared
+/// `Arc<Mutex<…>>` the [`ControllerState`] also holds to fill them once the
+/// asset arrives. (`Mutex` not `RefCell` only because `PresetStore: Send`;
+/// the page is single-threaded.)
+///
+/// The user side (IndexedDB/OPFS-backed) is the next ticket (0063); until then
+/// user ops are inert, exactly as the prior `NullStore` left them.
+#[derive(Default)]
+struct WebPresetStore {
+    factory: Arc<Mutex<Vec<FactoryEntry>>>,
+}
 
-impl PresetStore for NullStore {
+impl PresetStore for WebPresetStore {
     fn factory_len(&self) -> usize {
-        0
+        self.factory.lock().map(|f| f.len()).unwrap_or(0)
     }
-    fn factory_load(&self, _index: usize) -> Result<PresetLoad, String> {
-        Err("no presets".into())
+    fn factory_load(&self, index: usize) -> Result<PresetLoad, String> {
+        let f = self.factory.lock().map_err(|_| "factory poisoned")?;
+        let e = f.get(index).ok_or("factory index out of range")?;
+        Ok(PresetLoad {
+            meta: e.meta.clone(),
+            blob: e.blob.clone(),
+            warnings: Vec::new(),
+        })
     }
-    fn factory_meta(&self, _index: usize) -> Option<PresetMeta> {
-        None
+    fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
+        self.factory.lock().ok()?.get(index).map(|e| e.meta.clone())
     }
     fn user_load(&self, _path: &Path) -> Result<PresetLoad, String> {
         Err("no presets".into())
@@ -229,21 +245,36 @@ impl PresetStore for NullStore {
 //   VE_KEY_MODE_CHANGED (2):   u32 mode
 //   VE_SPLIT_POINT_CHANGED (3): u32 note
 //   VE_EDIT_LAYER_CHANGED (4):  u32 layer
+//   VE_PRESET_LOADED (5):       (E019 / 0062 — preset bar name + browser highlight)
+//     u32 name_len ; [name_len bytes UTF-8]
+//     u32 source_kind            0 = none, 1 = factory, 2 = user
+//       if factory: u32 index
+//       if user:    u32 path_len ; [path_len bytes UTF-8]
+//     u32 warning_count ; per warning: u32 len ; [len bytes UTF-8]
 //
-// Out-of-scope ViewEvents (preset / status / text-input — E018/E019) are
-// skipped here: this ticket delivers the param + non-param-shared-state
-// transport + a smoke sink, not the full UI marshalling.
+// Remaining out-of-scope ViewEvents (status / text-input / corpus-changed) are
+// skipped here; the corpus listing rides the separate `vxnc_corpus_json` channel
+// (the web analogue of the native `applyPresetCorpus` push).
 
 const VE_PARAM_CHANGED: u32 = 1;
 const VE_KEY_MODE_CHANGED: u32 = 2;
 const VE_SPLIT_POINT_CHANGED: u32 = 3;
 const VE_EDIT_LAYER_CHANGED: u32 = 4;
+const VE_PRESET_LOADED: u32 = 5;
+
+const PRESET_SRC_NONE: u32 = 0;
+const PRESET_SRC_FACTORY: u32 = 1;
+const PRESET_SRC_USER: u32 = 2;
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 fn push_f32(buf: &mut Vec<u8>, v: f32) {
     buf.extend_from_slice(&v.to_le_bytes());
+}
+fn push_str(buf: &mut Vec<u8>, s: &str) {
+    push_u32(buf, s.len() as u32);
+    buf.extend_from_slice(s.as_bytes());
 }
 
 // ===========================================================================
@@ -270,12 +301,27 @@ struct ControllerState {
     last_seen: Vec<f32>,
     /// Packed ViewEvent drain buffer JS reads after each tick.
     view_out: Vec<u8>,
+    /// Shared factory entries the store reads; filled by `vxnc_load_factory`
+    /// once JS has fetched the baked asset (E019 / 0062).
+    factory: Arc<Mutex<Vec<FactoryEntry>>>,
+    /// Shared corpus snapshot (factory + user listing) JS serializes for the
+    /// preset browser via `vxnc_corpus_json`.
+    corpus: CorpusHandle,
+    /// Staging buffer JS writes the fetched factory asset into before
+    /// `vxnc_load_factory`.
+    factory_in: Vec<u8>,
+    /// UTF-8 corpus JSON (built by `vxnc_load_factory`), read out by JS.
+    corpus_json: Vec<u8>,
 }
 
 impl ControllerState {
     fn new() -> Box<Self> {
         let model = Arc::new(WebModel::new());
-        let (ctrl, view_rx, _corpus) = Controller::new(model.clone(), Box::new(NullStore));
+        let factory: Arc<Mutex<Vec<FactoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let store = WebPresetStore {
+            factory: factory.clone(),
+        };
+        let (ctrl, view_rx, corpus) = Controller::new(model.clone(), Box::new(store));
         let ui_tx = ctrl.ui_sender();
         let host_tx = ctrl.host_sender();
         Box::new(Self {
@@ -288,7 +334,41 @@ impl ControllerState {
             readback_in: vec![0.0; TOTAL_PARAMS],
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
             view_out: Vec::with_capacity(8 * 1024),
+            factory,
+            corpus,
+            factory_in: Vec::new(),
+            corpus_json: Vec::new(),
         })
+    }
+
+    /// Parse the baked factory asset JS staged in `factory_in[..len]` into the
+    /// shared store, republish the factory corpus, and rebuild `corpus_json`.
+    /// Returns the entry count, or 0 on a bad/truncated asset.
+    fn load_factory(&mut self, len: usize) -> u32 {
+        let bytes = &self.factory_in[..len.min(self.factory_in.len())];
+        let entries = match factory_asset::decode(bytes) {
+            Ok(e) => e,
+            Err(_) => return 0,
+        };
+        let count = entries.len() as u32;
+        if let Ok(mut f) = self.factory.lock() {
+            *f = entries;
+        }
+        self.ctrl.refresh_factory_corpus();
+        self.rebuild_corpus_json();
+        count
+    }
+
+    /// Rebuild `corpus_json` from the shared corpus snapshot (same projection
+    /// the native wry editor pushes via `applyPresetCorpus`).
+    fn rebuild_corpus_json(&mut self) {
+        let json = self
+            .corpus
+            .lock()
+            .map(|c| corpus_snapshot_json(&c, UNCATEGORIZED))
+            .unwrap_or_else(|_| "{\"factory\":[],\"user\":[]}".to_string());
+        self.corpus_json.clear();
+        self.corpus_json.extend_from_slice(json.as_bytes());
     }
 
     #[inline]
@@ -355,8 +435,33 @@ impl ControllerState {
                         }
                     }
                 }
-                // Preset / status / text-input ViewEvents are E018/E019; skipped
-                // by this transport (smoke sink only).
+                ViewEvent::PresetLoaded {
+                    meta,
+                    source,
+                    warnings,
+                } => {
+                    push_u32(&mut self.view_out, VE_PRESET_LOADED);
+                    push_str(&mut self.view_out, &meta.name);
+                    match source {
+                        None => push_u32(&mut self.view_out, PRESET_SRC_NONE),
+                        Some(PresetSource::Factory { index }) => {
+                            push_u32(&mut self.view_out, PRESET_SRC_FACTORY);
+                            push_u32(&mut self.view_out, index as u32);
+                        }
+                        Some(PresetSource::User { path }) => {
+                            push_u32(&mut self.view_out, PRESET_SRC_USER);
+                            push_str(&mut self.view_out, &path.display().to_string());
+                        }
+                    }
+                    push_u32(&mut self.view_out, warnings.len() as u32);
+                    for w in &warnings {
+                        push_str(&mut self.view_out, w);
+                    }
+                    count += 1;
+                }
+                // Status / text-input / corpus-changed ViewEvents are skipped
+                // here; the corpus listing rides `vxnc_corpus_json` (0062), and
+                // status/text-input are E018-handled in JS.
                 _ => {}
             }
         }
@@ -578,4 +683,112 @@ pub extern "C" fn vxnc_readback_in_ptr() -> *mut f32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_pump_readback() {
     state().pump_readback();
+}
+
+// ---- presets: factory bank (E019 / 0062) ------------------------------------
+
+/// Reserve `len` bytes in the factory staging buffer and return a pointer into
+/// wasm memory JS writes the fetched baked asset into, before calling
+/// [`vxnc_load_factory`]. The buffer is owned by the controller; the pointer is
+/// valid until the next reserve (a `Vec` realloc can move it).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_factory_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.factory_in.clear();
+    s.factory_in.resize(len as usize, 0);
+    s.factory_in.as_mut_ptr()
+}
+
+/// Parse the `len` bytes JS staged via [`vxnc_factory_buf_reserve`] into the
+/// factory bank, republish the corpus, and rebuild the corpus JSON. Returns the
+/// preset count (0 on a malformed asset). After this, [`vxnc_corpus_json_ptr`] /
+/// [`vxnc_corpus_json_len`] address the browser payload.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_load_factory(len: u32) -> u32 {
+    state().load_factory(len as usize)
+}
+
+/// Pointer to the UTF-8 corpus JSON (built by [`vxnc_load_factory`]) — the same
+/// shape the native wry editor feeds `window.__vxn.applyPresetCorpus`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_corpus_json_ptr() -> *const u8 {
+    state().corpus_json.as_ptr()
+}
+
+/// Byte length of the corpus JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_corpus_json_len() -> u32 {
+    state().corpus_json.len() as u32
+}
+
+/// Load factory preset `index` (`UiEvent::LoadPreset { Factory }`). The model
+/// restore + `ParamChanged` fan-out + `PresetLoaded` land on the next
+/// [`vxnc_tick`].
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_load_factory(index: u32) {
+    state().post(UiEvent::LoadPreset {
+        source: PresetSource::Factory {
+            index: index as usize,
+        },
+    });
+}
+
+// ===========================================================================
+// Tests (E019 / 0062) — the factory read path, host-run
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vxn_app::factory_asset::{self, FactoryEntry};
+
+    fn entry(name: &str, category: Option<&str>, blob: Vec<u8>) -> FactoryEntry {
+        FactoryEntry {
+            meta: PresetMeta {
+                name: name.into(),
+                author: None,
+                category: category.map(Into::into),
+                comment: None,
+            },
+            blob,
+        }
+    }
+
+    // Acceptance (0062): the wasm-targeted store path reads a baked asset and
+    // `factory_len()` > 0 — here through the full `vxnc_load_factory` core
+    // (decode → store → corpus refresh → corpus JSON).
+    #[test]
+    fn load_factory_populates_store_and_corpus() {
+        let asset = factory_asset::encode(&[
+            entry("Init", Some("Bass"), vec![1, 2, 3]),
+            entry("Lead", Some("Lead"), vec![4, 5]),
+        ]);
+
+        let mut state = ControllerState::new();
+        state.factory_in = asset;
+        let n = state.load_factory(state.factory_in.len());
+
+        assert_eq!(n, 2);
+        assert!(state.ctrl.preset_store().factory_len() > 0);
+        assert_eq!(state.ctrl.preset_store().factory_len(), 2);
+        assert_eq!(
+            state.ctrl.preset_store().factory_meta(0).unwrap().name,
+            "Init"
+        );
+        assert_eq!(state.ctrl.preset_store().factory_load(1).unwrap().blob, vec![4, 5]);
+
+        let json = String::from_utf8(state.corpus_json.clone()).unwrap();
+        assert!(json.contains("\"factory\""));
+        assert!(json.contains("\"Init\""));
+        assert!(json.contains("\"Lead\""));
+    }
+
+    // A malformed asset leaves the store empty and reports 0 (no panic).
+    #[test]
+    fn load_factory_rejects_garbage() {
+        let mut state = ControllerState::new();
+        state.factory_in = vec![0xde, 0xad, 0xbe, 0xef];
+        assert_eq!(state.load_factory(4), 0);
+        assert_eq!(state.ctrl.preset_store().factory_len(), 0);
+    }
 }

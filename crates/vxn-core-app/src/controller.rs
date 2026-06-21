@@ -179,6 +179,20 @@ impl<M: ParamModel> Controller<M> {
         }
     }
 
+    /// Re-read the factory metas from the store and refresh the shared
+    /// snapshot. Native stores serve a static bank (built once at
+    /// construction), but the web controller fills its factory side
+    /// *after* construction — the baked bank arrives async at boot
+    /// (E019 / 0062) — so it calls this once the asset has loaded.
+    pub fn refresh_factory_corpus(&self) {
+        let factory: Vec<PresetMeta> = (0..self.presets.factory_len())
+            .filter_map(|i| self.presets.factory_meta(i))
+            .collect();
+        if let Ok(mut c) = self.corpus.lock() {
+            c.factory = factory;
+        }
+    }
+
     /// Drain inbound queues and apply their effects.
     ///
     /// UI drains first so an in-flight gesture is bracketed correctly

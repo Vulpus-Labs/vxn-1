@@ -10,7 +10,11 @@
 //
 //   0058 (JS -> controller): an opcode posted through `handleUiOpcode` mutates
 //        the controller model and the value lands in the SHARED store SAB; the
-//        layer/keymode string<->int mapping is correct; preset ops are inert.
+//        layer/keymode string<->int mapping is correct; USER preset ops stay
+//        inert (0063+).
+//   0062 (factory bank): a baked asset round-trips through `loadFactoryAsset`,
+//        the corpus JSON reflects it, and `load_factory` applies a preset +
+//        dispatches `preset_loaded`.
 //   0059 (controller -> JS): a controller ViewEvent is translated to the
 //        faceplate `{kind,..}` shape, deduped by id, and handed to a fake
 //        `window.__vxn.applyViewEvents` (the `dispatch` sink).
@@ -37,6 +41,51 @@ const WASM = join(
   here,
   "../../../../target/wasm32-unknown-unknown/debug/vxn_web_controller.wasm",
 );
+
+// --- VXFB factory-asset + VXN1 state-blob encoders (match the Rust codecs:
+//     vxn-app::factory_asset + vxn-app::state). Test-only; the production path
+//     bakes these in Rust (xtask -> bake-factory). ---------------------------
+const enc = new TextEncoder();
+function u32le(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n, true);
+  return b;
+}
+function concatBytes(arrs) {
+  const total = arrs.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrs) {
+    out.set(a, off);
+    off += a.length;
+  }
+  return out;
+}
+function strBytes(s) {
+  const u = enc.encode(s);
+  return concatBytes([u32le(u.length), u]);
+}
+function optStrBytes(s) {
+  return s == null ? new Uint8Array([0]) : concatBytes([new Uint8Array([1]), strBytes(s)]);
+}
+function encodeFactoryAsset(entries) {
+  const parts = [enc.encode("VXFB"), u32le(1), u32le(entries.length)];
+  for (const e of entries) {
+    parts.push(u32le(e.blob.length), e.blob, strBytes(e.name), optStrBytes(e.author), optStrBytes(e.category), optStrBytes(e.comment));
+  }
+  return concatBytes(parts);
+}
+// A valid VXN1 state blob (all params 0.0): magic + version + global + upper +
+// lower + key_mode + split. Counts read from the controller (never hard-coded).
+function makeStateBlob(controller) {
+  const floats = controller.globalCount + 2 * controller.patchCount;
+  return concatBytes([
+    enc.encode("VXN1"),
+    u32le(1),
+    new Uint8Array(floats * 4), // zeros = f32 0.0
+    new Uint8Array([0, 60]), // key_mode = Whole, split = 60
+  ]);
+}
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -88,6 +137,17 @@ async function main() {
   check(
     viewEventToFaceplate({ type: "EditLayerChanged", layer: 0 }).layer === "upper",
     "translate EditLayerChanged layer 0 -> 'upper'",
+  );
+  check(
+    JSON.stringify(
+      viewEventToFaceplate({
+        type: "PresetLoaded",
+        name: "Init",
+        source: { kind: "factory", index: 2 },
+        warnings: [],
+      }),
+    ) === JSON.stringify({ kind: "preset_loaded", name: "Init", source: { kind: "factory", index: 2 }, warnings: [] }),
+    "translate PresetLoaded -> preset_loaded",
   );
   {
     const deduped = dedupParamChanged([
@@ -141,18 +201,57 @@ async function main() {
   const km = dispatched.find((e) => e.kind === "key_mode_changed");
   check(!!km && km.mode === 1, `set_key_mode 1 -> key_mode_changed mode 1 (${km && km.mode})`);
 
-  // ---- 0058: preset opcodes are inert (no throw, nothing dispatched) -------
+  // ---- 0063+: USER preset opcodes are still inert (no throw, nothing out) ---
   dispatched.length = 0;
   let threw = false;
   try {
-    bridge.handleUiOpcode(JSON.stringify({ op: "load_factory", index: 0 }));
     bridge.handleUiOpcode(JSON.stringify({ op: "save_preset", name: "X", folder: null }));
     bridge.handleUiOpcode(JSON.stringify({ op: "step_preset", delta: 1 }));
     bridge.tick();
   } catch {
     threw = true;
   }
-  check(!threw, "preset opcodes route without throwing (inert under NullStore)");
+  check(!threw, "user preset opcodes route without throwing (inert until 0063)");
+
+  // ---- 0062: factory bank round-trip --------------------------------------
+  // Bake a two-preset asset in JS (the VXFB layout vxn-app::factory_asset
+  // owns), feed it through the controller, and assert the read + corpus + load
+  // paths — the headless proof of the browser boot path.
+  {
+    const blob = makeStateBlob(controller); // a valid VXN1 state blob (zeros)
+    const asset = encodeFactoryAsset([
+      { name: "Init Bass", author: null, category: "Bass", comment: null, blob },
+      { name: "Bright Lead", author: null, category: "Lead", comment: null, blob },
+    ]);
+    const count = controller.loadFactoryAsset(asset);
+    check(count === 2, `loadFactoryAsset parsed 2 presets (${count})`);
+
+    const corpus = controller.corpusJson();
+    const cats = (corpus.factory || []).map((g) => g.category).sort();
+    check(
+      JSON.stringify(cats) === JSON.stringify(["Bass", "Lead"]),
+      `corpus JSON groups by category (${JSON.stringify(cats)})`,
+    );
+    const allNames = (corpus.factory || []).flatMap((g) => g.presets.map((p) => p.name));
+    check(allNames.includes("Init Bass") && allNames.includes("Bright Lead"), "corpus lists both presets");
+
+    // Loading factory 0 applies it and dispatches preset_loaded with the source.
+    dispatched.length = 0;
+    bridge.handleUiOpcode(JSON.stringify({ op: "load_factory", index: 0 }));
+    bridge.tick();
+    const pl = dispatched.find((e) => e.kind === "preset_loaded");
+    check(!!pl, "load_factory dispatched preset_loaded");
+    check(pl && pl.name === "Init Bass", `preset_loaded name (${pl && pl.name})`);
+    check(
+      pl && pl.source && pl.source.kind === "factory" && pl.source.index === 0,
+      `preset_loaded source = factory#0 (${pl && JSON.stringify(pl.source)})`,
+    );
+    // The apply fans out a full param re-broadcast — at least one param_changed.
+    check(
+      dispatched.some((e) => e.kind === "param_changed"),
+      "load_factory fanned out param_changed",
+    );
+  }
 
   // ---- malformed / unknown opcode is dropped silently ----------------------
   let threw2 = false;

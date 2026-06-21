@@ -220,6 +220,14 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     let page = gen_faceplate_page(&root)?;
     fs::write(dist.join("index.html"), page).map_err(io("write index.html"))?;
 
+    // 2c'. The baked factory bank (E019 / 0062). Run vxn-engine's `bake-factory`
+    //      bin, which serializes the embedded bank (meta + canonical state blob
+    //      per preset) through the SAME `EnginePresetStore` the desktop build
+    //      serves, and capture its stdout as `factory.bin`. The page fetches it
+    //      at boot and feeds it to the controller (deps only vxn-app, ADR 0009).
+    let factory_bin = bake_factory_bin(&root)?;
+    fs::write(dist.join("factory.bin"), factory_bin).map_err(io("write factory.bin"))?;
+
     // 2d. A Netlify-style `_headers` file so dropping dist/ onto a static host
     //     (Netlify / Cloudflare Pages, both read `_headers`) carries the same
     //     two isolation headers the dev server sets — no extra config. The dev
@@ -237,6 +245,34 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
          COOP/COEP (`cargo xtask web --serve`, ticket 0045)"
     );
     Ok(())
+}
+
+/// Bake the embedded factory bank into the flat `factory.bin` asset (E019 /
+/// 0062) by running `vxn-engine`'s `bake-factory` bin and capturing its stdout.
+/// Run as a subprocess so xtask carries no engine dependency and the asset
+/// codec stays single-sourced in `vxn-app::factory_asset`.
+fn bake_factory_bin(root: &Path) -> Result<Vec<u8>, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(&cargo)
+        .current_dir(root)
+        .args([
+            "run",
+            "--quiet",
+            "--release",
+            "--package",
+            "vxn-engine",
+            "--bin",
+            "bake-factory",
+        ])
+        .output()
+        .map_err(|e| format!("failed to run bake-factory: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "bake-factory failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(out.stdout)
 }
 
 /// Generate the faceplate `index.html` by running `vxn-ui-web`'s `gen-web-page`

@@ -61,6 +61,16 @@ export function viewEventToFaceplate(ev) {
         kind: "edit_layer_changed",
         layer: ev.layer === LAYER_LOWER ? "lower" : "upper",
       };
+    case "PresetLoaded":
+      // Binds the preset bar name + browser-panel highlight (E019 / 0062).
+      // `source` already carries the {kind, index|path} shape the dispatcher's
+      // `preset_loaded` handler reads (byte-identical to `preset_source_json`).
+      return {
+        kind: "preset_loaded",
+        name: ev.name,
+        source: ev.source,
+        warnings: ev.warnings || [],
+      };
     default:
       return null;
   }
@@ -172,11 +182,13 @@ export class FaceplateBridge {
       case "request_text_input":
         this.onTextInput({ id: msg.id, title: msg.title || "", initial: msg.initial || "" });
         return; // no controller tick needed
-      // --- preset / folder ops (E019): accepted, inert under the NullStore ---
-      // The controller has no opcode surface for these yet (preset storage is
-      // E019); swallow them so the page's buttons don't throw. When E019 wires
-      // an IndexedDB store + controller opcodes, route them here.
+      // --- factory presets (E019 / 0062): wired ---
       case "load_factory":
+        c.loadFactory(msg.index >>> 0);
+        break;
+      // --- user preset / folder ops (E019 / 0063+): still inert ---
+      // User storage (IndexedDB/OPFS) is the next ticket; swallow these so the
+      // page's buttons don't throw until the store + opcodes land.
       case "load_user":
       case "save_preset":
       case "rename_preset":
@@ -328,6 +340,25 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     onViewEvents: () => {}, // the bridge drains via tick(); no extra sink
   });
   await controller.instantiate();
+
+  // 2a. Factory bank (E019 / 0062): fetch the build-time baked asset, parse it
+  //     into the controller's read-only factory store, and publish the corpus to
+  //     the preset browser (the web analogue of the native `applyPresetCorpus`
+  //     push). Best-effort: a missing/malformed asset just leaves the factory
+  //     list empty — the synth still plays.
+  try {
+    const resp = await fetch("./factory.bin");
+    if (resp.ok) {
+      const count = controller.loadFactoryAsset(new Uint8Array(await resp.arrayBuffer()));
+      if (count > 0 && window.__vxn && window.__vxn.applyPresetCorpus) {
+        window.__vxn.applyPresetCorpus(controller.corpusJson());
+      }
+    } else {
+      console.warn("vxn: factory.bin fetch failed", resp.status);
+    }
+  } catch (e) {
+    console.warn("vxn: factory bank load failed", e);
+  }
 
   // 3. The bridge: opcodes in, ViewEvents out, ~60 Hz coalescing.
   const bridge = new FaceplateBridge({

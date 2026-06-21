@@ -34,6 +34,12 @@ export const VE_PARAM_CHANGED = 1;
 export const VE_KEY_MODE_CHANGED = 2;
 export const VE_SPLIT_POINT_CHANGED = 3;
 export const VE_EDIT_LAYER_CHANGED = 4;
+export const VE_PRESET_LOADED = 5;
+
+// PresetSource discriminants in the VE_PRESET_LOADED record (match lib.rs).
+const PRESET_SRC_NONE = 0;
+const PRESET_SRC_FACTORY = 1;
+const PRESET_SRC_USER = 2;
 
 // KeyMode discriminants (match vxn_app::KeyMode).
 export const KEY_MODE_WHOLE = 0;
@@ -147,6 +153,38 @@ export class WebController {
     this.x.vxnc_ui_reset_layer(layer >>> 0);
   }
 
+  // ---- presets: factory bank (E019 / 0062) --------------------------------
+  //
+  // The factory bank is baked at build time into `factory.bin` (xtask runs
+  // vxn-engine's bake-factory). The page fetches it at boot and hands the bytes
+  // here; the controller parses them into its read-only factory store. Returns
+  // the preset count (0 on a malformed asset).
+  loadFactoryAsset(bytes) {
+    const len = bytes.byteLength;
+    const ptr = this.x.vxnc_factory_buf_reserve(len >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, len).set(
+      bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+    );
+    return this.x.vxnc_load_factory(len >>> 0);
+  }
+
+  // The corpus JSON (factory groups + user folders) the controller built when
+  // the asset loaded — the same shape the native editor feeds
+  // `window.__vxn.applyPresetCorpus`. Returns a parsed object.
+  corpusJson() {
+    const ptr = this.x.vxnc_corpus_json_ptr();
+    const len = this.x.vxnc_corpus_json_len();
+    if (!len) return { factory: [], user: [] };
+    const bytes = new Uint8Array(this.x.memory.buffer, ptr, len);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  // Load factory preset `index`. The model restore + ParamChanged fan-out +
+  // PresetLoaded land on the next tick().
+  loadFactory(index) {
+    this.x.vxnc_ui_load_factory(index >>> 0);
+  }
+
   // ---- tick: drain queues → mutate model → drain ViewEvents ---------------
   //
   // Call this on each rAF (or after a gesture burst). It (1) ticks the
@@ -253,6 +291,37 @@ export class WebController {
           const layer = view.getUint32(off, true);
           off += 4;
           out.push({ type: "EditLayerChanged", layer });
+          break;
+        }
+        case VE_PRESET_LOADED: {
+          const nameLen = view.getUint32(off, true);
+          off += 4;
+          const name = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, nameLen));
+          off += nameLen;
+          const srcKind = view.getUint32(off, true);
+          off += 4;
+          let source = null;
+          if (srcKind === PRESET_SRC_FACTORY) {
+            const index = view.getUint32(off, true);
+            off += 4;
+            source = { kind: "factory", index };
+          } else if (srcKind === PRESET_SRC_USER) {
+            const pathLen = view.getUint32(off, true);
+            off += 4;
+            const path = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, pathLen));
+            off += pathLen;
+            source = { kind: "user", path };
+          }
+          const warnCount = view.getUint32(off, true);
+          off += 4;
+          const warnings = [];
+          for (let w = 0; w < warnCount; w++) {
+            const wlen = view.getUint32(off, true);
+            off += 4;
+            warnings.push(dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, wlen)));
+            off += wlen;
+          }
+          out.push({ type: "PresetLoaded", name, source, warnings });
           break;
         }
         default:

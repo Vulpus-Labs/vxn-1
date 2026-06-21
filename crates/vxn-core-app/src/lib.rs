@@ -25,4 +25,5 @@ pub use model::{ParamId, ParamModel};
 pub use params::{ParamDesc, ParamKind, Taper};
 pub use preset::{
     PresetCorpus, PresetLoad, PresetMeta, PresetStore, UserFolderEntry, UserPresetEntry,
+    corpus_snapshot_json,
 };

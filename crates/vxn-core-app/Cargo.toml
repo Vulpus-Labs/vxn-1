@@ -9,6 +9,11 @@ description = "Shared MVC controller for VXN synth plugins (ParamModel, events, 
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Corpus → JS-browser JSON projection ([`preset::corpus_snapshot_json`]). Lives
+# here (model layer), not in the desktop `vxn-core-ui-web`, so the wasm web
+# controller (deps only `vxn-app`, ADR 0009 — never wry) builds the same payload
+# native does.
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

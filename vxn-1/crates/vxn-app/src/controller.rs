@@ -66,6 +66,18 @@ impl<M: ParamModel + Vxn1Params> Controller<M> {
         self.inner.preset_store()
     }
 
+    pub fn corpus_handle(&self) -> CorpusHandle {
+        self.inner.corpus_handle()
+    }
+
+    /// Re-read the factory metas from the store into the shared corpus
+    /// snapshot. The web controller fills its factory bank after
+    /// construction (the baked asset arrives async at boot, E019 / 0062);
+    /// this republishes the snapshot once it has.
+    pub fn refresh_factory_corpus(&self) {
+        self.inner.refresh_factory_corpus();
+    }
+
     /// Drain inbound queues and apply their effects. Wraps
     /// [`vxn_core_app::Controller::tick`] with the VXN1 custom handler;
     /// after dispatch, polls the model for key-mode / split-point
