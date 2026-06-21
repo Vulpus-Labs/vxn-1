@@ -29,6 +29,17 @@
 
 import { WebController, LAYER_UPPER, LAYER_LOWER } from "./controller.mjs";
 import { PresetPersistence } from "./preset-persistence.mjs";
+import { StateAutosave } from "./state-autosave.mjs";
+
+// Faceplate event kinds that change the persistable patch state (params + key
+// mode + split point) — the trigger for a full-state autosave (E019 / 0065). An
+// edit_layer_changed is pure view state and is deliberately excluded.
+const PATCH_STATE_KINDS = new Set([
+  "param_changed",
+  "key_mode_changed",
+  "split_point_changed",
+  "preset_loaded",
+]);
 
 // ---- opcode <-> controller routing helpers ---------------------------------
 
@@ -114,6 +125,7 @@ export class FaceplateBridge {
     dispatch = () => {},
     onTextInput = () => {},
     onCorpusChanged = () => {},
+    onPatchChanged = () => {},
     scheduleFrame = (cb) =>
       typeof requestAnimationFrame === "function"
         ? requestAnimationFrame(cb)
@@ -130,6 +142,11 @@ export class FaceplateBridge {
     // journal to IndexedDB (E019 / 0064). Not part of the dispatch batch: the
     // corpus rides its own side channel (controller.corpusJson()), not applyViewEvents.
     this.onCorpusChanged = onCorpusChanged;
+    // Called when a tick produced a change to the persistable patch state (param
+    // / key mode / split / preset load) — the boot wiring debounces a full-state
+    // autosave off this (E019 / 0065). Not the corpus channel: this is the live
+    // patch ("last session"), not the named-preset corpus.
+    this.onPatchChanged = onPatchChanged;
     this._scheduleFrame = scheduleFrame;
     this._cancelFrame = cancelFrame;
 
@@ -254,6 +271,11 @@ export class FaceplateBridge {
     }
     const batch = dedupParamChanged(translated);
     if (batch.length) this.dispatch(batch);
+    // Full-state autosave trigger (0065): if anything changed the persistable
+    // patch state this tick, debounce a session-blob write. Keyed off the
+    // emitted ViewEvents (the controller's own model mutations), so corpus-only
+    // ops (which ride their own channel) and pure view-state changes don't fire.
+    if (batch.some((e) => PATCH_STATE_KINDS.has(e.kind))) this.onPatchChanged();
     return batch;
   }
 
@@ -419,9 +441,26 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     console.warn("vxn: preset persistence init failed", e);
   }
 
+  // 2c. Full patch-state autosave/restore (E019 / 0065): the host-state-blob
+  //     analogue. Restore the saved "last session" patch into the model BEFORE
+  //     the faceplate's `ready`→EditorReady re-broadcast (step 4), so the
+  //     broadcast seeds the UI + param SAB with the restored values (params +
+  //     key mode + split point ride the one blob). Then arm the flush-on-hide
+  //     backstop; the bridge debounces writes on every patch change (below).
+  //     Best-effort: no saved blob / malformed / storage unavailable just boots
+  //     to defaults.
+  const autosave = new StateAutosave({ controller });
+  try {
+    await autosave.restore();
+    autosave.attachFlushOnHide();
+  } catch (e) {
+    console.warn("vxn: state autosave init failed", e);
+  }
+
   // 3. The bridge: opcodes in, ViewEvents out, ~60 Hz coalescing. A corpus
   //    change (user save/rename/delete/move/folder op) re-pushes the corpus and
-  //    flushes the write journal to IndexedDB off the tick.
+  //    flushes the write journal to IndexedDB off the tick. A patch-state change
+  //    (param / key mode / split / preset load) debounces a full-state autosave.
   const bridge = new FaceplateBridge({
     controller,
     dispatch,
@@ -430,6 +469,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
       publishCorpus();
       persistence.flush();
     },
+    onPatchChanged: () => autosave.schedule(),
   });
   bridge.start();
 
@@ -467,7 +507,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   window.addEventListener("keydown", unlock, true);
 
   // Expose for the page's Start button + E017 input adapters.
-  window.__vxnWeb = { host, controller, bridge, persistence, start: unlock, input };
+  window.__vxnWeb = { host, controller, bridge, persistence, autosave, start: unlock, input };
   return window.__vxnWeb;
 }
 

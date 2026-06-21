@@ -368,6 +368,32 @@ export class WebController {
     this.x.vxnc_hydrate_done();
   }
 
+  // ---- full patch-state autosave / restore (E019 / 0065) ------------------
+  //
+  // The host-state-blob analogue: snapshot the whole live patch (every param +
+  // key mode + split point, the canonical state codec) for the page to autosave,
+  // and restore a saved blob at boot. Distinct from user presets — this is the
+  // single "last session" patch, not a named corpus entry.
+
+  // Snapshot the full patch state. Returns a COPIED Uint8Array (the caller writes
+  // it to storage async, after wasm memory may have moved).
+  snapshotState() {
+    const len = this.x.vxnc_snapshot_state();
+    const ptr = this.x.vxnc_state_out_ptr();
+    return new Uint8Array(this.x.memory.buffer, ptr, len).slice(); // copy
+  }
+
+  // Restore a saved blob into the model. Stage it into the state buffer, then
+  // restore. Returns true if applied, false if malformed/wrong-length (the model
+  // is left at defaults). Call BEFORE editorReady() so the re-broadcast seeds the
+  // UI + param SAB with the restored values.
+  restoreState(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const ptr = this.x.vxnc_state_buf_reserve(b.length >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, b.length).set(b);
+    return this.x.vxnc_restore_state(b.length >>> 0) === 1;
+  }
+
   // ---- tick: drain queues → mutate model → drain ViewEvents ---------------
   //
   // Call this on each rAF (or after a gesture burst). It (1) ticks the

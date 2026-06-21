@@ -180,7 +180,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     processors stay out of the shipped bundle. The production worklet
     //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 14] = [
+    const MODULES: [(&str, &str); 15] = [
         ("event-ring.mjs", "event-ring.mjs"),
         ("event-codec.mjs", "event-codec.mjs"),
         ("param-store.mjs", "param-store.mjs"),
@@ -196,6 +196,9 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // the async-storage <-> sync-controller bridge faceplate-bridge imports.
         ("preset-storage.mjs", "preset-storage.mjs"),
         ("preset-persistence.mjs", "preset-persistence.mjs"),
+        // Full patch-state autosave/restore (E019 / 0065): the host-state-blob
+        // analogue faceplate-bridge restores at boot + debounces writes on edit.
+        ("state-autosave.mjs", "state-autosave.mjs"),
         // E017 input adapters (tickets 0053-0056): browser input → E015 ring
         // producers. The faceplate (E018) imports attachMidi / attachKeyboard /
         // attachKeyMode. .test.mjs suites stay out of the bundle as usual.

@@ -368,6 +368,10 @@ struct ControllerState {
     /// Packed pending-write journal (UserWrite variants) JS drains via
     /// `vxnc_take_journal` and flushes to IndexedDB off the tick (E019 / 0064).
     journal_out: Vec<u8>,
+    /// Full patch-state snapshot blob (the host-state-blob analogue) JS reads out
+    /// for full-state autosave, and the staging buffer it writes a saved blob into
+    /// before `vxnc_restore_state` (E019 / 0065). Reused per call.
+    state_out: Vec<u8>,
 }
 
 impl ControllerState {
@@ -399,6 +403,7 @@ impl ControllerState {
             corpus_json: Vec::new(),
             arg_in: Vec::new(),
             journal_out: Vec::with_capacity(4 * 1024),
+            state_out: Vec::with_capacity(vxn_app::BLOB_LEN),
         })
     }
 
@@ -1038,6 +1043,63 @@ pub extern "C" fn vxnc_hydrate_done() {
     s.rebuild_corpus_json();
 }
 
+// ---- full patch-state autosave / restore (E019 / 0065) ----------------------
+//
+// On desktop the host persists the plugin-state blob; on the web there is no
+// host, so the page autosaves the live patch and restores it on reload. The blob
+// is the SAME canonical state codec native CLAP host state and factory presets
+// use (`write_state_bytes` — params + key mode + split point), so a session blob
+// round-trips across native and wasm. Distinct from user presets: this is the
+// single "last session" patch, not a named corpus entry.
+
+/// Snapshot the full patch state into `state_out` and return its byte length.
+/// After this, [`vxnc_state_out_ptr`] addresses the blob (valid until the next
+/// snapshot/restore). JS copies it out and writes it to browser storage off the
+/// tick. The blob captures every param plus key mode + split point.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_snapshot_state() -> u32 {
+    let s = state();
+    let blob = s.model.snapshot_bytes();
+    s.state_out.clear();
+    s.state_out.extend_from_slice(&blob);
+    s.state_out.len() as u32
+}
+
+/// Pointer to the snapshot blob staged by [`vxnc_snapshot_state`] (also the
+/// staging buffer [`vxnc_restore_state`] reads). Valid until the next
+/// snapshot/restore call.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_state_out_ptr() -> *const u8 {
+    state().state_out.as_ptr()
+}
+
+/// Reserve `len` bytes in the state staging buffer and return a pointer JS writes
+/// a saved state blob into, before calling [`vxnc_restore_state`]. Valid until
+/// the next reserve (a `Vec` realloc can move it).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_state_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.state_out.clear();
+    s.state_out.resize(len as usize, 0);
+    s.state_out.as_mut_ptr()
+}
+
+/// Restore the model from the `len`-byte blob JS staged via
+/// [`vxnc_state_buf_reserve`]. Returns 1 on success, 0 if the blob is malformed
+/// or the wrong length (the codec rejects it and the model is left untouched, so
+/// the caller falls back to defaults). Call before re-broadcasting `EditorReady`
+/// so the broadcast seeds the UI + param SAB with the restored values; key mode
+/// + split point ride the same blob and are republished on the post-tick poll.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_restore_state(len: u32) -> u32 {
+    let s = state();
+    let n = (len as usize).min(s.state_out.len());
+    match s.model.restore_from_bytes(&s.state_out[..n]) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}
+
 // ===========================================================================
 // Tests (E019 / 0062) — the factory read path, host-run
 // ===========================================================================
@@ -1191,5 +1253,70 @@ mod tests {
             .user_load(Path::new("Pads/Warm.toml"))
             .unwrap();
         assert_eq!(load.blob, blob);
+    }
+
+    // E019 / 0065: a full-state snapshot round-trips through restore — every
+    // param plus the non-param key mode + split point (AC1).
+    #[test]
+    fn snapshot_state_round_trips_through_restore() {
+        let mut st = ControllerState::new();
+        // Edit a param, key mode, and split point away from defaults.
+        st.model.set(ParamId::new(0), 0.321);
+        st.model.set(ParamId::new(TOTAL_PARAMS - 1), 0.654);
+        st.model.set_key_mode(KeyMode::Split);
+        st.model.set_split_point(48);
+
+        // Snapshot it (the autosave blob).
+        let len = vxnc_snapshot_state_on(&mut st);
+        let blob: Vec<u8> = st.state_out[..len].to_vec();
+        assert_eq!(len, vxn_app::BLOB_LEN, "blob is the canonical state length");
+
+        // A fresh controller at cold defaults restores from the blob.
+        let mut fresh = ControllerState::new();
+        assert_eq!(fresh.model.key_mode(), KeyMode::Whole, "cold default");
+        fresh.state_out.clear();
+        fresh.state_out.extend_from_slice(&blob);
+        assert_eq!(restore_on(&mut fresh, blob.len()), 1, "restore succeeds");
+
+        assert!((fresh.model.get(ParamId::new(0)) - 0.321).abs() < 1e-6);
+        assert!((fresh.model.get(ParamId::new(TOTAL_PARAMS - 1)) - 0.654).abs() < 1e-6);
+        assert_eq!(fresh.model.key_mode(), KeyMode::Split, "key mode restored");
+        assert_eq!(fresh.model.split_point(), 48, "split point restored");
+    }
+
+    // E019 / 0065: a corrupt / wrong-length blob is rejected and leaves the model
+    // untouched, so the caller falls back to defaults (AC3).
+    #[test]
+    fn restore_rejects_bad_blob_without_mutating() {
+        let mut st = ControllerState::new();
+        st.model.set(ParamId::new(0), 0.5);
+        st.model.set_key_mode(KeyMode::Dual);
+
+        // Wrong length.
+        st.state_out = vec![0u8; 4];
+        assert_eq!(restore_on(&mut st, 4), 0, "short blob rejected");
+        // Right length, bad magic.
+        st.state_out = vec![0u8; vxn_app::BLOB_LEN];
+        assert_eq!(restore_on(&mut st, vxn_app::BLOB_LEN), 0, "bad magic rejected");
+
+        // Model untouched.
+        assert!((st.model.get(ParamId::new(0)) - 0.5).abs() < 1e-6);
+        assert_eq!(st.model.key_mode(), KeyMode::Dual);
+    }
+
+    // Test shims around the global-state opcodes (the `extern "C"` entry points go
+    // through the static STATE; these drive a borrowed instance directly).
+    fn vxnc_snapshot_state_on(st: &mut ControllerState) -> usize {
+        let blob = st.model.snapshot_bytes();
+        st.state_out.clear();
+        st.state_out.extend_from_slice(&blob);
+        st.state_out.len()
+    }
+    fn restore_on(st: &mut ControllerState, len: usize) -> u32 {
+        let n = len.min(st.state_out.len());
+        match st.model.restore_from_bytes(&st.state_out[..n]) {
+            Ok(()) => 1,
+            Err(_) => 0,
+        }
     }
 }

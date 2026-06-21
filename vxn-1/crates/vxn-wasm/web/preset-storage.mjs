@@ -13,13 +13,20 @@
 //   store "presets": key = synthetic path ("folder/Name.toml" | "Name.toml"),
 //                    value = Uint8Array (vxn_app::preset_record bytes).
 //   store "folders": key = folder name (so empty folders persist).
+//   store "state":   key = a fixed slot string, value = Uint8Array (the full
+//                    patch-state blob — the host-state analogue, E019 / 0065).
 //
 // Values are stored as plain Uint8Array; structured-clone handles them.
 
 export const DB_NAME = "vxn1-presets";
-export const DB_VERSION = 1;
+// v2 (0065) adds the "state" store for full-patch autosave. onupgradeneeded is
+// additive (guarded createObjectStore), so a v1 db upgrades in place.
+export const DB_VERSION = 2;
 export const STORE_PRESETS = "presets";
 export const STORE_FOLDERS = "folders";
+export const STORE_STATE = "state";
+// The single autosave slot key in STORE_STATE (the "last session" patch).
+export const STATE_KEY = "session";
 
 // Open (creating/upgrading) the preset DB. Resolves to the IDBDatabase.
 export function openPresetDB(indexedDB = globalThis.indexedDB) {
@@ -33,6 +40,7 @@ export function openPresetDB(indexedDB = globalThis.indexedDB) {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE_PRESETS)) db.createObjectStore(STORE_PRESETS);
       if (!db.objectStoreNames.contains(STORE_FOLDERS)) db.createObjectStore(STORE_FOLDERS);
+      if (!db.objectStoreNames.contains(STORE_STATE)) db.createObjectStore(STORE_STATE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -97,6 +105,25 @@ export function putFolder(db, name) {
 }
 export function deleteFolder(db, name) {
   return tx(db, STORE_FOLDERS, "readwrite", (s) => s.delete(name));
+}
+
+// Full patch-state autosave slot (E019 / 0065). One key→blob entry, the
+// host-state analogue. getState resolves the stored Uint8Array or null. The
+// `get`'s onsuccess fires before the transaction's oncomplete (which resolves
+// tx), so the captured result is ready by then — same shape as getAllPresets'
+// cursor accumulation.
+export function getState(db, key = STATE_KEY) {
+  return tx(db, STORE_STATE, "readonly", (s) => {
+    const out = { value: null };
+    s.get(key).onsuccess = (e) => {
+      const v = e.target.result;
+      out.value = v ? new Uint8Array(v) : null;
+    };
+    return out;
+  }).then((out) => out.value);
+}
+export function putState(db, bytes, key = STATE_KEY) {
+  return tx(db, STORE_STATE, "readwrite", (s) => s.put(bytes, key));
 }
 
 // Apply a batch of journal ops (the wasm UserState's UserWrite variants, decoded
