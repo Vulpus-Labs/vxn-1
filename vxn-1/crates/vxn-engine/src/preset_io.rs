@@ -17,6 +17,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+// Name sanitisation rules are shared with the web browser-storage store via
+// `vxn-app` (E019 / 0063) so folder names and preset filenames can't drift
+// between backends.
+use vxn_app::{preset_filename, sanitize_name, unique_folder_name};
+
 // `UNCATEGORIZED` (virtual root group label) lives in `vxn-app::domain` —
 // see [`crate::UNCATEGORIZED`] for the re-export.
 
@@ -63,34 +68,6 @@ pub fn ensure_user_dir() -> io::Result<PathBuf> {
     let dir = user_preset_dir().ok_or_else(no_dir_err)?;
     fs::create_dir_all(&dir)?;
     Ok(dir)
-}
-
-/// Sanitise a folder or preset display name: keep alphanumerics, space, `-`,
-/// `_`; map everything else (path separators, `.`, etc.) to `_`. Trim;
-/// empty → `"Untitled"`. Folder names and preset filenames share this rule so
-/// they can't drift (ADR 0005 §5).
-fn sanitize_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = cleaned.trim();
-    if trimmed.is_empty() {
-        "Untitled".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Preset filename derived from the display name (`<sanitized>.toml`).
-fn preset_filename(name: &str) -> String {
-    format!("{}.toml", sanitize_name(name))
 }
 
 /// Canonicalise the target path against the user dir and refuse anything that
@@ -536,24 +513,6 @@ fn existing_folder_names_ci(base: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn unique_folder_name(stem: &str, existing_ci: &[String]) -> String {
-    let stem_l = stem.to_lowercase();
-    if !existing_ci.iter().any(|e| e == &stem_l) {
-        return stem.to_string();
-    }
-    let mut n = 1;
-    loop {
-        let candidate = format!("{stem} {n}");
-        if !existing_ci
-            .iter()
-            .any(|e| e == &candidate.to_lowercase())
-        {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
 /// Why a preset file failed to load.
 #[derive(Debug)]
 pub enum LoadError {
@@ -601,42 +560,9 @@ mod tests {
         std::env::temp_dir().join(format!("vxn1-preset-io-test-{}", std::process::id()))
     }
 
-    #[test]
-    fn filename_is_sanitized() {
-        assert_eq!(preset_filename("Mini Bass"), "Mini Bass.toml");
-        assert_eq!(preset_filename("a/b:c*?"), "a_b_c__.toml");
-        assert_eq!(preset_filename("   "), "Untitled.toml");
-    }
-
-    #[test]
-    fn sanitize_folder_same_rule() {
-        assert_eq!(sanitize_name("Pads"), "Pads");
-        assert_eq!(sanitize_name("a/b"), "a_b");
-        assert_eq!(sanitize_name(""), "Untitled");
-        assert_eq!(sanitize_name("   "), "Untitled");
-    }
-
-    #[test]
-    fn unique_folder_name_suffixes_collisions() {
-        // Empty existing list: stem comes back unchanged.
-        assert_eq!(unique_folder_name("New Folder", &[]), "New Folder");
-
-        // Stem already present (case-insensitive) → "stem 1".
-        let existing = vec!["new folder".to_string()];
-        assert_eq!(unique_folder_name("New Folder", &existing), "New Folder 1");
-
-        // "stem" and "stem 1" both present → "stem 2".
-        let existing = vec!["new folder".to_string(), "new folder 1".to_string()];
-        assert_eq!(unique_folder_name("New Folder", &existing), "New Folder 2");
-
-        // Gaps are not filled: existing 0..=2 ⇒ next is 3, not the missing 1.
-        let existing = vec![
-            "pads".to_string(),
-            "pads 2".to_string(),
-            "pads 1".to_string(),
-        ];
-        assert_eq!(unique_folder_name("Pads", &existing), "Pads 3");
-    }
+    // Name-sanitisation rules (sanitize_name / preset_filename /
+    // unique_folder_name) moved to `vxn-app::preset_names` (E019 / 0063) and are
+    // tested there — shared with the web browser-storage store.
 
     #[test]
     fn write_then_load_round_trips_a_performance() {

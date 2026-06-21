@@ -55,6 +55,9 @@ use vxn_app::{
     factory_asset,
 };
 
+mod user_store;
+use user_store::UserState;
+
 // ===========================================================================
 // WebModel — the controller-side param store (the native SharedParams shape)
 // ===========================================================================
@@ -164,11 +167,15 @@ impl Vxn1Params for WebModel {
 /// asset arrives. (`Mutex` not `RefCell` only because `PresetStore: Send`;
 /// the page is single-threaded.)
 ///
-/// The user side (IndexedDB/OPFS-backed) is the next ticket (0063); until then
-/// user ops are inert, exactly as the prior `NullStore` left them.
+/// The user side is browser storage (IndexedDB; ADR 0009 addendum, E019 / 0063).
+/// This holds the synchronous in-memory cache ([`UserState`]); the cache is
+/// hydrated from IndexedDB at boot and its journal flushed back, both wired in
+/// 0064. The cache is shared with [`ControllerState`] (same `Arc`) so 0064 can
+/// drain the journal and seed hydrated records without re-plumbing the store.
 #[derive(Default)]
 struct WebPresetStore {
     factory: Arc<Mutex<Vec<FactoryEntry>>>,
+    user: Arc<Mutex<UserState>>,
 }
 
 impl PresetStore for WebPresetStore {
@@ -187,38 +194,59 @@ impl PresetStore for WebPresetStore {
     fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
         self.factory.lock().ok()?.get(index).map(|e| e.meta.clone())
     }
-    fn user_load(&self, _path: &Path) -> Result<PresetLoad, String> {
-        Err("no presets".into())
+    fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
+        self.user.lock().map_err(|_| "user store poisoned")?.load(path)
     }
     fn user_save(
         &self,
-        _name: &str,
-        _folder: Option<&str>,
-        _meta: &PresetMeta,
-        _blob: &[u8],
+        name: &str,
+        folder: Option<&str>,
+        meta: &PresetMeta,
+        blob: &[u8],
     ) -> Result<PathBuf, String> {
-        Err("readonly".into())
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .save(name, folder, meta, blob)
     }
-    fn user_delete(&self, _path: &Path) -> Result<(), String> {
-        Err("readonly".into())
+    fn user_delete(&self, path: &Path) -> Result<(), String> {
+        self.user.lock().map_err(|_| "user store poisoned")?.delete(path)
     }
-    fn user_rename(&self, _path: &Path, _new_name: &str) -> Result<PathBuf, String> {
-        Err("readonly".into())
+    fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .rename(path, new_name)
     }
-    fn user_move(&self, _path: &Path, _dest_folder: Option<&str>) -> Result<PathBuf, String> {
-        Err("readonly".into())
+    fn user_move(&self, path: &Path, dest_folder: Option<&str>) -> Result<PathBuf, String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .move_preset(path, dest_folder)
     }
-    fn user_create_folder(&self, _suggested: &str) -> Result<(PathBuf, String), String> {
-        Err("readonly".into())
+    fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .create_folder(suggested)
     }
-    fn user_rename_folder(&self, _old: &str, _new: &str) -> Result<(PathBuf, String), String> {
-        Err("readonly".into())
+    fn user_rename_folder(&self, old: &str, new: &str) -> Result<(PathBuf, String), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .rename_folder(old, new)
     }
-    fn user_delete_folder(&self, _name: &str) -> Result<(), String> {
-        Err("readonly".into())
+    fn user_delete_folder(&self, name: &str) -> Result<(), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .delete_folder(name)
     }
     fn list_user_tree(&self) -> Vec<UserFolderEntry> {
-        Vec::new()
+        self.user
+            .lock()
+            .map(|u| u.list_tree())
+            .unwrap_or_default()
     }
 }
 
@@ -304,6 +332,10 @@ struct ControllerState {
     /// Shared factory entries the store reads; filled by `vxnc_load_factory`
     /// once JS has fetched the baked asset (E019 / 0062).
     factory: Arc<Mutex<Vec<FactoryEntry>>>,
+    /// Shared user-preset cache the store reads/writes (E019 / 0063). Held here
+    /// so 0064 can hydrate it from IndexedDB and drain its write journal.
+    #[allow(dead_code, reason = "hydration + journal flush wired in 0064")]
+    user: Arc<Mutex<UserState>>,
     /// Shared corpus snapshot (factory + user listing) JS serializes for the
     /// preset browser via `vxnc_corpus_json`.
     corpus: CorpusHandle,
@@ -318,8 +350,10 @@ impl ControllerState {
     fn new() -> Box<Self> {
         let model = Arc::new(WebModel::new());
         let factory: Arc<Mutex<Vec<FactoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let user: Arc<Mutex<UserState>> = Arc::new(Mutex::new(UserState::default()));
         let store = WebPresetStore {
             factory: factory.clone(),
+            user: user.clone(),
         };
         let (ctrl, view_rx, corpus) = Controller::new(model.clone(), Box::new(store));
         let ui_tx = ctrl.ui_sender();
@@ -335,6 +369,7 @@ impl ControllerState {
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
             view_out: Vec::with_capacity(8 * 1024),
             factory,
+            user,
             corpus,
             factory_in: Vec::new(),
             corpus_json: Vec::new(),

@@ -298,6 +298,34 @@ inverse param_ref(id):
 - The `vxn-app-wasm-probe` crate is throwaway: delete it and its workspace
   member line once 0039 lands; the decision lives on in this ADR.
 
+## Addendum (2026-06-21, E019 / 0062–0063): web preset persistence
+
+E019 ports presets to the browser; two choices landed here since they extend
+this ADR's "controller deps only `vxn-app`" / cross-thread-store framing.
+
+- **Factory bank: build-time baked asset, not the engine in the controller**
+  (0062). Pulling `vxn-engine` into the lean main-thread controller wasm to read
+  the embedded bank would violate §1's intent. Instead xtask's web build runs
+  `vxn-engine`'s `bake-factory` bin → a flat `factory.bin` (`vxn-app::factory_asset`
+  codec, 29 presets); JS fetches it at boot and feeds it to the controller via
+  `vxnc_load_factory`. The shared `PluginState` codec moved to `vxn-app::state`
+  and the corpus→JSON projection to `vxn-core-app` so the controller builds the
+  byte-identical browser payload native does.
+
+- **User presets: IndexedDB, binary-blob format** (0063). Storage backend is
+  **IndexedDB**, not OPFS: the corpus is small key→value blobs, IndexedDB is
+  universal, and a flat store fits better than OPFS's file tree. Each preset is
+  stored as the canonical `vxn-app::state` blob + its `PresetMeta`
+  (`vxn-app::preset_record` codec), keyed by a synthetic `folder/Name.toml` path;
+  empty folders persist as their own keys. **The web does NOT reuse the desktop
+  TOML preset format** — that codec (`vxn-engine::preset`) is engine-coupled and
+  not worth hoisting to wasm, so web user presets are their own world; a
+  desktop-saved `.toml` does not parse on web. Cross-platform sharing is the 0066
+  export/import path. Name/folder sanitisation is shared with desktop via
+  `vxn-app::preset_names` so the two backends can't drift. The synchronous
+  `PresetStore` reads/writes an in-memory cache (`vxn-web-controller::user_store`);
+  boot-hydration timing and deferred-write flush to IndexedDB are 0064.
+
 ## References
 
 - ADR 0003 §3 — key mode / split as non-automatable shared state (not params).

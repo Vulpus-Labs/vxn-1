@@ -58,3 +58,36 @@ routed but inert under [`NullStore`](../../vxn-1/crates/vxn-web-controller/src/l
   controller loop on storage I/O here.
 - Out of scope: boot hydration timing + deferred-write flush (0064),
   full-state autosave (0065).
+
+## Close-out (2026-06-21)
+
+- **AC1 — backend chosen + recorded.** IndexedDB (not OPFS), justified in the
+  [ADR 0009 addendum](../../vxn-1/adrs/0009-web-controller-placement-and-param-store.md).
+  Also recorded the **binary-blob** format decision (user-chosen): web user
+  presets store the `vxn-app::state` blob + `PresetMeta`, *not* the desktop TOML.
+  This **waives AC5** by design — a desktop `.toml` does not parse on web; web
+  presets are their own world, cross-platform sharing deferred to 0066. The TOML
+  codec (`vxn-engine::preset`) is engine-coupled and not worth hoisting to wasm.
+- **AC2 — PresetStore user side.** `WebPresetStore` (now factory + user) delegates
+  every user op to an in-memory `UserState`
+  ([user_store.rs](../../vxn-1/crates/vxn-web-controller/src/user_store.rs)):
+  list/load/save/rename/delete/move + folder create/rename/delete, plus a
+  `UserWrite` journal (Put/Delete/PutFolder/DeleteFolder) and `take_journal` /
+  `hydrate_*` for 0064. The cache is shared with `ControllerState` via `Arc<Mutex>`.
+- **AC3 — sanitisation shared.** `sanitize_name` / `preset_filename` /
+  `unique_folder_name` hoisted from `vxn-engine::preset_io` to
+  [vxn-app::preset_names](../../vxn-1/crates/vxn-app/src/preset_names.rs); the
+  engine now imports them (its duplicate copies + tests removed). Tests live in
+  `vxn_app::preset_names::tests` — one source of rules for both backends.
+- **AC4 — round-trip.** `vxn_web_controller::user_store::tests::save_list_load_round_trips`
+  (+ rename/move/folder/journal+hydration tests, 9 total). The IndexedDB value
+  codec round-trips via `vxn-app::preset_record` (`PresetRecord` encode/decode).
+- **Storage primitive.** [preset-storage.mjs](../../vxn-1/crates/vxn-wasm/web/preset-storage.mjs)
+  (open/getAll/put/delete/applyWrites over two object stores: `presets`,
+  `folders`), with a headless fake-IDB smoke test
+  ([preset-storage.test.mjs](../../vxn-1/crates/vxn-wasm/web/preset-storage.test.mjs)).
+- **Not yet live.** The faceplate's user-preset buttons stay inert in the bridge
+  until 0064 wires boot-hydration + deferred-write flush + the controller opcodes
+  (the storage *layer* is this ticket's scope; the bridge is 0064).
+- Tests green: Rust (vxn-app 18, vxn-web-controller 11, engine 153), node
+  (faceplate-bridge / controller / preset-storage), 143 vitest; wasm builds clean.

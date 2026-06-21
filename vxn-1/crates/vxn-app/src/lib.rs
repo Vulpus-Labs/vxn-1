@@ -13,6 +13,8 @@ pub mod events;
 pub mod factory_asset;
 pub mod model;
 pub mod params;
+pub mod preset_names;
+pub mod preset_record;
 pub mod state;
 pub mod sync;
 
@@ -21,6 +23,8 @@ pub use domain::{DEFAULT_SPLIT_POINT, KeyMode, Layer, PresetMeta, UNCATEGORIZED}
 pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1ViewCustom};
 pub use factory_asset::FactoryEntry;
 pub use model::{ParamId, ParamModel, Vxn1Params};
+pub use preset_names::{preset_filename, sanitize_name, unique_folder_name};
+pub use preset_record::PresetRecord;
 pub use state::{BLOB_LEN, MAGIC, VERSION, read_state_into, write_state_bytes};
 pub use params::{
     AssignMode, CrossModType, EnvSel, GLOBAL_PARAMS, GLOBAL_COUNT, GlobalParam, LfoSel,
