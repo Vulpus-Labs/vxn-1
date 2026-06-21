@@ -100,3 +100,33 @@ and writes fire-and-forget to storage without stalling the tick.
 `preset-persistence.test.mjs` (new, real wasm + fake-IDB, all 4 ACs),
 `faceplate-bridge.test.mjs` (updated: save now journals + fires corpus-changed),
 `controller.test.mjs`, `preset-storage.test.mjs` — all pass.
+
+## Close-out (2026-06-21)
+
+- **Persist across reload (AC1).** Boot hydration seeds the in-memory cache
+  from IndexedDB before the controller goes live: `vxnc_hydrate_{folder,preset,
+  done}` ([lib.rs](../../vxn-1/crates/vxn-web-controller/src/lib.rs)) replay the
+  persisted corpus without journalling, driven by `PresetPersistence.hydrate()`
+  ([preset-persistence.mjs](../../vxn-1/crates/vxn-wasm/web/preset-persistence.mjs)).
+  Headless `preset-persistence.test.mjs` (real wasm + fake-IDB): a second
+  controller hydrated from the same store lists + loads the saves; delete
+  persists too. Browser-verified live: saves survive reload and are shared
+  across tabs (same-origin IndexedDB).
+- **Synchronous corpus after a mutating op (AC2).** The core controller
+  refreshes the shared corpus and the web controller rebuilds `corpus_json` in
+  the SAME `vxnc_tick` drain on `ViewEvent::PresetCorpusChanged` (packed as
+  `VE_PRESET_CORPUS_CHANGED`, tag 6); `corpusJson()` reflects the save the same
+  tick — `user_save_rebuilds_corpus_and_journals` + Node AC2.
+- **No lost write / flush-on-hide (AC3).** `vxnc_take_journal` packs the
+  `UserWrite` journal; `PresetPersistence.flush()` drains synchronously and
+  applies on a serialised tail promise (no transaction races); `attachFlushOnHide`
+  flushes on `visibilitychange`→hidden / `pagehide`. Rapid same-name saves
+  collapse correctly — Node AC3 + flush-on-hide.
+- **Tick never blocks on storage (AC4).** No `await` in the drain path:
+  `takeJournal()` is a sync wasm call; `applyWrites` runs off the tick — Node AC4.
+- User-preset opcodes wired (were inert): `vxnc_ui_{save_preset,load_user,
+  rename_preset,delete_preset,move_preset,rename_folder,delete_folder,new_folder,
+  step_preset}` over the `vxnc_arg_buf_reserve` arg buffer, routed in
+  [faceplate-bridge.mjs](../../vxn-1/crates/vxn-wasm/web/faceplate-bridge.mjs).
+  `xtask` bundles the two preset `.mjs`. Landed `b3d82d0`; deployed live to
+  `/products/vxn-1/web/`.
