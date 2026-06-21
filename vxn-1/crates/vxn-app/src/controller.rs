@@ -78,6 +78,15 @@ impl<M: ParamModel + Vxn1Params> Controller<M> {
         self.inner.refresh_factory_corpus();
     }
 
+    /// Re-read the user-side corpus from the store into the shared corpus
+    /// snapshot. The web controller seeds its user cache from IndexedDB at
+    /// boot (E019 / 0064) *after* construction; this republishes the snapshot
+    /// once the cache is hydrated (the native stores never need it — their
+    /// `Controller::new` already listed the on-disk corpus).
+    pub fn refresh_user_corpus(&self) {
+        self.inner.refresh_user_corpus();
+    }
+
     /// Drain inbound queues and apply their effects. Wraps
     /// [`vxn_core_app::Controller::tick`] with the VXN1 custom handler;
     /// after dispatch, polls the model for key-mode / split-point

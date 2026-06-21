@@ -28,6 +28,7 @@
 // proof is the byte-for-byte transport the page runs.
 
 import { WebController, LAYER_UPPER, LAYER_LOWER } from "./controller.mjs";
+import { PresetPersistence } from "./preset-persistence.mjs";
 
 // ---- opcode <-> controller routing helpers ---------------------------------
 
@@ -112,6 +113,7 @@ export class FaceplateBridge {
     controller,
     dispatch = () => {},
     onTextInput = () => {},
+    onCorpusChanged = () => {},
     scheduleFrame = (cb) =>
       typeof requestAnimationFrame === "function"
         ? requestAnimationFrame(cb)
@@ -123,6 +125,11 @@ export class FaceplateBridge {
     this.controller = controller;
     this.dispatch = dispatch;
     this.onTextInput = onTextInput;
+    // Called (with the optional follow path) when a tick changed the user-preset
+    // corpus — the boot wiring re-pushes `applyPresetCorpus` + flushes the write
+    // journal to IndexedDB (E019 / 0064). Not part of the dispatch batch: the
+    // corpus rides its own side channel (controller.corpusJson()), not applyViewEvents.
+    this.onCorpusChanged = onCorpusChanged;
     this._scheduleFrame = scheduleFrame;
     this._cancelFrame = cancelFrame;
 
@@ -186,19 +193,38 @@ export class FaceplateBridge {
       case "load_factory":
         c.loadFactory(msg.index >>> 0);
         break;
-      // --- user preset / folder ops (E019 / 0063+): still inert ---
-      // User storage (IndexedDB/OPFS) is the next ticket; swallow these so the
-      // page's buttons don't throw until the store + opcodes land.
+      // --- user preset / folder ops (E019 / 0064): wired ---
+      // The controller mutates the in-memory cache + journals the persistence
+      // op on the next tick; the corpus-changed event then re-pushes the corpus
+      // and flushes the journal to IndexedDB (onCorpusChanged). A null/absent
+      // folder means the user-dir root.
       case "load_user":
+        c.loadUser(msg.path);
+        break;
       case "save_preset":
+        c.savePreset(msg.name, msg.folder ?? null);
+        break;
       case "rename_preset":
+        c.renamePreset(msg.path, msg.new_name);
+        break;
       case "delete_preset":
+        c.deletePreset(msg.path);
+        break;
       case "move_preset":
+        c.movePreset(msg.path, msg.dest_folder ?? null);
+        break;
       case "rename_folder":
+        c.renameFolder(msg.old_name, msg.new_name);
+        break;
       case "delete_folder":
+        c.deleteFolder(msg.name);
+        break;
       case "new_folder":
+        c.newFolder(msg.suggested);
+        break;
       case "step_preset":
-        return; // inert for now
+        c.stepPreset(msg.delta | 0);
+        break;
       default:
         return; // unknown opcode — drop (matches native parse returning None)
     }
@@ -217,6 +243,12 @@ export class FaceplateBridge {
     if (!raw || raw.length === 0) return [];
     const translated = [];
     for (const ev of raw) {
+      // Corpus changes ride their own side channel (re-push applyPresetCorpus +
+      // flush the journal); they're not part of the applyViewEvents dispatch.
+      if (ev.type === "PresetCorpusChanged") {
+        this.onCorpusChanged(ev.follow);
+        continue;
+      }
       const fe = viewEventToFaceplate(ev);
       if (fe) translated.push(fe);
     }
@@ -295,6 +327,20 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     }
   };
 
+  // Push the current factory+user corpus to the preset browser (the web analogue
+  // of the native `applyPresetCorpus`). Called after the factory loads, after
+  // boot hydration, and on every corpus-changing op (save/rename/delete/move/
+  // folder). Best-effort: the panel may not be mounted yet.
+  const publishCorpus = () => {
+    try {
+      if (window.__vxn && window.__vxn.applyPresetCorpus) {
+        window.__vxn.applyPresetCorpus(controller.corpusJson());
+      }
+    } catch (e) {
+      console.warn("vxn: applyPresetCorpus threw", e);
+    }
+  };
+
   // 1. Audio coordinator owns the shared SABs (ring + param store). Construct it
   //    now; `start()` must run from a user gesture (autoplay), so the page's
   //    Start affordance drives it — but the controller + bridge can run before
@@ -350,9 +396,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     const resp = await fetch("./factory.bin");
     if (resp.ok) {
       const count = controller.loadFactoryAsset(new Uint8Array(await resp.arrayBuffer()));
-      if (count > 0 && window.__vxn && window.__vxn.applyPresetCorpus) {
-        window.__vxn.applyPresetCorpus(controller.corpusJson());
-      }
+      if (count > 0) publishCorpus();
     } else {
       console.warn("vxn: factory.bin fetch failed", resp.status);
     }
@@ -360,11 +404,32 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     console.warn("vxn: factory bank load failed", e);
   }
 
-  // 3. The bridge: opcodes in, ViewEvents out, ~60 Hz coalescing.
+  // 2b. User presets (E019 / 0064): bridge async IndexedDB to the sync
+  //     controller. Hydrate the in-memory cache from storage BEFORE the
+  //     controller goes live so list/load serve synchronously; then re-push the
+  //     corpus (now factory + user) and arm the flush-on-hide backstop. Writes
+  //     go through `persistence.flush()` off the tick (onCorpusChanged below).
+  //     Best-effort: storage unavailable (private mode) just means no persistence.
+  const persistence = new PresetPersistence({ controller });
+  try {
+    await persistence.hydrate();
+    publishCorpus();
+    persistence.attachFlushOnHide();
+  } catch (e) {
+    console.warn("vxn: preset persistence init failed", e);
+  }
+
+  // 3. The bridge: opcodes in, ViewEvents out, ~60 Hz coalescing. A corpus
+  //    change (user save/rename/delete/move/folder op) re-pushes the corpus and
+  //    flushes the write journal to IndexedDB off the tick.
   const bridge = new FaceplateBridge({
     controller,
     dispatch,
     onTextInput: (req) => openTextInputPopup(req),
+    onCorpusChanged: () => {
+      publishCorpus();
+      persistence.flush();
+    },
   });
   bridge.start();
 
@@ -402,7 +467,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   window.addEventListener("keydown", unlock, true);
 
   // Expose for the page's Start button + E017 input adapters.
-  window.__vxnWeb = { host, controller, bridge, start: unlock, input };
+  window.__vxnWeb = { host, controller, bridge, persistence, start: unlock, input };
   return window.__vxnWeb;
 }
 

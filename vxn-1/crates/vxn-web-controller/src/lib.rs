@@ -52,11 +52,11 @@ use vxn_app::{
     Controller, CorpusHandle, FactoryEntry, KeyMode, Layer, ParamDesc, ParamId, ParamModel,
     PresetLoad, PresetMeta, PresetSource, PresetStore, TOTAL_PARAMS, UNCATEGORIZED, UiEvent,
     UserFolderEntry, ViewEvent, Vxn1Params, Vxn1UiCustom, corpus_snapshot_json, desc_for_clap_id,
-    factory_asset,
+    factory_asset, preset_record,
 };
 
 mod user_store;
-use user_store::UserState;
+use user_store::{UserState, UserWrite};
 
 // ===========================================================================
 // WebModel — the controller-side param store (the native SharedParams shape)
@@ -289,10 +289,27 @@ const VE_KEY_MODE_CHANGED: u32 = 2;
 const VE_SPLIT_POINT_CHANGED: u32 = 3;
 const VE_EDIT_LAYER_CHANGED: u32 = 4;
 const VE_PRESET_LOADED: u32 = 5;
+// E019 / 0064: the user-preset corpus changed (save/rename/delete/move/folder
+// op, or an EditorReady re-push). Carries an optional follow path the browser
+// moves its cursor onto. The controller rebuilds `corpus_json` in the same
+// drain, so JS re-reads it via `vxnc_corpus_json` and re-pushes `applyPresetCorpus`.
+const VE_PRESET_CORPUS_CHANGED: u32 = 6;
 
 const PRESET_SRC_NONE: u32 = 0;
 const PRESET_SRC_FACTORY: u32 = 1;
 const PRESET_SRC_USER: u32 = 2;
+
+// Journal-op tags packed by `vxnc_take_journal` (the wasm UserWrite variants),
+// decoded JS-side into `applyWrites` ops (preset-storage.mjs). MUST match the
+// JS mirror in controller.mjs (JW_*).
+const JW_PUT: u32 = 1;
+const JW_DELETE: u32 = 2;
+const JW_PUT_FOLDER: u32 = 3;
+const JW_DELETE_FOLDER: u32 = 4;
+
+// Sentinel `len` meaning `Option::None` for the string opcodes whose argument is
+// `Option<String>` (save/move folder). A present-but-empty string is len 0.
+const ARG_NONE: u32 = u32::MAX;
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -334,7 +351,6 @@ struct ControllerState {
     factory: Arc<Mutex<Vec<FactoryEntry>>>,
     /// Shared user-preset cache the store reads/writes (E019 / 0063). Held here
     /// so 0064 can hydrate it from IndexedDB and drain its write journal.
-    #[allow(dead_code, reason = "hydration + journal flush wired in 0064")]
     user: Arc<Mutex<UserState>>,
     /// Shared corpus snapshot (factory + user listing) JS serializes for the
     /// preset browser via `vxnc_corpus_json`.
@@ -342,8 +358,16 @@ struct ControllerState {
     /// Staging buffer JS writes the fetched factory asset into before
     /// `vxnc_load_factory`.
     factory_in: Vec<u8>,
-    /// UTF-8 corpus JSON (built by `vxnc_load_factory`), read out by JS.
+    /// UTF-8 corpus JSON (rebuilt by `load_factory` / `hydrate_done` / a
+    /// corpus-changing tick), read out by JS.
     corpus_json: Vec<u8>,
+    /// Staging buffer JS writes UTF-8 opcode arguments (preset/folder names,
+    /// paths) into before a string-taking user opcode reads them (E019 / 0064).
+    /// Reused per call — opcodes copy what they need into the posted `UiEvent`.
+    arg_in: Vec<u8>,
+    /// Packed pending-write journal (UserWrite variants) JS drains via
+    /// `vxnc_take_journal` and flushes to IndexedDB off the tick (E019 / 0064).
+    journal_out: Vec<u8>,
 }
 
 impl ControllerState {
@@ -373,7 +397,59 @@ impl ControllerState {
             corpus,
             factory_in: Vec::new(),
             corpus_json: Vec::new(),
+            arg_in: Vec::new(),
+            journal_out: Vec::with_capacity(4 * 1024),
         })
+    }
+
+    /// Slice of the staged opcode-argument buffer (`arg_in[start..start+len]`),
+    /// clamped to the buffer so a malformed length can't panic.
+    fn arg_slice(&self, start: usize, len: usize) -> &[u8] {
+        let n = self.arg_in.len();
+        let s = start.min(n);
+        let e = start.saturating_add(len).min(n);
+        &self.arg_in[s..e]
+    }
+
+    /// `arg_slice` decoded as a UTF-8 `String` (lossy — the bytes came from a JS
+    /// `TextEncoder`, so this is only defensive).
+    fn arg_string(&self, start: usize, len: usize) -> String {
+        String::from_utf8_lossy(self.arg_slice(start, len)).into_owned()
+    }
+
+    /// Drain the user store's pending-write journal into `journal_out` (the
+    /// packed layout JS decodes into `applyWrites` ops). Returns the byte length.
+    fn take_journal(&mut self) -> u32 {
+        let ops = self
+            .user
+            .lock()
+            .map(|mut u| u.take_journal())
+            .unwrap_or_default();
+        self.journal_out.clear();
+        push_u32(&mut self.journal_out, ops.len() as u32);
+        for op in &ops {
+            match op {
+                UserWrite::Put { key, bytes } => {
+                    push_u32(&mut self.journal_out, JW_PUT);
+                    push_str(&mut self.journal_out, key);
+                    push_u32(&mut self.journal_out, bytes.len() as u32);
+                    self.journal_out.extend_from_slice(bytes);
+                }
+                UserWrite::Delete { key } => {
+                    push_u32(&mut self.journal_out, JW_DELETE);
+                    push_str(&mut self.journal_out, key);
+                }
+                UserWrite::PutFolder { name } => {
+                    push_u32(&mut self.journal_out, JW_PUT_FOLDER);
+                    push_str(&mut self.journal_out, name);
+                }
+                UserWrite::DeleteFolder { name } => {
+                    push_u32(&mut self.journal_out, JW_DELETE_FOLDER);
+                    push_str(&mut self.journal_out, name);
+                }
+            }
+        }
+        self.journal_out.len() as u32
     }
 
     /// Parse the baked factory asset JS staged in `factory_in[..len]` into the
@@ -430,6 +506,7 @@ impl ControllerState {
         self.view_out.clear();
         push_u32(&mut self.view_out, 0); // count placeholder
         let mut count = 0u32;
+        let mut corpus_dirty = false;
         while let Ok(ev) = self.view_rx.try_recv() {
             match ev {
                 ViewEvent::ParamChanged {
@@ -494,14 +571,33 @@ impl ControllerState {
                     }
                     count += 1;
                 }
-                // Status / text-input / corpus-changed ViewEvents are skipped
-                // here; the corpus listing rides `vxnc_corpus_json` (0062), and
-                // status/text-input are E018-handled in JS.
+                ViewEvent::PresetCorpusChanged { follow } => {
+                    // The core controller already refreshed the shared corpus
+                    // snapshot (save/rename/delete/move/folder op, or EditorReady).
+                    // Pack the notice + flag a corpus_json rebuild so JS re-pushes
+                    // `applyPresetCorpus` and flushes the write journal.
+                    push_u32(&mut self.view_out, VE_PRESET_CORPUS_CHANGED);
+                    match &follow {
+                        Some(p) => {
+                            push_u32(&mut self.view_out, 1);
+                            push_str(&mut self.view_out, &p.display().to_string());
+                        }
+                        None => push_u32(&mut self.view_out, 0),
+                    }
+                    count += 1;
+                    corpus_dirty = true;
+                }
+                // Status / text-input ViewEvents are skipped here; status /
+                // text-input are E018-handled in JS.
                 _ => {}
             }
         }
         // Backpatch the record count into the header.
         self.view_out[0..4].copy_from_slice(&count.to_le_bytes());
+        // Rebuild the browser-facing corpus JSON once if anything changed it.
+        if corpus_dirty {
+            self.rebuild_corpus_json();
+        }
     }
 
     /// Port of vxn-clap `push_param_diffs`: diff `readback_in` (the values the
@@ -768,6 +864,180 @@ pub extern "C" fn vxnc_ui_load_factory(index: u32) {
     });
 }
 
+// ---- presets: user side (E019 / 0064) ---------------------------------------
+//
+// User-preset ops carry strings (names, paths, folders). The JS glue stages the
+// UTF-8 bytes in the arg buffer via `vxnc_arg_buf_reserve`, then calls the
+// opcode with the byte LENGTHS; the opcode slices the buffer (sequential layout)
+// and posts the matching `UiEvent`. The core controller mutates the in-memory
+// `UserState` cache + journals the persistence op + refreshes the corpus on the
+// next `vxnc_tick`; JS drains the journal (`vxnc_take_journal`) and flushes it to
+// IndexedDB off the tick. An `Option<String>` folder rides `len == ARG_NONE`.
+
+/// Reserve `len` bytes in the opcode-argument staging buffer and return a
+/// pointer JS writes the concatenated UTF-8 arguments into, before calling a
+/// string-taking user opcode. Valid until the next reserve (a `Vec` realloc can
+/// move it).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_arg_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.arg_in.clear();
+    s.arg_in.resize(len as usize, 0);
+    s.arg_in.as_mut_ptr()
+}
+
+/// `UiEvent::SavePreset` — args: `name` then `folder` (folder `len == ARG_NONE`
+/// → root). Snapshots the model blob on the next tick and writes through the
+/// user store.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_save_preset(name_len: u32, folder_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    let folder = (folder_len != ARG_NONE).then(|| s.arg_string(name_len as usize, folder_len as usize));
+    s.post(UiEvent::SavePreset { name, folder });
+}
+
+/// `UiEvent::LoadPreset { User }` — arg: the synthetic preset path.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_load_user(path_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    s.post(UiEvent::LoadPreset {
+        source: PresetSource::User {
+            path: PathBuf::from(path),
+        },
+    });
+}
+
+/// `UiEvent::RenamePreset` — args: `path` then `new_name`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_rename_preset(path_len: u32, name_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    let new_name = s.arg_string(path_len as usize, name_len as usize);
+    s.post(UiEvent::RenamePreset {
+        path: PathBuf::from(path),
+        new_name,
+    });
+}
+
+/// `UiEvent::DeletePreset` — arg: the preset path.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_delete_preset(path_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    s.post(UiEvent::DeletePreset {
+        path: PathBuf::from(path),
+    });
+}
+
+/// `UiEvent::MovePreset` — args: `path` then `dest_folder` (folder `len ==
+/// ARG_NONE` → move to root).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_move_preset(path_len: u32, folder_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    let dest_folder =
+        (folder_len != ARG_NONE).then(|| s.arg_string(path_len as usize, folder_len as usize));
+    s.post(UiEvent::MovePreset {
+        path: PathBuf::from(path),
+        dest_folder,
+    });
+}
+
+/// `UiEvent::RenameFolder` — args: `old_name` then `new_name`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_rename_folder(old_len: u32, new_len: u32) {
+    let s = state();
+    let old_name = s.arg_string(0, old_len as usize);
+    let new_name = s.arg_string(old_len as usize, new_len as usize);
+    s.post(UiEvent::RenameFolder { old_name, new_name });
+}
+
+/// `UiEvent::DeleteFolder` — arg: the folder name.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_delete_folder(name_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    s.post(UiEvent::DeleteFolder { name });
+}
+
+/// `UiEvent::NewFolder` — arg: the suggested folder name (the store uniquifies).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_new_folder(suggested_len: u32) {
+    let s = state();
+    let suggested = s.arg_string(0, suggested_len as usize);
+    s.post(UiEvent::NewFolder { suggested });
+}
+
+/// `UiEvent::StepPreset` — walk the combined factory+user list by `delta`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_step_preset(delta: i32) {
+    state().post(UiEvent::StepPreset { delta });
+}
+
+// ---- presets: write journal drain (deferred flush, E019 / 0064) -------------
+
+/// Drain the user store's pending-write journal into the packed out-buffer (see
+/// `JW_*`), returning the byte length. JS decodes it into `applyWrites` ops and
+/// flushes them to IndexedDB OFF the tick. Empty on a tick with no writes.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_take_journal() -> u32 {
+    state().take_journal()
+}
+
+/// Pointer to the packed journal out-buffer. Valid until the next
+/// `vxnc_take_journal`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_journal_out_ptr() -> *const u8 {
+    state().journal_out.as_ptr()
+}
+
+// ---- presets: boot hydration (seed the cache from IndexedDB, E019 / 0064) ---
+//
+// At boot, before the controller goes live, JS reads the persisted user corpus
+// out of IndexedDB and replays it into the in-memory cache WITHOUT journalling
+// (it's already on disk). After replaying every folder + preset, JS calls
+// `vxnc_hydrate_done` to refresh the corpus snapshot + rebuild the corpus JSON.
+
+/// Register a hydrated (already-persisted) folder — arg: the folder name.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_folder(name_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    if let Ok(mut u) = s.user.lock() {
+        u.hydrate_folder(&name);
+    }
+}
+
+/// Insert a hydrated preset — args: the synthetic `key` (path) then the
+/// `preset_record` bytes. Returns 1 on success, 0 if the record fails to decode
+/// (a corrupt/foreign blob is skipped, not fatal).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_preset(key_len: u32, rec_len: u32) -> u32 {
+    let s = state();
+    let key = s.arg_string(0, key_len as usize);
+    let rec_bytes = s.arg_slice(key_len as usize, rec_len as usize).to_vec();
+    match preset_record::decode(&rec_bytes) {
+        Ok(rec) => {
+            if let Ok(mut u) = s.user.lock() {
+                u.hydrate_preset(&key, rec);
+            }
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Finish hydration: refresh the user corpus snapshot from the now-seeded cache
+/// and rebuild the corpus JSON so JS can push `applyPresetCorpus`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_done() {
+    let s = state();
+    s.ctrl.refresh_user_corpus();
+    s.rebuild_corpus_json();
+}
+
 // ===========================================================================
 // Tests (E019 / 0062) — the factory read path, host-run
 // ===========================================================================
@@ -775,6 +1045,7 @@ pub extern "C" fn vxnc_ui_load_factory(index: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vxn_app::PresetRecord;
     use vxn_app::factory_asset::{self, FactoryEntry};
 
     fn entry(name: &str, category: Option<&str>, blob: Vec<u8>) -> FactoryEntry {
@@ -825,5 +1096,100 @@ mod tests {
         state.factory_in = vec![0xde, 0xad, 0xbe, 0xef];
         assert_eq!(state.load_factory(4), 0);
         assert_eq!(state.ctrl.preset_store().factory_len(), 0);
+    }
+
+    // Decode the packed journal (vxnc_take_journal layout) into (tag, key/name)
+    // pairs so the test can assert the flush payload without the JS decoder.
+    fn decode_journal(buf: &[u8]) -> Vec<(u32, String)> {
+        let mut off = 0usize;
+        let rd_u32 = |b: &[u8], o: &mut usize| {
+            let v = u32::from_le_bytes(b[*o..*o + 4].try_into().unwrap());
+            *o += 4;
+            v
+        };
+        let count = rd_u32(buf, &mut off);
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let tag = rd_u32(buf, &mut off);
+            let nlen = rd_u32(buf, &mut off) as usize;
+            let name = String::from_utf8(buf[off..off + nlen].to_vec()).unwrap();
+            off += nlen;
+            if tag == JW_PUT {
+                let blen = rd_u32(buf, &mut off) as usize;
+                off += blen; // skip the record bytes
+            }
+            out.push((tag, name));
+        }
+        out
+    }
+
+    // E019 / 0064: a user save mutates the cache, rebuilds the corpus JSON in the
+    // same drain (PresetCorpusChanged), and journals the persistence ops for the
+    // deferred flush.
+    #[test]
+    fn user_save_rebuilds_corpus_and_journals() {
+        let mut st = ControllerState::new();
+        st.post(UiEvent::NewFolder { suggested: "Leads".into() });
+        st.post(UiEvent::SavePreset {
+            name: "Hero".into(),
+            folder: Some("Leads".into()),
+        });
+        st.tick();
+
+        // Corpus JSON reflects the save synchronously (AC2).
+        let json = String::from_utf8(st.corpus_json.clone()).unwrap();
+        assert!(json.contains("\"Hero\""), "corpus lists the saved preset");
+        assert!(json.contains("\"Leads\""), "corpus lists the folder");
+
+        // The flush journal carries a PutFolder + a Put for the preset.
+        let len = st.take_journal() as usize;
+        let ops = decode_journal(&st.journal_out[..len]);
+        assert!(
+            ops.iter().any(|(t, n)| *t == JW_PUT_FOLDER && n == "Leads"),
+            "journal has PutFolder(Leads): {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|(t, n)| *t == JW_PUT && n == "Leads/Hero.toml"),
+            "journal has Put(Leads/Hero.toml): {ops:?}"
+        );
+        // Drained — a second take is empty.
+        assert_eq!(st.take_journal(), 4, "empty journal packs just the u32 count");
+    }
+
+    // E019 / 0064: hydration replays persisted records WITHOUT journalling, then
+    // hydrate_done refreshes the corpus snapshot + rebuilds the corpus JSON.
+    #[test]
+    fn hydrate_seeds_cache_without_journalling() {
+        // Build a record the way the store persists one.
+        let blob = vec![9u8, 8, 7];
+        let rec = preset_record::encode(&PresetRecord {
+            meta: PresetMeta {
+                name: "Warm".into(),
+                ..Default::default()
+            },
+            blob: blob.clone(),
+        });
+
+        let mut st = ControllerState::new();
+        if let Ok(mut u) = st.user.lock() {
+            u.hydrate_folder("Pads");
+            u.hydrate_preset("Pads/Warm.toml", preset_record::decode(&rec).unwrap());
+        }
+        // Nothing journalled by hydration.
+        assert_eq!(st.take_journal(), 4, "hydration does not journal");
+
+        st.ctrl.refresh_user_corpus();
+        st.rebuild_corpus_json();
+        let json = String::from_utf8(st.corpus_json.clone()).unwrap();
+        assert!(json.contains("\"Warm\""), "hydrated preset shows in corpus");
+        assert!(json.contains("\"Pads\""), "hydrated folder shows in corpus");
+
+        // The hydrated preset is loadable through the store.
+        let load = st
+            .ctrl
+            .preset_store()
+            .user_load(Path::new("Pads/Warm.toml"))
+            .unwrap();
+        assert_eq!(load.blob, blob);
     }
 }

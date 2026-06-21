@@ -201,17 +201,34 @@ async function main() {
   const km = dispatched.find((e) => e.kind === "key_mode_changed");
   check(!!km && km.mode === 1, `set_key_mode 1 -> key_mode_changed mode 1 (${km && km.mode})`);
 
-  // ---- 0063+: USER preset opcodes are still inert (no throw, nothing out) ---
+  // ---- 0064: USER preset opcodes are wired — save journals + fires corpus ---
+  // A save_preset now mutates the in-memory cache, journals a write, and emits a
+  // corpus-changed notice (onCorpusChanged), all without throwing.
   dispatched.length = 0;
+  let corpusChanges = 0;
+  const saveBridge = new FaceplateBridge({
+    controller,
+    dispatch: (arr) => dispatched.push(...arr),
+    onCorpusChanged: () => corpusChanges++,
+    scheduleFrame: () => null,
+    cancelFrame: () => {},
+  });
   let threw = false;
   try {
-    bridge.handleUiOpcode(JSON.stringify({ op: "save_preset", name: "X", folder: null }));
-    bridge.handleUiOpcode(JSON.stringify({ op: "step_preset", delta: 1 }));
-    bridge.tick();
+    saveBridge.handleUiOpcode(JSON.stringify({ op: "save_preset", name: "X", folder: null }));
+    saveBridge.tick();
   } catch {
     threw = true;
   }
-  check(!threw, "user preset opcodes route without throwing (inert until 0063)");
+  check(!threw, "user preset opcodes route without throwing (0064 wired)");
+  check(corpusChanges >= 1, "save_preset fires onCorpusChanged");
+  {
+    const ops = controller.takeJournal();
+    check(
+      ops.some((o) => o.kind === "put" && o.key === "X.toml"),
+      `save_preset journals a Put for X.toml (${JSON.stringify(ops.map((o) => o.key || o.name))})`,
+    );
+  }
 
   // ---- 0062: factory bank round-trip --------------------------------------
   // Bake a two-preset asset in JS (the VXFB layout vxn-app::factory_asset

@@ -35,11 +35,22 @@ export const VE_KEY_MODE_CHANGED = 2;
 export const VE_SPLIT_POINT_CHANGED = 3;
 export const VE_EDIT_LAYER_CHANGED = 4;
 export const VE_PRESET_LOADED = 5;
+export const VE_PRESET_CORPUS_CHANGED = 6;
 
 // PresetSource discriminants in the VE_PRESET_LOADED record (match lib.rs).
 const PRESET_SRC_NONE = 0;
 const PRESET_SRC_FACTORY = 1;
 const PRESET_SRC_USER = 2;
+
+// Journal-op tags packed by vxnc_take_journal — MUST match lib.rs (JW_*).
+const JW_PUT = 1;
+const JW_DELETE = 2;
+const JW_PUT_FOLDER = 3;
+const JW_DELETE_FOLDER = 4;
+
+// Sentinel `len` meaning Option::None for a folder argument — MUST match lib.rs
+// (ARG_NONE = u32::MAX). A present-but-empty folder string is len 0.
+const ARG_NONE = 0xffffffff;
 
 // KeyMode discriminants (match vxn_app::KeyMode).
 export const KEY_MODE_WHOLE = 0;
@@ -75,6 +86,7 @@ export class WebController {
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
 
     this.x = null; // instance.exports
+    this._enc = new TextEncoder(); // opcode-argument encoder (user preset ops)
     // Worklet-side mirror of what we last mirrored into the SAB, so a tick only
     // writes CHANGED slots (latest-value-wins store, not a stream). NaN-seeded
     // so the first mirror writes every param.
@@ -183,6 +195,177 @@ export class WebController {
   // PresetLoaded land on the next tick().
   loadFactory(index) {
     this.x.vxnc_ui_load_factory(index >>> 0);
+  }
+
+  // ---- presets: user side (E019 / 0064) -----------------------------------
+  //
+  // User ops carry strings. Stage the concatenated UTF-8 bytes into the wasm
+  // arg buffer, then call the opcode with the byte LENGTHS (the wasm slices the
+  // buffer sequentially). The op posts a UiEvent; the model mutation + cache
+  // write + journal entry + corpus refresh land on the next tick(). The journal
+  // is drained via takeJournal() and flushed to IndexedDB off the tick.
+
+  // Write the concatenated arg parts (Uint8Arrays) into the wasm arg buffer.
+  // Re-views memory.buffer (a reserve can grow + detach a cached view).
+  _writeArgs(parts) {
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const ptr = this.x.vxnc_arg_buf_reserve(total >>> 0);
+    const buf = new Uint8Array(this.x.memory.buffer, ptr, total);
+    let off = 0;
+    for (const p of parts) {
+      buf.set(p, off);
+      off += p.length;
+    }
+  }
+
+  // Save the current model as a user preset. `folder` null/undefined = root.
+  savePreset(name, folder = null) {
+    const n = this._enc.encode(name);
+    if (folder == null) {
+      this._writeArgs([n]);
+      this.x.vxnc_ui_save_preset(n.length >>> 0, ARG_NONE);
+    } else {
+      const f = this._enc.encode(folder);
+      this._writeArgs([n, f]);
+      this.x.vxnc_ui_save_preset(n.length >>> 0, f.length >>> 0);
+    }
+  }
+
+  loadUser(path) {
+    const p = this._enc.encode(path);
+    this._writeArgs([p]);
+    this.x.vxnc_ui_load_user(p.length >>> 0);
+  }
+
+  renamePreset(path, newName) {
+    const p = this._enc.encode(path);
+    const n = this._enc.encode(newName);
+    this._writeArgs([p, n]);
+    this.x.vxnc_ui_rename_preset(p.length >>> 0, n.length >>> 0);
+  }
+
+  deletePreset(path) {
+    const p = this._enc.encode(path);
+    this._writeArgs([p]);
+    this.x.vxnc_ui_delete_preset(p.length >>> 0);
+  }
+
+  movePreset(path, destFolder = null) {
+    const p = this._enc.encode(path);
+    if (destFolder == null) {
+      this._writeArgs([p]);
+      this.x.vxnc_ui_move_preset(p.length >>> 0, ARG_NONE);
+    } else {
+      const f = this._enc.encode(destFolder);
+      this._writeArgs([p, f]);
+      this.x.vxnc_ui_move_preset(p.length >>> 0, f.length >>> 0);
+    }
+  }
+
+  renameFolder(oldName, newName) {
+    const o = this._enc.encode(oldName);
+    const n = this._enc.encode(newName);
+    this._writeArgs([o, n]);
+    this.x.vxnc_ui_rename_folder(o.length >>> 0, n.length >>> 0);
+  }
+
+  deleteFolder(name) {
+    const n = this._enc.encode(name);
+    this._writeArgs([n]);
+    this.x.vxnc_ui_delete_folder(n.length >>> 0);
+  }
+
+  newFolder(suggested) {
+    const s = this._enc.encode(suggested);
+    this._writeArgs([s]);
+    this.x.vxnc_ui_new_folder(s.length >>> 0);
+  }
+
+  stepPreset(delta) {
+    this.x.vxnc_ui_step_preset(delta | 0);
+  }
+
+  // ---- presets: write journal drain (deferred flush, E019 / 0064) ---------
+  //
+  // Drain the pending-write journal the controller accumulated (save/rename/
+  // delete/move/folder ops). Returns applyWrites-shaped ops (preset-storage.mjs:
+  // {kind:'put'|'delete'|'put_folder'|'delete_folder', key?, bytes?, name?}).
+  // Empty array on a tick with no writes. Byte payloads are COPIED out (the
+  // caller flushes async, after wasm memory may have moved).
+  takeJournal() {
+    const len = this.x.vxnc_take_journal();
+    if (!len) return [];
+    const ptr = this.x.vxnc_journal_out_ptr();
+    const view = new DataView(this.x.memory.buffer, ptr, len);
+    const dec = new TextDecoder();
+    let off = 0;
+    const readStr = () => {
+      const l = view.getUint32(off, true);
+      off += 4;
+      const s = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, l));
+      off += l;
+      return s;
+    };
+    const readBytes = () => {
+      const l = view.getUint32(off, true);
+      off += 4;
+      const b = new Uint8Array(this.x.memory.buffer, ptr + off, l).slice(); // copy
+      off += l;
+      return b;
+    };
+    const count = view.getUint32(off, true);
+    off += 4;
+    const ops = [];
+    for (let i = 0; i < count; i++) {
+      const tag = view.getUint32(off, true);
+      off += 4;
+      switch (tag) {
+        case JW_PUT: {
+          const key = readStr();
+          const bytes = readBytes();
+          ops.push({ kind: "put", key, bytes });
+          break;
+        }
+        case JW_DELETE:
+          ops.push({ kind: "delete", key: readStr() });
+          break;
+        case JW_PUT_FOLDER:
+          ops.push({ kind: "put_folder", name: readStr() });
+          break;
+        case JW_DELETE_FOLDER:
+          ops.push({ kind: "delete_folder", name: readStr() });
+          break;
+        default:
+          throw new Error(`controller: unknown journal op tag ${tag}`);
+      }
+    }
+    return ops;
+  }
+
+  // ---- presets: boot hydration (seed the cache from IndexedDB, E019 / 0064)-
+  //
+  // Replay the persisted corpus into the in-memory cache BEFORE the controller
+  // goes live, so list/load serve synchronously. Hydration does NOT journal (the
+  // data is already on disk). Call hydrateDone() after the last entry to refresh
+  // the corpus snapshot + rebuild the corpus JSON.
+  hydrateFolder(name) {
+    const n = this._enc.encode(name);
+    this._writeArgs([n]);
+    this.x.vxnc_hydrate_folder(n.length >>> 0);
+  }
+
+  // bytes = the stored preset_record blob. Returns 1 on success, 0 if the record
+  // failed to decode (a corrupt/foreign blob is skipped).
+  hydratePreset(key, bytes) {
+    const k = this._enc.encode(key);
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    this._writeArgs([k, b]);
+    return this.x.vxnc_hydrate_preset(k.length >>> 0, b.length >>> 0);
+  }
+
+  hydrateDone() {
+    this.x.vxnc_hydrate_done();
   }
 
   // ---- tick: drain queues → mutate model → drain ViewEvents ---------------
@@ -322,6 +505,19 @@ export class WebController {
             off += wlen;
           }
           out.push({ type: "PresetLoaded", name, source, warnings });
+          break;
+        }
+        case VE_PRESET_CORPUS_CHANGED: {
+          const hasFollow = view.getUint32(off, true);
+          off += 4;
+          let follow = null;
+          if (hasFollow) {
+            const flen = view.getUint32(off, true);
+            off += 4;
+            follow = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, flen));
+            off += flen;
+          }
+          out.push({ type: "PresetCorpusChanged", follow });
           break;
         }
         default:

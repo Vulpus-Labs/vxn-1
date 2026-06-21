@@ -63,9 +63,8 @@ fn path_str(path: &Path) -> Result<String, String> {
         .ok_or_else(|| "preset path is not valid UTF-8".to_string())
 }
 
-// `take_journal` / `hydrate_*` are the 0064 (boot-hydration + deferred-write)
-// surface; unused until that ticket wires the IndexedDB bridge.
-#[allow(dead_code, reason = "hydration + journal flush wired in 0064")]
+// `take_journal` / `hydrate_*` are the 0064 boot-hydration + deferred-write
+// surface, driven by the IndexedDB bridge in lib.rs / preset-persistence.mjs.
 impl UserState {
     /// Drain the pending persistence ops (0064 ships them to IndexedDB).
     pub fn take_journal(&mut self) -> Vec<UserWrite> {
