@@ -242,6 +242,9 @@ pub fn open_editor(
     ensure_webview2_data_dir();
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
         .with_html(html)
+        // macOS swallows the first click on an unfocused webview to activate
+        // it; accept_first_mouse delivers that click to the control instead.
+        .with_accept_first_mouse(true)
         .with_bounds(Rect {
             position: LogicalPosition::new(0i32, 0i32).into(),
             size: LogicalSize::new(EDITOR_WIDTH, EDITOR_HEIGHT).into(),

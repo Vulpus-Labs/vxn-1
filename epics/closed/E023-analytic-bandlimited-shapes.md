@@ -68,9 +68,9 @@ shape the scope:
 
 ## Planned tickets
 
-- [ ] 0073 — Nyquist-approach per-operator level fade (analytic anti-alias).
-- [ ] 0074 — Per-operator phase-offset parameter.
-- [ ] 0075 — Factory presets: stacked + decorrelated square and saw (algo 32).
+- [x] 0073 — Nyquist-approach per-operator level fade (analytic anti-alias).
+- [x] 0074 — Per-operator phase-offset parameter.
+- [x] 0075 — Factory presets: stacked + decorrelated square and saw (algo 32).
 
 ## Dependencies
 
