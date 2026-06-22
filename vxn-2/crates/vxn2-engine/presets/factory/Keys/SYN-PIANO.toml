@@ -1,0 +1,115 @@
+schema = 1
+
+[meta]
+name = "SYN-PIANO"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "Translated from DX7 factory ROM 'SYN-PIANO': algo 5, feedback 7."
+
+[params]
+algo = 5
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-detune = 5
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 96
+op1-eg-r2 = 25
+op1-eg-r3 = 25
+op1-eg-r4 = 54
+op1-eg-l1 = 99
+op1-eg-l2 = 75
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 3
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 93
+op2-vel-sens = 3
+op2-eg-r1 = 17
+op2-eg-r2 = 42
+op2-eg-r3 = 35
+op2-eg-r4 = 78
+op2-eg-l1 = 99
+op2-eg-l2 = 99
+op2-eg-l3 = 99
+op2-eg-l4 = 0
+op2-ks-rate = 3
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-level = 99
+op3-vel-sens = 0
+op3-eg-r1 = 96
+op3-eg-r2 = 25
+op3-eg-r3 = 25
+op3-eg-r4 = 55
+op3-eg-l1 = 99
+op3-eg-l2 = 75
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 2
+op4-level = 99
+op4-vel-sens = 4
+op4-eg-r1 = 95
+op4-eg-r2 = 84
+op4-eg-r3 = 20
+op4-eg-r4 = 99
+op4-eg-l1 = 99
+op4-eg-l2 = 0
+op4-eg-l3 = 0
+op4-eg-l4 = 69
+op4-ks-rate = 3
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-detune = -5
+op5-level = 99
+op5-vel-sens = 0
+op5-eg-r1 = 96
+op5-eg-r2 = 25
+op5-eg-r3 = 25
+op5-eg-r4 = 50
+op5-eg-l1 = 99
+op5-eg-l2 = 75
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 3
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 23
+op6-detune = 5
+op6-level = 84
+op6-vel-sens = 6
+op6-eg-r1 = 79
+op6-eg-r2 = 82
+op6-eg-r3 = 20
+op6-eg-r4 = 99
+op6-eg-l1 = 88
+op6-eg-l2 = 0
+op6-eg-l3 = 0
+op6-eg-l4 = 32
+op6-ks-rate = 3
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -12.4

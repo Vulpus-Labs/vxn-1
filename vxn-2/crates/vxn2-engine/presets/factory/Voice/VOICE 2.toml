@@ -1,0 +1,146 @@
+schema = 1
+
+[meta]
+name = "VOICE 2"
+author = "Vulpus Labs"
+category = "Voice"
+comment = "Translated from DX7 factory ROM 'VOICE   2': algo 7, feedback 7."
+
+[params]
+algo = 7
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-detune = -5
+op1-level = 87
+op1-vel-sens = 0
+op1-eg-r1 = 57
+op1-eg-r2 = 20
+op1-eg-r3 = 53
+op1-eg-r4 = 57
+op1-eg-l1 = 99
+op1-eg-l2 = 94
+op1-eg-l3 = 97
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 99
+op2-vel-sens = 2
+op2-eg-r1 = 30
+op2-eg-r2 = 47
+op2-eg-r3 = 56
+op2-eg-r4 = 25
+op2-eg-l1 = 61
+op2-eg-l2 = 71
+op2-eg-l3 = 85
+op2-eg-l4 = 61
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-detune = 5
+op3-level = 99
+op3-vel-sens = 3
+op3-eg-r1 = 48
+op3-eg-r2 = 20
+op3-eg-r3 = 53
+op3-eg-r4 = 46
+op3-eg-l1 = 99
+op3-eg-l2 = 94
+op3-eg-l3 = 97
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-fine = 2
+op4-detune = 2
+op4-level = 99
+op4-vel-sens = 1
+op4-eg-r1 = 72
+op4-eg-r2 = 60
+op4-eg-r3 = 41
+op4-eg-r4 = 12
+op4-eg-l1 = 86
+op4-eg-l2 = 70
+op4-eg-l3 = 66
+op4-eg-l4 = 9
+op4-ks-rate = 0
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-fine = 1
+op5-detune = -1
+op5-level = 60
+op5-vel-sens = 1
+op5-eg-r1 = 36
+op5-eg-r2 = 40
+op5-eg-r3 = 36
+op5-eg-r4 = 63
+op5-eg-l1 = 99
+op5-eg-l2 = 70
+op5-eg-l3 = 57
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 4
+op6-fine = 8
+op6-detune = 1
+op6-level = 50
+op6-vel-sens = 0
+op6-eg-r1 = 99
+op6-eg-r2 = 72
+op6-eg-r3 = 48
+op6-eg-r4 = 17
+op6-eg-l1 = 99
+op6-eg-l2 = 99
+op6-eg-l3 = 99
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+peg-r1 = 18
+peg-r2 = 60
+peg-r3 = 95
+peg-r4 = 60
+peg-l1 = -4
+peg-l2 = 2
+peg-l3 = 0
+peg-l4 = 0
+
+lfo2-shape = "Tri"
+lfo2-rate = 5.87
+lfo2-delay = 500.0
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.024
+
+[[matrix]]
+slot = 1
+source = "lfo2"
+dest = "op2-level"
+depth = 0.004

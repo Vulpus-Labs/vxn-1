@@ -1,0 +1,113 @@
+schema = 1
+
+[meta]
+name = "Marimba"
+author = "Vulpus Labs"
+category = "Mallet"
+comment = "Translated from DX7 ROM1A 'MARIMBA': algo 7, no feedback. Two woody carriers (ratio 0.5) plus fast-decaying modulators at ratios 3/5/0.75 and a near-instant op6 ping (R1=0). Percussive EGs copied 1:1; KS break at MIDI 75 rolls the modulators off up top."
+
+[params]
+algo = 7
+feedback = 0.0
+
+# op1 — carrier, ratio 0.5, woody body.
+op1-num = 1
+op1-denom = 2
+op1-level = 95
+op1-vel-sens = 0
+op1-ks-rate = 3
+op1-ks-r-depth = 0
+op1-eg-r1 = 95
+op1-eg-r2 = 40
+op1-eg-r3 = 49
+op1-eg-r4 = 55
+op1-eg-l1 = 99
+op1-eg-l2 = 92
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+
+# op2 -> op1, ratio 3.0, fast attack tone, rolls off above MIDI 75.
+op2-num = 3
+op2-level = 96
+op2-vel-sens = 2
+op2-ks-rate = 0
+op2-ks-break-pt = 75
+op2-ks-r-depth = 46
+op2-eg-r1 = 99
+op2-eg-r2 = 72
+op2-eg-r3 = 0
+op2-eg-r4 = 0
+op2-eg-l1 = 82
+op2-eg-l2 = 48
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+
+# op3 — carrier, ratio 0.5.
+op3-num = 1
+op3-denom = 2
+op3-level = 99
+op3-vel-sens = 1
+op3-ks-rate = 3
+op3-ks-r-depth = 0
+op3-eg-r1 = 95
+op3-eg-r2 = 33
+op3-eg-r3 = 49
+op3-eg-r4 = 41
+op3-eg-l1 = 99
+op3-eg-l2 = 92
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+
+# op4 -> op3, ratio 5.0.
+op4-num = 5
+op4-level = 85
+op4-vel-sens = 2
+op4-ks-rate = 0
+op4-ks-break-pt = 75
+op4-ks-r-depth = 46
+op4-eg-r1 = 99
+op4-eg-r2 = 75
+op4-eg-r3 = 0
+op4-eg-r4 = 82
+op4-eg-l1 = 82
+op4-eg-l2 = 48
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+
+# op5 -> op4, ratio 0.75 (num3/denom4).
+op5-num = 3
+op5-denom = 4
+op5-level = 93
+op5-vel-sens = 2
+op5-ks-rate = 0
+op5-ks-break-pt = 75
+op5-ks-r-depth = 46
+op5-eg-r1 = 99
+op5-eg-r2 = 75
+op5-eg-r3 = 0
+op5-eg-r4 = 8
+op5-eg-l1 = 82
+op5-eg-l2 = 48
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+
+# op6 -> op5, ratio 4.52 (num4 + fine52), instant ping (R1=0).
+op6-num = 4
+op6-fine = 52
+op6-level = 99
+op6-vel-sens = 2
+op6-ks-rate = 0
+op6-ks-r-depth = 0
+op6-eg-r1 = 0
+op6-eg-r2 = 63
+op6-eg-r3 = 55
+op6-eg-r4 = 0
+op6-eg-l1 = 78
+op6-eg-l2 = 78
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -14.0

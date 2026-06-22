@@ -1,0 +1,122 @@
+schema = 1
+
+[meta]
+name = "CALIOPE"
+author = "Vulpus Labs"
+category = "Organ"
+comment = "Translated from DX7 factory ROM 'CALIOPE': algo 16, feedback 5."
+
+[params]
+algo = 16
+feedback = 3.5
+
+# op1
+op1-num = 1
+op1-level = 98
+op1-vel-sens = 2
+op1-eg-r1 = 60
+op1-eg-r2 = 71
+op1-eg-r3 = 66
+op1-eg-r4 = 65
+op1-eg-l1 = 82
+op1-eg-l2 = 75
+op1-eg-l3 = 95
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 5
+op2-fine = -40
+op2-level = 75
+op2-vel-sens = 2
+op2-eg-r1 = 59
+op2-eg-r2 = 53
+op2-eg-r3 = 62
+op2-eg-r4 = 54
+op2-eg-l1 = 99
+op2-eg-l2 = 60
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 4
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 2
+op3-fine = 2
+op3-detune = 5
+op3-level = 67
+op3-vel-sens = 0
+op3-eg-r1 = 53
+op3-eg-r2 = 38
+op3-eg-r3 = 75
+op3-eg-r4 = 61
+op3-eg-l1 = 88
+op3-eg-l2 = 44
+op3-eg-l3 = 24
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 2
+op4-detune = -5
+op4-level = 75
+op4-vel-sens = 0
+op4-eg-r1 = 61
+op4-eg-r2 = 25
+op4-eg-r3 = 25
+op4-eg-r4 = 60
+op4-eg-l1 = 99
+op4-eg-l2 = 99
+op4-eg-l3 = 97
+op4-eg-l4 = 0
+op4-ks-rate = 3
+op4-ks-break-pt = 81
+op4-ks-l-depth = 10
+op4-ks-r-depth = 10
+op4-ks-r-curve = "neg-lin"
+
+# op5
+op5-num = 2
+op5-level = 56
+op5-vel-sens = 0
+op5-eg-r1 = 65
+op5-eg-r2 = 38
+op5-eg-r3 = 0
+op5-eg-r4 = 61
+op5-eg-l1 = 99
+op5-eg-l2 = 0
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-break-pt = 74
+op5-ks-l-depth = 0
+op5-ks-r-depth = 43
+op5-ks-r-curve = "neg-lin"
+
+# op6
+op6-num = 7
+op6-fine = 4
+op6-detune = 1
+op6-level = 82
+op6-vel-sens = 2
+op6-eg-r1 = 71
+op6-eg-r2 = 64
+op6-eg-r3 = 98
+op6-eg-r4 = 61
+op6-eg-l1 = 99
+op6-eg-l2 = 67
+op6-eg-l3 = 52
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -8.0

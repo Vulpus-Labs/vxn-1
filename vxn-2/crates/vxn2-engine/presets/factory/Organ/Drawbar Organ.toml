@@ -1,0 +1,116 @@
+schema = 1
+
+[meta]
+name = "Drawbar Organ"
+author = "Vulpus Labs"
+category = "Organ"
+comment = "Translated from DX7 ROM1A 'E.ORGAN 1': algo 32 = six parallel carriers (pure additive, no FM), each a drawbar at ratio 0.5/1.0/1.5/3.0 with small per-op detune for the rotary shimmer. Sustained organ envelope (L1-L3 ~99). Master pulled to -20 dB because six carriers sum hot."
+
+[params]
+algo = 32
+feedback = 0.0
+
+# op1 — sub drawbar, ratio 0.5.
+op1-num = 1
+op1-denom = 2
+op1-level = 94
+op1-vel-sens = 0
+op1-detune = -1
+op1-ks-rate = 0
+op1-ks-r-depth = 0
+op1-eg-r1 = 99
+op1-eg-r2 = 80
+op1-eg-r3 = 22
+op1-eg-r4 = 90
+op1-eg-l1 = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+op1-eg-l4 = 0
+
+# op2 — ratio 1.01 (num1 + fine1) for a slow beat against op5.
+op2-num = 1
+op2-fine = 1
+op2-level = 94
+op2-vel-sens = 0
+op2-detune = -4
+op2-ks-rate = 0
+op2-ks-break-pt = 21
+op2-ks-r-depth = 10
+op2-eg-r1 = 99
+op2-eg-r2 = 20
+op2-eg-r3 = 22
+op2-eg-r4 = 90
+op2-eg-l1 = 99
+op2-eg-l2 = 99
+op2-eg-l3 = 97
+op2-eg-l4 = 0
+
+# op3 — ratio 1.50 (the quint drawbar).
+op3-num = 1
+op3-fine = 50
+op3-level = 94
+op3-vel-sens = 0
+op3-detune = 3
+op3-ks-rate = 0
+op3-ks-r-depth = 0
+op3-eg-r1 = 99
+op3-eg-r2 = 80
+op3-eg-r3 = 54
+op3-eg-r4 = 82
+op3-eg-l1 = 99
+op3-eg-l2 = 99
+op3-eg-l3 = 99
+op3-eg-l4 = 0
+
+# op4 — ratio 0.5.
+op4-num = 1
+op4-denom = 2
+op4-level = 94
+op4-vel-sens = 0
+op4-detune = 4
+op4-ks-rate = 0
+op4-ks-r-depth = 0
+op4-eg-r1 = 99
+op4-eg-r2 = 80
+op4-eg-r3 = 22
+op4-eg-r4 = 90
+op4-eg-l1 = 99
+op4-eg-l2 = 99
+op4-eg-l3 = 99
+op4-eg-l4 = 0
+
+# op5 — ratio 1.0 (the 8' fundamental drawbar).
+op5-num = 1
+op5-level = 94
+op5-vel-sens = 0
+op5-detune = 1
+op5-ks-rate = 0
+op5-ks-r-depth = 0
+op5-eg-r1 = 99
+op5-eg-r2 = 80
+op5-eg-r3 = 22
+op5-eg-r4 = 90
+op5-eg-l1 = 99
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+op5-eg-l4 = 0
+
+# op6 — ratio 3.0, decays out (L2-L4=0) so the upper drawbar is attack-only.
+op6-num = 3
+op6-level = 94
+op6-vel-sens = 0
+op6-ks-rate = 0
+op6-ks-r-depth = 0
+op6-eg-r1 = 99
+op6-eg-r2 = 54
+op6-eg-r3 = 22
+op6-eg-r4 = 90
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -20.0

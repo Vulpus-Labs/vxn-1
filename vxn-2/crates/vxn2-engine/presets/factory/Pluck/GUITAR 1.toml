@@ -1,0 +1,136 @@
+schema = 1
+
+[meta]
+name = "GUITAR 1"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Translated from DX7 factory ROM 'GUITAR  1': algo 8, feedback 7."
+
+[params]
+algo = 8
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 5
+op1-eg-r1 = 74
+op1-eg-r2 = 85
+op1-eg-r3 = 27
+op1-eg-r4 = 70
+op1-eg-l1 = 99
+op1-eg-l2 = 95
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 4
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 3
+op2-level = 93
+op2-vel-sens = 7
+op2-eg-r1 = 91
+op2-eg-r2 = 25
+op2-eg-r3 = 39
+op2-eg-r4 = 60
+op2-eg-l1 = 99
+op2-eg-l2 = 86
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-break-pt = 21
+op2-ks-l-depth = 0
+op2-ks-r-depth = 65
+op2-ks-r-curve = "neg-lin"
+
+# op3
+op3-num = 1
+op3-level = 99
+op3-vel-sens = 7
+op3-eg-r1 = 78
+op3-eg-r2 = 87
+op3-eg-r3 = 22
+op3-eg-r4 = 75
+op3-eg-l1 = 99
+op3-eg-l2 = 92
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-break-pt = 55
+op3-ks-l-depth = 9
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 3
+op4-level = 89
+op4-vel-sens = 4
+op4-eg-r1 = 81
+op4-eg-r2 = 87
+op4-eg-r3 = 22
+op4-eg-r4 = 75
+op4-eg-l1 = 99
+op4-eg-l2 = 92
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 4
+op4-ks-break-pt = 21
+op4-ks-l-depth = 0
+op4-ks-r-depth = 14
+op4-ks-r-curve = "neg-lin"
+
+# op5
+op5-num = 3
+op5-level = 99
+op5-vel-sens = 7
+op5-eg-r1 = 81
+op5-eg-r2 = 87
+op5-eg-r3 = 22
+op5-eg-r4 = 75
+op5-eg-l1 = 99
+op5-eg-l2 = 92
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 4
+op5-ks-break-pt = 21
+op5-ks-l-depth = 0
+op5-ks-r-depth = 15
+op5-ks-r-curve = "neg-lin"
+
+# op6
+op6-num = 12
+op6-level = 57
+op6-vel-sens = 6
+op6-eg-r1 = 99
+op6-eg-r2 = 57
+op6-eg-r3 = 99
+op6-eg-r4 = 75
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-break-pt = 60
+op6-ks-l-depth = 53
+op6-ks-r-depth = 20
+op6-ks-r-curve = "neg-lin"
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.87
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.0013
+
+[[matrix]]
+slot = 1
+source = "lfo2"
+dest = "op6-level"
+depth = 0.0091

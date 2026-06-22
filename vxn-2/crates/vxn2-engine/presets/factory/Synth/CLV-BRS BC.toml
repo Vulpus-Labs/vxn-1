@@ -1,0 +1,123 @@
+schema = 1
+
+[meta]
+name = "CLV-BRS BC"
+author = "Vulpus Labs"
+category = "Synth"
+comment = "Translated from DX7 factory ROM 'CLV-BRS BC': algo 9, feedback 7."
+
+[params]
+algo = 9
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 98
+op1-eg-r2 = 72
+op1-eg-r3 = 75
+op1-eg-r4 = 61
+op1-eg-l1 = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 78
+op2-vel-sens = 0
+op2-eg-r1 = 59
+op2-eg-r2 = 26
+op2-eg-r3 = 13
+op2-eg-r4 = 61
+op2-eg-l1 = 99
+op2-eg-l2 = 96
+op2-eg-l3 = 99
+op2-eg-l4 = 0
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-fine = -50
+op3-detune = -1
+op3-level = 95
+op3-vel-sens = 0
+op3-eg-r1 = 98
+op3-eg-r2 = 72
+op3-eg-r3 = 75
+op3-eg-r4 = 61
+op3-eg-l1 = 99
+op3-eg-l2 = 89
+op3-eg-l3 = 98
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-fine = -50
+op4-detune = 3
+op4-level = 95
+op4-vel-sens = 0
+op4-eg-r1 = 99
+op4-eg-r2 = 38
+op4-eg-r3 = 75
+op4-eg-r4 = 61
+op4-eg-l1 = 88
+op4-eg-l2 = 44
+op4-eg-l3 = 25
+op4-eg-l4 = 0
+op4-ks-rate = 0
+op4-ks-break-pt = 21
+op4-ks-l-depth = 0
+op4-ks-r-depth = 11
+op4-ks-r-curve = "neg-exp"
+
+# op5
+op5-num = 1
+op5-level = 79
+op5-vel-sens = 0
+op5-eg-r1 = 85
+op5-eg-r2 = 38
+op5-eg-r3 = 75
+op5-eg-r4 = 61
+op5-eg-l1 = 88
+op5-eg-l2 = 44
+op5-eg-l3 = 25
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-break-pt = 36
+op5-ks-l-depth = 0
+op5-ks-r-depth = 33
+op5-ks-r-curve = "neg-exp"
+
+# op6
+op6-num = 10
+op6-detune = -2
+op6-level = 73
+op6-vel-sens = 0
+op6-eg-r1 = 85
+op6-eg-r2 = 46
+op6-eg-r3 = 75
+op6-eg-r4 = 61
+op6-eg-l1 = 88
+op6-eg-l2 = 44
+op6-eg-l3 = 25
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-break-pt = 36
+op6-ks-l-depth = 0
+op6-ks-r-depth = 1
+op6-ks-r-curve = "neg-exp"
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2

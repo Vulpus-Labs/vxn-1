@@ -1,0 +1,128 @@
+schema = 1
+
+[meta]
+name = "STG CRSNDO"
+author = "Vulpus Labs"
+category = "Synth"
+comment = "Translated from DX7 factory ROM 'STG CRSNDO': algo 2, feedback 7."
+
+[params]
+algo = 2
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-detune = -1
+op1-level = 87
+op1-vel-sens = 0
+op1-eg-r1 = 27
+op1-eg-r2 = 15
+op1-eg-r3 = 10
+op1-eg-r4 = 46
+op1-eg-l1 = 99
+op1-eg-l2 = 92
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-detune = 5
+op2-level = 75
+op2-vel-sens = 0
+op2-eg-r1 = 84
+op2-eg-r2 = 15
+op2-eg-r3 = 10
+op2-eg-r4 = 46
+op2-eg-l1 = 99
+op2-eg-l2 = 92
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-detune = 5
+op3-level = 92
+op3-vel-sens = 0
+op3-eg-r1 = 28
+op3-eg-r2 = 15
+op3-eg-r3 = 10
+op3-eg-r4 = 46
+op3-eg-l1 = 99
+op3-eg-l2 = 92
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-break-pt = 83
+op3-ks-l-depth = 0
+op3-ks-r-depth = 99
+op3-ks-r-curve = "neg-lin"
+
+# op4
+op4-num = 1
+op4-level = 71
+op4-vel-sens = 0
+op4-eg-r1 = 43
+op4-eg-r2 = 15
+op4-eg-r3 = 10
+op4-eg-r4 = 46
+op4-eg-l1 = 99
+op4-eg-l2 = 92
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 0
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 2
+op5-level = 66
+op5-vel-sens = 0
+op5-eg-r1 = 43
+op5-eg-r2 = 15
+op5-eg-r3 = 10
+op5-eg-r4 = 46
+op5-eg-l1 = 99
+op5-eg-l2 = 92
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 4
+op6-level = 62
+op6-vel-sens = 0
+op6-eg-r1 = 43
+op6-eg-r2 = 15
+op6-eg-r3 = 10
+op6-eg-r4 = 46
+op6-eg-l1 = 99
+op6-eg-l2 = 92
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.87
+lfo2-delay = 2175.0
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.0055

@@ -1,0 +1,124 @@
+schema = 1
+
+[meta]
+name = "SYN-BASS 2"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Translated from DX7 factory ROM 'SYN-BASS 2': algo 9, feedback 6. DX7 transpose -12 st baked into ratios."
+
+[params]
+algo = 9
+feedback = 4.2
+
+# op1
+op1-num = 1
+op1-detune = 5
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 99
+op1-eg-r2 = 25
+op1-eg-r3 = 25
+op1-eg-r4 = 61
+op1-eg-l1 = 99
+op1-eg-l2 = 98
+op1-eg-l3 = 70
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-fine = -75
+op2-detune = 5
+op2-level = 89
+op2-vel-sens = 1
+op2-eg-r1 = 99
+op2-eg-r2 = 39
+op2-eg-r3 = 32
+op2-eg-r4 = 46
+op2-eg-l1 = 99
+op2-eg-l2 = 98
+op2-eg-l3 = 70
+op2-eg-l4 = 0
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-fine = -50
+op3-detune = -2
+op3-level = 99
+op3-vel-sens = 0
+op3-eg-r1 = 99
+op3-eg-r2 = 39
+op3-eg-r3 = 32
+op3-eg-r4 = 71
+op3-eg-l1 = 99
+op3-eg-l2 = 98
+op3-eg-l3 = 70
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-fine = -75
+op4-detune = -1
+op4-level = 99
+op4-vel-sens = 0
+op4-eg-r1 = 99
+op4-eg-r2 = 39
+op4-eg-r3 = 32
+op4-eg-r4 = 71
+op4-eg-l1 = 99
+op4-eg-l2 = 98
+op4-eg-l3 = 70
+op4-eg-l4 = 0
+op4-ks-rate = 0
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-fine = -75
+op5-detune = 1
+op5-level = 99
+op5-vel-sens = 0
+op5-eg-r1 = 99
+op5-eg-r2 = 39
+op5-eg-r3 = 32
+op5-eg-r4 = 71
+op5-eg-l1 = 99
+op5-eg-l2 = 98
+op5-eg-l3 = 70
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-fine = -75
+op6-level = 80
+op6-vel-sens = 0
+op6-eg-r1 = 99
+op6-eg-r2 = 39
+op6-eg-r3 = 32
+op6-eg-r4 = 71
+op6-eg-l1 = 99
+op6-eg-l2 = 98
+op6-eg-l3 = 70
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-break-pt = 60
+op6-ks-l-depth = 0
+op6-ks-r-depth = 59
+op6-ks-r-curve = "neg-lin"
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2

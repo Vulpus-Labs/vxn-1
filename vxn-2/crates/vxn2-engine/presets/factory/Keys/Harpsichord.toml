@@ -1,0 +1,111 @@
+schema = 1
+
+[meta]
+name = "Harpsichord"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "Translated from DX7 ROM1A 'HARPSICH 1': algo 5, three carrier/modulator pairs at ratios 4:0.5, 1:3, 4:6 give the bright plucked buzz. Light op6 feedback. KS break at C6/D6 (DX7 brk 64 -> MIDI 85) thins the top modulators on high notes."
+
+[params]
+algo = 5
+feedback = 0.7
+
+# op1 — carrier, ratio 4.0.
+op1-num = 4
+op1-level = 89
+op1-vel-sens = 2
+op1-ks-rate = 3
+op1-ks-r-depth = 0
+op1-eg-r1 = 95
+op1-eg-r2 = 28
+op1-eg-r3 = 27
+op1-eg-r4 = 47
+op1-eg-l1 = 99
+op1-eg-l2 = 90
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+
+# op2 -> op1 modulator, ratio 0.5, long sustaining buzz.
+op2-num = 1
+op2-denom = 2
+op2-level = 99
+op2-vel-sens = 0
+op2-ks-rate = 1
+op2-ks-r-depth = 0
+op2-eg-r1 = 95
+op2-eg-r2 = 72
+op2-eg-r3 = 71
+op2-eg-r4 = 99
+op2-eg-l1 = 99
+op2-eg-l2 = 97
+op2-eg-l3 = 91
+op2-eg-l4 = 98
+
+# op3 — carrier, ratio 1.0.
+op3-num = 1
+op3-level = 85
+op3-vel-sens = 2
+op3-detune = -1
+op3-ks-rate = 3
+op3-ks-r-depth = 0
+op3-eg-r1 = 95
+op3-eg-r2 = 28
+op3-eg-r3 = 27
+op3-eg-r4 = 47
+op3-eg-l1 = 99
+op3-eg-l2 = 90
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+
+# op4 -> op3 modulator, ratio 3.0, thins above MIDI 85.
+op4-num = 3
+op4-level = 99
+op4-vel-sens = 0
+op4-ks-rate = 1
+op4-ks-break-pt = 85
+op4-ks-r-depth = 46
+op4-eg-r1 = 95
+op4-eg-r2 = 72
+op4-eg-r3 = 71
+op4-eg-r4 = 99
+op4-eg-l1 = 99
+op4-eg-l2 = 97
+op4-eg-l3 = 91
+op4-eg-l4 = 98
+
+# op5 — carrier, ratio 4.0.
+op5-num = 4
+op5-level = 83
+op5-vel-sens = 3
+op5-detune = -1
+op5-ks-rate = 3
+op5-ks-r-depth = 0
+op5-eg-r1 = 95
+op5-eg-r2 = 28
+op5-eg-r3 = 27
+op5-eg-r4 = 47
+op5-eg-l1 = 99
+op5-eg-l2 = 90
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+
+# op6 -> op5 modulator, ratio 6.0, carries the feedback; thins above MIDI 85.
+op6-num = 6
+op6-level = 87
+op6-vel-sens = 0
+op6-ks-rate = 1
+op6-ks-break-pt = 85
+op6-ks-r-depth = 55
+op6-eg-r1 = 95
+op6-eg-r2 = 72
+op6-eg-r3 = 71
+op6-eg-r4 = 99
+op6-eg-l1 = 99
+op6-eg-l2 = 97
+op6-eg-l3 = 91
+op6-eg-l4 = 98
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -14.0

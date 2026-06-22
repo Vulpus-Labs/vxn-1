@@ -1,0 +1,107 @@
+schema = 1
+
+[meta]
+name = "Tubular Bells"
+author = "Vulpus Labs"
+category = "Bell"
+comment = "Translated from DX7 ROM1A 'TUB BELLS': algo 5, heavy op6 feedback for the inharmonic clang, op5 a fixed 323 Hz strike transient. EG levels/rates and op output copied 1:1 from the DX7 voice; ratios via num/denom/fine; DX7 detune units scaled to cents."
+
+[params]
+algo = 5
+feedback = 4.9
+
+# op1 — carrier, ratio 1.0, slow inharmonic decay (L2=0,L3=32 = double-decay).
+op1-level = 95
+op1-vel-sens = 0
+op1-detune = 1
+op1-eg-r1 = 95
+op1-eg-r2 = 33
+op1-eg-r3 = 71
+op1-eg-r4 = 25
+op1-eg-l1 = 99
+op1-eg-l2 = 0
+op1-eg-l3 = 32
+op1-eg-l4 = 0
+op1-ks-r-depth = 0
+
+# op2 -> op1 modulator, ratio 3.50 (num3 + fine50).
+op2-num = 3
+op2-fine = 50
+op2-level = 78
+op2-vel-sens = 0
+op2-detune = 2
+op2-eg-r1 = 98
+op2-eg-r2 = 12
+op2-eg-r3 = 71
+op2-eg-r4 = 28
+op2-eg-l1 = 99
+op2-eg-l2 = 0
+op2-eg-l3 = 32
+op2-eg-l4 = 0
+op2-ks-r-depth = 0
+
+# op3 — carrier, ratio 1.0, detuned against op1 for beating.
+op3-level = 99
+op3-vel-sens = 0
+op3-detune = -4
+op3-eg-r1 = 95
+op3-eg-r2 = 33
+op3-eg-r3 = 71
+op3-eg-r4 = 25
+op3-eg-l1 = 99
+op3-eg-l2 = 0
+op3-eg-l3 = 32
+op3-eg-l4 = 0
+op3-ks-r-depth = 0
+
+# op4 -> op3 modulator, ratio 3.50.
+op4-num = 3
+op4-fine = 50
+op4-level = 75
+op4-vel-sens = 0
+op4-detune = -1
+op4-eg-r1 = 98
+op4-eg-r2 = 12
+op4-eg-r3 = 71
+op4-eg-r4 = 28
+op4-eg-l1 = 99
+op4-eg-l2 = 0
+op4-eg-l3 = 32
+op4-eg-l4 = 0
+op4-ks-r-depth = 0
+
+# op5 — carrier in FIXED mode (323.6 Hz), velocity-driven metallic strike.
+op5-ratio-mode = "Fixed"
+op5-fixed-hz = 323.6
+op5-level = 99
+op5-vel-sens = 5
+op5-eg-r1 = 76
+op5-eg-r2 = 78
+op5-eg-r3 = 71
+op5-eg-r4 = 70
+op5-eg-l1 = 99
+op5-eg-l2 = 0
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-r-depth = 0
+
+# op6 -> op5, ratio 2.0, carries the algo-5 feedback loop (the bell's bite).
+op6-num = 2
+op6-level = 85
+op6-vel-sens = 0
+op6-detune = -5
+op6-eg-r1 = 98
+op6-eg-r2 = 91
+op6-eg-r3 = 0
+op6-eg-r4 = 28
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-r-depth = 0
+
+# Faithful single DX7 voice: no unison, no FX colour beyond a small room.
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -12.0

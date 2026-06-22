@@ -1,0 +1,113 @@
+# DX7 source-voice capture (reference only — NOT a vxn-2 preset).
+#
+# Five Yamaha DX7 factory ROM voices, decoded from the original SysEx cartridge
+# dumps and captured verbatim in DX7 units. Used as the source material for the
+# five hand-translated vxn-2 factory presets (see presets/factory/{Bell,Bass,
+# Organ,Keys,Mallet}/). This file lives OUTSIDE presets/factory/ on purpose so
+# the include_dir!() factory bank never tries to parse it as a preset.
+#
+# Source banks (Yamaha Black Boxes archive, original cartridge dumps):
+#   ROM1A  https://yamahablackboxes.com/patches/dx7/factory/rom1a.syx
+#   (ROM2A/ROM1B also fetched; final picks are all ROM1A.)
+# Decoded with a SysEx unpacker per the VCED 155-byte voice spec
+#   (D. Benson DX7 sysex-format.txt; asb2m10/dexed sysex-format.txt).
+#
+# DX7 units (as stored on the instrument):
+#   eg_r / eg_l        : 4 envelope rates + 4 levels, 0-99 each
+#   out                : operator output level, 0-99
+#   coarse / fine      : ratio = (coarse==0 ? 0.5 : coarse) * (1 + fine/100)
+#   fixed_hz           : fixed-mode frequency = 10^((coarse & 3) + fine/100)
+#   detune             : 0-14, 7 = centre (so the value below is already det-7)
+#   kvs                : key velocity sensitivity, 0-7
+#   rs                 : keyboard rate scaling, 0-7
+#   brk / ld / rd      : KS break point (0-99 note offset) + left/right depth (0-99)
+#   lc / rc            : KS left/right curve, 0=-lin 1=-exp 2=+exp 3=+lin
+#   algo               : 1-32   feedback : 0-7
+#   peg_*              : pitch EG (rates 0-99, levels 0-99 where 50 = no shift)
+#   lfo_*              : pmd/amd = 0 in all five (no audible LFO modulation)
+
+# ──────────────────────────────────────────────────────────────────────────
+[["TUB BELLS"]]          # ROM1A #25 — inharmonic tubular bell
+algo = 5
+feedback = 7
+[["TUB BELLS".ops]]      # op1
+out = 95; coarse = 1; fine = 0; detune = 2;  eg_r = [95,33,71,25]; eg_l = [99,0,32,0]; kvs = 0; rs = 2
+[["TUB BELLS".ops]]      # op2
+out = 78; coarse = 2; fine = 75; detune = 3; eg_r = [98,12,71,28]; eg_l = [99,0,32,0]; kvs = 0; rs = 2  # ratio 3.50
+[["TUB BELLS".ops]]      # op3
+out = 99; coarse = 1; fine = 0; detune = -5; eg_r = [95,33,71,25]; eg_l = [99,0,32,0]; kvs = 0; rs = 2
+[["TUB BELLS".ops]]      # op4
+out = 75; coarse = 2; fine = 75; detune = -2; eg_r = [98,12,71,28]; eg_l = [99,0,32,0]; kvs = 0; rs = 2 # ratio 3.50
+[["TUB BELLS".ops]]      # op5 — FIXED 323.6 Hz, strike transient
+out = 99; mode = "fixed"; fixed_hz = 323.6; detune = 0; eg_r = [76,78,71,70]; eg_l = [99,0,0,0]; kvs = 5; rs = 2
+[["TUB BELLS".ops]]      # op6
+out = 85; coarse = 2; fine = 0; detune = -7; eg_r = [98,91,0,28]; eg_l = [99,0,0,0]; kvs = 0; rs = 2
+
+# ──────────────────────────────────────────────────────────────────────────
+[["BASS 1"]]             # ROM1A #14 — synth bass, transpose -12 st (one octave down)
+algo = 16
+feedback = 7
+transpose = -12
+[["BASS 1".ops]]         # op1 (carrier) ratio 0.5
+out = 99; coarse = 0; fine = 0; detune = 0; eg_r = [95,62,17,58]; eg_l = [99,95,32,0]; kvs = 0; rs = 7; brk = 36; ld = 57; rd = 14; lc = 3
+[["BASS 1".ops]]         # op2 ratio 0.5
+out = 80; coarse = 0; fine = 0; detune = 0; eg_r = [99,20,0,0]; eg_l = [99,0,0,0]; kvs = 0; rs = 7
+[["BASS 1".ops]]         # op3 ratio 0.5
+out = 99; coarse = 0; fine = 0; detune = 0; eg_r = [88,96,32,30]; eg_l = [79,65,0,0]; kvs = 3; rs = 6
+[["BASS 1".ops]]         # op4 ratio 5.0
+out = 93; coarse = 5; fine = 0; detune = 0; eg_r = [90,42,7,55]; eg_l = [90,30,0,0]; kvs = 5; rs = 5
+[["BASS 1".ops]]         # op5 ratio 0.5
+out = 62; coarse = 0; fine = 0; detune = 0; eg_r = [99,0,0,0]; eg_l = [99,0,0,0]; kvs = 3; rs = 7; brk = 52; ld = 75
+[["BASS 1".ops]]         # op6 ratio 9.0
+out = 85; coarse = 9; fine = 0; detune = 0; eg_r = [94,56,24,55]; eg_l = [93,28,0,0]; kvs = 7; rs = 1
+
+# ──────────────────────────────────────────────────────────────────────────
+[["E.ORGAN 1"]]          # ROM1A #16 — drawbar organ, algo 32 = 6 parallel carriers
+algo = 32
+feedback = 0
+[["E.ORGAN 1".ops]]      # op1 ratio 0.5
+out = 94; coarse = 0; fine = 0; detune = -2; eg_r = [99,80,22,90]; eg_l = [99,99,99,0]; kvs = 0; rs = 0
+[["E.ORGAN 1".ops]]      # op2 ratio 1.01
+out = 94; coarse = 1; fine = 1; detune = -6; eg_r = [99,20,22,90]; eg_l = [99,99,97,0]; kvs = 0; rs = 0; rd = 10
+[["E.ORGAN 1".ops]]      # op3 ratio 1.50
+out = 94; coarse = 1; fine = 50; detune = 4; eg_r = [99,80,54,82]; eg_l = [99,99,99,0]; kvs = 0; rs = 0
+[["E.ORGAN 1".ops]]      # op4 ratio 0.5
+out = 94; coarse = 0; fine = 0; detune = 5; eg_r = [99,80,22,90]; eg_l = [99,99,99,0]; kvs = 0; rs = 0
+[["E.ORGAN 1".ops]]      # op5 ratio 1.0
+out = 94; coarse = 1; fine = 0; detune = 2; eg_r = [99,80,22,90]; eg_l = [99,99,99,0]; kvs = 0; rs = 0
+[["E.ORGAN 1".ops]]      # op6 ratio 3.0
+out = 94; coarse = 3; fine = 0; detune = 0; eg_r = [99,54,22,90]; eg_l = [99,0,0,0]; kvs = 0; rs = 0
+
+# ──────────────────────────────────────────────────────────────────────────
+[["HARPSICH 1"]]         # ROM1A #18 — plucked harpsichord
+algo = 5
+feedback = 1
+[["HARPSICH 1".ops]]     # op1 (carrier) ratio 4.0
+out = 89; coarse = 4; fine = 0; detune = 0; eg_r = [95,28,27,47]; eg_l = [99,90,0,0]; kvs = 2; rs = 3; brk = 49
+[["HARPSICH 1".ops]]     # op2 ratio 0.5
+out = 99; coarse = 0; fine = 0; detune = 0; eg_r = [95,72,71,99]; eg_l = [99,97,91,98]; kvs = 0; rs = 1; brk = 49
+[["HARPSICH 1".ops]]     # op3 (carrier) ratio 1.0
+out = 85; coarse = 1; fine = 0; detune = -1; eg_r = [95,28,27,47]; eg_l = [99,90,0,0]; kvs = 2; rs = 3; brk = 49
+[["HARPSICH 1".ops]]     # op4 ratio 3.0
+out = 99; coarse = 3; fine = 0; detune = 0; eg_r = [95,72,71,99]; eg_l = [99,97,91,98]; kvs = 0; rs = 1; brk = 64; rd = 46
+[["HARPSICH 1".ops]]     # op5 (carrier) ratio 4.0
+out = 83; coarse = 4; fine = 0; detune = -1; eg_r = [95,28,27,47]; eg_l = [99,90,0,0]; kvs = 3; rs = 3; brk = 49
+[["HARPSICH 1".ops]]     # op6 ratio 6.0
+out = 87; coarse = 6; fine = 0; detune = 0; eg_r = [95,72,71,99]; eg_l = [99,97,91,98]; kvs = 0; rs = 1; brk = 64; rd = 55
+
+# ──────────────────────────────────────────────────────────────────────────
+[["MARIMBA"]]            # ROM1A #21 — percussive mallet
+algo = 7
+feedback = 0
+[["MARIMBA".ops]]        # op1 ratio 0.5
+out = 95; coarse = 0; fine = 0; detune = 0; eg_r = [95,40,49,55]; eg_l = [99,92,0,0]; kvs = 0; rs = 3
+[["MARIMBA".ops]]        # op2 ratio 3.0
+out = 96; coarse = 3; fine = 0; detune = 0; eg_r = [99,72,0,0]; eg_l = [82,48,0,0]; kvs = 2; rs = 0; brk = 54; rd = 46
+[["MARIMBA".ops]]        # op3 ratio 0.5
+out = 99; coarse = 0; fine = 0; detune = 0; eg_r = [95,33,49,41]; eg_l = [99,92,0,0]; kvs = 1; rs = 3
+[["MARIMBA".ops]]        # op4 ratio 5.0
+out = 85; coarse = 5; fine = 0; detune = 0; eg_r = [99,75,0,82]; eg_l = [82,48,0,0]; kvs = 2; rs = 0; brk = 54; rd = 46
+[["MARIMBA".ops]]        # op5 ratio 0.75
+out = 93; coarse = 0; fine = 50; detune = 0; eg_r = [99,75,0,8]; eg_l = [82,48,0,0]; kvs = 2; rs = 0; brk = 54; rd = 46
+[["MARIMBA".ops]]        # op6 ratio 4.52 — fast percussive ping
+out = 99; coarse = 4; fine = 13; detune = 0; eg_r = [0,63,55,0]; eg_l = [78,78,0,0]; kvs = 2; rs = 0; brk = 41

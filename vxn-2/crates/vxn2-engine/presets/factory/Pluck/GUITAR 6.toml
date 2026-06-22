@@ -1,0 +1,117 @@
+schema = 1
+
+[meta]
+name = "GUITAR 6"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Translated from DX7 factory ROM 'GUITAR  6': algo 3, feedback 7."
+
+[params]
+algo = 3
+feedback = 4.9
+
+# op1
+op1-num = 2
+op1-level = 92
+op1-vel-sens = 1
+op1-eg-r1 = 94
+op1-eg-r2 = 44
+op1-eg-r3 = 35
+op1-eg-r4 = 34
+op1-eg-l1 = 99
+op1-eg-l2 = 92
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 6
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 2
+op2-level = 89
+op2-vel-sens = 0
+op2-eg-r1 = 99
+op2-eg-r2 = 39
+op2-eg-r3 = 33
+op2-eg-r4 = 16
+op2-eg-l1 = 99
+op2-eg-l2 = 83
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 6
+op2-ks-break-pt = 58
+op2-ks-l-depth = 32
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-level = 99
+op3-vel-sens = 3
+op3-eg-r1 = 94
+op3-eg-r2 = 28
+op3-eg-r3 = 30
+op3-eg-r4 = 33
+op3-eg-l1 = 99
+op3-eg-l2 = 92
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 5
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 2
+op4-level = 99
+op4-vel-sens = 1
+op4-eg-r1 = 94
+op4-eg-r2 = 44
+op4-eg-r3 = 35
+op4-eg-r4 = 34
+op4-eg-l1 = 99
+op4-eg-l2 = 92
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 6
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 4
+op5-level = 91
+op5-vel-sens = 1
+op5-eg-r1 = 91
+op5-eg-r2 = 37
+op5-eg-r3 = 29
+op5-eg-r4 = 29
+op5-eg-l1 = 99
+op5-eg-l2 = 90
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 6
+op5-ks-break-pt = 21
+op5-ks-l-depth = 0
+op5-ks-r-depth = 5
+op5-ks-r-curve = "neg-lin"
+
+# op6
+op6-num = 6
+op6-level = 81
+op6-vel-sens = 1
+op6-eg-r1 = 82
+op6-eg-r2 = 53
+op6-eg-r3 = 37
+op6-eg-r4 = 48
+op6-eg-l1 = 99
+op6-eg-l2 = 81
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 6
+op6-ks-break-pt = 21
+op6-ks-l-depth = 0
+op6-ks-r-depth = 5
+op6-ks-r-curve = "neg-lin"
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.2
