@@ -587,4 +587,202 @@ name = "X"
     fn malformed_toml_is_error() {
         assert!(matches!(from_toml_str("nonsense ===="), Err(PresetError::Toml(_))));
     }
+
+    // ── vxn-app TOML codec parity (E019 / 0066) ──────────────────────────────
+    //
+    // The web export/import + URL share-link reuse a wasm-clean reimplementation
+    // of THIS format in `vxn-app::preset_toml` (model-trait based, no engine
+    // types), so an exported web patch imports on desktop and vice versa. These
+    // guard against the two drifting — the same discipline `state.rs` gets via
+    // `codec_matches_legacy_plugin_state`.
+
+    use crate::shared::SharedParams;
+
+    /// A `PluginState` with a distinct non-default value set on every per-layer
+    /// param (Upper and Lower) and every global, plus non-default key mode +
+    /// split — maximal coverage for the parity asserts.
+    fn dense_state() -> PluginState {
+        let mut params = ParamValues::default();
+        for p in PatchParam::all() {
+            params.layer_mut(Layer::Upper).set(p, non_default(p.desc()));
+            params.layer_mut(Layer::Lower).set(p, non_default(p.desc()));
+        }
+        for g in GlobalParam::all() {
+            params.global.set(g, non_default(g.desc()));
+        }
+        PluginState {
+            params,
+            key_mode: KeyMode::Split,
+            split_point: 48,
+        }
+    }
+
+    fn app_meta(m: &Meta) -> vxn_app::PresetMeta {
+        vxn_app::PresetMeta {
+            name: m.name.clone(),
+            author: m.author.clone(),
+            category: m.category.clone(),
+            comment: m.comment.clone(),
+        }
+    }
+
+    // The vxn-app writer is byte-identical to the engine's `to_toml_string` for
+    // the same state + meta (so the file format cannot drift between backends).
+    #[test]
+    fn app_writer_matches_engine_byte_for_byte() {
+        let state = dense_state();
+        let meta = Meta {
+            name: "Drift Guard".into(),
+            author: Some("Vulpus Labs".into()),
+            category: Some("Bass".into()),
+            comment: Some("parity".into()),
+        };
+        let engine_toml = Performance {
+            meta: meta.clone(),
+            state: state.clone(),
+        }
+        .to_toml_string();
+
+        let shared = SharedParams::new();
+        shared.load_performance(&state);
+        let app_toml = vxn_app::write_toml(&shared, &app_meta(&meta));
+
+        assert_eq!(engine_toml, app_toml, "vxn-app TOML drifted from engine");
+    }
+
+    // A vxn-app-exported patch parses on the engine (desktop) loader, reproducing
+    // every param — the "imports on the desktop build" acceptance, in reverse.
+    #[test]
+    fn app_write_parses_on_engine() {
+        let state = dense_state();
+        let shared = SharedParams::new();
+        shared.load_performance(&state);
+        let meta = vxn_app::PresetMeta {
+            name: "Web Patch".into(),
+            ..Default::default()
+        };
+        let app_toml = vxn_app::write_toml(&shared, &meta);
+
+        let (back, warnings) = from_toml_str(&app_toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.state.key_mode, state.key_mode);
+        assert_eq!(back.state.split_point, state.split_point);
+        for p in PatchParam::all() {
+            assert_eq!(
+                back.state.params.layer(Layer::Upper).get(p),
+                state.params.layer(Layer::Upper).get(p),
+                "upper {} drift",
+                p.desc().name
+            );
+            assert_eq!(
+                back.state.params.layer(Layer::Lower).get(p),
+                state.params.layer(Layer::Lower).get(p),
+                "lower {} drift",
+                p.desc().name
+            );
+        }
+        for g in GlobalParam::all() {
+            assert_eq!(
+                back.state.params.global.get(g),
+                state.params.global.get(g),
+                "global {} drift",
+                g.desc().name
+            );
+        }
+    }
+
+    // An engine-written (desktop) preset applies through the vxn-app reader,
+    // reproducing every param — the forward "imports on web" direction.
+    #[test]
+    fn engine_write_applies_through_app_reader() {
+        let state = dense_state();
+        let engine_toml = Performance {
+            meta: Meta {
+                name: "Desktop".into(),
+                ..Meta::default()
+            },
+            state: state.clone(),
+        }
+        .to_toml_string();
+
+        let shared = SharedParams::new();
+        let (meta, warnings) = vxn_app::read_toml_into(&shared, &engine_toml).unwrap();
+        assert_eq!(meta.name, "Desktop");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let back = shared.to_state();
+        assert_eq!(back.key_mode, state.key_mode);
+        assert_eq!(back.split_point, state.split_point);
+        for p in PatchParam::all() {
+            assert_eq!(
+                back.params.layer(Layer::Upper).get(p),
+                state.params.layer(Layer::Upper).get(p),
+            );
+            assert_eq!(
+                back.params.layer(Layer::Lower).get(p),
+                state.params.layer(Layer::Lower).get(p),
+            );
+        }
+        for g in GlobalParam::all() {
+            assert_eq!(back.params.global.get(g), state.params.global.get(g));
+        }
+    }
+
+    // A sparse default preset round-trips to defaults through the app reader, and
+    // the app reader resets a dirty model first (omitted params land on default).
+    #[test]
+    fn app_reader_resets_omitted_params_to_default() {
+        // A near-default state: only one param deviates.
+        let mut params = ParamValues::default();
+        params.layer_mut(Layer::Upper).set(PatchParam::Cutoff, 1234.0);
+        let state = PluginState {
+            params,
+            key_mode: KeyMode::Whole,
+            split_point: 60,
+        };
+        let toml = Performance {
+            meta: Meta { name: "Sparse".into(), ..Meta::default() },
+            state,
+        }
+        .to_toml_string();
+
+        // A model pre-loaded with a DIFFERENT dense patch.
+        let shared = SharedParams::new();
+        shared.load_performance(&dense_state());
+        vxn_app::read_toml_into(&shared, &toml).unwrap();
+
+        let back = shared.to_state();
+        // The one set param took; everything else reset to default.
+        assert_eq!(back.params.layer(Layer::Upper).get(PatchParam::Cutoff), 1234.0);
+        let def = PatchValues::default();
+        assert_eq!(
+            back.params.layer(Layer::Lower).get(PatchParam::Cutoff),
+            def.get(PatchParam::Cutoff),
+            "lower cutoff should have reset to default"
+        );
+        assert_eq!(back.key_mode, KeyMode::Whole);
+    }
+
+    // A malformed / wrong-schema blob is a hard error and does NOT mutate the
+    // model (parse fails before the commit) — the graceful-rejection acceptance.
+    #[test]
+    fn app_reader_rejects_garbage_without_mutating() {
+        let shared = SharedParams::new();
+        shared.load_performance(&dense_state());
+        let before = shared.to_state();
+
+        assert!(vxn_app::read_toml_into(&shared, "not = valid = toml").is_err());
+        assert!(
+            vxn_app::read_toml_into(&shared, "schema = 999\n[meta]\nname='x'").is_err(),
+            "wrong schema rejected"
+        );
+
+        // Model untouched by the failed reads.
+        let after = shared.to_state();
+        assert_eq!(before.split_point, after.split_point);
+        assert_eq!(
+            before.params.layer(Layer::Upper).get(PatchParam::Cutoff),
+            after.params.layer(Layer::Upper).get(PatchParam::Cutoff),
+        );
+    }
 }

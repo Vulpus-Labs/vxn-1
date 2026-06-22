@@ -10,6 +10,12 @@ description = "VXN1 controller: MVC arbiter between UI, host, and engine model (
 [dependencies]
 vxn-core-app = { workspace = true }
 vxn-core-utils = { workspace = true }
+# Name-keyed TOML preset codec (E019 / 0066). The wasm web controller exports /
+# imports the SAME sparse format the desktop build writes (vxn-engine::preset),
+# so this lives here in `vxn-app` (wasm-clean, model-trait based) the way
+# `state.rs` mirrors the binary blob — a drift-guard test asserts byte parity.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

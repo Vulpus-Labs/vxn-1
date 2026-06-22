@@ -394,6 +394,36 @@ export class WebController {
     return this.x.vxnc_restore_state(b.length >>> 0) === 1;
   }
 
+  // ---- patch export / import (name-keyed TOML, E019 / 0066) ---------------
+  //
+  // The portable, desktop-compatible patch format: a sparse TOML string keyed by
+  // param name (`vxn_app::preset_toml`, byte-identical to the desktop build), so
+  // an exported web patch imports on desktop and vice versa. Distinct from the
+  // binary snapshot blob (0065) — that stays the compact channel for autosave +
+  // the URL share-link; this is the human-readable file.
+
+  // Serialize the current patch to a TOML string. `name` is the preset's `[meta]
+  // name` (the desktop filename derives from it). Returns the text.
+  exportToml(name = "") {
+    const n = this._enc.encode(name);
+    this._writeArgs([n]);
+    const len = this.x.vxnc_export_toml(n.length >>> 0);
+    const ptr = this.x.vxnc_toml_out_ptr();
+    const bytes = new Uint8Array(this.x.memory.buffer, ptr, len);
+    return new TextDecoder().decode(bytes);
+  }
+
+  // Parse a TOML patch string and apply it into the model. Returns true if
+  // applied, false if malformed/wrong-schema (the model is left untouched, so the
+  // caller surfaces a message). Call editorReady() afterwards so the re-broadcast
+  // seeds the UI + param SAB with the imported values.
+  importToml(text) {
+    const b = this._enc.encode(text);
+    const ptr = this.x.vxnc_toml_buf_reserve(b.length >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, b.length).set(b);
+    return this.x.vxnc_import_toml(b.length >>> 0) === 1;
+  }
+
   // ---- tick: drain queues → mutate model → drain ViewEvents ---------------
   //
   // Call this on each rAF (or after a gesture burst). It (1) ticks the

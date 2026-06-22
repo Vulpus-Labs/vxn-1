@@ -15,6 +15,7 @@ pub mod model;
 pub mod params;
 pub mod preset_names;
 pub mod preset_record;
+pub mod preset_toml;
 pub mod state;
 pub mod sync;
 
@@ -25,6 +26,7 @@ pub use factory_asset::FactoryEntry;
 pub use model::{ParamId, ParamModel, Vxn1Params};
 pub use preset_names::{preset_filename, sanitize_name, unique_folder_name};
 pub use preset_record::PresetRecord;
+pub use preset_toml::{TomlError, read_toml_into, write_toml};
 pub use state::{BLOB_LEN, MAGIC, VERSION, read_state_into, write_state_bytes};
 pub use params::{
     AssignMode, CrossModType, EnvSel, GLOBAL_PARAMS, GLOBAL_COUNT, GlobalParam, LfoSel,

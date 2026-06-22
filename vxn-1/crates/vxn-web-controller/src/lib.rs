@@ -372,6 +372,11 @@ struct ControllerState {
     /// for full-state autosave, and the staging buffer it writes a saved blob into
     /// before `vxnc_restore_state` (E019 / 0065). Reused per call.
     state_out: Vec<u8>,
+    /// Name-keyed TOML preset text (E019 / 0066) — the portable file/share format.
+    /// `vxnc_export_toml` writes the current patch here for JS to download; JS also
+    /// stages an imported file's bytes here via `vxnc_toml_buf_reserve` before
+    /// `vxnc_import_toml`. Reused per call (export out / import in, like `state_out`).
+    toml_buf: Vec<u8>,
 }
 
 impl ControllerState {
@@ -404,6 +409,7 @@ impl ControllerState {
             arg_in: Vec::new(),
             journal_out: Vec::with_capacity(4 * 1024),
             state_out: Vec::with_capacity(vxn_app::BLOB_LEN),
+            toml_buf: Vec::with_capacity(4 * 1024),
         })
     }
 
@@ -1100,6 +1106,70 @@ pub extern "C" fn vxnc_restore_state(len: u32) -> u32 {
     }
 }
 
+// ---- patch export / import (name-keyed TOML file + share, E019 / 0066) -------
+//
+// The portable, desktop-compatible patch format: a sparse TOML file keyed by
+// param name (`vxn_app::preset_toml`, byte-identical to the desktop build). The
+// page exports the current patch to a `.toml` download and imports one back via
+// a file picker; the binary `snapshot_state` blob (0065) is reused base64url'd
+// for the compact URL share-link. Export and import share one `toml_buf` (export
+// writes it out, import stages bytes in), the same reuse pattern as `state_out`.
+
+/// Serialize the current patch to a name-keyed TOML string into `toml_buf` and
+/// return its byte length. The preset `name` is staged in the arg buffer
+/// (`vxnc_arg_buf_reserve`) — `name_len` bytes of UTF-8 (may be empty). After
+/// this, [`vxnc_toml_out_ptr`] addresses the text (valid until the next
+/// export/import call). JS decodes it and offers it as a `.toml` download.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_export_toml(name_len: u32) -> u32 {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    let meta = PresetMeta {
+        name,
+        ..Default::default()
+    };
+    let toml = vxn_app::write_toml(&*s.model, &meta);
+    s.toml_buf.clear();
+    s.toml_buf.extend_from_slice(toml.as_bytes());
+    s.toml_buf.len() as u32
+}
+
+/// Pointer to the TOML text staged by [`vxnc_export_toml`] (also the staging
+/// buffer [`vxnc_import_toml`] reads). Valid until the next export/import call.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_toml_out_ptr() -> *const u8 {
+    state().toml_buf.as_ptr()
+}
+
+/// Reserve `len` bytes in `toml_buf` and return a pointer JS writes an imported
+/// file's UTF-8 bytes into, before calling [`vxnc_import_toml`]. Valid until the
+/// next reserve (a `Vec` realloc can move it).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_toml_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.toml_buf.clear();
+    s.toml_buf.resize(len as usize, 0);
+    s.toml_buf.as_mut_ptr()
+}
+
+/// Parse the `len`-byte TOML JS staged via [`vxnc_toml_buf_reserve`] and apply it
+/// into the model. Returns 1 on success, 0 if the TOML is malformed or the wrong
+/// schema (a hard error leaves the model untouched — the parse fails before any
+/// mutation, so the caller surfaces a message and the patch is unchanged).
+/// Non-fatal warnings (unknown keys / bad labels falling back to defaults) still
+/// return 1. Call before re-broadcasting `EditorReady` so the broadcast seeds the
+/// UI + param SAB with the imported values, same ordering as preset/state load.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_import_toml(len: u32) -> u32 {
+    let s = state();
+    let n = (len as usize).min(s.toml_buf.len());
+    let text = String::from_utf8_lossy(&s.toml_buf[..n]).into_owned();
+    match vxn_app::read_toml_into(&*s.model, &text) {
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
 // ===========================================================================
 // Tests (E019 / 0062) — the factory read path, host-run
 // ===========================================================================
@@ -1318,5 +1388,85 @@ mod tests {
             Ok(()) => 1,
             Err(_) => 0,
         }
+    }
+
+    // Test shims for the TOML export/import opcodes (E019 / 0066), mirroring the
+    // `toml_buf` plumbing the `extern "C"` entry points use.
+    fn export_on(st: &mut ControllerState, name: &str) -> String {
+        let meta = PresetMeta {
+            name: name.into(),
+            ..Default::default()
+        };
+        let toml = vxn_app::write_toml(&*st.model, &meta);
+        st.toml_buf.clear();
+        st.toml_buf.extend_from_slice(toml.as_bytes());
+        String::from_utf8(st.toml_buf.clone()).unwrap()
+    }
+    fn import_on(st: &mut ControllerState, text: &str) -> u32 {
+        st.toml_buf.clear();
+        st.toml_buf.extend_from_slice(text.as_bytes());
+        let n = st.toml_buf.len();
+        let s = String::from_utf8_lossy(&st.toml_buf[..n]).into_owned();
+        match vxn_app::read_toml_into(&*st.model, &s) {
+            Ok(_) => 1,
+            Err(_) => 0,
+        }
+    }
+
+    // E019 / 0066: a patch exports to name-keyed TOML and imports back through the
+    // WebModel, reproducing the params + non-param key mode + split (AC1). Uses an
+    // idempotent re-export to prove fidelity across all param kinds (enums/bools
+    // round-trip lossily through value→label→value, so byte-equal re-export is the
+    // robust check), plus an exact compare on a Float param + the shared state.
+    #[test]
+    fn export_import_round_trips_through_toml() {
+        let float_id = (0..TOTAL_PARAMS)
+            .find(|&i| {
+                matches!(
+                    desc_for_clap_id(i).map(|d| d.kind),
+                    Some(vxn_app::ParamKind::Float { .. })
+                )
+            })
+            .expect("there is at least one Float param");
+        let d = desc_for_clap_id(float_id).unwrap();
+        let v = (d.min + d.max) * 0.5;
+
+        let mut st = ControllerState::new();
+        st.model.set(ParamId::new(float_id), v);
+        st.model.set_key_mode(KeyMode::Split);
+        st.model.set_split_point(48);
+        let toml1 = export_on(&mut st, "My Patch");
+        assert!(toml1.contains("name = \"My Patch\""), "{toml1}");
+
+        // A fresh controller at cold defaults imports the file.
+        let mut fresh = ControllerState::new();
+        assert_eq!(import_on(&mut fresh, &toml1), 1, "import succeeds");
+        assert!((fresh.model.get(ParamId::new(float_id)) - v).abs() < 1e-4);
+        assert_eq!(fresh.model.key_mode(), KeyMode::Split);
+        assert_eq!(fresh.model.split_point(), 48);
+
+        // Re-exporting the imported patch yields byte-identical TOML (full fidelity).
+        let toml2 = export_on(&mut fresh, "My Patch");
+        assert_eq!(toml1, toml2);
+    }
+
+    // E019 / 0066: malformed / wrong-schema TOML is rejected (returns 0) and the
+    // model is left untouched, so the caller surfaces a message (AC4).
+    #[test]
+    fn import_rejects_garbage_without_mutating() {
+        let mut st = ControllerState::new();
+        st.model.set_key_mode(KeyMode::Dual);
+        st.model.set_split_point(36);
+
+        assert_eq!(import_on(&mut st, "not = valid = toml"), 0, "garbage rejected");
+        assert_eq!(
+            import_on(&mut st, "schema = 999\n[meta]\nname='x'"),
+            0,
+            "wrong schema rejected"
+        );
+
+        // Model untouched by the failed imports.
+        assert_eq!(st.model.key_mode(), KeyMode::Dual);
+        assert_eq!(st.model.split_point(), 36);
     }
 }
