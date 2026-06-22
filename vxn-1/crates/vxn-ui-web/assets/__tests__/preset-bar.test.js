@@ -14,6 +14,7 @@ function mountPresetBarDOM() {
     <button id="pbar-next" type="button"></button>
     <button id="pbar-browse" type="button"></button>
     <button id="pbar-save" type="button"></button>
+    <button id="pbar-save-overwrite" type="button"></button>
   `;
 }
 async function loadPanels() {
@@ -26,6 +27,21 @@ async function loadPanels() {
   return mod;
 }
 
+// Overwrite-Save (`pbar-save-overwrite`) needs the dirty wrap intact: panels.js
+// wraps the bridge's `send.setParam` at import to flip dirty, and the recorder
+// `installVxn` swaps in would lose that wrap. So this loader keeps the bridge's
+// `window.vxn.send` (its `_post` is a no-op under jsdom — no `window.ipc`) and
+// just spies `savePreset` to capture the write.
+async function loadPanelsKeepBridge() {
+  vi.resetModules();
+  const mod = await import('../panels.js');
+  // `_post` posts via `window.ipc.postMessage`; stub it so the wrapped senders
+  // run silently under jsdom (otherwise bridge's catch logs a console error).
+  globalThis.window.ipc = { postMessage: vi.fn() };
+  vi.spyOn(window.vxn.send, 'savePreset');
+  return mod;
+}
+
 beforeEach(() => {
   mountPresetBarDOM();
   browserPanel = {
@@ -35,6 +51,7 @@ beforeEach(() => {
     setOpen: vi.fn(function (v) { this._open = !!v; }),
     openSaveAs: vi.fn(),
     onOpenChange: vi.fn(function (cb) { this._cb = cb; }),
+    folderForUserPath: vi.fn(() => 'Bass'),
   };
   globalThis.browserPanel = browserPanel;
 });
@@ -82,5 +99,51 @@ describe('presetBar buttons', () => {
     expect(btn.classList.contains('active')).toBe(true);
     browserPanel._cb(false);
     expect(btn.classList.contains('active')).toBe(false);
+  });
+});
+
+describe('presetBar overwrite-Save (0094 / 0016)', () => {
+  it('stays disabled until the patch is dirty AND the source is a user preset', async () => {
+    const { presetBar } = await loadPanelsKeepBridge();
+    const btn = document.getElementById('pbar-save-overwrite');
+
+    // Fresh load: not dirty → disabled regardless of source.
+    presetBar.setSource({ kind: 'user', path: 'Bass/My Patch.preset' });
+    expect(btn.disabled).toBe(true);
+
+    // A user edit flips dirty (the wrapped bridge sender) → enabled.
+    window.vxn.send.setParam(0, 0.5);
+    expect(btn.disabled).toBe(false);
+
+    // Factory source never enables overwrite (no write target).
+    presetBar.setSource({ kind: 'factory', index: 3 });
+    window.vxn.send.setParam(0, 0.6);
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('writes savePreset(name, folder) for a dirty user preset, then re-disables', async () => {
+    const { presetBar } = await loadPanelsKeepBridge();
+    const btn = document.getElementById('pbar-save-overwrite');
+    presetBar.setName('My Patch');
+    presetBar.setSource({ kind: 'user', path: 'Bass/My Patch.preset' });
+    window.vxn.send.setParam(0, 0.5); // dirty
+
+    btn.click();
+    expect(browserPanel.folderForUserPath).toHaveBeenCalledWith('Bass/My Patch.preset');
+    expect(window.vxn.send.savePreset).toHaveBeenCalledWith('My Patch', 'Bass');
+    // Optimistic clear: button disables again until the next edit.
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('refuses to save when the folder is missing from the corpus (no silent fork)', async () => {
+    const { presetBar } = await loadPanelsKeepBridge();
+    browserPanel.folderForUserPath.mockReturnValue(undefined);
+    const btn = document.getElementById('pbar-save-overwrite');
+    presetBar.setName('My Patch');
+    presetBar.setSource({ kind: 'user', path: 'Bass/My Patch.preset' });
+    window.vxn.send.setParam(0, 0.5); // dirty → enabled
+
+    btn.click();
+    expect(window.vxn.send.savePreset).not.toHaveBeenCalled();
   });
 });

@@ -49,15 +49,30 @@ export function buildParams() {
     2:  floatDesc('lfo1_delay_time', 'Delay'),
     3:  floatDesc('lfo1_fade', 'Fade'),
     4:  enumDesc('xmod_type', 'Cross Mod', XMOD_VARIANTS, 0),
+    // Per-patch sync/cutoff pairs (0016): LFO 1 rate↔sync and cutoff↔tuned
+    // are per-patch, so they twin across layers like the rest.
+    5:  floatDesc('lfo_rate', 'Rate'),
+    6:  boolDesc('lfo_sync', 'Sync'),
+    7:  floatDesc('cutoff', 'Cutoff', 0.5),
+    8:  boolDesc('cutoff_tuned', 'Tuned'),
     // Lower-layer twins (Upper id + PATCH_COUNT). Same name + shape.
     10: enumDesc('assign_mode', 'Assign', ASSIGN_VARIANTS, 0),
     11: boolDesc('lfo1_free_run', 'Free'),
     12: floatDesc('lfo1_delay_time', 'Delay'),
     13: floatDesc('lfo1_fade', 'Fade'),
     14: enumDesc('xmod_type', 'Cross Mod', XMOD_VARIANTS, 0),
+    15: floatDesc('lfo_rate', 'Rate'),
+    16: boolDesc('lfo_sync', 'Sync'),
+    17: floatDesc('cutoff', 'Cutoff', 0.5),
+    18: boolDesc('cutoff_tuned', 'Tuned'),
     // Globals (id ≥ 2·PATCH_COUNT, layer-independent).
     20: enumDesc('filter_mode', 'Mode', FILTER_VARIANTS, 0),
     21: floatDesc('filter_slope', 'Slope'),
+    // Global sync pairs (0016): LFO 2 rate↔sync and Delay time↔sync.
+    22: floatDesc('lfo2_rate', 'LFO2 Rate'),
+    23: boolDesc('lfo2_sync', 'LFO2 Sync'),
+    24: floatDesc('delay_time', 'Delay Time'),
+    25: boolDesc('delay_sync', 'Delay Sync'),
   };
 }
 

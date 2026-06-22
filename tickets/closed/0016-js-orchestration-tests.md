@@ -67,3 +67,41 @@ pin behaviour first.
 The `cutoffTuned*` helpers in `panels.js` are already
 unit-tested; what is missing is the factory wiring in
 dispatch.js that decides when they apply.
+
+## Close-out (2026-06-22)
+
+New direct vitest coverage for the dispatch orchestration layer; no
+production-code changes — only test files plus a fixture extension.
+
+- **New suite** `__tests__/dispatch-orchestration.test.js` (9 cases).
+  dispatch.js imports nothing (concat-time globals at splice), so the
+  cross-module symbols — `makeFader`/`makeSwitch`/…, `subdivisionLabel`,
+  the `cutoffTuned*` helpers, `keysPanel`/`presetBar`/`browserPanel`,
+  and bridge's `_earlyViewEvents`/`_textInputCallbacks` — are stubbed on
+  `globalThis`, exactly as the splice would define them.
+  - `locateSyncPartners`: rate↔sync + cutoff↔tuned maps at upper, per-
+    patch ids shift `+patchCount` at lower, globals stay put, missing
+    params skipped without throwing.
+  - `rateDisplayOverride`: null with no partner; returns the subdivision
+    label only while the partner sync is on.
+  - cutoff overrides (`cutoffDisplayOverride`/`cutoffNormOverride`/
+    `cutoffInteractionOverride`): null off a cutoff fader; route through
+    the tuned helpers only while Tuned is on, else passthrough (null).
+  - `rebindAllForLayer`: every layered cell re-binds to the new layer
+    ids (`5,7` → `15,17`), partners re-resolve, the freshly-bound cell is
+    reseeded from `model.lastParam`.
+  - `init()` → `applyViewEvents`: cells bind, a `param_changed` drives
+    its ctl, and a sync-toggle echo refreshes its rate partner's display.
+- **Fixture** `fixtures/params.js` gained the sync/cutoff params the
+  above needs (`lfo_rate`/`lfo_sync`, `cutoff`/`cutoff_tuned` per-patch;
+  `lfo2_rate`/`lfo2_sync`, `delay_time`/`delay_sync` global). Additive —
+  existing ids/names unchanged, so `dim-rules.test.js` et al stay green.
+- **presetBar overwrite-Save** (`__tests__/preset-bar.test.js`, 3 new
+  cases): gated disabled until dirty AND source is a user preset;
+  `savePreset(name, folder)` on a dirty user preset then re-disables;
+  refuses when `folderForUserPath` is undefined (no silent fork). Loaded
+  via a keep-bridge helper so panels' dirty-wrap on `send.setParam`
+  survives (the recorder swap would lose it).
+- Green via `npx vitest run` (168 cases) and the gated Rust path
+  `VXN_JS_TESTS=1 cargo test -p vxn-ui-web` (56 cases incl.
+  `js_suite_passes`), which is what CI (0116) runs.
