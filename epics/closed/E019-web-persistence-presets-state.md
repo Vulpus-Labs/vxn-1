@@ -2,7 +2,7 @@
 id: E019
 product: vxn-2
 title: "vxn-1 web port — persistence (presets + state)"
-status: open
+status: closed
 created: 2026-06-14
 depends-on: E018
 ---
