@@ -58,3 +58,19 @@ worklist epic of the same number, see Notes).
   means the *filter* epic (ADR 0004). The unified worklist's `epics/closed/E007`
   is the unrelated vxn-1 `faceplate-js-cleanup`. The vxn-2 008x filter tickets
   predate this worklist and have no files here, so `epic: null`.
+
+## Close-out (2026-06-22)
+
+- `DestId::FilterDrive` (discriminant 42) wired end-to-end: enum,
+  `N_DESTS`, `DEST_NAMES`/`DEST_LABELS`/`DEST_GAIN` (4.0, log/octave
+  domain), `tier() = PerStack`, `from_u8`, `VoiceIdx` degenerate
+  coherence. Engine applies `drive · 2^value` clamped `[0.1,16]` via a
+  new `FILTER_DRIVE_IDX` accumulator in `set_stack_filter_coeffs`
+  ([engine.rs:1305](../../vxn-2/crates/vxn2-engine/src/engine.rs#L1305)).
+  JS dest dropdown picks it up from `build_matrix_lists_json` (no JS
+  change).
+- Tests: matrix round-trip + coherence cover FilterDrive;
+  `build_matrix_lists_json_includes_all_enum_widths` bumped to 43
+  (also fixed the pre-existing stale 36-count assert). `cargo test
+  -p vxn2-engine -p vxn2-ui-web` green. Manual DAW drive-sweep check
+  waived at close.

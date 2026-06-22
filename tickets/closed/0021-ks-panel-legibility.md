@@ -162,3 +162,20 @@ control+persistence is a clean follow-on that only pays off once a control
 exists. Persistence pattern mirrors the mod matrix — see [[vxn2-preset-system]],
 [[vxn2-architecture]], [[vxn2-mvc-discipline]] (view never reads model; drag
 gated locally). Independent of the filter epic (E007).
+
+## Close-out (2026-06-22)
+
+- Legibility items 1-3 landed in `vxn2-ui-web` `op-row.js`: octave
+  gridlines carry note-name labels (`vxn.noteName`); BP-handle drag
+  shows live note name, L/R drag shows the dB multiplier at the
+  keyboard extreme; graph titled as **Level** scaling with an A3
+  rate-pivot marker on the same axis; real curve shape drawn
+  (quadratic for Exp) with per-side Lin/Exp toggles.
+- Curve sub-task (was 0089): full DX7 4-curve model + non-CLAP
+  `ks_curve_meta` `AtomicU32` persistence, `BLOB_VERSION` 11→12 with
+  v≤11 legacy migration, sparse `op{n}-ks-{l,r}-curve` TOML labels,
+  `ParamView::ks_curve` threaded into `read_op` (hardcode removed).
+- Tests: engine blob + legacy-v11 migration round-trips, preset text
+  round-trip, `snapshot_params` op-param threading, ui-web IPC
+  parse/serialise. Pure-UI items 1-2 had no DSP change. Manual DAW
+  verification of the curves waived at close.

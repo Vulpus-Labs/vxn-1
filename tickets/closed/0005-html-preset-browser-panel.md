@@ -43,3 +43,13 @@ Browse-only is more constrained — the data shape is fixed by ADR 0006.
 CSS-wise, the floating panel sits inside the WebView document (not
 a separate native window). It can absolutely-position over the rows
 without z-index drama; standard HTML.
+
+## Close-out (2026-06-22)
+
+- Two-pane browser shipped in `vxn-core-ui-web` `preset-browser.js`
+  (`createPresetBrowser`, wired from `browser.js`): left folder pane
+  (Factory categories + User folders), right name-sorted preset list,
+  substring search box, ESC + click-outside close, scroll on overflow.
+- Corpus sourced from controller (`ViewEvent::PresetCorpusChanged`
+  rebuilds lists); preset click posts `UiEvent::LoadPreset`; loaded
+  preset highlighted in its folder.

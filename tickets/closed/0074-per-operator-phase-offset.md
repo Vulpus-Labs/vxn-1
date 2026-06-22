@@ -70,3 +70,18 @@ additively with the existing per-lane offset.
   change the waveform.
 - Stack-path only; the scalar reference path (op.rs/voice.rs) does not reset
   phase at note-on, so the offset is intentionally a stack feature.
+
+## Close-out (2026-06-22)
+
+- `OpParams.phase` (fraction `[0,1)`, default 0.0) added; CLAP param
+  `op{n}-phase` appended as trailing op-block float (`N_PER_OP` 21→22,
+  `TOTAL_PARAMS` 189→195); PARAMETERS.md updated.
+- `apply_phase_offsets` (stack.rs) composes per-lane decorrelation +
+  per-op offset via wrapping Q32 add (`frac.rem_euclid(1.0) *
+  PM_SCALE_Q32`); applied at note-on only, hot loop unchanged.
+- Host-state blob `BLOB_VERSION` 11 migration: v≤10 op-blocks spread,
+  six new phase slots seed 0.0 (unchanged patch stays bit-identical).
+  Tests `per_op_phase_shifts_starting_phase_and_waveform`,
+  `per_op_phase_composes_with_lane_decorrelation`,
+  `load_bytes_migrates_v10_param_layout`; legacy v3-v6 still pass.
+  Excluded from audibility sweep (cyclic min≡max). UI fader added.

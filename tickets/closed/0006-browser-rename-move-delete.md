@@ -44,3 +44,15 @@ in `DeleteSweeper` is what makes it feel right. Port the timing,
 not the implementation.
 
 Drag-drop is 0007; this ticket is menu-driven only.
+
+## Close-out (2026-06-22)
+
+- Right-click context menus in `preset-browser.js`: user preset →
+  Rename / Delete / Move-to ▸ submenu (other user folders); user
+  folder → Rename / Delete; Factory rows read-only (no menu).
+- Rename/New-Folder use the shared text-input popup, committing
+  `UiEvent::RenamePreset`/`RenameFolder`/`NewFolder`; Move posts
+  `UiEvent::MovePreset`. Two-click delete-confirm with 3 s timeout
+  ports the Vizia `DeleteSweeper` timing. Each mutation triggers
+  `ViewEvent::PresetCorpusChanged` re-render; errors surface on the
+  status line.

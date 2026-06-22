@@ -1,0 +1,82 @@
+schema = 1
+
+[meta]
+name = "Analytic Saw Supersaw"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "E023 analytic-shape demo. Algo 32 (six parallel carriers) summed into a bandlimited sawtooth: ratios 1-6 at 1/n levels, even harmonics phase-flipped (0.5 = π) so the time-domain shape is an actual saw, not a same-spectrum scramble. Eight detuned + phase-decorrelated stack lanes fatten it into a supersaw — spectral fill comes from the stack, not the six partials (so don't expect bright analog bite from one voice). The 0073 Nyquist fade keeps upward sweeps alias-clean."
+
+[params]
+algo = 32
+feedback = 0.0
+
+# Six carriers at harmonic ratios 1..6, amplitudes ~1/n (textbook saw rolloff;
+# nudge brighter by ear if it reads too soft given only six partials). Even
+# harmonics (ratios 2, 4, 6 → ops 2, 4, 6) get phase 0.5 = π so the additive
+# sum forms a real sawtooth. EG sustains flat (l2 = l3 = 99) so the shape holds
+# steady; the per-op level ratios set the spectrum.
+op1-num = 1
+op1-level = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+
+op2-num = 2
+op2-level = 50
+op2-phase = 0.5
+op2-eg-l2 = 99
+op2-eg-l3 = 99
+
+op3-num = 3
+op3-level = 33
+op3-eg-l2 = 99
+op3-eg-l3 = 99
+
+op4-num = 4
+op4-level = 25
+op4-phase = 0.5
+op4-eg-l2 = 99
+op4-eg-l3 = 99
+
+op5-num = 5
+op5-level = 20
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+
+op6-num = 6
+op6-level = 17
+op6-phase = 0.5
+op6-eg-l2 = 99
+op6-eg-l3 = 99
+
+# Supersaw: eight decorrelated lanes. Detune + per-lane phase scatter give the
+# width; the saw shape per lane gives the character.
+stack-density = 8
+stack-detune = 18.0
+stack-spread = 0.80
+stack-phase = 0.70
+
+# A little space so the width reads.
+reverb-size = 0.5
+reverb-mix = 0.20
+
+# Lane spread → per-carrier pan for stereo width (matches FM Strings).
+[[matrix]]
+slot = 0
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 1.0

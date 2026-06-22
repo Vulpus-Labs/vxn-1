@@ -39,3 +39,13 @@ accidentally receive a preset path.
 
 Drag inside a WebView in a CLAP plugin: wry passes pointer events
 through; no DAW interference.
+
+## Close-out (2026-06-22)
+
+- HTML5 DnD in `preset-browser.js`: user preset rows `draggable`,
+  user folders are drop targets (`dragover` highlight / `dragleave`
+  clear), drop posts `UiEvent::MovePreset` with `dataTransfer`
+  key `vxn/preset`. Current-folder drop is a no-op (dimmed); Factory
+  folders reject. Moved preset stays selected on corpus refresh.
+- Covered by `browser-drag-drop.test.js` (factory-reject, target
+  highlight, MovePreset payload). Earlier Vizia ticket 0032 superseded.

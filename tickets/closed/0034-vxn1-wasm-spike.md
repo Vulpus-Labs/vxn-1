@@ -69,3 +69,14 @@ matter if this spike says go.
   so a future UI port reuses the opcode protocol over `postMessage`
   instead of wry `evaluate_script` — but that's a later ticket.
 - `priority: low` — exploratory, no downstream dependents.
+
+## Close-out (2026-06-22)
+
+- Spike verdict: **GO**. `vxn-engine` compiled to
+  `wasm32-unknown-unknown` with zero source changes; one sustained
+  note played glitch-free in an `AudioWorkletProcessor`; denormal
+  path confirmed safe with FTZ absent.
+- Verdict + AudioWorklet/wasm-bindgen gotchas and full-port effort
+  estimate captured in the spike crate README. The throwaway spike
+  files were later removed (0086, commit a15bde7); the full web port
+  it green-lit shipped as tickets 0035-0066.

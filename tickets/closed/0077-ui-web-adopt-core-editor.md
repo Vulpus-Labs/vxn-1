@@ -88,3 +88,17 @@ rework there; if it stays vxn-1-side, 0084 lands after this.
 This is the single highest-leverage item in E024 — it
 removes the most duplicated, hardest-to-keep-synced code in
 one move and is low-risk because vxn-2 proves the shape.
+
+## Close-out (2026-06-22)
+
+- `vxn-ui-web::open_editor` now builds a
+  `vxn_core_ui_web::WebEditorConfig` (faceplate HTML, dimensions,
+  hooks) and calls `vxn_core_ui_web::open_editor`, matching the
+  vxn-2 shim. Forked `EditorHandle`/`WebEditor`/`ParentWindow`/
+  `build_raw`/`ensure_webview2_data_dir` deleted; `EditorHandle`/
+  `OpenEditorError` re-exported from the shared crate
+  ([lib.rs:65-82](../../vxn-1/crates/vxn-ui-web/src/lib.rs#L65)).
+- Public `open_editor` signature preserved — `vxn-clap/src/gui.rs`
+  unchanged; clap shell builds. Non-unwinding `Result` path inherited
+  from the shared crate, discharging E011's wry-panic item.
+  HTML-structure tally tests retained. Merged in commit 05b42c1.

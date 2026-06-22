@@ -104,3 +104,20 @@ only for the all-carriers case — it does not address FM sideband aliasing
   keep it in-band (it was previously relying on aliasing for audibility).
 - Spectrogram capture of an upward sweep showing partials fading not folding:
   **pending manual verification in a DAW**.
+
+## Close-out (2026-06-22)
+
+- Per-lane Nyquist fade on `Stack::op_nyquist_fade[op][lane]`,
+  computed in `apply_pitch_mult` from `phase_inc` and multiplied into
+  effective level in `stack_tick_stereo`/`stack_tick_mono`. Carrier-
+  only (`spec_of(algo).carriers`); modulators stay 1.0.
+- **Window** (stack.rs consts): `NYQUIST_FADE_LO = 0.45`,
+  `NYQUIST_FADE_HI = 0.49` of fs (48 k: 21.6 k → 23.5 k; 44.1 k:
+  19.85 k → 21.6 k), Hermite smoothstep inverted. **+1.2%** bench on
+  the loaded SIMD path; the skip-branch variant was reverted
+  (defeated autovec, ~50% slower).
+- Tests: `nyquist_fade_curve_is_unity_low_zero_high_monotone`,
+  `fade_is_unity_at_normal_pitch`,
+  `fade_silences_partials_swept_past_nyquist`,
+  `fade_is_carrier_only_modulators_unattenuated`. Manual listen /
+  spectrogram pass waived at close.

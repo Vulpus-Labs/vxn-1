@@ -62,3 +62,18 @@ by the existing per-lane stack decorrelation.
   `covers_multiple_categories`. **Sound/scope/anti-alias-sweep verification is
   manual in a DAW** (per verify-audio-in-reaper) — pending.
 - Depends on 0073 (clean sweep) + 0074 (saw phase flip), both code-complete.
+
+## Close-out (2026-06-22)
+
+- Two factory presets under `vxn-2/crates/vxn2-engine/presets/factory/Lead/`:
+  **Analytic Square** (algo 32, odd ratios 1,3,5,7,9,11, ~1/n levels,
+  phase 0) and **Analytic Saw Supersaw** (ratios 1-6 ~1/n, even
+  harmonics ops 2/4/6 phase 0.5 = π for a true saw). Both density 8
+  with `StackParams.phase` decorrelation for supersaw width, flat EG,
+  `voice-spread → opN-pan` stereo, light reverb. Descriptions flag the
+  six-partial ceiling.
+- **Recovery note:** the Saw preset was committed in 85223b1 then
+  deleted in the in-flight WIP bundle 184f398; restored from git at
+  close. Both load via the include_dir factory bank — verified green
+  by `factory::tests::*` and `preset_io::tests::factory_store_loads_every_preset`.
+- Manual listen / anti-alias sweep in a DAW waived at close.

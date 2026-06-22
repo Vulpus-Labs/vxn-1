@@ -39,3 +39,14 @@ two together.
 Status messages (Loaded "X", Save failed: …) render as a small chip
 to the right of the name, fed by `ViewEvent::Status`. 3-second auto-
 dismiss.
+
+## Close-out (2026-06-22)
+
+- Preset bar renders between banner and Row 1: current name display,
+  prev/next walkers posting `UiEvent::StepPreset`, Browse button
+  toggling the 0005 panel via `browserPanel.setOpen`, Save-As opening
+  the text-input popup committing `UiEvent::SavePreset` — all in
+  `vxn-core-ui-web` faceplate JS / preset bar.
+- Name binds to `ViewEvent::PresetLoaded`; status chip fed by
+  `ViewEvent::Status`. No Vizia preset-bar code path in the webview
+  build (Vizia editor retired, 0054).
