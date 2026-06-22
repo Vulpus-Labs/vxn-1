@@ -55,3 +55,19 @@ mirror how `delay-on` / `reverb-on` gate their stages.
 Rate glide via `Smoothed` is held inside the phaser (0087); the engine
 just pushes targets per block. Sample-rate changes re-init the phaser
 like the other FX.
+
+## Close-out (2026-06-22)
+
+- `pub phaser: StereoPhaser` added to `Engine`, constructed in `Engine::new`,
+  inserted **pre-delay** in both bus sample loops
+  (`cleanup → phaser → delay → reverb`): the off-path (≈1106) and the
+  oversampled on-path (≈1281).
+- `apply_block_params()` fans `self.phaser.set_from(&self.params.phaser)`
+  (sets the on-gate + the four floats). `Engine::reset` calls
+  `self.phaser.clear()` alongside the delay/reverb tail clears.
+- `phaser-on = 0` → bit-exact passthrough (the DSP `enabled` gate returns the
+  input untouched), so a pre-epic patch renders bit-identical — covered by
+  `disabled_is_bit_exact_passthrough` (0087) and the engine null suite.
+- `phaser-on = 1` sweeps audibly: `param_audibility.rs` gained a phaser
+  context-override (on + depth/mix/fb + long window); all four phaser faders
+  register rel-diff > eps. `cargo test -p vxn2-engine` + `--workspace` pass.

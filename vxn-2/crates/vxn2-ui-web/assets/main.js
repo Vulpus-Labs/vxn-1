@@ -415,6 +415,23 @@
     }
   }
 
+  // Re-apply the cached value to every fader in a freshly-revealed FX pane
+  // (E025 / 0090). VXN-2 faders position from a percentage, so they paint
+  // correctly even while hidden — this keeps the reveal contract explicit.
+  function repaintFxPane(pane) {
+    const faders = pane.querySelectorAll(".fader[data-vxn-param]");
+    for (let i = 0; i < faders.length; i++) {
+      const id = resolveParamId(faders[i].getAttribute("data-vxn-param"));
+      if (id < 0 || !(id in livePlain)) continue;
+      const list = boundById[id];
+      if (!list) continue;
+      for (let j = 0; j < list.length; j++) {
+        try { list[j].set(livePlain[id]); }
+        catch (e) { console.error("vxn2 fx repaint set() failed", e); }
+      }
+    }
+  }
+
   function bindPitchEg(root) {
     const svg = root.querySelector('[data-vxn-section="peg-svg"]');
     if (!svg) return;
@@ -657,6 +674,10 @@
     bindButtonGroups(root);
     bindBoolToggles(root);
     bindToggleHeaders(root);
+    // FX tab strip (E025 / 0090): swap Phaser / Delay / Reverb panes. Runs
+    // after the binds above so the per-tab on/off switches + faders are live;
+    // the repaint callback re-applies cached fader values on reveal.
+    if (window.__vxn.wireFxTabs) window.__vxn.wireFxTabs(root, repaintFxPane);
     bindPitchEg(root);
     bindCustoms(root);
 

@@ -42,6 +42,7 @@ const PANEL_OP_ROW_JS: &str = include_str!("../assets/panels/op-row.js");
 const PANEL_MOD_MATRIX_JS: &str = include_str!("../assets/panels/mod-matrix.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
 const PANEL_PRESET_BROWSER_JS: &str = include_str!("../assets/panels/preset-browser.js");
+const PANEL_FX_TABS_JS: &str = include_str!("../assets/panels/fx-tabs.js");
 const MAIN_JS: &str = include_str!("../assets/main.js");
 
 /// Open the VXN2 editor under `parent`. Wraps
@@ -111,6 +112,9 @@ fn build_faceplate_html() -> String {
         // the `createPresetBrowser` it defines).
         vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
         asset(dev.as_deref(), "panels/preset-browser.js", PANEL_PRESET_BROWSER_JS),
+        // FX tab strip (E025 / 0090): attaches `window.__vxn.wireFxTabs`,
+        // which main.js calls in `boot`.
+        asset(dev.as_deref(), "panels/fx-tabs.js", PANEL_FX_TABS_JS),
         asset(dev.as_deref(), "main.js", MAIN_JS),
     ]
     .join("\n;\n");
@@ -489,7 +493,7 @@ mod tests {
             "preset-bar", "algo-block", "algo-diagram", "algo-svg",
             "op-tabs", "op-detail",
             "lfo1", "lfo2", "pitch-eg", "peg-svg", "mod-env",
-            "voice", "stack", "filter", "delay", "reverb", "master",
+            "voice", "stack", "filter", "fx", "master",
             "algo-overlay", "algo-grid", "mod-matrix", "mm-overlay-list",
         ] {
             let needle = format!("data-vxn-section=\"{section}\"");
@@ -504,6 +508,9 @@ mod tests {
             "delay-on", "delay-time", "delay-feedback", "delay-mix",
             "delay-sync",
             "reverb-on", "reverb-size", "reverb-mix",
+            // Phaser (E025 / ticket 0090): every param reachable in its pane.
+            "phaser-on", "phaser-rate", "phaser-depth", "phaser-feedback",
+            "phaser-mix",
             "master-tune", "master-volume",
             // Filter section (E007 / ticket 0088): every param reachable.
             "filter-enable", "filter-cutoff", "filter-resonance",

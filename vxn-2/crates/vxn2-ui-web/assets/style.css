@@ -732,6 +732,54 @@ html, body {
 .panel.toggle-off .panel-body { opacity: 0.4; }
 .panel-header.toggleable { cursor: pointer; }
 
+/* FX tabbed panel (E025 / 0090): left vertical tab strip + swappable panes. */
+.fx-body { flex-direction: row; }
+.fx-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: 70px;
+}
+.fx-tab {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 0;
+  background: #232323;
+  border: 1px solid #333;
+  border-radius: 2px;
+  padding: 0 6px;
+  cursor: pointer;
+  color: var(--ctl-label);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.fx-tab:hover { color: #ececec; border-color: var(--glyph-active); }
+.fx-tab.active {
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-color: var(--header-bg);
+}
+.fx-tab-label { flex: 1 1 auto; text-align: left; }
+/* Per-tab on/off switch: a small square `.bgrp-toggle` indicator. */
+.fx-tab-switch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 2px;
+}
+/* Panes: only the one matching `data-active-tab` is shown. */
+.fx-panes { display: flex; flex: 1 1 auto; min-height: 0; }
+.fx-pane { display: none; flex: 1 1 auto; flex-direction: row; gap: 6px; min-height: 0; }
+.fx-panel[data-active-tab="phaser"] .fx-pane-phaser,
+.fx-panel[data-active-tab="delay"] .fx-pane-delay,
+.fx-panel[data-active-tab="reverb"] .fx-pane-reverb { display: flex; }
+
 /* ===== algo overlay ===== */
 
 .overlay-backdrop {

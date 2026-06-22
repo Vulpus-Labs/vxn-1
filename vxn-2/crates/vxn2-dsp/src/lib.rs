@@ -17,6 +17,7 @@ pub mod lfo;
 pub mod limiter;
 pub mod math;
 pub mod op;
+pub mod phaser;
 pub mod reverb;
 pub mod rng;
 pub mod sine;

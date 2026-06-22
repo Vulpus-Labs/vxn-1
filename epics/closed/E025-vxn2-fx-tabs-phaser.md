@@ -2,7 +2,7 @@
 id: E025
 product: vxn-2
 title: FX tab panel + phaser
-status: open
+status: closed
 created: 2026-06-22
 ---
 
@@ -125,3 +125,16 @@ last because the faceplate drives the new param ids.
 - Old presets load with phaser defaulted off; saved DAW sessions
   with existing delay/reverb automation still resolve (param ids
   unchanged — phaser appended, not inserted).
+
+## Close-out (2026-06-22)
+
+All four tickets closed (0087–0090). Shipped: `StereoPhaser` ported into
+`vxn2-dsp` (deps adapted, byte-identical stage scatter), five host-automation
+`phaser-*` params appended at the table tail (blob v14 migration, NOT a
+mod-matrix dest), inserted into the engine bus pre-delay
+(`cleanup → phaser → delay → reverb`) with a bit-exact `phaser-on = 0` null,
+and the delay/reverb panels collapsed into one tabbed FX panel (Phaser /
+Delay / Reverb) with `wireFxTabs` + a vitest port (6/6).
+
+`cargo test --workspace` passes; `cargo build -p vxn2-clap --release` builds
+clean. Manual Reaper audio check pending per [[verify-audio-in-reaper]].

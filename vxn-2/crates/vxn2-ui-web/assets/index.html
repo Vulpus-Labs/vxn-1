@@ -347,65 +347,118 @@
       </div>
     </div>
 
-    <div class="panel delay-panel" data-vxn-section="delay">
-      <div class="panel-header toggleable" data-vxn-param="delay-on">DELAY</div>
-      <div class="panel-body">
-        <div class="fader-with-toggle">
-          <div class="fader" data-vxn-param="delay-time">
-            <div class="fader-label">Time</div>
-            <div class="fader-track">
-              <div class="fader-track-fill"></div>
-              <div class="fader-thumb"></div>
+    <!-- FX (E025 / 0090): Phaser / Delay / Reverb behind a left vertical tab
+         strip — one panel for the three time-domain effects, replacing the old
+         delay-panel + reverb-panel blocks. Tab order = signal order
+         (dry → phaser → delay → reverb). Each tab carries its own on/off switch
+         (`.fx-tab-switch` bound to phaser-on / delay-on / reverb-on); the panes
+         hold the controls verbatim. Visibility is CSS-driven off
+         `data-active-tab`; `panels/fx-tabs.js` (`wireFxTabs`) handles the
+         click → swap. Hiding a tab does NOT bypass its DSP — an inactive FX
+         still runs if its `on` param is 1. -->
+    <div class="panel fx-panel" data-vxn-section="fx" data-active-tab="phaser">
+      <div class="panel-header">FX</div>
+      <div class="panel-body fx-body">
+        <div class="fx-tabs">
+          <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
+            <span class="fx-tab-switch bgrp-toggle" data-vxn-param="phaser-on"></span>
+            <span class="fx-tab-label">PHASER</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-delay" data-tab="delay">
+            <span class="fx-tab-switch bgrp-toggle" data-vxn-param="delay-on"></span>
+            <span class="fx-tab-label">DELAY</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-reverb" data-tab="reverb">
+            <span class="fx-tab-switch bgrp-toggle" data-vxn-param="reverb-on"></span>
+            <span class="fx-tab-label">REVERB</span>
+          </button>
+        </div>
+        <div class="fx-panes">
+          <div class="fx-pane fx-pane-phaser">
+            <div class="fader" data-vxn-param="phaser-rate">
+              <div class="fader-label">Rate</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="phaser-depth">
+              <div class="fader-label">Depth</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="phaser-feedback">
+              <div class="fader-label">FB</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="phaser-mix">
+              <div class="fader-label">Mix</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
             </div>
           </div>
-          <button class="bgrp-toggle" data-vxn-param="delay-sync">Sync</button>
-        </div>
-        <div class="fader" data-vxn-param="delay-feedback">
-          <div class="fader-label">FB</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
+          <div class="fx-pane fx-pane-delay">
+            <div class="fader-with-toggle">
+              <div class="fader" data-vxn-param="delay-time">
+                <div class="fader-label">Time</div>
+                <div class="fader-track">
+                  <div class="fader-track-fill"></div>
+                  <div class="fader-thumb"></div>
+                </div>
+              </div>
+              <button class="bgrp-toggle" data-vxn-param="delay-sync">Sync</button>
+            </div>
+            <div class="fader" data-vxn-param="delay-feedback">
+              <div class="fader-label">FB</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="delay-mix">
+              <div class="fader-label">Mix</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="fader" data-vxn-param="delay-mix">
-          <div class="fader-label">Mix</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel reverb-panel" data-vxn-section="reverb">
-      <div class="panel-header toggleable" data-vxn-param="reverb-on">REVERB (FDN)</div>
-      <div class="panel-body">
-        <div class="fader" data-vxn-param="reverb-size">
-          <div class="fader-label">Size</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
-          </div>
-        </div>
-        <div class="fader" data-vxn-param="reverb-decay">
-          <div class="fader-label">Decay</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
-          </div>
-        </div>
-        <div class="fader" data-vxn-param="reverb-damp">
-          <div class="fader-label">Damp</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
-          </div>
-        </div>
-        <div class="fader" data-vxn-param="reverb-mix">
-          <div class="fader-label">Mix</div>
-          <div class="fader-track">
-            <div class="fader-track-fill"></div>
-            <div class="fader-thumb"></div>
+          <div class="fx-pane fx-pane-reverb">
+            <div class="fader" data-vxn-param="reverb-size">
+              <div class="fader-label">Size</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="reverb-decay">
+              <div class="fader-label">Decay</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="reverb-damp">
+              <div class="fader-label">Damp</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+            <div class="fader" data-vxn-param="reverb-mix">
+              <div class="fader-label">Mix</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
