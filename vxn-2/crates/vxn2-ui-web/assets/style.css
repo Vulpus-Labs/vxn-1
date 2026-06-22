@@ -733,43 +733,47 @@ html, body {
 .panel.toggle-off .panel-body { opacity: 0.4; }
 .panel-header.toggleable { cursor: pointer; }
 
-/* FX tabbed panel (E025 / 0090): left vertical tab strip + swappable panes. */
+/* FX tabbed panel (E025 / 0090): left vertical tab strip + swappable panes.
+   Tab styling ported from VXN-1 — transparent buttons with a left-border
+   accent rather than filled boxes. Tabs are fixed-height and top-aligned
+   (three tabs don't need to stretch down the full panel). */
 .fx-body { flex-direction: row; }
 .fx-tabs {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  flex: 0 0 auto;
-  width: 70px;
+  justify-content: flex-start;
+  gap: 3px;
+  flex: 0 0 52px;
+  padding-top: 8px;
 }
 .fx-tab {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 5px;
-  flex: 1 1 0;
-  background: #232323;
-  border: 1px solid #333;
-  border-radius: 2px;
-  padding: 0 6px;
+  gap: 4px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  padding: 5px 4px 5px 6px;
   cursor: pointer;
   color: var(--ctl-label);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
-.fx-tab:hover { color: #ececec; border-color: var(--glyph-active); }
+.fx-tab:hover { color: #d4d4d4; }
 .fx-tab.active {
-  background: var(--header-bg);
-  color: var(--header-fg);
-  border-color: var(--header-bg);
+  border-left-color: #84cdff;
+  color: #ececec;
 }
-.fx-tab-label { flex: 1 1 auto; text-align: left; }
+.fx-tab-label { flex: 1 1 auto; text-align: center; pointer-events: none; }
 /* Per-tab on/off switch: a small square `.bgrp-toggle` indicator. */
 .fx-tab-switch {
-  flex: 0 0 auto;
-  width: 10px;
-  height: 10px;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
   min-width: 0;
   padding: 0;
   border-radius: 2px;
