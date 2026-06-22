@@ -58,3 +58,42 @@ landed when closing this ticket.
 
 Keep amendments additive: ADRs are decision records, so
 amend with dated sections rather than rewriting history.
+
+## Close-out (2026-06-22)
+
+Docs-only sweep. No code changes.
+
+- **`vxn-1/README.md`**: line 19 "Vizia GUI" → "HTML faceplate GUI (wry
+  WebView)"; the crate table already described `vxn-ui-web` correctly, so
+  the editor is now described once, consistently.
+- **ADR 0001**: added `## Amendment — 2026-06-10` recording §8 (Vizia
+  editor) superseded by the ADR 0007 Phase B outcome (HTML faceplate via
+  wry); §8 carries an inline superseded banner; the §2 crate block now
+  lists `vxn-ui-web` (+ `vxn-core-ui-web`) instead of `vxn-ui`; the §2
+  body ref `vxn-ui`→`vxn-ui-web`; the Vizia References link marked
+  historical. Also fixed two stray-character typos (`e#` title prefix, a
+  dangling `</content>` tag).
+- **ADR 0006**: added a dated Amendment withdrawing tags (§3 `#tag`
+  filter, §4 tag editing, and the tag-carrying bits of §5–§7) — category
+  is the only discriminator (memory `vxn1-no-preset-tags`); §3/§4 carry
+  inline withdrawn banners; §8's vizia mouse-model caveats marked obsolete
+  (WebView editor).
+- **Epic state**: the bulk move the ticket described (E002, E004, E005,
+  E006, E007 → `epics/closed/`) had **already landed** before this session
+  — those, plus E001/E003/E015–E019/E021–E024, are in `epics/closed/`.
+  **Deviation from the ticket:** E008 is **not** moved — its planned
+  tickets (0086–0091 in the epic body) were never scaffolded (the numbers
+  were taken by unrelated work), so E008 is genuine open future work, not
+  a stale empty epic. Verified every current `epics/open/` entry has open
+  or planned-but-unscaffolded work: E008 (js primitives), E010 (vst3,
+  0008–0014 open), E011 (this epic, 0019/0020 open), E013 (0022–0026
+  open), E014 (0027–0033 open), E020 (web-ship checklist, unscaffolded).
+  None require moving.
+- **Link drift**: repointed E011's own ticket table (0115/0116/0015/0016/
+  0017/0018) from `tickets/open/` → `tickets/closed/` as those closed;
+  0019/0020 stay `open/`. No other open epic had `open/`→`closed/` drift.
+- **Root-level drift** (root README "vxn-2 in design" / "each subdir is
+  its own Cargo workspace", root ADR 0001 status `Proposed`): per the
+  ticket this belongs to **vxn-2 E012 0072** — verified it has **not**
+  landed yet, left untouched here to avoid duplicating/colliding with
+  that ticket's concurrent vxn-2 work.

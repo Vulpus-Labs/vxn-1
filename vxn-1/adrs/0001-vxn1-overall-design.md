@@ -1,4 +1,4 @@
-e# ADR 0001 — VXN1 overall design approach (first draft)
+# ADR 0001 — VXN1 overall design approach (first draft)
 
 - **Status:** Accepted
 - **Date:** 2026-05-24
@@ -8,6 +8,24 @@ e# ADR 0001 — VXN1 overall design approach (first draft)
 This is an overarching ADR. It records the design *approach* of the first
 draft as a whole; later, narrower ADRs can supersede individual decisions
 without rewriting this one.
+
+## Amendment — 2026-06-10 (E011 / 0018)
+
+**§8 (Editor — Vizia) is superseded.** The Vizia/baseview editor was retired
+during the [ADR 0007](0007-vxn1-mvc-architecture.md) Phase B work; VXN1 now
+ships an **HTML faceplate rendered in a wry WebView**, embedded through the same
+CLAP `gui` extension. The Jupiter-8 look, bundled font, and gesture/automation
+contract are preserved — only the rendering layer changed. Consequently:
+
+- The `crates/vxn-ui` (Vizia) crate named in §2 and §8 no longer exists; the
+  editor lives in **`crates/vxn-ui-web`** (faceplate HTML/CSS/JS spliced and
+  served by wry). The shared browser/MVC JS lives in `crates/vxn-core-ui-web`.
+- The Vizia/baseview/raw-window-handle 0.5 pinning in §8 and the Consequences
+  section is historical. The Vizia repo link under References is kept only for
+  the trail.
+
+Amendments are additive (ADRs are decision records): §8 below is left intact as
+the original decision; this section records its supersession.
 
 ## Context
 
@@ -44,13 +62,14 @@ crates/vxn-dsp     framework-free DSP kernels (no plugin/UI deps)
 crates/vxn-engine  parameters, voice allocation, block render, smoothing,
                    the thread-safe shared parameter store
 crates/vxn-clap    clack cdylib: CLAP shell, params, state, gui extension
-crates/vxn-ui      Vizia editor, embedded via baseview
+crates/vxn-ui-web  HTML faceplate editor in a wry WebView (was Vizia — see
+                   the Amendment); shared MVC/browser JS in vxn-core-ui-web
 xtask              `cargo xtask bundle` — builds/installs the .clap bundle
 ```
 
 The audio engine knows nothing about CLAP or the GUI; the CLAP and UI layers
 depend *down* onto it. `SharedParams` lives in `vxn-engine` (it is just atomics
-over the parameter table) so `vxn-clap` and `vxn-ui` share one definition
+over the parameter table) so `vxn-clap` and `vxn-ui-web` share one definition
 without depending on each other.
 
 ### 3. Processing model — per-sample kernels, block-rate control
@@ -125,6 +144,10 @@ Zipper-free parameter changes use **different mechanisms per consumption point**
 
 ### 8. Editor — Vizia embedded via the CLAP `gui` extension
 
+> **Superseded 2026-06-10 (see the Amendment at the top).** The editor is now
+> an HTML faceplate in a wry WebView (`crates/vxn-ui-web`); the Vizia design
+> below is historical.
+
 The editor is built with **Vizia** (skia-safe renderer) and embedded into the
 host window via **baseview** through `clack`'s `gui` extension. raw-window-handle
 0.5 is used to match the pinned baseview. The look is a Jupiter-8 faceplate:
@@ -176,5 +199,5 @@ release cadence.
 
 - Engine/architecture notes and build status are tracked in the project memory.
 - Reference DSP: `../patches`, `../patches-bundles`.
-- `clack`: https://github.com/prokopyl/clack — Vizia: https://github.com/vizia/vizia
-</content>
+- `clack`: https://github.com/prokopyl/clack
+- Vizia (historical — editor retired, see the Amendment): https://github.com/vizia/vizia

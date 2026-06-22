@@ -8,6 +8,23 @@
   is **unchanged**; this ADR is about how the browser presents and mutates the
   user preset corpus.
 
+## Amendment — 2026-06-10 (E011 / 0018)
+
+Two parts of this ADR were withdrawn before shipping:
+
+- **Tags (§3 `#tag` filter, §4 tag editing, and the tag-carrying bits of §5–§7
+  / Consequences) are withdrawn.** Tags were dropped from `Meta` and the
+  browser during the ADR 0005 / E002 work; **category is the only discriminator**
+  now. There is no `#tag` search token, no Edit-tags affordance, no
+  `update_preset_tags`/`parse_tags`, and `UserPreset` carries no `tags` field.
+  Search is plain substring over names/categories.
+- **§8's vizia mouse-model caveats are obsolete.** The editor is now an HTML
+  faceplate in a wry WebView (see [ADR 0001](0001-vxn1-overall-design.md)'s
+  amendment), so the vizia drag fragilities no longer apply; drag-and-drop is a
+  DOM concern. The referenced `vxn1-vizia-*` memories are archived.
+
+The section bodies below are left intact as the original decision record.
+
 ## Context
 
 E007 / ADR 0005 shipped the preset *format* and a minimal browser (0027):
@@ -65,6 +82,9 @@ Save button greys out while a factory folder is selected.
 
 ### 3. Search: substring + `#tag` token filter
 
+> **Withdrawn 2026-06-10 (see the Amendment).** Tags were dropped; there is no
+> `#tag` filter. Search is plain substring over name/category.
+
 A search textbox at the top of the browser filters the visible preset list.
 Tokens parse as:
 
@@ -81,6 +101,9 @@ is *not* in this ADR — once each folder is small the within-folder search is
 enough; cross-folder search can come later.
 
 ### 4. Tag editing: inline in the save form; context menu for existing files
+
+> **Withdrawn 2026-06-10 (see the Amendment).** Tags were dropped from `Meta`;
+> there is no tag editing, no Edit-tags context item, no `update_preset_tags`.
 
 Tags are edited as a **comma- or whitespace-separated string** in a `Tags:`
 textbox next to the save name field. The store is `Vec<String>`; the textbox is
@@ -150,6 +173,10 @@ sanitised-empty result becomes `"Untitled"` (matches the filename rule), not an
 error.
 
 ### 8. Drag-and-drop: best-effort, with the context menu as the safety net
+
+> **Mouse-model caveats obsolete 2026-06-10 (see the Amendment).** The editor is
+> now an HTML faceplate in a wry WebView, so the vizia drag fragilities cited
+> below no longer apply; drag-and-drop is a DOM concern.
 
 Drag a preset row onto a folder row to move it. The implementation uses a
 panel-level mouse tracker (so events keep flowing across rows without capture

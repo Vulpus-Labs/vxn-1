@@ -16,7 +16,7 @@ filter, and a vintage-flavoured chorus — packaged as a single `.clap` bundle.
 - **Pitch envelope** alongside the amplitude and filter envelopes.
 - **Vintage bucket-brigade (BBD) chorus** — "Bright" voicing with
   bucket saturation, anti-image/reconstruction filter banks, and inverted-LFO mono-compatible stereo.
-- **Vizia** GUI embedded via CLAP's `gui` extension.
+- **HTML faceplate** GUI (wry WebView) embedded via CLAP's `gui` extension.
 
 ## Architecture
 

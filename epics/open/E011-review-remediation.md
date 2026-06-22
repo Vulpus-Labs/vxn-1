@@ -100,12 +100,12 @@ there, not here.
 
 | # | Ticket | Priority |
 |---|--------|----------|
-| 1 | 0115 — Host-boundary panic safety | high |
-| 2 | 0116 — CI workspace test job | high |
-| 3 | [0015 — FX + mixer param smoothing](../../tickets/open/0015-fx-mixer-param-smoothing.md) | high |
-| 4 | [0016 — JS orchestration tests](../../tickets/open/0016-js-orchestration-tests.md) | medium |
-| 5 | [0017 — LocalParams gesture unification](../../tickets/open/0017-localparams-gesture-unification.md) | medium |
-| 6 | [0018 — Docs and epic-state sweep](../../tickets/open/0018-docs-epic-state-sweep.md) | low |
+| 1 | [0115 — Host-boundary panic safety](../../tickets/closed/0115-host-boundary-panic-safety.md) | high |
+| 2 | [0116 — CI workspace test job](../../tickets/closed/0116-ci-workspace-test-job.md) | high |
+| 3 | [0015 — FX + mixer param smoothing](../../tickets/closed/0015-fx-mixer-param-smoothing.md) | high |
+| 4 | [0016 — JS orchestration tests](../../tickets/closed/0016-js-orchestration-tests.md) | medium |
+| 5 | [0017 — LocalParams gesture unification](../../tickets/closed/0017-localparams-gesture-unification.md) | medium |
+| 6 | [0018 — Docs and epic-state sweep](../../tickets/closed/0018-docs-epic-state-sweep.md) | low |
 | 7 | [0019 — Rust hygiene batch](../../tickets/open/0019-rust-hygiene-batch.md) | low |
 | 8 | [0020 — UI-web hygiene batch](../../tickets/open/0020-ui-web-hygiene-batch.md) | low |
 
