@@ -109,7 +109,11 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
     // VXN2 doesn't drive any per-synth HostEvent::Custom in E003 — the
     // closure is the no-op pair Controller::tick requires.
     let mut on_host = |_: &mut Controller<M>, _: Box<dyn Any + Send>| {};
-    controller.tick(&mut on_ui, &mut on_host);
+    // No post-load hook: vxn-2's dirty-bitset pump (ADR 0003) already
+    // re-emits the whole table after a load, and it has no non-param view
+    // state (key-mode / split) to announce the way vxn-1 does.
+    let mut on_loaded = |_: &mut Controller<M>| {};
+    controller.tick(&mut on_ui, &mut on_host, &mut on_loaded);
 }
 
 /// Empty preset store. Used by `vxn2-clap` until the preset epic ships;

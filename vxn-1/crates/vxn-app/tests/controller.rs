@@ -1023,6 +1023,33 @@ fn set_split_point_writes_model_and_echoes() {
 }
 
 #[test]
+fn out_of_band_model_change_does_not_emit_keymode_split() {
+    // 0082: key-mode / split-point events fire from the load path's
+    // `on_model_loaded` hook (and direct UI edits), never from a per-tick
+    // poll of the model. Mutating the shared state behind the controller's
+    // back and ticking must therefore emit nothing — if the old
+    // poll-and-diff shim were still present this tick would (wrongly)
+    // notice the diff and re-announce it.
+    let (mut ctrl, model, view_rx) = build(2);
+    // Drain any construction-time events.
+    let _ = drain(&view_rx);
+
+    model.set_key_mode(KeyMode::Dual);
+    model.set_split_point(48);
+    ctrl.tick();
+
+    let events = drain(&view_rx);
+    assert!(
+        !events.iter().any(|ev| is_keymode_changed(ev)),
+        "poll-and-diff regression: KeyModeChanged emitted from a bare tick: {events:?}",
+    );
+    assert!(
+        !events.iter().any(|ev| is_splitpoint_changed(ev)),
+        "poll-and-diff regression: SplitPointChanged emitted from a bare tick: {events:?}",
+    );
+}
+
+#[test]
 fn step_preset_empty_corpus_is_noop() {
     // Cold start with no factory and no user presets: StepPreset must not
     // emit a PresetLoaded or touch the model.

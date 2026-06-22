@@ -140,7 +140,10 @@ pub fn tick_vxn3(controller: &mut Controller<Vxn3Model>, io: &EngineIo, sample_r
         }
     };
     let mut on_host = |_: &mut Controller<Vxn3Model>, _: Box<dyn Any + Send>| {};
-    controller.tick(&mut on_ui, &mut on_host);
+    // No post-load hook: vxn-3 has no preset/state-load-driven view state
+    // to re-announce.
+    let mut on_loaded = |_: &mut Controller<Vxn3Model>| {};
+    controller.tick(&mut on_ui, &mut on_host, &mut on_loaded);
 }
 
 #[cfg(test)]

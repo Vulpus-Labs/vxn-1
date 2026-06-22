@@ -1,11 +1,19 @@
 //! VXN1 controller wrapper.
 //!
 //! Owns a [`vxn_core_app::Controller`] plus the synth-specific bits the
-//! core controller can't know: the `Vxn1UiCustom` payload handler, the
-//! `Vxn1ViewCustom` emit on key-mode / split-point changes (polled
-//! after every tick because the shared controller's preset-load /
-//! state-load paths mutate the model directly), and the
-//! `snap-to-upper-if-Whole` edit-layer echo.
+//! core controller can't know: the `Vxn1UiCustom` payload handler and
+//! the `Vxn1ViewCustom` emit on key-mode / split-point changes.
+//!
+//! Those events fire at the moment of mutation, not from a poll:
+//! - direct UI edits (`SetKeyMode` / `SetSplitPoint`) emit from the
+//!   custom handler itself,
+//! - preset / state loads (which the core mutates silently) emit from
+//!   the `on_model_loaded` hook the core invokes from inside the load
+//!   path,
+//! - an editor (re-)attach republishes the lot via
+//!   [`Controller::tick`]'s `take_editor_ready_flag` path — the webview
+//!   page can reload without the plugin tearing down, so the per-instance
+//!   view state needs reseeding even though nothing in the model changed.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
@@ -24,9 +32,6 @@ pub type Tick = Arc<dyn Fn() + Send + Sync + 'static>;
 
 pub struct Controller<M: ParamModel + Vxn1Params> {
     inner: CoreController<M>,
-    last_key_mode: KeyMode,
-    last_split_point: u8,
-    first_tick: bool,
 }
 
 impl<M: ParamModel + Vxn1Params> Controller<M> {
@@ -34,16 +39,8 @@ impl<M: ParamModel + Vxn1Params> Controller<M> {
         model: Arc<M>,
         presets: Box<dyn PresetStore>,
     ) -> (Self, Receiver<ViewEvent>, CorpusHandle) {
-        let initial_key = model.key_mode();
-        let initial_split = model.split_point();
         let (inner, view_rx, corpus) = CoreController::new(model, presets);
-        let me = Self {
-            inner,
-            last_key_mode: initial_key,
-            last_split_point: initial_split,
-            first_tick: true,
-        };
-        (me, view_rx, corpus)
+        (Self { inner }, view_rx, corpus)
     }
 
     pub fn handle(&self) -> ControllerHandle {
@@ -88,58 +85,43 @@ impl<M: ParamModel + Vxn1Params> Controller<M> {
     }
 
     /// Drain inbound queues and apply their effects. Wraps
-    /// [`vxn_core_app::Controller::tick`] with the VXN1 custom handler;
-    /// after dispatch, polls the model for key-mode / split-point
-    /// changes the shared controller's preset / state load paths did
-    /// without an explicit Vxn1Custom event, and emits the matching
+    /// [`vxn_core_app::Controller::tick`] with the VXN1 custom handler
+    /// and the `on_model_loaded` hook that emits
     /// `Vxn1ViewCustom::{KeyModeChanged, SplitPointChanged,
-    /// EditLayerChanged}` so editors stay in sync.
+    /// EditLayerChanged}` from inside the preset / state load path.
     pub fn tick(&mut self) {
         self.inner.tick(
             &mut handle_ui_custom::<M>,
             &mut |_, _| {}, // no synth-specific host events
+            &mut publish_keymode_split::<M>,
         );
         // A fresh editor attach (incl. webview page reload while the plugin
-        // stays alive) re-fires UiEvent::EditorReady; rearm `first_tick` so
-        // `publish_keymode_split_diffs` republishes KeyMode / EditLayer /
-        // SplitPoint. Without this the keys panel reopens stuck on its
-        // cold-start defaults (Whole / Upper / C4) even when the model
+        // stays alive) re-fires UiEvent::EditorReady; republish KeyMode /
+        // EditLayer / SplitPoint so the keys panel doesn't reopen stuck on
+        // its cold-start defaults (Whole / Upper / C4) even when the model
         // already holds Dual/Split.
         if self.inner.take_editor_ready_flag() {
-            self.first_tick = true;
-        }
-        self.publish_keymode_split_diffs();
-    }
-
-    fn publish_keymode_split_diffs(&mut self) {
-        let model = self.inner.model();
-        let cur_key = model.key_mode();
-        let cur_split = model.split_point();
-
-        // First tick (post-EditorReady or post-state-load): always
-        // republish so editors that just attached see the current
-        // state without needing a change to fire.
-        let force = std::mem::take(&mut self.first_tick);
-
-        if force || cur_key != self.last_key_mode {
-            self.inner
-                .push_view_event(Vxn1ViewCustom::KeyModeChanged { mode: cur_key }.into_event());
-            // Whole reads only Upper-side params; rebind the editor's
-            // edit layer onto Upper so the faceplate doesn't paint
-            // stale Lower values.
-            if cur_key == KeyMode::Whole {
-                self.inner.push_view_event(
-                    Vxn1ViewCustom::EditLayerChanged { layer: Layer::Upper }.into_event(),
-                );
-            }
-            self.last_key_mode = cur_key;
-        }
-        if force || cur_split != self.last_split_point {
-            self.inner
-                .push_view_event(Vxn1ViewCustom::SplitPointChanged { note: cur_split }.into_event());
-            self.last_split_point = cur_split;
+            publish_keymode_split(&mut self.inner);
         }
     }
+}
+
+/// Emit the current key-mode and split-point as `Vxn1ViewCustom` events
+/// so editors stay in sync. Called from the load hook (model mutated by
+/// a preset / state load) and on editor re-attach (republish current
+/// state for a freshly-bound webview). Unconditional — the caller only
+/// invokes it when a republish is actually warranted, so there is no
+/// diff to do.
+fn publish_keymode_split<M: ParamModel + Vxn1Params>(ctrl: &mut CoreController<M>) {
+    let cur_key = ctrl.model().key_mode();
+    let cur_split = ctrl.model().split_point();
+    ctrl.push_view_event(Vxn1ViewCustom::KeyModeChanged { mode: cur_key }.into_event());
+    // Whole reads only Upper-side params; rebind the editor's edit layer
+    // onto Upper so the faceplate doesn't paint stale Lower values.
+    if cur_key == KeyMode::Whole {
+        ctrl.push_view_event(Vxn1ViewCustom::EditLayerChanged { layer: Layer::Upper }.into_event());
+    }
+    ctrl.push_view_event(Vxn1ViewCustom::SplitPointChanged { note: cur_split }.into_event());
 }
 
 fn handle_ui_custom<M: ParamModel + Vxn1Params>(
@@ -158,16 +140,21 @@ fn handle_ui_custom<M: ParamModel + Vxn1Params>(
             ctrl.model().set_key_mode_seeded(mode);
             // Lower-layer params may have just been seeded from
             // Upper — republish them so the editor's signals follow.
-            // KeyModeChanged + Whole→Upper snap are emitted by the
-            // post-tick poll in Controller::tick.
             ctrl.broadcast_all_params();
+            // Announce the mode change (+ Whole→Upper edit-layer snap).
+            ctrl.push_view_event(Vxn1ViewCustom::KeyModeChanged { mode }.into_event());
+            if mode == KeyMode::Whole {
+                ctrl.push_view_event(
+                    Vxn1ViewCustom::EditLayerChanged { layer: Layer::Upper }.into_event(),
+                );
+            }
         }
         Vxn1UiCustom::SetSplitPoint { note } => {
             ctrl.model().set_split_point(note);
             ctrl.push_view_event(ViewEvent::Status {
                 line: format!("split point: {note}"),
             });
-            // SplitPointChanged emitted by post-tick poll.
+            ctrl.push_view_event(Vxn1ViewCustom::SplitPointChanged { note }.into_event());
         }
         Vxn1UiCustom::SetEditLayer { layer } => {
             // No model mutation — the edit layer is pure view state.

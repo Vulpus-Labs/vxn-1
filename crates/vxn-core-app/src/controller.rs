@@ -20,6 +20,16 @@ use crate::preset::{PresetCorpus, PresetMeta, PresetStore};
 /// after every save / rename / delete / move / new-folder op.
 pub type CorpusHandle = Arc<Mutex<PresetCorpus>>;
 
+/// Handler for a per-synth `Custom` event payload (UI or host side).
+/// Receives the controller so it can re-broadcast params, push view
+/// events, etc. See [`Controller::tick`].
+pub type CustomHandler<'a, M> = dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>) + 'a;
+
+/// Post-mutation hook for the preset / state load paths. Invoked from
+/// inside the load after the model is mutated so a wrapper can announce
+/// non-param view state at the moment of change. See [`Controller::tick`].
+pub type ModelLoadedHook<'a, M> = dyn FnMut(&mut Controller<M>) + 'a;
+
 /// Bounded-channel depth. Sized for a preset-load burst (one
 /// `ParamChanged` per CLAP id, ~hundreds) with headroom.
 pub const CHANNEL_CAPACITY: usize = 1024;
@@ -205,28 +215,37 @@ impl<M: ParamModel> Controller<M> {
     /// (per-synth events). They receive a mutable reference to the
     /// controller so they can call [`Self::broadcast_all_params`],
     /// [`Self::push_view_event`], etc.
+    ///
+    /// `on_model_loaded` is the post-mutation hook for the preset-load /
+    /// state-load paths: it fires from *inside* `load_preset` /
+    /// `step_preset` / `StateLoaded` right after the model is mutated and
+    /// re-broadcast, so a wrapper synth can announce the non-param view
+    /// state the load touched (vxn-1's key-mode / split-point) at the
+    /// moment of the change instead of polling the model after the tick.
     pub fn tick(
         &mut self,
-        on_custom_ui: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
-        on_custom_host: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
+        on_custom_ui: &mut CustomHandler<'_, M>,
+        on_custom_host: &mut CustomHandler<'_, M>,
+        on_model_loaded: &mut ModelLoadedHook<'_, M>,
     ) {
         while let Ok(ev) = self.ui_rx.try_recv() {
-            self.handle_ui(ev, on_custom_ui);
+            self.handle_ui(ev, on_custom_ui, on_model_loaded);
         }
         while let Ok(ev) = self.host_rx.try_recv() {
-            self.handle_host(ev, on_custom_host);
+            self.handle_host(ev, on_custom_host, on_model_loaded);
         }
     }
 
     /// Convenience wrapper for synths with no custom events.
     pub fn tick_no_custom(&mut self) {
-        self.tick(&mut |_, _| {}, &mut |_, _| {});
+        self.tick(&mut |_, _| {}, &mut |_, _| {}, &mut |_| {});
     }
 
     fn handle_ui(
         &mut self,
         ev: UiEvent,
-        on_custom: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
+        on_custom: &mut CustomHandler<'_, M>,
+        on_model_loaded: &mut ModelLoadedHook<'_, M>,
     ) {
         match ev {
             UiEvent::SetParam { id, plain } => {
@@ -250,10 +269,10 @@ impl<M: ParamModel> Controller<M> {
                 self.model.set_gesture(id, false);
             }
             UiEvent::LoadPreset { source } => {
-                self.load_preset(source, on_custom);
+                self.load_preset(source, on_model_loaded);
             }
             UiEvent::StepPreset { delta } => {
-                self.step_preset(delta, on_custom);
+                self.step_preset(delta, on_model_loaded);
             }
             UiEvent::SavePreset { name, folder } => {
                 self.save_preset(name, folder);
@@ -355,7 +374,8 @@ impl<M: ParamModel> Controller<M> {
     fn handle_host(
         &mut self,
         ev: HostEvent,
-        on_custom: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
+        on_custom: &mut CustomHandler<'_, M>,
+        on_model_loaded: &mut ModelLoadedHook<'_, M>,
     ) {
         match ev {
             HostEvent::ParamAutomation { id, plain } => {
@@ -383,6 +403,10 @@ impl<M: ParamModel> Controller<M> {
                 if self.echo_param_writes {
                     self.broadcast_all_params();
                 }
+                // Post-load hook: the model just changed wholesale, so let
+                // the wrapper announce its non-param view state (vxn-1
+                // key-mode / split-point) from the load itself.
+                on_model_loaded(self);
             }
             HostEvent::Tempo { bpm: _ } => {
                 // Routed to the engine on a separate channel per-synth.
@@ -391,11 +415,7 @@ impl<M: ParamModel> Controller<M> {
         }
     }
 
-    fn load_preset(
-        &mut self,
-        source: PresetSource,
-        _on_custom: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
-    ) {
+    fn load_preset(&mut self, source: PresetSource, on_model_loaded: &mut ModelLoadedHook<'_, M>) {
         let loaded = match &source {
             PresetSource::Factory { index } => self.presets.factory_load(*index),
             PresetSource::User { path } => self.presets.user_load(path),
@@ -413,6 +433,7 @@ impl<M: ParamModel> Controller<M> {
                     warnings: load.warnings,
                 });
                 self.broadcast_all_params();
+                on_model_loaded(self);
             }
             Err(e) => self.send_status(format!("preset load failed: {e}")),
         }
@@ -423,11 +444,7 @@ impl<M: ParamModel> Controller<M> {
     /// (alpha-by-name), then user entries (alpha-by-name across
     /// folders); wraps at either end. With no prior preset,
     /// `delta >= 0` seeds at the first entry, `delta < 0` at the last.
-    fn step_preset(
-        &mut self,
-        delta: i32,
-        on_custom: &mut dyn FnMut(&mut Controller<M>, Box<dyn Any + Send>),
-    ) {
+    fn step_preset(&mut self, delta: i32, on_model_loaded: &mut ModelLoadedHook<'_, M>) {
         let list = self.combined_preset_list();
         if list.is_empty() {
             self.send_status("No presets available".into());
@@ -444,7 +461,7 @@ impl<M: ParamModel> Controller<M> {
             None => (len - 1) as usize,
         };
         let source = list[next].clone();
-        self.load_preset(source, on_custom);
+        self.load_preset(source, on_model_loaded);
     }
 
     fn combined_preset_list(&self) -> Vec<PresetSource> {

@@ -262,6 +262,7 @@ fn custom_payload_reaches_handler() {
             }
         },
         &mut |_, _| {},
+        &mut |_| {},
     );
 
     assert_eq!(*seen.lock().unwrap(), Some(42));
