@@ -48,4 +48,13 @@ pub trait EngineNotes {
 pub trait SharedStore: Send + Sync {
     fn get(&self, id: usize) -> f32;
     fn set(&self, id: usize, value: f32);
+
+    /// Live UI-gesture flag for `id`: `true` while the editor holds a
+    /// sustained drag on the param. [`crate::LocalParams::emit`] reads it
+    /// to bracket UI value echoes with `ParamGestureBegin`/`End` so DAW
+    /// automation records the drag as one edit. Defaults to `false` for
+    /// stores with no gesture channel (host-automation-only, headless).
+    fn gesture(&self, _id: usize) -> bool {
+        false
+    }
 }

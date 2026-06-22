@@ -3,12 +3,14 @@
 //! Wires the framework-agnostic [`Synth`] engine to CLAP: a stereo output port,
 //! a CLAP note input, the full parameter set, state save/restore, and the
 //! HTML webview editor via the `gui` extension. Parameters bridge the
-//! engine, the host and the UI through `vxn_engine::SharedParams`;
-//! [`local::LocalParams`] diffs that store to echo UI edits to the host
-//! without echoing host automation back (see its module docs).
+//! engine, the host and the UI through `vxn_engine::SharedParams`; the
+//! shared [`vxn_core_clap::LocalParams`] generic diffs that store to echo
+//! UI edits to the host (gesture-bracketed) without echoing host automation
+//! back. `SharedParams` reaches the generic via the [`StoreRef`] adapter
+//! (orphan rules forbid implementing the foreign `SharedStore` trait on the
+//! foreign `SharedParams` type directly here).
 
 mod gui;
-mod local;
 
 use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
@@ -17,7 +19,7 @@ use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
-use local::LocalParams;
+use vxn_core_clap::{LocalParams, SharedStore};
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::Read;
@@ -36,6 +38,30 @@ use vxn_engine::{
 /// to fail. The data is still valid (the panic happened mid-write at worst).
 fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Adapts the engine's [`SharedParams`] to the shared
+/// [`vxn_core_clap::SharedStore`] trait the generic [`LocalParams`] is written
+/// against. Orphan rules forbid `impl SharedStore for SharedParams` here (both
+/// are foreign to this crate), so the audio thread wraps a shared ref per call.
+/// The wrapper is zero-cost: it forwards `get`/`set` plus the live UI-gesture
+/// flag the editor raises via the controller so [`LocalParams::emit`] brackets
+/// drags into single automation edits.
+struct StoreRef<'a>(&'a SharedParams);
+
+impl SharedStore for StoreRef<'_> {
+    #[inline]
+    fn get(&self, id: usize) -> f32 {
+        self.0.get(id)
+    }
+    #[inline]
+    fn set(&self, id: usize, value: f32) {
+        self.0.set(id, value)
+    }
+    #[inline]
+    fn gesture(&self, id: usize) -> bool {
+        self.0.gesture(id)
+    }
 }
 
 /// Thin adapter that lets `vxn_engine::Synth` satisfy
@@ -226,7 +252,7 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
 pub struct VxnAudioProcessor<'a> {
     synth: Synth,
     shared: &'a VxnShared,
-    local: LocalParams,
+    local: LocalParams<TOTAL_PARAMS>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
 }
@@ -241,7 +267,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         let max = audio_config.max_frames_count as usize;
         Ok(Self {
             synth: Synth::new(audio_config.sample_rate as f32),
-            local: LocalParams::new(&shared.params),
+            local: LocalParams::new(&StoreRef(&shared.params)),
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
@@ -262,8 +288,16 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         // Fold UI edits made since the last process into the local mirror, then
         // drive the engine from the working values (UI + last host state).
-        self.local.fetch_ui_changes(&self.shared.params);
-        self.local.write_to(self.synth.params_mut());
+        self.local.fetch_ui_changes(&StoreRef(&self.shared.params));
+        // Push the mirror's working values into the engine table. (The fork's
+        // `write_to` helper is gone; the generic exposes the snapshot via
+        // `values()`, so inline the same per-clap-id copy here.)
+        {
+            let params = self.synth.params_mut();
+            for (i, &v) in self.local.values().iter().enumerate() {
+                params.set_by_clap_id(i, v);
+            }
+        }
 
         // Key mode + split point are non-automatable shared state (ADR 0003
         // §3/§8): push them to the engine so note routing and per-layer param
@@ -335,9 +369,9 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         // Fold host automation into the shared store (so the UI/host observe it)
         // and echo UI edits back to the host as gesture-bracketed param events.
-        self.local.publish(&self.shared.params);
+        self.local.publish(&StoreRef(&self.shared.params));
         self.local
-            .emit(&self.shared.params, events.output, frames as u32);
+            .emit(&StoreRef(&self.shared.params), events.output, frames as u32);
 
         Ok(ProcessStatus::Continue)
     }
@@ -480,7 +514,7 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
                 self.synth.set_param(idx, value);
             }
         }
-        self.local.publish(&self.shared.params);
+        self.local.publish(&StoreRef(&self.shared.params));
     }
 }
 
@@ -517,3 +551,56 @@ clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 // cdylib build (defensive; also a compile-time check the import is used).
 #[used]
 static _PARAM_COUNT: usize = TOTAL_PARAMS;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clack_plugin::events::Event;
+    use clack_plugin::events::event_types::{
+        ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+    };
+    use clack_plugin::events::io::EventBuffer;
+
+    // Emitted-event tag stream: 'b' begin, 'v' value, 'e' end (clack's
+    // CoreEventSpace doesn't map gesture events, so read the raw type id).
+    fn tags(buf: &EventBuffer) -> String {
+        let mut s = String::new();
+        for ev in buf.iter() {
+            let t = ev.header().type_id();
+            if t == ParamGestureBeginEvent::TYPE_ID {
+                s.push('b');
+            } else if t == ParamValueEvent::TYPE_ID {
+                s.push('v');
+            } else if t == ParamGestureEndEvent::TYPE_ID {
+                s.push('e');
+            }
+        }
+        s
+    }
+
+    /// Integration pin (0017): the [`StoreRef`] adapter forwards the live
+    /// gesture flag from a real [`SharedParams`], so the shared
+    /// [`LocalParams`] generic brackets a UI drag into one automation edit —
+    /// behaviour-identical to the deleted vxn-clap fork. The generic's own
+    /// transition logic is exhaustively covered in `vxn-core-clap`.
+    #[test]
+    fn store_ref_drives_gesture_brackets_from_shared_params() {
+        let shared = SharedParams::new();
+        let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
+        let id = 0usize;
+
+        // UI starts a drag and writes a value → begin + value.
+        shared.set_gesture(id, true);
+        shared.set(id, shared.get(id) + 0.1);
+        assert!(local.fetch_ui_changes(&StoreRef(&shared)));
+        let mut out = EventBuffer::with_capacity(8);
+        local.emit(&StoreRef(&shared), &mut out.as_output(), 0);
+        assert_eq!(tags(&out), "bv");
+
+        // Release with no new value → end only.
+        shared.set_gesture(id, false);
+        let mut out2 = EventBuffer::with_capacity(8);
+        local.emit(&StoreRef(&shared), &mut out2.as_output(), 5);
+        assert_eq!(tags(&out2), "e");
+    }
+}
