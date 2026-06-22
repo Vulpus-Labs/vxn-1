@@ -49,6 +49,17 @@ use crate::voice::VoiceParams;
 /// silences the trailing lanes via the pan mask.
 pub const STACK_LANES: usize = 8;
 
+/// Carrier-count loudness compensation: `1/√(carrier count)`. A raw carrier
+/// sum makes high-carrier algos (algo 32, 6 carriers) ~5 dB hotter than
+/// low-carrier ones. Carriers are partly decorrelated, so power-norm `1/√N` is
+/// the middle ground between raw (`1`, too hot) and amplitude-norm (`1/N`, too
+/// quiet). This diverges from the DX7, which does no compensation — chosen for
+/// modern usability, not vintage parity.
+#[inline]
+fn inv_sqrt_carriers(spec: &crate::algo::AlgoSpec) -> f32 {
+    1.0 / (spec.carriers.count_ones() as f32).sqrt()
+}
+
 /// Distribution mode for `voice_spread` across lanes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum StackDistrib {
@@ -643,7 +654,8 @@ impl Stack {
     ) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        let inv_sqrt_density = self.inv_sqrt_density;
+        // Mirror recompute_pan: 1/√density × 1/√carriers baked into the targets.
+        let fold = self.inv_sqrt_density * inv_sqrt_carriers(spec);
         let mut out_l = [[0.0_f32; STACK_LANES]; N_OPS];
         let mut out_r = [[0.0_f32; STACK_LANES]; N_OPS];
         for i in 0..N_OPS {
@@ -655,8 +667,8 @@ impl Stack {
                     let total = (op_pan + self.op_pan_mod[i][k]).clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
-                    out_l[i][k] = c * inv_sqrt_density;
-                    out_r[i][k] = s * inv_sqrt_density;
+                    out_l[i][k] = c * fold;
+                    out_r[i][k] = s * fold;
                 }
             }
         }
@@ -773,9 +785,12 @@ impl Stack {
     fn recompute_pan(&mut self, op_params: &[OpParams; N_OPS]) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        // 1/√density is baked into the pan tables so density 1..8 are
-        // level-matched without a per-sample multiply.
-        let inv_sqrt_density = self.inv_sqrt_density;
+        // 1/√density level-matches density 1..8; 1/√carriers level-matches
+        // algos (a 6-carrier algo is ~5 dB hotter than a 2-carrier one with a
+        // raw sum — carriers are partly decorrelated, so power-norm 1/√N is the
+        // right middle ground). Both are baked into the pan tables, so the fold
+        // stays a plain weighted sum with no per-sample compensation.
+        let fold = self.inv_sqrt_density * inv_sqrt_carriers(spec);
         for i in 0..N_OPS {
             let is_carrier = (spec.carriers >> i) & 1 == 1;
             let op_pan = op_params[i].pan;
@@ -785,8 +800,8 @@ impl Stack {
                     let total = op_pan.clamp(-1.0, 1.0);
                     let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
                     let (s, c) = theta.sin_cos();
-                    self.pan_l[i][k] = c * inv_sqrt_density;
-                    self.pan_r[i][k] = s * inv_sqrt_density;
+                    self.pan_l[i][k] = c * fold;
+                    self.pan_r[i][k] = s * fold;
                 } else {
                     self.pan_l[i][k] = 0.0;
                     self.pan_r[i][k] = 0.0;
@@ -925,7 +940,7 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
             }
         }
     }
-    sum *= stack.inv_sqrt_density;
+    sum *= stack.inv_sqrt_density * inv_sqrt_carriers(spec);
     stack.prev_outs = new_outs;
     sum
 }
@@ -1084,8 +1099,11 @@ mod tests {
         };
         let vp = carrier_friendly_patch();
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
-        // Both lanes centred → pan_l == pan_r per lane, scaled by 1/√density.
-        let centre = (core::f32::consts::FRAC_PI_4).cos() / 2.0_f32.sqrt();
+        // Both lanes centred → pan_l == pan_r per lane, scaled by 1/√density
+        // and the carrier-count comp (1/√carriers).
+        let centre = (core::f32::consts::FRAC_PI_4).cos()
+            / 2.0_f32.sqrt()
+            * inv_sqrt_carriers(spec_of(stack.algo));
         for k in 0..2 {
             assert!(
                 (stack.pan_l[0][k] - centre).abs() < 1e-4,
