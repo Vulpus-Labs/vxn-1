@@ -24,11 +24,9 @@ use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
-use vxn_app::{
-    Controller, CorpusHandle, HostEvent, ParamId, ParamModel, ViewEvent,
-};
+use vxn_app::{Controller, CorpusHandle, HostEvent, ParamId, ViewEvent};
 use vxn_engine::{
-    EnginePresetStore, ParamDesc, ParamKind, SharedParams, Synth, TOTAL_PARAMS, desc_for_clap_id,
+    EnginePresetStore, ParamKind, SharedParams, Synth, TOTAL_PARAMS, desc_for_clap_id,
     module_for_clap_id,
 };
 
@@ -194,44 +192,11 @@ impl<'a> VxnMainThread<'a> {
         let Some(handle) = self.gui.as_ref() else {
             return;
         };
-        let model = &*self.shared.params;
-        let n = ParamModel::total(model).min(self.last_seen.len());
-        // Sync flips refresh their rate partner's display label even though
-        // the rate's value didn't change. Collect those first, then emit
-        // after the main pass.
-        let mut force_rate_refresh: Vec<usize> = Vec::new();
-        for i in 0..n {
-            let id = ParamId::new(i);
-            let plain = ParamModel::get(model, id);
-            // NaN-aware: NaN never equals itself, so the seeded all-NaN
-            // vector forces a full broadcast on the first tick after open.
-            if plain == self.last_seen[i] {
-                continue;
-            }
-            self.last_seen[i] = plain;
-            let norm = ParamModel::get_normalized(model, id);
-            let display = sync_aware_display(&self.shared.params, i, plain);
-            handle.push_view_event(ViewEvent::ParamChanged {
-                id,
-                plain,
-                norm,
-                display,
-            });
-            if let Some(rate_id) = vxn_app::sync::rate_partner_clap_id(i) {
-                force_rate_refresh.push(rate_id);
-            }
-        }
-        for rate_id in force_rate_refresh {
-            let id = ParamId::new(rate_id);
-            let plain = ParamModel::get(model, id);
-            let norm = ParamModel::get_normalized(model, id);
-            let display = sync_aware_display(&self.shared.params, rate_id, plain);
-            handle.push_view_event(ViewEvent::ParamChanged {
-                id,
-                plain,
-                norm,
-                display,
-            });
+        // The diff (NaN-aware change detection + sync-flip rate-partner
+        // refresh) is a pure fn in vxn-app; here we only fan its events into
+        // the live handle.
+        for ev in vxn_app::diff_params(&*self.shared.params, &mut self.last_seen) {
+            handle.push_view_event(ev);
         }
     }
 }
@@ -350,19 +315,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
                     );
                 }
             }
-            let (sb, eb) = event_batch.sample_bounds();
-            let start = match sb {
-                std::ops::Bound::Included(n) => n,
-                std::ops::Bound::Excluded(n) => n + 1,
-                std::ops::Bound::Unbounded => 0,
-            }
-            .min(frames);
-            let end = match eb {
-                std::ops::Bound::Included(n) => n + 1,
-                std::ops::Bound::Excluded(n) => n,
-                std::ops::Bound::Unbounded => frames,
-            }
-            .min(frames);
+            let (start, end) = vxn_core_clap::batch_range(event_batch.sample_bounds(), frames);
             if start < end {
                 synth.process(&mut l[start..end], &mut r[start..end]);
             }
@@ -434,28 +387,6 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
 
 // ── Parameters ────────────────────────────────────────────────────────────────
 
-fn format_value(desc: &ParamDesc, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
-    // Shared with the editor's value readouts so host and UI render identically.
-    write!(writer, "{}", desc.display(value as f32))
-}
-
-/// Sync-aware display string for a CLAP param. When `id` is an LFO/Delay
-/// rate/time whose sync partner reads on, returns the matching subdivision
-/// label; otherwise the normal unit-formatted display. Shared by the host
-/// `value_to_text` path and the editor `ParamChanged` broadcast so both
-/// readouts agree.
-fn sync_aware_display(params: &SharedParams, clap_id: usize, value: f32) -> String {
-    let Some(desc) = desc_for_clap_id(clap_id) else {
-        return String::new();
-    };
-    if let Some(sync_id) = vxn_app::sync::sync_partner_clap_id(clap_id) {
-        if params.get(sync_id) >= 0.5 {
-            return vxn_app::sync::synced_label_for(desc, value).to_string();
-        }
-    }
-    desc.display(value)
-}
-
 impl PluginMainThreadParams for VxnMainThread<'_> {
     fn count(&mut self) -> u32 {
         TOTAL_PARAMS as u32
@@ -500,32 +431,26 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
         let id = param_id.get() as usize;
-        let Some(desc) = desc_for_clap_id(id) else {
+        if desc_for_clap_id(id).is_none() {
             return Err(std::fmt::Error);
-        };
-        // Synced rate/time params display their subdivision label (E004 /
-        // 0015), so the host's value readouts match the editor's popup.
-        if let Some(sync_id) = vxn_app::sync::sync_partner_clap_id(id) {
-            if self.shared.params.get(sync_id) >= 0.5 {
-                return write!(
-                    writer,
-                    "{}",
-                    vxn_app::sync::synced_label_for(desc, value as f32)
-                );
-            }
         }
-        format_value(desc, value, writer)
+        // Synced rate/time params display their subdivision label (E004 /
+        // 0015), so the host's value readouts match the editor's popup. Shared
+        // with the editor's `ParamChanged` broadcast so both readouts agree.
+        write!(
+            writer,
+            "{}",
+            vxn_app::sync::sync_aware_display(&*self.shared.params, id, value as f32)
+        )
     }
 
-    fn text_to_value(&mut self, _param_id: ClapId, text: &CStr) -> Option<f64> {
+    fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
+        // Route through ParamDesc: enum/bool params accept their variant label
+        // (host type-in of "Saw" / "On"), floats clamp the parsed number to
+        // range. Plain leading-number parsing used to drop enum labels.
+        let desc = desc_for_clap_id(param_id.get() as usize)?;
         let s = text.to_str().ok()?;
-        // Take the leading numeric token (ignore any unit suffix).
-        let num: String = s
-            .trim()
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-            .collect();
-        num.parse::<f64>().ok()
+        desc.parse(s).map(|v| v as f64)
     }
 
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {

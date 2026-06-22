@@ -118,6 +118,35 @@ impl ParamDesc {
         }
     }
 
+    /// Parse host type-in text (`param_text_to_value`) back to a plain value.
+    ///
+    /// Routes through the descriptor's kind rather than blindly parsing a
+    /// leading number: an enum/bool param accepts its **variant label**
+    /// (case-insensitive, e.g. "Saw", "On") as well as a numeric index, and a
+    /// float/int clamps the parsed number to range. Returns `None` when the
+    /// text matches neither a label nor a leading number.
+    pub fn parse(&self, text: &str) -> Option<f32> {
+        let t = text.trim();
+        match self.kind {
+            ParamKind::Enum { .. } => match self.variant_index(t) {
+                Some(i) => Some(i as f32),
+                None => leading_number(t).map(|v| self.clamp(v)),
+            },
+            ParamKind::Bool => {
+                if t.eq_ignore_ascii_case("on") || t.eq_ignore_ascii_case("true") {
+                    Some(1.0)
+                } else if t.eq_ignore_ascii_case("off") || t.eq_ignore_ascii_case("false") {
+                    Some(0.0)
+                } else {
+                    leading_number(t).map(|v| if v >= 0.5 { 1.0 } else { 0.0 })
+                }
+            }
+            ParamKind::Int { .. } | ParamKind::Float { .. } => {
+                leading_number(t).map(|v| self.clamp(v))
+            }
+        }
+    }
+
     /// Format `value` for display (host's `param_value_to_text`).
     pub fn display(&self, value: f32) -> String {
         match self.kind {
@@ -136,6 +165,17 @@ impl ParamDesc {
             }
         }
     }
+}
+
+/// Parse the leading numeric run of `s` (digits, `.`, leading `-`), ignoring
+/// any trailing unit suffix. `None` if there's no number at the front.
+fn leading_number(s: &str) -> Option<f32> {
+    let num: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    num.parse::<f32>().ok()
 }
 
 #[cfg(test)]
@@ -200,6 +240,49 @@ mod tests {
         };
         assert_eq!(d.display(2.0), "Saw");
         assert_eq!(d.variant_index("saw"), Some(2));
+    }
+
+    #[test]
+    fn parse_enum_label_and_out_of_range_float() {
+        let e = ParamDesc {
+            name: "wave",
+            label: "wave",
+            min: 0.0,
+            max: 3.0,
+            default: 0.0,
+            kind: ParamKind::Enum { variants: &["Sine", "Tri", "Saw", "Pulse"] },
+        };
+        // Enum label (case-insensitive) → its index, not a leading-number parse.
+        assert_eq!(e.parse("saw"), Some(2.0));
+        assert_eq!(e.parse(" Pulse "), Some(3.0));
+        // A bare index still parses, clamped to range.
+        assert_eq!(e.parse("1"), Some(1.0));
+        assert_eq!(e.parse("99"), Some(3.0));
+        // Nonsense → None.
+        assert_eq!(e.parse("banjo"), None);
+
+        // Float type-in clamps to the descriptor range.
+        let f = float(20.0, 20_000.0, Taper::Linear);
+        assert_eq!(f.parse("440 Hz"), Some(440.0));
+        assert_eq!(f.parse("50000"), Some(20_000.0));
+        assert_eq!(f.parse("-5"), Some(20.0));
+        assert_eq!(f.parse("nope"), None);
+    }
+
+    #[test]
+    fn parse_bool_accepts_labels_and_numbers() {
+        let b = ParamDesc {
+            name: "sync",
+            label: "sync",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            kind: ParamKind::Bool,
+        };
+        assert_eq!(b.parse("On"), Some(1.0));
+        assert_eq!(b.parse("off"), Some(0.0));
+        assert_eq!(b.parse("1"), Some(1.0));
+        assert_eq!(b.parse("0"), Some(0.0));
     }
 
     #[test]

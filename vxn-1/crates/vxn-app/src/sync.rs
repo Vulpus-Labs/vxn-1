@@ -8,8 +8,10 @@
 //! The LFO core stays Hz-driven (ADR 0002 §Consequences): sync is purely a rate
 //! computation here, isolated from [`vxn_dsp::LfoCore`].
 
+use crate::model::{ParamId, ParamModel};
 use crate::params::{
-    GlobalParam, ParamDesc, ParamRef, PatchParam, global_clap_id, param_ref, patch_clap_id,
+    GlobalParam, ParamDesc, ParamRef, PatchParam, desc_for_clap_id, global_clap_id, param_ref,
+    patch_clap_id,
 };
 
 /// Fallback tempo when the host provides none (no `HAS_TEMPO`). A sane musical
@@ -113,6 +115,23 @@ pub fn is_sync_flag(id: usize) -> bool {
 pub fn synced_label_for(desc: &ParamDesc, value: f32) -> &'static str {
     let pos = desc.to_fader(value);
     SUBDIVISIONS[index_from_norm(pos)].label
+}
+
+/// Sync-aware display string for a CLAP param. When `clap_id` is an LFO/Delay
+/// rate/time whose sync partner reads on, returns the matching subdivision
+/// label; otherwise the normal unit-formatted display. Shared by the host
+/// `value_to_text` path and the editor `ParamChanged` broadcast so both
+/// readouts agree.
+pub fn sync_aware_display<M: ParamModel + ?Sized>(model: &M, clap_id: usize, value: f32) -> String {
+    let Some(desc) = desc_for_clap_id(clap_id) else {
+        return String::new();
+    };
+    if let Some(sync_id) = sync_partner_clap_id(clap_id) {
+        if model.get(ParamId::new(sync_id)) >= 0.5 {
+            return synced_label_for(desc, value).to_string();
+        }
+    }
+    desc.display(value)
 }
 
 /// Resolve a subdivision (by index) at `tempo_bpm` to a **duration in seconds**

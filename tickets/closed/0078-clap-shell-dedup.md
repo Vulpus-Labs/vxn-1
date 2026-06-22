@@ -75,3 +75,36 @@ shared mirror, the `last_seen`/`host_changed` accessors the
 pure `diff_params` needs are already on it. 0017's Notes
 explicitly scoped vxn-2's `batch_range` dedup to vxn-2 E012;
 this ticket is the vxn-1 counterpart, not covered there.
+
+## Close-out (2026-06-22)
+
+- `process` now calls
+  [vxn_core_clap::batch_range](../../vxn-1/crates/vxn-clap/src/lib.rs#L341);
+  the inline `Bound` → `(start,end)` conversion is gone.
+- Diff/sync-partner logic extracted to pure
+  [diff_params](../../vxn-1/crates/vxn-app/src/diff.rs#L25) in vxn-app
+  (next to `sync.rs`). `push_param_diffs`
+  ([lib.rs](../../vxn-1/crates/vxn-clap/src/lib.rs#L188)) is now "call the
+  pure fn, fan events into the handle." Kept in vxn-app (not vxn-core-clap)
+  — the sync rules + `desc_for_clap_id` table it depends on are vxn-1's.
+- Unit tests cover all three required paths:
+  `diff::tests::plain_value_change_emits_one_event`,
+  `diff::tests::no_change_skips_and_nan_seed_broadcasts` (NaN seed forces
+  broadcast; equal values skip), and
+  `diff::tests::sync_flip_forces_rate_partner_refresh` (the second
+  collect-then-emit pass, asserting the rate partner re-emits with its
+  synced label even though its value didn't move).
+- `sync_aware_display` moved into
+  [vxn-app sync.rs](../../vxn-1/crates/vxn-app/src/sync.rs#L118) (generic
+  over `ParamModel`); `value_to_text`
+  ([lib.rs](../../vxn-1/crates/vxn-clap/src/lib.rs#L432)) now calls it
+  instead of re-deriving the 0.5-threshold + `synced_label_for` rule.
+- `text_to_value` routes through new
+  [ParamDesc::parse](../../crates/vxn-core-app/src/params.rs#L121)
+  (variant label for enum/bool, range-clamp for float/int) instead of
+  leading-numeric-run parsing — host type-in of an enum label ("Saw") /
+  bool ("On") now works. Covered by
+  `params::tests::parse_enum_label_and_out_of_range_float` and
+  `params::tests::parse_bool_accepts_labels_and_numbers`.
+- `cargo test --workspace` green; `tests/baseline.rs`
+  `baseline_render_is_stable` unchanged (no render-path touch).

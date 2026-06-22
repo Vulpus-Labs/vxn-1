@@ -8,6 +8,7 @@
 //! Scaffold only; handlers fill in across tickets 0034–0038.
 
 pub mod controller;
+pub mod diff;
 pub mod domain;
 pub mod events;
 pub mod factory_asset;
@@ -20,6 +21,7 @@ pub mod state;
 pub mod sync;
 
 pub use controller::{CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, Tick};
+pub use diff::diff_params;
 pub use domain::{DEFAULT_SPLIT_POINT, KeyMode, Layer, PresetMeta, UNCATEGORIZED};
 pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1ViewCustom};
 pub use factory_asset::FactoryEntry;
