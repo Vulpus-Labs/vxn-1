@@ -27,12 +27,12 @@ op1-eg-l2 = 99
 op1-eg-l3 = 99
 op1-eg-l4 = 0
 
-# op2 — ratio 1.01 (num1 + fine1) for a slow beat against op5.
+# op2 — ratio 1.01: clean unison ratio + the offset as exact cents (+17c fine
+# folded into detune) so all detuning lives in op-detune. Slow beat against op5.
 op2-num = 1
-op2-fine = 1
 op2-level = 94
 op2-vel-sens = 0
-op2-detune = -4
+op2-detune = 13
 op2-ks-rate = 0
 op2-ks-break-pt = 21
 op2-ks-r-depth = 10

@@ -29,8 +29,7 @@ op1-ks-r-depth = 0
 
 # op2
 op2-num = 2
-op2-fine = 2
-op2-detune = 1
+op2-detune = 18
 op2-level = 99
 op2-vel-sens = 0
 op2-eg-r1 = 45
@@ -82,9 +81,8 @@ op4-ks-r-curve = "neg-lin"
 
 # op5
 op5-num = 1
-op5-denom = 2
-op5-fine = 1
-op5-detune = -4
+op5-fine = -50
+op5-detune = 13
 op5-level = 0
 op5-vel-sens = 2
 op5-eg-r1 = 99

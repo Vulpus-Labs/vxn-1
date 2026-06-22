@@ -31,9 +31,8 @@ op1-ks-l-curve = "pos-lin"
 
 # op2
 op2-num = 1
-op2-denom = 2
-op2-fine = 1
-op2-detune = -5
+op2-fine = -50
+op2-detune = 12
 op2-level = 79
 op2-vel-sens = 0
 op2-eg-r1 = 77

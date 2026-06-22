@@ -31,7 +31,7 @@ op1-ks-r-curve = "neg-lin"
 
 # op2
 op2-num = 3
-op2-fine = 3
+op2-detune = 17
 op2-level = 72
 op2-vel-sens = 0
 op2-eg-r1 = 39

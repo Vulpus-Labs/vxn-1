@@ -100,6 +100,7 @@ op5-ks-r-depth = 0
 
 # op6
 op6-num = 32
+op6-fine = 99
 op6-level = 47
 op6-vel-sens = 0
 op6-eg-r1 = 99

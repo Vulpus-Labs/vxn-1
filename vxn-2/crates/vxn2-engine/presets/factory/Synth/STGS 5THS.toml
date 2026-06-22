@@ -67,8 +67,7 @@ op3-ks-r-depth = 0
 
 # op4
 op4-num = 1
-op4-fine = 1
-op4-detune = -3
+op4-detune = 14
 op4-level = 72
 op4-vel-sens = 1
 op4-eg-r1 = 79

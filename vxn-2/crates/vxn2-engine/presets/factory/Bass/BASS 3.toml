@@ -12,8 +12,8 @@ feedback = 4.9
 
 # op1
 op1-num = 1
-op1-denom = 4
-op1-fine = 1
+op1-fine = -75
+op1-detune = 17
 op1-level = 99
 op1-vel-sens = 2
 op1-eg-r1 = 89
@@ -87,8 +87,8 @@ op4-ks-r-depth = 0
 
 # op5
 op5-num = 1
-op5-denom = 2
-op5-fine = 1
+op5-fine = -50
+op5-detune = 17
 op5-level = 66
 op5-vel-sens = 2
 op5-eg-r1 = 99

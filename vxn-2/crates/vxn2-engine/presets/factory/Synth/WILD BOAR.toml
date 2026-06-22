@@ -71,8 +71,8 @@ op3-ks-r-curve = "neg-lin"
 
 # op4
 op4-num = 1
-op4-denom = 4
-op4-fine = 1
+op4-fine = -75
+op4-detune = 17
 op4-level = 99
 op4-vel-sens = 0
 op4-eg-r1 = 64
