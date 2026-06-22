@@ -39,7 +39,10 @@ pub use shared::SharedParams;
 use smoothing::ParamSmoother;
 pub use state::PluginState;
 
-use voice::{BlockCtx, Lfo1Trigger, VoiceBank};
+use voice::{
+    AmpRoute, BlockCtx, CrossMod, CutoffRoute, FilterParams, Lfo1Trigger, OscParams, PitchRoute,
+    PwmRoute, VoiceBank,
+};
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, FdnReverb, FdnReverbParams, LfoCore, MAX_OVERSAMPLE, Oversampler,
     Smoothed, StereoChorus, StereoDelay, StereoLimiter, StereoPhaser, note_to_hz,
@@ -102,38 +105,14 @@ pub struct Synth {
     /// layers and all voices: sampled once per block and broadcast. LFO 1 is
     /// per-voice, living inside each [`VoiceBank`] (E005 / 0018).
     lfo2: LfoCore,
-    /// Stereo allpass phaser. First in the FX chain (pre-chorus) so its
-    /// resonant peaks survive the chorus's chorale; runs only when
-    /// [`GlobalParam::PhaserOn`] is set.
-    phaser: StereoPhaser,
-    chorus: StereoChorus,
-    delay: StereoDelay,
-    /// 8-line FDN reverb (Jot-style, Hadamard feedback). Sits post-delay,
-    /// pre-limiter in the FX chain; runs only when [`GlobalParam::ReverbOn`]
-    /// is set.
-    reverb: FdnReverb,
-    /// Optional brickwall limiter on the master bus (last in the FX chain). Run
-    /// only when [`GlobalParam::LimiterOn`] is set; bypassed otherwise.
-    limiter: StereoLimiter,
-    /// Whether the limiter ran last block, so it can be reset on the off→on edge
-    /// (clears stale lookahead state instead of leaking a transient).
-    limiter_was_on: bool,
-    /// Anti-aliasing decimators for the oversampled synthesis path —
-    /// one per stereo channel. Both stay phase-aligned: at spread = 0
-    /// the L and R input streams are identical, so the filter states
-    /// evolve in lock-step and `r` outputs match `l` sample-for-sample.
-    /// `spread_zero_last_block` tracks whether the R decimator was
-    /// skipped last block; the mono→stereo transition needs to seed
-    /// the R decimator from L's converged state to avoid a click
-    /// (0107).
-    oversampler: Oversampler,
-    oversampler_r: Oversampler,
-    spread_zero_last_block: bool,
-    /// Consecutive blocks both banks took the silent fast path. Once it
-    /// exceeds [`DECIMATOR_DRAIN_BLOCKS`] the L decimator's FIR state has
-    /// fully drained to zero, so the `decimate()` call is skipped and the
-    /// base-rate output is zero-filled until a bank wakes back up (0106).
-    silent_blocks: u32,
+    /// The shared master-bus FX chain (phaser → chorus → delay → reverb →
+    /// limiter) plus its limiter edge flag, owned as one unit so the init/reset
+    /// paths can't drift out of sync.
+    master_fx: MasterFx,
+    /// The oversampled synthesis path's L/R anti-aliasing decimators plus the
+    /// phase-alignment / silent-drain bookkeeping (0106 / 0107), owned as one
+    /// unit so the duplicated reset/decimate branches collapse into its API.
+    output: OutputStage,
     /// Pitch bend in normalised `[-1, 1]`. Global value; each layer scales it by
     /// its own `PitchWheelDepth` in `build_ctx` (ADR 0003 §9, ADR 0004 §5).
     bend_norm: f32,
@@ -156,12 +135,272 @@ pub struct Synth {
     rr_layer: usize,
     /// Last envelope params pushed to each layer's voices; `None` forces a refresh.
     last_env: [Option<EnvSnapshot>; LAYERS],
-    /// Oversampling factor in effect last block; a change resets the decimator.
-    last_os: usize,
     /// Per-voice oscillator drift amount, broadcast into each block's
     /// [`BlockCtx`]. Defaults to [`DEFAULT_DRIFT_AMOUNT`]; tests that assert
     /// bit-equal two-layer equivalence set it to 0.
     drift_amount: f32,
+}
+
+/// Which master-bus effects run this block (raw on/off switches, read from the
+/// unsmoothed params — they're discrete toggles, not glided).
+struct MasterFxFlags {
+    phaser: bool,
+    chorus: bool,
+    delay: bool,
+    reverb: bool,
+    limiter: bool,
+}
+
+/// The shared master-bus FX chain (ADR 0003 §7), in signal order:
+/// phaser → chorus → delay → reverb → limiter. Owns every FX block plus the
+/// limiter's off→on edge flag, so `Synth` no longer re-lists them across
+/// `new`/`set_sample_rate`/`reset` — the init/reset drift hazard lives here.
+struct MasterFx {
+    /// Stereo allpass phaser. First in the FX chain (pre-chorus) so its
+    /// resonant peaks survive the chorus's chorale; runs only when
+    /// [`GlobalParam::PhaserOn`] is set.
+    phaser: StereoPhaser,
+    chorus: StereoChorus,
+    delay: StereoDelay,
+    /// 8-line FDN reverb (Jot-style, Hadamard feedback). Sits post-delay,
+    /// pre-limiter in the FX chain; runs only when [`GlobalParam::ReverbOn`]
+    /// is set.
+    reverb: FdnReverb,
+    /// Optional brickwall limiter on the master bus (last in the FX chain). Run
+    /// only when [`GlobalParam::LimiterOn`] is set; bypassed otherwise.
+    limiter: StereoLimiter,
+    /// Whether the limiter ran last block, so it can be reset on the off→on edge
+    /// (clears stale lookahead state instead of leaking a transient).
+    limiter_was_on: bool,
+}
+
+impl MasterFx {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            phaser: StereoPhaser::new(sample_rate),
+            chorus: StereoChorus::new(sample_rate),
+            delay: StereoDelay::new(sample_rate, 2.0),
+            reverb: FdnReverb::new(sample_rate),
+            limiter: StereoLimiter::new(sample_rate),
+            limiter_was_on: false,
+        }
+    }
+
+    /// Clear every FX block's internal state and the limiter edge flag. Used by
+    /// both `Synth::reset` and (via a fresh `MasterFx`) `set_sample_rate`.
+    fn reset(&mut self) {
+        self.phaser.clear();
+        self.chorus.clear();
+        self.delay.clear();
+        self.reverb.reset();
+        self.limiter.reset();
+        self.limiter_was_on = false;
+    }
+
+    /// Push this block's smoothed FX params. `reverb_on` is the raw (unsmoothed)
+    /// reverb switch; the FDN takes it directly as its discrete on flag.
+    fn update(&mut self, g: &GlobalValues, reverb_on: bool, tempo_bpm: f32) {
+        self.phaser.set_params(
+            g.get(GlobalParam::PhaserRate),
+            g.get(GlobalParam::PhaserDepth),
+            g.get(GlobalParam::PhaserFB),
+            g.get(GlobalParam::PhaserMix),
+        );
+        self.chorus.set_params(
+            g.get(GlobalParam::ChorusRate),
+            g.get(GlobalParam::ChorusDepth),
+            g.get(GlobalParam::ChorusMix),
+        );
+        let t = delay_time_seconds(
+            g.bool(GlobalParam::DelaySync),
+            g.get(GlobalParam::DelayTime),
+            tempo_bpm,
+        );
+        self.delay.set_params(
+            t,
+            t,
+            g.get(GlobalParam::DelayFeedback),
+            0.3,
+            g.get(GlobalParam::DelayMix),
+        );
+        // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come
+        // through the smoother. On is unsmoothed (it's a discrete switch).
+        self.reverb.set_params(&FdnReverbParams {
+            on: reverb_on,
+            size: g.get(GlobalParam::ReverbSize),
+            decay_secs: g.get(GlobalParam::ReverbDecay),
+            damp: g.get(GlobalParam::ReverbDamp),
+            mix: g.get(GlobalParam::ReverbMix),
+        });
+    }
+
+    /// Run the chain on the volume-applied dry stereo bus, writing the final
+    /// master output to `out_l`/`out_r`. Each stage passes through unchanged
+    /// when its flag is clear, keeping the engine sample-exact against a build
+    /// with that effect absent.
+    fn process_block(
+        &mut self,
+        dry_l: &[f32],
+        dry_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        flags: MasterFxFlags,
+    ) {
+        let block = dry_l.len();
+
+        // Phaser (first in FX chain, pre-chorus). Stereo-in / stereo-out via
+        // parallel L/R allpass cascades sharing one anti-phase LFO (0101). When
+        // off, the dry stereo bus passes through unchanged.
+        if flags.phaser {
+            self.phaser.process_block_stereo(dry_l, dry_r, out_l, out_r);
+        } else {
+            out_l.copy_from_slice(dry_l);
+            out_r.copy_from_slice(dry_r);
+        }
+
+        if flags.chorus {
+            // Chorus is stereo-in / stereo-out via parallel L/R delay lines
+            // sharing the inverted-per-line LFO setup (0102). The phaser output
+            // bus feeds straight in — no mono collapse.
+            let mut chorus_in_l = [0.0f32; CONTROL_BLOCK];
+            let mut chorus_in_r = [0.0f32; CONTROL_BLOCK];
+            let chorus_in_l = &mut chorus_in_l[..block];
+            let chorus_in_r = &mut chorus_in_r[..block];
+            chorus_in_l.copy_from_slice(out_l);
+            chorus_in_r.copy_from_slice(out_r);
+            self.chorus
+                .process_block_stereo(chorus_in_l, chorus_in_r, out_l, out_r);
+        }
+        if flags.delay {
+            for i in 0..block {
+                let (l, r) = self.delay.process(out_l[i], out_r[i]);
+                out_l[i] = l;
+                out_r[i] = r;
+            }
+        }
+
+        // Reverb (post-delay): FDN takes the stereo bus as input and applies its
+        // own internal dry/wet crossfade. Skipped when off so the engine stays
+        // sample-exact against a build with reverb absent.
+        if flags.reverb {
+            let mut wet_l = [0f32; CONTROL_BLOCK];
+            let mut wet_r = [0f32; CONTROL_BLOCK];
+            let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
+            self.reverb.process_block(out_l, out_r, wl, wr);
+            out_l.copy_from_slice(wl);
+            out_r.copy_from_slice(wr);
+        }
+
+        // Master limiter (last in the chain): clear stale lookahead state on the
+        // off→on edge so re-engaging it can't leak an old transient.
+        if flags.limiter {
+            if !self.limiter_was_on {
+                self.limiter.reset();
+            }
+            self.limiter.process_block(out_l, out_r);
+        }
+        self.limiter_was_on = flags.limiter;
+    }
+}
+
+/// The oversampled synthesis path's anti-aliasing decimators (one per stereo
+/// channel) plus the bookkeeping that keeps them phase-aligned: the mono→stereo
+/// seed flag, the silent-drain counter and the active oversample factor. Owning
+/// the L/R pair as one unit folds the duplicated reset / decimate / zero-fill
+/// branches into a single paired API (0106 / 0107).
+struct OutputStage {
+    /// Both stay phase-aligned: at spread = 0 the L and R input streams are
+    /// identical, so the filter states evolve in lock-step and `r` outputs match
+    /// `l` sample-for-sample. `spread_zero_last_block` tracks whether the R
+    /// decimator was skipped last block; the mono→stereo transition seeds the R
+    /// decimator from L's converged state to avoid a click (0107).
+    oversampler: Oversampler,
+    oversampler_r: Oversampler,
+    spread_zero_last_block: bool,
+    /// Consecutive blocks both banks took the silent fast path. Once it exceeds
+    /// [`DECIMATOR_DRAIN_BLOCKS`] the L decimator's FIR state has fully drained
+    /// to zero, so the `decimate()` call is skipped and the base-rate output is
+    /// zero-filled until a bank wakes back up (0106).
+    silent_blocks: u32,
+    /// Oversampling factor in effect last block; a change resets the decimators.
+    last_os: usize,
+}
+
+impl OutputStage {
+    fn new() -> Self {
+        Self {
+            oversampler: Oversampler::new(),
+            oversampler_r: Oversampler::new(),
+            spread_zero_last_block: true,
+            silent_blocks: 0,
+            last_os: 1,
+        }
+    }
+
+    /// Clear both decimators and the phase-alignment bookkeeping. (Leaves
+    /// `last_os` alone — the factor itself is unchanged by a transport reset; a
+    /// genuine factor change is handled by [`Self::on_os_change`].)
+    fn reset(&mut self) {
+        self.oversampler.reset();
+        self.oversampler_r.reset();
+        self.spread_zero_last_block = true;
+        self.silent_blocks = 0;
+    }
+
+    /// Reset both decimators when the oversample factor changes between process
+    /// calls (the FIR state is rate-specific).
+    fn on_os_change(&mut self, os: usize) {
+        if os != self.last_os {
+            self.oversampler.reset();
+            self.oversampler_r.reset();
+            self.last_os = os;
+        }
+    }
+
+    /// Decimate the oversampled L/R buses down to `dst_l`/`dst_r` at the base
+    /// rate. `spread_zero` means both layers are centred (L == R), so the R
+    /// decimator is skipped and `dst_r` is copied from `dst_l`; `both_silent`
+    /// drives the drain-skip that zero-fills once the FIR has flushed (0106).
+    /// The mono→stereo transition seeds R from L *before* L decimates this block
+    /// so R starts from L's converged state rather than one block ahead (0107).
+    #[allow(clippy::too_many_arguments)] // one paired decimate step, single caller
+    fn decimate_block(
+        &mut self,
+        l_os: &[f32],
+        r_os: &[f32],
+        dst_l: &mut [f32],
+        dst_r: &mut [f32],
+        os: usize,
+        spread_zero: bool,
+        both_silent: bool,
+    ) {
+        // Silent-skip predicate (0106): track consecutive all-silent blocks —
+        // once the decimator's FIR state has drained, skip it and zero-fill.
+        if both_silent {
+            self.silent_blocks = self.silent_blocks.saturating_add(1);
+        } else {
+            self.silent_blocks = 0;
+        }
+        let skip_decimator = self.silent_blocks > DECIMATOR_DRAIN_BLOCKS;
+
+        if !spread_zero && self.spread_zero_last_block {
+            self.oversampler_r.clone_state_from(&self.oversampler);
+        }
+
+        if skip_decimator {
+            dst_l.fill(0.0);
+        } else {
+            self.oversampler.decimate(l_os, dst_l, os);
+        }
+        if spread_zero {
+            dst_r.copy_from_slice(dst_l);
+        } else if skip_decimator {
+            dst_r.fill(0.0);
+        } else {
+            self.oversampler_r.decimate(r_os, dst_r, os);
+        }
+        self.spread_zero_last_block = spread_zero;
+    }
 }
 
 impl Synth {
@@ -176,16 +415,8 @@ impl Synth {
             params,
             banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, RNG_SEEDS[i])),
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
-            phaser: StereoPhaser::new(sample_rate),
-            chorus: StereoChorus::new(sample_rate),
-            delay: StereoDelay::new(sample_rate, 2.0),
-            reverb: FdnReverb::new(sample_rate),
-            limiter: StereoLimiter::new(sample_rate),
-            limiter_was_on: false,
-            oversampler: Oversampler::new(),
-            oversampler_r: Oversampler::new(),
-            spread_zero_last_block: true,
-            silent_blocks: 0,
+            master_fx: MasterFx::new(sample_rate),
+            output: OutputStage::new(),
             bend_norm: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
             key_mode: KeyMode::Whole,
@@ -194,7 +425,6 @@ impl Synth {
             alloc_counter: 0,
             rr_layer: 0,
             last_env: [None; LAYERS],
-            last_os: 1,
             drift_amount: voice::DEFAULT_DRIFT_AMOUNT,
         }
     }
@@ -217,16 +447,8 @@ impl Synth {
             bank.set_sample_rate(sample_rate);
         }
         self.lfo2 = LfoCore::new(control_rate, LFO2_SEED);
-        self.phaser = StereoPhaser::new(sample_rate);
-        self.chorus = StereoChorus::new(sample_rate);
-        self.delay = StereoDelay::new(sample_rate, 2.0);
-        self.reverb = FdnReverb::new(sample_rate);
-        self.limiter = StereoLimiter::new(sample_rate);
-        self.limiter_was_on = false;
-        self.oversampler.reset();
-        self.oversampler_r.reset();
-        self.spread_zero_last_block = true;
-        self.silent_blocks = 0;
+        self.master_fx = MasterFx::new(sample_rate);
+        self.output.reset();
         self.mod_wheel.set_time(MOD_WHEEL_SMOOTH_MS, control_rate);
         self.smoother.set_sample_rate(sample_rate);
         self.smoother.snap_all(&self.params);
@@ -422,16 +644,8 @@ impl Synth {
             bank.reset_all();
         }
         self.lfo2.reset();
-        self.phaser.clear();
-        self.chorus.clear();
-        self.delay.clear();
-        self.reverb.reset();
-        self.limiter.reset();
-        self.limiter_was_on = false;
-        self.oversampler.reset();
-        self.oversampler_r.reset();
-        self.spread_zero_last_block = true;
-        self.silent_blocks = 0;
+        self.master_fx.reset();
+        self.output.reset();
         self.smoother.snap_all(&self.params);
         self.rr_layer = 0;
     }
@@ -447,11 +661,7 @@ impl Synth {
 
         // Oversampling factor for this call; a change resets the decimator.
         let os = self.params.global().oversample_factor();
-        if os != self.last_os {
-            self.oversampler.reset();
-            self.oversampler_r.reset();
-            self.last_os = os;
-        }
+        self.output.on_os_change(os);
 
         let key_mode = self.key_mode;
         let n = out_l.len().min(out_r.len());
@@ -507,50 +717,39 @@ impl Synth {
                 self.banks[layer].render_block(l_os, r_os, &ctx);
             }
 
-            // Silent-skip predicate (0106): if both banks took the silent
-            // fast path the OS bus is zero. Track consecutive silent blocks
-            // — once the decimator's FIR state has drained, skip it and
-            // zero-fill the base-rate buffer.
+            // Decimate the oversampled buses to the base rate. Both banks
+            // silent → the OS bus is zero, so the silent-drain skip can
+            // eventually zero-fill; spread = 0 → R is copied from L. All of
+            // that bookkeeping lives in `OutputStage` (0106 / 0107).
             let both_silent = self.banks[0].is_silent() && self.banks[1].is_silent();
-            if both_silent {
-                self.silent_blocks = self.silent_blocks.saturating_add(1);
-            } else {
-                self.silent_blocks = 0;
-            }
-            let skip_decimator = self.silent_blocks > DECIMATOR_DRAIN_BLOCKS;
-
             let mut l_dec = [0.0f32; CONTROL_BLOCK];
             let mut r_dec = [0.0f32; CONTROL_BLOCK];
             let l_dec = &mut l_dec[..block];
             let r_dec = &mut r_dec[..block];
+            self.output
+                .decimate_block(l_os, r_os, l_dec, r_dec, os, spread_zero, both_silent);
 
-            // Mono→stereo transition: seed R from L BEFORE L decimates this
-            // block. L's current state reflects "having processed L=R input
-            // through the previous block"; that's exactly the state R should
-            // be in to start this first stereo block. Doing the clone after
-            // L's decimate would put R one block ahead and pop on the edge.
-            if !spread_zero && self.spread_zero_last_block {
-                self.oversampler_r.clone_state_from(&self.oversampler);
-            }
-
-            if skip_decimator {
-                l_dec.fill(0.0);
-            } else {
-                self.oversampler.decimate(l_os, l_dec, os);
-            }
-            if spread_zero {
-                r_dec.copy_from_slice(l_dec);
-            } else if skip_decimator {
-                r_dec.fill(0.0);
-            } else {
-                self.oversampler_r.decimate(r_os, r_dec, os);
-            }
-            self.spread_zero_last_block = spread_zero;
-
-            // Effects (stereo), then write out.
-            let chorus_on = self.params.global().bool(GlobalParam::ChorusOn);
-            let delay_on = self.params.global().bool(GlobalParam::DelayOn);
-            self.update_effects();
+            // Effects (stereo), then write out. On/off are raw (unsmoothed)
+            // discrete switches; the FX chain itself lives in `MasterFx`.
+            let g = self.params.global();
+            let reverb_on = g.bool(GlobalParam::ReverbOn);
+            let flags = MasterFxFlags {
+                phaser: g.bool(GlobalParam::PhaserOn),
+                chorus: g.bool(GlobalParam::ChorusOn),
+                delay: g.bool(GlobalParam::DelayOn),
+                reverb: reverb_on,
+                limiter: g.bool(GlobalParam::LimiterOn),
+            };
+            self.master_fx
+                .update(self.smoother.values().global(), reverb_on, self.tempo_bpm);
+            // Drift: the per-voice oscillator pitch jitter amount, broadcast into
+            // every voice's BlockCtx next block. Direct read (no smoother — drift
+            // is a slow creative param, sub-audio).
+            self.drift_amount = self
+                .params
+                .global()
+                .get(GlobalParam::MasterDrift)
+                .clamp(0.0, 1.0);
 
             // Apply the per-sample master-volume glide into the dry stereo
             // bus, then run the stereo effects a block at a time.
@@ -566,63 +765,8 @@ impl Synth {
 
             let l_out = &mut out_l[start..start + block];
             let r_out = &mut out_r[start..start + block];
-
-            // Phaser (first in FX chain, pre-chorus). Stereo-in / stereo-out
-            // via parallel L/R allpass cascades sharing one anti-phase LFO
-            // (0101). When off, the dry stereo bus passes through unchanged.
-            let phaser_on = self.params.global().bool(GlobalParam::PhaserOn);
-            if phaser_on {
-                self.phaser.process_block_stereo(dry_l, dry_r, l_out, r_out);
-            } else {
-                l_out.copy_from_slice(dry_l);
-                r_out.copy_from_slice(dry_r);
-            }
-
-            if chorus_on {
-                // Chorus is stereo-in / stereo-out via parallel L/R delay
-                // lines sharing the inverted-per-line LFO setup (0102). The
-                // phaser output bus feeds straight in — no mono collapse.
-                let mut chorus_in_l = [0.0f32; CONTROL_BLOCK];
-                let mut chorus_in_r = [0.0f32; CONTROL_BLOCK];
-                let chorus_in_l = &mut chorus_in_l[..block];
-                let chorus_in_r = &mut chorus_in_r[..block];
-                chorus_in_l.copy_from_slice(l_out);
-                chorus_in_r.copy_from_slice(r_out);
-                self.chorus
-                    .process_block_stereo(chorus_in_l, chorus_in_r, l_out, r_out);
-            }
-            if delay_on {
-                for i in 0..block {
-                    let (l, r) = self.delay.process(l_out[i], r_out[i]);
-                    l_out[i] = l;
-                    r_out[i] = r;
-                }
-            }
-
-            // Reverb (post-delay): FDN takes the stereo bus as input and
-            // applies its own internal dry/wet crossfade. Skipped when off so
-            // the engine stays sample-exact against a build with reverb
-            // absent.
-            let reverb_on = self.params.global().bool(GlobalParam::ReverbOn);
-            if reverb_on {
-                let mut wet_l = [0f32; CONTROL_BLOCK];
-                let mut wet_r = [0f32; CONTROL_BLOCK];
-                let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
-                self.reverb.process_block(l_out, r_out, wl, wr);
-                l_out.copy_from_slice(wl);
-                r_out.copy_from_slice(wr);
-            }
-
-            // Master limiter (last in the chain): clear stale lookahead state on
-            // the off→on edge so re-engaging it can't leak an old transient.
-            let limiter_on = self.params.global().bool(GlobalParam::LimiterOn);
-            if limiter_on {
-                if !self.limiter_was_on {
-                    self.limiter.reset();
-                }
-                self.limiter.process_block(l_out, r_out);
-            }
-            self.limiter_was_on = limiter_on;
+            self.master_fx
+                .process_block(dry_l, dry_r, l_out, r_out, flags);
             start += block;
         }
     }
@@ -661,53 +805,6 @@ impl Synth {
             snap.drift_amount,
         );
         self.last_env[layer] = Some(snap);
-    }
-
-    fn update_effects(&mut self) {
-        let g = self.smoother.values().global();
-        self.phaser.set_params(
-            g.get(GlobalParam::PhaserRate),
-            g.get(GlobalParam::PhaserDepth),
-            g.get(GlobalParam::PhaserFB),
-            g.get(GlobalParam::PhaserMix),
-        );
-        self.chorus.set_params(
-            g.get(GlobalParam::ChorusRate),
-            g.get(GlobalParam::ChorusDepth),
-            g.get(GlobalParam::ChorusMix),
-        );
-        let t = delay_time_seconds(
-            g.bool(GlobalParam::DelaySync),
-            g.get(GlobalParam::DelayTime),
-            self.tempo_bpm,
-        );
-        self.delay.set_params(
-            t,
-            t,
-            g.get(GlobalParam::DelayFeedback),
-            0.3,
-            g.get(GlobalParam::DelayMix),
-        );
-
-        // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come
-        // through the smoother. On is unsmoothed (it's a discrete switch).
-        let on = self.params.global().bool(GlobalParam::ReverbOn);
-        self.reverb.set_params(&FdnReverbParams {
-            on,
-            size: g.get(GlobalParam::ReverbSize),
-            decay_secs: g.get(GlobalParam::ReverbDecay),
-            damp: g.get(GlobalParam::ReverbDamp),
-            mix: g.get(GlobalParam::ReverbMix),
-        });
-
-        // Drift: the per-voice oscillator pitch jitter amount, broadcast into
-        // every voice's BlockCtx. Direct read (no smoother — drift is a slow
-        // creative param, sub-audio).
-        self.drift_amount = self
-            .params
-            .global()
-            .get(GlobalParam::MasterDrift)
-            .clamp(0.0, 1.0);
     }
 
     /// Build one layer's control-block context from its param source (§3) and the
@@ -750,64 +847,78 @@ impl Synth {
         BlockCtx {
             os_sample_rate: self.sample_rate * os as f32,
             os,
-            osc1_wave: p.osc_wave(PatchParam::Osc1Wave),
-            osc2_wave: p.osc_wave(PatchParam::Osc2Wave),
-            osc1_level: p.get(PatchParam::Osc1Level),
-            osc2_level: p.get(PatchParam::Osc2Level),
-            sub_level: p.get(PatchParam::SubLevel),
-            ring_mode,
-            noise_level: p.get(PatchParam::NoiseLevel),
-            noise_color: p.noise_color(),
-            osc1_pw: p.get(PatchParam::Osc1PulseWidth),
-            osc2_pw: p.get(PatchParam::Osc2PulseWidth),
-            // Octave and Coarse are integer-semitone params: hard-quantise them
-            // (the fader stores a continuous value) so the tuning lands exactly on
-            // a semitone. Fine stays continuous (cents).
-            osc1_semi: p.get(PatchParam::Osc1Octave).round() * 12.0
-                + p.get(PatchParam::Osc1Coarse).round()
-                + p.get(PatchParam::Osc1Fine) / 100.0,
-            osc2_semi: p.get(PatchParam::Osc2Octave).round() * 12.0
-                + p.get(PatchParam::Osc2Coarse).round()
-                + p.get(PatchParam::Osc2Fine) / 100.0,
-            cutoff: p.get(PatchParam::Cutoff),
-            hpf_cutoff: p.get(PatchParam::HpfCutoff),
-            resonance,
-            drive: p.get(PatchParam::Drive),
-            filter_mode: p.filter_mode(),
-            filter_slope: p.filter_slope(),
+            osc: OscParams {
+                osc1_wave: p.osc_wave(PatchParam::Osc1Wave),
+                osc2_wave: p.osc_wave(PatchParam::Osc2Wave),
+                osc1_level: p.get(PatchParam::Osc1Level),
+                osc2_level: p.get(PatchParam::Osc2Level),
+                sub_level: p.get(PatchParam::SubLevel),
+                noise_level: p.get(PatchParam::NoiseLevel),
+                noise_color: p.noise_color(),
+                osc1_pw: p.get(PatchParam::Osc1PulseWidth),
+                osc2_pw: p.get(PatchParam::Osc2PulseWidth),
+                // Octave and Coarse are integer-semitone params: hard-quantise them
+                // (the fader stores a continuous value) so the tuning lands exactly
+                // on a semitone. Fine stays continuous (cents).
+                osc1_semi: p.get(PatchParam::Osc1Octave).round() * 12.0
+                    + p.get(PatchParam::Osc1Coarse).round()
+                    + p.get(PatchParam::Osc1Fine) / 100.0,
+                osc2_semi: p.get(PatchParam::Osc2Octave).round() * 12.0
+                    + p.get(PatchParam::Osc2Coarse).round()
+                    + p.get(PatchParam::Osc2Fine) / 100.0,
+            },
+            cross_mod: CrossMod {
+                sync,
+                pm_index,
+                ring_mode,
+                cross_mod_type: p.cross_mod_type(),
+            },
+            filter: FilterParams {
+                cutoff: p.get(PatchParam::Cutoff),
+                hpf_cutoff: p.get(PatchParam::HpfCutoff),
+                resonance,
+                drive: p.get(PatchParam::Drive),
+                filter_mode: p.filter_mode(),
+                filter_slope: p.filter_slope(),
+            },
             base_semis: g.get(GlobalParam::MasterTune),
             lfo1_shape: p.lfo_shape(),
             lfo1_rate_hz,
             lfo1_delay_time: p.get(PatchParam::Lfo1DelayTime),
             lfo1_fade: p.get(PatchParam::Lfo1Fade),
             lfo2_val,
-            sync,
-            pm_index,
-            cross_mod_type: p.cross_mod_type(),
             portamento_time: p.get(PatchParam::PortamentoTime),
             // Fixed routes (ADR 0004 §4).
-            pitch_lfo_sel: p.lfo_sel(PatchParam::PitchLfoSrc),
-            pitch_lfo_depth: p.get(PatchParam::PitchLfoDepth),
-            pitch_lfo_mod_only: p.bool(PatchParam::PitchLfoModOnly),
-            pitch_env_sel: p.env_sel(PatchParam::PitchEnvSrc),
-            pitch_env_depth: p.get(PatchParam::PitchEnvDepth),
-            pitch_env_mod_only: p.bool(PatchParam::PitchEnvModOnly),
-            pitch_extra: self.bend_norm * p.get(PatchParam::PitchWheelDepth),
-            pwm_lfo_sel: p.lfo_sel(PatchParam::PwmLfoSrc),
-            pwm_lfo_depth: p.get(PatchParam::PwmLfoDepth),
-            pwm_env_sel: p.env_sel(PatchParam::PwmEnvSrc),
-            pwm_env_depth: p.get(PatchParam::PwmEnvDepth),
-            pwm_extra: wheel * p.get(PatchParam::ModWheelPwm),
-            cutoff_lfo1_depth: p.get(PatchParam::CutoffLfo1Depth),
-            cutoff_lfo2_depth: p.get(PatchParam::CutoffLfo2Depth),
-            cutoff_env_depth: p.get(PatchParam::CutoffEnvDepth),
-            cutoff_vel_depth: p.get(PatchParam::VelCutoffDepth),
-            cutoff_extra: wheel * p.get(PatchParam::ModWheelCutoff),
-            filter_key_track: p.get(PatchParam::FilterKeyTrack),
-            sweep_extra: wheel * p.get(PatchParam::ModWheelCrossModSweep),
-            amp_lfo_sel: p.lfo_sel(PatchParam::AmpLfoSrc),
-            amp_lfo_depth: p.get(PatchParam::AmpLfoDepth),
-            amp_env_bypass: p.bool(PatchParam::AmpEnvBypass),
+            pitch: PitchRoute {
+                lfo_sel: p.lfo_sel(PatchParam::PitchLfoSrc),
+                lfo_depth: p.get(PatchParam::PitchLfoDepth),
+                lfo_mod_only: p.bool(PatchParam::PitchLfoModOnly),
+                env_sel: p.env_sel(PatchParam::PitchEnvSrc),
+                env_depth: p.get(PatchParam::PitchEnvDepth),
+                env_mod_only: p.bool(PatchParam::PitchEnvModOnly),
+                extra: self.bend_norm * p.get(PatchParam::PitchWheelDepth),
+                sweep_extra: wheel * p.get(PatchParam::ModWheelCrossModSweep),
+            },
+            pwm: PwmRoute {
+                lfo_sel: p.lfo_sel(PatchParam::PwmLfoSrc),
+                lfo_depth: p.get(PatchParam::PwmLfoDepth),
+                env_sel: p.env_sel(PatchParam::PwmEnvSrc),
+                env_depth: p.get(PatchParam::PwmEnvDepth),
+                extra: wheel * p.get(PatchParam::ModWheelPwm),
+            },
+            cutoff: CutoffRoute {
+                lfo1_depth: p.get(PatchParam::CutoffLfo1Depth),
+                lfo2_depth: p.get(PatchParam::CutoffLfo2Depth),
+                env_depth: p.get(PatchParam::CutoffEnvDepth),
+                vel_depth: p.get(PatchParam::VelCutoffDepth),
+                extra: wheel * p.get(PatchParam::ModWheelCutoff),
+                key_track: p.get(PatchParam::FilterKeyTrack),
+            },
+            amp: AmpRoute {
+                lfo_sel: p.lfo_sel(PatchParam::AmpLfoSrc),
+                lfo_depth: p.get(PatchParam::AmpLfoDepth),
+                env_bypass: p.bool(PatchParam::AmpEnvBypass),
+            },
             drift_amount: self.drift_amount,
             layer_level: p.get(PatchParam::LayerLevel),
             spread: p.get(PatchParam::Spread),

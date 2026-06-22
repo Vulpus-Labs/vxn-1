@@ -68,3 +68,32 @@ describe fixing.
 and will keep growing — this is the time to group it.
 Behaviour-preserving throughout; if the hash moves, the
 refactor changed render order and is wrong.
+
+## Close-out (2026-06-22)
+
+- `BlockCtx` regrouped into named sub-structs
+  [voice.rs:211-345](../../vxn-1/crates/vxn-engine/src/voice.rs#L211-L345):
+  `OscParams`, `CrossMod`, `FilterParams`, plus one struct per `resolve_mod`
+  channel — `PitchRoute` / `PwmRoute` / `CutoffRoute` / `AmpRoute`. Route fields
+  dropped their redundant prefixes (`pitch_lfo_sel` → `ctx.pitch.lfo_sel`).
+  `build_ctx` is now nested sub-builders
+  [lib.rs:843-925](../../vxn-1/crates/vxn-engine/src/lib.rs#L843); `resolve_mod`
+  /`voice_pitches`/`voice_cutoff_hz` and the 166 unit tests read the grouped
+  paths. Grouping mirrors `resolve_mod`'s pitch/pwm/cutoff outputs.
+- `MasterFx` [lib.rs:158](../../vxn-1/crates/vxn-engine/src/lib.rs#L158) owns
+  phaser/chorus/delay/reverb/limiter + `limiter_was_on`, with
+  `new`/`reset`/`update`/`process_block`. The full FX chain and the limiter
+  off→on edge reset moved out of `Synth::process` into `MasterFx::process_block`.
+- `OutputStage` [lib.rs:311](../../vxn-1/crates/vxn-engine/src/lib.rs#L311) owns
+  the `oversampler`/`oversampler_r` pair + `spread_zero_last_block` +
+  `silent_blocks` + `last_os`. The mono→stereo `clone_state_from` seed, the
+  silent-drain skip and the L/R decimate/zero-fill branches fold into one
+  `decimate_block` (+ `on_os_change`); the duplicated `.reset()`/`.decimate()`
+  calls are gone.
+- `Synth::new`/`set_sample_rate`/`reset` delegate to the `MasterFx`/`OutputStage`
+  constructors + `reset` ([lib.rs:450-451](../../vxn-1/crates/vxn-engine/src/lib.rs#L450),
+  [lib.rs:647-648](../../vxn-1/crates/vxn-engine/src/lib.rs#L647)) — the
+  three-way init drift hazard is closed.
+- `cargo test --workspace` green; `tests/baseline.rs`
+  `baseline_render_is_stable` unchanged (pure structural regroup). Engine
+  clippy clean apart from one pre-existing `GOLDEN` excessive-precision warning.
