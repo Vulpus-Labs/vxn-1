@@ -49,3 +49,25 @@ Distinct from E011 **0020**, which removes
 `vxn-ui-web` — this ticket targets the `vxn-wasm/web/` spike
 files and the `vxn-wasm` crate's spike API, not touched
 there.
+
+## Close-out (2026-06-22)
+
+- Deleted spike files: `web/index.html` (0034 harness), `web/index-0035
+  .html`, `web/vxn-processor.js` (0034 spike worklet),
+  `web/vxn-processor-0035.js`. Renamed `vxn-processor-0038.js` →
+  `vxn-processor.js` (production worklet — stable name at source, matching
+  the xtask dist rename).
+- Spike `Instance` API removed from `vxn-wasm/src/lib.rs` (the
+  `vxn_new`/`vxn_destroy`/`vxn_note_*`/`vxn_process*`/`vxn_set_param`/
+  `vxn_out_*`/`vxn_quantum` exports + struct); `lib.rs` now re-exports only
+  `codec`, `host`, `QUANTUM` with clean module docs. Safe — symbols were
+  only called by the deleted spike worklets.
+- xtask updated: `("vxn-processor-0038.js","vxn-processor.js")` →
+  `("vxn-processor.js","vxn-processor.js")`. Stale comments fixed in
+  `event-ring.mjs`, `audio-host.mjs`, `host-runner.mjs`, `coordinator.mjs`,
+  `harness-0042.mjs`, `README.md`.
+- grep for `vxn-processor-0035` / `vxn-processor-0038` / `index-0035` across
+  `.mjs/.js/.html/.rs/.toml/.yml` → zero hits.
+- Tests: `cargo test -p vxn-wasm` 16/16 pass; gated JS suites that don't
+  need the wasm binary pass; the pre-existing `controller wasm not found`
+  failures are unrelated. Done by Sonnet in worktree.

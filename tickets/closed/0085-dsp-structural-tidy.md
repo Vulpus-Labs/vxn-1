@@ -59,3 +59,20 @@ memory `vxn1-tanh-branchless-only`). Mechanical, low-risk;
 asm verification is not needed (nothing touches the hot
 path's emitted code, and per-crate asm is misleading
 pre-LTO — memory `vxn1-ota-filter-perf`).
+
+## Close-out (2026-06-22)
+
+- All four dead mono kernels — `Oscillator`, `OtaLadderKernel`, `HpfKernel`,
+  `MonoPhaseAccumulator` (plus the `polyblep` helper) — gated behind
+  `#[cfg(test)]` (cleaner than `pub(crate)`: zero dead-code warnings in
+  non-test builds) and dropped from the `lib.rs` re-export list. They
+  survive only as differential test oracles against the `Poly*` kernels.
+- `poly.rs` (1820 lines) split into `poly/oscillator.rs` (`PolyOscillator`
+  + `WaveKind` + sub + ring) and `poly/ladder.rs` (`PolyOtaLadder` +
+  `LadderMix`), re-exported from a thin `poly/mod.rs`. The
+  `needless_range_loop` allow + SIMD-rationale doc comments moved with the
+  code they justify.
+- tanh implementations untouched (branch/branchless split deliberate).
+- Tests: `cargo test -p vxn-dsp` 93/93 pass (incl. scalar-vs-poly
+  differential oracles + FFT spectral); `vxn-engine` baseline render hash
+  unchanged. Behaviour-preserving. Done by Sonnet in worktree.
