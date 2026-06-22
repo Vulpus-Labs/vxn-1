@@ -322,6 +322,93 @@ fn push_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
+/// Pack ONE `ViewEvent` as a single record into `buf`, using the wire layout
+/// documented above. Returns `true` if a record was appended; some variants are
+/// intentionally skipped (status / text-input ride other channels, ADR 0009),
+/// in which case nothing is written and `false` is returned.
+///
+/// Extracted from `drain_view_events` so the golden-byte parity test (ticket
+/// 0083) exercises the REAL packer — the JS unpacker (`controller.mjs`
+/// `decodeViewEvents`) decodes these exact bytes back. Layout drift across the
+/// two hand-synchronised encodings fails in CI, not silently at runtime.
+fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
+    match ev {
+        ViewEvent::ParamChanged {
+            id,
+            plain,
+            norm,
+            display,
+        } => {
+            push_u32(buf, VE_PARAM_CHANGED);
+            push_u32(buf, id.raw() as u32);
+            push_f32(buf, *plain);
+            push_f32(buf, *norm);
+            push_str(buf, display);
+            true
+        }
+        ViewEvent::Custom(payload) => {
+            // Downcast stays inside wasm (ADR 0009 §1); per-synth view state
+            // becomes a narrow opcode record, never Box<dyn Any>.
+            match payload.downcast_ref::<vxn_app::Vxn1ViewCustom>() {
+                Some(vxn_app::Vxn1ViewCustom::KeyModeChanged { mode }) => {
+                    push_u32(buf, VE_KEY_MODE_CHANGED);
+                    push_u32(buf, *mode as u32);
+                    true
+                }
+                Some(vxn_app::Vxn1ViewCustom::SplitPointChanged { note }) => {
+                    push_u32(buf, VE_SPLIT_POINT_CHANGED);
+                    push_u32(buf, *note as u32);
+                    true
+                }
+                Some(vxn_app::Vxn1ViewCustom::EditLayerChanged { layer }) => {
+                    push_u32(buf, VE_EDIT_LAYER_CHANGED);
+                    push_u32(buf, *layer as u32);
+                    true
+                }
+                None => false,
+            }
+        }
+        ViewEvent::PresetLoaded {
+            meta,
+            source,
+            warnings,
+        } => {
+            push_u32(buf, VE_PRESET_LOADED);
+            push_str(buf, &meta.name);
+            match source {
+                None => push_u32(buf, PRESET_SRC_NONE),
+                Some(PresetSource::Factory { index }) => {
+                    push_u32(buf, PRESET_SRC_FACTORY);
+                    push_u32(buf, *index as u32);
+                }
+                Some(PresetSource::User { path }) => {
+                    push_u32(buf, PRESET_SRC_USER);
+                    push_str(buf, &path.display().to_string());
+                }
+            }
+            push_u32(buf, warnings.len() as u32);
+            for w in warnings {
+                push_str(buf, w);
+            }
+            true
+        }
+        ViewEvent::PresetCorpusChanged { follow } => {
+            push_u32(buf, VE_PRESET_CORPUS_CHANGED);
+            match follow {
+                Some(p) => {
+                    push_u32(buf, 1);
+                    push_str(buf, &p.display().to_string());
+                }
+                None => push_u32(buf, 0),
+            }
+            true
+        }
+        // Status / text-input ViewEvents are skipped here; status / text-input
+        // are E018-handled in JS.
+        _ => false,
+    }
+}
+
 // ===========================================================================
 // Controller state — one global instance (single-threaded main thread)
 // ===========================================================================
@@ -519,88 +606,14 @@ impl ControllerState {
         let mut count = 0u32;
         let mut corpus_dirty = false;
         while let Ok(ev) = self.view_rx.try_recv() {
-            match ev {
-                ViewEvent::ParamChanged {
-                    id,
-                    plain,
-                    norm,
-                    display,
-                } => {
-                    push_u32(&mut self.view_out, VE_PARAM_CHANGED);
-                    push_u32(&mut self.view_out, id.raw() as u32);
-                    push_f32(&mut self.view_out, plain);
-                    push_f32(&mut self.view_out, norm);
-                    let bytes = display.as_bytes();
-                    push_u32(&mut self.view_out, bytes.len() as u32);
-                    self.view_out.extend_from_slice(bytes);
-                    count += 1;
-                }
-                ViewEvent::Custom(payload) => {
-                    // Downcast stays inside wasm (ADR 0009 §1); per-synth view
-                    // state becomes a narrow opcode record, never Box<dyn Any>.
-                    if let Ok(custom) = payload.downcast::<vxn_app::Vxn1ViewCustom>() {
-                        match *custom {
-                            vxn_app::Vxn1ViewCustom::KeyModeChanged { mode } => {
-                                push_u32(&mut self.view_out, VE_KEY_MODE_CHANGED);
-                                push_u32(&mut self.view_out, mode as u32);
-                                count += 1;
-                            }
-                            vxn_app::Vxn1ViewCustom::SplitPointChanged { note } => {
-                                push_u32(&mut self.view_out, VE_SPLIT_POINT_CHANGED);
-                                push_u32(&mut self.view_out, note as u32);
-                                count += 1;
-                            }
-                            vxn_app::Vxn1ViewCustom::EditLayerChanged { layer } => {
-                                push_u32(&mut self.view_out, VE_EDIT_LAYER_CHANGED);
-                                push_u32(&mut self.view_out, layer as u32);
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-                ViewEvent::PresetLoaded {
-                    meta,
-                    source,
-                    warnings,
-                } => {
-                    push_u32(&mut self.view_out, VE_PRESET_LOADED);
-                    push_str(&mut self.view_out, &meta.name);
-                    match source {
-                        None => push_u32(&mut self.view_out, PRESET_SRC_NONE),
-                        Some(PresetSource::Factory { index }) => {
-                            push_u32(&mut self.view_out, PRESET_SRC_FACTORY);
-                            push_u32(&mut self.view_out, index as u32);
-                        }
-                        Some(PresetSource::User { path }) => {
-                            push_u32(&mut self.view_out, PRESET_SRC_USER);
-                            push_str(&mut self.view_out, &path.display().to_string());
-                        }
-                    }
-                    push_u32(&mut self.view_out, warnings.len() as u32);
-                    for w in &warnings {
-                        push_str(&mut self.view_out, w);
-                    }
-                    count += 1;
-                }
-                ViewEvent::PresetCorpusChanged { follow } => {
-                    // The core controller already refreshed the shared corpus
-                    // snapshot (save/rename/delete/move/folder op, or EditorReady).
-                    // Pack the notice + flag a corpus_json rebuild so JS re-pushes
-                    // `applyPresetCorpus` and flushes the write journal.
-                    push_u32(&mut self.view_out, VE_PRESET_CORPUS_CHANGED);
-                    match &follow {
-                        Some(p) => {
-                            push_u32(&mut self.view_out, 1);
-                            push_str(&mut self.view_out, &p.display().to_string());
-                        }
-                        None => push_u32(&mut self.view_out, 0),
-                    }
-                    count += 1;
-                    corpus_dirty = true;
-                }
-                // Status / text-input ViewEvents are skipped here; status /
-                // text-input are E018-handled in JS.
-                _ => {}
+            // A corpus change also drives a `corpus_json` rebuild so JS re-pushes
+            // `applyPresetCorpus` and flushes the write journal — the core
+            // controller already refreshed the shared corpus snapshot.
+            if matches!(ev, ViewEvent::PresetCorpusChanged { .. }) {
+                corpus_dirty = true;
+            }
+            if pack_view_event(&mut self.view_out, &ev) {
+                count += 1;
             }
         }
         // Backpatch the record count into the header.
@@ -1468,5 +1481,256 @@ mod tests {
         // Model untouched by the failed imports.
         assert_eq!(st.model.key_mode(), KeyMode::Dual);
         assert_eq!(st.model.split_point(), 36);
+    }
+
+    // ── Packed ViewEvent golden-byte parity (ticket 0083) ────────────────────
+    //
+    // The hand-walked binary ViewEvent protocol crosses two languages without a
+    // codec: the Rust packer (`pack_view_event` above) and the JS unpacker
+    // (`controller.mjs` `decodeViewEvents`). The GOLDEN BYTE TABLE below is the
+    // contract — `controller.mjs`'s `__tests__/viewevent-parity.test.js`
+    // replicates it byte-for-byte, decodes it, and asserts the structs. Here we
+    // assert the REAL packer emits these exact bytes. Layout drift in EITHER
+    // direction (a renumbered tag, a reordered field, a dropped length prefix)
+    // fails one of the two tests in CI, not silently at runtime.
+    //
+    // Pattern copied from `vxn-wasm/src/codec.rs` `golden()` +
+    // `web/event-codec.test.mjs`.
+
+    fn vrow(tag: u32) -> Vec<u8> {
+        tag.to_le_bytes().to_vec()
+    }
+    fn vu32(buf: &mut Vec<u8>, v: u32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn vf32(buf: &mut Vec<u8>, v: f32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn vstr(buf: &mut Vec<u8>, s: &str) {
+        vu32(buf, s.len() as u32);
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    /// (label, event, expected record bytes). One row per `VE_*` tag, plus the
+    /// multi-field `VE_PRESET_LOADED` in all three source kinds (none / factory /
+    /// user-with-warnings) and `VE_PRESET_CORPUS_CHANGED` with and without a
+    /// follow path. Mirrored verbatim in the JS parity test.
+    fn view_golden() -> Vec<(&'static str, ViewEvent, Vec<u8>)> {
+        use vxn_app::Vxn1ViewCustom;
+
+        let mut rows: Vec<(&'static str, ViewEvent, Vec<u8>)> = Vec::new();
+
+        // VE_PARAM_CHANGED: id 42, plain 1.5, norm 0.25, display "1.50 Hz".
+        {
+            let mut b = vrow(VE_PARAM_CHANGED);
+            vu32(&mut b, 42);
+            vf32(&mut b, 1.5);
+            vf32(&mut b, 0.25);
+            vstr(&mut b, "1.50 Hz");
+            rows.push((
+                "param_changed id42",
+                ViewEvent::ParamChanged {
+                    id: ParamId::new(42),
+                    plain: 1.5,
+                    norm: 0.25,
+                    display: "1.50 Hz".into(),
+                },
+                b,
+            ));
+        }
+
+        // VE_KEY_MODE_CHANGED: Split (discriminant 2).
+        {
+            let mut b = vrow(VE_KEY_MODE_CHANGED);
+            vu32(&mut b, KeyMode::Split as u32);
+            rows.push((
+                "key_mode split",
+                Vxn1ViewCustom::KeyModeChanged {
+                    mode: KeyMode::Split,
+                }
+                .into_event(),
+                b,
+            ));
+        }
+
+        // VE_SPLIT_POINT_CHANGED: note 60.
+        {
+            let mut b = vrow(VE_SPLIT_POINT_CHANGED);
+            vu32(&mut b, 60);
+            rows.push((
+                "split_point 60",
+                Vxn1ViewCustom::SplitPointChanged { note: 60 }.into_event(),
+                b,
+            ));
+        }
+
+        // VE_EDIT_LAYER_CHANGED: Lower (discriminant 1).
+        {
+            let mut b = vrow(VE_EDIT_LAYER_CHANGED);
+            vu32(&mut b, Layer::Lower as u32);
+            rows.push((
+                "edit_layer lower",
+                Vxn1ViewCustom::EditLayerChanged {
+                    layer: Layer::Lower,
+                }
+                .into_event(),
+                b,
+            ));
+        }
+
+        // VE_PRESET_LOADED, factory source, no warnings.
+        {
+            let mut b = vrow(VE_PRESET_LOADED);
+            vstr(&mut b, "Init");
+            vu32(&mut b, PRESET_SRC_FACTORY);
+            vu32(&mut b, 7);
+            vu32(&mut b, 0); // warning count
+            rows.push((
+                "preset_loaded factory#7",
+                ViewEvent::PresetLoaded {
+                    meta: meta_named("Init"),
+                    source: Some(PresetSource::Factory { index: 7 }),
+                    warnings: vec![],
+                },
+                b,
+            ));
+        }
+
+        // VE_PRESET_LOADED, user source, two warnings (the multi-field case).
+        {
+            let mut b = vrow(VE_PRESET_LOADED);
+            vstr(&mut b, "Deep");
+            vu32(&mut b, PRESET_SRC_USER);
+            vstr(&mut b, "Bass/Deep");
+            vu32(&mut b, 2); // warning count
+            vstr(&mut b, "clip high");
+            vstr(&mut b, "old fmt");
+            rows.push((
+                "preset_loaded user+warnings",
+                ViewEvent::PresetLoaded {
+                    meta: meta_named("Deep"),
+                    source: Some(PresetSource::User {
+                        path: "Bass/Deep".into(),
+                    }),
+                    warnings: vec!["clip high".into(), "old fmt".into()],
+                },
+                b,
+            ));
+        }
+
+        // VE_PRESET_LOADED, no source, one warning.
+        {
+            let mut b = vrow(VE_PRESET_LOADED);
+            vstr(&mut b, "X");
+            vu32(&mut b, PRESET_SRC_NONE);
+            vu32(&mut b, 1); // warning count
+            vstr(&mut b, "w");
+            rows.push((
+                "preset_loaded none",
+                ViewEvent::PresetLoaded {
+                    meta: meta_named("X"),
+                    source: None,
+                    warnings: vec!["w".into()],
+                },
+                b,
+            ));
+        }
+
+        // VE_PRESET_CORPUS_CHANGED with a follow path.
+        {
+            let mut b = vrow(VE_PRESET_CORPUS_CHANGED);
+            vu32(&mut b, 1); // has follow
+            vstr(&mut b, "Lead/New");
+            rows.push((
+                "corpus_changed follow",
+                ViewEvent::PresetCorpusChanged {
+                    follow: Some("Lead/New".into()),
+                },
+                b,
+            ));
+        }
+
+        // VE_PRESET_CORPUS_CHANGED with no follow path.
+        {
+            let mut b = vrow(VE_PRESET_CORPUS_CHANGED);
+            vu32(&mut b, 0); // no follow
+            rows.push((
+                "corpus_changed none",
+                ViewEvent::PresetCorpusChanged { follow: None },
+                b,
+            ));
+        }
+
+        rows
+    }
+
+    fn meta_named(name: &str) -> PresetMeta {
+        PresetMeta {
+            name: name.into(),
+            author: None,
+            category: None,
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn pack_view_event_matches_golden() {
+        for (label, ev, expected) in view_golden() {
+            let mut got = Vec::new();
+            assert!(
+                pack_view_event(&mut got, &ev),
+                "pack returned false for {label}"
+            );
+            assert_eq!(got, expected, "pack mismatch for {label}: {got:02x?}");
+        }
+    }
+
+    #[test]
+    fn pack_view_event_skips_other_channel_variants() {
+        // Status / text-input variants ride other channels — pack writes nothing.
+        for ev in [
+            ViewEvent::Status { line: "x".into() },
+            ViewEvent::OpenTextInput {
+                id: "i".into(),
+                title: "t".into(),
+                initial: "v".into(),
+            },
+            ViewEvent::TextInputResult {
+                id: "i".into(),
+                value: Some("v".into()),
+            },
+        ] {
+            let mut buf = Vec::new();
+            assert!(!pack_view_event(&mut buf, &ev));
+            assert!(buf.is_empty());
+        }
+    }
+
+    #[test]
+    fn drain_layout_empty_and_multi_batch() {
+        // The drain wraps the packed records in a `u32` record-count header. An
+        // empty batch is just the zero header; a multi-record batch is the count
+        // followed by each record's bytes back to back. The JS unpacker reads the
+        // header then that many records — mirrored in the parity test.
+        let rows = view_golden();
+
+        // Empty batch: count 0, nothing else.
+        let mut empty = Vec::new();
+        vu32(&mut empty, 0);
+        assert_eq!(empty, vec![0, 0, 0, 0]);
+
+        // Multi-record batch: count header + every golden record concatenated,
+        // exactly as `drain_view_events` lays them out.
+        let mut batch = Vec::new();
+        vu32(&mut batch, rows.len() as u32);
+        for (_label, ev, _expected) in &rows {
+            assert!(pack_view_event(&mut batch, ev));
+        }
+        let mut expected = Vec::new();
+        vu32(&mut expected, rows.len() as u32);
+        for (_label, _ev, bytes) in &rows {
+            expected.extend_from_slice(bytes);
+        }
+        assert_eq!(batch, expected);
     }
 }

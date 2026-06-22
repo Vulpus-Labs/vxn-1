@@ -56,3 +56,36 @@ two languages without the codec's golden treatment — highest
 drift risk in the web layer. Pattern to copy:
 `vxn-wasm/src/codec.rs` `golden()` + `assets/__tests__/
 event-codec.test.mjs`.
+
+## Close-out (2026-06-22)
+
+- Extracted the per-record packer `pack_view_event(buf, &ev) -> bool`
+  out of `drain_view_events` so the golden test exercises the REAL
+  packer; `drain` now loops over it
+  ([lib.rs:326](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L326),
+  [lib.rs:520](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L520)).
+- Rust golden-byte table `view_golden()` — one row per `VE_*` tag,
+  incl. all three `VE_PRESET_LOADED` source kinds (none / factory /
+  user-with-warnings) and `VE_PRESET_CORPUS_CHANGED` with/without a
+  follow path. Asserted by `vxn_web_controller::tests::pack_view_event_matches_golden`;
+  empty + multi-record batch layout by
+  `tests::drain_layout_empty_and_multi_batch`; skip semantics by
+  `tests::pack_view_event_skips_other_channel_variants`.
+- Extracted a standalone `decodeViewEvents(buffer, ptr, len)` export
+  (clean u32/f32/str cursor helpers); `_drainViewEvents` now delegates,
+  so the test hits production decode code
+  ([controller.mjs:64](../../vxn-1/crates/vxn-wasm/web/controller.mjs#L64)).
+  Exported `PRESET_SRC_*` for the constant cross-check.
+- JS parity test mirrors the Rust golden table byte-for-byte, decodes
+  each record and asserts the structs, plus empty-batch, multi-record
+  batch, an unknown-tag `throw`, and a constants-match assertion
+  (`VE_*` / `PRESET_SRC_*` / `KEY_MODE_*` / `LAYER_*` == Rust values) —
+  `assets/__tests__/viewevent-parity.test.js` (13 cases).
+- Placed the JS test in the Vitest suite rather than next to
+  `vxn-wasm/web/event-codec.test.mjs`: the `node:test` files in
+  `vxn-wasm/web/` are NOT run by CI; the only JS suite CI executes under
+  `VXN_JS_TESTS=1` is Vitest (`vxn-ui-web` `js_suite_passes` → `npm test`).
+  So drift now genuinely fails in CI.
+- Verified: `cargo test --workspace` green (0 failures);
+  `npx vitest run` green (24 files, 169 tests); `node --test
+  controller.test.mjs` green (refactored decoder, real wasm).

@@ -38,9 +38,9 @@ export const VE_PRESET_LOADED = 5;
 export const VE_PRESET_CORPUS_CHANGED = 6;
 
 // PresetSource discriminants in the VE_PRESET_LOADED record (match lib.rs).
-const PRESET_SRC_NONE = 0;
-const PRESET_SRC_FACTORY = 1;
-const PRESET_SRC_USER = 2;
+export const PRESET_SRC_NONE = 0;
+export const PRESET_SRC_FACTORY = 1;
+export const PRESET_SRC_USER = 2;
 
 // Journal-op tags packed by vxnc_take_journal — MUST match lib.rs (JW_*).
 const JW_PUT = 1;
@@ -60,6 +60,84 @@ export const KEY_MODE_SPLIT = 2;
 // Layer discriminants (match vxn_app::Layer).
 export const LAYER_UPPER = 0;
 export const LAYER_LOWER = 1;
+
+// Decode a packed ViewEvent out-buffer into an array of decoded records. The
+// wire layout is the hand-walked binary protocol documented in
+// vxn-web-controller/src/lib.rs (`drain_view_events` / `pack_view_event`):
+// a `u32` record count, then that many tag-prefixed records. Little-endian;
+// strings are `u32` length + UTF-8 bytes.
+//
+// `buffer`/`ptr`/`len` describe the bytes to read (wasm linear memory + the
+// view-out pointer in production; a plain ArrayBuffer in the parity test, ticket
+// 0083). Pulled out of `_drainViewEvents` so the golden-byte parity test
+// exercises THIS exact decoder against the Rust packer's bytes — drift fails in
+// CI, not at runtime as the `unknown ViewEvent tag` throw below.
+export function decodeViewEvents(buffer, ptr, len) {
+  const view = new DataView(buffer, ptr, len);
+  const dec = new TextDecoder();
+  let off = 0;
+  const u32 = () => {
+    const v = view.getUint32(off, true);
+    off += 4;
+    return v;
+  };
+  const f32 = () => {
+    const v = view.getFloat32(off, true);
+    off += 4;
+    return v;
+  };
+  const str = () => {
+    const n = u32();
+    const s = dec.decode(new Uint8Array(buffer, ptr + off, n));
+    off += n;
+    return s;
+  };
+
+  const count = u32();
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const tag = u32();
+    switch (tag) {
+      case VE_PARAM_CHANGED:
+        out.push({ type: "ParamChanged", id: u32(), plain: f32(), norm: f32(), display: str() });
+        break;
+      case VE_KEY_MODE_CHANGED:
+        out.push({ type: "KeyModeChanged", mode: u32() });
+        break;
+      case VE_SPLIT_POINT_CHANGED:
+        out.push({ type: "SplitPointChanged", note: u32() });
+        break;
+      case VE_EDIT_LAYER_CHANGED:
+        out.push({ type: "EditLayerChanged", layer: u32() });
+        break;
+      case VE_PRESET_LOADED: {
+        const name = str();
+        const srcKind = u32();
+        let source = null;
+        if (srcKind === PRESET_SRC_FACTORY) {
+          source = { kind: "factory", index: u32() };
+        } else if (srcKind === PRESET_SRC_USER) {
+          source = { kind: "user", path: str() };
+        }
+        const warnCount = u32();
+        const warnings = [];
+        for (let w = 0; w < warnCount; w++) warnings.push(str());
+        out.push({ type: "PresetLoaded", name, source, warnings });
+        break;
+      }
+      case VE_PRESET_CORPUS_CHANGED: {
+        const follow = u32() ? str() : null;
+        out.push({ type: "PresetCorpusChanged", follow });
+        break;
+      }
+      default:
+        // Unknown tag — the packed stream is self-describing only for known
+        // tags; an unknown one means JS/Rust drift. Fail loud.
+        throw new Error(`controller: unknown ViewEvent tag ${tag}`);
+    }
+  }
+  return out;
+}
 
 export class WebController {
   // Construct cheaply; instantiate() does the async wasm load. Options:
@@ -489,100 +567,7 @@ export class WebController {
   _drainViewEvents() {
     const ptr = this.x.vxnc_view_out_ptr();
     const len = this.x.vxnc_view_out_len();
-    const view = new DataView(this.x.memory.buffer, ptr, len);
-    const dec = new TextDecoder();
-    let off = 0;
-    const count = view.getUint32(off, true);
-    off += 4;
-    const out = [];
-    for (let i = 0; i < count; i++) {
-      const tag = view.getUint32(off, true);
-      off += 4;
-      switch (tag) {
-        case VE_PARAM_CHANGED: {
-          const id = view.getUint32(off, true);
-          off += 4;
-          const plain = view.getFloat32(off, true);
-          off += 4;
-          const norm = view.getFloat32(off, true);
-          off += 4;
-          const dlen = view.getUint32(off, true);
-          off += 4;
-          const bytes = new Uint8Array(this.x.memory.buffer, ptr + off, dlen);
-          const display = dec.decode(bytes);
-          off += dlen;
-          out.push({ type: "ParamChanged", id, plain, norm, display });
-          break;
-        }
-        case VE_KEY_MODE_CHANGED: {
-          const mode = view.getUint32(off, true);
-          off += 4;
-          out.push({ type: "KeyModeChanged", mode });
-          break;
-        }
-        case VE_SPLIT_POINT_CHANGED: {
-          const note = view.getUint32(off, true);
-          off += 4;
-          out.push({ type: "SplitPointChanged", note });
-          break;
-        }
-        case VE_EDIT_LAYER_CHANGED: {
-          const layer = view.getUint32(off, true);
-          off += 4;
-          out.push({ type: "EditLayerChanged", layer });
-          break;
-        }
-        case VE_PRESET_LOADED: {
-          const nameLen = view.getUint32(off, true);
-          off += 4;
-          const name = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, nameLen));
-          off += nameLen;
-          const srcKind = view.getUint32(off, true);
-          off += 4;
-          let source = null;
-          if (srcKind === PRESET_SRC_FACTORY) {
-            const index = view.getUint32(off, true);
-            off += 4;
-            source = { kind: "factory", index };
-          } else if (srcKind === PRESET_SRC_USER) {
-            const pathLen = view.getUint32(off, true);
-            off += 4;
-            const path = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, pathLen));
-            off += pathLen;
-            source = { kind: "user", path };
-          }
-          const warnCount = view.getUint32(off, true);
-          off += 4;
-          const warnings = [];
-          for (let w = 0; w < warnCount; w++) {
-            const wlen = view.getUint32(off, true);
-            off += 4;
-            warnings.push(dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, wlen)));
-            off += wlen;
-          }
-          out.push({ type: "PresetLoaded", name, source, warnings });
-          break;
-        }
-        case VE_PRESET_CORPUS_CHANGED: {
-          const hasFollow = view.getUint32(off, true);
-          off += 4;
-          let follow = null;
-          if (hasFollow) {
-            const flen = view.getUint32(off, true);
-            off += 4;
-            follow = dec.decode(new Uint8Array(this.x.memory.buffer, ptr + off, flen));
-            off += flen;
-          }
-          out.push({ type: "PresetCorpusChanged", follow });
-          break;
-        }
-        default:
-          // Unknown tag — the packed stream is self-describing only for known
-          // tags; an unknown one means JS/Rust drift. Fail loud.
-          throw new Error(`controller: unknown ViewEvent tag ${tag}`);
-      }
-    }
-    return out;
+    return decodeViewEvents(this.x.memory.buffer, ptr, len);
   }
 
   // Tear down the Rust controller (page teardown / re-init).
