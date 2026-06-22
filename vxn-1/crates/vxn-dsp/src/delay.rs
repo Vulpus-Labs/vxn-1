@@ -132,8 +132,13 @@ impl StereoDelay {
         self.left.write(in_l + fb_r);
         self.right.write(in_r + fb_l);
 
+        // Equal-power crossfade: the delayed wet is decorrelated from dry, so
+        // sqrt gains hold total power constant across the sweep (linear gains
+        // dip ~3 dB at mix=0.5).
         let m = self.mix;
-        (in_l * (1.0 - m) + wet_l * m, in_r * (1.0 - m) + wet_r * m)
+        let dry = (1.0 - m).sqrt();
+        let wet = m.sqrt();
+        (in_l * dry + wet_l * wet, in_r * dry + wet_r * wet)
     }
 }
 

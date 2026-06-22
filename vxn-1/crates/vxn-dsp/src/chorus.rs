@@ -168,9 +168,11 @@ impl StereoChorus {
         let swing = swing_s() * self.depth;
         let min_d = (center - swing_s()).max(1.0e-4);
         let max_d = center + swing_s();
+        // Equal-power crossfade (wet decorrelated by modulated delay); WET_GAIN
+        // keeps the intentional bright tilt over the sqrt wet leg.
         let mix = self.mix;
-        let dry_gain = 1.0 - mix;
-        let wet_gain = WET_GAIN * mix;
+        let dry_gain = (1.0 - mix).sqrt();
+        let wet_gain = WET_GAIN * mix.sqrt();
         let floor = HISS_FLOOR * self.hiss_amount;
 
         let mut dl = [0.0f32; CONTROL_BLOCK];
@@ -217,10 +219,13 @@ impl StereoChorus {
         let wet_l = self.left.process(mono + nl, dl);
         let wet_r = self.right.process(mono + nr, dr);
 
+        // Equal-power crossfade; WET_GAIN keeps the bright tilt (see block path).
         let m = self.mix;
+        let dry = (1.0 - m).sqrt();
+        let wet = m.sqrt();
         (
-            in_l * (1.0 - m) + WET_GAIN * wet_l * m,
-            in_r * (1.0 - m) + WET_GAIN * wet_r * m,
+            in_l * dry + WET_GAIN * wet_l * wet,
+            in_r * dry + WET_GAIN * wet_r * wet,
         )
     }
 }

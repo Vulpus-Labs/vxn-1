@@ -13,7 +13,7 @@
 //!   from the standard FDN formula `g = 10^(-3·L / (decay·sr))`.
 //! - `damp` drives the one-pole LP cutoff on each delay-line output (higher
 //!   damp → lower cutoff → faster HF decay).
-//! - `mix` is the wet/dry crossfade (`(1-mix)·dry + mix·wet`).
+//! - `mix` is the wet/dry crossfade (equal-power: `√(1-mix)·dry + √mix·wet`).
 //!
 //! ## Stereo image
 //!
@@ -139,7 +139,7 @@ pub struct FdnReverbParams {
     pub decay_secs: f32,
     /// 0.0 ..= 1.0 (clamped). 0 = no HF roll-off; 1 = aggressive damp.
     pub damp: f32,
-    /// 0.0 ..= 1.0 (clamped). Linear `(1-mix)·dry + mix·wet`.
+    /// 0.0 ..= 1.0 (clamped). Equal-power `√(1-mix)·dry + √mix·wet`.
     pub mix: f32,
 }
 
@@ -295,9 +295,13 @@ impl FdnReverb {
         let wet_l = 0.5 * (damp[0] + damp[1] + damp[2] + damp[3]);
         let wet_r = 0.5 * (damp[4] + damp[5] + damp[6] + damp[7]);
 
+        // Equal-power crossfade: reverb wet is decorrelated from dry, so the
+        // two sum in power, not amplitude. sqrt gains keep total power constant
+        // across the sweep (linear gains dip ~3 dB at mix=0.5).
         let mix = self.mix;
-        let dry = 1.0 - mix;
-        (dry * in_l + mix * wet_l, dry * in_r + mix * wet_r)
+        let dry = (1.0 - mix).sqrt();
+        let wet = mix.sqrt();
+        (dry * in_l + wet * wet_l, dry * in_r + wet * wet_r)
     }
 
     /// Block process: stereo in, stereo out. Engine bus shape (post-delay,
