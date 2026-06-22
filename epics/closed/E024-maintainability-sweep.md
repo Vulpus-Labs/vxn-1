@@ -2,7 +2,7 @@
 id: E024
 product: vxn-1
 title: Maintainability sweep (2026-06-21 review) — finish E001 extraction, untangle render hot path, kill wire-protocol drift
-status: open
+status: closed
 created: 2026-06-21
 ---
 
