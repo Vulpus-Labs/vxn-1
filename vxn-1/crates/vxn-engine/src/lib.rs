@@ -1056,6 +1056,49 @@ mod tests {
     }
 
     #[test]
+    fn spread_step_glides_stereo_image() {
+        // 0015: a Spread automation step must widen the stereo image over the
+        // glide window, not jump it in one block. With several voices, Spread
+        // pans them across L/R; measure the normalised L/R divergence right after
+        // the step vs once settled — a snap would make the first block already
+        // wide.
+        let mut s = Synth::new(48_000.0);
+        s.set_param(gp(GlobalParam::ChorusOn), 0.0); // FX off → clean L/R read
+        s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        s.set_param(pp(PatchParam::Env2Sustain), 1.0);
+        for n in [60, 64, 67, 71] {
+            s.note_on(n, 1.0);
+        }
+        // Settle at Spread 0 (default) — mono, L == R.
+        render(&mut s, 9_600);
+
+        let divergence = |l: &[f32], r: &[f32]| {
+            let num: f32 = l.iter().zip(r).map(|(a, b)| (a - b).abs()).sum();
+            let den: f32 = l.iter().zip(r).map(|(a, b)| a.abs() + b.abs()).sum::<f32>() + 1e-9;
+            num / den
+        };
+
+        let (l0, r0) = render(&mut s, CONTROL_BLOCK);
+        assert!(divergence(&l0, &r0) < 1e-4, "Spread 0 should be mono");
+
+        // Step Spread to full and read the very first block after the step.
+        s.set_param(pp(PatchParam::Spread), 1.0);
+        let (l1, r1) = render(&mut s, CONTROL_BLOCK);
+        let first = divergence(&l1, &r1);
+
+        // Let the glide settle, then read the converged image.
+        render(&mut s, 9_600);
+        let (l2, r2) = render(&mut s, CONTROL_BLOCK);
+        let settled = divergence(&l2, &r2);
+
+        assert!(settled > 0.05, "Spread should widen the image, got {settled}");
+        assert!(
+            first < 0.5 * settled,
+            "Spread jumped in one block (no glide): first {first}, settled {settled}"
+        );
+    }
+
+    #[test]
     fn vca_follows_env2() {
         // The VCA is hardwired to Env2 (ADR 0004 §4): a held note with Env2
         // sustain 0 and a fast decay settles to silence, proving the amp gain

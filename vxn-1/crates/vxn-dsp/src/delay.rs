@@ -2,6 +2,16 @@
 //! technique follows `patches-dsp::delay_buffer` (power-of-two mask + linear
 //! read); the stereo wrapper is VXN1's own.
 
+use crate::one_pole_coeff;
+
+/// Delay-time slew time constant (ms). The control layer hands the delay a
+/// stepped target each block; the read pointer slews toward it *per sample*
+/// (0015) so a DelayTime automation move bends the pitch like a tape/BBD line
+/// instead of clicking. This is why `GlobalParam::DelayTime` snaps in the
+/// engine smoother — its ramp lives here, the same way cutoff/reso ramp inside
+/// the ladder rather than in `ParamSmoother`.
+const TIME_SLEW_MS: f32 = 40.0;
+
 /// Power-of-two circular buffer with fractional (linear-interpolated) reads.
 #[derive(Clone)]
 pub struct DelayLine {
@@ -63,8 +73,15 @@ pub struct StereoDelay {
     fb_lp_l: f32,
     fb_lp_r: f32,
     // Control-block parameters.
+    // `delay_samples_*` is the *current* read distance, slewed per sample toward
+    // `target_samples_*` (set once per block) so a DelayTime move never jumps the
+    // pointer (0015). `feedback`/`damping`/`mix` are smoothed upstream by the
+    // engine's block-rate `ParamSmoother`, so they snap here.
     delay_samples_l: f32,
     delay_samples_r: f32,
+    target_samples_l: f32,
+    target_samples_r: f32,
+    time_slew: f32,
     feedback: f32,
     damping: f32,
     mix: f32,
@@ -81,6 +98,9 @@ impl StereoDelay {
             fb_lp_r: 0.0,
             delay_samples_l: sample_rate * 0.3,
             delay_samples_r: sample_rate * 0.3,
+            target_samples_l: sample_rate * 0.3,
+            target_samples_r: sample_rate * 0.3,
+            time_slew: one_pole_coeff(TIME_SLEW_MS, sample_rate),
             feedback: 0.4,
             damping: 0.3,
             mix: 0.25,
@@ -92,6 +112,10 @@ impl StereoDelay {
         self.right.clear();
         self.fb_lp_l = 0.0;
         self.fb_lp_r = 0.0;
+        // Snap the read pointer to its target so a reset / preset load doesn't
+        // glide the (now-empty) line from the previous patch's time.
+        self.delay_samples_l = self.target_samples_l;
+        self.delay_samples_r = self.target_samples_r;
     }
 
     /// Set parameters for the next control block. `time_l/time_r` in seconds,
@@ -108,8 +132,8 @@ impl StereoDelay {
         // A tempo-synced time at a slow subdivision/tempo can exceed capacity;
         // pin it here so the delay never wraps past its allocation.
         let max = (self.left.capacity().min(self.right.capacity()) - 2) as f32;
-        self.delay_samples_l = (time_l * self.sample_rate).clamp(1.0, max);
-        self.delay_samples_r = (time_r * self.sample_rate).clamp(1.0, max);
+        self.target_samples_l = (time_l * self.sample_rate).clamp(1.0, max);
+        self.target_samples_r = (time_r * self.sample_rate).clamp(1.0, max);
         self.feedback = feedback.clamp(0.0, 0.99);
         self.damping = damping.clamp(0.0, 1.0);
         self.mix = mix.clamp(0.0, 1.0);
@@ -118,6 +142,10 @@ impl StereoDelay {
     /// Process one stereo sample.
     #[inline]
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
+        // Slew the read distance toward its target per sample so an automated
+        // DelayTime sweep bends the pitch continuously (no pointer jump / click).
+        self.delay_samples_l += self.time_slew * (self.target_samples_l - self.delay_samples_l);
+        self.delay_samples_r += self.time_slew * (self.target_samples_r - self.delay_samples_r);
         let wet_l = self.left.read(self.delay_samples_l);
         let wet_r = self.right.read(self.delay_samples_r);
 
@@ -181,14 +209,14 @@ mod tests {
         d.set_params(60.0, 60.0, 0.5, 0.3, 1.0);
         let max = (d.left.capacity() - 2) as f32;
         assert!(
-            d.delay_samples_l <= max,
+            d.target_samples_l <= max,
             "left not clamped: {}",
-            d.delay_samples_l
+            d.target_samples_l
         );
         assert!(
-            d.delay_samples_r <= max,
+            d.target_samples_r <= max,
             "right not clamped: {}",
-            d.delay_samples_r
+            d.target_samples_r
         );
         // Still produces finite output at the clamped time.
         for i in 0..sr as usize {
@@ -196,5 +224,63 @@ mod tests {
             let (l, r) = d.process(x, x);
             assert!(l.is_finite() && r.is_finite());
         }
+    }
+
+    #[test]
+    fn delay_time_sweep_is_click_free() {
+        // 0015: a DelayTime automation sweep must not jump the read pointer. Run
+        // the identical sweep through the real (per-sample slewed) delay and a
+        // reference copy that snaps the pointer to its target each block (the old
+        // behaviour), and assert the slewed wet output's worst sample-to-sample
+        // step is far smaller. Self-calibrating — no magic threshold.
+        let sr = 48_000.0;
+
+        // Pure tone source, regenerated identically for both runs.
+        let tone = |n: usize| {
+            let dphase = 2.0 * std::f32::consts::PI * 220.0 / sr;
+            (n as f32 * dphase).sin()
+        };
+
+        // One run; `snap` forces the pointer to its target each block.
+        let run = |snap: bool| -> f32 {
+            let mut d = StereoDelay::new(sr, 2.0);
+            d.set_params(0.30, 0.30, 0.0, 0.0, 1.0); // wet-only, no feedback
+            d.clear();
+            let mut n = 0usize;
+            // Prime the line.
+            for _ in 0..(sr as usize) {
+                d.process(tone(n), tone(n));
+                n += 1;
+            }
+            // Gentle, realistic sweep: 0.30 s -> 0.10 s over ~1 s, stepped once
+            // per 32-sample control block.
+            let blocks = 1500;
+            let mut worst = 0.0f32;
+            let mut prev = d.process(tone(n), tone(n)).0;
+            n += 1;
+            for b in 0..blocks {
+                let t = 0.30 + (0.10 - 0.30) * (b as f32 / blocks as f32);
+                d.set_params(t, t, 0.0, 0.0, 1.0);
+                if snap {
+                    d.delay_samples_l = d.target_samples_l;
+                    d.delay_samples_r = d.target_samples_r;
+                }
+                for _ in 0..32 {
+                    let cur = d.process(tone(n), tone(n)).0;
+                    n += 1;
+                    assert!(cur.is_finite());
+                    worst = worst.max((cur - prev).abs());
+                    prev = cur;
+                }
+            }
+            worst
+        };
+
+        let slewed = run(false);
+        let snapped = run(true);
+        assert!(
+            slewed < 0.5 * snapped,
+            "DelayTime slew not smoothing the sweep: slewed {slewed} vs snapped {snapped}"
+        );
     }
 }

@@ -64,6 +64,14 @@ enum Glide {
 /// continuous values (levels, pulse widths, every fixed-route depth, the
 /// cross-mod amount) glide at block rate; selectors/bools/enums and downstream-
 /// smoothed params (cutoff/reso/drive) snap.
+///
+/// `LayerLevel` and `Spread` (0015) are mixer-class continuous values read into
+/// [`crate::voice::BlockCtx`] each block: LayerLevel is a per-layer gain that
+/// zippers on automation; Spread recomputes per-voice pan for all 8 slots, so a
+/// step jumps the stereo image on every voice at once. Both glide at block rate
+/// so the gain / pan coefficients move across the glide window instead of
+/// snapping. A Spread glide to 0.0 still settles exactly (see `glide_step`), so
+/// the mono fast path (`spread == 0.0`) re-arms once the glide lands.
 #[inline]
 fn patch_glide(p: PatchParam) -> Glide {
     use PatchParam::*;
@@ -72,15 +80,35 @@ fn patch_glide(p: PatchParam) -> Glide {
         | CrossModAmount | PitchLfoDepth | PitchEnvDepth | PitchWheelDepth | PwmLfoDepth
         | PwmEnvDepth | CutoffLfo1Depth | CutoffLfo2Depth | CutoffEnvDepth | VelCutoffDepth
         | ModWheelPwm | ModWheelCutoff | ModWheelReso | ModWheelCrossModSweep
-        | AmpLfoDepth => Glide::Block,
+        | AmpLfoDepth | LayerLevel | Spread => Glide::Block,
         _ => Glide::Snap,
     }
 }
 
 /// Classification for a global param. Master volume is glided per-sample by the
-/// dedicated [`Smoothed`]; reverb knobs glide at block rate because the engine
-/// reads them straight into FDN's per-sample blend / coefficients; the rest
+/// dedicated [`Smoothed`]; reverb/phaser/chorus/delay knobs glide at block rate
+/// because the engine reads them straight into each effect's per-block
+/// `set_params` (or, for the FDN, its per-sample blend / coefficients); the rest
 /// snap.
+///
+/// Chorus/delay smoothing (0015): the FX bus reads these into `MasterFx::update`
+/// each control block, and the DSP `set_params` snaps its targets, so unsmoothed
+/// automation steps audibly —
+///
+/// - **ChorusDepth / ChorusMix, DelayFeedback / DelayMix** zipper as gain-like
+///   blends → block glide here, exactly like the reverb/phaser knobs.
+/// - **DelayTime** deliberately **snaps** here: a block-rate glide of the *value*
+///   would still step the read pointer at each block boundary (a buzz on fast
+///   sweeps). Its ramp instead lives one level down, per sample, inside
+///   [`vxn_dsp::StereoDelay`] (slewed read distance through the line's
+///   fractional `read`) — the same arrangement as cutoff/reso, which snap here
+///   because the ladder ramps their coefficients. Block-gliding it too would
+///   double-smooth and fight the DSP slew.
+/// - **ChorusRate** deliberately **snaps**: `StereoChorus::set_params` only
+///   updates the LFO increment, the phase is continuous across a rate change, so
+///   there is no sample discontinuity to smooth (same reasoning as the per-patch
+///   `LfoRate`, which also snaps). PhaserRate glides only because it shares the
+///   reverb/phaser block above; chorus rate has no such coupling.
 #[inline]
 fn global_glide(g: GlobalParam) -> Glide {
     match g {
@@ -92,7 +120,13 @@ fn global_glide(g: GlobalParam) -> Glide {
         | GlobalParam::PhaserRate
         | GlobalParam::PhaserDepth
         | GlobalParam::PhaserFB
-        | GlobalParam::PhaserMix => Glide::Block,
+        | GlobalParam::PhaserMix
+        | GlobalParam::ChorusDepth
+        | GlobalParam::ChorusMix
+        | GlobalParam::DelayFeedback
+        | GlobalParam::DelayMix => Glide::Block,
+        // ChorusRate + DelayTime snap — see the doc comment (LFO phase is
+        // continuous; the delay-time ramp lives in StereoDelay per sample).
         _ => Glide::Snap,
     }
 }
@@ -261,6 +295,45 @@ mod tests {
         assert_eq!(patch_glide(PatchParam::NoiseLevel), Glide::Block);
         // Selectors snap (discrete).
         assert_eq!(patch_glide(PatchParam::PitchLfoSrc), Glide::Snap);
+    }
+
+    #[test]
+    fn mixer_params_are_block_smoothed() {
+        // 0015: LayerLevel (per-layer gain) and Spread (per-voice pan) glide so
+        // automation does not zipper the gain or jump the stereo image.
+        assert_eq!(patch_glide(PatchParam::LayerLevel), Glide::Block);
+        assert_eq!(patch_glide(PatchParam::Spread), Glide::Block);
+    }
+
+    #[test]
+    fn fx_params_smoothing_policy() {
+        // 0015: chorus/delay knobs that zipper or click glide at block rate;
+        // ChorusRate snaps (LFO phase is continuous across rate changes — see
+        // `global_glide`'s doc comment). This test pins both halves of that
+        // decision so a future edit can't silently drop a glide or start
+        // smoothing the rate.
+        for g in [
+            GlobalParam::ChorusDepth,
+            GlobalParam::ChorusMix,
+            GlobalParam::DelayFeedback,
+            GlobalParam::DelayMix,
+        ] {
+            assert_eq!(global_glide(g), Glide::Block, "{g:?} should block-glide");
+        }
+        assert_eq!(
+            global_glide(GlobalParam::ChorusRate),
+            Glide::Snap,
+            "ChorusRate snaps by design"
+        );
+        // DelayTime snaps here — its ramp is per-sample inside StereoDelay.
+        assert_eq!(
+            global_glide(GlobalParam::DelayTime),
+            Glide::Snap,
+            "DelayTime snaps in the smoother; StereoDelay slews it"
+        );
+        // On/off switches are discrete.
+        assert_eq!(global_glide(GlobalParam::ChorusOn), Glide::Snap);
+        assert_eq!(global_glide(GlobalParam::DelayOn), Glide::Snap);
     }
 
     #[test]

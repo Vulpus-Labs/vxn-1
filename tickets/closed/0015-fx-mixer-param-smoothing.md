@@ -73,3 +73,46 @@ silent-skip fast path; keep new glides on the same pattern
 so idle cost does not regress (memory: silent-skip freezes
 filter state — check interaction if DelayTime ramp keeps the
 wet path armed longer).
+
+## Close-out (2026-06-22)
+
+Smoothing decision recorded for all eight params; the
+`ParamSmoother` already feeds both `MasterFx::update` (FX bus)
+and `build_ctx` (spread/layer), so block-rate params smooth by
+joining the glide tables — no new plumbing.
+
+- **Block-glide** (gain-like zipper): ChorusDepth, ChorusMix,
+  DelayFeedback, DelayMix added to `global_glide`; LayerLevel
+  and Spread added to `patch_glide`
+  ([smoothing.rs:67](../../vxn-1/crates/vxn-engine/src/smoothing.rs#L67),
+  [smoothing.rs:99](../../vxn-1/crates/vxn-engine/src/smoothing.rs#L99)).
+- **ChorusRate snaps by design** — `StereoChorus::set_params`
+  only changes the LFO increment, phase is continuous, no
+  discontinuity to smooth (same reasoning as the per-patch
+  `LfoRate`). Documented in `global_glide`'s comment.
+- **DelayTime** does NOT block-glide: a value glide still steps
+  the read pointer at block boundaries (buzz on fast sweeps).
+  Its ramp lives one level down — a **per-sample read-pointer
+  slew inside `StereoDelay`** (`TIME_SLEW_MS = 40`,
+  [delay.rs:14](../../vxn-1/crates/vxn-dsp/src/delay.rs#L14),
+  [delay.rs:124](../../vxn-1/crates/vxn-dsp/src/delay.rs#L124)),
+  through the line's existing fractional `read` — tape/BBD pitch
+  bend, click-free. Same arrangement as cutoff/reso (ladder
+  ramps coeffs). DelayTime therefore snaps in `ParamSmoother`,
+  documented there. `clear()` snaps the pointer so reset/preset
+  load doesn't glide the empty line.
+- **Tests**: `delay::tests::delay_time_sweep_is_click_free`
+  (self-calibrating — identical sweep through slewed vs
+  force-snapped delay, asserts slewed worst sample-step < ½
+  snapped); `tests::spread_step_glides_stereo_image` (L/R
+  divergence first block < ½ settled);
+  `smoothing::tests::fx_params_smoothing_policy` and
+  `mixer_params_are_block_smoothed` pin every param's decision.
+  Full suite green (94 vxn-dsp + 169 vxn-engine).
+- **baseline.rs hash unchanged**: the default-patch render holds
+  params static, so the glide is a no-op (smoother current ==
+  target with no automation) and delay is off — no commit-time
+  delta, no re-baseline needed.
+- **Manual listen (Reaper)**: deferred to the user per the
+  team's verify-in-Reaper convention; automate DelayTime and
+  Spread and confirm no clicks.
