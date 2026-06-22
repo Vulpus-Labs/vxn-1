@@ -267,9 +267,14 @@ impl StereoDelay {
             self.buf_r.push(in_r + fb_r);
         }
 
+        // Equal-power crossfade: the delayed wet is decorrelated from dry, so
+        // sqrt gains hold total power constant across the sweep (linear gains
+        // dip ~3 dB at mix=0.5).
         let mix = self.mix;
-        let out_l = (1.0 - mix) * in_l + mix * tap_l;
-        let out_r = (1.0 - mix) * in_r + mix * tap_r;
+        let dry = (1.0 - mix).sqrt();
+        let wet = mix.sqrt();
+        let out_l = dry * in_l + wet * tap_l;
+        let out_r = dry * in_r + wet * tap_r;
         (out_l, out_r)
     }
 
@@ -467,7 +472,8 @@ mod tests {
 
     #[test]
     fn mix_half_is_equal_gain() {
-        // With an empty buffer, wet tap is ~0; out = 0.5 * dry exactly.
+        // Equal-power crossfade: with an empty buffer the wet tap is ~0, so
+        // out = √(1-mix) * dry = √0.5 ≈ 0.7071 at mix=0.5.
         let mut d = make();
         let p = StereoDelayParams {
             on: true,
@@ -479,8 +485,9 @@ mod tests {
         };
         d.set_params(&p, 120.0);
         let (l, r) = d.process(1.0, 1.0);
-        assert!((l - 0.5).abs() < 1e-6, "L gain at mix=0.5: {l}");
-        assert!((r - 0.5).abs() < 1e-6, "R gain at mix=0.5: {r}");
+        let g = 0.5_f32.sqrt();
+        assert!((l - g).abs() < 1e-6, "L gain at mix=0.5: {l}");
+        assert!((r - g).abs() < 1e-6, "R gain at mix=0.5: {r}");
     }
 
     #[test]
