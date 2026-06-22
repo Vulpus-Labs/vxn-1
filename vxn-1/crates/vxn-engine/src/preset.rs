@@ -135,23 +135,64 @@ fn value_for(desc: &ParamDesc, v: f32) -> toml::Value {
     }
 }
 
-fn patch_to_table(pv: &PatchValues) -> toml::Table {
-    let mut t = toml::Table::new();
-    for p in PatchParam::all() {
-        let d = p.desc();
-        let v = pv.get(p);
-        if v != d.default {
-            t.insert(d.name.to_string(), value_for(d, v));
-        }
-    }
-    t
+/// A param namespace (the per-layer patch block, or the global block) viewed
+/// generically so the sparse codec below is written once. The two blocks differ
+/// only by which enum names/describes a param and which value container holds
+/// it; this trait abstracts exactly that. Implemented for `PatchParam` over
+/// `PatchValues` and `GlobalParam` over `GlobalValues`.
+trait ParamNamespace: Copy {
+    type Values;
+    fn from_name(name: &str) -> Option<Self>;
+    fn desc(self) -> &'static ParamDesc;
+    fn all() -> Box<dyn Iterator<Item = Self>>;
+    fn get(self, values: &Self::Values) -> f32;
+    fn set(self, values: &mut Self::Values, v: f32);
 }
 
-fn global_to_table(gv: &GlobalValues) -> toml::Table {
+impl ParamNamespace for PatchParam {
+    type Values = PatchValues;
+    fn from_name(name: &str) -> Option<Self> {
+        PatchParam::from_name(name)
+    }
+    fn desc(self) -> &'static ParamDesc {
+        PatchParam::desc(self)
+    }
+    fn all() -> Box<dyn Iterator<Item = Self>> {
+        Box::new(PatchParam::all())
+    }
+    fn get(self, values: &PatchValues) -> f32 {
+        values.get(self)
+    }
+    fn set(self, values: &mut PatchValues, v: f32) {
+        values.set(self, v);
+    }
+}
+
+impl ParamNamespace for GlobalParam {
+    type Values = GlobalValues;
+    fn from_name(name: &str) -> Option<Self> {
+        GlobalParam::from_name(name)
+    }
+    fn desc(self) -> &'static ParamDesc {
+        GlobalParam::desc(self)
+    }
+    fn all() -> Box<dyn Iterator<Item = Self>> {
+        Box::new(GlobalParam::all())
+    }
+    fn get(self, values: &GlobalValues) -> f32 {
+        values.get(self)
+    }
+    fn set(self, values: &mut GlobalValues, v: f32) {
+        values.set(self, v);
+    }
+}
+
+/// Sparse-write a namespace: emit only params that deviate from their default.
+fn to_table<P: ParamNamespace>(values: &P::Values) -> toml::Table {
     let mut t = toml::Table::new();
-    for g in GlobalParam::all() {
-        let d = g.desc();
-        let v = gv.get(g);
+    for p in P::all() {
+        let d = p.desc();
+        let v = p.get(values);
         if v != d.default {
             t.insert(d.name.to_string(), value_for(d, v));
         }
@@ -208,30 +249,19 @@ fn parse_value(
     }
 }
 
-fn apply_patch_table(table: &toml::Table, ctx: &str, pv: &mut PatchValues, warnings: &mut Vec<String>) {
-    for (key, val) in table {
-        match PatchParam::from_name(key) {
-            Some(p) => {
-                if let Some(v) = parse_value(p.desc(), ctx, key, val, warnings) {
-                    pv.set(p, v); // clamps to range
-                }
-            }
-            None => warnings.push(format!("{ctx}: unknown parameter `{key}` (skipped)")),
-        }
-    }
-}
-
-fn apply_global_table(
+/// Default-fill read: resolve each table entry against the namespace and set it
+/// (clamped to range), warning on unknown keys and bad values.
+fn apply_table<P: ParamNamespace>(
     table: &toml::Table,
     ctx: &str,
-    gv: &mut GlobalValues,
+    values: &mut P::Values,
     warnings: &mut Vec<String>,
 ) {
     for (key, val) in table {
-        match GlobalParam::from_name(key) {
-            Some(g) => {
-                if let Some(v) = parse_value(g.desc(), ctx, key, val, warnings) {
-                    gv.set(g, v); // clamps to range
+        match P::from_name(key) {
+            Some(p) => {
+                if let Some(v) = parse_value(p.desc(), ctx, key, val, warnings) {
+                    p.set(values, v); // clamps to range
                 }
             }
             None => warnings.push(format!("{ctx}: unknown parameter `{key}` (skipped)")),
@@ -241,7 +271,7 @@ fn apply_global_table(
 
 fn table_to_patch(table: &toml::Table, ctx: &str, warnings: &mut Vec<String>) -> PatchValues {
     let mut pv = PatchValues::default();
-    apply_patch_table(table, ctx, &mut pv, warnings);
+    apply_table::<PatchParam>(table, ctx, &mut pv, warnings);
     pv
 }
 
@@ -257,9 +287,9 @@ impl Performance {
             performance: PerformanceBody {
                 key_mode: self.state.key_mode.label().to_string(),
                 split_point: self.state.split_point,
-                global: global_to_table(&p.global),
-                upper: patch_to_table(&p.layers[0]),
-                lower: patch_to_table(&p.layers[1]),
+                global: to_table::<GlobalParam>(&p.global),
+                upper: to_table::<PatchParam>(&p.layers[0]),
+                lower: to_table::<PatchParam>(&p.layers[1]),
             },
         };
         // Values are clamped to finite descriptor ranges, so serialization of
@@ -294,7 +324,7 @@ pub fn from_toml_str(s: &str) -> Result<(Performance, Vec<String>), PresetError>
     });
 
     let mut global = GlobalValues::default();
-    apply_global_table(&body.global, "performance.global", &mut global, &mut warnings);
+    apply_table::<GlobalParam>(&body.global, "performance.global", &mut global, &mut warnings);
     let upper = table_to_patch(&body.upper, "performance.upper", &mut warnings);
     let lower = table_to_patch(&body.lower, "performance.lower", &mut warnings);
 

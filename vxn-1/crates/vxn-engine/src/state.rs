@@ -40,35 +40,51 @@ pub struct PluginState {
     pub split_point: u8,
 }
 
-/// Serialize one layer's per-patch block as a self-contained unit.
-pub fn write_patch(p: &PatchValues, w: &mut impl Write) -> io::Result<()> {
-    for i in 0..PATCH_COUNT {
-        w.write_all(&p.get_index(i).to_le_bytes())?;
+/// Write a contiguous `f32` block: `count` little-endian values, `get(i)` each.
+/// Both the per-patch and global blocks are this exact shape — only the count
+/// and accessor differ.
+fn write_block(
+    count: usize,
+    mut get: impl FnMut(usize) -> f32,
+    w: &mut impl Write,
+) -> io::Result<()> {
+    for i in 0..count {
+        w.write_all(&get(i).to_le_bytes())?;
     }
     Ok(())
+}
+
+/// Read a contiguous `f32` block: `count` little-endian values into `set(i, v)`.
+fn read_block(
+    count: usize,
+    mut set: impl FnMut(usize, f32),
+    r: &mut impl Read,
+) -> io::Result<()> {
+    for i in 0..count {
+        set(i, read_f32(r)?);
+    }
+    Ok(())
+}
+
+/// Serialize one layer's per-patch block as a self-contained unit.
+pub fn write_patch(p: &PatchValues, w: &mut impl Write) -> io::Result<()> {
+    write_block(PATCH_COUNT, |i| p.get_index(i), w)
 }
 
 /// Deserialize one layer's per-patch block (clamped to descriptor ranges).
 pub fn read_patch(r: &mut impl Read) -> io::Result<PatchValues> {
     let mut p = PatchValues::default();
-    for i in 0..PATCH_COUNT {
-        p.set_index(i, read_f32(r)?);
-    }
+    read_block(PATCH_COUNT, |i, v| p.set_index(i, v), r)?;
     Ok(p)
 }
 
 fn write_global(g: &GlobalValues, w: &mut impl Write) -> io::Result<()> {
-    for i in 0..GLOBAL_COUNT {
-        w.write_all(&g.get_index(i).to_le_bytes())?;
-    }
-    Ok(())
+    write_block(GLOBAL_COUNT, |i| g.get_index(i), w)
 }
 
 fn read_global(r: &mut impl Read) -> io::Result<GlobalValues> {
     let mut g = GlobalValues::default();
-    for i in 0..GLOBAL_COUNT {
-        g.set_index(i, read_f32(r)?);
-    }
+    read_block(GLOBAL_COUNT, |i, v| g.set_index(i, v), r)?;
     Ok(g)
 }
 
