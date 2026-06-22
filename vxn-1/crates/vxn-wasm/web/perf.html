@@ -1,0 +1,74 @@
+<!doctype html>
+<!--
+  Perf-bench page (ticket 0087, epic E020).
+
+  The browser entry point for the 0087 MANUAL measurement. Click "Run" (a user
+  gesture is required to start an AudioContext) to render the worst-case
+  16-voice full-FX patch in the AudioWorklet and report mean / p50 / p95 / max
+  render-time-per-quantum and the headroom vs the realtime budget.
+
+  Serve from a cross-origin-isolated origin so the worklet path matches prod:
+      cargo xtask web --serve        (SIMD128 build)
+      cargo xtask web --scalar --serve   (scalar comparison build)
+  then open  http://localhost:8080/perf.html
+
+  The reported `build:` line (SIMD128 vs scalar) is read from the wasm itself
+  (vxn_bench_simd128), so there is no ambiguity about which build was measured.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VXN-1 web — worst-case perf bench (0087)</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; max-width: 48rem; }
+      button { font: inherit; padding: 0.5rem 1rem; cursor: pointer; }
+      pre { background: #111; color: #0f0; padding: 1rem; white-space: pre-wrap; }
+      .err { color: #c00; }
+    </style>
+  </head>
+  <body>
+    <h1>VXN-1 web — worst-case perf bench</h1>
+    <p>
+      16-voice (Dual, 8&nbsp;notes&nbsp;&times;&nbsp;2&nbsp;layers) full-FX patch
+      rendered in the AudioWorklet. Measures render-time-per-quantum vs the
+      realtime budget. Ticket&nbsp;0087&nbsp;/&nbsp;epic&nbsp;E020.
+    </p>
+    <p>
+      <button id="run">Run bench</button>
+      <span id="status"></span>
+    </p>
+    <pre id="out">(idle)</pre>
+
+    <script type="module">
+      import { runPerfBench, formatPerfResult } from "./perf-harness.mjs";
+
+      const out = document.getElementById("out");
+      const status = document.getElementById("status");
+      const btn = document.getElementById("run");
+
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        status.textContent = "running… (warmup + measurement, ~a few seconds)";
+        out.textContent = "(measuring)";
+        out.classList.remove("err");
+        try {
+          const r = await runPerfBench();
+          out.textContent = formatPerfResult(r);
+          status.textContent = "done.";
+        } catch (e) {
+          out.textContent = String((e && e.message) || e);
+          out.classList.add("err");
+          status.textContent = "failed.";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      if (!crossOriginIsolated) {
+        status.innerHTML =
+          '<span class="err">not cross-origin isolated — serve with COOP/COEP (cargo xtask web --serve)</span>';
+      }
+    </script>
+  </body>
+</html>

@@ -24,6 +24,12 @@ pub mod codec;
 // the 0035 spike drove from outside.
 pub mod host;
 
+// 0087 (E020): worst-case perf bench. A 16-voice full-FX patch single-sourced
+// in Rust, rendered N quanta per `vxn_bench_render` call so a JS harness can
+// time it with `performance.now()` inside the AudioWorklet (wasm32 has no
+// `std::time`). The gate the rest of E020 measures against.
+pub mod bench;
+
 /// Web Audio render-quantum size. AudioWorklet always calls `process()`
 /// with 128-frame planar buffers.
 pub(crate) const QUANTUM: usize = 128;
