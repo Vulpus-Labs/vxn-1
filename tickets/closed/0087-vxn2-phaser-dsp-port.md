@@ -54,3 +54,20 @@ Straight lift — see [[vxn1-fx-dual-chain-internally]] (phaser already
 holds separate L/R chain state, so no mono-path shortcut). The vxn-2
 bus runs per-sample (`engine.rs:1104`), so the `process(l, r)` path is
 the one the engine will call.
+
+## Close-out (2026-06-22)
+
+- `vxn2-dsp/src/phaser.rs` created — straight lift of VXN-1's
+  `StereoPhaser` (4 allpass stages/ch, anti-phase L/R sweep, 600 Hz centre,
+  ±0.9 FB clamp, wet-makeup). `pub mod phaser;` added to `lib.rs`.
+- Dep substitutions (no new crate deps): `crate::math::fast_tanh` (shared);
+  `crate::rng::xorshift_step` mapped to `[-1,1]` via a local `xorshift_unit`
+  — same canonical Vigna (13,7,17) triple as VXN-1's `xorshift64`, so the
+  per-stage scatter is byte-identical; a local `flush_denormal` (VXN-2 has
+  no `vxn-core-utils`). Test helpers use `sine::scalar::fast_sine_01` for
+  `lookup_sine` and a local `BLK = 32` for `CONTROL_BLOCK`.
+- Added `enabled` gate + `set_enabled` / `set_from(&PhaserParams)` for the
+  0089 engine bus (off → bit-exact passthrough); `PhaserParams` struct mirrors
+  `StereoDelayParams`.
+- All upstream tests ported + a new `disabled_is_bit_exact_passthrough`:
+  `cargo test -p vxn2-dsp phaser` → 8/8 pass. `mix=0` passthrough verified.

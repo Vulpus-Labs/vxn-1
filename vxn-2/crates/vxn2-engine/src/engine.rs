@@ -37,6 +37,7 @@ use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
 use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
+use vxn2_dsp::phaser::StereoPhaser;
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler};
 use vxn2_dsp::hpf::HpfKernel;
@@ -161,6 +162,9 @@ pub struct Engine {
     pub matrix: MatrixTable,
     pub patch_mod: PatchMod,
     pub cleanup: CleanupFilter,
+    /// Stereo phaser, inserted pre-delay in the FX bus (E025). Bypassed
+    /// bit-exactly when `phaser-on = 0`.
+    pub phaser: StereoPhaser,
     pub delay: StereoDelay,
     pub reverb: FdnReverb,
     pub master: MasterState,
@@ -306,6 +310,7 @@ impl Engine {
             matrix: default_patch::default_matrix(),
             patch_mod: PatchMod::new(0xDEAD_BEEF_DEAD_BEEF),
             cleanup: CleanupFilter::new(sample_rate),
+            phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
             master: MasterState::default(),
@@ -401,6 +406,7 @@ impl Engine {
     pub fn reset(&mut self) {
         self.alloc.clear();
         self.cleanup.reset();
+        self.phaser.clear();
         self.delay.reset();
         self.reverb.reset();
         self.master = MasterState::default();
@@ -462,6 +468,7 @@ impl Engine {
     pub fn apply_block_params(&mut self) {
         self.delay.set_params(&self.params.delay, self.tempo_bpm);
         self.reverb.set_params(&self.params.reverb);
+        self.phaser.set_from(&self.params.phaser);
         self.master.refresh(&self.params.master);
         // Rebuild the matrix table from the snapshot rows so UI / preset
         // topology edits (source / dest / curve / active) actually reach the
@@ -1102,6 +1109,7 @@ impl Engine {
                     self.advance_mod_ramps();
                 }
                 let (cl, cr) = self.cleanup.process(dry_l, dry_r);
+                let (cl, cr) = self.phaser.process(cl, cr);
                 let (l, r) = self.delay.process(cl, cr);
                 let (l, r) = self.reverb.process(l, r);
                 let (l, r) = self.master.apply(l, r);
@@ -1276,6 +1284,7 @@ impl Engine {
         // FX chain per sample, exactly as the OFF path.
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
+            let (cl, cr) = self.phaser.process(cl, cr);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
             let (l, r) = self.master.apply(l, r);

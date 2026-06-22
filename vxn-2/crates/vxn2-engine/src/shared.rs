@@ -29,6 +29,7 @@ use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
 use vxn2_dsp::filter::{FilterMode, FilterSlope};
 use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, LfoShape};
 use vxn2_dsp::op::{OpParams, RatioMode};
+use vxn2_dsp::phaser::PhaserParams;
 use vxn2_dsp::reverb::FdnReverbParams;
 use vxn2_dsp::stack::{StackDistrib, StackParams};
 use vxn2_dsp::voice::VoiceParams;
@@ -40,7 +41,7 @@ use crate::modulation::PatchModParams;
 use crate::params::{
     N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
     OFF_FILTER, OFF_HP, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG,
-    OFF_REVERB, OFF_STACK,
+    OFF_PHASER, OFF_REVERB, OFF_STACK,
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
@@ -154,9 +155,16 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   past every existing id, so older blobs map 1:1; the new id is seeded to its
 ///   default (20 Hz floor = "off"/transparent → an unchanged patch stays
 ///   bit-identical).
-pub const BLOB_VERSION: u16 = 13;
+pub const BLOB_VERSION: u16 = 14;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
+/// Number of params appended in v14 (the 5-param Phaser block, E025). Appended
+/// past every existing id, so older blobs map 1:1 and the five new ids seed to
+/// their defaults (`phaser-on` off → an unchanged patch stays bit-identical).
+const N_PHASER_PARAMS_V14: usize = 5;
+/// Param count in v13 blobs (before the v14 Phaser block). Live total minus
+/// the trailing Phaser append.
+const LEGACY_V13_PARAM_COUNT: usize = TOTAL_PARAMS - N_PHASER_PARAMS_V14; // 196
 /// Number of params appended in v13 (`hp-cutoff`).
 const N_HP_PARAMS_V13: usize = 1;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
@@ -168,13 +176,13 @@ const N_LIMITER_PARAMS_V9: usize = 1;
 const LEGACY_V10_N_PER_OP: usize = N_PER_OP - 1; // 21
 /// Param count in v11/v12 blobs (before the v13 `hp-cutoff` addition). The
 /// live total minus the single trailing `hp-cutoff` append.
-const LEGACY_V12_PARAM_COUNT: usize = TOTAL_PARAMS - N_HP_PARAMS_V13; // 195
+const LEGACY_V12_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - N_HP_PARAMS_V13; // 195
 /// Param count in v9/v10 blobs (before the v11 `opN-phase` addition). The
 /// legacy counts are live-relative: each is the live total minus the cumulative
 /// op-block spread + trailing appends since that version. `phase` is one
 /// op-block spread (`N_OPS`) below the live total, `hp-cutoff` one trailing
 /// append below that.
-const LEGACY_V10_PARAM_COUNT: usize = TOTAL_PARAMS - N_OPS - N_HP_PARAMS_V13; // 189
+const LEGACY_V10_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - N_OPS - N_HP_PARAMS_V13; // 189
 /// Param count in v8 blobs (before the v9 `limiter-on` addition).
 const LEGACY_V8_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9; // 188
 /// Param count in v7 blobs (before the v8 filter additions).
@@ -184,7 +192,7 @@ const LEGACY_V6_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V
 /// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition). Two
 /// op-block spreads (`ratio-mode` + `phase`) plus the trailing `hp-cutoff`
 /// append below the live total.
-const LEGACY_V5_PARAM_COUNT: usize = TOTAL_PARAMS - 2 * N_OPS - N_HP_PARAMS_V13;
+const LEGACY_V5_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - 2 * N_OPS - N_HP_PARAMS_V13;
 /// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
 const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 2; // 20
 /// Per-op index of `ratio-mode` in the live op block (second-from-last, before
@@ -803,6 +811,7 @@ impl ParamModel for SharedParams {
             8 => LEGACY_V8_PARAM_COUNT,
             9 | 10 => LEGACY_V10_PARAM_COUNT,
             11 | 12 => LEGACY_V12_PARAM_COUNT,
+            13 => LEGACY_V13_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -1226,6 +1235,7 @@ pub struct EngineParams {
     pub alloc: AllocParams,
     pub delay: StereoDelayParams,
     pub reverb: FdnReverbParams,
+    pub phaser: PhaserParams,
     pub master: MasterParams,
     pub filter: FilterParams,
     pub hp: HpParams,
@@ -1263,6 +1273,7 @@ impl EngineParams {
             alloc: AllocParams::default(),
             delay: StereoDelayParams::default(),
             reverb: FdnReverbParams::default(),
+            phaser: PhaserParams::default(),
             master: MasterParams::default(),
             filter: FilterParams::default(),
             hp: HpParams::default(),
@@ -1331,6 +1342,16 @@ impl EngineParams {
             decay_secs: shared.get(pb + OFF_REVERB + 2),
             damp: shared.get(pb + OFF_REVERB + 3),
             mix: shared.get(pb + OFF_REVERB + 4),
+        };
+
+        // Phaser (E025) — host-automation only, appended at the end of the flat
+        // space. `set_params` re-clamps; the struct just carries the snapshot.
+        self.phaser = PhaserParams {
+            on: shared.get(pb + OFF_PHASER) >= 0.5,
+            rate_hz: shared.get(pb + OFF_PHASER + 1),
+            depth: shared.get(pb + OFF_PHASER + 2),
+            feedback: shared.get(pb + OFF_PHASER + 3),
+            mix: shared.get(pb + OFF_PHASER + 4),
         };
 
         self.master = MasterParams {
@@ -1818,15 +1839,17 @@ mod tests {
         // field to v11 and strip the trailer to simulate an old blob.
         src.set_ks_curve_raw(2, 1, 3);
         let full = src.snapshot_bytes();
-        // A v11 blob: drop the v12 KS trailer and the trailing v13 `hp-cutoff`
-        // value, restore the v11 param count and stamp the version.
+        // A v11 blob: drop the v12 KS trailer, the v14 Phaser block, and the
+        // trailing v13 `hp-cutoff` value, restore the v11 param count and stamp
+        // the version.
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
         let matrix_end = full.len() - BLOB_KS_CURVE_LEN;
+        let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
         bytes[4..6].copy_from_slice(&11u16.to_le_bytes());
         bytes[6..8].copy_from_slice(&(LEGACY_V12_PARAM_COUNT as u16).to_le_bytes());
-        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - N_HP_PARAMS_V13 * 4]);
+        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - tail_drop]);
         bytes.extend_from_slice(&full[values_end..matrix_end]);
 
         let dst = SharedParams::new();
@@ -1886,12 +1909,13 @@ mod tests {
             out.extend_from_slice(&bytes[start..keep_end]);
         }
         // Post-op-block value params + matrix trailer copy through — but drop
-        // the trailing v13 `hp-cutoff` value (no v≤12 blob carries it) and the
-        // v12 KS-curve trailer (no v≤11 blob carries it).
+        // the trailing v14 Phaser block + v13 `hp-cutoff` value (no v≤12 blob
+        // carries them) and the v12 KS-curve trailer (no v≤11 blob carries it).
         let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
         let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN;
-        out.extend_from_slice(&bytes[rest..values_end - N_HP_PARAMS_V13 * 4]);
+        let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
+        out.extend_from_slice(&bytes[rest..values_end - tail_drop]);
         out.extend_from_slice(&bytes[values_end..matrix_end]);
         out
     }

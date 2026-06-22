@@ -65,3 +65,20 @@ off. No factory bank migration.
 Param decode flows per-block into the `EngineParams` snapshot; 0089
 fans `PhaserParams` to `phaser.set_params(...)` in
 `apply_block_params()`.
+
+## Close-out (2026-06-22)
+
+- Five `phaser-*` params appended at the table tail (ids 196–200);
+  `N_PATCH_LEVEL` 27→32, `TOTAL_PARAMS` 196→201; delay/reverb ids unchanged.
+  `phaser-on` default off, `phaser-feedback` range -0.9..0.9.
+- `OFF_PHASER = 27` added; `module_for_patch` labels the block `Global /
+  Phaser`. `PhaserParams` lives in `vxn2-dsp::phaser` (mirrors
+  `StereoDelayParams`); `shared.rs` decodes the five ids into
+  `EngineParams.phaser`.
+- Blob migration: `BLOB_VERSION` 13→14, `N_PHASER_PARAMS_V14 = 5`,
+  `LEGACY_V13_PARAM_COUNT` added, the three TOTAL-anchored legacy counts
+  re-anchored off it, `13 =>` arm added, and the two test rewriters drop the
+  phaser tail. Pre-epic presets load with `phaser-on = false`; round-trip
+  verified by the migration suite.
+- Mod matrix untouched: `grep -i phaser matrix.rs` → nothing.
+- `cargo test -p vxn2-engine` passes (param/shared goldens updated).

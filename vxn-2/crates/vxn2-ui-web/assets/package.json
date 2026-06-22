@@ -1,0 +1,13 @@
+{
+  "name": "vxn2-ui-web-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "jsdom": "^25",
+    "vitest": "^2"
+  }
+}

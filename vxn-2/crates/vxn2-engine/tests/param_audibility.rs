@@ -290,6 +290,26 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
         cap.release_blocks = 160;
     }
 
+    // ── Phaser (E025) ──────────────────────────────────────────────────────
+    // Off by default → every phaser param is inert unless the stage is on.
+    // Turn it on, drive depth/mix/feedback, and render long enough for the
+    // slow LFO (rate floor 0.05 Hz) to walk the notches so even a rate sweep
+    // diverges across the window.
+    if name.starts_with("phaser-") {
+        set("phaser-on", 1.0);
+        if name != "phaser-mix" {
+            set("phaser-mix", 0.7);
+        }
+        if name != "phaser-depth" {
+            set("phaser-depth", 0.8);
+        }
+        if name != "phaser-feedback" {
+            set("phaser-feedback", 0.6);
+        }
+        cap.sustain_blocks = 110;
+        cap.release_blocks = 60;
+    }
+
     // ── Long mod-env evolution ─────────────────────────────────────────────
     if name.starts_with("mod-env-") {
         cap.sustain_blocks = 150;
