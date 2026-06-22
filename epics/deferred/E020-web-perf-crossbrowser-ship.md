@@ -2,11 +2,18 @@
 id: E020
 product: vxn-2
 title: "vxn-1 web port — perf, cross-browser, ship"
-status: open
+status: deferred
 created: 2026-06-14
+deferred: 2026-06-22
 depends-on: E016
 ---
 
+> **Deferred 2026-06-22.** The perf-harness spine (0087 `Bench` rig + worklet
+> measurement + `--scalar` toggle) landed and is headless-verified; the
+> remaining work is live-browser measurement, the cross-browser matrix, and
+> CI/deploy. Parked to prioritise feature work; resume by reviving the tickets
+> from `tickets/deferred/`.
+>
 > **Depends on E016** (build pipeline) and effectively gates on the whole
 > stack being playable (E015/E017/E018). The closing epic: prove the port
 > performs at full polyphony in real browsers, on a cross-browser matrix,
