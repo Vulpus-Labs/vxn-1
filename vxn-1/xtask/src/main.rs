@@ -176,9 +176,8 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         .map_err(io("copy controller wasm"))?;
 
     // 2b. The E015 production transport modules + worklet. Curated by hand: the
-    //     *.test.mjs suites, the Node harnesses, and the 0034/0035 spike
-    //     processors stay out of the shipped bundle. The production worklet
-    //     (`vxn-processor-0038.js`, runner-based) takes dist's stable name.
+    //     *.test.mjs suites and the Node harnesses stay out of the shipped
+    //     bundle. The production worklet is `vxn-processor.js`.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
     const MODULES: [(&str, &str); 16] = [
         ("event-ring.mjs", "event-ring.mjs"),
@@ -186,7 +185,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         ("param-store.mjs", "param-store.mjs"),
         ("audio-host.mjs", "audio-host.mjs"),
         ("host-runner.mjs", "host-runner.mjs"),
-        ("vxn-processor-0038.js", "vxn-processor.js"),
+        ("vxn-processor.js", "vxn-processor.js"),
         // The main-thread coordinator (ticket 0042): the page imports WebHost.
         ("coordinator.mjs", "coordinator.mjs"),
         // The controller wasm glue (ticket 0044): instantiates the controller

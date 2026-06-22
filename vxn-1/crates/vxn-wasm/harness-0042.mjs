@@ -46,7 +46,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 // Fake AudioContext: the audio-thread stand-in. Its node builds the REAL runner
 // from the coordinator's processorOptions and exposes a hand-cranked render()
 // the harness pumps in place of the browser's audio clock. The runner wires its
-// onReady/onTrap to the node's port, exactly as vxn-processor-0038.js does — so
+// onReady/onTrap to the node's port, exactly as vxn-processor.js does — so
 // the coordinator's port.onmessage sees the genuine ready/trap stream.
 // ---------------------------------------------------------------------------
 function makeFakeAudio(sampleRate) {

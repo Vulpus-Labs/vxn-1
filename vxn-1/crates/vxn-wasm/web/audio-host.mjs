@@ -2,7 +2,7 @@
 // render loop.
 //
 // ONE code path, imported by BOTH the Node harness (harness-0038.mjs) and the
-// AudioWorklet (vxn-processor-0038.js), so what we prove headlessly is byte-for-
+// AudioWorklet (vxn-processor.js), so what we prove headlessly is byte-for-
 // byte what the browser runs — the same discipline the 0035 spike used for
 // event-ring.mjs.
 //

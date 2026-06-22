@@ -43,9 +43,8 @@ import {
   TOTAL_PARAMS,
 } from "./param-store.mjs";
 
-// The worklet registers itself under this name (vxn-processor-0038.js); in dist
-// the module file is `vxn-processor.js` (xtask web renames it). Defaults match
-// the shipped bundle so the browser path is zero-config.
+// The worklet module is `vxn-processor.js`; the processor registers as this
+// name. Defaults match the shipped bundle so the browser path is zero-config.
 const PROCESSOR_NAME = "vxn-host-processor";
 const DEFAULT_WORKLET_URL = "./vxn-processor.js";
 const DEFAULT_WASM_URL = "./vxn_wasm.wasm";
@@ -206,7 +205,7 @@ export class WebHost {
     await this._seedStoreFromDefaults(wasmBytes);
 
     // Construct the node over our SABs. sampleRate is NOT passed: the worklet
-    // reads it from its own global (vxn-processor-0038.js), which is the context
+    // reads it from its own global (vxn-processor.js), which is the context
     // rate — passing it would risk a mismatch. capacity MUST match our ring.
     // Disable the worklet's per-quantum render-load timing on Safari (no slack /
     // postMessage is glitchy there); keep it on Chromium.
