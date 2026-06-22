@@ -24,12 +24,18 @@ fn coeff(cutoff_hz: f32, sample_rate: f32) -> f32 {
 }
 
 /// Single-voice one-pole high-pass kernel.
+///
+/// Test oracle for [`PolyHpf`]: the scalar reference against which lane 0 of
+/// `PolyHpf` is checked in differential tests. Only compiled under
+/// `#[cfg(test)]`.
+#[cfg(test)]
 #[derive(Clone)]
-pub struct HpfKernel {
+pub(crate) struct HpfKernel {
     a: f32,
     s: f32,
 }
 
+#[cfg(test)]
 impl HpfKernel {
     pub fn new() -> Self {
         Self { a: 0.0, s: 0.0 }
@@ -55,6 +61,7 @@ impl HpfKernel {
     }
 }
 
+#[cfg(test)]
 impl Default for HpfKernel {
     fn default() -> Self {
         Self::new()

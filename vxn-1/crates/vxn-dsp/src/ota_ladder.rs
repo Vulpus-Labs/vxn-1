@@ -26,6 +26,7 @@
 //! crate docs); the engine recomputes coefficients once per block. The poly
 //! sibling [`crate::poly::PolyOtaLadder`] additionally ramps them per sample.
 
+#[cfg(test)]
 use crate::math::fast_tanh;
 use std::f32::consts::{FRAC_PI_4, PI};
 
@@ -146,8 +147,13 @@ impl OtaLadderCoeffs {
 }
 
 /// Single-voice OTA-ladder kernel. Frozen coefficients (set once per block).
+///
+/// Test oracle for [`crate::poly::PolyOtaLadder`]: the scalar reference
+/// against which mode-mix correctness is verified in differential tests.
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
 #[derive(Clone)]
-pub struct OtaLadderKernel {
+pub(crate) struct OtaLadderKernel {
     g: f32,
     k: f32,
     drive: f32,
@@ -157,6 +163,7 @@ pub struct OtaLadderKernel {
     y4_prev: f32,
 }
 
+#[cfg(test)]
 impl OtaLadderKernel {
     pub fn new() -> Self {
         Self {
@@ -219,6 +226,7 @@ impl OtaLadderKernel {
     }
 }
 
+#[cfg(test)]
 impl Default for OtaLadderKernel {
     fn default() -> Self {
         Self::new()

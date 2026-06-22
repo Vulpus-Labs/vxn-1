@@ -6,7 +6,9 @@
 //! rolled-off harmonics and aliases far less than saw/pulse. Sine is table
 //! lookup (effectively alias-free).
 
+#[cfg(test)]
 use crate::math::lookup_sine;
+#[cfg(test)]
 use crate::phase::{MonoPhaseAccumulator, polyblep};
 
 /// Selectable oscillator waveform.
@@ -39,13 +41,19 @@ impl Waveform {
 
 /// A single oscillator. Holds its own phase; the caller sets frequency
 /// (via `set_increment`) and reads samples with [`next`](Self::next).
+///
+/// Test oracle for [`crate::poly::PolyOscillator`]: the scalar reference
+/// against which the poly's lane 0 output is checked in differential tests.
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
 #[derive(Clone)]
-pub struct Oscillator {
+pub(crate) struct Oscillator {
     acc: MonoPhaseAccumulator,
     /// Pulse duty cycle in `(0, 1)`. Ignored by non-pulse waveforms.
     pub pulse_width: f32,
 }
 
+#[cfg(test)]
 impl Oscillator {
     pub fn new() -> Self {
         Self {
@@ -91,6 +99,7 @@ impl Oscillator {
     }
 }
 
+#[cfg(test)]
 impl Default for Oscillator {
     fn default() -> Self {
         Self::new()

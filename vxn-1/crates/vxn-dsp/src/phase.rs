@@ -4,12 +4,17 @@
 ///
 /// Knows nothing about frequency or sample rate — set the per-sample increment
 /// directly (`freq_hz / sample_rate`).
+///
+/// Backing state for the mono [`crate::oscillator::Oscillator`] oracle.
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
 #[derive(Clone)]
-pub struct MonoPhaseAccumulator {
+pub(crate) struct MonoPhaseAccumulator {
     pub phase: f32,
     pub phase_increment: f32,
 }
 
+#[cfg(test)]
 impl MonoPhaseAccumulator {
     pub fn new() -> Self {
         Self {
@@ -38,6 +43,7 @@ impl MonoPhaseAccumulator {
     }
 }
 
+#[cfg(test)]
 impl Default for MonoPhaseAccumulator {
     fn default() -> Self {
         Self::new()
@@ -48,8 +54,13 @@ impl Default for MonoPhaseAccumulator {
 ///
 /// Smooths the discontinuity near `t = 0` (rising) and `t = 1` (falling).
 /// Effective only when `dt < 0.5`.
+///
+/// Used by the mono [`crate::oscillator::Oscillator`] oracle only.
+/// The poly hot path uses its own branchless `pblep` in `poly/oscillator.rs`.
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
 #[inline]
-pub fn polyblep(t: f32, dt: f32) -> f32 {
+pub(crate) fn polyblep(t: f32, dt: f32) -> f32 {
     if t < dt {
         let t = t / dt;
         2.0 * t - t * t - 1.0
