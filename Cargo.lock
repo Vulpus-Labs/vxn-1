@@ -2452,11 +2452,9 @@ dependencies = [
 name = "vxn-ui-web"
 version = "0.0.8"
 dependencies = [
- "raw-window-handle",
  "serde_json",
  "vxn-app",
  "vxn-core-ui-web",
- "wry",
 ]
 
 [[package]]

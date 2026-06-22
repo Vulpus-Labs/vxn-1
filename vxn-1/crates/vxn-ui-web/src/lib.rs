@@ -1,70 +1,43 @@
-//! VXN1 web editor backend (E010 / 0039 scaffold).
+//! VXN1 web editor backend (E010 / 0039; thin shim since E024 / 0077).
 //!
-//! A [`wry`] WebView attached as a child of the host's parent window. The HTML
-//! is a placeholder for now — the real faceplate lands in 0040+. What ships
-//! here is the *bridge*:
+//! Thin wrapper over [`vxn_core_ui_web`]: [`open_editor`] assembles VXN1's
+//! faceplate HTML (markup + CSS + the bridge/browser/panels/dispatch JS
+//! modules + the param-descriptor JSON) and builds a
+//! [`vxn_core_ui_web::WebEditorConfig`] carrying that HTML plus VXN1's
+//! `parse_custom_ui` / `serialise_custom_view` hooks, then calls
+//! `vxn_core_ui_web::open_editor`. The WebView lifecycle, the JS↔Rust IPC
+//! bridge, the batched `evaluate_script` view-event sink, the corpus-
+//! snapshot push, the parent-window adapter, and the native text-input
+//! popup all live in the shared crate — this crate touches neither wry nor
+//! raw-window-handle directly.
 //!
-//! - **JS → Rust:** the page calls `window.ipc.postMessage(json)`; the IPC
-//!   handler parses one of the small set of opcodes below and posts the
-//!   matching [`UiEvent`] onto the controller's UI sender.
-//! - **Rust → JS:** [`EditorHandle::push_view_event`] serializes a
-//!   [`ViewEvent`] and calls `webview.evaluate_script`, which the page picks
-//!   up via `window.vxn.onViewEvent(ev)`. For 0039 the page just logs them;
-//!   structured DOM updates land per-panel in 0041+.
-//!
-//! [`WebEditor`] is the [`EditorBackend`] impl the clack shell will hold once
-//! 0047 flips it from vizia to this crate. Until then, the trait surface is
-//! the contract a future shell programs against.
+//! The shared vocabulary (param/gesture/preset opcodes, `ParamChanged` /
+//! `PresetLoaded` / … view events) is handled by `vxn-core-ui-web`; what
+//! stays here is VXN1-specific: the faceplate asset splice, the
+//! `Vxn1UiCustom` opcode parse ([`PARSE_CUSTOM`]) and `Vxn1ViewCustom`
+//! serialise ([`SERIALISE_CUSTOM`]) hooks, the param-descriptor JSON
+//! builder, and the standalone-web page assembly ([`build_web_faceplate_html`]).
 
-use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 
-use raw_window_handle::{
-    HandleError, HasWindowHandle, RawWindowHandle, WindowHandle as RwhWindowHandle,
-};
 use vxn_app::{
-    ControllerHandle, CorpusHandle, EditorBackend, KeyMode, Layer, PATCH_COUNT, ParamDesc,
-    ParamKind, PresetCorpus, TOTAL_PARAMS, UNCATEGORIZED, UiEvent, ViewEvent,
+    ControllerHandle, CorpusHandle, KeyMode, Layer, PATCH_COUNT, ParamDesc,
+    ParamKind, TOTAL_PARAMS, UNCATEGORIZED, UiEvent,
     desc_for_clap_id,
 };
-use wry::{Rect, WebView, WebViewBuilder};
-use wry::dpi::{LogicalPosition, LogicalSize};
+// `ViewEvent` is only named by the test-gated `batch_chunks` /
+// `view_event_to_json` wrappers (and the test module via `use super::*`)
+// since the live flush path moved into the shared crate (0077).
+#[cfg(test)]
+use vxn_app::ViewEvent;
+use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
 
-// text_input lifted to `vxn-core-ui-web::text_input` post-E001/0009.
-use vxn_core_ui_web::prompt_text;
-pub use vxn_core_ui_web::OpenEditorError;
-
-/// Redirect WebView2's user-data folder to a user-writable location.
-/// Default is `<host_exe_dir>\<exe_name>.WebView2`, which inside
-/// `C:\Program Files\REAPER\` is admin-only and fails the WebView2 env
-/// init with `E_ACCESSDENIED` (0x80070005). The WebView2 SDK honours
-/// `WEBVIEW2_USER_DATA_FOLDER` if set before the environment is created,
-/// so plant it once per process at `%LOCALAPPDATA%\VulpusLabs\VXN1\WebView2`.
-///
-/// Idempotent: if the user (or another plugin instance) already set the
-/// var we leave it alone.
-#[cfg(target_os = "windows")]
-fn ensure_webview2_data_dir() {
-    const ENV: &str = "WEBVIEW2_USER_DATA_FOLDER";
-    if std::env::var_os(ENV).is_some() {
-        return;
-    }
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join("VulpusLabs").join("VXN1").join("WebView2");
-    let _ = std::fs::create_dir_all(&dir);
-    // SAFETY (0115): `set_var` is unsound if another thread reads the
-    // process environment concurrently. This runs on the host's main
-    // thread inside `gui.set_parent`, *before* the WebView2 environment
-    // (and its worker threads) is created, which is the single-threaded-
-    // at-init window the WebView2 SDK itself requires for this variable
-    // to take effect. A host that reads env vars from another thread
-    // during GUI creation could race — accepted: wry exposes no
-    // per-environment user-data-folder argument, so the env var is the
-    // only channel.
-    unsafe { std::env::set_var(ENV, &dir) };
-}
+// The WebView lifecycle, IPC bridge, batched view-event sink, corpus
+// snapshot push, and native text-input popup all live in the shared
+// crate (E001 / E024 0077). This crate re-exports its handle + error and
+// supplies a `WebEditorConfig` carrying VXN1's faceplate HTML and the
+// VXN1-specific opcode-parse / view-serialise hooks.
+pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 
 /// Logical pixel dimensions of the editor. Matches the vizia editor's
 /// [`vxn_ui_vizia::EDITOR_WIDTH`] / `_HEIGHT` so swapping backends doesn't reflow
@@ -72,198 +45,40 @@ fn ensure_webview2_data_dir() {
 pub const EDITOR_WIDTH: u32 = 1024;
 pub const EDITOR_HEIGHT: u32 = 772;
 
-/// Max bytes per `evaluate_script` payload. The JSON-array literal interpolated
-/// into the JS source is bounded here; under heavy automation (preset load
-/// touches every param) the batch is split across multiple calls so wry never
-/// sees a giant string. 100 KB is the ticket's "sane" cap.
-const MAX_BATCH_BYTES: usize = 100_000;
-
-/// Live editor. Dropping it tears down the WebView; on macOS wry removes the
-/// subview from the parent NSView as part of that.
-pub struct EditorHandle {
-    webview: WebView,
-    /// Per-tick batch buffer. The clack shell's `on_timer` calls
-    /// [`Self::push_view_event`] once per event the controller produced this
-    /// tick, then [`Self::flush_view_events`] once at the end — one
-    /// `evaluate_script` per tick, not per event.
-    buf: RefCell<Vec<ViewEvent>>,
-    /// Raw native parent (NSView on macOS, HWND on Windows, xcb window id
-    /// on Linux). Held for the editor's lifetime so the floating text-input
-    /// popup (0048) can centre over the host plugin window without
-    /// re-plumbing the parent through every ViewEvent.
-    parent: *mut c_void,
-    /// Controller post handle. The popup callback uses it to fire
-    /// [`UiEvent::TextInputResult`] back when the user commits / cancels.
-    ctrl: ControllerHandle,
-    /// Shared preset corpus snapshot the controller refreshes on every
-    /// disk-mutating preset op (0050). Serialized + pushed to JS at first
-    /// flush and on every [`ViewEvent::PresetCorpusChanged`] in the batch
-    /// so the browser panel stays in sync without a controller→view payload
-    /// channel for the full corpus.
-    corpus: CorpusHandle,
-    /// `false` until the first batch flush has carried a corpus snapshot.
-    /// On the next flush we always seed one so the page can render its
-    /// browser even before any user-side mutation fires.
-    corpus_seeded: Cell<bool>,
-}
-
-impl EditorHandle {
-    /// Buffer one [`ViewEvent`] for the current tick. Flushed by
-    /// [`Self::flush_view_events`]; nothing crosses into JS until then.
-    ///
-    /// [`ViewEvent::OpenTextInput`] is intercepted here and dispatched to
-    /// the native popup primitive (0048) — it never reaches the JS bridge.
-    /// On commit / cancel the popup posts [`UiEvent::TextInputResult`]
-    /// through the controller, which echoes [`ViewEvent::TextInputResult`]
-    /// back into this buffer for the page's pending-callback map.
-    pub fn push_view_event(&self, event: ViewEvent) {
-        if let ViewEvent::OpenTextInput { id, title, initial } = event {
-            self.open_text_input(id, title, initial);
-            return;
-        }
-        self.buf.borrow_mut().push(event);
-    }
-
-    fn open_text_input(&self, id: String, title: String, initial: String) {
-        let ctrl = self.ctrl.clone();
-        prompt_text(self.parent, &title, &initial, move |value| {
-            // Channel-full / disconnected: nothing useful to do — the
-            // popup is already torn down. Drop silently.
-            let _ = ctrl.post(UiEvent::TextInputResult { id, value });
-        });
-    }
-
-    /// Drain the batch into one `__vxn.applyViewEvents` call (or several, if
-    /// the JSON exceeds [`MAX_BATCH_BYTES`]). `ParamChanged` events dedupe by
-    /// id within the batch — only the latest value per param survives, which
-    /// caps the bridge at one update per param per tick regardless of how
-    /// many automation writes the audio thread did between ticks.
-    ///
-    /// Corpus seeding (0050): the preset corpus snapshot is sized like a
-    /// few hundred metas and never deduped, so it ships as a separate
-    /// `applyPresetCorpus` JS call rather than going through the
-    /// [`ViewEvent`] batch. We push it once at first flush and once per
-    /// flush that carries a [`ViewEvent::PresetCorpusChanged`].
-    pub fn flush_view_events(&self) {
-        let events = std::mem::take(&mut *self.buf.borrow_mut());
-        let needs_corpus = !self.corpus_seeded.get()
-            || events
-                .iter()
-                .any(|e| matches!(e, ViewEvent::PresetCorpusChanged { .. }));
-        if events.is_empty() && !needs_corpus {
-            return;
-        }
-        if needs_corpus {
-            if let Some(json) = self.serialize_corpus() {
-                let js = format!(
-                    "if(window.__vxn&&window.__vxn.applyPresetCorpus){{window.__vxn.applyPresetCorpus({json})}}"
-                );
-                let _ = self.webview.evaluate_script(&js);
-                self.corpus_seeded.set(true);
-            }
-        }
-        if events.is_empty() {
-            return;
-        }
-        for chunk_json in batch_chunks(&events, MAX_BATCH_BYTES) {
-            let js = format!(
-                "if(window.__vxn&&window.__vxn.applyViewEvents){{window.__vxn.applyViewEvents({chunk_json})}}"
-            );
-            let _ = self.webview.evaluate_script(&js);
-        }
-    }
-
-    /// Build the JSON corpus payload from the shared snapshot. Returns `None`
-    /// if the mutex was poisoned (caller skips the push; next flush retries).
-    fn serialize_corpus(&self) -> Option<String> {
-        let corpus = self.corpus.lock().ok()?;
-        Some(corpus_snapshot_json(&corpus))
-    }
-
-    /// Marker for shape parity with vizia's `WindowHandle::close` — the
-    /// clack shell calls this from `gui.destroy()`. wry's `WebView::Drop`
-    /// already removes the subview from the parent NSView on macOS, so the
-    /// real teardown happens when the host drops the handle.
-    pub fn close(&mut self) {}
-}
-
-/// Zero-sized type that names this backend for trait-bounded code (the clack
-/// shell, tests). All state lives in [`EditorHandle`].
-pub struct WebEditor;
-
-impl EditorBackend for WebEditor {
-    type Handle = EditorHandle;
-    /// Raw native parent: NSView pointer on macOS, HWND on Windows, xcb window
-    /// id (zero-extended into a pointer slot) on Linux. The clack shell
-    /// already extracts these per-platform in `gui::set_parent`.
-    type ParentWindow = *mut c_void;
-
-    fn open(
-        parent: Self::ParentWindow,
-        ctrl: ControllerHandle,
-        corpus: CorpusHandle,
-    ) -> Result<Self::Handle, Box<dyn std::error::Error>> {
-        Ok(open_editor(parent, ctrl, corpus)?)
-    }
-
-    fn close(handle: &mut Self::Handle) {
-        // Tear down by replacing the handle's WebView with… nothing useful.
-        // The host owns the `EditorHandle`; close() is typically just a
-        // marker call before drop, so we don't reach into wry internals.
-        let _ = handle;
-    }
-
-    fn push_view_event(handle: &Self::Handle, event: ViewEvent) {
-        handle.push_view_event(event);
-    }
-
-    fn flush_view_events(handle: &Self::Handle) {
-        handle.flush_view_events();
-    }
-}
-
-/// Build the WebView under `parent`, wire the IPC handler to `ctrl`, and load
-/// the faceplate page. `parent` is the same raw pointer the host hands the
-/// clack shell in `gui::set_parent` (NSView / HWND / xcb-window-id).
+/// Open the VXN1 editor under `parent`. Thin wrapper over
+/// [`vxn_core_ui_web::open_editor`]: builds VXN1's faceplate HTML and a
+/// [`WebEditorConfig`] carrying the VXN1-specific opcode-parse
+/// ([`PARSE_CUSTOM`]) and view-serialise ([`SERIALISE_CUSTOM`]) hooks, then
+/// hands off to the shared crate. The WebView lifecycle, IPC bridge,
+/// batched view-event sink, corpus-snapshot push, the 100 KB batch
+/// chunking, the unsafe parent-handle plumbing, and the WebView2 user-data
+/// folder override all live in core — this crate touches neither wry nor
+/// raw-window-handle directly (E024 0077).
 ///
-/// Errors (never panics — 0115) on a null parent handle or a wry build
-/// failure; the clack shell maps it to `PluginError` in `set_parent` so
-/// no unwind crosses the C ABI and the plugin keeps rendering.
+/// `parent` is the same raw pointer the host hands the clack shell in
+/// `gui::set_parent` (NSView / HWND / xcb-window-id).
+///
+/// Errors (never panics — 0115, inherited from the shared `open_editor`)
+/// on a null parent handle or a wry build failure; the clack shell maps it
+/// to `PluginError` in `set_parent` so no unwind crosses the C ABI and the
+/// plugin keeps rendering.
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
 ) -> Result<EditorHandle, OpenEditorError> {
-    let parent_raw = parent;
-    let parent_wrap = ParentWindow { raw: build_raw(parent_raw)? };
     let html = build_faceplate_html();
-    let ipc_ctrl = ctrl.clone();
-    #[cfg(target_os = "windows")]
-    ensure_webview2_data_dir();
-    let webview = WebViewBuilder::new_as_child(&parent_wrap)
-        .with_html(html)
-        // macOS swallows the first click on an unfocused webview to activate
-        // it; accept_first_mouse delivers that click to the control instead.
-        .with_accept_first_mouse(true)
-        .with_bounds(Rect {
-            position: LogicalPosition::new(0i32, 0i32).into(),
-            size: LogicalSize::new(EDITOR_WIDTH, EDITOR_HEIGHT).into(),
-        })
-        .with_ipc_handler(move |req| {
-            if let Some(ev) = parse_ui_event(req.body()) {
-                let _ = ipc_ctrl.post(ev);
-            }
-        })
-        .build()
-        .map_err(OpenEditorError::WebViewBuild)?;
-    Ok(EditorHandle {
-        webview,
-        buf: RefCell::new(Vec::new()),
-        parent: parent_raw,
-        ctrl,
-        corpus,
-        corpus_seeded: Cell::new(false),
-    })
+    let mut config = WebEditorConfig::new(html, EDITOR_WIDTH, EDITOR_HEIGHT);
+    config.uncategorised_label = UNCATEGORIZED;
+    config.max_batch_bytes = DEFAULT_MAX_BATCH_BYTES;
+    // WebView2 user-data folder: `%LOCALAPPDATA%\VulpusLabs\VXN1\WebView2`
+    // (the shared crate joins vendor/product/"WebView2"). Avoids the
+    // admin-only `C:\Program Files\<host>\<exe>.WebView2` default.
+    config.webview2_vendor = Some("VulpusLabs");
+    config.webview2_product = Some("VXN1");
+    config.parse_custom_ui = Some(PARSE_CUSTOM.clone());
+    config.serialise_custom_view = Some(SERIALISE_CUSTOM.clone());
+    vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
 }
 
 /// Splice the runtime param-descriptor JSON into the faceplate template. The
@@ -479,71 +294,21 @@ fn taper_to_json(t: vxn_app::Taper) -> serde_json::Value {
     }
 }
 
-// ── Parent-window adapter ───────────────────────────────────────────────────
-
-/// Newtype that lets a raw native parent pointer satisfy
-/// [`HasWindowHandle`]. The host owns the underlying window for the editor's
-/// lifetime — we never outlive it.
-struct ParentWindow {
-    raw: RawWindowHandle,
-}
-
-// `RawWindowHandle` is `!Send`/`!Sync`; wry doesn't require either on the
-// `HasWindowHandle` impl, but the bounds aren't expressible without these
-// unsafe asserts on some toolchains. Safe here because we hand the parent
-// straight to wry on the same thread and never share it.
-unsafe impl Send for ParentWindow {}
-unsafe impl Sync for ParentWindow {}
-
-impl HasWindowHandle for ParentWindow {
-    fn window_handle(&self) -> Result<RwhWindowHandle<'_>, HandleError> {
-        // SAFETY: `raw` was built from the host-provided native handle; it
-        // stays valid as long as the host hasn't destroyed the GUI, which
-        // strictly outlives every borrow wry takes here.
-        Ok(unsafe { RwhWindowHandle::borrow_raw(self.raw) })
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
-    use raw_window_handle::AppKitWindowHandle;
-    use std::ptr::NonNull;
-    let ns_view =
-        NonNull::new(ptr).ok_or(OpenEditorError::BadParent("parent NSView is null"))?;
-    Ok(RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view)))
-}
-
-#[cfg(target_os = "windows")]
-fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
-    use raw_window_handle::Win32WindowHandle;
-    use std::num::NonZeroIsize;
-    let hwnd = NonZeroIsize::new(ptr as isize)
-        .ok_or(OpenEditorError::BadParent("parent HWND is zero"))?;
-    Ok(RawWindowHandle::Win32(Win32WindowHandle::new(hwnd)))
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn build_raw(ptr: *mut c_void) -> Result<RawWindowHandle, OpenEditorError> {
-    use raw_window_handle::XcbWindowHandle;
-    use std::num::NonZeroU32;
-    // The clack shell hands us the xcb window id zero-extended into a pointer
-    // slot; truncate back to u32. Matches `gui::set_parent`.
-    let win = NonZeroU32::new(ptr as usize as u32)
-        .ok_or(OpenEditorError::BadParent("parent xcb window is zero"))?;
-    Ok(RawWindowHandle::Xcb(XcbWindowHandle::new(win)))
-}
+// Parent-window adapter (`ParentWindow` + per-OS `build_raw`) moved to the
+// shared crate (E024 0077); `vxn_core_ui_web::open_editor` builds the raw
+// handle and returns `OpenEditorError::BadParent` on a null/zero parent.
 
 // ── IPC inbound: JSON → UiEvent ─────────────────────────────────────────────
 
-/// Parse one IPC message into a [`UiEvent`]. Returns `None` for malformed
-/// payloads or unknown opcodes (logged silently — surfacing parse errors is a
-/// later ticket).
+/// Parse one IPC message into a [`UiEvent`], routing unknown opcodes
+/// through [`PARSE_CUSTOM`]. Test-only since 0077: the live IPC handler
+/// inside the shared `open_editor` calls `vxn_core_ui_web::parse_ui_event`
+/// with the same `PARSE_CUSTOM` hook (handed through the config), so this
+/// wrapper exists only to keep the VXN1 opcode-parse contract unit-tested
+/// this side without standing up a WebView.
 ///
-/// Wire shape: `{ "op": "<opcode>", ...fields }`. The opcode set below is the
-/// minimum that lets 0041+ wire faders, transport, layer toggles, and
-/// factory-bank loads against the controller. Path-based preset mutations
-/// (save / rename / move / delete) join in 0049–0051 once the browser HTML
-/// lands.
+/// Wire shape: `{ "op": "<opcode>", ...fields }`.
+#[cfg(test)]
 fn parse_ui_event(body: &str) -> Option<UiEvent> {
     vxn_core_ui_web::parse_ui_event(body, Some(&PARSE_CUSTOM))
 }
@@ -601,16 +366,20 @@ fn parse_key_mode(v: &serde_json::Value) -> Option<KeyMode> {
 /// Build one or more JSON-array literals from a tick batch. Delegates
 /// to [`vxn_core_ui_web::batch_chunks`] with the VXN1 custom-serialise
 /// hook so per-synth `Vxn1ViewCustom` payloads keep their existing
-/// JSON shape on the wire.
+/// JSON shape on the wire. Test-only since 0077: the live flush path is
+/// `vxn_core_ui_web::EditorHandle::flush_view_events`, which is handed
+/// `SERIALISE_CUSTOM` through the config. Retained so the batching /
+/// dedup / custom-serialise contract stays unit-tested this side.
+#[cfg(test)]
 fn batch_chunks(events: &[ViewEvent], max_bytes: usize) -> Vec<String> {
     vxn_core_ui_web::batch_chunks(events, max_bytes, Some(&SERIALISE_CUSTOM))
 }
 
 /// Serialise a [`ViewEvent`] to a JSON string the page can read. Thin
 /// wrapper around [`vxn_core_ui_web::view_event_to_json`] with the
-/// VXN1 custom hook. Only used by the test suite — `flush_view_events`
-/// uses `batch_chunks` directly.
-#[allow(dead_code)]
+/// VXN1 custom hook. Test-only — the live path batches via the shared
+/// `EditorHandle`.
+#[cfg(test)]
 fn view_event_to_json(ev: &ViewEvent) -> String {
     vxn_core_ui_web::view_event_to_json(ev, Some(&SERIALISE_CUSTOM)).unwrap_or_default()
 }
@@ -639,10 +408,14 @@ fn serialise_vxn1_view_custom(payload: &dyn std::any::Any) -> Option<serde_json:
 static SERIALISE_CUSTOM: std::sync::LazyLock<vxn_core_ui_web::SerialiseCustomView> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(serialise_vxn1_view_custom));
 
-/// Serialise a [`PresetCorpus`] for the JS browser panel. Thin wrapper
-/// around [`vxn_core_ui_web::corpus_snapshot_json`] with VXN1's
-/// `UNCATEGORIZED` label.
-fn corpus_snapshot_json(corpus: &PresetCorpus) -> String {
+/// Serialise a [`vxn_app::PresetCorpus`] for the JS browser panel. Thin
+/// wrapper around [`vxn_core_ui_web::corpus_snapshot_json`] with VXN1's
+/// `UNCATEGORIZED` label. Test-only since 0077: the live corpus push is
+/// done by the shared `EditorHandle`, which holds the `uncategorised_label`
+/// from the config. Retained so the grouping/sort contract stays tested
+/// against VXN1's label this side.
+#[cfg(test)]
+fn corpus_snapshot_json(corpus: &vxn_app::PresetCorpus) -> String {
     vxn_core_ui_web::corpus_snapshot_json(corpus, UNCATEGORIZED)
 }
 
@@ -682,16 +455,10 @@ mod tests {
     use std::path::PathBuf;
     use vxn_app::{ParamId, PresetMeta, PresetSource};
 
-    #[test]
-    fn build_raw_null_parent_is_err_not_panic() {
-        // 0115: a host handing a null/zero parent used to panic inside
-        // `gui.set_parent` — an unwind across the C ABI. It must now be
-        // an Err the shell maps to PluginError.
-        assert!(matches!(
-            build_raw(std::ptr::null_mut()),
-            Err(OpenEditorError::BadParent(_)),
-        ));
-    }
+    // The null-parent → `OpenEditorError::BadParent` (not panic) guarantee
+    // (0115) is now covered by `vxn-core-ui-web`'s own
+    // `build_raw_null_parent_is_err_not_panic` test, since `build_raw`
+    // moved into the shared crate (E024 0077).
 
     #[test]
     fn parses_set_param_norm() {

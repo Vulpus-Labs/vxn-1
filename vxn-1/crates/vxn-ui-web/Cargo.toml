@@ -5,20 +5,15 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "VXN1 web-based editor backend: wry WebView child + IPC bridge to the vxn-app controller (E010 scaffold)."
+description = "VXN1 web editor backend: faceplate HTML assembly + VXN1 custom opcode/view hooks over the shared vxn-core-ui-web WebView editor."
 
 [dependencies]
 vxn-app.workspace = true
 vxn-core-ui-web = { workspace = true }
 
-# wry 0.45 matches the prototype that got the editor up against vxn-app's
-# controller end-to-end. The bridge surface (with_ipc_handler, evaluate_script,
-# new_as_child) is stable in this rev.
-wry = "0.45"
-
-# wry 0.45 takes a parent that implements `HasWindowHandle` from
-# raw-window-handle 0.6 — independent of vxn-ui's 0.5 pin (vizia/baseview lag).
-raw-window-handle = "0.6"
+# The WebView lifecycle (wry) and the parent-window adapter (raw-window-
+# handle) live in `vxn-core-ui-web` post-E024/0077; this crate only builds a
+# `WebEditorConfig` and never touches either directly.
 
 # IPC payloads are JSON; the bridge stays small enough that hand-rolled
 # matching beats pulling serde derives down into vxn-app.
