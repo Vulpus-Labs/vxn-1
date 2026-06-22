@@ -96,10 +96,26 @@ pub fn open_editor(
 /// browser/preset/keys UI against that bridge, dispatch wires `init()` and
 /// the ViewEvent fan-out last.
 fn build_faceplate_html() -> String {
-    // The browser logic is shared (vxn-core-ui-web); splice it (ESM markers
-    // stripped) immediately before VXN1's `browser.js` glue, which calls the
-    // `createPresetBrowser` it defines. Its CSS is appended to the faceplate
-    // sheet.
+    // Native plugin page: no web transport, so the `__WEB_BOOT_HEAD__` /
+    // `__WEB_BOOT_LOADER__` slots are spliced empty.
+    assemble_faceplate("", "")
+}
+
+/// Splice every faceplate placeholder. `web_boot_head` / `web_boot_loader`
+/// fill the `__WEB_BOOT_HEAD__` / `__WEB_BOOT_LOADER__` slots that bracket
+/// the inlined faceplate `<script>` — empty for the native plugin
+/// ([`build_faceplate_html`]), the web transport shim + module loader for the
+/// standalone build ([`build_web_faceplate_html`]). They are spliced FIRST,
+/// before the `__*_JSON__` replaces, so the boot head's own `__PARAMS_JSON__`
+/// / `__SUBDIVISIONS_JSON__` / `__PATCH_COUNT__` tokens pick up the very same
+/// descriptor data as the body — byte-identical, single-sourced, no separate
+/// pre-replace pass.
+///
+/// The browser logic is shared (vxn-core-ui-web); splice it (ESM markers
+/// stripped) immediately before VXN1's `browser.js` glue, which calls the
+/// `createPresetBrowser` it defines. Its CSS is appended to the faceplate
+/// sheet.
+fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
     let browser_js = format!(
         "{}\n;\n{}",
         strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
@@ -107,6 +123,8 @@ fn build_faceplate_html() -> String {
     );
     let css = format!("{}\n{}", FACEPLATE_CSS, vxn_core_ui_web::PRESET_BROWSER_CSS);
     PLACEHOLDER_HTML
+        .replace("__WEB_BOOT_HEAD__", web_boot_head)
+        .replace("__WEB_BOOT_LOADER__", web_boot_loader)
         .replace("__CSS__", &css)
         .replace("__BRIDGE_JS__", &strip_esm_exports(BRIDGE_JS))
         .replace("__BROWSER_JS__", &browser_js)
@@ -117,8 +135,10 @@ fn build_faceplate_html() -> String {
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
 }
 
-/// Web boot head (E018 / 0057). Spliced into the assembled faceplate page
-/// just BEFORE the inlined faceplate `<script>` so it runs first.
+/// Web boot head (E018 / 0057). Spliced into the `__WEB_BOOT_HEAD__` slot of
+/// `faceplate.html`, which sits just BEFORE the inlined faceplate `<script>`,
+/// so it runs first. Carries its own `__*_JSON__` placeholders — see
+/// [`assemble_faceplate`], which splices this in before the JSON pass.
 ///
 /// On the web there is no wry IPC: the faceplate posts opcodes via
 /// `window.ipc.postMessage(json)`, so this installs a SYNCHRONOUS queuing stub
@@ -172,7 +192,8 @@ const WEB_BOOT_HEAD: &str = r#"<style>
 </script>
 "#;
 
-/// Module-loader tag (E018 / 0057) appended after the faceplate `<script>`: it
+/// Module-loader tag (E018 / 0057) spliced into the `__WEB_BOOT_LOADER__`
+/// slot of `faceplate.html`, just AFTER the inlined faceplate `<script>`: it
 /// boots `WebHost` + `WebController` and runs the bridge. Deferred (module
 /// scripts always are), so it runs after the faceplate's synchronous `init()`.
 const WEB_BOOT_LOADER: &str = "<script type=\"module\" src=\"./faceplate-bridge.mjs\"></script>\n";
@@ -188,32 +209,15 @@ const WEB_BOOT_LOADER: &str = "<script type=\"module\" src=\"./faceplate-bridge.
 /// `target/web-dist/index.html`. Kept here (not in xtask) so the JSON-shaping
 /// stays single-sourced and xtask carries no wry-pulling dependency.
 pub fn build_web_faceplate_html() -> String {
-    let native = build_faceplate_html();
-    // The web boot head carries the same `__*_JSON__` placeholders as bridge.js;
-    // splice them here (the native pass already ran on the body, not on this
-    // string). Same generators -> byte-identical descriptor data.
-    let boot_head = WEB_BOOT_HEAD
-        .replace("__PARAMS_JSON__", &build_params_json())
-        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
-        .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string());
-    // The faceplate template has exactly one inlined `<script>` (faceplate.html
-    // end-of-body). Inject the web boot head right before it and the module
-    // loader right after its close. Splitting on the first `<script>` is robust:
-    // the CSS/markup above contain no `<script>` tag.
-    let marker = "<script>\n";
-    let split = native
-        .find(marker)
-        .expect("faceplate template must contain an inlined <script>");
-    let (head, tail) = native.split_at(split);
-    // `tail` starts at `<script>\n…</script>\n</body></html>`. Insert the loader
-    // after the closing `</script>` of that block.
-    let close = "</script>";
-    let close_at = tail
-        .find(close)
-        .expect("faceplate <script> must be closed")
-        + close.len();
-    let (script_block, after) = tail.split_at(close_at);
-    format!("{head}{boot_head}{script_block}\n{WEB_BOOT_LOADER}{after}")
+    // The web boot head + module loader splice into the dedicated
+    // `__WEB_BOOT_HEAD__` / `__WEB_BOOT_LOADER__` slots that bracket the
+    // inlined faceplate `<script>` in `faceplate.html` — same `str::replace`
+    // mechanism as every other splice point, no `<script>`-marker byte
+    // surgery. `assemble_faceplate` splices the boot head before its
+    // `__*_JSON__` pass, so the head's `__PARAMS_JSON__` / `__SUBDIVISIONS_JSON__`
+    // / `__PATCH_COUNT__` tokens get the SAME descriptor data as the body
+    // (byte-identical, single-sourced).
+    assemble_faceplate(WEB_BOOT_HEAD, WEB_BOOT_LOADER)
 }
 
 /// Drop ESM module syntax from every line of `src`. The four faceplate JS

@@ -48,28 +48,86 @@ pub const PRESET_BROWSER_JS: &str = include_str!("../assets/preset-browser.js");
 /// `--editor-w`) that both synths define.
 pub const PRESET_BROWSER_CSS: &str = include_str!("../assets/preset-browser.css");
 
-/// Drop ESM module syntax from every line of `src` so an ESM-authored
-/// asset can be inlined into a single `<script>` (where `export` / `import`
-/// are syntax errors). `export const X = …` / `export function X …` become
-/// bare declarations; `import …;` lines drop to blank lines (kept as blanks
-/// so line numbers — hence stack traces — line up). The splice already puts
-/// every binding in one shared script scope, so cross-module references
-/// resolve without the import. Shared so both synth faceplate crates and
-/// any other ESM-authored shared asset strip identically.
+/// Drop ESM module syntax from `src` so an ESM-authored asset can be inlined
+/// into a single `<script>` (where `export` / `import` are syntax errors).
+/// The splice concatenates every module into one shared script scope, so
+/// cross-module references resolve without the imports and re-exports.
+///
+/// ## Contract
+///
+/// Operates line-wise — a line's first non-whitespace token decides its
+/// fate, so leading indentation no longer matters (an indented `export` /
+/// `import` is handled the same as one at column 0). Dropped lines become
+/// blank lines, not deletions, so line numbers — hence stack traces — stay
+/// aligned. The forms handled, each covered by a unit test below:
+///
+/// - `export const/let/var/function/class/async … X = …` → the `export `
+///   keyword is removed, leaving the bare declaration (indentation kept).
+/// - `export default X` → `X`.
+/// - `import …;` (side-effect, default, named, namespace) → dropped. A
+///   multi-line import (`import {` with no terminating `;` on the opening
+///   line) drops every line through the one carrying its `;`.
+/// - `export { … }` (export-list), `export { … } from '…'` and
+///   `export * from '…'` (re-exports) → dropped whole, single- or
+///   multi-line; the named bindings already live in the shared scope.
+///
+/// Statement boundaries are found by the terminating `;`, so every `import`
+/// / multi-line `export { … }` MUST be semicolon-terminated (the repo's
+/// asset style always is). A line is classified by its leading token, so a
+/// comment or string whose first token is literally `import`/`export ` would
+/// be mis-stripped — same line-wise assumption the original had, just now
+/// trim-aware.
+///
+/// Shared so both synth faceplate crates and any other ESM-authored shared
+/// asset strip identically.
 pub fn strip_esm_exports(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
+    // True while swallowing the continuation lines of a multi-line `import`
+    // or `export { … }` statement, up to and including its terminating `;`.
+    let mut in_multiline_drop = false;
     for (i, line) in src.lines().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        if line.starts_with("import ") {
+        if in_multiline_drop {
+            // Continuation of a dropped statement → emit a blank line; the
+            // terminating `;` ends the swallow.
+            if line.contains(';') {
+                in_multiline_drop = false;
+            }
             continue;
         }
-        let stripped = line
+        let rest = line.trim_start();
+        let indent = &line[..line.len() - rest.len()];
+        // `import …` (any form) and `export { … }` / `export * …` re-exports
+        // are pure binding plumbing — the inline splice already shares one
+        // scope, so drop them whole. Multi-line forms (no `;` on the opening
+        // line) swallow their continuation until the `;`.
+        let is_import = rest == "import" || rest.starts_with("import ") || rest.starts_with("import{");
+        let is_reexport = rest.starts_with("export {")
+            || rest.starts_with("export{")
+            || rest.starts_with("export *")
+            || rest.starts_with("export*");
+        if is_import || is_reexport {
+            if !line.contains(';') {
+                in_multiline_drop = true;
+            }
+            continue;
+        }
+        // `export default X` → `X`; `export <decl>` → `<decl>`. Indentation
+        // is re-attached so an indented declaration keeps its shape.
+        let stripped = rest
             .strip_prefix("export default ")
-            .or_else(|| line.strip_prefix("export "))
-            .unwrap_or(line);
-        out.push_str(stripped);
+            .or_else(|| rest.strip_prefix("export "))
+            .unwrap_or(rest);
+        if std::ptr::eq(stripped, rest) {
+            // No prefix removed — emit the original line verbatim (keeps any
+            // leading whitespace exactly).
+            out.push_str(line);
+        } else {
+            out.push_str(indent);
+            out.push_str(stripped);
+        }
     }
     if src.ends_with('\n') {
         out.push('\n');
@@ -741,5 +799,67 @@ mod tests {
         let e = OpenEditorError::BadParent("parent NSView is null");
         assert!(e.to_string().contains("parent NSView is null"));
         assert!(std::error::Error::source(&e).is_none());
+    }
+
+    // ── strip_esm_exports contract (0084) ──────────────────────────────
+    //
+    // One test per form the doc-comment claims to handle.
+
+    #[test]
+    fn strip_export_decls_and_default_at_line_start() {
+        let src = "export const X = 1;\nexport function f() {}\nexport default 7;\nconst Y = 2;\n";
+        assert_eq!(
+            strip_esm_exports(src),
+            "const X = 1;\nfunction f() {}\n7;\nconst Y = 2;\n",
+        );
+    }
+
+    #[test]
+    fn strip_preserves_trailing_newline_shape() {
+        assert_eq!(strip_esm_exports("export const X = 1;"), "const X = 1;");
+        assert_eq!(strip_esm_exports("export const X = 1;\n"), "const X = 1;\n");
+    }
+
+    #[test]
+    fn strip_indented_export_keeps_indentation() {
+        // `export` not at column 0 (the original line-prefix hack missed this).
+        let src = "  export const X = 1;\n\texport function f() {}\n";
+        assert_eq!(strip_esm_exports(src), "  const X = 1;\n\tfunction f() {}\n");
+    }
+
+    #[test]
+    fn strip_single_line_import_drops_to_blank() {
+        let src = "import { foo } from './bar.js';\nconst X = 1;\n";
+        assert_eq!(strip_esm_exports(src), "\nconst X = 1;\n");
+        // Indented + side-effect + namespace forms all drop.
+        assert_eq!(strip_esm_exports("  import './side.js';\n"), "\n");
+        assert_eq!(strip_esm_exports("import * as ns from './n.js';\n"), "\n");
+    }
+
+    #[test]
+    fn strip_multi_line_import_drops_whole_statement() {
+        let src = "import {\n  foo,\n  bar,\n} from './bar.js';\nconst X = 1;\n";
+        // Every line of the statement → blank; the `;` line ends the swallow.
+        assert_eq!(strip_esm_exports(src), "\n\n\n\nconst X = 1;\n");
+    }
+
+    #[test]
+    fn strip_export_list_dropped_whole() {
+        // `export { … };` (export-list, no `from`) is pure plumbing → gone.
+        let src = "const X = 1;\nexport { X };\nconst Y = 2;\n";
+        assert_eq!(strip_esm_exports(src), "const X = 1;\n\nconst Y = 2;\n");
+    }
+
+    #[test]
+    fn strip_reexport_forms_dropped_whole() {
+        // `export { … } from '…'` and `export * from '…'` re-exports → gone.
+        let src = "export { a, b } from './x.js';\nexport * from './y.js';\nconst Z = 3;\n";
+        assert_eq!(strip_esm_exports(src), "\n\nconst Z = 3;\n");
+    }
+
+    #[test]
+    fn strip_multi_line_export_list_dropped_whole() {
+        let src = "export {\n  a,\n  b,\n} from './x.js';\nconst Z = 3;\n";
+        assert_eq!(strip_esm_exports(src), "\n\n\n\nconst Z = 3;\n");
     }
 }
