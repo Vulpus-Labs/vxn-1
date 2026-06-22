@@ -100,6 +100,17 @@ pub fn enable_flush_to_zero() {
         fpcr |= 1 << 24;
         std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
     }
+    // Other targets (0019): no portable FTZ control word, so this is a no-op and
+    // denormals are NOT flushed — the phaser/BBD/reverb feedback paths can hit
+    // denormal slowdowns on a held-quiet tail. The only shipping targets are
+    // x86_64 (CLAP/VST3/standalone) and aarch64 (Apple Silicon), both handled
+    // above; this arm exists so a NEW target compiles with an explicit,
+    // greppable "denormals unhandled here" instead of silently doing nothing.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        // Intentionally empty. Adding a target where the denormal tails matter?
+        // Wire its FTZ/DAZ control word here (and in `ScopedFlushToZero`).
+    }
 }
 
 // `ScopedFlushToZero` + `flush_denormal` lifted to `vxn-core-utils`; the

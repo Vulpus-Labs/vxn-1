@@ -20,8 +20,15 @@ pub enum AdsrShape {
     Exponential,
 }
 
+/// Exponential attack aims *past* full scale (1.2 = +20%) so the RC curve
+/// reaches 1.0 with real slope still left — the analog "overshoot" feel — then
+/// the stage caps hard at 1.0 and moves to Decay (it never actually outputs >1).
 const EXP_ATTACK_TARGET: f32 = 1.2;
+/// Number of RC time constants spanned by a stage's nominal length, so a stage
+/// is ~99.3% settled (1 − e⁻⁵) at its set time before the snap-to-target.
 const EXP_N_TAU: f32 = 5.0;
+/// Distance from the target at which an exponential stage snaps exactly and
+/// advances, instead of crawling down the asymptotic tail forever.
 const EXP_SNAP_EPS: f32 = 1.0e-4;
 
 fn exp_k(secs: f32, sample_rate: f32) -> f32 {
@@ -245,6 +252,36 @@ mod tests {
             c.tick(false, false);
         }
         assert!(c.is_idle());
+    }
+
+    #[test]
+    fn exponential_attack_caps_at_one_and_release_snaps_to_idle() {
+        // 0019: the exponential attack targets EXP_ATTACK_TARGET (1.2) for the
+        // analog overshoot feel, but the OUTPUT must never exceed 1.0 — the
+        // stage caps there and hands off to Decay. And the release must reach
+        // Idle exactly (snap at EXP_SNAP_EPS), not crawl the asymptotic tail.
+        let sr = 48_000.0;
+        let mut c = make(0.005, 0.005, 0.5, 0.005, sr);
+        c.set_shape(AdsrShape::Exponential);
+
+        // Hold the gate through attack + decay; the level never crosses 1.0.
+        let mut peak = c.tick(true, true);
+        for _ in 0..(0.02 * sr) as usize {
+            peak = peak.max(c.tick(false, true));
+        }
+        assert!(peak <= 1.0, "exp attack overshot 1.0: {peak}");
+        assert!(peak >= 1.0 - 1e-3, "exp attack never reached full: {peak}");
+
+        // Release reaches Idle in bounded time (snap, not infinite tail).
+        let mut settled = false;
+        for _ in 0..(0.005 * sr) as usize + 200 {
+            c.tick(false, false);
+            if c.is_idle() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "exp release never snapped to Idle");
     }
 
     #[test]

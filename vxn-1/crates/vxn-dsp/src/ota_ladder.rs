@@ -1,13 +1,13 @@
 //! R3109/IR3109-style OTA-C ladder lowpass — a Roland/Juno-flavoured filter.
 //!
-//! Four TPT one-pole stages like [`crate::ladder`], but the nonlinearity lives
-//! **inside each integrator** (a per-stage `tanh` on the integrator input)
-//! rather than on the global feedback sum. That matches the softer, more
-//! distributed saturation of OTA-C filter chips (IR3109, CEM3320, …) and gives
-//! a cleaner, more sinusoidal self-oscillation than the Moog-style transistor
-//! ladder in [`crate::ladder`].
+//! Four TPT one-pole stages like a classic transistor ladder, but the
+//! nonlinearity lives **inside each integrator** (a per-stage `tanh` on the
+//! integrator input) rather than on the global feedback sum. That matches the
+//! softer, more distributed saturation of OTA-C filter chips (IR3109, CEM3320,
+//! …) and gives a cleaner, more sinusoidal self-oscillation than a Moog-style
+//! transistor ladder.
 //!
-//! Differences from [`crate::ladder::LadderKernel`]:
+//! Differences from a Moog-style transistor ladder (`tanh` on the feedback sum):
 //!
 //! * Per-stage `tanh`, not a single global pre-feedback `tanh`.
 //! * **No** resonance-dependent input attenuation — Juno-style filters don't
@@ -134,8 +134,9 @@ pub struct OtaLadderCoeffs {
 
 impl OtaLadderCoeffs {
     /// `resonance` is taken in `[0, 1]` and scaled to the `[0, 4]` feedback
-    /// range internally (self-oscillation at `resonance = 1.0`), matching the
-    /// call convention of [`crate::ladder::LadderCoeffs::new`].
+    /// range internally (self-oscillation at `resonance = 1.0`), the same
+    /// `[0, 1]` → `[0, 4]` resonance convention a classic ladder coeff builder
+    /// would use.
     #[inline]
     pub fn new(cutoff_hz: f32, sample_rate: f32, resonance: f32, drive: f32) -> Self {
         Self {

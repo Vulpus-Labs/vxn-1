@@ -90,3 +90,56 @@ feature. That is why it leads the batch.
 Per-crate asm checks are misleading pre-LTO (memory:
 vxn1-ota-filter-perf) — no perf verification needed here;
 nothing touches a hot path.
+
+## Close-out (2026-06-22)
+
+Behaviour-preserving batch. `cargo test --workspace` green for every
+touched crate; `tests/baseline.rs` hash unchanged (nothing here touches
+the render path).
+
+**vxn-app:**
+
+- `PatchParam`/`GlobalParam` `from_index`: the two `unsafe transmute`s are
+  gone. A new `indexed_param_enum!` macro defines each enum plus a safe
+  exhaustive-`match` `from_index` (and `COUNT`/`index`/`all`) from a single
+  variant list, so a future variant can't desync `from_index`. No `unsafe`
+  remains in `params.rs`; `from_index_roundtrips` still passes.
+- `cutoff_tuned` descriptor gained the comment: UI-only display-mode
+  toggle, engine deliberately never reads it, persisted so it travels with
+  presets/state (prevents the next reviewer re-flagging it as dead).
+
+**vxn-engine:**
+
+- `factory()` now returns `&'static [FactoryPreset]` cached in a
+  `OnceLock` — parsed once instead of re-parsing ~33 TOML files per call
+  (3× per browser interaction). Callers are all read-only (`len`/`get`/
+  `iter`). Main-thread only.
+- `rename_user_preset`: round-trip parse warnings are logged to stderr
+  (host-captured) instead of dropped via `_w` — a rename rewrites the file,
+  so an unknown-key warning means possible data loss.
+
+**vxn-dsp:**
+
+- `enable_flush_to_zero`: explicit `#[cfg(not(any(x86_64, aarch64)))]` arm
+  (documented no-op) so a new target compiles with a greppable
+  "denormals unhandled here" rather than silently.
+- `ota_ladder.rs`: the four broken `[crate::ladder]` /
+  `[crate::ladder::*]` rustdoc links (module never shipped) de-linked to
+  prose.
+- `math::fast_tanh` ↔ `poly::oscillator::tanh_c`: cross-reference comments
+  on the shared Padé(5,6) coefficients; NOT merged (branched vs branchless
+  split is deliberate — memory `vxn1-tanh-branchless-only`).
+- `HALF_SEMITONE_VOCT` removed (was `pub`, consumed nowhere); a breadcrumb
+  comment points at git history.
+- `flush_denormal` doc header now states it also zeroes NaN/±∞ (not just
+  the inline note).
+- New `adsr` test `exponential_attack_caps_at_one_and_release_snaps_to_idle`
+  (overshoot cap at 1.0, release snap-to-idle); one-line doc comments on
+  `EXP_ATTACK_TARGET` / `EXP_N_TAU` / `EXP_SNAP_EPS`.
+
+**vxn-core-utils:** `flush_denormal` lives here — doc updated as above.
+
+**xtask:** `LIB_NAME` keeps the hardcoded `"vxn_clap"` with a comment
+accepting the coupling to `--package vxn-clap`; `build_universal` already
+errors with the path if the renamed dylib is absent, so a rename can't
+silently ship an empty bundle (the ticket's accepted alternative).

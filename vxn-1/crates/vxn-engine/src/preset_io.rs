@@ -489,7 +489,20 @@ pub fn rename_user_preset(path: &Path, new_name: &str) -> io::Result<PathBuf> {
             "preset already exists",
         ));
     }
-    let (mut perf, _w) = load_preset_file(path).map_err(load_err_to_io)?;
+    let (mut perf, warnings) = load_preset_file(path).map_err(load_err_to_io)?;
+    // Surface round-trip parse warnings (unknown/forward-incompatible keys)
+    // instead of silently dropping them (0019): a rename rewrites the file, so a
+    // warning here means the rewrite may have dropped data the reader didn't
+    // understand. No warning channel on this path, so log to stderr (the host
+    // captures it) — same as the bake-factory tool.
+    if !warnings.is_empty() {
+        eprintln!(
+            "vxn1: rename_user_preset({}): {} parse warning(s): {}",
+            path.display(),
+            warnings.len(),
+            warnings.join("; ")
+        );
+    }
     perf.meta.name = new_name.to_string();
     fs::write(&new_path, perf.to_toml_string())?;
     if new_path != path {

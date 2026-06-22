@@ -127,9 +127,50 @@ impl CrossModType {
 
 // ── Param id enums ──────────────────────────────────────────────────────────
 
+/// Define a `#[repr(usize)]` param-id enum with contiguous discriminants and a
+/// **safe** `from_index` (exhaustive match, no `unsafe transmute`), plus
+/// `COUNT`, `index`, and `all`. The variant list is written once here, so a new
+/// param can't leave `from_index`/`COUNT` out of sync — the footgun the old
+/// `transmute` carried (sound only while every discriminant stays contiguous
+/// and `< COUNT`, which the next enum edit could silently break). `0019`.
+macro_rules! indexed_param_enum {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident { $($variant:ident),+ $(,)? }
+    ) => {
+        $(#[$meta])*
+        #[repr(usize)]
+        $vis enum $name { $($variant),+ }
+
+        impl $name {
+            /// Number of variants (= the block size this enum indexes).
+            pub const COUNT: usize = [$($name::$variant),+].len();
+
+            /// Every variant in discriminant order.
+            pub fn all() -> impl Iterator<Item = $name> {
+                [$($name::$variant),+].into_iter()
+            }
+
+            /// Discriminant = index into the param block.
+            #[inline]
+            pub fn index(self) -> usize {
+                self as usize
+            }
+
+            /// Inverse of [`Self::index`]; `None` past the last variant.
+            pub fn from_index(i: usize) -> Option<$name> {
+                match i {
+                    $(x if x == $name::$variant as usize => Some($name::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+indexed_param_enum! {
 /// Per-patch parameter ids. Discriminant = index into the per-patch block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum PatchParam {
     Osc1Wave,
     Osc1Coarse,
@@ -201,27 +242,9 @@ pub enum PatchParam {
     LayerLevel,
     Spread,
 }
+}
 
 impl PatchParam {
-    pub const COUNT: usize = PatchParam::Spread as usize + 1;
-
-    pub fn all() -> impl Iterator<Item = PatchParam> {
-        (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
-    }
-
-    #[inline]
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn from_index(i: usize) -> Option<PatchParam> {
-        if i < Self::COUNT {
-            Some(unsafe { std::mem::transmute::<usize, PatchParam>(i) })
-        } else {
-            None
-        }
-    }
-
     /// Resolve a [`ParamDesc::name`] string to its param (preset key lookup).
     pub fn from_name(name: &str) -> Option<PatchParam> {
         PATCH_PARAMS
@@ -235,9 +258,9 @@ impl PatchParam {
     }
 }
 
+indexed_param_enum! {
 /// Global parameter ids. Discriminant = index into the global block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum GlobalParam {
     // Master
     MasterTune,
@@ -273,27 +296,9 @@ pub enum GlobalParam {
     ReverbDamp,
     ReverbMix,
 }
+}
 
 impl GlobalParam {
-    pub const COUNT: usize = GlobalParam::ReverbMix as usize + 1;
-
-    pub fn all() -> impl Iterator<Item = GlobalParam> {
-        (0..Self::COUNT).map(|i| Self::from_index(i).unwrap())
-    }
-
-    #[inline]
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn from_index(i: usize) -> Option<GlobalParam> {
-        if i < Self::COUNT {
-            Some(unsafe { std::mem::transmute::<usize, GlobalParam>(i) })
-        } else {
-            None
-        }
-    }
-
     pub fn from_name(name: &str) -> Option<GlobalParam> {
         GLOBAL_PARAMS
             .iter()
@@ -743,6 +748,12 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
         "s",
         Taper::Exp { mid: 0.1 },
     ),
+    // UI-only display-mode toggle: when on, the editor maps the Cutoff fader
+    // as note-quantised Hz with a note-name readout (see dispatch.js's cutoff
+    // overrides). The ENGINE DELIBERATELY NEVER READS THIS — cutoff is a plain
+    // Hz param regardless of the toggle. It is still a persisted param so the
+    // display mode travels with presets/state. (A 2026-06-10 review first
+    // misread it as a dead param; it is not — 0019.)
     b("cutoff_tuned", "Tuned", 0.0),
     f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
     f("spread", "Spread", 0.0, 1.0, 0.0, "", Taper::Linear),

@@ -31,6 +31,12 @@ mod rng_tests {
 
 /// Rational (Padé degree-5/6) approximation to `tanh`, saturating to ±1 for
 /// `|x| ≥ 2.5`. Exact at 0, monotone, RMS error < 0.05 over [−3, 3].
+///
+/// Shares the Padé(5,6) coefficients with `poly::oscillator::tanh_c` —
+/// keep the two in sync if you retune them. Deliberately NOT merged: this
+/// branched (early-return) form suits scalar callers, while `tanh_c`'s
+/// branchless `clamp` form vectorises in the poly lane loop (0019; memory
+/// `vxn1-tanh-branchless-only`).
 #[inline(always)]
 pub fn fast_tanh(x: f32) -> f32 {
     if x >= 2.5 {

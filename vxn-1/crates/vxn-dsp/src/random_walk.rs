@@ -9,10 +9,9 @@
 /// (≈ 0.5–2 Hz wander).
 pub const OSCILLATOR_DRIFT_STEP: f32 = 0.005;
 
-/// Half a semitone expressed in V/OCT units (1/24 of an octave). Scales a
-/// `[-1, 1]` walk value so that `drift = 1.0` produces at most ±half a
-/// semitone of pitch deviation.
-pub const HALF_SEMITONE_VOCT: f32 = 1.0 / 24.0;
+// `HALF_SEMITONE_VOCT` (1/24 octave) removed (0019): it was `pub` but consumed
+// nowhere — the drift→pitch scaling lives at the voice/oscillator call site, not
+// here. Recover from git history if a shared constant is wanted later.
 
 /// Bounded random walk driven by a 32-bit linear congruential generator.
 ///

@@ -65,20 +65,28 @@ fn factory_files() -> Vec<(String, String, &'static str)> {
 /// All embedded factory presets, parsed. A file that fails to parse is skipped
 /// (the CI test guarantees the shipped bank never has one); parse warnings are
 /// likewise dropped here — the test asserts the bank produces none.
-pub fn factory() -> Vec<FactoryPreset> {
-    factory_files()
-        .into_iter()
-        .filter_map(|(path, category, contents)| {
-            let (preset, _warnings) = from_toml_str(contents).ok()?;
-            let name = preset.meta.name.clone();
-            Some(FactoryPreset {
-                path,
-                category,
-                name,
-                preset,
+///
+/// Parsed once and cached (0019): the embedded TOML never changes at runtime,
+/// and the browser used to call this 3× per interaction, re-parsing all ~33
+/// files each time. Main-thread only, so a `OnceLock` suffices — no RT path
+/// touches it.
+pub fn factory() -> &'static [FactoryPreset] {
+    static BANK: std::sync::OnceLock<Vec<FactoryPreset>> = std::sync::OnceLock::new();
+    BANK.get_or_init(|| {
+        factory_files()
+            .into_iter()
+            .filter_map(|(path, category, contents)| {
+                let (preset, _warnings) = from_toml_str(contents).ok()?;
+                let name = preset.meta.name.clone();
+                Some(FactoryPreset {
+                    path,
+                    category,
+                    name,
+                    preset,
+                })
             })
-        })
-        .collect()
+            .collect()
+    })
 }
 
 #[cfg(test)]

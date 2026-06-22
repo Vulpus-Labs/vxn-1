@@ -28,6 +28,12 @@ use std::process::Command;
 
 const PLUGIN_NAME: &str = "VXN1";
 const BUNDLE_ID: &str = "labs.vulpus.vxn1";
+/// The cdylib's file stem: the `vxn-clap` package name with `-` → `_` (cargo's
+/// crate-name rule). Coupled to the `--package vxn-clap` build below by hand
+/// (0019); deriving it from the manifest at runtime isn't worth the parse for a
+/// build tool. A rename can't *silently* ship an empty bundle: `build_universal`
+/// checks the produced dylib exists at this name and errors with the path if it
+/// doesn't — update both this constant and the `--package` arg together.
 const LIB_NAME: &str = "vxn_clap";
 
 fn main() {

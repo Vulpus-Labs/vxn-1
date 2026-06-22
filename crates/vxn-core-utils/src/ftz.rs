@@ -104,6 +104,12 @@ impl Drop for ScopedFlushToZero {
 /// Per-sample flush-to-zero for `f32` filter/delay feedback state that
 /// decays into the denormal range. Complements the thread-wide guard
 /// (which not every host honours).
+///
+/// Note (0019): the test for `is_normal()` also captures **NaN and ±∞**, so
+/// those are flushed to `0.0` too — a feedback path that goes non-finite is
+/// snapped back to silence rather than poisoning the buffer. Only normal values
+/// and an exact `0.0` pass through unchanged. Callers relying on NaN/∞
+/// propagation must not route through this.
 #[inline]
 pub fn flush_denormal(x: f32) -> f32 {
     if !x.is_normal() && x != 0.0 { 0.0 } else { x }
