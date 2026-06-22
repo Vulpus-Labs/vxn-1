@@ -63,15 +63,15 @@ closes the gaps.
 
 ## Planned tickets
 
-> Ids assigned at scaffold time, against a playable build. Provisional set:
+> Ids assigned at scaffold time (2026-06-22), against a playable build:
 
-- [ ] SIMD128 build + perf measurement (16-voice, desktop + mobile).
-- [ ] Glitch/xrun stress + latency/block-size tuning.
-- [ ] Denormal stress (held-quiet-sustain → reverb) + flush if needed.
-- [ ] wasm size optimisation (wasm-opt, trimming).
-- [ ] Cross-browser/-device support matrix + fallbacks doc.
-- [ ] CI build + static-host deploy.
-- [ ] (optional) PWA manifest + offline service worker.
+- [ ] 0087 — SIMD128 build + perf measurement (16-voice, desktop + mobile).
+- [ ] 0088 — Glitch/xrun stress + latency/block-size tuning.
+- [ ] 0089 — Denormal stress (held-quiet-sustain → reverb) + flush if needed.
+- [ ] 0090 — wasm size optimisation (wasm-opt, trimming).
+- [ ] 0091 — Cross-browser/-device support matrix + fallbacks doc.
+- [ ] 0092 — CI build + static-host deploy.
+- [ ] 0093 — (optional) PWA manifest + offline service worker.
 
 ## Risks
 
