@@ -44,7 +44,16 @@ const BLOCK: usize = 64;
 // constant cutoff/resonance/envelope tolerance offsets, so each voice's tail
 // differs slightly — an intended audio change. (0123's drift-tracked keytrack
 // contributes nothing here: the default patch still has `filter_key_track = 0`.)
-const GOLDEN_HASH: u64 = 0xdf0361b13e355aab;
+//
+// 2026-06-22: re-baselined for the equal-power FX wet/dry crossfade. Chorus,
+// delay, and FDN reverb switched from a linear mix `(1-m)·dry + m·wet` to an
+// equal-power one `√(1-m)·dry + √m·wet` — the wet leg is decorrelated from dry,
+// so the two sum in power, not amplitude (linear law dips ~3 dB at m=0.5). The
+// default patch has chorus ON at mix=0.4 (delay/reverb/phaser off), so the
+// chorused tail is what moves the hash; delay/reverb carry the same fix but
+// don't render in this baseline. Endpoints (m=0, m=1) are unchanged by the new
+// law, so the gated-note body before the wet builds is unaffected.
+const GOLDEN_HASH: u64 = 0x4fdcf5e72764bf25;
 
 #[test]
 fn baseline_render_is_stable() {
