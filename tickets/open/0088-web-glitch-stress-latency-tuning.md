@@ -15,9 +15,11 @@ With the 0087 rig proving steady-state render cost, this ticket proves the port
 survives *bursty* load without xruns: sustained 16-voice chords plus a stream of
 param automation plus FX tails, played live in the browser, watching for audio
 dropouts. Where headroom is tight it tunes the only knobs the worklet exposes —
-the AudioContext latency hint and any host-side lookahead — and folds in the
-known **Safari one-quantum-buffer** limit
-(`vxn1-web-safari-audioworklet`).
+the AudioContext latency hint and any host-side lookahead. Safari/iOS (WebKit)
+is out of scope here: per the E020 decision the WASM audio engine is unsupported
+there (glitchy one-quantum AudioWorklet that ignores `latencyHint` —
+`vxn1-web-safari-audioworklet`), so there is no Safari audio path to stress.
+Audio targets are Chrome and Firefox (desktop + Android).
 
 ## Design
 
@@ -36,12 +38,13 @@ known **Safari one-quantum-buffer** limit
   does not let us pick a larger render block, so "block-size tuning" here means
   the latencyHint and how many quanta of slack the graph buffers, not the render
   quantum itself.
-- **Safari.** The CPU meter is already disabled on Safari
+- **Safari/WebKit out of scope.** The WASM audio engine is unsupported on Safari
+  and all iOS browsers (WebKit) by the E020 decision, so there is no Safari
+  render path to stress or tune here — stress targets are Chrome and Firefox
+  (desktop + Android). The existing meter-off-on-Safari guard
   (`processorOptions.cpuMeter=false`,
   [vxn-processor-0038.js:39-41](../../vxn-1/crates/vxn-wasm/web/vxn-processor-0038.js#L39))
-  because Safari ships a one-quantum buffer and ignores `latencyHint`; document
-  that as a platform floor, not a bug to fix, and record the worst-case voice
-  count Safari sustains.
+  stays as-is for the faceplate.
 
 ## Acceptance criteria
 
@@ -54,14 +57,12 @@ known **Safari one-quantum-buffer** limit
 - [ ] (MANUAL) Sweep `latencyHint` (`interactive` vs `playback` vs an explicit
       seconds value); record the lowest-latency setting that stays glitch-free at
       16 voices, and document it as the default.
-- [ ] (MANUAL, Safari) Record the max glitch-free voice count under Safari's
-      one-quantum buffer; document the fallback (e.g. reduced default poly) for
-      the 0091 matrix.
 
 ## Notes
 
 - Depends on 0087: this ticket needs the worst-case patch and a measured
   steady-state cost before it can attribute glitches to bursts vs baseline.
-- Memory: `vxn1-web-safari-audioworklet` (Safari one-quantum buffer, ignores
-  latencyHint, meter-off fix already shipped).
+- Safari/iOS (WebKit) audio engine is unsupported by E020 decision — not a
+  stress target. Memory: `vxn1-web-safari-audioworklet` (why: one-quantum
+  buffer, ignores latencyHint).
 - Out of scope: denormal cliffs (0089), the published matrix (0091).

@@ -27,8 +27,9 @@ When this epic closes:
 - SIMD128 perf is measured vs scalar; build flags settled.
 - The held-quiet-sustain-into-reverb denormal case is verified (manual FTZ
   flush added only if measurement demands it).
-- A cross-browser/-device support matrix is published (Chrome/Firefox/
-  Safari, desktop + mobile).
+- A cross-browser/-device support matrix is published: full audio-engine
+  support on Chrome/Firefox (desktop + Android); Safari/iOS (WebKit) is
+  faceplate-only — the WASM audio engine is unsupported there by decision.
 - CI builds the bundle and deploys to a static host; optional PWA/offline.
 
 ## Why last
@@ -52,7 +53,9 @@ closes the gaps.
 - wasm size optimisation (release, `wasm-opt`, feature trimming) to the
   extent it affects load time.
 - Cross-browser/-device matrix: AudioWorklet, Atomics/SAB, Web MIDI,
-  storage behaviour per browser; document support + fallbacks.
+  storage behaviour per browser; document support + fallbacks. Audio-engine
+  support is scoped to Chrome/Firefox (desktop + Android); Safari/iOS (WebKit)
+  is faceplate-only (WASM audio engine unsupported by decision).
 - CI: build the web bundle as an artifact; deploy to a static host.
 - Optional: PWA manifest + service worker for offline/install.
 
@@ -65,7 +68,7 @@ closes the gaps.
 
 > Ids assigned at scaffold time (2026-06-22), against a playable build:
 
-- [ ] 0087 — SIMD128 build + perf measurement (16-voice, desktop + mobile).
+- [ ] 0087 — SIMD128 build + perf measurement (16-voice, desktop + Android).
 - [ ] 0088 — Glitch/xrun stress + latency/block-size tuning.
 - [ ] 0089 — Denormal stress (held-quiet-sustain → reverb) + flush if needed.
 - [ ] 0090 — wasm size optimisation (wasm-opt, trimming).
@@ -79,9 +82,11 @@ closes the gaps.
   poly may need headroom work or voice-count scaling on weak devices.
 - **Mobile.** Battery/thermal throttling and smaller core budgets; mobile
   may need a reduced default polyphony.
-- **Safari.** Worklet, Atomics, Web MIDI, and storage quirks concentrate
-  here; the matrix may force fallbacks (e.g. keyboard-only input on
-  Safari if Web MIDI is absent).
+- **Safari/iOS is faceplate-only (decision, not a risk to chase).** The WASM
+  audio engine is unsupported on WebKit (glitchy one-quantum AudioWorklet that
+  ignores `latencyHint` — `vxn1-web-safari-audioworklet`). Safari loads the
+  faceplate but produces no audio; ship must surface a clear notice there, not
+  a silent dead synth. This removes Safari from all audio-engine testing.
 - **Denormals at scale.** The spike's release-path result is clean; a
   held quiet signal into reverb feedback is the untested case.
 

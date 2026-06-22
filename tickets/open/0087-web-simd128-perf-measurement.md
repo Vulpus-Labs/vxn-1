@@ -93,5 +93,9 @@ The build flag itself already ships — `build_wasm`
   0089 (denormal stress) — keep it single-sourced in `bench.rs`.
 - Memory: `vxn1-render-loop-optimized` (native hot-path numbers, for contrast
   only — not a browser target).
+- Audio-perf targets are Chrome/Firefox (desktop + Android). Safari and all iOS
+  browsers (WebKit) run the faceplate only — the WASM engine is unsupported
+  there by the E020 decision — so they are out of perf scope (`0091` records
+  them as faceplate-only).
 - Out of scope: block-size/latency tuning (0088), denormal flush (0089), wasm
   size (0090).
