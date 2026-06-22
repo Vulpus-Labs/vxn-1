@@ -1,8 +1,8 @@
 // Shared SPSC event-ring + worklet drain/slice logic (ticket 0035 spike).
 //
 // ONE code path, imported by BOTH the Node harness (harness-0035.mjs) and the
-// AudioWorklet (vxn-processor-0035.js), so the thing we measure headlessly is
-// byte-for-byte the thing the browser runs. This is the de-risk core of E015:
+// production AudioWorklet (vxn-processor.js), so the thing we measure headlessly
+// is byte-for-byte the thing the browser runs. This is the de-risk core of E015:
 // a lock-free main->worklet transport plus the CLAP block-slicing loop ported
 // to JS.
 //

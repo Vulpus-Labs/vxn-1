@@ -2,7 +2,7 @@
 // real-world use: instantiate-from-bytes, silence-until-ready, sample-rate,
 // suspend/resume, teardown, and render-thread TRAP SAFETY.
 //
-// ONE code path, shared by the AudioWorklet (vxn-processor-0038.js) and the
+// ONE code path, shared by the AudioWorklet (vxn-processor.js) and the
 // Node harness (harness-0040.mjs), like the rest of E015.
 //
 // The split of concerns: AudioHost (0038) is the steady-state render loop; this
