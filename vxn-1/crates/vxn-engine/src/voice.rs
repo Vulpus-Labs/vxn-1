@@ -948,42 +948,18 @@ impl VoiceBank {
             self.glide_semi[v] += glide_coeff * (target - self.glide_semi[v]);
             let nf = self.glide_semi[v];
             let detune = self.detune_cents[v] * 0.01; // cents → semitones (Unison)
-            // Env/LFO→pitch with the "Mod" switch on: isolate to the
-            // modulator oscillator. Default modulator = osc2; Sync flips to
-            // osc1 (the slave that drives the sweep). Off / Ring have no
-            // cross-mod role but the toggle is still a user-visible
-            // "isolate to one osc" affordance, so it routes to osc2 — same
-            // as Pm — instead of falling back to both oscs (which would
-            // make the switch a no-op when no cross-mod is in play).
-            let (mod_only_to_osc1, mod_only_to_osc2) = match ctx.cross_mod_type {
-                CrossModType::Sync => (m.pitch_mod_only, 0.0),
-                _ => (0.0, m.pitch_mod_only),
-            };
-            // Mod-wheel cross-mod sweep follows the *cross-mod role*
-            // strictly: Off / Ring sweep both oscs (whole-note pitch
-            // effect, no modulator); Sync sweeps the slave (osc1); Pm
-            // sweeps the modulator (osc2) for FM index/spectrum.
-            let (sweep_to_osc1, sweep_to_osc2) = match ctx.cross_mod_type {
-                CrossModType::Off | CrossModType::Ring => (m.sweep_mod, m.sweep_mod),
-                CrossModType::Sync => (m.sweep_mod, 0.0),
-                CrossModType::Pm => (0.0, m.sweep_mod),
-            };
-            let s1 = ctx.base_semis
-                + nf
-                + ctx.osc1_semi
-                + m.pitch_mod
-                + mod_only_to_osc1
-                + sweep_to_osc1
-                + detune
-                + self.osc1.drift_value[v];
-            let s2 = ctx.base_semis
-                + nf
-                + ctx.osc2_semi
-                + m.pitch_mod
-                + mod_only_to_osc2
-                + sweep_to_osc2
-                + detune
-                + self.osc2.drift_value[v];
+            // Per-osc pitch assembly (osc-routing match + detune + drift +
+            // cross-mod inputs) is pure over locals — lifted into
+            // `voice_pitches` (0079). The increment writes below are DSP
+            // application, so they stay inline.
+            let (s1, s2) = voice_pitches(
+                ctx,
+                &m,
+                nf,
+                detune,
+                self.osc1.drift_value[v],
+                self.osc2.drift_value[v],
+            );
             self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
             pw1[v] = (ctx.osc1_pw + m.pwm_mod).clamp(0.05, 0.95);
@@ -997,16 +973,17 @@ impl VoiceBank {
             // applied to the static `note − 12` term. Plus the fixed per-voice
             // cutoff tolerance (0124): a tiny constant offset, ±TRIM_CUTOFF_CENTS
             // at full drift — enough for gentle inter-voice beating, never
-            // enough to detune a self-oscillating whistle.
-            let drift_keytrack = drift_keytrack(
+            // enough to detune a self-oscillating whistle. Pure over locals —
+            // lifted into `voice_cutoff_hz` (0079).
+            let cutoff_hz = voice_cutoff_hz(
+                ctx.cutoff,
+                m.cutoff_mod,
                 self.osc1.drift_value[v],
                 self.osc2.drift_value[v],
                 ctx.filter_key_track,
+                self.trim.cutoff[v],
+                ctx.drift_amount,
             );
-            let cutoff_trim_semi =
-                self.trim.cutoff[v] * (TRIM_CUTOFF_CENTS / 100.0) * ctx.drift_amount;
-            let cutoff_hz =
-                ctx.cutoff * fast_exp2((m.cutoff_mod + drift_keytrack + cutoff_trim_semi) / 12.0);
             // Fixed per-voice resonance tolerance (0124): voices cross the
             // self-oscillation threshold at slightly different settings, so near
             // the edge one can whistle while a neighbour stays quiet. The OTA
@@ -1404,6 +1381,74 @@ fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
             + key_track
             + ctx.cutoff_extra,
     }
+}
+
+/// Pure per-voice oscillator pitches (semitones) for one channel: the osc-routing
+/// match (cross-mod mod-only + mod-wheel sweep targeting) plus base/note/osc-semi
+/// /detune/drift. No `&self`, no sample-rate side effects — `render_block` feeds it
+/// the per-voice locals and applies `note_to_hz` to the result (0079).
+///
+/// `nf` is the glided note in semitones, `detune` the Unison per-voice offset,
+/// `drift1`/`drift2` the independent per-osc drift values.
+///
+/// The "Mod" switch isolates Env/LFO→pitch to the modulator oscillator: default
+/// modulator = osc2; Sync flips to osc1 (the slave that drives the sweep). Off /
+/// Ring have no cross-mod role but the toggle still routes to osc2 (same as Pm),
+/// so it stays a meaningful "isolate to one osc" affordance rather than a no-op.
+/// The mod-wheel cross-mod sweep follows the cross-mod role strictly: Off / Ring
+/// sweep both oscs (whole-note pitch effect), Sync sweeps the slave (osc1), Pm
+/// sweeps the modulator (osc2) for FM index/spectrum.
+#[inline]
+fn voice_pitches(ctx: &BlockCtx, m: &ModOut, nf: f32, detune: f32, drift1: f32, drift2: f32) -> (f32, f32) {
+    let (mod_only_to_osc1, mod_only_to_osc2) = match ctx.cross_mod_type {
+        CrossModType::Sync => (m.pitch_mod_only, 0.0),
+        _ => (0.0, m.pitch_mod_only),
+    };
+    let (sweep_to_osc1, sweep_to_osc2) = match ctx.cross_mod_type {
+        CrossModType::Off | CrossModType::Ring => (m.sweep_mod, m.sweep_mod),
+        CrossModType::Sync => (m.sweep_mod, 0.0),
+        CrossModType::Pm => (0.0, m.sweep_mod),
+    };
+    let s1 = ctx.base_semis
+        + nf
+        + ctx.osc1_semi
+        + m.pitch_mod
+        + mod_only_to_osc1
+        + sweep_to_osc1
+        + detune
+        + drift1;
+    let s2 = ctx.base_semis
+        + nf
+        + ctx.osc2_semi
+        + m.pitch_mod
+        + mod_only_to_osc2
+        + sweep_to_osc2
+        + detune
+        + drift2;
+    (s1, s2)
+}
+
+/// Pure per-voice filter cutoff in Hz for one channel: `cutoff_base` shifted by
+/// the resolved cutoff mod (env/LFO/keytrack/velocity, already summed into
+/// `cutoff_mod`) plus the per-voice drift key-track and fixed cutoff trim, all in
+/// semitones via `fast_exp2`. No `&self`, no sample-rate side effects (0079).
+///
+/// `drift1`/`drift2` are the per-osc drift values (their mean × `key_track` is the
+/// drift key-track term); `trim_cutoff` is the voice's normalised cutoff tolerance
+/// (× `TRIM_CUTOFF_CENTS`, scaled by `drift_amount`).
+#[inline]
+fn voice_cutoff_hz(
+    cutoff_base: f32,
+    cutoff_mod: f32,
+    drift1: f32,
+    drift2: f32,
+    key_track: f32,
+    trim_cutoff: f32,
+    drift_amount: f32,
+) -> f32 {
+    let dk = drift_keytrack(drift1, drift2, key_track);
+    let trim_semi = trim_cutoff * (TRIM_CUTOFF_CENTS / 100.0) * drift_amount;
+    cutoff_base * fast_exp2((cutoff_mod + dk + trim_semi) / 12.0)
 }
 
 /// Portamento glide for this block: `(active, coeff)`. The one-pole coefficient
@@ -2330,5 +2375,114 @@ mod mod_tests {
         assert_eq!(drift_keytrack(0.2, 0.4, 0.0), 0.0);
         // Symmetric drift cancels: opposite wanders leave cutoff untracked.
         assert_eq!(drift_keytrack(0.3, -0.3, 1.0), 0.0);
+    }
+
+    // ── voice_pitches (osc-routing matrix) ──
+
+    /// ModOut with one field set; the rest neutral. Lets a test isolate the
+    /// routing of a single channel.
+    fn mod_out(pitch_mod: f32, pitch_mod_only: f32, sweep_mod: f32) -> ModOut {
+        ModOut {
+            pitch_mod,
+            pitch_mod_only,
+            sweep_mod,
+            pwm_mod: 0.0,
+            cutoff_mod: 0.0,
+        }
+    }
+
+    #[test]
+    fn voice_pitches_base_assembly_no_mod() {
+        // Off, all mod zero: each osc = base + nf + its osc_semi + detune + its drift.
+        let ctx = ctx_with(|c| {
+            c.cross_mod_type = CrossModType::Off;
+            c.base_semis = 60.0;
+            c.osc1_semi = 0.0;
+            c.osc2_semi = 7.0; // osc2 a fifth up
+        });
+        let (s1, s2) = voice_pitches(&ctx, &mod_out(0.0, 0.0, 0.0), 2.0, 0.1, 0.3, -0.2);
+        assert!((s1 - (60.0 + 2.0 + 0.0 + 0.1 + 0.3)).abs() < 1e-6, "{s1}");
+        assert!((s2 - (60.0 + 2.0 + 7.0 + 0.1 - 0.2)).abs() < 1e-6, "{s2}");
+    }
+
+    #[test]
+    fn voice_pitches_common_pitch_mod_hits_both_oscs() {
+        let ctx = ctx_with(|c| c.cross_mod_type = CrossModType::Off);
+        let (s1, s2) = voice_pitches(&ctx, &mod_out(3.0, 0.0, 0.0), 0.0, 0.0, 0.0, 0.0);
+        assert!((s1 - 3.0).abs() < 1e-6);
+        assert!((s2 - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn voice_pitches_mod_only_routes_per_cross_mod_mode() {
+        // Sync isolates the mod-only pitch to osc1 (the slave); every other mode
+        // routes it to osc2 (the default modulator).
+        let m = mod_out(0.0, 5.0, 0.0);
+        for (mode, want1, want2) in [
+            (CrossModType::Sync, 5.0, 0.0),
+            (CrossModType::Off, 0.0, 5.0),
+            (CrossModType::Ring, 0.0, 5.0),
+            (CrossModType::Pm, 0.0, 5.0),
+        ] {
+            let ctx = ctx_with(|c| c.cross_mod_type = mode);
+            let (s1, s2) = voice_pitches(&ctx, &m, 0.0, 0.0, 0.0, 0.0);
+            assert!((s1 - want1).abs() < 1e-6, "{mode:?} osc1 {s1}");
+            assert!((s2 - want2).abs() < 1e-6, "{mode:?} osc2 {s2}");
+        }
+    }
+
+    #[test]
+    fn voice_pitches_sweep_routes_per_cross_mod_mode() {
+        // Off/Ring sweep both oscs; Sync sweeps the slave (osc1); Pm sweeps the
+        // modulator (osc2).
+        let m = mod_out(0.0, 0.0, 2.0);
+        for (mode, want1, want2) in [
+            (CrossModType::Off, 2.0, 2.0),
+            (CrossModType::Ring, 2.0, 2.0),
+            (CrossModType::Sync, 2.0, 0.0),
+            (CrossModType::Pm, 0.0, 2.0),
+        ] {
+            let ctx = ctx_with(|c| c.cross_mod_type = mode);
+            let (s1, s2) = voice_pitches(&ctx, &m, 0.0, 0.0, 0.0, 0.0);
+            assert!((s1 - want1).abs() < 1e-6, "{mode:?} osc1 {s1}");
+            assert!((s2 - want2).abs() < 1e-6, "{mode:?} osc2 {s2}");
+        }
+    }
+
+    // ── voice_cutoff_hz ──
+
+    #[test]
+    fn voice_cutoff_neutral_is_base() {
+        // No mod, no drift, no trim → cutoff passes through untouched.
+        let hz = voice_cutoff_hz(1000.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        assert!((hz - 1000.0).abs() < 1e-3, "{hz}");
+    }
+
+    #[test]
+    fn voice_cutoff_mod_is_semitone_exponential() {
+        // +12 semitones of cutoff mod doubles the frequency; -12 halves it.
+        let up = voice_cutoff_hz(1000.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let down = voice_cutoff_hz(1000.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        assert!((up - 2000.0).abs() < 1.0, "{up}");
+        assert!((down - 500.0).abs() < 1.0, "{down}");
+    }
+
+    #[test]
+    fn voice_cutoff_includes_drift_keytrack() {
+        // Mean drift 0.5 st × key_track 1.0 = +0.5 st; key_track 0 cancels it.
+        let tracked = voice_cutoff_hz(1000.0, 0.0, 0.4, 0.6, 1.0, 0.0, 0.0);
+        let untracked = voice_cutoff_hz(1000.0, 0.0, 0.4, 0.6, 0.0, 0.0, 0.0);
+        assert!((tracked - 1000.0 * fast_exp2(0.5 / 12.0)).abs() < 1e-3, "{tracked}");
+        assert!((untracked - 1000.0).abs() < 1e-3, "{untracked}");
+    }
+
+    #[test]
+    fn voice_cutoff_trim_scales_with_drift_amount() {
+        // Trim contributes `trim · TRIM_CUTOFF_CENTS/100 · drift_amount` semitones;
+        // zero drift_amount zeroes it regardless of the per-voice trim draw.
+        let semi = 1.0 * (TRIM_CUTOFF_CENTS / 100.0) * 1.0;
+        let trimmed = voice_cutoff_hz(1000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0);
+        assert!((trimmed - 1000.0 * fast_exp2(semi / 12.0)).abs() < 1e-3, "{trimmed}");
+        assert!((voice_cutoff_hz(1000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0) - 1000.0).abs() < 1e-3);
     }
 }

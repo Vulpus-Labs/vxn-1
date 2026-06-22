@@ -62,3 +62,26 @@ of the coarse `lib.rs` integration oracles into precise unit
 tests. Pairs naturally with 0080 (BlockCtx grouping) — the
 extracted helpers' inputs should line up with the new route
 sub-structs, but either can land first.
+
+## Close-out (2026-06-22)
+
+- Pure `voice_pitches(ctx, m, nf, detune, drift1, drift2) -> (f32, f32)`
+  ([voice.rs:1402](../../vxn-1/crates/vxn-engine/src/voice.rs#L1402)) — no
+  `&self`, no sample rate. Holds the osc-routing match (mod-only: Sync→osc1,
+  else→osc2; sweep: Off/Ring→both, Sync→osc1, Pm→osc2) + base/note/osc-semi/
+  detune/drift. Replaces the old inline block; `render_block` now calls it and
+  applies `note_to_hz` to the result.
+- Pure `voice_cutoff_hz(base, cutoff_mod, drift1, drift2, key_track, trim, drift_amount) -> f32`
+  ([voice.rs:1440](../../vxn-1/crates/vxn-engine/src/voice.rs#L1440)) — base ×
+  `fast_exp2((cutoff_mod + drift_keytrack + trim)/12)`. Replaces inline block.
+- `render_block` ([voice.rs:864](../../vxn-1/crates/vxn-engine/src/voice.rs#L864))
+  calls both helpers; render loop, coeff writes, tremolo state machine, voice
+  freeing stay inline. Bit-exact: `tests/baseline.rs::baseline_render_is_stable`
+  green, render hash unchanged.
+- Direct unit tests, no buffer render: `voice_pitches_base_assembly_no_mod`,
+  `voice_pitches_common_pitch_mod_hits_both_oscs`,
+  `voice_pitches_mod_only_routes_per_cross_mod_mode`,
+  `voice_pitches_sweep_routes_per_cross_mod_mode` (each `CrossModType` arm),
+  `voice_cutoff_neutral_is_base`, `voice_cutoff_mod_is_semitone_exponential`,
+  `voice_cutoff_includes_drift_keytrack`, `voice_cutoff_trim_scales_with_drift_amount`.
+- `cargo test --workspace` green (69 suites ok).
