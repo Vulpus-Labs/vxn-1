@@ -3,3 +3,4 @@ target/
 *.clap
 .DS_Store
 **/node_modules/
+.claude/worktrees/
