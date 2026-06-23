@@ -519,6 +519,10 @@ impl Engine {
                 curve: CurveKind::from_u8(row.curve),
             };
         }
+        // Apply the live assign mode before the block's note events so a
+        // runtime Poly → Solo flip gates the held chord off instead of
+        // leaving it sustaining under the monophonic allocator.
+        self.alloc.set_mode(self.params.alloc.assign_mode);
         // Live-swap each stack's algorithm + patch-level feedback so a
         // picker change or feedback-fader move repatches a held note on the
         // next block (route_fn + fb_scale are otherwise only refreshed by

@@ -123,6 +123,10 @@ pub struct PolyAlloc {
     sustain: bool,
     /// Per-slot "key released while the pedal was down" flag.
     held_by_pedal: [bool; N_STACKS],
+    /// Last assign mode applied via [`Self::set_mode`]. Tracked so a runtime
+    /// Poly → Solo flip can gate the held chord off instead of leaving it
+    /// sustaining under the monophonic allocator.
+    assign_mode: AssignMode,
 }
 
 impl PolyAlloc {
@@ -143,6 +147,7 @@ impl PolyAlloc {
             voiced: [false; N_STACKS],
             sustain: false,
             held_by_pedal: [false; N_STACKS],
+            assign_mode: AssignMode::Poly,
         }
     }
 
@@ -167,6 +172,7 @@ impl PolyAlloc {
         self.voiced = [false; N_STACKS];
         self.sustain = false;
         self.held_by_pedal = [false; N_STACKS];
+        self.assign_mode = AssignMode::Poly;
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -234,6 +240,34 @@ impl PolyAlloc {
         match params.assign_mode {
             AssignMode::Solo => self.note_off_solo(params, stack_params, voice_params, note),
             AssignMode::Poly => self.note_off_poly(note),
+        }
+    }
+
+    /// Apply the live assign mode, reacting to a runtime change. The engine
+    /// calls this once per block from the param snapshot, so a host/UI flip of
+    /// the assign-mode param lands here before the block's note events.
+    ///
+    /// Poly → Solo gates every sounding voice off (release tails ring out) and
+    /// clears the held-note bookkeeping, so a chord held across the switch does
+    /// not keep sustaining under the now-monophonic allocator. Other
+    /// transitions are no-ops: Solo → Poly leaves the single live voice
+    /// playing, to be joined (not replaced) by the next note.
+    pub fn set_mode(&mut self, mode: AssignMode) {
+        if mode == self.assign_mode {
+            return;
+        }
+        let prev = self.assign_mode;
+        self.assign_mode = mode;
+        if prev == AssignMode::Poly && mode == AssignMode::Solo {
+            for i in 0..N_STACKS {
+                if self.stacks[i].gate {
+                    self.stacks[i].note_off();
+                }
+                self.held_by_pedal[i] = false;
+            }
+            self.held_len = 0;
+            self.solo_active = false;
+            self.solo_slot = None;
         }
     }
 
@@ -1138,6 +1172,60 @@ mod tests {
         for s in &alloc.stacks {
             assert_eq!(s.glide_st, 0.0);
         }
+    }
+
+    #[test]
+    fn poly_to_solo_switch_releases_held_gates() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        // Hold a chord in Poly.
+        for n in 60u8..64 {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
+        assert_eq!(alloc.stacks.iter().filter(|s| s.gate).count(), 4);
+        // Flip to Solo: every held gate releases.
+        alloc.set_mode(AssignMode::Solo);
+        assert!(alloc.stacks.iter().all(|s| !s.gate), "all gates released");
+        assert_eq!(alloc.held_len, 0, "held-note stack cleared");
+        assert!(!alloc.solo_active);
+        assert_eq!(alloc.solo_slot, None);
+    }
+
+    #[test]
+    fn poly_to_solo_switch_releases_pedal_held_gates() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+        alloc.set_sustain(true);
+        alloc.note_off(&params, &sp, &vp, 60); // deferred by pedal, gate stays high
+        assert!(alloc.stacks[0].gate);
+        alloc.set_mode(AssignMode::Solo);
+        assert!(!alloc.stacks[0].gate, "pedal-held gate released on solo switch");
+        assert!(!alloc.held_by_pedal[0]);
+    }
+
+    #[test]
+    fn solo_to_poly_switch_leaves_voice_sounding() {
+        let mut alloc = PolyAlloc::new(SR);
+        let solo = AllocParams {
+            assign_mode: AssignMode::Solo,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.set_mode(AssignMode::Solo);
+        alloc.note_on(&solo, &sp, &vp, 60, 100);
+        let slot = alloc.solo_slot.expect("solo voice live");
+        assert!(alloc.stacks[slot].gate);
+        // Solo → Poly must not kill the live voice.
+        alloc.set_mode(AssignMode::Poly);
+        assert!(alloc.stacks[slot].gate, "solo→poly keeps the live voice");
     }
 
     #[test]
