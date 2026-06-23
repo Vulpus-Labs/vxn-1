@@ -874,35 +874,32 @@ impl Engine {
                 for k in 0..STACK_LANES {
                     let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
                     level_targets[op_i][k] = eff - eg;
-                    if !fresh {
-                        // Keep `eg + op_level_mod` continuous across the EG's
-                        // block-edge march; the delta is folded into this
-                        // block's ramp instead.
-                        stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
-                    } else {
-                        // Fresh note: seed the level at silence so the onset
-                        // ramps `0 → eff` across this first block (set up in the
-                        // `fresh` branch below) instead of snapping. The rendered
-                        // level is `eg + op_level_mod`; starting `op_level_mod` at
-                        // `-eg` puts sample 0 at 0. Without this the block-constant
-                        // `eg` (already one attack step past 0 after `eg_tick`)
-                        // steps 0 → full at sample 0 on a very fast attack — a
-                        // click. Extends the 0077 per-sample EG ramp to the note's
-                        // first block (later blocks are already smoothed via the
-                        // rebase above).
-                        stack.op_level_mod[op_i][k] = -eg;
-                    }
+                    // Keep the rendered level (`eg + op_level_mod`) continuous
+                    // across the EG's block-edge march; the delta is folded into
+                    // this block's ramp instead of stepping. This runs for the
+                    // note's FIRST block too (not gated on `!fresh`) so the onset
+                    // ramp starts from the slot's *previous* rendered level:
+                    //   - idle/poly slot: a released voice settles `op_level_mod`
+                    //     and `eg` to ~0, so a brand-new note ramps up from
+                    //     silence (the fast-attack onset-click fix);
+                    //   - solo steal: the op-amp EG continues its level across
+                    //     `note_on` (click-free retrigger, see `eg::note_on`), and
+                    //     the outgoing note's `op_level_mod` is still live, so the
+                    //     new note ramps from the previous note's level instead of
+                    //     dipping to 0 first — which itself was a click.
+                    stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
                 }
                 prev_eg[op_i] = eg;
             }
             if fresh {
                 // Phase + pan snap to the new voice's values (no glide in from
                 // the previous allocation). The level onset, by contrast, ramps
-                // from the silence seeded above (`op_level_mod = -eg`) to this
-                // block's effective target, so a near-zero attack fades in over
-                // the first block (~1.3 ms) instead of stepping 0 → full at
-                // sample 0 (onset click). Same per-sample ramp the matrix mod /
-                // EG rebase use on later blocks (0077).
+                // from the rebased previous rendered level (above) to this
+                // block's effective target — so a fresh poly note fades in from
+                // silence and a solo steal glides from the outgoing note's
+                // level, neither stepping at sample 0 (onset click). Same
+                // per-sample ramp the matrix mod / EG rebase use on later
+                // blocks (0077).
                 stack.op_phase_mod_q32 = phase_targets_q32;
                 stack.refresh_pan_with_mod();
                 let inv = 1.0 / n as f32;

@@ -414,7 +414,17 @@ impl PolyAlloc {
         if self.solo_active && params.legato {
             self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
         } else {
+            // Retrigger steal. If the outgoing note is still sounding, keep the
+            // oscillator waveform continuous across the re-cook (note_on resets
+            // phase): the EG still retriggers, but resetting phase under a live
+            // note clicks audibly, and merely muting through it (the older
+            // behaviour) only swaps that click for a level dip.
+            let preserve = self.solo_active && !self.stacks[SOLO_SLOT].is_idle();
+            let snap = preserve.then(|| self.stacks[SOLO_SLOT].snapshot_waveform());
             self.stacks[SOLO_SLOT].note_on(sp, vp, note, velocity, self.sample_rate, counter);
+            if let Some(snap) = snap {
+                self.stacks[SOLO_SLOT].restore_waveform(&snap);
+            }
             self.stacks[SOLO_SLOT].set_bend(self.bend_st);
         }
         self.solo_active = true;
@@ -458,7 +468,14 @@ impl PolyAlloc {
             if params.legato {
                 self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
             } else {
+                // Held-note fallback re-pitches a still-ringing voice — same
+                // waveform-continuity treatment as a retrigger steal above.
+                let snap = (!self.stacks[SOLO_SLOT].is_idle())
+                    .then(|| self.stacks[SOLO_SLOT].snapshot_waveform());
                 self.stacks[SOLO_SLOT].note_on(sp, vp, prev, vel, self.sample_rate, counter);
+                if let Some(snap) = snap {
+                    self.stacks[SOLO_SLOT].restore_waveform(&snap);
+                }
                 self.stacks[SOLO_SLOT].set_bend(self.bend_st);
             }
             self.seq[SOLO_SLOT] = counter;

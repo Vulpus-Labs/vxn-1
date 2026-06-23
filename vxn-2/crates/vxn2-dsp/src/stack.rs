@@ -206,6 +206,17 @@ pub struct StackOp {
     pub fb_scale: [f32; STACK_LANES],
 }
 
+/// Running oscillator state captured by [`Stack::snapshot_waveform`] so a solo
+/// steal can retrigger the EGs without resetting the waveform (phase / feedback
+/// / prev-output continuity).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WaveformSnapshot {
+    phase: [[u32; STACK_LANES]; N_OPS],
+    fb_prev1: [[f32; STACK_LANES]; N_OPS],
+    fb_prev2: [[f32; STACK_LANES]; N_OPS],
+    prev_outs: [[f32; STACK_LANES]; N_OPS],
+}
+
 /// One voice stack — six lane-packed ops + per-stack metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct Stack {
@@ -555,6 +566,35 @@ impl Stack {
     #[inline]
     pub fn is_idle(&self) -> bool {
         self.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
+    }
+
+    /// Snapshot the running oscillator state — per-op phase accumulators,
+    /// feedback memory, and the prev-sample op outputs fed to the router.
+    /// Paired with [`Self::restore_waveform`] so a solo steal can retrigger the
+    /// EGs (via [`Self::note_on`], which otherwise resets phase to zero) while
+    /// keeping the *waveform* continuous: resetting phase under a still-sounding
+    /// note is an audible click. `phase_inc` is deliberately not captured — the
+    /// re-cook installs the stolen note's new pitch, which we keep.
+    pub fn snapshot_waveform(&self) -> WaveformSnapshot {
+        let mut s = WaveformSnapshot::default();
+        for i in 0..N_OPS {
+            s.phase[i] = self.ops[i].phase;
+            s.fb_prev1[i] = self.ops[i].fb_prev1;
+            s.fb_prev2[i] = self.ops[i].fb_prev2;
+        }
+        s.prev_outs = self.prev_outs;
+        s
+    }
+
+    /// Restore a [`WaveformSnapshot`] captured before a re-cook (see
+    /// [`Self::snapshot_waveform`]).
+    pub fn restore_waveform(&mut self, s: &WaveformSnapshot) {
+        for i in 0..N_OPS {
+            self.ops[i].phase = s.phase[i];
+            self.ops[i].fb_prev1 = s.fb_prev1[i];
+            self.ops[i].fb_prev2 = s.fb_prev2[i];
+        }
+        self.prev_outs = s.prev_outs;
     }
 
     #[inline]

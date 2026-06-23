@@ -8,6 +8,7 @@
 //! across the first block, so a fast attack fades in (~one block) instead of
 //! stepping.
 
+use vxn2_engine::alloc::AssignMode;
 use vxn2_engine::engine::Engine;
 
 const SR: f32 = 48_000.0;
@@ -55,4 +56,61 @@ fn note_on_onset_is_click_free_on_fast_attack() {
              (pre-fix the first block stepped 0 → full)"
         );
     }
+}
+
+/// Solo-mode steal (legato off): stealing a *sounding* note must be click-free.
+/// A retrigger steal resets the oscillator phase, and the EG continues its level
+/// across `note_on`. The earlier onset fix masked the phase-reset glitch by
+/// forcing the level to 0 through it (`op_level_mod = -eg`) — trading the click
+/// for a level dip. Carrying the level through instead (the onset fix's intent)
+/// then *exposed* the phase glitch as a loud click. The resolution keeps both
+/// the level and the oscillator waveform continuous on a steal (the EG still
+/// retriggers), so neither artefact is present. We measure the steal transient
+/// with the same 4th-difference probe as the note-off test and require it to
+/// stay near the click-free (legato) floor.
+#[test]
+fn solo_steal_is_click_free() {
+    let mut e = Engine::new(SR, BLK);
+    e.params.alloc.assign_mode = AssignMode::Solo;
+    e.params.alloc.legato = false; // retrigger the EG on the stolen note
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    for op in &mut e.params.patch.voice.ops {
+        op.eg.r[0] = 99; // fast attack — worst case for a steal transient
+    }
+
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    let mut buf = Vec::new();
+
+    // First note, settle to a steady sounding level.
+    e.note_on(60, 100);
+    for _ in 0..(SR as usize / 10 / BLK) {
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+    let steal_t = buf.len();
+    // Steal it. The slot is still sounding → waveform + level continuity.
+    e.note_on(67, 100);
+    for _ in 0..(SR as usize / 20 / BLK) {
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+
+    let d4 = |i: usize| {
+        (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs() as f64
+    };
+    let steal_worst = (steal_t..buf.len() - 2).map(d4).fold(0.0, f64::max);
+    let baseline = (4..steal_t - 2).map(d4).fold(0.0, f64::max);
+
+    // Click-free reference (legato, phase+level continuous) measures ~0.016 on
+    // this patch; the phase-reset click (level carried through, phase reset)
+    // measures ~0.6. Sit the gate well between the two.
+    assert!(
+        steal_worst < 5e-2,
+        "solo steal transient |d4| {steal_worst:.2e} (steady baseline {baseline:.2e}) — \
+         a steal-of-sounding-note click is back (phase reset no longer masked / continued)"
+    );
 }
