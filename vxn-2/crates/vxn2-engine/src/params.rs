@@ -436,7 +436,7 @@ macro_rules! per_patch_rest_arr {
             en("mod-env-shape", "Mod Env Shape", ADSR_SHAPES, 0),
             en("assign-mode", "Assign", ASSIGN_MODES, 0),
             bl("legato", "Legato", false),
-            flx("glide-time", "Glide", 0.0, 2000.0, 12.0, "ms", 100.0),
+            flx("glide-time", "Glide", 0.0, 2000.0, 0.0, "ms", 100.0),
             it("stack-density", "Stack Density", 1, 8, 4, ""),
             flx("stack-detune", "Stack Detune", 0.0, 50.0, 8.0, "ct", 10.0),
             fl("stack-spread", "Stack Spread", 0.0, 1.0, 0.60, ""),
