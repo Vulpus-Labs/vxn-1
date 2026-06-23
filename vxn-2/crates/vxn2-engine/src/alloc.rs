@@ -389,7 +389,12 @@ impl PolyAlloc {
     ///    note, so always-glide slides over a short, musical interval. If no
     ///    idle slot has sounded yet, take the first unvoiced idle slot (it
     ///    snaps — nothing to glide from).
-    /// 2. Steal the oldest at/past Sustain (ties broken by lowest note).
+    /// 2. Steal the oldest at/past Sustain (ties broken by lowest note),
+    ///    preferring voices whose physical key is already *up* — a
+    ///    pedal-sustained note (`held_by_pedal`) or a `Releasing` tail — over a
+    ///    key the player is still holding. So a steal under a held sustain pedal
+    ///    takes a pedal-sustained note first; only if every stealable voice has
+    ///    its key down does it fall back to the oldest of those.
     /// 3. Globally oldest.
     fn pick_slot(&self, note: u8) -> usize {
         let mut nearest_voiced: Option<(usize, f32)> = None;
@@ -418,7 +423,16 @@ impl PolyAlloc {
         if let Some(i) = first_unvoiced_idle {
             return i;
         }
+        // Oldest-then-lowest among all stealable voices, plus the same among
+        // only those whose key is already up (pedal-held or releasing). The
+        // key-up set wins when non-empty so a held pedal sheds its sustained
+        // notes before a key the player is still pressing.
         let mut best: Option<(usize, u64, u8)> = None;
+        let mut best_keyup: Option<(usize, u64, u8)> = None;
+        let older = |cand: (usize, u64, u8), b: Option<(usize, u64, u8)>| match b {
+            Some(b) if b.1 < cand.1 || (b.1 == cand.1 && b.2 <= cand.2) => b,
+            _ => cand,
+        };
         for i in 0..N_STACKS {
             // A voice already being killed (declick fade) is not a steal target.
             let stealable = self.stacks[i].phase != VoicePhase::Declick
@@ -428,14 +442,13 @@ impl PolyAlloc {
                     .any(|o| matches!(o.eg.stage, EgStage::Sustain | EgStage::Release));
             if stealable {
                 let cand = (i, self.seq[i], self.stacks[i].note);
-                best = Some(match best {
-                    None => cand,
-                    Some(b) if cand.1 < b.1 || (cand.1 == b.1 && cand.2 < b.2) => cand,
-                    Some(b) => b,
-                });
+                best = Some(older(cand, best));
+                if self.held_by_pedal[i] || self.stacks[i].phase == VoicePhase::Releasing {
+                    best_keyup = Some(older(cand, best_keyup));
+                }
             }
         }
-        if let Some((i, _, _)) = best {
+        if let Some((i, _, _)) = best_keyup.or(best) {
             return i;
         }
         let mut min_seq = IDLE_SEQ;
@@ -1124,6 +1137,53 @@ mod tests {
             alloc.stacks[0].ops[0].eg.level > 0.0,
             "EG restarts from the current level, not 0"
         );
+    }
+
+    /// Poly steal under a held sustain pedal must take a pedal-sustained note
+    /// (key already up) before a key the player is still holding, and must drop
+    /// the stolen slot's pedal-hold flag so a later pedal-up does not try to
+    /// re-release the now-reused voice.
+    #[test]
+    fn poly_steal_prefers_pedal_held_over_active_key() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams {
+            assign_mode: AssignMode::Poly,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let vp = fast_patch();
+        // Fill all 16 slots; note 60 (slot 0) is the oldest.
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain (Held)
+        // Pedal down, lift one *middle* key (70) — it is held by the pedal now,
+        // gate still high, but its physical key is up.
+        alloc.set_sustain(true);
+        alloc.note_off(&params, &sp, &vp, 70);
+        let pedal_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == 70)
+            .expect("note 70 sounding");
+        assert!(alloc.held_by_pedal[pedal_slot], "70 deferred by pedal");
+        assert!(alloc.stacks[pedal_slot].gate, "pedal keeps the gate high");
+        // No spare slot: the steal must take the pedal-held 70, not the oldest 60.
+        alloc.note_on(&params, &sp, &vp, 90, 100);
+        assert_eq!(alloc.stacks[pedal_slot].note, 90, "stole the pedal-held voice");
+        assert!(
+            !alloc.held_by_pedal[pedal_slot],
+            "stolen slot dropped its pedal-hold flag"
+        );
+        let notes: Vec<u8> = alloc.stacks.iter().filter(|s| s.gate).map(|s| s.note).collect();
+        assert!(notes.contains(&60), "oldest active key must survive the steal");
+        assert!(notes.contains(&90), "new note sounding");
+        assert!(!notes.contains(&70), "pedal-held note was stolen");
+        // Pedal up: nothing left flagged, so the reused voice is untouched.
+        alloc.set_sustain(false);
+        assert!(alloc.stacks[pedal_slot].gate, "reused voice not re-released by pedal-up");
+        assert_eq!(alloc.stacks[pedal_slot].note, 90);
     }
 
     /// Overlapping distinct notes (a chord) take *fresh* voices and must not

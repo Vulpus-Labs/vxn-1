@@ -108,6 +108,16 @@ spread):
 `pick_slot` will not steal a `Declick` voice (it is already dying). A *free*
 (idle) slot still takes a fresh `note_on` (onset from silence) as before.
 
+**Steal ordering under a held sustain pedal.** A note released while the pedal
+(CC64) is down keeps its gate high and stays `Held` (`held_by_pedal`), so by EG
+stage alone it is indistinguishable from a key the player is still pressing. The
+steal picker therefore prefers voices whose *physical key is already up* —
+`held_by_pedal` or `Releasing` — over actively-held keys, oldest-then-lowest
+within that set, falling back to the oldest key-down voice only when no key-up
+voice exists. So a steal under a held pedal sheds a pedal-sustained note before
+one the player is holding. Stealing clears the slot's `held_by_pedal` flag
+(`claim_slot`), so a later pedal-up does not try to re-release the reused voice.
+
 ## Implementation
 
 - `vxn2-dsp/src/stack.rs`: `VoicePhase` + `phase`/`idle_grace` fields;
