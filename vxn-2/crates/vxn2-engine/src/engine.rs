@@ -301,6 +301,18 @@ pub struct Engine {
     /// Decimated dry result fed to the FX chain (`block_size`).
     dry_l: Vec<f32>,
     dry_r: Vec<f32>,
+    // Block-rate smoothing of the *base* filter scalars (the UI cutoff /
+    // resonance / drive knobs), to kill zipper noise when they're swept. The
+    // per-stack matrix mod accumulators are already per-sample-ramped; only the
+    // global base param jumped at block boundaries. Cutoff and drive smooth in
+    // the log2 domain (musically linear, matching their exponential taper);
+    // resonance is linear. `filter_smooth_primed` snaps the glide to its target
+    // on the first filtered block after a reset or a filter-disable, so toggling
+    // the filter on never sweeps up from a stale value.
+    filter_cutoff_log2: f32,
+    filter_reso: f32,
+    filter_drive_log2: f32,
+    filter_smooth_primed: bool,
 }
 
 impl Engine {
@@ -362,6 +374,10 @@ impl Engine {
             bus_r: vec![0.0; block_size * MAX_OVERSAMPLE],
             dry_l: vec![0.0; block_size],
             dry_r: vec![0.0; block_size],
+            filter_cutoff_log2: 0.0,
+            filter_reso: 0.0,
+            filter_drive_log2: 0.0,
+            filter_smooth_primed: false,
         };
         e.apply_block_params();
         e
@@ -412,6 +428,9 @@ impl Engine {
         self.master = MasterState::default();
         self.limiter.reset();
         self.limiter_was_on = false;
+        // Re-prime the base-filter smoothers: the first filtered block after a
+        // reset snaps to the live param instead of gliding from a stale value.
+        self.filter_smooth_primed = false;
         self.patch_mod.on_transport_restart();
         // Drop any matrix LFO-rate modulation (E008 0092); a fresh patch
         // re-derives it from the matrix accumulator.
@@ -860,15 +879,54 @@ impl Engine {
                         // block-edge march; the delta is folded into this
                         // block's ramp instead.
                         stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
+                    } else {
+                        // Fresh note: seed the level at silence so the onset
+                        // ramps `0 → eff` across this first block (set up in the
+                        // `fresh` branch below) instead of snapping. The rendered
+                        // level is `eg + op_level_mod`; starting `op_level_mod` at
+                        // `-eg` puts sample 0 at 0. Without this the block-constant
+                        // `eg` (already one attack step past 0 after `eg_tick`)
+                        // steps 0 → full at sample 0 on a very fast attack — a
+                        // click. Extends the 0077 per-sample EG ramp to the note's
+                        // first block (later blocks are already smoothed via the
+                        // rebase above).
+                        stack.op_level_mod[op_i][k] = -eg;
                     }
                 }
                 prev_eg[op_i] = eg;
             }
             if fresh {
-                stack.op_level_mod = level_targets;
+                // Phase + pan snap to the new voice's values (no glide in from
+                // the previous allocation). The level onset, by contrast, ramps
+                // from the silence seeded above (`op_level_mod = -eg`) to this
+                // block's effective target, so a near-zero attack fades in over
+                // the first block (~1.3 ms) instead of stepping 0 → full at
+                // sample 0 (onset click). Same per-sample ramp the matrix mod /
+                // EG rebase use on later blocks (0077).
                 stack.op_phase_mod_q32 = phase_targets_q32;
                 stack.refresh_pan_with_mod();
-                self.ramp_live[i] = false;
+                let inv = 1.0 / n as f32;
+                let lvl_inc = &mut self.level_mod_inc[i];
+                let pl_inc = &mut self.pan_l_inc[i];
+                let pr_inc = &mut self.pan_r_inc[i];
+                let ph_inc = &mut self.phase_mod_inc[i];
+                let mut any = false;
+                for op_i in 0..vxn2_dsp::algo::N_OPS {
+                    for k in 0..STACK_LANES {
+                        let mut dl =
+                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                        if dl.abs() < RAMP_SNAP_EPS {
+                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            dl = 0.0;
+                        }
+                        lvl_inc[op_i][k] = dl;
+                        pl_inc[op_i][k] = 0.0;
+                        pr_inc[op_i][k] = 0.0;
+                        ph_inc[op_i][k] = 0;
+                        any |= dl != 0.0;
+                    }
+                }
+                self.ramp_live[i] = any;
             } else {
                 let inv = 1.0 / n as f32;
                 let (pan_l_t, pan_r_t) = stack.pan_targets();
@@ -1078,6 +1136,10 @@ impl Engine {
             // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
             self.render_block_filtered(out_l, out_r, n, hp_active);
         } else {
+            // Filter is off: re-prime the base-filter smoothers so re-enabling
+            // snaps to the live param rather than sweeping up from the value
+            // the cutoff sat at when the filter was last switched off.
+            self.filter_smooth_primed = false;
             // OFF path — the tuned sample-major loop. With the HP bypassed
             // (default) this is byte-for-byte the original sum loop; when the HP
             // is engaged each active stack's stereo pair is high-passed before
@@ -1154,7 +1216,32 @@ impl Engine {
         n: usize,
         hp_active: bool,
     ) {
-        let fp = self.params.filter;
+        let mut fp = self.params.filter;
+        // Block-rate smoothing of the base cutoff / resonance / drive knobs.
+        // Cooking ladder coeffs is deliberately block-rate (ADR 0004 §7), so a
+        // raw UI sweep steps the coefficients once per block — audible zipper.
+        // A one-pole glide (~30 ms) spreads each jump across many blocks so the
+        // per-block step is inaudible, while the steady state still lands
+        // exactly on the param. Cutoff / drive glide in log2 (musically linear);
+        // resonance linear. First block after reset / filter-off snaps.
+        const FILTER_SMOOTH_MS: f32 = 30.0;
+        let target_cutoff_log2 = fp.cutoff_hz.max(1.0).log2();
+        let target_reso = fp.resonance;
+        let target_drive_log2 = fp.drive.max(1.0e-4).log2();
+        if self.filter_smooth_primed {
+            let c = 1.0 - (-(n as f32) / (FILTER_SMOOTH_MS * 0.001 * self.sample_rate)).exp();
+            self.filter_cutoff_log2 += c * (target_cutoff_log2 - self.filter_cutoff_log2);
+            self.filter_reso += c * (target_reso - self.filter_reso);
+            self.filter_drive_log2 += c * (target_drive_log2 - self.filter_drive_log2);
+        } else {
+            self.filter_cutoff_log2 = target_cutoff_log2;
+            self.filter_reso = target_reso;
+            self.filter_drive_log2 = target_drive_log2;
+            self.filter_smooth_primed = true;
+        }
+        fp.cutoff_hz = self.filter_cutoff_log2.exp2();
+        fp.resonance = self.filter_reso;
+        fp.drive = self.filter_drive_log2.exp2();
         let f = fp.oversample.clamp(1, MAX_OVERSAMPLE);
 
         if f == 1 {
