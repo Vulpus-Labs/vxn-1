@@ -40,11 +40,26 @@ pub struct EgState {
     pub rates_per_sec: [f32; 4],
 }
 
+/// Prototype toggle: `true` = DX7-faithful **logarithmic** level curve
+/// (`amp = 2^((L-99)/8)`, ~6 dB per 8 steps); `false` = legacy perceptual
+/// square (`(L/99)^2`). Flip + rebuild for a clean A/B. Applies to both the EG
+/// L-values and the operator output level (see `op.rs`/`stack.rs` cook), which
+/// is why moderate-level modulators were ~30× too hot under the square curve.
+pub const EG_LOG_LEVELS: bool = true;
+
 /// Convert a DX7-style level (0..99) to a normalised amplitude in [0, 1].
 #[inline]
 pub fn level_to_amp(level: u8) -> f32 {
-    let l = level.min(99) as f32 / 99.0;
-    l * l
+    if level == 0 {
+        return 0.0;
+    }
+    if EG_LOG_LEVELS {
+        // DX7 log curve: 0 dB at L=99, −6 dB per 8 steps (≈ −74 dB at L=1).
+        2_f32.powf((level.min(99) as f32 - 99.0) / 8.0)
+    } else {
+        let l = level.min(99) as f32 / 99.0;
+        l * l
+    }
 }
 
 /// Convert a DX7-style rate (0..99) to amplitude-per-second.
@@ -167,10 +182,11 @@ mod tests {
         }
         assert!(reached_attack_top, "never finished attack");
         assert!(reached_sustain, "never reached sustain");
-        // Sustain level = (50/99)^2 ≈ 0.255.
+        // Sustain target = L3=50 through the active level curve.
+        let want = level_to_amp(50);
         assert!(
-            (eg.level - 0.255).abs() < 0.01,
-            "sustain level off: {}",
+            (eg.level - want).abs() < 0.01,
+            "sustain level off: {} (want {want})",
             eg.level
         );
     }

@@ -146,7 +146,9 @@ impl OpState {
             params.ks_r_curve,
         );
         let vel = vel_factor(params.vel_sens, velocity);
-        let level_norm = (params.level.min(99) as f32) / 99.0;
+        // Operator output level shares the EG level curve (DX7: OL and EG
+        // levels live in the same log domain) — see `eg::level_to_amp`.
+        let level_norm = crate::eg::level_to_amp(params.level);
         let max_amp = level_norm * ks_lvl * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         self.eg.cook(&params.eg, max_amp, rate_mult);
