@@ -209,6 +209,38 @@ topology/structural selectors (like algo / matrix source-dest) — excluded from
 CLAP automation; `cutoff`, `resonance`, `drive` are CLAP-automatable and
 matrix-targetable (cutoff/reso) continuous controls.
 
+### 10. Click-free `filter-enable` toggle — equal-gain crossfade
+
+Because the path reports no PDC (§8), the OFF and ON dry buses differ by the
+resampler group delay (≤28 base samples at 8×) *and* by the saturator's
+level/timbre step. Hard-switching `filter-enable` between the two render bodies
+(§5) pops on both counts — the group-delay shift jumps the waveform in time, and
+the saturator step lands as a discontinuity.
+
+The toggle therefore crossfades. For one ~8 ms window (`FILTER_XFADE_MS`) the
+engine renders the dry bus **both** ways from a *single* stack tick — the raw
+HP'd sum (OFF dry) and the filtered signal at the configured OS factor (ON dry)
+— and blends them. Rendering both from one tick is what makes the blend valid:
+the two buses are the same source material differing only by the filter, so the
+crossfade hides exactly the discontinuity the switch would expose. On the off→on
+edge the filter + resampler state is reset so the ON bus rings up from silence
+rather than a stale tail.
+
+The curve is a **raised cosine** (`0.5 − 0.5·cos(πt)`), equal-gain (weights sum
+to 1), not equal-power. Two reasons: the buses are strongly correlated (ON is
+the filtered raw), so equal-gain holds amplitude without the +3 dB mid-fade bump
+equal-power would add; and the raised cosine has **zero slope at both
+endpoints**, so neither the engage start nor the handoff to the steady body
+leaves a slope corner. An equal-power `cos` weight has slope −π/2 at t=1; when it
+clamps to 0 at the handoff — right where the ON signal is full-amplitude — that
+corner itself reads as a click. `t` spans the closed interval [0,1]
+(denominator `len−1`) so the last fade sample lands exactly on the target.
+
+Edge-only: the dual render and the second dry buffer run for one window per
+toggle and never touch the steady-state hot paths. Verified by
+`filter_toggle_is_click_free` (4th-difference click energy at both edges stays
+within the tone's own slew, at 8× — worst-case group delay).
+
 ## Consequences
 
 - The filter differs structurally from the FX "optional" idiom: FX optionality
@@ -225,6 +257,10 @@ matrix-targetable (cutoff/reso) continuous controls.
 - Host PDC does not see the filter path: VXN2 reports `latency: 0` (see §8). The
   filter adds ≤0.6 ms of uncompensated delay, traded for glitch-free OS switching
   — changing `filter-oversample` no longer restarts the plugin.
+- Toggling `filter-enable` is click-free via a one-window equal-gain crossfade
+  of the two dry buses (§10), the mitigation for the uncompensated group-delay +
+  saturator step the no-PDC choice (§8) leaves on the edge. Edge-only cost; the
+  steady OFF/ON hot paths are untouched and the OFF bypass stays bit-identical.
 - `vxn2-dsp` gains `filter.rs` + `math.rs` (`fast_tanh`) + halfband
   interpolation, all ported/dependency-free. The crate's no-dependency invariant
   holds.

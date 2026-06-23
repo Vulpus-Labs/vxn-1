@@ -19,6 +19,9 @@
 //! - **Quiescence tail preservation** — a resonant release tail rings out with
 //!   no skip cliff (0085 criteria): the moment the quiescence-skip engages must
 //!   not click (AC 6).
+//! - **Click-free enable toggle** — flipping `filter-enable` on and off is
+//!   crossfaded (ADR 0004 §10), so neither edge introduces a discontinuity
+//!   beyond the tone's own slew, checked at 8× (worst-case group delay).
 
 use vxn2_engine::engine::Engine;
 use vxn2_engine::factory::factory;
@@ -262,5 +265,90 @@ fn resonant_release_tail_rings_out_without_skip_cliff() {
     assert!(
         worst < 5e-3,
         "post-off |d4| {worst:.2e}: resonant tail clipped or skip introduced a cliff",
+    );
+}
+
+/// Worst 4th-difference (discontinuity energy) over an interleaved-L sample
+/// span — the same click detector the ring-out test uses, applied to a window.
+fn worst_d4(buf: &[f32], range: std::ops::Range<usize>) -> f64 {
+    range
+        .map(|i| {
+            (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs()
+                as f64
+        })
+        .fold(0.0, f64::max)
+}
+
+/// ADR 0004 §10 — toggling `filter-enable` is click-free. The enable edge swaps
+/// two render bodies whose dry buses differ by the resampler group delay (OS
+/// path) *and* the saturator level/timbre step; a hard switch pops on both.
+/// The engine equal-power-crossfades the two dry buses across one ~8 ms window,
+/// so the toggle introduces no discontinuity beyond the tone's own slew.
+///
+/// Checked at 8× (worst-case group delay) on both edges: hold a chord, render
+/// off → engage → settle → disengage → settle, and assert the `d4` click energy
+/// straddling each toggle stays within a small factor of the steady-state tone
+/// either side. A hard switch blows this by orders of magnitude.
+#[test]
+fn filter_toggle_is_click_free() {
+    let en = id_of("filter-enable").unwrap();
+    let cut = id_of("filter-cutoff").unwrap();
+    let res = id_of("filter-resonance").unwrap();
+    let os = id_of("filter-oversample").unwrap();
+
+    let s = SharedParams::new();
+    s.set(cut, 2000.0);
+    s.set(res, 0.4); // audible resonance ⇒ filtered tone clearly ≠ raw
+    s.set(os, 3.0); // 8× — largest resampler group delay, worst toggle step
+    s.set(id_of("delay-on").unwrap(), 0.0);
+    s.set(id_of("reverb-on").unwrap(), 0.0);
+    s.set(en, 0.0); // boot OFF
+
+    let mut e = Engine::new(SR, BLK);
+    e.snapshot_params(&s);
+    for &n in &[40u8, 47, 52, 59] {
+        e.note_on(n, 100);
+    }
+
+    // Timeline (blocks): [0,ON_B) off, engage at ON_B, [ON_B,OFF_B) on,
+    // disengage at OFF_B, [OFF_B,END) off. The ~8 ms fade spans ~6 blocks, so
+    // each segment leaves ample settled tail for a steady-state baseline.
+    const ON_B: usize = 12;
+    const OFF_B: usize = 40;
+    const END: usize = 72;
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    let mut buf = Vec::with_capacity(END * BLK);
+    for b in 0..END {
+        if b == ON_B {
+            s.set(en, 1.0);
+            e.snapshot_params(&s);
+        } else if b == OFF_B {
+            s.set(en, 0.0);
+            e.snapshot_params(&s);
+        }
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+
+    // Steady-state baseline: worst d4 well clear of either toggle (settled OFF
+    // before engage, settled ON before disengage). This is the tone's own slew.
+    let steady = worst_d4(&buf, (ON_B - 4) * BLK..(ON_B - 1) * BLK)
+        .max(worst_d4(&buf, (OFF_B - 4) * BLK..(OFF_B - 1) * BLK));
+
+    // Toggle windows: the fade plus a couple of blocks either side of each edge.
+    let engage = worst_d4(&buf, (ON_B - 1) * BLK..(ON_B + 9) * BLK);
+    let disengage = worst_d4(&buf, (OFF_B - 1) * BLK..(OFF_B + 9) * BLK);
+
+    // A hard switch lands a one-sample step of order |raw − filtered| at the
+    // edge — d4 orders of magnitude over the tone's slew. The crossfade must
+    // keep both edges within a small multiple of the steady baseline.
+    assert!(
+        engage <= 4.0 * steady,
+        "engage |d4| {engage:.2e} ≫ steady {steady:.2e}: filter-on toggle clicks",
+    );
+    assert!(
+        disengage <= 4.0 * steady,
+        "disengage |d4| {disengage:.2e} ≫ steady {steady:.2e}: filter-off toggle clicks",
     );
 }

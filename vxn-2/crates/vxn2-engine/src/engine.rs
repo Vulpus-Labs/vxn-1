@@ -129,6 +129,15 @@ const MAX_OVERSAMPLE: usize = 8;
 /// (it keeps re-filtering until truly settled) while a self-oscillating filter
 /// — whose state never decays — is never wrongly skipped.
 const FILTER_QUIESCENT_EPS: f32 = 1.0e-5;
+/// Equal-power crossfade time when the musical filter is toggled on/off. The
+/// filter-enable edge swaps two render bodies whose dry buses differ by the
+/// resampler group delay (OS path) *and* by the saturator's level/timbre step
+/// — a hard switch pops on both counts. For the duration of one fade the engine
+/// renders the dry bus *both* ways (raw sum vs filtered) from a single stack
+/// tick and equal-power blends them, so neither discontinuity lands as a click.
+/// ~8 ms is long enough to bury the ~0.6 ms OS group-delay shift and the level
+/// step, short enough to feel instant when the user clicks the toggle.
+const FILTER_XFADE_MS: f32 = 8.0;
 const _: () = {
     assert!(DestId::Op1Pitch.idx().unwrap() == 0);
     assert!(DestId::Op1Level.idx().unwrap() == 1);
@@ -313,6 +322,21 @@ pub struct Engine {
     filter_reso: f32,
     filter_drive_log2: f32,
     filter_smooth_primed: bool,
+    /// `filter-enable` as of last block, so [`Self::process_block`] can spot the
+    /// toggle edge and arm the declick crossfade. Seeded from the live param so
+    /// a patch that boots with the filter already on doesn't fade in from dry.
+    filter_was_enabled: bool,
+    /// Equal-power crossfade window length in samples (`FILTER_XFADE_MS`).
+    filter_xfade_len: usize,
+    /// Samples left in the active filter-toggle crossfade; 0 ⇒ steady state, a
+    /// single render body runs. While > 0 the dual-render xfade body runs and
+    /// decrements this by the block length until the fade completes.
+    filter_xfade_remaining: usize,
+    /// OFF-path (raw, unfiltered) dry bus, rendered alongside the filtered
+    /// `dry_l/r` only during a toggle crossfade (`block_size`). Untouched in
+    /// steady state.
+    dry_alt_l: Vec<f32>,
+    dry_alt_r: Vec<f32>,
 }
 
 impl Engine {
@@ -325,7 +349,7 @@ impl Engine {
             phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
-            master: MasterState::default(),
+            master: MasterState::new(sample_rate),
             limiter: StereoLimiter::new(sample_rate),
             limiter_was_on: false,
             params: EngineParams::default(),
@@ -378,6 +402,11 @@ impl Engine {
             filter_reso: 0.0,
             filter_drive_log2: 0.0,
             filter_smooth_primed: false,
+            filter_was_enabled: EngineParams::default().filter.enable,
+            filter_xfade_len: (FILTER_XFADE_MS * 0.001 * sample_rate) as usize,
+            filter_xfade_remaining: 0,
+            dry_alt_l: vec![0.0; block_size],
+            dry_alt_r: vec![0.0; block_size],
         };
         e.apply_block_params();
         e
@@ -425,7 +454,9 @@ impl Engine {
         self.phaser.clear();
         self.delay.reset();
         self.reverb.reset();
-        self.master = MasterState::default();
+        // Master gain snaps to the current param at the end of reset (see the
+        // snap below, after apply_block_params re-pushes the target) so a
+        // transport restart doesn't glide the level in from a stale value.
         self.limiter.reset();
         self.limiter_was_on = false;
         // Re-prime the base-filter smoothers: the first filtered block after a
@@ -458,7 +489,15 @@ impl Engine {
         self.decim_l.reset();
         self.decim_r.reset();
         self.any_ramp_live = false;
+        // Abort any in-flight filter-toggle crossfade and reseed the edge
+        // tracker, so the first block after reset renders the current enable
+        // state outright rather than fading in from a stale dry bus.
+        self.filter_xfade_remaining = 0;
+        self.filter_was_enabled = self.params.filter.enable;
         self.apply_block_params();
+        // apply_block_params re-pushed the master gain target; snap to it so
+        // post-reset playback starts at the correct level with no glide.
+        self.master.snap(&self.params.master);
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -1137,7 +1176,33 @@ impl Engine {
             }
         }
 
-        if filter_enabled {
+        // Filter-toggle edge → arm the declick crossfade (ADR 0004 §10). On the
+        // off→on edge also snap the cutoff smoother and reset the filter +
+        // resampler state, so the ON dry bus rings up from silence rather than
+        // from whatever stale tail the kernels last held — the fade then masks
+        // the resampler group-delay shift and the saturator level step.
+        if filter_enabled != self.filter_was_enabled {
+            self.filter_xfade_remaining = self.filter_xfade_len;
+            if filter_enabled {
+                self.filter_smooth_primed = false;
+                for i in 0..N_STACKS {
+                    self.filter_l[i].reset();
+                    self.filter_r[i].reset();
+                    self.interp_l[i].reset();
+                    self.interp_r[i].reset();
+                }
+                self.decim_l.reset();
+                self.decim_r.reset();
+            }
+            self.filter_was_enabled = filter_enabled;
+        }
+
+        if self.filter_xfade_remaining > 0 && self.filter_xfade_len > 0 {
+            // Toggle in flight: render both dry buses from one stack tick and
+            // equal-power blend. `filter_enabled` is the fade *target* — true ⇒
+            // OFF→ON (filter rising), false ⇒ ON→OFF (filter falling).
+            self.render_block_filter_xfade(out_l, out_r, n, hp_active, filter_enabled);
+        } else if filter_enabled {
             // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
             self.render_block_filtered(out_l, out_r, n, hp_active);
         } else {
@@ -1145,44 +1210,7 @@ impl Engine {
             // snaps to the live param rather than sweeping up from the value
             // the cutoff sat at when the filter was last switched off.
             self.filter_smooth_primed = false;
-            // OFF path — the tuned sample-major loop. With the HP bypassed
-            // (default) this is byte-for-byte the original sum loop; when the HP
-            // is engaged each active stack's stereo pair is high-passed before
-            // it folds into the dry bus. Per-sample: sum every active stack into
-            // the dry bus, then through delay + reverb + master gain. Every
-            // PITCH_SMOOTH_QUANTUM samples the pitch smoothers advance one step
-            // toward this block's targets and the affected stacks re-cook
-            // `phase_inc` — converged smoothers (no active pitch route) skip the
-            // recook entirely.
-            for sample in 0..n {
-                if sample % PITCH_SMOOTH_QUANTUM == 0 {
-                    self.advance_pitch_smoothers();
-                }
-                let mut dry_l = 0.0_f32;
-                let mut dry_r = 0.0_f32;
-                for i in 0..N_STACKS {
-                    if self.alloc.stacks[i].is_idle() {
-                        continue;
-                    }
-                    let (mut sl, mut sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
-                    if hp_active {
-                        sl = self.hp_l[i].tick(sl);
-                        sr = self.hp_r[i].tick(sr);
-                    }
-                    dry_l += sl;
-                    dry_r += sr;
-                }
-                if self.any_ramp_live {
-                    self.advance_mod_ramps();
-                }
-                let (cl, cr) = self.cleanup.process(dry_l, dry_r);
-                let (cl, cr) = self.phaser.process(cl, cr);
-                let (l, r) = self.delay.process(cl, cr);
-                let (l, r) = self.reverb.process(l, r);
-                let (l, r) = self.master.apply(l, r);
-                out_l[sample] = l;
-                out_r[sample] = r;
-            }
+            self.render_block_off(out_l, out_r, n, hp_active);
         }
 
         // Master limiter — last in the chain, after master gain, applied to the
@@ -1373,7 +1401,49 @@ impl Engine {
             self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
         }
 
-        // FX chain per sample, exactly as the OFF path.
+        self.apply_fx_block(n, out_l, out_r);
+    }
+
+    /// OFF-path render: the tuned sample-major sum loop. With the HP bypassed
+    /// (default) this is byte-for-byte the original sum; when the HP is engaged
+    /// each active stack's stereo pair is high-passed before it folds into the
+    /// dry bus. Sums every active stack into `dry_l/r`, then the shared FX chain.
+    /// Every `PITCH_SMOOTH_QUANTUM` samples the pitch smoothers advance one step
+    /// toward this block's targets and the affected stacks re-cook `phase_inc` —
+    /// converged smoothers (no active pitch route) skip the recook entirely.
+    fn render_block_off(&mut self, out_l: &mut [f32], out_r: &mut [f32], n: usize, hp_active: bool) {
+        for sample in 0..n {
+            if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                self.advance_pitch_smoothers();
+            }
+            let mut dry_l = 0.0_f32;
+            let mut dry_r = 0.0_f32;
+            for i in 0..N_STACKS {
+                if self.alloc.stacks[i].is_idle() {
+                    continue;
+                }
+                let (mut sl, mut sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                if hp_active {
+                    sl = self.hp_l[i].tick(sl);
+                    sr = self.hp_r[i].tick(sr);
+                }
+                dry_l += sl;
+                dry_r += sr;
+            }
+            if self.any_ramp_live {
+                self.advance_mod_ramps();
+            }
+            self.dry_l[sample] = dry_l;
+            self.dry_r[sample] = dry_r;
+        }
+        self.apply_fx_block(n, out_l, out_r);
+    }
+
+    /// Shared post-dry FX chain (cleanup → phaser → delay → reverb → master),
+    /// run per sample over `dry_l/r` into `out_l/r`. Identical on every render
+    /// body, so the dry bus is the only thing the three paths produce
+    /// differently.
+    fn apply_fx_block(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
             let (cl, cr) = self.phaser.process(cl, cr);
@@ -1383,6 +1453,162 @@ impl Engine {
             out_l[sample] = l;
             out_r[sample] = r;
         }
+    }
+
+    /// Declick render for the filter-enable toggle (ADR 0004 §10). Renders the
+    /// dry bus *both* ways from a single stack tick — the raw HP'd sum (OFF
+    /// dry, into `dry_alt_l/r`) and the filtered signal at the configured
+    /// oversample factor (ON dry, into `dry_l/r`) — then equal-power blends them
+    /// across `filter_xfade_len` samples before the shared FX chain. Rendering
+    /// both from one tick is what makes the blend valid: the two buses are the
+    /// same source material, differing only by the filter (its group delay and
+    /// level/timbre step), so the crossfade hides exactly the discontinuity the
+    /// hard switch would expose. `to_on` is the fade *target* — true ⇒ OFF→ON
+    /// (filter rising 0→1), false ⇒ ON→OFF (filter falling 1→0).
+    ///
+    /// Edge-only: runs for one ~8 ms window per toggle, so the per-stack double
+    /// pass and the second dry buffer never touch the steady-state hot paths.
+    fn render_block_filter_xfade(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        n: usize,
+        hp_active: bool,
+        to_on: bool,
+    ) {
+        // Block-rate base-knob smoothing — identical to `render_block_filtered`,
+        // so the cutoff/reso/drive the ON dry sees mid-fade tracks the steady
+        // path it hands off to (no second discontinuity at fade end).
+        let mut fp = self.params.filter;
+        const FILTER_SMOOTH_MS: f32 = 30.0;
+        let target_cutoff_log2 = fp.cutoff_hz.max(1.0).log2();
+        let target_reso = fp.resonance;
+        let target_drive_log2 = fp.drive.max(1.0e-4).log2();
+        if self.filter_smooth_primed {
+            let c = 1.0 - (-(n as f32) / (FILTER_SMOOTH_MS * 0.001 * self.sample_rate)).exp();
+            self.filter_cutoff_log2 += c * (target_cutoff_log2 - self.filter_cutoff_log2);
+            self.filter_reso += c * (target_reso - self.filter_reso);
+            self.filter_drive_log2 += c * (target_drive_log2 - self.filter_drive_log2);
+        } else {
+            self.filter_cutoff_log2 = target_cutoff_log2;
+            self.filter_reso = target_reso;
+            self.filter_drive_log2 = target_drive_log2;
+            self.filter_smooth_primed = true;
+        }
+        fp.cutoff_hz = self.filter_cutoff_log2.exp2();
+        fp.resonance = self.filter_reso;
+        fp.drive = self.filter_drive_log2.exp2();
+        let f = fp.oversample.clamp(1, MAX_OVERSAMPLE);
+        let osn = n * f;
+        let os_rate = self.sample_rate * f as f32;
+
+        self.dry_l[..n].fill(0.0);
+        self.dry_r[..n].fill(0.0);
+        self.dry_alt_l[..n].fill(0.0);
+        self.dry_alt_r[..n].fill(0.0);
+        if f > 1 {
+            self.bus_l[..osn].fill(0.0);
+            self.bus_r[..osn].fill(0.0);
+        }
+
+        for i in 0..N_STACKS {
+            let idle = self.alloc.stacks[i].is_idle();
+            // Idle + filter rung out ⇒ both buses get exact zero from this
+            // stack; skipping is exact (mirrors the ON path's quiescence-skip).
+            if idle && self.stack_filter_quiescent(i) {
+                continue;
+            }
+            self.set_stack_filter_coeffs(i, os_rate, fp);
+
+            // Render this stack's base block once — the single source the two
+            // dry buses share. Idle-but-ringing stacks feed zeros: the ON bus
+            // rings the resonant tail out through the filter, the OFF bus gets
+            // nothing (matching `render_block_off`'s `is_idle` skip).
+            if idle {
+                self.base_l[..n].fill(0.0);
+                self.base_r[..n].fill(0.0);
+            } else {
+                for sample in 0..n {
+                    if sample % PITCH_SMOOTH_QUANTUM == 0 {
+                        self.advance_pitch_smoother_one(i);
+                    }
+                    let (sl, sr) = stack_tick_stereo(&mut self.alloc.stacks[i]);
+                    self.base_l[sample] = sl;
+                    self.base_r[sample] = sr;
+                    if self.ramp_live[i] {
+                        self.advance_mod_ramp_one(i);
+                    }
+                }
+                // HP ahead of the filter, at base rate — the same HP'd signal
+                // both buses consume (one tick of the HP kernel per sample).
+                if hp_active {
+                    for sample in 0..n {
+                        self.base_l[sample] = self.hp_l[i].tick(self.base_l[sample]);
+                        self.base_r[sample] = self.hp_r[i].tick(self.base_r[sample]);
+                    }
+                }
+                // OFF dry: raw HP'd stack sum (exactly `render_block_off`).
+                for sample in 0..n {
+                    self.dry_alt_l[sample] += self.base_l[sample];
+                    self.dry_alt_r[sample] += self.base_r[sample];
+                }
+            }
+
+            // ON dry: filtered at the configured oversample factor (exactly
+            // `render_block_filtered`'s two branches).
+            if f == 1 {
+                for sample in 0..n {
+                    self.dry_l[sample] +=
+                        self.filter_l[i].tick(self.base_l[sample] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                    self.dry_r[sample] +=
+                        self.filter_r[i].tick(self.base_r[sample] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                }
+            } else {
+                self.interp_l[i].interpolate(&self.base_l[..n], &mut self.os_l[..osn], f);
+                self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
+                for j in 0..osn {
+                    self.bus_l[j] +=
+                        self.filter_l[i].tick(self.os_l[j] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                    self.bus_r[j] +=
+                        self.filter_r[i].tick(self.os_r[j] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                }
+            }
+        }
+        if f > 1 {
+            self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
+            self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
+        }
+
+        // Raised-cosine (equal-gain) blend OFF (`dry_alt`) ↔ ON (`dry`) into
+        // `dry_l/r`. The two buses are the *same* source pre/post filter —
+        // strongly correlated — so equal-gain (weights sum to 1) holds the
+        // amplitude without the +3 dB bump an equal-power curve would add. The
+        // raised cosine matters more than the gain law here: its derivative is
+        // zero at *both* endpoints, so neither the engage start nor the steady
+        // handoff leaves a slope corner. An equal-power `cos` weight has slope
+        // −π/2 at t=1; when it clamps to 0 at handoff — right where the ON
+        // signal is full-amplitude — that corner reads as a click (the exact
+        // failure this curve fixes).
+        //
+        // `t` spans the closed interval [0,1] across the `len`-sample window
+        // (denominator `len-1`), so the last fade sample lands exactly on the
+        // target before the steady body takes over; samples past the window end
+        // clamp to the full target.
+        let len = self.filter_xfade_len as f32;
+        let start = (self.filter_xfade_len - self.filter_xfade_remaining) as f32;
+        let span = (len - 1.0).max(1.0);
+        for sample in 0..n {
+            let t = ((start + sample as f32) / span).min(1.0);
+            // Smooth 0→1 ramp with zero slope at both ends.
+            let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
+            // `to_on`: ON weight rises 0→1. Else ON weight falls 1→0.
+            let (w_off, w_on) = if to_on { (1.0 - rise, rise) } else { (rise, 1.0 - rise) };
+            self.dry_l[sample] = w_off * self.dry_alt_l[sample] + w_on * self.dry_l[sample];
+            self.dry_r[sample] = w_off * self.dry_alt_r[sample] + w_on * self.dry_r[sample];
+        }
+        self.filter_xfade_remaining = self.filter_xfade_remaining.saturating_sub(n);
+
+        self.apply_fx_block(n, out_l, out_r);
     }
 
     /// True when stack `i`'s filter has rung out — both L/R ladder kernels'
@@ -1628,6 +1854,10 @@ mod tests {
         let mut e2 = Engine::new(SR, BLK);
         e2.params.master.volume_db = -60.0;
         e2.apply_block_params();
+        // Snap the smoothed master gain to −60 dB (reset preserves params and
+        // snaps) so we measure steady-state attenuation, not the anti-zipper
+        // glide down from the −6 dB default.
+        e2.reset();
         e2.note_on(60, 100);
 
         let mut l = [0.0_f32; BLK];
