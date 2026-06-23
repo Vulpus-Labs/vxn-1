@@ -11,8 +11,8 @@ algo = 15
 feedback = 4.9
 
 # op1
-op1-num = 2
-op1-fine = -50
+op1-num = 3
+op1-denom = 2
 op1-detune = 2
 op1-level = 99
 op1-vel-sens = 0
@@ -29,8 +29,9 @@ op1-ks-l-depth = 0
 op1-ks-r-depth = 0
 
 # op2
-op2-num = 2
-op2-fine = -49
+op2-num = 3
+op2-denom = 2
+op2-fine = 2
 op2-detune = -1
 op2-level = 78
 op2-vel-sens = 1
@@ -67,7 +68,7 @@ op3-ks-r-depth = 0
 
 # op4
 op4-num = 1
-op4-detune = 14
+op4-detune = -2
 op4-level = 72
 op4-vel-sens = 1
 op4-eg-r1 = 79

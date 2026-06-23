@@ -45,7 +45,7 @@ op2-ks-r-depth = 0
 
 # op3
 op3-num = 1
-op3-fine = -50
+op3-denom = 2
 op3-level = 99
 op3-vel-sens = 3
 op3-eg-r1 = 80
@@ -62,7 +62,7 @@ op3-ks-r-depth = 0
 
 # op4
 op4-num = 1
-op4-fine = -50
+op4-denom = 2
 op4-detune = -1
 op4-level = 85
 op4-vel-sens = 1
@@ -80,8 +80,8 @@ op4-ks-l-depth = 0
 op4-ks-r-depth = 41
 
 # op5
-op5-num = 4
-op5-fine = -50
+op5-num = 7
+op5-denom = 2
 op5-detune = 1
 op5-level = 65
 op5-vel-sens = 4
@@ -99,8 +99,8 @@ op5-ks-l-depth = 0
 op5-ks-r-depth = 21
 
 # op6
-op6-num = 4
-op6-fine = 50
+op6-num = 9
+op6-denom = 2
 op6-detune = 1
 op6-level = 56
 op6-vel-sens = 2

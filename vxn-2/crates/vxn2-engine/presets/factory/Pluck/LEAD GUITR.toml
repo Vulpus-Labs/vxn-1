@@ -27,8 +27,8 @@ op1-ks-l-depth = 0
 op1-ks-r-depth = 0
 
 # op2
-op2-num = 2
-op2-fine = 50
+op2-num = 5
+op2-denom = 2
 op2-level = 74
 op2-vel-sens = 0
 op2-eg-r1 = 25
@@ -47,7 +47,7 @@ op2-ks-r-curve = "neg-exp"
 
 # op3
 op3-num = 1
-op3-fine = -50
+op3-denom = 2
 op3-level = 99
 op3-vel-sens = 0
 op3-eg-r1 = 99
@@ -64,7 +64,7 @@ op3-ks-r-depth = 0
 
 # op4
 op4-num = 1
-op4-fine = -50
+op4-denom = 2
 op4-level = 86
 op4-vel-sens = 0
 op4-eg-r1 = 99
@@ -101,8 +101,8 @@ op5-ks-r-depth = 12
 op5-ks-r-curve = "neg-exp"
 
 # op6
-op6-num = 4
-op6-fine = -50
+op6-num = 7
+op6-denom = 2
 op6-level = 78
 op6-vel-sens = 0
 op6-eg-r1 = 99

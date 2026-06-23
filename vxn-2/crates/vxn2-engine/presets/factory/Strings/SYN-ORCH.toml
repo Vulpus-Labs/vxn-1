@@ -12,7 +12,7 @@ feedback = 4.9
 
 # op1
 op1-num = 1
-op1-fine = -50
+op1-denom = 2
 op1-detune = -5
 op1-level = 99
 op1-vel-sens = 0

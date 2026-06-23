@@ -27,12 +27,12 @@ op1-eg-l2 = 99
 op1-eg-l3 = 99
 op1-eg-l4 = 0
 
-# op2 — ratio 1.01: clean unison ratio + the offset as exact cents (+17c fine
-# folded into detune) so all detuning lives in op-detune. Slow beat against op5.
+# op2 — DX7 fine 1 was a unison offset: clean ratio + gentle cents detune
+# (1 fine-unit -> 1c, not its octave-scaled 17c) for a slow musical beat.
 op2-num = 1
 op2-level = 94
 op2-vel-sens = 0
-op2-detune = 13
+op2-detune = -3
 op2-ks-rate = 0
 op2-ks-break-pt = 21
 op2-ks-r-depth = 10

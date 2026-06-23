@@ -88,7 +88,7 @@ op5-ks-r-depth = 0
 
 # op6
 op6-num = 3
-op6-fine = 15
+op6-detune = 5
 op6-level = 70
 op6-vel-sens = 0
 op6-eg-r1 = 49

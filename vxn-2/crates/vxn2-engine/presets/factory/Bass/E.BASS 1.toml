@@ -12,7 +12,7 @@ feedback = 4.9
 
 # op1
 op1-num = 1
-op1-fine = -75
+op1-denom = 4
 op1-level = 99
 op1-vel-sens = 0
 op1-eg-r1 = 95
@@ -32,7 +32,7 @@ op1-ks-r-curve = "neg-lin"
 
 # op2
 op2-num = 1
-op2-fine = -75
+op2-denom = 4
 op2-level = 80
 op2-vel-sens = 0
 op2-eg-r1 = 99
@@ -49,7 +49,7 @@ op2-ks-r-depth = 0
 
 # op3
 op3-num = 1
-op3-fine = -75
+op3-denom = 4
 op3-level = 99
 op3-vel-sens = 3
 op3-eg-r1 = 88
@@ -65,8 +65,8 @@ op3-ks-l-depth = 0
 op3-ks-r-depth = 0
 
 # op4
-op4-num = 2
-op4-fine = 50
+op4-num = 5
+op4-denom = 2
 op4-level = 93
 op4-vel-sens = 5
 op4-eg-r1 = 90
@@ -83,7 +83,7 @@ op4-ks-r-depth = 0
 
 # op5
 op5-num = 1
-op5-fine = -75
+op5-denom = 4
 op5-level = 62
 op5-vel-sens = 3
 op5-eg-r1 = 99
@@ -100,8 +100,8 @@ op5-ks-l-depth = 75
 op5-ks-r-depth = 0
 
 # op6
-op6-num = 4
-op6-fine = 50
+op6-num = 9
+op6-denom = 2
 op6-level = 85
 op6-vel-sens = 7
 op6-eg-r1 = 94

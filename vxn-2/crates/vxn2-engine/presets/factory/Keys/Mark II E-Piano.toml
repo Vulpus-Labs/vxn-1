@@ -4,7 +4,7 @@ schema = 1
 name = "Mark II E-Piano"
 author = "Vulpus Labs"
 category = "Keys"
-comment = "DX7 ROM1A E.PIANO-style tine electric piano: algo 5, op6 feedback, velocity-driven tine bite. Light reverb, dry delay."
+comment = "DX7 ROM1A E.PIANO-1 tine electric piano: algo 5, op6 feedback, velocity-driven tine bite. Modulator levels restored to the real DX7 voice (op2 tine=58, op4=89, op6=79) now that the engine uses the DX7 log level curve. Light reverb, dry delay."
 
 # Algo 5 (three 2-op stacks: 2->1, 4->3, 6->5) is the descriptor default, so
 # it is omitted. feedback rides op6 (the algo's structural FB op).
@@ -23,9 +23,9 @@ op1-eg-l3 = 0
 op1-ks-r-depth = 0
 op1-ks-rate = 3
 
-# Op 2 — tine modulator -> Op 1; ratio 14, hard velocity.
+# Op 2 — tine modulator -> Op 1; ratio 14, hard velocity. Real DX7 tine level.
 op2-num = 14
-op2-level = 17
+op2-level = 58
 op2-vel-sens = 7
 op2-eg-r1 = 95
 op2-eg-r4 = 78
@@ -45,8 +45,8 @@ op3-eg-l3 = 0
 op3-ks-r-depth = 0
 op3-ks-rate = 3
 
-# Op 4 — modulator -> Op 3.
-op4-level = 64
+# Op 4 — modulator -> Op 3. Real DX7 level.
+op4-level = 89
 op4-vel-sens = 6
 op4-eg-r1 = 95
 op4-eg-r2 = 29
@@ -69,9 +69,9 @@ op5-eg-l3 = 0
 op5-ks-r-depth = 0
 op5-ks-rate = 3
 
-# Op 6 — modulator -> Op 5, carries the feedback loop; fades above D4.
+# Op 6 — modulator -> Op 5, carries the feedback loop; fades above D4. Real DX7 level.
 op6-detune = 5
-op6-level = 42
+op6-level = 79
 op6-vel-sens = 6
 op6-eg-r1 = 95
 op6-eg-r2 = 29

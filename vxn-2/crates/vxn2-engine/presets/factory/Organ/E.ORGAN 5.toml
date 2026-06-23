@@ -12,7 +12,7 @@ feedback = 4.2
 
 # op1
 op1-num = 1
-op1-fine = -50
+op1-denom = 2
 op1-level = 91
 op1-vel-sens = 0
 op1-eg-r1 = 99

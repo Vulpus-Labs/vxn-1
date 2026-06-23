@@ -85,8 +85,9 @@ op4-ks-l-depth = 0
 op4-ks-r-depth = 0
 
 # op5
-op5-num = 2
-op5-fine = -42
+op5-num = 3
+op5-denom = 2
+op5-fine = 16
 op5-detune = -1
 op5-level = 93
 op5-vel-sens = 1

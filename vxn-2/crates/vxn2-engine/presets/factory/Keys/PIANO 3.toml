@@ -103,7 +103,7 @@ op5-ks-r-curve = "neg-lin"
 
 # op6
 op6-num = 1
-op6-fine = -50
+op6-denom = 2
 op6-detune = 1
 op6-level = 84
 op6-vel-sens = 5

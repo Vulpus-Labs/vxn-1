@@ -11,8 +11,8 @@ algo = 31
 feedback = 4.9
 
 # op1
-op1-num = 2
-op1-fine = 50
+op1-num = 5
+op1-denom = 2
 op1-level = 99
 op1-vel-sens = 0
 op1-eg-r1 = 99
@@ -28,9 +28,9 @@ op1-ks-l-depth = 0
 op1-ks-r-depth = 0
 
 # op2
-op2-num = 10
-op2-fine = -50
-op2-detune = 34
+op2-num = 19
+op2-denom = 2
+op2-detune = 2
 op2-level = 86
 op2-vel-sens = 0
 op2-eg-r1 = 99
@@ -46,9 +46,9 @@ op2-ks-l-depth = 0
 op2-ks-r-depth = 0
 
 # op3
-op3-num = 8
-op3-fine = 50
-op3-detune = 17
+op3-num = 17
+op3-denom = 2
+op3-detune = 1
 op3-level = 65
 op3-vel-sens = 0
 op3-eg-r1 = 99
@@ -82,8 +82,8 @@ op4-ks-r-depth = 0
 
 # op5
 op5-num = 1
-op5-fine = -75
-op5-detune = 17
+op5-denom = 4
+op5-detune = 1
 op5-level = 98
 op5-vel-sens = 0
 op5-eg-r1 = 99
@@ -100,8 +100,8 @@ op5-ks-r-depth = 0
 
 # op6
 op6-num = 1
-op6-fine = -75
-op6-detune = 17
+op6-denom = 4
+op6-detune = 1
 op6-level = 84
 op6-vel-sens = 0
 op6-eg-r1 = 25

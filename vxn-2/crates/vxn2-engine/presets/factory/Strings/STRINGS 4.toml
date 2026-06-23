@@ -28,7 +28,7 @@ op1-ks-r-depth = 0
 
 # op2
 op2-num = 1
-op2-fine = -50
+op2-denom = 2
 op2-detune = -4
 op2-level = 76
 op2-vel-sens = 0

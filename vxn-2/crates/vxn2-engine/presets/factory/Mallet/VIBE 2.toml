@@ -99,8 +99,8 @@ op5-ks-r-depth = 12
 op5-ks-r-curve = "pos-lin"
 
 # op6
-op6-num = 10
-op6-fine = -10
+op6-num = 9
+op6-detune = 10
 op6-level = 89
 op6-vel-sens = 4
 op6-eg-r1 = 85

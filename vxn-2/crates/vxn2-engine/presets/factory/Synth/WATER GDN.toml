@@ -27,8 +27,8 @@ op1-ks-l-depth = 0
 op1-ks-r-depth = 0
 
 # op2
-op2-num = 2
-op2-fine = -50
+op2-num = 3
+op2-denom = 2
 op2-level = 99
 op2-vel-sens = 0
 op2-eg-r1 = 40

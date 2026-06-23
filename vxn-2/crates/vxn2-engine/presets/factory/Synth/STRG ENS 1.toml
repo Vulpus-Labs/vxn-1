@@ -12,7 +12,7 @@ feedback = 4.9
 
 # op1
 op1-num = 1
-op1-detune = 20
+op1-detune = 4
 op1-level = 98
 op1-vel-sens = 2
 op1-eg-r1 = 32
@@ -31,7 +31,7 @@ op1-ks-l-curve = "pos-lin"
 
 # op2
 op2-num = 1
-op2-detune = 12
+op2-detune = -4
 op2-level = 81
 op2-vel-sens = 0
 op2-eg-r1 = 77
