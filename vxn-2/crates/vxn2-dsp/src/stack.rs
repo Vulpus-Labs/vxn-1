@@ -206,17 +206,6 @@ pub struct StackOp {
     pub fb_scale: [f32; STACK_LANES],
 }
 
-/// Running oscillator state captured by [`Stack::snapshot_waveform`] so a solo
-/// steal can retrigger the EGs without resetting the waveform (phase / feedback
-/// / prev-output continuity).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WaveformSnapshot {
-    phase: [[u32; STACK_LANES]; N_OPS],
-    fb_prev1: [[f32; STACK_LANES]; N_OPS],
-    fb_prev2: [[f32; STACK_LANES]; N_OPS],
-    prev_outs: [[f32; STACK_LANES]; N_OPS],
-}
-
 /// One voice stack — six lane-packed ops + per-stack metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct Stack {
@@ -568,33 +557,28 @@ impl Stack {
         self.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
     }
 
-    /// Snapshot the running oscillator state — per-op phase accumulators,
-    /// feedback memory, and the prev-sample op outputs fed to the router.
-    /// Paired with [`Self::restore_waveform`] so a solo steal can retrigger the
-    /// EGs (via [`Self::note_on`], which otherwise resets phase to zero) while
-    /// keeping the *waveform* continuous: resetting phase under a still-sounding
-    /// note is an audible click. `phase_inc` is deliberately not captured — the
-    /// re-cook installs the stolen note's new pitch, which we keep.
-    pub fn snapshot_waveform(&self) -> WaveformSnapshot {
-        let mut s = WaveformSnapshot::default();
-        for i in 0..N_OPS {
-            s.phase[i] = self.ops[i].phase;
-            s.fb_prev1[i] = self.ops[i].fb_prev1;
-            s.fb_prev2[i] = self.ops[i].fb_prev2;
+    /// Restart the attack of the **carrier** amp envelopes only, leaving every
+    /// other running state — oscillator phase, feedback, LFO2, the pitch/mod
+    /// envelopes, *and the modulator* EGs — untouched. This is the audible half
+    /// of a non-legato solo steal: pair it with [`Self::retarget_pitch`] (which
+    /// re-pitches and re-cooks EG targets without resetting state) for a
+    /// click-free retrigger.
+    ///
+    /// Carriers only, by design: re-attacking a *modulator* mid-phrase snaps its
+    /// FM index back up while the carrier is still at full level — an unmasked
+    /// timbral transient (an audible click on every re-struck note; the FLUTE 2
+    /// 16th-note case). On a fresh poly voice the same modulator attack is
+    /// masked by the carrier fading in from silence; on a steal the carrier
+    /// stays loud, so only the carriers re-articulate. Routing the steal through
+    /// [`Self::note_on`] instead also resets phase / reseeds LFO2 / retriggers
+    /// the pitch+mod envelopes — more glitches still.
+    pub fn retrigger_carrier_eg(&mut self) {
+        let carriers = spec_of(self.algo).carriers;
+        for (i, op) in self.ops.iter_mut().enumerate() {
+            if (carriers >> i) & 1 == 1 {
+                op.eg.note_on();
+            }
         }
-        s.prev_outs = self.prev_outs;
-        s
-    }
-
-    /// Restore a [`WaveformSnapshot`] captured before a re-cook (see
-    /// [`Self::snapshot_waveform`]).
-    pub fn restore_waveform(&mut self, s: &WaveformSnapshot) {
-        for i in 0..N_OPS {
-            self.ops[i].phase = s.phase[i];
-            self.ops[i].fb_prev1 = s.fb_prev1[i];
-            self.ops[i].fb_prev2 = s.fb_prev2[i];
-        }
-        self.prev_outs = s.prev_outs;
     }
 
     #[inline]

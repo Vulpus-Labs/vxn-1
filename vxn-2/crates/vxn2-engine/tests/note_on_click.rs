@@ -10,6 +10,9 @@
 
 use vxn2_engine::alloc::AssignMode;
 use vxn2_engine::engine::Engine;
+use vxn2_engine::factory::factory;
+use vxn2_engine::preset::from_toml_str;
+use vxn2_engine::shared::{ParamModel, SharedParams};
 
 const SR: f32 = 48_000.0;
 const BLK: usize = 32;
@@ -112,5 +115,69 @@ fn solo_steal_is_click_free() {
         steal_worst < 5e-2,
         "solo steal transient |d4| {steal_worst:.2e} (steady baseline {baseline:.2e}) — \
          a steal-of-sounding-note click is back (phase reset no longer masked / continued)"
+    );
+}
+
+/// Real-world repro: the FLUTE 2 factory preset played as a solo 16th-note line
+/// at 100 BPM clicked on every note. The patch retriggers operator EGs whose
+/// modulators decay to sustain 0; re-attacking those modulators mid-phrase
+/// (carrier still loud) is an unmasked FM-index transient on every re-struck
+/// note. A solo steal now re-pitches in place and retriggers only the *carrier*
+/// envelopes, so the line re-articulates without the modulator click. Measured
+/// 4th-difference at the note boundaries: ~0.026 before, ~0.005 (the legato
+/// floor) after.
+#[test]
+fn flute2_solo_sixteenths_are_click_free() {
+    let fp = factory()
+        .into_iter()
+        .find(|p| p.name == "FLUTE 2")
+        .expect("FLUTE 2 factory preset present");
+    let (_meta, blob, _warn) = from_toml_str(fp.contents).expect("FLUTE 2 parses");
+    let shared = SharedParams::new();
+    shared.load_bytes(&blob).expect("FLUTE 2 loads");
+
+    let mut e = Engine::new(SR, BLK);
+    e.snapshot_params(&shared);
+    e.params.alloc.assign_mode = AssignMode::Solo;
+    e.params.alloc.legato = false;
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    e.apply_block_params();
+
+    // 16th notes at 100 BPM = 0.15 s = 7200 samples per note.
+    let note_blocks = ((SR * 60.0 / 100.0 / 4.0) / BLK as f32).round() as usize;
+    let pattern = [72u8, 74, 76, 77, 79, 77, 76, 74];
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    let mut buf = Vec::new();
+    let mut boundaries = Vec::new();
+    for (i, &n) in pattern.iter().cycle().take(24).enumerate() {
+        e.note_on(n, 100);
+        if i > 0 {
+            boundaries.push(buf.len());
+        }
+        for _ in 0..note_blocks {
+            e.process_block(&mut l, &mut r);
+            buf.extend_from_slice(&l);
+        }
+    }
+
+    let d4 = |i: usize| {
+        (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs() as f64
+    };
+    let mut worst = 0.0;
+    for &b in &boundaries {
+        let lo = b.saturating_sub(96).max(4);
+        let hi = (b + 96).min(buf.len() - 2);
+        for i in lo..hi {
+            worst = f64::max(worst, d4(i));
+        }
+    }
+    assert!(
+        worst < 1e-2,
+        "FLUTE 2 solo 16ths: note-boundary |d4| {worst:.2e} — the per-note retrigger \
+         click is back (modulator EGs retriggering mid-phrase, ~0.026 pre-fix)"
     );
 }

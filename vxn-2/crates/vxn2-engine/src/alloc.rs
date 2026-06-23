@@ -413,18 +413,19 @@ impl PolyAlloc {
         let counter = self.bump_seq();
         if self.solo_active && params.legato {
             self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
+        } else if self.solo_active && !self.stacks[SOLO_SLOT].is_idle() {
+            // Non-legato steal of a *still-sounding* note. Re-pitch in place
+            // (no phase / LFO / envelope reset), exactly like legato, then
+            // re-articulate by retriggering the carrier amp envelopes only
+            // (see `retrigger_carrier_eg` — retriggering modulators mid-phrase
+            // clicks). Routing a sounding steal through `note_on` instead resets
+            // oscillator phase, reseeds LFO2, and retriggers the pitch/mod
+            // envelopes — every one of which glitches mid-phrase.
+            self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
+            self.stacks[SOLO_SLOT].retrigger_carrier_eg();
         } else {
-            // Retrigger steal. If the outgoing note is still sounding, keep the
-            // oscillator waveform continuous across the re-cook (note_on resets
-            // phase): the EG still retriggers, but resetting phase under a live
-            // note clicks audibly, and merely muting through it (the older
-            // behaviour) only swaps that click for a level dip.
-            let preserve = self.solo_active && !self.stacks[SOLO_SLOT].is_idle();
-            let snap = preserve.then(|| self.stacks[SOLO_SLOT].snapshot_waveform());
+            // Fresh voice: first note, or a note after the slot fell silent.
             self.stacks[SOLO_SLOT].note_on(sp, vp, note, velocity, self.sample_rate, counter);
-            if let Some(snap) = snap {
-                self.stacks[SOLO_SLOT].restore_waveform(&snap);
-            }
             self.stacks[SOLO_SLOT].set_bend(self.bend_st);
         }
         self.solo_active = true;
@@ -467,15 +468,13 @@ impl PolyAlloc {
             let counter = self.bump_seq();
             if params.legato {
                 self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
-            } else {
+            } else if !self.stacks[SOLO_SLOT].is_idle() {
                 // Held-note fallback re-pitches a still-ringing voice — same
-                // waveform-continuity treatment as a retrigger steal above.
-                let snap = (!self.stacks[SOLO_SLOT].is_idle())
-                    .then(|| self.stacks[SOLO_SLOT].snapshot_waveform());
+                // click-free retrigger as a steal above (retarget + amp EG).
+                self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
+                self.stacks[SOLO_SLOT].retrigger_carrier_eg();
+            } else {
                 self.stacks[SOLO_SLOT].note_on(sp, vp, prev, vel, self.sample_rate, counter);
-                if let Some(snap) = snap {
-                    self.stacks[SOLO_SLOT].restore_waveform(&snap);
-                }
                 self.stacks[SOLO_SLOT].set_bend(self.bend_st);
             }
             self.seq[SOLO_SLOT] = counter;
