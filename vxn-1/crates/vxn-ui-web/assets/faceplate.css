@@ -107,8 +107,9 @@ html, body {
   color: var(--text);
 }
 .pbar-btn {
-  background: #2a2a2a;
-  border: 1px solid #444;
+  /* 0020: palette vars (value-identical) so a theme tweak is one edit. */
+  background: var(--knob-face);
+  border: 1px solid var(--knob-rim);
   border-radius: 2px;
   color: var(--ctl-label);
   font-family: inherit;
@@ -126,7 +127,7 @@ html, body {
 .pbar-btn:disabled:hover {
   opacity: 0.4;
   cursor: default;
-  border-color: #444;
+  border-color: var(--knob-rim);
   color: var(--ctl-label);
 }
 .pbar-btn.active {
@@ -172,8 +173,6 @@ html, body {
   flex: 1 1 0;
   box-sizing: border-box;
 }
-
-.panel[data-layered] {}
 
 /* Per-row stretch shares — pulled from `panel_view`'s `match title` block
    in `crates/vxn-ui-vizia/src/lib.rs`. flex-basis is 0 so `flex-grow`
@@ -294,7 +293,7 @@ html, body {
   position: fixed;
   display: none;
   pointer-events: none;
-  background: #0e0e0e;
+  background: var(--track-bg); /* 0020: was #0e0e0e (value-identical) */
   border: 1px solid var(--ctl-value);
   border-radius: 3px;
   padding: 2px 5px;
@@ -310,7 +309,7 @@ html, body {
    after ~3s; pure CSS animation so the JS side just sets the line and
    toggles the `visible` class. */
 .status-pill {
-  background: #0e0e0e;
+  background: var(--track-bg); /* 0020: was #0e0e0e (value-identical) */
   border: 1px solid var(--glyph-active);
   border-radius: 3px;
   padding: 2px 8px;

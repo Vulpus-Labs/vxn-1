@@ -69,3 +69,44 @@ Global:
 The vitest opt-in gate (`VXN_JS_TESTS=1`) stays as-is — CI
 (0116) sets it, which removes the original risk of the
 suite silently never running.
+
+## Close-out (2026-06-23)
+
+Behaviour-preserving cleanup. Vitest green (168), `VXN_JS_TESTS=1
+cargo test -p vxn-ui-web` green (56). No render-path logic changed; the
+CSS edits are value-identical var swaps (manual host open still wanted to
+eyeball the chrome).
+
+**Assets:**
+
+- `assets/prototypes/wave-knob.html` deleted (`git rm`) — never
+  `include_str!`'d, no other file in the dir, so `prototypes/` is gone.
+- Empty `.panel[data-layered] {}` ruleset removed from `faceplate.css`.
+- Literal hexes in the preset-bar / popup chrome replaced with the
+  value-identical palette vars: `.pbar-btn` bg/border `#2a2a2a`/`#444` →
+  `var(--knob-face)`/`var(--knob-rim)`; `.value-pop` and `.status-pill`
+  bg `#0e0e0e` → `var(--track-bg)`. (The browser *panel* CSS proper lives
+  in the shared `vxn-core-ui-web` crate, out of this vxn-1 ticket's scope.)
+
+**JS:**
+
+- Shared `preset-browser.js` `onOpenChange`: comment added — single-slot,
+  last-caller-wins, preset bar is the sole subscriber; promote to a
+  listener list if a second consumer appears.
+- `panels.js` send-wrapper block: comment added — wrappers must
+  capture-and-delegate `orig` so multiple patchers compose.
+
+**Rust:**
+
+- `descriptor_to_json`: the `as_object_mut().expect("json object")` is
+  gone — the object map is built directly (`serde_json::Map`), so there is
+  no panic path (the 0115 pattern). A doc comment records why the local
+  copy stays over `vxn_core_ui_web::descriptor_to_json` (returns the
+  `String` the splice wants; the shared one returns `Value` and still
+  routes through the `expect` pattern).
+- `view_event_to_json`: no `#[allow(dead_code)]` exists on it (already
+  removed) — it is live production code (the `vxn_core_ui_web` wrapper),
+  so nothing to move/drop. Item moot.
+
+**Global:** vitest + gated Rust suite green; manual faceplate open is the
+remaining (visual-only) check for the var swaps.

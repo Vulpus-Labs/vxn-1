@@ -72,6 +72,10 @@ export const presetBar = (() => {
     for (const k of ['setParam', 'setParamNorm', 'resetLayer', 'setKeyMode', 'setSplitPoint']) {
       const orig = send[k];
       if (typeof orig !== 'function') continue;
+      // 0020: wrappers MUST capture `orig` and delegate to it (not replace it),
+      // so this dirty-flag patch composes with any other patcher of the same
+      // sender — each layer runs its side effect then calls through. Replacing
+      // outright would silently drop whatever a prior patch installed.
       send[k] = function () {
         markDirty();
         return orig.apply(this, arguments);

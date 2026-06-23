@@ -722,6 +722,10 @@ export function createPresetBrowser(cfg) {
     getSaveFolder,
     folderForUserPath,
     openSaveAs: openSaveAsModal,
+    // 0020: single-slot callback — last caller wins, a second subscriber
+    // silently replaces the first. The preset bar (its Browse-button .active
+    // mirror) is the sole subscriber in both synths; promote to a listener list
+    // if a second consumer ever appears.
     onOpenChange: (cb) => { onOpenChange = cb; },
     followPath,
   };

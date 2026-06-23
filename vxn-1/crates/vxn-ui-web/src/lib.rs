@@ -257,18 +257,25 @@ fn build_params_json() -> String {
     format!("{{{}}}", entries.join(","))
 }
 
+/// Serialise one param descriptor for the spliced `window.vxn.params` map.
+///
+/// Near-identical to [`vxn_core_ui_web::descriptor_to_json`] but kept local
+/// (0020) deliberately: this returns the `String` the faceplate splice wants
+/// (the shared one returns a `serde_json::Value`, and still routes through the
+/// `as_object_mut().expect(...)` pattern this crate is purging). The shape is
+/// the same, so if the two ever diverge, reconcile here — the JS reads them
+/// identically.
 fn descriptor_to_json(d: &ParamDesc) -> String {
-    use serde_json::json;
-    let mut v = json!({
-        "name": d.name,
-        "label": d.label,
-        "min": d.min,
-        "max": d.max,
-        "default": d.default,
-    });
-    // Statically unreachable panic (0115 audit): `v` is the `json!({...})`
-    // object literal just above — always `Value::Object`.
-    let obj = v.as_object_mut().expect("json object");
+    use serde_json::{Map, Value, json};
+    // Build the object map directly (0020): no `json!({...})` +
+    // `as_object_mut().expect(...)` round-trip, so there is no panic path to
+    // reason about — the value is an object by construction.
+    let mut obj = Map::new();
+    obj.insert("name".into(), json!(d.name));
+    obj.insert("label".into(), json!(d.label));
+    obj.insert("min".into(), json!(d.min));
+    obj.insert("max".into(), json!(d.max));
+    obj.insert("default".into(), json!(d.default));
     match d.kind {
         ParamKind::Float { unit, taper } => {
             obj.insert("kind".into(), json!("float"));
@@ -287,7 +294,7 @@ fn descriptor_to_json(d: &ParamDesc) -> String {
             obj.insert("variants".into(), json!(variants));
         }
     }
-    v.to_string()
+    Value::Object(obj).to_string()
 }
 
 fn taper_to_json(t: vxn_app::Taper) -> serde_json::Value {
