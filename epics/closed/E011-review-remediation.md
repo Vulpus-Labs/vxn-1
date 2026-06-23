@@ -2,7 +2,7 @@
 id: E011
 product: vxn-1
 title: Structural-review remediation (vxn-1) — host-boundary safety, smoothing, CI, hygiene
-status: open
+status: closed
 created: 2026-06-10
 ---
 
@@ -106,8 +106,8 @@ there, not here.
 | 4 | [0016 — JS orchestration tests](../../tickets/closed/0016-js-orchestration-tests.md) | medium |
 | 5 | [0017 — LocalParams gesture unification](../../tickets/closed/0017-localparams-gesture-unification.md) | medium |
 | 6 | [0018 — Docs and epic-state sweep](../../tickets/closed/0018-docs-epic-state-sweep.md) | low |
-| 7 | [0019 — Rust hygiene batch](../../tickets/open/0019-rust-hygiene-batch.md) | low |
-| 8 | [0020 — UI-web hygiene batch](../../tickets/open/0020-ui-web-hygiene-batch.md) | low |
+| 7 | [0019 — Rust hygiene batch](../../tickets/closed/0019-rust-hygiene-batch.md) | low |
+| 8 | [0020 — UI-web hygiene batch](../../tickets/closed/0020-ui-web-hygiene-batch.md) | low |
 
 ## Acceptance
 
