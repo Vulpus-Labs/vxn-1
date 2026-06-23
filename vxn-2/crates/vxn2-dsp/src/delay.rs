@@ -40,6 +40,9 @@ pub const MAX_DELAY_MS: f32 = 4000.0;
 pub const MAX_FEEDBACK: f32 = 0.95;
 
 const SMOOTH_MS: f32 = 100.0;
+/// Dry/wet glide time — masks a mix-knob jump and fades the wet up from 0 on
+/// switch-on so the delay doesn't click in at full level.
+const MIX_SMOOTH_MS: f32 = 30.0;
 const DC_FC_HZ: f32 = 10.0;
 
 // ─── Ring buffer ─────────────────────────────────────────────────────────────
@@ -188,7 +191,10 @@ pub struct StereoDelay {
     /// Highest legal read offset (capacity - 4 to leave cubic guard taps).
     max_offset: f32,
     feedback: f32,
-    mix: f32,
+    /// Smoothed dry/wet, ticked per sample (kills zipper; fades in on switch-on).
+    mix: Smoothed,
+    /// First `set_params` snaps `mix` to target (no startup sweep from the seed).
+    mix_primed: bool,
     pingpong: bool,
     on: bool,
 }
@@ -220,7 +226,8 @@ impl StereoDelay {
             sr: sample_rate,
             max_offset,
             feedback: p.feedback.clamp(0.0, MAX_FEEDBACK),
-            mix: p.mix.clamp(0.0, 1.0),
+            mix: Smoothed::new(p.mix.clamp(0.0, 1.0), MIX_SMOOTH_MS, sample_rate),
+            mix_primed: false,
             pingpong: p.pingpong,
             on: p.on,
         }
@@ -232,7 +239,18 @@ impl StereoDelay {
     pub fn set_params(&mut self, p: &StereoDelayParams, tempo_bpm: f32) {
         self.on = p.on;
         self.feedback = p.feedback.clamp(0.0, MAX_FEEDBACK);
-        self.mix = p.mix.clamp(0.0, 1.0);
+        // Target the param mix while on, 0 while off — the smoother fades the
+        // wet both directions across the on/off edge (no click), and `process`
+        // only reverts to a bit-exact passthrough once the fade-out hits 0. The
+        // first call snaps (no startup fade on a patch loaded with the delay
+        // already set).
+        let target = if self.on { p.mix.clamp(0.0, 1.0) } else { 0.0 };
+        if self.mix_primed {
+            self.mix.set_target(target);
+        } else {
+            self.mix.snap(target);
+            self.mix_primed = true;
+        }
         self.pingpong = p.pingpong;
 
         let secs = if p.sync {
@@ -244,11 +262,14 @@ impl StereoDelay {
         self.samples.set_target(target);
     }
 
-    /// Process one stereo sample. When `on = false` returns `(in_l, in_r)`
-    /// bit-identical and does no buffer work.
+    /// Process one stereo sample. When `on = false` the wet first fades to 0,
+    /// after which this returns `(in_l, in_r)` bit-identical and does no buffer
+    /// work — the steady off bus is unchanged, but switch-off doesn't click.
     #[inline]
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        if !self.on {
+        // Bit-exact passthrough only once a switch-off fade has fully reached 0;
+        // while the wet ramps down we keep processing so it glides out cleanly.
+        if !self.on && self.mix.current() == 0.0 {
             return (in_l, in_r);
         }
 
@@ -270,7 +291,7 @@ impl StereoDelay {
         // Equal-power crossfade: the delayed wet is decorrelated from dry, so
         // sqrt gains hold total power constant across the sweep (linear gains
         // dip ~3 dB at mix=0.5).
-        let mix = self.mix;
+        let mix = self.mix.tick();
         let dry = (1.0 - mix).sqrt();
         let wet = mix.sqrt();
         let out_l = dry * in_l + wet * tap_l;

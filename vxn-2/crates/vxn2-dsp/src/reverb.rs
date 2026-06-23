@@ -24,7 +24,9 @@
 //!
 //! ## Bypass
 //!
-//! `on = false` returns `(in_l, in_r)` bit-identical with no buffer work.
+//! `on = false` fades the wet to 0 (no switch-off click), then returns
+//! `(in_l, in_r)` bit-identical with no buffer work — the steady off bus is
+//! unchanged.
 
 use crate::smoother::Smoothed;
 
@@ -38,6 +40,9 @@ const MIN_SIZE_SCALE: f32 = 0.2;
 /// changes glide rather than snap, so re-deriving delay lengths is
 /// audibly a crossfade rather than a click.
 const SIZE_SMOOTH_MS: f32 = 500.0;
+/// Dry/wet glide time — masks a mix-knob jump and fades the wet up from 0 on
+/// switch-on so the reverb doesn't click in at full level.
+const MIX_SMOOTH_MS: f32 = 30.0;
 /// LFO frequency on each delay line, Hz. Per ADR §7 / ticket notes:
 /// 0.5 Hz with phases spread evenly across the 8 lines.
 const LFO_HZ: f32 = 0.5;
@@ -190,7 +195,10 @@ pub struct FdnReverb {
     /// Feedback gain (per-line, shared — derived from RT60 + mean delay).
     feedback: f32,
 
-    mix: f32,
+    /// Smoothed dry/wet, ticked per sample (kills zipper; fades in on switch-on).
+    mix: Smoothed,
+    /// First `set_params` snaps `mix` to target (no startup sweep from the seed).
+    mix_primed: bool,
     on: bool,
 }
 
@@ -225,7 +233,8 @@ impl FdnReverb {
             damp_y: [0.0; LINES],
             damp_a: 0.0,
             feedback: 0.0,
-            mix: p.mix.clamp(0.0, 1.0),
+            mix: Smoothed::new(p.mix.clamp(0.0, 1.0), MIX_SMOOTH_MS, sr),
+            mix_primed: false,
             on: p.on,
         };
         r.update_damp(p.damp);
@@ -235,7 +244,18 @@ impl FdnReverb {
 
     pub fn set_params(&mut self, p: &FdnReverbParams) {
         self.on = p.on;
-        self.mix = p.mix.clamp(0.0, 1.0);
+        // Target the param mix while on, 0 while off — the smoother fades the
+        // wet both directions across the on/off edge (no click), and `process`
+        // only reverts to a bit-exact passthrough once the fade-out hits 0. The
+        // first call snaps (no startup fade on a patch loaded with the reverb
+        // already set).
+        let target = if self.on { p.mix.clamp(0.0, 1.0) } else { 0.0 };
+        if self.mix_primed {
+            self.mix.set_target(target);
+        } else {
+            self.mix.snap(target);
+            self.mix_primed = true;
+        }
 
         let target_scale = scale_from_size(p.size);
         self.size.set_target(target_scale);
@@ -266,11 +286,12 @@ impl FdnReverb {
         self.feedback = g.clamp(0.0, 0.999);
     }
 
-    /// Process one stereo sample. When `on = false` returns `(in_l, in_r)`
-    /// bit-identical and does no buffer work.
+    /// Process one stereo sample. When `on = false` the wet first fades to 0,
+    /// after which this returns `(in_l, in_r)` bit-identical and does no buffer
+    /// work — the steady off bus is unchanged, but switch-off doesn't click.
     #[inline]
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        if !self.on {
+        if !self.on && self.mix.current() == 0.0 {
             return (in_l, in_r);
         }
 
@@ -319,7 +340,7 @@ impl FdnReverb {
         // Equal-power crossfade: reverb wet is decorrelated from dry, so the
         // two sum in power, not amplitude. sqrt gains keep total power constant
         // across the sweep (linear gains dip ~3 dB at mix=0.5).
-        let mix = self.mix;
+        let mix = self.mix.tick();
         let dry = (1.0 - mix).sqrt();
         let wet = mix.sqrt();
         (dry * in_l + wet * wet_l, dry * in_r + wet * wet_r)

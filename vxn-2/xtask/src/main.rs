@@ -28,6 +28,7 @@ fn main() {
         "bundle" => bundle().map(|p| println!("bundled → {}", p.display())),
         "install" => install(),
         "uninstall" => uninstall(),
+        "level-presets" => level_presets(&args[1..]),
         "--help" | "-h" | "help" => {
             print_help();
             return;
@@ -57,8 +58,37 @@ Subcommands:
   bundle      Build {CLAP_PACKAGE} (release) and assemble target/release/{BUNDLE_NAME}.
   install     Bundle if stale, then copy to ~/Library/Audio/Plug-Ins/CLAP/{BUNDLE_NAME}.
   uninstall   Remove ~/Library/Audio/Plug-Ins/CLAP/{BUNDLE_NAME} if present.
+  level-presets  Render every factory preset (held C-major triad over C4),
+                 measure LUFS/peak, and rebalance each `master-volume`.
+                 Dry run by default; pass `--apply` to rewrite the TOMLs.
+                 Extra flags forwarded: --lufs <db> --headroom <db>.
   --help      Show this message."
     );
+}
+
+/// Forward to the `level_presets` example in vxn2-engine, which carries the
+/// engine + DSP it needs. Keeps xtask dependency-free (shell-only).
+fn level_presets(rest: &[String]) -> Result<(), String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut cmd = Command::new(&cargo);
+    cmd.current_dir(workspace_root()).args([
+        "run",
+        "--release",
+        "-p",
+        "vxn2-engine",
+        "--example",
+        "level_presets",
+        "--",
+    ]);
+    cmd.args(rest);
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to launch cargo: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("level-presets failed".into())
+    }
 }
 
 fn workspace_root() -> PathBuf {

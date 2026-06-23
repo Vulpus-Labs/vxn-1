@@ -26,6 +26,17 @@
 
 use crate::math::fast_tanh;
 use crate::rng::xorshift_step;
+use crate::smoother::Smoothed;
+
+/// Dry/wet glide time. Long enough to mask a knob jump or a switch-on fade-in
+/// (no click), short enough to feel instant.
+const MIX_SMOOTH_MS: f32 = 30.0;
+
+/// Wet makeup curve: a mild boost peaking mid-mix so a 50/50 blend doesn't dip.
+#[inline]
+fn wet_makeup(mix: f32) -> f32 {
+    mix * (1.0 + WET_MAKEUP_K * mix * (1.0 - mix))
+}
 
 // ── Pinned structural constants ─────────────────────────────────────────────
 
@@ -281,10 +292,16 @@ pub struct StereoPhaser {
     rate_hz: f32,
     depth: f32,
     feedback: f32,
-    mix: f32,
-    wet_gain: f32,
-    /// When `false`, [`process`](Self::process) is a bit-exact passthrough so
-    /// a `phaser-on = 0` patch renders identically to the pre-E025 bus.
+    /// Smoothed dry/wet. Targets the param mix; ticked per sample so knob
+    /// sweeps don't zipper and a switch-on fades the wet up from 0.
+    mix: Smoothed,
+    /// The first `set_params` snaps `mix` to its target instead of gliding, so
+    /// the patch's initial mix is exact (no startup sweep from the seed value).
+    mix_primed: bool,
+    /// When `false`, the wet fades to 0 and [`process`](Self::process) then
+    /// becomes a bit-exact passthrough — a steady `phaser-on = 0` patch renders
+    /// identically to the pre-E025 bus, but switch-off glides instead of
+    /// clicking.
     enabled: bool,
 }
 
@@ -306,8 +323,8 @@ impl StereoPhaser {
             rate_hz: 0.5,
             depth: 0.7,
             feedback: 0.0,
-            mix: 0.5,
-            wet_gain: 0.5 * (1.0 + WET_MAKEUP_K * 0.5 * (1.0 - 0.5)),
+            mix: Smoothed::new(0.5, MIX_SMOOTH_MS, sample_rate),
+            mix_primed: false,
             enabled: true,
         }
     }
@@ -328,7 +345,17 @@ impl StereoPhaser {
     /// unchanged (bit-exact), and the engine bus is identical to pre-E025.
     #[inline]
     pub fn set_enabled(&mut self, on: bool) {
+        // The mix smoother carries the on/off transition: disabling glides the
+        // wet down to 0 (no click on switch-off), and enabling glides it back up
+        // from the faded-out 0 (no click on switch-on). `process` only reverts
+        // to a bit-exact passthrough once the fade-out has fully reached 0, so
+        // the *steady* off bus stays unchanged. Re-targeting on enable is done
+        // by `set_params` (which knows the param mix); here we only have to pull
+        // the target to 0 on disable, in case `set_params` isn't called again.
         self.enabled = on;
+        if !on {
+            self.mix.set_target(0.0);
+        }
     }
 
     /// Set parameters for the next control block. `rate_hz` 0.05..10 Hz,
@@ -337,8 +364,16 @@ impl StereoPhaser {
         self.rate_hz = rate_hz.clamp(0.05, 10.0);
         self.depth = depth.clamp(0.0, 1.0);
         self.feedback = feedback.clamp(-FB_MAX, FB_MAX);
-        self.mix = mix.clamp(0.0, 1.0);
-        self.wet_gain = self.mix * (1.0 + WET_MAKEUP_K * self.mix * (1.0 - self.mix));
+        // Target the param mix while enabled, 0 while bypassed — so the smoother
+        // fades both directions across the on/off edge. The first call snaps
+        // (no startup fade on a patch that loads with the phaser already set).
+        let target = if self.enabled { mix.clamp(0.0, 1.0) } else { 0.0 };
+        if self.mix_primed {
+            self.mix.set_target(target);
+        } else {
+            self.mix.snap(target);
+            self.mix_primed = true;
+        }
         self.lfo.set_rate(self.rate_hz, self.sample_rate);
     }
 
@@ -353,7 +388,10 @@ impl StereoPhaser {
     /// R cascade at phase + 0.5 (anti-phase).
     #[inline]
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        if !self.enabled {
+        // Bit-exact passthrough only once a switch-off fade has fully reached 0;
+        // while the wet is still ramping down we keep processing so it glides
+        // out instead of clicking.
+        if !self.enabled && self.mix.current() == 0.0 {
             return (in_l, in_r);
         }
         let (tri_l, tri_r) = self.lfo.tick_offset(0.5);
@@ -370,8 +408,9 @@ impl StereoPhaser {
 
         let wet_l = self.left.process(in_l, self.feedback);
         let wet_r = self.right.process(in_r, self.feedback);
-        let dry_gain = 1.0 - self.mix;
-        let wet_gain = self.wet_gain;
+        let mix = self.mix.tick();
+        let dry_gain = 1.0 - mix;
+        let wet_gain = wet_makeup(mix);
         (
             dry_gain * in_l + wet_gain * wet_l,
             dry_gain * in_r + wet_gain * wet_r,
@@ -394,16 +433,13 @@ impl StereoPhaser {
             .min(r_in.len())
             .min(l_out.len())
             .min(r_out.len());
-        if !self.enabled {
+        if !self.enabled && self.mix.current() == 0.0 {
             l_out[..n].copy_from_slice(&l_in[..n]);
             r_out[..n].copy_from_slice(&r_in[..n]);
             return;
         }
         let depth = self.depth;
         let feedback = self.feedback;
-        let mix = self.mix;
-        let dry_gain = 1.0 - mix;
-        let wet_gain = self.wet_gain;
         let nyq = self.nyquist_guard;
 
         for i in 0..n {
@@ -422,6 +458,9 @@ impl StereoPhaser {
             let xr = r_in[i];
             let wet_l = self.left.process(xl, feedback);
             let wet_r = self.right.process(xr, feedback);
+            let mix = self.mix.tick();
+            let dry_gain = 1.0 - mix;
+            let wet_gain = wet_makeup(mix);
             l_out[i] = dry_gain * xl + wet_gain * wet_l;
             r_out[i] = dry_gain * xr + wet_gain * wet_r;
         }
@@ -464,12 +503,47 @@ mod tests {
     }
 
     #[test]
-    fn disabled_is_bit_exact_passthrough() {
-        // The engine gate (0089): when off, output must equal the input bit
-        // for bit, regardless of param state.
+    fn off_from_load_is_bit_exact_from_first_sample() {
+        // A patch that loads with the phaser off (set_enabled before the first
+        // set_params, as the engine's set_from does) must be a bit-exact
+        // passthrough from sample 0 — no startup fade, no buffer work (gate 0089).
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.7, 0.9, 0.8, 0.9);
         ph.set_enabled(false);
+        ph.set_params(0.7, 0.9, 0.8, 0.9);
+        for i in 0..1_000 {
+            let x = 0.4 * fast_sine_01((i as f32 * 330.0 / SR).fract());
+            let y = -0.3 * fast_sine_01((i as f32 * 110.0 / SR).fract());
+            let (l, r) = ph.process(x, y);
+            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact: {l} vs {x}");
+            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact: {r} vs {y}");
+        }
+    }
+
+    #[test]
+    fn switch_off_fades_then_settles_to_bit_exact() {
+        // Switching off mid-render fades the wet down (no click) and only then
+        // reverts to a bit-exact passthrough.
+        let mut ph = StereoPhaser::new(SR);
+        ph.set_params(0.5, 0.9, 0.8, 1.0); // full wet
+        for _ in 0..256 {
+            ph.process(0.3, 0.3);
+        }
+        let before = ph.process(0.3, 0.3);
+        ph.set_enabled(false);
+        let after = ph.process(0.3, 0.3);
+        // First sample after disable is continuous with the wet output, not
+        // snapped straight to the dry input — i.e. the wet is still fading.
+        assert!(
+            (after.0 - before.0).abs() < 0.05,
+            "switch-off jumped: {before:?} -> {after:?}"
+        );
+        assert!((after.0 - 0.3).abs() > 1.0e-4, "switch-off was instant (already dry)");
+        // After the fade fully settles (one-pole reaches its snap floor at
+        // ~14·τ ≈ 0.4 s for τ = 30 ms), output is bit-exact passthrough.
+        let settle = (SR * 0.6) as usize;
+        for _ in 0..settle {
+            ph.process(0.3, 0.3);
+        }
         for i in 0..1_000 {
             let x = 0.4 * fast_sine_01((i as f32 * 330.0 / SR).fract());
             let y = -0.3 * fast_sine_01((i as f32 * 110.0 / SR).fract());
