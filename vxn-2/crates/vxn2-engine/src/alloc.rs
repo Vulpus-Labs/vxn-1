@@ -41,15 +41,13 @@
 //! is 0 or the chosen slot has never sounded.
 
 use vxn2_dsp::eg::EgStage;
-use vxn2_dsp::stack::{Stack, StackParams};
+use vxn2_dsp::stack::{Stack, StackParams, VoicePhase};
 use vxn2_dsp::voice::VoiceParams;
 
 use crate::shared::Patch;
 
 /// Fixed polyphony cap. ADR §3 sets this at 16 stacks for v1.
 pub const N_STACKS: usize = 16;
-
-const SOLO_SLOT: usize = 0;
 
 const IDLE_SEQ: u64 = u64::MAX;
 
@@ -99,8 +97,15 @@ pub struct PolyAlloc {
     /// Last-note-priority stack of currently held notes (Solo bookkeeping).
     held: [u8; N_STACKS],
     held_len: usize,
-    /// True when `SOLO_SLOT` is currently playing a held note.
+    /// True when a solo voice is currently live (held or releasing).
     solo_active: bool,
+    /// The slot carrying the live solo note (`None` when solo is silent).
+    /// Solo rotates a fresh slot per note (round-robin via [`Self::pick_slot`])
+    /// and declicks the previous one, so this replaces the old fixed slot 0.
+    solo_slot: Option<usize>,
+    /// Last solo note pitch (semitones), surviving the slot being freed/reused,
+    /// so detached-note portamento still glides from the previous pitch.
+    solo_last_pitch: f32,
     /// True once Solo has sounded at least one note since the last
     /// [`Self::clear`]. Unlike `solo_active` it survives note-off, so a *new*
     /// Solo note glides from the previous pitch even when the prior key was
@@ -132,6 +137,8 @@ impl PolyAlloc {
             held: [0; N_STACKS],
             held_len: 0,
             solo_active: false,
+            solo_slot: None,
+            solo_last_pitch: 0.0,
             solo_voiced: false,
             voiced: [false; N_STACKS],
             sustain: false,
@@ -257,6 +264,10 @@ impl PolyAlloc {
                     self.stacks[i].set_glide(from * t);
                 }
             }
+            // Free a slot once its voice has gone Idle. The `Stack` self-retires
+            // (gate off, phase → Idle) in `eg_tick` once all its EGs decay —
+            // a released note, a percussive sustain-0 patch, or a Declick voice
+            // whose forced fast release reached 0.
             if self.stacks[i].is_idle() {
                 self.free_slot(i);
             }
@@ -287,7 +298,21 @@ impl PolyAlloc {
         };
         let counter = self.bump_seq();
         self.claim_slot(slot, counter);
-        self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
+        if self.stacks[slot].is_idle() {
+            // Free slot → fresh voice, onset from silence (click-free).
+            self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
+        } else {
+            // Steal a *sounding* voice (rare — only when no spare exists). Reuse
+            // it in place: re-pitch without resetting oscillator phase, LFO2, or
+            // the pitch/mod envelopes. If it was Held → legato (continue the amp
+            // EG); if Releasing (the common steal target) → restart the amp EG
+            // from its current level. Avoids the hard-retrigger click.
+            let held = self.stacks[slot].phase == VoicePhase::Held;
+            self.stacks[slot].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
+            if !held {
+                self.stacks[slot].retrigger_eg();
+            }
+        }
         self.stacks[slot].set_bend(self.bend_st);
         self.voiced[slot] = true;
         if glide_from != 0.0 {
@@ -361,10 +386,12 @@ impl PolyAlloc {
         }
         let mut best: Option<(usize, u64, u8)> = None;
         for i in 0..N_STACKS {
-            let stealable = self.stacks[i]
-                .ops
-                .iter()
-                .any(|o| matches!(o.eg.stage, EgStage::Sustain | EgStage::Release));
+            // A voice already being killed (declick fade) is not a steal target.
+            let stealable = self.stacks[i].phase != VoicePhase::Declick
+                && self.stacks[i]
+                    .ops
+                    .iter()
+                    .any(|o| matches!(o.eg.stage, EgStage::Sustain | EgStage::Release));
             if stealable {
                 let cand = (i, self.seq[i], self.stacks[i].note);
                 best = Some(match best {
@@ -402,40 +429,71 @@ impl PolyAlloc {
         // note plus any still-in-flight glide offset) to the new note —
         // regardless of whether the previous key is still held. Gated only by
         // glide-time and `solo_voiced` (so the very first note snaps). `legato`
-        // governs EG retrigger below, never the glide (ticket 0125).
+        // governs EG retrigger, never the glide (ticket 0125).
+        self.push_held(note);
+        let counter = self.bump_seq();
         let glide_from = if self.solo_voiced && params.glide_time_ms > 0.0 {
-            let cur_pitch = self.stacks[SOLO_SLOT].note as f32 + self.stacks[SOLO_SLOT].glide_st;
-            cur_pitch - note as f32
+            self.solo_pitch() - note as f32
         } else {
             0.0
         };
-        self.push_held(note);
-        let counter = self.bump_seq();
-        if self.solo_active && params.legato {
-            self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
-        } else if self.solo_active && !self.stacks[SOLO_SLOT].is_idle() {
-            // Non-legato steal of a *still-sounding* note. Re-pitch in place
-            // (no phase / LFO / envelope reset), exactly like legato, then
-            // re-articulate by retriggering the carrier amp envelopes only
-            // (see `retrigger_carrier_eg` — retriggering modulators mid-phrase
-            // clicks). Routing a sounding steal through `note_on` instead resets
-            // oscillator phase, reseeds LFO2, and retriggers the pitch/mod
-            // envelopes — every one of which glitches mid-phrase.
-            self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
-            self.stacks[SOLO_SLOT].retrigger_carrier_eg();
-        } else {
-            // Fresh voice: first note, or a note after the slot fell silent.
-            self.stacks[SOLO_SLOT].note_on(sp, vp, note, velocity, self.sample_rate, counter);
-            self.stacks[SOLO_SLOT].set_bend(self.bend_st);
+
+        // Legato + previous note still Held → re-pitch the same voice in place,
+        // no retrigger, no kill. (A `Releasing` previous note is not held, so it
+        // falls through to the crossfade.)
+        if params.legato {
+            if let Some(cur) = self.solo_slot {
+                if self.stacks[cur].phase == VoicePhase::Held {
+                    self.stacks[cur].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
+                    self.seq[cur] = counter;
+                    self.apply_solo_glide(cur, glide_from, params, note);
+                    self.solo_active = true;
+                    self.solo_voiced = true;
+                    return;
+                }
+            }
         }
+
+        // Otherwise: round-robin to a FRESH voice (onset from silence is
+        // click-free) and declick the previous note. `note_on` resets phase /
+        // LFO2 / envelopes on the *new* slot only — the outgoing voice keeps
+        // running while it fades, so no mid-phrase glitch.
+        let prev = self.solo_slot;
+        let slot = self.pick_slot(note);
+        self.claim_slot(slot, counter);
+        self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
+        self.stacks[slot].set_bend(self.bend_st);
+        self.voiced[slot] = true;
+        self.apply_solo_glide(slot, glide_from, params, note);
+        if let Some(p) = prev {
+            if p != slot {
+                self.stacks[p].start_declick();
+            }
+        }
+        self.solo_slot = Some(slot);
         self.solo_active = true;
         self.solo_voiced = true;
-        self.seq[SOLO_SLOT] = counter;
-        if glide_from != 0.0 {
-            self.start_glide(SOLO_SLOT, glide_from, params.glide_time_ms / 1000.0);
-        } else {
-            self.clear_glide(SOLO_SLOT);
+    }
+
+    /// Current solo sounding pitch (note + in-flight glide), falling back to the
+    /// stashed last pitch once the slot has been freed/reused (detached glide).
+    fn solo_pitch(&self) -> f32 {
+        match self.solo_slot {
+            Some(p) if !self.stacks[p].is_idle() => {
+                self.stacks[p].note as f32 + self.stacks[p].glide_st
+            }
+            _ => self.solo_last_pitch,
         }
+    }
+
+    /// Shared glide + last-pitch bookkeeping for a solo note landing on `slot`.
+    fn apply_solo_glide(&mut self, slot: usize, glide_from: f32, params: &AllocParams, note: u8) {
+        if glide_from != 0.0 {
+            self.start_glide(slot, glide_from, params.glide_time_ms / 1000.0);
+        } else {
+            self.clear_glide(slot);
+        }
+        self.solo_last_pitch = note as f32;
     }
 
     fn note_off_solo(
@@ -449,44 +507,49 @@ impl PolyAlloc {
         if !self.solo_active {
             return;
         }
-        if self.stacks[SOLO_SLOT].note != note {
+        let Some(cur) = self.solo_slot else {
+            return;
+        };
+        if self.stacks[cur].note != note {
             return;
         }
         if let Some(prev) = self.most_recent_held() {
-            let cur = self.stacks[SOLO_SLOT].note as f32 + self.stacks[SOLO_SLOT].glide_st;
-            let glide_from = if params.glide_time_ms > 0.0 {
-                cur - prev as f32
-            } else {
-                0.0
-            };
             // Fallback reuses the sounding stack's velocity (the note being
             // released) rather than the held note's original strike — `held`
             // stores notes only. Intentional: classic mono-synth behaviour,
-            // and it keeps the fallback dynamically continuous with the
-            // phrase being played (ticket 0064 Notes).
-            let vel = self.stacks[SOLO_SLOT].velocity;
+            // continuous with the phrase being played (ticket 0064 Notes).
+            let vel = self.stacks[cur].velocity;
             let counter = self.bump_seq();
-            if params.legato {
-                self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
-            } else if !self.stacks[SOLO_SLOT].is_idle() {
-                // Held-note fallback re-pitches a still-ringing voice — same
-                // click-free retrigger as a steal above (retarget + amp EG).
-                self.stacks[SOLO_SLOT].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
-                self.stacks[SOLO_SLOT].retrigger_carrier_eg();
+            let glide_from = if params.glide_time_ms > 0.0 {
+                self.solo_pitch() - prev as f32
             } else {
-                self.stacks[SOLO_SLOT].note_on(sp, vp, prev, vel, self.sample_rate, counter);
-                self.stacks[SOLO_SLOT].set_bend(self.bend_st);
-            }
-            self.seq[SOLO_SLOT] = counter;
-            if glide_from != 0.0 {
-                self.start_glide(SOLO_SLOT, glide_from, params.glide_time_ms / 1000.0);
+                0.0
+            };
+            if params.legato && self.stacks[cur].phase == VoicePhase::Held {
+                // Held → re-pitch the same voice in place.
+                self.stacks[cur].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
+                self.seq[cur] = counter;
+                self.apply_solo_glide(cur, glide_from, params, prev);
             } else {
-                // Symmetric with note_on_solo: a fallback without glide must
-                // also clear any in-flight glide ramp.
-                self.clear_glide(SOLO_SLOT);
+                // Crossfade the fallback onto a fresh voice; declick the released.
+                let slot = self.pick_slot(prev);
+                self.claim_slot(slot, counter);
+                self.stacks[slot].note_on(sp, vp, prev, vel, self.sample_rate, counter);
+                self.stacks[slot].set_bend(self.bend_st);
+                self.voiced[slot] = true;
+                self.apply_solo_glide(slot, glide_from, params, prev);
+                if slot != cur {
+                    self.stacks[cur].start_declick();
+                }
+                self.solo_slot = Some(slot);
             }
+            self.solo_active = true;
+            self.solo_voiced = true;
         } else {
-            self.stacks[SOLO_SLOT].note_off();
+            // No key left: release the current voice naturally. Keep `solo_slot`
+            // pointing at it (a fast re-press declicks the tail); `free_slot`
+            // clears it once the release completes.
+            self.stacks[cur].note_off();
             self.solo_active = false;
         }
     }
@@ -534,8 +597,9 @@ impl PolyAlloc {
         self.seq[slot] = IDLE_SEQ;
         self.glides[slot] = None;
         self.held_by_pedal[slot] = false;
-        if slot == SOLO_SLOT {
+        if Some(slot) == self.solo_slot {
             self.solo_active = false;
+            self.solo_slot = None;
         }
     }
 
@@ -777,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_reuses_slot_zero() {
+    fn solo_steal_uses_fresh_slot_and_declicks_previous() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Solo,
@@ -787,12 +851,15 @@ mod tests {
         let sp = density1();
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
+        let first = alloc.solo_slot.expect("first note allocates a slot");
         alloc.note_on(&params, &sp, &vp, 64, 100);
-        assert!(alloc.stacks[0].gate);
-        assert_eq!(alloc.stacks[0].note, 64);
-        for s in &alloc.stacks[1..] {
-            assert!(s.is_idle());
-        }
+        let cur = alloc.solo_slot.expect("second note allocates a slot");
+        assert_ne!(cur, first, "a solo steal must round-robin to a fresh slot");
+        assert!(alloc.stacks[cur].gate);
+        assert_eq!(alloc.stacks[cur].note, 64);
+        // The previous note is killed via the declick lifecycle (faded engine-side).
+        assert_eq!(alloc.stacks[first].phase, VoicePhase::Declick);
+        assert_eq!(alloc.stacks[first].note, 60);
     }
 
     #[test]
@@ -808,8 +875,13 @@ mod tests {
         alloc.note_on(&params, &sp, &vp, 60, 100);
         alloc.note_on(&params, &sp, &vp, 64, 100);
         alloc.note_off(&params, &sp, &vp, 64);
-        assert!(alloc.stacks[0].gate);
-        assert_eq!(alloc.stacks[0].note, 60);
+        // Fallback to the still-held 60 lands on a fresh live (non-declicking) slot.
+        let slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 60 && s.phase != VoicePhase::Declick)
+            .expect("fallback note 60 is sounding");
+        assert_eq!(alloc.solo_slot, Some(slot));
     }
 
     #[test]
@@ -834,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_non_legato_retriggers_eg() {
+    fn solo_non_legato_steal_is_fresh_voice_in_attack() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Solo,
@@ -844,9 +916,15 @@ mod tests {
         let sp = density1();
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
+        let first = alloc.solo_slot.unwrap();
         run_blocks(&mut alloc, (SR as usize) / 5 / BLK);
         alloc.note_on(&params, &sp, &vp, 64, 100);
-        assert_eq!(alloc.stacks[0].ops[0].eg.stage, EgStage::Attack);
+        let cur = alloc.solo_slot.unwrap();
+        assert_ne!(cur, first);
+        // The new note is a fresh voice (onset from silence → attack).
+        assert_eq!(alloc.stacks[cur].ops[0].eg.stage, EgStage::Attack);
+        // The previous note is declicking, not retriggered in place.
+        assert_eq!(alloc.stacks[first].phase, VoicePhase::Declick);
     }
 
     #[test]
@@ -947,6 +1025,71 @@ mod tests {
                 alloc.stacks[slot].glide_st
             );
         }
+    }
+
+    /// Poly steal of a *Held* voice (no spare slot) reuses it in place with
+    /// legato semantics: the amp EG continues (no restart), only the pitch moves.
+    #[test]
+    fn poly_steal_of_held_voice_is_legato() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams {
+            assign_mode: AssignMode::Poly,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let vp = fast_patch();
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain (Held)
+        // One more note: no spare slot → steal the oldest (slot 0, note 60).
+        alloc.note_on(&params, &sp, &vp, 90, 100);
+        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
+        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
+        assert_eq!(
+            alloc.stacks[0].ops[0].eg.stage,
+            EgStage::Sustain,
+            "stealing a Held voice is legato — the amp EG must not retrigger"
+        );
+    }
+
+    /// Poly steal of a *Releasing* voice (the common case) restarts the amp EG
+    /// from its current level — no reset to 0, no hard retrigger.
+    #[test]
+    fn poly_steal_of_releasing_voice_restarts_eg() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams {
+            assign_mode: AssignMode::Poly,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let vp = fast_patch();
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK);
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_off(&params, &sp, &vp, n); // all → Releasing
+        }
+        // Steal immediately (no intervening block_tick): the voices are still
+        // Releasing at their sustain level, not yet decayed/idle.
+        let level_before = alloc.stacks[0].ops[0].eg.level;
+        assert!(level_before > 0.0, "fixture: releasing voice still audible");
+        assert_eq!(alloc.stacks[0].phase, VoicePhase::Releasing);
+        alloc.note_on(&params, &sp, &vp, 90, 100);
+        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
+        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
+        assert_eq!(
+            alloc.stacks[0].ops[0].eg.stage,
+            EgStage::Attack,
+            "stealing a Releasing voice restarts the amp EG"
+        );
+        assert!(
+            alloc.stacks[0].ops[0].eg.level > 0.0,
+            "EG restarts from the current level, not 0"
+        );
     }
 
     /// Overlapping distinct notes (a chord) take *fresh* voices and must not

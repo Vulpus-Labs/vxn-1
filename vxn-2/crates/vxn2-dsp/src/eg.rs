@@ -95,6 +95,20 @@ impl EgState {
         }
     }
 
+    /// Force a fast release to 0 over `secs`, overriding the patch's release
+    /// target/rate — used to declick a killed voice. The rate is `level / secs`
+    /// so the descent is linear and reaches 0 in exactly `secs` from the current
+    /// level. Already-silent EGs go straight to Idle.
+    pub fn kill_release(&mut self, secs: f32) {
+        if self.level <= 0.0 {
+            self.stage = EgStage::Idle;
+            return;
+        }
+        self.targets[3] = 0.0;
+        self.rates_per_sec[3] = self.level / secs.max(1.0e-6);
+        self.stage = EgStage::Release;
+    }
+
     /// Advance one control tick, `dt` seconds since the previous tick.
     /// Returns the post-tick level.
     pub fn tick(&mut self, dt: f32) -> f32 {

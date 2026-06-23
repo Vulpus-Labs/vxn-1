@@ -697,6 +697,10 @@ impl Engine {
         for i in 0..self.alloc.stacks.len() {
             if self.alloc.stacks[i].is_idle() {
                 self.ramp_live[i] = false;
+                // Forget the last rendered EG level so a future fresh note reusing
+                // this slot rebases its onset from silence, not a stale level left
+                // by a hard-silenced (declicked) voice.
+                self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
                 continue;
             }
             // Fresh-note detection up front (E008 0093 needs it before the
@@ -2003,27 +2007,34 @@ mod tests {
     #[test]
     fn solo_note_off_falls_back_to_held_note_via_engine() {
         use crate::alloc::AssignMode;
+        use vxn2_dsp::stack::VoicePhase;
 
         let mut e = Engine::new(SR, BLK);
         e.params.alloc.assign_mode = AssignMode::Solo;
         let mut l = [0.0_f32; BLK];
         let mut r = [0.0_f32; BLK];
 
+        // The live solo voice (gated, not mid-declick) carrying `note`.
+        let live = |e: &Engine, note: u8| {
+            e.alloc
+                .stacks
+                .iter()
+                .position(|s| s.gate && s.note == note && s.phase != VoicePhase::Declick)
+        };
+
         e.note_on(60, 100);
         e.process_block(&mut l, &mut r);
         e.note_on(64, 90);
         e.process_block(&mut l, &mut r);
-        assert_eq!(e.alloc.stacks[0].note, 64, "solo slot plays the new note");
-        assert!(e.alloc.stacks[0].gate);
+        assert!(live(&e, 64).is_some(), "a live voice plays the new note");
 
-        // Release the top note while 60 is still held → fallback.
+        // Release the top note while 60 is still held → fallback to 60.
         e.note_off(64);
         e.process_block(&mut l, &mut r);
-        assert_eq!(
-            e.alloc.stacks[0].note, 60,
+        assert!(
+            live(&e, 60).is_some(),
             "released solo note must fall back to the held note"
         );
-        assert!(e.alloc.stacks[0].gate, "fallback note keeps sounding");
 
         // It is audibly sounding, not a gated corpse.
         let mut peak = 0.0_f32;
@@ -2035,10 +2046,15 @@ mod tests {
         }
         assert!(peak > 1e-3, "fallback note silent (peak = {peak})");
 
-        // Releasing the last note finally gates the voice off.
+        // Releasing the last note finally gates every voice off.
         e.note_off(60);
-        e.process_block(&mut l, &mut r);
-        assert!(!e.alloc.stacks[0].gate, "all keys up → voice released");
+        for _ in 0..(SR as usize) / 4 / BLK {
+            e.process_block(&mut l, &mut r);
+        }
+        assert!(
+            e.alloc.stacks.iter().all(|s| !s.gate),
+            "all keys up → voices released"
+        );
     }
 
     /// LFO1 → GlobalPitch at block size 256 must ramp, not step (ticket

@@ -62,15 +62,11 @@ fn note_on_onset_is_click_free_on_fast_attack() {
 }
 
 /// Solo-mode steal (legato off): stealing a *sounding* note must be click-free.
-/// A retrigger steal resets the oscillator phase, and the EG continues its level
-/// across `note_on`. The earlier onset fix masked the phase-reset glitch by
-/// forcing the level to 0 through it (`op_level_mod = -eg`) — trading the click
-/// for a level dip. Carrying the level through instead (the onset fix's intent)
-/// then *exposed* the phase glitch as a loud click. The resolution keeps both
-/// the level and the oscillator waveform continuous on a steal (the EG still
-/// retriggers), so neither artefact is present. We measure the steal transient
-/// with the same 4th-difference probe as the note-off test and require it to
-/// stay near the click-free (legato) floor.
+/// A solo note change now round-robins to a fresh voice (onset from silence is
+/// click-free) and declicks the previous note — a ~5 ms fade to silence that
+/// overlaps the new onset. Neither the old in-place retrigger's phase-reset
+/// glitch nor a level dip is present. We measure the steal transient with the
+/// same 4th-difference probe as the note-off test and require it near the floor.
 #[test]
 fn solo_steal_is_click_free() {
     let mut e = Engine::new(SR, BLK);
@@ -108,26 +104,18 @@ fn solo_steal_is_click_free() {
     let steal_worst = (steal_t..buf.len() - 2).map(d4).fold(0.0, f64::max);
     let baseline = (4..steal_t - 2).map(d4).fold(0.0, f64::max);
 
-    // Click-free reference (legato, phase+level continuous) measures ~0.016 on
-    // this patch; the phase-reset click (level carried through, phase reset)
-    // measures ~0.6. Sit the gate well between the two.
+    // Crossfade + ~5 ms declick measures ~0.006 here; an in-place phase-reset
+    // steal measured ~0.6. Gate well between the two.
     assert!(
-        steal_worst < 5e-2,
+        steal_worst < 1.5e-2,
         "solo steal transient |d4| {steal_worst:.2e} (steady baseline {baseline:.2e}) — \
-         a steal-of-sounding-note click is back (phase reset no longer masked / continued)"
+         a steal-of-sounding-note click is back"
     );
 }
 
-/// Real-world repro: the FLUTE 2 factory preset played as a solo 16th-note line
-/// at 100 BPM clicked on every note. The patch retriggers operator EGs whose
-/// modulators decay to sustain 0; re-attacking those modulators mid-phrase
-/// (carrier still loud) is an unmasked FM-index transient on every re-struck
-/// note. A solo steal now re-pitches in place and retriggers only the *carrier*
-/// envelopes, so the line re-articulates without the modulator click. Measured
-/// 4th-difference at the note boundaries: ~0.026 before, ~0.005 (the legato
-/// floor) after.
-#[test]
-fn flute2_solo_sixteenths_are_click_free() {
+/// Worst 4th-difference transient at the note boundaries of a FLUTE 2 solo
+/// 16th-note line at 100 BPM, for the given stacking density and stack phase.
+fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
     let fp = factory()
         .into_iter()
         .find(|p| p.name == "FLUTE 2")
@@ -144,6 +132,8 @@ fn flute2_solo_sixteenths_are_click_free() {
     e.params.delay.mix = 0.0;
     e.params.reverb.on = false;
     e.params.reverb.mix = 0.0;
+    e.params.patch.stack.density = density;
+    e.params.patch.stack.phase = stack_phase;
     e.apply_block_params();
 
     // 16th notes at 100 BPM = 0.15 s = 7200 samples per note.
@@ -175,9 +165,64 @@ fn flute2_solo_sixteenths_are_click_free() {
             worst = f64::max(worst, d4(i));
         }
     }
+    worst
+}
+
+/// Real-world repro: the FLUTE 2 factory preset played as a solo 16th-note line
+/// at 100 BPM clicked on every note (the patch's modulators decay to sustain 0;
+/// retriggering them mid-phrase was an unmasked FM transient). Solo now
+/// round-robins to a fresh voice per note and declicks the previous one — no
+/// retrigger, no click. ~0.026 pre-fix → ~0.005 after.
+#[test]
+fn flute2_solo_sixteenths_are_click_free() {
+    let worst = flute2_solo_sixteenths_boundary_d4(1, 0.0);
     assert!(
-        worst < 1e-2,
-        "FLUTE 2 solo 16ths: note-boundary |d4| {worst:.2e} — the per-note retrigger \
-         click is back (modulator EGs retriggering mid-phrase, ~0.026 pre-fix)"
+        worst < 1.5e-2,
+        "FLUTE 2 solo 16ths: note-boundary |d4| {worst:.2e} — per-note click is back"
     );
+}
+
+/// The case the in-place fixes never cracked: FLUTE 2 solo 16ths with voice
+/// stacking (density 4) and stack phase 0.5 (maximal per-lane decorrelation).
+/// Any in-place reuse discontinues the decorrelated lane phases; only the
+/// fresh-voice + declick crossfade is clean here.
+#[test]
+fn flute2_solo_sixteenths_stacked_phase_half_are_click_free() {
+    let worst = flute2_solo_sixteenths_boundary_d4(4, 0.5);
+    assert!(
+        worst < 1.5e-2,
+        "FLUTE 2 solo 16ths (density 4, phase 0.5): note-boundary |d4| {worst:.2e} — \
+         stacked-steal click is back"
+    );
+}
+
+/// A killed (declicked) solo voice fades out and frees its slot: after a steal,
+/// the previous voice reaches Idle within the declick window + a block.
+#[test]
+fn solo_declick_completes_to_idle() {
+    let mut e = Engine::new(SR, BLK);
+    e.params.alloc.assign_mode = AssignMode::Solo;
+    e.params.alloc.legato = false;
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    e.apply_block_params();
+
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    e.note_on(60, 100);
+    e.process_block(&mut l, &mut r);
+    e.note_on(67, 100); // steal: 60 starts declicking
+    // Declick is ~5 ms; render well past it.
+    for _ in 0..(SR as usize / 20 / BLK) {
+        e.process_block(&mut l, &mut r);
+    }
+    let live = e
+        .alloc
+        .stacks
+        .iter()
+        .filter(|s| s.gate && !s.is_idle())
+        .count();
+    assert_eq!(live, 1, "exactly one live voice after the declicked note frees");
 }

@@ -206,6 +206,29 @@ pub struct StackOp {
     pub fb_scale: [f32; STACK_LANES],
 }
 
+/// Voice lifecycle phase — a single voice-level state abstracting over the
+/// per-op ADSR stages (a `Held` voice can have ops simultaneously in attack,
+/// decay, and sustain, so the allocator must reason from this, not per-op
+/// stages). Drives the click-free reuse policy (see `alloc`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum VoicePhase {
+    /// Free; not sounding.
+    #[default]
+    Idle,
+    /// Key down (gated): attack/decay/sustain across the ops.
+    Held,
+    /// Key up; the EGs are releasing toward Idle but not yet silent.
+    Releasing,
+    /// Being killed: every op EG is in a forced fast release to 0 (see
+    /// [`Stack::start_declick`]); the voice goes Idle once they all reach Idle.
+    Declick,
+}
+
+/// Declick fade time: a killed voice's op EGs fast-release to 0 over this span.
+/// ~5 ms clears the transient (a one-control-block 0.67 ms fade does not) while
+/// staying short enough that solo voice overlap never approaches polyphony.
+pub const DECLICK_SECS: f32 = 0.005;
+
 /// One voice stack — six lane-packed ops + per-stack metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct Stack {
@@ -214,7 +237,16 @@ pub struct Stack {
     pub prev_outs: [[f32; STACK_LANES]; N_OPS],
     pub note: u8,
     pub velocity: u8,
+    /// `true` while the key is down. Kept in sync with `phase == Held`; retained
+    /// as a field because the allocator/tests read it directly.
     pub gate: bool,
+    /// Voice lifecycle phase — authoritative liveness state (see [`VoicePhase`]).
+    pub phase: VoicePhase,
+    /// One-block grace before retiring: when the EGs first all reach Idle the
+    /// voice stays non-idle for one more `eg_tick` so the engine's per-sample
+    /// level smoothing (0077) can ramp the last block-rate residual to 0 — a fast
+    /// declick release otherwise leaves a step when the voice is skipped early.
+    idle_grace: bool,
     pub density: u8,
     /// Cached `1 / √density` — decorrelated lanes sum to ~√N amplitude, so
     /// this level-matches density 1..8. Recomputed only when `density`
@@ -315,6 +347,8 @@ impl Default for Stack {
             note: 0,
             velocity: 0,
             gate: false,
+            phase: VoicePhase::Idle,
+            idle_grace: false,
             density: 1,
             inv_sqrt_density: 1.0,
             voice_idx: [0; STACK_LANES],
@@ -458,6 +492,8 @@ impl Stack {
         self.note = note;
         self.velocity = velocity;
         self.gate = true;
+        self.phase = VoicePhase::Held;
+        self.idle_grace = false;
         self.density = stack_params.density.clamp(1, STACK_LANES as u8);
         self.inv_sqrt_density = 1.0 / (self.density as f32).sqrt();
         self.algo = voice_params.algo;
@@ -527,6 +563,10 @@ impl Stack {
     ) {
         self.note = note;
         self.velocity = velocity;
+        // Reused in place (legato / poly steal) → the voice is held again.
+        self.gate = true;
+        self.phase = VoicePhase::Held;
+        self.idle_grace = false;
         self.detune_cents_max = stack_params.detune_cents_max;
         let master_mult = 2_f32.powf(voice_params.master_tune_cents / 1200.0);
         for i in 0..N_OPS {
@@ -545,6 +585,7 @@ impl Stack {
 
     pub fn note_off(&mut self) {
         self.gate = false;
+        self.phase = VoicePhase::Releasing;
         for op in &mut self.ops {
             op.eg.note_off();
         }
@@ -552,32 +593,58 @@ impl Stack {
         self.mod_env.note_off();
     }
 
+    /// Liveness, off the lifecycle phase (see [`VoicePhase`]).
     #[inline]
     pub fn is_idle(&self) -> bool {
+        self.phase == VoicePhase::Idle
+    }
+
+    /// All amp EGs have reached Idle — used by the allocator's `block_tick` to
+    /// retire a `Held`/`Releasing` voice once its envelopes have fully decayed
+    /// (a released note, or a percussive sustain-0 patch that dies while held).
+    #[inline]
+    pub fn eg_all_idle(&self) -> bool {
         self.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
     }
 
-    /// Restart the attack of the **carrier** amp envelopes only, leaving every
-    /// other running state — oscillator phase, feedback, LFO2, the pitch/mod
-    /// envelopes, *and the modulator* EGs — untouched. This is the audible half
-    /// of a non-legato solo steal: pair it with [`Self::retarget_pitch`] (which
-    /// re-pitches and re-cooks EG targets without resetting state) for a
-    /// click-free retrigger.
-    ///
-    /// Carriers only, by design: re-attacking a *modulator* mid-phrase snaps its
-    /// FM index back up while the carrier is still at full level — an unmasked
-    /// timbral transient (an audible click on every re-struck note; the FLUTE 2
-    /// 16th-note case). On a fresh poly voice the same modulator attack is
-    /// masked by the carrier fading in from silence; on a steal the carrier
-    /// stays loud, so only the carriers re-articulate. Routing the steal through
-    /// [`Self::note_on`] instead also resets phase / reseeds LFO2 / retriggers
-    /// the pitch+mod envelopes — more glitches still.
-    pub fn retrigger_carrier_eg(&mut self) {
-        let carriers = spec_of(self.algo).carriers;
-        for (i, op) in self.ops.iter_mut().enumerate() {
-            if (carriers >> i) & 1 == 1 {
-                op.eg.note_on();
-            }
+    /// Hard-silence and free: gate off, snap every EG to Idle, release the
+    /// pitch/mod envelopes, and mark the voice `Idle`. Used at declick completion
+    /// (output already ~0) and on the natural `eg_all_idle` retirement.
+    pub fn silence(&mut self) {
+        self.gate = false;
+        self.phase = VoicePhase::Idle;
+        self.idle_grace = false;
+        for op in &mut self.ops {
+            op.eg.stage = EgStage::Idle;
+            op.eg.level = 0.0;
+        }
+        self.pitch_eg.note_off();
+        self.mod_env.note_off();
+    }
+
+    /// Begin killing a sounding voice: gate off, enter `Declick`, and force every
+    /// op EG into a fast release to 0 over [`DECLICK_SECS`]. Each op's rate is set
+    /// to `level / DECLICK_SECS`, so every op reaches 0 simultaneously and the
+    /// voice fades *proportionally* (timbre held — equivalent to a uniform gain
+    /// fade). The normal EG path + the engine's per-sample level smoothing render
+    /// it click-free, exactly as a note-off release; the allocator's `block_tick`
+    /// retires the voice once all EGs reach Idle.
+    pub fn start_declick(&mut self) {
+        self.gate = false;
+        self.phase = VoicePhase::Declick;
+        for op in &mut self.ops {
+            op.eg.kill_release(DECLICK_SECS);
+        }
+    }
+
+    /// Restart the attack of **all** op amp envelopes, continuing each from its
+    /// current level (DX7-style click-free retrigger — no jump to 0). Used for a
+    /// poly steal of a `Releasing` voice ("pick up the EG at its current level"):
+    /// pair with [`Self::retarget_pitch`], which re-pitches without resetting
+    /// oscillator phase, LFO2, or the pitch/mod envelopes.
+    pub fn retrigger_eg(&mut self) {
+        for op in &mut self.ops {
+            op.eg.note_on();
         }
     }
 
@@ -710,11 +777,28 @@ impl Stack {
         self.pitch_eg.tick(dt);
         self.mod_env.tick(dt);
         self.apply_pitch_mult();
+        // Retire the voice once every amp EG has decayed to Idle: a released
+        // note, a percussive sustain-0 patch that died while held, or a Declick
+        // voice whose forced fast release reached 0. One `eg_tick` of grace first
+        // (idle_grace) so the engine renders one more block and its per-sample
+        // smoothing ramps the final block-rate residual to 0 before the voice is
+        // skipped — otherwise a fast declick leaves a step.
+        if self.phase != VoicePhase::Idle && self.eg_all_idle() {
+            if self.idle_grace {
+                self.gate = false;
+                self.phase = VoicePhase::Idle;
+                self.idle_grace = false;
+            } else {
+                self.idle_grace = true;
+            }
+        }
     }
 
     /// Force every op into Sustain at `level` — fixture for steady-state
     /// tests and benches. Skips Attack/Decay.
     pub fn force_sustain(&mut self, level: f32) {
+        self.gate = true;
+        self.phase = VoicePhase::Held;
         for op in &mut self.ops {
             op.eg.stage = EgStage::Sustain;
             op.eg.level = level;
