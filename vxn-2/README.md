@@ -21,6 +21,8 @@ epics closed (E001–E005, E007, E008).
 - [ADR 0002 — drop dual layer](adrs/0002-drop-dual-layer.md)
 - [ADR 0003 — dirty-bitset diff pump](adrs/0003-dirty-bitset-diff-pump.md)
 - [ADR 0004 — optional per-voice oversampled filter](adrs/0004-optional-per-voice-oversampled-filter.md)
+- [ADR 0005 — stack pitch modulation](adrs/0005-stack-pitch-mod.md)
+- [ADR 0006 — voice lifecycle & click-free voice reuse](adrs/0006-voice-lifecycle-click-free-reuse.md)
 - [PARAMETERS.md](PARAMETERS.md) — full param table + mod-matrix source/dest sets.
 
 Tickets use a per-project counter (vxn-1 and vxn-2 each start at 0001 and
