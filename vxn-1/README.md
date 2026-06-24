@@ -51,7 +51,8 @@ Requires Rust 1.85+ (edition 2024).
 
 The VST3 build path (`cargo xtask bundle --format vst3`, E010) links
 [clap-wrapper](https://github.com/free-audio/clap-wrapper) against the
-[VST3 SDK](https://github.com/steinbergmedia/vst3sdk), both vendored as git
+[CLAP SDK](https://github.com/free-audio/clap) and the
+[VST3 SDK](https://github.com/steinbergmedia/vst3sdk), all vendored as git
 submodules under `vendor/` at the repo root. Initialise them before building
 VST3:
 
