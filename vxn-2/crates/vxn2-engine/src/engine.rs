@@ -1944,9 +1944,18 @@ mod tests {
         let target_blocks = ((SR * 1.0) as usize) / BLK;
         let _ = render_and_rms(&mut e, target_blocks.saturating_sub(blocks_so_far));
         let (_, sustain_db, _) = render_and_rms(&mut e, blocks_per_window);
+        // 0125 (exponential EG ramps): the default patch is percussive — every
+        // carrier's L3 = 0, so the note decays toward silence. Under the old
+        // linear-amplitude march it sat on a ~-8..-24 dBFS plateau at t ≈ 1 s;
+        // the DX7 exponential march descends on a constant dB/sec slope and is
+        // far lower mid-tail (~-40 dBFS) for the *same* total decay duration.
+        // Bound it as a decaying-but-still-ringing tail (below the attack body,
+        // above the noise floor) rather than a fixed plateau — the absolute
+        // level is the manual listening pass + 0126 loudness re-sweep's job.
         assert!(
-            (-24.0..=-8.0).contains(&sustain_db),
-            "sustain RMS {sustain_db} dBFS outside [-24, -8]"
+            sustain_db < attack_db && sustain_db > -55.0,
+            "t≈1s RMS {sustain_db} dBFS not a decaying-but-ringing tail \
+             (want below attack {attack_db} dBFS and above -55)"
         );
 
         // Hold to t = 2 s, release, then run to t = 3.5 s.

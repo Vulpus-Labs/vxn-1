@@ -44,3 +44,47 @@ characteristic DX7 tapered envelope.
 linear ceiling = OL × ks × vel applied after `exp2`). Watch the matrix op-level
 write path and `force_sustain`. This is the only part of the epic that touches
 the per-sample-adjacent code, hence the explicit bench gate.
+
+## Implementation note (2026-06-24) — code landed, **pending ear verification**
+
+Implemented in [eg.rs](../../vxn-2/crates/vxn2-dsp/src/eg.rs); **ticket stays
+open until verified by ear in Reaper** (epic AC). What landed:
+
+- `EgState` gained `curve`, `max_amp`, `log_level`, `log_targets[4]`,
+  `log_rates[4]`, and a `kill` flag. `Exp` marches the **downward** segments
+  (Decay1/Decay2/Release) linearly in log2 → exponential amplitude taper
+  (`level = max_amp × 2^log_level`), the DX7 shape. **Attack stays a
+  linear-amplitude rise** (DX7 attack is fast/punchy; a log creep from the
+  −90 dB floor would be a dead-then-pop attack) — at the attack→Decay1
+  transition `log_level` is seeded from the reached amplitude. `Lin` is
+  unchanged (marches `level` in amplitude every segment).
+- `kill_release` (declick) is a linear-amplitude ramp to 0 on **both** curves
+  via the `kill` flag — smooth+fast is all a declick needs; the Release stage
+  ignores the log marcher while killed.
+- Rate recalibration: `rate_to_log2_per_sec` is built so a **full** segment
+  sweep takes the *same* wall-clock as the old linear march
+  (`20 / 2^(R/8)` s; R=0 ≈ 20 s, R=99 ≈ 4 ms). Only the *shape within* a
+  segment changes (constant dB/sec vs constant amp/sec), so a decay-to-silence
+  patch is much lower mid-tail.
+- `op{N}-level` matrix dest unaffected: the hot loop reads `eg.level` (amplitude)
+  + `op_level_mod` additively (`stack.rs` ~963/983) — `eg.level` is amplitude on
+  both curves, so that path is unchanged.
+- Perf: the log marcher + `exp2` run in `eg_tick` (control rate, scalar, once
+  per op per block) — the per-sample NEON lane loop is byte-unchanged. No hot-path
+  edit ([[vxn1-soa-match-defeats-simd]]); the explicit bench run is still owed.
+
+Tests (dsp): `exp_decay_is_linear_in_db`, `lin_decay_is_linear_in_amp`,
+`exp_rate_zero_is_far_slower_than_max`, `kill_release_declicks_linearly_on_exp`;
+the existing attack/decay/sustain/release tests pass under the new Exp path.
+Engine `default_patch_renders_with_expected_envelope` retargeted (the percussive
+E.PIANO now decays exponentially → a lower, still-ringing mid-tail at t≈1 s).
+Also fixed a **pre-existing** (5684c2d, the curve prototype) `param_sweep`
+fixture, `silence_when_master_volume_min`, which leaked the note-on transient
+through the still-ramping master smoother — added an 8-block pre-roll so it tests
+settled −60 dB silence.
+
+**To verify (Reaper):** attack feel (punchy, not soft), decay/release taper
+(natural exponential, not linear), segment times across R=0..99 on an e-piano
+pluck, a pad swell, and a bass. If times feel off, tune `rate_to_log2_per_sec`'s
+`/20.0`; if attack feels wrong, that's the linear-attack choice to revisit.
+dsp 188 / engine 205 lib green; CPU benches still to run.
