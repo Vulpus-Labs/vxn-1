@@ -1,7 +1,7 @@
 //! Build tasks for VXN1.
 //!
 //! Usage:
-//!   cargo xtask bundle [--release] [--install] [--universal]
+//!   cargo xtask bundle [--release] [--install] [--universal] [--format clap,vst3]
 //!   cargo xtask web [--debug] [--serve] [--port N]
 //!
 //! `bundle` compiles the `vxn-clap` cdylib and wraps it into a `VXN1.clap`
@@ -10,6 +10,13 @@
 //! to `.clap`. `--install` copies it to the user CLAP directory. `--universal`
 //! (macOS only) builds both `aarch64`/`x86_64` slices and `lipo`s them into a
 //! single fat binary, so one bundle loads on Apple Silicon and Intel hosts.
+//!
+//! `--format` selects which artifact(s) to produce (comma-separated, default
+//! `clap`): `clap` runs the path above verbatim; `vst3` (E010 / ticket 0011)
+//! builds the `vxn-clap` *staticlib*, force-loads it into a clap-wrapper VST3
+//! module via the `vxn-1/wrapper` CMake project, and stages `VXN1.vst3` next to
+//! the CLAP. Both can be requested together. The `vst3` path needs CMake and the
+//! `vendor/` submodules; macOS only for now (Windows is ticket 0012).
 //!
 //! `web` (ticket 0041) compiles the wasm crate(s) for `wasm32-unknown-unknown`
 //! (release + SIMD128 by default) and assembles a self-contained, servable
@@ -45,9 +52,22 @@ fn main() {
 
     match cmd {
         "bundle" => {
-            if let Err(e) = bundle(release, install, universal) {
-                eprintln!("xtask: {e}");
-                std::process::exit(1);
+            let formats = match parse_formats(&args) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("xtask: {e}");
+                    std::process::exit(2);
+                }
+            };
+            for fmt in formats {
+                let res = match fmt {
+                    Format::Clap => bundle(release, install, universal),
+                    Format::Vst3 => bundle_vst3(release, install, universal),
+                };
+                if let Err(e) = res {
+                    eprintln!("xtask: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         "web" => {
@@ -64,7 +84,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage:\n  cargo xtask bundle [--release] [--install] [--universal]\n  cargo xtask web [--debug] [--serve] [--port N]"
+                "usage:\n  cargo xtask bundle [--release] [--install] [--universal] [--format clap,vst3]\n  cargo xtask web [--debug] [--serve] [--port N]"
             );
             std::process::exit(2);
         }
@@ -77,6 +97,45 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+
+/// Output formats `bundle` can emit, selected by `--format` (E010 / 0011).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Clap,
+    Vst3,
+}
+
+/// Parse `--format a,b,c` into a deduped, order-preserving format list. Absent
+/// or value-less → `[Clap]` (the pre-0011 default — no behaviour change for
+/// callers who never pass the flag). Unknown tokens are a hard error.
+fn parse_formats(args: &[String]) -> Result<Vec<Format>, String> {
+    let Some(raw) = arg_value(args, "--format") else {
+        return Ok(vec![Format::Clap]);
+    };
+    let mut out: Vec<Format> = Vec::new();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let fmt = match tok {
+            "clap" => Format::Clap,
+            "vst3" => Format::Vst3,
+            other => {
+                return Err(format!(
+                    "unknown --format '{other}' (expected comma-separated: clap, vst3)"
+                ));
+            }
+        };
+        if !out.contains(&fmt) {
+            out.push(fmt);
+        }
+    }
+    if out.is_empty() {
+        return Ok(vec![Format::Clap]);
+    }
+    Ok(out)
 }
 
 fn workspace_root() -> PathBuf {
@@ -146,6 +205,291 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Build `VXN1.vst3` by wrapping the `vxn-clap` staticlib through clap-wrapper
+/// (E010 / ticket 0011). The engine, params, controller and faceplate are the
+/// same source as the CLAP; VST3 is purely a distribution artifact (ADR 0008).
+///
+/// Flow: build the staticlib slice(s) → configure + build the `vxn-1/wrapper`
+/// CMake project (force-loads the archive into a VST3 MODULE) → copy the staged
+/// `VXN1.vst3` bundle to `target/bundled/`, and on `--install` to the user VST3
+/// directory. macOS only here; Windows is ticket 0012.
+fn bundle_vst3(release: bool, install: bool, universal: bool) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("--format vst3 is macOS-only for now (Windows path is ticket 0012)".into());
+    }
+    if universal && !cfg!(target_os = "macos") {
+        return Err("--universal is macOS-only".into());
+    }
+    let root = workspace_root();
+    let profile = if release { "release" } else { "debug" };
+
+    // Preflight: fail early with actionable hints rather than letting CMake or
+    // the linker fail opaquely deep in the build.
+    ensure_cmake()?;
+    ensure_submodules(&root)?;
+
+    // 1. Build the staticlib. `cargo build --package vxn-clap` emits the .a
+    //    alongside the cdylib (crate-type cdylib+rlib+staticlib, ticket 0008),
+    //    so this also produces the dylib but we only consume the archive. For a
+    //    universal build we lipo the two thin archives into one fat .a — the
+    //    wrapper force_loads a single archive per link, so two thin slices won't
+    //    do (see wrapper/CMakeLists.txt VXN_CLAP_STATIC note).
+    let archive = if universal {
+        build_universal_static(&root, release)?
+    } else {
+        let mut build = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        build
+            .current_dir(&root)
+            .args(["build", "--package", "vxn-clap"]);
+        if release {
+            build.arg("--release");
+        }
+        let status = build
+            .status()
+            .map_err(|e| format!("failed to run cargo: {e}"))?;
+        if !status.success() {
+            return Err("cargo build failed".into());
+        }
+        let a = static_lib_path(&root.join("target").join(profile));
+        if !a.exists() {
+            return Err(format!("built static archive not found at {}", a.display()));
+        }
+        a
+    };
+
+    // 2. Configure + build the wrapper CMake project. The build dir is reused
+    //    across runs (CMake decides what to rebuild); `rm -rf target/wrapper-*`
+    //    forces a clean rebuild (ticket 0011 Notes).
+    let build_dir = root.join("target").join(format!("wrapper-{profile}"));
+    let out_dir = build_dir.join("out");
+    fs::create_dir_all(&build_dir).map_err(io("create wrapper build dir"))?;
+
+    let mut cfg = Command::new("cmake");
+    cfg.current_dir(&root)
+        .arg("-S")
+        .arg("vxn-1/wrapper")
+        .arg("-B")
+        .arg(&build_dir)
+        .arg(format!("-DVXN_CLAP_STATIC={}", archive.display()))
+        .arg(format!(
+            "-DVXN_CLAP_SDK_DIR={}",
+            root.join("vendor/clap").display()
+        ))
+        .arg(format!(
+            "-DVXN_VST3_SDK_DIR={}",
+            root.join("vendor/vst3sdk").display()
+        ))
+        .arg(format!(
+            "-DVXN_CLAP_WRAPPER_DIR={}",
+            root.join("vendor/clap-wrapper").display()
+        ))
+        .arg(format!("-DVXN_OUTPUT_DIR={}", out_dir.display()));
+    if universal {
+        cfg.arg("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64");
+    }
+    // Prefer Ninja when present (fast, single-config); otherwise the platform
+    // default generator. The `--config Release` on the build below is harmless
+    // on Ninja and required on multi-config generators (Xcode/MSBuild).
+    if ninja_available() {
+        cfg.arg("-G").arg("Ninja");
+    }
+    let status = cfg
+        .status()
+        .map_err(|e| format!("failed to run cmake configure: {e}"))?;
+    if !status.success() {
+        return Err("cmake configure failed (see output above)".into());
+    }
+
+    let status = Command::new("cmake")
+        .current_dir(&root)
+        .arg("--build")
+        .arg(&build_dir)
+        .arg("--parallel")
+        .arg("--config")
+        .arg("Release")
+        .status()
+        .map_err(|e| format!("failed to run cmake --build: {e}"))?;
+    if !status.success() {
+        return Err("cmake --build failed (see output above)".into());
+    }
+
+    // 3. Locate the finished bundle. Our CMake stages it to VXN_OUTPUT_DIR, but
+    //    multi-config generators can also leave one under a `Release/` subdir;
+    //    find the newest `VXN1.vst3` under the build tree to be generator-proof.
+    let vst3 = find_vst3(&out_dir, &build_dir)?;
+
+    // 4. Copy to target/bundled/VXN1.vst3 (mirrors the CLAP output location).
+    let bundled = root.join("target").join("bundled");
+    fs::create_dir_all(&bundled).map_err(io("create bundled dir"))?;
+    let dest = bundled.join(format!("{PLUGIN_NAME}.vst3"));
+    let _ = fs::remove_dir_all(&dest);
+    copy_dir_recursive(&vst3, &dest)?;
+    println!("bundled → {}", dest.display());
+
+    // 5. Optionally install to the user VST3 directory.
+    if install {
+        let dest_dir = vst3_install_dir()?;
+        fs::create_dir_all(&dest_dir).map_err(io("create VST3 install dir"))?;
+        let installed = dest_dir.join(format!("{PLUGIN_NAME}.vst3"));
+        copy_clap(&dest, &installed)?;
+        println!("installed → {}", installed.display());
+    }
+    Ok(())
+}
+
+/// Path to the `vxn-clap` static archive under a profile dir (the `.a`/`.lib`
+/// analogue of [`lib_path`]).
+fn static_lib_path(profile_dir: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        profile_dir.join(format!("{LIB_NAME}.lib"))
+    } else {
+        profile_dir.join(format!("lib{LIB_NAME}.a"))
+    }
+}
+
+/// Build both macOS slices of the staticlib and `lipo` them into one fat
+/// archive; returns its path. The static analogue of [`build_universal`] — the
+/// wrapper force_loads a single archive, so the slices must be combined here.
+fn build_universal_static(root: &Path, release: bool) -> Result<PathBuf, String> {
+    const TRIPLES: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+    let profile = if release { "release" } else { "debug" };
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+
+    let mut slices = Vec::new();
+    for triple in TRIPLES {
+        let mut build = Command::new(&cargo);
+        build
+            .current_dir(root)
+            .args(["build", "--package", "vxn-clap", "--target", triple]);
+        if release {
+            build.arg("--release");
+        }
+        let status = build
+            .status()
+            .map_err(|e| format!("failed to run cargo for {triple}: {e}"))?;
+        if !status.success() {
+            return Err(format!("cargo build failed for {triple}"));
+        }
+        let a = static_lib_path(&root.join("target").join(triple).join(profile));
+        if !a.exists() {
+            return Err(format!(
+                "{triple} static archive not found at {}",
+                a.display()
+            ));
+        }
+        slices.push(a);
+    }
+
+    let out_dir = root.join("target").join("universal").join(profile);
+    fs::create_dir_all(&out_dir).map_err(io("create universal dir"))?;
+    let out = out_dir.join(format!("lib{LIB_NAME}.a"));
+    let status = Command::new("lipo")
+        .arg("-create")
+        .args(&slices)
+        .arg("-output")
+        .arg(&out)
+        .status()
+        .map_err(|e| format!("failed to run lipo: {e}"))?;
+    if !status.success() {
+        return Err("lipo failed".into());
+    }
+    Ok(out)
+}
+
+/// Error unless `cmake` is invokable, with an install hint.
+fn ensure_cmake() -> Result<(), String> {
+    Command::new("cmake")
+        .arg("--version")
+        .output()
+        .map(|_| ())
+        .map_err(|_| {
+            "cmake not found on PATH — install it (`brew install cmake`, or \
+             https://cmake.org/download/) to build the VST3"
+                .to_string()
+        })
+}
+
+/// Error unless the `vendor/` submodules the wrapper CMake needs are checked
+/// out, pointing at the init command rather than letting CMake fail opaquely.
+fn ensure_submodules(root: &Path) -> Result<(), String> {
+    for sub in ["vendor/clap", "vendor/clap-wrapper", "vendor/vst3sdk"] {
+        let p = root.join(sub);
+        let empty = fs::read_dir(&p)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
+        if empty {
+            return Err(format!(
+                "submodule {sub} is missing or empty — run \
+                 `git submodule update --init --recursive`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `ninja` is invokable (preferred CMake generator when present).
+fn ninja_available() -> bool {
+    Command::new("ninja").arg("--version").output().is_ok()
+}
+
+/// Find the staged `VXN1.vst3` bundle. Prefer the copy our CMake stages into
+/// `out_dir`; fall back to the newest `VXN1.vst3` anywhere under the build tree
+/// (multi-config generators can place it under a `Release/` subdir).
+fn find_vst3(out_dir: &Path, build_dir: &Path) -> Result<PathBuf, String> {
+    let staged = out_dir.join(format!("{PLUGIN_NAME}.vst3"));
+    if staged.exists() {
+        return Ok(staged);
+    }
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    find_named_dirs(build_dir, &format!("{PLUGIN_NAME}.vst3"), &mut |p| {
+        let mtime = fs::metadata(p).and_then(|m| m.modified()).ok();
+        if let Some(t) = mtime
+            && best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true)
+        {
+            best = Some((t, p.to_path_buf()));
+        }
+    });
+    best.map(|(_, p)| p).ok_or_else(|| {
+        format!(
+            "VXN1.vst3 not found under {} after a successful build",
+            build_dir.display()
+        )
+    })
+}
+
+/// Recursively visit directories named `name` under `dir`, calling `f` on each.
+/// Does not descend into a matched directory (a bundle is a leaf for our needs).
+fn find_named_dirs(dir: &Path, name: &str, f: &mut impl FnMut(&Path)) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if entry.file_name() == *name {
+                f(&p);
+            } else {
+                find_named_dirs(&p, name, f);
+            }
+        }
+    }
+}
+
+/// The user VST3 install directory for the host platform.
+fn vst3_install_dir() -> Result<PathBuf, String> {
+    if cfg!(target_os = "macos") {
+        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+        Ok(PathBuf::from(home).join("Library/Audio/Plug-Ins/VST3"))
+    } else if cfg!(target_os = "windows") {
+        let pf =
+            env::var("CommonProgramFiles").map_err(|_| "CommonProgramFiles not set".to_string())?;
+        Ok(PathBuf::from(pf).join("VST3"))
+    } else {
+        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+        Ok(PathBuf::from(home).join(".vst3"))
+    }
+}
+
 const WASM_PKG: &str = "vxn-wasm";
 const WASM_ARTIFACT: &str = "vxn_wasm.wasm";
 
@@ -168,8 +512,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     // 1. Compile BOTH wasm crates for wasm32-unknown-unknown (ADR 0009 §1):
     //    the engine (runs in the worklet) and the main-thread controller (0044).
     let wasm = build_wasm(&root, WASM_PKG, WASM_ARTIFACT, release, profile)?;
-    let controller_wasm =
-        build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, profile)?;
+    let controller_wasm = build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, profile)?;
 
     // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
     let dist = root.join("target").join("web-dist");
@@ -338,13 +681,10 @@ fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String
     }
     let port = port.unwrap_or("8080");
     let mut cmd = Command::new("node");
-    cmd.current_dir(root)
-        .arg(&server)
-        .arg(port)
-        .arg(dist);
-    let status = cmd.status().map_err(|e| {
-        format!("failed to run node (is it on PATH?): {e}")
-    })?;
+    cmd.current_dir(root).arg(&server).arg(port).arg(dist);
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to run node (is it on PATH?): {e}"))?;
     // The server runs until Ctrl-C; a non-success exit (e.g. port in use) is an
     // error worth surfacing.
     if !status.success() {
