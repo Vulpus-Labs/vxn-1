@@ -94,3 +94,43 @@ Don't try to handle code signing here; out-of-scope per ADR
 If `cmake --build` fails, exit with a non-zero status and the
 CMake error verbatim. Don't try to translate the error — the
 underlying tooling is opaque to xtask and we'd lose detail.
+
+## Close-out (2026-06-24)
+
+- `--format` parsing: [main.rs:112](../../vxn-1/xtask/src/main.rs#L112)
+  `parse_formats` splits comma-separated `clap`/`vst3`, dedups order-preserving,
+  defaults to `[Clap]` when the flag is absent/empty, errors on unknown tokens
+  (`unknown --format 'bogus' (expected comma-separated: clap, vst3)`, exit 2).
+  Verified: `bundle --format clap,bogus` errors; `bundle` (no flag) still emits
+  only `VXN1.clap`.
+- Format dispatch: [main.rs:62](../../vxn-1/xtask/src/main.rs#L62) loops the
+  parsed formats, `Clap`→`bundle()` verbatim, `Vst3`→`bundle_vst3()`; both land
+  independently in `target/bundled/`. Verified `--format clap,vst3` produces both
+  `VXN1.clap` + `VXN1.vst3`.
+- VST3 macOS path: [main.rs:298](../../vxn-1/xtask/src/main.rs#L298)
+  `bundle_vst3` builds the `vxn-clap` staticlib (`--package vxn-clap` emits the
+  `.a` alongside the cdylib), resolves it via `static_lib_path` (`.a`/`.lib`
+  analogue of `lib_path`), configures the `vxn-1/wrapper` CMake with
+  `VXN_CLAP_STATIC` / `VXN_{CLAP,VST3}_SDK_DIR` / `VXN_CLAP_WRAPPER_DIR` /
+  `VXN_OUTPUT_DIR=target/wrapper-{profile}/out`, Ninja when present, then
+  `cmake --build … --parallel --config Release`. `--universal` lipos the two
+  thin archives into one fat `.a` (`build_universal_static`) and adds
+  `-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64`.
+- `--install`: [main.rs](../../vxn-1/xtask/src/main.rs#L418) copies the bundle
+  to `vst3_install_dir()` = `~/Library/Audio/Plug-Ins/VST3/VXN1.vst3` via the
+  existing recursive `copy_clap`.
+- Preflight guards: `ensure_submodules` errors with the
+  `git submodule update --init --recursive` hint when `vendor/clap`,
+  `vendor/clap-wrapper`, or `vendor/vst3sdk` is empty; `ensure_cmake` errors with
+  a `brew install cmake` hint when cmake is off PATH.
+- Bundle discovery: `find_vst3` prefers the CMake-staged `out/VXN1.vst3`, falls
+  back to the newest `VXN1.vst3` under the build tree (`find_named_dirs`) for
+  multi-config generators. `target/wrapper-{profile}` is reused across runs.
+- Build verified end-to-end: `bundle --format vst3` produced
+  `target/bundled/VXN1.vst3` (Mach-O arm64 CFBundle). `llvm-nm` confirms the VST3
+  `_GetPluginFactory` export, the force-loaded `vxn_clap` engine symbols, and the
+  exported `_clap_entry` the wrapper dlsym's at runtime. Reaper/Bitwig load +
+  automation/state round-trip is ticket 0013.
+- Regression: `bundle` and `bundle --release` with no `--format` are unchanged
+  (default dispatch is `[Clap]` → existing `bundle()`). `cargo clippy -p
+  vxn1-xtask` clean, `cargo fmt` applied.
