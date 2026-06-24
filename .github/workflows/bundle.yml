@@ -1,0 +1,106 @@
+name: Bundle
+
+# Build the shipping plugin artifacts — CLAP + VST3 — on every push to main and
+# every PR, matching the CLAP build cadence the repo had before E010. macOS
+# produces universal (arm64 + x86_64) bundles; Windows produces x86_64. VST3 is
+# built by wrapping the same vxn-clap staticlib through clap-wrapper
+# (`xtask --format clap,vst3`, tickets 0011/0012); a failed VST3 build fails the
+# job — it is a shipping artifact, not a side experiment (ticket 0014).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (e.g. force-push to a PR branch).
+concurrency:
+  group: bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS (universal — CLAP + VST3)
+    runs-on: macos-14
+    steps:
+      # clap-wrapper + vst3sdk must be present before xtask invokes CMake.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      # CMake ships on the macOS runner image; Ninja does not — install it so the
+      # wrapper build uses the fast single-config generator (xtask falls back to
+      # the default generator if absent, but Ninja keeps us under the build-time
+      # budget).
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Build universal CLAP + VST3
+        working-directory: vxn-1
+        run: cargo xtask bundle --release --format clap,vst3 --universal
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1-macOS-universal-clap
+          path: target/bundled/VXN1.clap
+          if-no-files-found: error
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1-macOS-universal-vst3
+          path: target/bundled/VXN1.vst3
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x86_64 — CLAP + VST3)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      # MSVC env (cl.exe + the VS-bundled Ninja/CMake on PATH) so the wrapper
+      # CMake builds under Ninja + MSVC. xtask's ensure_msvc preflight requires
+      # cl.exe; this provides it.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # CMake ships on the windows runner image; ensure Ninja is present too
+      # (msvc-dev-cmd exposes the VS copy, but install explicitly so the
+      # generator choice is not image-dependent).
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Build CLAP + VST3
+        working-directory: vxn-1
+        run: cargo xtask bundle --release --format clap,vst3
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1-windows-x64-clap
+          path: target/bundled/VXN1.clap
+          if-no-files-found: error
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1-windows-x64-vst3
+          path: target/bundled/VXN1.vst3
+          if-no-files-found: error

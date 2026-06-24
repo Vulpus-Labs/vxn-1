@@ -14,7 +14,10 @@ jobs:
     name: macOS (universal)
     runs-on: macos-14
     steps:
+      # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -24,25 +27,34 @@ jobs:
         with:
           workspaces: .
 
-      - name: Build universal CLAP bundle
-        working-directory: vxn-1
-        run: cargo xtask bundle --release --universal
+      - name: Install Ninja
+        run: brew install ninja
 
-      # The macOS .clap is a bundle directory; ditto zips it preserving the
-      # bundle structure (and resource forks) so it unpacks cleanly.
-      - name: Zip bundle
-        run: ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
+      - name: Build universal CLAP + VST3 bundles
+        working-directory: vxn-1
+        run: cargo xtask bundle --release --format clap,vst3 --universal
+
+      # The macOS .clap/.vst3 are bundle directories; ditto zips them preserving
+      # the bundle structure (and resource forks) so they unpack cleanly.
+      - name: Zip bundles
+        run: |
+          ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
+          ditto -c -k --keepParent target/bundled/VXN1.vst3 VXN1-macOS-universal.vst3.zip
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: VXN1-macOS-universal.clap.zip
+          files: |
+            VXN1-macOS-universal.clap.zip
+            VXN1-macOS-universal.vst3.zip
 
   windows:
     name: Windows (x86_64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -50,19 +62,29 @@ jobs:
         with:
           workspaces: .
 
-      - name: Build CLAP bundle
-        working-directory: vxn-1
-        run: cargo xtask bundle --release
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
 
-      # On Windows the .clap is a single shared library; rename for clarity and
-      # upload it directly.
-      - name: Rename artifact
-        run: Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Build CLAP + VST3 bundles
+        working-directory: vxn-1
+        run: cargo xtask bundle --release --format clap,vst3
+
+      # On Windows the .clap is a single shared library; the .vst3 is a folder
+      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
+      - name: Package artifacts
+        run: |
+          Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
+          Compress-Archive -Path target/bundled/VXN1.vst3 -DestinationPath VXN1-windows-x64.vst3.zip
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: VXN1-windows-x64.clap
+          files: |
+            VXN1-windows-x64.clap
+            VXN1-windows-x64.vst3.zip
 
   manual:
     name: Manual (PDF)

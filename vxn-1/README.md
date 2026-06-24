@@ -41,11 +41,22 @@ loop stays branch-light.
 
 ```sh
 cargo build --release
-cargo xtask bundle --release            # produce the VXN1.clap bundle
-cargo xtask bundle --release --install  # …and install it locally
+cargo xtask bundle --release                       # produce the VXN1.clap bundle
+cargo xtask bundle --release --format clap,vst3    # …and a VXN1.vst3 too (needs CMake + submodules)
+cargo xtask bundle --release --install             # install the bundle(s) locally
 ```
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.85+ (edition 2024). The VST3 path also needs CMake ≥ 3.21 (plus
+Ninja, and on Windows the MSVC toolchain — run from a "Developer PowerShell for
+VS 2022"); add `--universal` on macOS for a fat arm64+x86_64 build.
+
+### CI artifacts
+
+Every push to `main` and every PR runs the **Bundle** workflow, which uploads
+unsigned plugin artifacts per run: `VXN1.clap` + `VXN1.vst3` (universal) on
+macOS and `VXN1.clap` + `VXN1.vst3` (x86_64) on Windows — download them from the
+run's *Artifacts* section. Published GitHub releases additionally attach zipped
+copies of all four.
 
 ### Submodules (VST3 only)
 

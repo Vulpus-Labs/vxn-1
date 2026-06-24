@@ -76,3 +76,41 @@ yaml will need touch-ups. That's expected churn, not a
 regression of this epic.
 
 Closing this ticket closes the epic.
+
+## Close-out (2026-06-24)
+
+New [.github/workflows/bundle.yml](../../.github/workflows/bundle.yml) is the
+per-push/per-PR artifact pipeline (push `main` + PR + `workflow_dispatch`,
+concurrency-cancelled), replacing the CLAP-only `build-windows.yml` (removed —
+subsumed). Two jobs:
+
+- **macOS (macos-14)**: `submodules: recursive`, both apple targets, `brew
+  install ninja`, `cargo xtask bundle --release --format clap,vst3 --universal`,
+  uploads `VXN1.clap` + `VXN1.vst3` (universal bundle dirs; upload-artifact@v4
+  zips them).
+- **Windows (windows-latest)**: `submodules: recursive`, `ilammy/msvc-dev-cmd@v1`
+  for the MSVC env (satisfies xtask's `ensure_msvc` cl.exe preflight), `choco
+  install ninja`, `cargo xtask bundle --release --format clap,vst3`, uploads
+  `VXN1.clap` + `VXN1.vst3` (x86_64). A failed VST3 build fails the job
+  (`if-no-files-found: error` + non-zero xtask exit).
+
+Both jobs build VST3 via the same `xtask --format clap,vst3` path (0011/0012);
+the wrapper CMake (0010) handles each platform's bundle layout.
+
+Also extended [release.yml](../../.github/workflows/release.yml) (release-publish
+trigger) symmetrically so published releases attach zipped CLAP + VST3 for both
+platforms — keeps releases consistent with CI; not strictly in this ticket's
+push/PR scope but the same one-flag change.
+
+[README.md](../../vxn-1/README.md) Building section now documents the
+`--format clap,vst3` invocation, the CMake/Ninja/MSVC prereqs, and a **CI
+artifacts** subsection listing what each run / release produces.
+
+Build-time guardrail, cache strategy, green-build verification: deferred to the
+first live runs — YAML is `yq`-valid locally but GitHub-hosted runner behaviour
+(Ninja-after-msvc-dev-cmd, macOS universal CMake time) can only be confirmed on
+Actions. If the macOS job exceeds the ~3-min budget, add an `actions/cache` for
+`target/wrapper-release` keyed on `vendor/` SHAs + `CMakeLists.txt` hash before
+raising the cap (per Notes — measure first, hence not pre-tuned here).
+
+Acceptance boxes left unchecked pending the first green Actions run.
