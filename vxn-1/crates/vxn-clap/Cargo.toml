@@ -8,8 +8,9 @@ rust-version.workspace = true
 description = "VXN1 CLAP plugin shell (clack)."
 
 [lib]
-# cdylib for the host-loadable plugin; rlib so integration tests can link it.
-crate-type = ["cdylib", "rlib"]
+# cdylib for the host-loadable plugin; rlib so integration tests can link it;
+# staticlib for clap-wrapper to link into a bundled .vst3 (E010 / ADR 0008 §2).
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 vxn-app = { workspace = true }
