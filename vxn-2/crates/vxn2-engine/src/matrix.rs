@@ -971,6 +971,9 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
 /// updates targets; per-sample `tick` glides state toward them.
 #[derive(Clone, Copy, Debug)]
 pub struct PitchSmoother {
+    /// First cascade stage (intermediate). Not the output — see `state`.
+    stage1: [[f32; STACK_LANES]; N_PITCH_DESTS],
+    /// Second cascade stage and the smoothed output (`current()` returns this).
     state: [[f32; STACK_LANES]; N_PITCH_DESTS],
     coeff: f32,
 }
@@ -978,6 +981,7 @@ pub struct PitchSmoother {
 impl Default for PitchSmoother {
     fn default() -> Self {
         Self {
+            stage1: [[0.0; STACK_LANES]; N_PITCH_DESTS],
             state: [[0.0; STACK_LANES]; N_PITCH_DESTS],
             coeff: 1.0,
         }
@@ -985,12 +989,19 @@ impl Default for PitchSmoother {
 }
 
 impl PitchSmoother {
-    /// Time constant matches the control block: smooth over ~1 block (one
-    /// tau ≈ block duration). At 64 samples / 48 kHz that's ~1.33 ms — fast
-    /// enough that block edges read smooth, slow enough that an LFO at S&H
-    /// reads as steps with sloped edges rather than instant jumps.
+    /// Time constant matches the control block: each stage smooths over ~1
+    /// block (one tau ≈ block duration). At 64 samples / 48 kHz that's ~1.33 ms
+    /// — fast enough that block edges read smooth, slow enough that an LFO at
+    /// S&H reads as steps with sloped edges rather than instant jumps.
+    ///
+    /// Two cascaded one-poles (not one): a single pole is C0 but C1-broken —
+    /// at a saw/pulse LFO step the output value is continuous but pitch
+    /// *velocity* jumps 0 → max instantly, and that velocity step is the click.
+    /// Cascading a second pole makes the output slope start at 0, so sharp
+    /// LFO shapes routed to pitch ramp in without a click.
     pub fn new(block_secs: f32, sample_rate: f32) -> Self {
         Self {
+            stage1: [[0.0; STACK_LANES]; N_PITCH_DESTS],
             state: [[0.0; STACK_LANES]; N_PITCH_DESTS],
             coeff: one_pole_coeff(block_secs * 1000.0, sample_rate),
         }
@@ -1009,6 +1020,9 @@ impl PitchSmoother {
     }
 
     /// Advance one sample toward `target`, return current smoothed state.
+    /// Two cascaded one-poles: `stage1` chases the target, `state` chases
+    /// `stage1`. The second stage is what gives the output a zero starting
+    /// slope so sharp LFO-into-pitch steps ramp in without a click.
     #[inline]
     pub fn tick(
         &mut self,
@@ -1017,24 +1031,33 @@ impl PitchSmoother {
         let a = self.coeff;
         for i in 0..N_PITCH_DESTS {
             for k in 0..STACK_LANES {
-                self.state[i][k] += a * (target[i][k] - self.state[i][k]);
+                self.stage1[i][k] += a * (target[i][k] - self.stage1[i][k]);
+                self.state[i][k] += a * (self.stage1[i][k] - self.state[i][k]);
             }
         }
         &self.state
     }
 
     /// Snap state to `target` without smoothing (preset load, voice steal).
+    /// Both cascade stages snap so a re-armed smoother starts settled, not
+    /// mid-ramp.
     pub fn snap_to(&mut self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS]) {
+        self.stage1 = *target;
         self.state = *target;
     }
 
-    /// True when every lane state is within `eps` of its target — the
-    /// engine skips the tick + pitch recook entirely once a smoother has
-    /// settled (the common case: no active pitch-shaped matrix route).
+    /// True when every lane of *both* cascade stages is within `eps` of its
+    /// target — the engine skips the tick + pitch recook entirely once a
+    /// smoother has settled (the common case: no active pitch-shaped matrix
+    /// route). Both stages must be checked: the output (`state`) can pass
+    /// through the target while `stage1` is still mid-ramp, and freezing
+    /// there would strand the output short of the real target.
     pub fn converged(&self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS], eps: f32) -> bool {
         for i in 0..N_PITCH_DESTS {
             for k in 0..STACK_LANES {
-                if (self.state[i][k] - target[i][k]).abs() > eps {
+                if (self.state[i][k] - target[i][k]).abs() > eps
+                    || (self.stage1[i][k] - target[i][k]).abs() > eps
+                {
                     return false;
                 }
             }
