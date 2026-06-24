@@ -30,8 +30,8 @@ use clack_plugin::utils::Cookie;
 
 use vxn2_engine::params::PARAMS;
 use vxn2_engine::{
-    EngineParams, KsCurve, MatrixRowRaw, N_KS_CURVES, N_MATRIX_SLOTS, ParamView, SharedParams,
-    TOTAL_PARAMS,
+    EgCurve, EngineParams, KsCurve, MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, N_MATRIX_SLOTS,
+    ParamView, SharedParams, TOTAL_PARAMS,
 };
 
 /// Per-thread parameter mirror. Lives on the audio thread alongside the
@@ -55,6 +55,11 @@ pub struct LocalParams {
     /// by [`fetch_ui_changes`] and read by the engine through
     /// [`ParamView::ks_curve`] so block-time snapshots see UI / preset edits.
     ks_curves: [KsCurve; N_KS_CURVES],
+    /// Mirror of the shared store's per-op EG level-curve selectors, indexed by
+    /// op. Non-CLAP like the KS curves; refreshed by [`fetch_ui_changes`] and
+    /// read by the engine through [`ParamView::eg_curve`] so block-time
+    /// snapshots see UI / preset edits. Ticket 0124.
+    eg_curves: [EgCurve; N_EG_CURVES],
     /// Last-seen UI gesture state per param. [`emit`](Self::emit) compares
     /// against `SharedParams.gestures` (populated by the controller on
     /// `BeginGesture` / `EndGesture` UI intents) to push CLAP
@@ -70,6 +75,7 @@ impl LocalParams {
             ui_changed: [false; TOTAL_PARAMS],
             matrix_rows: std::array::from_fn(|s| shared.matrix_row_raw(s)),
             ks_curves: std::array::from_fn(|k| ParamView::ks_curve(shared, k / 2, k % 2)),
+            eg_curves: std::array::from_fn(|op| ParamView::eg_curve(shared, op)),
             gesture: [false; TOTAL_PARAMS],
         }
     }
@@ -102,6 +108,13 @@ impl LocalParams {
             let curve = ParamView::ks_curve(shared, k / 2, k % 2);
             if curve != self.ks_curves[k] {
                 self.ks_curves[k] = curve;
+                any = true;
+            }
+        }
+        for op in 0..N_EG_CURVES {
+            let curve = ParamView::eg_curve(shared, op);
+            if curve != self.eg_curves[op] {
+                self.eg_curves[op] = curve;
                 any = true;
             }
         }
@@ -231,6 +244,15 @@ impl ParamView for LocalParams {
             KsCurve::NegLin
         } else {
             KsCurve::NegExp
+        }
+    }
+
+    #[inline]
+    fn eg_curve(&self, op: usize) -> EgCurve {
+        if op < N_EG_CURVES {
+            self.eg_curves[op]
+        } else {
+            EgCurve::Exp
         }
     }
 }

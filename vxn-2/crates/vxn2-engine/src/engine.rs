@@ -3151,6 +3151,24 @@ mod tests {
         assert_eq!(op0.ks_r_curve, KsCurve::NegExp);
     }
 
+    /// A non-CLAP EG-curve write on the shared store threads through
+    /// `snapshot_params` → `read_op` into the per-op DSP params, so the curve
+    /// actually selects the level→amplitude mapping (ticket 0124).
+    #[test]
+    fn shared_eg_curve_writes_reach_engine_op_params() {
+        use vxn2_dsp::eg::EgCurve;
+
+        let shared = SharedParams::new();
+        // Default is Exp on every op; flip op4 (index 3) to Lin.
+        shared.set_eg_curve_raw(3, EgCurve::Lin as u8);
+
+        let mut e = Engine::new(SR, BLK);
+        e.snapshot_params(&shared);
+        assert_eq!(e.params.patch.voice.ops[3].eg_curve, EgCurve::Lin);
+        // An untouched op keeps the default (Exp).
+        assert_eq!(e.params.patch.voice.ops[0].eg_curve, EgCurve::Exp);
+    }
+
     /// Semitone-dest depths take the cubic taper at slot-cook time, on both
     /// depth sources (CLAP `mtx_depths` for slots 0..N_CLAP_DEPTH_SLOTS,
     /// raw row depth above). Non-pitch dests stay linear.

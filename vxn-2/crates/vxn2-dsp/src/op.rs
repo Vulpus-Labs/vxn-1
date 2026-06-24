@@ -16,7 +16,7 @@
 //! ([`op_eg_tick`]) so the caller can run the EG at control rate (typically
 //! once per block) and keep the per-sample loop tight.
 
-use crate::eg::{EgParams, EgState};
+use crate::eg::{EgCurve, EgParams, EgState};
 use crate::ks::{KsCurve, ks_level_mult, ks_rate_mult};
 use crate::sine;
 use crate::tables::vel_factor;
@@ -43,6 +43,11 @@ pub struct OpParams {
     pub level: u8,
     pub vel_sens: u8,
     pub eg: EgParams,
+    /// Per-op level→amplitude curve for the EG L-values *and* the operator
+    /// output level (DX7 shares one log domain). Default [`EgCurve::Exp`]
+    /// (DX7-faithful log); `Lin` is the legacy-square escape hatch. Patch
+    /// state, selected in `cook` — see [`EgCurve`]. Ticket 0124.
+    pub eg_curve: EgCurve,
     pub ks_break_pt: u8,
     pub ks_l_depth: u8,
     pub ks_r_depth: u8,
@@ -76,6 +81,7 @@ impl Default for OpParams {
                 r: [99, 50, 35, 60],
                 l: [99, 70, 50, 0],
             },
+            eg_curve: EgCurve::Exp,
             ks_break_pt: 60,
             ks_l_depth: 0,
             ks_r_depth: 30,
@@ -148,10 +154,10 @@ impl OpState {
         let vel = vel_factor(params.vel_sens, velocity);
         // Operator output level shares the EG level curve (DX7: OL and EG
         // levels live in the same log domain) — see `eg::level_to_amp`.
-        let level_norm = crate::eg::level_to_amp(params.level);
+        let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
         let max_amp = level_norm * ks_lvl * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
-        self.eg.cook(&params.eg, max_amp, rate_mult);
+        self.eg.cook(&params.eg, max_amp, rate_mult, params.eg_curve);
 
         // Feedback is now layer-level: stack/voice note_on (and the engine's
         // per-block live update) writes `fb_scale` directly onto the

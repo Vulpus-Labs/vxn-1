@@ -148,7 +148,7 @@ fn read_display_name(path: &Path) -> Option<String> {
         return None;
     }
     let contents = fs::read_to_string(path).ok()?;
-    let (meta, _values, _matrix, _curves, _warnings) = read_preset(&contents).ok()?;
+    let (meta, _values, _matrix, _curves, _eg_curves, _warnings) = read_preset(&contents).ok()?;
     Some(meta.name)
 }
 

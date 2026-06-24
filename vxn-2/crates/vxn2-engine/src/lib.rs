@@ -26,11 +26,12 @@ pub use sync::{rate_partner_clap_id, sync_aware_display, sync_pairs, sync_partne
 pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id};
 /// Tempo-sync subdivisions re-exported for the CLAP shell's sync-aware
 /// display path (ticket 0031). Canonical source lives in `vxn2-dsp::lfo`.
+pub use vxn2_dsp::eg::EgCurve;
 pub use vxn2_dsp::ks::KsCurve;
 pub use vxn2_dsp::lfo::{SUBDIVISIONS, Subdivision, index_from_norm};
 pub use shared::{
-    BLOB_HEADER_LEN, BLOB_KS_CURVE_LEN, BLOB_MAGIC, BLOB_MATRIX_LEN, BLOB_VERSION, EngineParams,
-    FilterParams, HP_OFF_HZ, HpParams, MatrixRowRaw, N_KS_CURVES, N_MATRIX_CLAP_SLOTS,
-    N_MATRIX_SLOTS, ParamLoadError, ParamModel, ParamView, Patch, SharedParams, filter_params_of,
-    hp_params_of,
+    BLOB_EG_CURVE_LEN, BLOB_HEADER_LEN, BLOB_KS_CURVE_LEN, BLOB_MAGIC, BLOB_MATRIX_LEN,
+    BLOB_VERSION, EngineParams, FilterParams, HP_OFF_HZ, HpParams, MatrixRowRaw, N_EG_CURVES,
+    N_KS_CURVES, N_MATRIX_CLAP_SLOTS, N_MATRIX_SLOTS, ParamLoadError, ParamModel, ParamView, Patch,
+    SharedParams, filter_params_of, hp_params_of,
 };

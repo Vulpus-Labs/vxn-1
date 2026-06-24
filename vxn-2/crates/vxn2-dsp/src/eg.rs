@@ -40,25 +40,37 @@ pub struct EgState {
     pub rates_per_sec: [f32; 4],
 }
 
-/// Prototype toggle: `true` = DX7-faithful **logarithmic** level curve
-/// (`amp = 2^((L-99)/8)`, ~6 dB per 8 steps); `false` = legacy perceptual
-/// square (`(L/99)^2`). Flip + rebuild for a clean A/B. Applies to both the EG
-/// L-values and the operator output level (see `op.rs`/`stack.rs` cook), which
-/// is why moderate-level modulators were ~30× too hot under the square curve.
-pub const EG_LOG_LEVELS: bool = true;
+/// Per-operator level→amplitude curve (ticket 0124). Selects how a DX7-style
+/// level (0..99) — for both the EG L-values and the operator output level —
+/// maps to a normalised amplitude. Patch state, default [`EgCurve::Exp`]; the
+/// choice is made in `cook` (control rate, scalar) so the per-sample lane loop
+/// is untouched (see [`level_to_amp`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum EgCurve {
+    /// DX7-faithful **logarithmic** curve (`amp = 2^((L-99)/8)`, ~6 dB per 8
+    /// steps). The corrected default — moderate-level modulators were ~30× too
+    /// hot under the legacy square curve. See ADR 0007.
+    #[default]
+    Exp = 0,
+    /// Legacy perceptual **square** curve (`(L/99)^2`). Escape hatch preserving
+    /// the pre-0123 behaviour on a per-op basis.
+    Lin = 1,
+}
 
-/// Convert a DX7-style level (0..99) to a normalised amplitude in [0, 1].
+/// Convert a DX7-style level (0..99) to a normalised amplitude in [0, 1] under
+/// the given per-op [`EgCurve`]. `L=0` is always hard silence.
 #[inline]
-pub fn level_to_amp(level: u8) -> f32 {
+pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
     if level == 0 {
         return 0.0;
     }
-    if EG_LOG_LEVELS {
+    match curve {
         // DX7 log curve: 0 dB at L=99, −6 dB per 8 steps (≈ −74 dB at L=1).
-        2_f32.powf((level.min(99) as f32 - 99.0) / 8.0)
-    } else {
-        let l = level.min(99) as f32 / 99.0;
-        l * l
+        EgCurve::Exp => 2_f32.powf((level.min(99) as f32 - 99.0) / 8.0),
+        EgCurve::Lin => {
+            let l = level.min(99) as f32 / 99.0;
+            l * l
+        }
     }
 }
 
@@ -74,10 +86,11 @@ pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
 impl EgState {
     /// Bake `params` into runtime increments + targets, scaled by `max_amp`
     /// (the cooked per-note ceiling: level × ks × vel) and `rate_mult` (the
-    /// key-rate scaling factor — see [`crate::ks::ks_rate_mult`]).
-    pub fn cook(&mut self, params: &EgParams, max_amp: f32, rate_mult: f32) {
+    /// key-rate scaling factor — see [`crate::ks::ks_rate_mult`]). `curve`
+    /// selects the per-op level→amplitude mapping for the L-targets.
+    pub fn cook(&mut self, params: &EgParams, max_amp: f32, rate_mult: f32, curve: EgCurve) {
         for i in 0..4 {
-            self.targets[i] = level_to_amp(params.l[i]) * max_amp;
+            self.targets[i] = level_to_amp(params.l[i], curve) * max_amp;
             self.rates_per_sec[i] = rate_to_amp_per_sec(params.r[i]) * rate_mult;
         }
     }
@@ -162,8 +175,22 @@ mod tests {
 
     #[test]
     fn level_to_amp_endpoints() {
-        assert!((level_to_amp(0)).abs() < 1e-6);
-        assert!((level_to_amp(99) - 1.0).abs() < 1e-6);
+        for curve in [EgCurve::Exp, EgCurve::Lin] {
+            assert!((level_to_amp(0, curve)).abs() < 1e-6);
+            assert!((level_to_amp(99, curve) - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn exp_curve_is_log_lin_is_square() {
+        // L=50 under the DX7 log curve ≈ −37 dB (ADR 0007); under the legacy
+        // square curve ≈ (50/99)^2 ≈ 0.255. The log value is ~15× quieter —
+        // the ~30× hot-modulator gap the curve change closed.
+        let exp = level_to_amp(50, EgCurve::Exp);
+        let lin = level_to_amp(50, EgCurve::Lin);
+        assert!((exp - 2_f32.powf((50.0 - 99.0) / 8.0)).abs() < 1e-6);
+        assert!((lin - (50.0_f32 / 99.0).powi(2)).abs() < 1e-6);
+        assert!(exp < lin * 0.1, "log curve should be far quieter at L=50");
     }
 
     #[test]
@@ -179,7 +206,7 @@ mod tests {
     #[test]
     fn attack_then_decay_then_sustain() {
         let mut eg = EgState::default();
-        eg.cook(&default_params(), 1.0, 1.0);
+        eg.cook(&default_params(), 1.0, 1.0, EgCurve::Exp);
         eg.note_on();
         let dt = 1.0 / 48_000.0;
         let mut reached_attack_top = false;
@@ -197,7 +224,7 @@ mod tests {
         assert!(reached_attack_top, "never finished attack");
         assert!(reached_sustain, "never reached sustain");
         // Sustain target = L3=50 through the active level curve.
-        let want = level_to_amp(50);
+        let want = level_to_amp(50, EgCurve::Exp);
         assert!(
             (eg.level - want).abs() < 0.01,
             "sustain level off: {} (want {want})",
@@ -208,7 +235,7 @@ mod tests {
     #[test]
     fn release_drops_to_l4() {
         let mut eg = EgState::default();
-        eg.cook(&default_params(), 1.0, 1.0);
+        eg.cook(&default_params(), 1.0, 1.0, EgCurve::Exp);
         eg.note_on();
         let dt = 1.0 / 48_000.0;
         for _ in 0..(48_000 * 2) {
@@ -232,10 +259,10 @@ mod tests {
     fn rate_mult_speeds_attack() {
         let params = default_params();
         let mut a = EgState::default();
-        a.cook(&params, 1.0, 1.0);
+        a.cook(&params, 1.0, 1.0, EgCurve::Exp);
         a.note_on();
         let mut b = EgState::default();
-        b.cook(&params, 1.0, 4.0);
+        b.cook(&params, 1.0, 4.0, EgCurve::Exp);
         b.note_on();
         let dt = 1.0 / 48_000.0;
         let mut ticks_a = 0;

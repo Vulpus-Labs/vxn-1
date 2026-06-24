@@ -29,7 +29,7 @@ use crate::matrix::{
     CURVE_NAMES, DEST_NAMES, N_SLOTS, SOURCE_NAMES,
 };
 use crate::params::{PARAMS, ParamDesc, ParamKind, TOTAL_PARAMS, id_of};
-use crate::shared::{MatrixRowRaw, N_KS_CURVES, ParamModel, SharedParams};
+use crate::shared::{MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, ParamModel, SharedParams};
 
 /// Per-side KS level-curve machine names, indexed by discriminant
 /// (`NegLin` / `PosLin` / `NegExp` / `PosExp`). Mirror of
@@ -69,6 +69,39 @@ fn parse_ks_curve_key(key: &str) -> Option<(usize, usize)> {
 fn ks_curve_from_name(label: &str) -> Option<u8> {
     let lc = label.trim().to_lowercase();
     KS_CURVE_NAMES.iter().position(|n| *n == lc).map(|i| i as u8)
+}
+
+/// Per-op EG level-curve machine names, indexed by discriminant
+/// (`Exp` / `Lin`). Mirror of [`vxn2_dsp::eg::EgCurve`] (ticket 0124).
+const EG_CURVE_NAMES: [&str; 2] = ["exp", "lin"];
+
+/// Default EG-curve discriminant: `Exp` (0) — the DX7-faithful log curve is the
+/// shipped default (ADR 0007).
+#[inline]
+fn default_eg_curve() -> u8 {
+    0
+}
+
+/// Preset `params`-table key for op `op` (0-based): e.g. `op1-eg-curve`.
+fn eg_curve_key(op: usize) -> String {
+    format!("op{}-eg-curve", op + 1)
+}
+
+/// Inverse of [`eg_curve_key`]: `op0-based` if `key` is an EG-curve label with
+/// an in-range op, else `None`.
+fn parse_eg_curve_key(key: &str) -> Option<usize> {
+    let num = key.strip_prefix("op")?.strip_suffix("-eg-curve")?;
+    let op = num.parse::<usize>().ok()?;
+    if op < 1 || op > N_EG_CURVES {
+        return None;
+    }
+    Some(op - 1)
+}
+
+/// EG-curve machine name → discriminant (case-insensitive).
+fn eg_curve_from_name(label: &str) -> Option<u8> {
+    let lc = label.trim().to_lowercase();
+    EG_CURVE_NAMES.iter().position(|n| *n == lc).map(|i| i as u8)
 }
 
 /// Preset *file-format* version (independent of the binary state blob
@@ -169,7 +202,15 @@ struct Header {
 #[allow(clippy::type_complexity)]
 fn decode_blob(
     blob: &[u8],
-) -> Result<([f32; TOTAL_PARAMS], [MatrixRowRaw; N_SLOTS], [u8; N_KS_CURVES]), String> {
+) -> Result<
+    (
+        [f32; TOTAL_PARAMS],
+        [MatrixRowRaw; N_SLOTS],
+        [u8; N_KS_CURVES],
+        [u8; N_EG_CURVES],
+    ),
+    String,
+> {
     let sp = SharedParams::new();
     ParamModel::load_bytes(&sp, blob).map_err(|e| e.to_string())?;
     let mut values = [0.0_f32; TOTAL_PARAMS];
@@ -181,7 +222,8 @@ fn decode_blob(
         *row = sp.matrix_row_raw(s);
     }
     let curves = std::array::from_fn(|k| sp.ks_curve_raw(k / 2, k % 2));
-    Ok((values, matrix, curves))
+    let eg_curves = std::array::from_fn(|op| sp.eg_curve_raw(op));
+    Ok((values, matrix, curves, eg_curves))
 }
 
 /// Encode a flat value table + matrix rows into a host-state blob the model
@@ -193,6 +235,7 @@ fn encode_blob(
     values: &[f32; TOTAL_PARAMS],
     matrix: &[MatrixRowRaw; N_SLOTS],
     curves: &[u8; N_KS_CURVES],
+    eg_curves: &[u8; N_EG_CURVES],
 ) -> Vec<u8> {
     let sp = SharedParams::new();
     for (i, v) in values.iter().enumerate() {
@@ -203,6 +246,9 @@ fn encode_blob(
     }
     for (k, c) in curves.iter().enumerate() {
         sp.set_ks_curve_raw(k / 2, k % 2, *c);
+    }
+    for (op, c) in eg_curves.iter().enumerate() {
+        sp.set_eg_curve_raw(op, *c);
     }
     ParamModel::snapshot_bytes(&sp)
 }
@@ -260,7 +306,7 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
 
 /// Serialise a host-state blob + metadata to a sparse TOML preset.
 pub fn write_preset(meta: &Meta, blob: &[u8]) -> Result<String, String> {
-    let (values, matrix, curves) = decode_blob(blob)?;
+    let (values, matrix, curves, eg_curves) = decode_blob(blob)?;
     let mut params = params_table(&values);
     // KS level-curve selectors aren't CLAP params — write them as sparse
     // string keys in the same table (only sides that deviate from the
@@ -270,6 +316,15 @@ pub fn write_preset(meta: &Meta, blob: &[u8]) -> Result<String, String> {
         if c != default_ks_curve(side) {
             let label = KS_CURVE_NAMES.get(c as usize).copied().unwrap_or("neg-lin");
             params.insert(ks_curve_key(op, side), toml::Value::String(label.to_string()));
+        }
+    }
+    // EG level-curve selectors (ticket 0124): same sparse treatment — only ops
+    // deviating from the default (`Exp`) are written, read back by
+    // `parse_eg_curve_key` below.
+    for (op, &c) in eg_curves.iter().enumerate() {
+        if c != default_eg_curve() {
+            let label = EG_CURVE_NAMES.get(c as usize).copied().unwrap_or("exp");
+            params.insert(eg_curve_key(op), toml::Value::String(label.to_string()));
         }
     }
     let file = PresetFile {
@@ -357,6 +412,7 @@ pub fn read_preset(
         [f32; TOTAL_PARAMS],
         [MatrixRowRaw; N_SLOTS],
         [u8; N_KS_CURVES],
+        [u8; N_EG_CURVES],
         Vec<String>,
     ),
     PresetError,
@@ -381,6 +437,8 @@ pub fn read_preset(
     // KS curves start at the legacy frozen default; sparse string keys in the
     // params table override individual sides.
     let mut curves: [u8; N_KS_CURVES] = std::array::from_fn(|k| default_ks_curve(k % 2));
+    // EG curves start at the default (`Exp`); sparse string keys override per op.
+    let mut eg_curves: [u8; N_EG_CURVES] = std::array::from_fn(|_| default_eg_curve());
     for (key, val) in &file.params {
         match id_of(key) {
             Some(id) => {
@@ -394,6 +452,13 @@ pub fn read_preset(
                         Some(c) => curves[op * 2 + side] = c,
                         None => warnings.push(format!(
                             "params: bad KS curve `{key}` = `{val}` (using default)"
+                        )),
+                    }
+                } else if let Some(op) = parse_eg_curve_key(key) {
+                    match val.as_str().and_then(eg_curve_from_name) {
+                        Some(c) => eg_curves[op] = c,
+                        None => warnings.push(format!(
+                            "params: bad EG curve `{key}` = `{val}` (using default)"
                         )),
                     }
                 } else {
@@ -447,14 +512,14 @@ pub fn read_preset(
         };
     }
 
-    Ok((file.meta, values, matrix, curves, warnings))
+    Ok((file.meta, values, matrix, curves, eg_curves, warnings))
 }
 
 /// Parse a TOML preset to `(meta, host-state blob, warnings)`. The blob is
 /// ready to hand to the model's `restore_from_bytes`.
 pub fn from_toml_str(s: &str) -> Result<(Meta, Vec<u8>, Vec<String>), PresetError> {
-    let (meta, values, matrix, curves, warnings) = read_preset(s)?;
-    Ok((meta, encode_blob(&values, &matrix, &curves), warnings))
+    let (meta, values, matrix, curves, eg_curves, warnings) = read_preset(s)?;
+    Ok((meta, encode_blob(&values, &matrix, &curves, &eg_curves), warnings))
 }
 
 #[cfg(test)]
@@ -495,6 +560,29 @@ mod tests {
         // An untouched op keeps the legacy default.
         assert_eq!(dst.ks_curve_raw(2, 0), 0);
         assert_eq!(dst.ks_curve_raw(2, 1), 2);
+    }
+
+    #[test]
+    fn eg_curves_round_trip_through_text() {
+        let src = SharedParams::new();
+        src.set_eg_curve_raw(0, 1); // op1 → Lin (deviates from default Exp)
+        src.set_eg_curve_raw(5, 1); // op6 → Lin
+        let blob = ParamModel::snapshot_bytes(&src);
+
+        let toml = write_preset(&meta("EG"), &blob).unwrap();
+        // Sparse: default `Exp` ops are omitted; touched ops are present.
+        assert!(toml.contains("op1-eg-curve = \"lin\""), "{toml}");
+        assert!(toml.contains("op6-eg-curve = \"lin\""), "{toml}");
+        assert!(!toml.contains("op2-eg-curve"), "default op omitted:\n{toml}");
+
+        let (_m, blob2, warnings) = from_toml_str(&toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let dst = SharedParams::new();
+        ParamModel::load_bytes(&dst, &blob2).unwrap();
+        assert_eq!(dst.eg_curve_raw(0), 1);
+        assert_eq!(dst.eg_curve_raw(5), 1);
+        // An untouched op keeps the default (Exp).
+        assert_eq!(dst.eg_curve_raw(2), 0);
     }
 
     /// A snapshot blob from a default `SharedParams` (the E.PIANO default
@@ -548,7 +636,7 @@ name = "X"
 [params]
 lfo2-shape = "pulse"
 "#;
-        let (_m, values, _mtx, _curves, warnings) = read_preset(s).unwrap();
+        let (_m, values, _mtx, _curves, _eg, warnings) = read_preset(s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         // "Pulse" is index 4 in LFO_SHAPES.
         assert_eq!(values[id_of("lfo2-shape").unwrap()], 4.0);
@@ -564,7 +652,7 @@ name = "X"
 not-a-param = 5.0
 feedback = 3.0
 "#;
-        let (_m, values, _mtx, _curves, warnings) = read_preset(s).unwrap();
+        let (_m, values, _mtx, _curves, _eg, warnings) = read_preset(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("not-a-param"), "{warnings:?}");
         assert_eq!(values[id_of("feedback").unwrap()], 3.0);
@@ -579,7 +667,7 @@ name = "X"
 [params]
 feedback = 99.0
 "#;
-        let (_m, values, _mtx, _curves, _w) = read_preset(s).unwrap();
+        let (_m, values, _mtx, _curves, _eg, _w) = read_preset(s).unwrap();
         assert_eq!(values[id_of("feedback").unwrap()], 7.0);
     }
 
@@ -596,7 +684,7 @@ dest = "global-pitch"
 curve = "lin"
 depth = 0.5
 "#;
-        let (_m, _v, mtx, _curves, warnings) = read_preset(s).unwrap();
+        let (_m, _v, mtx, _curves, _eg, warnings) = read_preset(s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(mtx[0].source, SourceId::Lfo2 as u8);
         assert_eq!(mtx[0].dest, DestId::GlobalPitch as u8);
@@ -617,7 +705,7 @@ source = "nope"
 dest = "op1-level"
 depth = 0.3
 "#;
-        let (_m, _v, mtx, _curves, warnings) = read_preset(s).unwrap();
+        let (_m, _v, mtx, _curves, _eg, warnings) = read_preset(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert_eq!(mtx[2].source, 0);
         assert_eq!(mtx[2].dest, 0);

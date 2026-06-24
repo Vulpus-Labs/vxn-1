@@ -123,7 +123,7 @@ mod tests {
         use crate::preset::read_preset;
 
         for (category, contents) in factory_files() {
-            let (meta, _params, matrix, _curves, _warnings) =
+            let (meta, _params, matrix, _curves, _eg_curves, _warnings) =
                 read_preset(contents).expect("factory preset parses");
             for (slot, row) in matrix.iter().enumerate() {
                 if !row.active {

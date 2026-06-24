@@ -49,3 +49,27 @@ const and is confirmed a major improvement by listening.
 Prototype lives in `vxn-2/crates/vxn2-dsp/src/{eg.rs,op.rs,stack.rs}`. The
 EG ramp *shape* stays linear-in-amplitude in this ticket (exponential ramps are
 0125); only the level→amplitude mapping changes here.
+
+## Close-out (2026-06-24)
+
+- The log curve `amp = 2^((L-99)/8)` is the shipped default for both the EG
+  L-values and the operator output level — landed in commit `5684c2d` and routed
+  through [eg.rs](../../vxn-2/crates/vxn2-dsp/src/eg.rs) `level_to_amp` →
+  [op.rs:157](../../vxn-2/crates/vxn2-dsp/src/op.rs#L157) +
+  [stack.rs:861](../../vxn-2/crates/vxn2-dsp/src/stack.rs#L861) cook.
+- ADR added: [adrs/0007-dx7-log-level-curve.md](../../vxn-2/adrs/0007-dx7-log-level-curve.md)
+  — documents the linear/square-vs-log divergence, the 6 dB/8-step curve
+  (L=0 → silence), calibration (L=50 ≈ −37 dB), and the recalibration policy
+  (DX7-faithful values are now correct; old hand-tunings revert — precedent
+  Mark II E-Piano tine 17 → 58).
+- `EG_LOG_LEVELS` prototype const removed — superseded by the per-op `eg-curve`
+  param (default `Exp` = this log curve) under **0124**, exactly as that
+  ticket's Notes specify. `eg::level_to_amp` now takes an `EgCurve`; the const is
+  gone.
+- Curve is computed only in `cook` (control rate, scalar); the per-sample NEON
+  lane loop reads the precomputed `eg.level` scalar — SIMD/perf neutral
+  ([[vxn1-soa-match-defeats-simd]]). dsp 184 / engine 205 lib tests green.
+  (Audibility guard handled in 0127; per-op param + tests in 0124.)
+- Pre-existing, unrelated: `vxn2-clap` `process_loop_two_batch_render_*` and
+  `reset_silences_held_voice` panic `index out of bounds: len 32 index 32` on
+  clean `HEAD` too — not from this work.

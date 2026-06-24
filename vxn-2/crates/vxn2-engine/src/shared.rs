@@ -25,6 +25,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use vxn2_dsp::delay::StereoDelayParams;
+use vxn2_dsp::eg::EgCurve;
 use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
 use vxn2_dsp::filter::{FilterMode, FilterSlope};
 use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, LfoShape};
@@ -155,7 +156,13 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   past every existing id, so older blobs map 1:1; the new id is seeded to its
 ///   default (20 Hz floor = "off"/transparent → an unchanged patch stays
 ///   bit-identical).
-pub const BLOB_VERSION: u16 = 14;
+/// - v15: appends a 4-byte EG-curve trailer (one `u32` packing all `N_OPS`
+///   per-op level→amplitude curve selectors, 1 bit each — ticket 0124) after
+///   the KS-curve trailer. No new CLAP params, so the value block + param count
+///   are unchanged and v≤14 blobs decode 1:1; the new trailer is seeded to
+///   [`default_eg_curve_meta`] (every op `Exp` → the DX7-faithful log curve is
+///   the default, ADR 0007, so a migrated patch is bit-identical).
+pub const BLOB_VERSION: u16 = 15;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of params appended in v14 (the 5-param Phaser block, E025). Appended
@@ -309,6 +316,38 @@ fn ks_curve_from_bits(bits: u8) -> vxn2_dsp::ks::KsCurve {
     }
 }
 
+/// EG-curve trailer byte length appended at v15: one `u32` packing all `N_OPS`
+/// per-op level→amplitude curve selectors (1 bit each — see
+/// [`SharedParams::eg_curve_meta`]).
+pub const BLOB_EG_CURVE_LEN: usize = 4;
+
+/// Number of independently-set EG level-curve fields: one per op (ticket 0124).
+pub const N_EG_CURVES: usize = N_OPS;
+
+/// Bit offset of op `op`'s EG level-curve selector within the packed
+/// `eg_curve_meta` word. 1 bit per op (`0 = Exp`, `1 = Lin`).
+#[inline]
+const fn eg_curve_shift(op: usize) -> u32 {
+    op as u32
+}
+
+/// Default packed `eg_curve_meta`: every op = `Exp` (0) — the DX7-faithful log
+/// curve is the shipped default (ADR 0007), so a fresh store or a v≤14 blob
+/// reproduces it.
+const fn default_eg_curve_meta() -> u32 {
+    0
+}
+
+/// Decode a 1-bit EG-curve field to [`EgCurve`].
+#[inline]
+fn eg_curve_from_bits(bits: u8) -> EgCurve {
+    if bits & 0b1 == 0 {
+        EgCurve::Exp
+    } else {
+        EgCurve::Lin
+    }
+}
+
 /// Indexed read access into a param store, keyed by CLAP id.
 ///
 /// Internal supertrait of [`ParamModel`]; both the atomic store and the
@@ -338,6 +377,12 @@ pub trait ParamView {
         } else {
             vxn2_dsp::ks::KsCurve::NegExp
         }
+    }
+    /// Read op `op`'s EG level→amplitude curve. Default [`EgCurve::Exp`] (the
+    /// DX7-faithful log curve) so stores that don't carry curve state behave as
+    /// the shipped default. Ticket 0124.
+    fn eg_curve(&self, _op: usize) -> EgCurve {
+        EgCurve::Exp
     }
 }
 
@@ -439,6 +484,16 @@ pub struct SharedParams {
     /// Set by `set_ks_curve_raw`; drained by the main-thread tick
     /// ([`take_dirty_ks_curve`]) to push a `KsCurveSnapshot` to the page.
     dirty_ks_curve: AtomicBool,
+    /// Per-op EG level→amplitude curve selectors packed 1 bit each (`N_OPS`
+    /// fields, `0 = Exp`, `1 = Lin`). Non-CLAP / non-automatable patch state —
+    /// persisted in the blob trailer (v15) and the preset `params` table,
+    /// mirrored into the audio thread via [`ParamView::eg_curve`]. Field
+    /// layout: [`eg_curve_shift`]; values: [`EgCurve`] discriminants. Default
+    /// [`default_eg_curve_meta`] (every op `Exp`). Ticket 0124.
+    eg_curve_meta: AtomicU32,
+    /// Set by `set_eg_curve_raw`; drained by the main-thread tick
+    /// ([`take_dirty_eg_curve`]).
+    dirty_eg_curve: AtomicBool,
 }
 
 impl Default for SharedParams {
@@ -482,6 +537,8 @@ impl SharedParams {
             // Seed dirty so the first tick pushes a KsCurveSnapshot alongside
             // the full value + matrix re-broadcast.
             dirty_ks_curve: AtomicBool::new(true),
+            eg_curve_meta: AtomicU32::new(default_eg_curve_meta()),
+            dirty_eg_curve: AtomicBool::new(true),
         }
     }
 
@@ -551,6 +608,7 @@ impl SharedParams {
             );
         }
         self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
+        self.eg_curve_meta.store(default_eg_curve_meta(), Ordering::Relaxed);
         self.mark_all_dirty();
     }
 
@@ -565,6 +623,7 @@ impl SharedParams {
         }
         self.dirty_matrix.fetch_or(DIRTY_MATRIX_ALL, Ordering::Release);
         self.dirty_ks_curve.store(true, Ordering::Release);
+        self.dirty_eg_curve.store(true, Ordering::Release);
     }
 
     // ── Dirty bitset drain ──────────────────────────────────────────────────
@@ -598,6 +657,12 @@ impl SharedParams {
         self.dirty_ks_curve.swap(false, Ordering::Acquire)
     }
 
+    /// Drain the EG-curve dirty flag. Same single-reader contract as
+    /// [`Self::take_dirty_ks_curve`]. Ticket 0124.
+    pub fn take_dirty_eg_curve(&self) -> bool {
+        self.dirty_eg_curve.swap(false, Ordering::Acquire)
+    }
+
     // ── KS level-curve storage ──────────────────────────────────────────────
 
     /// Read op `op`'s `side` (0 = left, 1 = right) level-curve discriminant
@@ -623,6 +688,31 @@ impl SharedParams {
         let next = (cur & !(0b11 << shift)) | (((curve as u32) & 0b11) << shift);
         self.ks_curve_meta.store(next, Ordering::Relaxed);
         self.dirty_ks_curve.store(true, Ordering::Release);
+    }
+
+    // ── EG level-curve storage (ticket 0124) ────────────────────────────────
+
+    /// Read op `op`'s EG level-curve discriminant (0 = `Exp`, 1 = `Lin`).
+    /// Out-of-range → default (`Exp`, the DX7-faithful log curve).
+    pub fn eg_curve_raw(&self, op: usize) -> u8 {
+        if op >= N_OPS {
+            return 0;
+        }
+        let packed = self.eg_curve_meta.load(Ordering::Relaxed);
+        ((packed >> eg_curve_shift(op)) & 0b1) as u8
+    }
+
+    /// Write op `op`'s EG level-curve selector. Single-writer (main thread);
+    /// flips `dirty_eg_curve` so the next tick re-broadcasts.
+    pub fn set_eg_curve_raw(&self, op: usize, curve: u8) {
+        if op >= N_OPS {
+            return;
+        }
+        let shift = eg_curve_shift(op);
+        let cur = self.eg_curve_meta.load(Ordering::Relaxed);
+        let next = (cur & !(0b1 << shift)) | (((curve as u32) & 0b1) << shift);
+        self.eg_curve_meta.store(next, Ordering::Relaxed);
+        self.dirty_eg_curve.store(true, Ordering::Release);
     }
 
     // ── Gesture flags ───────────────────────────────────────────────────────
@@ -732,6 +822,11 @@ impl ParamView for SharedParams {
     fn ks_curve(&self, op: usize, side: usize) -> vxn2_dsp::ks::KsCurve {
         ks_curve_from_bits(SharedParams::ks_curve_raw(self, op, side))
     }
+
+    #[inline]
+    fn eg_curve(&self, op: usize) -> EgCurve {
+        eg_curve_from_bits(SharedParams::eg_curve_raw(self, op))
+    }
 }
 
 impl ParamModel for SharedParams {
@@ -759,7 +854,11 @@ impl ParamModel for SharedParams {
     /// and carries the matrix source/dest/curve slots the blob omits).
     fn snapshot_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
+            BLOB_HEADER_LEN
+                + TOTAL_PARAMS * 4
+                + BLOB_MATRIX_LEN
+                + BLOB_KS_CURVE_LEN
+                + BLOB_EG_CURVE_LEN,
         );
         buf.extend_from_slice(BLOB_MAGIC);
         buf.extend_from_slice(&BLOB_VERSION.to_le_bytes());
@@ -779,6 +878,8 @@ impl ParamModel for SharedParams {
         }
         // v12 trailer — packed per-side KS level-curve selectors.
         buf.extend_from_slice(&self.ks_curve_meta.load(Ordering::Relaxed).to_le_bytes());
+        // v15 trailer — packed per-op EG level-curve selectors.
+        buf.extend_from_slice(&self.eg_curve_meta.load(Ordering::Relaxed).to_le_bytes());
         buf
     }
 
@@ -824,7 +925,8 @@ impl ParamModel for SharedParams {
         let expected = match version {
             1 => values_len,
             2..=11 => values_len + BLOB_MATRIX_LEN,
-            _ => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
+            12..=14 => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
+            _ => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN + BLOB_EG_CURVE_LEN,
         };
         if bytes.len() != expected {
             return Err(ParamLoadError::LengthMismatch {
@@ -988,6 +1090,21 @@ impl ParamModel for SharedParams {
             self.ks_curve_meta.store(packed, Ordering::Relaxed);
         } else {
             self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
+        }
+        // v15 EG-curve trailer. v≤14 blobs predate per-op EG-curve control —
+        // seed every op to `Exp` (the DX7-faithful log default, ADR 0007) so a
+        // migrated patch reproduces the shipped response exactly.
+        if version >= 15 {
+            let off = values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN;
+            let packed = u32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]);
+            self.eg_curve_meta.store(packed, Ordering::Relaxed);
+        } else {
+            self.eg_curve_meta.store(default_eg_curve_meta(), Ordering::Relaxed);
         }
         // Bulk store bypassed `set` / `set_matrix_row_raw`; flip every
         // dirty bit so the next main-thread tick re-broadcasts the full
@@ -1436,6 +1553,10 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
                 i(14).clamp(0, 99) as u8,
             ],
         },
+        // Per-op EG level curve (ticket 0124): non-CLAP patch state read
+        // through `ParamView::eg_curve`, persisted in the blob trailer (v15) +
+        // preset table. Default `Exp` (DX7-faithful log curve, ADR 0007).
+        eg_curve: s.eg_curve(op),
         ks_break_pt: i(15).clamp(0, 127) as u8,
         ks_l_depth: i(16).clamp(0, 99) as u8,
         ks_r_depth: i(17).clamp(0, 99) as u8,
@@ -1645,7 +1766,11 @@ mod tests {
         let bytes = src.snapshot_bytes();
         assert_eq!(
             bytes.len(),
-            BLOB_HEADER_LEN + TOTAL_PARAMS * 4 + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN
+            BLOB_HEADER_LEN
+                + TOTAL_PARAMS * 4
+                + BLOB_MATRIX_LEN
+                + BLOB_KS_CURVE_LEN
+                + BLOB_EG_CURVE_LEN
         );
         assert_eq!(&bytes[0..4], BLOB_MAGIC);
         assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
@@ -1830,6 +1955,66 @@ mod tests {
         assert_eq!(dst.ks_curve_raw(3, 1), 2);
     }
 
+    #[test]
+    fn eg_curve_default_is_exp() {
+        let s = SharedParams::new();
+        for op in 0..N_OPS {
+            assert_eq!(s.eg_curve_raw(op), 0, "op{op} default = Exp");
+            assert_eq!(ParamView::eg_curve(&s, op), EgCurve::Exp);
+        }
+    }
+
+    #[test]
+    fn set_eg_curve_raw_is_independent_per_op() {
+        let s = SharedParams::new();
+        // Flip alternate ops to Lin and confirm no op stomps a neighbour
+        // (1-bit packing correctness).
+        for op in 0..N_OPS {
+            s.set_eg_curve_raw(op, (op as u8) % 2);
+        }
+        for op in 0..N_OPS {
+            assert_eq!(s.eg_curve_raw(op), (op as u8) % 2);
+        }
+    }
+
+    #[test]
+    fn snapshot_bytes_round_trips_eg_curves() {
+        let src = SharedParams::new();
+        src.set_eg_curve_raw(0, 1); // Lin
+        src.set_eg_curve_raw(5, 1); // Lin
+
+        let bytes = src.snapshot_bytes();
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+
+        assert_eq!(dst.eg_curve_raw(0), 1);
+        assert_eq!(dst.eg_curve_raw(5), 1);
+        // Untouched ops keep the default (Exp).
+        assert_eq!(dst.eg_curve_raw(3), 0);
+    }
+
+    /// A v14 blob (no EG-curve trailer) loads and seeds every op to `Exp` (the
+    /// shipped default), leaving the migrated patch bit-identical.
+    #[test]
+    fn v14_blob_seeds_default_eg_curves() {
+        let src = SharedParams::new();
+        src.set_eg_curve_raw(2, 1); // Lin — must be discarded by the v14 seed
+        let full = src.snapshot_bytes();
+        // A v14 blob: drop the v15 EG trailer and stamp the version back to 14.
+        let eg_end = full.len() - BLOB_EG_CURVE_LEN;
+        let mut bytes = full[..eg_end].to_vec();
+        bytes[4..6].copy_from_slice(&14u16.to_le_bytes());
+
+        let dst = SharedParams::new();
+        // Pre-dirty dst with a non-default curve to prove the seed overwrites.
+        dst.set_eg_curve_raw(2, 1);
+        dst.load_bytes(&bytes).unwrap();
+        for op in 0..N_OPS {
+            assert_eq!(dst.eg_curve_raw(op), 0, "op{op} seeded to Exp");
+        }
+    }
+
     /// A v11 blob (no KS-curve trailer) loads and seeds the legacy frozen
     /// shapes, leaving the migrated patch's KS response bit-identical.
     #[test]
@@ -1843,7 +2028,7 @@ mod tests {
         // trailing v13 `hp-cutoff` value, restore the v11 param count and stamp
         // the version.
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let matrix_end = full.len() - BLOB_KS_CURVE_LEN;
+        let matrix_end = full.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
         let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
@@ -1910,10 +2095,11 @@ mod tests {
         }
         // Post-op-block value params + matrix trailer copy through — but drop
         // the trailing v14 Phaser block + v13 `hp-cutoff` value (no v≤12 blob
-        // carries them) and the v12 KS-curve trailer (no v≤11 blob carries it).
+        // carries them), the v15 EG-curve trailer (no v≤14 blob carries it), and
+        // the v12 KS-curve trailer (no v≤11 blob carries it).
         let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN;
+        let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
         let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
         out.extend_from_slice(&bytes[rest..values_end - tail_drop]);
         out.extend_from_slice(&bytes[values_end..matrix_end]);

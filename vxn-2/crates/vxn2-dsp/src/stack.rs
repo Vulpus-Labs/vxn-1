@@ -858,10 +858,10 @@ impl Stack {
         );
         let vel = vel_factor(params.vel_sens, velocity);
         // Operator output level shares the EG level curve (see `eg::level_to_amp`).
-        let level_norm = crate::eg::level_to_amp(params.level);
+        let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
         let max_amp = level_norm * ks_lvl * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
-        self.ops[i].eg.cook(&params.eg, max_amp, rate_mult);
+        self.ops[i].eg.cook(&params.eg, max_amp, rate_mult, params.eg_curve);
 
         // Feedback is no longer per-op: see `set_feedback_live`. cook_op
         // leaves `fb_scale` alone; note_on calls the live setter after the
