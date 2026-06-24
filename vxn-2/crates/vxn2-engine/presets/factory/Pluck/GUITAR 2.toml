@@ -118,4 +118,4 @@ op6-ks-r-curve = "neg-lin"
 stack-density = 1
 delay-on = false
 reverb-on = false
-master-volume = -8.0
+master-volume = 6.0
