@@ -75,6 +75,20 @@ fn base_context(s: &SharedParams) {
     set("algo", 32.0); // six independent carriers → every op audible
     set("feedback", 2.0); // structural FB op carries a non-trivial timbre
 
+    // Pin every op to a full-level carrier with a high EG sustain so its per-op
+    // params (level, ratio, detune, pan, KS, EG, and any route onto its
+    // level/pitch) move the mix directly. Under the DX7 log level curve
+    // (E026/0123) the default patch's modulator ops sustain at ≈ −37 dB, which
+    // dropped op2 (and parts of op6, plus the PitchEg→Op2Level / Lfo1→Op6Pitch
+    // routes and `feedback`) below the audibility floor even though their wiring
+    // is intact. Restoring a fair, loud carrier context fixes that without
+    // weakening AUDIBLE_EPS. The per-param `-eg-` override still re-shapes the
+    // op under test, so this only sets the *baseline* sustain.
+    for op in 1..=6 {
+        set(&format!("op{op}-level"), 99.0);
+        set(&format!("op{op}-eg-l3"), 90.0);
+    }
+
     // FX fully in-circuit so their params matter.
     set("delay-on", 1.0);
     set("delay-sync", 0.0); // free-running so delay-time is in ms
@@ -458,13 +472,6 @@ const AUDIBLE_EPS: f64 = 1e-4;
 /// makes this fail, listing the eight `mtx{n}-depth` params, `stack-spread`,
 /// and every LFO2 / mod-env param that reaches the output only through those
 /// routes — then it passes again once restored.
-// TEMPORARILY DISABLED — E026 ticket 0127. The DX7 log level curve (E026/0123)
-// makes the base-context modulators (op2 via the PitchEg→Op2Level route, op6)
-// sustain at ≈ −37 dB, dropping their min→max sweeps below AUDIBLE_EPS even
-// though the wiring is intact. Re-enabling needs per-param `context_override`s
-// that keep those operators audible under the log curve — that is 0127's scope.
-// Do NOT delete this guard; 0127 removes the `#[ignore]`.
-#[ignore = "E026/0127: base-context modulators inaudible under the DX7 log curve; re-enable after per-param context overrides land"]
 #[test]
 fn every_param_sweep_is_audible() {
     run_sweep(1);
