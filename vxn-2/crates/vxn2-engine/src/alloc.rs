@@ -331,6 +331,10 @@ impl PolyAlloc {
             0.0
         };
         let counter = self.bump_seq();
+        // Capture the pedal-hold flag before `claim_slot` clears it: a stolen
+        // pedal-held voice has its physical key already up, so the new note is
+        // a fresh attack rather than a legato continuation.
+        let was_pedal_held = self.held_by_pedal[slot];
         self.claim_slot(slot, counter);
         if self.stacks[slot].is_idle() {
             // Free slot → fresh voice, onset from silence (click-free).
@@ -338,12 +342,14 @@ impl PolyAlloc {
         } else {
             // Steal a *sounding* voice (rare — only when no spare exists). Reuse
             // it in place: re-pitch without resetting oscillator phase, LFO2, or
-            // the pitch/mod envelopes. If it was Held → legato (continue the amp
-            // EG); if Releasing (the common steal target) → restart the amp EG
-            // from its current level. Avoids the hard-retrigger click.
-            let held = self.stacks[slot].phase == VoicePhase::Held;
+            // the pitch/mod envelopes. If it was Held with the physical key still
+            // down → legato (continue the amp EG). Otherwise (Releasing tail, or
+            // pedal-held with key already up) → restart the amp EG from its
+            // current level. Avoids the hard-retrigger click while preserving
+            // piano-like onset semantics when the player has released the key.
+            let key_down_held = self.stacks[slot].phase == VoicePhase::Held && !was_pedal_held;
             self.stacks[slot].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
-            if !held {
+            if !key_down_held {
                 self.stacks[slot].retrigger_eg();
             }
         }
@@ -1170,11 +1176,24 @@ mod tests {
         assert!(alloc.held_by_pedal[pedal_slot], "70 deferred by pedal");
         assert!(alloc.stacks[pedal_slot].gate, "pedal keeps the gate high");
         // No spare slot: the steal must take the pedal-held 70, not the oldest 60.
+        let level_before = alloc.stacks[pedal_slot].ops[0].eg.level;
+        assert!(level_before > 0.0, "fixture: pedal-held voice still audible");
         alloc.note_on(&params, &sp, &vp, 90, 100);
         assert_eq!(alloc.stacks[pedal_slot].note, 90, "stole the pedal-held voice");
         assert!(
             !alloc.held_by_pedal[pedal_slot],
             "stolen slot dropped its pedal-hold flag"
+        );
+        // Pedal-held key is up: stolen voice must re-attack (piano-like onset),
+        // not legato-continue. EG restarts from its current level — click-free.
+        assert_eq!(
+            alloc.stacks[pedal_slot].ops[0].eg.stage,
+            EgStage::Attack,
+            "stealing a pedal-held voice restarts the amp EG (key already up)"
+        );
+        assert!(
+            (alloc.stacks[pedal_slot].ops[0].eg.level - level_before).abs() < 1.0e-6,
+            "EG retrigger picks up at the current level — no amplitude discontinuity"
         );
         let notes: Vec<u8> = alloc.stacks.iter().filter(|s| s.gate).map(|s| s.note).collect();
         assert!(notes.contains(&60), "oldest active key must survive the steal");
