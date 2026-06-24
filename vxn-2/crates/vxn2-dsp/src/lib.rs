@@ -7,6 +7,7 @@
 pub mod algo;
 pub mod cleanup;
 pub mod delay;
+pub mod dynamics;
 pub mod eg;
 pub mod envelope;
 pub mod filter;

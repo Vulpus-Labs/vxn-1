@@ -128,3 +128,39 @@ internal defaults — same discipline as phaser pinning stages /
 centre / spread.
 
 Followed by 0146 (params + decode), 0147 (engine bus), 0148 (faceplate).
+
+## Close-out (2026-06-24)
+
+- `DynamicsBlock` + `DynamicsParams` landed at
+  [dynamics.rs](../../vxn-2/crates/vxn2-dsp/src/dynamics.rs), module declared
+  in [lib.rs:10](../../vxn-2/crates/vxn2-dsp/src/lib.rs#L10). Internal order
+  comp → sat as designed; feed-forward linked-sidechain peak detector with
+  one-pole attack/release; soft-knee quadratic interp (6 dB internal width);
+  `tanh(k·x)/tanh(k)` saturator with `k = 10^(drive_db/20) − 1` so
+  drive_db = 0 collapses to identity (limit case) and 36 dB hits unity-gain
+  at full drive; one log2 / one exp2 per active sample for the static curve.
+  Wet/dry smoother (`MIX_SMOOTH_MS = 30`) follows phaser's
+  retarget-on-enable / snap-on-first-set pattern. Detector reset on the
+  inactive→active edge via `was_active` (mirror of `limiter_was_on`).
+- Acceptance test coverage in `dynamics::tests`:
+  - `off_from_load_is_bit_exact_from_first_sample` — `set_from(on=false)` at
+    load ⇒ `process` bit-exact for 1000 samples (asserts `to_bits()`).
+  - `switch_on_after_load_off_glides_up_from_zero` — first tick after
+    `on=false → on=true` shows mix between 0 and target (fade-in active).
+  - `switch_off_fades_then_settles_to_bit_exact` — switch-off ⇒ smooth fade
+    (no jump on the edge), then 600 ms settle ⇒ bit-exact for 1000 samples.
+  - `gain_reduction_matches_known_threshold_ratio` — threshold −20 dB,
+    ratio 4, 0 dBFS step ⇒ steady-state −15 dB ± 0.5 dB.
+  - `tanh_drive_flattens_sine` — drive_db = 24, 1.0 sine ⇒ peak ≤ 1.001,
+    RMS > 0.85 (well above the 0.707 sine baseline).
+  - `detector_resets_on_inactive_to_active_edge` — env hammered up,
+    fade-out under sustained drive, then switch-on ⇒ `detector_env() == 0`
+    on the first active sample.
+  - `mix_zero_is_dry` — bonus sanity that mix=0 stays dry through comp+sat.
+- `cargo test -p vxn2-dsp` — 191 passed, 1 ignored, 0 failed. clippy on
+  `dynamics.rs` clean (only pre-existing warnings in `halfband`/`stack`/
+  `tables` remain — out of scope).
+- Bit-exact passthrough costs one gate check + one branch
+  (`!enabled && mix.current() == 0.0`) — comp/sat/log/exp all behind the
+  gate, matching phaser's early-return shape.
+- Followed by 0146 (params + decode), 0147 (engine bus), 0148 (faceplate).
