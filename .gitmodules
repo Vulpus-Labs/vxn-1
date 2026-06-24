@@ -1,0 +1,6 @@
+[submodule "vendor/clap-wrapper"]
+	path = vendor/clap-wrapper
+	url = https://github.com/free-audio/clap-wrapper.git
+[submodule "vendor/vst3sdk"]
+	path = vendor/vst3sdk
+	url = https://github.com/steinbergmedia/vst3sdk.git
