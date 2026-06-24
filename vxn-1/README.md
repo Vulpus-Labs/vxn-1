@@ -47,6 +47,22 @@ cargo xtask bundle --release --install  # …and install it locally
 
 Requires Rust 1.85+ (edition 2024).
 
+### Submodules (VST3 only)
+
+The VST3 build path (`cargo xtask bundle --format vst3`, E010) links
+[clap-wrapper](https://github.com/free-audio/clap-wrapper) against the
+[CLAP SDK](https://github.com/free-audio/clap) and the
+[VST3 SDK](https://github.com/steinbergmedia/vst3sdk), all vendored as git
+submodules under `vendor/` at the repo root. Initialise them before building
+VST3:
+
+```sh
+git submodule update --init --recursive
+```
+
+The CLAP path (`cargo xtask bundle [--format clap]`, the default) does **not**
+need the submodules — a fresh clone can build CLAP with no extra setup.
+
 ## License
 
 Licensed under the [MIT License](LICENSE.txt).

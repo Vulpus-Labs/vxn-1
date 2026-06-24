@@ -547,6 +547,11 @@ impl PluginStateImpl for VxnMainThread<'_> {
 
 clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 
+// `clack_export_entry!` emits `#[no_mangle] pub static clap_entry`. That
+// `#[no_mangle]` keeps the symbol reachable in the `staticlib` build too
+// (verified: `libvxn_clap.a` exports `_clap_entry`), so the E010 VST3 bundle
+// needs no `#[used]` anchor here. See ticket 0008 / ADR 0008 §2.
+
 // Keep the param tables referenced so the linker never drops them in a thin-LTO
 // cdylib build (defensive; also a compile-time check the import is used).
 #[used]
