@@ -1,3 +1,7 @@
 # DX7 factory ROM dumps are Yamaha data — supply your own, never commit them.
 roms/
 *.syx
+
+# Python bytecode cache.
+__pycache__/
+*.pyc
