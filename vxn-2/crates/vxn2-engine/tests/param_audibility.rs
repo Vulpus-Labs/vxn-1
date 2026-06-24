@@ -370,6 +370,16 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("op4-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
     ("op5-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
     ("op6-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
+    // 0146 lands the dyn-* CLAP surface + EngineParams decode; 0147 wires the
+    // DSP block into the engine bus. Drop these once 0147 ships.
+    ("dyn-on", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-threshold", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-ratio", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-attack", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-release", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-makeup", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-drive", "Dynamics DSP not yet wired into the engine bus (0147)."),
+    ("dyn-mix", "Dynamics DSP not yet wired into the engine bus (0147)."),
 ];
 
 /// Render the configured patch through the capture script, returning the

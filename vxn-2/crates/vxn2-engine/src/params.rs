@@ -9,11 +9,12 @@
 //!   0 .. 169   Per-patch        (132 op + 1 algo + 1 feedback + 5 LFO2 +
 //!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
 //!                                8 mtx)
-//! 169 .. 196   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
-//!                                9 filter + 1 limiter + 1 HP)
+//! 169 .. 209   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
+//!                                9 filter + 1 limiter + 1 HP + 5 phaser +
+//!                                8 dynamics)
 //! ```
 //!
-//! Total 196. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
+//! Total 209. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
 //! is gone — a patch is one parameter set. Each op block is 22 params: the
 //! 20 continuous controls, a trailing `ratio-mode` enum (Ratio / Fixed), and
 //! a per-op `phase` float (ticket 0074).
@@ -52,8 +53,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 22;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 169
-pub const N_PATCH_LEVEL: usize = 32; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter + 1 HP + 5 phaser
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 201
+pub const N_PATCH_LEVEL: usize = 40; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter + 1 HP + 5 phaser + 8 dynamics
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 209
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -589,6 +590,20 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("phaser-depth", "Phaser Depth", 0.0, 1.0, 0.6, ""),
     fl("phaser-feedback", "Phaser FB", -0.9, 0.9, 0.3, ""),
     fl("phaser-mix", "Phaser Mix", 0.0, 1.0, 0.5, ""),
+    // ── Dynamics (E028 — first FX in the bus) ─────────────────────────────
+    // Stereo feed-forward peak comp → tanh saturator, host-automation only —
+    // NOT a mod-matrix dest (same discipline as phaser). Appended at the very
+    // end of the flat space so existing ids (filter / limiter / hp / phaser)
+    // stay stable and the blob prefix is unchanged; off by default → an
+    // unchanged patch renders bit-identical to the pre-E028 bus.
+    bl("dyn-on", "Dyn On", false),
+    fl("dyn-threshold", "Dyn Thresh", -60.0, 0.0, -12.0, "dB"),
+    fl("dyn-ratio", "Dyn Ratio", 1.0, 20.0, 4.0, ""),
+    flx("dyn-attack", "Dyn Attack", 0.1, 200.0, 10.0, "ms", 5.0),
+    flx("dyn-release", "Dyn Release", 5.0, 1000.0, 100.0, "ms", 50.0),
+    fl("dyn-makeup", "Dyn Makeup", 0.0, 24.0, 0.0, "dB"),
+    fl("dyn-drive", "Dyn Drive", 0.0, 36.0, 0.0, "dB"),
+    fl("dyn-mix", "Dyn Mix", 0.0, 1.0, 1.0, ""),
 ];
 
 // ── The table ───────────────────────────────────────────────────────────────
@@ -641,6 +656,8 @@ pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
 pub(crate) const OFF_LIMITER: usize = 25; // trailing append, after the 9-param Filter section
 pub(crate) const OFF_HP: usize = 26; // trailing append, after `limiter-on`
 pub(crate) const OFF_PHASER: usize = 27; // trailing append, after `hp-cutoff` (ids 196–200)
+pub(crate) const OFF_DYNAMICS: usize = 32; // trailing append, after the 5-param Phaser block (ids 201–208)
+pub(crate) const N_DYNAMICS_PARAMS: usize = 8;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
 /// the host renders nested folders. Per-patch ids resolve to e.g. `Op 3`,
@@ -720,6 +737,10 @@ fn module_for_patch(off: usize) -> &'static str {
         // Phaser (E025) — appended at the very end of the flat space; its own
         // FX section in the host tree.
         "Global / Phaser"
+    } else if off >= OFF_DYNAMICS && off < OFF_DYNAMICS + N_DYNAMICS_PARAMS {
+        // Dynamics (E028) — appended past the Phaser block; its own FX
+        // section in the host tree (sits first in the audio bus though).
+        "Global / Dynamics"
     } else {
         ""
     }
@@ -795,7 +816,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 201);
+        assert_eq!(TOTAL_PARAMS, 209);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -902,37 +923,48 @@ mod tests {
     #[test]
     fn filter_section_is_at_table_tail() {
         // The Filter section (9 params, E007/v8) sits after Master, then the
-        // single `limiter-on` (v9), `hp-cutoff` (v13), and finally the 5-param
-        // Phaser block (E025) are each appended at the very end of the flat
-        // space — so each blob migration stays a 1:1 prefix.
+        // single `limiter-on` (v9), `hp-cutoff` (v13), the 5-param Phaser block
+        // (E025/v14), and finally the 8-param Dynamics block (E028/v16) are
+        // each appended at the very end of the flat space — so each blob
+        // migration stays a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 18);
-        assert_eq!(vol, TOTAL_PARAMS - 17);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 16));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 15));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 14));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 13));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 12));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 11));
-        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 10));
-        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 9));
-        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 8));
-        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 7));
-        assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 6));
-        // Phaser block (E025), appended at the very tail, ids 196–200.
-        assert_eq!(id_of("phaser-on"), Some(TOTAL_PARAMS - 5));
-        assert_eq!(id_of("phaser-rate"), Some(TOTAL_PARAMS - 4));
-        assert_eq!(id_of("phaser-depth"), Some(TOTAL_PARAMS - 3));
-        assert_eq!(id_of("phaser-feedback"), Some(TOTAL_PARAMS - 2));
-        assert_eq!(id_of("phaser-mix"), Some(TOTAL_PARAMS - 1));
-        // `filter-enable`, `limiter-on`, and `phaser-on` default off, `hp-cutoff`
-        // defaults to its 20 Hz floor ("off") → migrated patches stay
-        // bit-identical.
+        assert_eq!(tune, TOTAL_PARAMS - 26);
+        assert_eq!(vol, TOTAL_PARAMS - 25);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 24));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 23));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 22));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 21));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 20));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 19));
+        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 18));
+        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 17));
+        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 16));
+        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 15));
+        assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 14));
+        // Phaser block (E025), ids 196–200.
+        assert_eq!(id_of("phaser-on"), Some(TOTAL_PARAMS - 13));
+        assert_eq!(id_of("phaser-rate"), Some(TOTAL_PARAMS - 12));
+        assert_eq!(id_of("phaser-depth"), Some(TOTAL_PARAMS - 11));
+        assert_eq!(id_of("phaser-feedback"), Some(TOTAL_PARAMS - 10));
+        assert_eq!(id_of("phaser-mix"), Some(TOTAL_PARAMS - 9));
+        // Dynamics block (E028), ids 201–208 — appended at the very tail.
+        assert_eq!(id_of("dyn-on"), Some(TOTAL_PARAMS - 8));
+        assert_eq!(id_of("dyn-threshold"), Some(TOTAL_PARAMS - 7));
+        assert_eq!(id_of("dyn-ratio"), Some(TOTAL_PARAMS - 6));
+        assert_eq!(id_of("dyn-attack"), Some(TOTAL_PARAMS - 5));
+        assert_eq!(id_of("dyn-release"), Some(TOTAL_PARAMS - 4));
+        assert_eq!(id_of("dyn-makeup"), Some(TOTAL_PARAMS - 3));
+        assert_eq!(id_of("dyn-drive"), Some(TOTAL_PARAMS - 2));
+        assert_eq!(id_of("dyn-mix"), Some(TOTAL_PARAMS - 1));
+        // `filter-enable`, `limiter-on`, `phaser-on`, and `dyn-on` default off,
+        // `hp-cutoff` defaults to its 20 Hz floor ("off") → migrated patches
+        // stay bit-identical.
         assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
         assert_eq!(PARAMS[id_of("limiter-on").unwrap()].default, 0.0);
         assert_eq!(PARAMS[id_of("hp-cutoff").unwrap()].default, 20.0);
         assert_eq!(PARAMS[id_of("phaser-on").unwrap()].default, 0.0);
+        assert_eq!(PARAMS[id_of("dyn-on").unwrap()].default, 0.0);
     }
 
     #[test]
@@ -965,6 +997,9 @@ mod tests {
             ("delay-time", "Global / Delay"),
             ("reverb-decay", "Global / Reverb"),
             ("master-volume", "Global / Master"),
+            ("phaser-on", "Global / Phaser"),
+            ("dyn-on", "Global / Dynamics"),
+            ("dyn-mix", "Global / Dynamics"),
         ];
         for (id, expected) in cases {
             let idx = id_of(id).unwrap_or_else(|| panic!("missing id {id}"));

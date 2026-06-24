@@ -261,6 +261,49 @@ track stacks) and no longer live inside the synth.
 
 ## Effects
 
+The FX bus order is **`cleanup → dynamics → phaser → delay → reverb → master gain → limiter`**.
+Dynamics is first so the comp evens FM transients before delay regen and reverb
+tail accumulate them; phaser sits between dynamics and the time FX; the master
+brickwall limiter remains last as a safety stage.
+
+Each block-level FX (Dynamics, Phaser, Delay, Reverb) bypasses to a bit-exact
+passthrough when its `*_on` toggle is off — `set_enabled(false)` first fades a
+wet-mix smoother to 0 (no click on switch-off), and only then reverts to the
+zero-cost passthrough. None of the FX-block params is a mod-matrix destination
+(host-automation only).
+
+### Dynamics
+
+Stereo feed-forward peak compressor → tanh saturator, channel-strip topology
+(comp first so the saturator drives consistent harmonic content). Soft-knee
+(6 dB internal width), one log2 + one exp2 per active sample. **First in the
+FX bus.**
+
+| Param           | Type | Range            | Default | Purpose                                              |
+|-----------------|------|------------------|---------|------------------------------------------------------|
+| `dyn-on`        | b    | off / on         | off     | Bypass toggle. Off ⇒ bit-exact passthrough.          |
+| `dyn-threshold` | f    | −60 .. 0 dB      | −12 dB  | Compressor threshold.                                |
+| `dyn-ratio`     | f    | 1 .. 20          | 4       | Compression ratio (1 = no compression).              |
+| `dyn-attack`    | f    | 0.1 .. 200 ms    | 10 ms   | Peak detector attack time.                           |
+| `dyn-release`   | f    | 5 .. 1000 ms     | 100 ms  | Peak detector release time.                          |
+| `dyn-makeup`    | f    | 0 .. 24 dB       | 0 dB    | Post-comp, pre-sat linear makeup gain.               |
+| `dyn-drive`     | f    | 0 .. 36 dB       | 0 dB    | Saturator input drive. 0 ⇒ identity (no harmonics).  |
+| `dyn-mix`       | f    | 0.0 .. 1.0       | 1.0     | Dry/wet on the comp + sat chain.                     |
+
+### Phaser
+
+Stereo allpass phaser, four cascaded all-pass sections per channel with an
+anti-phase L/R triangle LFO sweep around 600 Hz. Macro surface only; stages,
+centre frequency, and stereo spread are pinned internally.
+
+| Param             | Type | Range            | Default | Purpose                                              |
+|-------------------|------|------------------|---------|------------------------------------------------------|
+| `phaser-on`       | b    | off / on         | off     | Bypass toggle. Off ⇒ bit-exact passthrough.          |
+| `phaser-rate`     | f    | 0.05 .. 8 Hz     | 0.4 Hz  | LFO rate.                                            |
+| `phaser-depth`    | f    | 0.0 .. 1.0       | 0.6     | Sweep depth (±2 oct around 600 Hz at depth = 1).     |
+| `phaser-feedback` | f    | −0.9 .. 0.9      | 0.3     | Feedback through a soft-clipped path.                |
+| `phaser-mix`      | f    | 0.0 .. 1.0       | 0.5     | Dry/wet (wet gets a mild mid-mix makeup curve).      |
+
 ### Delay (clean)
 
 | Param            | Type | Range                                | Default | Purpose                                              |
