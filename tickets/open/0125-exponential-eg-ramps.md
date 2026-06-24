@@ -83,6 +83,14 @@ fixture, `silence_when_master_volume_min`, which leaked the note-on transient
 through the still-ramping master smoother — added an 8-block pre-roll so it tests
 settled −60 dB silence.
 
+**CPU bench gate (2026-06-24, M-series, criterion median):** no regression —
+`vxn2-osc-bench` pre-0125 (`d42b6a0^`) vs post:
+`stack_d1` 63.0→60.6 µs, `stack_d4` 62.4→60.7, `stack_d8` 62.4→60.5 (all ~−3%,
+within noise / marginally faster); `voice_release` 38.6→38.9 µs (+0.6%, noise).
+`voice_steady` pre-run was a noisy outlier (wide CI 55–58 µs); post 38.7 µs
+matches `voice_release`, i.e. effectively equal. Confirms the log marcher +
+`exp2` are control-rate scalar — the per-sample lane loop is byte-unchanged.
+
 **To verify (Reaper):** attack feel (punchy, not soft), decay/release taper
 (natural exponential, not linear), segment times across R=0..99 on an e-piano
 pluck, a pad swell, and a bass. If times feel off, tune `rate_to_log2_per_sec`'s
