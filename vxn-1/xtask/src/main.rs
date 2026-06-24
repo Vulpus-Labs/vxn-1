@@ -12,11 +12,13 @@
 //! single fat binary, so one bundle loads on Apple Silicon and Intel hosts.
 //!
 //! `--format` selects which artifact(s) to produce (comma-separated, default
-//! `clap`): `clap` runs the path above verbatim; `vst3` (E010 / ticket 0011)
-//! builds the `vxn-clap` *staticlib*, force-loads it into a clap-wrapper VST3
-//! module via the `vxn-1/wrapper` CMake project, and stages `VXN1.vst3` next to
-//! the CLAP. Both can be requested together. The `vst3` path needs CMake and the
-//! `vendor/` submodules; macOS only for now (Windows is ticket 0012).
+//! `clap`): `clap` runs the path above verbatim; `vst3` (E010 / tickets
+//! 0011+0012) builds the `vxn-clap` *staticlib*, whole-archives it into a
+//! clap-wrapper VST3 module via the `vxn-1/wrapper` CMake project, and stages
+//! `VXN1.vst3` next to the CLAP. Both can be requested together. The `vst3` path
+//! needs CMake and the `vendor/` submodules; on macOS it builds a universal
+//! bundle (`--universal`), on Windows an x86_64 MSVC build (run from a Developer
+//! PowerShell so `cl.exe` is on PATH).
 //!
 //! `web` (ticket 0041) compiles the wasm crate(s) for `wasm32-unknown-unknown`
 //! (release + SIMD128 by default) and assembles a self-contained, servable
@@ -210,15 +212,16 @@ fn bundle(release: bool, install: bool, universal: bool) -> Result<(), String> {
 /// same source as the CLAP; VST3 is purely a distribution artifact (ADR 0008).
 ///
 /// Flow: build the staticlib slice(s) → configure + build the `vxn-1/wrapper`
-/// CMake project (force-loads the archive into a VST3 MODULE) → copy the staged
-/// `VXN1.vst3` bundle to `target/bundled/`, and on `--install` to the user VST3
-/// directory. macOS only here; Windows is ticket 0012.
+/// CMake project (whole-archives the archive into a VST3 MODULE) → copy the
+/// staged `VXN1.vst3` bundle to `target/bundled/`, and on `--install` to the
+/// user VST3 directory. macOS (universal) and Windows (x86_64 MSVC, ticket
+/// 0012); the wrapper CMake (0010) handles both platforms' bundle layout.
 fn bundle_vst3(release: bool, install: bool, universal: bool) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("--format vst3 is macOS-only for now (Windows path is ticket 0012)".into());
+    if !(cfg!(target_os = "macos") || cfg!(target_os = "windows")) {
+        return Err("--format vst3 is supported on macOS and Windows only".into());
     }
     if universal && !cfg!(target_os = "macos") {
-        return Err("--universal is macOS-only".into());
+        return Err("--universal is macOS-only (omit it on Windows; the build is x86_64)".into());
     }
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
@@ -226,6 +229,7 @@ fn bundle_vst3(release: bool, install: bool, universal: bool) -> Result<(), Stri
     // Preflight: fail early with actionable hints rather than letting CMake or
     // the linker fail opaquely deep in the build.
     ensure_cmake()?;
+    ensure_msvc()?;
     ensure_submodules(&root)?;
 
     // 1. Build the staticlib. `cargo build --package vxn-clap` emits the .a
@@ -409,6 +413,24 @@ fn ensure_cmake() -> Result<(), String> {
         })
 }
 
+/// On Windows, error unless the MSVC toolchain (`cl.exe`) is reachable, hinting
+/// at the Developer PowerShell. We deliberately don't locate and source
+/// `vcvars64.bat` ourselves — that's a rabbit hole (ticket 0012). No-op on
+/// other platforms. Spawn succeeding (even with a non-zero "no input" exit)
+/// proves the compiler is on PATH; the env vars (`INCLUDE`/`LIB`) that the
+/// Ninja+MSVC build needs come from the same Developer shell.
+fn ensure_msvc() -> Result<(), String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(());
+    }
+    Command::new("cl.exe").output().map(|_| ()).map_err(|_| {
+        "MSVC compiler (cl.exe) not found on PATH — run xtask from a \
+         \"Developer PowerShell for VS 2022\" (or a shell where you've run \
+         vcvars64.bat) so the C++ toolchain and its INCLUDE/LIB env are set"
+            .to_string()
+    })
+}
+
 /// Error unless the `vendor/` submodules the wrapper CMake needs are checked
 /// out, pointing at the init command rather than letting CMake fail opaquely.
 fn ensure_submodules(root: &Path) -> Result<(), String> {
@@ -481,9 +503,12 @@ fn vst3_install_dir() -> Result<PathBuf, String> {
         let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
         Ok(PathBuf::from(home).join("Library/Audio/Plug-Ins/VST3"))
     } else if cfg!(target_os = "windows") {
-        let pf =
-            env::var("CommonProgramFiles").map_err(|_| "CommonProgramFiles not set".to_string())?;
-        Ok(PathBuf::from(pf).join("VST3"))
+        // Per-user VST3 path (`%LOCALAPPDATA%\Programs\Common\VST3`, ticket 0012)
+        // rather than the machine-wide `%CommonProgramFiles%\VST3` — the latter
+        // needs admin and we install for the current user, matching the CLAP path.
+        let local =
+            env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".to_string())?;
+        Ok(PathBuf::from(local).join(r"Programs\Common\VST3"))
     } else {
         let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
         Ok(PathBuf::from(home).join(".vst3"))

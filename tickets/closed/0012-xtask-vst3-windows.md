@@ -71,3 +71,42 @@ Add later when demand exists.
 Code signing: out of scope. Unsigned `.vst3` loads in
 DAWs in dev. Distribution-grade signing arrives in a future
 ticket via signtool / EV cert workflow.
+
+## Close-out (2026-06-24)
+
+Implemented host-agnostically; the macOS path (0011) and the new Windows path
+share one `bundle_vst3`. Verified buildable on the macOS dev host
+(`cargo build`/`clippy -p vxn1-xtask` clean); **Windows runtime build + DAW
+load is deferred to the validation matrix (0013)** — no Windows box here, same
+as 0011 deferred Reaper/Bitwig load.
+
+- Platform guard: [main.rs:217](../../vxn-1/xtask/src/main.rs#L219)
+  `bundle_vst3` now accepts macOS **or** Windows; errors
+  `--format vst3 is supported on macOS and Windows only` elsewhere (Linux is a
+  trivial follow-up per the epic). `--universal` still rejects off macOS with
+  `--universal is macOS-only (omit it on Windows; the build is x86_64)`.
+- MSVC preflight: [main.rs:ensure_msvc](../../vxn-1/xtask/src/main.rs#L422)
+  spawns `cl.exe`; if it's not on PATH, errors with the
+  "Developer PowerShell for VS 2022 / vcvars64.bat" hint. No-op on non-Windows.
+  We do **not** locate or source vcvars ourselves (the rabbit hole the ticket
+  warns against) — the Developer shell also supplies the `INCLUDE`/`LIB` env the
+  Ninja+MSVC build inherits.
+- Static archive: `static_lib_path` already emits `vxn_clap.lib` (no `lib`
+  prefix, `.lib` ext) on Windows; the non-universal cargo build produces it
+  alongside the cdylib (`vxn_clap.dll` + its `.dll.lib` import lib — no clash).
+  Passed to CMake via `-DVXN_CLAP_STATIC`.
+- Generator: the existing `ninja_available()` gate adds `-G Ninja` when present,
+  else the platform default (VS multi-config); `cmake --build … --parallel
+  --config Release` is correct for both. The wrapper CMake (0010) already
+  whole-archives via `/WHOLEARCHIVE:` on WIN32, links the win32 system libs
+  (`ws2_32 userenv ntdll bcrypt user32 …`), and stages the folder bundle through
+  the non-APPLE `copy_directory` branch.
+- Install: [main.rs:vst3_install_dir](../../vxn-1/xtask/src/main.rs#L501)
+  Windows branch now resolves `%LOCALAPPDATA%\Programs\Common\VST3` (per-user, no
+  admin) instead of the machine-wide `%CommonProgramFiles%\VST3`; bundle copied
+  recursively via the same `copy_clap`/`copy_dir_recursive` used on macOS.
+- Regression: CLAP-only `bundle [--release]` on Windows is untouched — copies
+  `vxn_clap.dll` → `VXN1.clap` exactly as before.
+
+Acceptance boxes left unchecked pending the Windows host pass in 0013, mirroring
+0011's "load proper lives in 0013" deferral.
