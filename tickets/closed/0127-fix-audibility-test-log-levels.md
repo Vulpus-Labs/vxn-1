@@ -39,3 +39,25 @@ The test framework already supports per-param context overrides (the failure
 message references them). Coordinate with 0123 (curve) and 0124 (the patch may be
 built with explicit `Exp`). Keep the guard meaningful — don't just lower the
 1e-4 threshold.
+
+## Close-out (2026-06-24)
+
+- `#[ignore]` + the "TEMPORARILY DISABLED" comment removed from
+  `every_param_sweep_is_audible`
+  ([param_audibility.rs](../../vxn-2/crates/vxn2-engine/tests/param_audibility.rs));
+  it runs in the default suite again and passes.
+- Root cause confirmed fixture-only: under the log curve the default-patch
+  modulator ops sustain at ≈ −37 dB, so in `base_context` (algo 32) op2 was
+  inaudible across **all** its params and op6 / `feedback` / `mtx3-depth`
+  (PitchEg→Op2Level) / `mtx7-depth` (Lfo1→Op6Pitch) fell below `AUDIBLE_EPS`.
+  Fix: `base_context` now pins every op to a full-level carrier
+  (`op{n}-level = 99`, `op{n}-eg-l3 = 90`) so each op's params move the mix
+  directly — wiring was intact, the context was just too quiet.
+- `AUDIBLE_EPS` (1e-4) **unchanged** — guard kept meaningful; the fix raises
+  signal, not lowers the bar. The per-param `-eg-` override still re-shapes the
+  op under test (it only overrides the baseline sustain).
+- Verified: full table sweep green under the default (Exp) curve (`run_sweep(1)`,
+  ~9 s); the previously-inert set (`op2-*`, `op6-eg-*`, `op6-ks-rate`,
+  `feedback`, `mtx3/mtx7-depth`) all now exceed the floor.
+- `every_param_sweep_is_audible_thorough` (`#[ignore]`, 3× windows) still passes
+  when run with `--ignored` (~26 s).
