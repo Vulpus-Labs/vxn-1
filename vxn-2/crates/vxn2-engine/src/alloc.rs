@@ -318,7 +318,29 @@ impl PolyAlloc {
         note: u8,
         velocity: u8,
     ) -> usize {
-        let slot = self.pick_slot(note);
+        // Re-press of a note already held by the sustain pedal retires the old
+        // voice instead of doubling: declick the pedal-held duplicate and start
+        // the new note on a fresh slot. Only when no fresh slot is available do
+        // we fall back to "steal and continue" — and in that case the steal
+        // target *is* the duplicate, so the slot count stays the same.
+        let pedal_dup = (0..N_STACKS).find(|&i| {
+            self.held_by_pedal[i]
+                && self.stacks[i].note == note
+                && self.stacks[i].phase != VoicePhase::Declick
+        });
+        let slot = match pedal_dup {
+            Some(dup) => {
+                let pick = self.pick_slot(note);
+                if self.stacks[pick].is_idle() {
+                    self.stacks[dup].start_declick();
+                    self.held_by_pedal[dup] = false;
+                    pick
+                } else {
+                    dup
+                }
+            }
+            None => self.pick_slot(note),
+        };
         // Always-glide (vxn-1 parity, ticket 0125): a reused or stolen voice
         // slides from its previous sounding pitch (note + any in-flight glide
         // offset) to the new note, independent of overlap or `legato`. A slot
@@ -1203,6 +1225,115 @@ mod tests {
         alloc.set_sustain(false);
         assert!(alloc.stacks[pedal_slot].gate, "reused voice not re-released by pedal-up");
         assert_eq!(alloc.stacks[pedal_slot].note, 90);
+    }
+
+    /// Re-pressing a note already held by the sustain pedal retires the old
+    /// voice (Declick) and starts the new note from a clean retrigger on a
+    /// fresh slot. The new key, on later release, enters the sustain buffer
+    /// in its own right.
+    #[test]
+    fn poly_repress_pedal_held_note_declicks_old_and_attacks_fresh() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+        let first_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 60)
+            .expect("first 60 voice");
+        run_blocks(&mut alloc, (SR as usize) / BLK); // reach Sustain (Held)
+        alloc.set_sustain(true);
+        alloc.note_off(&params, &sp, &vp, 60); // pedal-held now
+        assert!(alloc.held_by_pedal[first_slot]);
+        assert!(alloc.stacks[first_slot].gate);
+
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+
+        // Old voice declicking, no longer pedal-flagged.
+        assert_eq!(
+            alloc.stacks[first_slot].phase,
+            VoicePhase::Declick,
+            "pedal-held dup retired into Declick"
+        );
+        assert!(
+            !alloc.held_by_pedal[first_slot],
+            "declicked slot cleared from sustain buffer"
+        );
+        // New voice on a different slot, fresh Attack from level 0.
+        let new_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 60 && s.phase == VoicePhase::Held)
+            .expect("fresh 60 voice");
+        assert_ne!(new_slot, first_slot, "new note took a fresh slot");
+        assert_eq!(alloc.stacks[new_slot].ops[0].eg.stage, EgStage::Attack);
+        assert!(
+            alloc.stacks[new_slot].ops[0].eg.level < 1.0e-3,
+            "fresh attack starts from 0, not legato-continued"
+        );
+
+        // Release the new key: still under pedal, so it joins the sustain buffer.
+        alloc.note_off(&params, &sp, &vp, 60);
+        assert!(
+            alloc.held_by_pedal[new_slot],
+            "new voice now in sustain buffer"
+        );
+        assert!(alloc.stacks[new_slot].gate, "still held by pedal");
+
+        // Pedal up gates the new voice off.
+        alloc.set_sustain(false);
+        assert!(!alloc.held_by_pedal[new_slot]);
+    }
+
+    /// Re-press of a pedal-held note when *no* fresh slot is available: fall
+    /// back to "steal and continue" on the duplicate itself. The slot count is
+    /// preserved — no other voice is collateral-stolen, no doubling.
+    #[test]
+    fn poly_repress_pedal_held_with_no_free_slot_steals_dup() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        // Fill all 16 slots, pedal-hold every key. Every slot is now in the
+        // sustain buffer; no idle slot exists.
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK);
+        alloc.set_sustain(true);
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_off(&params, &sp, &vp, n);
+        }
+        let dup_note = 65u8;
+        let dup_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == dup_note)
+            .expect("dup note sounding");
+        assert!(alloc.held_by_pedal[dup_slot]);
+        let level_before = alloc.stacks[dup_slot].ops[0].eg.level;
+        assert!(level_before > 0.0);
+
+        alloc.note_on(&params, &sp, &vp, dup_note, 100);
+
+        // Steal-and-continue on the duplicate. Slot count and notes unchanged
+        // except for the EG retrigger on `dup_slot`.
+        assert_eq!(alloc.stacks[dup_slot].note, dup_note);
+        assert!(!alloc.held_by_pedal[dup_slot], "claim cleared pedal flag");
+        assert_eq!(
+            alloc.stacks[dup_slot].ops[0].eg.stage,
+            EgStage::Attack,
+            "steal of pedal-held dup restarts the amp EG"
+        );
+        assert!(
+            (alloc.stacks[dup_slot].ops[0].eg.level - level_before).abs() < 1.0e-6,
+            "EG retrigger picks up at the current level — no click"
+        );
+        // No other slot was stolen: still N_STACKS gates high, each unique note.
+        let gates: Vec<u8> = alloc.stacks.iter().filter(|s| s.gate).map(|s| s.note).collect();
+        assert_eq!(gates.len(), N_STACKS, "no collateral steal");
     }
 
     /// Overlapping distinct notes (a chord) take *fresh* voices and must not
