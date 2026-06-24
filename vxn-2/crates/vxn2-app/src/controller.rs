@@ -61,6 +61,21 @@ pub fn push_ks_curve_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
     ctrl.push_view_event(event);
 }
 
+/// Build a `Vxn2ViewCustom::EgCurveSnapshot` from `model` (ticket 0128). Shared
+/// by the controller push and the CLAP pump so both produce the same shape.
+pub fn eg_curve_snapshot_event<M: Vxn2Params>(model: &M) -> ViewEvent {
+    ViewEvent::Custom(Box::new(Vxn2ViewCustom::EgCurveSnapshot {
+        curves: model.eg_curves(),
+    }))
+}
+
+/// Push a fresh `EgCurveSnapshot` into the controller's queue (UI
+/// `RequestEgCurveSnapshot` path).
+pub fn push_eg_curve_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
+    let event = eg_curve_snapshot_event(ctrl.model().as_ref());
+    ctrl.push_view_event(event);
+}
+
 /// Drain inbound queues against `controller` and apply the VXN2 custom-
 /// event handlers. Call once per host timer tick.
 pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
@@ -96,6 +111,15 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
             }
             Vxn2UiCustom::RequestKsCurveSnapshot => {
                 push_ks_curve_snapshot(ctrl);
+            }
+            Vxn2UiCustom::SetEgCurve { op, curve } => {
+                // Write the Model; the dirty-bitset pump catches the EG-curve
+                // dirty flag next tick and pushes an `EgCurveSnapshot`. The
+                // op-row toggle paints optimistically meanwhile.
+                ctrl.model().set_eg_curve(op, curve);
+            }
+            Vxn2UiCustom::RequestEgCurveSnapshot => {
+                push_eg_curve_snapshot(ctrl);
             }
             Vxn2UiCustom::RequestFullRebroadcast => {
                 // Flip every dirty bit on the Model; the CLAP shell's

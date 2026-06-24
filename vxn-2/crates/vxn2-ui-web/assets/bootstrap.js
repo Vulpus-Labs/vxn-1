@@ -63,6 +63,10 @@
     // 1 PosLin, 2 NegExp, 3 PosExp). Seeded to the legacy frozen default;
     // a KsCurveSnapshot from the engine overwrites it at boot / preset load.
     ksCurves: [[0, 2], [0, 2], [0, 2], [0, 2], [0, 2], [0, 2]],
+    // Per-op EG level-curve discriminants (EgCurve: 0 Exp, 1 Lin). Seeded to
+    // the shipped default (Exp = DX7 log curve); an EgCurveSnapshot from the
+    // engine overwrites it at boot / preset load (ticket 0128).
+    egCurves: [0, 0, 0, 0, 0, 0],
     dispatch: dispatch,
     panels: Object.create(null),
     primitives: [],

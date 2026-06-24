@@ -23,8 +23,9 @@ pub mod events;
 pub mod model;
 
 pub use controller::{
-    NoopPresetStore, ks_curve_snapshot_event, matrix_snapshot_event, matrix_snapshot_rows,
-    push_ks_curve_snapshot, push_matrix_snapshot, tick_vxn2,
+    NoopPresetStore, eg_curve_snapshot_event, ks_curve_snapshot_event, matrix_snapshot_event,
+    matrix_snapshot_rows, push_eg_curve_snapshot, push_ks_curve_snapshot, push_matrix_snapshot,
+    tick_vxn2,
 };
 pub use events::{MatrixRow, Vxn2UiCustom, Vxn2ViewCustom};
 pub use model::Vxn2Params;

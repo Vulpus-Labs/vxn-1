@@ -63,6 +63,15 @@ pub enum Vxn2UiCustom {
     /// graphs render their real per-side shapes from a known state.
     RequestKsCurveSnapshot,
 
+    /// Write op `op`'s EG level-curve selector (`curve` = `eg::EgCurve`
+    /// discriminant: 0 = Exp, 1 = Lin). Non-CLAP patch state (ticket 0128).
+    SetEgCurve { op: u8, curve: u8 },
+
+    /// Page-side seed: ask the controller to push the full EG-curve snapshot
+    /// (alongside `RequestKsCurveSnapshot`) so the op-row toggles render their
+    /// real per-op state from a known point.
+    RequestEgCurveSnapshot,
+
     /// Page-side seed: flip every dirty bit on the Model so the next
     /// main-thread tick re-broadcasts the full table (every
     /// `ParamChanged` + one `MatrixSnapshot`). The page fires this once
@@ -84,4 +93,9 @@ pub enum Vxn2ViewCustom {
     /// the model's curve state drifts (preset load), so each op-row graph
     /// paints its real shapes without polling.
     KsCurveSnapshot { curves: [[u8; 2]; 6] },
+    /// Full EG-curve snapshot: per op (0..6) curve discriminant (0 = Exp,
+    /// 1 = Lin). Emitted on `RequestEgCurveSnapshot` and whenever the model's
+    /// EG-curve state drifts (preset load), so each op-row toggle paints its
+    /// real state without polling (ticket 0128).
+    EgCurveSnapshot { curves: [u8; 6] },
 }

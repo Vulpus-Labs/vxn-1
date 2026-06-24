@@ -26,7 +26,9 @@ use std::io::{Read, Write as _IoWrite};
 use std::ops::Bound;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use vxn2_app::{ks_curve_snapshot_event, matrix_snapshot_event, tick_vxn2};
+use vxn2_app::{
+    eg_curve_snapshot_event, ks_curve_snapshot_event, matrix_snapshot_event, tick_vxn2,
+};
 use vxn2_engine::Vxn2PresetStore;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
@@ -266,6 +268,10 @@ fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     // event, view-side renderer collapses to one path.
     if vxn2_app::Vxn2Params::take_dirty_ks_curve(params) {
         out.push(ks_curve_snapshot_event(params));
+    }
+    // Whole EG-curve snapshot on its dirty flag (ticket 0128). Same rationale.
+    if vxn2_app::Vxn2Params::take_dirty_eg_curve(params) {
+        out.push(eg_curve_snapshot_event(params));
     }
     out
 }

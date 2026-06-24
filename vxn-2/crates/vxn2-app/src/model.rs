@@ -35,6 +35,18 @@ pub trait Vxn2Params: ParamModel {
     /// `KsCurveSnapshot` this tick.
     fn take_dirty_ks_curve(&self) -> bool;
 
+    /// Read every op's EG level-curve selector as `[u8; 6]` discriminants
+    /// (`eg::EgCurve`: 0 = Exp, 1 = Lin). Ticket 0128.
+    fn eg_curves(&self) -> [u8; 6];
+
+    /// Write op `op`'s EG curve selector. Out-of-range op silently no-ops.
+    fn set_eg_curve(&self, op: u8, curve: u8);
+
+    /// Drain the EG-curve dirty flag (set on any `set_eg_curve` / bulk
+    /// store). `true` means the controller should push a fresh
+    /// `EgCurveSnapshot` this tick.
+    fn take_dirty_eg_curve(&self) -> bool;
+
     /// Force every dirty bit on the Model. The next main-thread tick's
     /// drain will re-broadcast the full table (every `ParamChanged` +
     /// one `MatrixSnapshot`). Used by the page on boot to re-seed itself

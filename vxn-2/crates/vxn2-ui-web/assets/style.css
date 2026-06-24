@@ -655,6 +655,34 @@ html, body {
 }
 .op-ks-shape:hover { background: rgba(255, 255, 255, 0.12); }
 
+/* Per-op EG ramp-shape toggle (ticket 0128): Exp (DX7) vs Lin (legacy). */
+.op-eg-curve {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+}
+.op-eg-curve-legend {
+  font-size: 8px;
+  color: var(--ctl-label);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+.op-eg-curve-btn {
+  cursor: pointer;
+  font-size: 8px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--ctl-value);
+  background: var(--ctl-bg, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--ctl-border, rgba(255, 255, 255, 0.15));
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.op-eg-curve-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
 /* ===== global mod row ===== */
 
 .gmod-row { height: 144px; }

@@ -141,6 +141,7 @@
     // Live KS graph hook for the current op (set by makeKsGraph, cleared on
     // each op-detail re-render). Lets KsCurveSnapshot repaint without a param.
     let ksGraphApi = null;
+    let egCurveApi = null;
 
     const algoSvg = root.querySelector('[data-vxn-section="algo-svg"]');
     const algoNumEl = root.querySelector('[data-vxn-param="algo"]');
@@ -383,6 +384,45 @@
         opDetailPrims.push({ id: rateIds[i], prim: setRate });
         opDetailPrims.push({ id: levelIds[i], prim: setLevel });
       }
+    }
+
+    // Per-op EG ramp-shape toggle (ticket 0128): Exp (DX7 log/exponential) vs
+    // Lin (legacy). Non-CLAP patch state — dispatched as `set_eg_curve` and
+    // echoed back via an `EgCurveSnapshot` (see onEgCurveSnapshot). Mirrors the
+    // KS-curve shape toggles' non-automatable opcode path.
+    function makeEgCurveToggle(parent) {
+      egCurveApi = null;
+      const opIdx = currentOp - 1; // egCurves cache is 0-based
+      const wrap = document.createElement("div");
+      wrap.className = "op-eg-curve";
+      const legend = document.createElement("span");
+      legend.className = "op-eg-curve-legend";
+      legend.textContent = "RAMP";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "op-eg-curve-btn";
+      function cached() {
+        return (vxn.egCurves && (vxn.egCurves[opIdx] | 0)) || 0;
+      }
+      function paint() {
+        const c = cached();
+        btn.textContent = c === 1 ? "lin" : "exp";
+        btn.title =
+          c === 1
+            ? "Linear (legacy) envelope ramps"
+            : "Exponential (DX7) envelope ramps";
+      }
+      btn.addEventListener("click", function () {
+        const next = cached() === 1 ? 0 : 1;
+        if (vxn.egCurves) vxn.egCurves[opIdx] = next;
+        ctx.dispatch("set_eg_curve", { op: opIdx, curve: next });
+        paint();
+      });
+      wrap.appendChild(legend);
+      wrap.appendChild(btn);
+      parent.appendChild(wrap);
+      paint();
+      egCurveApi = { apply: paint };
     }
 
     function makeKsGraph(parent) {
@@ -719,6 +759,7 @@
       col2.style.cssText = "flex: 1.4 1 0; min-width: 180px;";
       col2.innerHTML = '<div class="op-col-title">Envelope</div>';
       makeEgGraph(col2);
+      makeEgCurveToggle(col2);
       opDetailEl.appendChild(col2);
 
       // Column 3: KS graph
@@ -813,10 +854,17 @@
       if (ksGraphApi) ksGraphApi.applyCurves();
     }
 
+    function onEgCurveSnapshot() {
+      // vxn.egCurves is updated by main.js before this call; repaint the live
+      // op's toggle (ticket 0128).
+      if (egCurveApi) egCurveApi.apply();
+    }
+
     vxn._opRow = {
       onAlgoChanged: onAlgoChanged,
       onOpTabChanged: onOpTabChanged,
       onKsCurveSnapshot: onKsCurveSnapshot,
+      onEgCurveSnapshot: onEgCurveSnapshot,
       currentAlgo: function () { return currentAlgo; },
       currentOp: function () { return currentOp; },
     };

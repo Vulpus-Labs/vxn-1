@@ -601,6 +601,15 @@
       if (vxn._opRow && vxn._opRow.onKsCurveSnapshot) vxn._opRow.onKsCurveSnapshot();
       return;
     }
+    if (ev.kind === "eg_curve_snapshot") {
+      // [u8; 6] per-op EG curve discriminants (0 Exp, 1 Lin). Cache + repaint
+      // the live op's toggle (ticket 0128).
+      if (Array.isArray(ev.curves)) {
+        vxn.egCurves = ev.curves.map(function (c) { return c | 0; });
+      }
+      if (vxn._opRow && vxn._opRow.onEgCurveSnapshot) vxn._opRow.onEgCurveSnapshot();
+      return;
+    }
   }
 
   // Clamp a parsed plain value to the descriptor's [min, max], with

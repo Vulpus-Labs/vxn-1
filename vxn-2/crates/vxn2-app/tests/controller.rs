@@ -174,6 +174,39 @@ fn request_matrix_snapshot_emits_full_16_row_table() {
 }
 
 #[test]
+fn set_eg_curve_then_snapshot_round_trips() {
+    let (mut ctrl, view_rx, _model) = build_controller();
+
+    // UI sets op4 (index 3) to Lin, then asks for the snapshot.
+    ctrl.handle()
+        .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetEgCurve {
+            op: 3,
+            curve: 1,
+        })))
+        .unwrap();
+    ctrl.handle()
+        .post(UiEvent::Custom(Box::new(
+            Vxn2UiCustom::RequestEgCurveSnapshot,
+        )))
+        .unwrap();
+    tick_vxn2(&mut ctrl);
+
+    let mut got = None;
+    for ev in drain(&view_rx) {
+        if let ViewEvent::Custom(payload) = ev {
+            if let Ok(custom) = payload.downcast::<Vxn2ViewCustom>() {
+                if let Vxn2ViewCustom::EgCurveSnapshot { curves } = *custom {
+                    got = Some(curves);
+                }
+            }
+        }
+    }
+    let curves = got.expect("EgCurveSnapshot not emitted");
+    assert_eq!(curves[3], 1, "op4 set to Lin");
+    assert_eq!(curves[0], 0, "untouched op stays Exp");
+}
+
+#[test]
 fn matrix_row_slot_9_uses_extra_depth_storage() {
     let (mut ctrl, _view_rx, model) = build_controller();
     let row = MatrixRow {

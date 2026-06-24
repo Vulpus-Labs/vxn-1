@@ -1208,6 +1208,18 @@ impl vxn2_app::Vxn2Params for SharedParams {
         SharedParams::take_dirty_ks_curve(self)
     }
 
+    fn eg_curves(&self) -> [u8; 6] {
+        std::array::from_fn(|op| SharedParams::eg_curve_raw(self, op))
+    }
+
+    fn set_eg_curve(&self, op: u8, curve: u8) {
+        SharedParams::set_eg_curve_raw(self, op as usize, curve);
+    }
+
+    fn take_dirty_eg_curve(&self) -> bool {
+        SharedParams::take_dirty_eg_curve(self)
+    }
+
     fn mark_all_dirty(&self) {
         SharedParams::mark_all_dirty(self);
     }
