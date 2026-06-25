@@ -1,11 +1,11 @@
-//! Polyphony allocator: 16 fixed `Stack` slots with oldest-note stealing,
+//! Polyphony allocator: 16 fixed `Stack` slots with quietest-voice stealing,
 //! Poly / Solo assignment modes, glide (portamento), and channel-wide pitch
 //! bend forwarding.
 //!
 //! A "voice" here is a *stack* of up to 8 lane-packed op-instances (ticket
 //! 0005). The allocator's poly cap is 16 stacks, giving up to 16 × 8 = 128
 //! op-voice instances in flight when `stack_density = 8`. Stealing operates
-//! on whole stacks — picking off the oldest reclaims all of its lanes
+//! on whole stacks — picking off the quietest reclaims all of its lanes
 //! together.
 //!
 //! Lifecycle per audio block:
@@ -417,12 +417,14 @@ impl PolyAlloc {
     ///    note, so always-glide slides over a short, musical interval. If no
     ///    idle slot has sounded yet, take the first unvoiced idle slot (it
     ///    snaps — nothing to glide from).
-    /// 2. Steal the oldest at/past Sustain (ties broken by lowest note),
-    ///    preferring voices whose physical key is already *up* — a
-    ///    pedal-sustained note (`held_by_pedal`) or a `Releasing` tail — over a
-    ///    key the player is still holding. So a steal under a held sustain pedal
-    ///    takes a pedal-sustained note first; only if every stealable voice has
-    ///    its key down does it fall back to the oldest of those.
+    /// 2. Steal the *quietest* at/past Sustain (lowest carrier amplitude, ties
+    ///    broken by oldest), preferring voices whose physical key is already
+    ///    *up* — a pedal-sustained note (`held_by_pedal`) or a `Releasing` tail
+    ///    — over a key the player is still holding. So a steal under a held
+    ///    sustain pedal takes a pedal-sustained note first; only if every
+    ///    stealable voice has its key down does it fall back to the quietest of
+    ///    those. Quietest-first keeps the re-attack (see [`Self::note_on_poly`])
+    ///    musical: re-attacking a near-silent voice has no audible surge.
     /// 3. Globally oldest.
     fn pick_slot(&self, note: u8) -> usize {
         let mut nearest_voiced: Option<(usize, f32)> = None;
@@ -451,13 +453,16 @@ impl PolyAlloc {
         if let Some(i) = first_unvoiced_idle {
             return i;
         }
-        // Oldest-then-lowest among all stealable voices, plus the same among
+        // Quietest-then-oldest among all stealable voices, plus the same among
         // only those whose key is already up (pedal-held or releasing). The
         // key-up set wins when non-empty so a held pedal sheds its sustained
-        // notes before a key the player is still pressing.
-        let mut best: Option<(usize, u64, u8)> = None;
-        let mut best_keyup: Option<(usize, u64, u8)> = None;
-        let older = |cand: (usize, u64, u8), b: Option<(usize, u64, u8)>| match b {
+        // notes before a key the player is still pressing. Within a set the
+        // *quietest* voice (lowest carrier amplitude) is taken, so the re-attack
+        // surge ("twang") is minimised — re-attacking a near-silent voice reads
+        // as a fresh attack; ties break to the oldest for determinism.
+        let mut best: Option<(usize, f32, u64)> = None;
+        let mut best_keyup: Option<(usize, f32, u64)> = None;
+        let quieter = |cand: (usize, f32, u64), b: Option<(usize, f32, u64)>| match b {
             Some(b) if b.1 < cand.1 || (b.1 == cand.1 && b.2 <= cand.2) => b,
             _ => cand,
         };
@@ -469,10 +474,10 @@ impl PolyAlloc {
                     .iter()
                     .any(|o| matches!(o.eg.stage, EgStage::Sustain | EgStage::Release));
             if stealable {
-                let cand = (i, self.seq[i], self.stacks[i].note);
-                best = Some(older(cand, best));
+                let cand = (i, self.stacks[i].carrier_level(), self.seq[i]);
+                best = Some(quieter(cand, best));
                 if self.held_by_pedal[i] || self.stacks[i].phase == VoicePhase::Releasing {
-                    best_keyup = Some(older(cand, best_keyup));
+                    best_keyup = Some(quieter(cand, best_keyup));
                 }
             }
         }
@@ -898,6 +903,10 @@ mod tests {
         assert!(alloc.stacks[0].is_idle());
     }
 
+    /// Uniform chord (all notes equal velocity/patch → equal carrier level): the
+    /// quietest-first steal rule ties across every voice, so the deterministic
+    /// oldest-seq tiebreak takes the oldest (note 60). See
+    /// `poly_steal_picks_quietest_voice` for the level-differentiated case.
     #[test]
     fn steal_oldest_when_polyphony_full() {
         let mut alloc = PolyAlloc::new(SR);
@@ -1118,12 +1127,18 @@ mod tests {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain (Held)
-        // One more note: no spare slot → steal the oldest (slot 0, note 60).
+        // One more note: no spare slot → steal a key-down Held voice (which one
+        // depends on the quietest-first rule + KS; the assertion is on *how* the
+        // steal happens, not which slot). Stealing a Held key is legato.
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
+        let slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 90)
+            .expect("stolen voice now sounds 90");
+        assert_eq!(alloc.stacks[slot].phase, VoicePhase::Held);
         assert_eq!(
-            alloc.stacks[0].ops[0].eg.stage,
+            alloc.stacks[slot].ops[0].eg.stage,
             EgStage::Sustain,
             "stealing a Held voice is legato — the amp EG must not retrigger"
         );
@@ -1150,19 +1165,26 @@ mod tests {
         }
         // Steal immediately (no intervening block_tick): the voices are still
         // Releasing at their sustain level, not yet decayed/idle.
-        let level_before = alloc.stacks[0].ops[0].eg.level;
-        assert!(level_before > 0.0, "fixture: releasing voice still audible");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Releasing);
+        assert!(
+            alloc.stacks.iter().all(|s| s.phase == VoicePhase::Releasing),
+            "fixture: every voice is releasing"
+        );
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
+        // The stolen voice (whichever the quietest-first rule picked) is a
+        // key-up Releasing voice → it re-attacks from its current level.
+        let slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 90)
+            .expect("stolen voice now sounds 90");
+        assert_eq!(alloc.stacks[slot].phase, VoicePhase::Held);
         assert_eq!(
-            alloc.stacks[0].ops[0].eg.stage,
+            alloc.stacks[slot].ops[0].eg.stage,
             EgStage::Attack,
             "stealing a Releasing voice restarts the amp EG"
         );
         assert!(
-            alloc.stacks[0].ops[0].eg.level > 0.0,
+            alloc.stacks[slot].ops[0].eg.level > 0.0,
             "EG restarts from the current level, not 0"
         );
     }
@@ -1225,6 +1247,72 @@ mod tests {
         alloc.set_sustain(false);
         assert!(alloc.stacks[pedal_slot].gate, "reused voice not re-released by pedal-up");
         assert_eq!(alloc.stacks[pedal_slot].note, 90);
+    }
+
+    /// Poly steal with no spare slot picks the *quietest* voice (lowest carrier
+    /// amplitude), not the oldest — so the re-attack surge is minimal. One note
+    /// is struck at near-zero velocity (a high `vel_sens` makes it the quietest
+    /// carrier) and all keys are released (key-up → the steal re-attacks). The
+    /// soft note must be stolen even though it is neither oldest nor newest,
+    /// while the louder oldest note survives.
+    #[test]
+    fn poly_steal_picks_quietest_voice() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams {
+            assign_mode: AssignMode::Poly,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let mut vp = fast_patch();
+        // Velocity is the only loudness lever here: max `vel_sens`, KS off (so
+        // pitch does not also scale the carrier level and confound the pick).
+        for op in &mut vp.ops {
+            op.vel_sens = 7;
+            op.ks_l_depth = 0;
+            op.ks_r_depth = 0;
+        }
+        // Fill all 16 slots. Note 68 struck softly → quietest carrier; the rest
+        // hard. 60 is the oldest (lowest seq).
+        let quiet_note = 68u8;
+        for n in 60u8..(60 + N_STACKS as u8) {
+            let vel = if n == quiet_note { 1 } else { 127 };
+            alloc.note_on(&params, &sp, &vp, n, vel);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain
+        // Release every key so all voices are key-up (Releasing) → a steal
+        // re-attacks. Steal immediately, before they decay off their sustain.
+        for n in 60u8..(60 + N_STACKS as u8) {
+            alloc.note_off(&params, &sp, &vp, n);
+        }
+        let quiet_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == quiet_note)
+            .expect("soft note sounding");
+        let oldest_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == 60)
+            .expect("oldest note sounding");
+        assert!(
+            alloc.stacks[quiet_slot].carrier_level() < alloc.stacks[oldest_slot].carrier_level(),
+            "fixture: soft note must be the quieter carrier"
+        );
+        // No spare → steal the quietest (68), not the oldest (60). (Released
+        // voices have gate low, so assert on the captured slots directly.)
+        assert_ne!(quiet_slot, oldest_slot);
+        alloc.note_on(&params, &sp, &vp, 90, 100);
+        assert_eq!(
+            alloc.stacks[quiet_slot].note, 90,
+            "quietest voice was stolen and now sounds the new note"
+        );
+        assert_eq!(
+            alloc.stacks[oldest_slot].note, 60,
+            "louder oldest voice survives the steal"
+        );
+        // The stolen (key-up) slot re-attacks from the quiet voice's low level.
+        assert_eq!(alloc.stacks[quiet_slot].ops[0].eg.stage, EgStage::Attack);
     }
 
     /// Re-pressing a note already held by the sustain pedal retires the old
