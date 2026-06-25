@@ -821,11 +821,18 @@ html, body {
   min-width: 0;
   min-height: 0;
 }
+.fx-panel[data-active-tab="dyn"] .fx-pane-dyn,
 .fx-panel[data-active-tab="phaser"] .fx-pane-phaser,
 .fx-panel[data-active-tab="delay"] .fx-pane-delay,
 .fx-panel[data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
 .fx-pane > [data-vxn-param$="-mix"] { grid-column: 4; }
 .fx-pane-delay > .fader-with-toggle { grid-column: 1; }
+/* Dynamics has 7 continuous params + the mix fader (8 controls), so its pane
+   runs 2 rows × 4 cols. Mix rides column 4 spanning both rows (matches the
+   other panes' rightmost-mix convention); the six comp/sat params auto-flow
+   the remaining 3 × 2 slots in their authored order. */
+.fx-pane-dyn { grid-template-rows: repeat(2, 1fr); row-gap: 6px; }
+.fx-pane-dyn > [data-vxn-param="dyn-mix"] { grid-row: 1 / span 2; }
 
 /* ===== algo overlay ===== */
 

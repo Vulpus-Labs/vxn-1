@@ -6,16 +6,22 @@ import "../panels/fx-tabs.js";
 
 const { wireFxTabs } = window.__vxn;
 
-// VXN-2 FX panel: three tabs (signal order Phaser / Delay / Reverb), each with
-// an inline on/off switch (`.fx-tab-switch`, a `.bgrp-toggle` bound to
-// `phaser-on` / `delay-on` / `reverb-on` in production) and a label. Panes are
-// CSS-gated off the panel's `data-active-tab`.
+// VXN-2 FX panel: four tabs (signal order Dyn / Phaser / Delay / Reverb), each
+// with an inline on/off switch (`.fx-tab-switch`, a `.bgrp-toggle` bound to
+// `dyn-on` / `phaser-on` / `delay-on` / `reverb-on` in production) and a
+// label. Panes are CSS-gated off the panel's `data-active-tab`. Dyn was added
+// in E028 / 0148; the default `data-active-tab` stays `phaser` so opening a
+// saved patch doesn't surface the new tab.
 function buildFxPanel() {
   document.body.innerHTML = `
     <div class="panel fx-panel" data-vxn-section="fx" data-active-tab="phaser">
       <div class="panel-header">FX</div>
       <div class="panel-body fx-body">
         <div class="fx-tabs">
+          <button type="button" class="fx-tab fx-tab-dyn" data-tab="dyn">
+            <span class="fx-tab-switch bgrp-toggle" data-vxn-param="dyn-on"></span>
+            <span class="fx-tab-label">DYN</span>
+          </button>
           <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
             <span class="fx-tab-switch bgrp-toggle" data-vxn-param="phaser-on"></span>
             <span class="fx-tab-label">PHASER</span>
@@ -30,6 +36,7 @@ function buildFxPanel() {
           </button>
         </div>
         <div class="fx-panes">
+          <div class="fx-pane fx-pane-dyn"></div>
           <div class="fx-pane fx-pane-phaser"></div>
           <div class="fx-pane fx-pane-delay"></div>
           <div class="fx-pane fx-pane-reverb"></div>
@@ -39,10 +46,17 @@ function buildFxPanel() {
   `;
 }
 
-describe("wireFxTabs (E025 / 0090)", () => {
+describe("wireFxTabs (E025 / 0090, E028 / 0148)", () => {
   beforeEach(() => {
     buildFxPanel();
     wireFxTabs(document);
+  });
+
+  it("renders four tabs in signal order", () => {
+    const tabs = [...document.querySelectorAll(".fx-tab")].map(
+      (t) => t.dataset.tab,
+    );
+    expect(tabs).toEqual(["dyn", "phaser", "delay", "reverb"]);
   });
 
   it("seeds the authored data-active-tab and marks that button .active", () => {
@@ -50,6 +64,24 @@ describe("wireFxTabs (E025 / 0090)", () => {
     expect(panel.dataset.activeTab).toBe("phaser");
     const phaser = panel.querySelector('.fx-tab[data-tab="phaser"]');
     expect(phaser.classList.contains("active")).toBe(true);
+  });
+
+  it("can swap into the dyn pane and back", () => {
+    const panel = document.querySelector(".fx-panel");
+    const dynBtn = panel.querySelector('.fx-tab[data-tab="dyn"]');
+    dynBtn.click();
+    expect(panel.dataset.activeTab).toBe("dyn");
+    expect(dynBtn.classList.contains("active")).toBe(true);
+    panel.querySelector('.fx-tab[data-tab="phaser"]').click();
+    expect(panel.dataset.activeTab).toBe("phaser");
+    expect(dynBtn.classList.contains("active")).toBe(false);
+  });
+
+  it("dyn tab switch is wired to dyn-on", () => {
+    const sw = document.querySelector(
+      '.fx-tab[data-tab="dyn"] .fx-tab-switch',
+    );
+    expect(sw.dataset.vxnParam).toBe("dyn-on");
   });
 
   it("swaps data-active-tab and the .active class on click", () => {
@@ -65,7 +97,7 @@ describe("wireFxTabs (E025 / 0090)", () => {
 
   it("only one tab carries .active at any time", () => {
     const panel = document.querySelector(".fx-panel");
-    for (const t of ["reverb", "phaser", "delay"]) {
+    for (const t of ["reverb", "phaser", "delay", "dyn"]) {
       panel.querySelector(`.fx-tab[data-tab="${t}"]`).click();
       const active = panel.querySelectorAll(".fx-tab.active");
       expect(active.length).toBe(1);
