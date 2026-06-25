@@ -379,6 +379,21 @@
     }
   }
 
+  // Generic rotary dial for continuous params where a full-height fader
+  // doesn't fit (E028 Dynamics pane). Same data-vxn-param binding contract
+  // as a fader; the panel handles taper / display.
+  function bindDials(root) {
+    const dials = root.querySelectorAll(".dial[data-vxn-param]");
+    for (let i = 0; i < dials.length; i++) {
+      const el = dials[i];
+      const name = el.getAttribute("data-vxn-param");
+      const ctx = makeCtx(name);
+      if (!ctx.desc) continue;
+      const prim = panels.dial.create(el, ctx);
+      register(ctx.id, prim, el);
+    }
+  }
+
   function bindButtonGroups(root) {
     const rows = root.querySelectorAll(".bgrp-row[data-vxn-param]");
     for (let i = 0; i < rows.length; i++) {
@@ -415,13 +430,17 @@
     }
   }
 
-  // Re-apply the cached value to every fader in a freshly-revealed FX pane
-  // (E025 / 0090). VXN-2 faders position from a percentage, so they paint
-  // correctly even while hidden — this keeps the reveal contract explicit.
+  // Re-apply the cached value to every fader / dial in a freshly-revealed FX
+  // pane (E025 / 0090, E028 / 0148). VXN-2 controls paint off a percentage /
+  // norm so they're correct even while hidden — this keeps the reveal
+  // contract explicit. Dials are bound the same way as faders, so a single
+  // selector covers both.
   function repaintFxPane(pane) {
-    const faders = pane.querySelectorAll(".fader[data-vxn-param]");
-    for (let i = 0; i < faders.length; i++) {
-      const id = resolveParamId(faders[i].getAttribute("data-vxn-param"));
+    const controls = pane.querySelectorAll(
+      ".fader[data-vxn-param], .dial[data-vxn-param]",
+    );
+    for (let i = 0; i < controls.length; i++) {
+      const id = resolveParamId(controls[i].getAttribute("data-vxn-param"));
       if (id < 0 || !(id in livePlain)) continue;
       const list = boundById[id];
       if (!list) continue;
@@ -679,6 +698,7 @@
   function boot() {
     const root = document;
     bindFaders(root);
+    bindDials(root);
     bindWaveKnobs(root);
     bindButtonGroups(root);
     bindBoolToggles(root);
