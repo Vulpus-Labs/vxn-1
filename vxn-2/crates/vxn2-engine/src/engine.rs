@@ -35,6 +35,7 @@
 use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
+use vxn2_dsp::dynamics::DynamicsBlock;
 use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::phaser::StereoPhaser;
@@ -171,8 +172,12 @@ pub struct Engine {
     pub matrix: MatrixTable,
     pub patch_mod: PatchMod,
     pub cleanup: CleanupFilter,
-    /// Stereo phaser, inserted pre-delay in the FX bus (E025). Bypassed
-    /// bit-exactly when `phaser-on = 0`.
+    /// Dynamics block (comp + sat), inserted **first** in the FX bus (E028) so
+    /// it evens FM transients before phaser / delay / reverb accumulate them.
+    /// Bypassed bit-exactly when `dyn-on = 0`.
+    pub dynamics: DynamicsBlock,
+    /// Stereo phaser, inserted between dynamics and delay in the FX bus (E025).
+    /// Bypassed bit-exactly when `phaser-on = 0`.
     pub phaser: StereoPhaser,
     pub delay: StereoDelay,
     pub reverb: FdnReverb,
@@ -346,6 +351,7 @@ impl Engine {
             matrix: default_patch::default_matrix(),
             patch_mod: PatchMod::new(0xDEAD_BEEF_DEAD_BEEF),
             cleanup: CleanupFilter::new(sample_rate),
+            dynamics: DynamicsBlock::new(sample_rate),
             phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
@@ -451,6 +457,7 @@ impl Engine {
     pub fn reset(&mut self) {
         self.alloc.clear();
         self.cleanup.reset();
+        self.dynamics.clear();
         self.phaser.clear();
         self.delay.reset();
         self.reverb.reset();
@@ -527,6 +534,7 @@ impl Engine {
         self.delay.set_params(&self.params.delay, self.tempo_bpm);
         self.reverb.set_params(&self.params.reverb);
         self.phaser.set_from(&self.params.phaser);
+        self.dynamics.set_from(&self.params.dynamics);
         self.master.refresh(&self.params.master);
         // Rebuild the matrix table from the snapshot rows so UI / preset
         // topology edits (source / dest / curve / active) actually reach the
@@ -1439,13 +1447,14 @@ impl Engine {
         self.apply_fx_block(n, out_l, out_r);
     }
 
-    /// Shared post-dry FX chain (cleanup → phaser → delay → reverb → master),
-    /// run per sample over `dry_l/r` into `out_l/r`. Identical on every render
-    /// body, so the dry bus is the only thing the three paths produce
-    /// differently.
+    /// Shared post-dry FX chain (cleanup → dynamics → phaser → delay → reverb →
+    /// master), run per sample over `dry_l/r` into `out_l/r`. Identical on
+    /// every render body, so the dry bus is the only thing the three paths
+    /// produce differently.
     fn apply_fx_block(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
+            let (cl, cr) = self.dynamics.process(cl, cr);
             let (cl, cr) = self.phaser.process(cl, cr);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
