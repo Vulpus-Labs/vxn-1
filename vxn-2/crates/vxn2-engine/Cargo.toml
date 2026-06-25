@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 vxn2-dsp = { workspace = true }
 vxn-core-app = { workspace = true }
+vxn-core-utils = { workspace = true }
 vxn2-app = { workspace = true }
 # Preset format (E007 lineage): name-keyed TOML, sparse-vs-descriptor-default.
 # Main-thread only — the audio path never touches serde/toml. `include_dir`

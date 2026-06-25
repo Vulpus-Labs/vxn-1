@@ -7,9 +7,19 @@ pub const MIDI_0_HZ: f32 = 8.175_799;
 ///
 /// `f32` rather than `u8` so callers can pass `note + bend_semitones` directly
 /// (pitch-bend, glide, mod-wheel pitch depth) without rounding.
+///
+/// Anchored on A4 = 440 Hz (`440 · 2^((note−69)/12)`) rather than the
+/// `MIDI_0_HZ · 2^(note/12)` form: the A4 anchor is exact and this is the
+/// formula vxn-2's operator core was already shipping, so consuming this fn
+/// leaves vxn-2's render hash bit-for-bit unchanged (E027/0117). Note that
+/// vxn-1's audio path uses its own `fast_exp2`-based `note_to_hz`
+/// (`vxn-dsp`), a deliberately separate fast variant — this one is the
+/// `std`-accurate shared definition.
 #[inline]
 pub fn note_to_hz(note: f32) -> f32 {
-    MIDI_0_HZ * (note / 12.0).exp2()
+    // `powf` (not `exp2`) deliberately: it's the exact op vxn-2 shipped, so
+    // integer-note results stay bit-identical (`exp2` can differ by an ULP).
+    440.0 * 2_f32.powf((note - 69.0) / 12.0)
 }
 
 #[cfg(test)]

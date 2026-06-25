@@ -36,10 +36,10 @@
 //!
 //! ## BPM sync subdivisions
 //!
-//! Coarse→fine straight / dotted / triplet table identical to VXN1's
-//! `vxn_app::sync::SUBDIVISIONS`. Reused here verbatim because the two
-//! synths are sibling Cargo workspaces (per ADR §Consequences); duplication
-//! is preferred over carving a shared crate before divergence stabilises.
+//! Coarse→fine straight / dotted / triplet table. The divergence the original
+//! "duplication preferred" note feared never arrived, so E027/0117 folded both
+//! synths' copies into the single `vxn-core-utils::sync` table; this module
+//! re-exports it (and `synced_hz`) to keep the `vxn2_dsp::lfo::…` paths.
 
 use crate::sine::scalar::fast_sine_q32;
 use crate::stack::STACK_LANES;
@@ -151,59 +151,15 @@ fn xorshift_bipolar(state: &mut u64) -> f32 {
     u * 2.0 - 1.0
 }
 
-// --- BPM sync table ---------------------------------------------------------
-
-/// One tempo-sync subdivision: label + length in beats per LFO cycle (quarter
-/// note = 1 beat). Straight = base, dotted = ×1.5, triplet = ×2/3.
-#[derive(Clone, Copy, Debug)]
-pub struct Subdivision {
-    pub label: &'static str,
-    pub beats: f32,
-}
-
-const fn s(label: &'static str, beats: f32) -> Subdivision {
-    Subdivision { label, beats }
-}
-
-const T: f32 = 2.0 / 3.0;
-
-/// Coarse→fine table, straight / dotted / triplet, 1/1 … 1/32. Identical to
-/// VXN1's `vxn_app::sync::SUBDIVISIONS` (intentional duplication — see module
-/// docs).
-pub static SUBDIVISIONS: [Subdivision; 18] = [
-    s("1/1", 4.0),
-    s("1/1.", 4.0 * 1.5),
-    s("1/1T", 4.0 * T),
-    s("1/2", 2.0),
-    s("1/2.", 2.0 * 1.5),
-    s("1/2T", 2.0 * T),
-    s("1/4", 1.0),
-    s("1/4.", 1.0 * 1.5),
-    s("1/4T", 1.0 * T),
-    s("1/8", 0.5),
-    s("1/8.", 0.5 * 1.5),
-    s("1/8T", 0.5 * T),
-    s("1/16", 0.25),
-    s("1/16.", 0.25 * 1.5),
-    s("1/16T", 0.25 * T),
-    s("1/32", 0.125),
-    s("1/32.", 0.125 * 1.5),
-    s("1/32T", 0.125 * T),
-];
-
-/// Map a normalised `[0, 1]` rate-fader position to a subdivision index.
-#[inline]
-pub fn index_from_norm(norm: f32) -> usize {
-    let last = SUBDIVISIONS.len() - 1;
-    (norm.clamp(0.0, 1.0) * last as f32).round() as usize
-}
-
-/// Hz at `tempo_bpm` for the subdivision at `index`.
-#[inline]
-pub fn synced_hz(tempo_bpm: f32, index: usize) -> f32 {
-    let beats = SUBDIVISIONS[index.min(SUBDIVISIONS.len() - 1)].beats;
-    (tempo_bpm / 60.0) / beats
-}
+// --- BPM sync table (shared) ------------------------------------------------
+//
+// The subdivision table, its index lookup, and the rate resolver now live in
+// `vxn-core-utils::sync` (E027/0117). Re-exported under the `vxn2_dsp::lfo::…`
+// paths the LFO core, the delay, and the engine's sync display all use —
+// `synced_hz` is core's `subdivision_hz` (same `(bpm/60)/beats`).
+pub use vxn_core_utils::sync::{
+    SUBDIVISIONS, Subdivision, index_from_norm, subdivision_hz as synced_hz,
+};
 
 // --- LFO1 (global) ----------------------------------------------------------
 

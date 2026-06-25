@@ -6,6 +6,11 @@ use std::f32::consts::TAU;
 /// Xorshift64 PRNG mapped to `[-1, 1]`. `state` must be non-zero (zero is a
 /// stuck fixed point); seed with `instance_id + 1`. Shared by the S&H LFO, the
 /// chorus noise floor, and the BBD companding dither.
+///
+/// Intentionally a *different* generator from vxn-2's xorshift64\*
+/// (`vxn2-dsp/src/rng.rs`): plain xorshift (13,7,17) scaled by `i64::MAX`
+/// here vs. the multiplied star variant with a `>> 40` mapping there. Their
+/// output streams differ — do **not** merge them (E027/0117).
 #[inline]
 pub fn xorshift64(state: &mut u64) -> f32 {
     *state ^= *state << 13;

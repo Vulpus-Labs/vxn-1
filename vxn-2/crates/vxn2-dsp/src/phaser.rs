@@ -21,12 +21,13 @@
 //!
 //! VXN-1 dep substitutions for VXN-2: `crate::math::fast_tanh` (shared),
 //! `crate::rng::xorshift_step` mapped to `[-1, 1]` (same canonical Vigna
-//! triple as VXN-1's `xorshift64`, so the stage scatter is identical), and a
-//! local [`flush_denormal`] (VXN-2 has no `vxn-core-utils` dep).
+//! triple as VXN-1's `xorshift64`, so the stage scatter is identical), and the
+//! shared [`vxn_core_utils::ftz::flush_denormal`] guard on the feedback state.
 
 use crate::math::fast_tanh;
 use crate::rng::xorshift_step;
 use crate::smoother::Smoothed;
+use vxn_core_utils::ftz::flush_denormal;
 
 /// Dry/wet glide time. Long enough to mask a knob jump or a switch-on fade-in
 /// (no click), short enough to feel instant.
@@ -55,19 +56,6 @@ const CENTER_HZ: f32 = 600.0;
 /// ~3 dB broadband loss at mix=0.5 where dry+wet notches cancel, while
 /// keeping mix=0 (dry-pass) and mix=1 (full-wet) unscaled.
 const WET_MAKEUP_K: f32 = 1.5;
-
-/// Flush a denormal toward zero. VXN-1 pulls this from `vxn-core-utils::ftz`;
-/// VXN-2 has no such dep, so the feedback-state path gets this local guard.
-/// Audio threads still set hardware FTZ at the host boundary — this is belt
-/// and braces for the recursive `fb_state`.
-#[inline]
-fn flush_denormal(x: f32) -> f32 {
-    if x.abs() < 1.0e-30 {
-        0.0
-    } else {
-        x
-    }
-}
 
 /// `[-1, 1]` float from the shared xorshift64* step. Matches VXN-1's
 /// `xorshift64` mapping exactly (same Vigna triple), so the per-stage scatter

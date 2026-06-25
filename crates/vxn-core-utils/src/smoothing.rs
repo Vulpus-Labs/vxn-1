@@ -24,7 +24,11 @@ pub fn one_pole_coeff(ms: f32, sample_rate: f32) -> f32 {
 const SNAP_EPS: f32 = 1.0e-6;
 
 /// A smoothed scalar parameter.
-#[derive(Clone)]
+///
+/// `Copy + Debug` so vxn-2's mod-matrix can hold smoothers in `Copy` state
+/// structs and `#[derive(Debug)]` containers (E027/0117 — both synths now
+/// share this one definition).
+#[derive(Clone, Copy, Debug)]
 pub struct Smoothed {
     current: f32,
     target: f32,

@@ -111,7 +111,7 @@ const FILTER_OUT_MAKEUP: f32 = 1.0 / FILTER_IN_TRIM;
 /// Key-tracking cutoff offset in octaves: `(note − 12)/12 × amount`, centred on
 /// C0 (`amount` ∈ [0,1]). With the base cutoff at the [`CUTOFF_MIN_HZ`] C0
 /// floor, `amount = 1` makes the resulting `CUTOFF_MIN_HZ · 2^offset` equal the
-/// played note's pitch (`midi_to_hz`), i.e. the cutoff tracks the keyboard 1:1.
+/// played note's pitch (`note_to_hz`), i.e. the cutoff tracks the keyboard 1:1.
 #[inline]
 fn keytrack_octaves(note: u8, amount: f32) -> f32 {
     (note as f32 - KEYTRACK_CENTRE_NOTE) / 12.0 * amount
@@ -1805,13 +1805,13 @@ mod tests {
 
     /// Full key-tracking + a C0-floored base cutoff lands the cutoff exactly on
     /// the played note's pitch (VXN-1 parity): `CUTOFF_MIN_HZ · 2^offset ==
-    /// midi_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
+    /// note_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
     /// amount.
     #[test]
     fn keytrack_full_lands_cutoff_on_note_pitch() {
         for note in [24u8, 36, 48, 60, 72, 96] {
             let cutoff = CUTOFF_MIN_HZ * keytrack_octaves(note, 1.0).exp2();
-            let pitch = vxn2_dsp::op::midi_to_hz(note);
+            let pitch = vxn_core_utils::note_to_hz(note as f32);
             assert!(
                 (cutoff - pitch).abs() / pitch < 1e-3,
                 "note {note}: key-tracked cutoff {cutoff} ≠ pitch {pitch}",

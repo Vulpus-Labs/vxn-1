@@ -10,7 +10,6 @@ pub mod alloc;
 pub mod default_patch;
 pub mod engine;
 pub mod factory;
-pub mod ftz;
 pub mod master;
 pub mod matrix;
 pub mod modulation;
@@ -20,7 +19,9 @@ pub mod preset_io;
 pub mod shared;
 pub mod sync;
 
-pub use ftz::ScopedFlushToZero;
+// FTZ guard shared with vxn-1 (E027/0117). Re-exported so vxn2-clap and the
+// engine's `process` boundary keep importing `ScopedFlushToZero` from here.
+pub use vxn_core_utils::ScopedFlushToZero;
 pub use preset_io::Vxn2PresetStore;
 pub use sync::{rate_partner_clap_id, sync_aware_display, sync_pairs, sync_partner_clap_id};
 pub use params::{ParamDesc, ParamKind, TOTAL_PARAMS, desc_for_clap_id, module_for_clap_id};

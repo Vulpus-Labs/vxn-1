@@ -139,25 +139,36 @@ fn custom_set_matrix_row_routes_through_controller() {
 /// Full preset-load path: JS dispatches `{op:"load_factory", index}`; the
 /// shared backend parses it, the controller loads the factory blob through
 /// `Vxn2PresetStore` and restores it into the model. After one tick the
-/// store reflects the factory preset's params. Factory index 0 is
-/// `Brass/Analog Brass` (categories sort alpha) which uses algo 1, distinct
-/// from the default patch's algo 5 — a clean witness that the preset landed.
+/// store reflects the factory preset's params. We target `Brass/Analog Brass`
+/// — algo 1, distinct from the default patch's algo 5 — a clean witness that
+/// the preset landed. Located by name rather than a fixed index so adding
+/// presets in alpha-earlier categories (e.g. Bass) doesn't break the test.
 #[test]
 fn load_factory_round_trips_into_shared_params() {
     let shared = Arc::new(SharedParams::new());
     let (mut controller, _view_rx, corpus) =
         Controller::new(shared.clone(), Box::new(Vxn2PresetStore::new()));
-    // The published corpus carries the embedded factory bank.
-    {
+    // The published corpus carries the embedded factory bank. Find Analog
+    // Brass by name; `load_factory` indexes this same sorted listing.
+    let brass_index = {
         let c = corpus.lock().unwrap();
         assert!(c.factory.len() >= 5, "factory corpus too small: {}", c.factory.len());
-        assert_eq!(c.factory[0].category.as_deref(), Some("Brass"));
-    }
+        let idx = c
+            .factory
+            .iter()
+            .position(|m| m.name == "Analog Brass")
+            .expect("factory bank should contain Analog Brass");
+        assert_eq!(c.factory[idx].category.as_deref(), Some("Brass"));
+        idx
+    };
 
     let algo = id_of("algo").unwrap();
     assert_eq!(shared.get(algo), 5.0, "default patch should be algo 5");
 
-    simulate_ipc(&mut controller, r#"{"op":"load_factory","index":0}"#);
+    simulate_ipc(
+        &mut controller,
+        &format!(r#"{{"op":"load_factory","index":{brass_index}}}"#),
+    );
     tick_vxn2(&mut controller);
 
     assert_eq!(
