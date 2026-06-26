@@ -138,3 +138,61 @@ fn master_volume_sweep_leaves_no_block_edge_zipper() {
         "master-volume block-edge d² ratio {ratio:.2} (want < {MAX_EDGE_RATIO})"
     );
 }
+
+/// The dynamics comp/sat params (threshold, ratio, makeup, drive) each scale
+/// the signal per sample. Without per-sample smoothing, a swept slider writes
+/// a fresh value once per control block → a gain step at every block edge →
+/// audible crackle. Sweep makeup (the most direct multiply) every block and
+/// assert the block-edge d² stays ≈ interior. Same detector as the LFO routes
+/// and master volume.
+#[test]
+fn dynamics_makeup_sweep_leaves_no_block_edge_zipper() {
+    let mut e = Engine::new(SR, BLK);
+    // Dry tails off — only the dynamics block under test should color the
+    // signal.
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    e.params.dynamics.on = true;
+    e.params.dynamics.threshold_db = -24.0;
+    e.params.dynamics.ratio = 4.0;
+    e.params.dynamics.drive_db = 12.0;
+    e.params.dynamics.mix = 1.0;
+    e.apply_block_params();
+    e.note_on(60, 100);
+
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    // Warm past the attack so EG motion doesn't pollute the window.
+    for _ in 0..(SR as usize / 2 / BLK) {
+        e.apply_block_params();
+        e.process_block(&mut l, &mut r);
+    }
+
+    let nblocks = SR as usize / BLK;
+    let mut buf = Vec::with_capacity(nblocks * BLK);
+    for b in 0..nblocks {
+        // Sweep makeup across its full 0..24 dB range every control block —
+        // the gesture a fast slider drag produces.
+        e.params.dynamics.makeup_db = 12.0 + 12.0 * (b as f32 * 0.05).sin();
+        e.apply_block_params();
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+
+    let mut sum = [0.0_f64; BLK];
+    let mut cnt = [0u64; BLK];
+    for i in 1..buf.len() - 1 {
+        sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
+        cnt[i % BLK] += 1;
+    }
+    let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
+    let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
+    let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
+    let ratio = edge / interior;
+    assert!(
+        ratio < MAX_EDGE_RATIO,
+        "dynamics-makeup block-edge d² ratio {ratio:.2} (want < {MAX_EDGE_RATIO})"
+    );
+}

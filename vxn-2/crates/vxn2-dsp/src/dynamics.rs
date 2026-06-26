@@ -26,6 +26,13 @@ use crate::smoother::{one_pole_coeff, Smoothed};
 /// short enough to feel instant. Matches phaser / delay / reverb.
 const MIX_SMOOTH_MS: f32 = 30.0;
 
+/// Glide for the continuous comp/sat params (threshold, slope, makeup, drive).
+/// These all scale the signal per sample, so a block-rate jump zippers when a
+/// slider is swept fast. Shorter than the mix glide — the mix carries the
+/// on/off transition and wants to be unhurried, whereas these only need to
+/// outrun the control block to kill the step.
+const PARAM_SMOOTH_MS: f32 = 15.0;
+
 /// Soft-knee width in dB. Internal default (not exposed) — same discipline as
 /// the phaser pinning stages / centre / spread.
 const KNEE_DB: f32 = 6.0;
@@ -87,13 +94,19 @@ pub struct DynamicsBlock {
     env: f32,
     attack_coeff: f32,
     release_coeff: f32,
-    threshold_db: f32,
-    ratio: f32,
-    makeup_lin: f32,
-    // Saturator: precomputed at param update so the hot path costs one
-    // `fast_tanh` + one multiply per channel.
-    drive_lin: f32,
-    tanh_drive: f32,
+    /// Compressor threshold, dBFS. Smoothed — feeds the static curve per
+    /// sample, so a swept slider would zipper without the glide.
+    threshold_db: Smoothed,
+    /// Compression slope `1 − 1/ratio` (0 = no compression). Smoothed in
+    /// slope space rather than ratio space so the audible quantity glides
+    /// linearly.
+    slope: Smoothed,
+    /// Linear makeup gain. Smoothed — a direct per-sample multiply.
+    makeup_lin: Smoothed,
+    // Saturator: drive is smoothed in linear space (`10^(db/20) − 1`); the
+    // normalisation `tanh(drive)` is recomputed per sample from the smoothed
+    // value, so a swept drive slider glides instead of stepping.
+    drive_lin: Smoothed,
     // Wet/dry — same retarget-on-enable / snap-on-first-set as phaser.
     mix: Smoothed,
     mix_primed: bool,
@@ -114,11 +127,10 @@ impl DynamicsBlock {
             env: 0.0,
             attack_coeff: one_pole_coeff(p.attack_ms, sample_rate),
             release_coeff: one_pole_coeff(p.release_ms, sample_rate),
-            threshold_db: p.threshold_db,
-            ratio: p.ratio,
-            makeup_lin: 1.0,
-            drive_lin: 0.0,
-            tanh_drive: 0.0,
+            threshold_db: Smoothed::new(p.threshold_db, PARAM_SMOOTH_MS, sample_rate),
+            slope: Smoothed::new(1.0 - 1.0 / p.ratio, PARAM_SMOOTH_MS, sample_rate),
+            makeup_lin: Smoothed::new(1.0, PARAM_SMOOTH_MS, sample_rate),
+            drive_lin: Smoothed::new(0.0, PARAM_SMOOTH_MS, sample_rate),
             mix: Smoothed::new(0.0, MIX_SMOOTH_MS, sample_rate),
             mix_primed: false,
             enabled: true,
@@ -152,26 +164,36 @@ impl DynamicsBlock {
     /// in on a fade.
     pub fn set_from(&mut self, p: &DynamicsParams) {
         self.set_enabled(p.on);
-        self.threshold_db = p.threshold_db.clamp(-60.0, 0.0);
-        self.ratio = p.ratio.clamp(1.0, 20.0);
+        let threshold = p.threshold_db.clamp(-60.0, 0.0);
+        let ratio = p.ratio.clamp(1.0, 20.0);
+        let slope = 1.0 - 1.0 / ratio;
         let attack_ms = p.attack_ms.clamp(0.1, 200.0);
         let release_ms = p.release_ms.clamp(5.0, 1000.0);
         self.attack_coeff = one_pole_coeff(attack_ms, self.sample_rate);
         self.release_coeff = one_pole_coeff(release_ms, self.sample_rate);
-        self.makeup_lin = (p.makeup_db.clamp(0.0, 24.0) * DB_TO_LOG2).exp2();
+        let makeup = (p.makeup_db.clamp(0.0, 24.0) * DB_TO_LOG2).exp2();
         // drive_db → drive_lin via `10^(db/20) − 1`: at 0 dB drive_lin is 0,
         // so the saturator collapses to identity (lim_{k→0} tanh(k·x)/tanh(k)
         // = x). At 36 dB drive_lin ≈ 62, with tanh(62) clamped to 1 so the
         // output peak on a ±1 input is exactly 1 — unity gain at full drive.
         let drive_db = p.drive_db.clamp(0.0, 36.0);
-        self.drive_lin = (drive_db * DB_TO_LOG2).exp2() - 1.0;
-        self.tanh_drive = fast_tanh(self.drive_lin);
+        let drive = (drive_db * DB_TO_LOG2).exp2() - 1.0;
 
-        let target = if self.enabled { p.mix.clamp(0.0, 1.0) } else { 0.0 };
+        let mix_target = if self.enabled { p.mix.clamp(0.0, 1.0) } else { 0.0 };
         if self.mix_primed {
-            self.mix.set_target(target);
+            self.threshold_db.set_target(threshold);
+            self.slope.set_target(slope);
+            self.makeup_lin.set_target(makeup);
+            self.drive_lin.set_target(drive);
+            self.mix.set_target(mix_target);
         } else {
-            self.mix.snap(target);
+            // First set — snap everything so a patch loaded with dynamics
+            // already engaged doesn't ride in on a glide.
+            self.threshold_db.snap(threshold);
+            self.slope.snap(slope);
+            self.makeup_lin.snap(makeup);
+            self.drive_lin.snap(drive);
+            self.mix.snap(mix_target);
             self.mix_primed = true;
         }
     }
@@ -201,12 +223,18 @@ impl DynamicsBlock {
         };
         self.env += coeff * (peak - self.env);
 
+        // Tick the smoothed comp/sat params once per sample. Glides outrun the
+        // control block so a swept slider doesn't zipper.
+        let threshold_db = self.threshold_db.tick();
+        let slope = self.slope.tick();
+        let makeup_lin = self.makeup_lin.tick();
+        let drive_lin = self.drive_lin.tick();
+
         // Soft-knee static curve in dB. One log2 + one exp2 per sample (both
         // behind the bypass gate, so a steady off block pays neither).
         let env_safe = self.env.max(1.0e-9);
         let env_db = env_safe.log2() * LOG2_TO_DB;
-        let over = env_db - self.threshold_db;
-        let slope = 1.0 - 1.0 / self.ratio;
+        let over = env_db - threshold_db;
         let gr_db = if 2.0 * over <= -KNEE_DB {
             0.0
         } else if 2.0 * over >= KNEE_DB {
@@ -216,18 +244,20 @@ impl DynamicsBlock {
             let k = over + KNEE_DB * 0.5;
             -slope * k * k / (2.0 * KNEE_DB)
         };
-        let comp_gain = (gr_db * DB_TO_LOG2).exp2() * self.makeup_lin;
+        let comp_gain = (gr_db * DB_TO_LOG2).exp2() * makeup_lin;
 
         let cl = in_l * comp_gain;
         let cr = in_r * comp_gain;
 
         // Saturator: `tanh(k·x)/tanh(k)`. At k = 0 (drive_db = 0) the
-        // limit is x — early-out so we don't divide by 0.
-        let (sl, sr) = if self.drive_lin > 1.0e-6 {
-            let inv = 1.0 / self.tanh_drive;
+        // limit is x — early-out so we don't divide by 0. `tanh(k)` is
+        // recomputed from the smoothed drive each sample (one extra
+        // `fast_tanh`, behind the bypass gate).
+        let (sl, sr) = if drive_lin > 1.0e-6 {
+            let inv = 1.0 / fast_tanh(drive_lin);
             (
-                fast_tanh(self.drive_lin * cl) * inv,
-                fast_tanh(self.drive_lin * cr) * inv,
+                fast_tanh(drive_lin * cl) * inv,
+                fast_tanh(drive_lin * cr) * inv,
             )
         } else {
             (cl, cr)
