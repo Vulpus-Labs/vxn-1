@@ -94,6 +94,14 @@ Settled details:
 
 ### 4. Poly steal: reuse in place, never retrigger hard
 
+> **Superseded by ADR 0008.** The in-place reuse below still clicked when the
+> voice pool was full (re-cooking a sounding voice steps the FM spectrum and the
+> engine resets the slot's filter mid-voice). ADR 0008 adds declick headroom (20
+> physical stacks, 16 active cap) so a stolen voice is `start_declick`ed in place
+> and the new note onsets fresh on a spare — the click-free Solo path of §2/§3,
+> now applied to Poly. The reuse below survives only as the no-spare burst
+> fallback.
+
 Poly only steals when **no spare voice exists** — there is no free slot to
 crossfade into, so the crossfade does not apply. A steal is also rare and
 usually lands on a *decaying* (Releasing) note. The stolen voice is therefore
