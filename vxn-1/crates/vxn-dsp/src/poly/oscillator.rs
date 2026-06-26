@@ -44,11 +44,12 @@ pub(super) fn pblep(t: f32, dt: f32) -> f32 {
 /// gain stage; the better fit (vs the cheaper Padé(3,3) form) is audible at
 /// high drive / resonance for ~15–25% extra time on the saturator-heavy paths.
 ///
-/// Shares the Padé(5,6) coefficients with [`crate::math::fast_tanh`] — keep the
-/// two in sync if you retune them. They are deliberately NOT merged: this
+/// Shares the Padé(5,6) coefficients with the shared scalar `fast_tanh`
+/// (`vxn-core-utils::math`, re-exported as [`crate::math::fast_tanh`]) — keep
+/// the two in sync if you retune them. They are deliberately NOT merged: this
 /// branchless `clamp` form vectorises in the poly lane loop, while `fast_tanh`'s
 /// early-return branches are fine on scalar paths (0019; memory
-/// `vxn1-tanh-branchless-only`).
+/// `vxn1-tanh-branchless-only`; E027/0118 left this one in place by design).
 #[inline(always)]
 pub(super) fn tanh_c(x: f32) -> f32 {
     let x = x.clamp(-2.5, 2.5);
