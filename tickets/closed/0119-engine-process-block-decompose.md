@@ -68,3 +68,34 @@ here beyond sharing a final FX-tail fn if convenient. Stack
 SoA layout is load-bearing for NEON (memory
 `vxn2-stack-soa`) — do not change field layout, only group
 the ramp scalars.
+
+## Close-out (2026-06-28)
+
+- Inner 16-stack matrix loop extracted into
+  [cook_stacks_block](../../vxn-2/crates/vxn2-engine/src/engine.rs#L884),
+  returning
+  [StackBlockSummary](../../vxn-2/crates/vxn2-engine/src/engine.rs#L196)
+  (FX-mix sums, lfo1-rate oct, active count). `process_block`
+  ([engine.rs:695](../../vxn-2/crates/vxn2-engine/src/engine.rs#L695))
+  shrank 530 → 153 lines (−377) and now reads as named stage calls + the
+  post-loop FX-apply / filter-dispatch / limiter tail.
+- The five lockstep ramp `Vec`s (`level_mod_inc` / `pan_l_inc` /
+  `pan_r_inc` / `phase_mod_inc` / `prev_eg_level`) collapsed into one
+  [RampState](../../vxn-2/crates/vxn2-engine/src/engine.rs#L181) `Vec`
+  ([engine.rs:291](../../vxn-2/crates/vxn2-engine/src/engine.rs#L291)).
+  `new`, `reset`, the cook loop, `advance_mod_ramp_one`, and
+  `advance_mod_ramps` index the single `self.ramps`; a new ramp field now
+  touches only `RampState`. Stack SoA field layout untouched (only the
+  engine-side ramp scalars were grouped).
+- 12 `// == STAGE N: … ==` markers precede each stage in `cook_stacks_block`
+  (grep `// == STAGE` → 12 in body), with a block-comment 12-row ordering
+  table at the method top
+  ([engine.rs:863](../../vxn-2/crates/vxn2-engine/src/engine.rs#L863)).
+- `cargo test -p vxn2-engine` green (211 lib + integration suites, 0
+  failed). New render-hash guard
+  [tests/baseline.rs](../../vxn-2/crates/vxn2-engine/tests/baseline.rs)
+  (`render_hash_unchanged`) drives a matrix-rich patch through every cook
+  stage; golden hash `0x9460b892913e5b85` captured pre-refactor and
+  unchanged after — proves no stage reorder or ramp-index regression.
+- Pure refactor: no per-sample/hot-loop overhead added, no per-block
+  allocation; `cook_stacks_block` reuses the existing scratch Vecs.
