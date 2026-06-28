@@ -507,7 +507,7 @@ impl PolyOscillator {
     /// Convention (see [`process_pair`](Self::process_pair)): `self` is osc1 =
     /// slave/carrier (audible); `other` is osc2 = master (drives reset).
     #[inline]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // coupled SIMD pair kernel: two waves + two pw/out arrays
     pub fn process_sync(
         &mut self,
         other: &mut PolyOscillator,
@@ -596,7 +596,7 @@ impl PolyOscillator {
     /// Convention (see [`process_pair`](Self::process_pair)): `self` is osc1 =
     /// carrier (PM target); `other` is osc2 = modulator (PM source).
     #[inline]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // coupled SIMD pair kernel: two waves + two pw/out arrays + pm_index
     pub fn process_pm(
         &mut self,
         other: &mut PolyOscillator,
