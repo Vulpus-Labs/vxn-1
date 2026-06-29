@@ -18,7 +18,10 @@ op1-eg-r1 = 96
 op1-eg-r2 = 25
 op1-eg-r3 = 25
 op1-eg-r4 = 67
-op1-eg-l2 = 35
+# Body decay knee. Was 35 under the old square curve (~-18 dB); the log curve
+# (ADR 0007) made 35 ~-48 dB, collapsing the body to a marimba-like ping. 75 is
+# the real DX7 E.PIANO-1 op1 L2 and restores the ~-18 dB knee under the log curve.
+op1-eg-l2 = 75
 op1-eg-l3 = 0
 op1-ks-r-depth = 0
 op1-ks-rate = 3
@@ -40,7 +43,8 @@ op3-eg-r1 = 95
 op3-eg-r2 = 20
 op3-eg-r3 = 20
 op3-eg-r4 = 50
-op3-eg-l2 = 83
+# Knee was 83 under the square curve (~-3 dB); 95 restores it under the log curve.
+op3-eg-l2 = 95
 op3-eg-l3 = 0
 op3-ks-r-depth = 0
 op3-ks-rate = 3
@@ -64,7 +68,8 @@ op5-eg-r1 = 95
 op5-eg-r2 = 20
 op5-eg-r3 = 20
 op5-eg-r4 = 50
-op5-eg-l2 = 83
+# Knee was 83 under the square curve (~-3 dB); 95 restores it under the log curve.
+op5-eg-l2 = 95
 op5-eg-l3 = 0
 op5-ks-r-depth = 0
 op5-ks-rate = 3
@@ -86,7 +91,10 @@ op6-ks-rate = 3
 # Per-voice LFO + pitch EG (DX7 voice settings).
 lfo2-shape = "Sine"
 lfo2-rate = 5.6
+# Delay + fade so the stereo tremolo (slots 6/7) swells in after the attack
+# transient rather than chopping the note from the start.
 lfo2-delay = 400.0
+lfo2-fade = 650.0
 peg-r1 = 94
 peg-r2 = 67
 peg-r3 = 95
@@ -95,6 +103,11 @@ peg-r4 = 60
 # Single dry voice like the hardware; no glide.
 glide-time = 0.0
 stack-density = 1
+
+# Gain-match to the bank: 3 carriers at OL 99 (loudness est 3.0) →
+# -3 - 20*log10(3) ≈ -12.5 dB, the converter's formula. Needed now that the
+# L2 fix lets all three carrier bodies sustain near full instead of collapsing.
+master-volume = -12.5
 
 # Touch of room. Delay bypassed.
 reverb-size = 0.4
@@ -144,3 +157,20 @@ source = "voice-spread"
 dest = "op3-pan"
 curve = "lin"
 depth = 1.0
+
+# Stereo tremolo: lfo2 pans carrier pair A (op1) and pair C (op5) in antiphase,
+# so the tail sways left/right — the classic Rhodes "vibrato". Pair B (op3) is
+# left unmodulated to anchor the centre. lfo2-delay/fade ramp it in post-attack.
+[[matrix]]
+slot = 6
+source = "lfo2"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 7
+source = "lfo2"
+dest = "op5-pan"
+curve = "lin"
+depth = -0.35
