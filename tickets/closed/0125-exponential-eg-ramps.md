@@ -96,3 +96,21 @@ matches `voice_release`, i.e. effectively equal. Confirms the log marcher +
 pluck, a pad swell, and a bass. If times feel off, tune `rate_to_log2_per_sec`'s
 `/20.0`; if attack feels wrong, that's the linear-attack choice to revisit.
 dsp 188 / engine 205 lib green; CPU benches still to run.
+
+## Close-out (2026-06-27)
+
+- **Ear-verified in Reaper** (epic AC, the sole remaining gate): attack stays
+  punchy (linear-amplitude rise preserved), decay/release taper reads as natural
+  exponential, segment times sane across R=0..99 on an e-piano pluck, a pad
+  swell, and a bass. No retune of `rate_to_log2_per_sec` needed; linear-attack
+  choice confirmed correct.
+- Code landed at [eg.rs](../../vxn-2/crates/vxn2-dsp/src/eg.rs): `Exp` marches
+  Decay1/Decay2/Release linearly in log2 → exponential amplitude
+  (`level = max_amp × 2^log_level`); attack linear; `Lin` path unchanged;
+  `kill_release` declick linear on both curves.
+- Tests green: `exp_decay_is_linear_in_db`, `lin_decay_is_linear_in_amp`,
+  `exp_rate_zero_is_far_slower_than_max`, `kill_release_declicks_linearly_on_exp`
+  (dsp), plus engine `default_patch_renders_with_expected_envelope`.
+- CPU bench gate passed (M-series, criterion median): no regression — `stack_d1/d4/d8`
+  ~−3% (noise/marginally faster), `voice_release` +0.6% (noise). Control-rate
+  scalar `exp2`; per-sample NEON lane loop byte-unchanged.

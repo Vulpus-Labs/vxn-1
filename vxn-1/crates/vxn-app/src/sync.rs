@@ -14,62 +14,16 @@ use crate::params::{
     patch_clap_id,
 };
 
-/// Fallback tempo when the host provides none (no `HAS_TEMPO`). A sane musical
-/// default so a synced LFO never stalls or NaNs absent transport.
-pub const DEFAULT_TEMPO_BPM: f32 = 120.0;
-
-/// One tempo-sync subdivision: its label and its length in **beats per LFO
-/// cycle** (quarter note = 1 beat). Straight = base, dotted = ×1.5, triplet =
-/// ×2/3.
-#[derive(Clone, Copy, Debug)]
-pub struct Subdivision {
-    pub label: &'static str,
-    pub beats: f32,
-}
-
-const fn s(label: &'static str, beats: f32) -> Subdivision {
-    Subdivision { label, beats }
-}
-
-const T: f32 = 2.0 / 3.0;
-
-/// Subdivisions coarse → fine, each as straight / dotted / triplet, 1/1 … 1/32.
-pub static SUBDIVISIONS: [Subdivision; 18] = [
-    s("1/1", 4.0),
-    s("1/1.", 4.0 * 1.5),
-    s("1/1T", 4.0 * T),
-    s("1/2", 2.0),
-    s("1/2.", 2.0 * 1.5),
-    s("1/2T", 2.0 * T),
-    s("1/4", 1.0),
-    s("1/4.", 1.0 * 1.5),
-    s("1/4T", 1.0 * T),
-    s("1/8", 0.5),
-    s("1/8.", 0.5 * 1.5),
-    s("1/8T", 0.5 * T),
-    s("1/16", 0.25),
-    s("1/16.", 0.25 * 1.5),
-    s("1/16T", 0.25 * T),
-    s("1/32", 0.125),
-    s("1/32.", 0.125 * 1.5),
-    s("1/32T", 0.125 * T),
-];
-
-/// Map an LFO rate knob's normalised position `[0, 1]` to a subdivision index.
-#[inline]
-pub fn index_from_norm(norm: f32) -> usize {
-    let last = SUBDIVISIONS.len() - 1;
-    (norm.clamp(0.0, 1.0) * last as f32).round() as usize
-}
-
-/// Resolve a subdivision (by index) at `tempo_bpm` to an LFO frequency in Hz.
-/// Caller clamps to the LFO's valid Hz range (`LfoCore::set_rate` does).
-#[inline]
-pub fn synced_hz(tempo_bpm: f32, index: usize) -> f32 {
-    let beats = SUBDIVISIONS[index.min(SUBDIVISIONS.len() - 1)].beats;
-    // beats/sec ÷ beats/cycle = cycles/sec (Hz).
-    (tempo_bpm / 60.0) / beats
-}
+// Tempo-sync subdivision table — shared (E027/0117). The table, its index
+// lookup, and the rate/period resolvers moved to `vxn-core-utils::sync`; this
+// module re-exports them under the `synced_*` names vxn-1's engine/editor use
+// (`synced_hz`/`synced_seconds` = core's `subdivision_hz`/`_seconds`, same
+// `(bpm/60)/beats` math over the byte-identical table) and keeps only the
+// per-synth CLAP-id sync helpers below.
+pub use vxn_core_utils::sync::{
+    DEFAULT_TEMPO_BPM, SUBDIVISIONS, Subdivision, index_from_norm,
+    subdivision_hz as synced_hz, subdivision_seconds as synced_seconds,
+};
 
 /// Sync partner CLAP id for a rate/time param — returns the matching sync
 /// toggle's id when the input is one of the sync-pairable rate/time params
@@ -134,16 +88,6 @@ pub fn sync_aware_display<M: ParamModel + ?Sized>(model: &M, clap_id: usize, val
     desc.display(value)
 }
 
-/// Resolve a subdivision (by index) at `tempo_bpm` to a **duration in seconds**
-/// (one cycle = `beats` quarter-notes). Used by the tempo-synced delay (E006):
-/// the period, not the rate. Caller clamps to the delay buffer's capacity — a
-/// slow subdivision at a slow tempo can exceed it.
-#[inline]
-pub fn synced_seconds(tempo_bpm: f32, index: usize) -> f32 {
-    let beats = SUBDIVISIONS[index.min(SUBDIVISIONS.len() - 1)].beats;
-    // beats/cycle ÷ beats/sec = sec/cycle.
-    beats / (tempo_bpm / 60.0)
-}
 
 #[cfg(test)]
 mod tests {

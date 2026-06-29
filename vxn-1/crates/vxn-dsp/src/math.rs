@@ -6,6 +6,11 @@ use std::f32::consts::TAU;
 /// Xorshift64 PRNG mapped to `[-1, 1]`. `state` must be non-zero (zero is a
 /// stuck fixed point); seed with `instance_id + 1`. Shared by the S&H LFO, the
 /// chorus noise floor, and the BBD companding dither.
+///
+/// Intentionally a *different* generator from vxn-2's xorshift64\*
+/// (`vxn2-dsp/src/rng.rs`): plain xorshift (13,7,17) scaled by `i64::MAX`
+/// here vs. the multiplied star variant with a `>> 40` mapping there. Their
+/// output streams differ — do **not** merge them (E027/0117).
 #[inline]
 pub fn xorshift64(state: &mut u64) -> f32 {
     *state ^= *state << 13;
@@ -29,27 +34,13 @@ mod rng_tests {
     }
 }
 
-/// Rational (Padé degree-5/6) approximation to `tanh`, saturating to ±1 for
-/// `|x| ≥ 2.5`. Exact at 0, monotone, RMS error < 0.05 over [−3, 3].
-///
-/// Shares the Padé(5,6) coefficients with `poly::oscillator::tanh_c` —
-/// keep the two in sync if you retune them. Deliberately NOT merged: this
-/// branched (early-return) form suits scalar callers, while `tanh_c`'s
-/// branchless `clamp` form vectorises in the poly lane loop (0019; memory
-/// `vxn1-tanh-branchless-only`).
-#[inline(always)]
-pub fn fast_tanh(x: f32) -> f32 {
-    if x >= 2.5 {
-        return 1.0;
-    }
-    if x <= -2.5 {
-        return -1.0;
-    }
-    let x2 = x * x;
-    let x4 = x2 * x2;
-    let x6 = x4 * x2;
-    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
-}
+/// Scalar Padé(5,6) `tanh`. Promoted to `vxn-core-utils::math` (E027/0118) —
+/// it was byte-identical in vxn-1 and vxn-2; re-exported here so
+/// `crate::math::fast_tanh` and the lib re-export keep resolving. Still
+/// deliberately NOT merged with `poly::oscillator::tanh_c`: that branchless
+/// `clamp` form vectorises in the poly lane loop where this early-return form
+/// would not (memory `vxn1-tanh-branchless-only`).
+pub use vxn_core_utils::math::fast_tanh;
 
 static SINE_TABLE: std::sync::LazyLock<Vec<f32>> =
     std::sync::LazyLock::new(|| (0..1024).map(|i| (i as f32 / 1024.0 * TAU).sin()).collect());

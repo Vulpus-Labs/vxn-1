@@ -821,11 +821,70 @@ html, body {
   min-width: 0;
   min-height: 0;
 }
+.fx-panel[data-active-tab="dyn"] .fx-pane-dyn,
 .fx-panel[data-active-tab="phaser"] .fx-pane-phaser,
 .fx-panel[data-active-tab="delay"] .fx-pane-delay,
 .fx-panel[data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
 .fx-pane > [data-vxn-param$="-mix"] { grid-column: 4; }
 .fx-pane-delay > .fader-with-toggle { grid-column: 1; }
+/* Dynamics: six small rotary dials (threshold / ratio / attack / release /
+   makeup / drive) packed into a 3-column dial grid on the left, and the
+   mix fader spanning column 4 (matches the rightmost-mix convention from
+   the other panes). The dial-grid is its own sub-grid so the dials stay
+   evenly spaced regardless of pane width. */
+.fx-pane-dyn { grid-template-columns: 3fr 1fr; column-gap: 8px; }
+.fx-pane-dyn > .dial-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, 1fr);
+  gap: 4px 6px;
+  align-items: center;
+  justify-items: center;
+}
+.fx-pane-dyn > [data-vxn-param="dyn-mix"] { grid-column: 2; }
+
+/* ===== rotary dial ===== */
+.dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 9px;
+  color: #b4b4b4;
+  cursor: ns-resize;
+  user-select: none;
+  touch-action: none;
+}
+.dial-label {
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #888;
+  pointer-events: none;
+}
+.dial-svg { display: block; }
+.dial .dial-track {
+  fill: none;
+  stroke: #2a2a2a;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.dial .dial-fill {
+  fill: none;
+  stroke: #a7cfe2;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.dial .dial-face { fill: #2a2a2a; stroke: #444; stroke-width: 0.5; }
+.dial .dial-indicator-line {
+  stroke: #d4d4d4;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.dial.dragging .dial-fill { stroke: #d4d4d4; }
+.dial.dragging .dial-indicator-line { stroke: #fff; }
 
 /* ===== algo overlay ===== */
 

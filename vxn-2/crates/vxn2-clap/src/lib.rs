@@ -956,11 +956,15 @@ mod tests {
         audio.scratch_r = vec![0.0; frames];
 
         // Block N: note-on at 0, note-off at 200 (two batches: 0..200, 200..256).
+        // `process_block` requires `len <= CONTROL_BLOCK`; the host wrapper
+        // chunks the same way (see `control_chunks` in `process`).
         audio.engine.note_on(60, 100);
-        audio.engine.process_block(
-            &mut audio.scratch_l[0..200],
-            &mut audio.scratch_r[0..200],
-        );
+        for (a, b) in control_chunks(0, 200) {
+            audio.engine.process_block(
+                &mut audio.scratch_l[a..b],
+                &mut audio.scratch_r[a..b],
+            );
+        }
         let attack_peak = audio.scratch_l[..200]
             .iter()
             .chain(audio.scratch_r[..200].iter())
@@ -974,10 +978,12 @@ mod tests {
         }
 
         audio.engine.note_off(60);
-        audio.engine.process_block(
-            &mut audio.scratch_l[200..frames],
-            &mut audio.scratch_r[200..frames],
-        );
+        for (a, b) in control_chunks(200, frames) {
+            audio.engine.process_block(
+                &mut audio.scratch_l[a..b],
+                &mut audio.scratch_r[a..b],
+            );
+        }
         for &v in audio.scratch_l[200..frames]
             .iter()
             .chain(&audio.scratch_r[200..frames])
@@ -1004,13 +1010,25 @@ mod tests {
         let shared = mk_shared();
         let mut audio = mk_audio(&shared);
         audio.engine.note_on(60, 100);
-        // Render a bit so smoothers and FX wind up.
-        audio.engine.process_block(&mut audio.scratch_l, &mut audio.scratch_r);
+        // Render a bit so smoothers and FX wind up. `process_block` requires
+        // `len <= CONTROL_BLOCK`; chunk the scratch like the host wrapper.
+        let frames = audio.scratch_l.len();
+        for (a, b) in control_chunks(0, frames) {
+            audio.engine.process_block(
+                &mut audio.scratch_l[a..b],
+                &mut audio.scratch_r[a..b],
+            );
+        }
         audio.reset();
         // After reset: no gated stacks.
         assert!(!audio.engine.alloc.stacks.iter().any(|s| s.gate));
         // And one block of silence should now be near-zero.
-        audio.engine.process_block(&mut audio.scratch_l, &mut audio.scratch_r);
+        for (a, b) in control_chunks(0, frames) {
+            audio.engine.process_block(
+                &mut audio.scratch_l[a..b],
+                &mut audio.scratch_r[a..b],
+            );
+        }
         let peak = audio
             .scratch_l
             .iter()

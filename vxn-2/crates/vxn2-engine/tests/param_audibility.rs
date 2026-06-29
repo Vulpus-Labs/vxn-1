@@ -324,6 +324,30 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
         cap.release_blocks = 60;
     }
 
+    // ── Dynamics (E028) ───────────────────────────────────────────────────
+    // Off by default → every dyn-* knob except `dyn-on` is inert unless the
+    // block is engaged. Turn it on and drive a hot threshold so the comp is
+    // actually working; keep mix at full wet so makeup / drive land on the
+    // bus. `dyn-attack` / `dyn-release` only diverge when the envelope is
+    // tracking transients — the base velocity-120 note-on transient covers
+    // that.
+    if name.starts_with("dyn-") {
+        if name != "dyn-on" {
+            set("dyn-on", 1.0);
+        }
+        if name != "dyn-mix" {
+            set("dyn-mix", 1.0);
+        }
+        // Hot threshold + non-1 ratio so a sweep of either, or of the time
+        // constants, audibly reshapes the bus.
+        if name != "dyn-threshold" {
+            set("dyn-threshold", -30.0);
+        }
+        if name != "dyn-ratio" {
+            set("dyn-ratio", 8.0);
+        }
+    }
+
     // ── Long mod-env evolution ─────────────────────────────────────────────
     if name.starts_with("mod-env-") {
         cap.sustain_blocks = 150;

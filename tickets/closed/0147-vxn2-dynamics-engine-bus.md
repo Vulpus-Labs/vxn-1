@@ -98,3 +98,47 @@ specifically: toggle `dyn-on` on a sustained note and confirm no
 audible click (the 0145 fade semantics).
 
 Followed by 0148 (faceplate tab).
+
+## Close-out (2026-06-25)
+
+- `Engine::dynamics: DynamicsBlock` field added
+  ([engine.rs:174-178](../../vxn-2/crates/vxn2-engine/src/engine.rs#L174-L178)),
+  constructed with `sample_rate` in `Engine::new`
+  ([engine.rs:354-356](../../vxn-2/crates/vxn2-engine/src/engine.rs#L354-L356)),
+  cleared in `reset()`
+  ([engine.rs:460](../../vxn-2/crates/vxn2-engine/src/engine.rs#L460)). DSP
+  import at [engine.rs:38](../../vxn-2/crates/vxn2-engine/src/engine.rs#L38).
+- `apply_block_params` calls
+  `self.dynamics.set_from(&self.params.dynamics)`
+  ([engine.rs:537](../../vxn-2/crates/vxn2-engine/src/engine.rs#L537)),
+  next to the phaser refresh.
+- `apply_fx_block` inserts `self.dynamics.process(cl, cr)` **before** the
+  phaser, so the bus is now
+  `cleanup → dynamics → phaser → delay → reverb → master → limiter`
+  ([engine.rs:1455-1460](../../vxn-2/crates/vxn2-engine/src/engine.rs#L1455-L1460)).
+  Block-doc comment updated to reflect the new chain.
+- Bit-identical null test:
+  `dynamics_integration::bypass_render_is_bit_identical_across_dynamics_params`
+  ([tests/dynamics_integration.rs](../../vxn-2/crates/vxn2-engine/tests/dynamics_integration.rs))
+  renders the default patch twice — once with all `dyn-*` at defaults, once
+  with `dyn-on = 0` but every other `dyn-*` slammed to extremes — and asserts
+  `to_bits()` equality on every interleaved sample. The 0145 DSP gate makes
+  this trivially pass; this test guards the gate from regressing.
+- `dyn-on = 1` reduces post-FX peak:
+  `dynamics_integration::dyn_on_reduces_post_fx_peak` renders 64 blocks with
+  `dyn-on=0` vs `dyn-on=1` (threshold −36 dB, ratio 20, mix 1), asserts the
+  on-peak is at least 10 % below the off-peak — the gain reduction is
+  actually shaping the bus, not just attached.
+- No new mod-matrix entries.
+  `grep -in 'dyn\|dynamics'
+  [vxn-2/crates/vxn2-engine/src/matrix.rs](../../vxn-2/crates/vxn2-engine/src/matrix.rs)`
+  returns only the word "dynamic" in English text — no `DestId`, no
+  `DEST_NAMES`, no aggregation-block branch.
+- `param_audibility.rs` `EXCLUDED` list trimmed: the eight `dyn-*` forward-
+  pointer entries from 0146 are gone; `context_override` gains a `dyn-`
+  arm that engages `dyn-on=1`, full wet mix, hot threshold, ratio 8 so each
+  swept `dyn-*` param audibly reshapes the bus. `every_param_sweep_is_audible`
+  passes.
+- `cargo test -p vxn2-engine` → 209 lib + integration tests pass.
+  `cargo build -p vxn2-clap --release` clean.
+- Followed by 0148 (faceplate tab).

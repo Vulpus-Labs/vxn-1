@@ -72,3 +72,44 @@ fade-off on `dyn-on` is click-free.
 
 Final ticket of E028 — close the epic via `/close-epic E028` once
 this lands.
+
+## Close-out (2026-06-25)
+
+- Fourth `Dyn` tab appended as the **first** in the `.fx-tabs` strip
+  ([index.html:363-367](../../vxn-2/crates/vxn2-ui-web/assets/index.html#L363-L367));
+  tab order now matches signal order Dyn → Phaser → Delay → Reverb. The
+  inline `.fx-tab-switch` is bound to `dyn-on` (matches the
+  phaser-on / delay-on / reverb-on precedent).
+- `.fx-pane-dyn` added with seven faders bound to `dyn-threshold`,
+  `dyn-ratio`, `dyn-attack`, `dyn-release`, `dyn-makeup`, `dyn-drive`,
+  `dyn-mix`
+  ([index.html:386-436](../../vxn-2/crates/vxn2-ui-web/assets/index.html#L386-L436)).
+  Eight controls total counting the tab-switch.
+- CSS: `.fx-panel[data-active-tab="dyn"] .fx-pane-dyn { display: grid }`
+  added to the existing pane-visibility rule
+  ([style.css:824-827](../../vxn-2/crates/vxn2-ui-web/assets/style.css#L824-L827));
+  the dyn pane runs 2 rows × 4 cols (`.fx-pane-dyn { grid-template-rows:
+  repeat(2, 1fr) }`) with `dyn-mix` spanning both rows on column 4 —
+  matches the rightmost-mix convention. The other six comp/sat params
+  auto-flow the remaining 3 × 2 slots in authored order.
+- `panel-header="FX"` boots `data-active-tab="phaser"`
+  ([index.html:359](../../vxn-2/crates/vxn2-ui-web/assets/index.html#L359))
+  — unchanged from 0090, so opening a saved patch doesn't surface the
+  new tab unless the user clicks it.
+- `wireFxTabs` requires no change — it iterates `.fx-tab` children and
+  routes clicks via `data-tab`; the fourth tab is picked up automatically
+  by the existing handler.
+- `fx-tabs.test.js` extended to four-tab assertions
+  ([assets/__tests__/fx-tabs.test.js](../../vxn-2/crates/vxn2-ui-web/assets/__tests__/fx-tabs.test.js)):
+  added `renders four tabs in signal order`,
+  `can swap into the dyn pane and back`,
+  `dyn tab switch is wired to dyn-on`; existing
+  `only one tab carries .active at any time` now sweeps all four. All 9
+  vitest cases pass (`npx vitest run`).
+- `cargo build -p vxn2-clap --release` clean — the bundled CLAP loads
+  with the four-tab FX panel; all dynamics knobs drive the
+  `dyn-*` CLAP ids the 0146 surface exposed.
+- Manual Reaper smoke check pending the user
+  (per [[verify-audio-in-reaper]] — toggle `dyn-on` mid-note to
+  confirm no click).
+- Final ticket of E028.

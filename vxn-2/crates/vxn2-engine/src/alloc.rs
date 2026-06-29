@@ -1,11 +1,11 @@
-//! Polyphony allocator: 16 fixed `Stack` slots with oldest-note stealing,
+//! Polyphony allocator: 16 fixed `Stack` slots with quietest-voice stealing,
 //! Poly / Solo assignment modes, glide (portamento), and channel-wide pitch
 //! bend forwarding.
 //!
 //! A "voice" here is a *stack* of up to 8 lane-packed op-instances (ticket
 //! 0005). The allocator's poly cap is 16 stacks, giving up to 16 × 8 = 128
 //! op-voice instances in flight when `stack_density = 8`. Stealing operates
-//! on whole stacks — picking off the oldest reclaims all of its lanes
+//! on whole stacks — picking off the quietest reclaims all of its lanes
 //! together.
 //!
 //! Lifecycle per audio block:
@@ -36,18 +36,30 @@
 //! note after the first slides from the previous sounding pitch regardless of
 //! note overlap, and independent of `legato` (which controls EG retrigger
 //! only). In Poly each reused/stolen voice glides from its own previous pitch;
-//! a new note prefers the free slot nearest in pitch (see [`Self::pick_slot`])
+//! a new note prefers the free slot nearest in pitch (see [`Self::pick_idle`])
 //! so glides stay short and musical. Glide is off only when `glide_time_ms`
 //! is 0 or the chosen slot has never sounded.
 
-use vxn2_dsp::eg::EgStage;
 use vxn2_dsp::stack::{Stack, StackParams, VoicePhase};
 use vxn2_dsp::voice::VoiceParams;
 
 use crate::shared::Patch;
 
-/// Fixed polyphony cap. ADR §3 sets this at 16 stacks for v1.
-pub const N_STACKS: usize = 16;
+/// Polyphony cap: a new note past this many *active* (Held/Releasing) voices
+/// declicks the quietest one to stay within it. ADR §3 sets this at 16 for v1.
+pub const N_ACTIVE: usize = 16;
+
+/// Declick headroom: spare stacks above the active cap. A stolen voice is
+/// declicked *in place* (keeping its own filter/interp state — click-free) over
+/// `DECLICK_SECS` while the new note takes a spare idle stack. These lanes only
+/// ever hold short declick tails, so a handful covers any realistic burst; a
+/// new note only hard-reuses a sounding slot if every spare is mid-declick.
+pub const N_DECLICK: usize = 4;
+
+/// Physical stack count — what the engine renders and sizes its per-stack DSP
+/// buffers (filters, interpolators, smoothers) by. Active voices are capped at
+/// [`N_ACTIVE`]; the remaining [`N_DECLICK`] absorb declick tails.
+pub const N_STACKS: usize = N_ACTIVE + N_DECLICK;
 
 const IDLE_SEQ: u64 = u64::MAX;
 
@@ -100,7 +112,7 @@ pub struct PolyAlloc {
     /// True when a solo voice is currently live (held or releasing).
     solo_active: bool,
     /// The slot carrying the live solo note (`None` when solo is silent).
-    /// Solo rotates a fresh slot per note (round-robin via [`Self::pick_slot`])
+    /// Solo rotates a fresh slot per note (round-robin via [`Self::pick_idle`])
     /// and declicks the previous one, so this replaces the old fixed slot 0.
     solo_slot: Option<usize>,
     /// Last solo note pitch (semitones), surviving the slot being freed/reused,
@@ -318,7 +330,45 @@ impl PolyAlloc {
         note: u8,
         velocity: u8,
     ) -> usize {
-        let slot = self.pick_slot(note);
+        // Pick the voice (if any) to retire for this note-on:
+        //  - a re-press of a pedal-held note retires *that* voice (avoids
+        //    doubling), regardless of the active-voice cap;
+        //  - otherwise, only once the active (Held/Releasing) voices are at the
+        //    cap, retire the quietest to make room.
+        let pedal_dup = (0..N_STACKS).find(|&i| {
+            self.held_by_pedal[i]
+                && self.stacks[i].note == note
+                && self.stacks[i].phase != VoicePhase::Declick
+        });
+        let victim = match pedal_dup {
+            Some(dup) => Some(dup),
+            None if self.active_count() >= N_ACTIVE => self.pick_victim(),
+            None => None,
+        };
+        // The new note wants a clean idle stack. With N_DECLICK spare stacks
+        // above the cap, one is essentially always free — even while a victim
+        // declicks. `None` only under a pathological steal burst (every spare
+        // mid-declick), in which case we fall back to in-place reuse.
+        let idle = self.pick_idle(note);
+
+        let slot = match (victim, idle) {
+            (Some(v), Some(s)) if v != s => {
+                // Declick the victim *in place* — it keeps its own filter/interp
+                // state, so its tail rings out continuously (click-free) — and
+                // start the new note fresh on the spare idle stack.
+                self.stacks[v].start_declick();
+                self.held_by_pedal[v] = false;
+                s
+            }
+            (_, Some(s)) => s, // under cap → fresh onset on an idle stack
+            (Some(v), None) => v, // burst fallback: hard-reuse the victim in place
+            (None, None) => {
+                // Unreachable: under the cap there is always an idle stack. Guard
+                // defensively rather than panic on the audio thread.
+                self.pick_victim().unwrap_or(0)
+            }
+        };
+
         // Always-glide (vxn-1 parity, ticket 0125): a reused or stolen voice
         // slides from its previous sounding pitch (note + any in-flight glide
         // offset) to the new note, independent of overlap or `legato`. A slot
@@ -331,19 +381,24 @@ impl PolyAlloc {
             0.0
         };
         let counter = self.bump_seq();
+        // Capture the pedal-hold flag before `claim_slot` clears it: a stolen
+        // pedal-held voice has its physical key already up, so the new note is
+        // a fresh attack rather than a legato continuation.
+        let was_pedal_held = self.held_by_pedal[slot];
         self.claim_slot(slot, counter);
         if self.stacks[slot].is_idle() {
-            // Free slot → fresh voice, onset from silence (click-free).
+            // Idle stack → fresh voice, onset from silence (click-free). This is
+            // now the common steal path: the victim declicks elsewhere.
             self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
         } else {
-            // Steal a *sounding* voice (rare — only when no spare exists). Reuse
-            // it in place: re-pitch without resetting oscillator phase, LFO2, or
-            // the pitch/mod envelopes. If it was Held → legato (continue the amp
-            // EG); if Releasing (the common steal target) → restart the amp EG
-            // from its current level. Avoids the hard-retrigger click.
-            let held = self.stacks[slot].phase == VoicePhase::Held;
+            // Burst fallback only: no spare idle stack, so reuse the victim in
+            // place — re-pitch without resetting oscillator phase / LFO2 / the
+            // pitch/mod envelopes. Key still down → legato (continue the amp EG);
+            // key up (releasing / pedal-held) → restart the amp EG from current
+            // level. Both avoid the hard-retrigger click.
+            let key_down_held = self.stacks[slot].phase == VoicePhase::Held && !was_pedal_held;
             self.stacks[slot].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
-            if !held {
+            if !key_down_held {
                 self.stacks[slot].retrigger_eg();
             }
         }
@@ -353,6 +408,17 @@ impl PolyAlloc {
             self.start_glide(slot, glide_from, params.glide_time_ms / 1000.0);
         }
         slot
+    }
+
+    /// Count of *active* voices — those a player owns and hears (`Held` or
+    /// `Releasing`). Excludes `Idle` (free) and `Declick` (being killed) stacks,
+    /// so short declick tails living in the spare stacks do not count against
+    /// the [`N_ACTIVE`] polyphony cap.
+    fn active_count(&self) -> usize {
+        self.stacks
+            .iter()
+            .filter(|s| matches!(s.phase, VoicePhase::Held | VoicePhase::Releasing))
+            .count()
     }
 
     fn note_off_poly(&mut self, note: u8) {
@@ -382,21 +448,13 @@ impl PolyAlloc {
         }
     }
 
-    /// Pick the destination slot for a new note. Priority:
-    ///
-    /// 1. A free (idle) slot. Among idle slots, vxn-1's rule (ticket 0125):
-    ///    take the *voiced* one whose last sounding pitch is nearest the new
-    ///    note, so always-glide slides over a short, musical interval. If no
-    ///    idle slot has sounded yet, take the first unvoiced idle slot (it
-    ///    snaps — nothing to glide from).
-    /// 2. Steal the oldest at/past Sustain (ties broken by lowest note),
-    ///    preferring voices whose physical key is already *up* — a
-    ///    pedal-sustained note (`held_by_pedal`) or a `Releasing` tail — over a
-    ///    key the player is still holding. So a steal under a held sustain pedal
-    ///    takes a pedal-sustained note first; only if every stealable voice has
-    ///    its key down does it fall back to the oldest of those.
-    /// 3. Globally oldest.
-    fn pick_slot(&self, note: u8) -> usize {
+    /// Pick a free (idle) stack for a new note. Among idle stacks, vxn-1's rule
+    /// (ticket 0125): take the *voiced* one whose last sounding pitch is nearest
+    /// the new note, so always-glide slides over a short, musical interval. If no
+    /// idle stack has sounded yet, take the first unvoiced idle one (it snaps —
+    /// nothing to glide from). `None` only when every stack is busy (≥`N_ACTIVE`
+    /// sounding plus all `N_DECLICK` spares mid-declick) — a steal burst.
+    fn pick_idle(&self, note: u8) -> Option<usize> {
         let mut nearest_voiced: Option<(usize, f32)> = None;
         let mut first_unvoiced_idle: Option<usize> = None;
         for i in 0..N_STACKS {
@@ -417,49 +475,44 @@ impl PolyAlloc {
                 first_unvoiced_idle = Some(i);
             }
         }
-        if let Some((i, _)) = nearest_voiced {
-            return i;
-        }
-        if let Some(i) = first_unvoiced_idle {
-            return i;
-        }
-        // Oldest-then-lowest among all stealable voices, plus the same among
-        // only those whose key is already up (pedal-held or releasing). The
-        // key-up set wins when non-empty so a held pedal sheds its sustained
-        // notes before a key the player is still pressing.
-        let mut best: Option<(usize, u64, u8)> = None;
-        let mut best_keyup: Option<(usize, u64, u8)> = None;
-        let older = |cand: (usize, u64, u8), b: Option<(usize, u64, u8)>| match b {
+        nearest_voiced.map(|(i, _)| i).or(first_unvoiced_idle)
+    }
+
+    /// Pick the voice to retire when at the polyphony cap. The *quietest* active
+    /// voice (lowest carrier amplitude, ties broken by oldest), preferring those
+    /// whose physical key is already *up* — a pedal-sustained note
+    /// (`held_by_pedal`) or a `Releasing` tail — over a key the player is still
+    /// holding. So a steal under a held sustain pedal sheds a pedal-sustained
+    /// note first; only if every active voice has its key down does it take the
+    /// quietest of those. Quietest-first makes the declick the least audible (a
+    /// near-silent voice's tail is already inaudible). Returns `None` only if no
+    /// voice is at/past Sustain yet (every active voice still attacking).
+    fn pick_victim(&self) -> Option<usize> {
+        let mut best: Option<(usize, f32, u64)> = None;
+        let mut best_keyup: Option<(usize, f32, u64)> = None;
+        let quieter = |cand: (usize, f32, u64), b: Option<(usize, f32, u64)>| match b {
             Some(b) if b.1 < cand.1 || (b.1 == cand.1 && b.2 <= cand.2) => b,
             _ => cand,
         };
         for i in 0..N_STACKS {
-            // A voice already being killed (declick fade) is not a steal target.
-            let stealable = self.stacks[i].phase != VoicePhase::Declick
-                && self.stacks[i]
-                    .ops
-                    .iter()
-                    .any(|o| matches!(o.eg.stage, EgStage::Sustain | EgStage::Release));
+            // Any *active* voice is a valid victim (declick fades it from its
+            // current level regardless of EG stage). Idle/Declick stacks are not.
+            // This matches `active_count` exactly, so at the cap a victim always
+            // exists. Attacking voices have low carrier level, so the quietest
+            // pick rarely lands on one anyway.
+            let stealable = matches!(
+                self.stacks[i].phase,
+                VoicePhase::Held | VoicePhase::Releasing
+            );
             if stealable {
-                let cand = (i, self.seq[i], self.stacks[i].note);
-                best = Some(older(cand, best));
+                let cand = (i, self.stacks[i].carrier_level(), self.seq[i]);
+                best = Some(quieter(cand, best));
                 if self.held_by_pedal[i] || self.stacks[i].phase == VoicePhase::Releasing {
-                    best_keyup = Some(older(cand, best_keyup));
+                    best_keyup = Some(quieter(cand, best_keyup));
                 }
             }
         }
-        if let Some((i, _, _)) = best_keyup.or(best) {
-            return i;
-        }
-        let mut min_seq = IDLE_SEQ;
-        let mut min_i = 0;
-        for i in 0..N_STACKS {
-            if self.seq[i] < min_seq {
-                min_seq = self.seq[i];
-                min_i = i;
-            }
-        }
-        min_i
+        best_keyup.or(best).map(|(i, _, _)| i)
     }
 
     // --- Solo internals -----------------------------------------------------
@@ -506,7 +559,12 @@ impl PolyAlloc {
         // LFO2 / envelopes on the *new* slot only — the outgoing voice keeps
         // running while it fades, so no mid-phrase glitch.
         let prev = self.solo_slot;
-        let slot = self.pick_slot(note);
+        // Solo is monophonic — at most one active voice plus declick tails — so
+        // an idle stack is always free; fall back defensively to a victim.
+        let slot = self
+            .pick_idle(note)
+            .or_else(|| self.pick_victim())
+            .unwrap_or(0);
         self.claim_slot(slot, counter);
         self.stacks[slot].note_on(sp, vp, note, velocity, self.sample_rate, counter);
         self.stacks[slot].set_bend(self.bend_st);
@@ -579,7 +637,10 @@ impl PolyAlloc {
                 self.apply_solo_glide(cur, glide_from, params, prev);
             } else {
                 // Crossfade the fallback onto a fresh voice; declick the released.
-                let slot = self.pick_slot(prev);
+                let slot = self
+                    .pick_idle(prev)
+                    .or_else(|| self.pick_victim())
+                    .unwrap_or(0);
                 self.claim_slot(slot, counter);
                 self.stacks[slot].note_on(sp, vp, prev, vel, self.sample_rate, counter);
                 self.stacks[slot].set_bend(self.bend_st);
@@ -691,6 +752,7 @@ impl PolyAlloc {
 mod tests {
     use super::*;
     use vxn2_dsp::algo::N_OPS;
+    use vxn2_dsp::eg::EgStage;
     use vxn2_dsp::op::OpParams;
     use vxn2_dsp::stack::{StackDistrib, stack_tick_mono, stack_tick_stereo};
 
@@ -870,21 +932,27 @@ mod tests {
         assert!(alloc.stacks[0].is_idle());
     }
 
+    /// A note past the active cap holds polyphony at `N_ACTIVE`: the new note
+    /// sounds, one voice is shed (declicked), and the count of owned voices is
+    /// unchanged. Which voice is shed depends on the quietest-first rule + KS, so
+    /// this asserts the invariant, not the slot.
     #[test]
-    fn steal_oldest_when_polyphony_full() {
+    fn steal_caps_active_voices() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams::default();
         let sp = density1();
         let vp = fast_patch();
-        for n in 60u8..76 {
+        for n in 60u8..(60 + N_ACTIVE as u8) {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / 20 / BLK);
+        assert_eq!(alloc.active_count(), N_ACTIVE);
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        let active: Vec<u8> = alloc.stacks.iter().filter(|s| s.gate).map(|s| s.note).collect();
-        assert_eq!(active.len(), 16);
-        assert!(active.contains(&90));
-        assert!(!active.contains(&60));
+        assert_eq!(alloc.active_count(), N_ACTIVE, "steal holds the cap");
+        assert!(
+            alloc.stacks.iter().any(|s| s.gate && s.note == 90),
+            "new note sounding"
+        );
     }
 
     #[test]
@@ -1074,10 +1142,12 @@ mod tests {
         }
     }
 
-    /// Poly steal of a *Held* voice (no spare slot) reuses it in place with
-    /// legato semantics: the amp EG continues (no restart), only the pitch moves.
+    /// Poly steal at the active-voice cap: the victim is declicked *in place*
+    /// (keeps its slot/filter, fades over `DECLICK_SECS`) and the new note takes
+    /// a spare idle stack with a *fresh* attack from silence. Active voices stay
+    /// capped at `N_ACTIVE`.
     #[test]
-    fn poly_steal_of_held_voice_is_legato() {
+    fn poly_steal_declicks_victim_and_attacks_fresh() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Poly,
@@ -1086,25 +1156,40 @@ mod tests {
         };
         let sp = density1();
         let vp = fast_patch();
-        for n in 60u8..(60 + N_STACKS as u8) {
+        for n in 60u8..(60 + N_ACTIVE as u8) {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain (Held)
-        // One more note: no spare slot → steal the oldest (slot 0, note 60).
+        assert_eq!(alloc.active_count(), N_ACTIVE);
+        // One more note → declick a victim, fresh-attack the new note elsewhere.
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
+        let new = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 90)
+            .expect("new note sounds 90");
+        assert_eq!(alloc.stacks[new].phase, VoicePhase::Held);
         assert_eq!(
-            alloc.stacks[0].ops[0].eg.stage,
-            EgStage::Sustain,
-            "stealing a Held voice is legato — the amp EG must not retrigger"
+            alloc.stacks[new].ops[0].eg.stage,
+            EgStage::Attack,
+            "new note is a fresh onset, not a reused voice"
         );
+        assert!(
+            alloc.stacks[new].ops[0].eg.level < 1.0e-3,
+            "fresh attack starts from silence"
+        );
+        assert!(
+            alloc.stacks.iter().any(|s| s.phase == VoicePhase::Declick),
+            "the stolen victim is declicking in place"
+        );
+        // Still exactly N_ACTIVE owned voices — the steal did not grow polyphony.
+        assert_eq!(alloc.active_count(), N_ACTIVE);
     }
 
-    /// Poly steal of a *Releasing* voice (the common case) restarts the amp EG
-    /// from its current level — no reset to 0, no hard retrigger.
+    /// A steal of a *Releasing* voice declicks the (quietest) tail and fresh-
+    /// attacks the new note on a spare stack — no in-place reuse.
     #[test]
-    fn poly_steal_of_releasing_voice_restarts_eg() {
+    fn poly_steal_of_releasing_declicks_and_attacks_fresh() {
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams {
             assign_mode: AssignMode::Poly,
@@ -1113,36 +1198,33 @@ mod tests {
         };
         let sp = density1();
         let vp = fast_patch();
-        for n in 60u8..(60 + N_STACKS as u8) {
+        for n in 60u8..(60 + N_ACTIVE as u8) {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / BLK);
-        for n in 60u8..(60 + N_STACKS as u8) {
+        for n in 60u8..(60 + N_ACTIVE as u8) {
             alloc.note_off(&params, &sp, &vp, n); // all → Releasing
         }
-        // Steal immediately (no intervening block_tick): the voices are still
-        // Releasing at their sustain level, not yet decayed/idle.
-        let level_before = alloc.stacks[0].ops[0].eg.level;
-        assert!(level_before > 0.0, "fixture: releasing voice still audible");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Releasing);
+        assert_eq!(alloc.active_count(), N_ACTIVE, "releasing voices count as active");
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        assert_eq!(alloc.stacks[0].note, 90, "steal reuses the oldest slot");
-        assert_eq!(alloc.stacks[0].phase, VoicePhase::Held);
-        assert_eq!(
-            alloc.stacks[0].ops[0].eg.stage,
-            EgStage::Attack,
-            "stealing a Releasing voice restarts the amp EG"
-        );
+        let new = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 90)
+            .expect("new note sounds 90");
+        assert_eq!(alloc.stacks[new].ops[0].eg.stage, EgStage::Attack);
+        assert!(alloc.stacks[new].ops[0].eg.level < 1.0e-3, "fresh from silence");
         assert!(
-            alloc.stacks[0].ops[0].eg.level > 0.0,
-            "EG restarts from the current level, not 0"
+            alloc.stacks.iter().any(|s| s.phase == VoicePhase::Declick),
+            "a releasing tail was declicked to make room"
         );
     }
 
-    /// Poly steal under a held sustain pedal must take a pedal-sustained note
-    /// (key already up) before a key the player is still holding, and must drop
-    /// the stolen slot's pedal-hold flag so a later pedal-up does not try to
-    /// re-release the now-reused voice.
+    /// At the cap under a held sustain pedal, the victim is a pedal-sustained
+    /// note (key already up) before a key the player is still holding. The
+    /// pedal-held voice is declicked (its pedal flag cleared so a later pedal-up
+    /// does not re-release it) and the new note attacks fresh; the held key
+    /// survives.
     #[test]
     fn poly_steal_prefers_pedal_held_over_active_key() {
         let mut alloc = PolyAlloc::new(SR);
@@ -1153,13 +1235,13 @@ mod tests {
         };
         let sp = density1();
         let vp = fast_patch();
-        // Fill all 16 slots; note 60 (slot 0) is the oldest.
-        for n in 60u8..(60 + N_STACKS as u8) {
+        // Fill the active cap; note 60 is the oldest.
+        for n in 60u8..(60 + N_ACTIVE as u8) {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain (Held)
-        // Pedal down, lift one *middle* key (70) — it is held by the pedal now,
-        // gate still high, but its physical key is up.
+        // Pedal down, lift one *middle* key (70) — held by the pedal now, gate
+        // high, physical key up. (Still N_ACTIVE active: pedal-held counts.)
         alloc.set_sustain(true);
         alloc.note_off(&params, &sp, &vp, 70);
         let pedal_slot = alloc
@@ -1168,22 +1250,235 @@ mod tests {
             .position(|s| s.note == 70)
             .expect("note 70 sounding");
         assert!(alloc.held_by_pedal[pedal_slot], "70 deferred by pedal");
-        assert!(alloc.stacks[pedal_slot].gate, "pedal keeps the gate high");
-        // No spare slot: the steal must take the pedal-held 70, not the oldest 60.
+        assert_eq!(alloc.active_count(), N_ACTIVE);
+        // At the cap → the victim must be the pedal-held 70, not the held 60.
         alloc.note_on(&params, &sp, &vp, 90, 100);
-        assert_eq!(alloc.stacks[pedal_slot].note, 90, "stole the pedal-held voice");
+        assert_eq!(
+            alloc.stacks[pedal_slot].phase,
+            VoicePhase::Declick,
+            "the pedal-held voice is the victim"
+        );
         assert!(
             !alloc.held_by_pedal[pedal_slot],
-            "stolen slot dropped its pedal-hold flag"
+            "declicked victim dropped its pedal-hold flag"
         );
-        let notes: Vec<u8> = alloc.stacks.iter().filter(|s| s.gate).map(|s| s.note).collect();
-        assert!(notes.contains(&60), "oldest active key must survive the steal");
-        assert!(notes.contains(&90), "new note sounding");
-        assert!(!notes.contains(&70), "pedal-held note was stolen");
-        // Pedal up: nothing left flagged, so the reused voice is untouched.
+        // 60 (held key) survives; 90 sounds fresh.
+        let new = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 90)
+            .expect("new note sounding");
+        assert_eq!(alloc.stacks[new].ops[0].eg.stage, EgStage::Attack);
+        assert!(
+            alloc.stacks.iter().any(|s| s.gate && s.note == 60),
+            "oldest held key must survive the steal"
+        );
+        // Pedal up: nothing flagged points at the declicked victim.
         alloc.set_sustain(false);
-        assert!(alloc.stacks[pedal_slot].gate, "reused voice not re-released by pedal-up");
-        assert_eq!(alloc.stacks[pedal_slot].note, 90);
+        assert!(!alloc.held_by_pedal[pedal_slot]);
+    }
+
+    /// At the cap, the victim is the *quietest* active voice (lowest carrier
+    /// amplitude), so the declick is least audible. A note struck at near-zero
+    /// velocity (high `vel_sens`, KS off) is declicked over louder, older notes.
+    #[test]
+    fn poly_steal_picks_quietest_voice() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams {
+            assign_mode: AssignMode::Poly,
+            legato: false,
+            glide_time_ms: 0.0,
+        };
+        let sp = density1();
+        let mut vp = fast_patch();
+        // Velocity is the only loudness lever here: max `vel_sens`, KS off (so
+        // pitch does not also scale the carrier level and confound the pick).
+        for op in &mut vp.ops {
+            op.vel_sens = 7;
+            op.ks_l_depth = 0;
+            op.ks_r_depth = 0;
+        }
+        // Fill the cap. Note 68 struck softly → quietest carrier; the rest hard.
+        let quiet_note = 68u8;
+        for n in 60u8..(60 + N_ACTIVE as u8) {
+            let vel = if n == quiet_note { 1 } else { 127 };
+            alloc.note_on(&params, &sp, &vp, n, vel);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK); // all reach Sustain
+        let quiet_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == quiet_note)
+            .expect("soft note sounding");
+        let oldest_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == 60)
+            .expect("oldest note sounding");
+        assert!(
+            alloc.stacks[quiet_slot].carrier_level() < alloc.stacks[oldest_slot].carrier_level(),
+            "fixture: soft note must be the quieter carrier"
+        );
+        // At the cap → declick the quietest (68), not the louder oldest (60).
+        alloc.note_on(&params, &sp, &vp, 90, 100);
+        assert_eq!(
+            alloc.stacks[quiet_slot].phase,
+            VoicePhase::Declick,
+            "quietest voice is the victim"
+        );
+        assert_eq!(
+            alloc.stacks[oldest_slot].note, 60,
+            "louder oldest voice survives"
+        );
+        assert!(
+            alloc.stacks[oldest_slot].gate,
+            "survivor still held"
+        );
+        assert!(
+            alloc.stacks.iter().any(|s| s.gate && s.note == 90),
+            "new note sounds fresh on a spare stack"
+        );
+    }
+
+    /// Re-pressing a note already held by the sustain pedal retires the old
+    /// voice (Declick) and starts the new note from a clean retrigger on a
+    /// fresh slot. The new key, on later release, enters the sustain buffer
+    /// in its own right.
+    #[test]
+    fn poly_repress_pedal_held_note_declicks_old_and_attacks_fresh() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+        let first_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 60)
+            .expect("first 60 voice");
+        run_blocks(&mut alloc, (SR as usize) / BLK); // reach Sustain (Held)
+        alloc.set_sustain(true);
+        alloc.note_off(&params, &sp, &vp, 60); // pedal-held now
+        assert!(alloc.held_by_pedal[first_slot]);
+        assert!(alloc.stacks[first_slot].gate);
+
+        alloc.note_on(&params, &sp, &vp, 60, 100);
+
+        // Old voice declicking, no longer pedal-flagged.
+        assert_eq!(
+            alloc.stacks[first_slot].phase,
+            VoicePhase::Declick,
+            "pedal-held dup retired into Declick"
+        );
+        assert!(
+            !alloc.held_by_pedal[first_slot],
+            "declicked slot cleared from sustain buffer"
+        );
+        // New voice on a different slot, fresh Attack from level 0.
+        let new_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.gate && s.note == 60 && s.phase == VoicePhase::Held)
+            .expect("fresh 60 voice");
+        assert_ne!(new_slot, first_slot, "new note took a fresh slot");
+        assert_eq!(alloc.stacks[new_slot].ops[0].eg.stage, EgStage::Attack);
+        assert!(
+            alloc.stacks[new_slot].ops[0].eg.level < 1.0e-3,
+            "fresh attack starts from 0, not legato-continued"
+        );
+
+        // Release the new key: still under pedal, so it joins the sustain buffer.
+        alloc.note_off(&params, &sp, &vp, 60);
+        assert!(
+            alloc.held_by_pedal[new_slot],
+            "new voice now in sustain buffer"
+        );
+        assert!(alloc.stacks[new_slot].gate, "still held by pedal");
+
+        // Pedal up gates the new voice off.
+        alloc.set_sustain(false);
+        assert!(!alloc.held_by_pedal[new_slot]);
+    }
+
+    /// Re-press of a pedal-held note retires that voice (declick) and starts the
+    /// new note fresh on a spare stack — no doubling. With declick headroom a
+    /// spare is always free, so the dup is declicked rather than reused in place.
+    #[test]
+    fn poly_repress_pedal_held_declicks_dup_attacks_fresh() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        for n in 60u8..(60 + N_ACTIVE as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK);
+        alloc.set_sustain(true);
+        for n in 60u8..(60 + N_ACTIVE as u8) {
+            alloc.note_off(&params, &sp, &vp, n); // all pedal-held
+        }
+        let dup_note = 65u8;
+        let dup_slot = alloc
+            .stacks
+            .iter()
+            .position(|s| s.note == dup_note)
+            .expect("dup note sounding");
+        assert!(alloc.held_by_pedal[dup_slot]);
+
+        alloc.note_on(&params, &sp, &vp, dup_note, 100);
+
+        // The pedal-held dup is declicked (flag cleared); the new note attacks
+        // fresh on a different stack. Exactly one *Held* voice sounds the note.
+        assert_eq!(alloc.stacks[dup_slot].phase, VoicePhase::Declick);
+        assert!(!alloc.held_by_pedal[dup_slot], "declicked dup cleared its flag");
+        let held_dup = alloc
+            .stacks
+            .iter()
+            .filter(|s| s.phase == VoicePhase::Held && s.note == dup_note)
+            .count();
+        assert_eq!(held_dup, 1, "no doubling — one fresh voice for the re-press");
+        let fresh = alloc
+            .stacks
+            .iter()
+            .position(|s| s.phase == VoicePhase::Held && s.note == dup_note)
+            .unwrap();
+        assert_ne!(fresh, dup_slot, "fresh note took a spare stack");
+        assert_eq!(alloc.stacks[fresh].ops[0].eg.stage, EgStage::Attack);
+    }
+
+    /// Steal burst exhausting the declick headroom: once every spare is mid-
+    /// declick, a further steal falls back to in-place reuse of the victim. No
+    /// panic, polyphony stays at the cap, output stays finite.
+    #[test]
+    fn poly_steal_burst_falls_back_in_place() {
+        let mut alloc = PolyAlloc::new(SR);
+        let params = AllocParams::default();
+        let sp = density1();
+        let vp = fast_patch();
+        for n in 60u8..(60 + N_ACTIVE as u8) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+        }
+        run_blocks(&mut alloc, (SR as usize) / BLK);
+        // Fire more steals than the headroom with NO block_tick between, so the
+        // declick lanes never free — the last few hit the in-place fallback.
+        for n in 90u8..(90 + N_DECLICK as u8 + 3) {
+            alloc.note_on(&params, &sp, &vp, n, 100);
+            assert!(alloc.active_count() <= N_ACTIVE, "cap never exceeded");
+        }
+        // Render: no panic, finite output.
+        let mut peak = 0.0_f32;
+        for _ in 0..64 {
+            alloc.block_tick(BLK_DT);
+            for s in &mut alloc.stacks {
+                s.eg_tick(BLK_DT);
+                for _ in 0..BLK {
+                    let (l, r) = stack_tick_stereo(s);
+                    assert!(l.is_finite() && r.is_finite());
+                    peak = peak.max(l.abs()).max(r.abs());
+                }
+            }
+        }
+        assert!(peak < 40.0, "peak too high: {peak}");
     }
 
     /// Overlapping distinct notes (a chord) take *fresh* voices and must not

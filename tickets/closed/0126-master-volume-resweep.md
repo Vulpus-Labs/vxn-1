@@ -70,3 +70,20 @@ ramps shift loudness — see that dependency below).
     final gain-match *after* 0125 is ear-verified, then re-run the converter
     (one command) if the target shifts.
   - Spot-check loudest (6-carrier organ) vs quietest categories by ear.
+
+## Close-out (2026-06-27)
+
+- **Ear-verified** after 0125's ear-check (the dependency that held this open):
+  exponential ramps did not shift the gain-match meaningfully — no converter
+  re-run / `TARGET_PEAK_DB` retune needed. Loudest (6-carrier organ) vs quietest
+  categories spot-checked by ear; consistent perceived loudness, no clipping, no
+  inaudibly-quiet patches.
+- Converter folded into repo at [vxn-2/tools/](../../vxn-2/tools/)
+  (`dx7_to_vxn2.py` + `dx7decode.py` + README); ROM dumps gitignored. Regen is
+  one deterministic command.
+- Master-volume heuristic recomputed for the log curve (carrier-loudness
+  `Σ 2^((OL-99)/8)` gain-matched to `TARGET_PEAK_DB = -3` dBFS, clamped
+  `[-24,+6]`). 189 auto presets re-swept (master-volume-only diff, verified
+  line-by-line); 5 hand-made `KEEP` presets hand gain-matched by ear.
+- `factory` lib tests green (parses clean, no incoherent routes, loudest within
+  master-volume range). Median ≈ −9 dBFS, loudest ≈ −3.

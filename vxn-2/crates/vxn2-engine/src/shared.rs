@@ -30,6 +30,7 @@ use vxn2_dsp::envelope::{AdsrShape, ModEnvParams, PitchEgParams};
 use vxn2_dsp::filter::{FilterMode, FilterSlope};
 use vxn2_dsp::lfo::{Lfo1Params, Lfo2Params, LfoShape};
 use vxn2_dsp::op::{OpParams, RatioMode};
+use vxn2_dsp::dynamics::DynamicsParams;
 use vxn2_dsp::phaser::PhaserParams;
 use vxn2_dsp::reverb::FdnReverbParams;
 use vxn2_dsp::stack::{StackDistrib, StackParams};
@@ -42,7 +43,7 @@ use crate::modulation::PatchModParams;
 use crate::params::{
     N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
     OFF_FILTER, OFF_HP, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG,
-    OFF_PHASER, OFF_REVERB, OFF_STACK,
+    OFF_DYNAMICS, OFF_PHASER, OFF_REVERB, OFF_STACK,
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
@@ -162,16 +163,30 @@ pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
 ///   are unchanged and v≤14 blobs decode 1:1; the new trailer is seeded to
 ///   [`default_eg_curve_meta`] (every op `Exp` → the DX7-faithful log curve is
 ///   the default, ADR 0007, so a migrated patch is bit-identical).
-pub const BLOB_VERSION: u16 = 15;
+/// - v16: appends the 8-param Dynamics block (E028 — `dyn-on`, `dyn-threshold`,
+///   `dyn-ratio`, `dyn-attack`, `dyn-release`, `dyn-makeup`, `dyn-drive`,
+///   `dyn-mix`) at the very end of the flat space — param count 201 → 209.
+///   It sits past every existing id (filter / limiter / hp / phaser), so older
+///   blobs map 1:1; the new ids seed to their defaults (`dyn-on` off → an
+///   unchanged patch stays bit-identical).
+pub const BLOB_VERSION: u16 = 16;
 /// Number of params in the Filter section (the trailing block).
 const N_FILTER_PARAMS: usize = 9;
 /// Number of params appended in v14 (the 5-param Phaser block, E025). Appended
 /// past every existing id, so older blobs map 1:1 and the five new ids seed to
 /// their defaults (`phaser-on` off → an unchanged patch stays bit-identical).
 const N_PHASER_PARAMS_V14: usize = 5;
+/// Number of params appended in v16 (the 8-param Dynamics block, E028).
+/// Appended past the Phaser block; `dyn-on` off → an unchanged patch stays
+/// bit-identical.
+const N_DYNAMICS_PARAMS_V16: usize = 8;
+/// Param count in v14 / v15 blobs (before the v16 Dynamics block). The live
+/// total minus the trailing Dynamics append; v15 added only a packed trailer
+/// (no new CLAP params), so v14 and v15 share the same value-block count.
+const LEGACY_V14_PARAM_COUNT: usize = TOTAL_PARAMS - N_DYNAMICS_PARAMS_V16; // 201
 /// Param count in v13 blobs (before the v14 Phaser block). Live total minus
-/// the trailing Phaser append.
-const LEGACY_V13_PARAM_COUNT: usize = TOTAL_PARAMS - N_PHASER_PARAMS_V14; // 196
+/// the trailing Phaser + Dynamics appends.
+const LEGACY_V13_PARAM_COUNT: usize = LEGACY_V14_PARAM_COUNT - N_PHASER_PARAMS_V14; // 196
 /// Number of params appended in v13 (`hp-cutoff`).
 const N_HP_PARAMS_V13: usize = 1;
 /// Number of filter params appended in v8 (key-track + cutoff-tuned).
@@ -913,6 +928,7 @@ impl ParamModel for SharedParams {
             9 | 10 => LEGACY_V10_PARAM_COUNT,
             11 | 12 => LEGACY_V12_PARAM_COUNT,
             13 => LEGACY_V13_PARAM_COUNT,
+            14 | 15 => LEGACY_V14_PARAM_COUNT,
             _ => TOTAL_PARAMS,
         };
         if count as usize != expected_count {
@@ -1001,46 +1017,73 @@ impl ParamModel for SharedParams {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
-        // v≤6 blobs predate the Filter section (the trailing `N_FILTER_PARAMS`
-        // ids). They map 1:1 above; seed the new ids to their defaults so a
-        // load can't leave them at stale store contents. `filter-enable`
-        // defaults off, keeping a migrated patch bit-identical.
+        // Trailing-tail seeders: each block writes descriptor defaults into the
+        // ids appended *after* the legacy version, so a load can't leave them
+        // at stale store contents. Ranges count back from `TOTAL_PARAMS` by
+        // summing the per-version trailing appends, so a new append (filter /
+        // limiter / hp / phaser / dynamics …) only needs to be added to each
+        // affected block's subtraction list. Cascading overlaps are idempotent
+        // default writes. `filter-enable`, `limiter-on`, `phaser-on`, and
+        // `dyn-on` all default off, `hp-cutoff` defaults to its 20 Hz floor
+        // ("off") → every migrated patch stays bit-identical.
         if version <= 6 {
-            for id in
-                (TOTAL_PARAMS - N_FILTER_PARAMS - N_LIMITER_PARAMS_V9 - N_HP_PARAMS_V13)..TOTAL_PARAMS
+            // v≤6 predates the Filter section (v7/v8), limiter (v9), hp (v13),
+            // phaser (v14), and dynamics (v16).
+            for id in (TOTAL_PARAMS
+                - N_FILTER_PARAMS
+                - N_LIMITER_PARAMS_V9
+                - N_HP_PARAMS_V13
+                - N_PHASER_PARAMS_V14
+                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
             {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
-        // v≤7 blobs predate `filter-keytrack` + `filter-cutoff-tuned` (the two
-        // trailing filter ids). They map 1:1 above; seed those plus the v9
-        // `limiter-on` id to their defaults (keytrack 0, tuned off, limiter off
-        // → a migrated patch stays bit-identical). v≤6 already covered these via
-        // the wider block above.
         if version <= 7 {
+            // v≤7 predates the v8 filter additions, limiter, hp, phaser, dynamics.
             for id in (TOTAL_PARAMS
                 - N_FILTER_PARAMS_V8
                 - N_LIMITER_PARAMS_V9
-                - N_HP_PARAMS_V13)..TOTAL_PARAMS
+                - N_HP_PARAMS_V13
+                - N_PHASER_PARAMS_V14
+                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
             {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
-        // v≤8 blobs predate `limiter-on` (the single trailing v9 id) and the
-        // v13 `hp-cutoff`. They map 1:1 above; seed both to their defaults (off
-        // / 20 Hz floor → a migrated patch stays bit-identical). v≤7 already
-        // covered these via the wider block above.
         if version <= 8 {
-            for id in (TOTAL_PARAMS - N_LIMITER_PARAMS_V9 - N_HP_PARAMS_V13)..TOTAL_PARAMS {
+            // v≤8 predates limiter, hp, phaser, dynamics.
+            for id in (TOTAL_PARAMS
+                - N_LIMITER_PARAMS_V9
+                - N_HP_PARAMS_V13
+                - N_PHASER_PARAMS_V14
+                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
+            {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
-        // v≤12 blobs predate `hp-cutoff` (the single trailing v13 id). They map
-        // 1:1 above; seed it to its default (20 Hz floor = "off" → a migrated
-        // patch stays bit-identical). v≤8 already covered it via the wider
-        // blocks above.
         if version <= 12 {
-            for id in (TOTAL_PARAMS - N_HP_PARAMS_V13)..TOTAL_PARAMS {
+            // v≤12 predates hp, phaser, dynamics.
+            for id in (TOTAL_PARAMS
+                - N_HP_PARAMS_V13
+                - N_PHASER_PARAMS_V14
+                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
+            {
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        if version <= 13 {
+            // v≤13 predates phaser, dynamics.
+            for id in
+                (TOTAL_PARAMS - N_PHASER_PARAMS_V14 - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
+            {
+                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
+            }
+        }
+        if version <= 15 {
+            // v≤15 predates the v16 Dynamics block (v15 added only a packed
+            // EG-curve trailer, no new CLAP params).
+            for id in (TOTAL_PARAMS - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS {
                 self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
             }
         }
@@ -1365,6 +1408,7 @@ pub struct EngineParams {
     pub delay: StereoDelayParams,
     pub reverb: FdnReverbParams,
     pub phaser: PhaserParams,
+    pub dynamics: DynamicsParams,
     pub master: MasterParams,
     pub filter: FilterParams,
     pub hp: HpParams,
@@ -1403,6 +1447,7 @@ impl EngineParams {
             delay: StereoDelayParams::default(),
             reverb: FdnReverbParams::default(),
             phaser: PhaserParams::default(),
+            dynamics: DynamicsParams::default(),
             master: MasterParams::default(),
             filter: FilterParams::default(),
             hp: HpParams::default(),
@@ -1481,6 +1526,19 @@ impl EngineParams {
             depth: shared.get(pb + OFF_PHASER + 2),
             feedback: shared.get(pb + OFF_PHASER + 3),
             mix: shared.get(pb + OFF_PHASER + 4),
+        };
+
+        // Dynamics (E028) — host-automation only, appended past the Phaser
+        // block. `set_from` re-clamps; the struct just carries the snapshot.
+        self.dynamics = DynamicsParams {
+            on: shared.get(pb + OFF_DYNAMICS) >= 0.5,
+            threshold_db: shared.get(pb + OFF_DYNAMICS + 1),
+            ratio: shared.get(pb + OFF_DYNAMICS + 2),
+            attack_ms: shared.get(pb + OFF_DYNAMICS + 3),
+            release_ms: shared.get(pb + OFF_DYNAMICS + 4),
+            makeup_db: shared.get(pb + OFF_DYNAMICS + 5),
+            drive_db: shared.get(pb + OFF_DYNAMICS + 6),
+            mix: shared.get(pb + OFF_DYNAMICS + 7),
         };
 
         self.master = MasterParams {
@@ -2006,17 +2064,111 @@ mod tests {
         assert_eq!(dst.eg_curve_raw(3), 0);
     }
 
-    /// A v14 blob (no EG-curve trailer) loads and seeds every op to `Exp` (the
-    /// shipped default), leaving the migrated patch bit-identical.
+    /// A v15 blob (no v16 Dynamics block) loads with the eight `dyn-*` slots
+    /// seeded to their descriptor defaults (`dyn-on` off → migrated patch is
+    /// bit-identical). Pre-dirty the dst with non-default dynamics values to
+    /// prove the seed overwrites them.
+    #[test]
+    fn v15_blob_seeds_default_dynamics() {
+        let src = SharedParams::new();
+        // Set non-default dyn-* in src so we'd see them carried through if the
+        // seed were missing — but the rewrite below strips them out anyway.
+        src.set(id_of("dyn-on").unwrap(), 1.0);
+        src.set(id_of("dyn-drive").unwrap(), 18.0);
+
+        let full = src.snapshot_bytes();
+        // A v15 blob: drop the v16 Dynamics value tail, stamp version=15 with
+        // the legacy param count. Matrix + KS + EG trailers carry through.
+        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let trailers = &full[values_end..];
+        let dyn_drop = N_DYNAMICS_PARAMS_V16 * 4;
+        let mut bytes = Vec::with_capacity(full.len() - dyn_drop);
+        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
+        bytes[4..6].copy_from_slice(&15u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(LEGACY_V14_PARAM_COUNT as u16).to_le_bytes());
+        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - dyn_drop]);
+        bytes.extend_from_slice(trailers);
+
+        let dst = SharedParams::new();
+        // Pre-dirty dst to prove the seed actually overwrites stale values.
+        dst.set(id_of("dyn-on").unwrap(), 1.0);
+        dst.set(id_of("dyn-drive").unwrap(), 24.0);
+        dst.load_bytes(&bytes).unwrap();
+        for name in [
+            "dyn-on",
+            "dyn-threshold",
+            "dyn-ratio",
+            "dyn-attack",
+            "dyn-release",
+            "dyn-makeup",
+            "dyn-drive",
+            "dyn-mix",
+        ] {
+            let id = id_of(name).unwrap();
+            assert_eq!(dst.get(id), PARAMS[id].default, "{name} should seed to default");
+        }
+    }
+
+    /// A live v16 blob round-trips every `dyn-*` slot byte-for-byte — the
+    /// engine-side decode is the only consumer between save and load.
+    #[test]
+    fn snapshot_round_trips_dynamics_params() {
+        let src = SharedParams::new();
+        let cases: &[(&str, f32)] = &[
+            ("dyn-on", 1.0),
+            ("dyn-threshold", -24.0),
+            ("dyn-ratio", 8.0),
+            ("dyn-attack", 3.5),
+            ("dyn-release", 150.0),
+            ("dyn-makeup", 6.0),
+            ("dyn-drive", 18.0),
+            ("dyn-mix", 0.75),
+        ];
+        for &(name, v) in cases {
+            src.set(id_of(name).unwrap(), v);
+        }
+
+        let bytes = src.snapshot_bytes();
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
+
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+        for &(name, v) in cases {
+            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
+        }
+
+        // And the engine decode lands the same values.
+        let ep = EngineParams::from_shared(&dst);
+        assert!(ep.dynamics.on);
+        assert_eq!(ep.dynamics.threshold_db, -24.0);
+        assert_eq!(ep.dynamics.ratio, 8.0);
+        assert_eq!(ep.dynamics.attack_ms, 3.5);
+        assert_eq!(ep.dynamics.release_ms, 150.0);
+        assert_eq!(ep.dynamics.makeup_db, 6.0);
+        assert_eq!(ep.dynamics.drive_db, 18.0);
+        assert_eq!(ep.dynamics.mix, 0.75);
+    }
+
+    /// A v14 blob (no EG-curve trailer, no v16 Dynamics block) loads and seeds
+    /// every op to `Exp` (the shipped default), leaving the migrated patch
+    /// bit-identical.
     #[test]
     fn v14_blob_seeds_default_eg_curves() {
         let src = SharedParams::new();
         src.set_eg_curve_raw(2, 1); // Lin — must be discarded by the v14 seed
         let full = src.snapshot_bytes();
-        // A v14 blob: drop the v15 EG trailer and stamp the version back to 14.
-        let eg_end = full.len() - BLOB_EG_CURVE_LEN;
-        let mut bytes = full[..eg_end].to_vec();
+        // A v14 blob: drop the v16 Dynamics value tail, the v15 EG trailer, and
+        // stamp the version back to 14 with the legacy param count.
+        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        let matrix_end = full.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
+        let dyn_drop = N_DYNAMICS_PARAMS_V16 * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
         bytes[4..6].copy_from_slice(&14u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(LEGACY_V14_PARAM_COUNT as u16).to_le_bytes());
+        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - dyn_drop]);
+        bytes.extend_from_slice(&full[values_end..matrix_end]);
+        bytes.extend_from_slice(&full[matrix_end..matrix_end + BLOB_KS_CURVE_LEN]);
 
         let dst = SharedParams::new();
         // Pre-dirty dst with a non-default curve to prove the seed overwrites.
@@ -2036,12 +2188,13 @@ mod tests {
         // field to v11 and strip the trailer to simulate an old blob.
         src.set_ks_curve_raw(2, 1, 3);
         let full = src.snapshot_bytes();
-        // A v11 blob: drop the v12 KS trailer, the v14 Phaser block, and the
-        // trailing v13 `hp-cutoff` value, restore the v11 param count and stamp
-        // the version.
+        // A v11 blob: drop the v16 Dynamics block, the v14 Phaser block, the
+        // trailing v13 `hp-cutoff` value, and the v12 KS / v15 EG trailers;
+        // restore the v11 param count and stamp the version.
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
         let matrix_end = full.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
-        let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
+        let tail_drop =
+            (N_DYNAMICS_PARAMS_V16 + N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
         bytes[4..6].copy_from_slice(&11u16.to_le_bytes());
@@ -2106,13 +2259,15 @@ mod tests {
             out.extend_from_slice(&bytes[start..keep_end]);
         }
         // Post-op-block value params + matrix trailer copy through — but drop
-        // the trailing v14 Phaser block + v13 `hp-cutoff` value (no v≤12 blob
-        // carries them), the v15 EG-curve trailer (no v≤14 blob carries it), and
-        // the v12 KS-curve trailer (no v≤11 blob carries it).
+        // the trailing v16 Dynamics block, v14 Phaser block, and v13 `hp-cutoff`
+        // value (no v≤12 blob carries any of them), the v15 EG-curve trailer
+        // (no v≤14 blob carries it), and the v12 KS-curve trailer (no v≤11 blob
+        // carries it).
         let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
         let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
         let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
-        let tail_drop = (N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
+        let tail_drop =
+            (N_DYNAMICS_PARAMS_V16 + N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
         out.extend_from_slice(&bytes[rest..values_end - tail_drop]);
         out.extend_from_slice(&bytes[values_end..matrix_end]);
         out

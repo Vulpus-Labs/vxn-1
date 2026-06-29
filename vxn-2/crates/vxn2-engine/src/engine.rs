@@ -35,6 +35,7 @@
 use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
+use vxn2_dsp::dynamics::DynamicsBlock;
 use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::phaser::StereoPhaser;
@@ -110,7 +111,7 @@ const FILTER_OUT_MAKEUP: f32 = 1.0 / FILTER_IN_TRIM;
 /// Key-tracking cutoff offset in octaves: `(note − 12)/12 × amount`, centred on
 /// C0 (`amount` ∈ [0,1]). With the base cutoff at the [`CUTOFF_MIN_HZ`] C0
 /// floor, `amount = 1` makes the resulting `CUTOFF_MIN_HZ · 2^offset` equal the
-/// played note's pitch (`midi_to_hz`), i.e. the cutoff tracks the keyboard 1:1.
+/// played note's pitch (`note_to_hz`), i.e. the cutoff tracks the keyboard 1:1.
 #[inline]
 fn keytrack_octaves(note: u8, amount: f32) -> f32 {
     (note as f32 - KEYTRACK_CENTRE_NOTE) / 12.0 * amount
@@ -164,6 +165,41 @@ const PITCH_SMOOTH_EPS_ST: f32 = 1e-4;
 /// as inactive, so a settled sound releases the per-sample advance.
 const RAMP_SNAP_EPS: f32 = 1e-9;
 
+/// Per-stack ramp bookkeeping (ticket 0119). One struct per slot, replacing the
+/// five lockstep parallel `Vec`s the engine used to carry (`level_mod_inc`,
+/// `pan_l_inc`, `pan_r_inc`, `phase_mod_inc`, `prev_eg_level`) — adding a new
+/// ramp type now touches only this struct, not five parallel index sites.
+///
+/// `level_mod` / `pan_l` / `pan_r` are per-sample f32 increments; `phase_mod` is
+/// a signed Q32 increment (wrapping, so the cyclic phase ramp is exact). All
+/// four glide their `stack.*` field linearly across the block while the slot's
+/// `ramp_live` flag is set. `prev_eg` is the EG level the previous block's ramp
+/// targeted, used to rebase the level ramp across the EG's block-edge march
+/// (0077). `STACK_LANES` (8) and `N_OPS` (6) are both ≤ 32, so `derive(Default)`
+/// (and `Clone`, for `vec![_; N_STACKS]`) cover the array fields.
+#[derive(Clone, Default)]
+struct RampState {
+    level_mod: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
+    pan_l: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
+    pan_r: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
+    phase_mod: [[i32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
+    prev_eg: [f32; vxn2_dsp::algo::N_OPS],
+}
+
+/// Block-rate outputs of [`Engine::cook_stacks_block`] that
+/// [`Engine::process_block`] consumes after the per-stack loop: the FX-mix
+/// accumulators (averaged at lane 0 across active stacks), the patch-global
+/// LFO1-rate octave accumulator (cached for next block, one-block latency), and
+/// the active-stack count used as the averaging divisor. Per-stack ramp state is
+/// written straight into `self.ramps` / `self.ramp_live` inside the cook.
+#[derive(Default)]
+struct StackBlockSummary {
+    fx_delay_mix_sum: f32,
+    fx_reverb_mix_sum: f32,
+    lfo1_rate_oct_sum: f32,
+    fx_active: u32,
+}
+
 /// Top-level audio engine. Owns every sub-engine plus the per-block
 /// parameter snapshot.
 pub struct Engine {
@@ -171,8 +207,12 @@ pub struct Engine {
     pub matrix: MatrixTable,
     pub patch_mod: PatchMod,
     pub cleanup: CleanupFilter,
-    /// Stereo phaser, inserted pre-delay in the FX bus (E025). Bypassed
-    /// bit-exactly when `phaser-on = 0`.
+    /// Dynamics block (comp + sat), inserted **first** in the FX bus (E028) so
+    /// it evens FM transients before phaser / delay / reverb accumulate them.
+    /// Bypassed bit-exactly when `dyn-on = 0`.
+    pub dynamics: DynamicsBlock,
+    /// Stereo phaser, inserted between dynamics and delay in the FX bus (E025).
+    /// Bypassed bit-exactly when `phaser-on = 0`.
     pub phaser: StereoPhaser,
     pub delay: StereoDelay,
     pub reverb: FdnReverb,
@@ -239,26 +279,16 @@ pub struct Engine {
     /// otherwise; 0 when un-targeted → bit-identical off-path.
     stack_detune_mod: [f32; N_STACKS],
     stack_spread_mod: [f32; N_STACKS],
-    /// Per-stack per-sample increments ramping `stack.op_level_mod` and the
-    /// folded pan gains `stack.pan_l` / `pan_r` linearly to each block's
-    /// matrix targets (ticket 0074 — kills block-edge zipper on level/pan
-    /// routes). Engine-owned so the `stack_tick_*` hot path stays untouched;
-    /// the render loop advances them once per sample while live.
-    level_mod_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
-    pan_l_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
-    pan_r_inc: Vec<[[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
-    /// Per-stack per-sample signed Q32 increments ramping
-    /// `stack.op_phase_mod_q32` linearly to each block's matrix `Op{N}Phase`
-    /// target (E023). Integer (wrapping) so the ramp is exact and click-free on
-    /// the cyclic phase; advanced alongside the level/pan ramps while live.
-    phase_mod_inc: Vec<[[i32; STACK_LANES]; vxn2_dsp::algo::N_OPS]>,
-    /// Each op's EG level as seen by the previous block's ramp targets
-    /// (ticket 0077). The ramp interpolates the *combined* effective level
-    /// `eg + mod`; when the EG marches at the block edge, `op_level_mod` is
-    /// rebased by `prev_eg - eg` so the sum the tick reads stays continuous,
-    /// and the EG's block delta rides the same per-lane ramp as the matrix
-    /// mod — one ramp, no separate EG staircase.
-    prev_eg_level: Vec<[f32; vxn2_dsp::algo::N_OPS]>,
+    /// Per-stack ramp state (one [`RampState`] per slot): the per-sample
+    /// level / pan / phase increments that glide `stack.op_level_mod`,
+    /// `stack.pan_l` / `pan_r`, and `stack.op_phase_mod_q32` to each block's
+    /// matrix targets (tickets 0074 / E023), plus `prev_eg` — the previous
+    /// block's EG level, used to rebase the level ramp across the EG's
+    /// block-edge march (0077). Collapsed from five lockstep parallel `Vec`s
+    /// into one struct so adding a ramp type touches only [`RampState`]
+    /// (ticket 0119). Engine-owned so the `stack_tick_*` hot path stays
+    /// untouched; the render loop advances them once per sample while live.
+    ramps: Vec<RampState>,
     /// Which slots carry a live ramp this block; `any_ramp_live` is the
     /// whole-engine OR so a patch with static effective levels pays one
     /// branch per sample.
@@ -346,6 +376,7 @@ impl Engine {
             matrix: default_patch::default_matrix(),
             patch_mod: PatchMod::new(0xDEAD_BEEF_DEAD_BEEF),
             cleanup: CleanupFilter::new(sample_rate),
+            dynamics: DynamicsBlock::new(sample_rate),
             phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
@@ -373,11 +404,7 @@ impl Engine {
             lfo1_rate_oct: 0.0,
             stack_detune_mod: [0.0; N_STACKS],
             stack_spread_mod: [0.0; N_STACKS],
-            level_mod_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
-            pan_l_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
-            pan_r_inc: vec![[[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
-            phase_mod_inc: vec![[[0; STACK_LANES]; vxn2_dsp::algo::N_OPS]; N_STACKS],
-            prev_eg_level: vec![[0.0; vxn2_dsp::algo::N_OPS]; N_STACKS],
+            ramps: vec![RampState::default(); N_STACKS],
             ramp_live: [false; N_STACKS],
             any_ramp_live: false,
             stack_pitch_masks: [0; vxn2_dsp::algo::N_OPS],
@@ -451,6 +478,7 @@ impl Engine {
     pub fn reset(&mut self) {
         self.alloc.clear();
         self.cleanup.reset();
+        self.dynamics.clear();
         self.phaser.clear();
         self.delay.reset();
         self.reverb.reset();
@@ -478,7 +506,7 @@ impl Engine {
             self.stack_detune_mod[i] = 0.0;
             self.stack_spread_mod[i] = 0.0;
             self.ramp_live[i] = false;
-            self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
+            self.ramps[i].prev_eg = [0.0; vxn2_dsp::algo::N_OPS];
             self.filter_l[i].reset();
             self.filter_r[i].reset();
             self.hp_l[i].reset();
@@ -527,6 +555,7 @@ impl Engine {
         self.delay.set_params(&self.params.delay, self.tempo_bpm);
         self.reverb.set_params(&self.params.reverb);
         self.phaser.set_from(&self.params.phaser);
+        self.dynamics.set_from(&self.params.dynamics);
         self.master.refresh(&self.params.master);
         // Rebuild the matrix table from the snapshot rows so UI / preset
         // topology edits (source / dest / curve / active) actually reach the
@@ -706,433 +735,22 @@ impl Engine {
             s.eg_tick(dt);
         }
 
-        // Mod matrix. Per active stack: tick LFO2, fan sources into the lane
-        // lookup, run eval_dests against the single per-patch table, then
-        // project the per-op level / pitch / pan destinations and the global
-        // pitch destination onto the stack. Reapply pitch + pan after so
-        // `phase_inc` and `pan_l/pan_r` reflect this block's matrix output.
-        //
-        // FX destinations (DelayMix, ReverbMix) are patch-global but their
-        // sources include per-stack scalars (velocity, mod env, …). The
-        // aggregation policy is: average across active stacks at lane 0.
-        //
-        // Lfo2Phase is wired (E008 0091): the smoothed per-lane value is
-        // applied as a wrapping Q32 phase offset to each stack's LFO2 after
-        // `apply_pitch_mult` below (one-block latency). Lfo1Rate / Lfo2Rate
-        // are wired (E008 0092): octave offsets applied as `rate · 2^oct` with
-        // one-block latency — LFO1 (patch-global) aggregated below like the FX
-        // mixes, LFO2 (per-stack) stashed on the stack in the loop.
-        // StackDetune / StackSpread are wired (E008 0093): gated per-block
-        // re-cook of the per-lane detune (folded into apply_pitch_mult) and the
-        // VoiceSpread source width (one-block latency).
         let patch_sources = PatchSources::from_modblock(&mb, self.mod_wheel, self.aftertouch);
-        let voice = &self.params.patch.voice;
-        // Dest indices are module-level consts (`GLOBAL_PITCH_IDX` etc.);
-        // layout is op-major (Pitch, Level, Pan per op — stride 3), then
-        // global pitch / lfo / stack / FX, asserted at compile time.
-        let patch_feedback = voice.feedback;
-
-        let mut fx_delay_mix_sum = 0.0_f32;
-        let mut fx_reverb_mix_sum = 0.0_f32;
-        let mut lfo1_rate_oct_sum = 0.0_f32;
-        let mut fx_active = 0u32;
-
-        for i in 0..self.alloc.stacks.len() {
-            if self.alloc.stacks[i].is_idle() {
-                self.ramp_live[i] = false;
-                // Forget the last rendered EG level so a future fresh note reusing
-                // this slot rebases its onset from silence, not a stale level left
-                // by a hard-silenced (declicked) voice.
-                self.prev_eg_level[i] = [0.0; vxn2_dsp::algo::N_OPS];
-                continue;
-            }
-            // Fresh-note detection up front (E008 0093 needs it before the
-            // VoiceSpread source is built so the spread-mod doesn't glide in
-            // from the previous voice on a reused stack). A bumped allocation
-            // generation means a new note reused this slot.
-            let seq = self.alloc.slot_seq(i);
-            let fresh = seq != self.mod_seq[i];
-            if fresh {
-                self.mod_seq[i] = seq;
-                self.stack_detune_mod[i] = 0.0;
-                self.stack_spread_mod[i] = 0.0;
-            }
-
-            // LFO2 is per-voice (per-stack, lane-packed). Tick it once per
-            // block here — note_on initialises phase/env but nothing else
-            // advanced it.
-            let lfo2_lanes =
-                self.alloc.stacks[i]
-                    .lfo2
-                    .eval(&voice.lfo2, self.tempo_bpm, dt);
-
-            let stack = &self.alloc.stacks[i];
-            // Pitch EG → normalized [-1, 1] shape (E008 0094): divide the raw
-            // semitone output by its full-scale swing (`peg_depth`) so the
-            // pitch dest's ±24 st gain sets the excursion — no hidden 24×
-            // re-scale of absolute semitones. peg_depth ≈ 0 ⇒ EG output is 0
-            // anyway, so the source reads 0.
-            let pitch_eg = {
-                let depth = voice.peg_depth;
-                if depth.abs() > 1e-6 {
-                    stack.pitch_eg.level_st / depth
-                } else {
-                    0.0
-                }
-            };
-            let stack_scalars = StackScalarSources {
-                pitch_eg,
-                mod_env: stack.mod_env.level,
-                velocity: (stack.velocity as f32) * (1.0 / 127.0),
-                key: (stack.note as f32) * (1.0 / 127.0),
-            };
-            // `voice_spread` is the raw symmetric lane position in [-1, +1].
-            // We scale by `cached_spread` (the stack-spread macro captured at
-            // note-on) before exposing it to the matrix so the spread fader
-            // gates how widely matrix slots see the lanes. spread = 0 → all
-            // lanes read 0 from the VoiceSpread source. The matrix `stack-spread`
-            // route (E008 0093) further scales this by `(1 + spread_mod)` using
-            // last block's smoothed amount (one-block latency).
-            let spread_gain = stack.cached_spread * (1.0 + self.stack_spread_mod[i]);
-            let scaled_voice_spread = {
-                let mut a = [0.0_f32; STACK_LANES];
-                for k in 0..STACK_LANES {
-                    a[k] = spread_gain * stack.voice_spread[k];
-                }
-                a
-            };
-            let lane_inputs = LaneSources {
-                lfo2: lfo2_lanes,
-                voice_idx: {
-                    let mut a = [0.0_f32; STACK_LANES];
-                    let denom = (STACK_LANES - 1) as f32;
-                    for k in 0..STACK_LANES {
-                        a[k] = stack.voice_idx[k] as f32 / denom;
-                    }
-                    a
-                },
-                voice_spread: scaled_voice_spread,
-                voice_rand: stack.voice_rand,
-            };
-            eval_sources(
-                &patch_sources,
-                &stack_scalars,
-                &lane_inputs,
-                &mut self.lane_sources,
-            );
-            eval_dests(
-                &self.matrix,
-                &self.lane_sources,
-                &mut self.dest_vals[i],
-            );
-            // Fan each stack-pitch accumulator across its ratio-coherent
-            // component into the per-op pitch columns (E022 0069), before the
-            // smoother captures pitch targets below. Gated so the common
-            // (no stack-pitch route) path is untouched.
-            if stack_pitch_targeted {
-                scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
-            }
-
-            // Project per-op level + pan destinations into the stack.
-            // Indices: OpiLevel=i*3+1, OpiPan=i*3+2. Neither applies as a
-            // block constant: level ramps linearly to this block's target
-            // via per-sample increments, and pan ramps the folded equal-
-            // power gains the same way (ticket 0074). Pitch-shaped
-            // destinations ride the per-stack PitchSmoother instead (0063).
-            let mut level_targets = [[0.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
-            // E023 phase dests: read the per-op phase offset (cycles) and fold to
-            // a Q32 target. The dests are appended after the contiguous
-            // pitch/level/pan block, so they index off `Op1Phase`, not `op_i*3`.
-            let mut phase_targets_q32 = [[0_u32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
-            let phase_base = DestId::Op1Phase.idx().unwrap();
-            let stack = &mut self.alloc.stacks[i];
-            for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let level_idx = op_i * 3 + 1;
-                let pan_idx = op_i * 3 + 2;
-                let phase_idx = phase_base + op_i;
-                for k in 0..STACK_LANES {
-                    level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
-                    stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
-                    // Wrap the (possibly multi-route) cycle offset into [0,1) and
-                    // scale to Q32; `as u32` wraps cleanly at the cycle boundary.
-                    let pcyc = self.dest_vals[i][k][phase_idx].rem_euclid(1.0);
-                    phase_targets_q32[op_i][k] = (pcyc * vxn2_dsp::op::PM_SCALE_Q32) as u32;
-                }
-            }
-            // Capture this block's pitch-dest targets. A slot whose
-            // allocation generation changed since the last block carries a
-            // fresh note — snap every smoothing/ramp state (pitch smoother,
-            // level + pan ramps) so the new voice doesn't glide in from the
-            // previous voice's modulation.
-            self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
-            if fresh {
-                self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
-                // A re-used slot carries a fresh note — clear its filter state
-                // (kernels + interpolators) so the new voice starts clean
-                // (ADR 0004: `reset()` on note-on). Only when the filter is on;
-                // off, the state is inert anyway.
-                if filter_enabled {
-                    self.filter_l[i].reset();
-                    self.filter_r[i].reset();
-                    self.interp_l[i].reset();
-                    self.interp_r[i].reset();
-                }
-                // HP stage is independent of the musical filter — clear it on a
-                // fresh note too so the new voice doesn't inherit the previous
-                // one's one-pole state. Inert (cheap) while the HP is bypassed.
-                self.hp_l[i].reset();
-                self.hp_r[i].reset();
-            }
-            let stack = &mut self.alloc.stacks[i];
-            project_pitch_state(stack, self.pitch_smoothers[i].current());
-            // Level modulation is MULTIPLICATIVE on the EG (ticket 0078):
-            // effective level = `clamp(eg · (1 + m), 0, 1)`, with `m` the
-            // matrix accumulator. The tick reads `eg + op_level_mod`, so the
-            // engine projects the multiplicative target into that additive
-            // offset: `op_level_mod_target = clamp(eg·(1+m), 0, 1) − eg`.
-            //
-            // Why multiplicative (vs the additive `eg + m` it replaced):
-            // `eg = 0` forces eff = 0, so a RELEASED op always closes —
-            // additive mod could refill what release drains and leave a voice
-            // droning until the allocator cut it at full amplitude (a click).
-            // A full-depth sine gates through silence at its trough, where the
-            // LFO's own slope is zero, so tremolo gating is C¹-smooth — no
-            // bottom corner to round, which is why the 0076 target one-pole
-            // measured zero effect and was removed.
-            //
-            // The block-rate `clamp(…, 0, 1)` is the ONE bound for the whole
-            // path: it absorbs boost overflow (`eg·(1+m) > 1` when eg > 0.5)
-            // and multi-route `m` overflow (several slots summing into one
-            // level dest) alike. Because both the ramp's start point (the
-            // previous block's in-range effective level, carried by the EG
-            // rebase below) and its end point (this clamped target) give
-            // `eff ∈ [0, 1]`, the per-sample linear ramp stays in range too —
-            // so `stack_tick_*` needs no per-sample clamp.
-            //
-            // The EG marches once per block (0077); `op_level_mod` is rebased
-            // by the block delta so the sum the tick reads stays continuous
-            // across the edge, then ramps to the new target — the EG's motion
-            // rides the same per-lane ramp as the matrix mod (no block-rate EG
-            // staircase). Static patches with settled EGs pass through
-            // bit-exact: m = 0 → target offset 0, rebase +0.
-            let prev_eg = &mut self.prev_eg_level[i];
-            for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let eg = stack.ops[op_i].eg.level;
-                for k in 0..STACK_LANES {
-                    let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
-                    level_targets[op_i][k] = eff - eg;
-                    // Keep the rendered level (`eg + op_level_mod`) continuous
-                    // across the EG's block-edge march; the delta is folded into
-                    // this block's ramp instead of stepping. This runs for the
-                    // note's FIRST block too (not gated on `!fresh`) so the onset
-                    // ramp starts from the slot's *previous* rendered level:
-                    //   - idle/poly slot: a released voice settles `op_level_mod`
-                    //     and `eg` to ~0, so a brand-new note ramps up from
-                    //     silence (the fast-attack onset-click fix);
-                    //   - solo steal: the op-amp EG continues its level across
-                    //     `note_on` (click-free retrigger, see `eg::note_on`), and
-                    //     the outgoing note's `op_level_mod` is still live, so the
-                    //     new note ramps from the previous note's level instead of
-                    //     dipping to 0 first — which itself was a click.
-                    stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
-                }
-                prev_eg[op_i] = eg;
-            }
-            if fresh {
-                // Phase + pan snap to the new voice's values (no glide in from
-                // the previous allocation). The level onset, by contrast, ramps
-                // from the rebased previous rendered level (above) to this
-                // block's effective target — so a fresh poly note fades in from
-                // silence and a solo steal glides from the outgoing note's
-                // level, neither stepping at sample 0 (onset click). Same
-                // per-sample ramp the matrix mod / EG rebase use on later
-                // blocks (0077).
-                stack.op_phase_mod_q32 = phase_targets_q32;
-                stack.refresh_pan_with_mod();
-                let inv = 1.0 / n as f32;
-                let lvl_inc = &mut self.level_mod_inc[i];
-                let pl_inc = &mut self.pan_l_inc[i];
-                let pr_inc = &mut self.pan_r_inc[i];
-                let ph_inc = &mut self.phase_mod_inc[i];
-                let mut any = false;
-                for op_i in 0..vxn2_dsp::algo::N_OPS {
-                    for k in 0..STACK_LANES {
-                        let mut dl =
-                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
-                        if dl.abs() < RAMP_SNAP_EPS {
-                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
-                            dl = 0.0;
-                        }
-                        lvl_inc[op_i][k] = dl;
-                        pl_inc[op_i][k] = 0.0;
-                        pr_inc[op_i][k] = 0.0;
-                        ph_inc[op_i][k] = 0;
-                        any |= dl != 0.0;
-                    }
-                }
-                self.ramp_live[i] = any;
-            } else {
-                let inv = 1.0 / n as f32;
-                let (pan_l_t, pan_r_t) = stack.pan_targets();
-                let mut any = false;
-                let lvl_inc = &mut self.level_mod_inc[i];
-                let pl_inc = &mut self.pan_l_inc[i];
-                let pr_inc = &mut self.pan_r_inc[i];
-                let ph_inc = &mut self.phase_mod_inc[i];
-                for op_i in 0..vxn2_dsp::algo::N_OPS {
-                    for k in 0..STACK_LANES {
-                        // A ramp lands within f32 rounding of its target, so
-                        // a settled value never compares exactly equal — snap
-                        // inside RAMP_SNAP_EPS (≈ −120 dB) so a static sound
-                        // releases the per-sample advance.
-                        let mut dl =
-                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
-                        if dl.abs() < RAMP_SNAP_EPS {
-                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
-                            dl = 0.0;
-                        }
-                        let mut pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
-                        if pl.abs() < RAMP_SNAP_EPS {
-                            stack.pan_l[op_i][k] = pan_l_t[op_i][k];
-                            pl = 0.0;
-                        }
-                        let mut pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
-                        if pr.abs() < RAMP_SNAP_EPS {
-                            stack.pan_r[op_i][k] = pan_r_t[op_i][k];
-                            pr = 0.0;
-                        }
-                        // Phase ramp (E023): shortest-arc Q32 delta to the new
-                        // target, split linearly across the block. `wrapping_sub
-                        // as i32` picks the ≤ half-cycle direction so a small
-                        // matrix move never wraps the long way round. A whole
-                        // block of `delta / n` steps lands within `n` LSB of the
-                        // target; the next block re-derives from the current
-                        // value, so residue self-corrects (no drift).
-                        let delta =
-                            phase_targets_q32[op_i][k].wrapping_sub(stack.op_phase_mod_q32[op_i][k])
-                                as i32;
-                        let pq = delta / n as i32;
-                        if pq == 0 {
-                            stack.op_phase_mod_q32[op_i][k] = phase_targets_q32[op_i][k];
-                        }
-                        lvl_inc[op_i][k] = dl;
-                        pl_inc[op_i][k] = pl;
-                        pr_inc[op_i][k] = pr;
-                        ph_inc[op_i][k] = pq;
-                        any |= dl != 0.0 || pl != 0.0 || pr != 0.0 || pq != 0;
-                    }
-                }
-                self.ramp_live[i] = any;
-            }
-            // Layer-level feedback is single-valued per stack. Read lane 0 of
-            // the matrix accumulator and add to the patch's feedback value;
-            // re-apply through `set_feedback_live_lanes` so the algorithm's
-            // FB op sees the modulated `fb_scale` for this block. Feedback is
-            // a voice property — each lane carries its own modulated amount
-            // (unlike the FX dests below, which apply post-mixdown).
-            let mut fb_lanes = [0.0_f32; STACK_LANES];
-            let mut fb_any = false;
-            for k in 0..STACK_LANES {
-                let m = self.dest_vals[i][k][FEEDBACK_IDX];
-                fb_any |= m != 0.0;
-                fb_lanes[k] = (patch_feedback + m).clamp(0.0, 7.0);
-            }
-            if fb_any {
-                stack.set_feedback_live_lanes(&fb_lanes);
-            }
-            // Stack-detune (E008 0093): re-derive the per-lane detune offset
-            // from this block's lane-0 accumulator and fold it into the pitch
-            // sum below. Snap on a fresh note (static sources like key/velocity
-            // land immediately, zipper-free); one-pole the block-to-block
-            // motion of a dynamic source otherwise. Gated: when un-targeted,
-            // zero the offset once so the pitch path stays bit-identical.
-            if stack_detune_targeted {
-                let target = self.dest_vals[i][0][STACK_DETUNE_IDX];
-                self.stack_detune_mod[i] = if fresh {
-                    target
-                } else {
-                    self.stack_detune_mod[i]
-                        + STACK_MACRO_SMOOTH * (target - self.stack_detune_mod[i])
-                };
-                stack.set_detune_mod(self.stack_detune_mod[i]);
-            } else if self.stack_detune_mod[i] != 0.0 {
-                self.stack_detune_mod[i] = 0.0;
-                stack.set_detune_mod(0.0);
-            }
-
-            // Refresh pitch from the new offsets so the per-sample loop
-            // reads phase_inc that includes this block's matrix output.
-            // Cost: per active stack 6×8 powf — affordable at ≤16 stacks.
-            // (Pan gains are handled by the ramp above — ticket 0074.)
-            stack.apply_pitch_mult();
-
-            // LFO2 phase offset (E008 0091, `*→lfo2_phase`). The smoothed
-            // per-lane Lfo2Phase value rides the same PitchSmoother as the
-            // pitch dests (it is `is_pitch_shaped`); read its row and apply
-            // the *delta* vs last block as a wrapping Q32 add to each lane's
-            // LFO2 phase. Delta-not-absolute so a static offset settles to a
-            // fixed scatter instead of running away. This lands *after* this
-            // block's `lfo2.eval` (top of loop), so it takes effect on the
-            // next block — a one-block latency, consistent with the other
-            // deferred dests and inaudible at musical rates (LFO2's note-on
-            // delay/fade covers the onset). The guard keeps the off-path
-            // bit-identical: with no `lfo2-phase` slot the smoother row stays
-            // 0, every delta is 0, and `lfo2.phase` is never touched.
-            let lfo2_off_tgt = self.pitch_smoothers[i].current()[LFO2_PHASE_SMOOTHER_ROW];
-            let prev = &mut self.prev_lfo2_phase_off[i];
-            if fresh {
-                // note_on reset every lane's phase to the shape zero-crossing
-                // (no offset baked in); drop tracking to 0 so the full target
-                // offset snaps onto the fresh phase rather than gliding from
-                // the previous voice on the reused stack.
-                *prev = [0.0; STACK_LANES];
-            }
-            let lfo2 = &mut self.alloc.stacks[i].lfo2;
-            for k in 0..STACK_LANES {
-                let target = lfo2_off_tgt[k];
-                let delta = target - prev[k];
-                if delta != 0.0 {
-                    lfo2.add_phase_offset(k, delta);
-                }
-                prev[k] = target;
-            }
-            // LFO2 per-stack rate (E008 0092). `lfo2-rate` is a per-stack dest;
-            // read this block's lane-0 accumulator (in octaves) and stash the
-            // multiplier for *next* block's `eval` (one-block latency). Gated:
-            // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
-            lfo2.rate_mult = if lfo2_rate_targeted {
-                self.dest_vals[i][0][LFO2_RATE_IDX].exp2()
-            } else {
-                1.0
-            };
-
-            // Stack-spread (E008 0093): update the per-stack smoothed amount
-            // for *next* block's VoiceSpread source scaling (one-block latency
-            // — the source is built before the matrix eval). Snap on fresh,
-            // one-pole otherwise; zero when un-targeted.
-            if stack_spread_targeted {
-                let target = self.dest_vals[i][0][STACK_SPREAD_IDX];
-                self.stack_spread_mod[i] = if fresh {
-                    target
-                } else {
-                    self.stack_spread_mod[i]
-                        + STACK_MACRO_SMOOTH * (target - self.stack_spread_mod[i])
-                };
-            } else {
-                self.stack_spread_mod[i] = 0.0;
-            }
-
-            // FX dests aggregate at lane 0 across active stacks. Lane 0
-            // sees patch-source contributions exactly once; per-stack
-            // sources (velocity, mod env, …) average naturally across the
-            // active stacks below.
-            fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
-            fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
-            // LFO1 rate is patch-global — aggregate at lane 0 like the FX mixes
-            // and cache for next block (E008 0092, one-block latency).
-            lfo1_rate_oct_sum += self.dest_vals[i][0][LFO1_RATE_IDX];
-            fx_active += 1;
-        }
+        let StackBlockSummary {
+            fx_delay_mix_sum,
+            fx_reverb_mix_sum,
+            lfo1_rate_oct_sum,
+            fx_active,
+        } = self.cook_stacks_block(
+            n,
+            dt,
+            filter_enabled,
+            lfo2_rate_targeted,
+            stack_detune_targeted,
+            stack_spread_targeted,
+            stack_pitch_targeted,
+            &patch_sources,
+        );
 
         // Cache the LFO1-rate octave offset for next block. Reset to 0 when no
         // slot targets it or no stack is active, so a released note + held
@@ -1226,6 +844,486 @@ impl Engine {
                 .process_block(&mut out_l[..n], &mut out_r[..n]);
         }
         self.limiter_was_on = limiter_on;
+    }
+
+
+    /// Mod-matrix cook: the per-stack loop extracted from `process_block`
+    /// (ticket 0119). Per active stack it ticks LFO2, fans the patch / stack /
+    /// lane scalars into the lane lookup, runs `eval_dests` against the single
+    /// per-patch matrix table, projects the per-op level / pan / phase / pitch
+    /// destinations onto the stack, and computes this block's per-sample ramp
+    /// increments. Per-stack ramp state lands in `self.ramps` / `self.ramp_live`;
+    /// the block-rate FX-mix / LFO1-rate aggregates are returned in the summary
+    /// for `process_block` to apply.
+    ///
+    /// The loop runs a strict 12-stage order — a reorder injects a one-block-
+    /// latency bug invisible to most tests (the render-hash `tests/baseline.rs`
+    /// is the guard). Each stage is marked `// == STAGE N: … ==` in the body:
+    ///
+    /// ```text
+    ///  1  Idle skip          release ramp + forget EG; early-out for idle slots
+    ///  2  Fresh-note detect  clears macro mods BEFORE stage 4 (one-block latency)
+    ///  3  LFO2 tick          per-voice; once per block; read by stages 4 & 11
+    ///  4  Source fan-out     VoiceSpread uses last block's spread -> before stage 5
+    ///  5  Matrix eval        sources->dests, then stack-pitch scatter (after dests,
+    ///                        before stage 7's smoother capture)
+    ///  6  Target projection  per-op level/pan/phase targets from dest_vals
+    ///  7  Pitch smoother     capture targets + fresh snap & filter/HP reset;
+    ///                        before stage 9 (fresh path reads snapped state)
+    ///  8  Level + EG rebase  multiplicative level projection; rebase BEFORE stage 9
+    ///                        (the ramp interpolates the rebased level)
+    ///  9  Ramp compute       fresh snap vs continuing glide for level/pan/phase
+    /// 10  Feedback + detune   detune folds into the pitch sum -> before apply_pitch_mult
+    /// 11  LFO2 phase + rate   deferred; applied AFTER stage 3's eval (one-block latency)
+    /// 12  Spread + FX agg     next-block VoiceSpread (one-block) + lane-0 FX/LFO1 sums
+    /// ```
+    // Block-rate gates + the patch-source snapshot are passed in from
+    // `process_block` (computed once before the loop); grouping them buys no
+    // clarity over named args.
+    #[allow(clippy::too_many_arguments)]
+    fn cook_stacks_block(
+        &mut self,
+        n: usize,
+        dt: f32,
+        filter_enabled: bool,
+        lfo2_rate_targeted: bool,
+        stack_detune_targeted: bool,
+        stack_spread_targeted: bool,
+        stack_pitch_targeted: bool,
+        patch_sources: &PatchSources,
+    ) -> StackBlockSummary {
+        let voice = &self.params.patch.voice;
+        // Dest indices are module-level consts (`GLOBAL_PITCH_IDX` etc.);
+        // layout is op-major (Pitch, Level, Pan per op — stride 3), then
+        // global pitch / lfo / stack / FX, asserted at compile time.
+        let patch_feedback = voice.feedback;
+
+        let mut fx_delay_mix_sum = 0.0_f32;
+        let mut fx_reverb_mix_sum = 0.0_f32;
+        let mut lfo1_rate_oct_sum = 0.0_f32;
+        let mut fx_active = 0u32;
+
+        for i in 0..self.alloc.stacks.len() {
+            // == STAGE 1: Idle skip — release the slot's ramp, forget its EG (early-out). ==
+            if self.alloc.stacks[i].is_idle() {
+                self.ramp_live[i] = false;
+                // Forget the last rendered EG level so a future fresh note reusing
+                // this slot rebases its onset from silence, not a stale level left
+                // by a hard-silenced (declicked) voice.
+                self.ramps[i].prev_eg = [0.0; vxn2_dsp::algo::N_OPS];
+                continue;
+            }
+            // == STAGE 2: Fresh-note detection — clears macro mods before the VoiceSpread
+            //          source is built (one-block latency). ==
+            // Fresh-note detection up front (E008 0093 needs it before the
+            // VoiceSpread source is built so the spread-mod doesn't glide in
+            // from the previous voice on a reused stack). A bumped allocation
+            // generation means a new note reused this slot.
+            let seq = self.alloc.slot_seq(i);
+            let fresh = seq != self.mod_seq[i];
+            if fresh {
+                self.mod_seq[i] = seq;
+                self.stack_detune_mod[i] = 0.0;
+                self.stack_spread_mod[i] = 0.0;
+            }
+
+            // == STAGE 3: LFO2 tick — per-voice, advanced once per block. ==
+            // LFO2 is per-voice (per-stack, lane-packed). Tick it once per
+            // block here — note_on initialises phase/env but nothing else
+            // advanced it.
+            let lfo2_lanes =
+                self.alloc.stacks[i]
+                    .lfo2
+                    .eval(&voice.lfo2, self.tempo_bpm, dt);
+
+            // == STAGE 4: Source fan-out — stack scalars + lane inputs; VoiceSpread uses
+            //          last block's smoothed spread (one-block latency), so it must
+            //          precede the matrix eval below. ==
+            let stack = &self.alloc.stacks[i];
+            // Pitch EG → normalized [-1, 1] shape (E008 0094): divide the raw
+            // semitone output by its full-scale swing (`peg_depth`) so the
+            // pitch dest's ±24 st gain sets the excursion — no hidden 24×
+            // re-scale of absolute semitones. peg_depth ≈ 0 ⇒ EG output is 0
+            // anyway, so the source reads 0.
+            let pitch_eg = {
+                let depth = voice.peg_depth;
+                if depth.abs() > 1e-6 {
+                    stack.pitch_eg.level_st / depth
+                } else {
+                    0.0
+                }
+            };
+            let stack_scalars = StackScalarSources {
+                pitch_eg,
+                mod_env: stack.mod_env.level,
+                velocity: (stack.velocity as f32) * (1.0 / 127.0),
+                key: (stack.note as f32) * (1.0 / 127.0),
+            };
+            // `voice_spread` is the raw symmetric lane position in [-1, +1].
+            // We scale by `cached_spread` (the stack-spread macro captured at
+            // note-on) before exposing it to the matrix so the spread fader
+            // gates how widely matrix slots see the lanes. spread = 0 → all
+            // lanes read 0 from the VoiceSpread source. The matrix `stack-spread`
+            // route (E008 0093) further scales this by `(1 + spread_mod)` using
+            // last block's smoothed amount (one-block latency).
+            let spread_gain = stack.cached_spread * (1.0 + self.stack_spread_mod[i]);
+            let scaled_voice_spread = {
+                let mut a = [0.0_f32; STACK_LANES];
+                for k in 0..STACK_LANES {
+                    a[k] = spread_gain * stack.voice_spread[k];
+                }
+                a
+            };
+            let lane_inputs = LaneSources {
+                lfo2: lfo2_lanes,
+                voice_idx: {
+                    let mut a = [0.0_f32; STACK_LANES];
+                    let denom = (STACK_LANES - 1) as f32;
+                    for k in 0..STACK_LANES {
+                        a[k] = stack.voice_idx[k] as f32 / denom;
+                    }
+                    a
+                },
+                voice_spread: scaled_voice_spread,
+                voice_rand: stack.voice_rand,
+            };
+            // == STAGE 5: Matrix eval (sources -> dests) + stack-pitch scatter. Scatter
+            //          must run after eval_dests and before the smoother capture. ==
+            eval_sources(
+                patch_sources,
+                &stack_scalars,
+                &lane_inputs,
+                &mut self.lane_sources,
+            );
+            eval_dests(
+                &self.matrix,
+                &self.lane_sources,
+                &mut self.dest_vals[i],
+            );
+            // Fan each stack-pitch accumulator across its ratio-coherent
+            // component into the per-op pitch columns (E022 0069), before the
+            // smoother captures pitch targets below. Gated so the common
+            // (no stack-pitch route) path is untouched.
+            if stack_pitch_targeted {
+                scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
+            }
+
+            // == STAGE 6: Per-op level/pan/phase target projection from dest_vals. ==
+            // Project per-op level + pan destinations into the stack.
+            // Indices: OpiLevel=i*3+1, OpiPan=i*3+2. Neither applies as a
+            // block constant: level ramps linearly to this block's target
+            // via per-sample increments, and pan ramps the folded equal-
+            // power gains the same way (ticket 0074). Pitch-shaped
+            // destinations ride the per-stack PitchSmoother instead (0063).
+            let mut level_targets = [[0.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
+            // E023 phase dests: read the per-op phase offset (cycles) and fold to
+            // a Q32 target. The dests are appended after the contiguous
+            // pitch/level/pan block, so they index off `Op1Phase`, not `op_i*3`.
+            let mut phase_targets_q32 = [[0_u32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
+            let phase_base = DestId::Op1Phase.idx().unwrap();
+            let stack = &mut self.alloc.stacks[i];
+            for op_i in 0..vxn2_dsp::algo::N_OPS {
+                let level_idx = op_i * 3 + 1;
+                let pan_idx = op_i * 3 + 2;
+                let phase_idx = phase_base + op_i;
+                for k in 0..STACK_LANES {
+                    level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
+                    stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
+                    // Wrap the (possibly multi-route) cycle offset into [0,1) and
+                    // scale to Q32; `as u32` wraps cleanly at the cycle boundary.
+                    let pcyc = self.dest_vals[i][k][phase_idx].rem_euclid(1.0);
+                    phase_targets_q32[op_i][k] = (pcyc * vxn2_dsp::op::PM_SCALE_Q32) as u32;
+                }
+            }
+            // == STAGE 7: Pitch-smoother target capture + fresh-note snap & filter/HP
+            //          reset. Must precede the ramp compute (STAGE 9 reads snapped
+            //          state on a fresh note). ==
+            // Capture this block's pitch-dest targets. A slot whose
+            // allocation generation changed since the last block carries a
+            // fresh note — snap every smoothing/ramp state (pitch smoother,
+            // level + pan ramps) so the new voice doesn't glide in from the
+            // previous voice's modulation.
+            self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
+            if fresh {
+                self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
+                // A re-used slot carries a fresh note — clear its filter state
+                // (kernels + interpolators) so the new voice starts clean
+                // (ADR 0004: `reset()` on note-on). Only when the filter is on;
+                // off, the state is inert anyway.
+                if filter_enabled {
+                    self.filter_l[i].reset();
+                    self.filter_r[i].reset();
+                    self.interp_l[i].reset();
+                    self.interp_r[i].reset();
+                }
+                // HP stage is independent of the musical filter — clear it on a
+                // fresh note too so the new voice doesn't inherit the previous
+                // one's one-pole state. Inert (cheap) while the HP is bypassed.
+                self.hp_l[i].reset();
+                self.hp_r[i].reset();
+            }
+            let stack = &mut self.alloc.stacks[i];
+            project_pitch_state(stack, self.pitch_smoothers[i].current());
+            // == STAGE 8: Level multiplicative projection + EG block-edge rebase. Rebase
+            //          must run before STAGE 9 — the ramp interpolates the rebased
+            //          effective level. ==
+            // Level modulation is MULTIPLICATIVE on the EG (ticket 0078):
+            // effective level = `clamp(eg · (1 + m), 0, 1)`, with `m` the
+            // matrix accumulator. The tick reads `eg + op_level_mod`, so the
+            // engine projects the multiplicative target into that additive
+            // offset: `op_level_mod_target = clamp(eg·(1+m), 0, 1) − eg`.
+            //
+            // Why multiplicative (vs the additive `eg + m` it replaced):
+            // `eg = 0` forces eff = 0, so a RELEASED op always closes —
+            // additive mod could refill what release drains and leave a voice
+            // droning until the allocator cut it at full amplitude (a click).
+            // A full-depth sine gates through silence at its trough, where the
+            // LFO's own slope is zero, so tremolo gating is C¹-smooth — no
+            // bottom corner to round, which is why the 0076 target one-pole
+            // measured zero effect and was removed.
+            //
+            // The block-rate `clamp(…, 0, 1)` is the ONE bound for the whole
+            // path: it absorbs boost overflow (`eg·(1+m) > 1` when eg > 0.5)
+            // and multi-route `m` overflow (several slots summing into one
+            // level dest) alike. Because both the ramp's start point (the
+            // previous block's in-range effective level, carried by the EG
+            // rebase below) and its end point (this clamped target) give
+            // `eff ∈ [0, 1]`, the per-sample linear ramp stays in range too —
+            // so `stack_tick_*` needs no per-sample clamp.
+            //
+            // The EG marches once per block (0077); `op_level_mod` is rebased
+            // by the block delta so the sum the tick reads stays continuous
+            // across the edge, then ramps to the new target — the EG's motion
+            // rides the same per-lane ramp as the matrix mod (no block-rate EG
+            // staircase). Static patches with settled EGs pass through
+            // bit-exact: m = 0 → target offset 0, rebase +0.
+            let prev_eg = &mut self.ramps[i].prev_eg;
+            for op_i in 0..vxn2_dsp::algo::N_OPS {
+                let eg = stack.ops[op_i].eg.level;
+                for k in 0..STACK_LANES {
+                    let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
+                    level_targets[op_i][k] = eff - eg;
+                    // Keep the rendered level (`eg + op_level_mod`) continuous
+                    // across the EG's block-edge march; the delta is folded into
+                    // this block's ramp instead of stepping. This runs for the
+                    // note's FIRST block too (not gated on `!fresh`) so the onset
+                    // ramp starts from the slot's *previous* rendered level:
+                    //   - idle/poly slot: a released voice settles `op_level_mod`
+                    //     and `eg` to ~0, so a brand-new note ramps up from
+                    //     silence (the fast-attack onset-click fix);
+                    //   - solo steal: the op-amp EG continues its level across
+                    //     `note_on` (click-free retrigger, see `eg::note_on`), and
+                    //     the outgoing note's `op_level_mod` is still live, so the
+                    //     new note ramps from the previous note's level instead of
+                    //     dipping to 0 first — which itself was a click.
+                    stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
+                }
+                prev_eg[op_i] = eg;
+            }
+            // == STAGE 9: Ramp-increment compute — fresh snap vs continuing glide for the
+            //          level/pan/phase ramps. ==
+            if fresh {
+                // Phase + pan snap to the new voice's values (no glide in from
+                // the previous allocation). The level onset, by contrast, ramps
+                // from the rebased previous rendered level (above) to this
+                // block's effective target — so a fresh poly note fades in from
+                // silence and a solo steal glides from the outgoing note's
+                // level, neither stepping at sample 0 (onset click). Same
+                // per-sample ramp the matrix mod / EG rebase use on later
+                // blocks (0077).
+                stack.op_phase_mod_q32 = phase_targets_q32;
+                stack.refresh_pan_with_mod();
+                let inv = 1.0 / n as f32;
+                let r = &mut self.ramps[i];
+                let mut any = false;
+                for op_i in 0..vxn2_dsp::algo::N_OPS {
+                    for k in 0..STACK_LANES {
+                        let mut dl =
+                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                        if dl.abs() < RAMP_SNAP_EPS {
+                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            dl = 0.0;
+                        }
+                        r.level_mod[op_i][k] = dl;
+                        r.pan_l[op_i][k] = 0.0;
+                        r.pan_r[op_i][k] = 0.0;
+                        r.phase_mod[op_i][k] = 0;
+                        any |= dl != 0.0;
+                    }
+                }
+                self.ramp_live[i] = any;
+            } else {
+                let inv = 1.0 / n as f32;
+                let (pan_l_t, pan_r_t) = stack.pan_targets();
+                let mut any = false;
+                let r = &mut self.ramps[i];
+                for op_i in 0..vxn2_dsp::algo::N_OPS {
+                    for k in 0..STACK_LANES {
+                        // A ramp lands within f32 rounding of its target, so
+                        // a settled value never compares exactly equal — snap
+                        // inside RAMP_SNAP_EPS (≈ −120 dB) so a static sound
+                        // releases the per-sample advance.
+                        let mut dl =
+                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                        if dl.abs() < RAMP_SNAP_EPS {
+                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            dl = 0.0;
+                        }
+                        let mut pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
+                        if pl.abs() < RAMP_SNAP_EPS {
+                            stack.pan_l[op_i][k] = pan_l_t[op_i][k];
+                            pl = 0.0;
+                        }
+                        let mut pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
+                        if pr.abs() < RAMP_SNAP_EPS {
+                            stack.pan_r[op_i][k] = pan_r_t[op_i][k];
+                            pr = 0.0;
+                        }
+                        // Phase ramp (E023): shortest-arc Q32 delta to the new
+                        // target, split linearly across the block. `wrapping_sub
+                        // as i32` picks the ≤ half-cycle direction so a small
+                        // matrix move never wraps the long way round. A whole
+                        // block of `delta / n` steps lands within `n` LSB of the
+                        // target; the next block re-derives from the current
+                        // value, so residue self-corrects (no drift).
+                        let delta =
+                            phase_targets_q32[op_i][k].wrapping_sub(stack.op_phase_mod_q32[op_i][k])
+                                as i32;
+                        let pq = delta / n as i32;
+                        if pq == 0 {
+                            stack.op_phase_mod_q32[op_i][k] = phase_targets_q32[op_i][k];
+                        }
+                        r.level_mod[op_i][k] = dl;
+                        r.pan_l[op_i][k] = pl;
+                        r.pan_r[op_i][k] = pr;
+                        r.phase_mod[op_i][k] = pq;
+                        any |= dl != 0.0 || pl != 0.0 || pr != 0.0 || pq != 0;
+                    }
+                }
+                self.ramp_live[i] = any;
+            }
+            // == STAGE 10: Feedback mod + stack-detune apply + apply_pitch_mult (detune is
+            //           folded into the pitch sum, so it must precede apply_pitch_mult). ==
+            // Layer-level feedback is single-valued per stack. Read lane 0 of
+            // the matrix accumulator and add to the patch's feedback value;
+            // re-apply through `set_feedback_live_lanes` so the algorithm's
+            // FB op sees the modulated `fb_scale` for this block. Feedback is
+            // a voice property — each lane carries its own modulated amount
+            // (unlike the FX dests below, which apply post-mixdown).
+            let mut fb_lanes = [0.0_f32; STACK_LANES];
+            let mut fb_any = false;
+            for k in 0..STACK_LANES {
+                let m = self.dest_vals[i][k][FEEDBACK_IDX];
+                fb_any |= m != 0.0;
+                fb_lanes[k] = (patch_feedback + m).clamp(0.0, 7.0);
+            }
+            if fb_any {
+                stack.set_feedback_live_lanes(&fb_lanes);
+            }
+            // Stack-detune (E008 0093): re-derive the per-lane detune offset
+            // from this block's lane-0 accumulator and fold it into the pitch
+            // sum below. Snap on a fresh note (static sources like key/velocity
+            // land immediately, zipper-free); one-pole the block-to-block
+            // motion of a dynamic source otherwise. Gated: when un-targeted,
+            // zero the offset once so the pitch path stays bit-identical.
+            if stack_detune_targeted {
+                let target = self.dest_vals[i][0][STACK_DETUNE_IDX];
+                self.stack_detune_mod[i] = if fresh {
+                    target
+                } else {
+                    self.stack_detune_mod[i]
+                        + STACK_MACRO_SMOOTH * (target - self.stack_detune_mod[i])
+                };
+                stack.set_detune_mod(self.stack_detune_mod[i]);
+            } else if self.stack_detune_mod[i] != 0.0 {
+                self.stack_detune_mod[i] = 0.0;
+                stack.set_detune_mod(0.0);
+            }
+
+            // Refresh pitch from the new offsets so the per-sample loop
+            // reads phase_inc that includes this block's matrix output.
+            // Cost: per active stack 6×8 powf — affordable at ≤16 stacks.
+            // (Pan gains are handled by the ramp above — ticket 0074.)
+            stack.apply_pitch_mult();
+
+            // == STAGE 11: LFO2 phase offset + LFO2 rate — deferred, one-block latency
+            //           (applied after this block's lfo2.eval in STAGE 3). ==
+            // LFO2 phase offset (E008 0091, `*→lfo2_phase`). The smoothed
+            // per-lane Lfo2Phase value rides the same PitchSmoother as the
+            // pitch dests (it is `is_pitch_shaped`); read its row and apply
+            // the *delta* vs last block as a wrapping Q32 add to each lane's
+            // LFO2 phase. Delta-not-absolute so a static offset settles to a
+            // fixed scatter instead of running away. This lands *after* this
+            // block's `lfo2.eval` (top of loop), so it takes effect on the
+            // next block — a one-block latency, consistent with the other
+            // deferred dests and inaudible at musical rates (LFO2's note-on
+            // delay/fade covers the onset). The guard keeps the off-path
+            // bit-identical: with no `lfo2-phase` slot the smoother row stays
+            // 0, every delta is 0, and `lfo2.phase` is never touched.
+            let lfo2_off_tgt = self.pitch_smoothers[i].current()[LFO2_PHASE_SMOOTHER_ROW];
+            let prev = &mut self.prev_lfo2_phase_off[i];
+            if fresh {
+                // note_on reset every lane's phase to the shape zero-crossing
+                // (no offset baked in); drop tracking to 0 so the full target
+                // offset snaps onto the fresh phase rather than gliding from
+                // the previous voice on the reused stack.
+                *prev = [0.0; STACK_LANES];
+            }
+            let lfo2 = &mut self.alloc.stacks[i].lfo2;
+            for k in 0..STACK_LANES {
+                let target = lfo2_off_tgt[k];
+                let delta = target - prev[k];
+                if delta != 0.0 {
+                    lfo2.add_phase_offset(k, delta);
+                }
+                prev[k] = target;
+            }
+            // LFO2 per-stack rate (E008 0092). `lfo2-rate` is a per-stack dest;
+            // read this block's lane-0 accumulator (in octaves) and stash the
+            // multiplier for *next* block's `eval` (one-block latency). Gated:
+            // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
+            lfo2.rate_mult = if lfo2_rate_targeted {
+                self.dest_vals[i][0][LFO2_RATE_IDX].exp2()
+            } else {
+                1.0
+            };
+
+            // == STAGE 12: Stack-spread update (next block's VoiceSpread, one-block latency)
+            //           + FX-mix / LFO1-rate aggregation at lane 0. ==
+            // Stack-spread (E008 0093): update the per-stack smoothed amount
+            // for *next* block's VoiceSpread source scaling (one-block latency
+            // — the source is built before the matrix eval). Snap on fresh,
+            // one-pole otherwise; zero when un-targeted.
+            if stack_spread_targeted {
+                let target = self.dest_vals[i][0][STACK_SPREAD_IDX];
+                self.stack_spread_mod[i] = if fresh {
+                    target
+                } else {
+                    self.stack_spread_mod[i]
+                        + STACK_MACRO_SMOOTH * (target - self.stack_spread_mod[i])
+                };
+            } else {
+                self.stack_spread_mod[i] = 0.0;
+            }
+
+            // FX dests aggregate at lane 0 across active stacks. Lane 0
+            // sees patch-source contributions exactly once; per-stack
+            // sources (velocity, mod env, …) average naturally across the
+            // active stacks below.
+            fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
+            fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
+            // LFO1 rate is patch-global — aggregate at lane 0 like the FX mixes
+            // and cache for next block (E008 0092, one-block latency).
+            lfo1_rate_oct_sum += self.dest_vals[i][0][LFO1_RATE_IDX];
+            fx_active += 1;
+        }
+
+        StackBlockSummary {
+            fx_delay_mix_sum,
+            fx_reverb_mix_sum,
+            lfo1_rate_oct_sum,
+            fx_active,
+        }
     }
 
     /// ON-path render (ADR 0004 §3–§5): stack-major, oversampled per-voice
@@ -1439,13 +1537,14 @@ impl Engine {
         self.apply_fx_block(n, out_l, out_r);
     }
 
-    /// Shared post-dry FX chain (cleanup → phaser → delay → reverb → master),
-    /// run per sample over `dry_l/r` into `out_l/r`. Identical on every render
-    /// body, so the dry bus is the only thing the three paths produce
-    /// differently.
+    /// Shared post-dry FX chain (cleanup → dynamics → phaser → delay → reverb →
+    /// master), run per sample over `dry_l/r` into `out_l/r`. Identical on
+    /// every render body, so the dry bus is the only thing the three paths
+    /// produce differently.
     fn apply_fx_block(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
+            let (cl, cr) = self.dynamics.process(cl, cr);
             let (cl, cr) = self.phaser.process(cl, cr);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
@@ -1672,17 +1771,14 @@ impl Engine {
     #[inline]
     fn advance_mod_ramp_one(&mut self, i: usize) {
         let stack = &mut self.alloc.stacks[i];
-        let lvl_inc = &self.level_mod_inc[i];
-        let pl_inc = &self.pan_l_inc[i];
-        let pr_inc = &self.pan_r_inc[i];
-        let ph_inc = &self.phase_mod_inc[i];
+        let r = &self.ramps[i];
         for op_i in 0..vxn2_dsp::algo::N_OPS {
             for k in 0..STACK_LANES {
-                stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
-                stack.pan_l[op_i][k] += pl_inc[op_i][k];
-                stack.pan_r[op_i][k] += pr_inc[op_i][k];
+                stack.op_level_mod[op_i][k] += r.level_mod[op_i][k];
+                stack.pan_l[op_i][k] += r.pan_l[op_i][k];
+                stack.pan_r[op_i][k] += r.pan_r[op_i][k];
                 stack.op_phase_mod_q32[op_i][k] =
-                    stack.op_phase_mod_q32[op_i][k].wrapping_add(ph_inc[op_i][k] as u32);
+                    stack.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
             }
         }
     }
@@ -1697,17 +1793,14 @@ impl Engine {
                 continue;
             }
             let stack = &mut self.alloc.stacks[i];
-            let lvl_inc = &self.level_mod_inc[i];
-            let pl_inc = &self.pan_l_inc[i];
-            let pr_inc = &self.pan_r_inc[i];
-            let ph_inc = &self.phase_mod_inc[i];
+            let r = &self.ramps[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 for k in 0..STACK_LANES {
-                    stack.op_level_mod[op_i][k] += lvl_inc[op_i][k];
-                    stack.pan_l[op_i][k] += pl_inc[op_i][k];
-                    stack.pan_r[op_i][k] += pr_inc[op_i][k];
+                    stack.op_level_mod[op_i][k] += r.level_mod[op_i][k];
+                    stack.pan_l[op_i][k] += r.pan_l[op_i][k];
+                    stack.pan_r[op_i][k] += r.pan_r[op_i][k];
                     stack.op_phase_mod_q32[op_i][k] =
-                        stack.op_phase_mod_q32[op_i][k].wrapping_add(ph_inc[op_i][k] as u32);
+                        stack.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
                 }
             }
         }
@@ -1796,13 +1889,13 @@ mod tests {
 
     /// Full key-tracking + a C0-floored base cutoff lands the cutoff exactly on
     /// the played note's pitch (VXN-1 parity): `CUTOFF_MIN_HZ · 2^offset ==
-    /// midi_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
+    /// note_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
     /// amount.
     #[test]
     fn keytrack_full_lands_cutoff_on_note_pitch() {
         for note in [24u8, 36, 48, 60, 72, 96] {
             let cutoff = CUTOFF_MIN_HZ * keytrack_octaves(note, 1.0).exp2();
-            let pitch = vxn2_dsp::op::midi_to_hz(note);
+            let pitch = vxn_core_utils::note_to_hz(note as f32);
             assert!(
                 (cutoff - pitch).abs() / pitch < 1e-3,
                 "note {note}: key-tracked cutoff {cutoff} ≠ pitch {pitch}",

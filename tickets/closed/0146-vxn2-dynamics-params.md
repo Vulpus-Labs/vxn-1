@@ -105,3 +105,58 @@ gap is still there when this ticket runs, backfill phaser **and**
 add dynamics in the same edit so the doc catches up.
 
 Followed by 0147 (engine bus wiring), 0148 (faceplate).
+
+## Close-out (2026-06-24)
+
+- **Blob bumped to v16, not v15** — v15 was already taken by the EG-curve
+  trailer (ticket 0124, `BLOB_VERSION` doc at
+  [shared.rs:159-164](../../vxn-2/crates/vxn2-engine/src/shared.rs#L159-L164)).
+  Ticket assumed v15 was free; corrected to v16. `N_DYNAMICS_PARAMS_V16 = 8`,
+  `LEGACY_V14_PARAM_COUNT = TOTAL_PARAMS − N_DYNAMICS_PARAMS_V16 = 201`
+  (v14 and v15 share the same value-block count — v15 added only a packed
+  trailer, no new CLAP params), `LEGACY_V13_PARAM_COUNT` redefined off
+  `LEGACY_V14_PARAM_COUNT − N_PHASER_PARAMS_V14`. `load_bytes` count match
+  arm `14 | 15 => LEGACY_V14_PARAM_COUNT`; v16 hits the `_` arm for the
+  full trailer length.
+- Eight `dyn-*` ids appended at the table tail
+  ([params.rs:587-595](../../vxn-2/crates/vxn2-engine/src/params.rs#L587-L595));
+  `TOTAL_PARAMS = 209`, `N_PATCH_LEVEL = 40`; `OFF_DYNAMICS = 32` /
+  `N_DYNAMICS_PARAMS = 8` exposed for shared.rs.
+  `module_for_patch` routes ids 201..209 to `"Global / Dynamics"`.
+- Trailing-tail seeders for v≤6/7/8/12 widened to include the new
+  `N_DYNAMICS_PARAMS_V16` subtraction; added explicit v≤13 and v≤15 seeders
+  (cascading, idempotent default writes), so any pre-v16 blob loads with
+  `dyn-on = 0` → bit-identical render.
+- `EngineParams::dynamics: DynamicsParams` field
+  ([shared.rs:1374](../../vxn-2/crates/vxn2-engine/src/shared.rs#L1374))
+  with `Default::default()` init and an 8-field decode arm in
+  `snapshot_from`
+  ([shared.rs:1499-1510](../../vxn-2/crates/vxn2-engine/src/shared.rs#L1499-L1510)).
+- Default patch leaves `dyn-on = 0` (descriptor default, no explicit set in
+  [default_patch.rs](../../vxn-2/crates/vxn2-engine/src/default_patch.rs) —
+  pre-epic bus stays bit-identical).
+- Round-trip tests in `shared::tests`:
+  - `snapshot_round_trips_dynamics_params` — live v16 blob round-trips all
+    eight `dyn-*` slots and the `EngineParams` decode lands the same values.
+  - `v15_blob_seeds_default_dynamics` — strips the v16 dynamics tail off a
+    snapshot, stamps v15 / `LEGACY_V14_PARAM_COUNT`; load defaults every
+    `dyn-*` slot in dst (pre-dirtied with non-defaults) to its descriptor
+    default.
+- `grep -in 'dyn\|dynamics'
+  [vxn-2/crates/vxn2-engine/src/matrix.rs](../../vxn-2/crates/vxn2-engine/src/matrix.rs)`
+  returns only the word "dynamic" in English text — no `dyn-*` `DestId` /
+  `SourceId` entries, matching the phaser/host-automation-only precedent.
+- `PARAMETERS.md` updated with `### Dynamics` and `### Phaser` subsections
+  under `## Effects` plus an FX-bus-order intro
+  ([PARAMETERS.md:262-300](../../vxn-2/PARAMETERS.md#L262-L300)). Phaser
+  backfill follows the ticket's Notes guidance — E025 shipped the params
+  but the doc wasn't updated. Limiter / HP gaps in the doc are out of
+  scope here.
+- `param_audibility.rs` `EXCLUDED` list gains eight `dyn-*` entries with a
+  forward-pointer note (`Dynamics DSP not yet wired into the engine bus
+  (0147)`); the entries get removed when 0147 lands the DSP wiring.
+- `cargo test -p vxn2-engine` → 209 lib + integration tests pass (1
+  pre-existing `vxn2-clap::editor_smoke::load_factory_round_trips…`
+  failure on `main`, unrelated — confirmed by `git stash` re-run).
+- `cargo build -p vxn2-clap --release` clean.
+- Followed by 0147 (engine bus wiring), 0148 (faceplate).

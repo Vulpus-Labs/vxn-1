@@ -2,7 +2,7 @@
 id: E028
 product: vxn-2
 title: FX dynamics block (compressor + saturation)
-status: open
+status: closed
 created: 2026-06-24
 ---
 

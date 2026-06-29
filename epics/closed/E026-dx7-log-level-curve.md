@@ -2,7 +2,7 @@
 id: E026
 product: vxn-2
 title: DX7-faithful operator level curve + per-op EG curve mode
-status: open
+status: closed
 created: 2026-06-23
 ---
 

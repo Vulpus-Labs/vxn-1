@@ -17,6 +17,7 @@
 //! once per block) and keep the per-sample loop tight.
 
 use crate::eg::{EgCurve, EgParams, EgState};
+use vxn_core_utils::note_to_hz;
 use crate::ks::{KsCurve, ks_level_mult, ks_rate_mult};
 use crate::sine;
 use crate::tables::vel_factor;
@@ -108,15 +109,8 @@ pub struct OpState {
 /// modulator = one cycle = 2π radians of phase shift).
 pub const PM_SCALE_Q32: f32 = 4_294_967_296.0;
 
-/// MIDI note → frequency in Hz. A4 (MIDI 69) = 440 Hz.
-#[inline]
-pub fn midi_to_hz(note: u8) -> f32 {
-    let n = note as f32;
-    440.0 * 2_f32.powf((n - 69.0) / 12.0)
-}
-
 /// Operator base frequency (Hz) from its ratio/fixed mode and the played key,
-/// *before* any per-lane stack detune. Ratio mode: `midi_to_hz(key)` times the
+/// *before* any per-lane stack detune. Ratio mode: `note_to_hz(key)` times the
 /// effective ratio (`num + fine/100` over `denom`) and the detune-cents factor;
 /// Fixed mode: the literal `fixed_hz`. Single definition shared by
 /// [`OpState::cook`] (scalar reference path) and `Stack::cook_op` (the
@@ -128,7 +122,7 @@ pub fn compute_base_hz(params: &OpParams, key: u8) -> f32 {
             let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
             let denom = params.denom.max(1) as f32;
             let cents = params.detune as f32;
-            midi_to_hz(key) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
+            note_to_hz(key as f32) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
         }
         RatioMode::Fixed => params.fixed_hz,
     }

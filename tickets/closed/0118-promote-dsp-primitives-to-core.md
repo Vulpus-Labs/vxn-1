@@ -69,3 +69,39 @@ codegen. Land with or just after `0117` (both touch
 `vxn-core-utils`; sequence to avoid churn). Memory
 `vxn1-tanh-branchless-only`: only branch-free tanh variants
 matter in the poly hot path — leave that one alone.
+
+## Close-out (2026-06-26)
+
+- **Limiter.** New [limiter.rs](../../crates/vxn-core-utils/src/limiter.rs)
+  in `vxn-core-utils` holds `PeakWindow`, `LimiterCore`, `StereoLimiter` and a
+  private inlined `DelayLine` (+ `THRESHOLD`/`ATTACK_MS`/`RELEASE_MS`/
+  `MAX_ATTACK_MS` and the 7 unit tests). Verified the two synths' copies were
+  byte-identical apart from docs/imports and vxn-2's inlined-vs-imported
+  `DelayLine` (whose `new`/`clear`/`write`/`read` match vxn-1's
+  `delay.rs::DelayLine` exactly). `vxn-dsp/src/limiter.rs` and
+  `vxn2-dsp/src/limiter.rs` are now re-export shims; engine call sites
+  (`vxn-engine`, `vxn2-engine`) unchanged.
+- **Half-band.** New [halfband.rs](../../crates/vxn-core-utils/src/halfband.rs)
+  holds the decimation half: `HalfbandFir`, `Oversampler`, `DEFAULT_TAPS`,
+  `DEFAULT_CENTRE`, `roundtrip_latency_base_samples` (+ decimator tests). The
+  `HalfbandFir`/`Oversampler` code was identical across both synths (confirmed
+  comment-stripped diff). `vxn-dsp/src/halfband.rs` is a pure re-export;
+  `vxn2-dsp/src/halfband.rs` re-exports the shared half and keeps its
+  `HalfbandInterp`/`Interpolator` (+ interp tests) local, layered on the shared
+  FIR via the re-exported `HalfbandFir::GROUP_DELAY_OVERSAMPLED`.
+- **Scalar tanh.** New [math.rs](../../crates/vxn-core-utils/src/math.rs) holds
+  `fast_tanh` (byte-identical Padé(5,6) body + tests). `vxn-dsp/src/math.rs`
+  and `vxn2-dsp/src/math.rs` re-export it; both keep their other locals
+  (`fast_exp2`/`fast_sine`/`lookup_sine`/`xorshift64` stay in vxn-1).
+- **Poly-lane tanh left in place.** `vxn-dsp::poly::oscillator::tanh_c`
+  ([oscillator.rs:53](../../vxn-1/crates/vxn-dsp/src/poly/oscillator.rs#L53))
+  not moved/merged; its doc now points at the shared scalar `fast_tanh` and
+  states the branchless-clamp split is deliberate for vectorisation.
+- **Single-definition sweep.** `grep` across `crates/`, `vxn-1/crates/`,
+  `vxn-2/crates/` finds exactly one definition of `LimiterCore`,
+  `StereoLimiter`, `HalfbandFir`, `Oversampler`, and scalar `fast_tanh` (all in
+  `vxn-core-utils`).
+- **Tests.** `cargo test --workspace` green; `vxn-engine` `tests/baseline.rs`
+  render hash unchanged (proves the promoted FIR/limiter are bit-identical);
+  vxn-2 `filter_integration` (exercises the oversampler) green. `cargo clippy
+  -p vxn-core-utils` clean.

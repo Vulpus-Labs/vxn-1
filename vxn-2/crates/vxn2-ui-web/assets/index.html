@@ -347,19 +347,24 @@
       </div>
     </div>
 
-    <!-- FX (E025 / 0090): Phaser / Delay / Reverb behind a left vertical tab
-         strip — one panel for the three time-domain effects, replacing the old
-         delay-panel + reverb-panel blocks. Tab order = signal order
-         (dry → phaser → delay → reverb). Each tab carries its own on/off switch
-         (`.fx-tab-switch` bound to phaser-on / delay-on / reverb-on); the panes
-         hold the controls verbatim. Visibility is CSS-driven off
-         `data-active-tab`; `panels/fx-tabs.js` (`wireFxTabs`) handles the
-         click → swap. Hiding a tab does NOT bypass its DSP — an inactive FX
-         still runs if its `on` param is 1. -->
+    <!-- FX (E025 / 0090, E028 / 0148): Dyn / Phaser / Delay / Reverb behind a
+         left vertical tab strip — one panel for the four FX-bus stages,
+         replacing the old delay-panel + reverb-panel blocks. Tab order =
+         signal order (dry → dynamics → phaser → delay → reverb). Each tab
+         carries its own on/off switch (`.fx-tab-switch` bound to dyn-on /
+         phaser-on / delay-on / reverb-on); the panes hold the controls
+         verbatim. Visibility is CSS-driven off `data-active-tab`;
+         `panels/fx-tabs.js` (`wireFxTabs`) handles the click → swap. Hiding a
+         tab does NOT bypass its DSP — an inactive FX still runs if its `on`
+         param is 1. -->
     <div class="panel fx-panel" data-vxn-section="fx" data-active-tab="phaser">
       <div class="panel-header">FX</div>
       <div class="panel-body fx-body">
         <div class="fx-tabs">
+          <button type="button" class="fx-tab fx-tab-dyn" data-tab="dyn">
+            <span class="fx-tab-switch bgrp-toggle" data-vxn-param="dyn-on"></span>
+            <span class="fx-tab-label">DYN</span>
+          </button>
           <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
             <span class="fx-tab-switch bgrp-toggle" data-vxn-param="phaser-on"></span>
             <span class="fx-tab-label">PHASER</span>
@@ -374,6 +379,23 @@
           </button>
         </div>
         <div class="fx-panes">
+          <div class="fx-pane fx-pane-dyn">
+            <div class="dial-grid">
+              <div class="dial" data-vxn-param="dyn-threshold" data-label="Thresh"></div>
+              <div class="dial" data-vxn-param="dyn-ratio" data-label="Ratio"></div>
+              <div class="dial" data-vxn-param="dyn-attack" data-label="Attack"></div>
+              <div class="dial" data-vxn-param="dyn-release" data-label="Release"></div>
+              <div class="dial" data-vxn-param="dyn-makeup" data-label="Makeup"></div>
+              <div class="dial" data-vxn-param="dyn-drive" data-label="Drive"></div>
+            </div>
+            <div class="fader" data-vxn-param="dyn-mix">
+              <div class="fader-label">Mix</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
+          </div>
           <div class="fx-pane fx-pane-phaser">
             <div class="fader" data-vxn-param="phaser-rate">
               <div class="fader-label">Rate</div>

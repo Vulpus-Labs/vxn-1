@@ -9,7 +9,16 @@
 //! Detector: max |4th difference| over late render (EG settled, t=2..3 s).
 //! The 4th difference suppresses smooth carriers by f^4 while a slope
 //! discontinuity keeps its full size. Pre-0076 the routed render measured
-//! 6.5e-4 against a 3.65e-4 static floor (1.8x); the bound allows 1.2x.
+//! 6.5e-4 against a 3.65e-4 static floor (1.8x); the bound allows 1.6x.
+//!
+//! 1.6x (relaxed from 1.2x after ticket 0125): the exp-curve EG marches
+//! Decay1/Decay2/Release linearly in log2 at control rate, so the
+//! per-block amplitude delta varies across blocks and the d4 detector
+//! picks up small block-boundary kinks. Those are piecewise-linear
+//! interpolation of a smooth log2 curve — inaudible zipper, not the
+//! sample-rate-band tick of a clamp corner — so we widen the bound
+//! enough to ignore them while still catching the 1.8x clamp-corner
+//! return this test was written for.
 
 use vxn2_engine::MatrixRowRaw;
 use vxn2_engine::engine::Engine;
@@ -76,7 +85,7 @@ fn gating_level_route_stays_below_waveform_floor() {
     let floor = max_d4(false);
     let routed = max_d4(true);
     assert!(
-        routed < floor * 1.2,
+        routed < floor * 1.6,
         "gating level route d4 max {routed:.2e} pokes above static floor {floor:.2e} — clamp corner is back"
     );
 }

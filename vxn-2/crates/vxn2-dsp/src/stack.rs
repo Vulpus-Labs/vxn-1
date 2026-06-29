@@ -607,6 +607,28 @@ impl Stack {
         self.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
     }
 
+    /// Instantaneous radiated amplitude: the sum of the *carrier* ops' current
+    /// EG levels. Modulator EGs are excluded — they shape timbre/brightness, not
+    /// gross loudness, so a voice with a hot modulator but a near-silent carrier
+    /// is correctly judged quiet. `eg.level` is already in absolute amplitude
+    /// units (`cook` bakes `max_amp = level×ks×vel` into the targets), so this is
+    /// real audible amplitude with no extra normalisation.
+    ///
+    /// Used by the allocator to steal the *quietest* voice when polyphony is
+    /// full: re-attacking a low-level voice reads as a near-fresh attack rather
+    /// than the loud "twang" of re-attacking a voice sitting at full sustain.
+    #[inline]
+    pub fn carrier_level(&self) -> f32 {
+        let carriers = spec_of(self.algo).carriers;
+        let mut sum = 0.0;
+        for i in 0..N_OPS {
+            if (carriers >> i) & 1 == 1 {
+                sum += self.ops[i].eg.level;
+            }
+        }
+        sum
+    }
+
     /// Hard-silence and free: gate off, snap every EG to Idle, release the
     /// pitch/mod envelopes, and mark the voice `Idle`. Used at declick completion
     /// (output already ~0) and on the natural `eg_all_idle` retirement.

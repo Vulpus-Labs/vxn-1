@@ -34,6 +34,7 @@ const HTML_TEMPLATE: &str = include_str!("../assets/index.html");
 const FACEPLATE_CSS: &str = include_str!("../assets/style.css");
 const BOOTSTRAP_JS: &str = include_str!("../assets/bootstrap.js");
 const PANEL_KNOB_JS: &str = include_str!("../assets/panels/knob.js");
+const PANEL_DIAL_JS: &str = include_str!("../assets/panels/dial.js");
 const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 const PANEL_BUTTON_GROUP_JS: &str = include_str!("../assets/panels/button-group.js");
 const PANEL_GRAPH_JS: &str = include_str!("../assets/panels/graph.js");
@@ -100,7 +101,10 @@ fn build_faceplate_html() -> String {
     let js_bundle = [
         bootstrap,
         asset(dev.as_deref(), "panels/knob.js", PANEL_KNOB_JS),
+        // dial.js depends on fader.js's taper/format helpers, so it's spliced
+        // immediately after fader.js below.
         asset(dev.as_deref(), "panels/fader.js", PANEL_FADER_JS),
+        asset(dev.as_deref(), "panels/dial.js", PANEL_DIAL_JS),
         asset(dev.as_deref(), "panels/button-group.js", PANEL_BUTTON_GROUP_JS),
         asset(dev.as_deref(), "panels/graph.js", PANEL_GRAPH_JS),
         asset(dev.as_deref(), "panels/algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
