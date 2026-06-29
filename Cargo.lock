@@ -2492,6 +2492,7 @@ dependencies = [
  "clack-host",
  "clack-plugin",
  "vxn-core-app",
+ "vxn-core-clap",
  "vxn-core-ui-web",
  "vxn2-app",
  "vxn2-engine",
@@ -2501,6 +2502,9 @@ dependencies = [
 [[package]]
 name = "vxn2-dsp"
 version = "0.0.8"
+dependencies = [
+ "vxn-core-utils",
+]
 
 [[package]]
 name = "vxn2-engine"
@@ -2510,6 +2514,7 @@ dependencies = [
  "serde",
  "toml",
  "vxn-core-app",
+ "vxn-core-utils",
  "vxn2-app",
  "vxn2-dsp",
 ]

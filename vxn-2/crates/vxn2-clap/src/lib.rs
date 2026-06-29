@@ -17,7 +17,7 @@ use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::event_types::TransportFlags;
 use clack_plugin::events::spaces::CoreEventSpace;
-use clack_plugin::events::{Match, UnknownEvent};
+use clack_plugin::events::UnknownEvent;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
@@ -37,6 +37,7 @@ use vxn2_engine::{
     rate_partner_clap_id, sync_aware_display,
 };
 use vxn_core_app::{Controller, CorpusHandle, ParamId, ViewEvent};
+use vxn_core_clap::{EngineNotes, batch_range, dispatch_notes};
 
 use crate::local::LocalParams;
 
@@ -105,18 +106,7 @@ impl DefaultPluginFactory for VxnPlugin {
         host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        let (mut controller, view_rx, corpus) =
-            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
-        // The dirty-bitset pump (`push_model_diffs`) is vxn-2's single
-        // Model→View emitter; suppress the controller's redundant echo so a
-        // UI write / state load isn't broadcast twice (ticket 0067).
-        controller.set_echo_param_writes(false);
-        // Seed the preset bar with the synthetic "Init" label until the
-        // preset epic (E007 lineage) ships a real factory bank.
-        controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
-            name: "Init".into(),
-            ..Default::default()
-        }));
+        let (controller, view_rx, corpus) = make_vxn2_controller(shared.params.clone());
         Ok(VxnMainThread {
             shared,
             controller: Arc::new(Mutex::new(controller)),
@@ -127,6 +117,29 @@ impl DefaultPluginFactory for VxnPlugin {
             timer: None,
         })
     }
+}
+
+/// The one construction path for vxn-2's controller, shared by
+/// `new_main_thread` and the test `mk_main` helper. Wires the two vxn-2
+/// policy choices onto a fresh `Controller`:
+///
+/// - `set_echo_param_writes(false)`: the dirty-bitset pump
+///   (`push_model_diffs`) is vxn-2's single Model→View emitter; suppress the
+///   controller's redundant echo so a UI write / state load isn't broadcast
+///   twice (ticket 0067).
+/// - `set_init_preset_meta`: seed the preset bar with the synthetic "Init"
+///   label until the preset epic (E007 lineage) ships a real factory bank.
+fn make_vxn2_controller(
+    shared: Arc<SharedParams>,
+) -> (Controller<SharedParams>, Receiver<ViewEvent>, CorpusHandle) {
+    let (mut controller, view_rx, corpus) =
+        Controller::new(shared, Box::new(Vxn2PresetStore::new()));
+    controller.set_echo_param_writes(false);
+    controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
+        name: "Init".into(),
+        ..Default::default()
+    }));
+    (controller, view_rx, corpus)
 }
 
 /// Data shared between the main and audio threads. The param store lives
@@ -414,82 +427,52 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
     }
 }
 
-/// Convert a clack event-batch `[start, end)` sample range into concrete
-/// frame offsets, capped to the host's frame count. Mirrors VXN1's bound
-/// extraction — `Unbounded` means "from start" / "to end" of the host block.
-fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usize, usize) {
-    let (sb, eb) = bounds;
-    let start = match sb {
-        Bound::Included(n) => n,
-        Bound::Excluded(n) => n + 1,
-        Bound::Unbounded => 0,
+/// Adapts vxn-2's [`Engine`] to [`vxn_core_clap::EngineNotes`] so the shared
+/// [`dispatch_notes`] drives the note + raw-MIDI arms. Lives here (not on
+/// `Engine` directly) because the orphan rule blocks an external-trait /
+/// external-type impl in this crate. The one synth-specific quirk is the
+/// velocity mapping: CLAP's `[0, 1]` float → the engine's `1..=127` u8.
+struct EngineNotesAdapter<'a>(&'a mut Engine);
+
+impl EngineNotes for EngineNotesAdapter<'_> {
+    fn note_on(&mut self, key: u8, velocity: f32) {
+        let vel = ((velocity * 127.0) as i32).clamp(1, 127) as u8;
+        self.0.note_on(key, vel);
     }
-    .min(frames);
-    let end = match eb {
-        Bound::Included(n) => n + 1,
-        Bound::Excluded(n) => n,
-        Bound::Unbounded => frames,
+    fn note_off(&mut self, key: u8) {
+        self.0.note_off(key);
     }
-    .min(frames);
-    (start, end)
+    fn pitch_bend(&mut self, value: f32) {
+        self.0.set_pitch_bend(value);
+    }
+    fn mod_wheel(&mut self, value: f32) {
+        self.0.set_mod_wheel(value);
+    }
+    fn aftertouch(&mut self, value: f32) {
+        self.0.set_aftertouch(value);
+    }
+    fn sustain(&mut self, on: bool) {
+        self.0.set_sustain(on);
+    }
 }
 
-/// Per-event dispatch: notes go straight to the engine, param-value events
-/// fold into the local mirror AND write through to the shared store (so the
-/// dirty bitset catches host automation), raw MIDI feeds bend / mod-wheel /
-/// aftertouch.
+/// Per-event dispatch. `ParamValue` events fold into the local mirror AND
+/// write through to the shared store (so the dirty bitset catches host
+/// automation — the synth-specific seam); the engine re-snapshots from
+/// [`LocalParams`] at the top of the next block. Sub-block accuracy at event
+/// boundaries lands with the UI epic when `Engine::set_param` (per-id) is
+/// exposed. Every other arm (notes, raw MIDI) delegates to the shared
+/// [`dispatch_notes`] via [`EngineNotesAdapter`].
 fn dispatch_event(
     engine: &mut Engine,
     local: &mut LocalParams,
     shared: &SharedParams,
     event: &UnknownEvent,
 ) {
-    match event.as_core_event() {
-        Some(CoreEventSpace::NoteOn(e)) => {
-            if let Match::Specific(key) = e.key() {
-                let vel = ((e.velocity() * 127.0) as i32).clamp(1, 127) as u8;
-                engine.note_on(key as u8, vel);
-            }
-        }
-        Some(CoreEventSpace::NoteOff(e)) => {
-            if let Match::Specific(key) = e.key() {
-                engine.note_off(key as u8);
-            }
-        }
-        Some(CoreEventSpace::ParamValue(_)) => {
-            // Mirror + shared store: the engine re-snapshots from `LocalParams`
-            // at the top of the next block, and the shared write flips a
-            // dirty bit the main-thread tick will drain into a ParamChanged.
-            // Sub-block accuracy at event boundaries lands with the UI epic
-            // when `Engine::set_param` (per-id) is exposed.
-            let _ = local.apply_input(shared, event);
-        }
-        Some(CoreEventSpace::Midi(e)) => {
-            let [status, d1, d2] = e.data();
-            match status & 0xF0 {
-                0xE0 => {
-                    // 14-bit bend, centre 8192 → normalised [-1, 1].
-                    let raw = ((d2 as u16) << 7) | d1 as u16;
-                    engine.set_pitch_bend((raw as f32 - 8192.0) / 8192.0);
-                }
-                0xB0 if d1 == 1 => {
-                    // CC1 mod wheel. Deadzone the bottom LSB — hardware
-                    // wheels rarely rest clean at 0 (mirrors VXN1).
-                    let wheel = if d2 <= 1 { 0.0 } else { d2 as f32 / 127.0 };
-                    engine.set_mod_wheel(wheel);
-                }
-                0xD0 => {
-                    // Channel aftertouch: single data byte in [0, 127].
-                    engine.set_aftertouch(d1 as f32 / 127.0);
-                }
-                0xB0 if d1 == 64 => {
-                    // CC64 sustain (damper) pedal. MIDI convention: >= 64 on.
-                    engine.set_sustain(d2 >= 64);
-                }
-                _ => {}
-            }
-        }
-        _ => {}
+    if let Some(CoreEventSpace::ParamValue(_)) = event.as_core_event() {
+        let _ = local.apply_input(shared, event);
+    } else {
+        dispatch_notes(&mut EngineNotesAdapter(engine), event);
     }
 }
 
@@ -672,14 +655,7 @@ mod tests {
     use vxn2_engine::params::id_of;
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
-        let (mut controller, view_rx, corpus) =
-            Controller::new(shared.params.clone(), Box::new(Vxn2PresetStore::new()));
-        // Match production: pump is the single emitter (ticket 0067).
-        controller.set_echo_param_writes(false);
-        controller.set_init_preset_meta(Some(vxn_core_app::PresetMeta {
-            name: "Init".into(),
-            ..Default::default()
-        }));
+        let (controller, view_rx, corpus) = make_vxn2_controller(shared.params.clone());
         VxnMainThread {
             shared,
             controller: Arc::new(Mutex::new(controller)),

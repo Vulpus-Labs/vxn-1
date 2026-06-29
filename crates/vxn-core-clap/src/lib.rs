@@ -19,9 +19,9 @@ pub mod state;
 pub mod transport;
 
 pub use engine::{EngineNotes, EngineProcess, SharedStore};
-pub use events::{batch_range, dispatch_event};
+pub use events::{batch_range, dispatch_event, dispatch_notes};
 pub use gesture::{emit_gesture_begin, emit_gesture_end, emit_param_value};
-pub use local::LocalParams;
+pub use local::{LocalParams, bracket};
 pub use state::{load_blob, save_blob};
 pub use transport::tempo_from_transport;
 pub use vxn_core_app::ParamModel;

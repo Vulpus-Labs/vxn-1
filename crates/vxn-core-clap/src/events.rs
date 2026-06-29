@@ -31,20 +31,17 @@ pub fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usiz
     (start, end)
 }
 
-/// Per-event dispatch.
+/// Dispatch the note + raw-MIDI arms onto `engine`. The param-write seam
+/// differs per synth (callback vs. shared-store write-through), so it lives
+/// in [`dispatch_event`] / each synth's own wrapper; this carries only the
+/// arms that are identical across synths.
 ///
 /// - NoteOn / NoteOff: forwarded to `engine`. CLAP velocity is `[0, 1]`
 ///   float; we forward it as-is (the engine decides the mapping).
 /// - Raw MIDI: pitch-bend (0xE0), CC1 mod wheel (0xB0), CC64 sustain
 ///   pedal (0xB0), channel aftertouch (0xD0) forwarded.
-/// - `ParamValue`: routed to `on_param` (the synth folds into its
-///   audio-thread mirror).
-/// - Anything else: silently ignored.
-pub fn dispatch_event<E, F>(engine: &mut E, on_param: &mut F, event: &UnknownEvent)
-where
-    E: EngineNotes,
-    F: FnMut(&UnknownEvent),
-{
+/// - `ParamValue` and anything else: silently ignored.
+pub fn dispatch_notes<E: EngineNotes>(engine: &mut E, event: &UnknownEvent) {
     match event.as_core_event() {
         Some(CoreEventSpace::NoteOn(e)) => {
             if let Match::Specific(key) = e.key() {
@@ -55,9 +52,6 @@ where
             if let Match::Specific(key) = e.key() {
                 engine.note_off(key as u8);
             }
-        }
-        Some(CoreEventSpace::ParamValue(_)) => {
-            on_param(event);
         }
         Some(CoreEventSpace::Midi(e)) => {
             let [status, d1, d2] = e.data();
@@ -85,5 +79,20 @@ where
             }
         }
         _ => {}
+    }
+}
+
+/// Per-event dispatch. `ParamValue` events route to `on_param` (the synth
+/// folds them into its audio-thread mirror); every other arm delegates to
+/// [`dispatch_notes`].
+pub fn dispatch_event<E, F>(engine: &mut E, on_param: &mut F, event: &UnknownEvent)
+where
+    E: EngineNotes,
+    F: FnMut(&UnknownEvent),
+{
+    if let Some(CoreEventSpace::ParamValue(_)) = event.as_core_event() {
+        on_param(event);
+    } else {
+        dispatch_notes(engine, event);
     }
 }

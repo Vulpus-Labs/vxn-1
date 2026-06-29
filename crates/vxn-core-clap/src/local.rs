@@ -36,7 +36,7 @@ use crate::gesture::{emit_gesture_begin, emit_gesture_end, emit_param_value};
 /// self-bracketed — its own begin *and* end in the same block ("Both"),
 /// so a single programmatic set still records as one automation edit.
 #[inline]
-fn bracket(changed: bool, cur: bool, prev: bool) -> (bool, bool, bool) {
+pub fn bracket(changed: bool, cur: bool, prev: bool) -> (bool, bool, bool) {
     let bare = changed && !cur && !prev;
     let begin = (cur && !prev) || bare;
     let end = (!cur && prev) || bare;

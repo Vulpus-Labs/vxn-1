@@ -66,3 +66,31 @@ masks it — see epic Notes); do not "fix" `flush` here.
 `drain_dirty_bits` (`lib.rs:210`) and its `force_rate_refresh`
 hot-path `Vec` alloc are noted but out of scope — they belong
 in vxn2-app, ticket separately if pursued.
+
+## Close-out (2026-06-29)
+
+- Private `batch_range` deleted; `vxn2-clap` imports
+  [`vxn_core_clap::batch_range`](../../crates/vxn-core-clap/src/events.rs#L17).
+  Existing parity tests (`tests::batch_range_*`) retained, now
+  exercising the imported fn.
+- Note/MIDI arms (NoteOn/NoteOff/bend/CC1/CC64/aftertouch)
+  extracted to [`dispatch_notes`](../../crates/vxn-core-clap/src/events.rs#L43)
+  in core; `dispatch_event` (core) routes `ParamValue`→callback,
+  else delegates. vxn-2's
+  [`dispatch_event`](../../vxn-2/crates/vxn2-clap/src/lib.rs#L441)
+  keeps only the shared-store write-through seam and calls
+  `dispatch_notes` through `EngineNotesAdapter` (orphan rule
+  blocks impl on `Engine`; adapter carries the `[0,1]`→`1..=127`
+  velocity quirk). Dispatch tests
+  (`tests::dispatch_*`) green both sides.
+- Gesture-bracket decision is the single pure fn
+  [`bracket`](../../crates/vxn-core-clap/src/local.rs#L39) in core
+  (unit-tested `local::tests::bracket_decisions`); vxn-2's
+  [`emit`](../../vxn-2/crates/vxn2-clap/src/local.rs#L177) consumes
+  it, retaining the `end_time = frame_count.saturating_sub(1)`
+  guard.
+- [`make_vxn2_controller`](../../vxn-2/crates/vxn2-clap/src/lib.rs#L132)
+  factory is the one construction path; `new_main_thread` and the
+  test `mk_main` both call it.
+- `cargo test -p vxn-core-clap -p vxn2-clap` green; clippy clean
+  for both crates (pre-existing dsp/engine warnings untouched).

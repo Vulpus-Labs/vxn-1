@@ -28,6 +28,8 @@ use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::utils::Cookie;
 
+use vxn_core_clap::bracket;
+
 use vxn2_engine::params::PARAMS;
 use vxn2_engine::{
     EgCurve, EngineParams, KsCurve, MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, N_MATRIX_SLOTS,
@@ -192,10 +194,10 @@ impl LocalParams {
                 continue;
             }
             // A held gesture brackets a burst of values; a bare value change
-            // (no sustained gesture) is wrapped in its own begin/end.
-            let bare = changed && !cur && !prev;
-            let begin = (cur && !prev) || bare;
-            let end = (!cur && prev) || bare;
+            // (no sustained gesture) is wrapped in its own begin/end. The
+            // pure decision lives in `vxn_core_clap::bracket` (unit-tested
+            // there); vxn-2 keeps the `end_time` guard below.
+            let (begin, _, end) = bracket(changed, cur, prev);
             let id = ClapId::new(i as u32);
             if begin {
                 let _ = out.try_push(ParamGestureBeginEvent::new(0, id));
