@@ -639,45 +639,6 @@ impl DestId {
         }
     }
 
-    /// Translate a v2 blob `DestId` discriminant to the v3 layout.
-    /// v2 had per-op stride 4 (Ratio, Level, Detune, Pan); v3 collapses
-    /// Ratio+Detune into a single Pitch dest with stride 3.
-    /// Both old Ratio and old Detune map to the new Pitch dest.
-    pub fn from_u8_v2(v: u8) -> Self {
-        match v {
-            // op block: old indices 1..=24, new 1..=18
-            1 | 3 => DestId::Op1Pitch,
-            2 => DestId::Op1Level,
-            4 => DestId::Op1Pan,
-            5 | 7 => DestId::Op2Pitch,
-            6 => DestId::Op2Level,
-            8 => DestId::Op2Pan,
-            9 | 11 => DestId::Op3Pitch,
-            10 => DestId::Op3Level,
-            12 => DestId::Op3Pan,
-            13 | 15 => DestId::Op4Pitch,
-            14 => DestId::Op4Level,
-            16 => DestId::Op4Pan,
-            17 | 19 => DestId::Op5Pitch,
-            18 => DestId::Op5Level,
-            20 => DestId::Op5Pan,
-            21 | 23 => DestId::Op6Pitch,
-            22 => DestId::Op6Level,
-            24 => DestId::Op6Pan,
-            // global block shifts down by 6 (drop 6 Detune variants).
-            25 => DestId::GlobalPitch,
-            26 => DestId::Lfo1Rate,
-            27 => DestId::Lfo2Rate,
-            28 => DestId::Lfo2Phase,
-            29 => DestId::StackDetune,
-            30 => DestId::StackSpread,
-            31 => DestId::DelayMix,
-            32 => DestId::ReverbMix,
-            33 => DestId::Feedback,
-            _ => DestId::None,
-        }
-    }
-
     /// Cubic depth taper for the ±24 st semitone dests. Linear depth puts
     /// vibrato-scale amounts (≤ 0.5 st) inside the bottom 2% of widget
     /// travel; `d³` keeps the sign and the full ±2 oct reach while widening

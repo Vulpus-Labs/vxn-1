@@ -69,3 +69,34 @@ The param table stays append-only by design (memory
 const-asserts enforce it at compile time. The next time
 real back-compat is needed (≥1.0.0), reintroduce a versioned
 migration mechanism then — not before.
+
+## Close-out (2026-06-29)
+
+- `BLOB_VERSION` reset 16 → 1; `load_bytes` now rejects any
+  `version != BLOB_VERSION` with `UnsupportedVersion`
+  ([shared.rs:819](../../vxn-2/crates/vxn2-engine/src/shared.rs#L819),
+  [shared.rs:112](../../vxn-2/crates/vxn2-engine/src/shared.rs#L112)).
+  Ladder collapsed to a single current-version path: value block 1:1,
+  then matrix / KS / EG trailers straight-read, no remap, no seeding.
+- Deleted every ladder artefact — 3 `migrate_v*_id` fns, all
+  `LEGACY_V*_PARAM_COUNT` / `N_*_PARAMS_V*` consts,
+  `LIVE_RATIO_MODE_IDX` / `LIVE_PHASE_IDX` / `LEGACY_AMP_SENS_IDX` /
+  `LEGACY_LFO1_DEPTH_ID`, every per-version seed block, the version-keyed
+  `expected_count` / `expected` match arms, the v2→v3 dest remap and
+  `DestId::from_u8_v2` ([matrix.rs](../../vxn-2/crates/vxn2-engine/src/matrix.rs)).
+  Net: shared.rs −767, matrix.rs −39. Grep sweep for
+  `migrate_v|LEGACY_V|from_u8_v2|_PARAM_COUNT` over the engine crate → none.
+- 34 section-offset compile guards added: `const _: () =
+  assert!(id_eq(PARAMS[…].id, "…"))` pinning each `OFF_*` anchor + section
+  width (op-block anchor/stride/trailing slots, every per-patch section,
+  all 9 patch-level sections)
+  ([shared.rs:120+](../../vxn-2/crates/vxn2-engine/src/shared.rs#L120)).
+  A mid-section insert now fails to compile; zero runtime cost.
+- Round-trip test retained
+  (`shared::tests::snapshot_bytes_round_trip_is_bit_identical`); added
+  `shared::tests::load_bytes_rejects_old_version` (v15 → `UnsupportedVersion`).
+  Removed all `rewrite_as_*` helpers + `load_bytes_migrates_*` +
+  `v*_blob_seeds_*` + `accepts_legacy_v1` migration tests.
+- `cargo test -p vxn2-engine` green (lib 202 passed; param/sweep/zipper
+  suites pass); `tests/baseline.rs::render_hash_unchanged` ok — codec change
+  alters no rendered audio.

@@ -41,7 +41,7 @@ use crate::master::MasterParams;
 use crate::matrix::{N_CLAP_DEPTH_SLOTS, N_SLOTS as N_MATRIX_RUNTIME_SLOTS};
 use crate::modulation::PatchModParams;
 use crate::params::{
-    N_OPS, N_PATCH_LEVEL, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
+    N_OPS, N_PER_OP, OFF_ALGO, OFF_ASSIGN, OFF_DELAY, OFF_FEEDBACK, OFF_LFO1,
     OFF_FILTER, OFF_HP, OFF_LFO2, OFF_LIMITER, OFF_MASTER, OFF_MOD_ENV, OFF_MTX, OFF_PEG,
     OFF_DYNAMICS, OFF_PHASER, OFF_REVERB, OFF_STACK,
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
@@ -65,10 +65,10 @@ pub struct Patch {
 pub enum ParamLoadError {
     /// First 4 bytes were not `b"VXN2"`.
     MagicMismatch,
-    /// Version field exceeds the highest supported version (v1 today).
+    /// Version field is not [`BLOB_VERSION`]. The migration ladder is gone
+    /// (ticket 0120) — only the current version loads.
     UnsupportedVersion(u16),
-    /// Header count differs from [`TOTAL_PARAMS`]. v1 demands exact match;
-    /// future versions may relax this.
+    /// Header count differs from [`TOTAL_PARAMS`] (exact match required).
     CountMismatch { expected: u16, got: u16 },
     /// Payload length not equal to `8 + count × 4` (header + values).
     LengthMismatch { expected: usize, got: usize },
@@ -93,204 +93,99 @@ impl std::error::Error for ParamLoadError {}
 
 /// Magic prefix on every VXN2 host-state blob.
 pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
-/// Highest blob version this build can read.
+/// Blob format version. **One version only** (ticket 0120): vxn-2 carries no
+/// blob back-compat obligation pre-1.0.0, so the historical v2–v16 migration
+/// ladder is deleted. [`load_bytes`](SharedParams::load_bytes) accepts only
+/// `version == BLOB_VERSION`; any other version is rejected with
+/// [`ParamLoadError::UnsupportedVersion`]. Existing dev/test blobs at a prior
+/// version become unreadable — re-save from the live build.
 ///
-/// - v1: header + `f32` values for every CLAP id.
-/// - v2: appends mod-matrix topology (16 × packed `u32` meta) and the
-///   non-automatable slot depths (8 × `f32`). Older v1 blobs still load and
-///   leave the matrix at default-patch topology.
-/// - v3: collapses per-op Ratio + Detune mod-matrix dests into a single
-///   per-op Pitch dest (was 4 dests per op, now 3). Older v2 blobs migrate
-///   on load by rewriting the packed `dest` discriminant — both old Ratio
-///   and old Detune routes map to the new Pitch dest.
-/// - v4: drops `lfo1-depth` (E006 / ticket 0061) — param count 180 → 179
-///   and every patch-level id after it shifts down by one. Older blobs
-///   migrate on load by skipping the stored depth value and remapping the
-///   later ids.
-/// - v5: drops the six `opN-amp-sens` params (the AmpSens receive gate is
-///   gone; matrix slot depth is the only level-mod attenuator) — param
-///   count 179 → 173, per-op block 21 → 20 params. Older blobs migrate on
-///   load by skipping the stored amp-sens values and remapping the later
-///   ids.
-/// - v6: adds a trailing `opN-ratio-mode` enum to each op block (the
-///   Ratio/Fixed tuning selector, formerly patch-only) — param count
-///   173 → 179, per-op block 20 → 21 params. Older blobs migrate on load by
-///   spreading the op blocks (later ids shift up by `N_OPS`) and seeding the
-///   six new ratio-mode slots to their default (Ratio).
-/// - v7: appends the 7-param Filter section (E007 / ADR 0004) at the very end
-///   of the flat space (after `master-volume`) — param count 179 → 186. The
-///   section sits past every existing id, so older blobs map 1:1 with no
-///   remap; the 7 new filter ids are seeded to their descriptor defaults
-///   (`filter-enable` off → an unchanged patch stays bit-identical).
-/// - v8: appends `filter-keytrack` + `filter-cutoff-tuned` to the Filter
-///   section (dedicated key-tracking + the Tuned display toggle) — param
-///   count 186 → 188. Both sit past every existing id, so older blobs map
-///   1:1; the 2 new ids are seeded to their defaults (keytrack 0, tuned off
-///   → an unchanged patch stays bit-identical).
-/// - v9: appends `limiter-on` (master brickwall safety limiter, VXN1 parity)
-///   at the very end of the flat space — param count 188 → 189. It sits past
-///   every existing id, so older blobs map 1:1; the new id is seeded to its
-///   default (off → an unchanged patch stays bit-identical).
-/// - v10: widens the mod-matrix dest space with the six `opN-stack-pitch`
-///   dests (E022 0068). The byte layout is **unchanged** — dest is a `u8` in
-///   the matrix trailer, param count is unchanged (no new CLAP params), so a
-///   v10 blob is byte-identical to v9 except the version field, and older
-///   v≤9 blobs decode 1:1 with no remap. The bump exists purely as a
-///   forward-compat guard: a patch that *uses* a stack-pitch dest (dest byte
-///   30..=35) would silently lose the route on a pre-0068 build, so stamping
-///   v10 makes those builds reject it (`version > BLOB_VERSION`) rather than
-///   degrade quietly.
-/// - v11: appends a trailing `opN-phase` float to each op block (the per-op
-///   note-on phase offset, ticket 0074) — per-op block 21 → 22 params, param
-///   count 189 → 195. Structurally identical to the v6 `ratio-mode` spread:
-///   older blobs migrate on load by spreading the op blocks (later ids shift
-///   up by `N_OPS`) and seeding the six new phase slots to their default
-///   (0.0 → an unchanged patch stays bit-identical).
-/// - v12: appends a 4-byte KS-curve trailer (one `u32` packing all
-///   `N_OPS * 2` per-side level-curve selectors, 2 bits each — ticket 0021
-///   sub-task) after the matrix trailer. No new CLAP params, so the value
-///   block + param count are unchanged and v≤11 blobs decode 1:1; the new
-///   trailer is seeded to [`default_ks_curve_meta`] (left NegLin / right
-///   NegExp → an unchanged patch stays bit-identical to the old frozen shapes).
-/// - v13: appends `hp-cutoff` (static one-pole high-pass stage, pre the musical
-///   filter) at the very end of the flat space — param count 195 → 196. It sits
-///   past every existing id, so older blobs map 1:1; the new id is seeded to its
-///   default (20 Hz floor = "off"/transparent → an unchanged patch stays
-///   bit-identical).
-/// - v15: appends a 4-byte EG-curve trailer (one `u32` packing all `N_OPS`
-///   per-op level→amplitude curve selectors, 1 bit each — ticket 0124) after
-///   the KS-curve trailer. No new CLAP params, so the value block + param count
-///   are unchanged and v≤14 blobs decode 1:1; the new trailer is seeded to
-///   [`default_eg_curve_meta`] (every op `Exp` → the DX7-faithful log curve is
-///   the default, ADR 0007, so a migrated patch is bit-identical).
-/// - v16: appends the 8-param Dynamics block (E028 — `dyn-on`, `dyn-threshold`,
-///   `dyn-ratio`, `dyn-attack`, `dyn-release`, `dyn-makeup`, `dyn-drive`,
-///   `dyn-mix`) at the very end of the flat space — param count 201 → 209.
-///   It sits past every existing id (filter / limiter / hp / phaser), so older
-///   blobs map 1:1; the new ids seed to their defaults (`dyn-on` off → an
-///   unchanged patch stays bit-identical).
-pub const BLOB_VERSION: u16 = 16;
-/// Number of params in the Filter section (the trailing block).
-const N_FILTER_PARAMS: usize = 9;
-/// Number of params appended in v14 (the 5-param Phaser block, E025). Appended
-/// past every existing id, so older blobs map 1:1 and the five new ids seed to
-/// their defaults (`phaser-on` off → an unchanged patch stays bit-identical).
-const N_PHASER_PARAMS_V14: usize = 5;
-/// Number of params appended in v16 (the 8-param Dynamics block, E028).
-/// Appended past the Phaser block; `dyn-on` off → an unchanged patch stays
-/// bit-identical.
-const N_DYNAMICS_PARAMS_V16: usize = 8;
-/// Param count in v14 / v15 blobs (before the v16 Dynamics block). The live
-/// total minus the trailing Dynamics append; v15 added only a packed trailer
-/// (no new CLAP params), so v14 and v15 share the same value-block count.
-const LEGACY_V14_PARAM_COUNT: usize = TOTAL_PARAMS - N_DYNAMICS_PARAMS_V16; // 201
-/// Param count in v13 blobs (before the v14 Phaser block). Live total minus
-/// the trailing Phaser + Dynamics appends.
-const LEGACY_V13_PARAM_COUNT: usize = LEGACY_V14_PARAM_COUNT - N_PHASER_PARAMS_V14; // 196
-/// Number of params appended in v13 (`hp-cutoff`).
-const N_HP_PARAMS_V13: usize = 1;
-/// Number of filter params appended in v8 (key-track + cutoff-tuned).
-const N_FILTER_PARAMS_V8: usize = 2;
-/// Number of params appended in v9 (`limiter-on`).
-const N_LIMITER_PARAMS_V9: usize = 1;
-/// Per-op param count in v≤10 blobs (before `opN-phase` was appended) —
-/// `ratio-mode` trailing, no `phase`. One narrower than the live op block.
-const LEGACY_V10_N_PER_OP: usize = N_PER_OP - 1; // 21
-/// Param count in v11/v12 blobs (before the v13 `hp-cutoff` addition). The
-/// live total minus the single trailing `hp-cutoff` append.
-const LEGACY_V12_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - N_HP_PARAMS_V13; // 195
-/// Param count in v9/v10 blobs (before the v11 `opN-phase` addition). The
-/// legacy counts are live-relative: each is the live total minus the cumulative
-/// op-block spread + trailing appends since that version. `phase` is one
-/// op-block spread (`N_OPS`) below the live total, `hp-cutoff` one trailing
-/// append below that.
-const LEGACY_V10_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - N_OPS - N_HP_PARAMS_V13; // 189
-/// Param count in v8 blobs (before the v9 `limiter-on` addition).
-const LEGACY_V8_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9; // 188
-/// Param count in v7 blobs (before the v8 filter additions).
-const LEGACY_V7_PARAM_COUNT: usize = LEGACY_V8_PARAM_COUNT - N_FILTER_PARAMS_V8; // 186
-/// Param count in v6 blobs (before the v7 Filter section was appended).
-const LEGACY_V6_PARAM_COUNT: usize = LEGACY_V10_PARAM_COUNT - N_LIMITER_PARAMS_V9 - N_FILTER_PARAMS; // 179
-/// Param count in v5 blobs (before the v6 `opN-ratio-mode` addition). Two
-/// op-block spreads (`ratio-mode` + `phase`) plus the trailing `hp-cutoff`
-/// append below the live total.
-const LEGACY_V5_PARAM_COUNT: usize = LEGACY_V13_PARAM_COUNT - 2 * N_OPS - N_HP_PARAMS_V13;
-/// Per-op param count in v≤5 blobs (before `ratio-mode` was appended).
-const LEGACY_V5_N_PER_OP: usize = N_PER_OP - 2; // 20
-/// Per-op index of `ratio-mode` in the live op block (second-from-last, before
-/// the trailing `phase` slot).
-const LIVE_RATIO_MODE_IDX: usize = N_PER_OP - 2; // 20
-/// Per-op index of `phase` in the live op block (trailing slot, ticket 0074).
-const LIVE_PHASE_IDX: usize = N_PER_OP - 1; // 21
-/// Param count in v4 blobs (before the v5 `opN-amp-sens` removal).
-const LEGACY_V4_PARAM_COUNT: usize = LEGACY_V5_PARAM_COUNT + N_OPS; // 189
-/// Param count in v≤3 blobs (before the v4 `lfo1-depth` removal).
-const LEGACY_V3_PARAM_COUNT: usize = LEGACY_V4_PARAM_COUNT + 1; // 190
-/// Per-op param count in v≤4 blobs (`amp-sens` still present).
-const LEGACY_V4_N_PER_OP: usize = LEGACY_V5_N_PER_OP + 1; // 21
-/// Per-op index of `amp-sens` in v≤4 blobs (after `vel-sens`).
-const LEGACY_AMP_SENS_IDX: usize = 7;
-/// CLAP id `lfo1-depth` held in v≤3 blobs (v4-space `PATCH_BASE + 2`,
-/// between `lfo1-rate` and `lfo1-sync`). Values at this index are dropped
-/// on load.
-const LEGACY_LFO1_DEPTH_ID: usize = LEGACY_V4_PARAM_COUNT - N_PATCH_LEVEL + 2;
-
-/// v4-space CLAP id → v5-space id. `None` for the dropped `opN-amp-sens`
-/// slots; op-block ids compress 21 → 20 per op, later ids shift down by
-/// `N_OPS`. (Stops at v5 space — the v5 → v6 spread is `migrate_v5_id`.)
-fn migrate_v4_id(id: usize) -> Option<usize> {
-    const LEGACY_V4_OP_BLOCK: usize = LEGACY_V4_N_PER_OP * N_OPS;
-    if id < LEGACY_V4_OP_BLOCK {
-        let op = id / LEGACY_V4_N_PER_OP;
-        let idx = id % LEGACY_V4_N_PER_OP;
-        match idx.cmp(&LEGACY_AMP_SENS_IDX) {
-            std::cmp::Ordering::Less => Some(op * LEGACY_V5_N_PER_OP + idx),
-            std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Greater => Some(op * LEGACY_V5_N_PER_OP + idx - 1),
-        }
-    } else {
-        Some(id - N_OPS)
-    }
-}
-
-/// v5-space CLAP id → v10-space id. Op blocks grow 20 → 21 for the new
-/// trailing `ratio-mode` slot (not a target here — seeded separately), so
-/// op-block ids re-base on `LEGACY_V10_N_PER_OP` and every later id shifts up
-/// by `N_OPS`. Stops at v10 space — the v10 → live `phase` spread is
-/// `migrate_v10_id`.
-fn migrate_v5_id(id: usize) -> usize {
-    const V5_OP_BLOCK: usize = LEGACY_V5_N_PER_OP * N_OPS;
-    if id < V5_OP_BLOCK {
-        let op = id / LEGACY_V5_N_PER_OP;
-        let idx = id % LEGACY_V5_N_PER_OP;
-        op * LEGACY_V10_N_PER_OP + idx
-    } else {
-        id + N_OPS
-    }
-}
-
-/// v10-space CLAP id → live (v11) id. Op blocks grow 21 → 22 for the new
-/// trailing `opN-phase` slot (not a target here — seeded separately), so
-/// op-block ids re-base on `N_PER_OP` and every later id shifts up by `N_OPS`.
-/// Total maps 1:1 (no v10 id is dropped). Ticket 0074.
-fn migrate_v10_id(id: usize) -> usize {
-    const V10_OP_BLOCK: usize = LEGACY_V10_N_PER_OP * N_OPS;
-    if id < V10_OP_BLOCK {
-        let op = id / LEGACY_V10_N_PER_OP;
-        let idx = id % LEGACY_V10_N_PER_OP;
-        op * N_PER_OP + idx
-    } else {
-        id + N_OPS
-    }
-}
+/// Current layout: header (8 B) + `f32` values for every CLAP id, then three
+/// fixed trailers — matrix topology + non-automatable slot depths
+/// ([`BLOB_MATRIX_LEN`]), packed per-side KS level-curve selectors
+/// ([`BLOB_KS_CURVE_LEN`]), and packed per-op EG level-curve selectors
+/// ([`BLOB_EG_CURVE_LEN`]).
+///
+/// When real back-compat is needed (≥1.0.0), reintroduce a versioned migration
+/// mechanism then — not before. Append discipline in the meantime is enforced
+/// mechanically by the section-offset `const` asserts below.
+pub const BLOB_VERSION: u16 = 1;
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
-/// Trailing matrix-meta byte length appended at v2:
+/// Trailing matrix-meta byte length:
 /// `N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4`.
 pub const BLOB_MATRIX_LEN: usize =
     N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4;
 
-/// KS-curve trailer byte length appended at v12: one `u32` packing all
+// ── Section-offset compile-time guards (ticket 0120) ─────────────────────────
+//
+// Each `OFF_*` offset (and the op-block stride) names a section anchor in the
+// flat `PARAMS` table that the section readers + `snapshot_from` index by
+// `base + k`. Inserting a param mid-section silently shifts every later offset;
+// these `const _` asserts pin each anchor to its expected descriptor id so a
+// mid-section insert fails to *compile* instead of corrupting the decode. Zero
+// runtime cost. Adding a param appended at the tail of a section requires
+// moving that section's downstream anchor here in lock-step — by design.
+
+/// `const`-context string equality for the section-offset asserts below.
+const fn id_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// Op block: anchor (op1) + stride (op2) + the two trailing slots `read_op`
+// reads by literal index (20 = ratio-mode, 21 = phase).
+const _: () = assert!(id_eq(PARAMS[0].id, "op1-num"));
+const _: () = assert!(id_eq(PARAMS[N_PER_OP].id, "op2-num"));
+const _: () = assert!(id_eq(PARAMS[20].id, "op1-ratio-mode"));
+const _: () = assert!(id_eq(PARAMS[21].id, "op1-phase"));
+
+// Per-patch sections (absolute ids in the per-patch space).
+const _: () = assert!(id_eq(PARAMS[OFF_ALGO].id, "algo"));
+const _: () = assert!(id_eq(PARAMS[OFF_FEEDBACK].id, "feedback"));
+const _: () = assert!(id_eq(PARAMS[OFF_LFO2].id, "lfo2-shape"));
+const _: () = assert!(id_eq(PARAMS[OFF_LFO2 + 4].id, "lfo2-sync"));
+const _: () = assert!(id_eq(PARAMS[OFF_PEG].id, "peg-r1"));
+const _: () = assert!(id_eq(PARAMS[OFF_PEG + 8].id, "peg-depth"));
+const _: () = assert!(id_eq(PARAMS[OFF_MOD_ENV].id, "mod-env-a"));
+const _: () = assert!(id_eq(PARAMS[OFF_MOD_ENV + 4].id, "mod-env-shape"));
+const _: () = assert!(id_eq(PARAMS[OFF_ASSIGN].id, "assign-mode"));
+const _: () = assert!(id_eq(PARAMS[OFF_ASSIGN + 2].id, "glide-time"));
+const _: () = assert!(id_eq(PARAMS[OFF_STACK].id, "stack-density"));
+const _: () = assert!(id_eq(PARAMS[OFF_STACK + 4].id, "stack-distrib"));
+const _: () = assert!(id_eq(PARAMS[OFF_MTX].id, "mtx1-depth"));
+const _: () = assert!(id_eq(PARAMS[OFF_MTX + 7].id, "mtx8-depth"));
+
+// Patch-level sections (relative to `PATCH_BASE`). Each anchor + the section's
+// trailing field, so both the start and the width are locked.
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_LFO1].id, "lfo1-shape"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_LFO1 + 2].id, "lfo1-sync"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DELAY].id, "delay-on"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DELAY + 5].id, "delay-pingpong"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_REVERB].id, "reverb-on"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_REVERB + 4].id, "reverb-mix"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_MASTER].id, "master-tune"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_MASTER + 1].id, "master-volume"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_FILTER].id, "filter-enable"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_FILTER + 8].id, "filter-cutoff-tuned"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_LIMITER].id, "limiter-on"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_HP].id, "hp-cutoff"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER].id, "phaser-on"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER + 4].id, "phaser-mix"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DYNAMICS].id, "dyn-on"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DYNAMICS + 7].id, "dyn-mix"));
+
+/// KS-curve trailer byte length: one `u32` packing all
 /// `N_OPS * 2` per-side curve selectors (2 bits each — see
 /// [`SharedParams::ks_curve_meta`]).
 pub const BLOB_KS_CURVE_LEN: usize = 4;
@@ -899,12 +794,21 @@ impl ParamModel for SharedParams {
     }
 
     /// Inverse of [`snapshot_bytes`]. Validates magic / version / count /
-    /// length, then writes value bits unmodified — no descriptor clamp — so
-    /// a snapshot round-trip is bit-identical.
+    /// length, then writes value + trailer bits unmodified — no descriptor
+    /// clamp — so a snapshot round-trip is bit-identical.
+    ///
+    /// Single version only (ticket 0120): a blob whose version field is not
+    /// [`BLOB_VERSION`] is rejected outright. There is no migration ladder —
+    /// vxn-2 carries no blob back-compat obligation pre-1.0.0.
     fn load_bytes(&self, bytes: &[u8]) -> Result<(), ParamLoadError> {
+        let expected = BLOB_HEADER_LEN
+            + TOTAL_PARAMS * 4
+            + BLOB_MATRIX_LEN
+            + BLOB_KS_CURVE_LEN
+            + BLOB_EG_CURVE_LEN;
         if bytes.len() < BLOB_HEADER_LEN {
             return Err(ParamLoadError::LengthMismatch {
-                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
+                expected,
                 got: bytes.len(),
             });
         }
@@ -912,83 +816,24 @@ impl ParamModel for SharedParams {
             return Err(ParamLoadError::MagicMismatch);
         }
         let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version > BLOB_VERSION {
+        if version != BLOB_VERSION {
             return Err(ParamLoadError::UnsupportedVersion(version));
         }
         let count = u16::from_le_bytes([bytes[6], bytes[7]]);
-        // v≤4 blobs carry the six since-removed `opN-amp-sens` params; v≤3
-        // additionally carry `lfo1-depth` (v4-space id 165).
-        let expected_count = match version {
-            ..=3 => LEGACY_V3_PARAM_COUNT,
-            4 => LEGACY_V4_PARAM_COUNT,
-            5 => LEGACY_V5_PARAM_COUNT,
-            6 => LEGACY_V6_PARAM_COUNT,
-            7 => LEGACY_V7_PARAM_COUNT,
-            8 => LEGACY_V8_PARAM_COUNT,
-            9 | 10 => LEGACY_V10_PARAM_COUNT,
-            11 | 12 => LEGACY_V12_PARAM_COUNT,
-            13 => LEGACY_V13_PARAM_COUNT,
-            14 | 15 => LEGACY_V14_PARAM_COUNT,
-            _ => TOTAL_PARAMS,
-        };
-        if count as usize != expected_count {
+        if count as usize != TOTAL_PARAMS {
             return Err(ParamLoadError::CountMismatch {
-                expected: expected_count as u16,
+                expected: TOTAL_PARAMS as u16,
                 got: count,
             });
         }
-        let values_len = BLOB_HEADER_LEN + (count as usize) * 4;
-        let expected = match version {
-            1 => values_len,
-            2..=11 => values_len + BLOB_MATRIX_LEN,
-            12..=14 => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN,
-            _ => values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN + BLOB_EG_CURVE_LEN,
-        };
         if bytes.len() != expected {
             return Err(ParamLoadError::LengthMismatch {
                 expected,
                 got: bytes.len(),
             });
         }
-        for i in 0..count as usize {
-            // v3 → v4 id remap: drop the stored lfo1-depth value, shift
-            // every later id down one.
-            let v4_id = if version <= 3 {
-                match i.cmp(&LEGACY_LFO1_DEPTH_ID) {
-                    std::cmp::Ordering::Less => i,
-                    std::cmp::Ordering::Equal => continue,
-                    std::cmp::Ordering::Greater => i - 1,
-                }
-            } else {
-                i
-            };
-            // v4 → v5 id remap: drop the six stored amp-sens values,
-            // compress the op blocks. v5 blobs map 1:1 here.
-            let v5_id = if version <= 4 {
-                match migrate_v4_id(v4_id) {
-                    Some(id) => id,
-                    None => continue,
-                }
-            } else {
-                v4_id
-            };
-            // v5 → v6 id remap: spread the op blocks for the new trailing
-            // `ratio-mode` slot (later ids shift up by N_OPS). v6..v10 blobs map
-            // 1:1 here (already v10-space). The new ratio-mode slots are seeded
-            // below.
-            let v10_id = if version <= 5 {
-                migrate_v5_id(v5_id)
-            } else {
-                v5_id
-            };
-            // v10 → v11 id remap: spread the op blocks again for the new
-            // trailing `opN-phase` slot (later ids shift up by N_OPS). v11 blobs
-            // map 1:1. The new phase slots are seeded below.
-            let id = if version <= 10 {
-                migrate_v10_id(v10_id)
-            } else {
-                v10_id
-            };
+        // Value block — one `f32` per CLAP id, indexed 1:1.
+        for i in 0..TOTAL_PARAMS {
             let off = BLOB_HEADER_LEN + i * 4;
             let bits = u32::from_le_bytes([
                 bytes[off],
@@ -996,159 +841,47 @@ impl ParamModel for SharedParams {
                 bytes[off + 2],
                 bytes[off + 3],
             ]);
-            self.values[id].store(bits, Ordering::Relaxed);
+            self.values[i].store(bits, Ordering::Relaxed);
         }
-        // v≤5 blobs predate `opN-ratio-mode`; seed each op's new trailing
-        // slot to its descriptor default (Ratio) so a load can't leave it at
-        // a stale value carried over from the store's prior contents.
-        if version <= 5 {
-            for op in 0..N_OPS {
-                let id = op * N_PER_OP + LIVE_RATIO_MODE_IDX;
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        // v≤10 blobs predate `opN-phase` (ticket 0074); seed each op's new
-        // trailing slot to its descriptor default (0.0) so a load can't leave it
-        // at a stale value carried over from the store's prior contents. Default
-        // 0.0 keeps a migrated patch bit-identical.
-        if version <= 10 {
-            for op in 0..N_OPS {
-                let id = op * N_PER_OP + LIVE_PHASE_IDX;
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        // Trailing-tail seeders: each block writes descriptor defaults into the
-        // ids appended *after* the legacy version, so a load can't leave them
-        // at stale store contents. Ranges count back from `TOTAL_PARAMS` by
-        // summing the per-version trailing appends, so a new append (filter /
-        // limiter / hp / phaser / dynamics …) only needs to be added to each
-        // affected block's subtraction list. Cascading overlaps are idempotent
-        // default writes. `filter-enable`, `limiter-on`, `phaser-on`, and
-        // `dyn-on` all default off, `hp-cutoff` defaults to its 20 Hz floor
-        // ("off") → every migrated patch stays bit-identical.
-        if version <= 6 {
-            // v≤6 predates the Filter section (v7/v8), limiter (v9), hp (v13),
-            // phaser (v14), and dynamics (v16).
-            for id in (TOTAL_PARAMS
-                - N_FILTER_PARAMS
-                - N_LIMITER_PARAMS_V9
-                - N_HP_PARAMS_V13
-                - N_PHASER_PARAMS_V14
-                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
-            {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version <= 7 {
-            // v≤7 predates the v8 filter additions, limiter, hp, phaser, dynamics.
-            for id in (TOTAL_PARAMS
-                - N_FILTER_PARAMS_V8
-                - N_LIMITER_PARAMS_V9
-                - N_HP_PARAMS_V13
-                - N_PHASER_PARAMS_V14
-                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
-            {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version <= 8 {
-            // v≤8 predates limiter, hp, phaser, dynamics.
-            for id in (TOTAL_PARAMS
-                - N_LIMITER_PARAMS_V9
-                - N_HP_PARAMS_V13
-                - N_PHASER_PARAMS_V14
-                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
-            {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version <= 12 {
-            // v≤12 predates hp, phaser, dynamics.
-            for id in (TOTAL_PARAMS
-                - N_HP_PARAMS_V13
-                - N_PHASER_PARAMS_V14
-                - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
-            {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version <= 13 {
-            // v≤13 predates phaser, dynamics.
-            for id in
-                (TOTAL_PARAMS - N_PHASER_PARAMS_V14 - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS
-            {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version <= 15 {
-            // v≤15 predates the v16 Dynamics block (v15 added only a packed
-            // EG-curve trailer, no new CLAP params).
-            for id in (TOTAL_PARAMS - N_DYNAMICS_PARAMS_V16)..TOTAL_PARAMS {
-                self.values[id].store(PARAMS[id].default.to_bits(), Ordering::Relaxed);
-            }
-        }
-        if version >= 2 {
-            let mut off = values_len;
-            for s in 0..N_MATRIX_SLOTS {
-                let packed = u32::from_le_bytes([
-                    bytes[off],
-                    bytes[off + 1],
-                    bytes[off + 2],
-                    bytes[off + 3],
-                ]);
-                // v2 → v3: rewrite the `dest` byte through the v2 enum map
-                // so old Ratio/Detune routes land on the new Pitch dest.
-                let packed = if version < 3 {
-                    let old_dest = ((packed >> 16) & 0xFF) as u8;
-                    let new_dest = crate::matrix::DestId::from_u8_v2(old_dest) as u8;
-                    (packed & 0xFF00_FFFF) | ((new_dest as u32) << 16)
-                } else {
-                    packed
-                };
-                self.matrix_meta[s].store(packed, Ordering::Relaxed);
-                off += 4;
-            }
-            for s in 0..(N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) {
-                let bits = u32::from_le_bytes([
-                    bytes[off],
-                    bytes[off + 1],
-                    bytes[off + 2],
-                    bytes[off + 3],
-                ]);
-                self.matrix_extra_depth[s].store(bits, Ordering::Relaxed);
-                off += 4;
-            }
-        }
-        // v12 KS-curve trailer. v≤11 blobs predate per-side curve control —
-        // seed the legacy frozen shapes (left NegLin / right NegExp) so a
-        // migrated patch reproduces the old response exactly.
-        if version >= 12 {
-            let off = values_len + BLOB_MATRIX_LEN;
+        // Matrix trailer — topology + non-automatable slot depths.
+        let mut off = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        for s in 0..N_MATRIX_SLOTS {
             let packed = u32::from_le_bytes([
                 bytes[off],
                 bytes[off + 1],
                 bytes[off + 2],
                 bytes[off + 3],
             ]);
-            self.ks_curve_meta.store(packed, Ordering::Relaxed);
-        } else {
-            self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
+            self.matrix_meta[s].store(packed, Ordering::Relaxed);
+            off += 4;
         }
-        // v15 EG-curve trailer. v≤14 blobs predate per-op EG-curve control —
-        // seed every op to `Exp` (the DX7-faithful log default, ADR 0007) so a
-        // migrated patch reproduces the shipped response exactly.
-        if version >= 15 {
-            let off = values_len + BLOB_MATRIX_LEN + BLOB_KS_CURVE_LEN;
-            let packed = u32::from_le_bytes([
+        for s in 0..(N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) {
+            let bits = u32::from_le_bytes([
                 bytes[off],
                 bytes[off + 1],
                 bytes[off + 2],
                 bytes[off + 3],
             ]);
-            self.eg_curve_meta.store(packed, Ordering::Relaxed);
-        } else {
-            self.eg_curve_meta.store(default_eg_curve_meta(), Ordering::Relaxed);
+            self.matrix_extra_depth[s].store(bits, Ordering::Relaxed);
+            off += 4;
         }
+        // KS-curve trailer — packed per-side level-curve selectors.
+        let packed = u32::from_le_bytes([
+            bytes[off],
+            bytes[off + 1],
+            bytes[off + 2],
+            bytes[off + 3],
+        ]);
+        self.ks_curve_meta.store(packed, Ordering::Relaxed);
+        off += 4;
+        // EG-curve trailer — packed per-op level-curve selectors.
+        let packed = u32::from_le_bytes([
+            bytes[off],
+            bytes[off + 1],
+            bytes[off + 2],
+            bytes[off + 3],
+        ]);
+        self.eg_curve_meta.store(packed, Ordering::Relaxed);
         // Bulk store bypassed `set` / `set_matrix_row_raw`; flip every
         // dirty bit so the next main-thread tick re-broadcasts the full
         // table (ADR 0003). State load no longer needs a bespoke push
@@ -1866,13 +1599,12 @@ mod tests {
     fn load_bytes_rejects_short_buffer() {
         let s = SharedParams::new();
         let err = s.load_bytes(&[0u8; 4]).unwrap_err();
-        assert_eq!(
-            err,
-            ParamLoadError::LengthMismatch {
-                expected: BLOB_HEADER_LEN + TOTAL_PARAMS * 4,
-                got: 4,
-            }
-        );
+        let expected = BLOB_HEADER_LEN
+            + TOTAL_PARAMS * 4
+            + BLOB_MATRIX_LEN
+            + BLOB_KS_CURVE_LEN
+            + BLOB_EG_CURVE_LEN;
+        assert_eq!(err, ParamLoadError::LengthMismatch { expected, got: 4 });
     }
 
     #[test]
@@ -1892,6 +1624,20 @@ mod tests {
         assert_eq!(
             s.load_bytes(&bytes).unwrap_err(),
             ParamLoadError::UnsupportedVersion(future)
+        );
+    }
+
+    /// The migration ladder is gone (ticket 0120): any *older* version is now
+    /// rejected too, not just future ones. A blob stamped with a historical
+    /// version (e.g. 15) no longer loads — re-save from the live build.
+    #[test]
+    fn load_bytes_rejects_old_version() {
+        let s = SharedParams::new();
+        let mut bytes = s.snapshot_bytes();
+        bytes[4..6].copy_from_slice(&15u16.to_le_bytes());
+        assert_eq!(
+            s.load_bytes(&bytes).unwrap_err(),
+            ParamLoadError::UnsupportedVersion(15)
         );
     }
 
@@ -2064,52 +1810,7 @@ mod tests {
         assert_eq!(dst.eg_curve_raw(3), 0);
     }
 
-    /// A v15 blob (no v16 Dynamics block) loads with the eight `dyn-*` slots
-    /// seeded to their descriptor defaults (`dyn-on` off → migrated patch is
-    /// bit-identical). Pre-dirty the dst with non-default dynamics values to
-    /// prove the seed overwrites them.
-    #[test]
-    fn v15_blob_seeds_default_dynamics() {
-        let src = SharedParams::new();
-        // Set non-default dyn-* in src so we'd see them carried through if the
-        // seed were missing — but the rewrite below strips them out anyway.
-        src.set(id_of("dyn-on").unwrap(), 1.0);
-        src.set(id_of("dyn-drive").unwrap(), 18.0);
-
-        let full = src.snapshot_bytes();
-        // A v15 blob: drop the v16 Dynamics value tail, stamp version=15 with
-        // the legacy param count. Matrix + KS + EG trailers carry through.
-        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let trailers = &full[values_end..];
-        let dyn_drop = N_DYNAMICS_PARAMS_V16 * 4;
-        let mut bytes = Vec::with_capacity(full.len() - dyn_drop);
-        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
-        bytes[4..6].copy_from_slice(&15u16.to_le_bytes());
-        bytes[6..8].copy_from_slice(&(LEGACY_V14_PARAM_COUNT as u16).to_le_bytes());
-        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - dyn_drop]);
-        bytes.extend_from_slice(trailers);
-
-        let dst = SharedParams::new();
-        // Pre-dirty dst to prove the seed actually overwrites stale values.
-        dst.set(id_of("dyn-on").unwrap(), 1.0);
-        dst.set(id_of("dyn-drive").unwrap(), 24.0);
-        dst.load_bytes(&bytes).unwrap();
-        for name in [
-            "dyn-on",
-            "dyn-threshold",
-            "dyn-ratio",
-            "dyn-attack",
-            "dyn-release",
-            "dyn-makeup",
-            "dyn-drive",
-            "dyn-mix",
-        ] {
-            let id = id_of(name).unwrap();
-            assert_eq!(dst.get(id), PARAMS[id].default, "{name} should seed to default");
-        }
-    }
-
-    /// A live v16 blob round-trips every `dyn-*` slot byte-for-byte — the
+    /// A live blob round-trips every `dyn-*` slot byte-for-byte — the
     /// engine-side decode is the only consumer between save and load.
     #[test]
     fn snapshot_round_trips_dynamics_params() {
@@ -2149,69 +1850,6 @@ mod tests {
         assert_eq!(ep.dynamics.mix, 0.75);
     }
 
-    /// A v14 blob (no EG-curve trailer, no v16 Dynamics block) loads and seeds
-    /// every op to `Exp` (the shipped default), leaving the migrated patch
-    /// bit-identical.
-    #[test]
-    fn v14_blob_seeds_default_eg_curves() {
-        let src = SharedParams::new();
-        src.set_eg_curve_raw(2, 1); // Lin — must be discarded by the v14 seed
-        let full = src.snapshot_bytes();
-        // A v14 blob: drop the v16 Dynamics value tail, the v15 EG trailer, and
-        // stamp the version back to 14 with the legacy param count.
-        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let matrix_end = full.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
-        let dyn_drop = N_DYNAMICS_PARAMS_V16 * 4;
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
-        bytes[4..6].copy_from_slice(&14u16.to_le_bytes());
-        bytes[6..8].copy_from_slice(&(LEGACY_V14_PARAM_COUNT as u16).to_le_bytes());
-        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - dyn_drop]);
-        bytes.extend_from_slice(&full[values_end..matrix_end]);
-        bytes.extend_from_slice(&full[matrix_end..matrix_end + BLOB_KS_CURVE_LEN]);
-
-        let dst = SharedParams::new();
-        // Pre-dirty dst with a non-default curve to prove the seed overwrites.
-        dst.set_eg_curve_raw(2, 1);
-        dst.load_bytes(&bytes).unwrap();
-        for op in 0..N_OPS {
-            assert_eq!(dst.eg_curve_raw(op), 0, "op{op} seeded to Exp");
-        }
-    }
-
-    /// A v11 blob (no KS-curve trailer) loads and seeds the legacy frozen
-    /// shapes, leaving the migrated patch's KS response bit-identical.
-    #[test]
-    fn v11_blob_seeds_legacy_ks_curves() {
-        let src = SharedParams::new();
-        // Mutate curves away from default, snapshot, then rewrite the version
-        // field to v11 and strip the trailer to simulate an old blob.
-        src.set_ks_curve_raw(2, 1, 3);
-        let full = src.snapshot_bytes();
-        // A v11 blob: drop the v16 Dynamics block, the v14 Phaser block, the
-        // trailing v13 `hp-cutoff` value, and the v12 KS / v15 EG trailers;
-        // restore the v11 param count and stamp the version.
-        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let matrix_end = full.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
-        let tail_drop =
-            (N_DYNAMICS_PARAMS_V16 + N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&full[..BLOB_HEADER_LEN]);
-        bytes[4..6].copy_from_slice(&11u16.to_le_bytes());
-        bytes[6..8].copy_from_slice(&(LEGACY_V12_PARAM_COUNT as u16).to_le_bytes());
-        bytes.extend_from_slice(&full[BLOB_HEADER_LEN..values_end - tail_drop]);
-        bytes.extend_from_slice(&full[values_end..matrix_end]);
-
-        let dst = SharedParams::new();
-        // Pre-dirty dst with a non-default curve to prove the seed overwrites.
-        dst.set_ks_curve_raw(2, 1, 1);
-        dst.load_bytes(&bytes).unwrap();
-        for op in 0..N_OPS {
-            assert_eq!(dst.ks_curve_raw(op, 0), 0);
-            assert_eq!(dst.ks_curve_raw(op, 1), 2);
-        }
-    }
-
     /// E022: a stack-pitch route (dest in the appended 30..=35 band) saves and
     /// reloads through the snapshot blob unchanged.
     #[test]
@@ -2240,372 +1878,6 @@ mod tests {
         assert_eq!(DestId::from_u8(r0.dest), DestId::Op3StackPitch);
         assert!(r0.active);
         assert!((r0.depth - 0.5).abs() < 1e-6);
-    }
-
-    /// Rewrite a freshly saved live (v11) blob into the v10 layout: drop the
-    /// trailing per-op `phase` slot from each op block (op block 22 → 21),
-    /// restore the v10 param count and stamp `version`. Matrix trailer copies
-    /// through verbatim. The base every older-version rewriter builds on.
-    fn rewrite_as_v10(bytes: &[u8], version: u16) -> Vec<u8> {
-        let mut out = Vec::with_capacity(bytes.len());
-        out.extend_from_slice(&bytes[..BLOB_HEADER_LEN]);
-        out[4..6].copy_from_slice(&version.to_le_bytes());
-        out[6..8].copy_from_slice(&(LEGACY_V10_PARAM_COUNT as u16).to_le_bytes());
-        for op in 0..N_OPS {
-            // Keep the first 21 params of each 22-param op block, dropping the
-            // trailing `phase` slot at live index `LIVE_PHASE_IDX`.
-            let start = BLOB_HEADER_LEN + (op * N_PER_OP) * 4;
-            let keep_end = start + LEGACY_V10_N_PER_OP * 4;
-            out.extend_from_slice(&bytes[start..keep_end]);
-        }
-        // Post-op-block value params + matrix trailer copy through — but drop
-        // the trailing v16 Dynamics block, v14 Phaser block, and v13 `hp-cutoff`
-        // value (no v≤12 blob carries any of them), the v15 EG-curve trailer
-        // (no v≤14 blob carries it), and the v12 KS-curve trailer (no v≤11 blob
-        // carries it).
-        let rest = BLOB_HEADER_LEN + (N_OPS * N_PER_OP) * 4;
-        let values_end = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
-        let matrix_end = bytes.len() - BLOB_KS_CURVE_LEN - BLOB_EG_CURVE_LEN;
-        let tail_drop =
-            (N_DYNAMICS_PARAMS_V16 + N_PHASER_PARAMS_V14 + N_HP_PARAMS_V13) * 4;
-        out.extend_from_slice(&bytes[rest..values_end - tail_drop]);
-        out.extend_from_slice(&bytes[values_end..matrix_end]);
-        out
-    }
-
-    /// Rewrite a freshly saved live blob into the v5 layout: strip to the v10
-    /// layout first (drop `phase`), then drop the trailing per-op `ratio-mode`
-    /// slot from each op block, restore the v5 param count and stamp `version`.
-    fn rewrite_as_v5(bytes: &[u8], version: u16) -> Vec<u8> {
-        let v10 = rewrite_as_v10(bytes, version);
-        let mut out = Vec::with_capacity(v10.len());
-        out.extend_from_slice(&v10[..BLOB_HEADER_LEN]);
-        out[6..8].copy_from_slice(&(LEGACY_V5_PARAM_COUNT as u16).to_le_bytes());
-        for op in 0..N_OPS {
-            // Keep the first 20 params of each 21-param v10 op block, dropping
-            // the trailing `ratio-mode` slot.
-            let start = BLOB_HEADER_LEN + (op * LEGACY_V10_N_PER_OP) * 4;
-            let keep_end = start + LEGACY_V5_N_PER_OP * 4;
-            out.extend_from_slice(&v10[start..keep_end]);
-        }
-        // Post-op-block params + matrix trailer copy verbatim.
-        let rest = BLOB_HEADER_LEN + (N_OPS * LEGACY_V10_N_PER_OP) * 4;
-        out.extend_from_slice(&v10[rest..]);
-        out
-    }
-
-    /// Rewrite a freshly saved v6 blob into the v4 layout: strip to v5 first,
-    /// then re-insert a 4-byte value slot at each legacy `opN-amp-sens` id,
-    /// restore the v4 param count and stamp `version`.
-    fn rewrite_as_v4(bytes: &[u8], version: u16, amp_sens_bits: u32) -> Vec<u8> {
-        let v5 = rewrite_as_v5(bytes, version);
-        let mut out = Vec::with_capacity(v5.len() + 4 * N_OPS);
-        out.extend_from_slice(&v5[..BLOB_HEADER_LEN]);
-        out[6..8].copy_from_slice(&(LEGACY_V4_PARAM_COUNT as u16).to_le_bytes());
-        let mut off = BLOB_HEADER_LEN;
-        for op in 0..N_OPS {
-            // Insertion point in v5 layout: per-op index 7, between
-            // vel-sens and eg-r1.
-            let split = BLOB_HEADER_LEN + (op * LEGACY_V5_N_PER_OP + LEGACY_AMP_SENS_IDX) * 4;
-            out.extend_from_slice(&v5[off..split]);
-            out.extend_from_slice(&amp_sens_bits.to_le_bytes());
-            off = split;
-        }
-        out.extend_from_slice(&v5[off..]);
-        out
-    }
-
-    /// Rewrite a freshly saved v5 blob into the v≤3 layout: the v4 amp-sens
-    /// slots plus a 4-byte value slot at the legacy `lfo1-depth` id, legacy
-    /// param count, stamped `version`.
-    fn rewrite_as_legacy(bytes: &[u8], version: u16, lfo1_depth_bits: u32) -> Vec<u8> {
-        let v4 = rewrite_as_v4(bytes, version, 0);
-        let mut out = Vec::with_capacity(v4.len() + 4);
-        out.extend_from_slice(&v4[..BLOB_HEADER_LEN]);
-        out[6..8].copy_from_slice(&(LEGACY_V3_PARAM_COUNT as u16).to_le_bytes());
-        let depth_off = BLOB_HEADER_LEN + LEGACY_LFO1_DEPTH_ID * 4;
-        out.extend_from_slice(&v4[BLOB_HEADER_LEN..depth_off]);
-        out.extend_from_slice(&lfo1_depth_bits.to_le_bytes());
-        out.extend_from_slice(&v4[depth_off..]);
-        out
-    }
-
-    /// Rewrite a freshly saved v7 blob into the v6 layout: drop the trailing
-    /// `N_FILTER_PARAMS` Filter value slots (they sit at the very end, before
-    /// the matrix trailer), restore the v6 param count and stamp `version`.
-    fn rewrite_as_v6(bytes: &[u8], version: u16) -> Vec<u8> {
-        // Strip to the v10 layout first (drop `phase`, op blocks 22 → 21), then
-        // drop the trailing Filter + limiter sections that v6 predates.
-        let v10 = rewrite_as_v10(bytes, version);
-        let values_end = BLOB_HEADER_LEN + LEGACY_V10_PARAM_COUNT * 4;
-        let v6_values_end = BLOB_HEADER_LEN + LEGACY_V6_PARAM_COUNT * 4;
-        let mut out = Vec::with_capacity(v6_values_end + BLOB_MATRIX_LEN);
-        out.extend_from_slice(&v10[..BLOB_HEADER_LEN]);
-        out[6..8].copy_from_slice(&(LEGACY_V6_PARAM_COUNT as u16).to_le_bytes());
-        // Keep all values up to the Filter section, drop the trailing
-        // filter + limiter params…
-        out.extend_from_slice(&v10[BLOB_HEADER_LEN..v6_values_end]);
-        // …then re-attach the matrix trailer that followed the value section.
-        out.extend_from_slice(&v10[values_end..]);
-        out
-    }
-
-    /// A v10 blob (op block 21, no `opN-phase`) loads under v11 code: the op
-    /// blocks spread for the new trailing `phase` slot, every later id shifts up
-    /// by `N_OPS`, and the six new slots seed to their default (0.0). A
-    /// non-default phase in the saving store must *not* leak through — v10 blobs
-    /// carry no such field. Mirrors the v5 → v6 `ratio-mode` migration.
-    #[test]
-    fn load_bytes_migrates_v10_param_layout() {
-        let non_defaults: &[(&str, f32)] = &[
-            ("op1-ratio-mode", 1.0), // last param of op 1 in v10 layout (Fixed)
-            ("op6-num", 7.0),        // op-block param, late op
-            ("algo", 19.0),          // first post-op-block param — shifts up 6
-            ("filter-cutoff", 880.0),// trailing append, present in v10
-            ("master-volume", -2.0), // last param in the table
-        ];
-        let src = SharedParams::new();
-        for &(name, v) in non_defaults {
-            src.set(id_of(name).unwrap(), v);
-        }
-        // This must be dropped on the way to v10 and reseeded to default.
-        src.set(id_of("op3-phase").unwrap(), 0.5);
-        let bytes = rewrite_as_v10(&src.snapshot_bytes(), 10);
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v10 blob loads under v11");
-        for &(name, v) in non_defaults {
-            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
-        }
-        for op in 1..=6 {
-            let id = id_of(&format!("op{op}-phase")).unwrap();
-            assert_eq!(dst.get(id), 0.0, "op{op} phase must seed to default");
-        }
-    }
-
-    /// A v6 blob (param count 179, no Filter section) loads under v7 code: the
-    /// 179 stored values land 1:1 (Filter is appended at the tail, so nothing
-    /// shifts) and the 7 new filter ids seed to their descriptor defaults. A
-    /// non-default filter value in the saving store must NOT leak through —
-    /// v6 blobs carry no such field.
-    #[test]
-    fn load_bytes_migrates_v6_param_layout() {
-        let non_defaults: &[(&str, f32)] = &[
-            ("op1-pan", -0.4),
-            ("algo", 11.0),
-            ("reverb-mix", 0.33),
-            ("master-tune", 25.0),
-            ("master-volume", -4.0), // last v6 param (id 178)
-        ];
-        let src = SharedParams::new();
-        for &(name, v) in non_defaults {
-            src.set(id_of(name).unwrap(), v);
-        }
-        // These must be dropped on the way to v6 and reseeded to default.
-        src.set(id_of("filter-enable").unwrap(), 1.0);
-        src.set(id_of("filter-cutoff").unwrap(), 440.0);
-        let bytes = rewrite_as_v6(&src.snapshot_bytes(), 6);
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v6 blob loads under v7");
-        for &(name, v) in non_defaults {
-            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
-        }
-        // Filter ids must seed to defaults (enable off), not the saved values.
-        for name in [
-            "filter-enable",
-            "filter-cutoff",
-            "filter-resonance",
-            "filter-mode",
-            "filter-slope",
-            "filter-drive",
-            "filter-oversample",
-        ] {
-            let id = id_of(name).unwrap();
-            assert_eq!(dst.get(id), PARAMS[id].default, "{name} must seed to default");
-        }
-    }
-
-    /// A v4 blob (param count 179, `amp-sens` at per-op index 7) loads under
-    /// v5 code: the six stored amp-sens values are silently dropped and
-    /// every later param lands on its compressed id. Values either side of
-    /// the removed slots survive bit-exact.
-    #[test]
-    fn load_bytes_migrates_v4_param_layout() {
-        assert!(
-            id_of("op1-amp-sens").is_none(),
-            "param must be gone from the table"
-        );
-        let non_defaults: &[(&str, f32)] = &[
-            ("op1-vel-sens", 5.0),   // immediately before the removed slot
-            ("op1-eg-r1", 42.0),     // immediately after — shifts down one
-            ("op6-pan", -0.7),       // last op-block param
-            ("algo", 17.0),          // first post-op-block param — shifts by 6
-            ("master-volume", -3.0), // last param in the table
-        ];
-        let src = SharedParams::new();
-        for &(name, v) in non_defaults {
-            src.set(id_of(name).unwrap(), v);
-        }
-        let bytes = rewrite_as_v4(&src.snapshot_bytes(), 4, 3.0f32.to_bits());
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v4 blob loads under v5");
-        for &(name, v) in non_defaults {
-            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
-        }
-        for i in 0..TOTAL_PARAMS {
-            assert_eq!(
-                src.values[i].load(Ordering::Relaxed),
-                dst.values[i].load(Ordering::Relaxed),
-                "id {i} ({}) differs after v4 → v5 migration",
-                PARAMS[i].id
-            );
-        }
-    }
-
-    /// A v5 blob (param count 173, op block 20) loads under v6 code: the op
-    /// blocks spread for the new trailing `ratio-mode` slot, every later id
-    /// shifts up by `N_OPS`, and the six new slots seed to their default
-    /// (Ratio). A non-default ratio-mode in the saving store must *not* leak
-    /// through — v5 blobs carry no such field.
-    #[test]
-    fn load_bytes_migrates_v5_param_layout() {
-        let non_defaults: &[(&str, f32)] = &[
-            ("op1-pan", -0.5),       // last continuous op-block param
-            ("op6-num", 7.0),        // op-block param, late op
-            ("algo", 19.0),          // first post-op-block param — shifts up 6
-            ("master-volume", -2.0), // last param in the table
-        ];
-        let src = SharedParams::new();
-        for &(name, v) in non_defaults {
-            src.set(id_of(name).unwrap(), v);
-        }
-        // This must be dropped on the way to v5 and reseeded to default.
-        src.set(id_of("op3-ratio-mode").unwrap(), 1.0);
-        let bytes = rewrite_as_v5(&src.snapshot_bytes(), 5);
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v5 blob loads under v6");
-        for &(name, v) in non_defaults {
-            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
-        }
-        for op in 1..=6 {
-            let id = id_of(&format!("op{op}-ratio-mode")).unwrap();
-            assert_eq!(dst.get(id), 0.0, "op{op} ratio-mode must seed to default");
-        }
-    }
-
-    /// A v3 blob (param count 180, `lfo1-depth` at v4-space id 165) loads
-    /// under current code: the stored depth and amp-sens values are silently
-    /// dropped and every later param lands on its shifted id. Values either
-    /// side of the removed slots survive bit-exact (E006 / ticket 0061).
-    #[test]
-    fn load_bytes_migrates_v3_param_layout() {
-        assert!(id_of("lfo1-depth").is_none(), "param must be gone from the table");
-        let non_defaults: &[(&str, f32)] = &[
-            ("lfo1-rate", 7.5),      // immediately before the removed id
-            ("lfo1-sync", 1.0),      // immediately after — shifts 166 → 165
-            ("delay-time", 250.0),
-            ("delay-feedback", 0.66),
-            ("reverb-decay", 4.5),
-            ("master-volume", -3.0), // last param in the table
-        ];
-        let src = SharedParams::new();
-        for &(name, v) in non_defaults {
-            src.set(id_of(name).unwrap(), v);
-        }
-        let bytes = rewrite_as_legacy(&src.snapshot_bytes(), 3, 0.42f32.to_bits());
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v3 blob loads under v5");
-        for &(name, v) in non_defaults {
-            assert_eq!(dst.get(id_of(name).unwrap()), v, "{name}");
-        }
-        for i in 0..TOTAL_PARAMS {
-            assert_eq!(
-                src.values[i].load(Ordering::Relaxed),
-                dst.values[i].load(Ordering::Relaxed),
-                "id {i} ({}) differs after v3 → v5 migration",
-                PARAMS[i].id
-            );
-        }
-    }
-
-    /// A v2 blob's per-op Ratio (= old dest 1) and Detune (= old dest 3)
-    /// both map to the new per-op Pitch dest (= new dest 1) on load.
-    /// Global-tier dests shift down by 6 (drop the six Detune variants).
-    #[test]
-    fn load_bytes_migrates_v2_matrix_dests_to_v3() {
-        let src = SharedParams::new();
-        // Build a v3 blob, then rewrite the dest bytes back to the v2
-        // encoding so we can re-load it as v2 and verify the migration.
-        src.set_matrix_row_raw(
-            0,
-            MatrixRowRaw {
-                source: 4,
-                dest: crate::matrix::DestId::Op1Pitch as u8,
-                curve: 0,
-                active: true,
-                depth: 0.5,
-            },
-        );
-        src.set_matrix_row_raw(
-            1,
-            MatrixRowRaw {
-                source: 4,
-                dest: crate::matrix::DestId::Op2Pitch as u8,
-                curve: 0,
-                active: true,
-                depth: 0.25,
-            },
-        );
-        src.set_matrix_row_raw(
-            2,
-            MatrixRowRaw {
-                source: 5,
-                dest: crate::matrix::DestId::GlobalPitch as u8,
-                curve: 0,
-                active: true,
-                depth: 0.1,
-            },
-        );
-        // Rewrite to the v2 layout (legacy param count incl. lfo1-depth).
-        let mut bytes = rewrite_as_legacy(&src.snapshot_bytes(), 2, 0.30f32.to_bits());
-        // Rewrite dest bytes in the matrix trailer to v2 codes:
-        //   slot 0 → 3 (old Op1Detune) — both Ratio/Detune now collapse to Pitch
-        //   slot 1 → 5 (old Op2Ratio)
-        //   slot 2 → 25 (old GlobalPitch — shifts from 25 down to 19)
-        let trailer_off = BLOB_HEADER_LEN + LEGACY_V3_PARAM_COUNT * 4;
-        // Each meta is 4 bytes; dest is at byte offset 1 (big-endian packing
-        // in u32 → little-endian on wire means byte index +1 from start).
-        // packed = source<<24 | dest<<16 | curve<<8 | active, stored LE →
-        // bytes: [active, curve, dest, source]. Dest at +2.
-        for (slot, v2_dest) in [(0usize, 3u8), (1, 5), (2, 25)] {
-            bytes[trailer_off + slot * 4 + 2] = v2_dest;
-        }
-
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).unwrap();
-
-        let r0 = dst.matrix_row_raw(0);
-        assert_eq!(r0.dest, crate::matrix::DestId::Op1Pitch as u8);
-        let r1 = dst.matrix_row_raw(1);
-        assert_eq!(r1.dest, crate::matrix::DestId::Op2Pitch as u8);
-        let r2 = dst.matrix_row_raw(2);
-        assert_eq!(r2.dest, crate::matrix::DestId::GlobalPitch as u8);
-    }
-
-    /// A v1 blob (no matrix trailer) still loads cleanly — older project
-    /// files just leave the matrix at its current topology.
-    #[test]
-    fn load_bytes_accepts_legacy_v1_blob() {
-        let src = SharedParams::new();
-        // Rewrite to the v1 layout: legacy param count, no matrix trailer.
-        let mut bytes = rewrite_as_legacy(&src.snapshot_bytes(), 1, 0.30f32.to_bits());
-        bytes.truncate(BLOB_HEADER_LEN + LEGACY_V3_PARAM_COUNT * 4);
-        let dst = SharedParams::new();
-        dst.load_bytes(&bytes).expect("v1 blob loads");
     }
 
     #[test]
