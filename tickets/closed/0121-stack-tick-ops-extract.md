@@ -68,3 +68,29 @@ of `tick_ops`. Per-crate asm is misleading pre-LTO (memory
 `vxn1-ota-filter-perf`) — verify on the linked artifact. This
 is the only E026 ticket that can regress audio performance;
 gate the close on the profile number, not just correctness.
+
+## Close-out (2026-06-29)
+
+- Shared inner loop extracted to `fn tick_ops(stack: &mut Stack) ->
+  [[f32; STACK_LANES]; N_OPS]`
+  ([stack.rs](../../vxn-2/crates/vxn2-dsp/src/stack.rs)): routes mod inputs,
+  ticks all ops over 8 lanes, returns `new_outs` and leaves `prev_outs`
+  untouched so each variant folds the *old* outputs then assigns. `stack_tick_
+  stereo` / `_mono` are now thin folds — no third copy of the FB / phase /
+  Nyquist arithmetic. `#[inline]` keeps it as the single SIMD kernel.
+- `recompute_pan` deleted; note_on now zeroes `op_pan_mod` then calls
+  `refresh_pan_with_mod` → `pan_targets`, so the equal-power curve
+  (`theta = (total+1)*FRAC_PI_4`, `sin_cos`) lives in one place. Inactive lanes
+  stay 0 (pan_targets seeds zero arrays). The 1/√density × 1/√carriers rationale
+  comment moved with it.
+- Post-LTO asm on the linked `stack` bench artifact: NEON `.4s` quad-lane count
+  **467 unchanged** vs stashed baseline (467) — extraction is codegen-identical,
+  no scalar fallback. (`.4s` carried on the mnemonic — counted via
+  `objdump -d | grep -cE '\.4s'`, per memory `vxn1-neon-grep-pitfall`.)
+- `cargo test -p vxn2-dsp -p vxn2-engine` green (174 + 202 tests);
+  `tests/baseline.rs` render hash unchanged (1 passed). `stack` bench d4/d8
+  within noise; d1 jitter (wide CI, crosses run-to-run) is machine noise —
+  confirmed by the identical asm. No RT regression.
+- Stack struct split **deferred** to [0152](../../tickets/open/0152-stack-struct-split.md):
+  design-review gated, coupled via `apply_pitch_mult` which straddles all three
+  proposed sub-structs — not attempted blind, per the ticket's own guidance.

@@ -540,7 +540,6 @@ impl Stack {
         for i in 0..N_OPS {
             self.cached_op_pans[i] = voice_params.ops[i].pan;
         }
-        self.recompute_pan(&voice_params.ops);
         self.prev_outs = [[0.0_f32; STACK_LANES]; N_OPS];
         // Matrix writes block-rate; until the first block runs, hold zero.
         self.op_level_mod = [[0.0_f32; STACK_LANES]; N_OPS];
@@ -548,6 +547,10 @@ impl Stack {
         self.op_pitch_mod_st = [[0.0_f32; STACK_LANES]; N_OPS];
         self.op_pan_mod = [[0.0_f32; STACK_LANES]; N_OPS];
         self.op_phase_mod_q32 = [[0_u32; STACK_LANES]; N_OPS];
+        // Pan gains via the single equal-power curve (`pan_targets`). op_pan_mod
+        // was just zeroed (matrix hasn't run), so this equals the un-modulated
+        // pan that the old `recompute_pan` produced.
+        self.refresh_pan_with_mod();
     }
 
     /// Solo-legato retarget: re-cook EG targets/rates and per-lane phase
@@ -767,7 +770,11 @@ impl Stack {
     ) {
         let spec = spec_of(self.algo);
         let density = self.density as usize;
-        // Mirror recompute_pan: 1/√density × 1/√carriers baked into the targets.
+        // 1/√density level-matches density 1..8; 1/√carriers level-matches
+        // algos (a 6-carrier algo is ~5 dB hotter than a 2-carrier one with a
+        // raw sum — carriers are partly decorrelated, so power-norm 1/√N is the
+        // right middle ground). Both are baked into the pan tables, so the fold
+        // stays a plain weighted sum with no per-sample compensation.
         let fold = self.inv_sqrt_density * inv_sqrt_carriers(spec);
         let mut out_l = [[0.0_f32; STACK_LANES]; N_OPS];
         let mut out_r = [[0.0_f32; STACK_LANES]; N_OPS];
@@ -913,33 +920,6 @@ impl Stack {
         }
     }
 
-    fn recompute_pan(&mut self, op_params: &[OpParams; N_OPS]) {
-        let spec = spec_of(self.algo);
-        let density = self.density as usize;
-        // 1/√density level-matches density 1..8; 1/√carriers level-matches
-        // algos (a 6-carrier algo is ~5 dB hotter than a 2-carrier one with a
-        // raw sum — carriers are partly decorrelated, so power-norm 1/√N is the
-        // right middle ground). Both are baked into the pan tables, so the fold
-        // stays a plain weighted sum with no per-sample compensation.
-        let fold = self.inv_sqrt_density * inv_sqrt_carriers(spec);
-        for i in 0..N_OPS {
-            let is_carrier = (spec.carriers >> i) & 1 == 1;
-            let op_pan = op_params[i].pan;
-            for k in 0..STACK_LANES {
-                let active = is_carrier && k < density;
-                if active {
-                    let total = op_pan.clamp(-1.0, 1.0);
-                    let theta = (total + 1.0) * core::f32::consts::FRAC_PI_4;
-                    let (s, c) = theta.sin_cos();
-                    self.pan_l[i][k] = c * fold;
-                    self.pan_r[i][k] = s * fold;
-                } else {
-                    self.pan_l[i][k] = 0.0;
-                    self.pan_r[i][k] = 0.0;
-                }
-            }
-        }
-    }
 }
 
 fn fill_linear(out: &mut [f32; STACK_LANES], density: usize) {
@@ -970,11 +950,15 @@ fn fill_geometric(out: &mut [f32; STACK_LANES], density: usize) {
     }
 }
 
-/// Per-sample stereo tick. Routes prev-sample outputs into mod inputs, ticks
-/// every op across all 8 lanes, folds carriers into `(L, R)` using the
-/// precomputed pan matrix.
+/// Shared per-sample op kernel for both tick variants. Routes prev-sample
+/// outputs into mod inputs, ticks every op across all 8 lanes, and returns the
+/// fresh `new_outs`. Leaves `stack.prev_outs` untouched so the caller can fold
+/// the *old* outputs (1-sample-delay convention, matches algo.rs) before
+/// assigning `new_outs`. This **is** the SIMD kernel — keeping it in one place
+/// is what lets the stereo and mono folds stay divergence-free; no runtime
+/// match lives in the lane loop (a SoA enum match drops NEON to scalar).
 #[inline]
-pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
+fn tick_ops(stack: &mut Stack) -> [[f32; STACK_LANES]; N_OPS] {
     let (mi, _cs) = (stack.route_fn)(&stack.prev_outs);
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
@@ -1012,6 +996,14 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
         op.fb_prev2 = op.fb_prev1;
         op.fb_prev1 = sines;
     }
+    new_outs
+}
+
+/// Per-sample stereo tick. Ticks every op via [`tick_ops`], then folds carriers
+/// into `(L, R)` using the precomputed pan matrix.
+#[inline]
+pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
+    let new_outs = tick_ops(stack);
     // Stereo fold from prev_outs (1-sample-delay convention, matches algo.rs).
     let mut l = 0.0_f32;
     let mut r = 0.0_f32;
@@ -1030,37 +1022,7 @@ pub fn stack_tick_stereo(stack: &mut Stack) -> (f32, f32) {
 /// about stereo placement.
 #[inline]
 pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
-    let (mi, _cs_lane) = (stack.route_fn)(&stack.prev_outs);
-    let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
-    for i in 0..N_OPS {
-        let lvl_mod = stack.op_level_mod[i];
-        let fade = stack.op_nyquist_fade[i];
-        let ph_mod = stack.op_phase_mod_q32[i];
-        let op = &mut stack.ops[i];
-        let lvl = op.eg.level;
-        let fbs = op.fb_scale;
-        let mut pm_q32 = [0u32; STACK_LANES];
-        for k in 0..STACK_LANES {
-            let fb_avg = 0.5 * (op.fb_prev1[k] + op.fb_prev2[k]);
-            let total_mod = mi[i][k] + fb_avg * fbs[k];
-            pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
-        }
-        // See `stack_tick_stereo`: effective level is bounded engine-side, no
-        // per-sample clamp; the per-lane 0073 fade multiply stays in the
-        // vectorised lane loop (1.0 except for carriers near Nyquist), and the
-        // E023 matrix phase offset is a wrapping Q32 add at the sine read.
-        let mut sines = [0.0_f32; STACK_LANES];
-        for k in 0..STACK_LANES {
-            let phase_mod = op.phase[k].wrapping_add(pm_q32[k]).wrapping_add(ph_mod[k]);
-            sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
-        }
-        for k in 0..STACK_LANES {
-            new_outs[i][k] = sines[k];
-            op.phase[k] = op.phase[k].wrapping_add(op.phase_inc[k]);
-        }
-        op.fb_prev2 = op.fb_prev1;
-        op.fb_prev1 = sines;
-    }
+    let new_outs = tick_ops(stack);
     let spec = spec_of(stack.algo);
     let density = stack.density as usize;
     let mut sum = 0.0_f32;
