@@ -27,15 +27,16 @@ async function loadPanels() {
   return mod;
 }
 
-// Overwrite-Save (`pbar-save-overwrite`) needs the dirty wrap intact: panels.js
-// wraps the bridge's `send.setParam` at import to flip dirty, and the recorder
-// `installVxn` swaps in would lose that wrap. So this loader keeps the bridge's
-// `window.vxn.send` (its `_post` is a no-op under jsdom — no `window.ipc`) and
-// just spies `savePreset` to capture the write.
+// Overwrite-Save (`pbar-save-overwrite`) needs the real dirty path intact: the
+// preset bar registers `markDirty` on the bridge's `onMutation` hook (0141), so
+// every engine-mutating `send.*` flips dirty. The recorder `installVxn` swaps in
+// would replace the whole `window.vxn`, losing that hook. So this loader keeps
+// the bridge's `window.vxn.send` (its `_post` is a no-op under jsdom — no
+// `window.ipc`) and just spies `savePreset` to capture the write.
 async function loadPanelsKeepBridge() {
   vi.resetModules();
   const mod = await import('../panels.js');
-  // `_post` posts via `window.ipc.postMessage`; stub it so the wrapped senders
+  // `_post` posts via `window.ipc.postMessage`; stub it so the mutating senders
   // run silently under jsdom (otherwise bridge's catch logs a console error).
   globalThis.window.ipc = { postMessage: vi.fn() };
   vi.spyOn(window.vxn.send, 'savePreset');

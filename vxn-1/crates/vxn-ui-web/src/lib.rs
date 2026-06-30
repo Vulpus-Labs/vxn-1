@@ -139,7 +139,7 @@ fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
         .replace("__CSS__", &css)
         .replace("__BRIDGE_JS__", &bridge_js)
         .replace("__BROWSER_JS__", &browser_js)
-        .replace("__PANELS_JS__", &strip_esm_exports(PANELS_JS))
+        .replace("__PANELS_JS__", &panels_js())
         .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
@@ -246,6 +246,18 @@ fn strip_esm_exports(src: &str) -> String {
     // local alias so the four splice call sites + the unit test below read
     // unchanged.
     vxn_core_ui_web::strip_esm_exports(src)
+}
+
+/// Concatenate the split panel source files (0141) into one ESM-stripped blob
+/// for the `__PANELS_JS__` slot. Joined the same way as the bridge / browser
+/// concats (`\n;\n`) so a trailing expression in one file can't fuse with the
+/// next file's leading token.
+fn panels_js() -> String {
+    PANELS_FILES
+        .iter()
+        .map(|src| strip_esm_exports(src))
+        .collect::<Vec<_>>()
+        .join("\n;\n")
 }
 
 /// Tempo-sync subdivision labels (vxn_app::sync::SUBDIVISIONS), spliced into
@@ -460,11 +472,31 @@ const BRIDGE_JS: &str = include_str!("../assets/bridge.js");
 /// bridge and the rest of panels because the bar IIFE
 /// (`const presetBar = …`) references `browserPanel`.
 const BROWSER_JS: &str = include_str!("../assets/browser.js");
-/// Panel UI — preset bar, Keys panel, waveform glyphs, control primitives
-/// (fader / wave / switch / buttongroup / dropdown / header-switch /
-/// detune-legato). Registers everything against `model.controls` so
-/// dispatch can fan ViewEvents to the right cell.
-const PANELS_JS: &str = include_str!("../assets/panels.js");
+/// Panel UI, split into cohesive modules (0141) matching VXN2's `panels/`
+/// layout. `panels.js` is now a re-export barrel for the Node test suite (its
+/// `export … from` lines strip to nothing), so production splices the five
+/// source files directly via `PANELS_FILES` below. Each registers its controls
+/// against `model.controls` so dispatch can fan ViewEvents to the right cell.
+///
+/// Splice order: `util/drag.js` first (the shared drag/paint/clamp/tgRow
+/// primitives the rest reference), then the widget modules. `keys.js` and
+/// `preset-bar.js` run IIFEs at load that need `window.vxn` (bridge slot, runs
+/// first) and `browserPanel` (browser slot, spliced before this), so they sit
+/// last. Function declarations across the files hoist within the one inline
+/// `<script>` scope, so the order only matters for these load-time IIFEs.
+const PANEL_UTIL_DRAG_JS: &str = include_str!("../assets/util/drag.js");
+const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
+const PANEL_DISCRETE_JS: &str = include_str!("../assets/panels/discrete.js");
+const PANEL_KEYS_JS: &str = include_str!("../assets/panels/keys.js");
+const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
+/// The split panel source files, in splice order.
+const PANELS_FILES: &[&str] = &[
+    PANEL_UTIL_DRAG_JS,
+    PANEL_FADER_JS,
+    PANEL_DISCRETE_JS,
+    PANEL_KEYS_JS,
+    PANEL_PRESET_BAR_JS,
+];
 /// `init()` + per-tick ViewEvent dispatcher + dim rules + layer rebind.
 /// Splices last because it references the panel objects defined above.
 const DISPATCH_JS: &str = include_str!("../assets/dispatch.js");

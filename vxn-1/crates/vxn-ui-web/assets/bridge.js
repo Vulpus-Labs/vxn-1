@@ -29,22 +29,37 @@ function _post(msg) {
   try { window.ipc.postMessage(JSON.stringify(msg)); }
   catch (e) { console.warn('vxn.send failed', e); }
 }
+// Mutation hook (0141). The engine-mutating senders below (set_param /
+// set_param_norm / reset_layer / set_key_mode / set_split_point) fire every
+// registered callback after posting. This replaces the old preset-bar
+// monkey-patch that reassigned the shared sender methods to flip a dirty flag:
+// `window.vxn.onMutation(cb)` is a first-class, additive hook in the dispatch
+// layer, so a subscriber composes instead of overwriting (and can't silently
+// drop a prior patcher's side effect). View-only / transport sends (gestures,
+// preset load, text input, ready) deliberately don't fire it.
+const _mutationHooks = [];
+function _mutated() {
+  for (const cb of _mutationHooks) {
+    try { cb(); } catch (e) { console.warn('vxn.onMutation hook failed', e); }
+  }
+}
 window.vxn = {
   send: {
     _post,
-    setParam:        (id, plain)            => _post({ op: 'set_param', id, plain }),
-    setParamNorm:    (id, norm)             => _post({ op: 'set_param_norm', id, norm }),
+    setParam:        (id, plain)            => { _post({ op: 'set_param', id, plain }); _mutated(); },
+    setParamNorm:    (id, norm)             => { _post({ op: 'set_param_norm', id, norm }); _mutated(); },
     beginGesture:    (id)                   => _post({ op: 'begin_gesture', id }),
     endGesture:      (id)                   => _post({ op: 'end_gesture', id }),
     // One-click discrete write. Brackets the set_param in a
     // begin/end gesture so the host records a single edit rather
-    // than a zero-width gesture-less write some hosts drop.
+    // than a zero-width gesture-less write some hosts drop. The inner
+    // setParam fires the mutation hook, so discrete writes mark dirty too.
     discrete(id, plain) {
       this.beginGesture(id);
       this.setParam(id, plain);
       this.endGesture(id);
     },
-    resetLayer:      (layer)                => _post({ op: 'reset_layer', layer }),
+    resetLayer:      (layer)                => { _post({ op: 'reset_layer', layer }); _mutated(); },
     loadFactory:     (index)                => _post({ op: 'load_factory', index }),
     loadUser:        (path)                 => _post({ op: 'load_user', path }),
     renamePreset:    (path, new_name)       => _post({ op: 'rename_preset', path, new_name }),
@@ -55,8 +70,8 @@ window.vxn = {
     newFolder:       (suggested)            => _post({ op: 'new_folder', suggested }),
     stepPreset:      (delta)                => _post({ op: 'step_preset', delta }),
     savePreset:      (name, folder)         => _post({ op: 'save_preset', name, folder }),
-    setKeyMode:      (mode)                 => _post({ op: 'set_key_mode', mode }),
-    setSplitPoint:   (note)                 => _post({ op: 'set_split_point', note }),
+    setKeyMode:      (mode)                 => { _post({ op: 'set_key_mode', mode }); _mutated(); },
+    setSplitPoint:   (note)                 => { _post({ op: 'set_split_point', note }); _mutated(); },
     setEditLayer:    (layer)                => _post({ op: 'set_edit_layer', layer }),
     requestTextInput:(id, title, initial)   => _post({ op: 'request_text_input', id, title, initial }),
     ready:           ()                     => _post({ op: 'ready' }),
@@ -107,6 +122,12 @@ window.vxn.promptText = function (title, initial, cb) {
   const id = 'ti' + (++_textInputCounter);
   _textInputCallbacks.set(id, cb);
   window.vxn.send.requestTextInput(id, title || '', initial || '');
+};
+
+// Register a callback fired on every engine-mutating send (0141). The preset
+// bar uses it for dirty-tracking; see the `_mutated` chokepoint above.
+window.vxn.onMutation = function (cb) {
+  if (typeof cb === 'function') _mutationHooks.push(cb);
 };
 
 // `valuePop` (the floating value popup singleton) moved to the shared
