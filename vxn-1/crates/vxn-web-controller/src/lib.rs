@@ -418,12 +418,11 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
 // it (the `Mutex` is RefCell-discipline). The instance is a leaked Box; its
 // pointer is the opaque handle every opcode passes back, like the engine wasm.
 
-struct ControllerState {
-    ctrl: Controller<WebModel>,
-    model: Arc<WebModel>,
-    view_rx: Receiver<ViewEvent>,
-    ui_tx: SyncSender<UiEvent>,
-    host_tx: SyncSender<vxn_app::HostEvent>,
+/// The controller-side param mirror (ticket 0142): the JS-visible current-value
+/// snapshot, the readback staging buffer, and the NaN-seeded diff mirror. Split
+/// out of `ControllerState` so the model-mirror concern is one named unit
+/// distinct from the binary staging buffers.
+struct ParamMirror {
     /// Snapshot of the model's plain values, exported to JS for SAB mirroring.
     values_out: Vec<f32>,
     /// Staging buffer JS copies the readback SAB into before `vxnc_pump_readback`.
@@ -431,17 +430,24 @@ struct ControllerState {
     /// Diff-pump mirror — port of vxn-clap `last_seen`. NaN-seeded so the first
     /// pump after open broadcasts the whole table (NaN != NaN).
     last_seen: Vec<f32>,
+}
+
+impl ParamMirror {
+    fn new() -> Self {
+        Self {
+            values_out: vec![0.0; TOTAL_PARAMS],
+            readback_in: vec![0.0; TOTAL_PARAMS],
+            last_seen: vec![f32::NAN; TOTAL_PARAMS],
+        }
+    }
+}
+
+/// The seven reused byte staging buffers (ticket 0142): each is the JS↔wasm
+/// hand-off region for one opcode family, reused per call. Grouped out of
+/// `ControllerState` so the protocol-staging concern is one named unit.
+struct StagingBuffers {
     /// Packed ViewEvent drain buffer JS reads after each tick.
     view_out: Vec<u8>,
-    /// Shared factory entries the store reads; filled by `vxnc_load_factory`
-    /// once JS has fetched the baked asset (E019 / 0062).
-    factory: Arc<Mutex<Vec<FactoryEntry>>>,
-    /// Shared user-preset cache the store reads/writes (E019 / 0063). Held here
-    /// so 0064 can hydrate it from IndexedDB and drain its write journal.
-    user: Arc<Mutex<UserState>>,
-    /// Shared corpus snapshot (factory + user listing) JS serializes for the
-    /// preset browser via `vxnc_corpus_json`.
-    corpus: CorpusHandle,
     /// Staging buffer JS writes the fetched factory asset into before
     /// `vxnc_load_factory`.
     factory_in: Vec<u8>,
@@ -466,6 +472,47 @@ struct ControllerState {
     toml_buf: Vec<u8>,
 }
 
+impl StagingBuffers {
+    fn new() -> Self {
+        Self {
+            view_out: Vec::with_capacity(8 * 1024),
+            factory_in: Vec::new(),
+            corpus_json: Vec::new(),
+            arg_in: Vec::new(),
+            journal_out: Vec::with_capacity(4 * 1024),
+            state_out: Vec::with_capacity(vxn_app::BLOB_LEN),
+            toml_buf: Vec::with_capacity(4 * 1024),
+        }
+    }
+}
+
+struct ControllerState {
+    ctrl: Controller<WebModel>,
+    model: Arc<WebModel>,
+    view_rx: Receiver<ViewEvent>,
+    ui_tx: SyncSender<UiEvent>,
+    host_tx: SyncSender<vxn_app::HostEvent>,
+    /// Shared factory entries the store reads; filled by `vxnc_load_factory`
+    /// once JS has fetched the baked asset (E019 / 0062). Duplicated into
+    /// `WebPresetStore` (same `Arc`); folding out that duplication needs a typed
+    /// store accessor — deferred (ticket 0142 follow-up).
+    factory: Arc<Mutex<Vec<FactoryEntry>>>,
+    /// Shared user-preset cache the store reads/writes (E019 / 0063). Held here
+    /// so 0064 can hydrate it from IndexedDB and drain its write journal.
+    user: Arc<Mutex<UserState>>,
+    /// Shared corpus snapshot (factory + user listing) JS serializes for the
+    /// preset browser via `vxnc_corpus_json`.
+    corpus: CorpusHandle,
+    /// The model-value mirror trio (values_out / readback_in / last_seen).
+    mirror: ParamMirror,
+    /// The seven reused JS↔wasm byte staging buffers.
+    staging: StagingBuffers,
+    /// Set by any corpus-mutating path; `flush_corpus_json` rebuilds the corpus
+    /// JSON at most once when set (ticket 0142). Coalesces multiple
+    /// corpus-changing events in one tick into a single rebuild.
+    corpus_json_dirty: bool,
+}
+
 impl ControllerState {
     fn new() -> Box<Self> {
         let model = Arc::new(WebModel::new());
@@ -484,29 +531,22 @@ impl ControllerState {
             view_rx,
             ui_tx,
             host_tx,
-            values_out: vec![0.0; TOTAL_PARAMS],
-            readback_in: vec![0.0; TOTAL_PARAMS],
-            last_seen: vec![f32::NAN; TOTAL_PARAMS],
-            view_out: Vec::with_capacity(8 * 1024),
             factory,
             user,
             corpus,
-            factory_in: Vec::new(),
-            corpus_json: Vec::new(),
-            arg_in: Vec::new(),
-            journal_out: Vec::with_capacity(4 * 1024),
-            state_out: Vec::with_capacity(vxn_app::BLOB_LEN),
-            toml_buf: Vec::with_capacity(4 * 1024),
+            mirror: ParamMirror::new(),
+            staging: StagingBuffers::new(),
+            corpus_json_dirty: false,
         })
     }
 
     /// Slice of the staged opcode-argument buffer (`arg_in[start..start+len]`),
     /// clamped to the buffer so a malformed length can't panic.
     fn arg_slice(&self, start: usize, len: usize) -> &[u8] {
-        let n = self.arg_in.len();
+        let n = self.staging.arg_in.len();
         let s = start.min(n);
         let e = start.saturating_add(len).min(n);
-        &self.arg_in[s..e]
+        &self.staging.arg_in[s..e]
     }
 
     /// `arg_slice` decoded as a UTF-8 `String` (lossy — the bytes came from a JS
@@ -523,38 +563,39 @@ impl ControllerState {
             .lock()
             .map(|mut u| u.take_journal())
             .unwrap_or_default();
-        self.journal_out.clear();
-        push_u32(&mut self.journal_out, ops.len() as u32);
+        let journal_out = &mut self.staging.journal_out;
+        journal_out.clear();
+        push_u32(journal_out, ops.len() as u32);
         for op in &ops {
             match op {
                 UserWrite::Put { key, bytes } => {
-                    push_u32(&mut self.journal_out, JW_PUT);
-                    push_str(&mut self.journal_out, key);
-                    push_u32(&mut self.journal_out, bytes.len() as u32);
-                    self.journal_out.extend_from_slice(bytes);
+                    push_u32(journal_out, JW_PUT);
+                    push_str(journal_out, key);
+                    push_u32(journal_out, bytes.len() as u32);
+                    journal_out.extend_from_slice(bytes);
                 }
                 UserWrite::Delete { key } => {
-                    push_u32(&mut self.journal_out, JW_DELETE);
-                    push_str(&mut self.journal_out, key);
+                    push_u32(journal_out, JW_DELETE);
+                    push_str(journal_out, key);
                 }
                 UserWrite::PutFolder { name } => {
-                    push_u32(&mut self.journal_out, JW_PUT_FOLDER);
-                    push_str(&mut self.journal_out, name);
+                    push_u32(journal_out, JW_PUT_FOLDER);
+                    push_str(journal_out, name);
                 }
                 UserWrite::DeleteFolder { name } => {
-                    push_u32(&mut self.journal_out, JW_DELETE_FOLDER);
-                    push_str(&mut self.journal_out, name);
+                    push_u32(journal_out, JW_DELETE_FOLDER);
+                    push_str(journal_out, name);
                 }
             }
         }
-        self.journal_out.len() as u32
+        journal_out.len() as u32
     }
 
     /// Parse the baked factory asset JS staged in `factory_in[..len]` into the
     /// shared store, republish the factory corpus, and rebuild `corpus_json`.
     /// Returns the entry count, or 0 on a bad/truncated asset.
     fn load_factory(&mut self, len: usize) -> u32 {
-        let bytes = &self.factory_in[..len.min(self.factory_in.len())];
+        let bytes = &self.staging.factory_in[..len.min(self.staging.factory_in.len())];
         let entries = match factory_asset::decode(bytes) {
             Ok(e) => e,
             Err(_) => return 0,
@@ -564,20 +605,29 @@ impl ControllerState {
             *f = entries;
         }
         self.ctrl.refresh_factory_corpus();
-        self.rebuild_corpus_json();
+        // Boot opcode: JS reads `corpus_json` synchronously after this call (not
+        // after a tick), so flush the dirty rebuild immediately.
+        self.corpus_json_dirty = true;
+        self.flush_corpus_json();
         count
     }
 
     /// Rebuild `corpus_json` from the shared corpus snapshot (same projection
-    /// the native wry editor pushes via `applyPresetCorpus`).
-    fn rebuild_corpus_json(&mut self) {
+    /// the native wry editor pushes via `applyPresetCorpus`) if the dirty flag is
+    /// set, then clear it. Idempotent — a clean flag is a no-op, so multiple
+    /// corpus-changing events in one tick rebuild at most once (ticket 0142).
+    fn flush_corpus_json(&mut self) {
+        if !self.corpus_json_dirty {
+            return;
+        }
+        self.corpus_json_dirty = false;
         let json = self
             .corpus
             .lock()
             .map(|c| corpus_snapshot_json(&c, UNCATEGORIZED))
             .unwrap_or_else(|_| "{\"factory\":[],\"user\":[]}".to_string());
-        self.corpus_json.clear();
-        self.corpus_json.extend_from_slice(json.as_bytes());
+        self.staging.corpus_json.clear();
+        self.staging.corpus_json.extend_from_slice(json.as_bytes());
     }
 
     #[inline]
@@ -593,35 +643,34 @@ impl ControllerState {
     fn tick(&mut self) {
         self.ctrl.tick();
         self.drain_view_events();
+        // Rebuild the browser-facing corpus JSON once if the drain (or any other
+        // path) dirtied it this tick.
+        self.flush_corpus_json();
         // Refresh the JS-visible value snapshot AFTER the tick so a mirror pass
         // sees every model write this tick produced.
         for id in 0..TOTAL_PARAMS {
-            self.values_out[id] = self.model.get(ParamId::new(id));
+            self.mirror.values_out[id] = self.model.get(ParamId::new(id));
         }
     }
 
     fn drain_view_events(&mut self) {
-        self.view_out.clear();
-        push_u32(&mut self.view_out, 0); // count placeholder
+        self.staging.view_out.clear();
+        push_u32(&mut self.staging.view_out, 0); // count placeholder
         let mut count = 0u32;
-        let mut corpus_dirty = false;
         while let Ok(ev) = self.view_rx.try_recv() {
             // A corpus change also drives a `corpus_json` rebuild so JS re-pushes
             // `applyPresetCorpus` and flushes the write journal — the core
-            // controller already refreshed the shared corpus snapshot.
+            // controller already refreshed the shared corpus snapshot. The rebuild
+            // is deferred to one `flush_corpus_json` at end of tick (ticket 0142).
             if matches!(ev, ViewEvent::PresetCorpusChanged { .. }) {
-                corpus_dirty = true;
+                self.corpus_json_dirty = true;
             }
-            if pack_view_event(&mut self.view_out, &ev) {
+            if pack_view_event(&mut self.staging.view_out, &ev) {
                 count += 1;
             }
         }
         // Backpatch the record count into the header.
-        self.view_out[0..4].copy_from_slice(&count.to_le_bytes());
-        // Rebuild the browser-facing corpus JSON once if anything changed it.
-        if corpus_dirty {
-            self.rebuild_corpus_json();
-        }
+        self.staging.view_out[0..4].copy_from_slice(&count.to_le_bytes());
     }
 
     /// Port of vxn-clap `push_param_diffs`: diff `readback_in` (the values the
@@ -634,18 +683,25 @@ impl ControllerState {
     /// emitted ParamChanged then lands in `view_rx` and is packed on the next
     /// `tick()`.
     fn pump_readback(&mut self) {
-        for i in 0..TOTAL_PARAMS {
-            let plain = self.readback_in[i];
-            // NaN-aware compare, exactly like the native pump.
-            if plain == self.last_seen[i] {
-                continue;
-            }
-            self.last_seen[i] = plain;
-            let _ = self.host_tx.try_send(vxn_app::HostEvent::ParamAutomation {
-                id: ParamId::new(i),
-                plain,
-            });
-        }
+        // Disjoint field borrows: read the readback buffer, mutate the diff
+        // mirror, send on the host channel — `nan_diff` is the single shared diff
+        // loop (ticket 0142). Opt into the sync-toggle → rate-partner refresh the
+        // web path previously omitted, so a sync flip echoed back from the worklet
+        // refreshes its rate partner's label, exactly like the native `diff_params`.
+        let host_tx = &self.host_tx;
+        let readback = &self.mirror.readback_in;
+        vxn_app::nan_diff(
+            TOTAL_PARAMS,
+            &mut self.mirror.last_seen,
+            |i| readback[i],
+            true,
+            |i, plain| {
+                let _ = host_tx.try_send(vxn_app::HostEvent::ParamAutomation {
+                    id: ParamId::new(i),
+                    plain,
+                });
+            },
+        );
     }
 }
 
@@ -797,20 +853,20 @@ pub extern "C" fn vxnc_ui_reset_layer(layer: u32) {
 pub extern "C" fn vxnc_tick() -> u32 {
     let st = state();
     st.tick();
-    st.view_out.len() as u32
+    st.staging.view_out.len() as u32
 }
 
 /// Pointer to the packed ViewEvent out-buffer in linear memory (see the module
 /// docs for the record layout). Valid until the next [`vxnc_tick`].
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_view_out_ptr() -> *const u8 {
-    state().view_out.as_ptr()
+    state().staging.view_out.as_ptr()
 }
 
 /// Byte length of the packed ViewEvent out-buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_view_out_len() -> u32 {
-    state().view_out.len() as u32
+    state().staging.view_out.len() as u32
 }
 
 // ---- param SAB mirroring ----------------------------------------------------
@@ -820,7 +876,7 @@ pub extern "C" fn vxnc_view_out_len() -> u32 {
 /// reads lock-free.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_param_values_ptr() -> *const f32 {
-    state().values_out.as_ptr()
+    state().mirror.values_out.as_ptr()
 }
 
 /// Pointer to the f32[TOTAL_PARAMS] readback staging buffer. JS copies the
@@ -828,7 +884,7 @@ pub extern "C" fn vxnc_param_values_ptr() -> *const f32 {
 /// [`vxnc_pump_readback`].
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_readback_in_ptr() -> *mut f32 {
-    state().readback_in.as_mut_ptr()
+    state().mirror.readback_in.as_mut_ptr()
 }
 
 /// Run the diff pump over `readback_in` (port of `push_param_diffs`): route any
@@ -849,9 +905,9 @@ pub extern "C" fn vxnc_pump_readback() {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_factory_buf_reserve(len: u32) -> *mut u8 {
     let s = state();
-    s.factory_in.clear();
-    s.factory_in.resize(len as usize, 0);
-    s.factory_in.as_mut_ptr()
+    s.staging.factory_in.clear();
+    s.staging.factory_in.resize(len as usize, 0);
+    s.staging.factory_in.as_mut_ptr()
 }
 
 /// Parse the `len` bytes JS staged via [`vxnc_factory_buf_reserve`] into the
@@ -867,13 +923,13 @@ pub extern "C" fn vxnc_load_factory(len: u32) -> u32 {
 /// shape the native wry editor feeds `window.__vxn.applyPresetCorpus`.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_corpus_json_ptr() -> *const u8 {
-    state().corpus_json.as_ptr()
+    state().staging.corpus_json.as_ptr()
 }
 
 /// Byte length of the corpus JSON.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_corpus_json_len() -> u32 {
-    state().corpus_json.len() as u32
+    state().staging.corpus_json.len() as u32
 }
 
 /// Load factory preset `index` (`UiEvent::LoadPreset { Factory }`). The model
@@ -905,9 +961,9 @@ pub extern "C" fn vxnc_ui_load_factory(index: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_arg_buf_reserve(len: u32) -> *mut u8 {
     let s = state();
-    s.arg_in.clear();
-    s.arg_in.resize(len as usize, 0);
-    s.arg_in.as_mut_ptr()
+    s.staging.arg_in.clear();
+    s.staging.arg_in.resize(len as usize, 0);
+    s.staging.arg_in.as_mut_ptr()
 }
 
 /// `UiEvent::SavePreset` — args: `name` then `folder` (folder `len == ARG_NONE`
@@ -1014,7 +1070,7 @@ pub extern "C" fn vxnc_take_journal() -> u32 {
 /// `vxnc_take_journal`.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_journal_out_ptr() -> *const u8 {
-    state().journal_out.as_ptr()
+    state().staging.journal_out.as_ptr()
 }
 
 // ---- presets: boot hydration (seed the cache from IndexedDB, E019 / 0064) ---
@@ -1059,7 +1115,10 @@ pub extern "C" fn vxnc_hydrate_preset(key_len: u32, rec_len: u32) -> u32 {
 pub extern "C" fn vxnc_hydrate_done() {
     let s = state();
     s.ctrl.refresh_user_corpus();
-    s.rebuild_corpus_json();
+    // Boot opcode: JS reads `corpus_json` synchronously after this call, so flush
+    // the dirty rebuild immediately rather than deferring to a tick.
+    s.corpus_json_dirty = true;
+    s.flush_corpus_json();
 }
 
 // ---- full patch-state autosave / restore (E019 / 0065) ----------------------
@@ -1079,9 +1138,9 @@ pub extern "C" fn vxnc_hydrate_done() {
 pub extern "C" fn vxnc_snapshot_state() -> u32 {
     let s = state();
     let blob = s.model.snapshot_bytes();
-    s.state_out.clear();
-    s.state_out.extend_from_slice(&blob);
-    s.state_out.len() as u32
+    s.staging.state_out.clear();
+    s.staging.state_out.extend_from_slice(&blob);
+    s.staging.state_out.len() as u32
 }
 
 /// Pointer to the snapshot blob staged by [`vxnc_snapshot_state`] (also the
@@ -1089,7 +1148,7 @@ pub extern "C" fn vxnc_snapshot_state() -> u32 {
 /// snapshot/restore call.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_state_out_ptr() -> *const u8 {
-    state().state_out.as_ptr()
+    state().staging.state_out.as_ptr()
 }
 
 /// Reserve `len` bytes in the state staging buffer and return a pointer JS writes
@@ -1098,9 +1157,9 @@ pub extern "C" fn vxnc_state_out_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_state_buf_reserve(len: u32) -> *mut u8 {
     let s = state();
-    s.state_out.clear();
-    s.state_out.resize(len as usize, 0);
-    s.state_out.as_mut_ptr()
+    s.staging.state_out.clear();
+    s.staging.state_out.resize(len as usize, 0);
+    s.staging.state_out.as_mut_ptr()
 }
 
 /// Restore the model from the `len`-byte blob JS staged via
@@ -1112,8 +1171,8 @@ pub extern "C" fn vxnc_state_buf_reserve(len: u32) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_restore_state(len: u32) -> u32 {
     let s = state();
-    let n = (len as usize).min(s.state_out.len());
-    match s.model.restore_from_bytes(&s.state_out[..n]) {
+    let n = (len as usize).min(s.staging.state_out.len());
+    match s.model.restore_from_bytes(&s.staging.state_out[..n]) {
         Ok(()) => 1,
         Err(_) => 0,
     }
@@ -1142,16 +1201,16 @@ pub extern "C" fn vxnc_export_toml(name_len: u32) -> u32 {
         ..Default::default()
     };
     let toml = vxn_app::write_toml(&*s.model, &meta);
-    s.toml_buf.clear();
-    s.toml_buf.extend_from_slice(toml.as_bytes());
-    s.toml_buf.len() as u32
+    s.staging.toml_buf.clear();
+    s.staging.toml_buf.extend_from_slice(toml.as_bytes());
+    s.staging.toml_buf.len() as u32
 }
 
 /// Pointer to the TOML text staged by [`vxnc_export_toml`] (also the staging
 /// buffer [`vxnc_import_toml`] reads). Valid until the next export/import call.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_toml_out_ptr() -> *const u8 {
-    state().toml_buf.as_ptr()
+    state().staging.toml_buf.as_ptr()
 }
 
 /// Reserve `len` bytes in `toml_buf` and return a pointer JS writes an imported
@@ -1160,9 +1219,9 @@ pub extern "C" fn vxnc_toml_out_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_toml_buf_reserve(len: u32) -> *mut u8 {
     let s = state();
-    s.toml_buf.clear();
-    s.toml_buf.resize(len as usize, 0);
-    s.toml_buf.as_mut_ptr()
+    s.staging.toml_buf.clear();
+    s.staging.toml_buf.resize(len as usize, 0);
+    s.staging.toml_buf.as_mut_ptr()
 }
 
 /// Parse the `len`-byte TOML JS staged via [`vxnc_toml_buf_reserve`] and apply it
@@ -1175,8 +1234,8 @@ pub extern "C" fn vxnc_toml_buf_reserve(len: u32) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_import_toml(len: u32) -> u32 {
     let s = state();
-    let n = (len as usize).min(s.toml_buf.len());
-    let text = String::from_utf8_lossy(&s.toml_buf[..n]).into_owned();
+    let n = (len as usize).min(s.staging.toml_buf.len());
+    let text = String::from_utf8_lossy(&s.staging.toml_buf[..n]).into_owned();
     match vxn_app::read_toml_into(&*s.model, &text) {
         Ok(_) => 1,
         Err(_) => 0,
@@ -1216,8 +1275,8 @@ mod tests {
         ]);
 
         let mut state = ControllerState::new();
-        state.factory_in = asset;
-        let n = state.load_factory(state.factory_in.len());
+        state.staging.factory_in = asset;
+        let n = state.load_factory(state.staging.factory_in.len());
 
         assert_eq!(n, 2);
         assert!(state.ctrl.preset_store().factory_len() > 0);
@@ -1228,7 +1287,7 @@ mod tests {
         );
         assert_eq!(state.ctrl.preset_store().factory_load(1).unwrap().blob, vec![4, 5]);
 
-        let json = String::from_utf8(state.corpus_json.clone()).unwrap();
+        let json = String::from_utf8(state.staging.corpus_json.clone()).unwrap();
         assert!(json.contains("\"factory\""));
         assert!(json.contains("\"Init\""));
         assert!(json.contains("\"Lead\""));
@@ -1238,9 +1297,63 @@ mod tests {
     #[test]
     fn load_factory_rejects_garbage() {
         let mut state = ControllerState::new();
-        state.factory_in = vec![0xde, 0xad, 0xbe, 0xef];
+        state.staging.factory_in = vec![0xde, 0xad, 0xbe, 0xef];
         assert_eq!(state.load_factory(4), 0);
         assert_eq!(state.ctrl.preset_store().factory_len(), 0);
+    }
+
+    // Decode the VE_PARAM_CHANGED ids out of a packed `view_out` drain (header
+    // count + records). Only ParamChanged is expected in the diff-pump tests.
+    fn decode_view_param_ids(buf: &[u8]) -> Vec<usize> {
+        let mut off = 0usize;
+        let rd_u32 = |b: &[u8], o: &mut usize| {
+            let v = u32::from_le_bytes(b[*o..*o + 4].try_into().unwrap());
+            *o += 4;
+            v
+        };
+        let count = rd_u32(buf, &mut off);
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            let tag = rd_u32(buf, &mut off);
+            assert_eq!(tag, VE_PARAM_CHANGED, "only ParamChanged expected");
+            ids.push(rd_u32(buf, &mut off) as usize); // id
+            off += 8; // plain + norm
+            let dlen = rd_u32(buf, &mut off) as usize;
+            off += dlen; // display
+        }
+        ids
+    }
+
+    // Ticket 0142 (AC2): the web readback pump opts into the vxn-1 sync-toggle →
+    // rate-partner label refresh `diff_params` already does (it was silently
+    // omitted before). Flipping the sync toggle in the readback buffer emits both
+    // its own ParamChanged and a forced refresh of its rate partner.
+    #[test]
+    fn pump_readback_refreshes_sync_rate_partner() {
+        use vxn_app::{GlobalParam, global_clap_id};
+        let sync_id = global_clap_id(GlobalParam::Lfo2Sync);
+        let rate_id = global_clap_id(GlobalParam::Lfo2Rate);
+
+        let mut st = ControllerState::new();
+        // Settle `last_seen` to the current readback (all zeros) so the NaN-seed
+        // full broadcast on the first pump doesn't mask the targeted change.
+        st.pump_readback();
+        st.tick();
+
+        // Flip the sync toggle in the readback buffer; its rate value is unchanged.
+        st.mirror.readback_in[sync_id] = 1.0;
+        st.pump_readback();
+        st.tick();
+
+        let ids = decode_view_param_ids(&st.staging.view_out);
+        assert!(
+            ids.contains(&sync_id),
+            "sync flip emits its own ParamChanged: {ids:?}"
+        );
+        assert!(
+            ids.contains(&rate_id),
+            "sync flip force-refreshes the rate partner label: {ids:?}"
+        );
     }
 
     // Decode the packed journal (vxnc_take_journal layout) into (tag, key/name)
@@ -1282,13 +1395,13 @@ mod tests {
         st.tick();
 
         // Corpus JSON reflects the save synchronously (AC2).
-        let json = String::from_utf8(st.corpus_json.clone()).unwrap();
+        let json = String::from_utf8(st.staging.corpus_json.clone()).unwrap();
         assert!(json.contains("\"Hero\""), "corpus lists the saved preset");
         assert!(json.contains("\"Leads\""), "corpus lists the folder");
 
         // The flush journal carries a PutFolder + a Put for the preset.
         let len = st.take_journal() as usize;
-        let ops = decode_journal(&st.journal_out[..len]);
+        let ops = decode_journal(&st.staging.journal_out[..len]);
         assert!(
             ops.iter().any(|(t, n)| *t == JW_PUT_FOLDER && n == "Leads"),
             "journal has PutFolder(Leads): {ops:?}"
@@ -1324,8 +1437,9 @@ mod tests {
         assert_eq!(st.take_journal(), 4, "hydration does not journal");
 
         st.ctrl.refresh_user_corpus();
-        st.rebuild_corpus_json();
-        let json = String::from_utf8(st.corpus_json.clone()).unwrap();
+        st.corpus_json_dirty = true;
+        st.flush_corpus_json();
+        let json = String::from_utf8(st.staging.corpus_json.clone()).unwrap();
         assert!(json.contains("\"Warm\""), "hydrated preset shows in corpus");
         assert!(json.contains("\"Pads\""), "hydrated folder shows in corpus");
 
@@ -1351,14 +1465,14 @@ mod tests {
 
         // Snapshot it (the autosave blob).
         let len = vxnc_snapshot_state_on(&mut st);
-        let blob: Vec<u8> = st.state_out[..len].to_vec();
+        let blob: Vec<u8> = st.staging.state_out[..len].to_vec();
         assert_eq!(len, vxn_app::BLOB_LEN, "blob is the canonical state length");
 
         // A fresh controller at cold defaults restores from the blob.
         let mut fresh = ControllerState::new();
         assert_eq!(fresh.model.key_mode(), KeyMode::Whole, "cold default");
-        fresh.state_out.clear();
-        fresh.state_out.extend_from_slice(&blob);
+        fresh.staging.state_out.clear();
+        fresh.staging.state_out.extend_from_slice(&blob);
         assert_eq!(restore_on(&mut fresh, blob.len()), 1, "restore succeeds");
 
         assert!((fresh.model.get(ParamId::new(0)) - 0.321).abs() < 1e-6);
@@ -1376,10 +1490,10 @@ mod tests {
         st.model.set_key_mode(KeyMode::Dual);
 
         // Wrong length.
-        st.state_out = vec![0u8; 4];
+        st.staging.state_out = vec![0u8; 4];
         assert_eq!(restore_on(&mut st, 4), 0, "short blob rejected");
         // Right length, bad magic.
-        st.state_out = vec![0u8; vxn_app::BLOB_LEN];
+        st.staging.state_out = vec![0u8; vxn_app::BLOB_LEN];
         assert_eq!(restore_on(&mut st, vxn_app::BLOB_LEN), 0, "bad magic rejected");
 
         // Model untouched.
@@ -1391,13 +1505,13 @@ mod tests {
     // through the static STATE; these drive a borrowed instance directly).
     fn vxnc_snapshot_state_on(st: &mut ControllerState) -> usize {
         let blob = st.model.snapshot_bytes();
-        st.state_out.clear();
-        st.state_out.extend_from_slice(&blob);
-        st.state_out.len()
+        st.staging.state_out.clear();
+        st.staging.state_out.extend_from_slice(&blob);
+        st.staging.state_out.len()
     }
     fn restore_on(st: &mut ControllerState, len: usize) -> u32 {
-        let n = len.min(st.state_out.len());
-        match st.model.restore_from_bytes(&st.state_out[..n]) {
+        let n = len.min(st.staging.state_out.len());
+        match st.model.restore_from_bytes(&st.staging.state_out[..n]) {
             Ok(()) => 1,
             Err(_) => 0,
         }
@@ -1411,15 +1525,15 @@ mod tests {
             ..Default::default()
         };
         let toml = vxn_app::write_toml(&*st.model, &meta);
-        st.toml_buf.clear();
-        st.toml_buf.extend_from_slice(toml.as_bytes());
-        String::from_utf8(st.toml_buf.clone()).unwrap()
+        st.staging.toml_buf.clear();
+        st.staging.toml_buf.extend_from_slice(toml.as_bytes());
+        String::from_utf8(st.staging.toml_buf.clone()).unwrap()
     }
     fn import_on(st: &mut ControllerState, text: &str) -> u32 {
-        st.toml_buf.clear();
-        st.toml_buf.extend_from_slice(text.as_bytes());
-        let n = st.toml_buf.len();
-        let s = String::from_utf8_lossy(&st.toml_buf[..n]).into_owned();
+        st.staging.toml_buf.clear();
+        st.staging.toml_buf.extend_from_slice(text.as_bytes());
+        let n = st.staging.toml_buf.len();
+        let s = String::from_utf8_lossy(&st.staging.toml_buf[..n]).into_owned();
         match vxn_app::read_toml_into(&*st.model, &s) {
             Ok(_) => 1,
             Err(_) => 0,

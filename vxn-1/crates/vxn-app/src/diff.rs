@@ -12,6 +12,49 @@ use crate::events::ViewEvent;
 use crate::model::{ParamId, ParamModel};
 use crate::sync::{rate_partner_clap_id, sync_aware_display};
 
+/// Generic NaN-aware param diff — the single diff loop both the native CLAP
+/// timer ([`diff_params`]) and the web readback pump
+/// (`vxn-web-controller::pump_readback`) delegate to.
+///
+/// Walk `0..n`, compare `get(i)` against `last_seen[i]` (updated in place),
+/// and invoke `on_change(i, plain)` for every slot whose value drifted. NaN
+/// never equals itself, so seeding `last_seen` all-`NaN` forces a full
+/// broadcast on the first call (used to populate the page on editor open).
+///
+/// When `sync_partner` is set, a changed **sync toggle** additionally fires
+/// `on_change` for its rate/time partner — the partner's displayed subdivision
+/// label depends on the toggle even though the rate value itself didn't move.
+/// This rule is vxn-1-specific, so it stays a caller opt-in and never leaks
+/// into `vxn-core-app`. `last_seen` is NOT updated for the forced partner (its
+/// value didn't change; only its display did).
+pub fn nan_diff(
+    n: usize,
+    last_seen: &mut [f32],
+    get: impl Fn(usize) -> f32,
+    sync_partner: bool,
+    mut on_change: impl FnMut(usize, f32),
+) {
+    // Sync flips refresh their rate partner's display label even though the
+    // rate's value didn't change. Collect those first, emit after the main pass.
+    let mut force_rate_refresh: Vec<usize> = Vec::new();
+    for (i, seen) in last_seen.iter_mut().enumerate().take(n) {
+        let plain = get(i);
+        if plain == *seen {
+            continue;
+        }
+        *seen = plain;
+        on_change(i, plain);
+        if sync_partner {
+            if let Some(rate_id) = rate_partner_clap_id(i) {
+                force_rate_refresh.push(rate_id);
+            }
+        }
+    }
+    for rate_id in force_rate_refresh {
+        on_change(rate_id, get(rate_id));
+    }
+}
+
 /// Diff `model` against `last_seen` (updating it in place) and return a
 /// `ParamChanged` for every param whose value drifted. A changed **sync
 /// toggle** additionally re-emits its rate/time partner: the partner's
@@ -22,28 +65,14 @@ use crate::sync::{rate_partner_clap_id, sync_aware_display};
 /// forces a full broadcast on the first call (used to populate the page on
 /// editor open).
 pub fn diff_params<M: ParamModel + ?Sized>(model: &M, last_seen: &mut [f32]) -> Vec<ViewEvent> {
-    let n = model.total().min(last_seen.len());
     let mut events = Vec::new();
-    // Sync flips refresh their rate partner's display label even though the
-    // rate's value didn't change. Collect those first, emit after the main pass.
-    let mut force_rate_refresh: Vec<usize> = Vec::new();
-    for i in 0..n {
-        let plain = model.get(ParamId::new(i));
-        // NaN never equals itself, so the seeded all-NaN vector forces a full
-        // broadcast on the first tick after open.
-        if plain == last_seen[i] {
-            continue;
-        }
-        last_seen[i] = plain;
-        events.push(param_changed(model, i, plain));
-        if let Some(rate_id) = rate_partner_clap_id(i) {
-            force_rate_refresh.push(rate_id);
-        }
-    }
-    for rate_id in force_rate_refresh {
-        let plain = model.get(ParamId::new(rate_id));
-        events.push(param_changed(model, rate_id, plain));
-    }
+    nan_diff(
+        model.total(),
+        last_seen,
+        |i| model.get(ParamId::new(i)),
+        true, // vxn-1 sync-toggle → rate-partner label refresh
+        |i, plain| events.push(param_changed(model, i, plain)),
+    );
     events
 }
 

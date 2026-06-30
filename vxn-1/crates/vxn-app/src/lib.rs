@@ -21,7 +21,7 @@ pub mod state;
 pub mod sync;
 
 pub use controller::{CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, Tick};
-pub use diff::diff_params;
+pub use diff::{diff_params, nan_diff};
 pub use domain::{DEFAULT_SPLIT_POINT, KeyMode, Layer, PresetMeta, UNCATEGORIZED};
 pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent, Vxn1UiCustom, Vxn1ViewCustom};
 pub use factory_asset::FactoryEntry;

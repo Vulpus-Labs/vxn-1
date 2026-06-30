@@ -69,3 +69,41 @@ tangle — fold into the struct split if low-risk, else note
 for follow-up. `static mut STATE` (`:655`) is fine for the
 cdylib but flag the forward-compat note (`UnsafeCell` /
 `OnceCell`) in the close-out; not required this ticket.
+
+## Close-out (2026-06-30)
+
+- **AC1** — `ControllerState` now holds `ParamMirror`
+  ([lib.rs:425](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L425):
+  `values_out`/`readback_in`/`last_seen`) + `StagingBuffers`
+  ([lib.rs:448](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L448):
+  the seven byte buffers), each with a `new()`. Flat
+  buffer/mirror fields gone; struct is ctrl + model + 3
+  channels + factory/user/corpus arcs + `mirror`/`staging` +
+  `corpus_json_dirty`.
+- **AC2** — single diff loop `vxn_app::nan_diff`
+  ([diff.rs:24](../../vxn-1/crates/vxn-app/src/diff.rs#L24)),
+  generic with a `sync_partner: bool` opt-in + per-slot
+  callback. `diff_params` delegates (opt-in true); web
+  `pump_readback`
+  ([lib.rs:684](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L684))
+  delegates and now opts into the sync-toggle→rate-partner
+  refresh it previously omitted. Rule stays a vxn-1 caller
+  opt-in — does not leak into `vxn-core-app`.
+- **AC3** — `rebuild_corpus_json` → `flush_corpus_json`
+  ([lib.rs:619](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L619)),
+  gated on a single `corpus_json_dirty` flag. The drain sets
+  the flag (no inline rebuild); `tick` flushes once at end.
+  Boot opcodes `load_factory`/`hydrate_done` set+flush (JS
+  reads `corpus_json` synchronously, not after a tick), so the
+  rebuild still runs at most once per call site.
+- **AC4** — `cargo test -p vxn-web-controller -p vxn-app`
+  green (21 + 17). Added
+  `tests::pump_readback_refreshes_sync_rate_partner` locking in
+  the AC2 web sync-partner refresh. `cargo clippy -p vxn-app`
+  clean.
+- **Deferred (per Notes):** duplicate factory/user Arc vs
+  `WebPresetStore` left in place — dedup needs a typed store
+  accessor (downcast), higher-risk; comment marks it follow-up.
+  `static mut STATE` `UnsafeCell`/`OnceCell` forward-compat not
+  done (pre-existing clippy `deref_addrof` lints on the raw-ptr
+  block, untouched) — follow-up.
