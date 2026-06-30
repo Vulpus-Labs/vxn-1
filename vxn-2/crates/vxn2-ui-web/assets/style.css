@@ -593,28 +593,6 @@ html, body {
 }
 
 /* ===== KS (key-scaling) graph annotations ===== */
-.op-ks-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  font-size: 8px;
-  color: var(--ctl-label);
-}
-.op-ks-oct {
-  position: absolute;
-  bottom: 1px;
-  transform: translateX(-50%);
-  letter-spacing: 0.3px;
-  opacity: 0.8;
-}
-.op-ks-rate-tag {
-  position: absolute;
-  top: 1px;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  letter-spacing: 0.3px;
-  opacity: 0.85;
-}
 .op-ks-readout {
   position: absolute;
   top: 2px;

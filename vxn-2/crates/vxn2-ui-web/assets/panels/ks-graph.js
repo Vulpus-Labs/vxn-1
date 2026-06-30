@@ -37,7 +37,6 @@
     wrap.style.height = "108px";
     wrap.innerHTML =
       '<svg viewBox="0 0 240 108" preserveAspectRatio="none"></svg>' +
-      '<div class="op-ks-overlay" data-ks-overlay></div>' +
       '<div class="op-ks-readout" data-ks-readout></div>' +
       '<div class="op-ks-controls">' +
         '<button type="button" class="op-ks-shape" data-ks-shape="l"></button>' +
@@ -46,7 +45,6 @@
       '</div>';
     parent.appendChild(wrap);
     const svg = wrap.querySelector("svg");
-    const overlay = wrap.querySelector("[data-ks-overlay]");
     const readout = wrap.querySelector("[data-ks-readout]");
 
     const opIdx = op - 1; // snapshot/curve cache is 0-based
@@ -98,7 +96,6 @@
     // doesn't hide the second, differently-pivoted mechanism.
     const RATE_PIVOT = 57;
     function xAt(m) { return 6 + (m / 127) * (W - 12); }
-    function pctAt(m) { return (xAt(m) / W) * 100; }
 
     // Port of ks::ks_level_mult with the live per-side curves. The curve
     // discriminant carries sign (bit0: 1 = boost, 0 = cut) and shape
@@ -149,17 +146,6 @@
       bpHandle = svg.querySelector('[data-ks-pt="bp"]');
       lHandle = svg.querySelector('[data-ks-pt="l"]');
       rHandle = svg.querySelector('[data-ks-pt="r"]');
-      // Octave note-name labels (every other octave, to stay legible) plus
-      // the A3 rate-pivot tag. HTML overlay so text isn't stretched by the
-      // svg's non-uniform preserveAspectRatio.
-      let labels = "";
-      for (let oct = 0; oct < 11; oct += 2) {
-        labels += '<span class="op-ks-oct" style="left:' + pctAt(oct * 12).toFixed(2) +
-          '%">' + vxn.noteName(oct * 12) + "</span>";
-      }
-      labels += '<span class="op-ks-rate-tag" style="left:' + pctAt(RATE_PIVOT).toFixed(2) +
-        '%">RATE ▸ A3</span>';
-      overlay.innerHTML = labels;
       bindKsHandles();
       // Per-side Lin/Exp shape toggles (the curve's bit1). Sign is set by
       // the handle drag; shape is this explicit pick — together they cover
