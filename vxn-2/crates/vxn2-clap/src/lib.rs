@@ -23,7 +23,6 @@ use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::{Read, Write as _IoWrite};
-use std::ops::Bound;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn2_app::{

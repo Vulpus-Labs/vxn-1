@@ -545,7 +545,13 @@ impl PolyAlloc {
             if let Some(cur) = self.solo_slot {
                 if self.stacks[cur].phase == VoicePhase::Held {
                     self.stacks[cur].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
-                    self.seq[cur] = counter;
+                    // Legato continuation reuses the SAME sounding voice — do not
+                    // bump `seq`. A bumped generation reads as a fresh onset in the
+                    // engine (cook_stacks_block), which snaps the pitch smoother and
+                    // *zeros the filter/HP z-state* (ADR 0004). On a continuous voice
+                    // that mid-note reset is an audible click with the filter (or a
+                    // raised HP) on. Phase/EG/LFO already carry over via
+                    // `retarget_pitch`; pitch moves via the glide offset below.
                     self.apply_solo_glide(cur, glide_from, params, note);
                     self.solo_active = true;
                     self.solo_voiced = true;
@@ -631,9 +637,10 @@ impl PolyAlloc {
                 0.0
             };
             if params.legato && self.stacks[cur].phase == VoicePhase::Held {
-                // Held → re-pitch the same voice in place.
+                // Held → re-pitch the same voice in place. Same as the note-on
+                // legato path: a continuation, NOT a fresh onset, so don't bump
+                // `seq` — that would zero the filter/HP z-state mid-note and click.
                 self.stacks[cur].retarget_pitch(sp, vp, prev, vel, self.sample_rate);
-                self.seq[cur] = counter;
                 self.apply_solo_glide(cur, glide_from, params, prev);
             } else {
                 // Crossfade the fallback onto a fresh voice; declick the released.
