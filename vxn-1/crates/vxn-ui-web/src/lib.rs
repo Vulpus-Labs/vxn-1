@@ -121,12 +121,23 @@ fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
         strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
         strip_esm_exports(BROWSER_JS),
     );
-    let css = format!("{}\n{}", FACEPLATE_CSS, vxn_core_ui_web::PRESET_BROWSER_CSS);
+    let css = format!(
+        "{}\n{}\n{}",
+        FACEPLATE_CSS, vxn_core_ui_web::PRESET_BROWSER_CSS, vxn_core_ui_web::VALUE_POP_CSS,
+    );
+    // Shared widget primitives (0140): valuePop / wireDrag / cutoff-tuned
+    // math. Spliced into the bridge slot (which runs first) so their stripped
+    // top-level bindings precede panels.js, which references them.
+    let bridge_js = format!(
+        "{}\n;\n{}",
+        vxn_core_ui_web::shared_widgets_js(),
+        strip_esm_exports(BRIDGE_JS),
+    );
     PLACEHOLDER_HTML
         .replace("__WEB_BOOT_HEAD__", web_boot_head)
         .replace("__WEB_BOOT_LOADER__", web_boot_loader)
         .replace("__CSS__", &css)
-        .replace("__BRIDGE_JS__", &strip_esm_exports(BRIDGE_JS))
+        .replace("__BRIDGE_JS__", &bridge_js)
         .replace("__BROWSER_JS__", &browser_js)
         .replace("__PANELS_JS__", &strip_esm_exports(PANELS_JS))
         .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
@@ -1703,8 +1714,10 @@ mod tests {
         assert!(assembled().contains("keysPanel.setLayer"));
         assert!(assembled().contains("keysPanel.setSplit"));
         // Note-name readout: covers a C0..C7 span, matches the vizia
-        // editor's `note_name`.
-        assert!(assembled().contains("function keysNoteName("));
+        // editor's `note_name`. The helper is now the shared `noteName`
+        // (vxn-core-ui-web/assets/cutoff-tuned.js, 0140; formerly
+        // `keysNoteName`), spliced ahead of panels.js.
+        assert!(assembled().contains("function noteName("));
         assert!(assembled().contains("KEYS_SPLIT_MIN = 12"));
         assert!(assembled().contains("KEYS_SPLIT_MAX = 96"));
         // Default split: matches DEFAULT_SPLIT_POINT (C4) so a

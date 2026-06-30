@@ -82,7 +82,9 @@
 
     let glyphPaths = [];
     let indicatorG = null;
-    let dragging = false;
+    // Drag handle (assigned in bindDrag); `null` until built so an early host
+    // echo through `set()` reads "not dragging".
+    let drag = null;
 
     function clampIdx(i) { return Math.max(0, Math.min(n - 1, i | 0)); }
 
@@ -135,46 +137,30 @@
 
     // Rotary drag on the knob face: grab anywhere that isn't a glyph hit
     // (glyphs keep their direct click-to-select) and drag vertically to step
-    // through variants. Up = next, no wrap, gesture-bracketed.
+    // through variants. Up = next, no wrap, gesture-bracketed. On the shared
+    // wireDrag primitive (0140): the inner <svg> is the drag target, a press
+    // on a `g[data-variant]` glyph is excluded so click-to-select still wins,
+    // and the relative payload is quantised to detents (shift = 0.25× fine,
+    // which the knob keeps via a per-call override of wireDrag's 0.1 default).
+    // No rAF (the step quantiser already coalesces) and no value-pop.
     function bindDrag() {
       const svg = el.querySelector("svg");
       if (!svg) return;
-      let startY = 0, startIdx = 0;
-      svg.addEventListener("pointerdown", function (ev) {
-        // A press that lands on a glyph is a click-to-select, not a drag.
-        if (ev.target instanceof Element && ev.target.closest("g[data-variant]")) {
-          return;
-        }
-        ev.preventDefault();
-        dragging = true;
-        startY = ev.clientY;
-        startIdx = currentIdx;
-        if (svg.setPointerCapture) {
-          try { svg.setPointerCapture(ev.pointerId); } catch (_) {}
-        }
-        ctx.beginGesture();
-      });
-      svg.addEventListener("pointermove", function (ev) {
-        if (!dragging) return;
-        ev.preventDefault();
-        const sens = ev.shiftKey ? 0.25 : 1.0;
-        const steps = Math.round(((startY - ev.clientY) * sens) / PIXELS_PER_DETENT);
-        commit(clampIdx(startIdx + steps));
-      });
-      function up(ev) {
-        if (!dragging) return;
-        ev.preventDefault();
-        dragging = false;
-        if (svg.releasePointerCapture) {
-          try { svg.releasePointerCapture(ev.pointerId); } catch (_) {}
-        }
-        ctx.endGesture();
-      }
-      svg.addEventListener("pointerup", up);
-      svg.addEventListener("pointercancel", up);
-      svg.addEventListener("dblclick", function (ev) {
-        ev.preventDefault();
-        ctx.requestTextInput();
+      drag = wireDrag(svg, {
+        target: svg,
+        axis: "y",
+        shift: 0.25,
+        excludeHit: "g[data-variant]",
+        downContext: () => ({ startIdx: currentIdx }),
+      }, {
+        onDown: () => ctx.beginGesture(),
+        // Up (a negative clientY delta) steps to the next variant.
+        onMove: (_ev, info) => {
+          const steps = Math.round(-info.dy / PIXELS_PER_DETENT);
+          commit(clampIdx(info.ctx.startIdx + steps));
+        },
+        onUp: () => ctx.endGesture(),
+        onDoubleClick: () => ctx.requestTextInput(),
       });
     }
 
@@ -184,7 +170,7 @@
       set: function (plain) {
         // Don't let a host echo stomp the value mid-drag (the page is the
         // source of truth while the user is turning the knob).
-        if (dragging) return;
+        if (drag && drag.isDragging()) return;
         applyValue(clampIdx(Math.round(plain)));
       },
     };

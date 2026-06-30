@@ -1,9 +1,28 @@
-// E015 / 0079: `valuePop` is consumed by `attachValuePop` below. The
-// splice loader drops this line for the inline wry `<script>` (the
-// concat-time `valuePop` const from bridge.js is already in scope there);
-// under Node ESM the binding resolves through bridge.js so the
-// drag-and-popup tests can exercise the helper without re-mocking.
-import { valuePop } from './bridge.js';
+// Shared faceplate primitives (0140) — `valuePop`, `wireDrag`, and the
+// cutoff-tuned math + `noteName` — live in `vxn-core-ui-web/assets/`. The
+// splice loader drops these `import` lines for the inline wry `<script>`
+// (the stripped top-level bindings are spliced ahead of this module, so
+// they're already in scope); under Node ESM the bindings resolve through
+// the shared modules so the tests can exercise the helpers. Re-exported
+// below so suites that pull them from `../panels.js` keep working.
+// Side-effect import: bridge.js installs `window.vxn` (the `send` table this
+// module's `presetBar` wraps for dirty-tracking). At splice time it's stripped
+// (bridge.js is concatenated ahead of this module); under Node ESM it ensures
+// bridge.js evaluates first. Previously implicit via the old `valuePop` import.
+import './bridge.js';
+import { valuePop } from '../../../../crates/vxn-core-ui-web/assets/value-pop.js';
+import { wireDrag } from '../../../../crates/vxn-core-ui-web/assets/wire-drag.js';
+import {
+  midiToHz, hzToMidi, noteName,
+  cutoffTunedNormToHz, cutoffTunedHzToNorm, cutoffTunedNoteName,
+  CUTOFF_TUNED_MIDI_MIN, CUTOFF_TUNED_MIDI_MAX,
+} from '../../../../crates/vxn-core-ui-web/assets/cutoff-tuned.js';
+export {
+  valuePop, wireDrag,
+  midiToHz, hzToMidi, noteName,
+  cutoffTunedNormToHz, cutoffTunedHzToNorm, cutoffTunedNoteName,
+  CUTOFF_TUNED_MIDI_MIN, CUTOFF_TUNED_MIDI_MAX,
+};
 // `paramIdByNameAtLayer` + `addCtl` are imported for ESM-mode tests; in the
 // inline-bundled production script the splice loader drops `import` lines
 // and the bindings come from the concat-time function declarations in
@@ -149,42 +168,11 @@ export const KEYS_DEFAULT_SPLIT = 60;
 // MIDI range so every semitone is easy to land on.
 export const KEYS_SPLIT_MIN = 12;
 export const KEYS_SPLIT_MAX = 96;
-export function keysNoteName(n) {
-  const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-  const octave = Math.floor(n / 12) - 1;
-  return NAMES[((n % 12) + 12) % 12] + octave;
-}
-
-// Filter Cutoff Tuned mode: fader range = MIDI C0..C4 (12..60), C2 at the
-// midpoint. Hz <-> MIDI helpers; the fader stores Hz like the untuned
-// path so DAW automation reads the same param value.
-export const CUTOFF_TUNED_MIDI_MIN = 12;   // C0
-export const CUTOFF_TUNED_MIDI_MAX = 60;   // C4
-export function midiToHz(m) {
-  return 440 * Math.pow(2, (m - 69) / 12);
-}
-export function hzToMidi(hz) {
-  return 69 + 12 * Math.log2(Math.max(1e-6, hz) / 440);
-}
-export function cutoffTunedNormToHz(norm) {
-  const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
-  const midi = Math.round(CUTOFF_TUNED_MIDI_MIN + Math.max(0, Math.min(1, norm)) * span);
-  return midiToHz(midi);
-}
-export function cutoffTunedHzToNorm(hz) {
-  const midi = Math.max(
-    CUTOFF_TUNED_MIDI_MIN,
-    Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))),
-  );
-  return (midi - CUTOFF_TUNED_MIDI_MIN) / (CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN);
-}
-export function cutoffTunedNoteName(hz) {
-  const midi = Math.max(
-    CUTOFF_TUNED_MIDI_MIN,
-    Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))),
-  );
-  return keysNoteName(midi);
-}
+// `noteName` (MIDI → name) and the Filter Cutoff Tuned helpers
+// (`midiToHz` / `hzToMidi` / `cutoffTuned*` / `CUTOFF_TUNED_MIDI_*`) moved
+// to the shared `vxn-core-ui-web/assets/cutoff-tuned.js` (0140) — imported
+// and re-exported at the top of this module. The old VXN1-local
+// `keysNoteName` is now `noteName`.
 export const keysPanel = (() => {
   const bodyEl = document.querySelector('.panel[data-name="Keys"] .panel-body');
   if (!bodyEl) return { setMode() {}, setLayer() {}, setSplit() {}, wireLayerLevels() {} };
@@ -268,7 +256,7 @@ export const keysPanel = (() => {
     // is stable and the user sees that the slider exists but is parked.
     splitRowEl.classList.toggle('dimmed', mode !== 2);
     splitSlider.value = String(split);
-    splitReadout.textContent = keysNoteName(split);
+    splitReadout.textContent = noteName(split);
   }
 
   splitSlider.addEventListener('input', () => {
@@ -278,7 +266,7 @@ export const keysPanel = (() => {
     );
     // Optimistic local repaint of the readout; the echo from
     // `split_point_changed` will overwrite when it arrives.
-    splitReadout.textContent = keysNoteName(note);
+    splitReadout.textContent = noteName(note);
     window.vxn.send.setSplitPoint(note);
   });
   splitSlider.addEventListener('dblclick', (ev) => {
@@ -391,7 +379,7 @@ export const keysPanel = (() => {
       split = n;
       // Only the slider/readout change — no mode/layer visibility flip.
       splitSlider.value = String(split);
-      splitReadout.textContent = keysNoteName(split);
+      splitReadout.textContent = noteName(split);
     },
     wireLayerLevels,
   };
@@ -449,66 +437,10 @@ export const KNOB_INDICATOR_TRANSITION_MS = 120;
 // load-bearing).
 export const TWIN_TOP_CT = 20.0;
 
-// Generalised pointer-drag protocol. Both fader-shaped controls (vertical
-// linear norm) and the wave knob (vertical pixel-delta off a captured start
-// state) share the same hover / down / capture / move / release lifecycle —
-// they only differ in how pointer position maps to a value.
-//
-// `pointerToValue(ev, ctx)` — required. Runs on `pointerdown` (its return
-//   value is the second arg to `onDown`) and `pointermove` (second arg to
-//   `onMove`). `ctx` is whatever `downContext` returned for this drag.
-// `downContext(ev)` — optional. Runs once on `pointerdown`, before
-//   `pointerToValue`. Lets stateful drags (the wave knob) stash start
-//   coordinates / start value cleanly instead of via closure-scoped lets.
-//
-// Callbacks fire in order:
-//   onEnter(ev)             — hover begins (not during drag)
-//   onDown(ev, value)       — pointer down, drag starts.
-//   onMove(ev, value)       — drag-time move. Fires only while dragging.
-//   onUp(ev)                — drag ends (pointerup or cancel).
-//   onLeave()               — hover ends (not during drag).
-// Returns { isDragging, isHovered } getters for callers whose
-// ParamChanged echoes need to know whether to update the popup.
-export function wireDrag(el, { pointerToValue, downContext }, { onEnter, onDown, onMove, onUp, onLeave }) {
-  let dragging = false;
-  let hovered = false;
-  let ctx = null;
-  el.addEventListener('pointerenter', (ev) => {
-    if (dragging) return;
-    hovered = true;
-    if (onEnter) onEnter(ev);
-  });
-  el.addEventListener('pointerleave', () => {
-    hovered = false;
-    if (!dragging && onLeave) onLeave();
-  });
-  el.addEventListener('pointerdown', (ev) => {
-    ev.preventDefault();
-    dragging = true;
-    ctx = downContext ? downContext(ev) : null;
-    el.classList.add('dragging');
-    el.setPointerCapture(ev.pointerId);
-    if (onDown) onDown(ev, pointerToValue(ev, ctx));
-  });
-  el.addEventListener('pointermove', (ev) => {
-    if (!dragging || !onMove) return;
-    onMove(ev, pointerToValue(ev, ctx));
-  });
-  const end = (ev) => {
-    if (!dragging) return;
-    dragging = false;
-    el.classList.remove('dragging');
-    try { el.releasePointerCapture(ev.pointerId); } catch (e) {}
-    if (onUp) onUp(ev);
-    if (!hovered && onLeave) onLeave();
-  };
-  el.addEventListener('pointerup', end);
-  el.addEventListener('pointercancel', end);
-  return {
-    isDragging: () => dragging,
-    isHovered:  () => hovered,
-  };
-}
+// `wireDrag` (the generalised pointer-drag protocol) moved to the shared
+// `vxn-core-ui-web/assets/wire-drag.js` (0140) — imported and re-exported at
+// the top of this module. VXN1's faders / wave knob use its ABSOLUTE
+// `pointerToValue` path, unchanged.
 
 // Thin wrapper: the fader-shaped controls (Fader, DetuneLegato) all want
 // the same vertical [0, 1] norm.

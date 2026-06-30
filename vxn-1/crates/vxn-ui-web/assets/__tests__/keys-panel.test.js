@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { installVxn } from './_helpers.js';
-import { keysNoteName, KEYS_SPLIT_MIN, KEYS_SPLIT_MAX, KEYS_DEFAULT_SPLIT } from '../panels.js';
+import { noteName, KEYS_SPLIT_MIN, KEYS_SPLIT_MAX, KEYS_DEFAULT_SPLIT } from '../panels.js';
 
 // 0093: Keys panel mode / edit-layer / split-point widgets. `setMode` /
 // `setLayer` on the returned API are the test door for internal mode/layer
@@ -89,13 +89,13 @@ describe('Keys panel — split slider', () => {
     slider.value = String(KEYS_SPLIT_MIN - 5);          // below floor
     slider.dispatchEvent(new Event('input'));
     expect(sendCalls).toEqual([['setSplitPoint', KEYS_SPLIT_MIN]]);
-    expect(readout.textContent).toBe(keysNoteName(KEYS_SPLIT_MIN));
+    expect(readout.textContent).toBe(noteName(KEYS_SPLIT_MIN));
 
     sendCalls.length = 0;
     slider.value = String(KEYS_SPLIT_MAX + 5);          // above ceiling
     slider.dispatchEvent(new Event('input'));
     expect(sendCalls).toEqual([['setSplitPoint', KEYS_SPLIT_MAX]]);
-    expect(readout.textContent).toBe(keysNoteName(KEYS_SPLIT_MAX));
+    expect(readout.textContent).toBe(noteName(KEYS_SPLIT_MAX));
   });
 
   it('dblclick sends setSplitPoint(KEYS_DEFAULT_SPLIT)', async () => {

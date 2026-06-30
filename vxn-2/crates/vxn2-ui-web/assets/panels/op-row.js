@@ -627,78 +627,74 @@
         for (let i = 0; i < handles.length; i++) {
           const h = handles[i];
           const which = h.getAttribute("data-ks-pt");
-          let dragging = false;
-          let startX = 0, startY = 0, startVal = 0;
-          let id = -1;
-          h.addEventListener("pointerdown", function (ev) {
-            ev.preventDefault();
-            dragging = true;
-            startX = ev.clientX;
-            startY = ev.clientY;
-            if (which === "bp") {
-              startVal = bp; id = bpDesc.id;
-            } else if (which === "l") {
-              // Drag works in *signed* depth (sign = boost/cut) so the handle
-              // tracks the cursor across the midline; magnitude is the depth
-              // param, sign is the curve's bit0.
-              startVal = (lCurve & 1 ? 1 : -1) * lDepth; id = lDesc.id;
-            } else {
-              startVal = (rCurve & 1 ? 1 : -1) * rDepth; id = rDesc.id;
-            }
-            if (h.setPointerCapture) {
-              try { h.setPointerCapture(ev.pointerId); } catch (_) {}
-            }
-            // Bind-helper gate: while the wrap is "dragging", the
-            // gated `set` callbacks drop incoming param_changed echoes
-            // so the live drag value isn't overwritten by the pump.
-            wrap.dataset.dragging = "1";
-            setReadout(liveReadout(which));
-            ctx.dispatch("begin_gesture", { id: id });
-          });
-          h.addEventListener("pointermove", function (ev) {
-            if (!dragging) return;
-            ev.preventDefault();
-            const sens = ev.shiftKey ? 0.1 : 1.0;
-            if (which === "bp") {
-              const dx = (ev.clientX - startX) * sens * 0.5;
-              bp = Math.max(0, Math.min(127, Math.round(startVal + dx)));
-              ctx.dispatch("set_param", { id: id, plain: bp });
-            } else {
-              // Up = boost (positive), down = cut. `signed` carries the sign;
-              // crossing the midline flips the curve's sign bit (bit0) while
-              // preserving its shape bit (bit1 lin/exp).
-              const up = (startY - ev.clientY) * sens * 0.5;
-              const signed = Math.max(-99, Math.min(99, startVal + up));
-              const depth = Math.round(Math.abs(signed));
-              const posBit = signed >= 0 ? 1 : 0;
-              if (which === "l") {
-                const nc = (lCurve & 2) | posBit;
-                if (nc !== lCurve) { setSideCurve(0, nc); }
-                lDepth = depth;
-                ctx.dispatch("set_param", { id: id, plain: lDepth });
+          // bp drags horizontally (break-point note); the l/r depth handles
+          // drag vertically. On the shared wireDrag primitive (0140) with the
+          // per-handle value math in the callbacks: relative drag, 0.1× shift
+          // (wireDrag's default) then the panel's own ×0.5 gain, the
+          // `wrap.dataset.dragging` echo-gate, and per-`id` gesture brackets.
+          // No rAF (these dispatch straight through) and no value-pop.
+          let id = -1; // resolved in downContext; read by onUp's end_gesture
+          wireDrag(h, {
+            target: h,
+            axis: which === "bp" ? "x" : "y",
+            downContext: function () {
+              let startVal;
+              if (which === "bp") {
+                startVal = bp; id = bpDesc.id;
+              } else if (which === "l") {
+                // Drag works in *signed* depth (sign = boost/cut) so the handle
+                // tracks the cursor across the midline; magnitude is the depth
+                // param, sign is the curve's bit0.
+                startVal = (lCurve & 1 ? 1 : -1) * lDepth; id = lDesc.id;
               } else {
-                const nc = (rCurve & 2) | posBit;
-                if (nc !== rCurve) { setSideCurve(1, nc); }
-                rDepth = depth;
-                ctx.dispatch("set_param", { id: id, plain: rDepth });
+                startVal = (rCurve & 1 ? 1 : -1) * rDepth; id = rDesc.id;
               }
-            }
-            paint();
-            setReadout(liveReadout(which));
+              return { startVal: startVal };
+            },
+          }, {
+            onDown: function () {
+              // Bind-helper gate: while the wrap is "dragging", the gated `set`
+              // callbacks drop incoming param_changed echoes so the live drag
+              // value isn't overwritten by the pump.
+              wrap.dataset.dragging = "1";
+              setReadout(liveReadout(which));
+              ctx.dispatch("begin_gesture", { id: id });
+            },
+            onMove: function (_ev, info) {
+              const startVal = info.ctx.startVal;
+              if (which === "bp") {
+                const dx = info.dx * 0.5;
+                bp = Math.max(0, Math.min(127, Math.round(startVal + dx)));
+                ctx.dispatch("set_param", { id: id, plain: bp });
+              } else {
+                // Up = boost (positive), down = cut. `signed` carries the sign;
+                // crossing the midline flips the curve's sign bit (bit0) while
+                // preserving its shape bit (bit1 lin/exp).
+                const up = -info.dy * 0.5;
+                const signed = Math.max(-99, Math.min(99, startVal + up));
+                const depth = Math.round(Math.abs(signed));
+                const posBit = signed >= 0 ? 1 : 0;
+                if (which === "l") {
+                  const nc = (lCurve & 2) | posBit;
+                  if (nc !== lCurve) { setSideCurve(0, nc); }
+                  lDepth = depth;
+                  ctx.dispatch("set_param", { id: id, plain: lDepth });
+                } else {
+                  const nc = (rCurve & 2) | posBit;
+                  if (nc !== rCurve) { setSideCurve(1, nc); }
+                  rDepth = depth;
+                  ctx.dispatch("set_param", { id: id, plain: rDepth });
+                }
+              }
+              paint();
+              setReadout(liveReadout(which));
+            },
+            onUp: function () {
+              delete wrap.dataset.dragging;
+              setReadout();
+              ctx.dispatch("end_gesture", { id: id });
+            },
           });
-          function up(ev) {
-            if (!dragging) return;
-            ev.preventDefault();
-            dragging = false;
-            if (h.releasePointerCapture) {
-              try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
-            }
-            delete wrap.dataset.dragging;
-            setReadout();
-            ctx.dispatch("end_gesture", { id: id });
-          }
-          h.addEventListener("pointerup", up);
-          h.addEventListener("pointercancel", up);
         }
       }
 

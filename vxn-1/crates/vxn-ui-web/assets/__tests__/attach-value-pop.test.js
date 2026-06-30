@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { attachValuePop } from '../panels.js';
-import { valuePop } from '../bridge.js';
+import { valuePop } from '../panels.js';
 
 // `attachValuePop` is the popup lifecycle adapter every primitive uses.
 // The popup itself (`valuePop`) is a module-level singleton from

@@ -10,30 +10,12 @@
 // it through `window.__vxn.panels.dial.create(el, ctx)`.
 
 (function () {
-  // The shared value-pop lives in fader.js (it's a single DOM element appended
-  // to body). We re-implement the same trio here so dial can stand on its own
-  // load order, but read/write the same `.value-pop` node so a fader and a
-  // dial don't fight over two singletons.
-  let popEl = null;
-  function ensurePop() {
-    if (popEl) return popEl;
-    popEl = document.querySelector(".value-pop");
-    if (!popEl) {
-      popEl = document.createElement("div");
-      popEl.className = "value-pop";
-      document.body.appendChild(popEl);
-    }
-    return popEl;
-  }
-  function showPop(text, x, y) {
-    const el = ensurePop();
-    el.textContent = text;
-    el.style.left = (x + 12) + "px";
-    el.style.top = (y - 8) + "px";
-    el.style.display = "block";
-  }
-  function updatePop(text) { if (popEl) popEl.textContent = text; }
-  function hidePop() { if (popEl) popEl.style.display = "none"; }
+  // Shared floating value popup (0140): one `valuePop` singleton (spliced
+  // ahead of this module) backs every control, so a fader and a dial share
+  // the one `.value-pop` node. Thin aliases keep the call sites unchanged.
+  function showPop(text, x, y) { valuePop.show(text, x, y); }
+  function updatePop(text) { valuePop.update(text); }
+  function hidePop() { valuePop.hide(); }
 
   // Reuse the fader's taper math so a dial-bound param and a fader-bound param
   // round-trip the same way through the host. The fader panel registers itself
@@ -118,11 +100,8 @@
 
     const fillPath = el.querySelector(".dial-fill");
     const indicatorG = el.querySelector(".dial-indicator-g");
-    const svg = el.querySelector("svg");
-
     let currentPlain = desc.default;
     let currentNorm = paramToNorm(desc, currentPlain);
-    let hovered = false;
 
     function displayText() { return formatDisplay(desc, currentPlain); }
 
@@ -142,15 +121,15 @@
           describeArc(CX, CY, ARC_R, ARC_START_DEG, ARC_START_DEG + sweep)
         );
       }
-      if (hovered || dragging) updatePop(displayText());
+      if (popActive()) updatePop(displayText());
     }
 
-    let dragging = false;
-    let pointerId = null;
-    let startY = 0;
-    let startNorm = 0;
-    let pendingNorm = null;
-    let rafScheduled = false;
+    // Drag handle (assigned below); `null` until then so `popActive()` — called
+    // by the first `paint()` — reads false instead of tripping the TDZ.
+    let drag = null;
+    function popActive() {
+      return drag && (drag.isHovered() || drag.isDragging());
+    }
 
     paint();
 
@@ -161,83 +140,36 @@
       currentPlain = normToParam(desc, clamped);
       paint();
     }
-    function flushPending() {
-      rafScheduled = false;
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-    }
 
-    function onPointerEnter(ev) {
-      hovered = true;
-      if (!dragging) showPop(displayText(), ev.clientX, ev.clientY);
-    }
-    function onPointerLeave() {
-      hovered = false;
-      if (!dragging) hidePop();
-    }
-    function onPointerDown(ev) {
-      if (ev.button !== undefined && ev.button !== 0) return;
-      ev.preventDefault();
-      dragging = true;
-      pointerId = ev.pointerId;
-      startY = ev.clientY;
-      startNorm = currentNorm;
-      el.classList.add("dragging");
-      el.dataset.dragging = "1";
-      if (svg && svg.setPointerCapture && pointerId !== undefined) {
-        try { svg.setPointerCapture(pointerId); } catch (_) {}
-      }
-      showPop(displayText(), ev.clientX, ev.clientY);
-      ctx.beginGesture();
-    }
-    function onPointerMove(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      const dy = startY - ev.clientY;
-      const range = 200; // same per-norm travel as the fader (200 px = full).
-      const sens = ev.shiftKey ? 0.1 : 1.0;
-      const next = startNorm + (dy / range) * sens;
-      pendingNorm = next < 0 ? 0 : next > 1 ? 1 : next;
-      if (!rafScheduled) {
-        rafScheduled = true;
-        window.requestAnimationFrame(flushPending);
-      }
-    }
-    function onPointerUp(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-      dragging = false;
-      el.classList.remove("dragging");
-      delete el.dataset.dragging;
-      if (svg && svg.releasePointerCapture && pointerId !== undefined) {
-        try { svg.releasePointerCapture(pointerId); } catch (_) {}
-      }
-      if (!hovered) hidePop();
-      ctx.endGesture();
-      pointerId = null;
-    }
-    function onDoubleClick(ev) {
-      ev.preventDefault();
-      ctx.requestTextInput(formatDisplay(desc, currentPlain));
-    }
-
-    el.addEventListener("pointerenter", onPointerEnter);
-    el.addEventListener("pointerleave", onPointerLeave);
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("pointercancel", onPointerUp);
-    el.addEventListener("dblclick", onDoubleClick);
+    // ── Gesture ── vertical relative drag on the shared wireDrag primitive
+    // (0140): the same contract as the fader (rAF-throttled, 0.1× shift-fine,
+    // 200 px full travel, `dataset.dragging` echo-gate, gesture brackets,
+    // value-pop) in a rotary shape.
+    const RANGE_PX = 200; // px for full 0..1 travel (matches the fader)
+    drag = wireDrag(el, {
+      axis: "y",
+      raf: true,
+      downContext: () => ({ startNorm: currentNorm }),
+    }, {
+      onEnter: (ev) => showPop(displayText(), ev.clientX, ev.clientY),
+      onDown: (ev) => {
+        el.dataset.dragging = "1";
+        showPop(displayText(), ev.clientX, ev.clientY);
+        ctx.beginGesture();
+      },
+      // Up (a negative clientY delta) raises the value.
+      onMove: (_ev, info) => postNorm(info.ctx.startNorm - info.dy / RANGE_PX),
+      onUp: () => {
+        delete el.dataset.dragging;
+        ctx.endGesture();
+      },
+      onLeave: () => hidePop(),
+      onDoubleClick: () => ctx.requestTextInput(formatDisplay(desc, currentPlain)),
+    });
 
     return {
       set: function (plain) {
-        if (dragging) return; // user gesture wins over host echoes
+        if (drag.isDragging()) return; // user gesture wins over host echoes
         currentPlain = plain;
         currentNorm = paramToNorm(desc, plain);
         paint();

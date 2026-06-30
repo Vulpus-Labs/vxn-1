@@ -1,0 +1,23 @@
+/* Floating value popup — one shared <div> across every control, anchored
+   at the pointer's entry / grab point in fixed coords so it floats above
+   the layout and can never push siblings around or be clipped by a panel's
+   overflow. Shared ruleset (0140): replaces the per-synth `.value-pop`
+   copies in VXN1 `faceplate.css` and VXN2 `style.css`.
+
+   `--track-bg` and `--ctl-value` are theme custom properties both synths
+   define (VXN1 `faceplate.css`, VXN2 `style.css`); the fallback keeps the
+   rule valid if a host page omits them. */
+.value-pop {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  background: var(--track-bg, #0e0e0e);
+  border: 1px solid var(--ctl-value);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: #f6f6f6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  z-index: 1000;
+}

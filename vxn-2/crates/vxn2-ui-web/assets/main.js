@@ -179,31 +179,11 @@
   // musical note over C0..C4 (MIDI 12..60, semitone-snapped) instead of Hz. The
   // stored param stays Hz — only the fader's norm↔value map and readout change —
   // so the DSP and DAW automation are unaffected (the engine never reads the
-  // toggle). Mirrors VXN-1's `panels.js` cutoff-tuned helpers.
-  const CUTOFF_TUNED_MIDI_MIN = 12; // C0
-  const CUTOFF_TUNED_MIDI_MAX = 60; // C4
-  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  function midiToHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
-  function hzToMidi(hz) { return 69 + 12 * Math.log2(Math.max(1e-6, hz) / 440); }
-  function noteName(m) {
-    const n = Math.round(m);
-    return NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
-  }
-  // norm [0,1] → MIDI 12..60 (semitone-snapped) → Hz.
-  function cutoffTunedNormToHz(norm) {
-    const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
-    const c = norm < 0 ? 0 : norm > 1 ? 1 : norm;
-    return midiToHz(Math.round(CUTOFF_TUNED_MIDI_MIN + c * span));
-  }
-  function cutoffTunedHzToNorm(hz) {
-    const span = CUTOFF_TUNED_MIDI_MAX - CUTOFF_TUNED_MIDI_MIN;
-    const c = (Math.round(hzToMidi(hz)) - CUTOFF_TUNED_MIDI_MIN) / span;
-    return c < 0 ? 0 : c > 1 ? 1 : c;
-  }
-  function cutoffTunedNoteName(hz) {
-    const m = Math.max(CUTOFF_TUNED_MIDI_MIN, Math.min(CUTOFF_TUNED_MIDI_MAX, Math.round(hzToMidi(hz))));
-    return noteName(m);
-  }
+  // toggle). The helpers (`midiToHz` / `hzToMidi` / `noteName` /
+  // `cutoffTunedNormToHz` / `cutoffTunedHzToNorm` / `cutoffTunedNoteName` /
+  // `CUTOFF_TUNED_MIDI_MIN/MAX`) moved to the shared
+  // `vxn-core-ui-web/assets/cutoff-tuned.js` (0140), spliced ahead of this
+  // module so their top-level bindings are in scope here.
   // cutoff CLAP id → tuned-toggle CLAP id, and the inverse.
   const tunedToggleByCutoffId = Object.create(null);
   const cutoffByTunedToggleId = Object.create(null);

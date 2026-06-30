@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { wireDrag } from '../panels.js';
 import { mountEl, pointerEvt } from './_helpers.js';
 
@@ -123,5 +123,166 @@ describe('wireDrag — hover-during-drag suppression', () => {
     el.dispatchEvent(pointerEvt('pointerdown'));
     el.dispatchEvent(pointerEvt('pointerup'));
     expect(onLeave).not.toHaveBeenCalled();
+  });
+});
+
+// 0140: the RELATIVE delta model VXN2's faders / knob use. With no
+// `pointerToValue`, onMove receives `{ dx, dy, ctx }` — the signed pixel
+// delta from the grab point, scaled by `shift` while Shift is held.
+describe('wireDrag — relative delta + shift-fine taper', () => {
+  let el, onMove;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    el = mountEl();
+    onMove = vi.fn();
+    wireDrag(el, { axis: 'y' }, { onMove });
+  });
+
+  it('reports the signed delta from the grab point (full sensitivity)', () => {
+    el.dispatchEvent(pointerEvt('pointerdown', { clientX: 100, clientY: 200 }));
+    el.dispatchEvent(pointerEvt('pointermove', { clientX: 130, clientY: 160 }));
+    expect(onMove.mock.calls[0][1]).toEqual({ dx: 30, dy: -40, ctx: null });
+  });
+
+  it('scales the whole delta-since-grab by the default 0.1 while Shift is held', () => {
+    el.dispatchEvent(pointerEvt('pointerdown', { clientX: 0, clientY: 100 }));
+    const ev = pointerEvt('pointermove', { clientX: 0, clientY: 0 }); // dy = -100
+    Object.defineProperty(ev, 'shiftKey', { value: true });
+    el.dispatchEvent(ev);
+    expect(onMove.mock.calls[0][1].dy).toBeCloseTo(-10, 9); // -100 × 0.1
+  });
+
+  it('honours a per-call shift override (knob keeps 0.25)', () => {
+    document.body.innerHTML = '';
+    const el2 = mountEl();
+    const mv = vi.fn();
+    wireDrag(el2, { axis: 'y', shift: 0.25 }, { onMove: mv });
+    el2.dispatchEvent(pointerEvt('pointerdown', { clientX: 0, clientY: 100 }));
+    const ev = pointerEvt('pointermove', { clientX: 0, clientY: 0 }); // dy = -100
+    Object.defineProperty(ev, 'shiftKey', { value: true });
+    el2.dispatchEvent(ev);
+    expect(mv.mock.calls[0][1].dy).toBeCloseTo(-25, 9); // -100 × 0.25
+  });
+
+  it('downContext is stashed and threaded through the delta payload', () => {
+    document.body.innerHTML = '';
+    const el2 = mountEl();
+    const mv = vi.fn();
+    const downContext = vi.fn(() => ({ startNorm: 0.5 }));
+    wireDrag(el2, { axis: 'y', downContext }, { onMove: mv });
+    el2.dispatchEvent(pointerEvt('pointerdown', { clientX: 0, clientY: 50 }));
+    el2.dispatchEvent(pointerEvt('pointermove', { clientX: 0, clientY: 30 }));
+    expect(downContext).toHaveBeenCalledTimes(1);
+    expect(mv.mock.calls[0][1].ctx).toEqual({ startNorm: 0.5 });
+  });
+});
+
+describe('wireDrag — rAF throttle', () => {
+  let raf, flushRaf;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    // Controllable rAF: queue callbacks, fire them on demand.
+    const queue = [];
+    flushRaf = () => { const q = queue.splice(0); q.forEach((cb) => cb()); };
+    raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      queue.push(cb);
+      return queue.length;
+    });
+  });
+
+  afterEach(() => { raf.mockRestore(); });
+
+  it('coalesces a burst of moves into one onMove carrying the latest delta', () => {
+    const el = mountEl();
+    const onMove = vi.fn();
+    wireDrag(el, { axis: 'y', raf: true }, { onMove });
+    el.dispatchEvent(pointerEvt('pointerdown', { clientX: 0, clientY: 0 }));
+    el.dispatchEvent(pointerEvt('pointermove', { clientX: 0, clientY: -10 }));
+    el.dispatchEvent(pointerEvt('pointermove', { clientX: 0, clientY: -20 }));
+    el.dispatchEvent(pointerEvt('pointermove', { clientX: 0, clientY: -30 }));
+    expect(onMove).not.toHaveBeenCalled(); // throttled until the frame fires
+    flushRaf();
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(onMove.mock.calls[0][1].dy).toBe(-30); // latest sample wins
+  });
+
+  it('flushes the trailing edit unthrottled on pointerup', () => {
+    const el = mountEl();
+    const onMove = vi.fn();
+    const onUp = vi.fn();
+    wireDrag(el, { axis: 'y', raf: true }, { onMove, onUp });
+    el.dispatchEvent(pointerEvt('pointerdown', { clientX: 0, clientY: 0 }));
+    el.dispatchEvent(pointerEvt('pointermove', { clientX: 0, clientY: -42 }));
+    // No frame fired yet; pointerup must still deliver the pending sample,
+    // and before onUp.
+    el.dispatchEvent(pointerEvt('pointerup'));
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(onMove.mock.calls[0][1].dy).toBe(-42);
+    expect(onUp).toHaveBeenCalledTimes(1);
+    expect(onMove.mock.invocationCallOrder[0])
+      .toBeLessThan(onUp.mock.invocationCallOrder[0]);
+  });
+});
+
+describe('wireDrag — hit-exclude + inner target + double-click', () => {
+  it('a pointerdown matching excludeHit is not a drag (click-to-select passes through)', () => {
+    document.body.innerHTML = '';
+    const el = mountEl();
+    el.innerHTML = '<span class="glyph">g</span><span class="face">f</span>';
+    const onDown = vi.fn();
+    const drag = wireDrag(el, { excludeHit: '.glyph' }, { onDown });
+    const glyph = el.querySelector('.glyph');
+    const evGlyph = pointerEvt('pointerdown');
+    Object.defineProperty(evGlyph, 'target', { value: glyph });
+    el.dispatchEvent(evGlyph);
+    expect(onDown).not.toHaveBeenCalled();
+    expect(drag.isDragging()).toBe(false);
+    // A press off the glyph still drags.
+    const face = el.querySelector('.face');
+    const evFace = pointerEvt('pointerdown');
+    Object.defineProperty(evFace, 'target', { value: face });
+    el.dispatchEvent(evFace);
+    expect(onDown).toHaveBeenCalledTimes(1);
+    expect(drag.isDragging()).toBe(true);
+  });
+
+  it('attaches to an inner target element when given', () => {
+    document.body.innerHTML = '';
+    const host = mountEl();
+    const inner = document.createElement('div');
+    inner.setPointerCapture = vi.fn();
+    inner.releasePointerCapture = vi.fn();
+    host.appendChild(inner);
+    const onDown = vi.fn();
+    wireDrag(host, { target: inner, pointerToValue: () => 1 }, { onDown });
+    // Event on the host (outer) is NOT wired.
+    host.dispatchEvent(pointerEvt('pointerdown'));
+    expect(onDown).not.toHaveBeenCalled();
+    // Event on the inner target fires.
+    inner.dispatchEvent(pointerEvt('pointerdown', { pointerId: 3 }));
+    expect(onDown).toHaveBeenCalledTimes(1);
+    expect(inner.setPointerCapture).toHaveBeenCalledWith(3);
+  });
+
+  it('fires onDoubleClick when supplied', () => {
+    document.body.innerHTML = '';
+    const el = mountEl();
+    const onDoubleClick = vi.fn();
+    wireDrag(el, {}, { onDoubleClick });
+    el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    expect(onDoubleClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a non-primary button press', () => {
+    document.body.innerHTML = '';
+    const el = mountEl();
+    const onDown = vi.fn();
+    wireDrag(el, { pointerToValue: () => 0 }, { onDown });
+    const ev = pointerEvt('pointerdown');
+    Object.defineProperty(ev, 'button', { value: 2 }); // right button
+    el.dispatchEvent(ev);
+    expect(onDown).not.toHaveBeenCalled();
   });
 });

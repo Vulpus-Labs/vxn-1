@@ -48,6 +48,33 @@ pub const PRESET_BROWSER_JS: &str = include_str!("../assets/preset-browser.js");
 /// `--editor-w`) that both synths define.
 pub const PRESET_BROWSER_CSS: &str = include_str!("../assets/preset-browser.css");
 
+/// Shared faceplate widget primitives (0140), each an ESM-authored asset
+/// both synths splice (after [`strip_esm_exports`]) ahead of their own
+/// panels so the stripped top-level bindings — `valuePop`, `wireDrag`,
+/// `noteName` / `midiToHz` / `cutoffTuned*` / `CUTOFF_TUNED_MIDI_*` — are in
+/// the shared inline-script scope before any consumer references them.
+/// Splice ORDER matters: these must precede the panel modules (`const`
+/// bindings don't hoist). The `export` markers exist for the Node/vitest
+/// suites, which `import` the pure helpers directly.
+pub const VALUE_POP_JS: &str = include_str!("../assets/value-pop.js");
+pub const CUTOFF_TUNED_JS: &str = include_str!("../assets/cutoff-tuned.js");
+pub const WIRE_DRAG_JS: &str = include_str!("../assets/wire-drag.js");
+
+/// Stylesheet for the shared floating value popup. Appended to each synth's
+/// faceplate `<style>` (like [`PRESET_BROWSER_CSS`]); the single
+/// `.value-pop` ruleset replaces the per-synth copies.
+pub const VALUE_POP_CSS: &str = include_str!("../assets/value-pop.css");
+
+/// The shared widget primitives ([`VALUE_POP_JS`], [`CUTOFF_TUNED_JS`],
+/// [`WIRE_DRAG_JS`]), ESM markers stripped and joined in dependency order,
+/// ready to splice ahead of a synth's own panel modules. One owner of the
+/// order so both faceplates can't drift on it.
+pub fn shared_widgets_js() -> String {
+    [VALUE_POP_JS, CUTOFF_TUNED_JS, WIRE_DRAG_JS]
+        .map(strip_esm_exports)
+        .join("\n;\n")
+}
+
 /// Drop ESM module syntax from `src` so an ESM-authored asset can be inlined
 /// into a single `<script>` (where `export` / `import` are syntax errors).
 /// The splice concatenates every module into one shared script scope, so
@@ -861,5 +888,25 @@ mod tests {
     fn strip_multi_line_export_list_dropped_whole() {
         let src = "export {\n  a,\n  b,\n} from './x.js';\nconst Z = 3;\n";
         assert_eq!(strip_esm_exports(src), "\n\n\n\nconst Z = 3;\n");
+    }
+
+    // ── shared widget bundle (0140) ────────────────────────────────────
+
+    #[test]
+    fn shared_widgets_js_strips_exports_and_carries_every_symbol() {
+        let js = shared_widgets_js();
+        // ESM markers gone (illegal in the inline-script splice).
+        assert!(!js.contains("export "), "shared widgets still carry `export `");
+        // Every top-level binding the panels reference is present.
+        for sym in [
+            "const valuePop",
+            "function wireDrag",
+            "function noteName",
+            "function midiToHz",
+            "function cutoffTunedNormToHz",
+            "const CUTOFF_TUNED_MIDI_MIN",
+        ] {
+            assert!(js.contains(sym), "shared widgets missing `{sym}`");
+        }
     }
 }

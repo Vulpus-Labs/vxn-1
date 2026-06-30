@@ -84,23 +84,12 @@
   }
 
   // ── Shared value-pop singleton ──
-  let popEl = null;
-  function ensurePop() {
-    if (popEl) return popEl;
-    popEl = document.createElement("div");
-    popEl.className = "value-pop";
-    document.body.appendChild(popEl);
-    return popEl;
-  }
-  function showPop(text, x, y) {
-    const el = ensurePop();
-    el.textContent = text;
-    el.style.left = (x + 12) + "px";
-    el.style.top  = (y - 8)  + "px";
-    el.style.display = "block";
-  }
-  function updatePop(text) { if (popEl) popEl.textContent = text; }
-  function hidePop() { if (popEl) popEl.style.display = "none"; }
+  // The popup itself moved to `vxn-core-ui-web/assets/value-pop.js` (0140),
+  // spliced ahead of this module as the top-level `valuePop` binding. Thin
+  // aliases keep the `create` / `createBipolar` call sites unchanged.
+  function showPop(text, x, y) { valuePop.show(text, x, y); }
+  function updatePop(text) { valuePop.update(text); }
+  function hidePop() { valuePop.hide(); }
 
   // ── Primitive ──
   function create(el, ctx) {
@@ -122,7 +111,9 @@
 
     let currentPlain = desc.default;
     let currentNorm = plainToNormM(currentPlain);
-    let hovered = false;
+    // Drag handle (assigned below); `null` until then so `popActive()` — called
+    // by the first `paint()` — reads false instead of tripping the TDZ.
+    let drag = null;
 
     // Display text for the value popup. When this is a synced rate/time
     // fader (ctx.syncLabel returns a label) the readout is the subdivision
@@ -137,24 +128,16 @@
       return formatDisplay(desc, currentPlain);
     }
 
+    function popActive() {
+      return drag && (drag.isHovered() || drag.isDragging());
+    }
+
     function paint() {
       const pct = (currentNorm * 100).toFixed(2) + "%";
       if (fill) fill.style.height = pct;
       if (thumb) thumb.style.bottom = pct;
-      if (hovered || dragging) {
-        updatePop(displayText());
-      }
+      if (popActive()) updatePop(displayText());
     }
-
-    // ── Gesture ──
-    let dragging = false;
-    let pointerId = null;
-    let startY = 0;
-    let startNorm = 0;
-    let pendingNorm = null;
-    let rafScheduled = false;
-
-    paint();
 
     function postNorm(n) {
       const clamped = n < 0 ? 0 : n > 1 ? 1 : n;
@@ -174,91 +157,39 @@
       paint();
     }
 
-    function flushPending() {
-      rafScheduled = false;
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-    }
+    paint();
 
-    function onPointerEnter(ev) {
-      hovered = true;
-      if (!dragging) showPop(displayText(), ev.clientX, ev.clientY);
-    }
-    function onPointerLeave() {
-      hovered = false;
-      if (!dragging) hidePop();
-    }
-
-    function onPointerDown(ev) {
-      if (ev.button !== undefined && ev.button !== 0) return;
-      ev.preventDefault();
-      dragging = true;
-      pointerId = ev.pointerId;
-      startY = ev.clientY;
-      startNorm = currentNorm;
-      el.classList.add("dragging");
-      // Bind-helper gate (ADR 0003 / 0060): `bindGestureGated` reads
-      // this dataset flag to drop incoming param_changed echoes for
-      // the duration of the drag — the page is the source of truth.
-      el.dataset.dragging = "1";
-      if (el.setPointerCapture && pointerId !== undefined) {
-        try { el.setPointerCapture(pointerId); } catch (_) {}
-      }
-      showPop(displayText(), ev.clientX, ev.clientY);
-      ctx.beginGesture();
-    }
-
-    function onPointerMove(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      const dy = startY - ev.clientY;
-      const range = 200; // px for full travel
-      const sens = ev.shiftKey ? 0.1 : 1.0;
-      const next = startNorm + (dy / range) * sens;
-      pendingNorm = next < 0 ? 0 : next > 1 ? 1 : next;
-      if (!rafScheduled) {
-        rafScheduled = true;
-        window.requestAnimationFrame(flushPending);
-      }
-    }
-
-    function onPointerUp(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      // Flush trailing edit unthrottled — keeps tap-and-hold crisp.
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-      dragging = false;
-      el.classList.remove("dragging");
-      delete el.dataset.dragging;
-      if (el.releasePointerCapture && pointerId !== undefined) {
-        try { el.releasePointerCapture(pointerId); } catch (_) {}
-      }
-      if (!hovered) hidePop();
-      ctx.endGesture();
-      pointerId = null;
-    }
-
-    function onDoubleClick(ev) {
-      ev.preventDefault();
-      ctx.requestTextInput(formatDisplay(desc, currentPlain));
-    }
-
-    el.addEventListener("pointerenter", onPointerEnter);
-    el.addEventListener("pointerleave", onPointerLeave);
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("pointercancel", onPointerUp);
-    el.addEventListener("dblclick", onDoubleClick);
+    // ── Gesture ── vertical relative drag on the shared wireDrag primitive
+    // (0140): rAF-throttled, 0.1× shift-fine, 200 px full travel. wireDrag owns
+    // pointer capture + the `.dragging` class + the trailing-edit flush on
+    // release; the per-fader bits stay in the callbacks — the `dataset.dragging`
+    // echo-gate (ADR 0003 / 0060: `bindGestureGated` drops param_changed echoes
+    // mid-drag), the gesture brackets, and the value-pop lifecycle.
+    const RANGE_PX = 200; // px for full 0..1 travel
+    drag = wireDrag(el, {
+      axis: "y",
+      raf: true,
+      downContext: () => ({ startNorm: currentNorm }),
+    }, {
+      onEnter: (ev) => showPop(displayText(), ev.clientX, ev.clientY),
+      onDown: (ev) => {
+        el.dataset.dragging = "1";
+        showPop(displayText(), ev.clientX, ev.clientY);
+        ctx.beginGesture();
+      },
+      // Up (a negative clientY delta) raises the value.
+      onMove: (_ev, info) => postNorm(info.ctx.startNorm - info.dy / RANGE_PX),
+      onUp: () => {
+        delete el.dataset.dragging;
+        ctx.endGesture();
+      },
+      onLeave: () => hidePop(),
+      onDoubleClick: () => ctx.requestTextInput(formatDisplay(desc, currentPlain)),
+    });
 
     return {
       set: function (plain) {
-        if (dragging) return; // user gesture wins
+        if (drag.isDragging()) return; // user gesture wins
         currentPlain = plain;
         currentNorm = plainToNormM(plain);
         paint();
@@ -287,13 +218,13 @@
     function normToDepth(n) { return n * 2 - 1; }
 
     let current = clampDepth(ctx.value());
-    let hovered = false;
-    let dragging = false;
-    let pointerId = null;
-    let startX = 0;
-    let startNorm = 0;
-    let pendingNorm = null;
-    let rafScheduled = false;
+    // Drag handle (assigned below); `null` until then so `popActive()` reads
+    // false during the first `paint()` instead of tripping the TDZ.
+    let drag = null;
+
+    function popActive() {
+      return drag && (drag.isHovered() || drag.isDragging());
+    }
 
     function paint() {
       const norm = depthToNorm(current);
@@ -309,7 +240,7 @@
         }
       }
       if (thumb) thumb.style.left = pct + "%";
-      if (hovered || dragging) updatePop(ctx.format(current));
+      if (popActive()) updatePop(ctx.format(current));
     }
     paint();
 
@@ -319,87 +250,37 @@
       ctx.commit(current);
       paint();
     }
-    function flushPending() {
-      rafScheduled = false;
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-    }
 
-    function onPointerEnter(ev) {
-      hovered = true;
-      if (!dragging) showPop(ctx.format(current), ev.clientX, ev.clientY);
-    }
-    function onPointerLeave() {
-      hovered = false;
-      if (!dragging) hidePop();
-    }
-    function onPointerDown(ev) {
-      if (ev.button !== undefined && ev.button !== 0) return;
-      ev.preventDefault();
-      dragging = true;
-      pointerId = ev.pointerId;
-      startX = ev.clientX;
-      startNorm = depthToNorm(current);
-      el.classList.add("dragging");
-      // Drag-gate flag the matrix repaint honours so a snapshot echo can't
-      // stomp an in-progress drag.
-      el.dataset.dragging = "1";
-      if (el.setPointerCapture && pointerId !== undefined) {
-        try { el.setPointerCapture(pointerId); } catch (_) {}
-      }
-      showPop(ctx.format(current), ev.clientX, ev.clientY);
-    }
-    function onPointerMove(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      const dx = ev.clientX - startX;
-      const range = 200; // px for full -1..+1 travel
-      const sens = ev.shiftKey ? 0.1 : 1.0;
-      const next = startNorm + (dx / range) * sens;
-      pendingNorm = next < 0 ? 0 : next > 1 ? 1 : next;
-      if (!rafScheduled) {
-        rafScheduled = true;
-        window.requestAnimationFrame(flushPending);
-      }
-    }
-    function onPointerUp(ev) {
-      if (!dragging) return;
-      ev.preventDefault();
-      if (pendingNorm !== null) {
-        postNorm(pendingNorm);
-        pendingNorm = null;
-      }
-      dragging = false;
-      el.classList.remove("dragging");
-      delete el.dataset.dragging;
-      if (el.releasePointerCapture && pointerId !== undefined) {
-        try { el.releasePointerCapture(pointerId); } catch (_) {}
-      }
-      if (!hovered) hidePop();
-      pointerId = null;
-    }
-    function onDoubleClick(ev) {
-      ev.preventDefault();
-      ctx.requestText();
-    }
-
-    el.addEventListener("pointerenter", onPointerEnter);
-    el.addEventListener("pointerleave", onPointerLeave);
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("pointercancel", onPointerUp);
-    el.addEventListener("dblclick", onDoubleClick);
+    // ── Gesture ── horizontal relative drag (left −1 … right +1) on the shared
+    // wireDrag primitive (0140): rAF-throttled, 0.1× shift-fine, 200 px full
+    // travel. No CLAP gesture brackets (the matrix depth path is value-based);
+    // the `dataset.dragging` flag gates the matrix repaint so a snapshot echo
+    // can't stomp an in-progress drag.
+    const RANGE_PX = 200; // px for full -1..+1 travel
+    drag = wireDrag(el, {
+      axis: "x",
+      raf: true,
+      downContext: () => ({ startNorm: depthToNorm(current) }),
+    }, {
+      onEnter: (ev) => showPop(ctx.format(current), ev.clientX, ev.clientY),
+      onDown: (ev) => {
+        el.dataset.dragging = "1";
+        showPop(ctx.format(current), ev.clientX, ev.clientY);
+      },
+      // Right (a positive clientX delta) raises the depth.
+      onMove: (_ev, info) => postNorm(info.ctx.startNorm + info.dx / RANGE_PX),
+      onUp: () => { delete el.dataset.dragging; },
+      onLeave: () => hidePop(),
+      onDoubleClick: () => ctx.requestText(),
+    });
 
     return {
       set: function (depth) {
-        if (dragging) return; // gesture / drag-gate wins over echoes
+        if (drag.isDragging()) return; // gesture / drag-gate wins over echoes
         current = clampDepth(depth);
         paint();
       },
-      isDragging: function () { return dragging; },
+      isDragging: function () { return drag.isDragging(); },
     };
   }
 

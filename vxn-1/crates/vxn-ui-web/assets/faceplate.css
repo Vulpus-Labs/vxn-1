@@ -285,23 +285,8 @@ html, body {
   margin-bottom: 4px;
 }
 
-/* Floating value popup — one shared <div> across every control, anchored
-   at the pointer's entry / grab point in fixed coords so it floats above
-   the layout and can never push siblings around. Style matches the vizia
-   editor's `.value-pop` (dark fill, orange border). */
-.value-pop {
-  position: fixed;
-  display: none;
-  pointer-events: none;
-  background: var(--track-bg); /* 0020: was #0e0e0e (value-identical) */
-  border: 1px solid var(--ctl-value);
-  border-radius: 3px;
-  padding: 2px 5px;
-  font-size: 10px;
-  color: #f6f6f6;
-  white-space: nowrap;
-  z-index: 1000;
-}
+/* `.value-pop` moved to the shared `vxn-core-ui-web/assets/value-pop.css`
+   (0140); appended to this faceplate's `<style>` at splice time. */
 
 /* Status pill (0046) — inline chip in the preset bar, right of the
    current name (0049 §Notes). Driven by the controller's `Status { line }`

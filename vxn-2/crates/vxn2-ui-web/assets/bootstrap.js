@@ -36,14 +36,10 @@
     }
   }
 
-  // MIDI note number → name (e.g. 60 → "C4"). Shared util; mirrors the
-  // copy in main.js so panels (KS graph) can label keyboard axes without
-  // reaching into main's IIFE.
-  var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  function noteName(m) {
-    var n = Math.round(m);
-    return NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
-  }
+  // `noteName` (MIDI → name) moved to the shared
+  // `vxn-core-ui-web/assets/cutoff-tuned.js` (0140), spliced ahead of this
+  // module so its top-level binding is in scope here. Re-exposed on
+  // `window.__vxn` so panels (KS graph axis labels) can reach it.
 
   window.__vxn = {
     params: PARAMS,

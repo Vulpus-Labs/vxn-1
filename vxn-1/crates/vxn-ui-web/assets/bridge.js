@@ -109,29 +109,10 @@ window.vxn.promptText = function (title, initial, cb) {
   window.vxn.send.requestTextInput(id, title || '', initial || '');
 };
 
-// ─── Floating value popup (single shared instance) ─────────────────────────
-//
-// One <div> per page, used by every control. Show/update/hide as the
-// pointer enters / drags / leaves. Anchored at the pointer's first
-// relevant position (entry for hover, grab for drag) so the popup stays
-// put while the indicator moves — matches the vizia editor's grabbed-cell
-// behaviour. `fixed` positioning + body-level mount means it can't push
-// any layout around or be clipped by a panel's overflow.
-export const valuePop = (() => {
-  const el = document.createElement('div');
-  el.className = 'value-pop';
-  document.body.appendChild(el);
-  return {
-    show(text, clientX, clientY) {
-      el.textContent = text;
-      el.style.left = (clientX + 12) + 'px';
-      el.style.top  = (clientY - 8)  + 'px';
-      el.style.display = 'block';
-    },
-    update(text) { el.textContent = text; },
-    hide() { el.style.display = 'none'; },
-  };
-})();
+// `valuePop` (the floating value popup singleton) moved to the shared
+// `vxn-core-ui-web/assets/value-pop.js` (0140); it's spliced ahead of this
+// module, so its top-level binding is already in scope for `attachValuePop`
+// in panels.js.
 
 // ─── Status pill (0046, repositioned in 0049) ──────────────────────────────
 //

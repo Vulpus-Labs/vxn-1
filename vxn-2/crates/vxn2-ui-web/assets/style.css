@@ -423,22 +423,8 @@ html, body {
   cursor: ns-resize;
 }
 .fader.disabled { opacity: 0.35; pointer-events: none; }
-/* Shared value-pop tooltip — sits at body level, follows pointer on
- * hover/drag. Replaces the per-fader inline value readout. */
-.value-pop {
-  position: fixed;
-  display: none;
-  pointer-events: none;
-  background: #0e0e0e;
-  border: 1px solid var(--ctl-value);
-  border-radius: 3px;
-  padding: 2px 5px;
-  font-size: 10px;
-  color: #f6f6f6;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  z-index: 1000;
-}
+/* `.value-pop` moved to the shared `vxn-core-ui-web/assets/value-pop.css`
+ * (0140); appended to this faceplate's `<style>` at splice time. */
 
 /* fader with a sub-toggle button (rate fader + tempo-sync button). */
 .fader-with-toggle {

@@ -99,6 +99,11 @@ fn build_faceplate_html() -> String {
         .replace("__DEFAULT_PATCH_JSON__", &default_patch_json)
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json());
     let js_bundle = [
+        // Shared widget primitives (0140): valuePop / wireDrag / cutoff-tuned
+        // math. Spliced FIRST so their stripped top-level bindings precede
+        // bootstrap.js and every panel that references them (`const` bindings
+        // don't hoist).
+        vxn_core_ui_web::shared_widgets_js(),
         bootstrap,
         asset(dev.as_deref(), "panels/knob.js", PANEL_KNOB_JS),
         // dial.js depends on fader.js's taper/format helpers, so it's spliced
@@ -124,9 +129,10 @@ fn build_faceplate_html() -> String {
     .join("\n;\n");
     let html_tpl = asset(dev.as_deref(), "index.html", HTML_TEMPLATE);
     let css = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         asset(dev.as_deref(), "style.css", FACEPLATE_CSS),
         vxn_core_ui_web::PRESET_BROWSER_CSS,
+        vxn_core_ui_web::VALUE_POP_CSS,
     );
     html_tpl
         .replace("__CSS__", &css)
