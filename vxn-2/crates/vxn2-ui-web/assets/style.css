@@ -363,6 +363,24 @@ html, body {
   align-items: flex-end;
   justify-content: center;
 }
+.op-col-row-start { justify-content: flex-start; }
+
+/* Op-detail column geometry (0141): was inline style.cssText in
+ * renderOpDetail. Four columns — fixed-width Tuning, two flexible graph
+ * columns (EG / KS), and a fixed-width Sensitivity+Output row. */
+.op-col-tuning { width: 160px; flex: 0 0 160px; }
+.op-col-graph { flex: 1.4 1 0; min-width: 180px; }
+.op-col-senout {
+  width: 188px;
+  flex: 0 0 188px;
+  flex-direction: row;
+  gap: 6px;
+}
+/* Sensitivity holds two faders (Vel / KsRt); Output gets the slack so its
+ * three faders (Out / Pan / Phase) fit without spilling past col4's right
+ * edge. col4's total width is unchanged. */
+.op-col-sens { flex: 0 0 78px; }
+.op-col-out { flex: 1 1 auto; }
 
 /* Tuning column: taller slider tracks so their bottoms line up with the
  * adjacent envelope graph (108px), and a horizontal Ratio/Fixed selector

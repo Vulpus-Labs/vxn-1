@@ -472,11 +472,13 @@
   const CUSTOM_OPS = {
     "preset_prev":      "step_preset",
     "preset_next":      "step_preset",
-    "open_algo_picker": "open_algo_picker",
-    "close_algo_picker":"close_algo_picker",
     "open_mod_matrix":  "open_mod_matrix",
     "close_mod_matrix": "close_mod_matrix",
   };
+  // open_algo_picker / close_algo_picker are owned by the op-row panel (0141):
+  // it wires its own overlay buttons (and paints the grid on open), so they're
+  // deliberately absent here — bindCustoms skips any [data-vxn-custom] key not
+  // in CUSTOM_OPS, leaving op-row's listener the sole handler.
   const CUSTOM_PAYLOAD = {
     "preset_prev": { delta: -1 },
     "preset_next": { delta:  1 },
@@ -495,16 +497,6 @@
         ev.preventDefault();
         const opcode = CUSTOM_OPS[key];
         const payload = CUSTOM_PAYLOAD[key];
-        if (key === "open_algo_picker") {
-          const overlay = document.querySelector('[data-vxn-section="algo-overlay"]');
-          if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }
-          return;
-        }
-        if (key === "close_algo_picker") {
-          const overlay = document.querySelector('[data-vxn-section="algo-overlay"]');
-          if (overlay) { overlay.setAttribute("hidden", ""); overlay.classList.remove("open"); }
-          return;
-        }
         if (key === "open_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
           if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }

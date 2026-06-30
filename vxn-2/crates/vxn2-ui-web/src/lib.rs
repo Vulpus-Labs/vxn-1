@@ -39,6 +39,11 @@ const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 const PANEL_BUTTON_GROUP_JS: &str = include_str!("../assets/panels/button-group.js");
 const PANEL_GRAPH_JS: &str = include_str!("../assets/panels/graph.js");
 const PANEL_ALGO_DIAGRAM_JS: &str = include_str!("../assets/panels/algo-diagram.js");
+// op-row sub-modules (split out of op-row.js in 0141); spliced before it.
+const PANEL_ALGO_DATA_JS: &str = include_str!("../assets/panels/algo-data.js");
+const PANEL_KS_GRAPH_JS: &str = include_str!("../assets/panels/ks-graph.js");
+const PANEL_EG_GRAPH_JS: &str = include_str!("../assets/panels/eg-graph.js");
+const PANEL_OP_FADERS_JS: &str = include_str!("../assets/panels/op-faders.js");
 const PANEL_OP_ROW_JS: &str = include_str!("../assets/panels/op-row.js");
 const PANEL_MOD_MATRIX_JS: &str = include_str!("../assets/panels/mod-matrix.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
@@ -113,6 +118,13 @@ fn build_faceplate_html() -> String {
         asset(dev.as_deref(), "panels/button-group.js", PANEL_BUTTON_GROUP_JS),
         asset(dev.as_deref(), "panels/graph.js", PANEL_GRAPH_JS),
         asset(dev.as_deref(), "panels/algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
+        // op-row's data tables + sub-widgets, spliced before the coordinator
+        // (0141). algo-data must precede op-row (referenced in bind); ks-graph
+        // / eg-graph are referenced at render time but kept here for clarity.
+        asset(dev.as_deref(), "panels/algo-data.js", PANEL_ALGO_DATA_JS),
+        asset(dev.as_deref(), "panels/ks-graph.js", PANEL_KS_GRAPH_JS),
+        asset(dev.as_deref(), "panels/eg-graph.js", PANEL_EG_GRAPH_JS),
+        asset(dev.as_deref(), "panels/op-faders.js", PANEL_OP_FADERS_JS),
         asset(dev.as_deref(), "panels/op-row.js", PANEL_OP_ROW_JS),
         asset(dev.as_deref(), "panels/mod-matrix.js", PANEL_MOD_MATRIX_JS),
         asset(dev.as_deref(), "panels/preset-bar.js", PANEL_PRESET_BAR_JS),
@@ -614,7 +626,12 @@ mod tests {
         assert!(PANEL_GRAPH_JS.contains("__vxn.panels.graph"));
         assert!(PANEL_ALGO_DIAGRAM_JS.contains("__vxn.panels.algoDiagram"));
         assert!(PANEL_OP_ROW_JS.contains("__vxn.panels.opRow"));
-        assert!(PANEL_OP_ROW_JS.contains("ALGO_CARRIERS"));
+        // op-row sub-modules split out in 0141.
+        assert!(PANEL_ALGO_DATA_JS.contains("__vxn.panels.algoData"));
+        assert!(PANEL_ALGO_DATA_JS.contains("ALGO_CARRIERS"));
+        assert!(PANEL_KS_GRAPH_JS.contains("__vxn.panels.ksGraph"));
+        assert!(PANEL_EG_GRAPH_JS.contains("__vxn.panels.egGraph"));
+        assert!(PANEL_OP_FADERS_JS.contains("__vxn.panels.opFaders"));
         assert!(MAIN_JS.contains("dispatch(\"ready\")"));
         assert!(MAIN_JS.contains("begin_gesture"));
         assert!(MAIN_JS.contains("set_param_norm"));
@@ -663,6 +680,9 @@ mod tests {
         assert!(html.contains("__vxn.panels.buttonGroup"));
         assert!(html.contains("__vxn.panels.graph"));
         assert!(html.contains("__vxn.panels.algoDiagram"));
+        assert!(html.contains("__vxn.panels.algoData"));
+        assert!(html.contains("__vxn.panels.ksGraph"));
+        assert!(html.contains("__vxn.panels.egGraph"));
         assert!(html.contains("__vxn.panels.opRow"));
         assert!(html.contains("dispatch(\"ready\")"));
         // Params JSON spliced — first descriptor's machine id is `op1-num`
@@ -672,15 +692,15 @@ mod tests {
         assert!(html.contains("\"master-volume\""));
     }
 
-    /// The 32 x 6 JS carrier table embedded in `panels/op-row.js`
+    /// The 32 x 6 JS carrier table embedded in `panels/algo-data.js`
     /// MUST match the engine's algorithm routing table — drift would
     /// silently colour the op tabs wrong. Parses the JS literal back
     /// out (assumes a stable formatting; the parser is intentionally
     /// strict so editing the table without keeping the comment markers
     /// breaks the test loudly).
     #[test]
-    fn op_row_carriers_match_engine_table() {
-        let js = PANEL_OP_ROW_JS;
+    fn algo_data_carriers_match_engine_table() {
+        let js = PANEL_ALGO_DATA_JS;
         // Extract the ALGO_CARRIERS literal — between
         // `const ALGO_CARRIERS = [` and the matching `];`.
         let start = js.find("const ALGO_CARRIERS = [")
@@ -742,12 +762,12 @@ mod tests {
         }
     }
 
-    /// Parity check for `ALGO_FB_OPS` in `op-row.js`. Mirrors
+    /// Parity check for `ALGO_FB_OPS` in `algo-data.js`. Mirrors
     /// `AlgoSpec::structural_fb_op` across the 32 algorithms — drift would
     /// silently disable the wrong op's feedback fader.
     #[test]
-    fn op_row_fb_ops_match_engine_table() {
-        let js = PANEL_OP_ROW_JS;
+    fn algo_data_fb_ops_match_engine_table() {
+        let js = PANEL_ALGO_DATA_JS;
         let start = js.find("const ALGO_FB_OPS = [")
             .expect("ALGO_FB_OPS declaration");
         let body_start = start + "const ALGO_FB_OPS = [".len();
