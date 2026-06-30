@@ -66,3 +66,34 @@ cross-link if E008 is still open. Coordinate with the
 concurrent E026 faceplate work (ticket 0128 adds an EG-curve
 selector to the same op-row faceplate) to avoid editing the
 same DOM region simultaneously.
+
+## Close-out (2026-06-30)
+
+- **ValuePop** lifted to shared singleton
+  [value-pop.js](../../crates/vxn-core-ui-web/assets/value-pop.js) with one CSS
+  ruleset [value-pop.css](../../crates/vxn-core-ui-web/assets/value-pop.css).
+  vxn-1 re-exports from [panels.js:25](../../vxn-1/crates/vxn-ui-web/assets/panels.js#L25);
+  old `bridge.js` copy removed. vxn-2 consumes via
+  [panels/dial.js:16](../../vxn-2/crates/vxn2-ui-web/assets/panels/dial.js#L16);
+  old `fader.js`/`style.css` copies removed.
+- **Cutoff-tuned math + noteName** in shared
+  [cutoff-tuned.js](../../crates/vxn-core-ui-web/assets/cutoff-tuned.js) — all six
+  symbols (`midiToHz`/`hzToMidi`/`cutoffTunedNormToHz`/`cutoffTunedHzToNorm`/
+  `noteName`/`CUTOFF_TUNED_MIDI_MIN/MAX`). vxn-1 re-exports
+  [panels.js:27](../../vxn-1/crates/vxn-ui-web/assets/panels.js#L27); vxn-2
+  consumes via [bootstrap.js:39](../../vxn-2/crates/vxn2-ui-web/assets/bootstrap.js#L39).
+  `main.js`/`bootstrap.js` local dupes removed (grep: 0 occurrences).
+- **wireDrag** in shared
+  [wire-drag.js](../../crates/vxn-core-ui-web/assets/wire-drag.js) with `raf` flag +
+  `shift = 0.1` default. vxn-1 wraps as `wireFaderDrag`
+  [util/drag.js:30](../../vxn-1/crates/vxn-ui-web/assets/util/drag.js#L30); vxn-2
+  fader [fader.js:169](../../vxn-2/crates/vxn2-ui-web/assets/panels/fader.js#L169)
+  and knob [knob.js:149](../../vxn-2/crates/vxn2-ui-web/assets/panels/knob.js#L149)
+  (`shift: 0.25` override) consume it. No panel re-implements the pointer lifecycle
+  (grep: 0 local defs across 15 vxn-2 panels).
+- Build splices shared assets via `vxn_core_ui_web::shared_widgets_js()` /
+  `VALUE_POP_CSS` in both [vxn-1 lib.rs:1752](../../vxn-1/crates/vxn-ui-web/src/lib.rs#L1752)
+  and [vxn-2 lib.rs:111](../../vxn-2/crates/vxn2-ui-web/src/lib.rs#L111).
+- **Tests** green both sides: vxn-1 `cutoff-tuned.test.js` (round-trip + clamp),
+  `wire-drag.test.js` (relative-delta + 0.1× shift + rAF coalesce) — 188 passed;
+  vxn-2 same coverage incl. knob 0.25 quantiser — 35 passed.
