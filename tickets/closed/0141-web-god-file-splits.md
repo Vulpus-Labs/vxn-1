@@ -73,3 +73,52 @@ the new tests first where coverage is thin (op-row's
 split touches the same file E026's ticket 0128 (EG-curve
 selector) edits — sequence after that ticket lands, or
 coordinate, to avoid a churn conflict.
+
+## Close-out (2026-06-30)
+
+Landed in two commits: vxn-2 half `19adc1c`, vxn-1 half `683d2d2`.
+0128 + 0140 both already shipped, so no churn conflict.
+
+- **vxn-2 op-row split.** `op-row.js` is now a 275-sloc coordinator
+  (`grep -vcE '^\s*(//|$)'`); the heavy concerns live in sibling
+  modules: [algo-data.js](../../vxn-2/crates/vxn2-ui-web/assets/panels/algo-data.js)
+  (ALGO_CARRIERS / ALGO_FB_OPS / OP_PARAMS / isCarrier),
+  [ks-graph.js](../../vxn-2/crates/vxn2-ui-web/assets/panels/ks-graph.js)
+  (the 200-line KS drag protocol),
+  [eg-graph.js](../../vxn-2/crates/vxn2-ui-web/assets/panels/eg-graph.js),
+  and [op-faders.js](../../vxn-2/crates/vxn2-ui-web/assets/panels/op-faders.js)
+  (per-op fader factory + Ratio/Fixed selector). Each takes a per-render
+  binding context instead of closing over op-row's locals.
+- **op-detail column geometry → CSS.** No `style.cssText` left in op-row
+  (`grep -c` = 0); geometry is `.op-col-tuning` / `.op-col-graph` /
+  `.op-col-senout` / `.op-col-sens` / `.op-col-out` / `.op-col-row-start`
+  in [style.css](../../vxn-2/crates/vxn2-ui-web/assets/style.css).
+- **vxn-1 panels.js split.** Split into
+  [util/drag.js](../../vxn-1/crates/vxn-ui-web/assets/util/drag.js),
+  [panels/fader.js](../../vxn-1/crates/vxn-ui-web/assets/panels/fader.js),
+  [panels/discrete.js](../../vxn-1/crates/vxn-ui-web/assets/panels/discrete.js),
+  [panels/keys.js](../../vxn-1/crates/vxn-ui-web/assets/panels/keys.js),
+  [panels/preset-bar.js](../../vxn-1/crates/vxn-ui-web/assets/panels/preset-bar.js);
+  `panels.js` is now a re-export barrel so the 11 vitest suites import
+  it unchanged. Build step concatenates the five source files via
+  `PANELS_FILES` + `panels_js()` in
+  [lib.rs](../../vxn-1/crates/vxn-ui-web/src/lib.rs) (ESM-stripped,
+  `\n;\n`-joined, splice order util/drag → widgets → load-time IIFEs).
+- **presetBar dirty-tracking → onMutation hook.** No more
+  `send[k] = …` reassignment (`grep -c` = 0). bridge.js gains a
+  first-class `window.vxn.onMutation` hook fired by the five
+  engine-mutating senders; [preset-bar.js](../../vxn-1/crates/vxn-ui-web/assets/panels/preset-bar.js)
+  registers `markDirty` on it.
+- **Open/close race resolved.** `open_algo_picker` / `close_algo_picker`
+  dropped from `CUSTOM_OPS` in
+  [main.js](../../vxn-2/crates/vxn2-ui-web/assets/main.js); op-row wires
+  its own overlay buttons with plain bubble-phase listeners (no
+  capture-phase + `stopImmediatePropagation`).
+- **Tests.** New vitest:
+  [algo-data.test.js](../../vxn-2/crates/vxn2-ui-web/assets/__tests__/algo-data.test.js)
+  (ALGO_CARRIERS/FB_OPS tables) and
+  [ks-graph.test.js](../../vxn-2/crates/vxn2-ui-web/assets/__tests__/ks-graph.test.js)
+  (bp/depth-handle drag, sign-bit flips, shape toggles, clamping).
+  Green: vxn-2 vitest 35, cargo `vxn2-ui-web` 27; vxn-1 vitest 188,
+  cargo `vxn-ui-web` 56. Concatenated vxn-1 production bundle passes
+  `node --check` with no `export`/`import` leaks.
