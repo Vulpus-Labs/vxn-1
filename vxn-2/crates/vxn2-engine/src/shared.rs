@@ -452,6 +452,13 @@ impl SharedParams {
         }
     }
 
+    /// SAFETY: `get` and `set` use `Ordering::Relaxed` — sound because CLAP
+    /// guarantees the audio thread (`process`) and the main thread
+    /// (`params_flush`, UI callbacks) never run concurrently on the same plugin
+    /// instance. The audio thread's `LocalParams` mirror is a plain `[f32]`
+    /// (no atomics) for the same reason. Any field added to `LocalParams` that
+    /// crosses the audio/main-thread boundary must use an atomic, or the CLAP
+    /// non-overlap guarantee must be verified to cover it.
     #[inline]
     pub fn get(&self, id: usize) -> f32 {
         f32::from_bits(self.values[id].load(Ordering::Relaxed))

@@ -411,18 +411,6 @@ impl EditorBackend for WebEditor {
     /// platform in `gui::set_parent`.
     type ParentWindow = *mut c_void;
 
-    fn open(
-        _parent: Self::ParentWindow,
-        _ctrl: ControllerHandle,
-        _corpus: CorpusHandle,
-    ) -> Result<Self::Handle, Box<dyn std::error::Error>> {
-        // The shared trait surface has no room for a config payload, so
-        // synth shells call [`open_editor`] directly with their config
-        // rather than going through `WebEditor::open`. Erroring (not
-        // panicking — 0115) keeps accidental use loud without an unwind.
-        Err("vxn-core-ui-web::WebEditor::open: call open_editor(parent, ctrl, corpus, config) directly so the synth can supply its faceplate HTML + custom hooks".into())
-    }
-
     fn close(handle: &mut Self::Handle) {
         handle.close();
     }

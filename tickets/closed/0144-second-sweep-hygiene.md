@@ -53,3 +53,20 @@ the concurrent epic E026 (DX7-faithful level curve, ticket
 forward-compat note lives in `0142`. No audio behaviour
 changes here — comments + dead-code removal only; do not
 touch any hot-path or EG code.
+
+## Close-out (2026-07-01)
+
+- Deleted `EditorBackend::open` trait method from
+  [backend.rs](../../crates/vxn-core-app/src/backend.rs) and
+  `WebEditor::open` impl from
+  [lib.rs:407](../../crates/vxn-core-ui-web/src/lib.rs#L407). Removed now-unused
+  `use std::error::Error` and `{ControllerHandle, CorpusHandle}` imports from
+  `backend.rs`. Grep sweep confirms zero callers in the workspace.
+- Xorshift cross-ref comment already present at
+  [math.rs:10](../../vxn-1/crates/vxn-dsp/src/math.rs#L10): "Intentionally a
+  *different* generator from vxn-2's xorshift64*" — criterion satisfied.
+- Added SAFETY comment on `SharedParams::get`/`set` at
+  [shared.rs:455](../../vxn-2/crates/vxn2-engine/src/shared.rs#L455) documenting
+  the CLAP audio/main-thread non-overlap guarantee and the `LocalParams` plain-`[f32]`
+  consequence; warns future reviewers adding non-atomic fields.
+- `cargo test --workspace` green (exit code 0).
