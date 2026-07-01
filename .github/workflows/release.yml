@@ -86,6 +86,56 @@ jobs:
             VXN1-windows-x64.clap
             VXN1-windows-x64.vst3.zip
 
+  macos-vxn2:
+    name: macOS vxn-2 (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build universal VXN2 CLAP
+        working-directory: vxn-2
+        run: cargo xtask bundle --release --universal
+
+      - name: Zip bundle
+        run: ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN2-macOS-universal.clap.zip
+
+  windows-vxn2:
+    name: Windows vxn-2 (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build VXN2 CLAP
+        working-directory: vxn-2
+        run: cargo xtask bundle --release
+
+      - name: Package artifact
+        run: Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN2-windows-x64.clap
+
   manual:
     name: Manual (PDF)
     runs-on: ubuntu-latest

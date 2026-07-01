@@ -9,8 +9,9 @@ description = "VXN2 CLAP plugin shell (clack)."
 
 [lib]
 # cdylib for the host-loadable plugin; rlib so integration tests (0020) can
-# link the plugin in-process without dlopen and get real panic backtraces.
-crate-type = ["cdylib", "rlib"]
+# link the plugin in-process without dlopen and get real panic backtraces;
+# staticlib for clap-wrapper to link into a bundled standalone / VST3 (E014).
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 vxn2-engine = { workspace = true }

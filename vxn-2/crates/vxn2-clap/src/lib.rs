@@ -664,6 +664,7 @@ mod tests {
     use clack_plugin::events::event_types::ParamValueEvent;
     use clack_plugin::events::io::EventBuffer;
     use clack_plugin::utils::Cookie;
+    use std::ops::Bound;
     use vxn2_engine::params::id_of;
 
     /// Canonical edit list shared with `tests/smoke.rs` via `tests/test_support.rs`.

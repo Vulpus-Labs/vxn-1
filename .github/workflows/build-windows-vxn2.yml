@@ -1,0 +1,38 @@
+name: Build Windows (vxn-2)
+
+# Build VXN2.clap on Windows — mirrors the vxn-1 Windows job in bundle.yml.
+# Runs on push to main and on workflow_dispatch; uploads VXN2-windows-x64.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-windows-vxn2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (x86_64 — CLAP)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build VXN2.clap
+        working-directory: vxn-2
+        run: cargo xtask bundle --release
+
+      - name: Upload VXN2-windows-x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN2-windows-x64
+          path: target/bundled/VXN2.clap
+          if-no-files-found: error
