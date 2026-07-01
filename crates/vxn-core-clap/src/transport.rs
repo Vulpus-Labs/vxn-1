@@ -11,3 +11,8 @@ pub fn tempo_from_transport(t: &TransportEvent) -> Option<f64> {
         None
     }
 }
+
+/// Returns `true` when the host transport is currently rolling.
+pub fn playing_from_transport(t: &TransportEvent) -> bool {
+    t.flags.contains(TransportFlags::IS_PLAYING)
+}

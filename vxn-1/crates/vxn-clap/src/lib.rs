@@ -255,6 +255,9 @@ pub struct VxnAudioProcessor<'a> {
     local: LocalParams<TOTAL_PARAMS>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
+    /// Last known transport playing state — used to detect play→stop transitions
+    /// and fire `all_notes_off` so the host stopping playback doesn't leave voices stuck.
+    was_playing: bool,
 }
 
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
@@ -271,6 +274,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
+            was_playing: false,
         })
     }
 
@@ -308,6 +312,16 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // Host transport → engine tempo for LFO host-sync (E004 / 0015). Use the
         // BPM only when the transport actually carries a tempo; otherwise the
         // engine keeps its sane default (never NaN).
+        // Also detect play→stop transitions and kill all gates so the host
+        // stopping playback doesn't leave voices sounding indefinitely.
+        let is_playing = process
+            .transport
+            .map(vxn_core_clap::playing_from_transport)
+            .unwrap_or(false);
+        if self.was_playing && !is_playing {
+            self.synth.all_notes_off();
+        }
+        self.was_playing = is_playing;
         if let Some(t) = process.transport {
             if let Some(bpm) = vxn_core_clap::tempo_from_transport(t) {
                 self.synth.set_tempo(bpm as f32);
