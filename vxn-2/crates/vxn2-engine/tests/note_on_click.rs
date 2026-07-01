@@ -222,7 +222,7 @@ fn solo_declick_completes_to_idle() {
         .alloc
         .stacks
         .iter()
-        .filter(|s| s.gate && !s.is_idle())
+        .filter(|s| s.meta.gate && !s.is_idle())
         .count();
     assert_eq!(live, 1, "exactly one live voice after the declicked note frees");
 }

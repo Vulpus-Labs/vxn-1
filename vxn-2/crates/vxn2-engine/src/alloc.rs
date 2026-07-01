@@ -272,7 +272,7 @@ impl PolyAlloc {
         self.assign_mode = mode;
         if prev == AssignMode::Poly && mode == AssignMode::Solo {
             for i in 0..N_STACKS {
-                if self.stacks[i].gate {
+                if self.stacks[i].meta.gate {
                     self.stacks[i].note_off();
                 }
                 self.held_by_pedal[i] = false;
@@ -337,8 +337,8 @@ impl PolyAlloc {
         //    cap, retire the quietest to make room.
         let pedal_dup = (0..N_STACKS).find(|&i| {
             self.held_by_pedal[i]
-                && self.stacks[i].note == note
-                && self.stacks[i].phase != VoicePhase::Declick
+                && self.stacks[i].meta.note == note
+                && self.stacks[i].meta.phase != VoicePhase::Declick
         });
         let victim = match pedal_dup {
             Some(dup) => Some(dup),
@@ -375,7 +375,7 @@ impl PolyAlloc {
         // that has never sounded snaps. Computed before `note_on` resets the
         // stack's pitch.
         let glide_from = if self.voiced[slot] && params.glide_time_ms > 0.0 {
-            let cur_pitch = self.stacks[slot].note as f32 + self.stacks[slot].glide_st;
+            let cur_pitch = self.stacks[slot].meta.note as f32 + self.stacks[slot].meta.glide_st;
             cur_pitch - note as f32
         } else {
             0.0
@@ -396,7 +396,7 @@ impl PolyAlloc {
             // pitch/mod envelopes. Key still down → legato (continue the amp EG);
             // key up (releasing / pedal-held) → restart the amp EG from current
             // level. Both avoid the hard-retrigger click.
-            let key_down_held = self.stacks[slot].phase == VoicePhase::Held && !was_pedal_held;
+            let key_down_held = self.stacks[slot].meta.phase == VoicePhase::Held && !was_pedal_held;
             self.stacks[slot].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
             if !key_down_held {
                 self.stacks[slot].retrigger_eg();
@@ -417,13 +417,13 @@ impl PolyAlloc {
     fn active_count(&self) -> usize {
         self.stacks
             .iter()
-            .filter(|s| matches!(s.phase, VoicePhase::Held | VoicePhase::Releasing))
+            .filter(|s| matches!(s.meta.phase, VoicePhase::Held | VoicePhase::Releasing))
             .count()
     }
 
     fn note_off_poly(&mut self, note: u8) {
         for i in 0..N_STACKS {
-            if self.stacks[i].gate && self.stacks[i].note == note {
+            if self.stacks[i].meta.gate && self.stacks[i].meta.note == note {
                 if self.sustain {
                     // Pedal held: defer the release to pedal-up.
                     self.held_by_pedal[i] = true;
@@ -448,23 +448,6 @@ impl PolyAlloc {
         }
     }
 
-    /// Gate off every sounding stack and clear all held-note bookkeeping.
-    /// Called on host transport stop to prevent stuck notes. Lighter than
-    /// `clear()` — preserves voiced[], assign_mode, and glide history so
-    /// subsequent playback behaves correctly.
-    pub fn all_notes_off(&mut self) {
-        for i in 0..N_STACKS {
-            if self.stacks[i].gate {
-                self.stacks[i].note_off();
-            }
-            self.held_by_pedal[i] = false;
-        }
-        self.sustain = false;
-        self.held_len = 0;
-        self.solo_active = false;
-        self.solo_slot = None;
-    }
-
     /// Pick a free (idle) stack for a new note. Among idle stacks, vxn-1's rule
     /// (ticket 0125): take the *voiced* one whose last sounding pitch is nearest
     /// the new note, so always-glide slides over a short, musical interval. If no
@@ -479,7 +462,7 @@ impl PolyAlloc {
                 continue;
             }
             if self.voiced[i] {
-                let last_pitch = self.stacks[i].note as f32 + self.stacks[i].glide_st;
+                let last_pitch = self.stacks[i].meta.note as f32 + self.stacks[i].meta.glide_st;
                 let dist = (last_pitch - note as f32).abs();
                 let better = match nearest_voiced {
                     Some((_, bd)) => dist < bd,
@@ -518,13 +501,13 @@ impl PolyAlloc {
             // exists. Attacking voices have low carrier level, so the quietest
             // pick rarely lands on one anyway.
             let stealable = matches!(
-                self.stacks[i].phase,
+                self.stacks[i].meta.phase,
                 VoicePhase::Held | VoicePhase::Releasing
             );
             if stealable {
                 let cand = (i, self.stacks[i].carrier_level(), self.seq[i]);
                 best = Some(quieter(cand, best));
-                if self.held_by_pedal[i] || self.stacks[i].phase == VoicePhase::Releasing {
+                if self.held_by_pedal[i] || self.stacks[i].meta.phase == VoicePhase::Releasing {
                     best_keyup = Some(quieter(cand, best_keyup));
                 }
             }
@@ -560,7 +543,7 @@ impl PolyAlloc {
         // falls through to the crossfade.)
         if params.legato {
             if let Some(cur) = self.solo_slot {
-                if self.stacks[cur].phase == VoicePhase::Held {
+                if self.stacks[cur].meta.phase == VoicePhase::Held {
                     self.stacks[cur].retarget_pitch(sp, vp, note, velocity, self.sample_rate);
                     // Legato continuation reuses the SAME sounding voice — do not
                     // bump `seq`. A bumped generation reads as a fresh onset in the
@@ -608,7 +591,7 @@ impl PolyAlloc {
     fn solo_pitch(&self) -> f32 {
         match self.solo_slot {
             Some(p) if !self.stacks[p].is_idle() => {
-                self.stacks[p].note as f32 + self.stacks[p].glide_st
+                self.stacks[p].meta.note as f32 + self.stacks[p].meta.glide_st
             }
             _ => self.solo_last_pitch,
         }
@@ -638,7 +621,7 @@ impl PolyAlloc {
         let Some(cur) = self.solo_slot else {
             return;
         };
-        if self.stacks[cur].note != note {
+        if self.stacks[cur].meta.note != note {
             return;
         }
         if let Some(prev) = self.most_recent_held() {
@@ -646,14 +629,14 @@ impl PolyAlloc {
             // released) rather than the held note's original strike — `held`
             // stores notes only. Intentional: classic mono-synth behaviour,
             // continuous with the phrase being played (ticket 0064 Notes).
-            let vel = self.stacks[cur].velocity;
+            let vel = self.stacks[cur].meta.velocity;
             let counter = self.bump_seq();
             let glide_from = if params.glide_time_ms > 0.0 {
                 self.solo_pitch() - prev as f32
             } else {
                 0.0
             };
-            if params.legato && self.stacks[cur].phase == VoicePhase::Held {
+            if params.legato && self.stacks[cur].meta.phase == VoicePhase::Held {
                 // Held → re-pitch the same voice in place. Same as the note-on
                 // legato path: a continuation, NOT a fresh onset, so don't bump
                 // `seq` — that would zero the filter/HP z-state mid-note and click.
@@ -858,8 +841,8 @@ mod tests {
         assert!(a.glides.iter().all(|g| g.is_none()));
         for (s, f) in a.stacks.iter().zip(fresh.stacks.iter()) {
             assert!(s.is_idle());
-            assert_eq!(s.gate, f.gate);
-            assert_eq!(s.note, f.note);
+            assert_eq!(s.meta.gate, f.meta.gate);
+            assert_eq!(s.meta.note, f.meta.note);
         }
 
         // Next note-on after clear behaves identically to a fresh instance's.
@@ -868,8 +851,8 @@ mod tests {
         b.note_on(&params, &sp, &vp, 64, 100);
         assert_eq!(a.seq, b.seq, "slot pick / seq after clear matches fresh");
         for (s, f) in a.stacks.iter().zip(b.stacks.iter()) {
-            assert_eq!(s.gate, f.gate);
-            assert_eq!(s.note, f.note);
+            assert_eq!(s.meta.gate, f.meta.gate);
+            assert_eq!(s.meta.note, f.meta.note);
         }
     }
 
@@ -880,8 +863,8 @@ mod tests {
         let sp = density1();
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
-        assert!(alloc.stacks[0].gate);
-        assert_eq!(alloc.stacks[0].note, 60);
+        assert!(alloc.stacks[0].meta.gate);
+        assert_eq!(alloc.stacks[0].meta.note, 60);
         for s in &alloc.stacks[1..] {
             assert!(s.is_idle());
         }
@@ -896,7 +879,7 @@ mod tests {
         for n in 60..70 {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
-        let active = alloc.stacks.iter().filter(|s| s.gate).count();
+        let active = alloc.stacks.iter().filter(|s| s.meta.gate).count();
         assert_eq!(active, 10);
     }
 
@@ -908,7 +891,7 @@ mod tests {
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
         alloc.note_off(&params, &sp, &vp, 60);
-        assert!(!alloc.stacks[0].gate);
+        assert!(!alloc.stacks[0].meta.gate);
     }
 
     #[test]
@@ -921,12 +904,12 @@ mod tests {
         alloc.set_sustain(true);
         alloc.note_off(&params, &sp, &vp, 60);
         // Pedal held: gate stays high, the stack keeps ringing.
-        assert!(alloc.stacks[0].gate);
+        assert!(alloc.stacks[0].meta.gate);
         run_blocks(&mut alloc, (SR as usize) / 10 / BLK);
         assert!(!alloc.stacks[0].is_idle(), "held by pedal, must not free");
         // Pedal up: the deferred release fires and the tail frees the stack.
         alloc.set_sustain(false);
-        assert!(!alloc.stacks[0].gate);
+        assert!(!alloc.stacks[0].meta.gate);
         run_blocks(&mut alloc, (SR as usize) / 10 / BLK);
         assert!(alloc.stacks[0].is_idle());
     }
@@ -941,7 +924,7 @@ mod tests {
         alloc.set_sustain(true);
         // Key never released; pedal-up must not gate a held key off.
         alloc.set_sustain(false);
-        assert!(alloc.stacks[0].gate);
+        assert!(alloc.stacks[0].meta.gate);
     }
 
     #[test]
@@ -974,7 +957,7 @@ mod tests {
         alloc.note_on(&params, &sp, &vp, 90, 100);
         assert_eq!(alloc.active_count(), N_ACTIVE, "steal holds the cap");
         assert!(
-            alloc.stacks.iter().any(|s| s.gate && s.note == 90),
+            alloc.stacks.iter().any(|s| s.meta.gate && s.meta.note == 90),
             "new note sounding"
         );
     }
@@ -994,11 +977,11 @@ mod tests {
         alloc.note_on(&params, &sp, &vp, 64, 100);
         let cur = alloc.solo_slot.expect("second note allocates a slot");
         assert_ne!(cur, first, "a solo steal must round-robin to a fresh slot");
-        assert!(alloc.stacks[cur].gate);
-        assert_eq!(alloc.stacks[cur].note, 64);
+        assert!(alloc.stacks[cur].meta.gate);
+        assert_eq!(alloc.stacks[cur].meta.note, 64);
         // The previous note is killed via the declick lifecycle (faded engine-side).
-        assert_eq!(alloc.stacks[first].phase, VoicePhase::Declick);
-        assert_eq!(alloc.stacks[first].note, 60);
+        assert_eq!(alloc.stacks[first].meta.phase, VoicePhase::Declick);
+        assert_eq!(alloc.stacks[first].meta.note, 60);
     }
 
     #[test]
@@ -1018,7 +1001,7 @@ mod tests {
         let slot = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 60 && s.phase != VoicePhase::Declick)
+            .position(|s| s.meta.gate && s.meta.note == 60 && s.meta.phase != VoicePhase::Declick)
             .expect("fallback note 60 is sounding");
         assert_eq!(alloc.solo_slot, Some(slot));
     }
@@ -1038,10 +1021,10 @@ mod tests {
         }
         alloc.note_on(&params, &sp, &vp, 60, 100);
         run_blocks(&mut alloc, (SR as usize) / BLK);
-        assert_eq!(alloc.stacks[0].ops[0].eg.stage, EgStage::Sustain);
+        assert_eq!(alloc.stacks[0].core.ops[0].eg.stage, EgStage::Sustain);
         alloc.note_on(&params, &sp, &vp, 64, 100);
-        assert_eq!(alloc.stacks[0].ops[0].eg.stage, EgStage::Sustain);
-        assert_eq!(alloc.stacks[0].note, 64);
+        assert_eq!(alloc.stacks[0].core.ops[0].eg.stage, EgStage::Sustain);
+        assert_eq!(alloc.stacks[0].meta.note, 64);
     }
 
     #[test]
@@ -1061,9 +1044,9 @@ mod tests {
         let cur = alloc.solo_slot.unwrap();
         assert_ne!(cur, first);
         // The new note is a fresh voice (onset from silence → attack).
-        assert_eq!(alloc.stacks[cur].ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[cur].core.ops[0].eg.stage, EgStage::Attack);
         // The previous note is declicking, not retriggered in place.
-        assert_eq!(alloc.stacks[first].phase, VoicePhase::Declick);
+        assert_eq!(alloc.stacks[first].meta.phase, VoicePhase::Declick);
     }
 
     #[test]
@@ -1080,21 +1063,21 @@ mod tests {
         run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
         alloc.note_on(&params, &sp, &vp, 60, 100);
         assert!(
-            (alloc.stacks[0].glide_st - 12.0).abs() < 1e-3,
+            (alloc.stacks[0].meta.glide_st - 12.0).abs() < 1e-3,
             "glide_st should start at +12 st, got {}",
-            alloc.stacks[0].glide_st
+            alloc.stacks[0].meta.glide_st
         );
         run_blocks(&mut alloc, (100 * SR as usize) / 1000 / BLK);
         assert!(
-            (alloc.stacks[0].glide_st - 6.0).abs() < 1.0,
+            (alloc.stacks[0].meta.glide_st - 6.0).abs() < 1.0,
             "mid-glide should be ~+6, got {}",
-            alloc.stacks[0].glide_st
+            alloc.stacks[0].meta.glide_st
         );
         run_blocks(&mut alloc, (150 * SR as usize) / 1000 / BLK);
         assert!(
-            alloc.stacks[0].glide_st.abs() < 1e-3,
+            alloc.stacks[0].meta.glide_st.abs() < 1e-3,
             "post-glide should be 0, got {}",
-            alloc.stacks[0].glide_st
+            alloc.stacks[0].meta.glide_st
         );
     }
 
@@ -1116,7 +1099,7 @@ mod tests {
             // First note: snaps (no previous pitch to glide from).
             alloc.note_on(&params, &sp, &vp, 72, 100);
             run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
-            assert!(alloc.stacks[0].glide_st.abs() < 1e-3, "first note must snap");
+            assert!(alloc.stacks[0].meta.glide_st.abs() < 1e-3, "first note must snap");
             // Release it and let the voice idle (slot frees, solo_active clears).
             alloc.note_off(&params, &sp, &vp, 72);
             run_blocks(&mut alloc, SR as usize / BLK);
@@ -1124,9 +1107,9 @@ mod tests {
             // Next note (no overlap) must still glide from the previous pitch.
             alloc.note_on(&params, &sp, &vp, 60, 100);
             assert!(
-                (alloc.stacks[0].glide_st - 12.0).abs() < 1e-3,
+                (alloc.stacks[0].meta.glide_st - 12.0).abs() < 1e-3,
                 "detached note (legato={legato}) must glide: glide_st={}",
-                alloc.stacks[0].glide_st
+                alloc.stacks[0].meta.glide_st
             );
         }
     }
@@ -1148,20 +1131,20 @@ mod tests {
             let vp = fast_patch();
             alloc.note_on(&params, &sp, &vp, 60, 100);
             run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
-            assert!(alloc.stacks[0].glide_st.abs() < 1e-3, "first note must snap");
+            assert!(alloc.stacks[0].meta.glide_st.abs() < 1e-3, "first note must snap");
             alloc.note_off(&params, &sp, &vp, 60);
             run_blocks(&mut alloc, SR as usize / BLK);
             alloc.note_on(&params, &sp, &vp, 72, 100);
             let slot = alloc
                 .stacks
                 .iter()
-                .position(|s| s.gate && s.note == 72)
+                .position(|s| s.meta.gate && s.meta.note == 72)
                 .expect("new note not allocated");
             assert_eq!(slot, 0, "nearest-pitch pick must reuse the freed voice");
             assert!(
-                (alloc.stacks[slot].glide_st - (-12.0)).abs() < 1e-3,
+                (alloc.stacks[slot].meta.glide_st - (-12.0)).abs() < 1e-3,
                 "reused voice (legato={legato}) must glide: glide_st={}",
-                alloc.stacks[slot].glide_st
+                alloc.stacks[slot].meta.glide_st
             );
         }
     }
@@ -1190,20 +1173,20 @@ mod tests {
         let new = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 90)
+            .position(|s| s.meta.gate && s.meta.note == 90)
             .expect("new note sounds 90");
-        assert_eq!(alloc.stacks[new].phase, VoicePhase::Held);
+        assert_eq!(alloc.stacks[new].meta.phase, VoicePhase::Held);
         assert_eq!(
-            alloc.stacks[new].ops[0].eg.stage,
+            alloc.stacks[new].core.ops[0].eg.stage,
             EgStage::Attack,
             "new note is a fresh onset, not a reused voice"
         );
         assert!(
-            alloc.stacks[new].ops[0].eg.level < 1.0e-3,
+            alloc.stacks[new].core.ops[0].eg.level < 1.0e-3,
             "fresh attack starts from silence"
         );
         assert!(
-            alloc.stacks.iter().any(|s| s.phase == VoicePhase::Declick),
+            alloc.stacks.iter().any(|s| s.meta.phase == VoicePhase::Declick),
             "the stolen victim is declicking in place"
         );
         // Still exactly N_ACTIVE owned voices — the steal did not grow polyphony.
@@ -1234,12 +1217,12 @@ mod tests {
         let new = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 90)
+            .position(|s| s.meta.gate && s.meta.note == 90)
             .expect("new note sounds 90");
-        assert_eq!(alloc.stacks[new].ops[0].eg.stage, EgStage::Attack);
-        assert!(alloc.stacks[new].ops[0].eg.level < 1.0e-3, "fresh from silence");
+        assert_eq!(alloc.stacks[new].core.ops[0].eg.stage, EgStage::Attack);
+        assert!(alloc.stacks[new].core.ops[0].eg.level < 1.0e-3, "fresh from silence");
         assert!(
-            alloc.stacks.iter().any(|s| s.phase == VoicePhase::Declick),
+            alloc.stacks.iter().any(|s| s.meta.phase == VoicePhase::Declick),
             "a releasing tail was declicked to make room"
         );
     }
@@ -1271,14 +1254,14 @@ mod tests {
         let pedal_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.note == 70)
+            .position(|s| s.meta.note == 70)
             .expect("note 70 sounding");
         assert!(alloc.held_by_pedal[pedal_slot], "70 deferred by pedal");
         assert_eq!(alloc.active_count(), N_ACTIVE);
         // At the cap → the victim must be the pedal-held 70, not the held 60.
         alloc.note_on(&params, &sp, &vp, 90, 100);
         assert_eq!(
-            alloc.stacks[pedal_slot].phase,
+            alloc.stacks[pedal_slot].meta.phase,
             VoicePhase::Declick,
             "the pedal-held voice is the victim"
         );
@@ -1290,11 +1273,11 @@ mod tests {
         let new = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 90)
+            .position(|s| s.meta.gate && s.meta.note == 90)
             .expect("new note sounding");
-        assert_eq!(alloc.stacks[new].ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[new].core.ops[0].eg.stage, EgStage::Attack);
         assert!(
-            alloc.stacks.iter().any(|s| s.gate && s.note == 60),
+            alloc.stacks.iter().any(|s| s.meta.gate && s.meta.note == 60),
             "oldest held key must survive the steal"
         );
         // Pedal up: nothing flagged points at the declicked victim.
@@ -1332,12 +1315,12 @@ mod tests {
         let quiet_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.note == quiet_note)
+            .position(|s| s.meta.note == quiet_note)
             .expect("soft note sounding");
         let oldest_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.note == 60)
+            .position(|s| s.meta.note == 60)
             .expect("oldest note sounding");
         assert!(
             alloc.stacks[quiet_slot].carrier_level() < alloc.stacks[oldest_slot].carrier_level(),
@@ -1346,20 +1329,20 @@ mod tests {
         // At the cap → declick the quietest (68), not the louder oldest (60).
         alloc.note_on(&params, &sp, &vp, 90, 100);
         assert_eq!(
-            alloc.stacks[quiet_slot].phase,
+            alloc.stacks[quiet_slot].meta.phase,
             VoicePhase::Declick,
             "quietest voice is the victim"
         );
         assert_eq!(
-            alloc.stacks[oldest_slot].note, 60,
+            alloc.stacks[oldest_slot].meta.note, 60,
             "louder oldest voice survives"
         );
         assert!(
-            alloc.stacks[oldest_slot].gate,
+            alloc.stacks[oldest_slot].meta.gate,
             "survivor still held"
         );
         assert!(
-            alloc.stacks.iter().any(|s| s.gate && s.note == 90),
+            alloc.stacks.iter().any(|s| s.meta.gate && s.meta.note == 90),
             "new note sounds fresh on a spare stack"
         );
     }
@@ -1378,19 +1361,19 @@ mod tests {
         let first_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 60)
+            .position(|s| s.meta.gate && s.meta.note == 60)
             .expect("first 60 voice");
         run_blocks(&mut alloc, (SR as usize) / BLK); // reach Sustain (Held)
         alloc.set_sustain(true);
         alloc.note_off(&params, &sp, &vp, 60); // pedal-held now
         assert!(alloc.held_by_pedal[first_slot]);
-        assert!(alloc.stacks[first_slot].gate);
+        assert!(alloc.stacks[first_slot].meta.gate);
 
         alloc.note_on(&params, &sp, &vp, 60, 100);
 
         // Old voice declicking, no longer pedal-flagged.
         assert_eq!(
-            alloc.stacks[first_slot].phase,
+            alloc.stacks[first_slot].meta.phase,
             VoicePhase::Declick,
             "pedal-held dup retired into Declick"
         );
@@ -1402,12 +1385,12 @@ mod tests {
         let new_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 60 && s.phase == VoicePhase::Held)
+            .position(|s| s.meta.gate && s.meta.note == 60 && s.meta.phase == VoicePhase::Held)
             .expect("fresh 60 voice");
         assert_ne!(new_slot, first_slot, "new note took a fresh slot");
-        assert_eq!(alloc.stacks[new_slot].ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[new_slot].core.ops[0].eg.stage, EgStage::Attack);
         assert!(
-            alloc.stacks[new_slot].ops[0].eg.level < 1.0e-3,
+            alloc.stacks[new_slot].core.ops[0].eg.level < 1.0e-3,
             "fresh attack starts from 0, not legato-continued"
         );
 
@@ -1417,7 +1400,7 @@ mod tests {
             alloc.held_by_pedal[new_slot],
             "new voice now in sustain buffer"
         );
-        assert!(alloc.stacks[new_slot].gate, "still held by pedal");
+        assert!(alloc.stacks[new_slot].meta.gate, "still held by pedal");
 
         // Pedal up gates the new voice off.
         alloc.set_sustain(false);
@@ -1445,7 +1428,7 @@ mod tests {
         let dup_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.note == dup_note)
+            .position(|s| s.meta.note == dup_note)
             .expect("dup note sounding");
         assert!(alloc.held_by_pedal[dup_slot]);
 
@@ -1453,21 +1436,21 @@ mod tests {
 
         // The pedal-held dup is declicked (flag cleared); the new note attacks
         // fresh on a different stack. Exactly one *Held* voice sounds the note.
-        assert_eq!(alloc.stacks[dup_slot].phase, VoicePhase::Declick);
+        assert_eq!(alloc.stacks[dup_slot].meta.phase, VoicePhase::Declick);
         assert!(!alloc.held_by_pedal[dup_slot], "declicked dup cleared its flag");
         let held_dup = alloc
             .stacks
             .iter()
-            .filter(|s| s.phase == VoicePhase::Held && s.note == dup_note)
+            .filter(|s| s.meta.phase == VoicePhase::Held && s.meta.note == dup_note)
             .count();
         assert_eq!(held_dup, 1, "no doubling — one fresh voice for the re-press");
         let fresh = alloc
             .stacks
             .iter()
-            .position(|s| s.phase == VoicePhase::Held && s.note == dup_note)
+            .position(|s| s.meta.phase == VoicePhase::Held && s.meta.note == dup_note)
             .unwrap();
         assert_ne!(fresh, dup_slot, "fresh note took a spare stack");
-        assert_eq!(alloc.stacks[fresh].ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[fresh].core.ops[0].eg.stage, EgStage::Attack);
     }
 
     /// Steal burst exhausting the declick headroom: once every spare is mid-
@@ -1523,13 +1506,13 @@ mod tests {
         let new_slot = alloc
             .stacks
             .iter()
-            .position(|s| s.gate && s.note == 72)
+            .position(|s| s.meta.gate && s.meta.note == 72)
             .expect("new note not allocated");
         assert_ne!(new_slot, 0, "overlapping note must take a fresh voice");
         assert!(
-            alloc.stacks[new_slot].glide_st.abs() < 1e-3,
+            alloc.stacks[new_slot].meta.glide_st.abs() < 1e-3,
             "fresh voice must not glide from another voice: glide_st={}",
-            alloc.stacks[new_slot].glide_st
+            alloc.stacks[new_slot].meta.glide_st
         );
     }
 
@@ -1549,7 +1532,7 @@ mod tests {
         run_blocks(&mut alloc, SR as usize / BLK);
         alloc.note_on(&params, &sp, &vp, 72, 100);
         for s in &alloc.stacks {
-            assert_eq!(s.glide_st, 0.0);
+            assert_eq!(s.meta.glide_st, 0.0);
         }
     }
 
@@ -1564,10 +1547,10 @@ mod tests {
             alloc.note_on(&params, &sp, &vp, n, 100);
         }
         run_blocks(&mut alloc, (SR as usize) / 50 / BLK);
-        assert_eq!(alloc.stacks.iter().filter(|s| s.gate).count(), 4);
+        assert_eq!(alloc.stacks.iter().filter(|s| s.meta.gate).count(), 4);
         // Flip to Solo: every held gate releases.
         alloc.set_mode(AssignMode::Solo);
-        assert!(alloc.stacks.iter().all(|s| !s.gate), "all gates released");
+        assert!(alloc.stacks.iter().all(|s| !s.meta.gate), "all gates released");
         assert_eq!(alloc.held_len, 0, "held-note stack cleared");
         assert!(!alloc.solo_active);
         assert_eq!(alloc.solo_slot, None);
@@ -1582,9 +1565,9 @@ mod tests {
         alloc.note_on(&params, &sp, &vp, 60, 100);
         alloc.set_sustain(true);
         alloc.note_off(&params, &sp, &vp, 60); // deferred by pedal, gate stays high
-        assert!(alloc.stacks[0].gate);
+        assert!(alloc.stacks[0].meta.gate);
         alloc.set_mode(AssignMode::Solo);
-        assert!(!alloc.stacks[0].gate, "pedal-held gate released on solo switch");
+        assert!(!alloc.stacks[0].meta.gate, "pedal-held gate released on solo switch");
         assert!(!alloc.held_by_pedal[0]);
     }
 
@@ -1601,10 +1584,10 @@ mod tests {
         alloc.set_mode(AssignMode::Solo);
         alloc.note_on(&solo, &sp, &vp, 60, 100);
         let slot = alloc.solo_slot.expect("solo voice live");
-        assert!(alloc.stacks[slot].gate);
+        assert!(alloc.stacks[slot].meta.gate);
         // Solo → Poly must not kill the live voice.
         alloc.set_mode(AssignMode::Poly);
-        assert!(alloc.stacks[slot].gate, "solo→poly keeps the live voice");
+        assert!(alloc.stacks[slot].meta.gate, "solo→poly keeps the live voice");
     }
 
     #[test]
@@ -1618,7 +1601,7 @@ mod tests {
         }
         alloc.set_bend(2.0);
         for s in &alloc.stacks {
-            assert_eq!(s.bend_st, 2.0);
+            assert_eq!(s.meta.bend_st, 2.0);
         }
     }
 
@@ -1630,7 +1613,7 @@ mod tests {
         let vp = fast_patch();
         alloc.set_bend(1.0);
         alloc.note_on(&params, &sp, &vp, 60, 100);
-        assert_eq!(alloc.stacks[0].bend_st, 1.0);
+        assert_eq!(alloc.stacks[0].meta.bend_st, 1.0);
     }
 
     #[test]
@@ -1676,9 +1659,9 @@ mod tests {
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
         // One stack carrying 8 lanes — only slot 0 is gated.
-        let active = alloc.stacks.iter().filter(|s| s.gate).count();
+        let active = alloc.stacks.iter().filter(|s| s.meta.gate).count();
         assert_eq!(active, 1);
-        assert_eq!(alloc.stacks[0].density, 8);
+        assert_eq!(alloc.stacks[0].meta.density, 8);
     }
 
     #[test]
@@ -1694,8 +1677,8 @@ mod tests {
         let vp = fast_patch();
         alloc.note_on(&params, &sp, &vp, 60, 100);
         alloc.note_off(&params, &sp, &vp, 60);
-        assert!(!alloc.stacks[0].gate);
-        for op in &alloc.stacks[0].ops {
+        assert!(!alloc.stacks[0].meta.gate);
+        for op in &alloc.stacks[0].core.ops {
             assert_eq!(op.eg.stage, EgStage::Release);
         }
     }

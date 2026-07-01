@@ -671,12 +671,6 @@ impl Engine {
         self.alloc.set_sustain(on);
     }
 
-    /// Gate off all sounding voices and clear held-note state. Called on host
-    /// transport stop to prevent stuck notes.
-    pub fn all_notes_off(&mut self) {
-        self.alloc.all_notes_off();
-    }
-
     /// Reset host transport — realigns LFO1 phase to the bar grid.
     pub fn on_transport_restart(&mut self) {
         self.patch_mod.on_transport_restart();
@@ -939,7 +933,7 @@ impl Engine {
             // advanced it.
             let lfo2_lanes =
                 self.alloc.stacks[i]
-                    .lfo2
+                    .meta.lfo2
                     .eval(&voice.lfo2, self.tempo_bpm, dt);
 
             // == STAGE 4: Source fan-out — stack scalars + lane inputs; VoiceSpread uses
@@ -954,16 +948,16 @@ impl Engine {
             let pitch_eg = {
                 let depth = voice.peg_depth;
                 if depth.abs() > 1e-6 {
-                    stack.pitch_eg.level_st / depth
+                    stack.meta.pitch_eg.level_st / depth
                 } else {
                     0.0
                 }
             };
             let stack_scalars = StackScalarSources {
                 pitch_eg,
-                mod_env: stack.mod_env.level,
-                velocity: (stack.velocity as f32) * (1.0 / 127.0),
-                key: (stack.note as f32) * (1.0 / 127.0),
+                mod_env: stack.meta.mod_env.level,
+                velocity: (stack.meta.velocity as f32) * (1.0 / 127.0),
+                key: (stack.meta.note as f32) * (1.0 / 127.0),
             };
             // `voice_spread` is the raw symmetric lane position in [-1, +1].
             // We scale by `cached_spread` (the stack-spread macro captured at
@@ -972,11 +966,11 @@ impl Engine {
             // lanes read 0 from the VoiceSpread source. The matrix `stack-spread`
             // route (E008 0093) further scales this by `(1 + spread_mod)` using
             // last block's smoothed amount (one-block latency).
-            let spread_gain = stack.cached_spread * (1.0 + self.stack_spread_mod[i]);
+            let spread_gain = stack.meta.cached_spread * (1.0 + self.stack_spread_mod[i]);
             let scaled_voice_spread = {
                 let mut a = [0.0_f32; STACK_LANES];
                 for k in 0..STACK_LANES {
-                    a[k] = spread_gain * stack.voice_spread[k];
+                    a[k] = spread_gain * stack.meta.voice_spread[k];
                 }
                 a
             };
@@ -986,12 +980,12 @@ impl Engine {
                     let mut a = [0.0_f32; STACK_LANES];
                     let denom = (STACK_LANES - 1) as f32;
                     for k in 0..STACK_LANES {
-                        a[k] = stack.voice_idx[k] as f32 / denom;
+                        a[k] = stack.meta.voice_idx[k] as f32 / denom;
                     }
                     a
                 },
                 voice_spread: scaled_voice_spread,
-                voice_rand: stack.voice_rand,
+                voice_rand: stack.meta.voice_rand,
             };
             // == STAGE 5: Matrix eval (sources -> dests) + stack-pitch scatter. Scatter
             //          must run after eval_dests and before the smoother capture. ==
@@ -1034,7 +1028,7 @@ impl Engine {
                 let phase_idx = phase_base + op_i;
                 for k in 0..STACK_LANES {
                     level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
-                    stack.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
+                    stack.modulation.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                     // Wrap the (possibly multi-route) cycle offset into [0,1) and
                     // scale to Q32; `as u32` wraps cleanly at the cycle boundary.
                     let pcyc = self.dest_vals[i][k][phase_idx].rem_euclid(1.0);
@@ -1105,7 +1099,7 @@ impl Engine {
             // bit-exact: m = 0 → target offset 0, rebase +0.
             let prev_eg = &mut self.ramps[i].prev_eg;
             for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let eg = stack.ops[op_i].eg.level;
+                let eg = stack.core.ops[op_i].eg.level;
                 for k in 0..STACK_LANES {
                     let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
                     level_targets[op_i][k] = eff - eg;
@@ -1122,7 +1116,7 @@ impl Engine {
                     //     the outgoing note's `op_level_mod` is still live, so the
                     //     new note ramps from the previous note's level instead of
                     //     dipping to 0 first — which itself was a click.
-                    stack.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
+                    stack.core.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
                 }
                 prev_eg[op_i] = eg;
             }
@@ -1137,7 +1131,7 @@ impl Engine {
                 // level, neither stepping at sample 0 (onset click). Same
                 // per-sample ramp the matrix mod / EG rebase use on later
                 // blocks (0077).
-                stack.op_phase_mod_q32 = phase_targets_q32;
+                stack.core.op_phase_mod_q32 = phase_targets_q32;
                 stack.refresh_pan_with_mod();
                 let inv = 1.0 / n as f32;
                 let r = &mut self.ramps[i];
@@ -1145,9 +1139,9 @@ impl Engine {
                 for op_i in 0..vxn2_dsp::algo::N_OPS {
                     for k in 0..STACK_LANES {
                         let mut dl =
-                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                            (level_targets[op_i][k] - stack.core.op_level_mod[op_i][k]) * inv;
                         if dl.abs() < RAMP_SNAP_EPS {
-                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            stack.core.op_level_mod[op_i][k] = level_targets[op_i][k];
                             dl = 0.0;
                         }
                         r.level_mod[op_i][k] = dl;
@@ -1170,19 +1164,19 @@ impl Engine {
                         // inside RAMP_SNAP_EPS (≈ −120 dB) so a static sound
                         // releases the per-sample advance.
                         let mut dl =
-                            (level_targets[op_i][k] - stack.op_level_mod[op_i][k]) * inv;
+                            (level_targets[op_i][k] - stack.core.op_level_mod[op_i][k]) * inv;
                         if dl.abs() < RAMP_SNAP_EPS {
-                            stack.op_level_mod[op_i][k] = level_targets[op_i][k];
+                            stack.core.op_level_mod[op_i][k] = level_targets[op_i][k];
                             dl = 0.0;
                         }
-                        let mut pl = (pan_l_t[op_i][k] - stack.pan_l[op_i][k]) * inv;
+                        let mut pl = (pan_l_t[op_i][k] - stack.core.pan_l[op_i][k]) * inv;
                         if pl.abs() < RAMP_SNAP_EPS {
-                            stack.pan_l[op_i][k] = pan_l_t[op_i][k];
+                            stack.core.pan_l[op_i][k] = pan_l_t[op_i][k];
                             pl = 0.0;
                         }
-                        let mut pr = (pan_r_t[op_i][k] - stack.pan_r[op_i][k]) * inv;
+                        let mut pr = (pan_r_t[op_i][k] - stack.core.pan_r[op_i][k]) * inv;
                         if pr.abs() < RAMP_SNAP_EPS {
-                            stack.pan_r[op_i][k] = pan_r_t[op_i][k];
+                            stack.core.pan_r[op_i][k] = pan_r_t[op_i][k];
                             pr = 0.0;
                         }
                         // Phase ramp (E023): shortest-arc Q32 delta to the new
@@ -1193,11 +1187,11 @@ impl Engine {
                         // target; the next block re-derives from the current
                         // value, so residue self-corrects (no drift).
                         let delta =
-                            phase_targets_q32[op_i][k].wrapping_sub(stack.op_phase_mod_q32[op_i][k])
+                            phase_targets_q32[op_i][k].wrapping_sub(stack.core.op_phase_mod_q32[op_i][k])
                                 as i32;
                         let pq = delta / n as i32;
                         if pq == 0 {
-                            stack.op_phase_mod_q32[op_i][k] = phase_targets_q32[op_i][k];
+                            stack.core.op_phase_mod_q32[op_i][k] = phase_targets_q32[op_i][k];
                         }
                         r.level_mod[op_i][k] = dl;
                         r.pan_l[op_i][k] = pl;
@@ -1275,7 +1269,7 @@ impl Engine {
                 // the previous voice on the reused stack.
                 *prev = [0.0; STACK_LANES];
             }
-            let lfo2 = &mut self.alloc.stacks[i].lfo2;
+            let lfo2 = &mut self.alloc.stacks[i].meta.lfo2;
             for k in 0..STACK_LANES {
                 let target = lfo2_off_tgt[k];
                 let delta = target - prev[k];
@@ -1738,7 +1732,7 @@ impl Engine {
     fn set_stack_filter_coeffs(&mut self, i: usize, os_rate: f32, fp: crate::shared::FilterParams) {
         // Dedicated key-tracking (VXN-1 `FilterKeyTrack`), added to the matrix
         // cutoff modulation (both in octaves).
-        let keytrack_oct = keytrack_octaves(self.alloc.stacks[i].note, fp.keytrack);
+        let keytrack_oct = keytrack_octaves(self.alloc.stacks[i].meta.note, fp.keytrack);
         let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX] + keytrack_oct;
         let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(CUTOFF_MIN_HZ, CUTOFF_MAX_HZ);
         let resonance = (fp.resonance + self.dest_vals[i][0][RESONANCE_IDX]).clamp(0.0, 1.0);
@@ -1780,11 +1774,11 @@ impl Engine {
         let r = &self.ramps[i];
         for op_i in 0..vxn2_dsp::algo::N_OPS {
             for k in 0..STACK_LANES {
-                stack.op_level_mod[op_i][k] += r.level_mod[op_i][k];
-                stack.pan_l[op_i][k] += r.pan_l[op_i][k];
-                stack.pan_r[op_i][k] += r.pan_r[op_i][k];
-                stack.op_phase_mod_q32[op_i][k] =
-                    stack.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
+                stack.core.op_level_mod[op_i][k] += r.level_mod[op_i][k];
+                stack.core.pan_l[op_i][k] += r.pan_l[op_i][k];
+                stack.core.pan_r[op_i][k] += r.pan_r[op_i][k];
+                stack.core.op_phase_mod_q32[op_i][k] =
+                    stack.core.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
             }
         }
     }
@@ -1802,11 +1796,11 @@ impl Engine {
             let r = &self.ramps[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 for k in 0..STACK_LANES {
-                    stack.op_level_mod[op_i][k] += r.level_mod[op_i][k];
-                    stack.pan_l[op_i][k] += r.pan_l[op_i][k];
-                    stack.pan_r[op_i][k] += r.pan_r[op_i][k];
-                    stack.op_phase_mod_q32[op_i][k] =
-                        stack.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
+                    stack.core.op_level_mod[op_i][k] += r.level_mod[op_i][k];
+                    stack.core.pan_l[op_i][k] += r.pan_l[op_i][k];
+                    stack.core.pan_r[op_i][k] += r.pan_r[op_i][k];
+                    stack.core.op_phase_mod_q32[op_i][k] =
+                        stack.core.op_phase_mod_q32[op_i][k].wrapping_add(r.phase_mod[op_i][k] as u32);
                 }
             }
         }
@@ -1877,11 +1871,11 @@ fn project_pitch_state(
     st: &[[f32; STACK_LANES]; N_PITCH_DESTS],
 ) {
     for k in 0..STACK_LANES {
-        stack.global_pitch_mod_st[k] = st[0][k];
+        stack.modulation.global_pitch_mod_st[k] = st[0][k];
     }
     for op_i in 0..vxn2_dsp::algo::N_OPS {
         for k in 0..STACK_LANES {
-            stack.op_pitch_mod_st[op_i][k] = st[2 + op_i][k];
+            stack.modulation.op_pitch_mod_st[op_i][k] = st[2 + op_i][k];
         }
     }
 }
@@ -2120,7 +2114,7 @@ mod tests {
             for s in &modulated.alloc.stacks {
                 if !s.is_idle() {
                     for k in 0..STACK_LANES {
-                        if s.op_level_mod[0][k].abs() > 1e-6 {
+                        if s.core.op_level_mod[0][k].abs() > 1e-6 {
                             found_nonzero_op_level_mod = true;
                         }
                     }
@@ -2178,7 +2172,7 @@ mod tests {
             for s in &modulated.alloc.stacks {
                 if !s.is_idle() {
                     for k in 0..STACK_LANES {
-                        if s.op_phase_mod_q32[0][k] != 0 {
+                        if s.core.op_phase_mod_q32[0][k] != 0 {
                             found_nonzero_phase_mod = true;
                         }
                     }
@@ -2238,7 +2232,7 @@ mod tests {
         // `process_block` returns. The ramp must converge each block on this
         // target — no smoothing.
         let target = |e: &Engine, k: usize| {
-            let eg = e.alloc.stacks[slot].ops[0].eg.level;
+            let eg = e.alloc.stacks[slot].core.ops[0].eg.level;
             let m = self::tests_dest_val(e, slot, k, level_idx);
             (eg * (1.0 + m)).clamp(0.0, 1.0) - eg
         };
@@ -2247,7 +2241,7 @@ mod tests {
             e.process_block(&mut l, &mut r);
             saw_ramp |= e.ramp_live[slot];
             for k in 0..STACK_LANES {
-                let got = e.alloc.stacks[slot].op_level_mod[0][k];
+                let got = e.alloc.stacks[slot].core.op_level_mod[0][k];
                 assert!(
                     (got - target(&e, k)).abs() < 1e-3,
                     "lane {k}: level mod {got} hasn't converged on target {}",
@@ -2361,7 +2355,7 @@ mod tests {
             e.alloc
                 .stacks
                 .iter()
-                .position(|s| s.gate && s.note == note && s.phase != VoicePhase::Declick)
+                .position(|s| s.meta.gate && s.meta.note == note && s.meta.phase != VoicePhase::Declick)
         };
 
         e.note_on(60, 100);
@@ -2394,7 +2388,7 @@ mod tests {
             e.process_block(&mut l, &mut r);
         }
         assert!(
-            e.alloc.stacks.iter().all(|s| !s.gate),
+            e.alloc.stacks.iter().all(|s| !s.meta.gate),
             "all keys up → voices released"
         );
     }
@@ -2488,7 +2482,7 @@ mod tests {
         );
         // The stack's pitch field carries the snapped value too.
         assert!(
-            (e.alloc.stacks[slot].global_pitch_mod_st[0] - target).abs() < 1e-5,
+            (e.alloc.stacks[slot].modulation.global_pitch_mod_st[0] - target).abs() < 1e-5,
             "snapped state must be projected into the stack"
         );
     }
@@ -2523,8 +2517,8 @@ mod tests {
             baseline.process_block(&mut l, &mut r);
             let am = modulated.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
             let ab = baseline.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
-            let im = modulated.alloc.stacks[am].ops[0].phase_inc[0];
-            let ib = baseline.alloc.stacks[ab].ops[0].phase_inc[0];
+            let im = modulated.alloc.stacks[am].core.ops[0].phase_inc[0];
+            let ib = baseline.alloc.stacks[ab].core.ops[0].phase_inc[0];
             if im != ib {
                 diverged = true;
                 break;
@@ -2562,7 +2556,7 @@ mod tests {
             e.process_block(&mut l, &mut r);
         }
         let a = active_stack(&e);
-        let phases = e.alloc.stacks[a].lfo2.phase;
+        let phases = e.alloc.stacks[a].meta.lfo2.phase;
         let mut distinct = std::collections::HashSet::new();
         for p in phases {
             distinct.insert(p);
@@ -2589,7 +2583,7 @@ mod tests {
             e.process_block(&mut l, &mut r);
         }
         let a = active_stack(&e);
-        let phases = e.alloc.stacks[a].lfo2.phase;
+        let phases = e.alloc.stacks[a].meta.lfo2.phase;
         for k in 1..STACK_LANES {
             assert_eq!(phases[k], phases[0], "lane {k} drifted without a slot");
         }
@@ -2619,13 +2613,13 @@ mod tests {
         }
         let a = active_stack(&e);
         let early: [u32; STACK_LANES] = std::array::from_fn(|k| {
-            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+            e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
         for _ in 0..40 {
             e.process_block(&mut l, &mut r);
         }
         let late: [u32; STACK_LANES] = std::array::from_fn(|k| {
-            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+            e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
         assert_eq!(early, late, "static lfo2-phase offset ran away over blocks");
     }
@@ -2663,8 +2657,8 @@ mod tests {
         }
         let am = active_stack(&modulated);
         let ab = active_stack(&baseline);
-        let mp = modulated.alloc.stacks[am].lfo2.phase;
-        let bp = baseline.alloc.stacks[ab].lfo2.phase;
+        let mp = modulated.alloc.stacks[am].meta.lfo2.phase;
+        let bp = baseline.alloc.stacks[ab].meta.lfo2.phase;
         // Broadcast: every lane carries the same offset.
         for k in 1..STACK_LANES {
             assert_eq!(mp[k], mp[0], "lane {k} decorrelated under a patch-global source");
@@ -2704,19 +2698,19 @@ mod tests {
         let a = active_stack(&e);
         // Static offset stable after retrigger (no accumulation across notes).
         let d1: [u32; STACK_LANES] = std::array::from_fn(|k| {
-            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+            e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
         for _ in 0..20 {
             e.process_block(&mut l, &mut r);
         }
         let d2: [u32; STACK_LANES] = std::array::from_fn(|k| {
-            e.alloc.stacks[a].lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].lfo2.phase[0])
+            e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
         assert_eq!(d1, d2, "offset unstable after fresh retrigger");
         // Phases remain finite (no NaN propagation) — trivially true for u32,
         // but assert the scatter survived the retrigger.
         let mut distinct = std::collections::HashSet::new();
-        for p in e.alloc.stacks[a].lfo2.phase {
+        for p in e.alloc.stacks[a].meta.lfo2.phase {
             distinct.insert(p);
         }
         assert!(distinct.len() >= STACK_LANES - 1, "scatter lost after retrigger");
@@ -2782,7 +2776,7 @@ mod tests {
             .stacks
             .iter()
             .filter(|s| !s.is_idle())
-            .map(|s| s.lfo2.rate_mult)
+            .map(|s| s.meta.lfo2.rate_mult)
             .collect();
         assert!(mults.len() >= 2, "expected two active voices, got {}", mults.len());
         // The two velocities map to distinct octave offsets → distinct mults.
@@ -2811,7 +2805,7 @@ mod tests {
         }
         assert_eq!(e.patch_mod.lfo1.rate_mult, 1.0);
         let a = active_stack(&e);
-        assert_eq!(e.alloc.stacks[a].lfo2.rate_mult, 1.0);
+        assert_eq!(e.alloc.stacks[a].meta.lfo2.rate_mult, 1.0);
     }
 
     /// Self-rate feedback (`lfo1 → lfo1-rate`, flagged incoherent by 0090) is
@@ -2931,7 +2925,7 @@ mod tests {
     }
 
     fn phase_incs(e: &Engine, slot: usize) -> [[u32; STACK_LANES]; vxn2_dsp::algo::N_OPS] {
-        std::array::from_fn(|op| std::array::from_fn(|k| e.alloc.stacks[slot].ops[op].phase_inc[k]))
+        std::array::from_fn(|op| std::array::from_fn(|k| e.alloc.stacks[slot].core.ops[op].phase_inc[k]))
     }
 
     /// `key → stack-detune` re-cooks the per-lane detune → `phase_inc` shifts
@@ -2977,7 +2971,7 @@ mod tests {
 
         let pan_span = |e: &Engine| -> f32 {
             let a = active_stack(e);
-            let pans = e.alloc.stacks[a].pan_l[0];
+            let pans = e.alloc.stacks[a].core.pan_l[0];
             let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
             for k in 0..4 {
                 lo = lo.min(pans[k]);
@@ -3039,7 +3033,7 @@ mod tests {
         assert_eq!(e.stack_detune_mod[a], 0.0);
         assert_eq!(e.stack_spread_mod[a], 0.0);
         for k in 0..STACK_LANES {
-            assert_eq!(e.alloc.stacks[a].detune_mod_st[k], 0.0);
+            assert_eq!(e.alloc.stacks[a].modulation.detune_mod_st[k], 0.0);
         }
     }
 
@@ -3143,8 +3137,8 @@ mod tests {
         let a = modulated.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
         let b = baseline.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
         // Op 1 is a carrier in algo 1 — its pan_l[0] is populated.
-        let pm = modulated.alloc.stacks[a].pan_l[0][0];
-        let pb = baseline.alloc.stacks[b].pan_l[0][0];
+        let pm = modulated.alloc.stacks[a].core.pan_l[0][0];
+        let pb = baseline.alloc.stacks[b].core.pan_l[0][0];
         assert!(
             (pm - pb).abs() > 1e-3,
             "Op1Pan matrix slot did not move pan_l (mod={pm}, base={pb})"
@@ -3347,10 +3341,10 @@ mod tests {
         e.process_block(&mut l, &mut r);
 
         let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
-        let fb_op = spec_of(e.alloc.stacks[s].algo).structural_fb_op as usize;
+        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).structural_fb_op as usize;
         let want = fb_scale(4.0);
         // ModWheel is a patch-level source: every lane gets the same amount.
-        for (k, got) in e.alloc.stacks[s].ops[fb_op - 1].fb_scale.iter().enumerate() {
+        for (k, got) in e.alloc.stacks[s].core.ops[fb_op - 1].fb_scale.iter().enumerate() {
             assert!(
                 (got - want).abs() < 1e-5,
                 "matrix Feedback did not land on lane {k}: got {got} want {want}",
@@ -3384,8 +3378,8 @@ mod tests {
         e.process_block(&mut l, &mut r);
 
         let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
-        let fb_op = spec_of(e.alloc.stacks[s].algo).structural_fb_op as usize;
-        let got = e.alloc.stacks[s].ops[fb_op - 1].fb_scale;
+        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).structural_fb_op as usize;
+        let got = e.alloc.stacks[s].core.ops[fb_op - 1].fb_scale;
         // Density 4, linear distrib: lane spread = -1, -1/3, +1/3, +1.
         for (k, spread) in [-1.0_f32, -1.0 / 3.0, 1.0 / 3.0, 1.0].iter().enumerate() {
             let want = fb_scale(3.0 + 2.0 * spread);
@@ -3988,7 +3982,7 @@ mod tests {
         let a = active_stack(&e);
         let mut out = [0u32; 6];
         for op in 0..6 {
-            out[op] = e.alloc.stacks[a].ops[op].phase_inc[0];
+            out[op] = e.alloc.stacks[a].core.ops[op].phase_inc[0];
         }
         out
     }
