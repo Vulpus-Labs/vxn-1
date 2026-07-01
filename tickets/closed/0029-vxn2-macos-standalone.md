@@ -34,3 +34,10 @@ Depends on `vxn2-clap` having the `staticlib` crate-type (added in
   file dependency.
 - No change to vxn-2 DSP, params, or editor (only `vxn2-clap`'s
   crate-type gains `staticlib`).
+
+## Close-out (2026-07-01)
+
+- [vxn-2/xtask/src/main.rs](../../vxn-2/xtask/src/main.rs): `"standalone"` arm added (line 37); `standalone(release)` function (line 229) builds `vxn2-clap` staticlib, configures `standalone/CMakeLists.txt` with `VXN_PLUGIN_NAME=VXN2` / `VXN_BUNDLE_ID=labs.vulpus.vxn2.standalone` into `target/standalone2-{profile}`.
+- On macOS: copies `VXN2.app` to `target/bundled/VXN2.app`. On Windows: copies `VXN2.exe` to `target/bundled/VXN2.exe`.
+- `vxn2-clap` `staticlib` crate-type added ([vxn-2/crates/vxn2-clap/Cargo.toml](../../vxn-2/crates/vxn2-clap/Cargo.toml) line 14) as part of 0027.
+- Reuses shared `standalone/CMakeLists.txt` (separate build dir `standalone2-{profile}` avoids clobbering vxn-1). Runtime launch pending hardware test.

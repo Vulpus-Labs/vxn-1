@@ -32,6 +32,12 @@ Windows-x64 `.clap`).
   `VXN2-windows-x64.clap`.
 - vxn-1's release flow is untouched.
 
+## Close-out (2026-07-01)
+
+- [.github/workflows/release.yml](../../.github/workflows/release.yml): added `macos-vxn2` job (`macos-14`, `cargo xtask bundle --release --universal` in `vxn-2/`, `ditto`-zips to `VXN2-macOS-universal.clap.zip`, attached via `softprops/action-gh-release`) and `windows-vxn2` job (`windows-latest`, `cargo xtask bundle --release` in `vxn-2/`, `Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap`, attached to release).
+- The `--universal` path in vxn-2 xtask (`build_universal()` / `lipo`) was added as part of 0022.
+- vxn-1's `macos` and `windows` jobs in `release.yml` are unchanged.
+
 ## Notes
 
 Stretch / deferrable — the core E013 deliverable is the

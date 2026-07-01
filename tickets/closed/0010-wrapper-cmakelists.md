@@ -99,3 +99,11 @@ If clap-wrapper's pinned-tag CMake doesn't expose
 `CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES` cleanly, set
 `FETCHCONTENT_FULLY_DISCONNECTED=ON` as a belt-and-braces
 guard against silent downloads.
+
+## Close-out (2026-07-01)
+
+- [vxn-1/wrapper/CMakeLists.txt](../../vxn-1/wrapper/CMakeLists.txt): `cmake_minimum_required(VERSION 3.21)`, `project(vxn1-wrapper LANGUAGES C CXX)`, all required cache vars present (`VXN_CLAP_STATIC`, `VXN_CLAP_SDK_DIR`, `VXN_VST3_SDK_DIR`, `VXN_CLAP_WRAPPER_DIR`, `VXN_OUTPUT_DIR`). An extra `VXN_CLAP_SDK_DIR` is accepted because clap-wrapper v0.14.0 requires the CLAP SDK headers too (deviation from ticket, documented in commit `ab509c2`).
+- `CLAP_WRAPPER_OUTPUT_NAME=VXN1`, `CLAP_WRAPPER_BUILD_AUV2=FALSE`, `CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=FALSE`, `FETCHCONTENT_FULLY_DISCONNECTED=ON`, `VST3_SDK_ROOT="${VXN_VST3_SDK_DIR}"` — all set.
+- `add_subdirectory("${VXN_CLAP_WRAPPER_DIR}" clap-wrapper-build EXCLUDE_FROM_ALL)` at line 85. Per-archive `force_load` (macOS), `/WHOLEARCHIVE` (Windows), `--whole-archive`/`--no-whole-archive` (Linux) at lines 107–117.
+- Post-build `copy_directory` to `VXN_OUTPUT_DIR` for macOS bundle dir and Windows/Linux folder at lines 147–160.
+- Verified on macOS (arm64) at commit `ab509c2`: offline configure + build produces `Contents/Info.plist`, `Contents/MacOS/VXN1`, `Contents/PkgInfo`; binary exports `_clap_entry` and `_GetPluginFactory`. Windows build verified via CI (`bundle.yml` windows job, tickets 0012/0014). Build is fully offline once submodules checked out.

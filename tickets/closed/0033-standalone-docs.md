@@ -30,3 +30,8 @@ Document the standalone apps for end users.
 
 - User-facing docs describe launch, device selection, and the WebView2
   prereq for both synths on both OSes.
+
+## Close-out (2026-07-01)
+
+- [vxn-1/docs/src/standalone.md](../../vxn-1/docs/src/standalone.md): new page covering build commands (VXN1 `--universal` + VXN2), output table (macOS `.app` / Windows `.exe`), launch instructions per OS, device selection (Audio/MIDI menus from clap-wrapper), WebView2 prereq (ships Win10 2004+/Win11; download link for older; standalone still launches without editor on missing runtime), macOS Gatekeeper (`xattr -d/rd com.apple.quarantine`), and audio permission on first launch.
+- [vxn-1/docs/src/SUMMARY.md](../../vxn-1/docs/src/SUMMARY.md) line 8: `- [Standalone apps](standalone.md)` added under "Getting started" after "Installing VXN1". Covers both synths (VXN1 + VXN2) in all examples and the output table.

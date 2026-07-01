@@ -60,3 +60,10 @@ Pinning recommendation at ticket date: pick the most recent
 *tagged* commits on each repo's default branch; record the
 exact SHAs in the commit message so the pin reason is
 recoverable if the tags later move.
+
+## Close-out (2026-07-01)
+
+- `.gitmodules` registers `vendor/clap-wrapper` (free-audio/clap-wrapper v0.14.0, `18a95457`) and `vendor/vst3sdk` (steinbergmedia/vst3sdk v3.8.0_build_66, `9fad9770`). Also adds `vendor/clap` (free-audio/clap, required by the wrapper CMake). Pinned commits recorded in commit `5075a77`.
+- Both pass the license audit: `clap-wrapper/LICENSE` = MIT; `vst3sdk/LICENSE.txt` = MIT (and its nested SDK components). Documented in the `5075a77` commit message.
+- [vxn-1/README.md:61](../../vxn-1/README.md#L61) gains a "Submodules (VST3 only)" subsection explaining `git submodule update --init --recursive` is required before `cargo xtask bundle --format vst3`, and that the CLAP path needs no submodule init.
+- No new files under `vxn-1/`, `crates/`, or the Cargo workspace — all vendored code under `vendor/` at repo root only.

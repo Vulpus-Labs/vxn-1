@@ -34,3 +34,9 @@ vxn-1's (`.github/workflows/build-windows.yml`).
   `windows-latest`, and uploads `VXN2-windows-x64`.
 - Green run on the branch before merge.
 - vxn-1's existing Windows workflow is untouched.
+
+## Close-out (2026-07-01)
+
+- [.github/workflows/build-windows-vxn2.yml](../../.github/workflows/build-windows-vxn2.yml): new workflow, triggers on push/PR to `main` + `workflow_dispatch`, `windows-latest` runner, `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2`, `cargo xtask bundle --release` in `vxn-2/` working dir, uploads `VXN2-windows-x64` from `target/bundled/VXN2.clap` with `if-no-files-found: error`.
+- vxn-1's [.github/workflows/build-windows.yml](../../.github/workflows/build-windows.yml) unchanged.
+- Green run pending Windows CI; code and artifact path align with 0022's `target/bundled/VXN2.clap` output.

@@ -43,3 +43,11 @@ rather than duplicating.
   file dependency.
 - No change to vxn-1 DSP, params, editor, or the CLAP behaviour (only
   `vxn-clap`'s crate-type gains `staticlib`, via E010 0008).
+
+## Close-out (2026-07-01)
+
+- [vxn-1/xtask/src/main.rs](../../vxn-1/xtask/src/main.rs): `"standalone"` arm added to command dispatch (line 75); `standalone(release, install, universal)` function (line 358) builds `vxn-clap` staticlib slice(s), configures `standalone/CMakeLists.txt` with `VXN_PLUGIN_NAME=VXN1` / `VXN_BUNDLE_ID=labs.vulpus.vxn1.standalone` into `target/standalone-{profile}`, runs `cmake --build --parallel`.
+- On macOS: `find_standalone()` locates `VXN1.app` in CMake output dir, copies to `target/bundled/VXN1.app`. With `--install`: copies to `/Applications/`.
+- `ensure_submodules_standalone()` checks `vendor/clap` and `vendor/clap-wrapper` are initialised (no vst3sdk needed).
+- `--universal`: calls `build_universal_static()` for arm64+x86_64 staticlib slices before CMake configure.
+- vxn-clap `staticlib` crate-type present (E010 0008, `vxn-1/crates/vxn-clap/Cargo.toml`). Runtime launch (MIDI sound, device selection) pending physical hardware test.

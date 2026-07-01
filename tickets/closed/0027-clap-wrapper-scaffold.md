@@ -43,3 +43,10 @@ vendor a second copy.
 - `cmake` configures the standalone scaffold without error on macOS.
 - README/notes capture the toolchain prereqs and the static-link
   contract.
+
+## Close-out (2026-07-01)
+
+- `vendor/clap-wrapper` registered in [.gitmodules](../../.gitmodules) (shared with E010/0009, pinned via submodule SHA).
+- [vxn-2/crates/vxn2-clap/Cargo.toml](../../vxn-2/crates/vxn2-clap/Cargo.toml) line 14: `crate-type = ["cdylib", "rlib", "staticlib"]`. `clap_entry` symbol confirmed via `ar p __.SYMDEF | strings | grep _clap_entry` on the built archive.
+- [standalone/CMakeLists.txt](../../standalone/CMakeLists.txt): shared scaffold at repo root; parameterised on `VXN_PLUGIN_NAME`, `VXN_CLAP_STATIC`, `VXN_CLAP_WRAPPER_DIR`; invokes `target_add_standalone_wrapper` in bundled mode with `force_load`/`/WHOLEARCHIVE`/`--whole-archive` per platform.
+- Toolchain prereqs (CMake ≥ 3.21, C++ compiler, Ninja) documented in [vxn-1/docs/src/standalone.md](../../vxn-1/docs/src/standalone.md#building) (ticket 0033).

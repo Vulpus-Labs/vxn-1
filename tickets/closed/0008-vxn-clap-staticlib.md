@@ -62,3 +62,11 @@ This ticket is the load-bearing one for the epic. If the
 staticlib entry symbol doesn't export cleanly, the bundled-
 mode decision in ADR 0008 §2 needs revisiting (likely toward
 external-CLAP packaging) before more work lands.
+
+## Close-out (2026-07-01)
+
+- [vxn-1/crates/vxn-clap/Cargo.toml](../../vxn-1/crates/vxn-clap/Cargo.toml): `crate-type = ["cdylib", "rlib", "staticlib"]` confirmed present (already on main before this session).
+- `cargo build -p vxn-clap --release` produces `target/release/libvxn_clap.a` (worktree target) alongside `libvxn_clap.dylib`. Zero new warnings.
+- `_clap_entry` confirmed in SYMDEF via `ar p __.SYMDEF | strings | grep _clap_entry`. System `nm -gU` errors on LLVM 21 bitcode objects (CLT 1700 reader mismatch) but the SYMDEF table is text-readable and unambiguous. Documented at [vxn-1/crates/vxn-clap/src/lib.rs:553](../../vxn-1/crates/vxn-clap/src/lib.rs#L553).
+- `cargo xtask bundle --release` produces `target/bundled/VXN1.clap/Contents/MacOS/VXN1` — bundle structure intact, cdylib output unperturbed by the added staticlib crate-type.
+- `cargo test --workspace` green (background run, exit code 0).

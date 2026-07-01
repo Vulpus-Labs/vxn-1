@@ -31,3 +31,11 @@ artifacts are produced for vxn-1 and vxn-2.
 - Green runs before merge.
 - Plugin-only workflows (E013 0024, vxn-1's build-windows) remain
   intact.
+
+## Close-out (2026-07-01)
+
+- [.github/workflows/build-standalone.yml](../../.github/workflows/build-standalone.yml): new workflow; triggers on push/PR to `main` + `workflow_dispatch`.
+  - `macos` job (`macos-14`): VXN1 `cargo xtask standalone --release --universal` + VXN2 `cargo xtask standalone --release`; `brew install ninja`; uploads `vxn1-standalone-macOS` (`target/bundled/VXN1.app`) and `vxn2-standalone-macOS` (`target/bundled/VXN2.app`) with `if-no-files-found: error`.
+  - `windows` job (`windows-latest`): `ilammy/msvc-dev-cmd@v1`, `choco install ninja`, VXN1 + VXN2 standalone; uploads `VXN1-windows-x64-standalone` and `VXN2-windows-x64-standalone`.
+  - Both jobs: `submodules: recursive`, `Swatinem/rust-cache@v2`.
+- Plugin-only workflows (`build-windows-vxn2.yml`, `build-windows.yml`, `build.yml`) unchanged.
