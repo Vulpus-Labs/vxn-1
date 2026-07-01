@@ -135,6 +135,10 @@ pub struct Synth {
     rr_layer: usize,
     /// Last envelope params pushed to each layer's voices; `None` forces a refresh.
     last_env: [Option<EnvSnapshot>; LAYERS],
+    /// Per-layer assign mode from the previous process call. Used to detect
+    /// Poly/Twin → Solo/Unison transitions and gate off held voices so they
+    /// don't stick under the now-monophonic allocator.
+    last_assign_mode: [AssignMode; LAYERS],
     /// Per-voice oscillator drift amount, broadcast into each block's
     /// [`BlockCtx`]. Defaults to [`DEFAULT_DRIFT_AMOUNT`]; tests that assert
     /// bit-equal two-layer equivalence set it to 0.
@@ -425,6 +429,7 @@ impl Synth {
             alloc_counter: 0,
             rr_layer: 0,
             last_env: [None; LAYERS],
+            last_assign_mode: [AssignMode::default(); LAYERS],
             drift_amount: voice::DEFAULT_DRIFT_AMOUNT,
         }
     }
@@ -569,6 +574,18 @@ impl Synth {
         let src = Self::param_source(layer, self.key_mode);
         let p = self.params.layer(src);
         let mode = p.assign_mode();
+        // Poly/Twin → Solo/Unison: gate off held poly voices before placing the new
+        // mono note so they don't sustain under the monophonic allocator. Updating
+        // last_assign_mode here also prevents process() from re-detecting the same
+        // transition after the new note is placed.
+        if self.last_assign_mode[layer] != mode {
+            if matches!(self.last_assign_mode[layer], AssignMode::Poly | AssignMode::Twin)
+                && matches!(mode, AssignMode::Solo | AssignMode::Unison)
+            {
+                self.banks[layer].all_notes_off();
+            }
+            self.last_assign_mode[layer] = mode;
+        }
         let unison_detune = p.get(PatchParam::UnisonDetune);
         // Per-voice LFO 1 (E005 / 0018): the bank retriggers the triggered
         // channel(s)' LFO 1 phase to the shape's zero crossing at note-on, unless
@@ -648,6 +665,7 @@ impl Synth {
         self.output.reset();
         self.smoother.snap_all(&self.params);
         self.rr_layer = 0;
+        self.last_assign_mode = [AssignMode::default(); LAYERS];
     }
 
     /// Render `out_l`/`out_r` (equal length). No events occur within this span;
@@ -655,8 +673,21 @@ impl Synth {
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         // Params are constant across a process call; refresh envelope coeffs at
         // most once per layer, and only when they actually changed.
+        // Also detect Poly/Twin → Solo/Unison transitions and gate off any held
+        // poly voices so they don't stick under the now-monophonic allocator.
         for layer in 0..LAYERS {
             self.sync_envelopes(layer);
+            let src = Self::param_source(layer, self.key_mode);
+            let mode = self.params.layer(src).assign_mode();
+            let prev = self.last_assign_mode[layer];
+            if prev != mode {
+                let was_poly = matches!(prev, AssignMode::Poly | AssignMode::Twin);
+                let now_mono = matches!(mode, AssignMode::Solo | AssignMode::Unison);
+                if was_poly && now_mono {
+                    self.banks[layer].all_notes_off();
+                }
+                self.last_assign_mode[layer] = mode;
+            }
         }
 
         // Oversampling factor for this call; a change resets the decimator.
