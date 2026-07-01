@@ -320,6 +320,8 @@ pub struct VxnAudioProcessor<'a> {
     local: LocalParams,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
+    /// Last known transport playing state — detect play→stop to fire all_notes_off.
+    was_playing: bool,
 }
 
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
@@ -336,6 +338,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
+            was_playing: false,
         })
     }
 
@@ -359,6 +362,15 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         // Host transport → engine tempo for LFO1 sync + delay sync. Read on
         // every block so BPM changes track without waiting for a reset.
+        // Also detect play→stop to kill all gates (stuck-note prevention).
+        let is_playing = process
+            .transport
+            .map(|t| t.flags.contains(TransportFlags::IS_PLAYING))
+            .unwrap_or(false);
+        if self.was_playing && !is_playing {
+            self.engine.all_notes_off();
+        }
+        self.was_playing = is_playing;
         if let Some(t) = process.transport {
             if t.flags.contains(TransportFlags::HAS_TEMPO) {
                 self.engine.set_tempo(t.tempo as f32);

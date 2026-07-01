@@ -448,6 +448,23 @@ impl PolyAlloc {
         }
     }
 
+    /// Gate off every sounding stack and clear all held-note bookkeeping.
+    /// Called on host transport stop to prevent stuck notes. Lighter than
+    /// `clear()` — preserves voiced[], assign_mode, and glide history so
+    /// subsequent playback behaves correctly.
+    pub fn all_notes_off(&mut self) {
+        for i in 0..N_STACKS {
+            if self.stacks[i].gate {
+                self.stacks[i].note_off();
+            }
+            self.held_by_pedal[i] = false;
+        }
+        self.sustain = false;
+        self.held_len = 0;
+        self.solo_active = false;
+        self.solo_slot = None;
+    }
+
     /// Pick a free (idle) stack for a new note. Among idle stacks, vxn-1's rule
     /// (ticket 0125): take the *voiced* one whose last sounding pitch is nearest
     /// the new note, so always-glide slides over a short, musical interval. If no

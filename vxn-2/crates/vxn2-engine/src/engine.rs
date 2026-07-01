@@ -671,6 +671,12 @@ impl Engine {
         self.alloc.set_sustain(on);
     }
 
+    /// Gate off all sounding voices and clear held-note state. Called on host
+    /// transport stop to prevent stuck notes.
+    pub fn all_notes_off(&mut self) {
+        self.alloc.all_notes_off();
+    }
+
     /// Reset host transport — realigns LFO1 phase to the bar grid.
     pub fn on_transport_restart(&mut self) {
         self.patch_mod.on_transport_restart();
