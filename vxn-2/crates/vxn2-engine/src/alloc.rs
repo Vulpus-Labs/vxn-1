@@ -283,6 +283,21 @@ impl PolyAlloc {
         }
     }
 
+    /// Release every gated stack and clear all hold state (sustain, pedal,
+    /// solo). Used on transport stop to kill stuck notes.
+    pub fn all_notes_off(&mut self) {
+        for i in 0..N_STACKS {
+            if self.stacks[i].meta.gate {
+                self.stacks[i].note_off();
+            }
+            self.held_by_pedal[i] = false;
+        }
+        self.sustain = false;
+        self.held_len = 0;
+        self.solo_active = false;
+        self.solo_slot = None;
+    }
+
     /// Set channel-wide pitch bend in semitones; forwarded to every stack.
     pub fn set_bend(&mut self, semitones: f32) {
         self.bend_st = semitones;

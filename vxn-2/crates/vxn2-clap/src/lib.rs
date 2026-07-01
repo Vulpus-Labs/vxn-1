@@ -686,6 +686,7 @@ mod tests {
             shared,
             scratch_l: vec![0.0; 64],
             scratch_r: vec![0.0; 64],
+            was_playing: false,
         }
     }
 
@@ -850,7 +851,7 @@ mod tests {
         b.push(&NoteOnEvent::new(0, pckn_for(60), 0.78));
         let evt = b.iter().next().unwrap();
         dispatch_event(&mut audio.engine, &mut audio.local, &shared.params, evt);
-        let any_gated = audio.engine.alloc.stacks.iter().any(|s| s.gate);
+        let any_gated = audio.engine.alloc.stacks.iter().any(|s| s.meta.gate);
         assert!(any_gated, "note-on did not gate a stack");
     }
 
@@ -868,7 +869,7 @@ mod tests {
             b.iter().next().unwrap(),
         );
         // Stack stays in release tail but gate clears.
-        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.gate));
+        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.meta.gate));
     }
 
     #[test]
@@ -1009,7 +1010,7 @@ mod tests {
         }
         audio.reset();
         // After reset: no gated stacks.
-        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.gate));
+        assert!(!audio.engine.alloc.stacks.iter().any(|s| s.meta.gate));
         // And one block of silence should now be near-zero.
         for (a, b) in control_chunks(0, frames) {
             audio.engine.process_block(

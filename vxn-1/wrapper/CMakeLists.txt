@@ -130,9 +130,15 @@ if(APPLE)
     "-framework CoreFoundation"
     "-liconv")
 elseif(WIN32)
+  # wry's webview (window subclassing, PROPVARIANT/VARIANT marshalling, memory
+  # streams) and windows_core's error/variant helpers pull symbols from libs a
+  # staticlib doesn't record: comctl32 (SetWindowSubclass/DefSubclassProc),
+  # shlwapi (SHCreateMemStream), propsys (PropVariantTo*/VariantTo*), and
+  # runtimeobject (RoOriginateErrorW). Kept in sync with the working CLAP link.
   target_link_libraries(vxn1_vst3 PRIVATE
     ws2_32 userenv ntdll bcrypt
-    user32 gdi32 shell32 ole32 oleaut32 advapi32 version)
+    user32 gdi32 shell32 ole32 oleaut32 advapi32 version
+    comctl32 shlwapi propsys runtimeobject)
 elseif(UNIX)
   target_link_libraries(vxn1_vst3 PRIVATE dl pthread m)
 endif()

@@ -661,6 +661,11 @@ impl Engine {
         self.alloc.note_off_patch(&alloc, &self.params.patch, note);
     }
 
+    /// Release all voices and clear hold state — used on transport stop.
+    pub fn all_notes_off(&mut self) {
+        self.alloc.all_notes_off();
+    }
+
     pub fn set_bend(&mut self, semitones: f32) {
         self.alloc.set_bend(semitones);
     }
