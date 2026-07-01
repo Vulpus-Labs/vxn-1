@@ -10,6 +10,9 @@ description = "VXN1 synth engine: parameters, voice allocation, and block render
 [dependencies]
 vxn-dsp = { workspace = true }
 vxn-app = { workspace = true }
+# Shared sparse-TOML preset scaffold (Meta/PresetError/Header/SCHEMA/value_for,
+# ticket 0143). Only the synth-specific body types stay here.
+vxn-preset = { workspace = true }
 # Preset format (E007 / ADR 0005): main-thread only — the audio path never
 # touches serde/toml. `include_dir` embeds the factory bank in the binary.
 serde = { version = "1", features = ["derive"] }

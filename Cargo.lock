@@ -2446,6 +2446,15 @@ dependencies = [
  "toml",
  "vxn-app",
  "vxn-dsp",
+ "vxn-preset",
+]
+
+[[package]]
+name = "vxn-preset"
+version = "0.0.8"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -2515,6 +2524,7 @@ dependencies = [
  "toml",
  "vxn-core-app",
  "vxn-core-utils",
+ "vxn-preset",
  "vxn2-app",
  "vxn2-dsp",
 ]

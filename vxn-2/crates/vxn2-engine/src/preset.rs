@@ -104,57 +104,13 @@ fn eg_curve_from_name(label: &str) -> Option<u8> {
     EG_CURVE_NAMES.iter().position(|n| *n == lc).map(|i| i as u8)
 }
 
-/// Preset *file-format* version (independent of the binary state blob
-/// version). Because the format is name-keyed, most evolutions need no bump;
-/// reserve this for structural changes (ADR 0005 §2).
-pub const SCHEMA: u32 = 1;
-
-/// Free-form preset metadata (the `[meta]` table). Only `name` is required.
-/// Category is the **only** discriminator the browser groups on — there is no
-/// tag list. Field-for-field the same shape as [`vxn_core_app::PresetMeta`];
-/// the store converts between the two.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Meta {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
-    /// Browser grouping. Free-form string.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
-}
-
-/// Why a preset failed to parse. Unknown keys / bad enum labels do **not**
-/// land here — those are non-fatal warnings (see [`from_toml_str`]).
-#[derive(Debug)]
-pub enum PresetError {
-    /// The TOML did not parse, or the envelope (`schema`, `meta`) was missing
-    /// or the wrong type.
-    Toml(toml::de::Error),
-    /// `schema` is not a version this build understands.
-    UnsupportedSchema { found: u32, expected: u32 },
-}
-
-impl std::fmt::Display for PresetError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PresetError::Toml(e) => write!(f, "invalid preset TOML: {e}"),
-            PresetError::UnsupportedSchema { found, expected } => write!(
-                f,
-                "unsupported preset schema {found} (this build expects {expected})"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for PresetError {}
-
-impl From<toml::de::Error> for PresetError {
-    fn from(e: toml::de::Error) -> Self {
-        PresetError::Toml(e)
-    }
-}
+// Shared sparse-TOML scaffold (ticket 0143). `Meta`, `PresetError`, `Header`
+// and `SCHEMA` are byte-identical to vxn-1's codec, so they live in
+// `vxn-preset`; re-exported here to keep the `crate::preset::Meta` path stable
+// for `factory.rs` and `preset_io.rs`. (`Meta` is field-for-field the same
+// shape as `vxn_core_app::PresetMeta`; the store converts between the two.)
+pub use vxn_preset::{Header, Meta, PresetError, SCHEMA};
+use vxn_preset::ScalarKind;
 
 // ── On-disk file shape (serde) ──────────────────────────────────────────────
 
@@ -185,13 +141,6 @@ struct MatrixRowFile {
 
 fn default_curve() -> String {
     "lin".to_string()
-}
-
-/// Just enough of the envelope to validate the schema before committing to a
-/// body shape.
-#[derive(Deserialize)]
-struct Header {
-    schema: u32,
 }
 
 // ── blob <-> arrays (round-trip through SharedParams) ───────────────────────
@@ -256,18 +205,16 @@ fn encode_blob(
 // ── Sparse write (engine values → TOML) ─────────────────────────────────────
 
 /// One param's value as a typed TOML scalar, matching its descriptor kind.
+/// Maps this engine's `ParamKind` onto the shared [`ScalarKind`] and delegates
+/// the rendering to [`vxn_preset::value_for`].
 fn value_for(desc: &ParamDesc, v: f32) -> toml::Value {
-    match desc.kind {
-        ParamKind::Enum { variants } => {
-            let i = (v.round().max(0.0) as usize).min(variants.len().saturating_sub(1));
-            toml::Value::String(variants[i].to_string())
-        }
-        ParamKind::Bool => toml::Value::Boolean(v >= 0.5),
-        ParamKind::Int { .. } => toml::Value::Integer(v.round() as i64),
-        // f32 → f64 widening is exact, and the f64 narrows back to the same
-        // f32 on read, so the stored value round-trips precisely.
-        ParamKind::Float { .. } => toml::Value::Float(v as f64),
-    }
+    let kind = match desc.kind {
+        ParamKind::Enum { variants } => ScalarKind::Enum { variants },
+        ParamKind::Bool => ScalarKind::Bool,
+        ParamKind::Int { .. } => ScalarKind::Int,
+        ParamKind::Float { .. } => ScalarKind::Float,
+    };
+    vxn_preset::value_for(kind, v)
 }
 
 fn params_table(values: &[f32; TOTAL_PARAMS]) -> toml::Table {

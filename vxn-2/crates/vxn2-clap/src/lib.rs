@@ -647,6 +647,7 @@ clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Bound;
     use clack_plugin::events::Pckn;
     use clack_plugin::events::event_types::ParamValueEvent;
     use clack_plugin::events::io::EventBuffer;

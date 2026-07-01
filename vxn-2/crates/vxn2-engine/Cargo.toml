@@ -10,6 +10,9 @@ vxn2-dsp = { workspace = true }
 vxn-core-app = { workspace = true }
 vxn-core-utils = { workspace = true }
 vxn2-app = { workspace = true }
+# Shared sparse-TOML preset scaffold (Meta/PresetError/Header/SCHEMA/value_for,
+# ticket 0143). Only the synth-specific body types stay here.
+vxn-preset = { workspace = true }
 # Preset format (E007 lineage): name-keyed TOML, sparse-vs-descriptor-default.
 # Main-thread only — the audio path never touches serde/toml. `include_dir`
 # bakes the factory bank into the binary at compile time.

@@ -28,61 +28,18 @@ use crate::params::{
 use crate::state::PluginState;
 use serde::{Deserialize, Serialize};
 
-/// Preset *file-format* version (independent of the binary state `VERSION`).
-/// Because the format is name-keyed, most evolutions need no bump; reserve this
-/// for structural changes (ADR 0005 §2).
-pub const SCHEMA: u32 = 1;
-
-/// Free-form preset metadata (the `[meta]` table). Only `name` is required.
-/// Category is the **only** discriminator the browser groups on — there is no
-/// tag list. (Earlier drafts had `tags: Vec<String>`; dropped as overkill.)
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Meta {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
-    /// Browser grouping (0027). Free-form string.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
-}
+// Shared sparse-TOML scaffold (ticket 0143). `Meta`, `PresetError`, `Header`
+// and `SCHEMA` are byte-identical to vxn-2's codec, so they live in
+// `vxn-preset`; re-exported here to keep the `crate::preset::Meta` path stable
+// for `factory.rs`, `preset_io.rs` and the lib re-export.
+pub use vxn_preset::{Header, Meta, PresetError, SCHEMA};
+use vxn_preset::ScalarKind;
 
 /// The whole instrument plus its metadata. Converts to/from [`PluginState`].
 #[derive(Clone, Debug)]
 pub struct Performance {
     pub meta: Meta,
     pub state: PluginState,
-}
-
-/// Why a preset failed to parse. Unknown keys / bad enum labels do **not** land
-/// here — those are non-fatal warnings (see [`from_toml_str`]).
-#[derive(Debug)]
-pub enum PresetError {
-    /// The TOML did not parse, or required envelope fields (`schema`, `meta`,
-    /// the body table) were missing or the wrong type.
-    Toml(toml::de::Error),
-    /// `schema` is not a version this build understands.
-    UnsupportedSchema { found: u32, expected: u32 },
-}
-
-impl std::fmt::Display for PresetError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PresetError::Toml(e) => write!(f, "invalid preset TOML: {e}"),
-            PresetError::UnsupportedSchema { found, expected } => {
-                write!(f, "unsupported preset schema {found} (this build expects {expected})")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PresetError {}
-
-impl From<toml::de::Error> for PresetError {
-    fn from(e: toml::de::Error) -> Self {
-        PresetError::Toml(e)
-    }
 }
 
 // ── On-disk file shape (serde) ──────────────────────────────────────────────
@@ -111,28 +68,19 @@ struct PerformanceBody {
     lower: toml::Table,
 }
 
-/// Just enough of the envelope to validate the schema before committing to a
-/// body shape.
-#[derive(Deserialize)]
-struct Header {
-    schema: u32,
-}
-
 // ── Sparse write (engine values → TOML value) ───────────────────────────────
 
 /// One param's value as a typed TOML scalar, matching its descriptor kind.
+/// Maps this engine's `ParamKind` onto the shared [`ScalarKind`] and delegates
+/// the rendering to [`vxn_preset::value_for`].
 fn value_for(desc: &ParamDesc, v: f32) -> toml::Value {
-    match desc.kind {
-        ParamKind::Enum { variants } => {
-            let i = (v.round() as usize).min(variants.len().saturating_sub(1));
-            toml::Value::String(variants[i].to_string())
-        }
-        ParamKind::Bool => toml::Value::Boolean(v >= 0.5),
-        ParamKind::Int { .. } => toml::Value::Integer(v.round() as i64),
-        // f32 → f64 widening is exact, and the f64 narrows back to the same f32
-        // on read, so the stored value round-trips precisely.
-        ParamKind::Float { .. } => toml::Value::Float(v as f64),
-    }
+    let kind = match desc.kind {
+        ParamKind::Enum { variants } => ScalarKind::Enum { variants },
+        ParamKind::Bool => ScalarKind::Bool,
+        ParamKind::Int { .. } => ScalarKind::Int,
+        ParamKind::Float { .. } => ScalarKind::Float,
+    };
+    vxn_preset::value_for(kind, v)
 }
 
 /// A param namespace (the per-layer patch block, or the global block) viewed
