@@ -68,6 +68,16 @@ set(CLAP_WRAPPER_BUILD_STANDALONE      TRUE  CACHE BOOL "" FORCE)
 set(CLAP_WRAPPER_BUILD_TESTS           FALSE CACHE BOOL "" FORCE)
 set(CLAP_WRAPPER_OUTPUT_NAME "${VXN_PLUGIN_NAME}" CACHE STRING "" FORCE)
 
+# clap-wrapper 0.12.1's Windows standalone glue (wrapasstandalone_windows.cpp,
+# windows_standalone.cpp) still includes <experimental/coroutine>, which recent
+# MSVC (VS2022 17.10+ / VS18) turns into a hard error (STL1011). Silence it so
+# the wrapper compiles until clap-wrapper migrates to C++20 <coroutine>.
+# Directory-scoped and set before add_subdirectory, so it reaches the wrapper's
+# targets too.
+if(MSVC)
+  add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+endif()
+
 add_subdirectory("${VXN_CLAP_WRAPPER_DIR}" clap-wrapper-build EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------
