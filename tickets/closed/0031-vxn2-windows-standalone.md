@@ -3,10 +3,18 @@ id: "0031"
 product: vxn-2
 title: "vxn-2 Windows standalone (.exe)"
 priority: medium
+status: shelved
 created: 2026-06-13
+shelved: 2026-07-02
 epic: E014
 depends: ["0029", "0030"]
 ---
+
+> **SHELVED 2026-07-02** with the rest of [E014](../../epics/closed/E014-standalone-builds.md).
+> Standalone builds dropped for now — see the epic for the clap-wrapper
+> macOS blockers (dead faceplate: no `timer-support`; TCC mic crash) and
+> what was removed. Revive with the epic.
+
 
 ## Summary
 

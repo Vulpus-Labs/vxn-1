@@ -34,7 +34,6 @@ fn main() {
 
     let result = match cmd {
         "bundle" => bundle(release, universal).map(|p| println!("bundled → {}", p.display())),
-        "standalone" => standalone(release).map(|p| println!("standalone → {}", p.display())),
         "install" => install(),
         "uninstall" => uninstall(),
         "level-presets" => level_presets(&args[1..]),
@@ -69,9 +68,6 @@ Subcommands:
               Windows/Linux: the shared library renamed to {BUNDLE_NAME}.
               Pass --release to build in release mode.
               Pass --universal (macOS only) to lipo arm64+x86_64 into one fat binary.
-  standalone  Build vxn2-clap staticlib + run standalone/CMakeLists.txt to produce
-              VXN2.app (macOS) or VXN2.exe (Windows) in target/bundled/.
-              Pass --release to build in release mode.
   install     Bundle (release) + copy to user CLAP directory. macOS only.
   uninstall   Remove ~/Library/Audio/Plug-Ins/CLAP/{BUNDLE_NAME}. macOS only.
   level-presets  Render every factory preset (held C-major triad over C4),
@@ -221,156 +217,6 @@ fn bundle(release: bool, universal: bool) -> Result<PathBuf, String> {
     }
 
     Ok(bundle)
-}
-
-/// Build `VXN2.app` (macOS) or `VXN2.exe` (Windows) via the `standalone/`
-/// CMake project (E014 / ticket 0029). Reuses the shared `standalone/CMakeLists.txt`
-/// at the repo root, passing vxn2-clap's static archive and VXN2 as the plugin name.
-fn standalone(release: bool) -> Result<PathBuf, String> {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let profile = if release { "release" } else { "debug" };
-
-    ensure_cmake()?;
-    ensure_submodule("vendor/clap")?;
-    ensure_submodule("vendor/clap-wrapper")?;
-
-    // Build the staticlib slice.
-    let mut build = Command::new(&cargo);
-    build
-        .current_dir(workspace_root())
-        .args(["build", "-p", CLAP_PACKAGE]);
-    if release {
-        build.arg("--release");
-    }
-    let status = build
-        .status()
-        .map_err(|e| format!("failed to run cargo: {e}"))?;
-    if !status.success() {
-        return Err(format!("`cargo build -p {CLAP_PACKAGE}` failed"));
-    }
-
-    let root = workspace_root();
-    let archive = static_lib_path(&root.join("target").join(profile));
-    if !archive.exists() {
-        return Err(format!(
-            "static archive not found at {} (is staticlib in crate-type?)",
-            archive.display()
-        ));
-    }
-
-    let build_dir = root.join("target").join(format!("standalone2-{profile}"));
-    let out_dir = build_dir.join("out");
-    fs::create_dir_all(&build_dir).map_err(io("create standalone build dir"))?;
-
-    let mut cfg = Command::new("cmake");
-    cfg.current_dir(&root)
-        .arg("-S")
-        .arg("standalone")
-        .arg("-B")
-        .arg(&build_dir)
-        .arg(format!("-DVXN_CLAP_STATIC={}", archive.display()))
-        .arg(format!(
-            "-DVXN_CLAP_SDK_DIR={}",
-            root.join("vendor/clap").display()
-        ))
-        .arg(format!(
-            "-DVXN_CLAP_WRAPPER_DIR={}",
-            root.join("vendor/clap-wrapper").display()
-        ))
-        .arg(format!("-DVXN_OUTPUT_DIR={}", out_dir.display()))
-        .arg("-DVXN_PLUGIN_NAME=VXN2")
-        .arg("-DVXN_BUNDLE_ID=labs.vulpus.vxn2.standalone")
-        // Single-config Ninja needs the build type at configure time; without it
-        // the C++ side (clap-wrapper, rtaudio) defaults to the Debug CRT and
-        // collides with the release Rust staticlib (LNK2038 MTd/MDd on Windows).
-        .arg("-DCMAKE_BUILD_TYPE=Release");
-    if ninja_available() {
-        cfg.arg("-G").arg("Ninja");
-    }
-    let status = cfg
-        .status()
-        .map_err(|e| format!("failed to run cmake configure: {e}"))?;
-    if !status.success() {
-        return Err("cmake configure failed (see output above)".into());
-    }
-
-    let status = Command::new("cmake")
-        .current_dir(&root)
-        .arg("--build")
-        .arg(&build_dir)
-        .arg("--parallel")
-        .arg("--config")
-        .arg("Release")
-        .status()
-        .map_err(|e| format!("failed to run cmake --build: {e}"))?;
-    if !status.success() {
-        return Err("cmake --build failed (see output above)".into());
-    }
-
-    let artifact_name = if cfg!(target_os = "macos") { "VXN2.app" } else { "VXN2.exe" };
-    let artifact = out_dir.join(artifact_name);
-    if !artifact.exists() {
-        return Err(format!(
-            "{artifact_name} not found at {} after successful build",
-            out_dir.display()
-        ));
-    }
-
-    let bundled = root.join("target").join("bundled");
-    fs::create_dir_all(&bundled).map_err(io("create bundled dir"))?;
-    let dest = bundled.join(artifact_name);
-
-    if artifact.is_dir() {
-        let _ = fs::remove_dir_all(&dest);
-        copy_dir_recursive(&artifact, &dest)?;
-    } else {
-        let _ = fs::remove_file(&dest);
-        fs::copy(&artifact, &dest).map_err(io("copy standalone exe"))?;
-    }
-    Ok(dest)
-}
-
-/// Path to the vxn2-clap static archive under a profile dir.
-fn static_lib_path(profile_dir: &Path) -> PathBuf {
-    let (prefix, ext) = if cfg!(target_os = "windows") {
-        ("", "lib")
-    } else {
-        ("lib", "a")
-    };
-    profile_dir.join(format!("{prefix}{LIB_NAME}.{ext}"))
-}
-
-/// Error unless CMake is invokable.
-fn ensure_cmake() -> Result<(), String> {
-    Command::new("cmake")
-        .arg("--version")
-        .output()
-        .map(|_| ())
-        .map_err(|_| {
-            "cmake not found on PATH — install it (`brew install cmake`, or \
-             https://cmake.org/download/) to build the standalone"
-                .to_string()
-        })
-}
-
-/// Error unless a specific `vendor/` submodule directory is non-empty.
-fn ensure_submodule(sub: &str) -> Result<(), String> {
-    let p = workspace_root().join(sub);
-    let empty = fs::read_dir(&p)
-        .map(|mut d| d.next().is_none())
-        .unwrap_or(true);
-    if empty {
-        return Err(format!(
-            "submodule {sub} is missing or empty — run \
-             `git submodule update --init --recursive`"
-        ));
-    }
-    Ok(())
-}
-
-/// Whether `ninja` is invokable (preferred CMake generator when present).
-fn ninja_available() -> bool {
-    Command::new("ninja").arg("--version").output().is_ok()
 }
 
 fn install() -> Result<(), String> {

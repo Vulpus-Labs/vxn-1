@@ -5,7 +5,6 @@
 # Getting started
 
 - [Installing VXN1](install.md)
-- [Standalone apps](standalone.md)
 - [Unsigned binaries](install-unsigned.md)
 - [Quick start](quickstart.md)
 - [Mental model](mental-model.md)

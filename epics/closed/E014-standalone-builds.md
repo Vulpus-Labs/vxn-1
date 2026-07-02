@@ -2,10 +2,29 @@
 id: E014
 product: vxn-2
 title: Standalone executables (macOS + Windows) for vxn-1 & vxn-2
-status: open
+status: shelved
 created: 2026-06-13
+shelved: 2026-07-02
 depends-on: E013
 ---
+
+> **SHELVED 2026-07-02.** Standalone builds are dropped for now. The
+> macOS standalone via clap-wrapper hit two blockers that make it a poor
+> deliverable without patching the vendored wrapper:
+> - **Dead faceplate.** clap-wrapper's macOS standalone host does not
+>   implement `timer-support` (`register_timer` returns `false`; no
+>   run-loop drives `on_timer`), so the editor's diff/flush pump never
+>   runs and the UI never echoes host/controller activity.
+> - **Mic-permission crash.** RtAudio probes input devices at startup,
+>   tripping macOS TCC; the bundle must carry `NSMicrophoneUsageDescription`
+>   (a spurious mic prompt) or the app is hard-killed — even though the
+>   synth opens no audio input.
+> All standalone code, the `standalone/` CMake project, the RtAudio/RtMidi
+> pull, the `cargo xtask standalone` commands, and the Build-Standalone CI
+> job were removed. The shared clap-wrapper submodule and the `staticlib`
+> crate-type stay — VST3 (E010) still uses them. Revive by patching the
+> wrapper's macOS standalone (NSTimer-driven `on_timer`; skip input
+> enumeration for 0-input plugins) or by hand-rolling a Rust shell.
 
 > **Depends on E013.** The Windows standalone hosts a Windows `.clap`,
 > which E013 produces and verifies. The macOS standalone can start as
