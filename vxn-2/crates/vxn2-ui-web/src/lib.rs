@@ -535,15 +535,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_faceplate_html_splices_css_and_bootstrap() {
-        let html = build_faceplate_html();
-        assert!(html.contains("VXN2"));
-        assert!(html.contains("color-scheme: dark"));
-        assert!(html.contains("window.__vxn"));
-        assert!(!html.contains("__CSS__"));
-        assert!(!html.contains("__BOOTSTRAP_JS__"));
-    }
+    // NOTE: build_faceplate_html_splices_css_and_bootstrap collapsed into
+    // build_faceplate_html_bundles_full_js_stack below (superset); the
+    // unique `color-scheme: dark` check is preserved there.
 
     /// 0025 AC: shell carries the static faceplate markup, no inline
     /// handlers, no placeholder values inlined into style attributes, all
@@ -619,68 +613,59 @@ mod tests {
         );
     }
 
-    /// CSS file carries the viewport dims + structural rules ported from
-    /// the mockup.
+    // Asset-present guards — one per embedded asset.
+    // These confirm the asset didn't vanish and that no __PLACEHOLDER__ tokens
+    // remain in the rendered page. The real behavioural net for JS wiring is
+    // the Vitest suite under `assets/__tests__/`; do not regrow per-token
+    // substring assertions here (they prove nothing about live behaviour).
     #[test]
-    fn faceplate_css_carries_mockup_rules() {
-        assert!(FACEPLATE_CSS.contains("--editor-w: 1024px"));
-        assert!(FACEPLATE_CSS.contains("--editor-h: 772px"));
-        assert!(FACEPLATE_CSS.contains(".vxn-faceplate"));
-        assert!(FACEPLATE_CSS.contains(".op-row"));
-        assert!(FACEPLATE_CSS.contains(".gmod-row"));
-        assert!(FACEPLATE_CSS.contains(".perf-row"));
-        assert!(FACEPLATE_CSS.contains(".overlay-backdrop"));
-        assert!(FACEPLATE_CSS.contains(".algo-grid"));
-        assert!(FACEPLATE_CSS.contains(".mm-overlay"));
+    fn asset_present_css() {
+        assert!(!FACEPLATE_CSS.is_empty(), "faceplate CSS asset is empty");
+        // Viewport dims are load-bearing structure (not wiring); one guard is enough.
+        assert!(FACEPLATE_CSS.contains("--editor-w: 1024px"), "viewport width CSS var missing");
+        assert!(FACEPLATE_CSS.contains("--editor-h: 772px"), "viewport height CSS var missing");
     }
 
-    /// Bootstrap declares the surface main.js + panels.js attach to;
-    /// main.js (loaded later in the same script) is what fires `ready`.
     #[test]
-    fn bootstrap_js_declares_required_surface() {
-        assert!(BOOTSTRAP_JS.contains("window.__vxn"));
-        assert!(BOOTSTRAP_JS.contains("applyViewEvents"));
-        assert!(BOOTSTRAP_JS.contains("applyPresetCorpus"));
-        assert!(BOOTSTRAP_JS.contains("paramsByName"));
-        assert!(BOOTSTRAP_JS.contains("__PARAMS_JSON__"));
-        assert!(BOOTSTRAP_JS.contains("panels"));
+    fn asset_present_bootstrap_js() {
+        assert!(!BOOTSTRAP_JS.is_empty(), "bootstrap JS asset is empty");
+        // The __PARAMS_JSON__ placeholder must exist in the source so the splice
+        // has something to replace; the rendered page must not contain it.
+        assert!(
+            BOOTSTRAP_JS.contains("__PARAMS_JSON__"),
+            "bootstrap.js missing __PARAMS_JSON__ placeholder",
+        );
+        let html = build_faceplate_html();
+        assert!(
+            !html.contains("__PARAMS_JSON__"),
+            "__PARAMS_JSON__ placeholder not spliced in rendered page",
+        );
     }
 
-    /// Panel primitives and main bootstrap carry the contracts main.js +
-    /// the section renderers depend on.
     #[test]
-    fn panel_js_files_carry_expected_exports() {
-        assert!(PANEL_KNOB_JS.contains("__vxn.panels.knob"));
-        assert!(PANEL_FADER_JS.contains("__vxn.panels.fader"));
-        assert!(PANEL_FADER_JS.contains("paramToNorm"));
-        assert!(PANEL_BUTTON_GROUP_JS.contains("__vxn.panels.buttonGroup"));
-        assert!(PANEL_BUTTON_GROUP_JS.contains("createToggleHeader"));
-        assert!(PANEL_GRAPH_JS.contains("__vxn.panels.graph"));
-        assert!(PANEL_ALGO_DIAGRAM_JS.contains("__vxn.panels.algoDiagram"));
-        assert!(PANEL_OP_ROW_JS.contains("__vxn.panels.opRow"));
-        // op-row sub-modules split out in 0141.
-        assert!(PANEL_ALGO_DATA_JS.contains("__vxn.panels.algoData"));
-        assert!(PANEL_ALGO_DATA_JS.contains("ALGO_CARRIERS"));
-        assert!(PANEL_KS_GRAPH_JS.contains("__vxn.panels.ksGraph"));
-        assert!(PANEL_EG_GRAPH_JS.contains("__vxn.panels.egGraph"));
-        assert!(PANEL_OP_FADERS_JS.contains("__vxn.panels.opFaders"));
-        assert!(MAIN_JS.contains("dispatch(\"ready\")"));
-        assert!(MAIN_JS.contains("begin_gesture"));
-        assert!(MAIN_JS.contains("set_param_norm"));
-        assert!(MAIN_JS.contains("end_gesture"));
-        assert!(MAIN_JS.contains("request_text_input"));
-        assert!(MAIN_JS.contains("text_input_result"));
-        assert!(MAIN_JS.contains("panels.opRow"));
-        // 0030: text-input Promise + Linux fallback are part of the
-        // bundled surface, not external infrastructure.
-        assert!(MAIN_JS.contains("dispatchTextInput"));
-        assert!(MAIN_JS.contains("resolveTextInput"));
-        assert!(MAIN_JS.contains("showFallbackDialog"));
-        assert!(MAIN_JS.contains("vxn-text-input-fallback"));
-        // The numeric-entry path calls set_param (plain-value write) in addition
-        // to the set_param_norm used by the fader — assert the plain-value path
-        // is present. begin_gesture / end_gesture are already asserted above.
-        assert!(MAIN_JS.contains("set_param"), "numeric-entry set_param call missing");
+    fn asset_present_panel_js() {
+        // Each panel file is non-empty — catches an accidental `include_str!`
+        // path typo that would embed an empty string silently.
+        for (name, src) in [
+            ("knob.js",          PANEL_KNOB_JS),
+            ("dial.js",          PANEL_DIAL_JS),
+            ("fader.js",         PANEL_FADER_JS),
+            ("button-group.js",  PANEL_BUTTON_GROUP_JS),
+            ("graph.js",         PANEL_GRAPH_JS),
+            ("algo-diagram.js",  PANEL_ALGO_DIAGRAM_JS),
+            ("algo-data.js",     PANEL_ALGO_DATA_JS),
+            ("ks-graph.js",      PANEL_KS_GRAPH_JS),
+            ("eg-graph.js",      PANEL_EG_GRAPH_JS),
+            ("op-faders.js",     PANEL_OP_FADERS_JS),
+            ("op-row.js",        PANEL_OP_ROW_JS),
+            ("mod-matrix.js",    PANEL_MOD_MATRIX_JS),
+            ("preset-bar.js",    PANEL_PRESET_BAR_JS),
+            ("preset-browser.js", PANEL_PRESET_BROWSER_JS),
+            ("fx-tabs.js",       PANEL_FX_TABS_JS),
+            ("main.js",          MAIN_JS),
+        ] {
+            assert!(!src.is_empty(), "panel asset {name} is empty");
+        }
     }
 
     /// Dumps the spliced HTML to `/tmp/vxn2-faceplate.html` for manual
@@ -696,13 +681,24 @@ mod tests {
         std::fs::write("/tmp/vxn2-bundle.js", js).expect("write js");
     }
 
-    /// Bundle composition: params JSON spliced into bootstrap, all panel
-    /// files concatenated, no placeholder tokens left in the served HTML.
+    /// Bundle composition: CSS + params JSON spliced in, all panel files
+    /// concatenated, no placeholder tokens left in the served HTML.
+    /// Supersedes the old `build_faceplate_html_splices_css_and_bootstrap`
+    /// test (which was a subset); `color-scheme: dark` check absorbed here.
     #[test]
     fn build_faceplate_html_bundles_full_js_stack() {
         let html = build_faceplate_html();
-        assert!(!html.contains("__PARAMS_JSON__"));
-        assert!(!html.contains("__BOOTSTRAP_JS__"));
+        // No unreplaced placeholder tokens.
+        assert!(!html.contains("__CSS__"), "CSS placeholder not spliced");
+        assert!(!html.contains("__PARAMS_JSON__"), "params JSON placeholder not spliced");
+        assert!(!html.contains("__BOOTSTRAP_JS__"), "bootstrap JS placeholder not spliced");
+        assert!(!html.contains("__MATRIX_LISTS_JSON__"), "matrix lists placeholder not spliced");
+        // Structural canary from the old splices_css_and_bootstrap test.
+        assert!(html.contains("VXN2"), "VXN2 identifier missing from rendered HTML");
+        assert!(html.contains("color-scheme: dark"), "color-scheme: dark missing from CSS");
+        assert!(html.contains("window.__vxn"), "window.__vxn surface missing");
+        // All panel panel modules present in the bundle (non-empty asset guard
+        // is in asset_present_panel_js; here we confirm splice into the page).
         assert!(html.contains("__vxn.panels.knob"));
         assert!(html.contains("__vxn.panels.fader"));
         assert!(html.contains("__vxn.panels.buttonGroup"));
@@ -720,6 +716,29 @@ mod tests {
         assert!(html.contains("\"master-volume\""));
     }
 
+    /// Extract the body of a top-level JS `const DECL_NAME = [ ... ];`
+    /// declaration from `js`. Returns the slice between `[` and `]`.
+    /// Panics with a clear message if either marker is absent — the algo
+    /// drift guards rely on stable formatting, so a silent miss would
+    /// make those tests vacuous instead of failing loudly.
+    fn extract_js_array_body<'a>(js: &'a str, decl_name: &str) -> &'a str {
+        let needle = format!("const {decl_name} = [");
+        let start = js.find(needle.as_str())
+            .unwrap_or_else(|| panic!("{decl_name} declaration not found in JS"));
+        let body_start = start + needle.len();
+        let body_rest = &js[body_start..];
+        let body_end = body_rest.find("];")
+            .unwrap_or_else(|| panic!("closing ]; for {decl_name} not found in JS"));
+        &body_rest[..body_end]
+    }
+
+    /// Parse `matrix_lists_json` once into a `serde_json::Value`; shared by
+    /// the two matrix-lists tests so the JSON string is only parsed once.
+    fn matrix_lists_value() -> serde_json::Value {
+        serde_json::from_str(&build_matrix_lists_json())
+            .expect("build_matrix_lists_json must produce valid JSON")
+    }
+
     /// The 32 x 6 JS carrier table embedded in `panels/algo-data.js`
     /// MUST match the engine's algorithm routing table — drift would
     /// silently colour the op tabs wrong. Parses the JS literal back
@@ -731,12 +750,7 @@ mod tests {
         let js = PANEL_ALGO_DATA_JS;
         // Extract the ALGO_CARRIERS literal — between
         // `const ALGO_CARRIERS = [` and the matching `];`.
-        let start = js.find("const ALGO_CARRIERS = [")
-            .expect("ALGO_CARRIERS declaration");
-        let body_start = start + "const ALGO_CARRIERS = [".len();
-        let body_rest = &js[body_start..];
-        let body_end = body_rest.find("];").expect("close of array");
-        let body = &body_rest[..body_end];
+        let body = extract_js_array_body(js, "ALGO_CARRIERS");
 
         // Each row looks like `[true, false, true, false, false, false],`
         // — extract one row per `[…]` group.
@@ -795,14 +809,7 @@ mod tests {
     /// silently disable the wrong op's feedback fader.
     #[test]
     fn algo_data_fb_ops_match_engine_table() {
-        let js = PANEL_ALGO_DATA_JS;
-        let start = js.find("const ALGO_FB_OPS = [")
-            .expect("ALGO_FB_OPS declaration");
-        let body_start = start + "const ALGO_FB_OPS = [".len();
-        let body_rest = &js[body_start..];
-        let body_end = body_rest.find("];").expect("close of array");
-        let body = &body_rest[..body_end];
-
+        let body = extract_js_array_body(PANEL_ALGO_DATA_JS, "ALGO_FB_OPS");
         let mut vals: Vec<u8> = Vec::new();
         for tok in body.split(',') {
             let t = tok.trim();
@@ -943,8 +950,7 @@ mod tests {
 
     #[test]
     fn build_matrix_lists_json_includes_all_enum_widths() {
-        let s = build_matrix_lists_json();
-        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let v = matrix_lists_value();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
         // None + 42 dests (E007 appended Cutoff + Resonance after Feedback;
         // E022 appended the six op{N}-stack-pitch dests after Resonance;
@@ -967,8 +973,7 @@ mod tests {
 
     #[test]
     fn build_matrix_lists_json_carries_tiers_and_coherence() {
-        let s = build_matrix_lists_json();
-        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let v = matrix_lists_value();
         // Tiers: lfo1 = patch-global (0), velocity = per-stack (1),
         // voice-rand = per-lane (2); lfo2-phase dest = per-lane (2).
         assert_eq!(v["sources"][1]["name"], "lfo1");

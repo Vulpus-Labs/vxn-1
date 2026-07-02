@@ -918,24 +918,55 @@ mod tests {
         assert!(assembled().contains("flex: 0 0 54px"));
     }
 
+    // Asset-present guards — one per embedded asset.
+    // These confirm that each asset compiled in, the splice didn't silently
+    // zero it, and no __PLACEHOLDER__ tokens survive into the rendered page.
+    // The real behavioural net for JS/CSS wiring is the gated Vitest suite
+    // under `assets/__tests__/` (run with VXN_JS_TESTS=1). Do NOT regrow
+    // per-token substring assertions here — str::contains over an asset blob
+    // is a change-detector, not a behaviour test; a token in a comment passes
+    // just as readily as a live call site.
     #[test]
-    fn faceplate_bridge_object_intact() {
-        // Bridge from 0039 still present — 0040 only adds layout.
-        assert!(assembled().contains("window.vxn"));
-        assert!(assembled().contains("window.ipc.postMessage"));
-        assert!(assembled().contains("onViewEvent"));
+    fn asset_present_bridge_js() {
+        assert!(!BRIDGE_JS.is_empty(), "bridge.js asset is empty");
+        // The two JSON placeholders must exist in the source so the splice
+        // has something to replace. The rendered page must not contain them.
+        assert!(BRIDGE_JS.contains("__PARAMS_JSON__"), "bridge.js missing __PARAMS_JSON__ placeholder");
+        assert!(BRIDGE_JS.contains("__SUBDIVISIONS_JSON__"), "bridge.js missing __SUBDIVISIONS_JSON__ placeholder");
+        assert!(BRIDGE_JS.contains("__PATCH_COUNT__"), "bridge.js missing __PATCH_COUNT__ placeholder");
+        let html = build_faceplate_html();
+        assert!(!html.contains("__PARAMS_JSON__"), "__PARAMS_JSON__ not spliced");
+        assert!(!html.contains("__SUBDIVISIONS_JSON__"), "__SUBDIVISIONS_JSON__ not spliced");
+        assert!(!html.contains("__PATCH_COUNT__"), "__PATCH_COUNT__ not spliced");
+        assert!(
+            html.contains(&format!("patchCount: {}", vxn_app::PATCH_COUNT)),
+            "patchCount splice value missing from rendered html",
+        );
     }
 
     #[test]
-    fn faceplate_batched_bridge_wired() {
-        // 0046: Rust calls `window.__vxn.applyViewEvents(arr)` once per
-        // controller tick. Bootstrap installs a buffering stub; init() swaps
-        // in the real dispatcher.
-        assert!(assembled().contains("window.__vxn"));
-        assert!(assembled().contains("applyViewEvents"));
-        // Bootstrap stub still funnels into `_earlyViewEvents` so events
-        // that race the inline init() are not lost.
-        assert!(assembled().contains("_earlyViewEvents"));
+    fn asset_present_panels_js() {
+        // Each panel source file is non-empty — catches an accidental
+        // include_str! path typo that would embed an empty string silently.
+        for (name, src) in [
+            ("bridge.js",            BRIDGE_JS),
+            ("browser.js",           BROWSER_JS),
+            ("dispatch.js",          DISPATCH_JS),
+            ("util/drag.js",         PANEL_UTIL_DRAG_JS),
+            ("panels/fader.js",      PANEL_FADER_JS),
+            ("panels/discrete.js",   PANEL_DISCRETE_JS),
+            ("panels/keys.js",       PANEL_KEYS_JS),
+            ("panels/preset-bar.js", PANEL_PRESET_BAR_JS),
+        ] {
+            assert!(!src.is_empty(), "panel asset {name} is empty");
+        }
+    }
+
+    #[test]
+    fn asset_present_faceplate_css() {
+        assert!(!FACEPLATE_CSS.is_empty(), "faceplate.css asset is empty");
+        // Sanity-check that the assembled page spliced the CSS (no placeholder left).
+        assert!(!assembled().contains("__CSS__"), "__CSS__ placeholder not spliced");
     }
 
     #[test]
@@ -978,17 +1009,15 @@ mod tests {
         assert_eq!(strip_esm_exports(with_import), "\nconst X = 1;\n");
     }
 
-    #[test]
-    fn faceplate_text_input_bridge_wired() {
-        // 0048: faceplate exposes `window.vxn.promptText(title, initial,
-        // cb)` and the dispatcher routes `text_input_result` back to the
-        // pending callback. JS plumbing only — the actual NSWindow is
-        // verified by running the plugin in-DAW (see ticket Acceptance).
-        assert!(assembled().contains("window.vxn.promptText"));
-        assert!(assembled().contains("_textInputCallbacks"));
-        assert!(assembled().contains("send.requestTextInput("));
-        assert!(assembled().contains("ev.kind === 'text_input_result'"));
-    }
+    // NOTE: faceplate_text_input_bridge_wired, faceplate_status_pill_wired,
+    // faceplate_preset_bar_wired, faceplate_browser_mutation_flows_wired,
+    // faceplate_save_as_modal_wired, faceplate_browser_search_is_cross_folder,
+    // faceplate_browser_panel_wired, header_switch_primitive_wired,
+    // keys_panel_wired, filter_mode_notch_dims_slope_strip,
+    // faceplate_browser_drag_drop_wired, faceplate_bridge_object_intact,
+    // faceplate_batched_bridge_wired were all pure str::contains() wiring
+    // guards — replaced by asset_present_* guards above + the Vitest suite
+    // (VXN_JS_TESTS=1 cargo test -p vxn-ui-web).
 
     #[test]
     fn parses_request_and_result_text_input() {
@@ -1047,164 +1076,6 @@ mod tests {
         assert!(v["value"].is_null());
     }
 
-    #[test]
-    fn faceplate_status_pill_wired() {
-        // 0046: Status ViewEvent flashes the status chip. 0049 re-anchored
-        // it from the lower-right corner into the preset bar; the
-        // `.status-pill` class + `statusPill.flash` API are unchanged so
-        // the bridge contract here stays the same.
-        assert!(assembled().contains(".status-pill"));
-        assert!(assembled().contains(".status-pill.visible"));
-        assert!(assembled().contains("statusPill"));
-        assert!(assembled().contains("statusPill.flash"));
-        assert!(assembled().contains("ev.kind === 'status'"));
-    }
-
-    #[test]
-    fn faceplate_preset_bar_wired() {
-        // 0049: preset bar replaces the empty placeholder div. Markup
-        // carries the current-name slot, prev/next walker buttons, the
-        // Browse toggle, the Save As button, and the in-bar status chip.
-        for id in [
-            "id=\"pbar-prev\"",
-            "id=\"pbar-name\"",
-            "id=\"pbar-next\"",
-            "id=\"pbar-browse\"",
-            "id=\"pbar-save\"",
-            "id=\"pbar-status\"",
-        ] {
-            assert!(assembled().contains(id), "preset bar missing {id}");
-        }
-        // JS bridge: prev/next post `step_preset` with signed delta; Save
-        // As funnels through the 0048 popup then posts `save_preset` with
-        // `folder: null`; preset_loaded sets the name.
-        assert!(assembled().contains("send.stepPreset(-1)"));
-        assert!(assembled().contains("send.stepPreset(1)"));
-        assert!(assembled().contains("send.savePreset("));
-        // Save As funnels through the in-WebView modal (name field +
-        // folder dropdown) rather than going straight through the native
-        // popup. The modal posts `save_preset` directly; presetBar just
-        // opens it. `browserPanel.getSaveFolder()` is still exposed for
-        // other call sites but no longer the Save As path.
-        assert!(assembled().contains("browserPanel.openSaveAs"));
-        assert!(assembled().contains("ev.kind === 'preset_loaded'"));
-        assert!(assembled().contains("presetBar.setName"));
-        // 0050: Browse toggles the panel itself via `browserPanel.setOpen`;
-        // the `onOpenChange` callback drives the bar's active-class mirror.
-        // (0081 dropped the dead `window.vxn._browserOpen` write.)
-        assert!(assembled().contains("browserPanel.setOpen"));
-    }
-
-    #[test]
-    fn faceplate_browser_mutation_flows_wired() {
-        // 0051: every mutation op the controller exposes has a JS post
-        // site inside the browser panel. The IIFE wires:
-        // - Rename: posts `rename_preset` / `rename_folder` via the
-        //   text-input popup.
-        // - Delete: modal confirm posts `delete_preset` / `delete_folder`
-        //   (the Vizia version's two-click row-armed pattern was scrapped
-        //   here — the right-click menu obscured the row text).
-        // - Move to: submenu posts `move_preset` with the destination
-        //   folder (or null for user root).
-        // - New Folder: "+ New" button on the user header posts
-        //   `new_folder` after the popup commits.
-        assert!(assembled().contains("send.renamePreset("));
-        assert!(assembled().contains("send.renameFolder("));
-        assert!(assembled().contains("send.deletePreset("));
-        assert!(assembled().contains("send.deleteFolder("));
-        assert!(assembled().contains("send.movePreset("));
-        assert!(assembled().contains("send.newFolder("));
-        // Modal confirm primitive present; ESC tears down modal → menu →
-        // panel in that order (one level per press).
-        assert!(assembled().contains("openDeleteConfirm"));
-        assert!(assembled().contains(".browser-modal"));
-        assert!(assembled().contains(".browser-modal-backdrop"));
-        assert!(assembled().contains("if (modalEl)"));
-        // Right-click hooks on both row types (factory rows must not
-        // attach one — the JS gates by selectedFolder.kind / key.kind).
-        assert!(assembled().contains("'contextmenu'"));
-        // Move-to submenu helper present; mirrors `vxn_ui_vizia::move_targets`.
-        // 0077 lifted `moveTargets` to module scope (so the Node test
-        // suite can import it pure) and added `corpus` as an explicit arg.
-        assert!(assembled().contains("moveTargets(currentName, corpus)"));
-        assert!(assembled().contains(".browser-menu"));
-        assert!(assembled().contains(".browser-submenu"));
-        assert!(assembled().contains(".browser-new-folder"));
-    }
-
-    #[test]
-    fn faceplate_save_as_modal_wired() {
-        // Save As modal hosts a name field (captured via the native
-        // popup for spacebar-safe entry) + a folder dropdown over user
-        // folders. The modal posts `save_preset { name, folder }`.
-        assert!(assembled().contains("openSaveAsModal"));
-        // The name field reuses the injected `promptText` (VXN1's glue wires
-        // it to `window.vxn.promptText`) so Space and friends still route
-        // through the native NSWindow on macOS.
-        assert!(assembled().contains("promptText('Preset name'"));
-        // Folder choices come from a `<select>` populated from the corpus.
-        assert!(assembled().contains("folderOptions"));
-        assert!(assembled().contains(".save-as-select"));
-        // Modal anchors over the faceplate root (injected by the glue), not
-        // the browser panel — so Save As works whether the browser is open
-        // or not.
-        assert!(assembled().contains("faceplateRoot().appendChild(wrap)"));
-        assert!(assembled().contains("faceplateRoot: () => document.getElementById('faceplate')"));
-        // Save button is disabled until the name field is non-empty
-        // (gateOk toggles the disabled attribute directly).
-        assert!(assembled().contains("gateOk"));
-        assert!(assembled().contains(".browser-modal-btn:disabled"));
-    }
-
-    #[test]
-    fn faceplate_browser_search_is_cross_folder() {
-        // Non-empty query: the right pane switches to flat search results
-        // covering the whole corpus (factory + user) instead of filtering
-        // within the selected folder only.
-        assert!(assembled().contains("collectSearchHits"));
-        assert!(assembled().contains("'Factory · '"));
-        assert!(assembled().contains("'User · '"));
-        // Search-mode row carries name + muted origin label.
-        assert!(assembled().contains(".browser-row.search-row"));
-        assert!(assembled().contains(".browser-row-origin"));
-    }
-
-    #[test]
-    fn faceplate_browser_panel_wired() {
-        // 0050: floating two-pane browser. Markup carries the search input,
-        // the folders + presets panes, and the click-outside backdrop. The
-        // panel and its backdrop start hidden (`hidden` attribute, toggled
-        // by `setOpen`).
-        for needle in [
-            r#"id="browser-panel""#,
-            r#"id="browser-backdrop""#,
-            r#"id="browser-folders""#,
-            r#"id="browser-presets""#,
-            r#"id="browser-search-input""#,
-            r#"id="browser-search-clear""#,
-        ] {
-            assert!(assembled().contains(needle), "browser panel missing {needle}");
-        }
-        // JS module + Rust→JS corpus channel.
-        assert!(assembled().contains("const browserPanel"));
-        assert!(assembled().contains("window.__vxn.applyPresetCorpus"));
-        // Bootstrap stub funnels the first snapshot into `_earlyPresetCorpus`
-        // so any corpus push that races init() is replayed.
-        assert!(assembled().contains("_earlyPresetCorpus"));
-        // Click handlers: folder click rerenders presets, preset click posts
-        // load_factory or load_user (browser panel routes by folder kind).
-        assert!(assembled().contains("send.loadFactory("));
-        assert!(assembled().contains("send.loadUser("));
-        // Dismissal: ESC + outside-click backdrop both close the panel.
-        assert!(assembled().contains("e.key !== 'Escape'"));
-        assert!(assembled().contains("backdropEl.addEventListener('click'"));
-        // Highlight: preset_loaded fans `source` into the panel's
-        // currently-loaded marker.
-        assert!(assembled().contains("browserPanel.setCurrentSource"));
-        // Section headers match the Vizia browser's labels.
-        assert!(assembled().contains("'FACTORY'"));
-        assert!(assembled().contains("'USER'"));
-    }
 
     #[test]
     fn corpus_snapshot_groups_and_sorts() {
@@ -1274,16 +1145,34 @@ mod tests {
         assert_eq!(bass[0]["path"], "/u/Bass/a.preset");
     }
 
-    // ── Row 1 + Row 2 control mount points (0041, 0041a, 0042, 0043) ────
+    // ── Control mount-point helpers (0041, 0041a, 0042, 0043, 0044, 0098) ─
+
+    /// Assert that every `(kind, name, label)` triple in `mounts` produces
+    /// a matching DOM mount marker in the assembled faceplate. Mount markers
+    /// are the behavioural DOM contract — they're what the JS bind step
+    /// walks at runtime — so they're worth keeping; the four-test layout is
+    /// deduped here so changes touch one place.
+    ///
+    /// Header-switch controls omit `data-label`; for those pass `label = ""`
+    /// and the helper uses the shorter `data-control/data-param` form.
+    fn assert_mounts(mounts: &[(&str, &str, &str)]) {
+        for &(kind, name, label) in mounts {
+            let needle = if kind == "header-switch" || label.is_empty() {
+                format!(r#"data-control="{kind}" data-param="{name}""#)
+            } else {
+                format!(r#"data-control="{kind}" data-param="{name}" data-label="{label}""#)
+            };
+            assert!(
+                assembled().contains(&needle),
+                "mount point missing: {needle}",
+            );
+        }
+    }
 
     #[test]
-    fn row1_osc_mixer_panels_have_expected_mounts() {
-        // Wave + four faders per Osc panel; four level faders + one Col
-        // switch on the Mixer; LFO 1 (Shape/Rate/Delay/Fade up top, Sync +
-        // Free toggles in the strip) and LFO 2 (Shape/Rate, Sync in the
-        // strip). Param names are descriptor `name`s so a `PatchParam` enum
-        // reorder doesn't break the HTML.
-        for (kind, name, label) in [
+    fn all_rows_have_expected_mounts() {
+        // Row 1 — LFO 1/2, Osc 1/2, Mixer
+        assert_mounts(&[
             // LFO 1
             ("wave",   "lfo_shape",       "Shape"),
             ("fader",  "lfo_rate",        "Rate"),
@@ -1313,45 +1202,23 @@ mod tests {
             ("fader",  "sub_level",   "Sub"),
             ("fader",  "noise_level", "Noise"),
             ("switch", "noise_color", "Col"),
-        ] {
-            let marker = format!(
-                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
-            );
-            assert!(
-                assembled().contains(&marker),
-                "Row 1 mount point missing: {marker}",
-            );
-        }
-    }
+        ]);
 
-    #[test]
-    fn row2_env_filter_panels_have_expected_mounts() {
-        // Env 1/2: ADSR faders + Shape switch in the bottom strip (Vizia
-        // maps the 2-variant Lin/Exp enum to a switch via `in_bottom_strip`).
-        // VCA: AmpLfoSrc dropdown + Depth fader; AmpEnvBypass in strip.
-        // Filter: HPF/Cutoff/Reso/Drive faders + Mode dropdown; Slope (12/24
-        // dB enum) and KeyTrk (bool) ride the strip. Filter Mod: four fixed
-        // depths into cutoff (E006), no source selectors. Names match the
-        // `ParamDesc.name` fields so a `PatchParam` enum reorder doesn't
-        // break the HTML.
-        for (kind, name, label) in [
-            // Env 1
+        // Row 2 — Env 1/2, VCA, Filter, Filter Mod
+        assert_mounts(&[
             ("fader",  "env1_attack",  "A"),
             ("fader",  "env1_decay",   "D"),
             ("fader",  "env1_sustain", "S"),
             ("fader",  "env1_release", "R"),
             ("switch", "env1_shape",   "Shape"),
-            // Env 2
             ("fader",  "env2_attack",  "A"),
             ("fader",  "env2_decay",   "D"),
             ("fader",  "env2_sustain", "S"),
             ("fader",  "env2_release", "R"),
             ("switch", "env2_shape",   "Shape"),
-            // VCA
             ("buttongroup", "amp_lfo_src",    "LFO"),
             ("fader",       "amp_lfo_depth",  "Depth"),
             ("switch",      "amp_env_bypass", "Gate"),
-            // Filter
             ("fader",       "hpf_cutoff",       "HPF"),
             ("fader",       "cutoff",           "Cutoff"),
             ("fader",       "resonance",        "Reso"),
@@ -1359,152 +1226,77 @@ mod tests {
             ("buttongroup", "filter_mode",      "Mode"),
             ("switch",      "filter_slope",     "Slope"),
             ("switch",      "cutoff_tuned",     "Tuned"),
-            // Filter Mod
             ("fader", "vel_cutoff_depth",  "Vel"),
             ("fader", "cutoff_lfo1_depth", "LFO1"),
             ("fader", "cutoff_lfo2_depth", "LFO2"),
             ("fader", "cutoff_env_depth",  "Env1"),
             ("fader", "filter_key_track",  "Key"),
-        ] {
-            let marker = format!(
-                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
-            );
-            assert!(
-                assembled().contains(&marker),
-                "Row 2 mount point missing: {marker}",
-            );
-        }
-    }
+        ]);
 
-    #[test]
-    fn row3_mod_route_panels_have_expected_mounts() {
-        // 0044: Pitch Mod / PWM Mod each carry two route columns (depth
-        // fader + source buttongroup). Cross Mod is the wide custom panel
-        // (Type buttongroup + Amount fader, Src buttongroup + Mod fader).
-        // Mod Wheel = four cutoff/pwm/reso/pitch destination faders. Bend
-        // is the single-fader pinned-width panel. Names match the
-        // `ParamDesc.name` fields so a `PatchParam` enum reorder doesn't
-        // break the HTML.
-        for (kind, name, label) in [
-            // Pitch Mod
+        // Row 3 — Pitch Mod, PWM Mod, Cross Mod, Mod Wheel, Bend
+        assert_mounts(&[
             ("buttongroup", "pitch_lfo_src",      "LFO"),
             ("switch",      "pitch_lfo_mod_only", "Mod"),
             ("buttongroup", "pitch_env_src",      "Env"),
             ("switch",      "pitch_env_mod_only", "Mod"),
-            // PWM Mod
             ("buttongroup", "pwm_lfo_src",   "LFO"),
             ("buttongroup", "pwm_env_src",   "Env"),
-            // Cross Mod
-            ("buttongroup", "cross_mod_type",       "Type"),
-            ("fader",       "cross_mod_amount",     "Amt"),
-            // Mod Wheel
-            ("fader", "mod_wheel_pwm",        "PWM"),
-            ("fader", "mod_wheel_cutoff",     "Cutoff"),
-            ("fader", "mod_wheel_reso",       "Reso"),
+            ("buttongroup", "cross_mod_type",  "Type"),
+            ("fader",       "cross_mod_amount", "Amt"),
+            ("fader", "mod_wheel_pwm",             "PWM"),
+            ("fader", "mod_wheel_cutoff",          "Cutoff"),
+            ("fader", "mod_wheel_reso",            "Reso"),
             ("fader", "mod_wheel_cross_mod_sweep", "X-Mod"),
-            // Bend
-            ("fader", "pitch_wheel_depth", "Range"),
-        ] {
-            let marker = format!(
-                r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
-            );
-            assert!(
-                assembled().contains(&marker),
-                "Row 3 mount point missing: {marker}",
-            );
-        }
-        // Pitch Mod / PWM Mod depth faders carry `data-no-label` — the
-        // route header (LFO / Env) is the only column label, matching the
-        // source buttongroup beside them.
-        for name in [
-            "pitch_lfo_depth",
-            "pitch_env_depth",
-            "pwm_lfo_depth",
-            "pwm_env_depth",
-        ] {
-            let marker = format!(
-                r#"data-control="fader" data-param="{name}" data-dim-when-src-off="#,
-            );
-            assert!(
-                assembled().contains(&marker),
-                "Pitch Mod depth fader missing: {marker}",
-            );
+            ("fader", "pitch_wheel_depth",         "Range"),
+        ]);
+        // Pitch Mod / PWM Mod depth faders have no label (route header
+        // labels the column) but do carry data-dim-when-src-off.
+        for name in ["pitch_lfo_depth", "pitch_env_depth", "pwm_lfo_depth", "pwm_env_depth"] {
+            let marker = format!(r#"data-control="fader" data-param="{name}" data-dim-when-src-off="#);
+            assert!(assembled().contains(&marker), "Pitch/PWM Mod depth fader missing: {marker}");
             assert!(
                 !assembled().contains(&format!(r#"data-param="{name}" data-label="#)),
-                "Pitch Mod depth fader {name} should not carry data-label",
+                "Pitch/PWM Mod depth fader {name} should not carry data-label",
             );
         }
-    }
 
-    #[test]
-    fn row4_voice_master_fx_panels_have_expected_mounts() {
-        // E018 / 0098: Voice / FX (tabbed Phaser/Chorus/Delay/Reverb) /
-        // Master. Voice carries AssignMode (display-order 0,3,1,2 →
-        // Poly/Twin/Unison/Solo) + Detune-Legato + Glide. Master is
-        // Tune/Volume/Drift faders with Oversample + Limit toggles in the
-        // bottom strip. The FX panel hosts four tab panes — every effect's
-        // header-switch is mounted (CSS hides the inactive ones), and
-        // every fader/switch behind each tab is bound normally. Names =
-        // descriptor names.
-        for (kind, name, label) in [
-            // Voice
+        // Row 4 — Voice, Master, FX (Phaser/Chorus/Delay/Reverb tabs)
+        assert_mounts(&[
             ("buttongroup",   "assign_mode",     "Assign"),
             ("detune-legato", "unison_detune",   "Detune"),
             ("fader",         "portamento_time", "Glide"),
-            // Master
             ("fader",  "master_tune",   "Tune"),
             ("fader",  "master_volume", "Volume"),
             ("fader",  "master_drift",  "Drift"),
             ("switch", "oversample",    "OvSmp"),
             ("switch", "limiter_on",    "Limit"),
-            // FX → Phaser tab
-            ("header-switch", "phaser_on",    ""),
+            // FX tab header-switches (label="" → shorter form)
+            ("header-switch", "phaser_on",  ""),
             ("fader",         "phaser_rate",  "Rate"),
             ("fader",         "phaser_depth", "Depth"),
             ("fader",         "phaser_fb",    "FB"),
             ("fader",         "phaser_mix",   "Mix"),
-            // FX → Chorus tab
-            ("header-switch", "chorus_on",    ""),
+            ("header-switch", "chorus_on",  ""),
             ("fader",         "chorus_rate",  "Rate"),
             ("fader",         "chorus_depth", "Depth"),
             ("fader",         "chorus_mix",   "Mix"),
-            // FX → Delay tab
-            ("header-switch", "delay_on",       ""),
+            ("header-switch", "delay_on",   ""),
             ("fader",         "delay_time",     "Time"),
             ("fader",         "delay_feedback", "FB"),
             ("fader",         "delay_mix",      "Mix"),
             ("switch",        "delay_sync",     "Sync"),
-            // FX → Reverb tab (FDN — four direct knobs).
-            ("header-switch", "reverb_on",    ""),
+            ("header-switch", "reverb_on",  ""),
             ("fader",         "reverb_size",  "Size"),
             ("fader",         "reverb_decay", "Decay"),
             ("fader",         "reverb_damp",  "Damp"),
             ("fader",         "reverb_mix",   "Mix"),
-        ] {
-            // Header-switch slots carry no `data-label` attribute; assert
-            // on the kind+name pair instead.
-            let needle = if kind == "header-switch" {
-                format!(r#"data-control="{kind}" data-param="{name}""#)
-            } else {
-                format!(
-                    r#"data-control="{kind}" data-param="{name}" data-label="{label}""#,
-                )
-            };
-            assert!(
-                assembled().contains(&needle),
-                "Row 4 mount point missing: {needle}",
-            );
-        }
-        // Voice's AssignMode buttongroup carries the display permutation
-        // (descriptor order = Poly/Unison/Solo/Twin → display order =
-        // Poly/Twin/Unison/Solo). If the descriptor order changes, this
-        // attribute changes alongside; the test guards the wiring.
+        ]);
+        // Row 4 structural extras: AssignMode display permutation,
+        // Detune-Legato composite attr dependencies.
         assert!(
             assembled().contains(r#"data-param="assign_mode" data-label="Assign" data-order="0,3,1,2""#),
             "AssignMode missing display-order remap",
         );
-        // Detune-Legato carries its two extra param-name dependencies so
-        // a layer rebind can re-resolve both alongside the primary param.
         assert!(
             assembled().contains(r#"data-legato-param="legato""#),
             "Detune-Legato missing data-legato-param",
@@ -1642,35 +1434,9 @@ mod tests {
         assert!(assembled().contains("collectDimRuleSpecs"));
     }
 
-    #[test]
-    fn edit_layer_rebind_wired() {
-        // 0045: EditLayerChanged ViewEvent dispatch + layer-rebind logic
-        // present. The actual rebind walks LAYERED_CELLS and re-resolves
-        // each per-patch name → id via paramIdByNameAtLayer using the
-        // patchCount splice.
-        assert!(assembled().contains("edit_layer_changed"));
-        assert!(assembled().contains("rebindAllForLayer"));
-        assert!(assembled().contains("paramIdByNameAtLayer"));
-        // Placeholder lives in bridge.js pre-splice — assembled() has already
-        // replaced it, so check the raw bridge module.
-        assert!(BRIDGE_JS.contains("__PATCH_COUNT__"));
-        // The splice replaces the placeholder at render time.
-        let html = build_faceplate_html();
-        assert!(!html.contains("__PATCH_COUNT__"), "patchCount placeholder must be replaced");
-        assert!(
-            html.contains(&format!("patchCount: {}", vxn_app::PATCH_COUNT)),
-            "patchCount splice value missing from rendered html",
-        );
-    }
-
-    #[test]
-    fn header_switch_primitive_wired() {
-        // 0045: Chorus + Delay carry a header-switch in
-        // `.panel-header-toggle-slot`; CSS provides the active palette.
-        assert!(assembled().contains("makeHeaderSwitch"));
-        assert!(assembled().contains(".panel-header-switch"));
-        assert!(assembled().contains(".panel-header-switch.active"));
-    }
+    // NOTE: edit_layer_rebind_wired (substring wiring assertions) and
+    // header_switch_primitive_wired were collapsed; placeholder-guard content
+    // from edit_layer_rebind_wired lives in asset_present_bridge_js above.
 
     #[test]
     fn edit_layer_changed_serializes() {
@@ -1698,70 +1464,14 @@ mod tests {
         assert_eq!(v["note"], 72);
     }
 
+    // NOTE: keys_panel_wired and filter_mode_notch_dims_slope_strip were
+    // collapsed (pure str::contains wiring); the value-only guard from
+    // keys_panel_wired is kept below.
     #[test]
-    fn keys_panel_wired() {
-        // 0053: Keys panel — mode/edit toggles, split slider with
-        // C0..C7 range, note-name readout, Reset button. UiEvent posts:
-        //   - set_key_mode (Whole / Dual / Split row)
-        //   - set_edit_layer (Upper / Lower row, hidden in Whole)
-        //   - set_split_point (slider, visible only in Split)
-        //   - reset_layer (Reset button — both layers in Whole, the
-        //     active layer otherwise)
-        // ViewEvent dispatch:
-        //   - key_mode_changed → keysPanel.setMode
-        //   - edit_layer_changed → keysPanel.setLayer (in addition to
-        //     the per-patch rebind)
-        //   - split_point_changed → keysPanel.setSplit
-        assert!(assembled().contains("const keysPanel = "));
-        assert!(assembled().contains("send.setKeyMode("));
-        assert!(assembled().contains("send.setEditLayer("));
-        assert!(assembled().contains("send.setSplitPoint("));
-        assert!(assembled().contains("send.resetLayer("));
-        assert!(assembled().contains("ev.kind === 'key_mode_changed'"));
-        assert!(assembled().contains("ev.kind === 'split_point_changed'"));
-        assert!(assembled().contains("keysPanel.setMode"));
-        assert!(assembled().contains("keysPanel.setLayer"));
-        assert!(assembled().contains("keysPanel.setSplit"));
-        // Note-name readout: covers a C0..C7 span, matches the vizia
-        // editor's `note_name`. The helper is now the shared `noteName`
-        // (vxn-core-ui-web/assets/cutoff-tuned.js, 0140; formerly
-        // `keysNoteName`), spliced ahead of panels.js.
-        assert!(assembled().contains("function noteName("));
-        assert!(assembled().contains("KEYS_SPLIT_MIN = 12"));
-        assert!(assembled().contains("KEYS_SPLIT_MAX = 96"));
-        // Default split: matches DEFAULT_SPLIT_POINT (C4) so a
-        // double-click reset lands on the same plain value the vizia
-        // editor's `on_double_click` posts.
+    fn keys_default_split_point_matches_engine() {
+        // DEFAULT_SPLIT_POINT must equal 60 (C4) — the double-click reset on
+        // the vizia editor posts this value; the web Keys panel must agree.
         assert_eq!(vxn_app::DEFAULT_SPLIT_POINT, 60);
-        assert!(assembled().contains("KEYS_DEFAULT_SPLIT = 60"));
-        // The slot reserved by 0040 now carries real markup, not a
-        // bare placeholder. The vizia overlay note is gone.
-        assert!(assembled().contains("data-name=\"Keys\""));
-        assert!(!assembled().contains("still rendered by vizia"));
-    }
-
-    #[test]
-    fn filter_mode_notch_dims_slope_strip() {
-        // 0043: Filter Mode = Notch dims the Slope strip cell (DSP no-op,
-        // see vxn-dsp/src/ota_ladder.rs). Test guards the wiring rather
-        // than the runtime toggle:
-        //   - CSS targets both `.ctl.dimmed` and `.ctl-strip.dimmed` (slope
-        //     lives in the strip).
-        //   - JS resolves `filter_mode` + `filter_slope` and looks up the
-        //     Notch variant by label (so a `FILTER_MODE_LABELS` reorder
-        //     doesn't desync).
-        //   - The dispatch branch keys on `FILTER_MODE_ID`.
-        // Asserting on the assembled HTML keeps the test substring-based —
-        // the existing Free-run dim has the same shape.
-        assert!(
-            assembled().contains(".ctl-strip.dimmed"),
-            "missing strip dim selector (slope dim relies on it)",
-        );
-        assert!(assembled().contains("BUILTIN_DIM_SPECS"));
-        assert!(assembled().contains("'filter-notch'"));
-        assert!(assembled().contains("variantIdx('filter_mode', 'Notch'"));
-        assert!(assembled().contains("data-param=\"filter_slope\""));
-        assert!(assembled().contains("applyDimRulesFor("));
     }
 
     #[test]
@@ -1876,64 +1586,9 @@ mod tests {
         assert!(seen_float && seen_int && seen_bool && seen_enum);
     }
 
-    #[test]
-    fn faceplate_browser_drag_drop_wired() {
-        // 0052: HTML5 DnD. Drag source = user-side preset rows (folder
-        // view + search view). Drop target = user folder rows (left
-        // pane). Factory rows have no DnD listeners on either side —
-        // gated by `selectedFolder.kind === 'user'` /
-        // `key.kind === 'user'`.
-        //
-        // Wire shape:
-        //   - `row.draggable = true` + `dragstart` sets
-        //     `dataTransfer.setData('vxn/preset', path)` (custom MIME
-        //     guards against external dropzones receiving a preset path)
-        //     plus module-level `dragSourcePath` / `dragSourceFolder`
-        //     (read during `dragover` because `dataTransfer.getData` is
-        //     not callable then).
-        //   - Drop target preventDefaults `dragover` only when source is
-        //     a vxn preset AND the target is not the source folder; the
-        //     source folder shows `.drag-blocked` instead.
-        //   - Drop posts `op: 'move_preset'` with the destination
-        //     folder name (or null for the virtual user root).
-        // The Move-to ▸ submenu (0051) shares the `move_preset` op
-        // string, so this test additionally asserts the DnD-specific
-        // bridge surface (drag listeners, MIME, drop CSS).
-        assert!(assembled().contains("'vxn/preset'"));
-        assert!(assembled().contains("wirePresetDragSource"));
-        assert!(assembled().contains("'dragstart'"));
-        assert!(assembled().contains("'dragover'"));
-        assert!(assembled().contains("'dragleave'"));
-        assert!(assembled().contains("'dragend'"));
-        // The drop handler shares the `move_preset` op with the Move-to
-        // submenu; the DnD-specific path passes `dragSourcePath` rather
-        // than the menu's `target.path`. The `dragSourcePath` identifier
-        // is used by both the dragstart write and the drop read — its
-        // mere presence proves the bridge is wired through.
-        assert!(assembled().contains("send.movePreset(dragSourcePath"));
-        // Drop-target gating: factory rows must not get listeners. The
-        // `appendFolderRow` gate keys on `key.kind === 'user'`; assert
-        // the source folder no-op branch is present (key.name ===
-        // dragSourceFolder).
-        assert!(assembled().contains("key.name === dragSourceFolder"));
-        // CSS for drop-target highlight + source-folder block + drag-
-        // source dimming. `.drag-over` is the live drop highlight;
-        // `.drag-blocked` shows the source folder mid-drag.
-        assert!(assembled().contains(".browser-row.drag-over"));
-        assert!(assembled().contains(".browser-row.drag-blocked"));
-        assert!(assembled().contains(".browser-row.dragging"));
-        // Follow-path plumbing: PresetCorpusChanged carries an
-        // Option<PathBuf>; non-null means reselect the folder and
-        // scroll the moved row into view. Dispatcher branch + module
-        // method both present.
-        assert!(assembled().contains("ev.kind === 'preset_corpus_changed'"));
-        assert!(assembled().contains("browserPanel.followPath"));
-        assert!(assembled().contains("function followPath("));
-        // Rendered rows tag themselves with `data-path` so followPath
-        // can locate the moved row via a CSS attribute selector.
-        assert!(assembled().contains("r.dataset.path = p.path"));
-        assert!(assembled().contains("r.dataset.path = h.source.path"));
-    }
+    // NOTE: faceplate_browser_drag_drop_wired was a pure str::contains()
+    // wiring guard — collapsed; see asset_present_* guards above +
+    // the Vitest suite for live DnD behaviour coverage.
 
     // ── JS suite gate (E015 / 0078) ─────────────────────────────────────
     //
