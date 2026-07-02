@@ -291,6 +291,12 @@ fn bundle_vst3(release: bool, install: bool, universal: bool) -> Result<(), Stri
     if universal {
         cfg.arg("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64");
     }
+    // Ninja is single-config: without an explicit build type it defaults to an
+    // empty/Debug config (the `--config Release` on the build step is ignored),
+    // leaving the C++ side on the debug CRT while the Rust staticlib is built
+    // `--release`. Pin Release here so both sides use the release runtime; it is
+    // harmless on multi-config generators, which honour `--config` instead.
+    cfg.arg("-DCMAKE_BUILD_TYPE=Release");
     // Prefer Ninja when present (fast, single-config); otherwise the platform
     // default generator. The `--config Release` on the build below is harmless
     // on Ninja and required on multi-config generators (Xcode/MSBuild).

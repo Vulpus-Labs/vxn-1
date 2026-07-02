@@ -37,6 +37,17 @@ project(vxn1-wrapper LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The Rust staticlib links against the dynamic MSVC runtime (rustc's default,
+# and what a `--release` build emits). Force every C++ target — the VST3 SDK
+# and clap-wrapper glue included — onto the same dynamic runtime so the final
+# link doesn't mix static (libcmt/libcpmt) and dynamic (msvcrt) CRTs, which
+# LNK2005/LNK2038 out. CMP0091 NEW routes the choice through
+# MSVC_RUNTIME_LIBRARY instead of hard-coded /MT|/MD compile flags.
+if(WIN32)
+  cmake_policy(SET CMP0091 NEW)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 # The wrapper compiles an Objective-C++ source (detail/os/macos.mm); enable the
 # languages at top level so the toolchain is registered for the whole tree.
 if(APPLE)
