@@ -4,3 +4,7 @@ target/
 .DS_Store
 **/node_modules/
 .claude/worktrees/
+.claude/settings.json
+.claude/settings.local.json
+.agents/
+skills-lock.json
