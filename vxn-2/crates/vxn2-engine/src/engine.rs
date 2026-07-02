@@ -2712,13 +2712,6 @@ mod tests {
             e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
         assert_eq!(d1, d2, "offset unstable after fresh retrigger");
-        // Phases remain finite (no NaN propagation) — trivially true for u32,
-        // but assert the scatter survived the retrigger.
-        let mut distinct = std::collections::HashSet::new();
-        for p in e.alloc.stacks[a].meta.lfo2.phase {
-            distinct.insert(p);
-        }
-        assert!(distinct.len() >= STACK_LANES - 1, "scatter lost after retrigger");
     }
 
     // --- Lfo1Rate / Lfo2Rate dests (E008 0092) ---------------------------

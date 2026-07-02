@@ -177,8 +177,13 @@ fn algo_sweep_every_algo_renders_finite() {
         e.note_on(64, 100);
         let (peak, _) = render(&mut e, 24);
         assert!(
-            peak.is_finite() && peak >= 0.0,
-            "algo {} non-finite peak {peak}",
+            peak.is_finite(),
+            "algo {} produced non-finite peak {peak}",
+            algo
+        );
+        assert!(
+            peak > 0.0,
+            "algo {} produced no audible output (peak {peak})",
             algo
         );
     }

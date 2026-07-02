@@ -510,9 +510,24 @@ mod tests {
     /// guard against u8 wraparound bugs upstream.)
     #[test]
     fn resolve_route_clamps() {
-        let _ = resolve_route(0);
-        let _ = resolve_route(33);
-        let _ = resolve_route(255);
+        // algo 0 and algo 255 both saturate to algo 1 — they must resolve to
+        // the exact same route function.  algo 33 saturates to algo 32.
+        // Mirroring `component_range_guards` which tests the same saturation
+        // contract for `pitch_stack_component`.
+        let algo1 = resolve_route(1);
+        let algo32 = resolve_route(32);
+        assert_eq!(
+            resolve_route(0) as usize, algo1 as usize,
+            "algo 0 must clamp to algo 1's route"
+        );
+        assert_eq!(
+            resolve_route(33) as usize, algo32 as usize,
+            "algo 33 must clamp to algo 32's route"
+        );
+        assert_eq!(
+            resolve_route(255) as usize, algo32 as usize,
+            "algo 255 must clamp to algo 32's route"
+        );
     }
 
     // ---- pitch_stack_component (ticket 0067) ----------------------------

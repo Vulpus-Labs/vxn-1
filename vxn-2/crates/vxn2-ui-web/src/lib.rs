@@ -501,6 +501,38 @@ mod tests {
             assert!(entry.get("kind").is_some(), "missing kind at {i}");
             assert_eq!(entry["id"].as_u64().unwrap() as usize, i);
         }
+        // Spot-check: verify "algo" descriptor field values match the engine's
+        // descriptor exactly (catches mismatches between build_params_json
+        // serialisation and the actual param table).
+        let algo_id = vxn2_engine::params::id_of("algo").expect("algo param not found");
+        let algo_desc = vxn2_engine::params::core_desc_for_clap_id(algo_id)
+            .expect("algo descriptor missing");
+        let entry = &arr[algo_id];
+        assert_eq!(
+            entry["name"].as_str().unwrap(),
+            algo_desc.name,
+            "algo name mismatch in params JSON"
+        );
+        assert_eq!(
+            entry["label"].as_str().unwrap(),
+            algo_desc.label,
+            "algo label mismatch in params JSON"
+        );
+        assert_eq!(
+            entry["min"].as_f64().unwrap() as f32,
+            algo_desc.min,
+            "algo min mismatch in params JSON"
+        );
+        assert_eq!(
+            entry["max"].as_f64().unwrap() as f32,
+            algo_desc.max,
+            "algo max mismatch in params JSON"
+        );
+        assert_eq!(
+            entry["default"].as_f64().unwrap() as f32,
+            algo_desc.default,
+            "algo default mismatch in params JSON"
+        );
     }
 
     #[test]
@@ -645,14 +677,10 @@ mod tests {
         assert!(MAIN_JS.contains("resolveTextInput"));
         assert!(MAIN_JS.contains("showFallbackDialog"));
         assert!(MAIN_JS.contains("vxn-text-input-fallback"));
-        // The numeric-entry path brackets the commit with begin_gesture /
-        // end_gesture so host automation sees a clean atomic write.
-        assert!(
-            MAIN_JS.contains("begin_gesture")
-                && MAIN_JS.contains("set_param")
-                && MAIN_JS.contains("end_gesture"),
-            "numeric-entry gesture bracketing missing",
-        );
+        // The numeric-entry path calls set_param (plain-value write) in addition
+        // to the set_param_norm used by the fader — assert the plain-value path
+        // is present. begin_gesture / end_gesture are already asserted above.
+        assert!(MAIN_JS.contains("set_param"), "numeric-entry set_param call missing");
     }
 
     /// Dumps the spliced HTML to `/tmp/vxn2-faceplate.html` for manual

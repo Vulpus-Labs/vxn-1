@@ -1565,9 +1565,11 @@ mod tests {
     }
 
     #[test]
-    fn stack_pitch_route_evals_inert_no_panic() {
-        // Until 0069 wires the scatter, a stack-pitch route is harmless: it
-        // writes its own accumulator column (no panic) and nothing else.
+    fn stack_pitch_dest_writes_own_column_only() {
+        // `eval_dests` routes a stack-pitch dest to its own accumulator column
+        // and does NOT spill into the per-op pitch column. Pins the single-column
+        // write invariant: stack-pitch modulation is a separate accumulator from
+        // per-op pitch and the two must not alias.
         let mut table = MatrixTable::default();
         table.slots[0] =
             full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, CurveKind::Lin);
@@ -1578,7 +1580,7 @@ mod tests {
         // Lfo1 = 0.5, depth 1, gain 24 → 12 st in its own column.
         for k in 0..STACK_LANES {
             assert!((out[k][di] - 12.0).abs() < 1e-4);
-            // No per-op pitch column was touched (scatter is 0069).
+            // The per-op pitch column is untouched.
             assert_eq!(out[k][DestId::Op3Pitch.idx().unwrap()], 0.0);
         }
     }

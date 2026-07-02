@@ -369,9 +369,23 @@ mod tests {
 
     #[test]
     fn param_step_lands_at_offset() {
-        // A param change at offset N affects only the audio from N onward: render
-        // with the param applied at N, and compare against rendering the two
-        // halves with the old/new value — they must match at the split.
+        // A param change at offset N affects only the audio from N onward:
+        // samples [0..N) must be identical to a reference render without the
+        // param change (the host slices at the event offset and renders the
+        // pre-event region before applying the event).
+        //
+        // Reference: note-on only, no param change.
+        let note_ev = [Event::NoteOn {
+            offset: 0,
+            note: 60,
+            velocity: 1.0,
+        }];
+        let mut ref_host = Host::new(48_000.0);
+        load(&mut ref_host, &note_ev);
+        ref_host.render(1, 0, 60);
+        let ref_pre: Vec<f32> = ref_host.out_l[..64].to_vec();
+
+        // Sliced render: same note-on plus a param step at offset 64.
         let mut host = Host::new(48_000.0);
         load(
             &mut host,
@@ -383,16 +397,24 @@ mod tests {
                 },
                 Event::SetParam {
                     offset: 64,
-                    id: 2,
+                    id: 2, // PatchParam::Osc1Fine (Upper layer)
                     plain: 1.0,
                 },
             ],
         );
         host.render(2, 0, 60);
-        // The pre-offset region is driven only by the note-on; the post-offset
-        // region also by the param. The host must have rendered *something*
-        // audible spanning the offset (sanity that slicing didn't drop the tail).
-        assert!(onset(&host.out_l).is_some(), "no audio rendered");
+
+        // Pre-offset: the param hasn't been applied yet — identical to reference.
+        assert_eq!(
+            &host.out_l[..64],
+            ref_pre.as_slice(),
+            "samples before offset 64 were affected by a param change at 64"
+        );
+        // Post-offset: rendering continued past offset 64 (tail not dropped).
+        assert!(
+            onset(&host.out_l).is_some(),
+            "no audio rendered at all"
+        );
         assert!(
             host.out_l[120] != 0.0 || host.out_r[120] != 0.0,
             "tail after the param-step offset was not rendered"

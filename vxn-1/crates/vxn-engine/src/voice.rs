@@ -2409,14 +2409,27 @@ mod mod_tests {
     fn zero_drift_is_bit_exact_env() {
         // drift_amount = 0 → every per-voice env factor collapses to exactly
         // 1.0, so all voices get bit-identical params (equivalence contract).
+        // Verify by ticking every env2 voice from the attack onset and
+        // asserting bit-identical output across all voices — if any voice
+        // received a drifted time scale its attack slope would diverge.
         let mut bank = VoiceBank::new(48_000.0, 0xDEAD_BEEF);
         let e = (0.01_f32, 0.2, 0.6, 0.3);
         bank.set_envelopes(e, AdsrShape::Linear, e, AdsrShape::Linear, 0.0);
-        // With zero drift the multiplicative factor is 1.0 for every lane,
-        // independent of the trim draw — assert the math, not just lane 0.
-        for v in 0..N {
-            assert_eq!(1.0 + bank.trim.env_time[v] * TRIM_ENV_TIME * 0.0, 1.0);
-            assert_eq!(1.0 + bank.trim.sustain[v] * TRIM_SUSTAIN * 0.0, 1.0);
+        // Tick each env2 lane: triggered on the first sample (attack), gate held.
+        let samples: Vec<f32> = bank
+            .env2
+            .iter_mut()
+            .enumerate()
+            .map(|(_, env)| env.tick(true, true))
+            .collect();
+        // All lanes must be bit-identical — drift=0 means no per-voice scaling.
+        let first = samples[0];
+        assert!(first > 0.0, "env2 attack sample must be positive, got {first}");
+        for (v, &s) in samples.iter().enumerate() {
+            assert_eq!(
+                s, first,
+                "env2[{v}] attack sample {s} != env2[0] {first}: drift leaked into params"
+            );
         }
     }
 

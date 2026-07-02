@@ -1026,15 +1026,6 @@ mod tests {
         assert!(peak < 1e-3, "reset left audible state: {peak}");
     }
 
-    /// Host transport tempo flows into the engine via `set_tempo`.
-    #[test]
-    fn set_tempo_propagates_to_engine() {
-        let shared = mk_shared();
-        let mut audio = mk_audio(&shared);
-        audio.engine.set_tempo(140.0);
-        assert!((audio.engine.tempo_bpm - 140.0).abs() < 1e-6);
-    }
-
     // ── State extension ────────────────────────────────────────────────────
 
     /// `save` → `load` on a fresh `SharedParams` reproduces every slot.

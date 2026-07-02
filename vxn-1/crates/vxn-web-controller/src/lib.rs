@@ -1410,8 +1410,10 @@ mod tests {
             ops.iter().any(|(t, n)| *t == JW_PUT && n == "Leads/Hero.toml"),
             "journal has Put(Leads/Hero.toml): {ops:?}"
         );
-        // Drained — a second take is empty.
-        assert_eq!(st.take_journal(), 4, "empty journal packs just the u32 count");
+        // Drained — a second take encodes zero ops.
+        let len2 = st.take_journal() as usize;
+        let ops2 = decode_journal(&st.staging.journal_out[..len2]);
+        assert!(ops2.is_empty(), "drained journal must be empty, got: {ops2:?}");
     }
 
     // E019 / 0064: hydration replays persisted records WITHOUT journalling, then
@@ -1433,8 +1435,13 @@ mod tests {
             u.hydrate_folder("Pads");
             u.hydrate_preset("Pads/Warm.toml", preset_record::decode(&rec).unwrap());
         }
-        // Nothing journalled by hydration.
-        assert_eq!(st.take_journal(), 4, "hydration does not journal");
+        // Nothing journalled by hydration — the journal must encode zero ops.
+        let hydrate_jlen = st.take_journal() as usize;
+        let hydrate_ops = decode_journal(&st.staging.journal_out[..hydrate_jlen]);
+        assert!(
+            hydrate_ops.is_empty(),
+            "hydration must not journal any writes, got: {hydrate_ops:?}"
+        );
 
         st.ctrl.refresh_user_corpus();
         st.corpus_json_dirty = true;

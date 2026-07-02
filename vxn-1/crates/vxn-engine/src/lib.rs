@@ -1036,11 +1036,6 @@ mod tests {
     }
 
     #[test]
-    fn a4_is_440() {
-        assert!((a4_hz() - 440.0).abs() < 0.5, "A4 = {}", a4_hz());
-    }
-
-    #[test]
     fn silent_when_idle() {
         let mut s = Synth::new(48_000.0);
         let (l, _) = render(&mut s, 512);

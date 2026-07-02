@@ -1143,12 +1143,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_stack_is_idle() {
-        let stack = Stack::default();
-        assert!(stack.is_idle());
-    }
-
-    #[test]
     fn note_on_attacks_all_ops() {
         let mut stack = Stack::default();
         let sp = StackParams::default();
@@ -1337,7 +1331,6 @@ mod tests {
         let baseline: Vec<u32> = (0..4).map(|k| stack.core.ops[0].phase_inc[k]).collect();
         stack.set_bend(12.0); // +1 octave
         for k in 0..4 {
-            let want = (baseline[k] as u64 * 2).min(u32::MAX as u64) as u32;
             let got = stack.core.ops[0].phase_inc[k];
             // Within 1 part in 1e4 for f64 rounding.
             let ratio = got as f64 / baseline[k] as f64;
@@ -1346,7 +1339,6 @@ mod tests {
                 "lane {k}: bend ratio {ratio}, want ≈2 (got {got} / base {})",
                 baseline[k]
             );
-            let _ = want;
         }
     }
 

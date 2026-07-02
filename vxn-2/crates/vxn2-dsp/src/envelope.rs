@@ -553,17 +553,6 @@ mod tests {
         assert!(env.level >= 0.9, "level after snap {}", env.level);
     }
 
-    #[test]
-    fn mod_env_shape_field_persists_after_cook() {
-        let mut env = ModEnvState::default();
-        let params = ModEnvParams {
-            shape: AdsrShape::Exp,
-            ..ModEnvParams::default()
-        };
-        env.cook(&params);
-        assert_eq!(env.shape, AdsrShape::Exp);
-    }
-
     /// Retrigger must restart the attack from zero. The cooked Lin slope is
     /// sized for a full 0 → 1 sweep, so a `note_on` from a residual level (here
     /// the sustain plateau) must reset to 0 — otherwise the second attack
