@@ -38,8 +38,10 @@ pub fn batch_range(bounds: (Bound<usize>, Bound<usize>), frames: usize) -> (usiz
 ///
 /// - NoteOn / NoteOff: forwarded to `engine`. CLAP velocity is `[0, 1]`
 ///   float; we forward it as-is (the engine decides the mapping).
-/// - Raw MIDI: pitch-bend (0xE0), CC1 mod wheel (0xB0), CC64 sustain
-///   pedal (0xB0), channel aftertouch (0xD0) forwarded.
+/// - Raw MIDI: note on/off (0x90/0x80), pitch-bend (0xE0), CC1 mod wheel
+///   (0xB0), CC64 sustain pedal (0xB0), channel aftertouch (0xD0) forwarded.
+///   Note on/off matter for raw-MIDI hosts (the standalone) that never send
+///   the typed CLAP note events the NoteOn/NoteOff arms above expect.
 /// - `ParamValue` and anything else: silently ignored.
 pub fn dispatch_notes<E: EngineNotes>(engine: &mut E, event: &UnknownEvent) {
     match event.as_core_event() {
@@ -56,6 +58,17 @@ pub fn dispatch_notes<E: EngineNotes>(engine: &mut E, event: &UnknownEvent) {
         Some(CoreEventSpace::Midi(e)) => {
             let [status, d1, d2] = e.data();
             match status & 0xF0 {
+                // Note on/off as raw MIDI. Hosts that speak the CLAP note
+                // dialect deliver typed NoteOn/NoteOff (handled above), but a
+                // raw-MIDI host (e.g. the clap-wrapper standalone) sends these
+                // as channel-voice bytes. A 0x90 with velocity 0 is note-off
+                // by MIDI convention.
+                0x90 if d2 > 0 => {
+                    engine.note_on(d1, d2 as f32 / 127.0);
+                }
+                0x80 | 0x90 => {
+                    engine.note_off(d1);
+                }
                 0xE0 => {
                     // 14-bit bend, centre 8192 → normalised [-1, 1].
                     let raw = ((d2 as u16) << 7) | d1 as u16;

@@ -109,6 +109,24 @@ fn dispatch_note_on_off_round_trip() {
 }
 
 #[test]
+fn dispatch_raw_midi_note_on_off() {
+    // Raw-MIDI hosts (the clap-wrapper standalone) send note on/off as
+    // channel-voice bytes rather than typed CLAP note events. Note-on with
+    // velocity 0 is note-off by MIDI convention.
+    let mut engine = StubEngine::default();
+    let mut buf = EventBuffer::with_capacity(4);
+    buf.push(&MidiEvent::new(0, 0, [0x90, 60, 100])); // note on, vel 100
+    buf.push(&MidiEvent::new(0, 0, [0x80, 60, 0])); // note off
+    buf.push(&MidiEvent::new(0, 0, [0x90, 64, 0])); // note on vel 0 → off
+    for ev in buf.iter() {
+        dispatch_event(&mut engine, &mut |_| {}, ev);
+    }
+    let log = engine.log.borrow();
+    assert_eq!(log.notes_on, vec![(60, 100.0 / 127.0)]);
+    assert_eq!(log.notes_off, vec![60, 64]);
+}
+
+#[test]
 fn dispatch_midi_pitch_bend_normalises_to_unit_range() {
     let mut engine = StubEngine::default();
     // Centre + 4096 → +0.5 of bend range.
