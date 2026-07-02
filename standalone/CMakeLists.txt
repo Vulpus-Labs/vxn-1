@@ -54,12 +54,14 @@ endforeach()
 # ---------------------------------------------------------------------------
 # clap-wrapper configuration: bundled, standalone only.
 # ---------------------------------------------------------------------------
-# The standalone wrapper's RtAudio/RtMidi are bundled as clap-wrapper submodules
-# (initialised by `git submodule update --init --recursive vendor/clap-wrapper`).
-# FETCHCONTENT_FULLY_DISCONNECTED keeps it from downloading anything at configure time.
+# The standalone wrapper needs RtAudio/RtMidi. clap-wrapper 0.12.1 does not
+# vendor them as submodules (its libs/ holds only fmt + psl), so a recursive
+# submodule checkout cannot supply them and `search_for_sdk_source` finds
+# nothing on a clean tree (e.g. CI). Let clap-wrapper CPM-fetch them at configure
+# time — pinned tags (rtaudio 6.0.1, rtmidi) keep it reproducible. The CLAP SDK
+# still comes from our vendored checkout via CLAP_SDK_ROOT.
 set(CLAP_SDK_ROOT              "${VXN_CLAP_SDK_DIR}" CACHE STRING "" FORCE)
-set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES FALSE CACHE BOOL "" FORCE)
-set(FETCHCONTENT_FULLY_DISCONNECTED    ON    CACHE BOOL "" FORCE)
+set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE  CACHE BOOL "" FORCE)
 set(CLAP_WRAPPER_BUILD_AUV2            FALSE CACHE BOOL "" FORCE)
 set(CLAP_WRAPPER_BUILD_VST3            FALSE CACHE BOOL "" FORCE)
 set(CLAP_WRAPPER_BUILD_STANDALONE      TRUE  CACHE BOOL "" FORCE)
@@ -74,11 +76,15 @@ add_subdirectory("${VXN_CLAP_WRAPPER_DIR}" clap-wrapper-build EXCLUDE_FROM_ALL)
 add_executable(vxn_standalone)
 set_target_properties(vxn_standalone PROPERTIES OUTPUT_NAME "${VXN_PLUGIN_NAME}")
 
+# STATICALLY_LINKED_CLAP_ENTRY: we whole-archive the CLAP below, so clap_entry
+# is linked into the binary. Without this the wrapper compiles its dynamic-load
+# path, which references HOSTED_CLAP_NAME (undefined here) and fails to build.
 target_add_standalone_wrapper(
   TARGET vxn_standalone
   OUTPUT_NAME "${VXN_PLUGIN_NAME}"
   BUNDLE_IDENTIFIER "${VXN_BUNDLE_ID}"
   BUNDLE_VERSION "1.0"
+  STATICALLY_LINKED_CLAP_ENTRY TRUE
 )
 
 # Force-load the static archive so clap_entry and the whole engine are pulled
