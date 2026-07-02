@@ -2504,6 +2504,7 @@ dependencies = [
  "vxn-core-clap",
  "vxn-core-ui-web",
  "vxn2-app",
+ "vxn2-clap",
  "vxn2-engine",
  "vxn2-ui-web",
 ]

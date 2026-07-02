@@ -280,15 +280,27 @@ mod tests {
     use super::*;
     use clack_plugin::events::io::EventBuffer;
     use vxn2_engine::params::id_of;
+    // Shared test-support helpers from the monorepo's generic clack scaffold
+    // (ticket 0167). `push_param_event` replaces the locally-defined copy;
+    // `event_log` replaces the locally-defined gesture/value decoder.
+    use vxn_core_clap::testing::{event_log, push_param_event};
 
-    fn push_param_event(buf: &mut EventBuffer, id: usize, value: f32) {
-        buf.push(&ParamValueEvent::new(
-            0,
-            ClapId::new(id as u32),
-            Pckn::match_all(),
-            value as f64,
-            Cookie::empty(),
-        ));
+    /// Convenience wrapper: call `local.emit` for `frame_count` frames into a
+    /// fresh buffer and return the decoded `(kind, id, time)` log. Collapses
+    /// the `EventBuffer::with_capacity` + `emit` + `event_log` triple that
+    /// appears in every emit gesture test.
+    ///
+    /// This helper is local to the vxn2 `LocalParams` tests because vxn2's
+    /// `LocalParams` is a bespoke struct (not the generic `LocalParams<N>` from
+    /// `vxn-core-clap`), so it can't live in the shared `testing` module.
+    fn emit_after(
+        local: &mut LocalParams,
+        shared: &SharedParams,
+        frame_count: u32,
+    ) -> Vec<(&'static str, u32, u32)> {
+        let mut buf = EventBuffer::with_capacity(8);
+        local.emit(shared, &mut buf.as_output(), frame_count);
+        event_log(&buf)
     }
 
     /// `apply_input` writes through to the shared store on every event —
@@ -373,31 +385,6 @@ mod tests {
         assert!(!local.fetch_ui_changes(&shared));
     }
 
-    /// Render the event buffer as compact `(kind, id, time)` tuples for
-    /// order assertions. Kind: "begin" / "value" / "end".
-    ///
-    /// Decodes via typed [`UnknownEvent::as_event`] rather than
-    /// `as_core_event()` — the pinned clack rev's `CoreEventSpace::
-    /// from_unknown` match table is missing the two gesture TYPE_ID arms
-    /// (the enum variants exist; the decoder never produces them). The wire
-    /// events are spec-correct regardless — real hosts parse the raw CLAP
-    /// structs.
-    fn event_log(buf: &EventBuffer) -> Vec<(&'static str, u32, u32)> {
-        buf.iter()
-            .filter_map(|ev| {
-                if let Some(e) = ev.as_event::<ParamGestureBeginEvent>() {
-                    Some(("begin", e.param_id().unwrap().get(), e.header().time()))
-                } else if let Some(e) = ev.as_event::<ParamValueEvent>() {
-                    Some(("value", e.param_id().unwrap().get(), e.header().time()))
-                } else if let Some(e) = ev.as_event::<ParamGestureEndEvent>() {
-                    Some(("end", e.param_id().unwrap().get(), e.header().time()))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// A UI drag emits, in order: `gesture_begin` → `value`×N → `gesture_end`
     /// across the blocks the drag spans (ticket 0065). The end lands at the
     /// last sample of its block.
@@ -411,31 +398,23 @@ mod tests {
         shared.set_gesture(id, true);
         shared.set(id, 3.0);
         local.fetch_ui_changes(&shared);
-        let mut b1 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b1.as_output(), 256);
         assert_eq!(
-            event_log(&b1),
+            emit_after(&mut local, &shared, 256),
             vec![("begin", id as u32, 0), ("value", id as u32, 0)]
         );
 
         // Block 2: drag continues — value only, no new bracket.
         shared.set(id, 4.0);
         local.fetch_ui_changes(&shared);
-        let mut b2 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b2.as_output(), 256);
-        assert_eq!(event_log(&b2), vec![("value", id as u32, 0)]);
+        assert_eq!(emit_after(&mut local, &shared, 256), vec![("value", id as u32, 0)]);
 
         // Block 3: EndGesture, no further value change.
         shared.set_gesture(id, false);
         local.fetch_ui_changes(&shared);
-        let mut b3 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b3.as_output(), 256);
-        assert_eq!(event_log(&b3), vec![("end", id as u32, 255)]);
+        assert_eq!(emit_after(&mut local, &shared, 256), vec![("end", id as u32, 255)]);
 
         // Block 4: silence.
-        let mut b4 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b4.as_output(), 256);
-        assert!(event_log(&b4).is_empty());
+        assert!(emit_after(&mut local, &shared, 256).is_empty());
     }
 
     /// A bare UI value change (preset load, text entry — no sustained
@@ -448,10 +427,8 @@ mod tests {
 
         shared.set(id, -3.0);
         local.fetch_ui_changes(&shared);
-        let mut buf = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut buf.as_output(), 128);
         assert_eq!(
-            event_log(&buf),
+            emit_after(&mut local, &shared, 128),
             vec![
                 ("begin", id as u32, 0),
                 ("value", id as u32, 0),
@@ -473,12 +450,10 @@ mod tests {
         for ev in input.iter() {
             let _ = local.apply_input(&shared, ev);
         }
-        let mut out = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut out.as_output(), 256);
+        let log = emit_after(&mut local, &shared, 256);
         assert!(
-            event_log(&out).is_empty(),
-            "host automation echoed back: {:?}",
-            event_log(&out)
+            log.is_empty(),
+            "host automation echoed back: {log:?}",
         );
     }
 
@@ -492,14 +467,10 @@ mod tests {
         let id = id_of("reverb-size").unwrap();
 
         shared.set_gesture(id, true);
-        let mut b1 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b1.as_output(), 64);
-        assert_eq!(event_log(&b1), vec![("begin", id as u32, 0)]);
+        assert_eq!(emit_after(&mut local, &shared, 64), vec![("begin", id as u32, 0)]);
 
         shared.set_gesture(id, false);
-        let mut b2 = EventBuffer::with_capacity(4);
-        local.emit(&shared, &mut b2.as_output(), 64);
-        assert_eq!(event_log(&b2), vec![("end", id as u32, 63)]);
+        assert_eq!(emit_after(&mut local, &shared, 64), vec![("end", id as u32, 63)]);
     }
 
     /// `write_to` pushes the mirror through the same section readers as

@@ -42,6 +42,16 @@ fn simulate_ipc(controller: &mut Controller<SharedParams>, body: &str) {
         .expect("controller channel rejected event");
 }
 
+/// Build a minimal test controller for the IPC smoke tests.
+/// Returns `(controller, shared_params)` — the view receiver is discarded
+/// because the IPC smoke tests assert on `SharedParams` state, not on
+/// view events.
+///
+/// Disambiguation note (ticket 0167): the similarly-named helper in
+/// `vxn2-app/tests/controller.rs` returns the receiver for event-inspection
+/// and is the vxn2-app variant. These two are in different crates and
+/// different test-binary namespaces; they are kept separate because their
+/// callers have different inspection needs.
 fn build_controller() -> (Controller<SharedParams>, Arc<SharedParams>) {
     let shared = Arc::new(SharedParams::new());
     let (controller, _view_rx, _corpus) =

@@ -10,6 +10,13 @@
 //!
 //! Re-exports `vxn_core_app::ParamModel` so the state helpers compose
 //! with the controller surface.
+//!
+//! ## Feature flags
+//!
+//! - `test-support` (off by default): exposes [`testing`], a module of
+//!   synth-agnostic helpers for the CLAP event-buffer ritual
+//!   (`push_param_event`, `event_log`). Not compiled into release
+//!   builds; crates add it under `[dev-dependencies]` only.
 
 pub mod engine;
 pub mod events;
@@ -17,6 +24,9 @@ pub mod gesture;
 pub mod local;
 pub mod state;
 pub mod transport;
+
+#[cfg(feature = "test-support")]
+pub mod testing;
 
 pub use engine::{EngineNotes, EngineProcess, SharedStore};
 pub use events::{batch_range, dispatch_event, dispatch_notes};

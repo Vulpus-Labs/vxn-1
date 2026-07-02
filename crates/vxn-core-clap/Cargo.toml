@@ -7,6 +7,11 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Shared clack scaffold helpers for VXN synth plugins (event dispatch, LocalParams, state I/O, gesture emit, transport)."
 
+# `test-support` exposes the `testing` module (push_param_event, event_log).
+# Off by default; downstream crates activate it only under [dev-dependencies].
+[features]
+test-support = []
+
 [dependencies]
 vxn-core-app = { workspace = true }
 clack-plugin = { workspace = true }

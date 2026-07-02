@@ -12,6 +12,16 @@ use vxn2_app::{
 use vxn2_engine::SharedParams;
 use vxn2_engine::params::id_of;
 
+/// Build a minimal test controller backed by `NoopPresetStore`.
+/// Returns `(controller, view_rx, shared_params)`.
+///
+/// Disambiguation note (ticket 0167): this is the vxn2-app variant, which
+/// returns the view receiver for event-inspection assertions. The
+/// vxn2-clap/tests/editor_smoke.rs variant has a different signature
+/// (no receiver returned) and is scoped to the IPC-parser smoke tests.
+/// The two live in different crates and test-binary namespaces, so there
+/// is no conflict; they are kept separate because their callers have
+/// different inspection needs.
 fn build_controller() -> (
     Controller<SharedParams>,
     std::sync::mpsc::Receiver<ViewEvent>,

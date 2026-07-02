@@ -13,6 +13,12 @@ description = "VXN2 CLAP plugin shell (clack)."
 # staticlib for clap-wrapper to link into a bundled standalone / VST3 (E014).
 crate-type = ["cdylib", "rlib", "staticlib"]
 
+# `test-support` gates the EDITS const used by both `src/lib.rs` unit tests
+# and `tests/smoke.rs` integration tests. Off by default; activated via the
+# self-referencing dev-dependency below so `cargo test` picks it up.
+[features]
+test-support = []
+
 [dependencies]
 vxn2-engine = { workspace = true }
 vxn2-app = { workspace = true }
@@ -46,3 +52,10 @@ clack-extensions = { workspace = true, features = [
 # editor_smoke (0032) reuses the shared IPC parser to drive the
 # controller pipeline without instantiating a WebView.
 vxn-core-ui-web = { workspace = true }
+# Self-reference to activate the `test-support` feature when running tests.
+# This ensures `EDITS` (gated by that feature in src/lib.rs) is visible to
+# both the unit tests in src/ and integration tests in tests/.
+vxn2-clap = { path = ".", features = ["test-support"] }
+# Generic test-support helpers (push_param_event, event_log) from the
+# shared clack scaffold crate.
+vxn-core-clap = { workspace = true, features = ["test-support"] }

@@ -656,34 +656,41 @@ impl PluginStateImpl for VxnMainThread<'_> {
 
 clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 
+/// Canonical edit list for state round-trip tests in `src/lib.rs` (unit tests)
+/// and `tests/smoke.rs` (integration tests). Gated by the `test-support`
+/// feature so it is not compiled into production builds; the self-referencing
+/// dev-dependency in `Cargo.toml` activates the feature for `cargo test`.
+///
+/// ADR (0167): this is the single definition — `tests/test_support.rs`
+/// re-exports it via `pub use vxn2_clap::EDITS`, and the unit test below
+/// accesses it as `crate::EDITS`. Do not add a second copy.
+///
+/// Covers float / int / enum / bool ids spanning per-op / master / matrix /
+/// FX. Each value sits inside the descriptor's valid range.
+#[cfg(any(test, feature = "test-support"))]
+pub const EDITS: &[(&str, f64)] = &[
+    ("master-volume", -3.0),
+    ("master-tune", 5.0),
+    ("op1-num", 3.0),
+    ("op6-level", 88.0),
+    ("op4-pan", -0.7),
+    ("mtx1-depth", 0.4),
+    ("mtx8-depth", -0.7),
+    ("reverb-decay", 4.5),
+    ("delay-time", 250.0),
+    ("assign-mode", 1.0),
+    ("glide-time", 200.0),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ops::Bound;
-    use clack_plugin::events::Pckn;
-    use clack_plugin::events::event_types::ParamValueEvent;
     use clack_plugin::events::io::EventBuffer;
-    use clack_plugin::utils::Cookie;
-    use std::ops::Bound;
+    use clack_plugin::events::Pckn;
     use vxn2_engine::params::id_of;
-
-    /// Canonical edit list shared with `tests/smoke.rs` via `tests/test_support.rs`.
-    /// Unit tests (this module) cannot reach the `tests/` directory at compile
-    /// time, so the const is mirrored here. The two copies must stay identical;
-    /// ticket 0167 will consolidate into a proper test-support crate.
-    const EDITS: &[(&str, f64)] = &[
-        ("master-volume", -3.0),
-        ("master-tune", 5.0),
-        ("op1-num", 3.0),
-        ("op6-level", 88.0),
-        ("op4-pan", -0.7),
-        ("mtx1-depth", 0.4),
-        ("mtx8-depth", -0.7),
-        ("reverb-decay", 4.5),
-        ("delay-time", 250.0),
-        ("assign-mode", 1.0),
-        ("glide-time", 200.0),
-    ];
+    // Generic event-buffer helper from the shared test-support surface (0167).
+    use vxn_core_clap::testing::push_param_event;
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
         let (controller, view_rx, corpus) = make_vxn2_controller(shared.params.clone());
@@ -724,13 +731,7 @@ mod tests {
         let vol = id_of("master-volume").unwrap();
 
         let mut buf = EventBuffer::with_capacity(2);
-        buf.push(&ParamValueEvent::new(
-            0,
-            ClapId::new(vol as u32),
-            Pckn::match_all(),
-            -3.0,
-            Cookie::empty(),
-        ));
+        push_param_event(&mut buf, vol, -3.0);
         let mut out = EventBuffer::with_capacity(0);
         main.flush(&buf.as_input(), &mut out.as_output());
 
@@ -746,13 +747,7 @@ mod tests {
         let decay = id_of("reverb-decay").unwrap();
 
         let mut buf = EventBuffer::with_capacity(2);
-        buf.push(&ParamValueEvent::new(
-            0,
-            ClapId::new(decay as u32),
-            Pckn::match_all(),
-            4.5,
-            Cookie::empty(),
-        ));
+        push_param_event(&mut buf, decay, 4.5);
         let mut out = EventBuffer::with_capacity(0);
         audio.flush(&buf.as_input(), &mut out.as_output());
 
@@ -930,13 +925,7 @@ mod tests {
         let mut audio = mk_audio(&shared);
         let decay = id_of("reverb-decay").unwrap();
         let mut b = EventBuffer::with_capacity(2);
-        b.push(&ParamValueEvent::new(
-            0,
-            ClapId::new(decay as u32),
-            Pckn::match_all(),
-            7.5,
-            Cookie::empty(),
-        ));
+        push_param_event(&mut b, decay, 7.5);
         dispatch_event(
             &mut audio.engine,
             &mut audio.local,
@@ -1051,9 +1040,10 @@ mod tests {
     #[test]
     fn plugin_state_save_load_round_trips_every_param() {
         let shared = mk_shared();
-        // Spread non-default values across the table (edit list shared with
-        // tests/smoke.rs via the EDITS const above).
-        for &(name, v) in EDITS {
+        // Spread non-default values across the table. EDITS is the
+        // single-source list (defined in crate root, re-exported to
+        // tests/test_support.rs via the test-support feature — see 0167).
+        for &(name, v) in crate::EDITS {
             let id = id_of(name).unwrap();
             shared.params.set(id, v as f32);
         }
@@ -1112,13 +1102,7 @@ mod tests {
         let decay = id_of("reverb-decay").unwrap();
 
         let mut buf = EventBuffer::with_capacity(2);
-        buf.push(&ParamValueEvent::new(
-            0,
-            ClapId::new(decay as u32),
-            Pckn::match_all(),
-            4.5,
-            Cookie::empty(),
-        ));
+        push_param_event(&mut buf, decay, 4.5);
         let mut sink = EventBuffer::with_capacity(0);
         audio.flush(&buf.as_input(), &mut sink.as_output());
 
