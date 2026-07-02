@@ -16,15 +16,17 @@ use crate::lane::{Hit, LaneState};
 use crate::sequencer::{LockParam, Pattern};
 use crate::swap::EngineSwap;
 use crate::track::Track;
-use crate::track_engine::Knob;
 use crate::transport::Transport;
 
-/// Map a faceplate knob to its lockable-param slot.
-fn knob_to_lock_param(knob: Knob) -> LockParam {
-    match knob {
-        Knob::Decay => LockParam::Decay,
-        Knob::Tone => LockParam::Tone,
-        Knob::Pitch => LockParam::Pitch,
+/// Map a generic macro slot to its lockable-param lane (slots 0/1/2 →
+/// decay/tone/pitch — the three engine-reinterpreted lanes; ADR 0003 §2). Slots
+/// outside the budget have no lane.
+fn macro_to_lock_param(slot: u8) -> Option<LockParam> {
+    match slot {
+        0 => Some(LockParam::Decay),
+        1 => Some(LockParam::Tone),
+        2 => Some(LockParam::Pitch),
+        _ => None,
     }
 }
 
@@ -278,7 +280,7 @@ impl Engine {
             | EngineCommand::SetStepBeats { track, .. }
             | EngineCommand::SetGain { track, .. }
             | EngineCommand::SetPan { track, .. }
-            | EngineCommand::SetKnob { track, .. }
+            | EngineCommand::SetMacro { track, .. }
             | EngineCommand::SetLock { track, .. }
             | EngineCommand::ClearLock { track, .. }
             | EngineCommand::SetSend { track, .. } => *track as usize,
@@ -318,8 +320,10 @@ impl Engine {
             EngineCommand::SetPan { pan, .. } => {
                 track.set_base(LockParam::Pan, pan.clamp(-1.0, 1.0))
             }
-            EngineCommand::SetKnob { knob, value, .. } => {
-                track.set_base(knob_to_lock_param(knob), value)
+            EngineCommand::SetMacro { slot, value, .. } => {
+                if let Some(p) = macro_to_lock_param(slot) {
+                    track.set_base(p, value)
+                }
             }
             EngineCommand::SetLock {
                 step, param, lock, ..

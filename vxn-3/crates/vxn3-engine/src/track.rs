@@ -7,7 +7,7 @@ use crate::engines::KickTone;
 use crate::lane::{Hit, LaneState};
 use crate::sequencer::{LockParam, N_LOCK_PARAMS, Pattern};
 use crate::swap::EngineSwap;
-use crate::track_engine::{Knob, TrackEngine};
+use crate::track_engine::TrackEngine;
 
 pub struct Track {
     /// The single active engine. Swapped off-thread via [`Track::swap`].
@@ -18,7 +18,8 @@ pub struct Track {
     /// Step grid + p-lock table.
     pub pattern: Pattern,
     /// Base values of the lockable params (UI-set), indexed by
-    /// [`LockParam::index`]: `[gain, pan, decay, tone, pitch]`. p-locks override
+    /// [`LockParam::index`]: `[gain, pan, macro0, macro1, macro2, send]` (the
+    /// decay/tone/pitch lanes are the three engine macro slots). p-locks override
     /// these per step; `effective = override ?? base` (ADR 0001 §3a).
     base: [f32; N_LOCK_PARAMS],
     /// Last applied effective value per param, so knob re-cooks only fire on a
@@ -59,9 +60,10 @@ impl Track {
                 match p {
                     // gain / pan / send: read from `applied` in the mix
                     0 | 1 | 5 => {}
-                    2 => self.engine.set_knob(Knob::Decay, eff),
-                    3 => self.engine.set_knob(Knob::Tone, eff),
-                    4 => self.engine.set_knob(Knob::Pitch, eff),
+                    // decay / tone / pitch lanes → macro slots 0/1/2 (ADR 0003 §2)
+                    2 => self.engine.set_macro(0, eff),
+                    3 => self.engine.set_macro(1, eff),
+                    4 => self.engine.set_macro(2, eff),
                     _ => {}
                 }
             }

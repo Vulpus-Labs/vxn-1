@@ -139,9 +139,9 @@ fn command_drain_is_allocation_free() {
     let allocs = alloc_trap::count_allocs(|| {
         for b in 1..200 {
             // A fresh edit every block, drained on the audio thread.
-            io.edits.push(EngineCommand::SetKnob {
+            io.edits.push(EngineCommand::SetMacro {
                 track: (b % 8) as u8,
-                knob: vxn3_engine::Knob::Decay,
+                slot: 0,
                 value: 0.5,
             });
             engine.set_transport(Transport {

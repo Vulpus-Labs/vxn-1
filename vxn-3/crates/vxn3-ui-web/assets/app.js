@@ -95,11 +95,16 @@
 
     // Knobs + length.
     var knobs = document.createElement("div"); knobs.className = "knobs";
+    // Three generic macro slots (0/1/2). The active engine reinterprets each
+    // onto its patch (ADR 0003 §2); labels here are the generic slot roles.
     knobs.appendChild(makeKnob("Decay", 0, 1, 0.01, 0.5, function (v) {
-      send("set_knob", { track: t, knob: "decay", value: v });
+      send("set_macro", { track: t, slot: 0, value: v });
     }));
     knobs.appendChild(makeKnob("Tone", 0, 1, 0.01, 0.5, function (v) {
-      send("set_knob", { track: t, knob: "tone", value: v });
+      send("set_macro", { track: t, slot: 1, value: v });
+    }));
+    knobs.appendChild(makeKnob("Pitch", 0, 1, 0.01, 0.5, function (v) {
+      send("set_macro", { track: t, slot: 2, value: v });
     }));
     knobs.appendChild(makeKnob("Gain", 0, 1.5, 0.01, 1.0, function (v) {
       send("set_gain", { track: t, gain: v });

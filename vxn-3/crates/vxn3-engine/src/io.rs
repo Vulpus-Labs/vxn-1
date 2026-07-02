@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::N_TRACKS;
 use crate::sequencer::{Lock, LockParam, Retrig};
-use crate::track_engine::Knob;
 
 /// A data-only edit from the UI to the engine. `Copy` so the queue is a plain
 /// ring with no heap ownership transfer (engine *swaps* go via `EngineSwap`).
@@ -37,8 +36,9 @@ pub enum EngineCommand {
     SetGain { track: u8, gain: f32 },
     /// Set a track's pan (-1..1).
     SetPan { track: u8, pan: f32 },
-    /// Set one of a track engine's generic knobs (0..1).
-    SetKnob { track: u8, knob: Knob, value: f32 },
+    /// Set one of a track engine's generic macro slots (0..1). The active engine
+    /// reinterprets the slot onto its patch (ADR 0003 §2).
+    SetMacro { track: u8, slot: u8, value: f32 },
     /// Set a per-step p-lock on a continuous param.
     SetLock {
         track: u8,

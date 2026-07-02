@@ -27,5 +27,7 @@ pub use sequencer::{
 };
 pub use swap::EngineSwap;
 pub use track::Track;
-pub use track_engine::{EngineKind, Knob, LANES, TrackEngine};
+pub use track_engine::{
+    EngineKind, LANES, MACRO_SLOTS, MacroReadout, MacroUnit, TrackEngine, macro_display, macro_map,
+};
 pub use transport::Transport;

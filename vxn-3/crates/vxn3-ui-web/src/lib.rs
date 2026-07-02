@@ -14,7 +14,7 @@ use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig, open_editor as c
 pub use vxn_core_ui_web::{EditorHandle, OpenEditorError};
 use vxn3_app::{Vxn3UiCustom, Vxn3ViewCustom};
 use vxn3_engine::sequencer::{Retrig, RetrigCurve};
-use vxn3_engine::track_engine::{EngineKind, Knob};
+use vxn3_engine::track_engine::EngineKind;
 use vxn3_engine::{EngineCommand, MAX_STEPS, N_TRACKS};
 
 pub const EDITOR_WIDTH: u32 = 900;
@@ -66,14 +66,6 @@ fn f32_at(v: &Json, key: &str) -> Option<f32> {
     Some(v.get(key)?.as_f64()? as f32)
 }
 
-fn knob_of(s: &str) -> Option<Knob> {
-    match s {
-        "decay" => Some(Knob::Decay),
-        "tone" => Some(Knob::Tone),
-        "pitch" => Some(Knob::Pitch),
-        _ => None,
-    }
-}
 fn kind_of(s: &str) -> Option<EngineKind> {
     match s {
         "kick" => Some(EngineKind::KickTone),
@@ -164,9 +156,9 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
             track,
             pan: f32_at(v, "pan")?,
         })),
-        "set_knob" => Some(edit(EngineCommand::SetKnob {
+        "set_macro" => Some(edit(EngineCommand::SetMacro {
             track,
-            knob: knob_of(v.get("knob")?.as_str()?)?,
+            slot: u8_at(v, "slot")?,
             value: f32_at(v, "value")?,
         })),
         "set_engine" => Some(UiEvent::Custom(Box::new(Vxn3UiCustom::SetEngine {
