@@ -26,6 +26,12 @@ jobs:
         with:
           workspaces: .
 
+      # Ticket 0023 acceptance #2: the host-agnostic vxn-2 crates' tests must
+      # pass on Windows. These crates carry no platform cfg (vxn2-engine's
+      # per-OS preset dir is fully gated), so the suite is platform-independent.
+      - name: Test host-agnostic vxn-2 crates
+        run: cargo test --release -p vxn2-dsp -p vxn2-app -p vxn2-engine -p vxn2-osc-bench
+
       - name: Build VXN2.clap
         working-directory: vxn-2
         run: cargo xtask bundle --release
