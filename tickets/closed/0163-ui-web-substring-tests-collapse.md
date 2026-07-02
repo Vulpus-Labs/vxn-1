@@ -25,7 +25,7 @@ Line numbers are as-reviewed on 2026-07-01; re-grep by test name.
 
 vxn-1 `vxn-ui-web/src/lib.rs`:
 
-- [ ] Replace the ~30 `faceplate_*_wired` token-presence tests (~945–1958:
+- [x] Replace the ~30 `faceplate_*_wired` token-presence tests (~945–1958:
       `faceplate_bridge_object_intact`, `faceplate_text_input_bridge_wired`,
       `faceplate_status_pill_wired`, `faceplate_preset_bar_wired`,
       `faceplate_browser_mutation_flows_wired`, `faceplate_save_as_modal_
@@ -36,33 +36,33 @@ vxn-1 `vxn-ui-web/src/lib.rs`:
       small number of "asset present" guards — one per embedded asset
       (bootstrap JS, panel JS, faceplate CSS), asserting the asset is
       non-empty and spliced (no `__PLACEHOLDER__` tokens remain).
-- [ ] Keep `control_tallies_match_all_rows` (~1541, catches duplicate
+- [x] Keep `control_tallies_match_all_rows` (~1541, catches duplicate
       mounts — real value) and the byte-identical params test (~1860).
       Fold the four `row{1..4}_*_have_expected_mounts` (~1302–1539) into a
       single `assert_mounts(&[(kind, name, label)])` helper driven by four
       data tables (the mount markers are behavioural DOM contract, worth
       keeping — just deduped).
-- [ ] Add a code comment on the surviving guards pointing to the Vitest
+- [x] Add a code comment on the surviving guards pointing to the Vitest
       suite as the behavioural net, so the pattern isn't regrown.
 
 vxn-2 `vxn2-ui-web/src/lib.rs`:
 
-- [ ] `bootstrap_js_declares_required_surface` (~606),
+- [x] `bootstrap_js_declares_required_surface` (~606),
       `panel_js_files_carry_expected_exports` (~619), `faceplate_css_
       carries_mockup_rules` (~592) — reduce to one asset-present guard each
       (or delete if the vxn-1 pattern already covers the shared asset).
-- [ ] Collapse `build_faceplate_html_splices_css_and_bootstrap` (~507) into
+- [x] Collapse `build_faceplate_html_splices_css_and_bootstrap` (~507) into
       `build_faceplate_html_bundles_full_js_stack` (~674, superset); carry
       over the unique `color-scheme: dark` check.
-- [ ] Keep the two `algo_data_*_match_engine_table` drift guards (~701/768)
+- [x] Keep the two `algo_data_*_match_engine_table` drift guards (~701/768)
       — genuine engine/JS drift protection — but extract their hand-rolled
       `const X = [ ... ];` slicing into `fn extract_js_array_body(js,
       decl_name) -> &str` so both share it.
-- [ ] Add `fn matrix_lists_value() -> serde_json::Value` (parse
+- [x] Add `fn matrix_lists_value() -> serde_json::Value` (parse
       `build_matrix_lists_json()` once) shared by the two matrix-lists
       tests (~916/940).
 
-- [ ] `cargo test` green; Vitest suite still runs and passes; net test
+- [x] `cargo test` green; Vitest suite still runs and passes; net test
       count drops but no behavioural coverage lost (behaviour lived in
       Vitest, not these greps).
 
@@ -73,3 +73,24 @@ a dev tool; leave it ignored. The point of this ticket is that
 `str::contains` over an asset blob is a change-detector, not a behaviour
 test; do not grow the pattern. If a token genuinely must exist for wiring,
 the Vitest suite exercising that wiring is the correct guard.
+
+## Close-out (2026-07-02)
+
+Implemented by a Sonnet agent, gated + committed as `b64ac80`.
+
+- **vxn-ui-web:** 14 `faceplate_*_wired` token-presence tests → 3
+  asset-present guards (`asset_present_bridge_js` / `_panels_js` /
+  `_faceplate_css`) plus a value guard `keys_default_split_point_matches_
+  engine`. Four `row{1..4}_*_have_expected_mounts` folded into one
+  `all_rows_have_expected_mounts` driven by `assert_mounts(&[(kind,name,
+  label)])`. Kept `control_tallies_match_all_rows` and the byte-identical
+  params test.
+- **vxn2-ui-web:** 4 substring/greppy tests → 3 asset-present guards;
+  `build_faceplate_html_splices_css_and_bootstrap` absorbed into the full-
+  stack bundle test. Extracted `extract_js_array_body` + `matrix_lists_value`
+  shared by the kept drift guards (`algo_data_*_match_engine_table`).
+  `dump_spliced_html` left `#[ignore]`.
+
+Net −340 lines. Behavioural coverage for these paths lives in the gated
+Vitest suite. Tests green: `vxn-ui-web` 41 passed; `vxn2-ui-web` 26 passed,
+1 ignored.
