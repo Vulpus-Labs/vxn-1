@@ -920,7 +920,6 @@ mod tests {
         // the synced output is periodic in NFFT and needs no window.
         const K: usize = 40;
         let f_master = K as f32 * SR / NFFT as f32; // 468.75 Hz
-        let f_slave = f_master * 1.5; // 3:2 sync
 
         // Old sample-accurate path: hard reset to 0 on the master wrap, no
         // residual. Mirrors the pre-0020 `process_pair` slave handling.
@@ -1006,7 +1005,6 @@ mod tests {
             total
         }
 
-        let _ = f_slave;
         // Several inharmonic ratios; the floor across them is ~1.5×, so require
         // the sample-accurate reset to spray at least 1.4× the BLEP path's
         // high-band energy (margin tuned with headroom against regressions).

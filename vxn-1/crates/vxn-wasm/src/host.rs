@@ -477,6 +477,12 @@ mod tests {
         // key_mode/split arrive as args (shared state) and are applied before the
         // event loop — render must not panic and must honour the passed mode.
         // Split mode (2) routes notes by split point; just assert a clean render.
+        //
+        // NOTE (E031/0161, deferred to 0169): this is only a crash guard, not a
+        // behavioural assertion. A stronger "Split vs Whole route differently"
+        // check is infeasible here — a single Poly-mode note routes identically
+        // under both, and the level params that would differ use Glide::Block
+        // (don't settle within one 128-sample quantum). Left as-is deliberately.
         let mut host = Host::new(48_000.0);
         load(
             &mut host,
