@@ -6,6 +6,12 @@ priority: medium
 created: 2026-06-15
 ---
 
+> **Superseded 2026-07-02 by epic E032** (`epics/open/E032-vxn3-host-params-presets.md`).
+> This ticket was the design anchor; it is now decomposed into child tickets
+> 0170–0174. Decisions pinned on scheduling: `K = 3` macro slots per track;
+> `clap.state` in scope (0174). Kept for design-trail continuity — do not
+> implement standalone; work the E032 children.
+
 ## Summary
 
 Give VXN3 a `clap.params` table so the host can automate / modulate / save
