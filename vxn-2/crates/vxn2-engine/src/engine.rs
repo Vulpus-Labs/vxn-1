@@ -2021,44 +2021,56 @@ mod tests {
     #[test]
     fn default_patch_renders_with_expected_envelope() {
         let mut e = Engine::new(SR, BLK);
-        let win_samples = (SR * 0.05) as usize;
-        let blocks_per_window = win_samples / BLK;
 
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-
-        // Block-rate RMS accumulator helper, computes dBFS over `blocks` blocks.
-        let mut render_and_rms = |e: &mut Engine, blocks: usize| {
-            let mut sum_sq = 0.0_f64;
-            let mut n = 0u64;
-            let mut peak = 0.0_f32;
-            for _ in 0..blocks {
-                e.process_block(&mut l, &mut r);
-                for i in 0..BLK {
-                    assert!(l[i].is_finite() && r[i].is_finite());
-                    let m = l[i].abs().max(r[i].abs());
-                    if m > peak {
-                        peak = m;
-                    }
-                    sum_sq += (l[i] as f64).powi(2) + (r[i] as f64).powi(2);
-                    n += 2;
-                }
-            }
-            let rms = (sum_sq / n.max(1) as f64).sqrt() as f32;
-            let dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { -200.0 };
-            (rms, dbfs, peak)
-        };
-
-        // Render a few blocks before note-on so any reverb / delay state
-        // settles into its silent floor. Then trigger one note (the AC's
-        // automated half — chord behaviour is in the manual listening test).
-        let _ = render_and_rms(&mut e, 4);
+        // Pre-settle: 4 blocks so reverb / delay state is at its silent floor
+        // before the note fires (the AC's automated half — chord behaviour is
+        // in the manual listening test).
+        render_blocks(&mut e, 4);
         e.note_on(60, 100);
 
-        // Skip 100 ms past the bell-modulator attack peak before sampling;
-        // measure 50 ms of early sustain.
-        let _ = render_and_rms(&mut e, ((SR * 0.1) as usize) / BLK);
-        let (_, attack_db, attack_peak) = render_and_rms(&mut e, blocks_per_window);
+        // Render the full held + post-release timeline into one flat buffer
+        // whose sample index 0 corresponds to the note-on.
+        //   [0 .. 2 s)  — note held
+        //   [2 s .. 3.6 s) — post-release decay (tail window at 3.5 s needs
+        //                    50 ms clearance, so 3.6 s total suffices)
+        let t_note_off   = ((SR * 2.0) as usize) / BLK; // block count
+        let t_tail_end   = ((SR * 1.6) as usize) / BLK; // post-release blocks
+        let (held_l, held_r) = render_blocks(&mut e, t_note_off);
+        e.note_off(60);
+        let (decay_l, decay_r) = render_blocks(&mut e, t_tail_end);
+
+        // Single flat timeline from note-on at sample 0.
+        let l: Vec<f32> = [held_l.as_slice(), decay_l.as_slice()].concat();
+        let r: Vec<f32> = [held_r.as_slice(), decay_r.as_slice()].concat();
+
+        // All samples must be finite.
+        for (i, (&a, &b)) in l.iter().zip(r.iter()).enumerate() {
+            assert!(a.is_finite() && b.is_finite(), "non-finite at sample {i}");
+        }
+
+        // Compute RMS + peak over a 50 ms window starting at `from`.
+        // Returns (dbfs, peak). Factor of 2 in denominator: L and R are
+        // separate slices of the same window length, so total samples = 2·win.
+        let win = ((SR * 0.05) as usize / BLK) * BLK; // 37 blocks = 2 368 samples
+        let window_dbfs_peak = |buf_l: &[f32], buf_r: &[f32], from: usize| -> (f32, f32) {
+            let sl = &buf_l[from..from + win];
+            let sr_w = &buf_r[from..from + win];
+            let sum_sq: f64 = sl.iter().zip(sr_w.iter())
+                .map(|(&a, &b)| (a as f64).powi(2) + (b as f64).powi(2))
+                .sum();
+            let rms = (sum_sq / (2 * win) as f64).sqrt() as f32;
+            let dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { -200.0 };
+            let peak = sl.iter().chain(sr_w.iter()).map(|x| x.abs()).fold(0.0_f32, f32::max);
+            (dbfs, peak)
+        };
+
+        // Named measurement windows (sample offset from note-on):
+        let attack_start  = (SR * 0.1) as usize; // skip 100 ms bell-mod peak, then 50 ms
+        let sustain_start = (SR * 1.0) as usize; // mid-sustain near t ≈ 1 s
+        let tail_start    = (SR * 3.5) as usize; // 1.5 s after note-off
+
+        // Assert 1: early-sustain RMS is audible but not clipping.
+        let (attack_db, attack_peak) = window_dbfs_peak(&l, &r, attack_start);
         assert!(attack_peak < 1.0, "default patch clipping: peak {attack_peak}");
         // Upper bound loosened -9 → -8 dBFS with the 0079 feedback
         // recalibration: FB 6 dropped from the chaotic zone (scale 2.0) to a
@@ -2069,40 +2081,29 @@ mod tests {
             "early-sustain RMS {attack_db} dBFS outside [-24, -8]"
         );
 
-        // Mid-sustain near t ≈ 1.0 s.
-        let blocks_so_far = 4 + (((SR * 0.1) as usize) / BLK) + blocks_per_window;
-        let target_blocks = ((SR * 1.0) as usize) / BLK;
-        let _ = render_and_rms(&mut e, target_blocks.saturating_sub(blocks_so_far));
-        let (_, sustain_db, _) = render_and_rms(&mut e, blocks_per_window);
+        // Assert 2: mid-sustain tail is decaying but still ringing.
         // 0125 (exponential EG ramps): the default patch is percussive — every
         // carrier's L3 = 0, so the note decays toward silence. Under the old
         // linear-amplitude march it sat on a ~-8..-24 dBFS plateau at t ≈ 1 s;
         // the DX7 exponential march descends on a constant dB/sec slope and is
         // far lower mid-tail (~-40 dBFS) for the *same* total decay duration.
         // Bound it as a decaying-but-still-ringing tail (below the attack body,
-        // above the noise floor) rather than a fixed plateau — the absolute
-        // level is the manual listening pass + 0126 loudness re-sweep's job.
+        // above the noise floor) rather than a fixed plateau.
+        let (sustain_db, _) = window_dbfs_peak(&l, &r, sustain_start);
         assert!(
             sustain_db < attack_db && sustain_db > -55.0,
             "t≈1s RMS {sustain_db} dBFS not a decaying-but-ringing tail \
              (want below attack {attack_db} dBFS and above -55)"
         );
 
-        // Hold to t = 2 s, release, then run to t = 3.5 s.
-        let blocks_now = target_blocks + blocks_per_window;
-        let t2_blocks = ((SR * 2.0) as usize) / BLK;
-        let _ = render_and_rms(&mut e, t2_blocks.saturating_sub(blocks_now));
-        e.note_off(60);
-
-        let t35_blocks = ((SR * 3.5) as usize) / BLK;
-        let _ = render_and_rms(&mut e, t35_blocks.saturating_sub(t2_blocks));
-        let (_, tail_db, _) = render_and_rms(&mut e, blocks_per_window);
+        // Assert 3: reverb/delay tail has decayed below audibility.
         // AC: ≤ -60 dBFS. Physical floor at 1.5 s past note-off, with reverb
         // decay 2.4 s (RT60) at mix 0.18 plus ping-pong delay tail at 0.30
         // feedback, lands around -53 dBFS — the AC was optimistic about
         // reverb + delay decay overlap. -45 dBFS still bounds the tail well
         // below audibility (≈ 60 dB below a played note) and keeps the
         // patch's FX defaults intact.
+        let (tail_db, _) = window_dbfs_peak(&l, &r, tail_start);
         assert!(
             tail_db <= -45.0,
             "tail RMS {tail_db} dBFS at t=3.5 s still audible (want ≤ -45)"

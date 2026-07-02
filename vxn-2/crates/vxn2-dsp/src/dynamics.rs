@@ -478,15 +478,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detector_resets_on_inactive_to_active_edge() {
-        // Drive the env up, switch off, hold the env at saturation through
-        // the fade (so the inactive transition leaves env ≈ 1.0), wait for
-        // the fade to fully settle (process becomes bit-exact passthrough,
-        // env frozen at 1.0), then switch on. The very first active sample
-        // must see env reset to 0 — confirmed by inspecting the detector.
-        let mut d = DynamicsBlock::new(SR);
-        d.set_from(&DynamicsParams {
+    /// Build a `DynamicsBlock` with env frozen high and mix faded to zero:
+    ///   1. On, slow-release: hammer input loud until `detector_env > 0.9`.
+    ///   2. Off, still loud: hold through the smoother fade until `mix_current == 0`.
+    ///
+    /// Leaves the block in passthrough mode with `detector_env` frozen near 1.0 —
+    /// the precondition for testing the inactive→active edge reset.
+    fn dynamics_env_high_mix_faded() -> DynamicsBlock {
+        let base = DynamicsParams {
             on: true,
             threshold_db: -30.0,
             ratio: 8.0,
@@ -495,8 +494,12 @@ mod tests {
             makeup_db: 0.0,
             drive_db: 0.0,
             mix: 1.0,
-        });
-        // Hammer env up to ≈ 1.0.
+        };
+
+        let mut d = DynamicsBlock::new(SR);
+        d.set_from(&base);
+
+        // Phase 1 — drive: hammer env up to ≈ 1.0.
         for _ in 0..2_000 {
             d.process(1.0, 1.0);
         }
@@ -506,22 +509,12 @@ mod tests {
             d.detector_env()
         );
 
-        // Switch off; hold input loud so env keeps tracking near 1.0 across
-        // the smoother fade.
-        d.set_from(&DynamicsParams {
-            on: false,
-            threshold_db: -30.0,
-            ratio: 8.0,
-            attack_ms: 0.5,
-            release_ms: 1000.0,
-            makeup_db: 0.0,
-            drive_db: 0.0,
-            mix: 1.0,
-        });
+        // Phase 2 — fade off: switch off but keep input loud so env keeps
+        // tracking near 1.0 across the smoother fade, then wait for it to settle.
+        d.set_from(&DynamicsParams { on: false, ..base });
         for _ in 0..(SR * 0.6) as usize {
             d.process(1.0, 1.0);
         }
-        // Fade has settled — passthrough engaged, env frozen near 1.0.
         assert_eq!(d.mix_current(), 0.0, "mix should have fully faded to 0");
         assert!(
             d.detector_env() > 0.5,
@@ -529,7 +522,15 @@ mod tests {
             d.detector_env()
         );
 
-        // Switch on again.
+        d
+    }
+
+    #[test]
+    fn detector_resets_on_inactive_to_active_edge() {
+        // Precondition: block is in passthrough mode with env frozen near 1.0.
+        // The very first process call after switching on must reset env to 0.
+        let mut d = dynamics_env_high_mix_faded();
+
         d.set_from(&DynamicsParams {
             on: true,
             threshold_db: -30.0,
@@ -540,9 +541,7 @@ mod tests {
             drive_db: 0.0,
             mix: 1.0,
         });
-        // First active process call: env should be reset to 0 before the
-        // peak detector pushes its first sample in. With input 0.0, env
-        // remains exactly 0.
+        // With input 0.0, env remains exactly 0 after the reset.
         let (_l, _r) = d.process(0.0, 0.0);
         assert_eq!(
             d.detector_env(),

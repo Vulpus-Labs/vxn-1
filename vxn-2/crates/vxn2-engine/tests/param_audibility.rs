@@ -135,224 +135,280 @@ fn base_context(s: &SharedParams) {
 
 /// Per-param context tweak + capture override. Returns the capture script;
 /// mutates `s` with any extra patch state the param needs to be audible.
-/// Returns `None` to fall through to [`Capture::default`].
+///
+/// Implemented as a table of `(matcher, action)` pairs so each param's context
+/// is a named, greppable entry. Multiple rows may match the same param name —
+/// they execute in order, exactly as the original `if`-chain did. A param with
+/// no matching row uses `Capture::default()` unchanged.
 fn context_override(name: &str, s: &SharedParams) -> Capture {
-    let set = |n: &str, v: f32| s.set(id_of(n).unwrap(), v);
-    let mut cap = Capture::default();
+    type Action = fn(&str, &SharedParams, &mut Capture);
 
-    // ── Per-op operator params ─────────────────────────────────────────────
-    // Per-op fixed-hz is inert unless the op is in Fixed tuning mode.
-    if let Some(op) = name.strip_suffix("-fixed-hz").and_then(|_| parse_op(name)) {
-        set(&format!("op{op}-ratio-mode"), 1.0); // Fixed
-    }
-
-    // EG stage params: under the default near-instant EG most stage transitions
-    // never occupy the window, and one carrier's amplitude is 1/6 of the mix,
-    // so a mid-stage tweak barely moves the sum. Give the op a slow zig-zag
-    // contour (every stage a big, distinct move) and a long window so any
-    // single rate / level change reshapes its amplitude audibly.
-    if let Some(op) = parse_op(name) {
-        if name.contains("-eg-") {
-            // The base matrix routes modulate several op levels (e.g.
-            // PitchEg→Op2Level); that competing modulation is identical in both
-            // renders and dilutes the EG change under test. Silence the routes
-            // so the op's own amplitude envelope is the only thing moving.
-            deactivate_base_routes(s);
-            // Rates fast enough that every stage is actually reached inside the
-            // window (a too-slow env never enters stage 3, leaving r3/l3 inert);
-            // levels a big zig-zag so each stage is a distinct, audible move.
-            let o = |suf: &str| format!("op{op}-{suf}");
-            set(&o("eg-r1"), 80.0);
-            set(&o("eg-r2"), 72.0);
-            set(&o("eg-r3"), 64.0);
-            set(&o("eg-r4"), 40.0);
-            set(&o("eg-l1"), 99.0);
-            set(&o("eg-l2"), 8.0);
-            set(&o("eg-l3"), 85.0);
-            set(&o("eg-l4"), 0.0);
-            cap.sustain_blocks = 55;
-            cap.release_blocks = 60;
-        }
-    }
-
-    // ── Keyboard scaling ───────────────────────────────────────────────────
-    // Each KS mechanism scales one side of the break point; isolate the side
-    // under test (zero the other), put the played note far onto that side, and
-    // drive the depth hard so the level swing dominates the op.
-    if let Some(op) = parse_op(name) {
-        // KS tests play high notes (96) for strong R-side scaling. The default
-        // patch gives op2 a ratio-14 tine modulator, which at note 96 runs at
-        // ~29 kHz — above Nyquist. With the 0073 Nyquist fade that op is muted
-        // (correctly: it would otherwise alias), masking the KS effect under
-        // test. Pin the op to ratio 1 so its fundamental stays in-band and the
-        // KS level/rate change is the only audible mover.
-        if name.ends_with("-ks-r-depth") || name.ends_with("-ks-rate") {
-            set(&format!("op{op}-num"), 1.0);
-            set(&format!("op{op}-denom"), 1.0);
-        }
-        if name.ends_with("-ks-r-depth") {
-            set(&format!("op{op}-ks-l-depth"), 0.0);
-            set(&format!("op{op}-ks-break-pt"), 48.0);
-            cap.note = 96; // four octaves above the break → strong R scaling
-        }
-        if name.ends_with("-ks-l-depth") {
-            set(&format!("op{op}-ks-r-depth"), 0.0);
-            set(&format!("op{op}-ks-break-pt"), 108.0);
-            cap.note = 36; // well below the break → strong L scaling
-        }
-        if name.ends_with("-ks-break-pt") {
-            // R side hot, L side cold: sliding the break across the note flips
-            // between full R-scaling and none.
-            set(&format!("op{op}-ks-l-depth"), 0.0);
-            set(&format!("op{op}-ks-r-depth"), 99.0);
-            cap.note = 72;
-        }
-        if name.ends_with("-ks-rate") {
-            // Rate scaling shortens EG times about A3 (note 57). Give the op a
-            // slow release on a high note and watch the release window.
-            set(&format!("op{op}-eg-l3"), 85.0);
-            set(&format!("op{op}-eg-r4"), 18.0);
-            cap.note = 96;
-            cap.sustain_blocks = 40;
-            cap.release_blocks = 180;
-        }
-    }
-
-    // ── Pitch EG (global) ──────────────────────────────────────────────────
-    // Same idea as the op EG: a flat pitch envelope makes every peg rate/level
-    // inert. Give it a moving zig-zag contour spanning the window.
-    if name.starts_with("peg-") {
-        set("peg-r1", 80.0);
-        set("peg-r2", 72.0);
-        set("peg-r3", 64.0);
-        set("peg-r4", 40.0);
-        set("peg-l1", 70.0);
-        set("peg-l2", -70.0);
-        set("peg-l3", 60.0);
-        set("peg-l4", 0.0);
-        set("peg-depth", 1.0);
-        cap.sustain_blocks = 55;
-        cap.release_blocks = 60;
-    }
-
-    // ── LFO2 (per-voice) ───────────────────────────────────────────────────
-    // Routed onto Op3 pitch in the base patch. The delay/fade sweeps need a
-    // long window to show the silent-vs-active extremes.
-    if name == "lfo2-delay" || name == "lfo2-fade" {
-        cap.sustain_blocks = 150;
-    }
-
-    // ── Stack spread ───────────────────────────────────────────────────────
-    // `stack-spread` is not a direct DSP knob — it is the gain on the matrix's
-    // `VoiceSpread` source (stack.rs `cook` / `eval_sources`). It does nothing
-    // unless a route reads VoiceSpread, so wire one and widen the stack.
-    if name == "stack-spread" {
-        set("stack-density", 8.0);
-        set("stack-detune", 40.0);
-        s.set_matrix_row_raw(
-            0,
-            MatrixRowRaw {
-                source: SourceId::VoiceSpread as u8,
-                dest: DestId::Op1Pitch as u8,
-                curve: 0,
-                active: true,
-                depth: 1.0,
+    /// Each row: a predicate over the param name, and an action that tweak `s`
+    /// and/or `cap`. Rows are checked in order; all matching rows execute.
+    static TABLE: &[(fn(&str) -> bool, Action)] = &[
+        // ── Fixed-Hz tuning ────────────────────────────────────────────────
+        // Per-op fixed-hz is inert unless the op is in Fixed tuning mode.
+        (
+            |n| n.ends_with("-fixed-hz") && parse_op(n).is_some(),
+            |n, s, _cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-ratio-mode")).unwrap(), 1.0); // Fixed
             },
-        );
-        cap.sustain_blocks = 110;
-    }
+        ),
+        // ── EG stage params (per-op) ────────────────────────────────────────
+        // Under a near-instant EG most stage transitions never occupy the
+        // window. Give the op a slow zig-zag contour and a long capture window.
+        (
+            |n| parse_op(n).is_some() && n.contains("-eg-"),
+            |n, s, cap| {
+                let op = parse_op(n).unwrap();
+                // The base matrix routes modulate several op levels; silence
+                // them so the op's own amplitude envelope is the only mover.
+                deactivate_base_routes(s);
+                let o = |suf: &str| format!("op{op}-{suf}");
+                // Rates fast enough that every stage is reached inside the
+                // window; levels a big zig-zag so each stage is distinct.
+                s.set(id_of(&o("eg-r1")).unwrap(), 80.0);
+                s.set(id_of(&o("eg-r2")).unwrap(), 72.0);
+                s.set(id_of(&o("eg-r3")).unwrap(), 64.0);
+                s.set(id_of(&o("eg-r4")).unwrap(), 40.0);
+                s.set(id_of(&o("eg-l1")).unwrap(), 99.0);
+                s.set(id_of(&o("eg-l2")).unwrap(), 8.0);
+                s.set(id_of(&o("eg-l3")).unwrap(), 85.0);
+                s.set(id_of(&o("eg-l4")).unwrap(), 0.0);
+                cap.sustain_blocks = 55;
+                cap.release_blocks = 60;
+            },
+        ),
+        // ── KS: pin op ratio for high-note tests ────────────────────────────
+        // KS tests play note 96. The default patch gives op2 a ratio-14
+        // modulator, which at note 96 runs at ~29 kHz — above Nyquist. With
+        // the 0073 Nyquist fade that op is muted, masking the KS effect.
+        // Pin the op to ratio 1 so the fundamental stays in-band.
+        (
+            |n| parse_op(n).is_some()
+                && (n.ends_with("-ks-r-depth") || n.ends_with("-ks-rate")),
+            |n, s, _cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-num")).unwrap(), 1.0);
+                s.set(id_of(&format!("op{op}-denom")).unwrap(), 1.0);
+            },
+        ),
+        // ── KS right-side depth ─────────────────────────────────────────────
+        // R side hot, L side silent; play high (note 96) for strong R scaling.
+        (
+            |n| parse_op(n).is_some() && n.ends_with("-ks-r-depth"),
+            |n, s, cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-ks-l-depth")).unwrap(), 0.0);
+                s.set(id_of(&format!("op{op}-ks-break-pt")).unwrap(), 48.0);
+                cap.note = 96; // four octaves above the break → strong R scaling
+            },
+        ),
+        // ── KS left-side depth ─────────────────────────────────────────────
+        // L side hot, R side silent; play low (note 36) for strong L scaling.
+        (
+            |n| parse_op(n).is_some() && n.ends_with("-ks-l-depth"),
+            |n, s, cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-ks-r-depth")).unwrap(), 0.0);
+                s.set(id_of(&format!("op{op}-ks-break-pt")).unwrap(), 108.0);
+                cap.note = 36; // well below the break → strong L scaling
+            },
+        ),
+        // ── KS break point ──────────────────────────────────────────────────
+        // R side hot, L side cold: sliding the break across the note flips
+        // between full R-scaling and none.
+        (
+            |n| parse_op(n).is_some() && n.ends_with("-ks-break-pt"),
+            |n, s, cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-ks-l-depth")).unwrap(), 0.0);
+                s.set(id_of(&format!("op{op}-ks-r-depth")).unwrap(), 99.0);
+                cap.note = 72;
+            },
+        ),
+        // ── KS rate scaling ─────────────────────────────────────────────────
+        // Rate scaling shortens EG times above A3 (note 57). Give the op a
+        // slow release on a high note and watch the release window.
+        (
+            |n| parse_op(n).is_some() && n.ends_with("-ks-rate"),
+            |n, s, cap| {
+                let op = parse_op(n).unwrap();
+                s.set(id_of(&format!("op{op}-eg-l3")).unwrap(), 85.0);
+                s.set(id_of(&format!("op{op}-eg-r4")).unwrap(), 18.0);
+                cap.note = 96;
+                cap.sustain_blocks = 40;
+                cap.release_blocks = 180;
+            },
+        ),
+        // ── Pitch EG (global) ───────────────────────────────────────────────
+        // A flat pitch envelope makes every peg rate/level inert. Give it a
+        // moving zig-zag contour spanning the capture window.
+        (
+            |n| n.starts_with("peg-"),
+            |_n, s, cap| {
+                s.set(id_of("peg-r1").unwrap(), 80.0);
+                s.set(id_of("peg-r2").unwrap(), 72.0);
+                s.set(id_of("peg-r3").unwrap(), 64.0);
+                s.set(id_of("peg-r4").unwrap(), 40.0);
+                s.set(id_of("peg-l1").unwrap(), 70.0);
+                s.set(id_of("peg-l2").unwrap(), -70.0);
+                s.set(id_of("peg-l3").unwrap(), 60.0);
+                s.set(id_of("peg-l4").unwrap(), 0.0);
+                s.set(id_of("peg-depth").unwrap(), 1.0);
+                cap.sustain_blocks = 55;
+                cap.release_blocks = 60;
+            },
+        ),
+        // ── LFO2 delay / fade ───────────────────────────────────────────────
+        // LFO2 is routed onto Op3 pitch in the base patch. The delay/fade
+        // sweeps need a long window to show the silent-vs-active extremes.
+        (
+            |n| n == "lfo2-delay" || n == "lfo2-fade",
+            |_n, _s, cap| {
+                cap.sustain_blocks = 150;
+            },
+        ),
+        // ── Stack spread ────────────────────────────────────────────────────
+        // `stack-spread` scales the VoiceSpread matrix source. It does nothing
+        // without a route that reads VoiceSpread, so wire one and widen the
+        // stack so lanes diverge visibly.
+        (
+            |n| n == "stack-spread",
+            |_n, s, cap| {
+                s.set(id_of("stack-density").unwrap(), 8.0);
+                s.set(id_of("stack-detune").unwrap(), 40.0);
+                s.set_matrix_row_raw(
+                    0,
+                    MatrixRowRaw {
+                        source: SourceId::VoiceSpread as u8,
+                        dest: DestId::Op1Pitch as u8,
+                        curve: 0,
+                        active: true,
+                        depth: 1.0,
+                    },
+                );
+                cap.sustain_blocks = 110;
+            },
+        ),
+        // ── Filter params (non-enable) ──────────────────────────────────────
+        // Filter is off by default; turn it on and drive cutoff + resonance so
+        // any filter param sweep reshapes the spectrum audibly.
+        (
+            |n| n.starts_with("filter-") && n != "filter-enable",
+            |_n, s, _cap| {
+                s.set(id_of("filter-enable").unwrap(), 1.0);
+                s.set(id_of("filter-cutoff").unwrap(), 800.0);
+                s.set(id_of("filter-resonance").unwrap(), 0.6);
+            },
+        ),
+        // ── filter-enable itself ────────────────────────────────────────────
+        // Lower the cutoff + raise resonance so the on ≠ off renders differ
+        // audibly (not just the bypass switch).
+        (
+            |n| n == "filter-enable",
+            |_n, s, _cap| {
+                s.set(id_of("filter-cutoff").unwrap(), 500.0);
+                s.set(id_of("filter-resonance").unwrap(), 0.6);
+            },
+        ),
+        // ── Delay (all delay-* params) ──────────────────────────────────────
+        // The default 375 ms tap never returns inside a short window. Shorten
+        // the tap, raise mix/feedback, render long enough for several echoes.
+        (
+            |n| n.starts_with("delay-"),
+            |n, s, cap| {
+                s.set(id_of("delay-on").unwrap(), 1.0);
+                s.set(id_of("delay-mix").unwrap(), 0.7);
+                s.set(id_of("delay-feedback").unwrap(), 0.6);
+                if n != "delay-time" {
+                    s.set(id_of("delay-sync").unwrap(), 0.0);
+                    s.set(id_of("delay-time").unwrap(), 70.0);
+                }
+                // Ping-pong only diverges from a normal delay on a stereo
+                // input. Pan two ops hard L/R so the delay sees L ≠ R.
+                if n == "delay-pingpong" {
+                    s.set(id_of("op1-pan").unwrap(), -1.0);
+                    s.set(id_of("op2-pan").unwrap(), 1.0);
+                }
+                cap.sustain_blocks = 36;
+                cap.release_blocks = 170;
+            },
+        ),
+        // ── Reverb tails ────────────────────────────────────────────────────
+        (
+            |n| n.starts_with("reverb-"),
+            |_n, s, cap| {
+                s.set(id_of("reverb-on").unwrap(), 1.0);
+                s.set(id_of("reverb-mix").unwrap(), 0.6);
+                cap.release_blocks = 160;
+            },
+        ),
+        // ── Phaser (E025) ───────────────────────────────────────────────────
+        // Off by default → every phaser param is inert unless the stage is on.
+        // Drive depth/mix/feedback and render long enough for the slow LFO
+        // (rate floor 0.05 Hz) to walk the notches so even a rate sweep
+        // diverges across the window.
+        (
+            |n| n.starts_with("phaser-"),
+            |n, s, cap| {
+                s.set(id_of("phaser-on").unwrap(), 1.0);
+                if n != "phaser-mix" {
+                    s.set(id_of("phaser-mix").unwrap(), 0.7);
+                }
+                if n != "phaser-depth" {
+                    s.set(id_of("phaser-depth").unwrap(), 0.8);
+                }
+                if n != "phaser-feedback" {
+                    s.set(id_of("phaser-feedback").unwrap(), 0.6);
+                }
+                cap.sustain_blocks = 110;
+                cap.release_blocks = 60;
+            },
+        ),
+        // ── Dynamics (E028) ─────────────────────────────────────────────────
+        // Off by default → every dyn-* knob except `dyn-on` is inert without
+        // the block engaged. Turn it on, drive a hot threshold so the comp is
+        // actually working, and keep mix at full wet so makeup / drive land on
+        // the bus. `dyn-attack` / `dyn-release` only diverge when the envelope
+        // is tracking transients — the base velocity-120 note-on covers that.
+        (
+            |n| n.starts_with("dyn-"),
+            |n, s, _cap| {
+                if n != "dyn-on" {
+                    s.set(id_of("dyn-on").unwrap(), 1.0);
+                }
+                if n != "dyn-mix" {
+                    s.set(id_of("dyn-mix").unwrap(), 1.0);
+                }
+                // Hot threshold + non-1 ratio so a sweep of either, or of the
+                // time constants, audibly reshapes the bus.
+                if n != "dyn-threshold" {
+                    s.set(id_of("dyn-threshold").unwrap(), -30.0);
+                }
+                if n != "dyn-ratio" {
+                    s.set(id_of("dyn-ratio").unwrap(), 8.0);
+                }
+            },
+        ),
+        // ── Mod-env params ──────────────────────────────────────────────────
+        // The mod-env is routed in the base context; give it a long window so
+        // its contour is fully visible.
+        (
+            |n| n.starts_with("mod-env-"),
+            |_n, _s, cap| {
+                cap.sustain_blocks = 150;
+            },
+        ),
+    ];
 
-    // ── Filter ─────────────────────────────────────────────────────────────
-    if name.starts_with("filter-") && name != "filter-enable" {
-        set("filter-enable", 1.0);
-        set("filter-cutoff", 800.0);
-        set("filter-resonance", 0.6);
-    }
-    // filter-enable itself: lower the cutoff + raise resonance so on ≠ off.
-    if name == "filter-enable" {
-        set("filter-cutoff", 500.0);
-        set("filter-resonance", 0.6);
-    }
-
-    // ── Delay ──────────────────────────────────────────────────────────────
-    // The default 375 ms tap never returns inside a short window. Shorten the
-    // tap, raise mix/feedback, and render long enough for several echoes so
-    // time / sync / feedback / ping-pong all surface.
-    if name.starts_with("delay-") {
-        set("delay-on", 1.0);
-        set("delay-mix", 0.7);
-        set("delay-feedback", 0.6);
-        if name != "delay-time" {
-            set("delay-sync", 0.0);
-            set("delay-time", 70.0);
-        }
-        // Ping-pong only diverges from a normal delay on a *stereo* input —
-        // with a centred (mono) sum the L/R feedback swap is a no-op. Pan two
-        // ops hard L/R so the delay sees L ≠ R.
-        if name == "delay-pingpong" {
-            set("op1-pan", -1.0);
-            set("op2-pan", 1.0);
-        }
-        cap.sustain_blocks = 36;
-        cap.release_blocks = 170;
-    }
-
-    // ── Reverb tails ───────────────────────────────────────────────────────
-    if name.starts_with("reverb-") {
-        set("reverb-on", 1.0);
-        set("reverb-mix", 0.6);
-        cap.release_blocks = 160;
-    }
-
-    // ── Phaser (E025) ──────────────────────────────────────────────────────
-    // Off by default → every phaser param is inert unless the stage is on.
-    // Turn it on, drive depth/mix/feedback, and render long enough for the
-    // slow LFO (rate floor 0.05 Hz) to walk the notches so even a rate sweep
-    // diverges across the window.
-    if name.starts_with("phaser-") {
-        set("phaser-on", 1.0);
-        if name != "phaser-mix" {
-            set("phaser-mix", 0.7);
-        }
-        if name != "phaser-depth" {
-            set("phaser-depth", 0.8);
-        }
-        if name != "phaser-feedback" {
-            set("phaser-feedback", 0.6);
-        }
-        cap.sustain_blocks = 110;
-        cap.release_blocks = 60;
-    }
-
-    // ── Dynamics (E028) ───────────────────────────────────────────────────
-    // Off by default → every dyn-* knob except `dyn-on` is inert unless the
-    // block is engaged. Turn it on and drive a hot threshold so the comp is
-    // actually working; keep mix at full wet so makeup / drive land on the
-    // bus. `dyn-attack` / `dyn-release` only diverge when the envelope is
-    // tracking transients — the base velocity-120 note-on transient covers
-    // that.
-    if name.starts_with("dyn-") {
-        if name != "dyn-on" {
-            set("dyn-on", 1.0);
-        }
-        if name != "dyn-mix" {
-            set("dyn-mix", 1.0);
-        }
-        // Hot threshold + non-1 ratio so a sweep of either, or of the time
-        // constants, audibly reshapes the bus.
-        if name != "dyn-threshold" {
-            set("dyn-threshold", -30.0);
-        }
-        if name != "dyn-ratio" {
-            set("dyn-ratio", 8.0);
+    let mut cap = Capture::default();
+    for (matches, action) in TABLE {
+        if matches(name) {
+            action(name, s, &mut cap);
         }
     }
-
-    // ── Long mod-env evolution ─────────────────────────────────────────────
-    if name.starts_with("mod-env-") {
-        cap.sustain_blocks = 150;
-    }
-
     cap
 }
 

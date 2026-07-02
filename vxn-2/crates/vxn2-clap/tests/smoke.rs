@@ -119,6 +119,7 @@ fn process_one(
 
 /// Render `frames` samples worth of audio in `MAX_FRAMES`-size chunks,
 /// appending the stereo result to `l_out` / `r_out`.
+#[allow(dead_code)]
 fn render_seconds(
     processor: &mut StartedPluginAudioProcessor<TestHost>,
     frames: usize,
@@ -133,6 +134,90 @@ fn render_seconds(
         let n = remaining.min(MAX_FRAMES as usize);
         let mut l = vec![0.0_f32; n];
         let mut r = vec![0.0_f32; n];
+        process_one(
+            processor,
+            &in_events,
+            &mut out_events,
+            None,
+            &mut l,
+            &mut r,
+            *steady_time,
+        );
+        *steady_time += n as u64;
+        l_out.extend_from_slice(&l);
+        r_out.extend_from_slice(&r);
+        remaining -= n;
+    }
+}
+
+/// Like `render_seconds` but fires a `NoteOn(key, velocity)` at the start of
+/// the first chunk (sample offset 0 within that chunk), then renders `frames`
+/// samples total. The note event lands in the first `process()` call.
+fn render_with_note_on(
+    processor: &mut StartedPluginAudioProcessor<TestHost>,
+    frames: usize,
+    key: u16,
+    velocity: f64,
+    steady_time: &mut u64,
+    l_out: &mut Vec<f32>,
+    r_out: &mut Vec<f32>,
+) {
+    let mut first = true;
+    let mut out_events = EventBuffer::with_capacity(0);
+    let mut remaining = frames;
+    while remaining > 0 {
+        let n = remaining.min(MAX_FRAMES as usize);
+        let mut l = vec![0.0_f32; n];
+        let mut r = vec![0.0_f32; n];
+        let in_events = if first {
+            first = false;
+            let mut buf = EventBuffer::with_capacity(1);
+            buf.push(&note_on(0, key, velocity));
+            buf
+        } else {
+            EventBuffer::with_capacity(0)
+        };
+        process_one(
+            processor,
+            &in_events,
+            &mut out_events,
+            None,
+            &mut l,
+            &mut r,
+            *steady_time,
+        );
+        *steady_time += n as u64;
+        l_out.extend_from_slice(&l);
+        r_out.extend_from_slice(&r);
+        remaining -= n;
+    }
+}
+
+/// Like `render_seconds` but fires a `NoteOff(key)` at the start of the first
+/// chunk, then renders `frames` samples total.
+fn render_with_note_off(
+    processor: &mut StartedPluginAudioProcessor<TestHost>,
+    frames: usize,
+    key: u16,
+    steady_time: &mut u64,
+    l_out: &mut Vec<f32>,
+    r_out: &mut Vec<f32>,
+) {
+    let mut first = true;
+    let mut out_events = EventBuffer::with_capacity(0);
+    let mut remaining = frames;
+    while remaining > 0 {
+        let n = remaining.min(MAX_FRAMES as usize);
+        let mut l = vec![0.0_f32; n];
+        let mut r = vec![0.0_f32; n];
+        let in_events = if first {
+            first = false;
+            let mut buf = EventBuffer::with_capacity(1);
+            buf.push(&note_off(0, key));
+            buf
+        } else {
+            EventBuffer::with_capacity(0)
+        };
         process_one(
             processor,
             &in_events,
@@ -232,48 +317,9 @@ fn default_patch_render_one_note() {
     let mut l = Vec::with_capacity(sr * 5);
     let mut r = Vec::with_capacity(sr * 5);
 
-    // Sample 0: NoteOn(60).
-    let mut on_buf = EventBuffer::with_capacity(1);
-    on_buf.push(&note_on(0, 60, 0.8));
-    let mut out_events = EventBuffer::with_capacity(0);
-    let mut first_l = vec![0.0_f32; MAX_FRAMES as usize];
-    let mut first_r = vec![0.0_f32; MAX_FRAMES as usize];
-    process_one(
-        &mut processor,
-        &on_buf,
-        &mut out_events,
-        None,
-        &mut first_l,
-        &mut first_r,
-        steady,
-    );
-    steady += MAX_FRAMES as u64;
-    l.extend_from_slice(&first_l);
-    r.extend_from_slice(&first_r);
-
-    // Render the rest of the held-note second.
-    render_seconds(&mut processor, sr - MAX_FRAMES as usize, &mut steady, &mut l, &mut r);
-
-    // Sample 0 of the 1-second mark: NoteOff(60).
-    let mut off_buf = EventBuffer::with_capacity(1);
-    off_buf.push(&note_off(0, 60));
-    let mut release_l = vec![0.0_f32; MAX_FRAMES as usize];
-    let mut release_r = vec![0.0_f32; MAX_FRAMES as usize];
-    process_one(
-        &mut processor,
-        &off_buf,
-        &mut out_events,
-        None,
-        &mut release_l,
-        &mut release_r,
-        steady,
-    );
-    steady += MAX_FRAMES as u64;
-    l.extend_from_slice(&release_l);
-    r.extend_from_slice(&release_r);
-
-    // Render 4 s of release tail.
-    render_seconds(&mut processor, sr * 4 - MAX_FRAMES as usize, &mut steady, &mut l, &mut r);
+    // Render 1 s with C4 held, then 4 s after release.
+    render_with_note_on(&mut processor, sr, 60, 0.8, &mut steady, &mut l, &mut r);
+    render_with_note_off(&mut processor, sr * 4, 60, &mut steady, &mut l, &mut r);
 
     assert_eq!(l.len(), sr * 5);
     assert_eq!(r.len(), sr * 5);
