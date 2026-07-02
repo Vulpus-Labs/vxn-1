@@ -83,16 +83,22 @@ pub mod neon {
 mod tests {
     use super::*;
 
-    /// The const literal must be bit-identical to a freshly computed table —
-    /// same f32 `sin` per entry. Guards against a stale regeneration.
+    /// The const literal must match a freshly computed table to within one
+    /// f32 ULP — same `sin` per entry. Guards against a stale regeneration.
+    ///
+    /// Not bit-exact: libm's `f32::sin` differs by up to 1 ULP across platforms
+    /// (the table is baked on macOS; MSVC's `sinf` rounds a few entries the
+    /// other way). A stale table — formula or length change — diverges by far
+    /// more than a last-ULP rounding difference, so the ULP tolerance still
+    /// catches it. Values are bounded in [-1, 1], so `f32::EPSILON` is ~1 ULP.
     #[test]
     fn const_table_matches_computed() {
         for i in 0..TABLE_LEN {
             let computed = (i as f32 / TABLE_LEN as f32 * std::f32::consts::TAU).sin();
-            assert_eq!(
-                SINE_TABLE[i].to_bits(),
-                computed.to_bits(),
-                "SINE_TABLE[{i}] = {} differs from computed {computed}",
+            let diff = (SINE_TABLE[i] - computed).abs();
+            assert!(
+                diff <= f32::EPSILON,
+                "SINE_TABLE[{i}] = {} differs from computed {computed} by {diff}",
                 SINE_TABLE[i]
             );
         }
