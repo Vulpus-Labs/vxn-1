@@ -32,7 +32,7 @@ fn build_patch_sources() -> PatchSources {
 
 fn build_stack_sources() -> StackScalarSources {
     StackScalarSources {
-        pitch_eg_st: 0.8,
+        pitch_eg: 0.8,
         mod_env: 0.5,
         velocity: 0.75,
         key: 0.45,

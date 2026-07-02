@@ -59,7 +59,7 @@ fn render_scalar_fast_sine(phases: &mut [u32; N_OPS], incs: &[u32; N_OPS]) -> f3
 }
 
 fn render_scalar_lookup(phases: &mut [u32; N_OPS], incs: &[u32; N_OPS]) -> f32 {
-    let table = &*SINE_TABLE;
+    let table = &SINE_TABLE;
     let mut acc = 0.0f32;
     for _ in 0..BLOCK {
         for i in 0..N_OPS {
