@@ -337,6 +337,45 @@ mod tests {
         }
     }
 
+    /// Assert that every PatchParam in both layers and every GlobalParam in
+    /// `back` matches the corresponding value in `expected`. Calls `dense_state`
+    /// to supply the expected values when the test needs full coverage.
+    fn assert_all_params_match(back: &PluginState, expected: &PluginState) {
+        assert_eq!(back.key_mode, expected.key_mode);
+        assert_eq!(back.split_point, expected.split_point);
+        for p in PatchParam::all() {
+            assert_eq!(
+                back.params.layer(Layer::Upper).get(p),
+                expected.params.layer(Layer::Upper).get(p),
+                "upper {} drift",
+                p.desc().name
+            );
+            assert_eq!(
+                back.params.layer(Layer::Lower).get(p),
+                expected.params.layer(Layer::Lower).get(p),
+                "lower {} drift",
+                p.desc().name
+            );
+        }
+        for g in GlobalParam::all() {
+            assert_eq!(
+                back.params.global.get(g),
+                expected.params.global.get(g),
+                "global {} drift",
+                g.desc().name
+            );
+        }
+    }
+
+    /// Wrap a per-parameter TOML body with the shared schema/[meta]/[performance]
+    /// header used by all four inline-TOML tests. The `body` goes inside
+    /// `[performance.upper]`.
+    fn upper_preset(body: &str) -> String {
+        format!(
+            "schema = 1\n[meta]\nname = \"X\"\n[performance]\nkey_mode = \"Whole\"\nsplit_point = 60\n[performance.upper]\n{body}"
+        )
+    }
+
     #[test]
     fn default_performance_is_sparse() {
         let perf = Performance {
@@ -369,18 +408,8 @@ mod tests {
 
     #[test]
     fn unknown_key_warns_and_skips() {
-        let s = r#"
-schema = 1
-[meta]
-name = "X"
-[performance]
-key_mode = "Whole"
-split_point = 60
-[performance.upper]
-cutoff = 1234.0
-not_a_param = 5.0
-"#;
-        let (back, warnings) = from_toml_str(s).unwrap();
+        let s = upper_preset("cutoff = 1234.0\nnot_a_param = 5.0\n");
+        let (back, warnings) = from_toml_str(&s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("not_a_param"), "{warnings:?}");
         assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Cutoff), 1234.0);
@@ -388,17 +417,8 @@ not_a_param = 5.0
 
     #[test]
     fn bad_enum_label_warns_and_defaults() {
-        let s = r#"
-schema = 1
-[meta]
-name = "X"
-[performance]
-key_mode = "Whole"
-split_point = 60
-[performance.upper]
-osc1_wave = "Sawww"
-"#;
-        let (back, warnings) = from_toml_str(s).unwrap();
+        let s = upper_preset("osc1_wave = \"Sawww\"\n");
+        let (back, warnings) = from_toml_str(&s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Sawww"), "{warnings:?}");
         assert_eq!(
@@ -409,17 +429,8 @@ osc1_wave = "Sawww"
 
     #[test]
     fn enum_label_is_case_insensitive() {
-        let s = r#"
-schema = 1
-[meta]
-name = "X"
-[performance]
-key_mode = "Whole"
-split_point = 60
-[performance.upper]
-osc1_wave = "pulse"
-"#;
-        let (back, warnings) = from_toml_str(s).unwrap();
+        let s = upper_preset("osc1_wave = \"pulse\"\n");
+        let (back, warnings) = from_toml_str(&s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         // "Pulse" is index 3 in WAVE_LABELS.
         assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Osc1Wave), 3.0);
@@ -427,17 +438,8 @@ osc1_wave = "pulse"
 
     #[test]
     fn value_clamps_on_read() {
-        let s = r#"
-schema = 1
-[meta]
-name = "X"
-[performance]
-key_mode = "Whole"
-split_point = 60
-[performance.upper]
-resonance = 9.0
-"#;
-        let (back, _) = from_toml_str(s).unwrap();
+        let s = upper_preset("resonance = 9.0\n");
+        let (back, _) = from_toml_str(&s).unwrap();
         assert_eq!(back.state.params.layer(Layer::Upper).get(PatchParam::Resonance), 1.0);
     }
 
@@ -582,30 +584,7 @@ name = "X"
 
         let (back, warnings) = from_toml_str(&app_toml).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(back.state.key_mode, state.key_mode);
-        assert_eq!(back.state.split_point, state.split_point);
-        for p in PatchParam::all() {
-            assert_eq!(
-                back.state.params.layer(Layer::Upper).get(p),
-                state.params.layer(Layer::Upper).get(p),
-                "upper {} drift",
-                p.desc().name
-            );
-            assert_eq!(
-                back.state.params.layer(Layer::Lower).get(p),
-                state.params.layer(Layer::Lower).get(p),
-                "lower {} drift",
-                p.desc().name
-            );
-        }
-        for g in GlobalParam::all() {
-            assert_eq!(
-                back.state.params.global.get(g),
-                state.params.global.get(g),
-                "global {} drift",
-                g.desc().name
-            );
-        }
+        assert_all_params_match(&back.state, &state);
     }
 
     // An engine-written (desktop) preset applies through the vxn-app reader,
@@ -628,21 +607,7 @@ name = "X"
         assert!(warnings.is_empty(), "{warnings:?}");
 
         let back = shared.to_state();
-        assert_eq!(back.key_mode, state.key_mode);
-        assert_eq!(back.split_point, state.split_point);
-        for p in PatchParam::all() {
-            assert_eq!(
-                back.params.layer(Layer::Upper).get(p),
-                state.params.layer(Layer::Upper).get(p),
-            );
-            assert_eq!(
-                back.params.layer(Layer::Lower).get(p),
-                state.params.layer(Layer::Lower).get(p),
-            );
-        }
-        for g in GlobalParam::all() {
-            assert_eq!(back.params.global.get(g), state.params.global.get(g));
-        }
+        assert_all_params_match(&back, &state);
     }
 
     // A sparse default preset round-trips to defaults through the app reader, and

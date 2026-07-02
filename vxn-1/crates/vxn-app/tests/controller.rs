@@ -164,43 +164,78 @@ impl Vxn1Params for MockModel {
     }
 }
 
-// ── Mock preset store ───────────────────────────────────────────────────────
+// ── Shared test preset store ─────────────────────────────────────────────────
+//
+// Single configurable disk-backed store used by all tests.
+//
+// * `factory`: in-memory bank of factory entries (may be empty).
+// * `root`: when `Some`, user operations hit real disk under that path; when
+//   `None`, saves are recorded in `saves` in memory and other user ops are
+//   no-ops.
+// * `saves`: records `user_save` calls when `root` is `None`, so tests that
+//   only care about the save side-effect don't need a tempdir.
+//
+// Formerly three separate structs (`MockPresetStore` / `TempPresetStore` /
+// inline `MixedStore`); merged here since `TempPresetStore` and `MixedStore`
+// duplicated `user_load` / `list_user_tree` verbatim.
 
 type SaveRecord = (String, Option<String>, PresetMeta, Vec<u8>);
 
-#[derive(Default)]
-struct MockPresetStore {
+struct TestPresetStore {
     factory: Vec<(PresetMeta, Vec<u8>)>,
+    root: Option<PathBuf>,
     saves: Mutex<Vec<SaveRecord>>,
 }
 
-impl MockPresetStore {
+impl TestPresetStore {
+    /// In-memory store: no factory, saves are recorded but not written to disk.
+    fn memory() -> Self {
+        Self { factory: Vec::new(), root: None, saves: Mutex::new(Vec::new()) }
+    }
+
+    /// In-memory store pre-populated with factory entries.
     fn with_factory(entries: Vec<(PresetMeta, Vec<u8>)>) -> Self {
-        Self {
-            factory: entries,
-            ..Default::default()
-        }
+        Self { factory: entries, root: None, saves: Mutex::new(Vec::new()) }
+    }
+
+    /// Disk-backed store rooted at `root` with optional factory entries.
+    fn disk(root: PathBuf, factory: Vec<(PresetMeta, Vec<u8>)>) -> Self {
+        Self { factory, root: Some(root), saves: Mutex::new(Vec::new()) }
+    }
+
+    fn dir_for(&self, folder: Option<&str>) -> Option<PathBuf> {
+        self.root.as_ref().map(|r| match folder {
+            Some(f) => r.join(f),
+            None => r.clone(),
+        })
     }
 }
 
-impl PresetStore for MockPresetStore {
-    fn factory_len(&self) -> usize {
-        self.factory.len()
-    }
+impl Default for TestPresetStore {
+    fn default() -> Self { Self::memory() }
+}
+
+impl PresetStore for TestPresetStore {
+    fn factory_len(&self) -> usize { self.factory.len() }
     fn factory_load(&self, index: usize) -> Result<PresetLoad, String> {
         let (meta, blob) = self.factory.get(index).ok_or("oob")?;
-        Ok(PresetLoad {
-            meta: meta.clone(),
-            blob: blob.clone(),
-            warnings: Vec::new(),
-        })
+        Ok(PresetLoad { meta: meta.clone(), blob: blob.clone(), warnings: Vec::new() })
     }
     fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
         self.factory.get(index).map(|(m, _)| m.clone())
     }
-    fn user_load(&self, _path: &Path) -> Result<PresetLoad, String> {
-        Err("not implemented".into())
+
+    fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
+        match &self.root {
+            Some(_) => {
+                let blob = fs::read(path).map_err(|e| e.to_string())?;
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                Ok(PresetLoad { meta: PresetMeta { name, ..Default::default() }, blob, warnings: Vec::new() })
+            }
+            None => Err("not implemented".into()),
+        }
     }
+
     fn user_save(
         &self,
         name: &str,
@@ -208,149 +243,89 @@ impl PresetStore for MockPresetStore {
         meta: &PresetMeta,
         blob: &[u8],
     ) -> Result<PathBuf, String> {
-        self.saves.lock().unwrap().push((
-            name.to_string(),
-            folder.map(str::to_string),
-            meta.clone(),
-            blob.to_vec(),
-        ));
-        Ok(PathBuf::from(format!("/mock/{name}.toml")))
-    }
-    fn user_delete(&self, _path: &Path) -> Result<(), String> {
-        Ok(())
-    }
-    fn user_rename(&self, _path: &Path, _new_name: &str) -> Result<PathBuf, String> {
-        Ok(PathBuf::new())
-    }
-    fn user_move(&self, _path: &Path, _dest: Option<&str>) -> Result<PathBuf, String> {
-        Ok(PathBuf::new())
-    }
-    fn user_create_folder(&self, _suggested: &str) -> Result<(PathBuf, String), String> {
-        Ok((PathBuf::new(), String::new()))
-    }
-    fn user_rename_folder(
-        &self,
-        _old: &str,
-        _new: &str,
-    ) -> Result<(PathBuf, String), String> {
-        Ok((PathBuf::new(), String::new()))
-    }
-    fn user_delete_folder(&self, _name: &str) -> Result<(), String> {
-        Ok(())
-    }
-    fn list_user_tree(&self) -> Vec<UserFolderEntry> {
-        Vec::new()
-    }
-}
-
-// ── Tempdir-backed preset store ─────────────────────────────────────────────
-//
-// Exercises the controller's save → reseed → emit path against a real
-// filesystem (the engine's `EnginePresetStore` does the same shape, but pulls
-// vxn-engine into the test graph). Format is just the raw blob bytes under
-// `<root>/[folder/]<name>.preset`; meta beyond `name` is dropped on listing
-// since the round-trip test only cares about the corpus shape.
-
-struct TempPresetStore {
-    root: PathBuf,
-}
-
-impl TempPresetStore {
-    fn dir_for(&self, folder: Option<&str>) -> PathBuf {
-        match folder {
-            Some(f) => self.root.join(f),
-            None => self.root.clone(),
+        if let Some(dir) = self.dir_for(folder) {
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join(format!("{name}.preset"));
+            fs::write(&path, blob).map_err(|e| e.to_string())?;
+            Ok(path)
+        } else {
+            self.saves.lock().unwrap().push((
+                name.to_string(),
+                folder.map(str::to_string),
+                meta.clone(),
+                blob.to_vec(),
+            ));
+            Ok(PathBuf::from(format!("/mock/{name}.toml")))
         }
-    }
-}
-
-impl PresetStore for TempPresetStore {
-    fn factory_len(&self) -> usize {
-        0
-    }
-    fn factory_load(&self, _: usize) -> Result<PresetLoad, String> {
-        Err("no factory".into())
-    }
-    fn factory_meta(&self, _: usize) -> Option<PresetMeta> {
-        None
-    }
-
-    fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
-        let blob = fs::read(path).map_err(|e| e.to_string())?;
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(PresetLoad {
-            meta: PresetMeta {
-                name,
-                ..Default::default()
-            },
-            blob,
-            warnings: Vec::new(),
-        })
-    }
-
-    fn user_save(
-        &self,
-        name: &str,
-        folder: Option<&str>,
-        _meta: &PresetMeta,
-        blob: &[u8],
-    ) -> Result<PathBuf, String> {
-        let dir = self.dir_for(folder);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("{name}.preset"));
-        fs::write(&path, blob).map_err(|e| e.to_string())?;
-        Ok(path)
     }
 
     fn user_delete(&self, path: &Path) -> Result<(), String> {
-        fs::remove_file(path).map_err(|e| e.to_string())
+        if self.root.is_some() {
+            fs::remove_file(path).map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
-        let parent = path.parent().ok_or("no parent")?;
-        let new_path = parent.join(format!("{new_name}.preset"));
-        fs::rename(path, &new_path).map_err(|e| e.to_string())?;
-        Ok(new_path)
+        if let Some(dir) = self.dir_for(None) {
+            let parent = path.parent().unwrap_or(dir.as_path());
+            let new_path = parent.join(format!("{new_name}.preset"));
+            fs::rename(path, &new_path).map_err(|e| e.to_string())?;
+            Ok(new_path)
+        } else {
+            Ok(PathBuf::new())
+        }
     }
 
     fn user_move(&self, path: &Path, dest_folder: Option<&str>) -> Result<PathBuf, String> {
-        let dir = self.dir_for(dest_folder);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let name = path.file_name().ok_or("no name")?;
-        let new_path = dir.join(name);
-        fs::rename(path, &new_path).map_err(|e| e.to_string())?;
-        Ok(new_path)
+        if let Some(dir) = self.dir_for(dest_folder) {
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let name = path.file_name().ok_or("no name")?;
+            let new_path = dir.join(name);
+            fs::rename(path, &new_path).map_err(|e| e.to_string())?;
+            Ok(new_path)
+        } else {
+            Ok(PathBuf::new())
+        }
     }
 
     fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
-        let p = self.root.join(suggested);
-        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-        Ok((p, suggested.to_string()))
+        if let Some(root) = &self.root {
+            let p = root.join(suggested);
+            fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+            Ok((p, suggested.to_string()))
+        } else {
+            Ok((PathBuf::new(), String::new()))
+        }
     }
 
-    fn user_rename_folder(
-        &self,
-        old: &str,
-        new: &str,
-    ) -> Result<(PathBuf, String), String> {
-        let from = self.root.join(old);
-        let to = self.root.join(new);
-        fs::rename(&from, &to).map_err(|e| e.to_string())?;
-        Ok((to, new.to_string()))
+    fn user_rename_folder(&self, old: &str, new: &str) -> Result<(PathBuf, String), String> {
+        if let Some(root) = &self.root {
+            let from = root.join(old);
+            let to = root.join(new);
+            fs::rename(&from, &to).map_err(|e| e.to_string())?;
+            Ok((to, new.to_string()))
+        } else {
+            Ok((PathBuf::new(), String::new()))
+        }
     }
 
     fn user_delete_folder(&self, name: &str) -> Result<(), String> {
-        fs::remove_dir_all(self.root.join(name)).map_err(|e| e.to_string())
+        if let Some(root) = &self.root {
+            fs::remove_dir_all(root.join(name)).map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn list_user_tree(&self) -> Vec<UserFolderEntry> {
+        let Some(root) = &self.root else {
+            return Vec::new();
+        };
         let mut root_presets: Vec<UserPresetEntry> = Vec::new();
         let mut subs: Vec<(String, Vec<UserPresetEntry>)> = Vec::new();
-        let Ok(rd) = fs::read_dir(&self.root) else {
+        let Ok(rd) = fs::read_dir(root) else {
             return vec![UserFolderEntry { name: None, presets: Vec::new() }];
         };
         for e in rd.flatten() {
@@ -360,10 +335,7 @@ impl PresetStore for TempPresetStore {
                 if let Some(n) = p.file_stem().and_then(|s| s.to_str()) {
                     root_presets.push(UserPresetEntry {
                         path: p.clone(),
-                        meta: PresetMeta {
-                            name: n.to_string(),
-                            ..Default::default()
-                        },
+                        meta: PresetMeta { name: n.to_string(), ..Default::default() },
                         folder: None,
                     });
                 }
@@ -378,10 +350,7 @@ impl PresetStore for TempPresetStore {
                         if let Some(n) = sp.file_stem().and_then(|s| s.to_str()) {
                             presets.push(UserPresetEntry {
                                 path: sp.clone(),
-                                meta: PresetMeta {
-                                    name: n.to_string(),
-                                    ..Default::default()
-                                },
+                                meta: PresetMeta { name: n.to_string(), ..Default::default() },
                                 folder: Some(fname.clone()),
                             });
                         }
@@ -393,15 +362,9 @@ impl PresetStore for TempPresetStore {
         }
         root_presets.sort_by_key(|p| p.meta.name.to_lowercase());
         subs.sort_by_key(|s| s.0.to_lowercase());
-        let mut out = vec![UserFolderEntry {
-            name: None,
-            presets: root_presets,
-        }];
+        let mut out = vec![UserFolderEntry { name: None, presets: root_presets }];
         for (n, presets) in subs {
-            out.push(UserFolderEntry {
-                name: Some(n),
-                presets,
-            });
+            out.push(UserFolderEntry { name: Some(n), presets });
         }
         out
     }
@@ -410,7 +373,7 @@ impl PresetStore for TempPresetStore {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn build(total: usize) -> (Controller<MockModel>, Arc<MockModel>, Receiver<ViewEvent>) {
-    build_with(total, Box::<MockPresetStore>::default())
+    build_with(total, Box::<TestPresetStore>::default())
 }
 
 fn build_with(
@@ -428,6 +391,20 @@ fn drain(rx: &Receiver<ViewEvent>) -> Vec<ViewEvent> {
         out.push(ev);
     }
     out
+}
+
+/// Drain `rx` and collect the name from every `PresetLoaded` event.
+/// Replaces the `drain(&view_rx).into_iter().filter_map(|ev| match ev {
+/// ViewEvent::PresetLoaded { meta, .. } => Some(meta.name), _ => None }).collect()`
+/// pattern used across several step-preset tests.
+fn loaded_names(rx: &Receiver<ViewEvent>) -> Vec<String> {
+    drain(rx)
+        .into_iter()
+        .filter_map(|ev| match ev {
+            ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
+            _ => None,
+        })
+        .collect()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -519,7 +496,7 @@ fn preset_load_emits_per_param_view_events() {
         name: "Test".to_string(),
         ..Default::default()
     };
-    let store = Box::new(MockPresetStore::with_factory(vec![(meta.clone(), blob)]));
+    let store = Box::new(TestPresetStore::with_factory(vec![(meta.clone(), blob)]));
     let (mut ctrl, model, view_rx) = build_with(3, store);
 
     ctrl.ui_sender()
@@ -600,7 +577,7 @@ fn preset_load_snaps_edit_layer_to_upper_in_whole() {
         name: "Whole Preset".into(),
         ..Default::default()
     };
-    let store = Box::new(MockPresetStore::with_factory(vec![(meta, blob)]));
+    let store = Box::new(TestPresetStore::with_factory(vec![(meta, blob)]));
     let (mut ctrl, model, view_rx) = build_with(3, store);
     model.set_key_mode(KeyMode::Whole);
 
@@ -626,7 +603,7 @@ fn preset_load_in_dual_mode_does_not_snap_edit_layer() {
     for v in [0.1_f32, 0.2, 0.3] {
         blob.extend_from_slice(&v.to_le_bytes());
     }
-    let store = Box::new(MockPresetStore::with_factory(vec![(
+    let store = Box::new(TestPresetStore::with_factory(vec![(
         PresetMeta::default(),
         blob,
     )]));
@@ -744,9 +721,7 @@ fn controller_save_then_list_round_trip() {
     // SavePreset → refresh_user_corpus → PresetCorpusChanged path actually
     // touches the filesystem the way the engine adapter expects.
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = Box::new(TempPresetStore {
-        root: tmp.path().to_path_buf(),
-    });
+    let store = Box::new(TestPresetStore::disk(tmp.path().to_path_buf(), Vec::new()));
     let model = Arc::new(MockModel::new(3));
     let (mut ctrl, view_rx, corpus) = Controller::new(model.clone(), store);
 
@@ -830,7 +805,7 @@ fn step_preset_walks_combined_list_factory_then_user_alpha() {
         (PresetMeta { name: "Aether".into(), ..Default::default() }, blob_for(0.20)),
         (PresetMeta { name: "Choir".into(), ..Default::default() }, blob_for(0.30)),
     ];
-    let store = Box::new(MockPresetStore::with_factory(factory));
+    let store = Box::new(TestPresetStore::with_factory(factory));
     let (mut ctrl, model, view_rx) = build_with(1, store);
 
     // No prior preset, delta=+1 → first by alpha order ("Aether" → 0.20).
@@ -839,14 +814,7 @@ fn step_preset_walks_combined_list_factory_then_user_alpha() {
         .unwrap();
     ctrl.tick();
     assert!((model.get(ParamId::new(0)) - 0.20).abs() < 1e-6);
-    let names: Vec<String> = drain(&view_rx)
-        .into_iter()
-        .filter_map(|ev| match ev {
-            ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(names, vec!["Aether"]);
+    assert_eq!(loaded_names(&view_rx), vec!["Aether"]);
 
     // Step forward → "Brass" → "Choir" → wrap to "Aether".
     for expected in ["Brass", "Choir", "Aether"] {
@@ -854,14 +822,7 @@ fn step_preset_walks_combined_list_factory_then_user_alpha() {
             .send(UiEvent::StepPreset { delta: 1 })
             .unwrap();
         ctrl.tick();
-        let names: Vec<String> = drain(&view_rx)
-            .into_iter()
-            .filter_map(|ev| match ev {
-                ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names, vec![expected.to_string()]);
+        assert_eq!(loaded_names(&view_rx), vec![expected.to_string()]);
     }
 
     // Step backward from "Aether" wraps to "Choir".
@@ -869,14 +830,7 @@ fn step_preset_walks_combined_list_factory_then_user_alpha() {
         .send(UiEvent::StepPreset { delta: -1 })
         .unwrap();
     ctrl.tick();
-    let names: Vec<String> = drain(&view_rx)
-        .into_iter()
-        .filter_map(|ev| match ev {
-            ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(names, vec!["Choir".to_string()]);
+    assert_eq!(loaded_names(&view_rx), vec!["Choir".to_string()]);
 }
 
 #[test]
@@ -884,52 +838,11 @@ fn step_preset_spans_factory_into_user() {
     // 0049: factory entries come first, then user entries, both alpha. A
     // forward step from the last factory entry lands on the first user
     // entry — proves the walker treats the two halves as one ordered list.
+    //
+    // Uses `TestPresetStore::disk` with one factory entry and one user preset
+    // on disk: factory side comes first in the combined walker, then the disk
+    // entry; a second forward step crosses the factory→user boundary.
     let tmp = tempfile::TempDir::new().unwrap();
-    // Mixed source: one factory entry (no engine), one user entry on disk.
-    // Use the tempdir store wrapped so that factory_load returns a known
-    // blob and the user side hits disk.
-    struct MixedStore {
-        factory: Vec<(PresetMeta, Vec<u8>)>,
-        user_root: PathBuf,
-    }
-    impl PresetStore for MixedStore {
-        fn factory_len(&self) -> usize { self.factory.len() }
-        fn factory_load(&self, i: usize) -> Result<PresetLoad, String> {
-            let (m, b) = self.factory.get(i).ok_or("oob")?;
-            Ok(PresetLoad { meta: m.clone(), blob: b.clone(), warnings: Vec::new() })
-        }
-        fn factory_meta(&self, i: usize) -> Option<PresetMeta> {
-            self.factory.get(i).map(|(m, _)| m.clone())
-        }
-        fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
-            let blob = fs::read(path).map_err(|e| e.to_string())?;
-            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-            Ok(PresetLoad { meta: PresetMeta { name, ..Default::default() }, blob, warnings: Vec::new() })
-        }
-        fn user_save(&self, _: &str, _: Option<&str>, _: &PresetMeta, _: &[u8]) -> Result<PathBuf, String> { Err("ro".into()) }
-        fn user_delete(&self, _: &Path) -> Result<(), String> { Ok(()) }
-        fn user_rename(&self, _: &Path, _: &str) -> Result<PathBuf, String> { Ok(PathBuf::new()) }
-        fn user_move(&self, _: &Path, _: Option<&str>) -> Result<PathBuf, String> { Ok(PathBuf::new()) }
-        fn user_create_folder(&self, _: &str) -> Result<(PathBuf, String), String> { Ok((PathBuf::new(), String::new())) }
-        fn user_rename_folder(&self, _: &str, _: &str) -> Result<(PathBuf, String), String> { Ok((PathBuf::new(), String::new())) }
-        fn user_delete_folder(&self, _: &str) -> Result<(), String> { Ok(()) }
-        fn list_user_tree(&self) -> Vec<UserFolderEntry> {
-            let mut presets = Vec::new();
-            if let Ok(rd) = fs::read_dir(&self.user_root) {
-                for e in rd.flatten() {
-                    if let Some(n) = e.path().file_stem().and_then(|s| s.to_str()) {
-                        presets.push(UserPresetEntry {
-                            path: e.path(),
-                            meta: PresetMeta { name: n.to_string(), ..Default::default() },
-                            folder: None,
-                        });
-                    }
-                }
-            }
-            presets.sort_by_key(|p| p.meta.name.to_lowercase());
-            vec![UserFolderEntry { name: None, presets }]
-        }
-    }
 
     let mut blob = Vec::new();
     blob.extend_from_slice(&1u32.to_le_bytes());
@@ -939,26 +852,19 @@ fn step_preset_spans_factory_into_user() {
     let factory = vec![
         (PresetMeta { name: "FactoryOnly".into(), ..Default::default() }, blob.clone()),
     ];
-    let store = Box::new(MixedStore { factory, user_root: tmp.path().to_path_buf() });
+    let store = Box::new(TestPresetStore::disk(tmp.path().to_path_buf(), factory));
     let (mut ctrl, _model, view_rx) = build_with(1, store);
 
-    // Forward from cold → factory "FactoryOnly".
+    // Forward from cold → factory "FactoryOnly" (comes first alphabetically in
+    // the combined list since factory entries precede user entries).
     ctrl.ui_sender().send(UiEvent::StepPreset { delta: 1 }).unwrap();
     ctrl.tick();
-    let names: Vec<String> = drain(&view_rx).into_iter().filter_map(|ev| match ev {
-        ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
-        _ => None,
-    }).collect();
-    assert_eq!(names, vec!["FactoryOnly".to_string()]);
+    assert_eq!(loaded_names(&view_rx), vec!["FactoryOnly".to_string()]);
 
-    // Next step → first user entry "UserFoo".
+    // Next step crosses the factory→user boundary → first user entry "UserFoo".
     ctrl.ui_sender().send(UiEvent::StepPreset { delta: 1 }).unwrap();
     ctrl.tick();
-    let names: Vec<String> = drain(&view_rx).into_iter().filter_map(|ev| match ev {
-        ViewEvent::PresetLoaded { meta, .. } => Some(meta.name),
-        _ => None,
-    }).collect();
-    assert_eq!(names, vec!["UserFoo".to_string()]);
+    assert_eq!(loaded_names(&view_rx), vec!["UserFoo".to_string()]);
 }
 
 #[test]

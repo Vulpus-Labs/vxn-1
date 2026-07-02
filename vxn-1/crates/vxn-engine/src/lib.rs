@@ -1333,15 +1333,21 @@ mod tests {
         crossings as f32 * sr / s.len() as f32
     }
 
-    fn pitched_synth() -> Synth {
+    /// Base clean-sine builder: single osc1 sine, osc2 muted, vibrato killed,
+    /// chorus off, fast amp attack. All four prior builders shared this core;
+    /// call mutators on the returned synth for anything extra.
+    fn clean_sine_synth() -> Synth {
         let mut s = Synth::new(48_000.0);
-        // Single sine osc, no chorus/vibrato, fast attack — clean pitch readout.
         s.set_param(pp(PatchParam::Osc1Wave), 0.0); // Sine
         s.set_param(pp(PatchParam::Osc2Level), 0.0);
         s.set_param(pp(PatchParam::PitchLfoDepth), 0.0); // kill default vibrato
         s.set_param(gp(GlobalParam::ChorusOn), 0.0);
         s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
+    }
+
+    fn pitched_synth() -> Synth {
+        clean_sine_synth()
     }
 
     #[test]
@@ -1605,15 +1611,12 @@ mod tests {
 
     /// Single audible osc2 sine — for mod-wheel→osc2-pitch tests.
     fn osc2_sine_synth() -> Synth {
-        let mut s = Synth::new(48_000.0);
+        let mut s = clean_sine_synth();
         s.set_param(pp(PatchParam::Osc1Level), 0.0);
         s.set_param(pp(PatchParam::Osc2Wave), 0.0); // sine
         s.set_param(pp(PatchParam::Osc2Level), 0.8);
         s.set_param(pp(PatchParam::Osc2Coarse), 0.0);
         s.set_param(pp(PatchParam::Osc2Fine), 0.0);
-        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
-        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(pp(PatchParam::Env2Attack), 0.001);
         s
     }
 
@@ -1790,10 +1793,7 @@ mod tests {
         // LFO 1 is per voice: a new note retriggers only its own channel's LFO 1
         // (to the sine zero crossing = phase 0); a held voice's phase keeps
         // running, undisturbed.
-        let mut s = pitched_synth(); // sine LFO 1
-        s.set_param(pp(PatchParam::LfoRate), 5.0);
-        s.note_on_layer(0, 60, 1.0); // → channel 0
-        let _ = render(&mut s, 6000); // advance channel 0's LFO 1 phase
+        let mut s = advance_ch0_lfo(5.0, false);
         let ch0_before = s.banks[0].lfo1_phase(0);
         assert!(ch0_before > 0.01, "held voice should have advanced");
         s.note_on_layer(0, 64, 1.0); // → channel 1, retriggers only its own LFO 1
@@ -1816,6 +1816,7 @@ mod tests {
         for (shape_idx, expected) in [(0.0, 0.0), (1.0, 0.25), (2.0, 0.5), (4.0, 0.0)] {
             let mut s = pitched_synth();
             s.set_param(pp(PatchParam::LfoShape), shape_idx);
+            // Manually advance ch0 LFO so we can then retrigger ch1.
             s.set_param(pp(PatchParam::LfoRate), 5.0);
             s.note_on_layer(0, 60, 1.0);
             let _ = render(&mut s, 6000);
@@ -1831,11 +1832,7 @@ mod tests {
     #[test]
     fn lfo1_free_run_keeps_phase_across_note_ons() {
         // Free-run on: re-triggering a channel does not reset its LFO 1 phase.
-        let mut s = pitched_synth();
-        s.set_param(pp(PatchParam::LfoRate), 5.0);
-        s.set_param(pp(PatchParam::Lfo1FreeRun), 1.0);
-        s.note_on_layer(0, 60, 1.0);
-        let _ = render(&mut s, 6000);
+        let mut s = advance_ch0_lfo(5.0, true);
         let before = s.banks[0].lfo1_phase(0);
         assert!(before > 0.01);
         s.note_on_layer(0, 60, 1.0); // reuses channel 0 (same note); no reset
@@ -2651,12 +2648,7 @@ mod tests {
 
     /// Clean single-sine layer for pitch readout, with portamento configured.
     fn glide_synth(time: f32) -> Synth {
-        let mut s = Synth::new(48_000.0);
-        s.set_param(pp(PatchParam::Osc1Wave), 0.0); // sine
-        s.set_param(pp(PatchParam::Osc2Level), 0.0);
-        s.set_param(pp(PatchParam::PitchLfoDepth), 0.0);
-        s.set_param(gp(GlobalParam::ChorusOn), 0.0);
-        s.set_param(pp(PatchParam::Env2Attack), 0.001);
+        let mut s = clean_sine_synth();
         // Glide has no on/off: a non-zero time enables it (time 0 = off).
         s.set_param(pp(PatchParam::PortamentoTime), time);
         s
@@ -2770,29 +2762,63 @@ mod tests {
         render(s, frames)
     }
 
+    /// Assert that an FX bypass pair produces sample-identical output regardless
+    /// of the knob values: builds two synths that share the `off_param` = 0.0
+    /// switch, then sets each `(knob, value)` pair to its min on synth A and
+    /// max on synth B, renders a short note through both, and asserts L and R
+    /// channels match. Every FX bypass pair (`PhaserOn`/`ReverbOn`) passes exactly
+    /// the dry stereo bus through unchanged when off.
+    fn assert_fx_off_is_dry_pass(off_param: GlobalParam, knobs_a: &[(GlobalParam, f32)], knobs_b: &[(GlobalParam, f32)]) {
+        let setup = |knobs: &[(GlobalParam, f32)]| -> (Vec<f32>, Vec<f32>) {
+            let mut s = Synth::new(48_000.0);
+            s.set_param(gp(off_param), 0.0);
+            for &(k, v) in knobs {
+                s.set_param(gp(k), v);
+            }
+            render_short_note(&mut s, 4800)
+        };
+        let (al, ar) = setup(knobs_a);
+        let (bl, br) = setup(knobs_b);
+        let name = format!("{off_param:?}");
+        assert_eq!(al, bl, "{name} off path is not dry-pass on L");
+        assert_eq!(ar, br, "{name} off path is not dry-pass on R");
+    }
+
+    /// Advance channel 0's LFO 1 in a pitched synth by starting a note and
+    /// rendering a short block. Sets `LfoRate` to `rate` and `Lfo1FreeRun` to
+    /// `free_run` before triggering. Returns the synth so the caller can
+    /// inspect `lfo1_phase` or trigger further notes.
+    fn advance_ch0_lfo(rate: f32, free_run: bool) -> Synth {
+        let mut s = pitched_synth();
+        s.set_param(pp(PatchParam::LfoRate), rate);
+        if free_run {
+            s.set_param(pp(PatchParam::Lfo1FreeRun), 1.0);
+        }
+        s.note_on_layer(0, 60, 1.0);
+        let _ = render(&mut s, 6000);
+        s
+    }
+
     #[test]
     fn phaser_off_passes_dry_unchanged() {
         // With phaser_on=0 the phaser branch must keep the engine sample-
         // exact against a build with the phaser absent. The phaser knobs
         // must have no effect when the switch is off.
-        let mut a = Synth::new(48_000.0);
-        a.set_param(gp(GlobalParam::PhaserOn), 0.0);
-        a.set_param(gp(GlobalParam::PhaserRate), 0.05);
-        a.set_param(gp(GlobalParam::PhaserDepth), 0.0);
-        a.set_param(gp(GlobalParam::PhaserFB), 0.0);
-        a.set_param(gp(GlobalParam::PhaserMix), 0.0);
-        let (al, ar) = render_short_note(&mut a, 4800);
-
-        let mut b = Synth::new(48_000.0);
-        b.set_param(gp(GlobalParam::PhaserOn), 0.0);
-        b.set_param(gp(GlobalParam::PhaserRate), 8.0);
-        b.set_param(gp(GlobalParam::PhaserDepth), 1.0);
-        b.set_param(gp(GlobalParam::PhaserFB), 0.8);
-        b.set_param(gp(GlobalParam::PhaserMix), 1.0);
-        let (bl, br) = render_short_note(&mut b, 4800);
-
-        assert_eq!(al, bl, "phaser_off path is not dry-pass on L");
-        assert_eq!(ar, br, "phaser_off path is not dry-pass on R");
+        assert_fx_off_is_dry_pass(
+            GlobalParam::PhaserOn,
+            &[
+                (GlobalParam::PhaserRate, 0.05),
+                (GlobalParam::PhaserDepth, 0.0),
+                (GlobalParam::PhaserFB, 0.0),
+                (GlobalParam::PhaserMix, 0.0),
+            ],
+            &[
+                (GlobalParam::PhaserRate, 8.0),
+                (GlobalParam::PhaserDepth, 1.0),
+                (GlobalParam::PhaserFB, 0.8),
+                (GlobalParam::PhaserMix, 1.0),
+            ],
+        );
     }
 
     #[test]
@@ -2829,23 +2855,20 @@ mod tests {
         // With reverb_on=0 the reverb branch is gated off, so the dry chain
         // output must not depend on size / decay / damp / mix. Compare two
         // runs that differ in every reverb knob.
-        let mut a = Synth::new(48_000.0);
-        a.set_param(gp(GlobalParam::ReverbOn), 0.0);
-        a.set_param(gp(GlobalParam::ReverbSize), 0.0);
-        a.set_param(gp(GlobalParam::ReverbDecay), 0.5);
-        a.set_param(gp(GlobalParam::ReverbDamp), 0.0);
-        a.set_param(gp(GlobalParam::ReverbMix), 0.0);
-        let (al, ar) = render_short_note(&mut a, 4800);
-
-        let mut b = Synth::new(48_000.0);
-        b.set_param(gp(GlobalParam::ReverbOn), 0.0);
-        b.set_param(gp(GlobalParam::ReverbSize), 1.0);
-        b.set_param(gp(GlobalParam::ReverbDecay), 8.0);
-        b.set_param(gp(GlobalParam::ReverbDamp), 1.0);
-        b.set_param(gp(GlobalParam::ReverbMix), 1.0);
-        let (bl, br) = render_short_note(&mut b, 4800);
-
-        assert_eq!(al, bl, "reverb_off path is not dry-pass on L");
-        assert_eq!(ar, br, "reverb_off path is not dry-pass on R");
+        assert_fx_off_is_dry_pass(
+            GlobalParam::ReverbOn,
+            &[
+                (GlobalParam::ReverbSize, 0.0),
+                (GlobalParam::ReverbDecay, 0.5),
+                (GlobalParam::ReverbDamp, 0.0),
+                (GlobalParam::ReverbMix, 0.0),
+            ],
+            &[
+                (GlobalParam::ReverbSize, 1.0),
+                (GlobalParam::ReverbDecay, 8.0),
+                (GlobalParam::ReverbDamp, 1.0),
+                (GlobalParam::ReverbMix, 1.0),
+            ],
+        );
     }
 }

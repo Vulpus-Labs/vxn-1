@@ -25,10 +25,16 @@ impl HostHandlers for TestHost {
     type AudioProcessor<'a> = ();
 }
 
+/// Load the VXN1 plugin entry from the static descriptor. Wraps the repeated
+/// unsafe block that appears in every test that needs the entry.
+fn load_entry() -> PluginEntry {
+    // SAFETY: descriptor comes from clack's own macro.
+    unsafe { PluginEntry::load_from_raw(&VXN_ENTRY, c"/tmp/VXN1.clap") }.unwrap()
+}
+
 #[test]
 fn entry_factory_descriptor_is_correct() {
-    // SAFETY: descriptor comes from clack's own macro.
-    let entry = unsafe { PluginEntry::load_from_raw(&VXN_ENTRY, c"/tmp/VXN1.clap") }.unwrap();
+    let entry = load_entry();
     let factory = entry.get_factory::<PluginFactory>().unwrap();
     assert_eq!(factory.plugin_count(), 1);
     let desc = factory.plugin_descriptor(0).unwrap();
@@ -38,7 +44,7 @@ fn entry_factory_descriptor_is_correct() {
 
 #[test]
 fn instantiates_and_activates() {
-    let entry = unsafe { PluginEntry::load_from_raw(&VXN_ENTRY, c"/tmp/VXN1.clap") }.unwrap();
+    let entry = load_entry();
     let host_info =
         HostInfo::new("VXN Test", "Vulpus Labs", "https://vulpus.labs", "0.1.0").unwrap();
 
