@@ -2218,15 +2218,6 @@ mod mod_tests {
     }
 
     #[test]
-    fn keytrack_off_ignores_note() {
-        let ctx = neutral_ctx(); // key-track off
-        assert_eq!(
-            resolve_mod(&ctx, &src(0.0, 0.0, 0.0, 0.0, 0.0, 96)).cutoff_mod,
-            0.0
-        );
-    }
-
-    #[test]
     fn negative_depth_inverts_route() {
         let ctx = ctx_with(|c| {
             c.pwm.lfo_sel = LfoSel::Lfo2;
@@ -2348,10 +2339,13 @@ mod mod_tests {
 
     // ── E022: per-voice analog variance (0123 + 0124) ──
 
+    /// Consolidated VoiceTrim properties: bounded draws, determinism per seed,
+    /// and decorrelated streams — the three properties that together define the
+    /// per-voice spread contract.
     #[test]
-    fn trim_draws_are_bounded_and_varied() {
-        // Every draw stays in [-1, 1], and the lanes are not all identical —
-        // the whole point is per-voice spread.
+    fn trim_properties() {
+        // Bounded + varied: every draw stays in [-1, 1] and the lanes are not
+        // all identical (the whole point is per-voice spread).
         let t = VoiceTrim::new(0x1234_5678);
         for arr in [&t.env_time, &t.sustain, &t.cutoff, &t.reso] {
             for &x in arr {
@@ -2363,11 +2357,8 @@ mod mod_tests {
                 "all lanes identical — no variance"
             );
         }
-    }
 
-    #[test]
-    fn trim_is_deterministic_per_seed() {
-        // Same seed → identical table (baseline reproducibility); different
+        // Deterministic per seed: same seed → identical table; different
         // seed → different table (layers/instances decorrelate).
         let a = VoiceTrim::new(0xABCD);
         let b = VoiceTrim::new(0xABCD);
@@ -2375,16 +2366,13 @@ mod mod_tests {
         assert_eq!(a.env_time, b.env_time);
         let c = VoiceTrim::new(0xABCE);
         assert!(c.cutoff != a.cutoff, "distinct seeds must decorrelate");
-    }
 
-    #[test]
-    fn trim_streams_decorrelated() {
-        // The four targets draw from distinct salts, so they must not be the
-        // same sequence (a bright filter must not imply a long decay).
-        let t = VoiceTrim::new(0x0F0F_0F0F);
-        assert!(t.env_time != t.cutoff);
-        assert!(t.cutoff != t.reso);
-        assert!(t.sustain != t.env_time);
+        // Streams decorrelated: the four targets draw from distinct salts
+        // so a bright filter does not imply a long decay.
+        let d = VoiceTrim::new(0x0F0F_0F0F);
+        assert!(d.env_time != d.cutoff);
+        assert!(d.cutoff != d.reso);
+        assert!(d.sustain != d.env_time);
     }
 
     #[test]

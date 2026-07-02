@@ -10,6 +10,8 @@
 //! Loads via the in-process `rlib` target so panics surface with real
 //! backtraces; nothing here goes through `dlopen`.
 
+mod test_support;
+
 use clack_extensions::latency::PluginLatency;
 use clack_extensions::params::PluginParams;
 use clack_extensions::state::PluginState;
@@ -381,18 +383,9 @@ fn state_round_trip_preserves_every_param() {
 
     // Mix of float / int / enum / bool ids spanning per-op / master /
     // matrix / FX. Each value sits inside the descriptor's range.
-    let edits: &[(&str, f64)] = &[
-        ("master-volume", -3.0),
-        ("master-tune", 5.0),
-        ("op1-num", 3.0),
-        ("op6-level", 88.0),
-        ("op4-pan", -0.7),
-        ("mtx1-depth", 0.4),
-        ("mtx8-depth", -0.7),
-        ("reverb-decay", 4.5),
-        ("delay-time", 250.0),
-        ("assign-mode", 1.0),
-    ];
+    // Edit list is shared with the SharedParams-layer test in src/lib.rs;
+    // see tests/test_support.rs.
+    let edits = test_support::EDITS;
     let mut buf = EventBuffer::with_capacity(edits.len());
     for &(name, v) in edits {
         let id = id_of(name).unwrap_or_else(|| panic!("unknown id {name}"));

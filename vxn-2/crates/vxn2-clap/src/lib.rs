@@ -666,6 +666,24 @@ mod tests {
     use clack_plugin::utils::Cookie;
     use vxn2_engine::params::id_of;
 
+    /// Canonical edit list shared with `tests/smoke.rs` via `tests/test_support.rs`.
+    /// Unit tests (this module) cannot reach the `tests/` directory at compile
+    /// time, so the const is mirrored here. The two copies must stay identical;
+    /// ticket 0167 will consolidate into a proper test-support crate.
+    const EDITS: &[(&str, f64)] = &[
+        ("master-volume", -3.0),
+        ("master-tune", 5.0),
+        ("op1-num", 3.0),
+        ("op6-level", 88.0),
+        ("op4-pan", -0.7),
+        ("mtx1-depth", 0.4),
+        ("mtx8-depth", -0.7),
+        ("reverb-decay", 4.5),
+        ("delay-time", 250.0),
+        ("assign-mode", 1.0),
+        ("glide-time", 200.0),
+    ];
+
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
         let (controller, view_rx, corpus) = make_vxn2_controller(shared.params.clone());
         VxnMainThread {
@@ -1032,21 +1050,11 @@ mod tests {
     #[test]
     fn plugin_state_save_load_round_trips_every_param() {
         let shared = mk_shared();
-        // Spread non-default values across the table.
-        for (name, v) in [
-            ("op1-num", 3.0_f32),
-            ("op6-level", 88.0),
-            ("op4-pan", -0.7),
-            ("mtx1-depth", 0.4),
-            ("mtx8-depth", -0.7),
-            ("master-volume", -3.0),
-            ("reverb-decay", 4.5),
-            ("delay-time", 250.0),
-            ("assign-mode", 1.0),
-            ("glide-time", 200.0),
-        ] {
+        // Spread non-default values across the table (edit list shared with
+        // tests/smoke.rs via the EDITS const above).
+        for &(name, v) in EDITS {
             let id = id_of(name).unwrap();
-            shared.params.set(id, v);
+            shared.params.set(id, v as f32);
         }
 
         let mut main = mk_main(&shared);

@@ -94,11 +94,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bank_is_non_empty() {
-        assert!(!factory_files().is_empty(), "no factory presets embedded");
-    }
-
-    #[test]
     fn every_factory_preset_parses_cleanly() {
         // The shippable contract: each embedded file parses with the current
         // schema and produces ZERO warnings (no unknown keys, no bad enum

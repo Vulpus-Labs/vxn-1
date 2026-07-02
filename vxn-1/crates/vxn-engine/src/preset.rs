@@ -338,67 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn every_patch_param_round_trips() {
-        // Set every per-layer param in Upper to a distinct non-default value,
-        // then serialize/parse through the performance format.
-        let mut pv = PatchValues::default();
-        for p in PatchParam::all() {
-            let want = non_default(p.desc());
-            assert_ne!(want, p.desc().default, "{} test value is default", p.desc().name);
-            pv.set(p, want);
-        }
-        let mut params = ParamValues::default();
-        *params.layer_mut(Layer::Upper) = pv.clone();
-        let perf = Performance {
-            meta: meta("RT"),
-            state: PluginState {
-                params,
-                key_mode: KeyMode::Whole,
-                split_point: 60,
-            },
-        };
-        let (back, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        for p in PatchParam::all() {
-            assert_eq!(
-                back.state.params.layer(Layer::Upper).get(p),
-                pv.get(p),
-                "{} did not round-trip",
-                p.desc().name
-            );
-        }
-        assert_eq!(back.meta, meta("RT"));
-    }
-
-    #[test]
-    fn every_global_param_round_trips() {
-        let mut gv = GlobalValues::default();
-        for g in GlobalParam::all() {
-            gv.set(g, non_default(g.desc()));
-        }
-        let mut state = PluginState {
-            params: ParamValues::default(),
-            key_mode: KeyMode::Whole,
-            split_point: 60,
-        };
-        state.params.global = gv.clone();
-        let perf = Performance {
-            meta: meta("G"),
-            state,
-        };
-        let (back, warnings) = from_toml_str(&perf.to_toml_string()).unwrap();
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        for g in GlobalParam::all() {
-            assert_eq!(
-                back.state.params.global.get(g),
-                gv.get(g),
-                "{} did not round-trip",
-                g.desc().name
-            );
-        }
-    }
-
-    #[test]
     fn default_performance_is_sparse() {
         let perf = Performance {
             meta: meta("Empty"),

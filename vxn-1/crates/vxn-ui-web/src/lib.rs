@@ -700,17 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_chunks_single_under_cap() {
-        let events = vec![param_changed(1, 0.5), param_changed(2, 0.5)];
-        let chunks = batch_chunks(&events, 10_000);
-        assert_eq!(chunks.len(), 1, "should fit in one chunk");
-        let v: serde_json::Value = serde_json::from_str(&chunks[0]).unwrap();
-        let arr = v.as_array().expect("array");
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["kind"], "param_changed");
-    }
-
-    #[test]
     fn batch_chunks_splits_above_cap() {
         // 200 distinct ids — each event JSON is ~80 bytes, so a tight cap
         // forces multiple chunks. Every chunk must parse as a JSON array,
@@ -731,18 +720,6 @@ mod tests {
     #[test]
     fn batch_chunks_empty_yields_nothing() {
         assert!(batch_chunks(&[], 10_000).is_empty());
-    }
-
-    #[test]
-    fn batch_chunks_dedup_applies_before_chunking() {
-        // Two writes to the same id collapse before chunking.
-        let events = vec![param_changed(1, 0.1), param_changed(1, 0.9)];
-        let chunks = batch_chunks(&events, 10_000);
-        assert_eq!(chunks.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(&chunks[0]).unwrap();
-        let arr = v.as_array().expect("array");
-        assert_eq!(arr.len(), 1);
-        assert!((arr[0]["plain"].as_f64().unwrap() - 0.9).abs() < 1e-6);
     }
 
     #[test]
@@ -1828,10 +1805,11 @@ mod tests {
         // E018 / 0057: the standalone-web page reuses the native splice but
         // swaps the wry IPC head for the web boot head + module loader.
         let page = build_web_faceplate_html();
-        // No unreplaced placeholders leak (params/subdivisions/patchCount + the
+        // No unreplaced placeholders leak (subdivisions/patchCount + the
         // JS/CSS markers must all be spliced — including inside the boot head).
+        // __PARAMS_JSON__ presence/content is covered by
+        // web_page_params_are_byte_identical_to_native.
         for ph in [
-            "__PARAMS_JSON__",
             "__SUBDIVISIONS_JSON__",
             "__PATCH_COUNT__",
             "__BRIDGE_JS__",

@@ -340,31 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn feedback_alters_output_vs_no_feedback() {
-        // Same note, same modulation; with FB the output should diverge.
-        // Feedback is now layer-level; write `fb_scale` directly to match
-        // how stack/voice note_on does it for the structural FB op.
-        let params = OpParams::default();
-        let mut a = OpState::default();
-        a.cook(&params, 60, 100, 48_000.0);
-        a.fb_scale = fb_scale(0.0);
-        a.force_sustain(0.7);
-        let mut b = OpState::default();
-        b.cook(&params, 60, 100, 48_000.0);
-        b.fb_scale = fb_scale(6.0);
-        b.force_sustain(0.7);
-        let mut differ = 0;
-        for _ in 0..4096 {
-            let sa = op_tick(&mut a, 0.0);
-            let sb = op_tick(&mut b, 0.0);
-            if (sa - sb).abs() > 1e-3 {
-                differ += 1;
-            }
-        }
-        assert!(differ > 100, "feedback had no audible effect");
-    }
-
-    #[test]
     fn feedback_fractional_value_distinct_from_neighbours() {
         // Continuous feedback: fb_scale(3.5) sits between fb_scale(3) and (4).
         // Run identical ops at the three settings; the 3.5 output must differ

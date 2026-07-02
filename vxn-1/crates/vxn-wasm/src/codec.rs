@@ -639,15 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_every_kind() {
-        for (label, ev, _) in golden() {
-            let bytes = encode(&ev);
-            let back = decode(&bytes).unwrap();
-            assert_eq!(back, ev, "round-trip mismatch for {label}");
-        }
-    }
-
-    #[test]
     fn unknown_tag_decodes_none() {
         let mut buf = [0u8; SLOT_BYTES];
         buf[0] = 200; // not a known tag

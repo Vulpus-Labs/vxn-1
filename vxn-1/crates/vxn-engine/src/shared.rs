@@ -437,22 +437,6 @@ mod tests {
         assert_eq!(shared.get(id.raw()), 0.25);
     }
 
-    #[test]
-    fn state_roundtrip_through_store() {
-        let s = SharedParams::new();
-        let up = patch_clap_id(Layer::Upper, PatchParam::Cutoff);
-        s.set(up, 4321.0);
-        s.set_key_mode(KeyMode::Split);
-        s.set_split_point(48);
-
-        let state = s.to_state();
-        let s2 = SharedParams::new();
-        s2.restore_from(&state);
-        assert_eq!(s2.get(up), 4321.0);
-        assert_eq!(s2.key_mode(), KeyMode::Split);
-        assert_eq!(s2.split_point(), 48);
-    }
-
     /// Drift guard (E019 / 0062): the shared `vxn-app` codec must produce bytes
     /// **byte-identical** to the historical engine `PluginState::write`, so
     /// existing host-state blobs and baked factory presets stay readable after

@@ -430,64 +430,26 @@ mod tests {
         assert!(k_cap(12_000.0) < 1.0, "12 kHz cap above the self-osc threshold");
     }
 
-    /// AC for the high-resonance fix: at a *low* cutoff, resonance = 1 still
-    /// self-oscillates (the limit cycle sustains on silence) — the feature is
-    /// intact. At a *high* cutoff the cutoff-tracked damping caps `k` below the
-    /// self-osc threshold, so the same resonance decays away instead of parking
-    /// a screaming peak on inharmonic HF. This is what stops FM's dense HF
-    /// content from being self-oscillated unmusically.
+    /// Three disjoint scenarios for cutoff-cap and quiescence-gate behaviour:
+    ///
+    /// 1. **Non-resonant decay** (quiescence gate, ticket 0085): a ladder with
+    ///    low resonance settles below the −100 dBFS skip floor within ~0.5 s
+    ///    so a released voice is eventually quiescent.
+    ///
+    /// 2. **High-cutoff resonance decays** (cutoff-cap fix): at a high cutoff
+    ///    the cutoff-tracked damping caps `k` below the self-osc threshold, so
+    ///    resonance = 1 decays rather than parking a screaming HF peak.
+    ///
+    /// 3. **Low-cutoff self-osc sustains** (quiescence gate + cutoff-cap guard):
+    ///    at a low cutoff resonance = 1 sustains its limit cycle on silence —
+    ///    the feature is intact and the voice is never wrongly skipped.
     #[test]
-    fn high_cutoff_resonance_decays_while_low_cutoff_sustains() {
+    fn filter_resonance_decay_and_sustain_properties() {
         const EPS: f32 = 1.0e-5;
         let sr = 48_000.0;
 
-        // Low cutoff (below the damp onset): self-oscillation sustains.
-        let mut lo = OtaLadderKernel::new();
-        lo.set_coeffs(OtaLadderCoeffs::new(1500.0, sr, 1.0, 1.0));
-        for _ in 0..500 {
-            lo.tick(0.5);
-        }
-        let mut lo_min = f32::INFINITY;
-        for _ in 0..(sr as usize) {
-            lo.tick(0.0);
-            lo_min = lo_min.min(lo.state_abs_max());
-        }
-        assert!(lo_min > EPS, "low-cutoff self-osc wrongly decayed: {lo_min}");
-
-        // High cutoff (past the damp floor): same resonance now decays.
-        let mut hi = OtaLadderKernel::new();
-        hi.set_coeffs(OtaLadderCoeffs::new(14_000.0, sr, 1.0, 1.0));
-        for _ in 0..500 {
-            hi.tick(0.5);
-        }
-        let mut settled = None;
-        for i in 0..(sr as usize) {
-            hi.tick(0.0);
-            if hi.state_abs_max() < EPS {
-                settled = Some(i);
-                break;
-            }
-        }
-        assert!(
-            settled.is_some(),
-            "high-cutoff resonance still self-oscillated (state {})",
-            hi.state_abs_max(),
-        );
-    }
-
-    /// Quiescence gate (ticket 0085). A non-resonant ladder, once its input goes
-    /// silent, settles below the engine's −100 dBFS skip floor in finite time —
-    /// so a released voice eventually reads quiescent and can be skipped. A
-    /// self-oscillating ladder (resonance → 1) sustains its limit cycle on zero
-    /// input forever, so `state_abs_max` never falls below the floor and the
-    /// voice is never wrongly skipped while it rings.
-    #[test]
-    fn state_decays_below_floor_then_self_osc_never_does() {
-        const EPS: f32 = 1.0e-5;
-        let sr = 48_000.0;
-
-        // Low resonance: excite with a step, then feed silence. State must fall
-        // below the floor within ~0.5 s (well inside a release tail).
+        // 1. Non-resonant (reso=0.2, cutoff=1000 Hz): excite then silence;
+        //    state must fall below the floor within ~0.5 s.
         let mut k = OtaLadderKernel::new();
         k.set_coeffs(OtaLadderCoeffs::new(1000.0, sr, 0.2, 1.0));
         for _ in 0..500 {
@@ -507,22 +469,38 @@ mod tests {
             k.state_abs_max()
         );
 
-        // Self-oscillation: same silence, but the limit cycle sustains — state
-        // stays above the floor for a full second, so it is never skipped.
-        let mut osc = OtaLadderKernel::new();
-        osc.set_coeffs(OtaLadderCoeffs::new(2000.0, sr, 1.0, 1.0));
+        // 2. High cutoff (14 kHz, reso=1): cutoff-tracked damp forces decay.
+        let mut hi = OtaLadderKernel::new();
+        hi.set_coeffs(OtaLadderCoeffs::new(14_000.0, sr, 1.0, 1.0));
         for _ in 0..500 {
-            osc.tick(0.5);
+            hi.tick(0.5);
         }
-        let mut min_state = f32::INFINITY;
-        for _ in 0..(sr as usize) {
-            osc.tick(0.0);
-            min_state = min_state.min(osc.state_abs_max());
+        let mut hi_settled = None;
+        for i in 0..(sr as usize) {
+            hi.tick(0.0);
+            if hi.state_abs_max() < EPS {
+                hi_settled = Some(i);
+                break;
+            }
         }
         assert!(
-            min_state > EPS,
-            "self-oscillating ladder dipped below skip floor: {min_state}"
+            hi_settled.is_some(),
+            "high-cutoff resonance still self-oscillated (state {})",
+            hi.state_abs_max(),
         );
+
+        // 3. Low cutoff (1500 Hz, reso=1): self-osc sustains — never decays.
+        let mut lo = OtaLadderKernel::new();
+        lo.set_coeffs(OtaLadderCoeffs::new(1500.0, sr, 1.0, 1.0));
+        for _ in 0..500 {
+            lo.tick(0.5);
+        }
+        let mut lo_min = f32::INFINITY;
+        for _ in 0..(sr as usize) {
+            lo.tick(0.0);
+            lo_min = lo_min.min(lo.state_abs_max());
+        }
+        assert!(lo_min > EPS, "low-cutoff self-osc wrongly decayed: {lo_min}");
     }
 
     // ---- Integrated per-voice path (E007 ticket 0087) -------------------

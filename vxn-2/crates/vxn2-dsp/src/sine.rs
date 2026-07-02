@@ -126,31 +126,21 @@ mod tests {
         (p * std::f64::consts::TAU).sin() as f32
     }
 
-    #[test]
-    fn scalar_fast_sine_landmarks() {
-        for (phase, expected) in [
-            (0u32, 0.0f32),
-            (0x4000_0000, 1.0),
-            (0x8000_0000, 0.0),
-            (0xC000_0000, -1.0),
-        ] {
-            let got = scalar::fast_sine_q32(phase);
-            assert!(
-                (got - expected).abs() < 2e-3,
-                "fast_sine_q32({phase:#x}) = {got}, want ≈ {expected}"
-            );
-        }
-    }
+    /// Shared landmark pairs (phase, expected) for 0°, 90°, 180°, 270°.
+    /// Used by both lookup and fast-sine tests; fast_sine_accuracy's 100k-point
+    /// sweep subsumes the fast-sine landmarks, so only the lookup test uses
+    /// this array to guard the table-read path which has no sweep.
+    const LANDMARKS: &[(u32, f32)] = &[
+        (0u32, 0.0f32),
+        (0x4000_0000, 1.0),
+        (0x8000_0000, 0.0),
+        (0xC000_0000, -1.0),
+    ];
 
     #[test]
     fn scalar_lookup_sine_landmarks() {
         let t = &SINE_TABLE;
-        for (phase, expected) in [
-            (0u32, 0.0f32),
-            (0x4000_0000, 1.0),
-            (0x8000_0000, 0.0),
-            (0xC000_0000, -1.0),
-        ] {
+        for &(phase, expected) in LANDMARKS {
             let got = scalar::lookup_sine_q32(phase, t);
             assert!(
                 (got - expected).abs() < 1e-3,
