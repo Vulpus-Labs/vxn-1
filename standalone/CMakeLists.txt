@@ -76,6 +76,11 @@ set(CLAP_WRAPPER_OUTPUT_NAME "${VXN_PLUGIN_NAME}" CACHE STRING "" FORCE)
 # targets too.
 if(MSVC)
   add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+  # Align every C++ target (incl. clap-wrapper + rtaudio/rtmidi) with the Rust
+  # staticlib's dynamic CRT, else LNK2038 MTd/MDd mismatches. CMP0091 is NEW by
+  # default at cmake_minimum 3.21, so CMAKE_MSVC_RUNTIME_LIBRARY is honoured.
+  # Set before add_subdirectory so it reaches the wrapper's targets.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 add_subdirectory("${VXN_CLAP_WRAPPER_DIR}" clap-wrapper-build EXCLUDE_FROM_ALL)
@@ -126,6 +131,10 @@ elseif(WIN32)
     ws2_32 userenv ntdll bcrypt
     user32 gdi32 shell32 ole32 oleaut32 advapi32 version
     windowsapp)  # WebView2 requires WindowsApp
+  # rustc bundles a per-crate short-import stub for each native dep (ntdll, …);
+  # /WHOLEARCHIVE force-includes every copy → LNK2005 collisions. Keep the first
+  # (byte-identical) copy. Mirrors the VST3 wrapper link recipe.
+  target_link_options(vxn_standalone PRIVATE "/FORCE:MULTIPLE")
 elseif(UNIX)
   target_link_libraries(vxn_standalone PRIVATE dl pthread m)
 endif()

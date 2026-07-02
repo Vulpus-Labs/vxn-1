@@ -279,7 +279,11 @@ fn standalone(release: bool) -> Result<PathBuf, String> {
         ))
         .arg(format!("-DVXN_OUTPUT_DIR={}", out_dir.display()))
         .arg("-DVXN_PLUGIN_NAME=VXN2")
-        .arg("-DVXN_BUNDLE_ID=labs.vulpus.vxn2.standalone");
+        .arg("-DVXN_BUNDLE_ID=labs.vulpus.vxn2.standalone")
+        // Single-config Ninja needs the build type at configure time; without it
+        // the C++ side (clap-wrapper, rtaudio) defaults to the Debug CRT and
+        // collides with the release Rust staticlib (LNK2038 MTd/MDd on Windows).
+        .arg("-DCMAKE_BUILD_TYPE=Release");
     if ninja_available() {
         cfg.arg("-G").arg("Ninja");
     }
