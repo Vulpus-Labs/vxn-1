@@ -121,6 +121,13 @@ foreach(_archive ${VXN_CLAP_STATIC})
   elseif(WIN32)
     # MSVC: the archive basename (no path) is the library identifier.
     target_link_options(vxn1_vst3 PRIVATE "/WHOLEARCHIVE:${_archive}")
+    # rustc bundles a short-import stub for each native dependency (ntdll,
+    # etc.) as a separate archive member, and repeats them across crates.
+    # /WHOLEARCHIVE force-includes every copy, so the duplicated import
+    # descriptors (__IMPORT_DESCRIPTOR_ntdll, …) collide (LNK2005/LNK1169).
+    # /FORCE:MULTIPLE keeps the first definition of each and links; the
+    # duplicates are byte-identical import thunks, so this is safe here.
+    target_link_options(vxn1_vst3 PRIVATE "/FORCE:MULTIPLE")
   else() # Linux / other ELF
     target_link_options(vxn1_vst3 PRIVATE
       "-Wl,--whole-archive" "${_archive}" "-Wl,--no-whole-archive")
