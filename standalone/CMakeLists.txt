@@ -130,7 +130,9 @@ elseif(WIN32)
   target_link_libraries(vxn_standalone PRIVATE
     ws2_32 userenv ntdll bcrypt
     user32 gdi32 shell32 ole32 oleaut32 advapi32 version
-    windowsapp)  # WebView2 requires WindowsApp
+    windowsapp   # WebView2 requires WindowsApp
+    shlwapi      # wry: SHCreateMemStream
+    propsys)     # windows_core: PropVariantTo*/VariantTo*
   # rustc bundles a per-crate short-import stub for each native dep (ntdll, …);
   # /WHOLEARCHIVE force-includes every copy → LNK2005 collisions. Keep the first
   # (byte-identical) copy. Mirrors the VST3 wrapper link recipe.
