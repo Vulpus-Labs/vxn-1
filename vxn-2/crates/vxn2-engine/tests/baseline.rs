@@ -15,6 +15,13 @@
 //! If an *intentional* DSP change moves the hash, re-capture it: run with
 //! `--nocapture`, read the `BASELINE render hash = 0x…` line the test prints,
 //! and paste it into `EXPECTED`.
+//!
+//! The hash is **platform-locked**: it folds raw f32 bits, and the render path
+//! rounds differently across targets — the aarch64 NEON sine reader vs the x86
+//! scalar one, plus per-platform libm in the EG/LFO/reverb math. `EXPECTED` was
+//! captured on macOS/aarch64 (the dev + macOS-CI target), so the test is
+//! `#[ignore]`d elsewhere. Its job is guarding refactors, which happen on that
+//! target; Windows CI (ticket 0023) skips it as platform-dependent.
 
 use vxn2_engine::MatrixRowRaw;
 use vxn2_engine::engine::Engine;
@@ -97,6 +104,10 @@ fn render_hash(e: &mut Engine, blocks: usize, h: &mut impl Hasher) {
 }
 
 #[test]
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    ignore = "render hash is captured on macOS/aarch64; f32 rounding differs per target"
+)]
 fn render_hash_unchanged() {
     let mut e = reference_engine();
 
