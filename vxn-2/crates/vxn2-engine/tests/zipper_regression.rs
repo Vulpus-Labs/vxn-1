@@ -18,6 +18,19 @@ const SR: f32 = 48_000.0;
 const BLK: usize = 32;
 const MAX_EDGE_RATIO: f64 = 1.5;
 
+fn edge_interior_ratio_of(buf: &[f32]) -> f64 {
+    let mut sum = [0.0_f64; BLK];
+    let mut cnt = [0u64; BLK];
+    for i in 1..buf.len() - 1 {
+        sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
+        cnt[i % BLK] += 1;
+    }
+    let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
+    let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
+    let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
+    edge / interior
+}
+
 fn edge_interior_ratio(dest: u8) -> (f64, f64) {
     let mut e = Engine::new(SR, BLK);
     // Dry render: FX tails would only dilute the detector.
@@ -56,19 +69,7 @@ fn edge_interior_ratio(dest: u8) -> (f64, f64) {
         buf_r.extend_from_slice(&r);
     }
 
-    let ratio = |buf: &[f32]| {
-        let mut sum = [0.0_f64; BLK];
-        let mut cnt = [0u64; BLK];
-        for i in 1..buf.len() - 1 {
-            sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
-            cnt[i % BLK] += 1;
-        }
-        let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
-        let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
-        let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
-        edge / interior
-    };
-    (ratio(&buf_l), ratio(&buf_r))
+    (edge_interior_ratio_of(&buf_l), edge_interior_ratio_of(&buf_r))
 }
 
 #[test]
@@ -123,16 +124,7 @@ fn master_volume_sweep_leaves_no_block_edge_zipper() {
         buf.extend_from_slice(&l);
     }
 
-    let mut sum = [0.0_f64; BLK];
-    let mut cnt = [0u64; BLK];
-    for i in 1..buf.len() - 1 {
-        sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
-        cnt[i % BLK] += 1;
-    }
-    let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
-    let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
-    let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
-    let ratio = edge / interior;
+    let ratio = edge_interior_ratio_of(&buf);
     assert!(
         ratio < MAX_EDGE_RATIO,
         "master-volume block-edge d² ratio {ratio:.2} (want < {MAX_EDGE_RATIO})"
@@ -181,16 +173,7 @@ fn dynamics_makeup_sweep_leaves_no_block_edge_zipper() {
         buf.extend_from_slice(&l);
     }
 
-    let mut sum = [0.0_f64; BLK];
-    let mut cnt = [0u64; BLK];
-    for i in 1..buf.len() - 1 {
-        sum[i % BLK] += (buf[i + 1] - 2.0 * buf[i] + buf[i - 1]).abs() as f64;
-        cnt[i % BLK] += 1;
-    }
-    let mean: Vec<f64> = (0..BLK).map(|i| sum[i] / cnt[i].max(1) as f64).collect();
-    let edge = (mean[BLK - 1] + mean[0] + mean[1]) / 3.0;
-    let interior: f64 = mean[4..BLK - 4].iter().sum::<f64>() / (BLK - 8) as f64;
-    let ratio = edge / interior;
+    let ratio = edge_interior_ratio_of(&buf);
     assert!(
         ratio < MAX_EDGE_RATIO,
         "dynamics-makeup block-edge d² ratio {ratio:.2} (want < {MAX_EDGE_RATIO})"

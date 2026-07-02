@@ -1892,6 +1892,38 @@ mod tests {
     const SR: f32 = 48_000.0;
     const BLK: usize = 64;
 
+    /// Render `n` blocks and collect the L and R samples.
+    fn render_blocks(e: &mut Engine, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        let mut out_l = Vec::with_capacity(n * BLK);
+        let mut out_r = Vec::with_capacity(n * BLK);
+        for _ in 0..n {
+            e.process_block(&mut l, &mut r);
+            out_l.extend_from_slice(&l);
+            out_r.extend_from_slice(&r);
+        }
+        (out_l, out_r)
+    }
+
+    /// Build a fresh `Engine` with a single matrix route.
+    fn engine_with_route(
+        source: crate::matrix::SourceId,
+        dest: crate::matrix::DestId,
+        depth: f32,
+    ) -> Engine {
+        use crate::matrix::{CurveKind, MatrixSlot, MatrixTable};
+        let mut e = Engine::new(SR, BLK);
+        e.matrix = MatrixTable::default();
+        e.matrix.slots[0] = MatrixSlot {
+            source,
+            dest,
+            depth,
+            curve: CurveKind::Lin,
+        };
+        e
+    }
+
     /// Full key-tracking + a C0-floored base cutoff lands the cutoff exactly on
     /// the played note's pitch (VXN-1 parity): `CUTOFF_MIN_HZ · 2^offset ==
     /// note_to_hz(note)`. Also: centred on C0 (zero at note 12) and linear in
@@ -2543,23 +2575,12 @@ mod tests {
     /// seeded distinct per lane at note-on, so the per-lane offsets decorrelate.
     #[test]
     fn matrix_voice_rand_to_lfo2_phase_decorrelates_lanes() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::VoiceRand,
-            dest: DestId::Lfo2Phase,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::VoiceRand, DestId::Lfo2Phase, 1.0);
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
         // One-block latency: offset applied end of block 1, visible from 2.
-        for _ in 0..4 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 4);
         let a = active_stack(&e);
         let phases = e.alloc.stacks[a].meta.lfo2.phase;
         let mut distinct = std::collections::HashSet::new();
@@ -2582,11 +2603,7 @@ mod tests {
         // clear the table so this asserts the genuine off-path.
         e.matrix = crate::matrix::MatrixTable::default();
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..4 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 4);
         let a = active_stack(&e);
         let phases = e.alloc.stacks[a].meta.lfo2.phase;
         for k in 1..STACK_LANES {
@@ -2600,29 +2617,16 @@ mod tests {
     /// `inc`) must be identical early and late.
     #[test]
     fn matrix_lfo2_phase_static_offset_does_not_run_away() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::VoiceRand,
-            dest: DestId::Lfo2Phase,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::VoiceRand, DestId::Lfo2Phase, 1.0);
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..5 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 5);
         let a = active_stack(&e);
         let early: [u32; STACK_LANES] = std::array::from_fn(|k| {
             e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
-        for _ in 0..40 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 40);
         let late: [u32; STACK_LANES] = std::array::from_fn(|k| {
             e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
@@ -2635,18 +2639,11 @@ mod tests {
     /// × depth 0.25 = a quarter-cycle (0x4000_0000) Q32 shift, applied once.
     #[test]
     fn matrix_mod_wheel_to_lfo2_phase_broadcasts_equal_offset() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, MatrixTable, SourceId};
 
-        let mut modulated = Engine::new(SR, BLK);
         // Clear the default `voice-rand → lfo2-phase` slot so only the
         // patch-global broadcast route is in play.
-        modulated.matrix = MatrixTable::default();
-        modulated.matrix.slots[0] = MatrixSlot {
-            source: SourceId::ModWheel,
-            dest: DestId::Lfo2Phase,
-            depth: 0.25,
-            curve: CurveKind::Lin,
-        };
+        let mut modulated = engine_with_route(SourceId::ModWheel, DestId::Lfo2Phase, 0.25);
         modulated.set_mod_wheel(1.0);
         modulated.note_on(60, 100);
 
@@ -2677,37 +2674,22 @@ mod tests {
     /// after retrigger the scatter is stable, finite, and re-derived.
     #[test]
     fn matrix_lfo2_phase_fresh_note_snaps_offset() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::VoiceRand,
-            dest: DestId::Lfo2Phase,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
+        let mut e = engine_with_route(SourceId::VoiceRand, DestId::Lfo2Phase, 1.0);
         e.note_on(60, 100);
-        for _ in 0..6 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 6);
         // Retrigger the same note → reused stack slot hits the `fresh` branch.
         e.note_off(60);
-        e.process_block(&mut l, &mut r);
+        render_blocks(&mut e, 1);
         e.note_on(60, 100);
-        for _ in 0..6 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 6);
         let a = active_stack(&e);
         // Static offset stable after retrigger (no accumulation across notes).
         let d1: [u32; STACK_LANES] = std::array::from_fn(|k| {
             e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
-        for _ in 0..20 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 20);
         let d2: [u32; STACK_LANES] = std::array::from_fn(|k| {
             e.alloc.stacks[a].meta.lfo2.phase[k].wrapping_sub(e.alloc.stacks[a].meta.lfo2.phase[0])
         });
@@ -2722,24 +2704,13 @@ mod tests {
     /// is aggregated across active stacks like the FX mixes).
     #[test]
     fn matrix_mod_wheel_to_lfo1_rate_sweeps_log_domain() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::ModWheel,
-            dest: DestId::Lfo1Rate,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::ModWheel, DestId::Lfo1Rate, 1.0);
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
         // Block 1 aggregates the offset; block 2 applies it (one-block latency).
-        for _ in 0..3 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 3);
         let m = e.patch_mod.lfo1.rate_mult;
         assert!(
             (m - 16.0).abs() < 0.5,
@@ -2752,23 +2723,12 @@ mod tests {
     /// independence).
     #[test]
     fn matrix_velocity_to_lfo2_rate_is_per_stack() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::Velocity,
-            dest: DestId::Lfo2Rate,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::Velocity, DestId::Lfo2Rate, 1.0);
         e.note_on(60, 30);
         e.note_on(67, 120);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..3 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 3);
         let mults: Vec<f32> = e
             .alloc
             .stacks
@@ -2796,11 +2756,7 @@ mod tests {
         let mut e = Engine::new(SR, BLK);
         e.matrix = crate::matrix::MatrixTable::default();
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..4 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 4);
         assert_eq!(e.patch_mod.lfo1.rate_mult, 1.0);
         let a = active_stack(&e);
         assert_eq!(e.alloc.stacks[a].meta.lfo2.rate_mult, 1.0);
@@ -2811,16 +2767,9 @@ mod tests {
     /// bounded by the Hz clamp, never run away or NaN.
     #[test]
     fn matrix_lfo1_self_rate_feedback_is_bounded() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, MatrixTable, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::Lfo1,
-            dest: DestId::Lfo1Rate,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::Lfo1, DestId::Lfo1Rate, 1.0);
         e.note_on(60, 100);
         let mut l = [0.0_f32; BLK];
         let mut r = [0.0_f32; BLK];
@@ -2839,28 +2788,17 @@ mod tests {
     /// source gives 24.
     #[test]
     fn matrix_pitch_eg_into_pitch_no_double_scale() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
         let gp_idx = DestId::GlobalPitch.idx().unwrap();
         let run = |peg_l: i8| -> f32 {
-            let mut e = Engine::new(SR, BLK);
-            e.matrix = crate::matrix::MatrixTable::default();
-            e.matrix.slots[0] = MatrixSlot {
-                source: SourceId::PitchEg,
-                dest: DestId::GlobalPitch,
-                depth: 1.0,
-                curve: CurveKind::Lin,
-            };
+            let mut e = engine_with_route(SourceId::PitchEg, DestId::GlobalPitch, 1.0);
             // Full-scale EG, fast rates, and a 2-semitone configured swing.
             e.params.patch.voice.peg_depth = 2.0;
             e.params.patch.voice.pitch_eg.l = [peg_l, peg_l, peg_l, peg_l];
             e.params.patch.voice.pitch_eg.r = [99, 99, 99, 99];
             e.note_on(60, 100);
-            let mut l = [0.0_f32; BLK];
-            let mut r = [0.0_f32; BLK];
-            for _ in 0..40 {
-                e.process_block(&mut l, &mut r);
-            }
+            render_blocks(&mut e, 40);
             let a = active_stack(&e);
             e.dest_vals[a][0][gp_idx]
         };
@@ -2880,19 +2818,12 @@ mod tests {
     /// the excursion.
     #[test]
     fn pitch_eg_source_is_normalized_shape() {
-        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use crate::matrix::{DestId, SourceId};
 
         // Route into a gain-1 dest (op1-pan) so the dest accumulator reads the
         // raw source shape, undistorted by a gain.
         let pan_idx = DestId::Op1Pan.idx().unwrap();
-        let mut e = Engine::new(SR, BLK);
-        e.matrix = crate::matrix::MatrixTable::default();
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::PitchEg,
-            dest: DestId::Op1Pan,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
+        let mut e = engine_with_route(SourceId::PitchEg, DestId::Op1Pan, 1.0);
         e.params.patch.voice.peg_depth = 7.0; // large swing
         e.params.patch.voice.pitch_eg.l = [99, 99, 99, 99];
         e.params.patch.voice.pitch_eg.r = [99, 99, 99, 99];
@@ -3022,11 +2953,7 @@ mod tests {
     fn matrix_no_stack_macro_slot_is_bit_identical() {
         let mut e = stacked_engine();
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..4 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 4);
         let a = active_stack(&e);
         assert_eq!(e.stack_detune_mod[a], 0.0);
         assert_eq!(e.stack_spread_mod[a], 0.0);
@@ -3050,11 +2977,7 @@ mod tests {
         };
         e.note_on(36, 100);
         e.note_on(96, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..3 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 3);
         let mods: Vec<f32> = (0..N_STACKS)
             .filter(|&i| !e.alloc.stacks[i].is_idle())
             .map(|i| e.stack_detune_mod[i])
@@ -3083,24 +3006,18 @@ mod tests {
         };
         e.set_mod_wheel(0.0);
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..4 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 4);
         let a = active_stack(&e);
         assert_eq!(e.stack_detune_mod[a], 0.0, "should settle at 0 with wheel down");
         // Jump the wheel mid-note: the amount must ramp, not snap.
         e.set_mod_wheel(1.0);
-        e.process_block(&mut l, &mut r);
+        render_blocks(&mut e, 1);
         let after_one = e.stack_detune_mod[a];
         assert!(
             after_one > 0.0 && after_one < 1.0,
             "dynamic detune not ramped (got {after_one}, expected partway to 1.0)"
         );
-        for _ in 0..20 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 20);
         assert!(
             (e.stack_detune_mod[a] - 1.0).abs() < 1e-2,
             "detune did not converge to target"
@@ -3972,11 +3889,7 @@ mod tests {
             e.mod_wheel = 0.5;
         }
         e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..80 {
-            e.process_block(&mut l, &mut r);
-        }
+        render_blocks(&mut e, 80);
         let a = active_stack(&e);
         let mut out = [0u32; 6];
         for op in 0..6 {

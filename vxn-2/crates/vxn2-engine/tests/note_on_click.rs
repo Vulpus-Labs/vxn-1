@@ -8,6 +8,8 @@
 //! across the first block, so a fast attack fades in (~one block) instead of
 //! stepping.
 
+mod common;
+
 use vxn2_engine::alloc::AssignMode;
 use vxn2_engine::engine::Engine;
 use vxn2_engine::factory::factory;
@@ -47,12 +49,7 @@ fn note_on_onset_is_click_free_on_fast_attack() {
         }
         // 4th-difference transient detector over the onset window (same
         // discontinuity probe as the note-off test).
-        let worst = (on_t..buf.len() - 2)
-            .map(|i| {
-                (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2])
-                    .abs() as f64
-            })
-            .fold(0.0, f64::max);
+        let worst = common::worst_d4(&buf, on_t..buf.len() - 2);
         assert!(
             worst < 5e-3,
             "note {note}: onset |d4| {worst:.2e} — fast-attack onset click is back \
@@ -98,11 +95,8 @@ fn solo_steal_is_click_free() {
         buf.extend_from_slice(&l);
     }
 
-    let d4 = |i: usize| {
-        (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs() as f64
-    };
-    let steal_worst = (steal_t..buf.len() - 2).map(d4).fold(0.0, f64::max);
-    let baseline = (4..steal_t - 2).map(d4).fold(0.0, f64::max);
+    let steal_worst = common::worst_d4(&buf, steal_t..buf.len() - 2);
+    let baseline = common::worst_d4(&buf, 4..steal_t - 2);
 
     // Crossfade + ~5 ms declick measures ~0.006 here; an in-place phase-reset
     // steal measured ~0.6. Gate well between the two.
@@ -154,16 +148,11 @@ fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
         }
     }
 
-    let d4 = |i: usize| {
-        (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs() as f64
-    };
     let mut worst = 0.0;
     for &b in &boundaries {
         let lo = b.saturating_sub(96).max(4);
         let hi = (b + 96).min(buf.len() - 2);
-        for i in lo..hi {
-            worst = f64::max(worst, d4(i));
-        }
+        worst = f64::max(worst, common::worst_d4(&buf, lo..hi));
     }
     worst
 }

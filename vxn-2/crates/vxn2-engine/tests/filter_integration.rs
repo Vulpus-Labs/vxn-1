@@ -23,6 +23,9 @@
 //!   crossfaded (ADR 0004 §10), so neither edge introduces a discontinuity
 //!   beyond the tone's own slew, checked at 8× (worst-case group delay).
 
+mod common;
+use common::worst_d4;
+
 use vxn2_engine::engine::Engine;
 use vxn2_engine::factory::factory;
 use vxn2_engine::matrix::{DestId, SourceId};
@@ -256,27 +259,11 @@ fn resonant_release_tail_rings_out_without_skip_cliff() {
     }
 
     let off_t = off_block * BLK;
-    let worst = (off_t + 2..buf.len() - 2)
-        .map(|i| {
-            (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs()
-                as f64
-        })
-        .fold(0.0, f64::max);
+    let worst = worst_d4(&buf, off_t + 2..buf.len() - 2);
     assert!(
         worst < 5e-3,
         "post-off |d4| {worst:.2e}: resonant tail clipped or skip introduced a cliff",
     );
-}
-
-/// Worst 4th-difference (discontinuity energy) over an interleaved-L sample
-/// span — the same click detector the ring-out test uses, applied to a window.
-fn worst_d4(buf: &[f32], range: std::ops::Range<usize>) -> f64 {
-    range
-        .map(|i| {
-            (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs()
-                as f64
-        })
-        .fold(0.0, f64::max)
 }
 
 /// ADR 0004 §10 — toggling `filter-enable` is click-free. The enable edge swaps

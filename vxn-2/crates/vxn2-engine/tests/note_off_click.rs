@@ -6,6 +6,8 @@
 //! With the DX7-calibrated FB_SCALE_TABLE the loop stays in its stable
 //! region at every feedback setting; the release must be transient-free.
 
+mod common;
+
 use vxn2_engine::engine::Engine;
 
 const SR: f32 = 48_000.0;
@@ -33,13 +35,7 @@ fn note_off_release_is_click_free() {
             buf.extend_from_slice(&l);
         }
         let off_t = off_block * BLK;
-        let worst = (off_t..buf.len() - 2)
-            .map(|i| {
-                (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1]
-                    + buf[i - 2])
-                    .abs() as f64
-            })
-            .fold(0.0, f64::max);
+        let worst = common::worst_d4(&buf, off_t..buf.len() - 2);
         assert!(
             worst < 5e-3,
             "note {note}: post-off |d4| {worst:.2e} — release transient is back (pre-0079 ≈ 0.7)"
