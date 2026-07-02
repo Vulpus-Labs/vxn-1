@@ -1087,19 +1087,10 @@ pub fn stack_tick_mono(stack: &mut Stack) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algo::N_OPS;
-    use crate::op::OpParams;
+    use crate::test_util;
 
     fn carrier_friendly_patch() -> VoiceParams {
-        let mut ops = [OpParams::default(); N_OPS];
-        for op in &mut ops {
-            op.eg.r[3] = 99;
-        }
-        VoiceParams {
-            ops,
-            algo: 32,
-            ..VoiceParams::default()
-        }
+        test_util::carrier_friendly_patch()
     }
 
     #[test]
@@ -1513,12 +1504,14 @@ mod tests {
         };
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
         let dt = 64.0 / 48_000.0;
-        for _ in 0..2000 {
-            stack.eg_tick(dt);
-            if stack.meta.mod_env.stage == crate::envelope::AdsrStage::Sustain {
-                break;
-            }
-        }
+        let reached_sustain = test_util::run_until_stage(
+            || {
+                stack.eg_tick(dt);
+                stack.meta.mod_env.stage == crate::envelope::AdsrStage::Sustain
+            },
+            2000,
+        );
+        assert!(reached_sustain, "mod env never reached sustain");
         assert_eq!(
             stack.meta.mod_env.stage,
             crate::envelope::AdsrStage::Sustain,
@@ -1530,12 +1523,14 @@ mod tests {
             stack.meta.mod_env.level
         );
         stack.note_off();
-        for _ in 0..2000 {
-            stack.eg_tick(dt);
-            if stack.meta.mod_env.stage == crate::envelope::AdsrStage::Idle {
-                break;
-            }
-        }
+        let reached_idle = test_util::run_until_stage(
+            || {
+                stack.eg_tick(dt);
+                stack.meta.mod_env.stage == crate::envelope::AdsrStage::Idle
+            },
+            2000,
+        );
+        assert!(reached_idle, "mod env never returned to idle");
         assert_eq!(
             stack.meta.mod_env.stage,
             crate::envelope::AdsrStage::Idle,

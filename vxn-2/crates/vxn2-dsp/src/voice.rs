@@ -315,20 +315,10 @@ pub fn voice_tick_stereo(
 mod tests {
     use super::*;
     use crate::eg::EgStage;
+    use crate::test_util;
     fn carrier_friendly_patch() -> VoiceParams {
-        // Algo 32: all 6 ops are carriers, no edges — exercises every op's
-        // own path with no inter-op coupling. Set every op to a quick
-        // release so is_idle() is reachable in tests.
-        let mut ops = [OpParams::default(); N_OPS];
-        for op in &mut ops {
-            // Fast release (R4=99 → ~4ms sweep).
-            op.eg.r[3] = 99;
-        }
-        VoiceParams {
-            ops,
-            algo: 32,
-            ..VoiceParams::default()
-        }
+        // Delegates to the shared test_util helper (ticket 0165).
+        test_util::carrier_friendly_patch()
     }
 
     #[test]

@@ -462,6 +462,7 @@ mod tests {
     use super::*;
     use crate::sine::scalar::fast_sine_01;
     use std::f32::consts::TAU;
+    use crate::test_util;
 
     const SR: f32 = 48_000.0;
     /// VXN-1's `CONTROL_BLOCK` — the per-block buffer length the block tests use.
@@ -498,13 +499,7 @@ mod tests {
         let mut ph = StereoPhaser::new(SR);
         ph.set_enabled(false);
         ph.set_params(0.7, 0.9, 0.8, 0.9);
-        for i in 0..1_000 {
-            let x = 0.4 * fast_sine_01((i as f32 * 330.0 / SR).fract());
-            let y = -0.3 * fast_sine_01((i as f32 * 110.0 / SR).fract());
-            let (l, r) = ph.process(x, y);
-            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact: {l} vs {x}");
-            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact: {r} vs {y}");
-        }
+        test_util::assert_bit_exact_passthrough(|x, y| ph.process(x, y), 1_000);
     }
 
     #[test]
@@ -529,16 +524,7 @@ mod tests {
         // After the fade fully settles (one-pole reaches its snap floor at
         // ~14·τ ≈ 0.4 s for τ = 30 ms), output is bit-exact passthrough.
         let settle = (SR * 0.6) as usize;
-        for _ in 0..settle {
-            ph.process(0.3, 0.3);
-        }
-        for i in 0..1_000 {
-            let x = 0.4 * fast_sine_01((i as f32 * 330.0 / SR).fract());
-            let y = -0.3 * fast_sine_01((i as f32 * 110.0 / SR).fract());
-            let (l, r) = ph.process(x, y);
-            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact: {l} vs {x}");
-            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact: {r} vs {y}");
-        }
+        test_util::assert_bit_exact_after_settle(|x, y| ph.process(x, y), settle, 1_000);
     }
 
     #[test]

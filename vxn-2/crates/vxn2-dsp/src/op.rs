@@ -209,15 +209,12 @@ pub fn op_eg_tick(state: &mut OpState, dt: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util;
 
     #[test]
     fn cook_sets_phase_inc_to_a4_at_48k() {
-        let params = OpParams::default();
-        let mut state = OpState::default();
-        state.cook(&params, 69, 100, 48_000.0);
-        // 440 Hz at 48k: inc = 440 / 48000 * 2^32 ≈ 39_370_534.
-        let want = ((440.0 / 48_000.0) * PM_SCALE_Q32) as u32;
-        assert_eq!(state.phase_inc, want);
+        // 440 Hz at 48k: inc = 440 / 48000 * 2^32 ≈ 39_370_534. Exact (tol=0).
+        test_util::assert_cooked_hz(&OpParams::default(), 440.0, 0);
     }
 
     #[test]
@@ -272,44 +269,23 @@ mod tests {
     #[test]
     fn cook_rational_ratio_three_halves_at_a4() {
         // num=3, denom=2, fine=0, detune=0 → 1.5 × 440 = 660 Hz.
-        let params = OpParams {
-            num: 3,
-            denom: 2,
-            ..OpParams::default()
-        };
-        let mut state = OpState::default();
-        state.cook(&params, 69, 100, 48_000.0);
-        let want = ((660.0 / 48_000.0) * PM_SCALE_Q32) as u32;
-        assert!(state.phase_inc.abs_diff(want) <= 1, "{} vs {want}", state.phase_inc);
+        let params = OpParams { num: 3, denom: 2, ..OpParams::default() };
+        test_util::assert_cooked_hz(&params, 660.0, 1);
     }
 
     #[test]
     fn cook_fine_adds_hundredth_of_numerator() {
         // num=2, denom=1, fine=+50 → (2 + 0.5)/1 = 2.5 × 440 = 1100 Hz.
-        let params = OpParams {
-            num: 2,
-            denom: 1,
-            fine: 50,
-            ..OpParams::default()
-        };
-        let mut state = OpState::default();
-        state.cook(&params, 69, 100, 48_000.0);
-        let want = ((1100.0 / 48_000.0) * PM_SCALE_Q32) as u32;
-        assert!(state.phase_inc.abs_diff(want) <= 1, "{} vs {want}", state.phase_inc);
+        let params = OpParams { num: 2, denom: 1, fine: 50, ..OpParams::default() };
+        test_util::assert_cooked_hz(&params, 1100.0, 1);
     }
 
     #[test]
     fn cook_detune_is_cents_one_for_one() {
         // detune=+100 ct → 1 semitone up → 440 × 2^(1/12) ≈ 466.164 Hz.
-        let params = OpParams {
-            detune: 100,
-            ..OpParams::default()
-        };
-        let mut state = OpState::default();
-        state.cook(&params, 69, 100, 48_000.0);
+        let params = OpParams { detune: 100, ..OpParams::default() };
         let want_hz = 440.0 * 2_f32.powf(100.0 / 1200.0);
-        let want = ((want_hz / 48_000.0) * PM_SCALE_Q32) as u32;
-        assert!(state.phase_inc.abs_diff(want) <= 2, "{} vs {want}", state.phase_inc);
+        test_util::assert_cooked_hz(&params, want_hz, 2);
     }
 
     #[test]

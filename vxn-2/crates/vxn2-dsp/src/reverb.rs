@@ -369,6 +369,7 @@ fn scale_from_size(size01: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util;
 
     const SR: f32 = 48_000.0;
 
@@ -493,33 +494,13 @@ mod tests {
     #[test]
     fn damp_attenuates_hf() {
         // Drive a high-frequency tone, compare wet RMS at damp=0 vs damp=1.
-        fn rms_with_damp(damp: f32) -> f32 {
+        let rms_with_damp = |damp: f32| -> f32 {
             let mut r = make();
-            let p = FdnReverbParams {
-                on: true,
-                size: 0.5,
-                decay_secs: 2.0,
-                damp,
-                mix: 1.0,
-            };
+            let p = FdnReverbParams { on: true, size: 0.5, decay_secs: 2.0, damp, mix: 1.0 };
             r.set_params(&p);
-            // Warm up + settle.
-            for n in 0..(SR as usize / 2) {
-                let t = n as f32 / SR;
-                let s = (t * 8000.0 * std::f32::consts::TAU).sin();
-                let _ = r.process(s, s);
-            }
-            // Measure.
-            let mut e = 0.0_f32;
-            let nn = (0.1 * SR) as usize;
-            for n in 0..nn {
-                let t = (SR as usize / 2 + n) as f32 / SR;
-                let s = (t * 8000.0 * std::f32::consts::TAU).sin();
-                let (l, rr) = r.process(s, s);
-                e += l * l + rr * rr;
-            }
-            (e / (2.0 * nn as f32)).sqrt()
-        }
+            // Warm up for 0.5 s, measure 0.1 s — delegates to sine_rms.
+            test_util::sine_rms(|s, t| r.process(s, t), 8000.0, SR as usize / 2, (0.1 * SR) as usize)
+        };
         let bright = rms_with_damp(0.0);
         let dark = rms_with_damp(1.0);
         // Dark should be measurably quieter at 8 kHz.

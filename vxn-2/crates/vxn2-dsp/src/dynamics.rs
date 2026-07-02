@@ -287,6 +287,7 @@ impl DynamicsBlock {
 mod tests {
     use super::*;
     use std::f32::consts::TAU;
+    use crate::test_util;
 
     const SR: f32 = 48_000.0;
 
@@ -314,14 +315,7 @@ mod tests {
             drive_db: 18.0,
             mix: 1.0,
         });
-        for i in 0..1_000 {
-            let phase = (i as f32 * 330.0 / SR).fract();
-            let x = 0.4 * (TAU * phase).sin();
-            let y = -0.3 * (TAU * (i as f32 * 110.0 / SR).fract()).sin();
-            let (l, r) = d.process(x, y);
-            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact at i={i}: {l} vs {x}");
-            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact at i={i}: {r} vs {y}");
-        }
+        test_util::assert_bit_exact_passthrough(|x, y| d.process(x, y), 1_000);
     }
 
     #[test]
@@ -405,18 +399,8 @@ mod tests {
 
         // Settle past the smoother tail (~14·τ ≈ 0.4 s for τ = 30 ms).
         let settle = (SR * 0.6) as usize;
-        for _ in 0..settle {
-            d.process(0.3, 0.3);
-        }
         // Now bit-exact passthrough — assert against arbitrary input.
-        for i in 0..1_000 {
-            let phase = (i as f32 * 330.0 / SR).fract();
-            let x = 0.4 * (TAU * phase).sin();
-            let y = -0.3 * (TAU * (i as f32 * 110.0 / SR).fract()).sin();
-            let (l, r) = d.process(x, y);
-            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact: {l} vs {x}");
-            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact: {r} vs {y}");
-        }
+        test_util::assert_bit_exact_after_settle(|x, y| d.process(x, y), settle, 1_000);
     }
 
     #[test]

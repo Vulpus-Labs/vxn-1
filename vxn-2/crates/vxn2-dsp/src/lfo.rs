@@ -427,6 +427,7 @@ impl Lfo2Stack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util;
 
     const BLK: f32 = 64.0 / 48_000.0;
 
@@ -455,16 +456,8 @@ mod tests {
             sync_index: 0,
         };
         let samples = run_lfo1(&params, 2000);
-        let mut crossings = vec![];
-        let mut prev = samples[0];
-        for (i, &v) in samples.iter().enumerate().skip(1) {
-            if prev < 0.0 && v >= 0.0 {
-                crossings.push(i);
-            }
-            prev = v;
-        }
-        assert!(crossings.len() >= 2);
-        let period = (crossings[1] - crossings[0]) as i32;
+        let period = test_util::zero_cross_period(&samples)
+            .expect("fewer than 2 zero crossings found");
         assert!((period - 750).abs() <= 4, "period {period}, want ≈750");
     }
 
@@ -520,16 +513,9 @@ mod tests {
             sync_index: q_idx,
         };
         let samples = run_lfo1(&params, 1500);
-        let mut crossings = vec![];
-        let mut prev = samples[0];
-        for (i, &v) in samples.iter().enumerate().skip(1) {
-            if prev < 0.0 && v >= 0.0 {
-                crossings.push(i);
-            }
-            prev = v;
-        }
         // 2 Hz at 64-sample blocks @ 48 kHz = 375 blocks per cycle.
-        let period = (crossings[1] - crossings[0]) as i32;
+        let period = test_util::zero_cross_period(&samples)
+            .expect("fewer than 2 zero crossings found");
         assert!((period - 375).abs() <= 3, "synced period {period}, want ≈375");
     }
 
@@ -763,17 +749,11 @@ mod tests {
             sync_index: q_idx,
         };
         lfo.note_on(&params);
-        let mut crossings = vec![];
-        let mut prev = lfo.eval(&params, 120.0, BLK)[0];
-        for i in 1..1500 {
-            let v = lfo.eval(&params, 120.0, BLK)[0];
-            if prev < 0.0 && v >= 0.0 {
-                crossings.push(i);
-            }
-            prev = v;
-        }
+        // Collect lane-0 samples, then measure period via zero_cross_period.
+        let samples: Vec<f32> = (0..1500).map(|_| lfo.eval(&params, 120.0, BLK)[0]).collect();
         // 2 Hz at 64-sample blocks @ 48 kHz = 375 blocks per cycle.
-        let period = (crossings[1] - crossings[0]) as i32;
+        let period = test_util::zero_cross_period(&samples)
+            .expect("fewer than 2 zero crossings found");
         assert!((period - 375).abs() <= 3, "synced period {period}, want ≈375");
     }
 

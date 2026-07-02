@@ -331,6 +331,7 @@ fn march_exp(level: &mut f32, target: f32, tau_secs: f32, dt: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util;
 
     const DT: f32 = 64.0 / 48_000.0;
 
@@ -423,19 +424,9 @@ mod tests {
         };
         eg.cook(&params, 1.0, 1.0);
         eg.note_on();
-        for _ in 0..2000 {
-            eg.tick(DT);
-            if eg.stage == EnvStage4::Sustain {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { eg.tick(DT); eg.stage == EnvStage4::Sustain }, 2000);
         eg.note_off();
-        for _ in 0..2000 {
-            eg.tick(DT);
-            if eg.stage == EnvStage4::Idle {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { eg.tick(DT); eg.stage == EnvStage4::Idle }, 2000);
         // Idle holds L4 target.
         let expected = -10.0 / 99.0;
         assert!(
@@ -461,15 +452,14 @@ mod tests {
         env.cook(&params);
         env.note_on();
         let mut peak = 0.0_f32;
-        for _ in 0..1000 {
-            let v = env.tick(DT);
-            if v > peak {
-                peak = v;
-            }
-            if env.stage == AdsrStage::Sustain {
-                break;
-            }
-        }
+        test_util::run_until_stage(
+            || {
+                let v = env.tick(DT);
+                if v > peak { peak = v; }
+                env.stage == AdsrStage::Sustain
+            },
+            1000,
+        );
         assert!(peak >= 0.99, "lin attack peak {peak}");
         assert!(
             (env.level - 0.5).abs() < 1e-3,
@@ -491,12 +481,7 @@ mod tests {
         env.cook(&params);
         env.note_on();
         // Run long enough for Attack + Decay to finish (5 ms each ≈ tau×4.6).
-        for _ in 0..500 {
-            env.tick(DT);
-            if env.stage == AdsrStage::Sustain {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { env.tick(DT); env.stage == AdsrStage::Sustain }, 500);
         assert_eq!(env.stage, AdsrStage::Sustain);
         assert!(
             (env.level - 0.3).abs() < 1e-2,
@@ -517,19 +502,9 @@ mod tests {
         };
         env.cook(&params);
         env.note_on();
-        for _ in 0..1000 {
-            env.tick(DT);
-            if env.stage == AdsrStage::Sustain {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { env.tick(DT); env.stage == AdsrStage::Sustain }, 1000);
         env.note_off();
-        for _ in 0..1000 {
-            env.tick(DT);
-            if env.stage == AdsrStage::Idle {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { env.tick(DT); env.stage == AdsrStage::Idle }, 1000);
         assert_eq!(env.stage, AdsrStage::Idle);
         assert!(env.level.abs() < 1e-3);
     }

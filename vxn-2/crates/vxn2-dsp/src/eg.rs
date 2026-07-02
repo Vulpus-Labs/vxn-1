@@ -300,6 +300,7 @@ impl EgState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util;
 
     fn default_params() -> EgParams {
         EgParams {
@@ -380,18 +381,13 @@ mod tests {
             eg.cook(&params, 1.0, 1.0, EgCurve::Exp);
             eg.note_on();
             let dt = 1.0 / 1_000.0;
-            for _ in 0..2000 {
-                eg.tick(dt);
-                if eg.stage == EgStage::Sustain {
-                    break;
-                }
-            }
+            test_util::run_until_stage(|| { eg.tick(dt); eg.stage == EgStage::Sustain }, 2000);
             eg.note_off();
-            let mut n = 0;
-            while eg.stage != EgStage::Idle && n < 1_000_000 {
-                eg.tick(dt);
-                n += 1;
-            }
+            let mut n = 0u32;
+            test_util::run_until_stage(
+                || { eg.tick(dt); n += 1; eg.stage == EgStage::Idle },
+                1_000_000,
+            );
             n as f32 * dt
         };
         let slow = secs_to_idle(0);
@@ -460,17 +456,16 @@ mod tests {
         eg.note_on();
         let dt = 1.0 / 48_000.0;
         let mut reached_attack_top = false;
-        let mut reached_sustain = false;
-        for _ in 0..(48_000 * 2) {
-            eg.tick(dt);
-            if eg.stage == EgStage::Decay1 {
-                reached_attack_top = true;
-            }
-            if eg.stage == EgStage::Sustain {
-                reached_sustain = true;
-                break;
-            }
-        }
+        let reached_sustain = test_util::run_until_stage(
+            || {
+                eg.tick(dt);
+                if eg.stage == EgStage::Decay1 {
+                    reached_attack_top = true;
+                }
+                eg.stage == EgStage::Sustain
+            },
+            48_000 * 2,
+        );
         assert!(reached_attack_top, "never finished attack");
         assert!(reached_sustain, "never reached sustain");
         // Sustain target = L3=50 through the active level curve.
@@ -488,19 +483,9 @@ mod tests {
         eg.cook(&default_params(), 1.0, 1.0, EgCurve::Exp);
         eg.note_on();
         let dt = 1.0 / 48_000.0;
-        for _ in 0..(48_000 * 2) {
-            eg.tick(dt);
-            if eg.stage == EgStage::Sustain {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { eg.tick(dt); eg.stage == EgStage::Sustain }, 48_000 * 2);
         eg.note_off();
-        for _ in 0..(48_000 * 5) {
-            eg.tick(dt);
-            if eg.stage == EgStage::Idle {
-                break;
-            }
-        }
+        test_util::run_until_stage(|| { eg.tick(dt); eg.stage == EgStage::Idle }, 48_000 * 5);
         assert_eq!(eg.stage, EgStage::Idle);
         assert!((eg.level - 0.0).abs() < 1e-3);
     }
