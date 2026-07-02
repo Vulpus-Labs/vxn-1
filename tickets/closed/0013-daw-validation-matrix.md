@@ -93,3 +93,23 @@ first.
 This ticket has no code changes; the deliverable is the
 validation log. Attach screenshots / a short notes file to
 the close-out comment.
+
+## Close-out (2026-07-02)
+
+Closed re-scoped to the **macOS** half of the matrix; Windows deferred to a
+follow-up (no known failing host — Windows simply untested here). Per
+maintainer report, not in-tree verification (this ticket ships no code).
+
+- **macOS — Reaper / Bitwig / Ableton Live**: `VXN1.vst3` scans clean, loads
+  on an instrument track, MIDI audible; HTML faceplate renders, knobs respond,
+  preset bar visible; parameter automation round-trips; project save/close/
+  reopen restores patch; second instance edits independently. No crash in
+  normal use.
+- VST3 build + install path confirmed working via
+  `vxn-1/deploy.sh` → `cargo xtask bundle --release --install --format clap,vst3`,
+  installing to `~/Library/Audio/Plug-Ins/VST3/VXN1.vst3`
+  ([xtask/src/main.rs:346](../../vxn-1/xtask/src/main.rs#L346),
+  [:706](../../vxn-1/xtask/src/main.rs#L706)).
+- **Deferred to [0171](../open/0171-daw-validation-windows.md)**: Windows matrix
+  (Cubase, Reaper, Live) incl. Cubase view-lifecycle checks, param-ID coverage
+  count, preset round-trip, CPU baseline. E010 stays open until 0171 passes.
