@@ -2,7 +2,7 @@
 id: E031
 product: monorepo
 title: Test-suite remediation (2026-07-01 test review) — kill non-cogent tests, prune redundancy, extract shared apparatus
-status: open
+status: closed
 created: 2026-07-01
 ---
 
@@ -88,3 +88,30 @@ vxn-1 dsp/app/ui/clap/wasm; vxn-2 engine; vxn-2 dsp; vxn-2 app/ui/clap).
 Every ticket cites specific `file:line` findings from that review. Line
 numbers are as-reviewed on 2026-07-01 — re-grep by test name before
 editing, since earlier tickets in this epic will shift later line numbers.
+
+## Close-out (2026-07-02)
+
+All nine tickets (0161–0169) closed. The 2026-07-01 test-quality review's
+four buckets are cleared:
+
+- **Non-cogent (0161):** 14 tests repaired/deleted/trimmed, 1 documented
+  skip; the repaired tests now read real output (one verified to fail on a
+  deliberately broken feature during the 0169 re-review).
+- **Redundant (0162):** 9 subsumed tests deleted (each covering test
+  verified), 2 pairs merged, the state-round-trip EDITS literal deduped.
+- **Substring-only (0163):** ~18 ui-web `faceplate_*_wired` token tests
+  collapsed to asset-present guards; behaviour left to the Vitest suite.
+- **Shared apparatus (0164–0167):** per-crate helpers (render_blocks,
+  worst_d4, test_util, clean_sine_synth, TestPresetStore) + a cross-crate
+  `test-support` feature on vxn-core-clap; single-source EDITS.
+- **Clarity (0168):** timeline-slice envelope test, render_with_note_on/off,
+  and the param_audibility context TABLE.
+
+Verified: full `cargo test --workspace` = 1000 passed / 0 failed / 75 suites;
+five-way re-review (0169) found no regressions and no new false-confidence
+tests. One follow-up filed outside this epic: **0170** (pre-existing
+vxn2-ui-web contract-token tests, out of the original review scope).
+
+Delivered by fanning the tickets out to Sonnet implementation agents in
+waves (0161→0162 serial; 0163–0166 parallel; 0167→0168 serial), each gated
+(test-only diff check + green tests) before commit.
