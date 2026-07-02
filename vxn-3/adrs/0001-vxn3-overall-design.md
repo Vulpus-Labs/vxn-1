@@ -68,6 +68,10 @@ Per-track / per-trig levers:
   separate data model. Slow per-bar evolution comes from sparse ramp/latch locks
   over the (long, polymetric) loop — minimal techno lives on change over many
   bars, so evolution is designed in, not bolted on.
+- **Micro-timing + lane shift:** push a hit early/late off the grid. Per-trig
+  micro-timing is a trig attribute; per-lane shift is a constant per-track
+  offset that phases the whole lane against the others. Full semantics in
+  [ADR 0004](0004-vxn3-micro-timing.md).
 
 ### 3. Dub sends as part of the instrument
 
