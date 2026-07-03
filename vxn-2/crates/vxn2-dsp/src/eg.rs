@@ -120,22 +120,28 @@ pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
 
 /// Convert a DX7-style rate (0..99) to **log2 units per second** for the `Exp`
 /// downward marcher (ticket 0125). Calibrated to the measured DX7 EG (MSFA /
-/// Dexed model): the downward segment falls at `0.2819 × 2^(R×0.16)` dB/s —
-/// ≈ 0.28 dB/s at R=0 (a ~96 dB sweep takes ~5½ min) up to ≈ 16 500 dB/s at
-/// R=99 (~6 ms). Converted to log2 units: `dB/s ÷ 6.0206`, so R=0 →
-/// 0.04682 log2/s. Because the march is linear-in-dB at a constant rate, a
-/// *partial* segment (a small dB step) is proportionally quicker, exactly as
-/// on a DX7.
+/// Dexed model): the downward segment falls at
+/// `0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4))` dB/s, where the 6-bit
+/// quantised rate `qrate = (R × 41) / 64` (integer). This is a piecewise
+/// approximation of an exponential — `2^(qrate/4)` doubles every 4 qrate steps,
+/// and the `(1 + 0.25·(qrate mod 4))` factor (1.0…1.75) interpolates the three
+/// in-between steps. ≈ 0.28 dB/s at R=0 (a ~96 dB sweep takes ~5½ min) up to
+/// ≈ 16 500 dB/s at R=99 (~6 ms). Converted to log2 units: `dB/s ÷ 6.0206`.
+/// Because the march is linear-in-dB at a constant rate, a *partial* segment
+/// (a small dB step) is proportionally quicker, exactly as on a DX7.
 ///
-/// Supersedes the earlier hand-fit `0.75 × 2^(R×0.125)` log2/s, which was
-/// ~10× too fast at the mid rates (R≈20–35) that dominate sustained voices —
-/// e.g. DX7 E.PIANO 1 decayed in ~3 s instead of ringing for tens of seconds.
+/// Supersedes the earlier hand-fit `0.75 × 2^(R×0.125)` log2/s (~10× too fast
+/// at mid rates), and its successor `0.2819 × 2^(R×0.16)` dB/s which had the
+/// right exponent but dropped the `(1 + 0.25·(qrate mod 4))` factor — running
+/// up to 1.75× too *slow* at rates where `qrate mod 4 ≠ 0`.
 #[inline]
 pub fn rate_to_log2_per_sec(rate: u8) -> f32 {
-    let r = rate.min(99) as f32;
-    // DX7 (MSFA/Dexed): 0.2819 dB/s at R=0, ×2 per 6.25 rate steps.
-    // 0.2819 dB/s ÷ 6.0206 dB/log2 = 0.04682 log2/s.
-    0.04682 * (2_f32).powf(r * 0.16)
+    // DX7 (MSFA/Dexed): qrate = (R × 41) / 64, integer-quantised.
+    let qrate = (rate.min(99) as u32 * 41) / 64;
+    // 0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4)) dB/s, ÷ 6.0206 dB/log2.
+    let db_per_sec =
+        0.2819 * 2_f32.powf(qrate as f32 / 4.0) * (1.0 + 0.25 * (qrate % 4) as f32);
+    db_per_sec / 6.0206
 }
 
 /// log2 of a linear amplitude relative to `max_amp`, floored at [`EG_LOG_FLOOR`].
@@ -454,11 +460,13 @@ mod tests {
     }
 
     /// The `Exp` downward marcher must fall at the *measured* DX7 EG speed
-    /// (MSFA / Dexed): `0.2819 × 2^(R×0.16)` dB/s. We drive a real release and
-    /// measure the realized slope, so this locks the whole path — `cook`,
+    /// (MSFA / Dexed): `0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4))` dB/s,
+    /// with `qrate = (R × 41) / 64`. We drive a real release and measure the
+    /// realized slope, so this locks the whole path — `cook`,
     /// `rate_to_log2_per_sec`, and the per-tick `march_log` integration — not
     /// just the rate function in isolation. Both decay and release march
-    /// through the same code, so one measurement covers both.
+    /// through the same code, so one measurement covers both. Rates are chosen
+    /// to exercise several `qrate mod 4` residues (the interpolation factor).
     #[test]
     fn exp_downward_slope_matches_dx7_db_per_sec() {
         const LOG2_TO_DB: f32 = 6.020_6;
@@ -472,7 +480,9 @@ mod tests {
             let dt = 1.0 / 48_000.0;
             test_util::run_until_stage(|| { eg.tick(dt); eg.stage == EgStage::Sustain }, 96_000);
             eg.note_off();
-            let expected = 0.2819 * 2_f32.powf(r as f32 * 0.16);
+            let qrate = (r as u32 * 41) / 64;
+            let expected =
+                0.2819 * 2_f32.powf(qrate as f32 / 4.0) * (1.0 + 0.25 * (qrate % 4) as f32);
             // Windows scale with the rate so we always sample mid-sweep (the
             // full span is ~90 dB): settle 5 dB in, then measure a 10 dB drop.
             let settle_s = 5.0 / expected;
