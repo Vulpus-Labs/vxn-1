@@ -467,9 +467,9 @@ impl Stack {
     /// to re-cook routing. No-op when the algo hasn't moved.
     ///
     /// Routes only; feedback is *not* refreshed here. The new algorithm has its
-    /// own `structural_fb_op`, so the caller must follow this with
+    /// own `fb_src`, so the caller must follow this with
     /// [`Self::set_feedback_live`] (or `_lanes`) to move the FB scale onto the
-    /// new op. `Engine::apply_block_params` calls both every block, so the
+    /// new source op. `Engine::apply_block_params` calls both every block, so the
     /// contract holds for the production path; any other caller must do the same.
     #[inline]
     pub fn set_algo_live(&mut self, algo: u8) {
@@ -504,9 +504,9 @@ impl Stack {
 
     #[inline]
     fn write_fb_scales(&mut self, scales: [f32; STACK_LANES]) {
-        let fb_op = spec_of(self.meta.algo).structural_fb_op;
+        let fb_src = spec_of(self.meta.algo).fb_src;
         for i in 0..N_OPS {
-            self.core.ops[i].fb_scale = if (i + 1) as u8 == fb_op {
+            self.core.ops[i].fb_scale = if (i + 1) as u8 == fb_src {
                 scales
             } else {
                 [0.0; STACK_LANES]
@@ -1005,7 +1005,21 @@ fn fill_geometric(out: &mut [f32; STACK_LANES], density: usize) {
 /// match lives in the lane loop (a SoA enum match drops NEON to scalar).
 #[inline]
 fn tick_ops(stack: &mut Stack) -> [[f32; STACK_LANES]; N_OPS] {
-    let (mi, _cs) = (stack.meta.route_fn)(&stack.core.prev_outs);
+    let (mut mi, _cs) = (stack.meta.route_fn)(&stack.core.prev_outs);
+    // Feedback: the algorithm's single fb_src → fb_dst path (self-loop for 30
+    // algos, OP4→OP6 / OP5→OP6 for algos 4 / 6). Inject the source op's
+    // two-sample-averaged prior output — scaled by its per-lane `fb_scale`,
+    // the only op carrying a nonzero one — into the dest op's mod input, per
+    // lane. Hoisted out of the op loop so no runtime branch enters the kernel.
+    let spec = spec_of(stack.meta.algo);
+    let (fs, fd) = ((spec.fb_src - 1) as usize, (spec.fb_dst - 1) as usize);
+    {
+        let src = &stack.core.ops[fs];
+        let (p1, p2, fbs) = (src.fb_prev1, src.fb_prev2, src.fb_scale);
+        for k in 0..STACK_LANES {
+            mi[fd][k] += 0.5 * (p1[k] + p2[k]) * fbs[k];
+        }
+    }
     let mut new_outs = [[0.0_f32; STACK_LANES]; N_OPS];
     for i in 0..N_OPS {
         let lvl_mod = stack.core.op_level_mod[i];
@@ -1013,13 +1027,11 @@ fn tick_ops(stack: &mut Stack) -> [[f32; STACK_LANES]; N_OPS] {
         let ph_mod = stack.core.op_phase_mod_q32[i];
         let op = &mut stack.core.ops[i];
         let lvl = op.eg.level;
-        let fbs = op.fb_scale;
-        // Stage 1: phase-modulation Q32 per lane.
+        // Stage 1: phase-modulation Q32 per lane (feedback already folded into
+        // `mi` above).
         let mut pm_q32 = [0u32; STACK_LANES];
         for k in 0..STACK_LANES {
-            let fb_avg = 0.5 * (op.fb_prev1[k] + op.fb_prev2[k]);
-            let total_mod = mi[i][k] + fb_avg * fbs[k];
-            pm_q32[k] = (total_mod * PM_SCALE_Q32) as i32 as u32;
+            pm_q32[k] = (mi[i][k] * PM_SCALE_Q32) as i32 as u32;
         }
         // Stage 2: read sine at modulated phase (accumulator + FM mod + the
         // engine-ramped matrix phase offset, E023), scaled by EG level plus the

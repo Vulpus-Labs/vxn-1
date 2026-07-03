@@ -182,21 +182,30 @@ impl OpState {
 ///   pass modulator outputs scaled by send levels.
 /// - The EG level (`state.eg.level`) is held constant across the call — the
 ///   caller advances it via [`op_eg_tick`] at control rate.
-/// - Per-op feedback reads the average of the last two outputs (DX7
-///   anti-aliasing convention) scaled by the cached `fb_scale`.
+/// - `mod_in` must already include any feedback contribution. Feedback is a
+///   per-algorithm `fb_src → fb_dst` path injected by the voice/stack tick
+///   loop (see [`crate::algo`]); this function does not read `fb_scale`. It
+///   still maintains `fb_prev1/2` (the two-sample history) so a later op's
+///   feedback injection can average this op's output.
 ///
 /// Returns the post-EG sample.
 #[inline(always)]
 pub fn op_tick(state: &mut OpState, mod_in: f32) -> f32 {
-    let fb_avg = 0.5 * (state.fb_prev1 + state.fb_prev2);
-    let total_mod = mod_in + fb_avg * state.fb_scale;
-    let pm_q32 = (total_mod * PM_SCALE_Q32) as i32 as u32;
+    let pm_q32 = (mod_in * PM_SCALE_Q32) as i32 as u32;
     let phase_mod = state.phase.wrapping_add(pm_q32);
     let out = sine::scalar::fast_sine_q32(phase_mod) * state.eg.level;
     state.fb_prev2 = state.fb_prev1;
     state.fb_prev1 = out;
     state.phase = state.phase.wrapping_add(state.phase_inc);
     out
+}
+
+/// Two-sample-averaged feedback contribution from a source op (DX7
+/// anti-aliasing convention): `0.5·(prev1 + prev2)·fb_scale`. The voice/stack
+/// tick loop adds this into the destination op's `mod_in` before ticking.
+#[inline(always)]
+pub fn fb_inject(src: &OpState) -> f32 {
+    0.5 * (src.fb_prev1 + src.fb_prev2) * src.fb_scale
 }
 
 /// Advance the EG one control tick (typically once per block). `dt` is
@@ -259,7 +268,9 @@ mod tests {
                 op_eg_tick(&mut state, dt_block);
                 let modu = ((blk as f32) * 0.001).sin();
                 for _ in 0..64 {
-                    let s = op_tick(&mut state, modu);
+                    // Self-feedback injection (max fb_scale) stresses the loop.
+                    let inj = fb_inject(&state);
+                    let s = op_tick(&mut state, modu + inj);
                     assert!(s.is_finite(), "non-finite sample");
                 }
             }
@@ -333,10 +344,13 @@ mod tests {
         c.fb_scale = fb_scale(4.0);
         let mut diff_ab = 0;
         let mut diff_bc = 0;
+        // Self-feedback loop (fb_src == fb_dst): feed each op's own averaged
+        // history back into its mod_in, as the tick loop does for a self-fb algo.
         for _ in 0..2048 {
-            let sa = op_tick(&mut a, 0.0);
-            let sb = op_tick(&mut b, 0.0);
-            let sc = op_tick(&mut c, 0.0);
+            let (ia, ib, ic) = (fb_inject(&a), fb_inject(&b), fb_inject(&c));
+            let sa = op_tick(&mut a, ia);
+            let sb = op_tick(&mut b, ib);
+            let sc = op_tick(&mut c, ic);
             if (sa - sb).abs() > 1e-3 {
                 diff_ab += 1;
             }

@@ -13,16 +13,19 @@
   // Full 32-entry DX7 algorithm table. Each entry:
   //   edges: [modOp, carOp] pairs (modulator → carrier).
   //   carriers: ops whose output sums into the algo's bus.
-  //   fb: op carrying the algorithm-wide feedback loop (0 = none).
+  //   fb: source op of the algorithm's single feedback path (0 = none).
+  //   fbTo: dest op the feedback lands on. Defaults to `fb` (self-loop) when
+  //         absent; only algos 4 (OP4→OP6) and 6 (OP5→OP6) differ — the DX7
+  //         two-operator feedback loops.
   // Sourced from `vxn2-dsp::algo::ALGOS` — keep this in lock-step with
   // that table; the Rust side is authoritative.
   const ALGOS = {
     1:  { edges: [[2,1],[4,3],[5,4],[6,5]],          carriers: [1, 3],          fb: 6 },
     2:  { edges: [[2,1],[4,3],[5,4],[6,5]],          carriers: [1, 3],          fb: 2 },
     3:  { edges: [[2,1],[3,2],[5,4],[6,5]],          carriers: [1, 4],          fb: 6 },
-    4:  { edges: [[2,1],[3,2],[5,4],[6,5]],          carriers: [1, 4],          fb: 4 },
+    4:  { edges: [[2,1],[3,2],[5,4],[6,5]],          carriers: [1, 4],          fb: 4, fbTo: 6 },
     5:  { edges: [[2,1],[4,3],[6,5]],                carriers: [1, 3, 5],       fb: 6 },
-    6:  { edges: [[2,1],[4,3],[6,5]],                carriers: [1, 3, 5],       fb: 5 },
+    6:  { edges: [[2,1],[4,3],[6,5]],                carriers: [1, 3, 5],       fb: 5, fbTo: 6 },
     7:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 6 },
     8:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 4 },
     9:  { edges: [[2,1],[4,3],[5,3],[6,5]],          carriers: [1, 3],          fb: 2 },
@@ -111,13 +114,26 @@
       out += '<line class="algo-edge" x1="' + pm.x + '" y1="' + (pm.y + 12) + '" x2="' + pc.x + '" y2="' + (pc.y - 12) + '" />';
     });
 
-    if (algo.fb && positions[algo.fb]) {
-      const p = positions[algo.fb];
-      out += '<path class="algo-fb-loop" d="M ' + (p.x + 14) + ' ' + (p.y - 6) +
-        ' C ' + (p.x + 28) + ' ' + (p.y - 6) + ', ' + (p.x + 28) + ' ' + (p.y - 22) + ', ' + (p.x + 4) + ' ' + (p.y - 22) +
-        ' C ' + (p.x - 8) + ' ' + (p.y - 22) + ', ' + (p.x - 2) + ' ' + (p.y - 12) + ', ' + (p.x + 1) + ' ' + (p.y - 13) +
-        '" marker-end="url(#vxn-fb-arrow)" />';
-      out += '<text x="' + (p.x + 30) + '" y="' + (p.y - 15) + '" fill="#d9701b" font-size="8" font-weight="700">FB</text>';
+    const fbDst = algo.fbTo || algo.fb;
+    if (algo.fb && positions[algo.fb] && positions[fbDst]) {
+      const ps = positions[algo.fb];
+      if (fbDst === algo.fb) {
+        // Self-feedback: small loop on the source op's top-right.
+        out += '<path class="algo-fb-loop" d="M ' + (ps.x + 14) + ' ' + (ps.y - 6) +
+          ' C ' + (ps.x + 28) + ' ' + (ps.y - 6) + ', ' + (ps.x + 28) + ' ' + (ps.y - 22) + ', ' + (ps.x + 4) + ' ' + (ps.y - 22) +
+          ' C ' + (ps.x - 8) + ' ' + (ps.y - 22) + ', ' + (ps.x - 2) + ' ' + (ps.y - 12) + ', ' + (ps.x + 1) + ' ' + (ps.y - 13) +
+          '" marker-end="url(#vxn-fb-arrow)" />';
+        out += '<text x="' + (ps.x + 30) + '" y="' + (ps.y - 15) + '" fill="#d9701b" font-size="8" font-weight="700">FB</text>';
+      } else {
+        // Two-operator feedback (algos 4, 6): source (carrier) → dest (top of
+        // the branch), bowing out to the right past the intervening ops.
+        const pd = positions[fbDst];
+        const bx = Math.max(ps.x, pd.x) + 34;
+        out += '<path class="algo-fb-loop" d="M ' + (ps.x + 14) + ' ' + ps.y +
+          ' C ' + bx + ' ' + ps.y + ', ' + bx + ' ' + pd.y + ', ' + (pd.x + 14) + ' ' + pd.y +
+          '" marker-end="url(#vxn-fb-arrow)" />';
+        out += '<text x="' + (bx - 2) + '" y="' + ((ps.y + pd.y) / 2) + '" fill="#d9701b" font-size="8" font-weight="700">FB</text>';
+      }
     }
 
     for (let op = 1; op <= 6; op++) {
@@ -155,9 +171,17 @@
       if (!pm || !pc) return;
       out += '<line stroke="#666" stroke-width="1" x1="' + pm.x + '" y1="' + (pm.y + 8) + '" x2="' + pc.x + '" y2="' + (pc.y - 8) + '" />';
     });
-    if (algo.fb && positions[algo.fb]) {
-      const p = positions[algo.fb];
-      out += '<path stroke="#d9701b" stroke-width="1" fill="none" d="M ' + (p.x + 8) + ' ' + (p.y - 6) + ' Q ' + (p.x + 18) + ' ' + (p.y - 14) + ' ' + (p.x + 8) + ' ' + (p.y - 9) + '" />';
+    const fbDst = algo.fbTo || algo.fb;
+    if (algo.fb && positions[algo.fb] && positions[fbDst]) {
+      const ps = positions[algo.fb];
+      if (fbDst === algo.fb) {
+        out += '<path stroke="#d9701b" stroke-width="1" fill="none" d="M ' + (ps.x + 8) + ' ' + (ps.y - 6) + ' Q ' + (ps.x + 18) + ' ' + (ps.y - 14) + ' ' + (ps.x + 8) + ' ' + (ps.y - 9) + '" />';
+      } else {
+        // Two-op feedback: source → dest arc bowing right.
+        const pd = positions[fbDst];
+        const bx = Math.max(ps.x, pd.x) + 20;
+        out += '<path stroke="#d9701b" stroke-width="1" fill="none" d="M ' + (ps.x + 9) + ' ' + ps.y + ' C ' + bx + ' ' + ps.y + ', ' + bx + ' ' + pd.y + ', ' + (pd.x + 9) + ' ' + pd.y + '" />';
+      }
     }
     for (let op = 1; op <= 6; op++) {
       const p = positions[op];

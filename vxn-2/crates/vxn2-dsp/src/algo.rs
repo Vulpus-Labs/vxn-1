@@ -12,16 +12,25 @@
 //! fused prev-output reads + adds — emitted as a distinct symbol so an asm
 //! dump can verify each algorithm individually.
 //!
-//! ## Per-op vs structural feedback
+//! ## Feedback path (one per algorithm)
 //!
-//! DX7 had a single self-feedback path per algorithm, located on one
-//! specific operator (the "FB op"). VXN2 promotes feedback to a per-op
-//! parameter (ADR 0001 §1) — any op can feed back, independent of the
-//! algorithm choice. The [`AlgoSpec::structural_fb_op`] field is retained
-//! only as a UI / algorithm-diagram marker; the router itself does NOT
-//! apply structural feedback. Per-op feedback is applied inside
-//! [`crate::op::op_tick`], summed into the modulation input after this
-//! router runs.
+//! Each DX7 algorithm has exactly **one** feedback path, scaled by the
+//! single global feedback control (ADR 0001 §1). The path is a
+//! `fb_src → fb_dst` op pair: the (two-sample-averaged) prior output of
+//! `fb_src` is summed into `fb_dst`'s modulation input.
+//!
+//! For 30 algorithms `fb_src == fb_dst` — a single-operator self-feedback
+//! loop. Algorithms **4** and **6** are the DX7 exceptions: their feedback
+//! wraps *two* operators, so `fb_src != fb_dst` (algo 4: OP4→OP6, algo 6:
+//! OP5→OP6). The [`AlgoSpec::fb_src`] / [`AlgoSpec::fb_dst`] fields encode
+//! this pair.
+//!
+//! The router itself does not apply feedback — it only sums the structural
+//! modulator→carrier edges. Feedback injection (reading `fb_src` history,
+//! scaling, adding into `fb_dst`'s mod input) happens in the voice / stack
+//! tick loop, before [`crate::op::op_tick`], using the same one-sample-delay
+//! convention as the router. `fb_scale` (the cooked global feedback amount)
+//! is stored on the `fb_src` op.
 //!
 //! ## Sample-delay convention
 //!
@@ -61,15 +70,20 @@ const MAX_EDGES: usize = 5;
 /// `carriers` is a 6-bit mask of carrier ops: bit `i` (0..=5) set means
 /// op (i + 1) is a carrier (its output contributes to the audio bus).
 ///
-/// `structural_fb_op` is the 1-indexed op that DX7 historically placed its
-/// per-algorithm self-feedback loop on. UI / diagram metadata only — the
-/// router does not consume it (see module docs).
+/// `fb_src` / `fb_dst` are the 1-indexed endpoints of the algorithm's single
+/// feedback path: `fb_src`'s prior output feeds back into `fb_dst`'s
+/// modulation input, scaled by the global feedback control. For the 30
+/// self-feedback algorithms `fb_src == fb_dst`; algorithms 4 and 6 have a
+/// two-operator loop (`fb_src != fb_dst`). The cooked `fb_scale` lives on the
+/// `fb_src` op; injection happens in the voice/stack tick loop (see module
+/// docs), not in the router.
 #[derive(Clone, Copy, Debug)]
 pub struct AlgoSpec {
     pub edges: [(u8, u8); MAX_EDGES],
     pub n_edges: u8,
     pub carriers: u8,
-    pub structural_fb_op: u8,
+    pub fb_src: u8,
+    pub fb_dst: u8,
 }
 
 const fn carrier_mask(carriers: &[u8]) -> u8 {
@@ -92,12 +106,19 @@ const fn edge_buf(src: &[(u8, u8)]) -> [(u8, u8); MAX_EDGES] {
     out
 }
 
+/// Self-feedback algorithm (`fb_src == fb_dst == fb`): the common case.
 const fn spec(edges: &[(u8, u8)], carriers: &[u8], fb: u8) -> AlgoSpec {
+    spec_fb(edges, carriers, fb, fb)
+}
+
+/// Two-operator feedback (`fb_src → fb_dst`): DX7 algorithms 4 and 6 only.
+const fn spec_fb(edges: &[(u8, u8)], carriers: &[u8], fb_src: u8, fb_dst: u8) -> AlgoSpec {
     AlgoSpec {
         edges: edge_buf(edges),
         n_edges: edges.len() as u8,
         carriers: carrier_mask(carriers),
-        structural_fb_op: fb,
+        fb_src,
+        fb_dst,
     }
 }
 
@@ -113,12 +134,12 @@ pub const ALGOS: [AlgoSpec; N_ALGOS] = [
     spec(&[(2, 1), (4, 3), (5, 4), (6, 5)], &[1, 3], 2),
     // 3: stacks (6→5→4) + (3→2→1), fb op6, carriers {1,4}
     spec(&[(2, 1), (3, 2), (5, 4), (6, 5)], &[1, 4], 6),
-    // 4: same edges as 3, fb op4
-    spec(&[(2, 1), (3, 2), (5, 4), (6, 5)], &[1, 4], 4),
+    // 4: same edges as 3; two-op feedback OP4→OP6 (loop wraps ops 4,5,6)
+    spec_fb(&[(2, 1), (3, 2), (5, 4), (6, 5)], &[1, 4], 4, 6),
     // 5: three 2-stacks (6→5),(4→3),(2→1), fb op6, carriers {1,3,5}
     spec(&[(2, 1), (4, 3), (6, 5)], &[1, 3, 5], 6),
-    // 6: same edges as 5, fb op5
-    spec(&[(2, 1), (4, 3), (6, 5)], &[1, 3, 5], 5),
+    // 6: same edges as 5; two-op feedback OP5→OP6 (loop wraps ops 5,6)
+    spec_fb(&[(2, 1), (4, 3), (6, 5)], &[1, 3, 5], 5, 6),
     // 7: (2→1) + (4→3, 5→3 with 6→5), fb op6, carriers {1,3}
     spec(&[(2, 1), (4, 3), (5, 3), (6, 5)], &[1, 3], 6),
     // 8: same edges as 7, fb op4
@@ -287,8 +308,8 @@ pub fn spec_of(algo: u8) -> &'static AlgoSpec {
 /// If `target_op` is itself a wall (or out of range), returns `0` — the
 /// stack route no-ops (E022 design).
 ///
-/// Self-feedback (`AlgoSpec::structural_fb_op`) is not a modulation edge and
-/// is irrelevant to connectivity; it is not consulted here.
+/// The feedback path (`AlgoSpec::fb_src` / `fb_dst`) is not a modulation edge
+/// and is irrelevant to connectivity; it is not consulted here.
 ///
 /// Pure, allocation-free, `const` integer graph walk — safe from the cook
 /// path. `algo` is 1-indexed (out-of-range saturates to algo 1); `target_op`
@@ -368,14 +389,37 @@ mod tests {
     }
 
     #[test]
-    fn structural_fb_op_is_valid() {
+    fn fb_endpoints_are_valid() {
         for (i, spec) in ALGOS.iter().enumerate() {
             assert!(
-                (1..=N_OPS as u8).contains(&spec.structural_fb_op),
-                "algo {}: structural_fb_op {} out of range",
+                (1..=N_OPS as u8).contains(&spec.fb_src),
+                "algo {}: fb_src {} out of range",
                 i + 1,
-                spec.structural_fb_op
+                spec.fb_src
             );
+            assert!(
+                (1..=N_OPS as u8).contains(&spec.fb_dst),
+                "algo {}: fb_dst {} out of range",
+                i + 1,
+                spec.fb_dst
+            );
+        }
+    }
+
+    /// Exactly two DX7 algorithms (4 and 6) have a two-operator feedback loop
+    /// (`fb_src != fb_dst`); all other 30 are single-op self-feedback. Guards
+    /// against a data-entry slip re-introducing the old self-feedback-only
+    /// encoding for algos 4/6.
+    #[test]
+    fn only_algos_4_and_6_have_two_op_feedback() {
+        for (i, spec) in ALGOS.iter().enumerate() {
+            let algo = i + 1;
+            let two_op = spec.fb_src != spec.fb_dst;
+            match algo {
+                4 => assert_eq!((spec.fb_src, spec.fb_dst), (4, 6), "algo 4 feedback"),
+                6 => assert_eq!((spec.fb_src, spec.fb_dst), (5, 6), "algo 6 feedback"),
+                _ => assert!(!two_op, "algo {algo}: unexpected two-op feedback"),
+            }
         }
     }
 

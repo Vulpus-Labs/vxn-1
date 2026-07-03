@@ -11,9 +11,9 @@
   window.__vxn = window.__vxn || {};
   window.__vxn.panels = window.__vxn.panels || {};
 
-  // 1-indexed op that carries the algorithm's structural feedback loop, by
-  // algo number (1-indexed). Mirrors `AlgoSpec::structural_fb_op` in
-  // `vxn2_dsp::algo::ALGOS`.
+  // 1-indexed source op of the algorithm's feedback path (where `fb_scale`
+  // lives / the feedback fader targets), by algo number (1-indexed). Mirrors
+  // `AlgoSpec::fb_src` in `vxn2_dsp::algo::ALGOS`.
   const ALGO_FB_OPS = [
     6, 2, 6, 4, 6, 5, 6, 4, 2, 3, 6, 2, 6, 6, 2, 6,
     2, 3, 6, 3, 6, 6, 6, 6, 6, 6, 3, 5, 6, 5, 6, 6,

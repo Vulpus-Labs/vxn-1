@@ -38,27 +38,28 @@ New constraints for VXN2:
 ### 1. Operator-based engine, 6 operators per voice
 
 Each voice contains 6 operators. Each operator is a phase accumulator + sine
-generator + EG + per-op level + per-op feedback + key scaling. Operators are
-combined per a *patch's* algorithm: a fixed graph of which ops modulate which
-others, which ops are carriers (sum to output), and which op has a self-feedback
-loop. This mirrors the DX7/TX802 model exactly, both for sound-design familiarity
-and because the algorithm space (32 standard graphs) is well-understood
-territory.
+generator + EG + per-op level + key scaling. Operators are combined per a
+*patch's* algorithm: a fixed graph of which ops modulate which others, which ops
+are carriers (sum to output), and the algorithm's single feedback path. This
+mirrors the DX7/TX802 model exactly, both for sound-design familiarity and
+because the algorithm space (32 standard graphs) is well-understood territory.
 
 **Oscillator core**: Bhaskara+Moser sine approximation (5 mul + 2 abs + 2 add,
 branch-free, ~−59 dB THD). Q32 fixed-point phase accumulator (zero drift, free
 wraparound). Float past the phase boundary: filters, envelopes, mixing stay
 f32. See `vxn-2/README.md` for premises.
 
-**Extension over DX7**: per-op feedback (DX7 had feedback on one op per algo;
-VXN2 allows any op a feedback amount, costing modest extra DSP for the
-flexibility). Cross-op PM stays algorithm-bound — arbitrary PM is the mod
-matrix's job, not the algo graph's.
+**Feedback follows DX7 exactly**: each algorithm has one feedback path, scaled
+by the single global feedback control. The path is a `fb_src → fb_dst` op pair —
+a self-loop for 30 algorithms, and a two-operator loop for algorithms 4
+(OP4→OP6) and 6 (OP5→OP6), matching the DX7 chart. There is no per-op feedback
+parameter. Cross-op PM beyond this stays algorithm-bound — arbitrary PM is the
+mod matrix's job, not the algo graph's.
 
 ### 2. 32 DX7 algorithms as the patch topology library
 
 The algorithm enum is the canonical DX7 set (1–32), each with a fixed
-modulator→carrier graph and one designated feedback op. We do not allow
+modulator→carrier graph and one feedback path (`fb_src → fb_dst`). We do not allow
 free-form algorithm editing in v1 — the 32 cover the useful topology space,
 and a free editor is its own UX problem (loop detection, latency-cost
 visualisation, presets that don't fit other algos). A free editor is a
@@ -120,7 +121,8 @@ A fixed-slot matrix (16 slots in v1, expandable). Each slot:
 - Sources: LFO1, LFO2, Pitch EG, Mod Env, Mod Wheel, Aftertouch (channel),
   Velocity, Key (note number), `voice_idx`, `voice_spread`, `voice_rand`.
 - Destinations: per-op ratio / level / detune / pan; global pitch; FX wet
-  amounts; LFO rates / phase; per-op feedback; stacking macros.
+  amounts; LFO rates / phase; feedback (the algorithm's single feedback path);
+  stacking macros.
 - Curve: lin / exp / log / bipolar.
 - Condition: optional gate by another source (e.g. "only when velocity > X")
   — v2 feature; v1 ships unconditional.
@@ -183,7 +185,7 @@ matches `vxn-ui-vizia` exports). Three rows below the preset bar:
   by clicking its node in the diagram) populates the detail panel: tuning
   (ratio/fixed/fine/detune), envelope graph (drag points), key-scaling level
   graph (BP + L/R depth + curve), sensitivity (vel/AMS/key-rate), output
-  (out/pan/per-op fb).
+  (out/pan). Feedback is layer-level (one path per algorithm), not per-op.
 - **Global mod row** — LFO1 | LFO2 | Pitch EG (graph) | Mod Env (ADSR).
 - **Performance row** — Voice mode | Stacking macros | Delay | Reverb |
   Master.
@@ -217,7 +219,7 @@ Per-op parameters are repeated 6× with a per-op index suffix
 parameter count is **180** (was 345 pre-[ADR 0002]; the drop comes from
 collapsing the Upper/Lower pair into a single set and removing
 `voicing_mode` + `split_point`). Sits slightly above DX7's ~155, the
-increment carried by per-op FB + extra envelopes + stacking + matrix
+increment carried by feedback + extra envelopes + stacking + matrix
 depths. See `vxn-2/PARAMETERS.md` for the full enumeration.
 
 The CLAP `params` table follows VXN1's ADR 0007 pattern: stable IDs are *not*

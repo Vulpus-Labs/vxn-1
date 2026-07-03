@@ -2325,51 +2325,71 @@ mod tests {
         );
     }
 
-    /// Multiplicative level mod (ticket 0078): a released voice must decay
-    /// to silence even with a full-depth positive LFO on a carrier level.
-    /// Under the old additive semantics the LFO refilled what release
-    /// drained — the voice droned at the LFO level until the allocator's
-    /// idle detection cut it at full amplitude (a loud click on every
-    /// chord release, found in a DAW bounce).
+    /// Multiplicative level mod (ticket 0078): a full-depth positive LFO on a
+    /// carrier's level must not *refill* a releasing voice. Under multiplicative
+    /// semantics the rendered level is `clamp(eg·(1+m), 0, 1)`, so it rides the
+    /// EG down — the mod can at most ~double the natural tail (m ≤ +1), never
+    /// exceed it structurally. Under the old *additive* `eg + m` semantics the
+    /// LFO left a floor of ~depth as `eg → 0`, so the voice droned until the
+    /// allocator cut it at full amplitude (a loud click on every chord release,
+    /// found in a DAW bounce).
+    ///
+    /// The invariant is therefore a *comparison*, not an absolute-silence
+    /// threshold: the modulated release tail must not materially exceed the
+    /// unmodulated one. (An earlier version asserted `peak < 1e-3` on the
+    /// default E.PIANO — whose modulator EGs release for seconds — and so
+    /// could never pass regardless of the semantics under test.) The LFO is
+    /// routed to `Op3Level`, a carrier still ringing in the measurement window,
+    /// so an additive refill would actually show up here.
     #[test]
     fn released_voice_closes_under_positive_level_mod() {
         use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
 
-        let mut e = Engine::new(SR, BLK);
-        e.params.delay.on = false;
-        e.params.delay.mix = 0.0;
-        e.params.reverb.on = false;
-        e.params.reverb.mix = 0.0;
-        e.params.mod_params.lfo1.rate_hz = 5.0;
-        e.matrix.slots[0] = MatrixSlot {
-            source: SourceId::Lfo1,
-            dest: DestId::Op1Level,
-            depth: 1.0,
-            curve: CurveKind::Lin,
-        };
-        e.note_on(60, 100);
-        let mut l = [0.0_f32; BLK];
-        let mut r = [0.0_f32; BLK];
-        for _ in 0..(SR as usize / 4 / BLK) {
-            e.process_block(&mut l, &mut r);
-        }
-        e.note_off(60);
-        // 0.5 s after release: well past every op's release tail. The voice
-        // must be silent (no LFO-held zombie) and the render must contain no
-        // idle-cut step.
-        let mut peak_tail = 0.0_f32;
-        let blocks = SR as usize / 2 / BLK;
-        for b in 0..blocks {
-            e.process_block(&mut l, &mut r);
-            if b > blocks / 2 {
-                for &x in &l {
-                    peak_tail = peak_tail.max(x.abs());
+        // Peak of the release tail (0.25–0.5 s after note-off), optionally with
+        // a full-depth positive LFO on op3's (a carrier) level.
+        fn release_tail_peak(with_mod: bool) -> f32 {
+            let mut e = Engine::new(SR, BLK);
+            e.params.delay.on = false;
+            e.params.delay.mix = 0.0;
+            e.params.reverb.on = false;
+            e.params.reverb.mix = 0.0;
+            e.params.mod_params.lfo1.rate_hz = 5.0;
+            if with_mod {
+                e.matrix.slots[0] = MatrixSlot {
+                    source: SourceId::Lfo1,
+                    dest: DestId::Op3Level,
+                    depth: 1.0,
+                    curve: CurveKind::Lin,
+                };
+            }
+            e.note_on(60, 100);
+            let mut l = [0.0_f32; BLK];
+            let mut r = [0.0_f32; BLK];
+            for _ in 0..(SR as usize / 4 / BLK) {
+                e.process_block(&mut l, &mut r);
+            }
+            e.note_off(60);
+            let mut peak_tail = 0.0_f32;
+            let blocks = SR as usize / 2 / BLK;
+            for b in 0..blocks {
+                e.process_block(&mut l, &mut r);
+                if b > blocks / 2 {
+                    for &x in &l {
+                        peak_tail = peak_tail.max(x.abs());
+                    }
                 }
             }
+            peak_tail
         }
+
+        let baseline = release_tail_peak(false);
+        let modded = release_tail_peak(true);
+        // Multiplicative: `modded ≤ ~2·baseline`. Additive (the regression)
+        // would leave a floor ≫ baseline. 2.5× gives margin without admitting
+        // a refill.
         assert!(
-            peak_tail < 1e-3,
-            "released voice still audible under positive level mod: peak {peak_tail}"
+            modded <= baseline * 2.5 + 1e-4,
+            "positive level mod refilled a releasing voice: modded {modded} vs baseline {baseline}"
         );
     }
 
@@ -3257,7 +3277,7 @@ mod tests {
         e.process_block(&mut l, &mut r);
 
         let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
-        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).structural_fb_op as usize;
+        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).fb_src as usize;
         let want = fb_scale(4.0);
         // ModWheel is a patch-level source: every lane gets the same amount.
         for (k, got) in e.alloc.stacks[s].core.ops[fb_op - 1].fb_scale.iter().enumerate() {
@@ -3294,7 +3314,7 @@ mod tests {
         e.process_block(&mut l, &mut r);
 
         let s = e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap();
-        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).structural_fb_op as usize;
+        let fb_op = spec_of(e.alloc.stacks[s].meta.algo).fb_src as usize;
         let got = e.alloc.stacks[s].core.ops[fb_op - 1].fb_scale;
         // Density 4, linear distrib: lane spread = -1, -1/3, +1/3, +1.
         for (k, spread) in [-1.0_f32, -1.0 / 3.0, 1.0 / 3.0, 1.0].iter().enumerate() {

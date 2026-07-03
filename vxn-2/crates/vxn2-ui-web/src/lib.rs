@@ -805,8 +805,9 @@ mod tests {
     }
 
     /// Parity check for `ALGO_FB_OPS` in `algo-data.js`. Mirrors
-    /// `AlgoSpec::structural_fb_op` across the 32 algorithms — drift would
-    /// silently disable the wrong op's feedback fader.
+    /// `AlgoSpec::fb_src` (the feedback source op, where `fb_scale` lives)
+    /// across the 32 algorithms — drift would silently disable the wrong op's
+    /// feedback fader.
     #[test]
     fn algo_data_fb_ops_match_engine_table() {
         let body = extract_js_array_body(PANEL_ALGO_DATA_JS, "ALGO_FB_OPS");
@@ -828,7 +829,7 @@ mod tests {
         for (i, v) in vals.iter().enumerate() {
             assert_eq!(
                 *v,
-                vxn2_dsp::algo::ALGOS[i].structural_fb_op,
+                vxn2_dsp::algo::ALGOS[i].fb_src,
                 "ALGO_FB_OPS mismatch at algo {} (1-indexed)",
                 i + 1,
             );

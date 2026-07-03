@@ -35,9 +35,10 @@ use crate::op::{OpParams, OpState, op_eg_tick, op_tick};
 pub struct VoiceParams {
     pub ops: [OpParams; N_OPS],
     pub algo: u8,
-    /// Layer-level feedback amount, continuous in `[0.0, 7.0]`. Routed by
-    /// note-on / live update onto the algorithm's `structural_fb_op` only;
-    /// all other ops get `fb_scale = 0`. Integer positions still land on the
+    /// Layer-level feedback amount, continuous in `[0.0, 7.0]`. Scales the
+    /// algorithm's single feedback path: note-on / live update writes the
+    /// cooked `fb_scale` onto the algorithm's `fb_src` op, and the tick loop
+    /// injects its averaged history into `fb_dst`. Integer positions land on the
     /// DX7-style table values so existing patches sound the same; intermediate
     /// values interpolate.
     pub feedback: f32,
@@ -162,13 +163,13 @@ impl Voice {
         self.algo = params.algo;
         self.route_fn = resolve_route(params.algo);
         let master_mult = 2_f32.powf(params.master_tune_cents / 1200.0);
-        let fb_op = spec_of(params.algo).structural_fb_op;
+        let fb_src = spec_of(params.algo).fb_src;
         let fb = crate::tables::fb_scale(params.feedback);
         for i in 0..N_OPS {
             self.ops[i].cook(&params.ops[i], note, velocity, sample_rate);
             let base = (self.ops[i].phase_inc as f64 * master_mult as f64) as u32;
             self.base_phase_inc[i] = base;
-            self.ops[i].fb_scale = if (i + 1) as u8 == fb_op { fb } else { 0.0 };
+            self.ops[i].fb_scale = if (i + 1) as u8 == fb_src { fb } else { 0.0 };
             self.ops[i].eg.note_on();
         }
         self.pitch_eg.cook(&params.pitch_eg, params.peg_depth, 1.0);
@@ -270,7 +271,12 @@ impl Voice {
 /// ticket beyond signature stability.
 #[inline]
 pub fn voice_tick(voice: &mut Voice, _modulation: &VoiceMod) -> f32 {
-    let (mi, carrier_sum) = (voice.route_fn)(&voice.prev_outs);
+    let (mut mi, carrier_sum) = (voice.route_fn)(&voice.prev_outs);
+    // Feedback: the algorithm's single fb_src → fb_dst path. Inject the
+    // source op's two-sample-averaged prior output into the dest's mod input
+    // (self-loop for 30 algos; OP4→OP6 / OP5→OP6 for algos 4 / 6).
+    let spec = spec_of(voice.algo);
+    mi[(spec.fb_dst - 1) as usize] += crate::op::fb_inject(&voice.ops[(spec.fb_src - 1) as usize]);
     let mut new_outs = [0.0_f32; N_OPS];
     for i in 0..N_OPS {
         new_outs[i] = op_tick(&mut voice.ops[i], mi[i]);
@@ -289,12 +295,14 @@ pub fn voice_tick_stereo(
     params: &VoiceParams,
     _modulation: &VoiceMod,
 ) -> (f32, f32) {
-    let (mi, _carrier_sum_mono) = (voice.route_fn)(&voice.prev_outs);
+    let (mut mi, _carrier_sum_mono) = (voice.route_fn)(&voice.prev_outs);
+    let spec = spec_of(voice.algo);
+    // Feedback injection (fb_src → fb_dst) — see `voice_tick`.
+    mi[(spec.fb_dst - 1) as usize] += crate::op::fb_inject(&voice.ops[(spec.fb_src - 1) as usize]);
     let mut new_outs = [0.0_f32; N_OPS];
     for i in 0..N_OPS {
         new_outs[i] = op_tick(&mut voice.ops[i], mi[i]);
     }
-    let spec = spec_of(voice.algo);
     let mut l = 0.0_f32;
     let mut r = 0.0_f32;
     for i in 0..N_OPS {
