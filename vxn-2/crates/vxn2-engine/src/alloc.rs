@@ -298,6 +298,23 @@ impl PolyAlloc {
         self.solo_slot = None;
     }
 
+    /// Hard-silence every stack (all operators snap to `Idle`, level 0) and drop
+    /// all hold state. Unlike [`all_notes_off`](Self::all_notes_off) — which
+    /// gracefully *releases* gated notes and lets their tails ring — this leaves
+    /// no sounding voice at all. Used on preset load: a previous patch's
+    /// still-ringing operators must not bleed through the new patch's algorithm,
+    /// where an op that was a modulator may now be a carrier (and vice versa).
+    pub fn silence_all(&mut self) {
+        for i in 0..N_STACKS {
+            self.stacks[i].silence();
+            self.held_by_pedal[i] = false;
+        }
+        self.sustain = false;
+        self.held_len = 0;
+        self.solo_active = false;
+        self.solo_slot = None;
+    }
+
     /// Set channel-wide pitch bend in semitones; forwarded to every stack.
     pub fn set_bend(&mut self, semitones: f32) {
         self.bend_st = semitones;

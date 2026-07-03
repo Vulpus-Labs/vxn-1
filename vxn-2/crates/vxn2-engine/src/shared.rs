@@ -404,6 +404,13 @@ pub struct SharedParams {
     /// Set by `set_eg_curve_raw`; drained by the main-thread tick
     /// ([`take_dirty_eg_curve`]).
     dirty_eg_curve: AtomicBool,
+    /// Monotonic counter bumped by every bulk patch swap
+    /// ([`load_bytes`](Self::load_bytes), [`reset_to_defaults`](Self::reset_to_defaults)).
+    /// The audio engine snapshots it once per block; a change is the cue that a
+    /// new preset was loaded, so it can silence still-ringing voices from the
+    /// previous patch — they would otherwise sound through the new algorithm,
+    /// often mis-roled (a former modulator now a carrier).
+    load_epoch: AtomicU64,
 }
 
 impl Default for SharedParams {
@@ -449,7 +456,18 @@ impl SharedParams {
             dirty_ks_curve: AtomicBool::new(true),
             eg_curve_meta: AtomicU32::new(default_eg_curve_meta()),
             dirty_eg_curve: AtomicBool::new(true),
+            load_epoch: AtomicU64::new(0),
         }
+    }
+
+    /// Monotonic patch-swap counter. Bumped whenever a whole patch is loaded in
+    /// bulk ([`load_bytes`](Self::load_bytes) /
+    /// [`reset_to_defaults`](Self::reset_to_defaults)); left untouched by
+    /// per-parameter [`set`](Self::set)s (automation, single-knob edits). The
+    /// audio engine reads it each block to detect a preset change.
+    #[inline]
+    pub fn load_epoch(&self) -> u64 {
+        self.load_epoch.load(Ordering::Acquire)
     }
 
     /// SAFETY: `get` and `set` use `Ordering::Relaxed` — sound because CLAP
@@ -527,6 +545,8 @@ impl SharedParams {
         self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
         self.eg_curve_meta.store(default_eg_curve_meta(), Ordering::Relaxed);
         self.mark_all_dirty();
+        // A reset is a patch swap — cue the engine to silence held voices.
+        self.load_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Set every valid dirty bit (values + matrix). Used by bulk-store
@@ -894,6 +914,9 @@ impl ParamModel for SharedParams {
         // table (ADR 0003). State load no longer needs a bespoke push
         // from the caller.
         self.mark_all_dirty();
+        // Loading a blob is a whole-patch swap — bump the epoch so the audio
+        // engine silences any voice still ringing from the previous preset.
+        self.load_epoch.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }

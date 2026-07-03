@@ -367,6 +367,10 @@ pub struct Engine {
     /// steady state.
     dry_alt_l: Vec<f32>,
     dry_alt_r: Vec<f32>,
+    /// Last [`SharedParams::load_epoch`] seen in [`Self::snapshot_params`]. When
+    /// it changes, a new preset was loaded in bulk and any voice still ringing
+    /// from the old patch is silenced before the new algorithm takes effect.
+    last_load_epoch: u64,
 }
 
 impl Engine {
@@ -434,6 +438,9 @@ impl Engine {
             filter_xfade_remaining: 0,
             dry_alt_l: vec![0.0; block_size],
             dry_alt_r: vec![0.0; block_size],
+            // Matches a fresh SharedParams (epoch 0) so the first snapshot after
+            // open doesn't read as a preset change and silence the boot patch.
+            last_load_epoch: 0,
         };
         e.apply_block_params();
         e
@@ -544,6 +551,16 @@ impl Engine {
     /// into FX, matrix depths, and master state.
     pub fn snapshot_params(&mut self, shared: &SharedParams) {
         self.params.snapshot_from(shared);
+        // A bumped load-epoch means the whole patch was just swapped (preset
+        // load / reset). Silence any voice still ringing from the old patch
+        // *before* apply_block_params live-swaps the algorithm, so its
+        // operators — possibly re-roled (modulator → carrier) — can't sound
+        // through the new topology.
+        let epoch = shared.load_epoch();
+        if epoch != self.last_load_epoch {
+            self.last_load_epoch = epoch;
+            self.alloc.silence_all();
+        }
         self.apply_block_params();
     }
 
@@ -3163,6 +3180,52 @@ mod tests {
         assert_eq!(slot.dest, DestId::Op1Level);
         assert_eq!(slot.curve, CurveKind::Lin);
         assert!((slot.depth - 0.5).abs() < 1e-6);
+    }
+
+    /// Loading a new preset (a bumped [`SharedParams::load_epoch`]) must silence
+    /// any voice still ringing from the previous patch, so its operators can't
+    /// sound through the new — possibly re-roled (modulator → carrier) —
+    /// algorithm. A same-epoch snapshot (ordinary automation) must NOT.
+    #[test]
+    fn preset_load_silences_ringing_voices() {
+        let any_sounding = |e: &Engine| {
+            e.alloc
+                .stacks
+                .iter()
+                .any(|s| s.core.ops.iter().any(|op| op.eg.level > 1e-4))
+        };
+
+        let shared = SharedParams::new();
+        let mut e = Engine::new(SR, BLK);
+        e.snapshot_params(&shared);
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..16 {
+            e.process_block(&mut l, &mut r);
+        }
+        assert!(any_sounding(&e), "voice should be sounding before preset load");
+
+        // Simulate a preset load: bump the shared store's load-epoch. The next
+        // per-block snapshot must silence the held voice outright.
+        shared.reset_to_defaults();
+        e.snapshot_params(&shared);
+        assert!(
+            !any_sounding(&e),
+            "all operators must be silenced on the snapshot after a preset load"
+        );
+
+        // A fresh note under the new preset, followed by an ordinary same-epoch
+        // snapshot, must survive — the silence fires only on an epoch change.
+        e.note_on(64, 100);
+        for _ in 0..16 {
+            e.process_block(&mut l, &mut r);
+        }
+        e.snapshot_params(&shared);
+        assert!(
+            any_sounding(&e),
+            "a same-epoch snapshot must not silence sounding voices"
+        );
     }
 
     /// A non-CLAP KS-curve write on the shared store threads through
