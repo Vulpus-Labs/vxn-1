@@ -118,20 +118,24 @@ pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
     0.05 * (2_f32).powf(r * 0.125)
 }
 
-/// Full log2 span of an `Exp` envelope segment: floor (silence) → 0 dB.
-const EG_LOG_SPAN: f32 = -EG_LOG_FLOOR;
-
 /// Convert a DX7-style rate (0..99) to **log2 units per second** for the `Exp`
-/// downward marcher (ticket 0125). Calibrated so a full-span sweep (silence →
-/// full) takes ≈ 20 s at R=0 and ≈ 4 ms at R=99 — the same log-spacing as
-/// [`rate_to_amp_per_sec`], rescaled to the log2 span. Because the march is
-/// linear-in-dB at a constant rate, a *partial* segment (a small dB step) is
-/// proportionally quicker, exactly as on a DX7.
+/// downward marcher (ticket 0125). Calibrated to the measured DX7 EG (MSFA /
+/// Dexed model): the downward segment falls at `0.2819 × 2^(R×0.16)` dB/s —
+/// ≈ 0.28 dB/s at R=0 (a ~96 dB sweep takes ~5½ min) up to ≈ 16 500 dB/s at
+/// R=99 (~6 ms). Converted to log2 units: `dB/s ÷ 6.0206`, so R=0 →
+/// 0.04682 log2/s. Because the march is linear-in-dB at a constant rate, a
+/// *partial* segment (a small dB step) is proportionally quicker, exactly as
+/// on a DX7.
+///
+/// Supersedes the earlier hand-fit `0.75 × 2^(R×0.125)` log2/s, which was
+/// ~10× too fast at the mid rates (R≈20–35) that dominate sustained voices —
+/// e.g. DX7 E.PIANO 1 decayed in ~3 s instead of ringing for tens of seconds.
 #[inline]
 pub fn rate_to_log2_per_sec(rate: u8) -> f32 {
     let r = rate.min(99) as f32;
-    // R=0 → EG_LOG_SPAN / 20 s; ×2 per 8 rate steps (same slope as the amp rate).
-    (EG_LOG_SPAN / 20.0) * (2_f32).powf(r * 0.125)
+    // DX7 (MSFA/Dexed): 0.2819 dB/s at R=0, ×2 per 6.25 rate steps.
+    // 0.2819 dB/s ÷ 6.0206 dB/log2 = 0.04682 log2/s.
+    0.04682 * (2_f32).powf(r * 0.16)
 }
 
 /// log2 of a linear amplitude relative to `max_amp`, floored at [`EG_LOG_FLOOR`].
@@ -447,6 +451,49 @@ mod tests {
         assert!(r0 < r50 && r50 < r99);
         assert!(r0 < 0.1);
         assert!(r99 > 100.0);
+    }
+
+    /// The `Exp` downward marcher must fall at the *measured* DX7 EG speed
+    /// (MSFA / Dexed): `0.2819 × 2^(R×0.16)` dB/s. We drive a real release and
+    /// measure the realized slope, so this locks the whole path — `cook`,
+    /// `rate_to_log2_per_sec`, and the per-tick `march_log` integration — not
+    /// just the rate function in isolation. Both decay and release march
+    /// through the same code, so one measurement covers both.
+    #[test]
+    fn exp_downward_slope_matches_dx7_db_per_sec() {
+        const LOG2_TO_DB: f32 = 6.020_6;
+        for r in [10u8, 25, 40, 60, 80] {
+            // L4=0 so the release sweeps the full span; measure between two
+            // points well inside it (before the silence floor).
+            let params = EgParams { r: [99, 99, 99, r], l: [99, 99, 99, 0] };
+            let mut eg = EgState::default();
+            eg.cook(&params, 1.0, 1.0, EgCurve::Exp);
+            eg.note_on();
+            let dt = 1.0 / 48_000.0;
+            test_util::run_until_stage(|| { eg.tick(dt); eg.stage == EgStage::Sustain }, 96_000);
+            eg.note_off();
+            let expected = 0.2819 * 2_f32.powf(r as f32 * 0.16);
+            // Windows scale with the rate so we always sample mid-sweep (the
+            // full span is ~90 dB): settle 5 dB in, then measure a 10 dB drop.
+            let settle_s = 5.0 / expected;
+            let window_s = 10.0 / expected;
+            let ticks = |s: f32| (s * 48_000.0).round() as u32;
+            for _ in 0..ticks(settle_s) {
+                eg.tick(dt);
+            }
+            let db0 = eg.level.log2() * LOG2_TO_DB;
+            for _ in 0..ticks(window_s) {
+                eg.tick(dt);
+            }
+            let db1 = eg.level.log2() * LOG2_TO_DB;
+            let realized = (db0 - db1) / window_s; // dB/s (positive = falling)
+            let err = (realized - expected).abs() / expected;
+            assert!(
+                err < 0.02,
+                "R={r}: realized {realized:.3} dB/s vs DX7 {expected:.3} dB/s ({:.1}% off)",
+                err * 100.0
+            );
+        }
     }
 
     #[test]
