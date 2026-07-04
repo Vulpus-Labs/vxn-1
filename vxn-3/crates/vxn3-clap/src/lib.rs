@@ -499,7 +499,7 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        let blob = state::save(&self.shared.params, &self.io.kinds);
+        let blob = state::save(&self.shared.params, &self.io.kinds, self.shared.sample_rate());
         output
             .write_all(&blob)
             .map_err(|_| PluginError::Message("state save failed"))
@@ -510,17 +510,23 @@ impl PluginStateImpl for VxnMainThread<'_> {
         input
             .read_to_end(&mut blob)
             .map_err(|_| PluginError::Message("state read failed"))?;
-        state::load(&blob, &self.shared.params, &self.io.kinds)
+        let mut patches: [Vec<u8>; N_TRACKS] = Default::default();
+        state::load(&blob, &self.shared.params, &self.io.kinds, &mut patches)
             .map_err(|_| PluginError::Message("state parse failed"))?;
-        // Rebuild each track's engine from the restored kind. Handles a load onto
-        // an already-active plugin; an inactive load is also reflected by
-        // `activate` building engines from the same kind mirror. Macro/lock
-        // values re-apply after the swap installs (`invalidate_applied`), and the
-        // restored cache re-applies on `activate`.
+        // Rebuild each track's engine from the restored kind, then apply its deep
+        // patch (0179) *before* handing it to the audio thread — so the restored
+        // patch is the base layer and the macro/mix cache replays over it
+        // (`invalidate_applied` on install; cache re-applies on `activate`). Host
+        // params are overrides on the patch, never the reverse. The patched engine
+        // is queued into the *shared* swap ring, so it survives an inactive load →
+        // `activate` too: `activate` builds a default initial engine, and the first
+        // process block installs this patched one from the ring.
         let sr = self.shared.sample_rate();
-        for t in 0..N_TRACKS {
+        for (t, patch) in patches.iter().enumerate() {
             if let Some(swap) = self.io.swaps.get(t) {
-                let _ = swap.send(make(self.io.kinds.get(t), sr));
+                let mut engine = make(self.io.kinds.get(t), sr);
+                let _ = engine.deserialize_patch(patch); // empty/unknown → default kept
+                let _ = swap.send(engine);
             }
         }
         Ok(())
@@ -738,14 +744,15 @@ mod tests {
         let kinds = vxn3_engine::TrackKinds::new();
         cache.set(0, 0.2);
         kinds.set(4, EngineKind::Metal);
-        let blob = state::save(&cache, &kinds);
+        let blob = state::save(&cache, &kinds, 48_000.0);
 
         let cache2 = ParamCache::new();
         let kinds2 = vxn3_engine::TrackKinds::new();
-        state::load(&blob, &cache2, &kinds2).unwrap();
+        let mut patches: [Vec<u8>; N_TRACKS] = Default::default();
+        state::load(&blob, &cache2, &kinds2, &mut patches).unwrap();
         assert_eq!(cache2.get(0), 0.2);
         assert_eq!(kinds2.get(4), EngineKind::Metal);
-        assert_eq!(blob, state::save(&cache2, &kinds2), "resave identical");
+        assert_eq!(blob, state::save(&cache2, &kinds2, 48_000.0), "resave identical");
     }
 
     #[test]

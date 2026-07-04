@@ -11,7 +11,12 @@
 
 use vxn3_dsp::{SILENCE_EPS, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
+use crate::patch::PatchReader;
 use crate::track_engine::{EngineKind, LANES, TrackEngine, macro_map};
+
+/// Deep-patch layout version for `Noise` (0179) — bump independently of the global
+/// state format when this engine's patch field set changes.
+const PATCH_VERSION: u8 = 1;
 
 #[derive(Copy, Clone, Debug)]
 pub struct NoisePatch {
@@ -186,6 +191,30 @@ impl TrackEngine for Noise {
             _ => return,
         }
         self.cook();
+    }
+
+    fn serialize_patch(&self, out: &mut Vec<u8>) {
+        out.push(PATCH_VERSION);
+        out.extend_from_slice(&self.patch.noise_decay_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.tone_decay_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.tone_mix.to_le_bytes());
+        out.extend_from_slice(&self.patch.hp_hz.to_le_bytes());
+    }
+
+    fn deserialize_patch(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        if bytes.is_empty() {
+            return Ok(()); // v1 state blob: no patch → keep default
+        }
+        let mut r = PatchReader::new(bytes);
+        if r.u8()? != PATCH_VERSION {
+            return Ok(()); // newer/unknown layout: keep default, don't fail the load
+        }
+        self.patch.noise_decay_s = r.f32()?;
+        self.patch.tone_decay_s = r.f32()?;
+        self.patch.tone_mix = r.f32()?;
+        self.patch.hp_hz = r.f32()?;
+        self.cook();
+        Ok(())
     }
 }
 

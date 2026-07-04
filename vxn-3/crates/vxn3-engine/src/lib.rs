@@ -11,6 +11,7 @@ pub mod engine;
 pub mod engines;
 pub mod io;
 pub mod lane;
+pub mod patch;
 pub mod sequencer;
 pub mod swap;
 pub mod track;

@@ -55,7 +55,7 @@ still sees only 3 macros/track (ADR 0003 unchanged).
 Dependency chain: **0179 → 0180 → { 0181, 0182, 0183, 0184 } → 0185**; **0186**
 parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwork.)
 
-- [ ] **0179** — *(open, groundwork)* Per-engine patch serialization; fill the
+- [x] **0179** — *(closed 2026-07-04)* Per-engine patch serialization; fill the
       reserved `clap.state` bytes so a deep patch (→ flavour) round-trips through
       save/load + swap. Finishes roadmap Phase 0.
 - [ ] **0180** — **Flavour runtime + macro-binding core.** The mechanism from ADR

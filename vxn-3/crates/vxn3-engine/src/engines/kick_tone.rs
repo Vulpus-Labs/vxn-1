@@ -13,7 +13,12 @@
 
 use vxn3_dsp::{SILENCE_EPS, attack_coef, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
+use crate::patch::PatchReader;
 use crate::track_engine::{EngineKind, LANES, TrackEngine, macro_map};
+
+/// Deep-patch layout version for `Kick/Tone` (0179). Bump only this engine's tag
+/// when its patch field set changes — independent of the global state format.
+const PATCH_VERSION: u8 = 1;
 
 /// Patch parameters for the `Kick/Tone` engine. Cooked into per-sample
 /// coefficients at [`KickTone::set_sample_rate`] / construction.
@@ -187,6 +192,30 @@ impl TrackEngine for KickTone {
             _ => return,
         }
         self.cook();
+    }
+
+    fn serialize_patch(&self, out: &mut Vec<u8>) {
+        out.push(PATCH_VERSION);
+        out.extend_from_slice(&self.patch.amp_attack_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.amp_decay_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.pitch_depth_st.to_le_bytes());
+        out.extend_from_slice(&self.patch.pitch_decay_s.to_le_bytes());
+    }
+
+    fn deserialize_patch(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        if bytes.is_empty() {
+            return Ok(()); // v1 state blob: no patch → keep default
+        }
+        let mut r = PatchReader::new(bytes);
+        if r.u8()? != PATCH_VERSION {
+            return Ok(()); // newer/unknown layout: keep default, don't fail the load
+        }
+        self.patch.amp_attack_s = r.f32()?;
+        self.patch.amp_decay_s = r.f32()?;
+        self.patch.pitch_depth_st = r.f32()?;
+        self.patch.pitch_decay_s = r.f32()?;
+        self.cook();
+        Ok(())
     }
 }
 

@@ -56,6 +56,28 @@ pub trait TrackEngine: Send {
     /// [`macro_display`] via [`macro_map`], so the readout always matches what
     /// was set. Keeps the host macro surface uniform without a per-engine table.
     fn set_macro(&mut self, _slot: usize, _value: f32) {}
+
+    /// Serialize this engine's **deep patch** — the faceplate-only synthesis params
+    /// below the host param table (ADR 0003 §3) — appending to `out`. Field-explicit
+    /// LE with a leading per-engine patch-version byte, so the layout is reviewable
+    /// and can evolve independently of the global `clap.state` format version (0179).
+    /// These bytes *are* a flavour's base vector (ADR 0005), so the roster/kit epic
+    /// (E034) persists the same format — get the layout right. Called on the main
+    /// thread at save time. Default: no patch (0 bytes).
+    fn serialize_patch(&self, _out: &mut Vec<u8>) {}
+
+    /// Restore a deep patch previously written by [`serialize_patch`]. **Empty** input
+    /// keeps the default patch (a v1 state blob carried no patch bytes — backward
+    /// compat). A **newer/unknown** per-engine patch version is tolerated — the default
+    /// patch is kept and `Ok` returned — so a project saved by a newer build still
+    /// loads instead of failing outright; a **truncated / malformed** patch within a
+    /// known version is `Err`. Called on the main thread *before* the engine is handed
+    /// to the audio thread over [`crate::swap`], so it may allocate / re-cook freely.
+    /// Default: accept, no-op.
+    #[allow(clippy::result_unit_err)] // parse-failure sentinel, mirrors the state reader
+    fn deserialize_patch(&mut self, _bytes: &[u8]) -> Result<(), ()> {
+        Ok(())
+    }
 }
 
 /// Fixed budget of generic host-facing macro slots per track (ADR 0003 §2). Each

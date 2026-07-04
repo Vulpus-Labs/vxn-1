@@ -86,3 +86,36 @@ flat value list; get the layout right, the flavour store reads the same bytes);
   each implement this trait. A sloppy format now is 17 modules of debt later.
 - Belongs to the E034 voice-roster epic as its groundwork ticket; if E034 is not yet
   scaffolded when this is picked up, land it standalone — it stands on 0174 alone.
+
+## Close-out (2026-07-04)
+
+- **Trait.** `TrackEngine` gains `serialize_patch(&self, &mut Vec<u8>)` +
+  `deserialize_patch(&mut self, &[u8]) -> Result<(),()>` with no-op defaults
+  ([track_engine.rs:59](../../vxn-3/crates/vxn3-engine/src/track_engine.rs#L59)). All
+  three engines implement them field-explicit LE behind a per-engine `PATCH_VERSION`
+  byte: KickTone (4 f32s), Metal (5), Noise (4) —
+  [kick_tone.rs](../../vxn-3/crates/vxn3-engine/src/engines/kick_tone.rs),
+  [metal.rs](../../vxn-3/crates/vxn3-engine/src/engines/metal.rs),
+  [noise.rs](../../vxn-3/crates/vxn3-engine/src/engines/noise.rs). Shared LE underrun
+  reader in new [patch.rs](../../vxn-3/crates/vxn3-engine/src/patch.rs) (crate-internal).
+- **Format v2.** [state.rs](../../vxn-3/crates/vxn3-clap/src/state.rs) `VERSION 1→2`;
+  `save` writes real `patch_len` + engine patch bytes per track (module header + restore
+  order documented); `load` surfaces per-track patch bytes via a `&mut [Vec<u8>; N_TRACKS]`
+  out-param.
+- **Restore order.** [lib.rs](../../vxn-3/crates/vxn3-clap/src/lib.rs) `PluginStateImpl::load`
+  rebuilds each engine → `deserialize_patch` → sends over the swap ring, so the deep patch
+  is the base layer and the macro/mix cache replays over it (host params override the patch,
+  not the reverse). Survives inactive-load→activate via the shared swap ring.
+- **Round-trip through swap** proven with distinct non-default values:
+  `engines::tests::patch_round_trips_through_rebuild` (edit → serialize → fresh default
+  engine → deserialize → identical audio, and ≠ default).
+- **v1 compat / rejection.** `state::tests::v1_blob_loads_with_default_patch_then_upgrades`
+  (patch_len==0 → default kept; resave upgrades to v2), `empty_and_garbage_rejected`,
+  `future_version_rejected`, `engines::tests::patch_deserialize_tolerances` (empty ok,
+  unknown-version tolerated, truncated rejected). `resave_is_byte_identical` holds for v2.
+- **Gates.** `cargo test -p vxn3-engine -p vxn3-clap` green; `cargo clippy` on both crates
+  0 warnings; alloc-trap tests (`three_engine_kit_is_allocation_free`, plocks) pass;
+  `clap-validator validate vxn3.clap` — **0 failed** (state-reproducibility-basic/flush/
+  buffered/null-cookies/invalid all PASSED; 5 note-ports tests skipped, land in 0186).
+- Phase 0 closed. E034 (voice roster) unblocked: enriched/new engines implement the two
+  trait methods; kits/flavours persist the same bytes.

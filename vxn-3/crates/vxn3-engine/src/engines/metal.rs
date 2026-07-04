@@ -16,7 +16,12 @@
 
 use vxn3_dsp::decay_coef;
 
+use crate::patch::PatchReader;
 use crate::track_engine::{EngineKind, TrackEngine, macro_map};
+
+/// Deep-patch layout version for `Metal` (0179) — bump independently of the global
+/// state format when this engine's patch field set changes.
+const PATCH_VERSION: u8 = 1;
 
 /// Modal partial count (the engine-declared lane budget). Two NEON `f32x4`.
 pub const METAL_MODES: usize = 8;
@@ -170,6 +175,32 @@ impl TrackEngine for Metal {
             _ => return,
         }
         self.cook();
+    }
+
+    fn serialize_patch(&self, out: &mut Vec<u8>) {
+        out.push(PATCH_VERSION);
+        out.extend_from_slice(&self.patch.base_hz.to_le_bytes());
+        out.extend_from_slice(&self.patch.open_decay_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.closed_decay_s.to_le_bytes());
+        out.extend_from_slice(&self.patch.closed_below.to_le_bytes());
+        out.extend_from_slice(&self.patch.excite.to_le_bytes());
+    }
+
+    fn deserialize_patch(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        if bytes.is_empty() {
+            return Ok(()); // v1 state blob: no patch → keep default
+        }
+        let mut r = PatchReader::new(bytes);
+        if r.u8()? != PATCH_VERSION {
+            return Ok(()); // newer/unknown layout: keep default, don't fail the load
+        }
+        self.patch.base_hz = r.f32()?;
+        self.patch.open_decay_s = r.f32()?;
+        self.patch.closed_decay_s = r.f32()?;
+        self.patch.closed_below = r.f32()?;
+        self.patch.excite = r.f32()?;
+        self.cook();
+        Ok(())
     }
 }
 
