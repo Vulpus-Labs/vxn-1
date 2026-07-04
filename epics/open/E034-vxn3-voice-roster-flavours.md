@@ -58,7 +58,7 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
 - [x] **0179** — *(closed 2026-07-04)* Per-engine patch serialization; fill the
       reserved `clap.state` bytes so a deep patch (→ flavour) round-trips through
       save/load + swap. Finishes roadmap Phase 0.
-- [ ] **0180** — **Flavour runtime + macro-binding core.** The mechanism from ADR
+- [x] **0180** — *(closed 2026-07-04)* **Flavour runtime + macro-binding core.** The mechanism from ADR
       0005: family param space with metadata (id/range/default/curve); `Flavour`
       = base vector + binding table + default macro values; additive-from-base
       evaluation on trig, allocation-free; flavour load/apply onto an engine.

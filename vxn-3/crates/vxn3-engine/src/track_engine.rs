@@ -78,6 +78,22 @@ pub trait TrackEngine: Send {
     fn deserialize_patch(&mut self, _bytes: &[u8]) -> Result<(), ()> {
         Ok(())
     }
+
+    /// This family's parameter-space metadata (ADR 0005 §Family, 0180) — the table the
+    /// flavour editor + value-text read on the main thread. Empty for a family that has
+    /// not yet adopted the flavour runtime (Metal/Noise until 0182/0183). The default
+    /// is empty.
+    fn family_params(&self) -> &'static [crate::flavour::ParamMeta] {
+        &[]
+    }
+
+    /// Install a [`crate::flavour::Flavour`] (base vector + binding table + macro
+    /// defaults) onto this engine. Does **not** re-resolve immediately — the resolved
+    /// param vector is recomputed at the next [`TrackEngine::on_trig`], so a flavour or
+    /// macro change never glitches a sounding voice. No-op for a family without a
+    /// flavour runtime. Called on the main thread before the engine is handed over the
+    /// swap, or applied live by the editor (0185).
+    fn apply_flavour(&mut self, _flavour: crate::flavour::Flavour) {}
 }
 
 /// Fixed budget of generic host-facing macro slots per track (ADR 0003 §2). Each
@@ -155,15 +171,26 @@ pub fn macro_display(
     let Some(r) = macro_map(kind, slot, norm) else {
         return out.write_str("—");
     };
-    match r.unit {
-        MacroUnit::Seconds if r.value < 1.0 => write!(out, "{} {:.0} ms", r.label, r.value * 1e3),
-        MacroUnit::Seconds => write!(out, "{} {:.2} s", r.label, r.value),
-        MacroUnit::Semitones => write!(out, "{} {:.1} st", r.label, r.value),
-        MacroUnit::Hertz if r.value >= 1_000.0 => {
-            write!(out, "{} {:.2} kHz", r.label, r.value / 1e3)
-        }
-        MacroUnit::Hertz => write!(out, "{} {:.0} Hz", r.label, r.value),
-        MacroUnit::Percent => write!(out, "{} {:.0}%", r.label, r.value * 100.0),
+    format_macro_value(r.label, r.unit, r.value, out)
+}
+
+/// Format a `label value unit` readout (e.g. "Decay 0.42 s", "Body 1.80 kHz",
+/// "Excite 65%") — the shared unit-formatting used by both the fixed per-engine
+/// [`macro_display`] and the flavour-aware [`crate::flavour::flavour_macro_display`]
+/// (0180), so the two can never drift on how a unit prints. Allocation-free.
+pub fn format_macro_value(
+    label: &str,
+    unit: MacroUnit,
+    value: f32,
+    out: &mut impl core::fmt::Write,
+) -> core::fmt::Result {
+    match unit {
+        MacroUnit::Seconds if value < 1.0 => write!(out, "{label} {:.0} ms", value * 1e3),
+        MacroUnit::Seconds => write!(out, "{label} {value:.2} s"),
+        MacroUnit::Semitones => write!(out, "{label} {value:.1} st"),
+        MacroUnit::Hertz if value >= 1_000.0 => write!(out, "{label} {:.2} kHz", value / 1e3),
+        MacroUnit::Hertz => write!(out, "{label} {value:.0} Hz"),
+        MacroUnit::Percent => write!(out, "{label} {:.0}%", value * 100.0),
     }
 }
 

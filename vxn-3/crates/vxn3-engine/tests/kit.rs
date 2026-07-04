@@ -134,3 +134,46 @@ fn three_engine_kit_is_allocation_free() {
     });
     assert_eq!(allocs, 0, "three-engine mix allocated on the audio path");
 }
+
+/// The flavour runtime (0180) is allocation-free on the audio path: the Driven
+/// track's per-trig `resolve` (additive-from-base) and re-cook must not allocate —
+/// the kick trigs 4×/bar and the macro-driven re-resolve fires on each trig.
+#[test]
+fn driven_flavour_trig_is_allocation_free() {
+    use vxn3_engine::flavour::{Binding, Curve, Flavour};
+
+    let mut engine = build_kit();
+    // Install a Driven flavour with all three macros bound, so every trig re-resolves.
+    let flav = Flavour {
+        base: vec![0.001, 0.35, 24.0, 0.05],
+        bindings: vec![
+            Binding { slot: 0, param: 1, curve: Curve::Linear, depth: 0.6 },
+            Binding { slot: 1, param: 3, curve: Curve::Exp, depth: 0.1 },
+            Binding { slot: 2, param: 2, curve: Curve::Linear, depth: 12.0 },
+        ],
+        macro_defaults: [0.5; 3],
+    };
+    engine.track_mut(0).engine.apply_flavour(flav);
+
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime (installs the resolve)
+
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..300 {
+            // Nudge a macro every few blocks → forces a re-resolve at the next trig.
+            if b % 8 == 0 {
+                engine.track_mut(0).engine.set_macro(0, (b as f32 * 0.01) % 1.0);
+            }
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+        }
+    });
+    assert_eq!(allocs, 0, "flavour resolve allocated on the audio path");
+}

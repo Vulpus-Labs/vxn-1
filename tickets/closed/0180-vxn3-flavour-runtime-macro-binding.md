@@ -79,3 +79,42 @@ slots, 0170's `set_macro`) and pairs with **0179** (serialises the `Flavour`).
 - Keep the binding eval readable; it's a constrained mod-matrix, not the vxn-2 general
   matrix ([[vxn2-architecture]]) — don't generalise beyond ADR 0005 without a reason
   that came from playing.
+
+## Close-out (2026-07-04)
+
+- **Flavour runtime module** [flavour.rs](../../vxn-3/crates/vxn3-engine/src/flavour.rs):
+  `Curve {Linear, Exp}`, `ParamMeta {name/unit/min/max/default}`, `Binding
+  {slot,param,curve,depth}`, `Flavour {base: Vec<f32>, bindings: Vec<Binding>,
+  macro_defaults: [f32; K]}`. Explicit version-tagged LE byte layout
+  (`FLAVOUR_VERSION=1`) via `Flavour::serialize`/`deserialize`; `deserialize` returns
+  `Ok(Some)` / `Ok(None)` (version-or-shape mismatch → keep default) / `Err` (truncated)
+  — the 0179 deep-patch contract.
+- **Additive-from-base eval** `flavour::resolve(meta, base, bindings, macros, out)` —
+  `final(p)=clamp(base[p]+Σ curve(macro[slot])·depth, range)`, writes a caller scratch,
+  allocation-free. Tests `resolve_is_additive_from_base_and_clamped`,
+  `multiple_bindings_on_one_param_sum`.
+- **Driven family adopts the runtime**
+  [kick_tone.rs](../../vxn-3/crates/vxn3-engine/src/engines/kick_tone.rs): `DRIVEN_PARAMS`
+  (4-param space: Attack/Decay/Depth/Donk) + `driven_default_flavour` (3 host macros as
+  editable additive bindings, replacing the fixed 0170 map). `KickTone` holds
+  `flavour + macros + dirty`; `on_trig` re-resolves into `patch` + re-cooks only when
+  dirty (per-sample SoA kernel untouched). `serialize_patch` = the flavour; `set_macro`
+  updates live macro + marks dirty; `apply_flavour` + `family_params` added to
+  `TrackEngine` (default no-op / empty). Metal/Noise keep the flat 0179 patch until
+  their enrichment tickets (0182/0183).
+- **No glitch / next-trig re-resolve** proven: `change_takes_effect_on_next_trig_not_mid_voice`
+  (a mid-voice `apply_flavour` leaves the ringing voice byte-identical; the new flavour
+  bites on the next trig).
+- **Flavour-aware value-text** `flavour::flavour_macro_display` reads the binding table
+  (test `display_reflects_the_binding`); shares `track_engine::format_macro_value` with
+  the fixed `macro_display` so units can't drift. Clap `value_to_text` rewiring to the
+  main-thread flavour is left to 0172's path / the 0185 editor (no live main-thread
+  flavour store yet).
+- **Driven demonstrated** (acceptance #6): `two_flavours_differ_by_base_only`,
+  `macro_binding_drives_sound_only_when_bound`, `driven_flavour_round_trips_through_rebuild`.
+- **Gates.** `cargo test -p vxn3-engine -p vxn3-clap` green (incl. alloc-trap
+  `driven_flavour_trig_is_allocation_free` in [kit.rs](../../vxn-3/crates/vxn3-engine/tests/kit.rs));
+  clippy 0 warnings; `clap-validator` 0 failed (state-reproducibility suites PASS).
+- **Format note:** this supersedes 0179's flat Kick/Tone patch bytes with the flavour
+  layout (pre-release, no presets shipped) — the layout is now **frozen** for 0181–0185.
+  Live macro **values** are host state, not serialised in the patch (ADR 0005).

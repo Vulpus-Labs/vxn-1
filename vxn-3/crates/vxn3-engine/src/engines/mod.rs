@@ -27,50 +27,73 @@ pub fn make(kind: EngineKind, sample_rate: f32) -> Box<dyn TrackEngine> {
 mod tests {
     use super::*;
 
-    /// The deep patch survives a **rebuild** — the through-swap path (0179): build
-    /// an engine, edit its patch to a non-default point, serialize, build a *fresh
-    /// default* engine of the same kind (what the swap installs), deserialize, and
-    /// the rebuilt engine must render the *edited* voice, not the default.
+    fn render_trig(e: &mut dyn crate::track_engine::TrackEngine) -> Vec<f32> {
+        let mut buf = vec![0.0_f32; 4_800];
+        e.on_trig(50.0, 1.0);
+        e.render(&mut buf);
+        buf
+    }
+
+    /// The **flat** engines' patch (Metal, Noise) survives a rebuild — the through-swap
+    /// path (0179): edit the patch via `set_macro` (these still cook immediately),
+    /// serialize, rebuild a fresh default engine, deserialize, and the rebuilt engine
+    /// renders the edited voice, not the default.
     #[test]
-    fn patch_round_trips_through_rebuild() {
+    fn flat_engine_patch_round_trips_through_rebuild() {
         let sr = 48_000.0;
-        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise] {
+        for kind in [EngineKind::Metal, EngineKind::Noise] {
             let mut src = make(kind, sr);
-            // Move every macro-mapped patch field well off its default.
             src.set_macro(0, 0.9);
             src.set_macro(1, 0.15);
             src.set_macro(2, 0.8);
-
-            // Reference audio from the edited engine.
-            let mut want = vec![0.0_f32; 4_800];
-            src.on_trig(50.0, 1.0);
-            src.render(&mut want);
+            let want = render_trig(&mut *src);
 
             let mut bytes = Vec::new();
             src.serialize_patch(&mut bytes);
             assert!(!bytes.is_empty(), "{kind:?} serialized an empty patch");
 
-            // Fresh default engine (what the swap hands the audio thread), then apply.
             let mut dst = make(kind, sr);
             dst.deserialize_patch(&bytes).expect("valid patch");
-            let mut got = vec![0.0_f32; 4_800];
-            dst.on_trig(50.0, 1.0);
-            dst.render(&mut got);
-
+            let got = render_trig(&mut *dst);
             assert_eq!(want, got, "{kind:?} rebuilt patch does not match edited source");
 
-            // And it is genuinely non-default: a default engine renders differently.
-            let mut def = make(kind, sr);
-            let mut base = vec![0.0_f32; 4_800];
-            def.on_trig(50.0, 1.0);
-            def.render(&mut base);
-            assert_ne!(base, got, "{kind:?} edited patch indistinguishable from default");
+            let def = render_trig(&mut *make(kind, sr));
+            assert_ne!(def, got, "{kind:?} edited patch indistinguishable from default");
         }
     }
 
-    /// Backward / forward tolerance: an empty patch (v1 state blob) keeps the
-    /// default; an unknown-version tag keeps the default without erroring; a
-    /// truncated patch within the known version is rejected.
+    /// The **Driven** family's deep patch is a *flavour* (0180): edit the flavour (base
+    /// vector plus a binding), serialize, rebuild a fresh default engine, deserialize,
+    /// and the rebuilt engine renders the edited voice. Macro **values** are host state,
+    /// not in the patch — so this varies the flavour, not `set_macro`.
+    #[test]
+    fn driven_flavour_round_trips_through_rebuild() {
+        use crate::flavour::{Binding, Curve};
+        let sr = 48_000.0;
+        let mut flav = kick_tone::driven_default_flavour();
+        flav.base[kick_tone::P_AMP_DECAY] = 0.9; // long body
+        flav.base[kick_tone::P_PITCH_DEPTH] = 6.0; // shallow sweep
+        flav.bindings.push(Binding { slot: 2, param: kick_tone::P_AMP_DECAY as u8, curve: Curve::Exp, depth: -0.3 });
+
+        let mut src = make(EngineKind::KickTone, sr);
+        src.apply_flavour(flav);
+        let want = render_trig(&mut *src);
+
+        let mut bytes = Vec::new();
+        src.serialize_patch(&mut bytes);
+
+        let mut dst = make(EngineKind::KickTone, sr);
+        dst.deserialize_patch(&bytes).expect("valid flavour patch");
+        let got = render_trig(&mut *dst);
+        assert_eq!(want, got, "rebuilt flavour does not match edited source");
+
+        let def = render_trig(&mut *make(EngineKind::KickTone, sr));
+        assert_ne!(def, got, "edited flavour indistinguishable from default");
+    }
+
+    /// Backward / forward tolerance across both patch shapes: empty (v1 blob) keeps the
+    /// default; an unknown version tag keeps the default without erroring; a truncated
+    /// patch within a known version is rejected.
     #[test]
     fn patch_deserialize_tolerances() {
         let sr = 48_000.0;
@@ -78,8 +101,12 @@ mod tests {
             let mut e = make(kind, sr);
             assert!(e.deserialize_patch(&[]).is_ok(), "{kind:?} empty patch");
             assert!(e.deserialize_patch(&[0xFF]).is_ok(), "{kind:?} unknown version tolerated");
-            // Known version tag then a truncated field → Err.
-            assert!(e.deserialize_patch(&[1, 0x00, 0x00]).is_err(), "{kind:?} truncated rejected");
         }
+        // Truncated within a known version → Err. Flat engines: version 1 then a
+        // truncated f32. Driven (flavour): version 1, n_params 4, then truncated base.
+        let mut metal = make(EngineKind::Metal, sr);
+        assert!(metal.deserialize_patch(&[1, 0x00, 0x00]).is_err(), "flat truncated rejected");
+        let mut kick = make(EngineKind::KickTone, sr);
+        assert!(kick.deserialize_patch(&[1, 4, 0x00]).is_err(), "flavour truncated rejected");
     }
 }

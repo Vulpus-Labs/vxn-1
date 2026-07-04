@@ -168,10 +168,10 @@ mod tests {
         for id in 0..TOTAL_PARAMS {
             assert_eq!(cache.get(id), cache2.get(id), "param {id}");
         }
-        for t in 0..N_TRACKS {
+        for (t, patch) in patches.iter().enumerate() {
             assert_eq!(kinds.get(t), kinds2.get(t), "track {t} kind");
             // v2 writes a real (default) patch for every track.
-            assert!(!patches[t].is_empty(), "track {t} patch bytes surfaced");
+            assert!(!patch.is_empty(), "track {t} patch bytes surfaced");
         }
     }
 
@@ -219,8 +219,8 @@ mod tests {
         load(&v1, &cache2, &kinds2, &mut patches).unwrap();
         assert_eq!(cache2.get(3), 0.7);
         assert_eq!(kinds2.get(0), EngineKind::Metal);
-        for t in 0..N_TRACKS {
-            assert!(patches[t].is_empty(), "v1 track {t} carries no patch → default kept");
+        for (t, patch) in patches.iter().enumerate() {
+            assert!(patch.is_empty(), "v1 track {t} carries no patch → default kept");
         }
         // Resaving a loaded v1 blob upgrades it to v2 (documented, intentional).
         let up = save(&cache2, &kinds2, SR);

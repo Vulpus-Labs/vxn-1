@@ -13,12 +13,43 @@
 
 use vxn3_dsp::{SILENCE_EPS, attack_coef, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
-use crate::patch::PatchReader;
-use crate::track_engine::{EngineKind, LANES, TrackEngine, macro_map};
+use crate::flavour::{Binding, Curve, Flavour, ParamMeta};
+use crate::track_engine::{EngineKind, LANES, MACRO_SLOTS, MacroUnit, TrackEngine};
 
-/// Deep-patch layout version for `Kick/Tone` (0179). Bump only this engine's tag
-/// when its patch field set changes — independent of the global state format.
-const PATCH_VERSION: u8 = 1;
+/// The **Driven** family's parameter space (ADR 0005 §Family): index → metadata. A
+/// flavour's base vector and the resolved per-trig vector are addressed by these ids.
+pub const P_AMP_ATTACK: usize = 0;
+pub const P_AMP_DECAY: usize = 1;
+pub const P_PITCH_DEPTH: usize = 2;
+pub const P_PITCH_DECAY: usize = 3;
+/// Driven param count `P`.
+pub const DRIVEN_P: usize = 4;
+
+/// Per-param metadata for the Driven family — queryable on the main thread by the
+/// flavour editor (0185) and value-text (0172). Ranges track the old 0170 macro map.
+pub static DRIVEN_PARAMS: [ParamMeta; DRIVEN_P] = [
+    ParamMeta { name: "Attack", unit: MacroUnit::Seconds, min: 0.0001, max: 0.05, default: 0.001 },
+    ParamMeta { name: "Decay", unit: MacroUnit::Seconds, min: 0.05, max: 1.5, default: 0.35 },
+    ParamMeta { name: "Depth", unit: MacroUnit::Semitones, min: 0.0, max: 48.0, default: 24.0 },
+    ParamMeta { name: "Donk", unit: MacroUnit::Seconds, min: 0.005, max: 0.2, default: 0.05 },
+];
+
+/// The default Driven flavour — a serviceable 808-ish kick, with the three host macros
+/// bound to decay / donk / pitch-depth. This is the 0170 slot meaning re-expressed as
+/// **editable additive bindings from base** (ADR 0005 replaces the fixed per-engine
+/// map). At neutral macros (0.5) it reproduces a usable kick; a macro at 0 gives the
+/// base value, at 1 gives base + depth (clamped).
+pub fn driven_default_flavour() -> Flavour {
+    Flavour {
+        base: vec![0.001, 0.35, 24.0, 0.05],
+        bindings: vec![
+            Binding { slot: 0, param: P_AMP_DECAY as u8, curve: Curve::Linear, depth: 0.65 },
+            Binding { slot: 1, param: P_PITCH_DECAY as u8, curve: Curve::Linear, depth: 0.10 },
+            Binding { slot: 2, param: P_PITCH_DEPTH as u8, curve: Curve::Linear, depth: 12.0 },
+        ],
+        macro_defaults: [0.5; MACRO_SLOTS],
+    }
+}
 
 /// Patch parameters for the `Kick/Tone` engine. Cooked into per-sample
 /// coefficients at [`KickTone::set_sample_rate`] / construction.
@@ -47,7 +78,18 @@ impl Default for KickTonePatch {
 }
 
 pub struct KickTone {
+    /// Resolved / cooked effective params for the current trig — filled from the
+    /// flavour + live macros by [`KickTone::resolve_patch`].
     patch: KickTonePatch,
+    /// The installed flavour: base vector + macro-binding table + shipped macro
+    /// defaults (ADR 0005). Serialised as the deep patch (0179).
+    flavour: Flavour,
+    /// Live macro values (`0..1`) — performance/automation state, **not** part of the
+    /// flavour. Driven by the host macro slots via [`TrackEngine::set_macro`].
+    macros: [f32; MACRO_SLOTS],
+    /// The resolved vector is stale (a flavour or macro changed) → recompute at the
+    /// next trig so a sounding voice never glitches mid-decay.
+    dirty: bool,
     sample_rate: f32,
 
     // ── cooked per-sample coefficients (shared across lanes) ──
@@ -76,9 +118,14 @@ pub struct KickTone {
 }
 
 impl KickTone {
-    pub fn new(sample_rate: f32, patch: KickTonePatch) -> Self {
+    /// Build from a flavour; live macros seed from the flavour's shipped defaults.
+    pub fn from_flavour(sample_rate: f32, flavour: Flavour) -> Self {
+        let macros = flavour.macro_defaults;
         let mut e = Self {
-            patch,
+            patch: KickTonePatch::default(),
+            flavour,
+            macros,
+            dirty: false,
             sample_rate,
             amp_attack_coef: 0.0,
             amp_decay_coef: 0.0,
@@ -92,12 +139,32 @@ impl KickTone {
             active: [false; LANES],
             next: 0,
         };
-        e.cook();
+        e.resolve_patch(); // fill `patch` from flavour + macros, then cook
         e
     }
 
     pub fn with_default_patch(sample_rate: f32) -> Self {
-        Self::new(sample_rate, KickTonePatch::default())
+        Self::from_flavour(sample_rate, driven_default_flavour())
+    }
+
+    /// Resolve the flavour + live macros into the effective [`KickTonePatch`]
+    /// (additive-from-base, clamped) and re-cook coefficients. Allocation-free — the
+    /// resolved vector is a stack array. Runs at a trig boundary, never per sample.
+    fn resolve_patch(&mut self) {
+        let mut r = [0.0_f32; DRIVEN_P];
+        crate::flavour::resolve(
+            &DRIVEN_PARAMS,
+            &self.flavour.base,
+            &self.flavour.bindings,
+            &self.macros,
+            &mut r,
+        );
+        self.patch.amp_attack_s = r[P_AMP_ATTACK];
+        self.patch.amp_decay_s = r[P_AMP_DECAY];
+        self.patch.pitch_depth_st = r[P_PITCH_DEPTH];
+        self.patch.pitch_decay_s = r[P_PITCH_DECAY];
+        self.cook();
+        self.dirty = false;
     }
 
     fn cook(&mut self) {
@@ -152,6 +219,11 @@ impl TrackEngine for KickTone {
     }
 
     fn on_trig(&mut self, note: f32, velocity: f32) {
+        // A flavour/macro change re-resolves here, at the trig boundary — so already
+        // sounding voices keep their coefficients and don't glitch (ADR 0005).
+        if self.dirty {
+            self.resolve_patch();
+        }
         let k = self.alloc_lane();
         self.phase[k] = 0;
         self.base_inc[k] = phase_inc_hz(note_to_freq(note), self.sample_rate);
@@ -182,39 +254,42 @@ impl TrackEngine for KickTone {
     }
 
     fn set_macro(&mut self, slot: usize, value: f32) {
-        let Some(r) = macro_map(EngineKind::KickTone, slot, value) else {
-            return;
-        };
-        match slot {
-            0 => self.patch.amp_decay_s = r.value,   // body length
-            1 => self.patch.pitch_decay_s = r.value, // "donk" sweep length
-            2 => self.patch.pitch_depth_st = r.value, // pitch-sweep depth
-            _ => return,
+        // Update the live macro value (performance state) and mark the resolved vector
+        // stale; it re-resolves at the next trig via the flavour binding table.
+        if slot < MACRO_SLOTS && self.macros[slot] != value {
+            self.macros[slot] = value;
+            self.dirty = true;
         }
-        self.cook();
+    }
+
+    fn family_params(&self) -> &'static [ParamMeta] {
+        &DRIVEN_PARAMS
+    }
+
+    fn apply_flavour(&mut self, flavour: Flavour) {
+        // Keep the live macro values (performance state); only the base + bindings +
+        // shipped defaults change. Re-resolve at the next trig.
+        self.flavour = flavour;
+        self.dirty = true;
     }
 
     fn serialize_patch(&self, out: &mut Vec<u8>) {
-        out.push(PATCH_VERSION);
-        out.extend_from_slice(&self.patch.amp_attack_s.to_le_bytes());
-        out.extend_from_slice(&self.patch.amp_decay_s.to_le_bytes());
-        out.extend_from_slice(&self.patch.pitch_depth_st.to_le_bytes());
-        out.extend_from_slice(&self.patch.pitch_decay_s.to_le_bytes());
+        // The deep patch *is* the flavour (ADR 0005): base vector + binding table +
+        // shipped macro defaults. Live macro values are host state, not serialised here.
+        self.flavour.serialize(out);
     }
 
     fn deserialize_patch(&mut self, bytes: &[u8]) -> Result<(), ()> {
         if bytes.is_empty() {
-            return Ok(()); // v1 state blob: no patch → keep default
+            return Ok(()); // v1 state blob / no patch → keep default flavour
         }
-        let mut r = PatchReader::new(bytes);
-        if r.u8()? != PATCH_VERSION {
-            return Ok(()); // newer/unknown layout: keep default, don't fail the load
+        // `?` rejects a truncated patch; `Ok(None)` (version/shape mismatch) keeps the
+        // default flavour rather than failing the whole state load (0179 contract).
+        if let Some(flavour) = Flavour::deserialize(bytes, DRIVEN_P)? {
+            self.macros = flavour.macro_defaults; // restore performance starting point
+            self.flavour = flavour;
+            self.dirty = true;
         }
-        self.patch.amp_attack_s = r.f32()?;
-        self.patch.amp_decay_s = r.f32()?;
-        self.patch.pitch_depth_st = r.f32()?;
-        self.patch.pitch_decay_s = r.f32()?;
-        self.cook();
         Ok(())
     }
 }
@@ -284,5 +359,103 @@ mod tests {
         // A 5th trig steals, not grows.
         e.on_trig(40.0, 1.0);
         assert_eq!(e.active.iter().filter(|&&a| a).count(), LANES, "capped at LANES");
+    }
+
+    // ── Flavour runtime (0180) ────────────────────────────────────────────────
+
+    fn flavour_with(base: Vec<f32>, bindings: Vec<Binding>) -> Flavour {
+        Flavour { base, bindings, macro_defaults: [0.0; MACRO_SLOTS] }
+    }
+
+    /// Two flavours of the Driven family differ audibly via the **base vector alone**
+    /// (macros held equal) — the "Kick vs Tom is a point in the same space" thesis.
+    #[test]
+    fn two_flavours_differ_by_base_only() {
+        let mut a = KickTone::with_default_patch(48_000.0);
+        let mut b = KickTone::with_default_patch(48_000.0);
+        // Same (empty) bindings, same macros; only base pitch-depth + decay differ.
+        a.apply_flavour(flavour_with(vec![0.001, 0.6, 36.0, 0.08], vec![]));
+        b.apply_flavour(flavour_with(vec![0.001, 0.15, 4.0, 0.03], vec![]));
+        let mut ba = vec![0.0_f32; 9_600];
+        let mut bb = vec![0.0_f32; 9_600];
+        a.on_trig(40.0, 1.0);
+        b.on_trig(40.0, 1.0);
+        a.render(&mut ba);
+        b.render(&mut bb);
+        // Deeper/longer flavour rings louder over the window than the short one.
+        assert!(rms(&ba) > rms(&bb) * 1.3, "base-only flavours indistinct: {} vs {}", rms(&ba), rms(&bb));
+    }
+
+    /// A **macro binding** makes a slot move the sound; without the binding the same
+    /// slot is inert — proving the binding table (not a fixed map) is what gives a
+    /// macro meaning (ADR 0005).
+    #[test]
+    fn macro_binding_drives_sound_only_when_bound() {
+        let base = vec![0.001, 0.3, 12.0, 0.05];
+        // Bound: slot 0 drives decay hard. Unbound: no bindings at all.
+        let bound = flavour_with(base.clone(), vec![Binding {
+            slot: 0, param: P_AMP_DECAY as u8, curve: Curve::Linear, depth: 1.0,
+        }]);
+        let unbound = flavour_with(base, vec![]);
+
+        let sweep = |flav: Flavour, m: f32| {
+            let mut e = KickTone::with_default_patch(48_000.0);
+            e.apply_flavour(flav);
+            e.set_macro(0, m);
+            let mut buf = vec![0.0_f32; 24_000]; // 0.5 s window
+            e.on_trig(40.0, 1.0);
+            e.render(&mut buf);
+            rms(&buf)
+        };
+        // Bound: higher macro → longer decay ⇒ more energy across the window.
+        let bound_lo = sweep(bound.clone(), 0.0);
+        let bound_hi = sweep(bound, 1.0);
+        assert!(bound_hi > bound_lo * 1.3, "bound slot inert: {bound_lo} vs {bound_hi}");
+        // Unbound: the same macro move does nothing.
+        let unbound_lo = sweep(unbound.clone(), 0.0);
+        let unbound_hi = sweep(unbound, 1.0);
+        assert!((unbound_hi - unbound_lo).abs() < 1e-6, "unbound slot moved sound: {unbound_lo} vs {unbound_hi}");
+    }
+
+    /// A flavour/macro change re-resolves at the **next trig**, never mid-voice: a
+    /// currently ringing voice keeps the coefficients it triggered with (no glitch).
+    #[test]
+    fn change_takes_effect_on_next_trig_not_mid_voice() {
+        let short = || flavour_with(vec![0.001, 0.08, 0.0, 0.05], vec![]);
+        let long = flavour_with(vec![0.001, 0.9, 0.0, 0.05], vec![]);
+
+        // Control: trig short, render 0.5 s, no mid-flight change.
+        let mut ctrl = KickTone::with_default_patch(48_000.0);
+        ctrl.apply_flavour(short());
+        ctrl.on_trig(40.0, 1.0);
+        let mut c = vec![0.0_f32; 24_000];
+        ctrl.render(&mut c);
+
+        // Test: same trig, then swap to a long-decay flavour *without* a new trig.
+        let mut test = KickTone::with_default_patch(48_000.0);
+        test.apply_flavour(short());
+        test.on_trig(40.0, 1.0);
+        let mut t = vec![0.0_f32; 4_800]; // 0.1 s in — voice still ringing
+        test.render(&mut t);
+        test.apply_flavour(long.clone()); // marks dirty; must NOT affect the live voice
+        let mut t2 = vec![0.0_f32; 19_200];
+        test.render(&mut t2);
+        t.extend_from_slice(&t2);
+        assert_eq!(c, t, "mid-voice flavour change glitched the sounding voice");
+
+        // The long flavour does take effect on the next trig.
+        test.on_trig(40.0, 1.0);
+        let mut n = vec![0.0_f32; 24_000];
+        test.render(&mut n);
+        assert!(rms(&n) > rms(&c) * 1.3, "next trig ignored the new flavour: {} vs {}", rms(&n), rms(&c));
+    }
+
+    /// The Driven family exposes its param-space metadata for the editor / value-text.
+    #[test]
+    fn family_params_are_queryable() {
+        let e = KickTone::with_default_patch(48_000.0);
+        let p = e.family_params();
+        assert_eq!(p.len(), DRIVEN_P);
+        assert_eq!(p[P_AMP_DECAY].name, "Decay");
     }
 }

@@ -9,6 +9,7 @@
 
 pub mod engine;
 pub mod engines;
+pub mod flavour;
 pub mod io;
 pub mod lane;
 pub mod patch;
@@ -20,6 +21,7 @@ pub mod transport;
 
 pub use engine::{Engine, LIMITER_LOOKAHEAD, N_TRACKS};
 pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch, make};
+pub use flavour::{Binding, Curve, Flavour, ParamMeta, flavour_macro_display, resolve};
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
