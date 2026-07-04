@@ -54,6 +54,10 @@ pub enum EngineCommand {
     },
     /// Set a track's delay-send amount (0..1).
     SetSend { track: u8, amount: f32 },
+    /// Mute / unmute a track (gates its mix contribution).
+    SetMute { track: u8, muted: bool },
+    /// Master output volume (linear gain, applied pre-limiter).
+    SetMasterVolume { value: f32 },
     /// Master delay feedback (0..~1.3; >1 self-oscillates).
     SetDelayFeedback { value: f32 },
     /// Master delay time as a tempo-synced subdivision in beats.

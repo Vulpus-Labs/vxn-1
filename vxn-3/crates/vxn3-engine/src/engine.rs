@@ -73,6 +73,8 @@ pub struct Engine {
     return_level: f32,
     /// Delay time as a tempo-synced subdivision in beats.
     delay_sync_beats: f64,
+    /// Master output volume (linear), applied to the mix before the limiter.
+    master_volume: f32,
     /// Pre-allocated send / wet scratch (avoids per-block alloc).
     send_l: Vec<f32>,
     send_r: Vec<f32>,
@@ -108,6 +110,7 @@ impl Engine {
             limiter: vxn3_dsp::Limiter::new(sample_rate, LIMITER_LOOKAHEAD as usize, LIMITER_CEILING),
             return_level: 0.35,
             delay_sync_beats: 0.75, // dotted-8th — a classic dub time
+            master_volume: 1.0,
             send_l: vec![0.0; max_block],
             send_r: vec![0.0; max_block],
             wet_l: vec![0.0; max_block],
@@ -242,8 +245,8 @@ impl Engine {
             &mut self.wet_r[..frames],
         );
         for f in 0..frames {
-            left[f] += self.wet_l[f] * self.return_level;
-            right[f] += self.wet_r[f] * self.return_level;
+            left[f] = (left[f] + self.wet_l[f] * self.return_level) * self.master_volume;
+            right[f] = (right[f] + self.wet_r[f] * self.return_level) * self.master_volume;
         }
         self.limiter.process(&mut left[..frames], &mut right[..frames]);
 
@@ -252,9 +255,13 @@ impl Engine {
         }
     }
 
-    /// Apply one UI edit command to the addressed track. Bounds-checked; an
-    /// out-of-range track is ignored. Allocation-free.
-    fn apply_command(&mut self, cmd: EngineCommand) {
+    /// Apply one edit command to the engine. Bounds-checked; an out-of-range
+    /// track is ignored. Allocation-free.
+    ///
+    /// Public so the CLAP shell can apply **host parameter automation** straight
+    /// to the engine on the audio thread (0171) — the UI [`crate::EditQueue`] is
+    /// strict SPSC and must keep a single producer, so host writes bypass it.
+    pub fn apply_command(&mut self, cmd: EngineCommand) {
         // Master-bus commands carry no track.
         match cmd {
             EngineCommand::SetDelayFeedback { value } => {
@@ -263,6 +270,10 @@ impl Engine {
             }
             EngineCommand::SetDelaySyncBeats { beats } => {
                 self.delay_sync_beats = beats.max(0.001) as f64;
+                return;
+            }
+            EngineCommand::SetMasterVolume { value } => {
+                self.master_volume = value.clamp(0.0, 4.0);
                 return;
             }
             EngineCommand::SetDelayReturn { value } => {
@@ -283,11 +294,13 @@ impl Engine {
             | EngineCommand::SetMacro { track, .. }
             | EngineCommand::SetLock { track, .. }
             | EngineCommand::ClearLock { track, .. }
-            | EngineCommand::SetSend { track, .. } => *track as usize,
+            | EngineCommand::SetSend { track, .. }
+            | EngineCommand::SetMute { track, .. } => *track as usize,
             // Master commands handled above.
             EngineCommand::SetDelayFeedback { .. }
             | EngineCommand::SetDelaySyncBeats { .. }
-            | EngineCommand::SetDelayReturn { .. } => return,
+            | EngineCommand::SetDelayReturn { .. }
+            | EngineCommand::SetMasterVolume { .. } => return,
         };
         let Some(track) = self.tracks.get_mut(t) else {
             return;
@@ -334,10 +347,12 @@ impl Engine {
             EngineCommand::SetSend { amount, .. } => {
                 track.set_base(LockParam::Send, amount.clamp(0.0, 1.0))
             }
+            EngineCommand::SetMute { muted, .. } => track.set_muted(muted),
             // Master commands were dispatched above.
             EngineCommand::SetDelayFeedback { .. }
             | EngineCommand::SetDelaySyncBeats { .. }
-            | EngineCommand::SetDelayReturn { .. } => {}
+            | EngineCommand::SetDelayReturn { .. }
+            | EngineCommand::SetMasterVolume { .. } => {}
         }
     }
 

@@ -25,6 +25,10 @@ pub struct Track {
     /// Last applied effective value per param, so knob re-cooks only fire on a
     /// real change. Seeded to NaN so the first block applies the base.
     applied: [f32; N_LOCK_PARAMS],
+    /// Mute gate: when set, the track renders but contributes nothing to the mix
+    /// (host-automatable mix param, 0171). Independent of `level` so unmuting
+    /// restores the prior gain.
+    muted: bool,
     /// Pre-allocated mono render scratch (sized at construction).
     mono: Vec<f32>,
 }
@@ -40,6 +44,7 @@ impl Track {
             // gain 1, pan 0, knobs at midpoint, send 0 (matches faceplate defaults).
             base: [1.0, 0.0, 0.5, 0.5, 0.5, 0.0],
             applied: [f32::NAN; N_LOCK_PARAMS],
+            muted: false,
             mono: vec![0.0; max_block],
         }
     }
@@ -47,6 +52,11 @@ impl Track {
     /// Set a lockable param's base value (from a UI command).
     pub fn set_base(&mut self, param: LockParam, value: f32) {
         self.base[param.index()] = value;
+    }
+
+    /// Mute / unmute the track (gates its mix contribution; see [`Track::pan_gains`]).
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
     }
 
     /// Resolve this block's effective params (`override ?? base`) and apply any
@@ -80,6 +90,9 @@ impl Track {
     /// Equal-power pan gains `(left, right)`, from the effective gain/pan.
     #[inline]
     pub fn pan_gains(&self) -> (f32, f32) {
+        if self.muted {
+            return (0.0, 0.0);
+        }
         let gain = self.applied[0];
         let angle = (self.applied[1].clamp(-1.0, 1.0) * 0.5 + 0.5) * std::f32::consts::FRAC_PI_2;
         (gain * angle.cos(), gain * angle.sin())

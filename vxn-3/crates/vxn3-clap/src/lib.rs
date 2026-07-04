@@ -17,9 +17,16 @@ use clack_extensions::audio_ports::{
 };
 use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
+use clack_extensions::params::{
+    ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams,
+    PluginMainThreadParams, PluginParams,
+};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::event_types::{TransportEvent, TransportFlags};
+use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
+use std::ffi::CStr;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -30,6 +37,9 @@ use vxn3_engine::{Engine, N_TRACKS, Transport};
 use vxn_core_clap::tempo_from_transport;
 
 pub mod gui;
+pub mod params;
+
+use params::{ParamCache, TOTAL_PARAMS};
 
 /// Lock a mutex by extracting the inner value rather than unwrapping — a panic
 /// under `panic = unwind` could poison it, but subsequent main-thread ticks
@@ -41,7 +51,7 @@ pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct VxnPlugin;
 
 impl Plugin for VxnPlugin {
-    type AudioProcessor<'a> = VxnAudioProcessor;
+    type AudioProcessor<'a> = VxnAudioProcessor<'a>;
     type Shared<'a> = VxnShared;
     type MainThread<'a> = VxnMainThread<'a>;
 
@@ -50,7 +60,8 @@ impl Plugin for VxnPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginGui>()
             .register::<PluginTimer>()
-            .register::<PluginLatency>();
+            .register::<PluginLatency>()
+            .register::<PluginParams>();
     }
 }
 
@@ -68,6 +79,7 @@ impl DefaultPluginFactory for VxnPlugin {
         Ok(VxnShared {
             io: EngineIo::new(),
             sample_rate: AtomicU32::new(48_000.0_f32.to_bits()),
+            params: ParamCache::new(),
         })
     }
 
@@ -96,6 +108,9 @@ impl DefaultPluginFactory for VxnPlugin {
 pub struct VxnShared {
     io: EngineIo,
     sample_rate: AtomicU32, // f32 bits
+    /// Fixed host-param value cache (0171): written as host automation lands on
+    /// the audio thread, read by the main thread for `get_value`.
+    params: ParamCache,
 }
 
 impl VxnShared {
@@ -206,13 +221,25 @@ fn read_transport(t: Option<&TransportEvent>) -> Transport {
     }
 }
 
-pub struct VxnAudioProcessor {
+/// Apply one host param write to the engine + the shared value cache. Shared by
+/// the `process()` event loop and the audio-thread param `flush` (0171).
+fn apply_host_param(engine: &mut Engine, shared: &VxnShared, id: usize, value: f32) {
+    if id < TOTAL_PARAMS {
+        shared.params.set(id, value);
+        if let Some(cmd) = params::to_command(id, value) {
+            engine.apply_command(cmd);
+        }
+    }
+}
+
+pub struct VxnAudioProcessor<'a> {
     engine: Engine,
+    shared: &'a VxnShared,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
 }
 
-impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor {
+impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
     fn activate(
         _host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut VxnMainThread<'a>,
@@ -223,8 +250,18 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         let sr = audio_config.sample_rate as f32;
         // Publish the rate so the main thread builds swapped-in engines at it.
         shared.sample_rate.store(sr.to_bits(), Ordering::Relaxed);
+        let mut engine = Engine::with_io(sr, max, shared.io.clone());
+        // Seed the fresh engine from the host-param cache so automation set while
+        // inactive — or a just-restored project state (0174) — is in effect from
+        // the first block (0171).
+        for id in 0..TOTAL_PARAMS {
+            if let Some(cmd) = params::to_command(id, shared.params.get(id)) {
+                engine.apply_command(cmd);
+            }
+        }
         Ok(Self {
-            engine: Engine::with_io(sr, max, shared.io.clone()),
+            engine,
+            shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
         })
@@ -234,9 +271,23 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         &mut self,
         process: Process,
         mut audio: Audio,
-        _events: Events,
+        events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         self.engine.set_transport(read_transport(process.transport));
+
+        // Fold host parameter automation into the engine (block-granular) + the
+        // shared cache, before the engine drains the block. Applied straight to
+        // the engine — the UI edit queue is strict SPSC, so host writes must not
+        // become a second producer (0171).
+        for batch in events.input.batch() {
+            for event in batch.events() {
+                if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
+                    if let Some(pid) = e.param_id() {
+                        apply_host_param(&mut self.engine, self.shared, pid.get() as usize, e.value() as f32);
+                    }
+                }
+            }
+        }
 
         let mut output_port = audio
             .output_port(0)
@@ -273,6 +324,91 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
     fn reset(&mut self) {
         self.engine.reset();
+    }
+}
+
+// ── Parameters (fixed host table, 0171) ──────────────────────────────────────
+
+impl PluginMainThreadParams for VxnMainThread<'_> {
+    fn count(&mut self) -> u32 {
+        TOTAL_PARAMS as u32
+    }
+
+    fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
+        let id = param_index as usize;
+        let Some(slot) = params::decode(id) else {
+            return;
+        };
+        let (min, max, default, stepped) = params::range(slot);
+        let mut flags = ParamInfoFlags::IS_AUTOMATABLE;
+        if stepped {
+            flags |= ParamInfoFlags::IS_STEPPED;
+        }
+        let mut name = String::new();
+        params::write_name(slot, &mut name);
+        let mut module = String::new();
+        params::write_module(slot, &mut module);
+        info.set(&ParamInfo {
+            id: ClapId::new(id as u32),
+            flags,
+            cookie: Default::default(),
+            name: name.as_bytes(),
+            module: module.as_bytes(),
+            min_value: min as f64,
+            max_value: max as f64,
+            default_value: default as f64,
+        });
+    }
+
+    fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
+        let id = param_id.get() as usize;
+        (id < TOTAL_PARAMS).then(|| self.shared.params.get(id) as f64)
+    }
+
+    fn value_to_text(
+        &mut self,
+        param_id: ClapId,
+        value: f64,
+        writer: &mut ParamDisplayWriter,
+    ) -> std::fmt::Result {
+        let Some(slot) = params::decode(param_id.get() as usize) else {
+            return Err(std::fmt::Error);
+        };
+        let mut s = String::new();
+        params::write_value_text(slot, value as f32, &mut s);
+        writer.write_str(&s)
+    }
+
+    fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
+        // Slot-aware inverse of `value_to_text` so unit transforms round-trip.
+        let slot = params::decode(param_id.get() as usize)?;
+        let s = text.to_str().ok()?;
+        params::parse_value(slot, s).map(|v| v as f64)
+    }
+
+    fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
+        // Main-thread / inactive flush: no engine here, so fold host writes into
+        // the shared cache. `activate` replays the cache into the fresh engine.
+        for event in input {
+            if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
+                if let Some(pid) = e.param_id() {
+                    self.shared.params.set(pid.get() as usize, e.value() as f32);
+                }
+            }
+        }
+    }
+}
+
+impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
+    fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
+        // Active flush (no render): apply straight to the engine + cache.
+        for event in input {
+            if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
+                if let Some(pid) = e.param_id() {
+                    apply_host_param(&mut self.engine, self.shared, pid.get() as usize, e.value() as f32);
+                }
+            }
+        }
     }
 }
 
@@ -333,7 +469,7 @@ mod tests {
         }
     }
 
-    use vxn3_engine::Engine;
+    use vxn3_engine::{Engine, EngineCommand};
 
     #[test]
     fn silent_render_is_alloc_free_and_silent() {
@@ -375,5 +511,45 @@ mod tests {
         };
         engine.set_transport(clock);
         assert_eq!(engine.transport(), clock);
+    }
+
+    fn rms(b: &[f32]) -> f32 {
+        (b.iter().map(|&x| x * x).sum::<f32>() / b.len().max(1) as f32).sqrt()
+    }
+
+    /// A track programmed to fire step 0 at beat 0, transport playing — one block
+    /// renders an audible hit.
+    fn primed_engine() -> Engine {
+        let mut e = Engine::new(48_000.0, 512);
+        e.apply_command(EngineCommand::SetStep { track: 0, step: 0, note: 36.0, velocity: 1.0 });
+        e.set_transport(Transport { playing: true, tempo_bpm: 120.0, song_pos_beats: Some(0.0) });
+        e
+    }
+
+    #[test]
+    fn host_mute_reaches_engine() {
+        // A host write to the track-0 mute param (via the fixed-table mapping)
+        // silences the track; without it the same block is audible.
+        let mute_id = params::N_MASTER + 2;
+        let (mut l, mut r) = (vec![0.0_f32; 512], vec![0.0_f32; 512]);
+
+        let mut loud = primed_engine();
+        loud.process_block(&mut l, &mut r);
+        assert!(rms(&l) > 1e-3, "unmuted track should sound, rms={}", rms(&l));
+
+        let mut muted = primed_engine();
+        muted.apply_command(params::to_command(mute_id, 1.0).unwrap());
+        muted.process_block(&mut l, &mut r);
+        assert!(rms(&l) < 1e-6, "host mute should silence, rms={}", rms(&l));
+    }
+
+    #[test]
+    fn host_master_volume_reaches_engine() {
+        // Master volume 0 (id 0) silences the whole mix.
+        let (mut l, mut r) = (vec![0.0_f32; 512], vec![0.0_f32; 512]);
+        let mut e = primed_engine();
+        e.apply_command(params::to_command(0, 0.0).unwrap());
+        e.process_block(&mut l, &mut r);
+        assert!(rms(&l) < 1e-6, "master volume 0 should silence, rms={}", rms(&l));
     }
 }
