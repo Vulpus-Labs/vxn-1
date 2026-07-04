@@ -21,25 +21,29 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams,
     PluginMainThreadParams, PluginParams,
 };
+use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::Pckn;
 use clack_plugin::events::event_types::{ParamValueEvent, TransportEvent, TransportFlags};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
+use clack_plugin::stream::{InputStream, OutputStream};
 use clack_plugin::utils::Cookie;
 use std::ffi::CStr;
 use std::fmt::Write as _;
+use std::io::{Read as _, Write as _IoWrite};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn_core_app::{Controller, CorpusHandle, ViewEvent};
 use vxn3_app::{NullStore, Vxn3Model, Vxn3ViewCustom, tick_vxn3};
 use vxn3_engine::io::{EngineIo, PlayheadState};
-use vxn3_engine::{Engine, LockParam, N_TRACKS, Transport};
+use vxn3_engine::{Engine, LockParam, N_TRACKS, Transport, make};
 use vxn_core_clap::tempo_from_transport;
 
 pub mod gui;
 pub mod params;
+pub mod state;
 
 use params::{ParamCache, TOTAL_PARAMS};
 
@@ -63,7 +67,8 @@ impl Plugin for VxnPlugin {
             .register::<PluginGui>()
             .register::<PluginTimer>()
             .register::<PluginLatency>()
-            .register::<PluginParams>();
+            .register::<PluginParams>()
+            .register::<PluginState>();
     }
 }
 
@@ -490,6 +495,38 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
     }
 }
 
+// ── State save / restore (0174) ──────────────────────────────────────────────
+
+impl PluginStateImpl for VxnMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let blob = state::save(&self.shared.params, &self.io.kinds);
+        output
+            .write_all(&blob)
+            .map_err(|_| PluginError::Message("state save failed"))
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let mut blob = Vec::new();
+        input
+            .read_to_end(&mut blob)
+            .map_err(|_| PluginError::Message("state read failed"))?;
+        state::load(&blob, &self.shared.params, &self.io.kinds)
+            .map_err(|_| PluginError::Message("state parse failed"))?;
+        // Rebuild each track's engine from the restored kind. Handles a load onto
+        // an already-active plugin; an inactive load is also reflected by
+        // `activate` building engines from the same kind mirror. Macro/lock
+        // values re-apply after the swap installs (`invalidate_applied`), and the
+        // restored cache re-applies on `activate`.
+        let sr = self.shared.sample_rate();
+        for t in 0..N_TRACKS {
+            if let Some(swap) = self.io.swaps.get(t) {
+                let _ = swap.send(make(self.io.kinds.get(t), sr));
+            }
+        }
+        Ok(())
+    }
+}
+
 clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 
 #[cfg(test)]
@@ -547,7 +584,8 @@ mod tests {
         }
     }
 
-    use vxn3_engine::{Engine, EngineCommand};
+    use vxn3_engine::track_engine::EngineKind;
+    use vxn3_engine::{Engine, EngineCommand, EngineIo};
 
     #[test]
     fn silent_render_is_alloc_free_and_silent() {
@@ -676,6 +714,38 @@ mod tests {
         });
         assert_eq!(allocs, 0, "param echo allocated on the audio path");
         assert_eq!(n, 1, "changed once, echoed once");
+    }
+
+    #[test]
+    fn restored_kind_mirror_rebuilds_engines() {
+        // The state path restores each track's kind into the shared mirror; a
+        // (re)activated engine builds from it — so a reloaded project comes up
+        // on the saved engines, not all-KickTone (0174).
+        let io = EngineIo::new();
+        io.kinds.set(3, EngineKind::Noise);
+        io.kinds.set(5, EngineKind::Metal);
+        let engine = Engine::with_io(48_000.0, 512, io);
+        assert_eq!(engine.track_kind(3), Some(EngineKind::Noise));
+        assert_eq!(engine.track_kind(5), Some(EngineKind::Metal));
+        assert_eq!(engine.track_kind(0), Some(EngineKind::KickTone)); // default
+    }
+
+    #[test]
+    fn state_round_trips_through_cache_and_kinds() {
+        // Full blob round-trip at the state-module boundary: a saved cache + kind
+        // set reloads identically (mirrors clap-validator state-reproducibility).
+        let cache = ParamCache::new();
+        let kinds = vxn3_engine::TrackKinds::new();
+        cache.set(0, 0.2);
+        kinds.set(4, EngineKind::Metal);
+        let blob = state::save(&cache, &kinds);
+
+        let cache2 = ParamCache::new();
+        let kinds2 = vxn3_engine::TrackKinds::new();
+        state::load(&blob, &cache2, &kinds2).unwrap();
+        assert_eq!(cache2.get(0), 0.2);
+        assert_eq!(kinds2.get(4), EngineKind::Metal);
+        assert_eq!(blob, state::save(&cache2, &kinds2), "resave identical");
     }
 
     #[test]

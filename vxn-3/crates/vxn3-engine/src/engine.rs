@@ -97,7 +97,15 @@ impl Engine {
     pub fn with_io(sample_rate: f32, block_size: usize, io: EngineIo) -> Self {
         let max_block = block_size.max(1);
         let tracks = (0..N_TRACKS)
-            .map(|t| Track::new(sample_rate, max_block, io.swaps[t].clone()))
+            .map(|t| {
+                // Build each track's engine from the shared kind mirror so a
+                // freshly (re)activated plugin reflects a restored project's
+                // engine selection (0174). Fresh instances default to KickTone
+                // (mirror seeded to 0), preserving prior behaviour.
+                let mut track = Track::new(sample_rate, max_block, io.swaps[t].clone());
+                track.engine = crate::engines::make(io.kinds.get(t), sample_rate);
+                track
+            })
             .collect();
         let lanes = (0..N_TRACKS).map(LaneState::new).collect();
         Self {
@@ -188,6 +196,11 @@ impl Engine {
             // rate on the main thread; re-cook it for ours on install.
             if t.poll_swap() {
                 t.engine.set_sample_rate(sr);
+                // A swapped-in engine starts at its default patch — force the
+                // next `apply_effective` to re-push every macro/lock value so a
+                // restored (0174) or re-selected engine picks up the current
+                // settings instead of staying at defaults.
+                t.invalidate_applied();
             }
         }
 
@@ -375,6 +388,12 @@ impl Engine {
     /// Whether a track is muted (0.0/1.0 as a host mix param).
     pub fn track_muted(&self, track: usize) -> bool {
         self.tracks.get(track).is_some_and(|t| t.is_muted())
+    }
+
+    /// A track's active engine kind, or `None` if out of range (introspection /
+    /// state round-trip assertions).
+    pub fn track_kind(&self, track: usize) -> Option<crate::EngineKind> {
+        self.tracks.get(track).map(|t| t.engine.kind())
     }
 
     /// Master output volume (linear).

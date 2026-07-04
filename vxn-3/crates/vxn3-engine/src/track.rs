@@ -72,6 +72,13 @@ impl Track {
         self.muted
     }
 
+    /// Forget the last-applied params so the next [`Track::apply_effective`]
+    /// re-pushes every value to the engine — used after an engine swap, whose
+    /// fresh engine starts at its default patch (0174).
+    pub fn invalidate_applied(&mut self) {
+        self.applied = [f32::NAN; N_LOCK_PARAMS];
+    }
+
     /// Resolve this block's effective params (`override ?? base`) and apply any
     /// that changed: gain/pan feed [`Track::pan_gains`]; knob changes re-cook the
     /// engine. Called once per block before render. Allocation-free.
