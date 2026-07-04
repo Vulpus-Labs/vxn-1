@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::N_TRACKS;
 use crate::sequencer::{Lock, LockParam, Retrig};
+use crate::track_engine::EngineKind;
 
 /// A data-only edit from the UI to the engine. `Copy` so the queue is a plain
 /// ring with no heap ownership transfer (engine *swaps* go via `EngineSwap`).
@@ -165,12 +166,43 @@ impl PlayheadState {
     }
 }
 
+/// Main-thread mirror of each track's active [`EngineKind`]. The app writes it
+/// when it issues an engine swap (`SetEngine`); the CLAP shell reads it so
+/// `value_to_text` can render a macro slot engine-aware (0172) without touching
+/// the live engine on the audio thread. Seeded to the default engine a fresh
+/// track loads (`KickTone`).
+pub struct TrackKinds {
+    kinds: [AtomicU32; N_TRACKS],
+}
+
+impl TrackKinds {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            kinds: [const { AtomicU32::new(0) }; N_TRACKS], // 0 = KickTone
+        })
+    }
+
+    /// Record a track's active engine kind (app main thread, on swap).
+    pub fn set(&self, track: usize, kind: EngineKind) {
+        if let Some(a) = self.kinds.get(track) {
+            a.store(kind.as_u8() as u32, Ordering::Relaxed);
+        }
+    }
+
+    /// Read a track's active engine kind (CLAP main thread, for value-text).
+    pub fn get(&self, track: usize) -> EngineKind {
+        EngineKind::from_u8(self.kinds.get(track).map_or(0, |a| a.load(Ordering::Relaxed) as u8))
+    }
+}
+
 /// The shared main↔audio I/O handles, created once and cloned to both threads.
 #[derive(Clone)]
 pub struct EngineIo {
     pub edits: Arc<EditQueue>,
     pub playhead: Arc<PlayheadState>,
     pub swaps: Vec<Arc<crate::swap::EngineSwap>>,
+    /// Per-track active engine kind (main-thread mirror, for value-text; 0172).
+    pub kinds: Arc<TrackKinds>,
 }
 
 impl EngineIo {
@@ -179,6 +211,7 @@ impl EngineIo {
             edits: EditQueue::new(),
             playhead: PlayheadState::new(),
             swaps: (0..N_TRACKS).map(|_| crate::swap::EngineSwap::new()).collect(),
+            kinds: TrackKinds::new(),
         }
     }
 }

@@ -83,31 +83,41 @@ pub struct MacroReadout {
     pub unit: MacroUnit,
 }
 
-/// Map a normalised (`0..1`) macro slot value to its engine-specific physical
-/// value + label. `None` if the engine doesn't map that slot. **The single
-/// source of truth** shared by each engine's `set_macro` (which assigns
-/// `value` to the matching patch field) and [`macro_display`] (which formats it),
-/// so a slot's readout can never drift from what it sets.
-pub fn macro_map(kind: EngineKind, slot: usize, norm: f32) -> Option<MacroReadout> {
+/// Linear mapping of a `(kind, slot)` macro: `physical = base + span * norm`,
+/// plus its label + unit. The **single source of truth** for slot semantics —
+/// [`macro_map`], [`macro_display`], and [`macro_parse`] all read it, so the
+/// forward (norm→physical→text) and inverse (text→norm) paths can never drift.
+/// `None` if the engine doesn't map that slot.
+fn macro_coeffs(kind: EngineKind, slot: usize) -> Option<(f32, f32, &'static str, MacroUnit)> {
     use EngineKind::*;
     use MacroUnit::*;
-    let v = norm.clamp(0.0, 1.0);
-    let (value, label, unit) = match (kind, slot) {
+    Some(match (kind, slot) {
         // Kick/Tone: body length, "donk" sweep length, pitch-sweep depth.
-        (KickTone, 0) => (0.05 + v * 1.45, "Decay", Seconds), // 50 ms .. 1.5 s
-        (KickTone, 1) => (0.005 + v * 0.195, "Donk", Seconds), // 5 .. 200 ms
-        (KickTone, 2) => (v * 48.0, "Depth", Semitones),      // 0 .. 4 oct
+        (KickTone, 0) => (0.05, 1.45, "Decay", Seconds), // 50 ms .. 1.5 s
+        (KickTone, 1) => (0.005, 0.195, "Donk", Seconds), // 5 .. 200 ms
+        (KickTone, 2) => (0.0, 48.0, "Depth", Semitones), // 0 .. 4 oct
         // Metal: open-ring length, excitation energy, body pitch.
-        (Metal, 0) => (0.1 + v * 2.9, "Ring", Seconds),   // 100 ms .. 3 s
-        (Metal, 1) => (0.1 + v * 0.9, "Excite", Percent), // 10 .. 100 %
-        (Metal, 2) => (400.0 + v * 2_600.0, "Body", Hertz), // 400 .. 3000 Hz
+        (Metal, 0) => (0.1, 2.9, "Ring", Seconds),   // 100 ms .. 3 s
+        (Metal, 1) => (0.1, 0.9, "Excite", Percent), // 10 .. 100 %
+        (Metal, 2) => (400.0, 2_600.0, "Body", Hertz), // 400 .. 3000 Hz
         // Noise: burst length, noise↔body mix, output brightness.
-        (Noise, 0) => (0.02 + v * 0.48, "Decay", Seconds), // 20 ms .. 0.5 s
-        (Noise, 1) => (v, "Mix", Percent),                 // 0 .. 100 %
-        (Noise, 2) => (400.0 + v * 7_600.0, "Bright", Hertz), // 400 .. 8000 Hz
+        (Noise, 0) => (0.02, 0.48, "Decay", Seconds), // 20 ms .. 0.5 s
+        (Noise, 1) => (0.0, 1.0, "Mix", Percent),     // 0 .. 100 %
+        (Noise, 2) => (400.0, 7_600.0, "Bright", Hertz), // 400 .. 8000 Hz
         _ => return None,
-    };
-    Some(MacroReadout { value, label, unit })
+    })
+}
+
+/// Map a normalised (`0..1`) macro slot value to its engine-specific physical
+/// value + label. `None` if the engine doesn't map that slot. Each engine's
+/// `set_macro` assigns `value` to the matching patch field.
+pub fn macro_map(kind: EngineKind, slot: usize, norm: f32) -> Option<MacroReadout> {
+    let (base, span, label, unit) = macro_coeffs(kind, slot)?;
+    Some(MacroReadout {
+        value: base + span * norm.clamp(0.0, 1.0),
+        label,
+        unit,
+    })
 }
 
 /// Format macro `slot`'s value engine-aware (e.g. "Decay 0.42 s", "Body 1.80 kHz",
@@ -135,12 +145,62 @@ pub fn macro_display(
     }
 }
 
+/// Inverse of [`macro_display`]: parse an engine-aware readout back to a
+/// normalised (`0..1`) slot value, for CLAP `text_to_value` round-tripping
+/// (`value → text → value → text` must be stable). Reads the first numeric token
+/// and rescales it by the slot's unit (ms/kHz/%), then inverts the linear map.
+/// `None` for an unmapped slot or unparsable text.
+pub fn macro_parse(kind: EngineKind, slot: usize, text: &str) -> Option<f32> {
+    let (base, span, _, unit) = macro_coeffs(kind, slot)?;
+    if span == 0.0 {
+        return None;
+    }
+    // First numeric run (the label carries no digits, so this is the value).
+    let start = text.find(|c: char| c.is_ascii_digit() || c == '-' || c == '.')?;
+    let num: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    let n: f32 = num.parse().ok()?;
+    let physical = match unit {
+        MacroUnit::Seconds if text.contains("ms") => n * 1e-3,
+        MacroUnit::Seconds => n,
+        MacroUnit::Hertz if text.contains("kHz") => n * 1e3,
+        MacroUnit::Hertz => n,
+        MacroUnit::Percent => n / 100.0,
+        MacroUnit::Semitones => n,
+    };
+    Some(((physical - base) / span).clamp(0.0, 1.0))
+}
+
 /// The closed engine roster (ADR 0001 §6). `Metal` / `Noise` land in 0049.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EngineKind {
     KickTone,
     Metal,
     Noise,
+}
+
+impl EngineKind {
+    /// Compact tag for the shared per-track kind mirror ([`crate::io`]) and state
+    /// blobs (0174). Stable — append new engines, never renumber.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            EngineKind::KickTone => 0,
+            EngineKind::Metal => 1,
+            EngineKind::Noise => 2,
+        }
+    }
+
+    /// Inverse of [`EngineKind::as_u8`]; unknown tags fall back to `KickTone`
+    /// (the default engine a fresh track loads).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => EngineKind::Metal,
+            2 => EngineKind::Noise,
+            _ => EngineKind::KickTone,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +248,22 @@ mod tests {
         assert_eq!(show(EngineKind::KickTone, 1, 0.0), "Donk 5 ms"); // sub-second → ms
         assert_eq!(show(EngineKind::Noise, 1, 1.0), "Mix 100%");
         assert_eq!(show(EngineKind::Metal, 2, 1.0), "Body 3.00 kHz"); // ≥1k → kHz
+    }
+
+    #[test]
+    fn display_parse_round_trips() {
+        // value → text → value → text must be stable across every engine/slot
+        // and unit (ms/s/st/Hz/kHz/%) — CLAP text_to_value round-tripping (0172).
+        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise] {
+            for slot in 0..MACRO_SLOTS {
+                for &v in &[0.0_f32, 0.33, 0.5, 0.78, 1.0] {
+                    let t1 = show(kind, slot, v);
+                    let v2 = macro_parse(kind, slot, &t1)
+                        .unwrap_or_else(|| panic!("parse {kind:?} slot {slot} '{t1}'"));
+                    let t2 = show(kind, slot, v2);
+                    assert_eq!(t1, t2, "{kind:?} slot {slot} v={v} unstable: '{t1}' vs '{t2}'");
+                }
+            }
+        }
     }
 }

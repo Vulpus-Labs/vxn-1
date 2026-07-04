@@ -19,7 +19,7 @@ pub mod transport;
 
 pub use engine::{Engine, LIMITER_LOOKAHEAD, N_TRACKS};
 pub use engines::{KickTone, KickTonePatch, Metal, MetalPatch, Noise, NoisePatch, make};
-pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState};
+pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
     EIGHTH, EIGHTH_TRIPLET, Lock, LockParam, MAX_STEPS, N_LOCK_PARAMS, Pattern, Retrig,
@@ -29,5 +29,6 @@ pub use swap::EngineSwap;
 pub use track::Track;
 pub use track_engine::{
     EngineKind, LANES, MACRO_SLOTS, MacroReadout, MacroUnit, TrackEngine, macro_display, macro_map,
+    macro_parse,
 };
 pub use transport::Transport;

@@ -135,6 +135,8 @@ pub fn tick_vxn3(controller: &mut Controller<Vxn3Model>, io: &EngineIo, sample_r
             Vxn3UiCustom::SetEngine { track, kind } => {
                 if let Some(swap) = io.swaps.get(track as usize) {
                     let _ = swap.send(make(kind, sample_rate));
+                    // Mirror the selection so the host's value-text reads it (0172).
+                    io.kinds.set(track as usize, kind);
                 }
             }
         }
@@ -191,5 +193,8 @@ mod tests {
         let mut active: Box<dyn TrackEngine> = make(EngineKind::KickTone, 48_000.0);
         assert!(io.swaps[2].try_install(&mut active));
         assert_eq!(active.kind(), EngineKind::Noise);
+        // …and the main-thread kind mirror reflects the selection (0172).
+        assert_eq!(io.kinds.get(2), EngineKind::Noise);
+        assert_eq!(io.kinds.get(0), EngineKind::KickTone); // untouched default
     }
 }

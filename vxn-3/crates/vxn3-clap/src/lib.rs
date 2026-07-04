@@ -374,15 +374,27 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         let Some(slot) = params::decode(param_id.get() as usize) else {
             return Err(std::fmt::Error);
         };
+        // A macro slot renders engine-aware (ADR 0003 §2): dispatch to the pure
+        // `macro_display` keyed by the track's active engine (0172). Mix / master
+        // params render generically.
+        if let params::Slot::Macro(t, m) = slot {
+            let kind = self.io.kinds.get(t as usize);
+            return vxn3_engine::macro_display(kind, m as usize, value as f32, writer);
+        }
         let mut s = String::new();
         params::write_value_text(slot, value as f32, &mut s);
         writer.write_str(&s)
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
-        // Slot-aware inverse of `value_to_text` so unit transforms round-trip.
+        // Slot-aware inverse of `value_to_text` so the transforms round-trip.
         let slot = params::decode(param_id.get() as usize)?;
         let s = text.to_str().ok()?;
+        // Macros invert engine-aware (mirror of the value_to_text branch, 0172).
+        if let params::Slot::Macro(t, m) = slot {
+            let kind = self.io.kinds.get(t as usize);
+            return vxn3_engine::macro_parse(kind, m as usize, s).map(|v| v as f64);
+        }
         params::parse_value(slot, s).map(|v| v as f64)
     }
 
