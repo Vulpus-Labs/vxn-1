@@ -59,6 +59,19 @@ impl Track {
         self.muted = muted;
     }
 
+    /// This block's effective (post-p-lock) value for a lockable param — the
+    /// resolved value the mix/engine actually used. Read by the host-param echo
+    /// (0173). Seeded to the base until the first `apply_effective`.
+    pub fn effective(&self, param: LockParam) -> f32 {
+        let a = self.applied[param.index()];
+        if a.is_nan() { self.base[param.index()] } else { a }
+    }
+
+    /// Whether the track is currently muted.
+    pub fn is_muted(&self) -> bool {
+        self.muted
+    }
+
     /// Resolve this block's effective params (`override ?? base`) and apply any
     /// that changed: gain/pan feed [`Track::pan_gains`]; knob changes re-cook the
     /// engine. Called once per block before render. Allocation-free.

@@ -22,9 +22,11 @@ use clack_extensions::params::{
     PluginMainThreadParams, PluginParams,
 };
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
-use clack_plugin::events::event_types::{TransportEvent, TransportFlags};
+use clack_plugin::events::Pckn;
+use clack_plugin::events::event_types::{ParamValueEvent, TransportEvent, TransportFlags};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
+use clack_plugin::utils::Cookie;
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -33,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use vxn_core_app::{Controller, CorpusHandle, ViewEvent};
 use vxn3_app::{NullStore, Vxn3Model, Vxn3ViewCustom, tick_vxn3};
 use vxn3_engine::io::{EngineIo, PlayheadState};
-use vxn3_engine::{Engine, N_TRACKS, Transport};
+use vxn3_engine::{Engine, LockParam, N_TRACKS, Transport};
 use vxn_core_clap::tempo_from_transport;
 
 pub mod gui;
@@ -232,6 +234,55 @@ fn apply_host_param(engine: &mut Engine, shared: &VxnShared, id: usize, value: f
     }
 }
 
+/// The engine's current *effective* value for a host param slot — the resolved
+/// value the mix used this block (base, or a p-lock override for lockable lanes).
+/// Read by the 0173 echo pump.
+fn effective_value(engine: &Engine, slot: params::Slot) -> f32 {
+    use params::Slot;
+    match slot {
+        Slot::MasterVolume => engine.master_volume(),
+        Slot::DelayFeedback => engine.delay_feedback(),
+        Slot::DelayTime => engine.delay_time_beats(),
+        Slot::DelayReturn => engine.delay_return(),
+        Slot::Level(t) => engine.track_effective(t as usize, LockParam::Gain),
+        Slot::Pan(t) => engine.track_effective(t as usize, LockParam::Pan),
+        Slot::Send(t) => engine.track_effective(t as usize, LockParam::Send),
+        Slot::Mute(t) => {
+            if engine.track_muted(t as usize) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Slot::Macro(t, m) => {
+            let p = match m {
+                0 => LockParam::Decay,
+                1 => LockParam::Tone,
+                _ => LockParam::Pitch,
+            };
+            engine.track_effective(t as usize, p)
+        }
+    }
+}
+
+/// Diff every host-facing param's current effective value against the cache;
+/// for each that changed, update the cache and call `emit(id, value)`. The core
+/// of the 0173 echo pump — allocation-free, so `process` can push a
+/// `ParamValueEvent` per change and tests can record them. Host writes pre-set
+/// the cache, so an unchanged value never re-echoes (no feedback loop).
+fn drain_param_echo(engine: &Engine, cache: &ParamCache, mut emit: impl FnMut(usize, f32)) {
+    for id in 0..TOTAL_PARAMS {
+        let Some(slot) = params::decode(id) else {
+            continue;
+        };
+        let eff = effective_value(engine, slot);
+        if eff != cache.get(id) {
+            cache.set(id, eff);
+            emit(id, eff);
+        }
+    }
+}
+
 pub struct VxnAudioProcessor<'a> {
     engine: Engine,
     shared: &'a VxnShared,
@@ -318,6 +369,21 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
                 ch[..n].copy_from_slice(&self.scratch_r[..n]);
             }
         }
+
+        // Echo internally-originated param changes (faceplate edits + p-lock
+        // resolved values) back to the host so its automation lanes / generic UI
+        // track them (0173). Host writes above pre-set the cache, so an unchanged
+        // effective value never re-echoes — no feedback loop. Allocation-free.
+        let out_events = events.output;
+        drain_param_echo(&self.engine, &self.shared.params, |id, eff| {
+            let _ = out_events.try_push(ParamValueEvent::new(
+                0,
+                ClapId::new(id as u32),
+                Pckn::match_all(),
+                eff as f64,
+                Cookie::empty(),
+            ));
+        });
 
         Ok(ProcessStatus::Continue)
     }
@@ -563,5 +629,68 @@ mod tests {
         e.apply_command(params::to_command(0, 0.0).unwrap());
         e.process_block(&mut l, &mut r);
         assert!(rms(&l) < 1e-6, "master volume 0 should silence, rms={}", rms(&l));
+    }
+
+    fn collect_echo(engine: &Engine, cache: &ParamCache) -> Vec<(usize, f32)> {
+        let mut out = Vec::new();
+        drain_param_echo(engine, cache, |id, v| out.push((id, v)));
+        out
+    }
+
+    #[test]
+    fn echo_is_silent_when_nothing_changed() {
+        // Fresh engine + default-seeded cache agree → no spurious echo (0173).
+        let engine = Engine::new(48_000.0, 512);
+        let cache = ParamCache::new();
+        assert!(collect_echo(&engine, &cache).is_empty());
+    }
+
+    #[test]
+    fn echo_reports_internal_edit_once() {
+        // A faceplate edit (applied straight to the engine here) is echoed to the
+        // host exactly once; a second drain is silent — the cache absorbs it, so
+        // there is no feedback loop.
+        let mut engine = Engine::new(48_000.0, 512);
+        let cache = ParamCache::new();
+        engine.apply_command(EngineCommand::SetGain { track: 1, gain: 0.3 });
+
+        let level_id = params::N_MASTER + params::PER_TRACK; // track 1, level
+        let first = collect_echo(&engine, &cache);
+        assert_eq!(first, vec![(level_id, 0.3)], "one echo for the edited param");
+        assert_eq!(cache.get(level_id), 0.3, "cache absorbed the value");
+        assert!(collect_echo(&engine, &cache).is_empty(), "no re-echo (no feedback)");
+    }
+
+    #[test]
+    fn echo_drain_is_alloc_free() {
+        // The echo pass runs every block on the audio thread — it must not
+        // allocate (0173). Emit into a non-allocating counter.
+        let mut engine = Engine::new(48_000.0, 512);
+        let cache = ParamCache::new();
+        engine.apply_command(EngineCommand::SetGain { track: 2, gain: 0.7 });
+        let mut n = 0usize;
+        let allocs = alloc_trap::count_allocs(|| {
+            for _ in 0..100 {
+                drain_param_echo(&engine, &cache, |_, _| n += 1);
+            }
+        });
+        assert_eq!(allocs, 0, "param echo allocated on the audio path");
+        assert_eq!(n, 1, "changed once, echoed once");
+    }
+
+    #[test]
+    fn echo_skips_host_write_that_preset_cache() {
+        // The host-write path (0171) sets the cache before the engine renders, so
+        // the matching effective value is not echoed back — the no-feedback rule.
+        let mut engine = Engine::new(48_000.0, 512);
+        let cache = ParamCache::new();
+        let level_id = params::N_MASTER; // track 0 level
+        // Emulate apply_host_param: cache first, then engine.
+        cache.set(level_id, 0.6);
+        engine.apply_command(params::to_command(level_id, 0.6).unwrap());
+        assert!(
+            collect_echo(&engine, &cache).is_empty(),
+            "host write should not echo back to the host"
+        );
     }
 }

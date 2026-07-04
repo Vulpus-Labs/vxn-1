@@ -75,6 +75,9 @@ pub struct Engine {
     delay_sync_beats: f64,
     /// Master output volume (linear), applied to the mix before the limiter.
     master_volume: f32,
+    /// Cached delay feedback (the `Delay` doesn't expose a getter) — mirrored so
+    /// the host-param echo (0173) can report its effective value.
+    delay_feedback: f32,
     /// Pre-allocated send / wet scratch (avoids per-block alloc).
     send_l: Vec<f32>,
     send_r: Vec<f32>,
@@ -111,6 +114,7 @@ impl Engine {
             return_level: 0.35,
             delay_sync_beats: 0.75, // dotted-8th — a classic dub time
             master_volume: 1.0,
+            delay_feedback: 0.5,
             send_l: vec![0.0; max_block],
             send_r: vec![0.0; max_block],
             wet_l: vec![0.0; max_block],
@@ -266,6 +270,7 @@ impl Engine {
         match cmd {
             EngineCommand::SetDelayFeedback { value } => {
                 self.delay.set_feedback(value);
+                self.delay_feedback = value;
                 return;
             }
             EngineCommand::SetDelaySyncBeats { beats } => {
@@ -354,6 +359,42 @@ impl Engine {
             | EngineCommand::SetDelayReturn { .. }
             | EngineCommand::SetMasterVolume { .. } => {}
         }
+    }
+
+    // ── Effective host-param readback (for the 0173 echo pump) ───────────────
+    // These report the *resolved* value the mix currently uses (base value, or a
+    // p-lock override this block for the lockable lanes), so faceplate edits and
+    // p-locks can be echoed back to the host.
+
+    /// A track's effective (post-p-lock) lockable-param value, or 0.0 if the
+    /// track is out of range.
+    pub fn track_effective(&self, track: usize, param: LockParam) -> f32 {
+        self.tracks.get(track).map_or(0.0, |t| t.effective(param))
+    }
+
+    /// Whether a track is muted (0.0/1.0 as a host mix param).
+    pub fn track_muted(&self, track: usize) -> bool {
+        self.tracks.get(track).is_some_and(|t| t.is_muted())
+    }
+
+    /// Master output volume (linear).
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume
+    }
+
+    /// Delay feedback amount.
+    pub fn delay_feedback(&self) -> f32 {
+        self.delay_feedback
+    }
+
+    /// Delay time as a tempo-synced subdivision in beats.
+    pub fn delay_time_beats(&self) -> f32 {
+        self.delay_sync_beats as f32
+    }
+
+    /// Delay return level into the master mix.
+    pub fn delay_return(&self) -> f32 {
+        self.return_level
     }
 
     /// Drop voices / decaying state on every track, reset lane phase, and rewind
