@@ -112,8 +112,8 @@ fn solo_steal_is_click_free() {
 fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
     let fp = factory()
         .into_iter()
-        .find(|p| p.name == "FLUTE 2")
-        .expect("FLUTE 2 factory preset present");
+        .find(|p| p.name == "Flute 2")
+        .expect("Flute 2 factory preset present");
     let (_meta, blob, _warn) = from_toml_str(fp.contents).expect("FLUTE 2 parses");
     let shared = SharedParams::new();
     shared.load_bytes(&blob).expect("FLUTE 2 loads");

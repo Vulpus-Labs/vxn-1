@@ -1,0 +1,10 @@
+# Pinned so f32-sensitive golden tests are reproducible across CI and dev
+# machines. The render-hash canary (vxn-2 baseline.rs) is captured on a fixed
+# rustc; an unpinned `@stable` drifted to 1.96.1 and moved the libm/codegen
+# f32 results, breaking the golden with no code change. Bump this deliberately
+# and re-capture EXPECTED in the same commit.
+[toolchain]
+channel = "1.95.0"
+# Cross targets for the macOS universal (aarch64 + x86_64) bundle/release jobs,
+# so rustup installs std for them under the pinned channel.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
