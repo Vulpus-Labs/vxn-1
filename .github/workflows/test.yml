@@ -17,7 +17,10 @@ jobs:
     name: Workspace tests (macOS)
     # macOS is the primary dev/runtime target: NEON paths compile and run,
     # the xtask bundler is macOS-only, and editor_smoke.rs is macOS-gated.
-    runs-on: macos-latest
+    # Pinned (not macos-latest) because baseline.rs's render-hash golden folds
+    # the macOS system libm, which changes across OS majors — an image bump
+    # would flip the hash with no code change. Re-capture EXPECTED if bumped.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -42,9 +45,12 @@ jobs:
       # `--workspace` covers vxn-core-*, all vxn-1 and all vxn-2 crates in a
       # single invocation (flat workspace, E001). VXN_JS_TESTS=1 un-gates the
       # `js_suite_passes` test in vxn-ui-web, which shells `npm test` (Vitest).
+      # VXN_RENDER_HASH=1 un-gates baseline.rs's render-hash canary, which is
+      # environment-locked to this pinned runner (macos-15) + rustc.
       - name: cargo test --workspace
         env:
           VXN_JS_TESTS: "1"
+          VXN_RENDER_HASH: "1"
         run: cargo test --workspace
 
       # Bench code is compile-checked only — running criterion in CI is noise,

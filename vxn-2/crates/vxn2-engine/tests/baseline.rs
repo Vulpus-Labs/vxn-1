@@ -16,12 +16,20 @@
 //! `--nocapture`, read the `BASELINE render hash = 0x…` line the test prints,
 //! and paste it into `EXPECTED`.
 //!
-//! The hash is **platform-locked**: it folds raw f32 bits, and the render path
-//! rounds differently across targets — the aarch64 NEON sine reader vs the x86
-//! scalar one, plus per-platform libm in the EG/LFO/reverb math. `EXPECTED` was
-//! captured on macOS/aarch64 (the dev + macOS-CI target), so the test is
-//! `#[ignore]`d elsewhere. Its job is guarding refactors, which happen on that
-//! target; Windows CI (ticket 0023) skips it as platform-dependent.
+//! The hash is **environment-locked**: it folds raw f32 bits, and the render
+//! path rounds differently across targets *and* across OS releases — the
+//! aarch64 NEON sine reader vs the x86 scalar one, plus the macOS **system
+//! libm** in the EG/LFO/reverb math, which changes between macOS majors (14 →
+//! 15 moved the hash with no code change). So `EXPECTED` is only meaningful in
+//! one fixed environment. It is captured and enforced **on CI only** — the
+//! `macos-15` runner, gated behind `VXN_RENDER_HASH=1` (set in test.yml). On a
+//! dev machine the env var is unset and the test skips, so a developer on a
+//! different macOS release doesn't see a spurious red. Its job is guarding
+//! refactors (stage reorder / ramp-index regression), which CI catches; Windows
+//! CI (ticket 0023) skips it as platform-dependent via the `cfg` gate below.
+//!
+//! To re-capture after an intentional DSP change: read the `BASELINE render
+//! hash = 0x…` line from a CI run's log and paste it into `EXPECTED`.
 
 use vxn2_engine::MatrixRowRaw;
 use vxn2_engine::engine::Engine;
@@ -33,7 +41,7 @@ const BLK: usize = 32;
 
 /// Golden hash of the reference render. Behaviour-preserving refactors must
 /// leave this untouched; an intentional DSP change re-captures it (see header).
-const EXPECTED: u64 = 0x041a_5a44_836f_578b;
+const EXPECTED: u64 = 0x8704_4121_bab3_98d9;
 
 /// Build the reference engine: a matrix-rich, deterministic patch.
 fn reference_engine() -> Engine {
@@ -109,6 +117,14 @@ fn render_hash(e: &mut Engine, blocks: usize, h: &mut impl Hasher) {
     ignore = "render hash is captured on macOS/aarch64; f32 rounding differs per target"
 )]
 fn render_hash_unchanged() {
+    // Environment-locked golden: only enforced on the pinned CI runner
+    // (macos-15), where `VXN_RENDER_HASH=1` is set. Unset on dev machines, whose
+    // macOS/libm may differ from the capture environment — skip rather than red.
+    if std::env::var_os("VXN_RENDER_HASH").is_none() {
+        eprintln!("skipping render_hash_unchanged: VXN_RENDER_HASH unset (CI-only)");
+        return;
+    }
+
     let mut e = reference_engine();
 
     // A held chord with motion: mod-wheel + aftertouch keep the ModWheel /
