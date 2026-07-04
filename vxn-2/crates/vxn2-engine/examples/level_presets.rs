@@ -23,7 +23,20 @@ use vxn2_engine::shared::{ParamModel, SharedParams};
 
 const SR: f32 = 48_000.0;
 const BLOCK: usize = 512;
-const RENDER_SECS: f32 = 1.0;
+// Adaptive render window. The chord's true sample peak lands at the apex of the
+// carriers' attack, which for a slow DX7 attack rate is *seconds* away (rate 13
+// ≈ 6.4 s to full amplitude; rate 0 ≈ 20 s). A fixed short window measures the
+// envelope mid-climb, under-reads the peak, and the one-shot correction then
+// over-boosts long-attack presets (e.g. "Evolution"). So render until the
+// running peak settles: at least MIN_SECS (stable LUFS reference), then stop
+// once the peak has not risen for SETTLE_HOLD_SECS, capped at MAX_SECS.
+const MIN_SECS: f32 = 1.0;
+const MAX_SECS: f32 = 25.0;
+const SETTLE_HOLD_SECS: f32 = 0.5;
+// A new sample must exceed the running peak by this relative margin (~0.0087 dB)
+// to count as the peak still rising — ignores sub-audible creep so a preset that
+// has effectively plateaued isn't held open by rounding noise.
+const PEAK_RISE_EPS: f32 = 1e-3;
 // A vamping player's full voicing: octave C2+C3 root, plus E4/G4/C5 on top.
 const CHORD: [u8; 5] = [36, 48, 64, 67, 72]; // C2, C3, E4, G4, C5
 const VELOCITY: u8 = 127;
@@ -50,8 +63,8 @@ fn main() {
         if apply { "  [APPLY]" } else { "  [dry run]" }
     );
     println!(
-        "{:<34} {:>8} {:>8} {:>8} {:>8}  {}",
-        "preset", "LUFS", "peak", "cur dB", "new dB", ""
+        "{:<34} {:>8} {:>8} {:>6} {:>8} {:>8}  {}",
+        "preset", "LUFS", "peak", "rendS", "cur dB", "new dB", ""
     );
 
     let mut changed = 0;
@@ -89,8 +102,8 @@ fn main() {
 
         let label = preset_label(path);
         println!(
-            "{label:<34} {:>8.1} {:>8.1} {:>8.1} {:>8.1}{clamp_note}",
-            m.lufs, m.peak_dbfs, cur_db, new_db
+            "{label:<34} {:>8.1} {:>8.1} {:>6.1} {:>8.1} {:>8.1}{clamp_note}",
+            m.lufs, m.peak_dbfs, m.render_secs, cur_db, new_db
         );
 
         if apply && (new_db - cur_db).abs() > 0.05 {
@@ -113,6 +126,8 @@ fn main() {
 struct Measure {
     lufs: f32,
     peak_dbfs: f32,
+    /// Seconds actually rendered before the peak settled (or the cap hit).
+    render_secs: f32,
 }
 
 /// Load a preset blob into a fresh engine, play the held triad, render
@@ -129,7 +144,9 @@ fn measure(blob: &[u8]) -> Measure {
     engine.params_mut().master.limiter_on = false;
     engine.apply_block_params();
 
-    let total = (SR * RENDER_SECS) as usize;
+    let min_samples = (SR * MIN_SECS) as usize;
+    let max_samples = (SR * MAX_SECS) as usize;
+    let hold_samples = (SR * SETTLE_HOLD_SECS) as usize;
     let mut l = vec![0.0f32; BLOCK];
     let mut r = vec![0.0f32; BLOCK];
 
@@ -159,21 +176,32 @@ fn measure(blob: &[u8]) -> Measure {
     let mut k = KWeight::new();
     let mut sum_sq = 0.0f64;
     let mut count = 0usize;
+    // Samples elapsed since the running peak last rose past PEAK_RISE_EPS. Once
+    // this exceeds `hold_samples` (and we're past the minimum window) the attack
+    // apex is behind us and the peak reading is final.
+    let mut since_rise = 0usize;
 
-    let mut done = 0;
-    while done < total {
-        let n = BLOCK.min(total - done);
+    while count < max_samples {
+        let n = BLOCK.min(max_samples - count);
         l[..n].fill(0.0);
         r[..n].fill(0.0);
         engine.process_block(&mut l[..n], &mut r[..n]);
         for i in 0..n {
-            peak = peak.max(l[i].abs()).max(r[i].abs());
+            let a = l[i].abs().max(r[i].abs());
+            if a > peak * (1.0 + PEAK_RISE_EPS) {
+                since_rise = 0;
+            } else {
+                since_rise += 1;
+            }
+            peak = peak.max(a);
             let kl = k.l.process(l[i]);
             let kr = k.r.process(r[i]);
             sum_sq += (kl * kl + kr * kr) as f64;
             count += 1;
         }
-        done += n;
+        if count >= min_samples && since_rise >= hold_samples {
+            break;
+        }
     }
 
     let mean_sq = if count > 0 { sum_sq / count as f64 } else { 0.0 };
@@ -188,7 +216,7 @@ fn measure(blob: &[u8]) -> Measure {
     } else {
         -120.0
     };
-    Measure { lufs, peak_dbfs }
+    Measure { lufs, peak_dbfs, render_secs: count as f32 / SR }
 }
 
 // ── BS.1770 K-weighting (two cascaded biquads, 48 kHz coefficients) ──────────
