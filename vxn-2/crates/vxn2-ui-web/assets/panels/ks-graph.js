@@ -40,7 +40,6 @@
       '<div class="op-ks-readout" data-ks-readout></div>' +
       '<div class="op-ks-controls">' +
         '<button type="button" class="op-ks-shape" data-ks-shape="l"></button>' +
-        '<span class="op-ks-legend">LEVEL · drag ↑ boost · ↓ cut</span>' +
         '<button type="button" class="op-ks-shape" data-ks-shape="r"></button>' +
       '</div>';
     parent.appendChild(wrap);
@@ -99,17 +98,26 @@
 
     // Port of ks::ks_level_mult with the live per-side curves. The curve
     // discriminant carries sign (bit0: 1 = boost, 0 = cut) and shape
-    // (bit1: 1 = exp/quadratic, 0 = lin). Boost lifts the curve above the
-    // unity midline; cut drops it below.
-    function curveShape(curve, t) { return (curve & 2) ? t * t : t; }
+    // (bit1: 1 = exp, 0 = lin). Boost lifts the curve above the unity
+    // midline; cut drops it below. Each side ramps from the BP to the
+    // keyboard edge it faces (0 left, 127 right) — full depth at the extreme.
+    // KS_EXP_K must match ks::KS_EXP_K in the DSP.
+    const KS_EXP_K = 3.0;
+    function curveShape(curve, t) {
+      if (!(curve & 2)) return t;
+      return (Math.exp(KS_EXP_K * t) - 1) / (Math.exp(KS_EXP_K) - 1);
+    }
     function curveSign(curve) { return (curve & 1) ? 1.0 : -1.0; }
     function ksLevelMult(key, breakPt, lDep, rDep) {
       const semis = key - breakPt;
-      const t = Math.min(Math.abs(semis) / 12.0, 4.0) / 4.0;
       let mult;
       if (semis >= 0) {
+        const reach = 127 - breakPt;
+        const t = reach > 0 ? Math.min(semis / reach, 1.0) : 0.0;
         mult = 1.0 + curveSign(rCurve) * (rDep / 99.0) * curveShape(rCurve, t);
       } else {
+        const reach = breakPt;
+        const t = reach > 0 ? Math.min(-semis / reach, 1.0) : 0.0;
         mult = 1.0 + curveSign(lCurve) * (lDep / 99.0) * curveShape(lCurve, t);
       }
       return mult < 0 ? 0 : mult;

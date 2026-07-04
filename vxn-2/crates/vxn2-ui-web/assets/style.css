@@ -634,6 +634,10 @@ html, body {
   border-radius: 3px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  box-sizing: border-box;
+  display: inline-block;
+  text-align: center;
+  min-width: 40px;
 }
 .op-ks-shape:hover { background: rgba(255, 255, 255, 0.12); }
 
@@ -662,6 +666,10 @@ html, body {
   border-radius: 3px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  box-sizing: border-box;
+  display: inline-block;
+  text-align: center;
+  min-width: 32px;
 }
 .op-eg-curve-btn:hover { background: rgba(255, 255, 255, 0.12); }
 

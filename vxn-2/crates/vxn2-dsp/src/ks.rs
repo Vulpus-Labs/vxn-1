@@ -2,12 +2,21 @@
 //!
 //! At the break point, scaling has no effect. Below the BP the `l_*`
 //! parameters apply; above, the `r_*` parameters. Curve type sets shape (lin
-//! vs exp) and sign (boost vs cut). DX7's ROM uses tabulated dB offsets per
-//! octave; we approximate with a continuous closed-form so the result is
-//! smooth across the key range.
+//! vs exp) and sign (boost vs cut). Each side ramps from the break point to
+//! the keyboard edge it faces (note 0 on the left, 127 on the right): full
+//! depth lands exactly at the extreme note, so the ramp's reach scales with
+//! break-point position. DX7's ROM uses tabulated dB offsets; we approximate
+//! with a continuous closed-form so the result is smooth across the key range.
 //!
 //! Rate scaling speeds up all four EG rates as note pitch rises. A single
 //! `ks_rate` (0..7) parameter applies uniformly — matches DX7 RKS.
+
+/// Curvature of the exponential shape. The `exp` curve is a true normalised
+/// exponential `(e^(K·t) − 1) / (e^K − 1)` mapping `t∈[0,1] → [0,1]`; the
+/// endpoints are fixed (0 at the BP, 1 at the edge) and `K` only bends the
+/// interior. Larger `K` = later, sharper onset. Kept in lockstep with the
+/// UI port in `ks-graph.js` (`KS_EXP_K`).
+pub const KS_EXP_K: f32 = 3.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -39,21 +48,25 @@ pub fn ks_level_mult(
 ) -> f32 {
     let key = key.min(127) as i32;
     let bp = break_pt.min(127) as i32;
-    let semitones = (key - bp) as f32;
-    let (depth, curve) = if semitones >= 0.0 {
-        (r_depth, r_curve)
+    let semitones = key - bp;
+    // Pick the facing side and its reach to the keyboard edge: right side
+    // spans BP..127, left side spans 0..BP. `t` is 0 at the BP and 1 at the
+    // extreme note, so full depth lands on the edge rather than a fixed span.
+    let (depth, curve, reach) = if semitones >= 0 {
+        (r_depth, r_curve, 127 - bp)
     } else {
-        (l_depth, l_curve)
+        (l_depth, l_curve, bp)
     };
-
-    // Distance in octaves, clamped to 4 octaves (full DX7 range).
-    let d = (semitones.abs() / 12.0).min(4.0);
+    let t = if reach > 0 {
+        (semitones.unsigned_abs() as f32 / reach as f32).min(1.0)
+    } else {
+        0.0
+    };
     let shape = match curve {
-        KsCurve::PosLin | KsCurve::NegLin => d / 4.0,
+        KsCurve::PosLin | KsCurve::NegLin => t,
         KsCurve::PosExp | KsCurve::NegExp => {
-            // Exponential: more aggressive at the extremes.
-            let t = d / 4.0;
-            t * t
+            // True normalised exponential: bends late, sharp near the edge.
+            ((KS_EXP_K * t).exp() - 1.0) / (KS_EXP_K.exp() - 1.0)
         }
     };
     let sign = match curve {
@@ -90,15 +103,27 @@ mod tests {
     #[test]
     fn neg_lin_cuts_above_bp() {
         let m = ks_level_mult(96, 60, 0, KsCurve::PosLin, 99, KsCurve::NegLin);
-        // 96 - 60 = 36 semitones = 3 octaves; t = 3/4 = 0.75; -0.75 → 0.25 mult.
-        assert!(m < 0.30 && m > 0.20, "neg lin 3 oct above: {m}");
+        // Right reach = 127 - 60 = 67; t = 36/67 ≈ 0.537; lin, -depth →
+        // 1 - 0.537 ≈ 0.463.
+        assert!(m > 0.44 && m < 0.48, "neg lin above bp: {m}");
     }
 
     #[test]
-    fn pos_exp_boosts_above_bp() {
-        let m = ks_level_mult(108, 60, 0, KsCurve::PosLin, 99, KsCurve::PosExp);
-        // 4 octaves above, exp curve at full depth → 1 + 1*1 = 2.
-        assert!(m > 1.9, "pos exp 4 oct above: {m}");
+    fn full_depth_at_keyboard_edge() {
+        // Full depth is reached at the extreme note, not a fixed span.
+        let m = ks_level_mult(127, 60, 0, KsCurve::PosLin, 99, KsCurve::PosExp);
+        assert!(m > 1.99, "pos exp at top of keyboard: {m}");
+        let m = ks_level_mult(0, 60, 99, KsCurve::NegLin, 0, KsCurve::PosLin);
+        assert!(m < 0.01, "neg lin at bottom of keyboard: {m}");
+    }
+
+    #[test]
+    fn exp_bends_below_lin_in_interior() {
+        // Same key/depth: the exponential curve sits closer to unity than the
+        // linear one until the shared edge endpoint.
+        let lin = ks_level_mult(90, 60, 0, KsCurve::PosLin, 99, KsCurve::PosLin);
+        let exp = ks_level_mult(90, 60, 0, KsCurve::PosLin, 99, KsCurve::PosExp);
+        assert!(exp < lin, "exp {exp} should bend below lin {lin}");
     }
 
     #[test]
