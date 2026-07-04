@@ -129,13 +129,31 @@ fn measure(blob: &[u8]) -> Measure {
     engine.params_mut().master.limiter_on = false;
     engine.apply_block_params();
 
-    for &n in &CHORD {
-        engine.note_on(n, VELOCITY);
-    }
-
     let total = (SR * RENDER_SECS) as usize;
     let mut l = vec![0.0f32; BLOCK];
     let mut r = vec![0.0f32; BLOCK];
+
+    // Settle the master-gain smoother at the preset's target *before* striking
+    // the chord. A fresh engine primes the smoother at the default gain and
+    // `apply_block_params` only glides toward the preset value over ~5 ms
+    // (MASTER_VOL_SMOOTH_MS). Strike the chord during that glide and the attack
+    // transient is measured mid-ramp — the peak then isn't a pure function of
+    // master-volume, so a single peak→drop correction misses. Render silence
+    // past the glide first (master gain is the last, purely linear stage, so
+    // once settled `peak_dbfs` scales 1:1 with master-volume → one exact pass).
+    let warm = (SR * 0.05) as usize; // 50 ms ≫ the smoother time constant
+    let mut done = 0;
+    while done < warm {
+        let n = BLOCK.min(warm - done);
+        l[..n].fill(0.0);
+        r[..n].fill(0.0);
+        engine.process_block(&mut l[..n], &mut r[..n]);
+        done += n;
+    }
+
+    for &n in &CHORD {
+        engine.note_on(n, VELOCITY);
+    }
 
     let mut peak = 0.0f32;
     let mut k = KWeight::new();

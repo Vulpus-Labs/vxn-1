@@ -60,7 +60,7 @@ reverb-size = 0.5
 reverb-mix = 0.20
 
 # Lane spread → per-carrier pan for stereo width (matches FM Strings).
-master-volume = -13.09
+master-volume = -12.13
 [[matrix]]
 slot = 0
 source = "voice-spread"

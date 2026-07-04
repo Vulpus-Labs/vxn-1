@@ -115,7 +115,7 @@ lfo2-fade = 0.0
 stack-density = 1
 delay-on = false
 reverb-on = false
-master-volume = -13.79
+master-volume = -13.12
 
 [[matrix]]
 slot = 0

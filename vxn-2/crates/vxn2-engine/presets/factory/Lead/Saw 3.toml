@@ -63,7 +63,7 @@ reverb-mix = 0.20
 # Carrier-count comp (1/sqrt 6) now level-matches algo 32 in the engine, so the
 # old manual -6 for "six carriers run hot" is redundant. Back to the -6 default.
 # Limiter stays on for safety.
-master-volume = -13.17
+master-volume = -12.06
 limiter-on = true
 
 # Lane spread -> per-carrier pan for stereo width.
