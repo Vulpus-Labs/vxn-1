@@ -60,3 +60,23 @@ values). Depends on 0171 (value cache), 0172 (engine-kind cache), 0173 (echo).
   epic doesn't reverse-engineer it.
 - Closes E032: on merge, verify the epic acceptance list and close via the epic
   workflow.
+
+## Close-out (2026-07-04)
+
+- `PluginState` registered; new [state.rs](../../vxn-3/crates/vxn3-clap/src/state.rs)
+  freezes a versioned blob: magic `VX3S` / version 1 / `TOTAL_PARAMS` f32 cache
+  values / per-track (kind `u8` + reserved `patch_len u16 = 0`). Format documented
+  in the module header; deep per-engine patch goes in the reserved bytes later
+  (preset epic reads the same bytes). `state::tests::{round_trips_params_and_kinds,
+  resave_is_byte_identical, empty_and_garbage_rejected, future_version_rejected}`.
+- Round-trips through a swap: `Engine::with_io` builds each track from `io.kinds`
+  (restored project comes up on saved engines); `Track::invalidate_applied` after
+  `poll_swap` re-pushes macro/lock values so a swapped-in engine leaves its default
+  patch. `tests::{restored_kind_mirror_rebuilds_engines,
+  state_round_trips_through_cache_and_kinds}`.
+- `load` restores cache + kinds and pushes swaps (active-reload case); `activate`
+  rebuilds + replays the cache (inactive-load case). Empty / bad-magic / truncated /
+  future-version blobs rejected → host sees a failed load.
+- clap-validator: 0 failures — all state-reproducibility tests now pass; remaining
+  skips are note-ports / preset-discovery (intentionally absent). `cargo test
+  -p vxn3-clap` green.

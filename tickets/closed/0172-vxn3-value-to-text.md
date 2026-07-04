@@ -49,3 +49,19 @@ Design: ADR 0003 §2 (dynamic value-text under a fixed name). Depends on 0170
   `macro_display` already writes into a caller buffer (0170).
 - The engine-kind cache is the same fact 0174 must serialize — share the field,
   don't duplicate it.
+
+## Close-out (2026-07-04)
+
+- `TrackKinds` — per-track `EngineKind` mirror (atomics) in `EngineIo`
+  ([io.rs](../../vxn-3/crates/vxn3-engine/src/io.rs)); the app writes it on the
+  `SetEngine` swap (`vxn3-app` `set_engine_event_queues_a_swap` asserts the mirror).
+  `EngineKind::{as_u8, from_u8}` added.
+- `value_to_text` on a macro dispatches to `macro_display` keyed by that track's
+  mirrored kind ("Decay …" under Kick vs "Ring …" under Metal); swapping the engine
+  changes the readout, not the `clap_id`. Mix/master render generically.
+- `macro_map` refactored around shared linear coeffs; new inverse `macro_parse`
+  makes `text_to_value` engine-aware and keeps value→text→value→text stable —
+  `track_engine::tests::display_parse_round_trips` (3 engines × 3 slots × 5 values).
+- `macro_display` writes into the caller's `ParamDisplayWriter` (alloc-free). The
+  kind mirror is the same field 0174 serializes.
+- `cargo test -p vxn3-clap -p vxn3-app` green; clap-validator 0 failures.

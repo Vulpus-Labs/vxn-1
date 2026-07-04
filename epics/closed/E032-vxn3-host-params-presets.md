@@ -2,9 +2,23 @@
 id: E032
 product: vxn-3
 title: "vxn-3 host params + preset groundwork — fixed mix/master table + macro slots"
-status: open
+status: closed
 created: 2026-07-02
+closed: 2026-07-04
 ---
+
+> **Closed 2026-07-04.** All five tickets (0170–0174) shipped. VXN3 now exposes a
+> fixed, never-rescanned `clap.params` table (master + per-track mix + 3 generic
+> macro slots × 8), host automation applies straight to the engine (SPSC-safe),
+> macro value-text is engine-aware, faceplate/p-lock edits echo back to the host,
+> and `clap.state` round-trips the table + per-track engine kind through an engine
+> swap (versioned `VX3S` blob with reserved bytes for the preset epic's deep
+> patch). `clap-validator` reports **0 failures** (param-conversions +
+> state-reproducibility all pass; remaining skips are note-ports / preset-discovery,
+> intentionally absent). DAW verification in a host is still pending. Anchoring
+> ticket 0072 was folded in as the design doc (`tickets/closed/0072-…`).
+> **Note:** ids 0170/0171 collide with concurrently-created vxn-2 tickets — the
+> vxn-3 children are the `-vxn3-` files; renumber later if the worklist needs it.
 
 > **Anchors ticket 0072.** Design is fixed in `vxn-3/adrs/0003-vxn3-host-param-model.md`
 > (host param model) with `vxn-3/adrs/0001` §3a/§4/§5 (voicing + p-locks) and

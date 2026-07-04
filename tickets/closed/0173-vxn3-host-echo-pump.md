@@ -53,3 +53,20 @@ pump pattern (`vxn2-clap`). Depends on 0171 (params + value cache).
 - The echo reads the same value cache 0171 owns; the dirty bitset lives beside it.
 - Gesture begin/end (`ParamGestureBegin/End`) for faceplate drags is optional
   polish — note it but don't block the ticket on host-specific gesture handling.
+
+## Close-out (2026-07-04)
+
+- `drain_param_echo` ([lib.rs](../../vxn-3/crates/vxn3-clap/src/lib.rs)): after each
+  block, diff every host param's **effective** value (post-p-lock) vs `ParamCache`;
+  changed ids push a `ParamValueEvent` to `events.output` and update the cache.
+  Faceplate edits + p-lock resolved values reach the host's lanes / generic UI.
+- No feedback loop: host writes pre-set the cache (0171), so an unchanged effective
+  value never re-echoes — `tests::{echo_reports_internal_edit_once,
+  echo_skips_host_write_that_preset_cache}`. p-locks compose (effective read post-
+  lock, reverts on latch release).
+- Allocation-free: `tests::echo_drain_is_alloc_free` (alloc-trap over 100 drains);
+  `tests::echo_is_silent_when_nothing_changed`.
+- Engine effective-readback getters (`track_effective` / `track_muted` + master /
+  delay) + `Track::{effective, is_muted}`; cached delay feedback (no `Delay` getter).
+- Gesture begin/end deferred as optional polish (noted above).
+- `cargo test -p vxn3-clap` green; clap-validator 0 failures.

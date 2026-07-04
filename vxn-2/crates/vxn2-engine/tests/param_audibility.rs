@@ -165,6 +165,16 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 // The base matrix routes modulate several op levels; silence
                 // them so the op's own amplitude envelope is the only mover.
                 deactivate_base_routes(s);
+                // Algo 32 is six parallel carriers. The other five ring at full
+                // level through sustain *and* release, so a release-stage sweep
+                // (r4/l3/l4) on this op moves at most ~1/6 of the mix — diluted
+                // below AUDIBLE_EPS. Silence them so this op is the sole carrier
+                // and its whole envelope, release tail included, drives the mix.
+                for other in 1..=6 {
+                    if other != op {
+                        s.set(id_of(&format!("op{other}-level")).unwrap(), 0.0);
+                    }
+                }
                 let o = |suf: &str| format!("op{op}-{suf}");
                 // Rates fast enough that every stage is reached inside the
                 // window; levels a big zig-zag so each stage is distinct.
@@ -177,7 +187,10 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 s.set(id_of(&o("eg-l3")).unwrap(), 85.0);
                 s.set(id_of(&o("eg-l4")).unwrap(), 0.0);
                 cap.sustain_blocks = 55;
-                cap.release_blocks = 60;
+                // Long enough that the moderate R4 release actually reaches L4,
+                // so an `eg-l4` sweep (0 vs 99) separates the two release tails
+                // instead of both freezing partway.
+                cap.release_blocks = 130;
             },
         ),
         // ── KS: pin op ratio for high-note tests ────────────────────────────

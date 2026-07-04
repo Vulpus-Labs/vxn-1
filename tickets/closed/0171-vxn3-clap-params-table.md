@@ -69,3 +69,24 @@ Design: ADR 0003 §1 (fixed host-param table) + §4 (no rescan-on-swap). Depends
   design it as the single owner of host-facing param values.
 - `mute` semantics: pick gain-gate vs explicit `SetMute` command and note it for
   0174 (state must restore it).
+
+## Close-out (2026-07-04)
+
+- `PluginParams` registered; fixed 60-param table in new
+  [params.rs](../../vxn-3/crates/vxn3-clap/src/params.rs): master (volume + delay
+  fb/time/return) + per-track level/pan/mute/send + 3 macros × 8. `clap_id ==
+  index` via one `decode` scheme; never rescanned. `params::tests::{decode_round_
+  trips_every_id, positional_scheme_is_stable, total_matches_layout}`.
+- Host automation reaches the engine via new `pub Engine::apply_command` — applied
+  **direct on the audio thread**, not the SPSC `EditQueue` (would become a second
+  producer). `tests::{host_mute_reaches_engine, host_master_volume_reaches_engine}`.
+- `ParamCache` (atomics, seeded to defaults) owns host-facing values; `get_value`
+  reads it; `activate` replays it into a fresh engine (inactive automation / 0174
+  restore). Added `EngineCommand::{SetMasterVolume, SetMute}`; `Track.muted` gates
+  the mix; master volume pre-limiter.
+- `value_to_text` + slot-aware `parse_value` round-trip the dB/pan/% transforms —
+  `params::tests::value_text_round_trips`; clap-validator param-conversions passes.
+- Engine-aware macro text deferred to 0172 (generic stub here). Limiter param
+  dropped from the table — `vxn3_dsp::Limiter` exposes no ceiling setter; master
+  limiter stays fixed/PDC-reported.
+- `cargo test -p vxn3-clap` green; clap-validator 0 failures (state → 0174).

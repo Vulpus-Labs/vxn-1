@@ -69,3 +69,19 @@ value-text) + ADR 0001 §4/§5.
   value-text and 0174's preset docs agree.
 - Blocks 0171 (the host table calls `set_macro`) and 0172 (which calls
   `macro_display`).
+
+## Close-out (2026-07-04)
+
+- `TrackEngine` now declares `macro_count` + `set_macro(slot, value)`; `Knob` /
+  `set_knob` removed ([track_engine.rs:47](../../vxn-3/crates/vxn3-engine/src/track_engine.rs#L47)).
+- `macro_map` (shared linear coeffs) + pure `macro_display` free fn — no `&self`,
+  alloc-free into a caller writer; the single source of truth for slot value +
+  readout. Unit-tested `track_engine::tests::{every_engine_maps_all_slots,
+  display_is_engine_aware, unit_formatting}`.
+- Dead mappings fixed — all 3 engines map slot 0/1/2 to real controls: Kick
+  Decay/Donk(was inert)/Depth, Metal Ring/Excite(was inert)/Body, Noise
+  Decay/Mix/Bright(was inert); faceplate gained the missing Pitch knob
+  ([app.js](../../vxn-3/crates/vxn3-ui-web/assets/app.js), 3 macro knobs).
+- `EngineCommand::SetKnob` → `SetMacro { slot }`; rewired `track.rs` p-lock
+  dispatch, `engine.rs` routing, `ui-web` `set_macro` opcode.
+- `cargo test -p vxn3-engine -p vxn3-app -p vxn3-ui-web` green; no clap changes.
