@@ -1,0 +1,136 @@
+schema = 1
+
+[meta]
+name = "Brass Trumpet"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "Translated from DX7 factory ROM 'BR TRUMPET': algo 18, feedback 7."
+
+[params]
+algo = 18
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 4
+op1-eg-r1 = 70
+op1-eg-r2 = 24
+op1-eg-r3 = 19
+op1-eg-r4 = 55
+op1-eg-l1 = 99
+op1-eg-l2 = 86
+op1-eg-l3 = 86
+op1-eg-l4 = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 2
+op2-detune = 5
+op2-level = 50
+op2-vel-sens = 7
+op2-eg-r1 = 99
+op2-eg-r2 = 12
+op2-eg-r3 = 22
+op2-eg-r4 = 50
+op2-eg-l1 = 85
+op2-eg-l2 = 0
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-break-pt = 89
+op2-ks-l-depth = 0
+op2-ks-r-depth = 96
+op2-ks-r-curve = "neg-exp"
+
+# op3
+op3-num = 1
+op3-level = 79
+op3-vel-sens = 1
+op3-eg-r1 = 41
+op3-eg-r2 = 12
+op3-eg-r3 = 22
+op3-eg-r4 = 50
+op3-eg-l1 = 99
+op3-eg-l2 = 61
+op3-eg-l3 = 61
+op3-eg-l4 = 0
+op3-ks-rate = 5
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-level = 74
+op4-vel-sens = 4
+op4-eg-r1 = 66
+op4-eg-r2 = 76
+op4-eg-r3 = 22
+op4-eg-r4 = 50
+op4-eg-l1 = 99
+op4-eg-l2 = 61
+op4-eg-l3 = 61
+op4-eg-l4 = 0
+op4-ks-rate = 5
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 6
+op5-detune = 3
+op5-level = 50
+op5-vel-sens = 0
+op5-eg-r1 = 48
+op5-eg-r2 = 12
+op5-eg-r3 = 22
+op5-eg-r4 = 50
+op5-eg-l1 = 99
+op5-eg-l2 = 61
+op5-eg-l3 = 61
+op5-eg-l4 = 0
+op5-ks-rate = 5
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 17
+op6-denom = 2
+op6-fine = -6
+op6-level = 99
+op6-vel-sens = 3
+op6-eg-r1 = 42
+op6-eg-r2 = 56
+op6-eg-r3 = 20
+op6-eg-r4 = 70
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 7
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+peg-r1 = 86
+peg-r2 = 67
+peg-r3 = 95
+peg-r4 = 60
+peg-l1 = 4
+peg-l2 = 0
+peg-l3 = 0
+peg-l4 = 0
+
+lfo2-shape = "Tri"
+lfo2-rate = 5.54
+lfo2-delay = 826.0
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -14.46
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.004

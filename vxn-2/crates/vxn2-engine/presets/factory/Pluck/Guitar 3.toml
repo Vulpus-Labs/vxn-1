@@ -1,0 +1,121 @@
+schema = 1
+
+[meta]
+name = "Guitar 3"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Translated from DX7 factory ROM 'GUITAR  3': algo 14, feedback 4. DX7 transpose -12 st baked into ratios."
+
+[params]
+algo = 14
+feedback = 2.8
+
+# op1
+op1-num = 1
+op1-denom = 2
+op1-level = 86
+op1-vel-sens = 3
+op1-eg-r1 = 75
+op1-eg-r2 = 28
+op1-eg-r3 = 24
+op1-eg-r4 = 66
+op1-eg-l1 = 99
+op1-eg-l2 = 27
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 3
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-denom = 2
+op2-detune = 1
+op2-level = 75
+op2-vel-sens = 1
+op2-eg-r1 = 91
+op2-eg-r2 = 28
+op2-eg-r3 = 24
+op2-eg-r4 = 53
+op2-eg-l1 = 99
+op2-eg-l2 = 27
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 3
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-denom = 2
+op3-level = 85
+op3-vel-sens = 1
+op3-eg-r1 = 75
+op3-eg-r2 = 28
+op3-eg-r3 = 24
+op3-eg-r4 = 66
+op3-eg-l1 = 99
+op3-eg-l2 = 27
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 3
+op4-denom = 2
+op4-level = 63
+op4-vel-sens = 2
+op4-eg-r1 = 91
+op4-eg-r2 = 28
+op4-eg-r3 = 24
+op4-eg-r4 = 53
+op4-eg-l1 = 99
+op4-eg-l2 = 27
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 3
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-denom = 2
+op5-level = 61
+op5-vel-sens = 3
+op5-eg-r1 = 52
+op5-eg-r2 = 23
+op5-eg-r3 = 24
+op5-eg-r4 = 53
+op5-eg-l1 = 96
+op5-eg-l2 = 27
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 3
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 5
+op6-denom = 2
+op6-level = 89
+op6-vel-sens = 2
+op6-eg-r1 = 91
+op6-eg-r2 = 28
+op6-eg-r3 = 24
+op6-eg-r4 = 53
+op6-eg-l1 = 99
+op6-eg-l2 = 27
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 3
+op6-ks-break-pt = 21
+op6-ks-l-depth = 0
+op6-ks-r-depth = 20
+op6-ks-r-curve = "neg-lin"
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -6.05

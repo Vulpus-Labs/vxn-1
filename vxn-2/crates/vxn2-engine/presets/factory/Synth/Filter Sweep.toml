@@ -1,0 +1,116 @@
+schema = 1
+
+[meta]
+name = "Filter Sweep"
+author = "Vulpus Labs"
+category = "Synth"
+comment = "Translated from DX7 factory ROM 'FILTER SWP': algo 17, feedback 3."
+
+[params]
+algo = 17
+feedback = 2.1
+
+# op1
+op1-num = 1
+op1-denom = 2
+op1-level = 99
+op1-vel-sens = 1
+op1-eg-r1 = 28
+op1-eg-r2 = 99
+op1-eg-r3 = 20
+op1-eg-r4 = 35
+op1-eg-l1 = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 17
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 2
+op2-level = 90
+op2-vel-sens = 2
+op2-eg-r1 = 18
+op2-eg-r2 = 99
+op2-eg-r3 = 20
+op2-eg-r4 = 99
+op2-eg-l1 = 99
+op2-eg-l2 = 99
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-denom = 2
+op3-detune = 1
+op3-level = 93
+op3-vel-sens = 1
+op3-eg-r1 = 10
+op3-eg-r2 = 99
+op3-eg-r3 = 20
+op3-eg-r4 = 41
+op3-eg-l1 = 99
+op3-eg-l2 = 99
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 2
+op4-level = 93
+op4-vel-sens = 2
+op4-eg-r1 = 26
+op4-eg-r2 = 71
+op4-eg-r3 = 20
+op4-eg-r4 = 39
+op4-eg-l1 = 99
+op4-eg-l2 = 99
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 0
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 5
+op5-level = 92
+op5-vel-sens = 2
+op5-eg-r1 = 11
+op5-eg-r2 = 30
+op5-eg-r3 = 25
+op5-eg-r4 = 28
+op5-eg-l1 = 99
+op5-eg-l2 = 99
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-denom = 2
+op6-level = 99
+op6-vel-sens = 2
+op6-eg-r1 = 57
+op6-eg-r2 = 32
+op6-eg-r3 = 77
+op6-eg-r4 = 30
+op6-eg-l1 = 99
+op6-eg-l2 = 99
+op6-eg-l3 = 58
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -11.04

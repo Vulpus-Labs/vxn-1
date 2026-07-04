@@ -1,0 +1,113 @@
+schema = 1
+
+[meta]
+name = "Electric Piano Brass BC"
+author = "Vulpus Labs"
+category = "Synth"
+comment = "Translated from DX7 factory ROM 'E.P-BRS BC': algo 5, feedback 7."
+
+[params]
+algo = 5
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-level = 95
+op1-vel-sens = 2
+op1-eg-r1 = 96
+op1-eg-r2 = 23
+op1-eg-r3 = 25
+op1-eg-r4 = 54
+op1-eg-l1 = 99
+op1-eg-l2 = 75
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 3
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 76
+op2-vel-sens = 3
+op2-eg-r1 = 95
+op2-eg-r2 = 0
+op2-eg-r3 = 25
+op2-eg-r4 = 54
+op2-eg-l1 = 99
+op2-eg-l2 = 75
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 3
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-detune = 5
+op3-level = 94
+op3-vel-sens = 2
+op3-eg-r1 = 95
+op3-eg-r2 = 27
+op3-eg-r3 = 20
+op3-eg-r4 = 54
+op3-eg-l1 = 99
+op3-eg-l2 = 80
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-break-pt = 57
+op3-ks-l-depth = 36
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 14
+op4-level = 42
+op4-vel-sens = 4
+op4-eg-r1 = 97
+op4-eg-r2 = 41
+op4-eg-r3 = 13
+op4-eg-r4 = 54
+op4-eg-l1 = 99
+op4-eg-l2 = 81
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 3
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-level = 99
+op5-vel-sens = 0
+op5-eg-r1 = 72
+op5-eg-r2 = 78
+op5-eg-r3 = 20
+op5-eg-r4 = 57
+op5-eg-l1 = 99
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+op5-eg-l4 = 0
+op5-ks-rate = 3
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-level = 78
+op6-vel-sens = 0
+op6-eg-r1 = 90
+op6-eg-r2 = 52
+op6-eg-r3 = 25
+op6-eg-r4 = 54
+op6-eg-l1 = 99
+op6-eg-l2 = 99
+op6-eg-l3 = 98
+op6-eg-l4 = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -16.64

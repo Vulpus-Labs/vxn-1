@@ -63,6 +63,7 @@ reverb-size = 0.45
 reverb-mix = 0.18
 delay-on = false
 
+master-volume = -15.71
 [[matrix]]
 slot = 0
 source = "lfo2"

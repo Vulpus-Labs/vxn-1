@@ -1,0 +1,142 @@
+schema = 1
+
+[meta]
+name = "Laser Sweep"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "Translated from DX7 factory ROM 'LASERSWEEP': algo 31, feedback 7. DX7 transpose -12 st baked into ratios."
+
+[params]
+algo = 31
+feedback = 4.9
+
+# op1
+op1-num = 5
+op1-denom = 2
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 99
+op1-eg-r2 = 38
+op1-eg-r3 = 40
+op1-eg-r4 = 15
+op1-eg-l1 = 99
+op1-eg-l2 = 0
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 19
+op2-denom = 2
+op2-detune = 2
+op2-level = 86
+op2-vel-sens = 0
+op2-eg-r1 = 99
+op2-eg-r2 = 55
+op2-eg-r3 = 75
+op2-eg-r4 = 18
+op2-eg-l1 = 99
+op2-eg-l2 = 32
+op2-eg-l3 = 99
+op2-eg-l4 = 0
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 17
+op3-denom = 2
+op3-detune = 1
+op3-level = 65
+op3-vel-sens = 0
+op3-eg-r1 = 99
+op3-eg-r2 = 82
+op3-eg-r3 = 98
+op3-eg-r4 = 17
+op3-eg-l1 = 99
+op3-eg-l2 = 0
+op3-eg-l3 = 98
+op3-eg-l4 = 0
+op3-ks-rate = 0
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-fine = 11
+op4-level = 61
+op4-vel-sens = 0
+op4-eg-r1 = 99
+op4-eg-r2 = 82
+op4-eg-r3 = 98
+op4-eg-r4 = 15
+op4-eg-l1 = 99
+op4-eg-l2 = 0
+op4-eg-l3 = 98
+op4-eg-l4 = 0
+op4-ks-rate = 0
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-denom = 4
+op5-detune = 1
+op5-level = 98
+op5-vel-sens = 0
+op5-eg-r1 = 99
+op5-eg-r2 = 82
+op5-eg-r3 = 98
+op5-eg-r4 = 15
+op5-eg-l1 = 99
+op5-eg-l2 = 0
+op5-eg-l3 = 98
+op5-eg-l4 = 0
+op5-ks-rate = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-denom = 4
+op6-detune = 1
+op6-level = 84
+op6-vel-sens = 0
+op6-eg-r1 = 25
+op6-eg-r2 = 21
+op6-eg-r3 = 98
+op6-eg-r4 = 15
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 99
+op6-eg-l4 = 0
+op6-ks-rate = 0
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+peg-r1 = 29
+peg-r2 = 98
+peg-r3 = 35
+peg-r4 = 17
+peg-l1 = 12
+peg-l2 = 90
+peg-l3 = -10
+peg-l4 = 98
+
+lfo2-shape = "Saw+"
+lfo2-rate = 8.87
+lfo2-delay = 2000.0
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.61
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.9899

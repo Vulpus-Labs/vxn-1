@@ -1,16 +1,16 @@
 //! Headless preset auto-leveller.
 //!
-//! Renders every factory preset playing a held C-major triad over C4, measures
-//! integrated loudness (ITU-R BS.1770 K-weighted LUFS) and full-window sample
-//! peak, then computes the `master-volume` (dB) that lands the preset at a
-//! target loudness — pulled down further if needed so the peak keeps the
-//! requested headroom. The render is deterministic (RNG seeds from
-//! note/velocity/voice-counter, no entropy), so re-runs are repeatable.
+//! Renders every factory preset holding a full vamping chord (C2, C3, E4, G4,
+//! C5) at full velocity, measures the full-window sample peak (and integrated
+//! ITU-R BS.1770 K-weighted LUFS, for reference), then sets each preset's
+//! `master-volume` (dB) so the peak lands at the target ceiling (−6 dBFS by
+//! default). The render is deterministic (RNG seeds from note/velocity/voice-
+//! counter, no entropy), so re-runs are repeatable.
 //!
 //! Usage (from repo root):
 //!   cargo run --release -p vxn2-engine --example level_presets            # dry run, print table
 //!   cargo run --release -p vxn2-engine --example level_presets -- --apply # rewrite master-volume in each TOML
-//!   ... -- --lufs -18 --headroom 3   # override target loudness / peak headroom
+//!   ... -- --peak -8                 # override the target peak ceiling (dBFS)
 //!
 //! Or via xtask:  cargo xtask level-presets [-- --apply]
 
@@ -24,8 +24,9 @@ use vxn2_engine::shared::{ParamModel, SharedParams};
 const SR: f32 = 48_000.0;
 const BLOCK: usize = 512;
 const RENDER_SECS: f32 = 1.0;
-const TRIAD: [u8; 3] = [60, 64, 67]; // C4, E4, G4
-const VELOCITY: u8 = 100;
+// A vamping player's full voicing: octave C2+C3 root, plus E4/G4/C5 on top.
+const CHORD: [u8; 5] = [36, 48, 64, 67, 72]; // C2, C3, E4, G4, C5
+const VELOCITY: u8 = 127;
 
 // master-volume param range (dB) and default when the key is absent.
 const VOL_MIN_DB: f32 = -60.0;
@@ -35,9 +36,7 @@ const VOL_DEFAULT_DB: f32 = -6.0;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let apply = args.iter().any(|a| a == "--apply");
-    let target_lufs = flag_f32(&args, "--lufs").unwrap_or(-16.0);
-    let headroom_db = flag_f32(&args, "--headroom").unwrap_or(3.0);
-    let peak_ceil_dbfs = -headroom_db;
+    let target_peak_dbfs = flag_f32(&args, "--peak").unwrap_or(-6.0);
 
     let files = collect_presets(&factory_dir());
     if files.is_empty() {
@@ -46,7 +45,7 @@ fn main() {
     }
 
     println!(
-        "target {target_lufs:.1} LUFS, peak ceiling {peak_ceil_dbfs:.1} dBFS  ({} presets){}",
+        "target peak {target_peak_dbfs:.1} dBFS on chord [C2 C3 E4 G4 C5] @ vel {VELOCITY}  ({} presets){}",
         files.len(),
         if apply { "  [APPLY]" } else { "  [dry run]" }
     );
@@ -75,20 +74,15 @@ fn main() {
         let m = measure(&blob);
         let cur_db = parse_master_volume(&src).unwrap_or(VOL_DEFAULT_DB);
 
-        // Both LUFS and peak scale linearly (in dB) with the final master gain,
-        // so a delta in master-volume shifts each by the same dB amount.
-        let loud_delta = target_lufs - m.lufs;
-        let peak_at_target = m.peak_dbfs + loud_delta;
-        let excess = (peak_at_target - peak_ceil_dbfs).max(0.0); // how far over the ceiling
-        let delta = loud_delta - excess; // peak guard wins
+        // Peak scales linearly (in dB) with the final master gain, so shifting
+        // master-volume by `delta` shifts the measured peak by the same amount.
+        let delta = target_peak_dbfs - m.peak_dbfs;
         let new_db = (cur_db + delta).clamp(VOL_MIN_DB, VOL_MAX_DB);
 
         let clamp_note = if (cur_db + delta) < VOL_MIN_DB {
             "  (clamped: floor)"
         } else if (cur_db + delta) > VOL_MAX_DB {
-            "  (clamped: ceiling — still quiet)"
-        } else if excess > 0.0 {
-            "  (peak-capped)"
+            "  (clamped: ceiling — still under target)"
         } else {
             ""
         };
@@ -135,7 +129,7 @@ fn measure(blob: &[u8]) -> Measure {
     engine.params_mut().master.limiter_on = false;
     engine.apply_block_params();
 
-    for &n in &TRIAD {
+    for &n in &CHORD {
         engine.note_on(n, VELOCITY);
     }
 

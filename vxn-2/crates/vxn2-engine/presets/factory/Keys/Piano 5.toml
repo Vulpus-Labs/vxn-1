@@ -1,0 +1,116 @@
+schema = 1
+
+[meta]
+name = "Piano 5"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "Translated from DX7 factory ROM 'PIANO   5': algo 3, feedback 6."
+
+[params]
+algo = 3
+feedback = 4.2
+
+# op1
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 3
+op1-eg-r1 = 70
+op1-eg-r2 = 30
+op1-eg-r3 = 23
+op1-eg-r4 = 50
+op1-eg-l1 = 99
+op1-eg-l2 = 85
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 4
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 72
+op2-vel-sens = 1
+op2-eg-r1 = 98
+op2-eg-r2 = 36
+op2-eg-r3 = 6
+op2-eg-r4 = 32
+op2-eg-l1 = 91
+op2-eg-l2 = 90
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-break-pt = 71
+op2-ks-l-depth = 22
+op2-ks-r-depth = 50
+op2-ks-l-curve = "pos-lin"
+op2-ks-r-curve = "neg-lin"
+
+# op3
+op3-num = 3
+op3-level = 92
+op3-vel-sens = 7
+op3-eg-r1 = 94
+op3-eg-r2 = 21
+op3-eg-r3 = 33
+op3-eg-r4 = 12
+op3-eg-l1 = 74
+op3-eg-l2 = 19
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-break-pt = 59
+op3-ks-l-depth = 0
+op3-ks-r-depth = 20
+op3-ks-r-curve = "neg-lin"
+
+# op4
+op4-num = 1
+op4-level = 99
+op4-vel-sens = 3
+op4-eg-r1 = 70
+op4-eg-r2 = 30
+op4-eg-r3 = 23
+op4-eg-r4 = 50
+op4-eg-l1 = 99
+op4-eg-l2 = 85
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 4
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-level = 75
+op5-vel-sens = 1
+op5-eg-r1 = 98
+op5-eg-r2 = 20
+op5-eg-r3 = 6
+op5-eg-r4 = 2
+op5-eg-l1 = 91
+op5-eg-l2 = 90
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 5
+op6-level = 67
+op6-vel-sens = 1
+op6-eg-r1 = 94
+op6-eg-r2 = 1
+op6-eg-r3 = 33
+op6-eg-r4 = 12
+op6-eg-l1 = 4
+op6-eg-l2 = 19
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-break-pt = 74
+op6-ks-l-depth = 0
+op6-ks-r-depth = 38
+op6-ks-r-curve = "neg-lin"
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -16.75

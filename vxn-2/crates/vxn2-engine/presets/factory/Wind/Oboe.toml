@@ -1,0 +1,112 @@
+schema = 1
+
+[meta]
+name = "Oboe"
+author = "Vulpus Labs"
+category = "Wind"
+comment = "Translated from DX7 factory ROM 'OBOE': algo 3, feedback 5."
+
+[params]
+algo = 3
+feedback = 3.5
+
+# op1
+op1-num = 4
+op1-level = 99
+op1-vel-sens = 2
+op1-eg-r1 = 60
+op1-eg-r2 = 40
+op1-eg-r3 = 20
+op1-eg-r4 = 70
+op1-eg-l1 = 95
+op1-eg-l2 = 95
+op1-eg-l3 = 85
+op1-eg-l4 = 0
+op1-ks-rate = 3
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 76
+op2-vel-sens = 0
+op2-eg-r1 = 63
+op2-eg-r2 = 0
+op2-eg-r3 = 12
+op2-eg-r4 = 70
+op2-eg-l1 = 99
+op2-eg-l2 = 90
+op2-eg-l3 = 99
+op2-eg-l4 = 0
+op2-ks-rate = 1
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 8
+op3-level = 75
+op3-vel-sens = 0
+op3-eg-r1 = 97
+op3-eg-r2 = 80
+op3-eg-r3 = 80
+op3-eg-r4 = 70
+op3-eg-l1 = 99
+op3-eg-l2 = 90
+op3-eg-l3 = 80
+op3-eg-l4 = 0
+op3-ks-rate = 1
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 8
+op4-level = 75
+op4-vel-sens = 2
+op4-eg-r1 = 50
+op4-eg-r2 = 45
+op4-eg-r3 = 27
+op4-eg-r4 = 70
+op4-eg-l1 = 99
+op4-eg-l2 = 99
+op4-eg-l3 = 95
+op4-eg-l4 = 0
+op4-ks-rate = 3
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-level = 75
+op5-vel-sens = 0
+op5-eg-r1 = 63
+op5-eg-r2 = 0
+op5-eg-r3 = 12
+op5-eg-r4 = 70
+op5-eg-l1 = 99
+op5-eg-l2 = 90
+op5-eg-l3 = 99
+op5-eg-l4 = 0
+op5-ks-rate = 1
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-level = 79
+op6-vel-sens = 0
+op6-eg-r1 = 63
+op6-eg-r2 = 0
+op6-eg-r3 = 12
+op6-eg-r4 = 70
+op6-eg-l1 = 99
+op6-eg-l2 = 90
+op6-eg-l3 = 99
+op6-eg-l4 = 0
+op6-ks-rate = 1
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -10.92

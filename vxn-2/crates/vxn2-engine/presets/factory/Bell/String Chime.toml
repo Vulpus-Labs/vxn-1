@@ -1,0 +1,112 @@
+schema = 1
+
+[meta]
+name = "String Chime"
+author = "Vulpus Labs"
+category = "Bell"
+comment = "Translated from DX7 factory ROM 'STRG-CHIME': algo 2, feedback 7."
+
+[params]
+algo = 2
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 1
+op1-eg-r1 = 40
+op1-eg-r2 = 20
+op1-eg-r3 = 20
+op1-eg-r4 = 47
+op1-eg-l1 = 99
+op1-eg-l2 = 99
+op1-eg-l3 = 80
+op1-eg-l4 = 0
+op1-ks-break-pt = 57
+op1-ks-l-depth = 0
+op1-ks-r-depth = 99
+op1-ks-r-curve = "neg-lin"
+
+# op2
+op2-num = 1
+op2-level = 75
+op2-vel-sens = 0
+op2-eg-r1 = 97
+op2-eg-r2 = 15
+op2-eg-r3 = 15
+op2-eg-r4 = 43
+op2-eg-l1 = 99
+op2-eg-l2 = 98
+op2-eg-l3 = 98
+op2-eg-l4 = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 2
+op3-level = 99
+op3-vel-sens = 3
+op3-eg-r1 = 99
+op3-eg-r2 = 64
+op3-eg-r3 = 20
+op3-eg-r4 = 34
+op3-eg-l1 = 99
+op3-eg-l2 = 90
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-break-pt = 65
+op3-ks-l-depth = 97
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 5
+op4-level = 70
+op4-vel-sens = 0
+op4-eg-r1 = 99
+op4-eg-r2 = 64
+op4-eg-r3 = 20
+op4-eg-r4 = 34
+op4-eg-l1 = 99
+op4-eg-l2 = 90
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-break-pt = 65
+op4-ks-l-depth = 97
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 7
+op5-level = 63
+op5-vel-sens = 2
+op5-eg-r1 = 99
+op5-eg-r2 = 64
+op5-eg-r3 = 20
+op5-eg-r4 = 34
+op5-eg-l1 = 99
+op5-eg-l2 = 90
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-break-pt = 65
+op5-ks-l-depth = 97
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 12
+op6-level = 81
+op6-vel-sens = 3
+op6-eg-r1 = 99
+op6-eg-r2 = 64
+op6-eg-r3 = 20
+op6-eg-r4 = 34
+op6-eg-l1 = 99
+op6-eg-l2 = 90
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-break-pt = 65
+op6-ks-l-depth = 97
+op6-ks-r-depth = 0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -12.34

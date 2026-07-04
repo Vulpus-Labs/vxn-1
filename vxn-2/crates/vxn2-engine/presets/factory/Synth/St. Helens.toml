@@ -1,0 +1,144 @@
+schema = 1
+
+[meta]
+name = "St. Helens"
+author = "Vulpus Labs"
+category = "Synth"
+comment = "Translated from DX7 factory ROM 'ST.HELENS': algo 17, feedback 7. DX7 transpose -24 st baked into ratios."
+
+[params]
+algo = 17
+feedback = 4.9
+
+# op1
+op1-num = 1
+op1-denom = 8
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 45
+op1-eg-r2 = 14
+op1-eg-r3 = 14
+op1-eg-r4 = 32
+op1-eg-l1 = 99
+op1-eg-l2 = 23
+op1-eg-l3 = 0
+op1-eg-l4 = 86
+op1-ks-rate = 0
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-denom = 8
+op2-detune = 3
+op2-level = 92
+op2-vel-sens = 0
+op2-eg-r1 = 45
+op2-eg-r2 = 14
+op2-eg-r3 = 14
+op2-eg-r4 = 19
+op2-eg-l1 = 99
+op2-eg-l2 = 23
+op2-eg-l3 = 0
+op2-eg-l4 = 85
+op2-ks-rate = 0
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-denom = 8
+op3-detune = 9
+op3-level = 97
+op3-vel-sens = 0
+op3-eg-r1 = 21
+op3-eg-r2 = 20
+op3-eg-r3 = 99
+op3-eg-r4 = 19
+op3-eg-l1 = 0
+op3-eg-l2 = 0
+op3-eg-l3 = 99
+op3-eg-l4 = 85
+op3-ks-rate = 7
+op3-ks-break-pt = 100
+op3-ks-l-depth = 67
+op3-ks-r-depth = 98
+op3-ks-l-curve = "pos-lin"
+op3-ks-r-curve = "neg-lin"
+
+# op4
+op4-num = 1
+op4-denom = 8
+op4-fine = 23
+op4-level = 93
+op4-vel-sens = 0
+op4-eg-r1 = 32
+op4-eg-r2 = 20
+op4-eg-r3 = 99
+op4-eg-r4 = 20
+op4-eg-l1 = 0
+op4-eg-l2 = 0
+op4-eg-l3 = 99
+op4-eg-l4 = 89
+op4-ks-rate = 7
+op4-ks-break-pt = 118
+op4-ks-l-depth = 69
+op4-ks-r-depth = 98
+op4-ks-l-curve = "pos-lin"
+op4-ks-r-curve = "neg-lin"
+
+# op5
+op5-num = 1
+op5-denom = 6
+op5-fine = -10
+op5-level = 98
+op5-vel-sens = 0
+op5-eg-r1 = 28
+op5-eg-r2 = 20
+op5-eg-r3 = 99
+op5-eg-r4 = 18
+op5-eg-l1 = 0
+op5-eg-l2 = 0
+op5-eg-l3 = 99
+op5-eg-l4 = 90
+op5-ks-rate = 7
+op5-ks-break-pt = 119
+op5-ks-l-depth = 72
+op5-ks-r-depth = 98
+op5-ks-l-curve = "pos-lin"
+op5-ks-r-curve = "neg-lin"
+
+# op6
+op6-num = 1
+op6-denom = 8
+op6-fine = 49
+op6-level = 96
+op6-vel-sens = 0
+op6-eg-r1 = 19
+op6-eg-r2 = 20
+op6-eg-r3 = 99
+op6-eg-r4 = 19
+op6-eg-l1 = 99
+op6-eg-l2 = 0
+op6-eg-l3 = 99
+op6-eg-l4 = 89
+op6-ks-rate = 7
+op6-ks-break-pt = 120
+op6-ks-l-depth = 72
+op6-ks-r-depth = 98
+op6-ks-l-curve = "pos-lin"
+op6-ks-r-curve = "neg-lin"
+
+peg-r1 = 93
+peg-r2 = 98
+peg-r3 = 98
+peg-r4 = 98
+peg-l1 = -99
+peg-l2 = -94
+peg-l3 = -86
+peg-l4 = -80
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -15.81

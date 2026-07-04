@@ -1,0 +1,131 @@
+schema = 1
+
+[meta]
+name = "Piano 5ths"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "Translated from DX7 factory ROM 'PIANO 5THS': algo 5, feedback 3."
+
+[params]
+algo = 5
+feedback = 2.1
+
+# op1
+op1-num = 1
+op1-detune = 5
+op1-level = 99
+op1-vel-sens = 0
+op1-eg-r1 = 90
+op1-eg-r2 = 38
+op1-eg-r3 = 26
+op1-eg-r4 = 60
+op1-eg-l1 = 99
+op1-eg-l2 = 81
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 1
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 1
+op2-level = 82
+op2-vel-sens = 1
+op2-eg-r1 = 97
+op2-eg-r2 = 60
+op2-eg-r3 = 0
+op2-eg-r4 = 58
+op2-eg-l1 = 99
+op2-eg-l2 = 92
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-break-pt = 38
+op2-ks-l-depth = 0
+op2-ks-r-depth = 40
+op2-ks-r-curve = "neg-exp"
+
+# op3
+op3-num = 1
+op3-detune = -5
+op3-level = 99
+op3-vel-sens = 1
+op3-eg-r1 = 90
+op3-eg-r2 = 38
+op3-eg-r3 = 26
+op3-eg-r4 = 60
+op3-eg-l1 = 99
+op3-eg-l2 = 45
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 1
+op3-ks-break-pt = 70
+op3-ks-l-depth = 23
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 8
+op4-level = 72
+op4-vel-sens = 2
+op4-eg-r1 = 90
+op4-eg-r2 = 79
+op4-eg-r3 = 0
+op4-eg-r4 = 39
+op4-eg-l1 = 85
+op4-eg-l2 = 70
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 6
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 3
+op5-denom = 2
+op5-detune = -1
+op5-level = 99
+op5-vel-sens = 2
+op5-eg-r1 = 90
+op5-eg-r2 = 25
+op5-eg-r3 = 26
+op5-eg-r4 = 60
+op5-eg-l1 = 99
+op5-eg-l2 = 90
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 1
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 3
+op6-denom = 2
+op6-detune = 2
+op6-level = 58
+op6-vel-sens = 0
+op6-eg-r1 = 90
+op6-eg-r2 = 25
+op6-eg-r3 = 26
+op6-eg-r4 = 60
+op6-eg-l1 = 99
+op6-eg-l2 = 90
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 1
+op6-ks-l-depth = 0
+op6-ks-r-depth = 0
+
+lfo2-shape = "Tri"
+lfo2-rate = 11.99
+lfo2-delay = 2812.0
+lfo2-fade = 0.0
+
+stack-density = 1
+delay-on = false
+reverb-on = false
+master-volume = -17.06
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+depth = 0.0768
