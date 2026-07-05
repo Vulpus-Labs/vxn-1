@@ -175,15 +175,18 @@ const RAMP_SNAP_EPS: f32 = 1e-9;
 /// four glide their `stack.*` field linearly across the block while the slot's
 /// `ramp_live` flag is set. `prev_eg` is the EG level the previous block's ramp
 /// targeted, used to rebase the level ramp across the EG's block-edge march
-/// (0077). `STACK_LANES` (8) and `N_OPS` (6) are both ≤ 32, so `derive(Default)`
-/// (and `Clone`, for `vec![_; N_STACKS]`) cover the array fields.
+/// (0077). It is **per-lane** (0187): each unison lane carries its own amp EG,
+/// so with an `eg-rate` spread the lanes march at different speeds and each
+/// needs its own block-edge rebase. `STACK_LANES` (8) and `N_OPS` (6) are both
+/// ≤ 32, so `derive(Default)` (and `Clone`, for `vec![_; N_STACKS]`) cover the
+/// array fields.
 #[derive(Clone, Default)]
 struct RampState {
     level_mod: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
     pan_l: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
     pan_r: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
     phase_mod: [[i32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
-    prev_eg: [f32; vxn2_dsp::algo::N_OPS],
+    prev_eg: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
 }
 
 /// Block-rate outputs of [`Engine::cook_stacks_block`] that
@@ -513,7 +516,7 @@ impl Engine {
             self.stack_detune_mod[i] = 0.0;
             self.stack_spread_mod[i] = 0.0;
             self.ramp_live[i] = false;
-            self.ramps[i].prev_eg = [0.0; vxn2_dsp::algo::N_OPS];
+            self.ramps[i].prev_eg = [[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS];
             self.filter_l[i].reset();
             self.filter_r[i].reset();
             self.hp_l[i].reset();
@@ -662,6 +665,27 @@ impl Engine {
                     | DestId::Op4StackPitch
                     | DestId::Op5StackPitch
                     | DestId::Op6StackPitch
+            ) && s.source != SourceId::None
+                && s.depth != 0.0
+        })
+    }
+
+    /// True when any live slot targets an amp-EG rate dest (0187). Gates the
+    /// note-on rescale so a patch with no `eg-rate` route never touches the
+    /// cooked EG rates — the off-path stays bit-identical to pre-0187.
+    fn eg_rate_targeted(&self) -> bool {
+        self.matrix.slots.iter().any(|s| {
+            matches!(
+                s.dest,
+                DestId::GlobalEgRate
+                    | DestId::Op1EgRate
+                    | DestId::Op2EgRate
+                    | DestId::Op3EgRate
+                    | DestId::Op4EgRate
+                    | DestId::Op5EgRate
+                    | DestId::Op6EgRate
+                    | DestId::PitchEgRate
+                    | DestId::ModEnvRate
             ) && s.source != SourceId::None
                 && s.depth != 0.0
         })
@@ -925,6 +949,11 @@ impl Engine {
         let mut lfo1_rate_oct_sum = 0.0_f32;
         let mut fx_active = 0u32;
 
+        // eg-rate note-on scale gate (0187): resolved once per block; the
+        // per-stack apply below is further gated on `fresh` so the rescale
+        // (which multiplies the cooked rates) lands exactly once per note.
+        let eg_rate_targeted = self.eg_rate_targeted();
+
         for i in 0..self.alloc.stacks.len() {
             // == STAGE 1: Idle skip — release the slot's ramp, forget its EG (early-out). ==
             if self.alloc.stacks[i].is_idle() {
@@ -932,7 +961,7 @@ impl Engine {
                 // Forget the last rendered EG level so a future fresh note reusing
                 // this slot rebases its onset from silence, not a stale level left
                 // by a hard-silenced (declicked) voice.
-                self.ramps[i].prev_eg = [0.0; vxn2_dsp::algo::N_OPS];
+                self.ramps[i].prev_eg = [[0.0; STACK_LANES]; vxn2_dsp::algo::N_OPS];
                 continue;
             }
             // == STAGE 2: Fresh-note detection — clears macro mods before the VoiceSpread
@@ -970,7 +999,10 @@ impl Engine {
             let pitch_eg = {
                 let depth = voice.peg_depth;
                 if depth.abs() > 1e-6 {
-                    stack.meta.pitch_eg.level_st / depth
+                    // Pitch EG is per-lane (0187); the matrix source reads lane 0
+                    // to keep its per-stack tier (all lanes are identical unless a
+                    // pitch-eg-rate route decorrelates them).
+                    stack.meta.pitch_eg[0].level_st / depth
                 } else {
                     0.0
                 }
@@ -1028,6 +1060,41 @@ impl Engine {
             // (no stack-pitch route) path is untouched.
             if stack_pitch_targeted {
                 scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
+            }
+
+            // == STAGE 5b: eg-rate note-on scale (0187). On the fresh block only,
+            //          fold the per-lane eg-rate dest columns into each lane's
+            //          cooked amp-EG rates so a `voice-spread → eg-rate` route
+            //          makes the unison lanes evolve at different speeds. Note-on
+            //          static: applied exactly once (rescale multiplies), reading
+            //          the VoiceSpread source that is already valid on the fresh
+            //          block. The value is in octaves (`rate · 2^oct`, ±4 oct at
+            //          full depth), clamped to ±4 oct so a multi-route sum can't
+            //          drive the rate to an absurd extreme. ==
+            if fresh && eg_rate_targeted {
+                let global_idx = DestId::GlobalEgRate.idx().unwrap();
+                let op_eg_base = DestId::Op1EgRate.idx().unwrap();
+                let pitch_idx = DestId::PitchEgRate.idx().unwrap();
+                let mod_idx = DestId::ModEnvRate.idx().unwrap();
+                // Amp EGs: per-op × per-lane (global + per-op route).
+                let mut eg_rate_scale = [[1.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
+                // Pitch EG: per-lane (global + pitch route).
+                let mut pitch_scale = [1.0_f32; STACK_LANES];
+                for k in 0..STACK_LANES {
+                    let g = self.dest_vals[i][k][global_idx];
+                    for op_i in 0..vxn2_dsp::algo::N_OPS {
+                        let oct = (g + self.dest_vals[i][k][op_eg_base + op_i]).clamp(-4.0, 4.0);
+                        eg_rate_scale[op_i][k] = oct.exp2();
+                    }
+                    pitch_scale[k] = (g + self.dest_vals[i][k][pitch_idx]).clamp(-4.0, 4.0).exp2();
+                }
+                // Mod Env: one-per-voice → lane-0 collapse (global + mod route).
+                let mod_oct =
+                    (self.dest_vals[i][0][global_idx] + self.dest_vals[i][0][mod_idx]).clamp(-4.0, 4.0);
+                let stack = &mut self.alloc.stacks[i];
+                stack.rescale_eg_rates(&eg_rate_scale);
+                stack.rescale_pitch_eg_rates(&pitch_scale);
+                stack.rescale_mod_env_rate(mod_oct.exp2());
             }
 
             // == STAGE 6: Per-op level/pan/phase target projection from dest_vals. ==
@@ -1121,8 +1188,10 @@ impl Engine {
             // bit-exact: m = 0 → target offset 0, rebase +0.
             let prev_eg = &mut self.ramps[i].prev_eg;
             for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let eg = stack.core.ops[op_i].eg.level;
                 for k in 0..STACK_LANES {
+                    // Per-lane EG level (0187): each lane's own envelope drives its
+                    // own effective level and block-edge rebase.
+                    let eg = stack.core.ops[op_i].eg[k].level;
                     let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
                     level_targets[op_i][k] = eff - eg;
                     // Keep the rendered level (`eg + op_level_mod`) continuous
@@ -1138,9 +1207,9 @@ impl Engine {
                     //     the outgoing note's `op_level_mod` is still live, so the
                     //     new note ramps from the previous note's level instead of
                     //     dipping to 0 first — which itself was a click.
-                    stack.core.op_level_mod[op_i][k] += prev_eg[op_i] - eg;
+                    stack.core.op_level_mod[op_i][k] += prev_eg[op_i][k] - eg;
+                    prev_eg[op_i][k] = eg;
                 }
-                prev_eg[op_i] = eg;
             }
             // == STAGE 9: Ramp-increment compute — fresh snap vs continuing glide for the
             //          level/pan/phase ramps. ==
@@ -2247,6 +2316,97 @@ mod tests {
         );
     }
 
+    /// `voice-spread → global-eg-rate` (0187): on the fresh block the note-on
+    /// eval must fold each lane's spread into that lane's cooked amp-EG rates, so
+    /// the unison lanes end up with different march rates. Un-routed engines stay
+    /// bit-identical.
+    #[test]
+    fn eg_rate_dest_diverges_lane_rates_on_fresh_block() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.patch.stack.density = 4;
+        e.params.patch.stack.spread = 1.0; // full-width VoiceSpread source
+        e.matrix.slots[0] = MatrixSlot {
+            source: SourceId::VoiceSpread,
+            dest: DestId::GlobalEgRate,
+            depth: 1.0,
+            curve: CurveKind::Lin,
+        };
+        e.note_on(60, 100);
+
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r); // fresh block resolves + applies the rescale
+
+        let stack = e
+            .alloc
+            .stacks
+            .iter()
+            .find(|s| !s.is_idle())
+            .expect("no active voice");
+        // Linear spread over 4 lanes is symmetric [-1 .. +1], so lane 0 (scale
+        // 2^-1) must march slower than lane 3 (scale 2^+1) — a ~4× ratio.
+        let slow = stack.core.ops[0].eg[0].rates_per_sec[1];
+        let fast = stack.core.ops[0].eg[3].rates_per_sec[1];
+        assert!(
+            fast > slow * 3.0,
+            "lanes did not diverge: slow(lane0)={slow}, fast(lane3)={fast}"
+        );
+
+        // A matching engine with no eg-rate route leaves the rates uniform.
+        let mut plain = Engine::new(SR, BLK);
+        plain.params.patch.stack.density = 4;
+        plain.params.patch.stack.spread = 1.0;
+        plain.note_on(60, 100);
+        plain.process_block(&mut l, &mut r);
+        let ps = plain.alloc.stacks.iter().find(|s| !s.is_idle()).unwrap();
+        assert_eq!(
+            ps.core.ops[0].eg[0].rates_per_sec[1],
+            ps.core.ops[0].eg[3].rates_per_sec[1],
+            "un-routed engine had non-uniform lane rates"
+        );
+    }
+
+    /// `voice-spread → pitch-eg-rate` (0187): the fresh-block eval must scale the
+    /// per-lane Pitch EG rates, so after the sweep runs the unison lanes sit at
+    /// different points (chorusing). Un-routed engines keep the lanes locked.
+    #[test]
+    fn pitch_eg_rate_dest_decorrelates_lane_sweeps() {
+        use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
+        use vxn2_dsp::envelope::PitchEgParams;
+
+        let setup = |route: bool| {
+            let mut e = Engine::new(SR, BLK);
+            e.params.patch.stack.density = 4;
+            e.params.patch.stack.spread = 1.0;
+            e.params.patch.voice.peg_depth = 12.0;
+            // Rise to +12 st then decay back — a sweep that's mid-flight a while.
+            e.params.patch.voice.pitch_eg = PitchEgParams { r: [70, 20, 20, 20], l: [99, 0, 0, 0] };
+            if route {
+                e.matrix.slots[0] = MatrixSlot {
+                    source: SourceId::VoiceSpread,
+                    dest: DestId::PitchEgRate,
+                    depth: 1.0,
+                    curve: CurveKind::Lin,
+                };
+            }
+            e.note_on(60, 100);
+            let mut l = [0.0_f32; BLK];
+            let mut r = [0.0_f32; BLK];
+            for _ in 0..12 {
+                e.process_block(&mut l, &mut r);
+            }
+            let s = e.alloc.stacks.iter().find(|s| !s.is_idle()).unwrap();
+            (s.meta.pitch_eg[0].level_st, s.meta.pitch_eg[3].level_st)
+        };
+
+        let (r0, r3) = setup(true);
+        assert!((r0 - r3).abs() > 1e-2, "pitch sweep not decorrelated: l0={r0}, l3={r3}");
+        let (u0, u3) = setup(false);
+        assert!((u0 - u3).abs() < 1e-6, "un-routed pitch lanes diverged: l0={u0}, l3={u3}");
+    }
+
     /// Level + pan matrix routes ramp to each block's target instead of
     /// stepping at block edges (ticket 0074): after every `process_block`
     /// the stack's level mod has converged on that block's accumulator
@@ -2287,7 +2447,7 @@ mod tests {
         // `process_block` returns. The ramp must converge each block on this
         // target — no smoothing.
         let target = |e: &Engine, k: usize| {
-            let eg = e.alloc.stacks[slot].core.ops[0].eg.level;
+            let eg = e.alloc.stacks[slot].core.ops[0].eg[k].level;
             let m = self::tests_dest_val(e, slot, k, level_idx);
             (eg * (1.0 + m)).clamp(0.0, 1.0) - eg
         };
@@ -3192,7 +3352,12 @@ mod tests {
             e.alloc
                 .stacks
                 .iter()
-                .any(|s| s.core.ops.iter().any(|op| op.eg.level > 1e-4))
+                .any(|s| {
+                    s.core
+                        .ops
+                        .iter()
+                        .any(|op| op.eg.iter().any(|e| e.level > 1e-4))
+                })
         };
 
         let shared = SharedParams::new();

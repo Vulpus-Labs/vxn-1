@@ -179,6 +179,20 @@ impl EgState {
         }
     }
 
+    /// Multiply every cooked march rate by `scale` (a per-lane `eg-rate` mod
+    /// factor — ticket 0187). Applied *after* [`cook`](Self::cook) so it composes
+    /// with the key-rate scaling already baked in: `scale > 1` makes the envelope
+    /// evolve faster (shorter attack/decay/release), `< 1` slower. Segment targets
+    /// are untouched — only the speed between them changes. `scale == 1.0` is a
+    /// no-op (rates unchanged bit-for-bit), so an un-targeted voice is identical.
+    #[inline]
+    pub fn scale_rates(&mut self, scale: f32) {
+        for i in 0..4 {
+            self.rates_per_sec[i] *= scale;
+            self.log_rates[i] *= scale;
+        }
+    }
+
     /// Trigger the attack stage. Level continues from wherever it is — this
     /// supports retrigger without click.
     pub fn note_on(&mut self) {
@@ -574,5 +588,40 @@ mod tests {
             }
         }
         assert!(ticks_a > 2 * ticks_b, "4× rate didn't shorten attack");
+    }
+
+    #[test]
+    fn scale_rates_identity_is_bit_exact() {
+        // The `eg-rate` note-on path (0187) calls `scale_rates(1.0)` on every
+        // un-targeted lane; it must leave the cooked rates bit-for-bit unchanged.
+        let params = default_params();
+        let mut a = EgState::default();
+        a.cook(&params, 0.8, 1.3, EgCurve::Exp);
+        let before = a.rates_per_sec;
+        a.scale_rates(1.0);
+        assert_eq!(a.rates_per_sec, before, "scale 1.0 perturbed rates");
+    }
+
+    #[test]
+    fn scale_rates_speeds_up_the_envelope() {
+        // A scale > 1 shortens every segment proportionally; here the whole
+        // attack should finish in fewer ticks. Compare a 3× lane against baseline.
+        let params = EgParams { r: [30, 20, 20, 60], l: [99, 70, 40, 0] };
+        let dt = 1.0 / 1_000.0;
+        let run_to_sustain = |scale: f32| {
+            let mut eg = EgState::default();
+            eg.cook(&params, 1.0, 1.0, EgCurve::Exp);
+            eg.scale_rates(scale);
+            eg.note_on();
+            let mut ticks = 0;
+            while eg.stage != EgStage::Sustain && ticks < 1_000_000 {
+                eg.tick(dt);
+                ticks += 1;
+            }
+            ticks
+        };
+        let base = run_to_sustain(1.0);
+        let fast = run_to_sustain(3.0);
+        assert!(fast < base, "3× scale ({fast}) not faster than baseline ({base})");
     }
 }

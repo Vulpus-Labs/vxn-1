@@ -198,8 +198,13 @@ pub struct StackOp {
     /// Pre-bend/glide cooked phase increment per lane. Source-of-truth for
     /// `apply_pitch_mult()` — `phase_inc[k] = base_phase_inc[k] * mult`.
     pub base_phase_inc: [u32; STACK_LANES],
-    /// Per-op envelope; shared across lanes (one EG, one level per op).
-    pub eg: crate::eg::EgState,
+    /// Per-op, per-lane amplitude envelope. One `EgState` per unison lane so
+    /// the matrix `eg-rate` dests (ticket 0187) can scale each lane's EG rate
+    /// independently — the voices in a stack evolve their envelopes at slightly
+    /// different speeds. All lanes cook from the same `EgParams`; only the
+    /// note-on `rate_mult` differs per lane (see `rescale_eg_rates`). Lanes past
+    /// `density` are cooked identically but silenced by the pan mask.
+    pub eg: [crate::eg::EgState; STACK_LANES],
     /// Cooked feedback gain per lane. Non-zero only on the algorithm's
     /// structural FB op; per-lane because the matrix `Feedback` dest is a
     /// voice property (each lane can carry its own modulated amount).
@@ -270,6 +275,16 @@ pub struct StackCore {
     /// level/pan ramps. Zero when no phase route is active → `wrapping_add(0)`
     /// is a no-op that stays vectorised.
     pub op_phase_mod_q32: [[u32; STACK_LANES]; N_OPS],
+    /// Contiguous mirror of each op's per-lane amp-EG `level` (0187). The EG is
+    /// per-lane now, but each `EgState` is ~80 B, so gathering `eg[k].level`
+    /// across 8 lanes in the per-sample render kernel would stride over ~10 cache
+    /// lines per op every sample. Instead the levels are copied here — 3 cache
+    /// lines, laid out exactly like `op_level_mod` — once per control tick (see
+    /// [`Stack::refresh_eg_levels`]), and the hot loop reads this SoA so the
+    /// `(level + level_mod)` lane loop stays a contiguous, vectorisable load. The
+    /// EG level is constant across a block (it marches only in `eg_tick`), so the
+    /// mirror is exact, not an approximation.
+    pub op_eg_level: [[f32; STACK_LANES]; N_OPS],
     /// Per-carrier-op, per-lane stereo gain pre-multiplied with the
     /// equal-power pan curve, the carrier mask, and the active-lane mask.
     /// Inactive lanes and non-carrier ops are zeroed — no per-sample branch.
@@ -285,6 +300,7 @@ impl Default for StackCore {
             op_level_mod: [[0.0_f32; STACK_LANES]; N_OPS],
             op_nyquist_fade: [[1.0_f32; STACK_LANES]; N_OPS],
             op_phase_mod_q32: [[0_u32; STACK_LANES]; N_OPS],
+            op_eg_level: [[0.0_f32; STACK_LANES]; N_OPS],
             pan_l: [[0.0_f32; STACK_LANES]; N_OPS],
             pan_r: [[0.0_f32; STACK_LANES]; N_OPS],
         }
@@ -324,10 +340,13 @@ pub struct StackMeta {
     pub route_fn: LaneRouteFn,
     /// Per-voice LFO2, lane-packed across the 8 stack lanes (ticket 0006).
     pub lfo2: Lfo2Stack,
-    /// Patch-wide Pitch EG (ticket 0007). Shared across stack lanes — same
-    /// precedent as the per-op EG. Output is in semitones; default routing
-    /// adds into the voice pitch sum.
-    pub pitch_eg: PitchEgState,
+    /// Per-lane Pitch EG (ticket 0007; per-lane since 0187). Output is in
+    /// semitones, folded into each lane's pitch sum. Per-lane so a
+    /// `voice-spread → pitch-eg-rate` route decorrelates the pitch sweep across
+    /// the unison stack (a chorusing effect). All lanes cook identically; only
+    /// the note-on rate scale differs (see `rescale_pitch_eg_rates`). The matrix
+    /// `PitchEg` *source* reads lane 0 to keep its per-stack tier.
+    pub pitch_eg: [PitchEgState; STACK_LANES],
     /// Patch-wide Mod Env (ticket 0007). Matrix-only source; ticks alongside
     /// the per-op EGs so 0008 can read its level without per-block coupling.
     pub mod_env: ModEnvState,
@@ -363,7 +382,7 @@ impl Default for StackMeta {
             algo: 1,
             route_fn: resolve_lane_route(1),
             lfo2: Lfo2Stack::default(),
-            pitch_eg: PitchEgState::default(),
+            pitch_eg: [PitchEgState::default(); STACK_LANES],
             mod_env: ModEnvState::default(),
             cached_spread: 0.0,
             detune_cents_max: 0.0,
@@ -559,12 +578,15 @@ impl Stack {
                 master_mult,
                 stack_params.detune_cents_max,
             );
-            self.core.ops[i].eg.note_on();
+            for e in &mut self.core.ops[i].eg {
+                e.note_on();
+            }
         }
         self.set_feedback_live(voice_params.feedback);
-        self.meta.pitch_eg
-            .cook(&voice_params.pitch_eg, voice_params.peg_depth, 1.0);
-        self.meta.pitch_eg.note_on();
+        for pe in &mut self.meta.pitch_eg {
+            pe.cook(&voice_params.pitch_eg, voice_params.peg_depth, 1.0);
+            pe.note_on();
+        }
         self.meta.mod_env.cook(&voice_params.mod_env);
         self.meta.mod_env.note_on();
         self.meta.glide_st = 0.0;
@@ -581,6 +603,9 @@ impl Stack {
             self.meta.cached_op_pans[i] = voice_params.ops[i].pan;
         }
         self.core.prev_outs = [[0.0_f32; STACK_LANES]; N_OPS];
+        // Seed the contiguous EG-level mirror (0187) so a render before the first
+        // eg_tick (tests/benches) reads the note-on levels, not stale data.
+        self.refresh_eg_levels();
         // Matrix writes block-rate; until the first block runs, hold zero.
         self.core.op_level_mod = [[0.0_f32; STACK_LANES]; N_OPS];
         self.modulation.global_pitch_mod_st = [0.0_f32; STACK_LANES];
@@ -630,9 +655,13 @@ impl Stack {
         self.meta.gate = false;
         self.meta.phase = VoicePhase::Releasing;
         for op in &mut self.core.ops {
-            op.eg.note_off();
+            for e in &mut op.eg {
+                e.note_off();
+            }
         }
-        self.meta.pitch_eg.note_off();
+        for pe in &mut self.meta.pitch_eg {
+            pe.note_off();
+        }
         self.meta.mod_env.note_off();
     }
 
@@ -645,9 +674,17 @@ impl Stack {
     /// All amp EGs have reached Idle — used by the allocator's `block_tick` to
     /// retire a `Held`/`Releasing` voice once its envelopes have fully decayed
     /// (a released note, or a percussive sustain-0 patch that dies while held).
+    ///
+    /// Only the **active** lanes (`< density`) are checked: `eg_tick` skips the
+    /// inactive lanes (they're pan-masked to silence), so they stay frozen at
+    /// their note-on stage and must not gate retirement (0187).
     #[inline]
     pub fn eg_all_idle(&self) -> bool {
-        self.core.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
+        let density = self.meta.density as usize;
+        self.core
+            .ops
+            .iter()
+            .all(|o| o.eg[..density].iter().all(|e| e.stage == EgStage::Idle))
     }
 
     /// Instantaneous radiated amplitude: the sum of the *carrier* ops' current
@@ -660,13 +697,17 @@ impl Stack {
     /// Used by the allocator to steal the *quietest* voice when polyphony is
     /// full: re-attacking a low-level voice reads as a near-fresh attack rather
     /// than the loud "twang" of re-attacking a voice sitting at full sustain.
+    ///
+    /// Reads lane 0's EG (always active — density ≥ 1) as the representative
+    /// level; the per-lane `eg-rate` spread (0187) only perturbs decay timing,
+    /// not the coarse loudness this heuristic needs.
     #[inline]
     pub fn carrier_level(&self) -> f32 {
         let carriers = spec_of(self.meta.algo).carriers;
         let mut sum = 0.0;
         for i in 0..N_OPS {
             if (carriers >> i) & 1 == 1 {
-                sum += self.core.ops[i].eg.level;
+                sum += self.core.ops[i].eg[0].level;
             }
         }
         sum
@@ -680,10 +721,15 @@ impl Stack {
         self.meta.phase = VoicePhase::Idle;
         self.meta.idle_grace = false;
         for op in &mut self.core.ops {
-            op.eg.stage = EgStage::Idle;
-            op.eg.level = 0.0;
+            for e in &mut op.eg {
+                e.stage = EgStage::Idle;
+                e.level = 0.0;
+            }
         }
-        self.meta.pitch_eg.note_off();
+        self.refresh_eg_levels();
+        for pe in &mut self.meta.pitch_eg {
+            pe.note_off();
+        }
         self.meta.mod_env.note_off();
     }
 
@@ -698,7 +744,9 @@ impl Stack {
         self.meta.gate = false;
         self.meta.phase = VoicePhase::Declick;
         for op in &mut self.core.ops {
-            op.eg.kill_release(DECLICK_SECS);
+            for e in &mut op.eg {
+                e.kill_release(DECLICK_SECS);
+            }
         }
     }
 
@@ -709,7 +757,60 @@ impl Stack {
     /// oscillator phase, LFO2, or the pitch/mod envelopes.
     pub fn retrigger_eg(&mut self) {
         for op in &mut self.core.ops {
-            op.eg.note_on();
+            for e in &mut op.eg {
+                e.note_on();
+            }
+        }
+    }
+
+    /// Apply a per-op, per-lane amp-EG **rate scale** (ticket 0187). `scale[i][k]`
+    /// multiplies op `i`, lane `k`'s cooked march rates, so a `VoiceSpread →
+    /// eg-rate` matrix route makes the unison lanes evolve their envelopes at
+    /// slightly different speeds. Call *after* the note-on/legato cook (which
+    /// resets rates to the key-scaled baseline) — the engine resolves the note-on
+    /// matrix into `scale` and calls this once per re-cook. An all-`1.0` scale
+    /// leaves every EG bit-identical to the un-modulated cook.
+    #[inline]
+    pub fn rescale_eg_rates(&mut self, scale: &[[f32; STACK_LANES]; N_OPS]) {
+        for i in 0..N_OPS {
+            for k in 0..STACK_LANES {
+                self.core.ops[i].eg[k].scale_rates(scale[i][k]);
+            }
+        }
+    }
+
+    /// Apply a per-lane Pitch-EG rate scale (0187) — the `pitch-eg-rate` /
+    /// `global-eg-rate` note-on route. `scale[k]` multiplies lane `k`'s Pitch EG
+    /// sweep rate, so a `voice-spread` route decorrelates the pitch sweep across
+    /// the unison stack (chorusing). Call after the note-on cook.
+    #[inline]
+    pub fn rescale_pitch_eg_rates(&mut self, scale: &[f32; STACK_LANES]) {
+        for k in 0..STACK_LANES {
+            self.meta.pitch_eg[k].scale_rates(scale[k]);
+        }
+    }
+
+    /// Apply a single Mod-Env rate scale (0187) — the `mod-env-rate` /
+    /// `global-eg-rate` note-on route. The Mod Env is one-per-voice (it drives
+    /// per-stack targets like filter cutoff, where lane decorrelation is
+    /// meaningless), so this is a scalar. Call after the note-on cook.
+    #[inline]
+    pub fn rescale_mod_env_rate(&mut self, scale: f32) {
+        self.meta.mod_env.scale_rates(scale);
+    }
+
+    /// Copy each op's per-lane amp-EG `level` into the contiguous
+    /// [`StackCore::op_eg_level`] mirror the per-sample render kernel reads
+    /// (0187). Called at control rate wherever the EG level changes — after
+    /// `eg_tick`, at note-on, and on the direct level pokes (`force_sustain`,
+    /// `silence`). The level is constant across a block, so the mirror stays
+    /// exact between refreshes.
+    #[inline]
+    fn refresh_eg_levels(&mut self) {
+        for i in 0..N_OPS {
+            for k in 0..STACK_LANES {
+                self.core.op_eg_level[i][k] = self.core.ops[i].eg[k].level;
+            }
         }
     }
 
@@ -739,7 +840,9 @@ impl Stack {
     /// option a).
     #[inline]
     pub fn apply_pitch_mult(&mut self) {
-        let base_st = self.meta.bend_st + self.meta.glide_st + self.meta.pitch_eg.level_st;
+        // Pitch EG is per-lane (0187) so it drops into the lane loop below; bend +
+        // glide are per-stack scalars.
+        let base_st = self.meta.bend_st + self.meta.glide_st;
         // Nyquist fade is carrier-only (0073). A carrier's output is heard
         // directly, so a partial crossing Nyquist must fade or it folds back as
         // alias garbage — for algo 32 (all carriers) this is a genuine
@@ -754,7 +857,9 @@ impl Stack {
             for k in 0..STACK_LANES {
                 // `detune_mod_st` is the matrix `stack-detune` per-lane offset
                 // (E008 0093); 0 when un-routed → `+ 0.0` is bit-identical.
+                // `pitch_eg[k].level_st` is the per-lane Pitch EG sweep (0187).
                 let st = base_st
+                    + self.meta.pitch_eg[k].level_st
                     + self.modulation.global_pitch_mod_st[k]
                     + self.modulation.op_pitch_mod_st[i][k]
                     + self.modulation.detune_mod_st[k];
@@ -846,10 +951,21 @@ impl Stack {
     /// the per-sample loop picks up the freshly ticked Pitch EG offset.
     #[inline]
     pub fn eg_tick(&mut self, dt: f32) {
+        // Only the active lanes (`< density`) are ticked — the rest are
+        // pan-masked to silence, so ticking their per-lane amp/pitch envs is
+        // wasted control-rate work (0187). A density-1 voice (the common,
+        // unstacked case) ticks one lane, not eight. `eg_all_idle` matches this
+        // gate so retirement still fires.
+        let density = self.meta.density as usize;
         for op in &mut self.core.ops {
-            op.eg.tick(dt);
+            for e in &mut op.eg[..density] {
+                e.tick(dt);
+            }
         }
-        self.meta.pitch_eg.tick(dt);
+        self.refresh_eg_levels();
+        for pe in &mut self.meta.pitch_eg[..density] {
+            pe.tick(dt);
+        }
         self.meta.mod_env.tick(dt);
         self.apply_pitch_mult();
         // Retire the voice once every amp EG has decayed to Idle: a released
@@ -875,9 +991,12 @@ impl Stack {
         self.meta.gate = true;
         self.meta.phase = VoicePhase::Held;
         for op in &mut self.core.ops {
-            op.eg.stage = EgStage::Sustain;
-            op.eg.level = level;
+            for e in &mut op.eg {
+                e.stage = EgStage::Sustain;
+                e.level = level;
+            }
         }
+        self.refresh_eg_levels();
     }
 
     // --- internals ---------------------------------------------------------
@@ -936,7 +1055,12 @@ impl Stack {
         let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
         let max_amp = level_norm * ks_lvl * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
-        self.core.ops[i].eg.cook(&params.eg, max_amp, rate_mult, params.eg_curve);
+        // Every lane cooks identically here; per-lane `eg-rate` divergence is
+        // applied afterward by `rescale_eg_rates` (ticket 0187), which the engine
+        // calls once the note-on matrix has resolved the per-lane rate scale.
+        for e in &mut self.core.ops[i].eg {
+            e.cook(&params.eg, max_amp, rate_mult, params.eg_curve);
+        }
 
         // Feedback is no longer per-op: see `set_feedback_live`. cook_op
         // leaves `fb_scale` alone; note_on calls the live setter after the
@@ -1025,8 +1149,12 @@ fn tick_ops(stack: &mut Stack) -> [[f32; STACK_LANES]; N_OPS] {
         let lvl_mod = stack.core.op_level_mod[i];
         let fade = stack.core.op_nyquist_fade[i];
         let ph_mod = stack.core.op_phase_mod_q32[i];
+        // Per-lane EG level (0187): read the contiguous per-block mirror
+        // (`op_eg_level`), NOT `ops[i].eg[k].level` — the latter strides over 8
+        // fat EgState structs every sample and defeats vectorisation. The mirror
+        // is refreshed at control rate in `refresh_eg_levels`.
+        let lvl = stack.core.op_eg_level[i];
         let op = &mut stack.core.ops[i];
-        let lvl = op.eg.level;
         // Stage 1: phase-modulation Q32 per lane (feedback already folded into
         // `mi` above).
         let mut pm_q32 = [0u32; STACK_LANES];
@@ -1044,7 +1172,7 @@ fn tick_ops(stack: &mut Stack) -> [[f32; STACK_LANES]; N_OPS] {
         let mut sines = [0.0_f32; STACK_LANES];
         for k in 0..STACK_LANES {
             let phase_mod = op.phase[k].wrapping_add(pm_q32[k]).wrapping_add(ph_mod[k]);
-            sines[k] = fast_sine_q32(phase_mod) * ((lvl + lvl_mod[k]) * fade[k]);
+            sines[k] = fast_sine_q32(phase_mod) * ((lvl[k] + lvl_mod[k]) * fade[k]);
         }
         // Stage 3: advance phase + rotate feedback memory.
         for k in 0..STACK_LANES {
@@ -1153,7 +1281,7 @@ mod tests {
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
         assert!(stack.meta.gate);
         for op in &stack.core.ops {
-            assert_eq!(op.eg.stage, EgStage::Attack);
+            assert_eq!(op.eg[0].stage, EgStage::Attack);
         }
     }
 
@@ -1205,10 +1333,9 @@ mod tests {
         };
         let vp = carrier_friendly_patch();
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
-        for op in &mut stack.core.ops {
-            op.eg.stage = EgStage::Sustain;
-            op.eg.level = 0.4;
-        }
+        // force_sustain pins every op to Sustain at 0.4 *and* refreshes the
+        // contiguous EG-level mirror the render kernel reads (0187).
+        stack.force_sustain(0.4);
         for _ in 0..8 {
             stack_tick_stereo(&mut stack);
         }
@@ -1368,10 +1495,9 @@ mod tests {
         };
         let vp = carrier_friendly_patch();
         stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
-        for op in &mut stack.core.ops {
-            op.eg.stage = EgStage::Sustain;
-            op.eg.level = 0.4;
-        }
+        // force_sustain pins every op to Sustain at 0.4 *and* refreshes the
+        // contiguous EG-level mirror the render kernel reads (0187).
+        stack.force_sustain(0.4);
         let mut peak = 0.0_f32;
         for _ in 0..512 {
             let (l, r) = stack_tick_stereo(&mut stack);
@@ -1473,12 +1599,12 @@ mod tests {
             if inc > peak_inc {
                 peak_inc = inc;
             }
-            if stack.meta.pitch_eg.stage == crate::envelope::EnvStage4::Decay1
-                || stack.meta.pitch_eg.stage == crate::envelope::EnvStage4::Decay2
+            if stack.meta.pitch_eg[0].stage == crate::envelope::EnvStage4::Decay1
+                || stack.meta.pitch_eg[0].stage == crate::envelope::EnvStage4::Decay2
             {
                 reached_decay1 = true;
             }
-            if reached_decay1 && stack.meta.pitch_eg.level_st.abs() < 0.005 {
+            if reached_decay1 && stack.meta.pitch_eg[0].level_st.abs() < 0.005 {
                 settled_at = Some(i);
                 break;
             }
@@ -1765,5 +1891,133 @@ mod tests {
                 "default PEG perturbed pitch: inc {inc} baseline {baseline}"
             );
         }
+    }
+
+    #[test]
+    fn rescale_eg_rates_diverges_lanes() {
+        // The eg-rate mod dest (0187): with a per-lane rate scale, unison lanes
+        // must evolve their amp envelopes at different speeds. Cook a 4-lane
+        // stack, make lane 1 run 3× faster than lane 0, and confirm the two
+        // lanes' op-0 EG levels diverge and that the faster lane leads.
+        let mut stack = Stack::default();
+        let sp = StackParams { density: 4, ..StackParams::default() };
+        let mut vp = carrier_friendly_patch();
+        // A clear, slow decay so the divergence is well-resolved (fast attack,
+        // long Decay1 down from L0=99 to a low L3).
+        for op in &mut vp.ops {
+            op.eg.r = [99, 15, 15, 60];
+            op.eg.l = [99, 30, 10, 0];
+        }
+        stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+
+        // Lane 1 runs 3× on every op; the rest stay at baseline (scale 1.0).
+        let mut scale = [[1.0_f32; STACK_LANES]; N_OPS];
+        for op_scale in &mut scale {
+            op_scale[1] = 3.0;
+        }
+        stack.rescale_eg_rates(&scale);
+
+        // Tick a handful of control blocks (64 samples @ 48 kHz).
+        let dt = 64.0 / 48_000.0;
+        for _ in 0..40 {
+            stack.eg_tick(dt);
+        }
+
+        let lane0 = stack.core.ops[0].eg[0].level;
+        let lane1 = stack.core.ops[0].eg[1].level;
+        let lane2 = stack.core.ops[0].eg[2].level;
+        // Lane 1 (3×) has decayed further than the baseline lanes.
+        assert!(
+            lane1 < lane0 - 1e-4,
+            "faster lane did not lead: lane0={lane0}, lane1={lane1}"
+        );
+        // Un-scaled lanes stayed together (baseline == baseline).
+        assert!(
+            (lane0 - lane2).abs() < 1e-6,
+            "baseline lanes diverged: lane0={lane0}, lane2={lane2}"
+        );
+    }
+
+    #[test]
+    fn rescale_eg_rates_identity_is_inert() {
+        // An all-1.0 scale (no eg-rate route on a lane) must leave the EG
+        // bit-identical to the plain note-on cook.
+        let mut a = Stack::default();
+        let mut b = Stack::default();
+        let sp = StackParams { density: 4, ..StackParams::default() };
+        let vp = carrier_friendly_patch();
+        a.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+        b.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+        b.rescale_eg_rates(&[[1.0; STACK_LANES]; N_OPS]);
+        for i in 0..N_OPS {
+            for k in 0..STACK_LANES {
+                assert_eq!(
+                    a.core.ops[i].eg[k].rates_per_sec,
+                    b.core.ops[i].eg[k].rates_per_sec,
+                    "identity rescale perturbed op {i} lane {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rescale_pitch_eg_rates_decorrelates_lanes() {
+        // pitch-eg-rate (0187): a per-lane scale makes the unison lanes sweep
+        // pitch at different speeds (chorusing). Give the voice a real Pitch EG
+        // sweep (attack to +depth, decay back to 0), run lane 1 at 3×, and
+        // confirm the faster lane's sweep leads while the baseline lanes track.
+        let mut stack = Stack::default();
+        let sp = StackParams { density: 4, ..StackParams::default() };
+        let mut vp = carrier_friendly_patch();
+        vp.peg_depth = 12.0;
+        vp.pitch_eg = crate::envelope::PitchEgParams {
+            r: [90, 20, 20, 20],
+            l: [99, 0, 0, 0], // rise to +12 st, then decay back to 0
+        };
+        stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+        let mut scale = [1.0_f32; STACK_LANES];
+        scale[1] = 3.0;
+        stack.rescale_pitch_eg_rates(&scale);
+
+        let dt = 64.0 / 48_000.0;
+        for _ in 0..40 {
+            stack.eg_tick(dt);
+        }
+        let l0 = stack.meta.pitch_eg[0].level_st;
+        let l1 = stack.meta.pitch_eg[1].level_st;
+        let l2 = stack.meta.pitch_eg[2].level_st;
+        // The 3× lane is at a different point in its sweep than the baseline lane
+        // (decorrelated), while the two un-scaled lanes stay locked together.
+        assert!((l0 - l1).abs() > 1e-2, "pitch sweep did not decorrelate: l0={l0}, l1={l1}");
+        assert!((l0 - l2).abs() < 1e-6, "baseline pitch lanes diverged: l0={l0}, l2={l2}");
+    }
+
+    #[test]
+    fn rescale_mod_env_rate_speeds_it_up() {
+        // mod-env-rate (0187): a single per-voice scale speeds the Mod Env. Run a
+        // scaled and an un-scaled voice to the same point and confirm the scaled
+        // one has advanced further through its attack.
+        let build = |scale: f32| {
+            let mut stack = Stack::default();
+            let sp = StackParams::default();
+            let mut vp = carrier_friendly_patch();
+            vp.mod_env = crate::envelope::ModEnvParams {
+                a_ms: 200.0,
+                d_ms: 200.0,
+                s: 0.5,
+                r_ms: 200.0,
+                shape: crate::envelope::AdsrShape::Lin,
+            };
+            stack.note_on(&sp, &vp, 60, 100, 48_000.0, 0);
+            stack.rescale_mod_env_rate(scale);
+            let dt = 64.0 / 48_000.0;
+            for _ in 0..20 {
+                stack.eg_tick(dt);
+            }
+            stack.meta.mod_env.level
+        };
+        let base = build(1.0);
+        let fast = build(3.0);
+        assert!(fast > base + 1e-4, "3× mod env not faster: base={base}, fast={fast}");
     }
 }

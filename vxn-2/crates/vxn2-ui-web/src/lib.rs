@@ -953,10 +953,12 @@ mod tests {
     fn build_matrix_lists_json_includes_all_enum_widths() {
         let v = matrix_lists_value();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        // None + 42 dests (E007 appended Cutoff + Resonance after Feedback;
+        // None + 49 dests (E007 appended Cutoff + Resonance after Feedback;
         // E022 appended the six op{N}-stack-pitch dests after Resonance;
-        // E023 appended the six op{N}-phase dests; E007 appended FilterDrive).
-        assert_eq!(v["dests"].as_array().unwrap().len(), 43);
+        // E023 appended the six op{N}-phase dests; E007 appended FilterDrive;
+        // 0187 appended global-eg-rate + the six op{N}-eg-rate dests, then
+        // pitch-eg-rate + mod-env-rate).
+        assert_eq!(v["dests"].as_array().unwrap().len(), 52);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
@@ -969,6 +971,11 @@ mod tests {
         assert_eq!(v["dests"][36]["name"], "op1-phase");
         assert_eq!(v["dests"][41]["name"], "op6-phase");
         assert_eq!(v["dests"][42]["name"], "filter-drive");
+        assert_eq!(v["dests"][43]["name"], "global-eg-rate");
+        assert_eq!(v["dests"][44]["name"], "op1-eg-rate");
+        assert_eq!(v["dests"][49]["name"], "op6-eg-rate");
+        assert_eq!(v["dests"][50]["name"], "pitch-eg-rate");
+        assert_eq!(v["dests"][51]["name"], "mod-env-rate");
         assert_eq!(v["curves"][3]["name"], "bipolar");
     }
 

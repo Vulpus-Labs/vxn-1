@@ -391,10 +391,40 @@ pub enum DestId {
     // Log/octave domain (gain 4.0 = ±4 oct), consumer applies `drive · 2^value`
     // then clamps to the [0.1, 16] param range.
     FilterDrive,
+    // Amp-EG rate dests (ticket 0187): scale the amplitude envelope's march
+    // *rate* per unison lane, so a `voice-spread → eg-rate` route makes the
+    // voices in a stack evolve their envelopes at slightly different speeds.
+    // Appended after `FilterDrive` so the blob dest space stays a 1:1 prefix for
+    // older patches. **Per-lane** (each lane owns its EG since 0187) and
+    // **note-on static**: the value is resolved once at note-on and folded into
+    // each lane's cooked EG rates (`Stack::rescale_eg_rates`) — it does *not*
+    // track live sources during the note. Log/octave domain (gain 4.0 = ±4 oct
+    // = ×16 / ÷16 rate, like the LFO-rate / cutoff dests). `GlobalEgRate` scales
+    // all the envelopes (the six op amp EGs, the pitch EG, and the mod env); the
+    // per-op / per-env dests add on top of it.
+    GlobalEgRate,
+    Op1EgRate,
+    Op2EgRate,
+    Op3EgRate,
+    Op4EgRate,
+    Op5EgRate,
+    Op6EgRate,
+    // Pitch-EG rate dest (0187): scales the per-lane Pitch EG sweep rate, so a
+    // `voice-spread → pitch-eg-rate` route decorrelates the pitch sweep across
+    // the unison stack (chorusing). **Per-lane** like the amp eg-rate dests;
+    // `GlobalEgRate` also feeds it. Same note-on-static log/octave (±4 oct)
+    // treatment.
+    PitchEgRate,
+    // Mod-Env rate dest (0187): scales the Mod Env's ADSR speed. The Mod Env is
+    // one-per-voice (it drives per-stack targets like filter cutoff, where lane
+    // decorrelation is meaningless), so this is **per-stack** — a `voice-spread`
+    // source correctly reads as tier-collapse; drive it from per-stack sources
+    // (velocity, key, LFO). `GlobalEgRate` (lane-0 collapse) also feeds it.
+    ModEnvRate,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 42;
+pub const N_DESTS: usize = 51;
 
 /// Destination machine id (kebab-case wire name). Index matches
 /// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
@@ -422,6 +452,10 @@ pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "op1-phase", "op2-phase", "op3-phase",
     "op4-phase", "op5-phase", "op6-phase",
     "filter-drive",
+    "global-eg-rate",
+    "op1-eg-rate", "op2-eg-rate", "op3-eg-rate",
+    "op4-eg-rate", "op5-eg-rate", "op6-eg-rate",
+    "pitch-eg-rate", "mod-env-rate",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
@@ -449,6 +483,10 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Op 1 Phase", "Op 2 Phase", "Op 3 Phase",
     "Op 4 Phase", "Op 5 Phase", "Op 6 Phase",
     "Filter Drive",
+    "Global EG Rate",
+    "Op 1 EG Rate", "Op 2 EG Rate", "Op 3 EG Rate",
+    "Op 4 EG Rate", "Op 5 EG Rate", "Op 6 EG Rate",
+    "Pitch EG Rate", "Mod Env Rate",
 ];
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
@@ -520,6 +558,25 @@ pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     // stack-detune / stack-spread (E008 0093) are multiplicative scale factors
     // `(1 + depth·shape)`; gain 1.0 means depth 1 doubles the macro (0→2×).
     // Left at the table default of 1.0 — listed here so the audit is explicit.
+    //
+    // eg-rate dests (0187) modulate in the log/octave domain like the LFO-rate /
+    // cutoff / filter-drive dests: the value is in *octaves* and the consumer
+    // applies `rate · 2^value` once at note-on. Full depth = ±4 octaves (×16 /
+    // ÷16 the EG speed), matching the sibling rate dests — summing many unison
+    // lanes averages their envelopes, so a narrow span reads as almost no effect;
+    // ±4 oct gives the spread real audible bite (dial back with depth). The
+    // consumer clamps the summed octaves to ±4 so a multi-route stack can't run
+    // off. Note the `voice-spread` *source* is itself scaled by the Stack-Spread
+    // param, so a low spread setting shrinks this route regardless of depth.
+    g[DestId::GlobalEgRate as usize] = 4.0;
+    g[DestId::Op1EgRate as usize] = 4.0;
+    g[DestId::Op2EgRate as usize] = 4.0;
+    g[DestId::Op3EgRate as usize] = 4.0;
+    g[DestId::Op4EgRate as usize] = 4.0;
+    g[DestId::Op5EgRate as usize] = 4.0;
+    g[DestId::Op6EgRate as usize] = 4.0;
+    g[DestId::PitchEgRate as usize] = 4.0;
+    g[DestId::ModEnvRate as usize] = 4.0;
     g
 };
 
@@ -576,7 +633,17 @@ impl DestId {
             | DestId::Op3Phase
             | DestId::Op4Phase
             | DestId::Op5Phase
-            | DestId::Op6Phase => Tier::PerLane,
+            | DestId::Op6Phase
+            | DestId::GlobalEgRate
+            | DestId::Op1EgRate
+            | DestId::Op2EgRate
+            | DestId::Op3EgRate
+            | DestId::Op4EgRate
+            | DestId::Op5EgRate
+            | DestId::Op6EgRate
+            | DestId::PitchEgRate => Tier::PerLane,
+            // Mod Env is one-per-voice → its rate dest collapses to lane 0.
+            DestId::ModEnvRate => Tier::PerStack,
         }
     }
 
@@ -635,6 +702,15 @@ impl DestId {
             40 => DestId::Op5Phase,
             41 => DestId::Op6Phase,
             42 => DestId::FilterDrive,
+            43 => DestId::GlobalEgRate,
+            44 => DestId::Op1EgRate,
+            45 => DestId::Op2EgRate,
+            46 => DestId::Op3EgRate,
+            47 => DestId::Op4EgRate,
+            48 => DestId::Op5EgRate,
+            49 => DestId::Op6EgRate,
+            50 => DestId::PitchEgRate,
+            51 => DestId::ModEnvRate,
             _ => DestId::None,
         }
     }
@@ -1085,8 +1161,16 @@ mod tests {
         // block, so they now hold the tail indices.
         assert_eq!(DestId::Op1Phase.idx(), Some(35));
         assert_eq!(DestId::Op6Phase.idx(), Some(40));
-        // FilterDrive (E007) is appended after the phase block, holding the tail.
-        assert_eq!(DestId::FilterDrive.idx(), Some(N_DESTS - 1));
+        // FilterDrive (E007) is appended after the phase block.
+        assert_eq!(DestId::FilterDrive.idx(), Some(41));
+        // The eg-rate dests (0187) are appended after FilterDrive, holding the
+        // tail: global scale then the 6 per-op scales.
+        assert_eq!(DestId::GlobalEgRate.idx(), Some(42));
+        assert_eq!(DestId::Op1EgRate.idx(), Some(43));
+        assert_eq!(DestId::Op6EgRate.idx(), Some(48));
+        // pitch-eg-rate + mod-env-rate hold the tail.
+        assert_eq!(DestId::PitchEgRate.idx(), Some(49));
+        assert_eq!(DestId::ModEnvRate.idx(), Some(N_DESTS - 1));
         // Wire-discriminant round-trip for the new dests.
         assert_eq!(DestId::from_u8(28), DestId::Cutoff);
         assert_eq!(DestId::from_u8(29), DestId::Resonance);
@@ -1095,6 +1179,11 @@ mod tests {
         assert_eq!(DestId::from_u8(36), DestId::Op1Phase);
         assert_eq!(DestId::from_u8(41), DestId::Op6Phase);
         assert_eq!(DestId::from_u8(42), DestId::FilterDrive);
+        assert_eq!(DestId::from_u8(43), DestId::GlobalEgRate);
+        assert_eq!(DestId::from_u8(44), DestId::Op1EgRate);
+        assert_eq!(DestId::from_u8(49), DestId::Op6EgRate);
+        assert_eq!(DestId::from_u8(50), DestId::PitchEgRate);
+        assert_eq!(DestId::from_u8(51), DestId::ModEnvRate);
     }
 
     #[test]
@@ -1461,6 +1550,12 @@ mod tests {
             (GlobalPitch, Tier::PerLane),
             (Feedback, Tier::PerLane),
             (Lfo2Phase, Tier::PerLane),
+            (FilterDrive, Tier::PerStack),
+            (GlobalEgRate, Tier::PerLane),
+            (Op1EgRate, Tier::PerLane),
+            (Op6EgRate, Tier::PerLane),
+            (PitchEgRate, Tier::PerLane),
+            (ModEnvRate, Tier::PerStack),
         ] {
             assert_eq!(d.tier(), want, "{d:?}");
         }

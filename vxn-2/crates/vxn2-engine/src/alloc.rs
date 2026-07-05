@@ -1053,9 +1053,9 @@ mod tests {
         }
         alloc.note_on(&params, &sp, &vp, 60, 100);
         run_blocks(&mut alloc, (SR as usize) / BLK);
-        assert_eq!(alloc.stacks[0].core.ops[0].eg.stage, EgStage::Sustain);
+        assert_eq!(alloc.stacks[0].core.ops[0].eg[0].stage, EgStage::Sustain);
         alloc.note_on(&params, &sp, &vp, 64, 100);
-        assert_eq!(alloc.stacks[0].core.ops[0].eg.stage, EgStage::Sustain);
+        assert_eq!(alloc.stacks[0].core.ops[0].eg[0].stage, EgStage::Sustain);
         assert_eq!(alloc.stacks[0].meta.note, 64);
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         let cur = alloc.solo_slot.unwrap();
         assert_ne!(cur, first);
         // The new note is a fresh voice (onset from silence → attack).
-        assert_eq!(alloc.stacks[cur].core.ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[cur].core.ops[0].eg[0].stage, EgStage::Attack);
         // The previous note is declicking, not retriggered in place.
         assert_eq!(alloc.stacks[first].meta.phase, VoicePhase::Declick);
     }
@@ -1209,12 +1209,12 @@ mod tests {
             .expect("new note sounds 90");
         assert_eq!(alloc.stacks[new].meta.phase, VoicePhase::Held);
         assert_eq!(
-            alloc.stacks[new].core.ops[0].eg.stage,
+            alloc.stacks[new].core.ops[0].eg[0].stage,
             EgStage::Attack,
             "new note is a fresh onset, not a reused voice"
         );
         assert!(
-            alloc.stacks[new].core.ops[0].eg.level < 1.0e-3,
+            alloc.stacks[new].core.ops[0].eg[0].level < 1.0e-3,
             "fresh attack starts from silence"
         );
         assert!(
@@ -1251,8 +1251,8 @@ mod tests {
             .iter()
             .position(|s| s.meta.gate && s.meta.note == 90)
             .expect("new note sounds 90");
-        assert_eq!(alloc.stacks[new].core.ops[0].eg.stage, EgStage::Attack);
-        assert!(alloc.stacks[new].core.ops[0].eg.level < 1.0e-3, "fresh from silence");
+        assert_eq!(alloc.stacks[new].core.ops[0].eg[0].stage, EgStage::Attack);
+        assert!(alloc.stacks[new].core.ops[0].eg[0].level < 1.0e-3, "fresh from silence");
         assert!(
             alloc.stacks.iter().any(|s| s.meta.phase == VoicePhase::Declick),
             "a releasing tail was declicked to make room"
@@ -1307,7 +1307,7 @@ mod tests {
             .iter()
             .position(|s| s.meta.gate && s.meta.note == 90)
             .expect("new note sounding");
-        assert_eq!(alloc.stacks[new].core.ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[new].core.ops[0].eg[0].stage, EgStage::Attack);
         assert!(
             alloc.stacks.iter().any(|s| s.meta.gate && s.meta.note == 60),
             "oldest held key must survive the steal"
@@ -1420,9 +1420,9 @@ mod tests {
             .position(|s| s.meta.gate && s.meta.note == 60 && s.meta.phase == VoicePhase::Held)
             .expect("fresh 60 voice");
         assert_ne!(new_slot, first_slot, "new note took a fresh slot");
-        assert_eq!(alloc.stacks[new_slot].core.ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[new_slot].core.ops[0].eg[0].stage, EgStage::Attack);
         assert!(
-            alloc.stacks[new_slot].core.ops[0].eg.level < 1.0e-3,
+            alloc.stacks[new_slot].core.ops[0].eg[0].level < 1.0e-3,
             "fresh attack starts from 0, not legato-continued"
         );
 
@@ -1482,7 +1482,7 @@ mod tests {
             .position(|s| s.meta.phase == VoicePhase::Held && s.meta.note == dup_note)
             .unwrap();
         assert_ne!(fresh, dup_slot, "fresh note took a spare stack");
-        assert_eq!(alloc.stacks[fresh].core.ops[0].eg.stage, EgStage::Attack);
+        assert_eq!(alloc.stacks[fresh].core.ops[0].eg[0].stage, EgStage::Attack);
     }
 
     /// Steal burst exhausting the declick headroom: once every spare is mid-
@@ -1711,7 +1711,7 @@ mod tests {
         alloc.note_off(&params, &sp, &vp, 60);
         assert!(!alloc.stacks[0].meta.gate);
         for op in &alloc.stacks[0].core.ops {
-            assert_eq!(op.eg.stage, EgStage::Release);
+            assert_eq!(op.eg[0].stage, EgStage::Release);
         }
     }
 }

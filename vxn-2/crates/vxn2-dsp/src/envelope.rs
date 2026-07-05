@@ -106,6 +106,17 @@ impl PitchEgState {
         }
     }
 
+    /// Multiply every cooked segment rate by `scale` — the per-lane
+    /// `pitch-eg-rate` mod factor (0187). Applied after [`cook`](Self::cook), so
+    /// `scale > 1` sweeps faster, `< 1` slower; targets are untouched. `1.0` is a
+    /// bit-exact no-op.
+    #[inline]
+    pub fn scale_rates(&mut self, scale: f32) {
+        for r in &mut self.rates_st_per_sec {
+            *r *= scale;
+        }
+    }
+
     /// Trigger Attack. Level continues from wherever it is (retrigger-safe).
     #[inline]
     pub fn note_on(&mut self) {
@@ -213,6 +224,32 @@ impl ModEnvState {
                 self.attack = (a_s / EXP_TAU_DIV).max(1e-6);
                 self.decay = (d_s / EXP_TAU_DIV).max(1e-6);
                 self.release = (r_s / EXP_TAU_DIV).max(1e-6);
+            }
+        }
+    }
+
+    /// Scale the env speed by `scale` — the per-voice `mod-env-rate` mod factor
+    /// (0187). `scale > 1` runs the ADSR faster, `< 1` slower. Because this is a
+    /// *time*-based env, the internal representation differs by shape: `Lin`
+    /// stores slopes (units/sec, bigger = faster → multiply) and `Exp` stores
+    /// time constants (seconds, smaller = faster → divide). `1.0` is a bit-exact
+    /// no-op. Applied after [`cook`](Self::cook).
+    #[inline]
+    pub fn scale_rates(&mut self, scale: f32) {
+        if scale <= 0.0 {
+            return;
+        }
+        match self.shape {
+            AdsrShape::Lin => {
+                self.attack *= scale;
+                self.decay *= scale;
+                self.release *= scale;
+            }
+            AdsrShape::Exp => {
+                let inv = 1.0 / scale;
+                self.attack = (self.attack * inv).max(1e-6);
+                self.decay = (self.decay * inv).max(1e-6);
+                self.release = (self.release * inv).max(1e-6);
             }
         }
     }
