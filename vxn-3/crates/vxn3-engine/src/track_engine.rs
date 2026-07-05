@@ -108,6 +108,9 @@ pub enum MacroUnit {
     Semitones,
     Hertz,
     Percent,
+    /// A bare dimensionless ratio / count (filter Q, tap count) — printed as a plain
+    /// number (0182).
+    Ratio,
 }
 
 /// A macro slot's engine-aware readout: the mapped physical `value` plus how to
@@ -191,6 +194,7 @@ pub fn format_macro_value(
         MacroUnit::Hertz if value >= 1_000.0 => write!(out, "{label} {:.2} kHz", value / 1e3),
         MacroUnit::Hertz => write!(out, "{label} {value:.0} Hz"),
         MacroUnit::Percent => write!(out, "{label} {:.0}%", value * 100.0),
+        MacroUnit::Ratio => write!(out, "{label} {value:.2}"),
     }
 }
 
@@ -218,6 +222,7 @@ pub fn macro_parse(kind: EngineKind, slot: usize, text: &str) -> Option<f32> {
         MacroUnit::Hertz => n,
         MacroUnit::Percent => n / 100.0,
         MacroUnit::Semitones => n,
+        MacroUnit::Ratio => n,
     };
     Some(((physical - base) / span).clamp(0.0, 1.0))
 }

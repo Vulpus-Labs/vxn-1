@@ -66,7 +66,7 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
 - [x] **0181** — *(closed 2026-07-05)* **Enrich Driven family + author flavours.** Add `sweep-start`,
       `drive`, `click` to the driven param space; author flavours: kick, tom,
       snare-body, claves. Prove two flavours of one family morph via base edits.
-- [ ] **0182** — **Enrich Noise family + flavours.** Add bandpass freq/Q, `snap`
+- [x] **0182** — *(closed 2026-07-05)* **Enrich Noise family + flavours.** Add bandpass freq/Q, `snap`
       transient, multi-tap burst gate; author flavours: snare-noise, clap.
 - [ ] **0183** — **Enrich Metal family + flavours.** Add XOR-pair + modal-bank
       options + shimmer LFO + open/closed decay; author flavours: closed hat, open

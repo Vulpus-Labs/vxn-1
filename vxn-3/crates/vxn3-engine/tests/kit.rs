@@ -135,9 +135,9 @@ fn three_engine_kit_is_allocation_free() {
     assert_eq!(allocs, 0, "three-engine mix allocated on the audio path");
 }
 
-/// The flavour runtime (0180) is allocation-free on the audio path: the Driven
-/// track's per-trig `resolve` (additive-from-base) and re-cook must not allocate —
-/// the kick trigs 4×/bar and the macro-driven re-resolve fires on each trig.
+/// The flavour runtime (0180/0181/0182) is allocation-free on the audio path: the
+/// Driven track's per-trig `resolve` + re-cook, and the Noise clap's multi-tap gate +
+/// SVF bandpass + snap, must not allocate — both trig repeatedly across the loop.
 #[test]
 fn driven_flavour_trig_is_allocation_free() {
     use vxn3_engine::flavour::{Binding, Curve, Flavour};
@@ -155,6 +155,11 @@ fn driven_flavour_trig_is_allocation_free() {
         macro_defaults: [0.5; 3],
     };
     engine.track_mut(0).engine.apply_flavour(flav);
+    // Track 2 is Noise — give it a 4-tap clap so the burst gate + SVF + snap run (0182).
+    engine
+        .track_mut(2)
+        .engine
+        .apply_flavour(vxn3_engine::engines::noise::flavour_clap());
 
     let bps = BPM / 60.0 / SR as f64;
     let mut l = vec![0.0_f32; 512];
