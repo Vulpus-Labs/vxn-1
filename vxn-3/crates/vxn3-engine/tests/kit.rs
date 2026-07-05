@@ -155,6 +155,11 @@ fn driven_flavour_trig_is_allocation_free() {
         macro_defaults: [0.5; 3],
     };
     engine.track_mut(0).engine.apply_flavour(flav);
+    // Track 1 is Metal — a cymbal exercises the XOR oscillators + shimmer LFO + HP (0183).
+    engine
+        .track_mut(1)
+        .engine
+        .apply_flavour(vxn3_engine::engines::metal::flavour_cymbal());
     // Track 2 is Noise — give it a 4-tap clap so the burst gate + SVF + snap run (0182).
     engine
         .track_mut(2)
