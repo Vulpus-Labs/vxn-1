@@ -17,14 +17,17 @@ use clack_extensions::audio_ports::{
 };
 use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
+use clack_extensions::note_ports::{
+    NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts, PluginNotePortsImpl,
+};
 use clack_extensions::params::{
     ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams,
     PluginMainThreadParams, PluginParams,
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
-use clack_plugin::events::Pckn;
 use clack_plugin::events::event_types::{ParamValueEvent, TransportEvent, TransportFlags};
+use clack_plugin::events::{Match, Pckn};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
@@ -64,6 +67,7 @@ impl Plugin for VxnPlugin {
     fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: Option<&VxnShared>) {
         builder
             .register::<PluginAudioPorts>()
+            .register::<PluginNotePorts>()
             .register::<PluginGui>()
             .register::<PluginTimer>()
             .register::<PluginLatency>()
@@ -213,6 +217,42 @@ impl PluginAudioPortsImpl for VxnMainThread<'_> {
     }
 }
 
+// ── MIDI free-play note input (0186) ─────────────────────────────────────────
+
+impl PluginNotePortsImpl for VxnMainThread<'_> {
+    fn count(&mut self, is_input: bool) -> u32 {
+        if is_input { 1 } else { 0 }
+    }
+
+    fn get(&mut self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
+        if is_input && index == 0 {
+            writer.set(&NotePortInfo {
+                id: ClapId::new(1),
+                name: b"main",
+                preferred_dialect: Some(NoteDialect::Clap),
+                supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI,
+            });
+        }
+    }
+}
+
+/// Default GM-drum-ish MIDI note → track map for free-play (0186). Standard drum
+/// notes route to their voice track (the engine still receives the actual note, so a
+/// Metal track's closed/open-hat note split keeps working); other notes fall through
+/// chromatically so a keyboard plays the kit pitched across tracks. Explicit table —
+/// user remapping is a later ticket.
+fn note_to_track(note: u8) -> usize {
+    match note {
+        35 | 36 => 0,                     // acoustic / electric kick
+        37..=40 => 2,                     // rim, snare, clap → snare/noise track
+        42 | 44 | 46 => 1,                // closed / pedal / open hat — Metal note-split
+        41 | 43 | 45 | 47 | 48 | 50 => 3, // toms
+        49 | 55 | 57 => 4,                // crash / splash
+        51 | 53 | 59 => 5,                // ride / bell
+        _ => note as usize % N_TRACKS,    // chromatic fallback across the kit
+    }
+}
+
 /// Map a CLAP transport event (or its absence) into the engine's clock.
 fn read_transport(t: Option<&TransportEvent>) -> Transport {
     match t {
@@ -337,10 +377,40 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // become a second producer (0171).
         for batch in events.input.batch() {
             for event in batch.events() {
-                if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
-                    if let Some(pid) = e.param_id() {
-                        apply_host_param(&mut self.engine, self.shared, pid.get() as usize, e.value() as f32);
+                match event.as_core_event() {
+                    // Host param automation (block-granular, 0171).
+                    Some(CoreEventSpace::ParamValue(e)) => {
+                        if let Some(pid) = e.param_id() {
+                            apply_host_param(&mut self.engine, self.shared, pid.get() as usize, e.value() as f32);
+                        }
                     }
+                    // MIDI free-play note-on (0186): typed CLAP note dialect. Map the
+                    // note to a track + queue it sample-accurately at its event time.
+                    Some(CoreEventSpace::NoteOn(e)) => {
+                        if let Match::Specific(key) = e.key() {
+                            let key = key as u8;
+                            self.engine.queue_free_note(
+                                note_to_track(key),
+                                key as f32,
+                                e.velocity() as f32,
+                                event.header().time(),
+                            );
+                        }
+                    }
+                    // Raw-MIDI note-on (a MIDI-dialect host / the standalone): 0x90 with
+                    // velocity > 0. Note-off / 0x80 is ignored — percussion is one-shot.
+                    Some(CoreEventSpace::Midi(e)) => {
+                        let [status, d1, d2] = e.data();
+                        if status & 0xF0 == 0x90 && d2 > 0 {
+                            self.engine.queue_free_note(
+                                note_to_track(d1),
+                                d1 as f32,
+                                d2 as f32 / 127.0,
+                                event.header().time(),
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

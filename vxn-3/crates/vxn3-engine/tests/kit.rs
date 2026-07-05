@@ -95,6 +95,79 @@ fn run(engine: &mut Engine, total: usize, block: usize) -> Vec<f32> {
     out
 }
 
+fn rms(b: &[f32]) -> f32 {
+    (b.iter().map(|&x| x * x).sum::<f32>() / b.len().max(1) as f32).sqrt()
+}
+
+// ── MIDI free-play (0186) ────────────────────────────────────────────────────
+
+/// A live note alone — no pattern, transport stopped — trigs its mapped track's voice.
+#[test]
+fn free_play_note_trigs_a_voice() {
+    let mut engine = Engine::new(SR, 512);
+    engine.queue_free_note(0, 40.0, 1.0, 0); // track 0 (Kick/Tone) at frame 0
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.process_block(&mut l, &mut r);
+    assert!(rms(&l) > 1e-3, "free-play note should sound, rms={}", rms(&l));
+    assert!(l.iter().all(|x| x.is_finite()));
+}
+
+/// Free-play trigs are sample-accurate: a note queued at frame 256 is silent before it
+/// and audible after.
+#[test]
+fn free_play_note_is_sample_accurate() {
+    let mut engine = Engine::new(SR, 512);
+    engine.queue_free_note(0, 40.0, 1.0, 256);
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.process_block(&mut l, &mut r);
+    assert!(rms(&l[..256]) < 1e-6, "silent before the note frame, rms={}", rms(&l[..256]));
+    assert!(rms(&l[256..]) > 1e-3, "audible after the note frame, rms={}", rms(&l[256..]));
+}
+
+/// Free-play and the sequencer coexist: a live note on a silent track sounds while
+/// another track's pattern plays, and the output stays finite (no phase corruption).
+#[test]
+fn free_play_coexists_with_sequencer() {
+    let mut engine = build_kit(); // tracks 0-2 patterned
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    // Track 3 has no pattern — a live note there is purely free-play.
+    engine.queue_free_note(3, 55.0, 1.0, 64);
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.process_block(&mut l, &mut r);
+    assert!(rms(&l) > 1e-3, "kit + free-play audible");
+    assert!(l.iter().all(|x| x.is_finite()));
+}
+
+/// The free-play merge (queue + in-place sort into the hit buffer) is allocation-free
+/// on the audio path, even hammering several notes across tracks each block.
+#[test]
+fn free_play_is_allocation_free() {
+    let mut engine = build_kit();
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..300 {
+            engine.queue_free_note(0, 40.0, 0.9, 0);
+            engine.queue_free_note(1, 46.0, 0.8, 128);
+            engine.queue_free_note(2, 60.0, 1.0, 400);
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+        }
+    });
+    assert_eq!(allocs, 0, "free-play merge allocated on the audio path");
+}
+
 #[test]
 fn three_engine_kit_plays_a_loop() {
     let mut engine = build_kit();

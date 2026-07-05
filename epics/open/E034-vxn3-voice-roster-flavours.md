@@ -78,7 +78,7 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
       macro-binding assignment surface (target param, depth, curve per slot) +
       save a new flavour to the user store. `value_to_text` (0172) becomes
       flavour-aware. The "playable-with" payoff.
-- [ ] **0186** — **MIDI free-play note-in.** Add a CLAP note input port; map
+- [x] **0186** — *(closed 2026-07-05)* **MIDI free-play note-in.** Add a CLAP note input port; map
       incoming notes → track/voice so voices can be auditioned/jammed by hand.
       Independent of the flavour chain — land early for immediate playability.
 - [ ] **0187** — **Factory flavour/kit starter bank.** A `include_dir!` set of

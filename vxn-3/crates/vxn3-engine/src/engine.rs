@@ -38,6 +38,19 @@ pub const N_TRACKS: usize = 8;
 /// this rather than allocate.
 const HIT_CAPACITY: usize = 256;
 
+/// Max live MIDI free-play notes buffered per block (0186) before dropping —
+/// generous vs. a human hammering pads; keeps the per-block merge allocation-free.
+const FREE_NOTE_CAPACITY: usize = 64;
+
+/// A live MIDI note queued for the next block: which `track` to trig, at what `frame`,
+/// with what `note` (fractional MIDI, for pitch) + `velocity` (0..1).
+struct FreeNote {
+    track: u8,
+    frame: u32,
+    note: f32,
+    velocity: f32,
+}
+
 /// Master limiter look-ahead in samples — the plugin's reported latency (PDC).
 /// Constant, so the CLAP shell reports it once.
 pub const LIMITER_LOOKAHEAD: u32 = 64;
@@ -63,6 +76,9 @@ pub struct Engine {
     /// Beat position used when the host exposes no beats timeline — advanced by
     /// the block length each playing block so the sequencer free-runs.
     free_run_beats: f64,
+    /// Live MIDI free-play notes to trig this block (0186), merged into each track's
+    /// scheduled hits. Pre-allocated + cleared (not freed) each block.
+    free_notes: Vec<FreeNote>,
 
     // ── master FX (0051) ──
     /// Stereo delay send bus (the dub throw).
@@ -117,6 +133,7 @@ impl Engine {
             io,
             playhead_scratch: [PlayheadState::STOPPED; N_TRACKS],
             free_run_beats: 0.0,
+            free_notes: Vec::with_capacity(FREE_NOTE_CAPACITY),
             delay: vxn3_dsp::Delay::new(sample_rate, DELAY_MAX_SECONDS),
             limiter: vxn3_dsp::Limiter::new(sample_rate, LIMITER_LOOKAHEAD as usize, LIMITER_CEILING),
             return_level: 0.35,
@@ -174,6 +191,18 @@ impl Engine {
     /// freshly built engine. Panics if out of range.
     pub fn track_swap(&self, track: usize) -> Arc<EngineSwap> {
         self.tracks[track].swap.clone()
+    }
+
+    /// Queue a live MIDI note (free-play, 0186) to trig `track`'s engine at `frame`
+    /// within the **next** [`Engine::process_block`], sample-accurately. `note` is a
+    /// (fractional) MIDI note driving the engine's pitch; `velocity` is `0..1`. Bounded
+    /// — drops beyond [`FREE_NOTE_CAPACITY`] rather than allocate; an out-of-range track
+    /// is ignored. Free-play trigs share the sequencer's hit path, so they mix with
+    /// sequenced trigs into the same voice allocator without special-casing.
+    pub fn queue_free_note(&mut self, track: usize, note: f32, velocity: f32, frame: u32) {
+        if track < self.tracks.len() && self.free_notes.len() < FREE_NOTE_CAPACITY {
+            self.free_notes.push(FreeNote { track: track as u8, frame, note, velocity });
+        }
     }
 
     /// Render `left.len().min(right.len())` frames of stereo audio.
@@ -237,6 +266,19 @@ impl Engine {
                 playing,
                 &mut self.hits,
             );
+            // Merge live MIDI free-play notes for this track (0186) into the scheduled
+            // hits, then re-sort by frame so `render_with_hits` slices at each. Bounded
+            // by hit capacity; `sort_unstable_by_key` is in-place (allocation-free).
+            for fnote in &self.free_notes {
+                if fnote.track as usize == t && self.hits.len() < HIT_CAPACITY {
+                    self.hits.push(Hit {
+                        frame: (fnote.frame as usize).min(frames),
+                        note: fnote.note,
+                        velocity: fnote.velocity,
+                    });
+                }
+            }
+            self.hits.sort_unstable_by_key(|h| h.frame);
             self.tracks[t].apply_effective(&self.lanes[t]);
             self.tracks[t].render_with_hits(&self.hits, frames);
             self.tracks[t].mix_into(
@@ -247,6 +289,8 @@ impl Engine {
                 frames,
             );
         }
+        // Free-play notes were consumed by every track this block — clear (not free).
+        self.free_notes.clear();
 
         // 5. Delay send bus → return into the master, then the terminal limiter.
         //    Delay time tracks host tempo (synced subdivision). Runs even when
