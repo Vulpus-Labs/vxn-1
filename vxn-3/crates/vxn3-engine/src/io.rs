@@ -10,10 +10,11 @@
 //! reads them to drive the per-lane playhead.
 
 use std::cell::UnsafeCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::N_TRACKS;
+use crate::flavour::Flavour;
 use crate::sequencer::{Lock, LockParam, Retrig};
 use crate::track_engine::EngineKind;
 
@@ -195,6 +196,48 @@ impl TrackKinds {
     }
 }
 
+/// Per-track main-thread mirror of each lane's active deep patch (**flavour**) — the
+/// source of truth the CLAP shell serialises into `clap.state` and reads for
+/// flavour-aware `value_to_text` (0185). Written by the app when a voice is assigned;
+/// only ever touched on the main thread, so the `Mutex` is uncontended (it exists to
+/// keep [`EngineIo`] `Sync`, since the handle is cloned to the audio thread too).
+pub struct FlavourStore {
+    flavours: Mutex<Vec<Flavour>>,
+}
+
+impl FlavourStore {
+    pub fn new() -> Arc<Self> {
+        let init = (0..N_TRACKS)
+            .map(|_| crate::engines::default_flavour_for(EngineKind::KickTone))
+            .collect();
+        Arc::new(Self { flavours: Mutex::new(init) })
+    }
+
+    /// Store a track's active flavour (main thread, on voice assign / state load).
+    pub fn set(&self, track: usize, flavour: Flavour) {
+        if let Ok(mut g) = self.flavours.lock() {
+            if let Some(slot) = g.get_mut(track) {
+                *slot = flavour;
+            }
+        }
+    }
+
+    /// A clone of a track's flavour (for `clap.state` save).
+    pub fn get(&self, track: usize) -> Flavour {
+        self.flavours
+            .lock()
+            .ok()
+            .and_then(|g| g.get(track).cloned())
+            .unwrap_or_else(|| crate::engines::default_flavour_for(EngineKind::KickTone))
+    }
+
+    /// Read a track's flavour without cloning (for `value_to_text`). `None` if the lock
+    /// is poisoned or the track is out of range.
+    pub fn with<R>(&self, track: usize, f: impl FnOnce(&Flavour) -> R) -> Option<R> {
+        self.flavours.lock().ok().and_then(|g| g.get(track).map(f))
+    }
+}
+
 /// The shared main↔audio I/O handles, created once and cloned to both threads.
 #[derive(Clone)]
 pub struct EngineIo {
@@ -203,6 +246,8 @@ pub struct EngineIo {
     pub swaps: Vec<Arc<crate::swap::EngineSwap>>,
     /// Per-track active engine kind (main-thread mirror, for value-text; 0172).
     pub kinds: Arc<TrackKinds>,
+    /// Per-track active flavour (main-thread deep-patch store; 0185).
+    pub flavours: Arc<FlavourStore>,
 }
 
 impl EngineIo {
@@ -212,6 +257,7 @@ impl EngineIo {
             playhead: PlayheadState::new(),
             swaps: (0..N_TRACKS).map(|_| crate::swap::EngineSwap::new()).collect(),
             kinds: TrackKinds::new(),
+            flavours: FlavourStore::new(),
         }
     }
 }

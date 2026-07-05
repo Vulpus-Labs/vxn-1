@@ -13,6 +13,7 @@ pub use metal::{Metal, MetalPatch};
 pub use noise::{Noise, NoisePatch};
 pub use struck::{Struck, StruckPatch};
 
+use crate::flavour::{Flavour, ParamMeta};
 use crate::track_engine::{EngineKind, TrackEngine};
 
 /// Build a fresh engine of the given kind with its default patch — the factory
@@ -24,6 +25,38 @@ pub fn make(kind: EngineKind, sample_rate: f32) -> Box<dyn TrackEngine> {
         EngineKind::Metal => Box::new(Metal::with_default_patch(sample_rate)),
         EngineKind::Noise => Box::new(Noise::with_default_patch(sample_rate)),
         EngineKind::Struck => Box::new(Struck::with_default_patch(sample_rate)),
+    }
+}
+
+/// A family's parameter-space metadata by kind — the static table the flavour editor
+/// (0185) and value-text read on the main thread, without a live engine instance.
+pub fn params_for(kind: EngineKind) -> &'static [ParamMeta] {
+    match kind {
+        EngineKind::KickTone => &kick_tone::DRIVEN_PARAMS,
+        EngineKind::Metal => &metal::METAL_PARAMS,
+        EngineKind::Noise => &noise::NOISE_PARAMS,
+        EngineKind::Struck => &struck::STRUCK_PARAMS,
+    }
+}
+
+/// The authored flavours (name → flavour) for a family — the factory bank the editor's
+/// flavour picker offers (0185; 0187/0188 will move these to TOML data).
+pub fn flavours_for(kind: EngineKind) -> Vec<(&'static str, Flavour)> {
+    match kind {
+        EngineKind::KickTone => kick_tone::driven_flavours().to_vec(),
+        EngineKind::Metal => metal::metal_flavours().to_vec(),
+        EngineKind::Noise => noise::noise_flavours().to_vec(),
+        EngineKind::Struck => struck::struck_flavours().to_vec(),
+    }
+}
+
+/// A family's default flavour by kind (a fresh track / engine-change starting point).
+pub fn default_flavour_for(kind: EngineKind) -> Flavour {
+    match kind {
+        EngineKind::KickTone => kick_tone::driven_default_flavour(),
+        EngineKind::Metal => metal::metal_default_flavour(),
+        EngineKind::Noise => noise::noise_default_flavour(),
+        EngineKind::Struck => struck::struck_default_flavour(),
     }
 }
 

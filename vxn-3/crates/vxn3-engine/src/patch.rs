@@ -24,7 +24,7 @@ impl<'a> PatchReader<'a> {
         Self { b, pos: 0 }
     }
 
-    fn take(&mut self, n: usize) -> Result<&'a [u8], ()> {
+    pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], ()> {
         let end = self.pos.checked_add(n).ok_or(())?;
         let s = self.b.get(self.pos..end).ok_or(())?;
         self.pos = end;

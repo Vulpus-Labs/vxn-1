@@ -69,6 +69,7 @@ fn driven_flavour(base: [f32; DRIVEN_P], macro_defaults: [f32; MACRO_SLOTS]) -> 
             Binding { slot: 2, param: P_PITCH_DEPTH as u8, curve: Curve::Linear, depth: 12.0 },
         ],
         macro_defaults,
+        macro_names: Default::default(),
     }
 }
 
@@ -482,7 +483,7 @@ mod tests {
 
     fn flavour_with(mut base: Vec<f32>, bindings: Vec<Binding>) -> Flavour {
         base.resize(DRIVEN_P, 0.0); // pad drive/click (0181) when a test gives only the core params
-        Flavour { base, bindings, macro_defaults: [0.0; MACRO_SLOTS] }
+        Flavour { base, bindings, macro_defaults: [0.0; MACRO_SLOTS], macro_names: Default::default() }
     }
 
     /// Two flavours of the Driven family differ audibly via the **base vector alone**

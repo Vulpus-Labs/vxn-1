@@ -13,9 +13,10 @@ use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig, open_editor as c
 // Re-exported so the clack shell can name the editor handle / error.
 pub use vxn_core_ui_web::{EditorHandle, OpenEditorError};
 use vxn3_app::{Vxn3UiCustom, Vxn3ViewCustom};
+use vxn3_engine::flavour::{Binding, Curve, Flavour};
 use vxn3_engine::sequencer::{Retrig, RetrigCurve};
-use vxn3_engine::track_engine::EngineKind;
-use vxn3_engine::{EngineCommand, MAX_STEPS, N_TRACKS};
+use vxn3_engine::track_engine::{EngineKind, MACRO_SLOTS};
+use vxn3_engine::{EngineCommand, MAX_STEPS, N_TRACKS, flavours_for, params_for};
 
 pub const EDITOR_WIDTH: u32 = 900;
 pub const EDITOR_HEIGHT: u32 = 420;
@@ -42,16 +43,55 @@ pub fn open_editor(
     core_open_editor(parent, ctrl, corpus, config)
 }
 
+fn curve_str(c: Curve) -> &'static str {
+    match c {
+        Curve::Linear => "linear",
+        Curve::Exp => "exp",
+    }
+}
+
+/// A flavour as faceplate JSON: name + base vector + binding table + macro defaults.
+/// The editor renders base sliders + binding rows straight from this (0185).
+fn flavour_json(name: &str, f: &Flavour) -> Json {
+    let bindings: Vec<Json> = f
+        .bindings
+        .iter()
+        .map(|b| {
+            serde_json::json!({ "slot": b.slot, "param": b.param, "depth": b.depth, "curve": curve_str(b.curve) })
+        })
+        .collect();
+    serde_json::json!({
+        "name": name,
+        "base": f.base,
+        "bindings": bindings,
+        "macro_defaults": f.macro_defaults,
+    })
+}
+
+/// One engine's faceplate config: id/label + its family param-space metadata + the
+/// authored flavours (full data, so the picker + editor render locally).
+fn engine_json(id: &str, label: &str, kind: EngineKind) -> Json {
+    let params: Vec<Json> = params_for(kind)
+        .iter()
+        .map(|p| {
+            serde_json::json!({ "name": p.name, "unit": p.unit.symbol(), "min": p.min, "max": p.max, "default": p.default })
+        })
+        .collect();
+    let flavours: Vec<Json> = flavours_for(kind).iter().map(|(n, f)| flavour_json(n, f)).collect();
+    serde_json::json!({ "id": id, "label": label, "params": params, "flavours": flavours })
+}
+
 /// Splice CSS, the config JSON, and the app JS into the HTML template.
-fn build_html() -> String {
+pub fn build_html() -> String {
     let config = serde_json::json!({
         "tracks": N_TRACKS,
         "steps": MAX_STEPS,
+        "macro_slots": MACRO_SLOTS,
         "engines": [
-            { "id": "kick", "label": "Kick" },
-            { "id": "metal", "label": "Metal" },
-            { "id": "noise", "label": "Noise" },
-            { "id": "struck", "label": "Struck" },
+            engine_json("kick", "Kick", EngineKind::KickTone),
+            engine_json("metal", "Metal", EngineKind::Metal),
+            engine_json("noise", "Noise", EngineKind::Noise),
+            engine_json("struck", "Struck", EngineKind::Struck),
         ],
     });
     HTML_TEMPLATE
@@ -82,6 +122,51 @@ fn curve_of(s: &str) -> RetrigCurve {
         "decel" => RetrigCurve::Decel,
         _ => RetrigCurve::Even,
     }
+}
+fn flavour_curve_of(s: &str) -> Curve {
+    match s {
+        "exp" => Curve::Exp,
+        _ => Curve::Linear,
+    }
+}
+
+fn f32_array(v: &Json, key: &str) -> Vec<f32> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect())
+        .unwrap_or_default()
+}
+
+/// Parse an `assign_voice` payload's flavour (base + bindings + macro defaults + names).
+fn parse_flavour(v: &Json) -> Option<Flavour> {
+    let base = f32_array(v, "base");
+    if base.is_empty() {
+        return None;
+    }
+    let mut macro_defaults = [0.5_f32; MACRO_SLOTS];
+    for (i, x) in f32_array(v, "macro_defaults").iter().take(MACRO_SLOTS).enumerate() {
+        macro_defaults[i] = *x;
+    }
+    let mut macro_names: [String; MACRO_SLOTS] = Default::default();
+    if let Some(arr) = v.get("macro_names").and_then(|x| x.as_array()) {
+        for (i, x) in arr.iter().take(MACRO_SLOTS).enumerate() {
+            if let Some(s) = x.as_str() {
+                macro_names[i] = s.to_string();
+            }
+        }
+    }
+    let mut bindings = Vec::new();
+    if let Some(arr) = v.get("bindings").and_then(|x| x.as_array()) {
+        for b in arr {
+            bindings.push(Binding {
+                slot: u8_at(b, "slot")?,
+                param: u8_at(b, "param")?,
+                depth: f32_at(b, "depth")?,
+                curve: flavour_curve_of(b.get("curve").and_then(|x| x.as_str()).unwrap_or("linear")),
+            });
+        }
+    }
+    Some(Flavour { base, bindings, macro_defaults, macro_names })
 }
 
 #[inline]
@@ -167,6 +252,11 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
             track,
             kind: kind_of(v.get("kind")?.as_str()?)?,
         }))),
+        "assign_voice" => Some(UiEvent::Custom(Box::new(Vxn3UiCustom::AssignVoice {
+            track,
+            kind: kind_of(v.get("engine")?.as_str()?)?,
+            flavour: parse_flavour(v)?,
+        }))),
         _ => None,
     }
 }
@@ -213,6 +303,34 @@ mod tests {
                 Vxn3UiCustom::SetEngine { track, kind } => {
                     assert_eq!(track, 1);
                     assert_eq!(kind, EngineKind::Metal);
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+    }
+
+    #[test]
+    fn parses_assign_voice() {
+        // A Metal voice (9 params) with one binding + a renamed macro.
+        let json = r#"{
+            "track": 3, "engine": "metal",
+            "base": [1200,1.1,0.08,0.5,44,0,0,6,5000],
+            "bindings": [{"slot":0,"param":1,"depth":1.9,"curve":"exp"}],
+            "macro_defaults": [0.5,0.5,0.5],
+            "macro_names": ["Ring","",""]
+        }"#;
+        let ev = parse_custom_ui("assign_voice", &obj(json)).unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::AssignVoice { track, kind, flavour } => {
+                    assert_eq!(track, 3);
+                    assert_eq!(kind, EngineKind::Metal);
+                    assert_eq!(flavour.base.len(), 9);
+                    assert_eq!(flavour.bindings.len(), 1);
+                    assert_eq!(flavour.bindings[0].param, 1);
+                    assert_eq!(flavour.bindings[0].curve, Curve::Exp);
+                    assert_eq!(flavour.macro_names[0], "Ring");
                 }
                 _ => panic!("wrong variant"),
             },

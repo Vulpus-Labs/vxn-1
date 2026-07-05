@@ -76,6 +76,7 @@ fn struck_flavour(base: [f32; STRUCK_P], macro_defaults: [f32; MACRO_SLOTS]) -> 
             Binding { slot: 2, param: P_INHARM as u8, curve: Curve::Linear, depth: 1.0 },
         ],
         macro_defaults,
+        macro_names: Default::default(),
     }
 }
 

@@ -515,12 +515,20 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         let Some(slot) = params::decode(param_id.get() as usize) else {
             return Err(std::fmt::Error);
         };
-        // A macro slot renders engine-aware (ADR 0003 §2): dispatch to the pure
-        // `macro_display` keyed by the track's active engine (0172). Mix / master
-        // params render generically.
+        // A macro slot renders **flavour-aware** (0185): the assigned voice's macro name
+        // (override / first-bound-param / "M<n>") + the knob position as a percent. Reads
+        // the main-thread flavour store; falls back to the fixed engine map (0172) only if
+        // the store is unavailable. Mix / master params render generically.
         if let params::Slot::Macro(t, m) = slot {
             let kind = self.io.kinds.get(t as usize);
-            return vxn3_engine::macro_display(kind, m as usize, value as f32, writer);
+            let meta = vxn3_engine::params_for(kind);
+            let res = self.io.flavours.with(t as usize, |flav| {
+                vxn3_engine::flavour::flavour_macro_text(meta, flav, m as usize, value as f32, writer)
+            });
+            return match res {
+                Some(r) => r,
+                None => vxn3_engine::macro_display(kind, m as usize, value as f32, writer),
+            };
         }
         let mut s = String::new();
         params::write_value_text(slot, value as f32, &mut s);
@@ -531,10 +539,9 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         // Slot-aware inverse of `value_to_text` so the transforms round-trip.
         let slot = params::decode(param_id.get() as usize)?;
         let s = text.to_str().ok()?;
-        // Macros invert engine-aware (mirror of the value_to_text branch, 0172).
-        if let params::Slot::Macro(t, m) = slot {
-            let kind = self.io.kinds.get(t as usize);
-            return vxn3_engine::macro_parse(kind, m as usize, s).map(|v| v as f64);
+        // Macros are "<name> <pct>%" (0185) — invert the percent, flavour-independent.
+        if let params::Slot::Macro(_, _) = slot {
+            return vxn3_engine::flavour::flavour_macro_parse(s).map(|v| v as f64);
         }
         params::parse_value(slot, s).map(|v| v as f64)
     }
@@ -569,7 +576,7 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        let blob = state::save(&self.shared.params, &self.io.kinds, self.shared.sample_rate());
+        let blob = state::save(&self.shared.params, &self.io.kinds, &self.io.flavours);
         output
             .write_all(&blob)
             .map_err(|_| PluginError::Message("state save failed"))
@@ -580,22 +587,18 @@ impl PluginStateImpl for VxnMainThread<'_> {
         input
             .read_to_end(&mut blob)
             .map_err(|_| PluginError::Message("state read failed"))?;
-        let mut patches: [Vec<u8>; N_TRACKS] = Default::default();
-        state::load(&blob, &self.shared.params, &self.io.kinds, &mut patches)
+        state::load(&blob, &self.shared.params, &self.io.kinds, &self.io.flavours)
             .map_err(|_| PluginError::Message("state parse failed"))?;
-        // Rebuild each track's engine from the restored kind, then apply its deep
-        // patch (0179) *before* handing it to the audio thread — so the restored
-        // patch is the base layer and the macro/mix cache replays over it
-        // (`invalidate_applied` on install; cache re-applies on `activate`). Host
-        // params are overrides on the patch, never the reverse. The patched engine
-        // is queued into the *shared* swap ring, so it survives an inactive load →
-        // `activate` too: `activate` builds a default initial engine, and the first
-        // process block installs this patched one from the ring.
+        // Rebuild each track's engine from the restored kind and apply its restored
+        // flavour (0185) *before* handing it to the audio thread — the deep patch is the
+        // base layer; the macro/mix cache replays over it (`invalidate_applied` on
+        // install; cache re-applies on `activate`). The patched engine is queued into the
+        // *shared* swap ring, so it survives an inactive load → `activate` too.
         let sr = self.shared.sample_rate();
-        for (t, patch) in patches.iter().enumerate() {
+        for t in 0..N_TRACKS {
             if let Some(swap) = self.io.swaps.get(t) {
                 let mut engine = make(self.io.kinds.get(t), sr);
-                let _ = engine.deserialize_patch(patch); // empty/unknown → default kept
+                engine.apply_flavour(self.io.flavours.get(t));
                 let _ = swap.send(engine);
             }
         }
@@ -812,17 +815,19 @@ mod tests {
         // set reloads identically (mirrors clap-validator state-reproducibility).
         let cache = ParamCache::new();
         let kinds = vxn3_engine::TrackKinds::new();
+        let flavours = vxn3_engine::io::FlavourStore::new();
         cache.set(0, 0.2);
         kinds.set(4, EngineKind::Metal);
-        let blob = state::save(&cache, &kinds, 48_000.0);
+        flavours.set(4, vxn3_engine::default_flavour_for(EngineKind::Metal));
+        let blob = state::save(&cache, &kinds, &flavours);
 
         let cache2 = ParamCache::new();
         let kinds2 = vxn3_engine::TrackKinds::new();
-        let mut patches: [Vec<u8>; N_TRACKS] = Default::default();
-        state::load(&blob, &cache2, &kinds2, &mut patches).unwrap();
+        let flavours2 = vxn3_engine::io::FlavourStore::new();
+        state::load(&blob, &cache2, &kinds2, &flavours2).unwrap();
         assert_eq!(cache2.get(0), 0.2);
         assert_eq!(kinds2.get(4), EngineKind::Metal);
-        assert_eq!(blob, state::save(&cache2, &kinds2, 48_000.0), "resave identical");
+        assert_eq!(blob, state::save(&cache2, &kinds2, &flavours2), "resave identical");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use vxn_core_app::params::ParamDesc;
 use vxn_core_app::preset::{PresetLoad, PresetMeta, PresetStore, UserFolderEntry};
 use vxn_core_app::{Controller, ParamId, ParamModel};
+use vxn3_engine::flavour::Flavour;
 use vxn3_engine::io::EngineIo;
 use vxn3_engine::{EngineCommand, EngineKind, N_TRACKS, make};
 
@@ -107,6 +108,11 @@ pub enum Vxn3UiCustom {
     Edit(EngineCommand),
     /// Select a track's engine — built on the main thread, swapped in.
     SetEngine { track: u8, kind: EngineKind },
+    /// Assign a **voice** (engine kind + flavour) to a lane (0185): update the
+    /// main-thread flavour store, mirror the kind, and swap in a fresh engine with the
+    /// flavour applied. The single edit path for the voice library — a voice edit
+    /// re-sends this for every lane using the voice.
+    AssignVoice { track: u8, kind: EngineKind, flavour: Flavour },
 }
 
 /// A view update pushed to the faceplate.
@@ -137,6 +143,18 @@ pub fn tick_vxn3(controller: &mut Controller<Vxn3Model>, io: &EngineIo, sample_r
                     let _ = swap.send(make(kind, sample_rate));
                     // Mirror the selection so the host's value-text reads it (0172).
                     io.kinds.set(track as usize, kind);
+                }
+            }
+            Vxn3UiCustom::AssignVoice { track, kind, flavour } => {
+                let t = track as usize;
+                // Store the deep patch (for save + value-text), mirror the kind, and swap
+                // in a fresh engine with the flavour applied (re-resolves at next trig).
+                io.flavours.set(t, flavour.clone());
+                io.kinds.set(t, kind);
+                if let Some(swap) = io.swaps.get(t) {
+                    let mut engine = make(kind, sample_rate);
+                    engine.apply_flavour(flavour);
+                    let _ = swap.send(engine);
                 }
             }
         }
@@ -196,5 +214,30 @@ mod tests {
         // …and the main-thread kind mirror reflects the selection (0172).
         assert_eq!(io.kinds.get(2), EngineKind::Noise);
         assert_eq!(io.kinds.get(0), EngineKind::KickTone); // untouched default
+    }
+
+    #[test]
+    fn assign_voice_updates_store_kind_and_swaps() {
+        let mut ctrl = controller();
+        let io = EngineIo::new();
+        // A non-default Metal flavour with an edited base + macro name.
+        let mut flav = vxn3_engine::default_flavour_for(EngineKind::Metal);
+        flav.base[0] = 777.0;
+        flav.macro_names[0] = "Ring".into();
+        ctrl.handle()
+            .post(UiEvent::Custom(Box::new(Vxn3UiCustom::AssignVoice {
+                track: 4,
+                kind: EngineKind::Metal,
+                flavour: flav.clone(),
+            })))
+            .unwrap();
+        tick_vxn3(&mut ctrl, &io, 48_000.0);
+
+        // Kind mirror + flavour store updated, and a Metal engine queued for the swap.
+        assert_eq!(io.kinds.get(4), EngineKind::Metal);
+        assert_eq!(io.flavours.get(4), flav);
+        let mut active: Box<dyn TrackEngine> = make(EngineKind::KickTone, 48_000.0);
+        assert!(io.swaps[4].try_install(&mut active));
+        assert_eq!(active.kind(), EngineKind::Metal);
     }
 }

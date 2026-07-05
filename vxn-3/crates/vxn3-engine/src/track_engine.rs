@@ -113,6 +113,19 @@ pub enum MacroUnit {
     Ratio,
 }
 
+impl MacroUnit {
+    /// Short unit symbol for the faceplate editor (0185). Empty for a bare ratio.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            MacroUnit::Seconds => "s",
+            MacroUnit::Semitones => "st",
+            MacroUnit::Hertz => "Hz",
+            MacroUnit::Percent => "%",
+            MacroUnit::Ratio => "",
+        }
+    }
+}
+
 /// A macro slot's engine-aware readout: the mapped physical `value` plus how to
 /// `label` and unit-format it. Pure — computed from `(kind, slot, norm)` with no
 /// engine instance, so it is callable on the **main thread** for CLAP

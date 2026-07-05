@@ -226,6 +226,7 @@ fn driven_flavour_trig_is_allocation_free() {
             Binding { slot: 2, param: 2, curve: Curve::Linear, depth: 12.0 },
         ],
         macro_defaults: [0.5; 3],
+        macro_names: Default::default(),
     };
     engine.track_mut(0).engine.apply_flavour(flav);
     // Track 1 is Metal — a cymbal exercises the XOR oscillators + shimmer LFO + HP (0183).

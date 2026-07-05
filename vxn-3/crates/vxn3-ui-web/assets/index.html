@@ -10,10 +10,27 @@
   <header class="topbar">
     <span class="logo">VXN3</span>
     <span class="tagline">synthesis drum machine</span>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="pattern">Pattern</button>
+      <button class="tab" data-tab="voices">Voices</button>
+    </nav>
     <span id="transport" class="transport">■ stopped</span>
   </header>
-  <main id="rack"></main>
-  <footer id="master" class="master"></footer>
+
+  <section id="tab-pattern" class="tabview">
+    <main id="rack"></main>
+    <footer id="master" class="master"></footer>
+  </section>
+
+  <section id="tab-voices" class="tabview hidden">
+    <div class="voices-pane">
+      <aside id="voice-list" class="voice-list"></aside>
+      <div id="voice-editor" class="voice-editor"></div>
+    </div>
+  </section>
+
+  <div id="voice-browser" class="browser hidden" aria-label="voice browser"></div>
+
   <script>
     window.__VXN3_CONFIG__ = __CONFIG_JSON__;
   </script>

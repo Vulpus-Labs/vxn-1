@@ -73,6 +73,7 @@ fn metal_flavour(base: [f32; METAL_P], macro_defaults: [f32; MACRO_SLOTS]) -> Fl
             Binding { slot: 2, param: P_BASE_HZ as u8, curve: Curve::Linear, depth: 1800.0 },
         ],
         macro_defaults,
+        macro_names: Default::default(),
     }
 }
 
