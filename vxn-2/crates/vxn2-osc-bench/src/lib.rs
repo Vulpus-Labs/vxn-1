@@ -1,12 +1,7 @@
 //! Bench harness for VXN2. Wraps `vxn2-dsp` primitives in fixtures suitable
-//! for criterion runs. The sine readers and the operator core live in
-//! `vxn2-dsp`; this crate keeps a minimal scalar ADSR around as a stand-in
-//! envelope for the multi-op algorithm benches that pre-date the full EG.
-
-pub use vxn2_dsp::sine::{SINE_TABLE, TABLE_LEN, TABLE_MASK, scalar};
-
-#[cfg(target_arch = "aarch64")]
-pub use vxn2_dsp::sine::neon;
+//! for criterion runs. The operator core lives in `vxn2-dsp`; this crate keeps
+//! a minimal scalar ADSR around as a stand-in envelope for the multi-op
+//! algorithm benches that pre-date the full EG.
 
 /// Minimal scalar ADSR fixture for op-level env benches. Linear stages.
 /// Kept here because the multi-op benches predate the 4R/4L EG and use

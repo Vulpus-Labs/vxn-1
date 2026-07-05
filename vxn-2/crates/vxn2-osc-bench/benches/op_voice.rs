@@ -6,9 +6,9 @@
 //! - `op_voice_attack`  — fresh note-on each block, EG ticks through Attack
 //!   into Decay1. Stresses the EG state machine + cook path under transients.
 //!
-//! Throughput = samples per call (BLOCK × VOICES). Comparing against
-//! `sine_block::scalar_fast_sine_q32` at the same throughput shows the cost
-//! of EG mul + per-op feedback memory + the scalar shape vs the raw reader.
+//! Throughput = samples per call (BLOCK × VOICES). This isolates the cost of
+//! EG mul + per-op feedback memory + the scalar shape on top of the raw sine
+//! reader (`vxn2_dsp::sine::scalar::fast_sine_q32`).
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_dsp::op::{OpParams, OpState, op_eg_tick, op_tick};
