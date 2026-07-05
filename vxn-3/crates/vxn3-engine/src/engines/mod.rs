@@ -107,6 +107,7 @@ mod tests {
         let mut metal = make(EngineKind::Metal, sr);
         assert!(metal.deserialize_patch(&[1, 0x00, 0x00]).is_err(), "flat truncated rejected");
         let mut kick = make(EngineKind::KickTone, sr);
-        assert!(kick.deserialize_patch(&[1, 4, 0x00]).is_err(), "flavour truncated rejected");
+        // version 1, n_params = DRIVEN_P (6), then a truncated base → Err.
+        assert!(kick.deserialize_patch(&[1, 6, 0x00]).is_err(), "flavour truncated rejected");
     }
 }

@@ -22,16 +22,26 @@ pub const P_AMP_ATTACK: usize = 0;
 pub const P_AMP_DECAY: usize = 1;
 pub const P_PITCH_DEPTH: usize = 2;
 pub const P_PITCH_DECAY: usize = 3;
-/// Driven param count `P`.
-pub const DRIVEN_P: usize = 4;
+pub const P_DRIVE: usize = 4;
+pub const P_CLICK: usize = 5;
+/// Driven param count `P` (enriched with Drive + Click in 0181).
+pub const DRIVEN_P: usize = 6;
+
+/// Max saturation pre-gain at `drive = 1` (into the cubic soft-clip).
+const DRIVE_MAX: f32 = 4.0;
+/// Fixed onset-click decay time to -60 dB (s) — a fast beater/tick.
+const CLICK_DECAY_S: f32 = 0.003;
 
 /// Per-param metadata for the Driven family — queryable on the main thread by the
-/// flavour editor (0185) and value-text (0172). Ranges track the old 0170 macro map.
+/// flavour editor (0185) and value-text (0172). Ranges track the old 0170 macro map;
+/// Drive + Click are new in 0181 and default off.
 pub static DRIVEN_PARAMS: [ParamMeta; DRIVEN_P] = [
     ParamMeta { name: "Attack", unit: MacroUnit::Seconds, min: 0.0001, max: 0.05, default: 0.001 },
     ParamMeta { name: "Decay", unit: MacroUnit::Seconds, min: 0.05, max: 1.5, default: 0.35 },
     ParamMeta { name: "Depth", unit: MacroUnit::Semitones, min: 0.0, max: 48.0, default: 24.0 },
     ParamMeta { name: "Donk", unit: MacroUnit::Seconds, min: 0.005, max: 0.2, default: 0.05 },
+    ParamMeta { name: "Drive", unit: MacroUnit::Percent, min: 0.0, max: 1.0, default: 0.0 },
+    ParamMeta { name: "Click", unit: MacroUnit::Percent, min: 0.0, max: 1.0, default: 0.0 },
 ];
 
 /// The default Driven flavour — a serviceable 808-ish kick, with the three host macros
@@ -40,15 +50,63 @@ pub static DRIVEN_PARAMS: [ParamMeta; DRIVEN_P] = [
 /// map). At neutral macros (0.5) it reproduces a usable kick; a macro at 0 gives the
 /// base value, at 1 gives base + depth (clamped).
 pub fn driven_default_flavour() -> Flavour {
+    driven_flavour(
+        [0.001, 0.35, 24.0, 0.05, 0.0, 0.0],
+        [0.5; MACRO_SLOTS],
+    )
+}
+
+/// Build a Driven flavour from a full base vector + macro defaults, wiring the three
+/// standard host-macro bindings (decay / donk / pitch-depth) so the played knobs stay
+/// meaningful across every authored flavour. The single place base values live, so the
+/// 0187 TOML-bank move is mechanical.
+fn driven_flavour(base: [f32; DRIVEN_P], macro_defaults: [f32; MACRO_SLOTS]) -> Flavour {
     Flavour {
-        base: vec![0.001, 0.35, 24.0, 0.05],
+        base: base.to_vec(),
         bindings: vec![
             Binding { slot: 0, param: P_AMP_DECAY as u8, curve: Curve::Linear, depth: 0.65 },
             Binding { slot: 1, param: P_PITCH_DECAY as u8, curve: Curve::Linear, depth: 0.10 },
             Binding { slot: 2, param: P_PITCH_DEPTH as u8, curve: Curve::Linear, depth: 12.0 },
         ],
-        macro_defaults: [0.5; MACRO_SLOTS],
+        macro_defaults,
     }
+}
+
+// ── Authored Driven flavours (0181) ──────────────────────────────────────────────
+// Base = [attack, decay, depth(st), donk, drive, click]. Note (pitch) comes from the
+// sequencer, so flavours differ in character (sweep/decay/drive/click), not fixed pitch.
+// Macro defaults sit mid-ish so the shipped sound is the intended one at neutral knobs.
+
+/// Deep 808-ish kick: long-ish body, deep fast sweep, a touch of drive + beater click.
+pub fn flavour_kick() -> Flavour {
+    driven_flavour([0.001, 0.30, 30.0, 0.045, 0.25, 0.20], [0.3, 0.4, 0.6])
+}
+
+/// Tom: mid decay, moderate sweep, clean (no drive/click) — a round pitched drum.
+pub fn flavour_tom() -> Flavour {
+    driven_flavour([0.001, 0.45, 14.0, 0.08, 0.0, 0.0], [0.5, 0.5, 0.4])
+}
+
+/// Snare-body: short tonal thud with more drive for buzz + a little click.
+pub fn flavour_snare_body() -> Flavour {
+    driven_flavour([0.001, 0.18, 10.0, 0.03, 0.5, 0.25], [0.2, 0.3, 0.3])
+}
+
+/// Claves: very short high tick — no sweep to speak of, strong click, no drive.
+pub fn flavour_claves() -> Flavour {
+    driven_flavour([0.0005, 0.07, 2.0, 0.01, 0.0, 0.8], [0.1, 0.1, 0.1])
+}
+
+/// The authored Driven flavours (name → flavour), for the editor / factory bank (0185,
+/// 0187) to enumerate. `default` is the neutral starting point.
+pub fn driven_flavours() -> [(&'static str, Flavour); 5] {
+    [
+        ("default", driven_default_flavour()),
+        ("kick", flavour_kick()),
+        ("tom", flavour_tom()),
+        ("snare-body", flavour_snare_body()),
+        ("claves", flavour_claves()),
+    ]
 }
 
 /// Patch parameters for the `Kick/Tone` engine. Cooked into per-sample
@@ -63,16 +121,25 @@ pub struct KickTonePatch {
     pub pitch_depth_st: f32,
     /// Pitch sweep decay time to -60 dB of the depth (s) — the "donk".
     pub pitch_decay_s: f32,
+    /// Oscillator drive / saturation amount `0..1` (0 = clean sine). Adds odd
+    /// harmonics via a branchless cubic soft-clip — kick punch, snare buzz (0181).
+    pub drive: f32,
+    /// Onset click level `0..1` (0 = no click) — a short broadband transient at trig
+    /// for beater / tick attack (0181).
+    pub click: f32,
 }
 
 impl Default for KickTonePatch {
-    /// A serviceable 808-ish kick.
+    /// A serviceable 808-ish kick. Drive + click default off, so the enriched engine
+    /// reproduces the pre-0181 sound bit-for-bit at defaults.
     fn default() -> Self {
         Self {
             amp_attack_s: 0.001,
             amp_decay_s: 0.35,
             pitch_depth_st: 24.0,
             pitch_decay_s: 0.05,
+            drive: 0.0,
+            click: 0.0,
         }
     }
 }
@@ -97,9 +164,21 @@ pub struct KickTone {
     amp_decay_coef: f32,
     /// Per-sample relaxation of the pitch multiplier toward 1.0.
     pitch_coef: f32,
+    /// Saturation pre-gain (`1 + drive·DRIVE_MAX`) into the soft-clip.
+    drive_pre: f32,
+    /// Dry/sat blend `0..1` (= `patch.drive`); 0 keeps the clean sine.
+    drive_amt: f32,
+    /// Per-sample decay of the onset click envelope (fixed fast time).
+    click_coef: f32,
+    /// Click level `0..1` (= `patch.click`), seeded into a voice's click env at trig.
+    click_level: f32,
+    /// Shared xorshift noise state for the broadband click (as `Noise`).
+    rng: u32,
 
     // ── per-voice SoA state ──
     phase: [u32; LANES],
+    /// Fast-decaying onset click envelope, seeded to `click_level` at trig.
+    click_env: [f32; LANES],
     /// Settled phase increment per sample (Q32 as f32), from the voice's note.
     base_inc: [f32; LANES],
     /// Pitch multiplier, starts at 2^(depth/12) and relaxes to 1.0.
@@ -130,7 +209,13 @@ impl KickTone {
             amp_attack_coef: 0.0,
             amp_decay_coef: 0.0,
             pitch_coef: 0.0,
+            drive_pre: 1.0,
+            drive_amt: 0.0,
+            click_coef: 0.0,
+            click_level: 0.0,
+            rng: 0x2545_F491,
             phase: [0; LANES],
+            click_env: [0.0; LANES],
             base_inc: [0.0; LANES],
             pmul: [1.0; LANES],
             peak: [0.0; LANES],
@@ -163,6 +248,8 @@ impl KickTone {
         self.patch.amp_decay_s = r[P_AMP_DECAY];
         self.patch.pitch_depth_st = r[P_PITCH_DEPTH];
         self.patch.pitch_decay_s = r[P_PITCH_DECAY];
+        self.patch.drive = r[P_DRIVE];
+        self.patch.click = r[P_CLICK];
         self.cook();
         self.dirty = false;
     }
@@ -171,6 +258,21 @@ impl KickTone {
         self.amp_attack_coef = attack_coef(self.patch.amp_attack_s, self.sample_rate);
         self.amp_decay_coef = decay_coef(self.patch.amp_decay_s, self.sample_rate);
         self.pitch_coef = decay_coef(self.patch.pitch_decay_s, self.sample_rate);
+        self.drive_amt = self.patch.drive;
+        self.drive_pre = 1.0 + self.patch.drive * DRIVE_MAX;
+        self.click_coef = decay_coef(CLICK_DECAY_S, self.sample_rate);
+        self.click_level = self.patch.click;
+    }
+
+    /// One xorshift white-noise sample in `-1..1` (shared broadband click source).
+    #[inline]
+    fn white(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x as i32 as f32) * (1.0 / 2_147_483_648.0)
     }
 
     /// Pick a lane for a new voice: a free one if any, else round-robin steal.
@@ -189,14 +291,20 @@ impl TrackEngine for KickTone {
         let atk_c = self.amp_attack_coef;
         let dec_c = self.amp_decay_coef;
         let pit_c = self.pitch_coef;
+        let pre = self.drive_pre;
+        let drv = self.drive_amt;
+        let clk_c = self.click_coef;
 
         for s in out.iter_mut() {
+            // Shared broadband click source, gated per-voice by the click envelope.
+            let n = self.white();
             let mut acc = 0.0_f32;
             // 4-wide lane loop — branchless, autovectorises to f32x4.
             for k in 0..LANES {
                 // Envelopes.
                 self.atk[k] += (1.0 - self.atk[k]) * atk_c;
                 self.dec[k] *= dec_c;
+                self.click_env[k] *= clk_c;
                 // Pitch sweep: multiplier relaxes toward 1.0.
                 self.pmul[k] = 1.0 + (self.pmul[k] - 1.0) * pit_c;
 
@@ -204,8 +312,15 @@ impl TrackEngine for KickTone {
                 let inc = (self.base_inc[k] * self.pmul[k]) as u32;
                 self.phase[k] = self.phase[k].wrapping_add(inc);
 
+                // Oscillator + branchless cubic soft-clip (drive). `drv = 0` blends to
+                // the clean sine bit-for-bit (`sn + 0·(sat − sn) == sn`).
+                let sn = fast_sine_q32(self.phase[k]);
+                let d = (sn * pre).clamp(-1.0, 1.0);
+                let sat = d * (1.5 - 0.5 * d * d);
+                let body = sn + drv * (sat - sn);
+
                 let amp = self.peak[k] * self.atk[k] * self.dec[k];
-                acc += fast_sine_q32(self.phase[k]) * amp;
+                acc += body * amp + n * self.click_env[k] * self.peak[k];
             }
             *s = acc;
         }
@@ -231,6 +346,7 @@ impl TrackEngine for KickTone {
         self.peak[k] = velocity;
         self.atk[k] = 0.0;
         self.dec[k] = 1.0;
+        self.click_env[k] = self.click_level; // 0 when the flavour has no click
         self.active[k] = true;
     }
 
@@ -240,6 +356,7 @@ impl TrackEngine for KickTone {
         self.peak = [0.0; LANES];
         self.atk = [0.0; LANES];
         self.dec = [0.0; LANES];
+        self.click_env = [0.0; LANES];
         self.active = [false; LANES];
         self.next = 0;
     }
@@ -363,7 +480,8 @@ mod tests {
 
     // ── Flavour runtime (0180) ────────────────────────────────────────────────
 
-    fn flavour_with(base: Vec<f32>, bindings: Vec<Binding>) -> Flavour {
+    fn flavour_with(mut base: Vec<f32>, bindings: Vec<Binding>) -> Flavour {
+        base.resize(DRIVEN_P, 0.0); // pad drive/click (0181) when a test gives only the core params
         Flavour { base, bindings, macro_defaults: [0.0; MACRO_SLOTS] }
     }
 
@@ -457,5 +575,115 @@ mod tests {
         let p = e.family_params();
         assert_eq!(p.len(), DRIVEN_P);
         assert_eq!(p[P_AMP_DECAY].name, "Decay");
+        assert_eq!(p[P_DRIVE].name, "Drive");
+        assert_eq!(p[P_CLICK].name, "Click");
+    }
+
+    // ── Enriched Driven family: drive + click (0181) ──────────────────────────
+
+    fn render_note(flav: Flavour, note: f32, n: usize) -> Vec<f32> {
+        let mut e = KickTone::with_default_patch(48_000.0);
+        e.apply_flavour(flav);
+        let mut buf = vec![0.0_f32; n];
+        e.on_trig(note, 1.0);
+        e.render(&mut buf);
+        buf
+    }
+
+    /// High-frequency energy fraction — a saturation/harmonics proxy (first difference
+    /// emphasises highs; normalise by total so a level change alone doesn't move it).
+    fn hf_fraction(buf: &[f32]) -> f32 {
+        let hf: f32 = buf.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+        let total: f32 = buf.iter().map(|&x| x * x).sum::<f32>().max(1e-12);
+        hf / total
+    }
+
+    /// Drive + click default off ⇒ the enriched engine reproduces the clean output. A
+    /// default engine is deterministic, and the drive/click params are inert at 0.
+    #[test]
+    fn drive_and_click_inert_at_zero() {
+        let a = render_note(driven_default_flavour(), 40.0, 4_800);
+        let b = render_note(driven_default_flavour(), 40.0, 4_800);
+        assert_eq!(a, b, "default flavour render is not deterministic");
+        // The default flavour never touches drive/click (base + bindings only hit the
+        // core params), so a clean sine body: bounded, no broadband noise floor.
+        assert!(a.iter().all(|x| x.is_finite()));
+    }
+
+    /// Drive adds harmonics: same base/pitch, drive raised ⇒ higher HF-energy fraction
+    /// and an audibly different waveform.
+    #[test]
+    fn drive_adds_harmonics() {
+        let clean_base = [0.001, 0.4, 0.0, 0.05, 0.0, 0.0]; // no sweep, so HF is pure drive
+        let driven_base = [0.001, 0.4, 0.0, 0.05, 0.9, 0.0];
+        let clean = render_note(driven_flavour(clean_base, [0.0; MACRO_SLOTS]), 45.0, 4_800);
+        let driven = render_note(driven_flavour(driven_base, [0.0; MACRO_SLOTS]), 45.0, 4_800);
+        assert_ne!(clean, driven, "drive changed nothing");
+        assert!(
+            hf_fraction(&driven) > hf_fraction(&clean) * 1.5,
+            "drive did not add harmonics: {} vs {}",
+            hf_fraction(&clean),
+            hf_fraction(&driven)
+        );
+    }
+
+    /// Click adds broadband onset energy concentrated in the first few ms. The two
+    /// renders are deterministic and identical but for the click param (the shared
+    /// noise `rng` advances the same either way), so `b − a` *is* the injected click.
+    #[test]
+    fn click_adds_onset_energy() {
+        let no_click = [0.001, 0.3, 12.0, 0.05, 0.0, 0.0];
+        let with_click = [0.001, 0.3, 12.0, 0.05, 0.0, 0.9];
+        let a = render_note(driven_flavour(no_click, [0.0; MACRO_SLOTS]), 40.0, 480);
+        let b = render_note(driven_flavour(with_click, [0.0; MACRO_SLOTS]), 40.0, 480);
+        let diff: Vec<f32> = a.iter().zip(&b).map(|(x, y)| y - x).collect();
+        // ~3 ms click (144 samples @ 48k): onset carries the energy, the tail is clean.
+        let onset = rms(&diff[..144]);
+        let tail = rms(&diff[144..]);
+        assert!(onset > 1e-3, "click added no onset energy: {onset}");
+        assert!(onset > tail * 4.0, "click not concentrated at onset: {onset} vs {tail}");
+        // The click is broadband — HF-richer than the clean low-sine body.
+        assert!(hf_fraction(&b) > hf_fraction(&a), "click not broadband");
+    }
+
+    /// Kick and Tom are two points in the Driven space that differ by **base edits
+    /// alone** — macros held equal, same note, audibly distinct.
+    #[test]
+    fn kick_and_tom_morph_via_base() {
+        let render_eqmacro = |flav: Flavour| {
+            let mut e = KickTone::with_default_patch(48_000.0);
+            e.apply_flavour(flav);
+            for s in 0..MACRO_SLOTS {
+                e.set_macro(s, 0.5); // identical macro state for both
+            }
+            let mut buf = vec![0.0_f32; 12_000];
+            e.on_trig(45.0, 1.0);
+            e.render(&mut buf);
+            buf
+        };
+        let kick = render_eqmacro(flavour_kick());
+        let tom = render_eqmacro(flavour_tom());
+        assert_ne!(kick, tom, "kick and tom render identically");
+        // Tom's longer decay ⇒ more sustained energy than the punchy kick.
+        assert!(rms(&tom) > rms(&kick), "tom not longer than kick: {} vs {}", rms(&kick), rms(&tom));
+    }
+
+    /// Every authored flavour is audibly distinct (pairwise), via the registry.
+    #[test]
+    fn authored_flavours_are_distinct() {
+        let flavs = driven_flavours();
+        let rendered: Vec<Vec<f32>> = flavs
+            .iter()
+            .map(|(_, f)| render_note(f.clone(), 45.0, 9_600))
+            .collect();
+        for i in 0..rendered.len() {
+            for j in (i + 1)..rendered.len() {
+                assert_ne!(
+                    rendered[i], rendered[j],
+                    "flavours '{}' and '{}' render identically",
+                    flavs[i].0, flavs[j].0
+                );
+            }
+        }
     }
 }

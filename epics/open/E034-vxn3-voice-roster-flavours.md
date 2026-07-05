@@ -63,7 +63,7 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
       = base vector + binding table + default macro values; additive-from-base
       evaluation on trig, allocation-free; flavour load/apply onto an engine.
       No new synthesis, no UI yet — the model plumbing all four families build on.
-- [ ] **0181** — **Enrich Driven family + author flavours.** Add `sweep-start`,
+- [x] **0181** — *(closed 2026-07-05)* **Enrich Driven family + author flavours.** Add `sweep-start`,
       `drive`, `click` to the driven param space; author flavours: kick, tom,
       snare-body, claves. Prove two flavours of one family morph via base edits.
 - [ ] **0182** — **Enrich Noise family + flavours.** Add bandpass freq/Q, `snap`

@@ -143,9 +143,10 @@ fn driven_flavour_trig_is_allocation_free() {
     use vxn3_engine::flavour::{Binding, Curve, Flavour};
 
     let mut engine = build_kit();
-    // Install a Driven flavour with all three macros bound, so every trig re-resolves.
+    // Install a Driven flavour with all three macros bound and drive + click on, so
+    // every trig re-resolves and the saturation/click paths are exercised (0181).
     let flav = Flavour {
-        base: vec![0.001, 0.35, 24.0, 0.05],
+        base: vec![0.001, 0.35, 24.0, 0.05, 0.4, 0.5], // 6 params incl. drive + click
         bindings: vec![
             Binding { slot: 0, param: 1, curve: Curve::Linear, depth: 0.6 },
             Binding { slot: 1, param: 3, curve: Curve::Exp, depth: 0.1 },
