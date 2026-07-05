@@ -71,7 +71,7 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
 - [x] **0183** — *(closed 2026-07-05)* **Enrich Metal family + flavours.** Add XOR-pair + modal-bank
       options + shimmer LFO + open/closed decay; author flavours: closed hat, open
       hat, ride, cymbal (open/closed choke handled here or deferred to Phase 1).
-- [ ] **0184** — **New Struck family (BridgedT).** Port the resonator school:
+- [x] **0184** — *(closed 2026-07-05)* **New Struck family (BridgedT).** Port the resonator school:
       pitch-droop, Q-as-decay, selectable excitation shape (dirac / exp / half-sine
       / filtered-click). Author flavours: kick2, tom2, claves2, modal cymbal.
 - [ ] **0185** — **Flavour editor + save-as-flavour (faceplate).** Base sliders +

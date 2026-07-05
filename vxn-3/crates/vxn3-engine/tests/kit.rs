@@ -165,6 +165,13 @@ fn driven_flavour_trig_is_allocation_free() {
         .track_mut(2)
         .engine
         .apply_flavour(vxn3_engine::engines::noise::flavour_clap());
+    // Track 3 — a Struck kick2 so the resonator's per-trig resolve + droop + shaped
+    // excitation run under the trap (0184).
+    engine.track_mut(3).engine = make(EngineKind::Struck, SR);
+    engine.track_mut(3).engine.apply_flavour(vxn3_engine::engines::struck::flavour_kick2());
+    for s in [2, 6, 10, 14] {
+        engine.pattern_mut(3).set(s, 40.0, 1.0);
+    }
 
     let bps = BPM / 60.0 / SR as f64;
     let mut l = vec![0.0_f32; 512];

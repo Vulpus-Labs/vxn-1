@@ -51,6 +51,7 @@ fn build_html() -> String {
             { "id": "kick", "label": "Kick" },
             { "id": "metal", "label": "Metal" },
             { "id": "noise", "label": "Noise" },
+            { "id": "struck", "label": "Struck" },
         ],
     });
     HTML_TEMPLATE
@@ -71,6 +72,7 @@ fn kind_of(s: &str) -> Option<EngineKind> {
         "kick" => Some(EngineKind::KickTone),
         "metal" => Some(EngineKind::Metal),
         "noise" => Some(EngineKind::Noise),
+        "struck" => Some(EngineKind::Struck),
         _ => None,
     }
 }

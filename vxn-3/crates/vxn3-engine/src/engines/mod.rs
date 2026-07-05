@@ -1,14 +1,17 @@
-//! The engine roster (ADR 0001 §6): `Kick/Tone` (poly), `Metal` (modal
-//! resonator), `Noise` (poly perc) — all plugging into the same `TrackEngine`
-//! slot, per-block dispatch, and SoA block.
+//! The engine roster (ADR 0001 §6; four voice families, ADR 0005): `Kick/Tone`
+//! (Driven poly), `Metal` (modal + XOR metallic), `Noise` (filtered burst + clap),
+//! `Struck` (BridgedT resonator) — all plugging into the same `TrackEngine` slot,
+//! per-block dispatch, and SoA block.
 
 pub mod kick_tone;
 pub mod metal;
 pub mod noise;
+pub mod struck;
 
 pub use kick_tone::{KickTone, KickTonePatch};
 pub use metal::{Metal, MetalPatch};
 pub use noise::{Noise, NoisePatch};
+pub use struck::{Struck, StruckPatch};
 
 use crate::track_engine::{EngineKind, TrackEngine};
 
@@ -20,6 +23,7 @@ pub fn make(kind: EngineKind, sample_rate: f32) -> Box<dyn TrackEngine> {
         EngineKind::KickTone => Box::new(KickTone::with_default_patch(sample_rate)),
         EngineKind::Metal => Box::new(Metal::with_default_patch(sample_rate)),
         EngineKind::Noise => Box::new(Noise::with_default_patch(sample_rate)),
+        EngineKind::Struck => Box::new(Struck::with_default_patch(sample_rate)),
     }
 }
 
@@ -57,11 +61,16 @@ mod tests {
         metal_flav.base[metal::P_XOR_MIX] = 0.8;
         metal_flav.base[metal::P_SHIMMER] = 0.5;
         metal_flav.base[metal::P_BASE_HZ] = 900.0;
+        let mut struck_flav = struck::struck_default_flavour();
+        struck_flav.base[struck::P_DROOP_DEPTH] = 18.0;
+        struck_flav.base[struck::P_INHARM] = 0.7;
+        struck_flav.base[struck::P_EXC_SHAPE] = 3.0;
 
         let cases = [
             (EngineKind::KickTone, kick_flav),
             (EngineKind::Noise, noise_flav),
             (EngineKind::Metal, metal_flav),
+            (EngineKind::Struck, struck_flav),
         ];
         for (kind, flav) in cases {
             let mut src = make(kind, sr);
@@ -88,7 +97,7 @@ mod tests {
     #[test]
     fn patch_deserialize_tolerances() {
         let sr = 48_000.0;
-        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise] {
+        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise, EngineKind::Struck] {
             let mut e = make(kind, sr);
             assert!(e.deserialize_patch(&[]).is_ok(), "{kind:?} empty patch");
             assert!(e.deserialize_patch(&[0xFF]).is_ok(), "{kind:?} unknown version tolerated");
@@ -97,6 +106,7 @@ mod tests {
             (EngineKind::KickTone, kick_tone::DRIVEN_P as u8),
             (EngineKind::Noise, noise::NOISE_P as u8),
             (EngineKind::Metal, metal::METAL_P as u8),
+            (EngineKind::Struck, struck::STRUCK_P as u8),
         ] {
             let mut e = make(kind, sr);
             assert!(e.deserialize_patch(&[1, p, 0x00]).is_err(), "{kind:?} truncated flavour rejected");

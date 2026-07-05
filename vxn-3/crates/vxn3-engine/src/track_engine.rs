@@ -145,6 +145,10 @@ fn macro_coeffs(kind: EngineKind, slot: usize) -> Option<(f32, f32, &'static str
         (Noise, 0) => (0.02, 0.48, "Decay", Seconds), // 20 ms .. 0.5 s
         (Noise, 1) => (0.0, 1.0, "Mix", Percent),     // 0 .. 100 %
         (Noise, 2) => (400.0, 7_600.0, "Bright", Hertz), // 400 .. 8000 Hz
+        // Struck: ring length, excitation energy, inharmonicity (0184).
+        (Struck, 0) => (0.05, 1.95, "Decay", Seconds), // 50 ms .. 2 s
+        (Struck, 1) => (0.0, 1.0, "Excite", Percent),  // 0 .. 100 %
+        (Struck, 2) => (0.0, 1.0, "Inharm", Percent),  // 0 .. 100 %
         _ => return None,
     })
 }
@@ -227,12 +231,14 @@ pub fn macro_parse(kind: EngineKind, slot: usize, text: &str) -> Option<f32> {
     Some(((physical - base) / span).clamp(0.0, 1.0))
 }
 
-/// The closed engine roster (ADR 0001 §6). `Metal` / `Noise` land in 0049.
+/// The closed engine roster (ADR 0001 §6; four voice families, ADR 0005). `Metal` /
+/// `Noise` landed in 0049; `Struck` (BridgedT resonator) in 0184.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EngineKind {
     KickTone,
     Metal,
     Noise,
+    Struck,
 }
 
 impl EngineKind {
@@ -243,6 +249,7 @@ impl EngineKind {
             EngineKind::KickTone => 0,
             EngineKind::Metal => 1,
             EngineKind::Noise => 2,
+            EngineKind::Struck => 3,
         }
     }
 
@@ -252,6 +259,7 @@ impl EngineKind {
         match v {
             1 => EngineKind::Metal,
             2 => EngineKind::Noise,
+            3 => EngineKind::Struck,
             _ => EngineKind::KickTone,
         }
     }
@@ -271,7 +279,7 @@ mod tests {
     fn every_engine_maps_all_slots() {
         // No inert slot on any engine (the 0072 dead-mapping fix): all three
         // roster engines map slot 0..MACRO_SLOTS to a real, labelled control.
-        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise] {
+        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise, EngineKind::Struck] {
             for slot in 0..MACRO_SLOTS {
                 assert!(macro_map(kind, slot, 0.5).is_some(), "{kind:?} slot {slot} inert");
             }
@@ -308,7 +316,7 @@ mod tests {
     fn display_parse_round_trips() {
         // value → text → value → text must be stable across every engine/slot
         // and unit (ms/s/st/Hz/kHz/%) — CLAP text_to_value round-tripping (0172).
-        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise] {
+        for kind in [EngineKind::KickTone, EngineKind::Metal, EngineKind::Noise, EngineKind::Struck] {
             for slot in 0..MACRO_SLOTS {
                 for &v in &[0.0_f32, 0.33, 0.5, 0.78, 1.0] {
                     let t1 = show(kind, slot, v);
