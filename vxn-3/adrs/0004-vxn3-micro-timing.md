@@ -1,6 +1,13 @@
 # ADR 0004 — VXN3 micro-timing and lane shift
 
-- **Status:** Accepted
+> **Superseded by [ADR 0006](0006-vxn3-groove.md).** The RT model here (§3:
+> continuous-timeline lookahead, `fire = step·spacing + laneShift + offset`,
+> loop-wrap, retrig/p-lock interaction) is retained *unchanged*. What 0006
+> changes: the per-hit offset source is a **groove template** (per-track,
+> pooled), not a per-trig field (§1, §4 nudge strip both dropped); timing feel
+> gets its own editor, out of the pattern grid.
+
+- **Status:** Superseded by [ADR 0006](0006-vxn3-groove.md) (2026-07-06)
 - **Date:** 2026-07-02
 - **Scope:** Rhythmic offset in the VXN3 pattern engine — pushing hits off the
   grid, per-trig and per-lane. Refines [ADR 0001](0001-vxn3-overall-design.md)

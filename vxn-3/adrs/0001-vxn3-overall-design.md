@@ -68,9 +68,12 @@ Per-track / per-trig levers:
   separate data model. Slow per-bar evolution comes from sparse ramp/latch locks
   over the (long, polymetric) loop — minimal techno lives on change over many
   bars, so evolution is designed in, not bolted on.
-- **Micro-timing + lane shift:** push a hit early/late off the grid. Per-trig
-  micro-timing is a trig attribute; per-lane shift is a constant per-track
-  offset that phases the whole lane against the others. Full semantics in
+- **Groove + lane shift:** push hits early/late off the grid and shape feel.
+  Timing feel is *not* a per-trig attribute — it comes from a **groove**, a
+  reusable per-grid-position timing+velocity template assigned per track, edited
+  in its own surface (swing is a parametric groove). Per-lane shift is a
+  constant per-track offset that phases the whole lane against the others. Full
+  semantics in [ADR 0006](0006-vxn3-groove.md), which supersedes
   [ADR 0004](0004-vxn3-micro-timing.md).
 
 ### 3. Dub sends as part of the instrument
@@ -96,8 +99,11 @@ buses remain the default. (Bus count and how many may be external: ADR 0002 §5.
 
 A p-lock is a per-step override of a *continuous* track param (engine param,
 send amount, pan, level…). It is distinct from **trig attributes** (retrig
-n/m, probability, condition, velocity, micro-timing), which live *on the trig*
-and have no base to revert to. p-locks subsume what would otherwise be a
+n/m, probability, condition, velocity/accent), which live *on the trig*
+and have no base to revert to. (Micro-timing was formerly a trig attribute;
+[ADR 0006](0006-vxn3-groove.md) moves timing feel out to the groove template.
+Per-step **velocity/accent** stays on the trig — compositional accent, distinct
+from the groove's feel-based velocity contour.) p-locks subsume what would otherwise be a
 separate automation lane: a "lane" is the per-param view over a track's locks.
 
 A lock record is:
