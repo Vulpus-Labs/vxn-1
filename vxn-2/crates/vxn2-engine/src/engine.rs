@@ -203,6 +203,20 @@ struct StackBlockSummary {
     fx_active: u32,
 }
 
+/// Block-rate gates passed into [`Engine::cook_stacks_block`]: whether any
+/// matrix route targets each of the four re-cooked stack/LFO destinations,
+/// scanned once in [`Engine::process_block`]. Grouped because four bare
+/// positional bools at the call site are the transpose hazard
+/// `clippy::too_many_arguments` exists to flag — named fields
+/// (`flags.stack_detune`) read unambiguously.
+#[derive(Clone, Copy)]
+struct TargetFlags {
+    lfo2_rate: bool,
+    stack_detune: bool,
+    stack_spread: bool,
+    stack_pitch: bool,
+}
+
 /// Top-level audio engine. Owns every sub-engine plus the per-block
 /// parameter snapshot.
 pub struct Engine {
@@ -791,10 +805,12 @@ impl Engine {
             n,
             dt,
             filter_enabled,
-            lfo2_rate_targeted,
-            stack_detune_targeted,
-            stack_spread_targeted,
-            stack_pitch_targeted,
+            TargetFlags {
+                lfo2_rate: lfo2_rate_targeted,
+                stack_detune: stack_detune_targeted,
+                stack_spread: stack_spread_targeted,
+                stack_pitch: stack_pitch_targeted,
+            },
             &patch_sources,
         );
 
@@ -923,19 +939,15 @@ impl Engine {
     /// 11  LFO2 phase + rate   deferred; applied AFTER stage 3's eval (one-block latency)
     /// 12  Spread + FX agg     next-block VoiceSpread (one-block) + lane-0 FX/LFO1 sums
     /// ```
-    // Block-rate gates + the patch-source snapshot are passed in from
-    // `process_block` (computed once before the loop); grouping them buys no
-    // clarity over named args.
-    #[allow(clippy::too_many_arguments)]
+    // The four block-rate target gates are grouped into `flags` (built once in
+    // `process_block`); the remaining args — `n`, `dt`, `filter_enabled`, the
+    // patch-source snapshot — stay flat.
     fn cook_stacks_block(
         &mut self,
         n: usize,
         dt: f32,
         filter_enabled: bool,
-        lfo2_rate_targeted: bool,
-        stack_detune_targeted: bool,
-        stack_spread_targeted: bool,
-        stack_pitch_targeted: bool,
+        flags: TargetFlags,
         patch_sources: &PatchSources,
     ) -> StackBlockSummary {
         let voice = &self.params.patch.voice;
@@ -1058,7 +1070,7 @@ impl Engine {
             // component into the per-op pitch columns (E022 0069), before the
             // smoother captures pitch targets below. Gated so the common
             // (no stack-pitch route) path is untouched.
-            if stack_pitch_targeted {
+            if flags.stack_pitch {
                 scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
             }
 
@@ -1317,7 +1329,7 @@ impl Engine {
             // land immediately, zipper-free); one-pole the block-to-block
             // motion of a dynamic source otherwise. Gated: when un-targeted,
             // zero the offset once so the pitch path stays bit-identical.
-            if stack_detune_targeted {
+            if flags.stack_detune {
                 let target = self.dest_vals[i][0][STACK_DETUNE_IDX];
                 self.stack_detune_mod[i] = if fresh {
                     target
@@ -1373,7 +1385,7 @@ impl Engine {
             // read this block's lane-0 accumulator (in octaves) and stash the
             // multiplier for *next* block's `eval` (one-block latency). Gated:
             // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
-            lfo2.rate_mult = if lfo2_rate_targeted {
+            lfo2.rate_mult = if flags.lfo2_rate {
                 self.dest_vals[i][0][LFO2_RATE_IDX].exp2()
             } else {
                 1.0
@@ -1385,7 +1397,7 @@ impl Engine {
             // for *next* block's VoiceSpread source scaling (one-block latency
             // — the source is built before the matrix eval). Snap on fresh,
             // one-pole otherwise; zero when un-targeted.
-            if stack_spread_targeted {
+            if flags.stack_spread {
                 let target = self.dest_vals[i][0][STACK_SPREAD_IDX];
                 self.stack_spread_mod[i] = if fresh {
                     target

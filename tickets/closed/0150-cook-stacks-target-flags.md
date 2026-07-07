@@ -58,3 +58,19 @@ the non-bool args (`n`, `dt`, `filter_enabled`,
 `patch_sources`) flat. No stage reordering, no value change —
 the 12-stage `cook_stacks_block` ordering is preserved exactly
 (see the stage-ordering doc table above the fn).
+
+## Close-out
+
+Landed. `TargetFlags { lfo2_rate, stack_detune, stack_spread,
+stack_pitch }` added beside `StackBlockSummary`; `process_block`
+builds one before the loop; `cook_stacks_block` drops to five
+args (`n, dt, filter_enabled, flags, patch_sources`) and the
+four body reads become `flags.stack_pitch` etc. The allow is
+removed and the superseded "grouping … buys no clarity" comment
+rewritten to state what's grouped and what stays flat.
+`cargo clippy -p vxn2-engine` warning-neutral (the one remaining
+`too_many_arguments` is a pre-existing `vxn2-dsp` `stack.rs`
+site, out of scope); 205 lib tests + `tests/baseline.rs` render
+hash green — behaviour-preserving. Staged this hunk-selectively
+to keep a concurrent unrelated WIP diagnostic test out of the
+commit.
