@@ -2,7 +2,7 @@
 id: E027
 product: monorepo
 title: Second maintainability sweep — shared-primitive dedup, engine decomposition, plumbing tax
-status: open
+status: closed
 created: 2026-06-23
 ---
 
