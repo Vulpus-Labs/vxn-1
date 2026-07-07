@@ -896,6 +896,8 @@ impl VoiceBank {
             note: &self.note,
             glide_semi: &self.glide_semi,
             alloc_tick: &self.alloc_tick,
+            gate: &self.gate,
+            sustained: &self.sustained,
         }
     }
 
@@ -1593,8 +1595,16 @@ struct AllocView<'a> {
     /// Per-channel glide source pitch — the pitch a free channel would sweep from
     /// (drives nearest-free choice for musical Poly glide).
     glide_semi: &'a [f32; N],
-    /// Per-channel allocation tick — lowest is oldest, stolen first.
+    /// Per-channel allocation tick — lowest is oldest, stolen first (within a
+    /// steal tier).
     alloc_tick: &'a [u64; N],
+    /// Per-channel gate — `false` once the note is released (ring-out tail).
+    /// Drives the steal ranking: released tails are sacrificed before held notes.
+    gate: &'a [bool; N],
+    /// Per-channel pedal-defer flag — `true` when a poly note-off was held by
+    /// the sustain pedal (finger up, gate still high). Ranked between released
+    /// tails and finger-held notes when stealing.
+    sustained: &'a [bool; N],
 }
 
 /// One channel assignment: which channel to trigger and the per-channel detune
@@ -1635,9 +1645,26 @@ impl Plan {
 /// A channel index that can never match a real channel — "exclude nothing".
 const NO_SKIP: usize = usize::MAX;
 
+/// Steal ranking (lower = sacrificed first): a released tail before a
+/// pedal-sustained note before a finger-held one. So a melody played over a
+/// held chord (or a decaying pedal wash) eats the ringing-out tails and the
+/// pedal notes before it ever touches a key the player is still holding. Within
+/// a tier the oldest (lowest `alloc_tick`) goes first.
+#[inline]
+fn steal_tier(st: &AllocView, v: usize) -> u8 {
+    if !st.gate[v] {
+        0 // released — ringing out, no key or pedal holding it
+    } else if st.sustained[v] {
+        1 // finger up, held only by the sustain pedal
+    } else {
+        2 // finger still down — last resort
+    }
+}
+
 /// Pick one channel, skipping `skip`: re-use one already playing this note, else
-/// the free channel whose glide source sits nearest the new note, else steal the
-/// oldest.
+/// the free channel whose glide source sits nearest the new note, else steal by
+/// hold state — released tails first, finger-held notes last ([`steal_tier`]),
+/// oldest within a tier.
 ///
 /// Choosing the *nearest* free channel (by `glide_semi`, the pitch it would sweep
 /// from) keeps glide musical: a new note slides the shortest distance, and a
@@ -1661,7 +1688,7 @@ fn allocate_excl(note: u8, st: AllocView, skip: usize) -> usize {
     }
     (0..N)
         .filter(|&v| v != skip)
-        .min_by_key(|&v| st.alloc_tick[v])
+        .min_by_key(|&v| (steal_tier(&st, v), st.alloc_tick[v]))
         .unwrap_or(0)
 }
 
@@ -1771,6 +1798,8 @@ mod alloc_tests {
         note: [u8; N],
         glide_semi: [f32; N],
         alloc_tick: [u64; N],
+        gate: [bool; N],
+        sustained: [bool; N],
     }
 
     impl St {
@@ -1781,6 +1810,8 @@ mod alloc_tests {
                 note: [0; N],
                 glide_semi: [0.0; N],
                 alloc_tick: [0; N],
+                gate: [false; N],
+                sustained: [false; N],
             }
         }
 
@@ -1790,6 +1821,8 @@ mod alloc_tests {
                 note: &self.note,
                 glide_semi: &self.glide_semi,
                 alloc_tick: &self.alloc_tick,
+                gate: &self.gate,
+                sustained: &self.sustained,
             }
         }
     }
@@ -1848,12 +1881,49 @@ mod alloc_tests {
     fn poly_steals_oldest_when_full() {
         let mut st = St::empty();
         st.active = [true; N];
+        st.gate = [true; N]; // all finger-held (same tier) → oldest breaks the tie
         // All on other notes (no reuse), none free → steal lowest alloc_tick.
         for v in 0..N {
             st.note[v] = 40 + v as u8;
             st.alloc_tick[v] = 100 + v as u64;
         }
         st.alloc_tick[6] = 1; // oldest
+        assert_eq!(allocate_one(72, st.view()), 6);
+    }
+
+    #[test]
+    fn poly_steals_released_tail_before_held_even_if_newer() {
+        // A held chord + one released tail, pool full. A melody note must steal
+        // the ringing-out tail, NOT the older held chord note underneath it.
+        let mut st = St::empty();
+        st.active = [true; N];
+        st.gate = [true; N];
+        for v in 0..N {
+            st.note[v] = 40 + v as u8; // no reuse for the new note
+            st.alloc_tick[v] = 10 + v as u64;
+        }
+        // Channel 2 is the OLDEST (would win a blind oldest-steal)...
+        st.alloc_tick[2] = 1;
+        // ...but channel 5 is a released tail — newer, yet un-held.
+        st.gate[5] = false;
+        st.alloc_tick[5] = 999;
+        assert_eq!(allocate_one(72, st.view()), 5);
+    }
+
+    #[test]
+    fn poly_steals_pedal_sustained_before_finger_held() {
+        // No released tail: a finger-up pedal-sustained note is sacrificed
+        // before a note the player still holds, regardless of age.
+        let mut st = St::empty();
+        st.active = [true; N];
+        st.gate = [true; N]; // all gates high (pedal keeps sustained gates up too)
+        for v in 0..N {
+            st.note[v] = 40 + v as u8;
+            st.alloc_tick[v] = 10 + v as u64;
+        }
+        st.alloc_tick[3] = 1; // oldest, but finger-held
+        st.sustained[6] = true; // finger up, pedal only — newer but un-held
+        st.alloc_tick[6] = 500;
         assert_eq!(allocate_one(72, st.view()), 6);
     }
 
@@ -1941,6 +2011,7 @@ mod alloc_tests {
     fn twin_steals_two_distinct_oldest_when_full() {
         let mut st = St::empty();
         st.active = [true; N];
+        st.gate = [true; N]; // all same tier → the two oldest win
         for v in 0..N {
             st.note[v] = 40 + v as u8; // no reuse for the new note
             st.alloc_tick[v] = 100 + v as u64;
