@@ -155,6 +155,32 @@ pub struct Lfo1Trigger {
     pub free_run: bool,
 }
 
+/// The per-note parameter set shared by every note-on path (`note_on`,
+/// `mono_voice`, `mono_note_off`). Grouping the clump kills the arg-order-drift
+/// hazard (transposing `velocity` / a later `f32` no longer type-checks) and
+/// makes adding a per-note field a one-line struct edit rather than a
+/// four-signature one. Event-rate, so a plain struct costs nothing.
+#[derive(Clone, Copy)]
+pub struct NoteOn {
+    pub note: u8,
+    pub velocity: f32,
+    pub alloc_tick: u64,
+    pub lfo1: Lfo1Trigger,
+}
+
+/// A single channel trigger: the per-note set plus the assignment-specific
+/// detune and start phase resolved by [`plan`]. Built per assignment from a
+/// [`NoteOn`] and threaded into [`VoiceBank::trigger`].
+#[derive(Clone, Copy)]
+struct Trigger {
+    note: u8,
+    velocity: f32,
+    alloc_tick: u64,
+    detune_cents: f32,
+    start_phase: f32,
+    lfo1: Lfo1Trigger,
+}
+
 /// Per-voice two-stage onset for the per-voice LFO 1 (E005 / 0018): after a
 /// voice's note-on, its LFO 1 depth is held at zero for `delay` seconds, then
 /// ramps 0→1 over `fade` seconds. `delay = fade = 0` pins depth to full
@@ -635,26 +661,16 @@ impl VoiceBank {
     /// transform before allocation* — it would turn held notes into a timed
     /// sequence and feed each step here as an ordinary `note_on`, so neither the
     /// event router (0009) nor the render path (0008) changes.
-    #[allow(clippy::too_many_arguments)] // one coupled per-note param set, single caller
-    pub fn note_on(
-        &mut self,
-        mode: AssignMode,
-        note: u8,
-        velocity: f32,
-        alloc_tick: u64,
-        unison_detune: f32,
-        lfo1: Lfo1Trigger,
-        legato: bool,
-    ) {
+    pub fn note_on(&mut self, mode: AssignMode, n: NoteOn, unison_detune: f32, legato: bool) {
         // Solo and Unison are monophonic in spirit — one logical note (Solo on one
         // channel, Unison stacked across all, detuned) — so both run the stateful
         // mono path: a held-note stack, legato re-pitch, and quiescing of unused
         // channels. Poly/Twin take the pure `plan` policy below.
         if matches!(mode, AssignMode::Solo | AssignMode::Unison) {
             let was_sounding = self.mono_len > 0;
-            self.mono_push(note);
+            self.mono_push(n.note);
             let slide = legato && was_sounding;
-            self.mono_voice(mode, note, velocity, alloc_tick, unison_detune, lfo1, slide);
+            self.mono_voice(mode, n, unison_detune, slide);
             return;
         }
         // Leaving a mono mode discards the held-note stack so a later return starts
@@ -665,17 +681,19 @@ impl VoiceBank {
         // borrow in `alloc_view` ends when `plan` returns its owned result, so the
         // mutating `trigger` calls below are free to touch the same arrays.
         let mut rng = self.unison_rng;
-        let plan = plan(mode, note, unison_detune, self.alloc_view(), &mut rng);
+        let plan = plan(mode, n.note, unison_detune, self.alloc_view(), &mut rng);
         self.unison_rng = rng;
         for a in plan.iter() {
             self.trigger(
                 a.channel,
-                note,
-                velocity,
-                alloc_tick,
-                a.detune_cents,
-                a.start_phase,
-                lfo1,
+                Trigger {
+                    note: n.note,
+                    velocity: n.velocity,
+                    alloc_tick: n.alloc_tick,
+                    detune_cents: a.detune_cents,
+                    start_phase: a.start_phase,
+                    lfo1: n.lfo1,
+                },
             );
         }
         self.level_comp = plan.level_comp;
@@ -691,34 +709,26 @@ impl VoiceBank {
     /// `slide` (legato over a still-held note) the planned channels only change pitch
     /// — no envelope/phase retrigger, so the glide carries them; otherwise they
     /// retrigger. Solo plans one channel (pinned to 0); Unison plans all, detuned.
-    #[allow(clippy::too_many_arguments)] // one coupled per-note param set
-    fn mono_voice(
-        &mut self,
-        mode: AssignMode,
-        note: u8,
-        velocity: f32,
-        alloc_tick: u64,
-        unison_detune: f32,
-        lfo1: Lfo1Trigger,
-        slide: bool,
-    ) {
+    fn mono_voice(&mut self, mode: AssignMode, n: NoteOn, unison_detune: f32, slide: bool) {
         let mut rng = self.unison_rng;
-        let plan = plan(mode, note, unison_detune, self.alloc_view(), &mut rng);
+        let plan = plan(mode, n.note, unison_detune, self.alloc_view(), &mut rng);
         self.unison_rng = rng;
         let mut used = [false; N];
         for a in plan.iter() {
             used[a.channel] = true;
             if slide {
-                self.repitch(a.channel, note, velocity, a.detune_cents);
+                self.repitch(a.channel, n.note, n.velocity, a.detune_cents);
             } else {
                 self.trigger(
                     a.channel,
-                    note,
-                    velocity,
-                    alloc_tick,
-                    a.detune_cents,
-                    a.start_phase,
-                    lfo1,
+                    Trigger {
+                        note: n.note,
+                        velocity: n.velocity,
+                        alloc_tick: n.alloc_tick,
+                        detune_cents: a.detune_cents,
+                        start_phase: a.start_phase,
+                        lfo1: n.lfo1,
+                    },
                 );
             }
         }
@@ -765,38 +775,28 @@ impl VoiceBank {
     /// Trigger a specific channel: the lowest level of the assign seam. Poly hits
     /// one channel, Unison hits all; both route through here so per-channel state
     /// (gate, detune, phase reset) is set in exactly one place.
-    #[allow(clippy::too_many_arguments)] // one coupled per-trigger param set, single caller
-    fn trigger(
-        &mut self,
-        v: usize,
-        note: u8,
-        velocity: f32,
-        alloc_tick: u64,
-        detune_cents: f32,
-        start_phase: f32,
-        lfo1: Lfo1Trigger,
-    ) {
-        self.note[v] = note;
-        self.velocity[v] = velocity;
+    fn trigger(&mut self, v: usize, t: Trigger) {
+        self.note[v] = t.note;
+        self.velocity[v] = t.velocity;
         self.gate[v] = true;
         self.active[v] = true;
         self.sustained[v] = false;
         self.trigger_pending[v] = true;
-        self.alloc_tick[v] = alloc_tick;
-        self.detune_cents[v] = detune_cents;
+        self.alloc_tick[v] = t.alloc_tick;
+        self.detune_cents[v] = t.detune_cents;
         // Per-voice LFO 1: restart its onset, and (unless free-running) retrigger
         // its phase to the shape's zero crossing so modulation eases out of zero.
         self.lfo1_onset.retrigger(v);
-        if !lfo1.free_run {
-            self.lfo1[v].retrigger(lfo1.shape);
+        if !t.lfo1.free_run {
+            self.lfo1[v].retrigger(t.lfo1.shape);
         }
         self.osc1.reset(v);
         self.osc2.reset(v);
         // Offset the (otherwise zeroed) start phase per channel. Same offset for
         // both oscillators so a voice's osc1/osc2 relationship is preserved; the
         // offset only decorrelates voices from each other (Unison). Poly passes 0.
-        self.osc1.phase[v] = start_phase;
-        self.osc2.phase[v] = start_phase;
+        self.osc1.phase[v] = t.start_phase;
+        self.osc2.phase[v] = t.start_phase;
     }
 
     pub fn note_off(&mut self, note: u8) {
@@ -833,7 +833,6 @@ impl VoiceBank {
     /// `legato` reverts without retriggering (slurred), else the revealed note
     /// retriggers. Releasing a held key that wasn't sounding just drops it from the
     /// stack.
-    #[allow(clippy::too_many_arguments)] // mirrors the mono note-on param set
     pub fn mono_note_off(
         &mut self,
         mode: AssignMode,
@@ -854,10 +853,16 @@ impl VoiceBank {
         if !was_top || self.mono_len == 0 {
             return;
         }
-        // Revert the voice to the newest still-held note (legato carries the slide).
+        // Revert the voice to the newest still-held note (legato carries the slide),
+        // carrying the reference channel's live velocity.
         let revealed = self.mono_stack[self.mono_len - 1];
-        let vel = self.velocity[Self::MONO_REF_CH];
-        self.mono_voice(mode, revealed, vel, alloc_tick, unison_detune, lfo1, legato);
+        let n = NoteOn {
+            note: revealed,
+            velocity: self.velocity[Self::MONO_REF_CH],
+            alloc_tick,
+            lfo1,
+        };
+        self.mono_voice(mode, n, unison_detune, legato);
     }
 
     /// Remove `note` from the mono stack; returns whether it was the top (sounding)

@@ -63,3 +63,19 @@ struct is free (no SIMD/borrow concern). Pure refactor; do
 not change any allocation, retrigger, or legato behaviour. The
 `oscillator.rs` SIMD kernels are a separate matter (kept, see
 `0151`).
+
+## Close-out
+
+Landed. `NoteOn { note, velocity, alloc_tick, lfo1 }` and a
+private `Trigger` (adds `detune_cents`, `start_phase`) added to
+`voice.rs`. `note_on` / `mono_voice` now take `(mode, NoteOn,
+unison_detune, slide/legato)`; `trigger(v, Trigger)` builds the
+per-assignment struct once from the `NoteOn` plus the plan's
+detune/phase. `mono_note_off` builds the revival `NoteOn`
+internally (reference-channel velocity). All four
+`too_many_arguments` allows removed. Single caller updated
+(`lib.rs` `Synth::note_on`, `NoteOn` added to the `voice::`
+import). `cargo clippy -p vxn-engine` clean of the lint (only a
+pre-existing `excessive_precision` in a test const remains);
+161 lib tests + `baseline_render_is_stable` green —
+behaviour-preserving.

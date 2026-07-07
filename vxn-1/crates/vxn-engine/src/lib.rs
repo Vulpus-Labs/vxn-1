@@ -40,8 +40,8 @@ use smoothing::ParamSmoother;
 pub use state::PluginState;
 
 use voice::{
-    AmpRoute, BlockCtx, CrossMod, CutoffRoute, FilterParams, Lfo1Trigger, OscParams, PitchRoute,
-    PwmRoute, VoiceBank,
+    AmpRoute, BlockCtx, CrossMod, CutoffRoute, FilterParams, Lfo1Trigger, NoteOn, OscParams,
+    PitchRoute, PwmRoute, VoiceBank,
 };
 use vxn_dsp::{
     AdsrShape, CONTROL_BLOCK, FdnReverb, FdnReverbParams, LfoCore, MAX_OVERSAMPLE, Oversampler,
@@ -597,11 +597,13 @@ impl Synth {
         let legato = p.legato();
         self.banks[layer].note_on(
             mode,
-            note,
-            velocity,
-            self.alloc_counter,
+            NoteOn {
+                note,
+                velocity,
+                alloc_tick: self.alloc_counter,
+                lfo1,
+            },
             unison_detune,
-            lfo1,
             legato,
         );
     }
