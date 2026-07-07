@@ -37,6 +37,107 @@ const VOLUME_SMOOTH_MS: f32 = 5.0;
 /// 1e-6 is ≈ −120 dB, inaudible for the gain/depth params this governs.
 const GLIDE_SNAP_EPS: f32 = 1.0e-6;
 
+/// Equal-gain raised-cosine rise `0.5 − 0.5·cos(π·t)` for `t ∈ [0,1]`. Zero
+/// slope at *both* endpoints, so neither the start nor the steady handoff leaves
+/// a slope corner (a corner reads as a click — the exact failure this curve
+/// fixes). Shared by the FX bypass crossfade ([`BypassXfade`]) and the
+/// oversampling-change fade-in (0191); matches the law vxn-2 documents in
+/// `render_block_filter_xfade`.
+#[inline]
+pub(crate) fn raised_cosine_rise(t: f32) -> f32 {
+    0.5 - 0.5 * (core::f32::consts::PI * t).cos()
+}
+
+/// Fade window length in samples from a millisecond time at `sample_rate`
+/// (at least 1, so the ramp always spans a non-degenerate interval).
+#[inline]
+pub(crate) fn ms_to_samples(ms: f32, sample_rate: f32) -> usize {
+    (ms * 0.001 * sample_rate).round().max(1.0) as usize
+}
+
+/// A deterministic equal-gain raised-cosine crossfade between a stage's *dry*
+/// input and its *wet* output, armed on a bypass-flag edge. Equal-gain (weights
+/// sum to 1) because dry and wet are strongly correlated — same rationale as
+/// vxn-2's `FILTER_XFADE_MS` toggle. Idle (`remaining == 0`) it costs nothing:
+/// the caller takes its zero-cost passthrough instead.
+pub(crate) struct BypassXfade {
+    /// Fade window in samples (`~FX_XFADE_MS` at the base rate).
+    len: usize,
+    /// Samples of fade left; `0` ⇒ idle, `> 0` ⇒ fade in flight.
+    remaining: usize,
+    /// Direction: `true` = dry→wet (engage), `false` = wet→dry (bypass).
+    to_wet: bool,
+    /// Last-seen flag, for edge detection.
+    on: bool,
+}
+
+impl BypassXfade {
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            len: len.max(1),
+            remaining: 0,
+            to_wet: false,
+            on: false,
+        }
+    }
+
+    /// Re-idle the fade (transport reset / sample-rate change): drop any
+    /// in-flight fade. The edge memory (`on`) is left to the next
+    /// [`Self::prime`], so a still-engaged effect doesn't spuriously re-fade.
+    pub(crate) fn reset(&mut self) {
+        self.remaining = 0;
+    }
+
+    /// Adopt `on` as the current flag state with no fade — the first-block seed
+    /// after construction or a reset, so an effect that starts engaged is simply
+    /// on (no startup ramp) and only a genuine user edge arms a fade.
+    pub(crate) fn prime(&mut self, on: bool) {
+        self.on = on;
+        self.remaining = 0;
+    }
+
+    /// Arm a fade on a flag edge. No-op if the flag is unchanged. Returns `true`
+    /// only on the **off→on** edge, so the caller can reset that stage's DSP
+    /// state before the wet fades in from a clean tail.
+    pub(crate) fn arm(&mut self, now_on: bool) -> bool {
+        if now_on == self.on {
+            return false;
+        }
+        self.remaining = self.len;
+        self.to_wet = now_on;
+        self.on = now_on;
+        now_on
+    }
+
+    /// Whether a fade is in flight this block.
+    #[inline]
+    pub(crate) fn active(&self) -> bool {
+        self.remaining > 0
+    }
+
+    /// `(w_dry, w_wet)` for sample `i` within the current block (whose start had
+    /// `remaining` samples left). `t` spans `[0,1]` across the window and clamps
+    /// past its end, so the last fade sample lands exactly on the target.
+    #[inline]
+    pub(crate) fn weights_at(&self, i: usize) -> (f32, f32) {
+        let span = (self.len as f32 - 1.0).max(1.0);
+        let start = (self.len - self.remaining) as f32;
+        let t = ((start + i as f32) / span).min(1.0);
+        let rise = raised_cosine_rise(t);
+        if self.to_wet {
+            (1.0 - rise, rise)
+        } else {
+            (rise, 1.0 - rise)
+        }
+    }
+
+    /// Consume a processed block of `n` samples.
+    #[inline]
+    pub(crate) fn advance(&mut self, n: usize) {
+        self.remaining = self.remaining.saturating_sub(n);
+    }
+}
+
 /// One block-rate glide step: a one-pole move toward `tgt`, snapping to it once
 /// within [`GLIDE_SNAP_EPS`] so the value settles exactly (see the constant).
 #[inline]

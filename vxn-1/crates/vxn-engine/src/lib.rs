@@ -36,7 +36,7 @@ pub use preset_io::{
 // and the factory bank's category labels).
 pub use vxn_app::UNCATEGORIZED;
 pub use shared::SharedParams;
-use smoothing::ParamSmoother;
+use smoothing::{BypassXfade, ParamSmoother, ms_to_samples, raised_cosine_rise};
 pub use state::PluginState;
 
 use voice::{
@@ -173,10 +173,23 @@ struct MasterFx {
     /// Optional brickwall limiter on the master bus (last in the FX chain). Run
     /// only when [`GlobalParam::LimiterOn`] is set; bypassed otherwise.
     limiter: StereoLimiter,
-    /// Whether the limiter ran last block, so it can be reset on the off→on edge
-    /// (clears stale lookahead state instead of leaking a transient).
-    limiter_was_on: bool,
+    /// Raised-cosine bypass crossfades, one per toggleable stage, so an on/off
+    /// edge fades dry↔wet instead of hard-switching (0190). Each subsumes the
+    /// old limiter-style reset-on-edge: [`BypassXfade::arm`] flags the off→on
+    /// edge and the stage's DSP state is cleared before the wet fades in.
+    phaser_fade: BypassXfade,
+    chorus_fade: BypassXfade,
+    delay_fade: BypassXfade,
+    reverb_fade: BypassXfade,
+    limiter_fade: BypassXfade,
+    /// Whether the fades have adopted the live flag state. Cleared on
+    /// construction / reset; the first [`Self::process_block`] primes each fade
+    /// to its flag so an effect that starts engaged doesn't ramp in at startup.
+    fades_primed: bool,
 }
+
+/// Bypass-crossfade window (ms) applied on every master-FX on/off edge (0190).
+const FX_XFADE_MS: f32 = 10.0;
 
 impl MasterFx {
     fn new(sample_rate: f32) -> Self {
@@ -186,7 +199,12 @@ impl MasterFx {
             delay: StereoDelay::new(sample_rate, 2.0),
             reverb: FdnReverb::new(sample_rate),
             limiter: StereoLimiter::new(sample_rate),
-            limiter_was_on: false,
+            phaser_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            chorus_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            delay_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            reverb_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            limiter_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            fades_primed: false,
         }
     }
 
@@ -198,12 +216,20 @@ impl MasterFx {
         self.delay.clear();
         self.reverb.reset();
         self.limiter.reset();
-        self.limiter_was_on = false;
+        self.phaser_fade.reset();
+        self.chorus_fade.reset();
+        self.delay_fade.reset();
+        self.reverb_fade.reset();
+        self.limiter_fade.reset();
+        self.fades_primed = false;
     }
 
-    /// Push this block's smoothed FX params. `reverb_on` is the raw (unsmoothed)
-    /// reverb switch; the FDN takes it directly as its discrete on flag.
-    fn update(&mut self, g: &GlobalValues, reverb_on: bool, tempo_bpm: f32) {
+    /// Push this block's smoothed FX params. The FDN's own bypass is held on:
+    /// master reverb on/off is owned by the [`Self::reverb_fade`] gate + outer
+    /// crossfade in [`Self::process_block`] (0190), which run the reverb only
+    /// when engaged or fading, so the internal `on` flag is redundant. Keeping it
+    /// on lets the wet tail keep sounding *through* a fade-out.
+    fn update(&mut self, g: &GlobalValues, tempo_bpm: f32) {
         self.phaser.set_params(
             g.get(GlobalParam::PhaserRate),
             g.get(GlobalParam::PhaserDepth),
@@ -228,9 +254,9 @@ impl MasterFx {
             g.get(GlobalParam::DelayMix),
         );
         // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come
-        // through the smoother. On is unsmoothed (it's a discrete switch).
+        // through the smoother. `on` held true — the outer bypass fade owns it.
         self.reverb.set_params(&FdnReverbParams {
-            on: reverb_on,
+            on: true,
             size: g.get(GlobalParam::ReverbSize),
             decay_secs: g.get(GlobalParam::ReverbDecay),
             damp: g.get(GlobalParam::ReverbDamp),
@@ -239,9 +265,11 @@ impl MasterFx {
     }
 
     /// Run the chain on the volume-applied dry stereo bus, writing the final
-    /// master output to `out_l`/`out_r`. Each stage passes through unchanged
-    /// when its flag is clear, keeping the engine sample-exact against a build
-    /// with that effect absent.
+    /// master output to `out_l`/`out_r`. Each stage crossfades its own dry input
+    /// against its wet output on a toggle edge ([`BypassXfade`], 0190) instead of
+    /// hard-switching, so neither edge clicks. When a stage's flag is clear *and*
+    /// its fade is idle it takes the zero-cost passthrough, keeping the engine
+    /// sample-exact against a build with that effect absent.
     fn process_block(
         &mut self,
         dry_l: &[f32],
@@ -252,58 +280,145 @@ impl MasterFx {
     ) {
         let block = dry_l.len();
 
+        // First block after construction / reset: adopt the live flags with no
+        // fade, so an effect that starts engaged is simply on (no startup ramp).
+        if !self.fades_primed {
+            self.phaser_fade.prime(flags.phaser);
+            self.chorus_fade.prime(flags.chorus);
+            self.delay_fade.prime(flags.delay);
+            self.reverb_fade.prime(flags.reverb);
+            self.limiter_fade.prime(flags.limiter);
+            self.fades_primed = true;
+        }
+
         // Phaser (first in FX chain, pre-chorus). Stereo-in / stereo-out via
-        // parallel L/R allpass cascades sharing one anti-phase LFO (0101). When
-        // off, the dry stereo bus passes through unchanged.
-        if flags.phaser {
-            self.phaser.process_block_stereo(dry_l, dry_r, out_l, out_r);
+        // parallel L/R allpass cascades sharing one anti-phase LFO (0101). Dry
+        // input is the incoming bus; wet fades against it on a toggle edge.
+        if self.phaser_fade.arm(flags.phaser) {
+            self.phaser.clear(); // off→on: clean tail before the wet fades in
+        }
+        if flags.phaser || self.phaser_fade.active() {
+            let mut wet_l = [0f32; CONTROL_BLOCK];
+            let mut wet_r = [0f32; CONTROL_BLOCK];
+            let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
+            self.phaser.process_block_stereo(dry_l, dry_r, wl, wr);
+            if self.phaser_fade.active() {
+                for i in 0..block {
+                    let (wd, ww) = self.phaser_fade.weights_at(i);
+                    out_l[i] = wd * dry_l[i] + ww * wl[i];
+                    out_r[i] = wd * dry_r[i] + ww * wr[i];
+                }
+            } else {
+                out_l.copy_from_slice(wl);
+                out_r.copy_from_slice(wr);
+            }
         } else {
             out_l.copy_from_slice(dry_l);
             out_r.copy_from_slice(dry_r);
         }
+        self.phaser_fade.advance(block);
 
-        if flags.chorus {
-            // Chorus is stereo-in / stereo-out via parallel L/R delay lines
-            // sharing the inverted-per-line LFO setup (0102). The phaser output
-            // bus feeds straight in — no mono collapse.
-            let mut chorus_in_l = [0.0f32; CONTROL_BLOCK];
-            let mut chorus_in_r = [0.0f32; CONTROL_BLOCK];
-            let chorus_in_l = &mut chorus_in_l[..block];
-            let chorus_in_r = &mut chorus_in_r[..block];
-            chorus_in_l.copy_from_slice(out_l);
-            chorus_in_r.copy_from_slice(out_r);
-            self.chorus
-                .process_block_stereo(chorus_in_l, chorus_in_r, out_l, out_r);
+        // Chorus is stereo-in / stereo-out via parallel L/R delay lines sharing
+        // the inverted-per-line LFO setup (0102). The phaser output bus (now in
+        // `out`) feeds straight in — no mono collapse. Its copy doubles as the
+        // dry reference for the bypass fade.
+        if self.chorus_fade.arm(flags.chorus) {
+            self.chorus.clear();
         }
-        if flags.delay {
-            for i in 0..block {
-                let (l, r) = self.delay.process(out_l[i], out_r[i]);
-                out_l[i] = l;
-                out_r[i] = r;
+        if flags.chorus || self.chorus_fade.active() {
+            let mut dry_in_l = [0.0f32; CONTROL_BLOCK];
+            let mut dry_in_r = [0.0f32; CONTROL_BLOCK];
+            let (dil, dir) = (&mut dry_in_l[..block], &mut dry_in_r[..block]);
+            dil.copy_from_slice(out_l);
+            dir.copy_from_slice(out_r);
+            let mut wet_l = [0.0f32; CONTROL_BLOCK];
+            let mut wet_r = [0.0f32; CONTROL_BLOCK];
+            let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
+            self.chorus.process_block_stereo(dil, dir, wl, wr);
+            if self.chorus_fade.active() {
+                for i in 0..block {
+                    let (wd, ww) = self.chorus_fade.weights_at(i);
+                    out_l[i] = wd * dil[i] + ww * wl[i];
+                    out_r[i] = wd * dir[i] + ww * wr[i];
+                }
+            } else {
+                out_l.copy_from_slice(wl);
+                out_r.copy_from_slice(wr);
             }
         }
+        self.chorus_fade.advance(block);
 
-        // Reverb (post-delay): FDN takes the stereo bus as input and applies its
-        // own internal dry/wet crossfade. Skipped when off so the engine stays
-        // sample-exact against a build with reverb absent.
-        if flags.reverb {
+        // Delay (per-sample). Capture each sample's dry before the echo so a
+        // fade-out lets the tail decay gently under the ramp instead of cutting.
+        if self.delay_fade.arm(flags.delay) {
+            self.delay.clear();
+        }
+        if flags.delay || self.delay_fade.active() {
+            let fading = self.delay_fade.active();
+            for i in 0..block {
+                let (dry_ls, dry_rs) = (out_l[i], out_r[i]);
+                let (l, r) = self.delay.process(dry_ls, dry_rs);
+                if fading {
+                    let (wd, ww) = self.delay_fade.weights_at(i);
+                    out_l[i] = wd * dry_ls + ww * l;
+                    out_r[i] = wd * dry_rs + ww * r;
+                } else {
+                    out_l[i] = l;
+                    out_r[i] = r;
+                }
+            }
+        }
+        self.delay_fade.advance(block);
+
+        // Reverb (post-delay): the FDN applies its own internal (user-`mix`)
+        // dry/wet; the bypass fade is a *second, outer* crossfade of the reverb
+        // input bus (`out`) against the reverb output. The FDN is held `on`
+        // (see `update`) so its tail keeps sounding through a fade-out.
+        if self.reverb_fade.arm(flags.reverb) {
+            self.reverb.reset();
+        }
+        if flags.reverb || self.reverb_fade.active() {
             let mut wet_l = [0f32; CONTROL_BLOCK];
             let mut wet_r = [0f32; CONTROL_BLOCK];
             let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
             self.reverb.process_block(out_l, out_r, wl, wr);
-            out_l.copy_from_slice(wl);
-            out_r.copy_from_slice(wr);
+            if self.reverb_fade.active() {
+                for i in 0..block {
+                    let (wd, ww) = self.reverb_fade.weights_at(i);
+                    out_l[i] = wd * out_l[i] + ww * wl[i];
+                    out_r[i] = wd * out_r[i] + ww * wr[i];
+                }
+            } else {
+                out_l.copy_from_slice(wl);
+                out_r.copy_from_slice(wr);
+            }
         }
+        self.reverb_fade.advance(block);
 
         // Master limiter (last in the chain): clear stale lookahead state on the
-        // off→on edge so re-engaging it can't leak an old transient.
-        if flags.limiter {
-            if !self.limiter_was_on {
-                self.limiter.reset();
-            }
-            self.limiter.process_block(out_l, out_r);
+        // off→on edge (armed by the fade) so re-engaging it can't leak an old
+        // transient, then crossfade dry↔limited so engaging it can't step level.
+        if self.limiter_fade.arm(flags.limiter) {
+            self.limiter.reset();
         }
-        self.limiter_was_on = flags.limiter;
+        if flags.limiter || self.limiter_fade.active() {
+            if self.limiter_fade.active() {
+                let mut wet_l = [0f32; CONTROL_BLOCK];
+                let mut wet_r = [0f32; CONTROL_BLOCK];
+                let (wl, wr) = (&mut wet_l[..block], &mut wet_r[..block]);
+                wl.copy_from_slice(out_l);
+                wr.copy_from_slice(out_r);
+                self.limiter.process_block(wl, wr);
+                for i in 0..block {
+                    let (wd, ww) = self.limiter_fade.weights_at(i);
+                    out_l[i] = wd * out_l[i] + ww * wl[i];
+                    out_r[i] = wd * out_r[i] + ww * wr[i];
+                }
+            } else {
+                self.limiter.process_block(out_l, out_r);
+            }
+        }
+        self.limiter_fade.advance(block);
     }
 }
 
@@ -328,36 +443,90 @@ struct OutputStage {
     silent_blocks: u32,
     /// Oversampling factor in effect last block; a change resets the decimators.
     last_os: usize,
+    /// Raised-cosine crossfade after an OS-factor change (0191). `0` ⇒ steady;
+    /// `> 0` ⇒ blending the held pre-switch level into the rebuilt output.
+    os_fade_remaining: usize,
+    /// Crossfade window in samples (`~OS_FADE_MS` at the base rate).
+    os_fade_len: usize,
+    /// The last decimated L/R output sample of the previous block, updated every
+    /// block. Snapshotted into [`Self::os_hold`] when a factor change arms the
+    /// crossfade, so it can start from the pre-switch level (continuous join).
+    prev_last_l: f32,
+    prev_last_r: f32,
+    /// Frozen pre-switch L/R level held constant across the crossfade window.
+    os_hold_l: f32,
+    os_hold_r: f32,
+    /// Whether the first factor has been adopted. Until then a factor "change"
+    /// is just the initial seed (decimators already empty), so it neither resets
+    /// nor arms a fade — only a *later* genuine change does.
+    os_primed: bool,
 }
 
+/// Crossfade window (ms) after an oversampling factor change (0191). The
+/// rate-specific decimator reset makes the new FIR emit near-zero for its first
+/// samples — a hard step down from the pre-switch level. A plain fade-in from
+/// zero can't hide that step (it *is* the step); instead we crossfade from the
+/// frozen pre-switch level into the rebuilt output so the join is continuous and
+/// the FIR settle lands under low weight.
+const OS_FADE_MS: f32 = 5.0;
+
 impl OutputStage {
-    fn new() -> Self {
+    fn new(sample_rate: f32) -> Self {
         Self {
             oversampler: Oversampler::new(),
             oversampler_r: Oversampler::new(),
             spread_zero_last_block: true,
             silent_blocks: 0,
             last_os: 1,
+            os_fade_remaining: 0,
+            os_fade_len: ms_to_samples(OS_FADE_MS, sample_rate),
+            prev_last_l: 0.0,
+            prev_last_r: 0.0,
+            os_hold_l: 0.0,
+            os_hold_r: 0.0,
+            os_primed: false,
         }
+    }
+
+    /// Recompute the fade window for a new base rate. (Called on sample-rate
+    /// change; the decimator reset itself is [`Self::reset`].)
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.os_fade_len = ms_to_samples(OS_FADE_MS, sample_rate);
     }
 
     /// Clear both decimators and the phase-alignment bookkeeping. (Leaves
     /// `last_os` alone — the factor itself is unchanged by a transport reset; a
-    /// genuine factor change is handled by [`Self::on_os_change`].)
+    /// genuine factor change is handled by [`Self::on_os_change`]. A transport
+    /// reset doesn't change the factor, so no fade is armed.)
     fn reset(&mut self) {
         self.oversampler.reset();
         self.oversampler_r.reset();
         self.spread_zero_last_block = true;
         self.silent_blocks = 0;
+        self.os_fade_remaining = 0;
+        self.prev_last_l = 0.0;
+        self.prev_last_r = 0.0;
+        self.os_primed = false;
     }
 
     /// Reset both decimators when the oversample factor changes between process
-    /// calls (the FIR state is rate-specific).
+    /// calls (the FIR state is rate-specific) and arm the fade-in that buries the
+    /// resulting FIR-settle transient.
     fn on_os_change(&mut self, os: usize) {
-        if os != self.last_os {
+        if !self.os_primed {
+            // First factor after construction / reset: adopt it silently. The
+            // decimators are already empty, so there's nothing to settle and no
+            // click to bury.
+            self.last_os = os;
+            self.os_primed = true;
+        } else if os != self.last_os {
             self.oversampler.reset();
             self.oversampler_r.reset();
             self.last_os = os;
+            // Freeze the pre-switch level so the crossfade starts continuous.
+            self.os_hold_l = self.prev_last_l;
+            self.os_hold_r = self.prev_last_r;
+            self.os_fade_remaining = self.os_fade_len;
         }
     }
 
@@ -404,6 +573,32 @@ impl OutputStage {
             self.oversampler_r.decimate(r_os, dst_r, os);
         }
         self.spread_zero_last_block = spread_zero;
+
+        // OS-change crossfade (0191): blend the frozen pre-switch level
+        // (`os_hold`) into the rebuilt decimated output over the window, applied
+        // *last* — after the mono→stereo R-seed and both decimations — so it
+        // doesn't fight the seed and touches L/R with the same weights (phase
+        // alignment intact). At the first sample the rebuilt output is near-zero
+        // (empty FIR) and the hold weight is 1, so the join is continuous; as the
+        // weight ramps the (by-then settled) new output takes over. Idle
+        // (`remaining == 0`) it costs nothing.
+        let n = dst_l.len().min(dst_r.len());
+        if self.os_fade_remaining > 0 && n > 0 {
+            let span = (self.os_fade_len as f32 - 1.0).max(1.0);
+            let start = (self.os_fade_len - self.os_fade_remaining) as f32;
+            for i in 0..n {
+                let t = ((start + i as f32) / span).min(1.0);
+                let rise = raised_cosine_rise(t);
+                dst_l[i] = (1.0 - rise) * self.os_hold_l + rise * dst_l[i];
+                dst_r[i] = (1.0 - rise) * self.os_hold_r + rise * dst_r[i];
+            }
+            self.os_fade_remaining = self.os_fade_remaining.saturating_sub(n);
+        }
+        // Track the last emitted sample for the next factor change's hold.
+        if n > 0 {
+            self.prev_last_l = dst_l[n - 1];
+            self.prev_last_r = dst_r[n - 1];
+        }
     }
 }
 
@@ -420,7 +615,7 @@ impl Synth {
             banks: std::array::from_fn(|i| VoiceBank::new(sample_rate, RNG_SEEDS[i])),
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
             master_fx: MasterFx::new(sample_rate),
-            output: OutputStage::new(),
+            output: OutputStage::new(sample_rate),
             bend_norm: 0.0,
             mod_wheel: Smoothed::new(0.0, MOD_WHEEL_SMOOTH_MS, control_rate),
             key_mode: KeyMode::Whole,
@@ -454,6 +649,7 @@ impl Synth {
         self.lfo2 = LfoCore::new(control_rate, LFO2_SEED);
         self.master_fx = MasterFx::new(sample_rate);
         self.output.reset();
+        self.output.set_sample_rate(sample_rate);
         self.mod_wheel.set_time(MOD_WHEEL_SMOOTH_MS, control_rate);
         self.smoother.set_sample_rate(sample_rate);
         self.smoother.snap_all(&self.params);
@@ -765,16 +961,15 @@ impl Synth {
             // Effects (stereo), then write out. On/off are raw (unsmoothed)
             // discrete switches; the FX chain itself lives in `MasterFx`.
             let g = self.params.global();
-            let reverb_on = g.bool(GlobalParam::ReverbOn);
             let flags = MasterFxFlags {
                 phaser: g.bool(GlobalParam::PhaserOn),
                 chorus: g.bool(GlobalParam::ChorusOn),
                 delay: g.bool(GlobalParam::DelayOn),
-                reverb: reverb_on,
+                reverb: g.bool(GlobalParam::ReverbOn),
                 limiter: g.bool(GlobalParam::LimiterOn),
             };
             self.master_fx
-                .update(self.smoother.values().global(), reverb_on, self.tempo_bpm);
+                .update(self.smoother.values().global(), self.tempo_bpm);
             // Drift: the per-voice oscillator pitch jitter amount, broadcast into
             // every voice's BlockCtx next block. Direct read (no smoother — drift
             // is a slow creative param, sub-audio).
