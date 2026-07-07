@@ -2,7 +2,7 @@
 id: E029
 product: monorepo
 title: too_many_arguments cleanup — kill the data clumps, justify the keepers
-status: open
+status: closed
 created: 2026-06-28
 ---
 
@@ -125,3 +125,26 @@ explicitly *not* touched.
 Stage explicit paths when committing — `git add -A` pollutes
 commits with concurrent vxn-2 working-tree churn (memory
 `vxn-concurrent-vxn2-work-no-git-add-all`).
+
+## Close-out
+
+All three tickets closed.
+
+- **0149** (vxn-1) — `NoteOn` / `Trigger` param structs; four
+  `voice.rs` allows removed. 161 tests + baseline green.
+- **0150** (vxn-2) — `TargetFlags` groups the four bool gates
+  in `cook_stacks_block`; allow removed, stale comment
+  rewritten. 205 tests + baseline green. Staged
+  hunk-selectively around a concurrent WIP diagnostic test.
+- **0151** (monorepo) — all four retained allows carry a
+  justification comment (keeper comments landed in an earlier
+  pass; verified here).
+
+Final state: `grep -rn too_many_arguments` over the three crate
+roots finds exactly four allows — the three `oscillator.rs`
+SIMD pair kernels and `vxn-engine` `decimate_block` — each with
+an adjacent one-line justification, and zero in `voice.rs` /
+`engine.rs`. (The Goal table's "keep — SIMD pair kernel" row
+count and the Acceptance "exactly five" wording both meant these
+four; no fifth allow was ever in play.) All behaviour-preserving
+— no audio render or perf change.

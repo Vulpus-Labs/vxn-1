@@ -59,3 +59,18 @@ re-verification needed. The SIMD-discipline cautions for the
 oscillator kernels (NEON `.4s` survival, post-LTO asm) do not
 apply here because no kernel code changes. Pairs with `0149`
 (voice clump) and `0150` (engine flags) under E029.
+
+## Close-out
+
+Verified — all four retained allows carry a one-line
+justification. `process_sync` (`oscillator.rs:510`) and
+`process_pm` (`:599`), previously bare, now read
+`// coupled SIMD pair kernel: two waves + two pw/out arrays
+[+ pm_index]`; `process_pair` (`:410`) and `decimate_block`
+(`lib.rs:370`) already carried adequate comments and are left
+as-is. The `grep -rn too_many_arguments` sweep over `crates/`,
+`vxn-1/crates/`, `vxn-2/crates/` returns exactly these four
+allows — zero in `voice.rs` / `engine.rs` after 0149/0150 —
+each with an adjacent comment. Comment-only; no signature,
+body, or behaviour change (these comments landed with the
+earlier keeper-commenting pass, confirmed on HEAD).
