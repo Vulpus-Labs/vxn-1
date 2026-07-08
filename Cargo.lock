@@ -2373,7 +2373,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vxn-app"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-clap"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-core-app"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-core-clap"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-core-ui-web"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "objc",
  "raw-window-handle",
@@ -2427,18 +2427,18 @@ dependencies = [
 
 [[package]]
 name = "vxn-core-utils"
-version = "0.0.8"
+version = "0.1.0"
 
 [[package]]
 name = "vxn-dsp"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-core-utils",
 ]
 
 [[package]]
 name = "vxn-engine"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "include_dir",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-preset"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde",
  "toml",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-ui-web"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "vxn-app",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "vxn-wasm"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-app",
  "vxn-engine",
@@ -2476,18 +2476,18 @@ dependencies = [
 
 [[package]]
 name = "vxn-web-controller"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-app",
 ]
 
 [[package]]
 name = "vxn1-xtask"
-version = "0.0.8"
+version = "0.1.0"
 
 [[package]]
 name = "vxn2-app"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-core-app",
  "vxn2-engine",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "vxn2-clap"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -2511,14 +2511,14 @@ dependencies = [
 
 [[package]]
 name = "vxn2-dsp"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-core-utils",
 ]
 
 [[package]]
 name = "vxn2-engine"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "include_dir",
  "serde",
@@ -2532,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "vxn2-osc-bench"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "vxn2-dsp",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "vxn2-ui-web"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "vxn-core-app",
@@ -2553,11 +2553,11 @@ dependencies = [
 
 [[package]]
 name = "vxn2-xtask"
-version = "0.0.8"
+version = "0.1.0"
 
 [[package]]
 name = "vxn3-app"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn-core-app",
  "vxn3-engine",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "vxn3-clap"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -2579,18 +2579,18 @@ dependencies = [
 
 [[package]]
 name = "vxn3-dsp"
-version = "0.0.8"
+version = "0.1.0"
 
 [[package]]
 name = "vxn3-engine"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "vxn3-dsp",
 ]
 
 [[package]]
 name = "vxn3-ui-web"
-version = "0.0.8"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "vxn-core-app",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "vxn3-xtask"
-version = "0.0.8"
+version = "0.1.0"
 
 [[package]]
 name = "walkdir"
