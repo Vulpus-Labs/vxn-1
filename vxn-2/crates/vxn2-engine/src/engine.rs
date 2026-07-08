@@ -731,9 +731,13 @@ impl Engine {
         self.alloc.set_sustain(on);
     }
 
-    /// Reset host transport — realigns LFO1 phase to the bar grid.
+    /// Host transport restarted (stop→play). Realign LFO1 phase to the bar
+    /// grid so a synced rhythmic shape (pulse / saw) locks to the host beat.
+    /// No-op when LFO1 is free-running — a free LFO shouldn't jump on play.
     pub fn on_transport_restart(&mut self) {
-        self.patch_mod.on_transport_restart();
+        if self.params.mod_params.lfo1.sync {
+            self.patch_mod.on_transport_restart();
+        }
     }
 
     /// True if any active matrix slot drives `dest` (source set + nonzero

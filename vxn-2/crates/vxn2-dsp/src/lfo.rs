@@ -219,8 +219,9 @@ impl Lfo1 {
         }
     }
 
-    /// Reset on host transport restart. Sync mode anchors LFO1 to the bar
-    /// grid — restart events realign it.
+    /// Reset to the cycle boundary (phase 0) on host transport restart, so a
+    /// synced shape anchors to the bar grid: saw-down hits its peak transient
+    /// on the beat, saw-up rises from the trough. Sine starts at 0.
     #[inline]
     pub fn reset_phase(&mut self) {
         self.phase = 0;

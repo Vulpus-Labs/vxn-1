@@ -321,6 +321,11 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         if self.was_playing && !is_playing {
             self.synth.all_notes_off();
         }
+        // Stop→play: realign a host-synced global LFO (LFO 2) to the bar grid so
+        // its rhythmic shape pulses in phase with the host beat.
+        if !self.was_playing && is_playing {
+            self.synth.on_transport_restart();
+        }
         self.was_playing = is_playing;
         if let Some(t) = process.transport {
             if let Some(bpm) = vxn_core_clap::tempo_from_transport(t) {

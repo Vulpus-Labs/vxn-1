@@ -39,9 +39,9 @@ impl PatchMod {
         }
     }
 
-    /// Realign LFO1 phase to the bar grid on host transport restart. Only
-    /// meaningful when sync is on, but called unconditionally — Free mode
-    /// users typically don't care that phase reset, and the cost is trivial.
+    /// Realign LFO1 phase to the bar grid (phase 0) on host transport restart
+    /// so a synced shape anchors to the beat. Gating on sync is the caller's
+    /// job.
     pub fn on_transport_restart(&mut self) {
         self.lfo1.reset_phase();
     }

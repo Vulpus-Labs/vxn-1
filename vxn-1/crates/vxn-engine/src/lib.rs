@@ -849,6 +849,19 @@ impl Synth {
         }
     }
 
+    /// Host transport restarted (stop→play). Realign the global LFO (LFO 2) to
+    /// the bar grid so a synced rhythmic shape (pulse / saw) locks to the host
+    /// beat. No-op when LFO 2 is free-running — a free LFO shouldn't jump on
+    /// play.
+    pub fn on_transport_restart(&mut self) {
+        if self.params.global().bool(GlobalParam::Lfo2Sync) {
+            // Reset to the cycle boundary (phase 0), not the zero crossing:
+            // rhythmic use wants saw-down to hit its peak transient on the
+            // beat and saw-up to rise from the trough. Sine starts at 0.
+            self.lfo2.reset();
+        }
+    }
+
     /// Total active channels across both layers.
     pub fn active_count(&self) -> usize {
         self.banks.iter().map(|b| b.active_count()).sum()
