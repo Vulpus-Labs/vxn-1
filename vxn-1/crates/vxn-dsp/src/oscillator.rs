@@ -86,7 +86,9 @@ impl Oscillator {
             }
             Waveform::Pulse => {
                 let pw = self.pulse_width.clamp(0.01, 0.99);
-                let naive = if phase < pw { 1.0 } else { -1.0 };
+                // DC-blocked: `- (2·pw − 1)` removes the width-dependent mean so
+                // PWM can't sweep a DC offset (mirrors the poly `osc_sample`).
+                let naive = if phase < pw { 1.0 } else { -1.0 } - (2.0 * pw - 1.0);
                 // Rising edge at phase=0, falling edge at phase=pw.
                 let mut v = naive + polyblep(phase, dt);
                 let pf = (phase - pw + 1.0).fract();

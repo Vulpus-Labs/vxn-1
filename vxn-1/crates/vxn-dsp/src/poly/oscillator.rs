@@ -69,7 +69,13 @@ fn naive_osc(wave: Waveform, p: f32, pw: f32) -> f32 {
         Waveform::Sine => fast_sine(p),
         Waveform::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
         Waveform::Saw => 2.0 * p - 1.0,
-        Waveform::Pulse => 1.0 - 2.0 * (p >= pw) as u32 as f32,
+        // DC-blocked: the naive pulse mean is `2·pw − 1`; PWM sweeping `pw`
+        // would otherwise inject a swinging DC offset (up to ±0.9 at the clamp
+        // edges) that eats output headroom and clips — worst in Twin, where
+        // both channels share the same pwm_mod so their offsets sum coherently.
+        // As a *difference* (sync jump-sizing) the constant cancels; as the
+        // bare post-sync value it stays consistent with the free-running output.
+        Waveform::Pulse => 1.0 - 2.0 * (p >= pw) as u32 as f32 - (2.0 * pw - 1.0),
     }
 }
 
@@ -86,7 +92,9 @@ fn osc_sample(wave: Waveform, p: f32, pw: f32, dt: f32) -> f32 {
         Waveform::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
         Waveform::Saw => (2.0 * p - 1.0) - pblep(p, dt),
         Waveform::Pulse => {
-            let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32; // +1 below pw, -1 above
+            // +1 below pw, -1 above; `- (2·pw − 1)` removes the width-dependent
+            // DC so PWM can't sweep a headroom-eating offset (see `naive_osc`).
+            let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32 - (2.0 * pw - 1.0);
             let pf = {
                 let x = p - pw + 1.0;
                 x - x.floor()
@@ -149,11 +157,13 @@ impl WaveKind for WSaw {
 impl WaveKind for WPulse {
     #[inline(always)]
     fn naive(p: f32, pw: f32) -> f32 {
-        1.0 - 2.0 * (p >= pw) as u32 as f32
+        // DC-blocked to match `naive_osc` (mirrors it exactly — see that fn).
+        1.0 - 2.0 * (p >= pw) as u32 as f32 - (2.0 * pw - 1.0)
     }
     #[inline(always)]
     fn sample(p: f32, pw: f32, dt: f32) -> f32 {
-        let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32; // +1 below pw, -1 above
+        // DC-blocked to match `osc_sample` (see that fn / `naive_osc`).
+        let naive = 1.0 - 2.0 * (p >= pw) as u32 as f32 - (2.0 * pw - 1.0);
         let pf = {
             let x = p - pw + 1.0;
             x - x.floor()
@@ -350,7 +360,11 @@ impl PolyOscillator {
                     let p = self.phase[v];
                     let dt = self.inc[v];
                     let w = pw[v];
-                    let naive = 1.0 - 2.0 * (p >= w) as u32 as f32; // +1 below w, -1 above
+                    // +1 below w, -1 above; `- (2·w − 1)` removes the
+                    // width-dependent DC so PWM can't sweep a headroom-eating
+                    // offset (see `naive_osc`). Worst in Twin: both channels
+                    // share pwm_mod so their offsets would sum coherently.
+                    let naive = 1.0 - 2.0 * (p >= w) as u32 as f32 - (2.0 * w - 1.0);
                     let pf = {
                         let x = p - w + 1.0;
                         x - x.floor()
@@ -771,6 +785,32 @@ mod tests {
                     "{wave:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn pulse_is_dc_free_across_pulse_width() {
+        // The pulse is DC-blocked so PWM can't sweep a headroom-eating offset.
+        // A naive pulse at width `w` has mean `2w − 1` (e.g. −0.8 at w=0.1);
+        // the DC removal drives the long-run mean to ≈0 for any width. Averaged
+        // over many periods (BLEP residuals are zero-mean, so they wash out).
+        for w in [0.05_f32, 0.1, 0.3, 0.7, 0.9, 0.95] {
+            let mut poly = PolyOscillator::new();
+            poly.inc[0] = 220.0 / 48_000.0; // ~218 samples/period
+            let pw = [w; N];
+            let mut out = [0.0; N];
+            let mut sum = 0.0f64;
+            const NS: usize = 48_000; // ~220 periods
+            for _ in 0..NS {
+                poly.process(Waveform::Pulse, &pw, &mut out);
+                sum += out[0] as f64;
+            }
+            let mean = sum / NS as f64;
+            assert!(
+                mean.abs() < 0.02,
+                "pw={w}: mean {mean} (naive would be {})",
+                2.0 * w - 1.0
+            );
         }
     }
 

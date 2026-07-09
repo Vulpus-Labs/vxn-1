@@ -55,6 +55,31 @@ fn setup(fx: bool, res: f32, os: f32, xmod: f32, lim: bool) -> Synth {
     s
 }
 
+/// Pulse + PWM + Twin steady state: the worst case for the pulse arm (the DC
+/// removal added in 0157 runs one sub per voice per sample). Twin doubles each
+/// note into two detuned channels, so 8 held notes fill all 16 voices; PWM at
+/// full LFO depth sweeps the pulse width every sample.
+fn setup_pulse_pwm_twin() -> Synth {
+    let mut s = Synth::new(SR);
+    // Pulse on both oscillators, PWM driven by LFO 1 at full depth.
+    s.set_param(pp(PatchParam::Osc1Wave), 3.0); // Pulse
+    s.set_param(pp(PatchParam::Osc2Wave), 3.0); // Pulse
+    s.set_param(pp(PatchParam::PwmLfoSrc), 1.0); // LFO 1
+    s.set_param(pp(PatchParam::PwmLfoDepth), 0.5); // full sweep
+    // Twin: two detuned channels per note.
+    s.set_param(pp(PatchParam::AssignMode), 3.0); // Twin
+    s.set_param(pp(PatchParam::UnisonDetune), 0.5);
+    for n in 48..56u8 {
+        s.note_on(n, 1.0);
+    }
+    let mut l = vec![0.0; FRAMES];
+    let mut r = vec![0.0; FRAMES];
+    for _ in 0..40 {
+        s.process(&mut l, &mut r);
+    }
+    s
+}
+
 fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_16_voices");
     group.throughput(Throughput::Elements(FRAMES as u64));
@@ -96,6 +121,16 @@ fn bench(c: &mut Criterion) {
             s.process(&mut l, &mut r);
         }
         group.bench_function("idle_no_voices", |b| {
+            b.iter(|| s.process(black_box(&mut l), black_box(&mut r)));
+        });
+    }
+
+    // Pulse + PWM + Twin: exercises the pulse arm's per-sample DC removal.
+    {
+        let mut s = setup_pulse_pwm_twin();
+        let mut l = vec![0.0; FRAMES];
+        let mut r = vec![0.0; FRAMES];
+        group.bench_function("pulse_pwm_twin", |b| {
             b.iter(|| s.process(black_box(&mut l), black_box(&mut r)));
         });
     }
