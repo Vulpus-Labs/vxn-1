@@ -128,6 +128,14 @@ export class WebHost {
     this.ready = false; // worklet posted `ready`
     this.trapCount = 0;
 
+    // Latched non-automatable shared state (key mode / split point, ADR 0003
+    // §3). These never ride the param SAB — they travel out-of-band on the
+    // worklet port. Remembered here so a value set before start() (or lost when
+    // rebuild() spins up a fresh worklet) is replayed onto the new node; the
+    // defaults match the runner's own (Whole / note 60).
+    this._keyMode = 0;
+    this._splitPoint = 60;
+
     // ---- 0043 gate / lifecycle state machine ------------------------------
     //
     //   "idle"      : constructed, no context yet (pre-gesture).
@@ -226,6 +234,12 @@ export class WebHost {
     // Surface the worklet's lifecycle port messages. ready/trap are posted by
     // the runner (host-runner.mjs onReady/onTrap → vxn-processor port).
     this.node.port.onmessage = (e) => this._onPortMessage(e.data);
+
+    // Replay latched key mode / split point onto the fresh worklet so a mode
+    // selected before start() — or carried across a rebuild() — takes effect
+    // instead of the runner booting at its Whole default.
+    this.node.port.postMessage({ type: "keyMode", value: this._keyMode });
+    this.node.port.postMessage({ type: "splitPoint", value: this._splitPoint });
 
     this.node.connect(this.ctx.destination);
     // No render-load source on Safari → show the badge as n/a, not a frozen "—".
@@ -489,14 +503,17 @@ export class WebHost {
   // ---- non-automatable shared state (ADR 0003 §3) ------------------------
   //
   // Key mode / split point are NOT params and never occupy a store slot; they
-  // travel out-of-band on the worklet port. Honoured even if sent before ready
-  // (the runner buffers and applies on instantiate).
+  // travel out-of-band on the worklet port. A value set before start() (node
+  // still null) is dropped by the `?.` but retained in `_keyMode`/`_splitPoint`
+  // and replayed onto the worklet when start() creates the node.
 
   setKeyMode(mode) {
-    this.node?.port.postMessage({ type: "keyMode", value: mode & 0xff });
+    this._keyMode = mode & 0xff;
+    this.node?.port.postMessage({ type: "keyMode", value: this._keyMode });
   }
   setSplitPoint(note) {
-    this.node?.port.postMessage({ type: "splitPoint", value: note & 0xff });
+    this._splitPoint = note & 0xff;
+    this.node?.port.postMessage({ type: "splitPoint", value: this._splitPoint });
   }
 
   // ---- 0043 teardown ------------------------------------------------------

@@ -151,6 +151,23 @@ test("gate starts idle and reaches running only after start() (autoplay unlock)"
   assert.deepEqual(states, ["starting", "running"]);
 });
 
+test("key mode / split set before start() replay onto the fresh worklet", async () => {
+  const { host, lastNode } = makeHost();
+  // Chosen from the UI before the audio graph exists (node is null) — the
+  // posts are dropped by `?.` but latched. Without replay the worklet would
+  // boot at its Whole default and Split render both layers from Upper.
+  host.setKeyMode(2); // Split
+  host.setSplitPoint(48);
+  assert.equal(host.node, null, "no node before start()");
+
+  await host.start();
+  const posted = lastNode()._mock.posted;
+  const km = posted.filter((m) => m.type === "keyMode").pop();
+  const sp = posted.filter((m) => m.type === "splitPoint").pop();
+  assert.equal(km && km.value, 2, "Split replayed onto the new worklet");
+  assert.equal(sp && sp.value, 48, "split point replayed onto the new worklet");
+});
+
 test("start() after teardown refuses (fresh WebHost required)", async () => {
   const { host } = makeHost();
   await host.start();

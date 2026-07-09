@@ -348,6 +348,17 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   // buffers. We always call through `window.__vxn.applyViewEvents` so whichever
   // is current receives the batch.
   const dispatch = (arr) => {
+    // Forward non-automatable key mode / split point to the audio worklet.
+    // The controller owns them for state + UI echo, but the renderer only
+    // learns them through WebHost's out-of-band port hop — they never ride the
+    // param-store SAB. Driving off the ViewEvent batch reaches every source
+    // (mode button, preset load, state restore, share link), not just direct
+    // button clicks. Without this the worklet stays in its Whole default and
+    // Split/Dual silently render both layers from the Upper block.
+    for (const ev of arr) {
+      if (ev.kind === "key_mode_changed") host.setKeyMode(ev.mode);
+      else if (ev.kind === "split_point_changed") host.setSplitPoint(ev.note);
+    }
     try {
       window.__vxn.applyViewEvents(arr);
     } catch (e) {
