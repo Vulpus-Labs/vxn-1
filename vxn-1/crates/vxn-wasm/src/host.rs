@@ -146,6 +146,14 @@ pub extern "C" fn vxn_host_max_events() -> u32 {
     MAX_EVENTS as u32
 }
 
+/// Frames per Web Audio render quantum, so JS sizes its scratch buffers to
+/// match the engine instead of hard-coding the constant. (`audio-host.mjs`
+/// reads this at construction.)
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn_quantum() -> u32 {
+    QUANTUM as u32
+}
+
 /// Set a param by CLAP id on the host's synth. The worklet calls this block-
 /// start for each param the 0039 store reports changed (the `LocalParams` fold),
 /// before [`vxn_host_render`]. Sample-accurate param automation does NOT use
