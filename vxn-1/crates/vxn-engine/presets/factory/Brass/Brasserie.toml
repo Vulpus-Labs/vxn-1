@@ -1,0 +1,43 @@
+schema = 1
+
+[meta]
+name = "Brasserie"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_depth = 0.699999988079071
+chorus_mix = 0.550000011920929
+chorus_rate = 0.5
+master_drift = 0.30000001192092896
+reverb_damp = 0.12183277308940887
+reverb_decay = 0.4408107399940491
+reverb_mix = 0.2315244972705841
+reverb_on = true
+reverb_size = 0.2891680598258972
+
+[performance.upper]
+cutoff = 1300.0
+cutoff_env_depth = 48.95269775390625
+drive = 1.2000000476837158
+env1_attack = 0.03999999910593033
+env1_decay = 0.5
+env1_sustain = 0.25
+env2_attack = 0.03999999910593033
+env2_decay = 0.550000011920929
+env2_release = 0.4000000059604645
+env2_sustain = 0.7799999713897705
+filter_key_track = 0.5
+lfo1_delay_time = 0.6877111196517944
+lfo1_fade = 0.7751266956329346
+lfo_rate = 5.543464660644531
+lfo_shape = "Tri"
+osc2_fine = -9.0
+osc2_level = 0.75
+osc2_octave = 0
+pitch_lfo_depth = 0.30973196029663086
+
+[performance.lower]

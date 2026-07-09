@@ -1,0 +1,52 @@
+schema = 1
+
+[meta]
+name = "One Ringmod To Rule Them All"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_depth = 0.699999988079071
+chorus_mix = 0.5
+chorus_on = false
+chorus_rate = 0.550000011920929
+delay_sync = true
+delay_time = 1.1619393825531006
+lfo2_rate = 0.028289999812841415
+master_drift = 0.15171030163764954
+master_volume = 0.8884079456329346
+oversample = "4x"
+phaser_depth = 0.8029983043670654
+phaser_fb = 0.7249789237976074
+phaser_rate = 0.099161796271801
+reverb_damp = 0.44999998807907104
+reverb_decay = 1.7999999523162842
+reverb_mix = 0.18000000715255737
+reverb_size = 0.4000000059604645
+
+[performance.upper]
+assign_mode = "Unison"
+cross_mod_type = "Ring"
+cutoff = 73.41619110107422
+cutoff_tuned = true
+drive = 2.54367995262146
+env2_attack = 0.014586696401238441
+env2_decay = 0.3222027122974396
+env2_sustain = 0.7760768532752991
+filter_key_track = 1.0
+filter_slope = "12"
+hpf_cutoff = 39.19402313232422
+lfo_shape = "Tri"
+osc1_wave = "Pulse"
+osc2_coarse = 7
+osc2_level = 0.0
+osc2_octave = 0
+osc2_wave = "Pulse"
+resonance = 0.0
+sub_level = 0.36460092663764954
+unison_detune = 8.820734977722168
+
+[performance.lower]

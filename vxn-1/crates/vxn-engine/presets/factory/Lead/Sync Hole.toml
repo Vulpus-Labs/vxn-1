@@ -3,8 +3,6 @@ schema = 1
 [meta]
 name = "Sync Hole"
 author = "Vulpus Labs"
-category = "Lead"
-comment = "Bright metallic sync lead with a long sustained sweep into reverb space. Twin assign fattens each note. 4x oversample for clean sync."
 
 [performance]
 key_mode = "Whole"
@@ -13,31 +11,37 @@ split_point = 60
 [performance.global]
 chorus_on = false
 oversample = "4x"
-reverb_on = true
-reverb_size = 0.6
 reverb_decay = 4.0
-reverb_damp = 0.4
-reverb_mix = 0.28
+reverb_mix = 0.2800000011920929
+reverb_on = true
+reverb_size = 0.6000000238418579
 
 [performance.upper]
-osc1_coarse = 7
-osc1_octave = 0
-osc1_level = 0.85
+amp_lfo_depth = 0.2546980679035187
+amp_lfo_src = "LFO 1"
+assign_mode = "Twin"
 cross_mod_type = "Sync"
-pitch_env_src = "Env 1"
+cutoff = 1231.1339111328125
+cutoff_env_depth = 48.90202331542969
+drive = 1.600000023841858
+env1_attack = 0.006669805850833654
+env1_decay = 1.7826074361801147
+env1_release = 2.166865110397339
+env1_shape = "Exp"
+env1_sustain = 0.2785050570964813
+env2_attack = 0.009999999776482582
+env2_decay = 0.30000001192092896
+env2_release = 0.5
+lfo1_delay_time = 0.6203547120094299
+lfo1_fade = 0.8086993098258972
+mod_wheel_cross_mod_sweep = 24.0
+osc1_coarse = 7
+osc1_level = 0.8500000238418579
 pitch_env_depth = 12.0
 pitch_env_mod_only = true
-cutoff = 6500.0
-resonance = 0.3
-drive = 1.6
-env1_attack = 0.01
-env1_decay = 0.7
-env1_sustain = 0.3
-env2_attack = 0.01
-env2_decay = 0.3
-env2_sustain = 0.8
-env2_release = 0.5
-assign_mode = "Twin"
-unison_detune = 8.0
+pitch_env_src = "Env 1"
 pitch_wheel_depth = 7.0
-mod_wheel_cross_mod_sweep = 24.0
+resonance = 0.30000001192092896
+unison_detune = 8.0
+
+[performance.lower]

@@ -1,0 +1,54 @@
+schema = 1
+
+[meta]
+name = "PWM S&H"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_depth = 0.699999988079071
+chorus_mix = 0.5
+chorus_on = false
+chorus_rate = 0.550000011920929
+delay_on = true
+delay_sync = true
+delay_time = 1.1619393825531006
+lfo2_rate = 0.028289999812841415
+limiter_on = true
+master_drift = 0.15171030163764954
+master_volume = 0.25052785873413086
+phaser_depth = 0.8029983043670654
+phaser_fb = 0.7249789237976074
+phaser_rate = 0.099161796271801
+reverb_damp = 0.44999998807907104
+reverb_decay = 1.7999999523162842
+reverb_mix = 0.18000000715255737
+reverb_on = true
+reverb_size = 0.4000000059604645
+
+[performance.upper]
+assign_mode = "Twin"
+cutoff = 261.6255798339844
+cutoff_lfo2_depth = 1.4072755575180054
+cutoff_tuned = true
+drive = 1.5244821310043335
+filter_key_track = 1.0
+lfo_rate = 5.5337371826171875
+lfo_shape = "S&H"
+lfo_sync = true
+osc1_wave = "Pulse"
+osc2_level = 0.7808277010917664
+osc2_octave = 1
+osc2_wave = "Pulse"
+pitch_lfo_depth = 0.025239264592528343
+pitch_lfo_src = "LFO 2"
+pwm_lfo_depth = 0.5
+pwm_lfo_src = "LFO 1"
+resonance = 0.26314401626586914
+spread = 1.0
+unison_detune = 4.858530521392822
+
+[performance.lower]

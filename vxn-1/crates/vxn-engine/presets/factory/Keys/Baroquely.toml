@@ -1,0 +1,47 @@
+schema = 1
+
+[meta]
+name = "Baroquely"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_depth = 0.4000000059604645
+chorus_mix = 0.3499999940395355
+chorus_rate = 0.44999998807907104
+oversample = "8x"
+reverb_damp = 0.44999998807907104
+reverb_decay = 1.2000000476837158
+reverb_mix = 0.15000000596046448
+reverb_on = true
+reverb_size = 0.30000001192092896
+
+[performance.upper]
+amp_lfo_depth = 0.31688132882118225
+amp_lfo_src = "LFO 1"
+cross_mod_amount = 1.0
+cross_mod_type = "FM"
+cutoff = 7000.0
+env2_attack = 0.0020000000949949026
+env2_decay = 1.600000023841858
+env2_release = 0.4000000059604645
+env2_sustain = 0.0
+lfo1_delay_time = 0.6744087934494019
+lfo1_fade = 0.6005067825317383
+lfo_rate = 3.1298348903656006
+noise_color = "Pink"
+noise_level = 0.03125
+osc1_level = 0.8999999761581421
+osc1_wave = "Sine"
+osc2_level = 0.0
+osc2_octave = 0
+osc2_wave = "Sine"
+pitch_lfo_depth = 0.13011066615581512
+pitch_lfo_mod_only = true
+resonance = 0.10000000149011612
+vel_cutoff_depth = 24.0
+
+[performance.lower]

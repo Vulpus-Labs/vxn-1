@@ -1,0 +1,28 @@
+schema = 1
+
+[meta]
+name = "Bass Pressure"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+master_drift = 0.31191933155059814
+oversample = "O/S OFF"
+
+[performance.upper]
+assign_mode = "Unison"
+cutoff = 800.0
+drive = 2.1389713287353516
+env2_release = 0.20000000298023224
+env2_sustain = 0.949999988079071
+osc1_wave = "Sine"
+osc2_level = 0.699999988079071
+osc2_wave = "Triangle"
+resonance = 0.236328125
+sub_level = 0.550000011920929
+
+[performance.lower]

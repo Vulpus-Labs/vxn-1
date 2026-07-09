@@ -1,0 +1,113 @@
+schema = 1
+
+[meta]
+name = "Interplanetary Craft"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Dual"
+split_point = 60
+
+[performance.global]
+chorus_on = false
+delay_feedback = 0.8083324432373047
+delay_mix = 0.3534628450870514
+delay_sync = true
+delay_time = 0.7423838973045349
+lfo2_rate = 12.226510047912598
+lfo2_shape = "Saw-"
+lfo2_sync = true
+limiter_on = true
+master_drift = 0.3112331032752991
+master_volume = 0.3015202581882477
+oversample = "4x"
+phaser_depth = 0.7639886140823364
+phaser_fb = 0.5094805955886841
+phaser_rate = 0.14207491278648376
+reverb_damp = 0.3499999940395355
+reverb_decay = 5.0
+reverb_mix = 0.3499999940395355
+reverb_on = true
+reverb_size = 0.699999988079071
+
+[performance.upper]
+amp_env_bypass = true
+amp_lfo_depth = 1.0
+amp_lfo_src = "LFO 2"
+assign_mode = "Twin"
+cross_mod_type = "Sync"
+cutoff = 971.77001953125
+cutoff_env_depth = 18.0
+cutoff_lfo2_depth = 9.903600692749023
+drive = 4.0
+env1_attack = 0.0010000000474974513
+env1_decay = 2.5
+env1_release = 3.03425669670105
+env2_attack = 0.5
+env2_decay = 1.5
+env2_release = 1.600000023841858
+env2_shape = "Lin"
+env2_sustain = 0.699999988079071
+filter_key_track = 0.30000001192092896
+filter_mode = "BP"
+filter_slope = "12"
+layer_level = 0.862184464931488
+lfo_rate = 5.825441360473633
+lfo_shape = "Square"
+lfo_sync = true
+noise_color = "Pink"
+osc1_level = 0.8260663151741028
+osc1_wave = "Triangle"
+osc2_coarse = 0
+osc2_level = 0.5122466087341309
+osc2_octave = 0
+osc2_pw = 0.3499999940395355
+osc2_wave = "Pulse"
+pitch_env_depth = 12.0
+pitch_env_mod_only = true
+pitch_env_src = "Env 1"
+pitch_lfo_depth = 12.0
+resonance = 0.5609163641929626
+spread = 1.0
+unison_detune = 5.3029985427856445
+vel_cutoff_depth = -28.824325561523438
+
+[performance.lower]
+amp_env_bypass = true
+amp_lfo_depth = 1.0
+amp_lfo_src = "LFO 2"
+cross_mod_amount = 0.4638935923576355
+cross_mod_type = "FM"
+cutoff = 1747.8134765625
+cutoff_env_depth = 18.0
+cutoff_lfo2_depth = 9.903600692749023
+drive = 1.0039595365524292
+env1_attack = 0.0010000000474974513
+env1_decay = 3.668647050857544
+env1_release = 3.03425669670105
+env1_shape = "Exp"
+env2_attack = 0.5
+env2_decay = 1.5
+env2_release = 1.600000023841858
+env2_sustain = 0.699999988079071
+filter_key_track = 0.30000001192092896
+layer_level = 0.8741819858551025
+lfo_rate = 5.825441360473633
+lfo_sync = true
+noise_color = "Pink"
+osc1_level = 0.5408045053482056
+osc1_octave = 1
+osc1_wave = "Triangle"
+osc2_coarse = 7
+osc2_level = 0.8013091087341309
+osc2_octave = 2
+osc2_pw = 0.3499999940395355
+osc2_wave = "Triangle"
+pitch_env_depth = 12.0
+pitch_env_mod_only = true
+pitch_env_src = "Env 1"
+pitch_lfo_depth = 0.08887747675180435
+resonance = 0.42520058155059814
+spread = 1.0
+unison_detune = 45.04592514038086
+vel_cutoff_depth = -28.824325561523438

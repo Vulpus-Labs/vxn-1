@@ -1,0 +1,67 @@
+schema = 1
+
+[meta]
+name = "Starfall"
+author = "Vulpus Labs"
+
+[performance]
+key_mode = "Whole"
+split_point = 60
+
+[performance.global]
+chorus_depth = 0.43000420928001404
+chorus_mix = 0.5
+chorus_on = false
+chorus_rate = 3.2595436573028564
+delay_feedback = 0.6162161827087402
+delay_on = true
+delay_sync = true
+delay_time = 1.225387454032898
+lfo2_rate = 1.8227591514587402
+lfo2_shape = "Saw-"
+limiter_on = true
+master_drift = 0.15171030163764954
+master_volume = 0.6537690162658691
+phaser_depth = 0.4393475651741028
+phaser_fb = 0.1897486448287964
+phaser_on = true
+phaser_rate = 0.302741140127182
+reverb_damp = 0.44999998807907104
+reverb_decay = 1.7999999523162842
+reverb_mix = 0.18000000715255737
+reverb_on = true
+reverb_size = 0.4000000059604645
+
+[performance.upper]
+assign_mode = "Twin"
+cross_mod_type = "Sync"
+cutoff = 2757.791748046875
+cutoff_env_depth = 20.645263671875
+env1_attack = 0.0010000000474974513
+env1_decay = 1.1573113203048706
+env1_release = 1.1229463815689087
+env2_attack = 0.7082556486129761
+env2_decay = 0.3222027122974396
+env2_sustain = 1.0
+hpf_cutoff = 39.19402313232422
+lfo1_delay_time = 0.6900337934494019
+lfo1_fade = 1.0891047716140747
+lfo_rate = 0.45238959789276123
+lfo_shape = "Tri"
+lfo_sync = true
+osc1_level = 0.4993137717247009
+osc1_octave = 2
+osc2_coarse = 0
+osc2_level = 0.0
+osc2_octave = 0
+osc2_wave = "Pulse"
+pitch_env_depth = 12.0
+pitch_env_mod_only = true
+pitch_env_src = "Env 1"
+pitch_lfo_depth = 1.7352708578109741
+pitch_lfo_mod_only = true
+resonance = 0.3604307472705841
+spread = 1.0
+unison_detune = 8.820734977722168
+
+[performance.lower]
