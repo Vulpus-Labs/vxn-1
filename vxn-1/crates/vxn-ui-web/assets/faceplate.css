@@ -8,6 +8,7 @@
   /* Palette (matches vxn-ui-vizia's STYLE block). */
   --face-bg: #2b2b2b;
   --panel-bg: #1c1c1c;
+  --panel-bg-hi: #2f2f2f;        /* subtle top-left highlight for the panel gradient */
   --panel-border: #0e0e0e;
   --panel-corner: 4px;
   --header-bg: #a7cfe2;
@@ -18,6 +19,10 @@
   --ctl-value: #d9701b;          /* orange readout — Vizia .ctl-value */
   --track-bg: #0e0e0e;
   --track-fill: #d9701b;
+  /* Fader fill (the lit portion below/behind the knob): a fixed pale→bright
+     blue gradient the knob travels over, revealing more of it as it rises. */
+  --fader-fill-pale: #35507e;
+  --fader-fill-bright: #6cb1ff;
   --thumb-bg: #87afb2;
   --thumb-border: #a7cfe2;       /* matches --glyph-active / --knob-indicator */
   --glyph: #888888;
@@ -76,7 +81,7 @@ html, body {
 
 .banner {
   height: var(--banner-h);
-  background: var(--panel-bg);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   color: var(--banner-fg);
@@ -96,7 +101,7 @@ html, body {
    (ticket §Notes). */
 .preset-bar-slot {
   height: var(--preset-bar-h);
-  background: var(--panel-bg);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   display: flex;
@@ -162,7 +167,8 @@ html, body {
 
 .panel {
   position: relative;             /* anchor for absolutely-placed .panel-strip */
-  background: var(--panel-bg);
+  /* Subtle diagonal wash — the grey lifts slightly toward the top-left. */
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   padding: var(--panel-pad);
@@ -324,17 +330,12 @@ html, body {
   top: 0;
   width: var(--fader-track-w);
   height: 100%;
-  /* Below-thumb portion paints lighter than above so the slider reads
-     as filled. `--fader-norm` (0..1) is set by setThumb on the cell. */
-  background: linear-gradient(
-    to top,
-    #3a3a3a 0,
-    #3a3a3a calc(var(--fader-norm, 0) * 100%),
-    var(--track-bg) calc(var(--fader-norm, 0) * 100%),
-    var(--track-bg) 100%
-  );
+  /* Dark backdrop; the lit fill is painted by ::after on top. */
+  background: var(--track-bg);
   border-radius: 2px;
 }
+/* Midpoint marker — layered between the dark backdrop (below) and the lit
+   fill (above, ::after), so a fill risen past the midpoint covers it. */
 .ctl-fader-track::before {
   content: '';
   position: absolute;
@@ -344,6 +345,19 @@ html, body {
   transform: translateY(-50%);
   height: 3px;
   background: #3a3a3a;
+  z-index: 1;
+}
+/* Lit fill — a fixed-height pale→bright-blue gradient over the whole track
+   (pale at the bottom, bright near the top), revealed from the bottom up to
+   the knob via clip. `--fader-norm` (0..1) is set by setThumb on the cell. */
+.ctl-fader-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, var(--fader-fill-pale), var(--fader-fill-bright));
+  clip-path: inset(calc((1 - var(--fader-norm, 0)) * 100%) 0 0 0);
+  border-radius: 2px;
+  z-index: 2;
 }
 .ctl-fader-thumb {
   position: absolute;
@@ -357,10 +371,13 @@ html, body {
   transform: translateY(-50%);
   top: 50%;
   pointer-events: none;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.15);
+  /* Above the track backdrop, midpoint marker (z1) and lit fill (z2). */
+  z-index: 3;
+  /* Drop-shadow so the knob sits proud of the track, plus the faint rim glow. */
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 4px rgba(255, 255, 255, 0.15);
 }
 .ctl-fader.dragging .ctl-fader-thumb {
-  box-shadow: 0 0 6px var(--ctl-value);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 6px var(--ctl-value);
 }
 
 /* Rotary waveform selector (0041). SVG-based: knob face + rotating
@@ -757,12 +774,47 @@ html, body {
 }
 .keys-level-track {
   position: relative;
-  flex: 1 1 auto;
-  height: 12px;
-  background: var(--track-bg);
-  border-radius: 2px;
+  /* Same length as the vertical faders' travel (74px), not full-width. */
+  flex: 0 0 var(--fader-h);
+  width: var(--fader-h);
+  /* Comfortable hit area; the visible band is a thin ::before. */
+  height: 14px;
+  /* Sit ~4px right of the label. */
+  margin-left: 4px;
+  background: transparent;
   cursor: pointer;
   touch-action: none;
+}
+/* Visible band — same thinness as the vertical faders (--fader-track-w),
+   centred in the hit area. Matches the vertical faders' layering: a full-width
+   dark channel (::before) with the lit blue fill (::after) revealed left→knob
+   on top, so the dark channel spans the whole slider range. */
+.keys-level-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: var(--fader-track-w);
+  border-radius: 2px;
+  background: var(--track-bg);
+}
+/* Lit fill — fixed pale→bright-blue gradient over the whole channel (pale at
+   the left, bright near the knob), revealed from the left up to the thumb via
+   clip. `--level-norm` (0..1) is set by wireLayerLevels. */
+.keys-level-track::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: var(--fader-track-w);
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--fader-fill-pale), var(--fader-fill-bright));
+  clip-path: inset(0 calc((1 - var(--level-norm, 1)) * 100%) 0 0);
+  z-index: 1;
 }
 .keys-level-thumb {
   position: absolute;
@@ -778,7 +830,10 @@ html, body {
      param echoes — including DAW automation. Initial 100 % = unity. */
   left: 100%;
   pointer-events: none;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.15);
+  /* Above the dark channel (::before) and the lit fill (::after). */
+  z-index: 2;
+  /* Drop-shadow to match the vertical fader knobs. */
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 4px rgba(255, 255, 255, 0.15);
 }
 /* `.dimmed` already greys via opacity (shared rule). Block pointer ops on
    the parked Keys controls so a click in Whole/Dual can't move the split
@@ -822,10 +877,18 @@ html, body {
   text-align: right;
 }
 .keys-reset {
+  /* Pinned to the section's bottom-right (anchored on the position:relative
+     .panel), with ≥4px clearance from the right and bottom edges. */
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
   height: 16px;
+  /* Auto width (shrink-to-fit the label) — `right` anchors the corner. */
+  padding: 0 8px;
   background: #333333;
   color: #b0b0b0;
-  border: 1px solid #555555;
+  /* Red-tinged border flags the destructive action. */
+  border: 1px solid #7a4444;
   border-radius: 2px;
   font-family: inherit;
   font-size: 9px;
@@ -833,10 +896,9 @@ html, body {
   letter-spacing: 0.5px;
   text-transform: uppercase;
   cursor: pointer;
-  margin-top: auto;
 }
 .keys-reset:hover {
-  background: #3a3a3a;
-  border-color: #c4c4c4;
+  background: #3a2a2a;
+  border-color: #b45a5a;
   color: #ececec;
 }

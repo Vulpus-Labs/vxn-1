@@ -164,6 +164,9 @@ export const keysPanel = (() => {
     const paint = (thumb, norm) => {
       const n = Math.max(0, Math.min(1, norm));
       thumb.style.left = (n * 100) + '%';
+      // Mirror the fill boundary onto the track so the blue gradient fills up
+      // to the knob (matches the vertical faders). parent is `.keys-level-track`.
+      if (thumb.parentElement) thumb.parentElement.style.setProperty('--level-norm', n);
     };
     for (const which of ['upper', 'lower']) {
       const id = paramIdByNameAtLayer('layer_level', which);
@@ -186,29 +189,34 @@ export const keysPanel = (() => {
         return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
       };
       let dragging = false;
+      // Move / stop live on `window`, not the track: a drag that leaves the
+      // control keeps tracking, and a release ANYWHERE reliably ends it. A
+      // track-only `pointerup` was missed when the button came up outside the
+      // track, leaving the slider stuck in the dragging state. Both handlers
+      // no-op unless this row is the one being dragged, so the two rows'
+      // window listeners don't interfere.
+      const onMove = (ev) => {
+        if (!dragging) return;
+        const n = pointerToNorm(ev);
+        paint(thumb, n);
+        window.vxn.send.setParamNorm(id, n);
+      };
+      const onUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        window.vxn.send.endGesture(id);
+      };
       track.addEventListener('pointerdown', (ev) => {
         ev.preventDefault();
         dragging = true;
-        track.setPointerCapture(ev.pointerId);
         window.vxn.send.beginGesture(id);
         const n = pointerToNorm(ev);
         paint(thumb, n);
         window.vxn.send.setParamNorm(id, n);
       });
-      track.addEventListener('pointermove', (ev) => {
-        if (!dragging) return;
-        const n = pointerToNorm(ev);
-        paint(thumb, n);
-        window.vxn.send.setParamNorm(id, n);
-      });
-      const up = (ev) => {
-        if (!dragging) return;
-        dragging = false;
-        try { track.releasePointerCapture(ev.pointerId); } catch (e) {}
-        window.vxn.send.endGesture(id);
-      };
-      track.addEventListener('pointerup', up);
-      track.addEventListener('pointercancel', up);
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
       track.addEventListener('dblclick', (ev) => {
         ev.preventDefault();
         // Default = unity (1.0). Wrap in a gesture so it lands as one edit.
