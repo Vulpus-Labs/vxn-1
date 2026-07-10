@@ -17,22 +17,47 @@ the event ring (ticket 0155). Ports `vxn-wasm/web/coordinator.mjs`,
 
 ## Acceptance criteria
 
-- [ ] `vxn2-processor.js` AudioWorkletProcessor: instantiates the engine
-      wasm, drains the ring into `vxn_host_events_ptr` scratch, calls
-      `vxn_host_render`, copies L/R out to the worklet outputs.
-- [ ] `coordinator.mjs`: creates AudioContext, allocates event-ring +
-      param-store SABs, adds the worklet module, hands it the wasm bytes,
-      exposes a producer API to the bridge.
-- [ ] AudioContext lifecycle: user-gesture autoplay unlock, suspend/resume
-      (posts worklet a reset to clear stuck voices), sample-rate change,
-      teardown.
-- [ ] Worklet trap safety: a render-thread panic surfaces to the main
-      thread (onTrap), audio goes silent rather than wedging.
-- [ ] Served page reaches "audio live" after a click and renders a test
-      tone driven through the ring.
+- [x] `vxn2-processor.js` AudioWorkletProcessor: instantiates the engine
+      wasm via the shared `host-runner.mjs` + `audio-host.mjs`, drains the ring
+      into the `vxn_host_events_ptr` scratch, calls `vxn_host_render(host, n)`
+      (no key-mode/split args), copies L/R out. Registers as
+      `vxn2-host-processor`.
+- [x] `coordinator.mjs` (`WebHost`): creates AudioContext, allocates event-ring
+      + param-store SABs, adds the worklet module, hands it the wasm bytes,
+      seeds the store from engine defaults, exposes the producer API
+      (note/pitchBend/modWheel/sustain over the ring; setParam(s) over the
+      store; pollParamDiffs readback).
+- [x] AudioContext lifecycle: autoplay unlock (idle→starting→running),
+      suspend/resume (posts worklet a `reset` voice-flush, only on resume),
+      sample-rate change via `rebuild()` over the same SABs, device change /
+      setSink, teardown/dispose. 11 mock-context lifecycle tests.
+- [x] Worklet trap safety: a render-thread panic is caught at the runner
+      boundary → silence + `onTrap` + async re-instantiate over the same SABs;
+      proven end-to-end against the real wasm.
+- [~] Served page reaches "audio live" after a click and renders a test tone:
+      the headless proxy is green — `host-runner.test.mjs` boots the REAL
+      `vxn2_wasm.wasm`, pushes a note through the ring and asserts audible
+      output (silence-until-ready + tone + trap recovery). The actual served
+      page needs 0157 (`index.html` bridge) + 0158 (xtask `--serve` with
+      COOP/COEP); the in-browser click-to-live check rides those.
+
+## Close-out (2026-07-10)
+
+Done (bar the browser-served click, which needs 0157/0158 to have a page to
+serve). Files under `vxn-2/crates/vxn2-wasm/web/`: `vxn2-processor.js`,
+`host-runner.mjs`, `audio-host.mjs`, `coordinator.mjs` +
+`coordinator-lifecycle.test.mjs` (11 mock tests) and `host-runner.test.mjs`
+(2 real-wasm tests, auto-skip if the artifact isn't built). `node --test` →
+13 pass.
+
+vxn-2 divergences from the vxn-1 port: no key-mode/split shared state on the
+worklet port or in the runner/host; `vxn_host_render` takes `(host, n)`; the
+param fold pushes via `vxn_host_set_param` (block-start, `applyStoreToHost`),
+since vxn-2 folds the store into the engine inside `vxn_host_render`; names are
+`vxn2-host-processor` / `vxn2_wasm.wasm`.
 
 ## Notes
 
-References: `vxn-wasm/web/coordinator.mjs` (0042), `host-runner.mjs`
-(0040), `vxn-processor.js`, `audio-host.mjs`. Depends on 0153 (engine
-exports) + 0155 (transport). 128-frame quantum, same as vxn-1.
+References: `vxn-wasm/web/{coordinator,host-runner,vxn-processor,audio-host}`.
+Depends on 0153 (engine exports) + 0155 (transport). 128-frame quantum,
+CONTROL_BLOCK sub-chunking owned by the wasm host.
