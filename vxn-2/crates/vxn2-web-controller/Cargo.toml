@@ -1,0 +1,31 @@
+# Main-thread controller wasm module (ticket 0154, epic E030). A raw C-ABI
+# cdylib — no wasm-bindgen — that reuses vxn-2's MVC arbiter VERBATIM as the
+# single off-audio model mutator: the SAME `Controller<SharedParams>` +
+# `tick_vxn2` the native `vxn2-clap` shell drives. Instantiated on the main
+# thread by the faceplate bridge (0157) over a narrow opcode surface (UiEvent
+# in, ViewEvent out, tick). The engine wasm (vxn2-wasm) runs in the worklet; the
+# two share the 0155 param SAB, not linear memory.
+[package]
+name = "vxn2-web-controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN2 web main-thread controller: vxn_core_app::Controller<SharedParams> over a C-ABI opcode surface."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The controller composition (Controller + tick_vxn2 + custom events) reused
+# with NO controller-logic changes — one source of truth for model mutation
+# across native + web. NOTE (E030 divergence): unlike vxn-1, vxn-2's `vxn2-app`
+# itself depends on `vxn2-engine` (the `Vxn2Params` impl + param table live on
+# `SharedParams`), so the engine crate is unavoidably in this tree. The
+# controller still never RUNS the engine — no `Engine::process` on the main
+# thread; the audio engine is a separate wasm in the worklet. The engine dep is
+# link-only, for `SharedParams` (the model) + the param descriptors.
+vxn2-app = { workspace = true }
+vxn2-engine = { workspace = true }

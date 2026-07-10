@@ -2559,6 +2559,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn2-web-controller"
+version = "0.1.0"
+dependencies = [
+ "vxn2-app",
+ "vxn2-engine",
+]
+
+[[package]]
 name = "vxn2-xtask"
 version = "0.1.0"
 

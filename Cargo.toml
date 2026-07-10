@@ -26,6 +26,7 @@ members = [
     "vxn-2/crates/vxn2-clap",
     "vxn-2/crates/vxn2-osc-bench",
     "vxn-2/crates/vxn2-wasm",
+    "vxn-2/crates/vxn2-web-controller",
     "vxn-2/xtask",
 
     # vxn-3 (synth #3, MVP in-flight — see vxn-3/adrs/0001, epic E021).
