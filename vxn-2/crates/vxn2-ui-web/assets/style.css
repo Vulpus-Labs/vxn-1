@@ -4,6 +4,7 @@
 :root {
   --face-bg: #2b2b2b;
   --panel-bg: #1c1c1c;
+  --panel-bg-hi: #2f2f2f;        /* subtle top-left highlight for the panel gradient (vxn-1 parity) */
   --panel-border: #0e0e0e;
   --panel-corner: 4px;
   --header-bg: #a7cfe2;
@@ -14,6 +15,11 @@
   --ctl-value: #d9701b;
   --track-bg: #0e0e0e;
   --track-fill: #d9701b;
+  /* Fader lit fill (the portion below the thumb): a fixed pale→bright orange
+     gradient the thumb travels over, revealing more of it as it rises —
+     mirrors vxn-1's blue fader fill but in the orange readout hue. */
+  --fader-fill-pale: #8a4a18;
+  --fader-fill-bright: #ffa347;
   --thumb-bg: #87afb2;
   --thumb-border: #a7cfe2;
   --glyph: #888888;
@@ -68,7 +74,7 @@ html, body {
 
 .banner {
   height: var(--banner-h);
-  background: var(--panel-bg);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   color: var(--banner-fg);
@@ -81,7 +87,7 @@ html, body {
 
 .preset-bar {
   height: var(--preset-bar-h);
-  background: var(--panel-bg);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   display: flex;
@@ -120,7 +126,8 @@ html, body {
 }
 
 .panel {
-  background: var(--panel-bg);
+  /* Subtle diagonal wash — the grey lifts slightly toward the top-left (vxn-1 parity). */
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-corner);
   display: flex;
@@ -386,6 +393,9 @@ html, body {
  * adjacent envelope graph (108px), and a horizontal Ratio/Fixed selector
  * tucked underneath. 12px label + 4px+88px+4px track = 108px. */
 .op-tuning-row .fader-track { height: 88px; }
+/* Taller tuning tracks: re-anchor the fill gradient to the 88px length so the
+   pale→bright travel matches the standard faders. */
+.op-tuning-row .fader-track-fill { background-size: 100% 88px; }
 .op-tuning-mode {
   display: flex;
   justify-content: center;
@@ -425,7 +435,14 @@ html, body {
   position: absolute;
   bottom: 0; left: 0; right: 0;
   height: 0;
-  background: var(--track-fill);
+  /* Fixed pale→bright orange gradient anchored to the track's bottom, so the
+     thumb travels over it and reveals more toward bright as `height` grows
+     (JS drives height). `background-size` pins the gradient to the full track
+     length; `no-repeat` + bottom position keep the pale end fixed at the base. */
+  background: linear-gradient(to top, var(--fader-fill-pale), var(--fader-fill-bright));
+  background-size: 100% var(--fader-h);
+  background-repeat: no-repeat;
+  background-position: bottom;
   border-radius: 1px;
 }
 .fader-thumb {
@@ -439,6 +456,8 @@ html, body {
   border: 1px solid var(--thumb-border);
   border-radius: 1px;
   cursor: ns-resize;
+  /* Drop-shadow so the thumb sits proud of the track, plus a faint rim glow (vxn-1 parity). */
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 4px rgba(255, 255, 255, 0.15);
 }
 .fader.disabled { opacity: 0.35; pointer-events: none; }
 /* `.value-pop` moved to the shared `vxn-core-ui-web/assets/value-pop.css`
@@ -1012,6 +1031,9 @@ html, body {
   right: auto;
   width: 0;
   height: auto;
+  /* Bipolar depth fill grows signed from center; the vertical pale→bright
+     gradient is meaningless here, so revert to the flat orange. */
+  background: var(--track-fill);
 }
 .vxn-mm-depth .fader-thumb {
   /* horizontal thumb: tall+narrow, slides along x */
