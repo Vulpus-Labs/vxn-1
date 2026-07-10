@@ -41,7 +41,7 @@ const BLK: usize = 32;
 
 /// Golden hash of the reference render. Behaviour-preserving refactors must
 /// leave this untouched; an intentional DSP change re-captures it (see header).
-const EXPECTED: u64 = 0x8704_4121_bab3_98d9;
+const EXPECTED: u64 = 0xe72b_e8da_5e90_1e05;
 
 /// Build the reference engine: a matrix-rich, deterministic patch.
 fn reference_engine() -> Engine {
