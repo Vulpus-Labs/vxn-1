@@ -1,0 +1,23 @@
+# vxn-2 WASM/browser audio engine (ticket 0153, epic E030). Raw C-ABI cdylib —
+# no wasm-bindgen — so the module instantiates cleanly inside an AudioWorklet
+# scope. Mirror of vxn-1's `vxn-wasm`, retargeted to the vxn-2 FM engine.
+[package]
+name = "vxn2-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN2 WASM/browser audio engine: Engine::process_block exposed over a C ABI."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Single dep: vxn-2's params (ParamDesc / desc_for_clap_id / TOTAL_PARAMS) live
+# in the engine crate, not in an app crate — so unlike vxn-1 (which pulled
+# `vxn-app` for its id layout + KeyMode) the engine cdylib needs nothing else.
+# The `SharedParams` store is the block-start param fold; the engine folds it
+# via `Engine::snapshot_params`, so there's no `LocalParams` mirror (that lives
+# in the non-wasm-clean `vxn2-clap`) on this path.
+vxn2-engine = { workspace = true }

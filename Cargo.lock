@@ -2552,6 +2552,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn2-wasm"
+version = "0.1.0"
+dependencies = [
+ "vxn2-engine",
+]
+
+[[package]]
 name = "vxn2-xtask"
 version = "0.1.0"
 
