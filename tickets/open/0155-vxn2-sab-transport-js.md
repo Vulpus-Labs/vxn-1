@@ -17,19 +17,43 @@ sized for vxn-2's larger param surface.
 
 ## Acceptance criteria
 
-- [ ] `event-ring.mjs`: SPSC ring over SAB, 16-byte slots, producer
-      (main) / consumer (worklet) — ported from vxn-1.
-- [ ] `param-store.mjs`: lock-free param store over SAB sized for vxn-2's
-      ~250+ params; producer writes, consumer polls diffs.
-- [ ] `event-codec.mjs`: JS encode/decode of the 16-byte slot, byte-
-      identical to the Rust codec in ticket 0153 (same field offsets, type
-      tags, norm flag).
-- [ ] A shared one-page wire-format spec (comment or doc) referenced by
-      both the Rust and JS codec so they can't drift.
+- [x] `event-ring.mjs`: SPSC ring over SAB, 16-byte slots, producer
+      (main) / consumer (worklet) — ported from vxn-1. Added `pushEvent` so
+      the full codec vocabulary (norm params, gestures) can ride the ring, not
+      just the byte pushers. Dropped vxn-1's JS `renderQuantumSliced` /
+      `applyRecord` — the vxn-2 production path drains raw bytes into the wasm
+      host, which owns the slice loop (0153).
+- [x] `param-store.mjs`: lock-free param store over SAB, flat 209-param space
+      (TOTAL_PARAMS imported from the codec, not hardcoded); `writeBulk` /
+      `readAll` / `pollDiffs` readback pump + `applyStoreToHost` block-fold.
+- [x] `event-codec.mjs`: JS encode/decode of the 16-byte slot, byte-identical
+      to the Rust codec (0153) — proven by a golden table that is a literal copy
+      of `codec.rs tests::golden` (same offsets, tags, norm flag).
+- [x] Shared one-page wire-format spec `web/WIRE-FORMAT.md`, referenced from
+      both `src/codec.rs` and `web/event-codec.mjs` headers.
+
+## Close-out (2026-07-10)
+
+Done. `node --test` over the three `.test.mjs` → **18 pass**. Files under
+`vxn-2/crates/vxn2-wasm/web/`: `event-codec.mjs`, `event-ring.mjs`,
+`param-store.mjs` + a `.test.mjs` each, plus `WIRE-FORMAT.md`.
+
+Divergences from the vxn-1 port (all match the 0153 codec):
+
+- **Flat param space, 209.** No Upper/Lower layer split → no
+  `PATCH_COUNT`/`GLOBAL_COUNT`/`patchClapId`/`globalClapId`. `TOTAL_PARAMS` is
+  the single declared constant (JS) / re-checked against `vxn2_engine::TOTAL_PARAMS`
+  (Rust). Ticket's "~250+" estimate was high — it's 209.
+- **No key-mode / split-point** (tags 7/8 reserved-unused); a JS test asserts
+  both decode to `null`.
+- Tests use `node:test` (like vxn-1's transport), runnable headless with
+  `node --test vxn-2/crates/vxn2-wasm/web/*.test.mjs`; independent of the
+  `vxn2-ui-web` vitest suite.
+
+Consumed by the worklet (0156) and produced by the bridge (0157) / input
+adapters (0160).
 
 ## Notes
 
-vxn-1 froze this format in spike 0035. The only vxn-2 change is param-store
-sizing — re-derive slot count from the vxn-2 param table, don't hardcode
-165. Consumed by the worklet (0156) and produced by the bridge (0157) /
-input adapters (0160).
+vxn-1 froze this format in spike 0035; vxn-2 carries the byte layout verbatim
+(minus tags 7/8) so the two synths share a wire format.

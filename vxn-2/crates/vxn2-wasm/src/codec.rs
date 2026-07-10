@@ -4,7 +4,8 @@
 //! `web/event-codec.mjs` (ticket 0155). Both are typed encode/decode layers over
 //! a **16-byte fixed slot framing** carried verbatim from vxn-1's frozen spike-
 //! 0035 layout — so the two synths' web transports share a byte format and the
-//! JS ring/codec ports over unchanged.
+//! JS ring/codec ports over unchanged. The one-page spec both halves point at
+//! is `web/WIRE-FORMAT.md`.
 //!
 //! # Slot layout (16 bytes, little-endian)
 //!
