@@ -94,51 +94,8 @@ pub fn open_editor(
 /// cdylib. Per-file fallback: a missing file silently falls back to
 /// the embed, so a partial Resources/ tree doesn't break the page.
 fn build_faceplate_html() -> String {
-    let params_json = build_params_json();
-    let matrix_lists_json = build_matrix_lists_json();
     let dev = dev_assets_dir();
-    let default_patch_json = build_default_patch_json();
-    let bootstrap = asset(dev.as_deref(), "bootstrap.js", BOOTSTRAP_JS)
-        .replace("__PARAMS_JSON__", &params_json)
-        .replace("__MATRIX_LISTS_JSON__", &matrix_lists_json)
-        .replace("__DEFAULT_PATCH_JSON__", &default_patch_json)
-        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json());
-    let js_bundle = [
-        // Shared widget primitives (0140): valuePop / wireDrag / cutoff-tuned
-        // math. Spliced FIRST so their stripped top-level bindings precede
-        // bootstrap.js and every panel that references them (`const` bindings
-        // don't hoist).
-        vxn_core_ui_web::shared_widgets_js(),
-        bootstrap,
-        asset(dev.as_deref(), "panels/knob.js", PANEL_KNOB_JS),
-        // dial.js depends on fader.js's taper/format helpers, so it's spliced
-        // immediately after fader.js below.
-        asset(dev.as_deref(), "panels/fader.js", PANEL_FADER_JS),
-        asset(dev.as_deref(), "panels/dial.js", PANEL_DIAL_JS),
-        asset(dev.as_deref(), "panels/button-group.js", PANEL_BUTTON_GROUP_JS),
-        asset(dev.as_deref(), "panels/graph.js", PANEL_GRAPH_JS),
-        asset(dev.as_deref(), "panels/algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
-        // op-row's data tables + sub-widgets, spliced before the coordinator
-        // (0141). algo-data must precede op-row (referenced in bind); ks-graph
-        // / eg-graph are referenced at render time but kept here for clarity.
-        asset(dev.as_deref(), "panels/algo-data.js", PANEL_ALGO_DATA_JS),
-        asset(dev.as_deref(), "panels/ks-graph.js", PANEL_KS_GRAPH_JS),
-        asset(dev.as_deref(), "panels/eg-graph.js", PANEL_EG_GRAPH_JS),
-        asset(dev.as_deref(), "panels/op-faders.js", PANEL_OP_FADERS_JS),
-        asset(dev.as_deref(), "panels/op-row.js", PANEL_OP_ROW_JS),
-        asset(dev.as_deref(), "panels/mod-matrix.js", PANEL_MOD_MATRIX_JS),
-        asset(dev.as_deref(), "panels/preset-bar.js", PANEL_PRESET_BAR_JS),
-        // Shared two-pane preset browser (vxn-core-ui-web), ESM markers
-        // stripped, spliced immediately before its VXN2 glue (which calls
-        // the `createPresetBrowser` it defines).
-        vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
-        asset(dev.as_deref(), "panels/preset-browser.js", PANEL_PRESET_BROWSER_JS),
-        // FX tab strip (E025 / 0090): attaches `window.__vxn.wireFxTabs`,
-        // which main.js calls in `boot`.
-        asset(dev.as_deref(), "panels/fx-tabs.js", PANEL_FX_TABS_JS),
-        asset(dev.as_deref(), "main.js", MAIN_JS),
-    ]
-    .join("\n;\n");
+    let js_bundle = faceplate_js_bundle(dev.as_deref());
     let html_tpl = asset(dev.as_deref(), "index.html", HTML_TEMPLATE);
     let css = format!(
         "{}\n{}\n{}",
@@ -149,6 +106,101 @@ fn build_faceplate_html() -> String {
     html_tpl
         .replace("__CSS__", &css)
         .replace("__BOOTSTRAP_JS__", &js_bundle)
+}
+
+/// The concatenated classic-`<script>` JS bundle (shared widgets + bootstrap
+/// with the descriptor JSON spliced in + every panel + main). Shared by the
+/// native [`build_faceplate_html`] and the web [`build_web_faceplate_html`] so
+/// the two pages run byte-identical faceplate logic — only the transport under
+/// it differs.
+fn faceplate_js_bundle(dev: Option<&std::path::Path>) -> String {
+    let params_json = build_params_json();
+    let matrix_lists_json = build_matrix_lists_json();
+    let default_patch_json = build_default_patch_json();
+    let bootstrap = asset(dev, "bootstrap.js", BOOTSTRAP_JS)
+        .replace("__PARAMS_JSON__", &params_json)
+        .replace("__MATRIX_LISTS_JSON__", &matrix_lists_json)
+        .replace("__DEFAULT_PATCH_JSON__", &default_patch_json)
+        .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json());
+    [
+        // Shared widget primitives (0140): valuePop / wireDrag / cutoff-tuned
+        // math. Spliced FIRST so their stripped top-level bindings precede
+        // bootstrap.js and every panel that references them (`const` bindings
+        // don't hoist).
+        vxn_core_ui_web::shared_widgets_js(),
+        bootstrap,
+        asset(dev, "panels/knob.js", PANEL_KNOB_JS),
+        // dial.js depends on fader.js's taper/format helpers, so it's spliced
+        // immediately after fader.js below.
+        asset(dev, "panels/fader.js", PANEL_FADER_JS),
+        asset(dev, "panels/dial.js", PANEL_DIAL_JS),
+        asset(dev, "panels/button-group.js", PANEL_BUTTON_GROUP_JS),
+        asset(dev, "panels/graph.js", PANEL_GRAPH_JS),
+        asset(dev, "panels/algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
+        // op-row's data tables + sub-widgets, spliced before the coordinator
+        // (0141). algo-data must precede op-row (referenced in bind); ks-graph
+        // / eg-graph are referenced at render time but kept here for clarity.
+        asset(dev, "panels/algo-data.js", PANEL_ALGO_DATA_JS),
+        asset(dev, "panels/ks-graph.js", PANEL_KS_GRAPH_JS),
+        asset(dev, "panels/eg-graph.js", PANEL_EG_GRAPH_JS),
+        asset(dev, "panels/op-faders.js", PANEL_OP_FADERS_JS),
+        asset(dev, "panels/op-row.js", PANEL_OP_ROW_JS),
+        asset(dev, "panels/mod-matrix.js", PANEL_MOD_MATRIX_JS),
+        asset(dev, "panels/preset-bar.js", PANEL_PRESET_BAR_JS),
+        // Shared two-pane preset browser (vxn-core-ui-web), ESM markers
+        // stripped, spliced immediately before its VXN2 glue (which calls
+        // the `createPresetBrowser` it defines).
+        vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
+        asset(dev, "panels/preset-browser.js", PANEL_PRESET_BROWSER_JS),
+        // FX tab strip (E025 / 0090): attaches `window.__vxn.wireFxTabs`,
+        // which main.js calls in `boot`.
+        asset(dev, "panels/fx-tabs.js", PANEL_FX_TABS_JS),
+        asset(dev, "main.js", MAIN_JS),
+    ]
+    .join("\n;\n")
+}
+
+/// Build the STANDALONE web faceplate page (ticket 0157). Same markup / CSS /
+/// faceplate JS + spliced descriptor JSON as the native page, but:
+///
+/// - a tiny classic pre-script installs a `window.ipc` that *queues* posted
+///   opcodes, so no intent the faceplate dispatches during boot (notably
+///   `ready`) is lost before the ES-module bridge takes over; and
+/// - a trailing `<script type="module">` boots `faceplate-bridge.mjs`, which
+///   replaces `window.ipc` with the real SAB/controller transport and drains the
+///   boot queue.
+///
+/// The transport ES modules (`faceplate-bridge.mjs` + its imports) and the two
+/// `.wasm` files are served alongside this page by the xtask bundler (0158); the
+/// page references them by relative URL.
+pub fn build_web_faceplate_html() -> String {
+    // No dev-asset hot-reload for the generated page — always the embedded bundle.
+    let bundle = faceplate_js_bundle(None);
+    // The boot-queue stub MUST run before the faceplate bundle so `window.ipc`
+    // exists when main.js dispatches. Prepended into the same classic script.
+    let ipc_stub = "window.ipc={postMessage:function(m){\
+(window.__vxnBootQueue=window.__vxnBootQueue||[]).push(m);}};";
+    let classic = format!("{ipc_stub}\n;\n{bundle}");
+    let css = format!(
+        "{}\n{}\n{}",
+        FACEPLATE_CSS,
+        vxn_core_ui_web::PRESET_BROWSER_CSS,
+        vxn_core_ui_web::VALUE_POP_CSS,
+    );
+    // The module boot; appended before </body> so the classic faceplate has
+    // already parsed + set window.__vxn.applyViewEvents.
+    let module_boot = "\n<script type=\"module\">\n\
+import { bootFaceplate } from \"./faceplate-bridge.mjs\";\n\
+bootFaceplate().catch(function (e) { console.error(\"vxn2 boot failed\", e); });\n\
+</script>\n";
+    let html = HTML_TEMPLATE
+        .replace("__CSS__", &css)
+        .replace("__BOOTSTRAP_JS__", &classic);
+    if let Some(idx) = html.rfind("</body>") {
+        format!("{}{}{}", &html[..idx], module_boot, &html[idx..])
+    } else {
+        format!("{html}{module_boot}")
+    }
 }
 
 /// Read `relative` from `dev_dir` (if any) and fall back to `embedded`
