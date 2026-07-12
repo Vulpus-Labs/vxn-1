@@ -128,7 +128,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     *.test.mjs suites stay out of the shipped bundle. Preset / input
     //     modules land with 0159 / 0160.
     let web_src = root.join("vxn-2/crates/vxn2-wasm/web");
-    const MODULES: [&str; 9] = [
+    const MODULES: [&str; 11] = [
         "event-ring.mjs",
         "event-codec.mjs",
         "param-store.mjs",
@@ -137,6 +137,9 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         "vxn2-processor.js",
         "coordinator.mjs",
         "controller.mjs",
+        // Browser input adapters (0160): Web MIDI + computer keyboard → ring.
+        "midi-input.mjs",
+        "keyboard-input.mjs",
         "faceplate-bridge.mjs",
     ];
     for m in MODULES {

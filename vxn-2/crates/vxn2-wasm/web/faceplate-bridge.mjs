@@ -19,6 +19,8 @@
 
 import { WebHost } from "./coordinator.mjs";
 import { WebController } from "./controller.mjs";
+import { attachKeyboard } from "./keyboard-input.mjs";
+import { attachMidi } from "./midi-input.mjs";
 
 // Opcodes that don't touch the model / audio and can be ignored on the web path
 // until browser persistence (0159) wires them. Kept explicit so an unhandled
@@ -110,10 +112,16 @@ export class FaceplateBridge {
     win = globalThis,
     hostOptions = {},
     rafImpl = null,
+    enableKeyboard = true,
+    enableMidi = true,
   } = {}) {
     this._doc = doc;
     this._win = win;
     this._raf = rafImpl || (win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
+    this._enableKeyboard = enableKeyboard;
+    this._enableMidi = enableMidi;
+    this._keyboard = null;
+    this._midi = null;
 
     this.host = new WebHost({ wasmUrl, wasmBytes, ...hostOptions });
     this.controller = new WebController({
@@ -149,7 +157,25 @@ export class FaceplateBridge {
     for (const msg of this._queue) routeOpcode(this.controller, msg);
     this._queue.length = 0;
     this._startPump();
+    this._attachInputs();
     return this;
+  }
+
+  // Wire the browser input adapters (ticket 0160) onto the coordinator's producer
+  // surface: computer keyboard now, Web MIDI async (resolves granted=false and
+  // stays silent where Web MIDI is unavailable — the keyboard still plays). Notes
+  // pushed before audio is live buffer in the ring and sound on the first quantum.
+  _attachInputs() {
+    if (this._enableKeyboard && this._doc) {
+      this._keyboard = attachKeyboard(this.host, { target: this._doc });
+    }
+    if (this._enableMidi) {
+      attachMidi(this.host)
+        .then((m) => {
+          this._midi = m;
+        })
+        .catch(() => {}); // graceful: no MIDI → keyboard-only, never throws
+    }
   }
 
   _installIpc() {
@@ -225,6 +251,8 @@ export class FaceplateBridge {
 
   async destroy() {
     this._running = false;
+    if (this._keyboard) this._keyboard.detach();
+    if (this._midi) this._midi.detach();
     this.controller.destroy();
     await this.host.teardown();
   }
