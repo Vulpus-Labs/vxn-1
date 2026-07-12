@@ -23,6 +23,11 @@ export const VE_OP_TAB_CHANGED = 2;
 export const VE_MATRIX_SNAPSHOT = 3;
 export const VE_KS_CURVE_SNAPSHOT = 4;
 export const VE_EG_CURVE_SNAPSHOT = 5;
+export const VE_PRESET_LOADED = 6;
+
+// PresetSource discriminants in the VE_PRESET_LOADED record (match lib.rs).
+const PRESET_SRC_NONE = 0;
+const PRESET_SRC_FACTORY = 1;
 
 // Decode a packed ViewEvent out-buffer into an array of event objects whose
 // shape matches what the faceplate's `applyViewEvents` (`main.js`) consumes —
@@ -90,6 +95,17 @@ export function decodeViewEvents(buffer, ptr, len) {
         const curves = [];
         for (let opi = 0; opi < 6; opi++) curves.push(u8());
         out.push({ kind: "eg_curve_snapshot", curves });
+        break;
+      }
+      case VE_PRESET_LOADED: {
+        const name = str();
+        const srcKind = u32();
+        let source = null;
+        if (srcKind === PRESET_SRC_FACTORY) source = { kind: "factory", index: u32() };
+        const warnCount = u32();
+        const warnings = [];
+        for (let w = 0; w < warnCount; w++) warnings.push(str());
+        out.push({ kind: "preset_loaded", name, source, warnings });
         break;
       }
       default:
@@ -196,6 +212,38 @@ export class WebController {
   }
   requestFullRebroadcast() {
     this.x.vxnc_ui_request_full_rebroadcast();
+  }
+
+  // ---- factory presets (ticket 0159, minimal) -----------------------------
+
+  // Parse the fetched `factory.bin` bytes into the controller's factory bank.
+  // Returns the preset count. Stages the bytes into wasm memory then loads.
+  loadFactoryAsset(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const ptr = this.x.vxnc_factory_buf_reserve(b.length >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, b.length).set(b);
+    return this.x.vxnc_load_factory(b.length >>> 0);
+  }
+
+  // The browser corpus JSON (factory groups) the controller built when the
+  // factory asset loaded — same shape the native editor feeds applyPresetCorpus.
+  corpusJson() {
+    const len = this.x.vxnc_corpus_json_len();
+    if (!len) return { factory: [], user: [] };
+    const ptr = this.x.vxnc_corpus_json_ptr();
+    const bytes = new Uint8Array(this.x.memory.buffer, ptr, len);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  // Load factory preset `index`. The model restore + ParamChanged fan-out +
+  // PresetLoaded land on the next tick().
+  loadFactory(index) {
+    this.x.vxnc_ui_load_factory(index >>> 0);
+  }
+
+  // Step to the previous / next preset (delta ±1).
+  stepPreset(delta) {
+    this.x.vxnc_ui_step_preset(delta | 0);
   }
 
   // ---- tick: drain queues → mutate model → mirror + drain ViewEvents ------

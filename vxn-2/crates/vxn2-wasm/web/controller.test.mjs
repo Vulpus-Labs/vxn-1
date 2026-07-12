@@ -14,6 +14,7 @@ import {
   VE_MATRIX_SNAPSHOT,
   VE_KS_CURVE_SNAPSHOT,
   VE_EG_CURVE_SNAPSHOT,
+  VE_PRESET_LOADED,
 } from "./controller.mjs";
 
 // Little-endian packer mirroring the Rust `push_u32` / `push_f32` / `push_str`.
@@ -105,6 +106,36 @@ test("decodes ks_curve_snapshot (6×[L,R]) and eg_curve_snapshot (6)", () => {
   assert.deepEqual(evs[0].curves[5], [1, 3]);
   assert.equal(evs[1].kind, "eg_curve_snapshot");
   assert.deepEqual(evs[1].curves, [0, 1, 0, 1, 0, 1]);
+});
+
+test("decodes a factory preset_loaded record", () => {
+  const buf = pack([
+    ({ u32, str }) => {
+      u32(VE_PRESET_LOADED);
+      str("Init Bell");
+      u32(1); // PRESET_SRC_FACTORY
+      u32(7); // index
+      u32(1); // warning count
+      str("clamped X");
+    },
+  ]);
+  assert.deepEqual(decodeViewEvents(buf, 0, buf.byteLength), [
+    { kind: "preset_loaded", name: "Init Bell", source: { kind: "factory", index: 7 }, warnings: ["clamped X"] },
+  ]);
+});
+
+test("decodes a preset_loaded with no source", () => {
+  const buf = pack([
+    ({ u32, str }) => {
+      u32(VE_PRESET_LOADED);
+      str("None");
+      u32(0); // PRESET_SRC_NONE
+      u32(0); // no warnings
+    },
+  ]);
+  assert.deepEqual(decodeViewEvents(buf, 0, buf.byteLength), [
+    { kind: "preset_loaded", name: "None", source: null, warnings: [] },
+  ]);
 });
 
 test("throws on an unknown tag (drift tripwire)", () => {

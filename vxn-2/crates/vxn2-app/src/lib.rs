@@ -34,4 +34,5 @@ pub use vxn_core_app::{
     CHANNEL_CAPACITY, Controller, ControllerHandle, CorpusHandle, EditorBackend, HostEvent,
     ParamDesc, ParamId, ParamKind, ParamModel, PresetCorpus, PresetLoad, PresetMeta,
     PresetSource, PresetStore, Taper, UiEvent, UserFolderEntry, UserPresetEntry, ViewEvent,
+    corpus_snapshot_json,
 };

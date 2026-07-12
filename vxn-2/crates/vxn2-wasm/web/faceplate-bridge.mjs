@@ -25,7 +25,18 @@ import { attachMidi } from "./midi-input.mjs";
 // Opcodes that don't touch the model / audio and can be ignored on the web path
 // until browser persistence (0159) wires them. Kept explicit so an unhandled
 // opcode is a loud console warning, not a silent drop.
-const DEFERRED_OPS = new Set(["request_text_input"]);
+const DEFERRED_OPS = new Set([
+  "request_text_input",
+  // User-preset management — deferred (minimal 0159 is factory-load only).
+  "load_user",
+  "save_preset",
+  "delete_preset",
+  "rename_preset",
+  "move_preset",
+  "new_folder",
+  "rename_folder",
+  "delete_folder",
+]);
 
 /// Route ONE decoded `{op, ...}` opcode to the controller. Pure (no audio side
 /// effects) so it's unit-testable against a mock controller. Returns true if the
@@ -89,6 +100,12 @@ export function routeOpcode(ctrl, msg) {
     case "request_eg_curve_snapshot":
       ctrl.requestEgCurveSnapshot();
       return true;
+    case "load_factory":
+      ctrl.loadFactory(msg.index);
+      return true;
+    case "step_preset":
+      ctrl.stepPreset(msg.delta ?? (msg.dir === "next" ? 1 : -1));
+      return true;
     default:
       if (DEFERRED_OPS.has(msg.op)) return true; // known-but-deferred (0159)
       console.warn("vxn2 bridge: unhandled opcode", msg.op);
@@ -114,9 +131,13 @@ export class FaceplateBridge {
     rafImpl = null,
     enableKeyboard = true,
     enableMidi = true,
+    factoryUrl = "./factory.bin",
+    fetchImpl = globalThis.fetch,
   } = {}) {
     this._doc = doc;
     this._win = win;
+    this._factoryUrl = factoryUrl;
+    this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
     this._raf = rafImpl || (win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
     this._enableKeyboard = enableKeyboard;
     this._enableMidi = enableMidi;
@@ -153,12 +174,33 @@ export class FaceplateBridge {
     this._armAudioUnlock();
     await this.controller.instantiate();
     this._ready = true;
+    // Load the factory bank (minimal 0159) before flushing queued opcodes, so a
+    // page that requests a preset during boot finds the bank populated. Non-fatal
+    // — the instrument plays without presets.
+    await this._loadFactory();
     // Flush any opcodes the faceplate posted while we were instantiating.
     for (const msg of this._queue) routeOpcode(this.controller, msg);
     this._queue.length = 0;
     this._startPump();
     this._attachInputs();
     return this;
+  }
+
+  // Fetch `factory.bin`, parse it into the controller's factory bank, and hand
+  // the resulting corpus to the faceplate's preset browser.
+  async _loadFactory() {
+    if (!this._fetch) return;
+    try {
+      const resp = await this._fetch(this._factoryUrl);
+      if (!resp.ok) return;
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      this.controller.loadFactoryAsset(bytes);
+      const corpus = this.controller.corpusJson();
+      const apply = this._win.__vxn && this._win.__vxn.applyPresetCorpus;
+      if (typeof apply === "function") apply(corpus);
+    } catch (e) {
+      console.warn("vxn2 bridge: factory bank load failed (presets unavailable)", e);
+    }
   }
 
   // Wire the browser input adapters (ticket 0160) onto the coordinator's producer

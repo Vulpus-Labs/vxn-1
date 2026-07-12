@@ -32,13 +32,15 @@
 //! engine's (different wasm modules / memories). The JS glue mirrors this store's
 //! plain values into the worklet's param SAB (ticket 0155) each tick.
 
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 
 use vxn2_app::{
-    Controller, HostEvent, MatrixRow, NoopPresetStore, ParamId, UiEvent, ViewEvent, Vxn2Params,
-    Vxn2UiCustom, Vxn2ViewCustom, eg_curve_snapshot_event, ks_curve_snapshot_event,
-    matrix_snapshot_event, tick_vxn2,
+    Controller, CorpusHandle, HostEvent, MatrixRow, ParamId, PresetLoad, PresetMeta, PresetSource,
+    PresetStore, UiEvent, UserFolderEntry, ViewEvent, Vxn2Params, Vxn2UiCustom, Vxn2ViewCustom,
+    corpus_snapshot_json, eg_curve_snapshot_event, ks_curve_snapshot_event, matrix_snapshot_event,
+    tick_vxn2,
 };
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{TOTAL_PARAMS, rate_partner_clap_id, sync_aware_display};
@@ -123,6 +125,12 @@ const VE_OP_TAB_CHANGED: u32 = 2;
 const VE_MATRIX_SNAPSHOT: u32 = 3;
 const VE_KS_CURVE_SNAPSHOT: u32 = 4;
 const VE_EG_CURVE_SNAPSHOT: u32 = 5;
+/// `VE_PRESET_LOADED` (0159): u32 name_len + name, u32 source_kind
+/// (0 none / 1 factory), if factory u32 index, u32 warning_count + each str.
+const VE_PRESET_LOADED: u32 = 6;
+
+const PRESET_SRC_NONE: u32 = 0;
+const PRESET_SRC_FACTORY: u32 = 1;
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -181,9 +189,141 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
             }
             None => false,
         },
-        // Status / text-input / preset ViewEvents ride other channels (0159).
+        ViewEvent::PresetLoaded { meta, source, warnings } => {
+            push_u32(buf, VE_PRESET_LOADED);
+            push_str(buf, &meta.name);
+            match source {
+                Some(PresetSource::Factory { index }) => {
+                    push_u32(buf, PRESET_SRC_FACTORY);
+                    push_u32(buf, *index as u32);
+                }
+                // User presets aren't served in the minimal factory-only build.
+                _ => push_u32(buf, PRESET_SRC_NONE),
+            }
+            push_u32(buf, warnings.len() as u32);
+            for w in warnings {
+                push_str(buf, w);
+            }
+            true
+        }
+        // Status / text-input / user-preset ViewEvents ride other channels
+        // (deferred: user save/load, autosave, share-link).
         _ => false,
     }
+}
+
+// ===========================================================================
+// WebFactoryStore — a read-only factory bank loaded from `factory.bin` (0159)
+// ===========================================================================
+//
+// The minimal browser preset store: holds the factory bank (parsed from the
+// baked `factory.bin`, ticket 0158) so the preset browser can list + load
+// factory patches. User-preset persistence (save/load/autosave) is deferred.
+
+#[derive(Default)]
+struct WebFactoryStore {
+    /// (meta, canonical state blob) per factory preset. Filled by
+    /// `vxnc_load_factory` from the staged `factory.bin` bytes; shared with
+    /// [`ControllerState`] via the same `Arc`.
+    factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>>,
+}
+
+impl PresetStore for WebFactoryStore {
+    fn factory_len(&self) -> usize {
+        self.factory.lock().map(|f| f.len()).unwrap_or(0)
+    }
+    fn factory_load(&self, index: usize) -> Result<PresetLoad, String> {
+        let f = self.factory.lock().map_err(|_| "factory poisoned")?;
+        let (meta, blob) = f.get(index).ok_or("factory index out of range")?;
+        Ok(PresetLoad {
+            meta: meta.clone(),
+            blob: blob.clone(),
+            warnings: Vec::new(),
+        })
+    }
+    fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
+        self.factory.lock().ok()?.get(index).map(|(m, _)| m.clone())
+    }
+    // User side: not served in this build (deferred).
+    fn user_load(&self, _path: &Path) -> Result<PresetLoad, String> {
+        Err("user presets not supported in this build".into())
+    }
+    fn user_save(
+        &self,
+        _name: &str,
+        _folder: Option<&str>,
+        _meta: &PresetMeta,
+        _blob: &[u8],
+    ) -> Result<PathBuf, String> {
+        Err("Save not yet supported in the web build".into())
+    }
+    fn user_delete(&self, _path: &Path) -> Result<(), String> {
+        Err("delete not supported".into())
+    }
+    fn user_rename(&self, _path: &Path, _new_name: &str) -> Result<PathBuf, String> {
+        Err("rename not supported".into())
+    }
+    fn user_move(&self, _path: &Path, _dest: Option<&str>) -> Result<PathBuf, String> {
+        Err("move not supported".into())
+    }
+    fn user_create_folder(&self, _suggested: &str) -> Result<(PathBuf, String), String> {
+        Err("create folder not supported".into())
+    }
+    fn user_rename_folder(&self, _old: &str, _new: &str) -> Result<(PathBuf, String), String> {
+        Err("rename folder not supported".into())
+    }
+    fn user_delete_folder(&self, _name: &str) -> Result<(), String> {
+        Err("delete folder not supported".into())
+    }
+    fn list_user_tree(&self) -> Vec<UserFolderEntry> {
+        Vec::new()
+    }
+}
+
+/// Parse the baked `factory.bin` (ticket 0158 `bake-factory` format) into
+/// `(meta, blob)` entries: `u32 count`, then per preset `str name`,
+/// `str category`, `u32 blob_len` + blob (all little-endian). Returns an empty
+/// vec on any truncation (a malformed asset degrades to "no factory bank").
+fn parse_factory_bin(bytes: &[u8]) -> Vec<(PresetMeta, Vec<u8>)> {
+    let mut p = 0usize;
+    let take_u32 = |b: &[u8], p: &mut usize| -> Option<u32> {
+        let v = b.get(*p..*p + 4)?;
+        *p += 4;
+        Some(u32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+    };
+    let take_str = |b: &[u8], p: &mut usize| -> Option<String> {
+        let n = take_u32(b, p)? as usize;
+        let s = b.get(*p..*p + n)?;
+        *p += n;
+        Some(String::from_utf8_lossy(s).into_owned())
+    };
+    let count = match take_u32(bytes, &mut p) {
+        Some(c) => c as usize,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (Some(name), Some(cat), Some(blob_len)) = (
+            take_str(bytes, &mut p),
+            take_str(bytes, &mut p),
+            take_u32(bytes, &mut p),
+        ) else {
+            break;
+        };
+        let blob_len = blob_len as usize;
+        let Some(blob) = bytes.get(p..p + blob_len) else {
+            break;
+        };
+        p += blob_len;
+        let meta = PresetMeta {
+            name,
+            author: None,
+            category: if cat.is_empty() { None } else { Some(cat) },
+            comment: None,
+        };
+        out.push((meta, blob.to_vec()));
+    }
+    out
 }
 
 // ===========================================================================
@@ -196,6 +336,15 @@ struct ControllerState {
     view_rx: Receiver<ViewEvent>,
     ui_tx: SyncSender<UiEvent>,
     host_tx: SyncSender<HostEvent>,
+    /// Shared factory bank the store reads; filled by `vxnc_load_factory` (0159).
+    factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>>,
+    /// Shared corpus snapshot the browser JSON is built from.
+    corpus: CorpusHandle,
+    /// Staging buffer JS writes the fetched `factory.bin` into before
+    /// `vxnc_load_factory`.
+    factory_in: Vec<u8>,
+    /// UTF-8 corpus JSON (rebuilt on `load_factory`), read out by JS.
+    corpus_json: Vec<u8>,
     /// Packed ViewEvent drain buffer JS reads after each tick.
     view_out: Vec<u8>,
     /// Model plain-value snapshot, exported for JS to mirror into the worklet
@@ -212,10 +361,12 @@ struct ControllerState {
 impl ControllerState {
     fn new() -> Box<Self> {
         let model = Arc::new(SharedParams::new());
-        let (mut ctrl, view_rx, _corpus) =
-            Controller::new(model.clone(), Box::new(NoopPresetStore));
+        let factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let store = WebFactoryStore { factory: factory.clone() };
+        let (mut ctrl, view_rx, corpus) = Controller::new(model.clone(), Box::new(store));
         // Canonical vxn-2 Model→View path is the dirty-bitset drain; disable the
-        // auto-echo so UI writes aren't emitted twice (matches vxn2-clap).
+        // auto-echo so UI writes aren't emitted twice (matches vxn2-clap). Preset
+        // loads re-broadcast via `broadcast_all_params` regardless of this flag.
         ctrl.set_echo_param_writes(false);
         let ui_tx = ctrl.ui_sender();
         let host_tx = ctrl.host_sender();
@@ -225,11 +376,36 @@ impl ControllerState {
             view_rx,
             ui_tx,
             host_tx,
+            factory,
+            corpus,
+            factory_in: Vec::new(),
+            corpus_json: Vec::new(),
             view_out: Vec::with_capacity(8 * 1024),
             values_out: vec![0.0; TOTAL_PARAMS],
             readback_in: vec![0.0; TOTAL_PARAMS],
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
         })
+    }
+
+    /// Parse the staged `factory.bin` (`factory_in[..len]`) into the shared
+    /// factory bank, refresh the factory corpus, and rebuild the browser corpus
+    /// JSON. Returns the preset count (0 on a bad/truncated asset).
+    fn load_factory(&mut self, len: usize) -> u32 {
+        let bytes = &self.factory_in[..len.min(self.factory_in.len())];
+        let entries = parse_factory_bin(bytes);
+        let count = entries.len() as u32;
+        if let Ok(mut f) = self.factory.lock() {
+            *f = entries;
+        }
+        self.ctrl.refresh_factory_corpus();
+        let json = self
+            .corpus
+            .lock()
+            .map(|c| corpus_snapshot_json(&c, "Uncategorized"))
+            .unwrap_or_else(|_| "{\"factory\":[],\"user\":[]}".to_string());
+        self.corpus_json.clear();
+        self.corpus_json.extend_from_slice(json.as_bytes());
+        count
     }
 
     #[inline]
@@ -441,6 +617,52 @@ pub extern "C" fn vxnc_ui_request_full_rebroadcast() {
     state().post_custom(Vxn2UiCustom::RequestFullRebroadcast);
 }
 
+// ---- factory presets (ticket 0159, minimal) ---------------------------------
+
+/// Reserve `len` bytes in the factory staging buffer and return its pointer. JS
+/// writes the fetched `factory.bin` here, then calls [`vxnc_load_factory`].
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_factory_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.factory_in.clear();
+    s.factory_in.resize(len as usize, 0);
+    s.factory_in.as_mut_ptr()
+}
+
+/// Parse the staged `factory.bin` into the factory bank + rebuild the corpus
+/// JSON. Returns the preset count.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_load_factory(len: u32) -> u32 {
+    state().load_factory(len as usize)
+}
+
+/// Pointer to the browser corpus JSON (valid until the next `vxnc_load_factory`).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_corpus_json_ptr() -> *const u8 {
+    state().corpus_json.as_ptr()
+}
+
+/// Byte length of the browser corpus JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_corpus_json_len() -> u32 {
+    state().corpus_json.len() as u32
+}
+
+/// Load factory preset `index`: the model restore + full param re-broadcast +
+/// `PresetLoaded` land on the next tick.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_load_factory(index: u32) {
+    state().post(UiEvent::LoadPreset {
+        source: PresetSource::Factory { index: index as usize },
+    });
+}
+
+/// Step to the previous/next preset in the corpus (delta ±1).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_step_preset(delta: i32) {
+    state().post(UiEvent::StepPreset { delta });
+}
+
 // ---- Tick + drains ----------------------------------------------------------
 
 /// Drive one controller tick: drain UI/host queues into the model and pack the
@@ -583,6 +805,93 @@ mod tests {
             }
         }
         assert!(saw_matrix, "matrix row edit produced no MatrixSnapshot");
+    }
+
+    /// Bake the real factory bank the same way `bake-factory` does, so the test
+    /// exercises the actual on-the-wire `factory.bin` bytes end to end.
+    fn bake_real_factory_bin() -> Vec<u8> {
+        use vxn2_app::PresetStore;
+        let store = vxn2_engine::Vxn2PresetStore::new();
+        // Cap to a handful of presets: `factory_load` re-parses the embedded
+        // TOML bank each call, so baking all ~200 in a debug test is needlessly
+        // slow — 4 exercises the exact same wire format + load path.
+        let n = store.factory_len().min(4);
+        let mut out = Vec::new();
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+        for i in 0..n {
+            let load = store.factory_load(i).expect("factory load");
+            out.extend_from_slice(&(load.meta.name.len() as u32).to_le_bytes());
+            out.extend_from_slice(load.meta.name.as_bytes());
+            let cat = load.meta.category.unwrap_or_default();
+            out.extend_from_slice(&(cat.len() as u32).to_le_bytes());
+            out.extend_from_slice(cat.as_bytes());
+            out.extend_from_slice(&(load.blob.len() as u32).to_le_bytes());
+            out.extend_from_slice(&load.blob);
+        }
+        out
+    }
+
+    #[test]
+    fn factory_bin_round_trips_and_loads() {
+        let bin = bake_real_factory_bin();
+        let entries = parse_factory_bin(&bin);
+        assert!(!entries.is_empty(), "no factory presets parsed");
+        assert!(!entries[0].0.name.is_empty());
+
+        let mut s = fresh();
+        s.factory_in = bin.clone();
+        let count = s.load_factory(bin.len());
+        assert_eq!(count as usize, entries.len());
+        // The corpus JSON is rebuilt and non-trivial (lists the factory group).
+        let json = String::from_utf8(s.corpus_json.clone()).unwrap();
+        assert!(json.contains("factory"), "corpus json missing factory group: {json}");
+
+        // Load factory preset 0: PresetLoaded + a full param re-broadcast surface.
+        s.tick(); // clear the boot seed
+        s.post(UiEvent::LoadPreset { source: PresetSource::Factory { index: 0 } });
+        s.tick();
+        let count = u32::from_le_bytes(s.view_out[0..4].try_into().unwrap());
+        let mut p = 4usize;
+        let mut saw_preset_loaded = false;
+        let mut param_changed = 0;
+        for _ in 0..count {
+            let tag = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap());
+            p += 4;
+            match tag {
+                VE_PARAM_CHANGED => {
+                    param_changed += 1;
+                    p += 12;
+                    let l = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
+                    p += 4 + l;
+                }
+                VE_OP_TAB_CHANGED => p += 4,
+                VE_MATRIX_SNAPSHOT => {
+                    let rows = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
+                    p += 4 + rows * 8;
+                }
+                VE_KS_CURVE_SNAPSHOT => p += 12,
+                VE_EG_CURVE_SNAPSHOT => p += 6,
+                VE_PRESET_LOADED => {
+                    saw_preset_loaded = true;
+                    let nl = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
+                    p += 4 + nl;
+                    let src = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap());
+                    p += 4;
+                    if src == PRESET_SRC_FACTORY {
+                        p += 4; // index
+                    }
+                    let wc = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
+                    p += 4;
+                    for _ in 0..wc {
+                        let wl = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
+                        p += 4 + wl;
+                    }
+                }
+                other => panic!("unknown view tag {other}"),
+            }
+        }
+        assert!(saw_preset_loaded, "factory load did not surface a PresetLoaded");
+        assert!(param_changed > 0, "factory load did not re-broadcast params");
     }
 
     #[test]

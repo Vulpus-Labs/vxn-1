@@ -27,6 +27,8 @@ function mockController() {
     requestMatrixSnapshot: rec("requestMatrixSnapshot"),
     requestKsCurveSnapshot: rec("requestKsCurveSnapshot"),
     requestEgCurveSnapshot: rec("requestEgCurveSnapshot"),
+    loadFactory: rec("loadFactory"),
+    stepPreset: rec("stepPreset"),
   };
 }
 
@@ -89,9 +91,22 @@ test("side/curve at operator 0 still disambiguate (falsy op index)", () => {
   ]);
 });
 
+test("factory preset opcodes route (minimal 0159)", () => {
+  const c = mockController();
+  routeOpcode(c, { op: "load_factory", index: 3 });
+  routeOpcode(c, { op: "step_preset", delta: -1 });
+  routeOpcode(c, { op: "step_preset", dir: "next" }); // delta inferred
+  assert.deepEqual(c.calls, [
+    ["loadFactory", 3],
+    ["stepPreset", -1],
+    ["stepPreset", 1],
+  ]);
+});
+
 test("a known-but-deferred opcode is accepted without a controller call", () => {
   const c = mockController();
   assert.equal(routeOpcode(c, { op: "request_text_input", id: "x" }), true);
+  assert.equal(routeOpcode(c, { op: "save_preset", name: "x" }), true); // user op deferred
   assert.equal(c.calls.length, 0);
 });
 
