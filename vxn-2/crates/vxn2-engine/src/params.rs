@@ -429,7 +429,7 @@ macro_rules! per_patch_rest_arr {
             it("peg-l2", "PEG L2", -99, 99, 0, ""),
             it("peg-l3", "PEG L3", -99, 99, 0, ""),
             it("peg-l4", "PEG L4", -99, 99, 0, ""),
-            fl("peg-depth", "PEG Depth", 0.0, 1.0, 1.0, ""),
+            fl("peg-depth", "PEG Depth", 0.0, 48.0, 48.0, "st"),
             flx("mod-env-a", "Mod Env A", 0.0, 4000.0, 2.0, "ms", 50.0),
             flx("mod-env-d", "Mod Env D", 0.0, 4000.0, 320.0, "ms", 100.0),
             fl("mod-env-s", "Mod Env S", 0.0, 1.0, 0.60, ""),

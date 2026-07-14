@@ -112,10 +112,40 @@ pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
 /// Convert a DX7-style rate (0..99) to amplitude-per-second.
 ///
 /// R=0 ≈ 0.05/s (~20s sweep); R=99 ≈ ~250/s (~4ms sweep). Log-spaced.
+///
+/// Used for the **downward** Lin-path segments and the pitch EG. The **attack**
+/// segment has its own DX7-anchored curve — see [`rate_to_attack_per_sec`].
 #[inline]
 pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
     let r = rate.min(99) as f32;
     0.05 * (2_f32).powf(r * 0.125)
+}
+
+/// Convert a DX7-style rate (0..99) to the **attack** amplitude-per-second (full
+/// 0→1 rise). Split from [`rate_to_amp_per_sec`] so the attack can be calibrated
+/// independently of the downward segments.
+///
+/// The attack is a linear-amplitude rise (not the log creep of the downward
+/// path — DX7 attacks are fast/punchy). Its rate is anchored to measured DX7
+/// attack times rather than the old hand-fit (which ran ~2× too fast, so the
+/// characteristic multi-second "engine opens up" builds collapsed):
+///
+/// | R  | full 0→1 attack | DX7 reference |
+/// |----|-----------------|---------------|
+/// | 99 | ~6 ms           | ~instant      |
+/// | 50 | ~0.5 s          | ~0.5 s        |
+/// | 20 | ~8 s            | ~8 s          |
+/// | 0  | ~50 s           | tens of s     |
+///
+/// `0.02 × 2^(R × 0.131)` fits those anchors: base `0.02`/s at R=0, ×2 every
+/// ~7.6 rate steps (spanning ~50 s → 6 ms). The exponent tracks the DX7 attack
+/// rate table's doubling, distinct from the downward `2^(qrate/4)` decay law.
+/// The absolute scale is an ear/measured target like [`rate_to_log2_per_sec`]'s
+/// own predecessors — confirm against Dexed before treating it as final.
+#[inline]
+pub fn rate_to_attack_per_sec(rate: u8) -> f32 {
+    let r = rate.min(99) as f32;
+    0.02 * (2_f32).powf(r * 0.131)
 }
 
 /// Convert a DX7-style rate (0..99) to **log2 units per second** for the `Exp`
@@ -166,7 +196,14 @@ impl EgState {
         self.max_amp = max_amp;
         for i in 0..4 {
             self.targets[i] = level_to_amp(params.l[i], curve) * max_amp;
-            self.rates_per_sec[i] = rate_to_amp_per_sec(params.r[i]) * rate_mult;
+            // Segment 0 is the attack (its own DX7-anchored linear-amplitude
+            // curve); 1..=3 are the downward Lin-path segments.
+            let rate_per_sec = if i == 0 {
+                rate_to_attack_per_sec(params.r[i])
+            } else {
+                rate_to_amp_per_sec(params.r[i])
+            };
+            self.rates_per_sec[i] = rate_per_sec * rate_mult;
             // Exp downward-marcher state: log2 target (normalised to max_amp) and
             // a log2/sec rate. `(L-99)/8` is exactly `log2(level_to_amp(L, Exp))`;
             // L=0 → the silence floor.
@@ -471,6 +508,21 @@ mod tests {
         assert!(r0 < r50 && r50 < r99);
         assert!(r0 < 0.1);
         assert!(r99 > 100.0);
+    }
+
+    /// Attack rate is monotone and lands its DX7-anchored full-scale times:
+    /// R=99 ≈ 6 ms, R=50 ≈ 0.5 s, R=20 ≈ 8 s, R=0 ≈ 50 s. Guards against silent
+    /// re-drift of the `0.02 × 2^(R × 0.131)` calibration.
+    #[test]
+    fn attack_rate_matches_dx7_anchors() {
+        let full = |r: u8| 1.0 / rate_to_attack_per_sec(r); // seconds for 0→1
+        assert!(rate_to_attack_per_sec(0) < rate_to_attack_per_sec(50));
+        assert!(rate_to_attack_per_sec(50) < rate_to_attack_per_sec(99));
+        // Within ~15% of the anchor times.
+        assert!((full(99) - 0.006).abs() < 0.006 * 0.15, "R99 {}", full(99));
+        assert!((full(50) - 0.5).abs() < 0.5 * 0.15, "R50 {}", full(50));
+        assert!((full(20) - 8.0).abs() < 8.0 * 0.15, "R20 {}", full(20));
+        assert!((full(0) - 50.0).abs() < 50.0 * 0.15, "R0 {}", full(0));
     }
 
     /// The `Exp` downward marcher must fall at the *measured* DX7 EG speed

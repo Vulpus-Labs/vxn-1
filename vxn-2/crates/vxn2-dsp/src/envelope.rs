@@ -94,15 +94,22 @@ pub struct PitchEgState {
 
 impl PitchEgState {
     /// Cook into per-segment slopes + targets in semitones. `depth_semitones`
-    /// is the full-scale swing — `peg_depth` × 1 semitone — so `l=+99` →
-    /// target = `+depth_semitones`. `rate_mult` is the optional key-rate
-    /// scaler (typically 1.0 for the Pitch EG; the patch-level PEG has no
-    /// per-op KS).
+    /// is the full-scale swing (`peg_depth`) — so `l=+99` → target =
+    /// `+depth_semitones`. `rate_mult` is the optional key-rate scaler
+    /// (typically 1.0 for the Pitch EG; the patch-level PEG has no per-op KS).
+    ///
+    /// Both the targets *and* the march rate scale by `depth_semitones`, so a
+    /// segment's traversal *time* is depth-invariant: DX7 rate `R` crosses a
+    /// fixed level distance in a fixed time regardless of how many semitones
+    /// that maps to. Without the rate scaling, wide-swing patches (jet swoops
+    /// at `peg_depth = 48`) crawl ~48× too slowly and the sweep never completes
+    /// inside a note.
     pub fn cook(&mut self, params: &PitchEgParams, depth_semitones: f32, rate_mult: f32) {
         for i in 0..4 {
             let signed = (params.l[i].clamp(-99, 99) as f32) / 99.0;
             self.targets_st[i] = signed * depth_semitones;
-            self.rates_st_per_sec[i] = rate_to_amp_per_sec(params.r[i]) * rate_mult;
+            self.rates_st_per_sec[i] =
+                rate_to_amp_per_sec(params.r[i]) * depth_semitones * rate_mult;
         }
     }
 

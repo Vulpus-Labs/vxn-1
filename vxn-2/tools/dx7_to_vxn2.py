@@ -206,6 +206,9 @@ def emit(v, used_paths):
         for k,r in enumerate(v['peg_r'],1): L.append(f"peg-r{k} = {r}")
         for k,l in enumerate(v['peg_l'],1):
             sv_=max(-99,min(99,(l-50)*2)); L.append(f"peg-l{k} = {sv_}")
+        # Full-scale swing in semitones (l=±99). DX7 PEG extreme ≈ ±4 octaves;
+        # matches the peg-depth param default, emitted explicit for reproducibility.
+        L.append("peg-depth = 48.0")
         L.append("")
 
     # LFO -> lfo2 + matrix routes (vibrato from PMD, tremolo from AMD)

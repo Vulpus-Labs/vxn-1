@@ -46,8 +46,10 @@ pub struct VoiceParams {
     pub lfo2: Lfo2Params,
     pub pitch_eg: PitchEgParams,
     /// Pitch EG global depth in semitones at full-scale (l = ±99). Default
-    /// 1.0 → ±1 semitone. Matrix routing can amplify further by reading
-    /// `pitch_eg.level_st` and applying its own depth.
+    /// 48.0 → ±4 octaves, matching the DX7 pitch-EG extreme so translated
+    /// ROM voices (jet swoops, laser sweeps) keep their range. Matrix routing
+    /// reads the normalized `pitch_eg.level_st / peg_depth` shape and applies
+    /// its own dest gain.
     pub peg_depth: f32,
     pub mod_env: ModEnvParams,
 }
@@ -61,7 +63,7 @@ impl Default for VoiceParams {
             master_tune_cents: 0.0,
             lfo2: Lfo2Params::default(),
             pitch_eg: PitchEgParams::default(),
-            peg_depth: 1.0,
+            peg_depth: 48.0,
             mod_env: ModEnvParams::default(),
         }
     }

@@ -126,3 +126,13 @@ stack-density = 1
 delay-on = false
 reverb-on = false
 master-volume = -5.91
+
+# Mod-wheel "whistle": DX7 assigns MW→pitch as a performance/function param,
+# which is NOT stored in the 128-byte voice sysex, so the converter can't see
+# it. Restored here by convention — push MW to send the engines upward.
+# global-pitch depth 1.0 = +24 st (2 oct); tune to taste.
+[[matrix]]
+slot = 0
+source = "mod-wheel"
+dest = "global-pitch"
+depth = 1.0
