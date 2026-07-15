@@ -54,7 +54,7 @@ test("string opcodes route to the matching C-ABI call", () => {
 
 test("set_matrix_row unpacks the row fields", () => {
   const c = mockController();
-  routeOpcode(c, { op: "set_matrix_row", slot: 9, source: 2, dest: 3, curve: 1, active: true, depth: 0.5 });
+  routeOpcode(c, { op: "set_matrix_row", slot: 9, row: { source: 2, dest: 3, curve: 1, active: true, depth: 0.5 } });
   assert.deepEqual(c.calls, [["setMatrixRow", 9, 2, 3, 1, true, 0.5]]);
 });
 

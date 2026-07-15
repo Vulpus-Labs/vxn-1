@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  WebController,
   decodeViewEvents,
   VE_PARAM_CHANGED,
   VE_OP_TAB_CHANGED,
@@ -145,4 +146,52 @@ test("throws on an unknown tag (drift tripwire)", () => {
     },
   ]);
   assert.throws(() => decodeViewEvents(buf, 0, buf.byteLength), /unknown ViewEvent tag/);
+});
+
+test("mirrors a matrix_snapshot to the ring, one pushMatrixRow per slot (0193)", () => {
+  // Preset loads / reset restore the model and surface only a matrix_snapshot
+  // (no setMatrixRow call), so the tick must fan the whole table to the worklet.
+  const pushed = [];
+  const ring = { pushMatrixRow: (...args) => pushed.push(args), pushPatchSwap: () => {} };
+  const c = new WebController({ ring });
+  c._mirrorControlToRing([
+    { kind: "param_changed", id: 1, plain: 0.5 }, // ignored
+    {
+      kind: "matrix_snapshot",
+      rows: [
+        { source: 4, dest: 28, curve: 0, active: true, depth: 0.9 },
+        { source: 2, dest: 29, curve: 3, active: false, depth: 0.5 },
+      ],
+    },
+  ]);
+  assert.deepEqual(pushed, [
+    [0, 4, 28, 0, true, 0.9],
+    [1, 2, 29, 3, false, 0.5],
+  ]);
+});
+
+test("preset_loaded pushes a patchSwap BEFORE the matrix rows (0193 silence)", () => {
+  const order = [];
+  const ring = {
+    pushPatchSwap: () => order.push("swap"),
+    pushMatrixRow: () => order.push("row"),
+  };
+  const c = new WebController({ ring });
+  c._mirrorControlToRing([
+    { kind: "matrix_snapshot", rows: [{ source: 1, dest: 2, curve: 0, active: true, depth: 0 }] },
+    { kind: "preset_loaded", name: "X", source: { kind: "factory", index: 0 }, warnings: [] },
+  ]);
+  // Swap first (silence the old patch), then the new topology — regardless of
+  // the events' arrival order in the drain.
+  assert.deepEqual(order, ["swap", "row"]);
+});
+
+test("_mirrorControlToRing is a no-op without a ring", () => {
+  const c = new WebController({}); // no ring
+  assert.doesNotThrow(() =>
+    c._mirrorControlToRing([
+      { kind: "preset_loaded", name: "X", source: null, warnings: [] },
+      { kind: "matrix_snapshot", rows: [{ source: 1, dest: 2, curve: 0, active: true, depth: 0 }] },
+    ]),
+  );
 });

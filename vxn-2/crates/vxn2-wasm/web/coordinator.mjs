@@ -341,6 +341,20 @@ export class WebHost {
     return this.ring.pushSustain(offset, on);
   }
 
+  // Mod-matrix topology (source/dest/curve/active + depth) — rides the ring, NOT
+  // the store: unlike depth, topology has no CLAP id to mirror (ticket 0193). The
+  // controller stays authoritative for UI snapshots; this pushes the SAME edit to
+  // the worklet so the audible route follows.
+  setMatrixRow(slot, source, dest, curve, active, depth) {
+    return this.ring.pushMatrixRow(slot, source, dest, curve, active, depth);
+  }
+
+  // Preset-swap silence pulse (ticket 0193). load_epoch isn't a value param so it
+  // can't ride the store; the worklet silences the outgoing patch on this event.
+  patchSwap() {
+    return this.ring.pushPatchSwap();
+  }
+
   // ---- producer surface: params over the store ---------------------------
   //
   // Params travel on the latest-value-wins store, not the ring: the worklet folds

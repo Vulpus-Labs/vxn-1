@@ -470,6 +470,18 @@ impl SharedParams {
         self.load_epoch.load(Ordering::Acquire)
     }
 
+    /// Bump the load epoch to signal a patch swap (ticket 0193). The native host
+    /// shares one `SharedParams`, so `reset_to_defaults` / `load_bytes` bump it
+    /// directly. The web build's controller and worklet hold SEPARATE
+    /// `SharedParams`, and the epoch is not a value param, so it can't ride the
+    /// store mirror — the controller pushes an `EV_PATCH_SWAP` ring event that
+    /// calls this on the worklet's copy so `snapshot_params` silences the old
+    /// patch's still-ringing voices before the new patch's params take effect.
+    #[inline]
+    pub fn bump_load_epoch(&self) {
+        self.load_epoch.fetch_add(1, Ordering::Release);
+    }
+
     /// SAFETY: `get` and `set` use `Ordering::Relaxed` — sound because CLAP
     /// guarantees the audio thread (`process`) and the main thread
     /// (`params_flush`, UI callbacks) never run concurrently on the same plugin

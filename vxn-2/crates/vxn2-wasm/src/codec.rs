@@ -38,7 +38,7 @@
 //!   same mapping `vxn2-clap`'s `EngineNotesAdapter` does.
 
 use vxn2_engine::engine::Engine;
-use vxn2_engine::shared::SharedParams;
+use vxn2_engine::shared::{MatrixRowRaw, SharedParams};
 use vxn2_engine::TOTAL_PARAMS as VXN2_TOTAL_PARAMS;
 
 /// Total addressable CLAP ids (the vxn-2 param table size). 209 today — well
@@ -70,6 +70,24 @@ pub const EV_SUSTAIN: u8 = 6;
 pub const EV_GESTURE_BEGIN: u8 = 9;
 /// `gesture_end { id }`. `paramIdx` = id. Decoder no-ops on the engine.
 pub const EV_GESTURE_END: u8 = 10;
+/// `set_matrix_row { slot, source, dest, curve, active, depth }` (ticket 0193).
+/// Mod-matrix TOPOLOGY has no CLAP id, so it can't ride the param store the way
+/// depth does — this event is the only path it crosses to the worklet engine.
+/// Field packing reuses the generic slot: `paramIdx` = `source | (dest << 8)`,
+/// `value` = depth, `note` = slot, `flag` = `curve | (active << 7)`.
+pub const EV_MATRIX_ROW: u8 = 11;
+
+/// `flag` bit on [`EV_MATRIX_ROW`] carrying the slot's `active` flag; the low
+/// 7 bits carry the curve discriminant.
+pub const MATRIX_FLAG_ACTIVE: u8 = 0x80;
+
+/// `patch_swap {}` (ticket 0193). A preset load / reset bumps the shared
+/// `load_epoch` on the native host so the engine silences the outgoing patch's
+/// still-ringing voices. The web build's worklet has a SEPARATE `SharedParams`
+/// and the epoch is not a value param, so this event carries the pulse: apply
+/// bumps the worklet's `load_epoch`, and the next `snapshot_params` silences.
+/// No payload — the tag alone is the signal.
+pub const EV_PATCH_SWAP: u8 = 12;
 
 /// `flag` bit on [`EV_PARAM`] selecting the normalised encoding. `0` = plain
 /// value (engine-domain f32), `1` = normalised `[0, 1]` (taper applied on decode
@@ -91,6 +109,20 @@ pub enum Event {
     PitchBend { offset: u8, norm: f32 },
     ModWheel { offset: u8, norm: f32 },
     Sustain { offset: u8, on: bool },
+    /// Mod-matrix row topology + depth (ticket 0193). Applied to the atomic
+    /// [`SharedParams`] store via `set_matrix_row_raw`, block-granular like params.
+    SetMatrixRow {
+        offset: u8,
+        slot: u8,
+        source: u8,
+        dest: u8,
+        curve: u8,
+        active: bool,
+        depth: f32,
+    },
+    /// Patch-swap pulse (ticket 0193). Bumps the worklet's `load_epoch` so the
+    /// engine silences the outgoing patch's voices. No payload.
+    PatchSwap { offset: u8 },
 }
 
 impl Event {
@@ -106,6 +138,8 @@ impl Event {
             Event::PitchBend { .. } => EV_PITCH_BEND,
             Event::ModWheel { .. } => EV_MOD_WHEEL,
             Event::Sustain { .. } => EV_SUSTAIN,
+            Event::SetMatrixRow { .. } => EV_MATRIX_ROW,
+            Event::PatchSwap { .. } => EV_PATCH_SWAP,
         }
     }
 
@@ -121,7 +155,9 @@ impl Event {
             | Event::GestureEnd { offset, .. }
             | Event::PitchBend { offset, .. }
             | Event::ModWheel { offset, .. }
-            | Event::Sustain { offset, .. } => offset,
+            | Event::Sustain { offset, .. }
+            | Event::SetMatrixRow { offset, .. }
+            | Event::PatchSwap { offset, .. } => offset,
         }
     }
 }
@@ -196,6 +232,15 @@ pub fn encode_into(event: &Event, buf: &mut [u8; SLOT_BYTES]) {
         Event::Sustain { on, .. } => {
             buf[9] = on as u8;
         }
+        Event::SetMatrixRow { slot, source, dest, curve, active, depth, .. } => {
+            put_u16(buf, 2, (source as u16) | ((dest as u16) << 8));
+            put_f32(buf, 4, depth);
+            buf[8] = slot;
+            buf[9] = (curve & !MATRIX_FLAG_ACTIVE) | if active { MATRIX_FLAG_ACTIVE } else { 0 };
+        }
+        Event::PatchSwap { .. } => {
+            // Tag-only; no payload bytes.
+        }
     }
 }
 
@@ -250,6 +295,19 @@ pub fn decode(buf: &[u8]) -> Option<Event> {
             offset,
             on: buf[9] != 0,
         },
+        EV_MATRIX_ROW => {
+            let packed = get_u16(buf, 2);
+            Event::SetMatrixRow {
+                offset,
+                slot: buf[8],
+                source: (packed & 0xff) as u8,
+                dest: (packed >> 8) as u8,
+                curve: buf[9] & !MATRIX_FLAG_ACTIVE,
+                active: buf[9] & MATRIX_FLAG_ACTIVE != 0,
+                depth: get_f32(buf, 4),
+            }
+        }
+        EV_PATCH_SWAP => Event::PatchSwap { offset },
         _ => return None, // unknown tag: ignore (forward-compat)
     })
 }
@@ -286,6 +344,16 @@ pub fn apply(event: &Event, engine: &mut Engine, shared: &SharedParams) {
         Event::PitchBend { norm, .. } => engine.set_pitch_bend(norm),
         Event::ModWheel { norm, .. } => engine.set_mod_wheel(norm),
         Event::Sustain { on, .. } => engine.set_sustain(on),
+        Event::SetMatrixRow { slot, source, dest, curve, active, depth, .. } => {
+            shared.set_matrix_row_raw(
+                slot as usize,
+                MatrixRowRaw { source, dest, curve, active, depth },
+            );
+        }
+        // Patch swap: bump the epoch so the next snapshot_params silences the
+        // outgoing patch's voices (ticket 0193). Native shares the epoch; web
+        // must carry it as an event.
+        Event::PatchSwap { .. } => shared.bump_load_epoch(),
         // Gestures never touch the renderer.
         Event::GestureBegin { .. } | Event::GestureEnd { .. } => {}
     }
@@ -423,6 +491,41 @@ mod tests {
                 Event::Sustain { offset: 0, on: true },
                 row(EV_SUSTAIN, 0, 0, f0, 0, 1),
             ),
+            (
+                // slot 1, mod-env(4) -> cutoff(28), curve lin(0), active, depth 1.0.
+                // pidx = 4 | (28 << 8) = 7172; flag = 0 | ACTIVE(0x80).
+                "matrix_row slot1 modenv->cutoff active",
+                Event::SetMatrixRow {
+                    offset: 0,
+                    slot: 1,
+                    source: 4,
+                    dest: 28,
+                    curve: 0,
+                    active: true,
+                    depth: 1.0,
+                },
+                row(EV_MATRIX_ROW, 0, 7172, f1, 1, MATRIX_FLAG_ACTIVE),
+            ),
+            (
+                // slot 15, lfo2(2) -> resonance(29), curve bipolar(3), inactive,
+                // depth 0.5. pidx = 2 | (29 << 8) = 7426; flag = 3 (no ACTIVE bit).
+                "matrix_row slot15 lfo2->reso inactive",
+                Event::SetMatrixRow {
+                    offset: 0,
+                    slot: 15,
+                    source: 2,
+                    dest: 29,
+                    curve: 3,
+                    active: false,
+                    depth: 0.5,
+                },
+                row(EV_MATRIX_ROW, 0, 7426, fhalf, 15, 3),
+            ),
+            (
+                "patch_swap",
+                Event::PatchSwap { offset: 0 },
+                row(EV_PATCH_SWAP, 0, 0, f0, 0, 0),
+            ),
         ]
     }
 
@@ -514,5 +617,59 @@ mod tests {
         via_ref.set(id as usize, plain);
 
         assert_eq!(via_codec.get(id as usize), via_ref.get(id as usize));
+    }
+
+    #[test]
+    fn matrix_row_applies_topology_to_shared_store() {
+        // A decoded EV_MATRIX_ROW must land in the atomic store's matrix_meta so
+        // the engine's per-block snapshot picks it up — the whole point of 0193.
+        let shared = SharedParams::new();
+        apply(
+            &Event::SetMatrixRow {
+                offset: 0,
+                slot: 3,
+                source: 4, // mod-env
+                dest: 28,  // cutoff
+                curve: 1,
+                active: true,
+                depth: 0.75,
+            },
+            &mut Engine::new(48_000.0, crate::CONTROL_BLOCK),
+            &shared,
+        );
+        let raw = shared.matrix_row_raw(3);
+        assert_eq!(raw.source, 4);
+        assert_eq!(raw.dest, 28);
+        assert_eq!(raw.curve, 1);
+        assert!(raw.active);
+        assert!((raw.depth - 0.75).abs() < 1e-7);
+    }
+
+    #[test]
+    fn patch_swap_bumps_load_epoch_for_silence() {
+        // A preset swap must reach the worklet's SharedParams so snapshot_params
+        // silences the outgoing voices (ticket 0193). The event bumps load_epoch.
+        let shared = SharedParams::new();
+        let before = shared.load_epoch();
+        apply(
+            &Event::PatchSwap { offset: 0 },
+            &mut Engine::new(48_000.0, crate::CONTROL_BLOCK),
+            &shared,
+        );
+        assert_eq!(shared.load_epoch(), before + 1);
+    }
+
+    #[test]
+    fn matrix_row_survives_encode_decode_roundtrip() {
+        let ev = Event::SetMatrixRow {
+            offset: 0,
+            slot: 7,
+            source: 11,
+            dest: 35,
+            curve: 2,
+            active: false,
+            depth: -0.5,
+        };
+        assert_eq!(decode(&encode(&ev)).unwrap(), ev);
     }
 }

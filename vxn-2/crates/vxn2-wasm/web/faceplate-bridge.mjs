@@ -88,9 +88,15 @@ export function routeOpcode(ctrl, msg) {
     case "request_full_rebroadcast":
       ctrl.requestFullRebroadcast();
       return true;
-    case "set_matrix_row":
-      ctrl.setMatrixRow(msg.slot, msg.source, msg.dest, msg.curve, msg.active, msg.depth);
+    case "set_matrix_row": {
+      // Panel + native decoder both carry the fields nested under `row`
+      // (vxn2-ui-web parse_custom_ui reads v.get("row")). Reading msg.source
+      // et al. top-level yielded undefined → `x >>> 0` → 0, so any topology
+      // edit wiped source/dest/active and killed the route.
+      var row = msg.row || {};
+      ctrl.setMatrixRow(msg.slot, row.source, row.dest, row.curve, row.active, row.depth);
       return true;
+    }
     case "request_matrix_snapshot":
       ctrl.requestMatrixSnapshot();
       return true;
@@ -159,6 +165,7 @@ export class FaceplateBridge {
       wasmUrl: controllerWasmUrl,
       wasmBytes: controllerBytes,
       store: this.host.store, // controller mirrors its model into the worklet store
+      ring: this.host.ring, // matrix topology rides the ring (no CLAP id — 0193)
     });
 
     this._ready = false; // controller instantiated

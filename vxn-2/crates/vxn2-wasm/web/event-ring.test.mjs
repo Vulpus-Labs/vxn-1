@@ -9,7 +9,7 @@ import {
   EV_NOTE_ON,
   EV_PARAM,
 } from "./event-ring.mjs";
-import { encodeInto, ev, PARAM_FLAG_NORM } from "./event-codec.mjs";
+import { encodeInto, decode, ev, PARAM_FLAG_NORM } from "./event-codec.mjs";
 
 test("push then drainInto round-trips records in order with seq stamps", () => {
   const ring = new EventRing(createRingSAB(8), 8);
@@ -27,6 +27,22 @@ test("push then drainInto round-trips records in order with seq stamps", () => {
   assert.equal(out[2].offset, 100);
   // seq is monotonic from 0.
   assert.deepEqual(out.map((r) => r.seq), [0, 1, 2]);
+});
+
+test("pushMatrixRow drains a slot that decodes to the same row (0193)", () => {
+  const ring = new EventRing(createRingSAB(8), 8);
+  // slot 0, mod-env(4) -> cutoff(28), curve lin(0), active, depth 0.9.
+  ring.pushMatrixRow(0, 4, 28, 0, true, 0.9);
+  const dst = new Uint8Array(SLOT_BYTES);
+  assert.equal(ring.drainRawInto(dst), 1);
+  const got = decode(new DataView(dst.buffer), 0);
+  assert.equal(got.type, 11); // EV_MATRIX_ROW
+  assert.equal(got.slot, 0);
+  assert.equal(got.source, 4);
+  assert.equal(got.dest, 28);
+  assert.equal(got.curve, 0);
+  assert.equal(got.active, true);
+  assert.ok(Math.abs(got.depth - 0.9) < 1e-6);
 });
 
 test("drain reclaims slots — ring is empty afterward", () => {

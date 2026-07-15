@@ -51,6 +51,11 @@ export const EV_PARAM = 3;
 export const EV_PITCH_BEND = 4;
 export const EV_MOD_WHEEL = 5;
 export const EV_SUSTAIN = 6;
+export const EV_MATRIX_ROW = 11; // ticket 0193 — mod-matrix topology to worklet
+export const EV_PATCH_SWAP = 12; // ticket 0193 — preset-swap silence pulse
+
+// `flag` bit on EV_MATRIX_ROW carrying `active`; low 7 bits carry the curve.
+export const MATRIX_FLAG_ACTIVE = 0x80;
 
 const I_WRITE = 0;
 const I_READ = 1;
@@ -137,6 +142,22 @@ export class EventRing {
   }
   pushSustain(offset, on) {
     return this._push(EV_SUSTAIN, offset, 0, 0, 0, on ? 1 : 0);
+  }
+
+  /// Mod-matrix row topology + depth (ticket 0193). The only channel matrix
+  /// source/dest/curve/active cross to the worklet — they have no CLAP id, so
+  /// unlike depth they can't ride the param store. Packs `source | (dest << 8)`
+  /// into paramIdx, depth into value, slot into note, `curve | active<<7` flag.
+  pushMatrixRow(slot, source, dest, curve, active, depth) {
+    const paramIdx = (source & 0xff) | ((dest & 0xff) << 8);
+    const flag = (curve & ~MATRIX_FLAG_ACTIVE) | (active ? MATRIX_FLAG_ACTIVE : 0);
+    return this._push(EV_MATRIX_ROW, 0, paramIdx, depth, slot, flag);
+  }
+
+  /// Patch-swap pulse (ticket 0193). Tag-only — bumps the worklet's load_epoch
+  /// so the engine silences the outgoing preset's still-ringing voices.
+  pushPatchSwap() {
+    return this._push(EV_PATCH_SWAP, 0, 0, 0, 0, 0);
   }
 
   /// Push a pre-built codec event object (e.g. a normalised param, a gesture)

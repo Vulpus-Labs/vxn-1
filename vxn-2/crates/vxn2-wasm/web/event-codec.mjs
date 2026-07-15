@@ -36,9 +36,14 @@ export const EV_SUSTAIN = 6; // flag 0/1
 // tags 7 (key_mode) and 8 (split_point) reserved-unused in vxn-2
 export const EV_GESTURE_BEGIN = 9; // paramIdx = id
 export const EV_GESTURE_END = 10; // paramIdx = id
+export const EV_MATRIX_ROW = 11; // ticket 0193 — mod-matrix topology to worklet
+export const EV_PATCH_SWAP = 12; // ticket 0193 — preset-swap silence pulse
 
 // `flag` bit on EV_PARAM selecting normalised encoding (0 plain, 1 norm).
 export const PARAM_FLAG_NORM = 1;
+
+// `flag` bit on EV_MATRIX_ROW carrying `active`; low 7 bits carry the curve.
+export const MATRIX_FLAG_ACTIVE = 0x80;
 
 export const SLOT_BYTES = 16; // must equal event-ring.mjs SLOT_BYTES
 
@@ -91,6 +96,14 @@ export function encodeInto(view, base, event) {
     case EV_SUSTAIN:
       view.setUint8(base + 9, event.on ? 1 : 0);
       break;
+    case EV_MATRIX_ROW:
+      view.setUint16(base + 2, (event.source & 0xff) | ((event.dest & 0xff) << 8), true);
+      view.setFloat32(base + 4, event.depth, true);
+      view.setUint8(base + 8, event.slot & 0xff);
+      view.setUint8(base + 9, (event.curve & ~MATRIX_FLAG_ACTIVE) | (event.active ? MATRIX_FLAG_ACTIVE : 0));
+      break;
+    case EV_PATCH_SWAP:
+      break; // tag-only; header (type + offset) already written
     default:
       throw new Error(`encodeInto: unknown event type ${event.type}`);
   }
@@ -142,6 +155,22 @@ export function decode(view, base = 0) {
       return { type, offset, value: view.getFloat32(base + 4, true) };
     case EV_SUSTAIN:
       return { type, offset, on: view.getUint8(base + 9) !== 0 };
+    case EV_MATRIX_ROW: {
+      const packed = view.getUint16(base + 2, true);
+      const flag = view.getUint8(base + 9);
+      return {
+        type,
+        offset,
+        slot: view.getUint8(base + 8),
+        source: packed & 0xff,
+        dest: (packed >> 8) & 0xff,
+        curve: flag & ~MATRIX_FLAG_ACTIVE,
+        active: (flag & MATRIX_FLAG_ACTIVE) !== 0,
+        depth: view.getFloat32(base + 4, true),
+      };
+    }
+    case EV_PATCH_SWAP:
+      return { type, offset };
     default:
       return null; // unknown tag: ignore (forward-compat)
   }
@@ -159,4 +188,15 @@ export const ev = {
   pitchBend: (norm, offset = 0) => ({ type: EV_PITCH_BEND, offset, value: norm }),
   modWheel: (norm, offset = 0) => ({ type: EV_MOD_WHEEL, offset, value: norm }),
   sustain: (on, offset = 0) => ({ type: EV_SUSTAIN, offset, on }),
+  setMatrixRow: (slot, source, dest, curve, active, depth, offset = 0) => ({
+    type: EV_MATRIX_ROW,
+    offset,
+    slot,
+    source,
+    dest,
+    curve,
+    active,
+    depth,
+  }),
+  patchSwap: (offset = 0) => ({ type: EV_PATCH_SWAP, offset }),
 };

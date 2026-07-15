@@ -121,18 +121,23 @@ export class WebController {
   //   wasmBytes : pre-fetched controller bytes; skips the fetch (node test).
   //   store     : a ParamStore over the SHARED param SAB. The controller mirrors
   //               its model values into it so the worklet applies them. Optional.
+  //   ring      : the coordinator's EventRing producer. Matrix topology has no
+  //               CLAP id so it can't ride `store`; setMatrixRow pushes it here so
+  //               the worklet's audible route follows the UI (ticket 0193). Optional.
   //   onViewEvents : sink called with the decoded event-object array each tick.
   //   fetchImpl : fetch seam (defaults to global fetch).
   constructor({
     wasmUrl = DEFAULT_CONTROLLER_WASM_URL,
     wasmBytes = null,
     store = null,
+    ring = null,
     onViewEvents = () => {},
     fetchImpl = globalThis.fetch,
   } = {}) {
     this.wasmUrl = wasmUrl;
     this.wasmBytes = wasmBytes;
     this.store = store;
+    this.ring = ring;
     this._onViewEvents = onViewEvents;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
 
@@ -193,7 +198,11 @@ export class WebController {
     this.x.vxnc_ui_set_op_tab(op >>> 0);
   }
   setMatrixRow(slot, source, dest, curve, active, depth) {
+    // (1) Controller wasm — authoritative model, drives UI snapshots.
     this.x.vxnc_ui_set_matrix_row(slot >>> 0, source >>> 0, dest >>> 0, curve >>> 0, active ? 1 : 0, depth);
+    // (2) Worklet — topology has no CLAP id so `_mirrorToStore` can't carry it;
+    // push the row on the ring so the audible route follows (ticket 0193).
+    if (this.ring) this.ring.pushMatrixRow(slot, source, dest, curve, active, depth);
   }
   setKsCurve(op, side, curve) {
     this.x.vxnc_ui_set_ks_curve(op >>> 0, side >>> 0, curve >>> 0);
@@ -256,8 +265,36 @@ export class WebController {
     this.x.vxnc_tick();
     this._mirrorToStore();
     const events = this._drainViewEvents();
-    if (events.length) this._onViewEvents(events);
+    if (events.length) {
+      this._mirrorControlToRing(events);
+      this._onViewEvents(events);
+    }
     return events;
+  }
+
+  // Mirror control state the value-store can't carry to the worklet ring (0193):
+  //
+  //  - `preset_loaded` → a `patchSwap` pulse. A preset load / reset silences the
+  //    outgoing patch on native via a shared `load_epoch`; the web worklet holds
+  //    a separate SharedParams and the epoch isn't a value param, so without this
+  //    the previous patch's voices ring on. Pushed FIRST so the silence lands
+  //    before the new topology below.
+  //  - `matrix_snapshot` → one `pushMatrixRow` per slot. Live single-row edits
+  //    push directly from `setMatrixRow`, but BULK changes (preset loads, reset)
+  //    only surface a snapshot (they never call `setMatrixRow`). `mark_all_dirty`
+  //    guarantees the snapshot fires on every such load.
+  _mirrorControlToRing(events) {
+    if (!this.ring) return;
+    for (const e of events) {
+      if (e.kind === "preset_loaded") this.ring.pushPatchSwap();
+    }
+    for (const e of events) {
+      if (e.kind !== "matrix_snapshot") continue;
+      for (let slot = 0; slot < e.rows.length; slot++) {
+        const r = e.rows[slot];
+        this.ring.pushMatrixRow(slot, r.source, r.dest, r.curve, r.active, r.depth);
+      }
+    }
   }
 
   _mirrorToStore() {

@@ -388,6 +388,13 @@ pub struct Engine {
     /// it changes, a new preset was loaded in bulk and any voice still ringing
     /// from the old patch is silenced before the new algorithm takes effect.
     last_load_epoch: u64,
+    /// Last patch algorithm applied in [`Self::apply_block_params`]. A live algo
+    /// change (picker move, not a preset load) re-routes held notes in place —
+    /// but a voice still *releasing* from note-off can have an op that was a
+    /// modulator become a carrier, exposing its long release tail as a new
+    /// audible tone. On the change we declick-kill releasing voices; held voices
+    /// re-route and morph. `0` is the never-applied sentinel (algos are 1-based).
+    last_algo: u8,
 }
 
 impl Engine {
@@ -458,6 +465,7 @@ impl Engine {
             // Matches a fresh SharedParams (epoch 0) so the first snapshot after
             // open doesn't read as a preset change and silence the boot patch.
             last_load_epoch: 0,
+            last_algo: 0, // never-applied sentinel; first apply syncs it
         };
         e.apply_block_params();
         e
@@ -630,7 +638,22 @@ impl Engine {
         // next block (route_fn + fb_scale are otherwise only refreshed by
         // note_on).
         let voice = &self.params.patch.voice;
+        // A live algo change re-routes voices in place. A still-*releasing* voice
+        // (note-off, ringing out) can have an op that was a modulator become a
+        // carrier under the new algo, dumping its long release tail onto the audio
+        // bus as a surprise tone. Declick-kill those releasing voices before the
+        // re-route; held (gated) voices re-route and morph as intended. Preset
+        // loads take the `load_epoch` → `silence_all` path instead, so by here
+        // those voices are already idle and skipped.
+        let algo_changed = voice.algo != self.last_algo;
+        self.last_algo = voice.algo;
         for i in 0..self.alloc.stacks.len() {
+            if algo_changed
+                && !self.alloc.stacks[i].meta.gate
+                && !self.alloc.stacks[i].is_idle()
+            {
+                self.alloc.stacks[i].start_declick();
+            }
             self.alloc.stacks[i].set_algo_live(voice.algo);
             self.alloc.stacks[i].set_feedback_live(voice.feedback);
         }
@@ -3492,6 +3515,75 @@ mod tests {
         assert!((e.matrix.slots[0].depth - 0.125).abs() < 1e-7);
         assert!((e.matrix.slots[1].depth - 0.5).abs() < 1e-7);
         assert!((e.matrix.slots[hi].depth - -0.125).abs() < 1e-7);
+    }
+
+    /// A live algo change declick-kills a *releasing* voice (so a former
+    /// modulator promoted to carrier can't ring out its long release tail), but
+    /// leaves a *held* voice gated to re-route and morph. Ticket 0193.
+    #[test]
+    fn live_algo_change_declicks_releasing_voice_not_held() {
+        use vxn2_dsp::stack::VoicePhase;
+
+        let mut e = Engine::new(SR, BLK);
+        // Hot, sustaining ops with a slow release so a released note stays
+        // clearly non-idle for the block where we flip the algorithm.
+        for op in &mut e.params.patch.voice.ops {
+            op.level = 99;
+            op.eg.l = [99, 99, 99, 0];
+            op.eg.r = [99, 99, 99, 40]; // slow release tail
+        }
+        e.params.patch.voice.algo = 1;
+        e.apply_block_params();
+
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+
+        // Voice A: play then release → releasing (gate off, not idle).
+        e.note_on(60, 100);
+        e.process_block(&mut l, &mut r);
+        e.note_off(60);
+        e.process_block(&mut l, &mut r);
+        let a = e
+            .alloc
+            .stacks
+            .iter()
+            .position(|s| s.meta.note == 60 && !s.is_idle())
+            .expect("voice A should be releasing, not idle");
+        assert!(!e.alloc.stacks[a].meta.gate, "voice A is released");
+        assert_ne!(
+            e.alloc.stacks[a].meta.phase,
+            VoicePhase::Declick,
+            "voice A not declicking before the algo change"
+        );
+
+        // Voice B: held (gated, key down).
+        e.note_on(72, 100);
+        e.process_block(&mut l, &mut r);
+        let b = e
+            .alloc
+            .stacks
+            .iter()
+            .position(|s| s.meta.note == 72 && s.meta.gate)
+            .expect("voice B should be held");
+
+        // Live algo change (picker move, not a preset load).
+        e.params.patch.voice.algo = 2;
+        e.apply_block_params();
+
+        assert_eq!(
+            e.alloc.stacks[a].meta.phase,
+            VoicePhase::Declick,
+            "releasing voice must be declick-killed on the algo change"
+        );
+        assert!(
+            e.alloc.stacks[b].meta.gate,
+            "held voice keeps gating (re-routes/morphs, not cut)"
+        );
+        assert_ne!(
+            e.alloc.stacks[b].meta.phase,
+            VoicePhase::Declick,
+            "held voice must NOT be declicked"
+        );
     }
 
     /// Matrix dest `Feedback` mods the layer-level feedback amount each

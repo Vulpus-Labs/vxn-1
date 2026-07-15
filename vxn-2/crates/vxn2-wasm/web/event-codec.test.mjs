@@ -23,6 +23,9 @@ import {
   EV_SUSTAIN,
   EV_GESTURE_BEGIN,
   EV_GESTURE_END,
+  EV_MATRIX_ROW,
+  EV_PATCH_SWAP,
+  MATRIX_FLAG_ACTIVE,
   TOTAL_PARAMS,
 } from "./event-codec.mjs";
 
@@ -62,6 +65,10 @@ const GOLDEN = [
   ["mod_wheel 1", ev.modWheel(1.0, 0), row(EV_MOD_WHEEL, 0, 0, f1, 0, 0)],
   ["sustain off", ev.sustain(false, 0), row(EV_SUSTAIN, 0, 0, f0, 0, 0)],
   ["sustain on", ev.sustain(true, 0), row(EV_SUSTAIN, 0, 0, f0, 0, 1)],
+  // pidx = source | (dest << 8): 4 | (28<<8) = 7172; flag = curve | active<<7.
+  ["matrix_row slot1 modenv->cutoff active", ev.setMatrixRow(1, 4, 28, 0, true, 1.0, 0), row(EV_MATRIX_ROW, 0, 7172, f1, 1, MATRIX_FLAG_ACTIVE)],
+  ["matrix_row slot15 lfo2->reso inactive", ev.setMatrixRow(15, 2, 29, 3, false, 0.5, 0), row(EV_MATRIX_ROW, 0, 7426, fhalf, 15, 3)],
+  ["patch_swap", ev.patchSwap(0), row(EV_PATCH_SWAP, 0, 0, f0, 0, 0)],
 ];
 
 test("param count matches the Rust codec (vxn2-engine TOTAL_PARAMS)", () => {
