@@ -40,7 +40,7 @@ use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::phaser::StereoPhaser;
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
-use vxn2_dsp::halfband::{Interpolator, Oversampler};
+use vxn2_dsp::halfband::{Interpolator, Oversampler, roundtrip_latency_base_samples};
 use vxn2_dsp::hpf::HpfKernel;
 use vxn2_dsp::reverb::FdnReverb;
 use vxn2_dsp::stack::{STACK_LANES, stack_tick_stereo};
@@ -116,9 +116,27 @@ const FILTER_OUT_MAKEUP: f32 = 1.0 / FILTER_IN_TRIM;
 fn keytrack_octaves(note: u8, amount: f32) -> f32 {
     (note as f32 - KEYTRACK_CENTRE_NOTE) / 12.0 * amount
 }
-/// Largest oversample factor the filter path supports (`filter-oversample`
-/// tops out at 8×). Sizes the per-voice OS scratch and OS bus buffers.
+/// Largest oversample factor the filter path supports. The shipped factor is
+/// fixed at [`OVERSAMPLE_FACTOR`] (4×), but the OS scratch / bus buffers are
+/// sized for 8× so the kernel/unit tests can still drive the ladder at higher
+/// factors without overflowing them.
 const MAX_OVERSAMPLE: usize = 8;
+
+/// The one oversample factor shipped now that the `filter-oversample` selector
+/// was removed: the filter and the dynamics FX share a single 4× span. Used to
+/// build the dynamics block at the oversampled rate and to size the
+/// dynamics-only span (`run_dynamics_os`).
+pub(crate) const OVERSAMPLE_FACTOR: usize = 4;
+
+/// The engine's constant processing latency, in samples at the host rate — the
+/// oversampled span's resampler round-trip. [`SpanDelay`] holds the dry/bypass
+/// path at this same delay, so the group delay is identical whether the
+/// filter/dynamics span is engaged or not. That constancy is what makes it safe
+/// to report to the host: a *changing* latency would force a host `activate`
+/// restart on every filter/dynamics toggle (an audible dropout), which is why
+/// reporting was previously left at 0 (ticket 0086). The CLAP shell reports this
+/// once via the latency extension.
+pub const LATENCY_SAMPLES: u32 = roundtrip_latency_base_samples(OVERSAMPLE_FACTOR);
 
 /// Quiescence floor for the per-stack filter skip (ticket 0085), in ladder
 /// state magnitude. An idle stack feeds the filter exact zero, so once *every*
@@ -215,6 +233,102 @@ struct TargetFlags {
     stack_detune: bool,
     stack_spread: bool,
     stack_pitch: bool,
+}
+
+/// Lifecycle of the oversampled filter+dynamics span (ADR 0004 §5/§10). Exactly
+/// one variant holds per block, which is what makes the two declick crossfades —
+/// the filter toggle and the dynamics-disengage settle — mutually exclusive *by
+/// construction* rather than by careful flag ordering. Dynamics activeness is
+/// deliberately not an axis: it's owned by `DynamicsBlock`'s own wet fade and
+/// enters [`Engine::advance_os_span`] as an input, so folding it in would only
+/// duplicate that state and multiply the variants.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum OsSpan {
+    /// Both legs off — base-rate render, no resampling.
+    Bypassed,
+    /// Filter off, dynamics live — the global-upsample dynamics-only span.
+    DynOnly,
+    /// Filter on (dynamics folds into its per-stack span when live).
+    Filtered,
+    /// Filter-toggle declick in flight. `remaining` samples of the window left;
+    /// `to_on` is the fade target (true ⇒ resolves to `Filtered`, false ⇒ to
+    /// `DynOnly`/`Bypassed`).
+    FilterFade { remaining: u32, to_on: bool },
+    /// Dynamics-driven span engage/disengage with the filter off. The dyn-only
+    /// span adds the resampler's ~L-sample group delay, so switching it in or out
+    /// steps the latency (0↔L) and clicks unless bridged. Over `remaining`
+    /// samples we render *both* the base mix (latency 0) and the OS mix (latency
+    /// L, via `run_dynamics_os`) and raised-cosine blend between them: `to_os`
+    /// true fades base→OS (engaging), false fades OS→base (disengaging), so the
+    /// group-delay step is smeared across the window either way.
+    SpanFade { remaining: u32, to_os: bool },
+}
+
+impl OsSpan {
+    /// Whether the filter param was on as of this state — steady `Filtered`, or
+    /// the target of an in-flight `FilterFade`. Used to spot the toggle edge.
+    fn filter_on(self) -> bool {
+        matches!(self, OsSpan::Filtered | OsSpan::FilterFade { to_on: true, .. })
+    }
+
+    /// Decrement an in-flight fade by one rendered block; steady states are
+    /// inert. Resolution to the steady target happens in `advance_os_span` on
+    /// the next block, once `remaining` has reached 0.
+    fn tick(&mut self, n: usize) {
+        let n = n as u32;
+        match self {
+            OsSpan::FilterFade { remaining, .. } | OsSpan::SpanFade { remaining, .. } => {
+                *remaining = remaining.saturating_sub(n);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Fixed integer stereo delay of exactly the resampler's round-trip latency
+/// ([`roundtrip_latency_base_samples`]). The non-oversampled (base-rate) output
+/// is pushed through this so its latency matches the oversampled path's — the
+/// whole engine then carries a *constant* group delay whether or not the
+/// filter+dynamics span is engaged. That's what stops engaging/disengaging the
+/// span from stepping the latency, which is the only thing a declick crossfade
+/// can't hide (bridging a latency change means crossfading the signal with a
+/// delayed copy of itself — a comb). A synth has no dry reference to phase
+/// against, so the fixed ~0.5 ms delay is inaudible; it is deliberately not
+/// reported to the host (matches the filter-latency posture, ticket 0086).
+struct SpanDelay {
+    buf_l: Vec<f32>,
+    buf_r: Vec<f32>,
+    idx: usize,
+}
+
+impl SpanDelay {
+    fn new(delay: usize) -> Self {
+        let len = delay.max(1);
+        Self {
+            buf_l: vec![0.0; len],
+            buf_r: vec![0.0; len],
+            idx: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buf_l.fill(0.0);
+        self.buf_r.fill(0.0);
+        self.idx = 0;
+    }
+
+    /// Push one stereo sample and return the sample `delay` samples old.
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let out = (self.buf_l[self.idx], self.buf_r[self.idx]);
+        self.buf_l[self.idx] = l;
+        self.buf_r[self.idx] = r;
+        self.idx += 1;
+        if self.idx >= self.buf_l.len() {
+            self.idx = 0;
+        }
+        out
+    }
 }
 
 /// Top-level audio engine. Owns every sub-engine plus the per-block
@@ -343,8 +457,20 @@ pub struct Engine {
     hp_r: Vec<HpfKernel>,
     interp_l: Vec<Interpolator>,
     interp_r: Vec<Interpolator>,
+    // Global interpolator pair for the dynamics-only leg of the span (filter
+    // off, dynamics on): the summed dry mix is upsampled once here before the 4×
+    // dynamics. When the filter is on the per-stack `interp_*` do the upsampling
+    // instead and this stays idle. Its downsampling is the *same* shared
+    // `decim_*` the filter uses — there is one decimator per channel at the end
+    // of the whole filter+dynamics span, whichever legs are engaged.
+    interp_mix_l: Interpolator,
+    interp_mix_r: Interpolator,
     decim_l: Oversampler,
     decim_r: Oversampler,
+    /// Constant-latency delay applied to the base-rate (non-oversampled) output
+    /// so the engine's group delay never changes as the span engages/disengages.
+    /// See [`SpanDelay`].
+    span_delay: SpanDelay,
     /// Base-rate per-voice render scratch (`block_size`).
     base_l: Vec<f32>,
     base_r: Vec<f32>,
@@ -369,16 +495,16 @@ pub struct Engine {
     filter_reso: f32,
     filter_drive_log2: f32,
     filter_smooth_primed: bool,
-    /// `filter-enable` as of last block, so [`Self::process_block`] can spot the
-    /// toggle edge and arm the declick crossfade. Seeded from the live param so
-    /// a patch that boots with the filter already on doesn't fade in from dry.
-    filter_was_enabled: bool,
-    /// Equal-power crossfade window length in samples (`FILTER_XFADE_MS`).
+    /// Oversampled-span lifecycle: which render body runs this block, and how far
+    /// through a declick crossfade we are. Single source of truth for the filter
+    /// toggle edge, the engaged↔disengaged edge (decimator reset), and both
+    /// crossfade countdowns — see [`OsSpan`] / [`Self::advance_os_span`]. Seeded
+    /// from the live filter param so a patch that boots with the filter on
+    /// doesn't fade in from dry.
+    os_span: OsSpan,
+    /// Crossfade window length in samples (`FILTER_XFADE_MS`). Both the filter
+    /// toggle and the span-settle fade count down from this.
     filter_xfade_len: usize,
-    /// Samples left in the active filter-toggle crossfade; 0 ⇒ steady state, a
-    /// single render body runs. While > 0 the dual-render xfade body runs and
-    /// decrements this by the block length until the fade completes.
-    filter_xfade_remaining: usize,
     /// OFF-path (raw, unfiltered) dry bus, rendered alongside the filtered
     /// `dry_l/r` only during a toggle crossfade (`block_size`). Untouched in
     /// steady state.
@@ -404,7 +530,11 @@ impl Engine {
             matrix: default_patch::default_matrix(),
             patch_mod: PatchMod::new(0xDEAD_BEEF_DEAD_BEEF),
             cleanup: CleanupFilter::new(sample_rate),
-            dynamics: DynamicsBlock::new(sample_rate),
+            // Dynamics always runs inside the 4× oversampled span (in the
+            // filter's per-stack span when the filter is on, else in its own
+            // `run_dynamics_os` span), so its detector + smoothers are built at
+            // the oversampled rate.
+            dynamics: DynamicsBlock::new(sample_rate * OVERSAMPLE_FACTOR as f32),
             phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
@@ -443,8 +573,11 @@ impl Engine {
             hp_r: vec![HpfKernel::new(); N_STACKS],
             interp_l: vec![Interpolator::new(); N_STACKS],
             interp_r: vec![Interpolator::new(); N_STACKS],
+            interp_mix_l: Interpolator::new(),
+            interp_mix_r: Interpolator::new(),
             decim_l: Oversampler::new(),
             decim_r: Oversampler::new(),
+            span_delay: SpanDelay::new(LATENCY_SAMPLES as usize),
             base_l: vec![0.0; block_size],
             base_r: vec![0.0; block_size],
             os_l: vec![0.0; block_size * MAX_OVERSAMPLE],
@@ -457,9 +590,8 @@ impl Engine {
             filter_reso: 0.0,
             filter_drive_log2: 0.0,
             filter_smooth_primed: false,
-            filter_was_enabled: EngineParams::default().filter.enable,
+            os_span: OsSpan::Bypassed,
             filter_xfade_len: (FILTER_XFADE_MS * 0.001 * sample_rate) as usize,
-            filter_xfade_remaining: 0,
             dry_alt_l: vec![0.0; block_size],
             dry_alt_r: vec![0.0; block_size],
             // Matches a fresh SharedParams (epoch 0) so the first snapshot after
@@ -546,14 +678,23 @@ impl Engine {
             self.interp_l[i].reset();
             self.interp_r[i].reset();
         }
+        self.interp_mix_l.reset();
+        self.interp_mix_r.reset();
         self.decim_l.reset();
         self.decim_r.reset();
+        self.span_delay.reset();
         self.any_ramp_live = false;
-        // Abort any in-flight filter-toggle crossfade and reseed the edge
-        // tracker, so the first block after reset renders the current enable
-        // state outright rather than fading in from a stale dry bus.
-        self.filter_xfade_remaining = 0;
-        self.filter_was_enabled = self.params.filter.enable;
+        // Seed the span lifecycle to the steady state the live filter param
+        // implies, aborting any in-flight crossfade — so the first block after
+        // reset renders that state outright rather than fading in from a stale
+        // dry bus. (`Bypassed` when the filter is off even if the dynamics is
+        // live: the first block then transitions Bypassed→DynOnly with no fade,
+        // and the decimator it would reset is already clear from just above.)
+        self.os_span = if self.params.filter.enable {
+            OsSpan::Filtered
+        } else {
+            OsSpan::Bypassed
+        };
         self.apply_block_params();
         // apply_block_params re-pushed the master gain target; snap to it so
         // post-reset playback starts at the correct level with no glide.
@@ -883,42 +1024,41 @@ impl Engine {
             }
         }
 
-        // Filter-toggle edge → arm the declick crossfade (ADR 0004 §10). On the
-        // off→on edge also snap the cutoff smoother and reset the filter +
-        // resampler state, so the ON dry bus rings up from silence rather than
-        // from whatever stale tail the kernels last held — the fade then masks
-        // the resampler group-delay shift and the saturator level step.
-        if filter_enabled != self.filter_was_enabled {
-            self.filter_xfade_remaining = self.filter_xfade_len;
-            if filter_enabled {
-                self.filter_smooth_primed = false;
-                for i in 0..N_STACKS {
-                    self.filter_l[i].reset();
-                    self.filter_r[i].reset();
-                    self.interp_l[i].reset();
-                    self.interp_r[i].reset();
-                }
-                self.decim_l.reset();
-                self.decim_r.reset();
-            }
-            self.filter_was_enabled = filter_enabled;
-        }
+        // Advance the oversampled-span lifecycle from its two inputs — the filter
+        // param and whether the dynamics is contributing — running the resampler
+        // resets each transition demands. This is the single decision point for
+        // engaged↔disengaged and fade arming; the dispatch below is a pure match.
+        self.advance_os_span(filter_enabled, self.dynamics.is_active());
 
-        if self.filter_xfade_remaining > 0 && self.filter_xfade_len > 0 {
-            // Toggle in flight: render both dry buses from one stack tick and
-            // equal-power blend. `filter_enabled` is the fade *target* — true ⇒
-            // OFF→ON (filter rising), false ⇒ ON→OFF (filter falling).
-            self.render_block_filter_xfade(out_l, out_r, n, hp_active, filter_enabled);
-        } else if filter_enabled {
-            // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
-            self.render_block_filtered(out_l, out_r, n, hp_active);
-        } else {
-            // Filter is off: re-prime the base-filter smoothers so re-enabling
-            // snaps to the live param rather than sweeping up from the value
-            // the cutoff sat at when the filter was last switched off.
-            self.filter_smooth_primed = false;
-            self.render_block_off(out_l, out_r, n, hp_active);
+        match self.os_span {
+            OsSpan::FilterFade { remaining, to_on } => {
+                // Toggle in flight: render both dry buses from one stack tick and
+                // raised-cosine blend. `to_on` is the fade *target* — true ⇒
+                // OFF→ON (filter rising), false ⇒ ON→OFF (filter falling).
+                self.render_block_filter_xfade(out_l, out_r, n, hp_active, remaining, to_on);
+            }
+            OsSpan::Filtered => {
+                // ON path — stack-major oversampled filter (ADR 0004 §3–§5).
+                self.render_block_filtered(out_l, out_r, n, hp_active);
+            }
+            OsSpan::SpanFade { remaining, to_os } => {
+                // Filter off, dyn-only span engaging/disengaging: OFF path bridges
+                // the group delay over `remaining` samples. Re-prime the base-
+                // filter smoother (as any filter-off block does) so re-enabling
+                // snaps.
+                self.filter_smooth_primed = false;
+                self.render_block_off(out_l, out_r, n, hp_active, Some((remaining, to_os)));
+            }
+            OsSpan::DynOnly | OsSpan::Bypassed => {
+                // Filter off: re-prime the base-filter smoother so re-enabling
+                // snaps to the live param rather than sweeping up from the value
+                // the cutoff sat at when the filter was last switched off.
+                self.filter_smooth_primed = false;
+                self.render_block_off(out_l, out_r, n, hp_active, None);
+            }
         }
+        // Count down any in-flight fade for the next block; steady states no-op.
+        self.os_span.tick(n);
 
         // Master limiter — last in the chain, after master gain, applied to the
         // finished block on both render paths (VXN1 parity). Clear stale
@@ -935,6 +1075,113 @@ impl Engine {
         self.limiter_was_on = limiter_on;
     }
 
+    /// Advance the [`OsSpan`] lifecycle one block from `(filter_on, dyn_active)`
+    /// and run the resampler resets each transition requires. Single point of
+    /// truth for three edges that used to be separate flags:
+    ///
+    /// - **filter toggle** (`filter_on` differs from the state's `filter_on()`):
+    ///   arm a `FilterFade` toward the new state; on engage reset the per-stack
+    ///   filter + upsamplers and re-prime the cutoff smoother, on disengage give
+    ///   the global `interp_mix_*` a fresh start for the dynamics-only leg.
+    /// - **dynamics engage/disengage** (filter off, `dyn_active` flipped): arm a
+    ///   `SpanFade` in the matching direction to bridge the resampler group delay
+    ///   the dyn-only span adds/removes — engaging clicks just as disengaging
+    ///   does, so both are bridged.
+    /// - **fresh span** (previous state was `Bypassed` — OS legs fully idle — and
+    ///   the next runs them): reset the shared `decim_*` + `interp_mix_*`. Re-
+    ///   arming a filter fade over an already-running span (engaging the filter
+    ///   over live dynamics), or resolving/abandoning a `SpanFade`, is *not* such
+    ///   a transition, so the decimator stays continuous — the click fix.
+    ///
+    /// A completed fade (`remaining` hit 0 last `tick`) resolves to its steady
+    /// target here, using the current inputs. Dynamics activeness is only ever an
+    /// input; it never appears in the state (see [`OsSpan`]).
+    fn advance_os_span(&mut self, filter_on: bool, dyn_active: bool) {
+        let len = self.filter_xfade_len as u32;
+        let prev = self.os_span;
+        let steady = |filter_on: bool, dyn_active: bool| {
+            if filter_on {
+                OsSpan::Filtered
+            } else if dyn_active {
+                OsSpan::DynOnly
+            } else {
+                OsSpan::Bypassed
+            }
+        };
+
+        // Resolve a fade that ran out on the previous block to its steady target.
+        let cur = match prev {
+            OsSpan::FilterFade { remaining: 0, to_on } => steady(to_on, dyn_active),
+            OsSpan::SpanFade { remaining: 0, .. } => steady(false, dyn_active),
+            other => other,
+        };
+
+        let next = if filter_on != prev.filter_on() {
+            // Filter toggled — arm the declick fade toward the new state (or hard
+            // switch if the window rounds to zero at very low sample rates).
+            if len > 0 {
+                OsSpan::FilterFade { remaining: len, to_on: filter_on }
+            } else {
+                steady(filter_on, dyn_active)
+            }
+        } else {
+            // No filter edge — only dynamics-driven transitions remain. Engaging
+            // or disengaging the dyn-only span steps the latency (0↔L), so both
+            // directions bridge through a `SpanFade` (or hard-switch if there's no
+            // window).
+            match cur {
+                OsSpan::Bypassed if dyn_active => {
+                    if len > 0 {
+                        OsSpan::SpanFade { remaining: len, to_os: true }
+                    } else {
+                        OsSpan::DynOnly
+                    }
+                }
+                OsSpan::DynOnly if !dyn_active => {
+                    if len > 0 {
+                        OsSpan::SpanFade { remaining: len, to_os: false }
+                    } else {
+                        OsSpan::Bypassed
+                    }
+                }
+                // Dynamics came back mid-disengage ⇒ abandon it, resume the span
+                // (the decimator kept running through the fade, so this is
+                // continuous — no reset).
+                OsSpan::SpanFade { to_os: false, .. } if dyn_active => OsSpan::DynOnly,
+                keep => keep,
+            }
+        };
+
+        // A fresh span starts (clean decimator + global upsampler history) only
+        // when the OS legs were fully idle last block (`Bypassed`) and the next
+        // state runs them. A `SpanFade` — engage *or* disengage — already runs
+        // the OS legs, so transitions out of one never reset mid-signal.
+        let started = prev == OsSpan::Bypassed && next != OsSpan::Bypassed;
+        if started {
+            self.decim_l.reset();
+            self.decim_r.reset();
+            self.interp_mix_l.reset();
+            self.interp_mix_r.reset();
+        }
+
+        // Per-transition resampler prep on a filter toggle.
+        if filter_on != prev.filter_on() {
+            if filter_on {
+                self.filter_smooth_primed = false;
+                for i in 0..N_STACKS {
+                    self.filter_l[i].reset();
+                    self.filter_r[i].reset();
+                    self.interp_l[i].reset();
+                    self.interp_r[i].reset();
+                }
+            } else {
+                self.interp_mix_l.reset();
+                self.interp_mix_r.reset();
+            }
+        }
+
+        self.os_span = next;
+    }
 
     /// Mod-matrix cook: the per-stack loop extracted from `process_block`
     /// (ticket 0119). Per active stack it ticks LFO2, fans the patch / stack /
@@ -1505,6 +1752,14 @@ impl Engine {
         fp.drive = self.filter_drive_log2.exp2();
         let f = fp.oversample.clamp(1, MAX_OVERSAMPLE);
 
+        // Accumulate the post-HP base mix (the same raw sum the OFF path emits)
+        // into `dry_alt`, purely to keep `span_delay` primed: the constant-latency
+        // delay must see a continuous base stream in *every* render body, or its
+        // history goes stale during a long filter-on stretch and the filter-off
+        // toggle's delayed OFF side reads garbage. Output is discarded here.
+        self.dry_alt_l[..n].fill(0.0);
+        self.dry_alt_r[..n].fill(0.0);
+
         if f == 1 {
             // Fused unity-rate path: ladder runs directly on each stack's
             // stereo pair and accumulates straight into the dry bus — no
@@ -1547,6 +1802,8 @@ impl Engine {
                         sl = self.hp_l[i].tick(sl);
                         sr = self.hp_r[i].tick(sr);
                     }
+                    self.dry_alt_l[sample] += sl; // base mix, for span_delay priming
+                    self.dry_alt_r[sample] += sr;
                     self.dry_l[sample] +=
                         self.filter_l[i].tick(sl * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
                     self.dry_r[sample] +=
@@ -1609,6 +1866,13 @@ impl Engine {
                     }
                 }
 
+                // Accumulate this stack's post-HP base into the mix (idle stacks
+                // contribute their zero-filled scratch), for span_delay priming.
+                for sample in 0..n {
+                    self.dry_alt_l[sample] += self.base_l[sample];
+                    self.dry_alt_r[sample] += self.base_r[sample];
+                }
+
                 // 2. Upsample (mandatory anti-image LP) → per-voice OS scratch.
                 self.interp_l[i].interpolate(&self.base_l[..n], &mut self.os_l[..osn], f);
                 self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
@@ -1624,12 +1888,41 @@ impl Engine {
                 }
             }
 
+            // 4b. Dynamics shares the filter's oversampled span: run comp + tanh
+            //     saturation in place over the summed OS bus *before* decimation,
+            //     so the detector + saturator see the 4× rate (sharper transient
+            //     tracking, less saturation aliasing) and filter→dynamics is a
+            //     single span with one resample pair — no decimate-then-
+            //     re-upsample. Skipped (bit-exact) when the block is inactive.
+            if self.dynamics.is_active() {
+                for j in 0..osn {
+                    let (l, r) = self.dynamics.process(self.bus_l[j], self.bus_r[j]);
+                    self.bus_l[j] = l;
+                    self.bus_r[j] = r;
+                }
+            }
+
             // 5. One shared decimation past the voice-sum (linear ⇒ exact).
             self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
             self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
         }
 
-        self.apply_fx_block(n, out_l, out_r);
+        // The fused unity-rate branch has no OS bus for the dynamics to share,
+        // so when it runs (a test-only factor — production is pinned to 4×) the
+        // dynamics takes its own 4× span over the dry mix instead.
+        if f == 1 && self.dynamics.is_active() {
+            self.run_dynamics_os(n);
+        }
+
+        // Keep the constant-latency delay primed with the base mix (output
+        // discarded — the filtered `dry` is what plays). This is what lets the
+        // filter-off toggle read a valid delayed OFF side after a long filter-on
+        // stretch, and keeps the group delay constant across every render body.
+        for sample in 0..n {
+            self.span_delay.process(self.dry_alt_l[sample], self.dry_alt_r[sample]);
+        }
+
+        self.apply_tail_fx(n, out_l, out_r);
     }
 
     /// OFF-path render: the tuned sample-major sum loop. With the HP bypassed
@@ -1639,7 +1932,19 @@ impl Engine {
     /// Every `PITCH_SMOOTH_QUANTUM` samples the pitch smoothers advance one step
     /// toward this block's targets and the affected stacks re-cook `phase_inc` —
     /// converged smoothers (no active pitch route) skip the recook entirely.
-    fn render_block_off(&mut self, out_l: &mut [f32], out_r: &mut [f32], n: usize, hp_active: bool) {
+    /// `fade` = `Some((remaining, to_os))` (the [`OsSpan::SpanFade`] countdown +
+    /// direction) ⇒ the dyn-only span is engaging (`to_os` true) or disengaging
+    /// (false); bridge the resampler group delay across the window. `None` ⇒
+    /// steady `Bypassed`/`DynOnly` (the latter runs the dyn-only OS span when
+    /// `is_active`). The caller ticks the countdown after the render.
+    fn render_block_off(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        n: usize,
+        hp_active: bool,
+        fade: Option<(u32, bool)>,
+    ) {
         for sample in 0..n {
             if sample % PITCH_SMOOTH_QUANTUM == 0 {
                 self.advance_pitch_smoothers();
@@ -1664,17 +1969,89 @@ impl Engine {
             self.dry_l[sample] = dry_l;
             self.dry_r[sample] = dry_r;
         }
-        self.apply_fx_block(n, out_l, out_r);
+        // Constant latency: push the base mix through `span_delay` so its group
+        // delay matches the oversampled path (L samples). `dry_alt` becomes the
+        // base signal delayed by L — the bypass output *and* the OFF side of the
+        // engage/disengage bridge. Both are now latency L, so the whole engine
+        // carries one fixed delay whether the span is engaged or not: engaging /
+        // disengaging no longer steps the latency, and the bridge blends
+        // same-latency signals (no comb — the fix for the hard-saturation blip).
+        // Fed every block, so `span_delay` is primed the instant the span drops
+        // back to bypass.
+        for sample in 0..n {
+            let (dl, dr) = self.span_delay.process(self.dry_l[sample], self.dry_r[sample]);
+            self.dry_alt_l[sample] = dl;
+            self.dry_alt_r[sample] = dr;
+        }
+        if let Some((remaining, to_os)) = fade {
+            // The dyn-only span is engaging or disengaging: mask the resampler's
+            // fill transient (its interp/decim start fresh on engage) by
+            // raised-cosine blending the base-delayed-L signal with the OS output.
+            // Both are latency L, so this only smooths the fill — it does not comb.
+            self.run_dynamics_os(n); // dry ← OS mix (latency L)
+            let len = self.filter_xfade_len as f32;
+            let start = (self.filter_xfade_len - remaining as usize) as f32;
+            let span = (len - 1.0).max(1.0);
+            for sample in 0..n {
+                let t = ((start + sample as f32) / span).min(1.0);
+                // Raised-cosine rise, zero slope at both ends. `to_os`: OS weight
+                // rises 0→1 (base→OS, engaging); else it falls 1→0 (OS→base).
+                let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
+                let w_os = if to_os { rise } else { 1.0 - rise };
+                let w_base = 1.0 - w_os;
+                self.dry_l[sample] = w_os * self.dry_l[sample] + w_base * self.dry_alt_l[sample];
+                self.dry_r[sample] = w_os * self.dry_r[sample] + w_base * self.dry_alt_r[sample];
+            }
+        } else if self.dynamics.is_active() {
+            // DynOnly steady: the OS path already carries latency L. (`dry_alt`
+            // holds the delayed base, unused here but keeping `span_delay` primed.)
+            self.run_dynamics_os(n);
+        } else {
+            // Bypassed: emit the base signal delayed to the constant latency.
+            self.dry_l[..n].copy_from_slice(&self.dry_alt_l[..n]);
+            self.dry_r[..n].copy_from_slice(&self.dry_alt_r[..n]);
+        }
+        self.apply_tail_fx(n, out_l, out_r);
     }
 
-    /// Shared post-dry FX chain (cleanup → dynamics → phaser → delay → reverb →
-    /// master), run per sample over `dry_l/r` into `out_l/r`. Identical on
-    /// every render body, so the dry bus is the only thing the three paths
-    /// produce differently.
-    fn apply_fx_block(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
+    /// Dynamics-only leg of the span (filter off, dynamics on): upsample the
+    /// summed dry mix through the global `interp_mix_*`, run the 4× comp+sat over
+    /// it, and decimate back through the shared `decim_*` — the single decimator
+    /// at the end of the whole filter+dynamics span. Only the *upsampler*
+    /// differs from the filter-on leg (global mix vs per-stack); the decimation
+    /// is one pass either way, and `decim_*` is reset only when the span's
+    /// engaged state flips (see `process_block`), never on a filter toggle that
+    /// leaves the span engaged — that continuity is what keeps engaging the
+    /// filter over live dynamics click-free. Reuses the `bus_*` scratch, which
+    /// the caller has finished with by the time this runs.
+    fn run_dynamics_os(&mut self, n: usize) {
+        let f = OVERSAMPLE_FACTOR;
+        let osn = n * f;
+        debug_assert!(osn <= self.bus_l.len(), "OS bus overflow: {osn}");
+        self.interp_mix_l
+            .interpolate(&self.dry_l[..n], &mut self.bus_l[..osn], f);
+        self.interp_mix_r
+            .interpolate(&self.dry_r[..n], &mut self.bus_r[..osn], f);
+        for j in 0..osn {
+            let (l, r) = self.dynamics.process(self.bus_l[j], self.bus_r[j]);
+            self.bus_l[j] = l;
+            self.bus_r[j] = r;
+        }
+        self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
+        self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
+    }
+
+    /// Shared post-dry FX tail (cleanup → phaser → delay → reverb → master), run
+    /// per sample over `dry_l/r` into `out_l/r`. The dynamics is *not* here — it
+    /// runs upstream inside the 4× oversampled span (in the filter's per-stack
+    /// span, or `run_dynamics_os`). Cleanup therefore now sits just after the
+    /// dynamics rather than before it: safe, since the comp is pure gain and the
+    /// `tanh` saturator is odd-symmetric (no DC), and running the 18 kHz guard
+    /// after the saturator still strips any harmonics before the spatial FX —
+    /// which is exactly where that guard belongs.
+    fn apply_tail_fx(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
-            let (cl, cr) = self.dynamics.process(cl, cr);
             let (cl, cr) = self.phaser.process(cl, cr);
             let (l, r) = self.delay.process(cl, cr);
             let (l, r) = self.reverb.process(l, r);
@@ -1685,15 +2062,25 @@ impl Engine {
     }
 
     /// Declick render for the filter-enable toggle (ADR 0004 §10). Renders the
-    /// dry bus *both* ways from a single stack tick — the raw HP'd sum (OFF
-    /// dry, into `dry_alt_l/r`) and the filtered signal at the configured
-    /// oversample factor (ON dry, into `dry_l/r`) — then equal-power blends them
-    /// across `filter_xfade_len` samples before the shared FX chain. Rendering
-    /// both from one tick is what makes the blend valid: the two buses are the
-    /// same source material, differing only by the filter (its group delay and
-    /// level/timbre step), so the crossfade hides exactly the discontinuity the
-    /// hard switch would expose. `to_on` is the fade *target* — true ⇒ OFF→ON
-    /// (filter rising 0→1), false ⇒ ON→OFF (filter falling 1→0).
+    /// dry bus *both* ways from a single stack tick — raw HP'd sum (OFF) and
+    /// filtered (ON) — and raised-cosine blends them across `filter_xfade_len`
+    /// samples before the shared FX tail. Rendering both from one tick is what
+    /// makes the blend valid: the two buses are the same source material,
+    /// differing only by the filter, so the crossfade hides exactly the
+    /// discontinuity a hard switch would expose. `to_on` is the fade *target* —
+    /// true ⇒ OFF→ON (filter rising), false ⇒ ON→OFF (filter falling).
+    ///
+    /// Two blend domains, chosen by whether the dynamics is live:
+    /// - **dynamics inactive** — the span's engaged state *changes* across this
+    ///   toggle (base ↔ OS), so there is a real latency step to bridge. Blend at
+    ///   base rate: OFF stays base (latency 0, continuous with the pre-toggle dry
+    ///   sum), only ON is oversampled+decimated. Matches the historical path.
+    /// - **dynamics active** — the span is engaged on *both* sides of the toggle
+    ///   (the dynamics keeps it live), so latency is constant. Blend at OS rate
+    ///   per stack (raw vs filtered through the same interpolator → identical
+    ///   latency), run the dynamics once over the summed bus, decimate once. This
+    ///   keeps the single span decimator continuous across the toggle — the fix
+    ///   for the engage clunk that reusing/​resetting a shared decimator caused.
     ///
     /// Edge-only: runs for one ~8 ms window per toggle, so the per-stack double
     /// pass and the second dry buffer never touch the steady-state hot paths.
@@ -1703,6 +2090,7 @@ impl Engine {
         out_r: &mut [f32],
         n: usize,
         hp_active: bool,
+        remaining: u32,
         to_on: bool,
     ) {
         // Block-rate base-knob smoothing — identical to `render_block_filtered`,
@@ -1731,8 +2119,37 @@ impl Engine {
         let osn = n * f;
         let os_rate = self.sample_rate * f as f32;
 
+        // Raised-cosine (equal-gain) blend weight, evaluated at a position in the
+        // `len`-sample window. Derivative is zero at *both* endpoints, so neither
+        // the engage start nor the steady handoff leaves a slope corner (an
+        // equal-power `cos` weight has slope −π/2 at t=1 — a click at handoff).
+        // `to_on`: ON weight rises 0→1; else ON falls 1→0.
+        let len = self.filter_xfade_len as f32;
+        let start = (self.filter_xfade_len - remaining as usize) as f32;
+        let weight_at = |pos: f32, span: f32| {
+            let t = (pos / span).min(1.0);
+            let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
+            if to_on { (1.0 - rise, rise) } else { (rise, 1.0 - rise) }
+        };
+
+        // With the dynamics live the whole filter+dynamics span stays at the
+        // oversampled rate across the toggle (both fade sides carry the same
+        // latency the pre-/post-toggle steady states already have). The OFF side
+        // is the base mix upsampled through the *continuous* `interp_mix_*` (the
+        // dynamics-only leg's own upsampler — its history carries through the
+        // engage), the ON side is the per-stack filtered sum; they raised-cosine
+        // blend at OS rate, the dynamics runs once over the blend, and one
+        // decimation closes the span. With the dynamics inactive there is a
+        // genuine latency step (base ↔ OS) for the fade to bridge, so we keep the
+        // base-rate blend: OFF stays base rate (matching the pre-toggle dry sum),
+        // only ON is decimated. `f == 1` (test-only) has no OS bus → base path.
+        let os_blend = self.dynamics.is_active() && f > 1;
+
         self.dry_l[..n].fill(0.0);
         self.dry_r[..n].fill(0.0);
+        // `dry_alt` is the base-rate OFF mix (raw HP'd stack sum). The base path
+        // blends it directly; the OS-blend path upsamples it through the
+        // continuous `interp_mix_*` as the OFF side (see below).
         self.dry_alt_l[..n].fill(0.0);
         self.dry_alt_r[..n].fill(0.0);
         if f > 1 {
@@ -1776,16 +2193,31 @@ impl Engine {
                         self.base_r[sample] = self.hp_r[i].tick(self.base_r[sample]);
                     }
                 }
-                // OFF dry: raw HP'd stack sum (exactly `render_block_off`).
+                // OFF mix: raw HP'd stack sum (exactly `render_block_off`). The
+                // base path blends this directly; the OS-blend path upsamples it
+                // via `interp_mix_*` after the loop.
                 for sample in 0..n {
                     self.dry_alt_l[sample] += self.base_l[sample];
                     self.dry_alt_r[sample] += self.base_r[sample];
                 }
             }
 
-            // ON dry: filtered at the configured oversample factor (exactly
-            // `render_block_filtered`'s two branches).
-            if f == 1 {
+            if os_blend {
+                // OS-blend ON side: per-stack upsample → ladder → accumulate the
+                // *filtered* signal into the bus. The per-stack `interp_l` were
+                // reset on the engage edge, so this rings up from silence — which
+                // is exactly what the rising ON weight wants. The OFF side is
+                // added after the loop from the continuous `interp_mix_*`.
+                self.interp_l[i].interpolate(&self.base_l[..n], &mut self.os_l[..osn], f);
+                self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
+                for j in 0..osn {
+                    self.bus_l[j] +=
+                        self.filter_l[i].tick(self.os_l[j] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                    self.bus_r[j] +=
+                        self.filter_r[i].tick(self.os_r[j] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
+                }
+            } else if f == 1 {
+                // ON dry, fused unity-rate (test-only).
                 for sample in 0..n {
                     self.dry_l[sample] +=
                         self.filter_l[i].tick(self.base_l[sample] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
@@ -1793,6 +2225,8 @@ impl Engine {
                         self.filter_r[i].tick(self.base_r[sample] * FILTER_IN_TRIM) * FILTER_OUT_MAKEUP;
                 }
             } else {
+                // ON dry, oversampled — filtered signal only; blended at base
+                // rate with `dry_alt` after decimation.
                 self.interp_l[i].interpolate(&self.base_l[..n], &mut self.os_l[..osn], f);
                 self.interp_r[i].interpolate(&self.base_r[..n], &mut self.os_r[..osn], f);
                 for j in 0..osn {
@@ -1803,41 +2237,79 @@ impl Engine {
                 }
             }
         }
-        if f > 1 {
+
+        // Keep `span_delay` advancing exactly one block here too (its delay would
+        // drift if any render body skipped a block). The output is unused during a
+        // filter toggle — both branches derive their OFF side elsewhere — so this
+        // is purely to keep the constant-latency delay in lockstep with the base
+        // stream. (The base-blend f > 1 branch below feeds + *uses* it instead, so
+        // only prime here when that branch won't.)
+        if os_blend || f == 1 {
+            for sample in 0..n {
+                self.span_delay.process(self.dry_alt_l[sample], self.dry_alt_r[sample]);
+            }
+        }
+
+        if os_blend {
+            // OFF side: upsample the base mix through the *continuous*
+            // `interp_mix_*` — the same upsampler the dynamics-only leg
+            // (`run_dynamics_os`) feeds on both sides of the toggle, so its
+            // history carries straight through the engage with no discontinuity.
+            // (The per-stack `interp_l` can't do this: they're reset on engage,
+            // so reading the OFF side from them would ramp it up from silence and
+            // step off the pre-engage signal — the clunk.) Then raised-cosine
+            // blend OFF (`os_*`) ↔ ON (`bus`, the per-stack filtered sum) at the
+            // OS rate, run the dynamics once over the blend, and decimate once
+            // through the span's single decimator (kept continuous across the
+            // toggle).
+            self.interp_mix_l
+                .interpolate(&self.dry_alt_l[..n], &mut self.os_l[..osn], f);
+            self.interp_mix_r
+                .interpolate(&self.dry_alt_r[..n], &mut self.os_r[..osn], f);
+            let os_span = (len * f as f32 - 1.0).max(1.0);
+            let os_start = start * f as f32;
+            for j in 0..osn {
+                let (w_off, w_on) = weight_at(os_start + j as f32, os_span);
+                let (l, r) = self.dynamics.process(
+                    w_off * self.os_l[j] + w_on * self.bus_l[j],
+                    w_off * self.os_r[j] + w_on * self.bus_r[j],
+                );
+                self.bus_l[j] = l;
+                self.bus_r[j] = r;
+            }
             self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
             self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
+        } else {
+            if f > 1 {
+                self.decim_l.decimate(&self.bus_l[..osn], &mut self.dry_l[..n], f);
+                self.decim_r.decimate(&self.bus_r[..osn], &mut self.dry_r[..n], f);
+                // Constant latency: delay the raw OFF side (`dry_alt`) through
+                // `span_delay` so it carries the same L samples the decimated ON
+                // side does. Both fade sides are then latency L — the toggle only
+                // bridges timbre, never a latency step — and this keeps
+                // `span_delay` primed for the drop back to bypass. (Same
+                // signal `render_block_off` feeds it, so the stream is continuous.)
+                for sample in 0..n {
+                    let (dl, dr) =
+                        self.span_delay.process(self.dry_alt_l[sample], self.dry_alt_r[sample]);
+                    self.dry_alt_l[sample] = dl;
+                    self.dry_alt_r[sample] = dr;
+                }
+            }
+            // Base-rate raised-cosine blend OFF (`dry_alt`) ↔ ON (`dry`).
+            let span = (len - 1.0).max(1.0);
+            for sample in 0..n {
+                let (w_off, w_on) = weight_at(start + sample as f32, span);
+                self.dry_l[sample] = w_off * self.dry_alt_l[sample] + w_on * self.dry_l[sample];
+                self.dry_r[sample] = w_off * self.dry_alt_r[sample] + w_on * self.dry_r[sample];
+            }
+            // f == 1 with dynamics live: no OS bus above, so the dynamics takes
+            // its own span here (decim is a 1× identity, so no double-use).
+            if self.dynamics.is_active() {
+                self.run_dynamics_os(n);
+            }
         }
-
-        // Raised-cosine (equal-gain) blend OFF (`dry_alt`) ↔ ON (`dry`) into
-        // `dry_l/r`. The two buses are the *same* source pre/post filter —
-        // strongly correlated — so equal-gain (weights sum to 1) holds the
-        // amplitude without the +3 dB bump an equal-power curve would add. The
-        // raised cosine matters more than the gain law here: its derivative is
-        // zero at *both* endpoints, so neither the engage start nor the steady
-        // handoff leaves a slope corner. An equal-power `cos` weight has slope
-        // −π/2 at t=1; when it clamps to 0 at handoff — right where the ON
-        // signal is full-amplitude — that corner reads as a click (the exact
-        // failure this curve fixes).
-        //
-        // `t` spans the closed interval [0,1] across the `len`-sample window
-        // (denominator `len-1`), so the last fade sample lands exactly on the
-        // target before the steady body takes over; samples past the window end
-        // clamp to the full target.
-        let len = self.filter_xfade_len as f32;
-        let start = (self.filter_xfade_len - self.filter_xfade_remaining) as f32;
-        let span = (len - 1.0).max(1.0);
-        for sample in 0..n {
-            let t = ((start + sample as f32) / span).min(1.0);
-            // Smooth 0→1 ramp with zero slope at both ends.
-            let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
-            // `to_on`: ON weight rises 0→1. Else ON weight falls 1→0.
-            let (w_off, w_on) = if to_on { (1.0 - rise, rise) } else { (rise, 1.0 - rise) };
-            self.dry_l[sample] = w_off * self.dry_alt_l[sample] + w_on * self.dry_l[sample];
-            self.dry_r[sample] = w_off * self.dry_alt_r[sample] + w_on * self.dry_r[sample];
-        }
-        self.filter_xfade_remaining = self.filter_xfade_remaining.saturating_sub(n);
-
-        self.apply_fx_block(n, out_l, out_r);
+        self.apply_tail_fx(n, out_l, out_r);
     }
 
     /// True when stack `i`'s filter has rung out — both L/R ladder kernels'

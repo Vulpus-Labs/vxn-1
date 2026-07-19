@@ -624,24 +624,30 @@ fn pitch_bend_and_mod_wheel_stay_finite() {
     }
 }
 
-// ── 6. No latency reporting (ticket 0086 reverted) ──────────────────────────
+// ── 6. Constant latency reporting ───────────────────────────────────────────
 
-/// VXN2 deliberately exposes **no** CLAP latency extension. The filter's
-/// interp+decimate path adds a real but tiny group delay (≤28 base samples /
-/// ~0.6 ms at 8×), but reporting it forces a host restart on every
-/// `filter-oversample` change — CLAP only allows the reported latency to move
-/// across an `activate` boundary — which is an audible dropout. We trade
-/// sample-accurate PDC for glitch-free oversample switching (matches vxn-1),
-/// so the extension must stay unregistered regardless of the filter config.
+/// VXN2 now reports a **constant** processing latency (the oversampled
+/// filter+dynamics span's resampler round-trip). This became safe once the
+/// engine's `SpanDelay` held the dry path at the same delay: the group delay no
+/// longer changes as the filter/dynamics FX toggle, so there is no per-toggle
+/// latency move to force a host `activate` restart (the reason 0086 originally
+/// reverted reporting). The extension must be registered and report exactly
+/// [`vxn2_engine::engine::LATENCY_SAMPLES`].
 #[test]
-fn no_latency_extension_is_exposed() {
+fn latency_extension_reports_constant() {
     let entry = load_entry();
     let mut instance = instantiate(&entry);
+    let mut handle = instance.plugin_handle();
+    let latency = handle
+        .get_extension::<PluginLatency>()
+        .expect("VXN2 must register the CLAP latency extension");
+    assert_eq!(
+        latency.get(&mut handle),
+        vxn2_engine::engine::LATENCY_SAMPLES,
+        "reported latency must equal the engine's constant span latency",
+    );
     assert!(
-        instance
-            .plugin_handle()
-            .get_extension::<PluginLatency>()
-            .is_none(),
-        "VXN2 must not register the CLAP latency extension"
+        vxn2_engine::engine::LATENCY_SAMPLES > 0,
+        "constant latency should be non-zero (the resampler round-trip)",
     );
 }

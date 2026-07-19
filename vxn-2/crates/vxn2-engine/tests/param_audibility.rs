@@ -165,6 +165,15 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 // The base matrix routes modulate several op levels; silence
                 // them so the op's own amplitude envelope is the only mover.
                 deactivate_base_routes(s);
+                // Delay + reverb are common-mode here: their wet tails are
+                // identical in the min and max renders, so they add only to the
+                // rel-diff denominator (|x|+|y|), never the numerator (|x-y|).
+                // That dilutes a subtle EG-stage sweep — an `eg-l3` plateau
+                // difference sits an order of magnitude below the FX-inflated
+                // energy. Take them out of circuit so the sweep is measured on
+                // the dry op alone.
+                s.set(id_of("delay-on").unwrap(), 0.0);
+                s.set(id_of("reverb-on").unwrap(), 0.0);
                 // Algo 32 is six parallel carriers. The other five ring at full
                 // level through sustain *and* release, so a release-stage sweep
                 // (r4/l3/l4) on this op moves at most ~1/6 of the mix — diluted
@@ -186,7 +195,16 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 s.set(id_of(&o("eg-l2")).unwrap(), 8.0);
                 s.set(id_of(&o("eg-l3")).unwrap(), 85.0);
                 s.set(id_of(&o("eg-l4")).unwrap(), 0.0);
-                cap.sustain_blocks = 55;
+                // Hold well past the L2→L3 rise (rate 64, an 8→85 climb) so
+                // *every* op fully reaches and dwells at the stage-3 plateau
+                // before note-off. At the old 55-block sustain the note-off
+                // preempted stage 3 — op5 skipped it outright and op1 only
+                // grazed it, so their `eg-l3` / `eg-r3` sweeps read inaudible
+                // (rel-diff 0 / 8e-5) even though the wiring is intact. The
+                // longer hold keeps the early-stage (l1/l2/r1/r2) and release
+                // (l4/r4) sweeps audible too — they sit orders of magnitude
+                // above the floor.
+                cap.sustain_blocks = 130;
                 // Long enough that the moderate R4 release actually reaches L4,
                 // so an `eg-l4` sweep (0 vs 99) separates the two release tails
                 // instead of both freezing partway.
@@ -569,6 +587,7 @@ const AUDIBLE_EPS: f64 = 1e-4;
 fn every_param_sweep_is_audible() {
     run_sweep(1);
 }
+
 
 /// Thorough variant: 3× longer windows so slow-tail interactions get more
 /// settling time. `#[ignore]`d — run with `--ignored`. Same assertion; the

@@ -177,7 +177,7 @@ const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_REVERB + 4].id, "reverb-mix"
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_MASTER].id, "master-tune"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_MASTER + 1].id, "master-volume"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_FILTER].id, "filter-enable"));
-const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_FILTER + 8].id, "filter-cutoff-tuned"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_FILTER + 7].id, "filter-cutoff-tuned"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_LIMITER].id, "limiter-on"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_HP].id, "hp-cutoff"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER].id, "phaser-on"));
@@ -1083,13 +1083,15 @@ impl Default for FilterParams {
 }
 
 // The filter's interp+decimate path adds a real group delay
-// (`vxn2_dsp::halfband::roundtrip_latency_base_samples`, ≤28 base samples at
-// 8×), but VXN2 deliberately does **not** report it to the host: declaring it
-// forces a host restart on every `filter-oversample` change (CLAP only lets the
-// reported latency move across an `activate` boundary), which is an audible
-// dropout. We trade sample-accurate PDC for glitch-free oversample switching —
-// ticket 0086 reverted. The latency truth + its tests still live in the
-// halfband helper for reference.
+// (`vxn2_dsp::halfband::roundtrip_latency_base_samples`, 24 base samples at the
+// fixed 4×), and VXN2 **does** report it to the host now (`engine::LATENCY_SAMPLES`,
+// via the CLAP latency extension). Reporting was originally reverted (0086)
+// because the delay appeared/disappeared as the filter/dynamics span toggled,
+// which would force a host `activate` restart on every edge (CLAP only lets the
+// reported latency move across that boundary) — an audible dropout. The engine's
+// `SpanDelay` fixed that by holding the dry/bypass path at the same delay, so the
+// group delay is constant regardless of FX state and a single static report is
+// correct.
 
 /// Decode the `filter-*` CLAP params out of any [`ParamView`] into the
 /// engine-native [`FilterParams`], without building a whole [`EngineParams`]
@@ -1106,10 +1108,14 @@ pub fn filter_params_of<P: ParamView>(p: &P) -> FilterParams {
         mode: filter_mode_from(p.get(fb + 3).round() as i32),
         slope: filter_slope_from(p.get(fb + 4).round() as i32),
         drive: p.get(fb + 5),
-        // `filter-oversample` enum index 0..3 → factor 1/2/4/8.
-        oversample: 1usize << (p.get(fb + 6).round().clamp(0.0, 3.0) as usize),
-        keytrack: p.get(fb + 7).clamp(0.0, 1.0),
-        // `filter-cutoff-tuned` (fb + 8) is UI-only — the stored cutoff is Hz
+        // Oversampling is fixed at 4× (the `filter-oversample` selector was
+        // removed): the filter shares one 4× span with the dynamics FX, so the
+        // factor is no longer a param. The `FilterParams.oversample` field is
+        // retained only so kernel tests can still drive the ladder at other
+        // factors.
+        oversample: 4,
+        keytrack: p.get(fb + 6).clamp(0.0, 1.0),
+        // `filter-cutoff-tuned` (fb + 7) is UI-only — the stored cutoff is Hz
         // regardless, so the engine never reads it.
     }
 }

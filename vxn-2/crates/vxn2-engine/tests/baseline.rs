@@ -41,7 +41,14 @@ const BLK: usize = 32;
 
 /// Golden hash of the reference render. Behaviour-preserving refactors must
 /// leave this untouched; an intentional DSP change re-captures it (see header).
-const EXPECTED: u64 = 0xe72b_e8da_5e90_1e05;
+///
+/// Moved by the constant-latency change (`SpanDelay`): the engine now emits the
+/// dry/bypass path delayed by the resampler round-trip (24 samples), so every
+/// sample shifts and the hash folds a new value. This value was captured on a
+/// **macOS 14** dev machine; if the pinned CI runner (macos-15) folds libm
+/// differently, its first run prints the runner-correct hash — paste that (see
+/// header).
+const EXPECTED: u64 = 0x533a_37a7_def1_921a;
 
 /// Build the reference engine: a matrix-rich, deterministic patch.
 fn reference_engine() -> Engine {

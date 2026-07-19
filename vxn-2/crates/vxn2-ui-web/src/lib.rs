@@ -630,7 +630,7 @@ mod tests {
             "master-tune", "master-volume",
             // Filter section (E007 / ticket 0088): every param reachable.
             "filter-enable", "filter-cutoff", "filter-resonance",
-            "filter-mode", "filter-slope", "filter-drive", "filter-oversample",
+            "filter-mode", "filter-slope", "filter-drive",
         ] {
             let needle = format!("data-vxn-param=\"{id}\"");
             assert!(html.contains(&needle), "missing param: {id}");

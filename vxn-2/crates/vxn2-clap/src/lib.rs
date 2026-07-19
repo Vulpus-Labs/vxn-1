@@ -12,6 +12,7 @@
 //! where vxn-1 runs a value-diff poll.
 
 use clack_extensions::gui::PluginGui;
+use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
@@ -81,6 +82,7 @@ impl Plugin for VxnPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginGui>()
+            .register::<PluginLatency>()
             .register::<PluginTimer>();
     }
 }
@@ -493,6 +495,16 @@ fn dispatch_event(
 }
 
 // ── Audio / Note ports ──────────────────────────────────────────────────────
+
+impl PluginLatencyImpl for VxnMainThread<'_> {
+    /// Constant across the whole session — the oversampled filter+dynamics span's
+    /// resampler round-trip, which the engine's `SpanDelay` also applies to the
+    /// dry path so the group delay never changes as those FX toggle. Reported
+    /// once; never needs a `host.changed()` notification.
+    fn get(&mut self) -> u32 {
+        vxn2_engine::engine::LATENCY_SAMPLES
+    }
+}
 
 impl PluginAudioPortsImpl for VxnMainThread<'_> {
     fn count(&mut self, is_input: bool) -> u32 {

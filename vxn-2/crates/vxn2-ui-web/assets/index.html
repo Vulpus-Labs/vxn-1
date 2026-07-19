@@ -308,38 +308,24 @@
           </div>
         </div>
         <div class="filter-selectors">
-          <!-- Mode + Slope stacked in one column (Slope below Mode, with a
-               one-button gap) so the selector block is narrower. -->
-          <div class="filter-sel-stack">
-            <div class="cgrp">
-              <div class="cgrp-label">Mode</div>
-              <div class="bgrp">
-                <div class="bgrp-row" data-vxn-param="filter-mode">
-                  <button class="bgrp-btn" data-vxn-value="0">LP</button>
-                  <button class="bgrp-btn" data-vxn-value="1">HP</button>
-                  <button class="bgrp-btn" data-vxn-value="2">BP</button>
-                  <button class="bgrp-btn" data-vxn-value="3">Notch</button>
-                </div>
-              </div>
-            </div>
-            <div class="cgrp-gap"></div>
-            <div class="cgrp">
-              <div class="bgrp">
-                <div class="bgrp-row" data-vxn-param="filter-slope">
-                  <button class="bgrp-btn" data-vxn-value="0">2P</button>
-                  <button class="bgrp-btn" data-vxn-value="1">4P</button>
-                </div>
+          <!-- Mode and Slope side by side, one column each. -->
+          <div class="cgrp">
+            <div class="cgrp-label">Mode</div>
+            <div class="bgrp">
+              <div class="bgrp-row" data-vxn-param="filter-mode">
+                <button class="bgrp-btn" data-vxn-value="0">LP</button>
+                <button class="bgrp-btn" data-vxn-value="1">HP</button>
+                <button class="bgrp-btn" data-vxn-value="2">BP</button>
+                <button class="bgrp-btn" data-vxn-value="3">Notch</button>
               </div>
             </div>
           </div>
           <div class="cgrp">
-            <div class="cgrp-label">Oversample</div>
+            <div class="cgrp-label">Slope</div>
             <div class="bgrp">
-              <div class="bgrp-row" data-vxn-param="filter-oversample">
-                <button class="bgrp-btn" data-vxn-value="0">1&times;</button>
-                <button class="bgrp-btn" data-vxn-value="1">2&times;</button>
-                <button class="bgrp-btn" data-vxn-value="2">4&times;</button>
-                <button class="bgrp-btn" data-vxn-value="3">8&times;</button>
+              <div class="bgrp-row" data-vxn-param="filter-slope">
+                <button class="bgrp-btn" data-vxn-value="0">2P</button>
+                <button class="bgrp-btn" data-vxn-value="1">4P</button>
               </div>
             </div>
           </div>

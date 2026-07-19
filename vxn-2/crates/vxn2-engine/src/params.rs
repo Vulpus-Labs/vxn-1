@@ -53,8 +53,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 22;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 169
-pub const N_PATCH_LEVEL: usize = 40; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 9 filter + 1 limiter + 1 HP + 5 phaser + 8 dynamics
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 209
+pub const N_PATCH_LEVEL: usize = 39; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 8 filter + 1 limiter + 1 HP + 5 phaser + 8 dynamics
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 208
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -365,9 +365,6 @@ pub const FILTER_MODES: &[&str] = &["LP", "HP", "BP", "Notch"];
 /// Filter slope. Index order matches `vxn2_dsp::filter::FilterSlope`
 /// (`Pole2` = 0, `Pole4` = 1).
 pub const FILTER_SLOPES: &[&str] = &["2-Pole", "4-Pole"];
-/// Filter oversample factor (1× / 2× / 4× / 8×); the enum index maps to the
-/// factor `1 << idx` in the render path (ticket 0084).
-pub const FILTER_OVERSAMPLE: &[&str] = &["1×", "2×", "4×", "8×"];
 
 // ── Macros (each yields a single array literal) ─────────────────────────────
 //
@@ -543,18 +540,18 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("master-volume", "Master Vol", -60.0, 6.0, -6.0, "dB"),
     // ── Filter (E007 / ADR 0004) ──────────────────────────────────────────
     // Optional per-voice oversampled OTA-C ladder, off by default so an
-    // unchanged patch stays bit-identical. `enable`/`mode`/`slope`/`oversample`
-    // are structural selectors — automatable like `delay-on`/`algo`/`lfo2-shape`
+    // unchanged patch stays bit-identical. `enable`/`mode`/`slope` are
+    // structural selectors — automatable like `delay-on`/`algo`/`lfo2-shape`
     // (the codebase has no non-automatable flag), but they reconfigure topology
     // rather than sweeping. `cutoff`/`resonance` are matrix dests
-    // (`DestId::Cutoff` / `DestId::Resonance`).
+    // (`DestId::Cutoff` / `DestId::Resonance`). Oversampling is fixed at 4× (no
+    // user selector) and the filter shares one 4× span with the dynamics FX.
     bl("filter-enable", "Filter Enable", false),
     flx("filter-cutoff", "Filter Cutoff", 16.3516, 20000.0, 12000.0, "Hz", 1000.0),
     fl("filter-resonance", "Filter Reso", 0.0, 1.0, 0.0, ""),
     en("filter-mode", "Filter Mode", FILTER_MODES, 0),
     en("filter-slope", "Filter Slope", FILTER_SLOPES, 1),
     flx("filter-drive", "Filter Drive", 0.1, 16.0, 1.0, "", 1.0),
-    en("filter-oversample", "Filter OS", FILTER_OVERSAMPLE, 2),
     // Dedicated filter key-tracking amount (VXN-1 `FilterKeyTrack`): cutoff
     // shifts `(note − 12)/12 × amount` octaves, centred on C0 (MIDI 12). At
     // 1.0 the cutoff tracks the played pitch exactly (1 oct/oct); with the
@@ -653,10 +650,10 @@ pub(crate) const OFF_DELAY: usize = 3;
 pub(crate) const OFF_REVERB: usize = 9;
 pub(crate) const OFF_MASTER: usize = 14;
 pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
-pub(crate) const OFF_LIMITER: usize = 25; // trailing append, after the 9-param Filter section
-pub(crate) const OFF_HP: usize = 26; // trailing append, after `limiter-on`
-pub(crate) const OFF_PHASER: usize = 27; // trailing append, after `hp-cutoff` (ids 196–200)
-pub(crate) const OFF_DYNAMICS: usize = 32; // trailing append, after the 5-param Phaser block (ids 201–208)
+pub(crate) const OFF_LIMITER: usize = 24; // trailing append, after the 8-param Filter section
+pub(crate) const OFF_HP: usize = 25; // trailing append, after `limiter-on`
+pub(crate) const OFF_PHASER: usize = 26; // trailing append, after `hp-cutoff`
+pub(crate) const OFF_DYNAMICS: usize = 31; // trailing append, after the 5-param Phaser block
 pub(crate) const N_DYNAMICS_PARAMS: usize = 8;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
@@ -816,7 +813,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 209);
+        assert_eq!(TOTAL_PARAMS, 208);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -922,22 +919,22 @@ mod tests {
 
     #[test]
     fn filter_section_is_at_table_tail() {
-        // The Filter section (9 params, E007/v8) sits after Master, then the
-        // single `limiter-on` (v9), `hp-cutoff` (v13), the 5-param Phaser block
-        // (E025/v14), and finally the 8-param Dynamics block (E028/v16) are
-        // each appended at the very end of the flat space — so each blob
-        // migration stays a 1:1 prefix.
+        // The Filter section (8 params, E007/v8 — oversample selector removed,
+        // now fixed 4×) sits after Master, then the single `limiter-on` (v9),
+        // `hp-cutoff` (v13), the 5-param Phaser block (E025/v14), and finally the
+        // 8-param Dynamics block (E028/v16) are each appended at the very end of
+        // the flat space — so each blob migration stays a 1:1 prefix.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 26);
-        assert_eq!(vol, TOTAL_PARAMS - 25);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 24));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 23));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 22));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 21));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 20));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 19));
-        assert_eq!(id_of("filter-oversample"), Some(TOTAL_PARAMS - 18));
+        assert_eq!(tune, TOTAL_PARAMS - 25);
+        assert_eq!(vol, TOTAL_PARAMS - 24);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 23));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 22));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 21));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 20));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 19));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 18));
+        assert_eq!(id_of("filter-oversample"), None);
         assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 17));
         assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 16));
         assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 15));

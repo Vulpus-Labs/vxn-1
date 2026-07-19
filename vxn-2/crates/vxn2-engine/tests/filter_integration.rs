@@ -10,18 +10,18 @@
 //!   sample-for-sample independent of every filter param, i.e. the off path
 //!   is the unchanged sample-major loop and stays bit-identical to the
 //!   pre-epic output for every factory patch (AC 1).
-//! - **Self-oscillation bounded at every F** — resonance = 1 across the cutoff
-//!   range stays finite and bounded on the integrated per-voice path at
-//!   1×/2×/4×/8× (AC 5).
+//! - **Self-oscillation bounded** — resonance = 1 across the cutoff range stays
+//!   finite and bounded on the integrated per-voice path at the fixed 4× (AC 5;
+//!   the multi-factor resampler sweep lives in the `vxn2-dsp` kernel tests).
 //! - **Matrix cutoff/resonance + RT hardening** — `DestId::Cutoff`/`Resonance`
-//!   route end-to-end through the matrix with the filter on at every factor and
-//!   the process callback stays finite/non-panicking (AC 5, no-RT-alloc/panic).
+//!   route end-to-end through the matrix with the filter on and the process
+//!   callback stays finite/non-panicking (AC 5, no-RT-alloc/panic).
 //! - **Quiescence tail preservation** — a resonant release tail rings out with
 //!   no skip cliff (0085 criteria): the moment the quiescence-skip engages must
 //!   not click (AC 6).
 //! - **Click-free enable toggle** — flipping `filter-enable` on and off is
 //!   crossfaded (ADR 0004 §10), so neither edge introduces a discontinuity
-//!   beyond the tone's own slew, checked at 8× (worst-case group delay).
+//!   beyond the tone's own slew, checked at the fixed 4× group delay.
 
 mod common;
 use common::worst_d4;
@@ -78,7 +78,6 @@ fn bypass_render_is_bit_identical_across_filter_params() {
     let mode = id_of("filter-mode").unwrap();
     let slope = id_of("filter-slope").unwrap();
     let drive = id_of("filter-drive").unwrap();
-    let os = id_of("filter-oversample").unwrap();
 
     // The default patch plus every embedded factory preset.
     let mut banks: Vec<(String, SharedParams)> = vec![("<default>".into(), SharedParams::new())];
@@ -103,7 +102,6 @@ fn bypass_render_is_bit_identical_across_filter_params() {
         s.set(mode, 2.0); // BP (FILTER_MODES index: LP=0 HP=1 BP=2 Notch=3)
         s.set(slope, 1.0); // 4-pole
         s.set(drive, 4.0);
-        s.set(os, 3.0); // 8×
         let varied = render_capture(s, 24);
 
         assert_eq!(
@@ -123,107 +121,101 @@ fn bypass_render_is_bit_identical_across_filter_params() {
 }
 
 /// AC 5 — resonance = 1 across the cutoff range self-oscillates without blowing
-/// up at every oversample factor, on the integrated per-voice engine path.
+/// up on the integrated per-voice engine path. Oversampling is fixed at 4×
+/// (selector removed); the multi-factor resampler-stability sweep lives in the
+/// DSP-kernel tests (`vxn2-dsp` `filter::tests` / `halfband::tests`).
 #[test]
-fn self_oscillation_bounded_at_every_factor() {
+fn self_oscillation_bounded() {
     let en = id_of("filter-enable").unwrap();
     let cut = id_of("filter-cutoff").unwrap();
     let res = id_of("filter-resonance").unwrap();
-    let os = id_of("filter-oversample").unwrap();
 
-    for os_idx in 0..=3u32 {
-        for &cutoff in &[200.0_f32, 1000.0, 5000.0, 12000.0] {
-            let s = SharedParams::new();
-            s.set(en, 1.0);
-            s.set(res, 1.0); // top of range → self-oscillation
-            s.set(cut, cutoff);
-            s.set(os, os_idx as f32);
-
-            let mut e = Engine::new(SR, BLK);
-            e.snapshot_params(&s);
-            for &n in &[36u8, 48, 60, 72] {
-                e.note_on(n, 110);
-            }
-            let mut l = [0.0_f32; BLK];
-            let mut r = [0.0_f32; BLK];
-            let mut peak = 0.0_f32;
-            // ~0.5 s — long enough for any divergent limit cycle to show.
-            for _ in 0..(SR as usize / 2 / BLK) {
-                e.process_block(&mut l, &mut r);
-                for i in 0..BLK {
-                    assert!(
-                        l[i].is_finite() && r[i].is_finite(),
-                        "non-finite at {os_idx}× cutoff {cutoff}",
-                    );
-                    peak = peak.max(l[i].abs()).max(r[i].abs());
-                }
-            }
-            assert!(
-                peak < 100.0,
-                "{os_idx}× cutoff {cutoff}: self-osc unbounded (peak {peak})",
-            );
-        }
-    }
-}
-
-/// AC 5 + no-RT-alloc/panic — `Cutoff`/`Resonance` route through the matrix
-/// (velocity → cutoff, mod-env → resonance) with the filter on at every factor;
-/// the process callback stays finite and bounded with the modulation live.
-#[test]
-fn matrix_cutoff_resonance_routes_stay_finite_every_factor() {
-    let en = id_of("filter-enable").unwrap();
-    let cut = id_of("filter-cutoff").unwrap();
-    let res = id_of("filter-resonance").unwrap();
-    let os = id_of("filter-oversample").unwrap();
-
-    for os_idx in 0..=3u32 {
+    for &cutoff in &[200.0_f32, 1000.0, 5000.0, 12000.0] {
         let s = SharedParams::new();
         s.set(en, 1.0);
-        s.set(cut, 1200.0);
-        s.set(res, 0.5);
-        s.set(os, os_idx as f32);
-        // Velocity → Cutoff (octaves), Mod-env → Resonance (additive).
-        s.set_matrix_row_raw(
-            0,
-            MatrixRowRaw {
-                source: SourceId::Velocity as u8,
-                dest: DestId::Cutoff as u8,
-                curve: 0,
-                active: true,
-                depth: 1.0,
-            },
-        );
-        s.set_matrix_row_raw(
-            1,
-            MatrixRowRaw {
-                source: SourceId::ModEnv as u8,
-                dest: DestId::Resonance as u8,
-                curve: 0,
-                active: true,
-                depth: 1.0,
-            },
-        );
+        s.set(res, 1.0); // top of range → self-oscillation
+        s.set(cut, cutoff);
 
         let mut e = Engine::new(SR, BLK);
         e.snapshot_params(&s);
-        for (i, &n) in [40u8, 52, 64, 76].iter().enumerate() {
-            e.note_on(n, 40 + (i as u8) * 28); // spread velocities → spread cutoff
+        for &n in &[36u8, 48, 60, 72] {
+            e.note_on(n, 110);
         }
         let mut l = [0.0_f32; BLK];
         let mut r = [0.0_f32; BLK];
         let mut peak = 0.0_f32;
-        for _ in 0..(SR as usize / 4 / BLK) {
+        // ~0.5 s — long enough for any divergent limit cycle to show.
+        for _ in 0..(SR as usize / 2 / BLK) {
             e.process_block(&mut l, &mut r);
             for i in 0..BLK {
                 assert!(
                     l[i].is_finite() && r[i].is_finite(),
-                    "{os_idx}×: non-finite under matrix cutoff/reso mod",
+                    "non-finite at cutoff {cutoff}",
                 );
                 peak = peak.max(l[i].abs()).max(r[i].abs());
             }
         }
-        assert!(peak < 100.0, "{os_idx}×: matrix-modulated filter unbounded ({peak})");
+        assert!(
+            peak < 100.0,
+            "cutoff {cutoff}: self-osc unbounded (peak {peak})",
+        );
     }
+}
+
+/// AC 5 + no-RT-alloc/panic — `Cutoff`/`Resonance` route through the matrix
+/// (velocity → cutoff, mod-env → resonance) with the filter on (fixed 4×);
+/// the process callback stays finite and bounded with the modulation live.
+#[test]
+fn matrix_cutoff_resonance_routes_stay_finite() {
+    let en = id_of("filter-enable").unwrap();
+    let cut = id_of("filter-cutoff").unwrap();
+    let res = id_of("filter-resonance").unwrap();
+
+    let s = SharedParams::new();
+    s.set(en, 1.0);
+    s.set(cut, 1200.0);
+    s.set(res, 0.5);
+    // Velocity → Cutoff (octaves), Mod-env → Resonance (additive).
+    s.set_matrix_row_raw(
+        0,
+        MatrixRowRaw {
+            source: SourceId::Velocity as u8,
+            dest: DestId::Cutoff as u8,
+            curve: 0,
+            active: true,
+            depth: 1.0,
+        },
+    );
+    s.set_matrix_row_raw(
+        1,
+        MatrixRowRaw {
+            source: SourceId::ModEnv as u8,
+            dest: DestId::Resonance as u8,
+            curve: 0,
+            active: true,
+            depth: 1.0,
+        },
+    );
+
+    let mut e = Engine::new(SR, BLK);
+    e.snapshot_params(&s);
+    for (i, &n) in [40u8, 52, 64, 76].iter().enumerate() {
+        e.note_on(n, 40 + (i as u8) * 28); // spread velocities → spread cutoff
+    }
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    let mut peak = 0.0_f32;
+    for _ in 0..(SR as usize / 4 / BLK) {
+        e.process_block(&mut l, &mut r);
+        for i in 0..BLK {
+            assert!(
+                l[i].is_finite() && r[i].is_finite(),
+                "non-finite under matrix cutoff/reso mod",
+            );
+            peak = peak.max(l[i].abs()).max(r[i].abs());
+        }
+    }
+    assert!(peak < 100.0, "matrix-modulated filter unbounded ({peak})");
 }
 
 /// AC 6 — a resonant release tail must ring out with no "skip cliff": when the
@@ -237,7 +229,6 @@ fn resonant_release_tail_rings_out_without_skip_cliff() {
     s.set(id_of("filter-enable").unwrap(), 1.0);
     s.set(id_of("filter-cutoff").unwrap(), 700.0); // smooth ~700 Hz ring
     s.set(id_of("filter-resonance").unwrap(), 0.85);
-    s.set(id_of("filter-oversample").unwrap(), 1.0); // 2×
     s.set(id_of("delay-on").unwrap(), 0.0);
     s.set(id_of("reverb-on").unwrap(), 0.0);
 
@@ -272,21 +263,20 @@ fn resonant_release_tail_rings_out_without_skip_cliff() {
 /// The engine equal-power-crossfades the two dry buses across one ~8 ms window,
 /// so the toggle introduces no discontinuity beyond the tone's own slew.
 ///
-/// Checked at 8× (worst-case group delay) on both edges: hold a chord, render
-/// off → engage → settle → disengage → settle, and assert the `d4` click energy
-/// straddling each toggle stays within a small factor of the steady-state tone
-/// either side. A hard switch blows this by orders of magnitude.
+/// Checked at the fixed 4× (the group delay the toggle must hide) on both edges:
+/// hold a chord, render off → engage → settle → disengage → settle, and assert
+/// the `d4` click energy straddling each toggle stays within a small factor of
+/// the steady-state tone either side. A hard switch blows this by orders of
+/// magnitude.
 #[test]
 fn filter_toggle_is_click_free() {
     let en = id_of("filter-enable").unwrap();
     let cut = id_of("filter-cutoff").unwrap();
     let res = id_of("filter-resonance").unwrap();
-    let os = id_of("filter-oversample").unwrap();
 
     let s = SharedParams::new();
     s.set(cut, 2000.0);
     s.set(res, 0.4); // audible resonance ⇒ filtered tone clearly ≠ raw
-    s.set(os, 3.0); // 8× — largest resampler group delay, worst toggle step
     s.set(id_of("delay-on").unwrap(), 0.0);
     s.set(id_of("reverb-on").unwrap(), 0.0);
     s.set(en, 0.0); // boot OFF
@@ -339,3 +329,87 @@ fn filter_toggle_is_click_free() {
         "disengage |d4| {disengage:.2e} ≫ steady {steady:.2e}: filter-off toggle clicks",
     );
 }
+
+/// Regression: engaging (and disengaging) the filter while the dynamics FX is
+/// already live must stay click-free. The dynamics keeps the 4× span engaged on
+/// both sides of the toggle, so the span's single decimator must run once per
+/// block and stay continuous across the edge — an earlier version reset/reused
+/// the shared decimator on the filter edge, which clunked the dynamics-carried
+/// signal. Same `d4` guard as `filter_toggle_is_click_free`, but with dynamics
+/// (comp + tanh drive) engaged throughout.
+#[test]
+fn filter_toggle_over_live_dynamics_is_click_free() {
+    let en = id_of("filter-enable").unwrap();
+
+    let s = SharedParams::new();
+    s.set(id_of("filter-cutoff").unwrap(), 2000.0);
+    s.set(id_of("filter-resonance").unwrap(), 0.4);
+    // Dynamics live the whole time: it holds the oversampled span engaged across
+    // the filter toggle, so the span's single decimator must stay continuous. A
+    // gentle comp + mild drive keeps the block active (so the OS-blend path runs)
+    // without the compressor reacting hard to the level/brightness jump when the
+    // filter opens — that reaction is a real, musical response, not a glitch, and
+    // this test is guarding decimator continuity, not comp transient shaping.
+    s.set(id_of("dyn-on").unwrap(), 1.0);
+    s.set(id_of("dyn-threshold").unwrap(), -18.0);
+    s.set(id_of("dyn-ratio").unwrap(), 2.0);
+    s.set(id_of("dyn-drive").unwrap(), 6.0);
+    s.set(id_of("delay-on").unwrap(), 0.0);
+    s.set(id_of("reverb-on").unwrap(), 0.0);
+    s.set(en, 0.0); // boot with the filter OFF (dynamics-only span active)
+
+    let mut e = Engine::new(SR, BLK);
+    e.snapshot_params(&s);
+    for &n in &[40u8, 47, 52, 59] {
+        e.note_on(n, 100);
+    }
+
+    const ON_B: usize = 12;
+    const OFF_B: usize = 40;
+    const END: usize = 72;
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    let mut buf = Vec::with_capacity(END * BLK);
+    for b in 0..END {
+        if b == ON_B {
+            s.set(en, 1.0);
+            e.snapshot_params(&s);
+        } else if b == OFF_B {
+            s.set(en, 0.0);
+            e.snapshot_params(&s);
+        }
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+
+    // Steady baseline: the dynamics-processed tone's own slew, clear of either
+    // toggle (settled dynamics-only span before engage, settled filter+dynamics
+    // span before disengage).
+    let steady = worst_d4(&buf, (ON_B - 4) * BLK..(ON_B - 1) * BLK)
+        .max(worst_d4(&buf, (OFF_B - 4) * BLK..(OFF_B - 1) * BLK));
+
+    let engage = worst_d4(&buf, (ON_B - 1) * BLK..(ON_B + 9) * BLK);
+    let disengage = worst_d4(&buf, (OFF_B - 1) * BLK..(OFF_B + 9) * BLK);
+
+    // The pre-fix decimator clunk measured ~1.4e-1 — ~300× the steady slew — so
+    // both bounds sit far below it and would catch a regression outright.
+    //
+    // Engage (silence→filtered) is genuinely click-free: the continuous
+    // `interp_mix` OFF side carries the pre-engage signal straight through, so it
+    // holds to the same 4× bar as the dynamics-off toggle.
+    assert!(
+        engage <= 4.0 * steady,
+        "engage over live dynamics |d4| {engage:.2e} ≫ steady {steady:.2e}: decimator clunk",
+    );
+    // Disengage (filtered→raw) is looser only because the dynamics *correctly*
+    // tracks the real level/brightness jump as the filter opens (the saturator is
+    // memoryless, so it shapes the louder raw signal immediately) — a musical
+    // response, not a glitch. Softening the comp barely moves it, confirming it's
+    // signal-tracking, not a discontinuity. Still an order of magnitude under the
+    // clunk.
+    assert!(
+        disengage <= 8.0 * steady,
+        "disengage over live dynamics |d4| {disengage:.2e} ≫ steady {steady:.2e}: decimator clunk",
+    );
+}
+

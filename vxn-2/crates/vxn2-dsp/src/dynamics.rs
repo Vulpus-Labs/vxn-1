@@ -145,6 +145,17 @@ impl DynamicsBlock {
         self.was_active = false;
     }
 
+    /// True while the block contributes anything to the output — either
+    /// enabled, or mid switch-off fade before the wet has reached 0. The engine
+    /// gates the oversampled span on this (not just `enabled`) so the fade-out
+    /// still runs at the oversampled rate before the render falls back to the
+    /// base-rate path; the same fade the on/off discipline relies on. Once this
+    /// returns false, `process` is a bit-exact passthrough.
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.enabled || self.mix.current() > 0.0
+    }
+
     /// Enable/bypass. Disabling pulls the wet smoother to 0 so the wet fades
     /// out cleanly; `process` reverts to bit-exact passthrough only once the
     /// fade has actually reached 0.
