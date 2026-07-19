@@ -44,11 +44,11 @@ const BLK: usize = 32;
 ///
 /// Moved by the constant-latency change (`SpanDelay`): the engine now emits the
 /// dry/bypass path delayed by the resampler round-trip (24 samples), so every
-/// sample shifts and the hash folds a new value. This value was captured on a
-/// **macOS 14** dev machine; if the pinned CI runner (macos-15) folds libm
-/// differently, its first run prints the runner-correct hash — paste that (see
-/// header).
-const EXPECTED: u64 = 0x533a_37a7_def1_921a;
+/// sample shifts and the hash folds a new value. Captured from the pinned CI
+/// runner's log (macos-15 — the enforcing environment; a macOS 14 dev machine
+/// folds libm differently and would print a different value, but the test skips
+/// there since `VXN_RENDER_HASH` is unset).
+const EXPECTED: u64 = 0x7831_bb33_1750_7ab5;
 
 /// Build the reference engine: a matrix-rich, deterministic patch.
 fn reference_engine() -> Engine {
