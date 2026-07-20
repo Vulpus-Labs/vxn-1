@@ -58,6 +58,8 @@ pub enum EngineCommand {
     SetSend { track: u8, amount: f32 },
     /// Mute / unmute a track (gates its mix contribution).
     SetMute { track: u8, muted: bool },
+    /// Assign a track's choke group (0 = none). Members of a non-zero group cut each other.
+    SetChokeGroup { track: u8, group: u8 },
     /// Master output volume (linear gain, applied pre-limiter).
     SetMasterVolume { value: f32 },
     /// Master delay feedback (0..~1.3; >1 self-oscillates).

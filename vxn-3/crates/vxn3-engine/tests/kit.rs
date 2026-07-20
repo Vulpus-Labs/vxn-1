@@ -233,7 +233,7 @@ fn driven_flavour_trig_is_allocation_free() {
     engine
         .track_mut(1)
         .engine
-        .apply_flavour(vxn3_engine::engines::metal::flavour_cymbal());
+        .apply_flavour(vxn3_engine::engines::metal::flavour_crash());
     // Track 2 is Noise — give it a 4-tap clap so the burst gate + SVF + snap run (0182).
     engine
         .track_mut(2)
@@ -242,7 +242,7 @@ fn driven_flavour_trig_is_allocation_free() {
     // Track 3 — a Struck kick2 so the resonator's per-trig resolve + droop + shaped
     // excitation run under the trap (0184).
     engine.track_mut(3).engine = make(EngineKind::Struck, SR);
-    engine.track_mut(3).engine.apply_flavour(vxn3_engine::engines::struck::flavour_kick2());
+    engine.track_mut(3).engine.apply_flavour(vxn3_engine::engines::struck::flavour_kick());
     for s in [2, 6, 10, 14] {
         engine.pattern_mut(3).set(s, 40.0, 1.0);
     }

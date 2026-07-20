@@ -29,6 +29,10 @@ pub struct Track {
     /// (host-automatable mix param, 0171). Independent of `level` so unmuting
     /// restores the prior gain.
     muted: bool,
+    /// Choke group (0 = none). Tracks sharing a non-zero group cut each other: a trig on any
+    /// member fast-releases the others' sounding voices (808 open/closed hat behaviour, as a
+    /// track-routing relationship rather than an engine-config one).
+    choke_group: u8,
     /// Pre-allocated mono render scratch (sized at construction).
     mono: Vec<f32>,
 }
@@ -45,8 +49,19 @@ impl Track {
             base: [1.0, 0.0, 0.5, 0.5, 0.5, 0.0],
             applied: [f32::NAN; N_LOCK_PARAMS],
             muted: false,
+            choke_group: 0,
             mono: vec![0.0; max_block],
         }
+    }
+
+    /// Assign the track's choke group (0 = none).
+    pub fn set_choke_group(&mut self, group: u8) {
+        self.choke_group = group;
+    }
+
+    /// The track's choke group (0 = none).
+    pub fn choke_group(&self) -> u8 {
+        self.choke_group
     }
 
     /// Set a lockable param's base value (from a UI command).
@@ -122,19 +137,35 @@ impl Track {
     /// pre-scheduled `hits` sample-accurately by slicing the render at each hit's
     /// frame offset. `hits` are frame-ordered and clamped to `[0, frames]` by the
     /// scheduler ([`crate::lane`]). Allocation-free.
-    pub fn render_with_hits(&mut self, hits: &[Hit], frames: usize) {
+    /// `chokes` are sample offsets (sorted) at which a sibling choke-group track fires — the
+    /// engine is fast-released at each. Hits and chokes are merged by frame so both stay
+    /// sample-accurate; at a shared frame the choke is applied before the trig.
+    pub fn render_with_hits(&mut self, hits: &[Hit], chokes: &[usize], frames: usize) {
         let frames = frames.min(self.mono.len());
         let engine: &mut dyn TrackEngine = &mut *self.engine;
         let mono = &mut self.mono[..frames];
 
         let mut pos = 0usize;
-        for h in hits {
-            let f = h.frame.min(frames);
+        let (mut hi, mut ci) = (0usize, 0usize);
+        loop {
+            let hf = hits.get(hi).map_or(usize::MAX, |h| h.frame.min(frames));
+            let cf = chokes.get(ci).map_or(usize::MAX, |&c| c.min(frames));
+            let f = hf.min(cf);
+            if f == usize::MAX {
+                break;
+            }
             if f > pos {
                 engine.render(&mut mono[pos..f]);
                 pos = f;
             }
-            engine.on_trig(h.note, h.velocity);
+            // Choke first at a shared frame, so a closed hit cuts the ring it lands on.
+            if cf == f {
+                engine.choke();
+                ci += 1;
+            } else {
+                engine.on_trig(hits[hi].note, hits[hi].velocity);
+                hi += 1;
+            }
         }
         engine.render(&mut mono[pos..frames]);
     }

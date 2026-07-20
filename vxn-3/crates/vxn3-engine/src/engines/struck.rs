@@ -82,41 +82,46 @@ fn struck_flavour(base: [f32; STRUCK_P], macro_defaults: [f32; MACRO_SLOTS]) -> 
 
 /// The default Struck flavour — a serviceable struck body (harmonic, exp excitation).
 pub fn struck_default_flavour() -> Flavour {
-    struck_flavour([0.4, 1.0, 6.0, 0.04, 1.0, 0.008, 0.6, 0.0], [0.5; MACRO_SLOTS])
+    struck_flavour([0.2, 1.0, 6.0, 0.04, 1.0, 0.008, 0.5, 0.0], [0.3, 0.5, 0.1])
 }
 
 // ── Authored Struck flavours (0184) ──────────────────────────────────────────────
 // Base = [decay, tune, droop_st, glide_s, exc_shape, strike_s, excite, inharm]. Pitch
 // comes from the sequenced note × Tune.
 
-/// kick2 — deep droop, exp strike, long-ish harmonic body.
-pub fn flavour_kick2() -> Flavour {
-    struck_flavour([0.45, 1.0, 14.0, 0.055, EXC_EXP as f32, 0.010, 0.75, 0.0], [0.4, 0.6, 0.1])
+/// Kick — struck-resonator kick (patches-drums kick2): deep droop, exp strike, ~0.55 s
+/// harmonic body. Lane note ~33 (× Tune 1.0 ≈ 55 Hz). Punchier and more physical than the
+/// sine `Kick`.
+pub fn flavour_kick() -> Flavour {
+    struck_flavour([0.15, 1.0, 16.0, 0.055, EXC_EXP as f32, 0.010, 0.51, 0.0], [0.25, 0.6, 0.05])
 }
 
-/// tom2 — moderate droop, half-sine strike, a touch inharmonic.
-pub fn flavour_tom2() -> Flavour {
-    struck_flavour([0.55, 1.0, 8.0, 0.06, EXC_HALF_SINE as f32, 0.012, 0.6, 0.1], [0.5, 0.5, 0.15])
+/// Tom — struck-resonator tom (patches-drums tom2): moderate droop, half-sine strike, ~0.6 s
+/// body, a touch inharmonic for a real membrane.
+pub fn flavour_tom() -> Flavour {
+    struck_flavour([0.12, 1.0, 8.0, 0.06, EXC_HALF_SINE as f32, 0.012, 0.45, 0.0], [0.3, 0.5, 0.15])
 }
 
-/// claves2 — short, high, near-no droop, a dirac click.
-pub fn flavour_claves2() -> Flavour {
-    struck_flavour([0.1, 2.0, 2.0, 0.012, EXC_DIRAC as f32, 0.002, 0.5, 0.2], [0.1, 0.4, 0.2])
+/// Claves — short, high, near-no droop, a dirac click (patches-drums claves2). Lane note ~72
+/// (× Tune 2.5) gives the bright bandpass ping the sine engine can't make.
+pub fn flavour_claves() -> Flavour {
+    struck_flavour([0.05, 2.5, 2.0, 0.010, EXC_DIRAC as f32, 0.002, 0.34, 0.0], [0.0, 0.4, 0.2])
 }
 
-/// modal cymbal — long, high, inharmonic, filtered-click strike, no droop.
-pub fn flavour_modal_cymbal() -> Flavour {
-    struck_flavour([1.8, 3.0, 0.0, 0.02, EXC_FILTERED_CLICK as f32, 0.02, 0.6, 0.9], [0.8, 0.5, 0.9])
+/// Cymbal — long, high, inharmonic, filtered-click strike, no droop (a struck modal crash,
+/// patches-drums cymbal2 / modal-cymbal).
+pub fn flavour_cymbal() -> Flavour {
+    struck_flavour([0.68, 3.0, 0.0, 0.02, EXC_FILTERED_CLICK as f32, 0.02, 0.45, 0.9], [0.7, 0.5, 0.9])
 }
 
 /// The authored Struck flavours (name → flavour), for the editor / factory bank.
 pub fn struck_flavours() -> [(&'static str, Flavour); 5] {
     [
         ("default", struck_default_flavour()),
-        ("kick2", flavour_kick2()),
-        ("tom2", flavour_tom2()),
-        ("claves2", flavour_claves2()),
-        ("modal-cymbal", flavour_modal_cymbal()),
+        ("Kick", flavour_kick()),
+        ("Tom", flavour_tom()),
+        ("Claves", flavour_claves()),
+        ("Cymbal", flavour_cymbal()),
     ]
 }
 
@@ -388,7 +393,14 @@ mod tests {
 
     fn render(flav: Flavour, note: f32, n: usize) -> Vec<f32> {
         let mut e = Struck::with_default_patch(48_000.0);
+        let md = flav.macro_defaults;
         e.apply_flavour(flav);
+        // Seed live macros from the flavour's shipped defaults (apply_flavour keeps live
+        // macros, so a test flavour's macro_defaults would otherwise be ignored — the UI does
+        // the same snap on voice assign).
+        for (s, &v) in md.iter().enumerate() {
+            e.set_macro(s, v);
+        }
         let mut buf = vec![0.0_f32; n];
         e.on_trig(note, 1.0);
         e.render(&mut buf);

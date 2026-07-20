@@ -62,30 +62,33 @@ fn noise_flavour(base: [f32; NOISE_P], macro_defaults: [f32; MACRO_SLOTS]) -> Fl
     }
 }
 
-/// The default Noise flavour — a serviceable snare. Snap off, single tap, so it matches
-/// the pre-0182 character at the base.
+/// The default Noise flavour — a rounder, general-purpose snare: a little snap, single
+/// tap, a touch more body than `Snare` (shown as "Noise", the family's neutral start).
 pub fn noise_default_flavour() -> Flavour {
-    noise_flavour([0.18, 0.12, 0.35, 1500.0, 1.0, 0.0, 1.0, 0.012], [0.5; MACRO_SLOTS])
+    noise_flavour([0.09, 0.16, 0.40, 900.0, 1.0, 0.3, 1.0, 0.012], [0.35, 0.2, 0.35])
 }
 
 // ── Authored Noise flavours (0182) ───────────────────────────────────────────────
 
-/// Snare-noise: bright filtered burst with a tuned body + a little snap, one tap.
-pub fn flavour_snare_noise() -> Flavour {
-    noise_flavour([0.15, 0.10, 0.40, 2200.0, 1.2, 0.35, 1.0, 0.012], [0.3, 0.5, 0.6])
+/// Snare — 808 snare (patches-drums snare defaults): noise-decay 0.2 s, body-decay 0.15 s,
+/// tone 0.5 (≈ mix 0.45 → 50/50 body↔noise), band 3 kHz, snap 0.5, one tap. The body tracks
+/// the sequenced note, so the snare lane plays ~MIDI 54 (180 Hz) for the classic pitch.
+pub fn flavour_snare() -> Flavour {
+    noise_flavour([0.07, 0.15, 0.29, 1050.0, 1.2, 0.5, 1.0, 0.012], [0.4, 0.25, 0.3])
 }
 
-/// Clap: a focused mid band, no tuned body, four rapid taps → the clap "brrap".
+/// Clap — 808 clap (patches-drums clap defaults): mid band ~1.2 kHz, no tuned body, four
+/// rapid bursts (`bursts` 4, `spread` 0.5 → ~12 ms tap spacing) → the clap "brrap".
 pub fn flavour_clap() -> Flavour {
-    noise_flavour([0.06, 0.02, 0.0, 1000.0, 2.5, 0.2, 4.0, 0.011], [0.2, 0.0, 0.4])
+    noise_flavour([0.03, 0.02, 0.0, 550.0, 2.0, 0.15, 4.0, 0.012], [0.2, 0.0, 0.1])
 }
 
 /// The authored Noise flavours (name → flavour), for the editor / factory bank.
 pub fn noise_flavours() -> [(&'static str, Flavour); 3] {
     [
         ("default", noise_default_flavour()),
-        ("snare-noise", flavour_snare_noise()),
-        ("clap", flavour_clap()),
+        ("Snare", flavour_snare()),
+        ("Clap", flavour_clap()),
     ]
 }
 

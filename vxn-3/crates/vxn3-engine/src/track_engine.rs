@@ -37,6 +37,12 @@ pub trait TrackEngine: Send {
     /// Silence all voices / collapse decaying state (transport stop, reset).
     fn reset(&mut self);
 
+    /// Cross-track choke: fast-release whatever is currently sounding, without a re-trig.
+    /// Routed by the sequencer when another track in this track's choke group fires (e.g. a
+    /// closed hi-hat cutting a ringing open hat on a sibling track). Default: no-op — only
+    /// engines with an audible ring (Metal) need it.
+    fn choke(&mut self) {}
+
     /// Re-cook sample-rate-dependent coefficients.
     fn set_sample_rate(&mut self, sample_rate: f32);
 

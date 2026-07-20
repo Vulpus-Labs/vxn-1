@@ -51,8 +51,9 @@ pub static DRIVEN_PARAMS: [ParamMeta; DRIVEN_P] = [
 /// base value, at 1 gives base + depth (clamped).
 pub fn driven_default_flavour() -> Flavour {
     driven_flavour(
-        [0.001, 0.35, 24.0, 0.05, 0.0, 0.0],
-        [0.5; MACRO_SLOTS],
+        // 808 kick: 0.5 s body, ~0.04 s sweep, click 0.3, clean (patches-drums kick defaults).
+        [0.001, 0.175, 41.0, 0.01, 0.0, 0.3],
+        [0.5, 0.3, 0.6],
     )
 }
 
@@ -78,35 +79,40 @@ fn driven_flavour(base: [f32; DRIVEN_P], macro_defaults: [f32; MACRO_SLOTS]) -> 
 // sequencer, so flavours differ in character (sweep/decay/drive/click), not fixed pitch.
 // Macro defaults sit mid-ish so the shipped sound is the intended one at neutral knobs.
 
-/// Deep 808-ish kick: long-ish body, deep fast sweep, a touch of drive + beater click.
-pub fn flavour_kick() -> Flavour {
-    driven_flavour([0.001, 0.30, 30.0, 0.045, 0.25, 0.20], [0.3, 0.4, 0.6])
+/// Sub Kick — deep, long sub-boom: ~0.8 s body, very deep sweep, a little drive/click.
+pub fn flavour_sub_kick() -> Flavour {
+    driven_flavour([0.001, 0.41, 40.0, 0.02, 0.08, 0.15], [0.6, 0.3, 0.7])
 }
 
-/// Tom: mid decay, moderate sweep, clean (no drive/click) — a round pitched drum.
+/// Tom — round pitched drum: ~0.3 s body, moderate sweep, soft click (patches-drums tom
+/// defaults: decay 0.3, sweep-time 0.03; the noise-attack layer has no sine-engine home).
 pub fn flavour_tom() -> Flavour {
-    driven_flavour([0.001, 0.45, 14.0, 0.08, 0.0, 0.0], [0.5, 0.5, 0.4])
+    driven_flavour([0.001, 0.105, 17.0, 0.005, 0.0, 0.05], [0.3, 0.3, 0.4])
 }
 
-/// Snare-body: short tonal thud with more drive for buzz + a little click.
-pub fn flavour_snare_body() -> Flavour {
-    driven_flavour([0.001, 0.18, 10.0, 0.03, 0.5, 0.25], [0.2, 0.3, 0.3])
+/// Conga — short mid tonal drum: fast decay, small sweep, a little drive + click for skin.
+/// (The snare's tonal body now lives folded into `Noise · Snare`; this slot is the mid
+/// hand-drum the sine engine does well.)
+pub fn flavour_conga() -> Flavour {
+    driven_flavour([0.0008, 0.05, 8.0, 0.005, 0.12, 0.2], [0.2, 0.2, 0.3])
 }
 
-/// Claves: very short high tick — no sweep to speak of, strong click, no drive.
-pub fn flavour_claves() -> Flavour {
-    driven_flavour([0.0005, 0.07, 2.0, 0.01, 0.0, 0.8], [0.1, 0.1, 0.1])
+/// Zap — short tonal down-blip: near-instant decay, deep fast sweep, strong click. A
+/// synthetic tick/laser-tom. (A true clave — a bright bandpass ping — is `Struck · Claves`;
+/// the pure-sine engine can only approximate it, so this slot is an honest zap instead.)
+pub fn flavour_zap() -> Flavour {
+    driven_flavour([0.0005, 0.04, 22.0, 0.005, 0.1, 0.5], [0.1, 0.5, 0.2])
 }
 
 /// The authored Driven flavours (name → flavour), for the editor / factory bank (0185,
-/// 0187) to enumerate. `default` is the neutral starting point.
+/// 0187) to enumerate. `default` is the neutral starting point (shown as "Kick").
 pub fn driven_flavours() -> [(&'static str, Flavour); 5] {
     [
         ("default", driven_default_flavour()),
-        ("kick", flavour_kick()),
-        ("tom", flavour_tom()),
-        ("snare-body", flavour_snare_body()),
-        ("claves", flavour_claves()),
+        ("Sub Kick", flavour_sub_kick()),
+        ("Tom", flavour_tom()),
+        ("Conga", flavour_conga()),
+        ("Zap", flavour_zap()),
     ]
 }
 
@@ -662,11 +668,11 @@ mod tests {
             e.render(&mut buf);
             buf
         };
-        let kick = render_eqmacro(flavour_kick());
+        let kick = render_eqmacro(driven_default_flavour());
         let tom = render_eqmacro(flavour_tom());
         assert_ne!(kick, tom, "kick and tom render identically");
-        // Tom's longer decay ⇒ more sustained energy than the punchy kick.
-        assert!(rms(&tom) > rms(&kick), "tom not longer than kick: {} vs {}", rms(&kick), rms(&tom));
+        // The 808 kick's long body (~0.5 s) sustains more energy than the shorter tom (~0.4 s).
+        assert!(rms(&kick) > rms(&tom), "kick not longer than tom: {} vs {}", rms(&kick), rms(&tom));
     }
 
     /// Every authored flavour is audibly distinct (pairwise), via the registry.

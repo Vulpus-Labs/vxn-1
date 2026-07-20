@@ -45,8 +45,12 @@ pub const P_XOR_MIX: usize = 5;
 pub const P_SHIMMER: usize = 6;
 pub const P_SHIMMER_RATE: usize = 7;
 pub const P_BRIGHT: usize = 8;
+/// HP-filtered white-noise layer, blended against the metallic (modal+XOR) sum. This is the
+/// `patches-drums` hi-hat/cymbal "air" — those voices are `metal·tone + hp_noise·(1-tone)`;
+/// here `noise` is that `(1-tone)`. 0 = pure metal (the pre-0189 sound, bit-for-bit).
+pub const P_NOISE: usize = 9;
 /// Metal param count `P`.
-pub const METAL_P: usize = 9;
+pub const METAL_P: usize = 10;
 
 /// Per-param metadata for the Metal family — queryable on the main thread.
 pub static METAL_PARAMS: [ParamMeta; METAL_P] = [
@@ -59,6 +63,7 @@ pub static METAL_PARAMS: [ParamMeta; METAL_P] = [
     ParamMeta { name: "Shimmer", unit: MacroUnit::Percent, min: 0.0, max: 1.0, default: 0.0 },
     ParamMeta { name: "Rate", unit: MacroUnit::Hertz, min: 1.0, max: 12.0, default: 6.0 },
     ParamMeta { name: "Bright", unit: MacroUnit::Hertz, min: 500.0, max: 10000.0, default: 5000.0 },
+    ParamMeta { name: "Noise", unit: MacroUnit::Percent, min: 0.0, max: 1.0, default: 0.0 },
 ];
 
 /// Build a Metal flavour from a full base vector + macro defaults, wiring the three
@@ -80,7 +85,7 @@ fn metal_flavour(base: [f32; METAL_P], macro_defaults: [f32; MACRO_SLOTS]) -> Fl
 /// The default Metal flavour — the pure-modal hat/cymbal body (XOR + shimmer off), so
 /// it matches the pre-0183 character at the base.
 pub fn metal_default_flavour() -> Flavour {
-    metal_flavour([1200.0, 1.1, 0.08, 0.5, 44.0, 0.0, 0.0, 6.0, 5000.0], [0.5; MACRO_SLOTS])
+    metal_flavour([700.0, 0.9, 0.08, 0.4, 44.0, 0.4, 0.0, 6.0, 6500.0, 0.0], [0.4, 0.5, 0.5])
 }
 
 // ── Authored Metal flavours (0183) ───────────────────────────────────────────────
@@ -88,34 +93,37 @@ pub fn metal_default_flavour() -> Flavour {
 // Choke is by note vs `split`: play the "open" note (≥ split) for a ring, a note < split
 // to choke it. So one flavour covers a closed *and* an open hit on the same body.
 
-/// Closed hat — high, tight, noisy (mostly XOR), short ring.
-pub fn flavour_closed_hat() -> Flavour {
-    metal_flavour([2000.0, 0.25, 0.05, 0.6, 44.0, 0.7, 0.0, 6.0, 7500.0], [0.1, 0.5, 0.6])
+/// The one 808 hi-hat: a single point in Metal's config space that **both** the Closed Hat
+/// and Open Hat voices use. The 808 relationship — closed and open are the *same* oscillator
+/// bank, differing only in decay — is expressed as: identical base vector, with the sequenced
+/// **note** selecting which decay sounds (`note < split` = closed 0.045 s, `note ≥ split` =
+/// open ~0.65 s). The two library voices differ only in their default note; a **choke group**
+/// (track routing) gives the mutual cut across the two tracks. Noise-dominant so it reads as
+/// hiss not pitched metal: modal ring ~15 % (xor_mix 0.85), noise 0.78, HP 8 kHz.
+///
+/// `[base_hz, open_decay, closed_decay, excite, split, xor_mix, shimmer, rate, bright, noise]`
+pub fn flavour_hat() -> Flavour {
+    metal_flavour([900.0, 0.42, 0.045, 0.35, 44.0, 0.85, 0.0, 6.0, 8000.0, 0.78], [0.12, 0.5, 0.5])
 }
 
-/// Open hat — same bright metal, long ring (choked by a closed hit on the body).
-pub fn flavour_open_hat() -> Flavour {
-    metal_flavour([2000.0, 0.9, 0.1, 0.6, 44.0, 0.7, 0.0, 6.0, 7500.0], [0.5, 0.5, 0.6])
-}
-
-/// Ride — tonal, sustained, gentle shimmer, more modal than noise.
+/// Ride — tonal, sustained, gentle shimmer, more modal than square, defined bell.
 pub fn flavour_ride() -> Flavour {
-    metal_flavour([1000.0, 2.0, 0.15, 0.4, 44.0, 0.3, 0.4, 5.0, 4000.0], [0.7, 0.4, 0.4])
+    metal_flavour([400.0, 1.25, 0.15, 0.2, 44.0, 0.2, 0.35, 5.0, 4500.0, 0.2], [0.5, 0.4, 0.35])
 }
 
-/// Cymbal — long bright wash, half metal / half modal, strong shimmer.
-pub fn flavour_cymbal() -> Flavour {
-    metal_flavour([800.0, 2.8, 0.2, 0.6, 44.0, 0.5, 0.5, 4.0, 6000.0], [0.8, 0.6, 0.35])
+/// Crash — long bright wash: low body, half square / half modal, strong shimmer.
+pub fn flavour_crash() -> Flavour {
+    metal_flavour([300.0, 1.67, 0.2, 0.4, 44.0, 0.5, 0.55, 4.0, 7000.0, 0.4], [0.7, 0.6, 0.35])
 }
 
 /// The authored Metal flavours (name → flavour), for the editor / factory bank.
 pub fn metal_flavours() -> [(&'static str, Flavour); 5] {
     [
         ("default", metal_default_flavour()),
-        ("closed-hat", flavour_closed_hat()),
-        ("open-hat", flavour_open_hat()),
-        ("ride", flavour_ride()),
-        ("cymbal", flavour_cymbal()),
+        ("Closed Hat", flavour_hat()),
+        ("Open Hat", flavour_hat()),
+        ("Ride", flavour_ride()),
+        ("Crash", flavour_crash()),
     ]
 }
 
@@ -134,8 +142,10 @@ pub struct MetalPatch {
     pub shimmer: f32,
     /// Shimmer-LFO rate (Hz).
     pub shimmer_rate: f32,
-    /// XOR-path highpass cutoff (Hz) — brightness.
+    /// XOR-path (and noise-path) highpass cutoff (Hz) — brightness.
     pub bright: f32,
+    /// HP-white-noise blend `0..1` (0 = pure metal, 1 = pure HP noise). The hi-hat "air".
+    pub noise: f32,
 }
 
 impl Default for MetalPatch {
@@ -150,6 +160,7 @@ impl Default for MetalPatch {
             shimmer: 0.0,
             shimmer_rate: 6.0,
             bright: 5_000.0,
+            noise: 0.0,
         }
     }
 }
@@ -183,6 +194,11 @@ pub struct Metal {
     hp_y: f32,
     hp_x1: f32,
 
+    // HP-white-noise layer (shares hp_coef cutoff; own filter state + PRNG).
+    rng: u32,
+    nhp_y: f32,
+    nhp_x1: f32,
+
     // Shimmer LFO.
     lfo_phase: u32,
     lfo_inc: u32,
@@ -205,13 +221,16 @@ impl Metal {
             open_decay: 0.0,
             closed_decay: 0.0,
             cur_decay: 0.0,
-            out_gain: 0.25,
+            out_gain: 0.4,
             xor_phase: [0; XOR_OSCS],
             xor_inc: [0; XOR_OSCS],
             xor_env: 0.0,
             hp_coef: 0.0,
             hp_y: 0.0,
             hp_x1: 0.0,
+            rng: 0x2545_F491,
+            nhp_y: 0.0,
+            nhp_x1: 0.0,
             lfo_phase: 0,
             lfo_inc: 0,
         };
@@ -236,6 +255,7 @@ impl Metal {
         self.patch.shimmer = r[P_SHIMMER];
         self.patch.shimmer_rate = r[P_SHIMMER_RATE];
         self.patch.bright = r[P_BRIGHT];
+        self.patch.noise = r[P_NOISE];
         self.cook();
         self.dirty = false;
     }
@@ -257,6 +277,17 @@ impl Metal {
         self.hp_coef = (-two_pi * self.patch.bright / self.sample_rate).exp();
         self.lfo_inc = phase_inc_hz(self.patch.shimmer_rate, self.sample_rate) as u32;
     }
+
+    /// xorshift32 white noise in `[-1, 1)` — the hi-hat/cymbal "air" source.
+    #[inline]
+    fn white(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x as i32 as f32) * (1.0 / 2_147_483_648.0)
+    }
 }
 
 impl TrackEngine for Metal {
@@ -265,6 +296,7 @@ impl TrackEngine for Metal {
         let g = self.out_gain;
         let mix = self.patch.xor_mix;
         let shim = self.patch.shimmer;
+        let noise = self.patch.noise;
         let hp = self.hp_coef;
 
         for s in out.iter_mut() {
@@ -291,8 +323,20 @@ impl TrackEngine for Metal {
             self.hp_y = hy;
             self.hp_x1 = xraw;
 
-            // Blend + shimmer tremolo. `mix = 0, shim = 0` ⇒ `modal * g` bit-for-bit.
-            let mixed = modal * (1.0 - mix) + hy * mix;
+            // HP-white-noise "air": envelope-tracked white noise, same choke decay + HP cutoff
+            // as the XOR path. Blended against the metallic sum so the hi-hat/cymbal reaches
+            // its `patches-drums` hiss (metal·(1-noise) + hp_noise·noise).
+            // ×2.0 (not the XOR path's ×0.5): the HP strips ~⅔ of white-noise energy, and a
+            // noise-dominant hat no longer has the modal ring to carry its level, so the noise
+            // must be hotter to sit with the kick/snare.
+            let nraw = self.white() * self.xor_env * 2.0;
+            let nhy = hp * (self.nhp_y + nraw - self.nhp_x1);
+            self.nhp_y = nhy;
+            self.nhp_x1 = nraw;
+
+            // Blend + shimmer tremolo. `mix = 0, noise = 0, shim = 0` ⇒ `modal * g` bit-for-bit.
+            let metal_sum = modal * (1.0 - mix) + hy * mix;
+            let mixed = metal_sum * (1.0 - noise) + nhy * noise;
             self.lfo_phase = self.lfo_phase.wrapping_add(self.lfo_inc);
             let gmod = 1.0 + shim * 0.5 * fast_sine_q32(self.lfo_phase);
             *s = mixed * g * gmod;
@@ -317,12 +361,20 @@ impl TrackEngine for Metal {
         };
     }
 
+    /// Cross-track choke (a closed hit cutting an open ring on another track): collapse the
+    /// live decay to a fast ~5 ms release. The next `on_trig` restores the flavour's decay.
+    fn choke(&mut self) {
+        self.cur_decay = decay_coef(0.005, self.sample_rate);
+    }
+
     fn reset(&mut self) {
         self.re = [0.0; METAL_MODES];
         self.im = [0.0; METAL_MODES];
         self.xor_env = 0.0;
         self.hp_y = 0.0;
         self.hp_x1 = 0.0;
+        self.nhp_y = 0.0;
+        self.nhp_x1 = 0.0;
         self.cur_decay = self.open_decay;
     }
 
@@ -447,20 +499,33 @@ mod tests {
     /// HF-richer and audibly different from the pure modal ring.
     #[test]
     fn xor_source_adds_metallic_brightness() {
-        let modal = [1500.0, 0.8, 0.08, 0.6, 44.0, 0.0, 0.0, 6.0, 7000.0];
-        let metal = [1500.0, 0.8, 0.08, 0.6, 44.0, 0.85, 0.0, 6.0, 7000.0];
+        let modal = [1500.0, 0.8, 0.08, 0.6, 44.0, 0.0, 0.0, 6.0, 7000.0, 0.0];
+        let metal = [1500.0, 0.8, 0.08, 0.6, 44.0, 0.85, 0.0, 6.0, 7000.0, 0.0];
         let m = render_open(metal_flavour(modal, [0.0; MACRO_SLOTS]), 4_800);
         let x = render_open(metal_flavour(metal, [0.0; MACRO_SLOTS]), 4_800);
         assert_ne!(m, x, "XOR mix changed nothing");
         assert!(hf_fraction(&x) > hf_fraction(&m) * 1.3, "XOR not brighter: {} vs {}", hf_fraction(&m), hf_fraction(&x));
     }
 
+    /// The HP-noise layer adds broadband "air": blending it in keeps the voice audible and
+    /// makes it HF-richer than the pure metallic ring (the `patches-drums` hi-hat hiss).
+    #[test]
+    fn noise_layer_adds_air() {
+        let dry = [2000.0, 0.3, 0.08, 0.6, 44.0, 0.5, 0.0, 6.0, 8000.0, 0.0];
+        let air = [2000.0, 0.3, 0.08, 0.6, 44.0, 0.5, 0.0, 6.0, 8000.0, 0.8];
+        let d = render_open(metal_flavour(dry, [0.0; MACRO_SLOTS]), 4_800);
+        let a = render_open(metal_flavour(air, [0.0; MACRO_SLOTS]), 4_800);
+        assert_ne!(d, a, "noise layer changed nothing");
+        assert!(rms(&a) > 0.01, "noise voice silent: {}", rms(&a));
+        assert!(hf_fraction(&a) > hf_fraction(&d), "noise not brighter: {} vs {}", hf_fraction(&d), hf_fraction(&a));
+    }
+
     /// The shimmer LFO amplitude-modulates the output: with shimmer on, the windowed
     /// amplitude envelope wobbles more than the smooth decay of the shimmer-off ring.
     #[test]
     fn shimmer_modulates_amplitude() {
-        let flat = [1000.0, 2.5, 0.1, 0.6, 44.0, 0.0, 0.0, 6.0, 5000.0];
-        let wob = [1000.0, 2.5, 0.1, 0.6, 44.0, 0.0, 0.9, 8.0, 5000.0];
+        let flat = [1000.0, 2.5, 0.1, 0.6, 44.0, 0.0, 0.0, 6.0, 5000.0, 0.0];
+        let wob = [1000.0, 2.5, 0.1, 0.6, 44.0, 0.0, 0.9, 8.0, 5000.0, 0.0];
         let a = render_open(metal_flavour(flat, [0.0; MACRO_SLOTS]), 24_000);
         let b = render_open(metal_flavour(wob, [0.0; MACRO_SLOTS]), 24_000);
         assert_ne!(a, b, "shimmer changed nothing");
@@ -474,16 +539,60 @@ mod tests {
         assert!(cov(&b) > cov(&a) * 1.5, "shimmer did not wobble amplitude: {} vs {}", cov(&a), cov(&b));
     }
 
-    /// Every authored flavour is audibly distinct (pairwise), via the registry.
+    /// Authored flavours are distinct sounds. The Closed/Open Hat pair is deliberately **one**
+    /// config point (the 808 shared bank) distinguished only by the played note, so equal
+    /// flavours are skipped here — their note-selected distinction is checked below.
     #[test]
     fn metal_flavours_are_distinct() {
         let flavs = metal_flavours();
         let rendered: Vec<Vec<f32>> = flavs.iter().map(|(_, f)| render_open(f.clone(), 9_600)).collect();
         for i in 0..rendered.len() {
             for j in (i + 1)..rendered.len() {
+                if flavs[i].1 == flavs[j].1 {
+                    continue; // same config point (the hat) — distinct by note, not by config
+                }
                 assert_ne!(rendered[i], rendered[j], "'{}' and '{}' identical", flavs[i].0, flavs[j].0);
             }
         }
+    }
+
+    /// The single hat point renders a *closed* hat below `split` and an *open* hat at/above it:
+    /// the note selects the decay, so one config yields two distinct sounds (the 808 relation).
+    #[test]
+    fn hat_note_selects_open_vs_closed() {
+        let render_note = |note: f32| {
+            let mut e = Metal::with_default_patch(48_000.0);
+            e.apply_flavour(flavour_hat());
+            let mut buf = vec![0.0_f32; 9_600];
+            e.on_trig(note, 1.0);
+            e.render(&mut buf);
+            buf
+        };
+        let closed = render_note(CLOSED);
+        let open = render_note(OPEN);
+        assert_ne!(closed, open, "hat note did not select the decay");
+        // Open rings well past the closed hat's short gate.
+        assert!(rms(&open[4_800..]) > rms(&closed[4_800..]) * 2.0, "open not longer than closed");
+    }
+
+    /// `choke()` fast-releases a sounding ring (the cross-track cut): after a choke the tail
+    /// collapses far below the pre-choke level, without a re-trig.
+    #[test]
+    fn choke_cuts_the_ring() {
+        let mut e = Metal::with_default_patch(48_000.0);
+        e.apply_flavour(flavour_hat());
+        e.on_trig(OPEN, 1.0); // long open ring
+        let mut before = vec![0.0_f32; 2_400];
+        e.render(&mut before);
+        e.choke();
+        let mut after = vec![0.0_f32; 4_800];
+        e.render(&mut after);
+        assert!(
+            rms(&after[2_400..]) < rms(&before) * 0.1,
+            "choke did not cut the ring: pre {} vs post {}",
+            rms(&before),
+            rms(&after[2_400..])
+        );
     }
 
     #[test]

@@ -77,15 +77,31 @@
   });
 
   // ── voice library ───────────────────────────────────────────────────────────
-  // voice = { id, name, engine, flavour }. Seeded from the factory flavours (one
+  // voice = { id, name, engine, flavour, note }. Seeded from the factory flavours (one
   // voice per authored flavour); the per-engine "default" flavour is named for the
   // engine. Users add/edit voices in the Voices tab.
+  //
+  // `note` is the drum's pitch (MIDI): the sine/struck body tracks it, and — crucially —
+  // Metal reads open-vs-closed from note-vs-split (44), so a hat's open/closed identity IS
+  // its note (closed < 44 ≤ open). Keyed "engine|name"; falls back to the engine default.
+  var NOTE_BY_VOICE = {
+    "kick|Kick": 33, "kick|Sub Kick": 26, "kick|Tom": 47, "kick|Conga": 55, "kick|Zap": 64,
+    "metal|Metal": 46, "metal|Closed Hat": 38, "metal|Open Hat": 50, "metal|Ride": 50, "metal|Crash": 50,
+    "noise|Noise": 54, "noise|Snare": 54, "noise|Clap": 48,
+    "struck|Struck": 45, "struck|Kick": 33, "struck|Tom": 47, "struck|Claves": 72, "struck|Cymbal": 60,
+  };
+  var NOTE_BY_ENGINE = { kick: 36, metal: 46, noise: 54, struck: 45 };
+  function noteForVoice(engineId, name) {
+    var k = engineId + "|" + name;
+    if (NOTE_BY_VOICE[k] != null) return NOTE_BY_VOICE[k];
+    return NOTE_BY_ENGINE[engineId] != null ? NOTE_BY_ENGINE[engineId] : 36;
+  }
   var voices = [];
   var nextVoiceId = 1;
   ENGINES.forEach(function (e) {
     (e.flavours || []).forEach(function (f) {
       var nm = f.name === "default" ? e.label : f.name;
-      voices.push({ id: nextVoiceId++, name: nm, engine: e.id, flavour: cloneFlavour(f) });
+      voices.push({ id: nextVoiceId++, name: nm, engine: e.id, flavour: cloneFlavour(f), note: noteForVoice(e.id, nm) });
     });
   });
   function voiceById(id) {
@@ -100,13 +116,16 @@
   }
 
   // ── lanes (reference a voice) ────────────────────────────────────────────────
-  var DEFAULT_LANE = ["Kick", "closed-hat", "snare-noise", "tom", "clap", "open-hat", "ride", "cymbal"];
+  var DEFAULT_LANE = ["Kick", "Closed Hat", "Snare", "Tom", "Clap", "Open Hat", "Ride", "Crash"];
+  // Choke groups (0 = none). Closed + Open Hat share group 1 → a closed hit cuts the open
+  // ring, the 808 relationship, as a cross-track routing link (not a per-hit note change).
+  var DEFAULT_CHOKE = [0, 1, 0, 0, 0, 1, 0, 0];
   var lanes = [];
   for (var t = 0; t < NT; t++) {
     var steps = [];
     for (var s = 0; s < NS; s++) steps.push({ on: false, prob: 1.0, retrig: false });
     var v = voiceByName(DEFAULT_LANE[t]) || voices[t % voices.length] || voices[0];
-    lanes.push({ voiceId: v ? v.id : 0, len: NS, steps: steps });
+    lanes.push({ voiceId: v ? v.id : 0, len: NS, steps: steps, choke: DEFAULT_CHOKE[t] || 0 });
   }
 
   // Assign a voice to a lane: update the reference, tell the backend (engine + the
@@ -114,11 +133,26 @@
   function assignVoice(track, voiceId) {
     lanes[track].voiceId = voiceId;
     var v = voiceById(voiceId);
+    // Re-pitch any already-lit steps to the new voice's note (a hat's open/closed identity
+    // lives in the note, so reassigning must re-note or the drum plays at the old pitch).
+    var st = lanes[track].steps;
+    for (var s = 0; s < st.length; s++) {
+      if (st[s].on) send("set_step", { track: track, step: s, note: v.note, velocity: 1.0 });
+    }
     send("assign_voice", {
       track: track, engine: v.engine,
       base: v.flavour.base, bindings: v.flavour.bindings,
       macro_defaults: v.flavour.macro_defaults, macro_names: v.flavour.macro_names,
     });
+    // Snap the track's performance macros to the voice's shipped defaults — the engine keeps
+    // live macros across a flavour swap, so without this the voice would sound at whatever the
+    // knobs last were (0.5), not its authored point. `set` also sends `set_macro` to the audio.
+    var md = v.flavour.macro_defaults || [];
+    if (macroKnobEls[track]) {
+      for (var m = 0; m < NSLOT; m++) {
+        if (macroKnobEls[track][m]) macroKnobEls[track][m].set(md[m] != null ? md[m] : 0.5);
+      }
+    }
     refreshLane(track);
   }
   // Re-push a voice to every lane using it (after a voice edit) so audio tracks it.
@@ -131,6 +165,7 @@
   var cellEls = [];       // cellEls[t][s]
   var voiceBoxEls = [];   // voiceBoxEls[t]
   var macroLabelEls = []; // macroLabelEls[t][slot]
+  var macroKnobEls = [];  // macroKnobEls[t][slot] — the 3 performance-macro knob handles
 
   function renderCell(t, s) {
     var el2 = cellEls[t][s], st = lanes[t].steps[s];
@@ -164,7 +199,9 @@
     inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = value;
     inp.addEventListener("input", function () { oninput(parseFloat(inp.value)); });
     wrap.appendChild(lab); wrap.appendChild(inp);
-    return { wrap: wrap, label: lab };
+    // `set` moves the knob programmatically AND fires its callback (so loading a voice can
+    // snap its performance macros to the shipped defaults).
+    return { wrap: wrap, label: lab, input: inp, set: function (x) { inp.value = x; oninput(parseFloat(inp.value)); } };
   }
 
   function buildTrack(t) {
@@ -194,7 +231,7 @@
             else send("set_retrig", { track: t, step: s, n: 1, m: 1, curve: "even", vel_end: 1.0 });
           } else {
             st.on = !st.on;
-            if (st.on) send("set_step", { track: t, step: s, note: 36.0, velocity: 1.0 });
+            if (st.on) send("set_step", { track: t, step: s, note: voiceById(lanes[t].voiceId).note, velocity: 1.0 });
             else send("toggle_step", { track: t, step: s });
           }
           renderCell(t, s);
@@ -207,12 +244,14 @@
     // Knobs: 3 performance macros (labelled from the voice's bindings) + gain/pan/send/len.
     var knobs = el("div", "knobs");
     macroLabelEls[t] = [];
+    macroKnobEls[t] = [];
     for (var slot = 0; slot < NSLOT; slot++) {
       (function (slot) {
         var k = makeKnob("M" + (slot + 1), 0, 1, 0.01, 0.5, function (v) {
           send("set_macro", { track: t, slot: slot, value: v });
         });
         macroLabelEls[t][slot] = k.label;
+        macroKnobEls[t][slot] = k;
         knobs.appendChild(k.wrap);
       })(slot);
     }
@@ -232,6 +271,20 @@
     });
     len.appendChild(li);
     knobs.appendChild(len);
+
+    // Choke group (0 = none). Tracks sharing a non-zero group cut each other.
+    var chk = el("div", "len");
+    chk.appendChild(el("label", null, "Chk"));
+    var ci = document.createElement("input");
+    ci.type = "number"; ci.min = 0; ci.max = 7; ci.value = lanes[t].choke;
+    ci.title = "choke group (0 = none; shared group = mutual cut)";
+    ci.addEventListener("change", function () {
+      var g = Math.max(0, Math.min(7, parseInt(ci.value, 10) || 0));
+      lanes[t].choke = g; ci.value = g;
+      send("set_choke_group", { track: t, group: g });
+    });
+    chk.appendChild(ci);
+    knobs.appendChild(chk);
     row.appendChild(knobs);
 
     rack.appendChild(row);
@@ -239,6 +292,12 @@
     for (var s2 = 0; s2 < NS; s2++) renderCell(t, s2);
   }
   for (var t2 = 0; t2 < NT; t2++) buildTrack(t2);
+  // Push the seeded kit to the backend: each track's default engine is generic, so without
+  // this the loaded pattern would play default voices, not the labelled ones. Sends engine +
+  // flavour + snaps the macro knobs for every lane.
+  for (var t3 = 0; t3 < NT; t3++) assignVoice(t3, lanes[t3].voiceId);
+  // Push default choke groups (hat pair share group 1).
+  for (var t4 = 0; t4 < NT; t4++) send("set_choke_group", { track: t4, group: lanes[t4].choke });
 
   (function buildMaster() {
     var m = document.getElementById("master");
@@ -293,7 +352,7 @@
     add.title = "new voice";
     add.addEventListener("click", function () {
       var eng = ENGINES[0];
-      var v = { id: nextVoiceId++, name: "new voice", engine: eng.id, flavour: defaultFlavour(eng.id) };
+      var v = { id: nextVoiceId++, name: "new voice", engine: eng.id, flavour: defaultFlavour(eng.id), note: noteForVoice(eng.id, "new voice") };
       voices.push(v); editingVoiceId = v.id; renderVoiceList(); renderVoiceEditor();
     });
     head.appendChild(add);

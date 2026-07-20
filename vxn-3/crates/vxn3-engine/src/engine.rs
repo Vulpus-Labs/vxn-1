@@ -66,9 +66,12 @@ pub struct Engine {
     /// Per-track sequencer state (polymeter phase, probability RNG, in-flight
     /// retrig). Parallel to `tracks`.
     lanes: Vec<LaneState>,
-    /// Reused per-track scratch for one block's scheduled hits — pre-allocated,
-    /// cleared (not freed) each use, so scheduling never allocates.
-    hits: Vec<Hit>,
+    /// Per-track scheduled hits for one block — scheduled in a pre-pass (all tracks) so
+    /// cross-track choke can see every track's trigs before any track renders. Pre-allocated,
+    /// cleared (not freed) each block.
+    hits_by_track: Vec<Vec<Hit>>,
+    /// Reused scratch for one track's incoming choke frames (sibling choke-group trigs).
+    choke_scratch: Vec<usize>,
     /// Shared main↔audio I/O: edit-command queue, playhead, engine-swap mailboxes.
     io: EngineIo,
     /// Scratch for publishing per-lane playhead positions (avoids per-block alloc).
@@ -129,7 +132,8 @@ impl Engine {
             transport: Transport::default(),
             tracks,
             lanes,
-            hits: Vec::with_capacity(HIT_CAPACITY),
+            hits_by_track: (0..N_TRACKS).map(|_| Vec::with_capacity(HIT_CAPACITY)).collect(),
+            choke_scratch: Vec::with_capacity(HIT_CAPACITY),
             io,
             playhead_scratch: [PlayheadState::STOPPED; N_TRACKS],
             free_run_beats: 0.0,
@@ -254,33 +258,54 @@ impl Engine {
         }
         self.io.playhead.publish(&self.playhead_scratch, playing);
 
+        // Pre-pass: schedule every track's hits first, so cross-track choke can see all trigs
+        // in the block before any track renders. Advances each track's p-lock resolver (lane
+        // state + pattern + hit buffer are disjoint fields).
         for t in 0..self.tracks.len() {
-            // Schedule this track's hits + advance its p-lock resolver (lane
-            // state + pattern + hit scratch are disjoint fields), resolve the
-            // effective params, then render + mix.
+            self.hits_by_track[t].clear();
             self.lanes[t].schedule(
                 &self.tracks[t].pattern,
                 beat0,
                 bps,
                 frames,
                 playing,
-                &mut self.hits,
+                &mut self.hits_by_track[t],
             );
-            // Merge live MIDI free-play notes for this track (0186) into the scheduled
-            // hits, then re-sort by frame so `render_with_hits` slices at each. Bounded
-            // by hit capacity; `sort_unstable_by_key` is in-place (allocation-free).
+            // Merge live MIDI free-play notes for this track (0186), then sort by frame so
+            // `render_with_hits` slices at each. Bounded by hit capacity; sort is in-place.
             for fnote in &self.free_notes {
-                if fnote.track as usize == t && self.hits.len() < HIT_CAPACITY {
-                    self.hits.push(Hit {
+                if fnote.track as usize == t && self.hits_by_track[t].len() < HIT_CAPACITY {
+                    self.hits_by_track[t].push(Hit {
                         frame: (fnote.frame as usize).min(frames),
                         note: fnote.note,
                         velocity: fnote.velocity,
                     });
                 }
             }
-            self.hits.sort_unstable_by_key(|h| h.frame);
+            self.hits_by_track[t].sort_unstable_by_key(|h| h.frame);
+        }
+        // Free-play notes were consumed by every track this block — clear (not free).
+        self.free_notes.clear();
+
+        for t in 0..self.tracks.len() {
+            // Gather the frames a sibling in the same (non-zero) choke group trigs — the track
+            // is fast-released at each (808 hat mutual cut, a track-routing relationship).
+            self.choke_scratch.clear();
+            let g = self.tracks[t].choke_group();
+            if g != 0 {
+                for u in 0..self.tracks.len() {
+                    if u != t && self.tracks[u].choke_group() == g {
+                        for h in &self.hits_by_track[u] {
+                            if self.choke_scratch.len() < HIT_CAPACITY {
+                                self.choke_scratch.push(h.frame.min(frames));
+                            }
+                        }
+                    }
+                }
+                self.choke_scratch.sort_unstable();
+            }
             self.tracks[t].apply_effective(&self.lanes[t]);
-            self.tracks[t].render_with_hits(&self.hits, frames);
+            self.tracks[t].render_with_hits(&self.hits_by_track[t], &self.choke_scratch, frames);
             self.tracks[t].mix_into(
                 &mut left[..frames],
                 &mut right[..frames],
@@ -289,8 +314,6 @@ impl Engine {
                 frames,
             );
         }
-        // Free-play notes were consumed by every track this block — clear (not free).
-        self.free_notes.clear();
 
         // 5. Delay send bus → return into the master, then the terminal limiter.
         //    Delay time tracks host tempo (synced subdivision). Runs even when
@@ -357,7 +380,8 @@ impl Engine {
             | EngineCommand::SetLock { track, .. }
             | EngineCommand::ClearLock { track, .. }
             | EngineCommand::SetSend { track, .. }
-            | EngineCommand::SetMute { track, .. } => *track as usize,
+            | EngineCommand::SetMute { track, .. }
+            | EngineCommand::SetChokeGroup { track, .. } => *track as usize,
             // Master commands handled above.
             EngineCommand::SetDelayFeedback { .. }
             | EngineCommand::SetDelaySyncBeats { .. }
@@ -410,6 +434,7 @@ impl Engine {
                 track.set_base(LockParam::Send, amount.clamp(0.0, 1.0))
             }
             EngineCommand::SetMute { muted, .. } => track.set_muted(muted),
+            EngineCommand::SetChokeGroup { group, .. } => track.set_choke_group(group),
             // Master commands were dispatched above.
             EngineCommand::SetDelayFeedback { .. }
             | EngineCommand::SetDelaySyncBeats { .. }

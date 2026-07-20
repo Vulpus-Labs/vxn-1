@@ -243,6 +243,10 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
             track,
             pan: f32_at(v, "pan")?,
         })),
+        "set_choke_group" => Some(edit(EngineCommand::SetChokeGroup {
+            track,
+            group: u8_at(v, "group")?,
+        })),
         "set_macro" => Some(edit(EngineCommand::SetMacro {
             track,
             slot: u8_at(v, "slot")?,
@@ -312,10 +316,10 @@ mod tests {
 
     #[test]
     fn parses_assign_voice() {
-        // A Metal voice (9 params) with one binding + a renamed macro.
+        // A Metal voice (10 params) with one binding + a renamed macro.
         let json = r#"{
             "track": 3, "engine": "metal",
-            "base": [1200,1.1,0.08,0.5,44,0,0,6,5000],
+            "base": [1200,1.1,0.08,0.5,44,0,0,6,5000,0],
             "bindings": [{"slot":0,"param":1,"depth":1.9,"curve":"exp"}],
             "macro_defaults": [0.5,0.5,0.5],
             "macro_names": ["Ring","",""]
@@ -326,7 +330,7 @@ mod tests {
                 Vxn3UiCustom::AssignVoice { track, kind, flavour } => {
                     assert_eq!(track, 3);
                     assert_eq!(kind, EngineKind::Metal);
-                    assert_eq!(flavour.base.len(), 9);
+                    assert_eq!(flavour.base.len(), 10);
                     assert_eq!(flavour.bindings.len(), 1);
                     assert_eq!(flavour.bindings[0].param, 1);
                     assert_eq!(flavour.bindings[0].curve, Curve::Exp);
