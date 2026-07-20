@@ -140,6 +140,8 @@ export class FaceplateBridge {
     factoryUrl = "./factory.bin",
     fetchImpl = globalThis.fetch,
     showCpuMeter = true,
+    showWelcome = true,
+    showPianoKeyboard = true,
   } = {}) {
     this._doc = doc;
     this._win = win;
@@ -148,8 +150,11 @@ export class FaceplateBridge {
     this._raf = rafImpl || (win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
     this._enableKeyboard = enableKeyboard;
     this._enableMidi = enableMidi;
+    this._showWelcome = showWelcome;
+    this._showPianoKeyboard = showPianoKeyboard;
     this._keyboard = null;
     this._midi = null;
+    this._piano = null;
 
     // Render-load meter (bottom-left badge): the worklet posts its per-quantum
     // DSP load up the port, WebHost forwards it via onCpu → the meter. A no-op in
@@ -179,6 +184,12 @@ export class FaceplateBridge {
   // unlock, then start the rAF pump. Resolves once the controller is live.
   async boot() {
     this._installIpc();
+    // Mount the web-only chrome (welcome card + on-screen piano) up front —
+    // synchronously, before the controller-instantiate await — so it shows
+    // immediately and doesn't hinge on a successful async boot. `this.host`
+    // already exists from the constructor, so the piano can push notes into the
+    // ring (they buffer until audio is live).
+    this._mountWebChrome();
     // Replay opcodes the generated page's boot-queue stub captured before this
     // module loaded (notably the faceplate's `ready`). They re-enter through the
     // real `window.ipc.postMessage`, which queues them until the controller is
@@ -224,6 +235,19 @@ export class FaceplateBridge {
   // surface: computer keyboard now, Web MIDI async (resolves granted=false and
   // stays silent where Web MIDI is unavailable — the keyboard still plays). Notes
   // pushed before audio is live buffer in the ring and sound on the first quantum.
+  // Web-only affordances (self-contained DOM, inline styles): the first-run
+  // welcome card and the on-screen piano. Both no-op without a document body, so
+  // headless tests are unaffected. The piano is a note producer onto the same
+  // host surface the computer keyboard uses. Called synchronously from boot().
+  _mountWebChrome() {
+    if (this._showWelcome && this._doc && this._doc.body) {
+      createWelcome(this._doc);
+    }
+    if (this._showPianoKeyboard && this._doc && this._doc.body) {
+      this._piano = createPianoKeyboard(this._doc, this.host);
+    }
+  }
+
   _attachInputs() {
     if (this._enableKeyboard && this._doc) {
       this._keyboard = attachKeyboard(this.host, { target: this._doc });
@@ -312,6 +336,7 @@ export class FaceplateBridge {
     this._running = false;
     if (this._keyboard) this._keyboard.detach();
     if (this._midi) this._midi.detach();
+    if (this._piano) this._piano.detach();
     this.controller.destroy();
     await this.host.teardown();
   }
@@ -332,7 +357,9 @@ export function createCpuMeter(doc = globalThis.document) {
     el = doc.createElement("div");
     el.id = ID;
     el.style.cssText =
-      "position:fixed;left:10px;bottom:10px;z-index:9999;display:flex;" +
+      // bottom offset clears the 92px on-screen piano bar (which is fixed to the
+      // page bottom); harmless extra lift when the piano is disabled.
+      "position:fixed;left:10px;bottom:102px;z-index:9999;display:flex;" +
       "align-items:center;gap:6px;font:11px/1 system-ui,sans-serif;" +
       "color:#cfd3d8;background:rgba(20,22,26,.78);padding:4px 7px;" +
       "border-radius:5px;user-select:none;pointer-events:none;";
@@ -377,6 +404,294 @@ export function createCpuMeter(doc = globalThis.document) {
     p.textContent = a < 10 ? `${a.toFixed(1)}%` : `${Math.round(a)}%`;
   };
   return { update, el };
+}
+
+// ---- welcome card ----------------------------------------------------------
+//
+// A centred modal shown on load: a one-line "what is this", a "how to play"
+// note, a link to the VXN-2 product page (new tab), and a Close button. There is
+// no manual yet, so the link goes to the product page. Self-contained (inline
+// styles, no external CSS); idempotent if it already exists. Returns
+// { el, close }. Web-only — the bridge is the sole caller and never runs in the
+// native plugin. Ported from vxn-1's createWelcome.
+const PRODUCT_URL = "https://vulpuslabs.com/products/vxn-2/";
+
+// True on Apple WebKit (Safari), where the AudioWorklet is glitch-prone — used
+// only to show a low-key heads-up in the welcome card. Kept local so this module
+// has no cross-import for one predicate.
+function isAppleWebKitUA(doc = globalThis.document) {
+  const nav = (doc && doc.defaultView && doc.defaultView.navigator) || globalThis.navigator;
+  if (!nav) return false;
+  const ua = nav.userAgent || "";
+  const vendor = nav.vendor || "";
+  return /Apple/.test(vendor) && !/CriOS|FxiOS|EdgiOS|Chrome|Chromium|Edg|Android/.test(ua);
+}
+
+export function createWelcome(doc = globalThis.document) {
+  if (!doc || !doc.body) return { el: null, close() {} };
+  const ID = "vxn-welcome";
+  if (doc.getElementById(ID)) return { el: doc.getElementById(ID), close() {} };
+
+  const backdrop = doc.createElement("div");
+  backdrop.id = ID;
+  backdrop.style.cssText =
+    "position:fixed;inset:0;z-index:10000;display:flex;align-items:center;" +
+    "justify-content:center;background:rgba(8,9,11,.62);" +
+    "font:14px/1.5 system-ui,sans-serif;color:#e6e9ee;";
+
+  const card = doc.createElement("div");
+  card.style.cssText =
+    "max-width:30rem;margin:1rem;padding:22px 24px;border-radius:10px;" +
+    "background:#1b1e24;border:1px solid rgba(255,255,255,.10);" +
+    "box-shadow:0 14px 48px rgba(0,0,0,.55);";
+
+  const h = doc.createElement("h2");
+  h.textContent = "VXN-2";
+  h.style.cssText = "margin:0 0 .6rem;font-size:1.35rem;letter-spacing:.04em;";
+
+  const intro = doc.createElement("p");
+  intro.style.cssText = "margin:0 0 .8rem;";
+  intro.textContent =
+    "A WebAssembly port of the VXN-2 FM synthesizer by Vulpus Labs.";
+
+  const how = doc.createElement("p");
+  how.style.cssText = "margin:0 0 .8rem;";
+  how.textContent =
+    "Play it with the on-screen keyboard, your computer keyboard, or a connected MIDI device.";
+
+  const product = doc.createElement("p");
+  product.style.cssText = "margin:0 0 1.2rem;";
+  const link = doc.createElement("a");
+  link.href = PRODUCT_URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer"; // opens the product page in a new tab, safely
+  link.textContent = "Learn more about VXN-2";
+  link.style.cssText = "color:#6db7ff;text-decoration:underline;";
+  product.append(link, doc.createTextNode(" (opens in a new tab)."));
+
+  // Safari-only heads-up: its AudioWorklet runs with a single render quantum of
+  // output buffer and ignores latencyHint, so its realtime audio thread is prone
+  // to occasional dropouts no matter how cheap our render is. Chrome/Edge don't
+  // have this. Keep it low-key and only show it where it applies.
+  let note = null;
+  if (isAppleWebKitUA(doc)) {
+    note = doc.createElement("p");
+    note.style.cssText =
+      "margin:0 0 1.2rem;padding:8px 10px;border-radius:6px;font-size:12px;" +
+      "background:rgba(224,179,65,.12);color:#e0b341;";
+    note.textContent =
+      "For the smoothest audio, use Chrome or Edge — Safari may produce occasional clicks.";
+  }
+
+  const close = doc.createElement("button");
+  close.type = "button";
+  close.textContent = "Close";
+  close.style.cssText =
+    "display:block;margin-left:auto;padding:7px 18px;border:0;border-radius:6px;" +
+    "background:#46c46e;color:#0c0e10;font:600 14px system-ui,sans-serif;cursor:pointer;";
+
+  const dismiss = () => backdrop.remove();
+  close.addEventListener("click", dismiss);
+  // Click outside the card or press Escape also dismisses.
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) dismiss(); });
+  const onKey = (e) => {
+    if (e.key === "Escape") { dismiss(); doc.removeEventListener("keydown", onKey); }
+  };
+  doc.addEventListener("keydown", onKey);
+
+  card.append(h, intro, how, product, ...(note ? [note] : []), close);
+  backdrop.appendChild(card);
+  doc.body.appendChild(backdrop);
+  return { el: backdrop, close: dismiss };
+}
+
+// ---- on-screen piano keyboard ----------------------------------------------
+//
+// A clickable piano along the bottom of the page: white keys in a flex row with
+// black keys absolutely positioned overlapping them. Purely a producer for the
+// E015 ring — mouse/touch on a key calls host.noteOn / host.noteOff, the same
+// surface computer-keyboard and MIDI input use, so the ring stays
+// source-agnostic. Self-contained inline styles; idempotent per boot.
+//
+// Interaction: press a key → note-on + highlight; release (or pointer leaving
+// the keyboard) → note-off. Holding the button and dragging across keys plays a
+// glissando (each newly-entered key releases the previous note and sounds its
+// own). Returns { el, detach, allNotesOff }.
+
+// MIDI note -> true if it's a black (accidental) key. Pattern within an octave:
+// C# D# _ F# G# A# are the five black keys (pitch classes 1,3,6,8,10).
+export function isBlackKey(note) {
+  const pc = ((note % 12) + 12) % 12;
+  return pc === 1 || pc === 3 || pc === 6 || pc === 8 || pc === 10;
+}
+
+// Build the key layout for the inclusive MIDI range [startNote, endNote]:
+// an ordered list of { note, black }. White keys lay out left-to-right; each
+// black key floats between its neighbouring whites.
+export function pianoLayout(startNote, endNote) {
+  const keys = [];
+  for (let n = startNote; n <= endNote; n++) keys.push({ note: n, black: isBlackKey(n) });
+  return keys;
+}
+
+const PIANO_DEFAULT_START = 48; // C3
+const PIANO_DEFAULT_END = 84; // C6 (inclusive) — three octaves
+const PIANO_VELOCITY = 0.8; // no pressure sensing on click; match keyboard-input
+
+export function createPianoKeyboard(doc = globalThis.document, host = null, opts = {}) {
+  if (!doc || !doc.body) return { el: null, detach() {}, allNotesOff() {} };
+  const ID = "vxn-piano";
+  if (doc.getElementById(ID)) return { el: doc.getElementById(ID), detach() {}, allNotesOff() {} };
+
+  const startNote = opts.startNote != null ? opts.startNote : PIANO_DEFAULT_START;
+  const endNote = opts.endNote != null ? opts.endNote : PIANO_DEFAULT_END;
+  const velocity = opts.velocity != null ? opts.velocity : PIANO_VELOCITY;
+  const layout = pianoLayout(startNote, endNote);
+  const whites = layout.filter((k) => !k.black);
+
+  const bar = doc.createElement("div");
+  bar.id = ID;
+  bar.style.cssText =
+    "position:fixed;left:0;right:0;bottom:0;z-index:9998;height:92px;" +
+    "display:flex;background:#14161a;border-top:1px solid rgba(255,255,255,.10);" +
+    "box-shadow:0 -6px 20px rgba(0,0,0,.4);user-select:none;touch-action:none;" +
+    "-webkit-user-select:none;";
+
+  // A relative container the whites flex inside and the blacks absolutely sit on.
+  const bed = doc.createElement("div");
+  bed.style.cssText = "position:relative;display:flex;flex:1;height:100%;";
+  bar.appendChild(bed);
+
+  // note -> key element, so glissando and note-off can toggle the highlight.
+  const keyEls = new Map();
+  const whiteW = 100 / whites.length; // percent width per white key
+
+  function styleWhite(el, active) {
+    el.style.background = active ? "#8fd0ff" : "#f4f4f2";
+  }
+  function styleBlack(el, active) {
+    el.style.background = active ? "#4c8fbf" : "#1b1d21";
+  }
+
+  // Lay out white keys first (flex children), then overlay black keys.
+  let whiteIndex = 0;
+  for (const k of layout) {
+    if (k.black) continue;
+    const el = doc.createElement("div");
+    el.className = "vxn-piano-white";
+    el.dataset.note = String(k.note);
+    el.style.cssText =
+      "flex:1;height:100%;border-right:1px solid rgba(0,0,0,.28);" +
+      "border-radius:0 0 3px 3px;box-sizing:border-box;";
+    styleWhite(el, false);
+    bed.appendChild(el);
+    keyEls.set(k.note, el);
+    whiteIndex++;
+  }
+
+  // Overlay black keys. A black key at MIDI note n sits over the boundary between
+  // the white below it (n-1) and the white above (n+1); centre it on that seam.
+  for (const k of layout) {
+    if (!k.black) continue;
+    const whitesBelow = whites.filter((w) => w.note < k.note).length; // seam index
+    const el = doc.createElement("div");
+    el.className = "vxn-piano-black";
+    el.dataset.note = String(k.note);
+    const centre = whitesBelow * whiteW; // seam position, in percent
+    el.style.cssText =
+      "position:absolute;top:0;height:62%;width:" + (whiteW * 0.62).toFixed(4) + "%;" +
+      "left:" + centre.toFixed(4) + "%;transform:translateX(-50%);" +
+      "border-radius:0 0 3px 3px;box-sizing:border-box;z-index:2;" +
+      "box-shadow:0 2px 3px rgba(0,0,0,.5);";
+    styleBlack(el, false);
+    bed.appendChild(el);
+    keyEls.set(k.note, el);
+  }
+
+  // ---- pointer -> note plumbing ----
+  let pointerDown = false;
+  let current = null; // the single note sounding from the mouse/touch drag
+
+  function paint(note, active) {
+    const el = keyEls.get(note);
+    if (!el) return;
+    if (isBlackKey(note)) styleBlack(el, active);
+    else styleWhite(el, active);
+  }
+
+  function press(note) {
+    if (note == null || note === current) return;
+    if (current != null) release(); // monophonic drag: release the old note first
+    current = note;
+    paint(note, true);
+    if (host && typeof host.noteOn === "function") host.noteOn(note, velocity, 0);
+  }
+
+  function release() {
+    if (current == null) return;
+    const note = current;
+    current = null;
+    paint(note, false);
+    if (host && typeof host.noteOff === "function") host.noteOff(note, 0);
+  }
+
+  // Resolve the DOM target under a pointer to its MIDI note (data-note). Because
+  // black keys sit above whites in z-order, elementFromPoint / event.target gives
+  // the topmost key, which is what we want.
+  function noteFromTarget(t) {
+    if (!t || !t.dataset) return null;
+    const n = t.dataset.note;
+    return n == null ? null : parseInt(n, 10);
+  }
+
+  function onDown(e) {
+    pointerDown = true;
+    const note = noteFromTarget(e.target);
+    if (note != null) {
+      press(note);
+      if (typeof e.preventDefault === "function") e.preventDefault();
+    }
+  }
+  function onOver(e) {
+    if (!pointerDown) return;
+    const note = noteFromTarget(e.target);
+    if (note != null) press(note);
+  }
+  function onUp() {
+    pointerDown = false;
+    release();
+  }
+
+  // Pointer events cover mouse + touch + pen uniformly. mouseover/enter on the
+  // per-key elements bubbles to `bed`, so one delegated listener handles drag.
+  bed.addEventListener("pointerdown", onDown);
+  bed.addEventListener("pointerover", onOver);
+  // Release anywhere (pointer may lift off the keyboard) — listen on the document.
+  doc.addEventListener("pointerup", onUp);
+  doc.addEventListener("pointercancel", onUp);
+
+  function allNotesOff() {
+    pointerDown = false;
+    release();
+  }
+
+  doc.body.appendChild(bar);
+
+  return {
+    el: bar,
+    allNotesOff,
+    detach() {
+      allNotesOff();
+      bed.removeEventListener("pointerdown", onDown);
+      bed.removeEventListener("pointerover", onOver);
+      doc.removeEventListener("pointerup", onUp);
+      doc.removeEventListener("pointercancel", onUp);
+      if (bar.remove) bar.remove();
+    },
+    // Exposed for tests / drivers that synthesise pointer events.
+    _press: press,
+    _release: release,
+  };
 }
 
 // Convenience boot used by the generated index.html: fetch both wasm modules
