@@ -758,11 +758,6 @@ html, body {
 }
 /* each selector group: header label on top, buttons stacked vertically */
 .filter-selectors .bgrp-row { flex-direction: column; gap: 4px; }
-/* Mode + Slope share one column (Slope below Mode, label dropped) so the
-   selector block is narrower; a small gap separates the two button groups and
-   keeps the 2P/4P row up inside the section. */
-.filter-sel-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
-.filter-sel-stack .cgrp-gap { height: 6px; }
 
 /* header toggle */
 .panel.toggle-on > .panel-header { background: var(--header-bg); }

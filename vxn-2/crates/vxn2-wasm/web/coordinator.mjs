@@ -6,7 +6,7 @@
 // surface (notes/params) that writes into those SABs.
 //
 // Ported from vxn-1's `vxn-wasm/web/coordinator`. vxn-2 changes: no key-mode/
-// split shared state (dropped), the flat 209-param store, and the vxn2-* worklet
+// split shared state (dropped), the flat 208-param store, and the vxn2-* worklet
 // / wasm names. The AudioContext lifecycle state machine (autoplay unlock,
 // suspend/resume + voice flush, device change, teardown, CPU meter) ports
 // verbatim.

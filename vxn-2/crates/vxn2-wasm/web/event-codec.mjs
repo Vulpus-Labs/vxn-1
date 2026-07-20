@@ -53,8 +53,9 @@ export const SLOT_BYTES = 16; // must equal event-ring.mjs SLOT_BYTES
 // Rust side owns the authoritative count (`vxn2_engine::TOTAL_PARAMS`, re-checked
 // by `codec.rs tests::total_params_matches_vxn2_engine`); this JS constant MUST
 // match it. The host-init handshake (ticket 0156) asserts it against the wasm
-// param count so drift is caught at load. 209 today.
-export const TOTAL_PARAMS = 209;
+// param count so drift is caught at load. 208 today (the oversampling-rate
+// selector was removed).
+export const TOTAL_PARAMS = 208;
 
 // ── Encode ──────────────────────────────────────────────────────────────────
 //

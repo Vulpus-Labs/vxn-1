@@ -72,7 +72,7 @@ const GOLDEN = [
 ];
 
 test("param count matches the Rust codec (vxn2-engine TOTAL_PARAMS)", () => {
-  assert.equal(TOTAL_PARAMS, 209);
+  assert.equal(TOTAL_PARAMS, 208);
   assert.ok(TOTAL_PARAMS <= 0xffff); // fits the u16 paramIdx field
 });
 

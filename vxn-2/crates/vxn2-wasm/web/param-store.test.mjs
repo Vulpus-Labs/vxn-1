@@ -12,8 +12,8 @@ import {
   TOTAL_PARAMS,
 } from "./param-store.mjs";
 
-test("param count is vxn-2's flat 209", () => {
-  assert.equal(TOTAL_PARAMS, 209);
+test("param count is vxn-2's flat 208", () => {
+  assert.equal(TOTAL_PARAMS, 208);
 });
 
 test("write / read round-trips a plain f32 through the atomic bit-cast", () => {
