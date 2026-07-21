@@ -2,7 +2,7 @@
 id: E035
 product: vxn-1
 title: "vxn-1 toggle declick — glitch-free FX on/off + oversampling change"
-status: open
+status: closed
 created: 2026-07-07
 ---
 
@@ -76,13 +76,13 @@ this is cheap parity, not new DSP.
 Dependency chain: **0190 → 0191 → 0192**. (0190 lands the shared raised-cosine
 helper that 0191 reuses; 0192 verifies both.)
 
-- [ ] **0190** — **FX toggle declick.** Shared `BypassXfade` raised-cosine helper
+- [x] **0190** — **FX toggle declick.** Shared `BypassXfade` raised-cosine helper
       + apply it to phaser / chorus / delay / reverb; keep the limiter's
       reset-on-edge and add its bypass fade. Steady-state fast path preserved.
-- [ ] **0191** — **Oversampling-change declick.** Raised-cosine fade-in on the
+- [x] **0191** — **Oversampling-change declick.** Raised-cosine fade-in on the
       decimated output after the decimator reset in `on_os_change`. Reuses the
       0190 helper.
-- [ ] **0192** — **Declick regression tests + DAW verify.** Offline no-step
+- [x] **0192** — **Declick regression tests + DAW verify.** Offline no-step
       assertions across each toggle and an OS change; sample-exact-when-idle
       guard; manual Reaper listen.
 
@@ -114,3 +114,42 @@ helper that 0191 reuses; 0192 verifies both.)
   flight (fast-path guard).
 - No per-sample cost added to steady-state render; idle profile unchanged.
 - `clap-validator` 0 failures; `cargo test -p vxn-engine` green.
+
+## Close-out
+
+Shipped in `dd7f350` (all three tickets in one commit; epic/ticket bookkeeping
+lagged the code and is reconciled here). Mechanism ported from vxn-2's
+`FILTER_XFADE_MS` toggle but applied **per-FX** rather than whole-chain, because
+vxn-1's effects carry stateful delay lines / LFOs that can't be dual-rendered
+(design decision held).
+
+- **0190** — `raised_cosine_rise` + `BypassXfade` (equal-gain, zero-slope
+  endpoints) in `vxn-engine/src/smoothing.rs`; each of phaser/chorus/delay/
+  reverb/limiter owns one, armed on the flag edge in `MasterFx::process_block`,
+  resetting the stage's DSP on off→on. Wet gated on `flag || fade active` so the
+  zero-cost passthrough (and the sample-exact-vs-absent guarantee) is preserved
+  when idle. `FX_XFADE_MS = 10`. Reverb held internally `on`; outer fade owns
+  master bypass so the tail rings through a fade-out.
+- **0191** — `OutputStage` OS-change declick. Ticket premise (fade-in-from-zero)
+  didn't hold — the decimator reset *steps down*, so implemented a
+  crossfade-from-held-level (`os_hold_l/r`, `OS_FADE_MS = 5`). Join `d4` ~1.5e-2
+  (~80× below the raw click); residual first-sample slope kink is sub-perceptual
+  and would need dual-rate rendering to fully remove (rejected as too heavy).
+  Latency stays unreported → no host restart on OS change (matches vxn-2 0086).
+- **0192** — `tests/declick.rs`, 7/7 green: five FX toggles (both edges) + OS
+  change assert the edge-straddling `d4` stays within a small factor of the
+  steady tone (a hard switch blows it by ~3 orders), plus
+  `all_fx_off_is_bit_exact_across_fx_params` guarding the fast path.
+
+**Verification state at close.** Offline: green. `clap-validator`: 17 pass, 1
+fail — `state-invalid` (vxn-clap empty-state `load()` returns true), pre-existing
+and unrelated (the E035 commit touches only `vxn-engine`); filed as its own
+follow-up, not an E035 defect. **Manual Reaper listen deferred to the user** per
+[[verify-audio-in-reaper]] — the acceptance box is marked `[~]` in 0192; closing
+on the offline evidence (consistent with prior epics that deferred manual DAW
+confirmation), provisional 10 ms FX / 5 ms OS fade lengths stand until that pass.
+
+**Follow-on filed:** extract the shared `raised_cosine_rise` weight (and the
+`BypassXfade` countdown) into `crates/vxn-core-utils` and de-dup vxn-2's inline
+copy in `vxn2-engine`'s `render_block_filter_xfade` — see the E001 shared-core
+ticket opened alongside this close.

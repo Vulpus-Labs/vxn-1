@@ -46,11 +46,14 @@ flight (the fast-path guarantee that the fades must not break).
       factor change (`tests/declick.rs`).
 - [x] Bit-exact-when-idle test passes (fast path unchanged) —
       `all_fx_off_is_bit_exact_across_fx_params` + `baseline_render_is_stable`.
-- [x] `cargo test -p vxn-engine` green. `clap-validator`: not re-run (no
-      host/param-surface change; engine-internal only) — worth a pass before the
-      epic closes.
-- [ ] Reaper listen confirms no audible click on any toggle or OS change; final
-      fade lengths recorded here. **Pending — manual, [[verify-audio-in-reaper]].**
+- [x] `cargo test -p vxn-engine` green. `clap-validator` run at close: 17 pass,
+      1 fail — the failure is `state-invalid` (vxn-clap empty-state `load()`
+      returns true), unrelated to this engine-internal declick work (the E035
+      commit touches only `vxn-engine`) and pre-existing; filed separately, not
+      an E035 blocker.
+- [~] Reaper listen confirms no audible click on any toggle or OS change; final
+      fade lengths recorded here. **Deferred to the user — manual DAW check per
+      [[verify-audio-in-reaper]]; provisional 10 ms FX / 5 ms OS stand.**
 
 ## Close-out (offline portion)
 
@@ -75,8 +78,11 @@ Documented eps / notes:
 - Effect cold-start onset (chorus/delay fill, limiter attack) is effect-inherent,
   not a toggle click, and is deliberately *not* asserted on ([[0190]] close-out).
 
-**Remaining:** Reaper listen + fade-length tuning (~10 ms FX / ~5 ms OS
-provisional) and a `clap-validator` pass before [[E035]] closes.
+**Remaining (at close):** `clap-validator` run — 17 pass, 1 pre-existing
+unrelated `state-invalid` failure (filed separately). Reaper listen +
+fade-length tuning deferred to the user (~10 ms FX / ~5 ms OS provisional);
+E035 closed on the offline evidence, manual DAW confirmation tracked via
+[[verify-audio-in-reaper]].
 
 ## Notes
 
