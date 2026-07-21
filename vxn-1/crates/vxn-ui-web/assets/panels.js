@@ -1,8 +1,7 @@
 // panels.js — re-export barrel (ticket 0141).
 //
-// The faceplate primitives that used to live here in one 1100-line god-file are
-// now split into cohesive modules under `panels/` + `util/` (matching VXN2's
-// modular `panels/` layout):
+// The faceplate primitives are split into cohesive modules under `panels/` +
+// `util/` (matching VXN2's modular `panels/` layout):
 //
 //   util/drag.js          — drag / paint / value-popup primitives + clampVariant
 //                           / tgRow (consumes the shared wireDrag, 0140)

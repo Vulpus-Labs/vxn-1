@@ -174,10 +174,6 @@ impl Vxn1Params for MockModel {
 //   no-ops.
 // * `saves`: records `user_save` calls when `root` is `None`, so tests that
 //   only care about the save side-effect don't need a tempdir.
-//
-// Formerly three separate structs (`MockPresetStore` / `TempPresetStore` /
-// inline `MixedStore`); merged here since `TempPresetStore` and `MixedStore`
-// duplicated `user_load` / `list_user_tree` verbatim.
 
 type SaveRecord = (String, Option<String>, PresetMeta, Vec<u8>);
 
@@ -394,9 +390,6 @@ fn drain(rx: &Receiver<ViewEvent>) -> Vec<ViewEvent> {
 }
 
 /// Drain `rx` and collect the name from every `PresetLoaded` event.
-/// Replaces the `drain(&view_rx).into_iter().filter_map(|ev| match ev {
-/// ViewEvent::PresetLoaded { meta, .. } => Some(meta.name), _ => None }).collect()`
-/// pattern used across several step-preset tests.
 fn loaded_names(rx: &Receiver<ViewEvent>) -> Vec<String> {
     drain(rx)
         .into_iter()
@@ -790,8 +783,7 @@ fn step_preset_walks_combined_list_factory_then_user_alpha() {
     // 0049: prev/next walker. Combined order = factory alpha-by-name then
     // user alpha-by-name across all folders; wraps at either end. With no
     // prior preset, `delta=+1` seeds at index 0 and `delta=-1` at the last
-    // entry — matches the vizia `step_index` semantics so the walker is
-    // backend-agnostic.
+    // entry — the walker is backend-agnostic.
     let blob_for = |v: f32| {
         let mut b = Vec::new();
         b.extend_from_slice(&1u32.to_le_bytes());
@@ -910,9 +902,7 @@ fn editor_ready_replays_params_and_corpus() {
 #[test]
 fn set_split_point_writes_model_and_echoes() {
     // 0053: SetSplitPoint writes the (non-automatable) shared state and
-    // echoes SplitPointChanged so the HTML keys panel's slider reseeds
-    // — the vizia editor still poll-syncs from the model and ignores
-    // the echo.
+    // echoes SplitPointChanged so the HTML keys panel's slider reseeds.
     let (mut ctrl, model, view_rx) = build(2);
     ctrl.ui_sender()
         .send(Vxn1UiCustom::SetSplitPoint { note: 48 }.into_event())
@@ -933,9 +923,7 @@ fn out_of_band_model_change_does_not_emit_keymode_split() {
     // 0082: key-mode / split-point events fire from the load path's
     // `on_model_loaded` hook (and direct UI edits), never from a per-tick
     // poll of the model. Mutating the shared state behind the controller's
-    // back and ticking must therefore emit nothing — if the old
-    // poll-and-diff shim were still present this tick would (wrongly)
-    // notice the diff and re-announce it.
+    // back and ticking must therefore emit nothing.
     let (mut ctrl, model, view_rx) = build(2);
     // Drain any construction-time events.
     let _ = drain(&view_rx);

@@ -1,7 +1,6 @@
 // panels/fader.js — the continuous / fader-family controls: the vertical
 // fader, the LFO-rate subdivision label, the rotary waveform knob, and the
 // Detune+Legato composite, plus the waveform glyph polylines they draw.
-// Split out of the panels.js god-file in ticket 0141.
 //
 // `import` lines are dropped by the splice loader (the shared bindings ride
 // the bridge slot; the sibling helpers are concatenated in the same scope);
@@ -49,9 +48,8 @@ export function glyphPath(label, w, h) {
 
 // Detune ceiling in Twin assign mode (cents). Twin's "useful" range is
 // purely a view convention — the engine doesn't enforce it, so the
-// editor that surfaces the mode is the one that has to clamp. Mirrors
-// vxn_ui_vizia::TWIN_DETUNE_CT (retired in 0054 but the value is still
-// load-bearing).
+// editor that surfaces the mode is the one that has to clamp. Mirrors the
+// TWIN_DETUNE_CT value.
 export const TWIN_TOP_CT = 20.0;
 
 export function makeFader(el, id, desc, opts) {
@@ -158,11 +156,6 @@ export function subdivisionLabel(norm) {
 // of -135°…+135° "from up CW") while the 6-variant LFO shape fits without
 // crowding the corners. Indicator angle is the same affine function of
 // value, so the CSS transition always sweeps along the populated arc.
-//
-// **Future**: when intermediate / cross-fade waveforms ship, this becomes
-// a continuous `[0, N)` knob with wrap-around. The angle math already
-// works for fractional values; only the drag clamp + glyph-active logic
-// need a `wrap: true` branch.
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export function makeWave(el, id, desc) {

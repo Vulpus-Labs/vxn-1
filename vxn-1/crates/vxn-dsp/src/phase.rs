@@ -1,4 +1,4 @@
-//! Phase accumulator and PolyBLEP. Copied from `patches-dsp::oscillator`.
+//! Phase accumulator and PolyBLEP.
 
 /// Single-voice normalised phase accumulator in `[0.0, 1.0)`.
 ///

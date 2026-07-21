@@ -1,5 +1,4 @@
-//! Stereo allpass phaser, ported from `patches-bundles::patches-vintage`
-//! (`VStereoPhaser` + `VPhaserCore`).
+//! Stereo allpass phaser.
 //!
 //! Two [`PhaserChannel`] cascades share one triangle LFO; the right channel
 //! reads the LFO at a fixed anti-phase offset (the upstream's `spread = 1.0`
@@ -231,8 +230,8 @@ pub struct StereoPhaser {
 
 impl StereoPhaser {
     pub fn new(sample_rate: f32) -> Self {
-        // Seeds chosen as in the upstream; the right channel gets a golden-
-        // ratio XOR so the two channels' stage-stagger walks decorrelate.
+        // The right channel gets a golden-ratio XOR so the two channels'
+        // stage-stagger walks decorrelate.
         let mut left = PhaserChannel::new(sample_rate, 0x1F2E_3D4C);
         let mut right = PhaserChannel::new(sample_rate, 0x1F2E_3D4C ^ 0x9E37_79B9);
         left.snap(CENTER_HZ);

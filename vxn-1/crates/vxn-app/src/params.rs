@@ -130,9 +130,7 @@ impl CrossModType {
 /// Define a `#[repr(usize)]` param-id enum with contiguous discriminants and a
 /// **safe** `from_index` (exhaustive match, no `unsafe transmute`), plus
 /// `COUNT`, `index`, and `all`. The variant list is written once here, so a new
-/// param can't leave `from_index`/`COUNT` out of sync — the footgun the old
-/// `transmute` carried (sound only while every discriminant stays contiguous
-/// and `< COUNT`, which the next enum edit could silently break). `0019`.
+/// param can't leave `from_index`/`COUNT` out of sync.
 macro_rules! indexed_param_enum {
     (
         $(#[$meta:meta])*
@@ -372,9 +370,8 @@ pub fn module_for_clap_id(clap_id: usize) -> &'static str {
 
 // ── ParamDesc ───────────────────────────────────────────────────────────────
 //
-// Taper, ParamKind, ParamDesc, and ParamDesc's taper math live in
-// `vxn-core-app` post-E001/0006. Re-exported here so existing
-// `vxn_app::{ParamDesc, ParamKind, Taper}` call sites keep working.
+// Taper, ParamKind, ParamDesc, and ParamDesc's taper math.
+// Re-exported from vxn-core-app.
 
 pub use vxn_core_app::{ParamDesc, ParamKind, Taper};
 
@@ -752,8 +749,7 @@ pub static PATCH_PARAMS: [ParamDesc; PatchParam::COUNT] = [
     // as note-quantised Hz with a note-name readout (see dispatch.js's cutoff
     // overrides). The ENGINE DELIBERATELY NEVER READS THIS — cutoff is a plain
     // Hz param regardless of the toggle. It is still a persisted param so the
-    // display mode travels with presets/state. (A 2026-06-10 review first
-    // misread it as a dead param; it is not — 0019.)
+    // display mode travels with presets/state.
     b("cutoff_tuned", "Tuned", 0.0),
     f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
     f("spread", "Spread", 0.0, 1.0, 0.0, "", Taper::Linear),
@@ -887,8 +883,8 @@ mod tests {
 
     #[test]
     fn exp_taper_pins_min_mid_max_when_min_positive() {
-        // Cutoff (0100): Jupiter-8 convention — 20..16000 Hz, 800 Hz at
-        // midpoint. The C4 pin from the prior taper went away when KBT
+        // Cutoff: 20..16000 Hz, 800 Hz at midpoint.
+        // The C4 pin from the prior taper went away when KBT
         // moved its reference note to C0 (0100): the cutoff slider is
         // now a flat sound-design control, not coupled to a "playing C4
         // with keytrack on resonates at the slider value" coincidence.

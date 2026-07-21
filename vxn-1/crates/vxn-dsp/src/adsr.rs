@@ -1,5 +1,4 @@
-//! ADSR envelope state machine. Copied from `patches-dsp::adsr` (DADSR with
-//! linear/exponential segment shapes), trimmed to what VXN1 v1 uses.
+//! ADSR envelope state machine (DADSR with linear/exponential segment shapes).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdsrStage {
@@ -256,7 +255,7 @@ mod tests {
 
     #[test]
     fn exponential_attack_caps_at_one_and_release_snaps_to_idle() {
-        // 0019: the exponential attack targets EXP_ATTACK_TARGET (1.2) for the
+        // the exponential attack targets EXP_ATTACK_TARGET (1.2) for the
         // analog overshoot feel, but the OUTPUT must never exceed 1.0 — the
         // stage caps there and hands off to Decay. And the release must reach
         // Idle exactly (snap at EXP_SNAP_EPS), not crawl the asymptotic tail.

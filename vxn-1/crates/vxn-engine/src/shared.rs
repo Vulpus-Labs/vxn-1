@@ -451,7 +451,7 @@ mod tests {
         s.set_key_mode(KeyMode::Split);
         s.set_split_point(48);
 
-        // Legacy path: build a PluginState and write it the old way.
+        // Build a PluginState and write it directly.
         let mut legacy = Vec::new();
         s.to_state().write(&mut legacy).unwrap();
 

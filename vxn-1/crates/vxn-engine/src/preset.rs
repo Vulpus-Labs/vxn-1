@@ -10,8 +10,6 @@
 //!
 //! There is exactly one preset kind: a **Performance** — the whole instrument
 //! ([`PluginState`]): both layers, the global block, key mode and split point.
-//! The earlier patch/performance split was collapsed; every preset captures the
-//! complete instrument state so loading is unambiguous.
 //!
 //! This module is the **pure** mapping between those engine types and the file
 //! format. No IO, no embedding, no clap, no UI, no host sync — that is 0025

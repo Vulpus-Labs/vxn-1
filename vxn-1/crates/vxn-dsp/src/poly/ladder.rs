@@ -122,7 +122,7 @@ macro_rules! with_mix {
 
 // ── PolyOtaLadder ─────────────────────────────────────────────────────────────
 
-/// 16-voice OTA-C ladder lowpass (R3109/IR3109-style, Juno-flavoured). Poly
+/// 16-voice OTA-C ladder lowpass. Poly
 /// sibling of [`crate::ota_ladder::OtaLadderKernel`].
 ///
 /// Coefficients are *interpolated per sample* across each control block: the

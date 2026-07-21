@@ -1,6 +1,6 @@
-//! Bounded random walk + drift step sizes — ported from
-//! `patches-core::random_walk` so oscillator drift, BBD clock jitter, and any
-//! future low-rate analog wobble all share one deterministic source.
+//! Bounded random walk + drift step sizes, so oscillator drift, BBD clock
+//! jitter, and any future low-rate analog wobble all share one deterministic
+//! source.
 
 /// Per-update step size for oscillator-internal drift walks.
 ///
@@ -8,10 +8,6 @@
 /// per-advance step is larger to produce a similar perceived drift rate
 /// (≈ 0.5–2 Hz wander).
 pub const OSCILLATOR_DRIFT_STEP: f32 = 0.005;
-
-// `HALF_SEMITONE_VOCT` (1/24 octave) removed (0019): it was `pub` but consumed
-// nowhere — the drift→pitch scaling lives at the voice/oscillator call site, not
-// here. Recover from git history if a shared constant is wanted later.
 
 /// Bounded random walk driven by a 32-bit linear congruential generator.
 ///

@@ -66,10 +66,8 @@ fn factory_files() -> Vec<(String, String, &'static str)> {
 /// (the CI test guarantees the shipped bank never has one); parse warnings are
 /// likewise dropped here — the test asserts the bank produces none.
 ///
-/// Parsed once and cached (0019): the embedded TOML never changes at runtime,
-/// and the browser used to call this 3× per interaction, re-parsing all ~33
-/// files each time. Main-thread only, so a `OnceLock` suffices — no RT path
-/// touches it.
+/// Parsed once and cached (0019): the embedded TOML never changes at runtime.
+/// Main-thread only, so a `OnceLock` suffices — no RT path touches it.
 pub fn factory() -> &'static [FactoryPreset] {
     static BANK: std::sync::OnceLock<Vec<FactoryPreset>> = std::sync::OnceLock::new();
     BANK.get_or_init(|| {

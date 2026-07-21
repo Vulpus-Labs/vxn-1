@@ -109,8 +109,7 @@ enum Format {
 }
 
 /// Parse `--format a,b,c` into a deduped, order-preserving format list. Absent
-/// or value-less → `[Clap]` (the pre-0011 default — no behaviour change for
-/// callers who never pass the flag). Unknown tokens are a hard error.
+/// or value-less → `[Clap]`. Unknown tokens are a hard error.
 fn parse_formats(args: &[String]) -> Result<Vec<Format>, String> {
     let Some(raw) = arg_value(args, "--format") else {
         return Ok(vec![Format::Clap]);
@@ -604,8 +603,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     (markup + CSS + JS + byte-identical param-descriptor JSON) with the wry
     //     IPC swapped for the web boot head + `faceplate-bridge.mjs` loader. Run
     //     as a subprocess so xtask carries no wry-pulling dependency and the
-    //     JSON-shaping stays single-sourced. The 0042 coordinator-smoke page
-    //     (`web_index_html`) is retired by this.
+    //     JSON-shaping stays single-sourced.
     let page = gen_faceplate_page(&root)?;
     fs::write(dist.join("index.html"), page).map_err(io("write index.html"))?;
 

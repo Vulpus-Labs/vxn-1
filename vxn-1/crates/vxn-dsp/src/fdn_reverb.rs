@@ -1,4 +1,4 @@
-//! 8-channel FDN reverb, ported from `vxn-2/crates/vxn2-dsp/src/reverb.rs`.
+//! 8-channel FDN reverb.
 //!
 //! Clean Jot-style Feedback Delay Network: 8 mutually-prime delay lines, an
 //! 8×8 Hadamard mixing matrix on the feedback path, per-line one-pole LP

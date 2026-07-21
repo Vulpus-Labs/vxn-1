@@ -1,5 +1,6 @@
-//! One-pole (−6 dB/oct) high-pass filter, placed pre-VCF in the JP-8 topology
-//! (Source Mixer → HPF → VCF → VCA). Thins body / removes DC below the cutoff.
+//! One-pole (−6 dB/oct) high-pass filter, placed pre-filter in the signal
+//! topology (Source Mixer → HPF → VCF → VCA). Thins body / removes DC below the
+//! cutoff.
 //!
 //! Topological-preserving-transform one-pole (Zavalishin): compute the one-pole
 //! *lowpass* `lp` and return `x − lp`, which is the complementary high-pass.

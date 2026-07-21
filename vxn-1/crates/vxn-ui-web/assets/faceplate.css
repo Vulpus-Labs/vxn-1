@@ -112,7 +112,7 @@ html, body {
   color: var(--text);
 }
 .pbar-btn {
-  /* 0020: palette vars (value-identical) so a theme tweak is one edit. */
+  /* Palette vars so a theme tweak is one edit. */
   background: var(--knob-face);
   border: 1px solid var(--knob-rim);
   border-radius: 2px;
@@ -202,9 +202,8 @@ html, body {
 .row-3 .panel[data-name="Bend"] { flex: 0 0 54px; }
 
 /* Row 4 — four panels (Keys / Voice / FX / Master). FX hosts at most one
-   tabbed pane (4 faders + tab strip) at a time, so narrowing it from its
-   original tri-panel share (2.65) lets Keys / Voice / Master claim the
-   freed space proportionally. */
+   tabbed pane (4 faders + tab strip) at a time, so narrowing it lets Keys /
+   Voice / Master claim the freed space proportionally. */
 .row-4 .panel[data-name="Keys"]   { flex-grow: 1.25; }
 .row-4 .panel[data-name="Voice"]  { flex-grow: 1.25; }
 .row-4 .panel[data-name="FX"]     { flex-grow: 1.70; }
@@ -300,7 +299,7 @@ html, body {
    after ~3s; pure CSS animation so the JS side just sets the line and
    toggles the `visible` class. */
 .status-pill {
-  background: var(--track-bg); /* 0020: was #0e0e0e (value-identical) */
+  background: var(--track-bg);
   border: 1px solid var(--glyph-active);
   border-radius: 3px;
   padding: 2px 8px;

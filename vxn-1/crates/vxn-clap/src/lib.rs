@@ -90,7 +90,6 @@ impl vxn_core_clap::EngineNotes for SynthNotes<'_> {
     fn sustain(&mut self, on: bool) {
         self.0.sustain(on);
     }
-    // aftertouch: default no-op — VXN1 doesn't route it (yet).
 }
 
 /// Top-level plugin marker type.
@@ -293,9 +292,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // Fold UI edits made since the last process into the local mirror, then
         // drive the engine from the working values (UI + last host state).
         self.local.fetch_ui_changes(&StoreRef(&self.shared.params));
-        // Push the mirror's working values into the engine table. (The fork's
-        // `write_to` helper is gone; the generic exposes the snapshot via
-        // `values()`, so inline the same per-clap-id copy here.)
+        // Push the mirror's working values into the engine table. Expose the
+        // snapshot via `values()`; copy per clap id.
         {
             let params = self.synth.params_mut();
             for (i, &v) in self.local.values().iter().enumerate() {
@@ -500,7 +498,7 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
         // Route through ParamDesc: enum/bool params accept their variant label
         // (host type-in of "Saw" / "On"), floats clamp the parsed number to
-        // range. Plain leading-number parsing used to drop enum labels.
+        // range.
         let desc = desc_for_clap_id(param_id.get() as usize)?;
         let s = text.to_str().ok()?;
         desc.parse(s).map(|v| v as f64)
@@ -509,8 +507,7 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
         // Inactive-plugin / main-thread param flush. Host param events become
         // `HostEvent::ParamAutomation`; the controller folds them into
-        // `SharedParams` on tick (writing the same atomic the old `LocalParams`
-        // mirror used to publish to). The editor's idle drain consumes the
+        // `SharedParams` on tick. The editor's idle drain consumes the
         // emitted ViewEvents — we don't drop them here.
         let host_tx = lock_mut(&self.controller).host_sender();
         for event in input {
@@ -604,9 +601,9 @@ mod tests {
 
     /// Integration pin (0017): the [`StoreRef`] adapter forwards the live
     /// gesture flag from a real [`SharedParams`], so the shared
-    /// [`LocalParams`] generic brackets a UI drag into one automation edit —
-    /// behaviour-identical to the deleted vxn-clap fork. The generic's own
-    /// transition logic is exhaustively covered in `vxn-core-clap`.
+    /// [`LocalParams`] generic brackets a UI drag into one automation edit.
+    /// The generic's own transition logic is exhaustively covered in
+    /// `vxn-core-clap`.
     #[test]
     fn store_ref_drives_gesture_brackets_from_shared_params() {
         let shared = SharedParams::new();

@@ -37,8 +37,7 @@
 //!   an internal `last_seen[TOTAL]` mirror (NaN-seeded) and emits
 //!   `ViewEvent::ParamChanged` for audio-thread drift — the port of
 //!   `vxn-clap`'s `push_param_diffs`. The emitted records carry the correct
-//!   `norm`/`display` from the param descriptor (the controller owns them),
-//!   filling the TODO(E018) the JS `pollDiffs` stubbed.
+//!   `norm`/`display` from the param descriptor (the controller owns them).
 //!
 //! No wasm-bindgen — instantiated with a plain `WebAssembly.instantiate`, same
 //! approach as the 0034 engine spike, so the module stays scope-clean.
@@ -494,8 +493,7 @@ struct ControllerState {
     host_tx: SyncSender<vxn_app::HostEvent>,
     /// Shared factory entries the store reads; filled by `vxnc_load_factory`
     /// once JS has fetched the baked asset (E019 / 0062). Duplicated into
-    /// `WebPresetStore` (same `Arc`); folding out that duplication needs a typed
-    /// store accessor — deferred (ticket 0142 follow-up).
+    /// `WebPresetStore` (same `Arc`).
     factory: Arc<Mutex<Vec<FactoryEntry>>>,
     /// Shared user-preset cache the store reads/writes (E019 / 0063). Held here
     /// so 0064 can hydrate it from IndexedDB and drain its write journal.
@@ -685,9 +683,9 @@ impl ControllerState {
     fn pump_readback(&mut self) {
         // Disjoint field borrows: read the readback buffer, mutate the diff
         // mirror, send on the host channel — `nan_diff` is the single shared diff
-        // loop (ticket 0142). Opt into the sync-toggle → rate-partner refresh the
-        // web path previously omitted, so a sync flip echoed back from the worklet
-        // refreshes its rate partner's label, exactly like the native `diff_params`.
+        // loop (ticket 0142). The sync-toggle → rate-partner refresh routes drift
+        // so a sync flip echoed back from the worklet refreshes its rate partner's
+        // label, exactly like the native `diff_params`.
         let host_tx = &self.host_tx;
         let readback = &self.mirror.readback_in;
         vxn_app::nan_diff(

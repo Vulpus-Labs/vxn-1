@@ -19,7 +19,7 @@ impl Layer {
     pub const ALL: [Layer; Self::COUNT] = [Layer::Upper, Layer::Lower];
 }
 
-/// Jupiter-8 key mode. Non-automatable shared state (ADR 0003 §3): it travels
+/// Key mode. Non-automatable shared state (ADR 0003 §3): it travels
 /// in the plugin-state blob, not the CLAP param table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -64,5 +64,4 @@ pub const DEFAULT_SPLIT_POINT: u8 = 60;
 /// living directly under the user preset dir, not in a real subfolder.
 pub const UNCATEGORIZED: &str = "Uncategorised";
 
-// `PresetMeta` lives in `vxn-core-app` post-E001/0006.
 pub use vxn_core_app::PresetMeta;

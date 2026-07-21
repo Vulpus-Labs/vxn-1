@@ -7,7 +7,6 @@
 
 use crate::domain::KeyMode;
 
-// `ParamId` and `ParamModel` live in `vxn-core-app` post-E001/0007.
 pub use vxn_core_app::{ParamId, ParamModel};
 
 /// VXN1-specific extension trait: non-automatable shared state (key

@@ -1,5 +1,5 @@
 // panels/keys.js — the Keys panel (mode / edit-layer / split-point / reset +
-// the per-layer level sliders). Split out of the panels.js god-file in 0141.
+// the per-layer level sliders).
 //
 // Mirrors `vxn_ui_vizia::keys_panel`. The mode / edit / split widgets write
 // *non-automatable* shared state directly (ADR 0003 §3/§8) — no gestures, no
@@ -80,10 +80,7 @@ export const keysPanel = (() => {
     KEY_MODE_NAMES.forEach((label, i) => {
       const row = tgRow(label);
       if (i === mode) row.classList.add('active');
-      // pointerdown not click: matches the no-click-slop fix the vizia
-      // toggles needed (a small wobble between down and up eats the
-      // click). Browsers don't drop clicks the same way, but pointerdown
-      // is still the more responsive surface.
+      // pointerdown not click: the more responsive surface.
       row.addEventListener('pointerdown', (ev) => {
         ev.preventDefault();
         if (i === mode) return;

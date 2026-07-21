@@ -32,27 +32,6 @@ const BLOCK: usize = 64;
 /// SHA-style stable hash of the rendered samples. Computed once after
 /// E001/0007–0009 lands; subsequent refactors must preserve it (or
 /// update intentionally with `UPDATE_GOLDEN=1`).
-// Regenerated 2026-06-07 (0100): cutoff descriptor retuned to Jupiter-8 range
-// (20..16000 Hz, mid 800), and `filter_key_track` flipped from bool→f32 0..1
-// amount referenced to C0. Default patch had `filter_key_track = false` (0)
-// before, so the KBT contribution is still zero in the baseline render — the
-// hash drift is entirely the cutoff-slider default moving from 261.6 Hz to
-// 1000 Hz (descriptor default), making the dry tail brighter.
-//
-// 2026-06-13 (E022): re-baselined for the fixed per-voice variance (0124).
-// With `MasterDrift` at its non-zero default, the three chord voices now carry
-// constant cutoff/resonance/envelope tolerance offsets, so each voice's tail
-// differs slightly — an intended audio change. (0123's drift-tracked keytrack
-// contributes nothing here: the default patch still has `filter_key_track = 0`.)
-//
-// 2026-06-22: re-baselined for the equal-power FX wet/dry crossfade. Chorus,
-// delay, and FDN reverb switched from a linear mix `(1-m)·dry + m·wet` to an
-// equal-power one `√(1-m)·dry + √m·wet` — the wet leg is decorrelated from dry,
-// so the two sum in power, not amplitude (linear law dips ~3 dB at m=0.5). The
-// default patch has chorus ON at mix=0.4 (delay/reverb/phaser off), so the
-// chorused tail is what moves the hash; delay/reverb carry the same fix but
-// don't render in this baseline. Endpoints (m=0, m=1) are unchanged by the new
-// law, so the gated-note body before the wet builds is unaffected.
 const GOLDEN_HASH: u64 = 0x4fdcf5e72764bf25;
 
 #[test]

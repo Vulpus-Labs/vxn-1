@@ -1,5 +1,5 @@
 // panels/preset-bar.js — the preset bar (prev/next/browse/save/save-as +
-// dirty-tracking). Split out of the panels.js god-file in ticket 0141.
+// dirty-tracking).
 //
 // Prev/next post `step_preset` with a signed delta — the controller walks
 // the combined Factory + User list and emits a fresh `preset_loaded` for

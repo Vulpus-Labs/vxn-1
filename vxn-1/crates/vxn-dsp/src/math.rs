@@ -1,5 +1,4 @@
-//! Fast math approximations. Copied from `patches-dsp::approximate` with the
-//! consumers VXN1 needs. Error bounds and rationale are preserved in the docs.
+//! Fast math approximations. Error bounds and rationale are in the docs.
 
 use std::f32::consts::TAU;
 
@@ -7,10 +6,9 @@ use std::f32::consts::TAU;
 /// stuck fixed point); seed with `instance_id + 1`. Shared by the S&H LFO, the
 /// chorus noise floor, and the BBD companding dither.
 ///
-/// Intentionally a *different* generator from vxn-2's xorshift64\*
-/// (`vxn2-dsp/src/rng.rs`): plain xorshift (13,7,17) scaled by `i64::MAX`
-/// here vs. the multiplied star variant with a `>> 40` mapping there. Their
-/// output streams differ — do **not** merge them (E027/0117).
+/// A distinct generator from vxn-2's xorshift64\* (`vxn2-dsp/src/rng.rs`):
+/// plain xorshift (13,7,17) scaled by `i64::MAX` here vs. the multiplied star
+/// variant with a `>> 40` mapping there. Their output streams differ.
 #[inline]
 pub fn xorshift64(state: &mut u64) -> f32 {
     *state ^= *state << 13;
@@ -34,12 +32,9 @@ mod rng_tests {
     }
 }
 
-/// Scalar Padé(5,6) `tanh`. Promoted to `vxn-core-utils::math` (E027/0118) —
-/// it was byte-identical in vxn-1 and vxn-2; re-exported here so
-/// `crate::math::fast_tanh` and the lib re-export keep resolving. Still
-/// deliberately NOT merged with `poly::oscillator::tanh_c`: that branchless
-/// `clamp` form vectorises in the poly lane loop where this early-return form
-/// would not (memory `vxn1-tanh-branchless-only`).
+/// Scalar Padé(5,6) `tanh`. Re-exported from `vxn-core-utils::math`. Distinct
+/// from `poly::oscillator::tanh_c`: that branchless `clamp` form vectorises in
+/// the poly lane loop where this early-return form would not.
 pub use vxn_core_utils::math::fast_tanh;
 
 static SINE_TABLE: std::sync::LazyLock<Vec<f32>> =

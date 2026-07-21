@@ -1,8 +1,7 @@
 //! VXN1 DSP kernels.
 //!
 //! Pure, allocation-free-on-the-hot-path DSP building blocks for the VXN1
-//! synthesizer. Adapted from the `patches` / `patches-bundles` codebases and
-//! rewritten for VXN1's static signal flow.
+//! synthesizer.
 //!
 //! ## Processing model
 //!
@@ -35,7 +34,7 @@ pub mod phase;
 pub mod phaser;
 pub mod poly;
 pub mod random_walk;
-// `smoothing` lifted to `vxn-core-utils`; re-exported below for back-compat.
+// `smoothing` re-exported from `vxn-core-utils`.
 
 /// Channels (DSP voices) per layer. The poly kernels are sized to this: one
 /// homogeneous layer renders together, which is what the vectorised lane loop
@@ -100,7 +99,7 @@ pub fn enable_flush_to_zero() {
         fpcr |= 1 << 24;
         std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
     }
-    // Other targets (0019): no portable FTZ control word, so this is a no-op and
+    // Other targets: no portable FTZ control word, so this is a no-op and
     // denormals are NOT flushed — the phaser/BBD/reverb feedback paths can hit
     // denormal slowdowns on a held-quiet tail. The only shipping targets are
     // x86_64 (CLAP/VST3/standalone) and aarch64 (Apple Silicon), both handled
@@ -113,9 +112,7 @@ pub fn enable_flush_to_zero() {
     }
 }
 
-// `ScopedFlushToZero` + `flush_denormal` lifted to `vxn-core-utils`; the
-// re-export above keeps existing `vxn_dsp::ScopedFlushToZero` callsites
-// working without touching them.
+// `ScopedFlushToZero` + `flush_denormal` re-exported from `vxn-core-utils`.
 
 /// Reference frequency for V/oct: MIDI note 0 (C-1) ≈ 8.1758 Hz.
 pub const MIDI_0_HZ: f32 = 8.175_799;

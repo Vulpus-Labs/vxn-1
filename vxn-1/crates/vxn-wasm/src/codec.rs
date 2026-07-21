@@ -21,7 +21,7 @@
 //! off 12 f32  reserved  zero
 //! ```
 //!
-//! # Decisions made here (close-out)
+//! # Decisions made here
 //!
 //! - **norm vs plain param**: a `set_param_norm` rides the SAME `EV_PARAM` tag
 //!   with the `flag` byte set to [`PARAM_FLAG_NORM`] (1); a plain `set_param`

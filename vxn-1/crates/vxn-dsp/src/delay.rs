@@ -1,12 +1,11 @@
-//! Circular delay line and a stereo feedback delay effect. The interpolation
-//! technique follows `patches-dsp::delay_buffer` (power-of-two mask + linear
-//! read); the stereo wrapper is VXN1's own.
+//! Circular delay line and a stereo feedback delay effect. Interpolation uses a
+//! power-of-two mask + linear read.
 
 use crate::one_pole_coeff;
 
 /// Delay-time slew time constant (ms). The control layer hands the delay a
 /// stepped target each block; the read pointer slews toward it *per sample*
-/// (0015) so a DelayTime automation move bends the pitch like a tape/BBD line
+/// so a DelayTime automation move bends the pitch like a tape/BBD line
 /// instead of clicking. This is why `GlobalParam::DelayTime` snaps in the
 /// engine smoother — its ramp lives here, the same way cutoff/reso ramp inside
 /// the ladder rather than in `ParamSmoother`.
@@ -75,7 +74,7 @@ pub struct StereoDelay {
     // Control-block parameters.
     // `delay_samples_*` is the *current* read distance, slewed per sample toward
     // `target_samples_*` (set once per block) so a DelayTime move never jumps the
-    // pointer (0015). `feedback`/`damping`/`mix` are smoothed upstream by the
+    // pointer. `feedback`/`damping`/`mix` are smoothed upstream by the
     // engine's block-rate `ParamSmoother`, so they snap here.
     delay_samples_l: f32,
     delay_samples_r: f32,
@@ -228,10 +227,10 @@ mod tests {
 
     #[test]
     fn delay_time_sweep_is_click_free() {
-        // 0015: a DelayTime automation sweep must not jump the read pointer. Run
+        // a DelayTime automation sweep must not jump the read pointer. Run
         // the identical sweep through the real (per-sample slewed) delay and a
-        // reference copy that snaps the pointer to its target each block (the old
-        // behaviour), and assert the slewed wet output's worst sample-to-sample
+        // reference copy that snaps the pointer to its target each block,
+        // and assert the slewed wet output's worst sample-to-sample
         // step is far smaller. Self-calibrating — no magic threshold.
         let sr = 48_000.0;
 

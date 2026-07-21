@@ -7,7 +7,7 @@
 //! lane loop — the inner loop has no data-dependent branches. A heterogeneous
 //! second layer is simply a second kernel instance with its own hoisted globals.
 //!
-//! Mirrors the design of `patches-dsp`'s poly kernels. The mono kernels in the
+//! The mono kernels in the
 //! sibling modules remain as `pub(crate)` test oracles (see `oscillator.rs`,
 //! `ota_ladder.rs`, `hpf.rs`).
 

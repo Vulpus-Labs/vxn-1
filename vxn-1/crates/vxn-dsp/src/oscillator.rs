@@ -1,10 +1,8 @@
 //! Anti-aliased waveform oscillator built on [`MonoPhaseAccumulator`].
 //!
-//! Saw and pulse use PolyBLEP at their discontinuities; triangle is the
-//! integral of a band-limited square (cheap leaky integrator of the BLEP'd
-//! square) — but for VXN1 v1 we use the naive triangle, which has gently
-//! rolled-off harmonics and aliases far less than saw/pulse. Sine is table
-//! lookup (effectively alias-free).
+//! Saw and pulse use PolyBLEP at their discontinuities; triangle is the naive
+//! triangle, which has gently rolled-off harmonics and aliases far less than
+//! saw/pulse. Sine is table lookup (effectively alias-free).
 
 #[cfg(test)]
 use crate::math::lookup_sine;

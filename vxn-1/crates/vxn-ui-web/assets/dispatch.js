@@ -354,13 +354,7 @@ export function rebindAllForLayer(layer) {
   model.controls.clear();
   // Resolve per-layer quirk ids BEFORE bindCell so each fader's
   // `rateDisplayOverride` closure captures the *current* layer's
-  // sync-partner id. With the prior order (locate after bind), the
-  // first init saw an empty `syncOfRate` and every layer flip saw the
-  // previous layer's per-patch ids — so `syncOfRate.get(rateId)`
-  // returned undefined and the override was null. The popup then fell
-  // back to the controller's absolute display whenever
-  // `push_param_diffs` skipped (rebroadcasts, drag-at-rest), flipping
-  // hover/drag labels between "2 Hz" and "1/8".
+  // sync-partner id.
   locateSyncPartners(layer);
   rebuildDimRules(layer);
   for (const entry of model.cells) {

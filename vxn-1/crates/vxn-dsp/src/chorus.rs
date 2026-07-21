@@ -1,6 +1,4 @@
-//! Stereo chorus: the `VChorus` vintage bucket-brigade-device (BBD) emulation,
-//! ported from `patches-bundles::patches-vintage`, voiced after an early-80s
-//! Roland BBD chorus ("bright" / Juno-60 reference).
+//! Stereo chorus: a vintage bucket-brigade-device (BBD) emulation.
 //!
 //! Two [`ModDelayLine`]s (the BBD's input anti-image bank → soft bucket
 //! saturation → fractional read → output reconstruction bank → variant trim)
@@ -14,8 +12,7 @@
 //! The engine drives this once per [`CONTROL_BLOCK`]. All control-rate
 //! quantities — LFO increment, delay centre/swing, dry/wet gains, hiss floor —
 //! are hoisted out of the inner loop by [`set_params`](StereoChorus::set_params)
-//! and [`process_block`](StereoChorus::process_block) (the old per-sample
-//! `process` recomputed the LFO increment, a divide, every sample). The block
+//! and [`process_block`](StereoChorus::process_block). The block
 //! method also runs each delay line as its own pass so its filter-bank and ring
 //! state stay hot in cache for the whole block.
 
@@ -23,12 +20,12 @@ use crate::CONTROL_BLOCK;
 use crate::delay_line::{Interp, ModDelayLine};
 use crate::math::xorshift64;
 
-/// Bright (Juno-60 reference) delay sweep, in seconds: 1.66–5.35 ms.
+/// Bright delay sweep, in seconds: 1.66–5.35 ms.
 const DELAY_MIN_S: f32 = 0.00166;
 const DELAY_MAX_S: f32 = 0.00535;
 /// Ring headroom — the largest delay any setting commands, with margin.
 const MAX_DELAY_S: f32 = 0.008;
-/// Write soft-saturation drive, matching `BbdDevice::BBD_256`.
+/// Write soft-saturation drive.
 const SAT_DRIVE: f32 = 1.2;
 /// Post-BBD reconstruction trim for the bright voicing.
 const RECON_CUTOFF_HZ: f32 = 9_000.0;
@@ -76,11 +73,10 @@ impl TriangleLfo {
     }
 }
 
-/// Stereo BBD chorus (`VChorus`, bright voicing). The engine keeps its existing
-/// three controls: `rate_hz` drives the LFO, `depth` scales the delay swing,
-/// `mix` is the dry/wet blend. Variant (bright/dark), mode, hiss and jitter are
-/// further `VChorus` knobs not yet surfaced as plugin params; bright + full
-/// modulation + silent hiss + no jitter is the default voicing.
+/// Stereo BBD chorus (bright voicing). The engine keeps three controls:
+/// `rate_hz` drives the LFO, `depth` scales the delay swing, `mix` is the
+/// dry/wet blend. Bright + full modulation + silent hiss + no jitter is the
+/// default voicing.
 #[derive(Clone)]
 pub struct StereoChorus {
     sample_rate: f32,
@@ -102,7 +98,7 @@ impl StereoChorus {
             line.set_saturation(SAT_DRIVE);
             line.set_recon_cutoff(RECON_CUTOFF_HZ);
             // Thiran read: flat magnitude + group delay tracks the BBD's clean
-            // analog delay best under the smooth Juno-style sweep.
+            // analog delay best under the smooth sweep.
             line.set_interp(Interp::Thiran);
         }
         // Decorrelate the (currently disabled) jitter walks across channels.

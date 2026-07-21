@@ -50,7 +50,7 @@ const TREM_SNAP_EPS: f32 = 1.0e-6;
 /// Default per-voice oscillator pitch-drift amount, `[0.0, 1.0]`. Drives the
 /// bounded random walks inside each [`PolyOscillator`]: at full depth the walks
 /// wander ±~12.5 cents; `0.15` keeps the wobble subliminal (±~2 cents max,
-/// sub-Hz rate), giving JP-8-flavoured per-voice "live" detune without ever
+/// sub-Hz rate), giving per-voice "live" detune without ever
 /// sounding out-of-tune. Hidden default for v1 (no panel knob); can be
 /// promoted to a `PatchParam` once the depth is tuned by ear. Synth carries
 /// the live value so equivalence tests can opt out by setting it to 0.
@@ -392,18 +392,17 @@ pub struct BlockCtx {
     /// Per-voice oscillator pitch-drift amount in `[0.0, 1.0]`. Drives the
     /// bounded random walks inside each [`PolyOscillator`] (see
     /// [`PolyOscillator::tick_drift`]) so each lane wanders at a sub-Hz rate,
-    /// giving the JP-8-flavoured "live" detune. `0.0` short-circuits the walk
+    /// giving the "live" detune. `0.0` short-circuits the walk
     /// entirely — used by the equivalence tests where two layers must sum to
     /// exactly twice one (the drift would decorrelate them otherwise).
     pub drift_amount: f32,
     /// Per-layer pre-FX output gain. Lets the user balance Upper vs Lower
     /// independently before both layers sum into the shared FX bus. `1.0`
-    /// is unity; the param defaults to `1.0` so the prior single-level
-    /// behaviour holds for untouched patches.
+    /// is unity; the param defaults to `1.0`.
     pub layer_level: f32,
     /// Per-voice stereo spread amount in `[0.0, 1.0]`. Scales the fixed
     /// per-slot pan positions (`PAN_POSITIONS`). `0.0` → every voice pans
-    /// to centre (L=R), bit-identical to the pre-E019 mono sum after the
+    /// to centre (L=R), bit-identical to the mono sum after the
     /// L=R input passes through the stereo FX chain.
     pub spread: f32,
 }
@@ -498,7 +497,7 @@ impl VoiceBank {
     /// decorrelated (no shared random sequence when two similar patches sum).
     pub fn new(sample_rate: f32, rng_seed: u64) -> Self {
         // The LFO ticks once per control block, so its cores run at the control
-        // rate (sr / CONTROL_BLOCK), matching the old per-layer LFO.
+        // rate (sr / CONTROL_BLOCK).
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         let mut osc1 = PolyOscillator::new();
         let mut osc2 = PolyOscillator::new();
@@ -914,7 +913,7 @@ impl VoiceBank {
         let base_rate = ctx.os_sample_rate / os as f32;
 
         // Per-voice LFO 1: tick each channel's phase once for this block (held
-        // across the block's frames, like the old per-layer LFO). The onset gain
+        // across the block's frames). The onset gain
         // (delay → fade) is applied at each read site, since it ramps per frame.
         // LFOs tick even on silent blocks so free-run phase keeps drifting
         // between notes (skipping below the LFO tick would freeze free-run).
@@ -981,7 +980,7 @@ impl VoiceBank {
             // Portamento: glide each channel's pitch toward its target note. A
             // freshly triggered channel snaps to target when glide is off, the
             // time is 0, or it has no previous pitch (its first note); otherwise
-            // it ramps from where it was, giving JP-8 polyphonic glide per voice.
+            // it ramps from where it was, giving polyphonic glide per voice.
             // The glide is a stateful recurrence (and the osc/filter coefficient
             // writes below are DSP application), so they stay inline; only the
             // pure route maths is lifted into `resolve_mod`.
@@ -1083,7 +1082,7 @@ impl VoiceBank {
         // pair sums to 2.0 in amplitude at every position, so the mono
         // downmix (L+R) is invariant to spread. Centre is (1, 1), not the
         // equal-power 1/√2 — this is deliberate: at spread = 0 every lane
-        // sums identical content into L and R, matching the pre-E019 mono
+        // sums identical content into L and R, matching the mono
         // sum bit-for-bit through the stereo FX chain. Hard pan puts 2.0
         // into one channel; the master limiter handles that case.
         let mut pan_l = [0.0f32; N];
@@ -1260,7 +1259,7 @@ impl VoiceBank {
                         mix[v] += noise[v] * ctx.osc.noise_level;
                     }
                 }
-                // Source Mixer → HPF → VCF → VCA (JP-8 topology). HPF bypassed
+                // Source Mixer → HPF → VCF → VCA. HPF bypassed
                 // when disengaged (default), feeding the mix straight to the VCF.
                 let ladder_in = if hpf_active {
                     self.hpf.process(&mix, &mut hp);
@@ -1391,9 +1390,9 @@ fn resolve_mod(ctx: &BlockCtx, s: &ModSources) -> ModOut {
     // Filter key-track (0100): cutoff shifts `amt · (note − 12)` semitones,
     // referenced to C0 (MIDI 12). At `amt = 1.0` this is the textbook
     // "1 octave of cutoff per octave of key", with the VCF opening as you
-    // go up the keyboard (the Jupiter-8 100%-track shape). At `amt = 0.0`
-    // the multiplication zeroes the contribution out cleanly. The cutoff
-    // slider's taper is no longer pinned to C4 — see `params::Cutoff`.
+    // go up the keyboard (the 100%-track shape). At `amt = 0.0`
+    // the multiplication zeroes the contribution out cleanly. Cutoff
+    // taper: see `params::Cutoff`.
     let key_track = (s.note as f32 - 12.0) * ctx.cutoff.key_track;
     // LFO→pitch and Env→pitch are each split: diverted to the cross-mod
     // "modulator" channel when their "Mod" switch is on, else joining the
@@ -1713,7 +1712,7 @@ const TWIN_SPREAD: f32 = 1.0;
 
 /// Deterministic start phase keyed off the allocated channel — a golden-ratio
 /// walk well-separates the 8 channels' phases so a chord's voices land on
-/// decorrelated transients (the JP-8-style "live" attack) rather than every
+/// decorrelated transients (the "live" attack) rather than every
 /// voice snapping to a shared phase 0 (sterile, sums into a comb). Stable
 /// per channel, so two identical Poly layers still sum to exactly 2× one layer
 /// (the ADR 0003 §3 whole-mode equivalence — would not survive a per-call rng).
@@ -1846,8 +1845,7 @@ mod alloc_tests {
     #[test]
     fn channel_phase_is_distinct_across_all_channels() {
         // The golden-ratio walk must give a unique phase per channel so a
-        // chord's voices land on decorrelated transients, not just a single
-        // pair like the old TWIN_PHASE/0 split.
+        // chord's voices land on decorrelated transients.
         let phases: Vec<f32> = (0..N).map(channel_phase).collect();
         for (i, &p) in phases.iter().enumerate() {
             assert!((0.0..1.0).contains(&p));

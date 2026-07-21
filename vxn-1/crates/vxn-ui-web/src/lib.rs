@@ -1,4 +1,4 @@
-//! VXN1 web editor backend (E010 / 0039; thin shim since E024 / 0077).
+//! VXN1 web editor backend (thin shim).
 //!
 //! Thin wrapper over [`vxn_core_ui_web`]: [`open_editor`] assembles VXN1's
 //! faceplate HTML (markup + CSS + the bridge/browser/panels/dispatch JS
@@ -26,8 +26,7 @@ use vxn_app::{
     desc_for_clap_id,
 };
 // `ViewEvent` is only named by the test-gated `batch_chunks` /
-// `view_event_to_json` wrappers (and the test module via `use super::*`)
-// since the live flush path moved into the shared crate (0077).
+// `view_event_to_json` wrappers (and the test module via `use super::*`).
 #[cfg(test)]
 use vxn_app::ViewEvent;
 use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
@@ -241,10 +240,7 @@ pub fn build_web_faceplate_html() -> String {
 /// splice already puts every binding in one shared scope, so cross-module
 /// refs resolve without the import).
 fn strip_esm_exports(src: &str) -> String {
-    // Single source of truth lives in the shared crate now (both synths and
-    // the shared preset-browser asset strip identically). Kept as a thin
-    // local alias so the four splice call sites + the unit test below read
-    // unchanged.
+    // Thin local alias over the shared crate's implementation.
     vxn_core_ui_web::strip_esm_exports(src)
 }
 
@@ -283,16 +279,13 @@ fn build_params_json() -> String {
 /// Serialise one param descriptor for the spliced `window.vxn.params` map.
 ///
 /// Near-identical to [`vxn_core_ui_web::descriptor_to_json`] but kept local
-/// (0020) deliberately: this returns the `String` the faceplate splice wants
-/// (the shared one returns a `serde_json::Value`, and still routes through the
-/// `as_object_mut().expect(...)` pattern this crate is purging). The shape is
-/// the same, so if the two ever diverge, reconcile here — the JS reads them
-/// identically.
+/// deliberately: this returns the `String` the faceplate splice wants (the
+/// shared one returns a `serde_json::Value`). The shape is the same, so if the
+/// two ever diverge, reconcile here — the JS reads them identically.
 fn descriptor_to_json(d: &ParamDesc) -> String {
     use serde_json::{Map, Value, json};
-    // Build the object map directly (0020): no `json!({...})` +
-    // `as_object_mut().expect(...)` round-trip, so there is no panic path to
-    // reason about — the value is an object by construction.
+    // Build the object map directly: the value is an object by construction,
+    // so there is no panic path.
     let mut obj = Map::new();
     obj.insert("name".into(), json!(d.name));
     obj.insert("label".into(), json!(d.label));
@@ -327,10 +320,6 @@ fn taper_to_json(t: vxn_app::Taper) -> serde_json::Value {
         vxn_app::Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
     }
 }
-
-// Parent-window adapter (`ParentWindow` + per-OS `build_raw`) moved to the
-// shared crate (E024 0077); `vxn_core_ui_web::open_editor` builds the raw
-// handle and returns `OpenEditorError::BadParent` on a null/zero parent.
 
 // ── IPC inbound: JSON → UiEvent ─────────────────────────────────────────────
 
@@ -508,11 +497,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use vxn_app::{ParamId, PresetMeta, PresetSource};
-
-    // The null-parent → `OpenEditorError::BadParent` (not panic) guarantee
-    // (0115) is now covered by `vxn-core-ui-web`'s own
-    // `build_raw_null_parent_is_err_not_panic` test, since `build_raw`
-    // moved into the shared crate (E024 0077).
 
     #[test]
     fn parses_set_param_norm() {
@@ -1009,15 +993,6 @@ mod tests {
         assert_eq!(strip_esm_exports(with_import), "\nconst X = 1;\n");
     }
 
-    // NOTE: faceplate_text_input_bridge_wired, faceplate_status_pill_wired,
-    // faceplate_preset_bar_wired, faceplate_browser_mutation_flows_wired,
-    // faceplate_save_as_modal_wired, faceplate_browser_search_is_cross_folder,
-    // faceplate_browser_panel_wired, header_switch_primitive_wired,
-    // keys_panel_wired, filter_mode_notch_dims_slope_strip,
-    // faceplate_browser_drag_drop_wired, faceplate_bridge_object_intact,
-    // faceplate_batched_bridge_wired were all pure str::contains() wiring
-    // guards — replaced by asset_present_* guards above + the Vitest suite
-    // (VXN_JS_TESTS=1 cargo test -p vxn-ui-web).
 
     #[test]
     fn parses_request_and_result_text_input() {
@@ -1434,10 +1409,6 @@ mod tests {
         assert!(assembled().contains("collectDimRuleSpecs"));
     }
 
-    // NOTE: edit_layer_rebind_wired (substring wiring assertions) and
-    // header_switch_primitive_wired were collapsed; placeholder-guard content
-    // from edit_layer_rebind_wired lives in asset_present_bridge_js above.
-
     #[test]
     fn edit_layer_changed_serializes() {
         // The web crate's view_event_to_json must encode the new variant
@@ -1464,9 +1435,6 @@ mod tests {
         assert_eq!(v["note"], 72);
     }
 
-    // NOTE: keys_panel_wired and filter_mode_notch_dims_slope_strip were
-    // collapsed (pure str::contains wiring); the value-only guard from
-    // keys_panel_wired is kept below.
     #[test]
     fn keys_default_split_point_matches_engine() {
         // DEFAULT_SPLIT_POINT must equal 60 (C4) — the double-click reset on
@@ -1585,10 +1553,6 @@ mod tests {
         }
         assert!(seen_float && seen_int && seen_bool && seen_enum);
     }
-
-    // NOTE: faceplate_browser_drag_drop_wired was a pure str::contains()
-    // wiring guard — collapsed; see asset_present_* guards above +
-    // the Vitest suite for live DnD behaviour coverage.
 
     // ── JS suite gate (E015 / 0078) ─────────────────────────────────────
     //

@@ -48,8 +48,7 @@ pub(super) fn pblep(t: f32, dt: f32) -> f32 {
 /// (`vxn-core-utils::math`, re-exported as [`crate::math::fast_tanh`]) — keep
 /// the two in sync if you retune them. They are deliberately NOT merged: this
 /// branchless `clamp` form vectorises in the poly lane loop, while `fast_tanh`'s
-/// early-return branches are fine on scalar paths (0019; memory
-/// `vxn1-tanh-branchless-only`; E027/0118 left this one in place by design).
+/// early-return branches are fine on scalar paths.
 #[inline(always)]
 pub(super) fn tanh_c(x: f32) -> f32 {
     let x = x.clamp(-2.5, 2.5);
@@ -202,9 +201,7 @@ macro_rules! with_wave {
 
 /// Max pitch deviation a fully-engaged drift walk produces, in semitones —
 /// `drift_value[v] = walk · DRIFT_MAX_SEMITONES · amount`. So a `drift = 1.0`
-/// patch wanders at most ±12.5 cents (an eighth-semitone). Halved from the
-/// original ±25 cents: the tuning impact at any given drift amount was too
-/// strong by ear, reading as out-of-tune rather than as live analog detune.
+/// patch wanders at most ±12.5 cents (an eighth-semitone).
 const DRIFT_MAX_SEMITONES: f32 = 0.125;
 
 /// Update the local drift walk every `DRIFT_BLOCK_PERIOD` control blocks. At
@@ -240,7 +237,7 @@ pub struct PolyOscillator {
     /// each lane wanders independently — the "live" decorrelation a real
     /// analog poly synth's per-voice opamp tolerances produce. Free-running:
     /// not reset on note-on, so the voice's drift is a property of its lane,
-    /// not of when you played a note. Ported from patches `PolyOsc`.
+    /// not of when you played a note.
     drift_walks: [BoundedRandomWalk; N],
     /// Counts control blocks since the last walk advance — every
     /// `DRIFT_BLOCK_PERIOD` blocks the walks all step and `drift_value` is
@@ -380,7 +377,7 @@ impl PolyOscillator {
     }
 
     /// Coupled carrier(self=osc1)←modulator(osc2) path carrying **hard sync** and
-    /// **through-zero phase modulation** (JP-8 VCO-2 sync + Cross Mod; ADR 0004
+    /// **through-zero phase modulation** (Cross Mod; ADR 0004
     /// §7). osc1 is always the audible carrier (modulated thing); osc2 is always
     /// the silent modulator (driving signal).
     ///
@@ -674,7 +671,7 @@ impl PolyOscillator {
     }
 }
 
-// ── Sub-osc (Juno-style square one octave below the source) ────────────────
+// ── Sub-osc (square one octave below the source) ────────────────
 
 /// Band-limited square at half the source frequency, phase-locked to the
 /// source via a flipflop toggled on each source wrap. `phase`/`inc` are the
@@ -709,7 +706,7 @@ pub fn poly_sub_square(
 /// compensated. Branchless: the `x > 0` clamp is a multiply mask (the reference
 /// early-returns 0 for non-positive inputs) so the lane loop vectorises. `gain` =
 /// `10^(drive_dB/20)`; low gain ≈ near-ideal multiply, high gain = harmonic
-/// colouring. Ported from `patches-modules::modulators::ring_mod::diode`.
+/// colouring.
 #[inline(always)]
 fn ring_diode(x: f32, gain: f32) -> f32 {
     let i = x * gain;
@@ -945,13 +942,12 @@ mod tests {
         );
     }
 
-    /// Sub-sample polyBLEP sync sprays materially less aliasing than the old
-    /// sample-accurate hard reset. Modelled on
-    /// `patches-integration-tests/tests/hard_sync_aliasing.rs`: render a synced
-    /// saw both ways, take the magnitude spectrum (rectangular window — the
-    /// signal is periodic in the window by construction), and compare energy in
-    /// the upper eighth of the spectrum, which a BLEP-smoothed synced saw keeps
-    /// nearly empty while the boundary-rounded reset fills with broadband noise.
+    /// Sub-sample polyBLEP sync sprays materially less aliasing than a
+    /// sample-accurate hard reset. Render a synced saw both ways, take the
+    /// magnitude spectrum (rectangular window — the signal is periodic in the
+    /// window by construction), and compare energy in the upper eighth of the
+    /// spectrum, which a BLEP-smoothed synced saw keeps nearly empty while the
+    /// boundary-rounded reset fills with broadband noise.
     #[test]
     fn subsample_sync_beats_sample_accurate_aliasing() {
         const SR: f32 = 48_000.0;
@@ -961,8 +957,7 @@ mod tests {
         const K: usize = 40;
         let f_master = K as f32 * SR / NFFT as f32; // 468.75 Hz
 
-        // Old sample-accurate path: hard reset to 0 on the master wrap, no
-        // residual. Mirrors the pre-0020 `process_pair` slave handling.
+        // Sample-accurate path: hard reset to 0 on the master wrap, no residual.
         fn process_naive(
             slave: &mut PolyOscillator,
             master: &mut PolyOscillator,

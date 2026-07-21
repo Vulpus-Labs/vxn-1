@@ -15,8 +15,8 @@ __CSS__
   <!-- Preset bar (0049). Prev/next walk the combined Factory + User
        list (controller-side via UiEvent::StepPreset); Browse toggles a
        view-side `browserOpen` flag 0050 will bind a panel to; Save As
-       opens the 0048 floating popup, commits with `folder: null`
-       (defaults to user root until 0051 ties browser selection in). -->
+       opens the 0048 floating popup, committing to the browser panel's
+       currently-selected folder. -->
   <div class="preset-bar-slot" id="preset-bar-slot">
     <button class="pbar-btn pbar-step" id="pbar-prev" type="button" aria-label="Previous preset">&lt;</button>
     <div class="pbar-name" id="pbar-name"></div>
@@ -106,7 +106,7 @@ __CSS__
          in the bottom strip. NoiseColor is a 2-variant enum; the Switch
          primitive renders it as two exclusive labelled toggles. Ring lives on
          the XMod panel's CrossModType — when engaged it displaces osc1 in this
-         strip. Sub is a Juno-style square one octave below osc1 (osc2 under
+         strip. Sub is a square one octave below osc1 (osc2 under
          Sync), phase-locked to the source's flipflop. -->
     <div class="panel" data-name="Mixer" data-layered>
       <div class="panel-header">MIXER</div>
@@ -307,8 +307,8 @@ __CSS__
          descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
          the display permutation via `data-order`); Detune with its mode-aware
          top (50 ct Unison, 20 ct Twin) and the Legato toggle drawn beneath the
-         fader; Glide fader (0 = off). Legato is *not* its own column — the
-         detune-legato primitive handles both params. -->
+         fader; Glide fader (0 = off); Spread fader. Legato is *not* its own
+         column — the detune-legato primitive handles both params. -->
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
       <div class="panel-body">

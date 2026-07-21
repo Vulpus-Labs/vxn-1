@@ -172,8 +172,7 @@ impl vxn_app::PresetStore for EnginePresetStore {
             // The browser groups factory presets by their directory category
             // (the `FactoryPreset.category` field), not the optional
             // `[meta] category` in the TOML. Override here so the
-            // controller-published corpus carries the same grouping the old
-            // `build_browser(&factory(), …)` produced.
+            // controller-published corpus carries the same grouping.
             name: fp.preset.meta.name.clone(),
             author: fp.preset.meta.author.clone(),
             category: Some(fp.category.clone()),

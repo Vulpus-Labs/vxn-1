@@ -31,12 +31,11 @@ function _post(msg) {
 }
 // Mutation hook (0141). The engine-mutating senders below (set_param /
 // set_param_norm / reset_layer / set_key_mode / set_split_point) fire every
-// registered callback after posting. This replaces the old preset-bar
-// monkey-patch that reassigned the shared sender methods to flip a dirty flag:
-// `window.vxn.onMutation(cb)` is a first-class, additive hook in the dispatch
-// layer, so a subscriber composes instead of overwriting (and can't silently
-// drop a prior patcher's side effect). View-only / transport sends (gestures,
-// preset load, text input, ready) deliberately don't fire it.
+// registered callback after posting. `window.vxn.onMutation(cb)` is a
+// first-class, additive hook in the dispatch layer, so a subscriber composes
+// instead of overwriting (and can't silently drop a prior patcher's side
+// effect). View-only / transport sends (gestures, preset load, text input,
+// ready) deliberately don't fire it.
 const _mutationHooks = [];
 function _mutated() {
   for (const cb of _mutationHooks) {
@@ -130,8 +129,7 @@ window.vxn.onMutation = function (cb) {
   if (typeof cb === 'function') _mutationHooks.push(cb);
 };
 
-// `valuePop` (the floating value popup singleton) moved to the shared
-// `vxn-core-ui-web/assets/value-pop.js` (0140); it's spliced ahead of this
+// `valuePop` (the floating value popup singleton) is spliced ahead of this
 // module, so its top-level binding is already in scope for `attachValuePop`
 // in panels.js.
 

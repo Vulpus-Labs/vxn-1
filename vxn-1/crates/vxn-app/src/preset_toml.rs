@@ -66,10 +66,9 @@ impl std::error::Error for TomlError {}
 
 // ── On-disk file shape (serde) ──────────────────────────────────────────────
 //
-// Mirrors `vxn-engine::preset`'s `PerformanceFile` / `PerformanceBody` exactly
-// (scalar fields before table fields so TOML serialization is well-formed; the
+// Scalar fields before table fields so TOML serialization is well-formed; the
 // param maps stay dynamically typed `toml::Table` and are resolved against the
-// descriptor by hand).
+// descriptor by hand.
 
 #[derive(Serialize, Deserialize)]
 struct PerformanceFile {

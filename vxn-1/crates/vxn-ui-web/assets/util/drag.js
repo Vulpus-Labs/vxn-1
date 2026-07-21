@@ -1,6 +1,6 @@
 // util/drag.js — generic drag / paint / value-popup primitives, plus the two
-// tiny shared control helpers (`clampVariant`, `tgRow`). Split out of the
-// panels.js god-file in ticket 0141; consumes the shared `wireDrag` (0140).
+// tiny shared control helpers (`clampVariant`, `tgRow`). Consumes the shared
+// `wireDrag` (0140).
 //
 // The splice loader drops these `import` lines for the inline `<script>` (the
 // stripped shared bindings are spliced ahead of this module via the bridge

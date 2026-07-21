@@ -1,6 +1,5 @@
 // panels/discrete.js — the click-to-pick widgets (Switch / ButtonGroup /
-// Dropdown / HeaderSwitch) and the FX tab strip. Split out of the panels.js
-// god-file in ticket 0141.
+// Dropdown / HeaderSwitch) and the FX tab strip.
 //
 // All four pickers share the same write semantics: a click sends
 // `begin_gesture` → `set_param` → `end_gesture` (via `send.discrete`) so the

@@ -1,12 +1,7 @@
 //! Bucket-brigade-device (BBD) modelled delay line — the chorus primitive.
 //!
-//! Sole consumer is [`crate::chorus`]; the BBD reverb that once shared this
-//! module was retired with the FDN port (E009 — see [`crate::fdn_reverb`]), so
-//! what remains is the modulated delay line and the support types it needs.
-//!
-//! Ported from `patches-bundles::patches-vintage` — the continuous-time
-//! complex-pole filter banks, the host-rate modulated delay line, and the
-//! small support types they need ([`DelayBuffer`] cubic/Thiran reads,
+//! Sole consumer is [`crate::chorus`]. What remains is the modulated delay line
+//! and the support types it needs ([`DelayBuffer`] cubic/Thiran reads,
 //! [`BoundedRandomWalk`] clock jitter, [`OnePoleLpf`]).
 //!
 //! VXN1 only needs the *short-delay* BBD regime that chorus lives in

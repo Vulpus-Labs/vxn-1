@@ -1,5 +1,4 @@
-//! Noise sources for the mixer. White (flat) and Pink (−3 dB/oct); Brown was
-//! dropped in the E006 fixed-panel pass (a 2-button White/Pink selector).
+//! Noise sources for the mixer. White (flat) and Pink (−3 dB/oct).
 //!
 //! [`PolyNoise`] is the structure-of-arrays sibling used by the voice bank: one
 //! independent PRNG + pink shaper per channel, so a stacked (unison) note sums

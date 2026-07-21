@@ -4,9 +4,6 @@
 //! onwards) and [`codec`] (binary event codec, ticket 0037). They are driven
 //! by the JS side in `web/vxn-processor.js` → `web/audio-host.mjs` →
 //! `web/coordinator.mjs`.
-//!
-//! The 0034/0035 spike `Instance` API (`vxn_new` / `vxn_process` / …) that
-//! previously lived here has been removed — superseded by `host.rs`.
 
 // 0037: binary event codec (Rust half). Typed encode/decode over the 0035
 // 16-byte slot framing, plus `apply(event, &mut Synth)` with dispatch parity

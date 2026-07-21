@@ -1,24 +1,23 @@
-//! R3109/IR3109-style OTA-C ladder lowpass — a Roland/Juno-flavoured filter.
+//! OTA-C ladder lowpass filter.
 //!
 //! Four TPT one-pole stages like a classic transistor ladder, but the
 //! nonlinearity lives **inside each integrator** (a per-stage `tanh` on the
 //! integrator input) rather than on the global feedback sum. That matches the
-//! softer, more distributed saturation of OTA-C filter chips (IR3109, CEM3320,
-//! …) and gives a cleaner, more sinusoidal self-oscillation than a Moog-style
-//! transistor ladder.
+//! softer saturation of OTA-C filter chips than a transistor ladder, and gives
+//! a cleaner, more sinusoidal self-oscillation.
 //!
-//! Differences from a Moog-style transistor ladder (`tanh` on the feedback sum):
+//! Differences from a transistor ladder (`tanh` on the feedback sum):
 //!
 //! * Per-stage `tanh`, not a single global pre-feedback `tanh`.
-//! * **No** resonance-dependent input attenuation — Juno-style filters don't
+//! * **No** resonance-dependent input attenuation — OTA-C filters don't
 //!   thin the bass under high resonance, so there is no `scale` term and no
 //!   Sharp/Smooth voicing axis. There is also **no** resonance gain
-//!   compensation: this is a Juno emulation, so the `1/(1+k)` passband loss
-//!   under resonance is left intact as part of the authentic OTA character.
+//!   compensation: the `1/(1+k)` passband loss under resonance is left intact
+//!   as part of the authentic OTA character.
 //! * Selectable response ([`FilterMode`]): 24 / 12 dB lowpass, band-pass,
 //!   high-pass and notch, all formed as the classic analogue-ladder linear
 //!   combination of the four stage outputs and the ladder input node (the
-//!   "filter mode mixing" of the Oberheim/SSM multimode designs). The
+//!   "filter mode mixing" of classic multimode filter designs). The
 //!   resonance feedback loop is **always** taken from the 4th stage, so the
 //!   filter self-oscillates identically at `k ≈ 4` in every mode.
 //!

@@ -14,12 +14,10 @@ use crate::params::{
     patch_clap_id,
 };
 
-// Tempo-sync subdivision table — shared (E027/0117). The table, its index
-// lookup, and the rate/period resolvers moved to `vxn-core-utils::sync`; this
-// module re-exports them under the `synced_*` names vxn-1's engine/editor use
-// (`synced_hz`/`synced_seconds` = core's `subdivision_hz`/`_seconds`, same
-// `(bpm/60)/beats` math over the byte-identical table) and keeps only the
-// per-synth CLAP-id sync helpers below.
+// Re-exports the shared subdivision table (and its index lookup and rate/period
+// resolvers) under the `synced_*` names vxn-1's engine/editor use
+// (`synced_hz`/`synced_seconds` = core's `subdivision_hz`/`_seconds`). Keeps
+// only the per-synth CLAP-id sync helpers below.
 pub use vxn_core_utils::sync::{
     DEFAULT_TEMPO_BPM, SUBDIVISIONS, Subdivision, index_from_norm,
     subdivision_hz as synced_hz, subdivision_seconds as synced_seconds,

@@ -1,9 +1,6 @@
-// AudioWorkletProcessor for the production audio-host (tickets 0038 + 0040).
+// AudioWorkletProcessor for the production audio-host.
 //
-// 0038 built the render loop (one vxn_host_render per quantum); 0040 wraps it in
-// the lifecycle runner (host-runner.mjs): instantiate-from-bytes, silence-until-
-// ready, sample-rate, suspend/resume reset, teardown, and render-thread trap
-// safety. This file is just the worklet shell around that shared runner.
+// Worklet shell around the shared render/lifecycle runner.
 //
 // AudioWorklet module scope supports static ESM imports (resolved by
 // audioWorklet.addModule) but has no fetch: the main thread hands us the wasm
@@ -16,7 +13,7 @@ import { WorkletHostRunner } from "./host-runner.mjs";
 // Best available wall clock in AudioWorkletGlobalScope. `performance.now()` is
 // high-resolution but historically absent from the worklet scope
 // (WebAudio/web-audio-api#2413); `Date.now()` (~1ms) is always present. We do NOT
-// fall back to a constant 0 (the original meter's bug — it read 0 everywhere).
+// fall back to a constant 0.
 // With Date.now()'s coarse resolution a single sub-ms quantum reads 0/1ms, but
 // accumulated per-quantum over a window it converges to the true mean: a render
 // crosses a millisecond boundary with probability proportional to its duration.
