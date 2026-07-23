@@ -159,3 +159,35 @@ about a *per-sample* SoA EG — does not apply here.)
 - Follow the append-only blob discipline the dest table already documents
   ([matrix.rs:365](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L365)); do not
   reorder existing dest ids.
+
+## Close-out (2026-07-23)
+
+- Amp EG now per-lane: `Op.eg: [EgState; STACK_LANES]`; contiguous per-block
+  level mirror `StackCore::op_eg_level: [[f32; STACK_LANES]; N_OPS]`
+  ([stack.rs:286](../../vxn-2/crates/vxn2-dsp/src/stack.rs#L286)) refreshed at
+  control rate in `refresh_eg_levels`
+  ([stack.rs:808](../../vxn-2/crates/vxn2-dsp/src/stack.rs#L808)); render hot loop
+  reads the mirror, not `ops[i].eg[k].level`
+  ([stack.rs:1153](../../vxn-2/crates/vxn2-dsp/src/stack.rs#L1153)). All
+  lifecycle/tick/render touchpoints fanned over lanes.
+- 9 dests appended after `FilterDrive`: `GlobalEgRate`, `Op1..6EgRate`
+  (PerLane), `PitchEgRate` (PerLane), `ModEnvRate` (PerStack); `N_DESTS` 42→51
+  ([matrix.rs:428](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L428)).
+  `DEST_NAMES`/`DEST_LABELS`/`DEST_GAIN` (=4.0 log/oct), `tier()`
+  ([matrix.rs:637](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L637)), `from_u8`
+  ([matrix.rs:705](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L705)) all
+  updated; tier-table + idx + from_u8 tests extended
+  ([matrix.rs:1305](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1305)).
+- Note-on static eval: per op·lane scale `exp2(clamp(global+opN, ±4 oct))` +
+  per-lane pitch + lane-0 mod, calling `rescale_eg_rates` /
+  `rescale_pitch_eg_rates` / `rescale_mod_env_rate`
+  ([engine.rs:1375](../../vxn-2/crates/vxn2-engine/src/engine.rs#L1375)).
+- Rescale methods in-place on `rates_per_sec` + `log_rates`
+  ([stack.rs:773](../../vxn-2/crates/vxn2-dsp/src/stack.rs#L773)); DSP tests
+  `rescale_eg_rates_diverges_lanes`, `rescale_eg_rates_identity_is_inert`
+  (regression guard), `rescale_pitch_eg_rates_decorrelates_lanes`,
+  `rescale_mod_env_rate_speeds_it_up`.
+- Blob back-compat: dest ids ≤42 decode unchanged (append-only, no reorder);
+  new dests exported via descriptor → matrix UI dropdown.
+- `cargo test -p vxn2-dsp -p vxn2-engine` green (all suites 0 failed); render
+  hot path reads SoA mirror only — no per-sample cost added.
