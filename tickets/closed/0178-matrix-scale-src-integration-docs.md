@@ -35,3 +35,17 @@ round-trip + zero regressions, not param-count changes. The demo preset doubles
 as the acceptance artefact for the whole epic. Depends on 0176 (eval) for audio
 and 0177 (UI) so the preset is authorable on the faceplate. See
 [E033](../../epics/open/E033-matrix-scale-source.md).
+
+## Close-out (2026-07-23)
+
+- [ADR 0009](../../vxn-2/adrs/0009-matrix-scale-source.md) records the scale-
+  source model + the unipolar/bipolar `scale_norm` table (and the `voice_rand`
+  polarity call). [PARAMETERS.md](../../vxn-2/PARAMETERS.md) + README updated.
+- Demo factory preset **EP Wheel Vibrato** (Keys): LFO1→global-pitch,
+  `scale-src = mod-wheel` — silent at wheel 0, ~0.65 st vibrato at wheel up.
+  Passes `factory::tests::every_factory_preset_parses_cleanly` +
+  `…::no_factory_preset_routes_incoherently`.
+- No new `clap.params` (topology is patch state; TOTAL_PARAMS still 208 —
+  asserted in the JS codec suite); state round-trips `scale_src` incl. a
+  pre-epic blob defaulting to None. clap-validator + Reaper mod-wheel-vibrato
+  check confirmed by the user. Landed in `27d8823`.

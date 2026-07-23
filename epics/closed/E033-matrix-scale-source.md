@@ -2,7 +2,7 @@
 id: E033
 product: vxn-2
 title: "Mod-matrix per-slot scale source — VCA any route's depth by any source"
-status: open
+status: closed
 created: 2026-07-03
 ---
 

@@ -38,3 +38,20 @@ source gating a coarser dest needs no extra broadcast — just index the table a
 the slot's lane. Keep the `None` path branch-light so the common (unscaled)
 case stays hot. Design + normalisation rationale in
 [E033](../../epics/open/E033-matrix-scale-source.md).
+
+## Close-out (2026-07-23)
+
+- `scale_norm(SourceId, f32)` + `SourceId::is_bipolar`
+  ([matrix.rs](../../vxn-2/crates/vxn2-engine/src/matrix.rs)): unipolar
+  passthrough, bipolar `(x+1)*0.5`, both clamped `[0,1]`. `voice_rand` is
+  classified unipolar (`[0,1)`) — deviates from the epic's bipolar listing,
+  documented in [ADR 0009](../../vxn-2/adrs/0009-matrix-scale-source.md).
+- `eval_dests` multiplies each slot·lane contribution by the scale factor,
+  resolved once per slot·lane *before* the curve dispatch (stack `[1.0; 8]`
+  array, allocation-free). `scale_src = None` short-circuits to exact `1.0`.
+- Tests `matrix::tests::scale_norm_maps_polarity`,
+  `…::mod_wheel_scale_gates_route_to_zero_and_full`,
+  `…::bipolar_scale_source_halves_at_centre`,
+  `…::scale_src_none_is_bit_identical`, and end-to-end through `process_block`
+  `engine::tests::scale_source_gates_route_end_to_end`. Render-hash regression
+  (None = pre-epic) holds — all engine suites green. Landed in `27d8823`.
