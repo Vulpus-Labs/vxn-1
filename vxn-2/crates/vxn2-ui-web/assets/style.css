@@ -998,17 +998,114 @@ html, body {
  * .overlay-backdrop / .overlay-panel / .mm-overlay rules above. */
 .vxn-mm-row {
   display: grid;
-  /* slot | active | source | dest | depth | curve | scale (E033) | badge | bin */
-  grid-template-columns: 28px 24px 1fr 1fr 140px 90px 1fr 80px 24px;
+  /* slot | active | source | dest | amount | scaling | scale-by | bin */
+  grid-template-columns: 28px 24px 1fr 1fr 140px 64px 1fr 24px;
   gap: 6px;
   align-items: center;
   padding: 4px 0;
   color: #6f7780;
 }
+/* Column header + group dividers (mm layout tweak). Header shares the row
+ * grid so labels sit over their columns; the slot-num and bin spacers are
+ * empty. Dividers are flex children of the flex-column list, so they span
+ * the full width. */
+.vxn-mm-header {
+  display: grid;
+  grid-template-columns: 28px 24px 1fr 1fr 140px 64px 1fr 24px;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ctl-label);
+}
+/* "Active" header spans the slot-num + checkbox columns (grid cols 1-2) so the
+ * word has room and reads to the left of "Source" instead of colliding. */
+.vxn-mm-h-active { grid-column: 1 / 3; text-align: center; }
+/* Plain orange line closing the automatable group (under top 8). */
+.vxn-mm-divider {
+  border-top: 1px solid var(--track-fill);
+  margin: 3px 0;
+}
+/* Labelled orange line opening the automatable group (over top 8): the
+ * "automatable" label sits at the left with the orange rule filling right. */
+.vxn-mm-divider-labeled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 3px;
+  color: var(--track-fill);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.vxn-mm-divider-labeled::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px solid var(--track-fill);
+}
 .vxn-mm-row[data-active="1"] { color: var(--text); }
 /* E033 scale-source selector: min-width 0 so the extra column can shrink; the
  * "—" (None) default renders dimmer so an unscaled slot reads as off. */
 .vxn-mm-scale { min-width: 0; }
+
+/* Custom dropdown (mod-matrix.js buildSelect) — replaces the native <select>
+ * so no NSMenu steals webview first-responder (the first-click-swallow bug on
+ * macOS/WKWebView). Looks like the old selects; the popup is body-attached and
+ * fixed-positioned so the overlay's overflow can't clip it. */
+.vxn-mm-combo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
+  background: #0e0e0e;
+  border: 1px solid #333;
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  height: 20px;
+  cursor: pointer;
+  outline: none;
+}
+.vxn-mm-combo:hover,
+.vxn-mm-combo:focus,
+.vxn-mm-combo.open { border-color: var(--glyph-active); }
+.vxn-mm-combo-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vxn-mm-combo-caret { flex: 0 0 auto; color: var(--ctl-label); font-size: 8px; }
+.vxn-mm-combo-pop {
+  position: fixed;
+  z-index: 500;
+  max-height: 60vh;
+  overflow-y: auto;
+  /* Keep the popup's own wheel scroll from chaining to the panel behind it
+   * (which would fire a scroll there and dismiss the popup at the limits). */
+  overscroll-behavior: contain;
+  background: #141414;
+  border: 1px solid var(--glyph-active);
+  border-radius: 2px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+  padding: 2px;
+  font-size: 11px;
+}
+.vxn-mm-combo-opt {
+  padding: 3px 8px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.vxn-mm-combo-opt:hover { background: #2a2a2a; }
+.vxn-mm-combo-opt.sel { color: var(--ctl-value); }
 /* Bipolar depth fader (E008 0096): a compact center-origin HORIZONTAL fader in
  * the row's depth column. Center tick marks 0; the shared fill grows signed
  * left/right from it. */
@@ -1064,15 +1161,6 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 .vxn-mm-active input { cursor: pointer; }
-.vxn-mm-badge {
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ctl-label);
-  border: 1px solid #2c3038;
-  border-radius: 3px;
-  padding: 1px 4px;
-}
 .vxn-mm-bin {
   background: transparent;
   border: 1px solid #2c3038;

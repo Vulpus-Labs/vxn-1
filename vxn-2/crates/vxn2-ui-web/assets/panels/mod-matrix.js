@@ -74,17 +74,121 @@
     return out;
   }
 
+  // Custom div-based dropdown — NOT a native <select>. On macOS (WKWebView, the
+  // wry backend used in-DAW) a native <select> opens an NSMenu that takes
+  // first-responder from the webview; when it closes, the FIRST pointerdown
+  // anywhere in the page is eaten restoring mouse tracking — so the first
+  // click/drag on the amount fader right after picking a source/dest/etc. did
+  // nothing. A DOM-only dropdown never spawns an NSMenu, so focus stays in the
+  // webview and the next click lands. Returns an element that mimics enough of
+  // the <select> surface the rest of the panel uses: a settable `.value`
+  // (option id as string), a "change" event on commit, `.title`, `.dataset`,
+  // `.classList`, `.blur()`, and focusability (so the activeElement repaint
+  // guard still works).
   function buildSelect(list, idAttr) {
-    var sel = document.createElement("select");
-    if (idAttr) sel.dataset.field = idAttr;
-    for (var i = 0; i < list.length; i++) {
-      var entry = list[i];
-      var opt = document.createElement("option");
-      opt.value = String(entry.id);
-      opt.textContent = entry.label;
-      sel.appendChild(opt);
+    var btn = document.createElement("div");
+    btn.className = "vxn-mm-combo";
+    btn.tabIndex = 0;
+    if (idAttr) btn.dataset.field = idAttr;
+    var labelSpan = el("span", { class: "vxn-mm-combo-label" }, []);
+    var caret = el("span", { class: "vxn-mm-combo-caret" }, ["▾"]);
+    btn.appendChild(labelSpan);
+    btn.appendChild(caret);
+
+    var curId = list.length ? String(list[0].id) : "0";
+    function labelFor(id) {
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].id) === String(id)) return list[i].label;
+      }
+      return "";
     }
-    return sel;
+    function render() { labelSpan.textContent = labelFor(curId); }
+    render();
+
+    Object.defineProperty(btn, "value", {
+      get: function () { return curId; },
+      set: function (v) { curId = String(v); render(); },
+    });
+
+    var popup = null;
+    function closePopup() {
+      if (popup) { popup.remove(); popup = null; }
+      document.removeEventListener("mousedown", onDocDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", closePopup, true);
+      btn.classList.remove("open");
+    }
+    function onDocDown(e) {
+      if (popup && !popup.contains(e.target) && !btn.contains(e.target)) closePopup();
+    }
+    // Close only when something OTHER than the popup scrolls (the panel behind
+    // it) — the fixed popup would otherwise detach from its button. Scrolling
+    // the popup's own overflow must NOT close it.
+    function onScroll(e) {
+      if (popup && !popup.contains(e.target)) closePopup();
+    }
+    function onKey(e) {
+      if (e.key === "Escape" || e.keyCode === 27) {
+        // Swallow so the first Escape dismisses only the dropdown, not the
+        // whole overlay (the overlay's own keydown listener also watches Esc).
+        e.preventDefault();
+        e.stopPropagation();
+        closePopup();
+        btn.blur();
+      }
+    }
+    function pick(entry) {
+      var changed = String(entry.id) !== curId;
+      curId = String(entry.id);
+      render();
+      closePopup();
+      btn.blur();
+      if (changed) btn.dispatchEvent(new Event("change"));
+    }
+    function openPopup() {
+      popup = el("div", { class: "vxn-mm-combo-pop" }, []);
+      for (var i = 0; i < list.length; i++) {
+        (function (entry) {
+          var opt = el("div", { class: "vxn-mm-combo-opt" }, [entry.label]);
+          if (String(entry.id) === curId) opt.classList.add("sel");
+          opt.addEventListener("mousedown", function (e) {
+            e.preventDefault(); // keep webview focus; no text-selection
+            pick(entry);
+          });
+          popup.appendChild(opt);
+        })(list[i]);
+      }
+      document.body.appendChild(popup);
+      var r = btn.getBoundingClientRect();
+      popup.style.position = "fixed";
+      popup.style.left = r.left + "px";
+      popup.style.top = r.bottom + "px";
+      popup.style.minWidth = r.width + "px";
+      // Flip above if it would overflow the bottom of the viewport.
+      var pr = popup.getBoundingClientRect();
+      if (pr.bottom > window.innerHeight) {
+        popup.style.top = Math.max(0, r.top - pr.height) + "px";
+      }
+      btn.classList.add("open");
+      document.addEventListener("mousedown", onDocDown, true);
+      document.addEventListener("keydown", onKey, true);
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", closePopup, true);
+    }
+    btn.addEventListener("mousedown", function (e) {
+      e.preventDefault(); // keep focus in the webview
+      btn.focus();
+      if (popup) closePopup();
+      else openPopup();
+    });
+    btn.addEventListener("keydown", function (e) {
+      if ((e.key === "Enter" || e.key === " " || e.keyCode === 13 || e.keyCode === 32) && !popup) {
+        e.preventDefault();
+        openPopup();
+      }
+    });
+    return btn;
   }
 
   // Resolve "mtxN-depth" → CLAP id via the hydrated params model.
@@ -251,12 +355,8 @@
         dataset: { field: "active" },
       });
 
-      // Slot 1-8 carry the CLAP badge; slot 9-16 emit an empty placeholder
-      // so the bin button below lands in the same grid column on every row.
-      var badge = slot < CLAP_SLOT_COUNT
-        ? el("span", { class: "vxn-mm-badge", title: "CLAP-automatable depth" }, ["automatable"])
-        : el("span", { class: "vxn-mm-badge-spacer" }, []);
-
+      // CLAP-automatable slots (1-8) are grouped under the "automatable"
+      // divider rather than per-row badged — see buildScaffold().
       var bin = el("button", {
         type: "button",
         class: "vxn-mm-bin",
@@ -280,7 +380,6 @@
           depth,
           curveSel,
           scaleSel,
-          badge,
           bin,
         ]
       );
@@ -297,15 +396,22 @@
           partial.active = true;
         }
         dispatchRow(slot, partial);
+        // Drop focus so the next pointerdown on a sibling (e.g. the amount
+        // fader) isn't swallowed dismissing the still-focused native select
+        // (WebView quirk — first click was being eaten).
+        sourceSel.blur();
       });
       destSel.addEventListener("change", function () {
         dispatchRow(slot, { dest: parseInt(destSel.value, 10) | 0 });
+        destSel.blur();
       });
       curveSel.addEventListener("change", function () {
         dispatchRow(slot, { curve: parseInt(curveSel.value, 10) | 0 });
+        curveSel.blur();
       });
       scaleSel.addEventListener("change", function () {
         dispatchRow(slot, { scale: parseInt(scaleSel.value, 10) | 0 });
+        scaleSel.blur();
       });
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
@@ -330,6 +436,44 @@
         scale: scaleSel,
         active: active,
       };
+    }
+
+    // Column header + group dividers. Header labels align to the row grid
+    // (slot-num and bin columns are unlabelled spacers). The top-8 slots are
+    // CLAP-automatable: an orange "automatable" line opens the group and a
+    // plain orange line closes it, segregating slots 9-16 below.
+    function buildHeader() {
+      function h(txt, cls) {
+        return el("span", { class: cls ? "vxn-mm-h " + cls : "vxn-mm-h" }, [txt]);
+      }
+      return el("div", { class: "vxn-mm-header" }, [
+        // "Active" spans the slot-num + checkbox columns so the label has room
+        // and sits left of "Source" (a 24px column can't hold the word).
+        h("Active", "vxn-mm-h-active"),
+        h("Source"),
+        h("Destination"),
+        h("Amount"),
+        h("Scaling"),
+        h("Scale By"),
+        el("span", {}, []),
+      ]);
+    }
+
+    function buildDivider(label) {
+      if (label) {
+        return el("div", { class: "vxn-mm-divider-labeled" }, [
+          el("span", { class: "vxn-mm-divider-label" }, [label]),
+        ]);
+      }
+      return el("div", { class: "vxn-mm-divider" }, []);
+    }
+
+    function buildScaffold() {
+      list.appendChild(buildHeader());
+      list.appendChild(buildDivider("automatable"));
+      for (var i = 0; i < CLAP_SLOT_COUNT; i++) ensureRowDom(i);
+      list.appendChild(buildDivider(null));
+      for (var j = CLAP_SLOT_COUNT; j < SLOT_COUNT; j++) ensureRowDom(j);
     }
 
     function ensureRowDom(slot) {
@@ -424,6 +568,7 @@
     window.__vxn.panels.modMatrix.onRowChanged = api.onRowChanged;
     window.__vxn.panels.modMatrix.renderAll = api.renderAll;
 
+    buildScaffold();
     renderAll();
 
     return api;
