@@ -1,8 +1,8 @@
-//! Portable VXN2 preset format (E007 lineage, ADR 0005).
+//! Portable VXN2 preset format (ADR 0005).
 //!
 //! A preset is a **TOML** text file, keyed by parameter [`ParamDesc::id`]
 //! (never by CLAP index — the param table reorders freely, so any positional
-//! format would rot; [[vxn1-id-stability-dropped]]). Enums store their
+//! format would rot). Enums store their
 //! **variant label** (`lfo2-shape = "Sine"`), bools as `true`/`false`,
 //! numbers in the descriptor's plain unit. Files are **sparse**: only params
 //! that deviate from their descriptor default are written, so presets stay
@@ -37,7 +37,7 @@ use crate::shared::{MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, ParamModel, SharedPa
 const KS_CURVE_NAMES: [&str; 4] = ["neg-lin", "pos-lin", "neg-exp", "pos-exp"];
 
 /// Default curve discriminant for a side: left = `NegLin` (0), right =
-/// `NegExp` (2) — the historical frozen shapes.
+/// `NegExp` (2).
 #[inline]
 fn default_ks_curve(side: usize) -> u8 {
     if side == 0 { 0 } else { 2 }
@@ -72,11 +72,11 @@ fn ks_curve_from_name(label: &str) -> Option<u8> {
 }
 
 /// Per-op EG level-curve machine names, indexed by discriminant
-/// (`Exp` / `Lin`). Mirror of [`vxn2_dsp::eg::EgCurve`] (ticket 0124).
+/// (`Exp` / `Lin`). Mirror of [`vxn2_dsp::eg::EgCurve`].
 const EG_CURVE_NAMES: [&str; 2] = ["exp", "lin"];
 
-/// Default EG-curve discriminant: `Exp` (0) — the DX7-faithful log curve is the
-/// shipped default (ADR 0007).
+/// Default EG-curve discriminant: `Exp` (0) — the log curve is the shipped
+/// default (ADR 0007).
 #[inline]
 fn default_eg_curve() -> u8 {
     0
@@ -104,15 +104,13 @@ fn eg_curve_from_name(label: &str) -> Option<u8> {
     EG_CURVE_NAMES.iter().position(|n| *n == lc).map(|i| i as u8)
 }
 
-// Shared sparse-TOML scaffold (ticket 0143). `Meta`, `PresetError`, `Header`
-// and `SCHEMA` are byte-identical to vxn-1's codec, so they live in
-// `vxn-preset`; re-exported here to keep the `crate::preset::Meta` path stable
-// for `factory.rs` and `preset_io.rs`. (`Meta` is field-for-field the same
-// shape as `vxn_core_app::PresetMeta`; the store converts between the two.)
+// Shared sparse-TOML scaffold. `Meta`, `PresetError`, `Header` and `SCHEMA`
+// live in `vxn-preset`; re-exported here to keep the `crate::preset::Meta`
+// path stable for `factory.rs` and `preset_io.rs`. (`Meta` is field-for-field
+// the same shape as `vxn_core_app::PresetMeta`; the store converts between the
+// two.)
 pub use vxn_preset::{Header, Meta, PresetError, SCHEMA};
 use vxn_preset::ScalarKind;
-
-// ── On-disk file shape (serde) ──────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
 struct PresetFile {
@@ -127,8 +125,9 @@ struct PresetFile {
     matrix: Vec<MatrixRowFile>,
 }
 
-/// One routed matrix slot in the file. `source`/`dest`/`curve` are kebab
-/// machine names; `curve` defaults to `lin` when omitted.
+/// One routed matrix slot in the file. `source`/`dest`/`curve`/`scale-src` are
+/// kebab machine names; `curve` defaults to `lin` and `scale-src` to `none`
+/// when omitted (so presets without those keys round-trip unchanged).
 #[derive(Serialize, Deserialize)]
 struct MatrixRowFile {
     slot: u8,
@@ -137,13 +136,23 @@ struct MatrixRowFile {
     #[serde(default = "default_curve")]
     curve: String,
     depth: f64,
+    /// Secondary scale source. Omitted when `none`; `serde` default keeps
+    /// presets with no key reading as unscaled.
+    #[serde(rename = "scale-src", default = "default_scale_src", skip_serializing_if = "is_none_src")]
+    scale_src: String,
 }
 
 fn default_curve() -> String {
     "lin".to_string()
 }
 
-// ── blob <-> arrays (round-trip through SharedParams) ───────────────────────
+fn default_scale_src() -> String {
+    "none".to_string()
+}
+
+fn is_none_src(s: &str) -> bool {
+    s == "none"
+}
 
 /// Decode a host-state blob into the flat value table + matrix rows. Reuses
 /// [`SharedParams::load_bytes`] so every blob-version migration is honoured
@@ -202,8 +211,6 @@ fn encode_blob(
     ParamModel::snapshot_bytes(&sp)
 }
 
-// ── Sparse write (engine values → TOML) ─────────────────────────────────────
-
 /// One param's value as a typed TOML scalar, matching its descriptor kind.
 /// Maps this engine's `ParamKind` onto the shared [`ScalarKind`] and delegates
 /// the rendering to [`vxn_preset::value_for`].
@@ -240,12 +247,17 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
             .unwrap_or("none");
         let dest = DEST_NAMES.get(row.dest as usize).copied().unwrap_or("none");
         let curve = CURVE_NAMES.get(row.curve as usize).copied().unwrap_or("lin");
+        let scale_src = SOURCE_NAMES
+            .get(row.scale_src as usize)
+            .copied()
+            .unwrap_or("none");
         out.push(MatrixRowFile {
             slot: s as u8,
             source: source.to_string(),
             dest: dest.to_string(),
             curve: curve.to_string(),
             depth: row.depth as f64,
+            scale_src: scale_src.to_string(),
         });
     }
     out
@@ -265,7 +277,7 @@ pub fn write_preset(meta: &Meta, blob: &[u8]) -> Result<String, String> {
             params.insert(ks_curve_key(op, side), toml::Value::String(label.to_string()));
         }
     }
-    // EG level-curve selectors (ticket 0124): same sparse treatment — only ops
+    // EG level-curve selectors: same sparse treatment — only ops
     // deviating from the default (`Exp`) are written, read back by
     // `parse_eg_curve_key` below.
     for (op, &c) in eg_curves.iter().enumerate() {
@@ -284,8 +296,6 @@ pub fn write_preset(meta: &Meta, blob: &[u8]) -> Result<String, String> {
     // descriptor tables, so serialisation of this shape cannot fail.
     toml::to_string_pretty(&file).map_err(|e| e.to_string())
 }
-
-// ── Default-fill read (TOML → engine values, collecting warnings) ───────────
 
 /// Case-insensitive variant lookup for an `Enum` descriptor.
 fn variant_index(desc: &ParamDesc, label: &str) -> Option<usize> {
@@ -450,12 +460,22 @@ pub fn read_preset(
             0
         });
         let depth = (row.depth as f32).clamp(-1.0, 1.0);
+        // Secondary scale source. Absent key → "none" → 0; unknown name → 0
+        // (mirrors the primary source's degrade-to-inert on a bad blob).
+        let scale_src = name_to_u8(&SOURCE_NAMES, &row.scale_src).unwrap_or_else(|| {
+            warnings.push(format!(
+                "matrix slot {}: unknown scale source `{}` (unscaled)",
+                row.slot, row.scale_src
+            ));
+            0
+        });
         matrix[slot] = MatrixRowRaw {
             source,
             dest,
             curve,
             active: source != 0 && dest != 0,
             depth,
+            scale_src,
         };
     }
 
@@ -532,8 +552,8 @@ mod tests {
         assert_eq!(dst.eg_curve_raw(2), 0);
     }
 
-    /// A snapshot blob from a default `SharedParams` (the E.PIANO default
-    /// patch) round-trips through the text format back to bit-identical
+    /// A snapshot blob from a default `SharedParams` (the default patch)
+    /// round-trips through the text format back to bit-identical
     /// param values + matrix topology.
     #[test]
     fn default_patch_round_trips_through_text() {
@@ -557,6 +577,95 @@ mod tests {
             assert_eq!(a.curve, b.curve, "slot {s} curve");
             assert!((a.depth - b.depth).abs() < 1e-6, "slot {s} depth");
         }
+    }
+
+    /// A slot's secondary scale source round-trips through TOML as a kebab
+    /// `scale-src` key, is omitted when `none` (sparse), and reloads to the
+    /// same `SourceId`.
+    #[test]
+    fn matrix_scale_src_round_trips_through_text() {
+        let src = SharedParams::new();
+        // Slot 0: LFO2 → global-pitch, gated by the mod wheel (the
+        // mod-wheel-vibrato case). scale_src = ModWheel (5).
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: SourceId::Lfo2 as u8,
+                dest: DestId::GlobalPitch as u8,
+                curve: CurveKind::Lin as u8,
+                active: true,
+                depth: 0.5,
+                scale_src: SourceId::ModWheel as u8,
+            },
+        );
+        let blob = ParamModel::snapshot_bytes(&src);
+        let toml = write_preset(&meta("Scale"), &blob).unwrap();
+        assert!(toml.contains("scale-src = \"mod-wheel\""), "{toml}");
+
+        let (_m, blob2, warnings) = from_toml_str(&toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let dst = SharedParams::new();
+        ParamModel::load_bytes(&dst, &blob2).unwrap();
+        assert_eq!(dst.matrix_row_raw(0).scale_src, SourceId::ModWheel as u8);
+    }
+
+    /// An unscaled slot omits the `scale-src` key entirely (sparse write).
+    #[test]
+    fn matrix_scale_src_omitted_when_none() {
+        let src = SharedParams::new();
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: SourceId::Lfo1 as u8,
+                dest: DestId::GlobalPitch as u8,
+                curve: CurveKind::Lin as u8,
+                active: true,
+                depth: 0.5,
+                scale_src: 0,
+            },
+        );
+        let blob = ParamModel::snapshot_bytes(&src);
+        let toml = write_preset(&meta("NoScale"), &blob).unwrap();
+        assert!(!toml.contains("scale-src"), "none must be omitted:\n{toml}");
+    }
+
+    /// Absent key → `None` (0); an unknown scale-src name → `None` with a
+    /// warning (mirrors the primary source's degrade-to-inert).
+    #[test]
+    fn matrix_scale_src_absent_and_unknown_degrade_to_none() {
+        // Absent: no scale-src key at all.
+        let absent = r#"
+schema = 1
+[meta]
+name = "A"
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "global-pitch"
+depth = 0.5
+"#;
+        let (_m, _v, mtx, _c, _e, warnings) = read_preset(absent).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(mtx[0].scale_src, 0);
+
+        // Unknown: a bogus name warns and leaves the slot unscaled.
+        let unknown = r#"
+schema = 1
+[meta]
+name = "U"
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "global-pitch"
+depth = 0.5
+scale-src = "bogus"
+"#;
+        let (_m, _v, mtx, _c, _e, warnings) = read_preset(unknown).unwrap();
+        assert_eq!(mtx[0].scale_src, 0);
+        assert!(
+            warnings.iter().any(|w| w.contains("unknown scale source")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

@@ -1,43 +1,21 @@
-//! Parameter table (ticket 0012): the CLAP-facing surface every prior ticket
-//! has been writing into.
+//! Parameter table: the CLAP-facing parameter surface.
 //!
-//! ## Layout
+//! CLAP ids are a flat index space: per-patch params first, then patch-level.
+//! Each op block is 22 params: 20 continuous controls, a `ratio-mode` enum
+//! (Ratio / Fixed), and a per-op `phase` float.
 //!
-//! CLAP ids are a stable, flat index space:
-//!
-//! ```text
-//!   0 .. 169   Per-patch        (132 op + 1 algo + 1 feedback + 5 LFO2 +
-//!                                9 PEG + 5 mod-env + 3 assign + 5 stack +
-//!                                8 mtx)
-//! 169 .. 209   Patch-level      (3 LFO1 + 6 delay + 5 reverb + 2 master +
-//!                                9 filter + 1 limiter + 1 HP + 5 phaser +
-//!                                8 dynamics)
-//! ```
-//!
-//! Total 209. Per [ADR 0002] the dual-layer (Whole / Layer / Split) surface
-//! is gone — a patch is one parameter set. Each op block is 22 params: the
-//! 20 continuous controls, a trailing `ratio-mode` enum (Ratio / Fixed), and
-//! a per-op `phase` float (ticket 0074).
-//!
-//! ## What is *not* in the table
+//! Not in the table:
 //!
 //! - Per-op `ks_l_curve`, `ks_r_curve`: discrete topology selectors.
 //!   Automating them mid-note would re-cook the operator's KS shape — not a
 //!   continuous control. Set via patch state only.
-//!   (`ratio_mode` was in this group per [ADR 0002] but is now a CLAP enum —
-//!   `opN-ratio-mode` — so the editor's Ratio/Fixed selector can drive it.)
 //! - Mod-matrix `source` / `dest` / `curve` and slots 9..=16 `depth`:
 //!   matrix topology + extra depths. Slots 1..=8 `depth` are CLAP-automatable
 //!   per [`crate::matrix::N_CLAP_DEPTH_SLOTS`]; the rest is patch state.
 //! - Mod-matrix slot table itself: see [`crate::matrix::MatrixTable`].
 //!
-//! ## Stable IDs?
-//!
-//! No — per memory `vxn1-id-stability-dropped`. IDs are kebab-case strings
-//! for legibility but treat them as freely renameable; the preset format is
+//! IDs are kebab-case strings, freely renameable; the preset format is
 //! name-keyed and migrations live in the preset loader, not here.
-//!
-//! ## Descriptors
 //!
 //! Each [`ParamDesc`] carries everything a host / UI needs to render and
 //! automate the param: kebab-case id, display name, plain `[min, max]`,
@@ -46,8 +24,7 @@
 //! [`ParamDesc::to_normalised`] / [`ParamDesc::from_normalised`].
 //!
 //! The table is built as a single `const [ParamDesc; TOTAL_PARAMS]` via
-//! macros — the same const-slice approach VXN1's `vxn-engine::params` ships,
-//! avoiding a build script.
+//! macros, avoiding a build script.
 
 pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 22;
@@ -58,8 +35,6 @@ pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 208
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
-
-// ── Types ───────────────────────────────────────────────────────────────────
 
 /// Taper for `Float` params. `Linear` is the default; `Exp` pins normalised
 /// midpoint `0.5` to plain `mid` so a fader feels musical across wide ranges
@@ -150,8 +125,7 @@ impl ParamDesc {
     }
 
     /// Format `value` in this descriptor's plain unit. Used by the CLAP
-    /// `value_to_text` path (ticket 0015) — no allocation budget concerns
-    /// because the host calls it on the main thread.
+    /// `value_to_text` path.
     ///
     /// - `Enum`: variant label (clamped to range).
     /// - `Bool`: `"On"` / `"Off"`.
@@ -159,8 +133,7 @@ impl ParamDesc {
     /// - `Float`: two decimals + unit (three decimals if no unit).
     ///
     /// Sync-aware display (delay time as `1/8` when `delay_sync` is on) is
-    /// out of scope here — the UI epic adds a wrapper that intercepts before
-    /// hitting this method.
+    /// handled by a wrapper that intercepts before this method.
     pub fn display(&self, value: f32) -> String {
         match self.kind {
             ParamKind::Enum { variants } => {
@@ -207,8 +180,7 @@ fn linear_from_norm(n: f32, min: f32, max: f32) -> f32 {
 fn taper_to_norm_exp(value: f32, min: f32, max: f32, mid: f32) -> f32 {
     if !(min > 0.0 && mid > min && max > mid) {
         // min == 0 (or degenerate): exponential pinned at (0, 0),
-        // (0.5, mid), (1, max). Same shape VXN1 uses for params whose floor
-        // is genuinely zero.
+        // (0.5, mid), (1, max) — for params whose floor is genuinely zero.
         if !(max > mid && mid > 0.0) {
             return linear_to_norm(value, min, max);
         }
@@ -254,8 +226,6 @@ fn taper_from_norm_exp(n: f32, min: f32, max: f32, mid: f32) -> f32 {
         mid * (max / mid).powf(2.0 * n - 1.0)
     }
 }
-
-// ── Const constructors (compact macro-friendly) ─────────────────────────────
 
 #[inline]
 const fn fl(
@@ -350,8 +320,6 @@ const fn en(
     }
 }
 
-// ── Variant tables ──────────────────────────────────────────────────────────
-
 pub const LFO_SHAPES: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Pulse", "S&H"];
 /// Per-op tuning mode. Index order matches `vxn2_dsp::op::RatioMode`
 /// (`Ratio` = 0, `Fixed` = 1).
@@ -366,11 +334,8 @@ pub const FILTER_MODES: &[&str] = &["LP", "HP", "BP", "Notch"];
 /// (`Pole2` = 0, `Pole4` = 1).
 pub const FILTER_SLOPES: &[&str] = &["2-Pole", "4-Pole"];
 
-// ── Macros (each yields a single array literal) ─────────────────────────────
-//
-// macro_rules! expansions are parsed as a single expression in expression
-// context, so each macro here returns one `[ParamDesc; N]` array; the section
-// arrays are then flattened by `concat_per_patch` const fn.
+// Each macro returns one `[ParamDesc; N]` array; the section arrays are then
+// flattened by the `concat_per_patch` const fn.
 
 macro_rules! op_block_arr {
     ($n:literal) => {
@@ -395,14 +360,10 @@ macro_rules! op_block_arr {
             it(concat!("op", $n, "-ks-r-depth"), concat!("Op ", $n, " KS R Depth"), 0, 99, 30, ""),
             it(concat!("op", $n, "-ks-rate"), concat!("Op ", $n, " KS Rate"), 0, 7, 2, ""),
             fl(concat!("op", $n, "-pan"), concat!("Op ", $n, " Pan"), -1.0, 1.0, 0.0, ""),
-            // Tuning mode (Ratio / Fixed). Per ADR 0002 this was patch-only
-            // "discrete topology"; exposed as a CLAP enum so the editor's
-            // Ratio/Fixed selector can drive it. Appended at the end of the
-            // op block so the existing per-op offsets (read_op) are unchanged.
+            // Tuning mode (Ratio / Fixed), exposed as a CLAP enum so the
+            // editor's Ratio/Fixed selector can drive it. Index 20 in the block.
             en(concat!("op", $n, "-ratio-mode"), concat!("Op ", $n, " Ratio Mode"), RATIO_MODES, 0),
-            // Per-op note-on phase offset, fraction of a cycle [0, 1) (ticket
-            // 0074). Appended after ratio-mode so existing read_op offsets are
-            // unchanged; this is index 21 in the op block.
+            // Per-op note-on phase offset, fraction of a cycle [0, 1). Index 21.
             fl(concat!("op", $n, "-phase"), concat!("Op ", $n, " Phase"), 0.0, 1.0, 0.0, ""),
         ]
     };
@@ -538,61 +499,44 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("reverb-mix", "Reverb Mix", 0.0, 1.0, 0.20, ""),
     fl("master-tune", "Master Tune", -100.0, 100.0, 0.0, "ct"),
     fl("master-volume", "Master Vol", -60.0, 6.0, -6.0, "dB"),
-    // ── Filter (E007 / ADR 0004) ──────────────────────────────────────────
-    // Optional per-voice oversampled OTA-C ladder, off by default so an
-    // unchanged patch stays bit-identical. `enable`/`mode`/`slope` are
-    // structural selectors — automatable like `delay-on`/`algo`/`lfo2-shape`
-    // (the codebase has no non-automatable flag), but they reconfigure topology
-    // rather than sweeping. `cutoff`/`resonance` are matrix dests
-    // (`DestId::Cutoff` / `DestId::Resonance`). Oversampling is fixed at 4× (no
-    // user selector) and the filter shares one 4× span with the dynamics FX.
+    // Optional per-voice oversampled OTA-C ladder, off by default. `enable`/
+    // `mode`/`slope` are structural selectors — automatable, but they
+    // reconfigure topology rather than sweeping. `cutoff`/`resonance` are
+    // matrix dests (`DestId::Cutoff` / `DestId::Resonance`). Oversampling is
+    // fixed at 4×, shared with the dynamics FX.
     bl("filter-enable", "Filter Enable", false),
     flx("filter-cutoff", "Filter Cutoff", 16.3516, 20000.0, 12000.0, "Hz", 1000.0),
     fl("filter-resonance", "Filter Reso", 0.0, 1.0, 0.0, ""),
     en("filter-mode", "Filter Mode", FILTER_MODES, 0),
     en("filter-slope", "Filter Slope", FILTER_SLOPES, 1),
     flx("filter-drive", "Filter Drive", 0.1, 16.0, 1.0, "", 1.0),
-    // Dedicated filter key-tracking amount (VXN-1 `FilterKeyTrack`): cutoff
-    // shifts `(note − 12)/12 × amount` octaves, centred on C0 (MIDI 12). At
-    // 1.0 the cutoff tracks the played pitch exactly (1 oct/oct); with the
-    // cutoff fader at its C0 floor, 100 % key-track lands cutoff on the note
-    // pitch. Applied engine-side, not via the matrix. Appended at the very
-    // end of the flat space so the blob v7→v8 migration stays a 1:1 prefix.
+    // Filter key-tracking amount: cutoff shifts `(note − 12)/12 × amount`
+    // octaves, centred on C0 (MIDI 12). At 1.0 the cutoff tracks the played
+    // pitch exactly (1 oct/oct); with the cutoff fader at its C0 floor, 100 %
+    // key-track lands cutoff on the note pitch. Applied engine-side, not via
+    // the matrix.
     fl("filter-keytrack", "Filter KeyTrk", 0.0, 1.0, 0.0, ""),
-    // Cutoff "Tuned" toggle (VXN-1 parity): UI-only. When on, the cutoff
-    // fader is read/displayed as a musical note (C0..C4, semitone-snapped);
-    // the stored value stays Hz, so the DSP and automation are unaffected.
+    // Cutoff "Tuned" toggle: UI-only. When on, the cutoff fader is
+    // read/displayed as a musical note (C0..C4, semitone-snapped); the stored
+    // value stays Hz, so the DSP and automation are unaffected.
     bl("filter-cutoff-tuned", "Cutoff Tuned", false),
-    // Master brickwall safety limiter (VXN1 parity). Appended at the very end
-    // of the flat space (after the Filter section) so the blob v8→v9 migration
-    // stays a 1:1 prefix; off by default → an unchanged patch is bit-identical.
-    // UI groups it in the Master panel (its module label is overridden below).
+    // Master brickwall safety limiter, off by default. UI groups it in the
+    // Master panel (its module label is overridden below).
     bl("limiter-on", "Limiter", false),
-    // Static high-pass stage (Juno-HP style), one-pole, pre the musical filter
-    // and *not* oversampled. Cleans low rumble / clicks; a fixed tone-shaping
-    // tool, so it's deliberately *not* a mod-matrix dest — but still
-    // automatable like any fader. Appended at the very end of the flat space
-    // (after `limiter-on`) so the blob v12→v13 migration stays a 1:1 prefix;
-    // its 20 Hz floor default ("off"/transparent) keeps an unchanged patch
-    // bit-identical. Range / taper mirror VXN1's `hpf-cutoff`.
+    // Static high-pass stage, one-pole, pre the musical filter and *not*
+    // oversampled. Cleans low rumble / clicks; a fixed tone-shaping tool, so
+    // it's deliberately *not* a mod-matrix dest — but still automatable like
+    // any fader. Its 20 Hz floor default is transparent ("off").
     flx("hp-cutoff", "HP Cutoff", 20.0, 18000.0, 20.0, "Hz", 1000.0),
-    // ── Phaser (E025 / ADR-less, mirrors VXN-1 E009) ──────────────────────
-    // Stereo allpass phaser, host-automation only — NOT a mod-matrix dest.
-    // Appended at the very end of the flat space (ids 196–200) so existing
-    // delay/reverb ids stay stable and the blob prefix is unchanged; off by
-    // default → an unchanged patch renders bit-identical to the pre-E025 bus.
-    // Inserted into the engine bus pre-delay (`dry → phaser → delay → reverb`).
+    // Stereo allpass phaser, host-automation only — NOT a mod-matrix dest. Off
+    // by default. Inserted pre-delay (`dry → phaser → delay → reverb`).
     bl("phaser-on", "Phaser On", false),
     flx("phaser-rate", "Phaser Rate", 0.05, 8.0, 0.4, "Hz", 1.0),
     fl("phaser-depth", "Phaser Depth", 0.0, 1.0, 0.6, ""),
     fl("phaser-feedback", "Phaser FB", -0.9, 0.9, 0.3, ""),
     fl("phaser-mix", "Phaser Mix", 0.0, 1.0, 0.5, ""),
-    // ── Dynamics (E028 — first FX in the bus) ─────────────────────────────
     // Stereo feed-forward peak comp → tanh saturator, host-automation only —
-    // NOT a mod-matrix dest (same discipline as phaser). Appended at the very
-    // end of the flat space so existing ids (filter / limiter / hp / phaser)
-    // stay stable and the blob prefix is unchanged; off by default → an
-    // unchanged patch renders bit-identical to the pre-E028 bus.
+    // NOT a mod-matrix dest. Off by default; sits first in the audio bus.
     bl("dyn-on", "Dyn On", false),
     fl("dyn-threshold", "Dyn Thresh", -60.0, 0.0, -12.0, "dB"),
     fl("dyn-ratio", "Dyn Ratio", 1.0, 20.0, 4.0, ""),
@@ -603,21 +547,17 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("dyn-mix", "Dyn Mix", 0.0, 1.0, 1.0, ""),
 ];
 
-// ── The table ───────────────────────────────────────────────────────────────
-
-/// All CLAP-automatable parameters. Index = stable CLAP id. Sectioned as
-/// `[per-patch × 169, patch × 26]` — same flat ordering described in
-/// the module-level layout block.
+/// All CLAP-automatable parameters. Index = CLAP id. Sectioned as
+/// `[per-patch × 169, patch × 26]`.
 pub const PARAMS: [ParamDesc; TOTAL_PARAMS] = concat_all(PER_PATCH, PATCH);
 
-/// Lookup by stable CLAP id. Const, just a bounds check + slice index.
+/// Lookup by CLAP id. Const, just a bounds check + slice index.
 #[inline]
 pub fn desc(id: usize) -> Option<&'static ParamDesc> {
     PARAMS.get(id)
 }
 
-/// Alias of [`desc`] under the name the CLAP shell (ticket 0015) wires to.
-/// Matches the VXN1 surface so the bridge code stays structurally identical.
+/// Alias of [`desc`] under the name the CLAP shell wires to.
 #[inline]
 pub fn desc_for_clap_id(idx: usize) -> Option<&'static ParamDesc> {
     PARAMS.get(idx)
@@ -629,11 +569,9 @@ pub fn id_of(name: &str) -> Option<usize> {
     PARAMS.iter().position(|p| p.id == name)
 }
 
-// ── Section offsets (per-patch + patch) ─────────────────────────────────────
-//
-// Sourced here, not in `shared.rs`, because they describe the layout of the
-// param table itself — `module_for_clap_id` and `EngineParams::snapshot_from`
-// both read them.
+// Section offsets. Sourced here, not in `shared.rs`, because they describe the
+// layout of the param table itself — `module_for_clap_id` and
+// `EngineParams::snapshot_from` both read them.
 
 pub(crate) const N_OP_BLOCK: usize = N_PER_OP * N_OPS; // 126
 pub(crate) const OFF_ALGO: usize = N_OP_BLOCK;        // 126
@@ -649,11 +587,11 @@ pub(crate) const OFF_LFO1: usize = 0;
 pub(crate) const OFF_DELAY: usize = 3;
 pub(crate) const OFF_REVERB: usize = 9;
 pub(crate) const OFF_MASTER: usize = 14;
-pub(crate) const OFF_FILTER: usize = 16; // after master-tune + master-volume
-pub(crate) const OFF_LIMITER: usize = 24; // trailing append, after the 8-param Filter section
-pub(crate) const OFF_HP: usize = 25; // trailing append, after `limiter-on`
-pub(crate) const OFF_PHASER: usize = 26; // trailing append, after `hp-cutoff`
-pub(crate) const OFF_DYNAMICS: usize = 31; // trailing append, after the 5-param Phaser block
+pub(crate) const OFF_FILTER: usize = 16;
+pub(crate) const OFF_LIMITER: usize = 24;
+pub(crate) const OFF_HP: usize = 25;
+pub(crate) const OFF_PHASER: usize = 26;
+pub(crate) const OFF_DYNAMICS: usize = 31;
 pub(crate) const N_DYNAMICS_PARAMS: usize = 8;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
@@ -723,34 +661,24 @@ fn module_for_patch(off: usize) -> &'static str {
     } else if off < OFF_LIMITER {
         "Global / Filter"
     } else if off == OFF_LIMITER {
-        // `limiter-on` is appended past the Filter section for blob-prefix
-        // stability, but belongs to the Master section in the host tree.
+        // `limiter-on` belongs to the Master section in the host tree.
         "Global / Master"
     } else if off == OFF_HP {
-        // `hp-cutoff` is appended past the limiter for blob-prefix stability;
-        // its own section in the host tree (a pre-filter tone-shaping stage).
+        // A pre-filter tone-shaping stage; its own section in the host tree.
         "Global / HP"
     } else if off >= OFF_PHASER && off < OFF_PHASER + 5 {
-        // Phaser (E025) — appended at the very end of the flat space; its own
-        // FX section in the host tree.
         "Global / Phaser"
     } else if off >= OFF_DYNAMICS && off < OFF_DYNAMICS + N_DYNAMICS_PARAMS {
-        // Dynamics (E028) — appended past the Phaser block; its own FX
-        // section in the host tree (sits first in the audio bus though).
         "Global / Dynamics"
     } else {
         ""
     }
 }
 
-// ── Core-app ParamDesc bridge ───────────────────────────────────────────────
-//
 // `vxn_core_app::ParamDesc` is the shape the controller / editor surface
-// programs against (ticket 0022). Field-by-field same layout as the local
-// `ParamDesc` above with one rename: engine's `id` (kebab-case machine id)
-// → core-app's `name`, and engine's `name` (display label) → core-app's
-// `label`. Built as a const at compile time so `descriptor()` lookups stay
-// O(1) with no allocation.
+// programs against. Field-by-field the same layout as the local `ParamDesc`
+// with one rename: engine's `id` → core-app's `name`, engine's `name`
+// (display label) → core-app's `label`. Built as a const so lookups stay O(1).
 
 const fn to_core(d: &ParamDesc) -> vxn_core_app::ParamDesc {
     let kind = match d.kind {
@@ -798,13 +726,11 @@ pub const CORE_PARAMS: [vxn_core_app::ParamDesc; TOTAL_PARAMS] = {
 };
 
 /// Core-app descriptor for `idx` — the lookup the `ParamModel::descriptor`
-/// impl (ticket 0022) wires to.
+/// impl wires to.
 #[inline]
 pub fn core_desc_for_clap_id(idx: usize) -> Option<&'static vxn_core_app::ParamDesc> {
     CORE_PARAMS.get(idx)
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -919,11 +845,9 @@ mod tests {
 
     #[test]
     fn filter_section_is_at_table_tail() {
-        // The Filter section (8 params, E007/v8 — oversample selector removed,
-        // now fixed 4×) sits after Master, then the single `limiter-on` (v9),
-        // `hp-cutoff` (v13), the 5-param Phaser block (E025/v14), and finally the
-        // 8-param Dynamics block (E028/v16) are each appended at the very end of
-        // the flat space — so each blob migration stays a 1:1 prefix.
+        // The 8-param Filter section sits after Master, then `limiter-on`,
+        // `hp-cutoff`, the 5-param Phaser block, and the 8-param Dynamics block
+        // are each at the tail of the flat space.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
         assert_eq!(tune, TOTAL_PARAMS - 25);
@@ -939,13 +863,11 @@ mod tests {
         assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 16));
         assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 15));
         assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 14));
-        // Phaser block (E025), ids 196–200.
         assert_eq!(id_of("phaser-on"), Some(TOTAL_PARAMS - 13));
         assert_eq!(id_of("phaser-rate"), Some(TOTAL_PARAMS - 12));
         assert_eq!(id_of("phaser-depth"), Some(TOTAL_PARAMS - 11));
         assert_eq!(id_of("phaser-feedback"), Some(TOTAL_PARAMS - 10));
         assert_eq!(id_of("phaser-mix"), Some(TOTAL_PARAMS - 9));
-        // Dynamics block (E028), ids 201–208 — appended at the very tail.
         assert_eq!(id_of("dyn-on"), Some(TOTAL_PARAMS - 8));
         assert_eq!(id_of("dyn-threshold"), Some(TOTAL_PARAMS - 7));
         assert_eq!(id_of("dyn-ratio"), Some(TOTAL_PARAMS - 6));
@@ -954,9 +876,8 @@ mod tests {
         assert_eq!(id_of("dyn-makeup"), Some(TOTAL_PARAMS - 3));
         assert_eq!(id_of("dyn-drive"), Some(TOTAL_PARAMS - 2));
         assert_eq!(id_of("dyn-mix"), Some(TOTAL_PARAMS - 1));
-        // `filter-enable`, `limiter-on`, `phaser-on`, and `dyn-on` default off,
-        // `hp-cutoff` defaults to its 20 Hz floor ("off") → migrated patches
-        // stay bit-identical.
+        // `filter-enable`, `limiter-on`, `phaser-on`, and `dyn-on` default off;
+        // `hp-cutoff` defaults to its 20 Hz floor ("off").
         assert_eq!(PARAMS[id_of("filter-enable").unwrap()].default, 0.0);
         assert_eq!(PARAMS[id_of("limiter-on").unwrap()].default, 0.0);
         assert_eq!(PARAMS[id_of("hp-cutoff").unwrap()].default, 20.0);

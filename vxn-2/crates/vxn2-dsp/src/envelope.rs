@@ -1,4 +1,4 @@
-//! Patch-wide modulation envelopes beyond the per-op EG (ticket 0007).
+//! Patch-wide modulation envelopes beyond the per-op EG.
 //!
 //! Two flavours share segment-march helpers with each other but not with the
 //! per-op [`crate::eg`] — the per-op EG is the time-critical hot path (every
@@ -62,8 +62,6 @@ pub enum AdsrShape {
     Exp,
 }
 
-// --- Pitch EG --------------------------------------------------------------
-
 /// Pitch EG patch params. Levels are signed: `-99..+99` maps to `[-1, +1]`
 /// before scaling by `peg_depth` to semitones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +97,7 @@ impl PitchEgState {
     /// (typically 1.0 for the Pitch EG; the patch-level PEG has no per-op KS).
     ///
     /// Both the targets *and* the march rate scale by `depth_semitones`, so a
-    /// segment's traversal *time* is depth-invariant: DX7 rate `R` crosses a
+    /// segment's traversal *time* is depth-invariant: rate `R` crosses a
     /// fixed level distance in a fixed time regardless of how many semitones
     /// that maps to. Without the rate scaling, wide-swing patches (jet swoops
     /// at `peg_depth = 48`) crawl ~48× too slowly and the sweep never completes
@@ -114,7 +112,7 @@ impl PitchEgState {
     }
 
     /// Multiply every cooked segment rate by `scale` — the per-lane
-    /// `pitch-eg-rate` mod factor (0187). Applied after [`cook`](Self::cook), so
+    /// `pitch-eg-rate` mod factor. Applied after [`cook`](Self::cook), so
     /// `scale > 1` sweeps faster, `< 1` slower; targets are untouched. `1.0` is a
     /// bit-exact no-op.
     #[inline]
@@ -166,8 +164,7 @@ impl PitchEgState {
     }
 }
 
-// --- Mod Env ---------------------------------------------------------------
-
+// Mod Env
 #[derive(Clone, Copy, Debug)]
 pub struct ModEnvParams {
     pub a_ms: f32,
@@ -235,8 +232,8 @@ impl ModEnvState {
         }
     }
 
-    /// Scale the env speed by `scale` — the per-voice `mod-env-rate` mod factor
-    /// (0187). `scale > 1` runs the ADSR faster, `< 1` slower. Because this is a
+    /// Scale the env speed by `scale` — the per-voice `mod-env-rate` mod factor.
+    /// `scale > 1` runs the ADSR faster, `< 1` slower. Because this is a
     /// *time*-based env, the internal representation differs by shape: `Lin`
     /// stores slopes (units/sec, bigger = faster → multiply) and `Exp` stores
     /// time constants (seconds, smaller = faster → divide). `1.0` is a bit-exact
@@ -323,8 +320,7 @@ impl ModEnvState {
     }
 }
 
-// --- segment march helpers -------------------------------------------------
-
+// Segment march helpers.
 #[inline]
 fn inv_or_inf(secs: f32) -> f32 {
     if secs > 1e-6 {
@@ -378,8 +374,6 @@ mod tests {
     use crate::test_util;
 
     const DT: f32 = 64.0 / 48_000.0;
-
-    // --- Pitch EG ----------------------------------------------------------
 
     #[test]
     fn pitch_eg_default_idle_zero() {
@@ -480,8 +474,6 @@ mod tests {
             expected
         );
     }
-
-    // --- Mod Env -----------------------------------------------------------
 
     #[test]
     fn mod_env_lin_reaches_peak_and_sustain() {

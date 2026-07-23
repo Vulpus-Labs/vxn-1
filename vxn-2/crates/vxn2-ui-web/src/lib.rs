@@ -1,4 +1,4 @@
-//! VXN2 HTML faceplate backend (ticket 0023 / epic E003).
+//! VXN2 HTML faceplate backend.
 //!
 //! Thin wrapper over [`vxn_core_ui_web`]: splices VXN2's HTML / CSS / JS
 //! into one string, builds a [`vxn_core_ui_web::WebEditorConfig`] with
@@ -39,7 +39,7 @@ const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 const PANEL_BUTTON_GROUP_JS: &str = include_str!("../assets/panels/button-group.js");
 const PANEL_GRAPH_JS: &str = include_str!("../assets/panels/graph.js");
 const PANEL_ALGO_DIAGRAM_JS: &str = include_str!("../assets/panels/algo-diagram.js");
-// op-row sub-modules (split out of op-row.js in 0141); spliced before it.
+// op-row sub-modules; spliced before it.
 const PANEL_ALGO_DATA_JS: &str = include_str!("../assets/panels/algo-data.js");
 const PANEL_KS_GRAPH_JS: &str = include_str!("../assets/panels/ks-graph.js");
 const PANEL_EG_GRAPH_JS: &str = include_str!("../assets/panels/eg-graph.js");
@@ -58,9 +58,8 @@ const MAIN_JS: &str = include_str!("../assets/main.js");
 /// `parent` is the same raw pointer the clack shell extracts from the
 /// host's `gui::set_parent` (NSView / HWND / xcb window id).
 ///
-/// Errors (never panics — vxn-1 ticket 0115, fixed in the shared crate)
-/// on a null parent handle or a wry build failure; the clack shell maps
-/// it to `PluginError` in `set_parent`.
+/// Errors (never panics) on a null parent handle or a wry build failure;
+/// the clack shell maps it to `PluginError` in `set_parent`.
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
@@ -123,8 +122,8 @@ fn faceplate_js_bundle(dev: Option<&std::path::Path>) -> String {
         .replace("__DEFAULT_PATCH_JSON__", &default_patch_json)
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json());
     [
-        // Shared widget primitives (0140): valuePop / wireDrag / cutoff-tuned
-        // math. Spliced FIRST so their stripped top-level bindings precede
+        // Shared widget primitives: valuePop / wireDrag / cutoff-tuned math.
+        // Spliced FIRST so their stripped top-level bindings precede
         // bootstrap.js and every panel that references them (`const` bindings
         // don't hoist).
         vxn_core_ui_web::shared_widgets_js(),
@@ -137,9 +136,9 @@ fn faceplate_js_bundle(dev: Option<&std::path::Path>) -> String {
         asset(dev, "panels/button-group.js", PANEL_BUTTON_GROUP_JS),
         asset(dev, "panels/graph.js", PANEL_GRAPH_JS),
         asset(dev, "panels/algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
-        // op-row's data tables + sub-widgets, spliced before the coordinator
-        // (0141). algo-data must precede op-row (referenced in bind); ks-graph
-        // / eg-graph are referenced at render time but kept here for clarity.
+        // op-row's data tables + sub-widgets, spliced before the coordinator.
+        // algo-data must precede op-row (referenced in bind); ks-graph /
+        // eg-graph are referenced at render time but kept here for clarity.
         asset(dev, "panels/algo-data.js", PANEL_ALGO_DATA_JS),
         asset(dev, "panels/ks-graph.js", PANEL_KS_GRAPH_JS),
         asset(dev, "panels/eg-graph.js", PANEL_EG_GRAPH_JS),
@@ -152,15 +151,15 @@ fn faceplate_js_bundle(dev: Option<&std::path::Path>) -> String {
         // the `createPresetBrowser` it defines).
         vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
         asset(dev, "panels/preset-browser.js", PANEL_PRESET_BROWSER_JS),
-        // FX tab strip (E025 / 0090): attaches `window.__vxn.wireFxTabs`,
-        // which main.js calls in `boot`.
+        // FX tab strip: attaches `window.__vxn.wireFxTabs`, which main.js calls
+        // in `boot`.
         asset(dev, "panels/fx-tabs.js", PANEL_FX_TABS_JS),
         asset(dev, "main.js", MAIN_JS),
     ]
     .join("\n;\n")
 }
 
-/// Build the STANDALONE web faceplate page (ticket 0157). Same markup / CSS /
+/// Build the STANDALONE web faceplate page. Same markup / CSS /
 /// faceplate JS + spliced descriptor JSON as the native page, but:
 ///
 /// - a tiny classic pre-script installs a `window.ipc` that *queues* posted
@@ -171,7 +170,7 @@ fn faceplate_js_bundle(dev: Option<&std::path::Path>) -> String {
 ///   boot queue.
 ///
 /// The transport ES modules (`faceplate-bridge.mjs` + its imports) and the two
-/// `.wasm` files are served alongside this page by the xtask bundler (0158); the
+/// `.wasm` files are served alongside this page by the xtask bundler; the
 /// page references them by relative URL.
 pub fn build_web_faceplate_html() -> String {
     // No dev-asset hot-reload for the generated page — always the embedded bundle.
@@ -272,7 +271,7 @@ fn bundle_resources_dir() -> Option<std::path::PathBuf> {
 
 /// Build a `ParseCustomUi` closure pointing at this crate's
 /// VXN2-specific opcode parser. Exposed for the editor smoke test
-/// (ticket 0032) so an in-process test can drive the same IPC parse
+/// so an in-process test can drive the same IPC parse
 /// path the live WebView uses without spinning up a wry instance.
 pub fn parse_custom_ui_for_test() -> vxn_core_ui_web::ParseCustomUi {
     Arc::new(parse_custom_ui)
@@ -363,6 +362,8 @@ fn matrix_row_from_json(v: &JsonValue) -> Option<MatrixRow> {
         curve: v.get("curve")?.as_u64()? as u8,
         active: v.get("active")?.as_bool()?,
         depth: v.get("depth")?.as_f64()? as f32,
+        // E033 scale source; absent (older page / unscaled) → 0 = None.
+        scale_src: v.get("scale").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
     })
 }
 
@@ -373,20 +374,10 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
         "curve": row.curve,
         "active": row.active,
         "depth": row.depth,
+        "scale": row.scale_src,
     })
 }
 
-// ── Params JSON helper ──────────────────────────────────────────────────────
-
-/// Walk the engine's CLAP-id-indexed parameter table and emit one JSON
-/// array entry per id, in the shape `vxn_core_ui_web::descriptor_to_json`
-/// produces. The page hydrates this into `__vxn.params` on first batch
-/// (0026); each entry carries `name` (machine id), `label`, `min`, `max`,
-/// `default`, `kind`, and either `unit` or `variants`.
-///
-/// Returns a JSON string ready to splice into the HTML or hand to JS via
-/// `evaluate_script`. Production builds embed this at module load; a
-/// `VXN2_DEV_ASSETS=1` mode (ticket 0032) reads from disk instead.
 /// Walk the engine's mod-matrix enum tables and emit the source / dest
 /// / curve pick-lists the page populates the `<select>`s from. Shape:
 ///
@@ -404,7 +395,7 @@ pub fn build_matrix_lists_json() -> String {
         coherence, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES,
         SOURCE_LABELS, SOURCE_NAMES,
     };
-    // `id` is the wire discriminant; `tier` is the granularity tier (0090):
+    // `id` is the wire discriminant; `tier` is the granularity tier:
     // 0 = patch-global, 1 = per-stack, 2 = per-lane. The UI reads `tier` and
     // the `coherence` table below rather than re-deriving the rule.
     let sources: Vec<JsonValue> = SOURCE_NAMES
@@ -432,7 +423,7 @@ pub fn build_matrix_lists_json() -> String {
         .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
         .collect();
     // Flat `coherence[srcId][dstId]` verdict table — the canonical engine
-    // predicate baked in so the validator (0095) never drifts from the rule.
+    // predicate baked in so the validator never drifts from the rule.
     // Values are the machine-name strings ("ok", "tier-collapse", …).
     let coherence_table: Vec<Vec<&str>> = (0..SOURCE_NAMES.len())
         .map(|si| {
@@ -451,6 +442,9 @@ pub fn build_matrix_lists_json() -> String {
     .to_string()
 }
 
+/// One JSON entry per CLAP id (shape from `descriptor_to_json`): `name`,
+/// `label`, `min`, `max`, `default`, `kind`, and either `unit` or `variants`.
+/// The page hydrates it into `__vxn.params` on first batch.
 pub fn build_params_json() -> String {
     let entries: Vec<JsonValue> = (0..vxn2_engine::TOTAL_PARAMS)
         .filter_map(|i| {
@@ -496,9 +490,7 @@ mod tests {
     #[test]
     fn parse_custom_set_op_tab() {
         // The opcode is the first arg ("set_op_tab"); inside the payload `"op"`
-        // is the operator-tab index. (The earlier fixture also carried a
-        // shadowed `"op": "set_op_tab"` string that serde_json silently
-        // dropped — removed so the fixture reads as the wire shape.)
+        // is the operator-tab index.
         let v = serde_json::json!({ "op": 3 });
         let ev = parse_custom_ui("set_op_tab", &v).expect("parsed");
         match ev {
@@ -587,14 +579,9 @@ mod tests {
         );
     }
 
-    // NOTE: build_faceplate_html_splices_css_and_bootstrap collapsed into
-    // build_faceplate_html_bundles_full_js_stack below (superset); the
-    // unique `color-scheme: dark` check is preserved there.
-
-    /// 0025 AC: shell carries the static faceplate markup, no inline
-    /// handlers, no placeholder values inlined into style attributes, all
-    /// sections + a representative cross-section of params reachable via
-    /// `querySelector` by 0026.
+    /// Shell carries the static faceplate markup: no inline handlers, no
+    /// placeholder values inlined into style attributes, all sections + a
+    /// representative cross-section of params reachable via `querySelector`.
     #[test]
     fn faceplate_html_shell_meets_0025_acceptance() {
         let html = HTML_TEMPLATE;
@@ -624,11 +611,11 @@ mod tests {
             "delay-on", "delay-time", "delay-feedback", "delay-mix",
             "delay-sync",
             "reverb-on", "reverb-size", "reverb-mix",
-            // Phaser (E025 / ticket 0090): every param reachable in its pane.
+            // Phaser: every param reachable in its pane.
             "phaser-on", "phaser-rate", "phaser-depth", "phaser-feedback",
             "phaser-mix",
             "master-tune", "master-volume",
-            // Filter section (E007 / ticket 0088): every param reachable.
+            // Filter section: every param reachable.
             "filter-enable", "filter-cutoff", "filter-resonance",
             "filter-mode", "filter-slope", "filter-drive",
         ] {
@@ -644,8 +631,8 @@ mod tests {
             let needle = format!("data-vxn-custom=\"{custom}\"");
             assert!(html.contains(&needle), "missing custom dispatch: {custom}");
         }
-        // Overlays start hidden — 0027 / 0028 toggle via the [hidden]
-        // attribute. Tolerate intervening attrs (data-vxn-role etc.).
+        // Overlays start hidden — toggled via the [hidden] attribute. Tolerate
+        // intervening attrs (data-vxn-role etc.).
         assert!(
             html.contains("data-vxn-section=\"algo-overlay\"")
                 && html.contains("\"algo-overlay\"") && html.contains(" hidden>"),
@@ -735,8 +722,6 @@ mod tests {
 
     /// Bundle composition: CSS + params JSON spliced in, all panel files
     /// concatenated, no placeholder tokens left in the served HTML.
-    /// Supersedes the old `build_faceplate_html_splices_css_and_bootstrap`
-    /// test (which was a subset); `color-scheme: dark` check absorbed here.
     #[test]
     fn build_faceplate_html_bundles_full_js_stack() {
         let html = build_faceplate_html();
@@ -745,7 +730,7 @@ mod tests {
         assert!(!html.contains("__PARAMS_JSON__"), "params JSON placeholder not spliced");
         assert!(!html.contains("__BOOTSTRAP_JS__"), "bootstrap JS placeholder not spliced");
         assert!(!html.contains("__MATRIX_LISTS_JSON__"), "matrix lists placeholder not spliced");
-        // Structural canary from the old splices_css_and_bootstrap test.
+        // Structural canary.
         assert!(html.contains("VXN2"), "VXN2 identifier missing from rendered HTML");
         assert!(html.contains("color-scheme: dark"), "color-scheme: dark missing from CSS");
         assert!(html.contains("window.__vxn"), "window.__vxn surface missing");
@@ -991,6 +976,7 @@ mod tests {
             curve: 2,
             active: true,
             depth: 0.25,
+            scale_src: 0,
         };
         let payload = Vxn2ViewCustom::MatrixSnapshot { rows: [row; 16] };
         let v = serialise_custom_view(&payload).expect("serialised");
@@ -1005,11 +991,7 @@ mod tests {
     fn build_matrix_lists_json_includes_all_enum_widths() {
         let v = matrix_lists_value();
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
-        // None + 49 dests (E007 appended Cutoff + Resonance after Feedback;
-        // E022 appended the six op{N}-stack-pitch dests after Resonance;
-        // E023 appended the six op{N}-phase dests; E007 appended FilterDrive;
-        // 0187 appended global-eg-rate + the six op{N}-eg-rate dests, then
-        // pitch-eg-rate + mod-env-rate).
+        // Expected dest count = 52 (None + 51 routable dests).
         assert_eq!(v["dests"].as_array().unwrap().len(), 52);
         assert_eq!(v["curves"].as_array().unwrap().len(), 4);
         assert_eq!(v["sources"][0]["name"], "none");
@@ -1059,9 +1041,8 @@ mod tests {
 
     #[test]
     fn mod_matrix_panel_wires_coherence_validation() {
-        // 0095: the panel reads the exported coherence table (not a JS
-        // re-derivation) and flags incoherent rows with the shared class +
-        // reason tooltips.
+        // The panel reads the exported coherence table (not a JS re-derivation)
+        // and flags incoherent rows with the shared class + reason tooltips.
         assert!(
             PANEL_MOD_MATRIX_JS.contains("matrix.coherence"),
             "panel must consume the exported coherence table"
@@ -1094,8 +1075,8 @@ mod tests {
 
     #[test]
     fn mod_matrix_depth_is_bipolar_fader() {
-        // 0096: depth control is the shared bipolar fader, not a bare range
-        // input; routed through the existing dispatchRow depth path.
+        // Depth control is the shared bipolar fader, not a bare range input;
+        // routed through the existing dispatchRow depth path.
         assert!(
             PANEL_FADER_JS.contains("createBipolar"),
             "fader primitive must export the bipolar variant"
@@ -1133,7 +1114,7 @@ mod tests {
         assert!(!html.contains("__MATRIX_LISTS_JSON__"));
     }
 
-    /// 0029 AC: preset-bar panel + browse-dialog markup must be in the
+    /// Preset-bar panel + browse-dialog markup must be in the
     /// served HTML; main.js must route preset_loaded / status through
     /// the panel.
     #[test]
@@ -1161,8 +1142,7 @@ mod tests {
             html.contains("panels.presetBar.onView"),
             "main.js missing preset-bar onView route",
         );
-        // Save As awaits `dispatchTextInput` directly; the old
-        // correlation-token + router-callback path is gone.
+        // Save As awaits `dispatchTextInput` directly.
         assert!(
             html.contains("dispatchTextInput(\"Save Preset As\""),
             "preset-bar Save As not wired through dispatchTextInput",
@@ -1171,8 +1151,8 @@ mod tests {
             !html.contains("onTextInputResult"),
             "preset-bar still exposes onTextInputResult shim",
         );
-        // dispatchTextInput is the page-side Promise primitive added in
-        // 0030; it MUST be present for any text-input round trip.
+        // dispatchTextInput is the page-side Promise primitive; it MUST be
+        // present for any text-input round trip.
         assert!(
             html.contains("vxn.dispatchTextInput = dispatchTextInput"),
             "dispatchTextInput not installed on vxn",

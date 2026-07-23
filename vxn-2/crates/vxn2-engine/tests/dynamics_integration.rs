@@ -1,14 +1,12 @@
-//! E028 ticket 0147 — dynamics block wired into the FX bus.
+//! Dynamics block wired into the FX bus.
 //!
 //! The DSP-level checks (fade-in/out, detector reset, soft-knee gain reduction,
 //! tanh flattening) live in `vxn2-dsp::dynamics::tests`. Here we prove the
 //! *wired* feature:
 //!
 //! - **Bypass bit-identity** — with `dyn-on = 0` the per-sample loop early-exits
-//!   inside `DynamicsBlock::process` (gate at
-//!   `vxn-2/crates/vxn2-dsp/src/dynamics.rs`), so the bus output is
-//!   sample-for-sample independent of every other `dyn-*` param. That's the
-//!   "bit-identical to pre-epic" guarantee on the engine path.
+//!   inside `DynamicsBlock::process`, so the bus output is sample-for-sample
+//!   independent of every other `dyn-*` param.
 //! - **Gain reduction reaches the bus** — with `dyn-on = 1` and a known
 //!   threshold/ratio on a hot signal, the post-FX peak drops measurably below
 //!   the same render with `dyn-on = 0` (i.e. the block isn't just attached but
@@ -45,10 +43,8 @@ fn render_capture(s: &SharedParams, blocks: usize) -> Vec<f32> {
     out
 }
 
-/// With `dyn-on = 0` the per-sample loop's `DynamicsBlock::process` early-exits
-/// to a bit-exact passthrough — every other `dyn-*` param is dead air. Slamming
-/// them to extremes while the gate stays off must leave the bus output
-/// byte-for-byte identical to the dyn-defaulted render.
+/// Slam every `dyn-*` param to extremes with the gate off: the bus output must
+/// stay byte-for-byte identical to the dyn-defaulted render.
 #[test]
 fn bypass_render_is_bit_identical_across_dynamics_params() {
     let on = id_of("dyn-on").unwrap();
@@ -171,8 +167,8 @@ fn dynamics_off_with_filter_off_is_click_free() {
     // fade doesn't reach 0 (and the span doesn't drop) until the mix smoother
     // decays to its snap-to-zero floor — ~14·τ at the 30 ms smoother running at
     // the 4× rate, i.e. ~400 ms ≈ 306 blocks after OFF_B, not one fade-time. The
-    // pre-fix click was measured there (block ~346, d4 ~1.8e-1 ≈ 7.5× steady);
-    // the window straddles it with margin either side.
+    // click lands there (block ~346, d4 ~1.8e-1 ≈ 7.5× steady); the window
+    // straddles it with margin either side.
     const OFF_B: usize = 40;
     // Local baseline just *before* the drop — same faded-out (dynamics bypassed)
     // regime as the drop itself, so amplitude/EG decay can't bias the ratio.

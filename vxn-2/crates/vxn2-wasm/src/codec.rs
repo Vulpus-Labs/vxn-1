@@ -1,11 +1,11 @@
-//! Binary event codec — the wire format for the E030 event ring (ticket 0153).
+//! Binary event codec — the wire format for the event ring.
 //!
-//! ONE definition, two implementations. This is the Rust half; the JS half is
-//! `web/event-codec.mjs` (ticket 0155). Both are typed encode/decode layers over
-//! a **16-byte fixed slot framing** carried verbatim from vxn-1's frozen spike-
-//! 0035 layout — so the two synths' web transports share a byte format and the
-//! JS ring/codec ports over unchanged. The one-page spec both halves point at
-//! is `web/WIRE-FORMAT.md`.
+//! ONE definition, two implementations: this Rust half and the JS half
+//! (`web/event-codec.mjs`) must stay byte-identical. Both are typed
+//! encode/decode over **16-byte fixed slots**; spec is `web/WIRE-FORMAT.md`.
+//! [`apply`] takes `&mut Engine` (notes / MIDI, immediate) and `&SharedParams`
+//! (params, block-granular). Velocity is `[0, 1]` on the wire, mapped to
+//! `1..=127` on apply.
 //!
 //! # Slot layout (16 bytes, little-endian)
 //!
@@ -18,24 +18,9 @@
 //! off 9  u8   flag      sustain 0/1, OR the param-norm bit (EV_PARAM)
 //! off 10 u16  seq       producer sequence (low 16 bits) — owned by the ring,
 //!                       not the codec; encode writes 0, decode ignores it.
-//! off 12 f32  reserved  zero
+//! off 12 u8   scale     EV_MATRIX_ROW secondary scale source (E033); else 0
+//! off 13 ..15 reserved  zero
 //! ```
-//!
-//! # vxn-2 divergences from vxn-1's `vxn-wasm::codec`
-//!
-//! - **No key-mode / split-point events.** vxn-1's `EV_KEY_MODE` (7) /
-//!   `EV_SPLIT_POINT` (8) drove its dual/split layer shared state. The vxn-2 FM
-//!   engine has no such layering, so those tags and event kinds are dropped.
-//!   The remaining tags keep their vxn-1 numbering (no renumbering) so a note /
-//!   param / gesture record is byte-identical across both synths.
-//! - **Param apply targets the atomic store, not the engine.** vxn-2 has no
-//!   per-id `Engine::set_param`; a param edit writes the plain value into the
-//!   [`SharedParams`] store, which the host folds into the engine once per block
-//!   via `Engine::snapshot_params` (see [`crate::host`]). So [`apply`] takes both
-//!   `&mut Engine` (notes / MIDI, applied immediately) and `&SharedParams`
-//!   (params, block-granular). This matches the `vxn2-clap` dispatch split.
-//! - **Velocity is `[0, 1]` on the wire, mapped to `1..=127` on apply** — the
-//!   same mapping `vxn2-clap`'s `EngineNotesAdapter` does.
 
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::{MatrixRowRaw, SharedParams};
@@ -46,10 +31,8 @@ use vxn2_engine::TOTAL_PARAMS as VXN2_TOTAL_PARAMS;
 /// hard-coded, so a param add/remove flows through.
 pub const TOTAL_PARAMS: u16 = VXN2_TOTAL_PARAMS as u16;
 
-/// Bytes per slot — must equal the ring's `SLOT_BYTES` (0155).
+/// Bytes per slot — must equal the ring's `SLOT_BYTES`.
 pub const SLOT_BYTES: usize = 16;
-
-// ── Event type tags (numbering carried from vxn-1's 0035/0037 layout) ────────
 
 /// `note_on { note, velocity }`. `value` = velocity `[0,1]`, `note` = key.
 pub const EV_NOTE_ON: u8 = 1;
@@ -64,13 +47,12 @@ pub const EV_PITCH_BEND: u8 = 4;
 pub const EV_MOD_WHEEL: u8 = 5;
 /// `sustain { on }`. `flag` 0/1.
 pub const EV_SUSTAIN: u8 = 6;
-// Tags 7 (key_mode) and 8 (split_point) are intentionally unused in vxn-2 —
-// reserved so the numbering stays aligned with vxn-1's wire format.
+// Tags 7 (was EV_KEY_MODE) and 8 (was EV_SPLIT_POINT) are reserved (unused).
 /// `gesture_begin { id }`. `paramIdx` = id. Decoder no-ops on the engine.
 pub const EV_GESTURE_BEGIN: u8 = 9;
 /// `gesture_end { id }`. `paramIdx` = id. Decoder no-ops on the engine.
 pub const EV_GESTURE_END: u8 = 10;
-/// `set_matrix_row { slot, source, dest, curve, active, depth }` (ticket 0193).
+/// `set_matrix_row { slot, source, dest, curve, active, depth }`.
 /// Mod-matrix TOPOLOGY has no CLAP id, so it can't ride the param store the way
 /// depth does — this event is the only path it crosses to the worklet engine.
 /// Field packing reuses the generic slot: `paramIdx` = `source | (dest << 8)`,
@@ -81,7 +63,7 @@ pub const EV_MATRIX_ROW: u8 = 11;
 /// 7 bits carry the curve discriminant.
 pub const MATRIX_FLAG_ACTIVE: u8 = 0x80;
 
-/// `patch_swap {}` (ticket 0193). A preset load / reset bumps the shared
+/// `patch_swap {}`. A preset load / reset bumps the shared
 /// `load_epoch` on the native host so the engine silences the outgoing patch's
 /// still-ringing voices. The web build's worklet has a SEPARATE `SharedParams`
 /// and the epoch is not a value param, so this event carries the pulse: apply
@@ -109,7 +91,7 @@ pub enum Event {
     PitchBend { offset: u8, norm: f32 },
     ModWheel { offset: u8, norm: f32 },
     Sustain { offset: u8, on: bool },
-    /// Mod-matrix row topology + depth (ticket 0193). Applied to the atomic
+    /// Mod-matrix row topology + depth. Applied to the atomic
     /// [`SharedParams`] store via `set_matrix_row_raw`, block-granular like params.
     SetMatrixRow {
         offset: u8,
@@ -119,8 +101,11 @@ pub enum Event {
         curve: u8,
         active: bool,
         depth: f32,
+        /// Secondary scale source (E033). Rides byte 12 of the slot (a
+        /// reserved byte; `seq` is at 10..12). `0` = `None`.
+        scale_src: u8,
     },
-    /// Patch-swap pulse (ticket 0193). Bumps the worklet's `load_epoch` so the
+    /// Patch-swap pulse. Bumps the worklet's `load_epoch` so the
     /// engine silences the outgoing patch's voices. No payload.
     PatchSwap { offset: u8 },
 }
@@ -161,8 +146,6 @@ impl Event {
         }
     }
 }
-
-// ── Encode ──────────────────────────────────────────────────────────────────
 
 #[inline]
 fn put_u16(buf: &mut [u8; SLOT_BYTES], at: usize, v: u16) {
@@ -232,19 +215,18 @@ pub fn encode_into(event: &Event, buf: &mut [u8; SLOT_BYTES]) {
         Event::Sustain { on, .. } => {
             buf[9] = on as u8;
         }
-        Event::SetMatrixRow { slot, source, dest, curve, active, depth, .. } => {
+        Event::SetMatrixRow { slot, source, dest, curve, active, depth, scale_src, .. } => {
             put_u16(buf, 2, (source as u16) | ((dest as u16) << 8));
             put_f32(buf, 4, depth);
             buf[8] = slot;
             buf[9] = (curve & !MATRIX_FLAG_ACTIVE) | if active { MATRIX_FLAG_ACTIVE } else { 0 };
+            buf[12] = scale_src; // reserved byte (seq is 10..12)
         }
         Event::PatchSwap { .. } => {
             // Tag-only; no payload bytes.
         }
     }
 }
-
-// ── Decode ──────────────────────────────────────────────────────────────────
 
 /// Decode a 16-byte slot view into a typed [`Event`]. Zero-copy: reads the
 /// borrowed slice, allocates nothing. Returns `None` for an unknown tag
@@ -305,14 +287,13 @@ pub fn decode(buf: &[u8]) -> Option<Event> {
                 curve: buf[9] & !MATRIX_FLAG_ACTIVE,
                 active: buf[9] & MATRIX_FLAG_ACTIVE != 0,
                 depth: get_f32(buf, 4),
+                scale_src: buf[12],
             }
         }
         EV_PATCH_SWAP => Event::PatchSwap { offset },
         _ => return None, // unknown tag: ignore (forward-compat)
     })
 }
-
-// ── Apply (dispatch parity with vxn2-clap::dispatch_event) ───────────────────
 
 /// Map a wire velocity (`[0, 1]`) to the engine's `1..=127` — the exact mapping
 /// `vxn2-clap`'s `EngineNotesAdapter::note_on` performs.
@@ -321,17 +302,15 @@ fn vel_to_u8(velocity: f32) -> u8 {
     ((velocity * 127.0) as i32).clamp(1, 127) as u8
 }
 
-/// Apply a decoded event, with semantics **identical** to `vxn2-clap`'s
-/// `dispatch_event` split:
+/// Apply a decoded event:
 ///
 /// - Notes / raw MIDI act on `engine` immediately (sample-accurate within the
 ///   quantum): `NoteOn` maps velocity `[0,1] → 1..=127`; `PitchBend` /
 ///   `ModWheel` forward the already-normalised value; `Sustain` toggles CC64.
-/// - `SetParam{plain}` / `SetParamNorm{norm}` write the plain value into the
-///   atomic [`SharedParams`] store. The engine folds the store at block start
+/// - `SetParam{plain}` / `SetParamNorm{norm}` write into the atomic
+///   [`SharedParams`] store, which the engine folds at block start
 ///   (`Engine::snapshot_params`), so a mid-quantum param edit lands at the next
-///   quantum — matching the plugin, which folds params per block and documents
-///   the same one-block latency. Unknown ids are dropped by `SharedParams::set`.
+///   quantum. Unknown ids are dropped by `SharedParams::set`.
 /// - `GestureBegin` / `GestureEnd` → **no-op** (controller / host-echo concern;
 ///   they never reach rendering).
 #[inline]
@@ -344,15 +323,15 @@ pub fn apply(event: &Event, engine: &mut Engine, shared: &SharedParams) {
         Event::PitchBend { norm, .. } => engine.set_pitch_bend(norm),
         Event::ModWheel { norm, .. } => engine.set_mod_wheel(norm),
         Event::Sustain { on, .. } => engine.set_sustain(on),
-        Event::SetMatrixRow { slot, source, dest, curve, active, depth, .. } => {
+        Event::SetMatrixRow { slot, source, dest, curve, active, depth, scale_src, .. } => {
             shared.set_matrix_row_raw(
                 slot as usize,
-                MatrixRowRaw { source, dest, curve, active, depth },
+                MatrixRowRaw { source, dest, curve, active, depth, scale_src },
             );
         }
         // Patch swap: bump the epoch so the next snapshot_params silences the
-        // outgoing patch's voices (ticket 0193). Native shares the epoch; web
-        // must carry it as an event.
+        // outgoing patch's voices. Native shares the epoch; web must carry it
+        // as an event.
         Event::PatchSwap { .. } => shared.bump_load_epoch(),
         // Gestures never touch the renderer.
         Event::GestureBegin { .. } | Event::GestureEnd { .. } => {}
@@ -372,13 +351,11 @@ pub fn decode_and_apply(buf: &[u8], engine: &mut Engine, shared: &SharedParams) 
 mod tests {
     use super::*;
 
-    // ── Golden byte table ────────────────────────────────────────────────────
-    //
     // Hand-written expected 16-byte arrays. This is THE contract: the JS codec
-    // (`web/event-codec.test.mjs`, ticket 0155) replicates this exact table and
-    // asserts its own encode matches byte-for-byte. Any layout drift in either
-    // language fails here. Little-endian; seq (off 10..12) and reserved
-    // (off 12..16) are always zero from `encode`.
+    // (`web/event-codec.test.mjs`) replicates this exact table and asserts its
+    // own encode matches byte-for-byte. Any layout drift in either language
+    // fails here. Little-endian; seq (off 10..12) and reserved (off 12..16) are
+    // always zero from `encode`.
 
     /// (label, event, expected 16 bytes)
     fn golden() -> Vec<(&'static str, Event, [u8; SLOT_BYTES])> {
@@ -503,6 +480,7 @@ mod tests {
                     curve: 0,
                     active: true,
                     depth: 1.0,
+                    scale_src: 0,
                 },
                 row(EV_MATRIX_ROW, 0, 7172, f1, 1, MATRIX_FLAG_ACTIVE),
             ),
@@ -518,6 +496,7 @@ mod tests {
                     curve: 3,
                     active: false,
                     depth: 0.5,
+                    scale_src: 0,
                 },
                 row(EV_MATRIX_ROW, 0, 7426, fhalf, 15, 3),
             ),
@@ -557,10 +536,10 @@ mod tests {
         let mut buf = [0u8; SLOT_BYTES];
         buf[0] = 200; // not a known tag
         assert!(decode(&buf).is_none());
-        // The two vxn-1 tags dropped in vxn-2 are likewise unknown here.
-        buf[0] = 7; // was EV_KEY_MODE
+        // Reserved tags 7 and 8 are likewise unknown here.
+        buf[0] = 7;
         assert!(decode(&buf).is_none());
-        buf[0] = 8; // was EV_SPLIT_POINT
+        buf[0] = 8;
         assert!(decode(&buf).is_none());
     }
 
@@ -622,7 +601,7 @@ mod tests {
     #[test]
     fn matrix_row_applies_topology_to_shared_store() {
         // A decoded EV_MATRIX_ROW must land in the atomic store's matrix_meta so
-        // the engine's per-block snapshot picks it up — the whole point of 0193.
+        // the engine's per-block snapshot picks it up.
         let shared = SharedParams::new();
         apply(
             &Event::SetMatrixRow {
@@ -633,6 +612,7 @@ mod tests {
                 curve: 1,
                 active: true,
                 depth: 0.75,
+                scale_src: 5, // mod-wheel (E033)
             },
             &mut Engine::new(48_000.0, crate::CONTROL_BLOCK),
             &shared,
@@ -643,12 +623,13 @@ mod tests {
         assert_eq!(raw.curve, 1);
         assert!(raw.active);
         assert!((raw.depth - 0.75).abs() < 1e-7);
+        assert_eq!(raw.scale_src, 5);
     }
 
     #[test]
     fn patch_swap_bumps_load_epoch_for_silence() {
         // A preset swap must reach the worklet's SharedParams so snapshot_params
-        // silences the outgoing voices (ticket 0193). The event bumps load_epoch.
+        // silences the outgoing voices. The event bumps load_epoch.
         let shared = SharedParams::new();
         let before = shared.load_epoch();
         apply(
@@ -669,6 +650,7 @@ mod tests {
             curve: 2,
             active: false,
             depth: -0.5,
+            scale_src: 8, // key (E033) — exercises the reserved scale byte
         };
         assert_eq!(decode(&encode(&ev)).unwrap(), ev);
     }

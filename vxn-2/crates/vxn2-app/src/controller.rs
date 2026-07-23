@@ -61,8 +61,8 @@ pub fn push_ks_curve_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
     ctrl.push_view_event(event);
 }
 
-/// Build a `Vxn2ViewCustom::EgCurveSnapshot` from `model` (ticket 0128). Shared
-/// by the controller push and the CLAP pump so both produce the same shape.
+/// Build a `Vxn2ViewCustom::EgCurveSnapshot` from `model`. Shared by the
+/// controller push and the CLAP pump so both produce the same shape.
 pub fn eg_curve_snapshot_event<M: Vxn2Params>(model: &M) -> ViewEvent {
     ViewEvent::Custom(Box::new(Vxn2ViewCustom::EgCurveSnapshot {
         curves: model.eg_curves(),
@@ -78,6 +78,11 @@ pub fn push_eg_curve_snapshot<M: Vxn2Params>(ctrl: &mut Controller<M>) {
 
 /// Drain inbound queues against `controller` and apply the VXN2 custom-
 /// event handlers. Call once per host timer tick.
+///
+/// The `SetMatrixRow` / `SetKsCurve` / `SetEgCurve` handlers only write the
+/// Model: the dirty-bitset pump (ADR 0003) catches the corresponding dirty
+/// bit on the next tick and pushes the matching snapshot. The optimistic UI
+/// paint on the page covers the one-tick latency.
 pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
     let mut on_ui = |ctrl: &mut Controller<M>, payload: Box<dyn Any + Send>| {
         let Ok(boxed) = payload.downcast::<Vxn2UiCustom>() else {
@@ -93,29 +98,18 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
                 )));
             }
             Vxn2UiCustom::SetMatrixRow { slot, row } => {
-                // Write the Model and stop. The dirty-bitset pump
-                // catches the matrix-slot bit on the next tick and
-                // pushes a `MatrixSnapshot`. The optimistic UI paint
-                // in `dispatchRow` covers the one-tick latency.
                 ctrl.model().set_matrix_row(slot, row);
             }
             Vxn2UiCustom::RequestMatrixSnapshot => {
                 push_matrix_snapshot(ctrl);
             }
             Vxn2UiCustom::SetKsCurve { op, side, curve } => {
-                // Write the Model and stop. The dirty-bitset pump catches
-                // the KS-curve dirty flag on the next tick and pushes a
-                // `KsCurveSnapshot`; the op-row graph paints optimistically
-                // in the meantime.
                 ctrl.model().set_ks_curve(op, side, curve);
             }
             Vxn2UiCustom::RequestKsCurveSnapshot => {
                 push_ks_curve_snapshot(ctrl);
             }
             Vxn2UiCustom::SetEgCurve { op, curve } => {
-                // Write the Model; the dirty-bitset pump catches the EG-curve
-                // dirty flag next tick and pushes an `EgCurveSnapshot`. The
-                // op-row toggle paints optimistically meanwhile.
                 ctrl.model().set_eg_curve(op, curve);
             }
             Vxn2UiCustom::RequestEgCurveSnapshot => {
@@ -130,20 +124,19 @@ pub fn tick_vxn2<M: Vxn2Params>(controller: &mut Controller<M>) {
             }
         }
     };
-    // VXN2 doesn't drive any per-synth HostEvent::Custom in E003 — the
-    // closure is the no-op pair Controller::tick requires.
+    // VXN2 drives no per-synth HostEvent::Custom — the closure is the
+    // no-op pair Controller::tick requires.
     let mut on_host = |_: &mut Controller<M>, _: Box<dyn Any + Send>| {};
-    // No post-load hook: vxn-2's dirty-bitset pump (ADR 0003) already
-    // re-emits the whole table after a load, and it has no non-param view
-    // state (key-mode / split) to announce the way vxn-1 does.
+    // No post-load hook: the dirty-bitset pump (ADR 0003) already re-emits
+    // the whole table after a load, and there is no non-param view state to
+    // announce.
     let mut on_loaded = |_: &mut Controller<M>| {};
     controller.tick(&mut on_ui, &mut on_host, &mut on_loaded);
 }
 
-/// Empty preset store. Used by `vxn2-clap` until the preset epic ships;
-/// every save / load / list op returns "not supported" or an empty
-/// corpus. `Controller::new` requires a `PresetStore` so this fills the
-/// hole without committing to a wire format.
+/// Empty preset store: every save / load / list op returns "not supported"
+/// or an empty corpus. `Controller::new` requires a `PresetStore`, so this
+/// fills the hole where a real store isn't wired (e.g. test contexts).
 pub struct NoopPresetStore;
 
 impl PresetStore for NoopPresetStore {
@@ -166,10 +159,8 @@ impl PresetStore for NoopPresetStore {
         _meta: &PresetMeta,
         _blob: &[u8],
     ) -> Result<PathBuf, String> {
-        // The preset epic on top of E003 wires a real `PresetStore`.
-        // Until then both Save and Save As land here — the controller
-        // wraps this into a `save failed: …` status the preset bar
-        // displays as a toast.
+        // Both Save and Save As land here — the controller wraps this into
+        // a `save failed: …` status the preset bar displays as a toast.
         Err("Save not yet supported in this build".into())
     }
     fn user_delete(&self, _path: &Path) -> Result<(), String> {

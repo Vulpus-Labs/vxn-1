@@ -94,7 +94,8 @@ export function routeOpcode(ctrl, msg) {
       // et al. top-level yielded undefined → `x >>> 0` → 0, so any topology
       // edit wiped source/dest/active and killed the route.
       var row = msg.row || {};
-      ctrl.setMatrixRow(msg.slot, row.source, row.dest, row.curve, row.active, row.depth);
+      // `scale` (E033) is optional topology; older panels omit it → 0 = None.
+      ctrl.setMatrixRow(msg.slot, row.source, row.dest, row.curve, row.active, row.depth, row.scale | 0);
       return true;
     }
     case "request_matrix_snapshot":

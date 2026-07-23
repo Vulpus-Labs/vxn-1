@@ -25,8 +25,7 @@ fn build_voices() -> [OpState; VOICES] {
         // and the EG cook isn't a uniform broadcast.
         let key = 48 + (i as u8 * 2) % 48;
         v.cook(&params, key, 100, SR);
-        // Mid feedback exercises the FB averaging path. Feedback is now
-        // layer-level; the bench harness writes it onto the op directly.
+        // Mid feedback exercises the FB averaging path.
         v.fb_scale = vxn2_dsp::tables::fb_scale(4.0);
         // Decorrelate phase so the optimiser can't collapse the loop.
         v.phase = (i as u32).wrapping_mul(0x1234_5678);
@@ -40,7 +39,7 @@ fn render_steady(voices: &mut [OpState; VOICES]) -> f32 {
     for v in voices.iter_mut() {
         v.force_sustain(0.6 + 0.2 * (v.phase as f32 / u32::MAX as f32));
     }
-    op_eg_tick(&mut voices[0], dt_block); // single block-rate tick; sustain is no-op anyway.
+    op_eg_tick(&mut voices[0], dt_block);
     for _ in 0..BLOCK {
         for v in voices.iter_mut() {
             acc += op_tick(v, 0.0);

@@ -998,13 +998,17 @@ html, body {
  * .overlay-backdrop / .overlay-panel / .mm-overlay rules above. */
 .vxn-mm-row {
   display: grid;
-  grid-template-columns: 28px 24px 1fr 1fr 140px 90px 80px 24px;
+  /* slot | active | source | dest | depth | curve | scale (E033) | badge | bin */
+  grid-template-columns: 28px 24px 1fr 1fr 140px 90px 1fr 80px 24px;
   gap: 6px;
   align-items: center;
   padding: 4px 0;
   color: #6f7780;
 }
 .vxn-mm-row[data-active="1"] { color: var(--text); }
+/* E033 scale-source selector: min-width 0 so the extra column can shrink; the
+ * "—" (None) default renders dimmer so an unscaled slot reads as off. */
+.vxn-mm-scale { min-width: 0; }
 /* Bipolar depth fader (E008 0096): a compact center-origin HORIZONTAL fader in
  * the row's depth column. Center tick marks 0; the shared fill grows signed
  * left/right from it. */

@@ -1,4 +1,4 @@
-//! Mod matrix evaluation cost (ticket 0008).
+//! Mod matrix evaluation cost.
 //!
 //! Two scenarios at one block (control rate) per iteration, one stack:
 //!
@@ -7,12 +7,9 @@
 //! - `matrix_eval_empty` — all 16 slots `None`. Slot loop short-circuits at
 //!   the first match; only the per-lane accumulator clear runs.
 //!
-//! Per ticket: empty case should be near-free relative to full.
-//!
-//! Each iter is: `eval_sources` (fan patch + stack + lane sources into the
-//! 8-lane × N_SOURCES lookup) + `eval_dests` (walk slots, accumulate into the
-//! 8-lane × N_DESTS accumulator). Throughput = active slot evaluations per
-//! call (16 for full, 0 for empty — `Elements` is mostly cosmetic for empty).
+//! Empty case should be near-free relative to full. Throughput = active slot
+//! evaluations per call (16 for full, 0 for empty — `Elements` is mostly
+//! cosmetic for empty).
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_dsp::stack::STACK_LANES;
@@ -98,6 +95,7 @@ fn full_table() -> MatrixTable {
             dest: dests[i],
             depth: 0.5,
             curve: curves[i % 4],
+            scale_src: SourceId::None,
         };
     }
     table

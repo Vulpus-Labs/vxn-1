@@ -1,4 +1,4 @@
-//! Sync-aware parameter display (moved from `vxn2-clap` in E006 / 0066).
+//! Sync-aware parameter display.
 //!
 //! Rate / time params with a BPM-sync partner display as host-tempo
 //! subdivision labels (`1/8`, `1/4 T`, …) while the partner is on, and as
@@ -36,8 +36,8 @@ pub fn rate_partner_clap_id(id: usize) -> Option<usize> {
 }
 
 /// Subdivision index a synced rate / time fader selects at its current
-/// `value`. The fader *is* the subdivision selector (matching VXN1): its
-/// normalised position maps linearly across [`SUBDIVISIONS`]. Shared by the
+/// `value`. The fader *is* the subdivision selector: its normalised position
+/// maps linearly across [`SUBDIVISIONS`]. Shared by the
 /// engine snapshot (which resolves it to Hz / seconds at audio rate) and
 /// [`sync_aware_display`] (which resolves it to a label) so the two can never
 /// disagree about which division the slider is on.
@@ -95,8 +95,7 @@ mod tests {
 
     /// Every pair in `sync_pairs` flips its rate display between the
     /// descriptor's unit format and a subdivision label as the partner
-    /// toggles (ticket 0066 — the host's automation lane and the editor
-    /// must agree).
+    /// toggles (the host's automation lane and the editor must agree).
     #[test]
     fn each_sync_pair_switches_rate_display() {
         let params = SharedParams::new();

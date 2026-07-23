@@ -1,10 +1,8 @@
-//! Ticket 0069 — param audibility sweep.
+//! Param audibility sweep.
 //!
 //! Every CLAP param, swept min → max under a patch where it *should* matter,
-//! must change the rendered output. This is the mechanical guard for the E006
-//! review's headline pattern — `lfo1-depth`, `AmpSens`, `PitchSmoother` were
-//! all structurally complete but functionally inert; three of the five review
-//! bugs would have been caught here.
+//! must change the rendered output — the mechanical guard against a param that
+//! is structurally complete but functionally inert (severed wiring).
 //!
 //! Mechanism: render the patch twice — param at min, param at max — under an
 //! identical, deterministic context (two fresh engines, same note script, same
@@ -23,8 +21,8 @@
 //!
 //! Known-inert UI surface that is *not* a param and so doesn't trip this test:
 //! the deferred matrix destinations `Lfo2Phase`, `Lfo1Rate`, `Lfo2Rate`,
-//! `StackDetune`, `StackSpread` are dest-enum entries, wired E008 (0091-0093);
-//! the matrix *routing* fields (source/dest/active) are non-CLAP patch state.
+//! `StackDetune`, `StackSpread` are dest-enum entries; the matrix *routing*
+//! fields (source/dest/active) are non-CLAP patch state.
 
 use vxn2_engine::engine::Engine;
 use vxn2_engine::matrix::{DestId, SourceId};
@@ -77,13 +75,12 @@ fn base_context(s: &SharedParams) {
 
     // Pin every op to a full-level carrier with a high EG sustain so its per-op
     // params (level, ratio, detune, pan, KS, EG, and any route onto its
-    // level/pitch) move the mix directly. Under the DX7 log level curve
-    // (E026/0123) the default patch's modulator ops sustain at ≈ −37 dB, which
-    // dropped op2 (and parts of op6, plus the PitchEg→Op2Level / Lfo1→Op6Pitch
-    // routes and `feedback`) below the audibility floor even though their wiring
-    // is intact. Restoring a fair, loud carrier context fixes that without
-    // weakening AUDIBLE_EPS. The per-param `-eg-` override still re-shapes the
-    // op under test, so this only sets the *baseline* sustain.
+    // level/pitch) move the mix directly. Under the log level curve the default
+    // patch's modulator ops sustain at ≈ −37 dB, which would drop op2 (and parts
+    // of op6, plus the PitchEg→Op2Level / Lfo1→Op6Pitch routes and `feedback`)
+    // below the audibility floor even though their wiring is intact. The
+    // per-param `-eg-` override still re-shapes the op under test, so this only
+    // sets the *baseline* sustain.
     for op in 1..=6 {
         set(&format!("op{op}-level"), 99.0);
         set(&format!("op{op}-eg-l3"), 90.0);
@@ -128,6 +125,7 @@ fn base_context(s: &SharedParams) {
                 curve: 0,
                 active: true,
                 depth: 0.5,
+                scale_src: 0,
             },
         );
     }
@@ -197,13 +195,11 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 s.set(id_of(&o("eg-l4")).unwrap(), 0.0);
                 // Hold well past the L2→L3 rise (rate 64, an 8→85 climb) so
                 // *every* op fully reaches and dwells at the stage-3 plateau
-                // before note-off. At the old 55-block sustain the note-off
-                // preempted stage 3 — op5 skipped it outright and op1 only
-                // grazed it, so their `eg-l3` / `eg-r3` sweeps read inaudible
-                // (rel-diff 0 / 8e-5) even though the wiring is intact. The
-                // longer hold keeps the early-stage (l1/l2/r1/r2) and release
-                // (l4/r4) sweeps audible too — they sit orders of magnitude
-                // above the floor.
+                // before note-off; otherwise a note-off preempting stage 3 makes
+                // the `eg-l3` / `eg-r3` sweeps read inaudible even though the
+                // wiring is intact. The longer hold keeps the early-stage
+                // (l1/l2/r1/r2) and release (l4/r4) sweeps audible too — they
+                // sit orders of magnitude above the floor.
                 cap.sustain_blocks = 130;
                 // Long enough that the moderate R4 release actually reaches L4,
                 // so an `eg-l4` sweep (0 vs 99) separates the two release tails
@@ -213,9 +209,9 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
         ),
         // ── KS: pin op ratio for high-note tests ────────────────────────────
         // KS tests play note 96. The default patch gives op2 a ratio-14
-        // modulator, which at note 96 runs at ~29 kHz — above Nyquist. With
-        // the 0073 Nyquist fade that op is muted, masking the KS effect.
-        // Pin the op to ratio 1 so the fundamental stays in-band.
+        // modulator, which at note 96 runs at ~29 kHz — above Nyquist. The
+        // Nyquist fade mutes that op, masking the KS effect; pin the op to
+        // ratio 1 so the fundamental stays in-band.
         (
             |n| parse_op(n).is_some()
                 && (n.ends_with("-ks-r-depth") || n.ends_with("-ks-rate")),
@@ -318,6 +314,7 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                         curve: 0,
                         active: true,
                         depth: 1.0,
+                        scale_src: 0,
                     },
                 );
                 cap.sustain_blocks = 110;
@@ -376,7 +373,7 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 cap.release_blocks = 160;
             },
         ),
-        // ── Phaser (E025) ───────────────────────────────────────────────────
+        // ── Phaser ──────────────────────────────────────────────────────────
         // Off by default → every phaser param is inert unless the stage is on.
         // Drive depth/mix/feedback and render long enough for the slow LFO
         // (rate floor 0.05 Hz) to walk the notches so even a rate sweep
@@ -398,7 +395,7 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                 cap.release_blocks = 60;
             },
         ),
-        // ── Dynamics (E028) ─────────────────────────────────────────────────
+        // ── Dynamics ────────────────────────────────────────────────────────
         // Off by default → every dyn-* knob except `dyn-on` is inert without
         // the block engaged. Turn it on, drive a hot threshold so the comp is
         // actually working, and keep mix at full wet so makeup / drive land on
@@ -470,11 +467,11 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("filter-cutoff-tuned", "UI-only cutoff display mode (Hz vs note-tuned \
         readout); the engine never reads it — the stored cutoff is always Hz \
         (shared.rs `read_filter`)."),
-    // Per-op phase (0074) is cyclic: a fraction of one cycle, so min 0.0 and
-    // max 1.0 are the *same* phase by construction → a min→max sweep is a no-op
-    // by definition (the Q32 conversion wraps 1.0 → 0). The param is genuinely
-    // audible at intermediate offsets (see stack.rs `per_op_phase_shifts_waveform`);
-    // the extremes just happen to coincide. Excluded from the min→max guard only.
+    // Per-op phase is cyclic: min 0.0 and max 1.0 are the *same* phase by
+    // construction → a min→max sweep is a no-op by definition (the Q32
+    // conversion wraps 1.0 → 0). The param is genuinely audible at intermediate
+    // offsets (see stack.rs `per_op_phase_shifts_waveform`); the extremes just
+    // happen to coincide. Excluded from the min→max guard only.
     ("op1-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
     ("op2-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
     ("op3-phase", "cyclic param: min 0.0 ≡ max 1.0 (one full cycle), so min→max is a no-op."),
@@ -574,15 +571,12 @@ fn run_sweep(scale: usize) {
 /// without false-failing on genuinely-subtle-but-wired params.
 const AUDIBLE_EPS: f64 = 1e-4;
 
-/// Default fast run: short windows, full table (~9 s). The mechanical guard
-/// the E006 review wanted — a new param with no audibility context fails here
-/// rather than passing silently.
+/// Default fast run: short windows, full table (~9 s). A new param with no
+/// audibility context fails here rather than passing silently.
 ///
-/// Verified to have teeth (acceptance, ticket 0069): temporarily forcing the
-/// matrix depth projection to 0 in `engine.rs` (`depth = 0.0 * mtx_depths[s]`)
-/// makes this fail, listing the eight `mtx{n}-depth` params, `stack-spread`,
-/// and every LFO2 / mod-env param that reaches the output only through those
-/// routes — then it passes again once restored.
+/// Has teeth: forcing the matrix depth projection to 0 in `engine.rs` makes
+/// this fail, listing the routed-only params (`mtx{n}-depth`, `stack-spread`,
+/// LFO2 / mod-env).
 #[test]
 fn every_param_sweep_is_audible() {
     run_sweep(1);

@@ -1,8 +1,8 @@
 //! VXN2 — framework-free DSP kernels.
 //!
-//! Ticket 0001 deliverables: operator core (phase accumulator + sine + 4R/4L
-//! EG + key scaling + velocity / amp sens + per-op feedback). Higher-level
-//! voice / algorithm / matrix work lives in `vxn2-engine` (next epics).
+//! Operator core (phase accumulator + sine + 4R/4L EG + key scaling +
+//! velocity / amp sens + per-op feedback). Higher-level voice / algorithm /
+//! matrix work lives in `vxn2-engine`.
 
 pub mod algo;
 pub mod cleanup;

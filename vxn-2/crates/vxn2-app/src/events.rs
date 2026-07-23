@@ -20,6 +20,9 @@ pub struct MatrixRow {
     pub curve: u8,
     pub active: bool,
     pub depth: f32,
+    /// Secondary scale source. Opaque u8 index into `matrix::SourceId`,
+    /// same encoding as `source`. `0` = `None` = depth unscaled.
+    pub scale_src: u8,
 }
 
 impl Default for MatrixRow {
@@ -30,6 +33,7 @@ impl Default for MatrixRow {
             curve: 0,
             active: false,
             depth: 0.0,
+            scale_src: 0,
         }
     }
 }
@@ -64,7 +68,7 @@ pub enum Vxn2UiCustom {
     RequestKsCurveSnapshot,
 
     /// Write op `op`'s EG level-curve selector (`curve` = `eg::EgCurve`
-    /// discriminant: 0 = Exp, 1 = Lin). Non-CLAP patch state (ticket 0128).
+    /// discriminant: 0 = Exp, 1 = Lin). Non-CLAP patch state.
     SetEgCurve { op: u8, curve: u8 },
 
     /// Page-side seed: ask the controller to push the full EG-curve snapshot
@@ -96,6 +100,6 @@ pub enum Vxn2ViewCustom {
     /// Full EG-curve snapshot: per op (0..6) curve discriminant (0 = Exp,
     /// 1 = Lin). Emitted on `RequestEgCurveSnapshot` and whenever the model's
     /// EG-curve state drifts (preset load), so each op-row toggle paints its
-    /// real state without polling (ticket 0128).
+    /// real state without polling.
     EgCurveSnapshot { curves: [u8; 6] },
 }

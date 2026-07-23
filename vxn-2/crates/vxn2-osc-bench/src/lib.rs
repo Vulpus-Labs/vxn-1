@@ -1,11 +1,6 @@
-//! Bench harness for VXN2. Wraps `vxn2-dsp` primitives in fixtures suitable
-//! for criterion runs. The operator core lives in `vxn2-dsp`; this crate keeps
-//! a minimal scalar ADSR around as a stand-in envelope for the multi-op
-//! algorithm benches that pre-date the full EG.
+//! Minimal scalar ADSR fixture for op-level env benches.
 
 /// Minimal scalar ADSR fixture for op-level env benches. Linear stages.
-/// Kept here because the multi-op benches predate the 4R/4L EG and use
-/// a simpler envelope to isolate sine-throughput cost.
 pub mod adsr {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum Stage {

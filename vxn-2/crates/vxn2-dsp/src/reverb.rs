@@ -1,4 +1,4 @@
-//! 8-channel FDN reverb (ticket 0011 / ADR §7).
+//! 8-channel FDN reverb (ADR §7).
 //!
 //! Clean Jot-style Feedback Delay Network: 8 mutually-prime delay lines, an
 //! 8×8 Hadamard mixing matrix on the feedback path, per-line one-pole LP for
@@ -36,15 +36,15 @@ pub const LINES: usize = 8;
 const MAX_SIZE_SCALE: f32 = 2.0;
 /// Lower bound for the size scale.
 const MIN_SIZE_SCALE: f32 = 0.2;
-/// Glide time for the size scale smoother. ~500 ms per ticket AC; size
-/// changes glide rather than snap, so re-deriving delay lengths is
-/// audibly a crossfade rather than a click.
+/// Glide time for the size scale smoother. ~500 ms; size changes glide rather
+/// than snap, so re-deriving delay lengths is audibly a crossfade rather than
+/// a click.
 const SIZE_SMOOTH_MS: f32 = 500.0;
 /// Dry/wet glide time — masks a mix-knob jump and fades the wet up from 0 on
 /// switch-on so the reverb doesn't click in at full level.
 const MIX_SMOOTH_MS: f32 = 30.0;
-/// LFO frequency on each delay line, Hz. Per ADR §7 / ticket notes:
-/// 0.5 Hz with phases spread evenly across the 8 lines.
+/// LFO frequency on each delay line, Hz. 0.5 Hz with phases spread evenly
+/// across the 8 lines.
 const LFO_HZ: f32 = 0.5;
 /// LFO depth in samples (peak deviation around the base length).
 const LFO_DEPTH_SAMP: f32 = 2.0;
@@ -302,7 +302,7 @@ impl FdnReverb {
         let mut tap = [0.0_f32; LINES];
         for i in 0..LINES {
             // Bhaskara+Moser sine of the [0, 1) phase fraction — shared with
-            // the operator core (ticket 0071, was a hand-inlined copy here).
+            // the operator core.
             let s = crate::sine::scalar::fast_sine_01(self.lfo_phase[i]);
             let off = (self.base_samps[i] * scale + LFO_DEPTH_SAMP * s).clamp(1.0, max_off);
             tap[i] = self.ring.read_linear(i, off);

@@ -152,7 +152,7 @@
 
     function dispatchRow(slot, partial) {
       var current = window.__vxn.matrix.rows[slot] || {
-        source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
+        source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
       };
       var next = {
         source: partial.source != null ? partial.source : current.source,
@@ -160,6 +160,8 @@
         curve: partial.curve != null ? partial.curve : current.curve,
         active: partial.active != null ? partial.active : current.active,
         depth: partial.depth != null ? partial.depth : current.depth,
+        // E033 secondary scale source (VCA on depth). Topology, like curve.
+        scale: partial.scale != null ? partial.scale : (current.scale || 0),
       };
       // Local optimistic update so the UI doesn't flash before the
       // pump's next-tick MatrixSnapshot lands.
@@ -171,7 +173,8 @@
       var topologyChanged = partial.source != null
         || partial.dest != null
         || partial.curve != null
-        || partial.active != null;
+        || partial.active != null
+        || partial.scale != null;
 
       if (topologyChanged) {
         // Any topology field carries the whole row (depth included).
@@ -200,6 +203,11 @@
       var sourceSel = buildSelect(sourcesList, "source");
       var destSel = buildSelect(destDisplayOrder(destsList), "dest");
       var curveSel = buildSelect(curvesList, "curve");
+      // E033: secondary scale source. Reuses the full source roster; index 0
+      // ("—") is the None default so an unscaled slot reads as off at a glance.
+      var scaleSel = buildSelect(sourcesList, "scale");
+      scaleSel.classList.add("vxn-mm-scale");
+      scaleSel.title = "Scale depth by (secondary source)";
 
       // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop
       // readout, double-click numeric entry, shift-drag fine — built on the
@@ -271,6 +279,7 @@
           destSel,
           depth,
           curveSel,
+          scaleSel,
           badge,
           bin,
         ]
@@ -295,6 +304,9 @@
       curveSel.addEventListener("change", function () {
         dispatchRow(slot, { curve: parseInt(curveSel.value, 10) | 0 });
       });
+      scaleSel.addEventListener("change", function () {
+        dispatchRow(slot, { scale: parseInt(scaleSel.value, 10) | 0 });
+      });
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
       });
@@ -304,7 +316,7 @@
         // Avoids silently re-binding host automation lanes that point at
         // mtxN-depth CLAP ids on slots 1-8.
         dispatchRow(slot, {
-          source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
+          source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
         });
       });
 
@@ -315,6 +327,7 @@
         depth: depth,
         depthFader: depthFader,
         curve: curveSel,
+        scale: scaleSel,
         active: active,
       };
     }
@@ -338,6 +351,9 @@
       if (document.activeElement !== r.curve) {
         r.curve.value = String((row.curve | 0));
       }
+      if (document.activeElement !== r.scale) {
+        r.scale.value = String((row.scale | 0));
+      }
       // The bipolar fader's `set` no-ops while its own drag-gate is active,
       // so a snapshot echo can't stomp an in-progress depth drag.
       r.depthFader.set(clamp(+row.depth || 0, -1, 1));
@@ -354,7 +370,7 @@
       var table = window.__vxn.matrix.rows;
       for (var i = 0; i < SLOT_COUNT; i++) {
         var row = (table && table[i]) || {
-          source: 0, dest: 0, curve: 0, active: false, depth: 0.0,
+          source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
         };
         paintRow(i, row);
       }

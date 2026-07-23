@@ -1,6 +1,5 @@
-//! Top-level engine (ticket 0012): assembles the kernel and exposes a
-//! block-based `process` surface the (still-to-come) CLAP shell and the
-//! integration test below bind against.
+//! Top-level engine: assembles the kernel and exposes a block-based `process`
+//! surface the CLAP shell and the integration test below bind against.
 //!
 //! ```text
 //!   note-on / note-off / bend ─► PolyAlloc ─► Stacks ──┐
@@ -56,9 +55,9 @@ use crate::matrix::{
 use crate::modulation::PatchMod;
 use crate::shared::{EngineParams, SharedParams};
 
-// Matrix dest-accumulator indices, resolved at compile time (review nit from
-// E006: no live `unwrap()` in the hot path). The op-major stride-3 layout
-// (Pitch, Level, Pan per op) is asserted alongside.
+// Matrix dest-accumulator indices, resolved at compile time (no live
+// `unwrap()` in the hot path). The op-major stride-3 layout (Pitch, Level, Pan
+// per op) is asserted alongside.
 const DELAY_MIX_IDX: usize = DestId::DelayMix.idx().unwrap();
 const REVERB_MIX_IDX: usize = DestId::ReverbMix.idx().unwrap();
 const FEEDBACK_IDX: usize = DestId::Feedback.idx().unwrap();
@@ -70,25 +69,25 @@ const LFO2_RATE_IDX: usize = DestId::Lfo2Rate.idx().unwrap();
 const STACK_DETUNE_IDX: usize = DestId::StackDetune.idx().unwrap();
 const STACK_SPREAD_IDX: usize = DestId::StackSpread.idx().unwrap();
 /// Accumulator column of `Op1StackPitch`; the six stack-pitch dests are
-/// contiguous from here (E022 0069). `OpNStackPitch` column = base + (N-1).
+/// contiguous from here. `OpNStackPitch` column = base + (N-1).
 const OP_STACK_PITCH_BASE_IDX: usize = DestId::Op1StackPitch.idx().unwrap();
-/// Per-block one-pole factor smoothing *dynamic* stack-detune/spread changes
-/// (E008 0093). Fresh notes snap (immediate, zipper-free for static sources
-/// like key/velocity); only block-to-block motion from a moving source
-/// (mod-env, LFO) is ramped, keeping the re-cooked detune zipper-free at
-/// musical rates. ~0.5 ⇒ converges within a few blocks (~ms).
+/// Per-block one-pole factor smoothing *dynamic* stack-detune/spread changes.
+/// Fresh notes snap (immediate, zipper-free for static sources like
+/// key/velocity); only block-to-block motion from a moving source (mod-env,
+/// LFO) is ramped, keeping the re-cooked detune zipper-free at musical rates.
+/// ~0.5 ⇒ converges within a few blocks (~ms).
 const STACK_MACRO_SMOOTH: f32 = 0.5;
 /// Row of `Lfo2Phase` inside the per-stack `PitchSmoother` (the smoother's
 /// row order is `PITCH_DESTS`: `[GlobalPitch, Lfo2Phase, Op1..Op6]`). The
-/// matrix `*→lfo2_phase` route (E008 0091) reads this smoother row and applies
-/// it as a per-lane LFO2 phase offset.
+/// matrix `*→lfo2_phase` route reads this smoother row and applies it as a
+/// per-lane LFO2 phase offset.
 const LFO2_PHASE_SMOOTHER_ROW: usize = 1;
 const _: () = assert!(matches!(
     PITCH_DESTS[LFO2_PHASE_SMOOTHER_ROW],
     DestId::Lfo2Phase
 ));
-/// Lowest cutoff the ladder is driven to — C0 (MIDI 12), ≈16.35 Hz (VXN-1
-/// parity). Lets a fully key-tracked, C0-based cutoff reach bass pitches.
+/// Lowest cutoff the ladder is driven to — C0 (MIDI 12), ≈16.35 Hz. Lets a
+/// fully key-tracked, C0-based cutoff reach bass pitches.
 const CUTOFF_MIN_HZ: f32 = 16.3516;
 /// Highest cutoff the ladder is driven to (the `filter-cutoff` param ceiling).
 const CUTOFF_MAX_HZ: f32 = 20_000.0;
@@ -96,15 +95,15 @@ const CUTOFF_MAX_HZ: f32 = 20_000.0;
 /// `(note − 12)/12` octaves, so a C0-floored cutoff tracks the played pitch.
 const KEYTRACK_CENTRE_NOTE: f32 = 12.0;
 
-/// Filter saturator headroom / gain-staging. VXN-2 filters the post-stack-sum,
-/// which runs far hotter (rms ≈ 1.6, peaks ≈ 4–5) than VXN-1's per-voice input,
-/// so the ladder's per-stage `tanh` compresses deep into its knee — ≈ −7 dB at
-/// default drive even at density 1. We trim the signal into the saturator's
-/// near-linear region and make it up after, so `drive = 1` is ≈ transparent at
-/// the passband (cutoff open) and `drive` stays the knob that pushes into
-/// saturation. Equivalent to a `tanh` headroom of `1/TRIM`; self-oscillation
-/// stays bounded (the kernel limit cycle is ±~1, scaled by the make-up). Lives
-/// engine-side so the ported kernel and its unit tests are untouched.
+/// Filter saturator headroom / gain-staging. Filtering the post-stack-sum runs
+/// hot (rms ≈ 1.6, peaks ≈ 4–5), so the ladder's per-stage `tanh` compresses
+/// deep into its knee — ≈ −7 dB at default drive even at density 1. We trim the
+/// signal into the saturator's near-linear region and make it up after, so
+/// `drive = 1` is ≈ transparent at the passband (cutoff open) and `drive` stays
+/// the knob that pushes into saturation. Equivalent to a `tanh` headroom of
+/// `1/TRIM`; self-oscillation stays bounded (the kernel limit cycle is ±~1,
+/// scaled by the make-up). Lives engine-side so the kernel and its unit tests
+/// are untouched.
 const FILTER_IN_TRIM: f32 = 0.2;
 const FILTER_OUT_MAKEUP: f32 = 1.0 / FILTER_IN_TRIM;
 
@@ -122,10 +121,9 @@ fn keytrack_octaves(note: u8, amount: f32) -> f32 {
 /// factors without overflowing them.
 const MAX_OVERSAMPLE: usize = 8;
 
-/// The one oversample factor shipped now that the `filter-oversample` selector
-/// was removed: the filter and the dynamics FX share a single 4× span. Used to
-/// build the dynamics block at the oversampled rate and to size the
-/// dynamics-only span (`run_dynamics_os`).
+/// The one shipped oversample factor: the filter and the dynamics FX share a
+/// single 4× span. Used to build the dynamics block at the oversampled rate and
+/// to size the dynamics-only span (`run_dynamics_os`).
 pub(crate) const OVERSAMPLE_FACTOR: usize = 4;
 
 /// The engine's constant processing latency, in samples at the host rate — the
@@ -133,13 +131,12 @@ pub(crate) const OVERSAMPLE_FACTOR: usize = 4;
 /// path at this same delay, so the group delay is identical whether the
 /// filter/dynamics span is engaged or not. That constancy is what makes it safe
 /// to report to the host: a *changing* latency would force a host `activate`
-/// restart on every filter/dynamics toggle (an audible dropout), which is why
-/// reporting was previously left at 0 (ticket 0086). The CLAP shell reports this
-/// once via the latency extension.
+/// restart on every filter/dynamics toggle (an audible dropout). The CLAP shell
+/// reports this once via the latency extension.
 pub const LATENCY_SAMPLES: u32 = roundtrip_latency_base_samples(OVERSAMPLE_FACTOR);
 
-/// Quiescence floor for the per-stack filter skip (ticket 0085), in ladder
-/// state magnitude. An idle stack feeds the filter exact zero, so once *every*
+/// Quiescence floor for the per-stack filter skip, in ladder state magnitude.
+/// An idle stack feeds the filter exact zero, so once *every*
 /// ladder state (both L/R kernels) is below this, the filter's remaining output
 /// is bounded by ≈ this value — about −100 dBFS, inaudible — and the
 /// upsample + ladder + accumulate for that stack can be skipped exactly.
@@ -169,7 +166,7 @@ const _: () = {
 /// every op's `phase_inc` (48 `powf` per stack) each sample — not affordable.
 /// At 16 samples a 256-sample host block gets 16 interpolation points
 /// (≈ 0.33 ms apart at 48 kHz), which removes audible stepping; smoothers
-/// that have converged skip the recook entirely (ticket 0063).
+/// that have converged skip the recook entirely.
 const PITCH_SMOOTH_QUANTUM: usize = 16;
 
 /// Convergence threshold for the pitch smoothers, in semitones. 1e-4 st is
@@ -183,21 +180,19 @@ const PITCH_SMOOTH_EPS_ST: f32 = 1e-4;
 /// as inactive, so a settled sound releases the per-sample advance.
 const RAMP_SNAP_EPS: f32 = 1e-9;
 
-/// Per-stack ramp bookkeeping (ticket 0119). One struct per slot, replacing the
-/// five lockstep parallel `Vec`s the engine used to carry (`level_mod_inc`,
-/// `pan_l_inc`, `pan_r_inc`, `phase_mod_inc`, `prev_eg_level`) — adding a new
-/// ramp type now touches only this struct, not five parallel index sites.
+/// Per-stack ramp bookkeeping. One struct per slot, so adding a new ramp type
+/// touches only this struct, not several parallel index sites.
 ///
 /// `level_mod` / `pan_l` / `pan_r` are per-sample f32 increments; `phase_mod` is
 /// a signed Q32 increment (wrapping, so the cyclic phase ramp is exact). All
 /// four glide their `stack.*` field linearly across the block while the slot's
 /// `ramp_live` flag is set. `prev_eg` is the EG level the previous block's ramp
-/// targeted, used to rebase the level ramp across the EG's block-edge march
-/// (0077). It is **per-lane** (0187): each unison lane carries its own amp EG,
-/// so with an `eg-rate` spread the lanes march at different speeds and each
-/// needs its own block-edge rebase. `STACK_LANES` (8) and `N_OPS` (6) are both
-/// ≤ 32, so `derive(Default)` (and `Clone`, for `vec![_; N_STACKS]`) cover the
-/// array fields.
+/// targeted, used to rebase the level ramp across the EG's block-edge march. It
+/// is **per-lane**: each unison lane carries its own amp EG, so with an
+/// `eg-rate` spread the lanes march at different speeds and each needs its own
+/// block-edge rebase. `STACK_LANES` (8) and `N_OPS` (6) are both ≤ 32, so
+/// `derive(Default)` (and `Clone`, for `vec![_; N_STACKS]`) cover the array
+/// fields.
 #[derive(Clone, Default)]
 struct RampState {
     level_mod: [[f32; STACK_LANES]; vxn2_dsp::algo::N_OPS],
@@ -224,8 +219,7 @@ struct StackBlockSummary {
 /// Block-rate gates passed into [`Engine::cook_stacks_block`]: whether any
 /// matrix route targets each of the four re-cooked stack/LFO destinations,
 /// scanned once in [`Engine::process_block`]. Grouped because four bare
-/// positional bools at the call site are the transpose hazard
-/// `clippy::too_many_arguments` exists to flag — named fields
+/// positional bools at the call site are a transpose hazard — named fields
 /// (`flags.stack_detune`) read unambiguously.
 #[derive(Clone, Copy)]
 struct TargetFlags {
@@ -235,8 +229,8 @@ struct TargetFlags {
     stack_pitch: bool,
 }
 
-/// Lifecycle of the oversampled filter+dynamics span (ADR 0004 §5/§10). Exactly
-/// one variant holds per block, which is what makes the two declick crossfades —
+/// Lifecycle of the oversampled filter+dynamics span. Exactly one variant holds
+/// per block, which is what makes the two declick crossfades —
 /// the filter toggle and the dynamics-disengage settle — mutually exclusive *by
 /// construction* rather than by careful flag ordering. Dynamics activeness is
 /// deliberately not an axis: it's owned by `DynamicsBlock`'s own wet fade and
@@ -294,7 +288,7 @@ impl OsSpan {
 /// can't hide (bridging a latency change means crossfading the signal with a
 /// delayed copy of itself — a comb). A synth has no dry reference to phase
 /// against, so the fixed ~0.5 ms delay is inaudible; it is deliberately not
-/// reported to the host (matches the filter-latency posture, ticket 0086).
+/// reported to the host (matches the filter-latency posture).
 struct SpanDelay {
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
@@ -338,19 +332,18 @@ pub struct Engine {
     pub matrix: MatrixTable,
     pub patch_mod: PatchMod,
     pub cleanup: CleanupFilter,
-    /// Dynamics block (comp + sat), inserted **first** in the FX bus (E028) so
-    /// it evens FM transients before phaser / delay / reverb accumulate them.
-    /// Bypassed bit-exactly when `dyn-on = 0`.
+    /// Dynamics block (comp + sat), inserted **first** in the FX bus so it evens
+    /// FM transients before phaser / delay / reverb accumulate them. Bypassed
+    /// bit-exactly when `dyn-on = 0`.
     pub dynamics: DynamicsBlock,
-    /// Stereo phaser, inserted between dynamics and delay in the FX bus (E025).
+    /// Stereo phaser, inserted between dynamics and delay in the FX bus.
     /// Bypassed bit-exactly when `phaser-on = 0`.
     pub phaser: StereoPhaser,
     pub delay: StereoDelay,
     pub reverb: FdnReverb,
     pub master: MasterState,
     /// Optional brickwall limiter on the master bus (last in the FX chain).
-    /// Run only when `master.limiter_on` is set; bypassed otherwise (VXN1
-    /// parity).
+    /// Run only when `master.limiter_on` is set; bypassed otherwise.
     pub limiter: StereoLimiter,
     /// Whether the limiter ran last block, so it can be reset on the off→on
     /// edge (clears stale lookahead instead of leaking an old transient).
@@ -361,9 +354,9 @@ pub struct Engine {
     block_secs: f32,
     /// Host tempo. Defaults to 120 BPM until the host pushes one in.
     pub tempo_bpm: f32,
-    /// MIDI CC1 mod wheel, normalised `[0, 1]`. Read by the matrix engine
-    /// (ticket 0008) as a patch-global source; stored here so the CLAP shell
-    /// (0016) can push it without reaching across the matrix.
+    /// MIDI CC1 mod wheel, normalised `[0, 1]`. Read by the matrix engine as a
+    /// patch-global source; stored here so the CLAP shell can push it without
+    /// reaching across the matrix.
     pub mod_wheel: f32,
     /// MIDI channel aftertouch, normalised `[0, 1]`. Same routing role as
     /// [`Self::mod_wheel`].
@@ -377,7 +370,7 @@ pub struct Engine {
     /// lane scalar into a `[lane][source]` table so [`eval_dests`] reads a
     /// contiguous matrix per slot.
     lane_sources: LaneSourceVals,
-    /// Per-stack pitch-dest smoothers (ticket 0063). Targets refresh at
+    /// Per-stack pitch-dest smoothers. Targets refresh at
     /// block rate from `dest_vals`; state advances every
     /// [`PITCH_SMOOTH_QUANTUM`] samples inside the render loop and is
     /// projected into the stack pitch-mod fields before `apply_pitch_mult`.
@@ -390,7 +383,7 @@ pub struct Engine {
     /// previous voice's modulation.
     mod_seq: [u64; N_STACKS],
     /// Per-stack × per-lane LFO2 phase offset (fraction of a cycle) last
-    /// applied by the matrix `*→lfo2_phase` route (E008 0091). Each block the
+    /// applied by the matrix `*→lfo2_phase` route. Each block the
     /// engine adds the *delta* vs this value to `lfo2.phase[k]` so a static
     /// offset settles to a fixed scatter (no runaway); on a fresh note it
     /// resets to 0 (note_on already zeroed the per-lane phases) so the offset
@@ -398,12 +391,12 @@ pub struct Engine {
     prev_lfo2_phase_off: [[f32; STACK_LANES]; N_STACKS],
     /// LFO1 rate offset (octaves) aggregated from the matrix `*→lfo1-rate`
     /// route at the end of the previous block, applied to this block's LFO1
-    /// `eval` as `2^oct` (E008 0092, one-block latency). `lfo1-rate` is a
+    /// `eval` as `2^oct` (one-block latency). `lfo1-rate` is a
     /// patch-global dest; the value is averaged at lane 0 across active stacks
     /// exactly like the FX-mix dests. 0 when un-targeted → multiplier 1.0.
     lfo1_rate_oct: f32,
-    /// Per-stack smoothed `stack-detune` / `stack-spread` modulation amounts
-    /// (E008 0093). Detune is applied this block (folded into
+    /// Per-stack smoothed `stack-detune` / `stack-spread` modulation amounts.
+    /// Detune is applied this block (folded into
     /// `apply_pitch_mult`); spread feeds *next* block's `VoiceSpread` source
     /// scaling (one-block latency, since the source is evaluated before the
     /// matrix). Both snap on a fresh note and one-pole toward the target
@@ -413,12 +406,11 @@ pub struct Engine {
     /// Per-stack ramp state (one [`RampState`] per slot): the per-sample
     /// level / pan / phase increments that glide `stack.op_level_mod`,
     /// `stack.pan_l` / `pan_r`, and `stack.op_phase_mod_q32` to each block's
-    /// matrix targets (tickets 0074 / E023), plus `prev_eg` — the previous
-    /// block's EG level, used to rebase the level ramp across the EG's
-    /// block-edge march (0077). Collapsed from five lockstep parallel `Vec`s
-    /// into one struct so adding a ramp type touches only [`RampState`]
-    /// (ticket 0119). Engine-owned so the `stack_tick_*` hot path stays
-    /// untouched; the render loop advances them once per sample while live.
+    /// matrix targets, plus `prev_eg` — the previous block's EG level, used to
+    /// rebase the level ramp across the EG's block-edge march. One struct per
+    /// slot so adding a ramp type touches only [`RampState`]. Engine-owned so
+    /// the `stack_tick_*` hot path stays untouched; the render loop advances
+    /// them once per sample while live.
     ramps: Vec<RampState>,
     /// Which slots carry a live ramp this block; `any_ramp_live` is the
     /// whole-engine OR so a patch with static effective levels pays one
@@ -426,7 +418,7 @@ pub struct Engine {
     ramp_live: [bool; N_STACKS],
     any_ramp_live: bool,
 
-    /// Stack-pitch component masks (E022 0069): `stack_pitch_masks[n]` is the
+    /// Stack-pitch component masks: `stack_pitch_masks[n]` is the
     /// 6-bit op set an `Op(n+1)StackPitch` route bends — op n+1 plus its whole
     /// ratio-coherent FM component, with fixed-freq ops walled off
     /// ([`vxn2_dsp::algo::pitch_stack_component`]). Pure function of
@@ -438,16 +430,15 @@ pub struct Engine {
     /// `(u8::MAX, u8::MAX)` sentinel forces a first-cook recompute.
     stack_pitch_key: (u8, u8),
 
-    // ── Optional per-voice filter (E007 / ADR 0004) ──────────────────────
-    // Two scalar OTA-C ladder kernels per stack (L/R) — the filter runs on a
-    // stack's summed stereo pair. Plus one interpolating resampler per stack
-    // (per-voice upsample, stateful) and a single shared decimator per channel
-    // (deferred decimation past the voice-sum). All allocated once; untouched
-    // while `filter-enable` is off.
+    // Optional per-voice filter: two scalar OTA-C ladder kernels per stack
+    // (L/R) — the filter runs on a stack's summed stereo pair. Plus one
+    // interpolating resampler per stack (per-voice upsample, stateful) and a
+    // single shared decimator per channel (deferred decimation past the
+    // voice-sum). All allocated once; untouched while `filter-enable` is off.
     filter_l: Vec<OtaLadderKernel>,
     filter_r: Vec<OtaLadderKernel>,
-    // ── Static high-pass stage (v13) ─────────────────────────────────────
-    // Two scalar one-pole HP kernels per stack (L/R), run on each stack's
+    // Static high-pass stage: two scalar one-pole HP kernels per stack (L/R),
+    // run on each stack's
     // summed stereo pair at base rate (never oversampled) *ahead* of the
     // musical filter. Global cutoff (not a mod dest), so the coefficient is
     // computed once per block and broadcast. Bypassed (untouched) while the
@@ -516,7 +507,7 @@ pub struct Engine {
     last_load_epoch: u64,
     /// Last patch algorithm applied in [`Self::apply_block_params`]. A live algo
     /// change (picker move, not a preset load) re-routes held notes in place —
-    /// but a voice still *releasing* from note-off can have an op that was a
+    /// but a voice still *releasing* from note-off can have an op that is a
     /// modulator become a carrier, exposing its long release tail as a new
     /// audible tone. On the change we declick-kill releasing voices; held voices
     /// re-route and morph. `0` is the never-applied sentinel (algos are 1-based).
@@ -597,7 +588,7 @@ impl Engine {
             // Matches a fresh SharedParams (epoch 0) so the first snapshot after
             // open doesn't read as a preset change and silence the boot patch.
             last_load_epoch: 0,
-            last_algo: 0, // never-applied sentinel; first apply syncs it
+            last_algo: 0, // never-applied sentinel
         };
         e.apply_block_params();
         e
@@ -619,8 +610,7 @@ impl Engine {
         self.delay.set_params(&self.params.delay, self.tempo_bpm);
     }
 
-    /// Normalised `[-1, +1]` pitch bend. ±2 semitones for v1; configurable
-    /// bend range lands with the UI epic (ticket Notes).
+    /// Normalised `[-1, +1]` pitch bend. ±2 semitones.
     pub fn set_pitch_bend(&mut self, norm: f32) {
         const BEND_RANGE_ST: f32 = 2.0;
         self.alloc.set_bend(norm.clamp(-1.0, 1.0) * BEND_RANGE_ST);
@@ -655,8 +645,8 @@ impl Engine {
         // reset snaps to the live param instead of gliding from a stale value.
         self.filter_smooth_primed = false;
         self.patch_mod.on_transport_restart();
-        // Drop any matrix LFO-rate modulation (E008 0092); a fresh patch
-        // re-derives it from the matrix accumulator.
+        // Drop any matrix LFO-rate modulation; a fresh patch re-derives it from
+        // the matrix accumulator.
         self.patch_mod.lfo1.rate_mult = 1.0;
         self.lfo1_rate_oct = 0.0;
         // Zero the pitch smoothers — a voice played after reset must not
@@ -768,6 +758,10 @@ impl Engine {
                 // the same response.
                 depth: dest.cook_depth(depth),
                 curve: CurveKind::from_u8(row.curve),
+                // Inactive slots still carry their scale source through
+                // (harmless — an inactive slot's primary source is `None`, so
+                // eval skips it before the scale multiply matters).
+                scale_src: SourceId::from_u8(row.scale_src),
             };
         }
         // Apply the live assign mode before the block's note events so a
@@ -799,7 +793,7 @@ impl Engine {
             self.alloc.stacks[i].set_feedback_live(voice.feedback);
         }
         // Re-resolve the stack-pitch component masks if the algorithm or any
-        // op's Ratio/Fixed mode changed (E022 0069). Folded into the same cook
+        // op's Ratio/Fixed mode changed. Folded into the same cook
         // that live-swaps the algo above; gated on the `(algo, wall_mask)` key
         // so a ratio-*value* tweak (mode unchanged) leaves the masks alone.
         self.recompute_stack_pitch_masks();
@@ -848,9 +842,9 @@ impl Engine {
         })
     }
 
-    /// True when any live slot targets an amp-EG rate dest (0187). Gates the
-    /// note-on rescale so a patch with no `eg-rate` route never touches the
-    /// cooked EG rates — the off-path stays bit-identical to pre-0187.
+    /// True when any live slot targets an amp-EG rate dest. Gates the note-on
+    /// rescale so a patch with no `eg-rate` route never touches the cooked EG
+    /// rates — the off-path stays bit-identical.
     fn eg_rate_targeted(&self) -> bool {
         self.matrix.slots.iter().any(|s| {
             matches!(
@@ -905,7 +899,7 @@ impl Engine {
     }
 
     /// True if any active matrix slot drives `dest` (source set + nonzero
-    /// depth). Block-rate gate for the deferred rate/re-cook dests (E008) so an
+    /// depth). Block-rate gate for the deferred rate/re-cook dests so an
     /// un-targeted dest pays no extra math and the LFO tick stays bit-identical.
     #[inline]
     fn dest_targeted(&self, dest: DestId) -> bool {
@@ -935,7 +929,7 @@ impl Engine {
         // Per-block control-rate work.
         self.alloc.block_tick(dt);
 
-        // LFO-rate matrix routes (E008 0092), gated by a block-rate scan so
+        // LFO-rate matrix routes, gated by a block-rate scan so
         // the un-targeted path is free + bit-identical. LFO1 rate is
         // patch-global: apply last block's aggregated octave offset as `2^oct`
         // *before* `eval_block` (one-block latency sidesteps rate-on-self).
@@ -947,12 +941,12 @@ impl Engine {
             1.0
         };
 
-        // Stack-macro routes (E008 0093), gated so the un-targeted path skips
+        // Stack-macro routes, gated so the un-targeted path skips
         // the re-cook and stays bit-identical. Detune is applied this block;
         // spread feeds next block's VoiceSpread source (one-block latency).
         let stack_detune_targeted = self.dest_targeted(DestId::StackDetune);
         let stack_spread_targeted = self.dest_targeted(DestId::StackSpread);
-        // Stack-pitch scatter gate (E022 0069): skip the whole scatter when no
+        // Stack-pitch scatter gate: skip the whole scatter when no
         // route targets a stack-pitch dest, keeping the off-path bit-identical.
         let stack_pitch_targeted = self.stack_pitch_targeted();
 
@@ -1009,7 +1003,7 @@ impl Engine {
             }
         }
 
-        // Static high-pass stage (v13): a global cutoff, so one coefficient is
+        // Static high-pass stage: a global cutoff, so one coefficient is
         // computed at the base sample rate (the HP is deliberately *not*
         // oversampled) and broadcast to every stack's L/R kernel. Bypassed
         // entirely while the cutoff sits at its 20 Hz floor (the default) — the
@@ -1077,7 +1071,7 @@ impl Engine {
 
     /// Advance the [`OsSpan`] lifecycle one block from `(filter_on, dyn_active)`
     /// and run the resampler resets each transition requires. Single point of
-    /// truth for three edges that used to be separate flags:
+    /// truth for three edges:
     ///
     /// - **filter toggle** (`filter_on` differs from the state's `filter_on()`):
     ///   arm a `FilterFade` toward the new state; on engage reset the per-stack
@@ -1183,8 +1177,8 @@ impl Engine {
         self.os_span = next;
     }
 
-    /// Mod-matrix cook: the per-stack loop extracted from `process_block`
-    /// (ticket 0119). Per active stack it ticks LFO2, fans the patch / stack /
+    /// Mod-matrix cook: the per-stack loop extracted from `process_block`.
+    /// Per active stack it ticks LFO2, fans the patch / stack /
     /// lane scalars into the lane lookup, runs `eval_dests` against the single
     /// per-patch matrix table, projects the per-op level / pan / phase / pitch
     /// destinations onto the stack, and computes this block's per-sample ramp
@@ -1235,7 +1229,7 @@ impl Engine {
         let mut lfo1_rate_oct_sum = 0.0_f32;
         let mut fx_active = 0u32;
 
-        // eg-rate note-on scale gate (0187): resolved once per block; the
+        // eg-rate note-on scale gate: resolved once per block; the
         // per-stack apply below is further gated on `fresh` so the rescale
         // (which multiplies the cooked rates) lands exactly once per note.
         let eg_rate_targeted = self.eg_rate_targeted();
@@ -1252,10 +1246,10 @@ impl Engine {
             }
             // == STAGE 2: Fresh-note detection — clears macro mods before the VoiceSpread
             //          source is built (one-block latency). ==
-            // Fresh-note detection up front (E008 0093 needs it before the
-            // VoiceSpread source is built so the spread-mod doesn't glide in
-            // from the previous voice on a reused stack). A bumped allocation
-            // generation means a new note reused this slot.
+            // Fresh-note detection up front, needed before the VoiceSpread
+            // source is built so the spread-mod doesn't glide in from the
+            // previous voice on a reused stack. A bumped allocation generation
+            // means a new note reused this slot.
             let seq = self.alloc.slot_seq(i);
             let fresh = seq != self.mod_seq[i];
             if fresh {
@@ -1277,7 +1271,7 @@ impl Engine {
             //          last block's smoothed spread (one-block latency), so it must
             //          precede the matrix eval below. ==
             let stack = &self.alloc.stacks[i];
-            // Pitch EG → normalized [-1, 1] shape (E008 0094): divide the raw
+            // Pitch EG → normalized [-1, 1] shape: divide the raw
             // semitone output by its full-scale swing (`peg_depth`) so the
             // pitch dest's ±24 st gain sets the excursion — no hidden 24×
             // re-scale of absolute semitones. peg_depth ≈ 0 ⇒ EG output is 0
@@ -1285,7 +1279,7 @@ impl Engine {
             let pitch_eg = {
                 let depth = voice.peg_depth;
                 if depth.abs() > 1e-6 {
-                    // Pitch EG is per-lane (0187); the matrix source reads lane 0
+                    // Pitch EG is per-lane; the matrix source reads lane 0
                     // to keep its per-stack tier (all lanes are identical unless a
                     // pitch-eg-rate route decorrelates them).
                     stack.meta.pitch_eg[0].level_st / depth
@@ -1304,7 +1298,7 @@ impl Engine {
             // note-on) before exposing it to the matrix so the spread fader
             // gates how widely matrix slots see the lanes. spread = 0 → all
             // lanes read 0 from the VoiceSpread source. The matrix `stack-spread`
-            // route (E008 0093) further scales this by `(1 + spread_mod)` using
+            // route further scales this by `(1 + spread_mod)` using
             // last block's smoothed amount (one-block latency).
             let spread_gain = stack.meta.cached_spread * (1.0 + self.stack_spread_mod[i]);
             let scaled_voice_spread = {
@@ -1341,14 +1335,14 @@ impl Engine {
                 &mut self.dest_vals[i],
             );
             // Fan each stack-pitch accumulator across its ratio-coherent
-            // component into the per-op pitch columns (E022 0069), before the
+            // component into the per-op pitch columns, before the
             // smoother captures pitch targets below. Gated so the common
             // (no stack-pitch route) path is untouched.
             if flags.stack_pitch {
                 scatter_stack_pitch(&mut self.dest_vals[i], &self.stack_pitch_masks);
             }
 
-            // == STAGE 5b: eg-rate note-on scale (0187). On the fresh block only,
+            // == STAGE 5b: eg-rate note-on scale. On the fresh block only,
             //          fold the per-lane eg-rate dest columns into each lane's
             //          cooked amp-EG rates so a `voice-spread → eg-rate` route
             //          makes the unison lanes evolve at different speeds. Note-on
@@ -1388,10 +1382,10 @@ impl Engine {
             // Indices: OpiLevel=i*3+1, OpiPan=i*3+2. Neither applies as a
             // block constant: level ramps linearly to this block's target
             // via per-sample increments, and pan ramps the folded equal-
-            // power gains the same way (ticket 0074). Pitch-shaped
-            // destinations ride the per-stack PitchSmoother instead (0063).
+            // power gains the same way. Pitch-shaped destinations ride the
+            // per-stack PitchSmoother instead.
             let mut level_targets = [[0.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
-            // E023 phase dests: read the per-op phase offset (cycles) and fold to
+            // Phase dests: read the per-op phase offset (cycles) and fold to
             // a Q32 target. The dests are appended after the contiguous
             // pitch/level/pan block, so they index off `Op1Phase`, not `op_i*3`.
             let mut phase_targets_q32 = [[0_u32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
@@ -1442,20 +1436,12 @@ impl Engine {
             // == STAGE 8: Level multiplicative projection + EG block-edge rebase. Rebase
             //          must run before STAGE 9 — the ramp interpolates the rebased
             //          effective level. ==
-            // Level modulation is MULTIPLICATIVE on the EG (ticket 0078):
+            // Level modulation is MULTIPLICATIVE on the EG:
             // effective level = `clamp(eg · (1 + m), 0, 1)`, with `m` the
             // matrix accumulator. The tick reads `eg + op_level_mod`, so the
             // engine projects the multiplicative target into that additive
             // offset: `op_level_mod_target = clamp(eg·(1+m), 0, 1) − eg`.
-            //
-            // Why multiplicative (vs the additive `eg + m` it replaced):
-            // `eg = 0` forces eff = 0, so a RELEASED op always closes —
-            // additive mod could refill what release drains and leave a voice
-            // droning until the allocator cut it at full amplitude (a click).
-            // A full-depth sine gates through silence at its trough, where the
-            // LFO's own slope is zero, so tremolo gating is C¹-smooth — no
-            // bottom corner to round, which is why the 0076 target one-pole
-            // measured zero effect and was removed.
+            // `eg = 0` forces eff = 0, so a RELEASED op always closes.
             //
             // The block-rate `clamp(…, 0, 1)` is the ONE bound for the whole
             // path: it absorbs boost overflow (`eg·(1+m) > 1` when eg > 0.5)
@@ -1466,7 +1452,7 @@ impl Engine {
             // `eff ∈ [0, 1]`, the per-sample linear ramp stays in range too —
             // so `stack_tick_*` needs no per-sample clamp.
             //
-            // The EG marches once per block (0077); `op_level_mod` is rebased
+            // The EG marches once per block; `op_level_mod` is rebased
             // by the block delta so the sum the tick reads stays continuous
             // across the edge, then ramps to the new target — the EG's motion
             // rides the same per-lane ramp as the matrix mod (no block-rate EG
@@ -1475,7 +1461,7 @@ impl Engine {
             let prev_eg = &mut self.ramps[i].prev_eg;
             for op_i in 0..vxn2_dsp::algo::N_OPS {
                 for k in 0..STACK_LANES {
-                    // Per-lane EG level (0187): each lane's own envelope drives its
+                    // Per-lane EG level: each lane's own envelope drives its
                     // own effective level and block-edge rebase.
                     let eg = stack.core.ops[op_i].eg[k].level;
                     let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
@@ -1507,7 +1493,7 @@ impl Engine {
                 // silence and a solo steal glides from the outgoing note's
                 // level, neither stepping at sample 0 (onset click). Same
                 // per-sample ramp the matrix mod / EG rebase use on later
-                // blocks (0077).
+                // blocks.
                 stack.core.op_phase_mod_q32 = phase_targets_q32;
                 stack.refresh_pan_with_mod();
                 let inv = 1.0 / n as f32;
@@ -1556,7 +1542,7 @@ impl Engine {
                             stack.core.pan_r[op_i][k] = pan_r_t[op_i][k];
                             pr = 0.0;
                         }
-                        // Phase ramp (E023): shortest-arc Q32 delta to the new
+                        // Phase ramp: shortest-arc Q32 delta to the new
                         // target, split linearly across the block. `wrapping_sub
                         // as i32` picks the ≤ half-cycle direction so a small
                         // matrix move never wraps the long way round. A whole
@@ -1597,7 +1583,7 @@ impl Engine {
             if fb_any {
                 stack.set_feedback_live_lanes(&fb_lanes);
             }
-            // Stack-detune (E008 0093): re-derive the per-lane detune offset
+            // Stack-detune: re-derive the per-lane detune offset
             // from this block's lane-0 accumulator and fold it into the pitch
             // sum below. Snap on a fresh note (static sources like key/velocity
             // land immediately, zipper-free); one-pole the block-to-block
@@ -1620,12 +1606,12 @@ impl Engine {
             // Refresh pitch from the new offsets so the per-sample loop
             // reads phase_inc that includes this block's matrix output.
             // Cost: per active stack 6×8 powf — affordable at ≤16 stacks.
-            // (Pan gains are handled by the ramp above — ticket 0074.)
+            // (Pan gains are handled by the ramp above.)
             stack.apply_pitch_mult();
 
             // == STAGE 11: LFO2 phase offset + LFO2 rate — deferred, one-block latency
             //           (applied after this block's lfo2.eval in STAGE 3). ==
-            // LFO2 phase offset (E008 0091, `*→lfo2_phase`). The smoothed
+            // LFO2 phase offset (`*→lfo2_phase`). The smoothed
             // per-lane Lfo2Phase value rides the same PitchSmoother as the
             // pitch dests (it is `is_pitch_shaped`); read its row and apply
             // the *delta* vs last block as a wrapping Q32 add to each lane's
@@ -1655,7 +1641,7 @@ impl Engine {
                 }
                 prev[k] = target;
             }
-            // LFO2 per-stack rate (E008 0092). `lfo2-rate` is a per-stack dest;
+            // LFO2 per-stack rate. `lfo2-rate` is a per-stack dest;
             // read this block's lane-0 accumulator (in octaves) and stash the
             // multiplier for *next* block's `eval` (one-block latency). Gated:
             // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
@@ -1667,7 +1653,7 @@ impl Engine {
 
             // == STAGE 12: Stack-spread update (next block's VoiceSpread, one-block latency)
             //           + FX-mix / LFO1-rate aggregation at lane 0. ==
-            // Stack-spread (E008 0093): update the per-stack smoothed amount
+            // Stack-spread: update the per-stack smoothed amount
             // for *next* block's VoiceSpread source scaling (one-block latency
             // — the source is built before the matrix eval). Snap on fresh,
             // one-pole otherwise; zero when un-targeted.
@@ -1690,7 +1676,7 @@ impl Engine {
             fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
             fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
             // LFO1 rate is patch-global — aggregate at lane 0 like the FX mixes
-            // and cache for next block (E008 0092, one-block latency).
+            // and cache for next block (one-block latency).
             lfo1_rate_oct_sum += self.dest_vals[i][0][LFO1_RATE_IDX];
             fx_active += 1;
         }
@@ -1714,9 +1700,6 @@ impl Engine {
     /// oversampled rate, and accumulate into the oversampled bus. After all
     /// stacks, one shared decimator brings the bus back to base rate; the FX
     /// chain then runs per sample exactly as in the OFF path.
-    ///
-    /// Factored so ticket 0085 can drop a per-stack quiescence-skip in front
-    /// of the inner render and 0086 can read the resampler group delay.
     fn render_block_filtered(
         &mut self,
         out_l: &mut [f32],
@@ -1772,7 +1755,7 @@ impl Engine {
             let os_rate = self.sample_rate;
             for i in 0..N_STACKS {
                 let idle = self.alloc.stacks[i].is_idle();
-                // Quiescence-skip (0085): an idle stack feeds the filter exact
+                // Quiescence-skip: an idle stack feeds the filter exact
                 // zero; once its ladder has rung out, skipping the tick is
                 // exact (zero contribution). State + frozen coeffs are left
                 // untouched so re-entry on the next note is glitch-free.
@@ -1824,7 +1807,7 @@ impl Engine {
 
             for i in 0..N_STACKS {
                 let idle = self.alloc.stacks[i].is_idle();
-                // Quiescence-skip (0085): skip the upsample + ladder for an idle
+                // Quiescence-skip: skip the upsample + ladder for an idle
                 // stack only once its filter has settled. The interp FIR history
                 // self-flushes within tap-length zero-input samples, so by the
                 // time the ladder reads quiescent the resampler tail is gone too
@@ -2044,11 +2027,11 @@ impl Engine {
     /// Shared post-dry FX tail (cleanup → phaser → delay → reverb → master), run
     /// per sample over `dry_l/r` into `out_l/r`. The dynamics is *not* here — it
     /// runs upstream inside the 4× oversampled span (in the filter's per-stack
-    /// span, or `run_dynamics_os`). Cleanup therefore now sits just after the
-    /// dynamics rather than before it: safe, since the comp is pure gain and the
-    /// `tanh` saturator is odd-symmetric (no DC), and running the 18 kHz guard
-    /// after the saturator still strips any harmonics before the spatial FX —
-    /// which is exactly where that guard belongs.
+    /// span, or `run_dynamics_os`). Cleanup therefore sits just after the
+    /// dynamics: safe, since the comp is pure gain and the `tanh` saturator is
+    /// odd-symmetric (no DC), and running the 18 kHz guard after the saturator
+    /// still strips any harmonics before the spatial FX — which is exactly where
+    /// that guard belongs.
     fn apply_tail_fx(&mut self, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
         for sample in 0..n {
             let (cl, cr) = self.cleanup.process(self.dry_l[sample], self.dry_r[sample]);
@@ -2074,7 +2057,7 @@ impl Engine {
     /// - **dynamics inactive** — the span's engaged state *changes* across this
     ///   toggle (base ↔ OS), so there is a real latency step to bridge. Blend at
     ///   base rate: OFF stays base (latency 0, continuous with the pre-toggle dry
-    ///   sum), only ON is oversampled+decimated. Matches the historical path.
+    ///   sum), only ON is oversampled+decimated.
     /// - **dynamics active** — the span is engaged on *both* sides of the toggle
     ///   (the dynamics keeps it live), so latency is constant. Blend at OS rate
     ///   per stack (raw vs filtered through the same interpolator → identical
@@ -2385,10 +2368,10 @@ impl Engine {
         }
     }
 
-    /// Advance the live level/pan ramps one sample (ticket 0074): straight
-    /// lane-strided adds into the stacks' `op_level_mod` / `pan_l` / `pan_r`.
-    /// Lives engine-side so the `stack_tick_*` hot path keeps its exact
-    /// pre-0074 shape; only ramping slots pay anything.
+    /// Advance the live level/pan ramps one sample: straight lane-strided adds
+    /// into the stacks' `op_level_mod` / `pan_l` / `pan_r`. Lives engine-side so
+    /// the `stack_tick_*` hot path stays untouched; only ramping slots pay
+    /// anything.
     fn advance_mod_ramps(&mut self) {
         for i in 0..N_STACKS {
             if !self.ramp_live[i] {
@@ -2429,7 +2412,7 @@ impl Engine {
 }
 
 /// Scatter each `OpNStackPitch` accumulator into the per-op pitch columns of
-/// every op in component N (E022 0069). The **same** semitone delta is added
+/// every op in component N. The **same** semitone delta is added
 /// to every member — no depth scaling — so the FM ratios within the branch are
 /// preserved: pitch moves, timbre holds. Runs in the cook (per stack, per
 /// block) *before* the pitch smoother reads the per-op pitch columns, so the
@@ -2466,8 +2449,8 @@ fn scatter_stack_pitch(
 /// Copy a smoother's current pitch state into the stack's per-lane pitch-mod
 /// fields. [`crate::matrix::PITCH_DESTS`] order: `[GlobalPitch, Lfo2Phase,
 /// Op1Pitch .. Op6Pitch]` — `Lfo2Phase` (row 1) is *not* projected here: it
-/// is consumed directly in `process_block` as a per-lane LFO2 phase offset
-/// (E008 0091), so this fn skips row 1 and projects only the pitch dests.
+/// is consumed directly in `process_block` as a per-lane LFO2 phase offset,
+/// so this fn skips row 1 and projects only the pitch dests.
 fn project_pitch_state(
     stack: &mut vxn2_dsp::stack::Stack,
     st: &[[f32; STACK_LANES]; N_PITCH_DESTS],
@@ -2517,6 +2500,7 @@ mod tests {
             dest,
             depth,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e
     }
@@ -2611,7 +2595,7 @@ mod tests {
         );
     }
 
-    /// Ticket 0018 listening-test gate (automated half): the default patch
+    /// Listening-test gate (automated half): the default patch
     /// renders audible, non-clipping audio while held and decays to near-zero
     /// after note-off + reverb tail. RMS windows are 50 ms — long enough to
     /// average out per-cycle ripple, short enough to localise the segment.
@@ -2669,23 +2653,20 @@ mod tests {
         // Assert 1: early-sustain RMS is audible but not clipping.
         let (attack_db, attack_peak) = window_dbfs_peak(&l, &r, attack_start);
         assert!(attack_peak < 1.0, "default patch clipping: peak {attack_peak}");
-        // Upper bound loosened -9 → -8 dBFS with the 0079 feedback
-        // recalibration: FB 6 dropped from the chaotic zone (scale 2.0) to a
-        // stable 0.5, which concentrates op6's energy tonally and lifts the
-        // patch ~1 dB.
+        // FB 6 sits in a stable zone (scale 0.5), concentrating op6's energy
+        // tonally — the early-sustain body lands near -8 dBFS.
         assert!(
             (-24.0..=-8.0).contains(&attack_db),
             "early-sustain RMS {attack_db} dBFS outside [-24, -8]"
         );
 
         // Assert 2: mid-sustain tail is decaying but still ringing.
-        // 0125 (exponential EG ramps): the default patch is percussive — every
-        // carrier's L3 = 0, so the note decays toward silence. Under the old
-        // linear-amplitude march it sat on a ~-8..-24 dBFS plateau at t ≈ 1 s;
-        // the DX7 exponential march descends on a constant dB/sec slope and is
-        // far lower mid-tail (~-40 dBFS) for the *same* total decay duration.
-        // Bound it as a decaying-but-still-ringing tail (below the attack body,
-        // above the noise floor) rather than a fixed plateau.
+        // The default patch is percussive — every carrier's L3 = 0, so the note
+        // decays toward silence. The exponential
+        // march descends on a constant dB/sec slope and sits low mid-tail
+        // (~-40 dBFS) for a given total decay duration. Bound it as a
+        // decaying-but-still-ringing tail (below the attack body, above the
+        // noise floor) rather than a fixed plateau.
         let (sustain_db, _) = window_dbfs_peak(&l, &r, sustain_start);
         assert!(
             sustain_db < attack_db && sustain_db > -55.0,
@@ -2707,7 +2688,7 @@ mod tests {
         );
     }
 
-    /// Wiring sanity for the mod matrix (ticket follow-on to 0008/0012). A
+    /// Wiring sanity for the mod matrix. A
     /// matrix slot routing LFO1 → Op1Level should write non-zero into the
     /// stack's `op_level_mod` after one `process_block`, and the render
     /// output should diverge from a fresh engine with no matrix slot active.
@@ -2725,6 +2706,7 @@ mod tests {
             dest: DestId::Op1Level,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.note_on(60, 100);
 
@@ -2769,7 +2751,7 @@ mod tests {
         );
     }
 
-    /// Wiring sanity for the E023 per-op phase dests. A matrix slot routing
+    /// Wiring sanity for the per-op phase dests. A matrix slot routing
     /// LFO1 → Op1Phase should write a non-zero, ramping `op_phase_mod_q32`
     /// after a few blocks, and the render should diverge from a baseline with
     /// no phase route. (A carrier's steady magnitude spectrum is phase-deaf,
@@ -2786,6 +2768,7 @@ mod tests {
             dest: DestId::Op1Phase,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.note_on(60, 100);
 
@@ -2827,7 +2810,7 @@ mod tests {
         );
     }
 
-    /// `voice-spread → global-eg-rate` (0187): on the fresh block the note-on
+    /// `voice-spread → global-eg-rate`: on the fresh block the note-on
     /// eval must fold each lane's spread into that lane's cooked amp-EG rates, so
     /// the unison lanes end up with different march rates. Un-routed engines stay
     /// bit-identical.
@@ -2843,6 +2826,7 @@ mod tests {
             dest: DestId::GlobalEgRate,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.note_on(60, 100);
 
@@ -2879,7 +2863,7 @@ mod tests {
         );
     }
 
-    /// `voice-spread → pitch-eg-rate` (0187): the fresh-block eval must scale the
+    /// `voice-spread → pitch-eg-rate`: the fresh-block eval must scale the
     /// per-lane Pitch EG rates, so after the sweep runs the unison lanes sit at
     /// different points (chorusing). Un-routed engines keep the lanes locked.
     #[test]
@@ -2900,6 +2884,7 @@ mod tests {
                     dest: DestId::PitchEgRate,
                     depth: 1.0,
                     curve: CurveKind::Lin,
+                    scale_src: SourceId::None,
                 };
             }
             e.note_on(60, 100);
@@ -2919,7 +2904,7 @@ mod tests {
     }
 
     /// Level + pan matrix routes ramp to each block's target instead of
-    /// stepping at block edges (ticket 0074): after every `process_block`
+    /// stepping at block edges: after every `process_block`
     /// the stack's level mod has converged on that block's accumulator
     /// value, the ramp flag is live while the LFO moves, and a static
     /// patch keeps the flag off entirely.
@@ -2935,12 +2920,14 @@ mod tests {
             dest: DestId::Op1Level,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.matrix.slots[1] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::Op1Pan,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.set_mod_wheel(0.7);
         e.note_on(60, 100);
@@ -2952,9 +2939,9 @@ mod tests {
             .find(|&i| !e.alloc.stacks[i].is_idle())
             .expect("note is held");
         let level_idx = DestId::Op1Level.idx().unwrap();
-        // Replicate the engine's multiplicative projection (ticket 0078):
+        // Replicate the engine's multiplicative projection:
         // `target = clamp(eg·(1+m), 0, 1) − eg`, taken against the op's
-        // post-tick EG level (0077), which is what `eg.level` holds after
+        // post-tick EG level, which is what `eg.level` holds after
         // `process_block` returns. The ramp must converge each block on this
         // target — no smoothing.
         let target = |e: &Engine, k: usize| {
@@ -2986,9 +2973,9 @@ mod tests {
 
     /// With no moving level/pan route and settled EGs the ramp flag must
     /// clear so a static sound doesn't pay the per-sample advance. The
-    /// combined ramp (0077) legitimately runs while any EG marches — the
-    /// default E.PIANO's modulator tails decay for ~10 s — so this test
-    /// pins every EG to a flat sustain instead.
+    /// combined ramp legitimately runs while any EG marches — the default
+    /// patch's modulator tails decay for ~10 s — so this test pins every EG
+    /// to a flat sustain instead.
     #[test]
     fn static_patch_keeps_mod_ramps_inactive() {
         let mut e = Engine::new(SR, BLK);
@@ -3013,20 +3000,15 @@ mod tests {
         );
     }
 
-    /// Multiplicative level mod (ticket 0078): a full-depth positive LFO on a
+    /// Multiplicative level mod: a full-depth positive LFO on a
     /// carrier's level must not *refill* a releasing voice. Under multiplicative
     /// semantics the rendered level is `clamp(eg·(1+m), 0, 1)`, so it rides the
     /// EG down — the mod can at most ~double the natural tail (m ≤ +1), never
-    /// exceed it structurally. Under the old *additive* `eg + m` semantics the
-    /// LFO left a floor of ~depth as `eg → 0`, so the voice droned until the
-    /// allocator cut it at full amplitude (a loud click on every chord release,
-    /// found in a DAW bounce).
+    /// exceed it structurally.
     ///
     /// The invariant is therefore a *comparison*, not an absolute-silence
     /// threshold: the modulated release tail must not materially exceed the
-    /// unmodulated one. (An earlier version asserted `peak < 1e-3` on the
-    /// default E.PIANO — whose modulator EGs release for seconds — and so
-    /// could never pass regardless of the semantics under test.) The LFO is
+    /// unmodulated one. The LFO is
     /// routed to `Op3Level`, a carrier still ringing in the measurement window,
     /// so an additive refill would actually show up here.
     #[test]
@@ -3048,6 +3030,7 @@ mod tests {
                     dest: DestId::Op3Level,
                     depth: 1.0,
                     curve: CurveKind::Lin,
+                    scale_src: SourceId::None,
                 };
             }
             e.note_on(60, 100);
@@ -3072,9 +3055,8 @@ mod tests {
 
         let baseline = release_tail_peak(false);
         let modded = release_tail_peak(true);
-        // Multiplicative: `modded ≤ ~2·baseline`. Additive (the regression)
-        // would leave a floor ≫ baseline. 2.5× gives margin without admitting
-        // a refill.
+        // Multiplicative: `modded ≤ ~2·baseline`. 2.5× gives margin without
+        // admitting a refill.
         assert!(
             modded <= baseline * 2.5 + 1e-4,
             "positive level mod refilled a releasing voice: modded {modded} vs baseline {baseline}"
@@ -3082,10 +3064,8 @@ mod tests {
     }
 
     /// Solo-mode note-off with another key held must fall back to the held
-    /// note — and it must do so through `Engine::note_off`, which pre-E006
-    /// hardwired the poly path and made `note_off_solo` unreachable
-    /// (ticket 0064). The alloc-level tests call `alloc.note_off` directly
-    /// and never caught it.
+    /// note — and it must do so through `Engine::note_off` (the alloc-level
+    /// tests call `alloc.note_off` directly and never exercised this path).
     #[test]
     fn solo_note_off_falls_back_to_held_note_via_engine() {
         use crate::alloc::AssignMode;
@@ -3139,8 +3119,8 @@ mod tests {
         );
     }
 
-    /// LFO1 → GlobalPitch at block size 256 must ramp, not step (ticket
-    /// 0063). The block-rate target jump `|t − s0|` is what the audio would
+    /// LFO1 → GlobalPitch at block size 256 must ramp, not step. The
+    /// block-rate target jump `|t − s0|` is what the audio would
     /// have received per block before the smoother was wired in; the largest
     /// per-quantum step the smoothed path produces is `a·|t − s0|`. Assert
     /// the staircase would have been audible (> 10 cents) while the smoothed
@@ -3161,6 +3141,7 @@ mod tests {
             dest: DestId::GlobalPitch,
             depth: 0.5,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BIG_BLK];
@@ -3198,7 +3179,7 @@ mod tests {
 
     /// A fresh note in a reused slot snaps its pitch smoother to the new
     /// block's target instead of gliding in from the previous voice's
-    /// offset (ticket 0063).
+    /// offset.
     #[test]
     fn pitch_smoother_snaps_on_fresh_note() {
         use crate::matrix::{CurveKind, DestId, MatrixSlot, SourceId};
@@ -3210,6 +3191,7 @@ mod tests {
             dest: DestId::GlobalPitch,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -3248,6 +3230,7 @@ mod tests {
             // Depth 12 → ModEnv at 1.0 lifts pitch by an octave.
             depth: 12.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.note_on(60, 100);
 
@@ -3272,8 +3255,6 @@ mod tests {
         }
         assert!(diverged, "GlobalPitch matrix slot did not shift phase_inc");
     }
-
-    // --- Lfo2Phase dest (E008 0091) --------------------------------------
 
     fn active_stack(e: &Engine) -> usize {
         e.alloc.stacks.iter().position(|s| !s.is_idle()).unwrap()
@@ -3308,8 +3289,8 @@ mod tests {
     #[test]
     fn matrix_no_lfo2_phase_slot_keeps_lanes_phase_locked() {
         let mut e = Engine::new(SR, BLK);
-        // The default patch ships a `voice-rand → lfo2-phase` slot (now live);
-        // clear the table so this asserts the genuine off-path.
+        // The default patch ships a `voice-rand → lfo2-phase` slot; clear the
+        // table so this asserts the genuine off-path.
         e.matrix = crate::matrix::MatrixTable::default();
         e.note_on(60, 100);
         render_blocks(&mut e, 4);
@@ -3405,8 +3386,6 @@ mod tests {
         assert_eq!(d1, d2, "offset unstable after fresh retrigger");
     }
 
-    // --- Lfo1Rate / Lfo2Rate dests (E008 0092) ---------------------------
-
     /// `mod-wheel → lfo1-rate` sweeps LFO1 speed in the log domain: depth 1 ×
     /// mod-wheel 1.0 × gain 4 = +4 octaves → `rate_mult ≈ 16`. Patch-global,
     /// one-block latency, and only live while a voice plays (the accumulator
@@ -3471,7 +3450,7 @@ mod tests {
         assert_eq!(e.alloc.stacks[a].meta.lfo2.rate_mult, 1.0);
     }
 
-    /// Self-rate feedback (`lfo1 → lfo1-rate`, flagged incoherent by 0090) is
+    /// Self-rate feedback (`lfo1 → lfo1-rate`) is
     /// well-defined under the one-block latency — it must stay finite and
     /// bounded by the Hz clamp, never run away or NaN.
     #[test]
@@ -3489,12 +3468,9 @@ mod tests {
         }
     }
 
-    // --- Unit sanification (E008 0094) -----------------------------------
-
-    /// `pitch-eg → global-pitch` no longer double-scales: a full-scale EG at
+    /// `pitch-eg → global-pitch` does not double-scale: a full-scale EG at
     /// unity depth reaches ±24 st (the dest's gain), NOT `peg_depth × 24`. With
-    /// `peg_depth = 2`, the old raw-semitone path gave 48 st; the normalized
-    /// source gives 24.
+    /// `peg_depth = 2`, the normalized source gives 24 st, not 48.
     #[test]
     fn matrix_pitch_eg_into_pitch_no_double_scale() {
         use crate::matrix::{DestId, SourceId};
@@ -3549,8 +3525,6 @@ mod tests {
         assert!(peak > 0.9, "pitch-eg source did not reach full shape: peak {peak}");
     }
 
-    // --- StackDetune / StackSpread dests (E008 0093) ---------------------
-
     /// Spin up a stacked voice (density 4, real detune + spread) so the
     /// `stack-detune`/`stack-spread` macros have something to scale.
     fn stacked_engine() -> Engine {
@@ -3579,6 +3553,7 @@ mod tests {
             dest: DestId::StackDetune,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.note_on(72, 100);
 
@@ -3624,12 +3599,14 @@ mod tests {
             dest: DestId::StackSpread,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.matrix.slots[1] = MatrixSlot {
             source: SourceId::VoiceSpread,
             dest: DestId::Op1Pan,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.note_on(60, 120);
 
@@ -3639,6 +3616,7 @@ mod tests {
             dest: DestId::Op1Pan,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         baseline.note_on(60, 120);
 
@@ -3683,6 +3661,7 @@ mod tests {
             dest: DestId::StackDetune,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.note_on(36, 100);
         e.note_on(96, 100);
@@ -3712,6 +3691,7 @@ mod tests {
             dest: DestId::StackDetune,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.set_mod_wheel(0.0);
         e.note_on(60, 100);
@@ -3746,6 +3726,7 @@ mod tests {
             dest: DestId::Op1Pan,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         modulated.set_mod_wheel(1.0);
         modulated.note_on(60, 100);
@@ -3785,6 +3766,7 @@ mod tests {
             dest: DestId::DelayMix,
             depth: 0.8,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -3841,6 +3823,7 @@ mod tests {
                 curve: CurveKind::Lin as u8,
                 active: true,
                 depth: 0.5,
+                scale_src: 0,
             },
         );
 
@@ -3930,7 +3913,7 @@ mod tests {
 
     /// A non-CLAP EG-curve write on the shared store threads through
     /// `snapshot_params` → `read_op` into the per-op DSP params, so the curve
-    /// actually selects the level→amplitude mapping (ticket 0124).
+    /// actually selects the level→amplitude mapping.
     #[test]
     fn shared_eg_curve_writes_reach_engine_op_params() {
         use vxn2_dsp::eg::EgCurve;
@@ -3962,6 +3945,7 @@ mod tests {
             curve: 0,
             active: true,
             depth: 0.0,
+            scale_src: 0,
         };
         e.params.mtx_depths[0] = 0.5;
         // Non-pitch dest at the same depth: passthrough.
@@ -3971,6 +3955,7 @@ mod tests {
             curve: 0,
             active: true,
             depth: 0.0,
+            scale_src: 0,
         };
         e.params.mtx_depths[1] = 0.5;
         // Non-CLAP slot: depth rides in the row.
@@ -3981,6 +3966,7 @@ mod tests {
             curve: 0,
             active: true,
             depth: -0.5,
+            scale_src: 0,
         };
         e.apply_block_params();
 
@@ -3991,7 +3977,7 @@ mod tests {
 
     /// A live algo change declick-kills a *releasing* voice (so a former
     /// modulator promoted to carrier can't ring out its long release tail), but
-    /// leaves a *held* voice gated to re-route and morph. Ticket 0193.
+    /// leaves a *held* voice gated to re-route and morph.
     #[test]
     fn live_algo_change_declicks_releasing_voice_not_held() {
         use vxn2_dsp::stack::VoicePhase;
@@ -4058,6 +4044,47 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "diagnostic-only: prints per-algo feedback response then panics; run with --ignored"]
+    fn diag_engine_feedback_response_per_algo() {
+        for algo in [1u8, 3, 4, 5, 6] {
+            let mut rms = [0.0f64; 2];
+            for (fi, &fb) in [0.0f32, 7.0].iter().enumerate() {
+                let mut e = Engine::new(SR, BLK);
+                e.params.patch.voice.algo = algo;
+                e.params.patch.voice.feedback = fb;
+                // Hot, sustaining ops: level 99, EG sustain L3=99, ratio 1:1.
+                for op in &mut e.params.patch.voice.ops {
+                    op.level = 99;
+                    op.num = 1; op.denom = 1; op.detune = 0; op.fine = 0;
+                    op.eg.l = [99, 99, 99, 0];
+                    op.eg.r = [99, 99, 99, 60];
+                }
+                e.apply_block_params();
+                e.note_on(60, 100);
+                let mut l = [0.0f32; BLK];
+                let mut r = [0.0f32; BLK];
+                for _ in 0..20 { e.process_block(&mut l, &mut r); }
+                if let Some(s) = e.alloc.stacks.iter().position(|s| !s.is_idle()) {
+                    let spec = vxn2_dsp::algo::spec_of(e.alloc.stacks[s].meta.algo);
+                    let fbop = spec.fb_src as usize - 1;
+                    println!("  algo {algo} fb={fb} -> fb_src=op{} fb_scale[0]={:.4} op_eg_level[fb_src][0]={:.4}",
+                        spec.fb_src, e.alloc.stacks[s].core.ops[fbop].fb_scale[0], e.alloc.stacks[s].core.op_eg_level[fbop][0]);
+                }
+                let mut acc = 0.0f64;
+                for _ in 0..40 {
+                    e.process_block(&mut l, &mut r);
+                    for &s in l.iter() { acc += (s as f64) * (s as f64); }
+                }
+                rms[fi] = (acc / (40.0 * BLK as f64)).sqrt();
+            }
+            let delta = (rms[1] - rms[0]).abs();
+            let pct = if rms[0] > 1e-9 { delta / rms[0] * 100.0 } else { f64::INFINITY };
+            println!("ENGINE ALGO {algo:2}: fb0={:.5} fb7={:.5} delta={:.5} ({pct:.1}%)", rms[0], rms[1], delta);
+        }
+        panic!("diag");
+    }
+
     /// Matrix dest `Feedback` mods the layer-level feedback amount each
     /// block. With a `ModWheel → Feedback` slot at unitised depth 4/7 and
     /// wheel = 1.0, the gain-table boost (×7) takes the contribution back to
@@ -4077,6 +4104,7 @@ mod tests {
             dest: DestId::Feedback,
             depth: 4.0 / 7.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -4115,6 +4143,7 @@ mod tests {
             dest: DestId::Feedback,
             depth: 2.0 / 7.0, // ±2.0 native feedback units at full spread
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BLK];
@@ -4153,6 +4182,7 @@ mod tests {
                 curve: 0,
                 active: false,
                 depth: 0.03,
+                scale_src: 0,
             },
         );
         let mut e = Engine::new(SR, BLK);
@@ -4181,8 +4211,6 @@ mod tests {
         }
         assert!(last_peak < 0.05, "long tail still audible: {last_peak}");
     }
-
-    // ── E007 filter render path (ticket 0084) ────────────────────────────
 
     use crate::shared::FilterParams;
     use vxn2_dsp::filter::{FilterMode, FilterSlope};
@@ -4341,6 +4369,7 @@ mod tests {
                 dest: DestId::Cutoff,
                 depth: 1.0,
                 curve: CurveKind::Lin,
+                scale_src: SourceId::None,
             };
             e.set_mod_wheel(wheel);
             e.note_on(60, 110);
@@ -4384,8 +4413,6 @@ mod tests {
             }
         }
     }
-
-    // ── E007 quiescence-skip (ticket 0085) ───────────────────────────────
 
     /// Per-block stereo peak, for tracking a release tail.
     fn block_peak(e: &mut Engine, l: &mut [f32; BLK], r: &mut [f32; BLK]) -> f32 {
@@ -4531,7 +4558,41 @@ mod tests {
         }
     }
 
-    // --- Stack-pitch scatter + mask gating (E022 0069) -------------------
+    /// A mod-wheel scale source gates a live LFO→pitch route through the
+    /// full `apply_block_params` → `eval_dests` pipeline. At wheel 0 the
+    /// route's per-lane pitch contribution is exactly zero; render stays
+    /// finite. (Slot 8 is patch-state depth, so `row.depth` applies directly
+    /// rather than the CLAP-automatable slot-1..8 depth.)
+    #[test]
+    fn scale_source_gates_route_end_to_end() {
+        use crate::matrix::{CurveKind, DestId, SourceId};
+        use crate::shared::MatrixRowRaw;
+        let mut e = Engine::new(SR, BLK);
+        e.params.matrix_rows[8] = MatrixRowRaw {
+            source: SourceId::Lfo1 as u8,
+            dest: DestId::GlobalPitch as u8,
+            curve: CurveKind::Lin as u8,
+            active: true,
+            depth: 1.0,
+            scale_src: SourceId::ModWheel as u8,
+        };
+        e.mod_wheel = 0.0;
+        e.note_on(60, 100);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        e.process_block(&mut l, &mut r);
+        for i in 0..BLK {
+            assert!(l[i].is_finite() && r[i].is_finite());
+        }
+        let st = active_stack(&e);
+        let gi = DestId::GlobalPitch.idx().unwrap();
+        for k in 0..STACK_LANES {
+            assert_eq!(
+                e.dest_vals[st][k][gi], 0.0,
+                "wheel 0 must gate the vibrato route to silence (lane {k})"
+            );
+        }
+    }
 
     /// Per-op pitch accumulator column (op-major stride 3).
     fn op_pitch_col(op_1indexed: usize) -> usize {
@@ -4563,6 +4624,7 @@ mod tests {
             dest,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -4606,6 +4668,7 @@ mod tests {
             dest: DestId::Op3StackPitch,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         // Per-op pitch on op4, gain 24, but cubic-tapered depth 1.0 → 1.0.
         e.matrix.slots[1] = MatrixSlot {
@@ -4613,6 +4676,7 @@ mod tests {
             dest: DestId::Op4Pitch,
             depth: 1.0,
             curve: CurveKind::Lin,
+            scale_src: SourceId::None,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -4660,7 +4724,7 @@ mod tests {
 
     /// Masks re-resolve on a Ratio↔Fixed toggle and on an algo change, but a
     /// ratio-*value* tweak (same modes) does NOT re-resolve — the cache key is
-    /// unchanged and the masks are byte-identical (E022 0069 acceptance).
+    /// unchanged and the masks are byte-identical.
     #[test]
     fn stack_pitch_masks_recook_gating() {
         let mut e = Engine::new(SR, BLK);
@@ -4688,11 +4752,10 @@ mod tests {
         assert_ne!(e.stack_pitch_key, key1, "algo change did not re-cook");
     }
 
-    // --- E022 0071: render-level ratio-lock + shared-modulator spread ----
-    //
-    // Wall-split, fixed-target no-op, and recook gating are asserted in the
-    // 0069 block above (they exercise the same cook + render path). These two
-    // add the frequency-domain ratio-lock proof and the shared-modulator case.
+    // Render-level ratio-lock + shared-modulator spread. Wall-split,
+    // fixed-target no-op, and recook gating are asserted above (they exercise
+    // the same cook + render path). These two add the frequency-domain
+    // ratio-lock proof and the shared-modulator case.
 
     /// Render a harmonic algo-1 patch (ops 4/5/6 at ratios 2/3/4) until the
     /// pitch smoother settles, optionally with a `ModWheel → Op{target}
@@ -4714,6 +4777,7 @@ mod tests {
                 dest,
                 depth: 1.0,
                 curve: CurveKind::Lin,
+                scale_src: SourceId::None,
             };
             e.mod_wheel = 0.5;
         }

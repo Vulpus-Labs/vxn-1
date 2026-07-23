@@ -1,4 +1,4 @@
-//! Full master chain (ticket 0012).
+//! Full master chain.
 //!
 //! Drives the assembled engine through its steady-state hot path: 16 held
 //! voices, density 4 (so 64 op-voice instances in flight), full FX (delay
@@ -21,11 +21,8 @@ const SR: f32 = 48_000.0;
 const BLK: usize = 256;
 const N_NOTES: usize = 16;
 
-/// 16 notes × single-layer = 16 stacks. Density 4 → 16 stacks × 4 lanes
-/// = 64 op-voice instances in flight.
 fn build_engine(fx_on: bool) -> Engine {
     let s = SharedParams::new();
-    // Density 4 is the ticket-AC baseline.
     s.set(id_of("stack-density").unwrap(), 4.0);
     if !fx_on {
         s.set(id_of("delay-on").unwrap(), 0.0);

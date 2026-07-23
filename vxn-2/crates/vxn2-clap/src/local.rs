@@ -1,4 +1,4 @@
-//! Audio-thread parameter mirror (ticket 0014, dirty-bit refactor 0056).
+//! Audio-thread parameter mirror.
 //!
 //! Bridges the host (CLAP automation), the audio-thread engine, and the
 //! UI / state-load write path. Each processing thread keeps a local
@@ -17,8 +17,8 @@
 //! 4. [`emit`](LocalParams::emit) sends UI edits back to the host as
 //!    `ParamValue` events bracketed by `ParamGestureBegin` / `End`
 //!    (driven by the `SharedParams.gestures` bitset the controller
-//!    populates — ticket 0065). `ui_changed` survives — different
-//!    consumer (plugin → host echo); ADR 0003 §"What survives".
+//!    populates). `ui_changed` survives — different consumer (plugin →
+//!    host echo); ADR 0003.
 
 use clack_plugin::events::Pckn;
 use clack_plugin::events::event_types::{
@@ -60,13 +60,13 @@ pub struct LocalParams {
     /// Mirror of the shared store's per-op EG level-curve selectors, indexed by
     /// op. Non-CLAP like the KS curves; refreshed by [`fetch_ui_changes`] and
     /// read by the engine through [`ParamView::eg_curve`] so block-time
-    /// snapshots see UI / preset edits. Ticket 0124.
+    /// snapshots see UI / preset edits.
     eg_curves: [EgCurve; N_EG_CURVES],
     /// Last-seen UI gesture state per param. [`emit`](Self::emit) compares
     /// against `SharedParams.gestures` (populated by the controller on
     /// `BeginGesture` / `EndGesture` UI intents) to push CLAP
     /// `param_gesture_begin` / `param_gesture_end` brackets on the 0→1 / 1→0
-    /// transitions (ticket 0065; same pattern as VXN-1's `vxn-clap`).
+    /// transitions.
     gesture: [bool; TOTAL_PARAMS],
 }
 
@@ -159,7 +159,7 @@ impl LocalParams {
     }
 
     /// Emit UI-originated changes to the host, bracketed by CLAP gesture
-    /// events (ticket 0065). Per id and block:
+    /// events. Per id and block:
     ///
     /// - gesture bit 0→1: push `ParamGestureBeginEvent` before any value;
     /// - `ui_changed` (flagged by [`fetch_ui_changes`](Self::fetch_ui_changes)
@@ -259,8 +259,8 @@ impl ParamView for LocalParams {
     }
 }
 
-/// Normalised read against the mirror — useful where 0015 / 0017 need
-/// `[0, 1]` against the mirror rather than the atomic store.
+/// Normalised read against the mirror — `[0, 1]` against the mirror
+/// rather than the atomic store.
 impl LocalParams {
     pub fn get(&self, id: usize) -> f32 {
         ParamView::get(self, id)
@@ -280,9 +280,8 @@ mod tests {
     use super::*;
     use clack_plugin::events::io::EventBuffer;
     use vxn2_engine::params::id_of;
-    // Shared test-support helpers from the monorepo's generic clack scaffold
-    // (ticket 0167). `push_param_event` replaces the locally-defined copy;
-    // `event_log` replaces the locally-defined gesture/value decoder.
+    // Shared test-support helpers from the monorepo's generic clack scaffold:
+    // `push_param_event` and the `event_log` gesture/value decoder.
     use vxn_core_clap::testing::{event_log, push_param_event};
 
     /// Convenience wrapper: call `local.emit` for `frame_count` frames into a
@@ -358,7 +357,7 @@ mod tests {
     /// A UI / preset write that lands after `fetch_ui_changes` is folded
     /// in on the next block. The audio thread never overwrites it because
     /// there's no deferred publish — `apply_input` only touches the ids
-    /// the host event names. Regression mirror of vxn1's 0027.
+    /// the host event names.
     #[test]
     fn fetch_ui_changes_picks_up_concurrent_ui_write() {
         let shared = SharedParams::new();
@@ -386,8 +385,8 @@ mod tests {
     }
 
     /// A UI drag emits, in order: `gesture_begin` → `value`×N → `gesture_end`
-    /// across the blocks the drag spans (ticket 0065). The end lands at the
-    /// last sample of its block.
+    /// across the blocks the drag spans. The end lands at the last sample
+    /// of its block.
     #[test]
     fn emit_brackets_ui_drag_with_gesture_events() {
         let shared = SharedParams::new();

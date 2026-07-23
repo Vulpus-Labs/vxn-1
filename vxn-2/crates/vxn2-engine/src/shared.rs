@@ -1,8 +1,7 @@
-//! Lock-free parameter store + audio-thread snapshot (ticket 0012).
+//! Lock-free parameter store + audio-thread snapshot.
 //!
-//! Same shape as VXN1's `vxn-engine::SharedParams`: a flat
-//! `[AtomicU32; TOTAL_PARAMS]` of plain `f32` values stored as bits, indexed
-//! by stable CLAP id. The store is the single source of truth between the
+//! A flat `[AtomicU32; TOTAL_PARAMS]` of plain `f32` values stored as bits,
+//! indexed by stable CLAP id. The store is the single source of truth between the
 //! host (CLAP automation), the UI (knob writes), and the audio thread
 //! (snapshot once per block into [`EngineParams`]).
 //!
@@ -47,26 +46,20 @@ use crate::params::{
     PARAMS, PATCH_BASE, TOTAL_PARAMS, core_desc_for_clap_id,
 };
 
-// ── Patch ───────────────────────────────────────────────────────────────────
-
-/// A complete patch parameter set. Per [ADR 0002] dual-layer voicing is gone
-/// — a patch is one stack + voice pair. The matrix slot table lives next to
-/// the engine (one [`crate::matrix::MatrixTable`] per patch).
+/// A complete patch parameter set: one stack + voice pair. The matrix slot
+/// table lives next to the engine (one [`crate::matrix::MatrixTable`] per patch).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Patch {
     pub stack: StackParams,
     pub voice: VoiceParams,
 }
 
-// ── ParamModel trait surface ────────────────────────────────────────────────
-
 /// Errors returned by [`ParamModel::load_bytes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamLoadError {
     /// First 4 bytes were not `b"VXN2"`.
     MagicMismatch,
-    /// Version field is not [`BLOB_VERSION`]. The migration ladder is gone
-    /// (ticket 0120) — only the current version loads.
+    /// Version field is not [`BLOB_VERSION`] — only the current version loads.
     UnsupportedVersion(u16),
     /// Header count differs from [`TOTAL_PARAMS`] (exact match required).
     CountMismatch { expected: u16, got: u16 },
@@ -93,22 +86,17 @@ impl std::error::Error for ParamLoadError {}
 
 /// Magic prefix on every VXN2 host-state blob.
 pub const BLOB_MAGIC: &[u8; 4] = b"VXN2";
-/// Blob format version. **One version only** (ticket 0120): vxn-2 carries no
-/// blob back-compat obligation pre-1.0.0, so the historical v2–v16 migration
-/// ladder is deleted. [`load_bytes`](SharedParams::load_bytes) accepts only
+/// Blob format version. **One version only**: vxn-2 carries no blob back-compat
+/// obligation pre-1.0.0. [`load_bytes`](SharedParams::load_bytes) accepts only
 /// `version == BLOB_VERSION`; any other version is rejected with
-/// [`ParamLoadError::UnsupportedVersion`]. Existing dev/test blobs at a prior
-/// version become unreadable — re-save from the live build.
+/// [`ParamLoadError::UnsupportedVersion`].
 ///
-/// Current layout: header (8 B) + `f32` values for every CLAP id, then three
-/// fixed trailers — matrix topology + non-automatable slot depths
+/// Layout: header (8 B) + `f32` values for every CLAP id, then three fixed
+/// trailers — matrix topology + non-automatable slot depths
 /// ([`BLOB_MATRIX_LEN`]), packed per-side KS level-curve selectors
 /// ([`BLOB_KS_CURVE_LEN`]), and packed per-op EG level-curve selectors
-/// ([`BLOB_EG_CURVE_LEN`]).
-///
-/// When real back-compat is needed (≥1.0.0), reintroduce a versioned migration
-/// mechanism then — not before. Append discipline in the meantime is enforced
-/// mechanically by the section-offset `const` asserts below.
+/// ([`BLOB_EG_CURVE_LEN`]). Append discipline is enforced mechanically by the
+/// section-offset `const` asserts below.
 pub const BLOB_VERSION: u16 = 1;
 /// Header byte length: 4 magic + 2 version + 2 count.
 pub const BLOB_HEADER_LEN: usize = 8;
@@ -117,7 +105,7 @@ pub const BLOB_HEADER_LEN: usize = 8;
 pub const BLOB_MATRIX_LEN: usize =
     N_MATRIX_SLOTS * 4 + (N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS) * 4;
 
-// ── Section-offset compile-time guards (ticket 0120) ─────────────────────────
+// Section-offset compile-time guards.
 //
 // Each `OFF_*` offset (and the op-block stride) names a section anchor in the
 // flat `PARAMS` table that the section readers + `snapshot_from` index by
@@ -201,8 +189,7 @@ const fn ks_curve_shift(op: usize, side: usize) -> u32 {
 }
 
 /// Default packed `ks_curve_meta`: every left side = `NegLin` (0), every
-/// right side = `NegExp` (2) — the historical frozen shapes, so a v≤11 blob
-/// or a fresh store reproduces the legacy response bit-for-bit.
+/// right side = `NegExp` (2).
 const fn default_ks_curve_meta() -> u32 {
     let mut packed = 0u32;
     let mut op = 0;
@@ -226,12 +213,12 @@ fn ks_curve_from_bits(bits: u8) -> vxn2_dsp::ks::KsCurve {
     }
 }
 
-/// EG-curve trailer byte length appended at v15: one `u32` packing all `N_OPS`
-/// per-op level→amplitude curve selectors (1 bit each — see
+/// EG-curve trailer byte length: one `u32` packing all `N_OPS` per-op
+/// level→amplitude curve selectors (1 bit each — see
 /// [`SharedParams::eg_curve_meta`]).
 pub const BLOB_EG_CURVE_LEN: usize = 4;
 
-/// Number of independently-set EG level-curve fields: one per op (ticket 0124).
+/// Number of independently-set EG level-curve fields: one per op.
 pub const N_EG_CURVES: usize = N_OPS;
 
 /// Bit offset of op `op`'s EG level-curve selector within the packed
@@ -241,9 +228,8 @@ const fn eg_curve_shift(op: usize) -> u32 {
     op as u32
 }
 
-/// Default packed `eg_curve_meta`: every op = `Exp` (0) — the DX7-faithful log
-/// curve is the shipped default (ADR 0007), so a fresh store or a v≤14 blob
-/// reproduces it.
+/// Default packed `eg_curve_meta`: every op = `Exp` (0) — the log curve is the
+/// shipped default.
 const fn default_eg_curve_meta() -> u32 {
     0
 }
@@ -279,8 +265,8 @@ pub trait ParamView {
         MatrixRowRaw::default()
     }
     /// Read op `op`'s `side` (0 = left, 1 = right) KS level curve. Default
-    /// returns the legacy frozen shapes (left `NegLin`, right `NegExp`) so
-    /// stores that don't carry curve state (older fixtures) behave as before.
+    /// (left `NegLin`, right `NegExp`) so stores that don't carry curve state
+    /// behave as the shipped default.
     fn ks_curve(&self, _op: usize, side: usize) -> vxn2_dsp::ks::KsCurve {
         if side == 0 {
             vxn2_dsp::ks::KsCurve::NegLin
@@ -289,25 +275,23 @@ pub trait ParamView {
         }
     }
     /// Read op `op`'s EG level→amplitude curve. Default [`EgCurve::Exp`] (the
-    /// DX7-faithful log curve) so stores that don't carry curve state behave as
-    /// the shipped default. Ticket 0124.
+    /// log curve) so stores that don't carry curve state behave as the shipped
+    /// default.
     fn eg_curve(&self, _op: usize) -> EgCurve {
         EgCurve::Exp
     }
 }
 
-/// Main-thread parameter-model surface bound by the CLAP params extension
-/// (ticket 0015) and the state extension (ticket 0017). The UI epic adds a
-/// second implementation backing a view-side mirror with view-event emission;
-/// both satisfy this trait so the CLAP shell stays swappable.
+/// Main-thread parameter-model surface bound by the CLAP params + state
+/// extensions. A second implementation backs a view-side mirror with
+/// view-event emission; both satisfy this trait so the CLAP shell stays
+/// swappable.
 pub trait ParamModel: ParamView {
     fn total(&self) -> usize;
     fn get_normalised(&self, id: usize) -> f32;
     fn snapshot_bytes(&self) -> Vec<u8>;
     fn load_bytes(&self, bytes: &[u8]) -> Result<(), ParamLoadError>;
 }
-
-// ── SharedParams ────────────────────────────────────────────────────────────
 
 /// Number of mod-matrix slots (CLAP-automatable + patch state).
 pub const N_MATRIX_SLOTS: usize = 16;
@@ -319,7 +303,7 @@ pub const N_MATRIX_CLAP_SLOTS: usize = 8;
 const GESTURE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
 /// Dirty-bitset word count for the value table. One bit per CLAP id;
 /// flipped on every `set` / `set_normalised` / `set_matrix_row_raw` write
-/// and drained by the main-thread tick (ADR 0003 / epic E005).
+/// and drained by the main-thread tick.
 pub const N_DIRTY_VALUE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
 
 /// Mask of the valid bits in dirty-value word `w` (out-of-range bits in
@@ -349,9 +333,9 @@ const DIRTY_MATRIX_ALL: u64 = (1u64 << N_MATRIX_SLOTS) - 1;
 /// share via `Arc` — every field is an atomic.
 ///
 /// Beyond the CLAP-automatable `values` array the store also holds the
-/// non-CLAP shared state the controller (ticket 0022) needs to read /
-/// write: per-param gesture flags, matrix-row topology (source / dest /
-/// curve / active), slot 9-16 depths.
+/// non-CLAP shared state the controller needs to read / write: per-param
+/// gesture flags, matrix-row topology (source / dest / curve / active),
+/// slot 9-16 depths.
 pub struct SharedParams {
     values: [AtomicU32; TOTAL_PARAMS],
     /// Bitset (one bit per CLAP id): set while the editor is mid-gesture
@@ -367,7 +351,7 @@ pub struct SharedParams {
     /// `values` table (see [`OFF_MTX`]).
     matrix_extra_depth: [AtomicU32; N_MATRIX_SLOTS - N_MATRIX_CLAP_SLOTS],
     /// Dirty bitset for the value table — the canonical Model → View
-    /// change channel (ADR 0003). Every `set` / `set_normalised` /
+    /// change channel. Every `set` / `set_normalised` /
     /// `set_matrix_row_raw` write site flips the matching bit with
     /// `fetch_or(Release)`; the main-thread tick drains via
     /// `take_dirty_values` (`swap(Acquire)`). The Release/Acquire pair
@@ -375,8 +359,7 @@ pub struct SharedParams {
     /// writer stored before flipping it.
     ///
     /// Seeded with every valid bit set so the first tick after open
-    /// broadcasts the whole table — equivalent to the all-NaN
-    /// `last_seen` seed in the prior polling pump.
+    /// broadcasts the whole table.
     dirty_values: [AtomicU64; N_DIRTY_VALUE_WORDS],
     /// Dirty bitset for matrix-slot topology (one bit per slot). Any
     /// non-zero word triggers a whole-table `MatrixSnapshot` push on the
@@ -386,7 +369,7 @@ pub struct SharedParams {
     dirty_matrix: AtomicU64,
     /// Per-op, per-side KS level-curve selectors packed 2 bits each
     /// (`N_OPS * 2` fields). Non-CLAP / non-automatable patch state —
-    /// persisted in the blob trailer (v12) and the preset `params` table,
+    /// persisted in the blob trailer and the preset `params` table,
     /// mirrored into the audio thread via [`ParamView::ks_curve`]. Field
     /// layout: [`ks_curve_shift`]; values: [`vxn2_dsp::ks::KsCurve`]
     /// discriminants. Default [`default_ks_curve_meta`].
@@ -396,10 +379,10 @@ pub struct SharedParams {
     dirty_ks_curve: AtomicBool,
     /// Per-op EG level→amplitude curve selectors packed 1 bit each (`N_OPS`
     /// fields, `0 = Exp`, `1 = Lin`). Non-CLAP / non-automatable patch state —
-    /// persisted in the blob trailer (v15) and the preset `params` table,
+    /// persisted in the blob trailer and the preset `params` table,
     /// mirrored into the audio thread via [`ParamView::eg_curve`]. Field
     /// layout: [`eg_curve_shift`]; values: [`EgCurve`] discriminants. Default
-    /// [`default_eg_curve_meta`] (every op `Exp`). Ticket 0124.
+    /// [`default_eg_curve_meta`] (every op `Exp`).
     eg_curve_meta: AtomicU32,
     /// Set by `set_eg_curve_raw`; drained by the main-thread tick
     /// ([`take_dirty_eg_curve`]).
@@ -437,11 +420,10 @@ impl SharedParams {
                     slot.dest as u8,
                     slot.curve as u8,
                     active,
+                    slot.scale_src as u8,
                 ))
             }),
             matrix_extra_depth: std::array::from_fn(|s| {
-                // Slots past the CLAP-automatable range take depth from this
-                // array; the default matrix leaves them inert (zeroed).
                 let slot_idx = s + N_MATRIX_CLAP_SLOTS;
                 AtomicU32::new(default_matrix.slots[slot_idx].depth.to_bits())
             }),
@@ -470,7 +452,7 @@ impl SharedParams {
         self.load_epoch.load(Ordering::Acquire)
     }
 
-    /// Bump the load epoch to signal a patch swap (ticket 0193). The native host
+    /// Bump the load epoch to signal a patch swap. The native host
     /// shares one `SharedParams`, so `reset_to_defaults` / `load_bytes` bump it
     /// directly. The web build's controller and worklet hold SEPARATE
     /// `SharedParams`, and the epoch is not a value param, so it can't ride the
@@ -545,6 +527,7 @@ impl SharedParams {
                 slot.dest as u8,
                 slot.curve as u8,
                 active,
+                slot.scale_src as u8,
             );
             self.matrix_meta[s].store(packed, Ordering::Relaxed);
         }
@@ -574,8 +557,6 @@ impl SharedParams {
         self.dirty_ks_curve.store(true, Ordering::Release);
         self.dirty_eg_curve.store(true, Ordering::Release);
     }
-
-    // ── Dirty bitset drain ──────────────────────────────────────────────────
 
     /// Drain the value dirty bitset, returning a snapshot of the bits
     /// that were set since the last drain. Single-reader contract: only
@@ -607,15 +588,13 @@ impl SharedParams {
     }
 
     /// Drain the EG-curve dirty flag. Same single-reader contract as
-    /// [`Self::take_dirty_ks_curve`]. Ticket 0124.
+    /// [`Self::take_dirty_ks_curve`].
     pub fn take_dirty_eg_curve(&self) -> bool {
         self.dirty_eg_curve.swap(false, Ordering::Acquire)
     }
 
-    // ── KS level-curve storage ──────────────────────────────────────────────
-
     /// Read op `op`'s `side` (0 = left, 1 = right) level-curve discriminant
-    /// (0..=3 → `NegLin`/`PosLin`/`NegExp`/`PosExp`). Out-of-range → legacy
+    /// (0..=3 → `NegLin`/`PosLin`/`NegExp`/`PosExp`). Out-of-range →
     /// default (left `NegLin`, right `NegExp`).
     pub fn ks_curve_raw(&self, op: usize, side: usize) -> u8 {
         if op >= N_OPS || side > 1 {
@@ -639,10 +618,8 @@ impl SharedParams {
         self.dirty_ks_curve.store(true, Ordering::Release);
     }
 
-    // ── EG level-curve storage (ticket 0124) ────────────────────────────────
-
     /// Read op `op`'s EG level-curve discriminant (0 = `Exp`, 1 = `Lin`).
-    /// Out-of-range → default (`Exp`, the DX7-faithful log curve).
+    /// Out-of-range → default (`Exp`, the log curve).
     pub fn eg_curve_raw(&self, op: usize) -> u8 {
         if op >= N_OPS {
             return 0;
@@ -663,8 +640,6 @@ impl SharedParams {
         self.eg_curve_meta.store(next, Ordering::Relaxed);
         self.dirty_eg_curve.store(true, Ordering::Release);
     }
-
-    // ── Gesture flags ───────────────────────────────────────────────────────
 
     #[inline]
     pub fn gesture(&self, id: usize) -> bool {
@@ -689,8 +664,6 @@ impl SharedParams {
         }
     }
 
-    // ── Matrix-row storage ──────────────────────────────────────────────────
-
     /// Read the packed `(source, dest, curve, active, depth)` for a
     /// matrix slot. Slot index is `0..N_MATRIX_SLOTS`; out-of-range returns
     /// a zeroed-default row.
@@ -712,6 +685,7 @@ impl SharedParams {
             curve: ((packed >> 8) & 0xFF) as u8,
             active: (packed & 0x01) != 0,
             depth,
+            scale_src: ((packed >> 1) & 0x7F) as u8,
         }
     }
 
@@ -727,7 +701,7 @@ impl SharedParams {
         if slot >= N_MATRIX_SLOTS {
             return;
         }
-        let packed = pack_matrix_meta(row.source, row.dest, row.curve, row.active);
+        let packed = pack_matrix_meta(row.source, row.dest, row.curve, row.active, row.scale_src);
         self.matrix_meta[slot].store(packed, Ordering::Relaxed);
         if slot < N_MATRIX_CLAP_SLOTS {
             self.set(OFF_MTX + slot, row.depth);
@@ -749,11 +723,24 @@ pub struct MatrixRowRaw {
     pub curve: u8,
     pub active: bool,
     pub depth: f32,
+    /// Secondary scale source. `0` = `None` = depth unscaled. Rides the
+    /// free low-byte bits of the packed `matrix_meta` word (see
+    /// [`pack_matrix_meta`]).
+    pub scale_src: u8,
 }
 
+/// Pack a matrix row's topology into one `u32`:
+/// `source<<24 | dest<<16 | curve<<8 | scale_src<<1 | active`.
+///
+/// `active` is bit 0; the scale source (≤ 11) rides bits 1..=7 of the low byte.
+/// A blob with those bits clear decodes to `scale_src = None`.
 #[inline]
-pub(crate) fn pack_matrix_meta(source: u8, dest: u8, curve: u8, active: bool) -> u32 {
-    ((source as u32) << 24) | ((dest as u32) << 16) | ((curve as u32) << 8) | (active as u32)
+pub(crate) fn pack_matrix_meta(source: u8, dest: u8, curve: u8, active: bool, scale_src: u8) -> u32 {
+    ((source as u32) << 24)
+        | ((dest as u32) << 16)
+        | ((curve as u32) << 8)
+        | (((scale_src & 0x7F) as u32) << 1)
+        | (active as u32)
 }
 
 impl ParamView for SharedParams {
@@ -799,8 +786,7 @@ impl ParamModel for SharedParams {
     /// |   8    | 4 × N | raw `f32` bits, indexed by CLAP id|
     ///
     /// No per-id framing, no name strings — this is the binary host blob,
-    /// not the user-facing preset format (which lands with the preset epic
-    /// and carries the matrix source/dest/curve slots the blob omits).
+    /// not the user-facing preset format.
     fn snapshot_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             BLOB_HEADER_LEN
@@ -816,7 +802,7 @@ impl ParamModel for SharedParams {
             let bits = self.values[i].load(Ordering::Relaxed);
             buf.extend_from_slice(&bits.to_le_bytes());
         }
-        // v2 trailer — matrix topology + non-automatable slot depths.
+        // Matrix trailer — topology + non-automatable slot depths.
         for s in 0..N_MATRIX_SLOTS {
             let packed = self.matrix_meta[s].load(Ordering::Relaxed);
             buf.extend_from_slice(&packed.to_le_bytes());
@@ -825,9 +811,9 @@ impl ParamModel for SharedParams {
             let bits = self.matrix_extra_depth[s].load(Ordering::Relaxed);
             buf.extend_from_slice(&bits.to_le_bytes());
         }
-        // v12 trailer — packed per-side KS level-curve selectors.
+        // KS-curve trailer — packed per-side KS level-curve selectors.
         buf.extend_from_slice(&self.ks_curve_meta.load(Ordering::Relaxed).to_le_bytes());
-        // v15 trailer — packed per-op EG level-curve selectors.
+        // EG-curve trailer — packed per-op EG level-curve selectors.
         buf.extend_from_slice(&self.eg_curve_meta.load(Ordering::Relaxed).to_le_bytes());
         buf
     }
@@ -836,9 +822,8 @@ impl ParamModel for SharedParams {
     /// length, then writes value + trailer bits unmodified — no descriptor
     /// clamp — so a snapshot round-trip is bit-identical.
     ///
-    /// Single version only (ticket 0120): a blob whose version field is not
-    /// [`BLOB_VERSION`] is rejected outright. There is no migration ladder —
-    /// vxn-2 carries no blob back-compat obligation pre-1.0.0.
+    /// Single version only: a blob whose version field is not [`BLOB_VERSION`]
+    /// is rejected outright.
     fn load_bytes(&self, bytes: &[u8]) -> Result<(), ParamLoadError> {
         let expected = BLOB_HEADER_LEN
             + TOTAL_PARAMS * 4
@@ -923,8 +908,7 @@ impl ParamModel for SharedParams {
         self.eg_curve_meta.store(packed, Ordering::Relaxed);
         // Bulk store bypassed `set` / `set_matrix_row_raw`; flip every
         // dirty bit so the next main-thread tick re-broadcasts the full
-        // table (ADR 0003). State load no longer needs a bespoke push
-        // from the caller.
+        // table.
         self.mark_all_dirty();
         // Loading a blob is a whole-patch swap — bump the epoch so the audio
         // engine silences any voice still ringing from the previous preset.
@@ -933,10 +917,10 @@ impl ParamModel for SharedParams {
     }
 }
 
-// ── vxn_core_app::ParamModel + Vxn2Params bridges ───────────────────────────
+// vxn_core_app::ParamModel + Vxn2Params bridges.
 //
 // The local [`ParamModel`] above is the audio-thread / state-extension
-// surface; the bridges below are the controller surface (ticket 0022).
+// surface; the bridges below are the controller surface.
 // Method shapes differ — `ParamId` newtype, `normalized` spelling,
 // gesture flags, `descriptor` returning core-app's `ParamDesc`, and
 // `restore_from_bytes` returning `Result<(), String>` rather than the
@@ -993,6 +977,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
             curve: raw.curve,
             active: raw.active,
             depth: raw.depth,
+            scale_src: raw.scale_src,
         }
     }
 
@@ -1005,6 +990,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
                 curve: row.curve,
                 active: row.active,
                 depth: row.depth,
+                scale_src: row.scale_src,
             },
         );
     }
@@ -1043,11 +1029,9 @@ impl vxn2_app::Vxn2Params for SharedParams {
     }
 }
 
-// ── Filter params (E007 / ADR 0004) ─────────────────────────────────────────
-
 /// Engine-native shape of the optional per-voice filter section. Mirrors the
-/// `filter-*` CLAP params (ticket 0083) decoded into render-ready types.
-/// `enable` off ⇒ the engine takes the unchanged sample-major path and ignores
+/// `filter-*` CLAP params decoded into render-ready types.
+/// `enable` off ⇒ the engine takes the sample-major path and ignores
 /// every other field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterParams {
@@ -1084,20 +1068,17 @@ impl Default for FilterParams {
 
 // The filter's interp+decimate path adds a real group delay
 // (`vxn2_dsp::halfband::roundtrip_latency_base_samples`, 24 base samples at the
-// fixed 4×), and VXN2 **does** report it to the host now (`engine::LATENCY_SAMPLES`,
-// via the CLAP latency extension). Reporting was originally reverted (0086)
-// because the delay appeared/disappeared as the filter/dynamics span toggled,
-// which would force a host `activate` restart on every edge (CLAP only lets the
-// reported latency move across that boundary) — an audible dropout. The engine's
-// `SpanDelay` fixed that by holding the dry/bypass path at the same delay, so the
-// group delay is constant regardless of FX state and a single static report is
-// correct.
+// fixed 4×), reported to the host via `engine::LATENCY_SAMPLES` (the CLAP latency
+// extension). The engine's `SpanDelay` holds the dry/bypass path at the same
+// delay, so the group delay is constant regardless of FX state — a single static
+// report is correct (CLAP only lets the reported latency move across an `activate`
+// boundary, which would force a restart and an audible dropout).
 
 /// Decode the `filter-*` CLAP params out of any [`ParamView`] into the
 /// engine-native [`FilterParams`], without building a whole [`EngineParams`]
 /// snapshot. Used both by `EngineParams::snapshot_from` (audio thread, per
 /// control block) and the CLAP latency extension (main thread, on every host
-/// latency query and per-block change check — ticket 0086) so the param decode
+/// latency query and per-block change check) so the param decode
 /// lives in exactly one place.
 pub fn filter_params_of<P: ParamView>(p: &P) -> FilterParams {
     let fb = PATCH_BASE + OFF_FILTER;
@@ -1108,11 +1089,9 @@ pub fn filter_params_of<P: ParamView>(p: &P) -> FilterParams {
         mode: filter_mode_from(p.get(fb + 3).round() as i32),
         slope: filter_slope_from(p.get(fb + 4).round() as i32),
         drive: p.get(fb + 5),
-        // Oversampling is fixed at 4× (the `filter-oversample` selector was
-        // removed): the filter shares one 4× span with the dynamics FX, so the
-        // factor is no longer a param. The `FilterParams.oversample` field is
-        // retained only so kernel tests can still drive the ladder at other
-        // factors.
+        // Oversampling is fixed at 4×: the filter shares one 4× span with the
+        // dynamics FX. The `FilterParams.oversample` field lets kernel tests
+        // drive the ladder at other factors.
         oversample: 4,
         keytrack: p.get(fb + 6).clamp(0.0, 1.0),
         // `filter-cutoff-tuned` (fb + 7) is UI-only — the stored cutoff is Hz
@@ -1138,10 +1117,8 @@ fn filter_slope_from(idx: i32) -> FilterSlope {
     }
 }
 
-// ── HP params (static pre-filter high-pass, v13) ─────────────────────────────
-
 /// Cutoff in Hz at / below which the HP stage is bypassed (its 20 Hz floor =
-/// "off", transparent). Mirrors VXN1's `HPF_OFF_HZ`.
+/// "off", transparent).
 pub const HP_OFF_HZ: f32 = 20.0;
 
 /// Engine-native shape of the static high-pass stage (`hp-cutoff`). A one-pole
@@ -1175,8 +1152,6 @@ pub fn hp_params_of<P: ParamView>(p: &P) -> HpParams {
         cutoff_hz: p.get(PATCH_BASE + OFF_HP),
     }
 }
-
-// ── Engine params (audio-side mirror) ───────────────────────────────────────
 
 /// Mirror of [`SharedParams`] in engine-native shapes. Refreshed once per
 /// control block by [`Self::snapshot_from`]. The engine never touches the
@@ -1265,9 +1240,9 @@ impl EngineParams {
         let pb = PATCH_BASE;
 
         // Sync subdivision is derived from the rate / time fader's own
-        // position (the fader *is* the selector, matching VXN1) via the same
-        // helper the display uses — so dragging the slider while sync is on
-        // walks the subdivisions. `sync_index` is unused while sync is off.
+        // position (the fader *is* the selector) via the same helper the
+        // display uses — so dragging the slider while sync is on walks the
+        // subdivisions. `sync_index` is unused while sync is off.
         self.mod_params.lfo1 = Lfo1Params {
             shape: lfo_shape_from(shared.get(pb + OFF_LFO1) as i32),
             rate_hz: shared.get(pb + OFF_LFO1 + 1),
@@ -1299,8 +1274,8 @@ impl EngineParams {
             mix: shared.get(pb + OFF_REVERB + 4),
         };
 
-        // Phaser (E025) — host-automation only, appended at the end of the flat
-        // space. `set_params` re-clamps; the struct just carries the snapshot.
+        // Phaser — host-automation only. `set_params` re-clamps; the struct
+        // just carries the snapshot.
         self.phaser = PhaserParams {
             on: shared.get(pb + OFF_PHASER) >= 0.5,
             rate_hz: shared.get(pb + OFF_PHASER + 1),
@@ -1309,8 +1284,8 @@ impl EngineParams {
             mix: shared.get(pb + OFF_PHASER + 4),
         };
 
-        // Dynamics (E028) — host-automation only, appended past the Phaser
-        // block. `set_from` re-clamps; the struct just carries the snapshot.
+        // Dynamics — host-automation only. `set_from` re-clamps; the struct
+        // just carries the snapshot.
         self.dynamics = DynamicsParams {
             on: shared.get(pb + OFF_DYNAMICS) >= 0.5,
             threshold_db: shared.get(pb + OFF_DYNAMICS + 1),
@@ -1331,12 +1306,12 @@ impl EngineParams {
             limiter_on: shared.get(pb + OFF_LIMITER) >= 0.5,
         };
 
-        // Filter section (E007 / ADR 0004). Decoded by `filter_params_of` so
-        // the same path feeds the audio render and the CLAP latency report.
+        // Filter section (ADR 0004). Decoded by `filter_params_of` so the same
+        // path feeds the audio render and the CLAP latency report.
         self.filter = filter_params_of(shared);
 
-        // Static high-pass stage (v13) — a single cutoff, applied per stack
-        // ahead of the musical filter, at base rate (never oversampled).
+        // Static high-pass stage — a single cutoff, applied per stack ahead of
+        // the musical filter, at base rate (never oversampled).
         self.hp = hp_params_of(shared);
 
         // Master tune bakes into the patch's per-op `base_phase_inc` at
@@ -1347,8 +1322,6 @@ impl EngineParams {
         self.alloc = read_assign(shared);
     }
 }
-
-// ── Section readers ────────────────────────────────────────────────────────
 
 fn read_patch<P: ParamView>(s: &P) -> Patch {
     let mut ops = [OpParams::default(); 6];
@@ -1404,23 +1377,22 @@ fn read_op<P: ParamView>(s: &P, base: usize) -> OpParams {
                 i(14).clamp(0, 99) as u8,
             ],
         },
-        // Per-op EG level curve (ticket 0124): non-CLAP patch state read
-        // through `ParamView::eg_curve`, persisted in the blob trailer (v15) +
-        // preset table. Default `Exp` (DX7-faithful log curve, ADR 0007).
+        // Per-op EG level curve: non-CLAP patch state read through
+        // `ParamView::eg_curve`, persisted in the blob trailer + preset table.
+        // Default `Exp` (log curve, ADR 0007).
         eg_curve: s.eg_curve(op),
         ks_break_pt: i(15).clamp(0, 127) as u8,
         ks_l_depth: i(16).clamp(0, 99) as u8,
         ks_r_depth: i(17).clamp(0, 99) as u8,
-        // Per-side curve selectors (ticket 0021 sub-task): non-CLAP patch
-        // state read through `ParamView::ks_curve`, persisted in the blob
-        // trailer + preset table. Default (left NegLin / right NegExp) matches
-        // the historical frozen shapes.
+        // Per-side curve selectors: non-CLAP patch state read through
+        // `ParamView::ks_curve`, persisted in the blob trailer + preset table.
+        // Default left NegLin / right NegExp.
         ks_l_curve: s.ks_curve(op, 0),
         ks_r_curve: s.ks_curve(op, 1),
         ks_rate: i(18).clamp(0, 7) as u8,
         pan: f(19),
         // index 20 is `op{n}-ratio-mode` (read above); phase is the trailing
-        // float at index 21 (ticket 0074).
+        // float at index 21.
         phase: f(21),
     }
 }
@@ -1495,8 +1467,6 @@ fn read_assign<P: ParamView>(s: &P) -> AllocParams {
     }
 }
 
-// ── Enum decoders ───────────────────────────────────────────────────────────
-
 #[inline]
 fn lfo_shape_from(i: i32) -> LfoShape {
     match i {
@@ -1523,7 +1493,7 @@ mod tests {
         for i in 0..TOTAL_PARAMS {
             assert_eq!(s.get(i), expected[i], "slot {} ({})", i, PARAMS[i].id);
         }
-        // Feedback 6.0 comes from the E.PIANO 1 patch, not the descriptor
+        // Feedback 6.0 comes from the default patch, not the descriptor
         // default (0.0) — proves seeding goes through default_patch.
         assert!((s.get(crate::params::id_of("feedback").unwrap()) - 6.0).abs() < 1e-6);
         assert!(
@@ -1643,6 +1613,61 @@ mod tests {
         assert_eq!(dst.values[nan_id].load(Ordering::Relaxed), pattern);
     }
 
+    /// The secondary scale source rides the packed `matrix_meta` word's free
+    /// low-byte bits, so it survives a state-blob round-trip unchanged.
+    #[test]
+    fn matrix_scale_src_survives_blob_round_trip() {
+        let src = SharedParams::new();
+        src.set_matrix_row_raw(
+            2,
+            MatrixRowRaw {
+                source: 2, // lfo2
+                dest: 17, // global-pitch
+                curve: 0,
+                active: true,
+                depth: 0.5,
+                scale_src: 5, // mod-wheel
+            },
+        );
+        let bytes = src.snapshot_bytes();
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+        let row = dst.matrix_row_raw(2);
+        assert_eq!(row.scale_src, 5);
+        assert_eq!(row.source, 2);
+        assert!(row.active);
+    }
+
+    /// A blob with the scale-src bits clear (only `active` set in the low byte)
+    /// decodes to `scale_src = 0` (unscaled). Simulate by clearing the scale
+    /// bits in a snapshot's matrix trailer and confirming the row still loads.
+    #[test]
+    fn pre_e033_blob_decodes_scale_src_none() {
+        let src = SharedParams::new();
+        src.set_matrix_row_raw(
+            0,
+            MatrixRowRaw {
+                source: 1, // lfo1
+                dest: 17,
+                curve: 0,
+                active: true,
+                depth: 0.3,
+                scale_src: 7, // stripped below to simulate the bits-clear case
+            },
+        );
+        let mut bytes = src.snapshot_bytes();
+        // Matrix trailer starts right after the value block; slot 0's packed
+        // u32 is first. Clear bits 1..=7 of its low byte (keep bit 0 = active).
+        let off = BLOB_HEADER_LEN + TOTAL_PARAMS * 4;
+        bytes[off] &= 0x01;
+        let dst = SharedParams::new();
+        dst.load_bytes(&bytes).unwrap();
+        let row = dst.matrix_row_raw(0);
+        assert_eq!(row.scale_src, 0, "bits clear → unscaled");
+        assert!(row.active, "active bit preserved");
+        assert_eq!(row.source, 1);
+    }
+
     #[test]
     fn load_bytes_rejects_short_buffer() {
         let s = SharedParams::new();
@@ -1675,9 +1700,8 @@ mod tests {
         );
     }
 
-    /// The migration ladder is gone (ticket 0120): any *older* version is now
-    /// rejected too, not just future ones. A blob stamped with a historical
-    /// version (e.g. 15) no longer loads — re-save from the live build.
+    /// Any *older* version is rejected too, not just future ones. A blob
+    /// stamped with version 15 does not load — re-save from the live build.
     #[test]
     fn load_bytes_rejects_old_version() {
         let s = SharedParams::new();
@@ -1719,11 +1743,8 @@ mod tests {
         );
     }
 
-    /// Two consecutive saves with no intervening param changes produce
-    /// byte-for-byte identical blobs. Hosts rely on this for change detection.
     /// Matrix topology (source / dest / curve / active) round-trips through a
-    /// blob save/load just like CLAP-automatable params. Regression for the
-    /// bug where matrix edits silently vanished on patch reload.
+    /// blob save/load just like CLAP-automatable params.
     #[test]
     fn snapshot_bytes_round_trips_matrix_meta() {
         let src = SharedParams::new();
@@ -1737,16 +1758,18 @@ mod tests {
                 curve: 1,     // Exp
                 active: true,
                 depth: 0.42,
+                scale_src: 0,
             },
         );
         src.set_matrix_row_raw(
             9,
             MatrixRowRaw {
                 source: 5,    // ModWheel
-                dest: 21,     // Lfo2Rate (v3 numbering)
+                dest: 21,     // Lfo2Rate
                 curve: 0,
                 active: true,
                 depth: -0.6,
+                scale_src: 0,
             },
         );
 
@@ -1814,7 +1837,7 @@ mod tests {
         assert_eq!(dst.ks_curve_raw(0, 0), 3);
         assert_eq!(dst.ks_curve_raw(0, 1), 1);
         assert_eq!(dst.ks_curve_raw(5, 1), 3);
-        // Untouched fields keep their legacy default.
+        // Untouched fields keep their default.
         assert_eq!(dst.ks_curve_raw(3, 0), 0);
         assert_eq!(dst.ks_curve_raw(3, 1), 2);
     }
@@ -1898,7 +1921,7 @@ mod tests {
         assert_eq!(ep.dynamics.mix, 0.75);
     }
 
-    /// E022: a stack-pitch route (dest in the appended 30..=35 band) saves and
+    /// A stack-pitch route (dest in the appended 30..=35 band) saves and
     /// reloads through the snapshot blob unchanged.
     #[test]
     fn snapshot_round_trips_stack_pitch_route() {
@@ -1913,12 +1936,12 @@ mod tests {
                 curve: 0,
                 active: true,
                 depth: 0.5,
+                scale_src: 0,
             },
         );
         let bytes = src.snapshot_bytes();
         // The widened dest space does not change the param count or byte layout.
         assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), BLOB_VERSION);
-
         let dst = SharedParams::new();
         dst.load_bytes(&bytes).unwrap();
         let r0 = dst.matrix_row_raw(0);
@@ -1938,14 +1961,14 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    // ── Dirty bitset (ADR 0003 / ticket 0055) ──────────────────────────────
+    // Dirty bitset (ADR 0003).
 
     fn drain_total(words: &[u64; N_DIRTY_VALUE_WORDS]) -> u32 {
         words.iter().map(|w| w.count_ones()).sum()
     }
 
     /// Fresh `SharedParams` carries an all-ones seed (full re-broadcast
-    /// on the first tick). Matches the prior `last_seen = NaN` discipline.
+    /// on the first tick).
     #[test]
     fn new_seeds_all_dirty_bits_for_full_broadcast() {
         let s = SharedParams::new();
@@ -2007,7 +2030,7 @@ mod tests {
         let _ = s.take_dirty_matrix();
         s.set_matrix_row_raw(
             9,
-            MatrixRowRaw { source: 4, dest: 2, curve: 0, active: true, depth: 0.3 },
+            MatrixRowRaw { source: 4, dest: 2, curve: 0, active: true, depth: 0.3, scale_src: 0 },
         );
         // Slot 9 lives past N_MATRIX_CLAP_SLOTS; depth doesn't touch a
         // CLAP id, so the value bitset stays empty.
@@ -2025,7 +2048,7 @@ mod tests {
         let _ = s.take_dirty_matrix();
         s.set_matrix_row_raw(
             0,
-            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.5 },
+            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.5, scale_src: 0 },
         );
         assert_eq!(s.take_dirty_matrix(), 1u64 << 0);
         let bits = s.take_dirty_values();
@@ -2059,7 +2082,7 @@ mod tests {
         src.set(id_of("master-volume").unwrap(), -3.0);
         src.set_matrix_row_raw(
             0,
-            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.42 },
+            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.42, scale_src: 0 },
         );
         let bytes = src.snapshot_bytes();
 

@@ -1,9 +1,8 @@
 //! One-pole (−6 dB/oct) high-pass filter, placed pre-VCF in the voice-stack
 //! signal chain (stack sum → HPF → musical filter → FX). Thins body / removes
-//! DC + low rumble below the cutoff — the same static tone-shaping role the
-//! Juno HP plays. Ported from VXN1's `vxn-dsp::hpf` (single-voice kernel only —
-//! VXN2 runs the filter on a stack's summed stereo pair, so it needs two scalar
-//! kernels per stack, not the SoA poly form).
+//! DC + low rumble below the cutoff — a static tone-shaping HPF. Runs on a
+//! stack's summed stereo pair, so it needs two scalar kernels per stack, not
+//! the SoA poly form.
 //!
 //! Topological-preserving-transform one-pole (Zavalishin): compute the one-pole
 //! *lowpass* `lp` and return `x − lp`, which is the complementary high-pass.

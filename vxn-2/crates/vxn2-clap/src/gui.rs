@@ -1,9 +1,8 @@
 //! CLAP `gui` extension: mounts the `vxn2-ui-web` HTML editor as a child
 //! of the host's parent window.
 //!
-//! Structurally mirrors `vxn-1/crates/vxn-clap/src/gui.rs`. Editor IPC →
-//! controller goes through `ControllerHandle`; view-event drain + per-
-//! tick flush run from the timer extension (see [`crate::timer`]).
+//! Editor IPC → controller goes through `ControllerHandle`; view-event
+//! drain + per-tick flush run from the timer extension (see [`crate::timer`]).
 
 use clack_extensions::gui::*;
 use clack_extensions::timer::HostTimer;
@@ -86,8 +85,8 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         let corpus = Arc::clone(&self.corpus);
         // Construction failure (bad parent, wry build error) surfaces as
         // PluginError via clack's blanket `From<E: Error>` — never a
-        // panic across the host's C ABI (vxn-1 ticket 0115, shared fix).
-        // The plugin stays alive; the host may retry set_parent.
+        // panic across the host's C ABI. The plugin stays alive; the host
+        // may retry set_parent.
         self.gui = Some(vxn2_ui_web::open_editor(parent, ctrl_handle, corpus)?);
 
         // Register the main-thread timer so `on_timer` can drain

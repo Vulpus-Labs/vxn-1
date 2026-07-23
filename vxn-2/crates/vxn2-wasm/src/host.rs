@@ -1,45 +1,17 @@
-//! Worklet audio-host (ticket 0153) — the production render loop.
+//! Worklet audio-host — the production render loop. See [`crate`] for the
+//! params-fold / CONTROL_BLOCK-chunking architecture.
 //!
-//! This is the web analogue of `vxn2-clap`'s audio-thread half
-//! (`VxnAudioProcessor::process`). Where the CLAP host hands `process()` a
-//! sample-accurate event list *on the audio thread*, the browser splits
-//! controller (main thread) from renderer (worklet). The transport that bridges
-//! them is the SAB event ring (ticket 0155); this host consumes it on the render
-//! side and turns it into audio with the same event-sliced + control-block
-//! chunked shape the plugin renders.
-//!
-//! # Why a Rust host (vs a JS slice loop)
-//!
-//! JS copies the ring's raw wire bytes into a linear-memory scratch, then Rust
-//! decodes ([`crate::codec`]), slices, folds params and renders entirely inside
-//! wasm in **one** [`vxn_host_render`] call — the JS↔wasm boundary is crossed
-//! once per quantum, not once per event.
-//!
-//! # Per-quantum loop (mirrors the `vxn2-clap` process loop)
-//!
-//! 1. **Fold params once, at block start.** vxn-2 has no per-id engine setter;
-//!    param edits live in the atomic [`SharedParams`] store (written by
-//!    [`vxn_host_set_param`] block-start and by `EV_PARAM` records), and
-//!    [`Engine::snapshot_params`] folds the whole store into the engine +
-//!    refreshes FX / matrix. This is the `local.write_to → apply_block_params`
-//!    step of the plugin loop. A mid-quantum `EV_PARAM` therefore lands next
-//!    quantum — the plugin has the same one-block param latency.
-//! 2. **Slice at event sample-offsets.** Apply every event at offset `k`
-//!    (notes / MIDI act on the engine immediately), render `[prev..k)`, advance,
-//!    repeat; render the tail. Records arrive offset-ordered (single SPSC
-//!    producer).
-//! 3. **Sub-chunk each region to `CONTROL_BLOCK`.** `Engine::process_block`
-//!    samples block-rate state (LFOs, matrix) once per call and requires
-//!    `len <= CONTROL_BLOCK`, so each sliced region is rendered in
-//!    ≤`CONTROL_BLOCK`-frame pieces — the plugin's `control_chunks`.
+//! Per-quantum, in **one** [`vxn_host_render`] call: fold params at block start,
+//! slice at each event offset (notes/MIDI immediate, params land next quantum),
+//! sub-chunk each region to ≤`CONTROL_BLOCK` frames.
 
 use crate::codec::{self, SLOT_BYTES};
 use crate::{CONTROL_BLOCK, QUANTUM};
 use vxn2_engine::engine::Engine;
 use vxn2_engine::shared::SharedParams;
 
-/// Max events decoded per quantum. Matches the ring capacity (ticket 0155), so a
-/// full ring drains in one render.
+/// Max events decoded per quantum. Matches the ring capacity, so a full ring
+/// drains in one render.
 pub const MAX_EVENTS: usize = 1024;
 
 /// The worklet audio-host: an [`Engine`], the [`SharedParams`] store it folds
@@ -49,8 +21,7 @@ pub struct Host {
     engine: Engine,
     /// Block-start param fold source. `vxn_host_set_param` and `EV_PARAM` write
     /// here; [`Engine::snapshot_params`] reads it at the top of each render.
-    /// Owned (not `Arc`) — the worklet render thread is the sole accessor, so
-    /// there is no cross-thread sharing to arbitrate (unlike the plugin).
+    /// Owned (not `Arc`) — the worklet render thread is the sole accessor.
     shared: SharedParams,
     sample_rate: f32,
     out_l: [f32; QUANTUM],
@@ -91,7 +62,7 @@ impl Host {
     /// C-ABI pointer dance. Renders one quantum into `out_l`/`out_r` from the
     /// first `n` records in `events`, slicing at each record's sample offset.
     fn render(&mut self, n: usize) {
-        // (1) Fold the whole param store into the engine, once, before events.
+        // Fold the whole param store into the engine, once, before events.
         self.engine.snapshot_params(&self.shared);
 
         // Disjoint field borrows so decode (reads `events`, writes `shared`) and
@@ -110,7 +81,6 @@ impl Host {
         let mut prev = 0usize;
         let mut i = 0usize;
 
-        // (2) The plugin batch loop, ported.
         while i < n {
             let off = (events[i * SLOT_BYTES + 1] as usize).min(q);
             // Render everything strictly before this event's offset.
@@ -132,7 +102,7 @@ impl Host {
     }
 }
 
-// ── C ABI (raw `WebAssembly.instantiate`, no wasm-bindgen) ───────────────────
+// C ABI: raw WebAssembly.instantiate, no wasm-bindgen.
 
 /// Create a host at `sample_rate`. Returns an opaque handle (pointer) every
 /// other call passes back. Leaks the box; [`vxn_host_destroy`] reclaims it.
@@ -204,7 +174,7 @@ pub unsafe extern "C" fn vxn_host_set_param_norm(ptr: *mut Host, index: u32, nor
 /// Read a param's current PLAIN value by CLAP id from the store. `SharedParams`
 /// is seeded with the default patch at construction, so this returns real
 /// defaults immediately — the main-thread coordinator can snapshot all ids off a
-/// throwaway host to seed its param store (ticket 0156) without a render.
+/// throwaway host to seed its param store without a render.
 ///
 /// # Safety
 /// `ptr` must be a valid handle from [`vxn_host_new`].
@@ -247,20 +217,17 @@ pub unsafe extern "C" fn vxn_host_reset(ptr: *mut Host) {
 }
 
 /// **Test-only**: force a wasm trap (Rust panic → `unreachable` on wasm →
-/// `WebAssembly.RuntimeError` in JS). Exists so the trap-safety harness (ticket
-/// 0156) can prove the worklet boundary catches a render-thread trap and
-/// recovers. Never called in production.
+/// `WebAssembly.RuntimeError` in JS). Exists so the trap-safety harness can
+/// prove the worklet boundary catches a render-thread trap and recovers. Never
+/// called in production.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxn_host_force_trap() {
-    panic!("forced trap (0156 trap-safety test)");
+    panic!("forced trap (trap-safety test)");
 }
 
 /// Render one quantum: fold params, then slice the block at the offsets of the
 /// first `n_events` records in the scratch and render each slice. Output lands
 /// in the buffers exposed by [`vxn_host_out_l`] / [`vxn_host_out_r`].
-///
-/// Unlike vxn-1's host this takes no key-mode/split args — the vxn-2 FM engine
-/// has no dual/split layer.
 ///
 /// # Safety
 /// `ptr` must be a valid handle from [`vxn_host_new`]; the scratch must hold at
@@ -303,8 +270,8 @@ mod tests {
     use crate::codec::{encode, Event};
 
     /// First frame whose magnitude clears a small threshold on either channel.
-    /// vxn-2's FX bus means "silence" isn't guaranteed to be exact 0.0, so this
-    /// is threshold-based rather than the exact-zero probe vxn-1 could use.
+    /// The FX bus means "silence" isn't guaranteed to be exact 0.0, so this is
+    /// threshold-based.
     fn onset(l: &[f32], r: &[f32]) -> Option<usize> {
         l.iter()
             .zip(r)

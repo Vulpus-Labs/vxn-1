@@ -1,36 +1,19 @@
 //! `vxn2-web-controller` — the vxn-2 main-thread controller, compiled to wasm.
 //!
-//! Reuses vxn-2's MVC arbiter with **zero controller-logic changes**: the same
-//! `vxn_core_app::Controller<SharedParams>` + `vxn2_app::tick_vxn2` the native
-//! `vxn2-clap` shell drives on its host timer. Where the plugin flushes view
-//! events through the wry editor's `evaluate_script`, this exposes them over a
-//! C-ABI drain the browser reads once per tick.
+//! Runs vxn-2's MVC arbiter (`Controller<SharedParams>` + `tick_vxn2`) and
+//! exposes view events over a C-ABI drain the browser reads once per tick.
 //!
-//! # Boundary contract (mirror of vxn-1's E018 / ADR 0009 §1)
+//! Boundary: `UiEvent` / `ViewEvent` never cross as Rust types. Inbound, one
+//! `vxnc_ui_*` C function per UI intent posts onto the `ui` channel; outbound,
+//! `vxnc_tick` packs the resulting `ViewEvent`s into a linear-memory scratch
+//! (`vxnc_view_ptr` / `vxnc_view_len`) the JS bridge decodes.
 //!
-//! `UiEvent` / `ViewEvent` never cross the JS↔wasm boundary as Rust types. The
-//! JS side speaks a narrow **opcode** surface:
-//!
-//! - inbound: one `vxnc_ui_*` C function per UI intent (1:1 with `UiEvent` /
-//!   `Vxn2UiCustom` variants), each posting onto the controller's `ui` channel;
-//! - outbound: `vxnc_tick` drains the controller and packs the resulting
-//!   `ViewEvent`s into a linear-memory scratch (`vxnc_view_ptr` / `vxnc_view_len`)
-//!   the JS bridge decodes — the web analogue of `flush_view_events`.
-//!
-//! # Model = `SharedParams`, echo OFF
-//!
-//! Unlike vxn-1's web controller (which used a bespoke `WebModel` + the
-//! Controller's auto-echo), vxn-2's `SharedParams` already implements
-//! `ParamModel` + `Vxn2Params`, so the controller uses it directly — the SAME
-//! model type as `vxn2-clap`. Model→View change notification therefore runs the
-//! canonical vxn-2 way: the auto-echo is disabled (`set_echo_param_writes(false)`)
-//! and [`drain_dirty_bits`] drains `SharedParams`' dirty bitsets (ADR 0003 / E005)
-//! — the port of `vxn2-clap`'s `push_model_diffs`, catching UI writes, host
-//! automation (via the readback pump) and preset/state load under one discipline.
-//!
-//! This controller's `SharedParams` is a *separate* instance from the worklet
-//! engine's (different wasm modules / memories). The JS glue mirrors this store's
-//! plain values into the worklet's param SAB (ticket 0155) each tick.
+//! `SharedParams` implements `ParamModel` so the controller uses it directly;
+//! auto-echo is disabled (`set_echo_param_writes(false)`) and [`drain_dirty_bits`]
+//! drains its dirty bitsets, catching UI writes, host automation (via the
+//! readback pump) and preset/state load under one discipline. This instance is
+//! *separate* from the worklet engine's (different wasm memories); the JS glue
+//! mirrors its plain values into the worklet's param SAB each tick.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
@@ -45,14 +28,10 @@ use vxn2_app::{
 use vxn2_engine::shared::SharedParams;
 use vxn2_engine::{TOTAL_PARAMS, rate_partner_clap_id, sync_aware_display};
 
-// ===========================================================================
-// Model → View drain — port of vxn2-clap::drain_dirty_bits (push_model_diffs)
-// ===========================================================================
-
-/// Drain `SharedParams`' dirty bitsets into `ViewEvent`s. Byte-for-byte the
-/// vxn2-clap logic: one `ParamChanged` per flipped value bit (with the sync-
-/// aware display + rate-partner refresh), plus a whole-table matrix / KS-curve /
-/// EG-curve snapshot when the respective dirty flag was set.
+/// Drain `SharedParams`' dirty bitsets into `ViewEvent`s: one `ParamChanged`
+/// per flipped value bit (with the sync-aware display + rate-partner refresh),
+/// plus a whole-table matrix / KS-curve / EG-curve snapshot when the respective
+/// dirty flag was set.
 fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     let mut out: Vec<ViewEvent> = Vec::new();
     let value_bits = params.take_dirty_values();
@@ -106,9 +85,7 @@ fn param_changed_event(params: &SharedParams, id: usize) -> ViewEvent {
     }
 }
 
-// ===========================================================================
-// ViewEvent out-buffer — the single-drain wire format (JS decodes in 0157)
-// ===========================================================================
+// ViewEvent out-buffer — the single-drain wire format.
 //
 //   header:  u32 record_count
 //   then `record_count` records, each `u32 tag` + tag-specific payload:
@@ -116,7 +93,7 @@ fn param_changed_event(params: &SharedParams, id: usize) -> ViewEvent {
 //   VE_PARAM_CHANGED (1):    u32 id, f32 plain, f32 norm, u32 len, [len UTF-8]
 //   VE_OP_TAB_CHANGED (2):   u32 op
 //   VE_MATRIX_SNAPSHOT (3):  u32 rows(=16), then per row: u8 src,u8 dest,
-//                            u8 curve,u8 active,f32 depth
+//                            u8 curve,u8 active,f32 depth,u8 scale_src (E033)
 //   VE_KS_CURVE_SNAPSHOT (4): 6×2 = 12 u8 (op-major, [L,R])
 //   VE_EG_CURVE_SNAPSHOT (5): 6 u8 (per op)
 
@@ -125,7 +102,7 @@ const VE_OP_TAB_CHANGED: u32 = 2;
 const VE_MATRIX_SNAPSHOT: u32 = 3;
 const VE_KS_CURVE_SNAPSHOT: u32 = 4;
 const VE_EG_CURVE_SNAPSHOT: u32 = 5;
-/// `VE_PRESET_LOADED` (0159): u32 name_len + name, u32 source_kind
+/// `VE_PRESET_LOADED`: u32 name_len + name, u32 source_kind
 /// (0 none / 1 factory), if factory u32 index, u32 warning_count + each str.
 const VE_PRESET_LOADED: u32 = 6;
 
@@ -145,7 +122,7 @@ fn push_str(buf: &mut Vec<u8>, s: &str) {
 
 /// Pack ONE `ViewEvent` as a single record. Returns `true` if a record was
 /// appended; variants with no web analogue (status / text-input / preset —
-/// deferred to 0159) are skipped and return `false`.
+/// deferred) are skipped and return `false`.
 fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
     match ev {
         ViewEvent::ParamChanged { id, plain, norm, display } => {
@@ -171,6 +148,7 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
                     buf.push(r.curve);
                     buf.push(r.active as u8);
                     push_f32(buf, r.depth);
+                    buf.push(r.scale_src); // E033 scale source
                 }
                 true
             }
@@ -212,13 +190,11 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
     }
 }
 
-// ===========================================================================
-// WebFactoryStore — a read-only factory bank loaded from `factory.bin` (0159)
-// ===========================================================================
+// WebFactoryStore — a read-only factory bank loaded from `factory.bin`.
 //
 // The minimal browser preset store: holds the factory bank (parsed from the
-// baked `factory.bin`, ticket 0158) so the preset browser can list + load
-// factory patches. User-preset persistence (save/load/autosave) is deferred.
+// baked `factory.bin`) so the preset browser can list + load factory patches.
+// User-preset persistence (save/load/autosave) is deferred.
 
 #[derive(Default)]
 struct WebFactoryStore {
@@ -280,7 +256,7 @@ impl PresetStore for WebFactoryStore {
     }
 }
 
-/// Parse the baked `factory.bin` (ticket 0158 `bake-factory` format) into
+/// Parse the baked `factory.bin` (`bake-factory` format) into
 /// `(meta, blob)` entries: `u32 count`, then per preset `str name`,
 /// `str category`, `u32 blob_len` + blob (all little-endian). Returns an empty
 /// vec on any truncation (a malformed asset degrades to "no factory bank").
@@ -326,9 +302,7 @@ fn parse_factory_bin(bytes: &[u8]) -> Vec<(PresetMeta, Vec<u8>)> {
     out
 }
 
-// ===========================================================================
 // Controller state — one global instance (single-threaded main thread)
-// ===========================================================================
 
 struct ControllerState {
     ctrl: Controller<SharedParams>,
@@ -336,7 +310,7 @@ struct ControllerState {
     view_rx: Receiver<ViewEvent>,
     ui_tx: SyncSender<UiEvent>,
     host_tx: SyncSender<HostEvent>,
-    /// Shared factory bank the store reads; filled by `vxnc_load_factory` (0159).
+    /// Shared factory bank the store reads; filled by `vxnc_load_factory`.
     factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>>,
     /// Shared corpus snapshot the browser JSON is built from.
     corpus: CorpusHandle,
@@ -353,8 +327,8 @@ struct ControllerState {
     /// Staging buffer JS copies the worklet's readback SAB into before
     /// `vxnc_pump_readback`.
     readback_in: Vec<f32>,
-    /// NaN-seeded diff mirror for the readback pump (port of `last_seen`): the
-    /// first pump after open broadcasts the whole table (NaN != NaN).
+    /// NaN-seeded diff mirror for the readback pump: the first pump after open
+    /// broadcasts the whole table (NaN != NaN).
     last_seen: Vec<f32>,
 }
 
@@ -364,8 +338,8 @@ impl ControllerState {
         let factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
         let store = WebFactoryStore { factory: factory.clone() };
         let (mut ctrl, view_rx, corpus) = Controller::new(model.clone(), Box::new(store));
-        // Canonical vxn-2 Model→View path is the dirty-bitset drain; disable the
-        // auto-echo so UI writes aren't emitted twice (matches vxn2-clap). Preset
+        // The Model→View path is the dirty-bitset drain; disable the auto-echo
+        // so UI writes aren't emitted twice (matches vxn2-clap). Preset
         // loads re-broadcast via `broadcast_all_params` regardless of this flag.
         ctrl.set_echo_param_writes(false);
         let ui_tx = ctrl.ui_sender();
@@ -447,13 +421,12 @@ impl ControllerState {
         }
     }
 
-    /// Port of the vxn-clap readback pump: diff `readback_in` (the values the
-    /// worklet actually applied, copied from the readback SAB by JS) against
-    /// `last_seen`, and route any drift the controller never processed
-    /// (host-automation echo / modulation) through the controller as
-    /// `HostEvent::ParamAutomation` — so the gesture-suppression rule holds and
-    /// the resulting `ParamChanged` lands via the dirty bit on the next tick.
-    /// NaN-seed forces a full broadcast on the first pump.
+    /// Diff `readback_in` (the values the worklet actually applied, copied from
+    /// the readback SAB by JS) against `last_seen`, and route any drift the
+    /// controller never processed (host-automation echo / modulation) through the
+    /// controller as `HostEvent::ParamAutomation` — so the gesture-suppression
+    /// rule holds and the resulting `ParamChanged` lands via the dirty bit on the
+    /// next tick. NaN-seed forces a full broadcast on the first pump.
     fn pump_readback(&mut self) {
         for i in 0..TOTAL_PARAMS {
             let v = self.readback_in[i];
@@ -471,9 +444,7 @@ impl ControllerState {
     }
 }
 
-// ===========================================================================
 // Global instance + C-ABI opcode surface
-// ===========================================================================
 
 static mut STATE: *mut ControllerState = core::ptr::null_mut();
 
@@ -511,7 +482,7 @@ pub extern "C" fn vxnc_total_params() -> u32 {
     TOTAL_PARAMS as u32
 }
 
-// ---- UiEvent hot path (1:1 with UiEvent variants) ---------------------------
+// UiEvent hot path (1:1 with UiEvent variants).
 
 /// `UiEvent::SetParamNorm` — set a param from a normalised fader position.
 #[unsafe(no_mangle)]
@@ -544,7 +515,7 @@ pub extern "C" fn vxnc_ui_editor_ready() {
     state().post(UiEvent::EditorReady);
 }
 
-// ---- Vxn2 custom opcodes (1:1 with Vxn2UiCustom variants) --------------------
+// Vxn2 custom opcodes (1:1 with Vxn2UiCustom variants).
 
 /// `Vxn2UiCustom::SetOpTab` — which operator the op-detail panel shows.
 #[unsafe(no_mangle)]
@@ -562,6 +533,7 @@ pub extern "C" fn vxnc_ui_set_matrix_row(
     curve: u32,
     active: u32,
     depth: f32,
+    scale_src: u32,
 ) {
     state().post_custom(Vxn2UiCustom::SetMatrixRow {
         slot: slot as u8,
@@ -571,6 +543,7 @@ pub extern "C" fn vxnc_ui_set_matrix_row(
             curve: curve as u8,
             active: active != 0,
             depth,
+            scale_src: scale_src as u8,
         },
     });
 }
@@ -617,7 +590,7 @@ pub extern "C" fn vxnc_ui_request_full_rebroadcast() {
     state().post_custom(Vxn2UiCustom::RequestFullRebroadcast);
 }
 
-// ---- factory presets (ticket 0159, minimal) ---------------------------------
+// Factory presets (minimal).
 
 /// Reserve `len` bytes in the factory staging buffer and return its pointer. JS
 /// writes the fetched `factory.bin` here, then calls [`vxnc_load_factory`].
@@ -663,7 +636,7 @@ pub extern "C" fn vxnc_ui_step_preset(delta: i32) {
     state().post(UiEvent::StepPreset { delta });
 }
 
-// ---- Tick + drains ----------------------------------------------------------
+// Tick + drains.
 
 /// Drive one controller tick: drain UI/host queues into the model and pack the
 /// resulting ViewEvents into the drain buffer.
@@ -686,7 +659,7 @@ pub extern "C" fn vxnc_view_len() -> u32 {
 
 /// Pointer to the model's plain-value snapshot (`TOTAL_PARAMS` f32s), refreshed
 /// each tick. JS reads it to mirror the controller model into the worklet param
-/// SAB (ticket 0155).
+/// SAB.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_values_ptr() -> *const f32 {
     state().values_out.as_ptr()
@@ -734,7 +707,7 @@ mod tests {
                 VE_OP_TAB_CHANGED => p += 4,
                 VE_MATRIX_SNAPSHOT => {
                     let rows = u32::from_le_bytes(buf[p..p + 4].try_into().unwrap()) as usize;
-                    p += 4 + rows * (4 + 4); // 4 u8 + f32 depth per row
+                    p += 4 + rows * (4 + 4 + 1); // 4 u8 + f32 depth + u8 scale per row
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,
@@ -776,7 +749,7 @@ mod tests {
         s.tick(); // drain seed
         s.post_custom(Vxn2UiCustom::SetMatrixRow {
             slot: 9,
-            row: MatrixRow { source: 2, dest: 3, curve: 1, active: true, depth: 0.5 },
+            row: MatrixRow { source: 2, dest: 3, curve: 1, active: true, depth: 0.5, scale_src: 0 },
         });
         s.tick();
         // A MatrixSnapshot record must be present.
@@ -797,7 +770,7 @@ mod tests {
                     saw_matrix = true;
                     let rows = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
                     assert_eq!(rows, 16);
-                    p += 4 + rows * 8;
+                    p += 4 + rows * 9; // +1 for E033 scale byte
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,
@@ -867,7 +840,7 @@ mod tests {
                 VE_OP_TAB_CHANGED => p += 4,
                 VE_MATRIX_SNAPSHOT => {
                     let rows = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
-                    p += 4 + rows * 8;
+                    p += 4 + rows * 9; // +1 for E033 scale byte
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,

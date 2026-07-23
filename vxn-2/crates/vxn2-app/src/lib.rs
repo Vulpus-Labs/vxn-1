@@ -1,4 +1,4 @@
-//! VXN2 controller composition layer (ticket 0022 / epic E003).
+//! VXN2 controller composition layer.
 //!
 //! Bridges `vxn2-engine`'s atomic param store to `vxn_core_app::Controller`:
 //!
@@ -16,7 +16,7 @@
 //!
 //! `impl vxn_core_app::ParamModel for SharedParams` and
 //! `impl Vxn2Params for SharedParams` both live in `vxn2-engine` itself —
-//! orphan rule. This crate is intentionally tiny.
+//! orphan rule.
 
 pub mod controller;
 pub mod events;

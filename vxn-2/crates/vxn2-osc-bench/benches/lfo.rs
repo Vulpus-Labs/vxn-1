@@ -1,4 +1,4 @@
-//! LFO control-rate cost (ticket 0006).
+//! LFO control-rate cost.
 //!
 //! `lfo_block_eval` — worst-case patch-level evaluation: 16 [`Lfo2Stack`]
 //! instances (one per polyphony slot) plus 1 [`Lfo1`], each advanced one
@@ -63,7 +63,6 @@ fn render(
 fn bench_lfo(c: &mut Criterion) {
     let block_secs = BLK as f32 / SR;
     let mut g = c.benchmark_group("lfo");
-    // 16 stacks × 8 lanes + 1 LFO1 = 129 LFO sub-evals per iter.
     g.throughput(Throughput::Elements(129));
     g.bench_function("lfo_block_eval", |b| {
         let (mut lfo1, lfo1_p) = build_lfo1();

@@ -1,35 +1,16 @@
-//! Render-hash baseline (ticket 0119). Drives the engine through a fixed,
-//! matrix-rich patch and hashes the rendered stereo output bit-for-bit. The
-//! `cook_stacks_block` extraction and the `RampState` collapse are both
-//! behaviour-preserving refactors of the per-stack mod-matrix loop; this test
-//! is the guard that proves it — a stage reorder (one-block-latency bug) or a
-//! ramp-index regression (a mis-stepped parallel Vec) perturbs at least one
-//! sample and flips the hash.
+//! Render-hash baseline. Drives the engine through a fixed, matrix-rich patch
+//! and hashes the rendered stereo output bit-for-bit, guarding against a
+//! cook-stage reorder or ramp-index regression that flips the hash.
 //!
 //! The patch lights up every cook stage at once: per-op level / pan / phase
 //! ramps, the stack-pitch scatter, the global-pitch smoother, FX-mix
-//! aggregation, per-stack feedback, the deferred LFO1-rate / LFO2-phase /
-//! stack-detune routes — across a held chord with spread lanes, driven the way
-//! the CLAP shell drives it (re-`apply_block_params` per control block).
+//! aggregation, per-stack feedback, and the deferred routes — across a held
+//! chord with spread lanes, driven the way the CLAP shell drives it.
 //!
-//! If an *intentional* DSP change moves the hash, re-capture it: run with
-//! `--nocapture`, read the `BASELINE render hash = 0x…` line the test prints,
-//! and paste it into `EXPECTED`.
-//!
-//! The hash is **environment-locked**: it folds raw f32 bits, and the render
-//! path rounds differently across targets *and* across OS releases — the
-//! aarch64 NEON sine reader vs the x86 scalar one, plus the macOS **system
-//! libm** in the EG/LFO/reverb math, which changes between macOS majors (14 →
-//! 15 moved the hash with no code change). So `EXPECTED` is only meaningful in
-//! one fixed environment. It is captured and enforced **on CI only** — the
-//! `macos-15` runner, gated behind `VXN_RENDER_HASH=1` (set in test.yml). On a
-//! dev machine the env var is unset and the test skips, so a developer on a
-//! different macOS release doesn't see a spurious red. Its job is guarding
-//! refactors (stage reorder / ramp-index regression), which CI catches; Windows
-//! CI (ticket 0023) skips it as platform-dependent via the `cfg` gate below.
-//!
-//! To re-capture after an intentional DSP change: read the `BASELINE render
-//! hash = 0x…` line from a CI run's log and paste it into `EXPECTED`.
+//! The hash folds raw f32 bits, which round differently across targets and OS
+//! releases, so `EXPECTED` is enforced on CI only (gated behind
+//! `VXN_RENDER_HASH=1`) and dev machines skip. Re-capture after an intentional
+//! DSP change by reading the `BASELINE render hash = 0x…` line from a CI log.
 
 use vxn2_engine::MatrixRowRaw;
 use vxn2_engine::engine::Engine;
@@ -40,14 +21,7 @@ const SR: f32 = 48_000.0;
 const BLK: usize = 32;
 
 /// Golden hash of the reference render. Behaviour-preserving refactors must
-/// leave this untouched; an intentional DSP change re-captures it (see header).
-///
-/// Moved by the constant-latency change (`SpanDelay`): the engine now emits the
-/// dry/bypass path delayed by the resampler round-trip (24 samples), so every
-/// sample shifts and the hash folds a new value. Captured from the pinned CI
-/// runner's log (macos-15 — the enforcing environment; a macOS 14 dev machine
-/// folds libm differently and would print a different value, but the test skips
-/// there since `VXN_RENDER_HASH` is unset).
+/// leave it untouched; an intentional DSP change re-captures it (see header).
 const EXPECTED: u64 = 0x7831_bb33_1750_7ab5;
 
 /// Build the reference engine: a matrix-rich, deterministic patch.
@@ -76,7 +50,7 @@ fn reference_engine() -> Engine {
     let routes: [(u8, u8, f32); 10] = [
         (1, 2, 1.0),   // Lfo1   → Op1Level     (level ramp)
         (1, 6, 0.8),   // Lfo1   → Op2Pan       (pan ramp)
-        (2, 36, 0.5),  // Lfo2   → Op1Phase     (phase ramp, E023)
+        (2, 36, 0.5),  // Lfo2   → Op1Phase     (phase ramp)
         (4, 30, 0.7),  // ModEnv → Op1StackPitch(stack-pitch scatter)
         (1, 19, 0.4),  // Lfo1   → GlobalPitch  (pitch smoother)
         (7, 25, 0.6),  // Velocity → DelayMix   (FX aggregation)
@@ -92,6 +66,7 @@ fn reference_engine() -> Engine {
             curve: 0,
             active: true,
             depth,
+            scale_src: 0,
         };
         // Slots < N_CLAP_DEPTH_SLOTS (8) read the CLAP depth; later slots read
         // the row depth. Set both so every route's depth lands regardless.
@@ -124,9 +99,7 @@ fn render_hash(e: &mut Engine, blocks: usize, h: &mut impl Hasher) {
     ignore = "render hash is captured on macOS/aarch64; f32 rounding differs per target"
 )]
 fn render_hash_unchanged() {
-    // Environment-locked golden: only enforced on the pinned CI runner
-    // (macos-15), where `VXN_RENDER_HASH=1` is set. Unset on dev machines, whose
-    // macOS/libm may differ from the capture environment — skip rather than red.
+    // Enforced only where `VXN_RENDER_HASH=1` is set; dev machines skip.
     if std::env::var_os("VXN_RENDER_HASH").is_none() {
         eprintln!("skipping render_hash_unchanged: VXN_RENDER_HASH unset (CI-only)");
         return;

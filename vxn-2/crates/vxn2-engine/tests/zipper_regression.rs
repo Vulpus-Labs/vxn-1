@@ -1,15 +1,14 @@
-//! Audio-domain zipper regression for LFO → OpNLevel / OpNPan matrix
-//! routes (tickets 0074 + 0075). The state-convergence tests in
-//! `engine.rs` assert the ramp's bookkeeping; this asserts the rendered
-//! audio. Detector: mean |second difference| of the output at
-//! block-edge sample offsets vs the block interior. A stepped (or too
-//! coarsely interpolated) control leaves d² impulses at block edges; a
-//! correct per-sample ramp at the 32-sample control rate leaves
-//! edge ≈ interior (measured ~1.08 at the time of writing; bound 1.5).
+//! Audio-domain zipper regression for LFO → OpNLevel / OpNPan matrix routes.
+//! The state-convergence tests in `engine.rs` assert the ramp's bookkeeping;
+//! this asserts the rendered audio. Detector: mean |second difference| of the
+//! output at block-edge sample offsets vs the block interior. A stepped (or too
+//! coarsely interpolated) control leaves d² impulses at block edges; a correct
+//! per-sample ramp at the 32-sample control rate leaves edge ≈ interior
+//! (measured ~1.08; bound 1.5).
 //!
-//! The render is driven the way the CLAP shell drives the engine after
-//! ticket 0075: 32-sample control blocks with `apply_block_params`
-//! re-applied per process cycle, regardless of host buffer size.
+//! The render is driven the way the CLAP shell drives the engine: 32-sample
+//! control blocks with `apply_block_params` re-applied per process cycle,
+//! regardless of host buffer size.
 
 use vxn2_engine::MatrixRowRaw;
 use vxn2_engine::engine::Engine;
@@ -46,6 +45,7 @@ fn edge_interior_ratio(dest: u8) -> (f64, f64) {
         curve: 0,
         active: true,
         depth: 1.0,
+        scale_src: 0,
     };
     e.params.mtx_depths[0] = 1.0;
     e.apply_block_params();

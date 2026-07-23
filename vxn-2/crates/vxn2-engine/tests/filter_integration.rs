@@ -1,27 +1,25 @@
-//! E007 ticket 0087 — filter feature integration tests on the *engine* path
-//! (the DSP-kernel-level checks live in `vxn2-dsp`: `filter::tests` covers
-//! mode/slope, self-osc and quiescence-decay; `halfband::tests` covers the
-//! load-bearing deferred-decimation equivalence `decimate_is_linear_over_voice_sum`
-//! and the interp→decimate roundtrip).
+//! Filter feature integration tests on the *engine* path (the DSP-kernel-level
+//! checks live in `vxn2-dsp`: `filter::tests` covers mode/slope, self-osc and
+//! quiescence-decay; `halfband::tests` covers the load-bearing
+//! deferred-decimation equivalence `decimate_is_linear_over_voice_sum` and the
+//! interp→decimate roundtrip).
 //!
 //! Here we prove the *wired* feature:
 //!
 //! - **Bypass bit-identity** — with `filter-enable` off, the render is
-//!   sample-for-sample independent of every filter param, i.e. the off path
-//!   is the unchanged sample-major loop and stays bit-identical to the
-//!   pre-epic output for every factory patch (AC 1).
+//!   sample-for-sample independent of every filter param: the off path is the
+//!   unchanged sample-major loop.
 //! - **Self-oscillation bounded** — resonance = 1 across the cutoff range stays
-//!   finite and bounded on the integrated per-voice path at the fixed 4× (AC 5;
-//!   the multi-factor resampler sweep lives in the `vxn2-dsp` kernel tests).
+//!   finite and bounded on the integrated per-voice path at the fixed 4× (the
+//!   multi-factor resampler sweep lives in the `vxn2-dsp` kernel tests).
 //! - **Matrix cutoff/resonance + RT hardening** — `DestId::Cutoff`/`Resonance`
 //!   route end-to-end through the matrix with the filter on and the process
-//!   callback stays finite/non-panicking (AC 5, no-RT-alloc/panic).
+//!   callback stays finite/non-panicking.
 //! - **Quiescence tail preservation** — a resonant release tail rings out with
-//!   no skip cliff (0085 criteria): the moment the quiescence-skip engages must
-//!   not click (AC 6).
+//!   no skip cliff: the moment the quiescence-skip engages must not click.
 //! - **Click-free enable toggle** — flipping `filter-enable` on and off is
-//!   crossfaded (ADR 0004 §10), so neither edge introduces a discontinuity
-//!   beyond the tone's own slew, checked at the fixed 4× group delay.
+//!   crossfaded, so neither edge introduces a discontinuity beyond the tone's
+//!   own slew, checked at the fixed 4× group delay.
 
 mod common;
 use common::worst_d4;
@@ -64,12 +62,9 @@ fn shared_from_preset(contents: &str) -> SharedParams {
     s
 }
 
-/// AC 1 — with `filter-enable` off the render path is the sample-major bypass
-/// and its output does not depend on any filter param. Forcing the whole filter
-/// section to extreme values while the enable stays off must leave the output
-/// byte-for-byte identical: that is exactly the "bit-identical to pre-epic"
-/// guarantee, checked against the binary's own bypass floor for every factory
-/// patch (and the default patch).
+/// Force the whole filter section to extremes with `filter-enable` off: the
+/// output must stay byte-for-byte identical, for every factory patch and the
+/// default.
 #[test]
 fn bypass_render_is_bit_identical_across_filter_params() {
     let en = id_of("filter-enable").unwrap();
@@ -120,10 +115,9 @@ fn bypass_render_is_bit_identical_across_filter_params() {
     }
 }
 
-/// AC 5 — resonance = 1 across the cutoff range self-oscillates without blowing
-/// up on the integrated per-voice engine path. Oversampling is fixed at 4×
-/// (selector removed); the multi-factor resampler-stability sweep lives in the
-/// DSP-kernel tests (`vxn2-dsp` `filter::tests` / `halfband::tests`).
+/// Resonance = 1 across the cutoff range self-oscillates without blowing up on
+/// the integrated per-voice engine path at the fixed 4×. The multi-factor
+/// resampler-stability sweep lives in the DSP-kernel tests.
 #[test]
 fn self_oscillation_bounded() {
     let en = id_of("filter-enable").unwrap();
@@ -162,9 +156,9 @@ fn self_oscillation_bounded() {
     }
 }
 
-/// AC 5 + no-RT-alloc/panic — `Cutoff`/`Resonance` route through the matrix
-/// (velocity → cutoff, mod-env → resonance) with the filter on (fixed 4×);
-/// the process callback stays finite and bounded with the modulation live.
+/// `Cutoff`/`Resonance` route through the matrix (velocity → cutoff, mod-env →
+/// resonance) with the filter on (fixed 4×); the process callback stays finite
+/// and bounded with the modulation live.
 #[test]
 fn matrix_cutoff_resonance_routes_stay_finite() {
     let en = id_of("filter-enable").unwrap();
@@ -184,6 +178,7 @@ fn matrix_cutoff_resonance_routes_stay_finite() {
             curve: 0,
             active: true,
             depth: 1.0,
+            scale_src: 0,
         },
     );
     s.set_matrix_row_raw(
@@ -194,6 +189,7 @@ fn matrix_cutoff_resonance_routes_stay_finite() {
             curve: 0,
             active: true,
             depth: 1.0,
+            scale_src: 0,
         },
     );
 
@@ -218,11 +214,10 @@ fn matrix_cutoff_resonance_routes_stay_finite() {
     assert!(peak < 100.0, "matrix-modulated filter unbounded ({peak})");
 }
 
-/// AC 6 — a resonant release tail must ring out with no "skip cliff": when the
-/// quiescence-skip (0085) engages, the contribution is already sub-floor, so the
-/// post-note-off signal stays smooth. A 4th-difference transient detector (the
-/// 0079 note-off-click harness) catches any discontinuity introduced by clipping
-/// the tail or by an abrupt freeze.
+/// A resonant release tail must ring out with no "skip cliff": when the
+/// quiescence-skip engages, the contribution is already sub-floor, so the
+/// post-note-off signal stays smooth. A 4th-difference transient detector
+/// catches any discontinuity from clipping the tail or an abrupt freeze.
 #[test]
 fn resonant_release_tail_rings_out_without_skip_cliff() {
     let s = SharedParams::new();
@@ -257,7 +252,7 @@ fn resonant_release_tail_rings_out_without_skip_cliff() {
     );
 }
 
-/// ADR 0004 §10 — toggling `filter-enable` is click-free. The enable edge swaps
+/// Toggling `filter-enable` is click-free. The enable edge swaps
 /// two render bodies whose dry buses differ by the resampler group delay (OS
 /// path) *and* the saturator level/timbre step; a hard switch pops on both.
 /// The engine equal-power-crossfades the two dry buses across one ~8 ms window,
@@ -333,10 +328,8 @@ fn filter_toggle_is_click_free() {
 /// Regression: engaging (and disengaging) the filter while the dynamics FX is
 /// already live must stay click-free. The dynamics keeps the 4× span engaged on
 /// both sides of the toggle, so the span's single decimator must run once per
-/// block and stay continuous across the edge — an earlier version reset/reused
-/// the shared decimator on the filter edge, which clunked the dynamics-carried
-/// signal. Same `d4` guard as `filter_toggle_is_click_free`, but with dynamics
-/// (comp + tanh drive) engaged throughout.
+/// block and stay continuous across the edge. Same `d4` guard as
+/// `filter_toggle_is_click_free`, but with dynamics engaged throughout.
 #[test]
 fn filter_toggle_over_live_dynamics_is_click_free() {
     let en = id_of("filter-enable").unwrap();
@@ -391,8 +384,8 @@ fn filter_toggle_over_live_dynamics_is_click_free() {
     let engage = worst_d4(&buf, (ON_B - 1) * BLK..(ON_B + 9) * BLK);
     let disengage = worst_d4(&buf, (OFF_B - 1) * BLK..(OFF_B + 9) * BLK);
 
-    // The pre-fix decimator clunk measured ~1.4e-1 — ~300× the steady slew — so
-    // both bounds sit far below it and would catch a regression outright.
+    // A decimator clunk measures ~1.4e-1 (~300× the steady slew), so both bounds
+    // sit far below it and catch a regression outright.
     //
     // Engage (silence→filtered) is genuinely click-free: the continuous
     // `interp_mix` OFF side carries the pre-engage signal straight through, so it

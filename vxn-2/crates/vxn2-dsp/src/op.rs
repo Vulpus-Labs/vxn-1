@@ -1,7 +1,6 @@
 //! The operator: one phase accumulator + sine generator + 4R/4L EG + per-op
 //! level + key scaling + velocity / amp sens + per-op feedback. The atom of
-//! every VXN2 voice — up to 6 ops per voice × 8 stack × 16 poly = 768 op
-//! instances in flight.
+//! every VXN2 voice.
 //!
 //! Split into two state spaces:
 //!
@@ -45,9 +44,9 @@ pub struct OpParams {
     pub vel_sens: u8,
     pub eg: EgParams,
     /// Per-op level→amplitude curve for the EG L-values *and* the operator
-    /// output level (DX7 shares one log domain). Default [`EgCurve::Exp`]
-    /// (DX7-faithful log); `Lin` is the legacy-square escape hatch. Patch
-    /// state, selected in `cook` — see [`EgCurve`]. Ticket 0124.
+    /// output level (shared log domain). Default [`EgCurve::Exp`] (log);
+    /// `Lin` is the legacy-square escape hatch. Patch state, selected in
+    /// `cook` — see [`EgCurve`].
     pub eg_curve: EgCurve,
     pub ks_break_pt: u8,
     pub ks_l_depth: u8,
@@ -61,7 +60,7 @@ pub struct OpParams {
     /// decorrelation offset at note-on so the six carriers of algo 32 can sum
     /// into specific analytic shapes (saw flips even harmonics by π = 0.5).
     /// Stack-path only — the scalar reference path does not reset phase, so the
-    /// offset would wash out there. Ticket 0074.
+    /// offset would wash out there.
     pub phase: f32,
 }
 
@@ -114,7 +113,7 @@ pub const PM_SCALE_Q32: f32 = 4_294_967_296.0;
 /// effective ratio (`num + fine/100` over `denom`) and the detune-cents factor;
 /// Fixed mode: the literal `fixed_hz`. Single definition shared by
 /// [`OpState::cook`] (scalar reference path) and `Stack::cook_op` (the
-/// production per-lane path, which multiplies lane detune on top) — ticket 0071.
+/// production per-lane path, which multiplies lane detune on top).
 #[inline]
 pub fn compute_base_hz(params: &OpParams, key: u8) -> f32 {
     match params.ratio_mode {
@@ -146,8 +145,8 @@ impl OpState {
             params.ks_r_curve,
         );
         let vel = vel_factor(params.vel_sens, velocity);
-        // Operator output level shares the EG level curve (DX7: OL and EG
-        // levels live in the same log domain) — see `eg::level_to_amp`.
+        // Operator output level shares the EG level curve — see
+        // `eg::level_to_amp`.
         let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
         let max_amp = level_norm * ks_lvl * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
@@ -200,9 +199,9 @@ pub fn op_tick(state: &mut OpState, mod_in: f32) -> f32 {
     out
 }
 
-/// Two-sample-averaged feedback contribution from a source op (DX7
-/// anti-aliasing convention): `0.5·(prev1 + prev2)·fb_scale`. The voice/stack
-/// tick loop adds this into the destination op's `mod_in` before ticking.
+/// Two-sample-averaged feedback contribution from a source op (anti-aliasing):
+/// `0.5·(prev1 + prev2)·fb_scale`. The voice/stack tick loop adds this into the
+/// destination op's `mod_in` before ticking.
 #[inline(always)]
 pub fn fb_inject(src: &OpState) -> f32 {
     0.5 * (src.fb_prev1 + src.fb_prev2) * src.fb_scale

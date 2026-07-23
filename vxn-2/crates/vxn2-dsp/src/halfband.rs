@@ -1,21 +1,18 @@
-//! Halfband interpolator — VXN2's input-side counterpart to the shared
-//! decimator.
+//! Halfband interpolator — the input-side counterpart to the shared decimator.
 //!
 //! The *decimation* half (`HalfbandFir`, `Oversampler`, the default tap table,
-//! and `roundtrip_latency_base_samples`) was byte-identical across both synths
-//! and was promoted to `vxn-core-utils::halfband` (E027/0118); it is
-//! re-exported below so `vxn2_dsp::halfband::…` paths keep resolving.
+//! and `roundtrip_latency_base_samples`) lives in `vxn-core-utils::halfband`
+//! and is re-exported below so `vxn2_dsp::halfband::…` paths resolve.
 //!
-//! VXN2 keeps FM at base rate and oversamples only the filter, so unlike VXN1
-//! it also needs the *interpolating* counterpart — `HalfbandInterp` /
-//! `Interpolator` (ticket 0082), built on the same `DEFAULT_TAPS` /
-//! `DEFAULT_CENTRE` table. That half stays local here.
+//! FM runs at base rate and only the filter is oversampled, so the
+//! *interpolating* counterpart — `HalfbandInterp` / `Interpolator`, built on the
+//! same `DEFAULT_TAPS` / `DEFAULT_CENTRE` table — stays local here.
 
 pub use vxn_core_utils::halfband::{
     DEFAULT_CENTRE, DEFAULT_TAPS, HalfbandFir, Oversampler, roundtrip_latency_base_samples,
 };
 
-/// One 2× halfband **interpolating** stage — the counterpart VXN1 never needed.
+/// One 2× halfband **interpolating** stage.
 ///
 /// A halfband FIR has every even-distance tap zero except the centre, so its
 /// 2× polyphase interpolation splits cleanly: one output phase is a *pure delay*
@@ -313,8 +310,8 @@ mod tests {
     /// >60 dB stopband through the bulk of the passband, but the top transition
     /// band rolls off shallower — measured image rejection here is ~−63 dB at
     /// 8 kHz / ~−66 dB at 16 kHz, degrading to ~−33 dB at 20 kHz (4 kHz shy of
-    /// base Nyquist). That transition-band behaviour is inherent to the ported
-    /// FIR and matches the decimator. We therefore validate the >60 dB floor at
+    /// base Nyquist). That transition-band behaviour matches the decimator. We
+    /// therefore validate the >60 dB floor at
     /// a representative mid-passband tone; a *missing* LP would leave the image
     /// at ~0 dB, so this still proves the low-pass is present and effective.
     #[test]

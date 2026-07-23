@@ -1,4 +1,4 @@
-//! Embedded factory-preset bank (E007 lineage, ADR 0005 §4).
+//! Embedded factory-preset bank (ADR 0005 §4).
 //!
 //! The factory presets live as a source tree under
 //! `crates/vxn2-engine/presets/factory/<Category>/<name>.toml` and are baked
@@ -111,12 +111,12 @@ mod tests {
         }
     }
 
-    /// E008 0097 durable guard: every routed slot in every factory preset must
-    /// be coherent (per the 0090 predicate) and point at a *consumed* dest. A
-    /// future preset that reintroduces an incoherent route (finer source into a
-    /// coarser dest, an LFO into its own rate, or a degenerate `voice-idx`
-    /// collapse) — or that ever pointed at a now-removed dest — fails CI here.
-    /// This is the keystone test: it keeps the matrix honest as presets grow.
+    /// Durable guard: every routed slot in every factory preset must be
+    /// coherent and point at a *consumed* dest. A preset that reintroduces an
+    /// incoherent route (finer source into a coarser dest, an LFO into its own
+    /// rate, or a degenerate `voice-idx` collapse) — or that ever pointed at a
+    /// now-removed dest — fails CI here. This keeps the matrix honest as
+    /// presets grow.
     #[test]
     fn no_factory_preset_routes_incoherently() {
         use crate::matrix::{coherence, Coherence, DestId, SourceId};

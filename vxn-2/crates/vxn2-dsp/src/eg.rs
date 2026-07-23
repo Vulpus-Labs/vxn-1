@@ -1,15 +1,14 @@
-//! 4-rate / 4-level envelope generator, DX7-shape approximation.
+//! 4-rate / 4-level envelope generator.
 //!
 //! Stages: `Idle → Attack (→L1) → Decay1 (→L2) → Decay2 (→L3) → Sustain
 //! → Release (→L4) → Idle`. Each segment marches the current level toward
 //! its target at a rate-derived increment; a target reached terminates the
-//! segment. Level may be increasing or decreasing in any segment (DX7
-//! supports rising decays and rising releases).
+//! segment. Level may be increasing or decreasing in any segment (rising
+//! decays and rising releases are supported).
 //!
 //! Fidelity: levels (0..99) → amplitude via a perceptual square curve,
 //! `amp = (L/99)^2`. Rates (0..99) → log-spaced amp-per-second between
-//! ~0.05/s (R=0, ~20 s sweep) and ~250/s (R=99, ~4 ms sweep). Matches DX7
-//! shape, not byte-exact (per ticket: "approximate DX7 shape").
+//! ~0.05/s (R=0, ~20 s sweep) and ~250/s (R=99, ~4 ms sweep).
 //!
 //! Tick rate: the EG advances per *control sample* — typically once per
 //! audio block, or every M samples for sub-block envelopes. The caller
@@ -45,11 +44,11 @@ pub struct EgState {
     /// Per-segment amplitude march rates (amp/sec) — the `Lin` path and the
     /// declick ([`kill_release`](Self::kill_release)).
     pub rates_per_sec: [f32; 4],
-    /// Curve selected at cook (ticket 0125). `Exp` marches the **downward**
+    /// Curve selected at cook. `Exp` marches the **downward**
     /// segments (Decay1/Decay2/Release) in the log2 domain — linear-in-dB →
-    /// exponential amplitude taper, the characteristic DX7 envelope. Attack
-    /// stays a linear-amplitude rise (DX7 attack is fast/punchy, not a
-    /// dead-quiet log creep). `Lin` marches every segment in amplitude.
+    /// exponential amplitude taper. Attack stays a linear-amplitude rise
+    /// (fast/punchy, not a dead-quiet log creep). `Lin` marches every segment
+    /// in amplitude.
     curve: EgCurve,
     /// Linear amplitude ceiling (`OL × ks × vel`) applied after `exp2` on the
     /// `Exp` downward path. `targets` already folds it in; kept separately so
@@ -75,32 +74,30 @@ pub struct EgState {
 /// finite floor keeps the dB/sec rate well-defined (true 0 is `-inf` in log2).
 const EG_LOG_FLOOR: f32 = -15.0;
 
-/// Per-operator level→amplitude curve (ticket 0124). Selects how a DX7-style
-/// level (0..99) — for both the EG L-values and the operator output level —
-/// maps to a normalised amplitude. Patch state, default [`EgCurve::Exp`]; the
+/// Per-operator level→amplitude curve. Selects how a level (0..99) — for both
+/// the EG L-values and the operator output level — maps to a normalised
+/// amplitude. Patch state, default [`EgCurve::Exp`]; the
 /// choice is made in `cook` (control rate, scalar) so the per-sample lane loop
 /// is untouched (see [`level_to_amp`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum EgCurve {
-    /// DX7-faithful **logarithmic** curve (`amp = 2^((L-99)/8)`, ~6 dB per 8
-    /// steps). The corrected default — moderate-level modulators were ~30× too
-    /// hot under the legacy square curve. See ADR 0007.
+    /// **Logarithmic** level curve (`amp = 2^((L-99)/8)`, ~6 dB per 8 steps).
+    /// The default. See ADR 0007.
     #[default]
     Exp = 0,
-    /// Legacy perceptual **square** curve (`(L/99)^2`). Escape hatch preserving
-    /// the pre-0123 behaviour on a per-op basis.
+    /// Perceptual **square** curve (`(L/99)^2`), selectable per-op.
     Lin = 1,
 }
 
-/// Convert a DX7-style level (0..99) to a normalised amplitude in [0, 1] under
-/// the given per-op [`EgCurve`]. `L=0` is always hard silence.
+/// Convert a level (0..99) to a normalised amplitude in [0, 1] under the given
+/// per-op [`EgCurve`]. `L=0` is always hard silence.
 #[inline]
 pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
     if level == 0 {
         return 0.0;
     }
     match curve {
-        // DX7 log curve: 0 dB at L=99, −6 dB per 8 steps (≈ −74 dB at L=1).
+        // Log curve: 0 dB at L=99, −6 dB per 8 steps (≈ −74 dB at L=1).
         EgCurve::Exp => 2_f32.powf((level.min(99) as f32 - 99.0) / 8.0),
         EgCurve::Lin => {
             let l = level.min(99) as f32 / 99.0;
@@ -109,48 +106,43 @@ pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
     }
 }
 
-/// Convert a DX7-style rate (0..99) to amplitude-per-second.
+/// Convert a rate (0..99) to amplitude-per-second.
 ///
 /// R=0 ≈ 0.05/s (~20s sweep); R=99 ≈ ~250/s (~4ms sweep). Log-spaced.
 ///
 /// Used for the **downward** Lin-path segments and the pitch EG. The **attack**
-/// segment has its own DX7-anchored curve — see [`rate_to_attack_per_sec`].
+/// segment has its own anchored curve — see [`rate_to_attack_per_sec`].
 #[inline]
 pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
     let r = rate.min(99) as f32;
     0.05 * (2_f32).powf(r * 0.125)
 }
 
-/// Convert a DX7-style rate (0..99) to the **attack** amplitude-per-second (full
-/// 0→1 rise). Split from [`rate_to_amp_per_sec`] so the attack can be calibrated
+/// Convert a rate (0..99) to the **attack** amplitude-per-second (full 0→1
+/// rise). Split from [`rate_to_amp_per_sec`] so the attack can be calibrated
 /// independently of the downward segments.
 ///
 /// The attack is a linear-amplitude rise (not the log creep of the downward
-/// path — DX7 attacks are fast/punchy). Its rate is anchored to measured DX7
-/// attack times rather than the old hand-fit (which ran ~2× too fast, so the
-/// characteristic multi-second "engine opens up" builds collapsed):
+/// path — attacks are fast/punchy). Anchored to measured attack times:
 ///
-/// | R  | full 0→1 attack | DX7 reference |
-/// |----|-----------------|---------------|
-/// | 99 | ~6 ms           | ~instant      |
-/// | 50 | ~0.5 s          | ~0.5 s        |
-/// | 20 | ~8 s            | ~8 s          |
-/// | 0  | ~50 s           | tens of s     |
+/// | R  | full 0→1 attack |
+/// |----|-----------------|
+/// | 99 | ~6 ms           |
+/// | 50 | ~0.5 s          |
+/// | 20 | ~8 s            |
+/// | 0  | ~50 s           |
 ///
 /// `0.02 × 2^(R × 0.131)` fits those anchors: base `0.02`/s at R=0, ×2 every
-/// ~7.6 rate steps (spanning ~50 s → 6 ms). The exponent tracks the DX7 attack
-/// rate table's doubling, distinct from the downward `2^(qrate/4)` decay law.
-/// The absolute scale is an ear/measured target like [`rate_to_log2_per_sec`]'s
-/// own predecessors — confirm against Dexed before treating it as final.
+/// ~7.6 rate steps (spanning ~50 s → 6 ms), distinct from the downward
+/// `2^(qrate/4)` decay law.
 #[inline]
 pub fn rate_to_attack_per_sec(rate: u8) -> f32 {
     let r = rate.min(99) as f32;
     0.02 * (2_f32).powf(r * 0.131)
 }
 
-/// Convert a DX7-style rate (0..99) to **log2 units per second** for the `Exp`
-/// downward marcher (ticket 0125). Calibrated to the measured DX7 EG (MSFA /
-/// Dexed model): the downward segment falls at
+/// Convert a rate (0..99) to **log2 units per second** for the `Exp` downward
+/// marcher. The downward segment falls at
 /// `0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4))` dB/s, where the 6-bit
 /// quantised rate `qrate = (R × 41) / 64` (integer). This is a piecewise
 /// approximation of an exponential — `2^(qrate/4)` doubles every 4 qrate steps,
@@ -158,15 +150,9 @@ pub fn rate_to_attack_per_sec(rate: u8) -> f32 {
 /// in-between steps. ≈ 0.28 dB/s at R=0 (a ~96 dB sweep takes ~5½ min) up to
 /// ≈ 16 500 dB/s at R=99 (~6 ms). Converted to log2 units: `dB/s ÷ 6.0206`.
 /// Because the march is linear-in-dB at a constant rate, a *partial* segment
-/// (a small dB step) is proportionally quicker, exactly as on a DX7.
-///
-/// Supersedes the earlier hand-fit `0.75 × 2^(R×0.125)` log2/s (~10× too fast
-/// at mid rates), and its successor `0.2819 × 2^(R×0.16)` dB/s which had the
-/// right exponent but dropped the `(1 + 0.25·(qrate mod 4))` factor — running
-/// up to 1.75× too *slow* at rates where `qrate mod 4 ≠ 0`.
+/// (a small dB step) is proportionally quicker.
 #[inline]
 pub fn rate_to_log2_per_sec(rate: u8) -> f32 {
-    // DX7 (MSFA/Dexed): qrate = (R × 41) / 64, integer-quantised.
     let qrate = (rate.min(99) as u32 * 41) / 64;
     // 0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4)) dB/s, ÷ 6.0206 dB/log2.
     let db_per_sec =
@@ -196,8 +182,8 @@ impl EgState {
         self.max_amp = max_amp;
         for i in 0..4 {
             self.targets[i] = level_to_amp(params.l[i], curve) * max_amp;
-            // Segment 0 is the attack (its own DX7-anchored linear-amplitude
-            // curve); 1..=3 are the downward Lin-path segments.
+            // Segment 0 is the attack (its own linear-amplitude curve);
+            // 1..=3 are the downward Lin-path segments.
             let rate_per_sec = if i == 0 {
                 rate_to_attack_per_sec(params.r[i])
             } else {
@@ -217,7 +203,7 @@ impl EgState {
     }
 
     /// Multiply every cooked march rate by `scale` (a per-lane `eg-rate` mod
-    /// factor — ticket 0187). Applied *after* [`cook`](Self::cook) so it composes
+    /// factor). Applied *after* [`cook`](Self::cook) so it composes
     /// with the key-rate scaling already baked in: `scale > 1` makes the envelope
     /// evolve faster (shorter attack/decay/release), `< 1` slower. Segment targets
     /// are untouched — only the speed between them changes. `scale == 1.0` is a
@@ -403,7 +389,7 @@ mod tests {
     #[test]
     fn exp_decay_is_linear_in_db() {
         // The Exp marcher steps a constant amount in log2 per tick, so the dB
-        // drop between successive samples is ~constant — the DX7 exponential
+        // drop between successive samples is ~constant — an exponential
         // taper. (A linear-amplitude decay would have a *growing* dB step.)
         let s = decay_samples(EgCurve::Exp);
         assert!(s.len() > 50, "decay too short to measure: {}", s.len());
@@ -490,9 +476,8 @@ mod tests {
 
     #[test]
     fn exp_curve_is_log_lin_is_square() {
-        // L=50 under the DX7 log curve ≈ −37 dB (ADR 0007); under the legacy
-        // square curve ≈ (50/99)^2 ≈ 0.255. The log value is ~15× quieter —
-        // the ~30× hot-modulator gap the curve change closed.
+        // L=50 under the log curve ≈ −37 dB (ADR 0007); under the square
+        // curve ≈ (50/99)^2 ≈ 0.255. The log value is ~15× quieter.
         let exp = level_to_amp(50, EgCurve::Exp);
         let lin = level_to_amp(50, EgCurve::Lin);
         assert!((exp - 2_f32.powf((50.0 - 99.0) / 8.0)).abs() < 1e-6);
@@ -510,11 +495,11 @@ mod tests {
         assert!(r99 > 100.0);
     }
 
-    /// Attack rate is monotone and lands its DX7-anchored full-scale times:
+    /// Attack rate is monotone and lands its anchored full-scale times:
     /// R=99 ≈ 6 ms, R=50 ≈ 0.5 s, R=20 ≈ 8 s, R=0 ≈ 50 s. Guards against silent
     /// re-drift of the `0.02 × 2^(R × 0.131)` calibration.
     #[test]
-    fn attack_rate_matches_dx7_anchors() {
+    fn attack_rate_matches_anchors() {
         let full = |r: u8| 1.0 / rate_to_attack_per_sec(r); // seconds for 0→1
         assert!(rate_to_attack_per_sec(0) < rate_to_attack_per_sec(50));
         assert!(rate_to_attack_per_sec(50) < rate_to_attack_per_sec(99));
@@ -525,8 +510,8 @@ mod tests {
         assert!((full(0) - 50.0).abs() < 50.0 * 0.15, "R0 {}", full(0));
     }
 
-    /// The `Exp` downward marcher must fall at the *measured* DX7 EG speed
-    /// (MSFA / Dexed): `0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4))` dB/s,
+    /// The `Exp` downward marcher must fall at the *measured* target EG speed:
+    /// `0.2819 × 2^(qrate/4) × (1 + 0.25·(qrate mod 4))` dB/s,
     /// with `qrate = (R × 41) / 64`. We drive a real release and measure the
     /// realized slope, so this locks the whole path — `cook`,
     /// `rate_to_log2_per_sec`, and the per-tick `march_log` integration — not
@@ -566,7 +551,7 @@ mod tests {
             let err = (realized - expected).abs() / expected;
             assert!(
                 err < 0.02,
-                "R={r}: realized {realized:.3} dB/s vs DX7 {expected:.3} dB/s ({:.1}% off)",
+                "R={r}: realized {realized:.3} dB/s vs target {expected:.3} dB/s ({:.1}% off)",
                 err * 100.0
             );
         }
@@ -644,7 +629,7 @@ mod tests {
 
     #[test]
     fn scale_rates_identity_is_bit_exact() {
-        // The `eg-rate` note-on path (0187) calls `scale_rates(1.0)` on every
+        // The `eg-rate` note-on path calls `scale_rates(1.0)` on every
         // un-targeted lane; it must leave the cooked rates bit-for-bit unchanged.
         let params = default_params();
         let mut a = EgState::default();

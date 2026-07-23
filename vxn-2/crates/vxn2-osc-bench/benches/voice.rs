@@ -22,8 +22,8 @@ const SR: f32 = 48_000.0;
 fn build_voices(algo: u8) -> [Voice; VOICES] {
     let mut params = VoiceParams::default();
     params.algo = algo;
-    // Mid feedback (now layer-level) exercises the FB averaging path on the
-    // algorithm's structural FB op.
+    // Mid feedback exercises the FB averaging path on the algorithm's
+    // structural FB op.
     params.feedback = 2.0;
     let mut voices = [Voice::default(); VOICES];
     for (i, v) in voices.iter_mut().enumerate() {

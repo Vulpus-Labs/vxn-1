@@ -1,4 +1,4 @@
-//! Master section (ticket 0012): patch-level tune offset + final output gain.
+//! Master section: patch-level tune offset + final output gain.
 //!
 //! Per PARAMETERS.md the master is two scalars:
 //!
@@ -12,11 +12,11 @@
 //!   the very last multiplier before the engine returns its stereo pair.
 //!
 //! The default `master_volume = −6 dB` gives ~6 dB of headroom for typical
-//! patches. An optional brickwall safety limiter (VXN1 parity, `limiter_on`,
-//! off by default) sits last in the FX chain after this gain; when off,
-//! over-cooked patches clip into the host bus as before. The limiter DSP
-//! object itself lives on the engine — this module only owns the on/off flag
-//! alongside the master scalars.
+//! patches. An optional brickwall safety limiter (`limiter_on`, off by
+//! default) sits last in the FX chain after this gain; when off, over-cooked
+//! patches clip into the host bus. The limiter DSP object itself lives on the
+//! engine — this module only owns the on/off flag alongside the master
+//! scalars.
 
 /// `master_tune` range in cents.
 pub const MASTER_TUNE_MIN_CT: f32 = -100.0;
@@ -31,8 +31,8 @@ pub const MASTER_VOL_DEFAULT_DB: f32 = -6.0;
 
 /// Per-sample smoothing time for master gain. A slider drag or an automation
 /// lane writes a new `volume_db` once per control block; smoothing the linear
-/// gain toward it kills the zipper noise of a block-rate step (VXN1 parity,
-/// 5 ms). Snapped — not glided — on reset / preset load.
+/// gain toward it kills the zipper noise of a block-rate step (5 ms). Snapped
+/// — not glided — on reset / preset load.
 pub const MASTER_VOL_SMOOTH_MS: f32 = 5.0;
 
 /// dB → linear gain (`10^(dB / 20)`).
@@ -46,9 +46,8 @@ pub fn db_to_lin(db: f32) -> f32 {
 pub struct MasterParams {
     pub tune_cents: f32,
     pub volume_db: f32,
-    /// Brickwall safety limiter on the master bus (VXN1 parity). Off by
-    /// default so an unchanged patch stays bit-identical; the limiter object
-    /// lives on the engine and only runs when this is set.
+    /// Brickwall safety limiter on the master bus. Off by default; the limiter
+    /// object lives on the engine and only runs when this is set.
     pub limiter_on: bool,
 }
 

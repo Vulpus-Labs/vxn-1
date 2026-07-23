@@ -1,36 +1,5 @@
-/// Shared test helpers for vxn2-dsp unit tests.
-///
-/// Design notes (ticket 0165):
-///
-/// - All helpers are `pub(crate)` so they are accessible within any `#[cfg(test)]`
-///   module in this crate, which is the only intended consumer.
-/// - `run_until_stage` is closure-based to avoid coupling to a specific stage
-///   enum. The caller tick-fn returns `true` when the target stage is reached.
-/// - `assert_bit_exact_passthrough` uses a fixed internal stereo sine generator
-///   (330 Hz L, 110 Hz R, 48 kHz). Both callers (phaser + dynamics) previously
-///   used slightly different generators (fast_sine_01 vs TAU·f·sin), but because
-///   the assertion is `output == input` (not `output == reference`), the exact
-///   signal shape is irrelevant — any non-trivial, deterministic stereo pair
-///   proves the passthrough property. The tolerance remains zero bits (bit-exact).
-/// - `sine_tail_energy` targets the reverb helpers (`rms_with_damp`). The filter
-///   helpers (`mode_energy`, `chain_energy`) have incompatible signatures
-///   (they return `f64`, take mode/slope/cutoff args, and the chain variant uses
-///   `osc_chain`) — forcing them through a shared helper would add more complexity
-///   than it removes, so they remain as file-local helpers in `filter.rs`.
-///   `reverb::tail_energy` is an impulse-driver not a sine-driver; it remains a
-///   file-local helper too since its setup differs fundamentally from the
-///   `rms_with_damp` pattern (continuous tone vs impulse-then-silence).
-/// - The S&H threshold mismatch (`lfo1` uses `3..8`, `lfo2` uses `> 5`) is left
-///   as-is. `lfo1` counts steps across 1000 blocks at 4 Hz (~5 cycles);
-///   `lfo2_sample_hold` counts distinct `sh_value[0]` values across 1000 blocks
-///   at 4 Hz but seeds from the first eval. The two tests are measuring slightly
-///   different things (step transitions vs distinct held values) so aligning them
-///   would be an observable semantic change, not a safe refactor.
-/// - `zero_cross_period` (for lfo.rs) and `assert_cooked_hz` (for op.rs) are
-///   inlined since the lfo crossing detection is already extracted into local
-///   crossings vectors and `assert_cooked_hz` would save only a minor amount of
-///   boilerplate over the 4 call sites.  Instead we provide them both as proper
-///   helpers per the ticket AC.
+/// Shared test helpers for vxn2-dsp unit tests. All `pub(crate)`, consumed only
+/// by this crate's `#[cfg(test)]` modules.
 
 use std::f32::consts::TAU;
 
@@ -62,8 +31,7 @@ pub(crate) fn run_until_stage(mut tick: impl FnMut() -> bool, max: usize) -> boo
 ///
 /// The specific input waveform is immaterial — any non-trivial deterministic
 /// pair establishes the passthrough property (output == input, zero bits
-/// different). Both phaser.rs and dynamics.rs previously used slightly
-/// different generators; this unified form is semantically identical.
+/// different).
 pub(crate) fn assert_bit_exact_passthrough(mut process_fn: impl FnMut(f32, f32) -> (f32, f32), n: usize) {
     const SR: f32 = 48_000.0;
     for i in 0..n {
@@ -84,8 +52,7 @@ pub(crate) fn assert_bit_exact_passthrough(mut process_fn: impl FnMut(f32, f32) 
 }
 
 /// Settle `process_fn` for `settle` samples (arbitrary input), then assert
-/// bit-exact passthrough for `n` samples. Equivalent to the settle+check
-/// pattern in `switch_off_fades_then_settles_to_bit_exact` (phaser + dynamics).
+/// bit-exact passthrough for `n` samples.
 pub(crate) fn assert_bit_exact_after_settle(
     mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
     settle: usize,
@@ -98,10 +65,7 @@ pub(crate) fn assert_bit_exact_after_settle(
 }
 
 /// Drive `process_fn` (stereo in/out) with a `f_hz`-Hz sine at 48 kHz for
-/// `warm` samples, then sum the RMS of the following `measure` samples.
-///
-/// Encapsulates the pattern in `reverb.rs::rms_with_damp` (continuous tone
-/// drive → measure tail RMS). Returns the raw mean-square root (RMS).
+/// `warm` samples, then return the RMS of the following `measure` samples.
 pub(crate) fn sine_rms(
     mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
     f_hz: f32,
@@ -124,13 +88,10 @@ pub(crate) fn sine_rms(
     (e / (2.0 * measure as f32)).sqrt()
 }
 
-/// `carrier_friendly_patch()` — algo 32 with all ops having `r[3] = 99`.
-///
-/// Hoisted from the identical definitions in `stack.rs` and `voice.rs` test
-/// modules. Both modules re-export via their own local alias that delegates
-/// here. Algo 32: all 6 ops are carriers with no modulator edges, so each op
-/// runs its own path with no inter-op coupling. The fast release (`R4=99 ≈
-/// 4 ms`) makes `is_idle()` reachable in reasonable test time.
+/// Algo 32 with all ops having `r[3] = 99`: all 6 ops are carriers with no
+/// modulator edges, so each op runs its own path with no inter-op coupling.
+/// The fast release (`R4=99 ≈ 4 ms`) makes `is_idle()` reachable in reasonable
+/// test time.
 pub(crate) fn carrier_friendly_patch() -> crate::voice::VoiceParams {
     use crate::algo::N_OPS;
     use crate::op::OpParams;

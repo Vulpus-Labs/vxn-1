@@ -1,4 +1,4 @@
-//! Pre-FX cleanup filters (ticket 0021 / ADR §7).
+//! Pre-FX cleanup filters.
 //!
 //! Stereo one-pole HPF (20 Hz) → one-pole LPF (18 kHz) on the post-sum bus,
 //! between the stack mix and the delay input. Fixed cutoffs, no setters,

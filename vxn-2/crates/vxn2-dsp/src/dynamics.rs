@@ -1,13 +1,12 @@
 //! Stereo dynamics block: feed-forward peak compressor followed by a `tanh`
 //! saturator, wrapped in a wet/dry smoother so on/off transitions glide
-//! instead of click. Mirrors the on/off discipline of phaser / delay / reverb
-//! (`vxn-2/crates/vxn2-dsp/src/phaser.rs:347-394`): a steady `on = false`
+//! instead of click. Mirrors the on/off discipline of phaser / delay / reverb:
+//! a steady `on = false`
 //! block is a bit-exact passthrough; switching off fades the wet to 0 before
 //! reverting to passthrough; switching on glides up from the faded-out 0; the
 //! envelope follower resets across a fully-faded inactive interval so
 //! re-engaging can't dump a stale gain reduction (same shape as the master
-//! limiter's `limiter_was_on` reset at
-//! `vxn-2/crates/vxn2-engine/src/engine.rs:1216-1228`).
+//! limiter's `limiter_was_on` reset).
 //!
 //! Channel-strip order: **comp → sat**. Compressing first evens the
 //! transients the saturator drives into, so the harmonic content is
@@ -42,8 +41,6 @@ const LOG2_TO_DB: f32 = 6.020_6;
 /// `log2(10) / 20`: inverse of [`LOG2_TO_DB`], so `(db * DB_TO_LOG2).exp2()`
 /// equals `10^(db / 20)` at the cost of one `exp2` instead of one `powf`.
 const DB_TO_LOG2: f32 = 1.0 / LOG2_TO_DB;
-
-// ── Params struct (engine-facing snapshot; mirrors `PhaserParams`) ───────────
 
 /// Block-rate parameter snapshot the engine fans into [`DynamicsBlock`].
 /// Host-automation only — not a mod-matrix destination (matches phaser).
@@ -82,8 +79,6 @@ impl Default for DynamicsParams {
     }
 }
 
-// ── DynamicsBlock ────────────────────────────────────────────────────────────
-
 /// Stereo dynamics: feed-forward linked-sidechain peak compressor → `tanh`
 /// saturator, with a single wet/dry smoother wrapping the pair.
 #[derive(Clone)]
@@ -114,8 +109,7 @@ pub struct DynamicsBlock {
     /// `enabled || mix.current() > 0` on the previous active call. The
     /// detector is reset on the inactive→active edge so a fully-faded
     /// inactive interval doesn't dump stale gain reduction on re-engage
-    /// (mirrors the master limiter's `limiter_was_on` pattern at
-    /// `vxn-2/crates/vxn2-engine/src/engine.rs:1216-1228`).
+    /// (mirrors the master limiter's `limiter_was_on` pattern).
     was_active: bool,
 }
 
@@ -291,8 +285,6 @@ impl DynamicsBlock {
         self.mix.current()
     }
 }
-
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

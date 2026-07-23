@@ -36,7 +36,7 @@ pub trait Vxn2Params: ParamModel {
     fn take_dirty_ks_curve(&self) -> bool;
 
     /// Read every op's EG level-curve selector as `[u8; 6]` discriminants
-    /// (`eg::EgCurve`: 0 = Exp, 1 = Lin). Ticket 0128.
+    /// (`eg::EgCurve`: 0 = Exp, 1 = Lin).
     fn eg_curves(&self) -> [u8; 6];
 
     /// Write op `op`'s EG curve selector. Out-of-range op silently no-ops.

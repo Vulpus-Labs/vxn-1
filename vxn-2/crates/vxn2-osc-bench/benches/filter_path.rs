@@ -1,30 +1,12 @@
-//! Optional per-voice filter render path (E007 / ticket 0087).
+//! Optional per-voice filter render path.
 //!
 //! Same 16-voice × density-4 chord as `master_chain`, FX on. Measures the
 //! filter-OFF bypass against the filter-ON stack-major path at the fixed 4×
-//! oversample factor (selector removed), so the per-voice ladder + resampler
-//! cost is readable directly.
+//! oversample factor, so the per-voice ladder + resampler cost is readable
+//! directly.
 //!
-//! - `filter_off` — the unchanged sample-major loop (bypass; should match the
-//!   pre-E007 floor).
-//! - `filter_on_4x` — the interpolate → ladder@4× → decimate cost (the only
-//!   factor shipped now that the filter shares its 4× span with the dynamics FX).
-//!
-//! Recorded figures (Apple M-series, 48 kHz, 256-sample block ⇒ a 5.333 ms
-//! real-time budget; full poly = 16 voices × density 4 = 64 op-voice instances,
-//! FX on — the heaviest steady state). RT-multiple = 5333 µs / measured median,
-//! alongside the existing dry/sync/idle numbers:
-//!
-//! | path                | median   | × real-time |
-//! |---------------------|----------|-------------|
-//! | `filter_off`        | 286 µs   | 18.6×       |
-//! | `filter_on_4x`      | 1.21 ms  |  4.4×       |
-//!
-//! Off-path cost is within noise of the pre-epic full-poly floor; 4× stays
-//! real-time at full poly. Quiescence-skip saving (4× setting): a held
-//! chord costs ~1.24 ms (4.3×), the same chord released + fully rung out drops
-//! to ~12 µs — the skip reclaims essentially the whole filter cost once voices
-//! settle.
+//! - `filter_off` — the unchanged sample-major loop (bypass).
+//! - `filter_on_4x` — the interpolate → ladder@4× → decimate cost.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_engine::engine::Engine;
@@ -35,7 +17,7 @@ const SR: f32 = 48_000.0;
 const BLK: usize = 256;
 const N_NOTES: usize = 16;
 
-/// `on`: false ⇒ filter off; true ⇒ on at the fixed 4× (selector removed).
+/// `on`: false ⇒ filter off; true ⇒ on at the fixed 4×.
 fn build_engine(on: bool) -> Engine {
     let s = SharedParams::new();
     s.set(id_of("stack-density").unwrap(), 4.0);
@@ -86,7 +68,7 @@ fn bench_filter(c: &mut Criterion) {
     g.finish();
 }
 
-/// Quiescence-skip saving (ticket 0085 / 0087). The skip is not a runtime
+/// Quiescence-skip saving. The skip is not a runtime
 /// toggle — it engages automatically once a stack goes idle *and* its ladder
 /// has rung out — so the saving is read as the delta between two steady states
 /// at the same 4× filter setting:

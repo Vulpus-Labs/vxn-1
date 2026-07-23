@@ -1,4 +1,4 @@
-//! Editor smoke (ticket 0032).
+//! Editor smoke.
 //!
 //! Closes the IPC plumbing loop: simulates a JS-side `set_param` message
 //! flowing through the IPC parser, into the controller's `UiEvent`
@@ -6,7 +6,7 @@
 //! audio thread (or any other reader of `SharedParams`) sees the new
 //! value. Also covers `begin_gesture` / `end_gesture` brackets — the
 //! shape the page emits around a fader drag or a numeric-entry popup
-//! commit (ticket 0030).
+//! commit.
 //!
 //! Scope intentionally bounded to "JS → IPC → controller → ParamModel"
 //! per the ticket's "ONE path" note. The WebView itself is NOT
@@ -47,11 +47,8 @@ fn simulate_ipc(controller: &mut Controller<SharedParams>, body: &str) {
 /// because the IPC smoke tests assert on `SharedParams` state, not on
 /// view events.
 ///
-/// Disambiguation note (ticket 0167): the similarly-named helper in
-/// `vxn2-app/tests/controller.rs` returns the receiver for event-inspection
-/// and is the vxn2-app variant. These two are in different crates and
-/// different test-binary namespaces; they are kept separate because their
-/// callers have different inspection needs.
+/// The similarly-named helper in `vxn2-app/tests/controller.rs` returns the
+/// receiver for event-inspection; this variant discards it.
 fn build_controller() -> (Controller<SharedParams>, Arc<SharedParams>) {
     let shared = Arc::new(SharedParams::new());
     let (controller, _view_rx, _corpus) =
@@ -76,9 +73,9 @@ fn set_param_round_trips_into_shared_params() {
     );
 }
 
-/// Numeric-entry popup commit (ticket 0030) brackets a `set_param` with
-/// begin/end gesture events. After tick the value lands AND the
-/// gesture flag clears — the diff pump (0031) wouldn't be suppressed.
+/// Numeric-entry popup commit brackets a `set_param` with begin/end
+/// gesture events. After tick the value lands AND the gesture flag clears —
+/// the diff pump wouldn't be suppressed.
 #[test]
 fn gesture_bracketed_set_param_lands_and_clears_gesture() {
     let (mut controller, shared) = build_controller();

@@ -102,6 +102,8 @@ export function encodeInto(view, base, event) {
       view.setFloat32(base + 4, event.depth, true);
       view.setUint8(base + 8, event.slot & 0xff);
       view.setUint8(base + 9, (event.curve & ~MATRIX_FLAG_ACTIVE) | (event.active ? MATRIX_FLAG_ACTIVE : 0));
+      // E033 scale source rides byte 12 (bytes 12-15 reserved; seq is 10-11).
+      view.setUint8(base + 12, (event.scale_src | 0) & 0xff);
       break;
     case EV_PATCH_SWAP:
       break; // tag-only; header (type + offset) already written
@@ -168,6 +170,7 @@ export function decode(view, base = 0) {
         curve: flag & ~MATRIX_FLAG_ACTIVE,
         active: (flag & MATRIX_FLAG_ACTIVE) !== 0,
         depth: view.getFloat32(base + 4, true),
+        scale_src: view.getUint8(base + 12),
       };
     }
     case EV_PATCH_SWAP:
@@ -189,7 +192,7 @@ export const ev = {
   pitchBend: (norm, offset = 0) => ({ type: EV_PITCH_BEND, offset, value: norm }),
   modWheel: (norm, offset = 0) => ({ type: EV_MOD_WHEEL, offset, value: norm }),
   sustain: (on, offset = 0) => ({ type: EV_SUSTAIN, offset, on }),
-  setMatrixRow: (slot, source, dest, curve, active, depth, offset = 0) => ({
+  setMatrixRow: (slot, source, dest, curve, active, depth, scale_src = 0, offset = 0) => ({
     type: EV_MATRIX_ROW,
     offset,
     slot,
@@ -198,6 +201,7 @@ export const ev = {
     curve,
     active,
     depth,
+    scale_src,
   }),
   patchSwap: (offset = 0) => ({ type: EV_PATCH_SWAP, offset }),
 };

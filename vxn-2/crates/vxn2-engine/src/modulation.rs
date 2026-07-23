@@ -1,9 +1,8 @@
 //! Patch-level modulation sources resolved once per control block.
 //!
-//! Ticket 0006 scaffolding for the mod matrix (ticket 0008). The matrix
-//! routes from a fixed set of sources to destinations; LFO1 is one such
-//! source. This module owns the patch-global LFO1 state and produces a
-//! `ModBlock` snapshot the matrix can read.
+//! The mod matrix routes from a fixed set of sources to destinations; LFO1 is
+//! one such source. This module owns the patch-global LFO1 state and produces
+//! a `ModBlock` snapshot the matrix can read.
 //!
 //! Per-voice sources (LFO2, Pitch EG, Mod Env, `voice_idx`, `voice_spread`,
 //! `voice_rand`) are resolved inside each [`vxn2_dsp::stack::Stack`] — they
@@ -18,7 +17,7 @@
 use vxn2_dsp::lfo::{Lfo1, Lfo1Params};
 
 /// Patch-level modulation engine state. Owned by the top-level engine; one
-/// instance per patch (per layer once 0009 lands).
+/// instance per patch.
 #[derive(Clone, Copy, Debug)]
 pub struct PatchMod {
     pub lfo1: Lfo1,
@@ -72,8 +71,7 @@ pub struct PatchModParams {
 
 /// Patch-global modulation snapshot for one control block. The mod matrix
 /// reads from this. LFO1 output is bipolar `[-1, +1]` and enters the matrix
-/// at full scale; per-route send level is the slot depth column's job
-/// (the `lfo1-depth` macro was removed in E006 / ticket 0061).
+/// at full scale; per-route send level is the slot depth column's job.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ModBlock {
     pub lfo1: f32,

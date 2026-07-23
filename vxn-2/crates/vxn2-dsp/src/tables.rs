@@ -1,10 +1,9 @@
-//! Small lookup tables that translate plain DX7-style parameter values to
-//! runtime scalars. Approximate the DX7 ROM curves; values are not bit-exact
-//! but match the *shape* the synth manuals describe (see PARAMETERS.md and
-//! ADR 0001 — fidelity target is "sounds like an FM operator", not byte-exact
-//! DX7 reproduction).
+//! Small lookup tables that translate plain FM-operator parameter values to
+//! runtime scalars. Values are not bit-exact but match the *shape* described in
+//! PARAMETERS.md and ADR 0001 — fidelity target is "sounds like an FM
+//! operator", not byte-exact reproduction.
 
-/// Velocity sensitivity (0..7). Approximates the DX7 vel-sens curve: at 0,
+/// Velocity sensitivity (0..7). Approximate vel-sens curve: at 0,
 /// `level` is independent of velocity (1.0 always). At 7, a velocity of 1
 /// yields ~0 amplitude and 127 yields full. Intermediate `vs` interpolates
 /// linearly between the two extremes.
@@ -18,16 +17,12 @@ pub fn vel_factor(vs: u8, velocity: u8) -> f32 {
 
 /// Layer-level feedback (continuous, `[0.0, 7.0]`). Maps to a multiplier
 /// applied to the 2-sample-averaged feedback signal before it's mixed into
-/// the phase-modulation input. DX7 feedback is shift-based — exactly ×2 per
-/// step — so the table is a pure doubling ladder topping out at ~1.0, the
-/// sawtooth edge of the feedback loop's stable region (ticket 0079).
-///
-/// The previous table extended to 3.0: past ~1.0 the loop runs chaotic, and
-/// an op EG releasing through the stability boundary collapses the
-/// oscillation mode within a couple of samples — an unsmoothable click on
-/// every note-off (heard on the default E.PIANO, whose ROM FB=6 mapped to
-/// 2.0). DX7 ROM voices now land on DX7-equivalent loop gains verbatim;
-/// intermediate values linearly interpolate.
+/// the phase-modulation input. The table is a pure doubling ladder (×2 per
+/// step) topping out at ~1.0, the sawtooth edge of the feedback loop's stable
+/// region. Past ~1.0 the loop runs chaotic: an op EG releasing through the
+/// stability boundary collapses the oscillation mode within a couple of
+/// samples — an unsmoothable click on every note-off. Intermediate values
+/// linearly interpolate.
 pub const FB_SCALE_TABLE: [f32; 8] = [
     0.0,
     1.0 / 64.0,

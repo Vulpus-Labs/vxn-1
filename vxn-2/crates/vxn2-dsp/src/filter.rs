@@ -1,22 +1,14 @@
-//! R3109/IR3109-style OTA-C ladder lowpass — a Roland/Juno-flavoured filter.
-//!
-//! Lifted from VXN1 (`vxn-dsp/src/ota_ladder.rs`) into `vxn2-dsp` as a
-//! self-contained, dependency-free module (see `smoother.rs`, "lifted from
-//! VXN1"). VXN2 is pure-FM with no subtractive filter and no `tanh`; this brings
-//! the OTA-C ladder in as the optional per-voice filter of E007 / ADR 0004.
+//! OTA-C ladder lowpass, the optional per-voice filter of ADR 0004.
 //!
 //! Four TPT one-pole stages, but the nonlinearity lives **inside each
 //! integrator** (a per-stage `tanh` on the integrator input) rather than on the
-//! global feedback sum. That matches the softer, more distributed saturation of
-//! OTA-C filter chips (IR3109, CEM3320, …) and gives a cleaner, more sinusoidal
-//! self-oscillation than a Moog-style transistor ladder:
+//! global feedback sum. That gives a softer, more distributed saturation and a
+//! cleaner, more sinusoidal self-oscillation than a global-feedback ladder:
 //!
 //! * Per-stage `tanh`, not a single global pre-feedback `tanh`.
-//! * **No** resonance-dependent input attenuation — Juno-style filters don't
-//!   thin the bass under high resonance, so there is no `scale` term and no
-//!   Sharp/Smooth voicing axis. There is also **no** resonance gain
-//!   compensation: this is a Juno emulation, so the `1/(1+k)` passband loss
-//!   under resonance is left intact as part of the authentic OTA character.
+//! * **No** resonance-dependent input attenuation, so there is no `scale` term
+//!   and no Sharp/Smooth voicing axis. There is also **no** resonance gain
+//!   compensation: the `1/(1+k)` passband loss under resonance is left intact.
 //!   ([`k_cap`] still tames high-cutoff self-oscillation — a stability fix, not
 //!   a level restore.)
 //! * Selectable response ([`FilterMode`]): 24 / 12 dB lowpass, band-pass,
@@ -25,11 +17,10 @@
 //!   resonance feedback loop is **always** taken from the 4th stage, so the
 //!   filter self-oscillates identically at `k ≈ 4` in every mode.
 //!
-//! Frozen-coefficient kernel, matching VXN2's per-control-block model: the
-//! engine recomputes coefficients once per block via [`OtaLadderCoeffs`]. The
-//! per-sample-ramped poly SoA sibling from VXN1 is deliberately **not** ported —
-//! the filter runs on a stack's summed stereo pair (two scalar kernels, L/R),
-//! so there is no per-lane SoA problem here.
+//! Frozen-coefficient kernel on the per-control-block model: the engine
+//! recomputes coefficients once per block via [`OtaLadderCoeffs`]. The filter
+//! runs on a stack's summed stereo pair (two scalar kernels, L/R), so there is
+//! no per-lane SoA problem here.
 
 use crate::math::fast_tanh;
 use std::f32::consts::{FRAC_PI_4, PI};
@@ -186,8 +177,8 @@ pub struct OtaLadderCoeffs {
 impl OtaLadderCoeffs {
     /// `resonance` is taken in `[0, 1]` and scaled to the `[0, 4]` feedback
     /// range internally (self-oscillation at `resonance = 1.0`). The param layer
-    /// (ticket 0083) feeds `[0, 1]` directly. `sample_rate` is the oversampled
-    /// rate on the filter path.
+    /// feeds `[0, 1]` directly. `sample_rate` is the oversampled rate on the
+    /// filter path.
     #[inline]
     pub fn new(cutoff_hz: f32, sample_rate: f32, resonance: f32, drive: f32) -> Self {
         Self {
@@ -257,8 +248,8 @@ impl OtaLadderKernel {
     }
 
     /// Largest absolute value across all internal state (the four ladder stage
-    /// integrators plus the feedback-tap memory). Ticket 0085 keys its
-    /// quiescence-skip on this: a stack whose input is zero *and* whose filter
+    /// integrators plus the feedback-tap memory). The quiescence-skip keys on
+    /// this: a stack whose input is zero *and* whose filter
     /// state has fallen below an audibility floor can be skipped, because its
     /// future output is bounded by this magnitude. A self-oscillating filter
     /// (resonance → 1) sustains large state forever, so it never reads as
@@ -432,7 +423,7 @@ mod tests {
 
     /// Three disjoint scenarios for cutoff-cap and quiescence-gate behaviour:
     ///
-    /// 1. **Non-resonant decay** (quiescence gate, ticket 0085): a ladder with
+    /// 1. **Non-resonant decay** (quiescence gate): a ladder with
     ///    low resonance settles below the −100 dBFS skip floor within ~0.5 s
     ///    so a released voice is eventually quiescent.
     ///
@@ -503,9 +494,7 @@ mod tests {
         assert!(lo_min > EPS, "low-cutoff self-osc wrongly decayed: {lo_min}");
     }
 
-    // ---- Integrated per-voice path (E007 ticket 0087) -------------------
-    //
-    // The "integrated path" is interpolate → ladder@F → decimate (the actual
+    // Integrated per-voice path: interpolate → ladder@F → decimate (the actual
     // per-voice filter chain the engine runs), not the bare kernel. These
     // exercise the whole chain so oversampling's effect is observable.
 
@@ -604,7 +593,7 @@ mod tests {
             );
             prev = frac;
         }
-        // Recorded for the ticket / README; visible with `cargo test -- --nocapture`.
+        // Visible with `cargo test -- --nocapture`.
         for (f, d) in &db {
             println!("aliasing {f}×: inharmonic energy {d:.1} dB");
         }

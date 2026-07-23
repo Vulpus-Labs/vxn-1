@@ -55,7 +55,14 @@ test("string opcodes route to the matching C-ABI call", () => {
 test("set_matrix_row unpacks the row fields", () => {
   const c = mockController();
   routeOpcode(c, { op: "set_matrix_row", slot: 9, row: { source: 2, dest: 3, curve: 1, active: true, depth: 0.5 } });
-  assert.deepEqual(c.calls, [["setMatrixRow", 9, 2, 3, 1, true, 0.5]]);
+  // Trailing 0 is the E033 scale source (absent in row → None).
+  assert.deepEqual(c.calls, [["setMatrixRow", 9, 2, 3, 1, true, 0.5, 0]]);
+});
+
+test("set_matrix_row carries the E033 scale source when present", () => {
+  const c = mockController();
+  routeOpcode(c, { op: "set_matrix_row", slot: 4, row: { source: 1, dest: 17, curve: 0, active: true, depth: 1.0, scale: 5 } });
+  assert.deepEqual(c.calls, [["setMatrixRow", 4, 1, 17, 0, true, 1.0, 5]]);
 });
 
 test("numeric op == set_op_tab (operator index, no side/curve)", () => {

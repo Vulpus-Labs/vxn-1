@@ -24,7 +24,7 @@ use vxn2_engine::shared::{ParamModel, SharedParams};
 const SR: f32 = 48_000.0;
 const BLOCK: usize = 512;
 // Adaptive render window. The chord's true sample peak lands at the apex of the
-// carriers' attack, which for a slow DX7 attack rate is *seconds* away (rate 13
+// carriers' attack, which for a slow attack rate is *seconds* away (rate 13
 // ≈ 6.4 s to full amplitude; rate 0 ≈ 20 s). A fixed short window measures the
 // envelope mid-climb, under-reads the peak, and the one-shot correction then
 // over-boosts long-attack presets (e.g. "Evolution"). So render until the

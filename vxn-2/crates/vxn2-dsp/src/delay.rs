@@ -1,4 +1,4 @@
-//! Stereo BPM-syncable delay (ticket 0010 / ADR §7).
+//! Stereo BPM-syncable delay.
 //!
 //! Clean delay — no tape, no filter on the feedback path beyond a one-pole DC
 //! blocker at ~10 Hz. Character lives in the synth, not the FX.
@@ -44,8 +44,6 @@ const SMOOTH_MS: f32 = 100.0;
 /// switch-on so the delay doesn't click in at full level.
 const MIX_SMOOTH_MS: f32 = 30.0;
 const DC_FC_HZ: f32 = 10.0;
-
-// ─── Ring buffer ─────────────────────────────────────────────────────────────
 
 struct Ring {
     data: Box<[f32]>,
@@ -105,8 +103,6 @@ impl Ring {
     }
 }
 
-// ─── DC blocker ──────────────────────────────────────────────────────────────
-
 #[derive(Clone, Copy)]
 struct DcBlock {
     x1: f32,
@@ -138,17 +134,12 @@ impl DcBlock {
     }
 }
 
-// ─── BPM sync ────────────────────────────────────────────────────────────────
-
 /// Seconds per cycle for the subdivision at `index`, given `tempo_bpm`.
-/// Mirrors VXN1's `vxn_app::sync::synced_seconds`.
 #[inline]
 pub fn synced_seconds(tempo_bpm: f32, index: usize) -> f32 {
     let beats = SUBDIVISIONS[index.min(SUBDIVISIONS.len() - 1)].beats;
     beats / (tempo_bpm / 60.0)
 }
-
-// ─── Params + delay ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug)]
 pub struct StereoDelayParams {
@@ -312,8 +303,6 @@ impl StereoDelay {
     }
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,7 +315,6 @@ mod tests {
 
     #[test]
     fn buffer_holds_max_delay_at_sr() {
-        // 384k samples at 96 kHz × 4 s; next power of two is 524288.
         let d = StereoDelay::new(96_000.0);
         assert!(d.buffer_capacity() as f32 >= MAX_DELAY_S * 96_000.0);
         assert!(d.buffer_capacity().is_power_of_two());
@@ -398,7 +386,6 @@ mod tests {
             ..Default::default()
         };
         d.set_params(&p, 120.0);
-        // Settle smoother past full glide.
         for _ in 0..(SR as usize) {
             let _ = d.process(0.0, 0.0);
         }
@@ -432,7 +419,6 @@ mod tests {
             ..Default::default()
         };
         d.set_params(&p, 120.0);
-        // Settle.
         for _ in 0..(SR as usize / 5) {
             let _ = d.process(0.0, 0.0);
         }

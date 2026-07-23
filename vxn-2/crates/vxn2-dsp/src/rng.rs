@@ -1,9 +1,8 @@
 //! Shared xorshift64* step. The stack's per-voice randomisation
 //! ([`crate::stack`]) and the LFO sample-and-hold / phase-scatter
 //! ([`crate::lfo`]) both need a cheap, deterministic, audio-thread-safe PRNG
-//! seeded from a `u64`. They formerly carried byte-identical copies of the
-//! step (ticket 0071 dedup); this is the single definition. Each caller keeps
-//! its own `[0,1)` / `[-1,1)` wrapper since the output mapping differs.
+//! seeded from a `u64`. This is the single definition; each caller keeps its
+//! own `[0,1)` / `[-1,1)` wrapper since the output mapping differs.
 
 /// xorshift64* — advances `state` in place and returns the scrambled word.
 /// Constants are the canonical Vigna xorshift64* triple (13, 7, 17) and

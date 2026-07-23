@@ -3,9 +3,9 @@
 //! Drives the plugin through the real CLAP lifecycle via clack-host
 //! (`init` → `activate(44.1k / 256)` → `start_processing` → `process`) and
 //! exercises notes, automation, transport tempo, raw MIDI bend / mod-wheel,
-//! and state save / restore. Closes E002: if every test here passes, the
-//! kernel + CLAP shell + default patch + state extension are wired up
-//! correctly end-to-end.
+//! and state save / restore. If every test here passes, the kernel + CLAP
+//! shell + default patch + state extension are wired up correctly
+//! end-to-end.
 //!
 //! Loads via the in-process `rlib` target so panics surface with real
 //! backtraces; nothing here goes through `dlopen`.
@@ -33,8 +33,6 @@ static VXN_ENTRY: EntryDescriptor = clack_entry!(SinglePluginEntry<VxnPlugin>);
 const SAMPLE_RATE: f64 = 44_100.0;
 const MAX_FRAMES: u32 = 256;
 const PLUGIN_ID: &core::ffi::CStr = c"labs.vulpus.vxn2";
-
-// ── Host stub ───────────────────────────────────────────────────────────────
 
 struct TestHostShared;
 impl SharedHandler<'_> for TestHostShared {
@@ -286,8 +284,6 @@ fn tempo_transport(bpm: f64) -> TransportEvent {
     }
 }
 
-// ── 1. Entry / factory ──────────────────────────────────────────────────────
-
 #[test]
 fn entry_loads_and_describes_vxn2() {
     let entry = load_entry();
@@ -298,14 +294,11 @@ fn entry_loads_and_describes_vxn2() {
     assert_eq!(desc.name().unwrap().to_str().unwrap(), "VXN2");
 }
 
-// ── 2. Default-patch render ─────────────────────────────────────────────────
-
 /// One-note default-patch render. Holds C4 for 1 s, releases, lets the tail
 /// decay over 4 s. Checks: nothing NaN-tails, the attack RMS sits inside the
 /// listening-test envelope, the post-release tail dies below the noise floor.
 ///
-/// Bounds depend on the patch tuning in ticket 0018 — if 0018 shifts the
-/// patch's loudness materially, update these here.
+/// If the default patch's loudness shifts materially, update these bounds.
 #[test]
 fn default_patch_render_one_note() {
     let entry = load_entry();
@@ -349,14 +342,12 @@ fn default_patch_render_one_note() {
     );
 }
 
-// ── 3. Parameter sweep ──────────────────────────────────────────────────────
-
 /// Every CLAP id at `min` / midpoint / `max`, 128 samples per setting, with
 /// C4 held throughout. Cheap "extremes don't crash / NaN" guard.
 ///
 /// Won't catch slow audio bugs (a filter that quietly NaN-tails over seconds
 /// of post-sweep render escapes), but does catch denormal explosions, panics
-/// in stepped-param boundaries, and the obvious crash classes. Mirrors VXN1.
+/// in stepped-param boundaries, and the obvious crash classes.
 #[test]
 fn parameter_sweep_min_mid_max_stays_finite() {
     let entry = load_entry();
@@ -413,8 +404,6 @@ fn parameter_sweep_min_mid_max_stays_finite() {
         }
     }
 }
-
-// ── 4. State save / restore round-trip ──────────────────────────────────────
 
 /// Spread non-default values across the table via host param events, render
 /// a few blocks (so `publish()` propagates the audio-mirror back to the
@@ -518,8 +507,6 @@ fn state_round_trip_preserves_every_param() {
     }
 }
 
-// ── 5. Transport tempo edits ────────────────────────────────────────────────
-
 /// Render across a 90 → 180 BPM transport edit. The engine reads tempo on
 /// every block, so all we're guarding here is "no panic / no NaN at the
 /// boundary"; audible sync correctness is a manual listening test.
@@ -566,8 +553,6 @@ fn tempo_edit_does_not_break_render() {
         assert!(v.is_finite(), "non-finite at 180 BPM: {v}");
     }
 }
-
-// ── 6. Pitch bend / mod wheel via raw MIDI ──────────────────────────────────
 
 /// Send pitch bend at its 14-bit extremes (full ±2 st with default range)
 /// plus CC1 at 0 → 127 while a note holds. Just guards against panics + NaN
@@ -624,15 +609,12 @@ fn pitch_bend_and_mod_wheel_stay_finite() {
     }
 }
 
-// ── 6. Constant latency reporting ───────────────────────────────────────────
-
-/// VXN2 now reports a **constant** processing latency (the oversampled
-/// filter+dynamics span's resampler round-trip). This became safe once the
-/// engine's `SpanDelay` held the dry path at the same delay: the group delay no
-/// longer changes as the filter/dynamics FX toggle, so there is no per-toggle
-/// latency move to force a host `activate` restart (the reason 0086 originally
-/// reverted reporting). The extension must be registered and report exactly
-/// [`vxn2_engine::engine::LATENCY_SAMPLES`].
+/// VXN2 reports a **constant** processing latency (the oversampled
+/// filter+dynamics span's resampler round-trip). The engine's `SpanDelay`
+/// holds the dry path at the same delay, so the group delay doesn't change
+/// as the filter/dynamics FX toggle: no per-toggle latency move forces a
+/// host `activate` restart. The extension must be registered and report
+/// exactly [`vxn2_engine::engine::LATENCY_SAMPLES`].
 #[test]
 fn latency_extension_reports_constant() {
     let entry = load_entry();

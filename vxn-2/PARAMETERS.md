@@ -171,6 +171,26 @@ The matrix is a 16-slot table per patch. Each slot has:
 | `dest`     | e    | One of the routable destinations (see below).                                                    |
 | `depth`    | f    | −1.0 .. +1.0 (normalised; multiplied by dest-specific range to get plain offset).                |
 | `curve`    | e    | {lin, exp, log, bipolar}.                                                                        |
+| `scale_src`| e    | Optional **secondary scale source** (E033), same roster as `source`; `none` (default) = depth unscaled. |
+
+**Secondary scale source** (E033 / ADR 0009). Beyond the additive
+`source → dest` routing, each slot has an optional `scale_src` that
+*multiplicatively gates* the slot's depth — a VCA on the route. The route's
+per-lane contribution becomes `source · curve(depth) · scale_norm(scale_src)`,
+so e.g. `lfo1 → global_pitch` with `scale_src = mod_wheel` is a vibrato whose
+depth follows the mod wheel (0 at wheel down, full at wheel up — the classic
+DX7 mod-wheel-vibrato; see the *EP Wheel Vibrato* factory preset). The scale
+source is normalised to `[0, 1]`:
+
+| Scale source polarity | Sources | `scale_norm(x)` |
+| --- | --- | --- |
+| unipolar (already `[0, 1]`) | `mod_wheel`, `aftertouch`, `velocity`, `key`, `mod_env`, `voice_idx`, `voice_rand` | `x` (passthrough) |
+| bipolar (`[-1, 1]`) | `lfo1`, `lfo2`, `pitch_eg`, `voice_spread` | `(x + 1) · 0.5` |
+
+Both clamped to `[0, 1]`. `scale_src = none` is exact identity (multiply by
+`1.0`), so an unscaled patch renders bit-identically to a pre-E033 engine.
+`scale_src` is patch topology (like `source`/`dest`/`curve`) — **not** a new
+CLAP-automatable param.
 
 **Destinations** (29 total):
 

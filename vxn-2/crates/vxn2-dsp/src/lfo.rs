@@ -1,4 +1,4 @@
-//! Low-frequency oscillators (ticket 0006 / ADR §4).
+//! Low-frequency oscillators (ADR §4).
 //!
 //! Two flavours share waveform shapes and evaluation logic:
 //!
@@ -19,13 +19,12 @@
 //!
 //! Matches [`crate::sine`]: a full `u32` rotation = one LFO cycle. Free
 //! wraparound via wrapping add. Q32 reading is shared with the operator core,
-//! making `voice_rand → lfo2_phase` (mod matrix, ticket 0008) a Q32 add.
+//! making `voice_rand → lfo2_phase` (mod matrix) a Q32 add.
 //!
 //! ## Depth lives in the mod matrix
 //!
-//! Per the ticket: LFO depth is *not* part of the LFO struct. Per-route
-//! send level is the matrix slot's depth column (there is no global depth
-//! macro — `lfo1-depth` was removed in E006 / ticket 0061). The LFO
+//! LFO depth is *not* part of the LFO struct. Per-route send level is the
+//! matrix slot's depth column; there is no global depth macro. The LFO
 //! produces raw bipolar `[-1, +1]` output.
 //!
 //! ## S&H — sample-and-hold on cycle boundary
@@ -36,10 +35,9 @@
 //!
 //! ## BPM sync subdivisions
 //!
-//! Coarse→fine straight / dotted / triplet table. The divergence the original
-//! "duplication preferred" note feared never arrived, so E027/0117 folded both
-//! synths' copies into the single `vxn-core-utils::sync` table; this module
-//! re-exports it (and `synced_hz`) to keep the `vxn2_dsp::lfo::…` paths.
+//! Coarse→fine straight / dotted / triplet table. Shared via
+//! `vxn-core-utils::sync`; this module re-exports it (and `synced_hz`) to keep
+//! the `vxn2_dsp::lfo::…` paths.
 
 use crate::sine::scalar::fast_sine_q32;
 use crate::stack::STACK_LANES;
@@ -93,8 +91,6 @@ impl LfoShape {
     }
 }
 
-// --- shape evaluation -------------------------------------------------------
-
 /// Bipolar `[-1, +1]` sample for `shape` at Q32 `phase`. `sh_value` is the
 /// currently-held random sample (used only by `SampleHold`).
 #[inline]
@@ -128,7 +124,7 @@ fn eval_shape(shape: LfoShape, phase: u32, sh_value: f32) -> f32 {
 pub const U32_PER_CYCLE: f64 = 4_294_967_296.0;
 
 /// Clamp for a matrix-modulated LFO rate (Hz). The `*→lfo{1,2}-rate` routes
-/// (E008 0092) apply `rate · 2^oct` in the log domain; this keeps the result
+/// apply `rate · 2^oct` in the log domain; this keeps the result
 /// finite and out of the denormal floor. Only applied when a rate multiplier
 /// is in play (≠ 1.0), so un-modulated rates pass through bit-identically.
 pub const LFO_RATE_HZ_MIN: f32 = 0.001;
@@ -151,17 +147,13 @@ fn xorshift_bipolar(state: &mut u64) -> f32 {
     u * 2.0 - 1.0
 }
 
-// --- BPM sync table (shared) ------------------------------------------------
-//
-// The subdivision table, its index lookup, and the rate resolver now live in
-// `vxn-core-utils::sync` (E027/0117). Re-exported under the `vxn2_dsp::lfo::…`
-// paths the LFO core, the delay, and the engine's sync display all use —
-// `synced_hz` is core's `subdivision_hz` (same `(bpm/60)/beats`).
+// BPM sync table. The subdivision table, its index lookup, and the rate
+// resolver live in `vxn-core-utils::sync`, re-exported under the
+// `vxn2_dsp::lfo::…` paths; `synced_hz` is core's `subdivision_hz`
+// (`(bpm/60)/beats`).
 pub use vxn_core_utils::sync::{
     SUBDIVISIONS, Subdivision, index_from_norm, subdivision_hz as synced_hz,
 };
-
-// --- LFO1 (global) ----------------------------------------------------------
 
 /// LFO1 patch params. Depth (a macro multiplier) lives at the matrix-source
 /// boundary, not here — see module docs.
@@ -192,7 +184,7 @@ pub struct Lfo1 {
     pub phase: u32,
     pub sh_state: u64,
     pub sh_value: f32,
-    /// Rate multiplier from the matrix `*→lfo1-rate` route (E008 0092). The
+    /// Rate multiplier from the matrix `*→lfo1-rate` route. The
     /// engine sets this to `2^octaves` (one-block latency); `1.0` = no
     /// modulation, which keeps `eval` bit-identical to the un-wired path.
     pub rate_mult: f32,
@@ -253,14 +245,9 @@ impl Lfo1 {
     }
 }
 
-// --- LFO2 (per-voice, lane-packed) ------------------------------------------
-//
-// LFO2 is always key-triggered: on every note-on the lane phases retrigger to
-// the shape's zero crossing and delay+fade restart from zero. The free-running
-// variant tracked by an earlier `Lfo2Trig` enum was removed when the UI
-// dropped the Trig switch in favour of a host-tempo Sync toggle (matching
-// VXN1's per-voice LFO behaviour).
-
+// LFO2 (per-voice, lane-packed). Always key-triggered: on every note-on the
+// lane phases retrigger to the shape's zero crossing and delay+fade restart
+// from zero.
 #[derive(Clone, Copy, Debug)]
 pub struct Lfo2Params {
     pub shape: LfoShape,
@@ -290,7 +277,7 @@ impl Default for Lfo2Params {
 
 /// LFO2 lane-packed across the [`STACK_LANES`] of one [`crate::stack::Stack`].
 /// All eight lanes share `Lfo2Params` + delay/fade state, but each has its
-/// own phase and S&H. Matrix `voice_rand → lfo2_phase` (E008 0091) scatters
+/// own phase and S&H. Matrix `voice_rand → lfo2_phase` scatters
 /// the per-lane phases via [`Lfo2Stack::add_phase_offset`] for the supersaw
 /// shimmer route. (Op-level shimmer also comes from the `stack-phase` macro ×
 /// `voice_rand` op-phase scatter in [`crate::stack`]; this route adds a
@@ -303,9 +290,9 @@ pub struct Lfo2Stack {
     /// Seconds since the most recent note-on (KeySync) — drives delay+fade.
     /// In Free mode this stays at a large value so the envelope is full.
     pub secs_since_on: f32,
-    /// Per-stack rate multiplier from the matrix `*→lfo2-rate` route (E008
-    /// 0092). The engine sets this to `2^octaves` for the stack (one-block
-    /// latency); `1.0` = no modulation, keeping `eval` bit-identical. Shared
+    /// Per-stack rate multiplier from the matrix `*→lfo2-rate` route. The
+    /// engine sets this to `2^octaves` for the stack (one-block latency);
+    /// `1.0` = no modulation, keeping `eval` bit-identical. Shared
     /// across the stack's 8 lanes — `lfo2-rate` is a per-stack dest.
     pub rate_mult: f32,
 }
@@ -352,13 +339,13 @@ impl Lfo2Stack {
         }
         self.secs_since_on = 0.0;
         // Drop any inherited rate modulation; the engine re-derives it from
-        // this voice's matrix accumulator at block rate (E008 0092).
+        // this voice's matrix accumulator at block rate.
         self.rate_mult = 1.0;
     }
 
     /// Apply a per-lane phase offset as a wrapping Q32 add. `frac` is a
     /// fraction of a cycle (`[-1, 1]` = ±1 full cycle); the matrix
-    /// `*→lfo2_phase` route (E008 0091) calls this to scatter lanes. The
+    /// `*→lfo2_phase` route calls this to scatter lanes. The
     /// caller passes a *delta* vs the offset it last applied, so a static
     /// offset settles to a fixed scatter rather than accumulating each block.
     #[inline]
@@ -543,8 +530,6 @@ mod tests {
         let e = SUBDIVISIONS.iter().position(|s| s.label == "1/8").unwrap();
         assert!((synced_hz(120.0, e) - 4.0).abs() < 1e-5);
     }
-
-    // --- LFO2 -------------------------------------------------------------
 
     fn run_lfo2(
         lfo: &mut Lfo2Stack,

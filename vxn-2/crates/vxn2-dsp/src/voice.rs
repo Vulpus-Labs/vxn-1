@@ -1,9 +1,9 @@
-//! One voice = 6 operators + a DX7 algorithm graph + voice-level state
+//! One voice = 6 operators + an FM algorithm graph + voice-level state
 //! (played note, velocity, gate, pitch, stack metadata).
 //!
-//! Ticket 0003 deliverables. **This is the scalar reference + bench path, not
-//! the production path** — since 0005 landed, the engine renders through the
-//! SoA `Stack` ([`crate::stack`]), which carries 8 lanes and the full matrix.
+//! **This is the scalar reference + bench path, not the production path** — the
+//! engine renders through the SoA `Stack` ([`crate::stack`]), which carries 8
+//! lanes and the full matrix.
 //! `Voice` is retained as the single-lane, easy-to-read oracle that
 //! `vxn2-osc-bench` and the unit tests run against. Stack metadata
 //! (`voice_idx`, `voice_spread`, `voice_rand`) lives here so the layouts match.
@@ -30,7 +30,7 @@ use crate::op::{OpParams, OpState, op_eg_tick, op_tick};
 
 /// Patch-level parameters for one voice: per-op state + algorithm + voice-
 /// global tune offset + per-voice LFO (LFO2) + patch-wide modulation
-/// envelopes (Pitch EG + Mod Env, ticket 0007).
+/// envelopes (Pitch EG + Mod Env).
 #[derive(Clone, Copy, Debug)]
 pub struct VoiceParams {
     pub ops: [OpParams; N_OPS],
@@ -39,15 +39,15 @@ pub struct VoiceParams {
     /// algorithm's single feedback path: note-on / live update writes the
     /// cooked `fb_scale` onto the algorithm's `fb_src` op, and the tick loop
     /// injects its averaged history into `fb_dst`. Integer positions land on the
-    /// DX7-style table values so existing patches sound the same; intermediate
-    /// values interpolate.
+    /// table values so existing patches sound the same; intermediate values
+    /// interpolate.
     pub feedback: f32,
     pub master_tune_cents: f32,
     pub lfo2: Lfo2Params,
     pub pitch_eg: PitchEgParams,
     /// Pitch EG global depth in semitones at full-scale (l = ±99). Default
-    /// 48.0 → ±4 octaves, matching the DX7 pitch-EG extreme so translated
-    /// ROM voices (jet swoops, laser sweeps) keep their range. Matrix routing
+    /// 48.0 → ±4 octaves, wide enough for jet-swoop / laser-sweep pitch
+    /// envelopes. Matrix routing
     /// reads the normalized `pitch_eg.level_st / peg_depth` shape and applies
     /// its own dest gain.
     pub peg_depth: f32,
@@ -100,13 +100,12 @@ pub struct Voice {
     /// Current glide offset in semitones relative to the played note. Driven
     /// by the allocator each block while a glide is in progress.
     pub glide_st: f32,
-    /// Stack-instance index in [0, density). Populated by 0005. Default 0.
+    /// Stack-instance index in [0, density). Default 0.
     pub voice_idx: u8,
-    /// Symmetric stack position in [-1, +1]. Populated by 0005. Default 0.
+    /// Symmetric stack position in [-1, +1]. Default 0.
     pub voice_spread: f32,
     /// Per-instance random in [0, 1). Captured at note-on. Used for stack
-    /// decorrelation (LFO2 phase scatter, etc.). Default 0.5 until 0005
-    /// wires a proper RNG.
+    /// decorrelation (LFO2 phase scatter, etc.). Default 0.5.
     pub voice_rand: f32,
     /// Active algorithm number (1..=32). Cached alongside `route_fn` so the
     /// stereo path can read [`spec_of`] without a re-resolve.
@@ -114,10 +113,10 @@ pub struct Voice {
     pub route_fn: RouteFn,
     /// Prev-sample op outputs, fed to the router each tick.
     pub prev_outs: [f32; N_OPS],
-    /// Patch-wide Pitch EG (ticket 0007). Output in semitones; default
-    /// routing adds into the voice pitch sum.
+    /// Patch-wide Pitch EG. Output in semitones; default routing adds into the
+    /// voice pitch sum.
     pub pitch_eg: PitchEgState,
-    /// Patch-wide Mod Env (ticket 0007). Matrix-only source; no default
+    /// Patch-wide Mod Env. Matrix-only source; no default
     /// routing — voice state simply ticks it so the matrix can read it.
     pub mod_env: ModEnvState,
 }
@@ -147,8 +146,8 @@ impl Default for Voice {
 impl Voice {
     /// Note-on: capture played note + velocity, set the gate, re-cook every
     /// op against the new key/velocity/sample_rate, and trigger EG attack.
-    /// `voice_rand` is left at its prior value — 0005 populates it from a
-    /// per-allocation RNG. `prev_outs` is cleared to avoid carrying tail
+    /// `voice_rand` is left at its prior value — the allocator populates it
+    /// from a per-allocation RNG. `prev_outs` is cleared to avoid carrying tail
     /// energy from a previous voice life. `bend_st` is preserved (channel-
     /// wide state owned by the allocator); `glide_st` is reset to 0 and
     /// re-driven by the allocator if portamento is active.
@@ -246,7 +245,7 @@ impl Voice {
     }
 
     /// True when every op EG has reached `Idle` (release tail decayed past
-    /// L4). The polyphony allocator (0004) uses this to free voices.
+    /// L4). The polyphony allocator uses this to free voices.
     #[inline]
     pub fn is_idle(&self) -> bool {
         self.ops.iter().all(|o| o.eg.stage == EgStage::Idle)
@@ -269,8 +268,8 @@ impl Voice {
 /// Mono per-sample tick: route modulation, tick all 6 ops, return the
 /// carrier-bus sum (one sample behind the new op outputs — see module docs).
 ///
-/// `_modulation` is the per-block resolved matrix output; unused in this
-/// ticket beyond signature stability.
+/// `_modulation` is the per-block resolved matrix output; currently unused
+/// here.
 #[inline]
 pub fn voice_tick(voice: &mut Voice, _modulation: &VoiceMod) -> f32 {
     let (mut mi, carrier_sum) = (voice.route_fn)(&voice.prev_outs);
@@ -327,7 +326,6 @@ mod tests {
     use crate::eg::EgStage;
     use crate::test_util;
     fn carrier_friendly_patch() -> VoiceParams {
-        // Delegates to the shared test_util helper (ticket 0165).
         test_util::carrier_friendly_patch()
     }
 

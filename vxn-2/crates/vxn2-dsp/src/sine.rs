@@ -12,8 +12,7 @@ pub mod scalar {
     /// Bhaskara+Moser polynomial sine of a phase fraction `p ∈ [0, 1)`
     /// (`p = phase / cycle`). Branch-free, pure ALU. The float-phase form of
     /// the operator-core sine; [`fast_sine_q32`] is the Q32 wrapper and the
-    /// reverb LFO ([`crate::reverb`]) calls this directly (ticket 0071 — was a
-    /// third hand-inlined copy of the polynomial).
+    /// reverb LFO ([`crate::reverb`]) calls this directly.
     #[inline(always)]
     pub fn fast_sine_01(p: f32) -> f32 {
         let x1 = p - 0.5;

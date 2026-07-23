@@ -1,7 +1,7 @@
-//! DX7 32-algorithm router.
+//! 32-algorithm FM router.
 //!
 //! Each VXN2 voice has 6 operators wired together by one of 32 canonical
-//! DX7 algorithm graphs. This module encodes those graphs and provides a
+//! algorithm graphs. This module encodes those graphs and provides a
 //! branch-free per-sample router: given the prior-sample outputs of all six
 //! ops, returns each op's structural modulation input and the carrier-bus
 //! sum for the current sample.
@@ -14,13 +14,13 @@
 //!
 //! ## Feedback path (one per algorithm)
 //!
-//! Each DX7 algorithm has exactly **one** feedback path, scaled by the
-//! single global feedback control (ADR 0001 §1). The path is a
+//! Each algorithm has exactly **one** feedback path, scaled by the
+//! single global feedback control. The path is a
 //! `fb_src → fb_dst` op pair: the (two-sample-averaged) prior output of
 //! `fb_src` is summed into `fb_dst`'s modulation input.
 //!
 //! For 30 algorithms `fb_src == fb_dst` — a single-operator self-feedback
-//! loop. Algorithms **4** and **6** are the DX7 exceptions: their feedback
+//! loop. Algorithms **4** and **6** are the exceptions: their feedback
 //! wraps *two* operators, so `fb_src != fb_dst` (algo 4: OP4→OP6, algo 6:
 //! OP5→OP6). The [`AlgoSpec::fb_src`] / [`AlgoSpec::fb_dst`] fields encode
 //! this pair.
@@ -39,27 +39,25 @@
 //! letting the six ops in a voice run "in parallel" each sample tick
 //! (which is what enables SoA voice packing for SIMD). The carrier bus is
 //! likewise summed from prev-sample carrier outputs — the audio output is
-//! a single sample behind the latest `op_tick`s, which is inaudible and
-//! matches the Yamaha hardware idiom.
+//! a single sample behind the latest `op_tick`s, which is inaudible.
 //!
 //! ## Reference
 //!
-//! Algorithms 1–32 follow the Yamaha DX7 service-manual chart, reproduced
-//! as `vxn-2/adrs/ALGORITHMS.png` (to be added per ticket 0002 Notes). When
+//! Algorithms 1–32 follow the reference algorithm chart. When
 //! editing this table, cross-reference the chart — the per-algo carrier
 //! set and edge list MUST match it exactly. The [`tests::ping_test`]
 //! module validates carrier sets via independent expected-carrier-count and
 //! expected-pure-carriers tables; an editing mistake there will fail the
 //! tests rather than ship silently.
 
-/// Number of operators per voice. Fixed at 6 (DX7-inherited).
+/// Number of operators per voice. Fixed at 6.
 pub const N_OPS: usize = 6;
 
-/// Number of algorithms. Fixed at 32 (DX7-inherited).
+/// Number of algorithms. Fixed at 32.
 pub const N_ALGOS: usize = 32;
 
 /// Maximum modulator→carrier edges any single algorithm carries. The
-/// densest DX7 algorithm (algo 8 / 9) uses 4 edges; we pad to 5 for slack.
+/// densest algorithm (algo 8 / 9) uses 4 edges; we pad to 5 for slack.
 const MAX_EDGES: usize = 5;
 
 /// One algorithm's structural graph.
@@ -111,7 +109,7 @@ const fn spec(edges: &[(u8, u8)], carriers: &[u8], fb: u8) -> AlgoSpec {
     spec_fb(edges, carriers, fb, fb)
 }
 
-/// Two-operator feedback (`fb_src → fb_dst`): DX7 algorithms 4 and 6 only.
+/// Two-operator feedback (`fb_src → fb_dst`): algorithms 4 and 6 only.
 const fn spec_fb(edges: &[(u8, u8)], carriers: &[u8], fb_src: u8, fb_dst: u8) -> AlgoSpec {
     AlgoSpec {
         edges: edge_buf(edges),
@@ -122,11 +120,10 @@ const fn spec_fb(edges: &[(u8, u8)], carriers: &[u8], fb_src: u8, fb_dst: u8) ->
     }
 }
 
-/// The canonical 32 DX7 algorithm graphs.
+/// The canonical 32 algorithm graphs.
 ///
 /// Indexed 0..=31 for algo numbers 1..=32. Cross-reference each entry with
-/// `vxn-2/adrs/ALGORITHMS.png` (Yamaha DX7 service-manual chart) before
-/// editing.
+/// the reference algorithm chart before editing.
 pub const ALGOS: [AlgoSpec; N_ALGOS] = [
     // 1: stacks (6→5→4→3) + (2→1), fb op6, carriers {1,3}
     spec(&[(2, 1), (4, 3), (5, 4), (6, 5)], &[1, 3], 6),
@@ -182,8 +179,7 @@ pub const ALGOS: [AlgoSpec; N_ALGOS] = [
     spec(&[(3, 2), (5, 4), (6, 4)], &[1, 2, 4], 6),
     // 27: same edges as 26, fb op3
     spec(&[(3, 2), (5, 4), (6, 4)], &[1, 2, 4], 3),
-    // 28: carriers {1,3,6}; op6 pure; (2→1) + (4→3) + (5→4 — wait, op4 mods op3) — actually:
-    //     (2→1) + (5→4→3), op6 pure carrier, fb op5
+    // 28: (2→1) + (5→4→3), op6 pure carrier, fb op5, carriers {1,3,6}
     spec(&[(2, 1), (4, 3), (5, 4)], &[1, 3, 6], 5),
     // 29: carriers {1,2,3,5}; op1,2 pure; (4→3) + (6→5), fb op6
     spec(&[(4, 3), (6, 5)], &[1, 2, 3, 5], 6),
@@ -203,7 +199,7 @@ pub type RouteFn = fn(prev: &[f32; N_OPS]) -> ([f32; N_OPS], f32);
 /// Generate one specialised route function. The body is straight-line
 /// indexing — LLVM emits a sequence of loads + FMAs + a store, no branches
 /// inside the algorithm. `#[inline(never)]` so each algorithm appears as a
-/// distinct symbol in an asm dump (per ticket acceptance criterion 3).
+/// distinct symbol in an asm dump.
 macro_rules! impl_route {
     (
         $name:ident,
@@ -257,7 +253,7 @@ impl_route!(route_algo_32, edges = [],                                 carriers 
 /// Per-algorithm specialised route functions, indexed 0..=31 for algos
 /// 1..=32. Caller resolves once per block via [`resolve_route`] and calls
 /// the returned `fn` per sample — the algorithm match is then hoisted out
-/// of the inner sample loop (ticket 0002 acceptance criterion 3).
+/// of the inner sample loop.
 pub static ROUTE_FNS: [RouteFn; N_ALGOS] = [
     route_algo_1,  route_algo_2,  route_algo_3,  route_algo_4,
     route_algo_5,  route_algo_6,  route_algo_7,  route_algo_8,
@@ -306,7 +302,7 @@ pub fn spec_of(algo: u8) -> &'static AlgoSpec {
 ///
 /// Returns a 6-bit op mask (bit `i` set = op `(i + 1)` is in the component).
 /// If `target_op` is itself a wall (or out of range), returns `0` — the
-/// stack route no-ops (E022 design).
+/// stack route no-ops.
 ///
 /// The feedback path (`AlgoSpec::fb_src` / `fb_dst`) is not a modulation edge
 /// and is irrelevant to connectivity; it is not consulted here.
@@ -363,8 +359,8 @@ mod tests {
     use super::*;
 
     /// Independent table: count of carriers per algorithm, sourced from the
-    /// Yamaha DX7 chart. If the [`ALGOS`] table is mis-encoded, this test
-    /// catches the carrier-count discrepancy.
+    /// reference algorithm chart. If the [`ALGOS`] table is mis-encoded, this
+    /// test catches the carrier-count discrepancy.
     const EXPECTED_CARRIER_COUNT: [u8; N_ALGOS] = [
         2, 2, 2, 2, 3, 3, 2, 2, 2, 2, // 1..=10
         2, 2, 2, 2, 2, 1, 1, 1, 3, 3, // 11..=20
@@ -373,7 +369,7 @@ mod tests {
     ];
 
     #[test]
-    fn carrier_counts_match_yamaha_chart() {
+    fn carrier_counts_match_reference_chart() {
         for (i, spec) in ALGOS.iter().enumerate() {
             let got = spec.carriers.count_ones() as u8;
             let want = EXPECTED_CARRIER_COUNT[i];
@@ -406,9 +402,9 @@ mod tests {
         }
     }
 
-    /// Exactly two DX7 algorithms (4 and 6) have a two-operator feedback loop
+    /// Exactly two algorithms (4 and 6) have a two-operator feedback loop
     /// (`fb_src != fb_dst`); all other 30 are single-op self-feedback. Guards
-    /// against a data-entry slip re-introducing the old self-feedback-only
+    /// against a data-entry slip re-introducing the self-feedback-only
     /// encoding for algos 4/6.
     #[test]
     fn only_algos_4_and_6_have_two_op_feedback() {
@@ -447,7 +443,7 @@ mod tests {
         }
     }
 
-    /// Ping test (ticket 0002 acceptance criterion 5).
+    /// Ping test.
     ///
     /// For each algorithm N and each op K, set prev_outputs to a "ping"
     /// (op K at 1.0, all others 0.0). The carrier-sum returned by the
@@ -573,8 +569,6 @@ mod tests {
             "algo 255 must clamp to algo 32's route"
         );
     }
-
-    // ---- pitch_stack_component (ticket 0067) ----------------------------
 
     /// 1-indexed op list → 6-bit mask, for readable expected values.
     fn mask(ops: &[u8]) -> u8 {

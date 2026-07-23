@@ -2,8 +2,8 @@
 //! Poly / Solo assignment modes, glide (portamento), and channel-wide pitch
 //! bend forwarding.
 //!
-//! A "voice" here is a *stack* of up to 8 lane-packed op-instances (ticket
-//! 0005). The allocator's poly cap is 16 stacks, giving up to 16 × 8 = 128
+//! A "voice" here is a *stack* of up to 8 lane-packed op-instances. The
+//! allocator's poly cap is 16 stacks, giving up to 16 × 8 = 128
 //! op-voice instances in flight when `stack_density = 8`. Stealing operates
 //! on whole stacks — picking off the quietest reclaims all of its lanes
 //! together.
@@ -32,10 +32,10 @@
 //! [`vxn2_dsp::stack::Stack::set_glide`]. Block-rate ramp (one update per
 //! `block_tick`).
 //!
-//! Glide is true portamento in both modes (vxn-1 parity, ticket 0125): every
-//! note after the first slides from the previous sounding pitch regardless of
-//! note overlap, and independent of `legato` (which controls EG retrigger
-//! only). In Poly each reused/stolen voice glides from its own previous pitch;
+//! Glide is true portamento in both modes (vxn-1 parity): every note after the
+//! first slides from the previous sounding pitch regardless of note overlap,
+//! and independent of `legato` (which controls EG retrigger only). In Poly
+//! each reused/stolen voice glides from its own previous pitch;
 //! a new note prefers the free slot nearest in pitch (see [`Self::pick_idle`])
 //! so glides stay short and musical. Glide is off only when `glide_time_ms`
 //! is 0 or the chosen slot has never sounded.
@@ -75,7 +75,7 @@ pub struct AllocParams {
     pub assign_mode: AssignMode,
     /// Solo: skip EG retrigger on a slurred note change. No effect in Poly,
     /// and never gates glide in either mode (glide is governed by
-    /// `glide_time_ms` alone — ticket 0125).
+    /// `glide_time_ms` alone).
     pub legato: bool,
     /// Portamento time in milliseconds. 0 disables glide regardless of mode.
     pub glide_time_ms: f32,
@@ -113,7 +113,7 @@ pub struct PolyAlloc {
     solo_active: bool,
     /// The slot carrying the live solo note (`None` when solo is silent).
     /// Solo rotates a fresh slot per note (round-robin via [`Self::pick_idle`])
-    /// and declicks the previous one, so this replaces the old fixed slot 0.
+    /// and declicks the previous one.
     solo_slot: Option<usize>,
     /// Last solo note pitch (semitones), surviving the slot being freed/reused,
     /// so detached-note portamento still glides from the previous pitch.
@@ -122,12 +122,12 @@ pub struct PolyAlloc {
     /// [`Self::clear`]. Unlike `solo_active` it survives note-off, so a *new*
     /// Solo note glides from the previous pitch even when the prior key was
     /// already released (vxn-1 portamento semantics: glide is governed by
-    /// glide-time alone, not by note overlap or legato — ticket 0125).
+    /// glide-time alone, not by note overlap or legato).
     solo_voiced: bool,
     /// Per-slot "has sounded a note since the last [`Self::clear`]" flag.
     /// Survives note-off/free so a reused Poly slot glides from its previous
     /// pitch (always-glide, vxn-1 parity) and so the nearest-pitch slot pick
-    /// only considers slots with a meaningful last pitch (ticket 0125).
+    /// only considers slots with a meaningful last pitch.
     voiced: [bool; N_STACKS],
     /// Sustain pedal (CC64) state. While true, a poly note-off flags the
     /// matching stacks `held_by_pedal` instead of gating them; releasing the
@@ -194,7 +194,7 @@ impl PolyAlloc {
     /// Allocation generation for slot `i` (`u64::MAX` when free). The engine
     /// compares generations across blocks to detect a fresh note-on in a
     /// reused slot — e.g. to snap its pitch smoother instead of gliding in
-    /// from the previous voice's offset (ticket 0063).
+    /// from the previous voice's offset.
     #[inline]
     pub(crate) fn slot_seq(&self, i: usize) -> u64 {
         self.seq[i]
@@ -218,11 +218,10 @@ impl PolyAlloc {
         }
     }
 
-    /// Patch-driven note-on. After [ADR 0002] dropped Whole / Layer / Split
-    /// voicing this is a single-path allocation that defers to the assign
-    /// mode in `params`. Kept as a distinct entry point so the engine's
-    /// note dispatch reads against the live `Patch` snapshot rather than
-    /// re-shaping the stack + voice pair at every call site.
+    /// Patch-driven note-on: a single-path allocation that defers to the
+    /// assign mode in `params`. A distinct entry point so the engine's note
+    /// dispatch reads against the live `Patch` snapshot rather than re-shaping
+    /// the stack + voice pair at every call site.
     pub fn note_on_patch(
         &mut self,
         params: &AllocParams,
@@ -236,8 +235,6 @@ impl PolyAlloc {
     /// Patch-driven note-off. Mirrors [`Self::note_on_patch`]: defers to the
     /// assign-mode dispatch in [`Self::note_off`] so Solo gets its held-note
     /// fallback / legato re-pitch and Poly gates every stack holding `note`.
-    /// (Pre-E006 this hardwired `note_off_poly`, leaving the entire solo
-    /// note-off path unreachable from the engine — ticket 0064.)
     pub fn note_off_patch(&mut self, params: &AllocParams, patch: &Patch, note: u8) {
         self.note_off(params, &patch.stack, &patch.voice, note);
     }
@@ -352,7 +349,7 @@ impl PolyAlloc {
         }
     }
 
-    // --- Poly internals -----------------------------------------------------
+    // Poly internals.
 
     fn note_on_poly(
         &mut self,
@@ -401,7 +398,7 @@ impl PolyAlloc {
             }
         };
 
-        // Always-glide (vxn-1 parity, ticket 0125): a reused or stolen voice
+        // Always-glide (vxn-1 parity): a reused or stolen voice
         // slides from its previous sounding pitch (note + any in-flight glide
         // offset) to the new note, independent of overlap or `legato`. A slot
         // that has never sounded snaps. Computed before `note_on` resets the
@@ -480,8 +477,8 @@ impl PolyAlloc {
         }
     }
 
-    /// Pick a free (idle) stack for a new note. Among idle stacks, vxn-1's rule
-    /// (ticket 0125): take the *voiced* one whose last sounding pitch is nearest
+    /// Pick a free (idle) stack for a new note. Among idle stacks, vxn-1's
+    /// rule: take the *voiced* one whose last sounding pitch is nearest
     /// the new note, so always-glide slides over a short, musical interval. If no
     /// idle stack has sounded yet, take the first unvoiced idle one (it snaps —
     /// nothing to glide from). `None` only when every stack is busy (≥`N_ACTIVE`
@@ -547,7 +544,7 @@ impl PolyAlloc {
         best_keyup.or(best).map(|(i, _, _)| i)
     }
 
-    // --- Solo internals -----------------------------------------------------
+    // Solo internals.
 
     fn note_on_solo(
         &mut self,
@@ -561,7 +558,7 @@ impl PolyAlloc {
         // note plus any still-in-flight glide offset) to the new note —
         // regardless of whether the previous key is still held. Gated only by
         // glide-time and `solo_voiced` (so the very first note snaps). `legato`
-        // governs EG retrigger, never the glide (ticket 0125).
+        // governs EG retrigger, never the glide.
         self.push_held(note);
         let counter = self.bump_seq();
         let glide_from = if self.solo_voiced && params.glide_time_ms > 0.0 {
@@ -660,7 +657,7 @@ impl PolyAlloc {
             // Fallback reuses the sounding stack's velocity (the note being
             // released) rather than the held note's original strike — `held`
             // stores notes only. Intentional: classic mono-synth behaviour,
-            // continuous with the phrase being played (ticket 0064 Notes).
+            // continuous with the phrase being played.
             let vel = self.stacks[cur].meta.velocity;
             let counter = self.bump_seq();
             let glide_from = if params.glide_time_ms > 0.0 {
@@ -701,7 +698,7 @@ impl PolyAlloc {
         }
     }
 
-    // --- helpers ------------------------------------------------------------
+    // Helpers.
 
     fn bump_seq(&mut self) -> u64 {
         let s = self.next_seq;
@@ -1113,7 +1110,7 @@ mod tests {
         );
     }
 
-    /// vxn-1 portamento parity (ticket 0125): in Solo mode glide fires on a
+    /// vxn-1 portamento parity: in Solo mode glide fires on a
     /// *detached* note — previous key fully released and the slot idled before
     /// the next strike — not only on overlapping/slurred notes. Glide is
     /// governed by glide-time alone, independent of `legato`.
@@ -1146,7 +1143,7 @@ mod tests {
         }
     }
 
-    /// Poly always-glide is per-voice (vxn-1 parity, ticket 0125): a *reused*
+    /// Poly always-glide is per-voice (vxn-1 parity): a *reused*
     /// voice slides from its own previous pitch, regardless of `legato`. Play a
     /// note, release it so the slot idles, then play another — the nearest-pitch
     /// picker reuses the same slot and it glides from the old note.
@@ -1521,7 +1518,7 @@ mod tests {
     }
 
     /// Overlapping distinct notes (a chord) take *fresh* voices and must not
-    /// glide between each other — only same-voice reuse glides (ticket 0125).
+    /// glide between each other — only same-voice reuse glides.
     #[test]
     fn poly_overlapping_chord_notes_do_not_glide() {
         let mut alloc = PolyAlloc::new(SR);
@@ -1698,8 +1695,8 @@ mod tests {
 
     #[test]
     fn note_off_releases_all_lanes_in_stack() {
-        // 0005 acceptance: at note_off, all stacked instances gate to release
-        // together. Since one Stack holds all lanes, gating it gates them all.
+        // At note_off, all stacked instances gate to release together. Since
+        // one Stack holds all lanes, gating it gates them all.
         let mut alloc = PolyAlloc::new(SR);
         let params = AllocParams::default();
         let sp = StackParams {

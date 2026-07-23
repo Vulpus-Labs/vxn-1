@@ -1,4 +1,4 @@
-//! Integration test for the vxn2-app controller composition (ticket 0022).
+//! Integration test for the vxn2-app controller composition.
 //!
 //! Exercises the round-trip through `vxn_core_app::Controller` against the
 //! real `vxn2_engine::SharedParams` `ParamModel` / `Vxn2Params` impls.
@@ -15,13 +15,8 @@ use vxn2_engine::params::id_of;
 /// Build a minimal test controller backed by `NoopPresetStore`.
 /// Returns `(controller, view_rx, shared_params)`.
 ///
-/// Disambiguation note (ticket 0167): this is the vxn2-app variant, which
-/// returns the view receiver for event-inspection assertions. The
-/// vxn2-clap/tests/editor_smoke.rs variant has a different signature
-/// (no receiver returned) and is scoped to the IPC-parser smoke tests.
-/// The two live in different crates and test-binary namespaces, so there
-/// is no conflict; they are kept separate because their callers have
-/// different inspection needs.
+/// This variant returns the view receiver for event-inspection assertions;
+/// the `vxn2-clap/tests/editor_smoke.rs` variant discards it.
 fn build_controller() -> (
     Controller<SharedParams>,
     std::sync::mpsc::Receiver<ViewEvent>,
@@ -34,8 +29,7 @@ fn build_controller() -> (
 }
 
 /// Build a controller seeded the same way `vxn2-clap::new_main_thread`
-/// does: "Init" as the synthetic preset name until the preset epic
-/// ships.
+/// does: "Init" as the synthetic preset name.
 fn build_controller_with_init() -> (
     Controller<SharedParams>,
     std::sync::mpsc::Receiver<ViewEvent>,
@@ -102,6 +96,7 @@ fn matrix_row_custom_event_writes_model_no_echo() {
         curve: 1,
         active: true,
         depth: 0.42,
+        scale_src: 0,
     };
     let handle = ctrl.handle();
     handle
@@ -122,10 +117,10 @@ fn matrix_row_custom_event_writes_model_no_echo() {
     let clap_id = id_of("mtx4-depth").expect("mtx4-depth present");
     assert!((model.get(clap_id) - 0.42).abs() < 1e-5);
 
-    // Per ADR 0003 / E005 the SetMatrixRow handler no longer echoes:
-    // the dirty bitset on SharedParams catches the drift and the CLAP
-    // shell's pump pushes a fresh MatrixSnapshot. The controller test
-    // doesn't run that pump, so no matrix view event lands here.
+    // Per ADR 0003 the SetMatrixRow handler doesn't echo: the dirty bitset
+    // on SharedParams catches the drift and the CLAP shell's pump pushes a
+    // fresh MatrixSnapshot. The controller test doesn't run that pump, so no
+    // matrix view event lands here.
     let events = drain(&view_rx);
     let echoed = events.iter().any(|ev| match ev {
         ViewEvent::Custom(payload) => matches!(
@@ -149,6 +144,7 @@ fn request_matrix_snapshot_emits_full_16_row_table() {
         curve: 0,
         active: true,
         depth: 0.1,
+        scale_src: 0,
     };
     let row_b = MatrixRow {
         source: 7,
@@ -156,6 +152,7 @@ fn request_matrix_snapshot_emits_full_16_row_table() {
         curve: 2,
         active: false,
         depth: -0.25,
+        scale_src: 0,
     };
     Vxn2Params::set_matrix_row(&*model, 2, row_a);
     Vxn2Params::set_matrix_row(&*model, 9, row_b);
@@ -225,6 +222,7 @@ fn matrix_row_slot_9_uses_extra_depth_storage() {
         curve: 0,
         active: true,
         depth: -0.6,
+        scale_src: 0,
     };
     ctrl.handle()
         .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetMatrixRow {
@@ -244,9 +242,8 @@ fn matrix_row_slot_9_uses_extra_depth_storage() {
     assert_eq!(model.get(mtx7), 0.0);
 }
 
-/// Ticket 0029: when the page reports ready, the controller emits a
-/// synthetic `PresetLoaded { name: "Init" }` BEFORE the full param
-/// re-broadcast.
+/// When the page reports ready, the controller emits a synthetic
+/// `PresetLoaded { name: "Init" }` BEFORE the full param re-broadcast.
 #[test]
 fn editor_ready_emits_synthetic_init_preset_before_broadcast() {
     let (mut ctrl, view_rx, _model) = build_controller_with_init();
@@ -276,8 +273,8 @@ fn editor_ready_emits_synthetic_init_preset_before_broadcast() {
     }
 }
 
-/// Ticket 0029: prev/next with no corpus emits a Status the preset bar
-/// surfaces as a toast.
+/// prev/next with no corpus emits a Status the preset bar surfaces as a
+/// toast.
 #[test]
 fn step_preset_with_empty_corpus_emits_status() {
     let (mut ctrl, view_rx, _model) = build_controller();
@@ -294,7 +291,7 @@ fn step_preset_with_empty_corpus_emits_status() {
     assert!(saw, "expected Status {{ line: \"No presets available\" }}");
 }
 
-/// Ticket 0029: Save / Save As both land on `UiEvent::SavePreset` →
+/// Save / Save As both land on `UiEvent::SavePreset` →
 /// `NoopPresetStore::user_save`, which returns the "not yet supported"
 /// stub message wrapped into a Status by the shared controller.
 #[test]

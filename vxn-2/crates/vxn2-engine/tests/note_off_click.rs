@@ -1,10 +1,10 @@
-//! Note-off click regression (ticket 0079). The op feedback loop used to
-//! run in its chaotic zone on the default patch (fb_scale 2.0): a
-//! releasing EG swept the loop gain through the stability boundary and
-//! the oscillation mode collapsed within a couple of samples — a loud
-//! broadband transient (|d4| ≈ 0.7) about 1 ms after every note-off.
-//! With the DX7-calibrated FB_SCALE_TABLE the loop stays in its stable
-//! region at every feedback setting; the release must be transient-free.
+//! Note-off click regression. The op feedback loop must stay in its stable
+//! region at every feedback setting so a releasing EG can't sweep the loop gain
+//! through a stability boundary and collapse the oscillation mode into a loud
+//! broadband transient about 1 ms after note-off. The release must be
+//! transient-free.
+//!
+//! The feedback-scale table keeps the loop gain inside that stable region.
 
 mod common;
 
@@ -38,7 +38,7 @@ fn note_off_release_is_click_free() {
         let worst = common::worst_d4(&buf, off_t..buf.len() - 2);
         assert!(
             worst < 5e-3,
-            "note {note}: post-off |d4| {worst:.2e} — release transient is back (pre-0079 ≈ 0.7)"
+            "note {note}: post-off |d4| {worst:.2e} — release transient is back (pre-fix ≈ 0.7)"
         );
     }
 }

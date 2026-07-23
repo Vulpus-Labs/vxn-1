@@ -3,13 +3,8 @@
 //! The host-loadable plugin: descriptor, audio + note ports, param + state
 //! extensions, the event + render loop (`process()` drives [`Engine`]), and
 //! the GUI surface — a webview faceplate driven through `vxn-core-app`'s
-//! `Controller` plus the dirty-bitset pump (`push_model_diffs`, ADR 0003).
-//!
-//! Structurally mirrors `vxn-1/crates/vxn-clap`: same `Shared` / `MainThread`
-//! / `AudioProcessor` split and `declare_extensions` shape, and the same
-//! `Controller` / `ViewEvent` / GUI / timer machinery — vxn-2 differs in
-//! using the dirty-bitset pump as the single Model→View emitter (ticket 0067)
-//! where vxn-1 runs a value-diff poll.
+//! `Controller` plus the dirty-bitset pump (`push_model_diffs`), the single
+//! Model→View emitter.
 
 use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
@@ -56,8 +51,8 @@ pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// buffers into chunks of at most this size before driving
 /// `Engine::process_block` — block-rate state (LFO sampling, matrix eval,
 /// EG ticks) must advance at this rate regardless of host buffer size, or
-/// the 0074 level/pan ramps interpolate too coarsely and zipper returns at
-/// large buffers (ticket 0075).
+/// the level/pan ramps interpolate too coarsely and zipper returns at
+/// large buffers.
 const CONTROL_BLOCK: usize = 32;
 
 /// Subdivide `[start, end)` into chunks of at most [`CONTROL_BLOCK`]
@@ -125,11 +120,11 @@ impl DefaultPluginFactory for VxnPlugin {
 /// policy choices onto a fresh `Controller`:
 ///
 /// - `set_echo_param_writes(false)`: the dirty-bitset pump
-///   (`push_model_diffs`) is vxn-2's single Model→View emitter; suppress the
+///   (`push_model_diffs`) is the single Model→View emitter; suppress the
 ///   controller's redundant echo so a UI write / state load isn't broadcast
-///   twice (ticket 0067).
+///   twice.
 /// - `set_init_preset_meta`: seed the preset bar with the synthetic "Init"
-///   label until the preset epic (E007 lineage) ships a real factory bank.
+///   label.
 fn make_vxn2_controller(
     shared: Arc<SharedParams>,
 ) -> (Controller<SharedParams>, Receiver<ViewEvent>, CorpusHandle) {
@@ -163,9 +158,7 @@ pub struct VxnMainThread<'a> {
     /// these; when the GUI is closed they stay queued and the bounded
     /// channel drops on full.
     pub(crate) view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
-    /// Shared snapshot of the preset corpus. Empty until the preset
-    /// epic lands; the controller still publishes
-    /// `ViewEvent::PresetCorpusChanged` events the page can ignore.
+    /// Shared snapshot of the preset corpus.
     pub(crate) corpus: CorpusHandle,
     /// Live editor handle while the GUI is open.
     pub(crate) gui: Option<vxn2_ui_web::EditorHandle>,
@@ -197,16 +190,16 @@ impl<'a> VxnMainThread<'a> {
 
     /// Drain `SharedParams`' dirty bitsets and push the resulting view
     /// events to the live editor handle. The bitset is the canonical
-    /// Model → View change channel (ADR 0003): every write site —
-    /// UI knob, host automation via `LocalParams::apply_input`, state
-    /// load, preset load — flips a bit; this tick pops them.
+    /// Model → View change channel: every write site — UI knob, host
+    /// automation via `LocalParams::apply_input`, state load, preset
+    /// load — flips a bit; this tick pops them.
     ///
     /// The pump is source-agnostic and dumb: it pushes every drift. The
-    /// view's `bindGestureGated` helper (ticket 0060) drops echoes for
-    /// widgets the user is currently dragging. `SharedParams.gestures`
-    /// still drives plugin → host CLAP gesture brackets — different
-    /// direction, separate concern. Sync flips re-emit their rate
-    /// partner's display in a second pass.
+    /// view's `bindGestureGated` helper drops echoes for widgets the
+    /// user is currently dragging. `SharedParams.gestures` still drives
+    /// plugin → host CLAP gesture brackets — different direction,
+    /// separate concern. Sync flips re-emit their rate partner's display
+    /// in a second pass.
     fn push_model_diffs(&mut self) {
         let Some(handle) = self.gui.as_ref() else {
             return;
@@ -218,11 +211,11 @@ impl<'a> VxnMainThread<'a> {
 }
 
 /// Drain the dirty bitsets on `params` and return the view events the
-/// editor handle should receive this tick (ADR 0003). One
-/// `ParamChanged` per popped value bit, one `MatrixSnapshot` if any
-/// matrix bit was set. The pump is source-agnostic — mid-gesture
-/// suppression lives in the view's `bindGestureGated` helper (ticket
-/// 0060). Sync flips re-emit their rate partner's display.
+/// editor handle should receive this tick. One `ParamChanged` per popped
+/// value bit, one `MatrixSnapshot` if any matrix bit was set. The pump is
+/// source-agnostic — mid-gesture suppression lives in the view's
+/// `bindGestureGated` helper. Sync flips re-emit their rate partner's
+/// display.
 fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     let mut out: Vec<ViewEvent> = Vec::new();
     let value_bits = params.take_dirty_values();
@@ -283,7 +276,7 @@ fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     if vxn2_app::Vxn2Params::take_dirty_ks_curve(params) {
         out.push(ks_curve_snapshot_event(params));
     }
-    // Whole EG-curve snapshot on its dirty flag (ticket 0128). Same rationale.
+    // Whole EG-curve snapshot on its dirty flag. Same rationale.
     if vxn2_app::Vxn2Params::take_dirty_eg_curve(params) {
         out.push(eg_curve_snapshot_event(params));
     }
@@ -301,9 +294,9 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         }
         self.drain_view_events();
         // Drain SharedParams' dirty bitsets — the canonical Model → View
-        // change channel (ADR 0003 / E005). Catches audio-thread
-        // automation, host state load, preset load, and any UI write
-        // that landed since the last tick under one discipline.
+        // change channel. Catches audio-thread automation, host state
+        // load, preset load, and any UI write that landed since the last
+        // tick under one discipline.
         self.push_model_diffs();
         // One `evaluate_script` per tick. Both pushes above only
         // buffered into the EditorHandle; this is the single bridge
@@ -317,8 +310,8 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
 pub struct VxnAudioProcessor<'a> {
     engine: Engine,
     shared: &'a VxnShared,
-    /// Audio-thread parameter mirror. Host param events fold into it; 0016
-    /// pushes the mirror into the engine at the top of each block.
+    /// Audio-thread parameter mirror. Host param events fold into it; the
+    /// mirror is pushed into the engine at the top of each block.
     local: LocalParams,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
@@ -355,9 +348,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // different thread.
         let _ftz = ScopedFlushToZero::new();
 
-        // Fold any UI edits made since the last block (no-op for E002 — the
-        // UI write path lands in a later epic) into the local mirror, then
-        // push the authoritative param set into the engine.
+        // Fold any UI edits made since the last block into the local mirror,
+        // then push the authoritative param set into the engine.
         self.local.fetch_ui_changes(&self.shared.params);
         self.local.write_to(self.engine.params_mut());
         self.engine.apply_block_params();
@@ -432,8 +424,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
 
         // Host automation already wrote through to the shared store inside
         // `dispatch_event` (one shared store + dirty-bit flip per event —
-        // see [`LocalParams::apply_input`] / ADR 0003). Emit any UI edits
-        // back to the host as ParamValue events.
+        // see [`LocalParams::apply_input`]). Emit any UI edits back to the
+        // host as ParamValue events.
         self.local
             .emit(&self.shared.params, events.output, frames as u32);
 
@@ -476,10 +468,8 @@ impl EngineNotes for EngineNotesAdapter<'_> {
 
 /// Per-event dispatch. `ParamValue` events fold into the local mirror AND
 /// write through to the shared store (so the dirty bitset catches host
-/// automation — the synth-specific seam); the engine re-snapshots from
-/// [`LocalParams`] at the top of the next block. Sub-block accuracy at event
-/// boundaries lands with the UI epic when `Engine::set_param` (per-id) is
-/// exposed. Every other arm (notes, raw MIDI) delegates to the shared
+/// automation); the engine re-snapshots from [`LocalParams`] at the top of
+/// the next block. Every other arm (notes, raw MIDI) delegates to the shared
 /// [`dispatch_notes`] via [`EngineNotesAdapter`].
 fn dispatch_event(
     engine: &mut Engine,
@@ -493,8 +483,6 @@ fn dispatch_event(
         dispatch_notes(&mut EngineNotesAdapter(engine), event);
     }
 }
-
-// ── Audio / Note ports ──────────────────────────────────────────────────────
 
 impl PluginLatencyImpl for VxnMainThread<'_> {
     /// Constant across the whole session — the oversampled filter+dynamics span's
@@ -542,8 +530,6 @@ impl PluginNotePortsImpl for VxnMainThread<'_> {
     }
 }
 
-// ── Parameters ──────────────────────────────────────────────────────────────
-
 impl PluginMainThreadParams for VxnMainThread<'_> {
     fn count(&mut self) -> u32 {
         TOTAL_PARAMS as u32
@@ -586,9 +572,9 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
-        // Same sync-aware path as the view pump (ticket 0066): a synced
-        // rate shows its subdivision label in the host's automation lane,
-        // matching the editor, instead of the raw Hz/ms value.
+        // Same sync-aware path as the view pump: a synced rate shows its
+        // subdivision label in the host's automation lane, matching the
+        // editor, instead of the raw Hz/ms value.
         let id = param_id.get() as usize;
         if desc_for_clap_id(id).is_none() {
             return Err(std::fmt::Error);
@@ -603,11 +589,10 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     fn text_to_value(&mut self, _param_id: ClapId, text: &CStr) -> Option<f64> {
         let s = text.to_str().ok()?;
         // Take the leading numeric token; ignore unit suffix the host hands
-        // back through this field (e.g. "-6.0 dB"). Matches VXN1. Text input
-        // stays Hz/ms-only: subdivision strings ("1/8") are not parsed —
-        // "1/8" reads as 1.0 here, which is the documented trade-off
-        // (ticket 0066); hosts use value_to_text for display and pass plain
-        // values for edits.
+        // back through this field (e.g. "-6.0 dB"). Text input stays
+        // Hz/ms-only: subdivision strings ("1/8") are not parsed — "1/8"
+        // reads as 1.0 here, the documented trade-off; hosts use
+        // value_to_text for display and pass plain values for edits.
         let num: String = s
             .trim()
             .chars()
@@ -617,9 +602,9 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
     }
 
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
-        // Main-thread / inactive-plugin flush. No Controller in E002, so
-        // fold host param events straight into the shared store; the next
-        // audio-thread activation rebuilds `LocalParams` from it.
+        // Main-thread / inactive-plugin flush. Fold host param events
+        // straight into the shared store; the next audio-thread activation
+        // rebuilds `LocalParams` from it.
         for event in input {
             if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
                 if let Some(pid) = e.param_id() {
@@ -635,19 +620,16 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
 
 impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
-        // No render happens during `flush`; VXN2's engine refreshes from
-        // `LocalParams` at the top of each `process()` (ticket 0016), so a
-        // per-event engine setter (the VXN1 `synth.set_param` pattern) would
-        // be redundant here. `apply_input` writes through to the shared
-        // store (ADR 0003), so the host's next `get_value` poll reflects
-        // the automation without a separate publish pass.
+        // No render happens during `flush`; the engine refreshes from
+        // `LocalParams` at the top of each `process()`, so a per-event
+        // engine setter would be redundant here. `apply_input` writes
+        // through to the shared store, so the host's next `get_value` poll
+        // reflects the automation without a separate publish pass.
         for event in input {
             let _ = self.local.apply_input(&self.shared.params, event);
         }
     }
 }
-
-// ── State save / restore ────────────────────────────────────────────────────
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
@@ -666,7 +648,7 @@ impl PluginStateImpl for VxnMainThread<'_> {
             .map_err(|_| PluginError::Message("state read failed"))?;
         // `load_bytes` flips every dirty bit (values + matrix) so the
         // main-thread tick pumps a full re-broadcast — no bespoke push
-        // from this site (ADR 0003 / E005).
+        // from this site.
         Ok(())
     }
 }
@@ -678,9 +660,8 @@ clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 /// feature so it is not compiled into production builds; the self-referencing
 /// dev-dependency in `Cargo.toml` activates the feature for `cargo test`.
 ///
-/// ADR (0167): this is the single definition — `tests/test_support.rs`
-/// re-exports it via `pub use vxn2_clap::EDITS`, and the unit test below
-/// accesses it as `crate::EDITS`. Do not add a second copy.
+/// Single definition — `tests/test_support.rs` re-exports it and the unit
+/// test below accesses it as `crate::EDITS`. Do not add a second copy.
 ///
 /// Covers float / int / enum / bool ids spanning per-op / master / matrix /
 /// FX. Each value sits inside the descriptor's valid range.
@@ -706,7 +687,6 @@ mod tests {
     use clack_plugin::events::io::EventBuffer;
     use clack_plugin::events::Pckn;
     use vxn2_engine::params::id_of;
-    // Generic event-buffer helper from the shared test-support surface (0167).
     use vxn_core_clap::testing::push_param_event;
 
     fn mk_main<'a>(shared: &'a VxnShared) -> VxnMainThread<'a> {
@@ -771,7 +751,6 @@ mod tests {
         assert!((shared.params.get(decay) - 4.5).abs() < 1e-5);
     }
 
-    /// `get_value` for known + unknown ids.
     #[test]
     fn main_thread_get_value() {
         let shared = mk_shared();
@@ -797,7 +776,6 @@ mod tests {
         assert!((v - (-6.0)).abs() < 1e-9);
     }
 
-    /// `count` exposes the full table.
     #[test]
     fn main_thread_count_matches_total() {
         let shared = mk_shared();
@@ -808,11 +786,9 @@ mod tests {
         );
     }
 
-    // ── control_chunks ─────────────────────────────────────────────────────
-
-    /// Render slicing (ticket 0075): every chunk is at most CONTROL_BLOCK
-    /// long, chunks tile the range exactly, the ragged tail is preserved,
-    /// and an empty batch range yields no chunks.
+    /// Render slicing: every chunk is at most CONTROL_BLOCK long, chunks
+    /// tile the range exactly, the ragged tail is preserved, and an empty
+    /// batch range yields no chunks.
     #[test]
     fn control_chunks_tile_range_with_ragged_tail() {
         let chunks: Vec<_> = control_chunks(0, 512).collect();
@@ -831,8 +807,6 @@ mod tests {
 
         assert_eq!(control_chunks(37, 37).count(), 0);
     }
-
-    // ── batch_range ────────────────────────────────────────────────────────
 
     #[test]
     fn batch_range_unbounded_covers_full_block() {
@@ -863,8 +837,6 @@ mod tests {
         let (s, e) = batch_range((Bound::Included(300), Bound::Excluded(500)), 256);
         assert_eq!((s, e), (256, 256));
     }
-
-    // ── dispatch_event ─────────────────────────────────────────────────────
 
     use clack_plugin::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent};
 
@@ -955,12 +927,9 @@ mod tests {
         assert!((shared.params.get(decay) - 7.5).abs() < 1e-5);
     }
 
-    // ── process loop end-to-end ────────────────────────────────────────────
-
-    /// Mirrors the ticket's integration scenario: note-on at sample 0,
-    /// note-off at sample 200, in a 256-sample block. Drives the engine via
-    /// the two split batches and checks finite + non-silent attack +
-    /// decaying release tail.
+    /// Note-on at sample 0, note-off at sample 200, in a 256-sample block.
+    /// Drives the engine via the two split batches and checks finite +
+    /// non-silent attack + decaying release tail.
     #[test]
     fn process_loop_two_batch_render_is_finite_and_non_silent() {
         let shared = mk_shared();
@@ -1051,15 +1020,13 @@ mod tests {
         assert!(peak < 1e-3, "reset left audible state: {peak}");
     }
 
-    // ── State extension ────────────────────────────────────────────────────
-
     /// `save` → `load` on a fresh `SharedParams` reproduces every slot.
     #[test]
     fn plugin_state_save_load_round_trips_every_param() {
         let shared = mk_shared();
         // Spread non-default values across the table. EDITS is the
         // single-source list (defined in crate root, re-exported to
-        // tests/test_support.rs via the test-support feature — see 0167).
+        // tests/test_support.rs via the test-support feature).
         for &(name, v) in crate::EDITS {
             let id = id_of(name).unwrap();
             shared.params.set(id, v as f32);
@@ -1155,8 +1122,6 @@ mod tests {
         }
     }
 
-    // ── drain_dirty_bits (E005 / ADR 0003) ────────────────────────────────
-
     fn changed_ids(evs: &[ViewEvent]) -> Vec<usize> {
         evs.iter()
             .filter_map(|e| match e {
@@ -1196,8 +1161,7 @@ mod tests {
 
     /// First tick after open: dirty bitset is seeded all-ones, so the
     /// pump broadcasts the full table (every CLAP id) plus one matrix
-    /// snapshot. Parallels the all-NaN `last_seen` seed of the prior
-    /// polling pump.
+    /// snapshot.
     #[test]
     fn drain_full_broadcast_on_fresh_shared_params() {
         let shared = mk_shared();
@@ -1246,6 +1210,7 @@ mod tests {
             9,
             vxn2_engine::MatrixRowRaw {
                 source: 4, dest: 2, curve: 0, active: true, depth: 0.3,
+                scale_src: 0,
             },
         );
         let evs = drain_dirty_bits(&shared.params);
@@ -1253,10 +1218,10 @@ mod tests {
         assert_drains_just(&shared.params, &[]); // already drained
     }
 
-    /// Per ADR 0003 / ticket 0060 the pump is source-agnostic and does
-    /// NOT consult `SharedParams.gestures` — mid-drag suppression lives
-    /// in the view's `bindGestureGated` helper. Writes under gesture
-    /// flow through the drain like any other write.
+    /// The pump is source-agnostic and does NOT consult
+    /// `SharedParams.gestures` — mid-drag suppression lives in the view's
+    /// `bindGestureGated` helper. Writes under gesture flow through the
+    /// drain like any other write.
     #[test]
     fn drain_emits_ids_under_gesture_pump_is_source_agnostic() {
         let shared = mk_shared();
@@ -1275,11 +1240,10 @@ mod tests {
         }
     }
 
-    // ── Single-emitter discipline (ticket 0067) ───────────────────────────
     // With `echo_param_writes` off (set by `mk_main` to match production) the
-    // dirty-bitset pump is the only Model→View emitter. These guard the
-    // double-emission the E006 review found: a UI write echoed by the
-    // controller *and* re-broadcast by the pump.
+    // dirty-bitset pump is the only Model→View emitter. These guard against
+    // double-emission: a UI write echoed by the controller *and*
+    // re-broadcast by the pump.
 
     /// One UI `SetParam` intent + one pump drain → exactly one `ParamChanged`
     /// for that id across both channels (controller view queue + pump),
@@ -1316,7 +1280,7 @@ mod tests {
 
     /// One `StateLoaded` + one pump drain → exactly one `ParamChanged` per
     /// param (no duplicates) and exactly one `MatrixSnapshot`, across both
-    /// channels — not the ~360 events of the pre-0067 broadcast + pump overlap.
+    /// channels — no broadcast + pump overlap.
     #[test]
     fn state_load_emits_one_param_changed_per_param_and_one_snapshot() {
         use vxn_core_app::HostEvent;

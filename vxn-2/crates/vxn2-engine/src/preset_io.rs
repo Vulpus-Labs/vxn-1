@@ -1,5 +1,5 @@
-//! User-preset filesystem IO + the [`PresetStore`] impl (E007 lineage,
-//! ADR 0005 §5/§6, ADR 0006).
+//! User-preset filesystem IO + the [`PresetStore`] impl (ADR 0005 §5/§6,
+//! ADR 0006).
 //!
 //! Resolves the per-OS **user** preset directory and provides the file ops
 //! the browser needs: load/save a preset, enumerate one level of subfolders,
@@ -239,11 +239,9 @@ fn unique_folder_name(stem: &str, existing_ci: &[String]) -> String {
     }
 }
 
-// ── PresetStore ──────────────────────────────────────────────────────────────
-
 /// The concrete [`PresetStore`] for VXN2: an embedded factory bank plus
 /// user-dir TOML IO. Stateless — every call goes straight to the module
-/// functions and the [`factory`] bank, mirroring VXN1's `EnginePresetStore`.
+/// functions and the [`factory`] bank.
 pub struct Vxn2PresetStore;
 
 impl Vxn2PresetStore {
@@ -353,7 +351,7 @@ impl PresetStore for Vxn2PresetStore {
     }
 }
 
-// ── Mutating user ops (io::Result; the trait wraps to String) ───────────────
+// Mutating user ops (io::Result; the trait wraps to String).
 
 fn create_user_folder(suggested: &str) -> io::Result<(PathBuf, String)> {
     let base = ensure_user_dir()?;
@@ -416,7 +414,6 @@ fn rename_user_preset(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     if new_path != path && new_path.exists() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "preset already exists"));
     }
-    // Load → mutate meta.name → write under the new filename → remove old.
     let contents = fs::read_to_string(path)?;
     let (mut meta, blob, _w) =
         from_toml_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;

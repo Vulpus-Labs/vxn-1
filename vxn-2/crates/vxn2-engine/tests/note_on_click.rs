@@ -1,12 +1,8 @@
-//! Note-on (onset) click regression. The per-op EG level is applied as a
-//! block constant in `stack_tick`; block-to-block steps are smoothed by the
-//! 0077 per-sample ramp, but the note's *first* block used to snap — the
-//! engine ran `eg_tick` (advancing the level one attack step past 0) and then
-//! rendered that step as a block constant with no ramp. On a near-zero attack
-//! (rate 99) the voice amplitude jumped 0 → full at sample 0: an onset click.
-//! The fresh-note path now seeds the level at silence and ramps the onset
-//! across the first block, so a fast attack fades in (~one block) instead of
-//! stepping.
+//! Note-on (onset) click regression. The per-op EG level is applied as a block
+//! constant in `stack_tick`, with per-sample ramps smoothing block-to-block
+//! steps. The fresh-note path seeds the level at silence and ramps the onset
+//! across the first block, so even a near-zero attack (rate 99) fades in (~one
+//! block) rather than stepping 0 → full at sample 0.
 
 mod common;
 
@@ -52,18 +48,16 @@ fn note_on_onset_is_click_free_on_fast_attack() {
         let worst = common::worst_d4(&buf, on_t..buf.len() - 2);
         assert!(
             worst < 5e-3,
-            "note {note}: onset |d4| {worst:.2e} — fast-attack onset click is back \
-             (pre-fix the first block stepped 0 → full)"
+            "note {note}: onset |d4| {worst:.2e} — fast-attack onset click is back"
         );
     }
 }
 
 /// Solo-mode steal (legato off): stealing a *sounding* note must be click-free.
-/// A solo note change now round-robins to a fresh voice (onset from silence is
+/// A solo note change round-robins to a fresh voice (onset from silence is
 /// click-free) and declicks the previous note — a ~5 ms fade to silence that
-/// overlaps the new onset. Neither the old in-place retrigger's phase-reset
-/// glitch nor a level dip is present. We measure the steal transient with the
-/// same 4th-difference probe as the note-off test and require it near the floor.
+/// overlaps the new onset. Measure the steal transient with the same
+/// 4th-difference probe as the note-off test and require it near the floor.
 #[test]
 fn solo_steal_is_click_free() {
     let mut e = Engine::new(SR, BLK);
@@ -98,8 +92,8 @@ fn solo_steal_is_click_free() {
     let steal_worst = common::worst_d4(&buf, steal_t..buf.len() - 2);
     let baseline = common::worst_d4(&buf, 4..steal_t - 2);
 
-    // Crossfade + ~5 ms declick measures ~0.006 here; an in-place phase-reset
-    // steal measured ~0.6. Gate well between the two.
+    // Crossfade + ~5 ms declick measures ~0.006 here; a phase-reset steal
+    // click measures ~0.6. Gate well between the two.
     assert!(
         steal_worst < 1.5e-2,
         "solo steal transient |d4| {steal_worst:.2e} (steady baseline {baseline:.2e}) — \
@@ -157,11 +151,10 @@ fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
     worst
 }
 
-/// Real-world repro: the FLUTE 2 factory preset played as a solo 16th-note line
-/// at 100 BPM clicked on every note (the patch's modulators decay to sustain 0;
-/// retriggering them mid-phrase was an unmasked FM transient). Solo now
-/// round-robins to a fresh voice per note and declicks the previous one — no
-/// retrigger, no click. ~0.026 pre-fix → ~0.005 after.
+/// The FLUTE 2 factory preset played as a solo 16th-note line at 100 BPM must
+/// be click-free. The patch's modulators decay to sustain 0, so retriggering
+/// them mid-phrase would be an unmasked FM transient; solo round-robins to a
+/// fresh voice per note and declicks the previous one instead.
 #[test]
 fn flute2_solo_sixteenths_are_click_free() {
     let worst = flute2_solo_sixteenths_boundary_d4(1, 0.0);
@@ -171,10 +164,10 @@ fn flute2_solo_sixteenths_are_click_free() {
     );
 }
 
-/// The case the in-place fixes never cracked: FLUTE 2 solo 16ths with voice
-/// stacking (density 4) and stack phase 0.5 (maximal per-lane decorrelation).
-/// Any in-place reuse discontinues the decorrelated lane phases; only the
-/// fresh-voice + declick crossfade is clean here.
+/// FLUTE 2 solo 16ths with voice stacking (density 4) and stack phase 0.5
+/// (maximal per-lane decorrelation). Any in-place voice reuse would discontinue
+/// the decorrelated lane phases; only the fresh-voice + declick crossfade is
+/// clean here.
 #[test]
 fn flute2_solo_sixteenths_stacked_phase_half_are_click_free() {
     let worst = flute2_solo_sixteenths_boundary_d4(4, 0.5);

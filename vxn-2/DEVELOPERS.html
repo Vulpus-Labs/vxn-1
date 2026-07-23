@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VXN2 — Developer's Manual</title>
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --border: #30363d;
+  --fg: #d0d7de; --muted: #8b949e; --accent: #f2a97e; --accent2: #7ee0c8;
+  --link: #79c0ff; --code-bg: #1c2128;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.65 -apple-system, "SF Pro Text", Segoe UI, Roboto, sans-serif;
+}
+.wrap { display: flex; max-width: 1180px; margin: 0 auto; gap: 32px; padding: 0 24px; }
+nav.toc {
+  position: sticky; top: 0; align-self: flex-start; height: 100vh; overflow-y: auto;
+  width: 260px; flex: 0 0 260px; padding: 28px 8px 40px 0; font-size: 13.5px;
+  border-right: 1px solid var(--border);
+}
+nav.toc::-webkit-scrollbar { width: 8px; }
+nav.toc::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+nav.toc .toctitle { font-weight: 700; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .08em; font-size: 11px; margin: 0 0 10px 4px; }
+nav.toc ul { list-style: none; padding-left: 12px; margin: 4px 0; border-left: 1px solid var(--border); }
+nav.toc > ul { border-left: none; padding-left: 0; }
+nav.toc a { color: var(--muted); text-decoration: none; display: block; padding: 3px 8px;
+  border-radius: 6px; }
+nav.toc a:hover { color: var(--fg); background: var(--panel); }
+main { flex: 1 1 auto; min-width: 0; padding: 28px 0 120px; }
+h1, h2, h3, h4 { line-height: 1.25; font-weight: 700; scroll-margin-top: 20px; }
+h1 { font-size: 30px; margin: 8px 0 6px; }
+h2 { font-size: 23px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 18px; margin: 30px 0 10px; color: var(--accent2); }
+h4 { font-size: 15.5px; margin: 22px 0 8px; color: var(--muted); }
+a { color: var(--link); }
+.headerlink { visibility: hidden; margin-left: .4em; color: var(--muted); text-decoration: none; font-weight: 400; }
+h1:hover .headerlink, h2:hover .headerlink, h3:hover .headerlink, h4:hover .headerlink { visibility: visible; }
+p { margin: 12px 0; }
+.lede { color: var(--muted); font-size: 15px; }
+code { font: 13.5px/1.5 "SF Mono", ui-monospace, Menlo, Consolas, monospace; }
+p code, li code, td code { background: var(--code-bg); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 5px; font-size: 12.8px; color: var(--accent); }
+.hl { background: #1c2128; border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; overflow-x: auto; margin: 16px 0; font-size: 13px; }
+.hl pre { margin: 0; }
+.codehilite { background: #1c2128; border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; overflow-x: auto; margin: 16px 0; }
+.codehilite pre { margin: 0; }
+blockquote { margin: 16px 0; padding: 2px 18px; border-left: 3px solid var(--accent);
+  background: var(--panel); border-radius: 0 8px 8px 0; color: var(--fg); }
+blockquote p { margin: 10px 0; }
+table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14px; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+th { background: var(--panel); font-weight: 700; }
+tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+ul, ol { padding-left: 26px; }
+li { margin: 5px 0; }
+.masthead { padding: 10px 0 4px; }
+.masthead .kicker { color: var(--accent); font-size: 12px; letter-spacing: .12em;
+  text-transform: uppercase; font-weight: 700; }
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.hl .hll { background-color: #49483e }
+.hl { background: #272822; color: #F8F8F2 }
+.hl .c { color: #959077 } /* Comment */
+.hl .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.hl .esc { color: #F8F8F2 } /* Escape */
+.hl .g { color: #F8F8F2 } /* Generic */
+.hl .k { color: #66D9EF } /* Keyword */
+.hl .l { color: #AE81FF } /* Literal */
+.hl .n { color: #F8F8F2 } /* Name */
+.hl .o { color: #FF4689 } /* Operator */
+.hl .x { color: #F8F8F2 } /* Other */
+.hl .p { color: #F8F8F2 } /* Punctuation */
+.hl .ch { color: #959077 } /* Comment.Hashbang */
+.hl .cm { color: #959077 } /* Comment.Multiline */
+.hl .cp { color: #959077 } /* Comment.Preproc */
+.hl .cpf { color: #959077 } /* Comment.PreprocFile */
+.hl .c1 { color: #959077 } /* Comment.Single */
+.hl .cs { color: #959077 } /* Comment.Special */
+.hl .gd { color: #FF4689 } /* Generic.Deleted */
+.hl .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.hl .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.hl .gr { color: #F8F8F2 } /* Generic.Error */
+.hl .gh { color: #F8F8F2 } /* Generic.Heading */
+.hl .gi { color: #A6E22E } /* Generic.Inserted */
+.hl .go { color: #66D9EF } /* Generic.Output */
+.hl .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.hl .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.hl .gu { color: #959077 } /* Generic.Subheading */
+.hl .gt { color: #F8F8F2 } /* Generic.Traceback */
+.hl .kc { color: #66D9EF } /* Keyword.Constant */
+.hl .kd { color: #66D9EF } /* Keyword.Declaration */
+.hl .kn { color: #FF4689 } /* Keyword.Namespace */
+.hl .kp { color: #66D9EF } /* Keyword.Pseudo */
+.hl .kr { color: #66D9EF } /* Keyword.Reserved */
+.hl .kt { color: #66D9EF } /* Keyword.Type */
+.hl .ld { color: #E6DB74 } /* Literal.Date */
+.hl .m { color: #AE81FF } /* Literal.Number */
+.hl .s { color: #E6DB74 } /* Literal.String */
+.hl .na { color: #A6E22E } /* Name.Attribute */
+.hl .nb { color: #F8F8F2 } /* Name.Builtin */
+.hl .nc { color: #A6E22E } /* Name.Class */
+.hl .no { color: #66D9EF } /* Name.Constant */
+.hl .nd { color: #A6E22E } /* Name.Decorator */
+.hl .ni { color: #F8F8F2 } /* Name.Entity */
+.hl .ne { color: #A6E22E } /* Name.Exception */
+.hl .nf { color: #A6E22E } /* Name.Function */
+.hl .nl { color: #F8F8F2 } /* Name.Label */
+.hl .nn { color: #F8F8F2 } /* Name.Namespace */
+.hl .nx { color: #A6E22E } /* Name.Other */
+.hl .py { color: #F8F8F2 } /* Name.Property */
+.hl .nt { color: #FF4689 } /* Name.Tag */
+.hl .nv { color: #F8F8F2 } /* Name.Variable */
+.hl .ow { color: #FF4689 } /* Operator.Word */
+.hl .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.hl .w { color: #F8F8F2 } /* Text.Whitespace */
+.hl .mb { color: #AE81FF } /* Literal.Number.Bin */
+.hl .mf { color: #AE81FF } /* Literal.Number.Float */
+.hl .mh { color: #AE81FF } /* Literal.Number.Hex */
+.hl .mi { color: #AE81FF } /* Literal.Number.Integer */
+.hl .mo { color: #AE81FF } /* Literal.Number.Oct */
+.hl .sa { color: #E6DB74 } /* Literal.String.Affix */
+.hl .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.hl .sc { color: #E6DB74 } /* Literal.String.Char */
+.hl .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.hl .sd { color: #E6DB74 } /* Literal.String.Doc */
+.hl .s2 { color: #E6DB74 } /* Literal.String.Double */
+.hl .se { color: #AE81FF } /* Literal.String.Escape */
+.hl .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.hl .si { color: #E6DB74 } /* Literal.String.Interpol */
+.hl .sx { color: #E6DB74 } /* Literal.String.Other */
+.hl .sr { color: #E6DB74 } /* Literal.String.Regex */
+.hl .s1 { color: #E6DB74 } /* Literal.String.Single */
+.hl .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.hl .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.hl .fm { color: #A6E22E } /* Name.Function.Magic */
+.hl .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.hl .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.hl .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.hl .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.hl .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+@media (max-width: 900px) {
+  nav.toc { display: none; }
+  .wrap { padding: 0 16px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+<p class="toctitle">Contents</p>
+<div class="toc">
+<ul>
+<li><a href="#1-repository-layout">1. Repository layout</a></li>
+<li><a href="#2-the-dsp-core-vxn2-dsp">2. The DSP core (vxn2-dsp)</a><ul>
+<li><a href="#21-the-operator-oprs">2.1 The operator (op.rs)</a></li>
+<li><a href="#22-the-sine-siners">2.2 The sine (sine.rs)</a></li>
+<li><a href="#23-algorithms-algors">2.3 Algorithms (algo.rs)</a></li>
+<li><a href="#24-voices-and-stacks-the-soa-hot-loop-stackrs">2.4 Voices and stacks — the SoA hot loop (stack.rs)</a></li>
+<li><a href="#25-envelopes-egrs-envelopers">2.5 Envelopes (eg.rs, envelope.rs)</a></li>
+<li><a href="#26-the-optional-filter-filterrs">2.6 The optional filter (filter.rs)</a></li>
+<li><a href="#27-effects-delayrs-reverbrs-phaserrs-dynamicsrs">2.7 Effects (delay.rs, reverb.rs, phaser.rs, dynamics.rs)</a></li>
+</ul>
+</li>
+<li><a href="#3-the-engine-vxn2-engine">3. The engine (vxn2-engine)</a><ul>
+<li><a href="#31-voice-allocation-allocrs">3.1 Voice allocation (alloc.rs)</a></li>
+<li><a href="#32-the-mod-matrix-matrixrs-modulationrs">3.2 The mod matrix (matrix.rs, modulation.rs)</a></li>
+<li><a href="#33-the-render-loop-enginers">3.3 The render loop (engine.rs)</a></li>
+<li><a href="#34-shared-state-and-the-param-table-sharedrs-paramsrs">3.4 Shared state and the param table (shared.rs, params.rs)</a></li>
+<li><a href="#35-presets-presetrs-preset_iors-factoryrs-default_patchrs">3.5 Presets (preset.rs, preset_io.rs, factory.rs, default_patch.rs)</a></li>
+</ul>
+</li>
+<li><a href="#4-the-clap-shell-vxn2-clap">4. The CLAP shell (vxn2-clap)</a></li>
+<li><a href="#5-ui-plumbing-the-dirty-bitset-pump-vxn2-app-adr-0003">5. UI plumbing — the dirty-bitset pump (vxn2-app, ADR 0003)</a></li>
+<li><a href="#6-the-web-faceplate-vxn2-ui-web">6. The web faceplate (vxn2-ui-web)</a></li>
+<li><a href="#7-adr-quick-reference">7. ADR quick-reference</a></li>
+<li><a href="#8-constraints-you-must-respect-when-editing">8. Constraints you must respect when editing</a></li>
+</ul>
+</div>
+
+</nav>
+<main>
+<h1 id="vxn2-developers-manual">VXN2 — Developer's Manual<a class="headerlink" href="#vxn2-developers-manual" title="Permanent link">¶</a></h1>
+<p>A working guide to the VXN2 source tree: what the crates are, how audio flows
+from a MIDI note to the output buffer, how the UI talks to the engine, and the
+implementation choices worth knowing before you touch anything. Written for
+someone who has never read this code.</p>
+<p>VXN2 is a <strong>6-operator FM synthesizer</strong> shipped as a Rust <strong>CLAP</strong> plugin, in
+the DX7/Montage lineage, extended with first-class <strong>voice stacking</strong> (unison
+"supersaw" without wavetable storage). It is a sibling instrument to VXN1 (a
+subtractive polysynth); the two share the CLAP shell, preset conventions and
+the HTML-faceplate UI idiom, but have <strong>separate DSP kernels, parameter tables
+and patch formats</strong>.</p>
+<p>The canonical design record is <a href="adrs/"><code>adrs/</code></a> + <a href="PARAMETERS.md"><code>PARAMETERS.md</code></a>;
+this manual summarises and cross-links them, but the ADRs win on any conflict.</p>
+<hr />
+<h2 id="1-repository-layout">1. Repository layout<a class="headerlink" href="#1-repository-layout" title="Permanent link">¶</a></h2>
+<p>Everything lives in one Cargo workspace at the repo root (<code>vxn-1/</code> and <code>vxn-2/</code>
+are <em>not</em> separate workspaces — that was an early plan that never happened).
+The VXN2 crates are:</p>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>LOC</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="crates/vxn2-dsp"><code>vxn2-dsp</code></a></td>
+<td>~10k</td>
+<td>Pure DSP kernels — operators, algorithms, voices/stacks, envelopes, LFOs, filter, FX. No framework, no allocation on the hot path.</td>
+</tr>
+<tr>
+<td><a href="crates/vxn2-engine"><code>vxn2-engine</code></a></td>
+<td>~12k</td>
+<td>The synth engine — voice allocation, mod matrix, block render loop, param table, preset I/O, shared state.</td>
+</tr>
+<tr>
+<td><a href="crates/vxn2-clap"><code>vxn2-clap</code></a></td>
+<td>~2k</td>
+<td>CLAP plugin shell via <code>clack</code> — process callback, host param/note events, state save/load, GUI extension.</td>
+</tr>
+<tr>
+<td><a href="crates/vxn2-app"><code>vxn2-app</code></a></td>
+<td>~0.4k</td>
+<td>MVC controller glue — translates UI intents into model writes (VXN2-specific custom events).</td>
+</tr>
+<tr>
+<td><a href="crates/vxn2-ui-web"><code>vxn2-ui-web</code></a></td>
+<td>~1.2k</td>
+<td>Embeds and serves the HTML/JS/CSS faceplate; defines the UI↔engine JSON message protocol.</td>
+</tr>
+<tr>
+<td><a href="crates/vxn2-osc-bench"><code>vxn2-osc-bench</code></a></td>
+<td>—</td>
+<td>Criterion benches for every hot kernel.</td>
+</tr>
+</tbody>
+</table>
+<p>Dependency direction: <code>ui-web → app → engine → dsp</code>, and <code>clap</code> sits on top
+tying <code>engine</code> + <code>app</code> + <code>ui-web</code> together. Shared primitives (CLAP helpers,
+preset-browser JS, smoothing/math utils) come from root <code>vxn-core-*</code> crates.</p>
+<p>The mental model in one line:</p>
+<div class="hl"><pre><span></span><code>MIDI/host params ─► vxn2-clap (RT thread) ─► vxn2-engine.process_block ─► vxn2-dsp kernels ─► audio out
+                                    ▲                                                     │
+      HTML faceplate ◄─ vxn2-ui-web ◄─ vxn2-app controller ◄── dirty-bitset pump ◄────────┘ (main thread)
+</code></pre></div>
+
+<hr />
+<h2 id="2-the-dsp-core-vxn2-dsp">2. The DSP core (<code>vxn2-dsp</code>)<a class="headerlink" href="#2-the-dsp-core-vxn2-dsp" title="Permanent link">¶</a></h2>
+<p>This crate is framework-free number-crunching. It has <strong>two parallel paths</strong>:</p>
+<ul>
+<li>a <strong>scalar reference voice</strong> (<a href="crates/vxn2-dsp/src/voice.rs"><code>voice.rs</code></a>) — a
+  single-lane oracle used by tests and benches; and</li>
+<li>the <strong>production SoA stack</strong> (<a href="crates/vxn2-dsp/src/stack.rs"><code>stack.rs</code></a>) — an
+  8-lane lane-packed voice that is what actually renders in the plugin.</li>
+</ul>
+<p>They share the operator, algorithm and envelope code, and are cross-checked
+against each other in tests.</p>
+<h3 id="21-the-operator-oprs">2.1 The operator (<a href="crates/vxn2-dsp/src/op.rs"><code>op.rs</code></a>)<a class="headerlink" href="#21-the-operator-oprs" title="Permanent link">¶</a></h3>
+<p>An operator is a <strong>Q32 fixed-point phase accumulator + sine + 4-rate/4-level
+DX7 envelope</strong>. Phase is a <code>u32</code> where <code>2^32 == one cycle</code>, so wraparound is
+free (<code>wrapping_add</code>) and there is zero long-term drift. Everything past the
+phase boundary is <code>f32</code>.</p>
+<p>The per-sample tick is branch-free and about 15 cycles:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// op.rs — the hot path</span>
+<span class="cp">#[inline(always)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">op_tick</span><span class="p">(</span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">OpState</span><span class="p">,</span><span class="w"> </span><span class="n">mod_in</span><span class="p">:</span><span class="w"> </span><span class="kt">f32</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">f32</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">pm_q32</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">mod_in</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">PM_SCALE_Q32</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i32</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">u32</span><span class="p">;</span><span class="w">   </span><span class="c1">// modulation in cycles</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">phase_mod</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">state</span><span class="p">.</span><span class="n">phase</span><span class="p">.</span><span class="n">wrapping_add</span><span class="p">(</span><span class="n">pm_q32</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">out</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sine</span><span class="p">::</span><span class="n">scalar</span><span class="p">::</span><span class="n">fast_sine_q32</span><span class="p">(</span><span class="n">phase_mod</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">state</span><span class="p">.</span><span class="n">eg</span><span class="p">.</span><span class="n">level</span><span class="p">;</span>
+<span class="w">    </span><span class="n">state</span><span class="p">.</span><span class="n">fb_prev2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">state</span><span class="p">.</span><span class="n">fb_prev1</span><span class="p">;</span><span class="w">                        </span><span class="c1">// 2-sample feedback delay</span>
+<span class="w">    </span><span class="n">state</span><span class="p">.</span><span class="n">fb_prev1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">out</span><span class="p">;</span>
+<span class="w">    </span><span class="n">state</span><span class="p">.</span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">state</span><span class="p">.</span><span class="n">phase</span><span class="p">.</span><span class="n">wrapping_add</span><span class="p">(</span><span class="n">state</span><span class="p">.</span><span class="n">phase_inc</span><span class="p">);</span>
+<span class="w">    </span><span class="n">out</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Key conventions:</p>
+<ul>
+<li><strong>Modulation is in cycles.</strong> <code>PM_SCALE_Q32 = 2^32</code>, so a modulator output of
+  <code>1.0</code> means one full cycle of phase shift. This unifies FM depth across the
+  whole engine.</li>
+<li><strong>Feedback uses a 2-sample average</strong> (<code>0.5·(prev1+prev2)</code>), the DX7
+  anti-aliasing convention. The router does <em>not</em> inject feedback; the
+  voice/stack loop does, just before ticking (§2.3).</li>
+<li><strong>EG level is held constant across the tick.</strong> Envelopes advance separately
+  at <em>control rate</em> (once per block), not per sample.</li>
+</ul>
+<h3 id="22-the-sine-siners">2.2 The sine (<a href="crates/vxn2-dsp/src/sine.rs"><code>sine.rs</code></a>)<a class="headerlink" href="#22-the-sine-siners" title="Permanent link">¶</a></h3>
+<p>Sines are <strong>approximated, not table-looked-up</strong> — a Bhaskara+Moser polynomial,
+branch-free, ~−59 dB THD:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// sine.rs</span>
+<span class="cp">#[inline(always)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">fast_sine_01</span><span class="p">(</span><span class="n">p</span><span class="p">:</span><span class="w"> </span><span class="kt">f32</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">f32</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">x1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">0.5</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">x2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">x1</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">16.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">x1</span><span class="p">.</span><span class="n">abs</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">0.5</span><span class="p">);</span>
+<span class="w">    </span><span class="n">x2</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">0.225</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">x2</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">x2</span><span class="p">.</span><span class="n">abs</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">1.0</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Rationale (from the README premises): 5 mul + 2 abs + 2 add, vectorises
+beautifully, and avoids the SIMD-hostile gather that a table lookup needs. THD
+is masked under hypersaw detune anyway. A two-tier escape hatch exists —
+<code>lookup_sine_q32</code> (1024-entry table + linear interp, ~−133 dB THD) is reserved
+for exposed solo carriers. A NEON 4-wide port (<code>fast_sine_q32_x4</code>) exists for
+future explicit-SIMD contexts. The table is baked as a <code>const</code> literal
+(<code>include!("sine_table.rs")</code>) — never a <code>LazyLock</code>, which would be an
+alloc/lock trap on the audio thread.</p>
+<h3 id="23-algorithms-algors">2.3 Algorithms (<a href="crates/vxn2-dsp/src/algo.rs"><code>algo.rs</code></a>)<a class="headerlink" href="#23-algorithms-algors" title="Permanent link">¶</a></h3>
+<p>The 32 canonical DX7 algorithms are a static table. Each <code>AlgoSpec</code> holds the
+modulator→carrier edges, a carrier bitmask, and exactly one feedback pair
+(<code>fb_src → fb_dst</code> — a self-loop for 30 algorithms, a two-op loop for algos 4
+and 6, matching the DX7 chart). There is <strong>no per-op feedback</strong> parameter; a
+single global feedback control scales the one path. Arbitrary cross-op PM is the
+mod matrix's job, not the algorithm graph's.</p>
+<p>Two load-bearing tricks:</p>
+<ul>
+<li><strong>One-sample-delay routing.</strong> Every modulation edge consumes the <em>previous</em>
+  sample's op outputs. This removes within-sample data dependencies so the ops
+  can be evaluated "in parallel" — which is what makes the SoA lane packing
+  vectorise.</li>
+<li><strong>Each algorithm is its own function symbol.</strong> A macro unrolls the edge list
+  into straight-line adds, and <code>#[inline(never)]</code> keeps each algo a visible
+  symbol so an <code>objdump</code> in code review can <em>verify</em> the codegen is branch-free
+  (a hard-won VXN1 lesson: a runtime <code>match</code> in the poly loop silently drops
+  NEON to scalar).</li>
+</ul>
+<div class="hl"><pre><span></span><code><span class="c1">// algo.rs — one algorithm compiled to a distinct, branch-free symbol</span>
+<span class="fm">macro_rules!</span><span class="w"> </span><span class="n">impl_route</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="p">(</span><span class="cp">$name</span><span class="p">:</span><span class="nc">ident</span><span class="p">,</span><span class="w"> </span><span class="n">edges</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="cp">$(</span><span class="p">(</span><span class="cp">$m</span><span class="p">:</span><span class="nc">literal</span><span class="p">,</span><span class="w"> </span><span class="cp">$c</span><span class="p">:</span><span class="nc">literal</span><span class="p">)),</span><span class="o">*</span><span class="p">],</span><span class="w"> </span><span class="n">carriers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="cp">$($cs</span><span class="p">:</span><span class="nc">literal</span><span class="p">),</span><span class="o">*</span><span class="p">])</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="cp">#[inline(never)]</span>
+<span class="w">        </span><span class="k">fn</span><span class="w"> </span><span class="cp">$name</span><span class="p">(</span><span class="n">prev</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="kt">f32</span><span class="p">;</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="p">([</span><span class="kt">f32</span><span class="p">;</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">],</span><span class="w"> </span><span class="kt">f32</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.0_</span><span class="k">f32</span><span class="p">;</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">];</span>
+<span class="w">            </span><span class="cp">$(</span><span class="w"> </span><span class="n">mi</span><span class="p">[</span><span class="cp">$c</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">]</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">prev</span><span class="p">[</span><span class="cp">$m</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">];</span><span class="w"> </span><span class="p">)</span><span class="o">*</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">carrier_sum</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0_</span><span class="k">f32</span><span class="w"> </span><span class="cp">$(</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">prev</span><span class="p">[</span><span class="cp">$cs</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">]</span><span class="w"> </span><span class="p">)</span><span class="o">*</span><span class="p">;</span>
+<span class="w">            </span><span class="p">(</span><span class="n">mi</span><span class="p">,</span><span class="w"> </span><span class="n">carrier_sum</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">};</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><code>algo.rs</code> also owns <code>pitch_stack_component(algo, wall_mask, target_op)</code>, a pure
+<code>const</code>-style graph flood-fill used by stack-pitch modulation (§2.4, ADR 0005).</p>
+<h3 id="24-voices-and-stacks-the-soa-hot-loop-stackrs">2.4 Voices and stacks — the SoA hot loop (<a href="crates/vxn2-dsp/src/stack.rs"><code>stack.rs</code></a>)<a class="headerlink" href="#24-voices-and-stacks-the-soa-hot-loop-stackrs" title="Permanent link">¶</a></h3>
+<p>A "voice" in VXN2 is a <strong>stack</strong>: up to <code>STACK_LANES = 8</code> concurrent operator
+instances, detuned/decorrelated, that together form one played note's unison.
+The struct is <strong>Structure-of-Arrays</strong>: for each of the 6 ops, <code>phase</code>,
+<code>phase_inc</code>, feedback history, EG level etc. are <code>[_; 8]</code> arrays laid out
+contiguously so the inner loop autovectorises with no per-lane branches.</p>
+<p>The stack is split into three sub-structs for cache coherence
+(<code>StackCore</code> = hot DSP data, <code>StackMeta</code> = control-rate note state,
+<code>StackModulation</code> = block-rate matrix scratch).</p>
+<p>The kernel — <code>tick_ops</code> — is the single hottest function in the plugin. Note
+how feedback is injected once (hoisted out of the op loop), and the per-op work
+is three straight-line lane loops:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// stack.rs — the 8-lane kernel (abridged)</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">tick_ops</span><span class="p">(</span><span class="n">stack</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">Stack</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="p">[[</span><span class="kt">f32</span><span class="p">;</span><span class="w"> </span><span class="n">STACK_LANES</span><span class="p">];</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">mi</span><span class="p">,</span><span class="w"> </span><span class="n">_cs</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="n">meta</span><span class="p">.</span><span class="n">route_fn</span><span class="p">)(</span><span class="o">&amp;</span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">prev_outs</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">spec</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spec_of</span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="n">meta</span><span class="p">.</span><span class="n">algo</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">fs</span><span class="p">,</span><span class="w"> </span><span class="n">fd</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">((</span><span class="n">spec</span><span class="p">.</span><span class="n">fb_src</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">spec</span><span class="p">.</span><span class="n">fb_dst</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">usize</span><span class="p">);</span>
+<span class="w">    </span><span class="p">{</span><span class="w">   </span><span class="c1">// per-lane feedback injection, hoisted out of the op loop</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">src</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">ops</span><span class="p">[</span><span class="n">fs</span><span class="p">];</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">p1</span><span class="p">,</span><span class="w"> </span><span class="n">p2</span><span class="p">,</span><span class="w"> </span><span class="n">fbs</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="p">.</span><span class="n">fb_prev1</span><span class="p">,</span><span class="w"> </span><span class="n">src</span><span class="p">.</span><span class="n">fb_prev2</span><span class="p">,</span><span class="w"> </span><span class="n">src</span><span class="p">.</span><span class="n">fb_scale</span><span class="p">);</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">STACK_LANES</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">mi</span><span class="p">[</span><span class="n">fd</span><span class="p">][</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="mf">0.5</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">p1</span><span class="p">[</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">p2</span><span class="p">[</span><span class="n">k</span><span class="p">])</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">fbs</span><span class="p">[</span><span class="n">k</span><span class="p">];</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">new_outs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[[</span><span class="mf">0.0_</span><span class="k">f32</span><span class="p">;</span><span class="w"> </span><span class="n">STACK_LANES</span><span class="p">];</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">];</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">N_OPS</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">lvl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">op_eg_level</span><span class="p">[</span><span class="n">i</span><span class="p">];</span><span class="w">       </span><span class="c1">// contiguous EG mirror (see below)</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">lvl_mod</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">op_level_mod</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">fade</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">op_nyquist_fade</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">ops</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">STACK_LANES</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">phase_mod</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">phase</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+<span class="w">                </span><span class="p">.</span><span class="n">wrapping_add</span><span class="p">((</span><span class="n">mi</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">PM_SCALE_Q32</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i32</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="n">wrapping_add</span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="n">core</span><span class="p">.</span><span class="n">op_phase_mod_q32</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="n">k</span><span class="p">]);</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">fast_sine_q32</span><span class="p">(</span><span class="n">phase_mod</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">((</span><span class="n">lvl</span><span class="p">[</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">lvl_mod</span><span class="p">[</span><span class="n">k</span><span class="p">])</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">fade</span><span class="p">[</span><span class="n">k</span><span class="p">]);</span>
+<span class="w">            </span><span class="n">new_outs</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="p">;</span>
+<span class="w">            </span><span class="n">op</span><span class="p">.</span><span class="n">phase</span><span class="p">[</span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">phase</span><span class="p">[</span><span class="n">k</span><span class="p">].</span><span class="n">wrapping_add</span><span class="p">(</span><span class="n">op</span><span class="p">.</span><span class="n">phase_inc</span><span class="p">[</span><span class="n">k</span><span class="p">]);</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">op</span><span class="p">.</span><span class="n">fb_prev2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">fb_prev1</span><span class="p">;</span>
+<span class="w">        </span><span class="n">op</span><span class="p">.</span><span class="n">fb_prev1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">new_outs</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">new_outs</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Things to understand here:</p>
+<ul>
+<li><strong>Fixed 8 lanes regardless of density.</strong> <code>stack_density</code> (1..8) selects how
+  many lanes are <em>audible</em>; unused lanes are silenced by a <strong>zero pan gain</strong>, not
+  a branch or a <code>continue</code>. They still tick — the loop stays vectorisable.</li>
+<li><strong>Contiguous EG-level mirror.</strong> Each lane's EG is a fat struct; striding over
+  8 of them per sample is cache-hostile. So the control-rate tick copies all
+  levels into a flat <code>op_eg_level[i][k]</code> array once per block
+  (<code>refresh_eg_levels</code>), and the hot loop reads only that.</li>
+<li><strong>Per-lane everything.</strong> EGs, pitch EGs, feedback scale and LFO2 are all
+  per-lane, because the mod matrix can perturb each unison instance
+  independently (e.g. <code>voice-spread → eg-rate</code> makes lanes decay at slightly
+  different speeds — the thing that makes a supersaw feel alive instead of like
+  identical twins).</li>
+<li><strong>Determinism.</strong> Per-lane spread/rand and LFO2 seeds are drawn from an
+  xorshift seeded by <code>(note, velocity, alloc-counter)</code>, so offline renders are
+  reproducible.</li>
+<li><strong>Nyquist fade.</strong> Carriers whose frequency approaches Nyquist are faded out
+  with a per-lane smoothstep (window <code>f/fs ∈ [0.45, 0.49]</code>), computed at block
+  rate and applied as a plain multiply — no per-sample branch. Modulators are
+  left at 1.0 (fading them would thin the FM index).</li>
+</ul>
+<p>The scalar <code>Voice</code> mirrors all of this at width 1 and is the reference the
+stack is tested against.</p>
+<h3 id="25-envelopes-egrs-envelopers">2.5 Envelopes (<a href="crates/vxn2-dsp/src/eg.rs"><code>eg.rs</code></a>, <a href="crates/vxn2-dsp/src/envelope.rs"><code>envelope.rs</code></a>)<a class="headerlink" href="#25-envelopes-egrs-envelopers" title="Permanent link">¶</a></h3>
+<p>Two families:</p>
+<ul>
+<li><strong>Per-op EG</strong> (<code>eg.rs</code>) — the DX7 4-rate/4-level amplitude envelope. It ticks
+  at control rate. Downward segments march in <strong>log2 (linear-in-dB)</strong>, giving
+  the characteristic DX7 exponential taper; attack marches in linear amplitude
+  (DX7-punchy). A <code>Lin</code> curve is a per-op escape hatch for patches that relied
+  on the old square curve. See ADR 0007 for the level→amp formula (§6).</li>
+<li><strong>Patch-wide envelopes</strong> (<code>envelope.rs</code>) — a <strong>signed Pitch EG</strong> (4-rate/4-level,
+  −99..+99, output in semitones) and a <strong>Mod Env</strong> (ADSR with Lin/Exp shape).
+  Both are general matrix sources; the Pitch EG additionally sums into pitch by
+  default.</li>
+</ul>
+<p>All of these expose <code>scale_rates()</code> so a matrix <code>eg-rate</code> route can multiply a
+cooked envelope's speed per lane.</p>
+<h3 id="26-the-optional-filter-filterrs">2.6 The optional filter (<a href="crates/vxn2-dsp/src/filter.rs"><code>filter.rs</code></a>)<a class="headerlink" href="#26-the-optional-filter-filterrs" title="Permanent link">¶</a></h3>
+<p>An <strong>OTA-C ladder</strong> (Roland/Juno flavour, not Moog): per-stage <code>tanh</code> saturation
+rather than one global throat. Selectable LP/HP/BP/Notch × 2/4-pole,
+self-oscillating at <code>k≈4</code>. Coefficients are frozen per block. It is <strong>optional
+and per-voice</strong>, oversampled 1×/2×/4×/8× (default 4×) — but only the filter
+kernel is oversampled; the FM operators stay at base rate. A single <strong>shared
+decimator</strong> handles all voices because linear ops commute
+(<code>decimate(Σ voices) ≡ Σ decimate(voice)</code>). See ADR 0004 (§6).</p>
+<h3 id="27-effects-delayrs-reverbrs-phaserrs-dynamicsrs">2.7 Effects (<a href="crates/vxn2-dsp/src/delay.rs"><code>delay.rs</code></a>, <a href="crates/vxn2-dsp/src/reverb.rs"><code>reverb.rs</code></a>, <a href="crates/vxn2-dsp/src/phaser.rs"><code>phaser.rs</code></a>, <a href="crates/vxn2-dsp/src/dynamics.rs"><code>dynamics.rs</code></a>)<a class="headerlink" href="#27-effects-delayrs-reverbrs-phaserrs-dynamicsrs" title="Permanent link">¶</a></h3>
+<p>"Clean, no character" — the patch's character lives in the FM, the FX add space:</p>
+<ul>
+<li><strong>Delay</strong> — stereo, BPM-syncable, ping-pong, Catmull-Rom fractional read
+  (no pitch-click when the delay time glides), DC blocker on the feedback path.</li>
+<li><strong>Reverb</strong> — an 8-line <strong>Feedback Delay Network</strong> with a multiply-free 8×8
+  Hadamard mixing matrix, mutually-prime delay lengths, per-line one-pole
+  damping and a ±2-sample per-line LFO to suppress flutter.</li>
+</ul>
+<div class="hl"><pre><span></span><code><span class="c1">// reverb.rs — multiply-free unitary mixing (fast Walsh–Hadamard)</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">hadamard8</span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">x</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="kt">f32</span><span class="p">;</span><span class="w"> </span><span class="n">LINES</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="p">[</span><span class="kt">f32</span><span class="p">;</span><span class="w"> </span><span class="n">LINES</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">step</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">[</span><span class="mi">4_</span><span class="k">usize</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">LINES</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">j</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">i</span><span class="o">..</span><span class="n">i</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">step</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">x</span><span class="p">[</span><span class="n">j</span><span class="p">],</span><span class="w"> </span><span class="n">x</span><span class="p">[</span><span class="n">j</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">step</span><span class="p">]);</span>
+<span class="w">                </span><span class="n">x</span><span class="p">[</span><span class="n">j</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">b</span><span class="p">;</span><span class="w"> </span><span class="n">x</span><span class="p">[</span><span class="n">j</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">step</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">b</span><span class="p">;</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="n">i</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">step</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">iter_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">*</span><span class="n">v</span><span class="w"> </span><span class="o">*=</span><span class="w"> </span><span class="n">INV_SQRT8</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// unitary after 1/√8</span>
+<span class="w">    </span><span class="n">x</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>The full serial chain (defined in the engine) is:
+<code>cleanup(DC block) → dynamics → phaser → delay → reverb → master gain → limiter</code>.
+Each block is bit-exact passthrough when its <code>*_on</code> toggle is off.</p>
+<hr />
+<h2 id="3-the-engine-vxn2-engine">3. The engine (<code>vxn2-engine</code>)<a class="headerlink" href="#3-the-engine-vxn2-engine" title="Permanent link">¶</a></h2>
+<p>This is where notes become sound. The <code>Engine</code> owns the voice allocator, the
+mod matrix, the LFO1 state, all the FX blocks, per-voice filters, and a pile of
+per-stack ramp/smoother scratch. It is driven one <strong>control block</strong> at a time
+(32 samples — see §4). Everything is pre-allocated; the audio thread never
+touches the heap and never panics across the FFI boundary.</p>
+<h3 id="31-voice-allocation-allocrs">3.1 Voice allocation (<a href="crates/vxn2-engine/src/alloc.rs"><code>alloc.rs</code></a>)<a class="headerlink" href="#31-voice-allocation-allocrs" title="Permanent link">¶</a></h3>
+<p><code>PolyAlloc</code> runs <strong>20 physical stacks but caps active voices at 16</strong>
+(<code>N_ACTIVE = 16</code>, <code>N_DECLICK = 4</code>, <code>N_STACKS = 20</code>). The four spare stacks carry
+declick tails without counting against polyphony — this is the mechanism that
+makes voice stealing click-free (ADR 0008).</p>
+<p>Each stack has an explicit lifecycle: <code>VoicePhase ∈ {Idle, Held, Releasing,
+Declick}</code>. The core insight (ADR 0006/0008): a <strong>fresh onset from silence is
+already click-free</strong> (the EG ramps up from ~0), whereas re-cooking a <em>sounding</em>
+voice in place steps the FM spectrum audibly. So the main steal path is:</p>
+<ol>
+<li>new note takes a spare <strong>idle</strong> stack and onsets fresh;</li>
+<li>the victim is <strong>declick-faded in place</strong> (a forced ~5 ms EG release, all ops
+   scaled to reach 0 together), keeping its slot and filter state so its tail
+   rings continuously;</li>
+<li>only a pathological steal-storm that exhausts all spares falls back to
+   in-place reuse.</li>
+</ol>
+<p>Victim selection prefers the <strong>quietest</strong> voice, keying up (pedal-held or
+already <code>Releasing</code>) before actively-held keys, oldest as tiebreaker:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// alloc.rs — quietest-first, key-up-preferred voice stealing</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">pick_victim</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="kt">usize</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">best</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="p">(</span><span class="kt">usize</span><span class="p">,</span><span class="w"> </span><span class="kt">f32</span><span class="p">,</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">None</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">best_keyup</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="p">(</span><span class="kt">usize</span><span class="p">,</span><span class="w"> </span><span class="kt">f32</span><span class="p">,</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">None</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">quieter</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">|</span><span class="n">c</span><span class="p">:</span><span class="w"> </span><span class="p">(</span><span class="kt">usize</span><span class="p">,</span><span class="kt">f32</span><span class="p">,</span><span class="kt">u64</span><span class="p">),</span><span class="w"> </span><span class="n">b</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="p">(</span><span class="kt">usize</span><span class="p">,</span><span class="kt">f32</span><span class="p">,</span><span class="kt">u64</span><span class="p">)</span><span class="o">&gt;|</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="mi">1</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">c</span><span class="p">.</span><span class="mi">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="mi">1</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">c</span><span class="p">.</span><span class="mi">1</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="mi">2</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">c</span><span class="p">.</span><span class="mi">2</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">b</span><span class="p">,</span>
+<span class="w">        </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">c</span><span class="p">,</span>
+<span class="w">    </span><span class="p">};</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">N_STACKS</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="fm">matches!</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">stacks</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">meta</span><span class="p">.</span><span class="n">phase</span><span class="p">,</span><span class="w"> </span><span class="n">VoicePhase</span><span class="p">::</span><span class="n">Held</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">VoicePhase</span><span class="p">::</span><span class="n">Releasing</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">cand</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">stacks</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">carrier_level</span><span class="p">(),</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">seq</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+<span class="w">            </span><span class="n">best</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">quieter</span><span class="p">(</span><span class="n">cand</span><span class="p">,</span><span class="w"> </span><span class="n">best</span><span class="p">));</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">held_by_pedal</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">stacks</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">meta</span><span class="p">.</span><span class="n">phase</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">VoicePhase</span><span class="p">::</span><span class="n">Releasing</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">best_keyup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">quieter</span><span class="p">(</span><span class="n">cand</span><span class="p">,</span><span class="w"> </span><span class="n">best_keyup</span><span class="p">));</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">best_keyup</span><span class="p">.</span><span class="n">or</span><span class="p">(</span><span class="n">best</span><span class="p">).</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">i</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>The allocator also owns <strong>Poly/Solo</strong> modes, sustain-pedal deferral, and
+<strong>glide (portamento)</strong> — which is <em>always-glide</em> (VXN1 parity): every note after
+the first slides from the previous sounding pitch, tracked via a block-rate
+<code>GlideState</code>.</p>
+<h3 id="32-the-mod-matrix-matrixrs-modulationrs">3.2 The mod matrix (<a href="crates/vxn2-engine/src/matrix.rs"><code>matrix.rs</code></a>, <a href="crates/vxn2-engine/src/modulation.rs"><code>modulation.rs</code></a>)<a class="headerlink" href="#32-the-mod-matrix-matrixrs-modulationrs" title="Permanent link">¶</a></h3>
+<p>The matrix is <strong>the only routing mechanism</strong> — there is no hard-wired "mod
+wheel → cutoff". 16 slots, each <code>(source, dest, depth, curve)</code>. Depths for
+slots 1–8 are CLAP-automatable; slots 9–16 and all topology (source/dest/curve)
+are patch state only.</p>
+<p>Sources and destinations live in <strong>three granularity tiers</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Sources</th>
+<th>Destinations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>patch-global</strong> (1/patch)</td>
+<td><code>lfo1</code>, <code>mod-wheel</code>, <code>aftertouch</code></td>
+<td><code>lfo1-rate</code>, <code>delay-mix</code>, <code>reverb-mix</code></td>
+</tr>
+<tr>
+<td><strong>per-stack</strong> (1/voice)</td>
+<td><code>pitch-eg</code>, <code>mod-env</code>, <code>velocity</code>, <code>key</code></td>
+<td><code>lfo2-rate</code>, <code>stack-detune</code>, <code>stack-spread</code>, <code>cutoff</code>, <code>resonance</code>, filter-drive</td>
+</tr>
+<tr>
+<td><strong>per-lane</strong> (1/unison lane)</td>
+<td><code>lfo2</code>, <code>voice-idx</code>, <code>voice-spread</code>, <code>voice-rand</code></td>
+<td><code>op{1..6}-{pitch,level,pan}</code>, <code>global-pitch</code>, <code>feedback</code>, <code>lfo2-phase</code>, per-op stack-pitch</td>
+</tr>
+</tbody>
+</table>
+<p>A routing is <strong>coherent</strong> iff <code>source tier ≤ dest tier</code>. A coarser source
+broadcasts cleanly to a finer dest; a <em>finer</em> source into a coarser dest
+collapses to lane 0 (lossy) and the UI renders it red. <code>coherence(src, dst)</code> is
+the single source of truth, consulted by the UI tooltip, the matrix eval, and a
+<strong>factory CI test</strong> that fails if any shipped preset routes incoherently.</p>
+<p>Evaluation is a two-phase, allocation-free fan-out done once per block:</p>
+<ul>
+<li><code>eval_sources(...)</code> broadcasts every source into a <code>[lane][source]</code> lookup
+  table (the broadcast cost is paid once, never inside the per-slot loop);</li>
+<li><code>eval_dests(...)</code> walks each active slot, applies its curve, multiplies by
+  depth, and accumulates into the matching per-lane destination column.</li>
+</ul>
+<p><strong>Rate control:</strong> non-pitch destinations are applied at block rate. Pitch
+destinations are smoothed down to a 16-sample sub-block quantum (<code>PitchSmoother</code>)
+so a per-block matrix value doesn't zipper the pitch — and once the smoother is
+within <code>1e-4</code> semitones of target the per-quantum re-cook is skipped entirely, so
+unmodulated pitch pays nothing.</p>
+<p><strong>Stack-pitch modulation</strong> (ADR 0005): six <code>Op{N}StackPitch</code> destinations. A
+single route bends the target op <em>and every op in its connected component of the
+algorithm graph</em> by the <strong>same semitone delta</strong>, keeping FM ratios intact
+(frequencies scale by <code>2^(Δst/12)</code>, ratios invariant). Fixed-Hz ops are graph
+walls. The component mask is cached per cook, re-solved only on algo change or a
+Ratio↔Fixed flip.</p>
+<h3 id="33-the-render-loop-enginers">3.3 The render loop (<a href="crates/vxn2-engine/src/engine.rs"><code>engine.rs</code></a>)<a class="headerlink" href="#33-the-render-loop-enginers" title="Permanent link">¶</a></h3>
+<p><code>process_block(out_l, out_r)</code> is the entry point. The order is strict and
+matters — reordering silently introduces one-block-latency bugs, which is why
+<a href="crates/vxn2-engine/tests/baseline.rs"><code>tests/baseline.rs</code></a> hashes the rendered
+output as a guard:</p>
+<ol>
+<li>Allocator block-tick (advance glide ramps).</li>
+<li>Tick LFO1 (block rate, BPM-synced) and every stack's EGs (control rate).</li>
+<li><strong><code>cook_stacks_block</code></strong> — a strict 12-stage per-stack loop (idle-skip →
+   fresh-note detect → LFO2 → source fan-out → matrix eval + stack-pitch scatter
+   → target projection → pitch smoother → level+EG rebase → ramp compute →
+   feedback+detune → deferred LFO2 phase/rate → spread/FX aggregation).</li>
+<li>Dispatch to a render body: <code>render_block_off</code> (unfiltered, sample-major),
+   <code>render_block_filtered</code> (stack-major oversampled), or
+   <code>render_block_filter_xfade</code> (an ~8 ms raised-cosine blend when the filter is
+   toggled, so enabling it doesn't click).</li>
+<li>FX chain, master gain, optional limiter.</li>
+</ol>
+<p>Two subtleties encoded in that loop:</p>
+<ul>
+<li><strong>Fresh-note detection</strong> compares the allocator's per-slot generation counter
+  against a mirror; a bump means the slot was reused, so macro-mod smoothers are
+  <em>zeroed</em> (snap, not glide from a stale previous voice).</li>
+<li><strong>Level modulation is multiplicative on the EG</strong>: effective level =
+  <code>clamp(eg · (1 + m), 0, 1)</code>, with a block-edge rebase so the per-sample ramp
+  stays continuous across an EG step. Because it multiplies the EG, a released op
+  (<code>eg → 0</code>) always closes — no drone-through-zero.</li>
+</ul>
+<h3 id="34-shared-state-and-the-param-table-sharedrs-paramsrs">3.4 Shared state and the param table (<a href="crates/vxn2-engine/src/shared.rs"><code>shared.rs</code></a>, <a href="crates/vxn2-engine/src/params.rs"><code>params.rs</code></a>)<a class="headerlink" href="#34-shared-state-and-the-param-table-sharedrs-paramsrs" title="Permanent link">¶</a></h3>
+<p><code>SharedParams</code> is the <strong>lock-free SPSC bridge</strong> between the UI/host and the
+engine: a flat <code>[AtomicU32]</code> of f32 bits, plus packed atomics for matrix rows
+and KS/EG curve metadata, plus the <strong>dirty bitset</strong> (§5). Reads use <code>Relaxed</code>;
+the write→dirty-bit pairing uses <code>Release</code>/<code>Acquire</code> so the reader sees the
+value before the bit.</p>
+<p><code>params.rs</code> is the CLAP parameter table. The authoritative count is:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// params.rs</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">N_OPS</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">N_PER_OP</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="mi">22</span><span class="p">;</span><span class="w">                             </span><span class="c1">// repeated per op</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">N_PER_PATCH</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="n">N_OPS</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">N_PER_OP</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">REST</span><span class="p">;</span><span class="w">        </span><span class="c1">// 169</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">N_PATCH_LEVEL</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">40</span><span class="p">;</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">TOTAL_PARAMS</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">N_PER_PATCH</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">N_PATCH_LEVEL</span><span class="p">;</span><span class="w">    </span><span class="c1">// 209</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Heads-up on the numbers:</strong> the ADRs and <code>PARAMETERS.md</code> quote 180 / 186 /
+etc. — those are <em>historical</em> snapshots from before the filter, dynamics,
+phaser and per-op phase params landed. <strong><code>TOTAL_PARAMS = 209</code> in <code>params.rs</code>
+is the live source of truth</strong>; treat the ADR figures as period records, not
+current counts.</p>
+</blockquote>
+<p>The 22 per-op params repeat 6× with an <code>opN_</code> prefix (ratio mode / num / denom /
+fine / detune / fixed-hz / level / vel-sens / eg r1–4 / eg l1–4 / ks break /
+ks l-depth / ks r-depth / ks rate / pan / phase). Globals are named directly.
+Param IDs are legible kebab-case strings but are <strong>not</strong> a stability constraint
+(the patch format is name-keyed) — you may rename freely.</p>
+<p>A neat safety net: every section boundary is pinned at compile time, so an
+accidental mid-section param insert <strong>fails to compile</strong> instead of silently
+shifting every downstream ID:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// shared.rs — compile-time layout guard</span>
+<span class="k">const</span><span class="w"> </span><span class="n">_</span><span class="p">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">assert!</span><span class="p">(</span><span class="n">id_eq</span><span class="p">(</span><span class="n">PARAMS</span><span class="p">[</span><span class="n">OFF_ALGO</span><span class="p">].</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;algo&quot;</span><span class="p">));</span>
+<span class="k">const</span><span class="w"> </span><span class="n">_</span><span class="p">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">assert!</span><span class="p">(</span><span class="n">id_eq</span><span class="p">(</span><span class="n">PARAMS</span><span class="p">[</span><span class="n">OFF_FEEDBACK</span><span class="p">].</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;feedback&quot;</span><span class="p">));</span>
+<span class="c1">// ...one per section anchor</span>
+</code></pre></div>
+
+<h3 id="35-presets-presetrs-preset_iors-factoryrs-default_patchrs">3.5 Presets (<a href="crates/vxn2-engine/src/preset.rs"><code>preset.rs</code></a>, <a href="crates/vxn2-engine/src/preset_io.rs"><code>preset_io.rs</code></a>, <a href="crates/vxn2-engine/src/factory.rs"><code>factory.rs</code></a>, <a href="crates/vxn2-engine/src/default_patch.rs"><code>default_patch.rs</code></a>)<a class="headerlink" href="#35-presets-presetrs-preset_iors-factoryrs-default_patchrs" title="Permanent link">¶</a></h3>
+<p>Patches are <strong>name-keyed, sparse TOML</strong> — only non-default params are written,
+so files are compact and diffable:</p>
+<div class="hl"><pre><span></span><code><span class="n">schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+<span class="k">[meta]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;E.Piano 1&quot;</span>
+<span class="n">category</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Keys&quot;</span>
+<span class="k">[params]</span>
+<span class="n">op1-detune</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">2.0</span>
+<span class="n">op1-level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">99</span>
+<span class="k">[[matrix]]</span>
+<span class="n">slot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span>
+<span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lfo2&quot;</span>
+<span class="n">dest</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;global-pitch&quot;</span>
+<span class="n">depth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+</code></pre></div>
+
+<p>The <strong>factory bank</strong> is embedded into the binary at compile time with
+<code>include_dir!</code>. Note the gotcha (from project memory): editing or adding a
+factory TOML does <em>not</em> recompile it, because <code>include_dir!</code> emits no
+<code>rerun-if-changed</code> — you must touch <code>factory.rs</code> (or run the xtask install)
+before it re-bundles. <code>default_patch.rs</code> is the DX7 ROM1A "E.PIANO 1"
+transcription and is the deterministic initial state. <code>preset_io.rs</code> handles
+per-OS user-preset directories with path-canonicalisation guards so a browser
+op can't escape the user dir. The host state blob is a separate versioned binary
+format (<code>b"VXN2"</code> magic) used for DAW session save/load.</p>
+<hr />
+<h2 id="4-the-clap-shell-vxn2-clap">4. The CLAP shell (<code>vxn2-clap</code>)<a class="headerlink" href="#4-the-clap-shell-vxn2-clap" title="Permanent link">¶</a></h2>
+<p><a href="crates/vxn2-clap/src/lib.rs"><code>lib.rs</code></a> wires the plugin to the host via
+<code>clack</code>. It declares the params / state / audio-ports / note-ports / gui /
+timer extensions and runs the process callback. The two threads are strictly
+separated: <strong>audio thread</strong> (process, event dispatch) holds no locks;
+<strong>main thread</strong> (GUI timer, param flush) owns the controller.</p>
+<p>The process callback chunks the host buffer into fixed <strong>32-sample control
+blocks</strong> so LFO/matrix/EG state advances at a predictable rate regardless of the
+host's buffer size, and dispatches host events at their sample boundaries:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// vxn2-clap/src/lib.rs — process callback (abridged)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">_ftz</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ScopedFlushToZero</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="bp">self</span><span class="p">.</span><span class="n">local</span><span class="p">.</span><span class="n">fetch_ui_changes</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">shared</span><span class="p">.</span><span class="n">params</span><span class="p">);</span><span class="w">   </span><span class="c1">// pull UI/preset writes</span>
+<span class="bp">self</span><span class="p">.</span><span class="n">local</span><span class="p">.</span><span class="n">write_to</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">engine</span><span class="p">.</span><span class="n">params_mut</span><span class="p">());</span>
+<span class="bp">self</span><span class="p">.</span><span class="n">engine</span><span class="p">.</span><span class="n">apply_block_params</span><span class="p">();</span>
+<span class="c1">// transport: stop → all_notes_off (stuck-note guard); HAS_TEMPO → set_tempo</span>
+<span class="k">for</span><span class="w"> </span><span class="n">event_batch</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">input</span><span class="p">.</span><span class="n">batch</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">event</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">event_batch</span><span class="p">.</span><span class="n">events</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">dispatch_event</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span><span class="w"> </span><span class="n">local</span><span class="p">,</span><span class="w"> </span><span class="n">shared</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">);</span><span class="w">   </span><span class="c1">// ParamValue vs note/MIDI</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">start</span><span class="p">,</span><span class="w"> </span><span class="n">end</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">batch_range</span><span class="p">(</span><span class="n">event_batch</span><span class="p">.</span><span class="n">sample_bounds</span><span class="p">(),</span><span class="w"> </span><span class="n">frames</span><span class="p">);</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">control_chunks</span><span class="p">(</span><span class="n">start</span><span class="p">,</span><span class="w"> </span><span class="n">end</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">           </span><span class="c1">// 32-sample slices</span>
+<span class="w">        </span><span class="n">engine</span><span class="p">.</span><span class="n">process_block</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="n">l</span><span class="p">[</span><span class="n">a</span><span class="o">..</span><span class="n">b</span><span class="p">],</span><span class="w"> </span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="n">r</span><span class="p">[</span><span class="n">a</span><span class="o">..</span><span class="n">b</span><span class="p">]);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="bp">self</span><span class="p">.</span><span class="n">local</span><span class="p">.</span><span class="n">emit</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">shared</span><span class="p">.</span><span class="n">params</span><span class="p">,</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">frames</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">u32</span><span class="p">);</span><span class="w">   </span><span class="c1">// echo UI edits</span>
+</code></pre></div>
+
+<p>Host param events are folded into a thread-local <code>LocalParams</code> mirror
+(<a href="crates/vxn2-clap/src/local.rs"><code>local.rs</code></a>) <em>and</em> written through to
+<code>SharedParams</code> (atomic store + dirty bit), with the value read back clamped to
+keep the mirror in lockstep — no mutex on the audio path. <code>emit</code> sends
+UI-originated edits back to the host wrapped in CLAP gesture brackets;
+host-originated automation is deliberately <strong>not</strong> echoed (tracked via a
+<code>ui_changed</code> flag that only UI writes set).</p>
+<p><a href="crates/vxn2-clap/src/gui.rs"><code>gui.rs</code></a> implements the CLAP GUI extension:
+<code>set_parent</code> spawns the <code>vxn2-ui-web</code> webview as a child of the host window and
+registers a ~16 ms main-thread timer; <code>destroy</code> tears it down. Timer
+registration is best-effort — if the host lacks timer support the editor is
+static but gestures still post.</p>
+<hr />
+<h2 id="5-ui-plumbing-the-dirty-bitset-pump-vxn2-app-adr-0003">5. UI plumbing — the dirty-bitset pump (<code>vxn2-app</code>, ADR 0003)<a class="headerlink" href="#5-ui-plumbing-the-dirty-bitset-pump-vxn2-app-adr-0003" title="Permanent link">¶</a></h2>
+<p>This is the single most important architectural idea on the UI side, and worth
+internalising.</p>
+<p><strong>The problem:</strong> UI edits, host automation and preset loads all flow through the
+same <code>SharedParams</code> store. If the controller echoed UI writes <em>and</em> a pump also
+re-broadcast them, the page would get duplicates.</p>
+<p><strong>The solution — single-emitter discipline:</strong> every write flips a bit in an
+atomic dirty bitset, and the main-thread timer drain is the <strong>only</strong> Model→View
+channel. The controller's echo is explicitly disabled:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// vxn2-clap/src/lib.rs</span>
+<span class="n">controller</span><span class="p">.</span><span class="n">set_echo_param_writes</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span><span class="w">   </span><span class="c1">// pump is the sole emitter</span>
+</code></pre></div>
+
+<p>Each timer tick: pull UI intents into the model (<code>tick_vxn2</code>), drain the
+controller's view queue, then <strong>drain the dirty bits</strong> and flush everything to
+the webview in a single <code>evaluate_script</code> call:</p>
+<div class="hl"><pre><span></span><code><span class="c1">// vxn2-clap/src/lib.rs — drain (abridged): coalesced per-id + snapshots</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">value_bits</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">params</span><span class="p">.</span><span class="n">take_dirty_values</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">w</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">bits</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">value_bits</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">copied</span><span class="p">().</span><span class="n">enumerate</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="n">bits</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">64</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">bits</span><span class="p">.</span><span class="n">trailing_zeros</span><span class="p">()</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">usize</span><span class="p">;</span>
+<span class="w">        </span><span class="n">bits</span><span class="w"> </span><span class="o">&amp;=</span><span class="w"> </span><span class="n">bits</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span><span class="w">                                  </span><span class="c1">// pop lowest set bit</span>
+<span class="w">        </span><span class="n">out</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">ViewEvent</span><span class="p">::</span><span class="n">ParamChanged</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nc">ParamId</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">id</span><span class="p">),</span>
+<span class="w">            </span><span class="n">plain</span><span class="p">:</span><span class="w"> </span><span class="nc">params</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">id</span><span class="p">),</span>
+<span class="w">            </span><span class="n">norm</span><span class="p">:</span><span class="w">  </span><span class="nc">params</span><span class="p">.</span><span class="n">get_normalised</span><span class="p">(</span><span class="n">id</span><span class="p">),</span>
+<span class="w">            </span><span class="n">display</span><span class="p">:</span><span class="w"> </span><span class="nc">sync_aware_display</span><span class="p">(</span><span class="n">params</span><span class="p">,</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">params</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">id</span><span class="p">)),</span>
+<span class="w">        </span><span class="p">});</span>
+<span class="w">        </span><span class="c1">// if this id is a sync flag, queue its rate partner for a display refresh</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="k">if</span><span class="w"> </span><span class="n">params</span><span class="p">.</span><span class="n">take_dirty_matrix</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">out</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">matrix_snapshot_event</span><span class="p">(</span><span class="n">params</span><span class="p">));</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>Properties that fall out of this: N writes to one param between ticks <strong>coalesce</strong>
+to one event; the whole 16-row matrix ships as one <code>MatrixSnapshot</code> rather than
+16 events; and on a fresh <code>SharedParams</code> all bits are set, so the first drain
+broadcasts the entire table (the page's initial seed).</p>
+<p><code>vxn2-app</code> (<a href="crates/vxn2-app/src/controller.rs"><code>controller.rs</code></a>,
+<a href="crates/vxn2-app/src/events.rs"><code>events.rs</code></a>, <a href="crates/vxn2-app/src/model.rs"><code>model.rs</code></a>)
+holds the MVC glue: the <strong>view never reads the model</strong>, a dumb pump observes the
+model and emits events, and the controller translates VXN2-specific custom
+intents (<code>Vxn2UiCustom</code>: op-tab, matrix row, KS/EG curve, rebroadcast) into
+model writes. Matrix topology and KS/EG curves are the non-CLAP state that rides
+these custom events rather than the param table.</p>
+<hr />
+<h2 id="6-the-web-faceplate-vxn2-ui-web">6. The web faceplate (<code>vxn2-ui-web</code>)<a class="headerlink" href="#6-the-web-faceplate-vxn2-ui-web" title="Permanent link">¶</a></h2>
+<p>The UI is a <strong>fully embedded static HTML/JS/CSS bundle</strong> — every asset is pulled
+in with <code>include_str!</code> at compile time; there is no runtime filesystem
+dependency (a <code>VXN2_DEV_ASSETS=1</code> dev mode reads from disk for hot iteration).
+At build time the bootstrap splices in Rust-generated JSON: the param
+descriptor table (<code>build_params_json</code>), the matrix source/dest/curve lists +
+the <strong>coherence matrix</strong> (<code>build_matrix_lists_json</code>), the default patch and the
+tempo subdivisions.</p>
+<p>The message protocol is <strong>JSON over the wry WebView bridge</strong>
+(<code>window.ipc.postMessage</code>). Standard CLAP-shaped opcodes (<code>set_param</code>,
+<code>begin_gesture</code>/<code>end_gesture</code>, <code>request_text_input</code>) come from the shared
+<code>vxn-core-ui-web</code> layer; VXN2 adds custom opcodes for the state that isn't in
+the param table:</p>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>Opcodes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI → engine</td>
+<td><code>set_op_tab</code>, <code>set_matrix_row</code>, <code>request_matrix_snapshot</code>, <code>set_ks_curve</code>, <code>request_ks_curve_snapshot</code>, <code>set_eg_curve</code>, <code>request_eg_curve_snapshot</code>, <code>request_full_rebroadcast</code></td>
+</tr>
+<tr>
+<td>engine → UI</td>
+<td><code>param_changed</code>, <code>matrix_snapshot</code>, <code>ks_curve_snapshot</code>, <code>eg_curve_snapshot</code>, <code>op_tab_changed</code></td>
+</tr>
+</tbody>
+</table>
+<p>The faceplate is laid out as three rows (op row: algorithm diagram + op tabs +
+per-op detail; global mod row: LFO1/LFO2/Pitch EG/Mod Env; performance row:
+voice/stack/filter/FX/master), with the mod matrix in a button-triggered
+overlay. Widgets are vanilla-JS primitives (no framework). A couple of choices
+worth flagging:</p>
+<ul>
+<li><strong>Taper math is mirrored exactly</strong> between the JS faders and the Rust param
+  descriptors, so a knob feels identical whether dragged in the UI or moved by
+  host automation.</li>
+<li><strong>UI edits paint optimistically</strong> — a drag updates the DOM immediately and the
+  engine's <code>param_changed</code> echo (1 tick later) reconciles; the latency is
+  imperceptible.</li>
+<li><strong>JS/engine table drift is caught by tests.</strong> For example a Rust test parses
+  the hardcoded JS <code>ALGO_CARRIERS</code> table and asserts it matches
+  <code>vxn2_dsp::algo::ALGOS</code> — so the op-tab carrier colouring can't silently
+  diverge from the engine.</li>
+</ul>
+<p>Faceplate assets are pure DOM (no Web Audio / AudioWorklet), so the Safari
+audio-glitch issues noted for VXN1's web build don't apply here.</p>
+<hr />
+<h2 id="7-adr-quick-reference">7. ADR quick-reference<a class="headerlink" href="#7-adr-quick-reference" title="Permanent link">¶</a></h2>
+<p>The design decisions, with their load-bearing numbers:</p>
+<ul>
+<li><strong><a href="adrs/0001-vxn2-overall-design.md">0001</a> — Overall design.</strong> 6 ops, 32 DX7
+  algorithms, one feedback path per algorithm, stacking as first-class,
+  Bhaskara sine + Q32 phase, matrix-as-only-routing, clean delay+FDN reverb.</li>
+<li><strong><a href="adrs/0002-drop-dual-layer.md">0002</a> — Drop dual-layer.</strong> Whole/Layer/Split
+  is gone; one patch = one parameter set. Layer's job is covered by algorithm +
+  matrix combinatorics; keyboard splits are the DAW's job. Halved the param
+  surface and removed a <code>PolyAlloc</code> layer dimension.</li>
+<li><strong><a href="adrs/0003-dirty-bitset-diff-pump.md">0003</a> — Dirty-bitset pump.</strong> Single
+  atomic bitset is the only Model→View bridge; <code>fetch_or(Release)</code> on write
+  pairs with <code>swap(Acquire)</code> on the sole reader. Coalesces, dedups, batches
+  matrix snapshots. (§5.)</li>
+<li><strong><a href="adrs/0004-optional-per-voice-oversampled-filter.md">0004</a> — Optional
+  oversampled filter.</strong> OTA-C ladder, per-voice, 1×/2×/4×/8× (default 4×), only
+  the kernel oversampled, one shared decimator. Toggle crossfades over ~8 ms
+  (<code>0.5 − 0.5·cos(πt)</code>). Reports <strong>no</strong> latency (glitch-free OS switching beats
+  PDC truth, since CLAP only allows latency changes at activate boundaries).</li>
+<li><strong><a href="adrs/0005-stack-pitch-mod.md">0005</a> — Stack pitch mod.</strong> Six
+  <code>OpNStackPitch</code> dests; a route bends a whole ratio-coherent FM component by
+  one shared <code>Δst</code>, undirected propagation, fixed-Hz ops as walls, mask cached
+  per cook.</li>
+<li><strong><a href="adrs/0006-voice-lifecycle-click-free-reuse.md">0006</a> — Voice lifecycle.</strong>
+  Explicit <code>VoicePhase</code>; onset-from-silence is click-free; declick = forced
+  ~5 ms EG release (5 ms clears the ~0.06 transient of a single 0.67 ms block
+  down to ~0.006); one extra idle-grace block before retire.</li>
+<li><strong><a href="adrs/0007-dx7-log-level-curve.md">0007</a> — DX7 log level curve.</strong> One shared
+  curve for op output level and EG L-values: <code>level_to_amp(L) = 2^((L−99)/8)</code>
+  for L∈[1,99], <code>0</code> at L=0. ≈0.75 dB/step (−37 dB at L=50, −74 dB at L=1).
+  Evaluated only in <code>cook</code>.</li>
+<li><strong><a href="adrs/0008-declick-headroom-voice-stealing.md">0008</a> — Declick-headroom
+  stealing.</strong> 20 physical stacks, 16 active cap, 4 declick spares; poly steal
+  takes a spare and onsets fresh while the victim declicks in place — same
+  proven click-free path as solo. (§3.1.)</li>
+</ul>
+<hr />
+<h2 id="8-constraints-you-must-respect-when-editing">8. Constraints you must respect when editing<a class="headerlink" href="#8-constraints-you-must-respect-when-editing" title="Permanent link">¶</a></h2>
+<ul>
+<li><strong>Audio thread: no allocation, no panic, no locks.</strong> All buffers are made in
+  <code>Engine::new</code>. Corrupt IDs from the host decode to safe sentinels, never
+  <code>unwrap</code>. <code>SharedParams</code> is <code>Relaxed</code> SPSC.</li>
+<li><strong>The hot loops must stay branch-free and vectorisable.</strong> No runtime <code>match</code>
+  inside the per-lane op loop (it silently kills NEON — see the VXN1 lessons in
+  project memory). Silence lanes with zero gain, not <code>continue</code>. Verify codegen
+  with an <code>objdump</code>, and beware the ARM64 grep pitfall (the <code>.4s</code> suffix is on
+  the mnemonic, not the operands).</li>
+<li><strong>Control-rate vs sample-rate discipline.</strong> Envelopes, LFOs and matrix sources
+  tick once per 32-sample block; only pitch is sub-block-smoothed (16-sample
+  quantum). Don't move block-rate work into the sample loop.</li>
+<li><strong>Render-order is load-bearing.</strong> The 12-stage <code>cook_stacks_block</code> order and
+  the <code>process_block</code> pipeline order encode one-block-latency contracts;
+  <code>tests/baseline.rs</code> (render hash) is the guard — expect it to fail loudly if
+  you reorder.</li>
+<li><strong>Param-table edits.</strong> Adding a param shifts IDs; the compile-time section
+  guards in <code>shared.rs</code> will stop you if you insert mid-section. Prefer
+  appending within the right section, re-run the layout asserts, and remember
+  factory presets are name-keyed (safe) but the host state blob is versioned
+  (bump it).</li>
+<li><strong>Factory presets don't auto-rebuild</strong> — touch <code>factory.rs</code> after editing a
+  TOML (<code>include_dir!</code> emits no <code>rerun-if-changed</code>).</li>
+<li><strong>Don't <code>git add -A</code> in this monorepo</strong> — concurrent vxn-2 editor work
+  pollutes commits; stage explicit paths (project memory).</li>
+</ul>
+<hr />
+<p><em>This manual is a map, not the territory — when a detail matters, read the
+module and the cited ADR. Every code snippet above is abridged for clarity;
+the real signatures live in the source.</em></p>
+</main>
+</div>
+</body>
+</html>

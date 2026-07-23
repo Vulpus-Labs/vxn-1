@@ -94,6 +94,17 @@ test("decode of golden bytes yields the equivalent event", () => {
   }
 });
 
+test("matrix_row carries the E033 scale source in byte 12", () => {
+  // A non-zero scale source must land in the reserved byte 12 and survive the
+  // decode — the JS half of the byte-12 contract mirrored in src/codec.rs.
+  const event = ev.setMatrixRow(3, 1, 17, 0, true, 0.5, 5); // scale = mod-wheel
+  const bytes = encode(event);
+  assert.equal(bytes[12], 5, "scale source must occupy byte 12");
+  assert.equal(bytes[13], 0, "bytes 13-15 stay reserved");
+  const back = decode(new DataView(bytes.buffer), 0);
+  assert.equal(back.scale_src, 5);
+});
+
 test("round-trips every event kind", () => {
   for (const [label, event] of GOLDEN) {
     const buf = encode(event);

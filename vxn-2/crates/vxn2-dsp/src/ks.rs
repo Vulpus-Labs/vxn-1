@@ -5,11 +5,11 @@
 //! vs exp) and sign (boost vs cut). Each side ramps from the break point to
 //! the keyboard edge it faces (note 0 on the left, 127 on the right): full
 //! depth lands exactly at the extreme note, so the ramp's reach scales with
-//! break-point position. DX7's ROM uses tabulated dB offsets; we approximate
-//! with a continuous closed-form so the result is smooth across the key range.
+//! break-point position. Reference hardware uses tabulated dB offsets; we
+//! approximate with a continuous closed-form, smooth across the key range.
 //!
 //! Rate scaling speeds up all four EG rates as note pitch rises. A single
-//! `ks_rate` (0..7) parameter applies uniformly — matches DX7 RKS.
+//! `ks_rate` (0..7) parameter applies uniformly.
 
 /// Curvature of the exponential shape. The `exp` curve is a true normalised
 /// exponential `(e^(K·t) − 1) / (e^K − 1)` mapping `t∈[0,1] → [0,1]`; the

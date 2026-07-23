@@ -1,36 +1,16 @@
-//! Gated stack-macro / LFO-rate matrix dests (E008 0092 / 0093 / 0097).
+//! Gated stack-macro / LFO-rate matrix dests.
 //!
-//! These dests were deferred because they re-cook per-block state (LFO rate
-//! offset, per-lane detune). They are *gated*: a block where no slot targets
-//! them must pay nothing and stay bit-identical. This bench reads the used-path
-//! cost as the delta between an off case (no targeting slot) and an on case,
-//! all at density-8 (the heaviest unison stack — the re-cook is per-lane), full
-//! 16-note poly, FX on.
+//! These dests re-cook per-block state (LFO rate offset, per-lane detune) but
+//! are *gated*: a block where no slot targets them must pay nothing and stay
+//! bit-identical. This bench reads the used-path cost as the delta between an
+//! off case (no targeting slot) and an on case, all at density-8 (the heaviest
+//! unison stack — the re-cook is per-lane), full 16-note poly, FX on.
 //!
 //! - `baseline`         — no rate/macro slot; the gated paths are skipped.
 //! - `lfo2_rate_on`     — `velocity → lfo2-rate` active: one extra `2^oct` per
 //!   active stack per block (the LFO2 tick already runs).
 //! - `stack_detune_on`  — `key → stack-detune` active: the heaviest case, a
 //!   per-lane detune re-derive folded into the always-present `apply_pitch_mult`.
-//!
-//! The gate's correctness (off-path bit-identity) is locked by unit tests
-//! (`matrix_no_lfo_rate_slot_keeps_rate_mult_unity`,
-//! `matrix_no_stack_macro_slot_is_bit_identical`); this bench quantifies the
-//! on-path cost so the re-cook overhead is on record.
-//!
-//! Recorded figures (Apple M-series, 48 kHz, 256-sample block ⇒ 5.333 ms RT
-//! budget; density 8 × 16 notes, FX on):
-//!
-//! | case              | median  | × real-time |
-//! |-------------------|---------|-------------|
-//! | `baseline`        | 291 µs  | 18.3×       |
-//! | `lfo2_rate_on`    | 291 µs  | 18.3×       |
-//! | `stack_detune_on` | 292 µs  | 18.3×       |
-//!
-//! The on-path cost is within run-to-run noise (~1 µs) of baseline: the LFO2
-//! rate offset is one `2^oct` per active stack, and the per-lane detune
-//! re-derive folds into the `apply_pitch_mult` recompute that already runs each
-//! block — so wiring these dests added no measurable steady-state cost.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_engine::engine::Engine;
@@ -90,6 +70,7 @@ fn bench_gated(c: &mut Criterion) {
                 dest: DestId::Lfo2Rate,
                 depth: 1.0,
                 curve: lin,
+                scale_src: SourceId::None,
             }),
         ),
         (
@@ -99,6 +80,7 @@ fn bench_gated(c: &mut Criterion) {
                 dest: DestId::StackDetune,
                 depth: 1.0,
                 curve: lin,
+                scale_src: SourceId::None,
             }),
         ),
     ];

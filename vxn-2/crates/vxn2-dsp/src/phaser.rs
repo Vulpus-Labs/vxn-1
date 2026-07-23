@@ -1,12 +1,10 @@
-//! Stereo allpass phaser, ported from VXN-1's `vxn-dsp::phaser::StereoPhaser`
-//! (E025 / ticket 0087). Self-contained DSP — engine/param/UI wiring follows
-//! in 0088–0090.
+//! Stereo allpass phaser. Self-contained DSP.
 //!
 //! Two [`PhaserChannel`] cascades share one triangle LFO; the right channel
-//! reads the LFO at a fixed anti-phase offset (the upstream's `spread = 1.0`
-//! mode — the headline swirling stereo motion). The upstream macro surface
-//! (rate, depth, center, feedback, mix, spread, width, jitter, stages) is
-//! collapsed to **Rate / Depth / FB / Mix**; everything else is pinned:
+//! reads the LFO at a fixed anti-phase offset (the headline swirling stereo
+//! motion). The macro surface (rate, depth, center, feedback, mix, spread,
+//! width, jitter, stages) is collapsed to **Rate / Depth / FB / Mix**;
+//! everything else is pinned:
 //!
 //! - `STAGES = 4` (4 allpass per channel → 2 notches)
 //! - `SPREAD = 1.0` (anti-phase L/R sweep)
@@ -18,11 +16,6 @@
 //! frequency is sampled and `tan`-mapped every [`CONTROL_INTERVAL`] samples
 //! and linearly ramped between updates. The LFO ticks per sample so the
 //! sweep stays smooth.
-//!
-//! VXN-1 dep substitutions for VXN-2: `crate::math::fast_tanh` (shared),
-//! `crate::rng::xorshift_step` mapped to `[-1, 1]` (same canonical Vigna
-//! triple as VXN-1's `xorshift64`, so the stage scatter is identical), and the
-//! shared [`vxn_core_utils::ftz::flush_denormal`] guard on the feedback state.
 
 use crate::math::fast_tanh;
 use crate::rng::xorshift_step;
@@ -57,9 +50,7 @@ const CENTER_HZ: f32 = 600.0;
 /// keeping mix=0 (dry-pass) and mix=1 (full-wet) unscaled.
 const WET_MAKEUP_K: f32 = 1.5;
 
-/// `[-1, 1]` float from the shared xorshift64* step. Matches VXN-1's
-/// `xorshift64` mapping exactly (same Vigna triple), so the per-stage scatter
-/// seeded below is byte-for-byte identical to the upstream phaser.
+/// `[-1, 1]` float from the shared xorshift64* step.
 #[inline]
 fn xorshift_unit(state: &mut u64) -> f32 {
     (xorshift_step(state) as i64 as f32) / (i64::MAX as f32)
@@ -238,7 +229,7 @@ impl PhaserChannel {
 // ── Phaser params (engine-facing snapshot; mirrors `StereoDelayParams`) ──────
 
 /// Block-rate parameter snapshot the engine fans into [`StereoPhaser`].
-/// Host-automation only (E025) — not a mod-matrix destination.
+/// Host-automation only — not a mod-matrix destination.
 #[derive(Clone, Copy, Debug)]
 pub struct PhaserParams {
     pub on: bool,
@@ -288,15 +279,14 @@ pub struct StereoPhaser {
     mix_primed: bool,
     /// When `false`, the wet fades to 0 and [`process`](Self::process) then
     /// becomes a bit-exact passthrough — a steady `phaser-on = 0` patch renders
-    /// identically to the pre-E025 bus, but switch-off glides instead of
-    /// clicking.
+    /// as a clean bus, but switch-off glides instead of clicking.
     enabled: bool,
 }
 
 impl StereoPhaser {
     pub fn new(sample_rate: f32) -> Self {
-        // Seeds chosen as in the upstream; the right channel gets a golden-
-        // ratio XOR so the two channels' stage-stagger walks decorrelate.
+        // The right channel gets a golden-ratio XOR so the two channels'
+        // stage-stagger walks decorrelate.
         let mut left = PhaserChannel::new(sample_rate, 0x1F2E_3D4C);
         let mut right = PhaserChannel::new(sample_rate, 0x1F2E_3D4C ^ 0x9E37_79B9);
         left.snap(CENTER_HZ);
@@ -330,7 +320,7 @@ impl StereoPhaser {
     }
 
     /// Enable/bypass the stage. When `false`, `process` returns its input
-    /// unchanged (bit-exact), and the engine bus is identical to pre-E025.
+    /// unchanged (bit-exact).
     #[inline]
     pub fn set_enabled(&mut self, on: bool) {
         // The mix smoother carries the on/off transition: disabling glides the
@@ -465,7 +455,7 @@ mod tests {
     use crate::test_util;
 
     const SR: f32 = 48_000.0;
-    /// VXN-1's `CONTROL_BLOCK` — the per-block buffer length the block tests use.
+    /// Per-block buffer length the block tests use.
     const BLK: usize = 32;
 
     #[test]
@@ -495,7 +485,7 @@ mod tests {
     fn off_from_load_is_bit_exact_from_first_sample() {
         // A patch that loads with the phaser off (set_enabled before the first
         // set_params, as the engine's set_from does) must be a bit-exact
-        // passthrough from sample 0 — no startup fade, no buffer work (gate 0089).
+        // passthrough from sample 0 — no startup fade, no buffer work.
         let mut ph = StereoPhaser::new(SR);
         ph.set_enabled(false);
         ph.set_params(0.7, 0.9, 0.8, 0.9);
