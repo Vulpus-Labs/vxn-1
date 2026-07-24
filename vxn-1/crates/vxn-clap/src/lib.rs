@@ -554,6 +554,13 @@ impl PluginStateImpl for VxnMainThread<'_> {
         input
             .read_to_end(&mut blob)
             .map_err(|_| PluginError::Message("state read failed"))?;
+        // Reject an empty / undecodable stream *before* committing so the host
+        // learns the restore didn't take (clap-validator `state-invalid`, 0196).
+        // The controller holds the same `Arc<SharedParams>`, so its
+        // `StateLoaded` tick re-applies the same blob idempotently and emits the
+        // matching view events (PresetLoaded, key-mode) — this call only gates.
+        vxn_app::read_state_into(&*self.shared.params, &blob)
+            .map_err(|_| PluginError::Message("invalid state"))?;
         let host_tx = lock_mut(&self.controller).host_sender();
         let _ = host_tx.try_send(HostEvent::StateLoaded { blob });
         lock_mut(&self.controller).tick();

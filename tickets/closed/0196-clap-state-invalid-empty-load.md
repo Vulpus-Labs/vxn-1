@@ -73,3 +73,30 @@ coordinate with [[0195]] which is also consolidating into the core crates.
   under the validator when fixing.
 - Keep the fix on the main thread (this is `PluginStateImpl`, not the audio
   thread); no realtime constraint.
+
+## Close-out (2026-07-24)
+
+- Only **vxn-1** was actually broken. Its `PluginStateImpl::load`
+  ([vxn-clap/src/lib.rs:549](../../vxn-1/crates/vxn-clap/src/lib.rs#L549)) now
+  gates on `vxn_app::read_state_into(&*self.shared.params, &blob)` and returns
+  `Err(PluginError::Message("invalid state"))` *before* forwarding
+  `HostEvent::StateLoaded` to the controller. The controller holds the same
+  `Arc<SharedParams>`, so its `StateLoaded` tick re-applies the identical blob
+  idempotently and still emits the view events (PresetLoaded, key-mode) — the
+  new call only decides the verdict. Rejects both empty (length ≠ `BLOB_LEN`)
+  and garbage (bad magic / version / truncated), satisfying the "reject
+  undecodable" item, not just empty.
+- The ticket's premise that vxn-2/vxn-3 "share the identical `Ok(())`-always
+  pattern" was **stale**. vxn-2's `load` already ran
+  `ParamModel::load_bytes(&*self.shared.params, &blob)?`
+  ([vxn2-clap/src/lib.rs:642](../../vxn-2/crates/vxn2-clap/src/lib.rs#L642)) and
+  vxn-3's already ran `state::load(&blob, …)?`
+  ([vxn3-clap/src/lib.rs:585](../../vxn-3/crates/vxn3-clap/src/lib.rs#L585)) —
+  both return `Err` synchronously on empty/short/bad-magic. No change needed.
+- No shared helper in `vxn-core-clap`: the three decoders differ per synth
+  (`read_state_into` vs `load_bytes` vs `state::load`), so there was nothing
+  common to consolidate. [[0195]] coordination moot for this fix.
+- Verified with `clap-validator validate` (installed bundles): vxn-1 now
+  **18 pass / 0 fail** (was 17/1); `state-invalid` PASSED on all three
+  (vxn-1/vxn-2/vxn-3 each 5/5 on `--test-filter state`, incl.
+  `state-reproducibility-*` — no regression). `cargo test -p vxn-clap` green.
