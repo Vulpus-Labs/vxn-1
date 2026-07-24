@@ -90,7 +90,10 @@ jobs:
     name: macOS vxn-2 (universal)
     runs-on: macos-14
     steps:
+      # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -100,23 +103,32 @@ jobs:
         with:
           workspaces: .
 
-      - name: Build universal VXN2 CLAP
-        working-directory: vxn-2
-        run: cargo xtask bundle --release --universal
+      - name: Install Ninja
+        run: brew install ninja
 
-      - name: Zip bundle
-        run: ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
+      - name: Build universal VXN2 CLAP + VST3 bundles
+        working-directory: vxn-2
+        run: cargo xtask bundle --release --format clap,vst3 --universal
+
+      - name: Zip bundles
+        run: |
+          ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
+          ditto -c -k --keepParent target/bundled/VXN2.vst3 VXN2-macOS-universal.vst3.zip
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: VXN2-macOS-universal.clap.zip
+          files: |
+            VXN2-macOS-universal.clap.zip
+            VXN2-macOS-universal.vst3.zip
 
   windows-vxn2:
     name: Windows vxn-2 (x86_64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -124,17 +136,29 @@ jobs:
         with:
           workspaces: .
 
-      - name: Build VXN2 CLAP
-        working-directory: vxn-2
-        run: cargo xtask bundle --release
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Package artifact
-        run: Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Build VXN2 CLAP + VST3 bundles
+        working-directory: vxn-2
+        run: cargo xtask bundle --release --format clap,vst3
+
+      # On Windows the .clap is a single shared library; the .vst3 is a folder
+      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
+      - name: Package artifacts
+        run: |
+          Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap
+          Compress-Archive -Path target/bundled/VXN2.vst3 -DestinationPath VXN2-windows-x64.vst3.zip
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: VXN2-windows-x64.clap
+          files: |
+            VXN2-windows-x64.clap
+            VXN2-windows-x64.vst3.zip
 
   manual:
     name: Manual (PDF)
