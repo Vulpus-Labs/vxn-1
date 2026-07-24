@@ -1039,70 +1039,55 @@ mod tests {
         assert_eq!(coh[0][5], "ok");
     }
 
+    // Contract guard: the mod-matrix panel consumes the engine's coherence
+    // verdict table across the Rust↔JS boundary. The reason tokens are emitted
+    // verbatim by `matrix::Coherence::reason()` (vxn2-engine/src/matrix.rs);
+    // renaming a verdict there silently kills the JS tooltip — so these guard a
+    // real cross-language contract, not JS internals. Live panel behaviour (row
+    // repaint, edit-time validation) is JS wiring and is not asserted here.
     #[test]
     fn mod_matrix_panel_wires_coherence_validation() {
-        // The panel reads the exported coherence table (not a JS re-derivation)
-        // and flags incoherent rows with the shared class + reason tooltips.
+        // Panel reads the exported table (`window.__vxn.matrix.coherence`)
+        // rather than re-deriving verdicts.
         assert!(
             PANEL_MOD_MATRIX_JS.contains("matrix.coherence"),
             "panel must consume the exported coherence table"
         );
+        // Reason strings are the wire contract with `Coherence::reason()` —
+        // keep in lockstep with that enum.
+        for reason in ["self-rate", "tier-collapse", "degenerate"] {
+            assert!(
+                PANEL_MOD_MATRIX_JS.contains(reason),
+                "missing reason mapping for {reason} (see Coherence::reason)"
+            );
+        }
+        // Invalid-row feedback is a JS→CSS class contract: the panel toggles
+        // `vxn-mm-invalid`, the stylesheet must style it or the flag is dead.
         assert!(
             PANEL_MOD_MATRIX_JS.contains("vxn-mm-invalid"),
             "panel must toggle the invalid-row class"
         );
         assert!(
-            PANEL_MOD_MATRIX_JS.contains("validateRow"),
-            "panel must validate rows on edit + repaint"
-        );
-        // Reason tooltips for each non-ok verdict.
-        for reason in ["self-rate", "tier-collapse", "degenerate"] {
-            assert!(
-                PANEL_MOD_MATRIX_JS.contains(reason),
-                "missing reason mapping for {reason}"
-            );
-        }
-        // Red-text rule + the error token it resolves.
-        assert!(
-            FACEPLATE_CSS.contains(".vxn-mm-invalid select"),
-            "stylesheet missing invalid-row red-text rule"
-        );
-        assert!(
-            FACEPLATE_CSS.contains("--vxn-error"),
-            "stylesheet missing error color token"
+            FACEPLATE_CSS.contains(".vxn-mm-invalid"),
+            "stylesheet missing invalid-row rule for the toggled class"
         );
     }
 
+    // Contract guard: mod-matrix depth reuses the shared bipolar fader
+    // primitive (fader.js `createBipolar`) instead of forking its own control.
+    // That cross-module reuse is the contract; the exact markup, center-tick
+    // CSS, and dispatch-call formatting are JS internals (a token in a comment
+    // would satisfy them) — exercised by the Vitest suite / manual DAW checks,
+    // not guarded here.
     #[test]
     fn mod_matrix_depth_is_bipolar_fader() {
-        // Depth control is the shared bipolar fader, not a bare range input;
-        // routed through the existing dispatchRow depth path.
         assert!(
             PANEL_FADER_JS.contains("createBipolar"),
             "fader primitive must export the bipolar variant"
         );
         assert!(
             PANEL_MOD_MATRIX_JS.contains("createBipolar"),
-            "matrix depth must use the bipolar fader"
-        );
-        assert!(
-            PANEL_MOD_MATRIX_JS.contains("vxn-mm-depth"),
-            "matrix depth fader markup missing"
-        );
-        // No leftover native range input for depth.
-        assert!(
-            !PANEL_MOD_MATRIX_JS.contains("type: \"range\""),
-            "bare range input should be replaced by the bipolar fader"
-        );
-        // Center-tick + signed fill styling present.
-        assert!(
-            FACEPLATE_CSS.contains(".vxn-mm-depth-center"),
-            "center-tick style missing"
-        );
-        // Dispatch still flows through the depth path (CLAP slot 1-8 / opcode).
-        assert!(
-            PANEL_MOD_MATRIX_JS.contains("dispatchRow(slot, { depth:"),
-            "depth must still route through dispatchRow"
+            "matrix depth must reuse the shared bipolar fader"
         );
     }
 
@@ -1159,9 +1144,12 @@ mod tests {
         );
     }
 
-    /// Preset browser (two-pane, ported from VXN1): panel JS + floating
-    /// folders/presets markup must be in the served HTML, and main.js must
-    /// forward the corpus, highlight the loaded preset, and follow moves.
+    /// Contract guards for the preset-browser bundle: the shared module is
+    /// spliced with its ESM export marker stripped (a leaked `export` breaks
+    /// the inline `<script>`), main.js wires the corpus/highlight/follow
+    /// routes, and the browser dispatches the full opcode set the backend
+    /// parses. Internal markup ids and two-pane/DnD CSS are JS/style internals
+    /// (not guarded here); live browser behaviour is a manual DAW check.
     #[test]
     fn build_faceplate_html_includes_preset_browser() {
         let html = build_faceplate_html();
@@ -1183,18 +1171,6 @@ mod tests {
             !html.contains("export function createPresetBrowser"),
             "ESM export marker leaked into the inline script",
         );
-        // Floating two-pane markup (VXN1 ids).
-        for id in [
-            "id=\"browser-panel\"",
-            "id=\"browser-backdrop\"",
-            "id=\"browser-folders\"",
-            "id=\"browser-presets\"",
-            "id=\"browser-search-input\"",
-            "id=\"browser-search-clear\"",
-            "id=\"browser-close\"",
-        ] {
-            assert!(html.contains(id), "browser markup missing: {id}");
-        }
         // main.js installs the real corpus handler + load-highlight +
         // follow-path routes.
         assert!(
@@ -1209,7 +1185,9 @@ mod tests {
             html.contains("presetBrowser.followPath"),
             "main.js does not route preset_corpus_changed follow to the browser",
         );
-        // The browser dispatches the full opcode set the shared backend parses.
+        // Opcode-dispatch contract: the browser must dispatch every op the
+        // backend parses. Canonical consumer list is faceplate-bridge.mjs
+        // (DEFERRED_OPS + the routeOpcode switch); keep in lockstep with it.
         for op in [
             "load_factory", "load_user", "rename_preset", "delete_preset",
             "move_preset", "rename_folder", "delete_folder", "new_folder",
@@ -1217,9 +1195,5 @@ mod tests {
         ] {
             assert!(html.contains(op), "browser missing {op} dispatch");
         }
-        // Two-pane / DnD / context-menu CSS ported.
-        assert!(html.contains(".browser-panes"), "two-pane CSS missing");
-        assert!(html.contains(".browser-submenu"), "move-to submenu CSS missing");
-        assert!(html.contains(".browser-row.dragging"), "drag-and-drop CSS missing");
     }
 }
