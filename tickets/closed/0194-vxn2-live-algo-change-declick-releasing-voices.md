@@ -45,3 +45,20 @@ not a web-transport concern — distinct from ticket 0193.
   behaviour.
 - Touch points: `engine.rs` (`last_algo` field + declick loop in
   `apply_block_params`); test `live_algo_change_declicks_releasing_voice_not_held`.
+
+## Close-out (2026-07-24)
+
+- Shipped in commit `d7f0fba` (bundled with 0193). `last_algo: u8` field on the
+  engine ([engine.rs:514](../../vxn-2/crates/vxn2-engine/src/engine.rs#L514)),
+  never-applied sentinel `0` at init
+  ([engine.rs:591](../../vxn-2/crates/vxn2-engine/src/engine.rs#L591)).
+- Declick loop in `apply_block_params`
+  ([engine.rs:783-794](../../vxn-2/crates/vxn2-engine/src/engine.rs#L783-L794)):
+  on `algo_changed`, `start_declick()` every stack that is `!meta.gate &&
+  !is_idle()` — releasing voices only. Held (gated) voices fall through to
+  `set_algo_live` and morph. Preset-load path (`load_epoch → silence_all`) leaves
+  those voices idle, so `is_idle()` skips them — no double-cut.
+- Test `live_algo_change_declicks_releasing_voice_not_held`
+  ([engine.rs:3982](../../vxn-2/crates/vxn2-engine/src/engine.rs#L3982)):
+  releasing voice → `VoicePhase::Declick` after change; held voice stays gated,
+  non-declick.
