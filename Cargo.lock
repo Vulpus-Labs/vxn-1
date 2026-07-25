@@ -2486,6 +2486,34 @@ name = "vxn1-xtask"
 version = "0.1.1"
 
 [[package]]
+name = "vxn1b-clap"
+version = "0.1.1"
+dependencies = [
+ "clack-extensions",
+ "clack-plugin",
+ "vxn1b-engine",
+]
+
+[[package]]
+name = "vxn1b-engine"
+version = "0.1.1"
+dependencies = [
+ "vxn-core-utils",
+ "vxn-dsp",
+]
+
+[[package]]
+name = "vxn1b-ui-web"
+version = "0.1.1"
+dependencies = [
+ "vxn-core-ui-web",
+]
+
+[[package]]
+name = "vxn1b-xtask"
+version = "0.1.1"
+
+[[package]]
 name = "vxn2-app"
 version = "0.1.1"
 dependencies = [

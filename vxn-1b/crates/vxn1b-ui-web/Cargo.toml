@@ -1,0 +1,11 @@
+[package]
+name = "vxn1b-ui-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1b HTML faceplate — skeleton; compact faceplate + mod-matrix overlay land in E038."
+
+[dependencies]
+vxn-core-ui-web = { workspace = true }

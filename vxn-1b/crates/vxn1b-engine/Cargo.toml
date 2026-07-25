@@ -1,0 +1,14 @@
+[package]
+name = "vxn1b-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1b engine — param table + mod-matrix routing loop over VXN1's shared vxn-dsp kernels."
+
+[dependencies]
+# ADR 0001 §1: VXN1b reuses VXN1's DSP verbatim via a direct crate dependency,
+# not a fork — later tickets wire these kernels rather than porting them.
+vxn-dsp = { workspace = true }
+vxn-core-utils = { workspace = true }

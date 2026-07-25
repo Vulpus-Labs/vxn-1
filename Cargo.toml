@@ -36,6 +36,13 @@ members = [
     "vxn-3/crates/vxn3-ui-web",
     "vxn-3/crates/vxn3-clap",
     "vxn-3/xtask",
+
+    # vxn-1b (matrix-modulation variant of vxn-1 — see vxn-1b/adrs/0001, epic E036).
+    # Reuses vxn-1's vxn-dsp verbatim; only routing + faceplate diverge.
+    "vxn-1b/crates/vxn1b-engine",
+    "vxn-1b/crates/vxn1b-clap",
+    "vxn-1b/crates/vxn1b-ui-web",
+    "vxn-1b/xtask",
 ]
 
 [workspace.package]
@@ -70,6 +77,10 @@ vxn3-dsp = { path = "vxn-3/crates/vxn3-dsp" }
 vxn3-engine = { path = "vxn-3/crates/vxn3-engine" }
 vxn3-app = { path = "vxn-3/crates/vxn3-app" }
 vxn3-ui-web = { path = "vxn-3/crates/vxn3-ui-web" }
+
+# vxn-1b (path). Note: vxn-1b also depends on vxn-1's `vxn-dsp` (declared above).
+vxn1b-engine = { path = "vxn-1b/crates/vxn1b-engine" }
+vxn1b-ui-web = { path = "vxn-1b/crates/vxn1b-ui-web" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). Single source of truth across all consumers.
