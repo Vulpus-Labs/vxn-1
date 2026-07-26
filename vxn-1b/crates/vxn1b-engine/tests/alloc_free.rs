@@ -1,0 +1,66 @@
+//! Allocation-free hot-path gate (ticket 0202, acceptance 5).
+//!
+//! A process-wide counting allocator (this test binary only) tallies heap
+//! allocations while **armed**. After warm-up (construction + one block, where
+//! setup allocations are fine), the audio hot path — note on/off, pressure,
+//! param sets, and `process_block` — must allocate **zero** times: VXN1b's
+//! render is fixed-size arrays end to end (bank/eval/render/engine), no `Vec`,
+//! `Box`, or growth.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use vxn1b_engine::{Engine, ParamId};
+
+struct Counting;
+
+static ARMED: AtomicBool = AtomicBool::new(false);
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if ARMED.load(Ordering::Relaxed) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static A: Counting = Counting;
+
+#[test]
+fn hot_path_is_allocation_free() {
+    let mut e = Engine::new(48_000.0, 512);
+    let mut l = vec![0.0f32; 512];
+    let mut r = vec![0.0f32; 512];
+
+    // Warm-up (allocations permitted): fill the voices, exercise every op path
+    // once so any lazy setup is done before arming.
+    e.set_param(ParamId::Env2Attack as usize, 0.002);
+    for i in 0..16 {
+        e.note_on(0, 48 + i as u8, 1.0);
+    }
+    e.process_block(&mut l, &mut r);
+
+    // Arm: from here, the audio-thread API must not touch the heap.
+    ARMED.store(true, Ordering::Relaxed);
+
+    e.set_param(ParamId::Cutoff as usize, 4000.0);
+    e.set_pitch_bend(0.3);
+    e.set_mod_wheel(0.5);
+    e.channel_pressure(0, 0.7);
+    e.poly_pressure(0, 60, 0.4);
+    e.note_on(1, 72, 0.8); // steals — still alloc-free
+    e.process_block(&mut l, &mut r);
+    e.note_off(0, 48);
+    e.process_block(&mut l, &mut r);
+
+    ARMED.store(false, Ordering::Relaxed);
+
+    let n = ALLOCS.load(Ordering::Relaxed);
+    assert_eq!(n, 0, "audio hot path allocated {n} times");
+}

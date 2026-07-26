@@ -15,3 +15,9 @@ vxn-core-utils = { workspace = true }
 # ParamDesc / ParamKind / Taper — the shared param schema shape + taper math
 # (VXN1's table forks the same descriptor type, ADR 0001 §5).
 vxn-core-app = { workspace = true }
+
+[dev-dependencies]
+# VXN1's engine — the render-parity oracle (0202): the seeded default patch must
+# reproduce VXN1's fixed-routing output. Test-only.
+vxn-engine = { workspace = true }
+vxn-app = { workspace = true }

@@ -2498,8 +2498,11 @@ dependencies = [
 name = "vxn1b-engine"
 version = "0.1.1"
 dependencies = [
+ "vxn-app",
+ "vxn-core-app",
  "vxn-core-utils",
  "vxn-dsp",
+ "vxn-engine",
 ]
 
 [[package]]
