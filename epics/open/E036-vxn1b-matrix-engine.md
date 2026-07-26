@@ -84,7 +84,8 @@ voice struct the evaluator reads — retrofitting it later would churn the core.
 
 ## Planned tickets
 
-Dependency chain: **0197 → 0198 → 0199 → 0200 → 0201 → 0202 → 0203 → 0204**.
+Dependency chain: **0197 → 0198 → 0199 → 0200 → 0201 → 0202 → 0203 → 0205 → 0204**.
+(0205 wires depth automation into the evaluator; 0204's host param apply needs it.)
 (0198 MPE + 0199 random are the early novel-plumbing tickets, before the matrix.)
 
 - [ ] **0197** — Scaffold `vxn-1b` product. Create `vxn1b-engine`, `vxn1b-clap`,
@@ -133,6 +134,11 @@ Dependency chain: **0197 → 0198 → 0199 → 0200 → 0201 → 0202 → 0203 �
       builds/installs the `.clap`. **DAW-playable with host-generic knobs.**
       `clap-validator` reports 0 failures (incl. the empty-state-load contract
       from 0196).
+- [ ] **0205** — Slot-depth param sync. Wire the automatable slot-depth params
+      to the evaluator: `set_param` mirrors depth into `matrix.slots[i].depth`,
+      and the default-patch seed depths live in the param defaults so the two
+      stores agree at startup. Fixes dead depth automation + startup mismatch
+      found in 0203. Feeds 0204 (host param apply routes through `set_param`).
 
 ## Risks
 

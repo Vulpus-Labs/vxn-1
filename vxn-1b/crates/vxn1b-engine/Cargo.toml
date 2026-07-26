@@ -15,6 +15,11 @@ vxn-core-utils = { workspace = true }
 # ParamDesc / ParamKind / Taper — the shared param schema shape + taper math
 # (VXN1's table forks the same descriptor type, ADR 0001 §5).
 vxn-core-app = { workspace = true }
+# Sparse-TOML preset scaffold (Meta/Header/SCHEMA/value_for) shared across the
+# synths — the TOML persistence path (0203) builds on it rather than re-rolling.
+vxn-preset = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 # VXN1's engine — the render-parity oracle (0202): the seeded default patch must

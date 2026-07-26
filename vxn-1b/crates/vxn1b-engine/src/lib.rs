@@ -11,13 +11,17 @@
 //! - [`render`] — maps evaluated dest totals onto VXN1's DSP consumption points.
 //! - [`bank`] — an 8-wide matrix-driven render bank (fork of VXN1's `VoiceBank`).
 //! - [`engine`] — the full synth: params + matrix + voices + two banks.
+//! - [`state`] — the binary `clap.state` blob (params + matrix topology, 0203).
+//! - [`preset`] — the portable sparse-TOML preset codec (0203).
 
 pub mod bank;
 pub mod engine;
 pub mod eval;
 pub mod matrix;
 pub mod params;
+pub mod preset;
 pub mod render;
+pub mod state;
 pub mod voice;
 
 pub use bank::{BlockCtx, RenderBank};
@@ -25,6 +29,8 @@ pub use engine::Engine;
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
 pub use params::{ParamId, Params};
+pub use preset::{Meta, PresetError, from_toml_str, read_preset, write_preset};
+pub use state::PluginState;
 pub use voice::Voices;
 
 /// Maximum simultaneous voices, inherited from the shared DSP crate — VXN1b's
