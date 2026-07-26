@@ -9,7 +9,20 @@
 //!
 //! For now the crate exposes a minimal silent [`Engine`] so the CLAP shell can
 //! load in a host and render silence; audible synthesis arrives with the param
-//! table and matrix tickets.
+//! table and matrix tickets. The MPE-aware voice-allocation spine
+//! ([`voice::Voices`]) lands first (0198) — its per-voice `channel` + `pressure`
+//! fields shape the voice struct the matrix evaluator later reads.
+
+pub mod eval;
+pub mod matrix;
+pub mod params;
+pub mod render;
+pub mod voice;
+
+pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
+pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
+pub use params::{ParamId, Params};
+pub use voice::Voices;
 
 /// Maximum simultaneous voices, inherited from the shared DSP crate — VXN1b's
 /// voice count is identical to VXN1's (ADR 0001 §1). Referenced here so the

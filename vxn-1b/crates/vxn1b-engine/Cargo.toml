@@ -12,3 +12,6 @@ description = "VXN1b engine — param table + mod-matrix routing loop over VXN1'
 # not a fork — later tickets wire these kernels rather than porting them.
 vxn-dsp = { workspace = true }
 vxn-core-utils = { workspace = true }
+# ParamDesc / ParamKind / Taper — the shared param schema shape + taper math
+# (VXN1's table forks the same descriptor type, ADR 0001 §5).
+vxn-core-app = { workspace = true }
