@@ -91,3 +91,39 @@ Touch points:
 - Tests: extend the codec round-trip test (`event-codec.test.mjs` +
   `codec.rs` unit test) with `EV_MATRIX_ROW`; ring `pushMatrixRow` decode test;
   controller `_mirrorMatrixToRing` snapshot-fan test.
+
+## Close-out (2026-07-24)
+
+New fixed-slot ring events carry topology + patch-swap through the same
+main→worklet ring as notes/params, so the controller's authoritative param
+state now reaches the audio engine's separate `SharedParams`.
+
+- `EV_MATRIX_ROW` (11) + `EV_PATCH_SWAP` (12) added to the ring codec:
+  [codec.rs:60](../../vxn-2/crates/vxn2-wasm/src/codec.rs#L60),
+  `Event::SetMatrixRow`/`PatchSwap`, encode `row(...)`, `decode_and_apply` →
+  `shared.set_matrix_row_raw` / `bump_load_epoch`. Row also carries E033
+  `scale_src` in byte 12 (beyond original spec).
+- JS mirror: `EV_MATRIX_ROW`/`EV_PATCH_SWAP` consts + encodeInto/decode cases +
+  `setMatrixRow`/`patchSwap` constructors in
+  [event-codec.mjs:39](../../vxn-2/crates/vxn2-wasm/web/event-codec.mjs#L39);
+  `pushMatrixRow`/`pushPatchSwap` in
+  [event-ring.mjs:154](../../vxn-2/crates/vxn2-wasm/web/event-ring.mjs#L154).
+- Transport wiring: controller `setMatrixRow` dual-writes ctrl-wasm + ring
+  ([controller.mjs:209](../../vxn-2/crates/vxn2-wasm/web/controller.mjs#L209));
+  ViewEvent fan pushes one `pushMatrixRow` per slot on `matrix_snapshot` and
+  `pushPatchSwap` on `preset_loaded`
+  ([controller.mjs:293](../../vxn-2/crates/vxn2-wasm/web/controller.mjs#L293)),
+  so preset loads / resets (which never call `setMatrixRow`) reach the worklet.
+  Coordinator producer surface exposes both
+  ([coordinator.mjs:349](../../vxn-2/crates/vxn2-wasm/web/coordinator.mjs#L349)).
+  Depth rides the row (`pushMatrixRow(..., depth, ...)`) so slots 9-16 with no
+  CLAP id route too; CLAP slots 1-8 still also ride `set_param` (no regression).
+- Tests green: JS `event-codec.test.mjs` + `event-ring.test.mjs` (15 pass, incl.
+  `pushMatrixRow drains a slot that decodes to the same row (0193)` and the
+  scale-source drift case); Rust `codec::tests::matrix_row_survives_encode_decode_roundtrip`,
+  `matrix_row_applies_topology_to_shared_store`,
+  `patch_swap_bumps_load_epoch_for_silence` (10 pass).
+- Not machine-verified: the four *audible* criteria (route change within a tick,
+  overlay/worklet agreement, preset re-route, preset-swap silence) need a DAW.
+  Transport + engine-side apply are covered by the store/epoch unit tests above;
+  final audible confirmation is a manual Reaper check.
