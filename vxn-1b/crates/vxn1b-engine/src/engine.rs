@@ -16,7 +16,7 @@ use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 
 use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
-use crate::params::{CrossModType, ParamId, Params};
+use crate::params::{CrossModType, MATRIX_SLOTS, ParamId, Params};
 use crate::voice::Voices;
 
 /// Per-bank RNG seeds (distinct so the two banks' noise/drift streams
@@ -60,6 +60,15 @@ impl Engine {
             pitch_bend: 0.0,
             mod_wheel: 0.0,
         };
+        // Depth authority is the param table (ADR 0001 §5). The default patch
+        // authors its seed depths in the matrix, so seed the matching depth
+        // params from it once — after this the two are kept in lock-step by
+        // `set_param` (0205).
+        for slot in 0..MATRIX_SLOTS {
+            if let Some(p) = ParamId::slot_depth(slot) {
+                engine.params.set(p, engine.matrix.slots[slot].depth);
+            }
+        }
         engine.apply_envelopes();
         engine
     }
@@ -77,11 +86,16 @@ impl Engine {
         &mut self.matrix
     }
 
-    /// Set a CLAP-id param (identity map). Envelope params re-cook the banks.
+    /// Set a CLAP-id param (identity map). Envelope params re-cook the banks;
+    /// slot-depth params mirror into the matrix the evaluator reads (0205).
     pub fn set_param(&mut self, id: usize, value: f32) {
         self.params.set_index(id, value);
         if is_envelope_param(id) {
             self.apply_envelopes();
+        }
+        if let Some(slot) = ParamId::slot_depth_index(id) {
+            // Read back the clamped value so the mirror can't drift from the param.
+            self.matrix.slots[slot].depth = self.params.slot_depth(slot);
         }
     }
 
@@ -329,6 +343,47 @@ mod tests {
         }
         let v = e.note_on(0, 90, 1.0);
         assert_eq!(v, 0, "17th note steals the oldest (voice 0)");
+    }
+
+    #[test]
+    fn fresh_engine_params_match_matrix_depths() {
+        // 0205: the param table and the matrix agree on every slot depth at
+        // construction — no startup mismatch.
+        let e = Engine::new(48_000.0, 512);
+        for slot in 0..MATRIX_SLOTS {
+            assert_eq!(
+                e.params.slot_depth(slot),
+                e.matrix.slots[slot].depth,
+                "slot {slot} param/matrix depth disagree"
+            );
+        }
+    }
+
+    #[test]
+    fn set_param_mirrors_slot_depth_into_matrix() {
+        // 0205: a depth edit reaches the copy the evaluator reads.
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(ParamId::MatrixSlot2Depth as usize, -0.5);
+        assert_eq!(e.matrix.slots[2].depth, -0.5);
+        // Clamp is honoured on the mirror too (params clamp to [-1, 1]).
+        e.set_param(ParamId::MatrixSlot2Depth as usize, 9.0);
+        assert_eq!(e.matrix.slots[2].depth, 1.0);
+    }
+
+    #[test]
+    fn zeroing_amp_slot_depth_via_param_silences_note() {
+        // 0205: depth automation is live — zeroing the default Env2→Amp slot
+        // depth kills the VCA route the evaluator/bank reads, so the note is
+        // silent. Proves the param → matrix → DSP path end-to-end.
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(ParamId::Env2Attack as usize, 0.001);
+        e.set_param(ParamId::MatrixSlot0Depth as usize, 0.0);
+        e.note_on(0, 60, 1.0);
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        e.process_block(&mut l, &mut r);
+        let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert_eq!(peak, 0.0, "zeroing the amp slot depth must silence the voice");
     }
 
     #[test]

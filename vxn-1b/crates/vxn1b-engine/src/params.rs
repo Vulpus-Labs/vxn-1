@@ -226,6 +226,16 @@ impl ParamId {
             .then(|| Self::from_index(ParamId::MatrixSlot0Depth as usize + slot))
             .flatten()
     }
+
+    /// Inverse of [`Self::slot_depth`]: the slot index a CLAP id addresses, or
+    /// `None` if the id is not a slot-depth param. Lets `set_param` mirror a
+    /// depth edit into the matrix without a range test (0205).
+    pub fn slot_depth_index(clap_id: usize) -> Option<usize> {
+        let base = ParamId::MatrixSlot0Depth as usize;
+        (base..base + MATRIX_SLOTS)
+            .contains(&clap_id)
+            .then(|| clap_id - base)
+    }
 }
 
 // ── Descriptor table ────────────────────────────────────────────────────────
@@ -623,6 +633,19 @@ mod tests {
             assert_eq!((d.min, d.max, d.default), (-1.0, 1.0, 0.0));
         }
         assert!(ParamId::slot_depth(MATRIX_SLOTS).is_none());
+    }
+
+    #[test]
+    fn slot_depth_index_is_the_inverse_of_slot_depth() {
+        for s in 0..MATRIX_SLOTS {
+            let id = ParamId::slot_depth(s).unwrap().index();
+            assert_eq!(ParamId::slot_depth_index(id), Some(s));
+        }
+        // Non-slot ids (below the slot block and past the table) return None
+        // without underflowing — the `then` vs `then_some` trap (0205).
+        assert_eq!(ParamId::slot_depth_index(ParamId::Cutoff as usize), None);
+        assert_eq!(ParamId::slot_depth_index(0), None);
+        assert_eq!(ParamId::slot_depth_index(ParamId::COUNT), None);
     }
 
     #[test]
