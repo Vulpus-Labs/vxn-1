@@ -83,3 +83,30 @@ seeded depths that reproduce VXN1's default sound cannot drift.
 - Related design: [[vxn2-level-mod-pipeline]] (VXN2's combined depth/EG ramp)
   and [[vxn2-e006-review-remediation]] (Stack-vs-engine ramp codegen lesson) —
   VXN2 hit the same "who owns the ramped value" question.
+
+## Close-out (2026-07-27)
+
+- **Live depth automation.** `set_param`
+  ([engine.rs:87-97](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L87-L97))
+  now mirrors a slot-depth edit into `matrix.slots[i].depth` — the copy the
+  evaluator ([eval.rs](../../vxn-1b/crates/vxn1b-engine/src/eval.rs)) and the
+  bank amp path ([bank.rs:610-634](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L610-L634))
+  read — using a clamped read-back so the mirror can't drift from the param.
+  `engine::tests::set_param_mirrors_slot_depth_into_matrix` (mirror + clamp) and
+  `zeroing_amp_slot_depth_via_param_silences_note` (param → matrix → DSP end to
+  end: zeroing the default Env2→Amp depth kills the VCA route and silences the
+  note).
+- **No startup mismatch.** `Engine::new`
+  ([engine.rs:62-72](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L62-L72))
+  seeds the 16 depth params from `default_patch()` once, so param and matrix
+  agree from frame zero — `engine::tests::fresh_engine_params_match_matrix_depths`.
+- **Parity intact.** All `render::tests` (default-patch vibrato/amp/key-track
+  parity) and `matrix::tests::default_patch_*` stay green — `DEFAULT_VIBRATO_DEPTH`
+  / `KEY_CUTOFF_UNITY_DEPTH` unchanged.
+- **Single authority.** `default_patch()` authors the seed depths; the param
+  table is seeded from it and is thereafter the authority, with `set_param` the
+  only mutating path (it mirrors). Added `ParamId::slot_depth_index`
+  ([params.rs:231-241](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L231-L241))
+  as the inverse of `slot_depth`; `params::tests::slot_depth_index_is_the_inverse_of_slot_depth`
+  guards it and the `then` vs `then_some` usize-underflow trap caught in review.
+- 86 tests pass (`cargo test -p vxn1b-engine --lib`), clippy clean. Commit `09271d2`.
