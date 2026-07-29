@@ -1,0 +1,447 @@
+//! Serial post-voice FX chain (ticket 0207, epic E037).
+//!
+//! Order (ADR 0001 §8): **chorus → phaser → delay → reverb → dynamics**. Runs
+//! between the summed bank output and master volume, at the engine's global
+//! oversample rate (today 1×; the chain keys off the rate it's constructed at,
+//! so it follows the OS factor once that lands).
+//!
+//! ## On/off discipline
+//!
+//! Each of the five slots carries a short bypass **fade** (a `Smoothed` 0..1) and
+//! is gated on it:
+//!
+//! - **Steady off** (`on == false` and the fade has reached exactly 0) is a
+//!   *true skip* — the kernel's `process` is never called, so five idle effects
+//!   cost five gate checks, not five wet=0 multiplies through the DSP (E037 CPU
+//!   risk).
+//! - **Toggling** ramps the fade 0↔1 over [`FX_FADE_MS`], crossfading dry input
+//!   against the kernel's wet output so a switch doesn't click. `Smoothed` snaps
+//!   to its target within `SNAP_EPS`, so the fade genuinely reaches 0 and the
+//!   true-skip gate re-arms.
+//!
+//! The kernels are held **internally on** and their own `mix` argument carries
+//! the musical wet amount; this outer fade owns bypass. That's the same split
+//! VXN1's `MasterFx` uses for its reverb (bypass owned by the outer fade, kernel
+//! `on` held true). On an off→on edge the slot's kernel state is cleared so a
+//! re-enabled delay / reverb doesn't dump a stale tail.
+
+use vxn_dsp::{
+    DynamicsBlock, DynamicsParams, FdnReverb, FdnReverbParams, StereoChorus, StereoDelay,
+    StereoPhaser,
+};
+
+use crate::params::{ParamId, Params};
+
+/// Bypass fade length. Long enough to mask an on/off click, short enough to feel
+/// instant — matches VXN1's 10 ms FX toggle fade.
+const FX_FADE_MS: f32 = 10.0;
+
+/// Delay high-frequency damping in the feedback path. Fixed internal default
+/// (not a param) — mirrors VXN1's hardcoded `0.3`.
+const DELAY_DAMPING: f32 = 0.3;
+
+/// Longest delay time the ring buffer must hold (matches the `delay_time` param
+/// ceiling). Allocated once at construction.
+const DELAY_MAX_SECONDS: f32 = 2.0;
+
+// Slot indices into the fade / on-state arrays, in chain order.
+const CHORUS: usize = 0;
+const PHASER: usize = 1;
+const DELAY: usize = 2;
+const REVERB: usize = 3;
+const DYNAMICS: usize = 4;
+const N_SLOTS: usize = 5;
+
+/// Block-rate snapshot of the FX params, fanned into the chain each control
+/// block. Character values map straight to each kernel's setter; the `*_on`
+/// bools drive the bypass fades.
+#[derive(Clone, Copy, Debug)]
+pub struct FxParams {
+    pub chorus_on: bool,
+    pub chorus_rate: f32,
+    pub chorus_depth: f32,
+    pub chorus_mix: f32,
+
+    pub phaser_on: bool,
+    pub phaser_rate: f32,
+    pub phaser_depth: f32,
+    pub phaser_feedback: f32,
+    pub phaser_mix: f32,
+
+    pub delay_on: bool,
+    pub delay_time: f32,
+    pub delay_feedback: f32,
+    pub delay_mix: f32,
+
+    pub reverb_on: bool,
+    pub reverb_size: f32,
+    pub reverb_decay: f32,
+    pub reverb_damp: f32,
+    pub reverb_mix: f32,
+
+    pub dynamics_on: bool,
+    pub dynamics_threshold: f32,
+    pub dynamics_ratio: f32,
+    pub dynamics_attack: f32,
+    pub dynamics_release: f32,
+    pub dynamics_makeup: f32,
+    pub dynamics_drive: f32,
+    pub dynamics_mix: f32,
+}
+
+impl FxParams {
+    /// Read the FX params out of the flat param table.
+    pub fn from_params(p: &Params) -> Self {
+        Self {
+            chorus_on: p.bool(ParamId::ChorusOn),
+            chorus_rate: p.get(ParamId::ChorusRate),
+            chorus_depth: p.get(ParamId::ChorusDepth),
+            chorus_mix: p.get(ParamId::ChorusMix),
+
+            phaser_on: p.bool(ParamId::PhaserOn),
+            phaser_rate: p.get(ParamId::PhaserRate),
+            phaser_depth: p.get(ParamId::PhaserDepth),
+            phaser_feedback: p.get(ParamId::PhaserFeedback),
+            phaser_mix: p.get(ParamId::PhaserMix),
+
+            delay_on: p.bool(ParamId::DelayOn),
+            delay_time: p.get(ParamId::DelayTime),
+            delay_feedback: p.get(ParamId::DelayFeedback),
+            delay_mix: p.get(ParamId::DelayMix),
+
+            reverb_on: p.bool(ParamId::ReverbOn),
+            reverb_size: p.get(ParamId::ReverbSize),
+            reverb_decay: p.get(ParamId::ReverbDecay),
+            reverb_damp: p.get(ParamId::ReverbDamp),
+            reverb_mix: p.get(ParamId::ReverbMix),
+
+            dynamics_on: p.bool(ParamId::DynamicsOn),
+            dynamics_threshold: p.get(ParamId::DynamicsThreshold),
+            dynamics_ratio: p.get(ParamId::DynamicsRatio),
+            dynamics_attack: p.get(ParamId::DynamicsAttack),
+            dynamics_release: p.get(ParamId::DynamicsRelease),
+            dynamics_makeup: p.get(ParamId::DynamicsMakeup),
+            dynamics_drive: p.get(ParamId::DynamicsDrive),
+            dynamics_mix: p.get(ParamId::DynamicsMix),
+        }
+    }
+}
+
+/// The five-slot serial FX chain. Constructed once (all buffers allocated at
+/// `new`); `process_block` is allocation-free.
+pub struct FxChain {
+    chorus: StereoChorus,
+    phaser: StereoPhaser,
+    delay: StereoDelay,
+    reverb: FdnReverb,
+    dynamics: DynamicsBlock,
+    /// Bypass fade per slot (0 = fully bypassed / skipped, 1 = fully wet).
+    fades: [vxn_dsp::smoothing::Smoothed; N_SLOTS],
+    /// Latched on-state per slot — drives the fade target and the rising-edge
+    /// state-clear.
+    on: [bool; N_SLOTS],
+}
+
+impl FxChain {
+    pub fn new(sample_rate: f32) -> Self {
+        let fade = vxn_dsp::smoothing::Smoothed::new(0.0, FX_FADE_MS, sample_rate);
+        Self {
+            chorus: StereoChorus::new(sample_rate),
+            phaser: StereoPhaser::new(sample_rate),
+            delay: StereoDelay::new(sample_rate, DELAY_MAX_SECONDS),
+            reverb: FdnReverb::new(sample_rate),
+            dynamics: DynamicsBlock::new(sample_rate),
+            fades: [fade; N_SLOTS],
+            on: [false; N_SLOTS],
+        }
+    }
+
+    /// Silence all tails and snap every slot to fully bypassed. Called on engine
+    /// reset alongside the voice/bank reset.
+    pub fn reset(&mut self) {
+        self.chorus.clear();
+        self.phaser.clear();
+        self.delay.clear();
+        self.reverb.reset();
+        self.dynamics.clear();
+        for f in &mut self.fades {
+            f.snap(0.0);
+        }
+        self.on = [false; N_SLOTS];
+    }
+
+    /// Fan a block-rate param snapshot into the kernels and retarget the bypass
+    /// fades. Character params always update (cheap; ready for the moment a slot
+    /// re-activates); the kernels are held internally on, so their own `mix`
+    /// carries the wet amount and this chain's fade owns bypass.
+    pub fn set_params(&mut self, p: &FxParams) {
+        self.retarget(CHORUS, p.chorus_on);
+        self.retarget(PHASER, p.phaser_on);
+        self.retarget(DELAY, p.delay_on);
+        self.retarget(REVERB, p.reverb_on);
+        self.retarget(DYNAMICS, p.dynamics_on);
+
+        self.chorus.set_params(p.chorus_rate, p.chorus_depth, p.chorus_mix);
+        self.phaser
+            .set_params(p.phaser_rate, p.phaser_depth, p.phaser_feedback, p.phaser_mix);
+        self.delay.set_params(
+            p.delay_time,
+            p.delay_time,
+            p.delay_feedback,
+            DELAY_DAMPING,
+            p.delay_mix,
+        );
+        self.reverb.set_params(&FdnReverbParams {
+            on: true,
+            size: p.reverb_size,
+            decay_secs: p.reverb_decay,
+            damp: p.reverb_damp,
+            mix: p.reverb_mix,
+        });
+        self.dynamics.set_from(&DynamicsParams {
+            on: true,
+            threshold_db: p.dynamics_threshold,
+            ratio: p.dynamics_ratio,
+            attack_ms: p.dynamics_attack,
+            release_ms: p.dynamics_release,
+            makeup_db: p.dynamics_makeup,
+            drive_db: p.dynamics_drive,
+            mix: p.dynamics_mix,
+        });
+    }
+
+    /// Run the serial chain over a control block, in place. Each stage is a true
+    /// skip while it's bypassed and settled.
+    pub fn process_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+        for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
+            let (mut xl, mut xr) = (*ls, *rs);
+            let o = self.run_chorus(xl, xr);
+            (xl, xr) = o;
+            let o = self.run_phaser(xl, xr);
+            (xl, xr) = o;
+            let o = self.run_delay(xl, xr);
+            (xl, xr) = o;
+            let o = self.run_reverb(xl, xr);
+            (xl, xr) = o;
+            let o = self.run_dynamics(xl, xr);
+            (xl, xr) = o;
+            *ls = xl;
+            *rs = xr;
+        }
+    }
+
+    /// Latch a slot's on-state, retarget its fade, and clear the kernel on the
+    /// off→on edge so a re-enabled tail-carrying effect starts clean.
+    fn retarget(&mut self, slot: usize, on: bool) {
+        if on && !self.on[slot] {
+            self.clear_slot(slot);
+        }
+        self.on[slot] = on;
+        self.fades[slot].set_target(if on { 1.0 } else { 0.0 });
+    }
+
+    fn clear_slot(&mut self, slot: usize) {
+        match slot {
+            CHORUS => self.chorus.clear(),
+            PHASER => self.phaser.clear(),
+            DELAY => self.delay.clear(),
+            REVERB => self.reverb.reset(),
+            _ => self.dynamics.clear(),
+        }
+    }
+
+    #[inline]
+    fn run_chorus(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.on[CHORUS] && self.fades[CHORUS].current() == 0.0 {
+            return (xl, xr);
+        }
+        let (wl, wr) = self.chorus.process(xl, xr);
+        blend(xl, xr, wl, wr, self.fades[CHORUS].tick())
+    }
+
+    #[inline]
+    fn run_phaser(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.on[PHASER] && self.fades[PHASER].current() == 0.0 {
+            return (xl, xr);
+        }
+        let (wl, wr) = self.phaser.process(xl, xr);
+        blend(xl, xr, wl, wr, self.fades[PHASER].tick())
+    }
+
+    #[inline]
+    fn run_delay(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.on[DELAY] && self.fades[DELAY].current() == 0.0 {
+            return (xl, xr);
+        }
+        let (wl, wr) = self.delay.process(xl, xr);
+        blend(xl, xr, wl, wr, self.fades[DELAY].tick())
+    }
+
+    #[inline]
+    fn run_reverb(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.on[REVERB] && self.fades[REVERB].current() == 0.0 {
+            return (xl, xr);
+        }
+        let (wl, wr) = self.reverb.process(xl, xr);
+        blend(xl, xr, wl, wr, self.fades[REVERB].tick())
+    }
+
+    #[inline]
+    fn run_dynamics(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.on[DYNAMICS] && self.fades[DYNAMICS].current() == 0.0 {
+            return (xl, xr);
+        }
+        let (wl, wr) = self.dynamics.process(xl, xr);
+        blend(xl, xr, wl, wr, self.fades[DYNAMICS].tick())
+    }
+}
+
+/// Linear bypass crossfade: `g = 0` → dry input, `g = 1` → kernel wet output.
+#[inline]
+fn blend(dry_l: f32, dry_r: f32, wet_l: f32, wet_r: f32, g: f32) -> (f32, f32) {
+    (dry_l + g * (wet_l - dry_l), dry_r + g * (wet_r - dry_r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::TAU;
+
+    const SR: f32 = 48_000.0;
+
+    fn all_off() -> FxParams {
+        FxParams {
+            chorus_on: false,
+            chorus_rate: 0.6,
+            chorus_depth: 0.5,
+            chorus_mix: 0.4,
+            phaser_on: false,
+            phaser_rate: 0.5,
+            phaser_depth: 0.7,
+            phaser_feedback: 0.0,
+            phaser_mix: 0.5,
+            delay_on: false,
+            delay_time: 0.35,
+            delay_feedback: 0.4,
+            delay_mix: 0.25,
+            reverb_on: false,
+            reverb_size: 0.5,
+            reverb_decay: 2.5,
+            reverb_damp: 0.4,
+            reverb_mix: 0.3,
+            dynamics_on: false,
+            dynamics_threshold: -12.0,
+            dynamics_ratio: 4.0,
+            dynamics_attack: 10.0,
+            dynamics_release: 100.0,
+            dynamics_makeup: 0.0,
+            dynamics_drive: 0.0,
+            dynamics_mix: 1.0,
+        }
+    }
+
+    fn sig(i: usize) -> (f32, f32) {
+        let x = 0.4 * (TAU * 220.0 * i as f32 / SR).sin();
+        let y = -0.3 * (TAU * 330.0 * i as f32 / SR).cos();
+        (x, y)
+    }
+
+    #[test]
+    fn all_off_is_bit_exact_passthrough() {
+        // The default patch has every effect off: the chain must be a bit-exact
+        // passthrough from the first sample (fades start snapped to 0), so
+        // render-parity vs a no-FX render holds.
+        let mut fx = FxChain::new(SR);
+        fx.set_params(&all_off());
+        for i in 0..2_000 {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+            assert_eq!(l[0].to_bits(), x.to_bits(), "L not bit-exact at i={i}");
+            assert_eq!(r[0].to_bits(), y.to_bits(), "R not bit-exact at i={i}");
+        }
+    }
+
+    #[test]
+    fn enabling_an_effect_changes_the_output() {
+        // Dynamics on with heavy drive must audibly diverge from the dry input
+        // once the bypass fade has ridden up.
+        let mut fx = FxChain::new(SR);
+        let mut p = all_off();
+        p.dynamics_on = true;
+        p.dynamics_drive = 30.0;
+        p.dynamics_mix = 1.0;
+        fx.set_params(&p);
+        let mut diverged = false;
+        for i in 0..4_000 {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+            if (l[0] - x).abs() > 1.0e-3 {
+                diverged = true;
+            }
+        }
+        assert!(diverged, "dynamics on did not change the signal");
+    }
+
+    #[test]
+    fn toggling_off_settles_back_to_bit_exact_skip() {
+        // Turn an effect on, run it, then turn it off: after the fade settles the
+        // slot must return to a bit-exact passthrough (the true-skip path).
+        let mut fx = FxChain::new(SR);
+        let mut p = all_off();
+        p.delay_on = true;
+        p.delay_mix = 0.5;
+        fx.set_params(&p);
+        for i in 0..4_000 {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+        }
+        // Switch off and let the fade reach exactly 0.
+        p.delay_on = false;
+        fx.set_params(&p);
+        for i in 0..(SR * 0.2) as usize {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+        }
+        // Now settled off — assert bit-exact passthrough.
+        for i in 0..1_000 {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+            assert_eq!(l[0].to_bits(), x.to_bits(), "L not skipped after settle i={i}");
+            assert_eq!(r[0].to_bits(), y.to_bits(), "R not skipped after settle i={i}");
+        }
+    }
+
+    #[test]
+    fn reset_snaps_to_bypass() {
+        let mut fx = FxChain::new(SR);
+        let mut p = all_off();
+        p.reverb_on = true;
+        fx.set_params(&p);
+        for i in 0..1_000 {
+            let (x, y) = sig(i);
+            let mut l = [x];
+            let mut r = [y];
+            fx.process_block(&mut l, &mut r);
+        }
+        fx.reset();
+        // After reset every slot is off and snapped to 0 — even with reverb_on
+        // still latched false, the chain is an immediate passthrough.
+        fx.set_params(&all_off());
+        let (x, y) = sig(0);
+        let mut l = [x];
+        let mut r = [y];
+        fx.process_block(&mut l, &mut r);
+        assert_eq!(l[0].to_bits(), x.to_bits(), "reset did not restore skip");
+        assert_eq!(r[0].to_bits(), y.to_bits(), "reset did not restore skip");
+    }
+}

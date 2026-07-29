@@ -15,6 +15,7 @@
 use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 
 use crate::bank::{BlockCtx, RenderBank};
+use crate::fx::{FxChain, FxParams};
 use crate::matrix::MatrixTable;
 use crate::params::{CrossModType, ParamId, Params};
 use crate::voice::Voices;
@@ -36,6 +37,9 @@ pub struct Engine {
     banks: [RenderBank; 2],
     /// Global LFO 2, ticked once per control block and broadcast to both banks.
     lfo2: LfoCore,
+    /// Serial post-voice FX chain (0207): chorus → phaser → delay → reverb →
+    /// dynamics, run at the global OS rate before master volume.
+    fx: FxChain,
     /// Host pitch-bend in `[-1, 1]` — the hardwired bend term (ADR §3) *and* the
     /// PitchWheel matrix source.
     pitch_bend: f32,
@@ -61,6 +65,7 @@ impl Engine {
                 RenderBank::new(sample_rate, BANK_SEEDS[1]),
             ],
             lfo2: LfoCore::new(control_rate, LFO2_SEED),
+            fx: FxChain::new(sample_rate),
             pitch_bend: 0.0,
             mod_wheel: 0.0,
         };
@@ -146,6 +151,7 @@ impl Engine {
         for b in &mut self.banks {
             b.reset();
         }
+        self.fx.reset();
     }
 
     /// Render one host block, splitting it into `CONTROL_BLOCK`-sample control
@@ -205,6 +211,12 @@ impl Engine {
             l,
             r,
         );
+
+        // Serial FX chain over the summed voices, at the global OS rate (today
+        // 1×, so `l`/`r` are base-rate). Each effect is a true skip when off and
+        // settled, so the default FX-off patch is a bit-exact passthrough here.
+        self.fx.set_params(&FxParams::from_params(&self.params));
+        self.fx.process_block(l, r);
 
         // Master volume + a final finite guard. A denormal-free RT plugin must
         // never emit NaN/inf: an extreme param + dense-voice combo can drive a

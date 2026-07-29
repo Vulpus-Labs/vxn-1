@@ -88,4 +88,46 @@ this is the ADR default.
   chain ordering forces a decision on it.
 - UI (tab strip, per-effect panels) is [[E038]] — this ticket ships the engine
   wiring only; params are automatable from the host without UI.
+
+## Close-out (2026-07-29)
+
+- **Chain wired.** New [fx.rs](../../vxn-1b/crates/vxn1b-engine/src/fx.rs)
+  (`FxChain` + `FxParams`): serial chorus → phaser → delay → reverb → dynamics,
+  inserted in [engine.rs](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L210)
+  between the bank sum and master volume, run at `os_sample_rate` (1× today, so
+  it follows the OS factor once that lands). `FxChain::new` in `Engine::new`,
+  `fx.reset()` in `Engine::reset`.
+- **True-skip bypass, click-free toggle.** Each slot carries a 10 ms `Smoothed`
+  bypass fade; kernels are held internally on (their `mix` arg = the musical wet
+  amount) and the fade owns on/off — the same split VXN1's `MasterFx` uses for
+  its reverb. Steady-off (`!on && fade.current() == 0.0`) never calls the
+  kernel's `process` — a real skip, not a wet=0 multiply (E037 CPU risk).
+  `Smoothed` snaps within `SNAP_EPS`, so the fade reaches exactly 0 and the skip
+  re-arms; off→on edge clears the slot's kernel so a re-enabled delay/reverb
+  doesn't dump a stale tail.
+- **26 params** in [params.rs](../../vxn-1b/crates/vxn1b-engine/src/params.rs),
+  slotted between `Oversample` and the matrix depths: per-effect on + mix + a few
+  character knobs (ranges mirror VXN1's FX section; the dynamics eight mirror
+  VXN2's kernel clamps). All default **off/neutral** — the factory patch is
+  FX-free. Matrix slot CLAP ids shifted +26; fine — persistence is name-keyed
+  ([[vxn1-id-stability-dropped]]).
+- **Bypasses to identity when off.** `fx::tests::all_off_is_bit_exact_passthrough`
+  drives audio through the whole chain with every effect off and asserts bit-exact
+  equality to the input; `toggling_off_settles_back_to_bit_exact_skip` proves a
+  toggled-off slot returns to the exact-skip path once the fade settles;
+  `enabling_an_effect_changes_the_output` and `reset_snaps_to_bypass` round it out.
+- **Default patch audibly unchanged.** All `render::tests` parity checks stay
+  green — FX-off is a transparent passthrough, so VXN1 render parity is intact.
+- **Alloc-free.** Kernel ring buffers allocate once in `FxChain::new` (called
+  from `Engine::new`); `process_block` performs no allocation.
+- **Green** (`vxn-no-parallel-cargo-test`, run once, captured): `cargo test -p
+  vxn1b-engine --lib` = 95/95 (4 new fx tests + parity). All vxn1b crates build
+  (the CLAP shell derives its count from `ParamId::COUNT`, auto-adjusts). clippy
+  clean (only the pre-existing vxn-dsp `tap`-index warning).
+- **Deferred — dynamics-at-1× aliasing (epic risk).** The saturator can alias on
+  fast transients at 1×; verifying "clean at the default OS rate" is an ear check
+  in a DAW ([[verify-audio-in-reaper]] — audio is verified manually, not via a
+  headless harness). Pending a Reaper pass; note a 1× caveat there if needed. OS
+  plumbing itself is still 1×-hardwired (E036/E037 OS work), so this is the one
+  acceptance item that can't close from code alone.
 </content>
