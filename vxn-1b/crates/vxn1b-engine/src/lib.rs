@@ -21,6 +21,7 @@ pub mod matrix;
 pub mod params;
 pub mod preset;
 pub mod render;
+pub mod shared;
 pub mod state;
 pub mod voice;
 
@@ -28,8 +29,9 @@ pub use bank::{BlockCtx, RenderBank};
 pub use engine::Engine;
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
-pub use params::{ParamId, Params};
+pub use params::{ParamId, Params, TOTAL_PARAMS, desc_for_clap_id};
 pub use preset::{Meta, PresetError, from_toml_str, read_preset, write_preset};
+pub use shared::SharedParams;
 pub use state::PluginState;
 pub use voice::Voices;
 

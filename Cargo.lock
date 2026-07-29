@@ -2491,6 +2491,8 @@ version = "0.1.1"
 dependencies = [
  "clack-extensions",
  "clack-plugin",
+ "vxn-core-app",
+ "vxn-core-clap",
  "vxn1b-engine",
 ]
 

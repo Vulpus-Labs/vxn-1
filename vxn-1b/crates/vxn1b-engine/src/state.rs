@@ -57,6 +57,24 @@ pub struct PluginState {
 }
 
 impl PluginState {
+    /// The factory-default patch: default param values with the default-patch
+    /// matrix topology ([`crate::matrix::default_patch`]), and the 16 slot-depth
+    /// params seeded from that patch so params and matrix agree on depth from the
+    /// first frame (the depth-authority contract, 0205). Single source of truth
+    /// for the factory state — [`crate::Engine::new`] and the shared param store
+    /// both build from it.
+    pub fn factory_default() -> Self {
+        use crate::params::{MATRIX_SLOTS, ParamId};
+        let mut params = Params::default();
+        let matrix = crate::matrix::default_patch();
+        for slot in 0..MATRIX_SLOTS {
+            if let Some(p) = ParamId::slot_depth(slot) {
+                params.set(p, matrix.slots[slot].depth);
+            }
+        }
+        Self { params, matrix }
+    }
+
     /// Write the canonical blob: magic, version, the param block, then one
     /// 5-byte topology record per slot. Slot depths are already in the param
     /// block, so the topology carries only `source`/`dest`/`curve`/`scale`.

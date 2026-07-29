@@ -14,9 +14,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 vxn1b-engine = { workspace = true }
+# Shared clack helper (batch_range for event-batch → frame mapping). The
+# note/param dispatch is bespoke here — VXN1b is MPE-aware and the shared
+# EngineNotes dispatch is channel-agnostic (drops channel + per-note pressure).
+vxn-core-clap = { workspace = true }
+# ParamKind — the stepped/continuous discriminant get_info reports to the host.
+vxn-core-app = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",
     "note-ports",
+    "params",
+    "state",
     "clack-plugin",
 ] }

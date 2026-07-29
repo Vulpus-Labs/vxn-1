@@ -16,7 +16,7 @@ use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 
 use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
-use crate::params::{CrossModType, MATRIX_SLOTS, ParamId, Params};
+use crate::params::{CrossModType, ParamId, Params};
 use crate::voice::Voices;
 
 /// Per-bank RNG seeds (distinct so the two banks' noise/drift streams
@@ -46,11 +46,15 @@ pub struct Engine {
 impl Engine {
     pub fn new(sample_rate: f32, max_frames: usize) -> Self {
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        // Factory patch: default params + default-patch topology with the slot
+        // depths already reconciled (0205) — a single source of truth shared with
+        // the CLAP shell's param store ([`crate::state::PluginState::factory_default`]).
+        let factory = crate::state::PluginState::factory_default();
         let mut engine = Self {
             sample_rate,
             max_frames,
-            params: Params::default(),
-            matrix: crate::matrix::default_patch(),
+            params: factory.params,
+            matrix: factory.matrix,
             voices: Voices::new(),
             banks: [
                 RenderBank::new(sample_rate, BANK_SEEDS[0]),
@@ -60,17 +64,25 @@ impl Engine {
             pitch_bend: 0.0,
             mod_wheel: 0.0,
         };
-        // Depth authority is the param table (ADR 0001 §5). The default patch
-        // authors its seed depths in the matrix, so seed the matching depth
-        // params from it once — after this the two are kept in lock-step by
-        // `set_param` (0205).
-        for slot in 0..MATRIX_SLOTS {
-            if let Some(p) = ParamId::slot_depth(slot) {
-                engine.params.set(p, engine.matrix.slots[slot].depth);
-            }
-        }
         engine.apply_envelopes();
         engine
+    }
+
+    /// Overwrite the whole patch (params + matrix topology) from a decoded
+    /// [`crate::state::PluginState`] — the CLAP state-load / preset path. Re-cooks
+    /// envelopes. Depth stays param-authoritative: the topology's depths already
+    /// mirror the params (the codec seeds them), so no extra sync is needed.
+    pub fn load_state(&mut self, state: crate::state::PluginState) {
+        self.params = state.params;
+        self.matrix = state.matrix;
+        self.apply_envelopes();
+    }
+
+    /// Read a CLAP-id param value (identity map) — for the shell's param store
+    /// sync and `get_value`.
+    #[inline]
+    pub fn param(&self, id: usize) -> f32 {
+        self.params.get_index(id)
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -194,8 +206,14 @@ impl Engine {
             r,
         );
 
+        // Master volume + a final finite guard. A denormal-free RT plugin must
+        // never emit NaN/inf: an extreme param + dense-voice combo can drive a
+        // ladder/feedback state non-finite, and one NaN sample poisons the host
+        // graph (and fails `clap-validator`'s param-fuzz). Replacing non-finite
+        // samples with silence contains it at the engine boundary.
         for s in l.iter_mut().chain(r.iter_mut()) {
-            *s *= master;
+            let v = *s * master;
+            *s = if v.is_finite() { v } else { 0.0 };
         }
     }
 
@@ -311,6 +329,7 @@ fn is_envelope_param(id: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::MATRIX_SLOTS;
 
     #[test]
     fn silent_by_default_until_a_note() {
@@ -343,6 +362,43 @@ mod tests {
         }
         let v = e.note_on(0, 90, 1.0);
         assert_eq!(v, 0, "17th note steals the oldest (voice 0)");
+    }
+
+    #[test]
+    fn output_is_always_finite_under_param_and_note_fuzz() {
+        // Mirrors clap-validator's `param-fuzz-basic`: dense polyphony (both
+        // banks, high notes, wide channels, out-of-range pressure/bend) while
+        // every param is swept through its extremes. An extreme filter/feedback
+        // combo can drive DSP state non-finite; the engine's output guard must
+        // still emit only finite samples (never a NaN/inf to the host).
+        use crate::params::PARAMS;
+        let mut e = Engine::new(48_000.0, 512);
+        for i in 0..40u16 {
+            let note = (i * 3) as u8;
+            let ch = (i % 20) as u8;
+            e.note_on(ch, note, (i as f32 / 40.0).max(0.05));
+            e.poly_pressure(ch, note, 1.5); // out-of-range pressure
+            e.poly_pressure(ch, note, -0.5);
+        }
+        for ch in 0..20u8 {
+            e.channel_pressure(ch, 2.0);
+        }
+        e.set_pitch_bend(5.0);
+        e.set_mod_wheel(-1.0);
+        let mut l = vec![0.0f32; 512];
+        let mut r = vec![0.0f32; 512];
+        for (i, d) in PARAMS.iter().enumerate() {
+            for v in [d.min, d.max, d.default, d.min - 10.0, d.max + 10.0] {
+                e.set_param(i, v);
+                e.note_off((i % 20) as u8, (i * 3 % 128) as u8);
+                e.process_block(&mut l, &mut r);
+                assert!(
+                    l.iter().chain(r.iter()).all(|s| s.is_finite()),
+                    "non-finite output after param {} ({i}) = {v}",
+                    d.name,
+                );
+            }
+        }
     }
 
     #[test]
