@@ -77,4 +77,43 @@ Chain: **0206 → 0207**. (0205 was taken by an E036 ticket; real IDs shifted +1
   green (no shared-crate regression).
 - All five effects route in a serial chain with on/off + wet; each bypasses to
   identity when off; the chain is allocation-free.
+
+## Close-out (2026-07-29)
+
+Shipped in two tickets, landed on `main`.
+
+- **0206 — Dynamics kernel into `vxn-dsp`.** VXN2's `DynamicsBlock` (peak comp →
+  `tanh` saturator) copied verbatim into
+  [dynamics.rs](../../vxn-1/crates/vxn-dsp/src/dynamics.rs) — additive module, no
+  edits to existing kernels, VXN1 unaffected. The only real port work was dep
+  adaptation (`crate::smoother` → `crate::smoothing`; two bit-exact test helpers
+  inlined). **The epic's "delete its dedicated oversampling" turned out to be a
+  no-op:** VXN2's oversampling lives in its *engine* (`run_dynamics_os`), not the
+  kernel, which is already rate-agnostic — so it runs at the global OS rate for
+  free. 7/7 dynamics tests, full vxn-dsp suite 90/90, VXN1 consumer builds clean.
+  Commit `361fabe`.
+- **0207 — Serial FX chain in `vxn1b-engine`.** New
+  [fx.rs](../../vxn-1b/crates/vxn1b-engine/src/fx.rs) (`FxChain` + `FxParams`):
+  chorus → phaser → delay → reverb → dynamics, between the bank sum and master
+  volume. 26 params (per-effect on + wet + character), all default off/neutral →
+  factory patch is FX-free. Off-path is a **true skip** via a per-slot 10 ms
+  bypass fade that snaps to 0 (kernels held internally on; the fade owns
+  click-free on/off — the split VXN1's `MasterFx` uses for reverb). vxn1b-engine
+  95/95 (4 new fx tests + render parity intact), all vxn1b crates build, clippy
+  clean. Commit `d3f7efe`.
+
+**Acceptance met:** dynamics in `vxn-dsp` at the global OS rate with VXN1 green;
+five effects serial with on/off + wet, each bypassing to identity when off; chain
+allocation-free.
+
+**Carried forward:**
+
+- **Dynamics-at-1× aliasing** (epic risk) — the one item that can't close from
+  code: needs an ear check in a DAW ([[verify-audio-in-reaper]]). OS plumbing is
+  still 1×-hardwired, so verify at the eventual default 2× and note a 1× caveat
+  if audible. Recorded in 0207's close-out.
+- **UI** — the tab strip / per-effect panels are [[E038]]; params are
+  host-automatable today without a faceplate.
+- **Per-effect wet as a matrix destination** (ADR §2) stays a later candidate —
+  this epic shipped host-automation params only.
 </content>
