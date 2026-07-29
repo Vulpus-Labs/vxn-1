@@ -2,7 +2,7 @@
 id: E037
 product: vxn-1b
 title: "VXN1b FX section — dynamics kernel + tab-switched serial chain (chorus/phaser/delay/reverb/dynamics)"
-status: open
+status: closed
 created: 2026-07-25
 ---
 
