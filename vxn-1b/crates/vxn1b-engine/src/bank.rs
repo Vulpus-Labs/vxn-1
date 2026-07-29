@@ -31,11 +31,12 @@
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
     LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
-    PolyOtaLadder, Waveform, note_to_hz, one_pole_coeff, poly_ring_mod, poly_sub_square,
+    PolyOtaLadder, Waveform, note_to_hz, poly_ring_mod, poly_sub_square,
 };
 
 use crate::eval::{SourceInputs, eval_dests, eval_sources};
 use crate::matrix::{DestId, MatrixTable, SourceId};
+use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
 use crate::render;
 
@@ -181,6 +182,8 @@ pub struct RenderBank {
     glide_valid: [bool; N],
     /// Set at note-on trigger, consumed (taken) at the next render.
     trigger_pending: [bool; N],
+    /// Per-lane discontinuity guards on the pitch/PWM/Amp matrix dests (0208).
+    smooth: MotionSmoother,
     lfo1_seed: u64,
 }
 
@@ -207,6 +210,7 @@ impl RenderBank {
             glide_semi: [0.0; N],
             glide_valid: [false; N],
             trigger_pending: [false; N],
+            smooth: MotionSmoother::new(sample_rate),
             lfo1_seed: rng_seed,
         }
     }
@@ -217,6 +221,7 @@ impl RenderBank {
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         let seed = self.lfo1_seed;
         self.lfo1 = std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(seed, i)));
+        self.smooth.set_sample_rate(sample_rate);
         self.reset();
     }
 
@@ -243,6 +248,7 @@ impl RenderBank {
         self.glide_semi = [0.0; N];
         self.glide_valid = [false; N];
         self.trigger_pending = [false; N];
+        self.smooth.reset();
     }
 
     /// Apply ADSR params to all lanes (called when an envelope param changed).
@@ -342,9 +348,24 @@ impl RenderBank {
         let (glide, glide_coeff) = block_glide(ctx.portamento_time, base_frames, base_rate);
 
         // ── Block-start per-lane resolution ──
+        // Pitch-family dests (Pitch, XModSweep) are smoothed per-quantum inside
+        // the frame loop; PWM and the non-env Amp part get a block-rate one-pole
+        // here (0208). We stash the un-modulated pitch base + the smoother
+        // targets per lane so the frame loop can re-cook `inc` as the cascade
+        // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc, exactly as
+        // `render::voice_pitches` does.
+        let (g1, g2) = sweep_gates(ctx.cross_mod_type);
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         let mut amp_c = [AmpCoeffs::default(); N];
+        let mut amp_stat_tgt = [0.0f32; N];
+        let mut base1 = [0.0f32; N];
+        let mut base2 = [0.0f32; N];
+        let mut pitch_tgt = [0.0f32; N];
+        let mut sweep_tgt = [0.0f32; N];
+        let mut pwm_tgt = [0.0f32; N];
+        let mut pitch_active = [false; N];
+        let mut pwm_active = [false; N];
         for v in 0..N {
             let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
             // Matrix sources use env levels at block start (VXN1 granularity).
@@ -375,21 +396,41 @@ impl RenderBank {
             self.glide_semi[v] += glide_coeff * (target - self.glide_semi[v]);
             let nf = self.glide_semi[v];
 
-            let (s1, s2) = render::voice_pitches(
-                &dests,
-                ctx.cross_mod_type,
-                ctx.base_semis,
-                nf,
-                ctx.osc1_semi,
-                ctx.osc2_semi,
-                0.0, // detune (unison deferred)
-                self.osc1.drift_value[v],
-                self.osc2.drift_value[v],
-            );
-            self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
-            self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
-            pw1[v] = render::voice_pw(&dests, ctx.osc1_pw);
-            pw2[v] = render::voice_pw(&dests, ctx.osc2_pw);
+            // Un-modulated pitch base per osc (everything except the smoothed
+            // Pitch/XModSweep matrix dests). Constant across the control block —
+            // drift/glide are already block-rate.
+            base1[v] = ctx.base_semis + nf + ctx.osc1_semi + self.osc1.drift_value[v];
+            base2[v] = ctx.base_semis + nf + ctx.osc2_semi + self.osc2.drift_value[v];
+            pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
+            sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
+            pwm_tgt[v] = dests[DestId::Pwm.idx().unwrap()];
+
+            // Non-env Amp coefficient: `e1`/`e2` stay per-frame exact; `stat` (the
+            // non-envelope routes) is the target the per-frame Amp one-pole glides
+            // toward in the render loop.
+            let ac = amp_coeffs(ctx.matrix, &sources);
+            amp_stat_tgt[v] = ac.stat;
+
+            // A fresh note snaps its lane so it starts settled (static sources
+            // land zipper-free; no glide from the stolen voice's stale state).
+            if self.trigger_pending[v] {
+                self.smooth.snap_pitch(v, pitch_tgt[v], sweep_tgt[v]);
+                self.smooth.snap_slow(v, pwm_tgt[v], ac.stat);
+            }
+            amp_c[v] = AmpCoeffs { stat: self.smooth.amp_stat_current(v), ..ac };
+
+            // PWM: per-quantum one-pole on the matrix offset (peek here; the frame
+            // loop advances it), then VXN1's clamp.
+            pwm_active[v] = active[v] && self.smooth.pwm_active(v, pwm_tgt[v]);
+            let pwm_s = self.smooth.pwm_current(v);
+            pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
+            pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+
+            // Provisional `inc` from the base (smoothed pitch ≈ 0 when inactive);
+            // active lanes get re-cooked per quantum in the frame loop.
+            pitch_active[v] = active[v] && self.smooth.pitch_active(v, pitch_tgt[v], sweep_tgt[v]);
+            self.osc1.inc[v] = note_to_hz(base1[v]) / ctx.os_sample_rate;
+            self.osc2.inc[v] = note_to_hz(base2[v]) / ctx.os_sample_rate;
 
             let cutoff_hz = render::voice_cutoff_hz(
                 &dests,
@@ -406,9 +447,9 @@ impl RenderBank {
                 v,
                 OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
             );
-
-            amp_c[v] = amp_coeffs(ctx.matrix, &sources);
         }
+        let pitch_any = pitch_active.iter().any(|&a| a);
+        let pwm_any = pwm_active.iter().any(|&a| a);
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ;
@@ -452,9 +493,17 @@ impl RenderBank {
         let osc2_runs = ctx.sync || ctx.pm_index != 0.0 || ring_on || ctx.osc2_level != 0.0;
 
         let env_static = self.envelopes_static(&trig, active, gate);
-        // VCA base constant across the block when envelopes are static.
-        if env_static {
+        // The non-env Amp part glides per frame (0208); while it's still moving
+        // the VCA isn't constant even with static envelopes, so it must run the
+        // per-frame path too.
+        let amp_moving =
+            (0..N).any(|v| active[v] && !self.smooth.amp_stat_settled(v, amp_stat_tgt[v]));
+        let amp_per_frame = !env_static || amp_moving;
+        // VCA constant across the block only when envelopes are static *and* the
+        // non-env Amp has settled — then compute it once.
+        if !amp_per_frame {
             for v in 0..N {
+                amp_c[v].stat = self.smooth.amp_stat_current(v);
                 amp[v] = vca(
                     active[v],
                     gate[v],
@@ -467,14 +516,41 @@ impl RenderBank {
         }
 
         for base_i in 0..base_frames {
-            // Per-frame VCA: tick envelopes, substitute fresh levels into the
-            // factored Amp (step 2). Skipped when the block is envelope-static
-            // (amp constant, computed above).
-            if !env_static {
+            // Per-quantum pitch/PWM smoothing (0208): every PITCH_QUANTUM samples,
+            // advance the pitch cascade + PWM one-pole a step and re-cook the
+            // oscillator increments / pulse widths, so an LFO/env routed to
+            // Pitch/XModSweep/PWM ramps in as a slope, not a block-held stair.
+            // Only lanes with an active route pay this; static patches keep the
+            // block-start values.
+            if (pitch_any || pwm_any) && base_i % PITCH_QUANTUM == 0 {
                 for v in 0..N {
-                    let t = trig[v] && base_i == 0;
-                    let e1 = self.env1[v].tick(t, gate[v]);
-                    let e2 = self.env2[v].tick(t, gate[v]);
+                    if pitch_active[v] {
+                        let (p, sw) = self.smooth.tick_pitch(v, pitch_tgt[v], sweep_tgt[v]);
+                        let s1 = base1[v] + p + g1 * sw;
+                        let s2 = base2[v] + p + g2 * sw;
+                        self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
+                        self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
+                    }
+                    if pwm_active[v] {
+                        let pwm_s = self.smooth.tick_pwm(v, pwm_tgt[v]);
+                        pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
+                        pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+                    }
+                }
+            }
+
+            // Per-frame VCA: tick envelopes (unless static) and glide the non-env
+            // Amp part one frame, substituting fresh levels into the factored Amp.
+            // Skipped only when both are constant (amp computed once above).
+            if amp_per_frame {
+                for v in 0..N {
+                    let (e1, e2) = if env_static {
+                        (self.env1[v].level, self.env2[v].level)
+                    } else {
+                        let t = trig[v] && base_i == 0;
+                        (self.env1[v].tick(t, gate[v]), self.env2[v].tick(t, gate[v]))
+                    };
+                    amp_c[v].stat = self.smooth.tick_amp_stat(v, amp_stat_tgt[v]);
                     amp[v] = vca(active[v], gate[v], ctx.amp_env_bypass, &amp_c[v], e1, e2);
                 }
             }
@@ -663,11 +739,18 @@ fn vca(active: bool, gate: bool, bypass: bool, c: &AmpCoeffs, env1: f32, env2: f
     }
 }
 
-// `one_pole_coeff` is imported for the forthcoming LFO→Amp declick (block-rate
-// one-pole on the non-env Amp part); referenced here to keep the import live
-// until that path lands.
-#[allow(dead_code)]
-const _: fn(f32, f32) -> f32 = one_pole_coeff;
+/// Gate the `XModSweep` dest onto the mode-selected osc, matching
+/// [`render::voice_pitches`]: Off/Ring → both, Sync → osc1, PM → osc2. Returned
+/// as `(g1, g2)` multipliers so the frame loop can fold the smoothed sweep into
+/// each osc's pitch with a single FMA.
+#[inline]
+fn sweep_gates(mode: CrossModType) -> (f32, f32) {
+    match mode {
+        CrossModType::Off | CrossModType::Ring => (1.0, 1.0),
+        CrossModType::Sync => (1.0, 0.0),
+        CrossModType::Pm => (0.0, 1.0),
+    }
+}
 
 #[cfg(test)]
 mod tests {

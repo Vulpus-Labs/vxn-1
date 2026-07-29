@@ -10,6 +10,8 @@
 //! - [`eval`] — the generic source→dest evaluator (0202).
 //! - [`render`] — maps evaluated dest totals onto VXN1's DSP consumption points.
 //! - [`bank`] — an 8-wide matrix-driven render bank (fork of VXN1's `VoiceBank`).
+//! - [`mod_smoothing`] — per-lane discontinuity guards on the pitch/PWM/Amp
+//!   dests, so stepped sources don't click the block-rate matrix apply (0208).
 //! - [`engine`] — the full synth: params + matrix + voices + two banks.
 //! - [`state`] — the binary `clap.state` blob (params + matrix topology, 0203).
 //! - [`preset`] — the portable sparse-TOML preset codec (0203).
@@ -18,6 +20,7 @@ pub mod bank;
 pub mod engine;
 pub mod eval;
 pub mod matrix;
+pub mod mod_smoothing;
 pub mod params;
 pub mod preset;
 pub mod render;
