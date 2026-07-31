@@ -21,21 +21,30 @@ import { WebHost } from "./coordinator.mjs";
 import { WebController } from "./controller.mjs";
 import { attachKeyboard } from "./keyboard-input.mjs";
 import { attachMidi } from "./midi-input.mjs";
+import { PresetPersistence } from "./preset-persistence.mjs";
+import { StateAutosave } from "./state-autosave.mjs";
+import {
+  applyShareLinkOnBoot,
+  exportPatchFile,
+  importPatchFile,
+  shareLinkFor,
+} from "./patch-io.mjs";
 
-// Opcodes that don't touch the model / audio and can be ignored on the web path
-// until browser persistence (0159) wires them. Kept explicit so an unhandled
-// opcode is a loud console warning, not a silent drop.
-const DEFERRED_OPS = new Set([
-  "request_text_input",
-  // User-preset management — deferred (minimal 0159 is factory-load only).
-  "load_user",
-  "save_preset",
-  "delete_preset",
-  "rename_preset",
-  "move_preset",
-  "new_folder",
-  "rename_folder",
-  "delete_folder",
+// Opcodes that don't touch the model / audio and can be ignored on the web path.
+// Kept explicit so an unhandled opcode is a loud console warning, not a silent
+// drop. User-preset management (load_user / save_preset / …) is now handled
+// (0159); only the native text-input popup stays deferred (the web path uses a
+// Promise-based prompt in the faceplate, so it never posts this opcode).
+const DEFERRED_OPS = new Set(["request_text_input"]);
+
+// ViewEvent kinds that mutate the persistable patch — any in a tick arms the
+// full-state autosave debounce (0159).
+const PATCH_STATE_KINDS = new Set([
+  "param_changed",
+  "matrix_snapshot",
+  "ks_curve_snapshot",
+  "eg_curve_snapshot",
+  "preset_loaded",
 ]);
 
 /// Route ONE decoded `{op, ...}` opcode to the controller. Pure (no audio side
@@ -113,6 +122,31 @@ export function routeOpcode(ctrl, msg) {
     case "step_preset":
       ctrl.stepPreset(msg.delta ?? (msg.dir === "next" ? 1 : -1));
       return true;
+    // ---- user presets (0159) — panel sends these; see preset-browser.js ----
+    case "load_user":
+      ctrl.loadUser(msg.path);
+      return true;
+    case "save_preset":
+      ctrl.savePreset(msg.name, msg.folder ?? null);
+      return true;
+    case "rename_preset":
+      ctrl.renamePreset(msg.path, msg.new_name);
+      return true;
+    case "delete_preset":
+      ctrl.deletePreset(msg.path);
+      return true;
+    case "move_preset":
+      ctrl.movePreset(msg.path, msg.dest_folder ?? null);
+      return true;
+    case "new_folder":
+      ctrl.newFolder(msg.suggested);
+      return true;
+    case "rename_folder":
+      ctrl.renameFolder(msg.old_name, msg.new_name);
+      return true;
+    case "delete_folder":
+      ctrl.deleteFolder(msg.name);
+      return true;
     default:
       if (DEFERRED_OPS.has(msg.op)) return true; // known-but-deferred (0159)
       console.warn("vxn2 bridge: unhandled opcode", msg.op);
@@ -143,10 +177,16 @@ export class FaceplateBridge {
     showCpuMeter = true,
     showWelcome = true,
     showPianoKeyboard = true,
+    enablePersistence = true,
   } = {}) {
     this._doc = doc;
     this._win = win;
     this._factoryUrl = factoryUrl;
+    this._enablePersistence = enablePersistence;
+    // User-preset persistence + full-state autosave (0159); created in boot()
+    // once the controller is live. Null when persistence is disabled.
+    this._persistence = null;
+    this._autosave = null;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
     this._raf = rafImpl || (win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
     this._enableKeyboard = enableKeyboard;
@@ -203,16 +243,67 @@ export class FaceplateBridge {
     this._armAudioUnlock();
     await this.controller.instantiate();
     this._ready = true;
-    // Load the factory bank (minimal 0159) before flushing queued opcodes, so a
-    // page that requests a preset during boot finds the bank populated. Non-fatal
-    // — the instrument plays without presets.
+    // Load the factory bank before flushing queued opcodes, so a page that
+    // requests a preset during boot finds the bank populated. Non-fatal — the
+    // instrument plays without presets.
     await this._loadFactory();
+    // Browser persistence (0159): hydrate user presets + restore the last patch
+    // (or a share-link) BEFORE the queued `ready`/rebroadcast so the restored
+    // state seeds the UI + param SAB. All best-effort — a storage failure leaves
+    // the instrument playable at defaults.
+    await this._initPersistence();
     // Flush any opcodes the faceplate posted while we were instantiating.
     for (const msg of this._queue) routeOpcode(this.controller, msg);
     this._queue.length = 0;
     this._startPump();
     this._attachInputs();
     return this;
+  }
+
+  // Wire user-preset persistence + full-state autosave + patch-io (0159).
+  // Hydrate the user corpus from IndexedDB and republish it, then apply a boot
+  // share-link (`#patch=…`) or the autosaved last session. Exposes the patch-io
+  // helpers on `window.__vxn` for a future export/import/share UI. Ordering:
+  // this runs after `_loadFactory` (so the corpus republish carries factory +
+  // user) and before the queued `ready` (so the restored state re-broadcasts).
+  async _initPersistence() {
+    if (!this._enablePersistence) return;
+    const controller = this.controller;
+    try {
+      this._persistence = new PresetPersistence({ controller });
+      await this._persistence.hydrate();
+      this._republishCorpus();
+      this._persistence.attachFlushOnHide(this._win, this._doc);
+    } catch (e) {
+      console.warn("vxn2 bridge: user-preset persistence unavailable", e && e.message);
+    }
+    try {
+      this._autosave = new StateAutosave({ controller });
+      // A share-link wins over the autosaved session (an explicit link the user
+      // followed); otherwise restore the last session. Both are best-effort.
+      const fromShare = applyShareLinkOnBoot(controller, {
+        location: this._win.location,
+        history: this._win.history,
+      });
+      if (!fromShare) await this._autosave.restore();
+      this._autosave.attachFlushOnHide(this._win, this._doc);
+    } catch (e) {
+      console.warn("vxn2 bridge: state autosave unavailable", e && e.message);
+    }
+    // Patch export / import / share — no faceplate button yet, so expose them on
+    // the page surface for a future UI (and manual/console use).
+    const vxn = this._win.__vxn || (this._win.__vxn = {});
+    vxn.exportPatch = (name) => exportPatchFile(controller, { name, doc: this._doc });
+    vxn.importPatch = (onResult) => importPatchFile(controller, { doc: this._doc, onResult });
+    vxn.shareLink = () => shareLinkFor(controller, this._win.location);
+  }
+
+  // Re-publish the controller's corpus JSON (factory + user) to the faceplate's
+  // preset browser.
+  _republishCorpus() {
+    const corpus = this.controller.corpusJson();
+    const apply = this._win.__vxn && this._win.__vxn.applyPresetCorpus;
+    if (typeof apply === "function") apply(corpus);
   }
 
   // Fetch `factory.bin`, parse it into the controller's factory bank, and hand
@@ -330,7 +421,28 @@ export class FaceplateBridge {
     if (events.length) {
       const apply = this._win.__vxn && this._win.__vxn.applyViewEvents;
       if (typeof apply === "function") apply(events);
+      this._onEvents(events);
     }
+  }
+
+  // Persistence side-effects for a tick's events (0159). The faceplate's own
+  // `applyViewEvents` already renders `preset_corpus_changed` / `preset_loaded`
+  // / `status`; here we mirror the durable side:
+  //   - a user-corpus change → republish the corpus JSON (which now reflects the
+  //     mutation) + flush the write journal to IndexedDB off the tick;
+  //   - any patch-state change → arm the debounced full-state autosave.
+  _onEvents(events) {
+    let corpusChanged = false;
+    let patchChanged = false;
+    for (const e of events) {
+      if (e.kind === "preset_corpus_changed") corpusChanged = true;
+      if (PATCH_STATE_KINDS.has(e.kind)) patchChanged = true;
+    }
+    if (corpusChanged) {
+      this._republishCorpus();
+      if (this._persistence) this._persistence.flush();
+    }
+    if (patchChanged && this._autosave) this._autosave.schedule();
   }
 
   async destroy() {
@@ -338,6 +450,14 @@ export class FaceplateBridge {
     if (this._keyboard) this._keyboard.detach();
     if (this._midi) this._midi.detach();
     if (this._piano) this._piano.detach();
+    if (this._persistence) {
+      this._persistence.detachFlushOnHide();
+      await this._persistence.drain();
+    }
+    if (this._autosave) {
+      this._autosave.detachFlushOnHide();
+      await this._autosave.drain();
+    }
     this.controller.destroy();
     await this.host.teardown();
   }

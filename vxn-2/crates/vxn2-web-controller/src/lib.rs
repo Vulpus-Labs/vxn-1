@@ -25,8 +25,11 @@ use vxn2_app::{
     corpus_snapshot_json, eg_curve_snapshot_event, ks_curve_snapshot_event, matrix_snapshot_event,
     tick_vxn2,
 };
-use vxn2_engine::shared::SharedParams;
+use vxn2_engine::shared::{ParamModel, SharedParams};
 use vxn2_engine::{TOTAL_PARAMS, rate_partner_clap_id, sync_aware_display};
+
+mod user_store;
+use user_store::{UserState, UserWrite, decode_record};
 
 /// Drain `SharedParams`' dirty bitsets into `ViewEvent`s: one `ParamChanged`
 /// per flipped value bit (with the sync-aware display + rate-partner refresh),
@@ -103,11 +106,25 @@ const VE_MATRIX_SNAPSHOT: u32 = 3;
 const VE_KS_CURVE_SNAPSHOT: u32 = 4;
 const VE_EG_CURVE_SNAPSHOT: u32 = 5;
 /// `VE_PRESET_LOADED`: u32 name_len + name, u32 source_kind
-/// (0 none / 1 factory), if factory u32 index, u32 warning_count + each str.
+/// (0 none / 1 factory / 2 user), if factory u32 index / if user str path,
+/// u32 warning_count + each str.
 const VE_PRESET_LOADED: u32 = 6;
+/// `VE_CORPUS_CHANGED`: u32 has_follow (0/1), if 1 str follow-path. Signals the
+/// user corpus changed (save / rename / delete / move / folder op) so JS
+/// republishes the corpus JSON + flushes the persistence journal (0159).
+const VE_CORPUS_CHANGED: u32 = 7;
+/// `VE_STATUS`: u32 len + UTF-8 status line (save/rename/delete feedback).
+const VE_STATUS: u32 = 8;
 
 const PRESET_SRC_NONE: u32 = 0;
 const PRESET_SRC_FACTORY: u32 = 1;
+const PRESET_SRC_USER: u32 = 2;
+
+// Persistence-journal wire tags (JS `applyWrites` decodes these — 0159).
+const JW_PUT: u32 = 1;
+const JW_DELETE: u32 = 2;
+const JW_PUT_FOLDER: u32 = 3;
+const JW_DELETE_FOLDER: u32 = 4;
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -175,8 +192,11 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
                     push_u32(buf, PRESET_SRC_FACTORY);
                     push_u32(buf, *index as u32);
                 }
-                // User presets aren't served in the minimal factory-only build.
-                _ => push_u32(buf, PRESET_SRC_NONE),
+                Some(PresetSource::User { path }) => {
+                    push_u32(buf, PRESET_SRC_USER);
+                    push_str(buf, &path.to_string_lossy());
+                }
+                None => push_u32(buf, PRESET_SRC_NONE),
             }
             push_u32(buf, warnings.len() as u32);
             for w in warnings {
@@ -184,27 +204,45 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
             }
             true
         }
-        // Status / text-input / user-preset ViewEvents ride other channels
-        // (deferred: user save/load, autosave, share-link).
+        ViewEvent::PresetCorpusChanged { follow } => {
+            push_u32(buf, VE_CORPUS_CHANGED);
+            match follow {
+                Some(path) => {
+                    push_u32(buf, 1);
+                    push_str(buf, &path.to_string_lossy());
+                }
+                None => push_u32(buf, 0),
+            }
+            true
+        }
+        ViewEvent::Status { line } => {
+            push_u32(buf, VE_STATUS);
+            push_str(buf, line);
+            true
+        }
+        // Text-input ViewEvents ride other channels (native-only popup).
         _ => false,
     }
 }
 
-// WebFactoryStore — a read-only factory bank loaded from `factory.bin`.
+// WebPresetStore — the browser preset store (E030 / 0159).
 //
-// The minimal browser preset store: holds the factory bank (parsed from the
-// baked `factory.bin`) so the preset browser can list + load factory patches.
-// User-preset persistence (save/load/autosave) is deferred.
+// Factory side: a read-only bank parsed from the baked `factory.bin`. User
+// side: the synchronous in-memory [`UserState`] cache + write journal
+// ([`user_store`]); IndexedDB persistence is layered on JS-side over the
+// journal-drain / hydration opcodes. Both halves are shared with
+// [`ControllerState`] through the same `Arc`s, so the journal / hydration
+// opcodes and the controller's `refresh_user_corpus` see one cache.
 
-#[derive(Default)]
-struct WebFactoryStore {
+struct WebPresetStore {
     /// (meta, canonical state blob) per factory preset. Filled by
-    /// `vxnc_load_factory` from the staged `factory.bin` bytes; shared with
-    /// [`ControllerState`] via the same `Arc`.
+    /// `vxnc_load_factory` from the staged `factory.bin` bytes.
     factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>>,
+    /// The in-memory user corpus + persistence journal.
+    user: Arc<Mutex<UserState>>,
 }
 
-impl PresetStore for WebFactoryStore {
+impl PresetStore for WebPresetStore {
     fn factory_len(&self) -> usize {
         self.factory.lock().map(|f| f.len()).unwrap_or(0)
     }
@@ -220,39 +258,59 @@ impl PresetStore for WebFactoryStore {
     fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
         self.factory.lock().ok()?.get(index).map(|(m, _)| m.clone())
     }
-    // User side: not served in this build (deferred).
-    fn user_load(&self, _path: &Path) -> Result<PresetLoad, String> {
-        Err("user presets not supported in this build".into())
+    fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
+        self.user.lock().map_err(|_| "user store poisoned")?.load(path)
     }
     fn user_save(
         &self,
-        _name: &str,
-        _folder: Option<&str>,
-        _meta: &PresetMeta,
-        _blob: &[u8],
+        name: &str,
+        folder: Option<&str>,
+        meta: &PresetMeta,
+        blob: &[u8],
     ) -> Result<PathBuf, String> {
-        Err("Save not yet supported in the web build".into())
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .save(name, folder, meta, blob)
     }
-    fn user_delete(&self, _path: &Path) -> Result<(), String> {
-        Err("delete not supported".into())
+    fn user_delete(&self, path: &Path) -> Result<(), String> {
+        self.user.lock().map_err(|_| "user store poisoned")?.delete(path)
     }
-    fn user_rename(&self, _path: &Path, _new_name: &str) -> Result<PathBuf, String> {
-        Err("rename not supported".into())
+    fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .rename(path, new_name)
     }
-    fn user_move(&self, _path: &Path, _dest: Option<&str>) -> Result<PathBuf, String> {
-        Err("move not supported".into())
+    fn user_move(&self, path: &Path, dest: Option<&str>) -> Result<PathBuf, String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .move_preset(path, dest)
     }
-    fn user_create_folder(&self, _suggested: &str) -> Result<(PathBuf, String), String> {
-        Err("create folder not supported".into())
+    fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .create_folder(suggested)
     }
-    fn user_rename_folder(&self, _old: &str, _new: &str) -> Result<(PathBuf, String), String> {
-        Err("rename folder not supported".into())
+    fn user_rename_folder(&self, old: &str, new: &str) -> Result<(PathBuf, String), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .rename_folder(old, new)
     }
-    fn user_delete_folder(&self, _name: &str) -> Result<(), String> {
-        Err("delete folder not supported".into())
+    fn user_delete_folder(&self, name: &str) -> Result<(), String> {
+        self.user
+            .lock()
+            .map_err(|_| "user store poisoned")?
+            .delete_folder(name)
     }
     fn list_user_tree(&self) -> Vec<UserFolderEntry> {
-        Vec::new()
+        self.user
+            .lock()
+            .map(|u| u.list_tree())
+            .unwrap_or_default()
     }
 }
 
@@ -312,12 +370,30 @@ struct ControllerState {
     host_tx: SyncSender<HostEvent>,
     /// Shared factory bank the store reads; filled by `vxnc_load_factory`.
     factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>>,
+    /// Shared user-preset cache + journal (0159). The same `Arc` the store
+    /// mutates, so the hydration / journal-drain opcodes see one cache.
+    user: Arc<Mutex<UserState>>,
     /// Shared corpus snapshot the browser JSON is built from.
     corpus: CorpusHandle,
     /// Staging buffer JS writes the fetched `factory.bin` into before
     /// `vxnc_load_factory`.
     factory_in: Vec<u8>,
-    /// UTF-8 corpus JSON (rebuilt on `load_factory`), read out by JS.
+    /// Staging buffer JS writes packed UTF-8 opcode arguments into (preset
+    /// names, folder names, paths, hydrated records) before an opcode reads
+    /// them back by offset + length (0159).
+    arg_in: Vec<u8>,
+    /// Packed persistence-journal drain buffer, read out by JS after
+    /// `vxnc_take_journal` (0159).
+    journal_out: Vec<u8>,
+    /// State-blob scratch: `vxnc_snapshot_state` writes the snapshot here for JS
+    /// to read; `vxnc_state_buf_reserve` reuses it as the restore-input staging
+    /// buffer (0159).
+    state_buf: Vec<u8>,
+    /// TOML scratch: `vxnc_export_toml` writes here for JS; `vxnc_toml_buf_reserve`
+    /// reuses it as the import-input staging buffer (0159).
+    toml_buf: Vec<u8>,
+    /// UTF-8 corpus JSON (rebuilt on `load_factory` / hydration / corpus change),
+    /// read out by JS.
     corpus_json: Vec<u8>,
     /// Packed ViewEvent drain buffer JS reads after each tick.
     view_out: Vec<u8>,
@@ -336,7 +412,11 @@ impl ControllerState {
     fn new() -> Box<Self> {
         let model = Arc::new(SharedParams::new());
         let factory: Arc<Mutex<Vec<(PresetMeta, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
-        let store = WebFactoryStore { factory: factory.clone() };
+        let user: Arc<Mutex<UserState>> = Arc::new(Mutex::new(UserState::default()));
+        let store = WebPresetStore {
+            factory: factory.clone(),
+            user: user.clone(),
+        };
         let (mut ctrl, view_rx, corpus) = Controller::new(model.clone(), Box::new(store));
         // The Model→View path is the dirty-bitset drain; disable the auto-echo
         // so UI writes aren't emitted twice (matches vxn2-clap). Preset
@@ -351,8 +431,13 @@ impl ControllerState {
             ui_tx,
             host_tx,
             factory,
+            user,
             corpus,
             factory_in: Vec::new(),
+            arg_in: Vec::new(),
+            journal_out: Vec::new(),
+            state_buf: Vec::new(),
+            toml_buf: Vec::new(),
             corpus_json: Vec::new(),
             view_out: Vec::with_capacity(8 * 1024),
             values_out: vec![0.0; TOTAL_PARAMS],
@@ -372,6 +457,14 @@ impl ControllerState {
             *f = entries;
         }
         self.ctrl.refresh_factory_corpus();
+        self.rebuild_corpus_json();
+        count
+    }
+
+    /// Rebuild the JS-visible corpus JSON from the shared snapshot (factory +
+    /// user). Called after `load_factory`, after boot hydration, and whenever a
+    /// `PresetCorpusChanged` lands in a tick.
+    fn rebuild_corpus_json(&mut self) {
         let json = self
             .corpus
             .lock()
@@ -379,7 +472,57 @@ impl ControllerState {
             .unwrap_or_else(|_| "{\"factory\":[],\"user\":[]}".to_string());
         self.corpus_json.clear();
         self.corpus_json.extend_from_slice(json.as_bytes());
-        count
+    }
+
+    /// Boot hydration finished: refresh the user corpus from the (now-populated)
+    /// cache and rebuild the corpus JSON so JS can publish it synchronously.
+    fn hydrate_done(&mut self) {
+        self.ctrl.refresh_user_corpus();
+        self.rebuild_corpus_json();
+    }
+
+    /// Drain the user store's pending persistence ops into `journal_out`
+    /// (the packed wire the bridge ships to IndexedDB) and return its byte
+    /// length. Wire: `u32 op_count`, then per op `u32 tag` + payload —
+    /// PUT(1): str key, u32 blob_len + blob; DELETE(2): str key;
+    /// PUT_FOLDER(3): str name; DELETE_FOLDER(4): str name.
+    fn take_journal(&mut self) -> u32 {
+        let ops = self
+            .user
+            .lock()
+            .map(|mut u| u.take_journal())
+            .unwrap_or_default();
+        self.journal_out.clear();
+        push_u32(&mut self.journal_out, ops.len() as u32);
+        for op in &ops {
+            match op {
+                UserWrite::Put { key, bytes } => {
+                    push_u32(&mut self.journal_out, JW_PUT);
+                    push_str(&mut self.journal_out, key);
+                    push_u32(&mut self.journal_out, bytes.len() as u32);
+                    self.journal_out.extend_from_slice(bytes);
+                }
+                UserWrite::Delete { key } => {
+                    push_u32(&mut self.journal_out, JW_DELETE);
+                    push_str(&mut self.journal_out, key);
+                }
+                UserWrite::PutFolder { name } => {
+                    push_u32(&mut self.journal_out, JW_PUT_FOLDER);
+                    push_str(&mut self.journal_out, name);
+                }
+                UserWrite::DeleteFolder { name } => {
+                    push_u32(&mut self.journal_out, JW_DELETE_FOLDER);
+                    push_str(&mut self.journal_out, name);
+                }
+            }
+        }
+        self.journal_out.len() as u32
+    }
+
+    /// Read a UTF-8 string out of the argument staging buffer.
+    fn arg_string(&self, start: usize, len: usize) -> String {
+        let end = (start + len).min(self.arg_in.len());
+        String::from_utf8_lossy(&self.arg_in[start.min(self.arg_in.len())..end]).into_owned()
     }
 
     #[inline]
@@ -402,8 +545,12 @@ impl ControllerState {
         self.view_out.clear();
         push_u32(&mut self.view_out, 0); // count placeholder
         let mut count = 0u32;
+        let mut corpus_changed = false;
         // (1) Custom echoes + snapshot pushes that tick_vxn2 queued.
         while let Ok(ev) = self.view_rx.try_recv() {
+            if matches!(ev, ViewEvent::PresetCorpusChanged { .. }) {
+                corpus_changed = true;
+            }
             if pack_view_event(&mut self.view_out, &ev) {
                 count += 1;
             }
@@ -416,8 +563,75 @@ impl ControllerState {
         }
         self.view_out[0..4].copy_from_slice(&count.to_le_bytes());
 
+        // A user-corpus mutation this tick — rebuild the JS-visible corpus JSON
+        // so the bridge (which just saw the VE_CORPUS_CHANGED record) can
+        // republish it synchronously.
+        if corpus_changed {
+            self.rebuild_corpus_json();
+        }
+
         for id in 0..TOTAL_PARAMS {
             self.values_out[id] = self.model.get(id);
+        }
+    }
+
+    /// Snapshot the full patch state into `state_buf` and return its length. The
+    /// blob is the model's canonical [`ParamModel::snapshot_bytes`] format
+    /// (params + matrix + curves) — the host-state analogue used for autosave
+    /// and share-link.
+    fn snapshot_state(&mut self) -> u32 {
+        let blob = ParamModel::snapshot_bytes(&*self.model);
+        self.state_buf.clear();
+        self.state_buf.extend_from_slice(&blob);
+        self.state_buf.len() as u32
+    }
+
+    /// Restore the model from the `len`-byte blob JS staged in `state_buf`.
+    /// Returns 1 on success, 0 on a malformed / wrong-length blob (the model is
+    /// left untouched by `load_bytes` on error). `load_bytes` marks every dirty
+    /// bit, so the next tick re-broadcasts the whole table + snapshots.
+    fn restore_state(&mut self, len: usize) -> u32 {
+        let n = len.min(self.state_buf.len());
+        match ParamModel::load_bytes(&*self.model, &self.state_buf[..n]) {
+            Ok(()) => 1,
+            Err(_) => 0,
+        }
+    }
+
+    /// Serialise the current patch to name-keyed TOML into `toml_buf` and return
+    /// its length. `name` is staged in `arg_in`.
+    fn export_toml(&mut self, name_len: usize) -> u32 {
+        let name = self.arg_string(0, name_len);
+        let meta = PresetMeta { name, ..Default::default() };
+        let blob = ParamModel::snapshot_bytes(&*self.model);
+        match user_store::encode_record(&meta, &blob) {
+            Ok(bytes) => {
+                self.toml_buf.clear();
+                self.toml_buf.extend_from_slice(&bytes);
+                self.toml_buf.len() as u32
+            }
+            // A snapshot is always valid, so this can't fail in practice; emit an
+            // empty buffer rather than panic.
+            Err(_) => {
+                self.toml_buf.clear();
+                0
+            }
+        }
+    }
+
+    /// Parse the `len`-byte TOML JS staged in `toml_buf` and apply it to the
+    /// model. Returns 1 on success, 0 on a malformed / wrong-schema file (the
+    /// model is left untouched). Like `restore_state`, a success marks every
+    /// dirty bit so the next tick re-broadcasts.
+    fn import_toml(&mut self, len: usize) -> u32 {
+        let n = len.min(self.toml_buf.len());
+        let bytes = self.toml_buf[..n].to_vec();
+        match decode_record(&bytes) {
+            Ok((_meta, blob)) => match ParamModel::load_bytes(&*self.model, &blob) {
+                Ok(()) => 1,
+                Err(_) => 0,
+            },
+            Err(_) => 0,
         }
     }
 
@@ -634,6 +848,227 @@ pub extern "C" fn vxnc_ui_load_factory(index: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_step_preset(delta: i32) {
     state().post(UiEvent::StepPreset { delta });
+}
+
+// User presets + persistence (0159).
+//
+// String/blob args ride the shared `arg_in` staging buffer: JS reserves it via
+// `vxnc_arg_buf_reserve`, writes the concatenated arguments, then calls the
+// opcode with each argument's byte length. `ARG_NONE` in a length slot means an
+// absent optional argument (root folder / no destination).
+
+/// Sentinel length for an absent optional argument (folder = root).
+const ARG_NONE: u32 = u32::MAX;
+
+/// Reserve `len` bytes in the argument staging buffer and return its pointer.
+/// JS writes the concatenated UTF-8 opcode arguments (names / paths / records)
+/// here, then calls the opcode with each argument's length.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_arg_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.arg_in.clear();
+    s.arg_in.resize(len as usize, 0);
+    s.arg_in.as_mut_ptr()
+}
+
+/// `UiEvent::SavePreset` — snapshot the model + write through the user store.
+/// Args: name (`name_len`), then folder (`folder_len`, `ARG_NONE` → root).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_save_preset(name_len: u32, folder_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    let folder = if folder_len == ARG_NONE {
+        None
+    } else {
+        Some(s.arg_string(name_len as usize, folder_len as usize))
+    };
+    s.post(UiEvent::SavePreset { name, folder });
+}
+
+/// `UiEvent::LoadPreset { User }` — arg: synthetic preset path.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_load_user(path_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    s.post(UiEvent::LoadPreset {
+        source: PresetSource::User { path: PathBuf::from(path) },
+    });
+}
+
+/// `UiEvent::RenamePreset` — args: path (`path_len`), then new name (`name_len`).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_rename_preset(path_len: u32, name_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    let new_name = s.arg_string(path_len as usize, name_len as usize);
+    s.post(UiEvent::RenamePreset { path: PathBuf::from(path), new_name });
+}
+
+/// `UiEvent::DeletePreset` — arg: preset path.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_delete_preset(path_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    s.post(UiEvent::DeletePreset { path: PathBuf::from(path) });
+}
+
+/// `UiEvent::MovePreset` — args: path (`path_len`), then destination folder
+/// (`folder_len`, `ARG_NONE` → move to root).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_move_preset(path_len: u32, folder_len: u32) {
+    let s = state();
+    let path = s.arg_string(0, path_len as usize);
+    let dest_folder = if folder_len == ARG_NONE {
+        None
+    } else {
+        Some(s.arg_string(path_len as usize, folder_len as usize))
+    };
+    s.post(UiEvent::MovePreset { path: PathBuf::from(path), dest_folder });
+}
+
+/// `UiEvent::NewFolder` — arg: suggested folder name (the store uniquifies).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_new_folder(suggested_len: u32) {
+    let s = state();
+    let suggested = s.arg_string(0, suggested_len as usize);
+    s.post(UiEvent::NewFolder { suggested });
+}
+
+/// `UiEvent::RenameFolder` — args: old name (`old_len`), then new name (`new_len`).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_rename_folder(old_len: u32, new_len: u32) {
+    let s = state();
+    let old_name = s.arg_string(0, old_len as usize);
+    let new_name = s.arg_string(old_len as usize, new_len as usize);
+    s.post(UiEvent::RenameFolder { old_name, new_name });
+}
+
+/// `UiEvent::DeleteFolder` — arg: folder name.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_delete_folder(name_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    s.post(UiEvent::DeleteFolder { name });
+}
+
+// Boot hydration — replay the persisted user corpus into the cache BEFORE the
+// controller goes live, WITHOUT journalling (it's already stored).
+
+/// Register a hydrated (already-persisted) folder — arg: folder name.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_folder(name_len: u32) {
+    let s = state();
+    let name = s.arg_string(0, name_len as usize);
+    if let Ok(mut u) = s.user.lock() {
+        u.hydrate_folder(&name);
+    }
+}
+
+/// Insert a hydrated preset — args: synthetic key (`key_len`), then its stored
+/// TOML record (`rec_len`). Returns 1 on success, 0 if the record fails to
+/// parse (a corrupt / foreign entry is skipped rather than aborting hydration).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_preset(key_len: u32, rec_len: u32) -> u32 {
+    let s = state();
+    let key = s.arg_string(0, key_len as usize);
+    let start = (key_len as usize).min(s.arg_in.len());
+    let end = (key_len as usize + rec_len as usize).min(s.arg_in.len());
+    let rec = s.arg_in[start..end].to_vec();
+    match decode_record(&rec) {
+        Ok((meta, blob)) => {
+            if let Ok(mut u) = s.user.lock() {
+                u.hydrate_preset(&key, meta, blob);
+            }
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Finish hydration: refresh the user corpus from the cache + rebuild the
+/// corpus JSON (JS reads it synchronously after this).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_hydrate_done() {
+    state().hydrate_done();
+}
+
+// Deferred-write journal — drained off the tick and shipped to IndexedDB.
+
+/// Drain the user store's pending persistence ops into the packed journal
+/// buffer; returns its byte length. JS decodes it (see `applyWrites`).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_take_journal() -> u32 {
+    state().take_journal()
+}
+
+/// Pointer to the packed journal buffer (valid until the next `vxnc_take_journal`).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_journal_out_ptr() -> *const u8 {
+    state().journal_out.as_ptr()
+}
+
+// Full patch-state snapshot / restore (autosave + share-link).
+
+/// Snapshot the full patch state into the state scratch buffer; returns its
+/// byte length. JS reads it via [`vxnc_state_out_ptr`].
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_snapshot_state() -> u32 {
+    state().snapshot_state()
+}
+
+/// Pointer to the state scratch buffer (snapshot output / restore staging).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_state_out_ptr() -> *const u8 {
+    state().state_buf.as_ptr()
+}
+
+/// Reserve `len` bytes in the state scratch buffer and return its pointer. JS
+/// writes the saved blob here, then calls [`vxnc_restore_state`].
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_state_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.state_buf.clear();
+    s.state_buf.resize(len as usize, 0);
+    s.state_buf.as_mut_ptr()
+}
+
+/// Restore the model from the `len`-byte blob staged in the state scratch
+/// buffer. Returns 1 on success, 0 if malformed (model left untouched).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_restore_state(len: u32) -> u32 {
+    state().restore_state(len as usize)
+}
+
+// TOML export / import (file + share).
+
+/// Serialise the current patch to name-keyed TOML into the TOML scratch buffer;
+/// returns its byte length. The name is staged in `arg_in` (`name_len` bytes).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_export_toml(name_len: u32) -> u32 {
+    state().export_toml(name_len as usize)
+}
+
+/// Pointer to the TOML scratch buffer (export output / import staging).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_toml_out_ptr() -> *const u8 {
+    state().toml_buf.as_ptr()
+}
+
+/// Reserve `len` bytes in the TOML scratch buffer and return its pointer. JS
+/// writes the imported file's UTF-8 bytes here, then calls [`vxnc_import_toml`].
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_toml_buf_reserve(len: u32) -> *mut u8 {
+    let s = state();
+    s.toml_buf.clear();
+    s.toml_buf.resize(len as usize, 0);
+    s.toml_buf.as_mut_ptr()
+}
+
+/// Parse the `len`-byte TOML staged in the TOML scratch buffer and apply it to
+/// the model. Returns 1 on success, 0 if malformed (model left untouched).
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_import_toml(len: u32) -> u32 {
+    state().import_toml(len as usize)
 }
 
 // Tick + drains.
@@ -877,5 +1312,279 @@ mod tests {
         s.tick();
         let ids = param_changed_ids(&s.view_out);
         assert!(ids.contains(&7), "readback drift did not surface ParamChanged for id 7");
+    }
+
+    // ---- persistence (0159) --------------------------------------------------
+
+    /// Stage `args` (concatenated) into the arg buffer, as JS does before an op.
+    fn stage_args(s: &mut ControllerState, parts: &[&[u8]]) {
+        s.arg_in.clear();
+        for p in parts {
+            s.arg_in.extend_from_slice(p);
+        }
+    }
+
+    /// Find the first VE_CORPUS_CHANGED record in the drain buffer.
+    fn saw_corpus_changed(buf: &[u8]) -> bool {
+        let count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let mut p = 4usize;
+        let take_u32 = |buf: &[u8], p: &mut usize| {
+            let v = u32::from_le_bytes(buf[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        for _ in 0..count {
+            let tag = take_u32(buf, &mut p);
+            match tag {
+                VE_PARAM_CHANGED => {
+                    p += 8;
+                    let l = take_u32(buf, &mut p) as usize;
+                    p += l;
+                }
+                VE_OP_TAB_CHANGED => p += 4,
+                VE_MATRIX_SNAPSHOT => {
+                    let rows = take_u32(buf, &mut p) as usize;
+                    p += rows * 9;
+                }
+                VE_KS_CURVE_SNAPSHOT => p += 12,
+                VE_EG_CURVE_SNAPSHOT => p += 6,
+                VE_PRESET_LOADED => {
+                    let nl = take_u32(buf, &mut p) as usize;
+                    p += nl;
+                    let src = take_u32(buf, &mut p);
+                    if src == PRESET_SRC_FACTORY {
+                        p += 4;
+                    } else if src == PRESET_SRC_USER {
+                        let pl = take_u32(buf, &mut p) as usize;
+                        p += pl;
+                    }
+                    let wc = take_u32(buf, &mut p) as usize;
+                    for _ in 0..wc {
+                        let wl = take_u32(buf, &mut p) as usize;
+                        p += wl;
+                    }
+                }
+                VE_CORPUS_CHANGED => return true,
+                VE_STATUS => {
+                    let l = take_u32(buf, &mut p) as usize;
+                    p += l;
+                }
+                other => panic!("unknown view tag {other}"),
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn snapshot_restore_state_round_trips() {
+        let mut s = fresh();
+        s.tick(); // clear boot seed
+        // Move a param, snapshot, move it again, then restore the snapshot.
+        s.post(UiEvent::SetParam { id: ParamId::new(5), plain: 0.3 });
+        s.tick();
+        let before = s.model.get(5);
+        let n = s.snapshot_state();
+        let saved: Vec<u8> = s.state_buf[..n as usize].to_vec();
+
+        s.post(UiEvent::SetParam { id: ParamId::new(5), plain: 0.9 });
+        s.tick();
+        assert_ne!(s.model.get(5), before);
+
+        // Stage the saved blob and restore.
+        let ptr = vxnc_state_buf_reserve_len(&mut s, saved.len());
+        ptr.copy_from_slice(&saved);
+        assert_eq!(s.restore_state(saved.len()), 1);
+        assert!((s.model.get(5) - before).abs() < 1e-6, "restore did not reinstate the value");
+        // The restore marks every dirty bit → next tick re-broadcasts the table.
+        s.tick();
+        assert_eq!(param_changed_ids(&s.view_out).len(), TOTAL_PARAMS);
+    }
+
+    /// Helper mirroring `vxnc_state_buf_reserve` on a borrowed state (the C-ABI
+    /// version reaches through the global; tests drive the struct directly).
+    fn vxnc_state_buf_reserve_len(s: &mut ControllerState, len: usize) -> &mut [u8] {
+        s.state_buf.clear();
+        s.state_buf.resize(len, 0);
+        &mut s.state_buf[..]
+    }
+
+    #[test]
+    fn restore_state_rejects_malformed_blob() {
+        let mut s = fresh();
+        s.tick();
+        s.state_buf = vec![9, 9, 9]; // not a valid snapshot
+        assert_eq!(s.restore_state(3), 0);
+    }
+
+    /// A real, restorable state blob (factory preset 0) — a codec fixpoint that
+    /// round-trips through the sparse-TOML path bit-identically.
+    fn real_blob() -> Vec<u8> {
+        use vxn2_app::PresetStore;
+        vxn2_engine::Vxn2PresetStore::new()
+            .factory_load(0)
+            .expect("factory preset 0")
+            .blob
+    }
+
+    /// Set the controller model to `blob` via the raw restore path.
+    fn set_model_blob(s: &mut ControllerState, blob: &[u8]) {
+        s.state_buf = blob.to_vec();
+        assert_eq!(s.restore_state(blob.len()), 1);
+    }
+
+    #[test]
+    fn export_import_toml_round_trips() {
+        let mut s = fresh();
+        s.tick();
+        // Start from a real patch (matrix + curves + params all populated).
+        let fb = real_blob();
+        set_model_blob(&mut s, &fb);
+        s.tick();
+        let b0 = { let n = s.snapshot_state(); s.state_buf[..n as usize].to_vec() };
+
+        stage_args(&mut s, &[b"My Patch"]);
+        let n = s.export_toml("My Patch".len() as usize);
+        let toml: Vec<u8> = s.toml_buf[..n as usize].to_vec();
+        assert!(
+            String::from_utf8_lossy(&toml).contains("My Patch"),
+            "exported TOML missing name"
+        );
+
+        // Wipe the model to defaults, then import the exported TOML back.
+        set_model_blob(&mut s, &ParamModel::snapshot_bytes(&SharedParams::new()));
+        s.toml_buf = toml;
+        let len = s.toml_buf.len();
+        assert_eq!(s.import_toml(len), 1);
+        let b1 = { let n = s.snapshot_state(); s.state_buf[..n as usize].to_vec() };
+        assert_eq!(b1, b0, "export→import did not reinstate the full patch");
+    }
+
+    #[test]
+    fn import_toml_rejects_garbage() {
+        let mut s = fresh();
+        s.tick();
+        s.toml_buf = b"not a preset at all".to_vec();
+        let len = s.toml_buf.len();
+        assert_eq!(s.import_toml(len), 0);
+    }
+
+    #[test]
+    fn save_surfaces_corpus_changed_and_journals() {
+        let mut s = fresh();
+        s.tick();
+        stage_args(&mut s, &[b"Bass One"]);
+        s.post(UiEvent::SavePreset {
+            name: "Bass One".to_string(),
+            folder: None,
+        });
+        s.tick();
+        // The save emits a PresetCorpusChanged → VE_CORPUS_CHANGED record.
+        assert!(saw_corpus_changed(&s.view_out), "save did not surface VE_CORPUS_CHANGED");
+        // The corpus JSON now lists the user preset.
+        let json = String::from_utf8(s.corpus_json.clone()).unwrap();
+        assert!(json.contains("Bass One"), "corpus json missing user preset: {json}");
+        // And the journal carries a PUT the bridge would flush to IndexedDB.
+        let n = s.take_journal();
+        assert!(n > 0, "save produced no journal ops");
+        let count = u32::from_le_bytes(s.journal_out[0..4].try_into().unwrap());
+        assert!(count >= 1);
+        let tag = u32::from_le_bytes(s.journal_out[4..8].try_into().unwrap());
+        assert_eq!(tag, JW_PUT, "first journal op should be a PUT");
+    }
+
+    #[test]
+    fn hydrate_then_load_user_round_trips() {
+        // Save on one controller to produce a journalled TOML record, then
+        // hydrate a fresh controller from it and load the user preset back.
+        let mut a = fresh();
+        a.tick();
+        // Save a real patch (factory preset 0) as a user preset.
+        let fb = real_blob();
+        set_model_blob(&mut a, &fb);
+        a.tick();
+        let b0 = { let n = a.snapshot_state(); a.state_buf[..n as usize].to_vec() };
+        a.post(UiEvent::SavePreset {
+            name: "Keeper".to_string(),
+            folder: Some("Mine".to_string()),
+        });
+        a.tick();
+        a.take_journal(); // packs into a.journal_out
+        // Pull the PUT record (key + bytes) out of the packed journal.
+        let (key, rec) = first_put(&a.journal_out);
+
+        let mut b = fresh();
+        b.tick();
+        // Hydrate: folder, then preset, then done.
+        b.user.lock().unwrap().hydrate_folder("Mine");
+        stage_args(&mut b, &[key.as_bytes(), &rec]);
+        assert_eq!(
+            vxnc_hydrate_preset_on(&mut b, key.len(), rec.len()),
+            1,
+            "hydrate_preset failed to parse the stored record"
+        );
+        b.hydrate_done();
+        let json = String::from_utf8(b.corpus_json.clone()).unwrap();
+        assert!(json.contains("Keeper"), "hydrated corpus missing preset: {json}");
+
+        // Load the user preset and confirm the full patch comes back.
+        stage_args(&mut b, &[key.as_bytes()]);
+        b.post(UiEvent::LoadPreset {
+            source: PresetSource::User { path: PathBuf::from(&key) },
+        });
+        b.tick();
+        let b1 = { let n = b.snapshot_state(); b.state_buf[..n as usize].to_vec() };
+        assert_eq!(b1, b0, "user load did not reinstate the full patch");
+    }
+
+    /// Decode the first PUT (key, bytes) from a packed journal buffer.
+    fn first_put(buf: &[u8]) -> (String, Vec<u8>) {
+        let count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let mut p = 4usize;
+        let take_u32 = |buf: &[u8], p: &mut usize| {
+            let v = u32::from_le_bytes(buf[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        let take_str = |buf: &[u8], p: &mut usize| {
+            let n = take_u32(buf, p) as usize;
+            let s = String::from_utf8_lossy(&buf[*p..*p + n]).into_owned();
+            *p += n;
+            s
+        };
+        for _ in 0..count {
+            let tag = take_u32(buf, &mut p);
+            match tag {
+                JW_PUT => {
+                    let key = take_str(buf, &mut p);
+                    let n = take_u32(buf, &mut p) as usize;
+                    let bytes = buf[p..p + n].to_vec();
+                    return (key, bytes);
+                }
+                JW_DELETE => {
+                    let _ = take_str(buf, &mut p);
+                }
+                JW_PUT_FOLDER | JW_DELETE_FOLDER => {
+                    let _ = take_str(buf, &mut p);
+                }
+                other => panic!("unknown journal tag {other}"),
+            }
+        }
+        panic!("no PUT in journal");
+    }
+
+    /// `vxnc_hydrate_preset` driven against a borrowed state (the C-ABI version
+    /// reaches through the global).
+    fn vxnc_hydrate_preset_on(s: &mut ControllerState, key_len: usize, rec_len: usize) -> u32 {
+        let key = s.arg_string(0, key_len);
+        let start = key_len.min(s.arg_in.len());
+        let end = (key_len + rec_len).min(s.arg_in.len());
+        let rec = s.arg_in[start..end].to_vec();
+        match decode_record(&rec) {
+            Ok((meta, blob)) => {
+                s.user.lock().unwrap().hydrate_preset(&key, meta, blob);
+                1
+            }
+            Err(_) => 0,
+        }
     }
 }

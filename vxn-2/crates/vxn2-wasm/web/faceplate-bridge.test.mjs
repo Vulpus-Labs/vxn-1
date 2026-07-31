@@ -29,6 +29,15 @@ function mockController() {
     requestEgCurveSnapshot: rec("requestEgCurveSnapshot"),
     loadFactory: rec("loadFactory"),
     stepPreset: rec("stepPreset"),
+    // User-preset opcodes (0159).
+    loadUser: rec("loadUser"),
+    savePreset: rec("savePreset"),
+    renamePreset: rec("renamePreset"),
+    deletePreset: rec("deletePreset"),
+    movePreset: rec("movePreset"),
+    newFolder: rec("newFolder"),
+    renameFolder: rec("renameFolder"),
+    deleteFolder: rec("deleteFolder"),
   };
 }
 
@@ -110,10 +119,35 @@ test("factory preset opcodes route (minimal 0159)", () => {
   ]);
 });
 
-test("a known-but-deferred opcode is accepted without a controller call", () => {
+test("user-preset opcodes route to the matching C-ABI call (0159)", () => {
+  const c = mockController();
+  routeOpcode(c, { op: "load_user", path: "Mine/Lead.toml" });
+  routeOpcode(c, { op: "save_preset", name: "Lead", folder: "Mine" });
+  routeOpcode(c, { op: "save_preset", name: "Root" }); // no folder → null (root)
+  routeOpcode(c, { op: "rename_preset", path: "a.toml", new_name: "b" });
+  routeOpcode(c, { op: "delete_preset", path: "a.toml" });
+  routeOpcode(c, { op: "move_preset", path: "a.toml", dest_folder: "F" });
+  routeOpcode(c, { op: "move_preset", path: "a.toml" }); // no dest → null (root)
+  routeOpcode(c, { op: "new_folder", suggested: "Pads" });
+  routeOpcode(c, { op: "rename_folder", old_name: "A", new_name: "B" });
+  routeOpcode(c, { op: "delete_folder", name: "A" });
+  assert.deepEqual(c.calls, [
+    ["loadUser", "Mine/Lead.toml"],
+    ["savePreset", "Lead", "Mine"],
+    ["savePreset", "Root", null],
+    ["renamePreset", "a.toml", "b"],
+    ["deletePreset", "a.toml"],
+    ["movePreset", "a.toml", "F"],
+    ["movePreset", "a.toml", null],
+    ["newFolder", "Pads"],
+    ["renameFolder", "A", "B"],
+    ["deleteFolder", "A"],
+  ]);
+});
+
+test("the native text-input opcode stays deferred (no controller call)", () => {
   const c = mockController();
   assert.equal(routeOpcode(c, { op: "request_text_input", id: "x" }), true);
-  assert.equal(routeOpcode(c, { op: "save_preset", name: "x" }), true); // user op deferred
   assert.equal(c.calls.length, 0);
 });
 

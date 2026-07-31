@@ -73,7 +73,11 @@ pub fn ensure_user_dir() -> io::Result<PathBuf> {
 /// `_`; map everything else (path separators, `.`, etc.) to `_`. Trim; empty
 /// → `"Untitled"`. Folder names and preset filenames share this rule so they
 /// can't drift.
-fn sanitize_name(name: &str) -> String {
+///
+/// `pub` so the web port's in-memory user store
+/// (`vxn2-web-controller`) shares the exact same name rules as the desktop
+/// filesystem store — the two backends can't drift (E030 / 0159).
+pub fn sanitize_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
@@ -93,7 +97,8 @@ fn sanitize_name(name: &str) -> String {
 }
 
 /// Preset filename derived from the display name (`<sanitized>.toml`).
-fn preset_filename(name: &str) -> String {
+/// `pub` for the web user store (see [`sanitize_name`]).
+pub fn preset_filename(name: &str) -> String {
     format!("{}.toml", sanitize_name(name))
 }
 
@@ -224,7 +229,10 @@ fn existing_folder_names_ci(base: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn unique_folder_name(stem: &str, existing_ci: &[String]) -> String {
+/// Pick a folder name that doesn't collide (case-insensitively) with any in
+/// `existing_ci`, suffixing ` 1`, ` 2`, … on collision. `pub` for the web user
+/// store (see [`sanitize_name`]).
+pub fn unique_folder_name(stem: &str, existing_ci: &[String]) -> String {
     let stem_l = stem.to_lowercase();
     if !existing_ci.iter().any(|e| e == &stem_l) {
         return stem.to_string();

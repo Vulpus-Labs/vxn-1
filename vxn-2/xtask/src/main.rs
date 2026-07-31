@@ -131,10 +131,10 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("copy controller wasm: {e}"))?;
 
     // 2b. The production transport modules + worklet. Curated by hand: the
-    //     *.test.mjs suites stay out of the shipped bundle. Preset / input
-    //     modules land with 0159 / 0160.
+    //     *.test.mjs suites stay out of the shipped bundle. Input modules land
+    //     with 0160.
     let web_src = root.join("vxn-2/crates/vxn2-wasm/web");
-    const MODULES: [&str; 11] = [
+    const MODULES: [&str; 15] = [
         "event-ring.mjs",
         "event-codec.mjs",
         "param-store.mjs",
@@ -146,6 +146,12 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // Browser input adapters (0160): Web MIDI + computer keyboard → ring.
         "midi-input.mjs",
         "keyboard-input.mjs",
+        // Browser persistence (0159): IndexedDB user presets, full-state
+        // autosave, and patch export/import + share-link.
+        "preset-storage.mjs",
+        "preset-persistence.mjs",
+        "state-autosave.mjs",
+        "patch-io.mjs",
         "faceplate-bridge.mjs",
     ];
     for m in MODULES {

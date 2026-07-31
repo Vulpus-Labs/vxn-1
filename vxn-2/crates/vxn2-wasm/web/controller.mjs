@@ -24,10 +24,22 @@ export const VE_MATRIX_SNAPSHOT = 3;
 export const VE_KS_CURVE_SNAPSHOT = 4;
 export const VE_EG_CURVE_SNAPSHOT = 5;
 export const VE_PRESET_LOADED = 6;
+export const VE_CORPUS_CHANGED = 7;
+export const VE_STATUS = 8;
 
 // PresetSource discriminants in the VE_PRESET_LOADED record (match lib.rs).
 const PRESET_SRC_NONE = 0;
 const PRESET_SRC_FACTORY = 1;
+const PRESET_SRC_USER = 2;
+
+// Persistence-journal wire tags (match lib.rs JW_*).
+const JW_PUT = 1;
+const JW_DELETE = 2;
+const JW_PUT_FOLDER = 3;
+const JW_DELETE_FOLDER = 4;
+
+// Sentinel length for an absent optional opcode argument (folder = root).
+const ARG_NONE = 0xffffffff;
 
 // Decode a packed ViewEvent out-buffer into an array of event objects whose
 // shape matches what the faceplate's `applyViewEvents` (`main.js`) consumes —
@@ -103,12 +115,22 @@ export function decodeViewEvents(buffer, ptr, len) {
         const srcKind = u32();
         let source = null;
         if (srcKind === PRESET_SRC_FACTORY) source = { kind: "factory", index: u32() };
+        else if (srcKind === PRESET_SRC_USER) source = { kind: "user", path: str() };
         const warnCount = u32();
         const warnings = [];
         for (let w = 0; w < warnCount; w++) warnings.push(str());
         out.push({ kind: "preset_loaded", name, source, warnings });
         break;
       }
+      case VE_CORPUS_CHANGED: {
+        const hasFollow = u32();
+        const follow = hasFollow ? str() : null;
+        out.push({ kind: "preset_corpus_changed", follow });
+        break;
+      }
+      case VE_STATUS:
+        out.push({ kind: "status", line: str() });
+        break;
       default:
         throw new Error(`controller: unknown ViewEvent tag ${tag}`);
     }
@@ -257,6 +279,197 @@ export class WebController {
   // Step to the previous / next preset (delta ±1).
   stepPreset(delta) {
     this.x.vxnc_ui_step_preset(delta | 0);
+  }
+
+  // ---- user presets + persistence (ticket 0159) ---------------------------
+
+  // Stage a sequence of byte arrays into the wasm arg buffer (the concatenated
+  // opcode-argument scratch). Returns the per-part byte lengths. The buffer view
+  // is taken AFTER the reserve call, since resizing the Vec may grow (and detach)
+  // wasm memory.
+  _stageRaw(parts) {
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const ptr = this.x.vxnc_arg_buf_reserve(total >>> 0);
+    const mem = new Uint8Array(this.x.memory.buffer, ptr, total);
+    let off = 0;
+    for (const p of parts) {
+      mem.set(p, off);
+      off += p.length;
+    }
+    return parts.map((p) => p.length);
+  }
+
+  // ---- user-preset opcodes (1:1 with the vxnc_ui_* user ops) --------------
+
+  savePreset(name, folder) {
+    const enc = new TextEncoder();
+    const nameB = enc.encode(name || "");
+    if (folder == null) {
+      this._stageRaw([nameB]);
+      this.x.vxnc_ui_save_preset(nameB.length >>> 0, ARG_NONE);
+    } else {
+      const folderB = enc.encode(folder);
+      this._stageRaw([nameB, folderB]);
+      this.x.vxnc_ui_save_preset(nameB.length >>> 0, folderB.length >>> 0);
+    }
+  }
+  loadUser(path) {
+    const pathB = new TextEncoder().encode(path || "");
+    this._stageRaw([pathB]);
+    this.x.vxnc_ui_load_user(pathB.length >>> 0);
+  }
+  renamePreset(path, newName) {
+    const enc = new TextEncoder();
+    const pathB = enc.encode(path || "");
+    const nameB = enc.encode(newName || "");
+    this._stageRaw([pathB, nameB]);
+    this.x.vxnc_ui_rename_preset(pathB.length >>> 0, nameB.length >>> 0);
+  }
+  deletePreset(path) {
+    const pathB = new TextEncoder().encode(path || "");
+    this._stageRaw([pathB]);
+    this.x.vxnc_ui_delete_preset(pathB.length >>> 0);
+  }
+  movePreset(path, destFolder) {
+    const enc = new TextEncoder();
+    const pathB = enc.encode(path || "");
+    if (destFolder == null) {
+      this._stageRaw([pathB]);
+      this.x.vxnc_ui_move_preset(pathB.length >>> 0, ARG_NONE);
+    } else {
+      const folderB = enc.encode(destFolder);
+      this._stageRaw([pathB, folderB]);
+      this.x.vxnc_ui_move_preset(pathB.length >>> 0, folderB.length >>> 0);
+    }
+  }
+  newFolder(suggested) {
+    const b = new TextEncoder().encode(suggested || "");
+    this._stageRaw([b]);
+    this.x.vxnc_ui_new_folder(b.length >>> 0);
+  }
+  renameFolder(oldName, newName) {
+    const enc = new TextEncoder();
+    const oldB = enc.encode(oldName || "");
+    const newB = enc.encode(newName || "");
+    this._stageRaw([oldB, newB]);
+    this.x.vxnc_ui_rename_folder(oldB.length >>> 0, newB.length >>> 0);
+  }
+  deleteFolder(name) {
+    const b = new TextEncoder().encode(name || "");
+    this._stageRaw([b]);
+    this.x.vxnc_ui_delete_folder(b.length >>> 0);
+  }
+
+  // ---- boot hydration (replay IndexedDB into the wasm cache) --------------
+
+  hydrateFolder(name) {
+    const b = new TextEncoder().encode(name || "");
+    this._stageRaw([b]);
+    this.x.vxnc_hydrate_folder(b.length >>> 0);
+  }
+  // `bytes` is the stored TOML record (Uint8Array). Returns true if it parsed.
+  hydratePreset(key, bytes) {
+    const keyB = new TextEncoder().encode(key || "");
+    const recB = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    this._stageRaw([keyB, recB]);
+    return this.x.vxnc_hydrate_preset(keyB.length >>> 0, recB.length >>> 0) === 1;
+  }
+  hydrateDone() {
+    this.x.vxnc_hydrate_done();
+  }
+
+  // ---- deferred-write journal (drained off the tick to IndexedDB) ---------
+
+  // Drain the wasm user store's pending persistence ops into a decoded array of
+  // { kind, key?, bytes?, name? } that preset-storage.applyWrites consumes.
+  takeJournal() {
+    const len = this.x.vxnc_take_journal();
+    if (!len) return [];
+    const ptr = this.x.vxnc_journal_out_ptr();
+    const view = new DataView(this.x.memory.buffer, ptr, len);
+    const buf = this.x.memory.buffer;
+    const dec = new TextDecoder();
+    let off = 0;
+    const u32 = () => {
+      const v = view.getUint32(off, true);
+      off += 4;
+      return v;
+    };
+    const str = () => {
+      const n = u32();
+      const s = dec.decode(new Uint8Array(buf, ptr + off, n));
+      off += n;
+      return s;
+    };
+    const bytes = () => {
+      const n = u32();
+      const b = new Uint8Array(buf, ptr + off, n).slice(); // copy off wasm memory
+      off += n;
+      return b;
+    };
+    const count = u32();
+    const ops = [];
+    for (let i = 0; i < count; i++) {
+      const tag = u32();
+      switch (tag) {
+        case JW_PUT:
+          ops.push({ kind: "put", key: str(), bytes: bytes() });
+          break;
+        case JW_DELETE:
+          ops.push({ kind: "delete", key: str() });
+          break;
+        case JW_PUT_FOLDER:
+          ops.push({ kind: "put_folder", name: str() });
+          break;
+        case JW_DELETE_FOLDER:
+          ops.push({ kind: "delete_folder", name: str() });
+          break;
+        default:
+          throw new Error(`controller: unknown journal tag ${tag}`);
+      }
+    }
+    return ops;
+  }
+
+  // ---- full patch-state snapshot / restore (autosave + share-link) --------
+
+  // Snapshot the full patch state as a fresh Uint8Array (copied off wasm memory).
+  snapshotState() {
+    const len = this.x.vxnc_snapshot_state();
+    const ptr = this.x.vxnc_state_out_ptr();
+    return new Uint8Array(this.x.memory.buffer, ptr, len).slice();
+  }
+  // Restore the model from a state blob. Returns true on success. A load is a
+  // whole-patch swap, so pulse the worklet's patch-swap to silence ringing
+  // voices (the load_epoch bump is controller-local — the worklet has its own
+  // SharedParams).
+  restoreState(blob) {
+    const b = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
+    const ptr = this.x.vxnc_state_buf_reserve(b.length >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, b.length).set(b);
+    const ok = this.x.vxnc_restore_state(b.length >>> 0) === 1;
+    if (ok && this.ring) this.ring.pushPatchSwap();
+    return ok;
+  }
+
+  // ---- TOML export / import (file + share) --------------------------------
+
+  // Serialise the current patch to name-keyed TOML text.
+  exportToml(name) {
+    const [nameLen] = this._stageRaw([new TextEncoder().encode(name || "")]);
+    const len = this.x.vxnc_export_toml(nameLen >>> 0);
+    const ptr = this.x.vxnc_toml_out_ptr();
+    return new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, ptr, len));
+  }
+  // Apply a TOML patch to the model. Returns true on success. Pulses patch-swap
+  // like restoreState (a runtime import is a whole-patch swap).
+  importToml(text) {
+    const b = new TextEncoder().encode(text || "");
+    const ptr = this.x.vxnc_toml_buf_reserve(b.length >>> 0);
+    new Uint8Array(this.x.memory.buffer, ptr, b.length).set(b);
+    const ok = this.x.vxnc_import_toml(b.length >>> 0) === 1;
+    if (ok && this.ring) this.ring.pushPatchSwap();
+    return ok;
   }
 
   // ---- tick: drain queues → mutate model → mirror + drain ViewEvents ------
