@@ -1,0 +1,384 @@
+//! The `Synth` — VXN1b's core synth as an **instantiable unit** (0214, ADR 0002
+//! §1). One `Synth` owns its own voice pool, allocator/stealing, twin/unison,
+//! patch params, mod matrix, per-layer LFO 2, and two 8-wide [`RenderBank`]s
+//! (lanes 0–7 / 8–15, for stereo decorrelation — *not* layers). The plugin holds
+//! **2 × `Synth` + a global block** ([`crate::engine::Engine`]) that owns FX,
+//! master, and (later) mixer/demux.
+//!
+//! Allocation and stealing are **private to each synth** — no shared pool, no
+//! `param_source` indirection (contrast VXN1). A `Synth` renders its voices into
+//! the caller's buffer **accumulating**; the global block pre-zeroes, ticks each
+//! active synth, then runs the one global FX chain + master over the sum.
+
+use vxn_dsp::{CONTROL_BLOCK, LfoCore};
+
+use crate::bank::{BlockCtx, RenderBank};
+use crate::matrix::MatrixTable;
+use crate::params::{CrossModType, ParamId, Params};
+use crate::state::PluginState;
+use crate::voice::Voices;
+
+/// Per-synth seed set: the two bank RNG seeds (distinct so a synth's two banks'
+/// noise/drift streams decorrelate) plus its LFO 2 seed. The two synths get
+/// **distinct** sets so that two layers on the *same* patch still decorrelate
+/// (they don't phase-lock).
+pub(crate) struct SynthSeeds {
+    pub banks: [u64; 2],
+    pub lfo2: u64,
+}
+
+impl SynthSeeds {
+    /// Layer 1 seeds — identical to the pre-dual-layer engine's, so single mode
+    /// is byte-for-byte today's output.
+    pub(crate) const LAYER1: SynthSeeds = SynthSeeds {
+        banks: [0x1b_0000_0001, 0x1b_0000_0002],
+        lfo2: 0x1b_0000_00f2,
+    };
+    /// Layer 2 seeds — distinct streams so a duplicated patch decorrelates.
+    pub(crate) const LAYER2: SynthSeeds = SynthSeeds {
+        banks: [0x1b_0000_0011, 0x1b_0000_0012],
+        lfo2: 0x1b_0000_01f2,
+    };
+}
+
+/// One instantiable VXN1b synth: voices + patch + matrix + per-layer LFO 2 over
+/// two render banks.
+pub struct Synth {
+    sample_rate: f32,
+    params: Params,
+    matrix: MatrixTable,
+    voices: Voices,
+    banks: [RenderBank; 2],
+    /// This layer's LFO 2 (VXN1b has no *global* LFO — ADR 0002 §4), ticked once
+    /// per control block and broadcast to both banks.
+    lfo2: LfoCore,
+    /// Host pitch-bend in `[-1, 1]` — the hardwired bend term (ADR §3) *and* the
+    /// PitchWheel matrix source.
+    pitch_bend: f32,
+    /// Mod wheel `[0, 1]` — the ModWheel matrix source.
+    mod_wheel: f32,
+}
+
+impl Synth {
+    /// Build a synth from a decoded patch (`params` + matrix topology) with the
+    /// given per-layer seed set. Cooks envelopes.
+    pub(crate) fn new(sample_rate: f32, state: PluginState, seeds: &SynthSeeds) -> Self {
+        let control_rate = sample_rate / CONTROL_BLOCK as f32;
+        let mut synth = Self {
+            sample_rate,
+            params: state.params,
+            matrix: state.matrix,
+            voices: Voices::new(),
+            banks: [
+                RenderBank::new(sample_rate, seeds.banks[0]),
+                RenderBank::new(sample_rate, seeds.banks[1]),
+            ],
+            lfo2: LfoCore::new(control_rate, seeds.lfo2),
+            pitch_bend: 0.0,
+            mod_wheel: 0.0,
+        };
+        synth.apply_envelopes();
+        synth
+    }
+
+    /// Overwrite the whole patch (params + matrix topology) from a decoded
+    /// [`PluginState`]. Re-cooks envelopes. Depth stays param-authoritative: the
+    /// topology's depths already mirror the params (the codec seeds them).
+    pub(crate) fn load_state(&mut self, state: PluginState) {
+        self.params = state.params;
+        self.matrix = state.matrix;
+        self.apply_envelopes();
+    }
+
+    /// Read a CLAP-id param value (identity map).
+    #[inline]
+    pub(crate) fn param(&self, id: usize) -> f32 {
+        self.params.get_index(id)
+    }
+
+    /// This synth's param table (for the global block to read the transitionally
+    /// shared FX / master params, and for tests).
+    pub(crate) fn params(&self) -> &Params {
+        &self.params
+    }
+
+    /// This synth's matrix topology (preset load / tests).
+    pub(crate) fn matrix_mut(&mut self) -> &mut MatrixTable {
+        &mut self.matrix
+    }
+
+    #[cfg(test)]
+    pub(crate) fn matrix(&self) -> &MatrixTable {
+        &self.matrix
+    }
+
+    /// Set a CLAP-id param (identity map). Envelope params re-cook the banks;
+    /// slot-depth params mirror into the matrix the evaluator reads (0205).
+    pub(crate) fn set_param(&mut self, id: usize, value: f32) {
+        self.params.set_index(id, value);
+        if is_envelope_param(id) {
+            self.apply_envelopes();
+        }
+        if let Some(slot) = ParamId::slot_depth_index(id) {
+            // Read back the clamped value so the mirror can't drift from the param.
+            self.matrix.slots[slot].depth = self.params.slot_depth(slot);
+        }
+    }
+
+    pub(crate) fn set_pitch_bend(&mut self, bend: f32) {
+        self.pitch_bend = bend.clamp(-1.0, 1.0);
+    }
+
+    pub(crate) fn set_mod_wheel(&mut self, w: f32) {
+        self.mod_wheel = w.clamp(0.0, 1.0);
+    }
+
+    /// Note-on: allocate a voice (MPE channel threaded) and trigger its DSP lane.
+    /// Allocation/stealing are private to this synth.
+    pub(crate) fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
+        let v = self.voices.note_on(channel, note, velocity);
+        let (bank, lane) = (v / RenderBank::LANES, v % RenderBank::LANES);
+        let shape = self.params.lfo1_shape();
+        let free_run = self.params.bool(ParamId::Lfo1FreeRun);
+        self.banks[bank].trigger_lane(lane, shape, free_run);
+        v
+    }
+
+    pub(crate) fn note_off(&mut self, channel: u8, note: u8) {
+        self.voices.note_off(channel, note);
+    }
+
+    pub(crate) fn poly_pressure(&mut self, channel: u8, note: u8, value: f32) {
+        self.voices.poly_pressure(channel, note, value);
+    }
+
+    pub(crate) fn channel_pressure(&mut self, channel: u8, value: f32) {
+        self.voices.channel_pressure(channel, value);
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.voices.reset();
+        for b in &mut self.banks {
+            b.reset();
+        }
+    }
+
+    /// Render one ≤`CONTROL_BLOCK` control block, **accumulating** this synth's
+    /// voices into `l`/`r` (the global block pre-zeroes and may tick a second
+    /// synth on top). Ticks this layer's LFO 2, builds the block context, renders
+    /// both banks. No FX or master here — those are global (ADR §7).
+    pub(crate) fn render_control_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+        // LFO 2: one tick per control block, broadcast to both banks.
+        self.lfo2.set_rate(self.params.get(ParamId::Lfo2Rate));
+        let lfo2_val = self.lfo2.next(self.params.lfo2_shape());
+
+        let ctx = build_ctx(
+            &self.params,
+            &self.matrix,
+            self.sample_rate,
+            self.pitch_bend,
+            self.mod_wheel,
+            lfo2_val,
+        );
+
+        let view = self.voices.render_view();
+        let lanes = RenderBank::LANES;
+        let (a0, a1) = view.active.split_at_mut(lanes);
+        self.banks[0].render(
+            &ctx,
+            &view.note[..lanes],
+            &view.gate[..lanes],
+            a0,
+            &view.velocity[..lanes],
+            &view.pressure[..lanes],
+            &view.note_random[..lanes],
+            l,
+            r,
+        );
+        self.banks[1].render(
+            &ctx,
+            &view.note[lanes..],
+            &view.gate[lanes..],
+            a1,
+            &view.velocity[lanes..],
+            &view.pressure[lanes..],
+            &view.note_random[lanes..],
+            l,
+            r,
+        );
+    }
+
+    fn apply_envelopes(&mut self) {
+        let p = &self.params;
+        let env1 = (
+            p.get(ParamId::Env1Attack),
+            p.get(ParamId::Env1Decay),
+            p.get(ParamId::Env1Sustain),
+            p.get(ParamId::Env1Release),
+        );
+        let env2 = (
+            p.get(ParamId::Env2Attack),
+            p.get(ParamId::Env2Decay),
+            p.get(ParamId::Env2Sustain),
+            p.get(ParamId::Env2Release),
+        );
+        let (s1, s2) = (p.env1_shape(), p.env2_shape());
+        for b in &mut self.banks {
+            b.set_envelopes(env1, s1, env2, s2);
+        }
+    }
+}
+
+/// Assemble the mod-agnostic block context from the current params. A free
+/// function (not a `&self` method) so the returned [`BlockCtx`] borrows **only**
+/// `matrix` — every scalar is copied out of `params` — leaving `voices` and
+/// `banks` independently mutable during render. `os = 1` (oversampling deferred),
+/// so `os_sample_rate == sample_rate`.
+fn build_ctx<'a>(
+    p: &Params,
+    matrix: &'a MatrixTable,
+    sample_rate: f32,
+    pitch_bend: f32,
+    mod_wheel: f32,
+    lfo2_val: f32,
+) -> BlockCtx<'a> {
+    let (sync, pm_index, ring_mode) = match p.cross_mod_type() {
+        CrossModType::Off => (false, 0.0, false),
+        CrossModType::Sync => (true, 0.0, false),
+        CrossModType::Pm => (false, p.get(ParamId::CrossModAmount), false),
+        CrossModType::Ring => (false, 0.0, true),
+    };
+    // Hardwired pitch bend (ADR §3): global pitch += bend × range.
+    let base_semis = p.get(ParamId::MasterTune) + pitch_bend * p.get(ParamId::PitchBendRange);
+    BlockCtx {
+        os_sample_rate: sample_rate,
+        os: 1,
+        osc1_wave: p.osc_wave(ParamId::Osc1Wave),
+        osc2_wave: p.osc_wave(ParamId::Osc2Wave),
+        osc1_level: p.get(ParamId::Osc1Level),
+        osc2_level: p.get(ParamId::Osc2Level),
+        sub_level: p.get(ParamId::SubLevel),
+        noise_level: p.get(ParamId::NoiseLevel),
+        noise_color: p.noise_color(),
+        osc1_pw: p.get(ParamId::Osc1PulseWidth),
+        osc2_pw: p.get(ParamId::Osc2PulseWidth),
+        osc1_semi: osc_semis(p, ParamId::Osc1Octave, ParamId::Osc1Coarse, ParamId::Osc1Fine),
+        osc2_semi: osc_semis(p, ParamId::Osc2Octave, ParamId::Osc2Coarse, ParamId::Osc2Fine),
+        sync,
+        pm_index,
+        ring_mode,
+        cross_mod_type: p.cross_mod_type(),
+        cutoff: p.get(ParamId::Cutoff),
+        hpf_cutoff: p.get(ParamId::HpfCutoff),
+        resonance: p.get(ParamId::Resonance),
+        drive: p.get(ParamId::Drive),
+        filter_mode: p.filter_mode(),
+        filter_slope: p.filter_slope(),
+        base_semis,
+        lfo1_shape: p.lfo1_shape(),
+        lfo1_rate_hz: p.get(ParamId::Lfo1Rate),
+        lfo1_delay_time: p.get(ParamId::Lfo1DelayTime),
+        lfo1_fade: p.get(ParamId::Lfo1Fade),
+        lfo2_val,
+        portamento_time: p.get(ParamId::PortamentoTime),
+        amp_env_bypass: p.bool(ParamId::AmpEnvBypass),
+        drift_amount: p.get(ParamId::MasterDrift),
+        spread: p.get(ParamId::Spread),
+        matrix,
+        mod_wheel,
+        pitch_wheel: pitch_bend,
+    }
+}
+
+/// Quantised per-osc tuning in semitones (VXN1): `round(octave)·12 +
+/// round(coarse) + fine/100`.
+#[inline]
+fn osc_semis(p: &Params, octave: ParamId, coarse: ParamId, fine: ParamId) -> f32 {
+    p.get(octave).round() * 12.0 + p.get(coarse).round() + p.get(fine) / 100.0
+}
+
+/// Whether a CLAP id is one of the eight ADSR value/shape params (so a set
+/// re-cooks the banks' envelopes).
+fn is_envelope_param(id: usize) -> bool {
+    matches!(
+        ParamId::from_index(id),
+        Some(
+            ParamId::Env1Attack
+                | ParamId::Env1Decay
+                | ParamId::Env1Sustain
+                | ParamId::Env1Release
+                | ParamId::Env1Shape
+                | ParamId::Env2Attack
+                | ParamId::Env2Decay
+                | ParamId::Env2Sustain
+                | ParamId::Env2Release
+                | ParamId::Env2Shape
+        )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn factory_synth(seeds: &SynthSeeds) -> Synth {
+        Synth::new(48_000.0, PluginState::factory_default(), seeds)
+    }
+
+    /// Two `Synth`s with **distinct patches** render **distinct output** from the
+    /// same note stream — proving per-synth independence (no shared pool / param
+    /// source). Acceptance for 0214.
+    #[test]
+    fn two_synths_distinct_patches_render_distinct_output() {
+        let mut a = factory_synth(&SynthSeeds::LAYER1);
+        let mut b = factory_synth(&SynthSeeds::LAYER2);
+        // Fast attack on both so the VCA opens inside the first block.
+        a.set_param(ParamId::Env2Attack as usize, 0.001);
+        b.set_param(ParamId::Env2Attack as usize, 0.001);
+        // Distinct patch: shift synth B up two octaves + different cutoff.
+        b.set_param(ParamId::Osc1Octave as usize, 2.0);
+        b.set_param(ParamId::Cutoff as usize, 8_000.0);
+
+        // Same note stream to both.
+        a.note_on(0, 60, 1.0);
+        b.note_on(0, 60, 1.0);
+
+        let (mut la, mut ra) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        let (mut lb, mut rb) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        a.render_block(&mut la, &mut ra);
+        b.render_block(&mut lb, &mut rb);
+
+        assert!(la.iter().any(|&s| s != 0.0), "synth A must sound");
+        assert!(lb.iter().any(|&s| s != 0.0), "synth B must sound");
+        assert!(
+            la.iter().zip(&lb).any(|(x, y)| (x - y).abs() > 1e-6),
+            "distinct patches must render distinct output"
+        );
+    }
+
+    /// Allocation and stealing are private to a synth: 16 held notes fill both of
+    /// *this* synth's banks; the 17th steals its own voice 0.
+    #[test]
+    fn stealing_is_per_synth() {
+        let mut s = factory_synth(&SynthSeeds::LAYER1);
+        for i in 0..16 {
+            s.note_on(0, 48 + i as u8, 1.0);
+        }
+        assert_eq!(s.note_on(0, 90, 1.0), 0, "17th note steals this synth's voice 0");
+    }
+
+    /// Test helper: zero the buffer then render one control block (a `Synth`
+    /// accumulates, so tests must pre-zero as the global block does).
+    impl Synth {
+        fn render_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+            let mut off = 0;
+            while off < l.len() {
+                let n = (l.len() - off).min(CONTROL_BLOCK);
+                l[off..off + n].fill(0.0);
+                r[off..off + n].fill(0.0);
+                self.render_control_block(&mut l[off..off + n], &mut r[off..off + n]);
+                off += n;
+            }
+        }
+    }
+}

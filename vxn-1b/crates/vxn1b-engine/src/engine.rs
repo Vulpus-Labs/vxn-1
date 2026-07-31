@@ -1,93 +1,72 @@
-//! VXN1b engine (ticket 0202, step 3): the matrix-modulated synth over two
-//! 8-wide [`RenderBank`]s.
+//! VXN1b engine — the **global block** (0214, ADR 0002 §1). Holds **2 ×
+//! [`Synth`]** + the one global FX chain and master. Each `Synth` is a fully
+//! independent unit (own voice pool, allocator, matrix, per-layer LFO 2 —
+//! [`crate::synth`]); the global block sums their voices, runs the single serial
+//! FX chain, and applies master volume.
 //!
-//! Owns the param table, matrix topology, the 16-voice [`Voices`] coordinator,
-//! two render banks (lanes 0–7 / 8–15), and the global LFO 2. Host blocks are
-//! split into `CONTROL_BLOCK`-sample control blocks so modulation resolves at
-//! VXN1's granularity (sr/32); each control block builds a mod-agnostic
-//! [`BlockCtx`] from the params and renders both banks.
+//! **Single-mode bypass.** Layer 2 is off by default (no control wires it on yet
+//! — MIDI demux / KeyMode is 0215). While off, synth 2 is neither driven nor
+//! ticked, so single mode is **byte-for-byte today's output at today's CPU**.
+//! When on, both synths currently receive the *same* events (broadcast; routing
+//! is 0215) and mix together before FX + master.
 //!
-//! **Scope (this step).** 1× oversampling only — the OS/decimation stage and the
-//! FX section are shared/deferred code (E037), so a bit-exact render-parity
-//! comparison configures VXN1 with oversampling and FX **off** (step 4). Master
-//! volume is applied; the limiter (off by default) is not yet wired.
+//! **Scope.** 1× oversampling only — the OS/decimation and FX section are
+//! shared/deferred (E037). FX + master are read transitionally from layer 1's
+//! param table; a dedicated global param block lands in 0220.
 
-use vxn_dsp::{CONTROL_BLOCK, LfoCore};
-
-use crate::bank::{BlockCtx, RenderBank};
 use crate::fx::{FxChain, FxParams};
 use crate::matrix::MatrixTable;
-use crate::params::{CrossModType, ParamId, Params};
-use crate::voice::Voices;
+use crate::params::ParamId;
+use crate::state::PluginState;
+use crate::synth::{Synth, SynthSeeds};
 
-/// Per-bank RNG seeds (distinct so the two banks' noise/drift streams
-/// decorrelate, as VXN1's two layers do).
-const BANK_SEEDS: [u64; 2] = [0x1b_0000_0001, 0x1b_0000_0002];
+use vxn_dsp::CONTROL_BLOCK;
 
-/// LFO 2 core seed.
-const LFO2_SEED: u64 = 0x1b_0000_00f2;
-
-/// The full VXN1b engine.
+/// The full VXN1b engine: the global block over two synths.
 pub struct Engine {
     sample_rate: f32,
     max_frames: usize,
-    params: Params,
-    matrix: MatrixTable,
-    voices: Voices,
-    banks: [RenderBank; 2],
-    /// Global LFO 2, ticked once per control block and broadcast to both banks.
-    lfo2: LfoCore,
-    /// Serial post-voice FX chain (0207): dynamics → chorus → phaser → delay →
-    /// reverb, run at the global OS rate before master volume.
+    /// The two independent synths (layer 1 always on; layer 2 gated by
+    /// [`Self::layer2_on`]).
+    synths: [Synth; 2],
+    /// Whether layer 2 is active. Off → single mode (synth 2 fully bypassed). No
+    /// control wires this yet (0215); the plugin path leaves it `false`.
+    layer2_on: bool,
+    /// The single global serial FX chain (0207): dynamics → chorus → phaser →
+    /// delay → reverb, run over the summed synths before master volume.
     fx: FxChain,
-    /// Host pitch-bend in `[-1, 1]` — the hardwired bend term (ADR §3) *and* the
-    /// PitchWheel matrix source.
-    pitch_bend: f32,
-    /// Mod wheel `[0, 1]` — the ModWheel matrix source.
-    mod_wheel: f32,
 }
 
 impl Engine {
     pub fn new(sample_rate: f32, max_frames: usize) -> Self {
-        let control_rate = sample_rate / CONTROL_BLOCK as f32;
         // Factory patch: default params + default-patch topology with the slot
         // depths already reconciled (0205) — a single source of truth shared with
         // the CLAP shell's param store ([`crate::state::PluginState::factory_default`]).
-        let factory = crate::state::PluginState::factory_default();
-        let mut engine = Self {
+        // Both synths start from the factory patch; single mode leaves synth 2 idle.
+        Self {
             sample_rate,
             max_frames,
-            params: factory.params,
-            matrix: factory.matrix,
-            voices: Voices::new(),
-            banks: [
-                RenderBank::new(sample_rate, BANK_SEEDS[0]),
-                RenderBank::new(sample_rate, BANK_SEEDS[1]),
+            synths: [
+                Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER1),
+                Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER2),
             ],
-            lfo2: LfoCore::new(control_rate, LFO2_SEED),
+            layer2_on: false,
             fx: FxChain::new(sample_rate),
-            pitch_bend: 0.0,
-            mod_wheel: 0.0,
-        };
-        engine.apply_envelopes();
-        engine
+        }
     }
 
-    /// Overwrite the whole patch (params + matrix topology) from a decoded
-    /// [`crate::state::PluginState`] — the CLAP state-load / preset path. Re-cooks
-    /// envelopes. Depth stays param-authoritative: the topology's depths already
-    /// mirror the params (the codec seeds them), so no extra sync is needed.
-    pub fn load_state(&mut self, state: crate::state::PluginState) {
-        self.params = state.params;
-        self.matrix = state.matrix;
-        self.apply_envelopes();
+    /// Overwrite layer 1's patch (params + matrix topology) from a decoded
+    /// [`PluginState`] — the CLAP state-load / preset path. Layer 2's patch and
+    /// the KeyMode/split state arrive with the two-layer state format (0221).
+    pub fn load_state(&mut self, state: PluginState) {
+        self.synths[0].load_state(state);
     }
 
-    /// Read a CLAP-id param value (identity map) — for the shell's param store
-    /// sync and `get_value`.
+    /// Read a CLAP-id param value (identity map) from layer 1 — for the shell's
+    /// param store sync and `get_value`.
     #[inline]
     pub fn param(&self, id: usize) -> f32 {
-        self.params.get_index(id)
+        self.synths[0].param(id)
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -98,66 +77,74 @@ impl Engine {
         self.max_frames
     }
 
-    /// Mutable access to the patch topology (for preset load / tests).
+    /// Mutable access to layer 1's patch topology (for preset load / tests).
     pub fn matrix_mut(&mut self) -> &mut MatrixTable {
-        &mut self.matrix
+        self.synths[0].matrix_mut()
     }
 
-    /// Set a CLAP-id param (identity map). Envelope params re-cook the banks;
-    /// slot-depth params mirror into the matrix the evaluator reads (0205).
+    /// Set a CLAP-id param (identity map) on layer 1. The doubled per-layer param
+    /// surface (0216/0221) will route layer-2 ids here later.
     pub fn set_param(&mut self, id: usize, value: f32) {
-        self.params.set_index(id, value);
-        if is_envelope_param(id) {
-            self.apply_envelopes();
-        }
-        if let Some(slot) = ParamId::slot_depth_index(id) {
-            // Read back the clamped value so the mirror can't drift from the param.
-            self.matrix.slots[slot].depth = self.params.slot_depth(slot);
-        }
+        self.synths[0].set_param(id, value);
     }
 
     pub fn set_pitch_bend(&mut self, bend: f32) {
-        self.pitch_bend = bend.clamp(-1.0, 1.0);
+        self.synths[0].set_pitch_bend(bend);
+        if self.layer2_on {
+            self.synths[1].set_pitch_bend(bend);
+        }
     }
 
     pub fn set_mod_wheel(&mut self, w: f32) {
-        self.mod_wheel = w.clamp(0.0, 1.0);
+        self.synths[0].set_mod_wheel(w);
+        if self.layer2_on {
+            self.synths[1].set_mod_wheel(w);
+        }
     }
 
-    /// Note-on: allocate a voice (MPE channel threaded) and trigger its DSP lane.
+    /// Note-on. No demux yet (0215): layer 1 always; layer 2 too when on
+    /// (broadcast). Returns layer 1's allocated voice.
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
-        let v = self.voices.note_on(channel, note, velocity);
-        let (bank, lane) = (v / RenderBank::LANES, v % RenderBank::LANES);
-        let shape = self.params.lfo1_shape();
-        let free_run = self.params.bool(ParamId::Lfo1FreeRun);
-        self.banks[bank].trigger_lane(lane, shape, free_run);
+        let v = self.synths[0].note_on(channel, note, velocity);
+        if self.layer2_on {
+            self.synths[1].note_on(channel, note, velocity);
+        }
         v
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
-        self.voices.note_off(channel, note);
+        self.synths[0].note_off(channel, note);
+        if self.layer2_on {
+            self.synths[1].note_off(channel, note);
+        }
     }
 
     pub fn poly_pressure(&mut self, channel: u8, note: u8, value: f32) {
-        self.voices.poly_pressure(channel, note, value);
+        self.synths[0].poly_pressure(channel, note, value);
+        if self.layer2_on {
+            self.synths[1].poly_pressure(channel, note, value);
+        }
     }
 
     pub fn channel_pressure(&mut self, channel: u8, value: f32) {
-        self.voices.channel_pressure(channel, value);
+        self.synths[0].channel_pressure(channel, value);
+        if self.layer2_on {
+            self.synths[1].channel_pressure(channel, value);
+        }
     }
 
     pub fn reset(&mut self) {
-        self.voices.reset();
-        for b in &mut self.banks {
-            b.reset();
-        }
+        self.synths[0].reset();
+        self.synths[1].reset();
         self.fx.reset();
     }
 
     /// Render one host block, splitting it into `CONTROL_BLOCK`-sample control
     /// blocks. Buffers are overwritten (not accumulated).
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let master = self.params.get(ParamId::MasterVolume);
+        // FX + master are global; read transitionally from layer 1 (0220 gives
+        // them a dedicated global param block).
+        let master = self.synths[0].param(ParamId::MasterVolume as usize);
         let mut off = 0;
         while off < left.len() {
             let n = (left.len() - off).min(CONTROL_BLOCK);
@@ -166,56 +153,22 @@ impl Engine {
         }
     }
 
-    /// Render one ≤`CONTROL_BLOCK` control block. Ticks LFO 2, builds the block
-    /// context, renders both banks, applies master volume.
+    /// Render one ≤`CONTROL_BLOCK` control block: pre-zero, tick each active
+    /// synth (accumulating), run the one global FX chain, apply master volume.
     fn render_control_block(&mut self, l: &mut [f32], r: &mut [f32], master: f32) {
         l.fill(0.0);
         r.fill(0.0);
 
-        // LFO 2: one tick per control block, broadcast to both banks.
-        self.lfo2
-            .set_rate(self.params.get(ParamId::Lfo2Rate));
-        let lfo2_val = self.lfo2.next(self.params.lfo2_shape());
-
-        let ctx = build_ctx(
-            &self.params,
-            &self.matrix,
-            self.sample_rate,
-            self.pitch_bend,
-            self.mod_wheel,
-            lfo2_val,
-        );
-
-        let view = self.voices.render_view();
-        let lanes = RenderBank::LANES;
-        let (a0, a1) = view.active.split_at_mut(lanes);
-        self.banks[0].render(
-            &ctx,
-            &view.note[..lanes],
-            &view.gate[..lanes],
-            a0,
-            &view.velocity[..lanes],
-            &view.pressure[..lanes],
-            &view.note_random[..lanes],
-            l,
-            r,
-        );
-        self.banks[1].render(
-            &ctx,
-            &view.note[lanes..],
-            &view.gate[lanes..],
-            a1,
-            &view.velocity[lanes..],
-            &view.pressure[lanes..],
-            &view.note_random[lanes..],
-            l,
-            r,
-        );
+        // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
+        self.synths[0].render_control_block(l, r);
+        if self.layer2_on {
+            self.synths[1].render_control_block(l, r);
+        }
 
         // Serial FX chain over the summed voices, at the global OS rate (today
         // 1×, so `l`/`r` are base-rate). Each effect is a true skip when off and
         // settled, so the default FX-off patch is a bit-exact passthrough here.
-        self.fx.set_params(&FxParams::from_params(&self.params));
+        self.fx.set_params(&FxParams::from_params(self.synths[0].params()));
         self.fx.process_block(l, r);
 
         // Master volume + a final finite guard. A denormal-free RT plugin must
@@ -228,114 +181,6 @@ impl Engine {
             *s = if v.is_finite() { v } else { 0.0 };
         }
     }
-
-    fn apply_envelopes(&mut self) {
-        let p = &self.params;
-        let env1 = (
-            p.get(ParamId::Env1Attack),
-            p.get(ParamId::Env1Decay),
-            p.get(ParamId::Env1Sustain),
-            p.get(ParamId::Env1Release),
-        );
-        let env2 = (
-            p.get(ParamId::Env2Attack),
-            p.get(ParamId::Env2Decay),
-            p.get(ParamId::Env2Sustain),
-            p.get(ParamId::Env2Release),
-        );
-        let (s1, s2) = (p.env1_shape(), p.env2_shape());
-        for b in &mut self.banks {
-            b.set_envelopes(env1, s1, env2, s2);
-        }
-    }
-}
-
-/// Assemble the mod-agnostic block context from the current params. A free
-/// function (not a `&self` method) so the returned [`BlockCtx`] borrows **only**
-/// `matrix` — every scalar is copied out of `params` — leaving `voices` and
-/// `banks` independently mutable during render. `os = 1` (oversampling deferred),
-/// so `os_sample_rate == sample_rate`.
-fn build_ctx<'a>(
-    p: &Params,
-    matrix: &'a MatrixTable,
-    sample_rate: f32,
-    pitch_bend: f32,
-    mod_wheel: f32,
-    lfo2_val: f32,
-) -> BlockCtx<'a> {
-    let (sync, pm_index, ring_mode) = match p.cross_mod_type() {
-        CrossModType::Off => (false, 0.0, false),
-        CrossModType::Sync => (true, 0.0, false),
-        CrossModType::Pm => (false, p.get(ParamId::CrossModAmount), false),
-        CrossModType::Ring => (false, 0.0, true),
-    };
-    // Hardwired pitch bend (ADR §3): global pitch += bend × range.
-    let base_semis = p.get(ParamId::MasterTune) + pitch_bend * p.get(ParamId::PitchBendRange);
-    BlockCtx {
-        os_sample_rate: sample_rate,
-        os: 1,
-        osc1_wave: p.osc_wave(ParamId::Osc1Wave),
-        osc2_wave: p.osc_wave(ParamId::Osc2Wave),
-        osc1_level: p.get(ParamId::Osc1Level),
-        osc2_level: p.get(ParamId::Osc2Level),
-        sub_level: p.get(ParamId::SubLevel),
-        noise_level: p.get(ParamId::NoiseLevel),
-        noise_color: p.noise_color(),
-        osc1_pw: p.get(ParamId::Osc1PulseWidth),
-        osc2_pw: p.get(ParamId::Osc2PulseWidth),
-        osc1_semi: osc_semis(p, ParamId::Osc1Octave, ParamId::Osc1Coarse, ParamId::Osc1Fine),
-        osc2_semi: osc_semis(p, ParamId::Osc2Octave, ParamId::Osc2Coarse, ParamId::Osc2Fine),
-        sync,
-        pm_index,
-        ring_mode,
-        cross_mod_type: p.cross_mod_type(),
-        cutoff: p.get(ParamId::Cutoff),
-        hpf_cutoff: p.get(ParamId::HpfCutoff),
-        resonance: p.get(ParamId::Resonance),
-        drive: p.get(ParamId::Drive),
-        filter_mode: p.filter_mode(),
-        filter_slope: p.filter_slope(),
-        base_semis,
-        lfo1_shape: p.lfo1_shape(),
-        lfo1_rate_hz: p.get(ParamId::Lfo1Rate),
-        lfo1_delay_time: p.get(ParamId::Lfo1DelayTime),
-        lfo1_fade: p.get(ParamId::Lfo1Fade),
-        lfo2_val,
-        portamento_time: p.get(ParamId::PortamentoTime),
-        amp_env_bypass: p.bool(ParamId::AmpEnvBypass),
-        drift_amount: p.get(ParamId::MasterDrift),
-        spread: p.get(ParamId::Spread),
-        matrix,
-        mod_wheel,
-        pitch_wheel: pitch_bend,
-    }
-}
-
-/// Quantised per-osc tuning in semitones (VXN1): `round(octave)·12 +
-/// round(coarse) + fine/100`.
-#[inline]
-fn osc_semis(p: &Params, octave: ParamId, coarse: ParamId, fine: ParamId) -> f32 {
-    p.get(octave).round() * 12.0 + p.get(coarse).round() + p.get(fine) / 100.0
-}
-
-/// Whether a CLAP id is one of the eight ADSR value/shape params (so a set
-/// re-cooks the banks' envelopes).
-fn is_envelope_param(id: usize) -> bool {
-    matches!(
-        ParamId::from_index(id),
-        Some(
-            ParamId::Env1Attack
-                | ParamId::Env1Decay
-                | ParamId::Env1Sustain
-                | ParamId::Env1Release
-                | ParamId::Env1Shape
-                | ParamId::Env2Attack
-                | ParamId::Env2Decay
-                | ParamId::Env2Sustain
-                | ParamId::Env2Release
-                | ParamId::Env2Shape
-        )
-    )
 }
 
 #[cfg(test)]
@@ -366,8 +211,8 @@ mod tests {
     }
 
     #[test]
-    fn seventeenth_note_steals_across_banks() {
-        // 16 held notes fill both banks; the 17th steals voice 0 (bank 0).
+    fn seventeenth_note_steals_within_layer1() {
+        // 16 held notes fill layer 1's two banks; the 17th steals voice 0.
         let mut e = Engine::new(48_000.0, 512);
         for i in 0..16 {
             e.note_on(0, 48 + i as u8, 1.0);
@@ -420,8 +265,8 @@ mod tests {
         let e = Engine::new(48_000.0, 512);
         for slot in 0..MATRIX_SLOTS {
             assert_eq!(
-                e.params.slot_depth(slot),
-                e.matrix.slots[slot].depth,
+                e.synths[0].params().slot_depth(slot),
+                e.synths[0].matrix().slots[slot].depth,
                 "slot {slot} param/matrix depth disagree"
             );
         }
@@ -432,10 +277,10 @@ mod tests {
         // 0205: a depth edit reaches the copy the evaluator reads.
         let mut e = Engine::new(48_000.0, 512);
         e.set_param(ParamId::MatrixSlot2Depth as usize, -0.5);
-        assert_eq!(e.matrix.slots[2].depth, -0.5);
+        assert_eq!(e.synths[0].matrix().slots[2].depth, -0.5);
         // Clamp is honoured on the mirror too (params clamp to [-1, 1]).
         e.set_param(ParamId::MatrixSlot2Depth as usize, 9.0);
-        assert_eq!(e.matrix.slots[2].depth, 1.0);
+        assert_eq!(e.synths[0].matrix().slots[2].depth, 1.0);
     }
 
     #[test]
@@ -474,5 +319,36 @@ mod tests {
         let quiet = l2.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
 
         assert!(quiet < loud, "half master volume should be quieter ({quiet} vs {loud})");
+    }
+
+    #[test]
+    fn single_mode_leaves_layer2_idle() {
+        // Layer 2 off by default: enabling it (with a distinct patch) must change
+        // the output, and it must be silent again when the note is released —
+        // proving synth 2 is a real, separately-driven unit but bypassed in
+        // single mode.
+        let mut single = Engine::new(48_000.0, 512);
+        single.set_param(ParamId::Env2Attack as usize, 0.001);
+        single.note_on(0, 60, 1.0);
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        single.process_block(&mut l, &mut r);
+        let single_peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(single_peak > 0.0);
+
+        // Same, but with layer 2 on and detuned — output must differ.
+        let mut dual = Engine::new(48_000.0, 512);
+        dual.layer2_on = true;
+        dual.set_param(ParamId::Env2Attack as usize, 0.001);
+        dual.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
+        dual.synths[1].set_param(ParamId::Osc1Octave as usize, 1.0);
+        dual.note_on(0, 60, 1.0);
+        let mut l2 = vec![0.0; 512];
+        let mut r2 = vec![0.0; 512];
+        dual.process_block(&mut l2, &mut r2);
+        assert!(
+            l.iter().zip(&l2).any(|(x, y)| (x - y).abs() > 1e-6),
+            "layer 2 on must change the mix"
+        );
     }
 }

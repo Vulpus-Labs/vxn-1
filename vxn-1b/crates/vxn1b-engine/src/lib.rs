@@ -12,7 +12,10 @@
 //! - [`bank`] — an 8-wide matrix-driven render bank (fork of VXN1's `VoiceBank`).
 //! - [`mod_smoothing`] — per-lane discontinuity guards on the pitch/PWM/Amp
 //!   dests, so stepped sources don't click the block-rate matrix apply (0208).
-//! - [`engine`] — the full synth: params + matrix + voices + two banks.
+//! - [`synth`] — the core synth as an instantiable unit: params + matrix +
+//!   voices + per-layer LFO 2 + two banks (0214, ADR 0002 §1).
+//! - [`engine`] — the global block: 2 × [`synth::Synth`] + the one global FX
+//!   chain + master.
 //! - [`state`] — the binary `clap.state` blob (params + matrix topology, 0203).
 //! - [`preset`] — the portable sparse-TOML preset codec (0203).
 
@@ -28,6 +31,7 @@ pub mod preset_io;
 pub mod render;
 pub mod shared;
 pub mod state;
+pub mod synth;
 pub mod voice;
 
 pub use bank::{BlockCtx, RenderBank};
@@ -40,6 +44,7 @@ pub use preset::{Meta, PresetError, from_toml_str, read_preset, write_preset};
 pub use preset_io::EnginePresetStore;
 pub use shared::SharedParams;
 pub use state::PluginState;
+pub use synth::Synth;
 pub use voice::Voices;
 
 /// Maximum simultaneous voices, inherited from the shared DSP crate — VXN1b's
