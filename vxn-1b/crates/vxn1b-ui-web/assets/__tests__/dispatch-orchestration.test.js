@@ -1,8 +1,9 @@
-// 0016: direct coverage for the dispatch.js orchestration layer — sync-partner
-// resolution, the rate/cutoff display overrides, the full layer rebind, and the
-// init() → applyViewEvents fan-out. Previously this logic had only Rust-side
-// substring assertions on the spliced HTML (identifiers exist, not that the
-// wiring works).
+// 0209: direct coverage for the vxn1b dispatch.js orchestration layer —
+// sync-partner resolution, the rate display override, the cutoff-override
+// no-ops (the Cutoff "Tuned" strip was dropped from the compact faceplate), the
+// single-patch rebind, and the init() → applyViewEvents fan-out. This was
+// forked from VXN1's suite; vxn1b is single-patch (`patchCount === 1`) so a
+// layer flip is a no-op and there is no dual-layer id-shifting to test.
 //
 // dispatch.js imports nothing: at splice time it shares one scope with panels.js
 // / bridge.js, so cross-module symbols (makeFader, subdivisionLabel, keysPanel,
@@ -19,9 +20,14 @@ import {
   cutoffInteractionOverride,
   rebindAllForLayer,
   init,
+  paramIdByName,
   _resetParamIndex,
 } from '../dispatch.js';
-import { installFixture, PATCH_COUNT } from '../fixtures/params.js';
+import { installFixture } from '../fixtures/params.js';
+
+// Fixture ids the vxn1b dispatch suite drives (see fixtures/params.js). Resolved
+// by name so a fixture reshuffle can't silently desync the assertions.
+let LFO1_RATE, LFO1_SYNC, LFO2_RATE, LFO2_SYNC, CUTOFF, DRIVE;
 
 // Captures the ctl object each primitive factory returns, keyed by bound id, so
 // a test can assert `update()` was driven with the reseeded value.
@@ -49,16 +55,14 @@ function stubGlobals() {
   };
   globalThis.makeFader = factory('fader');
   globalThis.makeWave = factory('wave');
+  globalThis.makeDial = factory('dial');
   globalThis.makeSwitch = factory('switch');
   globalThis.makeButtonGroup = factory('buttongroup');
   globalThis.makeDropdown = factory('dropdown');
   globalThis.makeHeaderSwitch = factory('header-switch');
-  // Display/interaction helpers the override closures call (deterministic
-  // stand-ins so the wiring is observable).
+  // Display helper the rate override closure calls (deterministic stand-in so
+  // the wiring is observable).
   globalThis.subdivisionLabel = (norm) => `sub:${norm}`;
-  globalThis.cutoffTunedNormToHz = (norm) => 100 + norm * 100;
-  globalThis.cutoffTunedHzToNorm = (hz) => (hz - 100) / 100;
-  globalThis.cutoffTunedNoteName = (hz) => `note:${hz}`;
   // Side panels touched by rebind / dispatch.
   globalThis.keysPanel = {
     wireLayerLevels: vi.fn(),
@@ -78,14 +82,25 @@ function stubGlobals() {
 
 beforeEach(() => {
   installFixture();
+  // vxn1b is single-patch: patchCount = 1 makes every layer flip a no-op
+  // (upper id === lower id for every param the suite touches, all id ≥ 2).
+  window.vxn.patchCount = 1;
   _resetParamIndex();
   resetModel();
   stubGlobals();
   document.body.innerHTML = '';
+
+  LFO1_RATE = paramIdByName('lfo1_rate');
+  LFO1_SYNC = paramIdByName('lfo1_sync');
+  LFO2_RATE = paramIdByName('lfo2_rate');
+  LFO2_SYNC = paramIdByName('lfo2_sync');
+  CUTOFF    = paramIdByName('cutoff');
+  DRIVE     = paramIdByName('drive');
 });
 
 // Mount a [data-control] cell inside a [data-layered] wrapper so isLayeredEl
-// reports true (per-patch cells rebuild on a layer flip).
+// reports true. In vxn1b the layer machinery is retained but inert (single
+// patch), so a "layered" cell rebinds to the same ids on any flip.
 function mountCell(kind, name) {
   const wrap = document.createElement('div');
   wrap.setAttribute('data-layered', '');
@@ -98,37 +113,28 @@ function mountCell(kind, name) {
 }
 
 describe('locateSyncPartners', () => {
-  it('maps rate↔sync and cutoff↔tuned at the upper layer', () => {
+  it('maps only lfo1 and lfo2 rate↔sync; cutoff-tuned pairing is empty', () => {
     locateSyncPartners('upper');
-    // lfo_rate(5)↔lfo_sync(6), lfo2_rate(22)↔lfo2_sync(23),
-    // delay_time(24)↔delay_sync(25).
-    expect(model.syncOfRate.get(5)).toBe(6);
-    expect(model.syncOfRate.get(22)).toBe(23);
-    expect(model.syncOfRate.get(24)).toBe(25);
-    expect(model.rateOfSync.get(6)).toBe(5);
-    // cutoff(7)↔cutoff_tuned(8).
-    expect(model.tunedOfCutoff.get(7)).toBe(8);
-    expect(model.cutoffOfTuned.get(8)).toBe(7);
+    // lfo1_rate ↔ lfo1_sync, lfo2_rate ↔ lfo2_sync.
+    expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
+    expect(model.syncOfRate.get(LFO2_RATE)).toBe(LFO2_SYNC);
+    expect(model.rateOfSync.get(LFO1_SYNC)).toBe(LFO1_RATE);
+    expect(model.rateOfSync.get(LFO2_SYNC)).toBe(LFO2_RATE);
+    // The compact faceplate dropped the Cutoff "Tuned" strip and Delay Sync —
+    // nothing pairs to cutoff, and the tuned maps stay empty.
+    expect(model.tunedOfCutoff.size).toBe(0);
+    expect(model.cutoffOfTuned.size).toBe(0);
+    expect(model.tunedOfCutoff.get(CUTOFF)).toBeUndefined();
   });
 
-  it('translates per-patch pairs on the lower layer; globals stay put', () => {
-    locateSyncPartners('lower');
-    expect(model.syncOfRate.get(5 + PATCH_COUNT)).toBe(6 + PATCH_COUNT);
-    expect(model.tunedOfCutoff.get(7 + PATCH_COUNT)).toBe(8 + PATCH_COUNT);
-    // Globals are layer-independent.
-    expect(model.syncOfRate.get(24)).toBe(25);
-    // The upper-layer per-patch ids are no longer present.
-    expect(model.syncOfRate.has(5)).toBe(false);
-  });
-
-  it('tolerates missing params — the pair is skipped, no throw', () => {
-    delete window.vxn.params[24]; // drop delay_time
-    delete window.vxn.params[25];
+  it('tolerates a missing param — the pair is skipped, the other still resolves', () => {
+    delete window.vxn.params[LFO2_RATE]; // drop lfo2_rate
+    delete window.vxn.params[LFO2_SYNC];
     _resetParamIndex();
     expect(() => locateSyncPartners('upper')).not.toThrow();
-    expect(model.syncOfRate.has(24)).toBe(false);
-    // Other pairs still resolve.
-    expect(model.syncOfRate.get(5)).toBe(6);
+    expect(model.syncOfRate.has(LFO2_RATE)).toBe(false);
+    // The lfo1 pair still resolves.
+    expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
   });
 });
 
@@ -136,17 +142,18 @@ describe('rateDisplayOverride', () => {
   beforeEach(() => locateSyncPartners('upper'));
 
   it('returns null for a fader with no sync partner', () => {
+    expect(rateDisplayOverride(DRIVE)).toBe(null);
     expect(rateDisplayOverride(999)).toBe(null);
   });
 
   it('shows the subdivision label when the partner sync is on, else null', () => {
-    const fn = rateDisplayOverride(5);
+    const fn = rateDisplayOverride(LFO1_RATE);
     expect(typeof fn).toBe('function');
-    // Sync (id 6) on → subdivision label.
-    model.lastParam.set(6, { plain: 1, norm: 1, display: 'On' });
+    // lfo1_sync on → subdivision label.
+    model.lastParam.set(LFO1_SYNC, { plain: 1, norm: 1, display: 'On' });
     expect(fn(0.25, 0.25, '2 Hz')).toBe('sub:0.25');
     // Sync off → null (default numeric display).
-    model.lastParam.set(6, { plain: 0, norm: 0, display: 'Off' });
+    model.lastParam.set(LFO1_SYNC, { plain: 0, norm: 0, display: 'Off' });
     expect(fn(0.25, 0.25, '2 Hz')).toBe(null);
   });
 });
@@ -155,51 +162,45 @@ describe('cutoff overrides', () => {
   beforeEach(() => locateSyncPartners('upper'));
 
   it('return null for a non-cutoff fader', () => {
-    expect(cutoffDisplayOverride(999)).toBe(null);
-    expect(cutoffNormOverride(999)).toBe(null);
-    expect(cutoffInteractionOverride(999)).toBe(null);
+    expect(cutoffDisplayOverride(DRIVE)).toBe(null);
+    expect(cutoffNormOverride(DRIVE)).toBe(null);
+    expect(cutoffInteractionOverride(DRIVE)).toBe(null);
   });
 
-  it('map drag/display through the tuned helpers only while Tuned is on', () => {
-    const disp = cutoffDisplayOverride(7);
-    const norm = cutoffNormOverride(7);
-    const interact = cutoffInteractionOverride(7);
-
-    // Tuned (id 8) on.
-    model.lastParam.set(8, { plain: 1, norm: 1, display: 'On' });
-    expect(disp(440)).toBe('note:440');
-    expect(norm(200)).toBe(cutoffTunedHzToNorm(200));
-    expect(interact(0.5)).toEqual({ plain: 150, norm: cutoffTunedHzToNorm(150) });
-
-    // Tuned off → all passthrough (null).
-    model.lastParam.set(8, { plain: 0, norm: 0, display: 'Off' });
-    expect(disp(440)).toBe(null);
-    expect(norm(200)).toBe(null);
-    expect(interact(0.5)).toBe(null);
+  it('return null for the cutoff fader too — the Tuned strip was removed', () => {
+    // vxn1b has no Cutoff "Tuned" toggle, so `tunedOfCutoff` never carries the
+    // cutoff id and every override collapses to the default fader behaviour.
+    expect(cutoffDisplayOverride(CUTOFF)).toBe(null);
+    expect(cutoffNormOverride(CUTOFF)).toBe(null);
+    expect(cutoffInteractionOverride(CUTOFF)).toBe(null);
   });
 });
 
 describe('rebindAllForLayer', () => {
-  it('rebinds every layered cell to the new layer ids and reseeds from lastParam', () => {
-    mountCell('fader', 'cutoff'); // upper id 7 / lower 17
-    mountCell('fader', 'lfo_rate'); // upper id 5 / lower 15
+  it('binds every layered cell and re-resolves sync partners (single patch)', () => {
+    mountCell('fader', 'cutoff');
+    mountCell('fader', 'lfo1_rate');
     model.cells.push(
       { el: document.querySelector('[data-param="cutoff"]'), kind: 'fader', name: 'cutoff', layered: true },
-      { el: document.querySelector('[data-param="lfo_rate"]'), kind: 'fader', name: 'lfo_rate', layered: true },
+      { el: document.querySelector('[data-param="lfo1_rate"]'), kind: 'fader', name: 'lfo1_rate', layered: true },
     );
 
     rebindAllForLayer('upper');
-    expect([...model.controls.keys()].sort((a, b) => a - b)).toEqual([5, 7]);
+    expect([...model.controls.keys()].sort((a, b) => a - b)).toEqual(
+      [CUTOFF, LFO1_RATE].sort((a, b) => a - b),
+    );
     // Sync partners re-resolved for the active layer as part of the rebind.
-    expect(model.syncOfRate.get(5)).toBe(6);
+    expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
 
-    // Flip to lower: ids shift by patchCount, partners re-resolve, and the
-    // freshly-bound cell is reseeded from the cached lower-layer value.
-    model.lastParam.set(7 + PATCH_COUNT, { plain: 0.9, norm: 0.9, display: 'X' });
+    // A flip is a no-op in single-patch vxn1b: the same ids rebind. Seed a
+    // cached value and confirm the freshly-rebound cell is reseeded from it.
+    model.lastParam.set(CUTOFF, { plain: 0.9, norm: 0.9, display: 'X' });
     rebindAllForLayer('lower');
-    expect([...model.controls.keys()].sort((a, b) => a - b)).toEqual([15, 17]);
-    expect(model.syncOfRate.get(5 + PATCH_COUNT)).toBe(6 + PATCH_COUNT);
-    expect(madeCtls.get(17).update).toHaveBeenCalledWith(0.9, 0.9, 'X');
+    expect([...model.controls.keys()].sort((a, b) => a - b)).toEqual(
+      [CUTOFF, LFO1_RATE].sort((a, b) => a - b),
+    );
+    expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
+    expect(madeCtls.get(CUTOFF).update).toHaveBeenCalledWith(0.9, 0.9, 'X');
   });
 });
 
@@ -208,10 +209,10 @@ describe('init() → applyViewEvents', () => {
     globalThis.window.__vxn = {};
     window.vxn.send = { ready: vi.fn() };
 
-    mountCell('fader', 'lfo_rate'); // id 5
-    mountCell('switch', 'lfo_sync'); // id 6 (the sync toggle)
-    // init() needs the faceplate root for nothing here, but mount it so the
-    // shape matches production; the module-level auto-boot already ran (no-op).
+    mountCell('fader', 'lfo1_rate');
+    mountCell('switch', 'lfo1_sync'); // the sync toggle
+    // Mount the faceplate root so the shape matches production; the module-level
+    // auto-boot already ran under vitest (no #faceplate then) so this is inert.
     const root = document.createElement('div');
     root.id = 'faceplate';
     document.body.appendChild(root);
@@ -222,18 +223,18 @@ describe('init() → applyViewEvents', () => {
 
     // A param echo on the rate fader drives its ctl.
     window.__vxn.applyViewEvents([
-      { kind: 'param_changed', id: 5, plain: 0.4, norm: 0.4, display: '2 Hz' },
+      { kind: 'param_changed', id: LFO1_RATE, plain: 0.4, norm: 0.4, display: '2 Hz' },
     ]);
-    expect(madeCtls.get(5).update).toHaveBeenCalledWith(0.4, 0.4, '2 Hz');
+    expect(madeCtls.get(LFO1_RATE).update).toHaveBeenCalledWith(0.4, 0.4, '2 Hz');
 
-    // Toggling the sync partner (id 6) must re-update the rate fader (id 5)
-    // from its last-seen value so its display flips Hz ↔ subdivision.
-    madeCtls.get(5).update.mockClear();
+    // Toggling the sync partner must re-update the rate fader from its last-seen
+    // value so its display flips Hz ↔ subdivision.
+    madeCtls.get(LFO1_RATE).update.mockClear();
     window.__vxn.applyViewEvents([
-      { kind: 'param_changed', id: 6, plain: 1, norm: 1, display: 'On' },
+      { kind: 'param_changed', id: LFO1_SYNC, plain: 1, norm: 1, display: 'On' },
     ]);
-    expect(madeCtls.get(6).update).toHaveBeenCalledWith(1, 1, 'On');
+    expect(madeCtls.get(LFO1_SYNC).update).toHaveBeenCalledWith(1, 1, 'On');
     // Partner refresh fired with the rate's cached value.
-    expect(madeCtls.get(5).update).toHaveBeenCalledWith(0.4, 0.4, '2 Hz');
+    expect(madeCtls.get(LFO1_RATE).update).toHaveBeenCalledWith(0.4, 0.4, '2 Hz');
   });
 });
