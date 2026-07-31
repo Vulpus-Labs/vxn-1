@@ -50,7 +50,7 @@ fn vxn1b_output() -> (Vec<f32>, Vec<f32>) {
     let mut e = Engine::new(SR, BLOCK);
     // Disable the seeded LFO1→Pitch vibrato (slot 2) so the core render is
     // compared without the sub-ULP vibrato-depth divergence.
-    e.matrix_mut().slots[2].depth = 0.0;
+    e.matrix_mut(vxn1b_engine::Layer::L1).slots[2].depth = 0.0;
     e.note_on(0, 60, 1.0);
     let mut l = vec![0.0; BLOCK];
     let mut r = vec![0.0; BLOCK];

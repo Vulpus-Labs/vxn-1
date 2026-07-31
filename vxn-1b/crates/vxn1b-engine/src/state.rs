@@ -1,70 +1,78 @@
-//! Canonical `clap.state` serialization for VXN1b (ticket 0203).
+//! Canonical `clap.state` serialization for VXN1b.
 //!
-//! A blob is the flat param block followed by the mod-matrix **topology**. The
-//! split follows ADR 0001 §5–§6 (mirroring VXN2 ADR 0009 "Persistence"):
+//! **Two layers (0216, ADR 0002 §4).** VXN1b is a dual-layer instrument: two
+//! independent synths, each with its own patch + private mod matrix. The state
+//! blob is therefore **two** single-layer records back to back — one
+//! [`LayerState`] per synth. A [`LayerState`] is the flat param block followed by
+//! the mod-matrix **topology**, exactly as the single-patch format was (0203):
 //!
 //! - **Depths ride the param block.** The 16 slot depths are ordinary CLAP
 //!   params ([`ParamId::MatrixSlot0Depth`]…), so they serialise in the `f32`
 //!   block like every other param — never in the topology bytes.
 //! - **Topology is not automatable, so it lives here.** Each slot's
-//!   `source`/`dest`/`curve`/`scale_src` is packed as a fixed record (VXN2 ADR
-//!   0009 byte layout: an active bit plus the four id bytes).
+//!   `source`/`dest`/`curve`/`scale_src` is packed as a fixed 5-byte record.
 //!
 //! Layout (little-endian):
 //!
 //! ```text
-//! magic   : b"VX1B"                    (4 bytes)
-//! version : u32                        (one record format; bumped on change)
-//! params  : f32 × TOTAL_PARAMS         (includes the 16 slot depths)
+//! magic   : b"VX1B"                       (4 bytes)
+//! version : u32                           (bumped to 2 for the two-layer format)
+//! layer 0 : LayerState                    (param block + 16 topology records)
+//! layer 1 : LayerState                    (param block + 16 topology records)
+//! ```
+//!
+//! and each `LayerState`:
+//!
+//! ```text
+//! params  : f32 × ParamId::COUNT          (inner per-synth block; 16 depths incl.)
 //! matrix  : [active, source, dest, curve, scale] × N_SLOTS   (5 bytes/slot)
 //! ```
 //!
-//! **Back-compat default read (ADR 0001 §6, ticket 0203).** The matrix block is
-//! *optional on read*: a blob that ends after the param block — a pre-topology
-//! or otherwise matrix-less save — decodes to all-`None` slots rather than
-//! failing. Bytes are read a whole slot record at a time; a clean end at a
-//! record boundary stops decoding and leaves the remaining slots inert. A
-//! *truncated* record (a partial slot) is still an error — that is corruption,
-//! not an old format.
+//! **No migration pre-release.** Version 1 (single-patch) blobs are rejected on
+//! read — the dual-layer roll-out is a clean version bump (ADR 0002 Consequences;
+//! single→dual preset migration is 0221's concern).
 //!
-//! Depths are re-seeded onto the decoded [`MatrixTable`] from the param block on
-//! read, so the returned topology is render-ready and can never disagree with
-//! the automatable depths (the param block is the single source of truth for
+//! Depths are re-seeded onto each decoded [`MatrixTable`] from that layer's param
+//! block on read, so the returned topology is render-ready and can never disagree
+//! with the automatable depths (the param block is the single source of truth for
 //! depth).
 
 use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId};
-use crate::params::{Params, TOTAL_PARAMS};
+use crate::params::{ParamId, Params};
 use std::io::{self, Read, Write};
 
 /// Format magic; first four bytes of every VXN1b state blob. Distinct from
 /// VXN1's `b"VXN1"` — the two share no bytes (ADR 0001 §6).
 pub const MAGIC: [u8; 4] = *b"VX1B";
 
-/// Format version. Bump on any layout change (no migration pre-release).
-pub const VERSION: u32 = 1;
+/// Format version. `2` = the two-layer format (0216). Bump on any layout change.
+pub const VERSION: u32 = 2;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.
 const SLOT_RECORD: usize = 5;
 
-/// Everything a VXN1b patch persists: the flat param values (depths included)
-/// and the mod-matrix topology. Runtime controller state (pitch-bend, mod
-/// wheel, per-voice pressure) is transient MIDI and is deliberately *not* saved.
+/// Inner per-synth param-block length (f32 count) — one [`LayerState`] carries
+/// this many values, ahead of its topology.
+const LAYER_PARAMS: usize = ParamId::COUNT;
+
+/// One layer's persisted patch: the flat param values (depths included) and the
+/// mod-matrix topology. This is the single-patch unit; a [`PluginState`] holds
+/// two. Runtime controller state (pitch-bend, mod wheel, per-voice pressure) is
+/// transient MIDI and is deliberately *not* saved.
 #[derive(Clone, Debug)]
-pub struct PluginState {
+pub struct LayerState {
     pub params: Params,
     pub matrix: MatrixTable,
 }
 
-impl PluginState {
-    /// The factory-default patch: default param values with the default-patch
-    /// matrix topology ([`crate::matrix::default_patch`]), and the 16 slot-depth
-    /// params seeded from that patch so params and matrix agree on depth from the
-    /// first frame (the depth-authority contract, 0205). Single source of truth
-    /// for the factory state — [`crate::Engine::new`] and the shared param store
-    /// both build from it.
+impl LayerState {
+    /// The factory-default patch for one layer: default param values with the
+    /// default-patch matrix topology ([`crate::matrix::default_patch`]), the 16
+    /// slot-depth params seeded from that patch so params and matrix agree on
+    /// depth from the first frame (the depth-authority contract, 0205).
     pub fn factory_default() -> Self {
-        use crate::params::{MATRIX_SLOTS, ParamId};
+        use crate::params::MATRIX_SLOTS;
         let mut params = Params::default();
         let matrix = crate::matrix::default_patch();
         for slot in 0..MATRIX_SLOTS {
@@ -75,13 +83,11 @@ impl PluginState {
         Self { params, matrix }
     }
 
-    /// Write the canonical blob: magic, version, the param block, then one
-    /// 5-byte topology record per slot. Slot depths are already in the param
-    /// block, so the topology carries only `source`/`dest`/`curve`/`scale`.
-    pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&MAGIC)?;
-        w.write_all(&VERSION.to_le_bytes())?;
-        for i in 0..TOTAL_PARAMS {
+    /// Write one layer: the inner param block, then one 5-byte topology record
+    /// per slot. Slot depths are already in the param block, so the topology
+    /// carries only `source`/`dest`/`curve`/`scale`.
+    fn write(&self, w: &mut impl Write) -> io::Result<()> {
+        for i in 0..LAYER_PARAMS {
             w.write_all(&self.params.get_index(i).to_le_bytes())?;
         }
         for slot in &self.matrix.slots {
@@ -96,10 +102,58 @@ impl PluginState {
         Ok(())
     }
 
+    /// Read one layer: the inner param block, then as many whole topology records
+    /// as the stream holds (a clean end at a record boundary leaves the rest
+    /// inert — the default read; a truncated record is a hard error). Depths are
+    /// re-seeded from the param block so the returned topology is render-ready.
+    fn read(r: &mut impl Read) -> io::Result<Self> {
+        let mut params = Params::default();
+        for i in 0..LAYER_PARAMS {
+            params.set_index(i, read_f32(r)?);
+        }
+        let mut matrix = MatrixTable::default();
+        for slot in matrix.slots.iter_mut() {
+            match read_slot(r)? {
+                Some(rec) => *slot = decode_slot(rec),
+                None => break,
+            }
+        }
+        for (i, slot) in matrix.slots.iter_mut().enumerate() {
+            slot.depth = params.slot_depth(i);
+        }
+        Ok(Self { params, matrix })
+    }
+}
+
+/// Everything a VXN1b patch persists: **both layers'** patches. The two-layer
+/// binary format (0216); the derived KeyMode / split point ([`crate::KeyState`])
+/// is layered on by the two-layer state wiring (0221).
+#[derive(Clone, Debug)]
+pub struct PluginState {
+    pub layers: [LayerState; 2],
+}
+
+impl PluginState {
+    /// The factory-default state: both layers at the factory patch. Single source
+    /// of truth for the factory state — [`crate::Engine::new`] and the shared
+    /// param store both build from it. (Layer 2 is off by default, so its patch
+    /// is idle until the user enables it.)
+    pub fn factory_default() -> Self {
+        Self { layers: [LayerState::factory_default(), LayerState::factory_default()] }
+    }
+
+    /// Write the canonical blob: magic, version, then the two layer records.
+    pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
+        w.write_all(&MAGIC)?;
+        w.write_all(&VERSION.to_le_bytes())?;
+        for layer in &self.layers {
+            layer.write(w)?;
+        }
+        Ok(())
+    }
+
     /// Read the canonical blob. Rejects any blob whose magic/version does not
-    /// match the current format (pre-release: no migration). A blob that ends
-    /// after the param block decodes with all-`None` matrix slots (default
-    /// read); a truncated slot record is a hard error.
+    /// match the current two-layer format (pre-release: no migration).
     pub fn read(r: &mut impl Read) -> io::Result<Self> {
         let mut magic = [0u8; 4];
         r.read_exact(&mut magic)?;
@@ -117,28 +171,9 @@ impl PluginState {
                 "unsupported VXN1b state version",
             ));
         }
-
-        let mut params = Params::default();
-        for i in 0..TOTAL_PARAMS {
-            params.set_index(i, read_f32(r)?);
-        }
-
-        // Topology is optional: decode as many whole slot records as the stream
-        // holds; a clean end leaves the rest inert (default read).
-        let mut matrix = MatrixTable::default();
-        for slot in matrix.slots.iter_mut() {
-            match read_slot(r)? {
-                Some(rec) => *slot = decode_slot(rec),
-                None => break,
-            }
-        }
-        // Depth authority is the param block — re-seed it onto every slot so the
-        // returned topology is render-ready (the evaluator reads `slot.depth`).
-        for (i, slot) in matrix.slots.iter_mut().enumerate() {
-            slot.depth = params.slot_depth(i);
-        }
-
-        Ok(Self { params, matrix })
+        let l0 = LayerState::read(r)?;
+        let l1 = LayerState::read(r)?;
+        Ok(Self { layers: [l0, l1] })
     }
 }
 
@@ -193,14 +228,12 @@ fn read_f32(r: &mut impl Read) -> io::Result<f32> {
 mod tests {
     use super::*;
     use crate::matrix::N_SLOTS;
-    use crate::params::ParamId;
 
-    fn nondefault_state() -> PluginState {
+    fn nondefault_layer(cutoff: f32) -> LayerState {
         let mut params = Params::default();
-        params.set(ParamId::Cutoff, 1234.0);
+        params.set(ParamId::Cutoff, cutoff);
         params.set(ParamId::MatrixSlot0Depth, 1.0);
         params.set(ParamId::MatrixSlot3Depth, -0.5);
-        // Topology: two routed slots + a scaled one.
         let mut matrix = MatrixTable::default();
         matrix.slots[0] = MatrixSlot {
             source: SourceId::Env2,
@@ -216,103 +249,55 @@ mod tests {
             curve: Curve::Bipolar,
             scale_src: SourceId::ModWheel,
         };
-        PluginState { params, matrix }
+        LayerState { params, matrix }
     }
 
-    #[test]
-    fn roundtrips_params_and_topology() {
-        let st = nondefault_state();
-        let mut buf = Vec::new();
-        st.write(&mut buf).unwrap();
-        let back = PluginState::read(&mut &buf[..]).unwrap();
-
-        assert_eq!(back.params.get(ParamId::Cutoff), 1234.0);
-        assert_eq!(back.params.get(ParamId::MatrixSlot0Depth), 1.0);
-        assert_eq!(back.params.get(ParamId::MatrixSlot3Depth), -0.5);
-
-        // Topology round-trips; depth is re-seeded from the params.
-        let s0 = back.matrix.slots[0];
-        assert_eq!(s0.source, SourceId::Env2);
-        assert_eq!(s0.dest, DestId::Amp);
-        assert_eq!(s0.curve, Curve::Lin);
-        assert_eq!(s0.scale_src, SourceId::None);
-        assert_eq!(s0.depth, 1.0);
-
-        let s3 = back.matrix.slots[3];
-        assert_eq!(s3.source, SourceId::Lfo2);
-        assert_eq!(s3.dest, DestId::Pitch);
-        assert_eq!(s3.curve, Curve::Bipolar);
-        assert_eq!(s3.scale_src, SourceId::ModWheel);
-        assert_eq!(s3.depth, -0.5);
-
-        // Every other slot is inert.
-        for (i, slot) in back.matrix.slots.iter().enumerate() {
-            if i != 0 && i != 3 {
-                assert!(!slot.is_active(), "slot {i} should be inert");
-            }
-        }
-    }
-
-    #[test]
-    fn depths_are_not_double_encoded_in_topology() {
-        // The topology block is exactly 5 bytes per slot — no room for a depth
-        // f32 — so depth can only be riding the param block.
-        let st = PluginState {
-            params: Params::default(),
-            matrix: MatrixTable::default(),
+    fn nondefault_state() -> PluginState {
+        // Deliberately distinct layers so a round-trip can't accidentally pass by
+        // symmetry (0216: distinct matrices per layer survive save/reload).
+        let l1 = nondefault_layer(1234.0);
+        let mut l2 = nondefault_layer(220.0);
+        // Give layer 2 a different topology in a slot layer 1 leaves inert.
+        l2.params.set(ParamId::MatrixSlot5Depth, 0.75);
+        l2.matrix.slots[5] = MatrixSlot {
+            source: SourceId::Lfo1,
+            dest: DestId::Cutoff,
+            depth: 0.75,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
         };
-        let mut buf = Vec::new();
-        st.write(&mut buf).unwrap();
-        let expected = 4 + 4 + TOTAL_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
-        assert_eq!(buf.len(), expected);
+        PluginState { layers: [l1, l2] }
     }
 
     #[test]
-    fn blob_without_topology_reads_all_none() {
-        // A pre-topology blob: magic + version + param block only.
-        let params = {
-            let mut p = Params::default();
-            p.set(ParamId::Cutoff, 555.0);
-            p
-        };
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&MAGIC);
-        buf.extend_from_slice(&VERSION.to_le_bytes());
-        for i in 0..TOTAL_PARAMS {
-            buf.extend_from_slice(&params.get_index(i).to_le_bytes());
-        }
-
-        let back = PluginState::read(&mut &buf[..]).unwrap();
-        assert_eq!(back.params.get(ParamId::Cutoff), 555.0);
-        for (i, slot) in back.matrix.slots.iter().enumerate() {
-            assert_eq!(*slot, MatrixSlot::default(), "slot {i} must default to None");
-        }
-    }
-
-    #[test]
-    fn partial_topology_reads_present_slots_and_defaults_rest() {
-        // Write a full blob, then truncate to keep only the first slot record.
+    fn roundtrips_both_layers_independently() {
         let st = nondefault_state();
         let mut buf = Vec::new();
         st.write(&mut buf).unwrap();
-        let head = 4 + 4 + TOTAL_PARAMS * 4;
-        buf.truncate(head + SLOT_RECORD);
-
         let back = PluginState::read(&mut &buf[..]).unwrap();
-        assert_eq!(back.matrix.slots[0].source, SourceId::Env2);
-        for slot in &back.matrix.slots[1..] {
-            assert!(!slot.is_active(), "slots past the truncation are inert");
-        }
+
+        // Layer 1.
+        assert_eq!(back.layers[0].params.get(ParamId::Cutoff), 1234.0);
+        assert_eq!(back.layers[0].matrix.slots[0].source, SourceId::Env2);
+        assert_eq!(back.layers[0].matrix.slots[0].depth, 1.0);
+        assert_eq!(back.layers[0].matrix.slots[3].scale_src, SourceId::ModWheel);
+
+        // Layer 2 — distinct params + a slot layer 1 doesn't use.
+        assert_eq!(back.layers[1].params.get(ParamId::Cutoff), 220.0);
+        assert_eq!(back.layers[1].matrix.slots[5].source, SourceId::Lfo1);
+        assert_eq!(back.layers[1].matrix.slots[5].dest, DestId::Cutoff);
+        assert_eq!(back.layers[1].matrix.slots[5].depth, 0.75);
+        // The distinguishing slot is inert on layer 1.
+        assert!(!back.layers[0].matrix.slots[5].is_active());
     }
 
     #[test]
-    fn truncated_slot_record_is_an_error() {
-        let st = nondefault_state();
+    fn blob_length_is_two_full_layers() {
+        let st = PluginState::factory_default();
         let mut buf = Vec::new();
         st.write(&mut buf).unwrap();
-        // Drop two bytes so the last slot record is incomplete.
-        buf.truncate(buf.len() - 2);
-        assert!(PluginState::read(&mut &buf[..]).is_err());
+        let layer = LAYER_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
+        assert_eq!(buf.len(), 4 + 4 + 2 * layer);
     }
 
     #[test]
@@ -320,7 +305,7 @@ mod tests {
         let bad = [0u8; 64];
         assert!(PluginState::read(&mut &bad[..]).is_err());
 
-        let st = nondefault_state();
+        let st = PluginState::factory_default();
         let mut buf = Vec::new();
         st.write(&mut buf).unwrap();
         buf[4] = 0xff; // corrupt the version
@@ -328,9 +313,29 @@ mod tests {
     }
 
     #[test]
+    fn truncated_second_layer_is_an_error() {
+        let st = nondefault_state();
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        // Drop two bytes so layer 1's final topology record is incomplete.
+        buf.truncate(buf.len() - 2);
+        assert!(PluginState::read(&mut &buf[..]).is_err());
+    }
+
+    #[test]
     fn empty_blob_is_an_error() {
-        // The 0196 empty-state contract: an empty blob is a hard failure, not a
-        // silent accept (the CLAP layer maps this to a `false` load in 0204).
+        // The 0196 empty-state contract: an empty blob is a hard failure.
         assert!(PluginState::read(&mut &[][..]).is_err());
+    }
+
+    #[test]
+    fn depths_ride_the_param_block_not_topology() {
+        // Each layer's topology block is exactly 5 bytes per slot — no room for a
+        // depth f32 — so depth can only be riding the param block.
+        let st = PluginState::factory_default();
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        let layer = LAYER_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
+        assert_eq!(buf.len(), 4 + 4 + 2 * layer);
     }
 }

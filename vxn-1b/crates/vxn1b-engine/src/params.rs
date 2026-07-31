@@ -267,6 +267,160 @@ impl ParamId {
     }
 }
 
+// ── Two-layer CLAP map (0216, ADR 0002 §4) ──────────────────────────────────
+//
+// The inner `ParamId`/`PARAMS`/`Params` above are **per-synth** — each `Synth`
+// owns one full table (0214). The *host-facing* CLAP surface is a two-layer
+// expansion of it, mirroring VXN1's `Layer::COUNT * PATCH_COUNT + GLOBAL_COUNT`
+// layout: Layer 1's patch block first, then Layer 2's, then one shared global
+// block. So CLAP id → (layer, inner id) or (global, inner id); the UI's existing
+// layer-offset machinery keys on `patchCount` = [`PATCH_COUNT`] (Layer 2 = Layer
+// 1 + `PATCH_COUNT`).
+
+/// A synth layer. `L1` drives synth 0 (Upper), `L2` drives synth 1 (Lower).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum Layer {
+    L1 = 0,
+    L2 = 1,
+}
+
+impl Layer {
+    pub const ALL: [Layer; 2] = [Layer::L1, Layer::L2];
+
+    /// Host param-tree module label — VXN1's "Upper"/"Lower".
+    pub fn module(self) -> &'static str {
+        match self {
+            Layer::L1 => "Upper",
+            Layer::L2 => "Lower",
+        }
+    }
+}
+
+/// The per-layer **patch** params, in CLAP order — every control duplicated per
+/// synth (osc, mixer, filter, envelopes, LFO 1/2, voice, and the 16 matrix
+/// depths). Order *defines* the patch-block CLAP id layout; Layer 2's block is
+/// the same list offset by [`PATCH_COUNT`].
+pub const PATCH_PARAMS: [ParamId; 64] = {
+    use ParamId::*;
+    [
+        // Osc / mixer (17)
+        Osc1Wave, Osc1Coarse, Osc1Fine, Osc1Octave, Osc1Level, Osc1PulseWidth,
+        Osc2Wave, Osc2Coarse, Osc2Fine, Osc2Octave, Osc2Level, Osc2PulseWidth,
+        SubLevel, CrossModType, CrossModAmount, NoiseLevel, NoiseColor,
+        // Filter (6)
+        Cutoff, Resonance, Drive, FilterMode, FilterSlope, HpfCutoff,
+        // Envelopes (10)
+        Env1Attack, Env1Decay, Env1Sustain, Env1Release, Env1Shape,
+        Env2Attack, Env2Decay, Env2Sustain, Env2Release, Env2Shape,
+        // Amp (1)
+        AmpEnvBypass,
+        // LFO 1 (6)
+        Lfo1Shape, Lfo1Rate, Lfo1Sync, Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun,
+        // LFO 2 (3)
+        Lfo2Shape, Lfo2Rate, Lfo2Sync,
+        // Voice (5)
+        AssignMode, Legato, UnisonDetune, PortamentoTime, Spread,
+        // Matrix depths (16)
+        MatrixSlot0Depth, MatrixSlot1Depth, MatrixSlot2Depth, MatrixSlot3Depth,
+        MatrixSlot4Depth, MatrixSlot5Depth, MatrixSlot6Depth, MatrixSlot7Depth,
+        MatrixSlot8Depth, MatrixSlot9Depth, MatrixSlot10Depth, MatrixSlot11Depth,
+        MatrixSlot12Depth, MatrixSlot13Depth, MatrixSlot14Depth, MatrixSlot15Depth,
+    ]
+};
+
+/// The single **global** params, in CLAP order — one instance, applied to both
+/// synths (ADR 0002 §7): pitch-bend range, master level/tune/drift/limiter,
+/// oversample, and the whole FX chain.
+pub const GLOBAL_PARAMS: [ParamId; 32] = {
+    use ParamId::*;
+    [
+        PitchBendRange,
+        MasterTune, MasterVolume, MasterDrift, LimiterOn, Oversample,
+        ChorusOn, ChorusRate, ChorusDepth, ChorusMix,
+        PhaserOn, PhaserRate, PhaserDepth, PhaserFeedback, PhaserMix,
+        DelayOn, DelayTime, DelayFeedback, DelayMix,
+        ReverbOn, ReverbSize, ReverbDecay, ReverbDamp, ReverbMix,
+        DynamicsOn, DynamicsThreshold, DynamicsRatio, DynamicsAttack,
+        DynamicsRelease, DynamicsMakeup, DynamicsDrive, DynamicsMix,
+    ]
+};
+
+/// Per-layer patch-param count — the UI's `patchCount` and the Layer-2 CLAP id
+/// offset.
+pub const PATCH_COUNT: usize = PATCH_PARAMS.len();
+
+/// Global-param count (shared across layers).
+pub const GLOBAL_COUNT: usize = GLOBAL_PARAMS.len();
+
+/// What a CLAP id resolves to: a per-layer patch param or a shared global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClapRef {
+    /// A patch param on a specific layer → that synth's inner param.
+    Patch(Layer, ParamId),
+    /// A global param → applied to both synths.
+    Global(ParamId),
+}
+
+impl ClapRef {
+    /// The inner [`ParamId`] this CLAP id addresses (layer aside).
+    #[inline]
+    pub fn inner(self) -> ParamId {
+        match self {
+            ClapRef::Patch(_, p) | ClapRef::Global(p) => p,
+        }
+    }
+}
+
+/// Decode a CLAP id into its layer/global target, or `None` past the table.
+#[inline]
+pub fn clap_ref(clap_id: usize) -> Option<ClapRef> {
+    if clap_id < PATCH_COUNT {
+        Some(ClapRef::Patch(Layer::L1, PATCH_PARAMS[clap_id]))
+    } else if clap_id < 2 * PATCH_COUNT {
+        Some(ClapRef::Patch(Layer::L2, PATCH_PARAMS[clap_id - PATCH_COUNT]))
+    } else if clap_id < TOTAL_PARAMS {
+        Some(ClapRef::Global(GLOBAL_PARAMS[clap_id - 2 * PATCH_COUNT]))
+    } else {
+        None
+    }
+}
+
+/// The CLAP id of a patch param on a given layer (its position in
+/// [`PATCH_PARAMS`] offset by the layer). `None` if `p` is not a patch param.
+pub fn patch_clap_id(layer: Layer, p: ParamId) -> Option<usize> {
+    PATCH_PARAMS
+        .iter()
+        .position(|&q| q == p)
+        .map(|pos| layer as usize * PATCH_COUNT + pos)
+}
+
+/// The CLAP id of a global param. `None` if `p` is not a global param.
+pub fn global_clap_id(p: ParamId) -> Option<usize> {
+    GLOBAL_PARAMS
+        .iter()
+        .position(|&q| q == p)
+        .map(|pos| 2 * PATCH_COUNT + pos)
+}
+
+/// The CLAP id addressing inner `p` on `layer` — patch id if per-layer, else the
+/// global id (layer ignored). Panics only if `p` is in neither table, which the
+/// `partition` test rules out.
+pub fn clap_id_of(layer: Layer, p: ParamId) -> usize {
+    patch_clap_id(layer, p)
+        .or_else(|| global_clap_id(p))
+        .expect("every ParamId is either patch or global")
+}
+
+/// Host param-tree module label for a CLAP id: "Upper"/"Lower" for patch params,
+/// "" for globals.
+pub fn clap_module(clap_id: usize) -> &'static str {
+    match clap_ref(clap_id) {
+        Some(ClapRef::Patch(layer, _)) => layer.module(),
+        _ => "",
+    }
+}
+
 // ── Descriptor table ────────────────────────────────────────────────────────
 
 const WAVE_LABELS: &[&str] = &["Sine", "Triangle", "Saw", "Pulse"];
@@ -460,13 +614,17 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     slot("matrix_slot15_depth", "Slot 16 Depth"),
 ];
 
-/// Total CLAP-exposed params. Identity map: CLAP id = [`ParamId`] index.
-pub const TOTAL_PARAMS: usize = ParamId::COUNT;
+/// Total CLAP-exposed params: two per-layer patch blocks + one global block
+/// (ADR 0002 §4). **Not** the inner per-synth count ([`ParamId::COUNT`]) — the
+/// CLAP surface is the two-layer expansion.
+pub const TOTAL_PARAMS: usize = 2 * PATCH_COUNT + GLOBAL_COUNT;
 
-/// Descriptor for a CLAP id, or `None` past the table.
+/// Descriptor for a CLAP id, or `None` past the table. Layer 1 and Layer 2 share
+/// the inner descriptor (same name/range); the host tells them apart by the
+/// module label ([`clap_module`]).
 #[inline]
 pub fn desc_for_clap_id(clap_id: usize) -> Option<&'static ParamDesc> {
-    ParamId::from_index(clap_id).map(ParamId::desc)
+    clap_ref(clap_id).map(|r| r.inner().desc())
 }
 
 // ── Value store ─────────────────────────────────────────────────────────────
@@ -625,11 +783,59 @@ mod tests {
 
     #[test]
     fn defaults_in_range() {
+        // Iterate the CLAP surface; resolve each id to its inner default.
+        let p = Params::default();
         for id in 0..TOTAL_PARAMS {
             let d = desc_for_clap_id(id).unwrap();
-            let val = Params::default().get_index(id);
+            let val = p.get(clap_ref(id).unwrap().inner());
             assert!(val >= d.min && val <= d.max, "{} default OOR", d.name);
         }
+    }
+
+    #[test]
+    fn patch_and_global_partition_every_param() {
+        // The two CLAP blocks together cover every inner ParamId exactly once —
+        // no param is both per-layer and global, none is dropped.
+        assert_eq!(PATCH_COUNT + GLOBAL_COUNT, ParamId::COUNT, "partition size");
+        for p in ParamId::all() {
+            let in_patch = PATCH_PARAMS.contains(&p);
+            let in_global = GLOBAL_PARAMS.contains(&p);
+            assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
+        }
+        assert_eq!(TOTAL_PARAMS, 2 * 64 + 32);
+    }
+
+    #[test]
+    fn clap_ref_layout_is_l1_l2_globals() {
+        // Layer 1 patch block, then Layer 2 (same list, offset), then globals.
+        assert_eq!(clap_ref(0), Some(ClapRef::Patch(Layer::L1, PATCH_PARAMS[0])));
+        assert_eq!(
+            clap_ref(PATCH_COUNT),
+            Some(ClapRef::Patch(Layer::L2, PATCH_PARAMS[0]))
+        );
+        assert_eq!(
+            clap_ref(2 * PATCH_COUNT),
+            Some(ClapRef::Global(GLOBAL_PARAMS[0]))
+        );
+        assert_eq!(clap_ref(TOTAL_PARAMS), None);
+        // Round-trip the id helpers for every param.
+        for p in PATCH_PARAMS {
+            for layer in Layer::ALL {
+                let id = clap_id_of(layer, p);
+                assert_eq!(clap_ref(id), Some(ClapRef::Patch(layer, p)));
+            }
+        }
+        for p in GLOBAL_PARAMS {
+            let id = clap_id_of(Layer::L1, p);
+            assert_eq!(clap_ref(id), Some(ClapRef::Global(p)));
+        }
+    }
+
+    #[test]
+    fn module_labels_split_by_layer() {
+        assert_eq!(clap_module(0), "Upper");
+        assert_eq!(clap_module(PATCH_COUNT), "Lower");
+        assert_eq!(clap_module(2 * PATCH_COUNT), ""); // global
     }
 
     #[test]

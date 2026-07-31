@@ -15,7 +15,7 @@ use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
 use crate::params::{CrossModType, ParamId, Params};
-use crate::state::PluginState;
+use crate::state::LayerState;
 use crate::voice::Voices;
 
 /// Per-synth seed set: the two bank RNG seeds (distinct so a synth's two banks'
@@ -62,7 +62,7 @@ pub struct Synth {
 impl Synth {
     /// Build a synth from a decoded patch (`params` + matrix topology) with the
     /// given per-layer seed set. Cooks envelopes.
-    pub(crate) fn new(sample_rate: f32, state: PluginState, seeds: &SynthSeeds) -> Self {
+    pub(crate) fn new(sample_rate: f32, state: LayerState, seeds: &SynthSeeds) -> Self {
         let control_rate = sample_rate / CONTROL_BLOCK as f32;
         let mut synth = Self {
             sample_rate,
@@ -82,9 +82,9 @@ impl Synth {
     }
 
     /// Overwrite the whole patch (params + matrix topology) from a decoded
-    /// [`PluginState`]. Re-cooks envelopes. Depth stays param-authoritative: the
+    /// [`LayerState`]. Re-cooks envelopes. Depth stays param-authoritative: the
     /// topology's depths already mirror the params (the codec seeds them).
-    pub(crate) fn load_state(&mut self, state: PluginState) {
+    pub(crate) fn load_state(&mut self, state: LayerState) {
         self.params = state.params;
         self.matrix = state.matrix;
         self.apply_envelopes();
@@ -329,7 +329,7 @@ mod tests {
     use super::*;
 
     fn factory_synth(seeds: &SynthSeeds) -> Synth {
-        Synth::new(48_000.0, PluginState::factory_default(), seeds)
+        Synth::new(48_000.0, LayerState::factory_default(), seeds)
     }
 
     /// Two `Synth`s with **distinct patches** render **distinct output** from the

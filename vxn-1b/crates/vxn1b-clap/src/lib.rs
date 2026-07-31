@@ -37,7 +37,9 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use vxn_core_app::{Controller, CorpusHandle, ParamId as AppParamId, ParamKind, ViewEvent};
 use vxn_core_clap::{LocalParams, SharedStore, batch_range};
-use vxn1b_engine::{Engine, EnginePresetStore, SharedParams, TOTAL_PARAMS, desc_for_clap_id};
+use vxn1b_engine::{
+    Engine, EnginePresetStore, SharedParams, TOTAL_PARAMS, clap_module, desc_for_clap_id,
+};
 
 /// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
 /// Plugin code unwinds on panic, so a panic during `tick` could poison the
@@ -480,7 +482,9 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
             flags,
             cookie: Default::default(),
             name: desc.label.as_bytes(),
-            module: b"",
+            // Two-layer surface (0216): Layer 1/2 share a label, so the host tells
+            // them apart by module — "Upper"/"Lower" (globals stay ungrouped).
+            module: clap_module(idx).as_bytes(),
             min_value: desc.min as f64,
             max_value: desc.max as f64,
             default_value: desc.default as f64,
@@ -573,12 +577,18 @@ mod tests {
     use clack_plugin::events::Pckn;
     use clack_plugin::events::event_types::{NoteOnEvent, ParamValueEvent};
     use clack_plugin::utils::Cookie;
-    use vxn1b_engine::ParamId;
+    use vxn1b_engine::{Layer, ParamId, clap_id_of};
+
+    /// Layer-1 CLAP id for an inner param — the CLAP surface is the two-layer map
+    /// (0216), so a test that means "layer 1's X" resolves it, not `X as usize`.
+    fn l1(p: ParamId) -> usize {
+        clap_id_of(Layer::L1, p)
+    }
 
     fn param_event(id: ParamId, value: f64) -> ParamValueEvent {
         ParamValueEvent::new(
             0,
-            ClapId::new(id as u32),
+            ClapId::new(l1(id) as u32),
             Pckn::match_all(),
             value,
             Cookie::empty(),
@@ -617,14 +627,14 @@ mod tests {
         apply_param(&mut local, &mut engine, param_event(ParamId::Cutoff, 500.0).as_ref());
         // The mirror carries the host write; `publish` folds it into the store.
         local.publish(&StoreRef(&shared));
-        assert_eq!(shared.get(ParamId::Cutoff as usize), 500.0);
-        assert_eq!(engine.param(ParamId::Cutoff as usize), 500.0);
+        assert_eq!(shared.get(l1(ParamId::Cutoff)), 500.0);
+        assert_eq!(engine.param(l1(ParamId::Cutoff)), 500.0);
     }
 
     #[test]
     fn note_on_event_makes_sound() {
         let mut engine = Engine::new(48_000.0, 512);
-        engine.set_param(ParamId::Env2Attack as usize, 0.001);
+        engine.set_param(l1(ParamId::Env2Attack), 0.001);
         dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
         assert!(peak(&mut engine, 512) > 0.0, "a dispatched note must sound");
     }
@@ -636,7 +646,7 @@ mod tests {
         let mut engine = Engine::new(48_000.0, 512);
         let shared = SharedParams::new();
         let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
-        engine.set_param(ParamId::Env2Attack as usize, 0.001);
+        engine.set_param(l1(ParamId::Env2Attack), 0.001);
         apply_param(&mut local, &mut engine, param_event(ParamId::MatrixSlot0Depth, 0.0).as_ref());
         dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
         assert_eq!(peak(&mut engine, 512), 0.0, "zeroed amp-slot depth ⇒ silence");
@@ -656,7 +666,7 @@ mod tests {
         for (i, &v) in local.values().iter().enumerate() {
             engine.set_param(i, v);
         }
-        assert_eq!(engine.param(ParamId::Cutoff as usize), 777.0);
+        assert_eq!(engine.param(l1(ParamId::Cutoff)), 777.0);
     }
 
     #[test]

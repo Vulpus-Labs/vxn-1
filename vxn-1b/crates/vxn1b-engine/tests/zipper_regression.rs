@@ -14,7 +14,7 @@
 //! Cutoff is included precisely to show it needs *no* new smoothing: the OTA
 //! ladder ramps its own coefficients, so it already passes the same gate.
 
-use vxn1b_engine::{DestId, Engine, MatrixSlot, ParamId, SourceId};
+use vxn1b_engine::{DestId, Engine, Layer, MatrixSlot, ParamId, SourceId};
 use vxn1b_engine::matrix::Curve;
 
 const SR: f32 = 48_000.0;
@@ -46,11 +46,11 @@ fn engine_with_route(dest: DestId, depth: f32) -> Engine {
     // Slot 2 is the default LFO1→Pitch vibrato; zero it unless Pitch is the
     // route under test, so the carrier frequency is otherwise steady.
     if dest != DestId::Pitch {
-        e.matrix_mut().slots[2].depth = 0.0;
+        e.matrix_mut(Layer::L1).slots[2].depth = 0.0;
     }
     // Install the route in a spare slot (3); slot 0's Env2→Amp VCA stays so the
     // note sounds.
-    e.matrix_mut().slots[3] = MatrixSlot {
+    e.matrix_mut(Layer::L1).slots[3] = MatrixSlot {
         source: SourceId::Lfo1,
         dest,
         depth,

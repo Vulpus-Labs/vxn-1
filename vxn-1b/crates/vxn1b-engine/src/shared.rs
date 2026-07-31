@@ -29,8 +29,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::matrix::MatrixTable;
-use crate::params::{PARAMS, TOTAL_PARAMS};
-use crate::state::PluginState;
+use crate::params::{
+    ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, Params, TOTAL_PARAMS, clap_ref,
+    desc_for_clap_id, global_clap_id, patch_clap_id,
+};
+use crate::state::{LayerState, PluginState};
 
 /// Lock-free param mirror + topology channel shared by the CLAP main and audio
 /// threads. Seeded to the factory-default patch
@@ -39,7 +42,8 @@ pub struct SharedParams {
     values: Vec<AtomicU32>,
     /// Per-param live-drag flags the editor raises around a UI gesture (E038).
     gestures: Vec<AtomicBool>,
-    matrix: Mutex<MatrixTable>,
+    /// One matrix topology **per layer** (0216): index 0 = Layer 1, 1 = Layer 2.
+    matrix: Mutex<[MatrixTable; 2]>,
     /// Raised on `restore_from_bytes`; the audio thread clears it and re-syncs.
     reload: AtomicBool,
 }
@@ -51,27 +55,48 @@ impl Default for SharedParams {
 }
 
 impl SharedParams {
-    /// A store seeded from the factory-default patch.
+    /// A store seeded from the factory-default patch (both layers).
     pub fn new() -> Self {
         let factory = PluginState::factory_default();
         let values = (0..TOTAL_PARAMS)
-            .map(|i| AtomicU32::new(factory.params.get_index(i).to_bits()))
+            .map(|id| {
+                let r = clap_ref(id).expect("id < TOTAL_PARAMS");
+                let layer = match r {
+                    ClapRef::Patch(l, _) => l as usize,
+                    ClapRef::Global(_) => 0,
+                };
+                AtomicU32::new(factory.layers[layer].params.get(r.inner()).to_bits())
+            })
             .collect();
         let gestures = (0..TOTAL_PARAMS).map(|_| AtomicBool::new(false)).collect();
         Self {
             values,
             gestures,
-            matrix: Mutex::new(factory.matrix),
+            matrix: Mutex::new([factory.layers[0].matrix, factory.layers[1].matrix]),
             reload: AtomicBool::new(false),
         }
     }
 
     #[inline]
-    fn lock(&self) -> std::sync::MutexGuard<'_, MatrixTable> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, [MatrixTable; 2]> {
         // Recover a poisoned lock rather than propagating a panic: the guarded
         // topology is a plain value that's still readable after any mid-write
         // panic (plugin code unwinds).
         self.matrix.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Build one layer's [`Params`] from the current CLAP value array: its own
+    /// patch params plus the shared globals.
+    fn layer_params(&self, layer: Layer) -> Params {
+        let mut p = Params::default();
+        for &inner in PATCH_PARAMS.iter() {
+            let id = patch_clap_id(layer, inner).expect("patch param");
+            p.set(inner, self.get(id));
+        }
+        for &g in GLOBAL_PARAMS.iter() {
+            p.set(g, self.get(global_clap_id(g).expect("global param")));
+        }
+        p
     }
 
     /// Read a CLAP-id param value (`0.0` past the table).
@@ -85,7 +110,7 @@ impl SharedParams {
     /// Write a CLAP-id param value, clamped to the descriptor range.
     #[inline]
     pub fn set(&self, id: usize, value: f32) {
-        if let Some(desc) = PARAMS.get(id) {
+        if let Some(desc) = desc_for_clap_id(id) {
             self.values[id].store(desc.clamp(value).to_bits(), Ordering::Relaxed);
         }
     }
@@ -95,7 +120,7 @@ impl SharedParams {
     /// echoes both plain and normalized on a `ParamChanged`.
     #[inline]
     pub fn get_normalized(&self, id: usize) -> f32 {
-        match PARAMS.get(id) {
+        match desc_for_clap_id(id) {
             Some(desc) => desc.to_normalized(self.get(id)),
             None => 0.0,
         }
@@ -105,7 +130,7 @@ impl SharedParams {
     /// range by `set`). No-op past the table.
     #[inline]
     pub fn set_normalized(&self, id: usize, norm: f32) {
-        if let Some(desc) = PARAMS.get(id) {
+        if let Some(desc) = desc_for_clap_id(id) {
             self.set(id, desc.from_normalized(norm));
         }
     }
@@ -127,8 +152,8 @@ impl SharedParams {
         }
     }
 
-    /// A copy of the current matrix topology (for `state.save`).
-    pub fn matrix_snapshot(&self) -> MatrixTable {
+    /// A copy of both layers' matrix topology (for `state.save`).
+    pub fn matrix_snapshot(&self) -> [MatrixTable; 2] {
         *self.lock()
     }
 
@@ -148,28 +173,43 @@ impl SharedParams {
         blob
     }
 
-    /// Build a [`PluginState`] from the current store contents.
+    /// Build a two-layer [`PluginState`] from the current store contents. Each
+    /// layer's params come from its CLAP block (+ shared globals); its matrix
+    /// topology comes from the per-layer topology channel, with slot depths
+    /// re-seeded from the params so depth stays param-authoritative (0205).
     pub fn to_state(&self) -> PluginState {
-        let mut params = crate::params::Params::default();
-        for i in 0..TOTAL_PARAMS {
-            params.set_index(i, self.get(i));
-        }
-        PluginState {
-            params,
-            matrix: self.matrix_snapshot(),
-        }
+        let matrices = self.matrix_snapshot();
+        let layers = [Layer::L1, Layer::L2].map(|layer| {
+            let params = self.layer_params(layer);
+            let mut matrix = matrices[layer as usize];
+            for s in 0..MATRIX_SLOTS {
+                matrix.slots[s].depth = params.slot_depth(s);
+            }
+            LayerState { params, matrix }
+        });
+        PluginState { layers }
     }
 
-    /// Apply a `clap.state` blob. On success overwrites every param + the
-    /// topology and raises [`Self::take_reload`]. Returns `Err` (leaving the
-    /// store untouched) for an empty/undecodable blob — the 0196 contract: an
+    /// Apply a two-layer `clap.state` blob. On success overwrites every param +
+    /// both topologies and raises [`Self::take_reload`]. Returns `Err` (leaving
+    /// the store untouched) for an empty/undecodable blob — the 0196 contract: an
     /// invalid restore must report failure, not silently accept.
     pub fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
         let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
-        for i in 0..TOTAL_PARAMS {
-            self.values[i].store(state.params.get_index(i).to_bits(), Ordering::Relaxed);
+        for layer in [Layer::L1, Layer::L2] {
+            let p = &state.layers[layer as usize].params;
+            for &inner in PATCH_PARAMS.iter() {
+                let id = patch_clap_id(layer, inner).expect("patch param");
+                self.values[id].store(p.get(inner).to_bits(), Ordering::Relaxed);
+            }
         }
-        *self.lock() = state.matrix;
+        // Globals are saved identically in both layers; take Layer 1's copy.
+        let g = &state.layers[0].params;
+        for &gp in GLOBAL_PARAMS.iter() {
+            let id = global_clap_id(gp).expect("global param");
+            self.values[id].store(g.get(gp).to_bits(), Ordering::Relaxed);
+        }
+        *self.lock() = [state.layers[0].matrix, state.layers[1].matrix];
         self.reload.store(true, Ordering::Release);
         Ok(())
     }
@@ -220,7 +260,7 @@ impl vxn_core_app::ParamModel for SharedParams {
     }
 
     fn descriptor(&self, id: vxn_core_app::ParamId) -> Option<&'static vxn_core_app::ParamDesc> {
-        PARAMS.get(id.raw())
+        desc_for_clap_id(id.raw())
     }
 
     fn snapshot_bytes(&self) -> Vec<u8> {
@@ -235,17 +275,27 @@ impl vxn_core_app::ParamModel for SharedParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::ParamId;
+    use crate::params::{ParamId, clap_id_of};
 
     #[test]
     fn seeds_to_factory_default() {
         let sp = SharedParams::new();
         let factory = PluginState::factory_default();
-        for i in 0..TOTAL_PARAMS {
-            assert_eq!(sp.get(i), factory.params.get_index(i), "param {i}");
+        for id in 0..TOTAL_PARAMS {
+            let r = clap_ref(id).unwrap();
+            let layer = match r {
+                ClapRef::Patch(l, _) => l as usize,
+                ClapRef::Global(_) => 0,
+            };
+            assert_eq!(
+                sp.get(id),
+                factory.layers[layer].params.get(r.inner()),
+                "param {id}"
+            );
         }
-        // The seeded Amp depth (0205) is present in the store.
-        assert_eq!(sp.get(ParamId::MatrixSlot0Depth as usize), 1.0);
+        // The seeded Amp depth (0205) is present in the store on both layers.
+        assert_eq!(sp.get(clap_id_of(Layer::L1, ParamId::MatrixSlot0Depth)), 1.0);
+        assert_eq!(sp.get(clap_id_of(Layer::L2, ParamId::MatrixSlot0Depth)), 1.0);
     }
 
     #[test]
@@ -260,10 +310,12 @@ mod tests {
     #[test]
     fn snapshot_restore_round_trips_and_flags_reload() {
         let sp = SharedParams::new();
-        sp.set(ParamId::Cutoff as usize, 1234.0);
+        // Distinct edits on each layer to prove per-layer round-trip.
+        sp.set(clap_id_of(Layer::L1, ParamId::Cutoff), 1234.0);
+        sp.set(clap_id_of(Layer::L2, ParamId::Cutoff), 220.0);
         {
             let mut m = sp.lock();
-            m.slots[5] = crate::matrix::MatrixSlot {
+            m[1].slots[5] = crate::matrix::MatrixSlot {
                 source: crate::matrix::SourceId::Lfo2,
                 dest: crate::matrix::DestId::Cutoff,
                 depth: 0.0,
@@ -278,8 +330,11 @@ mod tests {
         sp2.restore_from_bytes(&blob).unwrap();
         assert!(sp2.take_reload(), "restore must flag a reload");
         assert!(!sp2.take_reload(), "flag clears after one read");
-        assert_eq!(sp2.get(ParamId::Cutoff as usize), 1234.0);
-        assert_eq!(sp2.matrix_snapshot().slots[5].source, crate::matrix::SourceId::Lfo2);
+        assert_eq!(sp2.get(clap_id_of(Layer::L1, ParamId::Cutoff)), 1234.0);
+        assert_eq!(sp2.get(clap_id_of(Layer::L2, ParamId::Cutoff)), 220.0);
+        // Layer 2's private matrix edit survived on layer 2, not layer 1.
+        assert_eq!(sp2.matrix_snapshot()[1].slots[5].source, crate::matrix::SourceId::Lfo2);
+        assert!(!sp2.matrix_snapshot()[0].slots[5].is_active());
     }
 
     #[test]

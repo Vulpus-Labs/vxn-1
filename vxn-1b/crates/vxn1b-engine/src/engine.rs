@@ -32,8 +32,8 @@
 
 use crate::fx::{FxChain, FxParams};
 use crate::matrix::MatrixTable;
-use crate::params::ParamId;
-use crate::state::PluginState;
+use crate::params::{ClapRef, Layer, ParamId, clap_ref};
+use crate::state::{LayerState, PluginState};
 use crate::synth::{Synth, SynthSeeds};
 use std::io::{self, Read, Write};
 
@@ -127,26 +127,32 @@ impl Engine {
             sample_rate,
             max_frames,
             synths: [
-                Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER1),
-                Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER2),
+                Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER1),
+                Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER2),
             ],
             key: KeyState::default(),
             fx: FxChain::new(sample_rate),
         }
     }
 
-    /// Overwrite layer 1's patch (params + matrix topology) from a decoded
-    /// [`PluginState`] — the CLAP state-load / preset path. Layer 2's patch and
-    /// the KeyMode/split state arrive with the two-layer state format (0221).
+    /// Overwrite **both layers'** patches from a decoded [`PluginState`] — the
+    /// CLAP state-load / preset path (0216). The KeyMode / split state is applied
+    /// separately via [`Self::set_key_state`] (0221).
     pub fn load_state(&mut self, state: PluginState) {
-        self.synths[0].load_state(state);
+        let [l1, l2] = state.layers;
+        self.synths[0].load_state(l1);
+        self.synths[1].load_state(l2);
     }
 
-    /// Read a CLAP-id param value (identity map) from layer 1 — for the shell's
-    /// param store sync and `get_value`.
+    /// Read a CLAP-id param value (0216 two-layer map): Layer-1 ids read synth 0,
+    /// Layer-2 ids read synth 1, globals read synth 0 (both hold the same value).
     #[inline]
-    pub fn param(&self, id: usize) -> f32 {
-        self.synths[0].param(id)
+    pub fn param(&self, clap_id: usize) -> f32 {
+        match clap_ref(clap_id) {
+            Some(ClapRef::Patch(Layer::L2, p)) => self.synths[1].param(p.index()),
+            Some(r) => self.synths[0].param(r.inner().index()),
+            None => 0.0,
+        }
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -157,15 +163,25 @@ impl Engine {
         self.max_frames
     }
 
-    /// Mutable access to layer 1's patch topology (for preset load / tests).
-    pub fn matrix_mut(&mut self) -> &mut MatrixTable {
-        self.synths[0].matrix_mut()
+    /// Mutable access to a layer's matrix topology (for preset load / tests).
+    pub fn matrix_mut(&mut self, layer: Layer) -> &mut MatrixTable {
+        self.synths[layer as usize].matrix_mut()
     }
 
-    /// Set a CLAP-id param (identity map) on layer 1. The doubled per-layer param
-    /// surface (0216/0221) will route layer-2 ids here later.
-    pub fn set_param(&mut self, id: usize, value: f32) {
-        self.synths[0].set_param(id, value);
+    /// Set a CLAP-id param (0216 two-layer map). A Layer-1/Layer-2 patch id routes
+    /// to that synth; a global id is applied to **both** synths so their shared
+    /// FX/master reads stay consistent (globals are single-instance, ADR §7).
+    pub fn set_param(&mut self, clap_id: usize, value: f32) {
+        match clap_ref(clap_id) {
+            Some(ClapRef::Patch(Layer::L1, p)) => self.synths[0].set_param(p.index(), value),
+            Some(ClapRef::Patch(Layer::L2, p)) => self.synths[1].set_param(p.index(), value),
+            Some(ClapRef::Global(p)) => {
+                let inner = p.index();
+                self.synths[0].set_param(inner, value);
+                self.synths[1].set_param(inner, value);
+            }
+            None => {}
+        }
     }
 
     /// The current derived keyboard routing mode (ADR 0002 §3).
@@ -313,7 +329,13 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::MATRIX_SLOTS;
+    use crate::params::{MATRIX_SLOTS, TOTAL_PARAMS, clap_id_of, desc_for_clap_id};
+
+    /// The Layer-1 CLAP id for an inner param — engine `set_param`/`param` take
+    /// CLAP ids, so tests that mean "layer 1's X" resolve it through the map.
+    fn l1(p: ParamId) -> usize {
+        clap_id_of(Layer::L1, p)
+    }
 
     #[test]
     fn silent_by_default_until_a_note() {
@@ -355,8 +377,8 @@ mod tests {
         // every param is swept through its extremes. An extreme filter/feedback
         // combo can drive DSP state non-finite; the engine's output guard must
         // still emit only finite samples (never a NaN/inf to the host).
-        use crate::params::PARAMS;
         let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true); // fuzz both synths, not just layer 1
         for i in 0..40u16 {
             let note = (i * 3) as u8;
             let ch = (i % 20) as u8;
@@ -371,14 +393,16 @@ mod tests {
         e.set_mod_wheel(-1.0);
         let mut l = vec![0.0f32; 512];
         let mut r = vec![0.0f32; 512];
-        for (i, d) in PARAMS.iter().enumerate() {
+        // Sweep the whole CLAP surface (both layers + globals) through extremes.
+        for id in 0..TOTAL_PARAMS {
+            let d = desc_for_clap_id(id).unwrap();
             for v in [d.min, d.max, d.default, d.min - 10.0, d.max + 10.0] {
-                e.set_param(i, v);
-                e.note_off((i % 20) as u8, (i * 3 % 128) as u8);
+                e.set_param(id, v);
+                e.note_off((id % 20) as u8, (id * 3 % 128) as u8);
                 e.process_block(&mut l, &mut r);
                 assert!(
                     l.iter().chain(r.iter()).all(|s| s.is_finite()),
-                    "non-finite output after param {} ({i}) = {v}",
+                    "non-finite output after clap param {id} ({}) = {v}",
                     d.name,
                 );
             }
@@ -403,11 +427,19 @@ mod tests {
     fn set_param_mirrors_slot_depth_into_matrix() {
         // 0205: a depth edit reaches the copy the evaluator reads.
         let mut e = Engine::new(48_000.0, 512);
-        e.set_param(ParamId::MatrixSlot2Depth as usize, -0.5);
+        // Layer 2 starts at the factory depth for this slot — capture it to prove
+        // a Layer-1 edit leaves it alone.
+        let l2_default = e.synths[1].matrix().slots[2].depth;
+        e.set_param(l1(ParamId::MatrixSlot2Depth), -0.5);
         assert_eq!(e.synths[0].matrix().slots[2].depth, -0.5);
+        assert_eq!(e.synths[1].matrix().slots[2].depth, l2_default, "layer 2 untouched");
         // Clamp is honoured on the mirror too (params clamp to [-1, 1]).
-        e.set_param(ParamId::MatrixSlot2Depth as usize, 9.0);
+        e.set_param(l1(ParamId::MatrixSlot2Depth), 9.0);
         assert_eq!(e.synths[0].matrix().slots[2].depth, 1.0);
+        // A Layer-2 edit is private to layer 2.
+        e.set_param(clap_id_of(Layer::L2, ParamId::MatrixSlot2Depth), 0.25);
+        assert_eq!(e.synths[1].matrix().slots[2].depth, 0.25);
+        assert_eq!(e.synths[0].matrix().slots[2].depth, 1.0, "layer 1 unchanged");
     }
 
     #[test]
@@ -416,8 +448,8 @@ mod tests {
         // depth kills the VCA route the evaluator/bank reads, so the note is
         // silent. Proves the param → matrix → DSP path end-to-end.
         let mut e = Engine::new(48_000.0, 512);
-        e.set_param(ParamId::Env2Attack as usize, 0.001);
-        e.set_param(ParamId::MatrixSlot0Depth as usize, 0.0);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::MatrixSlot0Depth), 0.0);
         e.note_on(0, 60, 1.0);
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
@@ -437,8 +469,8 @@ mod tests {
         let loud = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
 
         let mut e2 = Engine::new(48_000.0, 512);
-        e2.set_param(ParamId::Env2Attack as usize, 0.001);
-        e2.set_param(ParamId::MasterVolume as usize, 0.35); // half of default 0.7
+        e2.set_param(l1(ParamId::Env2Attack), 0.001);
+        e2.set_param(l1(ParamId::MasterVolume), 0.35); // half of default 0.7 (global)
         e2.note_on(0, 60, 1.0);
         let mut l2 = vec![0.0; 512];
         let mut r2 = vec![0.0; 512];

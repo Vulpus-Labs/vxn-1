@@ -15,7 +15,7 @@
 //! `matrix_slotN_depth` keys and are deliberately *not* duplicated in the
 //! `[[matrix]]` rows.
 //!
-//! Pure main-thread mapping between a [`PluginState`] and the file text — no IO,
+//! Pure main-thread mapping between a [`LayerState`] and the file text — no IO,
 //! no clap, no UI. Reuses the shared [`vxn_preset`] scaffold (`Meta`, `Header`,
 //! `SCHEMA`, `value_for`, `PresetError`) so a third synth starts from it.
 
@@ -30,7 +30,7 @@ use crate::matrix::{
     SourceId,
 };
 use crate::params::{PARAMS, ParamId, Params};
-use crate::state::PluginState;
+use crate::state::LayerState;
 
 #[derive(Serialize, Deserialize)]
 struct PresetFile {
@@ -119,8 +119,8 @@ fn matrix_rows(matrix: &MatrixTable) -> Vec<MatrixRowFile> {
     out
 }
 
-/// Serialise a [`PluginState`] + metadata to a sparse TOML preset.
-pub fn write_preset(meta: &Meta, state: &PluginState) -> Result<String, String> {
+/// Serialise a [`LayerState`] + metadata to a sparse TOML preset.
+pub fn write_preset(meta: &Meta, state: &LayerState) -> Result<String, String> {
     let file = PresetFile {
         schema: SCHEMA,
         meta: meta.clone(),
@@ -272,9 +272,9 @@ pub fn read_preset(
 }
 
 /// Parse a TOML preset to `(meta, state, warnings)`.
-pub fn from_toml_str(s: &str) -> Result<(Meta, PluginState, Vec<String>), PresetError> {
+pub fn from_toml_str(s: &str) -> Result<(Meta, LayerState, Vec<String>), PresetError> {
     let (meta, params, matrix, warnings) = read_preset(s)?;
-    Ok((meta, PluginState { params, matrix }, warnings))
+    Ok((meta, LayerState { params, matrix }, warnings))
 }
 
 #[cfg(test)]
@@ -289,7 +289,7 @@ mod tests {
         }
     }
 
-    fn sample_state() -> PluginState {
+    fn sample_state() -> LayerState {
         let mut params = Params::default();
         params.set(ParamId::Cutoff, 1234.0);
         params.set(ParamId::Osc1Wave, 3.0); // Pulse
@@ -310,7 +310,7 @@ mod tests {
             curve: Curve::Bipolar,
             scale_src: SourceId::ModWheel,
         };
-        PluginState { params, matrix }
+        LayerState { params, matrix }
     }
 
     #[test]

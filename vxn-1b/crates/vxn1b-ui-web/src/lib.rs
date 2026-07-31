@@ -135,10 +135,10 @@ fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
 }
 
-/// Single-patch: VXN1b has no Upper/Lower layer, so the faceplate's
-/// `patchCount` is fixed at 1. Spliced into the `__PATCH_COUNT__` slot the
-/// forked bridge.js still carries.
-const PATCH_COUNT: u32 = 1;
+/// Two-layer surface (0216): the faceplate's `patchCount` is the engine's
+/// per-layer patch-param count, so bridge.js translates a Layer-2 binding by
+/// `+PATCH_COUNT`. Spliced into the `__PATCH_COUNT__` slot.
+const PATCH_COUNT: u32 = vxn1b_engine::PATCH_COUNT as u32;
 
 /// Web boot head. Spliced into the `__WEB_BOOT_HEAD__` slot of
 /// `faceplate.html`, which sits just BEFORE the inlined faceplate `<script>`,
@@ -329,7 +329,6 @@ const DISPATCH_JS: &str = include_str!("../assets/dispatch.js");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vxn1b_engine::params::PARAMS;
 
     // Assemble once per test run — `build_faceplate_html` walks every CLAP
     // id to build the descriptor map, so caching keeps the checks cheap.
@@ -368,13 +367,11 @@ mod tests {
         let json = build_params_json();
         let v: serde_json::Value = serde_json::from_str(&json).expect("descriptor JSON");
         let obj = v.as_object().expect("object root");
-        // Every entry in the table is present (identity map, CLAP id = index).
-        let present = PARAMS
-            .iter()
-            .enumerate()
-            .filter(|(id, _)| desc_for_clap_id(*id).is_some())
-            .count();
+        // Every CLAP id is present: the two-layer surface (0216) — two patch
+        // blocks + globals, not the inner per-synth table.
+        let present = (0..TOTAL_PARAMS).filter(|id| desc_for_clap_id(*id).is_some()).count();
         assert_eq!(obj.len(), present, "params JSON entry count drift");
+        assert_eq!(obj.len(), TOTAL_PARAMS, "expected the full two-layer CLAP surface");
         // Every kind serialises to one of the four discriminants.
         for (_id, desc) in obj {
             let kind = desc["kind"].as_str().unwrap_or("");

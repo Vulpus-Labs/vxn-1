@@ -39,11 +39,14 @@ pub use engine::{Engine, KeyMode, KeyState, DEFAULT_SPLIT_POINT};
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
 pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
-pub use params::{ParamId, Params, TOTAL_PARAMS, desc_for_clap_id};
+pub use params::{
+    ClapRef, GLOBAL_PARAMS, Layer, PATCH_COUNT, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
+    clap_id_of, clap_module, clap_ref, desc_for_clap_id,
+};
 pub use preset::{Meta, PresetError, from_toml_str, read_preset, write_preset};
 pub use preset_io::EnginePresetStore;
 pub use shared::SharedParams;
-pub use state::PluginState;
+pub use state::{LayerState, PluginState};
 pub use synth::Synth;
 pub use voice::Voices;
 
