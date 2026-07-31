@@ -20,7 +20,11 @@
 //! per-voice pressure spine. Pitch-bend drives the hardwired global bend
 //! (ADR 0001 §3), not a matrix route.
 
+mod gui;
+
+use clack_extensions::gui::PluginGui;
 use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_extensions::{audio_ports::*, note_ports::*, params::*};
 use clack_plugin::events::event_types::NoteExpressionType;
 use clack_plugin::events::spaces::CoreEventSpace;
@@ -29,10 +33,19 @@ use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
 use std::io::{Read, Write};
-use std::sync::Arc;
-use vxn_core_app::ParamKind;
-use vxn_core_clap::batch_range;
-use vxn1b_engine::{Engine, SharedParams, TOTAL_PARAMS, desc_for_clap_id};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+use vxn_core_app::{Controller, CorpusHandle, ParamId as AppParamId, ParamKind, ViewEvent};
+use vxn_core_clap::{LocalParams, SharedStore, batch_range};
+use vxn1b_engine::{Engine, EnginePresetStore, SharedParams, TOTAL_PARAMS, desc_for_clap_id};
+
+/// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
+/// Plugin code unwinds on panic, so a panic during `tick` could poison the
+/// controller's outer mutex; we don't want every subsequent flush to fail. The
+/// guarded data is still valid (mid-write at worst). Used by [`gui`] too.
+pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// A CLAP channel `Match` narrowed to a concrete MIDI channel; `All`/wildcard
 /// (an omni or non-MPE host) folds to channel 0 — the degenerate single-channel
@@ -45,11 +58,34 @@ fn channel_of(m: Match<u16>) -> u8 {
     }
 }
 
-/// Route one CLAP event onto the engine (and, for param writes, the shared
-/// store so `get_value` reflects host automation). Bespoke rather than the
-/// shared `dispatch_event` because VXN1b threads MIDI channel + per-note
-/// pressure the shared `EngineNotes` surface can't carry.
-fn dispatch(engine: &mut Engine, shared: &SharedParams, event: &UnknownEvent) {
+/// Adapts the engine's [`SharedParams`] to the shared
+/// [`vxn_core_clap::SharedStore`] trait the generic [`LocalParams`] is written
+/// against. Orphan rules forbid `impl SharedStore for SharedParams` here (both
+/// are foreign to this crate), so the audio thread wraps a shared ref per call.
+/// Forwards `get`/`set` plus the live UI-gesture flag so [`LocalParams::emit`]
+/// brackets a knob drag into a single host automation edit.
+struct StoreRef<'a>(&'a SharedParams);
+
+impl SharedStore for StoreRef<'_> {
+    #[inline]
+    fn get(&self, id: usize) -> f32 {
+        self.0.get(id)
+    }
+    #[inline]
+    fn set(&self, id: usize, value: f32) {
+        self.0.set(id, value)
+    }
+    #[inline]
+    fn gesture(&self, id: usize) -> bool {
+        self.0.gesture(id)
+    }
+}
+
+/// Route one CLAP event onto the engine. Bespoke rather than the shared
+/// `dispatch_event` because VXN1b threads MIDI channel + per-note pressure the
+/// shared `EngineNotes` surface can't carry. `ParamValue` is *not* handled here
+/// — the audio thread folds param writes through [`LocalParams`] instead.
+fn dispatch(engine: &mut Engine, event: &UnknownEvent) {
     match event.as_core_event() {
         Some(CoreEventSpace::NoteOn(e)) => {
             if let Match::Specific(key) = e.key() {
@@ -67,16 +103,6 @@ fn dispatch(engine: &mut Engine, shared: &SharedParams, event: &UnknownEvent) {
         {
             if let Match::Specific(key) = e.key() {
                 engine.poly_pressure(channel_of(e.channel()), key as u8, e.value() as f32);
-            }
-        }
-        Some(CoreEventSpace::ParamValue(e)) => {
-            if let Some(pid) = e.param_id() {
-                let idx = pid.get() as usize;
-                let value = e.value() as f32;
-                // Store first (so a concurrent main-thread `get_value` sees the
-                // new value), then drive the engine.
-                shared.set(idx, value);
-                engine.set_param(idx, value);
             }
         }
         Some(CoreEventSpace::Midi(e)) => {
@@ -122,7 +148,9 @@ impl Plugin for VxnPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
-            .register::<PluginState>();
+            .register::<PluginState>()
+            .register::<PluginGui>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -146,7 +174,20 @@ impl DefaultPluginFactory for VxnPlugin {
         host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        Ok(VxnMainThread { _host: host, shared })
+        // The editor's controller (E038) shares the same `Arc<SharedParams>` as
+        // the audio path, so a UI edit and host automation land in one store.
+        let (controller, view_rx, corpus) =
+            Controller::new(shared.params.clone(), Box::new(EnginePresetStore::new()));
+        Ok(VxnMainThread {
+            host,
+            shared,
+            controller: Arc::new(Mutex::new(controller)),
+            view_rx: Arc::new(Mutex::new(view_rx)),
+            corpus,
+            gui: None,
+            timer: None,
+            last_seen: vec![f32::NAN; TOTAL_PARAMS],
+        })
     }
 }
 
@@ -158,12 +199,102 @@ pub struct VxnShared {
 
 impl PluginShared<'_> for VxnShared {}
 
+/// Main-thread state. Beyond the shared param store it now owns the editor's
+/// [`Controller`] (the sole non-audio model mutator), the view-event channel it
+/// emits, the shared preset corpus, the live editor handle, and the host timer
+/// that drives the view-event drain (E038).
 pub struct VxnMainThread<'a> {
-    _host: HostMainThreadHandle<'a>,
+    /// Host main-thread handle. `gui::set_parent` / `on_timer` use it to
+    /// register / unregister the periodic timer.
+    host: HostMainThreadHandle<'a>,
     shared: &'a VxnShared,
+    /// The editor's controller, wrapped so the timer drain and the params
+    /// `flush` path share one instance without crossing thread boundaries
+    /// (both are main-thread, so no real contention).
+    controller: Arc<Mutex<Controller<SharedParams>>>,
+    /// View-bound events the controller emits; the timer drains them into the
+    /// WebView. Stay queued (bounded, drop-on-full) while the GUI is closed.
+    view_rx: Arc<Mutex<Receiver<ViewEvent>>>,
+    /// Shared snapshot of the preset corpus for the editor's browser panel;
+    /// the controller republishes it after every disk op.
+    corpus: CorpusHandle,
+    /// The live editor window, while the GUI is open.
+    gui: Option<vxn1b_ui_web::EditorHandle>,
+    /// Editor's main-thread timer (the host's extension + id), driving the
+    /// view-event drain. `None` when the GUI is closed or the host has no
+    /// `timer-support`.
+    timer: Option<(HostTimer, TimerId)>,
+    /// Last param values seen by the diff pump. The audio thread writes
+    /// [`SharedParams`] directly on host automation without routing through the
+    /// controller, so the editor would otherwise never see it. Each tick diffs
+    /// the store against this vector and pushes a `ParamChanged` for any drift.
+    /// Seeded all-`NaN` so the first tick after open broadcasts the whole table.
+    last_seen: Vec<f32>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
+
+impl<'a> VxnMainThread<'a> {
+    /// Drain the controller's view-event queue into the live WebView. No-op
+    /// when there is no GUI.
+    fn drain_view_events(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let rx = lock_mut(&self.view_rx);
+        while let Ok(ev) = rx.try_recv() {
+            handle.push_view_event(ev);
+        }
+    }
+
+    /// Diff the shared store against `last_seen` and push a `ParamChanged` for
+    /// any drift. This catches audio-thread automation: `process()` writes
+    /// `SharedParams` directly, so the controller's view queue stays empty for
+    /// those changes. NaN-aware (a NaN seed forces a full first broadcast).
+    /// VXN1b has no tempo-sync rate/time partners, so — unlike VXN1's
+    /// `vxn_app::diff_params` — there is no sync-flip partner refresh here.
+    fn push_param_diffs(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            return;
+        };
+        let store = &*self.shared.params;
+        for (id, seen) in self.last_seen.iter_mut().enumerate() {
+            let plain = store.get(id);
+            if plain == *seen {
+                continue;
+            }
+            *seen = plain;
+            let display = desc_for_clap_id(id).map(|d| d.display(plain)).unwrap_or_default();
+            handle.push_view_event(ViewEvent::ParamChanged {
+                id: AppParamId::new(id),
+                plain,
+                norm: store.get_normalized(id),
+                display,
+            });
+        }
+    }
+}
+
+impl<'a> PluginTimerImpl for VxnMainThread<'a> {
+    fn on_timer(&mut self, _id: TimerId) {
+        // Pull UI-posted intents into the model first so the ViewEvents they
+        // generate land in `view_rx` before we drain it — saves a tick of
+        // round-trip latency on a knob drag. VXN1b has no custom UI/host
+        // events, so the no-custom tick suffices.
+        lock_mut(&self.controller).tick_no_custom();
+        self.drain_view_events();
+        // Then catch any audio-thread automation the controller never saw. The
+        // two pushes can echo the same param twice in a tick; the WebView
+        // dedupes ParamChanged by id in `flush_view_events`, so the overlap is
+        // free on the wire.
+        self.push_param_diffs();
+        // One `evaluate_script` per tick: the pushes above only buffered into
+        // the EditorHandle; this is the single bridge call.
+        if let Some(handle) = self.gui.as_ref() {
+            handle.flush_view_events();
+        }
+    }
+}
 
 /// Audio-thread processor: the engine + render scratch. Syncs its params +
 /// topology from the shared store on activate and whenever a state load raises
@@ -171,6 +302,10 @@ impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
 pub struct VxnAudioProcessor<'a> {
     engine: Engine,
     shared: &'a VxnShared,
+    /// Per-block mirror of the param table: folds UI edits (via the shared
+    /// store) and sub-block host automation, pushes the working values into the
+    /// engine each block, and echoes UI edits back to the host.
+    local: LocalParams<TOTAL_PARAMS>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
 }
@@ -190,6 +325,9 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         engine.load_state(shared.params.engine_state());
         Ok(Self {
             engine,
+            // Seed the mirror from the store *after* `load_state`, so it starts
+            // aligned with the active patch (no spurious first-block echo).
+            local: LocalParams::new(&StoreRef(&shared.params)),
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
@@ -207,6 +345,17 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             self.engine.load_state(self.shared.params.engine_state());
         }
 
+        // Fold UI edits made since the last process into the local mirror, then
+        // drive the engine from the working values (UI + last host state). This
+        // is the path that makes faceplate knob edits audible.
+        self.local.fetch_ui_changes(&StoreRef(&self.shared.params));
+        {
+            let engine = &mut self.engine;
+            for (i, &v) in self.local.values().iter().enumerate() {
+                engine.set_param(i, v);
+            }
+        }
+
         let mut output_port = audio
             .output_port(0)
             .ok_or(PluginError::Message("No output port"))?;
@@ -222,15 +371,23 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         }
 
         let engine = &mut self.engine;
-        let shared = &self.shared.params;
+        let local = &mut self.local;
         let l = &mut self.scratch_l[..frames];
         let r = &mut self.scratch_r[..frames];
 
         // Sub-block accurate: apply each event at its batch boundary, render the
-        // segment up to the next one.
+        // segment up to the next one. ParamValue folds through the local mirror
+        // (so host automation and UI edits reconcile); everything else routes
+        // through the bespoke note/MIDI dispatcher.
         for event_batch in events.input.batch() {
             for event in event_batch.events() {
-                dispatch(engine, shared, event);
+                if let Some(CoreEventSpace::ParamValue(_)) = event.as_core_event() {
+                    if let Some((idx, value)) = local.apply_input(event) {
+                        engine.set_param(idx, value);
+                    }
+                } else {
+                    dispatch(engine, event);
+                }
             }
             let (start, end) = batch_range(event_batch.sample_bounds(), frames);
             if start < end {
@@ -248,6 +405,12 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
                 ch[..n].copy_from_slice(&self.scratch_r[..n]);
             }
         }
+
+        // Fold host automation back into the shared store (so the UI/host see
+        // it) and echo UI edits to the host as gesture-bracketed param events.
+        self.local.publish(&StoreRef(&self.shared.params));
+        self.local
+            .emit(&StoreRef(&self.shared.params), events.output, frames as u32);
 
         Ok(ProcessStatus::Continue)
     }
@@ -362,8 +525,15 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
 impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
     fn flush(&mut self, input: &InputEvents, _output: &mut OutputEvents) {
         for event in input {
-            dispatch(&mut self.engine, &self.shared.params, event);
+            // Param writes fold through the mirror; notes/MIDI fall through to
+            // the bespoke dispatcher (`apply_input` returns None for them).
+            if let Some((idx, value)) = self.local.apply_input(event) {
+                self.engine.set_param(idx, value);
+            } else {
+                dispatch(&mut self.engine, event);
+            }
         }
+        self.local.publish(&StoreRef(&self.shared.params));
     }
 }
 
@@ -430,11 +600,23 @@ mod tests {
         l.iter().chain(r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()))
     }
 
+    /// Fold a ParamValue event through the same `LocalParams` mirror the audio
+    /// thread uses, then push the working values into the engine — the shape of
+    /// `process`'s param path.
+    fn apply_param(local: &mut LocalParams<TOTAL_PARAMS>, engine: &mut Engine, ev: &UnknownEvent) {
+        if let Some((idx, value)) = local.apply_input(ev) {
+            engine.set_param(idx, value);
+        }
+    }
+
     #[test]
     fn param_value_event_updates_store_and_engine() {
         let mut engine = Engine::new(48_000.0, 512);
         let shared = SharedParams::new();
-        dispatch(&mut engine, &shared, param_event(ParamId::Cutoff, 500.0).as_ref());
+        let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
+        apply_param(&mut local, &mut engine, param_event(ParamId::Cutoff, 500.0).as_ref());
+        // The mirror carries the host write; `publish` folds it into the store.
+        local.publish(&StoreRef(&shared));
         assert_eq!(shared.get(ParamId::Cutoff as usize), 500.0);
         assert_eq!(engine.param(ParamId::Cutoff as usize), 500.0);
     }
@@ -442,9 +624,8 @@ mod tests {
     #[test]
     fn note_on_event_makes_sound() {
         let mut engine = Engine::new(48_000.0, 512);
-        let shared = SharedParams::new();
         engine.set_param(ParamId::Env2Attack as usize, 0.001);
-        dispatch(&mut engine, &shared, note_on(0, 60, 1.0).as_ref());
+        dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
         assert!(peak(&mut engine, 512) > 0.0, "a dispatched note must sound");
     }
 
@@ -454,10 +635,28 @@ mod tests {
         // changes the sound. Zeroing the default Env2→Amp slot silences the note.
         let mut engine = Engine::new(48_000.0, 512);
         let shared = SharedParams::new();
+        let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
         engine.set_param(ParamId::Env2Attack as usize, 0.001);
-        dispatch(&mut engine, &shared, param_event(ParamId::MatrixSlot0Depth, 0.0).as_ref());
-        dispatch(&mut engine, &shared, note_on(0, 60, 1.0).as_ref());
+        apply_param(&mut local, &mut engine, param_event(ParamId::MatrixSlot0Depth, 0.0).as_ref());
+        dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
         assert_eq!(peak(&mut engine, 512), 0.0, "zeroed amp-slot depth ⇒ silence");
+    }
+
+    /// The bug fix: a UI edit written into the shared store (no CLAP event)
+    /// reaches the engine. `fetch_ui_changes` pulls the store into the mirror,
+    /// then the mirror's working values drive the engine — mirroring `process`.
+    #[test]
+    fn ui_edit_via_shared_store_reaches_engine() {
+        let mut engine = Engine::new(48_000.0, 512);
+        let shared = SharedParams::new();
+        let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
+        // UI edit: controller writes the store directly, no CLAP event.
+        shared.set(ParamId::Cutoff as usize, 777.0);
+        assert!(local.fetch_ui_changes(&StoreRef(&shared)));
+        for (i, &v) in local.values().iter().enumerate() {
+            engine.set_param(i, v);
+        }
+        assert_eq!(engine.param(ParamId::Cutoff as usize), 777.0);
     }
 
     #[test]

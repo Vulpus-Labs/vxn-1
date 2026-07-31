@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VXN1</title>
+<style>
+__CSS__
+</style>
+</head>
+<body>
+<div class="faceplate" id="faceplate">
+
+  <div class="banner">VULPUS LABS &mdash; VXN-1</div>
+
+  <!-- Preset bar (0049). Prev/next walk the combined Factory + User
+       list (controller-side via UiEvent::StepPreset); Browse toggles a
+       view-side `browserOpen` flag 0050 will bind a panel to; Save As
+       opens the 0048 floating popup, committing to the browser panel's
+       currently-selected folder. -->
+  <div class="preset-bar-slot" id="preset-bar-slot">
+    <button class="pbar-btn pbar-step" id="pbar-prev" type="button" aria-label="Previous preset">&lt;</button>
+    <div class="pbar-name" id="pbar-name"></div>
+    <button class="pbar-btn pbar-step" id="pbar-next" type="button" aria-label="Next preset">&gt;</button>
+    <button class="pbar-btn" id="pbar-browse" type="button">Browse</button>
+    <button class="pbar-btn" id="pbar-save-overwrite" type="button" disabled>Save</button>
+    <button class="pbar-btn" id="pbar-save" type="button">Save As</button>
+    <div class="pbar-spacer"></div>
+    <div class="status-pill" id="pbar-status"></div>
+  </div>
+
+  <!-- Preset browser panel (0050). Two-pane folders / presets list with a
+       case-insensitive substring search across the selected folder. Hidden
+       until the preset bar's Browse toggle flips on; populated from the
+       controller's corpus snapshot pushed via
+       `window.__vxn.applyPresetCorpus`. -->
+  <div class="browser-backdrop" id="browser-backdrop" hidden></div>
+  <div class="browser-panel" id="browser-panel" hidden>
+    <button class="browser-close" id="browser-close" type="button" aria-label="Close browser">&times;</button>
+    <div class="browser-search">
+      <input type="text" id="browser-search-input" placeholder="Search…" autocomplete="off" />
+      <button class="browser-search-clear" id="browser-search-clear" type="button" aria-label="Clear search">&times;</button>
+    </div>
+    <div class="browser-panes">
+      <div class="browser-pane browser-pane-folders" id="browser-folders"></div>
+      <div class="browser-pane browser-pane-presets" id="browser-presets"></div>
+    </div>
+  </div>
+
+  <!-- Row 1 — oscillators, mixer, filter. -->
+  <div class="row row-1" data-row="1">
+    <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —
+         the edit-layer toggle lands with the Voice panel in 0045. The faders
+         resolve by descriptor name, not CLAP id, so a `vxn_app::PatchParam`
+         reorder doesn't desync the HTML. -->
+    <div class="panel" data-name="Osc 1" data-layered>
+      <div class="panel-header">OSC 1</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="osc1_wave" data-label="Wave"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_octave" data-label="Oct"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_coarse" data-label="Semi"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_fine" data-label="Fine"></div>
+        <div class="ctl" data-control="fader" data-param="osc1_pw" data-label="PW"></div>
+      </div>
+    </div>
+    <!-- Osc 2 (0041a): identical control set to Osc 1, different param IDs. -->
+    <div class="panel" data-name="Osc 2" data-layered>
+      <div class="panel-header">OSC 2</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="osc2_wave" data-label="Wave"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_octave" data-label="Oct"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_coarse" data-label="Semi"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_fine" data-label="Fine"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_pw" data-label="PW"></div>
+      </div>
+    </div>
+    <!-- Mixer (0041a, 0061, 0062): four level faders + Col (White/Pink) switch
+         in the bottom strip. NoiseColor is a 2-variant enum; the Switch
+         primitive renders it as two exclusive labelled toggles. Sub is a
+         square one octave below osc1, phase-locked to the source's flipflop. -->
+    <div class="panel" data-name="Mixer" data-layered>
+      <div class="panel-header">MIXER</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="osc1_level" data-label="Osc1"></div>
+        <div class="ctl" data-control="fader" data-param="osc2_level" data-label="Osc2"></div>
+        <div class="ctl" data-control="fader" data-param="sub_level" data-label="Sub"></div>
+        <div class="ctl" data-control="fader" data-param="noise_level" data-label="Noise"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="noise_color" data-label="Col"></div>
+      </div>
+    </div>
+    <!-- Filter (0043): HPF/Cutoff/Reso/Drive faders + Mode button group
+         (vizia's `Ctl::Select` for FilterMode renders as a labelled-toggle
+         stack via `enum_list_body`). Slope (12/24 dB) is a strip switch. -->
+    <div class="panel" data-name="Filter" data-layered>
+      <div class="panel-header">FILTER</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="buttongroup" data-param="filter_mode" data-label="Mode"></div>
+        <div class="ctl" data-control="fader" data-param="hpf_cutoff" data-label="HPF"></div>
+        <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
+        <div class="ctl" data-control="fader" data-param="resonance" data-label="Reso"></div>
+        <div class="ctl" data-control="fader" data-param="drive" data-label="Drive"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2 — LFOs and envelopes (source shaping). -->
+  <div class="row row-2" data-row="2">
+    <!-- LFO 1 (0042): per-voice. Shape (rotary) + Rate/Delay/Fade faders in
+         the main row; Sync + Free toggles in the bottom strip (matches the
+         vizia layout via `in_bottom_strip`). Free is a quirk — when on, it
+         keeps the LFO free-running and the Delay/Fade cells dim. -->
+    <div class="panel" data-name="LFO 1" data-layered>
+      <div class="panel-header">LFO 1</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="lfo1_shape" data-label="Shape"></div>
+        <div class="ctl" data-control="fader" data-param="lfo1_rate" data-label="Rate"></div>
+        <div class="ctl" data-control="fader" data-param="lfo1_delay_time" data-label="Delay"></div>
+        <div class="ctl" data-control="fader" data-param="lfo1_fade" data-label="Fade"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="lfo1_sync" data-label="Sync"></div>
+        <div class="ctl-strip" data-control="switch" data-param="lfo1_free_run" data-label="Free"></div>
+      </div>
+    </div>
+    <!-- LFO 2 (0042): one global oscillator. Shape + Rate up top, Sync in
+         the strip. Not layer-aware — params come from GLOBAL_PARAMS. -->
+    <div class="panel" data-name="LFO 2">
+      <div class="panel-header">LFO 2</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="wave" data-param="lfo2_shape" data-label="Shape"></div>
+        <div class="ctl" data-control="fader" data-param="lfo2_rate" data-label="Rate"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="lfo2_sync" data-label="Sync"></div>
+      </div>
+    </div>
+    <!-- Env 1 (0043): ADSR + Shape (Lin/Exp) in the strip. Vizia maps the
+         2-variant Shape enum to a switch and routes it through the bottom
+         strip alongside FilterSlope etc. -->
+    <div class="panel" data-name="Env 1" data-layered>
+      <div class="panel-header">ENV 1</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="env1_attack" data-label="A"></div>
+        <div class="ctl" data-control="fader" data-param="env1_decay" data-label="D"></div>
+        <div class="ctl" data-control="fader" data-param="env1_sustain" data-label="S"></div>
+        <div class="ctl" data-control="fader" data-param="env1_release" data-label="R"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="env1_shape" data-label="Shape"></div>
+      </div>
+    </div>
+    <div class="panel" data-name="Env 2" data-layered>
+      <div class="panel-header">ENV 2</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="env2_attack" data-label="A"></div>
+        <div class="ctl" data-control="fader" data-param="env2_decay" data-label="D"></div>
+        <div class="ctl" data-control="fader" data-param="env2_sustain" data-label="S"></div>
+        <div class="ctl" data-control="fader" data-param="env2_release" data-label="R"></div>
+      </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="env2_shape" data-label="Shape"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 3 — voice, dynamics, effects, master (0208). -->
+  <div class="row row-3" data-row="3">
+    <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
+         descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
+         the display permutation via `data-order`); Detune with its mode-aware
+         top (50 ct Unison, 20 ct Twin) and the Legato toggle drawn beneath the
+         fader; Glide fader (0 = off); Spread fader. Legato is *not* its own
+         column — the detune-legato primitive handles both params. -->
+    <div class="panel" data-name="Voice" data-layered>
+      <div class="panel-header">VOICE</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="buttongroup" data-param="assign_mode" data-label="Assign" data-order="0,3,1,2"></div>
+        <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="assign_mode"></div>
+        <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
+        <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
+      </div>
+    </div>
+    <!-- Dynamics (E037 / 0207, reworked 0208): compressor + soft-drive in its
+         own bottom-row panel, sat to the LEFT of FX. On/off is a header toggle
+         (VXN1 idiom) bound to dynamics_on. The six kernel params render as
+         rotary dials in a 3×2 grid (mirrors vxn-2's Dynamics pane) so the
+         panel stays narrow; Mix stays a vertical fader beside the grid. -->
+    <div class="panel" data-name="Dynamics" data-header-toggle>
+      <div class="panel-header">
+        <span class="panel-header-toggle-slot" data-control="header-switch" data-param="dynamics_on"></span>
+        <span class="panel-header-title">DYNAMICS</span>
+      </div>
+      <div class="panel-body dynamics-body">
+        <div class="dial-grid">
+          <div class="ctl" data-control="dial" data-param="dynamics_threshold" data-label="Thresh"></div>
+          <div class="ctl" data-control="dial" data-param="dynamics_ratio" data-label="Ratio"></div>
+          <div class="ctl" data-control="dial" data-param="dynamics_attack" data-label="Atk"></div>
+          <div class="ctl" data-control="dial" data-param="dynamics_release" data-label="Rel"></div>
+          <div class="ctl" data-control="dial" data-param="dynamics_makeup" data-label="Mkup"></div>
+          <div class="ctl" data-control="dial" data-param="dynamics_drive" data-label="Drive"></div>
+        </div>
+        <div class="ctl" data-control="fader" data-param="dynamics_mix" data-label="Mix"></div>
+      </div>
+    </div>
+    <!-- FX (E018 / 0098): Phaser / Chorus / Delay / Reverb behind a left
+         vertical tab strip. One panel for the four time-domain effects.
+         Each tab gets its own header-switch (phaser_on / chorus_on /
+         delay_on / reverb_on); only the active tab's switch is visible,
+         driven by the `data-active-tab` attribute on the panel root. Tab
+         buttons themselves are not params — `wireFxTabs` in panels.js
+         handles the click → swap. -->
+    <div class="panel" data-name="FX" data-active-tab="phaser">
+      <div class="panel-header">FX</div>
+      <div class="panel-body fx-body">
+        <div class="fx-tabs">
+          <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="phaser_on"></span>
+            <span class="fx-tab-label">PHASER</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-chorus" data-tab="chorus">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="chorus_on"></span>
+            <span class="fx-tab-label">CHORUS</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-delay" data-tab="delay">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="delay_on"></span>
+            <span class="fx-tab-label">DELAY</span>
+          </button>
+          <button type="button" class="fx-tab fx-tab-reverb" data-tab="reverb">
+            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="reverb_on"></span>
+            <span class="fx-tab-label">REVERB</span>
+          </button>
+        </div>
+        <div class="fx-pane fx-pane-phaser">
+          <div class="ctl" data-control="fader" data-param="phaser_rate" data-label="Rate"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_fb" data-label="FB"></div>
+          <div class="ctl" data-control="fader" data-param="phaser_mix" data-label="Mix"></div>
+        </div>
+        <div class="fx-pane fx-pane-chorus">
+          <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
+          <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
+          <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
+        </div>
+        <div class="fx-pane fx-pane-delay">
+          <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+          <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
+          <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
+        </div>
+        <div class="fx-pane fx-pane-reverb">
+          <div class="ctl" data-control="fader" data-param="reverb_size" data-label="Size"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_decay" data-label="Decay"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_damp" data-label="Damp"></div>
+          <div class="ctl" data-control="fader" data-param="reverb_mix" data-label="Mix"></div>
+        </div>
+      </div>
+    </div>
+    <!-- Master (0045): Tune/Volume faders in the body; Oversample (4 enum
+         variants: O/S OFF / 2x / 4x / 8x) renders as a horizontal row of
+         labelled toggles at the bottom of the panel (matches
+         `vxn_ui_vizia::in_bottom_strip` for Oversample), with the Limit
+         switch stacked underneath in its own row. The vertical strip
+         layout overrides the panel-strip's default `flex-direction: row`
+         (see `.master-strip` below). -->
+    <div class="panel" data-name="Master">
+      <div class="panel-header">MASTER</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="master_tune" data-label="Tune"></div>
+        <div class="ctl" data-control="fader" data-param="master_volume" data-label="Volume"></div>
+        <div class="ctl" data-control="fader" data-param="master_drift" data-label="Drift"></div>
+      </div>
+      <div class="panel-strip master-strip">
+        <div class="ctl-strip" data-control="switch" data-param="oversample" data-label="OvSmp"></div>
+        <div class="ctl-strip" data-control="switch" data-param="limiter_on" data-label="Limit"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+__WEB_BOOT_HEAD__
+<script>
+__BRIDGE_JS__
+__BROWSER_JS__
+__PANELS_JS__
+__DISPATCH_JS__
+</script>
+__WEB_BOOT_LOADER__
+</body>
+</html>

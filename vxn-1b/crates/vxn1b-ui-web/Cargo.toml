@@ -9,3 +9,11 @@ description = "VXN1b HTML faceplate — skeleton; compact faceplate + mod-matrix
 
 [dependencies]
 vxn-core-ui-web = { workspace = true }
+# Param table + descriptor schema the faceplate splices into `window.vxn.params`.
+vxn1b-engine = { workspace = true }
+# ParamDesc / ParamKind / Taper the descriptor JSON operates on, plus the
+# ControllerHandle / CorpusHandle the `open_editor` wrapper takes.
+vxn-core-app = { workspace = true }
+
+# IPC payloads are JSON; the descriptor-JSON builder shapes them by hand.
+serde_json = "1"

@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 vxn1b-engine = { workspace = true }
+# The HTML webview editor backend (E038): open_editor + EditorHandle, driven
+# from the CLAP gui + timer extensions wired here.
+vxn1b-ui-web = { workspace = true }
 # Shared clack helper (batch_range for event-batch → frame mapping). The
 # note/param dispatch is bespoke here — VXN1b is MPE-aware and the shared
 # EngineNotes dispatch is channel-agnostic (drops channel + per-note pressure).
@@ -26,5 +29,7 @@ clack-extensions = { workspace = true, features = [
     "note-ports",
     "params",
     "state",
+    "gui",
+    "timer",
     "clack-plugin",
 ] }

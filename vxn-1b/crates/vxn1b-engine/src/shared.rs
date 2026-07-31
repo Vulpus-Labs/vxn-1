@@ -20,8 +20,10 @@
 //! depths already mirror the depth params (the codec seeds them), so a reload
 //! that pushes params-then-topology can't disagree.
 //!
-//! No `gui`/gesture/echo machinery — this shell targets host-generic knobs
-//! (0204); the faceplate + its controller land in E038.
+//! **Gesture channel (E038).** Each param carries an `AtomicBool` gesture flag
+//! the editor raises/lowers around a knob drag, so the controller can bracket a
+//! UI drag into one host automation edit and suppress host echo mid-gesture.
+//! Off the E038 GUI path this stays all-`false` and costs nothing.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -35,6 +37,8 @@ use crate::state::PluginState;
 /// ([`PluginState::factory_default`]).
 pub struct SharedParams {
     values: Vec<AtomicU32>,
+    /// Per-param live-drag flags the editor raises around a UI gesture (E038).
+    gestures: Vec<AtomicBool>,
     matrix: Mutex<MatrixTable>,
     /// Raised on `restore_from_bytes`; the audio thread clears it and re-syncs.
     reload: AtomicBool,
@@ -53,8 +57,10 @@ impl SharedParams {
         let values = (0..TOTAL_PARAMS)
             .map(|i| AtomicU32::new(factory.params.get_index(i).to_bits()))
             .collect();
+        let gestures = (0..TOTAL_PARAMS).map(|_| AtomicBool::new(false)).collect();
         Self {
             values,
+            gestures,
             matrix: Mutex::new(factory.matrix),
             reload: AtomicBool::new(false),
         }
@@ -81,6 +87,43 @@ impl SharedParams {
     pub fn set(&self, id: usize, value: f32) {
         if let Some(desc) = PARAMS.get(id) {
             self.values[id].store(desc.clamp(value).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Read a CLAP-id param as a normalized `[0, 1]` position via its
+    /// descriptor's host mapping (`0.0` past the table). The editor's controller
+    /// echoes both plain and normalized on a `ParamChanged`.
+    #[inline]
+    pub fn get_normalized(&self, id: usize) -> f32 {
+        match PARAMS.get(id) {
+            Some(desc) => desc.to_normalized(self.get(id)),
+            None => 0.0,
+        }
+    }
+
+    /// Write a CLAP-id param from a normalized `[0, 1]` position (clamped to
+    /// range by `set`). No-op past the table.
+    #[inline]
+    pub fn set_normalized(&self, id: usize, norm: f32) {
+        if let Some(desc) = PARAMS.get(id) {
+            self.set(id, desc.from_normalized(norm));
+        }
+    }
+
+    /// Whether the editor is actively dragging `id` (E038). Host automation
+    /// echo is suppressed while this is set so the knob doesn't fight the drag.
+    #[inline]
+    pub fn gesture(&self, id: usize) -> bool {
+        self.gestures
+            .get(id)
+            .is_some_and(|g| g.load(Ordering::Relaxed))
+    }
+
+    /// Raise/lower the live-drag flag for `id` (E038). No-op past the table.
+    #[inline]
+    pub fn set_gesture(&self, id: usize, on: bool) {
+        if let Some(g) = self.gestures.get(id) {
+            g.store(on, Ordering::Relaxed);
         }
     }
 
@@ -135,6 +178,57 @@ impl SharedParams {
     /// by the audio thread on reload / activate).
     pub fn engine_state(&self) -> PluginState {
         self.to_state()
+    }
+}
+
+// ── ParamModel trait (vxn-core-app) ───────────────────────────────────────────
+//
+// The E038 editor's [`vxn_core_app::Controller`] drives the parameter store
+// through [`vxn_core_app::ParamModel`]; this is the adaptor that lets it. Pure
+// delegation to the inherent methods above. `SharedParams` stays trait-free on
+// the audio path (0204); the trait surface is only the controller's generic
+// seam. Lives in-crate so the orphan rules don't bite (both `SharedParams` and
+// the trait would be foreign to the clap crate).
+
+impl vxn_core_app::ParamModel for SharedParams {
+    fn total(&self) -> usize {
+        TOTAL_PARAMS
+    }
+
+    fn get(&self, id: vxn_core_app::ParamId) -> f32 {
+        SharedParams::get(self, id.raw())
+    }
+
+    fn set(&self, id: vxn_core_app::ParamId, plain: f32) {
+        SharedParams::set(self, id.raw(), plain);
+    }
+
+    fn get_normalized(&self, id: vxn_core_app::ParamId) -> f32 {
+        SharedParams::get_normalized(self, id.raw())
+    }
+
+    fn set_normalized(&self, id: vxn_core_app::ParamId, norm: f32) {
+        SharedParams::set_normalized(self, id.raw(), norm);
+    }
+
+    fn gesture(&self, id: vxn_core_app::ParamId) -> bool {
+        SharedParams::gesture(self, id.raw())
+    }
+
+    fn set_gesture(&self, id: vxn_core_app::ParamId, on: bool) {
+        SharedParams::set_gesture(self, id.raw(), on);
+    }
+
+    fn descriptor(&self, id: vxn_core_app::ParamId) -> Option<&'static vxn_core_app::ParamDesc> {
+        PARAMS.get(id.raw())
+    }
+
+    fn snapshot_bytes(&self) -> Vec<u8> {
+        SharedParams::snapshot_bytes(self)
+    }
+
+    fn restore_from_bytes(&self, blob: &[u8]) -> Result<(), String> {
+        SharedParams::restore_from_bytes(self, blob)
     }
 }
 

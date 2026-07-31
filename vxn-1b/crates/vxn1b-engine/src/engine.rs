@@ -37,8 +37,8 @@ pub struct Engine {
     banks: [RenderBank; 2],
     /// Global LFO 2, ticked once per control block and broadcast to both banks.
     lfo2: LfoCore,
-    /// Serial post-voice FX chain (0207): chorus → phaser → delay → reverb →
-    /// dynamics, run at the global OS rate before master volume.
+    /// Serial post-voice FX chain (0207): dynamics → chorus → phaser → delay →
+    /// reverb, run at the global OS rate before master volume.
     fx: FxChain,
     /// Host pitch-bend in `[-1, 1]` — the hardwired bend term (ADR §3) *and* the
     /// PitchWheel matrix source.

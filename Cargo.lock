@@ -2494,6 +2494,7 @@ dependencies = [
  "vxn-core-app",
  "vxn-core-clap",
  "vxn1b-engine",
+ "vxn1b-ui-web",
 ]
 
 [[package]]
@@ -2514,7 +2515,10 @@ dependencies = [
 name = "vxn1b-ui-web"
 version = "0.1.1"
 dependencies = [
+ "serde_json",
+ "vxn-core-app",
  "vxn-core-ui-web",
+ "vxn1b-engine",
 ]
 
 [[package]]

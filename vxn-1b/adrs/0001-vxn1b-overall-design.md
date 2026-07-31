@@ -196,12 +196,22 @@ faceplate cannot see what modulates what without opening the overlay — the
 "somewhat more opaque" outcome the product brief names. This is the deliberate
 trade for compactness and flexibility.
 
-### 8. FX — a single tab-switched section (Chorus / Phaser / Delay / Reverb / Dynamics)
+### 8. FX — a tabbed Chorus/Phaser/Delay/Reverb section + a standalone Dynamics panel
+
+> **Amended (0208/0209):** two divergences from the original §8, both driven by
+> the faceplate build. (1) **Dynamics is broken out into its own bottom-row
+> panel** (6 rotary dials + a Mix fader, VXN2 shape) rather than a fifth FX tab —
+> seven controls read better as knobs than as a cramped tab pane; the tabbed
+> section is therefore **four** effects (Chorus/Phaser/Delay/Reverb). (2) The
+> **serial chain runs Dynamics FIRST** — `dynamics → chorus → phaser → delay →
+> reverb` — so input compression/drive sits ahead of the modulation + time
+> effects (matches VXN2's FX bus and the faceplate order, Dynamics left of FX).
 
 VXN1 scatters its effects across separate faceplate panels (Chorus, Delay). In
-keeping with the compact-panel goal, VXN1b collapses effects into **one FX
-section with tab switching** — a single panel whose tab strip selects which
-effect's controls are shown. Five effects:
+keeping with the compact-panel goal, VXN1b collapses the four time/modulation
+effects into **one FX section with tab switching** — a single panel whose tab
+strip selects which effect's controls are shown — and gives **Dynamics its own
+panel**. Five effects total:
 
 - **Chorus, Phaser, Delay, Reverb** — all four kernels already exist in the
   shared `vxn-dsp` crate (`chorus.rs`, `phaser.rs`, `delay.rs`, `fdn_reverb.rs`)

@@ -1,6 +1,9 @@
 //! Serial post-voice FX chain (ticket 0207, epic E037).
 //!
-//! Order (ADR 0001 §8): **chorus → phaser → delay → reverb → dynamics**. Runs
+//! Order (ADR 0001 §8): **dynamics → chorus → phaser → delay → reverb** —
+//! dynamics first (input compression / drive ahead of the modulation + time
+//! effects), matching the faceplate (Dynamics left of FX) and VXN2's FX bus.
+//! Runs
 //! between the summed bank output and master volume, at the engine's global
 //! oversample rate (today 1×; the chain keys off the rate it's constructed at,
 //! so it follows the OS factor once that lands).
@@ -44,12 +47,14 @@ const DELAY_DAMPING: f32 = 0.3;
 /// ceiling). Allocated once at construction.
 const DELAY_MAX_SECONDS: f32 = 2.0;
 
-// Slot indices into the fade / on-state arrays, in chain order.
-const CHORUS: usize = 0;
-const PHASER: usize = 1;
-const DELAY: usize = 2;
-const REVERB: usize = 3;
-const DYNAMICS: usize = 4;
+// Slot indices into the fade / on-state arrays, in chain order. Dynamics runs
+// FIRST (input compression / drive ahead of the modulation + time effects),
+// matching the faceplate order (Dynamics left of FX) and VXN2's FX bus.
+const DYNAMICS: usize = 0;
+const CHORUS: usize = 1;
+const PHASER: usize = 2;
+const DELAY: usize = 3;
+const REVERB: usize = 4;
 const N_SLOTS: usize = 5;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
@@ -215,6 +220,8 @@ impl FxChain {
     pub fn process_block(&mut self, l: &mut [f32], r: &mut [f32]) {
         for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
             let (mut xl, mut xr) = (*ls, *rs);
+            let o = self.run_dynamics(xl, xr);
+            (xl, xr) = o;
             let o = self.run_chorus(xl, xr);
             (xl, xr) = o;
             let o = self.run_phaser(xl, xr);
@@ -222,8 +229,6 @@ impl FxChain {
             let o = self.run_delay(xl, xr);
             (xl, xr) = o;
             let o = self.run_reverb(xl, xr);
-            (xl, xr) = o;
-            let o = self.run_dynamics(xl, xr);
             (xl, xr) = o;
             *ls = xl;
             *rs = xr;

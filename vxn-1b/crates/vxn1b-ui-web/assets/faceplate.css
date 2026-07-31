@@ -1,0 +1,720 @@
+/* Faceplate scaffold — VXN1b compact 3-row layout (0209, ADR 0001 §7).
+   760×480 logical (EDITOR_WIDTH / EDITOR_HEIGHT in lib.rs), 10px outer
+   padding, 8px vertical gap between banner / preset-bar / 3 rows, 6px
+   horizontal gap between panels in a row. Panel height is derived to fit
+   3 rows inside the 480px window (see `--panel-h`). CSS vars are named
+   after the vxn-ui Rust constants so the mapping stays obvious; pixel
+   literals stay out of selectors so a future resize policy is one
+   variable change. */
+:root {
+  /* Palette (matches vxn-ui-vizia's STYLE block). */
+  --face-bg: #2b2b2b;
+  --panel-bg: #1c1c1c;
+  --panel-bg-hi: #2f2f2f;        /* subtle top-left highlight for the panel gradient */
+  --panel-border: #0e0e0e;
+  --panel-corner: 4px;
+  --header-bg: #a7cfe2;
+  --header-fg: #141414;
+  --banner-fg: #a7cfe2;
+  --text: #d6d6d6;
+  --ctl-label: #aeaeae;
+  --ctl-value: #d9701b;          /* orange readout — Vizia .ctl-value */
+  --track-bg: #0e0e0e;
+  --track-fill: #d9701b;
+  /* Fader fill (the lit portion below/behind the knob): a fixed pale→bright
+     blue gradient the knob travels over, revealing more of it as it rises. */
+  --fader-fill-pale: #35507e;
+  --fader-fill-bright: #6cb1ff;
+  --thumb-bg: #87afb2;
+  --thumb-border: #a7cfe2;       /* matches --glyph-active / --knob-indicator */
+  --glyph: #888888;
+  --glyph-active: #a7cfe2;
+  --knob-face: #2a2a2a;
+  --knob-rim: #444444;
+  --knob-dimple: #222222;
+  --knob-dimple-rim: #333333;
+  --knob-indicator: #a7cfe2;       /* matches --glyph-active */
+
+  /* Geometry. Compact 3-row layout: with banner (26) + preset-bar (30) +
+     4×8 vgaps + 2×10 padding = 108px of chrome. Rows 1–2 are 124px; the
+     bottom row (Voice/FX/Dynamics/Master) is taller (--panel-h-3) so Voice's
+     Legato toggle and Master's stacked Oversample+Limit strip clear the denser
+     content instead of overlapping it. 108 + 124 + 124 + 164 = 520px window
+     (see EDITOR_HEIGHT). Width widened from the initial 760 to give the top
+     row (esp. Filter's six controls) breathing room and to fit Dynamics as its
+     own bottom-row panel. */
+  --editor-w: 940px;
+  --pad-outer: 10px;
+  --banner-h: 26px;
+  --preset-bar-h: 30px;
+  --panel-h: 124px;           /* PANEL_H — rows 1–2 */
+  --panel-h-3: 164px;         /* PANEL_H_3 — bottom row, taller for denser panels */
+  --col-h: 90px;              /* COL_H — per-control column inside a panel */
+  --fader-h: 56px;            /* FADER_H — fader travel */
+  --dial: 62px;               /* DIAL — selector-knob box */
+  --panel-pad: 5px;
+  --panel-vgap: 4px;
+  --row-vgap: 8px;
+  --row-hgap: 6px;
+  --header-h: 16px;
+  --header-toggle-slot: 16px; /* reserves the Chorus/Delay header switch (0045) */
+  --ctl-label-h: 12px;
+  --ctl-value-h: 12px;
+  --ctl-gap: 2px;
+  --fader-track-w: 4px;
+  --thumb-w: 18px;
+  --thumb-h: 6px;
+  --wave-knob-size: 64px;     /* matches the prototype's "Compact" variant */
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--face-bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans Condensed", -apple-system, system-ui, sans-serif;
+  /* Disable text selection across the faceplate — knobs / faders behave more
+     like physical controls than text. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.faceplate {
+  width: var(--editor-w);
+  box-sizing: border-box;
+  padding: var(--pad-outer);
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-vgap);
+}
+
+.banner {
+  height: var(--banner-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  color: var(--banner-fg);
+  font-size: 16px;
+  letter-spacing: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Preset bar (0049). Sits in the 30px row between banner and Row 1.
+   Carries the current preset name, prev/next walker buttons over the
+   combined Factory+User list, a Browse toggle (binds to 0050's browser
+   panel), and a Save As button (opens the 0048 floating popup). The
+   status chip is the same `.status-pill` primitive 0046 introduced —
+   re-anchored from the lower-right corner to the right of the name
+   (ticket §Notes). */
+.preset-bar-slot {
+  height: var(--preset-bar-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 6px;
+  box-sizing: border-box;
+  color: var(--text);
+}
+.pbar-btn {
+  /* Palette vars so a theme tweak is one edit. */
+  background: var(--knob-face);
+  border: 1px solid var(--knob-rim);
+  border-radius: 2px;
+  color: var(--ctl-label);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  height: 18px;
+  cursor: pointer;
+  user-select: none;
+}
+.pbar-btn:hover { border-color: var(--glyph-active); color: #ececec; }
+.pbar-btn:disabled,
+.pbar-btn:disabled:hover {
+  opacity: 0.4;
+  cursor: default;
+  border-color: var(--knob-rim);
+  color: var(--ctl-label);
+}
+.pbar-btn.active {
+  background: #1f9cff;
+  border-color: #84cdff;
+  color: #fff;
+}
+.pbar-step { padding: 0 6px; min-width: 18px; text-align: center; }
+.pbar-name {
+  font-size: 12px;
+  color: var(--ctl-value);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  min-width: 150px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pbar-spacer { flex: 1 1 auto; }
+
+/* `.faceplate` is the positioned anchor for body-level popups. The preset
+   browser panel markup + CSS now live in the shared crate
+   (vxn_core_ui_web::PRESET_BROWSER_CSS, appended to this sheet at splice). */
+.faceplate { position: relative; }
+
+.row {
+  display: flex;
+  gap: var(--row-hgap);
+  height: var(--panel-h);
+}
+/* Bottom row is taller — its panels (Voice / FX / Master) pack denser content
+   (4-toggle assign group + Legato, 5 FX tabs, stacked Oversample+Limit) that
+   overlapped at the rows-1–2 height. */
+.row-3 { height: var(--panel-h-3); }
+
+.panel {
+  position: relative;             /* anchor for absolutely-placed .panel-strip */
+  /* Subtle diagonal wash — the grey lifts slightly toward the top-left. */
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  padding: var(--panel-pad);
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-vgap);
+  min-width: 0;
+  flex: 1 1 0;
+  box-sizing: border-box;
+}
+
+/* Per-row stretch shares (compact 3-row layout, ADR 0001 §7). flex-basis
+   is 0 so `flex-grow` gives a pure ratio.
+   Row 1 — Osc 1 · Osc 2 · Mixer · Filter.
+   Row 2 — LFO 1 · LFO 2 · Env 1 · Env 2.
+   Row 3 — Voice · FX · Master. */
+.row-1 .panel[data-name="Osc 1"]  { flex-grow: 1.2; }
+.row-1 .panel[data-name="Osc 2"]  { flex-grow: 1.2; }
+.row-1 .panel[data-name="Mixer"]  { flex-grow: 1.0; }
+.row-1 .panel[data-name="Filter"] { flex-grow: 1.55; }  /* densest — Mode group + 4 faders */
+
+.row-2 .panel[data-name="LFO 1"] { flex-grow: 1.2; }
+.row-2 .panel[data-name="LFO 2"] { flex-grow: 0.7; }
+.row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
+.row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
+
+/* Row 3 — Voice / Dynamics / FX / Master (0208). Dynamics moved left of FX
+   and re-shaped from seven vertical faders to a compact 3×2 dial grid + Mix
+   fader, so it no longer needs the widest share. FX hosts at most one tabbed
+   pane (4 faders + tab strip) at a time; Voice / Master stay compact. */
+.row-3 .panel[data-name="Voice"]    { flex-grow: 1.0; }
+.row-3 .panel[data-name="Dynamics"] { flex-grow: 1.15; }
+.row-3 .panel[data-name="FX"]       { flex-grow: 1.2; }
+.row-3 .panel[data-name="Master"]   { flex-grow: 1.1; }
+
+.panel-header {
+  height: var(--header-h);
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+}
+
+.panel[data-header-toggle] .panel-header {
+  justify-content: flex-start;
+  padding-left: 3px;
+  gap: 4px;
+}
+.panel[data-header-toggle] .panel-header-toggle-slot {
+  width: var(--header-toggle-slot);
+  height: var(--header-toggle-slot);
+  flex: 0 0 var(--header-toggle-slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel[data-header-toggle] .panel-header-title {
+  flex: 1 1 auto;
+  text-align: center;
+  margin-right: var(--header-toggle-slot);
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+  justify-content: space-evenly;
+}
+/* Panels whose first body child is a selector buttongroup anchor it to the
+   panel's left edge so the distance from panel padding → first button is
+   uniform across Filter / Cross Mod / Reverb. Subsequent faders flow with
+   a fixed gap rather than the body's default `space-evenly`. */
+.panel-body:has(> .ctl-buttongroup:first-child) {
+  justify-content: flex-start;
+  gap: 10px;
+}
+/* Left-anchored buttongroup left-aligns its own contents too so the box
+   edge sits at `--panel-pad` regardless of label / row widths — keeps the
+   distance from panel border to first selector uniform across panels. */
+.panel-body > .ctl-buttongroup:first-child {
+  align-items: flex-start;
+}
+
+/* ── Control primitives (0041) ──────────────────────────────────────────── */
+
+/* Common cell — a vertical stack of label, control, value. */
+.ctl {
+  position: relative;          /* anchor for the absolute .ctl-value popup */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--ctl-gap);
+  height: var(--col-h);
+  min-width: 0;
+}
+
+.ctl-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ctl-label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+  margin-bottom: 4px;
+}
+
+/* `.value-pop` moved to the shared `vxn-core-ui-web/assets/value-pop.css`
+   (0140); appended to this faceplate's `<style>` at splice time. */
+
+/* Status pill (0046) — inline chip in the preset bar, right of the
+   current name (0049 §Notes). Driven by the controller's `Status { line }`
+   ViewEvent (clamp warnings on preset load, save / load messages). Fades
+   after ~3s; pure CSS animation so the JS side just sets the line and
+   toggles the `visible` class. */
+.status-pill {
+  background: var(--track-bg);
+  border: 1px solid var(--glyph-active);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: #f6f6f6;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease-out;
+}
+.status-pill.visible { opacity: 1; }
+
+/* Fader — vertical track + thumb. Pointer ops issue Begin/EndGesture
+   brackets so the host's automation lane records as one event, not a
+   pixel storm. */
+.ctl-fader {
+  position: relative;
+  width: var(--thumb-w);
+  height: var(--fader-h);
+  cursor: ns-resize;
+  /* Hit area extends slightly past the track so a near-miss still grabs. */
+  touch-action: none;
+}
+.ctl-fader-track {
+  position: absolute;
+  left: calc((var(--thumb-w) - var(--fader-track-w)) / 2);
+  top: 0;
+  width: var(--fader-track-w);
+  height: 100%;
+  /* Dark backdrop; the lit fill is painted by ::after on top. */
+  background: var(--track-bg);
+  border-radius: 2px;
+}
+/* Midpoint marker — layered between the dark backdrop (below) and the lit
+   fill (above, ::after), so a fill risen past the midpoint covers it. */
+.ctl-fader-track::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 3px;
+  background: #3a3a3a;
+  z-index: 1;
+}
+/* Lit fill — a fixed-height pale→bright-blue gradient over the whole track
+   (pale at the bottom, bright near the top), revealed from the bottom up to
+   the knob via clip. `--fader-norm` (0..1) is set by setThumb on the cell. */
+.ctl-fader-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, var(--fader-fill-pale), var(--fader-fill-bright));
+  clip-path: inset(calc((1 - var(--fader-norm, 0)) * 100%) 0 0 0);
+  border-radius: 2px;
+  z-index: 2;
+}
+.ctl-fader-thumb {
+  position: absolute;
+  left: 0;
+  width: var(--thumb-w);
+  height: var(--thumb-h);
+  box-sizing: border-box;
+  background: var(--thumb-bg);
+  border: 2px solid var(--thumb-border);
+  border-radius: 1px;
+  transform: translateY(-50%);
+  top: 50%;
+  pointer-events: none;
+  /* Above the track backdrop, midpoint marker (z1) and lit fill (z2). */
+  z-index: 3;
+  /* Drop-shadow so the knob sits proud of the track, plus the faint rim glow. */
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 4px rgba(255, 255, 255, 0.15);
+}
+.ctl-fader.dragging .ctl-fader-thumb {
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 6px var(--ctl-value);
+}
+
+/* Rotary waveform selector (0041). SVG-based: knob face + rotating
+   indicator + glyph labels arranged at the corners (SW/NW/NE/SE) outside
+   the rim. All visuals + hit-testing live in the SVG; no DOM children to
+   reflow. Layout stability comes for free — the dial occupies a fixed
+   square (--wave-knob-size) regardless of state. */
+.ctl-wave {
+  width: var(--wave-knob-size);
+  height: var(--wave-knob-size);
+  cursor: grab;
+  touch-action: none;
+}
+.ctl-wave.dragging { cursor: grabbing; }
+
+/* Rotary dial (0208). Ported from vxn-2's `.dial`; a compact 36px SVG knob —
+   270° arc track + fill + circular face + rotating indicator line — used in
+   the Dynamics pane so six params fit a narrow 2-row grid instead of six
+   vertical faders. Palette reuses the shared knob/track/fader-fill vars so it
+   matches the wave knob and faders rather than vxn-2's hardcoded hexes. */
+.ctl-dial {
+  display: block;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.ctl-dial .dial-track {
+  fill: none;
+  stroke: var(--track-bg);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ctl-dial .dial-fill {
+  fill: none;
+  stroke: var(--fader-fill-bright);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ctl-dial .dial-face {
+  fill: var(--knob-face);
+  stroke: var(--knob-rim);
+  stroke-width: 0.5;
+}
+.ctl-dial .dial-indicator-line {
+  stroke: var(--knob-indicator);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.ctl-dial.dragging .dial-fill { stroke: #fff; }
+.ctl-dial.dragging .dial-indicator-line { stroke: #fff; }
+
+/* Dynamics pane (0208): six dials in a 3×2 grid on the left + the Mix fader
+   beside them. Kept narrow — the dials are 36px, so the whole panel reads
+   compact next to the taller vertical-fader panels. The dial cells carry no
+   `.ctl` column-flex; the grid owns their placement. */
+.dynamics-body {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.dial-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, auto);
+  gap: 4px 6px;
+  align-items: center;
+  justify-items: center;
+}
+.dial-grid > .ctl {
+  height: auto;                /* override the full-column .ctl height */
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 1px;
+}
+/* Mix fader beside the dial grid keeps the normal full-height column. */
+.dynamics-body > .ctl[data-control="fader"] { flex: 0 0 auto; }
+
+/* Bottom strip — selector/toggle controls (NoiseColor, FilterSlope, etc.)
+   relocated into the panel's free clearance below the main column row.
+   Absolutely placed so it never grows the panel or competes with ctl
+   columns for flex space. Mirrors the vizia editor's strip placement
+   (left: 8px, bottom: 4px). */
+.panel-strip {
+  position: absolute;
+  left: 8px;
+  bottom: 4px;
+  right: 5px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;           /* empty space passes through to body */
+}
+.panel-strip > * { pointer-events: auto; }
+
+/* Master's strip stacks Oversample (horizontal toggle row) over Limit
+   (single toggle) — `panel-strip` defaults to a single horizontal row,
+   so this is the one panel that overrides it. */
+.master-strip {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+/* ── FX panel (E018 / 0098) — tabbed Phaser/Chorus/Delay/Reverb ──────── */
+
+/* Body layout: vertical tab strip on the left, active pane on the right.
+   `.panel-body` default `space-evenly` would distribute the strip + four
+   panes; flex-start keeps the strip at the left edge and lets the active
+   pane take the remaining space. */
+.panel[data-name="FX"] .fx-body {
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* Four tab buttons stacked vertically. Each tab carries its own on/off
+   switch inside the button (left slot) — clicking the switch toggles
+   the *_on param; clicking elsewhere on the tab swaps the active pane.
+   Width tuned to fit "REVERB" + the switch slot. */
+.panel[data-name="FX"] .fx-tabs {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  flex: 0 0 52px;
+  padding-top: 8px;
+}
+.panel[data-name="FX"] .fx-tab {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--ctl-label);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 0 4px 0 6px;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-height: 0;
+  text-transform: uppercase;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+.panel[data-name="FX"] .fx-tab:hover { color: #d4d4d4; }
+.panel[data-name="FX"] .fx-tab.active {
+  border-left-color: #84cdff;
+  color: #ececec;
+}
+.panel[data-name="FX"] .fx-tab-switch {
+  /* Override `.panel[data-header-toggle] .panel-header-toggle-slot`'s
+     header-sized box — the in-tab switch is smaller and sits flush in
+     the tab's left padding. */
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel[data-name="FX"] .fx-tab-label {
+  flex: 1 1 auto;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Tab panes: 4-column grid so a fader's horizontal slot is the same
+   across tabs (cells don't shift when the active tab changes). Row 1
+   holds the fader columns; row 2 is reserved for per-pane strip
+   controls (delay's Sync sits under Time). Last column carries the Mix
+   fader on every tab that has one, so Mix lines up too. */
+.panel[data-name="FX"] .fx-pane {
+  display: none;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: 1fr 22px;
+  column-gap: 6px;
+  row-gap: 2px;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+/* `.ctl` defaults to a fixed 120 px column height that would push the
+   bottom strip row outside the FX panel's body clearance. Inside the
+   FX pane the cells size to their natural label+fader stack and pin
+   to the top of their grid row, so the reserved strip row stays
+   visible below. */
+.panel[data-name="FX"] .fx-pane > .ctl {
+  height: auto;
+  align-self: start;
+}
+.panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: grid; }
+.panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: grid; }
+.panel[data-name="FX"][data-active-tab="delay"]  .fx-pane-delay  { display: grid; }
+.panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
+
+/* Mix always rides the rightmost column so the Mix fader sits in the
+   same x-slot across all four tabs (chorus/delay have one gap before
+   it; phaser/reverb fill the gap with FB/Damp). */
+.panel[data-name="FX"] .fx-pane-chorus > [data-param="chorus_mix"],
+.panel[data-name="FX"] .fx-pane-delay  > [data-param="delay_mix"] {
+  grid-column: 4;
+}
+
+
+/* Toggle row — small box + inline label. Matches vizia .tg-row /
+   .tg-box / .tg-lbl exactly (#1f9cff active fill, 9×9 box, 7 px label). */
+.ctl-tg-row {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.ctl-tg-box {
+  width: 11px;
+  height: 11px;
+  background: #4a4a4a;
+  border: 1px solid #8a8a8a;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.ctl-tg-row:hover .ctl-tg-box { border-color: #c4c4c4; }
+.ctl-tg-row.active .ctl-tg-box {
+  background: #1f9cff;
+  border-color: #84cdff;
+  box-shadow: 0 0 6px #36b3ff;
+}
+.ctl-tg-lbl {
+  font-size: 9px;
+  color: #9a9a9a;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ctl-tg-row.active .ctl-tg-lbl { color: #ececec; }
+
+/* ButtonGroup — rendered exactly like a strip of toggles (same `.ctl-tg-row`
+   children) but inside a normal column with a label on top. Used for
+   Oversample / CrossModType / AssignMode. */
+.ctl-buttongroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+}
+.ctl-buttongroup .ctl-tg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+/* Dropdown — native <select> styled to match the dark palette. Fallback for
+   enums that don't fit ButtonGroup (too many variants, or a long name list). */
+.ctl-dropdown {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+}
+.ctl-dropdown select {
+  background: #1c1c1c;
+  color: var(--text);
+  border: 1px solid #444;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 4px;
+}
+.ctl-dropdown select:focus { outline: 1px solid var(--ctl-value); }
+
+/* Dimmed — applied to control cells whose param is gated by a sibling
+   (LFO 1's Delay/Fade dim while Free is on; Filter Slope dims when the
+   mode is Notch, where the DSP's `FilterMode::mix` ignores slope, see
+   vxn-dsp/src/ota_ladder.rs). Visual-only: pointer events still pass
+   through so DAW automation echoes still move the thumb. Same selector
+   covers both panel-body (`.ctl`) and panel-strip (`.ctl-strip`)
+   mounts. */
+.ctl.dimmed, .ctl-strip.dimmed { opacity: 0.4; }
+
+/* Header-switch box (Chorus / Delay, 0045) — a small toggle child of
+   `.panel-header-toggle-slot`. Sized to sit *inside* the 16 px header
+   bar, not fill it, so the box reads as a control on the header rather
+   than the header's whole left edge. Palette matches `.ctl-tg-box` but
+   the inactive border picks up a header-tinted shade so it reads as
+   part of the header chrome. */
+.panel-header-switch {
+  width: 10px;
+  height: 10px;
+  background: #4a4a4a;
+  border: 1px solid #2c4a59;
+  border-radius: 2px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.panel-header-switch:hover { border-color: #141414; }
+.panel-header-switch.active {
+  background: #1f9cff;
+  border-color: #84cdff;
+  box-shadow: 0 0 6px #36b3ff;
+}
+
+/* Voice panel's Detune column — a normal fader column. The Legato toggle
+   is created inside the cell by `makeDetuneLegato` but absolute-positioned
+   to the panel's bottom-left corner, so the detune column itself reads as
+   a plain fader column width-wise (0045). `position: static` overrides the
+   `.ctl` base's `position: relative` so the absolute legato child escapes
+   up to `.panel` (the nearest remaining positioned ancestor) instead of
+   anchoring to this cell. */
+.ctl-detune {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+  height: var(--col-h);
+  min-width: 0;
+}
+.ctl-detune-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.ctl-detune-legato {
+  position: absolute;
+  bottom: var(--panel-pad);
+  left: var(--panel-pad);
+}
+.ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
