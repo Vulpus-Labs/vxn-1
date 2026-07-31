@@ -148,6 +148,13 @@ impl Synth {
         self.voices.note_off(channel, note);
     }
 
+    /// Test helper: is this synth still holding (pressed, un-released) `note`?
+    /// The demux tests use it to check note-offs land on the owning synth (0215).
+    #[cfg(test)]
+    pub(crate) fn voices_holding(&self, note: u8) -> bool {
+        self.voices.is_holding(note)
+    }
+
     pub(crate) fn poly_pressure(&mut self, channel: u8, note: u8, value: f32) {
         self.voices.poly_pressure(channel, note, value);
     }

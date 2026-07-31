@@ -4,34 +4,114 @@
 //! [`crate::synth`]); the global block sums their voices, runs the single serial
 //! FX chain, and applies master volume.
 //!
-//! **Single-mode bypass.** Layer 2 is off by default (no control wires it on yet
-//! — MIDI demux / KeyMode is 0215). While off, synth 2 is neither driven nor
-//! ticked, so single mode is **byte-for-byte today's output at today's CPU**.
-//! When on, both synths currently receive the *same* events (broadcast; routing
-//! is 0215) and mix together before FX + master.
+//! **MIDI demux / KeyMode (0215, ADR 0002 §2–§3).** A thin demux sits in front
+//! of the two synths and routes events by the derived [`KeyMode`]:
+//!
+//! - **Single** (layer 2 off): all events → synth 1; synth 2 bypassed.
+//! - **Dual** (layer 2 on, split off): every event fanned to both synths.
+//! - **Split** (layer 2 on, split on): note-**ons** routed by pitch vs the split
+//!   point (below → Lower / synth 2, at/above → Upper / synth 1 — VXN1's
+//!   convention); CC / wheels / pressure fanned to both.
+//!
+//! **Note-offs are always broadcast to both synths, in every mode.** The owning
+//! synth releases; the other no-ops on the unmatched pitch. This fixes the
+//! split-move stuck-note bug (note-on routed at press time; split point moves;
+//! a routed note-off would reach the wrong synth) with no per-note owner map and
+//! no cut held notes — they ring out on their origin synth.
+//!
+//! **Single-mode bypass.** Layer 2 is off by default; while off, synth 2 is
+//! neither driven nor ticked, so single mode is **byte-for-byte today's output
+//! at today's CPU**.
 //!
 //! **Scope.** 1× oversampling only — the OS/decimation and FX section are
 //! shared/deferred (E037). FX + master are read transitionally from layer 1's
-//! param table; a dedicated global param block lands in 0220.
+//! param table; a dedicated global param block lands in 0220. The [`KeyState`]
+//! (layer-2 toggle + split enable + point) is non-automatable domain state; its
+//! serialisation into the two-layer `clap.state` blob lands in 0221 — this crate
+//! owns the record shape ([`KeyState::write`]/[`KeyState::read`]).
 
 use crate::fx::{FxChain, FxParams};
 use crate::matrix::MatrixTable;
 use crate::params::ParamId;
 use crate::state::PluginState;
 use crate::synth::{Synth, SynthSeeds};
+use std::io::{self, Read, Write};
 
 use vxn_dsp::CONTROL_BLOCK;
+
+/// Default split point (MIDI note) — middle C, matching VXN1
+/// ([`vxn-app` domain `DEFAULT_SPLIT_POINT`](../../../vxn-1/crates/vxn-app/src/domain.rs)).
+pub const DEFAULT_SPLIT_POINT: u8 = 60;
+
+/// Keyboard routing mode. **Derived** from the layer-2 on/off toggle and the
+/// split-enable flag (ADR 0002 §3), never stored directly — the two toggles are
+/// the single source of truth so the UI can't desync `KeyMode` from them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyMode {
+    /// Layer 2 off: synth 2 bypassed, all events → synth 1.
+    Single,
+    /// Layer 2 on, split off: every event fanned to both synths (full range).
+    Dual,
+    /// Layer 2 on, split on: note-ons partitioned at the split point.
+    Split,
+}
+
+/// The global keyboard-routing state: the two toggles plus the split point.
+/// Non-automatable (ADR 0002 §3) — it rides the plugin-state blob, not the CLAP
+/// param table. `KeyMode` is derived from it. Kept a self-contained record so
+/// the two-layer `clap.state` format (0221) can serialise it directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyState {
+    /// Layer 2 active. Off → [`KeyMode::Single`] (synth 2 bypassed).
+    pub layer2_on: bool,
+    /// Split enabled (only meaningful when `layer2_on`): on → [`KeyMode::Split`],
+    /// off → [`KeyMode::Dual`].
+    pub split_enabled: bool,
+    /// Split point (MIDI note): note-ons **below** go to Lower (synth 2), at or
+    /// above go to Upper (synth 1).
+    pub split_point: u8,
+}
+
+impl Default for KeyState {
+    fn default() -> Self {
+        Self { layer2_on: false, split_enabled: false, split_point: DEFAULT_SPLIT_POINT }
+    }
+}
+
+impl KeyState {
+    /// Derive the routing mode (ADR 0002 §3).
+    #[inline]
+    pub fn key_mode(&self) -> KeyMode {
+        match (self.layer2_on, self.split_enabled) {
+            (false, _) => KeyMode::Single,
+            (true, false) => KeyMode::Dual,
+            (true, true) => KeyMode::Split,
+        }
+    }
+
+    /// Write the 3-byte record `[layer2_on, split_enabled, split_point]`.
+    pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
+        w.write_all(&[self.layer2_on as u8, self.split_enabled as u8, self.split_point])
+    }
+
+    /// Read a 3-byte record. A short read is a hard error (corruption).
+    pub fn read(r: &mut impl Read) -> io::Result<Self> {
+        let mut b = [0u8; 3];
+        r.read_exact(&mut b)?;
+        Ok(Self { layer2_on: b[0] != 0, split_enabled: b[1] != 0, split_point: b[2] })
+    }
+}
 
 /// The full VXN1b engine: the global block over two synths.
 pub struct Engine {
     sample_rate: f32,
     max_frames: usize,
-    /// The two independent synths (layer 1 always on; layer 2 gated by
-    /// [`Self::layer2_on`]).
+    /// The two independent synths. Index 0 is Upper (synth 1, always on); index
+    /// 1 is Lower (synth 2, gated by [`KeyState::layer2_on`]).
     synths: [Synth; 2],
-    /// Whether layer 2 is active. Off → single mode (synth 2 fully bypassed). No
-    /// control wires this yet (0215); the plugin path leaves it `false`.
-    layer2_on: bool,
+    /// Keyboard routing state: layer-2 toggle + split enable + split point. The
+    /// derived [`KeyMode`] drives the demux. Defaults to single mode.
+    key: KeyState,
     /// The single global serial FX chain (0207): dynamics → chorus → phaser →
     /// delay → reverb, run over the summed synths before master volume.
     fx: FxChain,
@@ -50,7 +130,7 @@ impl Engine {
                 Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER1),
                 Synth::new(sample_rate, PluginState::factory_default(), &SynthSeeds::LAYER2),
             ],
-            layer2_on: false,
+            key: KeyState::default(),
             fx: FxChain::new(sample_rate),
         }
     }
@@ -88,47 +168,94 @@ impl Engine {
         self.synths[0].set_param(id, value);
     }
 
+    /// The current derived keyboard routing mode (ADR 0002 §3).
+    #[inline]
+    pub fn key_mode(&self) -> KeyMode {
+        self.key.key_mode()
+    }
+
+    /// The keyboard-routing state (for the two-layer state blob, 0221).
+    pub fn key_state(&self) -> KeyState {
+        self.key
+    }
+
+    /// Replace the keyboard-routing state wholesale (state / preset load, 0221).
+    pub fn set_key_state(&mut self, key: KeyState) {
+        self.key = key;
+    }
+
+    /// Turn layer 2 on/off — the Single↔Dual/Split gate (ADR 0002 §3).
+    pub fn set_layer2_on(&mut self, on: bool) {
+        self.key.layer2_on = on;
+    }
+
+    /// Enable/disable the keyboard split (only meaningful with layer 2 on).
+    pub fn set_split_enabled(&mut self, on: bool) {
+        self.key.split_enabled = on;
+    }
+
+    /// Set the split point (MIDI note). Held notes are unaffected — routing is
+    /// fixed at press time and note-offs broadcast, so moving the point never
+    /// strands a held voice.
+    pub fn set_split_point(&mut self, note: u8) {
+        self.key.split_point = note;
+    }
+
     pub fn set_pitch_bend(&mut self, bend: f32) {
         self.synths[0].set_pitch_bend(bend);
-        if self.layer2_on {
+        if self.key.layer2_on {
             self.synths[1].set_pitch_bend(bend);
         }
     }
 
     pub fn set_mod_wheel(&mut self, w: f32) {
         self.synths[0].set_mod_wheel(w);
-        if self.layer2_on {
+        if self.key.layer2_on {
             self.synths[1].set_mod_wheel(w);
         }
     }
 
-    /// Note-on. No demux yet (0215): layer 1 always; layer 2 too when on
-    /// (broadcast). Returns layer 1's allocated voice.
+    /// Note-on, demuxed by the current [`KeyMode`] (ADR 0002 §2): Single → synth
+    /// 1; Dual → both; Split → Lower (synth 2) below the split point, Upper
+    /// (synth 1) at/above. Returns the owning synth's allocated voice.
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
-        let v = self.synths[0].note_on(channel, note, velocity);
-        if self.layer2_on {
-            self.synths[1].note_on(channel, note, velocity);
+        match self.key.key_mode() {
+            KeyMode::Single => self.synths[0].note_on(channel, note, velocity),
+            KeyMode::Dual => {
+                let v = self.synths[0].note_on(channel, note, velocity);
+                self.synths[1].note_on(channel, note, velocity);
+                v
+            }
+            KeyMode::Split => {
+                if note < self.key.split_point {
+                    self.synths[1].note_on(channel, note, velocity)
+                } else {
+                    self.synths[0].note_on(channel, note, velocity)
+                }
+            }
         }
-        v
     }
 
+    /// Note-off — **always broadcast to both synths, in every mode** (ADR 0002
+    /// §2). The synth that started the note releases it; the other has no
+    /// matching held voice and no-ops. This is the split-move stuck-note fix.
     pub fn note_off(&mut self, channel: u8, note: u8) {
         self.synths[0].note_off(channel, note);
-        if self.layer2_on {
-            self.synths[1].note_off(channel, note);
-        }
+        self.synths[1].note_off(channel, note);
     }
 
+    /// Poly pressure → the matching voice on both synths when layer 2 is on
+    /// (fanned; ADR 0002 §2). The synth without that pitch held no-ops.
     pub fn poly_pressure(&mut self, channel: u8, note: u8, value: f32) {
         self.synths[0].poly_pressure(channel, note, value);
-        if self.layer2_on {
+        if self.key.layer2_on {
             self.synths[1].poly_pressure(channel, note, value);
         }
     }
 
     pub fn channel_pressure(&mut self, channel: u8, value: f32) {
         self.synths[0].channel_pressure(channel, value);
-        if self.layer2_on {
+        if self.key.layer2_on {
             self.synths[1].channel_pressure(channel, value);
         }
     }
@@ -161,7 +288,7 @@ impl Engine {
 
         // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
         self.synths[0].render_control_block(l, r);
-        if self.layer2_on {
+        if self.key.layer2_on {
             self.synths[1].render_control_block(l, r);
         }
 
@@ -338,7 +465,7 @@ mod tests {
 
         // Same, but with layer 2 on and detuned — output must differ.
         let mut dual = Engine::new(48_000.0, 512);
-        dual.layer2_on = true;
+        dual.set_layer2_on(true);
         dual.set_param(ParamId::Env2Attack as usize, 0.001);
         dual.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
         dual.synths[1].set_param(ParamId::Osc1Octave as usize, 1.0);
@@ -350,5 +477,154 @@ mod tests {
             l.iter().zip(&l2).any(|(x, y)| (x - y).abs() > 1e-6),
             "layer 2 on must change the mix"
         );
+    }
+
+    #[test]
+    fn key_mode_is_derived_from_toggles() {
+        let mut e = Engine::new(48_000.0, 512);
+        assert_eq!(e.key_mode(), KeyMode::Single, "layer 2 off → Single");
+        e.set_layer2_on(true);
+        assert_eq!(e.key_mode(), KeyMode::Dual, "layer 2 on, split off → Dual");
+        e.set_split_enabled(true);
+        assert_eq!(e.key_mode(), KeyMode::Split, "layer 2 on, split on → Split");
+        // Split-enable is inert while layer 2 is off — Single dominates.
+        e.set_layer2_on(false);
+        assert_eq!(e.key_mode(), KeyMode::Single, "split-enable ignored with layer 2 off");
+    }
+
+    #[test]
+    fn single_mode_leaves_synth2_silent() {
+        // Single: a note reaches synth 1 only. Synth 2, given a loud fast-attack
+        // patch, must stay silent because the demux never routes to it.
+        let mut e = Engine::new(48_000.0, 512);
+        e.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
+        e.note_on(0, 60, 1.0);
+        // Synth 2 holds no voice → tick it in isolation and it is silent.
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        e.synths[1].render_control_block(&mut l, &mut r);
+        let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert_eq!(peak, 0.0, "single mode must not route notes to synth 2");
+    }
+
+    #[test]
+    fn dual_fans_note_on_to_both_synths() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        e.synths[0].set_param(ParamId::Env2Attack as usize, 0.001);
+        e.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
+        e.note_on(0, 60, 1.0);
+        for s in 0..2 {
+            let mut l = vec![0.0; 512];
+            let mut r = vec![0.0; 512];
+            e.synths[s].render_control_block(&mut l, &mut r);
+            let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()));
+            assert!(peak > 0.0, "dual must drive synth {s}");
+        }
+    }
+
+    #[test]
+    fn split_routes_note_on_by_pitch() {
+        // Below the split → Lower (synth 2); at/above → Upper (synth 1).
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        e.set_split_enabled(true);
+        e.set_split_point(60);
+        for s in 0..2 {
+            e.synths[s].set_param(ParamId::Env2Attack as usize, 0.001);
+        }
+        e.note_on(0, 48, 1.0); // below → synth 2
+        e.note_on(0, 72, 1.0); // above → synth 1
+
+        let peak = |e: &mut Engine, s: usize| {
+            let mut l = vec![0.0; 512];
+            let mut r = vec![0.0; 512];
+            e.synths[s].render_control_block(&mut l, &mut r);
+            l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()))
+        };
+        assert!(peak(&mut e, 0) > 0.0, "note at/above split must sound on synth 1");
+        assert!(peak(&mut e, 1) > 0.0, "note below split must sound on synth 2");
+
+        // The at-split boundary note (== split point) is Upper, not Lower.
+        let mut e2 = Engine::new(48_000.0, 512);
+        e2.set_layer2_on(true);
+        e2.set_split_enabled(true);
+        e2.set_split_point(60);
+        for s in 0..2 {
+            e2.synths[s].set_param(ParamId::Env2Attack as usize, 0.001);
+        }
+        e2.note_on(0, 60, 1.0);
+        assert!(peak(&mut e2, 0) > 0.0, "the split-point note itself is Upper");
+        assert_eq!(peak(&mut e2, 1), 0.0, "the split-point note must not reach Lower");
+    }
+
+    #[test]
+    fn split_move_does_not_strand_a_held_note() {
+        // The bug this fixes: hold a note above the split, move the split above
+        // it, release. The note-on routed to Upper (synth 1) at press time; the
+        // note-off broadcasts to both, so synth 1 releases it even though the
+        // note is now "below" the moved split. A second held note rings out.
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        e.set_split_enabled(true);
+        e.set_split_point(60);
+        for s in 0..2 {
+            e.synths[s].set_param(ParamId::Env2Attack as usize, 0.001);
+            // Long release so a stranded voice would still be ringing at the check.
+            e.synths[s].set_param(ParamId::Env2Release as usize, 5.0);
+        }
+        e.note_on(0, 64, 1.0); // above split → synth 1 (Upper)
+        e.note_on(0, 72, 1.0); // another Upper note, stays held throughout
+
+        // Move the split above the first held note.
+        e.set_split_point(70);
+
+        // Release the first note. If routing followed the *current* split it
+        // would go to Lower and miss the held Upper voice — broadcast avoids that.
+        e.note_off(0, 64);
+
+        // Let the release run out on note 64's voice.
+        let mut l = vec![0.0; 48_000];
+        let mut r = vec![0.0; 48_000];
+        e.process_block(&mut l, &mut r);
+
+        // Note 64 must have been released — its voice is idle. Note 72 (still
+        // held) keeps voicing, so the layer isn't range-killed.
+        assert!(!e.synths[0].voices_holding(64), "released note must not be stuck");
+        assert!(e.synths[0].voices_holding(72), "the still-held note must ring on");
+    }
+
+    #[test]
+    fn note_off_broadcasts_in_single_mode() {
+        // Even in single mode a note-off reaches synth 2 (harmless no-op) — the
+        // "always broadcast" contract holds regardless of mode.
+        let mut e = Engine::new(48_000.0, 512);
+        e.note_on(0, 60, 1.0);
+        e.note_off(0, 60); // must not panic / must be a clean no-op on synth 2
+        assert!(!e.synths[0].voices_holding(60), "synth 1 released the note");
+    }
+
+    #[test]
+    fn key_state_round_trips_through_blob() {
+        let ks = KeyState { layer2_on: true, split_enabled: true, split_point: 48 };
+        let mut buf = Vec::new();
+        ks.write(&mut buf).unwrap();
+        assert_eq!(buf.len(), 3, "key state is a fixed 3-byte record");
+        let back = KeyState::read(&mut &buf[..]).unwrap();
+        assert_eq!(back, ks);
+        assert_eq!(back.key_mode(), KeyMode::Split);
+
+        // A short read is corruption, not a default.
+        assert!(KeyState::read(&mut &buf[..2]).is_err());
+    }
+
+    #[test]
+    fn default_key_state_is_single_middle_c() {
+        let ks = KeyState::default();
+        assert!(!ks.layer2_on);
+        assert!(!ks.split_enabled);
+        assert_eq!(ks.split_point, DEFAULT_SPLIT_POINT);
+        assert_eq!(ks.split_point, 60);
+        assert_eq!(ks.key_mode(), KeyMode::Single);
     }
 }

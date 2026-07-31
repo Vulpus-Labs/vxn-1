@@ -233,6 +233,14 @@ impl Voices {
         self.note[v]
     }
 
+    /// Is any voice **holding** `note` — allocated *and* still gated (pressed)?
+    /// A released ring-out tail (gate off) does not count. Used by the demux
+    /// tests to prove a note was released on the right synth (0215).
+    #[cfg(test)]
+    pub fn is_holding(&self, note: u8) -> bool {
+        (0..N).any(|v| self.active[v] && self.gate[v] && self.note[v] == note)
+    }
+
     /// Voice `v`'s velocity `[0, 1]` — the matrix Velocity source.
     #[inline]
     pub fn velocity(&self, v: usize) -> f32 {
