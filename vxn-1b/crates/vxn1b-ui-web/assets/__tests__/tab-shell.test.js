@@ -53,9 +53,12 @@ beforeEach(() => {
       <button class="tab-btn" data-tab="layer" data-layer="lower">LAYER 2</button>
       <button class="tab-btn" data-tab="global">FX / GLOBAL</button>
     </div>
-    <div class="tab-pane active" data-tab-pane="layer"></div>
+    <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
+      <div class="panel" data-name="Layer 2 Enable">
+        <div id="layer2-enable" data-control="layer2-toggle"></div>
+      </div>
+    </div>
     <div class="tab-pane" data-tab-pane="global"></div>
-    <div id="layer2-enable" data-control="layer2-toggle"></div>
   `;
 });
 
@@ -75,6 +78,17 @@ describe('wireTabs', () => {
     // Active-tab styling follows the click.
     expect(btn(1).classList.contains('active')).toBe(true);
     expect(btn(0).classList.contains('active')).toBe(false);
+  });
+
+  it('the Layer 2 enable panel is gated to Layer 2 via the pane edit-layer attr', () => {
+    wireTabs();
+    const layerPane = pane('layer');
+    // Starts on Upper — CSS hides the Layer 2 enable panel.
+    expect(layerPane.dataset.editLayer).toBe('upper');
+    btn(1).click(); // LAYER 2
+    expect(layerPane.dataset.editLayer).toBe('lower');
+    btn(0).click(); // back to LAYER 1
+    expect(layerPane.dataset.editLayer).toBe('upper');
   });
 
   it('a per-layer param now resolves to the Lower id (upper + patchCount)', () => {

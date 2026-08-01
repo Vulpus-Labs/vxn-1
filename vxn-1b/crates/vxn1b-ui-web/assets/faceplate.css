@@ -261,6 +261,12 @@ html, body {
 .row-layer-3 .panel[data-name="Voice"]         { flex-grow: 2.4; }
 .row-layer-3 .panel[data-name="Layer 2 Enable"] { flex-grow: 1.0; }
 
+/* The Layer 2 enable panel belongs to Layer 2's tab only. The layer pane is
+   shared DOM (Layer 1 / Layer 2 rebind the same cells), so gate this panel on
+   the pane's active edit layer — hidden on Upper, shown on Lower. Voice grows to
+   fill the row when it's hidden. */
+.tab-pane[data-edit-layer="upper"] .panel[data-name="Layer 2 Enable"] { display: none; }
+
 /* Layer 2 on/off — a single large toggle. Off (default) = single mode; on =
    dual/split. `.on` is toggled by the tabs wiring; the label reads the state. */
 .layer2-body {

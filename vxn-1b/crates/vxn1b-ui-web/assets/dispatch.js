@@ -399,6 +399,7 @@ export function wireTabs() {
   if (!strip) return;
   const btns = Array.from(strip.querySelectorAll('.tab-btn'));
   const panes = Array.from(document.querySelectorAll('[data-tab-pane]'));
+  const layerPane = document.querySelector('[data-tab-pane="layer"]');
 
   const showPane = (name) => {
     for (const p of panes) p.classList.toggle('active', p.dataset.tabPane === name);
@@ -406,6 +407,9 @@ export function wireTabs() {
   const selectLayer = (code) => {
     if (model.currentLayer === code) return;
     model.currentLayer = code;
+    // The pane's edit layer drives which layer-specific panels show (the Layer 2
+    // enable lives on Layer 2's tab only — CSS gates it on this attribute).
+    if (layerPane) layerPane.dataset.editLayer = code;
     rebindAllForLayer(code);
     // Keep the controller's edit-layer in step so preset/reset context and the
     // KeyModeChanged/EditLayerChanged echoes target the right layer.

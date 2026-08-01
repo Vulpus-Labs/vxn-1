@@ -60,7 +60,7 @@ __CSS__
   <!-- Layer pane — the per-layer patch surface, shared by the Layer 1 / Layer 2
        tabs. Every panel here is `data-layered`, so a tab flip rebinds each cell
        to the active layer's CLAP ids (Lower = Upper + patchCount). -->
-  <div class="tab-pane active" data-tab-pane="layer">
+  <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
 
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
@@ -200,10 +200,12 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
       </div>
     </div>
-    <!-- Layer 2 enable (0219). Drives KeyMode (off → Single / synth 2 bypassed;
-         on → Dual, or Split when the FX/Global tab enables it — 0220). Non-
-         automatable shared state; the toggle posts `set_key_mode`. The engine
-         wire (KeyState → audio thread) lands with the topology wire. -->
+    <!-- Layer 2 enable (0219). Shown only on the Layer 2 tab (the pane carries
+         `data-edit-layer`; CSS reveals this panel when it's `lower`). Drives
+         KeyMode (off → Single / synth 2 bypassed; on → Dual, or Split when the
+         FX/Global tab enables it — 0220). Non-automatable shared state; the
+         toggle posts `set_key_mode`. The engine wire (KeyState → audio thread)
+         lands with the topology wire. -->
     <div class="panel" data-name="Layer 2 Enable">
       <div class="panel-header">LAYER 2</div>
       <div class="panel-body layer2-body">
