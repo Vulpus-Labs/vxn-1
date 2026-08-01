@@ -31,12 +31,14 @@ use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
 pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 
 /// Logical pixel dimensions of the editor (ADR 0001 §7 compact layout). Height
-/// tracks the CSS geometry in `faceplate.css`: 108px chrome + rows 124 + 124 +
-/// 164 (the bottom Voice/FX/Dynamics/Master row is taller) = 520. Width was
-/// widened from the initial 760 for top-row breathing room + the standalone
-/// Dynamics panel. Keep both in sync with `--editor-w` / the row heights.
+/// tracks the CSS geometry in `faceplate.css`, sized to the **tallest tab pane**
+/// — the Layer pane's three rows (0219): 20 pad + 26 banner + 30 preset-bar +
+/// 26 tab-strip + 3×8 chrome gaps + (124 + 124 + 164 rows + 2×8 pane gaps) = 554.
+/// The FX/Global pane is shorter for now (0220 fills it). Width was widened from
+/// the initial 760 for top-row breathing room + the standalone Dynamics panel.
+/// Keep in sync with `--editor-w` / the row heights.
 pub const EDITOR_WIDTH: u32 = 940;
-pub const EDITOR_HEIGHT: u32 = 520;
+pub const EDITOR_HEIGHT: u32 = 554;
 
 /// Display label for the virtual root group of the user preset corpus.
 /// VXN1b has no per-synth override, so this matches the shared default.

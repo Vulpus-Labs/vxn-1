@@ -46,6 +46,22 @@ __CSS__
     </div>
   </div>
 
+  <!-- Three-tab shell (0219, ADR 0002 §8). Layer 1 / Layer 2 select the edit
+       layer (the patch surface rebinds via the 0045 machinery — Layer 1 = Upper,
+       Layer 2 = Lower); FX / Global shows the shared global panels. The tab strip
+       subsumes VXN1's separate edit-layer toggle. Split / balance + full global
+       controls land on the FX/Global tab in 0220. -->
+  <div class="tab-strip" id="tab-strip" role="tablist">
+    <button type="button" class="tab-btn active" data-tab="layer" data-layer="upper" role="tab">LAYER 1</button>
+    <button type="button" class="tab-btn" data-tab="layer" data-layer="lower" role="tab">LAYER 2</button>
+    <button type="button" class="tab-btn" data-tab="global" role="tab">FX / GLOBAL</button>
+  </div>
+
+  <!-- Layer pane — the per-layer patch surface, shared by the Layer 1 / Layer 2
+       tabs. Every panel here is `data-layered`, so a tab flip rebinds each cell
+       to the active layer's CLAP ids (Lower = Upper + patchCount). -->
+  <div class="tab-pane active" data-tab-pane="layer">
+
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
     <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —
@@ -126,9 +142,9 @@ __CSS__
         <div class="ctl-strip" data-control="switch" data-param="lfo1_free_run" data-label="Free"></div>
       </div>
     </div>
-    <!-- LFO 2 (0042): one global oscillator. Shape + Rate up top, Sync in
-         the strip. Not layer-aware — params come from GLOBAL_PARAMS. -->
-    <div class="panel" data-name="LFO 2">
+    <!-- LFO 2 (0042): per-layer since 0216 (VXN1b has no global LFO — ADR 0002
+         §4). Shape + Rate up top, Sync in the strip; rebinds with its layer. -->
+    <div class="panel" data-name="LFO 2" data-layered>
       <div class="panel-header">LFO 2</div>
       <div class="panel-body">
         <div class="ctl" data-control="wave" data-param="lfo2_shape" data-label="Shape"></div>
@@ -167,8 +183,8 @@ __CSS__
     </div>
   </div>
 
-  <!-- Row 3 — voice, dynamics, effects, master (0208). -->
-  <div class="row row-3" data-row="3">
+  <!-- Row 3 (layer) — Voice + the Layer 2 enable. Both stay on the layer pane. -->
+  <div class="row row-layer-3" data-row="3">
     <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
          descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
          the display permutation via `data-order`); Detune with its mode-aware
@@ -184,6 +200,26 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
       </div>
     </div>
+    <!-- Layer 2 enable (0219). Drives KeyMode (off → Single / synth 2 bypassed;
+         on → Dual, or Split when the FX/Global tab enables it — 0220). Non-
+         automatable shared state; the toggle posts `set_key_mode`. The engine
+         wire (KeyState → audio thread) lands with the topology wire. -->
+    <div class="panel" data-name="Layer 2 Enable">
+      <div class="panel-header">LAYER 2</div>
+      <div class="panel-body layer2-body">
+        <div class="ctl layer2-toggle-cell" id="layer2-enable" data-control="layer2-toggle" data-label="Layer 2"></div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /tab-pane layer -->
+
+  <!-- FX / Global pane. 0219 parks the existing global panels (Dynamics, FX,
+       Master) here; the full mixer / split / balance / global surface is 0220. -->
+  <div class="tab-pane" data-tab-pane="global">
+
+  <!-- Row 3 (global) — dynamics, effects, master (0208). -->
+  <div class="row row-3" data-row="3">
     <!-- Dynamics (E037 / 0207, reworked 0208): compressor + soft-drive in its
          own bottom-row panel, sat to the LEFT of FX. On/off is a header toggle
          (VXN1 idiom) bound to dynamics_on. The six kernel params render as
@@ -278,6 +314,8 @@ __CSS__
       </div>
     </div>
   </div>
+
+  </div><!-- /tab-pane global -->
 
 </div>
 

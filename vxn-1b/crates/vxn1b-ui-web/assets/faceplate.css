@@ -168,6 +168,44 @@ html, body {
    (vxn_core_ui_web::PRESET_BROWSER_CSS, appended to this sheet at splice). */
 .faceplate { position: relative; }
 
+/* Three-tab shell (0219, ADR 0002 §8). The tab strip sits between the preset
+   bar and the panes; only the active pane displays. Layer 1 / Layer 2 share the
+   layer pane (the surface rebinds to the edit layer); FX / Global is its own
+   pane. */
+.tab-strip {
+  height: var(--banner-h);
+  display: flex;
+  gap: var(--row-hgap);
+  flex: 0 0 auto;
+}
+.tab-btn {
+  flex: 1 1 0;
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  color: var(--ctl-label);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 2px;
+  cursor: pointer;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-color: var(--header-bg);
+}
+
+/* Panes stack their rows; only `.active` shows. The faceplate flex column's
+   `gap` already spaces the strip from the pane, so the pane just carries its
+   own inter-row gap. */
+.tab-pane { display: none; }
+.tab-pane.active {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-vgap);
+}
+
 .row {
   display: flex;
   gap: var(--row-hgap);
@@ -212,10 +250,44 @@ html, body {
    and re-shaped from seven vertical faders to a compact 3×2 dial grid + Mix
    fader, so it no longer needs the widest share. FX hosts at most one tabbed
    pane (4 faders + tab strip) at a time; Voice / Master stay compact. */
-.row-3 .panel[data-name="Voice"]    { flex-grow: 1.0; }
 .row-3 .panel[data-name="Dynamics"] { flex-grow: 1.15; }
 .row-3 .panel[data-name="FX"]       { flex-grow: 1.2; }
 .row-3 .panel[data-name="Master"]   { flex-grow: 1.1; }
+
+/* Layer pane's bottom row — Voice + the Layer 2 enable panel (0219). Same
+   height as the global row-3; Voice keeps its share, the enable panel is
+   narrow. */
+.row-layer-3 { height: var(--panel-h-3); }
+.row-layer-3 .panel[data-name="Voice"]         { flex-grow: 2.4; }
+.row-layer-3 .panel[data-name="Layer 2 Enable"] { flex-grow: 1.0; }
+
+/* Layer 2 on/off — a single large toggle. Off (default) = single mode; on =
+   dual/split. `.on` is toggled by the tabs wiring; the label reads the state. */
+.layer2-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+}
+.layer2-toggle-cell {
+  width: 84px;
+  height: 40px;
+  border: 1px solid var(--knob-rim);
+  border-radius: 4px;
+  background: var(--track-bg);
+  color: var(--ctl-label);
+  font-size: 12px;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.layer2-toggle-cell.on {
+  background: var(--track-fill);
+  color: var(--header-fg);
+  border-color: var(--track-fill);
+}
 
 .panel-header {
   height: var(--header-h);

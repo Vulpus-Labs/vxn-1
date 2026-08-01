@@ -390,6 +390,68 @@ export function rebindAllForLayer(layer) {
   }
 }
 
+// Three-tab shell (0219, ADR 0002 §8). Layer 1 / Layer 2 select the edit layer
+// (the layer pane's cells rebind via `rebindAllForLayer`); FX / Global swaps to
+// the global pane. The tab strip subsumes VXN1's separate edit-layer toggle, so
+// tabbing to a layer both shows the layer pane and flips `model.currentLayer`.
+export function wireTabs() {
+  const strip = document.getElementById('tab-strip');
+  if (!strip) return;
+  const btns = Array.from(strip.querySelectorAll('.tab-btn'));
+  const panes = Array.from(document.querySelectorAll('[data-tab-pane]'));
+
+  const showPane = (name) => {
+    for (const p of panes) p.classList.toggle('active', p.dataset.tabPane === name);
+  };
+  const selectLayer = (code) => {
+    if (model.currentLayer === code) return;
+    model.currentLayer = code;
+    rebindAllForLayer(code);
+    // Keep the controller's edit-layer in step so preset/reset context and the
+    // KeyModeChanged/EditLayerChanged echoes target the right layer.
+    window.vxn.send.setEditLayer(code);
+  };
+
+  for (const btn of btns) {
+    btn.addEventListener('click', () => {
+      for (const b of btns) b.classList.toggle('active', b === btn);
+      if (btn.dataset.tab === 'layer') {
+        showPane('layer');
+        selectLayer(btn.dataset.layer);
+      } else {
+        showPane('global');
+      }
+    });
+  }
+}
+
+// Layer 2 on/off toggle (0219). Off (default) → Single (synth 2 bypassed); on →
+// Dual. Split (mode 2) is the FX/Global tab's concern (0220). Posts the derived
+// KeyMode via `setKeyMode`; the engine-side apply (KeyState → audio thread) lands
+// with the topology wire, so this is currently the view's own state until an echo
+// reconciles it. Exposed for `setLayer2On` so a KeyModeChanged echo can reflect.
+let _layer2On = false;
+export function wireLayer2Toggle() {
+  const el = document.getElementById('layer2-enable');
+  if (!el) return;
+  const render = () => {
+    el.classList.toggle('on', _layer2On);
+    el.textContent = _layer2On ? 'ON' : 'OFF';
+  };
+  render();
+  el.addEventListener('click', () => {
+    _layer2On = !_layer2On;
+    render();
+    window.vxn.send.setKeyMode(_layer2On ? 1 : 0);
+  });
+  // Reflect a controller echo (KeyModeChanged) without re-posting: mode ≥ 1 means
+  // layer 2 is live.
+  model.setLayer2On = (on) => {
+    _layer2On = !!on;
+    render();
+  };
+}
+
 export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
@@ -413,6 +475,10 @@ export function init() {
   // normal `data-control="header-switch"` mounts and get bound below by
   // `rebindAllForLayer`.
   wireFxTabs();
+  // Tab shell + Layer 2 toggle (0219). Wired before the first rebind so the
+  // layer pane starts on Layer 1 (upper) and the toggle reflects single mode.
+  wireTabs();
+  wireLayer2Toggle();
   collectDimRuleSpecs();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).
