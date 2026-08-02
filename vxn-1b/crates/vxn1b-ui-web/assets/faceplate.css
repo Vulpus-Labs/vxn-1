@@ -179,6 +179,7 @@ html, body {
   flex: 0 0 auto;
 }
 .tab-btn {
+  position: relative;          /* anchor the Layer 2 switch at the left edge */
   flex: 1 1 0;
   background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
   border: 1px solid var(--panel-border);
@@ -263,13 +264,15 @@ html, body {
    tabs carry their own on/off. Off (default) → Layer 2 bypassed; on → live.
    Clicking it also selects the Layer 2 tab (the click bubbles to the button). */
 /* Same embedded square toggle as the FX/Dynamics header-switch
-   (`.panel-header-switch`): grey off, blue-lit on. */
+   (`.panel-header-switch`): grey off, blue-lit on. Pinned to the left edge of
+   the tab with the label centred, matching the Dynamics header layout. */
 .tab-switch {
-  display: inline-block;
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 10px;
   height: 10px;
-  margin-right: 6px;
-  vertical-align: middle;
   background: #4a4a4a;
   border: 1px solid #2c4a59;
   border-radius: 2px;
