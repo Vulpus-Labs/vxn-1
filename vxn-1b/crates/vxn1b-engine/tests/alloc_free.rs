@@ -10,6 +10,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use vxn1b_engine::params::global_clap_id;
 use vxn1b_engine::{Engine, ParamId};
 
 struct Counting;
@@ -63,6 +64,10 @@ fn hot_path_is_allocation_free() {
     e.set_layer2_on(true);
     e.set_lfo2_link(true);
     e.note_on(2, 64, 0.9);
+    e.process_block(&mut l, &mut r);
+    // Global drift on (0218): re-cooks both synths' per-lane envelope trims and
+    // runs the drifted cutoff/resonance path — all fixed-size, still no heap.
+    e.set_param(global_clap_id(ParamId::MasterDrift).unwrap(), 0.8);
     e.process_block(&mut l, &mut r);
 
     ARMED.store(false, Ordering::Relaxed);

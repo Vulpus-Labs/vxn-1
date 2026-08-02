@@ -431,7 +431,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{MATRIX_SLOTS, TOTAL_PARAMS, clap_id_of, desc_for_clap_id};
+    use crate::params::{
+        MATRIX_SLOTS, TOTAL_PARAMS, clap_id_of, desc_for_clap_id, global_clap_id,
+    };
 
     /// The Layer-1 CLAP id for an inner param — engine `set_param`/`param` take
     /// CLAP ids, so tests that mean "layer 1's X" resolve it through the map.
@@ -611,6 +613,49 @@ mod tests {
             l.iter().zip(&l2).any(|(x, y)| (x - y).abs() > 1e-6),
             "layer 2 on must change the mix"
         );
+    }
+
+    /// 0218: one global `MasterDrift` drives **both** synths' voices. Each
+    /// synth is rendered in isolation (as the demux tests do) so the assertion
+    /// is per layer, not on the mix: drift > 0 changes that layer's voices,
+    /// drift = 0 renders identically every time.
+    #[test]
+    fn global_drift_reaches_both_layers() {
+        let render = |drift: f32, s: usize| -> Vec<f32> {
+            let mut e = Engine::new(48_000.0, 512);
+            e.set_layer2_on(true);
+            for i in 0..2 {
+                e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+            }
+            // One control, set once: the global block broadcasts it to both.
+            e.set_param(global_clap_id(ParamId::MasterDrift).unwrap(), drift);
+            for n in [60, 64, 67, 71] {
+                e.note_on(0, n, 1.0);
+            }
+            // Chunked pre-zeroed accumulate — what the global block does.
+            let mut out = vec![0.0f32; 4096];
+            let mut r = vec![0.0f32; 4096];
+            let mut off = 0;
+            while off < out.len() {
+                let n = (out.len() - off).min(CONTROL_BLOCK);
+                out[off..off + n].fill(0.0);
+                r[off..off + n].fill(0.0);
+                e.synths[s].render_control_block(&mut out[off..off + n], &mut r[off..off + n], None);
+                off += n;
+            }
+            out
+        };
+
+        for s in 0..2 {
+            let dry = render(0.0, s);
+            assert!(dry.iter().any(|&x| x != 0.0), "layer {s} must sound");
+            assert_eq!(dry, render(0.0, s), "drift 0 must be bit-identical, layer {s}");
+            let drifted = render(0.9, s);
+            assert!(
+                dry.iter().zip(&drifted).any(|(x, y)| (x - y).abs() > 1e-9),
+                "drift must reach layer {s}'s voices"
+            );
+        }
     }
 
     #[test]

@@ -116,7 +116,7 @@ impl Synth {
     /// slot-depth params mirror into the matrix the evaluator reads (0205).
     pub(crate) fn set_param(&mut self, id: usize, value: f32) {
         self.params.set_index(id, value);
-        if is_envelope_param(id) {
+        if recooks_envelopes(id) {
             self.apply_envelopes();
         }
         if let Some(slot) = ParamId::slot_depth_index(id) {
@@ -252,8 +252,11 @@ impl Synth {
             p.get(ParamId::Env2Release),
         );
         let (s1, s2) = (p.env1_shape(), p.env2_shape());
+        // Drift scales the per-lane envelope trims (0218), so a drift change
+        // re-cooks here just like an envelope param change.
+        let drift = p.get(ParamId::MasterDrift);
         for b in &mut self.banks {
-            b.set_envelopes(env1, s1, env2, s2);
+            b.set_envelopes(env1, s1, env2, s2, drift);
         }
     }
 }
@@ -326,13 +329,15 @@ fn osc_semis(p: &Params, octave: ParamId, coarse: ParamId, fine: ParamId) -> f32
     p.get(octave).round() * 12.0 + p.get(coarse).round() + p.get(fine) / 100.0
 }
 
-/// Whether a CLAP id is one of the eight ADSR value/shape params (so a set
-/// re-cooks the banks' envelopes).
-fn is_envelope_param(id: usize) -> bool {
+/// Whether a CLAP id is one of the ten ADSR value/shape params — or
+/// [`ParamId::MasterDrift`], which scales the per-lane envelope trims (0218) —
+/// so a set re-cooks the banks' envelopes.
+fn recooks_envelopes(id: usize) -> bool {
     matches!(
         ParamId::from_index(id),
         Some(
-            ParamId::Env1Attack
+            ParamId::MasterDrift
+                | ParamId::Env1Attack
                 | ParamId::Env1Decay
                 | ParamId::Env1Sustain
                 | ParamId::Env1Release

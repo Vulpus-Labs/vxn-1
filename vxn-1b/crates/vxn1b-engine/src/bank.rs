@@ -23,10 +23,11 @@
 //! envelope levels are substituted — 2 FMAs, not a full matrix re-eval (which
 //! the ticket forbids on the hot path).
 //!
-//! **Scope (this step).** Poly only (matches the 0198 allocator); unison/mono,
-//! the per-voice component trims (E022), and the two scalar-kernel dests
-//! (`HpfCutoff`, `CrossModAmount`) are deferred — all inert at the factory
-//! default, so the parity gate is unaffected.
+//! **Scope (this step).** Poly only (matches the 0198 allocator); unison/mono
+//! and the two scalar-kernel dests (`HpfCutoff`, `CrossModAmount`) are deferred
+//! — all inert at the factory default, so the parity gate is unaffected. The
+//! per-voice component trims landed with global drift (0218) and are likewise
+//! inert at the default `MasterDrift = 0`.
 
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
@@ -53,6 +54,98 @@ const RING_DRIVE_DB: f32 = 1.0;
 /// voice wander independently.
 const OSC1_DRIFT_SALT: u64 = 0xA1F7_0501;
 const OSC2_DRIFT_SALT: u64 = 0xB2E8_0502;
+
+/// Fixed per-voice component-tolerance trims (0218), ported unchanged from
+/// VXN1's `VoiceTrim` (E022 / 0124). Unlike the drift *walk* on osc pitch these
+/// are constant per-lane offsets — frozen at construction like a real synth's
+/// power-on calibration spread — on envelope times, sustain, base cutoff and
+/// resonance. Each is a normalised `[-1, 1]` draw ([`trim_draw`]) scaled by
+/// `drift_amount` (the one global "analog" amount) and the per-target magnitude
+/// below, so `drift_amount = 0` collapses every lane back to bit-identical
+/// shared params (the parity-gate contract).
+///
+/// Magnitudes are the *max* fractional deviation at `drift_amount = 1.0`:
+/// envelope A/D/R ±12%, sustain ±3%, resonance ±7% (component tolerance), and
+/// base cutoff a deliberately tiny ±3 cents — enough for gentle beating between
+/// voices, small enough that self-oscillating "whistle" tones never read as out
+/// of tune.
+const TRIM_ENV_TIME: f32 = 0.12;
+const TRIM_SUSTAIN: f32 = 0.03;
+const TRIM_RESO: f32 = 0.07;
+const TRIM_CUTOFF_CENTS: f32 = 3.0;
+
+/// Salts selecting the four independent trim streams from the bank seed.
+const TRIM_ENV_SALT: u64 = 0xC3D9_0601;
+const TRIM_SUS_SALT: u64 = 0xD4EA_0602;
+const TRIM_CUT_SALT: u64 = 0xE5FB_0603;
+const TRIM_RESO_SALT: u64 = 0xF60C_0604;
+
+/// One deterministic per-lane trim draw in `[-1, 1]`. A SplitMix64 finaliser
+/// over `base ⊕ salt ⊕ lane` — no state, no walk, reproducible. Distinct salts
+/// decorrelate the four targets (and the pitch drift) so a voice's bright filter
+/// doesn't imply a long decay.
+#[inline]
+fn trim_draw(base: u64, salt: u64, lane: usize) -> f32 {
+    let mut z = base
+        .wrapping_add(salt)
+        .wrapping_add((lane as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Top 24 bits → [0,1), then map to [-1, 1].
+    let unit = (z >> 40) as f32 / (1u64 << 24) as f32;
+    unit * 2.0 - 1.0
+}
+
+/// Fixed per-lane trim table: one normalised `[-1, 1]` draw per lane per target,
+/// generated once from the bank seed and never reset on note-on — a property of
+/// the lane, mirroring the drift seed. Scaled at apply time by `drift_amount`
+/// and the per-target magnitude. The two banks of a synth take distinct seeds,
+/// so all 16 voices draw independently.
+#[derive(Clone, Copy)]
+struct VoiceTrim {
+    /// Multiplies envelope attack/decay/release per lane.
+    env_time: [f32; N],
+    /// Multiplies envelope sustain level per lane.
+    sustain: [f32; N],
+    /// Base-cutoff offset per lane, in normalised units (× [`TRIM_CUTOFF_CENTS`]).
+    cutoff: [f32; N],
+    /// Multiplies resonance per lane.
+    reso: [f32; N],
+}
+
+impl VoiceTrim {
+    fn new(base: u64) -> Self {
+        Self {
+            env_time: std::array::from_fn(|i| trim_draw(base, TRIM_ENV_SALT, i)),
+            sustain: std::array::from_fn(|i| trim_draw(base, TRIM_SUS_SALT, i)),
+            cutoff: std::array::from_fn(|i| trim_draw(base, TRIM_CUT_SALT, i)),
+            reso: std::array::from_fn(|i| trim_draw(base, TRIM_RESO_SALT, i)),
+        }
+    }
+}
+
+/// VXN1's filter key-track *amount* as the drift coupling sees it, recovered
+/// from the matrix. VXN1 tracks the VCF to the VCO's **drifted** pitch at the
+/// same amount its `filter_key_track` param applies to the static note term;
+/// VXN1b has no such param — key-track is a Key→Cutoff route. A route at depth
+/// `d` shifts cutoff by `octaves_from_c4 · d · DEST_GAIN[Cutoff]` semitones,
+/// i.e. `d · gain / 12` semitones of cutoff per semitone of key — so the
+/// equivalent amount is that, summed over the active Key→Cutoff slots
+/// ([`KEY_CUTOFF_UNITY_DEPTH`](crate::matrix::KEY_CUTOFF_UNITY_DEPTH) = 0.25 →
+/// 1.0, VXN1's unity tracking). Curves and per-route scale sources are ignored:
+/// the coupling is a sub-cent nudge, so it takes the slot's nominal depth.
+#[inline]
+fn drift_key_track(matrix: &MatrixTable) -> f32 {
+    let gain = crate::eval::DEST_GAIN[DestId::Cutoff.idx().unwrap_or(0)];
+    let depth: f32 = matrix
+        .slots
+        .iter()
+        .filter(|s| s.source == SourceId::Key && s.dest == DestId::Cutoff)
+        .map(|s| s.depth)
+        .sum();
+    depth * gain / 12.0
+}
 
 /// Golden-ratio per-lane start phase (decorrelates a chord's transients).
 #[inline]
@@ -185,6 +278,9 @@ pub struct RenderBank {
     /// Per-lane discontinuity guards on the pitch/PWM/Amp matrix dests (0208).
     smooth: MotionSmoother,
     lfo1_seed: u64,
+    /// Fixed per-lane component-tolerance trims (0218). Frozen at construction,
+    /// scaled at apply time by the global drift amount.
+    trim: VoiceTrim,
 }
 
 impl RenderBank {
@@ -212,6 +308,7 @@ impl RenderBank {
             trigger_pending: [false; N],
             smooth: MotionSmoother::new(sample_rate),
             lfo1_seed: rng_seed,
+            trim: VoiceTrim::new(rng_seed),
         }
     }
 
@@ -251,21 +348,34 @@ impl RenderBank {
         self.smooth.reset();
     }
 
-    /// Apply ADSR params to all lanes (called when an envelope param changed).
-    /// Trims (E022) deferred — every lane gets identical params for now.
+    /// Apply ADSR params to all lanes (called when an envelope param *or*
+    /// `drift_amount` changed).
+    ///
+    /// `drift_amount` scales the fixed per-lane trims (0218): each lane's A/D/R
+    /// times and sustain get a constant multiplicative nudge from [`VoiceTrim`],
+    /// so a held chord's voices breathe at subtly different rates like real
+    /// per-voice analog tolerance. At `drift_amount = 0` every factor is exactly
+    /// `1.0`, so all lanes receive bit-identical params.
     pub fn set_envelopes(
         &mut self,
         env1: (f32, f32, f32, f32),
         env1_shape: AdsrShape,
         env2: (f32, f32, f32, f32),
         env2_shape: AdsrShape,
+        drift_amount: f32,
     ) {
-        for e in &mut self.env1 {
-            e.set_params(env1.0, env1.1, env1.2, env1.3);
+        let time_mag = TRIM_ENV_TIME * drift_amount;
+        let sus_mag = TRIM_SUSTAIN * drift_amount;
+        for (v, e) in self.env1.iter_mut().enumerate() {
+            let t = 1.0 + self.trim.env_time[v] * time_mag;
+            let s = (env1.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
+            e.set_params(env1.0 * t, env1.1 * t, s, env1.3 * t);
             e.set_shape(env1_shape);
         }
-        for e in &mut self.env2 {
-            e.set_params(env2.0, env2.1, env2.2, env2.3);
+        for (v, e) in self.env2.iter_mut().enumerate() {
+            let t = 1.0 + self.trim.env_time[v] * time_mag;
+            let s = (env2.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
+            e.set_params(env2.0 * t, env2.1 * t, s, env2.3 * t);
             e.set_shape(env2_shape);
         }
     }
@@ -355,6 +465,8 @@ impl RenderBank {
         // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc, exactly as
         // `render::voice_pitches` does.
         let (g1, g2) = sweep_gates(ctx.cross_mod_type);
+        // Topology-derived, so once per block rather than per lane.
+        let key_track = drift_key_track(ctx.matrix);
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         let mut amp_c = [AmpCoeffs::default(); N];
@@ -432,17 +544,27 @@ impl RenderBank {
             self.osc1.inc[v] = note_to_hz(base1[v]) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(base2[v]) / ctx.os_sample_rate;
 
+            // Filter key-track follows the voice's *drifted* pitch (0218): the
+            // keyboard CV a real VCF tracks carries the VCO's drift, so the
+            // tracked cutoff wanders with it — at the amount the Key→Cutoff
+            // route uses. Plus the fixed per-lane cutoff tolerance: a constant
+            // ±TRIM_CUTOFF_CENTS offset at full drift, enough for gentle
+            // inter-voice beating, never enough to detune a whistle.
             let cutoff_hz = render::voice_cutoff_hz(
                 &dests,
                 ctx.cutoff,
                 self.osc1.drift_value[v],
                 self.osc2.drift_value[v],
-                0.0, // drift key-track coupling (trim deferred)
-                0.0,
-                0.0,
+                key_track,
+                self.trim.cutoff[v],
+                TRIM_CUTOFF_CENTS,
                 ctx.drift_amount,
             );
-            let resonance = render::voice_resonance(&dests, ctx.resonance);
+            // Fixed per-lane resonance tolerance: voices cross the
+            // self-oscillation threshold at slightly different settings, so near
+            // the edge one can whistle while a neighbour stays quiet.
+            let resonance = render::voice_resonance(&dests, ctx.resonance)
+                * (1.0 + self.trim.reso[v] * TRIM_RESO * ctx.drift_amount);
             self.ladder.set_coeffs(
                 v,
                 OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
@@ -830,7 +952,7 @@ mod tests {
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
         // Fast attack so the VCA opens within the block.
-        bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.001, 0.2, 0.8, 0.2), AdsrShape::Linear);
+        bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, LfoShape::Sine, false);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 256];
@@ -847,7 +969,7 @@ mod tests {
         // not a block-rate step.
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
-        bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.005, 0.2, 0.8, 0.2), AdsrShape::Linear);
+        bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.005, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, LfoShape::Sine, false);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
@@ -866,7 +988,7 @@ mod tests {
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
         // Near-instant release so the voice idles within one block.
-        bank.set_envelopes((0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, (0.001, 0.001, 0.0, 0.001), AdsrShape::Linear);
+        bank.set_envelopes((0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, (0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, LfoShape::Sine, false);
         let note = [60u8; N];
         let gate = [false; N]; // already released
@@ -876,5 +998,160 @@ mod tests {
         let mut r = vec![0.0; 256];
         bank.render(&ctx(&m), &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(!active[0], "an idle released voice must free");
+    }
+
+    // ── 0218: global drift / per-voice component trims ──
+
+    /// Consolidated [`VoiceTrim`] properties: bounded draws, per-seed
+    /// determinism, and decorrelated streams — the three properties that define
+    /// the per-voice spread contract (ported with the trims from VXN1).
+    #[test]
+    fn trim_properties() {
+        // Bounded + varied: every draw stays in [-1, 1] and the lanes are not
+        // all identical (the whole point is per-voice spread).
+        let t = VoiceTrim::new(0x1234_5678);
+        for arr in [&t.env_time, &t.sustain, &t.cutoff, &t.reso] {
+            for &x in arr {
+                assert!((-1.0..=1.0).contains(&x), "draw {x} out of [-1,1]");
+            }
+            let first = arr[0];
+            assert!(
+                arr.iter().any(|&x| (x - first).abs() > 1e-3),
+                "all lanes identical — no variance"
+            );
+        }
+
+        // Deterministic per seed; distinct seeds decorrelate (so a synth's two
+        // banks, and the two layers, never share a spread).
+        let a = VoiceTrim::new(0xABCD);
+        let b = VoiceTrim::new(0xABCD);
+        assert_eq!(a.cutoff, b.cutoff);
+        assert_eq!(a.env_time, b.env_time);
+        let c = VoiceTrim::new(0xABCE);
+        assert!(c.cutoff != a.cutoff, "distinct seeds must decorrelate");
+
+        // The four targets draw from distinct salts, so a bright filter does not
+        // imply a long decay.
+        let d = VoiceTrim::new(0x0F0F_0F0F);
+        assert!(d.env_time != d.cutoff);
+        assert!(d.cutoff != d.reso);
+        assert!(d.sustain != d.env_time);
+    }
+
+    #[test]
+    fn cutoff_trim_stays_in_tune() {
+        // Base-cutoff variance must beat gently, never detune a self-osc
+        // whistle: the worst case is max|draw| (= 1) × TRIM_CUTOFF_CENTS at full
+        // drift, and must stay inside ±5 cents (we target ±3).
+        let t = VoiceTrim::new(0x55AA_55AA);
+        let worst = t.cutoff.iter().map(|&x| (x * TRIM_CUTOFF_CENTS).abs()).fold(0.0, f32::max);
+        assert!(worst <= 5.0, "voice cutoff offset {worst} cents too large");
+    }
+
+    /// Magnitudes match VXN1's (`vxn-engine/src/voice.rs`) — the trims are a
+    /// straight lift, so a drift setting sounds the same in both synths.
+    #[test]
+    fn trim_magnitudes_match_vxn1() {
+        assert_eq!(TRIM_ENV_TIME, 0.12);
+        assert_eq!(TRIM_SUSTAIN, 0.03);
+        assert_eq!(TRIM_RESO, 0.07);
+        assert_eq!(TRIM_CUTOFF_CENTS, 3.0);
+    }
+
+    /// Envelope trims: at drift 0 every lane is cooked bit-identically; above
+    /// zero the lanes' attack rates spread. Measured behaviourally by ticking
+    /// each lane's amp envelope (`AdsrCore` exposes no getters).
+    #[test]
+    fn drift_spreads_envelope_times_across_lanes() {
+        let attack_levels = |bank: &mut RenderBank| -> [f32; N] {
+            for e in &mut bank.env2 {
+                e.reset();
+            }
+            let mut out = [0.0f32; N];
+            for (v, e) in bank.env2.iter_mut().enumerate() {
+                let mut level = 0.0;
+                for i in 0..64 {
+                    level = e.tick(i == 0, true);
+                }
+                out[v] = level;
+            }
+            out
+        };
+        let env = (0.05, 0.1, 0.5, 0.2);
+
+        let mut bank = RenderBank::new(48_000.0, 0xBEEF);
+        bank.set_envelopes(env, AdsrShape::Linear, env, AdsrShape::Linear, 0.0);
+        let flat = attack_levels(&mut bank);
+        assert!(
+            flat.iter().all(|&x| x == flat[0]),
+            "drift 0 must cook every lane identically: {flat:?}"
+        );
+
+        bank.set_envelopes(env, AdsrShape::Linear, env, AdsrShape::Linear, 1.0);
+        let spread = attack_levels(&mut bank);
+        assert!(
+            spread.iter().any(|&x| (x - spread[0]).abs() > 1e-6),
+            "drift 1 must spread the lanes' attack rates: {spread:?}"
+        );
+    }
+
+    /// The filter/envelope trims reach the DSP independently of the osc pitch
+    /// walk: on a **noise-only** patch (both oscs muted) pitch drift can't touch
+    /// the output, so any difference between drift 0 and drift 1 is the
+    /// cutoff/resonance/envelope trims.
+    #[test]
+    fn trims_change_output_with_the_oscillators_muted() {
+        let m = default_patch();
+        let render = |drift: f32| -> Vec<f32> {
+            let mut bank = RenderBank::new(48_000.0, 7);
+            bank.set_envelopes(
+                (0.001, 0.2, 0.8, 0.2),
+                AdsrShape::Linear,
+                (0.001, 0.2, 0.8, 0.2),
+                AdsrShape::Linear,
+                drift,
+            );
+            bank.trigger_lane(0, LfoShape::Sine, false);
+            let (note, gate, mut active, vel, pres, rnd) = book();
+            let mut c = ctx(&m);
+            c.osc1_level = 0.0;
+            c.osc2_level = 0.0;
+            c.noise_level = 0.8;
+            c.resonance = 0.6;
+            c.drift_amount = drift;
+            let mut l = vec![0.0; 512];
+            let mut r = vec![0.0; 512];
+            bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+            l
+        };
+        let dry = render(0.0);
+        let drifted = render(1.0);
+        assert!(dry.iter().any(|&s| s != 0.0), "noise patch must sound");
+        assert!(
+            dry.iter().zip(&drifted).any(|(x, y)| (x - y).abs() > 1e-9),
+            "cutoff/reso/envelope trims must reach the DSP"
+        );
+        // Same drift twice → bit-identical: the trims are frozen draws, not a walk.
+        assert_eq!(dry, render(0.0));
+    }
+
+    /// The drift key-track coupling is read off the Key→Cutoff route:
+    /// [`KEY_CUTOFF_UNITY_DEPTH`](crate::matrix::KEY_CUTOFF_UNITY_DEPTH) → VXN1's
+    /// unity tracking, no route → no coupling.
+    #[test]
+    fn drift_key_track_reads_the_key_cutoff_route() {
+        use crate::matrix::{KEY_CUTOFF_UNITY_DEPTH, MatrixSlot};
+        let mut m = MatrixTable::default();
+        assert_eq!(drift_key_track(&m), 0.0, "no Key→Cutoff route → no coupling");
+        m.slots[0] = MatrixSlot {
+            source: SourceId::Key,
+            dest: DestId::Cutoff,
+            depth: KEY_CUTOFF_UNITY_DEPTH,
+            ..MatrixSlot::default()
+        };
+        assert!(
+            (drift_key_track(&m) - 1.0).abs() < 1e-6,
+            "unity key-track depth must give VXN1's key_track = 1.0"
+        );
     }
 }
