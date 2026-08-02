@@ -170,6 +170,31 @@ impl DestId {
             _ => DestId::None,
         }
     }
+
+    /// Cubic depth taper for the semitone `Pitch` dest (VXN2's `cook_depth`
+    /// idiom). With a linear depth the whole vibrato range lives in the bottom
+    /// sliver of fader travel — VXN1's default 0.05 st is 0.4% of the ±12 st
+    /// span, so a single pixel of movement is a semitone-scale jump and precise
+    /// vibrato is undialable. `d³` keeps the sign and the full ±12 st reach
+    /// while widening the musical low end: 25% travel ≈ ±0.19 st, 50% ≈ ±1.5 st,
+    /// 100% ≈ ±12 st.
+    ///
+    /// Applied at *consumption* ([`crate::eval::eval_dests`]), never to the
+    /// stored slot depth — the CLAP param, preset file and state blob all stay
+    /// linear, so automation and round-trips are unaffected.
+    ///
+    /// Non-pitch dests pass through untouched. `Cutoff` / `HpfCutoff` are
+    /// deliberately excluded: their gain is already log/semitone-shaped, so a
+    /// depth taper would double-bend the response (same rule as VXN2). The
+    /// ±48 st `XModSweep` is left linear for now — it is a sweep amount, not a
+    /// tuning offset.
+    #[inline]
+    pub fn cook_depth(self, depth: f32) -> f32 {
+        match self {
+            DestId::Pitch => depth * depth * depth,
+            _ => depth,
+        }
+    }
 }
 
 /// Destination machine id (kebab-case wire name). Index = `DestId as u8`.
@@ -298,11 +323,13 @@ impl Default for MatrixTable {
 pub const KEY_CUTOFF_UNITY_DEPTH: f32 = 0.25;
 
 /// Matrix depth reproducing VXN1's default LFO1→pitch **vibrato** of 0.05 st
-/// (`pitch_lfo_depth` default). The matrix depth is the semitone value divided
-/// by the Pitch dest's native gain ([`crate::eval::DEST_GAIN`]`[Pitch]` = 12 st),
-/// so `source·depth·gain` = 0.05 st at full LFO swing. Cross-checked against the
-/// gain in `eval::tests::default_vibrato_is_the_vxn1_005_st`.
-pub const DEFAULT_VIBRATO_DEPTH: f32 = 0.05 / 12.0;
+/// (`pitch_lfo_depth` default). Pitch takes the cubic depth taper
+/// ([`DestId::cook_depth`]) before the dest's native gain
+/// ([`crate::eval::DEST_GAIN`]`[Pitch]` = 12 st), so the depth is the *cube
+/// root* of the semitone value over that gain: `∛(0.05/12) ≈ 0.1609`, giving
+/// `source·depth³·gain` = 0.05 st at full LFO swing. Cross-checked against both
+/// in `eval::tests::default_vibrato_is_the_vxn1_005_st`.
+pub const DEFAULT_VIBRATO_DEPTH: f32 = 0.160_918;
 
 /// The factory default patch: seeds the routes that reproduce **VXN1's default
 /// sound**, leaving every other slot inert. The rest of the modulation surface
@@ -370,6 +397,30 @@ mod tests {
             assert_eq!(DestId::from_u8(v) as u8, v);
         }
         assert_eq!(DestId::from_u8(200), DestId::None);
+    }
+
+    #[test]
+    fn cook_depth_tapers_pitch_only() {
+        // Cubic on Pitch: sign and endpoints kept, low end widened.
+        assert_eq!(DestId::Pitch.cook_depth(0.0), 0.0);
+        assert_eq!(DestId::Pitch.cook_depth(1.0), 1.0);
+        assert_eq!(DestId::Pitch.cook_depth(-1.0), -1.0);
+        assert!((DestId::Pitch.cook_depth(0.5) - 0.125).abs() < 1e-6);
+        assert!((DestId::Pitch.cook_depth(-0.25) + 0.015_625).abs() < 1e-6);
+        // Every other dest passes through untouched.
+        for d in [
+            DestId::None,
+            DestId::XModSweep,
+            DestId::Pwm,
+            DestId::Cutoff,
+            DestId::Resonance,
+            DestId::HpfCutoff,
+            DestId::Amp,
+            DestId::CrossModAmount,
+        ] {
+            assert_eq!(d.cook_depth(0.5), 0.5, "{d:?} should stay linear");
+            assert_eq!(d.cook_depth(-0.3), -0.3, "{d:?} should stay linear");
+        }
     }
 
     #[test]

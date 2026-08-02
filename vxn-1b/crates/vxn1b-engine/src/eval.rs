@@ -11,12 +11,13 @@
 //!    **Key**, which carries signed *octaves relative to C4* so the seeded
 //!    Key→Cutoff route reproduces VXN1's key-track (see [`DEST_GAIN`]).
 //! 2. [`eval_dests`] walks the 16 slots and accumulates
-//!    `curve(source) · depth · DEST_GAIN[dest] · scale_norm(scale_src)` into a
-//!    `[f32; N_DESTS]` per-dest total. Slots to the same dest **sum**
+//!    `curve(source) · cook_depth(depth) · DEST_GAIN[dest] · scale_norm(scale_src)`
+//!    into a `[f32; N_DESTS]` per-dest total. Slots to the same dest **sum**
 //!    (additive). `curve` shapes the *source* value (per VXN2's model); `depth`
-//!    is the slot's bipolar `[-1, 1]` param (0200); `DEST_GAIN` converts the
-//!    normalised product to the dest's native unit; `scale_src` is the per-route
-//!    VCA (ADR 0009).
+//!    is the slot's bipolar `[-1, 1]` param (0200), passed through the dest's
+//!    [`DestId::cook_depth`] taper (cubic on `Pitch`, identity elsewhere);
+//!    `DEST_GAIN` converts the normalised product to the dest's native unit;
+//!    `scale_src` is the per-route VCA (ADR 0009).
 //!
 //! The dest totals are consumed by the render loop with VXN1's
 //! consumption-matched smoothing (per-sample cutoff/pitch, block-rate gains) —
@@ -113,6 +114,10 @@ const fn idx(s: SourceId) -> usize {
 /// | `HpfCutoff` | 48.0 | ±48 st of HPF cutoff |
 /// | `Amp` | 1.0 | full VCA gain (Env2→Amp @1 = VXN1 VCA) |
 /// | `CrossModAmount` | 4.0 | the 0..4 cross-mod range |
+///
+/// **Cubic taper:** `Pitch` additionally takes a `d³` taper on the stored depth
+/// before this gain ([`DestId::cook_depth`]) so vibrato-scale amounts are
+/// dialable; every other dest stays linear.
 pub const DEST_GAIN: [f32; N_DESTS] = {
     let mut g = [1.0_f32; N_DESTS];
     g[di(DestId::Pitch)] = 12.0;
@@ -179,7 +184,7 @@ pub fn eval_dests(table: &MatrixTable, sources: &SourceVals, out: &mut DestVals)
             Some(sc) => scale_norm(slot.scale_src, sources[sc]),
             None => 1.0,
         };
-        let gain = slot.depth * DEST_GAIN[di] * scale;
+        let gain = slot.dest.cook_depth(slot.depth) * DEST_GAIN[di] * scale;
         out[di] += shape(slot.curve, sources[si]) * gain;
     }
 }
@@ -217,12 +222,35 @@ mod tests {
 
     #[test]
     fn single_route_scales_by_depth_and_gain() {
-        // LFO1 (=1.0) → Pitch, depth 0.5 → 0.5 × 12 st = 6 st.
+        // LFO1 (=1.0) → Cutoff (linear depth), 0.5 × 48 st = 24 st.
         let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
-        let t = table(&[slot(SourceId::Lfo1, DestId::Pitch, 0.5, Curve::Lin)]);
+        let t = table(&[slot(SourceId::Lfo1, DestId::Cutoff, 0.5, Curve::Lin)]);
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 6.0).abs() < 1e-6);
+        assert!((out[DestId::Cutoff.idx().unwrap()] - 24.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pitch_depth_takes_the_cubic_taper_others_stay_linear() {
+        let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
+        let mut out = [0.0; N_DESTS];
+        // Pitch: 0.5³ · 12 st = 1.5 st — half travel is a musical vibrato/
+        // detune range, not 6 st.
+        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 0.5, Curve::Lin)]), &s, &mut out);
+        assert!((out[DestId::Pitch.idx().unwrap()] - 1.5).abs() < 1e-6);
+        // Endpoints and sign survive the taper.
+        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Curve::Lin)]), &s, &mut out);
+        assert!((out[DestId::Pitch.idx().unwrap()] - 12.0).abs() < 1e-6);
+        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, -1.0, Curve::Lin)]), &s, &mut out);
+        assert!((out[DestId::Pitch.idx().unwrap()] + 12.0).abs() < 1e-6);
+        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, -0.5, Curve::Lin)]), &s, &mut out);
+        assert!((out[DestId::Pitch.idx().unwrap()] + 1.5).abs() < 1e-6);
+        // Every other dest is untouched: 0.5 × 48 st stays 24 st.
+        for d in [DestId::XModSweep, DestId::Cutoff, DestId::HpfCutoff] {
+            eval_dests(&table(&[slot(SourceId::Lfo1, d, 0.5, Curve::Lin)]), &s, &mut out);
+            let want = 0.5 * DEST_GAIN[d.idx().unwrap()];
+            assert!((out[d.idx().unwrap()] - want).abs() < 1e-5, "{d:?} should stay linear");
+        }
     }
 
     #[test]
@@ -326,14 +354,15 @@ mod tests {
 
     #[test]
     fn default_vibrato_is_the_vxn1_005_st() {
-        // The seeded LFO1→Pitch depth × the Pitch gain must reproduce VXN1's
-        // 0.05 st default vibrato at full LFO swing. Cross-checks the coupling
-        // between DEFAULT_VIBRATO_DEPTH (matrix.rs) and DEST_GAIN[Pitch] here.
+        // The seeded LFO1→Pitch depth, cubically tapered × the Pitch gain, must
+        // reproduce VXN1's 0.05 st default vibrato at full LFO swing.
+        // Cross-checks the coupling between DEFAULT_VIBRATO_DEPTH (matrix.rs,
+        // a cube-root literal), DestId::cook_depth and DEST_GAIN[Pitch] here.
         let t = default_patch();
         let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 0.05).abs() < 1e-6,
+        assert!((out[DestId::Pitch.idx().unwrap()] - 0.05).abs() < 1e-4,
             "default vibrato should be 0.05 st, got {}", out[DestId::Pitch.idx().unwrap()]);
     }
 

@@ -697,7 +697,9 @@ fn amp_coeffs(table: &MatrixTable, sources: &crate::eval::SourceVals) -> AmpCoef
             Some(sc) => crate::eval::scale_norm(slot.scale_src, sources[sc]),
             None => 1.0,
         };
-        let coeff = slot.depth * gain * scale;
+        // `cook_depth` is identity for Amp — called for parity with
+        // `eval_dests` so a future tapered dest can't diverge here.
+        let coeff = slot.dest.cook_depth(slot.depth) * gain * scale;
         // Linear env sources become per-frame coefficients; everything else is
         // resolved at block-start value into `stat`.
         match (slot.source, slot.curve) {
