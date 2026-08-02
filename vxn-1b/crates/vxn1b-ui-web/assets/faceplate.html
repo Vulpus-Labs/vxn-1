@@ -62,6 +62,19 @@ __CSS__
        to the active layer's CLAP ids (Lower = Upper + patchCount). -->
   <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
 
+  <!-- Mod-matrix overlay (0219, absorbing 0210). A floating toggle reveals the
+       16-slot editor over the layer pane; it rebinds to the active edit layer.
+       Built + wired by panels/matrix.js; depth dials are data-control cells
+       dispatch binds, the source/dest/curve/scale selectors post set_matrix. -->
+  <button type="button" class="matrix-toggle" id="matrix-toggle">MOD MATRIX</button>
+  <div class="matrix-overlay" id="matrix-overlay" hidden>
+    <div class="matrix-head">MOD MATRIX — <span id="matrix-layer-label">Layer 1</span></div>
+    <div class="matrix-cols">
+      <span>#</span><span>Source</span><span>Dest</span><span>Depth</span><span>Curve</span><span>Scale</span>
+    </div>
+    <div class="matrix-rows" id="matrix-rows"></div>
+  </div>
+
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
     <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —

@@ -378,6 +378,10 @@ export function rebindAllForLayer(layer) {
   // first rebind. DOM event listeners are guarded inside `wireLayerLevels`
   // and only attach once per layer.
   keysPanel.wireLayerLevels();
+  // The mod-matrix overlay's topology selectors track the edit layer too (the
+  // depth dials are layered cells rebound above); reseed them from the new
+  // layer's snapshot (0219).
+  matrixOverlay.refreshForLayer(layer);
   // Reseed the visual dim state from cached last-known values so a layer
   // rebind reflects the new layer's state before any echo arrives.
   refreshAllDimRules();
@@ -460,6 +464,9 @@ export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
   // in `rebindAllForLayer`, which is also what a layer flip calls.
+  // Build the mod-matrix overlay first so its depth dials (data-control cells)
+  // are present for the sweep below and get bound + rebound like any other cell.
+  matrixOverlay.build();
   document.querySelectorAll('[data-control]').forEach((el) => {
     const name = el.dataset.param;
     if (!name) return;

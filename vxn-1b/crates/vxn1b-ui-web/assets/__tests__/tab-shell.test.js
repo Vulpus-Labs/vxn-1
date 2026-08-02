@@ -30,6 +30,7 @@ function resetModel() {
 
 function stubGlobals() {
   globalThis.keysPanel = { wireLayerLevels: vi.fn() };
+  globalThis.matrixOverlay = { build: vi.fn(), refreshForLayer: vi.fn() };
 }
 
 let sends;

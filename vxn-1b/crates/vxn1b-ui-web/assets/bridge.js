@@ -72,6 +72,9 @@ window.vxn = {
     setKeyMode:      (mode)                 => { _post({ op: 'set_key_mode', mode }); _mutated(); },
     setSplitPoint:   (note)                 => { _post({ op: 'set_split_point', note }); _mutated(); },
     setEditLayer:    (layer)                => _post({ op: 'set_edit_layer', layer }),
+    // Matrix topology edit (0219). `field` ∈ source|dest|curve|scale; `value` is
+    // the wire u8 (SourceId/DestId/Curve index). Depth is a normal set_param.
+    setMatrix:       (layer, slot, field, value) => { _post({ op: 'set_matrix', layer, slot, field, value }); _mutated(); },
     requestTextInput:(id, title, initial)   => _post({ op: 'request_text_input', id, title, initial }),
     ready:           ()                     => _post({ op: 'ready' }),
   },
@@ -82,6 +85,10 @@ window.vxn = {
   // descriptor's Hz formatting (0042 / 0015) — mirrors the vizia editor's
   // `sync_partner` override.
   subdivisions: __SUBDIVISIONS_JSON__,
+  // Mod-matrix vocab + factory topology (0219): { sources, dests, curves,
+  // slots:[layer0, layer1] }. The overlay reads it to build its selectors and
+  // seed each slot; edits post `set_matrix` (topology) / set_param (depth).
+  matrix: __MATRIX_JSON__,
   // Per-patch slot count — used by layer rebinding (0045) to translate an
   // Upper-side CLAP id into its Lower-side twin: Lower id = Upper id +
   // patchCount, for any id under 2 × patchCount.

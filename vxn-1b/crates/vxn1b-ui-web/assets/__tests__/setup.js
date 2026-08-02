@@ -5,4 +5,5 @@
 // bridge.js IIFE evaluates cleanly when a test imports it.
 globalThis.__PARAMS_JSON__ = {};
 globalThis.__SUBDIVISIONS_JSON__ = [];
+globalThis.__MATRIX_JSON__ = { sources: [], dests: [], curves: [], slots: [[], []] };
 globalThis.__PATCH_COUNT__ = 100;

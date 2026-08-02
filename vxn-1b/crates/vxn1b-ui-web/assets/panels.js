@@ -50,3 +50,5 @@ export {
 } from './panels/keys.js';
 
 export { presetBar } from './panels/preset-bar.js';
+
+export { matrixOverlay } from './panels/matrix.js';

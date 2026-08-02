@@ -74,6 +74,7 @@ function stubGlobals() {
   globalThis.presetBar = { setName: vi.fn(), setSource: vi.fn() };
   globalThis.browserPanel = { setCurrentSource: vi.fn(), followPath: vi.fn() };
   globalThis.wireFxTabs = vi.fn();
+  globalThis.matrixOverlay = { build: vi.fn(), refreshForLayer: vi.fn() };
   // bridge.js free globals init() reads (the early-event replay buffer and the
   // text-input callback registry).
   globalThis._earlyViewEvents = [];

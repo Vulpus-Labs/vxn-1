@@ -70,6 +70,29 @@ pub enum KeyOp {
     SetSplitPoint(u8),
 }
 
+/// Which topology field of a matrix slot a UI edit targets (0219, absorbing
+/// 0210). Depth is a CLAP param (`matrix_slot{n}_depth`) and does **not** travel
+/// here — it rides the normal automatable-param path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatrixField {
+    Source,
+    Dest,
+    Curve,
+    ScaleSrc,
+}
+
+/// A UI edit to one matrix slot's topology on one layer (0219). `value` is the
+/// wire `u8` (a `SourceId` / `DestId` / `Curve` discriminant); the store decodes
+/// it via `from_u8`. Carried as a `UiEvent::Custom` payload alongside [`KeyOp`],
+/// applied to the shared per-layer matrix channel + a reload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatrixEdit {
+    pub layer: Layer,
+    pub slot: u8,
+    pub field: MatrixField,
+    pub value: u8,
+}
+
 /// The global keyboard-routing state: the two toggles plus the split point.
 /// Non-automatable (ADR 0002 §3) — it rides the plugin-state blob, not the CLAP
 /// param table. `KeyMode` is derived from it. Kept a self-contained record so

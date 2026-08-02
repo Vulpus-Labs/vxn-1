@@ -284,10 +284,17 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // round-trip latency on a knob drag. Custom UI ops (0219: the Layer 2
         // key-mode / split-point) are applied to the shared KeyState channel;
         // the audio thread re-syncs the engine from it on the next `process`.
-        let key_sink = self.shared.params.clone();
+        let sink = self.shared.params.clone();
         let mut on_custom_ui = move |_ctrl: &mut _, payload: Box<dyn std::any::Any + Send>| {
-            if let Ok(op) = payload.downcast::<vxn1b_engine::KeyOp>() {
-                key_sink.apply_key_op(*op);
+            // Two vxn1b custom payloads share this hook: a KeyOp (Layer 2
+            // enable / split) or a MatrixEdit (topology). Try each; downcast
+            // hands the box back on a miss.
+            let payload = match payload.downcast::<vxn1b_engine::KeyOp>() {
+                Ok(op) => return sink.apply_key_op(*op),
+                Err(p) => p,
+            };
+            if let Ok(edit) = payload.downcast::<vxn1b_engine::MatrixEdit>() {
+                sink.edit_matrix_slot(*edit);
             }
         };
         lock_mut(&self.controller).tick(&mut on_custom_ui, &mut |_, _| {}, &mut |_| {});

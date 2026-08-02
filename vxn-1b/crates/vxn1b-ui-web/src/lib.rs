@@ -77,13 +77,38 @@ pub fn open_editor(
     // them into a `KeyOp` payload the clap controller applies to the shared
     // KeyState. (Matrix topology opcodes join this hook with the overlay, 0210.)
     config.parse_custom_ui = Some(std::sync::Arc::new(|op, v| {
-        use vxn1b_engine::KeyOp;
-        let ev = match op {
-            "set_key_mode" => KeyOp::SetKeyMode(v.get("mode")?.as_u64()? as u8),
-            "set_split_point" => KeyOp::SetSplitPoint(v.get("note")?.as_u64()? as u8),
-            _ => return None,
-        };
-        Some(UiEvent::Custom(Box::new(ev)))
+        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField};
+        match op {
+            "set_key_mode" => Some(UiEvent::Custom(Box::new(KeyOp::SetKeyMode(
+                v.get("mode")?.as_u64()? as u8,
+            )))),
+            "set_split_point" => Some(UiEvent::Custom(Box::new(KeyOp::SetSplitPoint(
+                v.get("note")?.as_u64()? as u8,
+            )))),
+            // Matrix topology edit (0219/0210): source/dest/curve/scale on one
+            // slot of one layer. Depth is a normal CLAP param, not this op.
+            "set_matrix" => {
+                let layer = if v.get("layer")?.as_str()? == "lower" {
+                    Layer::L2
+                } else {
+                    Layer::L1
+                };
+                let field = match v.get("field")?.as_str()? {
+                    "source" => MatrixField::Source,
+                    "dest" => MatrixField::Dest,
+                    "curve" => MatrixField::Curve,
+                    "scale" => MatrixField::ScaleSrc,
+                    _ => return None,
+                };
+                Some(UiEvent::Custom(Box::new(MatrixEdit {
+                    layer,
+                    slot: v.get("slot")?.as_u64()? as u8,
+                    field,
+                    value: v.get("value")?.as_u64()? as u8,
+                })))
+            }
+            _ => None,
+        }
     }));
     config.serialise_custom_view = None;
     vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
@@ -144,7 +169,51 @@ fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
         .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
+        .replace("__MATRIX_JSON__", &build_matrix_json())
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
+}
+
+/// Serialise the mod-matrix vocab + factory topology for the overlay (0219). The
+/// page reads it as `window.vxn.matrix = { sources, dests, curves, slots }`:
+/// each vocab entry is `{value, name, label}` (value = the wire `u8`), and
+/// `slots[layer][i]` is the factory `{source, dest, curve, scale}` for slot `i`.
+/// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
+fn build_matrix_json() -> String {
+    use serde_json::{Value, json};
+    use vxn1b_engine::matrix::{
+        CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, SOURCE_LABELS, SOURCE_NAMES,
+    };
+    let vocab = |names: &[&str], labels: &[&str]| -> Vec<Value> {
+        names
+            .iter()
+            .zip(labels)
+            .enumerate()
+            .map(|(i, (n, l))| json!({ "value": i, "name": n, "label": l }))
+            .collect()
+    };
+    let factory = vxn1b_engine::PluginState::factory_default();
+    let layer_slots = |li: usize| -> Vec<Value> {
+        factory.layers[li]
+            .matrix
+            .slots
+            .iter()
+            .map(|s| {
+                json!({
+                    "source": s.source as u8,
+                    "dest": s.dest as u8,
+                    "curve": s.curve as u8,
+                    "scale": s.scale_src as u8,
+                })
+            })
+            .collect()
+    };
+    json!({
+        "sources": vocab(&SOURCE_NAMES, &SOURCE_LABELS),
+        "dests": vocab(&DEST_NAMES, &DEST_LABELS),
+        "curves": vocab(&CURVE_NAMES, &CURVE_LABELS),
+        "slots": [layer_slots(0), layer_slots(1)],
+    })
+    .to_string()
 }
 
 /// Two-layer surface (0216): the faceplate's `patchCount` is the engine's
@@ -324,6 +393,7 @@ const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 const PANEL_DISCRETE_JS: &str = include_str!("../assets/panels/discrete.js");
 const PANEL_KEYS_JS: &str = include_str!("../assets/panels/keys.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
+const PANEL_MATRIX_JS: &str = include_str!("../assets/panels/matrix.js");
 /// The split panel source files, in splice order.
 const PANELS_FILES: &[&str] = &[
     PANEL_UTIL_DRAG_JS,
@@ -331,6 +401,7 @@ const PANELS_FILES: &[&str] = &[
     PANEL_DISCRETE_JS,
     PANEL_KEYS_JS,
     PANEL_PRESET_BAR_JS,
+    PANEL_MATRIX_JS,
 ];
 /// `init()` + per-tick ViewEvent dispatcher + dim rules. Splices last because
 /// it references the panel objects defined above.
@@ -360,6 +431,7 @@ mod tests {
             "__DISPATCH_JS__",
             "__PARAMS_JSON__",
             "__SUBDIVISIONS_JSON__",
+            "__MATRIX_JSON__",
             "__PATCH_COUNT__",
             "__WEB_BOOT_HEAD__",
             "__WEB_BOOT_LOADER__",

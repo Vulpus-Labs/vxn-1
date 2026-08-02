@@ -28,8 +28,8 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::engine::{KeyOp, KeyState};
-use crate::matrix::MatrixTable;
+use crate::engine::{KeyOp, KeyState, MatrixEdit, MatrixField};
+use crate::matrix::{Curve, DestId, MatrixTable, SourceId};
 use crate::params::{
     ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, Params, TOTAL_PARAMS, clap_ref,
     desc_for_clap_id, global_clap_id, patch_clap_id,
@@ -177,6 +177,25 @@ impl SharedParams {
     pub fn apply_key_op(&self, op: KeyOp) {
         self.key.lock().unwrap_or_else(|e| e.into_inner()).apply(op);
         self.key_dirty.store(true, Ordering::Release);
+    }
+
+    /// Apply a UI matrix-topology edit to the per-layer matrix channel and flag a
+    /// reload (0219). The audio thread's `take_reload` re-syncs the engine from
+    /// `engine_state()`, which reads this topology (depths stay param-authoritative
+    /// — the codec re-seeds them). Out-of-range slot indices are ignored.
+    pub fn edit_matrix_slot(&self, edit: MatrixEdit) {
+        {
+            let mut m = self.lock();
+            if let Some(slot) = m[edit.layer as usize].slots.get_mut(edit.slot as usize) {
+                match edit.field {
+                    MatrixField::Source => slot.source = SourceId::from_u8(edit.value),
+                    MatrixField::Dest => slot.dest = DestId::from_u8(edit.value),
+                    MatrixField::Curve => slot.curve = Curve::from_u8(edit.value),
+                    MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
+                }
+            }
+        }
+        self.reload.store(true, Ordering::Release);
     }
 
     /// The current keyboard state, if a key-op landed since the last call
@@ -383,6 +402,34 @@ mod tests {
         let k = sp.take_key_state().unwrap();
         assert_eq!(k.key_mode(), KeyMode::Split);
         assert_eq!(k.split_point, 48);
+    }
+
+    #[test]
+    fn matrix_edit_updates_the_right_layer_and_flags_reload() {
+        use crate::engine::{MatrixEdit, MatrixField};
+        use crate::matrix::{DestId, SourceId};
+        use crate::params::Layer;
+        let sp = SharedParams::new();
+        // Edit Layer 2, slot 7: route LFO2 → Cutoff.
+        sp.edit_matrix_slot(MatrixEdit {
+            layer: Layer::L2,
+            slot: 7,
+            field: MatrixField::Source,
+            value: SourceId::Lfo2 as u8,
+        });
+        sp.edit_matrix_slot(MatrixEdit {
+            layer: Layer::L2,
+            slot: 7,
+            field: MatrixField::Dest,
+            value: DestId::Cutoff as u8,
+        });
+        assert!(sp.take_reload(), "a topology edit must flag a reload");
+
+        let m = sp.matrix_snapshot();
+        assert_eq!(m[1].slots[7].source, SourceId::Lfo2);
+        assert_eq!(m[1].slots[7].dest, DestId::Cutoff);
+        // Layer 1's same slot is untouched.
+        assert!(!m[0].slots[7].is_active());
     }
 
     #[test]
