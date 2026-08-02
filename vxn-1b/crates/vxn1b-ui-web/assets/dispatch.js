@@ -443,15 +443,14 @@ let _layer2On = false;
 export function wireLayer2Toggle() {
   const el = document.getElementById('layer2-enable');
   if (!el) return;
-  const render = () => {
-    el.classList.toggle('on', _layer2On);
-    el.textContent = _layer2On ? 'ON' : 'OFF';
-  };
+  const render = () => el.classList.toggle('on', _layer2On);
   render();
   el.addEventListener('click', () => {
     _layer2On = !_layer2On;
     render();
     window.vxn.send.setKeyMode(_layer2On ? 1 : 0);
+    // The switch sits inside the Layer 2 tab button, so this click also bubbles
+    // to wireTabs — turning it on selects the Layer 2 tab (0219 §4).
   });
   // Reflect a controller echo (KeyModeChanged) without re-posting: mode ≥ 1 means
   // layer 2 is live.

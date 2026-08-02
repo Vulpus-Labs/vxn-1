@@ -659,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn layer1_sounds_through_the_full_process_flow() {
+        // Repro for the "Layer 1 silent" report: mirror the exact audio-thread
+        // flow — activate (load_state from the store), seed the mirror, then each
+        // block push every one of the 160 CLAP values into the engine — and prove
+        // synth 0 (Layer 1, single mode) still sounds.
+        let shared = SharedParams::new();
+        let mut engine = Engine::new(48_000.0, 512);
+        engine.load_state(shared.engine_state());
+        let local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
+        for (i, &v) in local.values().iter().enumerate() {
+            engine.set_param(i, v);
+        }
+        dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
+        assert!(peak(&mut engine, 2048) > 0.0, "Layer 1 must sound in single mode");
+    }
+
+    #[test]
     fn slot_depth_param_event_moves_modulation_through_the_shell() {
         // 0204 acceptance: automating a slot depth through the CLAP param path
         // changes the sound. Zeroing the default Env2→Amp slot silences the note.

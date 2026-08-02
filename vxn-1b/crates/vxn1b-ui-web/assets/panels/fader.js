@@ -485,8 +485,10 @@ export function makeBipolar(el, id, desc) {
     isHovered:  () => drag.isHovered(),
     isDragging: () => drag.isDragging(),
   }, () => lastDisplay);
-  // Horizontal relative drag: right (+dx) raises, 200 px for full −1…+1 travel.
-  const RANGE_PX = 200;
+  // Horizontal relative drag: right (+dx) raises. A wide 400 px full-scale
+  // travel (2× vxn-2's) makes gentle depths easy to dial without Shift; Shift
+  // still gives 0.1× fine, and double-click resets to 0 (0219 §3 calibration).
+  const RANGE_PX = 400;
   drag = wireDrag(track, {
     axis: 'x',
     raf: true,

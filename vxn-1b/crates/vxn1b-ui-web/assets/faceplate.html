@@ -24,6 +24,8 @@ __CSS__
     <button class="pbar-btn" id="pbar-browse" type="button">Browse</button>
     <button class="pbar-btn" id="pbar-save-overwrite" type="button" disabled>Save</button>
     <button class="pbar-btn" id="pbar-save" type="button">Save As</button>
+    <!-- Mod-matrix opens from the upper bar, beside load/save (0219). -->
+    <button class="pbar-btn" id="matrix-toggle" type="button">Mod Matrix</button>
     <div class="pbar-spacer"></div>
     <div class="status-pill" id="pbar-status"></div>
   </div>
@@ -64,7 +66,13 @@ __CSS__
        controls land on the FX/Global tab in 0220. -->
   <div class="tab-strip" id="tab-strip" role="tablist">
     <button type="button" class="tab-btn active" data-tab="layer" data-layer="upper" role="tab">LAYER 1</button>
-    <button type="button" class="tab-btn" data-tab="layer" data-layer="lower" role="tab">LAYER 2</button>
+    <!-- Layer 2's enable switch lives ON its tab (0219), the way each FX tab
+         carries its own on/off. Toggling it on also selects the Layer 2 tab
+         (the switch click bubbles to the tab button). Off → Layer 2 bypassed. -->
+    <button type="button" class="tab-btn" data-tab="layer" data-layer="lower" role="tab">
+      <span class="tab-switch" id="layer2-enable" role="switch" aria-label="Enable Layer 2"></span>
+      LAYER 2
+    </button>
     <button type="button" class="tab-btn" data-tab="global" role="tab">FX / GLOBAL</button>
   </div>
 
@@ -72,11 +80,6 @@ __CSS__
        tabs. Every panel here is `data-layered`, so a tab flip rebinds each cell
        to the active layer's CLAP ids (Lower = Upper + patchCount). -->
   <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
-
-  <!-- Mod-matrix (0219, absorbing 0210). A floating toggle opens the modal
-       overlay below; the 16-slot editor rebinds to the active edit layer.
-       Built + wired by panels/matrix.js. -->
-  <button type="button" class="matrix-toggle" id="matrix-toggle">MOD MATRIX</button>
 
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
@@ -199,7 +202,7 @@ __CSS__
     </div>
   </div>
 
-  <!-- Row 3 (layer) — Voice + the Layer 2 enable. Both stay on the layer pane. -->
+  <!-- Row 3 (layer) — Voice. The Layer 2 enable now lives on the Layer 2 tab. -->
   <div class="row row-layer-3" data-row="3">
     <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
          descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
@@ -214,18 +217,6 @@ __CSS__
         <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="assign_mode"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
-      </div>
-    </div>
-    <!-- Layer 2 enable (0219). Shown only on the Layer 2 tab (the pane carries
-         `data-edit-layer`; CSS reveals this panel when it's `lower`). Drives
-         KeyMode (off → Single / synth 2 bypassed; on → Dual, or Split when the
-         FX/Global tab enables it — 0220). Non-automatable shared state; the
-         toggle posts `set_key_mode`. The engine wire (KeyState → audio thread)
-         lands with the topology wire. -->
-    <div class="panel" data-name="Layer 2 Enable">
-      <div class="panel-header">LAYER 2</div>
-      <div class="panel-body layer2-body">
-        <div class="ctl layer2-toggle-cell" id="layer2-enable" data-control="layer2-toggle" data-label="Layer 2"></div>
       </div>
     </div>
   </div>

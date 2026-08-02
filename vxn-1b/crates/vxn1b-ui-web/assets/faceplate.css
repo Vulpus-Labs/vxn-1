@@ -254,68 +254,41 @@ html, body {
 .row-3 .panel[data-name="FX"]       { flex-grow: 1.2; }
 .row-3 .panel[data-name="Master"]   { flex-grow: 1.1; }
 
-/* Layer pane's bottom row — Voice + the Layer 2 enable panel (0219). Same
-   height as the global row-3; Voice keeps its share, the enable panel is
-   narrow. */
+/* Layer pane's bottom row — just Voice now (the Layer 2 enable moved onto the
+   Layer 2 tab). */
 .row-layer-3 { height: var(--panel-h-3); }
-.row-layer-3 .panel[data-name="Voice"]         { flex-grow: 2.4; }
-.row-layer-3 .panel[data-name="Layer 2 Enable"] { flex-grow: 1.0; }
+.row-layer-3 .panel[data-name="Voice"] { flex-grow: 1.0; }
 
-/* The Layer 2 enable panel belongs to Layer 2's tab only. The layer pane is
-   shared DOM (Layer 1 / Layer 2 rebind the same cells), so gate this panel on
-   the pane's active edit layer — hidden on Upper, shown on Lower. Voice grows to
-   fill the row when it's hidden. */
-.tab-pane[data-edit-layer="upper"] .panel[data-name="Layer 2 Enable"] { display: none; }
-
-/* Layer 2 on/off — a single large toggle. Off (default) = single mode; on =
-   dual/split. `.on` is toggled by the tabs wiring; the label reads the state. */
-.layer2-body {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1 1 auto;
-}
-.layer2-toggle-cell {
-  width: 84px;
-  height: 40px;
+/* Layer 2 enable switch, carried on the Layer 2 tab button (0219 §4) the way FX
+   tabs carry their own on/off. Off (default) → Layer 2 bypassed; on → live.
+   Clicking it also selects the Layer 2 tab (the click bubbles to the button). */
+.tab-switch {
+  display: inline-block;
+  width: 20px;
+  height: 11px;
+  margin-right: 6px;
+  border-radius: 6px;
   border: 1px solid var(--knob-rim);
-  border-radius: 4px;
   background: var(--track-bg);
-  color: var(--ctl-label);
-  font-size: 12px;
-  letter-spacing: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  vertical-align: middle;
+  position: relative;
   cursor: pointer;
 }
-.layer2-toggle-cell.on {
-  background: var(--track-fill);
-  color: var(--header-fg);
-  border-color: var(--track-fill);
-}
-
-/* Mod-matrix overlay (0219). A floating toggle reveals a scrollable 16-slot
-   editor that covers the layer pane (absolute, so it adds no layout height);
-   rebinds to the active edit layer. */
-.tab-pane[data-tab-pane="layer"] { position: relative; }
-.matrix-toggle {
+.tab-switch::after {
+  content: "";
   position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 6;
-  background: var(--knob-face);
-  border: 1px solid var(--knob-rim);
-  border-radius: 3px;
-  color: var(--ctl-label);
-  font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 2px;
-  padding: 3px 8px;
-  cursor: pointer;
+  top: 1px;
+  left: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ctl-label);
+  transition: left 0.08s ease;
 }
-.matrix-toggle:hover { color: var(--text); }
-.matrix-toggle.on { background: var(--track-fill); color: var(--header-fg); border-color: var(--track-fill); }
+.tab-switch.on { background: var(--track-fill); border-color: var(--track-fill); }
+.tab-switch.on::after { left: 10px; background: var(--header-fg); }
+/* Active-tab label stays readable with the switch lit. */
+.tab-btn.active .tab-switch::after { background: var(--header-fg); }
 
 /* Mod-matrix modal + rows — ported from vxn-2 (style.css .overlay-* / .vxn-mm-*),
    adapted to vxn-1b's palette. A dismissible modal over the whole faceplate. */

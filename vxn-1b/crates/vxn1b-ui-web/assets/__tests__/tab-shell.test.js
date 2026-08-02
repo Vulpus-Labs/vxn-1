@@ -51,14 +51,12 @@ beforeEach(() => {
   document.body.innerHTML = `
     <div id="tab-strip">
       <button class="tab-btn active" data-tab="layer" data-layer="upper">LAYER 1</button>
-      <button class="tab-btn" data-tab="layer" data-layer="lower">LAYER 2</button>
+      <button class="tab-btn" data-tab="layer" data-layer="lower">
+        <span class="tab-switch" id="layer2-enable"></span>LAYER 2
+      </button>
       <button class="tab-btn" data-tab="global">FX / GLOBAL</button>
     </div>
-    <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
-      <div class="panel" data-name="Layer 2 Enable">
-        <div id="layer2-enable" data-control="layer2-toggle"></div>
-      </div>
-    </div>
+    <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper"></div>
     <div class="tab-pane" data-tab-pane="global"></div>
   `;
 });
@@ -125,11 +123,9 @@ describe('wireLayer2Toggle', () => {
     wireLayer2Toggle();
     const el = document.getElementById('layer2-enable');
     expect(el.classList.contains('on')).toBe(false);
-    expect(el.textContent).toBe('OFF');
 
     el.click();
     expect(el.classList.contains('on')).toBe(true);
-    expect(el.textContent).toBe('ON');
     expect(sends).toContainEqual(['keymode', 1]); // Dual
 
     el.click();
@@ -142,8 +138,18 @@ describe('wireLayer2Toggle', () => {
     const el = document.getElementById('layer2-enable');
     model.setLayer2On(true);
     expect(el.classList.contains('on')).toBe(true);
-    expect(el.textContent).toBe('ON');
     // No op was posted by the echo path.
     expect(sends).toHaveLength(0);
+  });
+
+  it('the switch sits in the Layer 2 tab: enabling it also selects that tab', () => {
+    // Both wired: the switch click toggles enable AND bubbles to the tab button.
+    wireTabs();
+    wireLayer2Toggle();
+    model.setLayer2On(false); // reset the module-level toggle state for isolation
+    document.getElementById('layer2-enable').click();
+    expect(model.currentLayer).toBe('lower');
+    expect(pane('layer').classList.contains('active')).toBe(true);
+    expect(sends).toContainEqual(['keymode', 1]);
   });
 });
