@@ -460,6 +460,35 @@ export function wireLayer2Toggle() {
   };
 }
 
+// Cross-layer LFO 2 link (0217, ADR 0002 §5). Layer 2's LFO 2 slaves to Layer
+// 1's — rate + phase lock — so both layers' LFO2-driven routes move together.
+// It is KeyState, not a CLAP param (and not `lfo2_sync`, which is per-layer
+// tempo sync), so the cell is hand-built here rather than bound by
+// `rebindAllForLayer`: same `.ctl-tg-row` markup as a `switch` strip cell, but
+// posting `setLfo2Link`. Layer-1-only in the DOM sense — CSS hides it on the
+// Layer 1 tab, since the flag describes the slave layer.
+let _lfo2Link = false;
+export function wireLfo2Link() {
+  const el = document.getElementById('lfo2-link');
+  if (!el) return;
+  el.innerHTML = '';
+  const row = tgRow('Link');
+  el.appendChild(row);
+  const render = () => row.classList.toggle('active', _lfo2Link);
+  render();
+  row.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    _lfo2Link = !_lfo2Link;
+    render();
+    window.vxn.send.setLfo2Link(_lfo2Link);
+  });
+  // Reflect an engine-side echo (state / preset load) without re-posting.
+  model.setLfo2Link = (on) => {
+    _lfo2Link = !!on;
+    render();
+  };
+}
+
 export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
@@ -490,6 +519,9 @@ export function init() {
   // layer pane starts on Layer 1 (upper) and the toggle reflects single mode.
   wireTabs();
   wireLayer2Toggle();
+  // Cross-layer LFO 2 link (0217) — a hand-wired KeyState cell in the LFO 2
+  // panel strip, so it must not be left to `rebindAllForLayer`.
+  wireLfo2Link();
   collectDimRuleSpecs();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).

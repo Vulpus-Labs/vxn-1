@@ -9,10 +9,12 @@ import {
   model,
   wireTabs,
   wireLayer2Toggle,
+  wireLfo2Link,
   paramIdByNameAtLayer,
   _resetParamIndex,
 } from '../dispatch.js';
 import { installFixture, PATCH_COUNT } from '../fixtures/params.js';
+import { pointerEvt } from './_helpers.js';
 
 function resetModel() {
   model.controls.clear();
@@ -26,10 +28,19 @@ function resetModel() {
   model.cells.length = 0;
   model.currentLayer = 'upper';
   delete model.setLayer2On;
+  delete model.setLfo2Link;
 }
 
 function stubGlobals() {
   globalThis.keysPanel = { wireLayerLevels: vi.fn() };
+  // dispatch.js reaches `tgRow` as a splice-scope free global (util/drag.js).
+  globalThis.tgRow = (name) => {
+    const el = document.createElement('div');
+    el.className = 'ctl-tg-row';
+    el.innerHTML =
+      `<div class="ctl-tg-box"></div><div class="ctl-tg-lbl">${name.toUpperCase()}</div>`;
+    return el;
+  };
   globalThis.matrixOverlay = { build: vi.fn(), refreshForLayer: vi.fn() };
 }
 
@@ -43,6 +54,7 @@ beforeEach(() => {
   window.vxn.send = {
     setEditLayer: vi.fn((layer) => sends.push(['edit', layer])),
     setKeyMode: vi.fn((mode) => sends.push(['keymode', mode])),
+    setLfo2Link: vi.fn((on) => sends.push(['lfo2link', on])),
   };
   sends = [];
   _resetParamIndex();
@@ -58,6 +70,7 @@ beforeEach(() => {
     </div>
     <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper"></div>
     <div class="tab-pane" data-tab-pane="global"></div>
+    <div class="ctl-strip" id="lfo2-link" data-layer2-only></div>
   `;
 });
 
@@ -151,5 +164,36 @@ describe('wireLayer2Toggle', () => {
     expect(model.currentLayer).toBe('lower');
     expect(pane('layer').classList.contains('active')).toBe(true);
     expect(sends).toContainEqual(['keymode', 1]);
+  });
+});
+
+// 0217: the cross-layer LFO 2 link — Layer 2's LFO 2 slaves to Layer 1's. Not a
+// CLAP param (it rides KeyState), so dispatch hand-wires the cell instead of
+// `rebindAllForLayer` binding it. Distinct from the `lfo2_sync` tempo-sync param.
+describe('wireLfo2Link', () => {
+  it('builds a toggle row that starts off and posts set_lfo2_link on click', () => {
+    wireLfo2Link();
+    const row = document.querySelector('#lfo2-link .ctl-tg-row');
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain('LINK');
+    expect(row.classList.contains('active')).toBe(false);
+
+    row.dispatchEvent(pointerEvt('pointerdown'));
+    expect(row.classList.contains('active')).toBe(true);
+    expect(sends).toContainEqual(['lfo2link', true]);
+
+    row.dispatchEvent(pointerEvt('pointerdown'));
+    expect(row.classList.contains('active')).toBe(false);
+    expect(sends).toContainEqual(['lfo2link', false]);
+  });
+
+  it('an echo (model.setLfo2Link) reflects state without re-posting', () => {
+    wireLfo2Link();
+    const row = document.querySelector('#lfo2-link .ctl-tg-row');
+    model.setLfo2Link(true);
+    expect(row.classList.contains('active')).toBe(true);
+    expect(sends).toHaveLength(0);
+    model.setLfo2Link(false);
+    expect(row.classList.contains('active')).toBe(false);
   });
 });

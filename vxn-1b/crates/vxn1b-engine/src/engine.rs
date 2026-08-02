@@ -26,9 +26,16 @@
 //! **Scope.** 1× oversampling only — the OS/decimation and FX section are
 //! shared/deferred (E037). FX + master are read transitionally from layer 1's
 //! param table; a dedicated global param block lands in 0220. The [`KeyState`]
-//! (layer-2 toggle + split enable + point) is non-automatable domain state; its
-//! serialisation into the two-layer `clap.state` blob lands in 0221 — this crate
-//! owns the record shape ([`KeyState::write`]/[`KeyState::read`]).
+//! (layer-2 toggle + split enable + point + the LFO 2 link) is non-automatable
+//! domain state; its serialisation into the two-layer `clap.state` blob lands in
+//! 0221 — this crate owns the record shape
+//! ([`KeyState::write`]/[`KeyState::read`]).
+//!
+//! **Cross-layer LFO 2 link (0217, ADR 0002 §5).** The one coupling between the
+//! two otherwise-independent synths: with [`KeyState::lfo2_link`] set, layer 2's
+//! LFO 2 adopts layer 1's phase each control block (rate + phase lock) instead
+//! of running its own accumulator, so both layers' LFO2-driven matrix routes
+//! move together. Layer 1 ticks first, so the master phase is always current.
 
 use crate::fx::{FxChain, FxParams};
 use crate::matrix::MatrixTable;
@@ -68,6 +75,10 @@ pub enum KeyOp {
     SetKeyMode(u8),
     /// Split point (MIDI note).
     SetSplitPoint(u8),
+    /// Cross-layer LFO 2 link (0217): Layer 2's LFO 2 slaves to Layer 1's.
+    /// Named *link*, not sync — `lfo2_sync` is the (per-layer, automatable)
+    /// tempo-sync param.
+    SetLfo2Link(bool),
 }
 
 /// Which topology field of a matrix slot a UI edit targets (0219, absorbing
@@ -93,10 +104,11 @@ pub struct MatrixEdit {
     pub value: u8,
 }
 
-/// The global keyboard-routing state: the two toggles plus the split point.
-/// Non-automatable (ADR 0002 §3) — it rides the plugin-state blob, not the CLAP
-/// param table. `KeyMode` is derived from it. Kept a self-contained record so
-/// the two-layer `clap.state` format (0221) can serialise it directly.
+/// The global **non-automatable domain state**: the two keyboard toggles, the
+/// split point, and the one cross-layer link (LFO 2, ADR 0002 §5). Not in the
+/// CLAP param table (ADR 0002 §3) — it rides the plugin-state blob. `KeyMode` is
+/// derived from it. Kept a self-contained record so the two-layer `clap.state`
+/// format (0221) can serialise it directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyState {
     /// Layer 2 active. Off → [`KeyMode::Single`] (synth 2 bypassed).
@@ -107,11 +119,21 @@ pub struct KeyState {
     /// Split point (MIDI note): note-ons **below** go to Lower (synth 2), at or
     /// above go to Upper (synth 1).
     pub split_point: u8,
+    /// **Cross-layer LFO 2 link** (0217, ADR 0002 §5): when set, Layer 2's LFO 2
+    /// slaves to Layer 1's — rate *and* phase lock, Layer 2's own `lfo2_rate` is
+    /// ignored while linked (its shape is not). Only meaningful when `layer2_on`.
+    /// Distinct from the per-layer `lfo2_sync` **param**, which is tempo sync.
+    pub lfo2_link: bool,
 }
 
 impl Default for KeyState {
     fn default() -> Self {
-        Self { layer2_on: false, split_enabled: false, split_point: DEFAULT_SPLIT_POINT }
+        Self {
+            layer2_on: false,
+            split_enabled: false,
+            split_point: DEFAULT_SPLIT_POINT,
+            lfo2_link: false,
+        }
     }
 }
 
@@ -132,6 +154,7 @@ impl KeyState {
             }
             KeyOp::SetKeyMode(_) => {}
             KeyOp::SetSplitPoint(n) => self.split_point = n,
+            KeyOp::SetLfo2Link(on) => self.lfo2_link = on,
         }
     }
 
@@ -145,16 +168,27 @@ impl KeyState {
         }
     }
 
-    /// Write the 3-byte record `[layer2_on, split_enabled, split_point]`.
+    /// Write the 4-byte record `[layer2_on, split_enabled, split_point,
+    /// lfo2_link]`.
     pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&[self.layer2_on as u8, self.split_enabled as u8, self.split_point])
+        w.write_all(&[
+            self.layer2_on as u8,
+            self.split_enabled as u8,
+            self.split_point,
+            self.lfo2_link as u8,
+        ])
     }
 
-    /// Read a 3-byte record. A short read is a hard error (corruption).
+    /// Read a 4-byte record. A short read is a hard error (corruption).
     pub fn read(r: &mut impl Read) -> io::Result<Self> {
-        let mut b = [0u8; 3];
+        let mut b = [0u8; 4];
         r.read_exact(&mut b)?;
-        Ok(Self { layer2_on: b[0] != 0, split_enabled: b[1] != 0, split_point: b[2] })
+        Ok(Self {
+            layer2_on: b[0] != 0,
+            split_enabled: b[1] != 0,
+            split_point: b[2],
+            lfo2_link: b[3] != 0,
+        })
     }
 }
 
@@ -273,6 +307,13 @@ impl Engine {
         self.key.split_point = note;
     }
 
+    /// Turn the cross-layer LFO 2 link on/off (0217, ADR 0002 §5). On → Layer 2's
+    /// LFO 2 mirrors Layer 1's phase each control block (rate + phase lock);
+    /// off → it free-runs from Layer 2's own patch.
+    pub fn set_lfo2_link(&mut self, on: bool) {
+        self.key.lfo2_link = on;
+    }
+
     pub fn set_pitch_bend(&mut self, bend: f32) {
         self.synths[0].set_pitch_bend(bend);
         if self.key.layer2_on {
@@ -359,9 +400,14 @@ impl Engine {
         r.fill(0.0);
 
         // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
-        self.synths[0].render_control_block(l, r);
+        // Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
+        // master when the cross-layer link is on (0217): layer 2 adopts it
+        // instead of running its own accumulator. Link off → `None`, the
+        // free-running path, at no cost.
+        self.synths[0].render_control_block(l, r, None);
         if self.key.layer2_on {
-            self.synths[1].render_control_block(l, r);
+            let master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
+            self.synths[1].render_control_block(l, r, master);
         }
 
         // Serial FX chain over the summed voices, at the global OS rate (today
@@ -590,7 +636,7 @@ mod tests {
         // Synth 2 holds no voice → tick it in isolation and it is silent.
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        e.synths[1].render_control_block(&mut l, &mut r);
+        e.synths[1].render_control_block(&mut l, &mut r, None);
         let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
         assert_eq!(peak, 0.0, "single mode must not route notes to synth 2");
     }
@@ -605,7 +651,7 @@ mod tests {
         for s in 0..2 {
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            e.synths[s].render_control_block(&mut l, &mut r);
+            e.synths[s].render_control_block(&mut l, &mut r, None);
             let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()));
             assert!(peak > 0.0, "dual must drive synth {s}");
         }
@@ -627,7 +673,7 @@ mod tests {
         let peak = |e: &mut Engine, s: usize| {
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            e.synths[s].render_control_block(&mut l, &mut r);
+            e.synths[s].render_control_block(&mut l, &mut r, None);
             l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()))
         };
         assert!(peak(&mut e, 0) > 0.0, "note at/above split must sound on synth 1");
@@ -682,6 +728,87 @@ mod tests {
         assert!(e.synths[0].voices_holding(72), "the still-held note must ring on");
     }
 
+    /// Wire `LFO 2 → Cutoff` at full depth on both layers and give them
+    /// **different** LFO 2 rates, so nothing but the link can hold them together.
+    fn dual_engine_with_lfo2_to_cutoff() -> Engine {
+        use crate::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        for s in 0..2 {
+            e.synths[s].matrix_mut().slots[1] = MatrixSlot {
+                source: SourceId::Lfo2,
+                dest: DestId::Cutoff,
+                depth: 1.0,
+                curve: Curve::Lin,
+                scale_src: SourceId::None,
+            };
+            e.synths[s].set_param(ParamId::MatrixSlot1Depth as usize, 1.0);
+            e.synths[s].set_param(ParamId::Env2Attack as usize, 0.001);
+            e.synths[s].set_param(ParamId::Cutoff as usize, 1_000.0);
+        }
+        e.synths[0].set_param(ParamId::Lfo2Rate as usize, 3.0);
+        e.synths[1].set_param(ParamId::Lfo2Rate as usize, 17.0);
+        e
+    }
+
+    /// 0217 / ADR 0002 §5: with the link on, layer 2's LFO 2 mirrors layer 1's
+    /// phase every control block despite a wildly different `lfo2_rate` — rate
+    /// *and* phase lock. Same phase + same shape is exactly "both layers'
+    /// LFO2-driven dests move in phase": the dest contribution is
+    /// `depth · curve(shape(phase))`, so equal phase makes it equal. With the
+    /// link off they free-run and diverge.
+    #[test]
+    fn lfo2_link_locks_layer2_phase_to_layer1() {
+        let mut linked = dual_engine_with_lfo2_to_cutoff();
+        linked.set_lfo2_link(true);
+        assert_eq!(
+            linked.synths[0].param(ParamId::Lfo2Shape as usize),
+            linked.synths[1].param(ParamId::Lfo2Shape as usize),
+            "matching shapes, so equal phase means equal modulation"
+        );
+        linked.note_on(0, 60, 1.0);
+
+        let mut free = dual_engine_with_lfo2_to_cutoff();
+        free.note_on(0, 60, 1.0);
+
+        let (mut l, mut r) = (vec![0.0; CONTROL_BLOCK], vec![0.0; CONTROL_BLOCK]);
+        let mut free_diverged = false;
+        for block in 0..400 {
+            linked.process_block(&mut l, &mut r);
+            assert_eq!(
+                linked.synths[1].lfo2_phase(),
+                linked.synths[0].lfo2_phase(),
+                "linked layer 2 must track layer 1's LFO 2 phase (block {block})"
+            );
+            free.process_block(&mut l, &mut r);
+            let gap = free.synths[1].lfo2_phase() - free.synths[0].lfo2_phase();
+            free_diverged |= gap.abs() > 0.1;
+        }
+        assert!(free_diverged, "with the link off the two LFO 2s must free-run apart");
+    }
+
+    /// The link reaches the DSP, not just the phase accumulator: the same note on
+    /// the same two patches renders differently with the link on, because layer
+    /// 2's LFO2→Cutoff route now follows layer 1's (slower) phase instead of its
+    /// own rate.
+    #[test]
+    fn lfo2_link_changes_the_rendered_mix() {
+        let render = |link: bool| {
+            let mut e = dual_engine_with_lfo2_to_cutoff();
+            e.set_lfo2_link(link);
+            e.note_on(0, 60, 1.0);
+            let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+            e.process_block(&mut l, &mut r);
+            l
+        };
+        let (linked, free) = (render(true), render(false));
+        assert!(linked.iter().any(|&s| s != 0.0), "the test patch must sound");
+        assert!(
+            linked.iter().zip(&free).any(|(x, y)| (x - y).abs() > 1e-6),
+            "the LFO 2 link must change layer 2's filter movement"
+        );
+    }
+
     #[test]
     fn note_off_broadcasts_in_single_mode() {
         // Even in single mode a note-off reaches synth 2 (harmless no-op) — the
@@ -694,16 +821,21 @@ mod tests {
 
     #[test]
     fn key_state_round_trips_through_blob() {
-        let ks = KeyState { layer2_on: true, split_enabled: true, split_point: 48 };
+        let ks = KeyState {
+            layer2_on: true,
+            split_enabled: true,
+            split_point: 48,
+            lfo2_link: true,
+        };
         let mut buf = Vec::new();
         ks.write(&mut buf).unwrap();
-        assert_eq!(buf.len(), 3, "key state is a fixed 3-byte record");
+        assert_eq!(buf.len(), 4, "key state is a fixed 4-byte record");
         let back = KeyState::read(&mut &buf[..]).unwrap();
         assert_eq!(back, ks);
         assert_eq!(back.key_mode(), KeyMode::Split);
 
         // A short read is corruption, not a default.
-        assert!(KeyState::read(&mut &buf[..2]).is_err());
+        assert!(KeyState::read(&mut &buf[..3]).is_err());
     }
 
     #[test]
@@ -721,6 +853,15 @@ mod tests {
         assert!(!k.layer2_on);
         k.apply(KeyOp::SetSplitPoint(72));
         assert_eq!(k.split_point, 72);
+        // The cross-layer LFO 2 link rides the same op channel (0217) and is
+        // orthogonal to the key mode.
+        assert!(!k.lfo2_link, "link is off by default");
+        k.apply(KeyOp::SetLfo2Link(true));
+        assert!(k.lfo2_link);
+        k.apply(KeyOp::SetKeyMode(1));
+        assert!(k.lfo2_link, "a mode change leaves the link alone");
+        k.apply(KeyOp::SetLfo2Link(false));
+        assert!(!k.lfo2_link);
     }
 
     #[test]
@@ -730,6 +871,7 @@ mod tests {
         assert!(!ks.split_enabled);
         assert_eq!(ks.split_point, DEFAULT_SPLIT_POINT);
         assert_eq!(ks.split_point, 60);
+        assert!(!ks.lfo2_link, "the cross-layer LFO 2 link is off by default");
         assert_eq!(ks.key_mode(), KeyMode::Single);
     }
 }

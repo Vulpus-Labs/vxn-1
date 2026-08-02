@@ -93,6 +93,12 @@ mirrors L1's phase accumulator), giving true locked stereo movement. "Synced
 modulation, different timbre" is achieved by wiring `LFO2 → <dest>` in *each*
 layer's own matrix and enabling sync — same shape, independent timbres.
 
+Surfaced as **"Link"**, not "Sync" (0217): `lfo2_sync` is already the per-layer
+*tempo*-sync param, so the cross-layer flag is `KeyState::lfo2_link` / the
+`set_lfo2_link` UI op. The slave keeps its own LFO 2 **shape** (only phase, and
+therefore rate, is taken from the master), so a linked pair can run different
+shapes off one phase.
+
 ### 6. Global drift, ported unchanged from VXN1
 
 `MasterDrift` [0,1], default 0, is a **single global control** (Tab 3), applied

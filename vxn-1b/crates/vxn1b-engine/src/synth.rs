@@ -170,14 +170,36 @@ impl Synth {
         }
     }
 
+    /// This layer's LFO 2 phase after the last control-block tick. The global
+    /// block reads Layer 1's to drive Layer 2's LFO 2 link (0217, ADR 0002 §5).
+    #[inline]
+    pub(crate) fn lfo2_phase(&self) -> f32 {
+        self.lfo2.phase()
+    }
+
     /// Render one ≤`CONTROL_BLOCK` control block, **accumulating** this synth's
     /// voices into `l`/`r` (the global block pre-zeroes and may tick a second
     /// synth on top). Ticks this layer's LFO 2, builds the block context, renders
     /// both banks. No FX or master here — those are global (ADR §7).
-    pub(crate) fn render_control_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+    ///
+    /// `lfo2_link` is the **master LFO 2 phase** to slave to (0217): `Some(p)`
+    /// makes this layer's LFO 2 adopt `p` instead of running its own accumulator
+    /// — rate *and* phase lock — while its shape stays its own; `None` (always,
+    /// for Layer 1) free-runs from this layer's own patch settings.
+    pub(crate) fn render_control_block(
+        &mut self,
+        l: &mut [f32],
+        r: &mut [f32],
+        lfo2_link: Option<f32>,
+    ) {
         // LFO 2: one tick per control block, broadcast to both banks.
-        self.lfo2.set_rate(self.params.get(ParamId::Lfo2Rate));
-        let lfo2_val = self.lfo2.next(self.params.lfo2_shape());
+        let lfo2_val = match lfo2_link {
+            Some(master_phase) => self.lfo2.sync_to(master_phase, self.params.lfo2_shape()),
+            None => {
+                self.lfo2.set_rate(self.params.get(ParamId::Lfo2Rate));
+                self.lfo2.next(self.params.lfo2_shape())
+            }
+        };
 
         let ctx = build_ctx(
             &self.params,
@@ -383,7 +405,7 @@ mod tests {
                 let n = (l.len() - off).min(CONTROL_BLOCK);
                 l[off..off + n].fill(0.0);
                 r[off..off + n].fill(0.0);
-                self.render_control_block(&mut l[off..off + n], &mut r[off..off + n]);
+                self.render_control_block(&mut l[off..off + n], &mut r[off..off + n], None);
                 off += n;
             }
         }

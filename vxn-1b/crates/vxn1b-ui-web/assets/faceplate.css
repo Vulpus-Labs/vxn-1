@@ -736,6 +736,11 @@ html, body {
 }
 .panel-strip > * { pointer-events: auto; }
 
+/* Cross-layer cells (0217): the LFO 2 Link toggle only means anything on the
+   slave layer, so hide it while the pane shows Layer 1. `visibility` (not
+   `display`) so the strip's other cells never shift on a tab flip. */
+[data-edit-layer="upper"] [data-layer2-only] { visibility: hidden; }
+
 /* Master's strip stacks Oversample (horizontal toggle row) over Limit
    (single toggle) — `panel-strip` defaults to a single horizontal row,
    so this is the one panel that overrides it. */

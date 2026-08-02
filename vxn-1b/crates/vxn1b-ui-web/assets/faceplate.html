@@ -162,7 +162,11 @@ __CSS__
       </div>
     </div>
     <!-- LFO 2 (0042): per-layer since 0216 (VXN1b has no global LFO — ADR 0002
-         §4). Shape + Rate up top, Sync in the strip; rebinds with its layer. -->
+         §4). Shape + Rate up top, Sync in the strip; rebinds with its layer.
+         Link (0217) is the one cross-layer coupling — Layer 2's LFO 2 slaves to
+         Layer 1's (rate + phase). It is KeyState, not a param, so it carries no
+         `data-control`/`data-param` and is wired by hand in dispatch.js; CSS
+         shows it on the Layer 2 tab only. -->
     <div class="panel" data-name="LFO 2" data-layered>
       <div class="panel-header">LFO 2</div>
       <div class="panel-body">
@@ -171,6 +175,7 @@ __CSS__
       </div>
       <div class="panel-strip">
         <div class="ctl-strip" data-control="switch" data-param="lfo2_sync" data-label="Sync"></div>
+        <div class="ctl-strip" id="lfo2-link" data-layer2-only></div>
       </div>
     </div>
     <!-- Env 1 (0043): ADSR + Shape (Lin/Exp) in the strip. Vizia maps the

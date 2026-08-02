@@ -112,6 +112,32 @@ impl LfoCore {
         } else {
             self.phase = next;
         }
+        self.value(shape)
+    }
+
+    /// **Slave one tick to a master LFO's phase** and return this LFO's value at
+    /// that phase (VXN1b's cross-layer LFO 2 link, 0217). The own phase
+    /// accumulator is not advanced — `phase` is adopted wholesale, so rate *and*
+    /// phase track the master exactly while the caller keeps calling this instead
+    /// of [`Self::next`]. `shape` stays the slave's own, so a linked pair can run
+    /// different shapes locked to one phase.
+    ///
+    /// A backwards step (master wrapped since the last tick) draws the next S&H
+    /// value from *this* LFO's stream, so `Random` steps in lockstep with the
+    /// master without sharing its values.
+    #[inline]
+    pub fn sync_to(&mut self, phase: f32, shape: LfoShape) -> f32 {
+        let p = if phase.is_finite() { phase.rem_euclid(1.0) } else { 0.0 };
+        if p < self.phase {
+            self.random_value = xorshift64(&mut self.prng_state);
+        }
+        self.phase = p;
+        self.value(shape)
+    }
+
+    /// The bipolar `[-1, 1]` value of `shape` at the current phase.
+    #[inline]
+    fn value(&self, shape: LfoShape) -> f32 {
         let p = self.phase;
         match shape {
             LfoShape::Sine => lookup_sine(p),
@@ -176,6 +202,45 @@ mod tests {
             let v = lfo.next(shape);
             assert!(v.abs() < 0.01, "{shape:?} did not restart near zero: {v}");
         }
+    }
+
+    /// `sync_to` slaves a second LFO to a master's phase: matching shapes track
+    /// sample-for-sample regardless of the slave's own rate (0217).
+    #[test]
+    fn sync_to_tracks_a_master_phase_and_ignores_own_rate() {
+        let sr = 48_000.0;
+        let mut master = LfoCore::new(sr, 1);
+        let mut slave = LfoCore::new(sr, 2);
+        master.set_rate(3.0);
+        slave.set_rate(11.0); // deliberately different — the link must override it
+        for _ in 0..5_000 {
+            let m = master.next(LfoShape::Triangle);
+            let s = slave.sync_to(master.phase(), LfoShape::Triangle);
+            assert_eq!(slave.phase(), master.phase());
+            assert!((m - s).abs() < 1e-6, "linked LFOs must match: {m} vs {s}");
+        }
+    }
+
+    /// A linked `Random` slave steps on the master's wraps (its own stream, not
+    /// the master's values) and stays bounded.
+    #[test]
+    fn sync_to_steps_sample_and_hold_on_master_wrap() {
+        let sr = 1_000.0;
+        let mut master = LfoCore::new(sr, 1);
+        let mut slave = LfoCore::new(sr, 2);
+        master.set_rate(10.0); // 100-sample period
+        let mut steps = 0;
+        let mut prev = slave.sync_to(master.phase(), LfoShape::Random);
+        for _ in 0..1_000 {
+            master.next(LfoShape::Sine);
+            let v = slave.sync_to(master.phase(), LfoShape::Random);
+            assert!(v.is_finite() && v.abs() <= 1.001);
+            if v != prev {
+                steps += 1;
+            }
+            prev = v;
+        }
+        assert!((9..=11).contains(&steps), "one S&H step per master cycle, got {steps}");
     }
 
     #[test]

@@ -85,6 +85,12 @@ pub fn open_editor(
             "set_split_point" => Some(UiEvent::Custom(Box::new(KeyOp::SetSplitPoint(
                 v.get("note")?.as_u64()? as u8,
             )))),
+            // Cross-layer LFO 2 link (0217, ADR 0002 §5) — Layer 2's LFO 2 slaves
+            // to Layer 1's. Non-automatable, so it rides KeyState like the key
+            // mode; distinct from the `lfo2_sync` (tempo-sync) CLAP param.
+            "set_lfo2_link" => {
+                Some(UiEvent::Custom(Box::new(KeyOp::SetLfo2Link(v.get("on")?.as_bool()?))))
+            }
             // Matrix topology edit (0219/0210): source/dest/curve/scale on one
             // slot of one layer. Depth is a normal CLAP param, not this op.
             "set_matrix" => {

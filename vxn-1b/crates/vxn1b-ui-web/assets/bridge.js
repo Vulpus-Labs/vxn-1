@@ -72,6 +72,10 @@ window.vxn = {
     setKeyMode:      (mode)                 => { _post({ op: 'set_key_mode', mode }); _mutated(); },
     setSplitPoint:   (note)                 => { _post({ op: 'set_split_point', note }); _mutated(); },
     setEditLayer:    (layer)                => _post({ op: 'set_edit_layer', layer }),
+    // Cross-layer LFO 2 link (0217): Layer 2's LFO 2 slaves to Layer 1's. Not a
+    // param (KeyState state, like the key mode) — and not `lfo2_sync`, which is
+    // the per-layer tempo-sync param.
+    setLfo2Link:     (on)                   => { _post({ op: 'set_lfo2_link', on }); _mutated(); },
     // Matrix topology edit (0219). `field` ∈ source|dest|curve|scale; `value` is
     // the wire u8 (SourceId/DestId/Curve index). Depth is a normal set_param.
     setMatrix:       (layer, slot, field, value) => { _post({ op: 'set_matrix', layer, slot, field, value }); _mutated(); },

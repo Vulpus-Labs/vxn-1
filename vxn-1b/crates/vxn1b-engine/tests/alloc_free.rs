@@ -58,6 +58,12 @@ fn hot_path_is_allocation_free() {
     e.process_block(&mut l, &mut r);
     e.note_off(0, 48);
     e.process_block(&mut l, &mut r);
+    // Dual mode with the cross-layer LFO 2 link on (0217): both synths tick and
+    // layer 2 slaves to layer 1's phase — still no heap.
+    e.set_layer2_on(true);
+    e.set_lfo2_link(true);
+    e.note_on(2, 64, 0.9);
+    e.process_block(&mut l, &mut r);
 
     ARMED.store(false, Ordering::Relaxed);
 
