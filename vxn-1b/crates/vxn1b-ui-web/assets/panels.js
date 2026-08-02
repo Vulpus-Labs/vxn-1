@@ -36,7 +36,7 @@ export {
 
 export {
   WAVE_GLYPHS, glyphPath, SVG_NS, TWIN_TOP_CT,
-  makeFader, subdivisionLabel, makeWave, makeDial, makeDetuneLegato,
+  makeFader, subdivisionLabel, makeWave, makeDial, makeBipolar, makeDetuneLegato,
 } from './panels/fader.js';
 
 export {

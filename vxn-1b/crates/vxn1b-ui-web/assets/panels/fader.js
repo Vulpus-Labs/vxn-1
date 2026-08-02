@@ -435,6 +435,91 @@ export function makeDial(el, id, desc) {
   };
 }
 
+// ─── Bipolar horizontal fader (mod-matrix depth, 0219) ──────────────────────
+//
+// Ported from vxn-2's `createBipolar` (panels/fader.js): a center-origin
+// horizontal fader for a bipolar `[-1, 1]` param — the fill grows *signed* from
+// the 50% centre so "same source, opposite depths" reads at a glance (one slot
+// +0.5, another −0.5). Follows `makeDial`'s dispatch contract (setParamNorm +
+// gesture brackets + an `update` echo), so it automates and rebinds per layer
+// like any other cell. The centre of the param's normalised range is 0 depth.
+export function makeBipolar(el, id, desc) {
+  const noLabel = el.hasAttribute('data-no-label') || el.dataset.label === '';
+  const label = el.dataset.label || desc.label;
+  el.innerHTML =
+    (noLabel ? '' : `<div class="ctl-label">${label.toUpperCase()}</div>`) +
+    `<div class="fader-track">` +
+      `<div class="vxn-mm-depth-center"></div>` +
+      `<div class="fader-track-fill"></div>` +
+      `<div class="fader-thumb"></div>` +
+    `</div>`;
+
+  const track = el.querySelector('.fader-track');
+  const fill = el.querySelector('.fader-track-fill');
+  const thumb = el.querySelector('.fader-thumb');
+  let currentNorm = 0.5;
+  let lastDisplay = '';
+
+  // Signed fill grown horizontally from the 50% centre toward the thumb.
+  function paint(norm) {
+    currentNorm = norm;
+    const pct = norm * 100;
+    if (norm >= 0.5) {
+      fill.style.left = '50%';
+      fill.style.width = `${pct - 50}%`;
+    } else {
+      fill.style.left = `${pct}%`;
+      fill.style.width = `${50 - pct}%`;
+    }
+    thumb.style.left = `${pct}%`;
+  }
+
+  const writeFromDrag = (rawNorm) => {
+    const n = rawNorm < 0 ? 0 : rawNorm > 1 ? 1 : rawNorm;
+    paint(n);
+    window.vxn.send.setParamNorm(id, n);
+  };
+
+  let drag;
+  const pop = attachValuePop({
+    isHovered:  () => drag.isHovered(),
+    isDragging: () => drag.isDragging(),
+  }, () => lastDisplay);
+  // Horizontal relative drag: right (+dx) raises, 200 px for full −1…+1 travel.
+  const RANGE_PX = 200;
+  drag = wireDrag(track, {
+    axis: 'x',
+    raf: true,
+    downContext: () => ({ startNorm: currentNorm }),
+  }, {
+    onEnter: (ev) => pop.markEntered(ev),
+    onLeave: () => pop.markLeft(),
+    onDown: (ev) => {
+      window.vxn.send.beginGesture(id);
+      writeFromDrag(currentNorm); // re-anchor at the grab point
+      pop.markGrabbed(ev);
+    },
+    onMove: (_ev, info) => writeFromDrag(info.ctx.startNorm + info.dx / RANGE_PX),
+    onUp: () => {
+      window.vxn.send.endGesture(id);
+      pop.markReleased();
+    },
+  });
+
+  // Seed at centre (0 depth); the bind-time echo repaints authoritatively.
+  paint(0.5);
+
+  return {
+    update(plain, norm, display) {
+      // Always paint from the authoritative engine norm so DAW automation moves
+      // the fader even mid-drag (the local paint and the echo converge).
+      paint(norm);
+      lastDisplay = display;
+      pop.refresh();
+    },
+  };
+}
+
 // ─── Detune + Legato composite (Voice panel, 0045) ─────────────────────────
 //
 // Two params + one watch in a single column: the Detune fader on top and

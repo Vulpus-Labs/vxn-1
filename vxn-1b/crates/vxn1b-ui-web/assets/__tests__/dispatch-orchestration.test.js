@@ -56,6 +56,7 @@ function stubGlobals() {
   globalThis.makeFader = factory('fader');
   globalThis.makeWave = factory('wave');
   globalThis.makeDial = factory('dial');
+  globalThis.makeBipolar = factory('bipolar');
   globalThis.makeSwitch = factory('switch');
   globalThis.makeButtonGroup = factory('buttongroup');
   globalThis.makeDropdown = factory('dropdown');

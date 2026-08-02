@@ -389,7 +389,54 @@ html, body {
 .vxn-mm-row[data-active="1"] { color: var(--text); }
 .vxn-mm-slot-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; }
 .vxn-mm-scale { min-width: 0; }
-.vxn-mm-depth { justify-self: center; }
+
+/* Bipolar depth fader (ported from vxn-2 .vxn-mm-depth): a compact center-origin
+   HORIZONTAL fader. The centre tick marks 0; the fill grows signed left/right
+   from it (makeBipolar drives left/width). */
+.vxn-mm-depth {
+  min-width: 0;
+  justify-self: center;
+  width: 100%;
+}
+.vxn-mm-depth .fader-track {
+  position: relative;
+  width: 100%;
+  max-width: 120px;
+  height: 4px;
+  margin: 0 auto;
+  background: var(--track-bg);
+  border-radius: 2px;
+}
+.vxn-mm-depth .fader-track-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  background: var(--track-fill);
+}
+.vxn-mm-depth .fader-thumb {
+  position: absolute;
+  width: var(--thumb-h);
+  height: var(--thumb-w);
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--thumb-bg);
+  border: 1px solid var(--thumb-border);
+  border-radius: 2px;
+  cursor: ew-resize;
+}
+.vxn-mm-depth-center {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 50%;
+  width: 1px;
+  background: var(--glyph);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 
 /* Custom dropdown (matrix.js buildCombo) — replaces the native <select> so no
    NSMenu steals webview first-responder (the macOS/WKWebView first-click bug).

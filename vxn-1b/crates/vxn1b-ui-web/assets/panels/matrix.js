@@ -195,10 +195,11 @@ export const matrixOverlay = {
     const scale = buildCombo(mx.sources, 'scale');
     scale.classList.add('vxn-mm-scale');
 
-    // Depth: the automatable per-layer CLAP dial. dispatch binds/rebinds/echoes.
+    // Depth: the automatable per-layer bipolar CLAP fader (center-origin, signed
+    // fill). dispatch binds/rebinds/echoes it like any other cell.
     const depth = document.createElement('div');
     depth.className = 'ctl vxn-mm-depth';
-    depth.dataset.control = 'dial';
+    depth.dataset.control = 'bipolar';
     depth.dataset.param = `matrix_slot${slot}_depth`;
     depth.setAttribute('data-layered', '');
     depth.dataset.label = '';

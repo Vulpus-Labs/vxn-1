@@ -296,6 +296,7 @@ export function bindCell(entry, layer) {
     }
     case 'wave':          ctl = makeWave(el, id, desc); break;
     case 'dial':          ctl = makeDial(el, id, desc); break;
+    case 'bipolar':       ctl = makeBipolar(el, id, desc); break;
     case 'switch':        ctl = makeSwitch(el, id, desc); break;
     case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;
     case 'dropdown':      ctl = makeDropdown(el, id, desc); break;

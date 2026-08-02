@@ -62,9 +62,9 @@ describe('matrixOverlay.build', () => {
     expect(document.querySelector('.vxn-mm-header')).toBeTruthy();
     // Source combo carries every vocab option.
     expect(combo(0, 'source').parentElement).toBeTruthy();
-    // Depth is the automatable per-layer dial cell.
+    // Depth is the automatable per-layer bipolar fader cell.
     const depth = rows()[3].querySelector('.vxn-mm-depth');
-    expect(depth.dataset.control).toBe('dial');
+    expect(depth.dataset.control).toBe('bipolar');
     expect(depth.dataset.param).toBe('matrix_slot3_depth');
     expect(depth.hasAttribute('data-layered')).toBe(true);
   });
