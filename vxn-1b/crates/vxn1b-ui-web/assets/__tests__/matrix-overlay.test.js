@@ -1,7 +1,6 @@
-// 0219: the mod-matrix overlay — builds 16 slot rows, posts set_matrix topology
-// edits, and rebinds its selectors to the active edit layer. Depth dials are
-// data-control cells bound by dispatch (covered elsewhere); this suite drives
-// the topology selectors + the per-layer snapshot.
+// 0219: the mod-matrix overlay (ported from vxn-2) — builds 16 slot rows with
+// custom div-combos (not native <select>), posts set_matrix topology edits,
+// rebinds to the active edit layer, and opens/closes as a dismissible modal.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { matrixOverlay } from '../panels/matrix.js';
 
@@ -19,75 +18,82 @@ const CURVES = [
   { value: 3, name: 'bipolar', label: 'Bipolar' },
 ];
 
-function emptySlots() {
-  return Array.from({ length: 16 }, () => ({ source: 0, dest: 0, curve: 0, scale: 0 }));
-}
+const emptySlots = () =>
+  Array.from({ length: 16 }, () => ({ source: 0, dest: 0, curve: 0, scale: 0 }));
 
 let sends;
 
 beforeEach(() => {
   const l0 = emptySlots();
-  // Layer 1 slot 0 is a live route (Env1 → Cutoff); layer 2 stays empty.
-  l0[0] = { source: 1, dest: 4, curve: 0, scale: 0 };
+  l0[0] = { source: 1, dest: 4, curve: 0, scale: 0 }; // Env1 → Cutoff, live
   window.vxn = {
     matrix: { sources: SOURCES, dests: DESTS, curves: CURVES, slots: [l0, emptySlots()] },
-    send: { setMatrix: vi.fn((...a) => sends.push(a)) },
+    send: {
+      setMatrix: vi.fn((...a) => sends.push(['matrix', ...a])),
+      setParam: vi.fn((...a) => sends.push(['param', ...a])),
+    },
   };
   sends = [];
   matrixOverlay._layer = 'upper';
   document.body.innerHTML = `
     <button id="matrix-toggle"></button>
-    <div id="matrix-overlay" hidden>
-      <span id="matrix-layer-label"></span>
-      <div id="matrix-rows"></div>
+    <div class="overlay-backdrop" id="matrix-backdrop" hidden>
+      <div class="overlay-panel">
+        <button id="matrix-close"></button>
+        <span id="matrix-layer-label"></span>
+        <div id="matrix-rows"></div>
+      </div>
     </div>
   `;
 });
 
-const rows = () => document.querySelectorAll('#matrix-rows .mtx-row');
-const rowSel = (i, field) =>
-  rows()[i].querySelector(`.mtx-sel[data-field="${field}"]`);
+const rows = () => document.querySelectorAll('#matrix-rows .vxn-mm-row');
+const combo = (i, field) => rows()[i].querySelector(`.vxn-mm-combo[data-field="${field}"]`);
+const setCombo = (el, v) => {
+  el.value = String(v);
+  el.dispatchEvent(new Event('change'));
+};
 
 describe('matrixOverlay.build', () => {
-  it('renders 16 rows with populated selectors', () => {
+  it('renders a header + 16 rows with custom combos (no native selects)', () => {
     matrixOverlay.build();
     expect(rows()).toHaveLength(16);
-    // Source select carries the vocab options.
-    expect(rowSel(0, 'source').querySelectorAll('option')).toHaveLength(SOURCES.length);
-    expect(rowSel(0, 'dest').querySelectorAll('option')).toHaveLength(DESTS.length);
-    // A depth dial cell is present for dispatch to bind, layered + named.
-    const depth = rows()[3].querySelector('.mtx-depth');
+    expect(document.querySelectorAll('#matrix-rows select')).toHaveLength(0);
+    expect(document.querySelector('.vxn-mm-header')).toBeTruthy();
+    // Source combo carries every vocab option.
+    expect(combo(0, 'source').parentElement).toBeTruthy();
+    // Depth is the automatable per-layer dial cell.
+    const depth = rows()[3].querySelector('.vxn-mm-depth');
     expect(depth.dataset.control).toBe('dial');
     expect(depth.dataset.param).toBe('matrix_slot3_depth');
     expect(depth.hasAttribute('data-layered')).toBe(true);
   });
 
-  it('seeds selectors from the active layer and dims inactive rows', () => {
+  it('seeds combos from the active layer and marks active rows', () => {
     matrixOverlay.build();
-    // Layer 1 slot 0 is Env1 → Cutoff → active (not dimmed).
-    expect(rowSel(0, 'source').value).toBe('1');
-    expect(rowSel(0, 'dest').value).toBe('4');
-    expect(rows()[0].classList.contains('mtx-active')).toBe(true);
-    // Slot 1 is empty → dimmed.
-    expect(rows()[1].classList.contains('mtx-active')).toBe(false);
+    expect(combo(0, 'source').value).toBe('1');
+    expect(combo(0, 'dest').value).toBe('4');
+    expect(rows()[0].dataset.active).toBe('1');
+    expect(rows()[1].dataset.active).toBe('0'); // empty → inactive
   });
 
-  it('a selector edit posts set_matrix and updates the snapshot', () => {
+  it('a combo edit posts set_matrix and updates the snapshot', () => {
     matrixOverlay.build();
-    const src = rowSel(2, 'source');
-    src.value = '4'; // LFO 2
-    src.dispatchEvent(new Event('change'));
-    expect(sends).toContainEqual(['upper', 2, 'source', 4]);
-    // Local snapshot updated so a re-render reflects it.
+    setCombo(combo(2, 'source'), 4); // LFO 2
+    expect(sends).toContainEqual(['matrix', 'upper', 2, 'source', 4]);
     expect(window.vxn.matrix.slots[0][2].source).toBe(4);
-    // Still inactive (no dest yet).
-    expect(rows()[2].classList.contains('mtx-active')).toBe(false);
-    // Add a dest → row becomes active.
-    const dst = rowSel(2, 'dest');
-    dst.value = '4';
-    dst.dispatchEvent(new Event('change'));
-    expect(sends).toContainEqual(['upper', 2, 'dest', 4]);
-    expect(rows()[2].classList.contains('mtx-active')).toBe(true);
+    expect(rows()[2].dataset.active).toBe('0'); // no dest yet
+    setCombo(combo(2, 'dest'), 4);
+    expect(rows()[2].dataset.active).toBe('1');
+  });
+
+  it('the bin clears a slot (four topology zeros)', () => {
+    matrixOverlay.build();
+    rows()[0].querySelector('.vxn-mm-bin').click();
+    for (const f of ['source', 'dest', 'curve', 'scale']) {
+      expect(sends).toContainEqual(['matrix', 'upper', 0, f, 0]);
+    }
+    expect(rows()[0].dataset.active).toBe('0');
   });
 });
 
@@ -96,29 +102,28 @@ describe('matrixOverlay.refreshForLayer', () => {
     matrixOverlay.build();
     matrixOverlay.refreshForLayer('lower');
     expect(document.getElementById('matrix-layer-label').textContent).toBe('Layer 2');
-    // Layer 2 slot 0 is empty (Layer 1's live route does not bleed across).
-    expect(rowSel(0, 'source').value).toBe('0');
-    expect(rows()[0].classList.contains('mtx-active')).toBe(false);
-    // An edit now targets the lower layer — a value distinct from Layer 1's.
-    const src = rowSel(0, 'source');
-    src.value = '4'; // LFO 2
-    src.dispatchEvent(new Event('change'));
-    expect(sends).toContainEqual(['lower', 0, 'source', 4]);
+    expect(combo(0, 'source').value).toBe('0'); // layer 2 slot 0 empty
+    setCombo(combo(0, 'source'), 4);
+    expect(sends).toContainEqual(['matrix', 'lower', 0, 'source', 4]);
     expect(window.vxn.matrix.slots[1][0].source).toBe(4);
-    expect(window.vxn.matrix.slots[0][0].source).toBe(1); // Layer 1 keeps its own route
+    expect(window.vxn.matrix.slots[0][0].source).toBe(1); // layer 1 keeps its route
   });
 });
 
-describe('matrix toggle', () => {
-  it('reveals and hides the overlay', () => {
+describe('mod-matrix modal', () => {
+  it('opens and closes via the toggle, close button, and backdrop', () => {
     matrixOverlay.build();
-    const overlay = document.getElementById('matrix-overlay');
+    const backdrop = document.getElementById('matrix-backdrop');
     const toggle = document.getElementById('matrix-toggle');
-    expect(overlay.hidden).toBe(true);
+    expect(backdrop.hidden).toBe(true);
     toggle.click();
-    expect(overlay.hidden).toBe(false);
+    expect(backdrop.hidden).toBe(false);
     expect(toggle.classList.contains('on')).toBe(true);
+    document.getElementById('matrix-close').click();
+    expect(backdrop.hidden).toBe(true);
+    // Reopen, then dismiss by clicking the backdrop itself.
     toggle.click();
-    expect(overlay.hidden).toBe(true);
+    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(backdrop.hidden).toBe(true);
   });
 });

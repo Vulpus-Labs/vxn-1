@@ -317,68 +317,144 @@ html, body {
 .matrix-toggle:hover { color: var(--text); }
 .matrix-toggle.on { background: var(--track-fill); color: var(--header-fg); border-color: var(--track-fill); }
 
-.matrix-overlay {
-  position: absolute;
+/* Mod-matrix modal + rows — ported from vxn-2 (style.css .overlay-* / .vxn-mm-*),
+   adapted to vxn-1b's palette. A dismissible modal over the whole faceplate. */
+.overlay-backdrop {
+  position: fixed;
   inset: 0;
-  z-index: 5;
-  background: var(--face-bg);
-  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.overlay-backdrop[hidden] { display: none; }
+.overlay-panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--ctl-value);
   border-radius: var(--panel-corner);
-  padding: 8px;
-  box-sizing: border-box;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+  padding: 12px;
+  max-width: 900px;
+  max-height: 90%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  overflow: hidden;
+  gap: 8px;
+  position: relative;
 }
-.matrix-head {
+.overlay-title {
   color: var(--banner-fg);
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 2px;
-  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-weight: 700;
 }
-.matrix-cols,
-.mtx-row {
-  display: grid;
-  grid-template-columns: 22px 1fr 1fr 70px 1fr 1fr;
-  align-items: center;
-  gap: 6px;
-}
-.matrix-cols {
-  flex: 0 0 auto;
+.overlay-close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: transparent;
+  border: none;
   color: var(--ctl-label);
-  font-size: 10px;
-  letter-spacing: 1px;
-  padding-right: 12px; /* clear the scrollbar */
+  font-size: 18px;
+  cursor: pointer;
 }
-.matrix-rows {
-  flex: 1 1 auto;
+.overlay-close:hover { color: var(--text); }
+.mm-overlay { min-width: 720px; }
+.mm-overlay-list {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
-.mtx-row {
+
+/* Row grid: # | source | dest | amount | curve | scale | bin. */
+.vxn-mm-header,
+.vxn-mm-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 1fr 72px 88px 1fr 24px;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 0;
+}
+.vxn-mm-header {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ctl-label);
+  position: sticky;
+  top: 0;
   background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 3px;
-  padding: 4px 6px;
-  min-height: 64px;
 }
-/* Calm-when-sparse: inactive rows (no source/dest) dim. */
-.mtx-row:not(.mtx-active) { opacity: 0.5; }
-.mtx-num { color: var(--ctl-label); font-size: 11px; text-align: center; }
-.mtx-sel {
-  background: var(--track-bg);
-  color: var(--text);
-  border: 1px solid var(--knob-rim);
-  border-radius: 3px;
-  font-family: inherit;
-  font-size: 11px;
-  padding: 3px 4px;
+.vxn-mm-row { color: #6f7780; }
+.vxn-mm-row[data-active="1"] { color: var(--text); }
+.vxn-mm-slot-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; }
+.vxn-mm-scale { min-width: 0; }
+.vxn-mm-depth { justify-self: center; }
+
+/* Custom dropdown (matrix.js buildCombo) — replaces the native <select> so no
+   NSMenu steals webview first-responder (the macOS/WKWebView first-click bug).
+   The popup is body-attached + fixed so the modal's overflow can't clip it. */
+.vxn-mm-combo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
+  box-sizing: border-box;
+  background: #0e0e0e;
+  border: 1px solid #333;
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  height: 20px;
+  cursor: pointer;
+  outline: none;
 }
-.mtx-depth { justify-self: center; }
+.vxn-mm-combo:hover,
+.vxn-mm-combo:focus,
+.vxn-mm-combo.open { border-color: var(--glyph-active); }
+.vxn-mm-combo-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vxn-mm-combo-caret { flex: 0 0 auto; color: var(--ctl-label); font-size: 8px; }
+.vxn-mm-combo-pop {
+  position: fixed;
+  z-index: 500;
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #141414;
+  border: 1px solid var(--glyph-active);
+  border-radius: 2px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+  padding: 2px;
+  font-size: 11px;
+}
+.vxn-mm-combo-opt {
+  padding: 3px 8px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.vxn-mm-combo-opt:hover { background: #2a2a2a; }
+.vxn-mm-combo-opt.sel { color: var(--ctl-value); }
+.vxn-mm-bin {
+  background: transparent;
+  border: 1px solid #2c3038;
+  border-radius: 3px;
+  color: var(--ctl-label);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.vxn-mm-bin:hover { color: var(--text); border-color: #4a5060; }
 
 .panel-header {
   height: var(--header-h);

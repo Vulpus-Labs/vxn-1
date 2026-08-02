@@ -46,6 +46,17 @@ __CSS__
     </div>
   </div>
 
+  <!-- Mod-matrix modal (0219, ported from vxn-2). A dismissible overlay — close
+       button, backdrop click, or Esc — over the whole faceplate, so it never
+       traps the tab. panels/matrix.js fills #matrix-rows and wires open/close. -->
+  <div class="overlay-backdrop mm-backdrop" id="matrix-backdrop" hidden>
+    <div class="overlay-panel mm-overlay">
+      <button class="overlay-close" id="matrix-close" type="button" aria-label="Close mod matrix">&times;</button>
+      <div class="overlay-title">Mod Matrix &mdash; <span id="matrix-layer-label">Layer 1</span></div>
+      <div class="mm-overlay-list" id="matrix-rows"></div>
+    </div>
+  </div>
+
   <!-- Three-tab shell (0219, ADR 0002 §8). Layer 1 / Layer 2 select the edit
        layer (the patch surface rebinds via the 0045 machinery — Layer 1 = Upper,
        Layer 2 = Lower); FX / Global shows the shared global panels. The tab strip
@@ -62,18 +73,10 @@ __CSS__
        to the active layer's CLAP ids (Lower = Upper + patchCount). -->
   <div class="tab-pane active" data-tab-pane="layer" data-edit-layer="upper">
 
-  <!-- Mod-matrix overlay (0219, absorbing 0210). A floating toggle reveals the
-       16-slot editor over the layer pane; it rebinds to the active edit layer.
-       Built + wired by panels/matrix.js; depth dials are data-control cells
-       dispatch binds, the source/dest/curve/scale selectors post set_matrix. -->
+  <!-- Mod-matrix (0219, absorbing 0210). A floating toggle opens the modal
+       overlay below; the 16-slot editor rebinds to the active edit layer.
+       Built + wired by panels/matrix.js. -->
   <button type="button" class="matrix-toggle" id="matrix-toggle">MOD MATRIX</button>
-  <div class="matrix-overlay" id="matrix-overlay" hidden>
-    <div class="matrix-head">MOD MATRIX — <span id="matrix-layer-label">Layer 1</span></div>
-    <div class="matrix-cols">
-      <span>#</span><span>Source</span><span>Dest</span><span>Depth</span><span>Curve</span><span>Scale</span>
-    </div>
-    <div class="matrix-rows" id="matrix-rows"></div>
-  </div>
 
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
