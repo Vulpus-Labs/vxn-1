@@ -35,7 +35,7 @@ pub mod synth;
 pub mod voice;
 
 pub use bank::{BlockCtx, RenderBank};
-pub use engine::{Engine, KeyMode, KeyState, DEFAULT_SPLIT_POINT};
+pub use engine::{Engine, KeyMode, KeyOp, KeyState, DEFAULT_SPLIT_POINT};
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
 pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};

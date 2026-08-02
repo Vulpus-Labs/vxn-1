@@ -28,6 +28,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::engine::{KeyOp, KeyState};
 use crate::matrix::MatrixTable;
 use crate::params::{
     ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, Params, TOTAL_PARAMS, clap_ref,
@@ -46,6 +47,11 @@ pub struct SharedParams {
     matrix: Mutex<[MatrixTable; 2]>,
     /// Raised on `restore_from_bytes`; the audio thread clears it and re-syncs.
     reload: AtomicBool,
+    /// Non-automatable keyboard state (0219). Written by the controller tick from
+    /// a `set_key_mode` / `set_split_point` custom op; the audio thread swaps
+    /// `key_dirty` and re-applies it to the engine's [`KeyState`].
+    key: Mutex<KeyState>,
+    key_dirty: AtomicBool,
 }
 
 impl Default for SharedParams {
@@ -74,6 +80,8 @@ impl SharedParams {
             gestures,
             matrix: Mutex::new([factory.layers[0].matrix, factory.layers[1].matrix]),
             reload: AtomicBool::new(false),
+            key: Mutex::new(KeyState::default()),
+            key_dirty: AtomicBool::new(false),
         }
     }
 
@@ -162,6 +170,25 @@ impl SharedParams {
     #[inline]
     pub fn take_reload(&self) -> bool {
         self.reload.swap(false, Ordering::Acquire)
+    }
+
+    /// Apply a UI key-op to the shared [`KeyState`] and flag the audio thread to
+    /// re-sync (0219). Called on the controller (main) thread.
+    pub fn apply_key_op(&self, op: KeyOp) {
+        self.key.lock().unwrap_or_else(|e| e.into_inner()).apply(op);
+        self.key_dirty.store(true, Ordering::Release);
+    }
+
+    /// The current keyboard state, if a key-op landed since the last call
+    /// (clears the dirty flag). The audio thread applies it via
+    /// [`crate::Engine::set_key_state`]. `None` means no change — the common case.
+    #[inline]
+    pub fn take_key_state(&self) -> Option<KeyState> {
+        if self.key_dirty.swap(false, Ordering::Acquire) {
+            Some(*self.key.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            None
+        }
     }
 
     /// Snapshot the whole store to a `clap.state` blob (params + topology).
@@ -335,6 +362,27 @@ mod tests {
         // Layer 2's private matrix edit survived on layer 2, not layer 1.
         assert_eq!(sp2.matrix_snapshot()[1].slots[5].source, crate::matrix::SourceId::Lfo2);
         assert!(!sp2.matrix_snapshot()[0].slots[5].is_active());
+    }
+
+    #[test]
+    fn key_op_channel_is_dirty_once_and_carries_state() {
+        use crate::engine::{KeyMode, KeyOp};
+        let sp = SharedParams::new();
+        // Clean by default — no spurious re-sync.
+        assert!(sp.take_key_state().is_none());
+
+        sp.apply_key_op(KeyOp::SetKeyMode(1)); // enable → Dual
+        let k = sp.take_key_state().expect("dirty after a key-op");
+        assert_eq!(k.key_mode(), KeyMode::Dual);
+        assert!(k.layer2_on);
+        // Flag clears after one read.
+        assert!(sp.take_key_state().is_none());
+
+        sp.apply_key_op(KeyOp::SetSplitPoint(48));
+        sp.apply_key_op(KeyOp::SetKeyMode(2)); // Split, keeps the point
+        let k = sp.take_key_state().unwrap();
+        assert_eq!(k.key_mode(), KeyMode::Split);
+        assert_eq!(k.split_point, 48);
     }
 
     #[test]

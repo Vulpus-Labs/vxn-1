@@ -21,7 +21,7 @@
 use std::ffi::c_void;
 
 use vxn1b_engine::params::{TOTAL_PARAMS, desc_for_clap_id};
-use vxn_core_app::{ControllerHandle, CorpusHandle, ParamDesc, ParamKind, Taper};
+use vxn_core_app::{ControllerHandle, CorpusHandle, ParamDesc, ParamKind, Taper, UiEvent};
 use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
 
 // The WebView lifecycle, IPC bridge, batched view-event sink, corpus
@@ -72,9 +72,19 @@ pub fn open_editor(
     // admin-only `C:\Program Files\<host>\<exe>.WebView2` default.
     config.webview2_vendor = Some("VulpusLabs");
     config.webview2_product = Some("VXN1b");
-    // VXN1b is single-patch: no layer / key-mode custom opcodes (matrix
-    // opcodes land in 0210). Leave the custom hooks unset.
-    config.parse_custom_ui = None;
+    // Two-layer key-mode opcodes (0219). The faceplate posts `set_key_mode`
+    // (Layer 2 toggle) / `set_split_point` as non-automatable custom ops; parse
+    // them into a `KeyOp` payload the clap controller applies to the shared
+    // KeyState. (Matrix topology opcodes join this hook with the overlay, 0210.)
+    config.parse_custom_ui = Some(std::sync::Arc::new(|op, v| {
+        use vxn1b_engine::KeyOp;
+        let ev = match op {
+            "set_key_mode" => KeyOp::SetKeyMode(v.get("mode")?.as_u64()? as u8),
+            "set_split_point" => KeyOp::SetSplitPoint(v.get("note")?.as_u64()? as u8),
+            _ => return None,
+        };
+        Some(UiEvent::Custom(Box::new(ev)))
+    }));
     config.serialise_custom_view = None;
     vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
 }

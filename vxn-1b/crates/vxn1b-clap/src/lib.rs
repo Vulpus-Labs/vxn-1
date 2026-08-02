@@ -281,9 +281,16 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
     fn on_timer(&mut self, _id: TimerId) {
         // Pull UI-posted intents into the model first so the ViewEvents they
         // generate land in `view_rx` before we drain it — saves a tick of
-        // round-trip latency on a knob drag. VXN1b has no custom UI/host
-        // events, so the no-custom tick suffices.
-        lock_mut(&self.controller).tick_no_custom();
+        // round-trip latency on a knob drag. Custom UI ops (0219: the Layer 2
+        // key-mode / split-point) are applied to the shared KeyState channel;
+        // the audio thread re-syncs the engine from it on the next `process`.
+        let key_sink = self.shared.params.clone();
+        let mut on_custom_ui = move |_ctrl: &mut _, payload: Box<dyn std::any::Any + Send>| {
+            if let Ok(op) = payload.downcast::<vxn1b_engine::KeyOp>() {
+                key_sink.apply_key_op(*op);
+            }
+        };
+        lock_mut(&self.controller).tick(&mut on_custom_ui, &mut |_, _| {}, &mut |_| {});
         self.drain_view_events();
         // Then catch any audio-thread automation the controller never saw. The
         // two pushes can echo the same param twice in a tick; the WebView
@@ -345,6 +352,11 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // A state/preset load that landed while active: re-sync the whole patch.
         if self.shared.params.take_reload() {
             self.engine.load_state(self.shared.params.engine_state());
+        }
+        // A Layer 2 key-mode / split edit from the UI (0219): apply the new
+        // KeyState so the demux enables/bypasses synth 2 and routes note-ons.
+        if let Some(key) = self.shared.params.take_key_state() {
+            self.engine.set_key_state(key);
         }
 
         // Fold UI edits made since the last process into the local mirror, then

@@ -56,6 +56,20 @@ pub enum KeyMode {
     Split,
 }
 
+/// A UI-originated edit to the non-automatable keyboard state (0219). Parsed
+/// from the faceplate's `set_key_mode` / `set_split_point` opcodes (ui-web's
+/// `parse_custom_ui`), boxed as a `UiEvent::Custom` payload, and applied to the
+/// shared [`KeyState`] channel on the controller tick (clap) — the audio thread
+/// then re-syncs the engine. This is the non-param-state → engine wire that the
+/// matrix topology edits (0210) will share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyOp {
+    /// Derived KeyMode index: 0 = Single, 1 = Dual, 2 = Split.
+    SetKeyMode(u8),
+    /// Split point (MIDI note).
+    SetSplitPoint(u8),
+}
+
 /// The global keyboard-routing state: the two toggles plus the split point.
 /// Non-automatable (ADR 0002 §3) — it rides the plugin-state blob, not the CLAP
 /// param table. `KeyMode` is derived from it. Kept a self-contained record so
@@ -79,6 +93,25 @@ impl Default for KeyState {
 }
 
 impl KeyState {
+    /// Apply a UI key-op (0219). A KeyMode index maps back to the two toggles
+    /// (Single → layer 2 off; Dual → on, split off; Split → on, split on),
+    /// preserving the split point; a SetSplitPoint sets the point.
+    pub fn apply(&mut self, op: KeyOp) {
+        match op {
+            KeyOp::SetKeyMode(0) => self.layer2_on = false,
+            KeyOp::SetKeyMode(1) => {
+                self.layer2_on = true;
+                self.split_enabled = false;
+            }
+            KeyOp::SetKeyMode(2) => {
+                self.layer2_on = true;
+                self.split_enabled = true;
+            }
+            KeyOp::SetKeyMode(_) => {}
+            KeyOp::SetSplitPoint(n) => self.split_point = n,
+        }
+    }
+
     /// Derive the routing mode (ADR 0002 §3).
     #[inline]
     pub fn key_mode(&self) -> KeyMode {
@@ -648,6 +681,23 @@ mod tests {
 
         // A short read is corruption, not a default.
         assert!(KeyState::read(&mut &buf[..2]).is_err());
+    }
+
+    #[test]
+    fn key_op_maps_mode_to_toggles() {
+        let mut k = KeyState::default();
+        k.split_point = 48;
+        k.apply(KeyOp::SetKeyMode(1)); // Dual
+        assert_eq!(k.key_mode(), KeyMode::Dual);
+        assert!(k.layer2_on && !k.split_enabled);
+        assert_eq!(k.split_point, 48, "split point preserved across a mode change");
+        k.apply(KeyOp::SetKeyMode(2)); // Split
+        assert_eq!(k.key_mode(), KeyMode::Split);
+        k.apply(KeyOp::SetKeyMode(0)); // Single
+        assert_eq!(k.key_mode(), KeyMode::Single);
+        assert!(!k.layer2_on);
+        k.apply(KeyOp::SetSplitPoint(72));
+        assert_eq!(k.split_point, 72);
     }
 
     #[test]
