@@ -134,9 +134,10 @@ peg-r2 = 98
 peg-r3 = 98
 peg-r4 = 98
 peg-l1 = -99
-peg-l2 = -94
-peg-l3 = -86
-peg-l4 = -80
+peg-l2 = -73
+peg-l3 = -47
+peg-l4 = -38
+peg-depth = 48.000
 
 stack-density = 1
 delay-on = false

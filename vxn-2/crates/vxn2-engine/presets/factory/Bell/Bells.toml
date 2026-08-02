@@ -128,10 +128,11 @@ peg-r1 = 97
 peg-r2 = 94
 peg-r3 = 75
 peg-r4 = 60
-peg-l1 = -2
-peg-l2 = 2
+peg-l1 = -99
+peg-l2 = 99
 peg-l3 = 0
 peg-l4 = 0
+peg-depth = 0.375
 
 stack-density = 1
 delay-on = false

@@ -109,12 +109,23 @@ stack via `voice_rand → lfo2 phase` matrix routing is the "shimmer" trick.
 
 | Param          | Type | Range          | Default | Purpose                                                                  |
 |----------------|------|----------------|---------|--------------------------------------------------------------------------|
-| `peg_r1..r4`   | i    | 0 .. 99        | varies  | Rates (matches per-op EG semantics). |
+| `peg_r1..r4`   | i    | 0 .. 99        | varies  | Rates — DX7 pitch-EG law, *not* the per-op EG's (see below). |
 | `peg_l1..l4`   | i    | −99 .. +99     | 0,0,0,0 | Levels are *signed* — pitch can swing up or down. |
-| `peg_depth`    | f    | 0.0 .. 1.0     | 1.0     | Overall depth multiplier into the pitch sum. |
+| `peg_depth`    | f    | 0.0 .. 48.0 st | 48.0    | Semitone swing at level ±99. |
 
 Default routes to global pitch (additive). Mod matrix can route to any
 pitch-shaped destination.
+
+Rates are an **absolute** march speed in semitones/sec (`DX7_PEG_RATE[R]/21.3`
+octaves/sec — ≈0.56 st/s at R=0, ≈144 st/s at R=99), so only the targets scale
+with `peg_depth`: halving the depth also halves the traversal time, as on the
+hardware, which has no depth control. The per-op EG's amplitude rate curve is a
+different law and must not be reused here — it runs high R values ~60× too fast.
+
+DX7 translation: one hardware pitch unit is 1/32 octave (0.375 st) and its level
+table is non-linear (±1 unit per step across the middle, accelerating tails), so
+`tools/dx7_to_vxn2.py` sets `peg_depth` from the patch's widest excursion and
+stores the levels as fractions of it.
 
 ---
 

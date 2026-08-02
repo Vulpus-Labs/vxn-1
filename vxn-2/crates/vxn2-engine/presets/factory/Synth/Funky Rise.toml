@@ -119,7 +119,8 @@ peg-r4 = 98
 peg-l1 = 0
 peg-l2 = 0
 peg-l3 = 0
-peg-l4 = -72
+peg-l4 = -99
+peg-depth = 14.625
 
 lfo2-shape = "S&H"
 lfo2-rate = 8.06

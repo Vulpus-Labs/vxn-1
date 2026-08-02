@@ -53,6 +53,58 @@ LFO_SHAPE = {0:"Tri",1:"Saw-",2:"Saw+",3:"Pulse",4:"Sine",5:"S&H"}
 KS_CURVE  = {0:"neg-lin",1:"neg-exp",2:"pos-exp",3:"pos-lin"}  # DX7 idx -> vxn-2 name
 PITCHMODSENS = [0,10,20,33,55,92,153,255]                      # DX7 pms->sens (Dexed /255)
 
+# DX7 pitch-EG level table (`pitchenv_tab`): raw 0..99 -> signed pitch units.
+# 50 -> 0 (centre), one unit = 1/32 octave = 0.375 st, so the extremes are
+# -4 octaves (raw 0) / +3.97 octaves (raw 99). NOT linear in raw: the middle
+# 80 steps move 1 unit each, the tails accelerate.
+PEG_TAB = [
+ -128,-116,-104, -95, -85, -76, -68, -61, -56, -52, -49, -46, -43, -41, -39,
+  -37, -35, -33, -32, -31, -30, -29, -28, -27, -26, -25, -24, -23, -22, -21,
+  -20, -19, -18, -17, -16, -15, -14, -13, -12, -11, -10,  -9,  -8,  -7,  -6,
+   -5,  -4,  -3,  -2,  -1,   0,   1,   2,   3,   4,   5,   6,   7,   8,   9,
+   10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,
+   25,  26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  38,  40,  43,  46,
+   49,  53,  58,  65,  73,  82,  92, 103, 115, 127]
+assert len(PEG_TAB) == 100 and PEG_TAB[50] == 0
+PEG_UNIT_ST = 12.0 / 32.0   # one pitch unit = 1/32 octave
+
+
+def peg_block(peg_r, peg_l):
+    """DX7 pitch EG -> vxn-2 `peg-r*` / `peg-l*` / `peg-depth` lines.
+
+    vxn-2 stores levels as a signed -99..+99 integer scaled by `peg-depth`
+    (semitones at full scale), so the depth is set from the patch's own widest
+    excursion and the levels are that peak's fractions. This keeps the full
+    integer resolution for shallow patches — the old `(raw-50)*2` mapping
+    against the fixed 48 st default ran every DX7 pitch EG ~2.6x too deep.
+    Rates are absolute st/s in the engine, so a per-patch depth does not
+    disturb the sweep timing.
+    """
+    tabs = [PEG_TAB[l] for l in peg_l]
+    peak = max(abs(t) for t in tabs)
+    if peak == 0:
+        return []                       # centred: pitch EG does nothing
+    L = [f"peg-r{k} = {r}" for k, r in enumerate(peg_r, 1)]
+    L += [f"peg-l{k} = {round(t*99/peak)}" for k, t in enumerate(tabs, 1)]
+    L.append(f"peg-depth = {peak*PEG_UNIT_ST:.3f}")
+    L.append("")
+    return L
+
+
+def vibrato_semitones(pmd, pms):
+    """Peak DX7 LFO pitch excursion in semitones, at full delay ramp.
+
+    Mirrors the hardware model: `pmod = (pmd_scaled * delay) * (sens * lfo) >> 39`
+    in logfreq units where one octave is `1<<24`, with `pmd_scaled =
+    (PMD*165)>>6` and `lfo` peaking at `1<<23`. Max (PMD 99 / PMS 7) is
+    ~11.9 st — the siren-depth setting, not the ~2 st this converter used to
+    assume.
+    """
+    pmd_scaled = (pmd * 165) >> 6                      # 0..255
+    sens = PITCHMODSENS[pms]                           # 0..255
+    units = ((pmd_scaled * (1 << 24)) * (sens * (1 << 23))) >> 39
+    return 12.0 * units / (1 << 24)
+
 # Loudness gain-match target (dBFS). A single full-output carrier (estimate 1.0)
 # lands here; the loudest patches (a 6-carrier organ at OL 99, estimate 6) sit
 # ~15.6 dB below it. Chosen so that loudest case ≈ -18.7 dBFS (no clip) while
@@ -201,33 +253,28 @@ def emit(v, used_paths):
         if o['rd']>0 and o['rc']!=2: L.append(f'op{i}-ks-r-curve = "{KS_CURVE[o["rc"]]}"')
         L.append("")
 
-    # pitch EG — only if it actually moves pitch (any level != 50)
-    if any(l!=50 for l in v['peg_l']):
-        for k,r in enumerate(v['peg_r'],1): L.append(f"peg-r{k} = {r}")
-        for k,l in enumerate(v['peg_l'],1):
-            sv_=max(-99,min(99,(l-50)*2)); L.append(f"peg-l{k} = {sv_}")
-        # Full-scale swing in semitones (l=±99). DX7 PEG extreme ≈ ±4 octaves;
-        # matches the peg-depth param default, emitted explicit for reproducibility.
-        L.append("peg-depth = 48.0")
-        L.append("")
+    # pitch EG — only if it actually moves pitch (any level != centre)
+    L += peg_block(v['peg_r'], v['peg_l'])
 
     # LFO -> lfo2 + matrix routes (vibrato from PMD, tremolo from AMD)
     routes=[]
     pmd,amd,pms = v['lfo_pmd'],v['lfo_amd'],v['lfo_pms']
-    # DX7 vibrato -> matrix global-pitch depth. global-pitch 1.0 = +/-24 st, so
-    # depth = (pmd/99)*(pitchmodsens[pms]/255) lands typical patches at ~15-30c
-    # and the max (pmd99/pms7) at ~+/-2 st.
-    vib = (pmd/99.0)*(PITCHMODSENS[pms]/255.0)
+    # DX7 vibrato -> matrix global-pitch depth. The dest has a 24 st gain AND a
+    # cubic depth taper (matrix.rs DEST_GAIN / cook_depth), so invert both:
+    # depth = cbrt(semitones / 24). Feeding the linear fraction straight in (the
+    # old behaviour) cubed it away — a 28-cent vibrato came out at 0.03 cents.
+    vib_st = vibrato_semitones(pmd, pms)
+    vib = min(1.0, (vib_st/24.0) ** (1.0/3.0))
     trem_ops=[(i,o['ams']) for i,o in enumerate(v['ops'],1) if o['ams']>0]
-    if vib>0.0005 or (amd>0 and trem_ops):
+    if vib_st>0.005 or (amd>0 and trem_ops):
         L.append(f'lfo2-shape = "{LFO_SHAPE.get(v["lfo_wave"],"Sine")}"')
         L.append(f"lfo2-rate = {round(max(0.06,(v['lfo_speed']/99)**2*47),2)}")
         dly = round((v['lfo_delay']/99)**2*4000)
         if dly: L.append(f"lfo2-delay = {float(dly)}")
         L.append("lfo2-fade = 0.0")   # DX7 is delay-then-on, no fade ramp
         L.append("")
-        if vib>0.0005:
-            routes.append(("lfo2","global-pitch",round(min(1.0,vib),4)))
+        if vib_st>0.005:
+            routes.append(("lfo2","global-pitch",round(vib,4)))
         if amd>0:
             for i,ams in trem_ops[:6]:
                 d=round((amd/99.0)*(ams/3.0)*0.3,4)

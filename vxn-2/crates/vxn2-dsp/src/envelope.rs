@@ -18,8 +18,11 @@
 //!
 //! ## Rate semantics
 //!
-//! Pitch EG R values reuse [`crate::eg::rate_to_amp_per_sec`] — same log-
-//! spaced 0..99 mapping as the per-op EG. Mod Env A/D/R are in milliseconds.
+//! Pitch EG R values use their own DX7-calibrated law
+//! ([`rate_to_pitch_per_sec`]) — an absolute semitones-per-second march speed,
+//! *not* the per-op EG's amplitude law. The two are unrelated curves on the
+//! hardware and reusing the amp law made high R values sweep ~60× too fast.
+//! Mod Env A/D/R are in milliseconds.
 //!
 //! ## Segment shape
 //!
@@ -29,7 +32,31 @@
 //!   `tau = secs / 4.6` (segment reaches ~99% of target in the specified
 //!   time). Segment finishes when level is within `EXP_FINISH_EPS` of target.
 
-use crate::eg::rate_to_amp_per_sec;
+/// DX7 pitch-EG rate table: R (0..99) → level-units added per envelope tick.
+/// One level-unit is 1/32 octave and the tick cadence works out to `21.3` ticks
+/// per second-of-unit-slope, so R marches at `TAB[R] / 21.3` octaves/sec
+/// regardless of how far it has to travel. Transcribed from the DX7 behaviour
+/// model (`pitchenv_rate`); distinct from the per-op amplitude rate curve.
+const DX7_PEG_RATE: [u8; 100] = [
+    1, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 16,
+    16, 17, 18, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 33, 34, 36, 37, 38, 39, 41, 42,
+    44, 46, 47, 49, 51, 53, 54, 56, 58, 60, 62, 64, 66, 68, 70, 72, 74, 76, 79, 82, 85, 88, 91, 94,
+    98, 102, 106, 110, 115, 120, 125, 130, 135, 141, 147, 153, 159, 165, 171, 178, 185, 193, 202,
+    211, 232, 243, 254, 255,
+];
+
+/// Pitch EG march speed in **semitones per second** for a rate value `0..99`.
+///
+/// `TAB[R] / 21.3` octaves/sec × 12 → ≈ 0.56 st/s at R=0 (a 4-octave sweep
+/// takes ~85 s) up to ≈ 144 st/s at R=99 (the same sweep in ~0.33 s). Unlike
+/// the per-op amplitude rates this is an *absolute* speed: a short excursion
+/// finishes proportionally sooner, which is exactly how the hardware behaves
+/// (the DX7 marches a fixed number of pitch units per tick).
+#[inline]
+pub fn rate_to_pitch_per_sec(rate: u8) -> f32 {
+    const ST_PER_TICK_UNIT: f32 = 12.0 / 21.3;
+    DX7_PEG_RATE[rate.min(99) as usize] as f32 * ST_PER_TICK_UNIT
+}
 
 /// 4-segment stage enum (DX-style) — used by Pitch EG.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,18 +123,16 @@ impl PitchEgState {
     /// `+depth_semitones`. `rate_mult` is the optional key-rate scaler
     /// (typically 1.0 for the Pitch EG; the patch-level PEG has no per-op KS).
     ///
-    /// Both the targets *and* the march rate scale by `depth_semitones`, so a
-    /// segment's traversal *time* is depth-invariant: rate `R` crosses a
-    /// fixed level distance in a fixed time regardless of how many semitones
-    /// that maps to. Without the rate scaling, wide-swing patches (jet swoops
-    /// at `peg_depth = 48`) crawl ~48× too slowly and the sweep never completes
-    /// inside a note.
+    /// Only the *targets* scale by `depth_semitones` — the march rate is the
+    /// absolute DX7 speed in semitones/sec ([`rate_to_pitch_per_sec`]). A
+    /// shallower `peg_depth` therefore also traverses sooner, matching the
+    /// hardware, where the envelope has no depth control and a small level
+    /// excursion is simply a shorter march at the same slope.
     pub fn cook(&mut self, params: &PitchEgParams, depth_semitones: f32, rate_mult: f32) {
         for i in 0..4 {
             let signed = (params.l[i].clamp(-99, 99) as f32) / 99.0;
             self.targets_st[i] = signed * depth_semitones;
-            self.rates_st_per_sec[i] =
-                rate_to_amp_per_sec(params.r[i]) * depth_semitones * rate_mult;
+            self.rates_st_per_sec[i] = rate_to_pitch_per_sec(params.r[i]) * rate_mult;
         }
     }
 
@@ -451,6 +476,46 @@ mod tests {
             "level {} should be 2.0",
             eg.level_st
         );
+    }
+
+    #[test]
+    fn pitch_eg_rate_law_matches_dx7() {
+        // TAB[R]/21.3 octaves/sec: R=0 → 1 unit, R=50 → 41, R=99 → 255.
+        assert!((rate_to_pitch_per_sec(0) - 12.0 / 21.3).abs() < 1e-4);
+        assert!((rate_to_pitch_per_sec(50) - 41.0 * 12.0 / 21.3).abs() < 1e-3);
+        assert!((rate_to_pitch_per_sec(99) - 255.0 * 12.0 / 21.3).abs() < 1e-2);
+        // Out-of-range clamps to R=99 rather than panicking on the table index.
+        assert_eq!(rate_to_pitch_per_sec(200), rate_to_pitch_per_sec(99));
+    }
+
+    #[test]
+    fn pitch_eg_traversal_time_is_absolute() {
+        // The DX7 'VOICE 1' attack segment: R1 = 18 (TAB 11 → 6.20 st/s) over a
+        // ~0.75 st dip → ~121 ms. Two depth/level encodings of that same
+        // excursion take the same time, and the slope itself is depth-free.
+        let mut slopes = [0.0_f32; 2];
+        for (i, (depth, l1)) in [(0.75_f32, -99_i8), (1.5, -50)].into_iter().enumerate() {
+            let mut eg = PitchEgState::default();
+            eg.cook(&PitchEgParams { r: [18, 60, 95, 60], l: [l1, 0, 0, 0] }, depth, 1.0);
+            eg.note_on();
+            // First tick is a full un-clamped march step → the cooked slope.
+            slopes[i] = eg.tick(DT).abs() / DT;
+            let mut ticks = 1;
+            while eg.stage == EnvStage4::Attack && ticks < 4000 {
+                eg.tick(DT);
+                ticks += 1;
+            }
+            let secs = ticks as f32 * DT;
+            assert!(
+                (secs - 0.121).abs() < 0.01,
+                "depth {depth} l1 {l1}: attack took {secs}s, want ~0.121s"
+            );
+        }
+        assert!(
+            (slopes[0] - slopes[1]).abs() < 1e-3,
+            "slope varied with depth: {slopes:?}"
+        );
+        assert!((slopes[0] - rate_to_pitch_per_sec(18)).abs() < 1e-3);
     }
 
     #[test]

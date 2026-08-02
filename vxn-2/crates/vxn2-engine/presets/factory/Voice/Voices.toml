@@ -114,10 +114,11 @@ peg-r1 = 18
 peg-r2 = 60
 peg-r3 = 95
 peg-r4 = 60
-peg-l1 = -4
-peg-l2 = 2
+peg-l1 = -99
+peg-l2 = 50
 peg-l3 = 0
 peg-l4 = 0
+peg-depth = 0.750
 
 lfo2-shape = "Tri"
 lfo2-rate = 6.21
@@ -133,7 +134,7 @@ master-volume = -15.72
 slot = 0
 source = "lfo2"
 dest = "global-pitch"
-depth = 0.0497
+depth = 0.2901
 
 [[matrix]]
 slot = 1

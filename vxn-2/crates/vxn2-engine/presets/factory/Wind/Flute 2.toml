@@ -129,7 +129,7 @@ master-volume = -16.30
 slot = 0
 source = "lfo2"
 dest = "global-pitch"
-depth = 0.0028
+depth = 0.1112
 
 [[matrix]]
 slot = 1

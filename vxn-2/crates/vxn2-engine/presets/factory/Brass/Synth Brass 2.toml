@@ -128,4 +128,4 @@ master-volume = -19.23
 slot = 0
 source = "lfo2"
 dest = "global-pitch"
-depth = 0.0044
+depth = 0.128
