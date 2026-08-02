@@ -262,33 +262,26 @@ html, body {
 /* Layer 2 enable switch, carried on the Layer 2 tab button (0219 §4) the way FX
    tabs carry their own on/off. Off (default) → Layer 2 bypassed; on → live.
    Clicking it also selects the Layer 2 tab (the click bubbles to the button). */
+/* Same embedded square toggle as the FX/Dynamics header-switch
+   (`.panel-header-switch`): grey off, blue-lit on. */
 .tab-switch {
   display: inline-block;
-  width: 20px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   margin-right: 6px;
-  border-radius: 6px;
-  border: 1px solid var(--knob-rim);
-  background: var(--track-bg);
   vertical-align: middle;
-  position: relative;
+  background: #4a4a4a;
+  border: 1px solid #2c4a59;
+  border-radius: 2px;
+  box-sizing: border-box;
   cursor: pointer;
 }
-.tab-switch::after {
-  content: "";
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ctl-label);
-  transition: left 0.08s ease;
+.tab-switch:hover { border-color: #141414; }
+.tab-switch.on {
+  background: #1f9cff;
+  border-color: #84cdff;
+  box-shadow: 0 0 6px #36b3ff;
 }
-.tab-switch.on { background: var(--track-fill); border-color: var(--track-fill); }
-.tab-switch.on::after { left: 10px; background: var(--header-fg); }
-/* Active-tab label stays readable with the switch lit. */
-.tab-btn.active .tab-switch::after { background: var(--header-fg); }
 
 /* Mod-matrix modal + rows — ported from vxn-2 (style.css .overlay-* / .vxn-mm-*),
    adapted to vxn-1b's palette. A dismissible modal over the whole faceplate. */
