@@ -197,8 +197,10 @@ export const matrixOverlay = {
 
     // Depth: the automatable per-layer bipolar CLAP fader (center-origin, signed
     // fill). dispatch binds/rebinds/echoes it like any other cell.
+    // NB: no `.ctl` class — that imposes the 90px panel-column height, which
+    // would top-pin the fader and blow out the row. `.vxn-mm-depth` sizes compact.
     const depth = document.createElement('div');
-    depth.className = 'ctl vxn-mm-depth';
+    depth.className = 'vxn-mm-depth';
     depth.dataset.control = 'bipolar';
     depth.dataset.param = `matrix_slot${slot}_depth`;
     depth.setAttribute('data-layered', '');

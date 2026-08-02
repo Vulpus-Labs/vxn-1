@@ -371,10 +371,11 @@ html, body {
 .vxn-mm-header,
 .vxn-mm-row {
   display: grid;
-  grid-template-columns: 24px 1fr 1fr 72px 88px 1fr 24px;
+  grid-template-columns: 24px 1fr 1fr 130px 88px 1fr 24px;
   gap: 6px;
   align-items: center;
   padding: 3px 0;
+  min-height: 26px;
 }
 .vxn-mm-header {
   font-size: 9px;
@@ -394,8 +395,9 @@ html, body {
    HORIZONTAL fader. The centre tick marks 0; the fill grows signed left/right
    from it (makeBipolar drives left/width). */
 .vxn-mm-depth {
+  position: relative;         /* anchor for the value-pop */
   min-width: 0;
-  justify-self: center;
+  justify-self: stretch;
   width: 100%;
 }
 .vxn-mm-depth .fader-track {
