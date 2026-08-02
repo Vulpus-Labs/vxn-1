@@ -676,6 +676,25 @@ mod tests {
     }
 
     #[test]
+    fn layer1_sounds_after_a_state_save_load_roundtrip() {
+        // Some hosts save+restore the plugin's own state on a fresh instance.
+        // Prove that round-trip preserves Layer 1's amp route (Env2→Amp slot 0).
+        let src = SharedParams::new();
+        let blob = src.snapshot_bytes();
+        let dst = SharedParams::new();
+        dst.restore_from_bytes(&blob).expect("restore factory blob");
+
+        let mut engine = Engine::new(48_000.0, 512);
+        engine.load_state(dst.engine_state());
+        let local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&dst));
+        for (i, &v) in local.values().iter().enumerate() {
+            engine.set_param(i, v);
+        }
+        dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
+        assert!(peak(&mut engine, 2048) > 0.0, "Layer 1 must sound after a state round-trip");
+    }
+
+    #[test]
     fn slot_depth_param_event_moves_modulation_through_the_shell() {
         // 0204 acceptance: automating a slot depth through the CLAP param path
         // changes the sound. Zeroing the default Env2→Amp slot silences the note.
