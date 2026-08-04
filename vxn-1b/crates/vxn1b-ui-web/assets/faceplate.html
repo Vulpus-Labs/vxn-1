@@ -62,8 +62,7 @@ __CSS__
   <!-- Three-tab shell (0219, ADR 0002 §8). Layer 1 / Layer 2 select the edit
        layer (the patch surface rebinds via the 0045 machinery — Layer 1 = Upper,
        Layer 2 = Lower); FX / Global shows the shared global panels. The tab strip
-       subsumes VXN1's separate edit-layer toggle. Split / balance + full global
-       controls land on the FX/Global tab in 0220. -->
+       subsumes VXN1's separate edit-layer toggle. -->
   <div class="tab-strip" id="tab-strip" role="tablist">
     <button type="button" class="tab-btn active" data-tab="layer" data-layer="upper" role="tab">LAYER 1</button>
     <!-- Layer 2's enable switch lives ON its tab (0219), the way each FX tab
@@ -228,23 +227,95 @@ __CSS__
 
   </div><!-- /tab-pane layer -->
 
-  <!-- FX / Global pane. 0219 parks the existing global panels (Dynamics, FX,
-       Master) here; the full mixer / split / balance / global surface is 0220. -->
+  <!-- FX / Global pane (0220, ADR 0002 §8) — the mixer / split / global
+       surface above the FX chain. -->
   <div class="tab-pane" data-tab-pane="global">
 
-  <!-- Row 3 (global) — dynamics, effects, master (0208). -->
-  <div class="row row-3" data-row="3">
-    <!-- Dynamics (E037 / 0207, reworked 0208): compressor + soft-drive in its
-         own bottom-row panel, sat to the LEFT of FX. On/off is a header toggle
-         (VXN1 idiom) bound to dynamics_on. The six kernel params render as
-         rotary dials in a 3×2 grid (mirrors vxn-2's Dynamics pane) so the
-         panel stays narrow; Mix stays a vertical fader beside the grid. -->
+  <!-- Row 1 (global) — layer mixer + keyboard split (0220).
+
+       The two layer strips are FIXED to their layer (`data-fixed-layer`), not
+       `data-layered`: this is the mixer, so both layers must be visible and
+       adjustable at once regardless of which layer tab is being edited. That is
+       the whole point of a mixer strip, and it is why these cells opt out of
+       the edit-layer rebind machinery.
+
+       `layer_level` / `layer_mute` are ordinary per-layer CLAP params, so the
+       faders and mutes are normal bound cells. The meters are not — they carry
+       `data-meter` only, hold no model state, and are mounted by `wireMeters`. -->
+  <div class="row row-global-1" data-row="1">
+    <!-- Narrow mixer: two channel strips, split beneath them. Each strip is
+         [meter | fader] — meter to the LEFT of its fader, the channel-strip
+         convention — with the mute centred under the pair. The strip title
+         names the layer, so per-cell "Level" / "Lvl" labels would only repeat
+         what the column already says; both are dropped. -->
+    <div class="panel panel-mixer" data-name="Mixer">
+      <div class="panel-header">MIXER</div>
+      <div class="panel-body mixer-body">
+        <div class="mixer-strips">
+          <div class="mixer-strip">
+            <div class="mixer-strip-title">L1</div>
+            <div class="mixer-strip-body">
+              <div class="meter-mount" data-meter="l1"></div>
+              <div class="ctl" data-control="fader" data-param="layer_level"
+                   data-fixed-layer="upper" data-label="Level" data-no-label></div>
+            </div>
+            <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
+                 data-fixed-layer="upper" data-label="Mute"></div>
+          </div>
+          <div class="mixer-strip" data-layer2-gated>
+            <div class="mixer-strip-title">L2</div>
+            <div class="mixer-strip-body">
+              <div class="meter-mount" data-meter="l2"></div>
+              <div class="ctl" data-control="fader" data-param="layer_level"
+                   data-fixed-layer="lower" data-label="Level" data-no-label></div>
+            </div>
+            <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
+                 data-fixed-layer="lower" data-label="Mute"></div>
+          </div>
+        </div>
+
+        <!-- Split sits UNDER the two sliders, inside the mixer panel — it is a
+             property of how the two layers share the keyboard, so it belongs
+             with them rather than in a panel of its own. Enable + point are
+             KeyState, not CLAP params (ADR 0002 §3), so like the LFO 2 link
+             they carry no `data-control`/`data-param` and are hand-wired in
+             dispatch.js. Dims with Layer 2: a split needs two layers. -->
+        <div class="mixer-split" data-layer2-gated>
+          <!-- Point above, enable below: the slider gets the panel's full width
+               so a semitone is a comfortable drag target, instead of sharing
+               the row with the toggle. The point row dims when the split is
+               off — the control is inert then, and the toggle beneath it stays
+               live so it can be turned back on. -->
+          <div class="split-point-row" id="split-point-row">
+            <input type="range" class="split-point-slider" id="split-point-slider"
+                   min="12" max="96" step="1" value="60" />
+            <div class="split-point-readout" id="split-point-readout">C4</div>
+          </div>
+          <div class="split-enable-slot" id="split-enable"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dynamics (E037 / 0207, reworked 0208, moved to the top row + metered
+         0241). On/off is a header toggle (VXN1 idiom) bound to dynamics_on.
+         Six kernel params in a 3×2 dial grid, Mix as a fader, then the meter
+         cluster: input stereo, gain reduction (single, drawn downward from
+         0 dB), output stereo. In / GR / Out left to right is signal order,
+         so the reduction reads between the levels it sits between. -->
     <div class="panel" data-name="Dynamics" data-header-toggle>
       <div class="panel-header">
         <span class="panel-header-toggle-slot" data-control="header-switch" data-param="dynamics_on"></span>
         <span class="panel-header-title">DYNAMICS</span>
       </div>
       <div class="panel-body dynamics-body">
+        <!-- Input meter sits at the panel's left edge, before the controls:
+             signal enters here, so the panel reads in → controls → GR/out. -->
+        <div class="dyn-meters dyn-meters-in">
+          <div class="dyn-meter-col">
+            <div class="ctl-label">In</div>
+            <div class="meter-mount" data-meter="dynIn"></div>
+          </div>
+        </div>
         <div class="dial-grid">
           <div class="ctl" data-control="dial" data-param="dynamics_threshold" data-label="Thresh"></div>
           <div class="ctl" data-control="dial" data-param="dynamics_ratio" data-label="Ratio"></div>
@@ -254,77 +325,94 @@ __CSS__
           <div class="ctl" data-control="dial" data-param="dynamics_drive" data-label="Drive"></div>
         </div>
         <div class="ctl" data-control="fader" data-param="dynamics_mix" data-label="Mix"></div>
-      </div>
-    </div>
-    <!-- FX (E018 / 0098): Phaser / Chorus / Delay / Reverb behind a left
-         vertical tab strip. One panel for the four time-domain effects.
-         Each tab gets its own header-switch (phaser_on / chorus_on /
-         delay_on / reverb_on); only the active tab's switch is visible,
-         driven by the `data-active-tab` attribute on the panel root. Tab
-         buttons themselves are not params — `wireFxTabs` in panels.js
-         handles the click → swap. -->
-    <div class="panel" data-name="FX" data-active-tab="phaser">
-      <div class="panel-header">FX</div>
-      <div class="panel-body fx-body">
-        <div class="fx-tabs">
-          <button type="button" class="fx-tab fx-tab-phaser" data-tab="phaser">
-            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="phaser_on"></span>
-            <span class="fx-tab-label">PHASER</span>
-          </button>
-          <button type="button" class="fx-tab fx-tab-chorus" data-tab="chorus">
-            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="chorus_on"></span>
-            <span class="fx-tab-label">CHORUS</span>
-          </button>
-          <button type="button" class="fx-tab fx-tab-delay" data-tab="delay">
-            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="delay_on"></span>
-            <span class="fx-tab-label">DELAY</span>
-          </button>
-          <button type="button" class="fx-tab fx-tab-reverb" data-tab="reverb">
-            <span class="panel-header-toggle-slot fx-tab-switch" data-control="header-switch" data-param="reverb_on"></span>
-            <span class="fx-tab-label">REVERB</span>
-          </button>
-        </div>
-        <div class="fx-pane fx-pane-phaser">
-          <div class="ctl" data-control="fader" data-param="phaser_rate" data-label="Rate"></div>
-          <div class="ctl" data-control="fader" data-param="phaser_depth" data-label="Depth"></div>
-          <div class="ctl" data-control="fader" data-param="phaser_fb" data-label="FB"></div>
-          <div class="ctl" data-control="fader" data-param="phaser_mix" data-label="Mix"></div>
-        </div>
-        <div class="fx-pane fx-pane-chorus">
-          <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
-          <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
-          <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
-        </div>
-        <div class="fx-pane fx-pane-delay">
-          <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
-          <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
-          <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
-        </div>
-        <div class="fx-pane fx-pane-reverb">
-          <div class="ctl" data-control="fader" data-param="reverb_size" data-label="Size"></div>
-          <div class="ctl" data-control="fader" data-param="reverb_decay" data-label="Decay"></div>
-          <div class="ctl" data-control="fader" data-param="reverb_damp" data-label="Damp"></div>
-          <div class="ctl" data-control="fader" data-param="reverb_mix" data-label="Mix"></div>
+        <div class="dyn-meters">
+          <div class="dyn-meter-col">
+            <div class="ctl-label">GR</div>
+            <div class="meter-mount" data-meter="dynGr" data-meter-kind="gr"></div>
+          </div>
+          <div class="dyn-meter-col">
+            <div class="ctl-label">Out</div>
+            <div class="meter-mount" data-meter="dynOut"></div>
+          </div>
         </div>
       </div>
     </div>
-    <!-- Master (0045): Tune/Volume faders in the body; Oversample (4 enum
-         variants: O/S OFF / 2x / 4x / 8x) renders as a horizontal row of
-         labelled toggles at the bottom of the panel (matches
-         `vxn_ui_vizia::in_bottom_strip` for Oversample), with the Limit
-         switch stacked underneath in its own row. The vertical strip
-         layout overrides the panel-strip's default `flex-direction: row`
-         (see `.master-strip` below). -->
+
+    <!-- Master (0045): Tune/Volume/Drift faders + the out meter; Oversample and
+         Limit in the vertical bottom strip. -->
     <div class="panel" data-name="Master">
       <div class="panel-header">MASTER</div>
       <div class="panel-body">
         <div class="ctl" data-control="fader" data-param="master_tune" data-label="Tune"></div>
         <div class="ctl" data-control="fader" data-param="master_volume" data-label="Volume"></div>
         <div class="ctl" data-control="fader" data-param="master_drift" data-label="Drift"></div>
+        <!-- Master out meter (0240). Not a param cell: no data-control /
+             data-param, so `rebindAllForLayer` never touches it. -->
+        <div class="ctl ctl-meter">
+          <div class="ctl-label">Out</div>
+          <div class="meter-mount" data-meter="master"></div>
+        </div>
       </div>
       <div class="panel-strip master-strip">
         <div class="ctl-strip" data-control="switch" data-param="oversample" data-label="OvSmp"></div>
         <div class="ctl-strip" data-control="switch" data-param="limiter_on" data-label="Limit"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2 (global) — the four time-domain effects, each its own section with
+       an on/off toggle in its header (the Dynamics idiom).
+
+       This replaces the single tabbed FX panel: a left tab strip showed one
+       effect at a time and left roughly three-quarters of the panel empty,
+       while the faceplate is wide enough to carry all four side by side. Four
+       headers also means all four on/off states are readable at a glance
+       instead of only the selected tab's. -->
+  <div class="row row-global-2" data-row="2">
+    <div class="panel" data-name="Phaser" data-header-toggle>
+      <div class="panel-header">
+        <span class="panel-header-toggle-slot" data-control="header-switch" data-param="phaser_on"></span>
+        <span class="panel-header-title">PHASER</span>
+      </div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="phaser_rate" data-label="Rate"></div>
+        <div class="ctl" data-control="fader" data-param="phaser_depth" data-label="Depth"></div>
+        <div class="ctl" data-control="fader" data-param="phaser_fb" data-label="FB"></div>
+        <div class="ctl" data-control="fader" data-param="phaser_mix" data-label="Mix"></div>
+      </div>
+    </div>
+    <div class="panel" data-name="Chorus" data-header-toggle>
+      <div class="panel-header">
+        <span class="panel-header-toggle-slot" data-control="header-switch" data-param="chorus_on"></span>
+        <span class="panel-header-title">CHORUS</span>
+      </div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="chorus_rate" data-label="Rate"></div>
+        <div class="ctl" data-control="fader" data-param="chorus_depth" data-label="Depth"></div>
+        <div class="ctl" data-control="fader" data-param="chorus_mix" data-label="Mix"></div>
+      </div>
+    </div>
+    <div class="panel" data-name="Delay" data-header-toggle>
+      <div class="panel-header">
+        <span class="panel-header-toggle-slot" data-control="header-switch" data-param="delay_on"></span>
+        <span class="panel-header-title">DELAY</span>
+      </div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+        <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
+        <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
+      </div>
+    </div>
+    <div class="panel" data-name="Reverb" data-header-toggle>
+      <div class="panel-header">
+        <span class="panel-header-toggle-slot" data-control="header-switch" data-param="reverb_on"></span>
+        <span class="panel-header-title">REVERB</span>
+      </div>
+      <div class="panel-body">
+        <div class="ctl" data-control="fader" data-param="reverb_size" data-label="Size"></div>
+        <div class="ctl" data-control="fader" data-param="reverb_decay" data-label="Decay"></div>
+        <div class="ctl" data-control="fader" data-param="reverb_damp" data-label="Damp"></div>
+        <div class="ctl" data-control="fader" data-param="reverb_mix" data-label="Mix"></div>
       </div>
     </div>
   </div>

@@ -38,7 +38,8 @@ use std::sync::{Arc, Mutex};
 use vxn_core_app::{Controller, CorpusHandle, ParamId as AppParamId, ParamKind, ViewEvent};
 use vxn_core_clap::{LocalParams, SharedStore, batch_range};
 use vxn1b_engine::{
-    Engine, EnginePresetStore, SharedParams, TOTAL_PARAMS, clap_module, desc_for_clap_id,
+    Engine, EnginePresetStore, MeterBus, MeterFrame, SharedParams, TOTAL_PARAMS, clap_module,
+    desc_for_clap_id,
 };
 
 /// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
@@ -169,6 +170,7 @@ impl DefaultPluginFactory for VxnPlugin {
     fn new_shared(_host: HostSharedHandle) -> Result<VxnShared, PluginError> {
         Ok(VxnShared {
             params: Arc::new(SharedParams::new()),
+            meters: Arc::new(MeterBus::new()),
         })
     }
 
@@ -189,14 +191,20 @@ impl DefaultPluginFactory for VxnPlugin {
             gui: None,
             timer: None,
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
+            meters_idle: true,
         })
     }
 }
 
 /// State shared between the main and audio threads: the lock-free param store
-/// behind an `Arc` so the (future) editor can hold a clone too.
+/// behind an `Arc` so the (future) editor can hold a clone too, plus the meter
+/// bus the audio thread publishes into and the editor timer drains.
 pub struct VxnShared {
     params: Arc<SharedParams>,
+    /// Meter bus (0240). Lives here rather than inside the `Engine` because it
+    /// must outlive a deactivate/reactivate cycle — `activate` rebuilds the
+    /// engine, and the main thread's drain must keep reading the same slots.
+    meters: Arc<MeterBus>,
 }
 
 impl PluginShared<'_> for VxnShared {}
@@ -232,6 +240,11 @@ pub struct VxnMainThread<'a> {
     /// the store against this vector and pushes a `ParamChanged` for any drift.
     /// Seeded all-`NaN` so the first tick after open broadcasts the whole table.
     last_seen: Vec<f32>,
+    /// Whether the previous tick's meter frame was all-zero (0240). Lets the
+    /// drain push the *first* silent frame — the view needs that zero to start
+    /// its decay — then go quiet until there is signal again, so an idle plugin
+    /// costs nothing on the bridge.
+    meters_idle: bool,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
@@ -275,6 +288,32 @@ impl<'a> VxnMainThread<'a> {
             });
         }
     }
+
+    /// Drain the meter bus into one `ViewEvent::Custom(MeterFrame)` (0240).
+    ///
+    /// Runs only with the GUI open, so a closed editor pays nothing — the audio
+    /// thread's publish is a few atomics either way, but nothing is read,
+    /// serialised, or pushed. Because the drain clears the bus, skipping it
+    /// while closed also means the first frame after re-opening reports the
+    /// interval since that open, not a stale peak from before it.
+    ///
+    /// Idle suppression: an all-zero frame is pushed **once** — the view needs
+    /// that zero to start its decay — and then withheld until signal returns.
+    /// Without this a silent plugin would ship 60 identical frames a second.
+    fn push_meter_frame(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            // Editor closed: leave the bus alone. It self-limits (each slot
+            // holds one peak), so there is nothing to drain for hygiene.
+            return;
+        };
+        let frame = MeterFrame::drain(&self.shared.meters);
+        let silent = frame.is_silent();
+        if silent && self.meters_idle {
+            return;
+        }
+        self.meters_idle = silent;
+        handle.push_view_event(ViewEvent::Custom(Box::new(frame)));
+    }
 }
 
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
@@ -304,6 +343,8 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // dedupes ParamChanged by id in `flush_view_events`, so the overlap is
         // free on the wire.
         self.push_param_diffs();
+        // Meters (0240) join the same batch — no extra bridge call.
+        self.push_meter_frame();
         // One `evaluate_script` per tick: the pushes above only buffered into
         // the EditorHandle; this is the single bridge call.
         if let Some(handle) = self.gui.as_ref() {
@@ -335,6 +376,10 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
     ) -> Result<Self, PluginError> {
         let max = audio_config.max_frames_count as usize;
         let mut engine = Engine::new(audio_config.sample_rate as f32, max);
+        // Publish meters into the plugin-lifetime bus (0240), not the engine's
+        // own — this `Engine` is discarded on deactivate, and the editor's drain
+        // handle must survive that.
+        engine.set_meters(shared.meters.clone());
         // Adopt whatever the store holds (factory default, or a state loaded
         // while the plugin was inactive). Clears any stale reload flag.
         shared.params.take_reload();

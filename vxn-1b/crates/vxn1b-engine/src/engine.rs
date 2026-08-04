@@ -23,9 +23,18 @@
 //! neither driven nor ticked, so single mode is **byte-for-byte today's output
 //! at today's CPU**.
 //!
+//! **Layer mix (0220, ADR 0002 §7).** Each synth carries its own `layer_level`
+//! + `layer_mute` (patch params, so a preset holds its own balance), applied as
+//! a smoothed per-layer gain before the sum. Layer 1 renders into the output and
+//! is scaled in place; layer 2 renders into scratch so the two can take
+//! different gains before summing. Mute folds into that same gain rather than
+//! gating the render, so a muted layer keeps its voices running — unmuting
+//! resumes mid-note and never strands a held note. Post-fader meter taps (0240)
+//! sit on each layer's contribution.
+//!
 //! **Scope.** 1× oversampling only — the OS/decimation and FX section are
-//! shared/deferred (E037). FX + master are read transitionally from layer 1's
-//! param table; a dedicated global param block lands in 0220. The [`KeyState`]
+//! shared/deferred (E037). FX + master read the global param block, which both
+//! synths mirror, via layer 1's table. The [`KeyState`]
 //! (layer-2 toggle + split enable + point + the LFO 2 link) is non-automatable
 //! domain state; its serialisation into the two-layer `clap.state` blob lands in
 //! 0221 — this crate owns the record shape
@@ -43,8 +52,11 @@ use crate::params::{ClapRef, Layer, ParamId, clap_ref};
 use crate::state::{LayerState, PluginState};
 use crate::synth::{Synth, SynthSeeds};
 use std::io::{self, Read, Write};
+use std::sync::Arc;
 
+use vxn_core_utils::{MeterBus, MeterTap};
 use vxn_dsp::CONTROL_BLOCK;
+use vxn_dsp::smoothing::Smoothed;
 
 /// Default split point (MIDI note) — middle C, matching VXN1
 /// ([`vxn-app` domain `DEFAULT_SPLIT_POINT`](../../../vxn-1/crates/vxn-app/src/domain.rs)).
@@ -205,7 +217,26 @@ pub struct Engine {
     /// The single global serial FX chain (0207): dynamics → chorus → phaser →
     /// delay → reverb, run over the summed synths before master volume.
     fx: FxChain,
+    /// Lock-free meter publish target (0240). Owned so a bare `Engine` (tests,
+    /// the web build) meters without ceremony; the CLAP shell swaps in the
+    /// plugin-lifetime bus via [`Self::set_meters`] at activate so the main
+    /// thread's drain handle survives deactivate/reactivate cycles.
+    meters: Arc<MeterBus>,
+    /// Per-layer mix gain (0220), one `Smoothed` per synth. Targets are
+    /// `layer_mute ? 0 : layer_level`, so a mute is a short fade rather than a
+    /// hard gate — the layer keeps rendering underneath, so unmuting resumes
+    /// mid-note without a click and never strands a held voice.
+    layer_gain: [Smoothed; 2],
+    /// Scratch for layer 2's control block. Layer 1 renders straight into the
+    /// output and is scaled in place; layer 2 needs its own buffer so the two
+    /// can take different gains before they sum. One `CONTROL_BLOCK` pair,
+    /// allocated once at construction — never on the audio thread.
+    mix_scratch: [[f32; CONTROL_BLOCK]; 2],
 }
+
+/// Layer level/mute fade, ms. Matches the FX chain's bypass fade — long enough
+/// to mask a click, short enough that a mute feels immediate.
+const LAYER_FADE_MS: f32 = 10.0;
 
 impl Engine {
     pub fn new(sample_rate: f32, max_frames: usize) -> Self {
@@ -213,6 +244,13 @@ impl Engine {
         // depths already reconciled (0205) — a single source of truth shared with
         // the CLAP shell's param store ([`crate::state::PluginState::factory_default`]).
         // Both synths start from the factory patch; single mode leaves synth 2 idle.
+        //
+        // The FX chain publishes the dynamics taps itself, so it takes a handle
+        // to the same bus here — otherwise a bare `Engine` would meter master
+        // and layers but silently not dynamics.
+        let meters = Arc::new(MeterBus::new());
+        let mut fx = FxChain::new(sample_rate);
+        fx.set_meters(meters.clone());
         Self {
             sample_rate,
             max_frames,
@@ -221,8 +259,32 @@ impl Engine {
                 Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER2),
             ],
             key: KeyState::default(),
-            fx: FxChain::new(sample_rate),
+            fx,
+            meters,
+            // Start at the factory unity level, not 0 — a fade-in on the first
+            // block would clip the attack of a note that arrives immediately.
+            layer_gain: [
+                Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+            ],
+            mix_scratch: [[0.0; CONTROL_BLOCK]; 2],
         }
+    }
+
+    /// Adopt a caller-owned meter bus (0240). The CLAP shell holds one for the
+    /// plugin's whole lifetime in its `Shared` state and hands it here at
+    /// `activate`, so the main-thread drain keeps reading the same slots across
+    /// a deactivate/reactivate (which rebuilds the `Engine`).
+    pub fn set_meters(&mut self, meters: Arc<MeterBus>) {
+        // The FX chain publishes the dynamics taps itself (it owns the kernel
+        // whose reduction is being read), so it needs the same bus.
+        self.fx.set_meters(meters.clone());
+        self.meters = meters;
+    }
+
+    /// The meter bus this engine publishes into.
+    pub fn meters(&self) -> &Arc<MeterBus> {
+        &self.meters
     }
 
     /// Overwrite **both layers'** patches from a decoded [`PluginState`] — the
@@ -377,13 +439,17 @@ impl Engine {
         self.synths[0].reset();
         self.synths[1].reset();
         self.fx.reset();
+        // Drop any pending peaks so a re-started transport doesn't paint a
+        // meter from before the reset.
+        self.meters.clear();
     }
 
     /// Render one host block, splitting it into `CONTROL_BLOCK`-sample control
     /// blocks. Buffers are overwritten (not accumulated).
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        // FX + master are global; read transitionally from layer 1 (0220 gives
-        // them a dedicated global param block).
+        // FX + master are global params: `set_param` writes a global to BOTH
+        // synths, so either table holds the same value and layer 1's is read
+        // here by convention.
         let master = self.synths[0].param(ParamId::MasterVolume as usize);
         let mut off = 0;
         while off < left.len() {
@@ -393,21 +459,77 @@ impl Engine {
         }
     }
 
+    /// The mix gain a layer should fade toward: its level, or zero when muted.
+    ///
+    /// Mute folds into the same smoothed gain rather than gating the render, so
+    /// a muted layer keeps running its voices and envelopes — unmuting resumes
+    /// mid-note instead of restarting, and a held note is never stranded.
+    #[inline]
+    fn layer_gain_target(&self, layer: usize) -> f32 {
+        let p = self.synths[layer].params();
+        if p.bool(ParamId::LayerMute) {
+            0.0
+        } else {
+            p.get(ParamId::LayerLevel)
+        }
+    }
+
     /// Render one ≤`CONTROL_BLOCK` control block: pre-zero, tick each active
-    /// synth (accumulating), run the one global FX chain, apply master volume.
+    /// synth, apply its per-layer mix gain, sum, run the one global FX chain,
+    /// apply master volume.
     fn render_control_block(&mut self, l: &mut [f32], r: &mut [f32], master: f32) {
         l.fill(0.0);
         r.fill(0.0);
+        let n = l.len();
 
         // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
         // Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
         // master when the cross-layer link is on (0217): layer 2 adopts it
         // instead of running its own accumulator. Link off → `None`, the
         // free-running path, at no cost.
+        //
+        // Layer 1 renders straight into the output and is scaled in place; layer
+        // 2 renders into scratch so the two can take different gains before they
+        // sum (0220). Both gains ramp per sample, so a fader move or a mute is a
+        // short fade, not a step.
         self.synths[0].render_control_block(l, r, None);
+        self.layer_gain[0].set_target(self.layer_gain_target(0));
+        for i in 0..n {
+            let g = self.layer_gain[0].tick();
+            l[i] *= g;
+            r[i] *= g;
+        }
+        // Post-fader tap (0220): what this layer actually contributes to the
+        // mix, so a muted or pulled-down layer reads zero — which is what a
+        // mixer strip should show.
+        self.meters.publish_block_peak(MeterTap::Layer1L, &l[..n], &r[..n]);
+
         if self.key.layer2_on {
-            let master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
-            self.synths[1].render_control_block(l, r, master);
+            let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
+            // Read the gain target before the scratch borrow starts — it reads
+            // `self.synths`, which the split below would otherwise conflict with.
+            self.layer_gain[1].set_target(self.layer_gain_target(1));
+            // Split the scratch borrow so both halves are live at once.
+            let (scratch_l, scratch_r) = self.mix_scratch.split_at_mut(1);
+            let (s_l, s_r) = (&mut scratch_l[0][..n], &mut scratch_r[0][..n]);
+            s_l.fill(0.0);
+            s_r.fill(0.0);
+            self.synths[1].render_control_block(s_l, s_r, lfo2_master);
+
+            for i in 0..n {
+                let g = self.layer_gain[1].tick();
+                s_l[i] *= g;
+                s_r[i] *= g;
+            }
+            self.meters.publish_block_peak(MeterTap::Layer2L, s_l, s_r);
+            for i in 0..n {
+                l[i] += s_l[i];
+                r[i] += s_r[i];
+            }
+        } else {
+            // Synth 2 is bypassed, so its gain must not sit part-way through a
+            // fade waiting to be resumed — snap it, and let its meter rest.
+            self.layer_gain[1].snap(self.layer_gain_target(1));
         }
 
         // Serial FX chain over the summed voices, at the global OS rate (today
@@ -425,18 +547,31 @@ impl Engine {
             let v = *s * master;
             *s = if v.is_finite() { v } else { 0.0 };
         }
+
+        // Master-out meter tap (0240) — after master volume and after the
+        // finite guard, so it reports exactly what leaves the plugin. The bus
+        // accumulates the max across control blocks, so the UI's ~60 Hz drain
+        // sees the loudest sample since its last frame regardless of how many
+        // control blocks fell between the two.
+        self.meters.publish_block_peak(MeterTap::MasterL, l, r);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meters::MeterFrame;
     use crate::params::{
         MATRIX_SLOTS, TOTAL_PARAMS, clap_id_of, desc_for_clap_id, global_clap_id,
     };
 
     /// The Layer-1 CLAP id for an inner param — engine `set_param`/`param` take
     /// CLAP ids, so tests that mean "layer 1's X" resolve it through the map.
+    /// The CLAP id of a global param — FX / master live in the shared block.
+    fn global_id(p: ParamId) -> usize {
+        global_clap_id(p).expect("global param")
+    }
+
     fn l1(p: ParamId) -> usize {
         clap_id_of(Layer::L1, p)
     }
@@ -656,6 +791,242 @@ mod tests {
                 "drift must reach layer {s}'s voices"
             );
         }
+    }
+
+    /// 0240: the master-out tap publishes what actually leaves the plugin, and
+    /// the drain clears it. Silence in ⇒ a resting bus, so the view's decay
+    /// starts falling rather than a stale peak latching.
+    #[test]
+    fn master_meter_tracks_output_and_clears_on_drain() {
+        use crate::meters::MeterFrame;
+
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
+
+        // Idle: nothing rendered above zero, so nothing is published.
+        e.process_block(&mut l, &mut r);
+        assert!(MeterFrame::drain(e.meters()).is_silent(), "idle must not meter");
+
+        e.note_on(0, 60, 1.0);
+        e.process_block(&mut l, &mut r);
+        let frame = MeterFrame::drain(e.meters());
+        let block_peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(block_peak > 0.0, "a held note must produce output");
+        // The tap sits after master volume + the finite guard, so it reports the
+        // buffer exactly — not the pre-master sum.
+        assert_eq!(frame.master.0, block_peak, "master tap must equal the output peak");
+
+        // Read-and-clear: a second drain with no render in between is silent.
+        assert!(MeterFrame::drain(e.meters()).is_silent(), "drain must clear");
+    }
+
+    /// The tap accumulates the **max** across the control blocks that make up
+    /// one host block, so a transient in an early control block still reaches a
+    /// UI frame that arrives many blocks later. This is the property a plain
+    /// "store the last block's peak" publish would lose.
+    #[test]
+    fn master_meter_holds_the_peak_across_blocks_between_drains() {
+        use crate::meters::MeterFrame;
+
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        // Short decay to silence, so the loud transient is early and the later
+        // blocks are quiet — the case that distinguishes hold from last-wins.
+        e.set_param(l1(ParamId::Env2Decay), 0.01);
+        e.set_param(l1(ParamId::Env2Sustain), 0.0);
+        e.note_on(0, 60, 1.0);
+
+        let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
+        let mut loudest = 0.0f32;
+        // Several host blocks, no drain in between — as when the audio thread
+        // outruns the ~60 Hz editor tick.
+        for _ in 0..8 {
+            e.process_block(&mut l, &mut r);
+            loudest = loudest.max(l.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
+        }
+        let last_block_peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(loudest > last_block_peak, "test needs a decaying signal");
+        assert_eq!(
+            MeterFrame::drain(e.meters()).master.0,
+            loudest,
+            "the frame must carry the loudest sample since the last drain"
+        );
+    }
+
+    /// A caller-owned bus survives the engine: the CLAP shell keeps one for the
+    /// plugin's lifetime and re-attaches it to each freshly-activated `Engine`,
+    /// so the main thread's drain handle never goes stale.
+    #[test]
+    fn an_adopted_meter_bus_outlives_the_engine() {
+        use crate::meters::MeterFrame;
+
+        let bus = Arc::new(MeterBus::new());
+        {
+            let mut e = Engine::new(48_000.0, 512);
+            e.set_meters(bus.clone());
+            e.set_param(l1(ParamId::Env2Attack), 0.001);
+            e.note_on(0, 60, 1.0);
+            let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
+            e.process_block(&mut l, &mut r);
+        }
+        assert!(!MeterFrame::drain(&bus).is_silent(), "the shared bus keeps the reading");
+    }
+
+    /// 0220: the per-layer level fader scales that layer's contribution to the
+    /// mix, and only that layer's.
+    #[test]
+    fn layer_level_scales_only_its_own_layer() {
+        let peak_with = |l1_level: f32, l2_level: f32| -> (f32, f32) {
+            let mut e = Engine::new(48_000.0, 512);
+            e.set_layer2_on(true);
+            for i in 0..2 {
+                e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+            }
+            e.set_param(clap_id_of(Layer::L1, ParamId::LayerLevel), l1_level);
+            e.set_param(clap_id_of(Layer::L2, ParamId::LayerLevel), l2_level);
+            let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+            // Settle the 10 ms level fade on silence first. Without this the
+            // note's attack lands mid-ramp and the peak reports the gain the
+            // fader was moving *from*, not the one it settled at.
+            e.process_block(&mut l, &mut r);
+            let _ = MeterFrame::drain(e.meters());
+            e.note_on(0, 60, 1.0);
+            e.process_block(&mut l, &mut r);
+            let f = MeterFrame::drain(e.meters());
+            (f.layer1.0, f.layer2.0)
+        };
+
+        let (full1, full2) = peak_with(1.0, 1.0);
+        assert!(full1 > 0.0 && full2 > 0.0, "both layers must sound");
+
+        // Pulling layer 1 down halves its post-fader peak and leaves layer 2 be.
+        let (half1, still2) = peak_with(0.5, 1.0);
+        assert!(
+            (half1 / full1 - 0.5).abs() < 0.02,
+            "layer 1 at 0.5 should be ~half: {half1} vs {full1}"
+        );
+        assert!((still2 - full2).abs() < 1e-6, "layer 2 must be untouched");
+    }
+
+    /// Mute silences a layer's contribution without stopping its voices — so
+    /// unmuting resumes the held note mid-flight rather than restarting it.
+    #[test]
+    fn layer_mute_silences_the_layer_but_keeps_it_running() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        for i in 0..2 {
+            e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+        }
+        // Long sustain so the note is still held throughout.
+        e.set_param(clap_id_of(Layer::L2, ParamId::Env2Sustain), 1.0);
+        e.note_on(0, 60, 1.0);
+
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+        e.process_block(&mut l, &mut r);
+        assert!(MeterFrame::drain(e.meters()).layer2.0 > 0.0, "layer 2 must sound first");
+
+        e.set_param(clap_id_of(Layer::L2, ParamId::LayerMute), 1.0);
+        // First block still carries the 10 ms fade-out; the second is fully muted.
+        e.process_block(&mut l, &mut r);
+        e.process_block(&mut l, &mut r);
+        let _ = MeterFrame::drain(e.meters());
+        e.process_block(&mut l, &mut r);
+        assert_eq!(
+            MeterFrame::drain(e.meters()).layer2.0,
+            0.0,
+            "a muted layer must contribute silence"
+        );
+
+        // Unmute: the voice is still held, so sound returns without a new note.
+        e.set_param(clap_id_of(Layer::L2, ParamId::LayerMute), 0.0);
+        e.process_block(&mut l, &mut r);
+        e.process_block(&mut l, &mut r);
+        assert!(
+            MeterFrame::drain(e.meters()).layer2.0 > 0.0,
+            "unmuting must resume the held note — the layer kept rendering"
+        );
+    }
+
+    /// A mute is a short fade, not a gate: no sample-to-sample step big enough
+    /// to click. Guards the reason mute folds into the smoothed gain.
+    #[test]
+    fn muting_a_layer_does_not_step_the_output() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::Env2Sustain), 1.0);
+        e.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0; 2048], vec![0.0; 2048]);
+        e.process_block(&mut l, &mut r);
+
+        e.set_param(l1(ParamId::LayerMute), 1.0);
+        e.process_block(&mut l, &mut r);
+        let max_step = l.windows(2).fold(0.0f32, |a, w| a.max((w[1] - w[0]).abs()));
+        // The signal itself moves sample to sample; the bar is that the mute
+        // adds no discontinuity beyond ordinary waveform slew.
+        let pre_step = {
+            let mut e2 = Engine::new(48_000.0, 512);
+            e2.set_param(l1(ParamId::Env2Attack), 0.001);
+            e2.set_param(l1(ParamId::Env2Sustain), 1.0);
+            e2.note_on(0, 60, 1.0);
+            let (mut a, mut b) = (vec![0.0; 2048], vec![0.0; 2048]);
+            e2.process_block(&mut a, &mut b);
+            e2.process_block(&mut a, &mut b);
+            a.windows(2).fold(0.0f32, |x, w| x.max((w[1] - w[0]).abs()))
+        };
+        assert!(
+            max_step <= pre_step * 1.5 + 1e-6,
+            "mute stepped the output: {max_step} vs unmuted {pre_step}"
+        );
+    }
+
+    /// Layer 2's meter rests in single mode — synth 2 is never ticked, so
+    /// nothing publishes and the strip reads empty rather than stale.
+    #[test]
+    fn layer2_meter_is_silent_in_single_mode() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0; 1024], vec![0.0; 1024]);
+        e.process_block(&mut l, &mut r);
+        let f = MeterFrame::drain(e.meters());
+        assert!(f.layer1.0 > 0.0, "layer 1 must meter");
+        assert_eq!(f.layer2, (0.0, 0.0), "layer 2 must not meter when bypassed");
+    }
+
+    /// 0241: the dynamics slot reports input, output and gain reduction.
+    /// Reduction is negative only while the compressor is actually working.
+    #[test]
+    fn dynamics_meters_report_in_out_and_reduction() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::Env2Sustain), 1.0);
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+
+        // Compressor off: in and out both read, reduction rests at 0.
+        e.note_on(0, 60, 1.0);
+        e.process_block(&mut l, &mut r);
+        let off = MeterFrame::drain(e.meters());
+        assert!(off.dynamics_in.0 > 0.0, "input must meter");
+        assert!(off.dynamics_out.0 > 0.0, "output must meter");
+        assert_eq!(off.dynamics_gr, 0.0, "a bypassed compressor reduces nothing");
+
+        // Hard compression on a signal well above threshold.
+        e.set_param(global_id(ParamId::DynamicsOn), 1.0);
+        e.set_param(global_id(ParamId::DynamicsThreshold), -50.0);
+        e.set_param(global_id(ParamId::DynamicsRatio), 20.0);
+        for _ in 0..4 {
+            e.process_block(&mut l, &mut r);
+        }
+        let on = MeterFrame::drain(e.meters());
+        assert!(on.dynamics_gr < 0.0, "compressor must report reduction: {}", on.dynamics_gr);
+        // Reduction is real: the slot's output is pulled below its input.
+        assert!(
+            on.dynamics_out.0 < on.dynamics_in.0,
+            "out {} should sit below in {}",
+            on.dynamics_out.0,
+            on.dynamics_in.0
+        );
     }
 
     #[test]

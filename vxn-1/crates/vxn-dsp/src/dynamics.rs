@@ -118,6 +118,15 @@ pub struct DynamicsBlock {
     /// inactive interval doesn't dump stale gain reduction on re-engage
     /// (mirrors the master limiter's `limiter_was_on` pattern).
     was_active: bool,
+    /// Deepest gain reduction (dB, ≤ 0) applied since the last read — the
+    /// metering tap. Accumulated per sample and drained by
+    /// [`Self::take_gain_reduction_db`], so a UI reading slower than the block
+    /// rate still sees the peak reduction rather than whatever the last sample
+    /// happened to be. Excludes makeup gain: reduction is reduction.
+    ///
+    /// Rests at `0.0` = "no reduction", which is also what a bypassed block
+    /// reports — the steady-bypass early-out never touches it.
+    gr_db_min: f32,
 }
 
 impl DynamicsBlock {
@@ -136,7 +145,19 @@ impl DynamicsBlock {
             mix_primed: false,
             enabled: true,
             was_active: false,
+            gr_db_min: 0.0,
         }
+    }
+
+    /// Read the deepest gain reduction (dB, ≤ 0) since the last call and reset
+    /// the accumulator. `0.0` means none — including while bypassed, which is
+    /// the truthful display rather than a stale held value.
+    ///
+    /// Read-and-clear (not a plain getter) so the reported value covers exactly
+    /// the interval since the previous read, whatever rate the caller polls at.
+    #[inline]
+    pub fn take_gain_reduction_db(&mut self) -> f32 {
+        core::mem::replace(&mut self.gr_db_min, 0.0)
     }
 
     /// Clear the envelope follower. Smoother target is preserved (matches
@@ -144,6 +165,8 @@ impl DynamicsBlock {
     pub fn clear(&mut self) {
         self.env = 0.0;
         self.was_active = false;
+        // Drop any pending reduction reading with the detector that produced it.
+        self.gr_db_min = 0.0;
     }
 
     /// True while the block contributes anything to the output — either
@@ -256,6 +279,11 @@ impl DynamicsBlock {
             let k = over + KNEE_DB * 0.5;
             -slope * k * k / (2.0 * KNEE_DB)
         };
+        // Metering tap: keep the deepest reduction this interval. Branch-free
+        // `min` — this is inside the per-sample hot path shared with vxn-1 and
+        // vxn-2, and it already sits behind the steady-bypass gate.
+        self.gr_db_min = self.gr_db_min.min(gr_db);
+
         let comp_gain = (gr_db * DB_TO_LOG2).exp2() * makeup_lin;
 
         let cl = in_l * comp_gain;

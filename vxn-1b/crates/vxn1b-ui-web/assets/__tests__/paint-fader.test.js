@@ -63,3 +63,55 @@ describe('paintFader', () => {
     expect(fader.style.getPropertyValue('--fader-norm')).toBe('0.25');
   });
 });
+
+// Regression: a fader painted inside a `display: none` container.
+//
+// jsdom reports 0 for `clientHeight` / `offsetHeight` on hidden elements, which
+// is exactly what a real browser does — and what made the FX/Global tab's
+// faders show thumbs pinned to full scale over correctly-lit tracks. The fill
+// is percentage-driven so it stays right; only the pixel-positioned thumb is
+// affected, which is why the two disagreed.
+describe('paintFader with no layout', () => {
+  function unlaidPair() {
+    const fader = document.createElement('div');
+    const thumb = document.createElement('div');
+    fader.appendChild(thumb);
+    document.body.appendChild(fader);
+    // Both zero — the hidden-container case.
+    Object.defineProperty(fader, 'clientHeight', { value: 0, configurable: true });
+    Object.defineProperty(thumb, 'offsetHeight', { value: 0, configurable: true });
+    return { fader, thumb };
+  }
+
+  it('leaves the thumb untouched rather than pinning it to the top', () => {
+    const { fader, thumb } = unlaidPair();
+    paintFader(fader, thumb, 0.25);
+    // Writing `top: 0px` here is what read as "full scale"; not writing at all
+    // leaves the thumb wherever it was until a real repaint arrives.
+    expect(thumb.style.top).toBe('');
+  });
+
+  it('still records the norm, so the lit fill stays correct', () => {
+    const { fader, thumb } = unlaidPair();
+    paintFader(fader, thumb, 0.25);
+    expect(fader.style.getPropertyValue('--fader-norm')).toBe('0.25');
+  });
+
+  it('does not clobber a previously-painted position', () => {
+    const fader = document.createElement('div');
+    const thumb = document.createElement('div');
+    fader.appendChild(thumb);
+    document.body.appendChild(fader);
+    Object.defineProperty(fader, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(thumb, 'offsetHeight', { value: 20, configurable: true });
+    paintFader(fader, thumb, 0.5);
+    const painted = thumb.style.top;
+    expect(painted).not.toBe('');
+
+    // The container is then hidden and repainted (e.g. a tab flip away).
+    Object.defineProperty(fader, 'clientHeight', { value: 0, configurable: true });
+    Object.defineProperty(thumb, 'offsetHeight', { value: 0, configurable: true });
+    paintFader(fader, thumb, 0.9);
+    expect(thumb.style.top).toBe(painted);
+  });
+});

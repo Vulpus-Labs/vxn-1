@@ -34,7 +34,9 @@ pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 /// tracks the CSS geometry in `faceplate.css`, sized to the **tallest tab pane**
 /// — the Layer pane's three rows (0219): 20 pad + 26 banner + 30 preset-bar +
 /// 26 tab-strip + 3×8 chrome gaps + (124 + 124 + 164 rows + 2×8 pane gaps) = 554.
-/// The FX/Global pane is shorter for now (0220 fills it). Width was widened from
+/// The FX/Global pane is two rows (mixer + split, then Dynamics/FX/Master since
+/// 0220), so it stays shorter than the Layer pane and does not drive the height.
+/// Width was widened from
 /// the initial 760 for top-row breathing room + the standalone Dynamics panel.
 /// Keep in sync with `--editor-w` / the row heights.
 pub const EDITOR_WIDTH: u32 = 940;
@@ -116,7 +118,26 @@ pub fn open_editor(
             _ => None,
         }
     }));
-    config.serialise_custom_view = None;
+    // Meter frames (0240) are the one view-bound custom payload. They ride the
+    // normal per-tick ViewEvent batch — one `evaluate_script`, no separate
+    // bridge channel — and carry raw peaks; the dB mapping and ballistics live
+    // in `panels/meter.js`.
+    //
+    // Arrays rather than named l/r keys: the page indexes `[0]`/`[1]`, and the
+    // frame ships up to 60×/s, so the terser shape is worth it on the wire.
+    config.serialise_custom_view = Some(std::sync::Arc::new(|payload| {
+        let f = payload.downcast_ref::<vxn1b_engine::MeterFrame>()?;
+        Some(serde_json::json!({
+            "kind": "meters",
+            "l1": [f.layer1.0, f.layer1.1],
+            "l2": [f.layer2.0, f.layer2.1],
+            "dynIn": [f.dynamics_in.0, f.dynamics_in.1],
+            "dynOut": [f.dynamics_out.0, f.dynamics_out.1],
+            // One value, not a pair — the compressor's detector is stereo-linked.
+            "dynGr": f.dynamics_gr,
+            "master": [f.master.0, f.master.1],
+        }))
+    }));
     vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
 }
 
@@ -400,6 +421,7 @@ const PANEL_DISCRETE_JS: &str = include_str!("../assets/panels/discrete.js");
 const PANEL_KEYS_JS: &str = include_str!("../assets/panels/keys.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
 const PANEL_MATRIX_JS: &str = include_str!("../assets/panels/matrix.js");
+const PANEL_METER_JS: &str = include_str!("../assets/panels/meter.js");
 /// The split panel source files, in splice order.
 const PANELS_FILES: &[&str] = &[
     PANEL_UTIL_DRAG_JS,
@@ -408,6 +430,10 @@ const PANELS_FILES: &[&str] = &[
     PANEL_KEYS_JS,
     PANEL_PRESET_BAR_JS,
     PANEL_MATRIX_JS,
+    // Meters (0240) — must precede dispatch.js, which calls `makeMeter` /
+    // `meterRegistry` from `wireMeters`. The splice is order-sensitive: these
+    // files share one concatenated scope with no module resolution.
+    PANEL_METER_JS,
 ];
 /// `init()` + per-tick ViewEvent dispatcher + dim rules. Splices last because
 /// it references the panel objects defined above.
@@ -450,6 +476,117 @@ mod tests {
     fn esm_exports_stripped() {
         assert!(!assembled().contains("export "));
         assert!(!assembled().contains("import "));
+    }
+
+    /// Every control primitive the faceplate mounts must have styling in the
+    /// spliced sheet.
+    ///
+    /// Regression guard: a bulk edit that removed the retired tabbed-FX rules
+    /// (0220) sliced from the FX banner to the *next* banner comment and took
+    /// the toggle / button / dropdown primitives with it. Nothing failed —
+    /// every unit test still passed, because the breakage was purely visual:
+    /// toggle boxes vanished and labels fell back to the browser default size
+    /// across all three tabs. Selector presence is cheap to assert and would
+    /// have caught it at the source.
+    /// Collect the selectors that actually *head a rule* in `css`.
+    ///
+    /// A plain substring search is not enough: `.ctl-tg-box` also occurs inside
+    /// `.ctl-tg-row.active .ctl-tg-box`, so deleting its own rule leaves the
+    /// text present and a `contains` check green. Only a rule head means the
+    /// element is actually styled.
+    fn rule_heads(css: &str) -> std::collections::HashSet<String> {
+        // Strip block comments so a selector mentioned in prose doesn't count.
+        let mut stripped = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(open) = rest.find("/*") {
+            stripped.push_str(&rest[..open]);
+            match rest[open..].find("*/") {
+                Some(close) => rest = &rest[open + close + 2..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        }
+        stripped.push_str(rest);
+
+        let mut heads = std::collections::HashSet::new();
+        for chunk in stripped.split('{') {
+            // The head is whatever follows the previous rule's closing brace.
+            let head = chunk.rsplit('}').next().unwrap_or("").trim();
+            if head.is_empty() || head.starts_with('@') {
+                continue;
+            }
+            for part in head.split(',') {
+                let norm = part.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !norm.is_empty() {
+                    heads.insert(norm);
+                }
+            }
+        }
+        heads
+    }
+
+    #[test]
+    fn css_covers_every_control_primitive() {
+        let heads = rule_heads(FACEPLATE_CSS);
+        for selector in [
+            // Toggles: the strip switches, button groups and header on/offs.
+            ".ctl-tg-row",
+            ".ctl-tg-box",
+            ".ctl-tg-lbl",
+            ".ctl-buttongroup",
+            ".panel-header-switch",
+            // Faders, dials, wave knobs, dropdowns.
+            ".ctl-fader",
+            ".ctl-fader-track",
+            ".ctl-fader-thumb",
+            ".ctl-label",
+            ".ctl-dropdown",
+            ".dial-grid",
+            // Composite + state classes. `.dimmed` is only ever compounded
+            // onto a cell, so assert the real head rather than a bare class.
+            ".ctl-detune",
+            ".ctl-detune-legato",
+            ".ctl.dimmed",
+            "[data-layer2-gated].dimmed",
+            // Meters (0240/0241).
+            ".meter-mount",
+            ".meter-bar",
+            ".meter-fill",
+            ".meter-peak",
+            ".meter-bar.clipped",
+            // The GR variant only ever styles its children, never a bare
+            // `.meter-gr` box — assert the head that actually exists.
+            ".meter-gr .meter-fill",
+            // Layout scaffolding for the tab shell.
+            ".tab-strip",
+            ".tab-pane",
+            ".panel-strip",
+            ".mixer-strip",
+            ".mixer-split",
+        ] {
+            assert!(
+                heads.contains(selector),
+                "faceplate CSS has no rule for `{selector}` — that primitive is unstyled"
+            );
+        }
+    }
+
+    /// Every `data-control` / `data-meter` mount in the markup must name a
+    /// param the table actually has (or, for meters, a frame key). Catches a
+    /// panel rewrite that renames or drops a param behind the HTML's back.
+    #[test]
+    fn faceplate_mounts_resolve_to_real_params() {
+        let page = PLACEHOLDER_HTML;
+        for cap in page.match_indices("data-param=\"") {
+            let rest = &page[cap.0 + "data-param=\"".len()..];
+            let name = &rest[..rest.find('"').expect("closing quote")];
+            assert!(
+                vxn1b_engine::ParamId::from_name(name).is_some(),
+                "faceplate mounts unknown param `{name}`"
+            );
+        }
     }
 
     #[test]

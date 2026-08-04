@@ -65,11 +65,20 @@ export function attachValuePop(host, getLabel) {
 // `--fader-h` / `--thumb-h` tweaks. Also sets `--fader-norm` for dependent
 // CSS (track fill colour, etc).
 export function paintFader(fader, thumb, norm) {
-  const halfThumb = thumb.offsetHeight / 2;
-  const travel = fader.clientHeight - thumb.offsetHeight;
   const n = Math.max(0, Math.min(1, norm));
-  thumb.style.top = (halfThumb + (1 - n) * travel) + 'px';
+  // The lit fill is percentage-driven off this custom property, so it is
+  // correct whether or not the element has been laid out. Always set it.
   fader.style.setProperty('--fader-norm', n);
+
+  // The thumb, by contrast, is positioned in PIXELS, which needs real layout.
+  // Inside a `display: none` container (an inactive tab pane, a closed
+  // overlay) both measurements read 0, and `top: 0px` pins the thumb to the
+  // TOP of the track — i.e. it reads as full scale while the fill underneath
+  // shows the true value. Leave the thumb alone in that case; whoever reveals
+  // the container repaints from the cached value (`repaintAllControls`).
+  const travel = fader.clientHeight - thumb.offsetHeight;
+  if (travel <= 0) return;
+  thumb.style.top = (thumb.offsetHeight / 2 + (1 - n) * travel) + 'px';
 }
 
 // Plain → variant index clamp. Round to nearest, clamp to [0, len - 1].

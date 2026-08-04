@@ -110,17 +110,29 @@ driftable-param list, targets baked in DSP
 
 ### 7. Single global FX / mixer
 
-FX is **one global instance**; both synths mix into it via a layer-balance
-control. FX is *not* duplicated per layer. Global level / pitch / drift /
-limiting also live here.
+FX is **one global instance**; both synths mix into it. FX is *not* duplicated
+per layer. Global level / pitch / drift / limiting also live here.
+
+**Amended (0220).** This section originally specified a single "layer balance"
+control. Superseded by **two independent per-layer level faders, each with a
+mute and a live stereo meter**. A balance control cannot set *absolute* layer
+levels — which is what preset design needs — and it forces a taper choice
+(unity-at-centre vs. equal-power) that is wrong for one of the two use cases
+either way. `layer_level` / `layer_mute` are **patch** params, so the two-layer
+expansion yields one instance per synth and a preset carries its own mix. Mute
+folds into the same smoothed gain as level rather than gating the render, so a
+muted layer keeps running and unmuting resumes a held note mid-flight. Metering
+rides the shared spine (ticket 0240).
 
 ### 8. UI: three top-level tabs
 
 - **Tab 1 — Layer 1**: full synth patch (Osc1/2, mixer, filter, Env1/2, LFO1,
   LFO2) + Layer 1's matrix overlay. Always on.
 - **Tab 2 — Layer 2**: same surface + an on/off toggle. Off → single-patch.
-- **Tab 3 — FX / Mixer / Global**: layer balance → FX, split enable + point, all
-  FX params, master level / pitch / drift / limiting.
+- **Tab 3 — FX / Mixer / Global**: per-layer level + mute + meter → FX (see §7's
+  amendment), split enable + point, all FX params, master level / pitch / drift /
+  limiting. The **LFO 2 Link** toggle stays on the LFO 2 panel (0217/0220) rather
+  than here — it reads better beside the LFO it governs.
 
 The matrix overlay is **per-layer** (lives on each layer tab) — clean because
 there are no cross-layer "Both" rows to render twice.

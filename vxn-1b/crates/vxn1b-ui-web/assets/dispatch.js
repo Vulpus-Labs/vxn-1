@@ -1,4 +1,17 @@
 // ─── Init + dispatch ───────────────────────────────────────────────────────
+//
+// `import` lines are dropped by the splice loader (`strip_esm_exports`), so in
+// production every binding below rides the single concatenated scope — the
+// same arrangement `panels/keys.js` documents. Declaring the imports anyway
+// lets the vitest suites drive functions that touch these helpers under Node
+// ESM, where the concatenated scope doesn't exist. Only the helpers the suites
+// actually reach are declared; the rest still resolve implicitly.
+// Deliberately NOT declared here: the `make*` primitive factories. The
+// orchestration suite stubs them on `globalThis` to observe binding, and a
+// module-level binding would shadow those stubs. They stay implicit, resolved
+// from the concatenated scope in production and from the stubs under test.
+import { tgRow } from './util/drag.js';
+import { noteName } from '../../../../crates/vxn-core-ui-web/assets/cutoff-tuned.js';
 
 // Cached name → lowest-id index, built once in `init()` against
 // `window.vxn.params`. Null before init or in pure-helper test paths that
@@ -36,6 +49,16 @@ export function paramIdByName(name) {
 export function _resetParamIndex() {
   _paramIdByName = null;
   _paramIndexBuilds = 0;
+}
+
+// Test-only reset of the view's KeyState mirrors (`_layer2On` / `_splitEnabled`
+// / `_lfo2Link`). These are module-level in production because the editor is a
+// single long-lived page; the suites mount the faceplate repeatedly, so without
+// this one test's toggle state leaks into the next.
+export function _resetKeyStateView() {
+  _layer2On = false;
+  _splitEnabled = false;
+  _lfo2Link = false;
 }
 
 // Per-layer name → id lookup. Globals (id ≥ 2·patchCount) are layer-
@@ -277,7 +300,11 @@ export function cutoffDisplayOverride(id) {
 
 export function bindCell(entry, layer) {
   const { el, kind, name } = entry;
-  const id = paramIdByNameAtLayer(name, layer);
+  // `data-fixed-layer` pins a cell to one layer regardless of the edit-layer
+  // tab (0220). The mixer needs it: both layer strips must be visible and
+  // adjustable at once, which is the opposite of the `data-layered` rebind.
+  // Such cells are static — collected once, never reset on a tab flip.
+  const id = paramIdByNameAtLayer(name, entry.fixedLayer || layer);
   if (id == null) return null;
   const desc = window.vxn.params[id];
   let ctl = null;
@@ -388,6 +415,17 @@ export function rebindAllForLayer(layer) {
   refreshAllDimRules();
   // Feed cached values into freshly-rebound controls (the new ids are
   // already in model.lastParam from the editor-ready broadcast).
+  repaintAllControls();
+}
+
+// Re-apply every control's last-known value from cache.
+//
+// Needed because a fader's thumb is positioned in pixels and so needs real
+// layout: painted while its container is `display: none` it cannot be placed,
+// and `paintFader` deliberately skips it (the fill, being percentage-driven,
+// stays correct — which is why the symptom is a thumb pinned to full scale over
+// a correctly-lit track). Call this whenever a hidden container is revealed.
+export function repaintAllControls() {
   for (const [id, ctls] of model.controls) {
     const last = model.lastParam.get(id);
     if (!last) continue;
@@ -426,9 +464,13 @@ export function wireTabs() {
       for (const b of btns) b.classList.toggle('active', b === btn);
       if (btn.dataset.tab === 'layer') {
         showPane('layer');
+        // selectLayer repaints via rebindAllForLayer, but only when the layer
+        // actually changed — re-showing the same layer still needs a repaint.
         selectLayer(btn.dataset.layer);
+        repaintAllControls();
       } else {
         showPane('global');
+        repaintAllControls();
       }
     });
   }
@@ -443,12 +485,22 @@ let _layer2On = false;
 export function wireLayer2Toggle() {
   const el = document.getElementById('layer2-enable');
   if (!el) return;
-  const render = () => el.classList.toggle('on', _layer2On);
+  const render = () => {
+    el.classList.toggle('on', _layer2On);
+    // Panels that only mean something with two layers (the Layer 2 mixer strip,
+    // the whole Split panel) dim rather than disappear, so the layout doesn't
+    // jump as the layer toggles (0220).
+    document.querySelectorAll('[data-layer2-gated]').forEach((p) => {
+      p.classList.toggle('dimmed', !_layer2On);
+    });
+  };
   render();
   el.addEventListener('click', () => {
     _layer2On = !_layer2On;
     render();
-    window.vxn.send.setKeyMode(_layer2On ? 1 : 0);
+    // KeyMode is derived, so the posted mode must carry BOTH toggles: turning
+    // Layer 2 on with split already armed goes straight to Split (2), not Dual.
+    window.vxn.send.setKeyMode(_layer2On ? (_splitEnabled ? 2 : 1) : 0);
     // The switch sits inside the Layer 2 tab button, so this click also bubbles
     // to wireTabs — turning it on selects the Layer 2 tab (0219 §4).
   });
@@ -489,6 +541,96 @@ export function wireLfo2Link() {
   };
 }
 
+// Keyboard split (0220 / ADR 0002 §3). Enable + point are KeyState, not CLAP
+// params, so they post `setKeyMode` / `setSplitPoint` custom opcodes rather
+// than going through the param path.
+//
+// KeyMode is DERIVED, never stored: the wire carries 0/1/2 and the engine maps
+// it back onto the layer-2 and split-enable toggles. So the split switch must
+// send a mode that also respects whether Layer 2 is on — enabling a split while
+// Layer 2 is off would otherwise silently turn Layer 2 on as a side effect.
+// While Layer 2 is off the control is inert (the panel is dimmed by CSS) and
+// the flag is simply remembered for when Layer 2 comes back.
+export const SPLIT_MIN = 12;
+export const SPLIT_MAX = 96;
+export const SPLIT_DEFAULT = 60;
+
+let _splitEnabled = false;
+export function wireSplit() {
+  const enableEl = document.getElementById('split-enable');
+  const slider = document.getElementById('split-point-slider');
+  const readout = document.getElementById('split-point-readout');
+  if (!enableEl || !slider || !readout) return;
+
+  const pointRow = document.getElementById('split-point-row');
+  enableEl.innerHTML = '';
+  const row = tgRow('Split');
+  enableEl.appendChild(row);
+  const render = () => {
+    row.classList.toggle('active', _splitEnabled);
+    // The point only means anything with the split on, so grey it out
+    // otherwise. The toggle itself stays live — it is the way back.
+    if (pointRow) pointRow.classList.toggle('dimmed', !_splitEnabled);
+  };
+  render();
+
+  row.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    _splitEnabled = !_splitEnabled;
+    render();
+    // Only post while Layer 2 is live — see above. `_layer2On` is the view's
+    // mirror of the same KeyState.
+    if (_layer2On) window.vxn.send.setKeyMode(_splitEnabled ? 2 : 1);
+  });
+
+  const clampNote = (n) =>
+    Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, Math.round(Number(n))));
+
+  slider.addEventListener('input', () => {
+    const note = clampNote(slider.value);
+    // Optimistic local repaint; a `split_point_changed` echo overwrites it.
+    readout.textContent = noteName(note);
+    window.vxn.send.setSplitPoint(note);
+  });
+  slider.addEventListener('dblclick', (ev) => {
+    ev.preventDefault();
+    slider.value = String(SPLIT_DEFAULT);
+    readout.textContent = noteName(SPLIT_DEFAULT);
+    window.vxn.send.setSplitPoint(SPLIT_DEFAULT);
+  });
+
+  // Engine-side echoes (state / preset load) reflect without re-posting.
+  model.setSplitEnabled = (on) => {
+    _splitEnabled = !!on;
+    render();
+  };
+  model.setSplitPoint = (note) => {
+    const n = clampNote(note);
+    slider.value = String(n);
+    readout.textContent = noteName(n);
+  };
+}
+
+// Level meters (0240). Every `[data-meter]` element becomes a meter keyed by
+// its attribute value, which is also the field name in the frame the Rust side
+// ships (`master`, `l1`, `l2`, `dynIn`, `dynGr`). Declaring the mount in HTML
+// keeps meters out of the param-cell machinery entirely — they carry no CLAP
+// id, are never bound or rebound by layer, and hold no model state.
+export function wireMeters() {
+  document.querySelectorAll('[data-meter]').forEach((el) => {
+    const key = el.dataset.meter;
+    if (!key) return;
+    // `dynGr` is the compressor's reduction — one channel, drawn downward from
+    // 0 dB, and with no ballistics of its own (the compressor's own envelope is
+    // the movement). Everything else is a stereo level pair.
+    const isGr = el.dataset.meterKind === 'gr';
+    meterRegistry.register(
+      key,
+      makeMeter(el, { channels: isGr ? 1 : 2, kind: isGr ? 'gr' : 'level' }),
+    );
+  });
+}
+
 export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
@@ -500,7 +642,14 @@ export function init() {
     const name = el.dataset.param;
     if (!name) return;
     const kind = el.dataset.control;
-    const entry = { el, kind, name, layered: isLayeredEl(el) };
+    // A fixed-layer cell is never `layered`, even if it sits inside a
+    // `data-layered` container — the two markers are mutually exclusive by
+    // construction, and honouring `layered` would re-bind it off its pin.
+    const fixedLayer = el.dataset.fixedLayer || null;
+    const entry = {
+      el, kind, name, fixedLayer,
+      layered: fixedLayer ? false : isLayeredEl(el),
+    };
     if (kind === 'detune-legato') {
       entry.extras = {
         legatoName: el.dataset.legatoParam,
@@ -509,12 +658,6 @@ export function init() {
     }
     model.cells.push(entry);
   });
-  // FX tab wiring (E018 / 0098). The tab buttons aren't params (no
-  // data-control) so dispatch wouldn't touch them; wire their click ↔
-  // `data-active-tab` swap here. Header-switches inside the panel are
-  // normal `data-control="header-switch"` mounts and get bound below by
-  // `rebindAllForLayer`.
-  wireFxTabs();
   // Tab shell + Layer 2 toggle (0219). Wired before the first rebind so the
   // layer pane starts on Layer 1 (upper) and the toggle reflects single mode.
   wireTabs();
@@ -522,6 +665,12 @@ export function init() {
   // Cross-layer LFO 2 link (0217) — a hand-wired KeyState cell in the LFO 2
   // panel strip, so it must not be left to `rebindAllForLayer`.
   wireLfo2Link();
+  // Keyboard split (0220) — KeyState cells on the FX/Global tab, hand-wired
+  // for the same reason as the LFO 2 link.
+  wireSplit();
+  // Level meters (0240). Mount points are `data-meter="<frame key>"`, so a
+  // panel opts in from HTML and the registry needs no per-panel wiring.
+  wireMeters();
   collectDimRuleSpecs();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).
@@ -583,10 +732,25 @@ export function init() {
     }
     if (ev.kind === 'key_mode_changed') {
       keysPanel.setMode(ev.mode);
+      // KeyMode is derived from the two toggles, so an echo decomposes back
+      // into them (0220): 0 = Single, 1 = Dual, 2 = Split. Both setters are
+      // reflect-only — they repaint without re-posting, so a state/preset load
+      // can't bounce an opcode back at the engine.
+      if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
+      if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
       return;
     }
     if (ev.kind === 'split_point_changed') {
       keysPanel.setSplit(ev.note);
+      if (model.setSplitPoint) model.setSplitPoint(ev.note);
+      return;
+    }
+    // Meter frame (0240). Raw linear peaks since the previous frame; the
+    // registry fans them to whichever meters are mounted and the rAF loop
+    // renders the ballistics. Purely view-bound — nothing here touches the
+    // model, so the MVC parity rule is unaffected.
+    if (ev.kind === 'meters') {
+      meterRegistry.apply(ev);
       return;
     }
     if (ev.kind === 'status') {

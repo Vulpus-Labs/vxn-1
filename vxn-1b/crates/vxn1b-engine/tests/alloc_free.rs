@@ -10,8 +10,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use std::sync::Arc;
+
 use vxn1b_engine::params::global_clap_id;
-use vxn1b_engine::{Engine, ParamId};
+use vxn1b_engine::{Engine, MeterBus, MeterFrame, ParamId};
 
 struct Counting;
 
@@ -38,6 +40,9 @@ fn hot_path_is_allocation_free() {
     let mut e = Engine::new(48_000.0, 512);
     let mut l = vec![0.0f32; 512];
     let mut r = vec![0.0f32; 512];
+    // Allocated before arming — the shell builds its bus once, at plugin
+    // construction, never on the audio thread.
+    let bus = Arc::new(MeterBus::new());
 
     // Warm-up (allocations permitted): fill the voices, exercise every op path
     // once so any lazy setup is done before arming.
@@ -69,9 +74,21 @@ fn hot_path_is_allocation_free() {
     // runs the drifted cutoff/resonance path — all fixed-size, still no heap.
     e.set_param(global_clap_id(ParamId::MasterDrift).unwrap(), 0.8);
     e.process_block(&mut l, &mut r);
+    // Meter publish (0240) rides every `process_block` above; assert it is on
+    // an adopted (shared) bus too, since that is the CLAP shell's arrangement —
+    // an `Arc<MeterBus>` clone must not put the tap on a different code path.
+    // `fetch_update`'s closure captures by copy; there is nothing to box.
+    e.set_meters(bus.clone());
+    e.process_block(&mut l, &mut r);
 
     ARMED.store(false, Ordering::Relaxed);
 
     let n = ALLOCS.load(Ordering::Relaxed);
     assert_eq!(n, 0, "audio hot path allocated {n} times");
+    // Sanity: the armed blocks really did drive the tap, so a zero count above
+    // means "allocation-free", not "never ran".
+    assert!(
+        !MeterFrame::drain(&bus).is_silent(),
+        "the metered blocks must have published something"
+    );
 }

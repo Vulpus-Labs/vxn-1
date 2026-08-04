@@ -160,6 +160,13 @@ pub enum ParamId {
     Env2Shape,
     // ── Amp ──
     AmpEnvBypass,
+    // ── Layer mix (0220) ──
+    // Per-layer, so they live in the patch block and the two-layer expansion
+    // gives one instance per synth. A preset therefore carries its own layer
+    // balance, which is the point — this replaces ADR 0002 §7's single global
+    // "layer balance" control (a balance knob cannot set absolute levels).
+    LayerLevel,
+    LayerMute,
     // ── LFO 1 ──
     Lfo1Shape,
     Lfo1Rate,
@@ -298,10 +305,10 @@ impl Layer {
 }
 
 /// The per-layer **patch** params, in CLAP order — every control duplicated per
-/// synth (osc, mixer, filter, envelopes, LFO 1/2, voice, and the 16 matrix
-/// depths). Order *defines* the patch-block CLAP id layout; Layer 2's block is
-/// the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 64] = {
+/// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
+/// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
+/// 2's block is the same list offset by [`PATCH_COUNT`].
+pub const PATCH_PARAMS: [ParamId; 66] = {
     use ParamId::*;
     [
         // Osc / mixer (17)
@@ -315,6 +322,8 @@ pub const PATCH_PARAMS: [ParamId; 64] = {
         Env2Attack, Env2Decay, Env2Sustain, Env2Release, Env2Shape,
         // Amp (1)
         AmpEnvBypass,
+        // Layer mix (2)
+        LayerLevel, LayerMute,
         // LFO 1 (6)
         Lfo1Shape, Lfo1Rate, Lfo1Sync, Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun,
         // LFO 2 (3)
@@ -541,6 +550,11 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     e("env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
     // ── Amp ──
     b("amp_env_bypass", "Amp Gate", 0.0),
+    // ── Layer mix (0220) ──
+    // Unity default so a layer switched on sits at full level — turning Layer 2
+    // on must not require finding a fader before anything is heard.
+    f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
+    b("layer_mute", "Layer Mute", 0.0),
     // ── LFO 1 ──
     e("lfo1_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
     f("lfo1_rate", "LFO 1 Rate", 0.01, 40.0, 5.0, "Hz", Taper::Exp { mid: 5.0 }),
@@ -802,7 +816,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 64 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 66 + 32);
     }
 
     #[test]
@@ -881,10 +895,28 @@ mod tests {
             "mod_wheel_reso",
             "mod_wheel_cross_mod_sweep",
             "filter_key_track",
-            "layer_level",
         ] {
             assert!(ParamId::from_name(gone).is_none(), "{gone} should be removed");
         }
+    }
+
+    #[test]
+    fn layer_mix_params_are_per_layer() {
+        // 0220: level + mute are PATCH params, not globals, so the two-layer
+        // expansion gives each synth its own — a preset carries its own mix.
+        for p in [ParamId::LayerLevel, ParamId::LayerMute] {
+            assert!(PATCH_PARAMS.contains(&p), "{p:?} must be a patch param");
+            assert!(!GLOBAL_PARAMS.contains(&p), "{p:?} must not be global");
+            assert_ne!(
+                clap_id_of(Layer::L1, p),
+                clap_id_of(Layer::L2, p),
+                "{p:?} must have a distinct id per layer"
+            );
+        }
+        // Unity default: switching a layer on must be audible without hunting
+        // for a fader first.
+        assert_eq!(ParamId::LayerLevel.desc().default, 1.0);
+        assert_eq!(ParamId::LayerMute.desc().default, 0.0);
     }
 
     #[test]

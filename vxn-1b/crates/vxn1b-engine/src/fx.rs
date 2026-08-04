@@ -28,6 +28,9 @@
 //! `on` held true). On an off→on edge the slot's kernel state is cleared so a
 //! re-enabled delay / reverb doesn't dump a stale tail.
 
+use std::sync::Arc;
+
+use vxn_core_utils::{MeterBus, MeterTap};
 use vxn_dsp::{
     DynamicsBlock, DynamicsParams, FdnReverb, FdnReverbParams, StereoChorus, StereoDelay,
     StereoPhaser,
@@ -142,6 +145,10 @@ pub struct FxChain {
     dynamics: DynamicsBlock,
     /// Bypass fade per slot (0 = fully bypassed / skipped, 1 = fully wet).
     fades: [vxn_dsp::smoothing::Smoothed; N_SLOTS],
+    /// Meter publish target (0240/0241). `None` until the engine attaches one,
+    /// so a bare `FxChain` (unit tests) runs with no metering and no branch cost
+    /// beyond this check once per block.
+    meters: Option<Arc<MeterBus>>,
     /// Latched on-state per slot — drives the fade target and the rising-edge
     /// state-clear.
     on: [bool; N_SLOTS],
@@ -157,8 +164,16 @@ impl FxChain {
             reverb: FdnReverb::new(sample_rate),
             dynamics: DynamicsBlock::new(sample_rate),
             fades: [fade; N_SLOTS],
+            meters: None,
             on: [false; N_SLOTS],
         }
+    }
+
+    /// Attach the meter bus the dynamics taps publish into (0240/0241). The
+    /// engine calls this when it adopts a bus, so the chain and the engine
+    /// always publish into the same slots.
+    pub fn set_meters(&mut self, meters: Arc<MeterBus>) {
+        self.meters = Some(meters);
     }
 
     /// Silence all tails and snap every slot to fully bypassed. Called on engine
@@ -218,10 +233,23 @@ impl FxChain {
     /// Run the serial chain over a control block, in place. Each stage is a true
     /// skip while it's bypassed and settled.
     pub fn process_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+        // Dynamics in/out peaks for the metering spine (0240/0241). Accumulated
+        // in locals across the block and published once at the end, so the tap
+        // costs two compares per sample rather than an atomic per sample.
+        let (mut in_pk_l, mut in_pk_r) = (0.0f32, 0.0f32);
+        let (mut out_pk_l, mut out_pk_r) = (0.0f32, 0.0f32);
         for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
             let (mut xl, mut xr) = (*ls, *rs);
+            // Input to the dynamics slot = the summed layers, since dynamics
+            // runs first in the chain (ADR 0001 §8).
+            in_pk_l = in_pk_l.max(xl.abs());
+            in_pk_r = in_pk_r.max(xr.abs());
             let o = self.run_dynamics(xl, xr);
             (xl, xr) = o;
+            // Output is post comp/sat AND post the bypass crossfade, so it
+            // reads what the slot actually hands to the chorus.
+            out_pk_l = out_pk_l.max(xl.abs());
+            out_pk_r = out_pk_r.max(xr.abs());
             let o = self.run_chorus(xl, xr);
             (xl, xr) = o;
             let o = self.run_phaser(xl, xr);
@@ -232,6 +260,16 @@ impl FxChain {
             (xl, xr) = o;
             *ls = xl;
             *rs = xr;
+        }
+        if let Some(meters) = &self.meters {
+            meters.publish_peak(MeterTap::DynamicsInL, in_pk_l);
+            meters.publish_peak(MeterTap::DynamicsInR, in_pk_r);
+            meters.publish_peak(MeterTap::DynamicsOutL, out_pk_l);
+            meters.publish_peak(MeterTap::DynamicsOutR, out_pk_r);
+            // Read-and-clear from the kernel, then fold into the bus's own
+            // read-and-clear slot — the deepest reduction survives both hops
+            // however the block and frame rates line up.
+            meters.publish_reduction(MeterTap::DynamicsGr, self.dynamics.take_gain_reduction_db());
         }
     }
 

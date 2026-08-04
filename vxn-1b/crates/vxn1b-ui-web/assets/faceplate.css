@@ -212,10 +212,7 @@ html, body {
   gap: var(--row-hgap);
   height: var(--panel-h);
 }
-/* Bottom row is taller — its panels (Voice / FX / Master) pack denser content
-   (4-toggle assign group + Legato, 5 FX tabs, stacked Oversample+Limit) that
-   overlapped at the rows-1–2 height. */
-.row-3 { height: var(--panel-h-3); }
+
 
 .panel {
   position: relative;             /* anchor for absolutely-placed .panel-strip */
@@ -246,14 +243,6 @@ html, body {
 .row-2 .panel[data-name="LFO 2"] { flex-grow: 0.7; }
 .row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
 .row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
-
-/* Row 3 — Voice / Dynamics / FX / Master (0208). Dynamics moved left of FX
-   and re-shaped from seven vertical faders to a compact 3×2 dial grid + Mix
-   fader, so it no longer needs the widest share. FX hosts at most one tabbed
-   pane (4 faders + tab strip) at a time; Voice / Master stay compact. */
-.row-3 .panel[data-name="Dynamics"] { flex-grow: 1.15; }
-.row-3 .panel[data-name="FX"]       { flex-grow: 1.2; }
-.row-3 .panel[data-name="Master"]   { flex-grow: 1.1; }
 
 /* Layer pane's bottom row — just Voice now (the Layer 2 enable moved onto the
    Layer 2 tab). */
@@ -698,7 +687,10 @@ html, body {
    `.ctl` column-flex; the grid owns their placement. */
 .dynamics-body {
   flex-direction: row;
-  align-items: center;
+  /* Dial grid, Mix fader and the meter cluster read as three groups, so space
+     them evenly rather than letting flex strand them at the panel edges. */
+  justify-content: space-evenly;
+  align-items: flex-start;
   gap: 8px;
 }
 .dial-grid {
@@ -750,109 +742,77 @@ html, body {
   gap: 3px;
 }
 
-/* ── FX panel (E018 / 0098) — tabbed Phaser/Chorus/Delay/Reverb ──────── */
+/* ── Level meters (0240) ───────────────────────────────────────────────────
+   A meter mount is NOT a param cell: it carries no `data-control` /
+   `data-param`, so `rebindAllForLayer` never touches it and it holds no model
+   state. The `.ctl-meter` wrapper reuses the standard column stack so a meter
+   lines up with the faders beside it.
 
-/* Body layout: vertical tab strip on the left, active pane on the right.
-   `.panel-body` default `space-evenly` would distribute the strip + four
-   panes; flex-start keeps the strip at the left edge and lets the active
-   pane take the remaining space. */
-.panel[data-name="FX"] .fx-body {
-  flex-direction: row;
-  justify-content: flex-start;
-  align-items: stretch;
-  gap: 6px;
-}
+   Bars fill bottom-up from a `height` on `.meter-fill`; the peak marker is a
+   1px rule positioned by `bottom`. Both are set as percentages by
+   `panels/meter.js`, so the geometry here only has to establish the track. */
+.ctl-meter { justify-content: flex-end; }
 
-/* Four tab buttons stacked vertically. Each tab carries its own on/off
-   switch inside the button (left slot) — clicking the switch toggles
-   the *_on param; clicking elsewhere on the tab swaps the active pane.
-   Width tuned to fit "REVERB" + the switch slot. */
-.panel[data-name="FX"] .fx-tabs {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
-  flex: 0 0 52px;
-  padding-top: 8px;
-}
-.panel[data-name="FX"] .fx-tab {
-  background: transparent;
-  border: 0;
-  border-left: 2px solid transparent;
-  color: var(--ctl-label);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  padding: 0 4px 0 6px;
-  cursor: pointer;
-  flex: 1 1 0;
-  min-height: 0;
-  text-transform: uppercase;
+.meter-mount {
   display: flex;
   flex-direction: row;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
+  height: var(--fader-h);
 }
-.panel[data-name="FX"] .fx-tab:hover { color: #d4d4d4; }
-.panel[data-name="FX"] .fx-tab.active {
-  border-left-color: #84cdff;
-  color: #ececec;
+
+.meter-bar {
+  position: relative;
+  width: 5px;
+  height: 100%;
+  background: var(--track-bg);
+  border-radius: 1px;
+  overflow: hidden;
 }
-.panel[data-name="FX"] .fx-tab-switch {
-  /* Override `.panel[data-header-toggle] .panel-header-toggle-slot`'s
-     header-sized box — the in-tab switch is smaller and sits flush in
-     the tab's left padding. */
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+
+/* Green working range → amber approaching full scale → red at the top. The
+   gradient is fixed to the TRACK, not the fill, so a given colour always means
+   the same level — the fill just reveals more of it as it rises (same trick as
+   the faders' blue gradient). */
+.meter-fill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0;
+  background-image: linear-gradient(
+    to top,
+    #2f7d46 0%,
+    #4fbf6a 62%,       /* ≈ −22 dBFS on the −60…0 scale */
+    #d9b21b 83%,       /* ≈ −10 dBFS */
+    #d94b1b 100%
+  );
+  background-size: 100% var(--fader-h);
+  background-repeat: no-repeat;
+  background-position: bottom;
 }
-.panel[data-name="FX"] .fx-tab-label {
-  flex: 1 1 auto;
-  text-align: center;
+
+.meter-peak {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: #e8e8e8;
   pointer-events: none;
 }
 
-/* Tab panes: 4-column grid so a fader's horizontal slot is the same
-   across tabs (cells don't shift when the active tab changes). Row 1
-   holds the fader columns; row 2 is reserved for per-pane strip
-   controls (delay's Sync sits under Time). Last column carries the Mix
-   fader on every tab that has one, so Mix lines up too. */
-.panel[data-name="FX"] .fx-pane {
-  display: none;
-  flex: 1 1 auto;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: 1fr 22px;
-  column-gap: 6px;
-  row-gap: 2px;
-  min-width: 0;
-  min-height: 0;
-  position: relative;
-}
-/* `.ctl` defaults to a fixed 120 px column height that would push the
-   bottom strip row outside the FX panel's body clearance. Inside the
-   FX pane the cells size to their natural label+fader stack and pin
-   to the top of their grid row, so the reserved strip row stays
-   visible below. */
-.panel[data-name="FX"] .fx-pane > .ctl {
-  height: auto;
-  align-self: start;
-}
-.panel[data-name="FX"][data-active-tab="phaser"] .fx-pane-phaser { display: grid; }
-.panel[data-name="FX"][data-active-tab="chorus"] .fx-pane-chorus { display: grid; }
-.panel[data-name="FX"][data-active-tab="delay"]  .fx-pane-delay  { display: grid; }
-.panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
+/* Clip latches the bar's frame red until the peak marker decays back under
+   the threshold — a transient overload stays visible after the bar has fallen. */
+.meter-bar.clipped { box-shadow: inset 0 0 0 1px #ff4a2b; }
 
-/* Mix always rides the rightmost column so the Mix fader sits in the
-   same x-slot across all four tabs (chorus/delay have one gap before
-   it; phaser/reverb fill the gap with FB/Damp). */
-.panel[data-name="FX"] .fx-pane-chorus > [data-param="chorus_mix"],
-.panel[data-name="FX"] .fx-pane-delay  > [data-param="delay_mix"] {
-  grid-column: 4;
+/* Gain reduction (0241) reads DOWNWARD from 0 dB — the standard compressor
+   idiom — so its fill anchors to the top of the track instead of the bottom. */
+.meter-gr .meter-fill {
+  top: 0;
+  bottom: auto;
+  background-image: linear-gradient(to bottom, #d9701b 0%, #d94b1b 100%);
+  background-position: top;
 }
-
 
 /* Toggle row — small box + inline label. Matches vizia .tg-row /
    .tg-box / .tg-lbl exactly (#1f9cff active fill, 9×9 box, 7 px label). */
@@ -980,3 +940,177 @@ html, body {
   left: var(--panel-pad);
 }
 .ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
+
+/* ── FX/Global tab (0220 / 0241) ───────────────────────────────────────────
+   Two rows:
+     1. MIXER (narrow) | DYNAMICS | MASTER
+     2. PHASER | CHORUS | DELAY | REVERB — one section each, on/off in header.
+   The four effects were previously one tabbed panel showing a single effect at
+   a time; side by side they fill the row and expose all four on/off states. */
+.row-global-1 { height: var(--panel-h-3); }
+.row-global-2 { height: var(--panel-h-3); }
+
+/* The mixer is deliberately narrow — two slim channel strips and the split
+   beneath them, nothing else. */
+.row-global-1 .panel[data-name="Mixer"]    { flex-grow: 0; flex-basis: 150px; }
+.row-global-1 .panel[data-name="Dynamics"] { flex-grow: 1.35; }
+.row-global-1 .panel[data-name="Master"]   { flex-grow: 1; }
+
+/* Four faders vs three: let the wider sections take proportionally more so
+   every fader column ends up the same width across the row. */
+.row-global-2 .panel[data-name="Phaser"] { flex-grow: 1.15; }
+.row-global-2 .panel[data-name="Chorus"] { flex-grow: 0.9; }
+.row-global-2 .panel[data-name="Delay"]  { flex-grow: 0.9; }
+.row-global-2 .panel[data-name="Reverb"] { flex-grow: 1.15; }
+
+/* ── Meter / fader alignment ───────────────────────────────────────────────
+   A meter must line up with the fader TRACKS beside it, not with the top of
+   the control cell. Every meter cell therefore carries its label ABOVE the bar
+   exactly as a fader does, so the label block supplies the offset and the bars
+   land level with the tracks — no per-cell padding to keep in sync with the
+   label height. The mixer strips are the exception: their shared L1 / L2 title
+   is the label row for both the meter and the fader, and neither carries one
+   of its own, so there both simply start at the top. */
+.ctl-meter { justify-content: flex-start; }
+
+.meter-mount {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 2px;
+  height: var(--fader-h);
+}
+
+/* ── Mixer ─────────────────────────────────────────────────────────────── */
+.mixer-body {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+/* Two channel strips side by side. This is a mixer, so both layers show at
+   once regardless of the edit-layer tab — the cells are `data-fixed-layer`,
+   not `data-layered`. */
+.mixer-strips {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  gap: 16px;
+}
+
+.mixer-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.mixer-strip-title {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ctl-label);
+  letter-spacing: 0.6px;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+}
+
+/* Meter to the LEFT of its fader — channel-strip convention, and it puts the
+   bar next to the control that sets it. The strip title names the layer, so
+   neither cell carries its own label; both start at the same y, so `flex-start`
+   is what keeps the meter and the fader track aligned. */
+.mixer-strip-body {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 5px;
+}
+/* The fader cell is a full control column (label slot + travel); with the label
+   suppressed it must not still reserve the column height, or the mute below it
+   is pushed away from the strip. */
+.mixer-strip-body .ctl {
+  height: var(--fader-h);
+  gap: 0;
+}
+
+/* Mute centred under the meter+fader pair rather than pinned to the panel
+   edge, so it reads as belonging to this strip. */
+.mixer-mute {
+  display: flex;
+  justify-content: center;
+}
+
+/* Split lives under the two sliders, inside the mixer panel: the point row on
+   top (full panel width, so a semitone is an easy target), the enable toggle
+   beneath it. */
+.mixer-split {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding-top: 2px;
+}
+
+.split-point-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Takes the row's free width rather than a fixed size, so the track is as long
+   as the panel allows. */
+.split-point-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--track-fill);
+}
+
+.split-point-readout {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ctl-value);
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  text-align: right;
+}
+
+/* Split disabled: the point is inert, so grey it out. The toggle below stays
+   live — it is what turns the split back on. */
+.split-point-row.dimmed { opacity: 0.4; pointer-events: none; }
+
+.split-enable-slot { display: flex; justify-content: center; }
+
+/* A split needs two layers, and so does Layer 2's mixer strip. Both dim
+   (rather than vanish) while Layer 2 is off so the layout never jumps as the
+   layer toggles — same idiom as the existing `.dimmed` rules. */
+[data-layer2-gated].dimmed { opacity: 0.4; pointer-events: none; }
+
+/* ── Dynamics ──────────────────────────────────────────────────────────── */
+/* Meter clusters flank the controls in signal order: In at the panel's left
+   edge, GR + Out on the right. Labels above the bars, like every fader cell,
+   so the labels line up with the dial labels and the bars with the tracks. */
+.dyn-meters {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+/* The input cluster is a single column at the far left; no extra leading gap,
+   the panel padding already sets it off. */
+.dyn-meters-in { margin-right: 2px; }
+
+/* Same column shape as a fader cell (label, then bar) so the meter labels sit
+   on the dial-label line and the bars on the fader-track line. */
+.dyn-meter-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ctl-gap);
+}
+
+/* The GR bar is single-channel, so give it a wider bar than a stereo pair —
+   it reads as one quantity rather than half a missing pair. */
+.meter-gr .meter-bar { width: 8px; }

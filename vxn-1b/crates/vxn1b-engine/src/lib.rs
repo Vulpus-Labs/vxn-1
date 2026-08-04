@@ -18,12 +18,14 @@
 //!   chain + master.
 //! - [`state`] — the binary `clap.state` blob (params + matrix topology, 0203).
 //! - [`preset`] — the portable sparse-TOML preset codec (0203).
+//! - [`meters`] — meter frames over the shared lock-free bus (0240).
 
 pub mod bank;
 pub mod engine;
 pub mod eval;
 pub mod fx;
 pub mod matrix;
+pub mod meters;
 pub mod mod_smoothing;
 pub mod params;
 pub mod preset;
@@ -41,6 +43,8 @@ pub use engine::{
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
 pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
+pub use meters::MeterFrame;
+pub use vxn_core_utils::{MeterBus, MeterTap};
 pub use params::{
     ClapRef, GLOBAL_PARAMS, Layer, PATCH_COUNT, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
     clap_id_of, clap_module, clap_ref, desc_for_clap_id,

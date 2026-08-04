@@ -7,9 +7,10 @@
 //                           / tgRow (consumes the shared wireDrag, 0140)
 //   panels/fader.js       — fader, LFO-rate subdivision label, wave knob,
 //                           Detune+Legato composite, waveform glyphs
-//   panels/discrete.js    — Switch / ButtonGroup / Dropdown / HeaderSwitch + FX
-//                           tab strip
+//   panels/discrete.js    — Switch / ButtonGroup / Dropdown / HeaderSwitch
 //   panels/keys.js        — the Keys panel + its constants
+//   panels/meter.js       — level-meter ballistics + the stereo meter widget
+//                           and the frame registry (0240)
 //   panels/preset-bar.js  — the preset bar (dirty-tracking via the bridge's
 //                           onMutation hook, not a sender monkey-patch)
 //
@@ -40,7 +41,7 @@ export {
 } from './panels/fader.js';
 
 export {
-  makeSwitch, makeButtonGroup, makeDropdown, makeHeaderSwitch, wireFxTabs,
+  makeSwitch, makeButtonGroup, makeDropdown, makeHeaderSwitch,
 } from './panels/discrete.js';
 
 export {
@@ -52,3 +53,10 @@ export {
 export { presetBar } from './panels/preset-bar.js';
 
 export { matrixOverlay } from './panels/matrix.js';
+
+export {
+  METER_FLOOR_DB, METER_CLIP_DB, METER_DECAY_DB_PER_S, METER_HOLD_MS,
+  METER_PEAK_DECAY_DB_PER_S, GR_RELEASE_DB_PER_S,
+  toDb, dbToNorm, advanceMeter, initialMeterState, grToNorm, advanceGr,
+  makeMeter, meterRegistry,
+} from './panels/meter.js';
