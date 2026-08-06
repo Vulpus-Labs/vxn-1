@@ -206,8 +206,27 @@ __CSS__
     </div>
   </div>
 
-  <!-- Row 3 (layer) — Voice. The Layer 2 enable now lives on the Layer 2 tab. -->
+  <!-- Row 3 (layer) — Cross Mod · Voice. The Layer 2 enable now lives on the
+       Layer 2 tab. -->
   <div class="row row-layer-3" data-row="3">
+    <!-- Cross Mod (0242, ported from VXN1's row 3). 0209 removed this panel with
+         the five fixed-routing panels, but cross-mod is *patch topology* — how
+         the two oscillators are wired to each other — not a modulation depth,
+         so it belongs on the faceplate and not in the matrix overlay. It sits
+         here rather than beside Osc 2 because row 1 is full at four panels and
+         this row has both the width and the taller `--panel-h-3`.
+         Type is a 4-variant button group (Off/Sync/FM/Ring); the descriptor
+         labels PM as "FM" — players expect that name (VXN1 ADR 0004 §3).
+         Amount drives PM only, so it dims for Off/Sync/Ring via the generic
+         `unless-fm` dim rule. It is also a mod-matrix destination
+         (Cross-Mod Amt), applied per voice on top of this fader. -->
+    <div class="panel" data-name="Cross Mod" data-layered>
+      <div class="panel-header">CROSS MOD</div>
+      <div class="panel-body">
+        <div class="ctl" data-control="buttongroup" data-param="cross_mod_type" data-label="Type"></div>
+        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="Amt" data-dim-unless-fm="cross_mod_type"></div>
+      </div>
+    </div>
     <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
          descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
          the display permutation via `data-order`); Detune with its mode-aware

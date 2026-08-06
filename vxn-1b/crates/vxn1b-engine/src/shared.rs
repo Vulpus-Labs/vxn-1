@@ -123,23 +123,39 @@ impl SharedParams {
         }
     }
 
-    /// Read a CLAP-id param as a normalized `[0, 1]` position via its
-    /// descriptor's host mapping (`0.0` past the table). The editor's controller
-    /// echoes both plain and normalized on a `ParamChanged`.
+    /// Read a CLAP-id param as a **fader position** in `[0, 1]` (`0.0` past the
+    /// table). The editor's controller echoes both plain and this position on a
+    /// `ParamChanged`, and the faders paint the thumb from it.
+    ///
+    /// This is `to_fader`, not `to_normalized`: the descriptor's taper is part
+    /// of the calibration, not a display flourish. Cutoff is
+    /// `Exp { mid: 800 }` over 16.35 Hz … 16 kHz, so a *linear* position would
+    /// put 800 Hz at 5% of the travel and spend the top half of the fader
+    /// between 8 k and 16 k — the whole usable low end crushed into the bottom
+    /// centimetre. `to_fader` pins the midpoint to `mid` and gives each octave
+    /// roughly equal travel. VXN1's `SharedParams` has always done this
+    /// (`vxn-1/crates/vxn-engine/src/shared.rs`); VXN1b's fork read the linear
+    /// pair, which is the entire behavioural difference in fader feel between
+    /// the two synths (0243).
+    ///
+    /// Only the editor path goes through here — CLAP exchanges *plain* values
+    /// against the descriptor range, and preset/state I/O is plain — so the
+    /// taper never reaches host automation or the wire format.
     #[inline]
     pub fn get_normalized(&self, id: usize) -> f32 {
         match desc_for_clap_id(id) {
-            Some(desc) => desc.to_normalized(self.get(id)),
+            Some(desc) => desc.to_fader(self.get(id)),
             None => 0.0,
         }
     }
 
-    /// Write a CLAP-id param from a normalized `[0, 1]` position (clamped to
-    /// range by `set`). No-op past the table.
+    /// Write a CLAP-id param from a fader position in `[0, 1]` (clamped to
+    /// range by `set`). Inverse of [`Self::get_normalized`], taper included, so
+    /// a drag and the echo that answers it agree. No-op past the table.
     #[inline]
     pub fn set_normalized(&self, id: usize, norm: f32) {
         if let Some(desc) = desc_for_clap_id(id) {
-            self.set(id, desc.from_normalized(norm));
+            self.set(id, desc.from_fader(norm));
         }
     }
 

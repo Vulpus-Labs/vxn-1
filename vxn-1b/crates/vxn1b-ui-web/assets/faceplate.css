@@ -244,9 +244,12 @@ html, body {
 .row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
 .row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
 
-/* Layer pane's bottom row — just Voice now (the Layer 2 enable moved onto the
-   Layer 2 tab). */
+/* Layer pane's bottom row — Cross Mod · Voice (the Layer 2 enable moved onto
+   the Layer 2 tab). Cross Mod carries two cells against Voice's four, so it
+   takes the smaller share; both stay well clear of their natural widths in the
+   940px window. */
 .row-layer-3 { height: var(--panel-h-3); }
+.row-layer-3 .panel[data-name="Cross Mod"] { flex-grow: 0.5; }
 .row-layer-3 .panel[data-name="Voice"] { flex-grow: 1.0; }
 
 /* Layer 2 enable switch, carried on the Layer 2 tab button (0219 §4) the way FX

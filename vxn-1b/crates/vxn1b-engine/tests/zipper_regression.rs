@@ -42,6 +42,12 @@ fn engine_with_route(dest: DestId, depth: f32) -> Engine {
     e.set_param(ParamId::Lfo1DelayTime as usize, 0.0);
     e.set_param(ParamId::Lfo1Fade as usize, 0.0);
     e.set_param(ParamId::Lfo1FreeRun as usize, 1.0);
+    // Cross-mod amount only exists as a dest in FM mode (0242), and PM needs a
+    // modulator: engage FM with osc2 as the (unheard) PM source.
+    if dest == DestId::CrossModAmount {
+        e.set_param(ParamId::CrossModType as usize, 2.0); // FM
+        e.set_param(ParamId::CrossModAmount as usize, 1.0);
+    }
 
     // Slot 2 is the default LFO1→Pitch vibrato; zero it unless Pitch is the
     // route under test, so the carrier frequency is otherwise steady.
@@ -134,8 +140,32 @@ fn square_lfo_to_cutoff_stays_clean_without_added_smoothing() {
 }
 
 #[test]
+fn square_lfo_to_cross_mod_amount_is_declicked() {
+    // A square LFO flipping the FM index ±4 (0242). The index sets sideband
+    // amplitude, so an unsmoothed flip steps the waveform at the block edge;
+    // the per-quantum one-pole glides it into the sine's own curvature.
+    // Measured ~3.1× with the smoother; the FM sidebands raise the interior
+    // curvature too, so the bound is the same order as the other dests'.
+    let mut e = engine_with_route(DestId::CrossModAmount, 1.0);
+    let x = render(&mut e);
+    let ratio = peak_edge_d2_ratio(&x, 256);
+    eprintln!("cross-mod amount: peak edge/interior d² ratio = {ratio:.2}");
+    assert!(
+        ratio < 6.0,
+        "square LFO→Cross-Mod Amt spikes block-edge d² by {ratio}× — smoothing not engaged"
+    );
+}
+
+#[test]
 fn output_stays_finite_under_worst_case_flips() {
-    for dest in [DestId::Amp, DestId::Pitch, DestId::XModSweep, DestId::Pwm, DestId::Cutoff] {
+    for dest in [
+        DestId::Amp,
+        DestId::Pitch,
+        DestId::XModSweep,
+        DestId::Pwm,
+        DestId::Cutoff,
+        DestId::CrossModAmount,
+    ] {
         let mut e = engine_with_route(dest, 1.0);
         let x = render(&mut e);
         assert!(x.iter().all(|s| s.is_finite()), "non-finite output for {dest:?}");

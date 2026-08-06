@@ -84,8 +84,8 @@ VCA of VXN2 ADR 0009 (leaf-value, no cycles, `[0,1]` gain, identity default) —
 included from day one because mod-wheel-controlled vibrato is table stakes for
 this instrument too.
 
-**Sources (v1):** Env 1, Env 2, LFO 1, LFO 2, Velocity, Key (note number
-relative to C4), Mod Wheel, Pitch Wheel, **Aftertouch**, **Note-on Random
+**Sources (v1):** Env 1, Env 2, LFO 1, LFO 2, Velocity, Key (octaves relative to
+C0 = MIDI 12, VXN1's key-track pivot), Mod Wheel, Pitch Wheel, **Aftertouch**, **Note-on Random
 (per-voice humanisation)**. The last two do not exist in VXN1 today and are new
 engine additions for VXN1b; they are intended v1 sources, not candidates.
 
@@ -118,9 +118,11 @@ ordinary (default-seeded) matrix slots — that *is* the flexibility gain:
   amp env therefore stays click-free via the same per-sample smoothing; a patch
   may add/replace amp modulation but the factory default behaves like VXN1.
 - **Filter key-track.** VXN1's "1 octave of cutoff per octave of key relative to
-  C4" toggle becomes a **Key → Cutoff** slot; the factory init patch seeds it at
-  the depth that reproduces exactly 1 oct/oct, so the default is identical, but
-  the amount is now free.
+  C0" fader becomes a **Key → Cutoff** slot; the factory init patch pre-wires the
+  route at depth 0.0 (VXN1's `filter_key_track` default), and
+  `KEY_CUTOFF_UNITY_DEPTH` = 0.25 is the depth reproducing VXN1's `amt = 1.0`
+  exactly — same slope *and* same C0 pivot — but the amount is now free (and can
+  go past 1 oct/oct, which VXN1 cannot).
 - **Velocity → cutoff, LFO/env → everything.** All the fixed depth faders of ADR
   0004 (`CutoffLfo1Depth`, `VelCutoffDepth`, `PitchLfoDepth`, …) collapse into
   matrix slots.
@@ -172,18 +174,28 @@ param set — only the file-format conventions and the shared preset I/O crate.
 ### 7. UI — one compact faceplate + a mod-matrix overlay
 
 The point of the variant. VXN1 ADR 0004's faceplate row 3 (**Pitch Mod, PWM
-Mod, Cross Mod, Mod Wheel, Pitch Wheel**) and the **Filter Mod** panel are
+Mod, Mod Wheel, Pitch Wheel**) and the **Filter Mod** panel are
 **removed** from the front panel entirely. Their function moves into a single
 **Mod Matrix overlay**, triggered from the preset bar (`Mod Matrix · N`, the
 VXN2 idiom — ADR 0001 §9). Source-shaping panels (LFO1/LFO2 rate+shape, Env1/
 Env2 ADSR) stay on the faceplate — they define the *sources*; they just no
 longer carry per-destination depth faders.
 
+**Amended (0242):** the **Cross Mod** panel stays. It was removed with the rest
+of VXN1's row 3, which over-read this decision: what moves to the overlay is
+*modulation routing* — a source, a destination and a depth. Cross-mod type and
+amount are **patch topology**, the wiring between the two oscillators (hard
+sync / FM / ring), in the same category as Osc 2's octave or the filter's mode.
+Dropping them left sync, FM and ring reachable only by host automation. The
+amount is *also* a matrix destination (Cross-Mod Amt), applied per voice on top
+of the panel's value — the panel sets the wiring, the matrix modulates it, which
+is exactly the split this section intends.
+
 Proposed compact faceplate (fewer, denser rows than VXN1's four):
 
 1. Osc 1, Osc 2, Mixer, Filter
 2. LFO 1, LFO 2, Env 1, Env 2
-3. Voice, **FX** (one tabbed section — see §8), Master
+3. Cross Mod, Voice, **FX** (one tabbed section — see §8), Master
 
 The matrix overlay is a scrollable list of the 16 slots: per row a source
 selector, dest selector, bipolar depth fader, curve selector, and an optional

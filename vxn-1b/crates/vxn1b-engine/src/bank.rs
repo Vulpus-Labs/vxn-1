@@ -24,8 +24,11 @@
 //! the ticket forbids on the hot path).
 //!
 //! **Scope (this step).** Poly only (matches the 0198 allocator); unison/mono
-//! and the two scalar-kernel dests (`HpfCutoff`, `CrossModAmount`) are deferred
-//! — all inert at the factory default, so the parity gate is unaffected. The
+//! is deferred. `CrossModAmount` is live per lane (0242): the PM kernel takes a
+//! per-lane index whenever a route is active and the broadcast scalar otherwise,
+//! so an unrouted patch is bit-unchanged. `HpfCutoff` stays deferred — the HPF
+//! is set bank-wide. Both are inert at the factory default, so the parity gate
+//! is unaffected. The
 //! per-voice component trims landed with global drift (0218) and are likewise
 //! inert at the default `MasterDrift = 0`.
 
@@ -476,8 +479,15 @@ impl RenderBank {
         let mut pitch_tgt = [0.0f32; N];
         let mut sweep_tgt = [0.0f32; N];
         let mut pwm_tgt = [0.0f32; N];
+        let mut xmod_tgt = [0.0f32; N];
+        let mut pm_idx = [0.0f32; N];
         let mut pitch_active = [false; N];
         let mut pwm_active = [false; N];
+        let mut xmod_active = [false; N];
+        // `CrossModAmount` only means anything in PM mode — Off/Sync/Ring ignore
+        // the amount, as VXN1 does — so the dest is gated on the mode rather
+        // than silently accumulating smoother state the kernel can't read.
+        let pm_mode = matches!(ctx.cross_mod_type, CrossModType::Pm);
         for v in 0..N {
             let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
             // Matrix sources use env levels at block start (VXN1 granularity).
@@ -516,6 +526,11 @@ impl RenderBank {
             pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
             sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
             pwm_tgt[v] = dests[DestId::Pwm.idx().unwrap()];
+            xmod_tgt[v] = if pm_mode {
+                dests[DestId::CrossModAmount.idx().unwrap()]
+            } else {
+                0.0
+            };
 
             // Non-env Amp coefficient: `e1`/`e2` stay per-frame exact; `stat` (the
             // non-envelope routes) is the target the per-frame Amp one-pole glides
@@ -527,7 +542,7 @@ impl RenderBank {
             // land zipper-free; no glide from the stolen voice's stale state).
             if self.trigger_pending[v] {
                 self.smooth.snap_pitch(v, pitch_tgt[v], sweep_tgt[v]);
-                self.smooth.snap_slow(v, pwm_tgt[v], ac.stat);
+                self.smooth.snap_slow(v, pwm_tgt[v], xmod_tgt[v], ac.stat);
             }
             amp_c[v] = AmpCoeffs { stat: self.smooth.amp_stat_current(v), ..ac };
 
@@ -537,6 +552,14 @@ impl RenderBank {
             let pwm_s = self.smooth.pwm_current(v);
             pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
             pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+
+            // Cross-mod amount: same treatment as PWM (0242). Only the matrix
+            // *offset* is smoothed; the patch scalar rides on top, so a patch
+            // with no route on the dest keeps `ctx.pm_index` bit-exact and every
+            // lane stays on the broadcast kernel below. Clamped non-negative —
+            // `render::voice_cross_mod_amount` is the statement of that rule.
+            xmod_active[v] = active[v] && pm_mode && self.smooth.xmod_active(v, xmod_tgt[v]);
+            pm_idx[v] = (ctx.pm_index + self.smooth.xmod_current(v)).max(0.0);
 
             // Provisional `inc` from the base (smoothed pitch ≈ 0 when inactive);
             // active lanes get re-cooked per quantum in the frame loop.
@@ -572,6 +595,7 @@ impl RenderBank {
         }
         let pitch_any = pitch_active.iter().any(|&a| a);
         let pwm_any = pwm_active.iter().any(|&a| a);
+        let xmod_any = xmod_active.iter().any(|&a| a);
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ;
@@ -610,9 +634,13 @@ impl RenderBank {
         let ring_gain = 10.0f32.powf(RING_DRIVE_DB / 20.0);
         let noise_on = ctx.noise_level != 0.0;
         let sub_on = ctx.sub_level != 0.0;
-        let osc1_runs =
-            ctx.sync || ctx.pm_index != 0.0 || ring_on || ctx.osc1_level != 0.0 || sub_on;
-        let osc2_runs = ctx.sync || ctx.pm_index != 0.0 || ring_on || ctx.osc2_level != 0.0;
+        // PM engages on the patch amount *or* a live matrix route into
+        // `CrossModAmount` — a patch parked at amount 0 with an env into the
+        // dest is a legitimate "FM swells in from nothing" sound, and keying
+        // only off `ctx.pm_index` would render it unmodulated.
+        let pm_on = ctx.pm_index != 0.0 || xmod_any;
+        let osc1_runs = ctx.sync || pm_on || ring_on || ctx.osc1_level != 0.0 || sub_on;
+        let osc2_runs = ctx.sync || pm_on || ring_on || ctx.osc2_level != 0.0;
 
         let env_static = self.envelopes_static(&trig, active, gate);
         // The non-env Amp part glides per frame (0208); while it's still moving
@@ -644,7 +672,7 @@ impl RenderBank {
             // Pitch/XModSweep/PWM ramps in as a slope, not a block-held stair.
             // Only lanes with an active route pay this; static patches keep the
             // block-start values.
-            if (pitch_any || pwm_any) && base_i % PITCH_QUANTUM == 0 {
+            if (pitch_any || pwm_any || xmod_any) && base_i % PITCH_QUANTUM == 0 {
                 for v in 0..N {
                     if pitch_active[v] {
                         let (p, sw) = self.smooth.tick_pitch(v, pitch_tgt[v], sweep_tgt[v]);
@@ -657,6 +685,10 @@ impl RenderBank {
                         let pwm_s = self.smooth.tick_pwm(v, pwm_tgt[v]);
                         pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
                         pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+                    }
+                    if xmod_active[v] {
+                        let xmod_s = self.smooth.tick_xmod(v, xmod_tgt[v]);
+                        pm_idx[v] = (ctx.pm_index + xmod_s).max(0.0);
                     }
                 }
             }
@@ -689,17 +721,33 @@ impl RenderBank {
                         &mut o1,
                         &mut o2,
                     );
-                } else if ctx.pm_index != 0.0 {
-                    self.osc1.process_pm(
-                        &mut self.osc2,
-                        ctx.pm_index,
-                        ctx.osc1_wave,
-                        ctx.osc2_wave,
-                        &pw1,
-                        &pw2,
-                        &mut o1,
-                        &mut o2,
-                    );
+                } else if pm_on {
+                    // Per-lane index only when a route is live: the broadcast
+                    // arm keeps the single hoisted load the unmodulated patch
+                    // has always had (`PmIndex` monomorphises both).
+                    if xmod_any {
+                        self.osc1.process_pm(
+                            &mut self.osc2,
+                            &pm_idx,
+                            ctx.osc1_wave,
+                            ctx.osc2_wave,
+                            &pw1,
+                            &pw2,
+                            &mut o1,
+                            &mut o2,
+                        );
+                    } else {
+                        self.osc1.process_pm(
+                            &mut self.osc2,
+                            ctx.pm_index,
+                            ctx.osc1_wave,
+                            ctx.osc2_wave,
+                            &pw1,
+                            &pw2,
+                            &mut o1,
+                            &mut o2,
+                        );
+                    }
                 } else {
                     if osc1_runs {
                         self.osc1.process(ctx.osc1_wave, &pw1, &mut o1);

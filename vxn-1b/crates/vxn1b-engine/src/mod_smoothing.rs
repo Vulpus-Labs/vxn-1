@@ -25,10 +25,12 @@
 //!   per-sample level ramp), not once per block. The envelope part of the VCA
 //!   stays per-frame exact — only the non-env part (an LFO→Amp, velocity→Amp, …
 //!   route) is smoothed.
-//! * **PWM** — a single **per-quantum one-pole** on the pulse-width offset.
-//!   Less click-critical than amplitude but still stepped by a fast source; a
+//! * **PWM** and **cross-mod amount** — a single **per-quantum one-pole** each,
+//!   on the pulse-width offset and on the PM index offset (0242). Less
+//!   click-critical than amplitude but still stepped by a fast source; a
 //!   [`PITCH_QUANTUM`]-rate glide inside the render loop keeps the duty cycle
-//!   from stair-stepping at block edges.
+//!   (and the FM index, which is timbre in the same way) from stair-stepping at
+//!   block edges.
 //!
 //! Cutoff/Resonance are deliberately **not** smoothed here: the OTA ladder ramps
 //! its own coefficients per frame ([`crate::bank`] `prepare_ramp`/`tick_coeffs`),
@@ -74,14 +76,18 @@ pub struct MotionSmoother {
     p_state: [[f32; N]; N_PITCH],
     /// Block-rate one-pole state for the PWM dest, per lane.
     pwm: [f32; N],
+    /// Block-rate one-pole state for the `CrossModAmount` dest *offset*, per
+    /// lane (0242). The patch's own `cross_mod_amount` is added on top by the
+    /// render, so a patch with no route on the dest holds exactly zero here.
+    xmod: [f32; N],
     /// Block-rate one-pole state for the non-env Amp coefficient, per lane.
     amp_stat: [f32; N],
     /// Cascade coeff, calibrated at the *quantum* tick rate (`sr / PITCH_QUANTUM`).
     pitch_coeff: f32,
     /// Amp one-pole coeff, calibrated at the *per-frame* (base-sample) rate.
     amp_coeff: f32,
-    /// PWM one-pole coeff, calibrated at the *quantum* tick rate.
-    pwm_coeff: f32,
+    /// PWM / cross-mod one-pole coeff, calibrated at the *quantum* tick rate.
+    slow_coeff: f32,
 }
 
 impl MotionSmoother {
@@ -93,15 +99,16 @@ impl MotionSmoother {
         let pitch_coeff = one_pole_coeff(block_ms, sample_rate / PITCH_QUANTUM as f32);
         // Amp glides every sample; PWM every quantum.
         let amp_coeff = one_pole_coeff(SLOW_MS, sample_rate);
-        let pwm_coeff = one_pole_coeff(SLOW_MS, sample_rate / PITCH_QUANTUM as f32);
+        let slow_coeff = one_pole_coeff(SLOW_MS, sample_rate / PITCH_QUANTUM as f32);
         Self {
             p_stage1: [[0.0; N]; N_PITCH],
             p_state: [[0.0; N]; N_PITCH],
             pwm: [0.0; N],
+            xmod: [0.0; N],
             amp_stat: [0.0; N],
             pitch_coeff,
             amp_coeff,
-            pwm_coeff,
+            slow_coeff,
         }
     }
 
@@ -116,6 +123,7 @@ impl MotionSmoother {
         self.p_stage1 = [[0.0; N]; N_PITCH];
         self.p_state = [[0.0; N]; N_PITCH];
         self.pwm = [0.0; N];
+        self.xmod = [0.0; N];
         self.amp_stat = [0.0; N];
     }
 
@@ -129,10 +137,12 @@ impl MotionSmoother {
         self.p_state[SWEEP][v] = sweep_target;
     }
 
-    /// Snap one lane's PWM / Amp-stat one-poles to their block targets.
+    /// Snap one lane's PWM / cross-mod / Amp-stat one-poles to their block
+    /// targets.
     #[inline]
-    pub fn snap_slow(&mut self, v: usize, pwm_target: f32, amp_stat_target: f32) {
+    pub fn snap_slow(&mut self, v: usize, pwm_target: f32, xmod_target: f32, amp_stat_target: f32) {
         self.pwm[v] = pwm_target;
+        self.xmod[v] = xmod_target;
         self.amp_stat[v] = amp_stat_target;
     }
 
@@ -175,7 +185,7 @@ impl MotionSmoother {
     /// PWM offset.
     #[inline]
     pub fn tick_pwm(&mut self, v: usize, target: f32) -> f32 {
-        self.pwm[v] += self.pwm_coeff * (target - self.pwm[v]);
+        self.pwm[v] += self.slow_coeff * (target - self.pwm[v]);
         self.pwm[v]
     }
 
@@ -183,6 +193,28 @@ impl MotionSmoother {
     #[inline]
     pub fn pwm_current(&self, v: usize) -> f32 {
         self.pwm[v]
+    }
+
+    /// Whether lane `v`'s cross-mod one-pole needs ticking (nonzero target or
+    /// residual state); when false the render keeps the block-start PM index —
+    /// and, with every lane inactive, stays on the broadcast PM kernel entirely.
+    #[inline]
+    pub fn xmod_active(&self, v: usize, target: f32) -> bool {
+        target.abs() > SETTLE_EPS || self.xmod[v].abs() > SETTLE_EPS
+    }
+
+    /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
+    /// smoothed PM-index *offset* (the patch amount is added by the render).
+    #[inline]
+    pub fn tick_xmod(&mut self, v: usize, target: f32) -> f32 {
+        self.xmod[v] += self.slow_coeff * (target - self.xmod[v]);
+        self.xmod[v]
+    }
+
+    /// Lane `v`'s current smoothed cross-mod offset, without advancing.
+    #[inline]
+    pub fn xmod_current(&self, v: usize) -> f32 {
+        self.xmod[v]
     }
 
     /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
@@ -276,6 +308,23 @@ mod tests {
             s.tick_pwm(0, 1.0);
         }
         assert!((s.tick_pwm(0, 1.0) - 1.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn xmod_one_pole_glides_settles_and_snaps() {
+        let mut s = MotionSmoother::new(SR);
+        assert!(!s.xmod_active(0, 0.0), "no route, zero state → inactive");
+        let first = s.tick_xmod(0, 2.0);
+        assert!(first > 0.0 && first < 1.0, "per-quantum step is partial, got {first}");
+        assert!(s.xmod_active(0, 0.0), "residual energy keeps it active after the route drops");
+        for _ in 0..256 {
+            s.tick_xmod(0, 2.0);
+        }
+        assert!((s.xmod_current(0) - 2.0).abs() < 1e-2);
+        // A fresh note snaps the lane so the index starts settled, not gliding
+        // up from the stolen voice's state.
+        s.snap_slow(0, 0.0, 0.5, 0.0);
+        assert!((s.tick_xmod(0, 0.5) - 0.5).abs() < 1e-6);
     }
 
     #[test]

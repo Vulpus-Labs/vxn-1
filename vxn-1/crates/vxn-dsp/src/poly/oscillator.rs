@@ -171,6 +171,34 @@ impl WaveKind for WPulse {
     }
 }
 
+/// PM index source for the phase-mod kernel: either one value for every lane
+/// (the patch scalar) or one per lane (the scalar plus a per-voice modulation
+/// offset — VXN1b's `CrossModAmount` matrix destination).
+///
+/// A trait rather than an always-array parameter so each caller monomorphises
+/// to exactly the code it needs: the broadcast case keeps a single register
+/// load hoisted out of the lane loop, and neither case pays a runtime branch
+/// inside it (the same reason [`WaveKind`] exists — a `match` in the lane body
+/// costs the loop its vectorisation).
+pub trait PmIndex: Copy {
+    /// The index lane `v` is modulated at.
+    fn get(&self, v: usize) -> f32;
+}
+
+impl PmIndex for f32 {
+    #[inline(always)]
+    fn get(&self, _v: usize) -> f32 {
+        *self
+    }
+}
+
+impl PmIndex for &[f32; N] {
+    #[inline(always)]
+    fn get(&self, v: usize) -> f32 {
+        self[v]
+    }
+}
+
 /// Resolve a runtime [`Waveform`] to its [`WaveKind`] marker type, binding it to
 /// `$ty` for the block `$body`. Used once outside the lane loop to dispatch the
 /// monomorphised kernels; nest two calls for a master×slave pair.
@@ -608,10 +636,14 @@ impl PolyOscillator {
     /// carrier (PM target); `other` is osc2 = modulator (PM source).
     #[inline]
     #[allow(clippy::too_many_arguments)] // coupled SIMD pair kernel: two waves + two pw/out arrays + pm_index
-    pub fn process_pm(
+    ///
+    /// `pm_index` is either an `f32` (one index for every lane) or a
+    /// `&[f32; N]` (per-lane, when a matrix route modulates the cross-mod
+    /// amount) — see [`PmIndex`].
+    pub fn process_pm<I: PmIndex>(
         &mut self,
         other: &mut PolyOscillator,
-        pm_index: f32,
+        pm_index: I,
         wave1: Waveform,
         wave2: Waveform,
         pw1: &[f32; N],
@@ -620,17 +652,17 @@ impl PolyOscillator {
         o2: &mut [f32; N],
     ) {
         with_wave!(wave1, W1 => with_wave!(wave2, W2 => {
-            self.process_pm_w::<W1, W2>(other, pm_index, pw1, pw2, o1, o2)
+            self.process_pm_w::<W1, W2, I>(other, pm_index, pw1, pw2, o1, o2)
         }))
     }
 
     /// Monomorphised PM lane loop. `W1` is the osc1 (carrier) waveform, `W2`
     /// is the osc2 (modulator) waveform.
     #[inline(always)]
-    fn process_pm_w<W1: WaveKind, W2: WaveKind>(
+    fn process_pm_w<W1: WaveKind, W2: WaveKind, I: PmIndex>(
         &mut self,
         other: &mut PolyOscillator,
-        pm_index: f32,
+        pm_index: I,
         pw1: &[f32; N],
         pw2: &[f32; N],
         o1: &mut [f32; N],
@@ -658,7 +690,7 @@ impl PolyOscillator {
             let p_s = self.phase[v];
             let inc_c = self.inc[v];
             let read = {
-                let x = p_s + pm_index * s_m;
+                let x = p_s + pm_index.get(v) * s_m;
                 x - x.floor()
             };
             o1[v] = W1::sample(read, pw1[v], inc_c);
