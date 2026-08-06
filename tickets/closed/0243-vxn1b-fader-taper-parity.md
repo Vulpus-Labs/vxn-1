@@ -74,3 +74,29 @@ applies the taper. VXN1b's fork picked the linear pair.
   and is now wrong for VXN1b in the same way; tempo-sync rate resolution is not
   implemented in VXN1b's engine yet, so nothing reads it. Left as-is to keep the
   two files identical — fix in both when VXN1b gains tempo sync.
+
+## Close-out (2026-08-06)
+
+- **The two lines.** `SharedParams::{get_normalized, set_normalized}` now use
+  `to_fader`/`from_fader`, matching VXN1 —
+  [shared.rs:130](../../vxn-1b/crates/vxn1b-engine/src/shared.rs#L130). Cutoff at
+  half travel reads 800 Hz (was ~8 kHz); 25% ≈ 114 Hz, 75% ≈ 3.6 kHz.
+- **Gate.** `tests/taper_parity.rs`:
+  `shared_param_names_carry_identical_calibration` (every float shared by name
+  with VXN1 — min/max/default/unit/taper — so a future table edit can't drift),
+  `split_lfo_rates_match_vxn1s_single_rate` (VXN1's `lfo_rate` vs VXN1b's two
+  per-layer rates), `shared_params_normalised_accessors_are_tapered` (midpoint,
+  position round-trip, bottom-octave vs top-octave travel),
+  `linear_params_are_unchanged_by_the_taper_path`.
+- **Survey result.** Descriptor tables were already like-for-like: zero
+  mismatches across all shared names. VXN1-only floats are exactly the
+  fixed-routing depths the matrix replaced. JS applies no taper in either synth;
+  `util/drag.js` differs only by VXN1b's hidden-container `paintFader` guard, and
+  the tuned-cutoff override is identical — so the fix is Rust-side only.
+- **Blast radius confirmed.** `get_normalized`/`set_normalized` are reached only
+  from the editor path (`ViewEvent::ParamChanged`, `UiEvent::SetParamNorm`); CLAP
+  and the preset/state formats exchange plain values. Dynamics dials share the
+  write path and gain the taper too; matrix depth faders are `Taper::Linear` and
+  are bit-unchanged.
+- Verified at 6605617 in a clean worktree. **Outstanding:** the feel check in a
+  DAW (cutoff, env times, glide) is the user's.

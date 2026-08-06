@@ -85,3 +85,44 @@ Env→Cross-Mod Amt route would render silently unmodulated.
 - `render::voice_cross_mod_amount` stays the spec/tested statement of the
   clamp; `bank.rs` inlines the smoothed form, matching how PWM already works
   (`render::voice_pw` vs the inlined `(ctx.osc1_pw + pwm_s).clamp(..)`).
+
+## Close-out (2026-08-06)
+
+- **Panel restored.** CROSS MOD in the layer pane's bottom row —
+  [faceplate.html:223](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L223):
+  `buttongroup` on `cross_mod_type`, fader on `cross_mod_amount` with
+  `data-dim-unless-fm`, panel `data-layered` so a tab flip rebinds both cells.
+  Row share in [faceplate.css:252](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.css#L252).
+  No JS written: the buttongroup, fader and `unless-fm` dim rule were already in
+  the forked dispatch. Covered by `tests::faceplate_mounts_resolve_to_real_params`
+  and `tests::css_covers_every_control_primitive`.
+- **Dim rule.** `__tests__/cross-mod-dim.test.js` (2 tests): the rule resolves to
+  the *active layer's* `cross_mod_type` id (upper and lower), and its predicate
+  dims Off/Sync/Ring, not FM.
+- **Per-lane PM index.** `process_pm` is generic over a new `PmIndex` trait —
+  `f32` broadcast or `&[f32; N]` per lane, monomorphised like `WaveKind` so the
+  lane loop stays branch-free —
+  [oscillator.rs:177](../../vxn-1/crates/vxn-dsp/src/poly/oscillator.rs#L177).
+  VXN1's call site is unchanged (`vxn-dsp` 92 tests, `vxn-engine` 142 tests green).
+- **Dest wired.** [bank.rs](../../vxn-1b/crates/vxn1b-engine/src/bank.rs) reads
+  `DestId::CrossModAmount` per lane, gated to PM mode, and feeds the per-lane
+  kernel only when a route is live. `tests/cross_mod_dest.rs`:
+  `route_equals_the_same_amount_dialled_into_the_patch` (velocity route ≡ the
+  same index dialled in, max diff < 1e-5),
+  `route_drives_fm_from_a_zero_patch_amount`, `dest_is_inert_outside_fm_mode`,
+  `negative_total_clamps_to_zero_index`, `route_is_per_voice_not_per_bank`.
+- **Smoothing.** PWM-tier one-pole on the matrix *offset* only, ticked per
+  `PITCH_QUANTUM`, snapped on note-on —
+  [mod_smoothing.rs:200](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs#L200),
+  `mod_smoothing::tests::xmod_one_pole_glides_settles_and_snaps`.
+  `zipper_regression::square_lfo_to_cross_mod_amount_is_declicked` measures
+  3.13× edge/interior d² (bound 6.0), and the dest joins
+  `output_stays_finite_under_worst_case_flips`.
+- **Parity + RT.** `parity::default_patch_render_matches_vxn1` green — an
+  unrouted patch keeps `ctx.pm_index` bit-exact on the broadcast kernel.
+  `alloc_free::hot_path_is_allocation_free` green.
+- **ADR 0001 §7 amended** to record why the panel came back: routing depths move
+  to the overlay, oscillator *topology* stays on the faceplate.
+- Verified at 6605617 in a clean worktree — the shared tree carries another
+  session's in-flight 0244/0245 work. **Outstanding:** the DAW listening check
+  (FM index under an env/LFO) is the user's, per [[verify-audio-in-reaper]].
