@@ -1639,6 +1639,110 @@ mod tests {
         assert_eq!((f.layer1.0, f.layer1.1), (0.0, 0.0), "muted layer must be silent in both channels");
     }
 
+    // ── Layer detune (0263) ─────────────────────────────────────────────────
+
+    /// Count zero crossings as a cheap pitch proxy: a detuned layer completes
+    /// more (or fewer) cycles in the same window than an undetuned one.
+    fn zero_crossings(buf: &[f32]) -> usize {
+        buf.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+    }
+
+    /// A layer detuned sharp really is sharp — and by enough to hear, not just
+    /// enough to measure.
+    #[test]
+    fn layer_detune_shifts_the_layers_pitch() {
+        let render = |cents: f32| {
+            let mut e = Engine::new(48_000.0, 4096);
+            e.set_param(l1(ParamId::Env2Attack), 0.001);
+            e.set_param(l1(ParamId::Env2Sustain), 1.0);
+            // One oscillator only, so the crossing count reads its period.
+            e.set_param(l1(ParamId::Osc2Level), 0.0);
+            e.set_param(l1(ParamId::LayerDetune), cents);
+            e.note_on(0, 69, 1.0); // A4
+            let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+            e.process_block(&mut l, &mut r);
+            e.process_block(&mut l, &mut r);
+            zero_crossings(&l)
+        };
+        let flat = render(-50.0);
+        let centre = render(0.0);
+        let sharp = render(50.0);
+        assert!(flat < centre, "−50 ct must be flatter: {flat} vs {centre}");
+        assert!(sharp > centre, "+50 ct must be sharper: {sharp} vs {centre}");
+    }
+
+    /// Detune moves the layer, not one oscillator inside it — the distinction
+    /// from `Osc2Fine`. Both oscillators shift by the same amount, so the two
+    /// stay in the relationship the patch set.
+    #[test]
+    fn layer_detune_moves_both_oscillators_together() {
+        // Osc 2 alone, at its own octave: if detune only reached osc 1 this
+        // would be unchanged by the sweep.
+        let render_osc2_only = |cents: f32| {
+            let mut e = Engine::new(48_000.0, 4096);
+            e.set_param(l1(ParamId::Env2Attack), 0.001);
+            e.set_param(l1(ParamId::Env2Sustain), 1.0);
+            e.set_param(l1(ParamId::Osc1Level), 0.0);
+            e.set_param(l1(ParamId::Osc2Level), 1.0);
+            e.set_param(l1(ParamId::Osc2Octave), 0.0);
+            e.set_param(l1(ParamId::LayerDetune), cents);
+            e.note_on(0, 69, 1.0);
+            let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+            e.process_block(&mut l, &mut r);
+            e.process_block(&mut l, &mut r);
+            zero_crossings(&l)
+        };
+        assert!(
+            render_osc2_only(50.0) > render_osc2_only(-50.0),
+            "osc 2 must follow the layer detune too"
+        );
+    }
+
+    /// Each layer's detune is its own — the point of the control is beating
+    /// *between* layers, which needs them to move independently.
+    #[test]
+    fn layer_detune_is_per_layer() {
+        let mut e = Engine::new(48_000.0, 4096);
+        e.set_layer2_on(true);
+        for i in 0..2 {
+            e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+            e.synths[i].set_param(ParamId::Env2Sustain as usize, 1.0);
+        }
+        // Only layer 1 is detuned.
+        e.set_param(clap_id_of(Layer::L1, ParamId::LayerDetune), 50.0);
+        assert_eq!(
+            e.synths[1].params().get(ParamId::LayerDetune),
+            0.0,
+            "detune must not leak to the other layer — it is a patch param, not a global"
+        );
+        assert_eq!(e.synths[0].params().get(ParamId::LayerDetune), 50.0);
+
+        // And the two layers now beat against each other where they did not
+        // before: the summed envelope of the same note is no longer steady.
+        e.note_on(0, 69, 1.0);
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+        e.process_block(&mut l, &mut r);
+        e.process_block(&mut l, &mut r);
+        let first = l[..1024].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        let later = l[3072..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(
+            (first - later).abs() > 1e-3,
+            "two layers 50 ct apart must beat: {first} vs {later}"
+        );
+    }
+
+    /// The detune taper is the reason the control is usable: half travel each
+    /// way is ±20 ct, not the ±25 ct a linear slider would give.
+    #[test]
+    fn layer_detune_taper_puts_20_cents_at_half_travel() {
+        let d = ParamId::LayerDetune.desc();
+        assert_eq!(d.from_fader(0.5), 0.0);
+        assert!((d.from_fader(0.75) - 20.0).abs() < 1e-3, "{}", d.from_fader(0.75));
+        assert!((d.from_fader(0.25) + 20.0).abs() < 1e-3, "{}", d.from_fader(0.25));
+        assert!((d.from_fader(1.0) - 50.0).abs() < 1e-3);
+        assert!((d.from_fader(0.0) + 50.0).abs() < 1e-3);
+    }
+
     #[test]
     fn default_key_state_is_single_middle_c() {
         let ks = KeyState::default();

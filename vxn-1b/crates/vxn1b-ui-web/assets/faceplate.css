@@ -1047,6 +1047,21 @@ html, body {
   gap: 1px;
 }
 
+/* Layer detune (0263): a centre-origin horizontal slider under the pan dial.
+   Constrained to the strip width — the primitive's drag travel is in pixels of
+   pointer movement, not track width, so a narrow track loses no resolution. */
+.mixer-detune {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  width: 100%;
+}
+
+.mixer-detune .fader-track {
+  width: 100%;
+}
+
 /* Mute centred under the meter+fader pair rather than pinned to the panel
    edge, so it reads as belonging to this strip. */
 .mixer-mute {

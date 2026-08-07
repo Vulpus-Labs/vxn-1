@@ -184,6 +184,11 @@ pub enum ParamId {
     // Everything downstream of the voice is already stereo, so this is one
     // multiply in the mix loop that already applies `LayerLevel`.
     LayerPan,
+    // Tuning of the whole layer in cents (0263) — a third beating axis,
+    // distinct from `UnisonDetune` (per lane, within a voice) and `Osc2Fine`
+    // (per oscillator, within a layer). Lands on the layer's pitch base, so
+    // both oscillators and the sub move together.
+    LayerDetune,
     // ── LFO 1 ──
     Lfo1Shape,
     Lfo1Rate,
@@ -325,7 +330,7 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 69] = {
+pub const PATCH_PARAMS: [ParamId; 70] = {
     use ParamId::*;
     [
         // Osc / mixer (17)
@@ -340,8 +345,8 @@ pub const PATCH_PARAMS: [ParamId; 69] = {
         Env2Attack, Env2Decay, Env2Sustain, Env2Release, Env2Shape,
         // Amp (1)
         AmpEnvBypass,
-        // Layer mix (3)
-        LayerLevel, LayerMute, LayerPan,
+        // Layer mix (4)
+        LayerLevel, LayerMute, LayerPan, LayerDetune,
         // LFO 1 (6)
         Lfo1Shape, Lfo1Rate, Lfo1Sync, Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun,
         // LFO 2 (3)
@@ -578,6 +583,11 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     // Centre default: a layer switched on sits where it was placed by the
     // player, not off to one side. Same bipolar shape as a matrix slot depth.
     f("layer_pan", "Layer Pan", -1.0, 1.0, 0.0, "", Taper::Linear),
+    // ±50 ct, but the musical range is the inner part of it: past ~25 ct two
+    // layers read as out of tune rather than wide. `BipolarExp { mid: 20 }`
+    // puts ±20 ct at half travel each way, so the useful span occupies most of
+    // the slider and the extremes stay reachable (0263).
+    f("layer_detune", "Layer Detune", -50.0, 50.0, 0.0, "ct", Taper::BipolarExp { mid: 20.0 }),
     // ── LFO 1 ──
     e("lfo1_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
     f("lfo1_rate", "LFO 1 Rate", 0.01, 40.0, 5.0, "Hz", Taper::Exp { mid: 5.0 }),
@@ -839,7 +849,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 69 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 70 + 32);
     }
 
     #[test]

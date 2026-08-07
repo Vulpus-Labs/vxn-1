@@ -440,6 +440,7 @@ fn taper_to_json(t: Taper) -> serde_json::Value {
     match t {
         Taper::Linear => json!({"kind": "linear"}),
         Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
+        Taper::BipolarExp { mid } => json!({"kind": "bipolar-exp", "mid": mid}),
     }
 }
 

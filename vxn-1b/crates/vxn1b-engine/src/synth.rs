@@ -294,8 +294,14 @@ fn build_ctx<'a>(
         CrossModType::Pm => (false, p.get(ParamId::CrossModAmount), false),
         CrossModType::Ring => (false, 0.0, true),
     };
-    // Hardwired pitch bend (ADR §3): global pitch += bend × range.
-    let base_semis = p.get(ParamId::MasterTune) + pitch_bend * p.get(ParamId::PitchBendRange);
+    // Hardwired pitch bend (ADR §3): global pitch += bend × range. Layer detune
+    // (0263) joins the same base, so it moves both oscillators and the sub as
+    // one — a layer detuned against its partner, not an oscillator detuned
+    // against its neighbour (that is `Osc2Fine`) or a lane against its own
+    // voice (that is `UnisonDetune`).
+    let base_semis = p.get(ParamId::MasterTune)
+        + pitch_bend * p.get(ParamId::PitchBendRange)
+        + p.get(ParamId::LayerDetune) * 0.01;
     BlockCtx {
         os_sample_rate: sample_rate * os as f32,
         os,

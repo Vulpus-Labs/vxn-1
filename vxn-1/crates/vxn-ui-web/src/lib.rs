@@ -318,6 +318,7 @@ fn taper_to_json(t: vxn_app::Taper) -> serde_json::Value {
     match t {
         vxn_app::Taper::Linear => json!({"kind": "linear"}),
         vxn_app::Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
+        vxn_app::Taper::BipolarExp { mid } => json!({"kind": "bipolar-exp", "mid": mid}),
     }
 }
 
