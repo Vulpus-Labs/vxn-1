@@ -10,7 +10,7 @@
 //! the caller's buffer **accumulating**; the global block pre-zeroes, ticks each
 //! active synth, then runs the one global FX chain + master over the sum.
 
-use vxn_dsp::{CONTROL_BLOCK, LfoCore};
+use vxn_dsp::{CONTROL_BLOCK, LfoCore, MAX_VOICES};
 
 use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
@@ -173,6 +173,13 @@ impl Synth {
     /// This layer's LFO 2 phase after the last control-block tick. The global
     /// block reads Layer 1's to drive Layer 2's LFO 2 link (0217, ADR 0002 §5).
     #[inline]
+    /// Whether every voice in this synth is idle — the engine folds both
+    /// synths' answers into the decimator's drain-skip (0251). Cheap: a scan of
+    /// the 16 active flags, once per control block.
+    pub(crate) fn is_silent(&self) -> bool {
+        !(0..MAX_VOICES).any(|v| self.voices.is_active(v))
+    }
+
     pub(crate) fn lfo2_phase(&self) -> f32 {
         self.lfo2.phase()
     }
@@ -186,11 +193,15 @@ impl Synth {
     /// makes this layer's LFO 2 adopt `p` instead of running its own accumulator
     /// — rate *and* phase lock — while its shape stays its own; `None` (always,
     /// for Layer 1) free-runs from this layer's own patch settings.
+    /// `l`/`r` are the **oversampled** buses: `l.len() == base_frames · os`.
+    /// The banks derive their base frame count from that length, so the caller
+    /// owns the factor and this just passes it into the block context (0251).
     pub(crate) fn render_control_block(
         &mut self,
         l: &mut [f32],
         r: &mut [f32],
         lfo2_link: Option<f32>,
+        os: usize,
     ) {
         // LFO 2: one tick per control block, broadcast to both banks.
         let lfo2_val = match lfo2_link {
@@ -205,6 +216,7 @@ impl Synth {
             &self.params,
             &self.matrix,
             self.sample_rate,
+            os,
             self.pitch_bend,
             self.mod_wheel,
             lfo2_val,
@@ -264,12 +276,14 @@ impl Synth {
 /// Assemble the mod-agnostic block context from the current params. A free
 /// function (not a `&self` method) so the returned [`BlockCtx`] borrows **only**
 /// `matrix` — every scalar is copied out of `params` — leaving `voices` and
-/// `banks` independently mutable during render. `os = 1` (oversampling deferred),
-/// so `os_sample_rate == sample_rate`.
+/// `banks` independently mutable during render. `os` is the engine's global
+/// oversampling factor (0251): the banks run their inner loop `os` times per base
+/// frame at `os_sample_rate`, and the engine decimates the result.
 fn build_ctx<'a>(
     p: &Params,
     matrix: &'a MatrixTable,
     sample_rate: f32,
+    os: usize,
     pitch_bend: f32,
     mod_wheel: f32,
     lfo2_val: f32,
@@ -283,8 +297,8 @@ fn build_ctx<'a>(
     // Hardwired pitch bend (ADR §3): global pitch += bend × range.
     let base_semis = p.get(ParamId::MasterTune) + pitch_bend * p.get(ParamId::PitchBendRange);
     BlockCtx {
-        os_sample_rate: sample_rate,
-        os: 1,
+        os_sample_rate: sample_rate * os as f32,
+        os,
         osc1_wave: p.osc_wave(ParamId::Osc1Wave),
         osc2_wave: p.osc_wave(ParamId::Osc2Wave),
         osc1_level: p.get(ParamId::Osc1Level),
@@ -411,7 +425,7 @@ mod tests {
                 let n = (l.len() - off).min(CONTROL_BLOCK);
                 l[off..off + n].fill(0.0);
                 r[off..off + n].fill(0.0);
-                self.render_control_block(&mut l[off..off + n], &mut r[off..off + n], None);
+                self.render_control_block(&mut l[off..off + n], &mut r[off..off + n], None, 1);
                 off += n;
             }
         }
