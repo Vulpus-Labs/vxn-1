@@ -77,6 +77,9 @@ export function buildParams() {
     21: floatDesc('filter_slope', 'Slope'),
     22: floatDesc('cutoff', 'Cutoff', 0.5),
     23: floatDesc('resonance', 'Resonance', 0.0),
+    // Cutoff's "Tuned" partner (0250) — the toggle that re-maps the fader to
+    // note-quantised MIDI C0..C4.
+    30: boolDesc('cutoff_tuned', 'Tuned'),
     // LFO 1 rate↔sync pair.
     24: floatDesc('lfo1_rate', 'Rate'),
     25: boolDesc('lfo1_sync', 'Sync'),

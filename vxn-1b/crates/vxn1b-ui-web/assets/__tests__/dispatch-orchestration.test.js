@@ -1,7 +1,7 @@
 // 0209: direct coverage for the vxn1b dispatch.js orchestration layer —
-// sync-partner resolution, the rate display override, the cutoff-override
-// no-ops (the Cutoff "Tuned" strip was dropped from the compact faceplate), the
-// single-patch rebind, and the init() → applyViewEvents fan-out. This was
+// sync-partner resolution, the rate display override, the Cutoff "Tuned"
+// overrides (0250), the single-patch rebind, and the init() → applyViewEvents
+// fan-out. This was
 // forked from VXN1's suite; vxn1b is single-patch (`patchCount === 1`) so a
 // layer flip is a no-op and there is no dual-layer id-shifting to test.
 //
@@ -24,10 +24,18 @@ import {
   _resetParamIndex,
 } from '../dispatch.js';
 import { installFixture } from '../fixtures/params.js';
+// The tuned-mode math is a shared core primitive; the suite drives the real
+// implementation rather than a stand-in so a change there fails here.
+import {
+  cutoffTunedNormToHz,
+  cutoffTunedHzToNorm,
+  cutoffTunedNoteName,
+  midiToHz,
+} from '../../../../../crates/vxn-core-ui-web/assets/cutoff-tuned.js';
 
 // Fixture ids the vxn1b dispatch suite drives (see fixtures/params.js). Resolved
 // by name so a fixture reshuffle can't silently desync the assertions.
-let LFO1_RATE, LFO1_SYNC, LFO2_RATE, LFO2_SYNC, CUTOFF, DRIVE;
+let LFO1_RATE, LFO1_SYNC, LFO2_RATE, LFO2_SYNC, CUTOFF, CUTOFF_TUNED, DRIVE;
 
 // Captures the ctl object each primitive factory returns, keyed by bound id, so
 // a test can assert `update()` was driven with the reseeded value.
@@ -64,6 +72,11 @@ function stubGlobals() {
   // Display helper the rate override closure calls (deterministic stand-in so
   // the wiring is observable).
   globalThis.subdivisionLabel = (norm) => `sub:${norm}`;
+  // Cutoff tuned-mode helpers: free identifiers in production (spliced into one
+  // scope from the shared core module), so hand dispatch.js the real ones.
+  globalThis.cutoffTunedNormToHz = cutoffTunedNormToHz;
+  globalThis.cutoffTunedHzToNorm = cutoffTunedHzToNorm;
+  globalThis.cutoffTunedNoteName = cutoffTunedNoteName;
   // Side panels touched by rebind / dispatch.
   globalThis.keysPanel = {
     wireLayerLevels: vi.fn(),
@@ -96,6 +109,7 @@ beforeEach(() => {
   LFO2_RATE = paramIdByName('lfo2_rate');
   LFO2_SYNC = paramIdByName('lfo2_sync');
   CUTOFF    = paramIdByName('cutoff');
+  CUTOFF_TUNED = paramIdByName('cutoff_tuned');
   DRIVE     = paramIdByName('drive');
 });
 
@@ -114,18 +128,17 @@ function mountCell(kind, name) {
 }
 
 describe('locateSyncPartners', () => {
-  it('maps only lfo1 and lfo2 rate↔sync; cutoff-tuned pairing is empty', () => {
+  it('maps lfo1 / lfo2 rate↔sync and the cutoff↔tuned pair', () => {
     locateSyncPartners('upper');
     // lfo1_rate ↔ lfo1_sync, lfo2_rate ↔ lfo2_sync.
     expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
     expect(model.syncOfRate.get(LFO2_RATE)).toBe(LFO2_SYNC);
     expect(model.rateOfSync.get(LFO1_SYNC)).toBe(LFO1_RATE);
     expect(model.rateOfSync.get(LFO2_SYNC)).toBe(LFO2_RATE);
-    // The compact faceplate dropped the Cutoff "Tuned" strip and Delay Sync —
-    // nothing pairs to cutoff, and the tuned maps stay empty.
-    expect(model.tunedOfCutoff.size).toBe(0);
-    expect(model.cutoffOfTuned.size).toBe(0);
-    expect(model.tunedOfCutoff.get(CUTOFF)).toBeUndefined();
+    // Delay Sync stays dropped from the compact faceplate; Cutoff "Tuned" is
+    // back (0250) and pairs both ways so a toggle can repaint the fader.
+    expect(model.tunedOfCutoff.get(CUTOFF)).toBe(CUTOFF_TUNED);
+    expect(model.cutoffOfTuned.get(CUTOFF_TUNED)).toBe(CUTOFF);
   });
 
   it('tolerates a missing param — the pair is skipped, the other still resolves', () => {
@@ -168,12 +181,32 @@ describe('cutoff overrides', () => {
     expect(cutoffInteractionOverride(DRIVE)).toBe(null);
   });
 
-  it('return null for the cutoff fader too — the Tuned strip was removed', () => {
-    // vxn1b has no Cutoff "Tuned" toggle, so `tunedOfCutoff` never carries the
-    // cutoff id and every override collapses to the default fader behaviour.
-    expect(cutoffDisplayOverride(CUTOFF)).toBe(null);
-    expect(cutoffNormOverride(CUTOFF)).toBe(null);
-    expect(cutoffInteractionOverride(CUTOFF)).toBe(null);
+  // 0250: with Tuned OFF the overrides exist but defer — they hand back null so
+  // the fader keeps its exp-Hz mapping and Hz readout.
+  it('defer to the default fader while Tuned is off', () => {
+    model.lastParam.set(CUTOFF_TUNED, { plain: 0, norm: 0, display: 'Off' });
+    expect(cutoffDisplayOverride(CUTOFF)(1000, 0.5, '1000 Hz')).toBe(null);
+    expect(cutoffNormOverride(CUTOFF)(1000)).toBe(null);
+    expect(cutoffInteractionOverride(CUTOFF)(0.5)).toBe(null);
+  });
+
+  // Tuned ON: drag snaps to a semitone over MIDI C0..C4 and the readout is a
+  // note name. This is the whole point of the mode — the cutoff can be set to
+  // an exact pitch by eye.
+  it('snap to semitones and read out note names while Tuned is on', () => {
+    model.lastParam.set(CUTOFF_TUNED, { plain: 1, norm: 1, display: 'On' });
+    // Fader ends + midpoint → C0 / C2 / C4 (MIDI 12 / 36 / 60).
+    const interact = cutoffInteractionOverride(CUTOFF);
+    expect(interact(0).plain).toBeCloseTo(midiToHz(12), 6);
+    expect(interact(0.5).plain).toBeCloseTo(midiToHz(36), 6);
+    expect(interact(1).plain).toBeCloseTo(midiToHz(60), 6);
+    // An in-between drag snaps to the nearest semitone, not a free Hz value.
+    const snapped = interact(0.26).plain;
+    expect(snapped).toBeCloseTo(midiToHz(Math.round(12 + 0.26 * 48)), 6);
+    // Thumb position derives from the snapped Hz, and the popup reads a note.
+    expect(cutoffNormOverride(CUTOFF)(midiToHz(36))).toBeCloseTo(0.5, 6);
+    expect(cutoffDisplayOverride(CUTOFF)(midiToHz(36), 0.5, '65 Hz')).toBe('C2');
+    expect(cutoffDisplayOverride(CUTOFF)(midiToHz(57), 0.9375, '220 Hz')).toBe('A3');
   });
 });
 

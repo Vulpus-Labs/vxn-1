@@ -46,12 +46,12 @@ use std::io::{self, Read, Write};
 pub const MAGIC: [u8; 4] = *b"VX1B";
 
 /// Format version. `2` = the two-layer format (0216); `3` adds the per-layer
-/// mix params (0220); `4` adds `FilterKeyTrack` (0245) — each lengthens the
-/// layer's param block. Bump on any layout change — the block length is
+/// mix params (0220); `4` adds `FilterKeyTrack` (0245); `5` adds `CutoffTuned`
+/// (0250) — each lengthens the layer's param block. Bump on any layout change — the block length is
 /// positional, so an older blob read at a newer length would slide topology
 /// bytes into param slots rather than fail cleanly. Rejecting the old version is
 /// what makes that impossible.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.

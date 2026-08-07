@@ -141,6 +141,10 @@ __CSS__
       </div>
       <div class="panel-strip">
         <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>
+        <!-- Tuned (0250): note-precise cutoff. The fader re-maps to semitones
+             over MIDI C0..C4 and reads out as a note name; the stored param
+             stays Hz, so DSP and host automation are untouched. -->
+        <div class="ctl-strip" data-control="switch" data-param="cutoff_tuned" data-label="Tuned"></div>
       </div>
     </div>
   </div>

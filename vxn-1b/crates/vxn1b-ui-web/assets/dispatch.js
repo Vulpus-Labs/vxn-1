@@ -130,11 +130,11 @@ export function addCtl(id, ctl) {
 export function locateSyncPartners(layer) {
   model.syncOfRate.clear();
   model.rateOfSync.clear();
-  // VXN1b: LFO 1 / LFO 2 rate↔sync pairs. Delay sync and the Cutoff
-  // "Tuned" strip were dropped from the compact faceplate (0209) — no
-  // such params in vxn1b-engine — so those pairings are gone. The
-  // `paramIdByNameAtLayer` guard below tolerates any name that resolves
-  // to null, so a stale entry would no-op, but keep the list honest.
+  // VXN1b: LFO 1 / LFO 2 rate↔sync pairs. Delay sync stays dropped from the
+  // compact faceplate (0209) — no such param in vxn1b-engine. (Cutoff "Tuned"
+  // came back in 0250 and is paired below, not here — it is not a rate/sync
+  // pair.) The `paramIdByNameAtLayer` guard below tolerates any name that
+  // resolves to null, so a stale entry would no-op, but keep the list honest.
   const pairs = [
     ['lfo1_rate', 'lfo1_sync'],
     ['lfo2_rate', 'lfo2_sync'],
@@ -146,9 +146,19 @@ export function locateSyncPartners(layer) {
     model.syncOfRate.set(r, s);
     model.rateOfSync.set(s, r);
   }
-  // Cutoff "Tuned" is dropped in vxn1b (0209); nothing pairs to cutoff.
+  // Cutoff ↔ Tuned (0250, ported from VXN1). Paired per layer: the toggle
+  // switches that layer's Cutoff fader between exp-Hz and note-quantised
+  // (MIDI C0..C4) mapping, so the two ids have to find each other on every
+  // rebind. Engine-side the toggle is inert — it only changes how the fader
+  // reads and writes.
   model.tunedOfCutoff.clear();
   model.cutoffOfTuned.clear();
+  const cutoffId = paramIdByNameAtLayer('cutoff', layer);
+  const tunedId = paramIdByNameAtLayer('cutoff_tuned', layer);
+  if (cutoffId != null && tunedId != null) {
+    model.tunedOfCutoff.set(cutoffId, tunedId);
+    model.cutoffOfTuned.set(tunedId, cutoffId);
+  }
 }
 
 // ─── Generic dim rules (0044) ──────────────────────────────────────────────

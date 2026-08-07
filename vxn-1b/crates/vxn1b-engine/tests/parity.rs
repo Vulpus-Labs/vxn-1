@@ -48,9 +48,21 @@ fn vxn1_reference() -> (Vec<f32>, Vec<f32>) {
 /// VXN1b default patch with the vibrato route disabled (to match), one note.
 fn vxn1b_output() -> (Vec<f32>, Vec<f32>) {
     let mut e = Engine::new(SR, BLOCK);
-    // Disable the seeded LFO1→Pitch vibrato (slot 2) so the core render is
-    // compared without the sub-ULP vibrato-depth divergence.
-    e.matrix_mut(vxn1b_engine::Layer::L1).slots[2].depth = 0.0;
+    // Oversampling OFF, as on the VXN1 side (0249). Both synths *default* to 2×;
+    // the point of this gate is the voice render, and comparing across two
+    // different decimator states would only measure the halfband FIR. Aliasing
+    // under OS has its own test (`tests/oversampling.rs`).
+    let os_id = vxn1b_engine::params::global_clap_id(ParamId::Oversample).expect("global");
+    e.set_param(os_id, 0.0);
+    // Disable the seeded LFO1→Pitch vibrato so the core render is compared
+    // without the sub-ULP vibrato-depth divergence. Found by dest, not by slot
+    // index: 0245 removed the pre-wired Key→Cutoff slot and the vibrato route
+    // slid from slot 2 to slot 1, silently making the old index a no-op.
+    for slot in e.matrix_mut(vxn1b_engine::Layer::L1).slots.iter_mut() {
+        if slot.dest == vxn1b_engine::DestId::Pitch {
+            slot.depth = 0.0;
+        }
+    }
     e.note_on(0, 60, 1.0);
     let mut l = vec![0.0; BLOCK];
     let mut r = vec![0.0; BLOCK];
