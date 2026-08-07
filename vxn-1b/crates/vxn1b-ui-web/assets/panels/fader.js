@@ -354,9 +354,13 @@ function dialDescribeArc(cx, cy, r, startDeg, endDeg) {
        + ex.toFixed(2) + ' ' + ey.toFixed(2);
 }
 
-export function makeDial(el, id, desc) {
+export function makeDial(el, id, desc, opts) {
   const noLabel = el.hasAttribute('data-no-label');
   const label = el.dataset.label || desc.label;
+  // Same hook as `makeFader`: a dial whose readout is not the raw number
+  // (layer pan reads L/C/R, 0248). Null for every other dial, so the plain
+  // path is unchanged.
+  const displayOverride = (opts && opts.displayOverride) || null;
   const trackArc = dialDescribeArc(
     DIAL_CX, DIAL_CY, DIAL_ARC_R, DIAL_ARC_START, DIAL_ARC_START + DIAL_ARC_SWEEP);
   el.innerHTML =
@@ -429,7 +433,12 @@ export function makeDial(el, id, desc) {
       // DAW automation moves the dial even mid-drag (during a local drag the
       // pointermove paint and the round-trip echo converge on the same value).
       paint(norm);
-      lastDisplay = display;
+      let text = display;
+      if (displayOverride) {
+        const o = displayOverride(plain, norm, display);
+        if (o != null) text = o;
+      }
+      lastDisplay = text;
       pop.refresh();
     },
   };

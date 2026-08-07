@@ -308,6 +308,19 @@ export function cutoffDisplayOverride(id) {
     cutoffTunedOn(id) ? cutoffTunedNoteName(plain) : null;
 }
 
+// Layer pan readout (0248): a bipolar `[-1, 1]` position reads as a mixer
+// does — `L50` / `C` / `R50` — rather than as a signed fraction. The engine
+// keeps the raw number (it is what the host automates), so this is purely the
+// faceplate's label.
+export function panLabel(plain) {
+  const pct = Math.round(Math.abs(plain) * 100);
+  if (pct === 0) return 'C';
+  return (plain < 0 ? 'L' : 'R') + pct;
+}
+export function panDisplayOverride(name) {
+  return name === 'layer_pan' ? (plain) => panLabel(plain) : null;
+}
+
 export function bindCell(entry, layer) {
   const { el, kind, name } = entry;
   // `data-fixed-layer` pins a cell to one layer regardless of the edit-layer
@@ -332,7 +345,7 @@ export function bindCell(entry, layer) {
       break;
     }
     case 'wave':          ctl = makeWave(el, id, desc); break;
-    case 'dial':          ctl = makeDial(el, id, desc); break;
+    case 'dial':          ctl = makeDial(el, id, desc, { displayOverride: panDisplayOverride(name) }); break;
     case 'bipolar':       ctl = makeBipolar(el, id, desc); break;
     case 'switch':        ctl = makeSwitch(el, id, desc); break;
     case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;

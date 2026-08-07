@@ -1036,6 +1036,17 @@ html, body {
   gap: 0;
 }
 
+/* Pan dial between the fader and the mute (0248) — the mixer-strip order a
+   player expects, level above placement above mute. Sits outside
+   `.mixer-strip-body`, so it keeps its own label slot (the fader's is
+   suppressed; the dial's "PAN" is the one label the strip needs). */
+.mixer-pan {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
 /* Mute centred under the meter+fader pair rather than pinned to the panel
    edge, so it reads as belonging to this strip. */
 .mixer-mute {

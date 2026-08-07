@@ -495,6 +495,27 @@ mod tests {
         }
     }
 
+    /// 0248: pan is an ordinary named param, so it rides the sparse table like
+    /// any other — written only when it differs from centre, and negative
+    /// (left) values survive the text round trip.
+    #[test]
+    fn layer_pan_round_trips_and_stays_sparse_at_centre() {
+        let mut st = sample_state();
+        st.layers[0].params.set(ParamId::LayerPan, -0.75);
+        let toml = write_preset(&meta("Pan"), &st).unwrap();
+        assert!(toml.contains("layer_pan"), "a moved pan must be written:\n{toml}");
+        let (_, back, warnings) = read_preset(&toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.layers[0].params.get(ParamId::LayerPan), -0.75);
+
+        // Centre is the descriptor default, so it stays out of the file and is
+        // adopted on read — the sparse-format contract.
+        let toml = write_preset(&meta("Centre"), &sample_state()).unwrap();
+        assert!(!toml.contains("layer_pan"), "centre must not be written:\n{toml}");
+        let (_, back, _) = read_preset(&toml).unwrap();
+        assert_eq!(back.layers[0].params.get(ParamId::LayerPan), 0.0);
+    }
+
     #[test]
     fn topology_round_trips_through_text() {
         let st = sample_state();

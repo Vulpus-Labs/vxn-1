@@ -266,9 +266,10 @@ __CSS__
        the whole point of a mixer strip, and it is why these cells opt out of
        the edit-layer rebind machinery.
 
-       `layer_level` / `layer_mute` are ordinary per-layer CLAP params, so the
-       faders and mutes are normal bound cells. The meters are not — they carry
-       `data-meter` only, hold no model state, and are mounted by `wireMeters`. -->
+       `layer_level` / `layer_mute` / `layer_pan` are ordinary per-layer CLAP
+       params, so the faders, pan dials and mutes are normal bound cells. The
+       meters are not — they carry `data-meter` only, hold no model state, and
+       are mounted by `wireMeters`. -->
   <div class="row row-global-1" data-row="1">
     <!-- Narrow mixer: two channel strips, split beneath them. Each strip is
          [meter | fader] — meter to the LEFT of its fader, the channel-strip
@@ -286,6 +287,8 @@ __CSS__
               <div class="ctl" data-control="fader" data-param="layer_level"
                    data-fixed-layer="upper" data-label="Level" data-no-label></div>
             </div>
+            <div class="ctl mixer-pan" data-control="dial" data-param="layer_pan"
+                 data-fixed-layer="upper" data-label="Pan"></div>
             <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
                  data-fixed-layer="upper" data-label="Mute"></div>
           </div>
@@ -296,6 +299,8 @@ __CSS__
               <div class="ctl" data-control="fader" data-param="layer_level"
                    data-fixed-layer="lower" data-label="Level" data-no-label></div>
             </div>
+            <div class="ctl mixer-pan" data-control="dial" data-param="layer_pan"
+                 data-fixed-layer="lower" data-label="Pan"></div>
             <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
                  data-fixed-layer="lower" data-label="Mute"></div>
           </div>

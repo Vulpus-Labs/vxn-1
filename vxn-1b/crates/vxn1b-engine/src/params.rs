@@ -180,6 +180,10 @@ pub enum ParamId {
     // "layer balance" control (a balance knob cannot set absolute levels).
     LayerLevel,
     LayerMute,
+    // Placement of the layer in the stereo image (0248). Bipolar, centre 0.
+    // Everything downstream of the voice is already stereo, so this is one
+    // multiply in the mix loop that already applies `LayerLevel`.
+    LayerPan,
     // ── LFO 1 ──
     Lfo1Shape,
     Lfo1Rate,
@@ -321,7 +325,7 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 68] = {
+pub const PATCH_PARAMS: [ParamId; 69] = {
     use ParamId::*;
     [
         // Osc / mixer (17)
@@ -336,8 +340,8 @@ pub const PATCH_PARAMS: [ParamId; 68] = {
         Env2Attack, Env2Decay, Env2Sustain, Env2Release, Env2Shape,
         // Amp (1)
         AmpEnvBypass,
-        // Layer mix (2)
-        LayerLevel, LayerMute,
+        // Layer mix (3)
+        LayerLevel, LayerMute, LayerPan,
         // LFO 1 (6)
         Lfo1Shape, Lfo1Rate, Lfo1Sync, Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun,
         // LFO 2 (3)
@@ -571,6 +575,9 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     // on must not require finding a fader before anything is heard.
     f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
     b("layer_mute", "Layer Mute", 0.0),
+    // Centre default: a layer switched on sits where it was placed by the
+    // player, not off to one side. Same bipolar shape as a matrix slot depth.
+    f("layer_pan", "Layer Pan", -1.0, 1.0, 0.0, "", Taper::Linear),
     // ── LFO 1 ──
     e("lfo1_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
     f("lfo1_rate", "LFO 1 Rate", 0.01, 40.0, 5.0, "Hz", Taper::Exp { mid: 5.0 }),
@@ -832,7 +839,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 68 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 69 + 32);
     }
 
     #[test]
@@ -917,9 +924,10 @@ mod tests {
 
     #[test]
     fn layer_mix_params_are_per_layer() {
-        // 0220: level + mute are PATCH params, not globals, so the two-layer
-        // expansion gives each synth its own — a preset carries its own mix.
-        for p in [ParamId::LayerLevel, ParamId::LayerMute] {
+        // 0220/0248: level, mute and pan are PATCH params, not globals, so the
+        // two-layer expansion gives each synth its own — a preset carries its
+        // own mix.
+        for p in [ParamId::LayerLevel, ParamId::LayerMute, ParamId::LayerPan] {
             assert!(PATCH_PARAMS.contains(&p), "{p:?} must be a patch param");
             assert!(!GLOBAL_PARAMS.contains(&p), "{p:?} must not be global");
             assert_ne!(
@@ -932,6 +940,9 @@ mod tests {
         // for a fader first.
         assert_eq!(ParamId::LayerLevel.desc().default, 1.0);
         assert_eq!(ParamId::LayerMute.desc().default, 0.0);
+        // Pan is bipolar and defaults to centre.
+        let pan = ParamId::LayerPan.desc();
+        assert_eq!((pan.min, pan.max, pan.default), (-1.0, 1.0, 0.0));
     }
 
     #[test]

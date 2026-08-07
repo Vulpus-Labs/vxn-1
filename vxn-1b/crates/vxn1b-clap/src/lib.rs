@@ -779,7 +779,7 @@ mod tests {
     fn layer1_sounds_through_the_full_process_flow() {
         // Repro for the "Layer 1 silent" report: mirror the exact audio-thread
         // flow — activate (load_state from the store), seed the mirror, then each
-        // block push every one of the 160 CLAP values into the engine — and prove
+        // block push every one of the `TOTAL_PARAMS` CLAP values into the engine — and prove
         // synth 0 (Layer 1, single mode) still sounds.
         let shared = SharedParams::new();
         let mut engine = Engine::new(48_000.0, 512);

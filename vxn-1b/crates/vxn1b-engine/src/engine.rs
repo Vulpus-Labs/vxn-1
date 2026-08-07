@@ -23,9 +23,13 @@
 //! neither driven nor ticked, so single mode is **byte-for-byte today's output
 //! at today's CPU**.
 //!
-//! **Layer mix (0220, ADR 0002 §7).** Each synth carries its own `layer_level`
-//! + `layer_mute` (patch params, so a preset holds its own balance), applied as
-//! a smoothed per-layer gain before the sum. Layer 1 renders into the output and
+//! **Layer mix (0220, 0248, ADR 0002 §7).** Each synth carries its own
+//! `layer_level` + `layer_mute` + `layer_pan` (patch params, so a preset holds
+//! its own balance and placement), applied as a smoothed per-layer, per-channel
+//! gain before the sum: level and pan are multiplied together and the *product*
+//! is what smooths, so a fader move, a mute and a pan sweep are all the same
+//! kind of short fade. Pan uses a constant-power law normalised to unity at
+//! centre ([`pan_gains`]). Layer 1 renders into the output and
 //! is scaled in place; layer 2 renders into scratch so the two can take
 //! different gains before summing. Mute folds into that same gain rather than
 //! gating the render, so a muted layer keeps its voices running — unmuting
@@ -223,11 +227,18 @@ pub struct Engine {
     /// plugin-lifetime bus via [`Self::set_meters`] at activate so the main
     /// thread's drain handle survives deactivate/reactivate cycles.
     meters: Arc<MeterBus>,
-    /// Per-layer mix gain (0220), one `Smoothed` per synth. Targets are
-    /// `layer_mute ? 0 : layer_level`, so a mute is a short fade rather than a
-    /// hard gate — the layer keeps rendering underneath, so unmuting resumes
-    /// mid-note without a click and never strands a held voice.
-    layer_gain: [Smoothed; 2],
+    /// Per-layer mix gain (0220, 0248), one `Smoothed` **per channel** per
+    /// synth: `[layer][0] = L`, `[layer][1] = R`. Targets are
+    /// `(layer_mute ? 0 : layer_level) × pan_gains(layer_pan)`, so a mute is a
+    /// short fade rather than a hard gate — the layer keeps rendering
+    /// underneath, so unmuting resumes mid-note without a click and never
+    /// strands a held voice.
+    ///
+    /// Smoothing the *product* rather than the pan position is what makes one
+    /// smoother per channel enough: a fader move, a mute and a pan sweep all
+    /// arrive as a change in the same two targets, and each is a fade rather
+    /// than a step.
+    layer_gain: [[Smoothed; 2]; 2],
     /// Scratch for layer 2's control block, at the **oversampled** rate: layer 1
     /// renders into the OS bus and is scaled in place; layer 2 needs its own
     /// buffer so the two can take different gains before they sum. Sized for the
@@ -258,6 +269,26 @@ pub struct Engine {
 /// to mask a click, short enough that a mute feels immediate.
 const LAYER_FADE_MS: f32 = 10.0;
 
+/// Constant-power pan gains for a position in `[-1, 1]` (0248).
+///
+/// `gl = √2·cos(θ)`, `gr = √2·sin(θ)` with `θ = (pos + 1)·π/4`, so
+/// `gl² + gr²` is constant across the whole sweep — the point of the law: a
+/// layer keeps its apparent loudness as it crosses the image, which a linear
+/// (equal-sum) law does not give.
+///
+/// The `√2` normalises **centre to unity** rather than the textbook `0.707`.
+/// That is still constant power — just referenced to the centre instead of to
+/// the total — and it means a centred patch renders exactly as it did before
+/// pan existed. The cost lands at the extremes: a hard-panned layer puts
+/// `1.414 ×` the centre amplitude into one channel. That extra 3 dB of peak is
+/// inherent to holding power constant, not a bug in the normalisation.
+#[inline]
+fn pan_gains(pos: f32) -> (f32, f32) {
+    let theta = (pos.clamp(-1.0, 1.0) + 1.0) * (core::f32::consts::FRAC_PI_4);
+    let (sin, cos) = theta.sin_cos();
+    (core::f32::consts::SQRT_2 * cos, core::f32::consts::SQRT_2 * sin)
+}
+
 impl Engine {
     pub fn new(sample_rate: f32, max_frames: usize) -> Self {
         // Factory patch: default params + default-patch topology with the slot
@@ -284,8 +315,14 @@ impl Engine {
             // Start at the factory unity level, not 0 — a fade-in on the first
             // block would clip the attack of a note that arrives immediately.
             layer_gain: [
-                Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
-                Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                [
+                    Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                    Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                ],
+                [
+                    Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                    Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
+                ],
             ],
             mix_scratch: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
             os_bus: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
@@ -512,19 +549,18 @@ impl Engine {
         }
     }
 
-    /// The mix gain a layer should fade toward: its level, or zero when muted.
+    /// The `(L, R)` mix gains a layer should fade toward: its level (or zero
+    /// when muted) placed by [`pan_gains`].
     ///
     /// Mute folds into the same smoothed gain rather than gating the render, so
     /// a muted layer keeps running its voices and envelopes — unmuting resumes
     /// mid-note instead of restarting, and a held note is never stranded.
     #[inline]
-    fn layer_gain_target(&self, layer: usize) -> f32 {
+    fn layer_gain_target(&self, layer: usize) -> [f32; 2] {
         let p = self.synths[layer].params();
-        if p.bool(ParamId::LayerMute) {
-            0.0
-        } else {
-            p.get(ParamId::LayerLevel)
-        }
+        let level = if p.bool(ParamId::LayerMute) { 0.0 } else { p.get(ParamId::LayerLevel) };
+        let (gl, gr) = pan_gains(p.get(ParamId::LayerPan));
+        [level * gl, level * gr]
     }
 
     /// Render one ≤`CONTROL_BLOCK` control block: pre-zero, tick each active
@@ -567,28 +603,31 @@ impl Engine {
         //
         // Layer 1 renders straight into the output and is scaled in place; layer
         // 2 renders into scratch so the two can take different gains before they
-        // sum (0220). Both gains ramp per sample, so a fader move or a mute is a
-        // short fade, not a step.
+        // sum (0220). Both gains ramp per sample, so a fader move, a mute or a
+        // pan sweep is a short fade, not a step.
         self.synths[0].render_control_block(bus_l, bus_r, None, os);
-        self.layer_gain[0].set_target(gain_target[0]);
-        // The gain smoother ticks once per BASE frame and is held across that
-        // frame's OS sub-samples: a fader move must take the same wall-clock
-        // time to land at 8× as at 1× (0251).
+        self.layer_gain[0][0].set_target(gain_target[0][0]);
+        self.layer_gain[0][1].set_target(gain_target[0][1]);
+        // The gain smoothers tick once per BASE frame and are held across that
+        // frame's OS sub-samples: a fader or pan move must take the same
+        // wall-clock time to land at 8x as at 1x (0251).
         for i in 0..n {
-            let g = self.layer_gain[0].tick();
+            let (gl, gr) = (self.layer_gain[0][0].tick(), self.layer_gain[0][1].tick());
             for k in 0..os {
-                bus_l[i * os + k] *= g;
-                bus_r[i * os + k] *= g;
+                bus_l[i * os + k] *= gl;
+                bus_r[i * os + k] *= gr;
             }
         }
         // Post-fader tap (0220): what this layer actually contributes to the
         // mix, so a muted or pulled-down layer reads zero — which is what a
-        // mixer strip should show.
+        // mixer strip should show. Post-*pan* too (0248), so a hard-panned layer
+        // reads on one channel only.
         self.meters.publish_block_peak(MeterTap::Layer1L, bus_l, bus_r);
 
         if self.key.layer2_on {
             let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
-            self.layer_gain[1].set_target(gain_target[1]);
+            self.layer_gain[1][0].set_target(gain_target[1][0]);
+            self.layer_gain[1][1].set_target(gain_target[1][1]);
             // Split the scratch borrow so both halves are live at once.
             let (scratch_l, scratch_r) = self.mix_scratch.split_at_mut(1);
             let (s_l, s_r) = (&mut scratch_l[0][..os_n], &mut scratch_r[0][..os_n]);
@@ -597,10 +636,10 @@ impl Engine {
             self.synths[1].render_control_block(s_l, s_r, lfo2_master, os);
 
             for i in 0..n {
-                let g = self.layer_gain[1].tick();
+                let (gl, gr) = (self.layer_gain[1][0].tick(), self.layer_gain[1][1].tick());
                 for k in 0..os {
-                    s_l[i * os + k] *= g;
-                    s_r[i * os + k] *= g;
+                    s_l[i * os + k] *= gl;
+                    s_r[i * os + k] *= gr;
                 }
             }
             self.meters.publish_block_peak(MeterTap::Layer2L, s_l, s_r);
@@ -611,7 +650,8 @@ impl Engine {
         } else {
             // Synth 2 is bypassed, so its gain must not sit part-way through a
             // fade waiting to be resumed — snap it, and let its meter rest.
-            self.layer_gain[1].snap(gain_target[1]);
+            self.layer_gain[1][0].snap(gain_target[1][0]);
+            self.layer_gain[1][1].snap(gain_target[1][1]);
         }
 
         // Decimate the oversampled buses down to the base rate. Spread = 0 on
@@ -1442,6 +1482,161 @@ mod tests {
         assert!(k.lfo2_link, "a mode change leaves the link alone");
         k.apply(KeyOp::SetLfo2Link(false));
         assert!(!k.lfo2_link);
+    }
+
+    // ── Layer pan (0248) ────────────────────────────────────────────────────
+
+    /// The law itself: unity at centre, constant power across the sweep.
+    #[test]
+    fn pan_law_is_constant_power_with_unity_at_centre() {
+        let (cl, cr) = pan_gains(0.0);
+        assert!((cl - 1.0).abs() < 1e-6, "centre L must be unity: {cl}");
+        assert!((cr - 1.0).abs() < 1e-6, "centre R must be unity: {cr}");
+
+        // `gl² + gr²` constant everywhere — the whole point of the law. Centre
+        // is 2.0 because of the unity normalisation (√2 on each channel).
+        for pos in [-1.0_f32, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0] {
+            let (gl, gr) = pan_gains(pos);
+            let power = gl * gl + gr * gr;
+            assert!((power - 2.0).abs() < 1e-5, "power at {pos} is {power}, not 2.0");
+        }
+
+        // Hard left silences R (and vice versa), and the extreme channel takes
+        // the √2 peak that constant power implies.
+        let (hl_l, hl_r) = pan_gains(-1.0);
+        assert!(hl_r.abs() < 1e-6, "hard left must silence R: {hl_r}");
+        assert!((hl_l - core::f32::consts::SQRT_2).abs() < 1e-6);
+        let (hr_l, hr_r) = pan_gains(1.0);
+        assert!(hr_l.abs() < 1e-6, "hard right must silence L: {hr_l}");
+        assert!((hr_r - core::f32::consts::SQRT_2).abs() < 1e-6);
+
+        // Out-of-range positions clamp rather than wrapping round the circle.
+        assert_eq!(pan_gains(-4.0), pan_gains(-1.0));
+        assert_eq!(pan_gains(4.0), pan_gains(1.0));
+    }
+
+    /// Two layers panned apart land in opposite channels. Also the case the
+    /// mono fast path used to swallow (0262): spread is 0, so the only thing
+    /// decorrelating L and R is the pan.
+    #[test]
+    fn layers_panned_apart_land_in_opposite_channels() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_layer2_on(true);
+        for i in 0..2 {
+            e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+            e.synths[i].set_param(ParamId::Env2Sustain as usize, 1.0);
+            // Spread 0: every voice lane sits centre, so any L/R difference in
+            // the output is this ticket's doing.
+            e.synths[i].set_param(ParamId::Spread as usize, 0.0);
+        }
+        e.set_param(clap_id_of(Layer::L1, ParamId::LayerPan), -1.0);
+        e.set_param(clap_id_of(Layer::L2, ParamId::LayerPan), 1.0);
+        // Give layer 2 a different pitch. With identical patches the two layers
+        // emit the *same* waveform, so hard-left + hard-right would sum to
+        // L == R and the stereo check below would pass on a mono engine too.
+        e.set_param(clap_id_of(Layer::L2, ParamId::Osc1Coarse), 7.0);
+
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+        // Settle the gain fades on silence before the note, as the level test
+        // does. The fade is a one-pole, so the off-side channel approaches zero
+        // asymptotically — two blocks put it far below the audible floor, which
+        // is what the ratios below assert.
+        e.process_block(&mut l, &mut r);
+        e.process_block(&mut l, &mut r);
+        let _ = MeterFrame::drain(e.meters());
+        e.note_on(0, 60, 1.0);
+        e.process_block(&mut l, &mut r);
+        let f = MeterFrame::drain(e.meters());
+
+        // Layer 1 hard left: its post-fader tap reads L only.
+        assert!(f.layer1.0 > 0.0, "layer 1 must sound in L");
+        assert!(
+            f.layer1.1 < f.layer1.0 * 1e-3,
+            "layer 1 hard left must be silent in R: {} vs L {}",
+            f.layer1.1,
+            f.layer1.0
+        );
+        // Layer 2 hard right: R only.
+        assert!(f.layer2.1 > 0.0, "layer 2 must sound in R");
+        assert!(
+            f.layer2.0 < f.layer2.1 * 1e-3,
+            "layer 2 hard right must be silent in L: {} vs R {}",
+            f.layer2.0,
+            f.layer2.1
+        );
+        // NB: the *summed* output is still mono here, and that is a real bug —
+        // `OutputStage`'s `spread_zero` hint skips the R decimator and copies L
+        // whenever every layer's Spread is 0, which throws this pan away. The
+        // hint predates pan; removing it is 0262, which is where the
+        // summed-stereo assertion lives.
+    }
+
+    /// Centre pan is a true no-op: bit-identical to the same patch before pan
+    /// existed, which is what the unity normalisation buys.
+    #[test]
+    fn centre_pan_leaves_the_channels_identical() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::Spread), 0.0);
+        e.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0; 2048], vec![0.0; 2048]);
+        e.process_block(&mut l, &mut r);
+        assert!(l.iter().any(|&s| s != 0.0), "the note must sound");
+        assert_eq!(l, r, "spread 0 + centre pan must stay bit-mono");
+    }
+
+    /// A pan move is a fade, not a step — the same discipline as the mute fade,
+    /// and the reason the *product* is smoothed rather than the position.
+    #[test]
+    fn panning_a_layer_does_not_step_the_output() {
+        let settled = |pan: f32| {
+            let mut e = Engine::new(48_000.0, 512);
+            e.set_param(l1(ParamId::Env2Attack), 0.001);
+            e.set_param(l1(ParamId::Env2Sustain), 1.0);
+            e.set_param(l1(ParamId::LayerPan), pan);
+            e.note_on(0, 60, 1.0);
+            let (mut l, mut r) = (vec![0.0; 2048], vec![0.0; 2048]);
+            e.process_block(&mut l, &mut r);
+            e.process_block(&mut l, &mut r);
+            l.windows(2).fold(0.0f32, |a, w| a.max((w[1] - w[0]).abs()))
+        };
+        // Reference: the same patch already sitting hard left, no move at all.
+        let steady_step = settled(-1.0);
+
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::Env2Sustain), 1.0);
+        e.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0; 2048], vec![0.0; 2048]);
+        e.process_block(&mut l, &mut r);
+        // Slam centre → hard left between blocks: the worst case for a step.
+        e.set_param(l1(ParamId::LayerPan), -1.0);
+        e.process_block(&mut l, &mut r);
+        let moved_step = l.windows(2).fold(0.0f32, |a, w| a.max((w[1] - w[0]).abs()));
+        assert!(
+            moved_step < steady_step * 1.5 + 1e-4,
+            "pan move stepped: {moved_step} vs steady {steady_step}"
+        );
+    }
+
+    /// Pan rides on top of level and mute rather than replacing them: a muted
+    /// layer contributes nothing wherever it is placed.
+    #[test]
+    fn a_muted_layer_is_silent_at_any_pan() {
+        let mut e = Engine::new(48_000.0, 512);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.set_param(l1(ParamId::Env2Sustain), 1.0);
+        e.set_param(l1(ParamId::LayerPan), -1.0);
+        e.set_param(l1(ParamId::LayerMute), 1.0);
+        e.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+        // Two blocks: the first still carries the fade out of unity.
+        e.process_block(&mut l, &mut r);
+        e.process_block(&mut l, &mut r);
+        let _ = MeterFrame::drain(e.meters());
+        e.process_block(&mut l, &mut r);
+        let f = MeterFrame::drain(e.meters());
+        assert_eq!((f.layer1.0, f.layer1.1), (0.0, 0.0), "muted layer must be silent in both channels");
     }
 
     #[test]
