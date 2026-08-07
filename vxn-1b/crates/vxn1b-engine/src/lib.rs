@@ -42,7 +42,9 @@ pub use engine::{
 };
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
-pub use matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId, default_patch};
+pub use matrix::{
+    Curve, DestId, MatrixSlot, MatrixSnapshot, MatrixTable, SourceId, default_patch,
+};
 pub use meters::MeterFrame;
 pub use vxn_core_utils::{MeterBus, MeterTap};
 pub use params::{

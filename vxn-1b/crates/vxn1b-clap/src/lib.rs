@@ -191,6 +191,7 @@ impl DefaultPluginFactory for VxnPlugin {
             gui: None,
             timer: None,
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
+            last_matrix: None,
             meters_idle: true,
         })
     }
@@ -240,6 +241,11 @@ pub struct VxnMainThread<'a> {
     /// the store against this vector and pushes a `ParamChanged` for any drift.
     /// Seeded all-`NaN` so the first tick after open broadcasts the whole table.
     last_seen: Vec<f32>,
+    /// Last matrix topology pushed to the page (0247). `None` until the first
+    /// tick with the GUI open, which forces one push — the page was seeded at
+    /// editor-open (0246), but a load landing between that splice and the
+    /// page's first tick would otherwise slip through unnoticed.
+    last_matrix: Option<[vxn1b_engine::MatrixTable; 2]>,
     /// Whether the previous tick's meter frame was all-zero (0240). Lets the
     /// drain push the *first* silent frame — the view needs that zero to start
     /// its decay — then go quiet until there is signal again, so an idle plugin
@@ -287,6 +293,39 @@ impl<'a> VxnMainThread<'a> {
                 display,
             });
         }
+    }
+
+    /// Push the matrix topology to the page when it changes (0247).
+    ///
+    /// Topology is not a CLAP param, so none of the param machinery carries it:
+    /// a preset load, a host `state.load`, or a host undo all rewrite the shared
+    /// store's tables with nothing echoing to an open editor, leaving the
+    /// source/dest combos showing the previous patch. This diffs the store
+    /// against what the page was last told and pushes a `MatrixSnapshot` on any
+    /// drift.
+    ///
+    /// Edits made *by* the page come back through here too. That is intended
+    /// belt-and-braces — the combo is already showing the value it posted, so
+    /// reflecting it is a no-op — and it keeps this a plain "store is the truth"
+    /// diff rather than an origin-tracking scheme.
+    ///
+    /// Comparison is 32 slot structs; at the 60 Hz tick that is noise next to
+    /// the param diff loop already running beside it.
+    fn push_matrix_echo(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            // Editor closed: drop the memo so the next open re-pushes rather
+            // than trusting a snapshot the new page never received.
+            self.last_matrix = None;
+            return;
+        };
+        let live = self.shared.params.matrix_snapshot();
+        if self.last_matrix == Some(live) {
+            return;
+        }
+        self.last_matrix = Some(live);
+        handle.push_view_event(ViewEvent::Custom(Box::new(vxn1b_engine::MatrixSnapshot {
+            layers: live,
+        })));
     }
 
     /// Drain the meter bus into one `ViewEvent::Custom(MeterFrame)` (0240).
@@ -343,6 +382,8 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // dedupes ParamChanged by id in `flush_view_events`, so the overlap is
         // free on the wire.
         self.push_param_diffs();
+        // Topology echo (0247) — cheap, and only pushes on a real change.
+        self.push_matrix_echo();
         // Meters (0240) join the same batch — no extra bridge call.
         self.push_meter_frame();
         // One `evaluate_script` per tick: the pushes above only buffered into

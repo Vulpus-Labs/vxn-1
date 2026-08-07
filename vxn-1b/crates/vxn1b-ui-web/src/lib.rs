@@ -128,6 +128,16 @@ pub fn open_editor(
     // Arrays rather than named l/r keys: the page indexes `[0]`/`[1]`, and the
     // frame ships up to 60×/s, so the terser shape is worth it on the wire.
     config.serialise_custom_view = Some(std::sync::Arc::new(|payload| {
+        // Matrix topology echo (0247): the patch changed under an open editor
+        // (preset load, host state load, undo). Same slot shape as the
+        // open-time `__MATRIX_JSON__` seed, so the page can swap one for the
+        // other; depths stay out — they are params and ride `ParamChanged`.
+        if let Some(m) = payload.downcast_ref::<vxn1b_engine::MatrixSnapshot>() {
+            return Some(serde_json::json!({
+                "kind": "matrix",
+                "slots": [slots_json(&m.layers[0]), slots_json(&m.layers[1])],
+            }));
+        }
         let f = payload.downcast_ref::<vxn1b_engine::MeterFrame>()?;
         Some(serde_json::json!({
             "kind": "meters",
@@ -229,27 +239,34 @@ fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
             .map(|(i, (n, l))| json!({ "value": i, "name": n, "label": l }))
             .collect()
     };
-    let layer_slots = |li: usize| -> Vec<Value> {
-        matrices[li]
+    json!({
+        "sources": vocab(&SOURCE_NAMES, &SOURCE_LABELS),
+        "dests": vocab(&DEST_NAMES, &DEST_LABELS),
+        "curves": vocab(&CURVE_NAMES, &CURVE_LABELS),
+        "slots": [slots_json(&matrices[0]), slots_json(&matrices[1])],
+    })
+    .to_string()
+}
+
+/// One layer's slots as `[{source, dest, curve, scale}, …]` — the wire shape the
+/// page reads, shared by the open-time seed ([`build_matrix_json`]) and the
+/// running echo (the `kind: "matrix"` view payload). One writer, so the two can
+/// never drift into disagreeing about field names or value encodings.
+fn slots_json(table: &MatrixTable) -> serde_json::Value {
+    serde_json::Value::Array(
+        table
             .slots
             .iter()
             .map(|s| {
-                json!({
+                serde_json::json!({
                     "source": s.source as u8,
                     "dest": s.dest as u8,
                     "curve": s.curve as u8,
                     "scale": s.scale_src as u8,
                 })
             })
-            .collect()
-    };
-    json!({
-        "sources": vocab(&SOURCE_NAMES, &SOURCE_LABELS),
-        "dests": vocab(&DEST_NAMES, &DEST_LABELS),
-        "curves": vocab(&CURVE_NAMES, &CURVE_LABELS),
-        "slots": [layer_slots(0), layer_slots(1)],
-    })
-    .to_string()
+            .collect(),
+    )
 }
 
 /// Two-layer surface (0216): the faceplate's `patchCount` is the engine's
@@ -662,6 +679,30 @@ mod tests {
         assert_eq!(v["slots"][0][0]["source"], SourceId::Env2 as u8);
         // And the page really carries it — the splice, not just the builder.
         assert!(build_faceplate_html(&live).contains(&json));
+    }
+
+    /// 0247: the running echo and the open-time seed must describe a slot the
+    /// same way, or the page would swap one wire shape for another and read
+    /// `undefined` out of every combo. `slots_json` is the single writer — this
+    /// pins that the seed really goes through it.
+    #[test]
+    fn echo_slot_shape_matches_the_open_time_seed() {
+        use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        let mut live = factory_matrices();
+        live[0].slots[3] = MatrixSlot {
+            source: SourceId::Velocity,
+            dest: DestId::Resonance,
+            depth: -0.25,
+            curve: Curve::Log,
+            scale_src: SourceId::Env1,
+        };
+        let seed: serde_json::Value =
+            serde_json::from_str(&build_matrix_json(&live)).expect("valid JSON");
+        assert_eq!(seed["slots"][0], slots_json(&live[0]));
+        assert_eq!(seed["slots"][1], slots_json(&live[1]));
+        // Depth is a CLAP param and rides ParamChanged — it must not appear in
+        // either shape, or the page gets two sources of truth for one value.
+        assert!(seed["slots"][0][3].get("depth").is_none());
     }
 
     #[test]

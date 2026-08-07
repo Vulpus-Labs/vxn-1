@@ -303,6 +303,20 @@ impl Default for MatrixTable {
     }
 }
 
+/// Both layers' topology as a **view payload** (0247): the engine→page echo that
+/// keeps the mod-matrix combos honest when the patch changes underneath an open
+/// editor (preset load, host state load, undo).
+///
+/// Topology is not a CLAP param, so the host replays nothing for it; the page is
+/// seeded once at editor-open ([`crate::PluginState`] → the faceplate splice,
+/// 0246) and thereafter learns of changes only through this. Depths are
+/// deliberately absent — they *are* params and ride `ParamChanged`, and echoing
+/// them here would give the page two sources of truth for one value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatrixSnapshot {
+    pub layers: [MatrixTable; 2],
+}
+
 /// Key→Cutoff depth that reproduces **exactly 1 octave of cutoff per octave of
 /// key** (ADR 0001 §3), under the convention **locked by the 0202 evaluator**
 /// ([`crate::eval`]):

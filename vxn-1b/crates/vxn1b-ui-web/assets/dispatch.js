@@ -745,6 +745,19 @@ export function init() {
       if (model.setSplitPoint) model.setSplitPoint(ev.note);
       return;
     }
+    // Matrix topology echo (0247). Topology is not a CLAP param, so a preset
+    // load / host state load / undo rewrites it with nothing in the param
+    // machinery to carry the news; without this the source/dest combos keep
+    // showing the previous patch until the editor is reopened. Reflect-only —
+    // swapping the snapshot and repainting posts no `set_matrix`, so an echo
+    // can't bounce back at the engine.
+    if (ev.kind === 'matrix') {
+      if (window.vxn && window.vxn.matrix && Array.isArray(ev.slots)) {
+        window.vxn.matrix.slots = ev.slots;
+        matrixOverlay.refreshForLayer(model.currentLayer);
+      }
+      return;
+    }
     // Meter frame (0240). Raw linear peaks since the previous frame; the
     // registry fans them to whichever meters are mounted and the rAF loop
     // renders the ballistics. Purely view-bound — nothing here touches the

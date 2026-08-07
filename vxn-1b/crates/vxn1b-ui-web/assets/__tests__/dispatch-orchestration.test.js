@@ -238,4 +238,47 @@ describe('init() → applyViewEvents', () => {
     // Partner refresh fired with the rate's cached value.
     expect(madeCtls.get(LFO1_RATE).update).toHaveBeenCalledWith(0.4, 0.4, '2 Hz');
   });
+
+  // 0247: topology is not a CLAP param, so a preset / state load reaches the
+  // page only through this echo. It must replace the snapshot the combos read
+  // and repaint them — and never post a `set_matrix` back (that would bounce
+  // the load's own routing at the engine).
+  it('swaps the matrix snapshot and repaints the overlay on a topology echo', () => {
+    globalThis.window.__vxn = {};
+    window.vxn.send = { ready: vi.fn(), setMatrix: vi.fn() };
+    window.vxn.matrix = { sources: [], dests: [], curves: [], slots: [[], []] };
+
+    const root = document.createElement('div');
+    root.id = 'faceplate';
+    document.body.appendChild(root);
+    init();
+
+    const loaded = [
+      [{ source: 3, dest: 4, curve: 0, scale: 0 }],
+      [{ source: 9, dest: 1, curve: 2, scale: 7 }],
+    ];
+    window.__vxn.applyViewEvents([{ kind: 'matrix', slots: loaded }]);
+
+    expect(window.vxn.matrix.slots).toEqual(loaded);
+    expect(matrixOverlay.refreshForLayer).toHaveBeenCalledWith(model.currentLayer);
+    expect(window.vxn.send.setMatrix).not.toHaveBeenCalled();
+  });
+
+  // A malformed echo must not blank the snapshot the combos are reading.
+  it('ignores a topology echo with no slot array', () => {
+    globalThis.window.__vxn = {};
+    window.vxn.send = { ready: vi.fn(), setMatrix: vi.fn() };
+    const kept = [[{ source: 1, dest: 4, curve: 0, scale: 0 }], []];
+    window.vxn.matrix = { sources: [], dests: [], curves: [], slots: kept };
+
+    const root = document.createElement('div');
+    root.id = 'faceplate';
+    document.body.appendChild(root);
+    init();
+    matrixOverlay.refreshForLayer.mockClear();
+
+    window.__vxn.applyViewEvents([{ kind: 'matrix' }]);
+    expect(window.vxn.matrix.slots).toBe(kept);
+    expect(matrixOverlay.refreshForLayer).not.toHaveBeenCalled();
+  });
 });
