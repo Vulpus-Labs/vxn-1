@@ -90,10 +90,15 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         // host timer (registered below), not an editor-internal idle hook.
         let ctrl_handle = crate::lock_mut(&self.controller).handle();
         let corpus = Arc::clone(&self.corpus);
+        // The matrix topology is NOT a CLAP param, so the host replays nothing
+        // for it on GUI open — the page's `window.vxn.matrix` snapshot has to be
+        // seeded from the live store, or every source/dest combo comes back
+        // showing the factory patch after a close/reopen.
+        let matrices = self.shared.params.matrix_snapshot();
         // Construction failure (bad parent, wry build error) surfaces as
         // PluginError via clack's blanket `From<E: Error>` — never a panic
         // across the host's C ABI. The plugin stays alive; the host may retry.
-        self.gui = Some(vxn1b_ui_web::open_editor(parent, ctrl_handle, corpus)?);
+        self.gui = Some(vxn1b_ui_web::open_editor(parent, ctrl_handle, corpus, &matrices)?);
 
         // Register a periodic main-thread timer so `on_timer` can drain
         // ViewEvents into the WebView. Hosts without `timer-support` leave the

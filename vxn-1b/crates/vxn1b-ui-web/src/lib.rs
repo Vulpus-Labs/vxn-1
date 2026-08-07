@@ -20,6 +20,7 @@
 
 use std::ffi::c_void;
 
+use vxn1b_engine::matrix::MatrixTable;
 use vxn1b_engine::params::{TOTAL_PARAMS, desc_for_clap_id};
 use vxn_core_app::{ControllerHandle, CorpusHandle, ParamDesc, ParamKind, Taper, UiEvent};
 use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
@@ -64,8 +65,9 @@ pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
+    matrices: &[MatrixTable; 2],
 ) -> Result<EditorHandle, OpenEditorError> {
-    let html = build_faceplate_html();
+    let html = build_faceplate_html(matrices);
     let mut config = WebEditorConfig::new(html, EDITOR_WIDTH, EDITOR_HEIGHT);
     config.uncategorised_label = UNCATEGORISED;
     config.max_batch_bytes = DEFAULT_MAX_BATCH_BYTES;
@@ -150,10 +152,10 @@ pub fn open_editor(
 /// so external `<link href>` / `<script src>` would need a custom protocol
 /// handler to resolve. Inlining keeps the page self-contained without that
 /// plumbing.
-fn build_faceplate_html() -> String {
+fn build_faceplate_html(matrices: &[MatrixTable; 2]) -> String {
     // Native plugin page: no web transport, so the `__WEB_BOOT_HEAD__` /
     // `__WEB_BOOT_LOADER__` slots are spliced empty.
-    assemble_faceplate("", "")
+    assemble_faceplate("", "", matrices)
 }
 
 /// Splice every faceplate placeholder. `web_boot_head` / `web_boot_loader`
@@ -168,7 +170,11 @@ fn build_faceplate_html() -> String {
 /// stripped) immediately before VXN1b's `browser.js` glue, which calls the
 /// `createPresetBrowser` it defines. Its CSS is appended to the faceplate
 /// sheet.
-fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
+fn assemble_faceplate(
+    web_boot_head: &str,
+    web_boot_loader: &str,
+    matrices: &[MatrixTable; 2],
+) -> String {
     let browser_js = format!(
         "{}\n;\n{}",
         strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
@@ -196,16 +202,21 @@ fn assemble_faceplate(web_boot_head: &str, web_boot_loader: &str) -> String {
         .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
-        .replace("__MATRIX_JSON__", &build_matrix_json())
+        .replace("__MATRIX_JSON__", &build_matrix_json(matrices))
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
 }
 
-/// Serialise the mod-matrix vocab + factory topology for the overlay (0219). The
-/// page reads it as `window.vxn.matrix = { sources, dests, curves, slots }`:
+/// Serialise the mod-matrix vocab + **live** topology for the overlay (0219).
+/// The page reads it as `window.vxn.matrix = { sources, dests, curves, slots }`:
 /// each vocab entry is `{value, name, label}` (value = the wire `u8`), and
-/// `slots[layer][i]` is the factory `{source, dest, curve, scale}` for slot `i`.
+/// `slots[layer][i]` is `{source, dest, curve, scale}` for slot `i`.
 /// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
-fn build_matrix_json() -> String {
+///
+/// `matrices` MUST be the plugin's current per-layer topology, not the factory
+/// default: topology is non-automatable, so nothing replays it to a freshly
+/// opened page the way the host replays params. Seeding from the factory patch
+/// is what made every source/dest combo revert on GUI close/reopen.
+fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
     use serde_json::{Value, json};
     use vxn1b_engine::matrix::{
         CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, SOURCE_LABELS, SOURCE_NAMES,
@@ -218,10 +229,8 @@ fn build_matrix_json() -> String {
             .map(|(i, (n, l))| json!({ "value": i, "name": n, "label": l }))
             .collect()
     };
-    let factory = vxn1b_engine::PluginState::factory_default();
     let layer_slots = |li: usize| -> Vec<Value> {
-        factory.layers[li]
-            .matrix
+        matrices[li]
             .slots
             .iter()
             .map(|s| {
@@ -314,7 +323,14 @@ const WEB_BOOT_LOADER: &str = "<script type=\"module\" src=\"./faceplate-bridge.
 /// queuing `window.ipc` stub + the `faceplate-bridge.mjs` module loader, both
 /// injected around the inlined faceplate `<script>`.
 pub fn build_web_faceplate_html() -> String {
-    assemble_faceplate(WEB_BOOT_HEAD, WEB_BOOT_LOADER)
+    // The browser build boots a fresh engine from the factory state, so the
+    // factory topology *is* its live topology.
+    let factory = vxn1b_engine::PluginState::factory_default();
+    assemble_faceplate(
+        WEB_BOOT_HEAD,
+        WEB_BOOT_LOADER,
+        &[factory.layers[0].matrix, factory.layers[1].matrix],
+    )
 }
 
 /// Drop ESM module syntax from every line of `src`. The faceplate JS modules
@@ -447,10 +463,19 @@ mod tests {
 
     // Assemble once per test run — `build_faceplate_html` walks every CLAP
     // id to build the descriptor map, so caching keeps the checks cheap.
+    /// The factory topology — the seed a page gets when the plugin is still at
+    /// its default patch. Live topology travels the same path (0246).
+    fn factory_matrices() -> [MatrixTable; 2] {
+        let f = vxn1b_engine::PluginState::factory_default();
+        [f.layers[0].matrix, f.layers[1].matrix]
+    }
+
     fn assembled() -> &'static str {
         use std::sync::OnceLock;
         static CACHED: OnceLock<String> = OnceLock::new();
-        CACHED.get_or_init(build_faceplate_html).as_str()
+        CACHED
+            .get_or_init(|| build_faceplate_html(&factory_matrices()))
+            .as_str()
     }
 
     #[test]
@@ -609,10 +634,40 @@ mod tests {
         }
     }
 
+    /// 0246: the page's topology snapshot must be the LIVE matrix, not the
+    /// factory patch. Nothing replays topology to a fresh page (it is not a CLAP
+    /// param), so seeding from the factory made every source/dest combo revert
+    /// on GUI close/reopen.
+    #[test]
+    fn matrix_json_carries_the_live_topology_not_the_factory() {
+        use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        let mut live = factory_matrices();
+        // A route the factory patch does not have, on the second layer, in a
+        // slot the factory leaves inert — so a factory seed can't fake it.
+        live[1].slots[7] = MatrixSlot {
+            source: SourceId::Aftertouch,
+            dest: DestId::HpfCutoff,
+            depth: 0.5,
+            curve: Curve::Exp,
+            scale_src: SourceId::ModWheel,
+        };
+        let json = build_matrix_json(&live);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let slot = &v["slots"][1][7];
+        assert_eq!(slot["source"], SourceId::Aftertouch as u8);
+        assert_eq!(slot["dest"], DestId::HpfCutoff as u8);
+        assert_eq!(slot["curve"], Curve::Exp as u8);
+        assert_eq!(slot["scale"], SourceId::ModWheel as u8);
+        // Layer 1 still reads the (unmodified) live table it was handed.
+        assert_eq!(v["slots"][0][0]["source"], SourceId::Env2 as u8);
+        // And the page really carries it — the splice, not just the builder.
+        assert!(build_faceplate_html(&live).contains(&json));
+    }
+
     #[test]
     fn web_page_params_are_byte_identical_to_native() {
         let json = build_params_json();
-        let native = build_faceplate_html();
+        let native = build_faceplate_html(&factory_matrices());
         let web = build_web_faceplate_html();
         assert!(native.contains(&json), "native page must carry params JSON");
         assert!(web.contains(&json), "web page must carry the SAME params JSON");
