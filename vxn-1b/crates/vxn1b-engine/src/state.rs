@@ -19,6 +19,7 @@
 //! version : u32                           (bumped to 2 for the two-layer format)
 //! layer 0 : LayerState                    (param block + 16 topology records)
 //! layer 1 : LayerState                    (param block + 16 topology records)
+//! key     : KeyState                      (4 bytes: layer2/split/point/lfo2-link)
 //! ```
 //!
 //! and each `LayerState`:
@@ -28,15 +29,18 @@
 //! matrix  : [active, source, dest, curve, scale] × N_SLOTS   (5 bytes/slot)
 //! ```
 //!
-//! **No migration pre-release.** Version 1 (single-patch) blobs are rejected on
-//! read — the dual-layer roll-out is a clean version bump (ADR 0002 Consequences;
-//! single→dual preset migration is 0221's concern).
+//! **No migration pre-release.** Older blobs are rejected on read — every layout
+//! change is a clean version bump (ADR 0002 Consequences). The single→dual
+//! *preset* migration is a separate matter and is real: a legacy single-layer
+//! preset TOML still loads (0221, [`crate::preset`]), because the text format is
+//! name-keyed and sparse rather than positional.
 //!
 //! Depths are re-seeded onto each decoded [`MatrixTable`] from that layer's param
 //! block on read, so the returned topology is render-ready and can never disagree
 //! with the automatable depths (the param block is the single source of truth for
 //! depth).
 
+use crate::engine::KeyState;
 use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId};
 use crate::params::{ParamId, Params};
 use std::io::{self, Read, Write};
@@ -47,11 +51,12 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 
 /// Format version. `2` = the two-layer format (0216); `3` adds the per-layer
 /// mix params (0220); `4` adds `FilterKeyTrack` (0245); `5` adds `CutoffTuned`
-/// (0250) — each lengthens the layer's param block. Bump on any layout change — the block length is
+/// (0250) — each lengthens the layer's param block; `6` appends the [`KeyState`]
+/// record (0221). Bump on any layout change — the block length is
 /// positional, so an older blob read at a newer length would slide topology
 /// bytes into param slots rather than fail cleanly. Rejecting the old version is
 /// what makes that impossible.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.
@@ -130,30 +135,44 @@ impl LayerState {
     }
 }
 
-/// Everything a VXN1b patch persists: **both layers'** patches. The two-layer
-/// binary format (0216); the derived KeyMode / split point ([`crate::KeyState`])
-/// is layered on by the two-layer state wiring (0221).
+/// Everything a VXN1b patch persists: **both layers'** patches plus the global
+/// non-automatable [`KeyState`] — layer-2 enable, split enable + point, and the
+/// cross-layer LFO 2 link (0221). The two toggles are what [`crate::KeyMode`] is
+/// derived from, so persisting them persists the routing mode; nothing else in
+/// the blob knows about `KeyMode` as such.
+///
+/// `KeyState` is *not* a CLAP param (ADR 0002 §3), so unlike the patch params it
+/// has no host-automation path to replay it — the blob is its only home. Before
+/// 0221 it was simply lost on save/reload: a split patch came back Single.
 #[derive(Clone, Debug)]
 pub struct PluginState {
     pub layers: [LayerState; 2],
+    pub key: KeyState,
 }
 
 impl PluginState {
-    /// The factory-default state: both layers at the factory patch. Single source
-    /// of truth for the factory state — [`crate::Engine::new`] and the shared
-    /// param store both build from it. (Layer 2 is off by default, so its patch
-    /// is idle until the user enables it.)
+    /// The factory-default state: both layers at the factory patch, keyboard at
+    /// its default (Layer 2 off → Single). Single source of truth for the factory
+    /// state — [`crate::Engine::new`] and the shared param store both build from
+    /// it. (Layer 2 is off by default, so its patch is idle until the user
+    /// enables it.)
     pub fn factory_default() -> Self {
-        Self { layers: [LayerState::factory_default(), LayerState::factory_default()] }
+        Self {
+            layers: [LayerState::factory_default(), LayerState::factory_default()],
+            key: KeyState::default(),
+        }
     }
 
-    /// Write the canonical blob: magic, version, then the two layer records.
+    /// Write the canonical blob: magic, version, the two layer records, then the
+    /// key record. Key state goes **last** so the layer blocks keep the offsets
+    /// they had in version 5 — the two-layer reader is unchanged up to that point.
     pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
         w.write_all(&MAGIC)?;
         w.write_all(&VERSION.to_le_bytes())?;
         for layer in &self.layers {
             layer.write(w)?;
         }
+        self.key.write(w)?;
         Ok(())
     }
 
@@ -178,7 +197,11 @@ impl PluginState {
         }
         let l0 = LayerState::read(r)?;
         let l1 = LayerState::read(r)?;
-        Ok(Self { layers: [l0, l1] })
+        // A blob that ends before the key record is truncated, not "old": the
+        // version gate above already rejected every earlier layout, so a short
+        // read here can only be corruption. `KeyState::read` fails hard on it.
+        let key = KeyState::read(r)?;
+        Ok(Self { layers: [l0, l1], key })
     }
 }
 
@@ -234,6 +257,9 @@ mod tests {
     use super::*;
     use crate::matrix::N_SLOTS;
 
+    /// Bytes in the trailing [`KeyState`] record (0221).
+    const KEY_RECORD: usize = 4;
+
     fn nondefault_layer(cutoff: f32) -> LayerState {
         let mut params = Params::default();
         params.set(ParamId::Cutoff, cutoff);
@@ -271,7 +297,17 @@ mod tests {
             curve: Curve::Lin,
             scale_src: SourceId::None,
         };
-        PluginState { layers: [l1, l2] }
+        PluginState {
+            layers: [l1, l2],
+            // Every key field off its default, so a round-trip can't pass by
+            // accidentally rebuilding the factory record.
+            key: KeyState {
+                layer2_on: true,
+                split_enabled: true,
+                split_point: 48,
+                lfo2_link: true,
+            },
+        }
     }
 
     #[test]
@@ -297,12 +333,47 @@ mod tests {
     }
 
     #[test]
-    fn blob_length_is_two_full_layers() {
+    fn round_trips_key_state() {
+        // 0221: KeyMode/split/link are not CLAP params, so the blob is the only
+        // thing that can carry them across a save/reload.
+        let st = nondefault_state();
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        let back = PluginState::read(&mut &buf[..]).unwrap();
+        assert_eq!(back.key, st.key);
+        assert_eq!(back.key.key_mode(), crate::engine::KeyMode::Split);
+        assert_eq!(back.key.split_point, 48);
+        assert!(back.key.lfo2_link);
+    }
+
+    #[test]
+    fn factory_state_is_single_mode() {
+        let st = PluginState::factory_default();
+        assert_eq!(st.key.key_mode(), crate::engine::KeyMode::Single);
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        let back = PluginState::read(&mut &buf[..]).unwrap();
+        assert_eq!(back.key, KeyState::default());
+    }
+
+    #[test]
+    fn blob_length_is_two_full_layers_plus_the_key_record() {
         let st = PluginState::factory_default();
         let mut buf = Vec::new();
         st.write(&mut buf).unwrap();
         let layer = LAYER_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
-        assert_eq!(buf.len(), 4 + 4 + 2 * layer);
+        assert_eq!(buf.len(), 4 + 4 + 2 * layer + KEY_RECORD);
+    }
+
+    #[test]
+    fn missing_key_record_is_an_error() {
+        // A v5-shaped blob (two layers, no key record) stamped with the current
+        // version is corruption, and must not decode as "default keyboard".
+        let st = nondefault_state();
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        buf.truncate(buf.len() - KEY_RECORD);
+        assert!(PluginState::read(&mut &buf[..]).is_err());
     }
 
     #[test]
@@ -341,6 +412,6 @@ mod tests {
         let mut buf = Vec::new();
         st.write(&mut buf).unwrap();
         let layer = LAYER_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
-        assert_eq!(buf.len(), 4 + 4 + 2 * layer);
+        assert_eq!(buf.len(), 4 + 4 + 2 * layer + KEY_RECORD);
     }
 }

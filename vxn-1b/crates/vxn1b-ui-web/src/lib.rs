@@ -138,6 +138,19 @@ pub fn open_editor(
                 "slots": [slots_json(&m.layers[0]), slots_json(&m.layers[1])],
             }));
         }
+        // Keyboard echo (0221). Same reason as the topology echo: KeyState is
+        // not a CLAP param, so a preset / host-state load moves it with nothing
+        // in the param machinery to tell the page. `mode` is the derived 0/1/2
+        // the faceplate already speaks (`set_key_mode`), so the echo and the
+        // opcode share one encoding.
+        if let Some(k) = payload.downcast_ref::<vxn1b_engine::KeyState>() {
+            return Some(serde_json::json!({
+                "kind": "keys",
+                "mode": k.key_mode() as u8,
+                "split": k.split_point,
+                "link": k.lfo2_link,
+            }));
+        }
         let f = payload.downcast_ref::<vxn1b_engine::MeterFrame>()?;
         Some(serde_json::json!({
             "kind": "meters",

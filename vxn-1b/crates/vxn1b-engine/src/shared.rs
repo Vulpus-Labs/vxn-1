@@ -226,6 +226,15 @@ impl SharedParams {
         }
     }
 
+    /// The current keyboard state **without** consuming the dirty flag (0221).
+    /// The main thread's editor echo reads it every tick and diffs; only the
+    /// audio thread's [`Self::take_key_state`] may clear the flag, or a tick that
+    /// happened to land first would swallow the re-sync.
+    #[inline]
+    pub fn key_state(&self) -> KeyState {
+        *self.key.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Snapshot the whole store to a `clap.state` blob (params + topology).
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let state = self.to_state();
@@ -238,7 +247,9 @@ impl SharedParams {
     /// Build a two-layer [`PluginState`] from the current store contents. Each
     /// layer's params come from its CLAP block (+ shared globals); its matrix
     /// topology comes from the per-layer topology channel, with slot depths
-    /// re-seeded from the params so depth stays param-authoritative (0205).
+    /// re-seeded from the params so depth stays param-authoritative (0205). The
+    /// keyboard record rides along from the key channel (0221), so a `state.save`
+    /// carries the routing mode as well as the two patches.
     pub fn to_state(&self) -> PluginState {
         let matrices = self.matrix_snapshot();
         let layers = [Layer::L1, Layer::L2].map(|layer| {
@@ -249,7 +260,7 @@ impl SharedParams {
             }
             LayerState { params, matrix }
         });
-        PluginState { layers }
+        PluginState { layers, key: self.key_state() }
     }
 
     /// Apply a two-layer `clap.state` blob. On success overwrites every param +
@@ -272,6 +283,11 @@ impl SharedParams {
             self.values[id].store(g.get(gp).to_bits(), Ordering::Relaxed);
         }
         *self.lock() = [state.layers[0].matrix, state.layers[1].matrix];
+        // Keyboard state (0221) travels its own channel to the engine, so the
+        // reload flag alone would not carry it: raise `key_dirty` too, and the
+        // audio thread's `take_key_state` applies the loaded routing mode.
+        *self.key.lock().unwrap_or_else(|e| e.into_inner()) = state.key;
+        self.key_dirty.store(true, Ordering::Release);
         self.reload.store(true, Ordering::Release);
         Ok(())
     }
@@ -418,6 +434,32 @@ mod tests {
         let k = sp.take_key_state().unwrap();
         assert_eq!(k.key_mode(), KeyMode::Split);
         assert_eq!(k.split_point, 48);
+    }
+
+    #[test]
+    fn snapshot_restore_carries_key_state_and_flags_the_key_channel() {
+        use crate::engine::{KeyMode, KeyOp};
+        let sp = SharedParams::new();
+        sp.apply_key_op(KeyOp::SetSplitPoint(43));
+        sp.apply_key_op(KeyOp::SetKeyMode(2)); // Split
+        sp.apply_key_op(KeyOp::SetLfo2Link(true));
+        // Drain the dirty flag: the snapshot must read the state itself, not
+        // depend on a pending re-sync.
+        assert!(sp.take_key_state().is_some());
+        let blob = sp.snapshot_bytes();
+
+        let sp2 = SharedParams::new();
+        assert!(sp2.take_key_state().is_none(), "fresh store is clean");
+        sp2.restore_from_bytes(&blob).unwrap();
+
+        // The restore must flag the key channel as well as the reload — they are
+        // separate wires to the audio thread.
+        let k = sp2.take_key_state().expect("restore must flag the key channel");
+        assert_eq!(k.key_mode(), KeyMode::Split);
+        assert_eq!(k.split_point, 43);
+        assert!(k.lfo2_link);
+        // And the non-consuming peek agrees with what the audio thread got.
+        assert_eq!(sp2.key_state(), k);
     }
 
     #[test]

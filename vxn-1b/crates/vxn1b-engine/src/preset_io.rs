@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use vxn_core_app::{PresetLoad, PresetMeta, PresetStore, UserFolderEntry, UserPresetEntry};
 
-use crate::preset::{Meta, PresetError, from_toml_str, write_preset};
-use crate::state::{LayerState, PluginState};
+use crate::preset::{Meta, PresetError, read_preset, write_preset};
+use crate::state::PluginState;
 
 // ── Name-sanitisation ─────────────────────────────────────────────────────────
 //
@@ -176,12 +176,10 @@ fn meta_to_app(m: &Meta) -> PresetMeta {
 /// the canonical two-layer `clap.state` format the model restores from
 /// ([`crate::SharedParams::restore_from_bytes`]).
 ///
-/// **Interim single-layer presets (0216).** A preset TOML carries one layer's
-/// patch. Loading applies it to **Layer 1** and resets **Layer 2** to the
-/// factory default. Two-layer presets (both patches + KeyMode/split) land in
-/// 0221.
-fn to_load(meta: Meta, layer: LayerState, warnings: Vec<String>) -> Result<PresetLoad, String> {
-    let state = PluginState { layers: [layer, LayerState::factory_default()] };
+/// Since 0221 a preset carries the whole [`PluginState`] — both layers and the
+/// keyboard record — so this is a straight re-encode. A single-layer file has
+/// already been lifted into Layer 1 + factory Layer 2 + `Single` by the codec.
+fn to_load(meta: Meta, state: PluginState, warnings: Vec<String>) -> Result<PresetLoad, String> {
     let mut blob = Vec::with_capacity(256);
     state.write(&mut blob).map_err(|e| e.to_string())?;
     Ok(PresetLoad {
@@ -218,17 +216,18 @@ impl PresetStore for EnginePresetStore {
         meta: &PresetMeta,
         blob: &[u8],
     ) -> Result<PathBuf, String> {
-        // A preset captures Layer 1's patch (0216 interim); Layer 2 is dropped
-        // until two-layer presets (0221).
+        // A preset captures the whole plugin state: both layers plus the
+        // keyboard record (0221). The codec drops the sections that are still at
+        // their defaults, so a single-layer patch still saves as a single-layer
+        // file.
         let state = PluginState::read(&mut &blob[..]).map_err(|e| e.to_string())?;
-        let [layer1, _layer2] = state.layers;
         let file_meta = Meta {
             name: name.to_string(),
             author: meta.author.clone(),
             category: meta.category.clone(),
             comment: meta.comment.clone(),
         };
-        save_preset_in(&file_meta, &layer1, folder).map_err(|e| e.to_string())
+        save_preset_in(&file_meta, &state, folder).map_err(|e| e.to_string())
     }
 
     fn user_delete(&self, path: &Path) -> Result<(), String> {
@@ -281,7 +280,7 @@ impl PresetStore for EnginePresetStore {
 /// Save a preset (meta + state) under the user-root (`folder = None`) or into
 /// the named subfolder (creating it if missing). The filename derives from
 /// `meta.name`.
-pub fn save_preset_in(meta: &Meta, state: &LayerState, folder: Option<&str>) -> io::Result<PathBuf> {
+pub fn save_preset_in(meta: &Meta, state: &PluginState, folder: Option<&str>) -> io::Result<PathBuf> {
     let base = ensure_user_dir()?;
     let dir = match folder {
         Some(name) => base.join(sanitize_name(name)),
@@ -371,7 +370,7 @@ fn read_preset_at(path: &Path, folder: Option<String>) -> Option<UserPreset> {
         return None;
     }
     let contents = fs::read_to_string(path).ok()?;
-    let (meta, _state, _warnings) = from_toml_str(&contents).ok()?;
+    let (meta, _state, _warnings) = read_preset(&contents).ok()?;
     Some(UserPreset {
         path: path.to_path_buf(),
         name: meta.name,
@@ -529,7 +528,7 @@ fn load_err_to_io(e: LoadError) -> io::Error {
 }
 
 /// Read and parse a single preset file into `(meta, state, warnings)`.
-pub fn load_preset_file(path: &Path) -> Result<(Meta, LayerState, Vec<String>), LoadError> {
+pub fn load_preset_file(path: &Path) -> Result<(Meta, PluginState, Vec<String>), LoadError> {
     let contents = fs::read_to_string(path).map_err(LoadError::Io)?;
-    from_toml_str(&contents).map_err(LoadError::Parse)
+    read_preset(&contents).map_err(LoadError::Parse)
 }

@@ -15,7 +15,33 @@
 //! `matrix_slotN_depth` keys and are deliberately *not* duplicated in the
 //! `[[matrix]]` rows.
 //!
-//! Pure main-thread mapping between a [`LayerState`] and the file text — no IO,
+//! **Two layers (0221, ADR 0002 §4).** A VXN1b patch is two layers plus the
+//! keyboard record, so the file is:
+//!
+//! ```text
+//! schema / [meta]                        envelope
+//! [params] / [[matrix]]                  Layer 1 — unchanged, at the top level
+//! [layer2.params] / [[layer2.matrix]]    Layer 2 — optional
+//! [keys]                                 mode / split-point / lfo2-link — optional
+//! ```
+//!
+//! Layer 1 stays at the top level and both new sections are optional, so **every
+//! pre-0221 single-layer preset still loads**: no `[layer2]` gives Layer 2 the
+//! factory patch, no `[keys]` gives Layer 2 off (= `Single`), which is exactly
+//! what those files meant when they were written. That is the whole migration —
+//! the format is name-keyed and sparse rather than positional, so absence can
+//! carry meaning. Both sections are omitted again on write when they are at
+//! their defaults, so a single-layer patch saves as the same text it always did.
+//!
+//! **`KeyMode` is written, the toggles are derived.** The file stores `mode =
+//! "single" | "dual" | "split"` rather than [`KeyState`]'s two booleans: the
+//! mode is the user-facing control (ADR 0002 §3), and it round-trips a preset
+//! exactly. The one thing it does not preserve is a split *armed while Layer 2
+//! is off* — that reads back as plain `Single`. The host-state blob keeps both
+//! toggles verbatim, so nothing is lost across a DAW save; only an explicit
+//! preset save normalises it.
+//!
+//! Pure main-thread mapping between a [`PluginState`] and the file text — no IO,
 //! no clap, no UI. Reuses the shared [`vxn_preset`] scaffold (`Meta`, `Header`,
 //! `SCHEMA`, `value_for`, `PresetError`) so a third synth starts from it.
 
@@ -25,24 +51,71 @@ pub use vxn_preset::{Header, Meta, PresetError, SCHEMA};
 
 use vxn_core_app::{ParamDesc, ParamKind};
 
+use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
     CURVE_NAMES, Curve, DEST_NAMES, DestId, MatrixSlot, MatrixTable, N_SLOTS, SOURCE_NAMES,
     SourceId,
 };
 use crate::params::{PARAMS, ParamId, Params};
-use crate::state::LayerState;
+use crate::state::{LayerState, PluginState};
+
+/// Machine names for the three [`crate::KeyMode`]s, indexed by the mode's
+/// position in `Single / Dual / Split` order — the same 0/1/2 encoding the UI's
+/// `set_key_mode` opcode uses.
+const KEY_MODE_NAMES: [&str; 3] = ["single", "dual", "split"];
 
 #[derive(Serialize, Deserialize)]
 struct PresetFile {
     schema: u32,
     meta: Meta,
-    /// `name -> typed scalar`, resolved against the descriptor by hand below.
+    /// Layer 1's `name -> typed scalar`, resolved against the descriptor by hand
+    /// below. Top-level (not under a `[layer1]`) so pre-0221 files still parse.
     #[serde(default)]
     params: toml::Table,
-    /// Routed matrix slots only. Slots whose source or dest is `none` are
-    /// omitted on write and default-inert on read.
+    /// Layer 1's routed matrix slots only. Slots whose source or dest is `none`
+    /// are omitted on write and default-inert on read.
     #[serde(default)]
     matrix: Vec<MatrixRowFile>,
+    /// Layer 2's patch (0221). Absent → the factory patch, i.e. a single-layer
+    /// preset. Declared **after** the top-level array-of-tables so the emitted
+    /// TOML puts `[layer2]` past the last `[[matrix]]` row rather than inside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layer2: Option<LayerFile>,
+    /// Keyboard record (0221). Absent → `Single` at the default split point with
+    /// no LFO 2 link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keys: Option<KeysFile>,
+}
+
+/// One non-primary layer's patch: the same `params` + `matrix` pair the top
+/// level carries for Layer 1, nested under `[layer2]`.
+#[derive(Default, Serialize, Deserialize)]
+struct LayerFile {
+    #[serde(default)]
+    params: toml::Table,
+    #[serde(default)]
+    matrix: Vec<MatrixRowFile>,
+}
+
+/// The keyboard record. Every field defaults, so a partial `[keys]` (say, only
+/// `split-point`) is valid and the rest fall back.
+#[derive(Serialize, Deserialize)]
+struct KeysFile {
+    /// `single` | `dual` | `split`. Case-insensitive on read.
+    #[serde(default = "default_key_mode")]
+    mode: String,
+    #[serde(rename = "split-point", default = "default_split_point")]
+    split_point: u8,
+    #[serde(rename = "lfo2-link", default)]
+    lfo2_link: bool,
+}
+
+fn default_key_mode() -> String {
+    KEY_MODE_NAMES[0].to_string()
+}
+
+fn default_split_point() -> u8 {
+    DEFAULT_SPLIT_POINT
 }
 
 /// One routed matrix slot in the file. `source`/`dest` are required kebab
@@ -119,13 +192,45 @@ fn matrix_rows(matrix: &MatrixTable) -> Vec<MatrixRowFile> {
     out
 }
 
-/// Serialise a [`LayerState`] + metadata to a sparse TOML preset.
-pub fn write_preset(meta: &Meta, state: &LayerState) -> Result<String, String> {
+/// Whether a layer is the factory patch exactly — the test for "there is nothing
+/// here worth writing". Params compare by value across the whole block (they are
+/// plain `f32`s, and an exact compare is the right one: a param nudged and
+/// nudged back *is* the default again); the topology compares whole.
+fn is_factory_layer(layer: &LayerState) -> bool {
+    let factory = LayerState::factory_default();
+    layer.matrix == factory.matrix
+        && (0..PARAMS.len()).all(|i| layer.params.get_index(i) == factory.params.get_index(i))
+}
+
+/// The keyboard record to write, or `None` when it is entirely default and can
+/// be left out. `split_enabled` is only meaningful with Layer 2 on, so a patch
+/// with Layer 2 off and nothing else touched writes no `[keys]` at all.
+fn keys_file(key: &KeyState) -> Option<KeysFile> {
+    if !key.layer2_on && key.split_point == DEFAULT_SPLIT_POINT && !key.lfo2_link {
+        return None;
+    }
+    Some(KeysFile {
+        mode: KEY_MODE_NAMES[key.key_mode() as usize].to_string(),
+        split_point: key.split_point,
+        lfo2_link: key.lfo2_link,
+    })
+}
+
+/// Serialise a whole [`PluginState`] + metadata to a sparse TOML preset. Layer 2
+/// and the keyboard record are written only when they deviate from the factory
+/// default, so a single-layer patch produces the same file it did before 0221.
+pub fn write_preset(meta: &Meta, state: &PluginState) -> Result<String, String> {
+    let l2 = &state.layers[1];
     let file = PresetFile {
         schema: SCHEMA,
         meta: meta.clone(),
-        params: params_table(&state.params),
-        matrix: matrix_rows(&state.matrix),
+        params: params_table(&state.layers[0].params),
+        matrix: matrix_rows(&state.layers[0].matrix),
+        layer2: (!is_factory_layer(l2)).then(|| LayerFile {
+            params: params_table(&l2.params),
+            matrix: matrix_rows(&l2.matrix),
+        }),
+        keys: keys_file(&state.key),
     };
     // Values are clamped to finite ranges and labels come from the descriptor
     // tables, so serialisation of this shape cannot fail.
@@ -184,44 +289,35 @@ fn name_to_u8(table: &[&str], name: &str) -> Option<u8> {
         .map(|i| i as u8)
 }
 
-/// Parse a TOML preset into `(meta, params, matrix, warnings)`. Unspecified
-/// params fall back to their descriptor default; unspecified matrix slots are
-/// inert. Unknown keys / bad enum labels / type mismatches each fall back and
-/// emit a non-fatal warning. Only a malformed envelope is a hard
-/// [`PresetError`].
+/// Parse one layer's `params` table + `matrix` rows into a [`LayerState`].
+/// Unspecified params fall back to their descriptor default; unspecified slots
+/// are inert. `where_` prefixes the unknown-key warnings (`"params"` for Layer 1,
+/// `"layer2.params"` for Layer 2) so a warning names the layer it came from.
 ///
 /// The returned [`MatrixTable`] has depths seeded from the parsed params (the
 /// param block is the depth authority), so the topology is render-ready.
-pub fn read_preset(
-    s: &str,
-) -> Result<(Meta, Params, MatrixTable, Vec<String>), PresetError> {
-    let header: Header = toml::from_str(s)?;
-    if header.schema != SCHEMA {
-        return Err(PresetError::UnsupportedSchema {
-            found: header.schema,
-            expected: SCHEMA,
-        });
-    }
-
-    let file: PresetFile = toml::from_str(s)?;
-    let mut warnings = Vec::new();
-
+fn parse_layer(
+    params_table: &toml::Table,
+    rows: &[MatrixRowFile],
+    where_: &str,
+    warnings: &mut Vec<String>,
+) -> LayerState {
     // Params start at descriptor defaults; sparse keys override. `set` clamps.
     let mut params = Params::default();
-    for (key, val) in &file.params {
+    for (key, val) in params_table {
         match ParamId::from_name(key) {
             Some(id) => {
-                if let Some(v) = parse_value(id.desc(), key, val, &mut warnings) {
+                if let Some(v) = parse_value(id.desc(), key, val, warnings) {
                     params.set(id, v);
                 }
             }
-            None => warnings.push(format!("params: unknown parameter `{key}` (skipped)")),
+            None => warnings.push(format!("{where_}: unknown parameter `{key}` (skipped)")),
         }
     }
 
     // Matrix starts all-inert; each routed row sets one slot's topology.
     let mut matrix = MatrixTable::default();
-    for row in &file.matrix {
+    for row in rows {
         let slot = row.slot as usize;
         if slot >= N_SLOTS {
             warnings.push(format!("matrix: slot {} out of range (skipped)", row.slot));
@@ -268,18 +364,71 @@ pub fn read_preset(
         slot.depth = params.slot_depth(i);
     }
 
-    Ok((file.meta, params, matrix, warnings))
+    LayerState { params, matrix }
 }
 
-/// Parse a TOML preset to `(meta, state, warnings)`.
-pub fn from_toml_str(s: &str) -> Result<(Meta, LayerState, Vec<String>), PresetError> {
-    let (meta, params, matrix, warnings) = read_preset(s)?;
-    Ok((meta, LayerState { params, matrix }, warnings))
+/// Decode the `[keys]` section into a [`KeyState`]. An unknown mode label warns
+/// and falls back to `Single`. Absent section → the default (Layer 2 off).
+fn parse_keys(keys: &Option<KeysFile>, warnings: &mut Vec<String>) -> KeyState {
+    let Some(k) = keys else {
+        return KeyState::default();
+    };
+    let mode = KEY_MODE_NAMES
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(k.mode.trim()))
+        .unwrap_or_else(|| {
+            warnings.push(format!("keys.mode: unknown mode `{}` (using single)", k.mode));
+            0
+        });
+    // Route the mode through `KeyState::apply` rather than reimplementing the
+    // mode→toggles map, so the file and the UI opcode can never disagree about
+    // what "dual" means.
+    let mut key = KeyState {
+        split_point: k.split_point,
+        lfo2_link: k.lfo2_link,
+        ..KeyState::default()
+    };
+    key.apply(KeyOp::SetKeyMode(mode as u8));
+    key
+}
+
+/// Parse a TOML preset into `(meta, state, warnings)`. Unknown keys / bad enum
+/// labels / type mismatches each fall back to a default and emit a non-fatal
+/// warning. Only a malformed envelope is a hard [`PresetError`].
+///
+/// A file with no `[layer2]` / `[keys]` — every pre-0221 preset — yields Layer 2
+/// at the factory patch with the keyboard in `Single`, so it plays exactly as it
+/// did when it was written.
+pub fn read_preset(s: &str) -> Result<(Meta, PluginState, Vec<String>), PresetError> {
+    let header: Header = toml::from_str(s)?;
+    if header.schema != SCHEMA {
+        return Err(PresetError::UnsupportedSchema {
+            found: header.schema,
+            expected: SCHEMA,
+        });
+    }
+
+    let file: PresetFile = toml::from_str(s)?;
+    let mut warnings = Vec::new();
+
+    let layer1 = parse_layer(&file.params, &file.matrix, "params", &mut warnings);
+    let layer2 = match &file.layer2 {
+        Some(l) => parse_layer(&l.params, &l.matrix, "layer2.params", &mut warnings),
+        None => LayerState::factory_default(),
+    };
+    let key = parse_keys(&file.keys, &mut warnings);
+
+    Ok((
+        file.meta,
+        PluginState { layers: [layer1, layer2], key },
+        warnings,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::KeyMode;
     use crate::params::TOTAL_PARAMS;
 
     fn meta(name: &str) -> Meta {
@@ -289,7 +438,8 @@ mod tests {
         }
     }
 
-    fn sample_state() -> LayerState {
+    /// A layer that deviates from the factory patch in params and topology.
+    fn sample_layer() -> LayerState {
         let mut params = Params::default();
         params.set(ParamId::Cutoff, 1234.0);
         params.set(ParamId::Osc1Wave, 3.0); // Pulse
@@ -313,30 +463,200 @@ mod tests {
         LayerState { params, matrix }
     }
 
+    /// Single-layer patch: Layer 1 edited, Layer 2 factory, keyboard default —
+    /// the shape every pre-0221 preset had.
+    fn sample_state() -> PluginState {
+        PluginState {
+            layers: [sample_layer(), LayerState::factory_default()],
+            key: KeyState::default(),
+        }
+    }
+
+    /// A split patch: two distinct layers and a non-default keyboard record.
+    fn dual_state() -> PluginState {
+        let mut l2 = LayerState::factory_default();
+        l2.params.set(ParamId::Cutoff, 220.0);
+        l2.params.set(ParamId::MatrixSlot5Depth, 0.75);
+        l2.matrix.slots[5] = MatrixSlot {
+            source: SourceId::Lfo2,
+            dest: DestId::Cutoff,
+            depth: 0.75,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        PluginState {
+            layers: [sample_layer(), l2],
+            key: KeyState {
+                layer2_on: true,
+                split_enabled: true,
+                split_point: 48,
+                lfo2_link: true,
+            },
+        }
+    }
+
     #[test]
     fn topology_round_trips_through_text() {
         let st = sample_state();
         let toml = write_preset(&meta("RT"), &st).unwrap();
-        let (m, back, warnings) = from_toml_str(&toml).unwrap();
+        let (m, back, warnings) = read_preset(&toml).unwrap();
         assert_eq!(m.name, "RT");
         assert!(warnings.is_empty(), "{warnings:?}");
 
-        assert_eq!(back.params.get(ParamId::Cutoff), 1234.0);
-        assert_eq!(back.params.get(ParamId::Osc1Wave), 3.0);
+        let l1 = &back.layers[0];
+        assert_eq!(l1.params.get(ParamId::Cutoff), 1234.0);
+        assert_eq!(l1.params.get(ParamId::Osc1Wave), 3.0);
 
-        let s0 = back.matrix.slots[0];
+        let s0 = l1.matrix.slots[0];
         assert_eq!(s0.source, SourceId::Env2);
         assert_eq!(s0.dest, DestId::Amp);
         assert_eq!(s0.curve, Curve::Lin);
         assert_eq!(s0.scale_src, SourceId::None);
         assert_eq!(s0.depth, 1.0); // from the param
 
-        let s2 = back.matrix.slots[2];
+        let s2 = l1.matrix.slots[2];
         assert_eq!(s2.source, SourceId::Lfo1);
         assert_eq!(s2.dest, DestId::Pitch);
         assert_eq!(s2.curve, Curve::Bipolar);
         assert_eq!(s2.scale_src, SourceId::ModWheel);
         assert_eq!(s2.depth, -0.25);
+    }
+
+    #[test]
+    fn both_layers_and_keys_round_trip() {
+        // 0221 acceptance: a dual/split preset survives save → reload with both
+        // patches and the keyboard record intact.
+        let st = dual_state();
+        let toml = write_preset(&meta("Split"), &st).unwrap();
+        let (_m, back, warnings) = read_preset(&toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // Layer 1 kept its own patch...
+        assert_eq!(back.layers[0].params.get(ParamId::Cutoff), 1234.0);
+        assert_eq!(back.layers[0].matrix.slots[0].source, SourceId::Env2);
+        // ...and Layer 2 its own, in a slot Layer 1 leaves inert.
+        assert_eq!(back.layers[1].params.get(ParamId::Cutoff), 220.0);
+        assert_eq!(back.layers[1].matrix.slots[5].source, SourceId::Lfo2);
+        assert_eq!(back.layers[1].matrix.slots[5].dest, DestId::Cutoff);
+        assert_eq!(back.layers[1].matrix.slots[5].depth, 0.75);
+        assert!(!back.layers[0].matrix.slots[5].is_active());
+
+        assert_eq!(back.key.key_mode(), KeyMode::Split);
+        assert_eq!(back.key.split_point, 48);
+        assert!(back.key.lfo2_link);
+    }
+
+    #[test]
+    fn dual_mode_without_split_round_trips() {
+        let mut st = dual_state();
+        st.key.split_enabled = false;
+        let toml = write_preset(&meta("Dual"), &st).unwrap();
+        let (_m, back, _w) = read_preset(&toml).unwrap();
+        assert_eq!(back.key.key_mode(), KeyMode::Dual);
+        // The point rides along even with the split off, so arming it later
+        // lands where the patch author left it.
+        assert_eq!(back.key.split_point, 48);
+    }
+
+    #[test]
+    fn single_layer_patch_writes_no_layer2_or_keys() {
+        // The migration contract in the other direction: a single-layer patch
+        // still saves as a single-layer file, so nothing in an existing bank
+        // grows a `[layer2]` just by being re-saved.
+        let toml = write_preset(&meta("Single"), &sample_state()).unwrap();
+        assert!(!toml.contains("[layer2"), "{toml}");
+        assert!(!toml.contains("[keys]"), "{toml}");
+    }
+
+    #[test]
+    fn legacy_single_layer_preset_loads_as_layer1_plus_factory_layer2() {
+        // A pre-0221 file: no `[layer2]`, no `[keys]`. It must load with Layer 1
+        // exactly as written, Layer 2 at the factory patch, and the keyboard in
+        // Single — i.e. sounding exactly as it did before the format changed.
+        let legacy = r#"
+schema = 1
+[meta]
+name = "Legacy"
+[params]
+cutoff = 800.0
+[[matrix]]
+slot = 1
+source = "lfo1"
+dest = "cutoff"
+"#;
+        let (m, st, warnings) = read_preset(legacy).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(m.name, "Legacy");
+        assert_eq!(st.layers[0].params.get(ParamId::Cutoff), 800.0);
+        assert_eq!(st.layers[0].matrix.slots[1].source, SourceId::Lfo1);
+
+        assert_eq!(st.key, KeyState::default());
+        assert_eq!(st.key.key_mode(), KeyMode::Single);
+        // Layer 2 is the factory patch, param block and topology alike.
+        assert!(is_factory_layer(&st.layers[1]));
+        assert_eq!(st.layers[1].matrix, LayerState::factory_default().matrix);
+    }
+
+    #[test]
+    fn keys_without_layer2_is_valid() {
+        // Enabling Layer 2 on the factory patch writes no `[layer2]` (nothing
+        // deviates), so `[keys]` must stand alone.
+        let s = r#"
+schema = 1
+[meta]
+name = "K"
+[keys]
+mode = "dual"
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(st.key.key_mode(), KeyMode::Dual);
+        assert_eq!(st.key.split_point, DEFAULT_SPLIT_POINT);
+        assert!(is_factory_layer(&st.layers[1]));
+    }
+
+    #[test]
+    fn partial_keys_section_defaults_the_rest() {
+        let s = r#"
+schema = 1
+[meta]
+name = "K"
+[keys]
+split-point = 36
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(st.key.key_mode(), KeyMode::Single);
+        assert_eq!(st.key.split_point, 36);
+        assert!(!st.key.lfo2_link);
+    }
+
+    #[test]
+    fn unknown_key_mode_warns_and_falls_back_to_single() {
+        let s = r#"
+schema = 1
+[meta]
+name = "K"
+[keys]
+mode = "quadruple"
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert!(warnings.iter().any(|w| w.contains("unknown mode")), "{warnings:?}");
+        assert_eq!(st.key.key_mode(), KeyMode::Single);
+    }
+
+    #[test]
+    fn layer2_warnings_name_their_layer() {
+        let s = r#"
+schema = 1
+[meta]
+name = "W"
+[layer2.params]
+not_a_param = 5.0
+"#;
+        let (_m, _st, warnings) = read_preset(s).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("layer2.params:"), "{warnings:?}");
     }
 
     #[test]
@@ -362,6 +682,20 @@ mod tests {
     }
 
     #[test]
+    fn layer2_section_is_sparse_too() {
+        let toml = write_preset(&meta("L2"), &dual_state()).unwrap();
+        let doc: toml::Table = toml::from_str(&toml).unwrap();
+        let l2 = doc.get("layer2").and_then(|v| v.as_table()).unwrap();
+        let params = l2.get("params").and_then(|v| v.as_table()).unwrap();
+        assert!(params.contains_key("cutoff"));
+        assert!(params.len() < TOTAL_PARAMS, "expected sparse, got {}", params.len());
+        // Layer 2 starts from the factory patch, so its rows are the factory Amp
+        // route plus the one this patch adds.
+        let rows = l2.get("matrix").and_then(|v| v.as_array()).unwrap();
+        assert!(rows.iter().any(|r| r.get("slot").and_then(|v| v.as_integer()) == Some(5)));
+    }
+
+    #[test]
     fn depth_is_not_duplicated_in_matrix_rows() {
         let st = sample_state();
         let toml = write_preset(&meta("D"), &st).unwrap();
@@ -373,7 +707,7 @@ mod tests {
     #[test]
     fn scale_src_omitted_when_none() {
         let mut st = sample_state();
-        st.matrix.slots[2].scale_src = SourceId::None;
+        st.layers[0].matrix.slots[2].scale_src = SourceId::None;
         let toml = write_preset(&meta("NoScale"), &st).unwrap();
         // slot 0 already has scale_src none; neither routed slot writes the key.
         assert!(!toml.contains("scale-src"), "none must be omitted:\n{toml}");
@@ -390,8 +724,9 @@ slot = 0
 source = "lfo1"
 dest = "pitch"
 "#;
-        let (_m, _p, matrix, warnings) = read_preset(s).unwrap();
+        let (_m, st, warnings) = read_preset(s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
+        let matrix = st.layers[0].matrix;
         assert_eq!(matrix.slots[0].source, SourceId::Lfo1);
         assert_eq!(matrix.slots[0].dest, DestId::Pitch);
         assert_eq!(matrix.slots[0].curve, Curve::Lin);
@@ -409,10 +744,10 @@ slot = 2
 source = "nope"
 dest = "cutoff"
 "#;
-        let (_m, _p, matrix, warnings) = read_preset(s).unwrap();
+        let (_m, st, warnings) = read_preset(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("unknown source"), "{warnings:?}");
-        assert!(!matrix.slots[2].is_active());
+        assert!(!st.layers[0].matrix.slots[2].is_active());
     }
 
     #[test]
@@ -427,8 +762,8 @@ source = "lfo1"
 dest = "pitch"
 scale-src = "bogus"
 "#;
-        let (_m, _p, matrix, warnings) = read_preset(s).unwrap();
-        assert_eq!(matrix.slots[0].scale_src, SourceId::None);
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert_eq!(st.layers[0].matrix.slots[0].scale_src, SourceId::None);
         assert!(
             warnings.iter().any(|w| w.contains("unknown scale source")),
             "{warnings:?}"
@@ -445,10 +780,10 @@ name = "X"
 not_a_param = 5.0
 cutoff = 800.0
 "#;
-        let (_m, params, _mtx, warnings) = read_preset(s).unwrap();
+        let (_m, st, warnings) = read_preset(s).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("not_a_param"), "{warnings:?}");
-        assert_eq!(params.get(ParamId::Cutoff), 800.0);
+        assert_eq!(st.layers[0].params.get(ParamId::Cutoff), 800.0);
     }
 
     #[test]
@@ -460,8 +795,8 @@ name = "X"
 [params]
 resonance = 9.0
 "#;
-        let (_m, params, _mtx, _w) = read_preset(s).unwrap();
-        assert_eq!(params.get(ParamId::Resonance), 1.0);
+        let (_m, st, _w) = read_preset(s).unwrap();
+        assert_eq!(st.layers[0].params.get(ParamId::Resonance), 1.0);
     }
 
     #[test]
@@ -473,9 +808,9 @@ name = "X"
 [params]
 osc1_wave = "pulse"
 "#;
-        let (_m, params, _mtx, warnings) = read_preset(s).unwrap();
+        let (_m, st, warnings) = read_preset(s).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(params.get(ParamId::Osc1Wave), 3.0);
+        assert_eq!(st.layers[0].params.get(ParamId::Osc1Wave), 3.0);
     }
 
     #[test]
@@ -507,8 +842,8 @@ slot = 99
 source = "lfo1"
 dest = "pitch"
 "#;
-        let (_m, _p, matrix, warnings) = read_preset(s).unwrap();
+        let (_m, st, warnings) = read_preset(s).unwrap();
         assert!(warnings.iter().any(|w| w.contains("out of range")), "{warnings:?}");
-        assert!(matrix.slots.iter().all(|s| !s.is_active()));
+        assert!(st.layers[0].matrix.slots.iter().all(|s| !s.is_active()));
     }
 }

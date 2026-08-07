@@ -320,6 +320,12 @@ impl Engine {
         let [l1, l2] = state.layers;
         self.synths[0].load_state(l1);
         self.synths[1].load_state(l2);
+        // The blob carries the keyboard record too (0221), so a state load
+        // restores the routing mode along with the patches. The CLAP shell also
+        // pushes it down its own key channel (that channel exists for plain UI
+        // edits, which carry no state blob); applying it here as well is
+        // idempotent and keeps `load_state` a complete restore on its own.
+        self.key = state.key;
     }
 
     /// Read a CLAP-id param value (0216 two-layer map): Layer-1 ids read synth 0,
@@ -1176,6 +1182,28 @@ mod tests {
         // Split-enable is inert while layer 2 is off — Single dominates.
         e.set_layer2_on(false);
         assert_eq!(e.key_mode(), KeyMode::Single, "split-enable ignored with layer 2 off");
+    }
+
+    #[test]
+    fn load_state_restores_the_keyboard_record() {
+        // 0221: the blob carries KeyState, so a state load is a complete restore
+        // — an engine that loads a split patch must come back routing split,
+        // without depending on the shell's separate key channel.
+        let mut e = Engine::new(48_000.0, 512);
+        assert_eq!(e.key_mode(), KeyMode::Single);
+
+        let mut st = PluginState::factory_default();
+        st.key = KeyState {
+            layer2_on: true,
+            split_enabled: true,
+            split_point: 55,
+            lfo2_link: true,
+        };
+        e.load_state(st);
+
+        assert_eq!(e.key_mode(), KeyMode::Split);
+        assert_eq!(e.key_state().split_point, 55);
+        assert!(e.key_state().lfo2_link);
     }
 
     #[test]

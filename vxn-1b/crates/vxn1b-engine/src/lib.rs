@@ -52,7 +52,7 @@ pub use params::{
     ClapRef, GLOBAL_PARAMS, Layer, PATCH_COUNT, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
     clap_id_of, clap_module, clap_ref, desc_for_clap_id,
 };
-pub use preset::{Meta, PresetError, from_toml_str, read_preset, write_preset};
+pub use preset::{Meta, PresetError, read_preset, write_preset};
 pub use preset_io::EnginePresetStore;
 pub use shared::SharedParams;
 pub use state::{LayerState, PluginState};

@@ -755,6 +755,26 @@ export function init() {
       if (model.setSplitPoint) model.setSplitPoint(ev.note);
       return;
     }
+    // Keyboard echo (0221). KeyState — the Layer 2 toggle, the split and its
+    // point, the LFO 2 link — is not a CLAP param, so a preset load / host state
+    // load / undo moves it with nothing in the param machinery to carry the
+    // news. The engine diffs it each tick and pushes this on any drift; without
+    // it a loaded split patch plays split while the faceplate still reads
+    // Single. Reflect-only: every setter here repaints without posting, so an
+    // echo can't bounce an opcode back at the engine.
+    if (ev.kind === 'keys') {
+      // `mode` is the derived 0/1/2 (Single/Dual/Split), the same encoding
+      // `setKeyMode` posts — decompose it back into the two toggles.
+      keysPanel.setMode(ev.mode);
+      if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
+      if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
+      if (ev.split != null) {
+        keysPanel.setSplit(ev.split);
+        if (model.setSplitPoint) model.setSplitPoint(ev.split);
+      }
+      if (model.setLfo2Link) model.setLfo2Link(!!ev.link);
+      return;
+    }
     // Matrix topology echo (0247). Topology is not a CLAP param, so a preset
     // load / host state load / undo rewrites it with nothing in the param
     // machinery to carry the news; without this the source/dest combos keep

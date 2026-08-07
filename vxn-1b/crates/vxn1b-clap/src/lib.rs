@@ -192,6 +192,7 @@ impl DefaultPluginFactory for VxnPlugin {
             timer: None,
             last_seen: vec![f32::NAN; TOTAL_PARAMS],
             last_matrix: None,
+            last_key: None,
             meters_idle: true,
         })
     }
@@ -246,6 +247,9 @@ pub struct VxnMainThread<'a> {
     /// editor-open (0246), but a load landing between that splice and the
     /// page's first tick would otherwise slip through unnoticed.
     last_matrix: Option<[vxn1b_engine::MatrixTable; 2]>,
+    /// Last keyboard state pushed to the page (0221). Same contract as
+    /// `last_matrix`: `None` while the GUI is closed, so the next open re-pushes.
+    last_key: Option<vxn1b_engine::KeyState>,
     /// Whether the previous tick's meter frame was all-zero (0240). Lets the
     /// drain push the *first* silent frame — the view needs that zero to start
     /// its decay — then go quiet until there is signal again, so an idle plugin
@@ -328,6 +332,31 @@ impl<'a> VxnMainThread<'a> {
         })));
     }
 
+    /// Push the keyboard state to the page when it changes (0221).
+    ///
+    /// Exactly the topology echo's problem one type over: `KeyState` is not a
+    /// CLAP param (ADR 0002 §3), so a preset load, a host `state.load`, or a
+    /// host undo can turn Layer 2 on or move the split with nothing telling an
+    /// open editor about it — the Layer 2 switch and the split row would keep
+    /// showing the previous patch. Now that the blob carries the record, this
+    /// diffs it against what the page was last told and pushes on any drift.
+    ///
+    /// Reads via `key_state` rather than `take_key_state`: the dirty flag
+    /// belongs to the audio thread's engine re-sync, and consuming it here would
+    /// silently drop a load's routing change whenever a tick beat `process`.
+    fn push_key_echo(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            self.last_key = None;
+            return;
+        };
+        let live = self.shared.params.key_state();
+        if self.last_key == Some(live) {
+            return;
+        }
+        self.last_key = Some(live);
+        handle.push_view_event(ViewEvent::Custom(Box::new(live)));
+    }
+
     /// Drain the meter bus into one `ViewEvent::Custom(MeterFrame)` (0240).
     ///
     /// Runs only with the GUI open, so a closed editor pays nothing — the audio
@@ -384,6 +413,8 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         self.push_param_diffs();
         // Topology echo (0247) — cheap, and only pushes on a real change.
         self.push_matrix_echo();
+        // Keyboard echo (0221) — the same, for the state the blob now carries.
+        self.push_key_echo();
         // Meters (0240) join the same batch — no extra bridge call.
         self.push_meter_frame();
         // One `evaluate_script` per tick: the pushes above only buffered into

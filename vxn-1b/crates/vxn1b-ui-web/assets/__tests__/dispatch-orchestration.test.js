@@ -314,4 +314,63 @@ describe('init() → applyViewEvents', () => {
     expect(window.vxn.matrix.slots).toBe(kept);
     expect(matrixOverlay.refreshForLayer).not.toHaveBeenCalled();
   });
+
+  // 0221: KeyState rides the state blob, not the param table, so a preset /
+  // host-state load reaches the page only through this echo. The derived
+  // 0/1/2 mode decomposes back into the Layer 2 and split toggles, and nothing
+  // posts back — an echoed load must not bounce its own routing at the engine.
+  it('decomposes a keys echo into the layer-2 / split / link reflectors', () => {
+    globalThis.window.__vxn = {};
+    window.vxn.send = {
+      ready: vi.fn(),
+      setKeyMode: vi.fn(),
+      setSplitPoint: vi.fn(),
+      setLfo2Link: vi.fn(),
+    };
+
+    const root = document.createElement('div');
+    root.id = 'faceplate';
+    document.body.appendChild(root);
+    init();
+
+    // The faceplate's own wiring installs these when its elements exist; the
+    // suite mounts a bare root, so stand them in directly.
+    model.setLayer2On = vi.fn();
+    model.setSplitEnabled = vi.fn();
+    model.setSplitPoint = vi.fn();
+    model.setLfo2Link = vi.fn();
+
+    window.__vxn.applyViewEvents([{ kind: 'keys', mode: 2, split: 48, link: true }]);
+
+    expect(keysPanel.setMode).toHaveBeenCalledWith(2);
+    expect(keysPanel.setSplit).toHaveBeenCalledWith(48);
+    expect(model.setLayer2On).toHaveBeenCalledWith(true);
+    expect(model.setSplitEnabled).toHaveBeenCalledWith(true);
+    expect(model.setSplitPoint).toHaveBeenCalledWith(48);
+    expect(model.setLfo2Link).toHaveBeenCalledWith(true);
+    // Reflect-only.
+    expect(window.vxn.send.setKeyMode).not.toHaveBeenCalled();
+    expect(window.vxn.send.setSplitPoint).not.toHaveBeenCalled();
+    expect(window.vxn.send.setLfo2Link).not.toHaveBeenCalled();
+  });
+
+  it('turns both toggles off on a keys echo back to Single', () => {
+    globalThis.window.__vxn = {};
+    window.vxn.send = { ready: vi.fn(), setKeyMode: vi.fn() };
+
+    const root = document.createElement('div');
+    root.id = 'faceplate';
+    document.body.appendChild(root);
+    init();
+
+    model.setLayer2On = vi.fn();
+    model.setSplitEnabled = vi.fn();
+    model.setLfo2Link = vi.fn();
+
+    window.__vxn.applyViewEvents([{ kind: 'keys', mode: 0, split: 60, link: false }]);
+
+    expect(model.setLayer2On).toHaveBeenCalledWith(false);
+    expect(model.setSplitEnabled).toHaveBeenCalledWith(false);
+    expect(model.setLfo2Link).toHaveBeenCalledWith(false);
+  });
 });
