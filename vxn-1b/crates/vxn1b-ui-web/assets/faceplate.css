@@ -237,7 +237,7 @@ html, body {
 .row-1 .panel[data-name="Osc 1"]  { flex-grow: 1.2; }
 .row-1 .panel[data-name="Osc 2"]  { flex-grow: 1.2; }
 .row-1 .panel[data-name="Mixer"]  { flex-grow: 1.0; }
-.row-1 .panel[data-name="Filter"] { flex-grow: 1.55; }  /* densest — Mode group + 4 faders */
+.row-1 .panel[data-name="Filter"] { flex-grow: 1.8; }   /* densest — Mode group + 5 faders (Key added, 0245) */
 
 .row-2 .panel[data-name="LFO 1"] { flex-grow: 1.2; }
 .row-2 .panel[data-name="LFO 2"] { flex-grow: 0.7; }

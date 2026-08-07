@@ -80,33 +80,49 @@ pub fn voice_pitches(
     (s1, s2)
 }
 
-/// Filter cutoff in Hz for one voice: `cutoff_base` shifted by the matrix
-/// `Cutoff` total (semitones) plus the per-voice drift key-track and cutoff
-/// trim, all via `fast_exp2`. Mirrors VXN1's `voice_cutoff_hz` with
-/// `cutoff_mod = DestVals[Cutoff]`.
+/// Filter cutoff in Hz for one voice: `cutoff_base` shifted by key-track, the
+/// matrix `Cutoff` total (semitones), the per-voice drift key-track and the
+/// cutoff trim, all via `fast_exp2`. Mirrors VXN1's `voice_cutoff_hz` +
+/// `resolve_mod`'s key-track term, with `cutoff_mod = DestVals[Cutoff]`.
 ///
-/// `drift_keytrack` here is the *engine* key-track amount applied to the mean
-/// drift (VXN1 couples the tracked cutoff to VCO drift). In VXN1b, keyboard
-/// key-track is a matrix route (Key→Cutoff), already folded into the `Cutoff`
-/// dest; this term is only the drift coupling, so it takes the same amount the
-/// Key→Cutoff *route* uses — passed in by the caller.
+/// `key_track` is the [`FilterKeyTrack`](crate::params::ParamId) amount and, as
+/// in VXN1, it does two jobs at the same depth (0245):
+///
+/// - the **static note term**, `(note − 12) · key_track` semitones — pivoting at
+///   C0 (MIDI 12), so `1.0` is 1 oct of cutoff per oct of key with the cutoff
+///   *equal to* the played note when `cutoff_base` sits at its C0 minimum;
+/// - the **drift coupling**, the same amount applied to the mean osc drift —
+///   the keyboard CV a real VCF tracks carries the VCO's drift, so a tracked
+///   cutoff wanders with it.
+///
+/// `note` is the raw note-on MIDI note (VXN1 tracks the played note, not the
+/// glided pitch). A Key→Cutoff matrix route is *additional* free-form tracking
+/// and arrives inside `dests`.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn voice_cutoff_hz(
     dests: &DestVals,
     cutoff_base: f32,
+    note: f32,
+    key_track: f32,
     drift1: f32,
     drift2: f32,
-    drift_key_track: f32,
     trim_cutoff: f32,
     trim_cutoff_cents: f32,
     drift_amount: f32,
 ) -> f32 {
     let cutoff_mod = dest(dests, DestId::Cutoff);
-    let dk = 0.5 * (drift1 + drift2) * drift_key_track;
+    let kt = (note - C0_NOTE) * key_track;
+    let dk = 0.5 * (drift1 + drift2) * key_track;
     let trim_semi = trim_cutoff * (trim_cutoff_cents / 100.0) * drift_amount;
-    cutoff_base * fast_exp2((cutoff_mod + dk + trim_semi) / 12.0)
+    cutoff_base * fast_exp2((cutoff_mod + kt + dk + trim_semi) / 12.0)
 }
+
+/// MIDI note of C0 — the key-track pivot, matching VXN1's `resolve_mod`
+/// (`(note − 12) · amt`). The cutoff param's minimum is C0's frequency
+/// (16.3516 Hz), which is what makes "cutoff at minimum + key-track at 1.0 ⇒
+/// cutoff is the played note" hold; the two calibrations are a pair.
+const C0_NOTE: f32 = 12.0;
 
 /// Pulse width for an oscillator: base PW plus the matrix `Pwm` total, clamped
 /// to the VXN1 range. Both oscs take the same offset (VXN1 `pwm_mod`).
@@ -191,14 +207,75 @@ mod tests {
     #[test]
     fn cutoff_zero_mod_is_identity() {
         // fast_exp2(0) == 1, so a zero Cutoff total leaves cutoff_base exact.
-        let hz = voice_cutoff_hz(&zeros(), 1000.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+        let hz = voice_cutoff_hz(&zeros(), 1000.0, 60.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0);
         assert_eq!(hz, 1000.0);
     }
 
     #[test]
     fn cutoff_one_octave_mod_doubles() {
-        let hz = voice_cutoff_hz(&with(DestId::Cutoff, 12.0), 1000.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+        let hz = voice_cutoff_hz(&with(DestId::Cutoff, 12.0), 1000.0, 60.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0);
         assert!((hz - 2000.0).abs() < 1.0, "12 st should ~double, got {hz}");
+    }
+
+    #[test]
+    fn key_track_matches_vxn1s_pivot_and_slope() {
+        // VXN1's `resolve_mod`: `(note − 12) · amt` semitones of cutoff. Check
+        // the *absolute* shift, not just the slope — the C0 pivot is the point.
+        for note in [12.0, 36.0, 60.0, 69.0, 96.0] {
+            let hz = voice_cutoff_hz(&zeros(), 1000.0, note, 1.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+            let want = 1000.0 * (2.0f32).powf((note - 12.0) / 12.0);
+            assert!((hz / want - 1.0).abs() < 1e-3, "note {note}: {hz} Hz, want {want}");
+        }
+        // Amount scales it linearly, and zero is exactly inert.
+        let half = voice_cutoff_hz(&zeros(), 1000.0, 24.0, 0.5, 0.0, 0.0, 0.0, 3.0, 0.0);
+        assert!((half / (1000.0 * (2.0f32).powf(0.5)) - 1.0).abs() < 1e-3);
+        assert_eq!(voice_cutoff_hz(&zeros(), 1000.0, 96.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0), 1000.0);
+    }
+
+    #[test]
+    fn full_key_track_at_min_cutoff_is_the_played_note() {
+        // The pair of calibrations (0245): the cutoff param's minimum is C0's
+        // frequency, so key-track at 1.0 puts the cutoff *on* the played pitch.
+        for (note, hz_want) in [(69.0, 440.0), (60.0, 261.626), (12.0, 16.3516)] {
+            let hz = voice_cutoff_hz(&zeros(), 16.3516, note, 1.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+            assert!((hz / hz_want - 1.0).abs() < 1e-3, "note {note}: {hz} Hz, want {hz_want}");
+        }
+    }
+
+    #[test]
+    fn key_track_amount_also_drives_the_drift_coupling() {
+        // VXN1 tracks the VCF to the *drifted* pitch at the same amount (0218),
+        // and 0245 keeps that tied to the param rather than to matrix topology:
+        // no Key→Cutoff route exists here at all.
+        let base = voice_cutoff_hz(&zeros(), 1000.0, 12.0, 1.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+        let drifted = voice_cutoff_hz(&zeros(), 1000.0, 12.0, 1.0, 0.4, 0.2, 0.0, 3.0, 0.0);
+        // Mean drift 0.3 st at amount 1.0.
+        assert!((drifted / (base * (2.0f32).powf(0.3 / 12.0)) - 1.0).abs() < 1e-3);
+        // At amount 0 the drift coupling vanishes with the tracking.
+        let off = voice_cutoff_hz(&zeros(), 1000.0, 12.0, 0.0, 0.4, 0.2, 0.0, 3.0, 0.0);
+        assert_eq!(off, 1000.0);
+    }
+
+    #[test]
+    fn matrix_key_route_stacks_on_top_of_the_param() {
+        // A Key→Cutoff route is *extra* tracking: C4-pivoted like every other
+        // Key route, summed with the param's C0-pivoted term.
+        use crate::matrix::KEY_CUTOFF_UNITY_DEPTH;
+        let mut t = MatrixTable::default();
+        t.slots[0] = MatrixSlot {
+            source: SourceId::Key,
+            dest: DestId::Cutoff,
+            depth: KEY_CUTOFF_UNITY_DEPTH,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        let s = eval_sources(&SourceInputs { note: 72, ..Default::default() });
+        let mut out = zeros();
+        eval_dests(&t, &s, &mut out);
+        // Param: 72 − 12 = 60 st. Route: (72 − 60)/12 · 0.25 · 48 = 12 st. Sum 72.
+        let hz = voice_cutoff_hz(&out, 100.0, 72.0, 1.0, 0.0, 0.0, 0.0, 3.0, 0.0);
+        let want = 100.0 * (2.0f32).powf(72.0 / 12.0);
+        assert!((hz / want - 1.0).abs() < 1e-3, "{hz} Hz, want {want}");
     }
 
     #[test]
@@ -239,7 +316,7 @@ mod tests {
         let (s1, s2) = voice_pitches(&d, Mode::Off, 0.0, 60.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert!((s1 - 60.05).abs() < 1e-5 && (s2 - 60.05).abs() < 1e-5);
         // Cutoff unchanged (key-track off), amp follows env2.
-        assert_eq!(voice_cutoff_hz(&d, 1000.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0), 1000.0);
+        assert_eq!(voice_cutoff_hz(&d, 1000.0, 60.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0), 1000.0);
         assert_eq!(voice_amp(&d, true, true, false), 0.5);
     }
 
@@ -252,6 +329,6 @@ mod tests {
         let mut out = zeros();
         eval_dests(&t, &s, &mut out);
         // 0.25 · 1 · 48 = 12 st → ~double.
-        assert!((voice_cutoff_hz(&out, 1000.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0) - 2000.0).abs() < 1.0);
+        assert!((voice_cutoff_hz(&out, 1000.0, 60.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0) - 2000.0).abs() < 1.0);
     }
 }

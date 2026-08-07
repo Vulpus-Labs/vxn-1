@@ -128,28 +128,6 @@ impl VoiceTrim {
     }
 }
 
-/// VXN1's filter key-track *amount* as the drift coupling sees it, recovered
-/// from the matrix. VXN1 tracks the VCF to the VCO's **drifted** pitch at the
-/// same amount its `filter_key_track` param applies to the static note term;
-/// VXN1b has no such param — key-track is a Key→Cutoff route. A route at depth
-/// `d` shifts cutoff by `octaves_from_c4 · d · DEST_GAIN[Cutoff]` semitones,
-/// i.e. `d · gain / 12` semitones of cutoff per semitone of key — so the
-/// equivalent amount is that, summed over the active Key→Cutoff slots
-/// ([`KEY_CUTOFF_UNITY_DEPTH`](crate::matrix::KEY_CUTOFF_UNITY_DEPTH) = 0.25 →
-/// 1.0, VXN1's unity tracking). Curves and per-route scale sources are ignored:
-/// the coupling is a sub-cent nudge, so it takes the slot's nominal depth.
-#[inline]
-fn drift_key_track(matrix: &MatrixTable) -> f32 {
-    let gain = crate::eval::DEST_GAIN[DestId::Cutoff.idx().unwrap_or(0)];
-    let depth: f32 = matrix
-        .slots
-        .iter()
-        .filter(|s| s.source == SourceId::Key && s.dest == DestId::Cutoff)
-        .map(|s| s.depth)
-        .sum();
-    depth * gain / 12.0
-}
-
 /// Golden-ratio per-lane start phase (decorrelates a chord's transients).
 #[inline]
 fn lane_phase(lane: usize) -> f32 {
@@ -224,6 +202,10 @@ pub struct BlockCtx<'a> {
     pub cross_mod_type: CrossModType,
     // Filter
     pub cutoff: f32,
+    /// Key-track amount (0245): `1.0` = 1 oct of cutoff per oct of key, pivoting
+    /// at C0. Drives both the static note term and the drift coupling in
+    /// [`render::voice_cutoff_hz`].
+    pub filter_key_track: f32,
     pub hpf_cutoff: f32,
     pub resonance: f32,
     pub drive: f32,
@@ -468,8 +450,6 @@ impl RenderBank {
         // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc, exactly as
         // `render::voice_pitches` does.
         let (g1, g2) = sweep_gates(ctx.cross_mod_type);
-        // Topology-derived, so once per block rather than per lane.
-        let key_track = drift_key_track(ctx.matrix);
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         let mut amp_c = [AmpCoeffs::default(); N];
@@ -567,18 +547,20 @@ impl RenderBank {
             self.osc1.inc[v] = note_to_hz(base1[v]) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(base2[v]) / ctx.os_sample_rate;
 
-            // Filter key-track follows the voice's *drifted* pitch (0218): the
-            // keyboard CV a real VCF tracks carries the VCO's drift, so the
-            // tracked cutoff wanders with it — at the amount the Key→Cutoff
-            // route uses. Plus the fixed per-lane cutoff tolerance: a constant
+            // Filter key-track: the played note against VXN1's C0 pivot, at the
+            // `filter_key_track` amount (0245), and — at that same amount — the
+            // voice's *drifted* pitch (0218), since the keyboard CV a real VCF
+            // tracks carries the VCO's drift, so the tracked cutoff wanders with
+            // it. Plus the fixed per-lane cutoff tolerance: a constant
             // ±TRIM_CUTOFF_CENTS offset at full drift, enough for gentle
             // inter-voice beating, never enough to detune a whistle.
             let cutoff_hz = render::voice_cutoff_hz(
                 &dests,
                 ctx.cutoff,
+                note[v] as f32,
+                ctx.filter_key_track,
                 self.osc1.drift_value[v],
                 self.osc2.drift_value[v],
-                key_track,
                 self.trim.cutoff[v],
                 TRIM_CUTOFF_CENTS,
                 ctx.drift_amount,
@@ -961,6 +943,7 @@ mod tests {
             ring_mode: false,
             cross_mod_type: CrossModType::Off,
             cutoff: 8000.0,
+            filter_key_track: 0.0,
             hpf_cutoff: 20.0,
             resonance: 0.2,
             drive: 1.0,
@@ -1183,23 +1166,29 @@ mod tests {
         assert_eq!(dry, render(0.0));
     }
 
-    /// The drift key-track coupling is read off the Key→Cutoff route:
-    /// [`KEY_CUTOFF_UNITY_DEPTH`](crate::matrix::KEY_CUTOFF_UNITY_DEPTH) → VXN1's
-    /// unity tracking, no route → no coupling.
+    /// Key-track is a param (0245), not a matrix scrape: the drift coupling and
+    /// the note term both ride `ctx.filter_key_track`, so a patch whose matrix
+    /// never mentions Key still tracks. The maths lives in
+    /// [`render::voice_cutoff_hz`]; this pins the wiring — the block ctx carries
+    /// the param through to the per-lane cutoff.
     #[test]
-    fn drift_key_track_reads_the_key_cutoff_route() {
-        use crate::matrix::{KEY_CUTOFF_UNITY_DEPTH, MatrixSlot};
-        let mut m = MatrixTable::default();
-        assert_eq!(drift_key_track(&m), 0.0, "no Key→Cutoff route → no coupling");
-        m.slots[0] = MatrixSlot {
-            source: SourceId::Key,
-            dest: DestId::Cutoff,
-            depth: KEY_CUTOFF_UNITY_DEPTH,
-            ..MatrixSlot::default()
-        };
-        assert!(
-            (drift_key_track(&m) - 1.0).abs() < 1e-6,
-            "unity key-track depth must give VXN1's key_track = 1.0"
+    fn key_track_comes_from_the_param_not_the_matrix() {
+        let m = MatrixTable::default(); // no Key→Cutoff route at all
+        let mut c = ctx(&m);
+        c.filter_key_track = 1.0;
+        c.cutoff = 16.3516; // C0 — cutoff should land on the played note
+        let dests = [0.0f32; crate::matrix::N_DESTS];
+        let hz = render::voice_cutoff_hz(
+            &dests,
+            c.cutoff,
+            69.0, // A4
+            c.filter_key_track,
+            0.0,
+            0.0,
+            0.0,
+            TRIM_CUTOFF_CENTS,
+            0.0,
         );
+        assert!((hz - 440.0).abs() < 0.5, "A4 with full key-track → 440 Hz, got {hz}");
     }
 }

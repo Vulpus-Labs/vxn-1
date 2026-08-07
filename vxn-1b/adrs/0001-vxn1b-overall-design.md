@@ -84,8 +84,8 @@ VCA of VXN2 ADR 0009 (leaf-value, no cycles, `[0,1]` gain, identity default) —
 included from day one because mod-wheel-controlled vibrato is table stakes for
 this instrument too.
 
-**Sources (v1):** Env 1, Env 2, LFO 1, LFO 2, Velocity, Key (octaves relative to
-C0 = MIDI 12, VXN1's key-track pivot), Mod Wheel, Pitch Wheel, **Aftertouch**, **Note-on Random
+**Sources (v1):** Env 1, Env 2, LFO 1, LFO 2, Velocity, Key (signed octaves
+relative to C4), Mod Wheel, Pitch Wheel, **Aftertouch**, **Note-on Random
 (per-voice humanisation)**. The last two do not exist in VXN1 today and are new
 engine additions for VXN1b; they are intended v1 sources, not candidates.
 
@@ -117,12 +117,17 @@ ordinary (default-seeded) matrix slots — that *is* the flexibility gain:
   *original* ADR 0001 §5 matrix, where the VCA gain *was* the Amp column). The
   amp env therefore stays click-free via the same per-sample smoothing; a patch
   may add/replace amp modulation but the factory default behaves like VXN1.
-- **Filter key-track.** VXN1's "1 octave of cutoff per octave of key relative to
-  C0" fader becomes a **Key → Cutoff** slot; the factory init patch pre-wires the
-  route at depth 0.0 (VXN1's `filter_key_track` default), and
-  `KEY_CUTOFF_UNITY_DEPTH` = 0.25 is the depth reproducing VXN1's `amt = 1.0`
-  exactly — same slope *and* same C0 pivot — but the amount is now free (and can
-  go past 1 oct/oct, which VXN1 cannot).
+- **Filter key-track stays a param** (0245, revising this ADR's original "make
+  it a Key → Cutoff slot"). It is filter *calibration*, not modulation: VXN1's
+  `filter_key_track` is `0..1` where `1.0` = 1 octave of cutoff per octave of
+  key **pivoting at C0**, which is what makes cutoff-at-minimum (the Cutoff
+  param's floor is C0's 16.3516 Hz) track the played note exactly. A bipolar
+  matrix depth cannot express that control — unity would sit at a quarter of
+  travel — and the engine separately needs the amount as a number for the drift
+  coupling. A **Key → Cutoff** route remains available and sums on top, giving
+  the free-form tracking VXN1 has no way to patch (envelope-scaled, negative,
+  curved, or past 1 oct/oct); `KEY_CUTOFF_UNITY_DEPTH` = 0.25 marks 1 oct/oct
+  for that route, which pivots at C4 like every other Key route.
 - **Velocity → cutoff, LFO/env → everything.** All the fixed depth faders of ADR
   0004 (`CutoffLfo1Depth`, `VelCutoffDepth`, `PitchLfoDepth`, …) collapse into
   matrix slots.

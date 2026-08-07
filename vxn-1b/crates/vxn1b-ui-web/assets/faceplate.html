@@ -132,6 +132,10 @@ __CSS__
         <div class="ctl" data-control="buttongroup" data-param="filter_mode" data-label="Mode"></div>
         <div class="ctl" data-control="fader" data-param="hpf_cutoff" data-label="HPF"></div>
         <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
+        <!-- Key-track (0245): dedicated param, VXN1's control — 1.0 = 1 oct of
+             cutoff per oct of key, pivoting at C0, so with Cutoff at its
+             minimum (C0's 16.35 Hz) the filter tracks the played note. -->
+        <div class="ctl" data-control="fader" data-param="filter_key_track" data-label="Key"></div>
         <div class="ctl" data-control="fader" data-param="resonance" data-label="Reso"></div>
         <div class="ctl" data-control="fader" data-param="drive" data-label="Drive"></div>
       </div>

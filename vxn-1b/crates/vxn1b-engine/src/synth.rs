@@ -301,6 +301,7 @@ fn build_ctx<'a>(
         ring_mode,
         cross_mod_type: p.cross_mod_type(),
         cutoff: p.get(ParamId::Cutoff),
+        filter_key_track: p.get(ParamId::FilterKeyTrack),
         hpf_cutoff: p.get(ParamId::HpfCutoff),
         resonance: p.get(ParamId::Resonance),
         drive: p.get(ParamId::Drive),

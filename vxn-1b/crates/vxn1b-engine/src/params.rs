@@ -147,6 +147,12 @@ pub enum ParamId {
     FilterMode,
     FilterSlope,
     HpfCutoff,
+    // Key-track (0245) is a dedicated param, not a matrix route: it is filter
+    // *calibration*, not modulation. At 1.0 the cutoff shifts `note − 12` st,
+    // pivoting at C0 like VXN1's `filter_key_track`, so cutoff-at-minimum
+    // (16.3516 Hz = C0) tracks the played note exactly. A Key→Cutoff matrix
+    // route stacks on top for the free-form cases (KEY_CUTOFF_UNITY_DEPTH).
+    FilterKeyTrack,
     // ── Envelopes ──
     Env1Attack,
     Env1Decay,
@@ -308,15 +314,16 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 66] = {
+pub const PATCH_PARAMS: [ParamId; 67] = {
     use ParamId::*;
     [
         // Osc / mixer (17)
         Osc1Wave, Osc1Coarse, Osc1Fine, Osc1Octave, Osc1Level, Osc1PulseWidth,
         Osc2Wave, Osc2Coarse, Osc2Fine, Osc2Octave, Osc2Level, Osc2PulseWidth,
         SubLevel, CrossModType, CrossModAmount, NoiseLevel, NoiseColor,
-        // Filter (6)
+        // Filter (7)
         Cutoff, Resonance, Drive, FilterMode, FilterSlope, HpfCutoff,
+        FilterKeyTrack,
         // Envelopes (10)
         Env1Attack, Env1Decay, Env1Sustain, Env1Release, Env1Shape,
         Env2Attack, Env2Decay, Env2Sustain, Env2Release, Env2Shape,
@@ -537,6 +544,7 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     e("filter_mode", "Filter Mode", FILTER_MODE_LABELS, 0.0),
     e("filter_slope", "Filter Slope", SLOPE_LABELS, 1.0),
     f("hpf_cutoff", "HPF Cutoff", 20.0, 18000.0, 20.0, "Hz", Taper::Exp { mid: 1000.0 }),
+    f("filter_key_track", "Key Track", 0.0, 1.0, 0.0, "", Taper::Linear),
     // ── Envelopes ──
     f("env1_attack", "Env 1 Attack", 0.001, 10.0, 0.005, "s", Taper::Exp { mid: 1.0 }),
     f("env1_decay", "Env 1 Decay", 0.001, 10.0, 0.3, "s", Taper::Exp { mid: 1.0 }),
@@ -816,7 +824,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 66 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 67 + 32);
     }
 
     #[test]
@@ -894,7 +902,6 @@ mod tests {
             "mod_wheel_cutoff",
             "mod_wheel_reso",
             "mod_wheel_cross_mod_sweep",
-            "filter_key_track",
         ] {
             assert!(ParamId::from_name(gone).is_none(), "{gone} should be removed");
         }

@@ -90,8 +90,8 @@ impl SourceId {
     ///   treating them as bipolar would map `[0, 1]` through `(x+1)/2` → `[0.5,
     ///   1]` as a scale VCA and never gate to zero (the same trap VXN2 flags for
     ///   `VoiceRand`), so they stay unipolar passthrough. `Key` is unipolar for
-    ///   *scale* purposes; as a primary source its value is signed semitones rel
-    ///   C4 (see [`default_patch`]).
+    ///   *scale* purposes; as a primary source its value is signed octaves rel
+    ///   C4 (see [`KEY_CUTOFF_UNITY_DEPTH`]).
     #[inline]
     pub const fn is_bipolar(self) -> bool {
         match self {
@@ -315,11 +315,14 @@ impl Default for MatrixTable {
 /// semitones; over one octave of key (`octaves_from_c4` changes by 1) that is
 /// `d · 48` semitones. For 12 st (1 oct of cutoff) → `d = 12/48 = 0.25`.
 ///
-/// The factory patch does **not** seed this depth — key-track defaults **off**
-/// to match VXN1 (whose `filter_key_track` default is `0.0`); see
-/// [`default_patch`]. This is the UI/automation calibration point for a full
-/// octave of tracking (and the constant the 0202 parity work hinges on: change
-/// the Cutoff gain or Key normalisation and this value re-derives).
+/// **This is the *extra*, freely-routed tracking, not the VXN1 control** (0245).
+/// VXN1's key-track is [`ParamId::FilterKeyTrack`](crate::params::ParamId), a
+/// dedicated `0..1` param pivoting at **C0** — matching pivot as well as slope,
+/// which is what makes "cutoff at minimum (16.3516 Hz = C0) + track at 1.0 ⇒
+/// cutoff *is* the played note" hold. A matrix route pivots at C4 like every
+/// other Key route, and stacks additively on top of the param: use it for the
+/// things the param cannot do (envelope-scaled, negative, or curved tracking,
+/// or more than 1 oct/oct).
 pub const KEY_CUTOFF_UNITY_DEPTH: f32 = 0.25;
 
 /// Matrix depth reproducing VXN1's default LFO1→pitch **vibrato** of 0.05 st
@@ -338,14 +341,14 @@ pub const DEFAULT_VIBRATO_DEPTH: f32 = 0.160_918;
 /// - **Slot 0 — Env2 → Amp @ 1.0.** Reproduces VXN1's hardwired VCA = Env2: the
 ///   amp envelope drives the VCA at full depth (VXN1 ADR 0004's Amp column).
 ///   Essential — without it the VCA never opens.
-/// - **Slot 1 — Key → Cutoff @ 0.0.** The filter key-track route is *pre-wired*
-///   for convenience (so the player only dials the depth), but its amount
-///   defaults to **zero** — VXN1's `filter_key_track` default is `0.0`, so the
-///   factory sound has no key-track. Raising the depth toward
-///   [`KEY_CUTOFF_UNITY_DEPTH`] restores 1 oct/oct.
-/// - **Slot 2 — LFO1 → Pitch @ [`DEFAULT_VIBRATO_DEPTH`].** Reproduces VXN1's
+/// - **Slot 1 — LFO1 → Pitch @ [`DEFAULT_VIBRATO_DEPTH`].** Reproduces VXN1's
 ///   gentle default vibrato (0.05 st), so VXN1b's factory patch matches VXN1's
 ///   real default — the render-parity target (0202).
+///
+/// Filter key-track is **not** here: it used to occupy a pre-wired Key→Cutoff
+/// slot standing in for VXN1's missing param, and 0245 gave it back its own
+/// param ([`ParamId::FilterKeyTrack`](crate::params::ParamId), default `0.0`
+/// like VXN1's). The slot is the player's again.
 pub fn default_patch() -> MatrixTable {
     let mut table = MatrixTable::default();
     table.slots[0] = MatrixSlot {
@@ -356,13 +359,6 @@ pub fn default_patch() -> MatrixTable {
         scale_src: SourceId::None,
     };
     table.slots[1] = MatrixSlot {
-        source: SourceId::Key,
-        dest: DestId::Cutoff,
-        depth: 0.0,
-        curve: Curve::Lin,
-        scale_src: SourceId::None,
-    };
-    table.slots[2] = MatrixSlot {
         source: SourceId::Lfo1,
         dest: DestId::Pitch,
         depth: DEFAULT_VIBRATO_DEPTH,
@@ -483,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn default_patch_seeds_amp_and_prewires_keytrack_off() {
+    fn default_patch_seeds_amp_and_vibrato_only() {
         let t = default_patch();
         // Slot 0: Env2 → Amp @ 1.0 — essential, drives the VCA.
         assert_eq!(
@@ -496,28 +492,9 @@ mod tests {
                 scale_src: SourceId::None,
             }
         );
-        // Slot 1: Key → Cutoff pre-wired but at depth 0.0 (key-track off, VXN1
-        // parity — `filter_key_track` defaults to 0.0).
+        // Slot 1: LFO1 → Pitch gentle vibrato (matches VXN1's real default).
         assert_eq!(
             t.slots[1],
-            MatrixSlot {
-                source: SourceId::Key,
-                dest: DestId::Cutoff,
-                depth: 0.0,
-                curve: Curve::Lin,
-                scale_src: SourceId::None,
-            }
-        );
-        // The key-track route is wired (both endpoints real) so the UI shows it,
-        // but its zero depth means the evaluator (0202) skips it — no key-track
-        // in the factory sound.
-        assert!(t.slots[1].is_active());
-        assert_eq!(t.slots[1].depth, 0.0);
-        // The calibration constant is the full-octave target, not the default.
-        assert_eq!(KEY_CUTOFF_UNITY_DEPTH, 0.25);
-        // Slot 2: LFO1 → Pitch gentle vibrato (matches VXN1's real default).
-        assert_eq!(
-            t.slots[2],
             MatrixSlot {
                 source: SourceId::Lfo1,
                 dest: DestId::Pitch,
@@ -526,9 +503,17 @@ mod tests {
                 scale_src: SourceId::None,
             }
         );
-        // Every remaining slot is inert.
-        for s in &t.slots[3..] {
+        // Key-track is a param (0245), not a pre-wired slot: nothing in the
+        // factory patch touches Cutoff, and every remaining slot is the
+        // player's.
+        for s in &t.slots[2..] {
             assert!(!s.is_active(), "slot past the seeds must be inert");
         }
+        assert!(
+            !t.slots.iter().any(|s| s.dest == DestId::Cutoff),
+            "the factory patch must not pre-wire a Cutoff route"
+        );
+        // The calibration constant survives as the *extra* tracking's unity mark.
+        assert_eq!(KEY_CUTOFF_UNITY_DEPTH, 0.25);
     }
 }
