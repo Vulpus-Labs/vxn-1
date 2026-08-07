@@ -47,6 +47,7 @@
 //! move together. Layer 1 ticks first, so the master phase is always current.
 
 use crate::fx::{FxChain, FxParams};
+use crate::output::OutputStage;
 use crate::matrix::MatrixTable;
 use crate::params::{ClapRef, Layer, ParamId, clap_ref};
 use crate::state::{LayerState, PluginState};
@@ -55,8 +56,8 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use vxn_core_utils::{MeterBus, MeterTap};
-use vxn_dsp::CONTROL_BLOCK;
 use vxn_dsp::smoothing::Smoothed;
+use vxn_dsp::{CONTROL_BLOCK, MAX_OVERSAMPLE, StereoLimiter};
 
 /// Default split point (MIDI note) — middle C, matching VXN1
 /// ([`vxn-app` domain `DEFAULT_SPLIT_POINT`](../../../vxn-1/crates/vxn-app/src/domain.rs)).
@@ -227,11 +228,30 @@ pub struct Engine {
     /// hard gate — the layer keeps rendering underneath, so unmuting resumes
     /// mid-note without a click and never strands a held voice.
     layer_gain: [Smoothed; 2],
-    /// Scratch for layer 2's control block. Layer 1 renders straight into the
-    /// output and is scaled in place; layer 2 needs its own buffer so the two
-    /// can take different gains before they sum. One `CONTROL_BLOCK` pair,
-    /// allocated once at construction — never on the audio thread.
-    mix_scratch: [[f32; CONTROL_BLOCK]; 2],
+    /// Scratch for layer 2's control block, at the **oversampled** rate: layer 1
+    /// renders into the OS bus and is scaled in place; layer 2 needs its own
+    /// buffer so the two can take different gains before they sum. Sized for the
+    /// largest factor and allocated once at construction — never on the audio
+    /// thread.
+    mix_scratch: [[f32; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
+    /// The oversampled L/R synthesis buses both layers sum into, decimated to
+    /// the base rate by [`OutputStage`] before FX (0251).
+    os_bus: [[f32; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
+    /// Decimators + the OS-change / silence / mono bookkeeping.
+    output: OutputStage,
+    /// Master brickwall limiter, last in the signal path — *after* master volume
+    /// (0251), so a master boost can't push past the ceiling. Bypassed unless
+    /// `limiter_on`, with a short dry↔limited crossfade on the toggle and a
+    /// lookahead reset on the off→on edge.
+    limiter: StereoLimiter,
+    limiter_fade: Smoothed,
+    limiter_on: bool,
+    /// Whether the limiter's on-state has been adopted since construction /
+    /// reset. The *first* block must snap the fade to the current setting, not
+    /// ramp into it: a patch that loads with Limit already on would otherwise
+    /// pass its first 10 ms — the note attack, i.e. exactly the peak the limiter
+    /// exists to catch — through dry. Only a later toggle crossfades.
+    limiter_primed: bool,
 }
 
 /// Layer level/mute fade, ms. Matches the FX chain's bypass fade — long enough
@@ -267,7 +287,13 @@ impl Engine {
                 Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
                 Smoothed::new(1.0, LAYER_FADE_MS, sample_rate),
             ],
-            mix_scratch: [[0.0; CONTROL_BLOCK]; 2],
+            mix_scratch: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
+            os_bus: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
+            output: OutputStage::new(sample_rate),
+            limiter: StereoLimiter::new(sample_rate),
+            limiter_fade: Smoothed::new(0.0, LAYER_FADE_MS, sample_rate),
+            limiter_on: false,
+            limiter_primed: false,
         }
     }
 
@@ -439,6 +465,14 @@ impl Engine {
         self.synths[0].reset();
         self.synths[1].reset();
         self.fx.reset();
+        // Decimator + limiter state is transport state: a stale FIR history or
+        // lookahead window would leak the pre-reset signal into the first block
+        // after the transport restarts (0251).
+        self.output.reset();
+        self.limiter.reset();
+        self.limiter_fade.snap(0.0);
+        self.limiter_on = false;
+        self.limiter_primed = false;
         // Drop any pending peaks so a re-started transport doesn't paint a
         // meter from before the reset.
         self.meters.clear();
@@ -451,10 +485,23 @@ impl Engine {
         // synths, so either table holds the same value and layer 1's is read
         // here by convention.
         let master = self.synths[0].param(ParamId::MasterVolume as usize);
+        // Oversampling factor for this call. Resolved once (not per control
+        // block) so a change lands on a call boundary, and handed to the output
+        // stage first so the decimator reset + crossfade are armed before any
+        // audio is produced at the new rate.
+        let os = self.synths[0].params().oversample_factor();
+        self.output.on_os_change(os);
+        let limiter_on = self.synths[0].params().bool(ParamId::LimiterOn);
         let mut off = 0;
         while off < left.len() {
             let n = (left.len() - off).min(CONTROL_BLOCK);
-            self.render_control_block(&mut left[off..off + n], &mut right[off..off + n], master);
+            self.render_control_block(
+                &mut left[off..off + n],
+                &mut right[off..off + n],
+                master,
+                os,
+                limiter_on,
+            );
             off += n;
         }
     }
@@ -477,10 +524,34 @@ impl Engine {
     /// Render one ≤`CONTROL_BLOCK` control block: pre-zero, tick each active
     /// synth, apply its per-layer mix gain, sum, run the one global FX chain,
     /// apply master volume.
-    fn render_control_block(&mut self, l: &mut [f32], r: &mut [f32], master: f32) {
-        l.fill(0.0);
-        r.fill(0.0);
+    fn render_control_block(
+        &mut self,
+        l: &mut [f32],
+        r: &mut [f32],
+        master: f32,
+        os: usize,
+        limiter_on: bool,
+    ) {
         let n = l.len();
+        // Voices render into the oversampled buses; `l`/`r` receive the
+        // decimated result further down (0251). At os = 1 the decimator is a
+        // pass-through, so the OS-off render is bit-identical to the pre-0251
+        // path.
+        let os_n = n * os;
+        // Gain targets read `self.synths`, so resolve them before the `os_bus`
+        // borrow starts — the split below holds `self` mutably for the rest of
+        // the render.
+        let gain_target = [self.layer_gain_target(0), self.layer_gain_target(1)];
+        // Same reason: the decimator's two hints are param/voice reads.
+        // `spread == 0` on every *sounding* layer ⇒ L == R bit-for-bit.
+        let spread_zero = self.synths[0].params().get(ParamId::Spread) == 0.0
+            && (!self.key.layer2_on || self.synths[1].params().get(ParamId::Spread) == 0.0);
+        let both_silent =
+            self.synths[0].is_silent() && (!self.key.layer2_on || self.synths[1].is_silent());
+        let (bus_l, bus_r) = self.os_bus.split_at_mut(1);
+        let (bus_l, bus_r) = (&mut bus_l[0][..os_n], &mut bus_r[0][..os_n]);
+        bus_l.fill(0.0);
+        bus_r.fill(0.0);
 
         // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
         // Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
@@ -492,49 +563,61 @@ impl Engine {
         // 2 renders into scratch so the two can take different gains before they
         // sum (0220). Both gains ramp per sample, so a fader move or a mute is a
         // short fade, not a step.
-        self.synths[0].render_control_block(l, r, None);
-        self.layer_gain[0].set_target(self.layer_gain_target(0));
+        self.synths[0].render_control_block(bus_l, bus_r, None, os);
+        self.layer_gain[0].set_target(gain_target[0]);
+        // The gain smoother ticks once per BASE frame and is held across that
+        // frame's OS sub-samples: a fader move must take the same wall-clock
+        // time to land at 8× as at 1× (0251).
         for i in 0..n {
             let g = self.layer_gain[0].tick();
-            l[i] *= g;
-            r[i] *= g;
+            for k in 0..os {
+                bus_l[i * os + k] *= g;
+                bus_r[i * os + k] *= g;
+            }
         }
         // Post-fader tap (0220): what this layer actually contributes to the
         // mix, so a muted or pulled-down layer reads zero — which is what a
         // mixer strip should show.
-        self.meters.publish_block_peak(MeterTap::Layer1L, &l[..n], &r[..n]);
+        self.meters.publish_block_peak(MeterTap::Layer1L, bus_l, bus_r);
 
         if self.key.layer2_on {
             let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
-            // Read the gain target before the scratch borrow starts — it reads
-            // `self.synths`, which the split below would otherwise conflict with.
-            self.layer_gain[1].set_target(self.layer_gain_target(1));
+            self.layer_gain[1].set_target(gain_target[1]);
             // Split the scratch borrow so both halves are live at once.
             let (scratch_l, scratch_r) = self.mix_scratch.split_at_mut(1);
-            let (s_l, s_r) = (&mut scratch_l[0][..n], &mut scratch_r[0][..n]);
+            let (s_l, s_r) = (&mut scratch_l[0][..os_n], &mut scratch_r[0][..os_n]);
             s_l.fill(0.0);
             s_r.fill(0.0);
-            self.synths[1].render_control_block(s_l, s_r, lfo2_master);
+            self.synths[1].render_control_block(s_l, s_r, lfo2_master, os);
 
             for i in 0..n {
                 let g = self.layer_gain[1].tick();
-                s_l[i] *= g;
-                s_r[i] *= g;
+                for k in 0..os {
+                    s_l[i * os + k] *= g;
+                    s_r[i * os + k] *= g;
+                }
             }
             self.meters.publish_block_peak(MeterTap::Layer2L, s_l, s_r);
-            for i in 0..n {
-                l[i] += s_l[i];
-                r[i] += s_r[i];
+            for i in 0..os_n {
+                bus_l[i] += s_l[i];
+                bus_r[i] += s_r[i];
             }
         } else {
             // Synth 2 is bypassed, so its gain must not sit part-way through a
             // fade waiting to be resumed — snap it, and let its meter rest.
-            self.layer_gain[1].snap(self.layer_gain_target(1));
+            self.layer_gain[1].snap(gain_target[1]);
         }
 
-        // Serial FX chain over the summed voices, at the global OS rate (today
-        // 1×, so `l`/`r` are base-rate). Each effect is a true skip when off and
-        // settled, so the default FX-off patch is a bit-exact passthrough here.
+        // Decimate the oversampled buses down to the base rate. Spread = 0 on
+        // every sounding layer ⇒ L == R bit-for-bit, so the R decimator is
+        // skipped and copied; both synths silent ⇒ the drain-skip can eventually
+        // zero-fill. That bookkeeping lives in `OutputStage` (0251).
+        self.output
+            .decimate_block(bus_l, bus_r, l, r, os, spread_zero, both_silent);
+
+        // Serial FX chain over the summed voices, at the base rate. Each effect
+        // is a true skip when off and settled, so the default FX-off patch is a
+        // bit-exact passthrough here.
         self.fx.set_params(&FxParams::from_params(self.synths[0].params()));
         self.fx.process_block(l, r);
 
@@ -548,7 +631,34 @@ impl Engine {
             *s = if v.is_finite() { v } else { 0.0 };
         }
 
-        // Master-out meter tap (0240) — after master volume and after the
+        // Master limiter, genuinely last (0251): after master volume, so raising
+        // the master can't push the output past the ceiling. Re-engaging clears
+        // the lookahead first, or a stale transient leaks into the first block;
+        // the fade crossfades dry↔limited so the toggle can't step level. Off
+        // and settled it is a true skip, like the FX slots.
+        if limiter_on && !self.limiter_on {
+            self.limiter.reset();
+        }
+        self.limiter_on = limiter_on;
+        let target = if limiter_on { 1.0 } else { 0.0 };
+        if self.limiter_primed {
+            self.limiter_fade.set_target(target);
+        } else {
+            // First block since construction / reset: adopt the setting whole.
+            self.limiter_fade.snap(target);
+            self.limiter_primed = true;
+        }
+        if limiter_on || self.limiter_fade.current() != 0.0 {
+            for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
+                let (dl, dr) = (*ls, *rs);
+                let (wl, wr) = self.limiter.process(dl, dr);
+                let w = self.limiter_fade.tick();
+                *ls = dl + (wl - dl) * w;
+                *rs = dr + (wr - dr) * w;
+            }
+        }
+
+        // Master-out meter tap (0240) — after master volume, the limiter and the
         // finite guard, so it reports exactly what leaves the plugin. The bus
         // accumulates the max across control blocks, so the UI's ~60 Hz drain
         // sees the loudest sample since its last frame regardless of how many
@@ -596,6 +706,32 @@ mod tests {
         e.process_block(&mut l, &mut r);
         let peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak > 0.0, "a held note with the default patch must sound");
+    }
+
+    /// 0250: `CutoffTuned` is a UI display mode that persists with the patch —
+    /// the engine must never read it. Rendered blocks with the toggle off and on
+    /// have to be **bit-identical**, or the "Tuned" strip would quietly change
+    /// the sound of a preset that happened to be saved with it on.
+    #[test]
+    fn cutoff_tuned_never_reaches_the_engine() {
+        let render = |tuned: f32| {
+            let mut e = Engine::new(48_000.0, 512);
+            e.set_param(l1(ParamId::Env2Attack), 0.001);
+            e.set_param(l1(ParamId::CutoffTuned), tuned);
+            e.note_on(0, 60, 1.0);
+            let mut l = vec![0.0; 512];
+            let mut r = vec![0.0; 512];
+            e.process_block(&mut l, &mut r);
+            (l, r)
+        };
+        let (off_l, off_r) = render(0.0);
+        let (on_l, on_r) = render(1.0);
+        assert!(
+            off_l.iter().fold(0.0f32, |a, &s| a.max(s.abs())) > 0.0,
+            "the probe must actually sound, or this proves nothing"
+        );
+        assert_eq!(off_l, on_l, "Tuned changed the left channel");
+        assert_eq!(off_r, on_r, "Tuned changed the right channel");
     }
 
     #[test]
@@ -775,7 +911,7 @@ mod tests {
                 let n = (out.len() - off).min(CONTROL_BLOCK);
                 out[off..off + n].fill(0.0);
                 r[off..off + n].fill(0.0);
-                e.synths[s].render_control_block(&mut out[off..off + n], &mut r[off..off + n], None);
+                e.synths[s].render_control_block(&mut out[off..off + n], &mut r[off..off + n], None, 1);
                 off += n;
             }
             out
@@ -1052,7 +1188,7 @@ mod tests {
         // Synth 2 holds no voice → tick it in isolation and it is silent.
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        e.synths[1].render_control_block(&mut l, &mut r, None);
+        e.synths[1].render_control_block(&mut l, &mut r, None, 1);
         let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
         assert_eq!(peak, 0.0, "single mode must not route notes to synth 2");
     }
@@ -1067,7 +1203,7 @@ mod tests {
         for s in 0..2 {
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            e.synths[s].render_control_block(&mut l, &mut r, None);
+            e.synths[s].render_control_block(&mut l, &mut r, None, 1);
             let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()));
             assert!(peak > 0.0, "dual must drive synth {s}");
         }
@@ -1089,7 +1225,7 @@ mod tests {
         let peak = |e: &mut Engine, s: usize| {
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            e.synths[s].render_control_block(&mut l, &mut r, None);
+            e.synths[s].render_control_block(&mut l, &mut r, None, 1);
             l.iter().chain(r.iter()).fold(0.0f32, |a, &x| a.max(x.abs()))
         };
         assert!(peak(&mut e, 0) > 0.0, "note at/above split must sound on synth 1");

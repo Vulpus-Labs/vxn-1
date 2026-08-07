@@ -27,6 +27,7 @@ pub mod fx;
 pub mod matrix;
 pub mod meters;
 pub mod mod_smoothing;
+pub mod output;
 pub mod params;
 pub mod preset;
 pub mod preset_io;
