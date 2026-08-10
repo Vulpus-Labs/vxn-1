@@ -464,6 +464,8 @@ impl RenderBank {
         let mut pitch_active = [false; N];
         let mut pwm_active = [false; N];
         let mut xmod_active = [false; N];
+        let mut pan_tgt = [0.0f32; N];
+        let mut pan_active = [false; N];
         // `CrossModAmount` only means anything in PM mode — Off/Sync/Ring ignore
         // the amount, as VXN1 does — so the dest is gated on the mode rather
         // than silently accumulating smoother state the kernel can't read.
@@ -482,6 +484,11 @@ impl RenderBank {
                 pitch_wheel: ctx.pitch_wheel,
                 aftertouch: pressure[v],
                 note_random: note_random[v],
+                // The lane's own place in the image, already scaled by the
+                // Spread knob (0260). Routing this to `Pan` at depth 1 — what
+                // the default patch does — is VXN1's hard-wired unison spread,
+                // now expressed as topology.
+                spread_pos: pan_position(v) * ctx.spread,
             };
             let sources = eval_sources(&inp);
             let mut dests = [0.0f32; crate::matrix::N_DESTS];
@@ -506,6 +513,10 @@ impl RenderBank {
             pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
             sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
             pwm_tgt[v] = dests[DestId::Pwm.idx().unwrap()];
+            // Pan (0260). Clamped here rather than at the gains: the smoother
+            // should chase a reachable position, or an over-deep route would
+            // leave it creeping toward a target the law can never render.
+            pan_tgt[v] = dests[DestId::Pan.idx().unwrap()].clamp(-1.0, 1.0);
             xmod_tgt[v] = if pm_mode {
                 dests[DestId::CrossModAmount.idx().unwrap()]
             } else {
@@ -523,12 +534,16 @@ impl RenderBank {
             if self.trigger_pending[v] {
                 self.smooth.snap_pitch(v, pitch_tgt[v], sweep_tgt[v]);
                 self.smooth.snap_slow(v, pwm_tgt[v], xmod_tgt[v], ac.stat);
+                // A stolen lane must not glide across the image from wherever
+                // the previous note sat.
+                self.smooth.snap_pan(v, pan_tgt[v]);
             }
             amp_c[v] = AmpCoeffs { stat: self.smooth.amp_stat_current(v), ..ac };
 
             // PWM: per-quantum one-pole on the matrix offset (peek here; the frame
             // loop advances it), then VXN1's clamp.
             pwm_active[v] = active[v] && self.smooth.pwm_active(v, pwm_tgt[v]);
+            pan_active[v] = active[v] && self.smooth.pan_active(v, pan_tgt[v]);
             let pwm_s = self.smooth.pwm_current(v);
             pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
             pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
@@ -578,6 +593,7 @@ impl RenderBank {
         let pitch_any = pitch_active.iter().any(|&a| a);
         let pwm_any = pwm_active.iter().any(|&a| a);
         let xmod_any = xmod_active.iter().any(|&a| a);
+        let pan_any = pan_active.iter().any(|&a| a);
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ;
@@ -602,14 +618,23 @@ impl RenderBank {
         let mut filt = [0.0f32; N];
         let mut amp = [0.0f32; N];
 
-        // Equal-sum pan (VXN1): pos in [-1,1], (gL,gR) sums to 2, so spread=0
-        // collapses to identical L/R.
+        // Voice pan (0260). The position comes from the matrix `Pan` dest —
+        // the default patch routes `Spread` there at depth 1, which is how
+        // unison spread survives as topology rather than hard wiring — and the
+        // law is the same unity-centre constant power the layer mixer uses
+        // (0248): `gl² + gr²` constant across the sweep, centre exactly 1.0.
+        //
+        // The old law was VXN1's equal-sum (`1 − pos`, `1 + pos`). Equal-sum is
+        // defensible for a *static* placement, but total power rises toward the
+        // extremes, so an LFO routed here would audibly pump — which is exactly
+        // what this dest exists to allow. Centre stays unity, so a spread-0
+        // patch is bit-identical and the parity fork still holds.
         let mut pan_l = [0.0f32; N];
         let mut pan_r = [0.0f32; N];
         for v in 0..N {
-            let pos = pan_position(v) * ctx.spread;
-            pan_l[v] = 1.0 - pos;
-            pan_r[v] = 1.0 + pos;
+            let (gl, gr) = voice_pan_gains(self.smooth.pan_current(v));
+            pan_l[v] = gl;
+            pan_r[v] = gr;
         }
 
         let ring_on = ctx.ring_mode;
@@ -654,7 +679,7 @@ impl RenderBank {
             // Pitch/XModSweep/PWM ramps in as a slope, not a block-held stair.
             // Only lanes with an active route pay this; static patches keep the
             // block-start values.
-            if (pitch_any || pwm_any || xmod_any) && base_i % PITCH_QUANTUM == 0 {
+            if (pitch_any || pwm_any || xmod_any || pan_any) && base_i % PITCH_QUANTUM == 0 {
                 for v in 0..N {
                     if pitch_active[v] {
                         let (p, sw) = self.smooth.tick_pitch(v, pitch_tgt[v], sweep_tgt[v]);
@@ -671,6 +696,16 @@ impl RenderBank {
                     if xmod_active[v] {
                         let xmod_s = self.smooth.tick_xmod(v, xmod_tgt[v]);
                         pm_idx[v] = (ctx.pm_index + xmod_s).max(0.0);
+                    }
+                    if pan_active[v] {
+                        // Re-cook this lane's pan gains from the smoothed
+                        // position. The summing loop keeps reading `pan_l`/
+                        // `pan_r`, so the hot path is untouched — a lane with
+                        // no live route never gets here and keeps its
+                        // block-start gains.
+                        let (gl, gr) = voice_pan_gains(self.smooth.tick_pan(v, pan_tgt[v]));
+                        pan_l[v] = gl;
+                        pan_r[v] = gr;
                     }
                 }
             }
@@ -820,6 +855,21 @@ fn pan_position(lane: usize) -> f32 {
     P[lane]
 }
 
+/// Constant-power pan gains for a voice position in `[-1, 1]` (0260),
+/// normalised to unity at centre — the same law as the layer mixer's
+/// [`crate::engine::pan_gains`], applied per lane.
+///
+/// `gl² + gr²` is constant across the sweep, so a voice swept by an LFO holds
+/// its apparent loudness; the `√2` puts centre at exactly 1.0, so a centred
+/// (spread-0) patch renders as it did under the old equal-sum law and the
+/// parity fork stays valid.
+#[inline]
+fn voice_pan_gains(pos: f32) -> (f32, f32) {
+    let theta = (pos.clamp(-1.0, 1.0) + 1.0) * core::f32::consts::FRAC_PI_4;
+    let (sin, cos) = theta.sin_cos();
+    (core::f32::consts::SQRT_2 * cos, core::f32::consts::SQRT_2 * sin)
+}
+
 /// Portamento glide `(active, coeff)` for the block (VXN1, unison scaling
 /// dropped — Poly only). Time 0 snaps.
 #[inline]
@@ -909,7 +959,7 @@ fn sweep_gates(mode: CrossModType) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::default_patch;
+    use crate::matrix::{Curve, MatrixSlot, default_patch};
 
     #[allow(clippy::type_complexity)]
     fn book() -> ([u8; N], [bool; N], [bool; N], [f32; N], [f32; N], [f32; N]) {
@@ -963,6 +1013,168 @@ mod tests {
             mod_wheel: 0.0,
             pitch_wheel: 0.0,
         }
+    }
+
+    // ── Pan as a matrix destination (0260) ──────────────────────────────────
+
+    /// Render one lane and return its `(L, R)` peaks.
+    fn lane_peaks(bank: &mut RenderBank, c: &BlockCtx, lane: usize, frames: usize) -> (f32, f32) {
+        let mut note = [60u8; N];
+        note[lane] = 60;
+        let mut gate = [false; N];
+        let mut active = [false; N];
+        gate[lane] = true;
+        active[lane] = true;
+        let mut l = vec![0.0; frames];
+        let mut r = vec![0.0; frames];
+        bank.render(c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        (
+            l.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
+            r.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
+        )
+    }
+
+    fn fast_bank() -> RenderBank {
+        let mut bank = RenderBank::new(48_000.0, 1);
+        bank.set_envelopes(
+            (0.001, 0.2, 1.0, 0.2), AdsrShape::Linear,
+            (0.001, 0.2, 1.0, 0.2), AdsrShape::Linear, 0.0,
+        );
+        bank
+    }
+
+    /// The law: unity at centre, constant power across the sweep.
+    #[test]
+    fn voice_pan_law_is_constant_power_with_unity_centre() {
+        let (cl, cr) = voice_pan_gains(0.0);
+        assert!((cl - 1.0).abs() < 1e-6 && (cr - 1.0).abs() < 1e-6, "centre {cl},{cr}");
+        for pos in [-1.0_f32, -0.5, 0.0, 0.25, 1.0] {
+            let (gl, gr) = voice_pan_gains(pos);
+            assert!((gl * gl + gr * gr - 2.0).abs() < 1e-5, "power at {pos}");
+        }
+        assert!(voice_pan_gains(-1.0).1.abs() < 1e-6, "hard left must silence R");
+        assert!(voice_pan_gains(1.0).0.abs() < 1e-6, "hard right must silence L");
+    }
+
+    /// The default `Spread → Pan` route reproduces VXN1's unison spread: with
+    /// Spread up, lane 0 (hard left) and lane 7 (hard right) land in opposite
+    /// channels — the behaviour that used to be hard-wired DSP.
+    #[test]
+    fn default_route_places_lanes_across_the_image() {
+        let m = default_patch();
+        let mut c = ctx(&m);
+        c.spread = 1.0;
+
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (l0, r0) = lane_peaks(&mut bank, &c, 0, 512);
+        assert!(l0 > 0.0 && r0 < l0 * 1e-3, "lane 0 must sit hard left: {l0} vs {r0}");
+
+        let mut bank = fast_bank();
+        bank.trigger_lane(7, LfoShape::Sine, false);
+        let (l7, r7) = lane_peaks(&mut bank, &c, 7, 512);
+        assert!(r7 > 0.0 && l7 < r7 * 1e-3, "lane 7 must sit hard right: {l7} vs {r7}");
+    }
+
+    /// Spread at 0 centres every lane, so the two channels are bit-identical —
+    /// the parity condition, and what the unity-centre normalisation preserves.
+    #[test]
+    fn spread_zero_centres_every_lane() {
+        let m = default_patch();
+        let c = ctx(&m); // spread: 0.0
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        assert!(l.iter().any(|&s| s != 0.0), "the voice must sound");
+        assert_eq!(l, r, "spread 0 must stay bit-mono");
+    }
+
+    /// Deleting the route makes the Spread knob inert — the honest consequence
+    /// of spread being topology now, and worth pinning so it is not mistaken
+    /// for a bug later.
+    #[test]
+    fn without_the_route_spread_does_nothing() {
+        let mut m = default_patch();
+        m.slots[2] = MatrixSlot::default();
+        let mut c = ctx(&m);
+        c.spread = 1.0;
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (l, r) = lane_peaks(&mut bank, &c, 0, 512);
+        assert!(l > 0.0);
+        assert!((l - r).abs() < l * 1e-3, "no Pan route ⇒ centred: {l} vs {r}");
+    }
+
+    /// An LFO into `Pan` moves a *centred* voice — auto-pan, the thing this
+    /// dest exists for. Uses a slow LFO so the block lands on one side.
+    #[test]
+    fn lfo_into_pan_moves_a_centred_voice() {
+        let mut m = default_patch();
+        m.slots[3] = MatrixSlot {
+            source: SourceId::Lfo2,
+            dest: DestId::Pan,
+            depth: 1.0,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        let mut c = ctx(&m);
+        c.spread = 0.0; // no spread contribution: the LFO is the only pan source
+
+        // LFO 2 pinned hard positive ⇒ hard right, and vice versa.
+        c.lfo2_val = 1.0;
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (l_right, r_right) = lane_peaks(&mut bank, &c, 0, 2048);
+        assert!(r_right > l_right * 10.0, "LFO +1 must pan right: {l_right} vs {r_right}");
+
+        c.lfo2_val = -1.0;
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (l_left, r_left) = lane_peaks(&mut bank, &c, 0, 2048);
+        assert!(l_left > r_left * 10.0, "LFO −1 must pan left: {l_left} vs {r_left}");
+    }
+
+    /// A pan move ramps rather than stepping. Measured on the *envelope* of the
+    /// channel being panned into: with a block-rate step, R would be at full
+    /// amplitude from the first sample of the new block; with the one-pole it
+    /// fills in across the block.
+    ///
+    /// (Raw sample-to-sample slew is the wrong probe here — a saw's own reset
+    /// dwarfs the pan ramp and would mask a step entirely.)
+    #[test]
+    fn pan_moves_ramp_rather_than_stepping() {
+        let mut m = default_patch();
+        m.slots[3] = MatrixSlot {
+            source: SourceId::Lfo2,
+            dest: DestId::Pan,
+            depth: 1.0,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        let mut c = ctx(&m);
+        c.spread = 0.0;
+        c.lfo2_val = -1.0; // hard left: R silent
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false);
+        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        assert!(r.iter().all(|&s| s.abs() < 1e-3), "hard left should leave R quiet");
+
+        // Slam to hard right for the next block.
+        c.lfo2_val = 1.0;
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        let head = r[..64].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        let tail = r[448..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(tail > 0.0, "the voice must arrive in R");
+        assert!(
+            head < tail * 0.75,
+            "R should fill in across the block, not step: head {head} vs tail {tail}"
+        );
     }
 
     #[test]

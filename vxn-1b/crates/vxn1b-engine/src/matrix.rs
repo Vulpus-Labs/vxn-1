@@ -44,10 +44,16 @@ pub enum SourceId {
     PitchWheel = 8,
     Aftertouch = 9,
     NoteRandom = 10,
+    /// The voice's own place in the stereo image (0260): the lane's fixed
+    /// position scaled by the `Spread` param, so a route into [`DestId::Pan`]
+    /// at depth 1 reproduces VXN1's hard-wired unison spread exactly. Keeping
+    /// the param's scaling *inside* the source is what lets Spread stay a
+    /// front-panel knob instead of becoming "slot 3's depth".
+    Spread = 11,
 }
 
 /// Count of non-sentinel sources (`None` excluded).
-pub const N_SOURCES: usize = 10;
+pub const N_SOURCES: usize = 11;
 
 impl SourceId {
     /// Index into a per-voice source lookup, or `None` for the sentinel.
@@ -74,6 +80,7 @@ impl SourceId {
             8 => SourceId::PitchWheel,
             9 => SourceId::Aftertouch,
             10 => SourceId::NoteRandom,
+            11 => SourceId::Spread,
             _ => SourceId::None,
         }
     }
@@ -84,7 +91,8 @@ impl SourceId {
     /// a new source forces a polarity decision at compile time (the
     /// `is_bipolar` discipline of VXN2 ADR 0009).
     ///
-    /// - **Bipolar:** `Lfo1`, `Lfo2`, `PitchWheel` — genuinely swing ±.
+    /// - **Bipolar:** `Lfo1`, `Lfo2`, `PitchWheel`, `Spread` — genuinely swing
+    ///   ±. (`Spread` is a *position*: lanes sit either side of centre.)
     /// - **Unipolar:** `Env1`, `Env2`, `Velocity`, `Key`, `ModWheel`,
     ///   `Aftertouch`, `NoteRandom`. The envelopes are `[0, 1]` ADSR shapes:
     ///   treating them as bipolar would map `[0, 1]` through `(x+1)/2` → `[0.5,
@@ -95,7 +103,7 @@ impl SourceId {
     #[inline]
     pub const fn is_bipolar(self) -> bool {
         match self {
-            SourceId::Lfo1 | SourceId::Lfo2 | SourceId::PitchWheel => true,
+            SourceId::Lfo1 | SourceId::Lfo2 | SourceId::PitchWheel | SourceId::Spread => true,
             SourceId::None
             | SourceId::Env1
             | SourceId::Env2
@@ -111,13 +119,13 @@ impl SourceId {
 /// Source machine id (kebab-case wire name). Index = `SourceId as u8`.
 pub const SOURCE_NAMES: [&str; N_SOURCES + 1] = [
     "none", "env1", "env2", "lfo1", "lfo2", "velocity", "key", "mod-wheel", "pitch-wheel",
-    "aftertouch", "note-random",
+    "aftertouch", "note-random", "spread",
 ];
 
 /// Source display label. Same indexing as [`SOURCE_NAMES`].
 pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
     "—", "Env 1", "Env 2", "LFO 1", "LFO 2", "Velocity", "Key", "Mod Wheel", "Pitch Wheel",
-    "Aftertouch", "Note Rnd",
+    "Aftertouch", "Note Rnd", "Spread",
 ];
 
 // ── DestId ──────────────────────────────────────────────────────────────────
@@ -140,10 +148,15 @@ pub enum DestId {
     HpfCutoff = 6,
     Amp = 7,
     CrossModAmount = 8,
+    /// Voice position in the stereo image, `[-1, 1]` (0260). Replaces VXN1's
+    /// hard-wired `pan_position(lane) × spread`: the default patch routes
+    /// [`SourceId::Spread`] here at depth 1, and anything else routed on top
+    /// (LFO auto-pan, an envelope throwing a transient left) sums with it.
+    Pan = 9,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 8;
+pub const N_DESTS: usize = 9;
 
 impl DestId {
     /// Index into a per-voice dest accumulator, or `None` for the sentinel.
@@ -167,6 +180,7 @@ impl DestId {
             6 => DestId::HpfCutoff,
             7 => DestId::Amp,
             8 => DestId::CrossModAmount,
+            9 => DestId::Pan,
             _ => DestId::None,
         }
     }
@@ -200,12 +214,13 @@ impl DestId {
 /// Destination machine id (kebab-case wire name). Index = `DestId as u8`.
 pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "none", "pitch", "xmod-sweep", "pwm", "cutoff", "resonance", "hpf-cutoff", "amp",
-    "cross-mod-amount",
+    "cross-mod-amount", "pan",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
 pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "—", "Pitch", "X-Mod Sweep", "PWM", "Cutoff", "Resonance", "HPF Cutoff", "Amp", "Cross-Mod Amt",
+    "Pan",
 ];
 
 // ── Curve ───────────────────────────────────────────────────────────────────
@@ -303,6 +318,35 @@ impl Default for MatrixTable {
     }
 }
 
+impl MatrixTable {
+    /// Install the default `Spread → Pan` route if this table has **no** route
+    /// into [`DestId::Pan`] at all, using the first free slot. Returns whether
+    /// one was installed.
+    ///
+    /// Why loading needs this (0260): before pan was a destination, spread was
+    /// hard-wired DSP, so every patch written until now carries no pan route
+    /// and would load dead-centre — a silent regression on every existing
+    /// preset. Seeding on load fixes that without a format change, since the
+    /// preset text is name-keyed and sparse rather than positional.
+    ///
+    /// A patch that *does* route `Pan` — even from some other source, even at
+    /// depth 0 — is left alone: it has an opinion about pan, and overriding it
+    /// would be worse than the problem being solved. A table with all 16 slots
+    /// occupied is likewise left alone rather than evicting the player's work.
+    pub fn ensure_pan_route(&mut self) -> bool {
+        if self.slots.iter().any(|s| s.dest == DestId::Pan) {
+            return false;
+        }
+        match self.slots.iter_mut().find(|s| !s.is_active()) {
+            Some(slot) => {
+                *slot = SPREAD_TO_PAN;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// Both layers' topology as a **view payload** (0247): the engine→page echo that
 /// keeps the mod-matrix combos honest when the patch changes underneath an open
 /// editor (preset load, host state load, undo).
@@ -359,6 +403,12 @@ pub const DEFAULT_VIBRATO_DEPTH: f32 = 0.160_918;
 ///   gentle default vibrato (0.05 st), so VXN1b's factory patch matches VXN1's
 ///   real default — the render-parity target (0202).
 ///
+/// - **Slot 2 — Spread → Pan @ 1.0.** Reproduces VXN1's hard-wired unison
+///   spread, which used to be a line of DSP (`pan_position(lane) × spread`) and
+///   is now a route like any other (0260). Depth 1.0 is the identity, so the
+///   `Spread` knob keeps its full range and meaning; delete the route and the
+///   knob goes inert, which is the honest consequence of routing being visible.
+///
 /// Filter key-track is **not** here: it used to occupy a pre-wired Key→Cutoff
 /// slot standing in for VXN1's missing param, and 0245 gave it back its own
 /// param ([`ParamId::FilterKeyTrack`](crate::params::ParamId), default `0.0`
@@ -379,8 +429,20 @@ pub fn default_patch() -> MatrixTable {
         curve: Curve::Lin,
         scale_src: SourceId::None,
     };
+    table.slots[2] = SPREAD_TO_PAN;
     table
 }
+
+/// The `Spread → Pan` route the default patch seeds and
+/// [`MatrixTable::ensure_pan_route`] restores (0260). Depth 1.0 is the
+/// identity: the `Spread` param does the scaling inside the source.
+pub const SPREAD_TO_PAN: MatrixSlot = MatrixSlot {
+    source: SourceId::Spread,
+    dest: DestId::Pan,
+    depth: 1.0,
+    curve: Curve::Lin,
+    scale_src: SourceId::None,
+};
 
 #[cfg(test)]
 mod tests {
@@ -445,10 +507,10 @@ mod tests {
     fn idx_maps_reals_and_skips_sentinel() {
         assert_eq!(SourceId::None.idx(), None);
         assert_eq!(SourceId::Env1.idx(), Some(0));
-        assert_eq!(SourceId::NoteRandom.idx(), Some(N_SOURCES - 1));
+        assert_eq!(SourceId::Spread.idx(), Some(N_SOURCES - 1));
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Pitch.idx(), Some(0));
-        assert_eq!(DestId::CrossModAmount.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Pan.idx(), Some(N_DESTS - 1));
     }
 
     #[test]
@@ -481,6 +543,63 @@ mod tests {
         }
     }
 
+    // ── ensure_pan_route (0260) ─────────────────────────────────────────────
+
+    #[test]
+    fn ensure_pan_route_seeds_a_patch_with_no_pan_opinion() {
+        let mut t = MatrixTable::default();
+        t.slots[0] = MatrixSlot {
+            source: SourceId::Env2,
+            dest: DestId::Amp,
+            depth: 1.0,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        assert!(t.ensure_pan_route(), "a pan-less patch must be seeded");
+        assert_eq!(t.slots[1], SPREAD_TO_PAN, "seeded into the first free slot");
+        // Idempotent: a second pass finds the route it just installed.
+        assert!(!t.ensure_pan_route());
+    }
+
+    #[test]
+    fn ensure_pan_route_leaves_an_existing_pan_opinion_alone() {
+        // Any route into Pan counts — including one from another source, and
+        // including one parked at depth 0. The patch has an opinion; honour it.
+        for existing in [
+            MatrixSlot { source: SourceId::Lfo1, dest: DestId::Pan, depth: 0.5,
+                         curve: Curve::Lin, scale_src: SourceId::None },
+            MatrixSlot { source: SourceId::Spread, dest: DestId::Pan, depth: 0.0,
+                         curve: Curve::Lin, scale_src: SourceId::None },
+        ] {
+            let mut t = MatrixTable::default();
+            t.slots[4] = existing;
+            assert!(!t.ensure_pan_route(), "must not seed over {existing:?}");
+            assert_eq!(t.slots[4], existing);
+            assert!(
+                t.slots.iter().filter(|s| s.dest == DestId::Pan).count() == 1,
+                "exactly one pan route"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_pan_route_gives_up_rather_than_evicting() {
+        // Sixteen live routes, none of them pan: the player's work wins over
+        // the convenience seed.
+        let mut t = MatrixTable::default();
+        for slot in t.slots.iter_mut() {
+            *slot = MatrixSlot {
+                source: SourceId::Lfo1,
+                dest: DestId::Cutoff,
+                depth: 0.5,
+                curve: Curve::Lin,
+                scale_src: SourceId::None,
+            };
+        }
+        assert!(!t.ensure_pan_route(), "a full table must not be evicted");
+        assert!(t.slots.iter().all(|s| s.dest == DestId::Cutoff));
+    }
+
     #[test]
     fn default_slot_is_inert() {
         let s = MatrixSlot::default();
@@ -493,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn default_patch_seeds_amp_and_vibrato_only() {
+    fn default_patch_seeds_amp_vibrato_and_spread_pan() {
         let t = default_patch();
         // Slot 0: Env2 → Amp @ 1.0 — essential, drives the VCA.
         assert_eq!(
@@ -517,10 +636,14 @@ mod tests {
                 scale_src: SourceId::None,
             }
         );
+        // Slot 2: Spread → Pan at unity — VXN1's unison spread, as a route
+        // rather than hard-wired DSP (0260).
+        assert_eq!(t.slots[2], SPREAD_TO_PAN);
+        assert_eq!(t.slots[2].depth, 1.0);
         // Key-track is a param (0245), not a pre-wired slot: nothing in the
         // factory patch touches Cutoff, and every remaining slot is the
         // player's.
-        for s in &t.slots[2..] {
+        for s in &t.slots[3..] {
             assert!(!s.is_active(), "slot past the seeds must be inert");
         }
         assert!(

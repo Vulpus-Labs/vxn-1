@@ -363,6 +363,12 @@ fn parse_layer(
     for (i, slot) in matrix.slots.iter_mut().enumerate() {
         slot.depth = params.slot_depth(i);
     }
+    // Every preset written before 0260 predates `Pan` as a destination, so it
+    // says nothing about pan and would load with the spread knob inert. Seed
+    // the default route when the patch has no opinion about pan at all; a patch
+    // that routes Pan itself is left exactly as written. Seeded *after* the
+    // depth pass so the route lands at its own 1.0, not at a stale slot depth.
+    matrix.ensure_pan_route();
 
     LayerState { params, matrix }
 }
@@ -520,6 +526,82 @@ mod tests {
         let (_, back, _) = read_preset(&toml).unwrap();
         assert_eq!(back.layers[0].params.get(ParamId::LayerPan), 0.0);
         assert_eq!(back.layers[0].params.get(ParamId::LayerDetune), 0.0);
+    }
+
+    /// 0260: a preset written before pan was a destination says nothing about
+    /// it, and would load with the Spread knob inert. The loader seeds the
+    /// default route in that case — and only in that case.
+    #[test]
+    fn a_legacy_preset_gains_the_default_pan_route_on_load() {
+        let s = r#"
+schema = 1
+[meta]
+name = "Legacy"
+[params]
+cutoff = 900.0
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let routes: Vec<_> = st.layers[0]
+            .matrix
+            .slots
+            .iter()
+            .filter(|r| r.dest == DestId::Pan)
+            .collect();
+        assert_eq!(routes.len(), 1, "exactly one seeded pan route");
+        assert_eq!(routes[0].source, SourceId::Spread);
+        assert_eq!(routes[0].depth, 1.0, "seeded at unity, not at a stale slot depth");
+        // Layer 2 defaults to the factory patch, which already carries it.
+        assert!(st.layers[1].matrix.slots.iter().any(|r| r.dest == DestId::Pan));
+    }
+
+    /// A patch that routes Pan itself is not second-guessed.
+    #[test]
+    fn a_preset_with_its_own_pan_route_is_left_alone() {
+        let s = r#"
+schema = 1
+[meta]
+name = "Auto-pan"
+[params]
+matrix_slot0_depth = 0.5
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "pan"
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let routes: Vec<_> = st.layers[0]
+            .matrix
+            .slots
+            .iter()
+            .filter(|r| r.dest == DestId::Pan)
+            .collect();
+        assert_eq!(routes.len(), 1, "no second route bolted on");
+        assert_eq!(routes[0].source, SourceId::Lfo1);
+        assert_eq!(routes[0].depth, 0.5, "depth still comes from the param block");
+    }
+
+    /// Pan/Spread survive the text format like any other topology.
+    #[test]
+    fn pan_route_round_trips_through_text() {
+        let mut st = sample_state();
+        st.layers[0].params.set(ParamId::MatrixSlot7Depth, 0.6);
+        st.layers[0].matrix.slots[7] = MatrixSlot {
+            source: SourceId::Spread,
+            dest: DestId::Pan,
+            depth: 0.6,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        let toml = write_preset(&meta("PanRT"), &st).unwrap();
+        assert!(toml.contains("\"spread\""), "source name on the wire:\n{toml}");
+        assert!(toml.contains("\"pan\""), "dest name on the wire:\n{toml}");
+        let (_, back, warnings) = read_preset(&toml).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.layers[0].matrix.slots[7].source, SourceId::Spread);
+        assert_eq!(back.layers[0].matrix.slots[7].dest, DestId::Pan);
+        assert_eq!(back.layers[0].matrix.slots[7].depth, 0.6);
     }
 
     #[test]
@@ -871,6 +953,10 @@ dest = "pitch"
 "#;
         let (_m, st, warnings) = read_preset(s).unwrap();
         assert!(warnings.iter().any(|w| w.contains("out of range")), "{warnings:?}");
-        assert!(st.layers[0].matrix.slots.iter().all(|s| !s.is_active()));
+        // The bad row is dropped; the only live slot is the `Spread → Pan`
+        // route seeded on load for a patch that says nothing about pan (0260).
+        let live: Vec<_> = st.layers[0].matrix.slots.iter().filter(|s| s.is_active()).collect();
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0].dest, DestId::Pan);
     }
 }

@@ -82,6 +82,10 @@ pub struct MotionSmoother {
     xmod: [f32; N],
     /// Block-rate one-pole state for the non-env Amp coefficient, per lane.
     amp_stat: [f32; N],
+    /// Block-rate one-pole state for the `Pan` dest, per lane (0260). Pan is a
+    /// *position*, so unlike PWM/cross-mod there is no patch scalar riding on
+    /// top — this is the whole value the render pans by.
+    pan: [f32; N],
     /// Cascade coeff, calibrated at the *quantum* tick rate (`sr / PITCH_QUANTUM`).
     pitch_coeff: f32,
     /// Amp one-pole coeff, calibrated at the *per-frame* (base-sample) rate.
@@ -106,6 +110,7 @@ impl MotionSmoother {
             pwm: [0.0; N],
             xmod: [0.0; N],
             amp_stat: [0.0; N],
+            pan: [0.0; N],
             pitch_coeff,
             amp_coeff,
             slow_coeff,
@@ -125,6 +130,7 @@ impl MotionSmoother {
         self.pwm = [0.0; N];
         self.xmod = [0.0; N];
         self.amp_stat = [0.0; N];
+        self.pan = [0.0; N];
     }
 
     /// Snap one lane's pitch cascade (both stages) to the block targets, so a
@@ -144,6 +150,35 @@ impl MotionSmoother {
         self.pwm[v] = pwm_target;
         self.xmod[v] = xmod_target;
         self.amp_stat[v] = amp_stat_target;
+    }
+
+    /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
+    /// because a *stolen* lane must not glide across the image from wherever
+    /// the previous note sat — it starts where its own patch puts it.
+    #[inline]
+    pub fn snap_pan(&mut self, v: usize, target: f32) {
+        self.pan[v] = target;
+    }
+
+    /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
+    /// Mirrors [`Self::pwm_active`]: a patch with no live route into `Pan`
+    /// holds zero here and keeps the block-constant pan gains.
+    #[inline]
+    pub fn pan_active(&self, v: usize, target: f32) -> bool {
+        (target - self.pan[v]).abs() > SETTLE_EPS || self.pan[v].abs() > SETTLE_EPS
+    }
+
+    /// Advance one lane's pan one-pole a quantum step and return the new value.
+    #[inline]
+    pub fn tick_pan(&mut self, v: usize, target: f32) -> f32 {
+        self.pan[v] += self.slow_coeff * (target - self.pan[v]);
+        self.pan[v]
+    }
+
+    /// This lane's current smoothed pan without advancing it.
+    #[inline]
+    pub fn pan_current(&self, v: usize) -> f32 {
+        self.pan[v]
     }
 
     /// Advance one lane's pitch cascade one quantum step toward the targets and

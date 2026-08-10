@@ -131,6 +131,26 @@ ordinary (default-seeded) matrix slots — that *is* the flexibility gain:
 - **Velocity → cutoff, LFO/env → everything.** All the fixed depth faders of ADR
   0004 (`CutoffLfo1Depth`, `VelCutoffDepth`, `PitchLfoDepth`, …) collapse into
   matrix slots.
+- **Unison spread** (0260, amending this ADR). VXN1 computes voice pan as
+  `pan_position(lane) × spread` in the render loop. VXN1b makes **Pan** a
+  destination and **Spread** a source — the source carries the `Spread` param's
+  scaling, so the default patch's **Spread → Pan @ 1.0** reproduces VXN1
+  exactly while LFO/env/velocity routes into `Pan` become possible (auto-pan,
+  transient placement, keyboard-scattered stacks). Two consequences worth
+  stating: deleting the seeded route makes the front-panel Spread knob inert
+  (routing is visible now, which is the point), and presets written before 0260
+  carry no pan route, so the loader seeds one when a patch has no opinion about
+  pan at all.
+
+  **Divergence from VXN1:** voice pan changes law, from VXN1's equal-sum
+  (`1 − pos`, `1 + pos`) to **constant power normalised to unity at centre**
+  (`√2·cos θ`, `√2·sin θ`). Equal-sum is fine for a static placement but its
+  total power rises toward the extremes, so an LFO routed to `Pan` audibly
+  pumps — which is exactly the use the destination exists for. Centre stays at
+  unity, so a spread-0 patch is bit-identical to VXN1 and the render-parity
+  fork is unaffected; a **spread-1 unison patch does differ**, deliberately.
+  The layer mixer's pan (0248) uses the same law, so the two multiply
+  consistently.
 
 **Stays hardwired (not a matrix route):** pitch-bend. Host pitch-bend → global
 pitch with a **bend-range** param remains a dedicated always-on term (players

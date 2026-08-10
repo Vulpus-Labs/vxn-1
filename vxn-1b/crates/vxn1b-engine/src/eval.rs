@@ -60,6 +60,11 @@ pub struct SourceInputs {
     pub aftertouch: f32,
     /// Per-voice note-on random `[0, 1)` (0199).
     pub note_random: f32,
+    /// This lane's stereo position `[-1, 1]` (0260): the allocator's fixed lane
+    /// offset already scaled by the `Spread` param. Routed to [`DestId::Pan`]
+    /// at depth 1 by the default patch, which is what makes unison spread work
+    /// the way it always has — now as topology rather than hard wiring.
+    pub spread_pos: f32,
 }
 
 /// MIDI note of C4 — the Key source's reference. `note − 60` is semitones
@@ -82,6 +87,7 @@ pub fn eval_sources(inp: &SourceInputs) -> SourceVals {
     v[idx(SourceId::PitchWheel)] = inp.pitch_wheel;
     v[idx(SourceId::Aftertouch)] = inp.aftertouch;
     v[idx(SourceId::NoteRandom)] = inp.note_random;
+    v[idx(SourceId::Spread)] = inp.spread_pos;
     v
 }
 
@@ -114,6 +120,7 @@ const fn idx(s: SourceId) -> usize {
 /// | `HpfCutoff` | 48.0 | ±48 st of HPF cutoff |
 /// | `Amp` | 1.0 | full VCA gain (Env2→Amp @1 = VXN1 VCA) |
 /// | `CrossModAmount` | 4.0 | the 0..4 cross-mod range |
+/// | `Pan` | 1.0 | ±1 pan position (hard left .. hard right) |
 ///
 /// **Cubic taper:** `Pitch` additionally takes a `d³` taper on the stored depth
 /// before this gain ([`DestId::cook_depth`]) so vibrato-scale amounts are
@@ -128,6 +135,9 @@ pub const DEST_GAIN: [f32; N_DESTS] = {
     g[di(DestId::HpfCutoff)] = 48.0;
     g[di(DestId::Amp)] = 1.0;
     g[di(DestId::CrossModAmount)] = 4.0;
+    // Pan's native unit *is* the normalised depth: ±1 spans the image, so a
+    // route at full depth reaches hard left/right and nothing needs scaling.
+    g[di(DestId::Pan)] = 1.0;
     g
 };
 
