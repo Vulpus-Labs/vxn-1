@@ -7,13 +7,10 @@
 //! brings it back to the base rate through a halfband FIR pair before the FX
 //! chain and master volume run.
 //!
-//! Four behaviours ride along, each one a shipped VXN1 bug fix rather than a
-//! nicety:
+//! Three behaviours ride along, each one a shipped VXN1 bug fix rather than a
+//! nicety. (A fourth, VXN1 0107's `spread == 0` mono skip, was removed in 0262 —
+//! see [`OutputStage::decimate_block`].)
 //!
-//! * **`spread == 0` skip** (VXN1 0107). Spread distributes voice lanes across
-//!   L/R; at 0 every lane sits centre, so L and R are bit-identical and the R
-//!   decimator is redundant — skip it and copy. The mono→stereo transition seeds
-//!   R from L's *converged* state, or R starts from an empty FIR and clicks.
 //! * **Silent-drain skip** (VXN1 0106). Once the banks have been silent long
 //!   enough for the FIR state to flush ([`DECIMATOR_DRAIN_BLOCKS`]), decimation
 //!   is skipped outright and the output zero-filled — an idle instrument should
@@ -61,9 +58,6 @@ pub struct OutputStage {
     /// outputs match `l` sample-for-sample.
     oversampler: Oversampler,
     oversampler_r: Oversampler,
-    /// Whether the R decimator was skipped last block (drives the mono→stereo
-    /// state seed).
-    spread_zero_last_block: bool,
     /// Consecutive blocks every bank took the silent fast path.
     silent_blocks: u32,
     /// Oversampling factor in effect last block; a change resets the decimators.
@@ -90,7 +84,6 @@ impl OutputStage {
         Self {
             oversampler: Oversampler::new(),
             oversampler_r: Oversampler::new(),
-            spread_zero_last_block: true,
             silent_blocks: 0,
             last_os: 1,
             os_fade_remaining: 0,
@@ -115,7 +108,6 @@ impl OutputStage {
     pub fn reset(&mut self) {
         self.oversampler.reset();
         self.oversampler_r.reset();
-        self.spread_zero_last_block = true;
         self.silent_blocks = 0;
         self.os_fade_remaining = 0;
         self.prev_last_l = 0.0;
@@ -143,13 +135,15 @@ impl OutputStage {
     }
 
     /// Decimate the oversampled L/R buses into `dst_l`/`dst_r` at the base rate.
+    /// `both_silent` drives the drain-skip.
     ///
-    /// `spread_zero` means every sounding layer is centred (L == R), so the R
-    /// decimator is skipped and `dst_r` is copied from `dst_l`. `both_silent`
-    /// drives the drain-skip. The mono→stereo transition seeds R from L *before*
-    /// L decimates this block, so R starts from L's converged state rather than
-    /// one block ahead.
-    #[allow(clippy::too_many_arguments)] // one paired decimate step, single caller
+    /// Both channels always decimate. There was a mono fast path here — when
+    /// every sounding layer had `Spread == 0` the R decimator was skipped and
+    /// `dst_r` copied from `dst_l` — and it was removed in 0262: Spread stopped
+    /// being the only thing that decorrelates L and R once layers could be
+    /// panned (0248) and pan became a modulation destination (0260). "Is this
+    /// patch mono?" is a per-sample question now, so no block-rate hint can
+    /// answer it; a hint that is right until an LFO moves is worse than no hint.
     pub fn decimate_block(
         &mut self,
         l_os: &[f32],
@@ -157,7 +151,6 @@ impl OutputStage {
         dst_l: &mut [f32],
         dst_r: &mut [f32],
         os: usize,
-        spread_zero: bool,
         both_silent: bool,
     ) {
         if both_silent {
@@ -167,26 +160,16 @@ impl OutputStage {
         }
         let skip_decimator = self.silent_blocks > DECIMATOR_DRAIN_BLOCKS;
 
-        if !spread_zero && self.spread_zero_last_block {
-            self.oversampler_r.clone_state_from(&self.oversampler);
-        }
-
         if skip_decimator {
             dst_l.fill(0.0);
-        } else {
-            self.oversampler.decimate(l_os, dst_l, os);
-        }
-        if spread_zero {
-            dst_r.copy_from_slice(dst_l);
-        } else if skip_decimator {
             dst_r.fill(0.0);
         } else {
+            self.oversampler.decimate(l_os, dst_l, os);
             self.oversampler_r.decimate(r_os, dst_r, os);
         }
-        self.spread_zero_last_block = spread_zero;
 
-        // OS-change crossfade, applied *last* — after the mono→stereo R-seed and
-        // both decimations — so it doesn't fight the seed and touches L/R with
+        // OS-change crossfade, applied *last* — after both decimations — so it
+        // touches L/R with
         // identical weights (phase alignment intact). At the first sample the
         // rebuilt output is near-zero (empty FIR) and the hold weight is 1, so
         // the join is continuous; as the weight ramps, the by-then settled new
@@ -223,10 +206,10 @@ mod tests {
         vec![v; BLOCK * os]
     }
 
-    fn decimate(stage: &mut OutputStage, bus: &[f32], os: usize, spread_zero: bool) -> Vec<f32> {
+    fn decimate(stage: &mut OutputStage, bus: &[f32], os: usize) -> Vec<f32> {
         let mut l = vec![0.0; BLOCK];
         let mut r = vec![0.0; BLOCK];
-        stage.decimate_block(bus, bus, &mut l, &mut r, os, spread_zero, false);
+        stage.decimate_block(bus, bus, &mut l, &mut r, os, false);
         l
     }
 
@@ -235,44 +218,50 @@ mod tests {
         let mut s = OutputStage::new(SR);
         s.on_os_change(1);
         let bus: Vec<f32> = (0..BLOCK).map(|i| (i as f32) * 0.01 - 0.15).collect();
-        let out = decimate(&mut s, &bus, 1, true);
+        let out = decimate(&mut s, &bus, 1);
         assert_eq!(out, bus, "OS = 1 must not touch the samples");
     }
 
+    /// 0262: both channels always decimate. Identical input still yields
+    /// identical output — that was the old fast path's whole justification, and
+    /// it holds without it because the two decimators see the same weights in
+    /// the same order. What changed is that *different* input now survives.
     #[test]
-    fn spread_zero_keeps_channels_identical() {
+    fn identical_input_stays_bit_mono_without_the_fast_path() {
         for os in [1usize, 2, 4, 8] {
             let mut s = OutputStage::new(SR);
             s.on_os_change(os);
             let bus = constant_bus(os, 0.5);
             let mut l = vec![0.0; BLOCK];
             let mut r = vec![0.0; BLOCK];
-            s.decimate_block(&bus, &bus, &mut l, &mut r, os, true, false);
-            assert_eq!(l, r, "spread 0 must stay bit-mono at OS = {os}");
+            s.decimate_block(&bus, &bus, &mut l, &mut r, os, false);
+            assert_eq!(l, r, "identical buses must decimate identically at OS = {os}");
         }
     }
 
+    /// The case the fast path swallowed: a patch with `Spread == 0` but a panned
+    /// layer feeds different L and R buses, and the difference must reach the
+    /// output rather than being overwritten by a copy of L.
     #[test]
-    fn mono_to_stereo_transition_is_seeded_not_stepped() {
-        // Run mono (R skipped) until the L decimator has converged on DC, then
-        // flip to stereo. Without the state seed R would restart from an empty
-        // FIR and step from ~0 up to the DC level — a click.
-        let os = 4;
-        let mut s = OutputStage::new(SR);
-        s.on_os_change(os);
-        let bus = constant_bus(os, 0.5);
-        for _ in 0..8 {
-            decimate(&mut s, &bus, os, true);
+    fn differing_channels_survive_at_every_factor() {
+        for os in [1usize, 2, 4, 8] {
+            let mut s = OutputStage::new(SR);
+            s.on_os_change(os);
+            let loud = constant_bus(os, 0.5);
+            let quiet = constant_bus(os, 0.1);
+            let mut l = vec![0.0; BLOCK];
+            let mut r = vec![0.0; BLOCK];
+            // A few blocks so both FIRs converge off their empty state.
+            for _ in 0..8 {
+                s.decimate_block(&loud, &quiet, &mut l, &mut r, os, false);
+            }
+            assert!(
+                (l[BLOCK - 1] - r[BLOCK - 1]).abs() > 0.2,
+                "L/R must stay distinct at OS = {os}: {} vs {}",
+                l[BLOCK - 1],
+                r[BLOCK - 1]
+            );
         }
-        let mut l = vec![0.0; BLOCK];
-        let mut r = vec![0.0; BLOCK];
-        s.decimate_block(&bus, &bus, &mut l, &mut r, os, false, false);
-        assert!(
-            (r[0] - l[0]).abs() < 1e-6,
-            "R must resume from L's converged state, got {} vs {}",
-            r[0],
-            l[0]
-        );
     }
 
     #[test]
@@ -284,13 +273,13 @@ mod tests {
         let mut l = vec![0.0; BLOCK];
         let mut r = vec![0.0; BLOCK];
         for _ in 0..=(DECIMATOR_DRAIN_BLOCKS + 1) {
-            s.decimate_block(&silent, &silent, &mut l, &mut r, os, true, true);
+            s.decimate_block(&silent, &silent, &mut l, &mut r, os, true);
         }
         assert!(s.silent_blocks > DECIMATOR_DRAIN_BLOCKS, "drain counter should have armed");
         assert!(l.iter().all(|v| *v == 0.0), "skipped output must be silent");
         // One non-silent block re-arms the decimator immediately.
         let loud = constant_bus(os, 0.5);
-        s.decimate_block(&loud, &loud, &mut l, &mut r, os, true, false);
+        s.decimate_block(&loud, &loud, &mut l, &mut r, os, false);
         assert_eq!(s.silent_blocks, 0, "a sounding block resets the drain counter");
         assert!(l.iter().any(|v| *v != 0.0), "decimation must resume at once");
     }
@@ -305,13 +294,13 @@ mod tests {
         let bus2 = constant_bus(2, 0.5);
         let mut settled = 0.0;
         for _ in 0..16 {
-            settled = *decimate(&mut s, &bus2, 2, true).last().unwrap();
+            settled = *decimate(&mut s, &bus2, 2).last().unwrap();
         }
         assert!((settled - 0.5).abs() < 1e-3, "should settle at DC, got {settled}");
 
         s.on_os_change(8);
         let bus8 = constant_bus(8, 0.5);
-        let out = decimate(&mut s, &bus8, 8, true);
+        let out = decimate(&mut s, &bus8, 8);
         assert!(
             (out[0] - settled).abs() < 0.05,
             "first post-switch sample {} should join near the held level {settled}",

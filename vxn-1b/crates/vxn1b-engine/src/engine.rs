@@ -584,10 +584,7 @@ impl Engine {
         // borrow starts — the split below holds `self` mutably for the rest of
         // the render.
         let gain_target = [self.layer_gain_target(0), self.layer_gain_target(1)];
-        // Same reason: the decimator's two hints are param/voice reads.
-        // `spread == 0` on every *sounding* layer ⇒ L == R bit-for-bit.
-        let spread_zero = self.synths[0].params().get(ParamId::Spread) == 0.0
-            && (!self.key.layer2_on || self.synths[1].params().get(ParamId::Spread) == 0.0);
+        // Same reason: the decimator's silence hint is a voice read.
         let both_silent =
             self.synths[0].is_silent() && (!self.key.layer2_on || self.synths[1].is_silent());
         let (bus_l, bus_r) = self.os_bus.split_at_mut(1);
@@ -654,12 +651,11 @@ impl Engine {
             self.layer_gain[1][1].snap(gain_target[1][1]);
         }
 
-        // Decimate the oversampled buses down to the base rate. Spread = 0 on
-        // every sounding layer ⇒ L == R bit-for-bit, so the R decimator is
-        // skipped and copied; both synths silent ⇒ the drain-skip can eventually
-        // zero-fill. That bookkeeping lives in `OutputStage` (0251).
-        self.output
-            .decimate_block(bus_l, bus_r, l, r, os, spread_zero, both_silent);
+        // Decimate the oversampled buses down to the base rate. Both channels
+        // always decimate (0262 dropped the spread-0 mono skip — pan makes it
+        // unanswerable at block rate); both synths silent ⇒ the drain-skip can
+        // eventually zero-fill. That bookkeeping lives in `OutputStage` (0251).
+        self.output.decimate_block(bus_l, bus_r, l, r, os, both_silent);
 
         // Serial FX chain over the summed voices, at the base rate. Each effect
         // is a true skip when off and settled, so the default FX-off patch is a
@@ -1564,11 +1560,13 @@ mod tests {
             f.layer2.0,
             f.layer2.1
         );
-        // NB: the *summed* output is still mono here, and that is a real bug —
-        // `OutputStage`'s `spread_zero` hint skips the R decimator and copies L
-        // whenever every layer's Spread is 0, which throws this pan away. The
-        // hint predates pan; removing it is 0262, which is where the
-        // summed-stereo assertion lives.
+        // And the summed output is genuinely stereo. Before 0262 it was not:
+        // `OutputStage`'s `spread_zero` hint skipped the R decimator and copied
+        // L whenever every layer's Spread was 0, throwing this pan away.
+        assert!(
+            l.iter().zip(r.iter()).any(|(a, b)| (a - b).abs() > 1e-6),
+            "a panned layer must reach the output — the mono fast path is gone"
+        );
     }
 
     /// Centre pan is a true no-op: bit-identical to the same patch before pan
