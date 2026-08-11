@@ -163,6 +163,9 @@ fn note_random_draw(rng: &mut u64) -> f32 {
 /// steal target by [`steal_tier`] then age. Pure over the borrowed view; the
 /// caller stamps channel/note/pressure onto the returned index. Total — always
 /// returns a valid `0..N` index (steal falls back to voice 0).
+///
+/// Single-lane allocation, used by the plain [`Voices::note_on`] path. The
+/// stack path claims whole stacks instead — see [`Voices::claim_lanes`].
 fn allocate(view: &AllocView) -> usize {
     if let Some(v) = (0..N).find(|&v| !view.active[v]) {
         return v;
@@ -185,6 +188,12 @@ pub struct Voices {
     /// note's channel, so later channel-pressure broadcasts reach it correctly.
     channel: [u8; N],
     alloc_tick: [u64; N],
+    /// Which stack a lane belongs to (0266). Lanes claimed by one note-on share
+    /// an id, which is what makes stealing stack-granular: a victim is chosen
+    /// by lane but released by *stack*, so no note is ever left half-sounding
+    /// with an asymmetric detune fan and a `level_comp` computed for a width it
+    /// no longer has. Stale-until-reused, like `note`/`channel`.
+    stack_id: [u32; N],
     /// Per-voice pressure in `[0, 1]`, the MPE-aware aftertouch source
     /// (ADR 0001 §2). Updated by per-note pressure (only the matching
     /// note+channel voice) or channel pressure (every active voice on the
@@ -230,6 +239,9 @@ pub struct Voices {
     /// the steal policy can rank by age. Wraps at u64::MAX (unreachable in
     /// practice — ~6M years at 100k notes/s).
     next_tick: u64,
+    /// Monotonic stack counter, stamped into [`Voices::stack_id`] once per
+    /// note-on so every lane of one note shares an identity.
+    next_stack_id: u32,
     /// Note-on-random stream state. Advanced one draw per note-on; a single
     /// stream (not per-voice seeds) guarantees successive voices get distinct
     /// values while staying deterministic. Never zero (xorshift stuck point).
@@ -254,6 +266,7 @@ impl Voices {
             note: [0; N],
             channel: [0; N],
             alloc_tick: [0; N],
+            stack_id: [0; N],
             pressure: [0.0; N],
             note_random: [0.0; N],
             velocity: [0.0; N],
@@ -265,6 +278,7 @@ impl Voices {
             last_width: 1,
             level_comp: 1.0,
             next_tick: 0,
+            next_stack_id: 0,
             rng: NOTE_RANDOM_SEED,
             phase_rng: PHASE_SEED,
         }
@@ -298,6 +312,9 @@ impl Voices {
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
         let v = allocate(&self.view());
         self.stamp(v, channel, note, velocity, 0.0, 0.0, true);
+        // A one-lane stack, so a later stack-granular steal sees a whole note
+        // here rather than an unowned lane sharing some other note's id.
+        self.stack_id[v] = self.next_stack();
         v
     }
 
@@ -330,6 +347,77 @@ impl Voices {
         }
     }
 
+    /// The worst-ranked stack still available to steal, or `None` when every
+    /// lane is already spoken for. Ranked exactly as [`allocate`] ranks a single
+    /// lane — [`steal_tier`] then age — but judged on the stack's *oldest* lane,
+    /// so for a pool of width-1 stacks the two agree lane for lane.
+    fn worst_stack(&self, taken: &[bool; N]) -> Option<u32> {
+        let view = self.view();
+        (0..N)
+            .filter(|&v| !taken[v] && self.active[v])
+            .min_by_key(|&v| (steal_tier(&view, v), self.alloc_tick[v]))
+            .map(|v| self.stack_id[v])
+    }
+
+    /// Claim `width` lanes for one note as **whole stacks** (0266).
+    ///
+    /// Free lanes first, then victim stacks worst-ranked first. The victim is
+    /// picked by lane but released by *stack*: every lane sharing the victim's
+    /// [`stack_id`](Voices::stack_id) is gated off together. Claiming lane by
+    /// lane instead — as this did before — could take part of a held note and
+    /// leave the rest of it sounding with a fan missing its outer voices and a
+    /// `level_comp` for a width it no longer has. The two policies agree while
+    /// every stack is the same width, which is why the seam only shows once a
+    /// width change leaves mixed widths held (ADR 0003).
+    ///
+    /// Surplus lanes from a wider victim are released, not deactivated, so they
+    /// ring out on their own envelope tails rather than being cut mid-note.
+    /// They rank tier 0 from here on, so the next claim reuses them first.
+    ///
+    /// Returns the number of lanes claimed — always `width` unless the pool
+    /// itself is smaller.
+    fn claim_lanes(&mut self, width: usize, out: &mut [usize; N]) -> usize {
+        let mut taken = [false; N];
+        let mut n = 0;
+
+        for v in 0..N {
+            if n == width {
+                return n;
+            }
+            if !self.active[v] {
+                out[n] = v;
+                taken[v] = true;
+                n += 1;
+            }
+        }
+        while n < width {
+            let Some(victim) = self.worst_stack(&taken) else { break };
+            for v in 0..N {
+                if taken[v] || !self.active[v] || self.stack_id[v] != victim {
+                    continue;
+                }
+                // Release the whole victim, whether or not this note needs the
+                // lane — that is the point of stack granularity.
+                self.gate[v] = false;
+                taken[v] = true;
+                if n < width {
+                    out[n] = v;
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// Take the next stack identity. Wraps; collisions would need `u32::MAX`
+    /// note-ons to alias against a lane still holding the old id.
+    #[inline]
+    fn next_stack(&mut self) -> u32 {
+        let id = self.next_stack_id;
+        self.next_stack_id = self.next_stack_id.wrapping_add(1);
+        id
+    }
+
     /// Note-on under (`width`, `mode`) — the two orthogonal halves of what
     /// VXN1's assign-mode enum used to conflate (ADR 0003). Returns the lanes
     /// the caller must trigger in the DSP banks (empty on a legato slide — the
@@ -360,15 +448,16 @@ impl Voices {
         let mut out = Triggers::none();
         match mode {
             VoiceMode::Poly => {
-                // Allocate the stack one lane at a time, stamping as we go: each
-                // draw sees the previous lane taken (active, newest tick) and so
-                // picks a different one. Stealing therefore takes the oldest
-                // lanes first, which is the same policy a stack-granular
-                // allocator would land on for a full pool.
-                for i in 0..width {
-                    let v = allocate(&self.view());
+                // Claim the whole stack up front, so a steal sacrifices whole
+                // notes rather than slicing lanes off a held one.
+                let mut lanes = [0usize; N];
+                let n = self.claim_lanes(width, &mut lanes);
+                debug_assert_eq!(n, width, "the pool must always yield a full stack");
+                let id = self.next_stack();
+                for (i, &v) in lanes[..n].iter().enumerate() {
                     let pos = stack_spread(i, width);
                     self.stamp(v, channel, note, velocity, pos * unison_detune, pos, true);
+                    self.stack_id[v] = id;
                     out.push(v, self.stack_phase(width));
                 }
                 self.level_comp = level_comp(width);
@@ -379,9 +468,13 @@ impl Voices {
                 // Legato only slides when a note is *already* sounding — the
                 // first note of a phrase always articulates.
                 let slide = legato && sounding;
+                // A slide keeps the sounding stack's identity along with its age
+                // and humanisation; an articulation is a new stack.
+                let id = if slide { self.stack_id[0] } else { self.next_stack() };
                 for i in 0..width {
                     let pos = stack_spread(i, width);
                     self.stamp(i, channel, note, velocity, pos * unison_detune, pos, !slide);
+                    self.stack_id[i] = id;
                     if !slide {
                         out.push(i, self.stack_phase(width));
                     }
@@ -434,10 +527,14 @@ impl Voices {
             return out;
         }
         let revealed = self.mono_stack[self.mono_len - 1];
+        // A legato reveal keeps the stack's identity; a re-articulated one is a
+        // new stack, matching the note-on path.
+        let id = if legato { self.stack_id[0] } else { self.next_stack() };
         for i in 0..width {
             let pos = stack_spread(i, width);
             let velocity = self.velocity[i];
             self.stamp(i, channel, revealed, velocity, pos * unison_detune, pos, !legato);
+            self.stack_id[i] = id;
             if !legato {
                 out.push(i, self.stack_phase(width));
             }
@@ -948,6 +1045,136 @@ mod tests {
                 "width {width}: the stealing note must sound"
             );
         }
+    }
+
+    /// The stereo fan spreads each stack evenly across the image whatever its
+    /// width, because `stack_pos` comes off the same `stack_spread` helper as
+    /// the detune fan — a lane's position *within its stack*, not within a bank.
+    ///
+    /// This is the assumption 0260's `SourceId::Spread` originally got wrong: it
+    /// read an 8-entry per-bank table, which is only right while a stack *is* a
+    /// bank. At width 2 that handed a stack two arbitrary points off the table,
+    /// and at width 32 it repeated the same 8 positions four times. Invisible at
+    /// width 8, which is why it needs an explicit test.
+    #[test]
+    fn the_stereo_fan_spans_the_image_at_every_width() {
+        // Width 1 sits dead centre — nothing to spread.
+        let mut v = Voices::default();
+        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        assert_eq!(v.stack_pos[0], 0.0, "a single lane must be centred");
+
+        for width in stack_widths().into_iter().filter(|&w| w > 1) {
+            let mut v = Voices::default();
+            let t = v.note_on_stack(0, 60, 1.0, width, VoiceMode::Poly, 0.0, false);
+            let pos: Vec<f32> = fired(&t).iter().map(|&l| v.stack_pos[l]).collect();
+            assert_eq!(pos.len(), width);
+            // Outermost lanes reach the edges: a 2-lane stack is hard L/R, a
+            // 32-lane stack fills the same span densely.
+            assert!((pos[0] + 1.0).abs() < 1e-6, "width {width} left edge {}", pos[0]);
+            assert!(
+                (pos[width - 1] - 1.0).abs() < 1e-6,
+                "width {width} right edge {}",
+                pos[width - 1]
+            );
+            // Evenly spaced, so the image fills rather than clumping.
+            let step = 2.0 / (width - 1) as f32;
+            for pair in pos.windows(2) {
+                assert!(
+                    (pair[1] - pair[0] - step).abs() < 1e-5,
+                    "width {width} uneven stereo fan"
+                );
+            }
+        }
+    }
+
+    // ── Stack-granular allocation (0266) ────────────────────────────────────
+
+    /// Lanes claimed by one note-on share a stack identity — the thing that
+    /// makes a steal able to release a whole note.
+    #[test]
+    fn one_note_on_claims_one_stack() {
+        let mut v = Voices::default();
+        let t = v.note_on_stack(0, 60, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        let lanes = fired(&t);
+        let id = v.stack_id[lanes[0]];
+        assert!(lanes.iter().all(|&l| v.stack_id[l] == id), "one note, one stack id");
+
+        let u = v.note_on_stack(0, 67, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        assert_ne!(v.stack_id[fired(&u)[0]], id, "a second note is a second stack");
+    }
+
+    /// The divergence this policy exists for: a claim needing fewer lanes than
+    /// the victim holds still releases the victim **whole**, so no note is left
+    /// sounding with part of its stack gone and a fan missing its outer voices.
+    /// Only reachable with mixed widths held, which is exactly what a width
+    /// change under held notes produces (ADR 0003).
+    #[test]
+    fn a_steal_releases_the_whole_victim_stack() {
+        let mut v = Voices::default();
+        for i in 0..(N / 8) {
+            v.note_on_stack(0, 60 + i as u8, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        }
+        assert!((0..N).all(|i| v.gate[i]), "the pool must start fully held");
+
+        // Width drops to 4, so the next note wants half of a victim's lanes.
+        v.note_on_stack(0, 90, 1.0, 4, VoiceMode::Poly, 10.0, false);
+
+        assert!(
+            (0..N).all(|i| !(v.gate[i] && v.note[i] == 60)),
+            "the victim must be released whole, not sliced"
+        );
+        for note in 61..(60 + (N / 8) as u8) {
+            assert_eq!(
+                (0..N).filter(|&i| v.gate[i] && v.note[i] == note).count(),
+                8,
+                "note {note} lost lanes to a steal that should not have touched it"
+            );
+        }
+        assert_eq!(
+            (0..N).filter(|&i| v.gate[i] && v.note[i] == 90).count(),
+            4,
+            "the stealing note must get its full stack"
+        );
+    }
+
+    /// Lanes of the victim the new note doesn't need are *released*, not
+    /// deactivated: cutting them dead mid-note would click. They stay active
+    /// (ringing out) and gate-off, which also ranks them tier 0 for reuse.
+    #[test]
+    fn surplus_lanes_of_a_stolen_stack_ring_out_rather_than_being_cut() {
+        let mut v = Voices::default();
+        for i in 0..(N / 8) {
+            v.note_on_stack(0, 60 + i as u8, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        }
+        v.note_on_stack(0, 90, 1.0, 4, VoiceMode::Poly, 10.0, false);
+
+        let ringing: Vec<usize> =
+            (0..N).filter(|&i| v.note[i] == 60 && v.active[i] && !v.gate[i]).collect();
+        assert_eq!(ringing.len(), 4, "the unused half of the victim must ring out");
+    }
+
+    /// Releasing a note frees every lane of its stack — no lane outlives the
+    /// note that owns it.
+    #[test]
+    fn releasing_a_note_frees_every_lane_of_its_stack() {
+        let mut v = Voices::default();
+        v.note_on_stack(0, 60, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        assert_eq!((0..N).filter(|&i| v.gate[i]).count(), 8);
+        v.note_off_stack(0, 60, 8, VoiceMode::Poly, 10.0, false);
+        assert!((0..N).all(|i| !v.gate[i]), "every lane of the stack must release");
+    }
+
+    /// Stack granularity must not change the uniform-width case, which is every
+    /// patch that never touches the Width control mid-hold. Filling the pool at
+    /// width 1 and stealing still takes the oldest lane.
+    #[test]
+    fn uniform_widths_steal_exactly_as_the_lane_policy_did() {
+        let mut v = Voices::default();
+        for i in 0..N {
+            v.note_on_stack(0, 24 + i as u8, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        }
+        let t = v.note_on_stack(0, 120, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        assert_eq!(fired(&t), vec![0], "the oldest lane is still the steal target");
     }
 
     /// A width change does not re-voice sounding stacks (ADR 0003) — it applies

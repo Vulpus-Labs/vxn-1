@@ -36,20 +36,10 @@ Precedent: vxn-2 already allocates this way ([[vxn2-stack-soa]]) — `Stack` is
 the allocation unit, 16 stacks × 8 lanes with a density control, and it measures
 ~3.8% of an M1 at full poly × density 8.
 
-> **Partially landed 2026-08-11.** The param surface, allocation, detune fan,
-> stack-relative stereo fan, legacy-preset mapping and UI all shipped together
-> with the (superseded) 0244 mechanism they replaced — see
-> [ADR 0003](../../vxn-1b/adrs/0003-vxn1b-stack-width-and-voice-mode.md).
-> **Remaining:** (1) make the *stack* the allocation unit rather than claiming
-> lanes one at a time through the per-voice policy — the two agree for a full
-> pool but can differ when a partial steal splits a stack; ~~(2) width `32`~~
-> **done 2026-08-11** with [0264](../closed/0264-vxn1b-32-lanes-unison-16.md)'s
-> wider pool — `StackWidth::ThirtyTwo` exists, the width sweeps enumerate the
-> enum rather than a literal list, and `the_widest_stack_is_the_whole_pool`
-> pins the widest width to the pool size; (3) the `busy_profile` check at full
-> width, which **needs a harness first** — `busy_profile` exists only for vxn-1
-> ([vxn-engine/examples/busy_profile.rs](../../vxn-1/crates/vxn-engine/examples/busy_profile.rs)),
-> so vxn-1b needs its own port before 32 × 1 can be compared against 1 × 32.
+> **Landed in two passes.** The param surface, allocation, detune fan,
+> stack-relative stereo fan, legacy-preset mapping and UI shipped first
+> (2026-08-11, ADR 0003), followed by stack-granular stealing, width 32 and the
+> profile comparison. See the Close-out.
 
 ## Design
 
@@ -157,3 +147,100 @@ decision, read at a glance), voice mode as a two-way switch beside it.
   it will not show up in any existing test — hence the explicit criterion above.
 - Out of scope: per-stack (rather than per-lane) modulation sources, and
   chord/interval stacking — a stack is one note at N detuned lanes here.
+
+## Close-out (2026-08-11)
+
+### Param surface
+
+- `stack_width` (`1/2/4/8/16/32`) and `voice_mode` (`Poly`/`Solo`) are per-layer
+  patch params; `assign_mode` is gone from the table and the state version
+  bumped. Legacy presets naming `assign_mode` map through the table above —
+  `preset::legacy_assign_mode`, covered by
+  `legacy_assign_mode_maps_onto_width_and_voice_mode` and
+  `unrecognised_legacy_assign_mode_warns` (an unknown value warns and is
+  ignored rather than failing the load).
+- Faceplate exposes Width as a button group and Voice as a two-way switch, per
+  layer. Both read their variants from the Rust label table, so `32` appeared
+  with no JS change when 0264 added it.
+
+### Voicing rules
+
+- `the_four_legacy_modes_are_points_in_the_width_mode_space` — Poly=1/Poly,
+  Twin=2/Poly, Solo=1/Solo, Unison=N/Solo.
+- `full_width_poly_is_monophonic_but_retriggers` vs
+  `full_width_solo_slides_under_legato` — the combination the old enum could
+  not express.
+- `poly_capacity_is_the_pool_divided_by_width` — `32 / width` simultaneous
+  notes at every width, the next note stealing rather than sounding.
+- `detune_span_is_constant_across_widths` — the outermost lanes sit at ±detune
+  whatever the width, so widening a stack makes it denser, not out of tune.
+- `a_width_change_leaves_held_stacks_alone` — a width change applies from the
+  next note-on (ADR 0003); re-partitioning under held notes would be a click
+  and a stolen-note storm.
+
+### Stack-granular allocation
+
+Lanes now carry a `stack_id`; one note-on claims one stack
+(`one_note_on_claims_one_stack`). `claim_lanes` takes free lanes first, then
+whole victim stacks worst-ranked first — picked by lane, released by *stack*.
+
+The policies only diverge once mixed widths are held, which is exactly what a
+width change under held notes produces, so the seam was invisible to every
+existing test:
+
+- `a_steal_releases_the_whole_victim_stack` — the case that was wrong. A
+  width-4 claim against a pool of width-8 stacks used to slice 4 lanes off a
+  held note and leave the other 4 sounding, with a fan missing its outer
+  voices and a `level_comp` for a width it no longer had.
+- `surplus_lanes_of_a_stolen_stack_ring_out_rather_than_being_cut` — the unused
+  half is *released*, not deactivated. Cutting it dead mid-note would click;
+  gating it lets the envelope tail finish and ranks it tier 0 for reuse.
+- `releasing_a_note_frees_every_lane_of_its_stack`.
+- `uniform_widths_steal_exactly_as_the_lane_policy_did` — pins the no-change
+  case, which is every patch that never touches Width mid-hold.
+
+### Stereo fan
+
+`SourceId::Spread` reads `stack_pos[v] * ctx.spread`
+([bank.rs:514](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L514)), where
+`stack_pos` is the lane's position *within its stack* from the same
+`stack_spread` helper as the detune fan. This **replaces the 8-entry per-bank
+`pan_position` table** [0260](../closed/0260-vxn1b-pan-as-matrix-dest.md) left
+behind — correct only while a stack is a bank, and invisible at width 8, which
+is why it gets an explicit test:
+`the_stereo_fan_spans_the_image_at_every_width` (width 1 centred, width 2 hard
+L/R, every width evenly spaced edge to edge). That closes the follow-up logged
+on 0260.
+
+### CPU
+
+`busy_profile` ported to vxn-1b
+([examples/busy_profile.rs](../../vxn-1b/crates/vxn1b-engine/examples/busy_profile.rs)),
+taking a voicing argument so the two cases are one binary. Both run layer 1 at
+4× oversample with FX, resonance 0.9, hard sync, detune 12 ct and spread 1, so
+the matrix, output stage and pan smoothers are all live.
+
+Six interleaved runs each, 3000 blocks (32 s of audio), min-of-N — the machine
+was noisy enough that single runs spread 2.0–4.5 s:
+
+```text
+1 x 32 (full poly)              min 2.026 s   6.3% of one core
+32 x 1 (one full-width stack)   min 2.038 s   6.4% of one core
+```
+
+0.6% apart with fully overlapping distributions: **32 × 1 is no worse than
+1 × 32**, as ADR 0003 predicted — 32 lanes are 32 lanes however they are
+voiced. The hoped-for vectoriser win from every lane sharing a note did not
+materialise either; it is a wash.
+
+### Verification
+
+266 Rust / 240 JS, 0 failures. `tests/parity.rs`, `tests/alloc_free.rs` and
+`tests/taper_parity.rs` all green — `claim_lanes` uses two fixed-size stack
+arrays and allocates nothing.
+
+### Not done
+
+- **Manual DAW check.** Width and Voice have not been played in Reaper
+  ([[verify-audio-in-reaper]]) — worth doing before 0213 ships, particularly
+  32 × Poly vs 32 × Solo and a width change with notes held.
