@@ -95,15 +95,19 @@ size it to a Unison-specific const — 0266 makes 32 reachable.
   the `is_silent` early-out means idle banks don't render.
 - Real CPU doubles only when 32 notes actually sound, which is the point of the
   ticket.
-- Deliberately **not** exposing stack width as a param. `UNISON_LANES` being a
-  const makes a later "Stack Size" (8/16/32) control easy plumbing, but it would
-  be a new patch param — CLAP id relayout plus a state `VERSION` bump — so it's
-  out of scope here. Related: [0244](0244-vxn1b-assign-modes-unison-detune.md).
+- Stack width as a *param* is [0266](0266-vxn1b-stack-width-and-voice-mode.md).
+  **It landed first**, at widths `{1, 2, 4, 8, 16}` over the existing 16-lane
+  pool, rather than waiting on this ticket — the width machinery is
+  pool-size-agnostic, so the dependency only ever bound the `32` case. This
+  ticket is correspondingly smaller than first written: the pool
+  (`MAX_VOICES_1B = 32`, `[RenderBank; 4]`, seeds for banks 2–3) plus a single
+  `StackWidth::ThirtyTwo` variant. Still a pure capacity change apart from that
+  variant — no new params.
 - The doc comment at
   [voice.rs:50-52](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L50-L52)
   ("VXN1 fans 8 channels; VXN1b allocates 16 per layer and stacks all of them")
-  stops being literally true once the synth holds 32 — reword it to say the fan
-  is capped at `UNISON_LANES` by choice.
+  stops being literally true once the synth holds 32 — reword for the 32-lane
+  pool, and again for explicit widths when 0266 lands.
 - Orthogonal to the mirrored-layer idea (Layer 2 slaved to Layer 1's patch, own
   drift + a detune offset) discussed alongside this: that stays a separate
   ticket, and would compose with this one as 32 + 32.

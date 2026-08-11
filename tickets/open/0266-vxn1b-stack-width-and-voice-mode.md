@@ -36,6 +36,16 @@ Precedent: vxn-2 already allocates this way ([[vxn2-stack-soa]]) — `Stack` is
 the allocation unit, 16 stacks × 8 lanes with a density control, and it measures
 ~3.8% of an M1 at full poly × density 8.
 
+> **Partially landed 2026-08-11.** The param surface, allocation, detune fan,
+> stack-relative stereo fan, legacy-preset mapping and UI all shipped together
+> with the (superseded) 0244 mechanism they replaced — see
+> [ADR 0003](../../vxn-1b/adrs/0003-vxn1b-stack-width-and-voice-mode.md).
+> **Remaining:** (1) make the *stack* the allocation unit rather than claiming
+> lanes one at a time through the per-voice policy — the two agree for a full
+> pool but can differ when a partial steal splits a stack; (2) width `32`, which
+> arrives with [0264](0264-vxn1b-32-lanes-unison-16.md)'s wider pool; (3) the
+> `busy_profile` check at full width.
+
 ## Design
 
 **Params.** `assign_mode` is **replaced** by two params (decided with the user):

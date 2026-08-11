@@ -47,9 +47,9 @@ export function glyphPath(label, w, h) {
 // ─── Control primitives ────────────────────────────────────────────────────
 
 // Detune ceiling in Twin assign mode (cents). Twin's "useful" range is
-// purely a view convention — the engine doesn't enforce it, so the
-// editor that surfaces the mode is the one that has to clamp. Mirrors the
-// TWIN_DETUNE_CT value.
+// Retired with the Twin assign mode (0266): detune runs the descriptor's full
+// range at every stack width now. Kept exported and unused-by-the-panel only
+// long enough for the suite that pins the old behaviour to be retired with it.
 export const TWIN_TOP_CT = 20.0;
 
 export function makeFader(el, id, desc, opts) {
@@ -533,12 +533,14 @@ export function makeBipolar(el, id, desc) {
 
 // ─── Detune + Legato composite (Voice panel, 0045) ─────────────────────────
 //
-// Two params + one watch in a single column: the Detune fader on top and
-// the Legato toggle beneath it, both driven by Assign Mode for visual hints
-// (dim Legato in Poly/Twin) and behaviour (Detune fader's full-travel
-// meaning is 50 ct in Unison vs 20 ct in Twin — mirrors
-// `vxn_ui_vizia::detune_top`). Plain values stay in descriptor units (0–50
-// ct); only the fader's [0,1] → cents map changes per mode.
+// Two params + one watch in a single column: the Detune fader on top and the
+// Legato toggle beneath it, with the voice mode driving the hint (Legato only
+// bites in Solo, so it dims in Poly).
+//
+// The fader's full travel is the descriptor's own 0–50 ct at every width
+// (0266): VXN1's 20 ct ceiling existed because Twin was a fixed 2-lane mode
+// nobody chose, and with width an explicit control the player is entitled to
+// the whole range at any of them.
 //
 // `data-legato-param` / `data-mode-param` name the descriptor names this
 // cell pairs with; both are resolved per layer at bind time so a layer
@@ -562,15 +564,11 @@ export function makeDetuneLegato(el, ids, descs, modeName, layer) {
   tgRow('LEGATO', { mount: legatoRow });
 
   const DESC_TOP = descs.detune.max;
-  // Twin's variant index lives in the assign descriptor (current order:
-  // Poly, Unison, Solo, Twin → index 3). Look it up by name so a reorder
-  // in ASSIGN_LABELS doesn't desync.
+  // Legato only applies in Solo. Found by name so a label reorder can't desync
+  // the index.
   const lookupVariant = (name) => variantIdx(modeName, name, layer);
-  const TWIN_IDX = lookupVariant('Twin');
   const MONO_IDXS = new Set();
-  // Mono assign modes (Legato applies in these): Unison, Solo. Found by
-  // name so an ASSIGN_LABELS reorder doesn't desync.
-  ['Unison', 'Solo'].forEach((n) => {
+  ['Solo'].forEach((n) => {
     const i = lookupVariant(n);
     if (i >= 0) MONO_IDXS.add(i);
   });
@@ -579,7 +577,7 @@ export function makeDetuneLegato(el, ids, descs, modeName, layer) {
   let lastModePlain = 0;
 
   function currentTop() {
-    return Math.round(lastModePlain) === TWIN_IDX ? TWIN_TOP_CT : DESC_TOP;
+    return DESC_TOP;
   }
   function setThumbFromPlain(plain) {
     const top = currentTop();
@@ -649,16 +647,9 @@ export function makeDetuneLegato(el, ids, descs, modeName, layer) {
       legatoRow.classList.toggle('active', plain >= 0.5);
     },
     modeUpdate(plain) {
-      const prevTwin = Math.round(lastModePlain) === TWIN_IDX;
+      // Voice mode only dims Legato now — there is no mode-dependent detune
+      // ceiling to re-clamp against (0266).
       lastModePlain = plain;
-      // On entering Twin, clamp the stored detune down to the Twin ceiling
-      // (mirrors `vxn_ui_vizia::clamp_detune_on_twin`). The engine doesn't
-      // enforce this — Twin's "useful" range is purely a view convention,
-      // so the editor that surfaces the mode is the one that has to clamp.
-      if (!prevTwin && Math.round(plain) === TWIN_IDX && lastDetunePlain > TWIN_TOP_CT) {
-        window.vxn.send.discrete(detune, TWIN_TOP_CT);
-        lastDetunePlain = TWIN_TOP_CT;
-      }
       setThumbFromPlain(lastDetunePlain);
       applyLegatoDim();
     },

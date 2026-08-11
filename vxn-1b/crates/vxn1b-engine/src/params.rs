@@ -28,27 +28,68 @@ use vxn_dsp::{AdsrShape, FilterMode, FilterSlope, LfoShape, NoiseColor, Waveform
 
 // ── Param-value enums (variant indices stored as f32) ───────────────────────
 
-/// Voice-assignment mode. Forked from VXN1 (`vxn-app`) — the engine needs it to
-/// resolve the `AssignMode` param without depending on VXN1's app crate.
+/// Lanes per note — the *voicing* half of what VXN1's four-way assign mode
+/// used to conflate (ADR 0003, ticket 0266). Powers of two only: the width
+/// divides the lane pool exactly, so there are never orphaned lanes.
+///
+/// Simultaneous notes = `MAX_VOICES / width`, so the widest setting is
+/// monophonic *by capacity* while still being polyphonic *by behaviour* — a
+/// new note steals the stack and retriggers, with no legato. That combination
+/// is unreachable in VXN1's enum, and it is the point of splitting the two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(usize)]
-pub enum AssignMode {
+pub enum StackWidth {
     #[default]
-    Poly,
-    Unison,
-    Solo,
-    Twin,
+    One,
+    Two,
+    Four,
+    Eight,
+    Sixteen,
 }
 
-impl AssignMode {
-    pub const COUNT: usize = AssignMode::Twin as usize + 1;
+impl StackWidth {
+    pub const COUNT: usize = StackWidth::Sixteen as usize + 1;
 
-    pub fn from_index(i: usize) -> AssignMode {
+    pub fn from_index(i: usize) -> StackWidth {
         match i {
-            1 => AssignMode::Unison,
-            2 => AssignMode::Solo,
-            3 => AssignMode::Twin,
-            _ => AssignMode::Poly,
+            1 => StackWidth::Two,
+            2 => StackWidth::Four,
+            3 => StackWidth::Eight,
+            4 => StackWidth::Sixteen,
+            _ => StackWidth::One,
+        }
+    }
+
+    /// Lanes per note.
+    #[inline]
+    pub fn lanes(self) -> usize {
+        1 << (self as usize)
+    }
+}
+
+/// Keyboard behaviour — the *articulation* half. Orthogonal to [`StackWidth`]:
+/// any width can be played either way.
+///
+/// - `Poly` — each note takes its own stack; a new note steals when the pool is
+///   full and always retriggers.
+/// - `Solo` — one stack, last-note priority, with the notes beneath it held on
+///   a stack so releasing the top reveals what is under it. `Legato` then
+///   decides whether the reveal slides or articulates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(usize)]
+pub enum VoiceMode {
+    #[default]
+    Poly,
+    Solo,
+}
+
+impl VoiceMode {
+    pub const COUNT: usize = VoiceMode::Solo as usize + 1;
+
+    pub fn from_index(i: usize) -> VoiceMode {
+        match i {
+            1 => VoiceMode::Solo,
+            _ => VoiceMode::Poly,
         }
     }
 }
@@ -203,7 +244,8 @@ pub enum ParamId {
     // ── Pitch bend (hardwired global, ADR §3) ──
     PitchBendRange,
     // ── Voice ──
-    AssignMode,
+    StackWidth,
+    VoiceMode,
     Legato,
     UnisonDetune,
     PortamentoTime,
@@ -330,7 +372,7 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 70] = {
+pub const PATCH_PARAMS: [ParamId; 71] = {
     use ParamId::*;
     [
         // Osc / mixer (17)
@@ -352,7 +394,7 @@ pub const PATCH_PARAMS: [ParamId; 70] = {
         // LFO 2 (3)
         Lfo2Shape, Lfo2Rate, Lfo2Sync,
         // Voice (5)
-        AssignMode, Legato, UnisonDetune, PortamentoTime, Spread,
+        StackWidth, VoiceMode, Legato, UnisonDetune, PortamentoTime, Spread,
         // Matrix depths (16)
         MatrixSlot0Depth, MatrixSlot1Depth, MatrixSlot2Depth, MatrixSlot3Depth,
         MatrixSlot4Depth, MatrixSlot5Depth, MatrixSlot6Depth, MatrixSlot7Depth,
@@ -462,7 +504,9 @@ const NOISE_LABELS: &[&str] = &["White", "Pink"];
 const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
-const ASSIGN_LABELS: &[&str] = &["Poly", "Unison", "Solo", "Twin"];
+/// Lanes per note. Labelled by the number itself — it is a count, not a name.
+const WIDTH_LABELS: &[&str] = &["1", "2", "4", "8", "16"];
+const VOICE_MODE_LABELS: &[&str] = &["Poly", "Solo"];
 /// PM is labelled "FM" — players expect that name (VXN1 ADR 0004 §3).
 const CROSS_MOD_LABELS: &[&str] = &["Off", "Sync", "FM", "Ring"];
 
@@ -602,7 +646,8 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     // ── Pitch bend (hardwired, ADR §3) — was VXN1's PitchWheelDepth ──
     f("pitch_bend_range", "Bend Range", 0.0, 12.0, 2.0, "st", Taper::Linear),
     // ── Voice ──
-    e("assign_mode", "Assign", ASSIGN_LABELS, 0.0),
+    e("stack_width", "Width", WIDTH_LABELS, 0.0),
+    e("voice_mode", "Voice", VOICE_MODE_LABELS, 0.0),
     b("legato", "Legato", 0.0),
     f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", Taper::Linear),
     f("portamento_time", "Glide Time", 0.0, 0.5, 0.0, "s", Taper::Exp { mid: 0.1 }),
@@ -763,8 +808,12 @@ impl Params {
         LfoShape::ALL[enum_index(self.get(ParamId::Lfo2Shape), LfoShape::ALL.len() - 1)]
     }
 
-    pub fn assign_mode(&self) -> AssignMode {
-        AssignMode::from_index(enum_index(self.get(ParamId::AssignMode), AssignMode::COUNT - 1))
+    pub fn stack_width(&self) -> StackWidth {
+        StackWidth::from_index(enum_index(self.get(ParamId::StackWidth), StackWidth::COUNT - 1))
+    }
+
+    pub fn voice_mode(&self) -> VoiceMode {
+        VoiceMode::from_index(enum_index(self.get(ParamId::VoiceMode), VoiceMode::COUNT - 1))
     }
 
     pub fn cross_mod_type(&self) -> CrossModType {
@@ -849,7 +898,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 70 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 71 + 32);
     }
 
     #[test]
@@ -1006,7 +1055,10 @@ mod tests {
         assert_eq!(p.cross_mod_type(), CrossModType::Sync);
         p.set(ParamId::Oversample, 2.0);
         assert_eq!(p.oversample_factor(), 4);
-        p.set(ParamId::AssignMode, 1.0);
-        assert_eq!(p.assign_mode(), AssignMode::Unison);
+        p.set(ParamId::StackWidth, 4.0);
+        assert_eq!(p.stack_width(), StackWidth::Sixteen);
+        assert_eq!(p.stack_width().lanes(), 16);
+        p.set(ParamId::VoiceMode, 1.0);
+        assert_eq!(p.voice_mode(), VoiceMode::Solo);
     }
 }

@@ -23,12 +23,14 @@
 //! envelope levels are substituted — 2 FMAs, not a full matrix re-eval (which
 //! the ticket forbids on the hot path).
 //!
-//! **Scope (this step).** Poly only (matches the 0198 allocator); unison/mono
-//! is deferred. `CrossModAmount` is live per lane (0242): the PM kernel takes a
-//! per-lane index whenever a route is active and the broadcast scalar otherwise,
-//! so an unrouted patch is bit-unchanged. `HpfCutoff` stays deferred — the HPF
-//! is set bank-wide. Both are inert at the factory default, so the parity gate
-//! is unaffected. The
+//! **Scope (this step).** All four assign modes are live: the
+//! [`crate::voice::Voices`] coordinator resolves Poly/Unison/Solo/Twin and hands
+//! this bank a per-lane detune (cents) plus a stack-width `level_comp`.
+//! `CrossModAmount` is live per lane (0242) — the PM kernel takes a per-lane
+//! index whenever a route is active, and the broadcast scalar otherwise, so an
+//! unrouted patch is bit-unchanged. `HpfCutoff` is still deferred (the HPF is
+//! set bank-wide) — inert at the factory default, so the parity gate is
+//! unaffected. The
 //! per-voice component trims landed with global drift (0218) and are likewise
 //! inert at the default `MasterDrift = 0`.
 
@@ -222,6 +224,10 @@ pub struct BlockCtx<'a> {
     pub amp_env_bypass: bool,
     pub drift_amount: f32,
     pub spread: f32,
+    /// Stack-width output scaling from the voice allocator (`1/√len`), so
+    /// Unison's 16 copies and Twin's 2 don't jump the level against Poly's 1.
+    /// Folded into the per-lane pan gains once per block.
+    pub level_comp: f32,
     /// The routing topology + depths.
     pub matrix: &'a MatrixTable,
     /// Patch-global source scalars for the matrix (per-voice sources are read
@@ -368,7 +374,18 @@ impl RenderBank {
     /// DSP trigger for lane `v` at note-on: reset oscillators to a decorrelated
     /// start phase, restart the LFO 1 onset (and phase unless free-running), and
     /// mark a pending trigger for the next render's envelope re-arm.
-    pub fn trigger_lane(&mut self, v: usize, lfo1_shape: LfoShape, lfo1_free_run: bool) {
+    ///
+    /// `start_phase` overrides the lane's deterministic phase: `None` keeps
+    /// [`lane_phase`] (Poly / Solo / Twin — decorrelated but reproducible),
+    /// `Some(p)` stamps `p`. Unison passes a fresh random phase per voice so a
+    /// stack of near-identical copies doesn't comb into a synchronised null.
+    pub fn trigger_lane(
+        &mut self,
+        v: usize,
+        lfo1_shape: LfoShape,
+        lfo1_free_run: bool,
+        start_phase: Option<f32>,
+    ) {
         self.trigger_pending[v] = true;
         self.lfo1_onset.retrigger(v);
         if !lfo1_free_run {
@@ -376,7 +393,7 @@ impl RenderBank {
         }
         self.osc1.reset(v);
         self.osc2.reset(v);
-        let ph = lane_phase(v);
+        let ph = start_phase.unwrap_or_else(|| lane_phase(v));
         self.osc1.phase[v] = ph;
         self.osc2.phase[v] = ph;
     }
@@ -414,6 +431,8 @@ impl RenderBank {
         velocity: &[f32],
         pressure: &[f32],
         note_random: &[f32],
+        detune_cents: &[f32],
+        stack_pos: &[f32],
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) {
@@ -488,7 +507,11 @@ impl RenderBank {
                 // Spread knob (0260). Routing this to `Pan` at depth 1 — what
                 // the default patch does — is VXN1's hard-wired unison spread,
                 // now expressed as topology.
-                spread_pos: pan_position(v) * ctx.spread,
+                // The lane's place in the image comes from its position within
+                // its *stack* (ADR 0003), not from its lane index: a stack's
+                // lanes are wherever the allocator put them, and stacks vary in
+                // width. Width 1 stamps 0.0, so a plain poly voice is centred.
+                spread_pos: stack_pos[v] * ctx.spread,
             };
             let sources = eval_sources(&inp);
             let mut dests = [0.0f32; crate::matrix::N_DESTS];
@@ -507,9 +530,13 @@ impl RenderBank {
 
             // Un-modulated pitch base per osc (everything except the smoothed
             // Pitch/XModSweep matrix dests). Constant across the control block —
-            // drift/glide are already block-rate.
-            base1[v] = ctx.base_semis + nf + ctx.osc1_semi + self.osc1.drift_value[v];
-            base2[v] = ctx.base_semis + nf + ctx.osc2_semi + self.osc2.drift_value[v];
+            // drift/glide/detune are already block-rate. `detune` is the
+            // allocator's per-lane Unison/Twin offset in cents; it lands on both
+            // oscillators, so the whole voice moves rather than beating with
+            // itself (that is Osc 2 Fine's job).
+            let detune = detune_cents[v] * 0.01;
+            base1[v] = ctx.base_semis + nf + ctx.osc1_semi + detune + self.osc1.drift_value[v];
+            base2[v] = ctx.base_semis + nf + ctx.osc2_semi + detune + self.osc2.drift_value[v];
             pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
             sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
             pwm_tgt[v] = dests[DestId::Pwm.idx().unwrap()];
@@ -629,12 +656,16 @@ impl RenderBank {
         // extremes, so an LFO routed here would audibly pump — which is exactly
         // what this dest exists to allow. Centre stays unity, so a spread-0
         // patch is bit-identical and the parity fork still holds.
+        //
+        // The allocator's stack-width compensation (`1/√width`) rides along
+        // here — a per-lane constant for the block, so a wide stack costs one
+        // multiply per lane rather than anything in the frame loop.
         let mut pan_l = [0.0f32; N];
         let mut pan_r = [0.0f32; N];
         for v in 0..N {
             let (gl, gr) = voice_pan_gains(self.smooth.pan_current(v));
-            pan_l[v] = gl;
-            pan_r[v] = gr;
+            pan_l[v] = gl * ctx.level_comp;
+            pan_r[v] = gr * ctx.level_comp;
         }
 
         let ring_on = ctx.ring_mode;
@@ -839,21 +870,6 @@ fn lfo1_seed(base: u64, lane: usize) -> u64 {
         .wrapping_add((lane as u64 + 1).wrapping_mul(0x632B_E5A6))
 }
 
-/// Fixed per-lane pan positions in [-1, 1], evenly spread (VXN1's `PAN_POSITIONS`).
-#[inline]
-fn pan_position(lane: usize) -> f32 {
-    const P: [f32; N] = [
-        -1.0,
-        -5.0 / 7.0,
-        -3.0 / 7.0,
-        -1.0 / 7.0,
-        1.0 / 7.0,
-        3.0 / 7.0,
-        5.0 / 7.0,
-        1.0,
-    ];
-    P[lane]
-}
 
 /// Constant-power pan gains for a voice position in `[-1, 1]` (0260),
 /// normalised to unity at centre — the same law as the layer mixer's
@@ -1009,6 +1025,7 @@ mod tests {
             amp_env_bypass: false,
             drift_amount: 0.0,
             spread: 0.0,
+            level_comp: 1.0,
             matrix: m,
             mod_wheel: 0.0,
             pitch_wheel: 0.0,
@@ -1018,16 +1035,29 @@ mod tests {
     // ── Pan as a matrix destination (0260) ──────────────────────────────────
 
     /// Render one lane and return its `(L, R)` peaks.
-    fn lane_peaks(bank: &mut RenderBank, c: &BlockCtx, lane: usize, frames: usize) -> (f32, f32) {
+    /// `pos` is the lane's place within its stack (ADR 0003) — the stereo fan's
+    /// input, stamped by the allocator rather than derived from the lane index.
+    fn lane_peaks(
+        bank: &mut RenderBank,
+        c: &BlockCtx,
+        lane: usize,
+        pos: f32,
+        frames: usize,
+    ) -> (f32, f32) {
         let mut note = [60u8; N];
         note[lane] = 60;
         let mut gate = [false; N];
         let mut active = [false; N];
         gate[lane] = true;
         active[lane] = true;
+        let mut stack_pos = [0.0f32; N];
+        stack_pos[lane] = pos;
         let mut l = vec![0.0; frames];
         let mut r = vec![0.0; frames];
-        bank.render(c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(
+            c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &stack_pos,
+            &mut l, &mut r,
+        );
         (
             l.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
             r.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
@@ -1056,24 +1086,25 @@ mod tests {
         assert!(voice_pan_gains(1.0).0.abs() < 1e-6, "hard right must silence L");
     }
 
-    /// The default `Spread → Pan` route reproduces VXN1's unison spread: with
-    /// Spread up, lane 0 (hard left) and lane 7 (hard right) land in opposite
-    /// channels — the behaviour that used to be hard-wired DSP.
+    /// The default `Spread → Pan` route fans a stack across the image: with
+    /// Spread up, the lane at the bottom of its stack goes hard left and the one
+    /// at the top hard right — the behaviour that used to be hard-wired DSP,
+    /// now driven by the allocator's stack position (ADR 0003).
     #[test]
-    fn default_route_places_lanes_across_the_image() {
+    fn default_route_places_stack_lanes_across_the_image() {
         let m = default_patch();
         let mut c = ctx(&m);
         c.spread = 1.0;
 
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
-        let (l0, r0) = lane_peaks(&mut bank, &c, 0, 512);
-        assert!(l0 > 0.0 && r0 < l0 * 1e-3, "lane 0 must sit hard left: {l0} vs {r0}");
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let (l0, r0) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
+        assert!(l0 > 0.0 && r0 < l0 * 1e-3, "stack bottom must sit hard left: {l0} vs {r0}");
 
         let mut bank = fast_bank();
-        bank.trigger_lane(7, LfoShape::Sine, false);
-        let (l7, r7) = lane_peaks(&mut bank, &c, 7, 512);
-        assert!(r7 > 0.0 && l7 < r7 * 1e-3, "lane 7 must sit hard right: {l7} vs {r7}");
+        bank.trigger_lane(7, LfoShape::Sine, false, None);
+        let (l7, r7) = lane_peaks(&mut bank, &c, 7, 1.0, 512);
+        assert!(r7 > 0.0 && l7 < r7 * 1e-3, "stack top must sit hard right: {l7} vs {r7}");
     }
 
     /// Spread at 0 centres every lane, so the two channels are bit-identical —
@@ -1083,11 +1114,11 @@ mod tests {
         let m = default_patch();
         let c = ctx(&m); // spread: 0.0
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(l.iter().any(|&s| s != 0.0), "the voice must sound");
         assert_eq!(l, r, "spread 0 must stay bit-mono");
     }
@@ -1102,8 +1133,8 @@ mod tests {
         let mut c = ctx(&m);
         c.spread = 1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
-        let (l, r) = lane_peaks(&mut bank, &c, 0, 512);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let (l, r) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
         assert!(l > 0.0);
         assert!((l - r).abs() < l * 1e-3, "no Pan route ⇒ centred: {l} vs {r}");
     }
@@ -1126,14 +1157,14 @@ mod tests {
         // LFO 2 pinned hard positive ⇒ hard right, and vice versa.
         c.lfo2_val = 1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
-        let (l_right, r_right) = lane_peaks(&mut bank, &c, 0, 2048);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let (l_right, r_right) = lane_peaks(&mut bank, &c, 0, 0.0, 2048);
         assert!(r_right > l_right * 10.0, "LFO +1 must pan right: {l_right} vs {r_right}");
 
         c.lfo2_val = -1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
-        let (l_left, r_left) = lane_peaks(&mut bank, &c, 0, 2048);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let (l_left, r_left) = lane_peaks(&mut bank, &c, 0, 0.0, 2048);
         assert!(l_left > r_left * 10.0, "LFO −1 must pan left: {l_left} vs {r_left}");
     }
 
@@ -1158,16 +1189,16 @@ mod tests {
         c.spread = 0.0;
         c.lfo2_val = -1.0; // hard left: R silent
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(r.iter().all(|&s| s.abs() < 1e-3), "hard left should leave R quiet");
 
         // Slam to hard right for the next block.
         c.lfo2_val = 1.0;
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         let head = r[..64].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         let tail = r[448..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(tail > 0.0, "the voice must arrive in R");
@@ -1186,7 +1217,7 @@ mod tests {
         let mut active = [false; N];
         let mut l = vec![0.0; 64];
         let mut r = vec![0.0; 64];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&ctx(&m), &note, &gate, &mut active, &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(l.iter().chain(r.iter()).all(|&s| s == 0.0));
     }
 
@@ -1196,11 +1227,11 @@ mod tests {
         let mut bank = RenderBank::new(48_000.0, 1);
         // Fast attack so the VCA opens within the block.
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 256];
         let mut r = vec![0.0; 256];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        bank.render(&ctx(&m), &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         let peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak > 0.0, "a gated voice with the default patch must make sound");
     }
@@ -1213,13 +1244,13 @@ mod tests {
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.005, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
         let mut c = ctx(&m);
         c.os = 1;
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         // Early samples (attack just started) quieter than late samples.
         let early = l[..64].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         let late = l[448..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
@@ -1232,14 +1263,14 @@ mod tests {
         let mut bank = RenderBank::new(48_000.0, 1);
         // Near-instant release so the voice idles within one block.
         bank.set_envelopes((0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, (0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false);
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
         let note = [60u8; N];
         let gate = [false; N]; // already released
         let mut active = [false; N];
         active[0] = true;
         let mut l = vec![0.0; 256];
         let mut r = vec![0.0; 256];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&ctx(&m), &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(!active[0], "an idle released voice must free");
     }
 
@@ -1354,7 +1385,7 @@ mod tests {
                 AdsrShape::Linear,
                 drift,
             );
-            bank.trigger_lane(0, LfoShape::Sine, false);
+            bank.trigger_lane(0, LfoShape::Sine, false, None);
             let (note, gate, mut active, vel, pres, rnd) = book();
             let mut c = ctx(&m);
             c.osc1_level = 0.0;
@@ -1364,7 +1395,7 @@ mod tests {
             c.drift_amount = drift;
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &mut l, &mut r);
+            bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
             l
         };
         let dry = render(0.0);

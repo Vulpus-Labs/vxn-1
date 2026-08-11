@@ -235,17 +235,19 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="Amt" data-dim-unless-fm="cross_mod_type"></div>
       </div>
     </div>
-    <!-- Voice (0045): AssignMode with display order Poly/Twin/Unison/Solo (the
-         descriptor's natural order is Poly/Unison/Solo/Twin, so the cell carries
-         the display permutation via `data-order`); Detune with its mode-aware
-         top (50 ct Unison, 20 ct Twin) and the Legato toggle drawn beneath the
-         fader; Glide fader (0 = off); Spread fader. Legato is *not* its own
-         column — the detune-legato primitive handles both params. -->
+    <!-- Voice (0045, 0266): the two orthogonal halves of the old AssignMode —
+         Width (lanes per note, 1–16) as a button group, and Voice (Poly/Solo)
+         as a switch beside it. Detune fans the stack across its full 0–50 ct at
+         every width, with the Legato toggle drawn beneath the fader (Legato
+         only bites in Solo, so the composite dims it in Poly). Glide fader
+         (0 = off); Spread fader. Legato is *not* its own column — the
+         detune-legato primitive handles both params. -->
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
       <div class="panel-body">
-        <div class="ctl" data-control="buttongroup" data-param="assign_mode" data-label="Assign" data-order="0,3,1,2"></div>
-        <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="assign_mode"></div>
+        <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width"></div>
+        <div class="ctl-strip" data-control="switch" data-param="voice_mode" data-label="Voice"></div>
+        <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="voice_mode"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
       </div>

@@ -9,7 +9,7 @@
 // The `dim-rules.test.js` suite (which is out of scope for the 0209 rewrite and
 // must stay green) still exercises the layer-offset machinery against this same
 // fixture — it asserts per-patch watch ids translate by `+PATCH_COUNT` on the
-// lower layer (`assign_mode`@0, `xmod_type`@4, `lfo1_free_run`@1) and looks up
+// lower layer (`voice_mode`@0, `xmod_type`@4, `lfo1_free_run`@1) and looks up
 // `xmod_type`/`filter_mode`/`filter_slope`/`lfo1_delay_time`/`lfo1_fade` by
 // name. So the fixture keeps a representative multi-patch `PATCH_COUNT` and
 // those descriptors intact. `dispatch-orchestration.test.js` overrides
@@ -52,20 +52,22 @@ function enumDesc(name, label, variants, def = 0) {
 // Build a fresh params object each call so tests can mutate without
 // leaking state across files.
 export function buildParams() {
-  const ASSIGN_VARIANTS  = ['Poly', 'Twin', 'Unison', 'Solo'];
+  // The layer-rebind fixtures only need *an* enum at a known id; the real
+  // surface is `stack_width` × `voice_mode` since 0266.
+  const ASSIGN_VARIANTS  = ['Poly', 'Solo'];
   const XMOD_VARIANTS    = ['Off', 'Sync', 'FM'];
   const FILTER_VARIANTS  = ['Lowpass', 'Highpass', 'Bandpass', 'Notch'];
   return {
     // ── Per-patch block (upper 0..9, lower 10..19). The dim-rules suite
-    // relies on the specific ids below (assign_mode@0, lfo1_free_run@1,
+    // relies on the specific ids below (voice_mode@0, lfo1_free_run@1,
     // xmod_type@4) and their `+PATCH_COUNT` lower twins.
-    0:  enumDesc('assign_mode', 'Assign', ASSIGN_VARIANTS, 0),
+    0:  enumDesc('voice_mode', 'Voice', ASSIGN_VARIANTS, 0),
     1:  boolDesc('lfo1_free_run', 'Free'),
     2:  floatDesc('lfo1_delay_time', 'Delay'),
     3:  floatDesc('lfo1_fade', 'Fade'),
     4:  enumDesc('xmod_type', 'Cross Mod', XMOD_VARIANTS, 0),
     // Lower-layer twins (upper id + PATCH_COUNT). Same name + shape.
-    10: enumDesc('assign_mode', 'Assign', ASSIGN_VARIANTS, 0),
+    10: enumDesc('voice_mode', 'Voice', ASSIGN_VARIANTS, 0),
     11: boolDesc('lfo1_free_run', 'Free'),
     12: floatDesc('lfo1_delay_time', 'Delay'),
     13: floatDesc('lfo1_fade', 'Fade'),

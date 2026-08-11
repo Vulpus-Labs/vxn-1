@@ -106,9 +106,9 @@ describe('wireTabs', () => {
   it('a per-layer param now resolves to the Lower id (upper + patchCount)', () => {
     wireTabs();
     btn(1).click();
-    // assign_mode is a per-patch param (id < patchCount) in the fixture.
-    const upper = paramIdByNameAtLayer('assign_mode', 'upper');
-    const lower = paramIdByNameAtLayer('assign_mode', model.currentLayer);
+    // voice_mode is a per-patch param (id < patchCount) in the fixture.
+    const upper = paramIdByNameAtLayer('voice_mode', 'upper');
+    const lower = paramIdByNameAtLayer('voice_mode', model.currentLayer);
     expect(lower).toBe(upper + PATCH_COUNT);
   });
 

@@ -16,7 +16,7 @@ use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
 use crate::params::{CrossModType, ParamId, Params};
 use crate::state::LayerState;
-use crate::voice::Voices;
+use crate::voice::{Triggers, Voices, WIDE_GLIDE_SCALE};
 
 /// Per-synth seed set: the two bank RNG seeds (distinct so a synth's two banks'
 /// noise/drift streams decorrelate) plus its LFO 2 seed. The two synths get
@@ -133,19 +133,45 @@ impl Synth {
         self.mod_wheel = w.clamp(0.0, 1.0);
     }
 
-    /// Note-on: allocate a voice (MPE channel threaded) and trigger its DSP lane.
-    /// Allocation/stealing are private to this synth.
+    /// Note-on: allocate a `stack_width`-lane stack under the patch's voice
+    /// mode (MPE channel threaded) and trigger every lane it placed.
+    /// Allocation/stealing are private to this synth. Returns the voice the note
+    /// sounds on: the first triggered lane, or lane 0 when a legato slide
+    /// triggered none (a slide only happens in Solo, which pins lane 0).
     pub(crate) fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
-        let v = self.voices.note_on(channel, note, velocity);
-        let (bank, lane) = (v / RenderBank::LANES, v % RenderBank::LANES);
-        let shape = self.params.lfo1_shape();
-        let free_run = self.params.bool(ParamId::Lfo1FreeRun);
-        self.banks[bank].trigger_lane(lane, shape, free_run);
-        v
+        let width = self.params.stack_width().lanes();
+        let mode = self.params.voice_mode();
+        let detune = self.params.get(ParamId::UnisonDetune);
+        let legato = self.params.bool(ParamId::Legato);
+        let triggers =
+            self.voices
+                .note_on_stack(channel, note, velocity, width, mode, detune, legato);
+        self.fire(&triggers);
+        triggers.as_slice().first().map_or(0, |t| t.voice)
     }
 
     pub(crate) fn note_off(&mut self, channel: u8, note: u8) {
-        self.voices.note_off(channel, note);
+        let width = self.params.stack_width().lanes();
+        let mode = self.params.voice_mode();
+        let detune = self.params.get(ParamId::UnisonDetune);
+        let legato = self.params.bool(ParamId::Legato);
+        // Mono modes revert to the highest-priority note still held, which can
+        // re-trigger the stack — hence a trigger list on note-*off* too.
+        let triggers = self
+            .voices
+            .note_off_stack(channel, note, width, mode, detune, legato);
+        self.fire(&triggers);
+    }
+
+    /// Trigger the DSP lanes an allocation asked for, routing each 16-voice
+    /// index to its (bank, lane) pair.
+    fn fire(&mut self, triggers: &Triggers) {
+        let shape = self.params.lfo1_shape();
+        let free_run = self.params.bool(ParamId::Lfo1FreeRun);
+        for t in triggers.as_slice() {
+            let (bank, lane) = (t.voice / RenderBank::LANES, t.voice % RenderBank::LANES);
+            self.banks[bank].trigger_lane(lane, shape, free_run, t.start_phase);
+        }
     }
 
     /// Test helper: is this synth still holding (pressed, un-released) `note`?
@@ -174,7 +200,7 @@ impl Synth {
     /// block reads Layer 1's to drive Layer 2's LFO 2 link (0217, ADR 0002 §5).
     #[inline]
     /// Whether every voice in this synth is idle — the engine folds both
-    /// synths' answers into the decimator's drain-skip (0251). Cheap: a scan of
+    /// synths' answers into the decimator's drain-skip (0249). Cheap: a scan of
     /// the 16 active flags, once per control block.
     pub(crate) fn is_silent(&self) -> bool {
         !(0..MAX_VOICES).any(|v| self.voices.is_active(v))
@@ -195,7 +221,7 @@ impl Synth {
     /// for Layer 1) free-runs from this layer's own patch settings.
     /// `l`/`r` are the **oversampled** buses: `l.len() == base_frames · os`.
     /// The banks derive their base frame count from that length, so the caller
-    /// owns the factor and this just passes it into the block context (0251).
+    /// owns the factor and this just passes it into the block context (0249).
     pub(crate) fn render_control_block(
         &mut self,
         l: &mut [f32],
@@ -220,6 +246,7 @@ impl Synth {
             self.pitch_bend,
             self.mod_wheel,
             lfo2_val,
+            self.voices.level_comp(),
         );
 
         let view = self.voices.render_view();
@@ -233,6 +260,8 @@ impl Synth {
             &view.velocity[..lanes],
             &view.pressure[..lanes],
             &view.note_random[..lanes],
+            &view.detune_cents[..lanes],
+            &view.stack_pos[..lanes],
             l,
             r,
         );
@@ -244,6 +273,8 @@ impl Synth {
             &view.velocity[lanes..],
             &view.pressure[lanes..],
             &view.note_random[lanes..],
+            &view.detune_cents[lanes..],
+            &view.stack_pos[lanes..],
             l,
             r,
         );
@@ -277,7 +308,7 @@ impl Synth {
 /// function (not a `&self` method) so the returned [`BlockCtx`] borrows **only**
 /// `matrix` — every scalar is copied out of `params` — leaving `voices` and
 /// `banks` independently mutable during render. `os` is the engine's global
-/// oversampling factor (0251): the banks run their inner loop `os` times per base
+/// oversampling factor (0249): the banks run their inner loop `os` times per base
 /// frame at `os_sample_rate`, and the engine decimates the result.
 fn build_ctx<'a>(
     p: &Params,
@@ -287,6 +318,7 @@ fn build_ctx<'a>(
     pitch_bend: f32,
     mod_wheel: f32,
     lfo2_val: f32,
+    level_comp: f32,
 ) -> BlockCtx<'a> {
     let (sync, pm_index, ring_mode) = match p.cross_mod_type() {
         CrossModType::Off => (false, 0.0, false),
@@ -333,14 +365,27 @@ fn build_ctx<'a>(
         lfo1_delay_time: p.get(ParamId::Lfo1DelayTime),
         lfo1_fade: p.get(ParamId::Lfo1Fade),
         lfo2_val,
-        portamento_time: p.get(ParamId::PortamentoTime),
+        // A detuned stack slides as one and reads far stronger than a single
+        // Poly voice, so the stacked modes take a fraction of the knob's glide
+        // time — a scoop rather than an audible portamento (VXN1).
+        portamento_time: p.get(ParamId::PortamentoTime)
+            * glide_scale(p.stack_width().lanes()),
         amp_env_bypass: p.bool(ParamId::AmpEnvBypass),
         drift_amount: p.get(ParamId::MasterDrift),
         spread: p.get(ParamId::Spread),
+        level_comp,
         matrix,
         mod_wheel,
         pitch_wheel: pitch_bend,
     }
+}
+
+/// Portamento scaling for a stacked patch — see [`WIDE_GLIDE_SCALE`]. Keyed on
+/// width rather than on a mode name: a stack slides as one body whichever way
+/// the keyboard is being played, and a single lane has nothing to thicken.
+#[inline]
+fn glide_scale(width: usize) -> f32 {
+    if width > 1 { WIDE_GLIDE_SCALE } else { 1.0 }
 }
 
 /// Quantised per-osc tuning in semitones (VXN1): `round(octave)·12 +

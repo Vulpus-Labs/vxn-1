@@ -311,6 +311,19 @@ fn parse_layer(
                     params.set(id, v);
                 }
             }
+            // Pre-0266 patches carry `assign_mode`, the four-way enum that
+            // `stack_width` × `voice_mode` replaced (ADR 0003). Translate rather
+            // than warn: the four old modes are exactly four points in the new
+            // space, so nothing is lost and no patch loses its voicing.
+            None if key == "assign_mode" => match legacy_assign_mode(val) {
+                Some((width, mode)) => {
+                    params.set(ParamId::StackWidth, width);
+                    params.set(ParamId::VoiceMode, mode);
+                }
+                None => warnings.push(format!(
+                    "{where_}: unrecognised legacy `assign_mode` value {val} (ignored)"
+                )),
+            },
             None => warnings.push(format!("{where_}: unknown parameter `{key}` (skipped)")),
         }
     }
@@ -371,6 +384,40 @@ fn parse_layer(
     matrix.ensure_pan_route();
 
     LayerState { params, matrix }
+}
+
+/// Map a legacy `assign_mode` value — either its label or its enum index — onto
+/// `(stack_width, voice_mode)` param values (ADR 0003):
+///
+/// | Old    | Width | Mode |
+/// |--------|-------|------|
+/// | Poly   | 1     | Poly |
+/// | Unison | 16    | Solo |
+/// | Solo   | 1     | Solo |
+/// | Twin   | 2     | Poly |
+///
+/// Returns the two **param values** (enum indices), not the typed enums, since
+/// that is what the sparse table stores.
+fn legacy_assign_mode(val: &toml::Value) -> Option<(f32, f32)> {
+    let name = match val {
+        toml::Value::String(s) => s.to_ascii_lowercase(),
+        toml::Value::Integer(i) => match i {
+            0 => "poly".into(),
+            1 => "unison".into(),
+            2 => "solo".into(),
+            3 => "twin".into(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // Width index: One=0, Two=1, Four=2, Eight=3, Sixteen=4. Mode: Poly=0, Solo=1.
+    match name.as_str() {
+        "poly" => Some((0.0, 0.0)),
+        "unison" => Some((4.0, 1.0)),
+        "solo" => Some((0.0, 1.0)),
+        "twin" => Some((1.0, 0.0)),
+        _ => None,
+    }
 }
 
 /// Decode the `[keys]` section into a [`KeyState`]. An unknown mode label warns
@@ -435,7 +482,7 @@ pub fn read_preset(s: &str) -> Result<(Meta, PluginState, Vec<String>), PresetEr
 mod tests {
     use super::*;
     use crate::engine::KeyMode;
-    use crate::params::TOTAL_PARAMS;
+    use crate::params::{StackWidth, TOTAL_PARAMS, VoiceMode};
 
     fn meta(name: &str) -> Meta {
         Meta {
@@ -602,6 +649,38 @@ dest = "pan"
         assert_eq!(back.layers[0].matrix.slots[7].source, SourceId::Spread);
         assert_eq!(back.layers[0].matrix.slots[7].dest, DestId::Pan);
         assert_eq!(back.layers[0].matrix.slots[7].depth, 0.6);
+    }
+
+    /// 0266 / ADR 0003: the four legacy assign modes are four points in the
+    /// (width, mode) space, so a pre-0266 preset keeps its voicing instead of
+    /// warning and silently falling back to Poly.
+    #[test]
+    fn legacy_assign_mode_maps_onto_width_and_voice_mode() {
+        for (label, width, mode) in [
+            ("Poly", StackWidth::One, VoiceMode::Poly),
+            ("Twin", StackWidth::Two, VoiceMode::Poly),
+            ("Solo", StackWidth::One, VoiceMode::Solo),
+            ("Unison", StackWidth::Sixteen, VoiceMode::Solo),
+        ] {
+            let src = format!(
+                "schema = 1\n[meta]\nname = \"Legacy\"\n[params]\nassign_mode = \"{label}\"\n"
+            );
+            let (_m, st, warnings) = read_preset(&src).unwrap();
+            assert!(warnings.is_empty(), "{label}: {warnings:?}");
+            assert_eq!(st.layers[0].params.stack_width(), width, "{label} width");
+            assert_eq!(st.layers[0].params.voice_mode(), mode, "{label} mode");
+        }
+    }
+
+    /// An unrecognised legacy value warns rather than silently voicing wrong.
+    #[test]
+    fn unrecognised_legacy_assign_mode_warns() {
+        let src = "schema = 1\n[meta]\nname = \"X\"\n[params]\nassign_mode = \"Chorded\"\n";
+        let (_m, _st, warnings) = read_preset(src).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("assign_mode")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
