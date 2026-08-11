@@ -1,12 +1,21 @@
 ---
 id: "0264"
 product: vxn-1b
-title: "Widen Synth to 32 lanes (4 render banks), cap the Unison fan at 16"
+title: "Widen Synth to 32 lanes (4 render banks)"
 priority: medium
 created: 2026-08-08
-epic: null
+epic: E039
 depends: []
 ---
+
+> **Amended 2026-08-11.** The original ticket also added a `UNISON_LANES = 16`
+> cap so a 32-wide fan couldn't change the character of existing Unison patches.
+> [0266](0266-vxn1b-stack-width-and-voice-mode.md) makes stack width an explicit
+> per-patch control, which dissolves that concern — the player asked for 32 — and
+> 0266 is confirmed as the direction. **The cap is dropped from this ticket**: it
+> would be built and immediately deleted, and its bit-identity golden-buffer test
+> would be invalidated the moment 0266 lands. This ticket is now the widening
+> alone. The cap sections below are struck through for the record.
 
 ## Summary
 
@@ -16,9 +25,9 @@ two lanes per note, so a Twin patch is 8-note polyphonic — thin for the exact
 patches (fat detuned stacks) that want Twin in the first place.
 
 Widen the synth to 32 lanes (4 banks) so Poly gets 32 notes and Twin gets 16.
-Unison must **not** follow the widening: its stack width is a voicing decision,
-not a capacity one, and a 32-wide fan over the same `UnisonDetune` cents would
-change the character of every existing Unison patch. Cap it at the current 16.
+Stack width then becomes a voicing decision the player makes explicitly, in
+[0266](0266-vxn1b-stack-width-and-voice-mode.md); this ticket only supplies the
+pool it partitions.
 
 The alternative designs were considered and rejected:
 
@@ -47,42 +56,28 @@ becomes a loop over `RenderBank::LANES`-sized chunks of the render view.
 Everything else — allocator, stealing, matrix eval, `apply_envelopes` — is
 already written against `N` / `&mut self.banks` and needs no change.
 
-**Unison cap.** Add `const UNISON_LANES: usize = 16` and use it in the three
-places the fan is sized:
-
-- the stack width in `note_on_mode`
-  ([voice.rs:357](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L357)) and its
-  note-off twin
-  ([voice.rs:412](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L412));
-- the fan denominator in `unison_spread`
-  ([voice.rs:54](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L54)).
-
-The `for v in lanes..N { self.gate[v] = false }` cleanup keeps `N`, not
-`UNISON_LANES` — it must still release lanes 16–31 when a Poly/Twin hold precedes
-a switch into a mono mode. `level_comp(lanes)` already derives from `lanes`, so
-it stays 1/√16 with no edit.
-
-This makes Unison bit-identical to today: same lanes, same bank seeds, same fan
-denominator, and `phase_rng` draws in the same order and count so the start-phase
-sequence is unchanged.
+~~**Unison cap.** Add `const UNISON_LANES: usize = 16` …~~ **Dropped** — see the
+amendment note. The Unison fan follows the pool to 32 here, and 0266 replaces the
+whole fan-sizing question with an explicit `stack_width`. Unison output therefore
+*does* change in this ticket (a 32-wide fan over the same `UnisonDetune` cents),
+which is accepted as the transitional state on the way to 0266; the interesting
+invariant — constant detune *span* across widths — is 0266's to assert.
 
 **Triggers capacity.** `Triggers` is fixed-capacity `N`
-([voice.rs:89](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L89)); size it to
-`UNISON_LANES` instead, which is the real per-event maximum (Unison 16, Twin 2),
-so note-on doesn't copy a 32-slot array.
+([voice.rs:89](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L89)). It grows to
+32 with the pool, since a full-width stack is now the per-event maximum. Do not
+size it to a Unison-specific const — 0266 makes 32 reachable.
 
 ## Acceptance criteria
 
 - [ ] Poly sounds 32 simultaneous notes per layer; the 33rd steals. Test in
       `voice.rs` asserting 32 distinct active lanes before any steal.
 - [ ] Twin sounds 16 notes (32 lanes); the 17th steals.
-- [ ] Unison still stacks exactly 16 lanes, and lanes 16–31 stay inactive under
-      Unison and Solo.
-- [ ] Unison output is unchanged: a rendered Unison block is bit-identical to the
-      same render before this ticket (capture a golden buffer on the current
-      `main` and assert against it).
+- [ ] Unison stacks all 32 lanes, and `unison_spread`'s denominator follows the
+      pool. (The bit-identity golden-buffer criterion is **dropped** with the
+      cap — see the amendment note.)
 - [ ] A mode switch from a 32-note Poly hold into Solo/Unison releases every lane
-      above the new stack width (no stranded voices in 16–31).
+      above the new stack width (no stranded voices).
 - [ ] Render-parity gate
       ([tests/parity.rs](../../vxn-1b/crates/vxn1b-engine/tests/parity.rs)) still
       passes — it holds one Poly note on lane 0, so widening must not move it.
