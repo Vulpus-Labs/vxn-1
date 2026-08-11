@@ -124,11 +124,27 @@ pub fn voice_cutoff_hz(
 /// cutoff is the played note" hold; the two calibrations are a pair.
 const C0_NOTE: f32 = 12.0;
 
-/// Pulse width for an oscillator: base PW plus the matrix `Pwm` total, clamped
-/// to the VXN1 range. Both oscs take the same offset (VXN1 `pwm_mod`).
+/// The matrix pulse-width offset for one oscillator (0261): the combined `Pwm`
+/// total plus that oscillator's own dest. Summing the two dests *before* the
+/// clamp (and before the block-rate one-pole in [`crate::bank`]) is what makes a
+/// patch using only `Pwm` behave exactly as it did before the split.
 #[inline]
-pub fn voice_pw(dests: &DestVals, base_pw: f32) -> f32 {
-    (base_pw + dest(dests, DestId::Pwm)).clamp(0.05, 0.95)
+pub fn pwm_offset(dests: &DestVals, per_osc: DestId) -> f32 {
+    dest(dests, DestId::Pwm) + dest(dests, per_osc)
+}
+
+/// Osc 1's pulse width: base PW plus its matrix offset, clamped to the VXN1
+/// range. Clamped per oscillator, so a route driving osc 1 to the rail leaves
+/// osc 2's width untouched.
+#[inline]
+pub fn voice_pw1(dests: &DestVals, base_pw: f32) -> f32 {
+    (base_pw + pwm_offset(dests, DestId::Osc1Pwm)).clamp(0.05, 0.95)
+}
+
+/// Osc 2's pulse width. Mirror of [`voice_pw1`].
+#[inline]
+pub fn voice_pw2(dests: &DestVals, base_pw: f32) -> f32 {
+    (base_pw + pwm_offset(dests, DestId::Osc2Pwm)).clamp(0.05, 0.95)
 }
 
 /// Resonance for the block: base plus the matrix `Resonance` total, clamped
@@ -280,14 +296,39 @@ mod tests {
 
     #[test]
     fn pw_and_reso_and_hpf_and_xmod_clamp_and_apply() {
-        assert_eq!(voice_pw(&with(DestId::Pwm, 0.1), 0.5), 0.6);
-        assert_eq!(voice_pw(&with(DestId::Pwm, 10.0), 0.5), 0.95); // clamp hi
+        assert_eq!(voice_pw1(&with(DestId::Pwm, 0.1), 0.5), 0.6);
+        assert_eq!(voice_pw2(&with(DestId::Pwm, 0.1), 0.5), 0.6);
+        assert_eq!(voice_pw1(&with(DestId::Pwm, 10.0), 0.5), 0.95); // clamp hi
         assert_eq!(voice_resonance(&with(DestId::Resonance, 0.3), 0.5), 0.8);
         assert_eq!(voice_resonance(&with(DestId::Resonance, 5.0), 0.5), 1.0); // clamp
         assert_eq!(voice_hpf_hz(&zeros(), 200.0), 200.0); // identity
         assert!((voice_hpf_hz(&with(DestId::HpfCutoff, 12.0), 200.0) - 400.0).abs() < 1.0);
         assert_eq!(voice_cross_mod_amount(&with(DestId::CrossModAmount, 1.0), 2.0), 3.0);
         assert_eq!(voice_cross_mod_amount(&with(DestId::CrossModAmount, -5.0), 2.0), 0.0);
+    }
+
+    /// 0261: the per-osc dests move one width and sum with the combined `Pwm`,
+    /// and each osc clamps on its own.
+    #[test]
+    fn per_osc_pwm_dests_split_sum_and_clamp_independently() {
+        // Osc 1 alone moves; osc 2 sits at its patch value.
+        let d = with(DestId::Osc1Pwm, 0.2);
+        assert_eq!(voice_pw1(&d, 0.5), 0.7);
+        assert_eq!(voice_pw2(&d, 0.5), 0.5);
+
+        // Combined + per-osc sum on osc 1; osc 2 sees the combined alone.
+        let mut d = with(DestId::Pwm, 0.1);
+        d[DestId::Osc1Pwm.idx().unwrap()] = 0.2;
+        assert!((voice_pw1(&d, 0.5) - 0.8).abs() < 1e-6);
+        assert!((voice_pw2(&d, 0.5) - 0.6).abs() < 1e-6);
+
+        // Osc 1 railed, osc 2 untouched — the clamp is per oscillator.
+        let d = with(DestId::Osc1Pwm, 10.0);
+        assert_eq!(voice_pw1(&d, 0.5), 0.95);
+        assert_eq!(voice_pw2(&d, 0.5), 0.5);
+        let d = with(DestId::Osc2Pwm, -10.0);
+        assert_eq!(voice_pw1(&d, 0.5), 0.5);
+        assert_eq!(voice_pw2(&d, 0.5), 0.05);
     }
 
     #[test]

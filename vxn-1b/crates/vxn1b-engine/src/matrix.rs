@@ -153,10 +153,17 @@ pub enum DestId {
     /// [`SourceId::Spread`] here at depth 1, and anything else routed on top
     /// (LFO auto-pan, an envelope throwing a transient left) sums with it.
     Pan = 9,
+    /// Osc 1's pulse width alone (0261). Sums with [`DestId::Pwm`], which stays
+    /// as the both-oscillators route: osc 1's offset is `Pwm + Osc1Pwm`.
+    /// Two detuned pulse oscs get their thickness from the widths sweeping
+    /// *independently*, which a single shared dest cannot express.
+    Osc1Pwm = 10,
+    /// Osc 2's pulse width alone (0261). Mirror of [`DestId::Osc1Pwm`].
+    Osc2Pwm = 11,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 9;
+pub const N_DESTS: usize = 11;
 
 impl DestId {
     /// Index into a per-voice dest accumulator, or `None` for the sentinel.
@@ -181,6 +188,8 @@ impl DestId {
             7 => DestId::Amp,
             8 => DestId::CrossModAmount,
             9 => DestId::Pan,
+            10 => DestId::Osc1Pwm,
+            11 => DestId::Osc2Pwm,
             _ => DestId::None,
         }
     }
@@ -214,13 +223,25 @@ impl DestId {
 /// Destination machine id (kebab-case wire name). Index = `DestId as u8`.
 pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "none", "pitch", "xmod-sweep", "pwm", "cutoff", "resonance", "hpf-cutoff", "amp",
-    "cross-mod-amount", "pan",
+    "cross-mod-amount", "pan", "osc1-pwm", "osc2-pwm",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
 pub const DEST_LABELS: [&str; N_DESTS + 1] = [
-    "—", "Pitch", "X-Mod Sweep", "PWM", "Cutoff", "Resonance", "HPF Cutoff", "Amp", "Cross-Mod Amt",
+    "—",
+    "Pitch",
+    "X-Mod Sweep",
+    // 0261 relabelled this one; its wire name stays `"pwm"`, so presets and
+    // state blobs written before the split decode unchanged.
+    "PWM (Both)",
+    "Cutoff",
+    "Resonance",
+    "HPF Cutoff",
+    "Amp",
+    "Cross-Mod Amt",
     "Pan",
+    "Osc 1 PWM",
+    "Osc 2 PWM",
 ];
 
 // ── Curve ───────────────────────────────────────────────────────────────────
@@ -489,6 +510,9 @@ mod tests {
             DestId::HpfCutoff,
             DestId::Amp,
             DestId::CrossModAmount,
+            DestId::Pan,
+            DestId::Osc1Pwm,
+            DestId::Osc2Pwm,
         ] {
             assert_eq!(d.cook_depth(0.5), 0.5, "{d:?} should stay linear");
             assert_eq!(d.cook_depth(-0.3), -0.3, "{d:?} should stay linear");
@@ -510,7 +534,8 @@ mod tests {
         assert_eq!(SourceId::Spread.idx(), Some(N_SOURCES - 1));
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Pitch.idx(), Some(0));
-        assert_eq!(DestId::Pan.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Pan.idx(), Some(8));
+        assert_eq!(DestId::Osc2Pwm.idx(), Some(N_DESTS - 1));
     }
 
     #[test]

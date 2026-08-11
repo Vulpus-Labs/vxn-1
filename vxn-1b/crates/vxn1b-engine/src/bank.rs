@@ -477,7 +477,9 @@ impl RenderBank {
         let mut base2 = [0.0f32; N];
         let mut pitch_tgt = [0.0f32; N];
         let mut sweep_tgt = [0.0f32; N];
-        let mut pwm_tgt = [0.0f32; N];
+        // Per-oscillator PWM targets (0261): the combined `Pwm` dest summed with
+        // each osc's own dest, so the pair is equal whenever only `Pwm` is routed.
+        let mut pwm_tgt = [(0.0f32, 0.0f32); N];
         let mut xmod_tgt = [0.0f32; N];
         let mut pm_idx = [0.0f32; N];
         let mut pitch_active = [false; N];
@@ -539,7 +541,10 @@ impl RenderBank {
             base2[v] = ctx.base_semis + nf + ctx.osc2_semi + detune + self.osc2.drift_value[v];
             pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
             sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
-            pwm_tgt[v] = dests[DestId::Pwm.idx().unwrap()];
+            pwm_tgt[v] = (
+                render::pwm_offset(&dests, DestId::Osc1Pwm),
+                render::pwm_offset(&dests, DestId::Osc2Pwm),
+            );
             // Pan (0260). Clamped here rather than at the gains: the smoother
             // should chase a reachable position, or an over-deep route would
             // leave it creeping toward a target the law can never render.
@@ -571,9 +576,11 @@ impl RenderBank {
             // loop advances it), then VXN1's clamp.
             pwm_active[v] = active[v] && self.smooth.pwm_active(v, pwm_tgt[v]);
             pan_active[v] = active[v] && self.smooth.pan_active(v, pan_tgt[v]);
-            let pwm_s = self.smooth.pwm_current(v);
-            pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
-            pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+            // Clamped per oscillator (0261): a route driving osc 1 to the rail
+            // must not clip osc 2's width.
+            let (pwm_s1, pwm_s2) = self.smooth.pwm_current(v);
+            pw1[v] = (ctx.osc1_pw + pwm_s1).clamp(0.05, 0.95);
+            pw2[v] = (ctx.osc2_pw + pwm_s2).clamp(0.05, 0.95);
 
             // Cross-mod amount: same treatment as PWM (0242). Only the matrix
             // *offset* is smoothed; the patch scalar rides on top, so a patch
@@ -720,9 +727,9 @@ impl RenderBank {
                         self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
                     }
                     if pwm_active[v] {
-                        let pwm_s = self.smooth.tick_pwm(v, pwm_tgt[v]);
-                        pw1[v] = (ctx.osc1_pw + pwm_s).clamp(0.05, 0.95);
-                        pw2[v] = (ctx.osc2_pw + pwm_s).clamp(0.05, 0.95);
+                        let (pwm_s1, pwm_s2) = self.smooth.tick_pwm(v, pwm_tgt[v]);
+                        pw1[v] = (ctx.osc1_pw + pwm_s1).clamp(0.05, 0.95);
+                        pw2[v] = (ctx.osc2_pw + pwm_s2).clamp(0.05, 0.95);
                     }
                     if xmod_active[v] {
                         let xmod_s = self.smooth.tick_xmod(v, xmod_tgt[v]);
@@ -1206,6 +1213,153 @@ mod tests {
             head < tail * 0.75,
             "R should fill in across the block, not step: head {head} vs tail {tail}"
         );
+    }
+
+    // ── Per-oscillator PWM destinations (0261) ──────────────────────────────
+
+    /// The oscillator's pulse is DC-blocked (`− (2w − 1)`), so width has to be
+    /// read out of the *level*, not the mean: a ±1 pulse of duty `w` has
+    /// RMS `2√(w(1−w))` — 1.0 at a square, falling monotonically as the width
+    /// opens toward the rail. The filter is parked wide open so the shape
+    /// survives to the output.
+    fn pwm_ctx(m: &MatrixTable) -> BlockCtx<'_> {
+        let mut c = ctx(m);
+        c.osc1_wave = Waveform::Pulse;
+        c.osc2_wave = Waveform::Pulse;
+        c.cutoff = 18_000.0;
+        c.resonance = 0.0;
+        c.hpf_cutoff = HPF_OFF_HZ;
+        c
+    }
+
+    /// RMS of the rendered lane, skipping the envelope attack. `osc` selects
+    /// which oscillator is audible — the other is muted, so the level read is
+    /// that oscillator's width alone.
+    fn osc_rms(m: &MatrixTable, osc: usize, mod_wheel: f32) -> f32 {
+        let mut c = pwm_ctx(m);
+        c.mod_wheel = mod_wheel;
+        c.osc1_level = if osc == 1 { 0.8 } else { 0.0 };
+        c.osc2_level = if osc == 2 { 0.8 } else { 0.0 };
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let (note, gate, mut active, vel, pres, rnd) = book();
+        let frames = 4096;
+        let mut l = vec![0.0; frames];
+        let mut r = vec![0.0; frames];
+        bank.render(
+            &c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r,
+        );
+        let tail = &l[512..];
+        (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt()
+    }
+
+    fn pwm_route(dest: DestId, depth: f32) -> MatrixTable {
+        let mut m = default_patch();
+        m.slots[1].depth = 0.0; // silence the default vibrato: pitch must be steady
+        m.slots[3] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest,
+            depth,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        m
+    }
+
+    /// A route into `Osc1Pwm` moves osc 1's width and leaves osc 2 at its patch
+    /// value — the whole point of the split.
+    #[test]
+    fn osc1_pwm_route_moves_only_osc1() {
+        let m = pwm_route(DestId::Osc1Pwm, 0.6);
+        let (base1, base2) = (osc_rms(&m, 1, 0.0), osc_rms(&m, 2, 0.0));
+        let (mod1, mod2) = (osc_rms(&m, 1, 1.0), osc_rms(&m, 2, 1.0));
+        assert!(
+            mod1 < base1 * 0.9,
+            "osc 1's width must open (level drops off the square): {base1} → {mod1}"
+        );
+        assert!(
+            (mod2 - base2).abs() < base2 * 1e-3,
+            "osc 2 must stay at its patch width: {base2} → {mod2}"
+        );
+    }
+
+    /// The combined `Pwm` dest still moves both oscillators together — existing
+    /// patches are unaffected by the split.
+    #[test]
+    fn combined_pwm_route_still_moves_both() {
+        let m = pwm_route(DestId::Pwm, 0.6);
+        let (base1, base2) = (osc_rms(&m, 1, 0.0), osc_rms(&m, 2, 0.0));
+        let (mod1, mod2) = (osc_rms(&m, 1, 1.0), osc_rms(&m, 2, 1.0));
+        assert!(
+            mod1 < base1 * 0.9 && mod2 < base2 * 0.9,
+            "both must move: {base1} → {mod1}, {base2} → {mod2}"
+        );
+        assert!(
+            (mod1 - mod2).abs() < mod1 * 1e-3,
+            "and to the same width: {mod1} vs {mod2}"
+        );
+    }
+
+    /// `Pwm` and `Osc1Pwm` on the same patch **sum** on osc 1, while osc 2 sees
+    /// the combined route alone.
+    #[test]
+    fn combined_and_per_osc_routes_sum_on_osc1() {
+        let both = pwm_route(DestId::Pwm, 0.3);
+        let mut summed = both;
+        summed.slots[4] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::Osc1Pwm,
+            depth: 0.3,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        // Osc 1 under (Pwm 0.3 + Osc1Pwm 0.3) should match a single Pwm 0.6.
+        let doubled = pwm_route(DestId::Pwm, 0.6);
+        let one = osc_rms(&summed, 1, 1.0);
+        let want_one = osc_rms(&doubled, 1, 1.0);
+        assert!(
+            (one - want_one).abs() < want_one * 1e-3,
+            "osc 1 sums the two routes: {one} vs {want_one}"
+        );
+        // Osc 2 sees only the combined route.
+        let two = osc_rms(&summed, 2, 1.0);
+        let want_two = osc_rms(&both, 2, 1.0);
+        assert!(
+            (two - want_two).abs() < want_two * 1e-3,
+            "osc 2 sees `Pwm` alone: {two} vs {want_two}"
+        );
+        assert!(two > one * 1.05, "and so sits at a narrower width: {two} vs {one}");
+    }
+
+    /// A route driving osc 1 to the width rail must not clip osc 2 — the clamp
+    /// is per oscillator.
+    #[test]
+    fn width_clamp_is_per_oscillator() {
+        // +0.5 on a 0.5 base ⇒ osc 1 pinned at the 0.95 rail, where the pulse's
+        // RMS is 2√(0.95·0.05) ≈ 0.44 of the square's.
+        let m = pwm_route(DestId::Osc1Pwm, 1.0);
+        let (base1, railed) = (osc_rms(&m, 1, 0.0), osc_rms(&m, 1, 1.0));
+        assert!(
+            railed < base1 * 0.6 && railed > 0.0,
+            "osc 1 should sit at the wide rail, not silent: {base1} → {railed}"
+        );
+        let (base2, mod2) = (osc_rms(&m, 2, 0.0), osc_rms(&m, 2, 1.0));
+        assert!(
+            (mod2 - base2).abs() < base2 * 1e-3,
+            "osc 2 unclipped: {base2} → {mod2}"
+        );
+    }
+
+    /// The `pwm_active` gate fires when *either* lane is live, and a patch with
+    /// no PWM route at all stays on the block-constant path.
+    #[test]
+    fn pwm_gate_tracks_either_lane() {
+        let mut s = MotionSmoother::new(48_000.0);
+        assert!(!s.pwm_active(0, (0.0, 0.0)), "no route ⇒ block-constant widths");
+        assert!(s.pwm_active(0, (0.4, 0.0)), "osc 1 route arms the gate");
+        assert!(s.pwm_active(0, (0.0, 0.4)), "osc 2 route arms the gate");
+        s.tick_pwm(0, (0.4, 0.0));
+        assert!(s.pwm_active(0, (0.0, 0.0)), "residual state keeps it armed");
     }
 
     #[test]

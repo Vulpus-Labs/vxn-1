@@ -74,8 +74,14 @@ pub struct MotionSmoother {
     p_stage1: [[f32; N]; N_PITCH],
     /// Cascade stage 2 (= smoothed output) for the pitch-family dests.
     p_state: [[f32; N]; N_PITCH],
-    /// Block-rate one-pole state for the PWM dest, per lane.
-    pwm: [f32; N],
+    /// Block-rate one-pole state for osc 1's PWM offset, per lane. The three
+    /// PWM dests are summed per oscillator *before* the one-pole (0261), so
+    /// this stays two smoothers rather than three, and a patch routing only the
+    /// combined `Pwm` feeds both lanes the same target — identical to before
+    /// the split.
+    pwm1: [f32; N],
+    /// Block-rate one-pole state for osc 2's PWM offset, per lane.
+    pwm2: [f32; N],
     /// Block-rate one-pole state for the `CrossModAmount` dest *offset*, per
     /// lane (0242). The patch's own `cross_mod_amount` is added on top by the
     /// render, so a patch with no route on the dest holds exactly zero here.
@@ -107,7 +113,8 @@ impl MotionSmoother {
         Self {
             p_stage1: [[0.0; N]; N_PITCH],
             p_state: [[0.0; N]; N_PITCH],
-            pwm: [0.0; N],
+            pwm1: [0.0; N],
+            pwm2: [0.0; N],
             xmod: [0.0; N],
             amp_stat: [0.0; N],
             pan: [0.0; N],
@@ -127,7 +134,8 @@ impl MotionSmoother {
     pub fn reset(&mut self) {
         self.p_stage1 = [[0.0; N]; N_PITCH];
         self.p_state = [[0.0; N]; N_PITCH];
-        self.pwm = [0.0; N];
+        self.pwm1 = [0.0; N];
+        self.pwm2 = [0.0; N];
         self.xmod = [0.0; N];
         self.amp_stat = [0.0; N];
         self.pan = [0.0; N];
@@ -146,8 +154,15 @@ impl MotionSmoother {
     /// Snap one lane's PWM / cross-mod / Amp-stat one-poles to their block
     /// targets.
     #[inline]
-    pub fn snap_slow(&mut self, v: usize, pwm_target: f32, xmod_target: f32, amp_stat_target: f32) {
-        self.pwm[v] = pwm_target;
+    pub fn snap_slow(
+        &mut self,
+        v: usize,
+        pwm_targets: (f32, f32),
+        xmod_target: f32,
+        amp_stat_target: f32,
+    ) {
+        self.pwm1[v] = pwm_targets.0;
+        self.pwm2[v] = pwm_targets.1;
         self.xmod[v] = xmod_target;
         self.amp_stat[v] = amp_stat_target;
     }
@@ -209,25 +224,32 @@ impl MotionSmoother {
             || self.p_stage1[SWEEP][v].abs() > SETTLE_EPS
     }
 
-    /// Whether lane `v`'s PWM one-pole needs ticking (nonzero target or residual
-    /// state); when false the render loop keeps the block-start pulse width.
+    /// Whether lane `v`'s PWM one-poles need ticking (nonzero target or residual
+    /// state on *either* oscillator, 0261); when false the render loop keeps the
+    /// block-start pulse widths. A patch with no PWM route holds zero on both
+    /// lanes and stays on the block-constant path exactly as before the split.
     #[inline]
-    pub fn pwm_active(&self, v: usize, target: f32) -> bool {
-        target.abs() > SETTLE_EPS || self.pwm[v].abs() > SETTLE_EPS
+    pub fn pwm_active(&self, v: usize, targets: (f32, f32)) -> bool {
+        targets.0.abs() > SETTLE_EPS
+            || targets.1.abs() > SETTLE_EPS
+            || self.pwm1[v].abs() > SETTLE_EPS
+            || self.pwm2[v].abs() > SETTLE_EPS
     }
 
-    /// Advance lane `v`'s PWM one-pole one quantum step and return the smoothed
-    /// PWM offset.
+    /// Advance lane `v`'s PWM one-poles one quantum step and return the smoothed
+    /// `(osc 1, osc 2)` offsets.
     #[inline]
-    pub fn tick_pwm(&mut self, v: usize, target: f32) -> f32 {
-        self.pwm[v] += self.slow_coeff * (target - self.pwm[v]);
-        self.pwm[v]
+    pub fn tick_pwm(&mut self, v: usize, targets: (f32, f32)) -> (f32, f32) {
+        self.pwm1[v] += self.slow_coeff * (targets.0 - self.pwm1[v]);
+        self.pwm2[v] += self.slow_coeff * (targets.1 - self.pwm2[v]);
+        (self.pwm1[v], self.pwm2[v])
     }
 
-    /// Lane `v`'s current smoothed PWM offset, without advancing (block-start peek).
+    /// Lane `v`'s current smoothed `(osc 1, osc 2)` PWM offsets, without
+    /// advancing (block-start peek).
     #[inline]
-    pub fn pwm_current(&self, v: usize) -> f32 {
-        self.pwm[v]
+    pub fn pwm_current(&self, v: usize) -> (f32, f32) {
+        (self.pwm1[v], self.pwm2[v])
     }
 
     /// Whether lane `v`'s cross-mod one-pole needs ticking (nonzero target or
@@ -337,12 +359,33 @@ mod tests {
     #[test]
     fn pwm_one_pole_glides_and_settles() {
         let mut s = MotionSmoother::new(SR);
-        let first = s.tick_pwm(0, 1.0);
+        let (first, _) = s.tick_pwm(0, (1.0, 1.0));
         assert!(first > 0.0 && first < 0.5, "per-quantum step is partial, got {first}");
         for _ in 0..256 {
-            s.tick_pwm(0, 1.0);
+            s.tick_pwm(0, (1.0, 1.0));
         }
-        assert!((s.tick_pwm(0, 1.0) - 1.0).abs() < 1e-2);
+        let (a, b) = s.tick_pwm(0, (1.0, 1.0));
+        assert!((a - 1.0).abs() < 1e-2);
+        assert_eq!(a, b, "equal targets ⇒ the two lanes track identically");
+    }
+
+    /// 0261: the two lanes are independent — osc 2 stays put while osc 1 moves,
+    /// and the active gate fires while *either* is live.
+    #[test]
+    fn pwm_lanes_are_independent_and_gate_on_either() {
+        let mut s = MotionSmoother::new(SR);
+        assert!(!s.pwm_active(0, (0.0, 0.0)), "no route, zero state → inactive");
+        assert!(s.pwm_active(0, (0.0, 0.4)), "osc 2 target alone arms the gate");
+        for _ in 0..256 {
+            s.tick_pwm(0, (0.3, 0.0));
+        }
+        let (a, b) = s.pwm_current(0);
+        assert!((a - 0.3).abs() < 1e-2, "osc 1 settles at its target, got {a}");
+        assert_eq!(b, 0.0, "osc 2 never moved");
+        assert!(s.pwm_active(0, (0.0, 0.0)), "osc 1's residual keeps it active");
+        // Snapping takes both lanes.
+        s.snap_slow(0, (0.1, -0.2), 0.0, 0.0);
+        assert_eq!(s.pwm_current(0), (0.1, -0.2));
     }
 
     #[test]
@@ -358,7 +401,7 @@ mod tests {
         assert!((s.xmod_current(0) - 2.0).abs() < 1e-2);
         // A fresh note snaps the lane so the index starts settled, not gliding
         // up from the stolen voice's state.
-        s.snap_slow(0, 0.0, 0.5, 0.0);
+        s.snap_slow(0, (0.0, 0.0), 0.5, 0.0);
         assert!((s.tick_xmod(0, 0.5) - 0.5).abs() < 1e-6);
     }
 

@@ -114,7 +114,8 @@ const fn idx(s: SourceId) -> usize {
 /// |---|---|---|
 /// | `Pitch` | 12.0 | ±12 st (±1 oct vibrato) |
 /// | `XModSweep` | 48.0 | ±48 st (VXN1 wide sweep) |
-/// | `Pwm` | 0.5 | ±0.5 pulse-width fraction |
+/// | `Pwm` | 0.5 | ±0.5 pulse-width fraction (both oscs) |
+/// | `Osc1Pwm` / `Osc2Pwm` | 0.5 | ±0.5 pulse-width fraction (one osc) |
 /// | `Cutoff` | 48.0 | ±48 st of cutoff |
 /// | `Resonance` | 1.0 | additive `[0, 1]` |
 /// | `HpfCutoff` | 48.0 | ±48 st of HPF cutoff |
@@ -138,6 +139,10 @@ pub const DEST_GAIN: [f32; N_DESTS] = {
     // Pan's native unit *is* the normalised depth: ±1 spans the image, so a
     // route at full depth reaches hard left/right and nothing needs scaling.
     g[di(DestId::Pan)] = 1.0;
+    // Same unit and gain as the combined `Pwm` (0261) — the three sum per osc,
+    // so a route moved from `Pwm` to `Osc1Pwm` keeps its felt depth.
+    g[di(DestId::Osc1Pwm)] = 0.5;
+    g[di(DestId::Osc2Pwm)] = 0.5;
     g
 };
 
