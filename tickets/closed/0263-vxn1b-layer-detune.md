@@ -112,3 +112,42 @@ descriptor's own `ct` formatting — the same readout `osc1_fine` and
 - Classic use to check by ear ([[verify-audio-in-reaper]]): L1 at −7 ct against
   L2 at +7 ct on the same patch, which should read as one wide sound rather than
   two.
+
+## Close-out (2026-08-11)
+
+- `layer_detune` exists as a per-layer patch param, `[-50, +50]` ct, default 0
+  ([params.rs:590](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L590),
+  `ParamId::LayerDetune` at [params.rs:191](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L191)).
+- Applied to the layer's whole pitch base — `+ p.get(ParamId::LayerDetune) * 0.01`
+  folded into `base_semis`
+  ([synth.rs:304](../../vxn-1b/crates/vxn1b-engine/src/synth.rs#L304)) — so both
+  oscillators and the sub move as a unit, block-rate, one addition, nothing in
+  the voice.
+- `Taper::BipolarExp { mid }` landed in the **shared** crate
+  ([vxn-core-app/src/params.rs:38](../../crates/vxn-core-app/src/params.rs#L38)),
+  with the mirrored-`Exp` algebra at
+  [params.rs:114](../../crates/vxn-core-app/src/params.rs#L114) and
+  [:148](../../crates/vxn-core-app/src/params.rs#L148), and its own test block
+  ([params.rs:284-311](../../crates/vxn-core-app/src/params.rs#L284-L311))
+  covering round-trip, the `±20 ct at half travel` calibration, and the
+  degenerate `mid ≥ max/2` fallback to linear. Cross-product build confirmed:
+  full-workspace `cargo test` green, so vxn-2 and vxn-3's exhaustive `Taper`
+  matches are updated.
+- Engine coverage, all green:
+  `layer_detune_shifts_the_layers_pitch`
+  ([engine.rs:1651](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1651)),
+  `layer_detune_moves_both_oscillators_together`
+  ([engine.rs:1676](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1676)),
+  `layer_detune_is_per_layer`
+  ([engine.rs:1702](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1702)),
+  `layer_detune_taper_puts_20_cents_at_half_travel`
+  ([engine.rs:1735](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1735)).
+- Taper stays view-side: `to_normalized`/`from_normalized` remain linear, so CLAP
+  automation and preset round-trips are unwarped —
+  [tests/taper_parity.rs](../../vxn-1b/crates/vxn1b-engine/tests/taper_parity.rs)
+  still green.
+- Faceplate: `data-control="bipolar"` `layer_detune` slider in both mixer strips
+  ([faceplate.html:292](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L292),
+  [:306](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L306)); view
+  coverage in `bipolar-fader.test.js`. State `VERSION` 7, shared with 0248.
+- Shipped in 6c1eed9.

@@ -140,3 +140,51 @@ that assert vocab length are updated.
   *whole* image after modulation.
 - [[vxn1b-two-layer-param-map]]: no new params here — pan comes in through the
   existing slot topology, so the CLAP count is unchanged.
+
+## Close-out (2026-08-11)
+
+- `DestId::Pan` and `SourceId::Spread` exist: `N_DESTS` 8 → 9
+  ([matrix.rs:159](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L159)),
+  `N_SOURCES` 10 → 11
+  ([matrix.rs:56](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L56)), both in
+  the `from_u8` round-trip
+  ([matrix.rs:83](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L83)).
+  `Spread` is decided bipolar in the exhaustive `is_bipolar` match
+  ([matrix.rs:106](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L106)).
+- Source value is `pan_position(lane) · spread_param`, assembled per lane with
+  the other per-voice source inputs as `SourceInputs::spread_pos`
+  ([bank.rs:491](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L491)) — so the
+  front-panel Spread knob keeps its meaning and the default route's depth is an
+  honest 1.0.
+- Voice pan moved to the same unity-centre constant-power law as 0248
+  (`voice_pan_gains`, [bank.rs:867](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L867)),
+  replacing VXN1's equal-sum. Centre stays unity, so the spread-0 parity fork is
+  bit-identical and `tests/parity.rs` still passes.
+- Modulated pan is smoothed per `PITCH_QUANTUM` inside the frame loop, gated by
+  `pan_active` exactly as PWM is
+  ([mod_smoothing.rs:167](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs#L167),
+  gate at [bank.rs:546](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L546),
+  re-cook at [bank.rs:700](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L700));
+  a lane with no live pan route stays on block-start values and pays nothing.
+  The hot summing loop is untouched.
+- Engine coverage, all green:
+  `voice_pan_law_is_constant_power_with_unity_centre`
+  ([bank.rs:1048](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1048)),
+  `spread_zero_centres_every_lane`
+  ([bank.rs:1082](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1082)),
+  `lfo_into_pan_moves_a_centred_voice`
+  ([bank.rs:1114](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1114)),
+  `pan_moves_ramp_rather_than_stepping`
+  ([bank.rs:1148](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1148)).
+- Matrix panel dropdowns pick both entries up from the Rust vocab with no JS
+  change; `matrix-overlay.test.js` green.
+- **Two follow-ups deliberately left open:**
+  1. **ADR 0002 divergence list** does not yet record the equal-sum →
+     constant-power change. Fold into 0213's ADR pass.
+  2. **`pan_position` is still an 8-entry per-bank table**
+     ([bank.rs:844](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L844)), which is
+     only correct while a stack *is* a bank.
+     [0266](0266-vxn1b-stack-width-and-voice-mode.md) makes stack width explicit
+     and owns replacing it with a stack-relative fan; that ticket carries the
+     acceptance criterion.
+- Shipped in 3708e9a.

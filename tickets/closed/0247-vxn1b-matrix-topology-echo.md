@@ -65,3 +65,24 @@ plain "the store is the truth" diff rather than an origin-tracking scheme.
 - **Id collision:** a concurrent session is holding an untracked
   `tickets/open/0246-vxn1b-oversampling-and-limiter.md`; the committed 0246 is
   the matrix-topology fix this depends on. One of them needs renumbering.
+
+## Close-out (2026-08-11)
+
+- `VxnMainThread::push_matrix_echo`
+  ([clap/src/lib.rs:318](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L318)) diffs
+  `matrix_snapshot()` against `last_matrix` each timer tick and pushes only on
+  drift, beside the existing param pump
+  ([clap/src/lib.rs:415](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L415)).
+- Echo and open-time seed share one slot-wire writer, so the two shapes cannot
+  drift apart — asserted by
+  `tests::echo_slot_shape_matches_the_open_time_seed`
+  ([ui-web/src/lib.rs:703](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs#L703)).
+  Green.
+- `dispatch.js` handles `kind: 'matrix'` by swapping `window.vxn.matrix.slots`
+  and calling `matrixOverlay.refreshForLayer`, reflect-only — it posts no
+  `set_matrix`, so an echo cannot bounce a load's own routing back at the engine
+  ([dispatch.js:795-800](../../vxn-1b/crates/vxn1b-ui-web/assets/dispatch.js#L795-L800)).
+  Malformed-echo handling is covered in `dispatch-orchestration.test.js`.
+- Depths stay on `ParamChanged`, so the page never has two sources of truth for
+  one value.
+- Shipped in 23def6b. Manual DAW verification waived by the user (2026-08-11).

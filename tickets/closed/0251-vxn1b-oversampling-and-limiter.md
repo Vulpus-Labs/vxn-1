@@ -88,3 +88,41 @@ shipping output stage lands.
   caused an audible dropout on every factor change. Don't report it here.
 - The limiter's threshold is fixed (≈ −0.4 dBFS master ceiling) — no param,
   matching VXN1.
+
+## Close-out (2026-08-11)
+
+- `OutputStage` ported into
+  [output.rs](../../vxn-1b/crates/vxn1b-engine/src/output.rs) with the L/R
+  decimator pair, the silent-drain skip (VXN1 0106), and the OS-change
+  crossfade (VXN1 0191) via `on_os_change`
+  ([output.rs:121](../../vxn-1b/crates/vxn1b-engine/src/output.rs#L121)). `os` is
+  threaded through `build_ctx`, so the dead `oversample_factor()` helper is live
+  and the UI's default 2× is what actually renders.
+- `StereoLimiter` sits in the **engine**, after the master multiply and the
+  finite guard and before the master meter tap
+  ([engine.rs:640-657](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L640-L657)),
+  so a master boost cannot push past the ceiling. Off→on resets the lookahead;
+  the toggle crossfades dry↔limited. `limiter_primed`
+  ([engine.rs:254](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L254)) keeps
+  the *initial* state from crossfading, which would otherwise pass the first
+  10 ms — the note attack — through dry.
+- Dedicated integration suite,
+  [tests/oversampling_limiter.rs](../../vxn-1b/crates/vxn1b-engine/tests/oversampling_limiter.rs),
+  all green: `oversampling_converges_on_the_band_limited_ideal` (aliasing falls
+  as the factor rises), `oversampling_off_is_unchanged_and_every_factor_is_finite`,
+  `limiter_holds_the_ceiling`, `limiter_runs_after_master_volume`,
+  `limiter_off_is_a_true_bypass`, `engaging_the_limiter_does_not_click`,
+  `layer_fade_time_is_independent_of_the_oversampling_factor` (the base-rate
+  gain-smoother tick). `os_one_is_a_passthrough` in
+  [output.rs:217](../../vxn-1b/crates/vxn1b-engine/src/output.rs#L217).
+- `tests/parity.rs` and `tests/alloc_free.rs` both still green.
+- **One acceptance criterion is void, not met:** "spread == 0 still yields
+  L == R bit-for-bit at every factor". The `spread_zero` mono fast path it
+  describes was deliberately deleted by
+  [0262](../closed/0262-vxn1b-drop-mono-fast-path.md), because layer pan (0248)
+  and pan-as-a-matrix-dest (0260) make "is this patch mono?" unanswerable at
+  block rate. R is now decimated unconditionally.
+- Latency deliberately not reported, per [[vxn2-filter-epic]] — a CLAP restart on
+  every factor change is an audible dropout.
+- Shipped across the O/S + limiter work and 396f3e8. Manual DAW verification
+  waived by the user (2026-08-11).

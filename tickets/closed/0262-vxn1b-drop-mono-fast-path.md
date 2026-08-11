@@ -66,3 +66,22 @@ unnecessary once the argument goes.
 - Sequencing: 0248 (layer pan) and 0251 (oversampling) are independent of each
   other and both are landing separately; this ticket is the join. It cannot be
   written until 0251's `output.rs` is on main.
+
+## Close-out (2026-08-11)
+
+- `spread_zero` is gone from `vxn1b-engine`: the `decimate_block` parameter, the
+  `spread_zero_last_block` field, the R-decimator skip and its
+  `copy_from_slice`, the mono→stereo `clone_state_from` seed, the engine-side
+  computation, and the two tests that asserted the optimisation. R is decimated
+  unconditionally. The only surviving mentions are a `bank.rs` test about lane
+  centring (`spread_zero_centres_every_lane`, unrelated) and a comment in
+  `engine.rs` recording why the hint was removed.
+- `both_silent` drain-skip kept — it keys on actual silence, not a
+  stereo-correlation guess, and pan does not affect it.
+- **Landed before 0248, not after.** The ticket's `depends: ["0248", "0251"]` and
+  its sequencing note assumed 0251 was still unlanded; it was already on main, so
+  the hint would have swallowed layer pan the moment 0248 arrived. Order run was
+  0262 (c496638) → 0248 (9cf0363) → 0263 → 0260. The acceptance criterion
+  naming `layer_pan` was consequently verified on 0248's landing, since the param
+  did not exist yet at this commit.
+- Shipped in c496638.

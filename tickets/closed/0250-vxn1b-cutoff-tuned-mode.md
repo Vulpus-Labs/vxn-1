@@ -58,3 +58,24 @@ resolved to null, so the `tunedOfCutoff` / `cutoffOfTuned` maps stayed empty.
   parity gate was running *with* vibrato. Now found by dest, not index.
 - The tuned range (C0..C4 = MIDI 12..60) is the shared core constant, and its
   floor is the same C0 the cutoff param's minimum and the key-track pivot use.
+
+## Close-out (2026-08-11)
+
+- `cutoff_tuned` exists as a bool patch param, default off, per layer, in the
+  filter block.
+- The engine never reads it — asserted bit-identical by
+  `engine::tests::cutoff_tuned_never_reaches_the_engine`
+  ([engine.rs:758](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L758)). Green.
+- `locateSyncPartners` pairs cutoff ↔ cutoff_tuned per layer again, which was all
+  the dormant override machinery needed; the shared
+  [cutoff-tuned.js](../../crates/vxn-core-ui-web/assets/cutoff-tuned.js) helpers
+  were already spliced in. Snap-to-semitone over MIDI 12..60, note-name readout,
+  and the repaint-on-toggle path are covered by `cutoff-tuned.test.js` and
+  `dispatch-orchestration.test.js`, driving the real core helpers.
+- Faceplate carries the `Tuned` strip switch beside `Slope`
+  ([faceplate.html:147](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L147)).
+- Fixed in passing: `tests/parity.rs` zeroed the vibrato route by slot index, but
+  0245's removal of the pre-wired Key→Cutoff slot had slid that route to slot 1,
+  so the gate had quietly been running *with* vibrato. Now found by dest.
+- Shipped in ceac906 + 5e8c006. Manual DAW verification waived by the user
+  (2026-08-11).

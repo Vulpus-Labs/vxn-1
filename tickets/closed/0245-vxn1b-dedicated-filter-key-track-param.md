@@ -98,3 +98,33 @@ things VXN1 can't do).
   synth its own key-track — see [[vxn1b-two-layer-param-map]].
 - Adding a param shifts every later CLAP id; that's fine, id stability is not a
   constraint — see [[vxn1-id-stability-dropped]].
+
+## Close-out (2026-08-11)
+
+- `ParamId::FilterKeyTrack` exists as a per-layer patch param, `0..1` linear,
+  default `0.0`, placed with the filter block, and is off the
+  "params that should be gone" assert.
+- Threaded to the voice as `BlockCtx::filter_key_track`
+  ([bank.rs:208](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L208)), filled from
+  the param at [synth.rs:324](../../vxn-1b/crates/vxn1b-engine/src/synth.rs#L324)
+  and summed with the matrix `Cutoff` dest at
+  [bank.rs:566-576](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L566-L576) on
+  VXN1's `(note − 12) · amt` pivot.
+- `drift_key_track` reads the param instead of scraping the matrix for a
+  Key→Cutoff slot; the topology scan is gone
+  ([bank.rs:1382-1397](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1382-L1397)
+  covers the "no Key→Cutoff slot, still coupled to drift" case).
+- Key source reverted to C4-centred; the pre-wired Key→Cutoff factory slot is
+  dropped from `default_patch()`, leaving slot 1 inert.
+  `KEY_CUTOFF_UNITY_DEPTH` stays as the documented matrix-route calibration
+  ([matrix.rs:377](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L377),
+  [matrix.rs:414](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L414)).
+- Faceplate carries the `Key` fader in the Filter panel
+  ([faceplate.html:138](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L138)),
+  addressed per layer through the 0216 outer map.
+- State `VERSION`: the ticket asked for `4`; the blob has since moved on to `7`
+  via 0250 (`CutoffTuned`) and 0248/0263 (`LayerPan`/`LayerDetune`) — the
+  version-history comment at
+  [state.rs:53-55](../../vxn-1b/crates/vxn1b-engine/src/state.rs#L53-L55) records
+  `4` as this ticket's step.
+- Shipped in fc0ff83. `tests/parity.rs` green.

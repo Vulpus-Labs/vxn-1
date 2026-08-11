@@ -116,3 +116,43 @@ under the fader, above the mute. Value text reads `L50` / `C` / `R50`.
   built stereo-per-tap in 0240.
 - [[vxn1b-two-layer-param-map]]: tests that touch the new id must use
   `clap_id_of`, not `as usize`.
+
+## Close-out (2026-08-11)
+
+- `layer_pan` exists as a per-layer patch param, bipolar `[-1, 1]`, default
+  centre, `Taper::Linear`
+  ([params.rs:585](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L585),
+  `ParamId::LayerPan` at [params.rs:186](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L186)),
+  picked up on both layers by the outer two-layer map.
+- Constant-power law normalised to unity at centre in `pan_gains`
+  ([engine.rs:286](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L286)); the
+  per-layer gain became an L/R pair so one `Smoothed::tick` per channel per frame
+  covers both a fader move and a pan sweep, and the mute-fade semantics carry
+  over untouched.
+- Engine coverage, all green:
+  `pan_law_is_constant_power_with_unity_at_centre`
+  ([engine.rs:1487](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1487)),
+  `layers_panned_apart_land_in_opposite_channels`
+  ([engine.rs:1518](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1518)),
+  `centre_pan_leaves_the_channels_identical`
+  ([engine.rs:1575](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1575)),
+  `panning_a_layer_does_not_step_the_output`
+  ([engine.rs:1589](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1589)),
+  `a_muted_layer_is_silent_at_any_pan`
+  ([engine.rs:1623](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1623)).
+- Post-fader meter tap is post-pan for free — the scale loop runs ahead of it.
+- Preset + state round-trip via
+  `preset::tests::layer_pan_round_trips_and_stays_sparse_at_centre`
+  ([preset.rs:508](../../vxn-1b/crates/vxn1b-engine/src/preset.rs#L508)) — a moved
+  pan is written, a centred one stays out of the sparse TOML. State `VERSION` 7
+  ([state.rs:55](../../vxn-1b/crates/vxn1b-engine/src/state.rs#L55)).
+- Faceplate: `layer_pan` dial in both mixer strips
+  ([faceplate.html:290](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L290),
+  [:304](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html#L304)); view
+  coverage in `layer-pan.test.js`.
+- **Ordering note — the ticket's "Mono fast path" section was inverted by
+  events.** It assumed 0251 was not yet on main; it was, so the `spread_zero`
+  hint would have silently discarded pan at OS ≥ 2. 0262 therefore landed
+  *before* this ticket (c496638 → 9cf0363), not after, and the
+  `spread == 0 with non-centre layer_pan ⇒ L != R` criterion is asserted there.
+- Shipped in 9cf0363.

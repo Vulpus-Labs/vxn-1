@@ -62,3 +62,24 @@ Seed the page from the live store instead of the factory constant:
   ticket if it bites before then.
 - Same class of bug to watch for in any future non-automatable patch state: if
   it is not a CLAP param, opening the editor is the only chance to seed it.
+
+## Close-out (2026-08-11)
+
+- `build_matrix_json` serialises the topology it is handed rather than
+  `factory_default()`
+  ([ui-web/src/lib.rs:242](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs#L242)),
+  threaded from `gui::set_parent`'s `matrix_snapshot()` through `open_editor` →
+  `build_faceplate_html` → `assemble_faceplate`
+  ([lib.rs:228](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs#L228)).
+- Covered by `tests::matrix_json_carries_the_live_topology_not_the_factory`
+  ([lib.rs:685](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs#L685)), which seeds a
+  route the factory patch does not have and asserts it survives into the spliced
+  page. Green.
+- Standalone web build keeps the factory table — a browser session really does
+  boot a fresh engine at the factory patch.
+- The "known remaining gap" in the Notes (stale combos on a preset/state load
+  under an *open* editor) was filed and fixed as
+  [0247](0247-vxn1b-matrix-topology-echo.md).
+- The Notes' id-collision warning is stale: the duplicate 0246 became
+  [0251](0251-vxn1b-oversampling-and-limiter.md), so no renumbering is outstanding.
+- Shipped in 8a403b0. Manual DAW verification waived by the user (2026-08-11).
