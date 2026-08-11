@@ -1,7 +1,8 @@
 //! The `Synth` — VXN1b's core synth as an **instantiable unit** (0214, ADR 0002
-//! §1). One `Synth` owns its own voice pool, allocator/stealing, twin/unison,
-//! patch params, mod matrix, per-layer LFO 2, and two 8-wide [`RenderBank`]s
-//! (lanes 0–7 / 8–15, for stereo decorrelation — *not* layers). The plugin holds
+//! §1). One `Synth` owns its own voice pool, allocator/stealing, stack voicing,
+//! patch params, mod matrix, per-layer LFO 2, and [`Synth::BANKS`] 8-wide
+//! [`RenderBank`]s (32 lanes in 4 banks since 0264 — banks are an SoA split for
+//! stereo decorrelation, *not* layers). The plugin holds
 //! **2 × `Synth` + a global block** ([`crate::engine::Engine`]) that owns FX,
 //! master, and (later) mixer/demux.
 //!
@@ -10,7 +11,7 @@
 //! the caller's buffer **accumulating**; the global block pre-zeroes, ticks each
 //! active synth, then runs the one global FX chain + master over the sum.
 
-use vxn_dsp::{CONTROL_BLOCK, LfoCore, MAX_VOICES};
+use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 
 use crate::bank::{BlockCtx, RenderBank};
 use crate::matrix::MatrixTable;
@@ -18,39 +19,40 @@ use crate::params::{CrossModType, ParamId, Params};
 use crate::state::LayerState;
 use crate::voice::{Triggers, Voices, WIDE_GLIDE_SCALE};
 
-/// Per-synth seed set: the two bank RNG seeds (distinct so a synth's two banks'
-/// noise/drift streams decorrelate) plus its LFO 2 seed. The two synths get
-/// **distinct** sets so that two layers on the *same* patch still decorrelate
-/// (they don't phase-lock).
+/// Per-synth seed set: one RNG seed per render bank (distinct so a synth's
+/// banks' noise/drift streams decorrelate) plus its LFO 2 seed. The two synths
+/// get **distinct** sets so that two layers on the *same* patch still
+/// decorrelate (they don't phase-lock).
 pub(crate) struct SynthSeeds {
-    pub banks: [u64; 2],
+    pub banks: [u64; Synth::BANKS],
     pub lfo2: u64,
 }
 
 impl SynthSeeds {
-    /// Layer 1 seeds — identical to the pre-dual-layer engine's, so single mode
-    /// is byte-for-byte today's output.
+    /// Layer 1 seeds — the first two are identical to the pre-dual-layer
+    /// engine's, so lanes 0–15 stay byte-for-byte what they were before the
+    /// 32-lane widening (0264).
     pub(crate) const LAYER1: SynthSeeds = SynthSeeds {
-        banks: [0x1b_0000_0001, 0x1b_0000_0002],
+        banks: [0x1b_0000_0001, 0x1b_0000_0002, 0x1b_0000_0003, 0x1b_0000_0004],
         lfo2: 0x1b_0000_00f2,
     };
     /// Layer 2 seeds — distinct streams so a duplicated patch decorrelates.
     pub(crate) const LAYER2: SynthSeeds = SynthSeeds {
-        banks: [0x1b_0000_0011, 0x1b_0000_0012],
+        banks: [0x1b_0000_0011, 0x1b_0000_0012, 0x1b_0000_0013, 0x1b_0000_0014],
         lfo2: 0x1b_0000_01f2,
     };
 }
 
 /// One instantiable VXN1b synth: voices + patch + matrix + per-layer LFO 2 over
-/// two render banks.
+/// [`Synth::BANKS`] render banks.
 pub struct Synth {
     sample_rate: f32,
     params: Params,
     matrix: MatrixTable,
     voices: Voices,
-    banks: [RenderBank; 2],
+    banks: [RenderBank; Synth::BANKS],
     /// This layer's LFO 2 (VXN1b has no *global* LFO — ADR 0002 §4), ticked once
-    /// per control block and broadcast to both banks.
+    /// per control block and broadcast to every bank.
     lfo2: LfoCore,
     /// Host pitch-bend in `[-1, 1]` — the hardwired bend term (ADR §3) *and* the
     /// PitchWheel matrix source.
@@ -60,6 +62,11 @@ pub struct Synth {
 }
 
 impl Synth {
+    /// Render banks per synth. [`Voices::CAPACITY`] lanes split into
+    /// [`RenderBank::LANES`]-wide SoA banks; the division is exact by
+    /// construction and asserted in `tests::lane_pool_divides_into_banks`.
+    pub const BANKS: usize = Voices::CAPACITY / RenderBank::LANES;
+
     /// Build a synth from a decoded patch (`params` + matrix topology) with the
     /// given per-layer seed set. Cooks envelopes.
     pub(crate) fn new(sample_rate: f32, state: LayerState, seeds: &SynthSeeds) -> Self {
@@ -69,10 +76,7 @@ impl Synth {
             params: state.params,
             matrix: state.matrix,
             voices: Voices::new(),
-            banks: [
-                RenderBank::new(sample_rate, seeds.banks[0]),
-                RenderBank::new(sample_rate, seeds.banks[1]),
-            ],
+            banks: core::array::from_fn(|b| RenderBank::new(sample_rate, seeds.banks[b])),
             lfo2: LfoCore::new(control_rate, seeds.lfo2),
             pitch_bend: 0.0,
             mod_wheel: 0.0,
@@ -203,7 +207,7 @@ impl Synth {
     /// synths' answers into the decimator's drain-skip (0249). Cheap: a scan of
     /// the 16 active flags, once per control block.
     pub(crate) fn is_silent(&self) -> bool {
-        !(0..MAX_VOICES).any(|v| self.voices.is_active(v))
+        !(0..Voices::CAPACITY).any(|v| self.voices.is_active(v))
     }
 
     pub(crate) fn lfo2_phase(&self) -> f32 {
@@ -249,35 +253,30 @@ impl Synth {
             self.voices.level_comp(),
         );
 
+        // One pass per bank over `LANES`-wide slices of the render view. `active`
+        // is the only `&mut` field, so it is chunked rather than sliced; every
+        // bank sums into the same `l`/`r`. Banks with no live lane take
+        // `RenderBank::render`'s `is_silent` early-out, so widening the pool
+        // costs idle blocks nothing.
         let view = self.voices.render_view();
         let lanes = RenderBank::LANES;
-        let (a0, a1) = view.active.split_at_mut(lanes);
-        self.banks[0].render(
-            &ctx,
-            &view.note[..lanes],
-            &view.gate[..lanes],
-            a0,
-            &view.velocity[..lanes],
-            &view.pressure[..lanes],
-            &view.note_random[..lanes],
-            &view.detune_cents[..lanes],
-            &view.stack_pos[..lanes],
-            l,
-            r,
-        );
-        self.banks[1].render(
-            &ctx,
-            &view.note[lanes..],
-            &view.gate[lanes..],
-            a1,
-            &view.velocity[lanes..],
-            &view.pressure[lanes..],
-            &view.note_random[lanes..],
-            &view.detune_cents[lanes..],
-            &view.stack_pos[lanes..],
-            l,
-            r,
-        );
+        for (b, active) in view.active.chunks_mut(lanes).enumerate() {
+            let s = b * lanes;
+            let e = s + lanes;
+            self.banks[b].render(
+                &ctx,
+                &view.note[s..e],
+                &view.gate[s..e],
+                active,
+                &view.velocity[s..e],
+                &view.pressure[s..e],
+                &view.note_random[s..e],
+                &view.detune_cents[s..e],
+                &view.stack_pos[s..e],
+                l,
+                r,
+            );
+        }
     }
 
     fn apply_envelopes(&mut self) {
@@ -456,15 +455,34 @@ mod tests {
         );
     }
 
-    /// Allocation and stealing are private to a synth: 16 held notes fill both of
-    /// *this* synth's banks; the 17th steals its own voice 0.
+    /// Allocation and stealing are private to a synth: a full pool of held notes
+    /// fills all of *this* synth's banks; the next steals its own voice 0.
     #[test]
     fn stealing_is_per_synth() {
         let mut s = factory_synth(&SynthSeeds::LAYER1);
-        for i in 0..16 {
-            s.note_on(0, 48 + i as u8, 1.0);
+        for i in 0..Voices::CAPACITY {
+            s.note_on(0, 24 + i as u8, 1.0);
         }
-        assert_eq!(s.note_on(0, 90, 1.0), 0, "17th note steals this synth's voice 0");
+        assert_eq!(
+            s.note_on(0, 120, 1.0),
+            0,
+            "the note past capacity steals this synth's voice 0"
+        );
+    }
+
+    /// Widening the pool must not cost idle blocks anything: with only lane 0
+    /// sounding, banks 1–3 hold no active lane and take `RenderBank`'s
+    /// `is_silent` early-out (0264).
+    #[test]
+    fn banks_past_the_sounding_one_stay_inactive() {
+        let mut s = factory_synth(&SynthSeeds::LAYER1);
+        s.note_on(0, 60, 1.0);
+        let (mut l, mut r) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        s.render_block(&mut l, &mut r);
+        assert!(l.iter().any(|&x| x != 0.0), "the held note must sound");
+        for v in RenderBank::LANES..Voices::CAPACITY {
+            assert!(!s.voices.is_active(v), "lane {v} must be idle");
+        }
     }
 
     /// Test helper: zero the buffer then render one control block (a `Synth`

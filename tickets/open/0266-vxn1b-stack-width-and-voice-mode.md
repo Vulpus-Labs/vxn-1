@@ -42,9 +42,14 @@ the allocation unit, 16 stacks × 8 lanes with a density control, and it measure
 > [ADR 0003](../../vxn-1b/adrs/0003-vxn1b-stack-width-and-voice-mode.md).
 > **Remaining:** (1) make the *stack* the allocation unit rather than claiming
 > lanes one at a time through the per-voice policy — the two agree for a full
-> pool but can differ when a partial steal splits a stack; (2) width `32`, which
-> arrives with [0264](0264-vxn1b-32-lanes-unison-16.md)'s wider pool; (3) the
-> `busy_profile` check at full width.
+> pool but can differ when a partial steal splits a stack; ~~(2) width `32`~~
+> **done 2026-08-11** with [0264](../closed/0264-vxn1b-32-lanes-unison-16.md)'s
+> wider pool — `StackWidth::ThirtyTwo` exists, the width sweeps enumerate the
+> enum rather than a literal list, and `the_widest_stack_is_the_whole_pool`
+> pins the widest width to the pool size; (3) the `busy_profile` check at full
+> width, which **needs a harness first** — `busy_profile` exists only for vxn-1
+> ([vxn-engine/examples/busy_profile.rs](../../vxn-1/crates/vxn-engine/examples/busy_profile.rs)),
+> so vxn-1b needs its own port before 32 × 1 can be compared against 1 × 32.
 
 ## Design
 

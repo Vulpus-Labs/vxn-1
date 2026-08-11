@@ -15,15 +15,23 @@
 //! evaluator later reads (0202). Everything here is fixed-size and
 //! allocation-free: real-time safe by construction.
 
-use vxn_dsp::{MAX_VOICES, xorshift64};
+use vxn_dsp::xorshift64;
 
 use crate::params::VoiceMode;
 
-/// Voice count — inherited from the shared DSP crate so VXN1b's poly is
-/// identical to VXN1's (ADR 0001 §1). A flat bank: channel/pressure plumbing is
-/// orthogonal to VXN1's per-layer SoA split, so allocation reasons over all
-/// voices uniformly.
-const N: usize = MAX_VOICES;
+/// Lanes per synth (0264). **Local to VXN1b**, deliberately not
+/// `vxn_dsp::MAX_VOICES`: that const is vxn-1's, and raising it there would drag
+/// VXN1 along for a capacity decision that is VXN1b's alone.
+///
+/// 32 rather than VXN1's 16 because [`StackWidth`](crate::params::StackWidth)
+/// spends the pool — a width-2 patch is only 16-note polyphonic over 32 lanes,
+/// and 8 over VXN1b's original 16, which is thin for exactly the fat detuned
+/// patches that want a wide stack. Simultaneous notes are `N / width`.
+pub(crate) const MAX_VOICES_1B: usize = 32;
+
+/// Voice count. A flat bank: channel/pressure plumbing is orthogonal to VXN1's
+/// per-layer SoA split, so allocation reasons over all voices uniformly.
+const N: usize = MAX_VOICES_1B;
 
 /// Capacity of the Solo held-note stack. Far beyond ten
 /// fingers; an overflow drops the *oldest* entry, which is the one a player
@@ -579,7 +587,7 @@ impl Voices {
         self.velocity[v]
     }
 
-    /// Total voice capacity (= [`vxn_dsp::MAX_VOICES`]).
+    /// Total voice capacity (= [`MAX_VOICES_1B`]).
     pub const CAPACITY: usize = N;
 
     /// Bundle the per-voice bookkeeping the render path reads as **disjoint
@@ -630,6 +638,7 @@ pub struct RenderView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::StackWidth;
 
     #[test]
     fn note_on_stores_channel_on_assigned_voice() {
@@ -818,6 +827,24 @@ mod tests {
         t.as_slice().iter().map(|x| x.voice).collect()
     }
 
+    /// Every selectable stack width, straight off the param enum. Tests that
+    /// sweep widths iterate this rather than a literal list, so adding a width
+    /// (0264 added 32) widens their coverage instead of silently escaping it.
+    fn stack_widths() -> Vec<usize> {
+        (0..StackWidth::COUNT).map(|i| StackWidth::from_index(i).lanes()).collect()
+    }
+
+    /// The widest selectable stack is exactly the lane pool — no width can ask
+    /// for more lanes than exist, and none leaves the pool partly unreachable.
+    #[test]
+    fn the_widest_stack_is_the_whole_pool() {
+        let widths = stack_widths();
+        assert_eq!(*widths.last().unwrap(), N);
+        for w in widths {
+            assert_eq!(N % w, 0, "width {w} does not tile the {N}-lane pool");
+        }
+    }
+
     // ── Width × mode orthogonality (0266, ADR 0003) ─────────────────────────
 
     /// The two axes are independent: every width is playable in either mode,
@@ -871,7 +898,9 @@ mod tests {
     /// is a different chord at each width.
     #[test]
     fn detune_span_is_constant_across_widths() {
-        for width in [2usize, 4, 8, 16] {
+        // Enumerated from `StackWidth`, not a literal list, so a width added
+        // later (as 32 was, in 0264) cannot slip past this rule unchecked.
+        for width in stack_widths().into_iter().filter(|&w| w > 1) {
             let mut v = Voices::default();
             v.note_on_stack(0, 60, 1.0, width, VoiceMode::Solo, 25.0, false);
             let cents: Vec<f32> = (0..width).map(|i| v.detune_cents[i]).collect();
@@ -899,7 +928,7 @@ mod tests {
     /// than sounding alongside.
     #[test]
     fn poly_capacity_is_the_pool_divided_by_width() {
-        for width in [1usize, 2, 4, 8] {
+        for width in stack_widths() {
             let mut v = Voices::default();
             let stacks = N / width;
             for i in 0..stacks {

@@ -712,6 +712,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_VOICES;
     use crate::meters::MeterFrame;
     use crate::params::{
         MATRIX_SLOTS, TOTAL_PARAMS, clap_id_of, desc_for_clap_id, global_clap_id,
@@ -777,14 +778,28 @@ mod tests {
     }
 
     #[test]
-    fn seventeenth_note_steals_within_layer1() {
-        // 16 held notes fill layer 1's two banks; the 17th steals voice 0.
+    fn note_past_capacity_steals_within_layer1() {
+        // At the default width of 1, `MAX_VOICES` held notes fill layer 1's
+        // banks; the next one steals voice 0. Keyed on the const, not on 16 —
+        // 0264 widened the pool to 32 and this test predates it.
         let mut e = Engine::new(48_000.0, 512);
-        for i in 0..16 {
-            e.note_on(0, 48 + i as u8, 1.0);
+        for i in 0..MAX_VOICES {
+            e.note_on(0, 24 + i as u8, 1.0);
         }
-        let v = e.note_on(0, 90, 1.0);
-        assert_eq!(v, 0, "17th note steals the oldest (voice 0)");
+        let v = e.note_on(0, 120, 1.0);
+        assert_eq!(v, 0, "the note past capacity steals the oldest (voice 0)");
+    }
+
+    /// The widening is only useful if the pool really sounds 32 notes at
+    /// width 1 — i.e. nothing below `Voices` caps polyphony at the old 16.
+    #[test]
+    fn layer1_sounds_the_whole_pool_before_stealing() {
+        let mut e = Engine::new(48_000.0, 512);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..MAX_VOICES {
+            seen.insert(e.note_on(0, 24 + i as u8, 1.0));
+        }
+        assert_eq!(seen.len(), MAX_VOICES, "every note must land on its own lane");
     }
 
     #[test]

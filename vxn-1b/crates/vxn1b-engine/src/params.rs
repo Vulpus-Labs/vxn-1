@@ -32,10 +32,11 @@ use vxn_dsp::{AdsrShape, FilterMode, FilterSlope, LfoShape, NoiseColor, Waveform
 /// used to conflate (ADR 0003, ticket 0266). Powers of two only: the width
 /// divides the lane pool exactly, so there are never orphaned lanes.
 ///
-/// Simultaneous notes = `MAX_VOICES / width`, so the widest setting is
-/// monophonic *by capacity* while still being polyphonic *by behaviour* — a
-/// new note steals the stack and retriggers, with no legato. That combination
-/// is unreachable in VXN1's enum, and it is the point of splitting the two.
+/// Simultaneous notes = [`MAX_VOICES_1B`](crate::MAX_VOICES) `/ width`, so the
+/// widest setting (32, the whole pool — ticket 0264) is monophonic *by
+/// capacity* while still being polyphonic *by behaviour*: a new note steals the
+/// stack and retriggers, with no legato. That combination is unreachable in
+/// VXN1's enum, and it is the point of splitting the two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(usize)]
 pub enum StackWidth {
@@ -45,10 +46,11 @@ pub enum StackWidth {
     Four,
     Eight,
     Sixteen,
+    ThirtyTwo,
 }
 
 impl StackWidth {
-    pub const COUNT: usize = StackWidth::Sixteen as usize + 1;
+    pub const COUNT: usize = StackWidth::ThirtyTwo as usize + 1;
 
     pub fn from_index(i: usize) -> StackWidth {
         match i {
@@ -56,6 +58,7 @@ impl StackWidth {
             2 => StackWidth::Four,
             3 => StackWidth::Eight,
             4 => StackWidth::Sixteen,
+            5 => StackWidth::ThirtyTwo,
             _ => StackWidth::One,
         }
     }
@@ -505,7 +508,7 @@ const SHAPE_LABELS: &[&str] = &["Lin", "Exp"];
 const LFO_LABELS: &[&str] = &["Sine", "Tri", "Saw+", "Saw-", "Square", "S&H"];
 const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
 /// Lanes per note. Labelled by the number itself — it is a count, not a name.
-const WIDTH_LABELS: &[&str] = &["1", "2", "4", "8", "16"];
+const WIDTH_LABELS: &[&str] = &["1", "2", "4", "8", "16", "32"];
 const VOICE_MODE_LABELS: &[&str] = &["Poly", "Solo"];
 /// PM is labelled "FM" — players expect that name (VXN1 ADR 0004 §3).
 const CROSS_MOD_LABELS: &[&str] = &["Off", "Sync", "FM", "Ring"];

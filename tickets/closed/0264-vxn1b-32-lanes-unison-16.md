@@ -111,3 +111,49 @@ size it to a Unison-specific const — 0266 makes 32 reachable.
 - Orthogonal to the mirrored-layer idea (Layer 2 slaved to Layer 1's patch, own
   drift + a detune offset) discussed alongside this: that stays a separate
   ticket, and would compose with this one as 32 + 32.
+
+## Close-out (2026-08-11)
+
+- `MAX_VOICES_1B = 32` is vxn-1b-local
+  ([voice.rs:22](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L22));
+  `vxn_dsp::MAX_VOICES` is untouched, so vxn-1 is unaffected — confirmed by
+  running its suite (209 passed, 0 failed) and pinned against silent
+  re-coupling by `lib::tests::diverges_from_vxn1s_shared_voice_count`.
+- `Synth::BANKS` derives from `Voices::CAPACITY / RenderBank::LANES` rather than
+  a literal 4, so the pool and the bank count cannot drift apart
+  (`lib::tests::lane_pool_divides_into_banks`). Banks are built with
+  `core::array::from_fn`, and `SynthSeeds::banks` grew to 4 entries with
+  **banks 0–1 keeping their existing seed values** on both layers.
+- The hand-unrolled two-bank render fan became a `chunks_mut` loop over the
+  render view ([synth.rs](../../vxn-1b/crates/vxn1b-engine/src/synth.rs)) — the
+  `active` slice is the only `&mut` field, so it chunks while the rest slice.
+- `StackWidth::ThirtyTwo` added, `WIDTH_LABELS` gains `"32"`. The faceplate's
+  Width buttongroup is declarative and reads its variants from the Rust table,
+  so it picked the new option up with no JS change.
+- Capacity coverage: `layer1_sounds_the_whole_pool_before_stealing` (32 distinct
+  lanes before any steal) and `note_past_capacity_steals_within_layer1`, both
+  keyed on `MAX_VOICES` rather than a literal. `stealing_is_per_synth` likewise.
+  Twin's 16-note capacity falls out of
+  `poly_capacity_is_the_pool_divided_by_width`.
+- **Two width sweeps were iterating literal lists** (`[2,4,8,16]`,
+  `[1,2,4,8]`) and would have silently skipped 32. Both now enumerate
+  `StackWidth` through a `stack_widths()` helper, plus a new
+  `the_widest_stack_is_the_whole_pool` asserting the widest width *is* the pool
+  and every width tiles it.
+- Idle cost: `banks_past_the_sounding_one_stay_inactive` asserts lanes 8–31 stay
+  inactive with one note held, so banks 1–3 take `RenderBank`'s `is_silent`
+  early-out.
+- Nothing advertised the old capacity: no CLAP voice-info impl exists, and the
+  only UI voice-count surface is the Width buttongroup's Rust-sourced labels.
+- Tests: 260 Rust / 240 JS, 0 failures. `tests/parity.rs` and
+  `tests/alloc_free.rs` green.
+
+### Not done
+
+- **The busy/idle profile comparison.** `busy_profile` exists only for vxn-1
+  ([vxn-engine/examples/busy_profile.rs](../../vxn-1/crates/vxn-engine/examples/busy_profile.rs));
+  vxn-1b has no such harness, so "an idle-layer block does not regress" is
+  asserted by test (the `is_silent` early-out above) but not measured. Porting
+  the harness and profiling full width is
+  [0266](0266-vxn1b-stack-width-and-voice-mode.md)'s remaining item (3), which
+  already owns it.

@@ -59,17 +59,42 @@ pub use state::{LayerState, PluginState};
 pub use synth::Synth;
 pub use voice::Voices;
 
-/// Maximum simultaneous voices, inherited from the shared DSP crate — VXN1b's
-/// voice count is identical to VXN1's (ADR 0001 §1): two 8-lane banks.
-pub const MAX_VOICES: usize = vxn_dsp::MAX_VOICES;
+/// Lanes per synth: four 8-lane banks (0264). **Diverges from VXN1**, which
+/// runs `vxn_dsp::MAX_VOICES` = 16 — the widening is VXN1b's alone because
+/// [`StackWidth`](params::StackWidth) spends the pool on stack voicing, so
+/// simultaneous notes are `MAX_VOICES / width` rather than the whole pool.
+/// Raising the shared const instead would have dragged VXN1 along.
+pub const MAX_VOICES: usize = voice::MAX_VOICES_1B;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn inherits_voice_count_from_shared_dsp() {
-        assert_eq!(MAX_VOICES, vxn_dsp::MAX_VOICES);
-        assert_eq!(MAX_VOICES, 2 * RenderBank::LANES);
+    fn lane_pool_divides_into_banks() {
+        assert_eq!(MAX_VOICES, 32);
+        assert_eq!(MAX_VOICES, Synth::BANKS * RenderBank::LANES);
+        assert_eq!(MAX_VOICES % RenderBank::LANES, 0, "banks must tile the pool");
+    }
+
+    /// The widening is deliberate, so pin the divergence rather than let a
+    /// future `vxn-dsp` bump silently re-couple them (0264).
+    #[test]
+    fn diverges_from_vxn1s_shared_voice_count() {
+        assert_eq!(vxn_dsp::MAX_VOICES, 16);
+        assert_eq!(MAX_VOICES, 2 * vxn_dsp::MAX_VOICES);
+    }
+
+    /// Every `StackWidth` must divide the pool exactly — no orphaned lanes at
+    /// any width, and the widest is the whole pool.
+    #[test]
+    fn every_stack_width_divides_the_pool() {
+        use params::StackWidth;
+        for i in 0..StackWidth::COUNT {
+            let w = StackWidth::from_index(i).lanes();
+            assert!(w.is_power_of_two(), "width {w} is not a power of two");
+            assert_eq!(MAX_VOICES % w, 0, "width {w} leaves orphaned lanes");
+        }
+        assert_eq!(StackWidth::from_index(StackWidth::COUNT - 1).lanes(), MAX_VOICES);
     }
 }
