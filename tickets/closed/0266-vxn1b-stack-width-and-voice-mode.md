@@ -239,8 +239,8 @@ materialise either; it is a wash.
 `tests/taper_parity.rs` all green — `claim_lanes` uses two fixed-size stack
 arrays and allocates nothing.
 
-### Not done
+### DAW validation (2026-08-12)
 
-- **Manual DAW check.** Width and Voice have not been played in Reaper
-  ([[verify-audio-in-reaper]]) — worth doing before 0213 ships, particularly
-  32 × Poly vs 32 × Solo and a width change with notes held.
+Played in Reaper by the user ([[verify-audio-in-reaper]]) — Width and Voice
+behave, including 32 × Poly vs 32 × Solo and a width change with notes held.
+Every acceptance criterion is now met; nothing outstanding.
