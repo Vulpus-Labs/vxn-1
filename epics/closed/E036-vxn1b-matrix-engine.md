@@ -2,7 +2,7 @@
 id: E036
 product: vxn-1b
 title: "VXN1b core — matrix-modulated engine + all sources (scaffold, MPE plumbing, param table, evaluator, persistence, CLAP)"
-status: open
+status: closed
 created: 2026-07-25
 ---
 
