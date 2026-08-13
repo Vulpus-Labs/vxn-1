@@ -735,6 +735,9 @@ html, body {
    slave layer, so hide it while the pane shows Layer 1. `visibility` (not
    `display`) so the strip's other cells never shift on a tab flip. */
 [data-edit-layer="upper"] [data-layer2-only] { visibility: hidden; }
+/* Mirror of the above for controls that describe an action *from* Layer 1:
+   "Copy → L2" (0265) only makes sense while Layer 1 is the edit layer. */
+[data-edit-layer="lower"] [data-layer1-only] { visibility: hidden; }
 
 /* Master's strip stacks Oversample (horizontal toggle row) over Limit
    (single toggle) — `panel-strip` defaults to a single horizontal row,

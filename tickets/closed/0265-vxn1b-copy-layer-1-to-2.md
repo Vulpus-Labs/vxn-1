@@ -129,3 +129,79 @@ is worse than a loud one.
   slowly apart, which is usually what "fatter" wants. `lfo2_link` is there if not.
 - Orthogonal to [0264](0264-vxn1b-32-lanes-unison-16.md): with 32 lanes per synth
   a copied pair is 32 + 32.
+
+## Close-out (2026-08-13)
+
+- **`SharedParams::copy_layer(from, to)`**
+  ([shared.rs](../../vxn-1b/crates/vxn1b-engine/src/shared.rs)) walks
+  `PATCH_PARAMS` by `patch_clap_id`, copies the matrix table under the existing
+  `lock()`, stamps the detune offset, and raises `reload` — the same road
+  `restore_from_bytes` and `edit_matrix_slot` already take. A self-copy returns
+  early and does not flag a reload.
+- **Exclusions** are `LayerLevel`, `LayerMute`, `LayerPan`, `LayerDetune`
+  (`COPY_LAYER_EXCLUDED`). `LayerPan` was pencilled in as "joins the list when
+  0248 lands" — it has, so it went in from the start.
+- **`COPY_DETUNE_CENTS = 6.0`** stamped on the copy, source layer untouched. The
+  ticket's `depends: ["0263"]` paid off: `layer_detune` existed, so the `Fine`-param
+  fallback was not needed.
+- **Opcode.** `PatchOp::CopyLayer { from, to }` in the engine
+  ([engine.rs](../../vxn-1b/crates/vxn1b-engine/src/engine.rs)) — deliberately
+  **not** a `KeyOp` variant, since `KeyOp` is defined as mutations of `KeyState`.
+  `parse_custom_ui` gains a `copy_layer` arm and `on_custom_ui` a third downcast,
+  chained after `KeyOp` and `MatrixEdit`.
+- **Echo is free, as designed.** `local.publish(&StoreRef(…))`
+  ([clap/src/lib.rs:556](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L556)) diffs
+  the local mirror against the store each `process`, so main-thread writes reach
+  the host on the next block; the timer tick's param diff + matrix echo repaint
+  the editor. No new echo path, and **no gesture flags raised** — they suppress
+  host echo mid-drag and would only fight the repaint.
+- **Key mode.** Copying from Single lands in Dual; an existing Split is left
+  alone.
+
+### UI
+
+A `Copy → L2` cell in the Voice panel strip
+([faceplate.html](../../vxn-1b/crates/vxn1b-ui-web/assets/faceplate.html)),
+hand-wired in `dispatch.js` like the LFO 2 link cell it shares an opcode hook
+with. **Layer-1-only** via a new `[data-layer1-only]` rule mirroring the existing
+`[data-layer2-only]` — the action reads *from* the edit layer, so it would be
+backwards on the Layer 2 tab.
+
+The ticket left the destructive-safety mechanism open ("a confirm step in the UI
+(or a press-and-hold); decide when placing the control"). Chosen: **arm on first
+press, copy on second**, with the cell reading `Sure?` while armed. It disarms on
+a 2.5 s timeout *and* on any other pointer-down on the page, so an armed cell
+cannot outlive the player's attention. Cheaper than a modal, and it cannot fire
+from a stray tap.
+
+### Tests
+
+Engine (`shared::tests`):
+
+- `copy_layer_duplicates_every_patch_param_but_the_mixer_strip` — walks the whole
+  table by `patch_clap_id`, and asserts a pre-set Layer 2 mixer strip survives.
+- `copy_layer_duplicates_the_matrix_topology` — all 16 slots, all four fields.
+- `copy_layer_offsets_the_copys_detune_only`.
+- `a_copied_pair_does_not_null_double` — the criterion's *rendered* check, not
+  just a param assertion: drives a real `Engine` from the copied state with
+  `MasterDrift` at 0 and compares each layer's contribution with the other muted.
+  Verified to have teeth by zeroing `COPY_DETUNE_CENTS`, which fails it.
+- `copy_layer_turns_on_layer_2_but_leaves_an_existing_split`.
+- `copy_layer_raises_no_gesture_flags`.
+- `copy_layer_onto_itself_is_a_no_op`.
+- `clap_state_round_trips_after_a_copy` — both layers, params and topology.
+
+View (`__tests__/copy-layer.test.js`): a single press arms rather than copying;
+the confirming press sends `upper → lower` exactly once and disarms; timeout and
+click-elsewhere both disarm.
+
+281 Rust / 244 JS, 0 failures.
+
+### Not done
+
+- **Manual DAW check** ([[verify-audio-in-reaper]]): that the faceplate repaints
+  Layer 2's pane and the host sees the ~66 new values. Worth folding into 0213's
+  smoke, along with whether the 6 ct default reads as "fatter" by ear.
+- `cargo fmt` deliberately not run — the crate carries pre-existing rustfmt
+  diffs, so formatting would stomp unrelated work
+  ([[vxn-concurrent-vxn2-work-no-git-add-all]]).

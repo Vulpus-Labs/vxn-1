@@ -98,6 +98,17 @@ pub enum KeyOp {
     SetLfo2Link(bool),
 }
 
+/// A bulk **patch** mutation posted from the UI (0265). Deliberately not a
+/// [`KeyOp`] variant: `KeyOp` is defined as mutations of [`KeyState`], and this
+/// rewrites params and matrix topology instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchOp {
+    /// Duplicate one layer's patch params and matrix topology onto the other,
+    /// leaving the mixer strip (level / mute / pan / detune) alone and stamping
+    /// a small detune offset on the copy so the pair beats rather than sums.
+    CopyLayer { from: Layer, to: Layer },
+}
+
 /// Which topology field of a matrix slot a UI edit targets (0219, absorbing
 /// 0210). Depth is a CLAP param (`matrix_slot{n}_depth`) and does **not** travel
 /// here — it rides the normal automatable-param path.

@@ -81,7 +81,7 @@ pub fn open_editor(
     // them into a `KeyOp` payload the clap controller applies to the shared
     // KeyState. (Matrix topology opcodes join this hook with the overlay, 0210.)
     config.parse_custom_ui = Some(std::sync::Arc::new(|op, v| {
-        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField};
+        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField, PatchOp};
         match op {
             "set_key_mode" => Some(UiEvent::Custom(Box::new(KeyOp::SetKeyMode(
                 v.get("mode")?.as_u64()? as u8,
@@ -115,6 +115,21 @@ pub fn open_editor(
                     slot: v.get("slot")?.as_u64()? as u8,
                     field,
                     value: v.get("value")?.as_u64()? as u8,
+                })))
+            }
+            // Bulk patch duplication (0265). A `PatchOp`, not a `KeyOp`: this
+            // rewrites params and topology rather than KeyState.
+            "copy_layer" => {
+                let side = |k: &str| -> Option<Layer> {
+                    Some(match v.get(k)?.as_str()? {
+                        "lower" => Layer::L2,
+                        "upper" => Layer::L1,
+                        _ => return None,
+                    })
+                };
+                Some(UiEvent::Custom(Box::new(PatchOp::CopyLayer {
+                    from: side("from")?,
+                    to: side("to")?,
                 })))
             }
             _ => None,

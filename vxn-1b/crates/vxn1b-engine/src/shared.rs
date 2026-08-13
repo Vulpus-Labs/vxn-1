@@ -31,10 +31,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::engine::{KeyOp, KeyState, MatrixEdit, MatrixField};
 use crate::matrix::{Curve, DestId, MatrixTable, SourceId};
 use crate::params::{
-    ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, Params, TOTAL_PARAMS, clap_ref,
-    desc_for_clap_id, global_clap_id, patch_clap_id,
+    ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
+    clap_ref, desc_for_clap_id, global_clap_id, patch_clap_id,
 };
 use crate::state::{LayerState, PluginState};
+
+/// Detune stamped on the copy by [`SharedParams::copy_layer`] (0265), in cents.
+/// Small enough to read as one wide sound rather than two instruments, large
+/// enough that the pair cannot null-double.
+pub const COPY_DETUNE_CENTS: f32 = 6.0;
+
+/// Patch params [`SharedParams::copy_layer`] leaves alone: the mixer strip.
+/// These place the two copies against each other, so duplicating them would
+/// defeat the point of the copy.
+const COPY_LAYER_EXCLUDED: [ParamId; 4] =
+    [ParamId::LayerLevel, ParamId::LayerMute, ParamId::LayerPan, ParamId::LayerDetune];
 
 /// Lock-free param mirror + topology channel shared by the CLAP main and audio
 /// threads. Seeded to the factory-default patch
@@ -193,6 +204,64 @@ impl SharedParams {
     pub fn apply_key_op(&self, op: KeyOp) {
         self.key.lock().unwrap_or_else(|e| e.into_inner()).apply(op);
         self.key_dirty.store(true, Ordering::Release);
+    }
+
+    /// Duplicate `from`'s patch onto `to` — params and matrix topology (0265).
+    ///
+    /// **Excludes the mixer strip.** `LayerLevel`, `LayerMute`, `LayerPan` and
+    /// `LayerDetune` are balance and placement *between* the two copies, not
+    /// part of the sound, so they stay as the player set them.
+    ///
+    /// **Stamps a detune offset**, and this is required rather than a nicety:
+    /// `lane_phase` is a fixed function of lane index with no seed and both
+    /// allocators pick the same lane for the same note, so an exact copy with
+    /// `MasterDrift` at 0 renders *bit-identical* layers — +6 dB and no width at
+    /// all. `to`'s [`ParamId::LayerDetune`] is set to [`COPY_DETUNE_CENTS`],
+    /// leaving `from`'s alone, so the pair sits a few cents apart out of the box.
+    /// `layer_detune` is the right knob rather than the per-osc `Fine` params:
+    /// it moves the layer's whole pitch base, and it keeps the copy's one
+    /// sound-affecting edit visible in a single control the player can undo by
+    /// eye.
+    ///
+    /// **Levels are deliberately not trimmed.** Both `LayerLevel`s default to
+    /// 1.0, so a copy is roughly +6 dB. The balance is the player's, the detune
+    /// takes some of the coherence out of the sum, and a silent gain change on a
+    /// button press is worse than a loud one.
+    ///
+    /// Echo to the host and the faceplate is free: the audio thread's
+    /// `take_reload` re-syncs the engine, the per-block publish pushes the
+    /// changed ids to the host, and the timer tick's param diff + matrix echo
+    /// repaint the editor. Gesture flags are **not** raised — they exist to
+    /// suppress host echo during a live drag and would only fight the repaint.
+    ///
+    /// Copying while in Single mode would do nothing audible, so it also
+    /// switches to Dual. An existing Split is left alone — the player chose that
+    /// routing.
+    pub fn copy_layer(&self, from: Layer, to: Layer) {
+        if from == to {
+            return;
+        }
+        for &inner in PATCH_PARAMS.iter() {
+            if COPY_LAYER_EXCLUDED.contains(&inner) {
+                continue;
+            }
+            let (Some(src), Some(dst)) = (patch_clap_id(from, inner), patch_clap_id(to, inner))
+            else {
+                continue;
+            };
+            self.set(dst, self.get(src));
+        }
+        {
+            let mut m = self.lock();
+            m[to as usize] = m[from as usize];
+        }
+        if let Some(id) = patch_clap_id(to, ParamId::LayerDetune) {
+            self.set(id, COPY_DETUNE_CENTS);
+        }
+        if !self.key_state().layer2_on {
+            self.apply_key_op(KeyOp::SetKeyMode(1));
+        }
+        self.reload.store(true, Ordering::Release);
     }
 
     /// Apply a UI matrix-topology edit to the per-layer matrix channel and flag a
@@ -497,5 +566,203 @@ mod tests {
         assert!(sp.restore_from_bytes(&[]).is_err());
         assert_eq!(sp.get(ParamId::Cutoff as usize), 777.0, "store untouched on error");
         assert!(!sp.take_reload(), "a failed restore does not flag reload");
+    }
+
+    // ── Copy Layer 1 → Layer 2 (0265) ───────────────────────────────────────
+
+    /// Seed layer 1 with a recognisable patch and a route the factory lacks.
+    fn seeded_for_copy() -> SharedParams {
+        let sp = SharedParams::new();
+        for (p, v) in [
+            (ParamId::Cutoff, 3210.0),
+            (ParamId::Resonance, 0.77),
+            (ParamId::Osc1Level, 0.42),
+            (ParamId::StackWidth, 3.0),
+        ] {
+            sp.set(patch_clap_id(Layer::L1, p).unwrap(), v);
+        }
+        sp.edit_matrix_slot(MatrixEdit {
+            layer: Layer::L1,
+            slot: 9,
+            field: MatrixField::Source,
+            value: SourceId::Aftertouch as u8,
+        });
+        sp.edit_matrix_slot(MatrixEdit {
+            layer: Layer::L1,
+            slot: 9,
+            field: MatrixField::Dest,
+            value: DestId::HpfCutoff as u8,
+        });
+        sp.take_reload();
+        sp
+    }
+
+    #[test]
+    fn copy_layer_duplicates_every_patch_param_but_the_mixer_strip() {
+        let sp = seeded_for_copy();
+        // Give layer 2 a mixer strip the copy must not touch.
+        for (p, v) in [
+            (ParamId::LayerLevel, 0.25),
+            (ParamId::LayerMute, 1.0),
+            (ParamId::LayerPan, -0.5),
+        ] {
+            sp.set(patch_clap_id(Layer::L2, p).unwrap(), v);
+        }
+        sp.copy_layer(Layer::L1, Layer::L2);
+
+        for &inner in PATCH_PARAMS.iter() {
+            let (a, b) = (
+                sp.get(patch_clap_id(Layer::L1, inner).unwrap()),
+                sp.get(patch_clap_id(Layer::L2, inner).unwrap()),
+            );
+            if COPY_LAYER_EXCLUDED.contains(&inner) {
+                continue;
+            }
+            assert_eq!(a, b, "{inner:?} did not copy");
+        }
+        assert_eq!(sp.get(patch_clap_id(Layer::L2, ParamId::LayerLevel).unwrap()), 0.25);
+        assert_eq!(sp.get(patch_clap_id(Layer::L2, ParamId::LayerMute).unwrap()), 1.0);
+        assert_eq!(sp.get(patch_clap_id(Layer::L2, ParamId::LayerPan).unwrap()), -0.5);
+        assert!(sp.take_reload(), "a copy must flag a reload");
+    }
+
+    #[test]
+    fn copy_layer_duplicates_the_matrix_topology() {
+        let sp = seeded_for_copy();
+        sp.copy_layer(Layer::L1, Layer::L2);
+        let m = sp.matrix_snapshot();
+        for slot in 0..MATRIX_SLOTS {
+            assert_eq!(m[0].slots[slot].source, m[1].slots[slot].source, "slot {slot} source");
+            assert_eq!(m[0].slots[slot].dest, m[1].slots[slot].dest, "slot {slot} dest");
+            assert_eq!(m[0].slots[slot].curve, m[1].slots[slot].curve, "slot {slot} curve");
+            assert_eq!(
+                m[0].slots[slot].scale_src, m[1].slots[slot].scale_src,
+                "slot {slot} scale"
+            );
+        }
+        assert_eq!(m[1].slots[9].dest, DestId::HpfCutoff, "the seeded route came across");
+    }
+
+    /// The null-doubling guard. `lane_phase` is a fixed function of lane index
+    /// with no seed and both allocators pick the same lane for the same note, so
+    /// an exact copy would render bit-identical layers — +6 dB and no width.
+    #[test]
+    fn copy_layer_offsets_the_copys_detune_only() {
+        let sp = seeded_for_copy();
+        sp.set(patch_clap_id(Layer::L1, ParamId::LayerDetune).unwrap(), 0.0);
+        sp.copy_layer(Layer::L1, Layer::L2);
+        assert_eq!(
+            sp.get(patch_clap_id(Layer::L2, ParamId::LayerDetune).unwrap()),
+            COPY_DETUNE_CENTS
+        );
+        assert_eq!(
+            sp.get(patch_clap_id(Layer::L1, ParamId::LayerDetune).unwrap()),
+            0.0,
+            "the source layer's detune must be left alone"
+        );
+    }
+
+    #[test]
+    fn copy_layer_turns_on_layer_2_but_leaves_an_existing_split() {
+        let sp = SharedParams::new();
+        assert!(!sp.key_state().layer2_on, "single mode to start");
+        sp.copy_layer(Layer::L1, Layer::L2);
+        let k = sp.key_state();
+        assert!(k.layer2_on, "copying from single must land in dual");
+        assert!(!k.split_enabled);
+
+        // Already split → the routing is the player's choice, leave it.
+        let sp = SharedParams::new();
+        sp.apply_key_op(KeyOp::SetKeyMode(2));
+        sp.copy_layer(Layer::L1, Layer::L2);
+        let k = sp.key_state();
+        assert!(k.layer2_on && k.split_enabled, "an existing split must survive");
+    }
+
+    #[test]
+    fn copy_layer_raises_no_gesture_flags() {
+        let sp = seeded_for_copy();
+        sp.copy_layer(Layer::L1, Layer::L2);
+        assert!(
+            (0..TOTAL_PARAMS).all(|id| !sp.gesture(id)),
+            "gestures suppress host echo mid-drag; a bulk write must not raise them"
+        );
+    }
+
+    #[test]
+    fn copy_layer_onto_itself_is_a_no_op() {
+        let sp = seeded_for_copy();
+        let before = sp.get(patch_clap_id(Layer::L1, ParamId::LayerDetune).unwrap());
+        sp.copy_layer(Layer::L1, Layer::L1);
+        assert_eq!(sp.get(patch_clap_id(Layer::L1, ParamId::LayerDetune).unwrap()), before);
+        assert!(!sp.take_reload(), "a self-copy must not flag a reload");
+    }
+
+    /// The null-doubling regression, end to end. The param assertion above says
+    /// the detune landed; this says it *matters*. Drive a real engine from the
+    /// copied state and compare each layer's contribution: with `MasterDrift` at
+    /// 0 and no detune the two would render bit-identically (`lane_phase` is a
+    /// fixed function of lane index with no seed, and both allocators pick the
+    /// same lane for the same note), giving +6 dB and no width at all.
+    #[test]
+    fn a_copied_pair_does_not_null_double() {
+        use crate::engine::Engine;
+
+        // One layer's contribution, with the other muted.
+        let render = |sp: &SharedParams, mute: Layer| {
+            let sp2 = SharedParams::new();
+            sp2.restore_from_bytes(&sp.snapshot_bytes()).expect("round-trip");
+            sp2.set(patch_clap_id(mute, ParamId::LayerMute).unwrap(), 1.0);
+            let mut e = Engine::new(48_000.0, 256);
+            e.load_state(sp2.engine_state());
+            e.set_key_state(sp2.key_state());
+            e.note_on(0, 60, 1.0);
+            let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            for _ in 0..4 {
+                e.process_block(&mut l, &mut r);
+            }
+            l
+        };
+
+        let sp = SharedParams::new();
+        sp.set(global_clap_id(ParamId::MasterDrift).unwrap(), 0.0);
+        sp.copy_layer(Layer::L1, Layer::L2);
+
+        let a = render(&sp, Layer::L2);
+        let b = render(&sp, Layer::L1);
+        assert!(a.iter().any(|&s| s != 0.0), "layer 1 must sound");
+        assert!(b.iter().any(|&s| s != 0.0), "layer 2 must sound");
+        let diff = a.iter().zip(&b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+        assert!(diff > 1e-6, "the copied pair renders identically — it will null-double");
+    }
+
+    /// A copy must survive a host save/reload with both layers intact — params
+    /// *and* the duplicated topology.
+    #[test]
+    fn clap_state_round_trips_after_a_copy() {
+        let sp = seeded_for_copy();
+        sp.copy_layer(Layer::L1, Layer::L2);
+        let blob = sp.snapshot_bytes();
+
+        let back = SharedParams::new();
+        back.restore_from_bytes(&blob).expect("round-trip");
+        for &inner in PATCH_PARAMS.iter() {
+            for layer in [Layer::L1, Layer::L2] {
+                let id = patch_clap_id(layer, inner).unwrap();
+                assert_eq!(back.get(id), sp.get(id), "{layer:?} {inner:?} drifted");
+            }
+        }
+        let (a, b) = (sp.matrix_snapshot(), back.matrix_snapshot());
+        for layer in 0..2 {
+            for slot in 0..MATRIX_SLOTS {
+                assert_eq!(a[layer].slots[slot].source, b[layer].slots[slot].source);
+                assert_eq!(a[layer].slots[slot].dest, b[layer].slots[slot].dest);
+            }
+        }
+        assert_eq!(
+            back.get(patch_clap_id(Layer::L2, ParamId::LayerDetune).unwrap()),
+            COPY_DETUNE_CENTS,
+            "the copy's detune offset must survive the round-trip"
+        );
     }
 }

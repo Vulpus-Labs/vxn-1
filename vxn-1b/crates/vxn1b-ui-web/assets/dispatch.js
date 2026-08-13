@@ -564,6 +564,50 @@ export function wireLfo2Link() {
   };
 }
 
+// Copy Layer 1 → Layer 2 (0265). Duplicates Layer 1's patch params and matrix
+// topology onto Layer 2, leaves the mixer strip alone, and stamps a small
+// detune on the copy so the pair beats rather than sums.
+//
+// A `PatchOp`, not a param and not KeyState, so — like the LFO 2 link cell —
+// it is hand-built here rather than bound by `rebindAllForLayer`.
+//
+// Destructive: it overwrites whatever Layer 2 held, and lands ~66 param changes
+// in the host's undo stack as one burst. So the cell **arms** on the first press
+// and copies on the second, and disarms on a timeout or on any other click.
+// Cheaper than a modal and it cannot fire from a stray tap.
+export const COPY_ARM_MS = 2500;
+export function wireCopyLayer() {
+  const el = document.getElementById('copy-layer');
+  if (!el) return;
+  el.innerHTML = '';
+  const row = tgRow('Copy → L2');
+  el.appendChild(row);
+
+  let armed = null;
+  const disarm = () => {
+    if (armed) clearTimeout(armed);
+    armed = null;
+    row.classList.remove('active');
+    row.textContent = 'Copy → L2';
+  };
+  row.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    if (armed) {
+      disarm();
+      window.vxn.send.copyLayer('upper', 'lower');
+      return;
+    }
+    row.classList.add('active');
+    row.textContent = 'Sure?';
+    armed = setTimeout(disarm, COPY_ARM_MS);
+  });
+  // Any click elsewhere on the faceplate cancels a pending confirm, so the
+  // armed state can never outlive the player's attention.
+  document.addEventListener('pointerdown', (ev) => {
+    if (armed && !row.contains(ev.target)) disarm();
+  });
+}
+
 // Keyboard split (0220 / ADR 0002 §3). Enable + point are KeyState, not CLAP
 // params, so they post `setKeyMode` / `setSplitPoint` custom opcodes rather
 // than going through the param path.
@@ -688,6 +732,9 @@ export function init() {
   // Cross-layer LFO 2 link (0217) — a hand-wired KeyState cell in the LFO 2
   // panel strip, so it must not be left to `rebindAllForLayer`.
   wireLfo2Link();
+  // Copy Layer 1 → Layer 2 (0265) — a hand-wired PatchOp cell in the Voice
+  // panel strip, same reason.
+  wireCopyLayer();
   // Keyboard split (0220) — KeyState cells on the FX/Global tab, hand-wired
   // for the same reason as the LFO 2 link.
   wireSplit();

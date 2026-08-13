@@ -251,6 +251,14 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
       </div>
+      <!-- Copy Layer 1 → Layer 2 (0265). A PatchOp, not a param, so it is
+           hand-built in dispatch.js like the LFO 2 link cell it shares an
+           opcode hook with. Layer-1-only: the action reads *from* the edit
+           layer, so it would be backwards on the Layer 2 tab. Destructive —
+           the cell arms on first press and copies on the second. -->
+      <div class="panel-strip">
+        <div class="ctl-strip" id="copy-layer" data-layer1-only></div>
+      </div>
     </div>
   </div>
 

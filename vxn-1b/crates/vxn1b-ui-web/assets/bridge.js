@@ -79,6 +79,10 @@ window.vxn = {
     // Matrix topology edit (0219). `field` ∈ source|dest|curve|scale; `value` is
     // the wire u8 (SourceId/DestId/Curve index). Depth is a normal set_param.
     setMatrix:       (layer, slot, field, value) => { _post({ op: 'set_matrix', layer, slot, field, value }); _mutated(); },
+    // Bulk patch duplication (0265): params + matrix topology from one layer
+    // onto the other, mixer strip excluded. Destructive, so the caller confirms
+    // before posting.
+    copyLayer:       (from, to)             => { _post({ op: 'copy_layer', from, to }); _mutated(); },
     requestTextInput:(id, title, initial)   => _post({ op: 'request_text_input', id, title, initial }),
     ready:           ()                     => _post({ op: 'ready' }),
   },

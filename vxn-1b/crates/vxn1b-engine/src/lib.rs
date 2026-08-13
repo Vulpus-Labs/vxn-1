@@ -39,7 +39,7 @@ pub mod voice;
 
 pub use bank::{BlockCtx, RenderBank};
 pub use engine::{
-    Engine, KeyMode, KeyOp, KeyState, MatrixEdit, MatrixField, DEFAULT_SPLIT_POINT,
+    Engine, KeyMode, KeyOp, KeyState, MatrixEdit, MatrixField, PatchOp, DEFAULT_SPLIT_POINT,
 };
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
