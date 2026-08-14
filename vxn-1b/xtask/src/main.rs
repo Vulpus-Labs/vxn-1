@@ -98,10 +98,28 @@ fn install_dest() -> Result<PathBuf, String> {
         .join(BUNDLE_NAME))
 }
 
+/// Force `factory.rs` to look modified so cargo rebuilds the embedded preset
+/// bank (0212).
+///
+/// `include_dir!` bakes the TOML tree in at compile time but emits **no**
+/// `rerun-if-changed` for it, so editing or adding a preset leaves the previous
+/// bank in the rlib and the change silently doesn't ship. Rewriting the file's
+/// own bytes bumps its mtime, which cargo *does* track. Costs one recompile of
+/// one crate per bundle; the alternative is a bank that lies.
+fn touch_factory() -> Result<(), String> {
+    let path = workspace_root()
+        .join("vxn-1b/crates/vxn1b-engine/src/factory.rs");
+    let src = fs::read(&path).map_err(io("read factory.rs"))?;
+    fs::write(&path, src).map_err(io("touch factory.rs"))?;
+    Ok(())
+}
+
 fn bundle() -> Result<PathBuf, String> {
     if !cfg!(target_os = "macos") {
         return Err("bundle currently only supports macOS".into());
     }
+
+    touch_factory()?;
 
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = Command::new(&cargo)

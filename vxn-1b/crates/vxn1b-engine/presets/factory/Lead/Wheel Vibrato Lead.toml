@@ -1,0 +1,49 @@
+schema = 1
+
+[meta]
+name = "Wheel Vibrato Lead"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "Mod wheel scales the LFO 1 → pitch slot: no wheel, no vibrato."
+
+[params]
+cutoff = 2400.0
+env2_attack = 0.009999999776482582
+env2_release = 0.20000000298023224
+env2_sustain = 0.8500000238418579
+legato = true
+lfo1_delay_time = 0.15000000596046448
+lfo1_rate = 5.199999809265137
+matrix_slot0_depth = 1.0
+matrix_slot1_depth = 0.3499999940395355
+matrix_slot2_depth = 1.0
+matrix_slot4_depth = 0.30000001192092896
+osc2_fine = 6.0
+osc2_wave = "Pulse"
+portamento_time = 0.05999999865889549
+voice_mode = "Solo"
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 1
+source = "lfo1"
+dest = "pitch"
+curve = "lin"
+scale-src = "mod-wheel"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 4
+source = "aftertouch"
+dest = "cutoff"
+curve = "lin"

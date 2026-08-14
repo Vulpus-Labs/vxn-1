@@ -1,0 +1,48 @@
+schema = 1
+
+[meta]
+name = "Drifting Pad"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "LFO 2 → pan for slow auto-pan, on top of the spread route."
+
+[params]
+cutoff = 900.0
+env2_attack = 0.8999999761581421
+env2_release = 2.0
+env2_sustain = 0.75
+lfo2_rate = 0.11999999731779099
+master_drift = 0.3499999940395355
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.5
+matrix_slot4_depth = 0.15000000596046448
+osc1_wave = "Triangle"
+osc2_level = 0.5
+reverb_mix = 0.3499999940395355
+reverb_on = true
+reverb_size = 0.699999988079071
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "lfo2"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 4
+source = "key"
+dest = "cutoff"
+curve = "lin"

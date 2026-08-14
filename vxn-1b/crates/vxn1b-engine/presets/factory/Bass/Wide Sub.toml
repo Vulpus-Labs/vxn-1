@@ -1,0 +1,38 @@
+schema = 1
+
+[meta]
+name = "Wide Sub"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "4-lane stack, 14 ct fan. Width is a voicing, not a mode."
+
+[params]
+cutoff = 320.0
+env1_decay = 0.4000000059604645
+env1_sustain = 0.10000000149011612
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.4000000059604645
+osc2_level = 0.800000011920929
+spread = 0.699999988079071
+stack_width = "4"
+sub_level = 0.6000000238418579
+unison_detune = 14.0
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "env1"
+dest = "cutoff"
+curve = "exp"

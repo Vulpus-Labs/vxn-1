@@ -1,0 +1,76 @@
+schema = 1
+
+[meta]
+name = "Dual Locked Sweep"
+author = "Vulpus Labs"
+category = "Dual"
+comment = "Two layers panned and detuned apart, LFO 2 phase-locked across both."
+
+[params]
+cutoff = 700.0
+env2_attack = 0.30000001192092896
+env2_release = 0.8999999761581421
+layer_detune = -7.0
+layer_pan = -0.6000000238418579
+lfo2_rate = 0.30000001192092896
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.44999998807907104
+osc2_level = 0.699999988079071
+resonance = 0.4000000059604645
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "lfo2"
+dest = "cutoff"
+curve = "exp"
+
+[layer2.params]
+cutoff = 700.0
+env2_attack = 0.30000001192092896
+env2_release = 0.8999999761581421
+layer_detune = 7.0
+layer_pan = 0.6000000238418579
+lfo2_rate = 0.30000001192092896
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.44999998807907104
+osc1_pw = 0.3499999940395355
+osc1_wave = "Pulse"
+osc2_octave = 1
+resonance = 0.4000000059604645
+
+[[layer2.matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[layer2.matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[layer2.matrix]]
+slot = 3
+source = "lfo2"
+dest = "cutoff"
+curve = "exp"
+
+[keys]
+mode = "dual"
+split-point = 60
+lfo2-link = true

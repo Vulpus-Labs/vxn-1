@@ -1,0 +1,73 @@
+schema = 1
+
+[meta]
+name = "Split Bass and Lead"
+author = "Vulpus Labs"
+category = "Split"
+comment = "Bass below C3, lead above. Two synths, one keyboard."
+
+[params]
+cutoff = 2600.0
+legato = true
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.30000001192092896
+osc2_level = 0.5
+osc2_wave = "Pulse"
+portamento_time = 0.03999999910593033
+voice_mode = "Solo"
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "lfo1"
+dest = "pitch"
+curve = "lin"
+scale-src = "mod-wheel"
+
+[layer2.params]
+cutoff = 200.0
+drive = 0.25
+env1_decay = 0.25
+env2_release = 0.10000000149011612
+env2_sustain = 0.5
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.5
+osc1_level = 0.8999999761581421
+osc2_level = 0.0
+sub_level = 0.5
+
+[[layer2.matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[layer2.matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[layer2.matrix]]
+slot = 3
+source = "env1"
+dest = "cutoff"
+curve = "exp"
+
+[keys]
+mode = "split"
+split-point = 48
+lfo2-link = false

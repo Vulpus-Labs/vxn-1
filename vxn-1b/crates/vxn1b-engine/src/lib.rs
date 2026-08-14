@@ -23,6 +23,7 @@
 pub mod bank;
 pub mod engine;
 pub mod eval;
+pub mod factory;
 pub mod fx;
 pub mod matrix;
 pub mod meters;

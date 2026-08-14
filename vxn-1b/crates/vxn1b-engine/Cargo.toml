@@ -20,6 +20,10 @@ vxn-core-app = { workspace = true }
 vxn-preset = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Bakes the factory preset tree into the rlib (0212). Main-thread only — the
+# audio path never parses TOML. Emits no rerun-if-changed, so `xtask` touches
+# `factory.rs` before an install.
+include_dir = "0.7"
 
 [dev-dependencies]
 # VXN1's engine — the render-parity oracle (0202): the seeded default patch must

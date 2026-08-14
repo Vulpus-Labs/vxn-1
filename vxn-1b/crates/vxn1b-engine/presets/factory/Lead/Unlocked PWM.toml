@@ -1,0 +1,47 @@
+schema = 1
+
+[meta]
+name = "Unlocked PWM"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "LFO 1 → osc 1 width, LFO 2 → osc 2 width, different rates."
+
+[params]
+cutoff = 3200.0
+env2_attack = 0.05000000074505806
+env2_release = 0.3499999940395355
+env2_sustain = 0.8999999761581421
+lfo1_rate = 0.3499999940395355
+lfo2_rate = 0.23000000417232513
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.699999988079071
+matrix_slot4_depth = 0.699999988079071
+osc1_wave = "Pulse"
+osc2_fine = -4.0
+osc2_level = 0.800000011920929
+osc2_wave = "Pulse"
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "lfo1"
+dest = "osc1-pwm"
+curve = "lin"
+
+[[matrix]]
+slot = 4
+source = "lfo2"
+dest = "osc2-pwm"
+curve = "lin"

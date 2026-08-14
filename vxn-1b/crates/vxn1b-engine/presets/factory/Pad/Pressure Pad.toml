@@ -1,0 +1,50 @@
+schema = 1
+
+[meta]
+name = "Pressure Pad"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "Aftertouch → cutoff + amp. Per-note pressure on an MPE controller."
+
+[params]
+chorus_on = true
+cutoff = 520.0
+env2_attack = 0.6000000238418579
+env2_decay = 1.2000000476837158
+env2_release = 1.600000023841858
+env2_sustain = 0.699999988079071
+matrix_slot0_depth = 1.0
+matrix_slot2_depth = 1.0
+matrix_slot3_depth = 0.6000000238418579
+matrix_slot4_depth = 0.30000001192092896
+osc2_fine = 8.0
+osc2_level = 0.75
+resonance = 0.25
+reverb_on = true
+spread = 0.8500000238418579
+stack_width = "2"
+unison_detune = 9.0
+
+[[matrix]]
+slot = 0
+source = "env2"
+dest = "amp"
+curve = "lin"
+
+[[matrix]]
+slot = 2
+source = "spread"
+dest = "pan"
+curve = "lin"
+
+[[matrix]]
+slot = 3
+source = "aftertouch"
+dest = "cutoff"
+curve = "exp"
+
+[[matrix]]
+slot = 4
+source = "aftertouch"
+dest = "amp"
+curve = "lin"

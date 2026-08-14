@@ -9,9 +9,10 @@
 //! Ported from VXN1's `vxn-engine/src/preset_io.rs`, adapted to VXN1b's sparse
 //! TOML codec ([`crate::preset`]) and its `(Meta, PluginState)` shape (VXN1b has
 //! no `Performance` wrapper — meta + state serialise together via
-//! [`crate::preset::write_preset`]). The **factory** bank is empty for now; the
-//! embedded bank lands in 0212. Every mutating call canonicalises its target
-//! path and refuses anything outside the user dir ([`ensure_within_user_dir`]).
+//! [`crate::preset::write_preset`]). The **factory** side needs no IO at all —
+//! that bank is baked into the binary ([`crate::factory`], 0212). Every mutating
+//! call canonicalises its target path and refuses anything outside the user dir
+//! ([`ensure_within_user_dir`]).
 
 use std::fs;
 use std::io;
@@ -146,8 +147,8 @@ fn ensure_within_user_dir(target: &Path) -> io::Result<()> {
 // ── PresetStore adapter ───────────────────────────────────────────────────────
 //
 // The controller talks to preset IO through `vxn_core_app::PresetStore`; this
-// is the engine-side adapter. Stateless — every call goes straight to the
-// module functions below. Factory bank is empty until 0212.
+// is the engine-side adapter. Stateless — the user calls go straight to the
+// module functions below, the factory calls to the embedded bank.
 
 pub struct EnginePresetStore;
 
@@ -191,17 +192,17 @@ fn to_load(meta: Meta, state: PluginState, warnings: Vec<String>) -> Result<Pres
 
 impl PresetStore for EnginePresetStore {
     fn factory_len(&self) -> usize {
-        // Embedded factory bank lands in ticket 0212 (E038). Until then the
-        // browser shows only the user side.
-        0
+        crate::factory::factory().len()
     }
 
-    fn factory_load(&self, _index: usize) -> Result<PresetLoad, String> {
-        Err("no factory bank yet".to_string())
+    fn factory_load(&self, index: usize) -> Result<PresetLoad, String> {
+        let (meta, state, warnings) =
+            crate::factory::load(index).ok_or_else(|| format!("no factory preset {index}"))?;
+        to_load(meta, state, warnings)
     }
 
-    fn factory_meta(&self, _index: usize) -> Option<PresetMeta> {
-        None
+    fn factory_meta(&self, index: usize) -> Option<PresetMeta> {
+        crate::factory::factory().get(index).map(|p| meta_to_app(&p.meta))
     }
 
     fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
@@ -531,4 +532,45 @@ fn load_err_to_io(e: LoadError) -> io::Error {
 pub fn load_preset_file(path: &Path) -> Result<(Meta, PluginState, Vec<String>), LoadError> {
     let contents = fs::read_to_string(path).map_err(LoadError::Io)?;
     read_preset(&contents).map_err(LoadError::Parse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The browser reaches the factory bank through `PresetStore`, not through
+    /// [`crate::factory`] directly — so exercise that seam. Every entry must
+    /// enumerate, expose meta, and decode to a blob `restore_from_bytes` accepts
+    /// (0212's "loads in the browser" criterion, minus the webview).
+    #[test]
+    fn the_factory_bank_loads_through_the_store() {
+        let store = EnginePresetStore::new();
+        let n = store.factory_len();
+        assert!(n > 0, "the browser would show an empty factory side");
+
+        for i in 0..n {
+            let meta = store.factory_meta(i).expect("meta for every index");
+            assert!(!meta.name.is_empty(), "factory preset {i} has no name");
+            assert!(meta.category.is_some(), "factory preset `{}` has no category", meta.name);
+
+            let load = store
+                .factory_load(i)
+                .unwrap_or_else(|e| panic!("factory preset `{}` failed to load: {e}", meta.name));
+            assert!(load.warnings.is_empty(), "`{}` warned: {:?}", meta.name, load.warnings);
+            assert_eq!(load.meta.name, meta.name, "meta and load disagree at index {i}");
+
+            // The blob is what the model actually restores from.
+            let sp = crate::SharedParams::new();
+            sp.restore_from_bytes(&load.blob)
+                .unwrap_or_else(|e| panic!("`{}` produced an unloadable blob: {e}", meta.name));
+        }
+    }
+
+    /// Past the end is an error, not a panic or a silent factory-default load.
+    #[test]
+    fn a_factory_index_past_the_end_is_an_error() {
+        let store = EnginePresetStore::new();
+        assert!(store.factory_load(store.factory_len()).is_err());
+        assert!(store.factory_meta(store.factory_len()).is_none());
+    }
 }
