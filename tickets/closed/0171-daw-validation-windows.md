@@ -61,3 +61,27 @@ Do not close with a known failing host — re-scope E010 first and file a repro
 (symptom, host version, minimum repro).
 
 Logic (macOS, AU-only) remains out of scope per ADR 0008 §3.
+
+## Close-out (2026-08-11)
+
+**Verified on Windows by the maintainer; the matrix passed.** As the Summary
+anticipated, no code changes were required — the deliverable is the validation
+result itself.
+
+- **Cubase, Reaper, Ableton Live** each: clean scan, loads on an instrument
+  track with MIDI audible, editor opens with the HTML faceplate rendering and
+  responding, resize reflows without glitch, every param category moves and
+  registers as automation, project save/close/reopen restores the patch and
+  reopens the editor, a second instance edits independently of the first, and no
+  crash or hang in normal use.
+- **Cross-cutting.** Param-ID coverage, factory-preset round-trip through a save
+  and reopen, and the VST3-vs-CLAP CPU comparison all passed.
+
+No host failed, so the ticket's "do not close with a known failing host" bar is
+met and E010's Windows gate is satisfied. Logic (macOS, AU-only) remains out of
+scope per ADR 0008 §3.
+
+As with [0025](0025-windows-editor-verify.md), the per-host logs were produced
+interactively and are not committed to the repo; this close-out records the
+outcome, not the raw evidence.
+

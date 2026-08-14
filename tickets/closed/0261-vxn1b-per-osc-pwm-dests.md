@@ -81,3 +81,60 @@ new entries appear for free; only fixtures asserting vocab length need touching.
   blobs decode unchanged; only its display label moves.
 - Out of scope: per-oscillator PW *params* (`osc1_pw`/`osc2_pw` already exist and
   are already separate) and a sub-oscillator PWM dest.
+
+## Close-out (2026-08-12)
+
+- `DestId::Osc1Pwm` (10) / `Osc2Pwm` (11) exist, `N_DESTS` 9 → 11
+  ([matrix.rs:160-162](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L160-L162)),
+  decoded in `from_u8` and covered by the exhaustive round-trip
+  (`matrix::tests::dest_u8_roundtrips_and_degrades`, which loops `0..=N_DESTS`).
+  `DEST_GAIN` = 0.5 on both, matching the combined `Pwm`
+  ([eval.rs:144-145](../../vxn-1b/crates/vxn1b-engine/src/eval.rs#L144-L145)); no
+  `cook_depth` taper — asserted by `cook_depth_tapers_pitch_only`, which now lists
+  both new dests.
+- The three dests sum per oscillator in `render::pwm_offset`
+  ([render.rs:132](../../vxn-1b/crates/vxn1b-engine/src/render.rs#L132)); `voice_pw`
+  split into `voice_pw1`/`voice_pw2`
+  ([render.rs:140](../../vxn-1b/crates/vxn1b-engine/src/render.rs#L140)), each
+  clamping `[0.05, 0.95]` on its own.
+- Summing happens *before* the smoother, so `MotionSmoother` holds two PWM
+  one-poles rather than three: `pwm1`/`pwm2`
+  ([mod_smoothing.rs:82](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs#L82)),
+  with `snap_slow`/`pwm_active`/`tick_pwm`/`pwm_current` taking or returning both.
+  A `Pwm`-only patch feeds both lanes the same target and behaves as before.
+  Bank targets assembled at
+  [bank.rs:544](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L544); per-quantum
+  re-cook unchanged in shape.
+- `pwm_active` gates on either lane
+  ([mod_smoothing.rs:232](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs#L232));
+  a patch with no PWM route holds zero on both and keeps the block-constant
+  widths — `bank::tests::pwm_gate_tracks_either_lane`
+  ([bank.rs:1356](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1356)) and
+  `mod_smoothing::tests::pwm_lanes_are_independent_and_gate_on_either`
+  ([mod_smoothing.rs:375](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs#L375)).
+- Engine coverage, all green:
+  `osc1_pwm_route_moves_only_osc1`
+  ([bank.rs:1272](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1272)),
+  `combined_pwm_route_still_moves_both`
+  ([bank.rs:1289](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1289)),
+  `combined_and_per_osc_routes_sum_on_osc1`
+  ([bank.rs:1306](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1306)),
+  `width_clamp_is_per_oscillator`
+  ([bank.rs:1337](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1337)), plus the
+  unit-level `render::tests::per_osc_pwm_dests_split_sum_and_clamp_independently`
+  ([render.rs:313](../../vxn-1b/crates/vxn1b-engine/src/render.rs#L313)).
+  Two deliberate divergences from the criteria as written: the bank tests drive
+  the routes from **mod wheel**, not LFO 1 — a static source settles on the
+  note-on snap, so the read is deterministic; and width is read out as **RMS**
+  (`2√(w(1−w))`, helper `osc_rms` at
+  [bank.rs:1238](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1238)) rather than
+  DC, because the oscillator's pulse is DC-blocked (`− (2w − 1)`) and its mean
+  carries no width information.
+- `Pwm`'s wire name stays `"pwm"`; only its label moves, to `"PWM (Both)"`
+  ([matrix.rs:236](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs#L236)) — presets
+  and state blobs decode unchanged. Matrix panel dropdowns pick all three up from
+  the Rust vocab with no JS change; the 30 ui-web vitest files stay green.
+- **Left open:** the by-ear criterion (two LFOs at different rates into
+  `Osc1Pwm`/`Osc2Pwm`, non-locked beat) has not been run in Reaper. Closed on the
+  user's instruction with that check outstanding.
+- Shipped in 958d27d.
