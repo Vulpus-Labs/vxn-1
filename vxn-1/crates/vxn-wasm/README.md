@@ -70,6 +70,36 @@ deploy carries the same headers. Production hosting (nginx/Caddy/S3+CloudFront,
 the `require-corp` CORP/CORS implications, and the iframe/embedding caveat) is
 documented in [`WEB-HOSTING.md`](WEB-HOSTING.md).
 
+## Worst-case perf bench (ticket 0087, epic E020)
+
+The 0034 throughput figure was Node, 1 voice — not the shipping truth. The
+bench rig measures the **16-voice full-FX worst case IN the AudioWorklet** (the
+only place that reflects real audio-callback scheduling; `wasm32` has no
+`std::time`, so JS owns the clock).
+
+- `src/bench.rs` — a `Bench` owning a single-sourced worst-case patch:
+  16 voices (`KeyMode::Dual`, 8 notes × 2 layers) with the full FX bus on and a
+  long reverb tail / high delay feedback so the signal never hits the engine's
+  exact-silence fast path. C-ABI: `vxn_bench_new/_destroy/_render(n_quanta)/
+  _out_l/_simd128`. `cargo test -p vxn-wasm` covers audibility, FX-tail-survives-
+  note-off, and per-quantum advance.
+- `web/perf-processor.js` + `web/perf-harness.mjs` + `web/perf.html` — the
+  worklet that brackets `vxn_bench_render` batches with `performance.now()` and
+  reports mean / p50 / p95 / max render-ms-per-quantum + headroom vs the realtime
+  budget.
+
+```bash
+# headless export/smoke (no timing — that needs the browser):
+cargo build -p vxn-wasm --target wasm32-unknown-unknown --release
+node vxn-1/crates/vxn-wasm/perf-bench-exports.test.mjs
+
+# MANUAL browser measurement (the actual 0087 numbers):
+cargo xtask web --serve              # SIMD128 build
+# open http://localhost:8080/perf.html -> "Run bench"
+cargo xtask web --scalar --serve     # scalar comparison build, same page
+# the page's `build:` line is read from the wasm (vxn_bench_simd128) — no guessing
+```
+
 ## Findings
 
 | Question | Result |

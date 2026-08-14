@@ -78,15 +78,18 @@ fn main() {
             // with COOP/COEP; `--port N` overrides the default 8080.
             let debug = args.iter().any(|a| a == "--debug");
             let serve = args.iter().any(|a| a == "--serve");
+            // `--scalar` omits `+simd128` for a SIMD-vs-scalar perf comparison
+            // build (E020 / 0087). `vxn_bench_simd128()` labels which one shipped.
+            let scalar = args.iter().any(|a| a == "--scalar");
             let port = arg_value(&args, "--port");
-            if let Err(e) = web(!debug, serve, port.as_deref()) {
+            if let Err(e) = web(!debug, serve, scalar, port.as_deref()) {
                 eprintln!("xtask: {e}");
                 std::process::exit(1);
             }
         }
         _ => {
             eprintln!(
-                "usage:\n  cargo xtask bundle [--release] [--install] [--universal] [--format clap,vst3]\n  cargo xtask web [--debug] [--serve] [--port N]"
+                "usage:\n  cargo xtask bundle [--release] [--install] [--universal] [--format clap,vst3]\n  cargo xtask web [--debug] [--serve] [--scalar] [--port N]"
             );
             std::process::exit(2);
         }
@@ -535,14 +538,21 @@ const CONTROLLER_ARTIFACT: &str = "vxn_web_controller.wasm";
 /// `serve` then hands the bundle to `serve-coep.mjs` with the COOP/COEP headers
 /// `SharedArrayBuffer` needs (ticket 0045); the AudioContext boot that drives it
 /// is 0042.
-fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
+fn web(release: bool, serve: bool, scalar: bool, port: Option<&str>) -> Result<(), String> {
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
+    if scalar {
+        println!(
+            "  note: --scalar build (no +simd128) — for the 0087 SIMD-vs-scalar \
+             perf comparison; vxn_bench_simd128() will report 0"
+        );
+    }
 
     // 1. Compile BOTH wasm crates for wasm32-unknown-unknown (ADR 0009 §1):
     //    the engine (runs in the worklet) and the main-thread controller (0044).
-    let wasm = build_wasm(&root, WASM_PKG, WASM_ARTIFACT, release, profile)?;
-    let controller_wasm = build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, profile)?;
+    let wasm = build_wasm(&root, WASM_PKG, WASM_ARTIFACT, release, scalar, profile)?;
+    let controller_wasm =
+        build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT, release, scalar, profile)?;
 
     // 2. Assemble target/web-dist/ from scratch (a clean, portable copy).
     let dist = root.join("target").join("web-dist");
@@ -558,7 +568,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     *.test.mjs suites and the Node harnesses stay out of the shipped
     //     bundle. The production worklet is `vxn-processor.js`.
     let web_src = root.join("vxn-1/crates/vxn-wasm/web");
-    const MODULES: [(&str, &str); 16] = [
+    const MODULES: [(&str, &str); 18] = [
         ("event-ring.mjs", "event-ring.mjs"),
         ("event-codec.mjs", "event-codec.mjs"),
         ("param-store.mjs", "param-store.mjs"),
@@ -589,6 +599,12 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // The faceplate transport bridge (E018 / 0057-0061): boots WebHost +
         // WebController, routes opcodes <-> ViewEvents, runs the DOM text input.
         ("faceplate-bridge.mjs", "faceplate-bridge.mjs"),
+        // Worst-case perf bench (E020 / 0087): the worklet that times
+        // `vxn_bench_render` at full poly + the main-thread harness that drives
+        // it. Shipped so the 0087 manual measurement runs against the same bundle
+        // the page serves; perf.html below is the entry point.
+        ("perf-processor.js", "perf-processor.js"),
+        ("perf-harness.mjs", "perf-harness.mjs"),
     ];
     for (src, dest) in MODULES {
         let from = web_src.join(src);
@@ -606,6 +622,16 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     JSON-shaping stays single-sourced.
     let page = gen_faceplate_page(&root)?;
     fs::write(dist.join("index.html"), page).map_err(io("write index.html"))?;
+
+    // 2c''. The 0087 perf-bench entry page (E020). A standalone page (not the
+    //       faceplate) that drives perf-harness.mjs against the bundled wasm; the
+    //       `build:` line it prints is read from the wasm (vxn_bench_simd128), so
+    //       it self-labels SIMD vs `--scalar` builds.
+    let perf_html = web_src.join("perf.html");
+    if !perf_html.exists() {
+        return Err(format!("missing perf page {}", perf_html.display()));
+    }
+    fs::copy(&perf_html, dist.join("perf.html")).map_err(io("copy perf.html"))?;
 
     // 2c'. The baked factory bank (E019 / 0062). Run vxn-engine's `bake-factory`
     //      bin, which serializes the embedded bank (meta + canonical state blob
@@ -724,12 +750,14 @@ fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String
 
 /// Compile one wasm crate for `wasm32-unknown-unknown` (release + SIMD128 by
 /// default) and return the path to its `.wasm` artifact. Shared by the engine
-/// and the 0044 controller builds so both go through the same flags.
+/// and the 0044 controller builds so both go through the same flags. `scalar`
+/// (E020 / 0087) omits `+simd128` for a SIMD-vs-scalar perf comparison build.
 fn build_wasm(
     root: &Path,
     package: &str,
     artifact: &str,
     release: bool,
+    scalar: bool,
     profile: &str,
 ) -> Result<PathBuf, String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
@@ -744,15 +772,22 @@ fn build_wasm(
     if release {
         build.arg("--release");
     }
-    // SIMD128: perf measurement is E020, but the flag belongs in the pipeline.
-    // Append so we don't clobber a caller's RUSTFLAGS.
+    // SIMD128: on by default (E020 / 0087 measures it). `--scalar` omits it for
+    // the comparison build. Append so we don't clobber a caller's RUSTFLAGS.
     let existing = env::var("RUSTFLAGS").unwrap_or_default();
-    let rustflags = if existing.trim().is_empty() {
-        "-C target-feature=+simd128".to_string()
+    if scalar {
+        // Scalar build: leave RUSTFLAGS as the caller set it (no +simd128).
+        if !existing.trim().is_empty() {
+            build.env("RUSTFLAGS", existing);
+        }
     } else {
-        format!("{existing} -C target-feature=+simd128")
-    };
-    build.env("RUSTFLAGS", rustflags);
+        let rustflags = if existing.trim().is_empty() {
+            "-C target-feature=+simd128".to_string()
+        } else {
+            format!("{existing} -C target-feature=+simd128")
+        };
+        build.env("RUSTFLAGS", rustflags);
+    }
     let status = build
         .status()
         .map_err(|e| format!("failed to run cargo for {package}: {e}"))?;

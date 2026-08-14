@@ -2,11 +2,18 @@
 id: E020
 product: vxn-2
 title: "vxn-1 web port — perf, cross-browser, ship"
-status: open
+status: deferred
 created: 2026-06-14
+deferred: 2026-06-22
 depends-on: E016
 ---
 
+> **Deferred 2026-06-22.** The perf-harness spine (0087 `Bench` rig + worklet
+> measurement + `--scalar` toggle) landed and is headless-verified; the
+> remaining work is live-browser measurement, the cross-browser matrix, and
+> CI/deploy. Parked to prioritise feature work; resume by reviving the tickets
+> from `tickets/deferred/`.
+>
 > **Depends on E016** (build pipeline) and effectively gates on the whole
 > stack being playable (E015/E017/E018). The closing epic: prove the port
 > performs at full polyphony in real browsers, on a cross-browser matrix,
@@ -27,8 +34,9 @@ When this epic closes:
 - SIMD128 perf is measured vs scalar; build flags settled.
 - The held-quiet-sustain-into-reverb denormal case is verified (manual FTZ
   flush added only if measurement demands it).
-- A cross-browser/-device support matrix is published (Chrome/Firefox/
-  Safari, desktop + mobile).
+- A cross-browser/-device support matrix is published: full audio-engine
+  support on Chrome/Firefox (desktop + Android); Safari/iOS (WebKit) is
+  faceplate-only — the WASM audio engine is unsupported there by decision.
 - CI builds the bundle and deploys to a static host; optional PWA/offline.
 
 ## Why last
@@ -52,7 +60,9 @@ closes the gaps.
 - wasm size optimisation (release, `wasm-opt`, feature trimming) to the
   extent it affects load time.
 - Cross-browser/-device matrix: AudioWorklet, Atomics/SAB, Web MIDI,
-  storage behaviour per browser; document support + fallbacks.
+  storage behaviour per browser; document support + fallbacks. Audio-engine
+  support is scoped to Chrome/Firefox (desktop + Android); Safari/iOS (WebKit)
+  is faceplate-only (WASM audio engine unsupported by decision).
 - CI: build the web bundle as an artifact; deploy to a static host.
 - Optional: PWA manifest + service worker for offline/install.
 
@@ -63,15 +73,15 @@ closes the gaps.
 
 ## Planned tickets
 
-> Ids assigned at scaffold time, against a playable build. Provisional set:
+> Ids assigned at scaffold time (2026-06-22), against a playable build:
 
-- [ ] SIMD128 build + perf measurement (16-voice, desktop + mobile).
-- [ ] Glitch/xrun stress + latency/block-size tuning.
-- [ ] Denormal stress (held-quiet-sustain → reverb) + flush if needed.
-- [ ] wasm size optimisation (wasm-opt, trimming).
-- [ ] Cross-browser/-device support matrix + fallbacks doc.
-- [ ] CI build + static-host deploy.
-- [ ] (optional) PWA manifest + offline service worker.
+- [ ] 0087 — SIMD128 build + perf measurement (16-voice, desktop + Android).
+- [ ] 0088 — Glitch/xrun stress + latency/block-size tuning.
+- [ ] 0089 — Denormal stress (held-quiet-sustain → reverb) + flush if needed.
+- [ ] 0090 — wasm size optimisation (wasm-opt, trimming).
+- [ ] 0091 — Cross-browser/-device support matrix + fallbacks doc.
+- [ ] 0092 — CI build + static-host deploy.
+- [ ] 0093 — (optional) PWA manifest + offline service worker.
 
 ## Risks
 
@@ -79,9 +89,11 @@ closes the gaps.
   poly may need headroom work or voice-count scaling on weak devices.
 - **Mobile.** Battery/thermal throttling and smaller core budgets; mobile
   may need a reduced default polyphony.
-- **Safari.** Worklet, Atomics, Web MIDI, and storage quirks concentrate
-  here; the matrix may force fallbacks (e.g. keyboard-only input on
-  Safari if Web MIDI is absent).
+- **Safari/iOS is faceplate-only (decision, not a risk to chase).** The WASM
+  audio engine is unsupported on WebKit (glitchy one-quantum AudioWorklet that
+  ignores `latencyHint` — `vxn1-web-safari-audioworklet`). Safari loads the
+  faceplate but produces no audio; ship must surface a clear notice there, not
+  a silent dead synth. This removes Safari from all audio-engine testing.
 - **Denormals at scale.** The spike's release-path result is clean; a
   held quiet signal into reverb feedback is the untested case.
 
