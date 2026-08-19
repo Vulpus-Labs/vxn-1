@@ -54,12 +54,13 @@ use crate::fx::{FxChain, FxParams};
 use crate::output::OutputStage;
 use crate::matrix::MatrixTable;
 use crate::params::{ClapRef, Layer, ParamId, clap_ref};
+use crate::scope::ScopeTap;
 use crate::state::{LayerState, PluginState};
 use crate::synth::{Synth, SynthSeeds};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-use vxn_core_utils::{MeterBus, MeterTap};
+use vxn_core_utils::{MeterBus, MeterTap, ScopeBus};
 use vxn_dsp::smoothing::Smoothed;
 use vxn_dsp::{CONTROL_BLOCK, MAX_OVERSAMPLE, StereoLimiter};
 
@@ -238,6 +239,11 @@ pub struct Engine {
     /// plugin-lifetime bus via [`Self::set_meters`] at activate so the main
     /// thread's drain handle survives deactivate/reactivate cycles.
     meters: Arc<MeterBus>,
+    /// Lock-free scope capture ring. Same ownership story as `meters`: owned by
+    /// default so a bare `Engine` needs no ceremony, swapped for the
+    /// plugin-lifetime ring at activate. Rests inert — it captures nothing until
+    /// the editor points it at a layer.
+    scope: Arc<ScopeBus>,
     /// Per-layer mix gain (0220, 0248), one `Smoothed` **per channel** per
     /// synth: `[layer][0] = L`, `[layer][1] = R`. Targets are
     /// `(layer_mute ? 0 : layer_level) × pan_gains(layer_pan)`, so a mute is a
@@ -323,6 +329,7 @@ impl Engine {
             key: KeyState::default(),
             fx,
             meters,
+            scope: Arc::new(ScopeBus::new()),
             // Start at the factory unity level, not 0 — a fade-in on the first
             // block would clip the attack of a note that arrives immediately.
             layer_gain: [
@@ -359,6 +366,19 @@ impl Engine {
     /// The meter bus this engine publishes into.
     pub fn meters(&self) -> &Arc<MeterBus> {
         &self.meters
+    }
+
+    /// Adopt a caller-owned scope capture ring. Same contract as
+    /// [`Self::set_meters`]: the CLAP shell owns one for the plugin's lifetime
+    /// so the editor's reader survives the deactivate/reactivate that rebuilds
+    /// the `Engine`, and so the tap the player selected outlives it too.
+    pub fn set_scope(&mut self, scope: Arc<ScopeBus>) {
+        self.scope = scope;
+    }
+
+    /// The scope capture ring this engine publishes into.
+    pub fn scope(&self) -> &Arc<ScopeBus> {
+        &self.scope
     }
 
     /// Overwrite **both layers'** patches from a decoded [`PluginState`] — the
@@ -631,6 +651,12 @@ impl Engine {
         // mixer strip should show. Post-*pan* too (0248), so a hard-panned layer
         // reads on one channel only.
         self.meters.publish_block_peak(MeterTap::Layer1L, bus_l, bus_r);
+        // Scope capture at the same point, so the trace and the L1 meter are
+        // reading the same signal. `os` is the stride: the buses are at the
+        // oversampled rate here, and the ring wants base-rate frames so the
+        // trace's time axis doesn't change when Oversample does. A no-op unless
+        // this is the tap the editor selected.
+        self.scope.publish_stride(ScopeTap::Layer1.code(), bus_l, bus_r, os);
 
         if self.key.layer2_on {
             let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
@@ -651,6 +677,7 @@ impl Engine {
                 }
             }
             self.meters.publish_block_peak(MeterTap::Layer2L, s_l, s_r);
+            self.scope.publish_stride(ScopeTap::Layer2.code(), s_l, s_r, os);
             for i in 0..os_n {
                 bus_l[i] += s_l[i];
                 bus_r[i] += s_r[i];
@@ -1023,6 +1050,66 @@ mod tests {
 
         // Read-and-clear: a second drain with no render in between is silent.
         assert!(MeterFrame::drain(e.meters()).is_silent(), "drain must clear");
+    }
+
+    /// The scope ring captures only the tap the editor selected. Off by
+    /// default: with no editor open (or the FX/Global tab up) the whole
+    /// feature must be inert, not "capturing into a ring nobody reads".
+    #[test]
+    fn the_scope_captures_only_the_selected_layer() {
+        use crate::scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeTap};
+
+        let mut e = Engine::new(48_000.0, 4096);
+        e.set_layer2_on(true);
+        for i in 0..2 {
+            e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
+        }
+        // One host block long enough to fill a window at the read decimation.
+        let frames = SCOPE_DECIMATION * SCOPE_WINDOW + 512;
+        let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+
+        // No tap selected: a full block of audio leaves the ring empty.
+        e.note_on(0, 60, 1.0);
+        e.process_block(&mut l, &mut r);
+        assert!(l.iter().any(|&s| s != 0.0), "the note must sound");
+        assert!(ScopeFrame::read(e.scope()).is_none(), "an unselected ring must stay empty");
+
+        // Layer 1 selected: the trace fills and carries signal.
+        e.scope().set_source(ScopeTap::Layer1.code());
+        e.process_block(&mut l, &mut r);
+        let frame = ScopeFrame::read(e.scope()).expect("a full window");
+        assert_eq!(frame.samples.len(), SCOPE_WINDOW);
+        assert!(!frame.is_silent(), "layer 1 is sounding, so its trace must move");
+
+        // Switching taps clears the ring, so the previous layer's trace can
+        // never be left on screen under the new layer's name.
+        e.scope().set_source(ScopeTap::Layer2.code());
+        assert!(ScopeFrame::read(e.scope()).is_none(), "a tap change must blank the trace");
+        e.process_block(&mut l, &mut r);
+        assert!(
+            !ScopeFrame::read(e.scope()).expect("a full window").is_silent(),
+            "layer 2 is on and sounding, so its trace must move too"
+        );
+    }
+
+    /// A bypassed layer 2 publishes nothing (synth 2 is never ticked), so the
+    /// scope reads silence rather than the previous frame's audio.
+    #[test]
+    fn the_scope_reads_silence_from_a_bypassed_layer() {
+        use crate::scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeTap};
+
+        let mut e = Engine::new(48_000.0, 4096);
+        e.set_param(l1(ParamId::Env2Attack), 0.001);
+        e.scope().set_source(ScopeTap::Layer2.code());
+        e.note_on(0, 60, 1.0);
+        let frames = SCOPE_DECIMATION * SCOPE_WINDOW + 512;
+        let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+        e.process_block(&mut l, &mut r);
+        assert!(l.iter().any(|&s| s != 0.0), "layer 1 must still sound");
+        assert!(
+            ScopeFrame::read(e.scope()).is_none(),
+            "single mode never ticks synth 2, so nothing reaches the ring"
+        );
     }
 
     /// The tap accumulates the **max** across the control blocks that make up

@@ -24,8 +24,13 @@ __CSS__
     <button class="pbar-btn" id="pbar-browse" type="button">Browse</button>
     <button class="pbar-btn" id="pbar-save-overwrite" type="button" disabled>Save</button>
     <button class="pbar-btn" id="pbar-save" type="button">Save As</button>
-    <!-- Mod-matrix opens from the upper bar, beside load/save (0219). -->
-    <button class="pbar-btn" id="matrix-toggle" type="button">Mod Matrix</button>
+    <!-- Copy Layer 1 → Layer 2. A PatchOp, not a param, so it is hand-wired in
+         dispatch.js. It lives in the upper bar rather than on a layer panel
+         because it is a whole-patch operation like load/save, and because the
+         direction is fixed (L1 → L2) regardless of which layer is being
+         edited. Destructive — it overwrites Layer 2 and lands ~66 param changes
+         in the host's undo stack as one burst — so it opens a confirmation. -->
+    <button class="pbar-btn" id="copy-layer" type="button">Copy L1 &rarr; L2</button>
     <div class="pbar-spacer"></div>
     <div class="status-pill" id="pbar-status"></div>
   </div>
@@ -56,6 +61,21 @@ __CSS__
       <button class="overlay-close" id="matrix-close" type="button" aria-label="Close mod matrix">&times;</button>
       <div class="overlay-title">Mod Matrix &mdash; <span id="matrix-layer-label">Layer 1</span></div>
       <div class="mm-overlay-list" id="matrix-rows"></div>
+    </div>
+  </div>
+
+  <!-- Confirmation modal. Generic — title / message / two buttons — driven by
+       `confirmDialog.ask()` in dispatch.js, currently for Copy L1 → L2. Same
+       dismissal contract as the matrix overlay (button, backdrop, Esc), and
+       cancelling is the default: the backdrop and Esc both resolve to "no". -->
+  <div class="overlay-backdrop confirm-backdrop" id="confirm-backdrop" hidden>
+    <div class="overlay-panel confirm-panel">
+      <div class="overlay-title" id="confirm-title"></div>
+      <div class="confirm-message" id="confirm-message"></div>
+      <div class="confirm-actions">
+        <button class="pbar-btn" id="confirm-cancel" type="button">Cancel</button>
+        <button class="pbar-btn confirm-ok" id="confirm-ok" type="button">OK</button>
+      </div>
     </div>
   </div>
 
@@ -232,7 +252,10 @@ __CSS__
       <div class="panel-header">CROSS MOD</div>
       <div class="panel-body">
         <div class="ctl" data-control="buttongroup" data-param="cross_mod_type" data-label="Type"></div>
-        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="Amt" data-dim-unless-fm="cross_mod_type"></div>
+        <!-- Labelled "FM Amt", not "Amt": the fader drives PM only (which the
+             Type selector calls FM), so naming the mode it belongs to says what
+             the dim rule beside it already implies. -->
+        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="FM Amt" data-dim-unless-fm="cross_mod_type"></div>
       </div>
     </div>
     <!-- Voice (0045, 0266): the two orthogonal halves of the old AssignMode —
@@ -245,19 +268,40 @@ __CSS__
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
       <div class="panel-body">
-        <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width"></div>
-        <div class="ctl-strip" data-control="switch" data-param="voice_mode" data-label="Voice"></div>
+        <!-- Width + Voice as one column. Six widths in a single vertical list
+             is taller than the panel, so the button group runs in TWO columns
+             (`data-columns="2"`, filled column-major: 1/2/4 then 8/16/32) —
+             which also reads as what it is, a doubling scale. Voice mode sits
+             underneath as a rocker rather than beside the widths, because it is
+             the other half of the same decision and a two-state control next to
+             a six-state one invites reading them as one list. -->
+        <div class="ctl-col voice-col">
+          <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width" data-columns="2"></div>
+          <div class="ctl-strip voice-mode" data-control="rocker" data-param="voice_mode" data-no-label></div>
+        </div>
         <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="voice_mode"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
       </div>
-      <!-- Copy Layer 1 → Layer 2 (0265). A PatchOp, not a param, so it is
-           hand-built in dispatch.js like the LFO 2 link cell it shares an
-           opcode hook with. Layer-1-only: the action reads *from* the edit
-           layer, so it would be backwards on the Layer 2 tab. Destructive —
-           the cell arms on first press and copies on the second. -->
+      <!-- Mod-matrix opens from here (it edits the layer's routing, so it
+           belongs with the layer's panels). `panels/matrix.js` binds by id, so
+           the button's home is purely a markup decision. -->
       <div class="panel-strip">
-        <div class="ctl-strip" id="copy-layer" data-layer1-only></div>
+        <button class="pbar-btn" id="matrix-toggle" type="button">Mod Matrix</button>
+      </div>
+    </div>
+
+    <!-- Layer scope. Shows the edit layer's post-fader, post-pan output — the
+         same tap the mixer's L1/L2 meters read, so the trace and the bar agree.
+         Not a param cell: no `data-control`/`data-param`, so `rebindAllForLayer`
+         never touches it. It follows the edit layer by posting a
+         `set_scope_source` op on every tab flip, which is also what points the
+         audio thread's capture ring — nothing is captured for a layer that is
+         not on screen. -->
+    <div class="panel panel-scope" data-name="Scope">
+      <div class="panel-header">SCOPE</div>
+      <div class="panel-body">
+        <div class="scope-mount" data-scope="layer"></div>
       </div>
     </div>
   </div>

@@ -46,6 +46,10 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         if let Some(mut handle) = self.gui.take() {
             handle.close();
         }
+        // Stop scope capture with the window. `on_timer` would do it too, but
+        // the timer is unregistered above — so without this the audio thread
+        // would keep filling a ring nobody reads until the editor reopens.
+        self.shared.scope.set_source(vxn1b_engine::ScopeTap::Off.code());
     }
 
     fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> {

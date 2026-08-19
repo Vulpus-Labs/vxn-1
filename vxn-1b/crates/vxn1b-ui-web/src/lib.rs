@@ -10,13 +10,13 @@
 //! text-input popup all live in the shared crate — this crate touches neither
 //! wry nor raw-window-handle directly.
 //!
-//! What stays here is the faceplate asset splice and the param-descriptor JSON
-//! builder. VXN1b is single-patch (no Upper/Lower layer, no key-mode / split),
-//! so — unlike VXN1 — this crate carries NO custom opcode-parse / view-serialise
-//! hooks: `parse_custom_ui` / `serialise_custom_view` are left `None` in the
-//! config. (Matrix-topology custom opcodes land in 0210.) The faceplate is the
-//! compact three-row layout (Osc/Mixer/Filter · LFO/Env · Voice/FX/Master); the
-//! mod-matrix overlay is a follow-up step (0210).
+//! What stays here is the faceplate asset splice, the param-descriptor JSON
+//! builder, and VXN1b's two custom-payload hooks: [`parse_custom_op`] (the
+//! opcodes the page posts that aren't params — key mode, split point, LFO 2
+//! link, matrix topology, the layer copy, the scope tap) and
+//! [`serialise_custom_payload`] (the view-bound customs — matrix + keyboard
+//! echoes, meter frames, scope frames). Both are free functions rather than
+//! closures so the wire shape is testable without a WebView.
 
 use std::ffi::c_void;
 
@@ -34,14 +34,20 @@ pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 /// Logical pixel dimensions of the editor (ADR 0001 §7 compact layout). Height
 /// tracks the CSS geometry in `faceplate.css`, sized to the **tallest tab pane**
 /// — the Layer pane's three rows (0219): 20 pad + 26 banner + 30 preset-bar +
-/// 26 tab-strip + 3×8 chrome gaps + (124 + 124 + 164 rows + 2×8 pane gaps) = 554.
-/// The FX/Global pane is two rows (mixer + split, then Dynamics/FX/Master since
-/// 0220), so it stays shorter than the Layer pane and does not drive the height.
-/// Width was widened from
-/// the initial 760 for top-row breathing room + the standalone Dynamics panel.
-/// Keep in sync with `--editor-w` / the row heights.
+/// 26 tab-strip + 3×8 chrome gaps + (124 + 124 + 164 rows + 2×8 pane gaps) = 554
+/// nominal, **556 as laid out**: the banner and the tab strip carry 1 px borders
+/// outside their declared heights, and the host window has to fit the page as
+/// rendered, not as summed. At 554 the last 2 px — the bottom row's panel border
+/// — were cut off.
+///
+/// The FX/Global pane is two rows (mixer + FX), and since its first row grew to
+/// hold the whole mixer strip it comes to 424 against the Layer pane's 428 — so
+/// it fills the window without driving its height.
+///
+/// Width was widened from the initial 760 for top-row breathing room + the
+/// standalone Dynamics panel. Keep in sync with `--editor-w` / the row heights.
 pub const EDITOR_WIDTH: u32 = 940;
-pub const EDITOR_HEIGHT: u32 = 554;
+pub const EDITOR_HEIGHT: u32 = 556;
 
 /// Display label for the virtual root group of the user preset corpus.
 /// VXN1b has no per-synth override, so this matches the shared default.
@@ -76,12 +82,23 @@ pub fn open_editor(
     // admin-only `C:\Program Files\<host>\<exe>.WebView2` default.
     config.webview2_vendor = Some("VulpusLabs");
     config.webview2_product = Some("VXN1b");
-    // Two-layer key-mode opcodes (0219). The faceplate posts `set_key_mode`
-    // (Layer 2 toggle) / `set_split_point` as non-automatable custom ops; parse
-    // them into a `KeyOp` payload the clap controller applies to the shared
-    // KeyState. (Matrix topology opcodes join this hook with the overlay, 0210.)
-    config.parse_custom_ui = Some(std::sync::Arc::new(|op, v| {
-        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField, PatchOp};
+    config.parse_custom_ui = Some(std::sync::Arc::new(parse_custom_op));
+    config.serialise_custom_view = Some(std::sync::Arc::new(serialise_custom_payload));
+    vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
+}
+
+/// Parse a VXN1b-specific opcode the shared vocabulary doesn't cover.
+///
+/// Two-layer key-mode opcodes (0219): the faceplate posts `set_key_mode`
+/// (Layer 2 toggle) / `set_split_point` as non-automatable custom ops, parsed
+/// into a `KeyOp` payload the clap controller applies to the shared KeyState.
+/// Matrix topology, the bulk layer copy and the scope tap ride the same hook.
+///
+/// A free function rather than a closure inside [`open_editor`] so the wire
+/// shape is testable without a WebView.
+fn parse_custom_op(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
+    {
+        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField, PatchOp, ScopeOp, ScopeTap};
         match op {
             "set_key_mode" => Some(UiEvent::Custom(Box::new(KeyOp::SetKeyMode(
                 v.get("mode")?.as_u64()? as u8,
@@ -132,17 +149,37 @@ pub fn open_editor(
                     to: side("to")?,
                 })))
             }
+            // Oscilloscope tap select. Pure view state — which layer's trace is
+            // on screen — so it rides a custom op and never reaches the patch.
+            // `off` is what the page sends when the scope is not showing.
+            "set_scope_source" => {
+                let tap = match v.get("source")?.as_str()? {
+                    "upper" => ScopeTap::Layer1,
+                    "lower" => ScopeTap::Layer2,
+                    "off" => ScopeTap::Off,
+                    _ => return None,
+                };
+                Some(UiEvent::Custom(Box::new(ScopeOp::SetTap(tap))))
+            }
             _ => None,
         }
-    }));
-    // Meter frames (0240) are the one view-bound custom payload. They ride the
-    // normal per-tick ViewEvent batch — one `evaluate_script`, no separate
-    // bridge channel — and carry raw peaks; the dB mapping and ballistics live
-    // in `panels/meter.js`.
-    //
-    // Arrays rather than named l/r keys: the page indexes `[0]`/`[1]`, and the
-    // frame ships up to 60×/s, so the terser shape is worth it on the wire.
-    config.serialise_custom_view = Some(std::sync::Arc::new(|payload| {
+    }
+}
+
+/// Serialise a VXN1b-specific `ViewEvent::Custom` payload for the page.
+///
+/// The view-bound customs are the matrix + keyboard echoes and the two
+/// telemetry frames (meters, scope). They ride the normal per-tick ViewEvent
+/// batch — one `evaluate_script`, no separate bridge channel — and carry raw
+/// values; the dB mapping, the ballistics and the trigger search all live in
+/// the page (`panels/meter.js`, `panels/scope.js`).
+///
+/// Arrays rather than named l/r keys: the page indexes `[0]`/`[1]`, and the
+/// frames ship tens of times a second, so the terser shape is worth it on the
+/// wire. Extracted from [`open_editor`] for the same reason as
+/// [`parse_custom_op`].
+fn serialise_custom_payload(payload: &dyn std::any::Any) -> Option<serde_json::Value> {
+    {
         // Matrix topology echo (0247): the patch changed under an open editor
         // (preset load, host state load, undo). Same slot shape as the
         // open-time `__MATRIX_JSON__` seed, so the page can swap one for the
@@ -166,6 +203,20 @@ pub fn open_editor(
                 "link": k.lfo2_link,
             }));
         }
+        // Oscilloscope trace: one window of the selected layer's output, oldest
+        // → newest. Rounded to 3 dp on the way out — the canvas is ~120 px
+        // tall, so anything finer is invisible, and full f32 printing would
+        // triple the length of a 384-number array shipped 30×/s.
+        if let Some(s) = payload.downcast_ref::<vxn1b_engine::ScopeFrame>() {
+            let samples: Vec<f64> = s
+                .samples
+                .iter()
+                // Clamped past the rails: the trace clips there anyway, and it
+                // keeps one runaway sample from bloating the frame.
+                .map(|&v| ((v.clamp(-2.0, 2.0) as f64) * 1000.0).round() / 1000.0)
+                .collect();
+            return Some(serde_json::json!({ "kind": "scope", "s": samples }));
+        }
         let f = payload.downcast_ref::<vxn1b_engine::MeterFrame>()?;
         Some(serde_json::json!({
             "kind": "meters",
@@ -177,8 +228,7 @@ pub fn open_editor(
             "dynGr": f.dynamics_gr,
             "master": [f.master.0, f.master.1],
         }))
-    }));
-    vxn_core_ui_web::open_editor(parent, ctrl, corpus, config)
+    }
 }
 
 /// Splice the runtime param-descriptor JSON into the faceplate template. The
@@ -484,6 +534,7 @@ const PANEL_KEYS_JS: &str = include_str!("../assets/panels/keys.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
 const PANEL_MATRIX_JS: &str = include_str!("../assets/panels/matrix.js");
 const PANEL_METER_JS: &str = include_str!("../assets/panels/meter.js");
+const PANEL_SCOPE_JS: &str = include_str!("../assets/panels/scope.js");
 /// The split panel source files, in splice order.
 const PANELS_FILES: &[&str] = &[
     PANEL_UTIL_DRAG_JS,
@@ -496,6 +547,9 @@ const PANELS_FILES: &[&str] = &[
     // `meterRegistry` from `wireMeters`. The splice is order-sensitive: these
     // files share one concatenated scope with no module resolution.
     PANEL_METER_JS,
+    // Scope — same ordering constraint as the meters: dispatch.js calls
+    // `makeScope` from `wireScope`.
+    PANEL_SCOPE_JS,
 ];
 /// `init()` + per-tick ViewEvent dispatcher + dim rules. Splices last because
 /// it references the panel objects defined above.
@@ -608,6 +662,21 @@ mod tests {
             ".ctl-tg-lbl",
             ".ctl-buttongroup",
             ".panel-header-switch",
+            // Rocker (Voice mode) + the stacked-cell column that carries it.
+            ".ctl-rocker",
+            ".ctl-rocker-track",
+            ".ctl-rocker-knob",
+            ".ctl-rocker-lbl",
+            ".ctl-col",
+            // Multi-column button groups (Voice's six widths).
+            ".ctl-buttongroup[data-columns] .ctl-tg-rows",
+            // Layer scope.
+            ".scope-mount",
+            ".scope-canvas",
+            // Confirmation modal (Copy L1 → L2).
+            ".confirm-panel",
+            ".confirm-message",
+            ".confirm-actions",
             // Faders, dials, wave knobs, dropdowns.
             ".ctl-fader",
             ".ctl-fader-track",
@@ -732,6 +801,66 @@ mod tests {
         // Depth is a CLAP param and rides ParamChanged — it must not appear in
         // either shape, or the page gets two sources of truth for one value.
         assert!(seed["slots"][0][3].get("depth").is_none());
+    }
+
+    /// The scope tap is view state, so it must reach the ring as a `ScopeOp`
+    /// and never as a param write or a `KeyOp` (which would land it in the
+    /// patch, the state blob and the host's undo stack).
+    #[test]
+    fn scope_source_opcode_parses_to_a_tap() {
+        use vxn1b_engine::{ScopeOp, ScopeTap};
+        let parse = |src: &str| {
+            let v = serde_json::json!({ "source": src });
+            match parse_custom_op("set_scope_source", &v) {
+                Some(UiEvent::Custom(payload)) => payload.downcast::<ScopeOp>().ok().map(|b| *b),
+                _ => None,
+            }
+        };
+        assert_eq!(parse("upper"), Some(ScopeOp::SetTap(ScopeTap::Layer1)));
+        assert_eq!(parse("lower"), Some(ScopeOp::SetTap(ScopeTap::Layer2)));
+        assert_eq!(parse("off"), Some(ScopeOp::SetTap(ScopeTap::Off)));
+        // A malformed source is dropped rather than defaulting to a tap — the
+        // audio thread would otherwise start capturing on a typo.
+        assert!(parse("sideways").is_none());
+        assert!(parse_custom_op("set_scope_source", &serde_json::json!({})).is_none());
+    }
+
+    /// The trace's wire shape: `{kind:'scope', s:[…]}`, oldest → newest, 3 dp.
+    /// The rounding is what keeps a 384-sample frame at ~30 Hz cheap, and the
+    /// page's `ev.s` read depends on the key.
+    #[test]
+    fn scope_frame_serialises_rounded_samples() {
+        let frame = vxn1b_engine::ScopeFrame {
+            samples: vec![0.0, 0.123_456_7, -0.5, 3.0, -9.0],
+        };
+        let v = serialise_custom_payload(&frame).expect("scope frame serialises");
+        assert_eq!(v["kind"], "scope");
+        let s = v["s"].as_array().expect("sample array");
+        assert_eq!(s.len(), 5);
+        assert_eq!(s[1].as_f64(), Some(0.123), "3 dp keeps the frame small");
+        assert_eq!(s[2].as_f64(), Some(-0.5));
+        // Clamped past the rails — the trace clips there anyway.
+        assert_eq!(s[3].as_f64(), Some(2.0));
+        assert_eq!(s[4].as_f64(), Some(-2.0));
+        // Printed short, not as a 17-digit f32→f64 expansion.
+        assert!(
+            !v.to_string().contains("0.12345"),
+            "rounded samples must serialise short: {v}"
+        );
+    }
+
+    /// The scope shares the serialise hook with the meter frame; a payload
+    /// reaching the wrong arm would silently redraw one as the other.
+    #[test]
+    fn the_custom_payloads_keep_their_own_kinds() {
+        let meters = serialise_custom_payload(&vxn1b_engine::MeterFrame::default())
+            .expect("meter frame serialises");
+        assert_eq!(meters["kind"], "meters");
+        let scope = serialise_custom_payload(&vxn1b_engine::ScopeFrame { samples: vec![0.0; 4] })
+            .expect("scope frame serialises");
+        assert_eq!(scope["kind"], "scope");
+        // An unrecognised payload is skipped, not mis-serialised.
+        assert!(serialise_custom_payload(&42u8).is_none());
     }
 
     #[test]

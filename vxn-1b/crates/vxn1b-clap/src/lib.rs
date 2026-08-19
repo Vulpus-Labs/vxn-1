@@ -38,8 +38,8 @@ use std::sync::{Arc, Mutex};
 use vxn_core_app::{Controller, CorpusHandle, ParamId as AppParamId, ParamKind, ViewEvent};
 use vxn_core_clap::{LocalParams, SharedStore, batch_range};
 use vxn1b_engine::{
-    Engine, EnginePresetStore, MeterBus, MeterFrame, SharedParams, TOTAL_PARAMS, clap_module,
-    desc_for_clap_id,
+    Engine, EnginePresetStore, MeterBus, MeterFrame, ScopeBus, ScopeFrame, ScopeTap, SharedParams,
+    TOTAL_PARAMS, clap_module, desc_for_clap_id,
 };
 
 /// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
@@ -171,6 +171,7 @@ impl DefaultPluginFactory for VxnPlugin {
         Ok(VxnShared {
             params: Arc::new(SharedParams::new()),
             meters: Arc::new(MeterBus::new()),
+            scope: Arc::new(ScopeBus::new()),
         })
     }
 
@@ -194,6 +195,8 @@ impl DefaultPluginFactory for VxnPlugin {
             last_matrix: None,
             last_key: None,
             meters_idle: true,
+            scope_tick: 0,
+            scope_idle: true,
         })
     }
 }
@@ -207,6 +210,11 @@ pub struct VxnShared {
     /// must outlive a deactivate/reactivate cycle — `activate` rebuilds the
     /// engine, and the main thread's drain must keep reading the same slots.
     meters: Arc<MeterBus>,
+    /// Oscilloscope capture ring. Here for the same reason as `meters`, plus
+    /// one of its own: the selected tap is written by the **main** thread (the
+    /// faceplate's `set_scope_source`) and read by the audio thread, so the ring
+    /// has to be reachable from both without going through the engine.
+    scope: Arc<ScopeBus>,
 }
 
 impl PluginShared<'_> for VxnShared {}
@@ -255,6 +263,15 @@ pub struct VxnMainThread<'a> {
     /// its decay — then go quiet until there is signal again, so an idle plugin
     /// costs nothing on the bridge.
     meters_idle: bool,
+    /// Ticks since the last scope frame. The scope is pushed every other tick
+    /// (~30 Hz): a trace is several hundred samples of JSON where a meter frame
+    /// is eleven numbers, and 30 Hz is already past the point where a moving
+    /// waveform reads as continuous.
+    scope_tick: u8,
+    /// Whether the previous scope frame was all-zero. Same idle suppression as
+    /// `meters_idle`: one flat frame settles the trace on the centre line, then
+    /// silence costs nothing.
+    scope_idle: bool,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}
@@ -382,7 +399,45 @@ impl<'a> VxnMainThread<'a> {
         self.meters_idle = silent;
         handle.push_view_event(ViewEvent::Custom(Box::new(frame)));
     }
+
+    /// Read one window out of the scope ring into a `ViewEvent::Custom`.
+    ///
+    /// Three gates, cheapest first: no editor, no tap selected (the FX/Global
+    /// tab, or a page that never asked), and not this tick's turn. With the
+    /// scope off screen the whole feature costs one atomic load per audio block
+    /// and nothing at all here.
+    fn push_scope_frame(&mut self) {
+        let Some(handle) = self.gui.as_ref() else {
+            // Editor closed: stop capturing. Re-opening re-points the ring from
+            // the page's first tab sync, so nothing is lost, and a closed
+            // editor leaves the audio thread's publish a single load-and-return.
+            self.shared.scope.set_source(ScopeTap::Off.code());
+            return;
+        };
+        if self.shared.scope.source() == ScopeTap::Off.code() {
+            return;
+        }
+        self.scope_tick = self.scope_tick.wrapping_add(1);
+        if self.scope_tick % SCOPE_TICK_DIVISOR != 0 {
+            return;
+        }
+        // `None` while the ring is still filling — after an open, a tab flip, or
+        // a sample-rate change. Nothing to say yet, so say nothing.
+        let Some(frame) = ScopeFrame::read(&self.shared.scope) else {
+            return;
+        };
+        let silent = frame.is_silent();
+        if silent && self.scope_idle {
+            return;
+        }
+        self.scope_idle = silent;
+        handle.push_view_event(ViewEvent::Custom(Box::new(frame)));
+    }
 }
+
+/// Push a scope frame every Nth timer tick. The timer runs at ~60 Hz, so 2 puts
+/// the trace at ~30 Hz.
+const SCOPE_TICK_DIVISOR: u8 = 2;
 
 impl<'a> PluginTimerImpl for VxnMainThread<'a> {
     fn on_timer(&mut self, _id: TimerId) {
@@ -392,10 +447,12 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // key-mode / split-point) are applied to the shared KeyState channel;
         // the audio thread re-syncs the engine from it on the next `process`.
         let sink = self.shared.params.clone();
+        let scope = self.shared.scope.clone();
         let mut on_custom_ui = move |_ctrl: &mut _, payload: Box<dyn std::any::Any + Send>| {
-            // Three vxn1b custom payloads share this hook: a KeyOp (Layer 2
-            // enable / split), a MatrixEdit (topology), or a PatchOp (bulk
-            // patch duplication, 0265). Try each; downcast hands the box back
+            // Four vxn1b custom payloads share this hook: a KeyOp (Layer 2
+            // enable / split), a MatrixEdit (topology), a PatchOp (bulk
+            // patch duplication, 0265), or a ScopeOp (which signal the
+            // oscilloscope captures). Try each; downcast hands the box back
             // on a miss.
             let payload = match payload.downcast::<vxn1b_engine::KeyOp>() {
                 Ok(op) => return sink.apply_key_op(*op),
@@ -405,9 +462,21 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
                 Ok(edit) => return sink.edit_matrix_slot(*edit),
                 Err(p) => p,
             };
-            if let Ok(op) = payload.downcast::<vxn1b_engine::PatchOp>() {
+            let payload = match payload.downcast::<vxn1b_engine::PatchOp>() {
+                Ok(op) => {
+                    match *op {
+                        vxn1b_engine::PatchOp::CopyLayer { from, to } => sink.copy_layer(from, to),
+                    }
+                    return;
+                }
+                Err(p) => p,
+            };
+            // The tap goes straight onto the shared ring rather than through
+            // the param store: it is view state (which panel is on screen), so
+            // it must not touch the patch, the state blob or the undo stack.
+            if let Ok(op) = payload.downcast::<vxn1b_engine::ScopeOp>() {
                 match *op {
-                    vxn1b_engine::PatchOp::CopyLayer { from, to } => sink.copy_layer(from, to),
+                    vxn1b_engine::ScopeOp::SetTap(tap) => scope.set_source(tap.code()),
                 }
             }
         };
@@ -424,6 +493,8 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         self.push_key_echo();
         // Meters (0240) join the same batch — no extra bridge call.
         self.push_meter_frame();
+        // The scope trace rides it too, at half the tick rate.
+        self.push_scope_frame();
         // One `evaluate_script` per tick: the pushes above only buffered into
         // the EditorHandle; this is the single bridge call.
         if let Some(handle) = self.gui.as_ref() {
@@ -459,6 +530,9 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // own — this `Engine` is discarded on deactivate, and the editor's drain
         // handle must survive that.
         engine.set_meters(shared.meters.clone());
+        // Same lifetime argument for the scope ring — and it also carries the
+        // player's selected tap, which must survive a sample-rate change.
+        engine.set_scope(shared.scope.clone());
         // Adopt whatever the store holds (factory default, or a state loaded
         // while the plugin was inactive). Clears any stale reload flag.
         shared.params.take_reload();

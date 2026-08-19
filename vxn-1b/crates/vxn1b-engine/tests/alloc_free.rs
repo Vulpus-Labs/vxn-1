@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use vxn1b_engine::params::global_clap_id;
-use vxn1b_engine::{Engine, MeterBus, MeterFrame, ParamId};
+use vxn1b_engine::{Engine, MeterBus, MeterFrame, ParamId, ScopeBus, ScopeTap};
 
 struct Counting;
 
@@ -43,6 +43,10 @@ fn hot_path_is_allocation_free() {
     // Allocated before arming — the shell builds its bus once, at plugin
     // construction, never on the audio thread.
     let bus = Arc::new(MeterBus::new());
+    // Same contract for the scope ring: built once by the shell, armed by the
+    // editor, and from then on written on every audio block.
+    let scope = Arc::new(ScopeBus::new());
+    scope.set_source(ScopeTap::Layer1.code());
 
     // Warm-up (allocations permitted): fill the voices, exercise every op path
     // once so any lazy setup is done before arming.
@@ -79,6 +83,10 @@ fn hot_path_is_allocation_free() {
     // an `Arc<MeterBus>` clone must not put the tap on a different code path.
     // `fetch_update`'s closure captures by copy; there is nothing to box.
     e.set_meters(bus.clone());
+    // Scope capture is on the same per-block path and, unlike the meters,
+    // writes one atomic per *sample* — so it is the tap most worth pinning as
+    // heap-free on an adopted ring.
+    e.set_scope(scope.clone());
     e.process_block(&mut l, &mut r);
 
     ARMED.store(false, Ordering::Relaxed);
@@ -90,5 +98,10 @@ fn hot_path_is_allocation_free() {
     assert!(
         !MeterFrame::drain(&bus).is_silent(),
         "the metered blocks must have published something"
+    );
+    let mut window = Vec::new();
+    assert!(
+        scope.read_window(1, 512, &mut window) && window.iter().any(|&s| s != 0.0),
+        "the armed block must have filled the scope ring"
     );
 }

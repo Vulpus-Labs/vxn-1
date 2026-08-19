@@ -83,6 +83,11 @@ window.vxn = {
     // onto the other, mixer strip excluded. Destructive, so the caller confirms
     // before posting.
     copyLayer:       (from, to)             => { _post({ op: 'copy_layer', from, to }); _mutated(); },
+    // Which signal the oscilloscope captures: 'upper' | 'lower' | 'off'. View
+    // state, not patch state — it says which panel is on screen — so it does
+    // NOT fire the mutation hook: pointing the scope at a layer must never mark
+    // the preset dirty.
+    setScopeSource:  (source)               => _post({ op: 'set_scope_source', source }),
     requestTextInput:(id, title, initial)   => _post({ op: 'request_text_input', id, title, initial }),
     ready:           ()                     => _post({ op: 'ready' }),
   },

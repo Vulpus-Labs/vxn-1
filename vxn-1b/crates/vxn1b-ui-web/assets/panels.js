@@ -11,6 +11,8 @@
 //   panels/keys.js        — the Keys panel + its constants
 //   panels/meter.js       — level-meter ballistics + the stereo meter widget
 //                           and the frame registry (0240)
+//   panels/scope.js       — the layer oscilloscope: trigger search + canvas
+//                           trace
 //   panels/preset-bar.js  — the preset bar (dirty-tracking via the bridge's
 //                           onMutation hook, not a sender monkey-patch)
 //
@@ -41,7 +43,7 @@ export {
 } from './panels/fader.js';
 
 export {
-  makeSwitch, makeButtonGroup, makeDropdown, makeHeaderSwitch,
+  makeSwitch, makeButtonGroup, makeRocker, makeDropdown, makeHeaderSwitch,
 } from './panels/discrete.js';
 
 export {
@@ -53,6 +55,11 @@ export {
 export { presetBar } from './panels/preset-bar.js';
 
 export { matrixOverlay } from './panels/matrix.js';
+
+export {
+  SCOPE_SEARCH_FRACTION, SCOPE_RANGE,
+  findFirstRisingCross, scopeStart, makeScope,
+} from './panels/scope.js';
 
 export {
   METER_FLOOR_DB, METER_CLIP_DB, METER_DECAY_DB_PER_S, METER_HOLD_MS,

@@ -64,6 +64,10 @@ export function makeSwitch(el, id, desc) {
 // indices (e.g. `0,3,1,2` for AssignMode → Poly/Twin/Unison/Solo); the
 // stored value stays each variant's own descriptor index. Mirrors
 // vxn-ui-vizia's `ASSIGN_DISPLAY_ORDER`.
+// `data-columns` — lay the rows out in N columns instead of one tall
+// stack (Voice's six Widths). Column-major, so a 6-variant group in 2
+// columns reads 1/2/4 · 8/16/32; the row count the CSS grid needs is
+// derived here and passed down as `--ctl-rows`.
 export function makeButtonGroup(el, id, desc) {
   const label = el.dataset.label || desc.label;
   const variants = desc.variants || [];
@@ -83,6 +87,12 @@ export function makeButtonGroup(el, id, desc) {
     (noLabel ? '' : '<div class="ctl-label">' + label.toUpperCase() + '</div>') +
     '<div class="ctl-tg-rows"></div>';
   const rowsHost = el.querySelector('.ctl-tg-rows');
+  // Rows per column, ceil'd so an odd variant count leaves the short column
+  // last rather than dropping a row off the grid.
+  const columns = Math.max(1, parseInt(el.dataset.columns, 10) || 1);
+  if (columns > 1) {
+    el.style.setProperty('--ctl-rows', String(Math.ceil(variants.length / columns)));
+  }
   // `rows[i]` corresponds to variant index `i` (not display position), so
   // the update path can flip the active class by plain value directly.
   const rows = new Array(variants.length);
@@ -99,6 +109,48 @@ export function makeButtonGroup(el, id, desc) {
     update(plain) {
       const p = clampVariant(plain, variants);
       rows.forEach((row, i) => row && row.classList.toggle('active', i === p));
+    },
+  };
+}
+
+// `Rocker(id)` — a two-state switch with its variant names either side of the
+// travel: `POLY (o=) SOLO`.
+//
+// Same wire shape as `makeSwitch` (one gesture-bracketed discrete write) for a
+// different reading: a switch renders one checkbox per variant, which says the
+// variants are independent things to enable. A mode is not — it is one choice
+// with two positions — and the rocker draws exactly that. Clicking anywhere
+// flips it, including on either label, so the whole control is the target.
+//
+// Bools work too (off = left, on = right), taking the cell's `data-label` for
+// the right-hand name and `Off` for the left; the case that exists today is a
+// 2-variant enum.
+export function makeRocker(el, id, desc) {
+  const isEnum = desc.kind === 'enum';
+  const variants = isEnum ? (desc.variants || []) : ['Off', el.dataset.label || desc.label];
+  const left = variants[0] || '';
+  const right = variants[1] || '';
+  el.classList.add('ctl-rocker');
+  el.innerHTML =
+    '<div class="ctl-rocker-lbl ctl-rocker-left">' + left.toUpperCase() + '</div>' +
+    '<div class="ctl-rocker-track"><div class="ctl-rocker-knob"></div></div>' +
+    '<div class="ctl-rocker-lbl ctl-rocker-right">' + right.toUpperCase() + '</div>';
+  const leftLbl = el.querySelector('.ctl-rocker-left');
+  const rightLbl = el.querySelector('.ctl-rocker-right');
+
+  el.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    // Local state is the truth for the flip; the echo reconciles if the engine
+    // clamps or refuses (same contract as the switch).
+    window.vxn.send.discrete(id, el.classList.contains('right') ? 0 : 1);
+  });
+
+  return {
+    update(plain) {
+      const on = isEnum ? clampVariant(plain, variants) === 1 : plain >= 0.5;
+      el.classList.toggle('right', on);
+      leftLbl.classList.toggle('active', !on);
+      rightLbl.classList.toggle('active', on);
     },
   };
 }

@@ -1,8 +1,8 @@
 /* Faceplate scaffold — VXN1b compact 3-row layout (0209, ADR 0001 §7).
-   760×480 logical (EDITOR_WIDTH / EDITOR_HEIGHT in lib.rs), 10px outer
-   padding, 8px vertical gap between banner / preset-bar / 3 rows, 6px
-   horizontal gap between panels in a row. Panel height is derived to fit
-   3 rows inside the 480px window (see `--panel-h`). CSS vars are named
+   940×556 logical (EDITOR_WIDTH / EDITOR_HEIGHT in lib.rs), 10px outer
+   padding, 8px vertical gap between banner / preset-bar / tab strip / rows,
+   6px horizontal gap between panels in a row. Panel heights are derived to fit
+   the layer pane's 3 rows inside the window (see `--panel-h`). CSS vars are named
    after the vxn-ui Rust constants so the mapping stays obvious; pixel
    literals stay out of selectors so a future resize policy is one
    variable change. */
@@ -35,20 +35,25 @@
   --knob-dimple-rim: #333333;
   --knob-indicator: #a7cfe2;       /* matches --glyph-active */
 
-  /* Geometry. Compact 3-row layout: with banner (26) + preset-bar (30) +
-     4×8 vgaps + 2×10 padding = 108px of chrome. Rows 1–2 are 124px; the
-     bottom row (Voice/FX/Dynamics/Master) is taller (--panel-h-3) so Voice's
-     Legato toggle and Master's stacked Oversample+Limit strip clear the denser
-     content instead of overlapping it. 108 + 124 + 124 + 164 = 520px window
-     (see EDITOR_HEIGHT). Width widened from the initial 760 to give the top
-     row (esp. Filter's six controls) breathing room and to fit Dynamics as its
-     own bottom-row panel. */
+  /* Geometry. The window is sized to the LAYER pane: banner (26) +
+     preset-bar (30) + tab strip (26) + 3×8 chrome vgaps + 2×10 padding, over
+     three rows of 124 + 124 + 164 with 2×8 pane gaps. Rows 1–2 are 124px; the
+     bottom row (Cross Mod / Voice / Scope) is taller (--panel-h-3) so Voice's
+     Legato toggle and Mod Matrix button clear the denser content instead of
+     overlapping it. That comes to 554 summed and 556 as laid out — see
+     EDITOR_HEIGHT, which must match the rendered figure, not the sum. Width
+     widened from the initial 760 to give the top row (esp. Filter's six
+     controls) breathing room and to fit Dynamics as its own panel. */
   --editor-w: 940px;
   --pad-outer: 10px;
   --banner-h: 26px;
   --preset-bar-h: 30px;
   --panel-h: 124px;           /* PANEL_H — rows 1–2 */
   --panel-h-3: 164px;         /* PANEL_H_3 — bottom row, taller for denser panels */
+  /* FX/Global row 1 — sized to the mixer's full channel strip + split, the
+     tallest single panel in the editor. Fits inside the window the LAYER pane
+     already dictates (see `.row-global-1`). */
+  --panel-h-global-1: 252px;
   --col-h: 90px;              /* COL_H — per-control column inside a panel */
   --fader-h: 56px;            /* FADER_H — fader travel */
   --dial: 62px;               /* DIAL — selector-knob box */
@@ -244,13 +249,15 @@ html, body {
 .row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
 .row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
 
-/* Layer pane's bottom row — Cross Mod · Voice (the Layer 2 enable moved onto
-   the Layer 2 tab). Cross Mod carries two cells against Voice's four, so it
-   takes the smaller share; both stay well clear of their natural widths in the
-   940px window. */
+/* Layer pane's bottom row — Cross Mod · Voice · Scope. Cross Mod and Voice are
+   sized close to their natural widths (they were stretched across the whole row
+   before the scope joined it), and the scope takes everything left over: a
+   waveform is the one thing here that reads better the wider it is, while a
+   column of toggles gains nothing from the extra pixels. */
 .row-layer-3 { height: var(--panel-h-3); }
 .row-layer-3 .panel[data-name="Cross Mod"] { flex-grow: 0.5; }
 .row-layer-3 .panel[data-name="Voice"] { flex-grow: 1.0; }
+.row-layer-3 .panel[data-name="Scope"] { flex-grow: 1.9; }
 
 /* Layer 2 enable switch, carried on the Layer 2 tab button (0219 §4) the way FX
    tabs carry their own on/off. Off (default) → Layer 2 bypassed; on → live.
@@ -321,6 +328,32 @@ html, body {
   cursor: pointer;
 }
 .overlay-close:hover { color: var(--text); }
+
+/* Confirmation modal — reuses the overlay chrome for a title / message / two
+   buttons. Narrow: it asks one question, and a dialogue as wide as the matrix
+   editor would read as a panel rather than a prompt. The destructive action is
+   tinted and sits on the right, with Cancel to its left as the resting choice
+   (backdrop click and Esc both land on Cancel). */
+.confirm-panel { max-width: 340px; }
+.confirm-message {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.confirm-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.pbar-btn.confirm-ok {
+  background: #7a2f14;
+  border-color: var(--ctl-value);
+  color: #f0d5c4;
+}
+.pbar-btn.confirm-ok:hover { background: #a33f1b; color: #fff; }
+
 .mm-overlay { min-width: 720px; }
 .mm-overlay-list {
   overflow-y: auto;
@@ -352,25 +385,35 @@ html, body {
 .vxn-mm-slot-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; }
 .vxn-mm-scale { min-width: 0; }
 
-/* Bipolar depth fader (ported from vxn-2 .vxn-mm-depth): a compact center-origin
+/* Bipolar fader (ported from vxn-2 .vxn-mm-depth): a compact centre-origin
    HORIZONTAL fader. The centre tick marks 0; the fill grows signed left/right
-   from it (makeBipolar drives left/width). */
+   from it (makeBipolar drives left/width).
+
+   Keyed on the primitive's OWN class names rather than on the matrix overlay
+   that first used it. Scoped to `.vxn-mm-depth`, the second consumer — the
+   mixer's layer-detune slider (0263) — inherited none of it: a track with no
+   height or background is an invisible control, and an invisible control with
+   no box is also an unclickable one. Only the width cap below is really the
+   overlay's, and it stays there. */
 .vxn-mm-depth {
   position: relative;         /* anchor for the value-pop */
   min-width: 0;
   justify-self: stretch;
   width: 100%;
 }
-.vxn-mm-depth .fader-track {
+.fader-track {
   position: relative;
   width: 100%;
-  max-width: 120px;
   height: 4px;
   margin: 0 auto;
   background: var(--track-bg);
   border-radius: 2px;
 }
-.vxn-mm-depth .fader-track-fill {
+/* The matrix row is wide; a full-width depth track there would dwarf the combos
+   beside it. Panels that want the whole width (the mixer strip) just don't have
+   this cap. */
+.vxn-mm-depth .fader-track { max-width: 120px; }
+.fader-track-fill {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -378,7 +421,7 @@ html, body {
   width: 0;
   background: var(--track-fill);
 }
-.vxn-mm-depth .fader-thumb {
+.fader-thumb {
   position: absolute;
   width: var(--thumb-h);
   height: var(--thumb-w);
@@ -511,14 +554,16 @@ html, body {
    panel's left edge so the distance from panel padding → first button is
    uniform across Filter / Cross Mod / Reverb. Subsequent faders flow with
    a fixed gap rather than the body's default `space-evenly`. */
-.panel-body:has(> .ctl-buttongroup:first-child) {
+.panel-body:has(> .ctl-buttongroup:first-child),
+.panel-body:has(> .ctl-col:first-child) {
   justify-content: flex-start;
   gap: 10px;
 }
 /* Left-anchored buttongroup left-aligns its own contents too so the box
    edge sits at `--panel-pad` regardless of label / row widths — keeps the
    distance from panel border to first selector uniform across panels. */
-.panel-body > .ctl-buttongroup:first-child {
+.panel-body > .ctl-buttongroup:first-child,
+.panel-body > .ctl-col:first-child > .ctl-buttongroup {
   align-items: flex-start;
 }
 
@@ -735,9 +780,12 @@ html, body {
    slave layer, so hide it while the pane shows Layer 1. `visibility` (not
    `display`) so the strip's other cells never shift on a tab flip. */
 [data-edit-layer="upper"] [data-layer2-only] { visibility: hidden; }
-/* Mirror of the above for controls that describe an action *from* Layer 1:
-   "Copy → L2" (0265) only makes sense while Layer 1 is the edit layer. */
-[data-edit-layer="lower"] [data-layer1-only] { visibility: hidden; }
+
+/* The Voice panel's strip carries the Mod Matrix button, and its Detune cell
+   parks the Legato toggle at the panel's bottom-LEFT corner
+   (`.ctl-detune-legato`), so the button is pushed to the right end of the strip
+   to keep the two off each other. */
+.panel[data-name="Voice"] .panel-strip { justify-content: flex-end; }
 
 /* Master's strip stacks Oversample (horizontal toggle row) over Limit
    (single toggle) — `panel-strip` defaults to a single horizontal row,
@@ -820,6 +868,28 @@ html, body {
   background-position: top;
 }
 
+/* ── Layer scope ───────────────────────────────────────────────────────────
+   Like a meter mount, the scope is not a param cell — no `data-control` /
+   `data-param`, no model state, mounted from `[data-scope]`. The canvas has no
+   intrinsic size: it fills the mount, and `panels/scope.js` re-measures the box
+   on every draw and resizes the backing store to match (the layer pane is
+   `display: none` while another tab is up, where the box measures 0×0). */
+.panel-scope .panel-body { display: block; }
+.scope-mount {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.scope-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--track-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
 /* Toggle row — small box + inline label. Matches vizia .tg-row /
    .tg-box / .tg-lbl exactly (#1f9cff active fill, 9×9 box, 7 px label). */
 .ctl-tg-row {
@@ -866,6 +936,85 @@ html, body {
   flex-direction: column;
   gap: 6px;
   align-items: flex-start;
+}
+/* Multi-column variant (`data-columns` on the cell). Column-major: with six
+   variants in two columns the first three fill column one, so Width reads
+   1/2/4 · 8/16/32 — each column a doubling run, which is how the scale is
+   actually thought about. Rows are explicit (`grid-auto-flow: column` needs a
+   row count to know where to break); the JS mirrors the same number into
+   `--ctl-rows`. */
+.ctl-buttongroup[data-columns] .ctl-tg-rows {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(var(--ctl-rows, 3), auto);
+  gap: 5px 12px;
+  justify-items: start;
+}
+
+/* A stacked pair of cells sharing one column of the panel body — the Voice
+   panel's Width group with its Poly/Solo rocker beneath. `.ctl` sets a fixed
+   `--col-h`; this wrapper leaves its children their natural heights so the
+   two sit flush. */
+.ctl-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.ctl-col > .ctl { height: auto; }
+
+/* Rocker — a two-state switch drawn as `LEFT (o=) RIGHT`, the labels sitting
+   either side of the travel rather than beside a box.
+   Used where both states are equal-status choices (Poly vs Solo) rather than
+   one being "on": a checkbox-style `.ctl-tg-row` per variant says "these are
+   independent things you can each enable", which is exactly what a mode is
+   not. Clicking anywhere on the control flips it. */
+.ctl-rocker {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.ctl-rocker-lbl {
+  font-size: 9px;
+  color: #7a7a7a;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ctl-rocker-lbl.active { color: #ececec; }
+.ctl-rocker-track {
+  position: relative;
+  width: 26px;
+  height: 12px;
+  background: var(--track-bg);
+  border: 1px solid #8a8a8a;
+  border-radius: 6px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+.ctl-rocker:hover .ctl-rocker-track { border-color: #c4c4c4; }
+.ctl-rocker-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 8px;
+  height: 8px;
+  background: #b8b8b8;
+  border-radius: 50%;
+  transition: left 90ms ease, background 90ms ease;
+}
+/* `.right` is the second variant — the knob slides, and the track lights, so
+   the state is readable from the switch alone as well as from the labels. */
+.ctl-rocker.right .ctl-rocker-knob {
+  left: 15px;
+  background: #84cdff;
+}
+.ctl-rocker.right .ctl-rocker-track {
+  background: #1f9cff;
+  border-color: #84cdff;
 }
 
 /* Dropdown — native <select> styled to match the dark palette. Fallback for
@@ -953,8 +1102,24 @@ html, body {
      2. PHASER | CHORUS | DELAY | REVERB — one section each, on/off in header.
    The four effects were previously one tabbed panel showing a single effect at
    a time; side by side they fill the row and expose all four on/off states. */
-.row-global-1 { height: var(--panel-h-3); }
+/* Row 1 is the tallest row in the editor, and it is the mixer that sets the
+   figure: two channel strips of title + meter/fader + pan + detune + mute, with
+   the split beneath them, need ~219 px of panel body. It costs nothing — the
+   window is sized to the LAYER pane (428 px of rows), and even at this height
+   the global pane's two rows come to 424, so the row is taking slack that was
+   already there rather than growing the editor. */
+.row-global-1 { height: var(--panel-h-global-1); }
 .row-global-2 { height: var(--panel-h-3); }
+
+/* Dynamics and Master are sized by their own content, not the mixer's, so in a
+   row this tall they would sit against the header with a band of empty panel
+   beneath. Centring their bodies spreads that gap to both sides, which reads as
+   deliberate rather than as a layout that ran short. The mixer keeps its
+   `flex-start` — it fills the row. */
+.row-global-1 .panel[data-name="Dynamics"] .panel-body,
+.row-global-1 .panel[data-name="Master"] .panel-body {
+  align-items: center;
+}
 
 /* The mixer is deliberately narrow — two slim channel strips and the split
    beneath them, nothing else. */
@@ -1042,12 +1207,20 @@ html, body {
 /* Pan dial between the fader and the mute (0248) — the mixer-strip order a
    player expects, level above placement above mute. Sits outside
    `.mixer-strip-body`, so it keeps its own label slot (the fader's is
-   suppressed; the dial's "PAN" is the one label the strip needs). */
+   suppressed; the dial's "PAN" is the one label the strip needs).
+
+   `height: auto`, like the fader cell above and for the same reason: a `.ctl`
+   reserves a full `--col-h` control column, and a 36 px dial claiming 90 px of
+   it pushed the detune, the mute and the whole split section out of the panel
+   (they rendered *underneath* the FX row's panels, which is why they looked
+   deleted rather than overflowing). Nothing in the strip is a full column —
+   the L1/L2 title is the label row for all of them. */
 .mixer-pan {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
+  height: auto;
 }
 
 /* Layer detune (0263): a centre-origin horizontal slider under the pan dial.
@@ -1059,10 +1232,21 @@ html, body {
   align-items: center;
   gap: 1px;
   width: 100%;
+  height: auto;                   /* see `.mixer-pan` */
 }
 
+/* The thumb is centred on the track and stands well proud of it, so the cell
+   has to reserve room for the thumb, not the 4 px track — without the margin it
+   overflowed its cell by a few pixels at both ends. Trimmed a little from the
+   matrix overlay's thumb as well: the strip is ~46 px wide, and the overlay's
+   18 px block on a track that short reads as a slider with no travel. */
 .mixer-detune .fader-track {
   width: 100%;
+  margin: 6px auto;
+}
+.mixer-detune .fader-thumb {
+  width: 8px;
+  height: 12px;
 }
 
 /* Mute centred under the meter+fader pair rather than pinned to the panel
@@ -1081,6 +1265,12 @@ html, body {
   align-items: stretch;
   gap: 3px;
   padding-top: 2px;
+  /* The body centres its children on the cross axis, which sizes them to their
+     content — and a range input's natural width is wider than this deliberately
+     narrow panel, so the slider hung out over both edges and the note readout
+     fell off the right. Taking the body's width instead lets the slider's
+     `flex: 1 1 auto; min-width: 0` shrink it to fit. */
+  width: 100%;
 }
 
 .split-point-row {

@@ -348,6 +348,7 @@ export function bindCell(entry, layer) {
     case 'dial':          ctl = makeDial(el, id, desc, { displayOverride: panDisplayOverride(name) }); break;
     case 'bipolar':       ctl = makeBipolar(el, id, desc); break;
     case 'switch':        ctl = makeSwitch(el, id, desc); break;
+    case 'rocker':        ctl = makeRocker(el, id, desc); break;
     case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;
     case 'dropdown':      ctl = makeDropdown(el, id, desc); break;
     case 'header-switch': ctl = makeHeaderSwitch(el, id, desc); break;
@@ -397,30 +398,54 @@ export function bindCell(entry, layer) {
   return { ids: [id] };
 }
 
+// Swap a cell's element for a pristine copy of itself: same tag, same
+// attributes (`data-control` / `data-param` / the dim markers), no children, no
+// classes or inline styles the last primitive added — and, crucially, **no
+// event listeners**.
+//
+// Clearing `innerHTML` is not enough. It disposes of listeners bound to the
+// children a primitive built, which is most of them, but not of any bound to the
+// cell root: the rocker's click, the detune composite's double-click, and
+// `bindCell`'s reset-to-default double-click all attach there. Those survived
+// the reset and accumulated one closure per layer flip, each still holding the
+// id of the layer it was bound under — so after visiting Layer 2, a click on the
+// Voice rocker wrote Poly/Solo to layer 1 *and* layer 2, and a double-click
+// reset both layers' values.
+//
+// Replacing the node fixes every such case at once, including ones nobody has
+// written yet: a new primitive can attach listeners wherever it likes and stay
+// correct across a rebind by construction.
+function freshenCell(entry) {
+  const next = entry.el.cloneNode(false);
+  // The clone carries whatever classes the last primitive left; put the
+  // markup's own back. (`init` always records this; the guard is for entries
+  // hand-built by tests.)
+  if (entry.baseClass != null) next.className = entry.baseClass;
+  next.removeAttribute('style');
+  entry.el.replaceWith(next);
+  entry.el = next;
+}
+
 export function rebindAllForLayer(layer) {
   // Drop every prior binding — closures held the old ids; the only safe
   // way to retarget is to start fresh. `model.controls` is the routing
   // table for ParamChanged dispatch, so emptying it before re-bind
   // avoids stale updates landing on the old (now-orphaned) primitives.
   model.controls.clear();
+  // New nodes first, before anything captures an element reference. Static
+  // (`data-fixed-layer`) cells are freshened too: they rebind on every flip like
+  // any other cell, so their root-level listeners would pile up the same way —
+  // harmlessly, since the id never changes, but a pile-up either way.
+  for (const entry of model.cells) freshenCell(entry);
+  // The HTML-attribute dim specs hold element references, which the sweep above
+  // has just invalidated; re-collect before resolving them to ids.
+  collectDimRuleSpecs();
   // Resolve per-layer quirk ids BEFORE bindCell so each fader's
   // `rateDisplayOverride` closure captures the *current* layer's
   // sync-partner id.
   locateSyncPartners(layer);
   rebuildDimRules(layer);
   for (const entry of model.cells) {
-    if (entry.layered) {
-      // Reset the cell so a re-init clears whatever the previous primitive
-      // dropped onto el (innerHTML / inline styles / classes specific to
-      // its kind). Static cells aren't rebuilt on layer flips so they
-      // skip the reset — bindCell's primitive factory still runs and
-      // clobbers `el.innerHTML` if it had any.
-      entry.el.innerHTML = '';
-      entry.el.removeAttribute('style');
-      entry.el.classList.remove(
-        'ctl-buttongroup', 'ctl-dropdown', 'ctl-detune', 'dimmed',
-      );
-    }
     bindCell(entry, layer);
   }
   // Non-cell control subscribers (Keys panel's per-layer Level sliders)
@@ -495,6 +520,9 @@ export function wireTabs() {
         showPane('global');
         repaintAllControls();
       }
+      // The scope follows the visible pane: the edit layer's tap on a layer
+      // tab, nothing at all on FX/Global.
+      syncScopeSource();
     });
   }
 }
@@ -564,47 +592,86 @@ export function wireLfo2Link() {
   };
 }
 
+// Confirmation modal — title, message, Cancel / confirm.
+//
+// Elements are looked up per call rather than captured at module load: this
+// module is spliced into the page and imported headless by the suites, so
+// binding at load time would either crash or capture a DOM that isn't there
+// yet. Listeners are attached per call and torn down on close, so a dialogue
+// opened twice can't fire its callback twice.
+//
+// Cancel is the resting choice: the backdrop and Esc both dismiss without
+// running the action. With no dialogue markup on the page `ask` does nothing at
+// all — an unconfirmable destructive action must not silently become an
+// unconfirmed one.
+export const confirmDialog = {
+  ask(opts, onConfirm) {
+    const backdrop = document.getElementById('confirm-backdrop');
+    const okBtn = document.getElementById('confirm-ok');
+    const cancelBtn = document.getElementById('confirm-cancel');
+    const titleEl = document.getElementById('confirm-title');
+    const messageEl = document.getElementById('confirm-message');
+    if (!backdrop || !okBtn || !cancelBtn || !titleEl || !messageEl) return;
+
+    titleEl.textContent = opts.title || '';
+    messageEl.textContent = opts.message || '';
+    okBtn.textContent = opts.okLabel || 'OK';
+
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') close();
+    };
+    const onBackdrop = (ev) => {
+      // Only a click on the backdrop itself — one landing inside the panel
+      // bubbles here too, and dismissing on that would make the dialogue
+      // impossible to read without closing it.
+      if (ev.target === backdrop) close();
+    };
+    function close() {
+      backdrop.hidden = true;
+      okBtn.removeEventListener('click', confirm);
+      cancelBtn.removeEventListener('click', close);
+      backdrop.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+    }
+    function confirm() {
+      close();
+      onConfirm();
+    }
+
+    okBtn.addEventListener('click', confirm);
+    cancelBtn.addEventListener('click', close);
+    backdrop.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+    backdrop.hidden = false;
+  },
+};
+
 // Copy Layer 1 → Layer 2 (0265). Duplicates Layer 1's patch params and matrix
 // topology onto Layer 2, leaves the mixer strip alone, and stamps a small
 // detune on the copy so the pair beats rather than sums.
 //
 // A `PatchOp`, not a param and not KeyState, so — like the LFO 2 link cell —
-// it is hand-built here rather than bound by `rebindAllForLayer`.
+// it is hand-wired here rather than bound by `rebindAllForLayer`.
 //
 // Destructive: it overwrites whatever Layer 2 held, and lands ~66 param changes
-// in the host's undo stack as one burst. So the cell **arms** on the first press
-// and copies on the second, and disarms on a timeout or on any other click.
-// Cheaper than a modal and it cannot fire from a stray tap.
-export const COPY_ARM_MS = 2500;
+// in the host's undo stack as one burst — hence the confirmation. The direction
+// is fixed rather than "copy the edit layer to the other one", so the button
+// means the same thing on either tab and the label can say which way it goes.
 export function wireCopyLayer() {
-  const el = document.getElementById('copy-layer');
-  if (!el) return;
-  el.innerHTML = '';
-  const row = tgRow('Copy → L2');
-  el.appendChild(row);
-
-  let armed = null;
-  const disarm = () => {
-    if (armed) clearTimeout(armed);
-    armed = null;
-    row.classList.remove('active');
-    row.textContent = 'Copy → L2';
-  };
-  row.addEventListener('pointerdown', (ev) => {
-    ev.preventDefault();
-    if (armed) {
-      disarm();
-      window.vxn.send.copyLayer('upper', 'lower');
-      return;
-    }
-    row.classList.add('active');
-    row.textContent = 'Sure?';
-    armed = setTimeout(disarm, COPY_ARM_MS);
-  });
-  // Any click elsewhere on the faceplate cancels a pending confirm, so the
-  // armed state can never outlive the player's attention.
-  document.addEventListener('pointerdown', (ev) => {
-    if (armed && !row.contains(ev.target)) disarm();
+  const btn = document.getElementById('copy-layer');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    confirmDialog.ask(
+      {
+        title: 'Copy Layer 1 → Layer 2',
+        message:
+          "Layer 2's patch and mod-matrix routing will be replaced by Layer 1's. "
+          + 'Its mixer strip — level, pan, mute — is left alone, and the copy is '
+          + 'detuned slightly so the two layers beat rather than sum.',
+        okLabel: 'Copy',
+      },
+      () => window.vxn.send.copyLayer('upper', 'lower'),
+    );
   });
 }
 
@@ -698,6 +765,45 @@ export function wireMeters() {
   });
 }
 
+// Layer scope (`[data-scope]`). Like a meter mount it carries no CLAP id and
+// holds no model state, so it stays out of the param-cell machinery entirely.
+//
+// The panel and the audio-side capture are one switch: `syncScopeSource` posts
+// the tap that the layer pane is currently showing — or `off` whenever the
+// scope is not on screen — and that same opcode is what makes the audio thread
+// write into the ring at all. Nothing is captured for a layer nobody is
+// looking at, and nothing at all while the FX/Global tab is up.
+let _scope = null;
+let _scopeSource = null;
+
+// Test-only reset, for the same reason as `_resetKeyStateView`: these are
+// module-level in production because the editor is one long-lived page, but the
+// suites mount the faceplate repeatedly and would otherwise carry one test's
+// selected tap into the next.
+export function _resetScopeView() {
+  _scope = null;
+  _scopeSource = null;
+}
+
+export function wireScope() {
+  const el = document.querySelector('[data-scope]');
+  if (!el) return;
+  _scope = makeScope(el);
+}
+
+export function syncScopeSource() {
+  if (!_scope) return;
+  const pane = document.querySelector('[data-tab-pane="layer"]');
+  const next = pane && pane.classList.contains('active') ? model.currentLayer : 'off';
+  if (next === _scopeSource) return;
+  _scopeSource = next;
+  // The engine clears the ring on a tap change, so whatever is on the canvas
+  // belongs to the layer we just left. Blank it rather than leave the wrong
+  // layer's waveform up for the ~30 ms the ring takes to refill.
+  _scope.clear();
+  window.vxn.send.setScopeSource(next);
+}
+
 export function init() {
   // Categorize every mount point by descriptor name + kind, layer-
   // agnostic. The actual id resolution + primitive instantiation happens
@@ -716,6 +822,10 @@ export function init() {
     const entry = {
       el, kind, name, fixedLayer,
       layered: fixedLayer ? false : isLayeredEl(el),
+      // The markup's own classes, captured before any primitive has run.
+      // `freshenCell` restores exactly this on a rebind, so the reset needs no
+      // hand-maintained list of the classes each kind adds.
+      baseClass: el.className,
     };
     if (kind === 'detune-legato') {
       entry.extras = {
@@ -741,7 +851,9 @@ export function init() {
   // Level meters (0240). Mount points are `data-meter="<frame key>"`, so a
   // panel opts in from HTML and the registry needs no per-panel wiring.
   wireMeters();
-  collectDimRuleSpecs();
+  // Layer scope — mounted before the first `syncScopeSource` below, which is
+  // what actually turns capture on.
+  wireScope();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).
   _paramIdByName = buildParamIndex();
@@ -798,6 +910,9 @@ export function init() {
       if (layer === model.currentLayer) return;
       model.currentLayer = layer;
       rebindAllForLayer(layer);
+      // A controller-driven layer flip moves the scope's tap too — the page
+      // does not always originate the change.
+      syncScopeSource();
       return;
     }
     if (ev.kind === 'key_mode_changed') {
@@ -856,6 +971,13 @@ export function init() {
       meterRegistry.apply(ev);
       return;
     }
+    // Scope window (oldest → newest) for whichever layer the page asked for.
+    // Purely view-bound, like the meter frame: the trigger search and the
+    // drawing are the widget's business, and nothing here touches the model.
+    if (ev.kind === 'scope') {
+      if (_scope && Array.isArray(ev.s)) _scope.push(ev.s);
+      return;
+    }
     if (ev.kind === 'status') {
       statusPill.flash(ev.line);
       return;
@@ -911,6 +1033,10 @@ export function init() {
   _earlyViewEvents.length = 0;
   window.__vxn.applyViewEvents = applyViewEvents;
   window.vxn.onViewEvent = dispatch;
+
+  // Point the capture ring at the pane that is actually showing (Layer 1 on a
+  // fresh open). Until this lands the audio thread captures nothing.
+  syncScopeSource();
 
   // Tell the controller we're ready — it re-broadcasts every param + key
   // mode so any first-tick `push_param_diffs` that ran before

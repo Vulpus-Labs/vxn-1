@@ -19,6 +19,7 @@
 //! - [`state`] — the binary `clap.state` blob (params + matrix topology, 0203).
 //! - [`preset`] — the portable sparse-TOML preset codec (0203).
 //! - [`meters`] — meter frames over the shared lock-free bus (0240).
+//! - [`scope`] — oscilloscope capture taps + frames over the shared ring.
 
 pub mod bank;
 pub mod engine;
@@ -33,6 +34,7 @@ pub mod params;
 pub mod preset;
 pub mod preset_io;
 pub mod render;
+pub mod scope;
 pub mod shared;
 pub mod state;
 pub mod synth;
@@ -48,7 +50,8 @@ pub use matrix::{
     Curve, DestId, MatrixSlot, MatrixSnapshot, MatrixTable, SourceId, default_patch,
 };
 pub use meters::MeterFrame;
-pub use vxn_core_utils::{MeterBus, MeterTap};
+pub use scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeOp, ScopeTap};
+pub use vxn_core_utils::{MeterBus, MeterTap, ScopeBus};
 pub use params::{
     ClapRef, GLOBAL_PARAMS, Layer, PATCH_COUNT, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
     clap_id_of, clap_module, clap_ref, desc_for_clap_id,
