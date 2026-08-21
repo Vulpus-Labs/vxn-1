@@ -59,7 +59,7 @@ use vxn_engine::Synth;
 // them from one place. These come from vxn-app, not literals.
 pub use vxn_app::params::{global_clap_id, patch_clap_id};
 
-/// Total addressable CLAP ids (`2 * PATCH_COUNT + GLOBAL_COUNT`). 165 today.
+/// Total addressable CLAP ids (`2 * PATCH_COUNT + GLOBAL_COUNT`). 167 today.
 pub const TOTAL_PARAMS: u16 = VXN_TOTAL_PARAMS as u16;
 /// Per-layer patch param count (69 today). Upper = `[0, PATCH_COUNT)`,
 /// Lower = `[PATCH_COUNT, 2*PATCH_COUNT)`.
@@ -615,10 +615,11 @@ mod tests {
     #[test]
     fn id_layout_matches_vxn_app() {
         // The constants must come from vxn-app, and equal the ADR 0009 layout
-        // (165 = 2*69 + 27) for today's param table.
-        assert_eq!(TOTAL_PARAMS, 165);
+        // (167 = 2*69 + 29) for today's param table — the globals grew by the
+        // two FX-stereo params (0278).
+        assert_eq!(TOTAL_PARAMS, 167);
         assert_eq!(PATCH_COUNT, 69);
-        assert_eq!(GLOBAL_COUNT, 27);
+        assert_eq!(GLOBAL_COUNT, 29);
         assert_eq!(TOTAL_PARAMS, 2 * PATCH_COUNT + GLOBAL_COUNT);
     }
 

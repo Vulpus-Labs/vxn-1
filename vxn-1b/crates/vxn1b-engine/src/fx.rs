@@ -80,11 +80,16 @@ pub struct FxParams {
     pub phaser_depth: f32,
     pub phaser_feedback: f32,
     pub phaser_mix: f32,
+    /// L/R LFO sweep offset, already normalised to the kernel's `spread`
+    /// (`[0, 1]`) — the param itself is in degrees.
+    pub phaser_stereo: f32,
 
     pub delay_on: bool,
     pub delay_time: f32,
     pub delay_feedback: f32,
     pub delay_mix: f32,
+    /// Feedback crossfeed (ping-pong) on/off.
+    pub delay_pingpong: bool,
 
     pub reverb_on: bool,
     pub reverb_size: f32,
@@ -117,11 +122,13 @@ impl FxParams {
             phaser_depth: p.get(ParamId::PhaserDepth),
             phaser_feedback: p.get(ParamId::PhaserFeedback),
             phaser_mix: p.get(ParamId::PhaserMix),
+            phaser_stereo: p.get(ParamId::PhaserStereo) / 180.0,
 
             delay_on: p.bool(ParamId::DelayOn),
             delay_time: crate::sync::delay_time_seconds(p, tempo_bpm),
             delay_feedback: p.get(ParamId::DelayFeedback),
             delay_mix: p.get(ParamId::DelayMix),
+            delay_pingpong: p.bool(ParamId::DelayPingPong),
 
             reverb_on: p.bool(ParamId::ReverbOn),
             reverb_size: p.get(ParamId::ReverbSize),
@@ -208,14 +215,20 @@ impl FxChain {
         self.retarget(DYNAMICS, p.dynamics_on);
 
         self.chorus.set_params(p.chorus_rate, p.chorus_depth, p.chorus_mix);
-        self.phaser
-            .set_params(p.phaser_rate, p.phaser_depth, p.phaser_feedback, p.phaser_mix);
+        self.phaser.set_params(
+            p.phaser_rate,
+            p.phaser_depth,
+            p.phaser_feedback,
+            p.phaser_mix,
+            p.phaser_stereo,
+        );
         self.delay.set_params(
             p.delay_time,
             p.delay_time,
             p.delay_feedback,
             DELAY_DAMPING,
             p.delay_mix,
+            p.delay_pingpong,
         );
         self.reverb.set_params(&FdnReverbParams {
             on: true,
@@ -369,10 +382,12 @@ mod tests {
             phaser_depth: 0.7,
             phaser_feedback: 0.0,
             phaser_mix: 0.5,
+            phaser_stereo: 1.0,
             delay_on: false,
             delay_time: 0.35,
             delay_feedback: 0.4,
             delay_mix: 0.25,
+            delay_pingpong: true,
             reverb_on: false,
             reverb_size: 0.5,
             reverb_decay: 2.5,

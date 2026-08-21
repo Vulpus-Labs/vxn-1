@@ -35,7 +35,9 @@ use crate::ParamId;
 /// Format magic; first four bytes of every state blob.
 pub const MAGIC: [u8; 4] = *b"VXN1";
 /// Format version. Bump on any layout change (no migration pre-release).
-pub const VERSION: u32 = 1;
+/// `2` adds the two FX-stereo globals — `phaser_stereo` and `delay_pingpong`
+/// (0278) — which lengthen the global block.
+pub const VERSION: u32 = 2;
 
 /// Total serialized size of a state blob: header + every param + shared state.
 pub const BLOB_LEN: usize = 4 + 4 + TOTAL_PARAMS * 4 + 2;

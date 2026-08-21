@@ -169,7 +169,7 @@ pub unsafe extern "C" fn vxn_host_set_param(ptr: *mut Host, index: u32, value: f
 }
 
 /// Read a param's current PLAIN value by CLAP id. The main-thread coordinator
-/// (ticket 0042) snapshots all 165 of these off a throwaway host to SEED the
+/// (ticket 0042) snapshots all 167 of these off a throwaway host to SEED the
 /// 0039 param store with the engine's defaults before the worklet starts —
 /// otherwise the store's zero-initialised slots would fold zeros over every
 /// param on the first quantum (silencing the voice). The real controller wasm

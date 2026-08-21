@@ -54,12 +54,13 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 /// (0250) — each lengthens the layer's param block; `6` appends the [`KeyState`]
 /// record (0221); `7` adds `LayerPan` (0248) and `LayerDetune` (0263); `8`
 /// splits `AssignMode` into `StackWidth` + `VoiceMode` (0266, ADR 0003); `9`
-/// adds `DelaySync` (0267). Bump on
+/// adds `DelaySync` (0267); `10` adds the FX-stereo globals `PhaserStereo` and
+/// `DelayPingPong` (0279). Bump on
 /// any layout change — the
 /// block length is positional, so an older blob read at a newer length would
 /// slide topology bytes into param slots rather than fail cleanly. Rejecting the
 /// old version is what makes that impossible.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.

@@ -19,6 +19,7 @@ Pre-chorus phaser. Four cascaded all-pass stages with an LFO sweeping the centre
 | Phaser Depth | 0–1 | 0.7 | linear | Sweep range |
 | Phaser FB | −0.9 to +0.9 | 0 | linear | Feedback (negative inverts) |
 | Phaser Mix | 0–1 | 0.5 | linear | Dry/wet |
+| Phaser Stereo | 0–180 | 180 | ° | L/R sweep offset — 180° anti-phase (widest), 0° both channels in lockstep |
 
 ## Chorus
 
@@ -46,6 +47,7 @@ Stereo delay with feedback.
 | Delay FB | 0–0.95 | 0.4 | linear | Feedback amount |
 | Delay Mix | 0–1 | 0.25 | linear | Dry/wet |
 | Delay Sync | Off / On | Off | bool | Host-tempo sync (planned; not yet routed) |
+| Ping-Pong | Off / On | On | bool | Feedback crossfeeds L↔R; off keeps each side's feedback on its own channel |
 
 ## Reverb
 

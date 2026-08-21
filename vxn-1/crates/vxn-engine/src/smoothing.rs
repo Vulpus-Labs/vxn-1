@@ -222,6 +222,10 @@ fn global_glide(g: GlobalParam) -> Glide {
         | GlobalParam::PhaserDepth
         | GlobalParam::PhaserFB
         | GlobalParam::PhaserMix
+        // Stereo glides for the same reason the other phaser knobs do: a
+        // stepped offset would jump the R cascade's sweep position at a block
+        // boundary. PingPong can't glide (it's a bool) and snaps.
+        | GlobalParam::PhaserStereo
         | GlobalParam::ChorusDepth
         | GlobalParam::ChorusMix
         | GlobalParam::DelayFeedback

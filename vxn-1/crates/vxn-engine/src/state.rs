@@ -29,7 +29,10 @@ use std::io::{self, Read, Write};
 /// Format magic; first four bytes of every state blob.
 pub const MAGIC: [u8; 4] = *b"VXN1";
 /// Format version. Bump on any layout change (no migration pre-release).
-pub const VERSION: u32 = 1;
+/// `2` adds the two FX-stereo globals — `phaser_stereo` and `delay_pingpong`
+/// (0278) — which lengthen the global block. Must track
+/// [`vxn_app::state::VERSION`]: the two codecs write the same bytes.
+pub const VERSION: u32 = 2;
 
 /// Everything that persists: the full parameter set plus the shared state that
 /// is *not* a CLAP parameter.

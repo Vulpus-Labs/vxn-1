@@ -1193,9 +1193,10 @@ html, body {
 .row-global-1 .panel[data-name="Dynamics"] { flex-grow: 1.35; }
 .row-global-1 .panel[data-name="Master"]   { flex-grow: 1; }
 
-/* Four faders vs three: let the wider sections take proportionally more so
-   every fader column ends up the same width across the row. */
-.row-global-2 .panel[data-name="Phaser"] { flex-grow: 1.15; }
+/* Five / four / three faders: let the wider sections take proportionally more
+   so every fader column ends up the same width across the row. The weights
+   follow `0.15 + 0.25·faders` — Phaser carries five since Stereo joined it. */
+.row-global-2 .panel[data-name="Phaser"] { flex-grow: 1.4; }
 .row-global-2 .panel[data-name="Chorus"] { flex-grow: 0.9; }
 .row-global-2 .panel[data-name="Delay"]  { flex-grow: 0.9; }
 .row-global-2 .panel[data-name="Reverb"] { flex-grow: 1.15; }

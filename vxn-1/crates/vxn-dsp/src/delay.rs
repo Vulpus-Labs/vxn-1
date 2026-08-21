@@ -63,7 +63,8 @@ impl DelayLine {
 }
 
 /// Stereo feedback delay with a one-pole HF damping in the feedback path and a
-/// dry/wet mix. Feedback always cross-feeds (ping-pong) between channels.
+/// dry/wet mix. Feedback either cross-feeds between the channels (ping-pong —
+/// the historical, and still default, behaviour) or stays on its own side.
 #[derive(Clone)]
 pub struct StereoDelay {
     sample_rate: f32,
@@ -84,6 +85,10 @@ pub struct StereoDelay {
     feedback: f32,
     damping: f32,
     mix: f32,
+    /// Feedback routing. `true` bounces each line's feedback into the *other*
+    /// channel (ping-pong); `false` keeps it on its own. Input routing is
+    /// unaffected either way — dry L always enters the L line.
+    crossfeed: bool,
 }
 
 impl StereoDelay {
@@ -103,6 +108,7 @@ impl StereoDelay {
             feedback: 0.4,
             damping: 0.3,
             mix: 0.25,
+            crossfeed: true,
         }
     }
 
@@ -118,7 +124,10 @@ impl StereoDelay {
     }
 
     /// Set parameters for the next control block. `time_l/time_r` in seconds,
-    /// `feedback`/`mix`/`damping` in `[0, 1]`.
+    /// `feedback`/`mix`/`damping` in `[0, 1]`. `crossfeed` selects ping-pong
+    /// (`true`) or per-channel (`false`) feedback routing; it is a stepped
+    /// block-rate switch — a mid-tail flip changes where the *next* repeat
+    /// lands, it does not re-route what is already in the lines.
     pub fn set_params(
         &mut self,
         time_l: f32,
@@ -126,6 +135,7 @@ impl StereoDelay {
         feedback: f32,
         damping: f32,
         mix: f32,
+        crossfeed: bool,
     ) {
         // Clamp to the buffer's usable span (its `read` clamps the same way).
         // A tempo-synced time at a slow subdivision/tempo can exceed capacity;
@@ -136,6 +146,7 @@ impl StereoDelay {
         self.feedback = feedback.clamp(0.0, 0.99);
         self.damping = damping.clamp(0.0, 1.0);
         self.mix = mix.clamp(0.0, 1.0);
+        self.crossfeed = crossfeed;
     }
 
     /// Process one stereo sample.
@@ -156,8 +167,13 @@ impl StereoDelay {
         let fb_l = self.fb_lp_l * self.feedback;
         let fb_r = self.fb_lp_r * self.feedback;
 
-        self.left.write(in_l + fb_r);
-        self.right.write(in_r + fb_l);
+        if self.crossfeed {
+            self.left.write(in_l + fb_r);
+            self.right.write(in_r + fb_l);
+        } else {
+            self.left.write(in_l + fb_l);
+            self.right.write(in_r + fb_r);
+        }
 
         // Equal-power crossfade: the delayed wet is decorrelated from dry, so
         // sqrt gains hold total power constant across the sweep (linear gains
@@ -188,7 +204,7 @@ mod tests {
     fn stereo_delay_decays_and_is_finite() {
         let sr = 48_000.0;
         let mut d = StereoDelay::new(sr, 2.0);
-        d.set_params(0.01, 0.01, 0.5, 0.3, 1.0);
+        d.set_params(0.01, 0.01, 0.5, 0.3, 1.0, true);
         let mut peak = 0.0f32;
         for i in 0..sr as usize {
             let x = if i == 0 { 1.0 } else { 0.0 };
@@ -205,7 +221,7 @@ mod tests {
         let mut d = StereoDelay::new(sr, 2.0);
         // Ask for 60 s (e.g. 1/1 at a very slow synced tempo) — far past the
         // 2 s buffer. It must clamp to the line's usable span, not wrap.
-        d.set_params(60.0, 60.0, 0.5, 0.3, 1.0);
+        d.set_params(60.0, 60.0, 0.5, 0.3, 1.0, true);
         let max = (d.left.capacity() - 2) as f32;
         assert!(
             d.target_samples_l <= max,
@@ -243,7 +259,7 @@ mod tests {
         // One run; `snap` forces the pointer to its target each block.
         let run = |snap: bool| -> f32 {
             let mut d = StereoDelay::new(sr, 2.0);
-            d.set_params(0.30, 0.30, 0.0, 0.0, 1.0); // wet-only, no feedback
+            d.set_params(0.30, 0.30, 0.0, 0.0, 1.0, true); // wet-only, no feedback
             d.clear();
             let mut n = 0usize;
             // Prime the line.
@@ -259,7 +275,7 @@ mod tests {
             n += 1;
             for b in 0..blocks {
                 let t = 0.30 + (0.10 - 0.30) * (b as f32 / blocks as f32);
-                d.set_params(t, t, 0.0, 0.0, 1.0);
+                d.set_params(t, t, 0.0, 0.0, 1.0, true);
                 if snap {
                     d.delay_samples_l = d.target_samples_l;
                     d.delay_samples_r = d.target_samples_r;
@@ -281,5 +297,38 @@ mod tests {
             slewed < 0.5 * snapped,
             "DelayTime slew not smoothing the sweep: slewed {slewed} vs snapped {snapped}"
         );
+    }
+
+    #[test]
+    fn crossfeed_off_keeps_feedback_on_its_own_side() {
+        // L-only impulse, wet-only, heavy feedback. With crossfeed off the R
+        // line never sees a non-zero input, so R output must stay exact zero
+        // across several delay periods; with it on, the first repeat lands on R.
+        let sr = 48_000.0;
+        let run = |crossfeed: bool| -> (f32, f32) {
+            let mut d = StereoDelay::new(sr, 2.0);
+            d.set_params(0.01, 0.01, 0.7, 0.0, 1.0, crossfeed);
+            d.clear();
+            let (mut peak_l, mut peak_r) = (0.0f32, 0.0f32);
+            for i in 0..(sr as usize / 10) {
+                let x = if i == 0 { 1.0 } else { 0.0 };
+                let (l, r) = d.process(x, 0.0);
+                assert!(l.is_finite() && r.is_finite());
+                // Skip the dry impulse itself; only the repeats matter.
+                if i > 0 {
+                    peak_l = peak_l.max(l.abs());
+                    peak_r = peak_r.max(r.abs());
+                }
+            }
+            (peak_l, peak_r)
+        };
+
+        let (straight_l, straight_r) = run(false);
+        assert!(straight_l > 0.1, "L repeats missing: {straight_l}");
+        assert_eq!(straight_r, 0.0, "R must stay silent with crossfeed off");
+
+        let (ping_l, ping_r) = run(true);
+        assert!(ping_l > 0.1, "L repeats missing: {ping_l}");
+        assert!(ping_r > 0.1, "crossfeed should bounce repeats onto R: {ping_r}");
     }
 }

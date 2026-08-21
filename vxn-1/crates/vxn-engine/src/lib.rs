@@ -235,6 +235,8 @@ impl MasterFx {
             g.get(GlobalParam::PhaserDepth),
             g.get(GlobalParam::PhaserFB),
             g.get(GlobalParam::PhaserMix),
+            // Degrees on the faceplate, fraction of a half-cycle in the kernel.
+            g.get(GlobalParam::PhaserStereo) / 180.0,
         );
         self.chorus.set_params(
             g.get(GlobalParam::ChorusRate),
@@ -252,6 +254,7 @@ impl MasterFx {
             g.get(GlobalParam::DelayFeedback),
             0.3,
             g.get(GlobalParam::DelayMix),
+            g.bool(GlobalParam::DelayPingPong),
         );
         // Reverb (FDN): four direct knobs — size, decay, damp, mix. All come
         // through the smoother. `on` held true — the outer bypass fade owns it.

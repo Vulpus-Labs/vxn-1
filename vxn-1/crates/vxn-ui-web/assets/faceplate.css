@@ -492,7 +492,7 @@ html, body {
 .panel[data-name="FX"] .fx-pane {
   display: none;
   flex: 1 1 auto;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   grid-template-rows: 1fr 22px;
   column-gap: 6px;
   row-gap: 2px;
@@ -515,11 +515,20 @@ html, body {
 .panel[data-name="FX"][data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
 
 /* Mix always rides the rightmost column so the Mix fader sits in the
-   same x-slot across all four tabs (chorus/delay have one gap before
-   it; phaser/reverb fill the gap with FB/Damp). */
-.panel[data-name="FX"] .fx-pane-chorus > [data-param="chorus_mix"],
-.panel[data-name="FX"] .fx-pane-delay  > [data-param="delay_mix"] {
-  grid-column: 4;
+   same x-slot across all four tabs. The grid is five wide because the
+   phaser fills every column (Rate / Depth / FB / Stereo / Mix); the
+   other tabs leave the gaps before Mix empty. */
+.panel[data-name="FX"] .fx-pane > [data-param$="_mix"] {
+  grid-column: 5;
+}
+
+/* Ping-Pong rides row 2 under Mix — the delay's other routing switch,
+   drawn the same way as Sync. */
+.panel[data-name="FX"] .fx-pane-delay > [data-param="delay_pingpong"] {
+  grid-row: 2;
+  grid-column: 5;
+  justify-self: center;
+  align-self: start;
 }
 
 /* Delay Sync rides row 2, column 1 — directly below the Time fader,

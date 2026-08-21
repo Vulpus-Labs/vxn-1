@@ -276,6 +276,7 @@ pub enum GlobalParam {
     PhaserDepth,
     PhaserFB,
     PhaserMix,
+    PhaserStereo,
     // Chorus
     ChorusOn,
     ChorusRate,
@@ -287,6 +288,7 @@ pub enum GlobalParam {
     DelayFeedback,
     DelayMix,
     DelaySync,
+    DelayPingPong,
     // Reverb (FDN)
     ReverbOn,
     ReverbSize,
@@ -812,6 +814,18 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
         Taper::Linear,
     ),
     f("phaser_mix", "Phaser Mix", 0.0, 1.0, 0.5, "", Taper::Linear),
+    // L/R sweep offset. 180° is the anti-phase sweep the phaser was pinned to
+    // before this became a control, so it is the default: existing patches
+    // sound unchanged. 0° sweeps both cascades in lockstep (near-mono).
+    f(
+        "phaser_stereo",
+        "Phaser Stereo",
+        0.0,
+        180.0,
+        180.0,
+        "°",
+        Taper::Linear,
+    ),
     // Chorus
     b("chorus_on", "Chorus", 1.0),
     f(
@@ -855,6 +869,10 @@ pub static GLOBAL_PARAMS: [ParamDesc; GlobalParam::COUNT] = [
     ),
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
     b("delay_sync", "Delay Sync", 0.0),
+    // Feedback crossfeed. On is how VXN1's delay has always run, so it stays
+    // the default and no existing patch changes; off keeps each line's
+    // feedback on its own side.
+    b("delay_pingpong", "Ping-Pong", 1.0),
     // Reverb (FDN)
     b("reverb_on", "Reverb", 0.0),
     f("reverb_size", "Reverb Size", 0.0, 1.0, 0.5, "", Taper::Linear),

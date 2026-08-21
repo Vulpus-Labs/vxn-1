@@ -162,6 +162,7 @@ Per-layer parameters are exposed twice to the host — once for Upper, once for 
 | Phaser Depth | 0–1 | 0.7 | linear |
 | Phaser FB | −0.9 to +0.9 | 0 | linear |
 | Phaser Mix | 0–1 | 0.5 | linear |
+| Phaser Stereo | 0–180 | 180 | ° |
 
 ## Global — Chorus
 
@@ -181,6 +182,7 @@ Per-layer parameters are exposed twice to the host — once for Upper, once for 
 | Delay FB | 0–0.95 | 0.4 | linear |
 | Delay Mix | 0–1 | 0.25 | linear |
 | Delay Sync | Off / On | Off | bool |
+| Ping-Pong | Off / On | On | bool |
 
 ## Global — Reverb
 

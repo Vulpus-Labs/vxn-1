@@ -1294,11 +1294,11 @@ mod tests {
         //   Row 2: Env1 4, Env2 4, VCA 1, Filter 4, FilterMod 5 (+ KeyTrk) = 18
         //   Row 3: PitchMod 2, PwmMod 2, CrossMod 1, ModWheel 4, Bend 1      = 10
         //   Row 4: Voice 1 (Glide), Master 3 (Tune/Volume/Drift),
-        //          FX → Phaser 4 (Rate/Depth/FB/Mix),
+        //          FX → Phaser 5 (Rate/Depth/FB/Mix/Stereo),
         //          FX → Chorus 3 (Rate/Depth/Mix),
         //          FX → Delay 3 (Time/FB/Mix),
-        //          FX → Reverb 4 (Size/Decay/Damp/Mix)                       = 18
-        //   Total = 61.
+        //          FX → Reverb 4 (Size/Decay/Damp/Mix)                       = 19
+        //   Total = 62.
         // Waves: 4 (LFO 1/2 Shape, Osc 1/2 Wave).
         // Switches:
         //   Row 1: 4 (LfoSync, Lfo2Sync, Lfo1FreeRun, NoiseColor)
@@ -1307,9 +1307,9 @@ mod tests {
         //          lives in Filter Mod now); CutoffTuned added in the
         //          Filter panel strip.
         //   Row 3: 2 (PitchLfoModOnly, PitchEnvModOnly)
-        //   Row 4: 3 (Oversample as multi-toggle row, LimiterOn,
-        //            DelaySync)
-        //   Total = 14.
+        //   Row 4: 4 (Oversample as multi-toggle row, LimiterOn,
+        //            DelaySync, DelayPingPong)
+        //   Total = 15.
         // Button groups:
         //   Row 2: 2 (AmpLfoSrc, FilterMode)
         //   Row 3: 5 (Pitch/PWM LFO+Env sources, CrossModType)
@@ -1325,8 +1325,8 @@ mod tests {
         // bundles into the same assembled string.
         assert_eq!(
             assembled().matches(r#" data-control="fader""#).count(),
-            63,
-            "expected 63 fader cells across all four rows",
+            64,
+            "expected 64 fader cells across all four rows",
         );
         assert_eq!(
             assembled().matches(r#" data-control="wave""#).count(),
@@ -1335,8 +1335,8 @@ mod tests {
         );
         assert_eq!(
             assembled().matches(r#" data-control="switch""#).count(),
-            14,
-            "expected 14 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
+            15,
+            "expected 15 switch cells (Row 1 + Row 2 + Row 3 + Row 4)",
         );
         assert_eq!(
             assembled().matches(r#" data-control="buttongroup""#).count(),
