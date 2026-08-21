@@ -30,8 +30,8 @@ pub const N_OPS: usize = 6;
 pub const N_PER_OP: usize = 22;
 pub const N_PER_PATCH_REST: usize = 37;
 pub const N_PER_PATCH: usize = N_OPS * N_PER_OP + N_PER_PATCH_REST; // 169
-pub const N_PATCH_LEVEL: usize = 39; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 8 filter + 1 limiter + 1 HP + 5 phaser + 8 dynamics
-pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 208
+pub const N_PATCH_LEVEL: usize = 40; // 3 LFO1 + 6 delay + 5 reverb + 2 master + 8 filter + 1 limiter + 1 HP + 6 phaser + 8 dynamics
+pub const TOTAL_PARAMS: usize = N_PER_PATCH + N_PATCH_LEVEL; // 209
 
 /// Start of the patch-level block in the flat CLAP id space.
 pub const PATCH_BASE: usize = N_PER_PATCH;
@@ -535,6 +535,10 @@ const PATCH: [ParamDesc; N_PATCH_LEVEL] = [
     fl("phaser-depth", "Phaser Depth", 0.0, 1.0, 0.6, ""),
     fl("phaser-feedback", "Phaser FB", -0.9, 0.9, 0.3, ""),
     fl("phaser-mix", "Phaser Mix", 0.0, 1.0, 0.5, ""),
+    // L/R sweep offset (0280). 180° is the anti-phase sweep the kernel was
+    // pinned to, so it is the default and existing patches are unchanged; 0°
+    // sweeps both cascades in lockstep (near-mono).
+    fl("phaser-spread", "Phaser Stereo", 0.0, 180.0, 180.0, "°"),
     // Stereo feed-forward peak comp → tanh saturator, host-automation only —
     // NOT a mod-matrix dest. Off by default; sits first in the audio bus.
     bl("dyn-on", "Dyn On", false),
@@ -591,7 +595,8 @@ pub(crate) const OFF_FILTER: usize = 16;
 pub(crate) const OFF_LIMITER: usize = 24;
 pub(crate) const OFF_HP: usize = 25;
 pub(crate) const OFF_PHASER: usize = 26;
-pub(crate) const OFF_DYNAMICS: usize = 31;
+pub(crate) const N_PHASER_PARAMS: usize = 6;
+pub(crate) const OFF_DYNAMICS: usize = 32;
 pub(crate) const N_DYNAMICS_PARAMS: usize = 8;
 
 /// Human-readable module path for the host's automation tree. `/`-separated:
@@ -666,7 +671,7 @@ fn module_for_patch(off: usize) -> &'static str {
     } else if off == OFF_HP {
         // A pre-filter tone-shaping stage; its own section in the host tree.
         "Global / HP"
-    } else if off >= OFF_PHASER && off < OFF_PHASER + 5 {
+    } else if off >= OFF_PHASER && off < OFF_PHASER + N_PHASER_PARAMS {
         "Global / Phaser"
     } else if off >= OFF_DYNAMICS && off < OFF_DYNAMICS + N_DYNAMICS_PARAMS {
         "Global / Dynamics"
@@ -739,7 +744,7 @@ mod tests {
 
     #[test]
     fn total_count_matches_layout() {
-        assert_eq!(TOTAL_PARAMS, 208);
+        assert_eq!(TOTAL_PARAMS, 209);
         assert_eq!(PARAMS.len(), TOTAL_PARAMS);
     }
 
@@ -846,28 +851,29 @@ mod tests {
     #[test]
     fn filter_section_is_at_table_tail() {
         // The 8-param Filter section sits after Master, then `limiter-on`,
-        // `hp-cutoff`, the 5-param Phaser block, and the 8-param Dynamics block
+        // `hp-cutoff`, the 6-param Phaser block, and the 8-param Dynamics block
         // are each at the tail of the flat space.
         let tune = id_of("master-tune").expect("master-tune");
         let vol = id_of("master-volume").expect("master-volume");
-        assert_eq!(tune, TOTAL_PARAMS - 25);
-        assert_eq!(vol, TOTAL_PARAMS - 24);
-        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 23));
-        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 22));
-        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 21));
-        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 20));
-        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 19));
-        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 18));
+        assert_eq!(tune, TOTAL_PARAMS - 26);
+        assert_eq!(vol, TOTAL_PARAMS - 25);
+        assert_eq!(id_of("filter-enable"), Some(TOTAL_PARAMS - 24));
+        assert_eq!(id_of("filter-cutoff"), Some(TOTAL_PARAMS - 23));
+        assert_eq!(id_of("filter-resonance"), Some(TOTAL_PARAMS - 22));
+        assert_eq!(id_of("filter-mode"), Some(TOTAL_PARAMS - 21));
+        assert_eq!(id_of("filter-slope"), Some(TOTAL_PARAMS - 20));
+        assert_eq!(id_of("filter-drive"), Some(TOTAL_PARAMS - 19));
         assert_eq!(id_of("filter-oversample"), None);
-        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 17));
-        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 16));
-        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 15));
-        assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 14));
-        assert_eq!(id_of("phaser-on"), Some(TOTAL_PARAMS - 13));
-        assert_eq!(id_of("phaser-rate"), Some(TOTAL_PARAMS - 12));
-        assert_eq!(id_of("phaser-depth"), Some(TOTAL_PARAMS - 11));
-        assert_eq!(id_of("phaser-feedback"), Some(TOTAL_PARAMS - 10));
-        assert_eq!(id_of("phaser-mix"), Some(TOTAL_PARAMS - 9));
+        assert_eq!(id_of("filter-keytrack"), Some(TOTAL_PARAMS - 18));
+        assert_eq!(id_of("filter-cutoff-tuned"), Some(TOTAL_PARAMS - 17));
+        assert_eq!(id_of("limiter-on"), Some(TOTAL_PARAMS - 16));
+        assert_eq!(id_of("hp-cutoff"), Some(TOTAL_PARAMS - 15));
+        assert_eq!(id_of("phaser-on"), Some(TOTAL_PARAMS - 14));
+        assert_eq!(id_of("phaser-rate"), Some(TOTAL_PARAMS - 13));
+        assert_eq!(id_of("phaser-depth"), Some(TOTAL_PARAMS - 12));
+        assert_eq!(id_of("phaser-feedback"), Some(TOTAL_PARAMS - 11));
+        assert_eq!(id_of("phaser-mix"), Some(TOTAL_PARAMS - 10));
+        assert_eq!(id_of("phaser-spread"), Some(TOTAL_PARAMS - 9));
         assert_eq!(id_of("dyn-on"), Some(TOTAL_PARAMS - 8));
         assert_eq!(id_of("dyn-threshold"), Some(TOTAL_PARAMS - 7));
         assert_eq!(id_of("dyn-ratio"), Some(TOTAL_PARAMS - 6));

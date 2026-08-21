@@ -812,14 +812,17 @@ html, body {
 }
 /* Panes: only the one matching `data-active-tab` is shown. */
 .fx-panes { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
-/* Panes are a fixed 4-column grid so each fader's horizontal slot is the same
+/* Panes are a fixed 5-column grid so each fader's horizontal slot is the same
    across tabs — switching tab never shifts a slider sideways (mirrors VXN-1's
-   FX pane grid). Mix always rides column 4; delay's Time+Sync wrapper holds
-   column 1, so Time lines up with Rate / Size. */
+   FX pane grid). Five wide because the phaser fills every column (Rate /
+   Depth / FB / Stereo / Mix); the other tabs leave the gaps before Mix empty.
+   Mix always rides column 5; delay's Time+Sync wrapper holds column 1, so
+   Time lines up with Rate / Size, and its Mix+Ping-Pong wrapper takes the
+   Mix column. */
 .fx-pane {
   display: none;
   flex: 1 1 auto;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   grid-template-rows: 1fr;
   column-gap: 6px;
   min-width: 0;
@@ -829,8 +832,9 @@ html, body {
 .fx-panel[data-active-tab="phaser"] .fx-pane-phaser,
 .fx-panel[data-active-tab="delay"] .fx-pane-delay,
 .fx-panel[data-active-tab="reverb"] .fx-pane-reverb { display: grid; }
-.fx-pane > [data-vxn-param$="-mix"] { grid-column: 4; }
-.fx-pane-delay > .fader-with-toggle { grid-column: 1; }
+.fx-pane > [data-vxn-param$="-mix"] { grid-column: 5; }
+.fx-pane-delay > .fwt-time { grid-column: 1; }
+.fx-pane-delay > .fwt-mix { grid-column: 5; }
 /* Dynamics: six small rotary dials (threshold / ratio / attack / release /
    makeup / drive) packed into a 3-column dial grid on the left, and the
    mix fader spanning column 4 (matches the rightmost-mix convention from

@@ -411,9 +411,16 @@
                 <div class="fader-thumb"></div>
               </div>
             </div>
+            <div class="fader" data-vxn-param="phaser-spread">
+              <div class="fader-label">Stereo</div>
+              <div class="fader-track">
+                <div class="fader-track-fill"></div>
+                <div class="fader-thumb"></div>
+              </div>
+            </div>
           </div>
           <div class="fx-pane fx-pane-delay">
-            <div class="fader-with-toggle">
+            <div class="fader-with-toggle fwt-time">
               <div class="fader" data-vxn-param="delay-time">
                 <div class="fader-label">Time</div>
                 <div class="fader-track">
@@ -430,12 +437,15 @@
                 <div class="fader-thumb"></div>
               </div>
             </div>
-            <div class="fader" data-vxn-param="delay-mix">
-              <div class="fader-label">Mix</div>
-              <div class="fader-track">
-                <div class="fader-track-fill"></div>
-                <div class="fader-thumb"></div>
+            <div class="fader-with-toggle fwt-mix">
+              <div class="fader" data-vxn-param="delay-mix">
+                <div class="fader-label">Mix</div>
+                <div class="fader-track">
+                  <div class="fader-track-fill"></div>
+                  <div class="fader-thumb"></div>
+                </div>
               </div>
+              <button class="bgrp-toggle" data-vxn-param="delay-pingpong">Ping-Pong</button>
             </div>
           </div>
           <div class="fx-pane fx-pane-reverb">

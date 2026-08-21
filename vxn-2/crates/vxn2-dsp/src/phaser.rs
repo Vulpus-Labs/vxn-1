@@ -1,13 +1,13 @@
 //! Stereo allpass phaser. Self-contained DSP.
 //!
 //! Two [`PhaserChannel`] cascades share one triangle LFO; the right channel
-//! reads the LFO at a fixed anti-phase offset (the headline swirling stereo
-//! motion). The macro surface (rate, depth, center, feedback, mix, spread,
-//! width, jitter, stages) is collapsed to **Rate / Depth / FB / Mix**;
-//! everything else is pinned:
+//! reads the LFO at an offset of `0.5 · spread` cycles, so `spread = 1.0` is
+//! the anti-phase mode (the headline swirling stereo motion) and `spread = 0`
+//! sweeps both cascades together. The macro surface (rate, depth, center,
+//! feedback, mix, spread, width, jitter, stages) is collapsed to
+//! **Rate / Depth / FB / Mix / Spread**; everything else is pinned:
 //!
 //! - `STAGES = 4` (4 allpass per channel → 2 notches)
-//! - `SPREAD = 1.0` (anti-phase L/R sweep)
 //! - `WIDTH = 1.0` (no mid/side scaling — drops the M/S transform entirely)
 //! - `JITTER = 0.0` (deterministic; analog drift handled at master level)
 //! - `CENTER_HZ = 600.0`
@@ -241,6 +241,9 @@ pub struct PhaserParams {
     pub feedback: f32,
     /// Dry/wet, 0..1.
     pub mix: f32,
+    /// L/R LFO sweep offset as a fraction of half a cycle, 0..1. 1.0 is the
+    /// anti-phase sweep the phaser was pinned to before this was a control.
+    pub spread: f32,
 }
 
 impl Default for PhaserParams {
@@ -251,6 +254,7 @@ impl Default for PhaserParams {
             depth: 0.6,
             feedback: 0.3,
             mix: 0.5,
+            spread: 1.0,
         }
     }
 }
@@ -271,6 +275,9 @@ pub struct StereoPhaser {
     rate_hz: f32,
     depth: f32,
     feedback: f32,
+    /// L/R LFO sweep offset as a fraction of half a cycle. 1.0 = anti-phase
+    /// (the historical pinned behaviour), 0.0 = both cascades in lockstep.
+    spread: f32,
     /// Smoothed dry/wet. Targets the param mix; ticked per sample so knob
     /// sweeps don't zipper and a switch-on fades the wet up from 0.
     mix: Smoothed,
@@ -301,6 +308,7 @@ impl StereoPhaser {
             rate_hz: 0.5,
             depth: 0.7,
             feedback: 0.0,
+            spread: 1.0,
             mix: Smoothed::new(0.5, MIX_SMOOTH_MS, sample_rate),
             mix_primed: false,
             enabled: true,
@@ -337,11 +345,23 @@ impl StereoPhaser {
     }
 
     /// Set parameters for the next control block. `rate_hz` 0.05..10 Hz,
-    /// `depth` and `mix` in `[0, 1]`, `feedback` in `[-0.9, 0.9]`.
-    pub fn set_params(&mut self, rate_hz: f32, depth: f32, feedback: f32, mix: f32) {
+    /// `depth`, `mix` and `spread` in `[0, 1]`, `feedback` in `[-0.9, 0.9]`.
+    /// `spread` scales the R channel's LFO read offset: 1.0 anti-phase, 0.0
+    /// lockstep. Stepped per block, not smoothed — the offset feeds a triangle
+    /// lookup, not a gain, so a step re-aims the sweep rather than
+    /// discontinuing a level.
+    pub fn set_params(
+        &mut self,
+        rate_hz: f32,
+        depth: f32,
+        feedback: f32,
+        mix: f32,
+        spread: f32,
+    ) {
         self.rate_hz = rate_hz.clamp(0.05, 10.0);
         self.depth = depth.clamp(0.0, 1.0);
         self.feedback = feedback.clamp(-FB_MAX, FB_MAX);
+        self.spread = spread.clamp(0.0, 1.0);
         // Target the param mix while enabled, 0 while bypassed — so the smoother
         // fades both directions across the on/off edge. The first call snaps
         // (no startup fade on a patch that loads with the phaser already set).
@@ -359,7 +379,7 @@ impl StereoPhaser {
     /// on/off gate) into the DSP. Mirrors `StereoDelay::set_params`.
     pub fn set_from(&mut self, p: &PhaserParams) {
         self.set_enabled(p.on);
-        self.set_params(p.rate_hz, p.depth, p.feedback, p.mix);
+        self.set_params(p.rate_hz, p.depth, p.feedback, p.mix, p.spread);
     }
 
     /// One stereo sample in / out. The L cascade reads the LFO at phase, the
@@ -372,7 +392,7 @@ impl StereoPhaser {
         if !self.enabled && self.mix.current() == 0.0 {
             return (in_l, in_r);
         }
-        let (tri_l, tri_r) = self.lfo.tick_offset(0.5);
+        let (tri_l, tri_r) = self.lfo.tick_offset(0.5 * self.spread);
 
         if self.control_counter == 0 {
             let fc_l = swept_fc(CENTER_HZ, self.depth, tri_l, self.nyquist_guard);
@@ -419,9 +439,10 @@ impl StereoPhaser {
         let depth = self.depth;
         let feedback = self.feedback;
         let nyq = self.nyquist_guard;
+        let offset = 0.5 * self.spread;
 
         for i in 0..n {
-            let (tri_l, tri_r) = self.lfo.tick_offset(0.5);
+            let (tri_l, tri_r) = self.lfo.tick_offset(offset);
             if self.control_counter == 0 {
                 let fc_l = swept_fc(CENTER_HZ, depth, tri_l, nyq);
                 let fc_r = swept_fc(CENTER_HZ, depth, tri_r, nyq);
@@ -461,7 +482,7 @@ mod tests {
     #[test]
     fn silent_input_stays_silent() {
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.7, 1.0, 0.8, 1.0);
+        ph.set_params(0.7, 1.0, 0.8, 1.0, 1.0);
         for _ in 0..((SR * 0.2) as usize) {
             let (l, r) = ph.process(0.0, 0.0);
             assert!(l.is_finite() && r.is_finite());
@@ -472,7 +493,7 @@ mod tests {
     #[test]
     fn mix_zero_is_identity() {
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.7, 0.9, 0.6, 0.0);
+        ph.set_params(0.7, 0.9, 0.6, 0.0, 1.0);
         for i in 0..1_000 {
             let x = 0.4 * fast_sine_01((i as f32 * 220.0 / SR).fract());
             let (l, r) = ph.process(x, -x);
@@ -488,7 +509,7 @@ mod tests {
         // passthrough from sample 0 — no startup fade, no buffer work.
         let mut ph = StereoPhaser::new(SR);
         ph.set_enabled(false);
-        ph.set_params(0.7, 0.9, 0.8, 0.9);
+        ph.set_params(0.7, 0.9, 0.8, 0.9, 1.0);
         test_util::assert_bit_exact_passthrough(|x, y| ph.process(x, y), 1_000);
     }
 
@@ -497,7 +518,7 @@ mod tests {
         // Switching off mid-render fades the wet down (no click) and only then
         // reverts to a bit-exact passthrough.
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.5, 0.9, 0.8, 1.0); // full wet
+        ph.set_params(0.5, 0.9, 0.8, 1.0, 1.0); // full wet
         for _ in 0..256 {
             ph.process(0.3, 0.3);
         }
@@ -520,7 +541,7 @@ mod tests {
     #[test]
     fn stable_at_high_feedback() {
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.7, 1.0, 0.85, 0.5);
+        ph.set_params(0.7, 1.0, 0.85, 0.5, 1.0);
         for i in 0..((SR * 10.0) as usize) {
             let t = i as f32 / SR;
             let x = 0.3 * (TAU * 220.0 * t).sin();
@@ -537,8 +558,8 @@ mod tests {
         // configurations must produce different outputs for the same input.
         let mut a = StereoPhaser::new(SR);
         let mut b = StereoPhaser::new(SR);
-        a.set_params(1.5, 0.0, 0.3, 0.7);
-        b.set_params(1.5, 1.0, 0.3, 0.7);
+        a.set_params(1.5, 0.0, 0.3, 0.7, 1.0);
+        b.set_params(1.5, 1.0, 0.3, 0.7, 1.0);
         let mut diverged = false;
         for i in 0..((SR * 0.5) as usize) {
             let t = i as f32 / SR;
@@ -559,8 +580,8 @@ mod tests {
         // a mono source (l == r) they must agree sample-for-sample.
         let mut a = StereoPhaser::new(SR);
         let mut b = StereoPhaser::new(SR);
-        a.set_params(0.6, 0.7, 0.3, 0.5);
-        b.set_params(0.6, 0.7, 0.3, 0.5);
+        a.set_params(0.6, 0.7, 0.3, 0.5, 1.0);
+        b.set_params(0.6, 0.7, 0.3, 0.5, 1.0);
 
         let mut dry = [0.0f32; BLK];
         let mut bl = [0.0f32; BLK];
@@ -587,12 +608,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stereo_decorrelates_on_mono_input() {
-        // Anti-phase LFO means a mono source produces L ≠ R after a brief
-        // settle. Correlation should be well under 1.0.
+    /// L/R correlation of a mono source run through a phaser at `spread`.
+    fn mono_correlation(spread: f32) -> f32 {
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(1.0, 0.9, 0.0, 0.5);
+        ph.set_params(1.0, 0.9, 0.0, 0.5, spread);
 
         let n = (SR * 0.5) as usize;
         let settle = (SR * 0.05) as usize;
@@ -616,8 +635,29 @@ mod tests {
             dl += a * a;
             dr += b * b;
         }
-        let corr = num / (dl * dr).sqrt();
+        num / (dl * dr).sqrt()
+    }
+
+    #[test]
+    fn stereo_decorrelates_on_mono_input() {
+        // Anti-phase LFO means a mono source produces L ≠ R after a brief
+        // settle. Correlation should be well under 1.0.
+        let corr = mono_correlation(1.0);
         assert!(corr < 0.9, "L/R should decorrelate under anti-phase sweep: corr {corr}");
+    }
+
+    #[test]
+    fn spread_zero_recorrelates_channels() {
+        // spread = 0 reads both cascades off the LFO at the same phase, so a
+        // mono source stays near-mono — only the ±3 % per-stage scatter (seeded
+        // differently per channel) decorrelates it.
+        let narrow = mono_correlation(0.0);
+        let wide = mono_correlation(1.0);
+        assert!(narrow > 0.95, "spread=0 should stay near-mono: corr {narrow}");
+        assert!(
+            narrow > wide + 0.05,
+            "spread should widen the image: corr {narrow} (0.0) vs {wide} (1.0)"
+        );
     }
 
     #[test]
@@ -626,7 +666,7 @@ mod tests {
         // cascade sees only zeros at its input and zero in its feedback state,
         // so it can never produce non-zero. L must produce a non-zero tail.
         let mut ph = StereoPhaser::new(SR);
-        ph.set_params(0.6, 0.7, 0.5, 0.5);
+        ph.set_params(0.6, 0.7, 0.5, 0.5, 1.0);
 
         let mut l_in = [0.0f32; BLK];
         let r_in = [0.0f32; BLK];

@@ -170,6 +170,7 @@ const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_LIMITER].id, "limiter-on"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_HP].id, "hp-cutoff"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER].id, "phaser-on"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER + 4].id, "phaser-mix"));
+const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_PHASER + 5].id, "phaser-spread"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DYNAMICS].id, "dyn-on"));
 const _: () = assert!(id_eq(PARAMS[PATCH_BASE + OFF_DYNAMICS + 7].id, "dyn-mix"));
 
@@ -1282,6 +1283,8 @@ impl EngineParams {
             depth: shared.get(pb + OFF_PHASER + 2),
             feedback: shared.get(pb + OFF_PHASER + 3),
             mix: shared.get(pb + OFF_PHASER + 4),
+            // Degrees on the faceplate, fraction of a half-cycle in the kernel.
+            spread: shared.get(pb + OFF_PHASER + 5) / 180.0,
         };
 
         // Dynamics — host-automation only. `set_from` re-clamps; the struct
