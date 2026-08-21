@@ -580,6 +580,13 @@ const fn slot(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -1.0, 1.0, 0.0, "", Taper::Linear)
 }
 
+/// Pulse-width rails (VXN1): a width outside these degenerates to silence. They
+/// bound the two PW params in [`PARAMS`] *and* the modulated width the render
+/// cooks (`bank::cooked_pw`) — a matrix route must not be able to reach a duty
+/// cycle the knob itself refuses.
+pub const PW_MIN: f32 = 0.05;
+pub const PW_MAX: f32 = 0.95;
+
 /// The flat descriptor table. Index = [`ParamId`] discriminant = CLAP id.
 /// Synthesis param ranges/defaults carry over verbatim from VXN1.
 pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
@@ -589,13 +596,13 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     f("osc1_fine", "Osc 1 Fine", -50.0, 50.0, 0.0, "ct", Taper::Linear),
     i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
     f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", Taper::Linear),
-    f("osc1_pw", "Osc 1 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
+    f("osc1_pw", "Osc 1 PW", PW_MIN, PW_MAX, 0.5, "", Taper::Linear),
     e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
     i("osc2_coarse", "Osc 2 Coarse", -7.0, 7.0, 0.0, "st"),
     f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 0.0, "ct", Taper::Linear),
     i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, -1.0, "oct"),
     f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", Taper::Linear),
-    f("osc2_pw", "Osc 2 PW", 0.05, 0.95, 0.5, "", Taper::Linear),
+    f("osc2_pw", "Osc 2 PW", PW_MIN, PW_MAX, 0.5, "", Taper::Linear),
     f("sub_level", "Sub Level", 0.0, 1.0, 0.0, "", Taper::Linear),
     e("cross_mod_type", "Cross Mod", CROSS_MOD_LABELS, 0.0),
     f("cross_mod_amount", "Cross Mod Amt", 0.0, 4.0, 0.0, "", Taper::Linear),

@@ -65,6 +65,21 @@ impl SourceId {
         }
     }
 
+    /// Index into a per-voice source table, with the sentinel folded to 0.
+    ///
+    /// The companion to [`SourceId::idx`]: reach for `idx` where the sentinel
+    /// is a real case to branch on (an empty slot), and for this where the
+    /// caller already knows it holds a real source and only wants to index.
+    /// Folding rather than panicking keeps the method `const`, so index
+    /// expressions stay compile-time constants.
+    #[inline]
+    pub const fn index(self) -> usize {
+        match self.idx() {
+            Some(i) => i,
+            None => 0,
+        }
+    }
+
     /// Decode a wire-format `u8`. Out-of-range → [`SourceId::None`] so a corrupt
     /// patch blob degrades to an inert slot rather than panicking (0203).
     #[inline]
@@ -214,6 +229,17 @@ impl DestId {
         match self {
             DestId::None => None,
             _ => Some(self as usize - 1),
+        }
+    }
+
+    /// Index into a per-voice dest accumulator, with the sentinel folded to 0.
+    /// The companion to [`DestId::idx`] — see [`SourceId::index`] for when to
+    /// reach for which.
+    #[inline]
+    pub const fn index(self) -> usize {
+        match self.idx() {
+            Some(i) => i,
+            None => 0,
         }
     }
 

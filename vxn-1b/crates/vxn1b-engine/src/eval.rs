@@ -27,7 +27,7 @@
 //! Everything here is fixed-size and branch-light (curve dispatch is per slot,
 //! not per source) — allocation-free and NEON-friendly.
 
-use crate::matrix::{Curve, DestId, MatrixTable, N_DESTS, N_SOURCES, SourceId};
+use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, N_DESTS, N_SOURCES, SourceId};
 
 /// One voice's normalised source lookup, indexed by [`SourceId::idx`].
 pub type SourceVals = [f32; N_SOURCES];
@@ -76,28 +76,19 @@ const C4_NOTE: f32 = 60.0;
 #[inline]
 pub fn eval_sources(inp: &SourceInputs) -> SourceVals {
     let mut v = [0.0_f32; N_SOURCES];
-    v[idx(SourceId::Env1)] = inp.env1;
-    v[idx(SourceId::Env2)] = inp.env2;
-    v[idx(SourceId::Lfo1)] = inp.lfo1;
-    v[idx(SourceId::Lfo2)] = inp.lfo2;
-    v[idx(SourceId::Velocity)] = inp.velocity;
+    v[SourceId::Env1.index()] = inp.env1;
+    v[SourceId::Env2.index()] = inp.env2;
+    v[SourceId::Lfo1.index()] = inp.lfo1;
+    v[SourceId::Lfo2.index()] = inp.lfo2;
+    v[SourceId::Velocity.index()] = inp.velocity;
     // Key: signed octaves relative to C4 (see DEST_GAIN / KEY_CUTOFF_UNITY_DEPTH).
-    v[idx(SourceId::Key)] = (inp.note as f32 - C4_NOTE) / 12.0;
-    v[idx(SourceId::ModWheel)] = inp.mod_wheel;
-    v[idx(SourceId::PitchWheel)] = inp.pitch_wheel;
-    v[idx(SourceId::Aftertouch)] = inp.aftertouch;
-    v[idx(SourceId::NoteRandom)] = inp.note_random;
-    v[idx(SourceId::Spread)] = inp.spread_pos;
+    v[SourceId::Key.index()] = (inp.note as f32 - C4_NOTE) / 12.0;
+    v[SourceId::ModWheel.index()] = inp.mod_wheel;
+    v[SourceId::PitchWheel.index()] = inp.pitch_wheel;
+    v[SourceId::Aftertouch.index()] = inp.aftertouch;
+    v[SourceId::NoteRandom.index()] = inp.note_random;
+    v[SourceId::Spread.index()] = inp.spread_pos;
     v
-}
-
-/// Compile-time source index (the sentinel `None` never reaches here).
-#[inline]
-const fn idx(s: SourceId) -> usize {
-    match s.idx() {
-        Some(i) => i,
-        None => 0, // unreachable for real sources; keeps this const-callable
-    }
 }
 
 /// Per-destination gain: converts the normalised `curve(source)·depth` product
@@ -131,45 +122,36 @@ const fn idx(s: SourceId) -> usize {
 /// dialable; every other dest stays linear.
 pub const DEST_GAIN: [f32; N_DESTS] = {
     let mut g = [1.0_f32; N_DESTS];
-    g[di(DestId::Pitch)] = 12.0;
-    g[di(DestId::XModSweep)] = 48.0;
-    g[di(DestId::Pwm)] = 0.5;
-    g[di(DestId::Cutoff)] = 48.0;
-    g[di(DestId::Resonance)] = 1.0;
-    g[di(DestId::HpfCutoff)] = 48.0;
-    g[di(DestId::Amp)] = 1.0;
-    g[di(DestId::CrossModAmount)] = 4.0;
+    g[DestId::Pitch.index()] = 12.0;
+    g[DestId::XModSweep.index()] = 48.0;
+    g[DestId::Pwm.index()] = 0.5;
+    g[DestId::Cutoff.index()] = 48.0;
+    g[DestId::Resonance.index()] = 1.0;
+    g[DestId::HpfCutoff.index()] = 48.0;
+    g[DestId::Amp.index()] = 1.0;
+    g[DestId::CrossModAmount.index()] = 4.0;
     // Pan's native unit *is* the normalised depth: ±1 spans the image, so a
     // route at full depth reaches hard left/right and nothing needs scaling.
-    g[di(DestId::Pan)] = 1.0;
+    g[DestId::Pan.index()] = 1.0;
     // Same unit and gain as the combined `Pwm` (0261) — the three sum per osc,
     // so a route moved from `Pwm` to `Osc1Pwm` keeps its felt depth.
-    g[di(DestId::Osc1Pwm)] = 0.5;
-    g[di(DestId::Osc2Pwm)] = 0.5;
+    g[DestId::Osc1Pwm.index()] = 0.5;
+    g[DestId::Osc2Pwm.index()] = 0.5;
     // The envelope time scales are exponential (0268): their native unit is
     // *octaves of time*, so gain 1.0 means depth 1 reaches the 2× rail and the
     // range stays symmetric about unity (−1 → 0.5×, the same musical distance).
-    g[di(DestId::Env1Scale)] = 1.0;
-    g[di(DestId::Env2Scale)] = 1.0;
+    g[DestId::Env1Scale.index()] = 1.0;
+    g[DestId::Env2Scale.index()] = 1.0;
     // LFO rate is exponential too (0269), but wants a wider reach than the
     // envelopes: two octaves either way turns a 5 Hz wobble into a 1.25 Hz sway
     // or a 20 Hz buzz, which is the range the wheel/velocity routes are for.
-    g[di(DestId::Lfo1Rate)] = 2.0;
+    g[DestId::Lfo1Rate.index()] = 2.0;
     // Sustain is an absolute `[0, 1]` level and the dest is *additive* (0270),
     // so unity gain means depth 1 spans the full range in either direction.
-    g[di(DestId::Env1Sustain)] = 1.0;
-    g[di(DestId::Env2Sustain)] = 1.0;
+    g[DestId::Env1Sustain.index()] = 1.0;
+    g[DestId::Env2Sustain.index()] = 1.0;
     g
 };
-
-/// Compile-time dest index (the sentinel `None` never reaches here).
-#[inline]
-const fn di(d: DestId) -> usize {
-    match d.idx() {
-        Some(i) => i,
-        None => 0,
-    }
-}
 
 /// Widest envelope-time excursion, in octaves of time: ±1 octave → the 0.5×
 /// .. 2.0× range of [`DestId::Env1Scale`] (0268).
@@ -210,8 +192,12 @@ pub fn lfo_rate_scale(total: f32) -> f32 {
 
 /// Shape a source value through a curve (applied to the *source*, per VXN2).
 /// `Bipolar` AC-couples a unipolar `[0, 1]` source to `[-1, 1]`.
+///
+/// `pub(crate)` because the bank's Amp factoring ([`crate::bank`]) has to fold
+/// non-linear Amp routes at their block-start value and must shape them exactly
+/// as the evaluator does — it used to carry its own copy of this match.
 #[inline]
-fn shape(curve: Curve, v: f32) -> f32 {
+pub(crate) fn shape(curve: Curve, v: f32) -> f32 {
     match curve {
         Curve::Lin => v,
         Curve::Exp => v.abs() * v,       // signed square
@@ -233,6 +219,33 @@ pub fn scale_norm(src: SourceId, v: f32) -> f32 {
     n.clamp(0.0, 1.0)
 }
 
+/// The **topology half** of a slot's gain: `cook_depth(depth) · DEST_GAIN[dest]`.
+/// Depends only on the patch, so a consumer that resolves routes once per block
+/// can hoist it out of its per-voice loop ([`crate::bank`]'s Amp factoring does).
+#[inline]
+pub(crate) fn slot_topology_gain(slot: &MatrixSlot) -> f32 {
+    slot.dest.cook_depth(slot.depth) * DEST_GAIN[slot.dest.index()]
+}
+
+/// The **per-voice half** of a slot's gain: its `scale_src` VCA resolved against
+/// this voice's sources, or `1.0` for an unscaled slot (ADR 0009).
+#[inline]
+pub(crate) fn slot_scale(slot: &MatrixSlot, sources: &SourceVals) -> f32 {
+    match slot.scale_src.idx() {
+        Some(sc) => scale_norm(slot.scale_src, sources[sc]),
+        None => 1.0,
+    }
+}
+
+/// One slot's full gain — `cook_depth(depth) · DEST_GAIN[dest] · scale_norm`.
+/// The single statement of that product: [`eval_dests`] applies it to every
+/// dest, and [`crate::bank`]'s Amp factoring applies its two halves separately,
+/// so a new taper or scale rule lands in both without being written twice.
+#[inline]
+pub(crate) fn slot_gain(slot: &MatrixSlot, sources: &SourceVals) -> f32 {
+    slot_topology_gain(slot) * slot_scale(slot, sources)
+}
+
 /// Accumulate every active slot's contribution into a per-dest total for one
 /// voice. Zeroes `out` first. Empty slots (`None` source/dest) and zero-depth
 /// slots are skipped. Curve dispatch is per slot (out of any inner loop);
@@ -248,12 +261,7 @@ pub fn eval_dests(table: &MatrixTable, sources: &SourceVals, out: &mut DestVals)
         if slot.depth == 0.0 {
             continue;
         }
-        let scale = match slot.scale_src.idx() {
-            Some(sc) => scale_norm(slot.scale_src, sources[sc]),
-            None => 1.0,
-        };
-        let gain = slot.dest.cook_depth(slot.depth) * DEST_GAIN[di] * scale;
-        out[di] += shape(slot.curve, sources[si]) * gain;
+        out[di] += shape(slot.curve, sources[si]) * slot_gain(slot, sources);
     }
 }
 
@@ -281,11 +289,11 @@ mod tests {
     #[test]
     fn key_source_is_octaves_relative_to_c4() {
         let at_c4 = eval_sources(&SourceInputs { note: 60, ..Default::default() });
-        assert_eq!(at_c4[SourceId::Key.idx().unwrap()], 0.0);
+        assert_eq!(at_c4[SourceId::Key.index()], 0.0);
         let one_oct_up = eval_sources(&SourceInputs { note: 72, ..Default::default() });
-        assert_eq!(one_oct_up[SourceId::Key.idx().unwrap()], 1.0);
+        assert_eq!(one_oct_up[SourceId::Key.index()], 1.0);
         let one_oct_down = eval_sources(&SourceInputs { note: 48, ..Default::default() });
-        assert_eq!(one_oct_down[SourceId::Key.idx().unwrap()], -1.0);
+        assert_eq!(one_oct_down[SourceId::Key.index()], -1.0);
     }
 
     #[test]
@@ -295,7 +303,7 @@ mod tests {
         let t = table(&[slot(SourceId::Lfo1, DestId::Cutoff, 0.5, Curve::Lin)]);
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Cutoff.idx().unwrap()] - 24.0).abs() < 1e-5);
+        assert!((out[DestId::Cutoff.index()] - 24.0).abs() < 1e-5);
     }
 
     #[test]
@@ -305,19 +313,19 @@ mod tests {
         // Pitch: 0.5³ · 12 st = 1.5 st — half travel is a musical vibrato/
         // detune range, not 6 st.
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 0.5, Curve::Lin)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 1.5).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] - 1.5).abs() < 1e-6);
         // Endpoints and sign survive the taper.
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Curve::Lin)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 12.0).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] - 12.0).abs() < 1e-6);
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, -1.0, Curve::Lin)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] + 12.0).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] + 12.0).abs() < 1e-6);
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, -0.5, Curve::Lin)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] + 1.5).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] + 1.5).abs() < 1e-6);
         // Every other dest is untouched: 0.5 × 48 st stays 24 st.
         for d in [DestId::XModSweep, DestId::Cutoff, DestId::HpfCutoff] {
             eval_dests(&table(&[slot(SourceId::Lfo1, d, 0.5, Curve::Lin)]), &s, &mut out);
-            let want = 0.5 * DEST_GAIN[d.idx().unwrap()];
-            assert!((out[d.idx().unwrap()] - want).abs() < 1e-5, "{d:?} should stay linear");
+            let want = 0.5 * DEST_GAIN[d.index()];
+            assert!((out[d.index()] - want).abs() < 1e-5, "{d:?} should stay linear");
         }
     }
 
@@ -330,7 +338,7 @@ mod tests {
         ]);
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Cutoff.idx().unwrap()] - 48.0).abs() < 1e-5);
+        assert!((out[DestId::Cutoff.index()] - 48.0).abs() < 1e-5);
     }
 
     #[test]
@@ -365,15 +373,15 @@ mod tests {
         let s0 = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 0.0, ..Default::default() });
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s0, &mut out);
-        assert_eq!(out[DestId::Pitch.idx().unwrap()], 0.0);
+        assert_eq!(out[DestId::Pitch.index()], 0.0);
         // Wheel at 1 → full configured depth (1.0·12 st).
         let s1 = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 1.0, ..Default::default() });
         eval_dests(&t, &s1, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 12.0).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] - 12.0).abs() < 1e-6);
         // Wheel at 0.5 → half.
         let sh = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 0.5, ..Default::default() });
         eval_dests(&t, &sh, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 6.0).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] - 6.0).abs() < 1e-6);
     }
 
     #[test]
@@ -384,7 +392,7 @@ mod tests {
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
         // 1.0(env) · 1.0(depth) · 48(gain) · 0.5(scale) = 24.
-        assert!((out[DestId::Cutoff.idx().unwrap()] - 24.0).abs() < 1e-5);
+        assert!((out[DestId::Cutoff.index()] - 24.0).abs() < 1e-5);
     }
 
     #[test]
@@ -393,14 +401,14 @@ mod tests {
         // Exp: sign(v)·v² = 0.25; ·depth1·gain12 = 3.0.
         let mut out = [0.0; N_DESTS];
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Curve::Exp)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 3.0).abs() < 1e-6);
+        assert!((out[DestId::Pitch.index()] - 3.0).abs() < 1e-6);
         // Log: √0.5 ≈ 0.7071; ·12 ≈ 8.485.
         eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Curve::Log)]), &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 0.5_f32.sqrt() * 12.0).abs() < 1e-5);
+        assert!((out[DestId::Pitch.index()] - 0.5_f32.sqrt() * 12.0).abs() < 1e-5);
         // Bipolar on a unipolar mod-wheel 0.5 → 2·0.5−1 = 0 → nothing.
         let sw = eval_sources(&SourceInputs { mod_wheel: 0.5, ..Default::default() });
         eval_dests(&table(&[slot(SourceId::ModWheel, DestId::Pitch, 1.0, Curve::Bipolar)]), &sw, &mut out);
-        assert_eq!(out[DestId::Pitch.idx().unwrap()], 0.0);
+        assert_eq!(out[DestId::Pitch.index()], 0.0);
     }
 
     #[test]
@@ -427,8 +435,8 @@ mod tests {
         let mut out = [0.0; N_DESTS];
         for d in [DestId::Env1Scale, DestId::Env2Scale] {
             eval_dests(&table(&[slot(SourceId::ModWheel, d, 1.0, Curve::Lin)]), &s, &mut out);
-            assert_eq!(out[d.idx().unwrap()], 1.0);
-            assert!((env_time_scale(out[d.idx().unwrap()]) - 2.0).abs() < 1e-6);
+            assert_eq!(out[d.index()], 1.0);
+            assert!((env_time_scale(out[d.index()]) - 2.0).abs() < 1e-6);
         }
     }
 
@@ -449,7 +457,7 @@ mod tests {
             &s,
             &mut out,
         );
-        assert!((lfo_rate_scale(out[DestId::Lfo1Rate.idx().unwrap()]) - 4.0).abs() < 1e-6);
+        assert!((lfo_rate_scale(out[DestId::Lfo1Rate.index()]) - 4.0).abs() < 1e-6);
     }
 
     #[test]
@@ -460,10 +468,10 @@ mod tests {
         let s = eval_sources(&SourceInputs { env2: 0.73, note: 84, ..Default::default() });
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Amp.idx().unwrap()] - 0.73).abs() < 1e-6);
-        assert_eq!(out[DestId::Cutoff.idx().unwrap()], 0.0, "key-track off by default");
+        assert!((out[DestId::Amp.index()] - 0.73).abs() < 1e-6);
+        assert_eq!(out[DestId::Cutoff.index()], 0.0, "key-track off by default");
         for (i, &x) in out.iter().enumerate() {
-            if i != DestId::Amp.idx().unwrap() {
+            if i != DestId::Amp.index() {
                 assert_eq!(x, 0.0);
             }
         }
@@ -479,8 +487,8 @@ mod tests {
         let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Pitch.idx().unwrap()] - 0.05).abs() < 1e-4,
-            "default vibrato should be 0.05 st, got {}", out[DestId::Pitch.idx().unwrap()]);
+        assert!((out[DestId::Pitch.index()] - 0.05).abs() < 1e-4,
+            "default vibrato should be 0.05 st, got {}", out[DestId::Pitch.index()]);
     }
 
     #[test]
@@ -492,7 +500,7 @@ mod tests {
         let one_up = eval_sources(&SourceInputs { note: 72, ..Default::default() }); // +1 oct
         let mut out = [0.0; N_DESTS];
         eval_dests(&t, &one_up, &mut out);
-        assert!((out[DestId::Cutoff.idx().unwrap()] - 12.0).abs() < 1e-5,
+        assert!((out[DestId::Cutoff.index()] - 12.0).abs() < 1e-5,
             "1 octave of key should shift cutoff 12 st");
     }
 }

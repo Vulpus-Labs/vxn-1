@@ -28,9 +28,9 @@
 //! this bank a per-lane detune (cents) plus a stack-width `level_comp`.
 //! `CrossModAmount` is live per lane (0242) — the PM kernel takes a per-lane
 //! index whenever a route is active, and the broadcast scalar otherwise, so an
-//! unrouted patch is bit-unchanged. `HpfCutoff` is still deferred (the HPF is
-//! set bank-wide) — inert at the factory default, so the parity gate is
-//! unaffected. The
+//! unrouted patch is bit-unchanged. `HpfCutoff` is live per lane too (0272), on
+//! the same rule: routed means per-lane coefficients, unrouted means the
+//! bank-wide one. The
 //! per-voice component trims landed with global drift (0218) and are likewise
 //! inert at the default `MasterDrift = 0`.
 
@@ -41,7 +41,7 @@ use vxn_dsp::{
 };
 
 use crate::eval::{SourceInputs, env_time_scale, eval_dests, eval_sources, lfo_rate_scale};
-use crate::matrix::{DestId, MatrixTable, SourceId};
+use crate::matrix::{Curve, DestId, MatrixTable, N_SLOTS, SourceId};
 use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
 use crate::render;
@@ -54,6 +54,11 @@ const HPF_OFF_HZ: f32 = 20.0;
 
 /// Fixed ring-mod diode drive (dB), as VXN1.
 const RING_DRIVE_DB: f32 = 1.0;
+
+
+/// Declick ramp applied when a released lane frees (0271). Long enough to kill
+/// the step, short enough not to read as a release stage of its own.
+const FREE_FADE_SECS: f32 = 0.008;
 
 /// Independent drift streams for osc1/osc2 (as VXN1) so the two oscillators in a
 /// voice wander independently.
@@ -249,6 +254,109 @@ struct AmpCoeffs {
     e2: f32,
 }
 
+/// One lane's block-start modulation targets — everything the block-start pass
+/// resolves and the frame loop then consumes.
+///
+/// These were eight parallel `[f32; N]` scratch arrays, written together and
+/// read together; as one record per lane the block-start pass has a shape a
+/// reader can follow, and the three `snap_*` calls a fresh note makes collapse
+/// into [`MotionSmoother::snap_all`].
+///
+/// The `_active` flags stay separate `[bool; N]` arrays rather than joining
+/// this: they feed the `any()` reductions that decide whether the per-quantum
+/// tick runs at all, so they are read across lanes, not per lane.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LaneTargets {
+    /// Un-modulated pitch of each osc in semitones — master tune, the glided
+    /// note, per-osc tuning, unison detune and drift. Constant across the block;
+    /// the smoothed `Pitch`/`XModSweep` offsets are added per quantum on top.
+    pub(crate) base1: f32,
+    pub(crate) base2: f32,
+    /// `Pitch` dest total — semitones, both oscillators.
+    pub(crate) pitch: f32,
+    /// `XModSweep` dest total — semitones, onto the mode-gated osc.
+    pub(crate) sweep: f32,
+    /// Per-oscillator PWM targets (0261): the combined `Pwm` dest summed with
+    /// each osc's own dest, so the pair is equal whenever only `Pwm` is routed.
+    pub(crate) pwm: (f32, f32),
+    /// `CrossModAmount` offset — zero outside PM mode.
+    pub(crate) xmod: f32,
+    /// `Pan` position, pre-clamped to the reachable `[-1, 1]`.
+    pub(crate) pan: f32,
+    /// The non-envelope part of the Amp coefficient — the target its per-frame
+    /// one-pole glides toward.
+    pub(crate) amp_stat: f32,
+}
+
+/// One `Amp` slot with its topology-only gain already cooked.
+#[derive(Clone, Copy)]
+struct AmpRoute {
+    source: SourceId,
+    src_idx: usize,
+    curve: Curve,
+    scale_src: SourceId,
+    /// `cook_depth(depth) · DEST_GAIN[Amp]` — see [`crate::eval::slot_topology_gain`].
+    gain: f32,
+}
+
+/// The patch's `Amp` routes, resolved **once per control block** (0274).
+///
+/// The matrix is scanned for Amp slots here rather than inside the per-lane
+/// loop: the answer is pure topology, so scanning it sixteen times was sixteen
+/// times too many, and it used to happen *twice* over — once in `amp_coeffs`
+/// for the VCA factoring and again in a separate `amp_envelopes` walk for the
+/// voice-lifetime predicate (0271). Both now come off this one pass, and the
+/// per-lane factoring walks only the live routes (usually one) instead of all
+/// sixteen slots.
+#[derive(Clone, Copy)]
+struct AmpRoutes {
+    routes: [AmpRoute; N_SLOTS],
+    n: usize,
+    /// Whether Env 1 / Env 2 reach `Amp` at all — the only envelopes that can
+    /// end a note, and so the only ones allowed to hold a lane open after
+    /// gate-off (0271).
+    ///
+    /// Topology + depth, *not* the [`AmpCoeffs`]: those collect only `Lin`-curve
+    /// Env→Amp slots (the rest fold into `stat`), and a curved Env→Amp route
+    /// must silence its note exactly like a linear one. A `scale_src` sitting at
+    /// zero is likewise ignored — a route that exists counts as a route, so a
+    /// momentarily gated VCA cannot make a note un-endable.
+    holds_env1: bool,
+    holds_env2: bool,
+}
+
+impl AmpRoutes {
+    /// Scan one patch's slots for live `Amp` routes.
+    fn resolve(table: &MatrixTable) -> Self {
+        let empty = AmpRoute {
+            source: SourceId::None,
+            src_idx: 0,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+            gain: 0.0,
+        };
+        let mut out =
+            Self { routes: [empty; N_SLOTS], n: 0, holds_env1: false, holds_env2: false };
+        for slot in &table.slots {
+            if slot.dest != DestId::Amp || slot.depth == 0.0 {
+                continue;
+            }
+            out.holds_env1 |= slot.source == SourceId::Env1;
+            out.holds_env2 |= slot.source == SourceId::Env2;
+            let Some(src_idx) = slot.source.idx() else { continue };
+            out.routes[out.n] = AmpRoute {
+                source: slot.source,
+                src_idx,
+                curve: slot.curve,
+                scale_src: slot.scale_src,
+                gain: crate::eval::slot_topology_gain(slot),
+            };
+            out.n += 1;
+        }
+        out
+    }
+}
+
 /// The 8-wide DSP + trigger state. Bookkeeping (note/gate/active/velocity/
 /// pressure/note_random) is threaded in per [`Self::render`] call.
 pub struct RenderBank {
@@ -266,6 +374,10 @@ pub struct RenderBank {
     glide_valid: [bool; N],
     /// Set at note-on trigger, consumed (taken) at the next render.
     trigger_pending: [bool; N],
+    /// Per-lane declick gain for a lane on its way out (0271): `1.0` when the
+    /// lane is not freeing, ramping to `0.0` over [`FREE_FADE_SECS`] once its
+    /// Amp-routed envelopes are done, at which point the lane deactivates.
+    free_fade: [f32; N],
     /// Per-lane discontinuity guards on the pitch/PWM/Amp matrix dests (0208).
     smooth: MotionSmoother,
     lfo1_seed: u64,
@@ -341,6 +453,7 @@ impl RenderBank {
             glide_semi: [0.0; N],
             glide_valid: [false; N],
             trigger_pending: [false; N],
+            free_fade: [1.0; N],
             smooth: MotionSmoother::new(sample_rate),
             lfo1_seed: rng_seed,
             trim: VoiceTrim::new(rng_seed),
@@ -384,6 +497,7 @@ impl RenderBank {
         self.glide_semi = [0.0; N];
         self.glide_valid = [false; N];
         self.trigger_pending = [false; N];
+        self.free_fade = [1.0; N];
         self.smooth.reset();
         // Cooked note-on scales belong to notes, not to the lane: a reset has
         // no notes, so every lane returns to the patch's plain envelope times.
@@ -466,10 +580,10 @@ impl RenderBank {
     /// (pressure arrives after the note). They are routable, just not useful.
     #[inline]
     fn cook_env_mods(&mut self, v: usize, dests: &[f32; crate::matrix::N_DESTS]) {
-        let t1 = env_time_scale(dests[DestId::Env1Scale.idx().unwrap()]);
-        let t2 = env_time_scale(dests[DestId::Env2Scale.idx().unwrap()]);
-        let u1 = dests[DestId::Env1Sustain.idx().unwrap()];
-        let u2 = dests[DestId::Env2Sustain.idx().unwrap()];
+        let t1 = env_time_scale(dests[DestId::Env1Scale.index()]);
+        let t2 = env_time_scale(dests[DestId::Env2Scale.index()]);
+        let u1 = dests[DestId::Env1Sustain.index()];
+        let u2 = dests[DestId::Env2Sustain.index()];
         if t1 != self.env_scale[0][v]
             || t2 != self.env_scale[1][v]
             || u1 != self.env_sus_mod[0][v]
@@ -480,6 +594,96 @@ impl RenderBank {
             self.env_sus_mod[0][v] = u1;
             self.env_sus_mod[1][v] = u2;
             self.apply_env_lane(v);
+        }
+    }
+
+    /// Cook lane `v`'s filter coefficients for this block from its dest totals,
+    /// and return its HPF cutoff in Hz.
+    ///
+    /// The ladder's cutoff and resonance are written straight into the poly
+    /// coefficient bank — the OTA ladder ramps them itself per frame, which is
+    /// why neither dest has a [`MotionSmoother`] entry. The HPF cutoff is
+    /// *returned* instead of written, because whether the bank takes the
+    /// per-lane or the broadcast path is a decision across all lanes (0272).
+    #[inline]
+    fn set_lane_filter(
+        &mut self,
+        v: usize,
+        dests: &crate::eval::DestVals,
+        ctx: &BlockCtx,
+        note: f32,
+    ) -> f32 {
+        // Filter key-track: the played note against VXN1's C0 pivot, at the
+        // `filter_key_track` amount (0245), and — at that same amount — the
+        // voice's *drifted* pitch (0218), since the keyboard CV a real VCF
+        // tracks carries the VCO's drift, so the tracked cutoff wanders with it.
+        // Plus the fixed per-lane cutoff tolerance: a constant
+        // ±TRIM_CUTOFF_CENTS offset at full drift, enough for gentle
+        // inter-voice beating, never enough to detune a whistle.
+        let cutoff_hz = render::voice_cutoff_hz(
+            dests,
+            ctx.cutoff,
+            // The *played* note, not the glided pitch: VXN1 tracks the key,
+            // so a portamento slide does not drag the cutoff with it.
+            note,
+            ctx.filter_key_track,
+            self.osc1.drift_value[v],
+            self.osc2.drift_value[v],
+            self.trim.cutoff[v],
+            TRIM_CUTOFF_CENTS,
+            ctx.drift_amount,
+        );
+        // Fixed per-lane resonance tolerance: voices cross the self-oscillation
+        // threshold at slightly different settings, so near the edge one can
+        // whistle while a neighbour stays quiet.
+        let resonance = render::voice_resonance(dests, ctx.resonance)
+            * (1.0 + self.trim.reso[v] * TRIM_RESO * ctx.drift_amount);
+        self.ladder.set_coeffs(
+            v,
+            OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
+        );
+        render::voice_hpf_hz(dests, ctx.hpf_cutoff)
+    }
+
+    /// This lane's raw modulation inputs at block start, in their natural
+    /// units — what [`crate::eval::eval_sources`] normalises into the source
+    /// table. Envelope levels are read at block start, matching VXN1's
+    /// modulation granularity.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn lane_sources(
+        &self,
+        v: usize,
+        ctx: &BlockCtx,
+        lfo1_raw: f32,
+        velocity: &[f32],
+        note: &[u8],
+        pressure: &[f32],
+        note_random: &[f32],
+        stack_pos: &[f32],
+    ) -> SourceInputs {
+        SourceInputs {
+            env1: self.env1[v].level,
+            env2: self.env2[v].level,
+            // LFO 1 arrives already scaled by this lane's onset (delay + fade).
+            lfo1: lfo1_raw * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade),
+            lfo2: ctx.lfo2_val,
+            velocity: velocity[v],
+            note: note[v],
+            mod_wheel: ctx.mod_wheel,
+            pitch_wheel: ctx.pitch_wheel,
+            aftertouch: pressure[v],
+            note_random: note_random[v],
+            // The lane's place in the image, already scaled by the Spread knob
+            // (0260). Routing this to `Pan` at depth 1 — what the default patch
+            // does — is VXN1's hard-wired unison spread, now expressed as
+            // topology rather than hard wiring.
+            //
+            // The position comes from the lane's place within its *stack*
+            // (ADR 0003), not from its lane index: a stack's lanes are wherever
+            // the allocator put them, and stacks vary in width. Width 1 stamps
+            // 0.0, so a plain poly voice is centred.
+            spread_pos: stack_pos[v] * ctx.spread,
         }
     }
 
@@ -499,6 +703,8 @@ impl RenderBank {
         start_phase: Option<f32>,
     ) {
         self.trigger_pending[v] = true;
+        // A stolen lane may be mid-declick; the new note starts at full gain.
+        self.free_fade[v] = 1.0;
         self.lfo1_onset.retrigger(v);
         if !lfo1_free_run {
             self.lfo1[v].retrigger(lfo1_shape);
@@ -508,6 +714,55 @@ impl RenderBank {
         let ph = start_phase.unwrap_or_else(|| lane_phase(v));
         self.osc1.phase[v] = ph;
         self.osc2.phase[v] = ph;
+    }
+
+    /// Advance the declick ramp on every released lane and free the ones that
+    /// have finished (0271). One frame's worth.
+    ///
+    /// A released lane is held open only by the envelopes actually routed to
+    /// `Amp` — those are the ones that can still make sound. An unrouted (or
+    /// filter-only) envelope no longer keeps a silent lane allocated, and a
+    /// patch whose Amp comes from an LFO or a static route alone — nothing an
+    /// envelope can close — ends its note at gate-off instead of droning until
+    /// some unrelated envelope happens to finish.
+    ///
+    /// Freeing is always via the ramp: in the ordinary case the VCA is already
+    /// at zero when the amp envelope idles, so the ramp costs
+    /// [`FREE_FADE_SECS`] of silence; in the LFO-held case it is the difference
+    /// between a fade and a step.
+    #[inline]
+    fn free_released_lanes(
+        &mut self,
+        active: &mut [bool],
+        gate: &[bool],
+        amp_routes: &AmpRoutes,
+        fade_step: f32,
+    ) {
+        for v in 0..N {
+            if !active[v] {
+                continue;
+            }
+            // Any re-gate cancels a ramp in flight. Resetting here rather than
+            // in `trigger_lane` alone covers the paths that re-gate a lane
+            // *without* a trigger — a legato slide onto a widened stack can
+            // stamp a lane that is mid-declick, and it would otherwise sound at
+            // reduced gain for the whole note (the ramp only advances while the
+            // gate is low, so it would never recover).
+            if gate[v] {
+                self.free_fade[v] = 1.0;
+                continue;
+            }
+            let held = (amp_routes.holds_env1 && !self.env1[v].is_idle())
+                || (amp_routes.holds_env2 && !self.env2[v].is_idle());
+            if held {
+                continue;
+            }
+            self.free_fade[v] -= fade_step;
+            if self.free_fade[v] <= 0.0 {
+                active[v] = false;
+                self.free_fade[v] = 1.0;
+            }
+        }
     }
 
     /// True when no lane is active and none is pending — the caller can skip
@@ -552,6 +807,8 @@ impl RenderBank {
         let base_frames = out_l.len() / os;
         let base_rate = ctx.os_sample_rate / os as f32;
 
+        // ═══ Phase 1: bank-wide block setup ═════════════════════════════════
+
         // Per-voice LFO 1: tick each lane's phase once for this block. LFOs tick
         // even on silent blocks so free-run phase keeps drifting.
         // The rate is the panel's resolved Hz — sync already applied (0267) —
@@ -576,61 +833,42 @@ impl RenderBank {
 
         let (glide, glide_coeff) = block_glide(ctx.portamento_time, base_frames, base_rate);
 
-        // ── Block-start per-lane resolution ──
+        // ═══ Phase 2: per-lane block-start resolution ═══════════════════════
+        //
+        // One pass over the lanes: evaluate the matrix, fill `tgt` with this
+        // block's smoother targets, cook the filter coefficients, and snap a
+        // freshly triggered lane so it starts settled.
         // Pitch-family dests (Pitch, XModSweep) are smoothed per-quantum inside
         // the frame loop; PWM and the non-env Amp part get a block-rate one-pole
         // here (0208). We stash the un-modulated pitch base + the smoother
         // targets per lane so the frame loop can re-cook `inc` as the cascade
-        // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc, exactly as
-        // `render::voice_pitches` does.
+        // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc — see
+        // `sweep_gates`.
         let (g1, g2) = sweep_gates(ctx.cross_mod_type);
+        // The patch's Amp topology, scanned once for the whole block (0274):
+        // the per-lane factoring below and the voice-lifetime check in the frame
+        // loop both read it.
+        let amp_routes = AmpRoutes::resolve(ctx.matrix);
         let mut pw1 = [0.5f32; N];
         let mut pw2 = [0.5f32; N];
         let mut amp_c = [AmpCoeffs::default(); N];
-        let mut amp_stat_tgt = [0.0f32; N];
-        let mut base1 = [0.0f32; N];
-        let mut base2 = [0.0f32; N];
-        let mut pitch_tgt = [0.0f32; N];
-        let mut sweep_tgt = [0.0f32; N];
-        // Per-oscillator PWM targets (0261): the combined `Pwm` dest summed with
-        // each osc's own dest, so the pair is equal whenever only `Pwm` is routed.
-        let mut pwm_tgt = [(0.0f32, 0.0f32); N];
-        let mut xmod_tgt = [0.0f32; N];
+        let mut tgt = [LaneTargets::default(); N];
         let mut pm_idx = [0.0f32; N];
         let mut pitch_active = [false; N];
         let mut pwm_active = [false; N];
         let mut xmod_active = [false; N];
-        let mut pan_tgt = [0.0f32; N];
         let mut pan_active = [false; N];
+        // Per-lane HPF cutoff (0272). `hpf_modulated` stays false for a patch
+        // with no route on the dest, which keeps the bank-wide `set_cutoff_all`
+        // path — and with it the bit-exact unrouted render.
+        let mut hpf_tgt = [0.0f32; N];
+        let mut hpf_modulated = false;
         // `CrossModAmount` only means anything in PM mode — Off/Sync/Ring ignore
         // the amount, as VXN1 does — so the dest is gated on the mode rather
         // than silently accumulating smoother state the kernel can't read.
         let pm_mode = matches!(ctx.cross_mod_type, CrossModType::Pm);
         for v in 0..N {
-            let lfo1 = lfo1_raw[v] * self.lfo1_onset.gain(v, ctx.lfo1_delay_time, ctx.lfo1_fade);
-            // Matrix sources use env levels at block start (VXN1 granularity).
-            let inp = SourceInputs {
-                env1: self.env1[v].level,
-                env2: self.env2[v].level,
-                lfo1,
-                lfo2: ctx.lfo2_val,
-                velocity: velocity[v],
-                note: note[v],
-                mod_wheel: ctx.mod_wheel,
-                pitch_wheel: ctx.pitch_wheel,
-                aftertouch: pressure[v],
-                note_random: note_random[v],
-                // The lane's own place in the image, already scaled by the
-                // Spread knob (0260). Routing this to `Pan` at depth 1 — what
-                // the default patch does — is VXN1's hard-wired unison spread,
-                // now expressed as topology.
-                // The lane's place in the image comes from its position within
-                // its *stack* (ADR 0003), not from its lane index: a stack's
-                // lanes are wherever the allocator put them, and stacks vary in
-                // width. Width 1 stamps 0.0, so a plain poly voice is centred.
-                spread_pos: stack_pos[v] * ctx.spread,
-            };
-            let sources = eval_sources(&inp);
+            let sources = eval_sources(&self.lane_sources(v, ctx, lfo1_raw[v], velocity, note, pressure, note_random, stack_pos));
             let mut dests = [0.0f32; crate::matrix::N_DESTS];
             eval_dests(ctx.matrix, &sources, &mut dests);
 
@@ -652,20 +890,18 @@ impl RenderBank {
             // oscillators, so the whole voice moves rather than beating with
             // itself (that is Osc 2 Fine's job).
             let detune = detune_cents[v] * 0.01;
-            base1[v] = ctx.base_semis + nf + ctx.osc1_semi + detune + self.osc1.drift_value[v];
-            base2[v] = ctx.base_semis + nf + ctx.osc2_semi + detune + self.osc2.drift_value[v];
-            pitch_tgt[v] = dests[DestId::Pitch.idx().unwrap()];
-            sweep_tgt[v] = dests[DestId::XModSweep.idx().unwrap()];
-            pwm_tgt[v] = (
-                render::pwm_offset(&dests, DestId::Osc1Pwm),
-                render::pwm_offset(&dests, DestId::Osc2Pwm),
-            );
+            tgt[v].base1 = ctx.base_semis + nf + ctx.osc1_semi + detune + self.osc1.drift_value[v];
+            tgt[v].base2 = ctx.base_semis + nf + ctx.osc2_semi + detune + self.osc2.drift_value[v];
+            tgt[v].pitch = dests[DestId::Pitch.index()];
+            tgt[v].sweep = dests[DestId::XModSweep.index()];
+            tgt[v].pwm =
+                (render::pwm_offset(&dests, DestId::Osc1Pwm), render::pwm_offset(&dests, DestId::Osc2Pwm));
             // Pan (0260). Clamped here rather than at the gains: the smoother
             // should chase a reachable position, or an over-deep route would
             // leave it creeping toward a target the law can never render.
-            pan_tgt[v] = dests[DestId::Pan.idx().unwrap()].clamp(-1.0, 1.0);
-            xmod_tgt[v] = if pm_mode {
-                dests[DestId::CrossModAmount.idx().unwrap()]
+            tgt[v].pan = dests[DestId::Pan.index()].clamp(-1.0, 1.0);
+            tgt[v].xmod = if pm_mode {
+                dests[DestId::CrossModAmount.index()]
             } else {
                 0.0
             };
@@ -673,13 +909,13 @@ impl RenderBank {
             // Non-env Amp coefficient: `e1`/`e2` stay per-frame exact; `stat` (the
             // non-envelope routes) is the target the per-frame Amp one-pole glides
             // toward in the render loop.
-            let ac = amp_coeffs(ctx.matrix, &sources);
-            amp_stat_tgt[v] = ac.stat;
+            let ac = amp_coeffs(&amp_routes, &sources);
+            tgt[v].amp_stat = ac.stat;
 
             // A fresh note snaps its lane so it starts settled (static sources
             // land zipper-free; no glide from the stolen voice's stale state).
             // Next block's rate for this lane (0269).
-            self.lfo1_rate_mod[v] = dests[DestId::Lfo1Rate.idx().unwrap()];
+            self.lfo1_rate_mod[v] = dests[DestId::Lfo1Rate.index()];
 
             if self.trigger_pending[v] {
                 // Envelope time scales (0268) and sustain offsets (0270) are
@@ -690,75 +926,77 @@ impl RenderBank {
                 // tick above already happened, so this lands from the next one —
                 // one block earlier than the carry-over would.
                 self.lfo1[v].set_rate(ctx.lfo1_rate_hz * lfo_rate_scale(self.lfo1_rate_mod[v]));
-                self.smooth.snap_pitch(v, pitch_tgt[v], sweep_tgt[v]);
-                self.smooth.snap_slow(v, pwm_tgt[v], xmod_tgt[v], ac.stat);
-                // A stolen lane must not glide across the image from wherever
+                // Every smoother for this lane starts settled — including pan,
+                // so a stolen lane does not glide across the image from wherever
                 // the previous note sat.
-                self.smooth.snap_pan(v, pan_tgt[v]);
+                self.smooth.snap_all(v, &tgt[v]);
             }
             amp_c[v] = AmpCoeffs { stat: self.smooth.amp_stat_current(v), ..ac };
 
             // PWM: per-quantum one-pole on the matrix offset (peek here; the frame
             // loop advances it), then VXN1's clamp.
-            pwm_active[v] = active[v] && self.smooth.pwm_active(v, pwm_tgt[v]);
-            pan_active[v] = active[v] && self.smooth.pan_active(v, pan_tgt[v]);
+            pwm_active[v] = active[v] && self.smooth.pwm_active(v, tgt[v].pwm);
+            pan_active[v] = active[v] && self.smooth.pan_active(v, tgt[v].pan);
             // Clamped per oscillator (0261): a route driving osc 1 to the rail
             // must not clip osc 2's width.
             let (pwm_s1, pwm_s2) = self.smooth.pwm_current(v);
-            pw1[v] = (ctx.osc1_pw + pwm_s1).clamp(0.05, 0.95);
-            pw2[v] = (ctx.osc2_pw + pwm_s2).clamp(0.05, 0.95);
+            pw1[v] = cooked_pw(ctx.osc1_pw, pwm_s1);
+            pw2[v] = cooked_pw(ctx.osc2_pw, pwm_s2);
 
             // Cross-mod amount: same treatment as PWM (0242). Only the matrix
             // *offset* is smoothed; the patch scalar rides on top, so a patch
             // with no route on the dest keeps `ctx.pm_index` bit-exact and every
-            // lane stays on the broadcast kernel below. Clamped non-negative —
-            // `render::voice_cross_mod_amount` is the statement of that rule.
-            xmod_active[v] = active[v] && pm_mode && self.smooth.xmod_active(v, xmod_tgt[v]);
-            pm_idx[v] = (ctx.pm_index + self.smooth.xmod_current(v)).max(0.0);
+            // lane stays on the broadcast kernel below. `cooked_pm_index` is the
+            // statement of the non-negative clamp.
+            xmod_active[v] = active[v] && pm_mode && self.smooth.xmod_active(v, tgt[v].xmod);
+            pm_idx[v] = cooked_pm_index(ctx.pm_index, self.smooth.xmod_current(v));
 
             // Provisional `inc` from the base (smoothed pitch ≈ 0 when inactive);
             // active lanes get re-cooked per quantum in the frame loop.
-            pitch_active[v] = active[v] && self.smooth.pitch_active(v, pitch_tgt[v], sweep_tgt[v]);
-            self.osc1.inc[v] = note_to_hz(base1[v]) / ctx.os_sample_rate;
-            self.osc2.inc[v] = note_to_hz(base2[v]) / ctx.os_sample_rate;
+            pitch_active[v] = active[v] && self.smooth.pitch_active(v, tgt[v].pitch, tgt[v].sweep);
+            self.osc1.inc[v] = note_to_hz(tgt[v].base1) / ctx.os_sample_rate;
+            self.osc2.inc[v] = note_to_hz(tgt[v].base2) / ctx.os_sample_rate;
 
-            // Filter key-track: the played note against VXN1's C0 pivot, at the
-            // `filter_key_track` amount (0245), and — at that same amount — the
-            // voice's *drifted* pitch (0218), since the keyboard CV a real VCF
-            // tracks carries the VCO's drift, so the tracked cutoff wanders with
-            // it. Plus the fixed per-lane cutoff tolerance: a constant
-            // ±TRIM_CUTOFF_CENTS offset at full drift, enough for gentle
-            // inter-voice beating, never enough to detune a whistle.
-            let cutoff_hz = render::voice_cutoff_hz(
-                &dests,
-                ctx.cutoff,
-                note[v] as f32,
-                ctx.filter_key_track,
-                self.osc1.drift_value[v],
-                self.osc2.drift_value[v],
-                self.trim.cutoff[v],
-                TRIM_CUTOFF_CENTS,
-                ctx.drift_amount,
-            );
-            // Fixed per-lane resonance tolerance: voices cross the
-            // self-oscillation threshold at slightly different settings, so near
-            // the edge one can whistle while a neighbour stays quiet.
-            let resonance = render::voice_resonance(&dests, ctx.resonance)
-                * (1.0 + self.trim.reso[v] * TRIM_RESO * ctx.drift_amount);
-            self.ladder.set_coeffs(
-                v,
-                OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
-            );
+            hpf_tgt[v] = self.set_lane_filter(v, &dests, ctx, note[v] as f32);
+            hpf_modulated |= active[v] && hpf_tgt[v] != ctx.hpf_cutoff;
         }
+        // ═══ Phase 3: bank-wide decisions across the resolved lanes ═════════
+        //
+        // Which smoothers any lane still needs ticked, which kernels run, and
+        // whether the VCA is constant for the whole block — each one an `any()`
+        // over what phase 2 produced, hoisted out of the frame loop.
         let pitch_any = pitch_active.iter().any(|&a| a);
         let pwm_any = pwm_active.iter().any(|&a| a);
         let xmod_any = xmod_active.iter().any(|&a| a);
         let pan_any = pan_active.iter().any(|&a| a);
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
-        let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ;
+        // The HPF runs when the panel opens it *or* when a route lifts any
+        // sounding lane off the 20 Hz rail (0272) — gating on the raw param
+        // alone would make a route inert on a patch with the filter parked at
+        // its minimum, which is exactly the patch that most wants one.
+        //
+        // The bypass is per bank, not per lane, so one modulated lane pulls its
+        // neighbours through the filter too. At `HPF_OFF_HZ` that is what "off"
+        // already means — a 20 Hz one-pole is transparent over the audio band —
+        // so the cost is arithmetic, not tone.
+        //
+        // No `MotionSmoother` entry: Cutoff/Resonance skip one because the OTA
+        // ladder ramps its own coefficients, and while `PolyHpf` does not ramp,
+        // a one-pole's coefficient stepping at block rate is far below a gain
+        // step in audibility — and is already what moving the param does.
+        let hpf_active = ctx.hpf_cutoff > HPF_OFF_HZ
+            || (hpf_modulated && (0..N).any(|v| active[v] && hpf_tgt[v] > HPF_OFF_HZ));
         if hpf_active {
-            self.hpf.set_cutoff_all(ctx.hpf_cutoff, ctx.os_sample_rate);
+            if hpf_modulated {
+                for v in 0..N {
+                    self.hpf.set_cutoff(v, hpf_tgt[v], ctx.os_sample_rate);
+                }
+            } else {
+                // Unrouted: one coefficient for the whole bank, bit-identical to
+                // before the dest was wired.
+                self.hpf.set_cutoff_all(ctx.hpf_cutoff, ctx.os_sample_rate);
+            }
         }
         self.ladder.prepare_ramp(base_frames);
 
@@ -813,12 +1051,17 @@ impl RenderBank {
         let osc1_runs = ctx.sync || pm_on || ring_on || ctx.osc1_level != 0.0 || sub_on;
         let osc2_runs = ctx.sync || pm_on || ring_on || ctx.osc2_level != 0.0;
 
+        // Only Env→Amp routes can end a note, so only they hold a lane open
+        // after gate-off (0271); the declick ramp does the rest. Which envelopes
+        // those are came off the block's one Amp scan (0274).
+        let fade_step = 1.0 / (FREE_FADE_SECS * base_rate);
+
         let env_static = self.envelopes_static(&trig, active, gate);
         // The non-env Amp part glides per frame (0208); while it's still moving
         // the VCA isn't constant even with static envelopes, so it must run the
         // per-frame path too.
         let amp_moving =
-            (0..N).any(|v| active[v] && !self.smooth.amp_stat_settled(v, amp_stat_tgt[v]));
+            (0..N).any(|v| active[v] && !self.smooth.amp_stat_settled(v, tgt[v].amp_stat));
         let amp_per_frame = !env_static || amp_moving;
         // VCA constant across the block only when envelopes are static *and* the
         // non-env Amp has settled — then compute it once.
@@ -832,10 +1075,11 @@ impl RenderBank {
                     &amp_c[v],
                     self.env1[v].level,
                     self.env2[v].level,
-                );
+                ) * self.free_fade[v];
             }
         }
 
+        // ═══ Phase 4: the frame loop ════════════════════════════════════════
         for base_i in 0..base_frames {
             // Per-quantum pitch/PWM smoothing (0208): every PITCH_QUANTUM samples,
             // advance the pitch cascade + PWM one-pole a step and re-cook the
@@ -846,20 +1090,20 @@ impl RenderBank {
             if (pitch_any || pwm_any || xmod_any || pan_any) && base_i % PITCH_QUANTUM == 0 {
                 for v in 0..N {
                     if pitch_active[v] {
-                        let (p, sw) = self.smooth.tick_pitch(v, pitch_tgt[v], sweep_tgt[v]);
-                        let s1 = base1[v] + p + g1 * sw;
-                        let s2 = base2[v] + p + g2 * sw;
+                        let (p, sw) = self.smooth.tick_pitch(v, tgt[v].pitch, tgt[v].sweep);
+                        let s1 = tgt[v].base1 + p + g1 * sw;
+                        let s2 = tgt[v].base2 + p + g2 * sw;
                         self.osc1.inc[v] = note_to_hz(s1) / ctx.os_sample_rate;
                         self.osc2.inc[v] = note_to_hz(s2) / ctx.os_sample_rate;
                     }
                     if pwm_active[v] {
-                        let (pwm_s1, pwm_s2) = self.smooth.tick_pwm(v, pwm_tgt[v]);
-                        pw1[v] = (ctx.osc1_pw + pwm_s1).clamp(0.05, 0.95);
-                        pw2[v] = (ctx.osc2_pw + pwm_s2).clamp(0.05, 0.95);
+                        let (pwm_s1, pwm_s2) = self.smooth.tick_pwm(v, tgt[v].pwm);
+                        pw1[v] = cooked_pw(ctx.osc1_pw, pwm_s1);
+                        pw2[v] = cooked_pw(ctx.osc2_pw, pwm_s2);
                     }
                     if xmod_active[v] {
-                        let xmod_s = self.smooth.tick_xmod(v, xmod_tgt[v]);
-                        pm_idx[v] = (ctx.pm_index + xmod_s).max(0.0);
+                        let xmod_s = self.smooth.tick_xmod(v, tgt[v].xmod);
+                        pm_idx[v] = cooked_pm_index(ctx.pm_index, xmod_s);
                     }
                     if pan_active[v] {
                         // Re-cook this lane's pan gains from the smoothed
@@ -867,7 +1111,7 @@ impl RenderBank {
                         // `pan_r`, so the hot path is untouched — a lane with
                         // no live route never gets here and keeps its
                         // block-start gains.
-                        let (gl, gr) = voice_pan_gains(self.smooth.tick_pan(v, pan_tgt[v]));
+                        let (gl, gr) = voice_pan_gains(self.smooth.tick_pan(v, tgt[v].pan));
                         pan_l[v] = gl;
                         pan_r[v] = gr;
                     }
@@ -885,8 +1129,9 @@ impl RenderBank {
                         let t = trig[v] && base_i == 0;
                         (self.env1[v].tick(t, gate[v]), self.env2[v].tick(t, gate[v]))
                     };
-                    amp_c[v].stat = self.smooth.tick_amp_stat(v, amp_stat_tgt[v]);
-                    amp[v] = vca(active[v], gate[v], ctx.amp_env_bypass, &amp_c[v], e1, e2);
+                    amp_c[v].stat = self.smooth.tick_amp_stat(v, tgt[v].amp_stat);
+                    amp[v] = vca(active[v], gate[v], ctx.amp_env_bypass, &amp_c[v], e1, e2)
+                        * self.free_fade[v];
                 }
             }
 
@@ -986,11 +1231,7 @@ impl RenderBank {
             self.lfo1_onset.advance(onset_dt, onset_cap);
 
             if !env_static {
-                for v in 0..N {
-                    if active[v] && !gate[v] && self.env1[v].is_idle() && self.env2[v].is_idle() {
-                        active[v] = false;
-                    }
-                }
+                self.free_released_lanes(active, gate, &amp_routes, fade_step);
             }
         }
     }
@@ -1034,48 +1275,28 @@ fn block_glide(portamento_time: f32, base_frames: usize, base_rate: f32) -> (boo
 /// source table, so the per-frame VCA needs only two FMAs. `Lin`-curve Env→Amp
 /// slots (incl. the default Env2→Amp) contribute to `e1`/`e2`; every other Amp
 /// slot folds into `static` at its block-start value.
-fn amp_coeffs(table: &MatrixTable, sources: &crate::eval::SourceVals) -> AmpCoeffs {
-    use crate::matrix::Curve;
-    let amp_di = DestId::Amp.idx().unwrap();
-    let gain = crate::eval::DEST_GAIN[amp_di];
+///
+/// Walks the routes [`AmpRoutes::resolve`] found for this block, not the whole
+/// slot table (0274). The gain arrives pre-cooked; only the `scale_src` VCA is
+/// per-voice, and it comes from [`crate::eval::slot_scale`] so the scale rule
+/// has one definition.
+fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeffs {
     let mut c = AmpCoeffs::default();
-    for slot in &table.slots {
-        if slot.dest != DestId::Amp || slot.depth == 0.0 {
-            continue;
-        }
-        let Some(si) = slot.source.idx() else { continue };
-        let scale = match slot.scale_src.idx() {
-            Some(sc) => crate::eval::scale_norm(slot.scale_src, sources[sc]),
+    for r in &routes.routes[..routes.n] {
+        let scale = match r.scale_src.idx() {
+            Some(sc) => crate::eval::scale_norm(r.scale_src, sources[sc]),
             None => 1.0,
         };
-        // `cook_depth` is identity for Amp — called for parity with
-        // `eval_dests` so a future tapered dest can't diverge here.
-        let coeff = slot.dest.cook_depth(slot.depth) * gain * scale;
+        let coeff = r.gain * scale;
         // Linear env sources become per-frame coefficients; everything else is
         // resolved at block-start value into `stat`.
-        match (slot.source, slot.curve) {
+        match (r.source, r.curve) {
             (SourceId::Env1, Curve::Lin) => c.e1 += coeff,
             (SourceId::Env2, Curve::Lin) => c.e2 += coeff,
-            _ => c.stat += render_shape(slot.curve, sources[si]) * coeff,
+            _ => c.stat += crate::eval::shape(r.curve, sources[r.src_idx]) * coeff,
         }
     }
     c
-}
-
-/// Curve shaping mirror of [`crate::eval`]'s `shape` (kept private there); used
-/// only by [`amp_coeffs`] for the non-linear fold into `stat`.
-#[inline]
-fn render_shape(curve: crate::matrix::Curve, v: f32) -> f32 {
-    use crate::matrix::Curve;
-    match curve {
-        Curve::Lin => v,
-        Curve::Exp => v.abs() * v,
-        Curve::Log => {
-            let m = v.abs().sqrt();
-            if v < 0.0 { -m } else { m }
-        }
-        Curve::Bipolar => 2.0 * v - 1.0,
-    }
 }
 
 /// Per-frame VCA gain: 0 when inactive; gate-only in bypass (organ); else the
@@ -1092,10 +1313,35 @@ fn vca(active: bool, gate: bool, bypass: bool, c: &AmpCoeffs, env1: f32, env2: f
     }
 }
 
-/// Gate the `XModSweep` dest onto the mode-selected osc, matching
-/// [`render::voice_pitches`]: Off/Ring → both, Sync → osc1, PM → osc2. Returned
-/// as `(g1, g2)` multipliers so the frame loop can fold the smoothed sweep into
-/// each osc's pitch with a single FMA.
+/// Osc pulse width from the patch value plus its smoothed matrix offset,
+/// clamped to VXN1's range. Named because the block-start peek and the
+/// per-quantum tick both have to apply it, and a clamp that drifted between the
+/// two would show up as a duty-cycle jump at the first quantum boundary.
+///
+/// Clamped **per oscillator** (0261): a route driving osc 1 to the rail must
+/// leave osc 2's width alone.
+#[inline]
+fn cooked_pw(base_pw: f32, offset: f32) -> f32 {
+    (base_pw + offset).clamp(crate::params::PW_MIN, crate::params::PW_MAX)
+}
+
+/// PM index from the patch amount plus its smoothed `CrossModAmount` offset,
+/// clamped non-negative — VXN1's cross-mod amount is `0..4` and a negative index
+/// is not a quieter FM, it is a phase inversion. Same peek/tick pairing as
+/// [`cooked_pw`].
+#[inline]
+fn cooked_pm_index(base_amount: f32, offset: f32) -> f32 {
+    (base_amount + offset).max(0.0)
+}
+
+/// Gate the `XModSweep` dest onto the mode-selected osc: Off/Ring → both,
+/// Sync → osc1 (the slave whose pitch creates the sweep), PM → osc2 (the
+/// modulator whose pitch sets the FM index). Returned as `(g1, g2)` multipliers
+/// so the frame loop can fold the smoothed sweep into each osc's pitch with a
+/// single FMA.
+///
+/// This is the **only** statement of that rule (0273); `Pitch`, by contrast,
+/// lands on both oscillators unconditionally and needs no gate.
 #[inline]
 fn sweep_gates(mode: CrossModType) -> (f32, f32) {
     match mode {
@@ -1108,7 +1354,7 @@ fn sweep_gates(mode: CrossModType) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::{Curve, MatrixSlot, default_patch};
+    use crate::matrix::{MatrixSlot, default_patch};
 
     #[allow(clippy::type_complexity)]
     fn book() -> ([u8; N], [bool; N], [bool; N], [f32; N], [f32; N], [f32; N]) {
@@ -1341,6 +1587,277 @@ mod tests {
         );
     }
 
+    /// The block's single Amp scan (0274) has to answer both questions the two
+    /// old walks answered, and keep 0271's deliberate asymmetries: the lifetime
+    /// flags count **every** curve and ignore `scale_src`, where the `e1`/`e2`
+    /// per-frame coefficients collect only `Lin` Env→Amp slots.
+    #[test]
+    fn the_amp_scan_answers_factoring_and_lifetime_together() {
+        let mut m = MatrixTable::default();
+        // A curved Env 1 route: folds into `stat`, but still owns the lifetime.
+        m.slots[0] = MatrixSlot {
+            source: SourceId::Env1, dest: DestId::Amp, depth: 1.0,
+            curve: Curve::Exp, scale_src: SourceId::None,
+        };
+        // A linear Env 2 route gated by a wheel sitting at zero: contributes
+        // nothing this block, but a route that exists is still a route.
+        m.slots[1] = MatrixSlot {
+            source: SourceId::Env2, dest: DestId::Amp, depth: 1.0,
+            curve: Curve::Lin, scale_src: SourceId::ModWheel,
+        };
+        // A zero-depth route is not a route at all.
+        m.slots[2] = MatrixSlot {
+            source: SourceId::Lfo1, dest: DestId::Amp, depth: 0.0,
+            curve: Curve::Lin, scale_src: SourceId::None,
+        };
+        // And a non-Amp route is invisible here.
+        m.slots[3] = MatrixSlot {
+            source: SourceId::Lfo2, dest: DestId::Cutoff, depth: 1.0,
+            curve: Curve::Lin, scale_src: SourceId::None,
+        };
+
+        let r = AmpRoutes::resolve(&m);
+        assert_eq!(r.n, 2, "only the two live Amp routes");
+        assert!(r.holds_env1, "a curved Env→Amp route still ends its note");
+        assert!(r.holds_env2, "a scale_src at zero does not un-route Env 2");
+
+        let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
+            env1: 0.5, env2: 1.0, mod_wheel: 0.0, ..Default::default()
+        });
+        let c = amp_coeffs(&r, &sources);
+        assert_eq!(c.e1, 0.0, "the curved Env 1 route folds into stat, not e1");
+        assert_eq!(c.e2, 0.0, "Env 2's wheel is shut, so it contributes nothing");
+        assert!((c.stat - crate::eval::shape(Curve::Exp, 0.5)).abs() < 1e-6);
+    }
+
+    // ── The routing rules the bank owns (0273) ──────────────────────────────
+    //
+    // These moved off `render.rs`'s pure mirrors, which had gone unreachable
+    // outside their own tests while the bank did the real work. The assertions
+    // are the same; they now sit on the code that ships.
+
+    /// `XModSweep` is mode-gated exactly as VXN1 gates its sweep, and `Pitch`
+    /// is not gated at all.
+    #[test]
+    fn sweep_is_mode_gated_and_pitch_is_not() {
+        // Off / Ring: the sweep reaches both oscillators.
+        assert_eq!(sweep_gates(CrossModType::Off), (1.0, 1.0));
+        assert_eq!(sweep_gates(CrossModType::Ring), (1.0, 1.0));
+        // Sync: osc 1 only — the slave whose pitch creates the sweep.
+        assert_eq!(sweep_gates(CrossModType::Sync), (1.0, 0.0));
+        // PM: osc 2 only — the modulator whose pitch sets the FM index.
+        assert_eq!(sweep_gates(CrossModType::Pm), (0.0, 1.0));
+
+        // And the fold the render loop performs with those gates: a 3 st Pitch
+        // total moves both oscs, a 5 st sweep only the gated one.
+        for (mode, want) in [
+            (CrossModType::Off, (68.0, 68.0)),
+            (CrossModType::Sync, (68.0, 63.0)),
+            (CrossModType::Pm, (63.0, 68.0)),
+        ] {
+            let (g1, g2) = sweep_gates(mode);
+            let (pitch, sweep) = (3.0, 5.0);
+            let got = (60.0 + pitch + g1 * sweep, 60.0 + pitch + g2 * sweep);
+            assert_eq!(got, want, "{mode:?}");
+        }
+    }
+
+    /// The pulse-width rule: patch value plus the smoothed matrix offset,
+    /// clamped per oscillator so a route railing osc 1 leaves osc 2 alone.
+    #[test]
+    fn cooked_pw_clamps_each_oscillator_independently() {
+        assert_eq!(cooked_pw(0.5, 0.1), 0.6);
+        assert_eq!(cooked_pw(0.5, -0.1), 0.4);
+        assert_eq!(cooked_pw(0.5, 10.0), crate::params::PW_MAX);
+        assert_eq!(cooked_pw(0.5, -10.0), crate::params::PW_MIN);
+        // Independence is structural: the two oscillators call it separately,
+        // so osc 1 hitting a rail cannot move osc 2.
+        assert_eq!((cooked_pw(0.5, 10.0), cooked_pw(0.5, 0.0)), (crate::params::PW_MAX, 0.5));
+    }
+
+    /// The cross-mod rule: patch amount plus the smoothed offset, never
+    /// negative.
+    #[test]
+    fn cooked_pm_index_is_additive_and_non_negative() {
+        assert_eq!(cooked_pm_index(2.0, 1.0), 3.0);
+        assert_eq!(cooked_pm_index(2.0, -5.0), 0.0);
+        assert_eq!(cooked_pm_index(0.0, 0.0), 0.0);
+    }
+
+    /// The VCA rule, factored: inactive is silent, bypass (organ) is the bare
+    /// gate, and otherwise the Amp total clamped non-negative. For the default
+    /// patch (Env2→Amp @1) that is exactly VXN1's `amp_base(env2)`.
+    #[test]
+    fn vca_reproduces_vxn1_amp_base() {
+        // A pure Env2→Amp route at depth 1: e2 carries it, stat is zero.
+        let env2_route = AmpCoeffs { stat: 0.0, e1: 0.0, e2: 1.0 };
+        assert_eq!(vca(true, true, false, &env2_route, 0.0, 0.6), 0.6);
+        // Inactive → silent whatever the coefficients say.
+        assert_eq!(vca(false, true, false, &env2_route, 0.0, 0.6), 0.0);
+        // Bypass ignores the matrix entirely and follows the gate.
+        assert_eq!(vca(true, true, true, &env2_route, 0.0, 0.6), 1.0);
+        assert_eq!(vca(true, false, true, &env2_route, 0.0, 0.6), 0.0);
+        // A static (non-envelope) route sums with the envelope terms, and the
+        // total cannot go negative.
+        let mixed = AmpCoeffs { stat: 0.25, e1: 0.5, e2: 1.0 };
+        assert_eq!(vca(true, true, false, &mixed, 0.4, 0.3), 0.25 + 0.2 + 0.3);
+        let inverted = AmpCoeffs { stat: -1.0, e1: 0.0, e2: 1.0 };
+        assert_eq!(vca(true, true, false, &inverted, 0.0, 0.3), 0.0);
+    }
+
+    /// The curve shaper has one definition (0273): the bank's Amp factoring and
+    /// the evaluator must fold a non-linear route identically, or a curved
+    /// Env→Amp route would sound different from a curved LFO→Amp one.
+    #[test]
+    fn amp_folding_uses_the_evaluators_curve() {
+        use crate::eval::shape;
+        for curve in [Curve::Lin, Curve::Exp, Curve::Log, Curve::Bipolar] {
+            let mut m = MatrixTable::default();
+            m.slots[0] = MatrixSlot {
+                source: SourceId::ModWheel,
+                dest: DestId::Amp,
+                depth: 1.0,
+                curve,
+                scale_src: SourceId::None,
+            };
+            let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
+                mod_wheel: 0.25,
+                ..Default::default()
+            });
+            let c = amp_coeffs(&AmpRoutes::resolve(&m), &sources);
+            // Non-envelope routes fold entirely into `stat`, at the evaluator's
+            // shaped value × the Amp gain (1.0).
+            let want = shape(curve, 0.25);
+            assert!((c.stat - want).abs() < 1e-6, "{curve:?}: {} vs {want}", c.stat);
+            assert_eq!((c.e1, c.e2), (0.0, 0.0));
+        }
+    }
+
+    // ── HPF Cutoff as a matrix destination (0272) ───────────────────────────
+
+    /// Mean |sample| over the render — a crude but sufficient proxy for "the
+    /// high-pass is open", since a 1-pole HPF pushed above the played
+    /// fundamental strips the bulk of a saw's amplitude.
+    fn low_energy(l: &[f32]) -> f32 {
+        l.iter().map(|s| s.abs()).sum::<f32>() / l.len() as f32
+    }
+
+    /// The default patch (so the Env2→Amp route is present and the voice
+    /// sounds) plus one Mod Wheel → `HpfCutoff` route at `depth`.
+    fn hpf_patch(depth: f32) -> MatrixTable {
+        let mut m = default_patch();
+        m.slots[8] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest: DestId::HpfCutoff,
+            depth,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        m
+    }
+
+    /// Render one block with the HPF param at `base_hz`. `notes` is indexed by
+    /// lane, so a lane held at `None` stays silent *in place* — a solo render
+    /// and a pair render put the same note on the same lane, which is what
+    /// makes them comparable (lane index drives phase, trims and LFO seed).
+    fn hpf_render_notes(m: &MatrixTable, base_hz: f32, wheel: f32, notes: &[Option<u8>]) -> Vec<f32> {
+        let mut c = ctx(m);
+        c.hpf_cutoff = base_hz;
+        c.mod_wheel = wheel;
+        let mut bank = fast_bank();
+        let mut note = [60u8; N];
+        let mut gate = [false; N];
+        let mut active = [false; N];
+        for (v, n) in notes.iter().enumerate() {
+            let Some(n) = *n else { continue };
+            note[v] = n;
+            gate[v] = true;
+            active[v] = true;
+            bank.trigger_lane(v, LfoShape::Sine, false, None);
+        }
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        l
+    }
+
+    fn hpf_render(m: &MatrixTable, base_hz: f32, wheel: f32) -> Vec<f32> {
+        hpf_render_notes(m, base_hz, wheel, &[Some(60)])
+    }
+
+    /// A route into `HpfCutoff` must actually move the filter: opening it well
+    /// above the played note (C4, 261 Hz) has to strip low-end energy.
+    #[test]
+    fn an_hpf_route_opens_the_filter() {
+        let unrouted = hpf_render(&default_patch(), 200.0, 1.0);
+        let routed = hpf_render(&hpf_patch(0.5), 200.0, 1.0); // +24 st over the base
+        let (a, b) = (low_energy(&unrouted), low_energy(&routed));
+        assert!(a > 1e-4, "the unrouted render must sound");
+        assert!(b < a * 0.8, "the route should thin the low end: {b} vs {a}");
+    }
+
+    /// The gate is not keyed on the raw param: with the panel parked at its
+    /// 20 Hz minimum — "off" — a positive route still has to open the filter.
+    #[test]
+    fn a_route_opens_the_filter_from_the_off_rail() {
+        let off = hpf_render(&default_patch(), HPF_OFF_HZ, 1.0);
+        // Full depth: +48 st over 20 Hz is 320 Hz, above the played C4.
+        let routed = hpf_render(&hpf_patch(1.0), HPF_OFF_HZ, 1.0);
+        let (a, b) = (low_energy(&off), low_energy(&routed));
+        assert!(a > 1e-4);
+        assert!(b < a * 0.8, "a route must lift the filter off the rail: {b} vs {a}");
+    }
+
+    /// And the route has to be *live*: the same patch with the wheel down keeps
+    /// the bank-wide `set_cutoff_all` path and renders bit-identically to the
+    /// patch without the route at all.
+    #[test]
+    fn an_hpf_route_at_zero_source_leaves_the_bank_path() {
+        for base in [HPF_OFF_HZ, 200.0, 2_000.0] {
+            let plain = hpf_render(&default_patch(), base, 0.0);
+            let routed = hpf_render(&hpf_patch(0.6), base, 0.0);
+            assert_eq!(plain, routed, "an inert route must not change the render at {base} Hz");
+        }
+    }
+
+    /// The dest is genuinely **per lane**, not bank-wide. Two notes two octaves
+    /// apart under Key → `HpfCutoff` land on very different cutoffs; since
+    /// voices are independent and simply summed, rendering them together must
+    /// equal rendering each alone. A bank-wide `set_cutoff_all` would give both
+    /// lanes whichever cutoff was written last, and the two would diverge.
+    #[test]
+    fn the_hpf_dest_is_per_lane() {
+        let mut m = default_patch();
+        m.slots[8] = MatrixSlot {
+            source: SourceId::Key,
+            dest: DestId::HpfCutoff,
+            depth: 0.5, // 24 st of HPF per octave of key
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        let pair = hpf_render_notes(&m, 200.0, 0.0, &[Some(48), Some(84)]);
+        let solo_low = hpf_render_notes(&m, 200.0, 0.0, &[Some(48), None]);
+        let solo_high = hpf_render_notes(&m, 200.0, 0.0, &[None, Some(84)]);
+
+        let peak = pair.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak > 1e-4, "the pair must sound");
+        // Lane 1 sits three octaves of key above lane 0, so the two really are
+        // on different cutoffs — a bank-wide filter could not tell them apart.
+        assert!(
+            low_energy(&solo_low) > low_energy(&solo_high) * 1.5,
+            "the low note should survive the key-tracked HPF far better: {} vs {}",
+            low_energy(&solo_low),
+            low_energy(&solo_high)
+        );
+        for (i, ((p, a), b)) in pair.iter().zip(&solo_low).zip(&solo_high).enumerate() {
+            assert!(
+                (p - (a + b)).abs() < 1e-5,
+                "lane {i}: pair {p} != solo sum {} — the filter is not per lane",
+                a + b
+            );
+        }
+    }
+
     // ── Per-oscillator PWM destinations (0261) ──────────────────────────────
 
     /// The oscillator's pulse is DC-blocked (`− (2w − 1)`), so width has to be
@@ -1548,10 +2065,191 @@ mod tests {
         let gate = [false; N]; // already released
         let mut active = [false; N];
         active[0] = true;
-        let mut l = vec![0.0; 256];
-        let mut r = vec![0.0; 256];
+        // Long enough to cover the 8 ms declick ramp the free now goes through
+        // (0271) — 256 frames is 5.3 ms, less than the ramp.
+        let mut l = vec![0.0; 1024];
+        let mut r = vec![0.0; 1024];
         bank.render(&ctx(&m), &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(!active[0], "an idle released voice must free");
+    }
+
+    // ── 0271: voice lifetime is owned by the Amp routes ──────────────────────
+
+    /// A matrix with `slots` installed from index 0.
+    fn table_of(slots: &[MatrixSlot]) -> MatrixTable {
+        let mut t = MatrixTable::default();
+        for (i, s) in slots.iter().enumerate() {
+            t.slots[i] = *s;
+        }
+        t
+    }
+
+    fn route(source: SourceId, dest: DestId, depth: f32) -> MatrixSlot {
+        MatrixSlot { source, dest, depth, curve: Curve::Lin, scale_src: SourceId::None }
+    }
+
+    /// Gate lane 0 on for `hold` frames, then release it for `rel` frames.
+    /// Returns whether the lane freed, and the release render's left channel.
+    fn hold_then_release(
+        m: &MatrixTable,
+        bank: &mut RenderBank,
+        hold: usize,
+        rel: usize,
+    ) -> (bool, Vec<f32>) {
+        let note = [60u8; N];
+        let mut active = [false; N];
+        active[0] = true;
+        let mut c = ctx(m);
+        c.lfo2_val = 1.0; // an LFO→Amp route wide open, so the tail is audible
+
+        let mut gate = [false; N];
+        gate[0] = true;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let mut l = vec![0.0; hold];
+        let mut r = vec![0.0; hold];
+        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        assert!(active[0], "the note should still be sounding while gated");
+
+        let gate = [false; N];
+        let mut l = vec![0.0; rel];
+        let mut r = vec![0.0; rel];
+        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        (!active[0], l)
+    }
+
+    /// A long envelope (10 s release) and a snappy one, for the lane whose
+    /// lifetime is under test.
+    fn long_and_short(bank: &mut RenderBank, long_first: bool) {
+        let long = (0.001, 0.001, 1.0, 10.0);
+        let short = (0.001, 0.001, 1.0, 0.001);
+        let (e1, e2) = if long_first { (long, short) } else { (short, long) };
+        bank.set_envelopes(e1, AdsrShape::Linear, e2, AdsrShape::Linear, 0.0);
+    }
+
+    /// The bug this rule fixes: Env 2 → Amp is the only thing that can end a
+    /// note, but a long *unrouted* Env 1 used to hold the lane open — and an
+    /// LFO → Amp route kept that held lane sounding long after the amp envelope
+    /// had closed. The lane must now free on Env 2 alone.
+    #[test]
+    fn an_unrouted_envelope_no_longer_holds_a_lane_open() {
+        let m = table_of(&[
+            route(SourceId::Env2, DestId::Amp, 1.0),
+            route(SourceId::Lfo2, DestId::Amp, 1.0),
+        ]);
+        let mut bank = RenderBank::new(48_000.0, 1);
+        long_and_short(&mut bank, true); // Env 1 long, routed nowhere
+        let (freed, _) = hold_then_release(&m, &mut bank, 512, 2048);
+        assert!(freed, "Env 1 is unrouted — it must not hold the lane");
+    }
+
+    /// An envelope routed somewhere *other* than Amp does not hold the lane
+    /// either: only Amp routes can end a note, so only they own the lifetime.
+    #[test]
+    fn a_filter_only_envelope_does_not_hold_a_lane_open() {
+        let m = table_of(&[
+            route(SourceId::Env2, DestId::Amp, 1.0),
+            route(SourceId::Env1, DestId::Cutoff, 0.5),
+        ]);
+        let mut bank = RenderBank::new(48_000.0, 1);
+        long_and_short(&mut bank, true);
+        let (freed, _) = hold_then_release(&m, &mut bank, 512, 2048);
+        assert!(freed, "a filter envelope must not keep a silent lane allocated");
+    }
+
+    /// A patch whose Amp comes only from an LFO has nothing an envelope can
+    /// close. Note-off must still end the note — via the declick ramp — rather
+    /// than droning until some unrelated envelope finishes.
+    #[test]
+    fn an_lfo_only_amp_patch_still_ends_its_note() {
+        let m = table_of(&[route(SourceId::Lfo2, DestId::Amp, 1.0)]);
+        let mut bank = RenderBank::new(48_000.0, 1);
+        // Both envelopes long: under the old rule this note never ended.
+        let long = (0.001, 0.001, 1.0, 10.0);
+        bank.set_envelopes(long, AdsrShape::Linear, long, AdsrShape::Linear, 0.0);
+        let (freed, tail) = hold_then_release(&m, &mut bank, 512, 2048);
+        assert!(freed, "no Env→Amp route: gate-off must end the note");
+        assert!(tail.iter().any(|&s| s != 0.0), "and fade out, not cut instantly");
+    }
+
+    /// An Env→Amp route *does* hold its lane — including a curved one, which
+    /// folds into `AmpCoeffs::stat` rather than the per-frame `e1`/`e2` terms
+    /// and so cannot be detected from those.
+    #[test]
+    fn an_amp_routed_envelope_holds_its_lane_whatever_the_curve() {
+        for curve in [Curve::Lin, Curve::Exp, Curve::Log] {
+            let mut slot = route(SourceId::Env2, DestId::Amp, 1.0);
+            slot.curve = curve;
+            let m = table_of(&[slot]);
+            let mut bank = RenderBank::new(48_000.0, 1);
+            let long = (0.001, 0.001, 1.0, 10.0);
+            bank.set_envelopes(long, AdsrShape::Linear, long, AdsrShape::Linear, 0.0);
+            let (freed, _) = hold_then_release(&m, &mut bank, 512, 2048);
+            assert!(!freed, "{curve:?} Env→Amp route must hold the lane");
+        }
+    }
+
+    /// A lane re-gated mid-ramp comes back at full gain. `trigger_lane` resets
+    /// the ramp, but a legato slide onto a widened stack re-gates a lane with
+    /// no trigger at all — and since the ramp only advances while the gate is
+    /// low, a lane left part-faded there would stay quiet for the whole note.
+    #[test]
+    fn a_regated_lane_recovers_full_gain() {
+        let m = table_of(&[route(SourceId::Lfo2, DestId::Amp, 1.0)]);
+        let mut bank = RenderBank::new(48_000.0, 1);
+        let long = (0.001, 0.001, 1.0, 10.0);
+        bank.set_envelopes(long, AdsrShape::Linear, long, AdsrShape::Linear, 0.0);
+
+        let note = [60u8; N];
+        let mut active = [false; N];
+        active[0] = true;
+        let mut c = ctx(&m);
+        c.lfo2_val = 1.0;
+        let mut gate = [false; N];
+        gate[0] = true;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        let held_peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+
+        // Release for 2 ms — a quarter of the ramp, so the lane is part-faded
+        // but has not freed.
+        let released = [false; N];
+        let mut l = vec![0.0; 96];
+        let mut r = vec![0.0; 96];
+        bank.render(&c, &note, &released, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        assert!(active[0], "still mid-ramp");
+        assert!(bank.free_fade[0] < 1.0, "the ramp should have started");
+
+        // Re-gate with no trigger, as a legato slide does.
+        let mut l = vec![0.0; 512];
+        let mut r = vec![0.0; 512];
+        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        assert_eq!(bank.free_fade[0], 1.0, "a re-gate must cancel the ramp");
+        let back = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(back > held_peak * 0.9, "re-gated lane is quiet: {back} vs {held_peak}");
+    }
+
+    /// The free is a ramp, not a step: the tail must decay into silence rather
+    /// than stop at whatever the LFO was holding it at.
+    #[test]
+    fn freeing_a_sounding_lane_declicks() {
+        let m = table_of(&[route(SourceId::Lfo2, DestId::Amp, 1.0)]);
+        let mut bank = RenderBank::new(48_000.0, 1);
+        let long = (0.001, 0.001, 1.0, 10.0);
+        bank.set_envelopes(long, AdsrShape::Linear, long, AdsrShape::Linear, 0.0);
+        let (freed, tail) = hold_then_release(&m, &mut bank, 512, 2048);
+        assert!(freed);
+        let peak = tail.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak > 0.0, "the tail must sound");
+        let last = tail.iter().rposition(|&s| s != 0.0).unwrap();
+        assert!(tail[last].abs() < peak * 0.2, "stepped out at {}", tail[last]);
+        // The ramp is FREE_FADE_SECS long, not a block or a buffer.
+        let ramp = FREE_FADE_SECS * 48_000.0;
+        assert!(
+            (last as f32 - ramp).abs() < ramp * 0.5,
+            "ramp ended at {last}, expected near {ramp}"
+        );
     }
 
     // ── 0218: global drift / per-voice component trims ──

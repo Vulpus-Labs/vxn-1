@@ -67,6 +67,58 @@ pub const PITCH: usize = 0;
 pub const SWEEP: usize = 1;
 const N_PITCH: usize = 2;
 
+/// A one-pole smoother held per lane, for one smoothed quantity.
+///
+/// Every non-pitch dest smoothed here is the same recurrence —
+/// `state += coeff · (target − state)` — over a `[f32; N]` lane array. The
+/// coefficient is *not* a field: it belongs to the tier (`slow_coeff` per
+/// quantum, `amp_coeff` per frame) rather than to the quantity, so
+/// [`MotionSmoother`] owns it and passes it in. That keeps this type a plain
+/// `Copy` array, and keeps a new smoothed dest to one field instead of a field
+/// plus four hand-written methods.
+///
+/// The pitch cascade is deliberately **not** built on this: it is two poles with
+/// its own coefficient and a C1-continuity rationale (see the module docs).
+#[derive(Clone, Copy, Debug, Default)]
+struct LaneOnePole([f32; N]);
+
+impl LaneOnePole {
+    /// Snap one lane straight to `target` — a fresh note starts settled rather
+    /// than gliding up from whatever the stolen voice left behind.
+    #[inline]
+    fn snap(&mut self, v: usize, target: f32) {
+        self.0[v] = target;
+    }
+
+    /// This lane's current value, without advancing it.
+    #[inline]
+    fn current(&self, v: usize) -> f32 {
+        self.0[v]
+    }
+
+    /// Advance one lane a step toward `target` and return the new value.
+    #[inline]
+    fn tick(&mut self, v: usize, target: f32, coeff: f32) -> f32 {
+        self.0[v] += coeff * (target - self.0[v]);
+        self.0[v]
+    }
+
+    /// Whether this lane is worth ticking: a nonzero target, or residual state
+    /// still gliding back toward zero after a route turned off. When false the
+    /// render loop keeps its block-start value and skips the per-quantum recook.
+    #[inline]
+    fn active(&self, v: usize, target: f32) -> bool {
+        (target - self.0[v]).abs() > SETTLE_EPS || self.0[v].abs() > SETTLE_EPS
+    }
+
+    /// Whether this lane has arrived at `target` — distinct from [`Self::active`],
+    /// which also reports a lane displaced from zero with nothing to chase.
+    #[inline]
+    fn settled(&self, v: usize, target: f32) -> bool {
+        (self.0[v] - target).abs() <= SETTLE_EPS
+    }
+}
+
 /// Per-lane motion smoothers for one render bank.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionSmoother {
@@ -74,24 +126,22 @@ pub struct MotionSmoother {
     p_stage1: [[f32; N]; N_PITCH],
     /// Cascade stage 2 (= smoothed output) for the pitch-family dests.
     p_state: [[f32; N]; N_PITCH],
-    /// Block-rate one-pole state for osc 1's PWM offset, per lane. The three
-    /// PWM dests are summed per oscillator *before* the one-pole (0261), so
-    /// this stays two smoothers rather than three, and a patch routing only the
-    /// combined `Pwm` feeds both lanes the same target — identical to before
-    /// the split.
-    pwm1: [f32; N],
-    /// Block-rate one-pole state for osc 2's PWM offset, per lane.
-    pwm2: [f32; N],
-    /// Block-rate one-pole state for the `CrossModAmount` dest *offset*, per
-    /// lane (0242). The patch's own `cross_mod_amount` is added on top by the
-    /// render, so a patch with no route on the dest holds exactly zero here.
-    xmod: [f32; N],
-    /// Block-rate one-pole state for the non-env Amp coefficient, per lane.
-    amp_stat: [f32; N],
-    /// Block-rate one-pole state for the `Pan` dest, per lane (0260). Pan is a
-    /// *position*, so unlike PWM/cross-mod there is no patch scalar riding on
-    /// top — this is the whole value the render pans by.
-    pan: [f32; N],
+    /// Per-oscillator PWM offsets, `[osc 1, osc 2]`. The three PWM dests are
+    /// summed per oscillator *before* the one-pole (0261), so this stays two
+    /// smoothers rather than three, and a patch routing only the combined `Pwm`
+    /// feeds both the same target — identical to before the split.
+    pwm: [LaneOnePole; 2],
+    /// The `CrossModAmount` dest *offset* (0242). The patch's own
+    /// `cross_mod_amount` is added on top by the render, so a patch with no
+    /// route on the dest holds exactly zero here.
+    xmod: LaneOnePole,
+    /// The non-env Amp coefficient. The only quantity on the *per-frame* tier —
+    /// see `amp_coeff`.
+    amp_stat: LaneOnePole,
+    /// The `Pan` dest (0260). Pan is a *position*, so unlike PWM/cross-mod there
+    /// is no patch scalar riding on top — this is the whole value the render
+    /// pans by.
+    pan: LaneOnePole,
     /// Cascade coeff, calibrated at the *quantum* tick rate (`sr / PITCH_QUANTUM`).
     pitch_coeff: f32,
     /// Amp one-pole coeff, calibrated at the *per-frame* (base-sample) rate.
@@ -113,11 +163,10 @@ impl MotionSmoother {
         Self {
             p_stage1: [[0.0; N]; N_PITCH],
             p_state: [[0.0; N]; N_PITCH],
-            pwm1: [0.0; N],
-            pwm2: [0.0; N],
-            xmod: [0.0; N],
-            amp_stat: [0.0; N],
-            pan: [0.0; N],
+            pwm: Default::default(),
+            xmod: LaneOnePole::default(),
+            amp_stat: LaneOnePole::default(),
+            pan: LaneOnePole::default(),
             pitch_coeff,
             amp_coeff,
             slow_coeff,
@@ -130,15 +179,16 @@ impl MotionSmoother {
         *self = Self::new(sample_rate);
     }
 
-    /// Zero all state (bank reset).
+    /// Zero all state (bank reset). Coefficients are already cooked for the
+    /// current sample rate, so only the state clears — and it clears wholesale,
+    /// which is what stops a newly smoothed dest from being forgotten here.
     pub fn reset(&mut self) {
         self.p_stage1 = [[0.0; N]; N_PITCH];
         self.p_state = [[0.0; N]; N_PITCH];
-        self.pwm1 = [0.0; N];
-        self.pwm2 = [0.0; N];
-        self.xmod = [0.0; N];
-        self.amp_stat = [0.0; N];
-        self.pan = [0.0; N];
+        self.pwm = Default::default();
+        self.xmod = LaneOnePole::default();
+        self.amp_stat = LaneOnePole::default();
+        self.pan = LaneOnePole::default();
     }
 
     /// Snap one lane's pitch cascade (both stages) to the block targets, so a
@@ -151,6 +201,20 @@ impl MotionSmoother {
         self.p_state[SWEEP][v] = sweep_target;
     }
 
+    /// Snap **every** smoother for lane `v` to its block targets, so a fresh
+    /// note starts settled: static sources (velocity, key) land zipper-free,
+    /// and nothing glides in from the stolen voice's stale state.
+    ///
+    /// One entry point rather than three (0276) — a smoothed dest added without
+    /// a matching snap would show up as a note-on glide from the previous
+    /// voice's value, which is subtle enough to ship unnoticed.
+    #[inline]
+    pub(crate) fn snap_all(&mut self, v: usize, t: &crate::bank::LaneTargets) {
+        self.snap_pitch(v, t.pitch, t.sweep);
+        self.snap_slow(v, t.pwm, t.xmod, t.amp_stat);
+        self.snap_pan(v, t.pan);
+    }
+
     /// Snap one lane's PWM / cross-mod / Amp-stat one-poles to their block
     /// targets.
     #[inline]
@@ -161,10 +225,10 @@ impl MotionSmoother {
         xmod_target: f32,
         amp_stat_target: f32,
     ) {
-        self.pwm1[v] = pwm_targets.0;
-        self.pwm2[v] = pwm_targets.1;
-        self.xmod[v] = xmod_target;
-        self.amp_stat[v] = amp_stat_target;
+        self.pwm[0].snap(v, pwm_targets.0);
+        self.pwm[1].snap(v, pwm_targets.1);
+        self.xmod.snap(v, xmod_target);
+        self.amp_stat.snap(v, amp_stat_target);
     }
 
     /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
@@ -172,28 +236,25 @@ impl MotionSmoother {
     /// the previous note sat — it starts where its own patch puts it.
     #[inline]
     pub fn snap_pan(&mut self, v: usize, target: f32) {
-        self.pan[v] = target;
+        self.pan.snap(v, target);
     }
 
     /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
-    /// Mirrors [`Self::pwm_active`]: a patch with no live route into `Pan`
-    /// holds zero here and keeps the block-constant pan gains.
     #[inline]
     pub fn pan_active(&self, v: usize, target: f32) -> bool {
-        (target - self.pan[v]).abs() > SETTLE_EPS || self.pan[v].abs() > SETTLE_EPS
+        self.pan.active(v, target)
     }
 
     /// Advance one lane's pan one-pole a quantum step and return the new value.
     #[inline]
     pub fn tick_pan(&mut self, v: usize, target: f32) -> f32 {
-        self.pan[v] += self.slow_coeff * (target - self.pan[v]);
-        self.pan[v]
+        self.pan.tick(v, target, self.slow_coeff)
     }
 
     /// This lane's current smoothed pan without advancing it.
     #[inline]
     pub fn pan_current(&self, v: usize) -> f32 {
-        self.pan[v]
+        self.pan.current(v)
     }
 
     /// Advance one lane's pitch cascade one quantum step toward the targets and
@@ -214,6 +275,9 @@ impl MotionSmoother {
     /// target, or residual energy still gliding back toward zero after a route
     /// turned off. When false the render loop keeps the block-start `inc` and
     /// skips the per-quantum pitch recook.
+    ///
+    /// Both cascade *stages* are checked, not just the output: stage 1 can still
+    /// hold energy the output has yet to see.
     #[inline]
     pub fn pitch_active(&self, v: usize, pitch_target: f32, sweep_target: f32) -> bool {
         pitch_target.abs() > SETTLE_EPS
@@ -224,77 +288,74 @@ impl MotionSmoother {
             || self.p_stage1[SWEEP][v].abs() > SETTLE_EPS
     }
 
-    /// Whether lane `v`'s PWM one-poles need ticking (nonzero target or residual
-    /// state on *either* oscillator, 0261); when false the render loop keeps the
-    /// block-start pulse widths. A patch with no PWM route holds zero on both
-    /// lanes and stays on the block-constant path exactly as before the split.
+    /// Whether lane `v`'s PWM one-poles need ticking — on *either* oscillator
+    /// (0261); when false the render loop keeps the block-start pulse widths. A
+    /// patch with no PWM route holds zero on both and stays on the
+    /// block-constant path exactly as before the split.
     #[inline]
     pub fn pwm_active(&self, v: usize, targets: (f32, f32)) -> bool {
-        targets.0.abs() > SETTLE_EPS
-            || targets.1.abs() > SETTLE_EPS
-            || self.pwm1[v].abs() > SETTLE_EPS
-            || self.pwm2[v].abs() > SETTLE_EPS
+        self.pwm[0].active(v, targets.0) || self.pwm[1].active(v, targets.1)
     }
 
     /// Advance lane `v`'s PWM one-poles one quantum step and return the smoothed
     /// `(osc 1, osc 2)` offsets.
     #[inline]
     pub fn tick_pwm(&mut self, v: usize, targets: (f32, f32)) -> (f32, f32) {
-        self.pwm1[v] += self.slow_coeff * (targets.0 - self.pwm1[v]);
-        self.pwm2[v] += self.slow_coeff * (targets.1 - self.pwm2[v]);
-        (self.pwm1[v], self.pwm2[v])
+        (
+            self.pwm[0].tick(v, targets.0, self.slow_coeff),
+            self.pwm[1].tick(v, targets.1, self.slow_coeff),
+        )
     }
 
     /// Lane `v`'s current smoothed `(osc 1, osc 2)` PWM offsets, without
     /// advancing (block-start peek).
     #[inline]
     pub fn pwm_current(&self, v: usize) -> (f32, f32) {
-        (self.pwm1[v], self.pwm2[v])
+        (self.pwm[0].current(v), self.pwm[1].current(v))
     }
 
-    /// Whether lane `v`'s cross-mod one-pole needs ticking (nonzero target or
-    /// residual state); when false the render keeps the block-start PM index —
-    /// and, with every lane inactive, stays on the broadcast PM kernel entirely.
+    /// Whether lane `v`'s cross-mod one-pole needs ticking; when false the
+    /// render keeps the block-start PM index — and, with every lane inactive,
+    /// stays on the broadcast PM kernel entirely.
     #[inline]
     pub fn xmod_active(&self, v: usize, target: f32) -> bool {
-        target.abs() > SETTLE_EPS || self.xmod[v].abs() > SETTLE_EPS
+        self.xmod.active(v, target)
     }
 
     /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
     /// smoothed PM-index *offset* (the patch amount is added by the render).
     #[inline]
     pub fn tick_xmod(&mut self, v: usize, target: f32) -> f32 {
-        self.xmod[v] += self.slow_coeff * (target - self.xmod[v]);
-        self.xmod[v]
+        self.xmod.tick(v, target, self.slow_coeff)
     }
 
     /// Lane `v`'s current smoothed cross-mod offset, without advancing.
     #[inline]
     pub fn xmod_current(&self, v: usize) -> f32 {
-        self.xmod[v]
+        self.xmod.current(v)
     }
 
     /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
-    /// smoothed static Amp coefficient. Ticked per sample (not per block) because
-    /// a block-held amplitude stair is itself an audible click on a slow carrier.
+    /// smoothed static Amp coefficient. Ticked per sample (not per quantum)
+    /// because a block-held amplitude stair is itself an audible click on a slow
+    /// carrier — hence `amp_coeff` rather than `slow_coeff`.
     #[inline]
     pub fn tick_amp_stat(&mut self, v: usize, target: f32) -> f32 {
-        self.amp_stat[v] += self.amp_coeff * (target - self.amp_stat[v]);
-        self.amp_stat[v]
+        self.amp_stat.tick(v, target, self.amp_coeff)
     }
 
     /// Lane `v`'s current smoothed Amp coefficient, without advancing.
     #[inline]
     pub fn amp_stat_current(&self, v: usize) -> f32 {
-        self.amp_stat[v]
+        self.amp_stat.current(v)
     }
 
-    /// True when lane `v`'s Amp one-pole is within [`SETTLE_EPS`] of `target` —
-    /// the render loop keeps its envelope-static constant-amp fast path while a
-    /// non-env Amp route is still gliding.
+    /// True when lane `v`'s Amp one-pole has arrived at `target` — the render
+    /// loop keeps its envelope-static constant-amp fast path only while this
+    /// holds for every active lane.
     #[inline]
     pub fn amp_stat_settled(&self, v: usize, target: f32) -> bool {
-        (self.amp_stat[v] - target).abs() <= SETTLE_EPS
+        self.amp_stat.settled(v, target)
     }
 }
 
