@@ -73,3 +73,40 @@ clearly worse.
 
 `amp_env_bypass` (organ mode) is untouched — it returns `gate ? 1 : 0`, so its
 note-off step is unaffected by the ramp. Worth a separate look if it clicks.
+
+## Close-out
+
+Landed 2026-08-21 in `fafef73`. Files touched: `vxn1b-engine/src/bank.rs`.
+
+Both decisions shipped as written. A released lane is now held open only by the
+envelopes actually routed to `Amp`, and freeing always goes through an 8 ms
+declick ramp (`FREE_FADE_SECS`).
+
+The routed-envelope test is topology + depth, deliberately **not** the per-lane
+`AmpCoeffs`: those collect only `Lin`-curve Env→Amp slots (the rest fold into
+`stat`), and a curved Env→Amp route must silence its note exactly like a linear
+one. A `scale_src` sitting at zero is likewise ignored — a route that exists
+counts as a route, so a momentarily gated VCA cannot make a note un-endable.
+
+A re-gate cancels a ramp in flight, and that reset lives in the per-frame check
+rather than only in `trigger_lane`: a legato slide onto a widened stack can
+re-gate a lane *without* a trigger, and since the ramp only advances while the
+gate is low, a lane left part-faded there would have stayed quiet for the whole
+note.
+
+Tests: `an_unrouted_envelope_no_longer_holds_a_lane_open`,
+`a_filter_only_envelope_does_not_hold_a_lane_open`,
+`an_lfo_only_amp_patch_still_ends_its_note`,
+`an_amp_routed_envelope_holds_its_lane_whatever_the_curve`,
+`a_regated_lane_recovers_full_gain`, `freeing_a_sounding_lane_declicks`.
+
+**Refactored on landing.** 0274 replaced the standalone `amp_envelopes` walk
+with `AmpRoutes::resolve`, which carries `holds_env1`/`holds_env2` off the
+block's single Amp scan; 0276 lifted the per-frame lifetime block out of the
+render loop into `free_released_lanes`. The behaviour and all six tests are
+unchanged — see [0274](0274-vxn1b-amp-slot-walk-single-pass.md) and
+[0276](0276-vxn1b-bank-render-decomposition.md).
+
+**Not verified by automated test:** the audible result — in particular that the
+declick is inaudible on an ordinary patch and effective on an LFO→Amp one.
+Needs a listen in Reaper.

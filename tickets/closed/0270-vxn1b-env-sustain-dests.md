@@ -46,3 +46,30 @@ the two can leave `[0, 1]`.
 
 `cook_env_scale` (0268) became `cook_env_mods` — it now latches four values per
 lane, not two.
+
+## Close-out
+
+Landed 2026-08-20 in `e43b7d0`. Files touched: `vxn1b-engine/src/{matrix.rs,
+eval.rs, bank.rs}`.
+
+`DestId::Env1Sustain` / `Env2Sustain`, `DEST_GAIN` 1.0, linear `cook_depth`.
+`RenderBank::env_sus_mod` is latched in `cook_env_mods` alongside the 0268 time
+scales, and `apply_env_lane` folds it in as
+`(patch × drift trim + offset).clamp(0, 1)` — the clamp last, so no combination
+of drift and matrix offset can leave the legal range.
+
+**Additive** where the time dests are multiplicative, because sustain is an
+absolute level rather than a duration: a multiplier can never lift a sustain of
+0, and never reach the ceiling from a low one — which is exactly what a velocity
+or wheel route wants to do.
+
+Latched at note-on for the same reason as the time scales: sustain is the
+envelope's *held* value and also sets the decay rate, so tracking it
+continuously would both step a ringing note and bend a decay already in flight.
+
+Tests: `env_sustain_dest_offsets_the_patch_level`,
+`env_sustain_reaches_both_rails_and_clamps`, `env_sustain_latches_at_note_on`,
+`env_sustain_offset_survives_a_param_change`.
+
+**Not verified by automated test:** the audible result — needs a listen in
+Reaper.

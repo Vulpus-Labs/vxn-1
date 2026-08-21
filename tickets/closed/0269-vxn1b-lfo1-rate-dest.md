@@ -36,15 +36,15 @@ stolen voice never runs even one block at the previous note's rate.
 
 ## Acceptance criteria
 
-- [ ] `DestId::Lfo1Rate` (wire `lfo1-rate`, label `LFO 1 Rate`), `N_DESTS`
+- [x] `DestId::Lfo1Rate` (wire `lfo1-rate`, label `LFO 1 Rate`), `N_DESTS`
       13 → 14, `DEST_GAIN` 2.0 = ±2 octaves of rate.
-- [ ] `eval::lfo_rate_scale`: total → `2^clamp(x, −2, 2)`, rails at 0.25× / 4×,
+- [x] `eval::lfo_rate_scale`: total → `2^clamp(x, −2, 2)`, rails at 0.25× / 4×,
       unity at 0.
-- [ ] `RenderBank` keeps a per-lane `lfo1_rate_mod` carried over one block; the
+- [x] `RenderBank` keeps a per-lane `lfo1_rate_mod` carried over one block; the
       per-lane `set_rate` is `ctx.lfo1_rate_hz × lfo_rate_scale(mod)`.
-- [ ] A note-on re-rates its own lane from the trigger block's total.
-- [ ] No route → every lane at exactly the panel Hz, render bit-identical.
-- [ ] Tests: the ×4 / ×0.25 rails behaviourally (phase advance per block), a
+- [x] A note-on re-rates its own lane from the trigger block's total.
+- [x] No route → every lane at exactly the panel Hz, render bit-identical.
+- [x] Tests: the ×4 / ×0.25 rails behaviourally (phase advance per block), a
       synced rate multiplying to another subdivision's rate exactly, stolen-lane
       re-rate, and the unrouted case.
 
@@ -56,3 +56,34 @@ tops out there rather than aliasing the control-rate LFO.
 Deliberately continuous, unlike the envelope time scales of 0268: a phase
 increment can change mid-note without artefacts, so there is no reason to latch
 it at note-on.
+
+## Close-out
+
+Landed 2026-08-20 in `e43b7d0`. Files touched: `vxn1b-engine/src/{matrix.rs,
+eval.rs, bank.rs}`.
+
+`DestId::Lfo1Rate` (wire `lfo1-rate`), `DEST_GAIN` 2.0; `eval::lfo_rate_scale`
+maps the total to `2^clamp(x, −2, 2)` — rails at 0.25× / 4×, unity at 0. Wider
+than the envelope scales because that is the range the wheel/velocity routes
+want: a 5 Hz wobble reaches a 1.25 Hz sway or a 20 Hz buzz.
+
+Multiplicative on the **resolved** Hz, so it composes with tempo sync (0267): a
+synced LFO under a power-of-two amount stays on the grid and lands on another
+subdivision rather than off it.
+
+`RenderBank::lfo1_rate_mod` carries the total over **one control block**. LFO 1
+is itself a source and the lanes tick before the matrix is evaluated, so a
+same-block read would be circular; the lag is 32 samples (~0.7 ms at 48 kHz). A
+note-on re-rates its own lane from the trigger block's own total, so a fresh
+note does not inherit the stolen note's rate for a block.
+
+Tests: `lfo_rate_scale_spans_two_octaves_either_way`,
+`lfo1_rate_dest_multiplies_the_resolved_hz`,
+`lfo1_rate_multiplies_a_synced_rate_the_same_way`,
+`a_fresh_note_does_not_inherit_the_stolen_notes_rate`,
+`an_unrouted_lfo1_rate_stays_at_the_panel_hz`.
+
+`N_DESTS` in the first criterion (13 → 14) was superseded by 0270; it is 16 now.
+
+**Not verified by automated test:** the audible result — needs a listen in
+Reaper.
