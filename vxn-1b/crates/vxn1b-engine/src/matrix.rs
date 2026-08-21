@@ -160,10 +160,52 @@ pub enum DestId {
     Osc1Pwm = 10,
     /// Osc 2's pulse width alone (0261). Mirror of [`DestId::Osc1Pwm`].
     Osc2Pwm = 11,
+    /// Envelope 1's **A/D/R times**, as a multiplier cooked at note-on (0268):
+    /// `2^x` over the dest total clamped to `[-1, 1]`, so the reachable range
+    /// is 0.5× (half as long) .. 2.0× (twice as long) with 0 exactly unity.
+    /// Sustain is a *level*, not a time, and is deliberately untouched.
+    ///
+    /// Unlike every other dest this one is **not continuous**: the multiplier
+    /// is latched when the voice triggers and held for the life of the note
+    /// (see [`crate::eval::env_time_scale`]).
+    Env1Scale = 12,
+    /// Envelope 2's A/D/R times (0268). Mirror of [`DestId::Env1Scale`].
+    Env2Scale = 13,
+    /// Per-voice LFO 1's **rate**, as a multiplier on the resolved Hz (0269):
+    /// `2^x` over the dest total clamped to `[-2, 2]`, so a full-depth route
+    /// spans 0.25× .. 4× the panel rate with 0 exactly unity.
+    ///
+    /// Multiplicative on the *resolved* rate, so it composes with tempo sync
+    /// (0267): a synced LFO stays on the grid under any power-of-two amount,
+    /// and lands between subdivisions otherwise — the same freedom the Rate
+    /// fader has when sync is off, now per voice.
+    ///
+    /// Unlike every other dest this one reads the **previous** control block's
+    /// total: LFO 1 is itself a source, and the lanes tick before the matrix is
+    /// evaluated, so a same-block read would be circular. The lag is one
+    /// control block (32 samples, ~0.7 ms at 48 kHz).
+    Lfo1Rate = 14,
+    /// Envelope 1's **sustain level**, as an offset cooked at note-on (0270):
+    /// the dest total is *added* to the patch sustain and clamped to `[0, 1]`,
+    /// so depth 1 spans the whole range.
+    ///
+    /// Additive where the time dests ([`DestId::Env1Scale`]) are multiplicative,
+    /// because sustain is an absolute level rather than a duration: a
+    /// multiplier can never lift a sustain of 0, and never reach the ceiling
+    /// from a low one — which is exactly what a velocity or wheel route wants
+    /// to do.
+    ///
+    /// Latched at note-on like the time scales: the sustain level is the
+    /// envelope's *held* value, so tracking it continuously would step a
+    /// ringing note (and, through the decay rate it also sets, bend a decay
+    /// already in flight).
+    Env1Sustain = 15,
+    /// Envelope 2's sustain level (0270). Mirror of [`DestId::Env1Sustain`].
+    Env2Sustain = 16,
 }
 
 /// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 11;
+pub const N_DESTS: usize = 16;
 
 impl DestId {
     /// Index into a per-voice dest accumulator, or `None` for the sentinel.
@@ -190,6 +232,11 @@ impl DestId {
             9 => DestId::Pan,
             10 => DestId::Osc1Pwm,
             11 => DestId::Osc2Pwm,
+            12 => DestId::Env1Scale,
+            13 => DestId::Env2Scale,
+            14 => DestId::Lfo1Rate,
+            15 => DestId::Env1Sustain,
+            16 => DestId::Env2Sustain,
             _ => DestId::None,
         }
     }
@@ -223,14 +270,18 @@ impl DestId {
 /// Destination machine id (kebab-case wire name). Index = `DestId as u8`.
 pub const DEST_NAMES: [&str; N_DESTS + 1] = [
     "none", "pitch", "xmod-sweep", "pwm", "cutoff", "resonance", "hpf-cutoff", "amp",
-    "cross-mod-amount", "pan", "osc1-pwm", "osc2-pwm",
+    "cross-mod-amount", "pan", "osc1-pwm", "osc2-pwm", "env1-scale", "env2-scale",
+    "lfo1-rate", "env1-sustain", "env2-sustain",
 ];
 
 /// Destination display label. Same indexing as [`DEST_NAMES`].
 pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "—",
     "Pitch",
-    "X-Mod Sweep",
+    // Spelled out to match the Cross Mod panel it sweeps; the wire name stays
+    // `"xmod-sweep"`, so presets and state blobs written before the rename
+    // decode unchanged.
+    "Cross Mod Sweep",
     // 0261 relabelled this one; its wire name stays `"pwm"`, so presets and
     // state blobs written before the split decode unchanged.
     "PWM (Both)",
@@ -238,10 +289,15 @@ pub const DEST_LABELS: [&str; N_DESTS + 1] = [
     "Resonance",
     "HPF Cutoff",
     "Amp",
-    "Cross-Mod Amt",
+    "Cross Mod Amt",
     "Pan",
     "Osc 1 PWM",
     "Osc 2 PWM",
+    "Env 1 Scale",
+    "Env 2 Scale",
+    "LFO 1 Rate",
+    "Env 1 Sustain",
+    "Env 2 Sustain",
 ];
 
 // ── Curve ───────────────────────────────────────────────────────────────────
@@ -535,7 +591,10 @@ mod tests {
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Pitch.idx(), Some(0));
         assert_eq!(DestId::Pan.idx(), Some(8));
-        assert_eq!(DestId::Osc2Pwm.idx(), Some(N_DESTS - 1));
+        assert_eq!(DestId::Osc2Pwm.idx(), Some(10));
+        assert_eq!(DestId::Env2Scale.idx(), Some(12));
+        assert_eq!(DestId::Lfo1Rate.idx(), Some(13));
+        assert_eq!(DestId::Env2Sustain.idx(), Some(N_DESTS - 1));
     }
 
     #[test]

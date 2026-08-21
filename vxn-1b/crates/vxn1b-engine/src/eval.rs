@@ -122,6 +122,9 @@ const fn idx(s: SourceId) -> usize {
 /// | `Amp` | 1.0 | full VCA gain (Env2→Amp @1 = VXN1 VCA) |
 /// | `CrossModAmount` | 4.0 | the 0..4 cross-mod range |
 /// | `Pan` | 1.0 | ±1 pan position (hard left .. hard right) |
+/// | `Env1Scale` / `Env2Scale` | 1.0 | ±1 octave of envelope time (0.5× .. 2×) |
+/// | `Lfo1Rate` | 2.0 | ±2 octaves of LFO rate (0.25× .. 4×) |
+/// | `Env1Sustain` / `Env2Sustain` | 1.0 | ±1 of sustain level (additive, clamped) |
 ///
 /// **Cubic taper:** `Pitch` additionally takes a `d³` taper on the stored depth
 /// before this gain ([`DestId::cook_depth`]) so vibrato-scale amounts are
@@ -143,6 +146,19 @@ pub const DEST_GAIN: [f32; N_DESTS] = {
     // so a route moved from `Pwm` to `Osc1Pwm` keeps its felt depth.
     g[di(DestId::Osc1Pwm)] = 0.5;
     g[di(DestId::Osc2Pwm)] = 0.5;
+    // The envelope time scales are exponential (0268): their native unit is
+    // *octaves of time*, so gain 1.0 means depth 1 reaches the 2× rail and the
+    // range stays symmetric about unity (−1 → 0.5×, the same musical distance).
+    g[di(DestId::Env1Scale)] = 1.0;
+    g[di(DestId::Env2Scale)] = 1.0;
+    // LFO rate is exponential too (0269), but wants a wider reach than the
+    // envelopes: two octaves either way turns a 5 Hz wobble into a 1.25 Hz sway
+    // or a 20 Hz buzz, which is the range the wheel/velocity routes are for.
+    g[di(DestId::Lfo1Rate)] = 2.0;
+    // Sustain is an absolute `[0, 1]` level and the dest is *additive* (0270),
+    // so unity gain means depth 1 spans the full range in either direction.
+    g[di(DestId::Env1Sustain)] = 1.0;
+    g[di(DestId::Env2Sustain)] = 1.0;
     g
 };
 
@@ -153,6 +169,43 @@ const fn di(d: DestId) -> usize {
         Some(i) => i,
         None => 0,
     }
+}
+
+/// Widest envelope-time excursion, in octaves of time: ±1 octave → the 0.5×
+/// .. 2.0× range of [`DestId::Env1Scale`] (0268).
+const ENV_SCALE_OCTAVES: f32 = 1.0;
+
+/// Convert an `Env1Scale` / `Env2Scale` dest total into the A/D/R **multiplier**
+/// the bank applies (0268): `2^x` over the total clamped to ±[`ENV_SCALE_OCTAVES`].
+///
+/// Exponential rather than linear so the two directions are musically
+/// symmetric — a route at `+d` lengthens by exactly as much as `−d` shortens —
+/// and so summed routes *compose* (two half-depth routes at full swing land on
+/// the same 2× a single full-depth one does). Clamping the exponent rather than
+/// the result keeps the rails hard: no depth or stack of routes can push an
+/// attack past 2× or below 0.5×.
+///
+/// Unity at 0 is what makes the dest free: a patch with no route (or every
+/// route at depth 0) gets exactly `1.0` and the render stays bit-identical.
+#[inline]
+pub fn env_time_scale(total: f32) -> f32 {
+    total.clamp(-ENV_SCALE_OCTAVES, ENV_SCALE_OCTAVES).exp2()
+}
+
+/// Widest LFO-rate excursion, in octaves of rate: ±2 octaves → the 0.25× .. 4×
+/// range of [`DestId::Lfo1Rate`] (0269).
+const LFO_RATE_OCTAVES: f32 = 2.0;
+
+/// Convert a `Lfo1Rate` dest total into the **multiplier** on the lane's
+/// resolved rate (0269): `2^x` over the total clamped to ±[`LFO_RATE_OCTAVES`].
+///
+/// Exponential for the same reasons as [`env_time_scale`], plus one specific to
+/// rate: powers of two are the musical intervals of a tempo-synced LFO, so a
+/// route at ±1 or ±2 octaves moves a synced LFO between subdivisions rather
+/// than off the grid.
+#[inline]
+pub fn lfo_rate_scale(total: f32) -> f32 {
+    total.clamp(-LFO_RATE_OCTAVES, LFO_RATE_OCTAVES).exp2()
 }
 
 /// Shape a source value through a curve (applied to the *source*, per VXN2).
@@ -348,6 +401,55 @@ mod tests {
         let sw = eval_sources(&SourceInputs { mod_wheel: 0.5, ..Default::default() });
         eval_dests(&table(&[slot(SourceId::ModWheel, DestId::Pitch, 1.0, Curve::Bipolar)]), &sw, &mut out);
         assert_eq!(out[DestId::Pitch.idx().unwrap()], 0.0);
+    }
+
+    #[test]
+    fn env_time_scale_is_symmetric_and_railed() {
+        // Unity at nothing routed — the property that keeps an unrouted patch
+        // bit-identical.
+        assert_eq!(env_time_scale(0.0), 1.0);
+        assert!((env_time_scale(1.0) - 2.0).abs() < 1e-6);
+        assert!((env_time_scale(-1.0) - 0.5).abs() < 1e-6);
+        // Symmetric: +d lengthens by the factor −d shortens by.
+        for d in [0.25, 0.5, 0.75] {
+            assert!((env_time_scale(d) * env_time_scale(-d) - 1.0).abs() < 1e-6);
+        }
+        // The exponent clamps, so no stack of routes escapes [0.5, 2.0].
+        assert!((env_time_scale(9.0) - 2.0).abs() < 1e-6);
+        assert!((env_time_scale(-9.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn env_scale_dests_are_linear_unity_gain() {
+        // Depth 1 from a full unipolar source = 1 octave of time = the 2× rail;
+        // no cubic taper (the exponential mapping is the taper).
+        let s = eval_sources(&SourceInputs { mod_wheel: 1.0, ..Default::default() });
+        let mut out = [0.0; N_DESTS];
+        for d in [DestId::Env1Scale, DestId::Env2Scale] {
+            eval_dests(&table(&[slot(SourceId::ModWheel, d, 1.0, Curve::Lin)]), &s, &mut out);
+            assert_eq!(out[d.idx().unwrap()], 1.0);
+            assert!((env_time_scale(out[d.idx().unwrap()]) - 2.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn lfo_rate_scale_spans_two_octaves_either_way() {
+        assert_eq!(lfo_rate_scale(0.0), 1.0);
+        assert!((lfo_rate_scale(2.0) - 4.0).abs() < 1e-6);
+        assert!((lfo_rate_scale(-2.0) - 0.25).abs() < 1e-6);
+        assert!((lfo_rate_scale(1.0) - 2.0).abs() < 1e-6);
+        // Rails hold whatever the depth stack sums to.
+        assert!((lfo_rate_scale(50.0) - 4.0).abs() < 1e-6);
+        assert!((lfo_rate_scale(-50.0) - 0.25).abs() < 1e-6);
+        // A full-depth route from a full unipolar source reaches the rail.
+        let s = eval_sources(&SourceInputs { mod_wheel: 1.0, ..Default::default() });
+        let mut out = [0.0; N_DESTS];
+        eval_dests(
+            &table(&[slot(SourceId::ModWheel, DestId::Lfo1Rate, 1.0, Curve::Lin)]),
+            &s,
+            &mut out,
+        );
+        assert!((lfo_rate_scale(out[DestId::Lfo1Rate.idx().unwrap()]) - 4.0).abs() < 1e-6);
     }
 
     #[test]

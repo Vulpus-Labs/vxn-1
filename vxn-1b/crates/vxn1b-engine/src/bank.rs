@@ -40,7 +40,7 @@ use vxn_dsp::{
     PolyOtaLadder, Waveform, note_to_hz, poly_ring_mod, poly_sub_square,
 };
 
-use crate::eval::{SourceInputs, eval_dests, eval_sources};
+use crate::eval::{SourceInputs, env_time_scale, eval_dests, eval_sources, lfo_rate_scale};
 use crate::matrix::{DestId, MatrixTable, SourceId};
 use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
@@ -272,6 +272,50 @@ pub struct RenderBank {
     /// Fixed per-lane component-tolerance trims (0218). Frozen at construction,
     /// scaled at apply time by the global drift amount.
     trim: VoiceTrim,
+    /// The patch's envelope settings as last pushed by [`Self::set_envelopes`],
+    /// kept so a lane's cooked params can be *re-derived* (0268). Without this
+    /// the per-lane note-on env scale would be wiped by the next envelope or
+    /// drift param change, which re-pushes the patch values to every lane.
+    env_patch: EnvPatch,
+    /// Per-lane A/D/R multiplier from the matrix, latched at note-on (0268):
+    /// `[0]` = env 1, `[1]` = env 2. Exactly `1.0` when nothing is routed.
+    env_scale: [[f32; N]; 2],
+    /// Per-lane sustain-level *offset* from the matrix, latched at note-on
+    /// alongside [`Self::env_scale`] (0270). Additive, clamped into `[0, 1]` at
+    /// apply time; exactly `0.0` when nothing is routed.
+    env_sus_mod: [[f32; N]; 2],
+    /// Per-lane `Lfo1Rate` dest total carried over from the **previous** control
+    /// block (0269). LFO 1 is a matrix *source*, so the lanes must tick before
+    /// the matrix is evaluated; reading last block's total is what breaks that
+    /// circle. Exactly `0.0` (→ unity rate) when nothing is routed.
+    lfo1_rate_mod: [f32; N],
+}
+
+/// The envelope half of the patch: both ADSRs, their shapes, and the drift
+/// amount scaling the per-lane trims. Held by [`RenderBank`] so
+/// [`RenderBank::apply_env_lane`] can re-cook one lane without the caller
+/// having to re-supply the patch (0268).
+#[derive(Clone, Copy)]
+struct EnvPatch {
+    env1: (f32, f32, f32, f32),
+    env1_shape: AdsrShape,
+    env2: (f32, f32, f32, f32),
+    env2_shape: AdsrShape,
+    drift: f32,
+}
+
+impl Default for EnvPatch {
+    fn default() -> Self {
+        // Matches `AdsrCore::new`'s zeroed cook, so a bank that somehow renders
+        // before the synth's first `set_envelopes` behaves as it always did.
+        Self {
+            env1: (0.0, 0.0, 0.0, 0.0),
+            env1_shape: AdsrShape::Linear,
+            env2: (0.0, 0.0, 0.0, 0.0),
+            env2_shape: AdsrShape::Linear,
+            drift: 0.0,
+        }
+    }
 }
 
 impl RenderBank {
@@ -300,6 +344,10 @@ impl RenderBank {
             smooth: MotionSmoother::new(sample_rate),
             lfo1_seed: rng_seed,
             trim: VoiceTrim::new(rng_seed),
+            env_patch: EnvPatch::default(),
+            env_scale: [[1.0; N]; 2],
+            env_sus_mod: [[0.0; N]; 2],
+            lfo1_rate_mod: [0.0; N],
         }
     }
 
@@ -337,6 +385,14 @@ impl RenderBank {
         self.glide_valid = [false; N];
         self.trigger_pending = [false; N];
         self.smooth.reset();
+        // Cooked note-on scales belong to notes, not to the lane: a reset has
+        // no notes, so every lane returns to the patch's plain envelope times.
+        self.env_scale = [[1.0; N]; 2];
+        self.env_sus_mod = [[0.0; N]; 2];
+        for v in 0..N {
+            self.apply_env_lane(v);
+        }
+        self.lfo1_rate_mod = [0.0; N];
     }
 
     /// Apply ADSR params to all lanes (called when an envelope param *or*
@@ -347,6 +403,11 @@ impl RenderBank {
     /// so a held chord's voices breathe at subtly different rates like real
     /// per-voice analog tolerance. At `drift_amount = 0` every factor is exactly
     /// `1.0`, so all lanes receive bit-identical params.
+    ///
+    /// The patch is *stored* as well as applied (0268), so the per-lane note-on
+    /// envelope scale can be folded in here and survive a param change mid-note:
+    /// tweaking Decay while a scaled note rings re-cooks that lane at its own
+    /// multiplier rather than snapping it back to the patch value.
     pub fn set_envelopes(
         &mut self,
         env1: (f32, f32, f32, f32),
@@ -355,19 +416,70 @@ impl RenderBank {
         env2_shape: AdsrShape,
         drift_amount: f32,
     ) {
-        let time_mag = TRIM_ENV_TIME * drift_amount;
-        let sus_mag = TRIM_SUSTAIN * drift_amount;
-        for (v, e) in self.env1.iter_mut().enumerate() {
-            let t = 1.0 + self.trim.env_time[v] * time_mag;
-            let s = (env1.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
-            e.set_params(env1.0 * t, env1.1 * t, s, env1.3 * t);
-            e.set_shape(env1_shape);
+        self.env_patch = EnvPatch { env1, env1_shape, env2, env2_shape, drift: drift_amount };
+        for v in 0..N {
+            self.apply_env_lane(v);
         }
-        for (v, e) in self.env2.iter_mut().enumerate() {
-            let t = 1.0 + self.trim.env_time[v] * time_mag;
-            let s = (env2.2 * (1.0 + self.trim.sustain[v] * sus_mag)).clamp(0.0, 1.0);
-            e.set_params(env2.0 * t, env2.1 * t, s, env2.3 * t);
-            e.set_shape(env2_shape);
+    }
+
+    /// Cook one lane's two envelopes from the stored patch × that lane's drift
+    /// trims (0218) × its latched matrix time scale (0268), with the latched
+    /// sustain offset added on top (0270). The time factors are independent
+    /// multipliers on A/D/R; sustain takes the drift trim multiplicatively and
+    /// the matrix offset additively, clamped into `[0, 1]` last so no
+    /// combination of the two can leave the legal range.
+    fn apply_env_lane(&mut self, v: usize) {
+        let p = self.env_patch;
+        let time_mag = TRIM_ENV_TIME * p.drift;
+        let sus_mag = TRIM_SUSTAIN * p.drift;
+        let trim_t = 1.0 + self.trim.env_time[v] * time_mag;
+        let trim_s = 1.0 + self.trim.sustain[v] * sus_mag;
+
+        let t1 = trim_t * self.env_scale[0][v];
+        let s1 = (p.env1.2 * trim_s + self.env_sus_mod[0][v]).clamp(0.0, 1.0);
+        self.env1[v].set_params(p.env1.0 * t1, p.env1.1 * t1, s1, p.env1.3 * t1);
+        self.env1[v].set_shape(p.env1_shape);
+
+        let t2 = trim_t * self.env_scale[1][v];
+        let s2 = (p.env2.2 * trim_s + self.env_sus_mod[1][v]).clamp(0.0, 1.0);
+        self.env2[v].set_params(p.env2.0 * t2, p.env2.1 * t2, s2, p.env2.3 * t2);
+        self.env2[v].set_shape(p.env2_shape);
+    }
+
+    /// Latch lane `v`'s envelope time scales (0268) and sustain offsets (0270)
+    /// from this block's dest totals, and re-cook the lane if any moved.
+    ///
+    /// Called **only** on the lane's note-on trigger: `AdsrCore` holds cooked
+    /// per-sample increments, so tracking the dest continuously would make a
+    /// held note's decay lurch every time the source moved. Latched at the
+    /// trigger, each note in a chord instead keeps whatever length the sources
+    /// (mod wheel, `Spread`, `NoteRandom`, velocity, key, LFO 2 sampled at the
+    /// keypress) said at the moment it started, for the whole life of the note —
+    /// including its release, which is the point of scaling R at all.
+    ///
+    /// The same argument covers sustain (0270): it is the envelope's *held*
+    /// level, and it also sets the decay rate, so tracking it continuously
+    /// would both step a ringing note and bend a decay already in flight.
+    ///
+    /// Note the two sources that read as ~zero here by construction: the
+    /// envelopes themselves (level ≈ 0 at the trigger) and `Aftertouch`
+    /// (pressure arrives after the note). They are routable, just not useful.
+    #[inline]
+    fn cook_env_mods(&mut self, v: usize, dests: &[f32; crate::matrix::N_DESTS]) {
+        let t1 = env_time_scale(dests[DestId::Env1Scale.idx().unwrap()]);
+        let t2 = env_time_scale(dests[DestId::Env2Scale.idx().unwrap()]);
+        let u1 = dests[DestId::Env1Sustain.idx().unwrap()];
+        let u2 = dests[DestId::Env2Sustain.idx().unwrap()];
+        if t1 != self.env_scale[0][v]
+            || t2 != self.env_scale[1][v]
+            || u1 != self.env_sus_mod[0][v]
+            || u2 != self.env_sus_mod[1][v]
+        {
+            self.env_scale[0][v] = t1;
+            self.env_scale[1][v] = t2;
+            self.env_sus_mod[0][v] = u1;
+            self.env_sus_mod[1][v] = u2;
+            self.apply_env_lane(v);
         }
     }
 
@@ -442,9 +554,12 @@ impl RenderBank {
 
         // Per-voice LFO 1: tick each lane's phase once for this block. LFOs tick
         // even on silent blocks so free-run phase keeps drifting.
+        // The rate is the panel's resolved Hz — sync already applied (0267) —
+        // times this lane's `Lfo1Rate` multiplier from last block (0269), so a
+        // synced LFO under a power-of-two amount stays on the grid.
         let mut lfo1_raw = [0.0f32; N];
-        for (lfo, raw) in self.lfo1.iter_mut().zip(lfo1_raw.iter_mut()) {
-            lfo.set_rate(ctx.lfo1_rate_hz);
+        for (v, (lfo, raw)) in self.lfo1.iter_mut().zip(lfo1_raw.iter_mut()).enumerate() {
+            lfo.set_rate(ctx.lfo1_rate_hz * lfo_rate_scale(self.lfo1_rate_mod[v]));
             *raw = lfo.next(ctx.lfo1_shape);
         }
         self.osc1.tick_drift(ctx.drift_amount);
@@ -563,7 +678,18 @@ impl RenderBank {
 
             // A fresh note snaps its lane so it starts settled (static sources
             // land zipper-free; no glide from the stolen voice's stale state).
+            // Next block's rate for this lane (0269).
+            self.lfo1_rate_mod[v] = dests[DestId::Lfo1Rate.idx().unwrap()];
+
             if self.trigger_pending[v] {
+                // Envelope time scales (0268) and sustain offsets (0270) are
+                // latched here, before the envelopes re-arm below.
+                self.cook_env_mods(v, &dests);
+                // A fresh note must not inherit the *stolen* note's LFO rate for
+                // a block: re-rate the lane now from this block's own total. The
+                // tick above already happened, so this lands from the next one —
+                // one block earlier than the carry-over would.
+                self.lfo1[v].set_rate(ctx.lfo1_rate_hz * lfo_rate_scale(self.lfo1_rate_mod[v]));
                 self.smooth.snap_pitch(v, pitch_tgt[v], sweep_tgt[v]);
                 self.smooth.snap_slow(v, pwm_tgt[v], xmod_tgt[v], ac.stat);
                 // A stolen lane must not glide across the image from wherever
@@ -1561,6 +1687,348 @@ mod tests {
         );
         // Same drift twice → bit-identical: the trims are frozen draws, not a walk.
         assert_eq!(dry, render(0.0));
+    }
+
+    // ── Envelope time-scale dests, cooked at note-on (0268) ─────────────────
+
+    /// A matrix with one Mod Wheel → `dest` route at `depth`.
+    fn wheel_route(dest: DestId, depth: f32) -> MatrixTable {
+        let mut m = MatrixTable::default();
+        m.slots[0] = MatrixSlot {
+            source: SourceId::ModWheel,
+            dest,
+            depth,
+            curve: Curve::Lin,
+            scale_src: SourceId::None,
+        };
+        m
+    }
+
+    /// Level reached after `ticks` samples of a fresh attack on lane `v`'s
+    /// env 2 — a longer attack means a lower level. `AdsrCore` exposes no
+    /// getters, so the cooked times are measured behaviourally (as the drift
+    /// trims are).
+    fn attack_level(bank: &mut RenderBank, v: usize, ticks: usize) -> f32 {
+        bank.env2[v].reset();
+        let mut level = 0.0;
+        for i in 0..ticks {
+            level = bank.env2[v].tick(i == 0, true);
+        }
+        level
+    }
+
+    /// Render one 128-frame block for the lane-0 note of [`book`].
+    fn render_block(bank: &mut RenderBank, c: &BlockCtx) {
+        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut l = vec![0.0; 128];
+        let mut r = vec![0.0; 128];
+        bank.render(
+            c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r,
+        );
+    }
+
+    fn env_bank() -> RenderBank {
+        let env = (0.05, 0.1, 0.5, 0.2);
+        let mut bank = RenderBank::new(48_000.0, 3);
+        bank.set_envelopes(env, AdsrShape::Linear, env, AdsrShape::Linear, 0.0);
+        bank
+    }
+
+    #[test]
+    fn env_scale_latches_at_note_on_and_holds_for_the_note() {
+        let m = wheel_route(DestId::Env2Scale, 1.0);
+        let mut bank = env_bank();
+        // Nothing triggered yet: every lane sits at exactly unity.
+        assert_eq!(bank.env_scale[1], [1.0; N]);
+        let unscaled = attack_level(&mut bank, 0, 64);
+
+        // Wheel up at the trigger → the 2× rail.
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6, "{}", bank.env_scale[1][0]);
+        let scaled = attack_level(&mut bank, 0, 64);
+        assert!(scaled < unscaled * 0.6, "2× attack must climb slower: {scaled} vs {unscaled}");
+        // Env 1 has no route, and untriggered lanes are untouched.
+        assert_eq!(bank.env_scale[0], [1.0; N]);
+        assert_eq!(bank.env_scale[1][1], 1.0);
+
+        // The wheel drops mid-note: the cooked scale holds — this dest does not
+        // track, or a held note's decay would lurch as the source moved.
+        c.mod_wheel = 0.0;
+        render_block(&mut bank, &c);
+        assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6);
+
+        // The *next* note-on re-cooks it at the wheel's new position.
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_scale[1][0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn no_env_scale_route_renders_bit_identically() {
+        let m = default_patch();
+        let render = |wheel: f32| -> Vec<f32> {
+            let mut bank = env_bank();
+            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            let mut c = ctx(&m);
+            c.mod_wheel = wheel;
+            let (note, gate, mut active, vel, pres, rnd) = book();
+            let mut l = vec![0.0; 512];
+            let mut r = vec![0.0; 512];
+            bank.render(
+                &c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l,
+                &mut r,
+            );
+            assert_eq!(bank.env_scale, [[1.0; N]; 2], "an unrouted dest must stay unity");
+            assert_eq!(bank.env_sus_mod, [[0.0; N]; 2], "an unrouted dest must stay neutral");
+            l
+        };
+        assert!(render(0.0).iter().any(|&s| s != 0.0), "the patch must sound");
+        assert_eq!(render(0.0), render(1.0));
+    }
+
+    /// An envelope (or drift) param change mid-note re-pushes the patch to every
+    /// lane. It must fold the lane's latched scale back in rather than snapping
+    /// the ringing note to the patch times.
+    #[test]
+    fn envelope_param_change_mid_note_keeps_the_cooked_scale() {
+        let m = wheel_route(DestId::Env2Scale, 1.0);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6);
+
+        // Same envelope, freshly pushed (as a Decay tweak would).
+        let env = (0.05, 0.1, 0.5, 0.2);
+        bank.set_envelopes(env, AdsrShape::Linear, env, AdsrShape::Linear, 0.0);
+        assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6);
+
+        let mut plain = env_bank();
+        let scaled = attack_level(&mut bank, 0, 64);
+        let unscaled = attack_level(&mut plain, 0, 64);
+        assert!(scaled < unscaled * 0.6, "re-push must keep the 2×: {scaled} vs {unscaled}");
+    }
+
+    /// Negative depth shortens by exactly as much as positive lengthens, and the
+    /// exponent clamp holds the rails whatever the depth stack says.
+    #[test]
+    fn env_scale_rails_are_half_and_double() {
+        let mut bank = env_bank();
+        for (depth, want) in [(-1.0, 0.5), (1.0, 2.0), (0.5, 2.0f32.sqrt())] {
+            let m = wheel_route(DestId::Env1Scale, depth);
+            let mut c = ctx(&m);
+            c.mod_wheel = 1.0;
+            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            render_block(&mut bank, &c);
+            assert!(
+                (bank.env_scale[0][0] - want).abs() < 1e-6,
+                "depth {depth} → {} (want {want})",
+                bank.env_scale[0][0]
+            );
+        }
+        // Two full-depth routes sum to 2 octaves and clamp back to the 2× rail.
+        let mut m = wheel_route(DestId::Env1Scale, 1.0);
+        m.slots[1] = m.slots[0];
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_scale[0][0] - 2.0).abs() < 1e-6);
+    }
+
+    /// Level a lane's env 2 settles at after a full attack + decay — i.e. its
+    /// cooked sustain.
+    fn sustain_level(bank: &mut RenderBank, v: usize) -> f32 {
+        bank.env2[v].reset();
+        let mut level = 0.0;
+        // 0.05 s attack + 0.1 s decay at 48 kHz = 7200 samples; 20k is settled.
+        for i in 0..20_000 {
+            level = bank.env2[v].tick(i == 0, true);
+        }
+        level
+    }
+
+    #[test]
+    fn env_sustain_dest_offsets_the_patch_level() {
+        let mut plain = env_bank();
+        // The patch's own sustain, for reference (env_bank cooks 0.5).
+        let base = sustain_level(&mut plain, 0);
+        assert!((base - 0.5).abs() < 1e-3, "patch sustain should be 0.5, got {base}");
+
+        // Wheel up through a +0.25 route → 0.75.
+        let m = wheel_route(DestId::Env2Sustain, 0.25);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6);
+        let lifted = sustain_level(&mut bank, 0);
+        assert!((lifted - 0.75).abs() < 1e-3, "{lifted}");
+
+        // Negative depth pulls it down; env 1 and untriggered lanes untouched.
+        let m = wheel_route(DestId::Env2Sustain, -0.25);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((sustain_level(&mut bank, 0) - 0.25).abs() < 1e-3);
+        assert_eq!(bank.env_sus_mod[0], [0.0; N]);
+        assert_eq!(bank.env_sus_mod[1][1], 0.0);
+    }
+
+    /// Additive, so a route can reach both rails from any patch value — the
+    /// thing a multiplier cannot do — and the clamp holds them.
+    #[test]
+    fn env_sustain_reaches_both_rails_and_clamps() {
+        for (depth, want) in [(1.0, 1.0), (-1.0, 0.0)] {
+            let m = wheel_route(DestId::Env2Sustain, depth);
+            let mut bank = env_bank();
+            let mut c = ctx(&m);
+            c.mod_wheel = 1.0;
+            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            render_block(&mut bank, &c);
+            let got = sustain_level(&mut bank, 0);
+            assert!((got - want).abs() < 1e-3, "depth {depth} → {got} (want {want})");
+        }
+    }
+
+    /// Latched, not tracked: sustain sets the held level *and* the decay rate,
+    /// so a mid-note change would step a ringing note and bend a decay in
+    /// flight. The next note-on re-cooks.
+    #[test]
+    fn env_sustain_latches_at_note_on() {
+        let m = wheel_route(DestId::Env2Sustain, 0.25);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6);
+
+        c.mod_wheel = 0.0;
+        render_block(&mut bank, &c);
+        assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6, "must hold for the note");
+
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert_eq!(bank.env_sus_mod[1][0], 0.0, "the next note-on re-cooks");
+    }
+
+    /// The drift trim is multiplicative on sustain and the matrix offset is
+    /// additive; both must survive an envelope param re-push.
+    #[test]
+    fn env_sustain_offset_survives_a_param_change() {
+        let m = wheel_route(DestId::Env2Sustain, 0.25);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+
+        let env = (0.05, 0.1, 0.5, 0.2);
+        bank.set_envelopes(env, AdsrShape::Linear, env, AdsrShape::Linear, 0.0);
+        assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6);
+        assert!((sustain_level(&mut bank, 0) - 0.75).abs() < 1e-3);
+    }
+
+    // ── Per-voice LFO 1 rate (0269) ─────────────────────────────────────────
+
+    /// Phase advanced over 8 blocks, measured *after* the lane's first block so
+    /// the carry-over total is already in force.
+    fn lfo1_advance(m: &MatrixTable, wheel: f32) -> f32 {
+        let mut bank = env_bank();
+        let mut c = ctx(m);
+        c.mod_wheel = wheel;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        let start = bank.lfo1[0].phase();
+        for _ in 0..8 {
+            render_block(&mut bank, &c);
+        }
+        bank.lfo1[0].phase() - start
+    }
+
+    #[test]
+    fn lfo1_rate_dest_multiplies_the_resolved_hz() {
+        // Depth 1 × gain 2 = 2 octaves = 4× the panel rate.
+        let m = wheel_route(DestId::Lfo1Rate, 1.0);
+        let plain = lfo1_advance(&m, 0.0);
+        let fast = lfo1_advance(&m, 1.0);
+        assert!(plain > 0.0, "the LFO must run at all");
+        assert!((fast / plain - 4.0).abs() < 0.02, "wheel up → 4×: {fast} vs {plain}");
+        // Negative depth is the same distance the other way (0.25×).
+        let down = lfo1_advance(&wheel_route(DestId::Lfo1Rate, -1.0), 1.0);
+        assert!((down / plain - 0.25).abs() < 0.02, "wheel up at −1 → 0.25×: {down}");
+    }
+
+    /// The route is a multiplier on whatever the panel resolved — which under
+    /// tempo sync (0267) is the subdivision's Hz. Two octaves of amount on a
+    /// synced rate is still a subdivision, which is why the mapping is `2^x`.
+    #[test]
+    fn lfo1_rate_multiplies_a_synced_rate_the_same_way() {
+        let m = wheel_route(DestId::Lfo1Rate, 1.0);
+        let advance_at = |hz: f32, wheel: f32| -> f32 {
+            let mut bank = env_bank();
+            let mut c = ctx(&m);
+            c.lfo1_rate_hz = hz; // as `sync::lfo_rate_hz` would have resolved it
+            c.mod_wheel = wheel;
+            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            render_block(&mut bank, &c);
+            let start = bank.lfo1[0].phase();
+            for _ in 0..8 {
+                render_block(&mut bank, &c);
+            }
+            bank.lfo1[0].phase() - start
+        };
+        // 1/8 at 120 BPM = 4 Hz; ×4 = 16 Hz = 1/32, still on the grid.
+        let eighth = advance_at(4.0, 0.0);
+        let scaled = advance_at(4.0, 1.0);
+        let thirty_second = advance_at(16.0, 0.0);
+        assert!((scaled - thirty_second).abs() < 1e-6, "{scaled} vs {thirty_second}");
+        assert!((scaled / eighth - 4.0).abs() < 0.02);
+    }
+
+    /// A stolen lane must not run a block at the *previous* note's rate: the
+    /// trigger re-rates the lane from its own block's total.
+    #[test]
+    fn a_fresh_note_does_not_inherit_the_stolen_notes_rate() {
+        let m = wheel_route(DestId::Lfo1Rate, 1.0);
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert!((bank.lfo1_rate_mod[0] - 2.0).abs() < 1e-6);
+
+        // Wheel down, new note: the lane is re-rated on the trigger block, so
+        // the first block after it already runs at 1×.
+        c.mod_wheel = 0.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        let start = bank.lfo1[0].phase();
+        render_block(&mut bank, &c);
+        let stepped = bank.lfo1[0].phase() - start;
+        // One block at the panel's 5 Hz over the 1500 Hz control rate.
+        let want = 5.0 / (48_000.0 / CONTROL_BLOCK as f32);
+        assert!((stepped - want).abs() < 1e-6, "{stepped} vs {want}");
+    }
+
+    #[test]
+    fn an_unrouted_lfo1_rate_stays_at_the_panel_hz() {
+        let m = default_patch();
+        let mut bank = env_bank();
+        let mut c = ctx(&m);
+        c.mod_wheel = 1.0;
+        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        render_block(&mut bank, &c);
+        assert_eq!(bank.lfo1_rate_mod, [0.0; N], "no route → no rate offset");
+        assert_eq!(lfo_rate_scale(0.0), 1.0);
     }
 
     /// Key-track is a param (0245), not a matrix scrape: the drift coupling and
