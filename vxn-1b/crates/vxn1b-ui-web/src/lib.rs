@@ -450,11 +450,17 @@ fn panels_js() -> String {
         .join("\n;\n")
 }
 
-/// Tempo-sync subdivision labels. VXN1b has no sync partner yet, so this is an
-/// empty list — the forked bridge.js still reads the `__SUBDIVISIONS_JSON__`
-/// slot into `window.vxn.subdivisions`.
+/// Tempo-sync subdivision labels, spliced into the page as
+/// `window.vxn.subdivisions` (0267). A synced LFO-rate / delay-time fader reads
+/// its popup label out of this table by fader position, so it must stay the
+/// same table and the same order the engine resolves against
+/// (`vxn1b_engine::sync`).
 fn build_subdivisions_json() -> String {
-    "[]".to_string()
+    let labels: Vec<String> = vxn1b_engine::sync::SUBDIVISIONS
+        .iter()
+        .map(|s| format!("\"{}\"", s.label))
+        .collect();
+    format!("[{}]", labels.join(","))
 }
 
 fn build_params_json() -> String {
@@ -662,12 +668,15 @@ mod tests {
             ".ctl-tg-lbl",
             ".ctl-buttongroup",
             ".panel-header-switch",
-            // Rocker (Voice mode) + the stacked-cell column that carries it.
+            // Rocker (Voice mode, NoiseColor, FilterSlope, Env Shape) + the
+            // stacked-cell columns that carry it / the under-fader toggles.
             ".ctl-rocker",
+            ".ctl-rocker-body",
             ".ctl-rocker-track",
             ".ctl-rocker-knob",
             ".ctl-rocker-lbl",
             ".ctl-col",
+            ".ctl-col-center",
             // Multi-column button groups (Voice's six widths).
             ".ctl-buttongroup[data-columns] .ctl-tg-rows",
             // Layer scope.

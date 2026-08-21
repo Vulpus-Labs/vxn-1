@@ -91,6 +91,11 @@ export function buildParams() {
     // A couple of plain faders (no partner) for null-override coverage.
     28: floatDesc('drive', 'Drive', 0.0),
     29: floatDesc('mix', 'Mix', 0.5),
+    // Delay time↔sync pair (0267) — global, so its id sits past 2 × patchCount
+    // in the real table; here the fixture's ids are flat and the pairing code
+    // reads the same either way.
+    31: floatDesc('delay_time', 'Time', 0.35),
+    32: boolDesc('delay_sync', 'Sync'),
   };
 }
 

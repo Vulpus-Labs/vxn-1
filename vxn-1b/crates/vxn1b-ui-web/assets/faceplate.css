@@ -553,17 +553,25 @@ html, body {
 /* Panels whose first body child is a selector buttongroup anchor it to the
    panel's left edge so the distance from panel padding → first button is
    uniform across Filter / Cross Mod / Reverb. Subsequent faders flow with
-   a fixed gap rather than the body's default `space-evenly`. */
+   a fixed gap rather than the body's default `space-evenly`.
+   Voice gets the same treatment by name: its body now leads with the Poly/Solo
+   rocker rather than the Width group, and the anchoring belongs to the panel's
+   layout either way. Stating it here (rather than matching a first-child
+   `.ctl-col`) also keeps it off `.ctl-col-center` — a fader with its toggle
+   beneath is an ordinary fader column and wants the body's `space-evenly`. */
 .panel-body:has(> .ctl-buttongroup:first-child),
-.panel-body:has(> .ctl-col:first-child) {
+.panel[data-name="Voice"] .panel-body {
   justify-content: flex-start;
   gap: 10px;
 }
 /* Left-anchored buttongroup left-aligns its own contents too so the box
    edge sits at `--panel-pad` regardless of label / row widths — keeps the
-   distance from panel border to first selector uniform across panels. */
+   distance from panel border to first selector uniform across panels. Voice's
+   Width group is second in its body but wants the same treatment: its two
+   columns of checkboxes read as a block, and centring the WIDTH label over
+   them would leave it off every box beneath it. */
 .panel-body > .ctl-buttongroup:first-child,
-.panel-body > .ctl-col:first-child > .ctl-buttongroup {
+.panel[data-name="Voice"] .panel-body > .ctl-buttongroup {
   align-items: flex-start;
 }
 
@@ -766,7 +774,10 @@ html, body {
 .panel-strip {
   position: absolute;
   left: 8px;
-  bottom: 4px;
+  /* `--panel-pad`, not a hair less: it puts the strip's bottom edge exactly on
+     the panel body's, so a strip toggle and an under-fader toggle
+     (`.ctl-col-center`) in the same panel sit on one line. */
+  bottom: var(--panel-pad);
   right: 5px;
   display: flex;
   flex-direction: row;
@@ -780,6 +791,15 @@ html, body {
    slave layer, so hide it while the pane shows Layer 1. `visibility` (not
    `display`) so the strip's other cells never shift on a tab flip. */
 [data-edit-layer="upper"] [data-layer2-only] { visibility: hidden; }
+
+/* Link is hand-wired (KeyState, not a param), so it never gets the inline-flex
+   `makeSwitch` sets on the cells it builds. Left as a block, its toggle sits in
+   a line box whose leading lifts the row a few pixels — enough to miss the line
+   it shares with LFO 2's Sync. */
+#lfo2-link {
+  display: inline-flex;
+  align-items: center;
+}
 
 /* The Voice panel's strip carries the Mod Matrix button, and its Detune cell
    parks the Legato toggle at the panel's bottom-LEFT corner
@@ -964,18 +984,63 @@ html, body {
 }
 .ctl-col > .ctl { height: auto; }
 
-/* Rocker — a two-state switch drawn as `LEFT (o=) RIGHT`, the labels sitting
-   either side of the travel rather than beside a box.
-   Used where both states are equal-status choices (Poly vs Solo) rather than
-   one being "on": a checkbox-style `.ctl-tg-row` per variant says "these are
-   independent things you can each enable", which is exactly what a mode is
-   not. Clicking anywhere on the control flips it. */
+/* Centred variant — a toggle parked directly beneath the fader it modifies
+   (LFO Rate ↔ Sync, Cutoff ↔ Tuned), centred on the fader rather than
+   left-aligned like the Voice stack. The budget is tight: a fader cell is
+   label 12 + 4 + gap 2 + travel 56 = 74, the toggle row is ~13, and
+   `panel-body` is 94 tall, so the gap has to stay at 4 for the pair to clear
+   the panel's bottom padding. */
+.ctl-col-center {
+  align-items: center;
+  gap: 4px;
+}
+/* Row 2 is the LFOs, and both of them pair an under-fader Sync with something
+   in the bottom strip (LFO 1's Free, LFO 2's Link). `space-between` drops the
+   toggle to the body's bottom edge — where `.panel-strip` now bottoms out too —
+   so the pair reads as one line of toggles instead of two near-misses. The
+   fader itself stays flush with its neighbours at the top.
+   Deliberately not global: Filter's Tuned and Delay's Sync have no strip to
+   line up with, and Delay's body is 134px tall, so bottoming out there would
+   strand the toggle half a panel below the fader it belongs to. */
+.row-2 .ctl-col-center {
+  justify-content: space-between;
+}
+
+/* Rocker — a two-state switch drawn vertically, variant 0 above the travel and
+   variant 1 below it, the labels sitting either end rather than beside a box.
+   Used where both states are equal-status choices (Poly vs Solo, White vs
+   Pink, 12 vs 24, Lin vs Exp) rather than one being "on": a checkbox-style
+   `.ctl-tg-row` per variant says "these are independent things you can each
+   enable", which is exactly what a mode is not. Clicking anywhere on the
+   control flips it.
+
+   Vertical, not horizontal, so the two labels stack in the width of the
+   longer one — which is what lets a rocker be a normal `panel-body` column
+   (Mixer's Col, Filter's Slope, the two Env Shapes) instead of a pair of
+   toggles absolutely parked in the bottom strip. Enum rockers carry a
+   `.ctl-label` header, so the column's top edge lines up with the fader
+   labels beside it. */
 .ctl-rocker {
   display: inline-flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: var(--ctl-gap);
   cursor: pointer;
+}
+/* A rocker standing as its own `panel-body` column reserves the height its
+   neighbours spend on a `.ctl-label`, so its top variant name lines up with
+   their labels rather than floating above them. Rockers nested deeper (Voice's,
+   before 0269 moved it) get no such row. */
+.panel-body > .ctl-rocker {
+  padding-top: calc(var(--ctl-label-h) + 4px);
+}
+/* Labels + travel in their own box, so the reserved label row above stays out
+   of the gap between the two variant names. */
+.ctl-rocker-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
 }
 .ctl-rocker-lbl {
   font-size: 9px;
@@ -987,8 +1052,8 @@ html, body {
 .ctl-rocker-lbl.active { color: #ececec; }
 .ctl-rocker-track {
   position: relative;
-  width: 26px;
-  height: 12px;
+  width: 12px;
+  height: 26px;
   background: var(--track-bg);
   border: 1px solid #8a8a8a;
   border-radius: 6px;
@@ -1004,17 +1069,14 @@ html, body {
   height: 8px;
   background: #b8b8b8;
   border-radius: 50%;
-  transition: left 90ms ease, background 90ms ease;
+  transition: top 90ms ease, background 90ms ease;
 }
-/* `.right` is the second variant — the knob slides, and the track lights, so
-   the state is readable from the switch alone as well as from the labels. */
+/* `.right` is the second variant — the knob slides down to sit against its own
+   label. The track deliberately does NOT light up the way `.ctl-tg-row.active`
+   does: a lit control reads as "on", and neither position of a mode switch is
+   on. Position is the whole signal, backed by which label is bright. */
 .ctl-rocker.right .ctl-rocker-knob {
-  left: 15px;
-  background: #84cdff;
-}
-.ctl-rocker.right .ctl-rocker-track {
-  background: #1f9cff;
-  border-color: #84cdff;
+  top: 15px;
 }
 
 /* Dropdown — native <select> styled to match the dark palette. Fallback for
@@ -1094,6 +1156,10 @@ html, body {
   bottom: var(--panel-pad);
   left: var(--panel-pad);
 }
+/* Legato is parked at the panel's bottom-left corner, which is now under the
+   Poly/Solo rocker rather than under the Width group. The rocker's column ends
+   well above it — a label row plus ~50px of switch inside a 134px body — so
+   the two need no nudging apart. */
 .ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
 
 /* ── FX/Global tab (0220 / 0241) ───────────────────────────────────────────

@@ -130,14 +130,15 @@ export function addCtl(id, ctl) {
 export function locateSyncPartners(layer) {
   model.syncOfRate.clear();
   model.rateOfSync.clear();
-  // VXN1b: LFO 1 / LFO 2 rate↔sync pairs. Delay sync stays dropped from the
-  // compact faceplate (0209) — no such param in vxn1b-engine. (Cutoff "Tuned"
-  // came back in 0250 and is paired below, not here — it is not a rate/sync
-  // pair.) The `paramIdByNameAtLayer` guard below tolerates any name that
-  // resolves to null, so a stale entry would no-op, but keep the list honest.
+  // VXN1b: LFO 1 / LFO 2 rate↔sync pairs (per-layer) plus Delay Time ↔ Delay
+  // Sync (global, 0267). (Cutoff "Tuned" came back in 0250 and is paired below,
+  // not here — it is not a rate/sync pair.) The `paramIdByNameAtLayer` guard
+  // below tolerates any name that resolves to null, so a stale entry would
+  // no-op, but keep the list honest.
   const pairs = [
     ['lfo1_rate', 'lfo1_sync'],
     ['lfo2_rate', 'lfo2_sync'],
+    ['delay_time', 'delay_sync'],
   ];
   for (const [rateName, syncName] of pairs) {
     const r = paramIdByNameAtLayer(rateName, layer);

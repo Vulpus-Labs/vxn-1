@@ -113,8 +113,13 @@ export function makeButtonGroup(el, id, desc) {
   };
 }
 
-// `Rocker(id)` — a two-state switch with its variant names either side of the
-// travel: `POLY (o=) SOLO`.
+// `Rocker(id)` — a two-state switch with its variant names either end of the
+// travel, stacked vertically:
+//
+//     POLY      <- variant 0 ("left")
+//      (o)
+//      | |      <- travel
+//     SOLO      <- variant 1 ("right")
 //
 // Same wire shape as `makeSwitch` (one gesture-bracketed discrete write) for a
 // different reading: a switch renders one checkbox per variant, which says the
@@ -122,9 +127,17 @@ export function makeButtonGroup(el, id, desc) {
 // with two positions — and the rocker draws exactly that. Clicking anywhere
 // flips it, including on either label, so the whole control is the target.
 //
+// The `left`/`right` names are the wire order (variant 0 / variant 1), kept
+// from the horizontal layout this replaced; on screen they read top/bottom.
+//
+// The two variant names ARE the label — a "COL" / "SLOPE" / "SHAPE" header
+// over WHITE/PINK, 12/24, LIN/EXP only repeats what the positions already say.
+// The column still lines up with the fader labels beside it; the blank space
+// where a header would go is reserved in CSS (`.panel-body > .ctl-rocker`),
+// not by an empty element here.
+//
 // Bools work too (off = left, on = right), taking the cell's `data-label` for
-// the right-hand name and `Off` for the left; the case that exists today is a
-// 2-variant enum.
+// the right-hand name and `Off` for the left.
 export function makeRocker(el, id, desc) {
   const isEnum = desc.kind === 'enum';
   const variants = isEnum ? (desc.variants || []) : ['Off', el.dataset.label || desc.label];
@@ -132,9 +145,11 @@ export function makeRocker(el, id, desc) {
   const right = variants[1] || '';
   el.classList.add('ctl-rocker');
   el.innerHTML =
-    '<div class="ctl-rocker-lbl ctl-rocker-left">' + left.toUpperCase() + '</div>' +
-    '<div class="ctl-rocker-track"><div class="ctl-rocker-knob"></div></div>' +
-    '<div class="ctl-rocker-lbl ctl-rocker-right">' + right.toUpperCase() + '</div>';
+    '<div class="ctl-rocker-body">' +
+      '<div class="ctl-rocker-lbl ctl-rocker-left">' + left.toUpperCase() + '</div>' +
+      '<div class="ctl-rocker-track"><div class="ctl-rocker-knob"></div></div>' +
+      '<div class="ctl-rocker-lbl ctl-rocker-right">' + right.toUpperCase() + '</div>' +
+    '</div>';
   const leftLbl = el.querySelector('.ctl-rocker-left');
   const rightLbl = el.querySelector('.ctl-rocker-right');
 

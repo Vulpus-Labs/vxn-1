@@ -59,6 +59,10 @@ pub struct Synth {
     pitch_bend: f32,
     /// Mod wheel `[0, 1]` — the ModWheel matrix source.
     mod_wheel: f32,
+    /// Host tempo in BPM, pushed down from the engine each block (0267). Only
+    /// read when an LFO's sync toggle is on; [`sync::DEFAULT_TEMPO_BPM`] until
+    /// a host supplies one, so a synced LFO in a tempo-less host still runs.
+    tempo_bpm: f32,
 }
 
 impl Synth {
@@ -80,6 +84,7 @@ impl Synth {
             lfo2: LfoCore::new(control_rate, seeds.lfo2),
             pitch_bend: 0.0,
             mod_wheel: 0.0,
+            tempo_bpm: crate::sync::DEFAULT_TEMPO_BPM,
         };
         synth.apply_envelopes();
         synth
@@ -135,6 +140,25 @@ impl Synth {
 
     pub(crate) fn set_mod_wheel(&mut self, w: f32) {
         self.mod_wheel = w.clamp(0.0, 1.0);
+    }
+
+    /// Host tempo for the synced LFO rates (0267). Non-finite / non-positive
+    /// BPM is ignored — a host that reports garbage must not stall the LFOs.
+    pub(crate) fn set_tempo(&mut self, bpm: f32) {
+        if bpm.is_finite() && bpm > 0.0 {
+            self.tempo_bpm = bpm;
+        }
+    }
+
+    /// Transport stop→play: realign this layer's LFO 2 to the bar grid so a
+    /// synced rhythmic shape locks to the host beat. Reset to the cycle
+    /// boundary (phase 0), not the zero crossing — saw-down should hit its peak
+    /// transient on the beat. No-op when LFO 2 isn't synced: a free LFO must not
+    /// jump on play.
+    pub(crate) fn on_transport_restart(&mut self) {
+        if self.params.bool(ParamId::Lfo2Sync) {
+            self.lfo2.reset();
+        }
     }
 
     /// Note-on: allocate a `stack_width`-lane stack under the patch's voice
@@ -237,7 +261,12 @@ impl Synth {
         let lfo2_val = match lfo2_link {
             Some(master_phase) => self.lfo2.sync_to(master_phase, self.params.lfo2_shape()),
             None => {
-                self.lfo2.set_rate(self.params.get(ParamId::Lfo2Rate));
+                self.lfo2.set_rate(crate::sync::lfo_rate_hz(
+                    &self.params,
+                    ParamId::Lfo2Rate,
+                    ParamId::Lfo2Sync,
+                    self.tempo_bpm,
+                ));
                 self.lfo2.next(self.params.lfo2_shape())
             }
         };
@@ -251,6 +280,7 @@ impl Synth {
             self.mod_wheel,
             lfo2_val,
             self.voices.level_comp(),
+            self.tempo_bpm,
         );
 
         // One pass per bank over `LANES`-wide slices of the render view. `active`
@@ -318,6 +348,7 @@ fn build_ctx<'a>(
     mod_wheel: f32,
     lfo2_val: f32,
     level_comp: f32,
+    tempo_bpm: f32,
 ) -> BlockCtx<'a> {
     let (sync, pm_index, ring_mode) = match p.cross_mod_type() {
         CrossModType::Off => (false, 0.0, false),
@@ -360,7 +391,12 @@ fn build_ctx<'a>(
         filter_slope: p.filter_slope(),
         base_semis,
         lfo1_shape: p.lfo1_shape(),
-        lfo1_rate_hz: p.get(ParamId::Lfo1Rate),
+        lfo1_rate_hz: crate::sync::lfo_rate_hz(
+            p,
+            ParamId::Lfo1Rate,
+            ParamId::Lfo1Sync,
+            tempo_bpm,
+        ),
         lfo1_delay_time: p.get(ParamId::Lfo1DelayTime),
         lfo1_fade: p.get(ParamId::Lfo1Fade),
         lfo2_val,

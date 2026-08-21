@@ -35,7 +35,7 @@ import {
 
 // Fixture ids the vxn1b dispatch suite drives (see fixtures/params.js). Resolved
 // by name so a fixture reshuffle can't silently desync the assertions.
-let LFO1_RATE, LFO1_SYNC, LFO2_RATE, LFO2_SYNC, CUTOFF, CUTOFF_TUNED, DRIVE;
+let LFO1_RATE, LFO1_SYNC, LFO2_RATE, LFO2_SYNC, DELAY_TIME, DELAY_SYNC, CUTOFF, CUTOFF_TUNED, DRIVE;
 
 // Captures the ctl object each primitive factory returns, keyed by bound id, so
 // a test can assert `update()` was driven with the reseeded value.
@@ -108,6 +108,8 @@ beforeEach(() => {
   LFO1_SYNC = paramIdByName('lfo1_sync');
   LFO2_RATE = paramIdByName('lfo2_rate');
   LFO2_SYNC = paramIdByName('lfo2_sync');
+  DELAY_TIME = paramIdByName('delay_time');
+  DELAY_SYNC = paramIdByName('delay_sync');
   CUTOFF    = paramIdByName('cutoff');
   CUTOFF_TUNED = paramIdByName('cutoff_tuned');
   DRIVE     = paramIdByName('drive');
@@ -128,15 +130,17 @@ function mountCell(kind, name) {
 }
 
 describe('locateSyncPartners', () => {
-  it('maps lfo1 / lfo2 rate↔sync and the cutoff↔tuned pair', () => {
+  it('maps lfo1 / lfo2 / delay rate↔sync and the cutoff↔tuned pair', () => {
     locateSyncPartners('upper');
-    // lfo1_rate ↔ lfo1_sync, lfo2_rate ↔ lfo2_sync.
+    // lfo1_rate ↔ lfo1_sync, lfo2_rate ↔ lfo2_sync, delay_time ↔ delay_sync.
     expect(model.syncOfRate.get(LFO1_RATE)).toBe(LFO1_SYNC);
     expect(model.syncOfRate.get(LFO2_RATE)).toBe(LFO2_SYNC);
+    expect(model.syncOfRate.get(DELAY_TIME)).toBe(DELAY_SYNC);
     expect(model.rateOfSync.get(LFO1_SYNC)).toBe(LFO1_RATE);
     expect(model.rateOfSync.get(LFO2_SYNC)).toBe(LFO2_RATE);
-    // Delay Sync stays dropped from the compact faceplate; Cutoff "Tuned" is
-    // back (0250) and pairs both ways so a toggle can repaint the fader.
+    expect(model.rateOfSync.get(DELAY_SYNC)).toBe(DELAY_TIME);
+    // Cutoff "Tuned" is back (0250) and pairs both ways so a toggle can
+    // repaint the fader.
     expect(model.tunedOfCutoff.get(CUTOFF)).toBe(CUTOFF_TUNED);
     expect(model.cutoffOfTuned.get(CUTOFF_TUNED)).toBe(CUTOFF);
   });

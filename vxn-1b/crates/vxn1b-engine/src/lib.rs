@@ -37,6 +37,7 @@ pub mod render;
 pub mod scope;
 pub mod shared;
 pub mod state;
+pub mod sync;
 pub mod synth;
 pub mod voice;
 

@@ -273,6 +273,7 @@ pub enum ParamId {
     DelayTime,
     DelayFeedback,
     DelayMix,
+    DelaySync,
     ReverbOn,
     ReverbSize,
     ReverbDecay,
@@ -409,14 +410,14 @@ pub const PATCH_PARAMS: [ParamId; 71] = {
 /// The single **global** params, in CLAP order — one instance, applied to both
 /// synths (ADR 0002 §7): pitch-bend range, master level/tune/drift/limiter,
 /// oversample, and the whole FX chain.
-pub const GLOBAL_PARAMS: [ParamId; 32] = {
+pub const GLOBAL_PARAMS: [ParamId; 33] = {
     use ParamId::*;
     [
         PitchBendRange,
         MasterTune, MasterVolume, MasterDrift, LimiterOn, Oversample,
         ChorusOn, ChorusRate, ChorusDepth, ChorusMix,
         PhaserOn, PhaserRate, PhaserDepth, PhaserFeedback, PhaserMix,
-        DelayOn, DelayTime, DelayFeedback, DelayMix,
+        DelayOn, DelayTime, DelayFeedback, DelayMix, DelaySync,
         ReverbOn, ReverbSize, ReverbDecay, ReverbDamp, ReverbMix,
         DynamicsOn, DynamicsThreshold, DynamicsRatio, DynamicsAttack,
         DynamicsRelease, DynamicsMakeup, DynamicsDrive, DynamicsMix,
@@ -677,6 +678,10 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     f("delay_time", "Delay Time", 0.01, 2.0, 0.35, "s", Taper::Linear),
     f("delay_feedback", "Delay FB", 0.0, 0.95, 0.4, "", Taper::Linear),
     f("delay_mix", "Delay Mix", 0.0, 1.0, 0.25, "", Taper::Linear),
+    // Tempo sync (0267): when on, Delay Time's fader position selects a musical
+    // subdivision instead of literal seconds. Same rate/sync pairing as the two
+    // LFOs — see `crate::sync`.
+    b("delay_sync", "Delay Sync", 0.0),
     b("reverb_on", "Reverb", 0.0),
     f("reverb_size", "Reverb Size", 0.0, 1.0, 0.5, "", Taper::Linear),
     f("reverb_decay", "Reverb Decay", 0.2, 10.0, 2.5, "s", Taper::Exp { mid: 2.0 }),
@@ -901,7 +906,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 71 + 32);
+        assert_eq!(TOTAL_PARAMS, 2 * 71 + 33);
     }
 
     #[test]

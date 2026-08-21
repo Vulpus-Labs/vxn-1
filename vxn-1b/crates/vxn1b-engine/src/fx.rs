@@ -46,9 +46,14 @@ const FX_FADE_MS: f32 = 10.0;
 /// (not a param) — mirrors VXN1's hardcoded `0.3`.
 const DELAY_DAMPING: f32 = 0.3;
 
-/// Longest delay time the ring buffer must hold (matches the `delay_time` param
-/// ceiling). Allocated once at construction.
-const DELAY_MAX_SECONDS: f32 = 2.0;
+/// Longest delay time the ring buffer must hold. Allocated once at
+/// construction. Deliberately **twice** the `delay_time` param ceiling (2 s):
+/// free-run mode can only ask for 2 s, but tempo sync resolves a subdivision
+/// *period*, and the slow end of the table runs well past the knob's range —
+/// `1/1` is 4 s at 60 BPM. Sizing the line to the knob would have silently
+/// clamped those, so the label would read `1/1` while the ear heard 2 s (0267).
+/// Costs ~768 KB more than a 2 s line at 48 kHz, per instance.
+pub(crate) const DELAY_MAX_SECONDS: f32 = 4.0;
 
 // Slot indices into the fade / on-state arrays, in chain order. Dynamics runs
 // FIRST (input compression / drive ahead of the modulation + time effects),
@@ -98,8 +103,9 @@ pub struct FxParams {
 }
 
 impl FxParams {
-    /// Read the FX params out of the flat param table.
-    pub fn from_params(p: &Params) -> Self {
+    /// Read the FX params out of the flat param table. `tempo_bpm` resolves the
+    /// delay's time when Delay Sync is on (0267); it is ignored otherwise.
+    pub fn from_params(p: &Params, tempo_bpm: f32) -> Self {
         Self {
             chorus_on: p.bool(ParamId::ChorusOn),
             chorus_rate: p.get(ParamId::ChorusRate),
@@ -113,7 +119,7 @@ impl FxParams {
             phaser_mix: p.get(ParamId::PhaserMix),
 
             delay_on: p.bool(ParamId::DelayOn),
-            delay_time: p.get(ParamId::DelayTime),
+            delay_time: crate::sync::delay_time_seconds(p, tempo_bpm),
             delay_feedback: p.get(ParamId::DelayFeedback),
             delay_mix: p.get(ParamId::DelayMix),
 

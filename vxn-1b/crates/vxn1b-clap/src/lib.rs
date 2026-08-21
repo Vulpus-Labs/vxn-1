@@ -41,6 +41,7 @@ use vxn1b_engine::{
     Engine, EnginePresetStore, MeterBus, MeterFrame, ScopeBus, ScopeFrame, ScopeTap, SharedParams,
     TOTAL_PARAMS, clap_module, desc_for_clap_id,
 };
+use vxn1b_engine::sync::{rate_partner_clap_id, sync_aware_display};
 
 /// Locks a poisoned mutex by extracting the inner value instead of unwrapping.
 /// Plugin code unwinds on panic, so a panic during `tick` could poison the
@@ -293,8 +294,9 @@ impl<'a> VxnMainThread<'a> {
     /// any drift. This catches audio-thread automation: `process()` writes
     /// `SharedParams` directly, so the controller's view queue stays empty for
     /// those changes. NaN-aware (a NaN seed forces a full first broadcast).
-    /// VXN1b has no tempo-sync rate/time partners, so — unlike VXN1's
-    /// `vxn_app::diff_params` — there is no sync-flip partner refresh here.
+    /// A sync toggle that flips also re-pushes its rate/time partner (0267): the
+    /// partner's *value* hasn't changed, but its display flips Hz/s ↔
+    /// subdivision, and the faceplate repaints from what it is sent.
     fn push_param_diffs(&mut self) {
         let Some(handle) = self.gui.as_ref() else {
             return;
@@ -306,13 +308,23 @@ impl<'a> VxnMainThread<'a> {
                 continue;
             }
             *seen = plain;
-            let display = desc_for_clap_id(id).map(|d| d.display(plain)).unwrap_or_default();
             handle.push_view_event(ViewEvent::ParamChanged {
                 id: AppParamId::new(id),
                 plain,
                 norm: store.get_normalized(id),
-                display,
+                display: sync_aware_display(store, id, plain),
             });
+            // Sync flag flipped: re-push the partnered rate/time so its readout
+            // switches between Hz/seconds and the subdivision label.
+            if let Some(rate_id) = rate_partner_clap_id(id) {
+                let rate_plain = store.get(rate_id);
+                handle.push_view_event(ViewEvent::ParamChanged {
+                    id: AppParamId::new(rate_id),
+                    plain: rate_plain,
+                    norm: store.get_normalized(rate_id),
+                    display: sync_aware_display(store, rate_id, rate_plain),
+                });
+            }
         }
     }
 
@@ -515,6 +527,9 @@ pub struct VxnAudioProcessor<'a> {
     local: LocalParams<TOTAL_PARAMS>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
+    /// Last known transport playing state (0267) — a stop→play edge realigns the
+    /// synced LFO 2s to the bar grid.
+    was_playing: bool,
 }
 
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
@@ -545,15 +560,32 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             shared,
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
+            was_playing: false,
         })
     }
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Host transport → engine tempo for the synced LFO rates and delay time
+        // (0267). Take the BPM only when the transport actually carries one;
+        // otherwise the engine keeps its sane default and never sees a NaN. A
+        // stop→play edge realigns a synced LFO 2 to the bar grid.
+        let is_playing = process
+            .transport
+            .map(vxn_core_clap::playing_from_transport)
+            .unwrap_or(false);
+        if !self.was_playing && is_playing {
+            self.engine.on_transport_restart();
+        }
+        self.was_playing = is_playing;
+        if let Some(bpm) = process.transport.and_then(vxn_core_clap::tempo_from_transport) {
+            self.engine.set_tempo(bpm as f32);
+        }
+
         // A state/preset load that landed while active: re-sync the whole patch.
         if self.shared.params.take_reload() {
             self.engine.load_state(self.shared.params.engine_state());
@@ -720,8 +752,14 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
         use std::fmt::Write as _;
-        let desc = desc_for_clap_id(param_id.get() as usize).ok_or(std::fmt::Error)?;
-        write!(writer, "{}", desc.display(value as f32))
+        let id = param_id.get() as usize;
+        if desc_for_clap_id(id).is_none() {
+            return Err(std::fmt::Error);
+        }
+        // Synced rate/time params read out as their subdivision label (0267), so
+        // the host's value display matches the editor's popup. Same helper the
+        // `ParamChanged` broadcast uses, so the two can't disagree.
+        write!(writer, "{}", sync_aware_display(&self.shared.params, id, value as f32))
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {

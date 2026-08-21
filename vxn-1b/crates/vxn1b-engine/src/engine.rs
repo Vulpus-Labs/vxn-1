@@ -225,6 +225,10 @@ impl KeyState {
 pub struct Engine {
     sample_rate: f32,
     max_frames: usize,
+    /// Host tempo in BPM (0267), mirrored down into both synths and read here
+    /// for the delay's synced time. [`crate::sync::DEFAULT_TEMPO_BPM`] until a
+    /// host supplies one.
+    tempo_bpm: f32,
     /// The two independent synths. Index 0 is Upper (synth 1, always on); index
     /// 1 is Lower (synth 2, gated by [`KeyState::layer2_on`]).
     synths: [Synth; 2],
@@ -322,6 +326,7 @@ impl Engine {
         Self {
             sample_rate,
             max_frames,
+            tempo_bpm: crate::sync::DEFAULT_TEMPO_BPM,
             synths: [
                 Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER1),
                 Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER2),
@@ -487,6 +492,28 @@ impl Engine {
         self.synths[0].set_mod_wheel(w);
         if self.key.layer2_on {
             self.synths[1].set_mod_wheel(w);
+        }
+    }
+
+    /// Host tempo in BPM, for the tempo-synced LFO rates and delay time (0267).
+    /// Pushed to both synths unconditionally — a layer switched on mid-session
+    /// must not inherit a stale tempo — and cached here for the FX chain's
+    /// delay-time resolution. Ignores a non-finite / non-positive BPM.
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if !(bpm.is_finite() && bpm > 0.0) {
+            return;
+        }
+        self.tempo_bpm = bpm;
+        for synth in &mut self.synths {
+            synth.set_tempo(bpm);
+        }
+    }
+
+    /// Host transport stop→play: realign each layer's synced LFO 2 to the bar
+    /// grid. See [`Synth::on_transport_restart`].
+    pub fn on_transport_restart(&mut self) {
+        for synth in &mut self.synths {
+            synth.on_transport_restart();
         }
     }
 
@@ -698,7 +725,7 @@ impl Engine {
         // Serial FX chain over the summed voices, at the base rate. Each effect
         // is a true skip when off and settled, so the default FX-off patch is a
         // bit-exact passthrough here.
-        self.fx.set_params(&FxParams::from_params(self.synths[0].params()));
+        self.fx.set_params(&FxParams::from_params(self.synths[0].params(), self.tempo_bpm));
         self.fx.process_block(l, r);
 
         // Master volume + a final finite guard. A denormal-free RT plugin must

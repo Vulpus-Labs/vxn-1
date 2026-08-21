@@ -127,10 +127,12 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="osc2_pw" data-label="PW"></div>
       </div>
     </div>
-    <!-- Mixer (0041a, 0061, 0062): four level faders + Col (White/Pink) switch
-         in the bottom strip. NoiseColor is a 2-variant enum; the Switch
-         primitive renders it as two exclusive labelled toggles. Sub is a
-         square one octave below osc1, phase-locked to the source's flipflop. -->
+    <!-- Mixer (0041a, 0061, 0062): four level faders + Col (White/Pink) as a
+         column of its own. NoiseColor is a 2-variant enum — one choice with two
+         positions, not two independent things to enable — so it draws as a
+         rocker beside the faders rather than as a pair of checkboxes in the
+         bottom strip. Sub is a square one octave below osc1, phase-locked to
+         the source's flipflop. -->
     <div class="panel" data-name="Mixer" data-layered>
       <div class="panel-header">MIXER</div>
       <div class="panel-body">
@@ -138,20 +140,30 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="osc2_level" data-label="Osc2"></div>
         <div class="ctl" data-control="fader" data-param="sub_level" data-label="Sub"></div>
         <div class="ctl" data-control="fader" data-param="noise_level" data-label="Noise"></div>
-      </div>
-      <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="noise_color" data-label="Col"></div>
+        <div class="ctl-strip" data-control="rocker" data-param="noise_color"></div>
       </div>
     </div>
     <!-- Filter (0043): HPF/Cutoff/Reso/Drive faders + Mode button group
          (vizia's `Ctl::Select` for FilterMode renders as a labelled-toggle
-         stack via `enum_list_body`). Slope (12/24 dB) is a strip switch. -->
+         stack via `enum_list_body`). Slope (12/24 dB) is a rocker sitting
+         beside Mode — the two together are the filter's shape, and a rocker
+         says "one choice, two positions" where the old pair of strip
+         checkboxes said "two things you can each enable". -->
     <div class="panel" data-name="Filter" data-layered>
       <div class="panel-header">FILTER</div>
       <div class="panel-body">
         <div class="ctl" data-control="buttongroup" data-param="filter_mode" data-label="Mode"></div>
+        <div class="ctl-strip" data-control="rocker" data-param="filter_slope"></div>
         <div class="ctl" data-control="fader" data-param="hpf_cutoff" data-label="HPF"></div>
-        <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
+        <!-- Tuned (0250): note-precise cutoff. The fader re-maps to semitones
+             over MIDI C0..C4 and reads out as a note name; the stored param
+             stays Hz, so DSP and host automation are untouched. It rides
+             directly under the fader it re-maps, centred on it, rather than in
+             the bottom strip where nothing said which fader it governed. -->
+        <div class="ctl-col ctl-col-center">
+          <div class="ctl" data-control="fader" data-param="cutoff" data-label="Cutoff"></div>
+          <div class="ctl-strip" data-control="switch" data-param="cutoff_tuned" data-label="Tuned"></div>
+        </div>
         <!-- Key-track (0245): dedicated param, VXN1's control — 1.0 = 1 oct of
              cutoff per oct of key, pivoting at C0, so with Cutoff at its
              minimum (C0's 16.35 Hz) the filter tracks the played note. -->
@@ -159,37 +171,35 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="resonance" data-label="Reso"></div>
         <div class="ctl" data-control="fader" data-param="drive" data-label="Drive"></div>
       </div>
-      <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="filter_slope" data-label="Slope"></div>
-        <!-- Tuned (0250): note-precise cutoff. The fader re-maps to semitones
-             over MIDI C0..C4 and reads out as a note name; the stored param
-             stays Hz, so DSP and host automation are untouched. -->
-        <div class="ctl-strip" data-control="switch" data-param="cutoff_tuned" data-label="Tuned"></div>
-      </div>
     </div>
   </div>
 
   <!-- Row 2 — LFOs and envelopes (source shaping). -->
   <div class="row row-2" data-row="2">
     <!-- LFO 1 (0042): per-voice. Shape (rotary) + Rate/Delay/Fade faders in
-         the main row; Sync + Free toggles in the bottom strip (matches the
-         vizia layout via `in_bottom_strip`). Free is a quirk — when on, it
-         keeps the LFO free-running and the Delay/Fade cells dim. -->
+         the main row. Sync rides under the Rate fader, centred on it — it is
+         Rate's own modifier (it swaps Hz for a musical subdivision), so it
+         belongs with the fader rather than in the strip. Free stays in the
+         bottom strip: it is a quirk of the LFO as a whole — when on, it keeps
+         the LFO free-running and the Delay/Fade cells dim. -->
     <div class="panel" data-name="LFO 1" data-layered>
       <div class="panel-header">LFO 1</div>
       <div class="panel-body">
         <div class="ctl" data-control="wave" data-param="lfo1_shape" data-label="Shape"></div>
-        <div class="ctl" data-control="fader" data-param="lfo1_rate" data-label="Rate"></div>
+        <div class="ctl-col ctl-col-center">
+          <div class="ctl" data-control="fader" data-param="lfo1_rate" data-label="Rate"></div>
+          <div class="ctl-strip" data-control="switch" data-param="lfo1_sync" data-label="Sync"></div>
+        </div>
         <div class="ctl" data-control="fader" data-param="lfo1_delay_time" data-label="Delay"></div>
         <div class="ctl" data-control="fader" data-param="lfo1_fade" data-label="Fade"></div>
       </div>
       <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="lfo1_sync" data-label="Sync"></div>
         <div class="ctl-strip" data-control="switch" data-param="lfo1_free_run" data-label="Free"></div>
       </div>
     </div>
     <!-- LFO 2 (0042): per-layer since 0216 (VXN1b has no global LFO — ADR 0002
-         §4). Shape + Rate up top, Sync in the strip; rebinds with its layer.
+         §4). Shape + Rate up top with Sync centred under the Rate fader (same
+         pairing as LFO 1); rebinds with its layer.
          Link (0217) is the one cross-layer coupling — Layer 2's LFO 2 slaves to
          Layer 1's (rate + phase). It is KeyState, not a param, so it carries no
          `data-control`/`data-param` and is wired by hand in dispatch.js; CSS
@@ -198,16 +208,19 @@ __CSS__
       <div class="panel-header">LFO 2</div>
       <div class="panel-body">
         <div class="ctl" data-control="wave" data-param="lfo2_shape" data-label="Shape"></div>
-        <div class="ctl" data-control="fader" data-param="lfo2_rate" data-label="Rate"></div>
+        <div class="ctl-col ctl-col-center">
+          <div class="ctl" data-control="fader" data-param="lfo2_rate" data-label="Rate"></div>
+          <div class="ctl-strip" data-control="switch" data-param="lfo2_sync" data-label="Sync"></div>
+        </div>
       </div>
       <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="lfo2_sync" data-label="Sync"></div>
         <div class="ctl-strip" id="lfo2-link" data-layer2-only></div>
       </div>
     </div>
-    <!-- Env 1 (0043): ADSR + Shape (Lin/Exp) in the strip. Vizia maps the
-         2-variant Shape enum to a switch and routes it through the bottom
-         strip alongside FilterSlope etc. -->
+    <!-- Env 1 (0043): ADSR + Shape (Lin/Exp) as a fifth column. Lin and Exp
+         are two positions of one curve choice, so — like NoiseColor and
+         FilterSlope — the 2-variant enum draws as a rocker rather than as the
+         pair of strip checkboxes vizia's `Ctl::Switch` produced. -->
     <div class="panel" data-name="Env 1" data-layered>
       <div class="panel-header">ENV 1</div>
       <div class="panel-body">
@@ -215,9 +228,7 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="env1_decay" data-label="D"></div>
         <div class="ctl" data-control="fader" data-param="env1_sustain" data-label="S"></div>
         <div class="ctl" data-control="fader" data-param="env1_release" data-label="R"></div>
-      </div>
-      <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="env1_shape" data-label="Shape"></div>
+        <div class="ctl-strip" data-control="rocker" data-param="env1_shape"></div>
       </div>
     </div>
     <div class="panel" data-name="Env 2" data-layered>
@@ -227,9 +238,7 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="env2_decay" data-label="D"></div>
         <div class="ctl" data-control="fader" data-param="env2_sustain" data-label="S"></div>
         <div class="ctl" data-control="fader" data-param="env2_release" data-label="R"></div>
-      </div>
-      <div class="panel-strip">
-        <div class="ctl-strip" data-control="switch" data-param="env2_shape" data-label="Shape"></div>
+        <div class="ctl-strip" data-control="rocker" data-param="env2_shape"></div>
       </div>
     </div>
   </div>
@@ -247,7 +256,7 @@ __CSS__
          labels PM as "FM" — players expect that name (VXN1 ADR 0004 §3).
          Amount drives PM only, so it dims for Off/Sync/Ring via the generic
          `unless-fm` dim rule. It is also a mod-matrix destination
-         (Cross-Mod Amt), applied per voice on top of this fader. -->
+         (Cross Mod Amt), applied per voice on top of this fader. -->
     <div class="panel" data-name="Cross Mod" data-layered>
       <div class="panel-header">CROSS MOD</div>
       <div class="panel-body">
@@ -268,17 +277,15 @@ __CSS__
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
       <div class="panel-body">
-        <!-- Width + Voice as one column. Six widths in a single vertical list
-             is taller than the panel, so the button group runs in TWO columns
+        <!-- Voice mode, then Width. Six widths in a single vertical list is
+             taller than the panel, so the button group runs in TWO columns
              (`data-columns="2"`, filled column-major: 1/2/4 then 8/16/32) —
-             which also reads as what it is, a doubling scale. Voice mode sits
-             underneath as a rocker rather than beside the widths, because it is
-             the other half of the same decision and a two-state control next to
-             a six-state one invites reading them as one list. -->
-        <div class="ctl-col voice-col">
-          <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width" data-columns="2"></div>
-          <div class="ctl-strip voice-mode" data-control="rocker" data-param="voice_mode" data-no-label></div>
-        </div>
+             which also reads as what it is, a doubling scale. Poly/Solo leads
+             the panel as its own column: it is the other half of the same
+             decision, and a rocker beside a checkbox list can't be misread as
+             a seventh width the way a stack of the two invited. -->
+        <div class="ctl-strip voice-mode" data-control="rocker" data-param="voice_mode"></div>
+        <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width" data-columns="2"></div>
         <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="voice_mode"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
@@ -488,7 +495,14 @@ __CSS__
         <span class="panel-header-title">DELAY</span>
       </div>
       <div class="panel-body">
-        <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+        <!-- Tempo sync (0267): flips Time from seconds to a musical
+             subdivision, same rate↔sync pairing as the two LFOs — and drawn
+             the same way, centred under the fader it re-maps rather than in
+             the bottom strip. -->
+        <div class="ctl-col ctl-col-center">
+          <div class="ctl" data-control="fader" data-param="delay_time" data-label="Time"></div>
+          <div class="ctl-strip" data-control="switch" data-param="delay_sync" data-label="Sync"></div>
+        </div>
         <div class="ctl" data-control="fader" data-param="delay_feedback" data-label="FB"></div>
         <div class="ctl" data-control="fader" data-param="delay_mix" data-label="Mix"></div>
       </div>
