@@ -257,7 +257,10 @@ pub struct VxnMainThread<'a> {
     /// page's first tick would otherwise slip through unnoticed.
     last_matrix: Option<[vxn1b_engine::MatrixTable; 2]>,
     /// Last keyboard state pushed to the page (0221). Same contract as
-    /// `last_matrix`: `None` while the GUI is closed, so the next open re-pushes.
+    /// `last_matrix`: `None` while the GUI is closed, so the next open
+    /// re-pushes, and cleared again on `EditorReady` — the GUI handle exists
+    /// from `set_parent`, but the page's `applyViewEvents` only exists from the
+    /// `ready` handshake, so a push in between is dropped on the floor.
     last_key: Option<vxn1b_engine::KeyState>,
     /// Whether the previous tick's meter frame was all-zero (0240). Lets the
     /// drain push the *first* silent frame — the view needs that zero to start
@@ -492,7 +495,23 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
                 }
             }
         };
-        lock_mut(&self.controller).tick(&mut on_custom_ui, &mut |_, _| {}, &mut |_| {});
+        let editor_ready = {
+            let mut ctrl = lock_mut(&self.controller);
+            ctrl.tick(&mut on_custom_ui, &mut |_, _| {}, &mut |_| {});
+            ctrl.take_editor_ready_flag()
+        };
+        // The page just (re)attached: its JS only exists from `ready` onwards,
+        // so anything pushed between `set_parent` and that handshake went into
+        // a WebView with no `applyViewEvents` yet and was lost. Params survive
+        // it — `EditorReady` re-broadcasts the whole table — but the two
+        // non-param echoes are diff-gated, so a dropped push would stay dropped
+        // until the state changed again: a session reloaded with Layer 2 on
+        // would play dual while the switch read dark. Clearing the memos makes
+        // the pushes below unconditional for this tick.
+        if editor_ready {
+            self.last_matrix = None;
+            self.last_key = None;
+        }
         self.drain_view_events();
         // Then catch any audio-thread automation the controller never saw. The
         // two pushes can echo the same param twice in a tick; the WebView

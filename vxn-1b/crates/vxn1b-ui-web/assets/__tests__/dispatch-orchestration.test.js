@@ -242,6 +242,31 @@ describe('rebindAllForLayer', () => {
   });
 });
 
+// 0282: level / pan / detune are now bound TWICE — once on the FX pane's mixer
+// strips, once beside the scope — so a param echo has to reach every cell on
+// the id, not just the last one bound. `drive` stands in for them here; the
+// fixture carries it and the fan-out is per-id, not per-param.
+describe('a param bound by more than one cell', () => {
+  it('fans a param echo out to every cell on the id', () => {
+    globalThis.window.__vxn = {};
+    window.vxn.send = { ready: vi.fn() };
+
+    mountCell('fader', 'drive');
+    mountCell('dial', 'drive');
+    init();
+
+    const ctls = model.controls.get(DRIVE);
+    expect(ctls).toHaveLength(2);
+
+    window.__vxn.applyViewEvents([
+      { kind: 'param_changed', id: DRIVE, plain: 0.4, norm: 0.4, display: '0.40' },
+    ]);
+    for (const c of ctls) {
+      expect(c.update).toHaveBeenCalledWith(0.4, 0.4, '0.40');
+    }
+  });
+});
+
 describe('init() → applyViewEvents', () => {
   it('binds cells, applies param echoes, and refreshes a sync partner on toggle', () => {
     globalThis.window.__vxn = {};

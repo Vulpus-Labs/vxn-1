@@ -46,8 +46,8 @@ pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 ///
 /// Width was widened from the initial 760 for top-row breathing room + the
 /// standalone Dynamics panel. Keep in sync with `--editor-w` / the row heights.
-pub const EDITOR_WIDTH: u32 = 940;
-pub const EDITOR_HEIGHT: u32 = 556;
+pub const EDITOR_WIDTH: u32 = 1060;
+pub const EDITOR_HEIGHT: u32 = 616;
 
 /// Display label for the virtual root group of the user preset corpus.
 /// VXN1b has no per-synth override, so this matches the shared default.

@@ -361,6 +361,16 @@ export function makeDial(el, id, desc, opts) {
   // (layer pan reads L/C/R, 0248). Null for every other dial, so the plain
   // path is unchanged.
   const displayOverride = (opts && opts.displayOverride) || null;
+  // Where the lit arc GROWS FROM. A unipolar param grows from the most
+  // anticlockwise point (norm 0 = the bottom of the range); a bipolar one is
+  // detented at its centre, so it grows from 12 o'clock in whichever direction
+  // the knob was turned — the same read as the bipolar faders' centre-origin
+  // fill. Keyed off the descriptor rather than a per-cell flag: a range that
+  // straddles zero IS the definition of centre-origin here, and it makes the
+  // mixer's pan and detune dials (0248) correct without either cell opting in.
+  // `min < 0 && max > 0` deliberately excludes ranges that merely END at zero
+  // (dynamics threshold, −60…0 dB), which are unipolar with a negative unit.
+  const fillOrigin = (desc.min < 0 && desc.max > 0) ? 0.5 : 0;
   const trackArc = dialDescribeArc(
     DIAL_CX, DIAL_CY, DIAL_ARC_R, DIAL_ARC_START, DIAL_ARC_START + DIAL_ARC_SWEEP);
   el.innerHTML =
@@ -385,11 +395,17 @@ export function makeDial(el, id, desc, opts) {
     indicatorG.setAttribute(
       'transform',
       `rotate(${dialNormToDeg(norm).toFixed(2)} ${DIAL_CX} ${DIAL_CY})`);
-    // Re-draw the fill arc up to `norm`; cap at a hair above zero so a norm
-    // of 0 still renders a usable zero-length stub (no NaN path).
-    const sweep = Math.max(0.001, norm) * DIAL_ARC_SWEEP;
+    // Re-draw the fill arc between `fillOrigin` and `norm` — the span runs
+    // whichever way round the two sit, so a bipolar dial fills anticlockwise
+    // below centre and clockwise above it. Cap the span at a hair above zero
+    // so a norm sitting exactly on the origin still renders a usable
+    // zero-length stub (no NaN path).
+    const from = Math.min(fillOrigin, norm);
+    const to = Math.max(fillOrigin, norm);
+    const startDeg = DIAL_ARC_START + from * DIAL_ARC_SWEEP;
+    const sweep = Math.max(0.001, to - from) * DIAL_ARC_SWEEP;
     fillPath.setAttribute(
-      'd', dialDescribeArc(DIAL_CX, DIAL_CY, DIAL_ARC_R, DIAL_ARC_START, DIAL_ARC_START + sweep));
+      'd', dialDescribeArc(DIAL_CX, DIAL_CY, DIAL_ARC_R, startDeg, startDeg + sweep));
   }
 
   const writeFromDrag = (rawNorm) => {

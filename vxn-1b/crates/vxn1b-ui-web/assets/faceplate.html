@@ -243,31 +243,14 @@ __CSS__
     </div>
   </div>
 
-  <!-- Row 3 (layer) — Cross Mod · Voice. The Layer 2 enable now lives on the
-       Layer 2 tab. -->
+  <!-- Row 3 (layer) — Voice · Scope. The Layer 2 enable lives on the Layer 2
+       tab. Cross Mod folded into Voice in the 0282 geometry pass: it was two
+       cells in a panel of its own, ran 42 px short of the row, and cost a
+       panel's worth of width that the scope and the new scope-side mixer
+       controls make better use of. -->
   <div class="row row-layer-3" data-row="3">
-    <!-- Cross Mod (0242, ported from VXN1's row 3). 0209 removed this panel with
-         the five fixed-routing panels, but cross-mod is *patch topology* — how
-         the two oscillators are wired to each other — not a modulation depth,
-         so it belongs on the faceplate and not in the matrix overlay. It sits
-         here rather than beside Osc 2 because row 1 is full at four panels and
-         this row has both the width and the taller `--panel-h-3`.
-         Type is a 4-variant button group (Off/Sync/FM/Ring); the descriptor
-         labels PM as "FM" — players expect that name (VXN1 ADR 0004 §3).
-         Amount drives PM only, so it dims for Off/Sync/Ring via the generic
-         `unless-fm` dim rule. It is also a mod-matrix destination
-         (Cross Mod Amt), applied per voice on top of this fader. -->
-    <div class="panel" data-name="Cross Mod" data-layered>
-      <div class="panel-header">CROSS MOD</div>
-      <div class="panel-body">
-        <div class="ctl" data-control="buttongroup" data-param="cross_mod_type" data-label="Type"></div>
-        <!-- Labelled "FM Amt", not "Amt": the fader drives PM only (which the
-             Type selector calls FM), so naming the mode it belongs to says what
-             the dim rule beside it already implies. -->
-        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="FM Amt" data-dim-unless-fm="cross_mod_type"></div>
-      </div>
-    </div>
-    <!-- Voice (0045, 0266): the two orthogonal halves of the old AssignMode —
+    <!-- Voice (0045, 0266, + Cross Mod 0242/0282): the two orthogonal halves of
+         the old AssignMode —
          Width (lanes per note, 1–16) as a button group, and Voice (Poly/Solo)
          as a switch beside it. Detune fans the stack across its full 0–50 ct at
          every width, with the Legato toggle drawn beneath the fader (Legato
@@ -289,6 +272,20 @@ __CSS__
         <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="voice_mode"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
+        <!-- Cross Mod (0242), folded in here by 0282. Still patch topology —
+             how the two oscillators are wired to each other, not a modulation
+             depth — which is why it is on the faceplate and not in the matrix
+             overlay; but two cells did not earn a panel. The rule separates it
+             from the voice-allocation columns so the panel reads as the two
+             groups it is. The group label says "Cross Mod" rather than "Type"
+             now that the panel header no longer says it.
+             The descriptor labels PM as "FM" — players expect that name (VXN1
+             ADR 0004 §3). Amount drives PM only, so it dims for Off/Sync/Ring
+             via the generic `unless-fm` dim rule. It is also a mod-matrix
+             destination (Cross Mod Amt), applied per voice on top of it. -->
+        <div class="panel-sep"></div>
+        <div class="ctl" data-control="buttongroup" data-param="cross_mod_type" data-label="Cross Mod"></div>
+        <div class="ctl" data-control="fader" data-param="cross_mod_amount" data-label="FM Amt" data-dim-unless-fm="cross_mod_type"></div>
       </div>
       <!-- Mod-matrix opens from here (it edits the layer's routing, so it
            belongs with the layer's panels). `panels/matrix.js` binds by id, so
@@ -309,6 +306,26 @@ __CSS__
       <div class="panel-header">SCOPE</div>
       <div class="panel-body">
         <div class="scope-mount" data-scope="layer"></div>
+        <!-- Edit-layer level / pan / detune, the same params the FX pane's
+             mixer strips drive (0282). Bound twice on purpose: the dispatcher
+             fans a `param_changed` echo out to every updater registered on the
+             id, so moving either copy moves the other. -->
+        <div class="scope-strip" data-layered>
+          <div class="strip-title">LAYER</div>
+          <div class="scope-strip-body">
+            <!-- Meter to the LEFT of its fader, as in the mixer. `scope` is not
+                 a key any meter frame carries: the mount registers (so the
+                 registry's rAF loop renders it) but `apply` never feeds it, and
+                 the dispatcher pushes the EDIT layer's pair into it instead —
+                 which is the same tap the trace beside it is drawn from. -->
+            <div class="meter-mount" data-meter="scope"></div>
+            <div class="ctl" data-control="fader" data-param="layer_level" data-label="Level" data-no-label></div>
+            <div class="strip-dials">
+              <div class="ctl strip-dial" data-control="dial" data-param="layer_pan" data-label="Pan"></div>
+              <div class="ctl strip-dial" data-control="dial" data-param="layer_detune" data-label="Detune"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -333,8 +350,9 @@ __CSS__
        are mounted by `wireMeters`. -->
   <div class="row row-global-1" data-row="1">
     <!-- Narrow mixer: two channel strips, split beneath them. Each strip is
-         [meter | fader] — meter to the LEFT of its fader, the channel-strip
-         convention — with the mute centred under the pair. The strip title
+         [meter | fader | pan+detune dials] — meter to the LEFT of its fader,
+         the channel-strip convention, with the two dials stacked in a column
+         beside them — and the mute centred under the lot. The strip title
          names the layer, so per-cell "Level" / "Lvl" labels would only repeat
          what the column already says; both are dropped. -->
     <div class="panel panel-mixer" data-name="Mixer">
@@ -342,30 +360,34 @@ __CSS__
       <div class="panel-body mixer-body">
         <div class="mixer-strips">
           <div class="mixer-strip">
-            <div class="mixer-strip-title">L1</div>
+            <div class="strip-title">LAYER 1</div>
             <div class="mixer-strip-body">
               <div class="meter-mount" data-meter="l1"></div>
               <div class="ctl" data-control="fader" data-param="layer_level"
                    data-fixed-layer="upper" data-label="Level" data-no-label></div>
+              <div class="strip-dials">
+                <div class="ctl strip-dial" data-control="dial" data-param="layer_pan"
+                     data-fixed-layer="upper" data-label="Pan"></div>
+                <div class="ctl strip-dial" data-control="dial" data-param="layer_detune"
+                     data-fixed-layer="upper" data-label="Detune"></div>
+              </div>
             </div>
-            <div class="ctl mixer-pan" data-control="dial" data-param="layer_pan"
-                 data-fixed-layer="upper" data-label="Pan"></div>
-            <div class="ctl mixer-detune" data-control="bipolar" data-param="layer_detune"
-                 data-fixed-layer="upper" data-label="Detune"></div>
             <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
                  data-fixed-layer="upper" data-label="Mute"></div>
           </div>
           <div class="mixer-strip" data-layer2-gated>
-            <div class="mixer-strip-title">L2</div>
+            <div class="strip-title">LAYER 2</div>
             <div class="mixer-strip-body">
               <div class="meter-mount" data-meter="l2"></div>
               <div class="ctl" data-control="fader" data-param="layer_level"
                    data-fixed-layer="lower" data-label="Level" data-no-label></div>
+              <div class="strip-dials">
+                <div class="ctl strip-dial" data-control="dial" data-param="layer_pan"
+                     data-fixed-layer="lower" data-label="Pan"></div>
+                <div class="ctl strip-dial" data-control="dial" data-param="layer_detune"
+                     data-fixed-layer="lower" data-label="Detune"></div>
+              </div>
             </div>
-            <div class="ctl mixer-pan" data-control="dial" data-param="layer_pan"
-                 data-fixed-layer="lower" data-label="Pan"></div>
-            <div class="ctl mixer-detune" data-control="bipolar" data-param="layer_detune"
-                 data-fixed-layer="lower" data-label="Detune"></div>
             <div class="ctl-strip mixer-mute" data-control="switch" data-param="layer_mute"
                  data-fixed-layer="lower" data-label="Mute"></div>
           </div>

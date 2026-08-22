@@ -37,25 +37,44 @@
 
   /* Geometry. The window is sized to the LAYER pane: banner (26) +
      preset-bar (30) + tab strip (26) + 3×8 chrome vgaps + 2×10 padding, over
-     three rows of 124 + 124 + 164 with 2×8 pane gaps. Rows 1–2 are 124px; the
-     bottom row (Cross Mod / Voice / Scope) is taller (--panel-h-3) so Voice's
-     Legato toggle and Mod Matrix button clear the denser content instead of
-     overlapping it. That comes to 554 summed and 556 as laid out — see
-     EDITOR_HEIGHT, which must match the rendered figure, not the sum. Width
-     widened from the initial 760 to give the top row (esp. Filter's six
-     controls) breathing room and to fit Dynamics as its own panel. */
-  --editor-w: 940px;
+     three rows of 144 + 144 + 184 with 2×8 pane gaps. Rows 1–2 are 144px; the
+     bottom row (Voice / Scope) is taller (--panel-h-3) so Voice's Legato
+     toggle and Mod Matrix button clear the denser content instead of
+     overlapping it. See EDITOR_HEIGHT, which must match the RENDERED figure,
+     not the sum — the banner and tab strip carry 1 px borders outside their
+     declared heights.
+
+     Widths and travels were both opened out in the 0282 geometry pass. A
+     `.ctl` column reserved 90 px for a label (12 + 4) and a 56 px fader, so
+     every fader in the editor sat above ~18 px of dead column; the faders now
+     take that back (`--fader-h` 76) and the rows grew to keep the under-fader
+     toggles (Cutoff's Tuned, the LFO Syncs) clearing the panel floor. Width
+     went 940 → 1060 for the same reason in the other axis: the top row's
+     panels came to 902 of 920 px, which is not a layout with any give in
+     it. */
+  --editor-w: 1060px;
   --pad-outer: 10px;
   --banner-h: 26px;
   --preset-bar-h: 30px;
-  --panel-h: 124px;           /* PANEL_H — rows 1–2 */
-  --panel-h-3: 164px;         /* PANEL_H_3 — bottom row, taller for denser panels */
-  /* FX/Global row 1 — sized to the mixer's full channel strip + split, the
-     tallest single panel in the editor. Fits inside the window the LAYER pane
-     already dictates (see `.row-global-1`). */
-  --panel-h-global-1: 252px;
-  --col-h: 90px;              /* COL_H — per-control column inside a panel */
-  --fader-h: 56px;            /* FADER_H — fader travel */
+  --panel-h: 144px;           /* PANEL_H — rows 1–2 */
+  --panel-h-3: 184px;         /* PANEL_H_3 — bottom row, taller for denser panels */
+  /* FX/Global rows. The LAYER pane dictates the window, and the FX pane's
+     content is shorter — before 0282 that showed as a 45–65 px dead band under
+     every panel in row 1 and a 42 px one under three of the four FX panels.
+     The two rows now split the pane's full height between them and scale their
+     own controls into it (`.row-global-1` / `.row-global-2` re-declare
+     `--fader-h` / `--col-h` locally), so the space goes into travel on the
+     master and FX faders rather than into empty panel. */
+  --panel-h-global-1: 240px;
+  --panel-h-global-2: 240px;
+  --col-h: 110px;             /* COL_H — per-control column inside a panel */
+  --fader-h: 76px;            /* FADER_H — fader travel */
+  /* Channel strip (the mixer's two, and the scope's): the meter and the level
+     fader span BOTH dial rows beside them, so their height is the dial
+     column's, not `--fader-h`. Two dial cells of (label 12 + 1 margin + 1 gap
+     + 36 knob) plus the 4 px column gap = 104. Rows may re-declare it — the
+     FX pane's mixer runs a taller strip and centres the dials in it. */
+  --strip-h: 104px;
   --dial: 62px;               /* DIAL — selector-knob box */
   --panel-pad: 5px;
   --panel-vgap: 4px;
@@ -249,15 +268,26 @@ html, body {
 .row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
 .row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
 
-/* Layer pane's bottom row — Cross Mod · Voice · Scope. Cross Mod and Voice are
-   sized close to their natural widths (they were stretched across the whole row
-   before the scope joined it), and the scope takes everything left over: a
-   waveform is the one thing here that reads better the wider it is, while a
-   column of toggles gains nothing from the extra pixels. */
+/* Layer pane's bottom row — Voice · Scope. Voice is sized close to its natural
+   width (seven columns since Cross Mod folded into it), and the scope takes
+   everything left over: a waveform is the one thing here that reads better the
+   wider it is, while a column of toggles gains nothing from the extra pixels. */
 .row-layer-3 { height: var(--panel-h-3); }
-.row-layer-3 .panel[data-name="Cross Mod"] { flex-grow: 0.5; }
 .row-layer-3 .panel[data-name="Voice"] { flex-grow: 1.0; }
-.row-layer-3 .panel[data-name="Scope"] { flex-grow: 1.9; }
+.row-layer-3 .panel[data-name="Scope"] { flex-grow: 1.4; }
+
+/* Hairline rule between two groups of columns inside one panel body — Voice's
+   allocation columns and the cross-mod pair. Full body height, so it reads as a
+   divider rather than as a very thin control. */
+.panel-sep {
+  flex: 0 0 1px;
+  align-self: stretch;
+  /* `--panel-border` and `--track-bg` are both near-black: right against the
+     face, invisible against `--panel-bg` (#1c1c1c). The knob rim is the
+     faceplate's existing "structural line drawn ON a panel" tone. */
+  background: var(--knob-rim);
+  margin: 0 6px;
+}
 
 /* Layer 2 enable switch, carried on the Layer 2 tab button (0219 §4) the way FX
    tabs carry their own on/off. Off (default) → Layer 2 bypassed; on → live.
@@ -390,11 +420,13 @@ html, body {
    from it (makeBipolar drives left/width).
 
    Keyed on the primitive's OWN class names rather than on the matrix overlay
-   that first used it. Scoped to `.vxn-mm-depth`, the second consumer — the
-   mixer's layer-detune slider (0263) — inherited none of it: a track with no
-   height or background is an invisible control, and an invisible control with
-   no box is also an unclickable one. Only the width cap below is really the
-   overlay's, and it stays there. */
+   that first used it. Scoped to `.vxn-mm-depth`, a second consumer inherited
+   none of it: a track with no height or background is an invisible control,
+   and an invisible control with no box is also an unclickable one. (That
+   consumer was the mixer's layer-detune slider (0263), since made a dial — the
+   overlay is the only user again, but the rules stay keyed on the primitive so
+   the next one does not repeat the lesson.) Only the width cap below is really
+   the overlay's, and it stays there. */
 .vxn-mm-depth {
   position: relative;         /* anchor for the value-pop */
   min-width: 0;
@@ -894,11 +926,62 @@ html, body {
    intrinsic size: it fills the mount, and `panels/scope.js` re-measures the box
    on every draw and resizes the backing store to match (the layer pane is
    `display: none` while another tab is up, where the box measures 0×0). */
-.panel-scope .panel-body { display: block; }
+/* Scope body is a row: canvas on the left taking whatever is left over, the
+   edit-layer strip pinned to the right. (It was `display: block` while the
+   canvas was the body's only child.) */
+.panel-scope .panel-body {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+}
 .scope-mount {
-  width: 100%;
+  /* Flexes rather than claiming `width: 100%`: the scope panel body also holds
+     the layer strip below, and a 100%-wide canvas beside it overflows. */
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100%;
   min-height: 0;
+}
+
+/* Layer strip beside the scope (0282). Level / pan / detune on the EDIT layer —
+   the same three params the FX pane's mixer strips carry, bound a second time
+   here (`model.controls` is id → [updaters], so both cells track one another
+   through the engine's echo). The scope shows the edit layer's post-fader,
+   post-pan output, so the controls that shape that trace are worth having in
+   reach of it instead of a tab away.
+
+   `data-layered`, not `data-fixed-layer`: this strip follows the edit layer
+   exactly as the scope's tap does. The mixer's strips are the opposite — both
+   layers at once — which is the whole distinction between the two surfaces. */
+.scope-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding-left: 10px;
+}
+/* Same shape as a mixer channel — a title naming the group, the level fader
+   spanning the two dials beside it — so the two surfaces read as the same
+   control in two places rather than as two different ones. The title is the
+   label row for the fader (which is why the fader cell carries
+   `data-no-label`), exactly as L1 / L2 is in the mixer.
+   `.ctl-fader` carries its own `--fader-h`, so the primitive needs the
+   override too. */
+.scope-strip-body {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 6px;
+}
+.scope-strip-body > .ctl {
+  height: var(--strip-h);
+  gap: 0;
+}
+.scope-strip-body .ctl-fader {
+  height: 100%;
 }
 .scope-canvas {
   display: block;
@@ -1169,27 +1252,50 @@ html, body {
    The four effects were previously one tabbed panel showing a single effect at
    a time; side by side they fill the row and expose all four on/off states. */
 /* Row 1 is the tallest row in the editor, and it is the mixer that sets the
-   figure: two channel strips of title + meter/fader + pan + detune + mute, with
-   the split beneath them, need ~219 px of panel body. It costs nothing — the
+   figure: two channel strips of title + meter/fader/dials + mute, with the
+   split beneath them, need ~180 px of panel body. It costs nothing — the
    window is sized to the LAYER pane (428 px of rows), and even at this height
    the global pane's two rows come to 424, so the row is taking slack that was
    already there rather than growing the editor. */
-.row-global-1 { height: var(--panel-h-global-1); }
-.row-global-2 { height: var(--panel-h-3); }
+/* Both FX-pane rows carry their own control scale (0282). The pane holds less
+   than the LAYER pane does, so at the shared `--fader-h` it rendered as two
+   bands of empty panel; declaring the vars on the row lets the faders grow into
+   the height instead. Nothing else has to know — `.ctl-fader`, the lit fill and
+   `paintFader`'s thumb are all relative to the live element height. */
+.row-global-1 {
+  height: var(--panel-h-global-1);
+  --fader-h: 136px;
+  --col-h: 170px;
+  /* The channel strip grows past its dial column here — see `.strip-dials`,
+     which centres the two knobs against the taller meter/fader pair. */
+  --strip-h: 124px;
+}
+.row-global-2 {
+  height: var(--panel-h-global-2);
+  --fader-h: 120px;
+  --col-h: 154px;
+}
 
 /* Dynamics and Master are sized by their own content, not the mixer's, so in a
    row this tall they would sit against the header with a band of empty panel
    beneath. Centring their bodies spreads that gap to both sides, which reads as
    deliberate rather than as a layout that ran short. The mixer keeps its
-   `flex-start` — it fills the row. */
+   `flex-start` — it fills the row.
+
+   Row 2 gets the same treatment for the same reason, and there it is the whole
+   row bar Delay: Delay carries a Sync / Ping-pong strip under its faders and
+   the other three do not, so Delay sets the row height and the rest run ~54 px
+   short of it. Scaling only those three up would give one row two different
+   fader lengths, which is worse than the gap. */
 .row-global-1 .panel[data-name="Dynamics"] .panel-body,
-.row-global-1 .panel[data-name="Master"] .panel-body {
+.row-global-1 .panel[data-name="Master"] .panel-body,
+.row-global-2 .panel-body {
   align-items: center;
 }
 
-/* The mixer is deliberately narrow — two slim channel strips and the split
-   beneath them, nothing else. */
-.row-global-1 .panel[data-name="Mixer"]    { flex-grow: 0; flex-basis: 150px; }
+/* The mixer is deliberately narrow — two channel strips (meter + fader + a
+   column of two dials) and the split beneath them, nothing else. */
+.row-global-1 .panel[data-name="Mixer"]    { flex-grow: 0; flex-basis: 200px; }
 .row-global-1 .panel[data-name="Dynamics"] { flex-grow: 1.35; }
 .row-global-1 .panel[data-name="Master"]   { flex-grow: 1; }
 
@@ -1206,9 +1312,9 @@ html, body {
    the control cell. Every meter cell therefore carries its label ABOVE the bar
    exactly as a fader does, so the label block supplies the offset and the bars
    land level with the tracks — no per-cell padding to keep in sync with the
-   label height. The mixer strips are the exception: their shared L1 / L2 title
-   is the label row for both the meter and the fader, and neither carries one
-   of its own, so there both simply start at the top. */
+   label height. The mixer strips are the exception: their shared strip title
+   (LAYER 1 / LAYER 2) is the label row for both the meter and the fader, and
+   neither carries one of its own, so there both simply start at the top. */
 .ctl-meter { justify-content: flex-start; }
 
 .meter-mount {
@@ -1244,19 +1350,28 @@ html, body {
   gap: 3px;
 }
 
-.mixer-strip-title {
+/* Spelled out rather than abbreviated: the panel has the width for it now that
+   the strip is meter + fader + dial column, and "LAYER 1" needs no decoding.
+   Capitalised in the markup, like the panel headers — the control labels get
+   their caps from `text-transform` on `.ctl-label`, but this is not a `.ctl`.
+   `align-self: stretch` + centred text keeps it centred over the whole strip
+   instead of over whatever its own text happens to measure. */
+.strip-title {
   font-size: 9px;
   font-weight: 700;
   color: var(--ctl-label);
   letter-spacing: 0.6px;
   height: var(--ctl-label-h);
   line-height: var(--ctl-label-h);
+  align-self: stretch;
+  text-align: center;
 }
 
 /* Meter to the LEFT of its fader — channel-strip convention, and it puts the
-   bar next to the control that sets it. The strip title names the layer, so
-   neither cell carries its own label; both start at the same y, so `flex-start`
-   is what keeps the meter and the fader track aligned. */
+   bar next to the control that sets it — with the pan/detune dial column to
+   the right of the pair. The strip title names the layer, so neither the meter
+   nor the fader carries its own label; both start at the same y, so
+   `flex-start` is what keeps the meter and the fader track aligned. */
 .mixer-strip-body {
   display: flex;
   flex-direction: row;
@@ -1265,59 +1380,78 @@ html, body {
 }
 /* The fader cell is a full control column (label slot + travel); with the label
    suppressed it must not still reserve the column height, or the mute below it
-   is pushed away from the strip. */
-.mixer-strip-body .ctl {
-  height: var(--fader-h);
+   is pushed away from the strip. Direct child only — the dial cells inside
+   `.strip-dials` size themselves (see below).
+
+   Height is the DIAL COLUMN's, not `--fader-h`: level and its meter run the
+   full height of the pan/detune pair beside them, which is the channel-strip
+   read (one long fader, its meter alongside, the trim knobs stacked next to
+   it) and gives the fader half again the travel it had. `.ctl-fader` carries
+   its own `--fader-h`, so the primitive needs the override too — the track,
+   the lit fill and `paintFader`'s thumb are all relative to the live element
+   height, so nothing else has to know. */
+.mixer-strip-body > .ctl {
+  height: var(--strip-h);
   gap: 0;
 }
+.mixer-strip-body .ctl-fader {
+  height: 100%;
+}
+.mixer-strip-body .meter-mount,
+.scope-strip-body .meter-mount {
+  height: var(--strip-h);
+}
+/* The meter's colour gradient is sized to the TRACK so a given colour always
+   means the same level (see `.meter-fill`). That size is stated in pixels, so
+   the taller mixer bar has to restate it or the amber/red band would sit at
+   −22/−10 dB of a 56 px meter partway up a 104 px one. */
+.mixer-strip-body .meter-fill,
+.scope-strip-body .meter-fill {
+  background-size: 100% var(--strip-h);
+}
 
-/* Pan dial between the fader and the mute (0248) — the mixer-strip order a
-   player expects, level above placement above mute. Sits outside
-   `.mixer-strip-body`, so it keeps its own label slot (the fader's is
-   suppressed; the dial's "PAN" is the one label the strip needs).
+/* Pan and detune (0248, reworked from a slider to a dial): two dials stacked
+   in a column beside the meter/fader pair rather than strung out beneath it.
+   Both are centre-origin params, both are placement rather than level, and a
+   column of two 36 px dials is shorter than the label+control rows they used
+   to occupy — so the strip gets back the height the split section wanted, and
+   the meter/fader pair spans the column rather than sitting short of it.
 
-   `height: auto`, like the fader cell above and for the same reason: a `.ctl`
-   reserves a full `--col-h` control column, and a 36 px dial claiming 90 px of
-   it pushed the detune, the mute and the whole split section out of the panel
-   (they rendered *underneath* the FX row's panels, which is why they looked
-   deleted rather than overflowing). Nothing in the strip is a full column —
-   the L1/L2 title is the label row for all of them. */
-.mixer-pan {
+   `height: auto`: a `.ctl` reserves a full `--col-h` control column, and a
+   36 px dial claiming 90 px of it pushed the mute and the whole split section
+   out of the panel (they rendered *underneath* the FX row's panels, which is
+   why they looked deleted rather than overflowing). Nothing in the strip is a
+   full column — the strip title is the label row for the meter and fader, and
+   the dials carry their own one-word labels. */
+.strip-dials {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* Take the strip's height and centre in it: the meter and the level fader
+     span the full strip, which is taller than two dials, and knobs pinned to
+     the top of a long fader read as though they had come loose from it. */
+  height: var(--strip-h);
+}
+.strip-dial {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
   height: auto;
 }
-
-/* Layer detune (0263): a centre-origin horizontal slider under the pan dial.
-   Constrained to the strip width — the primitive's drag travel is in pixels of
-   pointer movement, not track width, so a narrow track loses no resolution. */
-.mixer-detune {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  width: 100%;
-  height: auto;                   /* see `.mixer-pan` */
+/* DETUNE is the longest label in the panel; at the strip's width it would set
+   the column wider than its dial. Trimmed a point and de-spaced so it fits the
+   36 px knob. */
+.strip-dial .ctl-label {
+  font-size: 9px;
+  letter-spacing: 0.2px;
+  margin-bottom: 1px;
 }
 
-/* The thumb is centred on the track and stands well proud of it, so the cell
-   has to reserve room for the thumb, not the 4 px track — without the margin it
-   overflowed its cell by a few pixels at both ends. Trimmed a little from the
-   matrix overlay's thumb as well: the strip is ~46 px wide, and the overlay's
-   18 px block on a track that short reads as a slider with no travel. */
-.mixer-detune .fader-track {
-  width: 100%;
-  margin: 6px auto;
-}
-.mixer-detune .fader-thumb {
-  width: 8px;
-  height: 12px;
-}
-
-/* Mute centred under the meter+fader pair rather than pinned to the panel
-   edge, so it reads as belonging to this strip. */
+/* Mute centred under the strip body rather than pinned to the panel edge, so
+   it reads as belonging to this strip. */
 .mixer-mute {
   display: flex;
   justify-content: center;

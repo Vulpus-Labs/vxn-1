@@ -104,6 +104,69 @@ describe('makeDial', () => {
     expect(dHigh).not.toBe(dLow);
   });
 
+  // Bipolar dials (mixer pan / detune) grow their fill from the CENTRE detent,
+  // not from the anticlockwise end of the track. jsdom has no SVG geometry, so
+  // the assertions read the arc's endpoints out of the `d` string. An SVG arc
+  // is always written clockwise here, so the centre is the path's END below
+  // centre and its START above — either way one end of the lit span sits at
+  // 12 o'clock, x = cx, y = cy - arcR (18, 3).
+  describe('centre-origin fill (bipolar descriptor)', () => {
+    const BIPOLAR = { name: 'layer_pan', label: 'Pan', min: -1, max: 1, default: 0, kind: 'float' };
+    const TOP = ['18.00', '3.00'];
+    // 'M sx sy A r r 0 f 1 ex ey' → [[sx, sy], [ex, ey]].
+    function ends(d) {
+      const t = d.split(/[\s]+/);
+      return [[t[1], t[2]], [t[t.length - 2], t[t.length - 1]]];
+    }
+
+    it('anchors one end of the arc at 12 o\'clock on both sides of centre', () => {
+      const ctl = makeDial(el, 7, BIPOLAR);
+      const fill = el.querySelector('.dial-fill');
+
+      ctl.update(-0.5, 0.25, 'L50');
+      const [leftStart, leftEnd] = ends(fill.getAttribute('d'));
+      // Below centre the span runs value → centre, so the TOP is the endpoint.
+      expect(leftEnd).toEqual(TOP);
+      expect(leftStart).not.toEqual(TOP);
+
+      ctl.update(0.5, 0.75, 'R50');
+      const [rightStart, rightEnd] = ends(fill.getAttribute('d'));
+      // Above centre it runs centre → value, so the TOP is the start point.
+      expect(rightStart).toEqual(TOP);
+      expect(rightEnd).not.toEqual(TOP);
+    });
+
+    it('collapses to a stub at the centre detent', () => {
+      const ctl = makeDial(el, 7, BIPOLAR);
+      const fill = el.querySelector('.dial-fill');
+      ctl.update(0, 0.5, 'C');
+      const [start, end] = ends(fill.getAttribute('d'));
+      expect(start).toEqual(TOP);
+      // A hair of sweep, not a zero-length (NaN-prone) path.
+      expect(end).not.toEqual(TOP);
+      expect(Number(end[1])).toBeCloseTo(3.0, 2);
+    });
+
+    it('leaves a unipolar descriptor growing from norm 0', () => {
+      const ctl = makeDial(el, 7, DESC);
+      const fill = el.querySelector('.dial-fill');
+      ctl.update(0.5, 0.5, '50%');
+      const [start, end] = ends(fill.getAttribute('d'));
+      // −135°: down-left of the face. The arc ENDS at the top at norm 0.5.
+      expect(start).not.toEqual(TOP);
+      expect(end).toEqual(TOP);
+    });
+
+    it('treats a range that merely ends at zero as unipolar', () => {
+      const THRESH = { name: 'dynamics_threshold', label: 'Thresh', min: -60, max: 0, default: -12, kind: 'float' };
+      const ctl = makeDial(el, 7, THRESH);
+      const fill = el.querySelector('.dial-fill');
+      ctl.update(-30, 0.25, '-30 dB');
+      const [start] = ends(fill.getAttribute('d'));
+      expect(start).toEqual(['7.39', '28.61']);  // −135°, the track's start
+    });
+  });
+
   it('a drag brackets a gesture and writes norm', () => {
     makeDial(el, 7, DESC);
     const svg = el.querySelector('svg.ctl-dial');

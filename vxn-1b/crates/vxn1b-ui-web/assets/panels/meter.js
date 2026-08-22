@@ -251,6 +251,14 @@ export const meterRegistry = (() => {
     reset() {
       for (const m of meters.values()) m.reset();
     },
+    // One mounted meter by key. The scope panel's meter is registered under a
+    // key no frame carries (`scope`) so `apply` skips it — it shows whichever
+    // layer is being edited, which is a view decision, so the dispatcher feeds
+    // it by hand from the frame's `l1` / `l2` while the rAF loop here still
+    // drives its ballistics.
+    get(key) {
+      return meters.get(key) || null;
+    },
     // Test seam: the suites drive `render` directly rather than via rAF.
     _meters: meters,
   };

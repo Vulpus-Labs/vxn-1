@@ -776,6 +776,12 @@ export function wireMeters() {
 // looking at, and nothing at all while the FX/Global tab is up.
 let _scope = null;
 let _scopeSource = null;
+// The scope panel's own level meter. Registered under a key no meter frame
+// carries, so `meterRegistry.apply` skips it and `dispatchMeters` below feeds
+// it the edit layer's pair by hand — a meter that follows the edit layer is a
+// view decision, not something the audio side should have to publish twice.
+let _scopeMeter = null;
+export const SCOPE_METER_KEY = 'scope';
 
 // Test-only reset, for the same reason as `_resetKeyStateView`: these are
 // module-level in production because the editor is one long-lived page, but the
@@ -784,12 +790,31 @@ let _scopeSource = null;
 export function _resetScopeView() {
   _scope = null;
   _scopeSource = null;
+  _scopeMeter = null;
 }
 
 export function wireScope() {
+  // The meter mount is wired by `wireMeters` like any other; all this does is
+  // keep the handle, since its frames arrive off the registry's usual path.
+  // Called after `wireMeters`, so the meter is already registered. Gated on the
+  // mount rather than reaching for the registry unconditionally: `dispatch.js`
+  // sees `meterRegistry` as a spliced free global, and a faceplate (or a suite)
+  // with no meter mounts must not need it defined at all.
+  const mount = document.querySelector(`[data-meter="${SCOPE_METER_KEY}"]`);
+  _scopeMeter = mount ? meterRegistry.get(SCOPE_METER_KEY) : null;
   const el = document.querySelector('[data-scope]');
   if (!el) return;
   _scope = makeScope(el);
+}
+
+// Feed a decoded meter frame to the scope panel's meter, reading whichever
+// channel pair the edit layer is. Exported for the suite; the dispatcher calls
+// it right after `meterRegistry.apply`.
+export function pushScopeMeter(frame) {
+  if (!_scopeMeter) return;
+  const v = frame[model.currentLayer === 'upper' ? 'l1' : 'l2'];
+  if (v == null) return;
+  _scopeMeter.push(Array.isArray(v) ? v : [v]);
 }
 
 export function syncScopeSource() {
@@ -802,6 +827,9 @@ export function syncScopeSource() {
   // belongs to the layer we just left. Blank it rather than leave the wrong
   // layer's waveform up for the ~30 ms the ring takes to refill.
   _scope.clear();
+  // Same reason: the ballistics on screen are the layer we just left, and a
+  // decaying bar from the wrong layer is as misleading as a stale trace.
+  if (_scopeMeter) _scopeMeter.reset();
   window.vxn.send.setScopeSource(next);
 }
 
@@ -970,6 +998,7 @@ export function init() {
     // model, so the MVC parity rule is unaffected.
     if (ev.kind === 'meters') {
       meterRegistry.apply(ev);
+      pushScopeMeter(ev);
       return;
     }
     // Scope window (oldest → newest) for whichever layer the page asked for.
