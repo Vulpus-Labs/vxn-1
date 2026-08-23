@@ -116,3 +116,38 @@ the flipflop disappears.
   ticket, not scoped here.
 - Discovered while investigating why Ring on two squares a fifth apart sounds
   polite next to a miniKorg 700S.
+
+## Close-out (2026-08-23)
+
+- `PolySub` replaces the derived sub: `phase: [f32; N]`, `reset(v)` → 0,
+  `process(&src_inc, &mut out)` advancing at `src_inc/2` and emitting the same
+  BLEP'd square
+  ([oscillator.rs:691](../../vxn-1/crates/vxn-dsp/src/poly/oscillator.rs#L691)).
+  Advance-then-emit keeps the old sample alignment, so only the start phase moved.
+- `sub_flipflop` gone — field, init, reset, and the seven toggle sites across the
+  four kernels including the dead `other.sub_flipflop` write in the PM kernel.
+  Repo-wide grep for `sub_flipflop|poly_sub_square` returns nothing.
+- Engines hold a `sub: PolySub` beside the oscillators, reset per lane in
+  `trigger`/`trigger_lane` and rebuilt in `reset_all`/`reset`; the call sites pass
+  only the source increment
+  ([voice.rs:1251](../../vxn-1/crates/vxn-engine/src/voice.rs#L1251),
+  [bank.rs:1204](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1204)). Sync still
+  keys the sub to osc2.
+- Tests: `sub_first_half_cycle_is_a_full_source_cycle_on_every_lane` (all 16 lanes,
+  first edge at `source_period ±1` under golden-ratio osc phases),
+  `sub_pitch_tracks_source_under_pitch_modulation` (block-quantised vibrato,
+  zero-crossing counts stay 2:1), `sub_survives_cross_mod_switch_without_polarity_flip`
+  (Sync→Ring mid-note, delta 3), plus the five ported sub tests.
+- `baseline_render_is_stable` and `default_patch_render_matches_vxn1` green with
+  **no rebaseline** — `sub_level` defaults to 0 in both param tables
+  ([params.rs:536](../../vxn-1/crates/vxn-app/src/params.rs#L536),
+  [params.rs:608](../../vxn-1b/crates/vxn1b-engine/src/params.rs#L608)).
+- Perf (16 voices, 512-frame blocks, minimum of two runs per tree): sub **off**
+  gets cheaper — `dry_1x` 84.8 → 78.5 µs (−7.4%), the flipflop was a per-voice
+  per-sample FMA in every kernel whether or not the sub was audible. Sub **on**
+  is flat at 1x (96.9 → 97.6 µs) and costs ~5% at 4x sync (399.6 → 418.8 µs) for
+  the accumulator's store. Worst case is still ~25× real-time.
+- Factory presets using the sub (vxn-1: *Bass Pressure*, *Boofy Summers*, *One
+  Ringmod To Rule Them All*; vxn-1b: *Split Bass and Lead*, *Ladder Bass*, *Wide
+  Sub*) audited by ear and signed off — no unwanted render change.
+- Shipped in `02dab34`; this close-out follows it.
