@@ -256,11 +256,6 @@ pub struct PolyOscillator {
     /// 1.0 on the sample following a sync reset (emit the bare post value, not
     /// the `osc_sample` free value), else 0.0.
     sync_pending: [f32; N],
-    /// Sub-osc flipflop (0.0 / 1.0), toggled by the kernel that advances the
-    /// phase keying it: own wrap on the independent / PM paths, master wrap on
-    /// the sync path. Stored as `f32` so the lane loop stays branchless and
-    /// vectorises (matches `sync_pending`). Read by [`poly_sub_square`].
-    pub sub_flipflop: [f32; N],
     /// Per-voice slow random walk driving pitch drift. Seeded per voice so
     /// each lane wanders independently — the "live" decorrelation a real
     /// analog poly synth's per-voice opamp tolerances produce. Free-running:
@@ -291,7 +286,6 @@ impl PolyOscillator {
             inc: [0.0; N],
             sync_resid: [0.0; N],
             sync_pending: [0.0; N],
-            sub_flipflop: [0.0; N],
             drift_walks: std::array::from_fn(|i| {
                 BoundedRandomWalk::new(0xD1F7_0001_u32.wrapping_add(i as u32), OSCILLATOR_DRIFT_STEP)
             }),
@@ -304,7 +298,6 @@ impl PolyOscillator {
     pub fn reset(&mut self, v: usize) {
         self.sync_resid[v] = 0.0;
         self.sync_pending[v] = 0.0;
-        self.sub_flipflop[v] = 0.0;
         self.phase[v] = 0.0;
     }
 
@@ -344,8 +337,7 @@ impl PolyOscillator {
     }
 
     /// Produce one sample per voice into `out`, advancing all phases. `wave` is
-    /// global; `pw` is per-voice pulse width. Toggles [`sub_flipflop`] on each
-    /// own-wrap (drives the sub-osc on Off / Ring; unused for osc2, harmless).
+    /// global; `pw` is per-voice pulse width.
     #[inline]
     pub fn process(&mut self, wave: Waveform, pw: &[f32; N], out: &mut [f32; N]) {
         match wave {
@@ -356,7 +348,6 @@ impl PolyOscillator {
                     let np = p + self.inc[v];
                     let wrapped = (np >= 1.0) as u32 as f32;
                     self.phase[v] = np - wrapped;
-                    self.sub_flipflop[v] += wrapped - 2.0 * self.sub_flipflop[v] * wrapped;
                 }
             }
             Waveform::Triangle => {
@@ -366,7 +357,6 @@ impl PolyOscillator {
                     let np = p + self.inc[v];
                     let wrapped = (np >= 1.0) as u32 as f32;
                     self.phase[v] = np - wrapped;
-                    self.sub_flipflop[v] += wrapped - 2.0 * self.sub_flipflop[v] * wrapped;
                 }
             }
             Waveform::Saw => {
@@ -377,7 +367,6 @@ impl PolyOscillator {
                     let np = p + dt;
                     let wrapped = (np >= 1.0) as u32 as f32;
                     self.phase[v] = np - wrapped;
-                    self.sub_flipflop[v] += wrapped - 2.0 * self.sub_flipflop[v] * wrapped;
                 }
             }
             Waveform::Pulse => {
@@ -398,7 +387,6 @@ impl PolyOscillator {
                     let np = p + dt;
                     let wrapped = (np >= 1.0) as u32 as f32;
                     self.phase[v] = np - wrapped;
-                    self.sub_flipflop[v] += wrapped - 2.0 * self.sub_flipflop[v] * wrapped;
                 }
             }
         }
@@ -597,9 +585,6 @@ impl PolyOscillator {
             let wrapped = (np_m >= 1.0) as u32 as f32;
             other.phase[v] = np_m - wrapped;
             let frac = (1.0 - (np_m - 1.0) / dt_m.max(1.0e-12)).clamp(f32::MIN_POSITIVE, 1.0);
-            // Sub flipflop is keyed to the master wrap under sync (the audible
-            // period is osc2's, so the sub sits an octave below that).
-            self.sub_flipflop[v] += wrapped - 2.0 * self.sub_flipflop[v] * wrapped;
 
             // Sync always on here: the reset mask is the bare master wrap.
             let reset = wrapped;
@@ -678,15 +663,14 @@ impl PolyOscillator {
             let np_m = p_m + dt_m;
             let wrapped_m = (np_m >= 1.0) as u32 as f32;
             other.phase[v] = np_m - wrapped_m;
-            other.sub_flipflop[v] += wrapped_m - 2.0 * other.sub_flipflop[v] * wrapped_m;
 
             // osc1 (carrier): through-zero phase mod. The accumulator advances at
             // the base increment; the modulator offsets only the read, which wraps
             // two-sided so it can run backward through zero. Clear any
             // `sync_pending` left on the carrier by a prior sync block so a later
-            // switch back to sync starts clean. The sub-osc flipflop tracks the
-            // carrier's accumulator wrap (PM doesn't modulate it), so sub
-            // frequency stays at `osc1_accumulator / 2` regardless of `pm_index`.
+            // switch back to sync starts clean. PM offsets only the read, never
+            // the increment [`PolySub`] halves, so sub frequency stays at
+            // `osc1 / 2` regardless of `pm_index`.
             let p_s = self.phase[v];
             let inc_c = self.inc[v];
             let read = {
@@ -698,37 +682,69 @@ impl PolyOscillator {
             let np_s = p_s + inc_c;
             let wrapped_s = (np_s >= 1.0) as u32 as f32;
             self.phase[v] = np_s - wrapped_s;
-            self.sub_flipflop[v] += wrapped_s - 2.0 * self.sub_flipflop[v] * wrapped_s;
         }
     }
 }
 
 // ── Sub-osc (square one octave below the source) ────────────────
 
-/// Band-limited square at half the source frequency, phase-locked to the
-/// source via a flipflop toggled on each source wrap. `phase`/`inc` are the
-/// source oscillator's (osc1's accumulator on Off/Ring/PM, osc2's master on
-/// Sync); `flip` is the per-voice flipflop the source's kernel toggles. The
-/// sub phase is `source_phase/2 + flip·½` and the increment is `source_inc/2`,
-/// so two source wraps make one full sub cycle (sub period = 2× source).
-/// PolyBLEP is applied on both the sub's wrap and the half-cycle duty edge.
-/// Branchless, vectorising.
-#[inline]
-pub fn poly_sub_square(
-    phase: &[f32; N],
-    inc: &[f32; N],
-    flip: &[f32; N],
-    out: &mut [f32; N],
-) {
-    for v in 0..N {
-        let sp = phase[v] * 0.5 + flip[v] * 0.5;
-        let sdt = inc[v] * 0.5;
-        let naive = 1.0 - 2.0 * (sp >= 0.5) as u32 as f32;
-        let pf = {
-            let x = sp - 0.5 + 1.0;
-            x - x.floor()
-        };
-        out[v] = naive + pblep(sp, sdt) - pblep(pf, sdt);
+/// 16-voice sub-oscillator: a band-limited square running at exactly half the
+/// source oscillator's frequency, on its own phase accumulator.
+///
+/// The source is osc1 on the Off / Ring / PM paths and osc2 (the master) on
+/// Sync — the sub tracks whichever one sets the audible period — but it only
+/// ever reads that oscillator's *increment*, never its phase. Frequency lock is
+/// therefore exact (`inc` is assigned each control block, never accumulated, so
+/// `Σ(inc_k/2) = (Σ inc_k)/2` and pitch mod, portamento, drift and vibrato all
+/// track), while the phase relationship is the sub's own: seeded to 0 by
+/// [`reset`](Self::reset) at note-on, so the first half-cycle is a full source
+/// cycle on every lane regardless of where the source started (0281).
+///
+/// Owning the state here rather than on a [`PolyOscillator`] is deliberate: the
+/// source alternates with the cross-mod mode, and a live mode switch under a
+/// held note must not disturb the sub's phase.
+#[derive(Clone)]
+pub struct PolySub {
+    phase: [f32; N],
+}
+
+impl Default for PolySub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PolySub {
+    pub fn new() -> Self {
+        Self { phase: [0.0; N] }
+    }
+
+    /// Zero voice `v`'s phase. Called at note-on alongside the oscillator
+    /// resets, so a repeated note gets an identical sub onset whichever lane
+    /// the allocator hands it.
+    #[inline]
+    pub fn reset(&mut self, v: usize) {
+        self.phase[v] = 0.0;
+    }
+
+    /// Advance one sample per voice at `src_inc/2` and emit the band-limited
+    /// square. PolyBLEP is applied on both the wrap and the half-cycle duty
+    /// edge. Advance-then-emit, matching the oscillator kernels' sample
+    /// alignment. Branchless, vectorising.
+    #[inline]
+    pub fn process(&mut self, src_inc: &[f32; N], out: &mut [f32; N]) {
+        for v in 0..N {
+            let sdt = src_inc[v] * 0.5;
+            let np = self.phase[v] + sdt;
+            let sp = np - (np >= 1.0) as u32 as f32;
+            self.phase[v] = sp;
+            let naive = 1.0 - 2.0 * (sp >= 0.5) as u32 as f32;
+            let pf = {
+                let x = sp - 0.5 + 1.0;
+                x - x.floor()
+            };
+            out[v] = naive + pblep(sp, sdt) - pblep(pf, sdt);
+        }
     }
 }
 
@@ -1275,37 +1291,29 @@ mod tests {
     }
 
     #[test]
-    fn poly_sub_square_matches_scalar_within_tolerance() {
+    fn poly_sub_matches_scalar_within_tolerance() {
         // Mirror `poly_saw_matches_scalar_within_tolerance`: drive lane 0 of a
-        // PolyOscillator on the saw fast path; the same flipflop-toggle and
-        // half-rate comparator built scalar-side must track within 1e-5.
+        // PolySub off a source increment; the same half-rate accumulator and
+        // comparator built scalar-side must track within 1e-5.
         for f_hz in [220.0_f32, 750.0, 1234.0] {
             let inc = f_hz / 48_000.0;
-            let mut poly = PolyOscillator::new();
-            poly.inc[0] = inc;
+            let mut sub_osc = PolySub::new();
+            let src_inc = [inc; N];
             let mut sp_ref = 0.0f32;
-            let mut flip_ref = 0.0f32;
-            let pw = [0.5; N];
-            let mut osc_out = [0.0; N];
             let mut sub_out = [0.0; N];
             let mut max_diff = 0.0f32;
             for _ in 0..4800 {
-                poly.process(Waveform::Saw, &pw, &mut osc_out);
-                poly_sub_square(&poly.phase, &poly.inc, &poly.sub_flipflop, &mut sub_out);
-                // Advance scalar source identically (emit-then-advance order).
-                let np = sp_ref + inc;
-                let wrapped = (np >= 1.0) as u32 as f32;
-                sp_ref = np - wrapped;
-                flip_ref += wrapped - 2.0 * flip_ref * wrapped;
-                // Compute scalar sub at the post-advance state (matches kernel).
-                let sp = sp_ref * 0.5 + flip_ref * 0.5;
+                sub_osc.process(&src_inc, &mut sub_out);
+                // Advance scalar sub identically (advance-then-emit order).
                 let sdt = inc * 0.5;
-                let naive = 1.0 - 2.0 * (sp >= 0.5) as u32 as f32;
+                let np = sp_ref + sdt;
+                sp_ref = np - (np >= 1.0) as u32 as f32;
+                let naive = 1.0 - 2.0 * (sp_ref >= 0.5) as u32 as f32;
                 let pf = {
-                    let x = sp - 0.5 + 1.0;
+                    let x = sp_ref - 0.5 + 1.0;
                     x - x.floor()
                 };
-                let want = naive + pblep(sp, sdt) - pblep(pf, sdt);
+                let want = naive + pblep(sp_ref, sdt) - pblep(pf, sdt);
                 max_diff = max_diff.max((sub_out[0] - want).abs());
             }
             assert!(max_diff < 1e-5, "f={f_hz}: diff {max_diff}");
@@ -1314,33 +1322,117 @@ mod tests {
 
     #[test]
     fn sub_pitch_off_is_source_half() {
-        // Off / Ring path uses `process`; sub frequency = osc1 / 2.
+        // Off / Ring path: sub frequency = osc1 / 2.
         const SR: f32 = 48_000.0;
         const NFFT: usize = 1024;
         const K: usize = 32; // even → K/2 integer; f_src = 1500 Hz, sub = 750 Hz
         let f_src = K as f32 * SR / NFFT as f32;
         let mut osc = PolyOscillator::new();
         osc.inc[0] = f_src / SR;
+        let mut sub_osc = PolySub::new();
         let pw = [0.5; N];
         let mut o = [0.0; N];
         let mut sub = [0.0; N];
         for _ in 0..NFFT {
             osc.process(Waveform::Sine, &pw, &mut o);
+            sub_osc.process(&osc.inc, &mut sub);
         }
         let mut buf = Vec::with_capacity(NFFT);
         for _ in 0..NFFT {
             osc.process(Waveform::Sine, &pw, &mut o);
-            poly_sub_square(&osc.phase, &osc.inc, &osc.sub_flipflop, &mut sub);
+            sub_osc.process(&osc.inc, &mut sub);
             buf.push(sub[0]);
         }
         assert_eq!(peak_bin(&buf), K / 2, "sub fundamental not at source/2");
     }
 
     #[test]
+    fn sub_pitch_tracks_source_under_pitch_modulation() {
+        // The sub reads `inc`, which the engine re-assigns every control block
+        // — so a source swept by a pitch LFO / portamento glide keeps the sub
+        // exactly an octave below rather than drifting off it. Sweep the source
+        // over a block-quantised vibrato and check the sub's mean frequency (via
+        // zero-crossing count) is half the source's, sample-for-sample.
+        const SR: f32 = 48_000.0;
+        const BLOCK: usize = 32;
+        const BLOCKS: usize = 600;
+        let mut osc = PolyOscillator::new();
+        let mut sub_osc = PolySub::new();
+        let pw = [0.5; N];
+        let mut o = [0.0; N];
+        let mut sub = [0.0; N];
+        let (mut src_x, mut sub_x) = (0usize, 0usize);
+        let (mut prev_o, mut prev_s) = (0.0f32, 1.0f32);
+        for b in 0..BLOCKS {
+            // ±3 semitones of vibrato around 400 Hz, held across the block.
+            let semi = 3.0 * (b as f32 * 0.05).sin();
+            let f = 400.0 * 2.0f32.powf(semi / 12.0);
+            osc.inc = [f / SR; N];
+            for _ in 0..BLOCK {
+                osc.process(Waveform::Saw, &pw, &mut o);
+                sub_osc.process(&osc.inc, &mut sub);
+                src_x += ((o[0] >= 0.0) != (prev_o >= 0.0)) as usize;
+                sub_x += ((sub[0] >= 0.0) != (prev_s >= 0.0)) as usize;
+                prev_o = o[0];
+                prev_s = sub[0];
+            }
+        }
+        // Saw and square both cross zero twice per cycle; sub period is 2×, so
+        // the counts differ by exactly a factor of two (±1 for the partial
+        // cycle at each end).
+        assert!(
+            (src_x as i32 - 2 * sub_x as i32).abs() <= 2,
+            "sub not source/2 under modulation (src {src_x}, sub {sub_x})"
+        );
+    }
+
+    #[test]
+    fn sub_first_half_cycle_is_a_full_source_cycle_on_every_lane() {
+        // 0281: the sub is zero-referenced at note-on, so its first edge lands
+        // one source period in — on every lane, whatever start phase the
+        // allocator stamped on the oscillators.
+        const SR: f32 = 48_000.0;
+        let f_src = 200.0_f32;
+        let inc = f_src / SR;
+        let period = (1.0 / inc).round() as usize;
+        let mut sub_osc = PolySub::new();
+        let src_inc = [inc; N];
+        let mut sub = [0.0; N];
+        // Golden-ratio lane phases, as `lane_phase` stamps them: they must not
+        // reach the sub at all.
+        let mut osc = PolyOscillator::new();
+        for v in 0..N {
+            osc.inc[v] = inc;
+            osc.phase[v] = (v as f32 * 0.618_034) % 1.0;
+            sub_osc.reset(v);
+        }
+        let mut first_edge = [0usize; N];
+        let pw = [0.5; N];
+        let mut o = [0.0; N];
+        for n in 0..period * 2 {
+            osc.process(Waveform::Saw, &pw, &mut o);
+            sub_osc.process(&src_inc, &mut sub);
+            for v in 0..N {
+                if first_edge[v] == 0 && sub[v] < 0.0 {
+                    first_edge[v] = n + 1;
+                }
+            }
+        }
+        for v in 0..N {
+            let d = first_edge[v] as i32 - period as i32;
+            assert!(
+                d.abs() <= 1,
+                "lane {v}: first sub edge at {} samples, want {period}",
+                first_edge[v]
+            );
+        }
+    }
+
+    #[test]
     fn sub_pitch_under_pm_independent_of_amount() {
-        // FM path uses `process_pm`; PM offsets only the read phase, not the
-        // accumulator that drives the flipflop, so sub pitch is constant
-        // regardless of `pm_index`.
+        // FM path uses `process_pm`; PM offsets only the carrier's read phase,
+        // never its increment, so sub pitch is constant regardless of
+        // `pm_index`.
         const SR: f32 = 48_000.0;
         const NFFT: usize = 1024;
         const K: usize = 32;
@@ -1352,6 +1444,7 @@ mod tests {
             let mut o2 = PolyOscillator::new();
             o1.inc[0] = f1 / SR;
             o2.inc[0] = f2 / SR;
+            let mut sub_osc = PolySub::new();
             let mut a = [0.0; N];
             let mut b = [0.0; N];
             let mut sub = [0.0; N];
@@ -1366,6 +1459,7 @@ mod tests {
                     &mut a,
                     &mut b,
                 );
+                sub_osc.process(&o1.inc, &mut sub);
             }
             let mut buf = Vec::with_capacity(NFFT);
             for _ in 0..NFFT {
@@ -1379,7 +1473,7 @@ mod tests {
                     &mut a,
                     &mut b,
                 );
-                poly_sub_square(&o1.phase, &o1.inc, &o1.sub_flipflop, &mut sub);
+                sub_osc.process(&o1.inc, &mut sub);
                 buf.push(sub[0]);
             }
             assert_eq!(peak_bin(&buf), K / 2, "amt {amt}: sub pitch moved");
@@ -1388,9 +1482,9 @@ mod tests {
 
     #[test]
     fn sub_pitch_under_sync_locks_to_master_half() {
-        // Sync path uses `process_sync`; the flipflop toggles on osc2 (master)
-        // wraps, and the sub is read using osc2's phase/inc. Sub pitch = osc2/2,
-        // independent of osc1's tuning above master.
+        // Sync path uses `process_sync`; the engine feeds the sub osc2's
+        // (master's) increment. Sub pitch = osc2/2, independent of osc1's
+        // tuning above master.
         const SR: f32 = 48_000.0;
         const NFFT: usize = 1024;
         const K_M: usize = 32;
@@ -1402,6 +1496,7 @@ mod tests {
             let mut o2 = PolyOscillator::new();
             o1.inc[0] = f_s / SR;
             o2.inc[0] = f_m / SR;
+            let mut sub_osc = PolySub::new();
             let mut a = [0.0; N];
             let mut b = [0.0; N];
             let mut sub = [0.0; N];
@@ -1415,6 +1510,7 @@ mod tests {
                     &mut a,
                     &mut b,
                 );
+                sub_osc.process(&o2.inc, &mut sub);
             }
             let mut buf = Vec::with_capacity(NFFT);
             for _ in 0..NFFT {
@@ -1427,9 +1523,8 @@ mod tests {
                     &mut a,
                     &mut b,
                 );
-                // Engine routes osc2 phase/inc into the sub under sync; the
-                // flipflop lives on osc1 in all modes.
-                poly_sub_square(&o2.phase, &o2.inc, &o1.sub_flipflop, &mut sub);
+                // Engine routes the master's increment into the sub under sync.
+                sub_osc.process(&o2.inc, &mut sub);
                 buf.push(sub[0]);
             }
             assert_eq!(peak_bin(&buf), K_M / 2, "ratio {ratio}: sub not locked");
@@ -1437,29 +1532,88 @@ mod tests {
     }
 
     #[test]
+    fn sub_survives_cross_mod_switch_without_polarity_flip() {
+        // 0281 delta 3: `cross_mod_type` is live-changeable with no retrigger.
+        // The old flipflop was clocked by osc2 under Sync and osc1 elsewhere, so
+        // switching mid-note re-pointed the clock carrying arbitrary parity over
+        // and could flip the sub's polarity under a held note. On its own
+        // accumulator the switch only changes which increment is halved, and
+        // phase stays continuous.
+        const SR: f32 = 48_000.0;
+        let f_m = 110.0_f32;
+        let f_s = f_m * 2.5;
+        let mut o1 = PolyOscillator::new();
+        let mut o2 = PolyOscillator::new();
+        o1.inc[0] = f_s / SR;
+        o2.inc[0] = f_m / SR;
+        let mut sub_osc = PolySub::new();
+        let pw = [0.5; N];
+        let (mut a, mut b, mut sub) = ([0.0; N], [0.0; N], [0.0; N]);
+        let mut trace = Vec::new();
+        // 2000 samples of Sync (sub keyed to the master), then 2000 of Ring
+        // (sub keyed to osc1) with no retrigger between them.
+        for n in 0..4000 {
+            let sync = n < 2000;
+            if sync {
+                o1.process_sync(
+                    &mut o2,
+                    Waveform::Saw,
+                    Waveform::Saw,
+                    &pw,
+                    &pw,
+                    &mut a,
+                    &mut b,
+                );
+                sub_osc.process(&o2.inc, &mut sub);
+            } else {
+                o1.process(Waveform::Saw, &pw, &mut a);
+                o2.process(Waveform::Saw, &pw, &mut b);
+                sub_osc.process(&o1.inc, &mut sub);
+            }
+            trace.push(sub[0]);
+        }
+        // Across the switch the sub must not step: the only legal ±2 jumps are
+        // its own duty edges, and there is none within a couple of samples of
+        // 2000 at these frequencies (sub period ≥ 380 samples either side).
+        for n in 1999..2002 {
+            let step = (trace[n] - trace[n - 1]).abs();
+            assert!(
+                step < 0.5,
+                "sub jumped {step} at sample {n} across the cross-mod switch"
+            );
+        }
+    }
+
+    #[test]
     fn sub_square_polyblep_beats_naive_aliasing() {
         // BLEP-smoothed sub has materially less high-band energy than the bare
-        // comparator at the same flipflop pattern (mirrors the methodology of
+        // comparator on the same phase (mirrors the methodology of
         // `subsample_sync_beats_sample_accurate_aliasing`, scoped to the sub).
         const SR: f32 = 48_000.0;
         const NFFT: usize = 4096;
         let f_src = 1234.5_f32; // not bin-aligned, transitions land off-grid
-        let mut osc = PolyOscillator::new();
-        osc.inc[0] = f_src / SR;
-        let pw = [0.5; N];
-        let mut o = [0.0; N];
+        let src_inc = [f_src / SR; N];
+        let mut sub_osc = PolySub::new();
         let mut sub = [0.0; N];
+        // Scalar mirror of the accumulator, for the bare-comparator reference.
+        let sdt = src_inc[0] * 0.5;
+        let mut sp_ref = 0.0f32;
+        let mut advance_ref = || {
+            let np = sp_ref + sdt;
+            sp_ref = np - (np >= 1.0) as u32 as f32;
+            sp_ref
+        };
         for _ in 0..NFFT {
-            osc.process(Waveform::Sine, &pw, &mut o);
+            sub_osc.process(&src_inc, &mut sub);
+            advance_ref();
         }
         let mut blep = Vec::with_capacity(NFFT);
         let mut naive = Vec::with_capacity(NFFT);
         for _ in 0..NFFT {
-            osc.process(Waveform::Sine, &pw, &mut o);
-            poly_sub_square(&osc.phase, &osc.inc, &osc.sub_flipflop, &mut sub);
+            sub_osc.process(&src_inc, &mut sub);
             blep.push(sub[0]);
-            // Bare comparator — same flipflop, no BLEP residual.
-            let sp = osc.phase[0] * 0.5 + osc.sub_flipflop[0] * 0.5;
+            // Bare comparator — same phase, no BLEP residual.
+            let sp = advance_ref();
             naive.push(1.0 - 2.0 * (sp >= 0.5) as u32 as f32);
         }
         let band = |x: &[f32]| -> f64 {
@@ -1479,15 +1633,14 @@ mod tests {
 
     #[test]
     fn sub_no_op_with_zero_inc_stays_finite() {
-        // Frozen lane (inc = 0): no wraps, flipflop never toggles, sub stays
-        // at the comparator's resting value (+1 since sp = 0 < 0.5).
-        let mut osc = PolyOscillator::new();
-        let pw = [0.5; N];
-        let mut o = [0.0; N];
+        // Frozen lane (inc = 0): the accumulator never moves, so the sub sits
+        // on a constant (the comparator's +1 less the wrap BLEP residual it
+        // parks exactly on) and never goes non-finite.
+        let mut sub_osc = PolySub::new();
+        let src_inc = [0.0; N];
         let mut sub = [0.0; N];
         for _ in 0..200 {
-            osc.process(Waveform::Pulse, &pw, &mut o);
-            poly_sub_square(&osc.phase, &osc.inc, &osc.sub_flipflop, &mut sub);
+            sub_osc.process(&src_inc, &mut sub);
             assert!(sub.iter().all(|s| s.is_finite()));
         }
     }

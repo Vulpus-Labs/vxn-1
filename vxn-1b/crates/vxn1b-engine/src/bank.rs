@@ -37,7 +37,7 @@
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
     LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
-    PolyOtaLadder, Waveform, note_to_hz, poly_ring_mod, poly_sub_square,
+    PolyOtaLadder, PolySub, Waveform, note_to_hz, poly_ring_mod,
 };
 
 use crate::eval::{SourceInputs, env_time_scale, eval_dests, eval_sources, lfo_rate_scale};
@@ -362,6 +362,9 @@ impl AmpRoutes {
 pub struct RenderBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
+    /// Sub-osc, on its own accumulator: locked to the source's frequency but
+    /// not its phase, so a note's sub onset is the same on every lane (0281).
+    sub: PolySub,
     noise: PolyNoiseBank,
     hpf: PolyHpf,
     ladder: PolyOtaLadder,
@@ -443,6 +446,7 @@ impl RenderBank {
         Self {
             osc1,
             osc2,
+            sub: PolySub::new(),
             noise: PolyNoiseBank::new(rng_seed),
             hpf: PolyHpf::new(),
             ladder: PolyOtaLadder::new(),
@@ -481,6 +485,7 @@ impl RenderBank {
             .set_drift_seed(self.lfo1_seed.wrapping_add(OSC1_DRIFT_SALT) as u32);
         self.osc2
             .set_drift_seed(self.lfo1_seed.wrapping_add(OSC2_DRIFT_SALT) as u32);
+        self.sub = PolySub::new();
         self.noise.reset();
         self.hpf.reset();
         self.ladder.reset();
@@ -711,6 +716,9 @@ impl RenderBank {
         }
         self.osc1.reset(v);
         self.osc2.reset(v);
+        // The sub always starts at phase 0 — it takes the source's frequency,
+        // never its start phase, so its onset is lane-independent (0281).
+        self.sub.reset(v);
         let ph = start_phase.unwrap_or_else(|| lane_phase(v));
         self.osc1.phase[v] = ph;
         self.osc2.phase[v] = ph;
@@ -1193,12 +1201,15 @@ impl RenderBank {
                     }
                 }
                 if sub_on {
-                    let (sp, sdt) = if ctx.sync {
-                        (&self.osc2.phase, &self.osc2.inc)
+                    // Only the source's increment is read — the sub runs its own
+                    // phase, so a live cross-mod switch re-points the frequency
+                    // without disturbing it.
+                    let sdt = if ctx.sync {
+                        &self.osc2.inc
                     } else {
-                        (&self.osc1.phase, &self.osc1.inc)
+                        &self.osc1.inc
                     };
-                    poly_sub_square(sp, sdt, &self.osc1.sub_flipflop, &mut sub);
+                    self.sub.process(sdt, &mut sub);
                     for v in 0..N {
                         mix[v] += sub[v] * ctx.sub_level;
                     }

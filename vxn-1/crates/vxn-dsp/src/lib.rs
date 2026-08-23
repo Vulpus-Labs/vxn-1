@@ -70,7 +70,7 @@ pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::Waveform;
 pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
 pub use phaser::StereoPhaser;
-pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, poly_ring_mod, poly_sub_square};
+pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, PolySub, poly_ring_mod};
 pub use vxn_core_utils::smoothing::{self as smoothing, Smoothed, ms_to_samples, one_pole_coeff};
 pub use vxn_core_utils::ScopedFlushToZero;
 pub use vxn_core_utils::ftz::flush_denormal;

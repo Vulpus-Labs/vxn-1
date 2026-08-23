@@ -15,4 +15,4 @@ pub mod ladder;
 pub mod oscillator;
 
 pub use ladder::PolyOtaLadder;
-pub use oscillator::{PolyNoiseBank, PolyOscillator, poly_ring_mod, poly_sub_square};
+pub use oscillator::{PolyNoiseBank, PolyOscillator, PolySub, poly_ring_mod};

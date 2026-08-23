@@ -16,7 +16,7 @@
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
     LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
-    PolyOtaLadder, Waveform, fast_exp2, note_to_hz, one_pole_coeff, poly_ring_mod, poly_sub_square,
+    PolyOtaLadder, PolySub, Waveform, fast_exp2, note_to_hz, one_pole_coeff, poly_ring_mod,
     xorshift64,
 };
 
@@ -239,8 +239,8 @@ pub struct OscParams {
     pub osc2_wave: Waveform,
     pub osc1_level: f32,
     pub osc2_level: f32,
-    /// Sub-oscillator mix level (square one octave below osc1, phase-locked).
-    /// 0 = no-op path (no sub kernel, no flipflop read).
+    /// Sub-oscillator mix level (square one octave below the source osc).
+    /// 0 = no-op path (the sub kernel is skipped entirely).
     pub sub_level: f32,
     /// Noise source mix level. 0 = the cheap no-op path (no PRNG/pink work).
     pub noise_level: f32,
@@ -411,6 +411,9 @@ pub struct BlockCtx {
 pub struct VoiceBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
+    /// Sub-osc, on its own accumulator: locked to the source's frequency but
+    /// not its phase, so a note's sub onset is the same on every lane (0281).
+    sub: PolySub,
     noise: PolyNoiseBank,
     hpf: PolyHpf,
     ladder: PolyOtaLadder,
@@ -509,6 +512,7 @@ impl VoiceBank {
         Self {
             osc1,
             osc2,
+            sub: PolySub::new(),
             noise: PolyNoiseBank::new(rng_seed),
             hpf: PolyHpf::new(),
             ladder: PolyOtaLadder::new(),
@@ -556,6 +560,7 @@ impl VoiceBank {
             .set_drift_seed(self.lfo1_seed.wrapping_add(OSC1_DRIFT_SALT) as u32);
         self.osc2
             .set_drift_seed(self.lfo1_seed.wrapping_add(OSC2_DRIFT_SALT) as u32);
+        self.sub = PolySub::new();
         self.noise.reset();
         self.hpf.reset();
         self.ladder.reset();
@@ -791,6 +796,9 @@ impl VoiceBank {
         }
         self.osc1.reset(v);
         self.osc2.reset(v);
+        // The sub always starts at phase 0 — it takes the source's frequency,
+        // never its start phase, so its onset is lane-independent (0281).
+        self.sub.reset(v);
         // Offset the (otherwise zeroed) start phase per channel. Same offset for
         // both oscillators so a voice's osc1/osc2 relationship is preserved; the
         // offset only decorrelates voices from each other (Unison). Poly passes 0.
@@ -1100,9 +1108,9 @@ impl VoiceBank {
         let ring_gain = 10.0f32.powf(RING_DRIVE_DB / 20.0);
         // Noise source mixed into the source bus; zero level skips PRNG/pink work.
         let noise_on = ctx.osc.noise_level != 0.0;
-        // Sub-osc (0062): square one octave below the source osc, phase-locked
-        // to its flipflop. Source is osc2 under Sync (audible period = master),
-        // osc1 otherwise (Off/Ring/FM). Zero level skips the kernel.
+        // Sub-osc (0062): square one octave below the source osc, on its own
+        // accumulator (0281). Source is osc2 under Sync (audible period =
+        // master), osc1 otherwise (Off/Ring/FM). Zero level skips the kernel.
         let sub_on = ctx.osc.sub_level != 0.0;
 
         // Block-level osc skip: when an oscillator's mix level is zero and it
@@ -1110,8 +1118,9 @@ impl VoiceBank {
         // every OS-sample in this block — `o1`/`o2` stay at the zero they were
         // initialised to, so the mix line contributes nothing for that osc.
         // Sync and PM run both oscs through a paired kernel, so neither can be
-        // skipped under those modes. Sub uses osc1.phase + flipflop on the
-        // non-sync paths, so osc1 must run when sub is on.
+        // skipped under those modes. The `sub_on` clause is conservative since
+        // 0281: the sub reads only osc1's `inc`, which the engine assigns every
+        // control block whether or not the kernel runs.
         let osc1_runs = ctx.cross_mod.sync
             || ctx.cross_mod.pm_index != 0.0
             || ring_on
@@ -1239,15 +1248,16 @@ impl VoiceBank {
                     }
                 }
                 // Sub: keyed to osc2 under Sync (audible period = master), osc1
-                // otherwise. The flipflop the source kernel toggled lives on osc1
-                // (the audible carrier) in all modes.
+                // otherwise. Only the source's increment is read — the sub runs
+                // its own phase, so a live cross-mod switch just re-points the
+                // frequency without disturbing it.
                 if sub_on {
-                    let (sp, sdt) = if ctx.cross_mod.sync {
-                        (&self.osc2.phase, &self.osc2.inc)
+                    let sdt = if ctx.cross_mod.sync {
+                        &self.osc2.inc
                     } else {
-                        (&self.osc1.phase, &self.osc1.inc)
+                        &self.osc1.inc
                     };
-                    poly_sub_square(sp, sdt, &self.osc1.sub_flipflop, &mut sub);
+                    self.sub.process(sdt, &mut sub);
                     for v in 0..N {
                         mix[v] += sub[v] * ctx.osc.sub_level;
                     }
