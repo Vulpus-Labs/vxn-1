@@ -173,12 +173,14 @@ pub enum ParamId {
     Osc1Octave,
     Osc1Level,
     Osc1PulseWidth,
+    Osc1FreeRun,
     Osc2Wave,
     Osc2Coarse,
     Osc2Fine,
     Osc2Octave,
     Osc2Level,
     Osc2PulseWidth,
+    Osc2FreeRun,
     SubLevel,
     CrossModType,
     CrossModAmount,
@@ -378,12 +380,14 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 71] = {
+pub const PATCH_PARAMS: [ParamId; 73] = {
     use ParamId::*;
     [
-        // Osc / mixer (17)
+        // Osc / mixer (19)
         Osc1Wave, Osc1Coarse, Osc1Fine, Osc1Octave, Osc1Level, Osc1PulseWidth,
+        Osc1FreeRun,
         Osc2Wave, Osc2Coarse, Osc2Fine, Osc2Octave, Osc2Level, Osc2PulseWidth,
+        Osc2FreeRun,
         SubLevel, CrossModType, CrossModAmount, NoiseLevel, NoiseColor,
         // Filter (8)
         Cutoff, Resonance, Drive, FilterMode, FilterSlope, HpfCutoff,
@@ -599,12 +603,18 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     i("osc1_octave", "Osc 1 Octave", -4.0, 4.0, 0.0, "oct"),
     f("osc1_level", "Osc 1 Level", 0.0, 1.0, 0.8, "", Taper::Linear),
     f("osc1_pw", "Osc 1 PW", PW_MIN, PW_MAX, 0.5, "", Taper::Linear),
+    // Free-run (0283): off = the phase is stamped at note-on (`lane_phase`, or
+    // unison's random per-voice value), so attacks are repeatable. On = the
+    // accumulator is left alone and drifts across notes, the way a poly with no
+    // key-triggered reset does. Per layer, like every other osc param.
+    b("osc1_free_run", "Osc 1 Free", 0.0),
     e("osc2_wave", "Osc 2 Wave", WAVE_LABELS, 2.0),
     i("osc2_coarse", "Osc 2 Coarse", -7.0, 7.0, 0.0, "st"),
     f("osc2_fine", "Osc 2 Fine", -50.0, 50.0, 0.0, "ct", Taper::Linear),
     i("osc2_octave", "Osc 2 Octave", -4.0, 4.0, -1.0, "oct"),
     f("osc2_level", "Osc 2 Level", 0.0, 1.0, 0.6, "", Taper::Linear),
     f("osc2_pw", "Osc 2 PW", PW_MIN, PW_MAX, 0.5, "", Taper::Linear),
+    b("osc2_free_run", "Osc 2 Free", 0.0),
     f("sub_level", "Sub Level", 0.0, 1.0, 0.0, "", Taper::Linear),
     e("cross_mod_type", "Cross Mod", CROSS_MOD_LABELS, 0.0),
     f("cross_mod_amount", "Cross Mod Amt", 0.0, 4.0, 0.0, "", Taper::Linear),
@@ -922,7 +932,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 71 + 35);
+        assert_eq!(TOTAL_PARAMS, 2 * 73 + 35);
     }
 
     #[test]

@@ -359,6 +359,31 @@ impl AmpRoutes {
 
 /// The 8-wide DSP + trigger state. Bookkeeping (note/gate/active/velocity/
 /// pressure/note_random) is threaded in per [`Self::render`] call.
+/// The per-trigger switches [`RenderBank::trigger_lane`] needs, gathered in one
+/// place rather than as a growing positional tail (0283). Read once per trigger
+/// batch by the synth, so a chord's notes cannot disagree about them.
+#[derive(Clone, Copy)]
+pub struct TriggerOpts {
+    pub lfo1_shape: LfoShape,
+    pub lfo1_free_run: bool,
+    /// Per-oscillator free-run, indexed `[osc1, osc2]`. `true` leaves that
+    /// oscillator's phase accumulator running across the note-on.
+    pub osc_free_run: [bool; 2],
+}
+
+impl TriggerOpts {
+    /// Everything retriggered — the default note-on behaviour, and what every
+    /// bank-level test wants unless it is specifically exercising a free-run
+    /// flag.
+    pub fn retrig(lfo1_shape: LfoShape) -> Self {
+        Self {
+            lfo1_shape,
+            lfo1_free_run: false,
+            osc_free_run: [false; 2],
+        }
+    }
+}
+
 pub struct RenderBank {
     osc1: PolyOscillator,
     osc2: PolyOscillator,
@@ -700,28 +725,34 @@ impl RenderBank {
     /// [`lane_phase`] (Poly / Solo / Twin — decorrelated but reproducible),
     /// `Some(p)` stamps `p`. Unison passes a fresh random phase per voice so a
     /// stack of near-identical copies doesn't comb into a synchronised null.
-    pub fn trigger_lane(
-        &mut self,
-        v: usize,
-        lfo1_shape: LfoShape,
-        lfo1_free_run: bool,
-        start_phase: Option<f32>,
-    ) {
+    /// Either oscillator's [`TriggerOpts::osc_free_run`] flag opts it out of all
+    /// of that — phase and start phase alike.
+    pub fn trigger_lane(&mut self, v: usize, opts: TriggerOpts, start_phase: Option<f32>) {
         self.trigger_pending[v] = true;
         // A stolen lane may be mid-declick; the new note starts at full gain.
         self.free_fade[v] = 1.0;
         self.lfo1_onset.retrigger(v);
-        if !lfo1_free_run {
-            self.lfo1[v].retrigger(lfo1_shape);
+        if !opts.lfo1_free_run {
+            self.lfo1[v].retrigger(opts.lfo1_shape);
         }
-        self.osc1.reset(v);
-        self.osc2.reset(v);
         // The sub always starts at phase 0 — it takes the source's frequency,
-        // never its start phase, so its onset is lane-independent (0281).
+        // never its start phase, so its onset is lane-independent (0281), and a
+        // free-running oscillator above it does not change that.
         self.sub.reset(v);
         let ph = start_phase.unwrap_or_else(|| lane_phase(v));
-        self.osc1.phase[v] = ph;
-        self.osc2.phase[v] = ph;
+        // A free-running oscillator keeps its accumulator but still drops the
+        // deferred-sync state the previous note may have left owed.
+        for (osc, free) in [
+            (&mut self.osc1, opts.osc_free_run[0]),
+            (&mut self.osc2, opts.osc_free_run[1]),
+        ] {
+            if free {
+                osc.reset_keep_phase(v);
+            } else {
+                osc.reset(v);
+                osc.phase[v] = ph;
+            }
+        }
     }
 
     /// Advance the declick ramp on every released lane and free the ones that
@@ -1463,6 +1494,69 @@ mod tests {
         bank
     }
 
+    /// Free-run off (the default): note-on stamps the lane's deterministic
+    /// phase on both oscillators, so repeated notes on a lane are identical.
+    #[test]
+    fn free_run_off_stamps_the_lane_phase() {
+        let mut bank = fast_bank();
+        bank.osc1.phase[3] = 0.37;
+        bank.osc2.phase[3] = 0.81;
+        bank.trigger_lane(3, TriggerOpts::retrig(LfoShape::Sine), None);
+        assert_eq!(bank.osc1.phase[3], lane_phase(3));
+        assert_eq!(bank.osc2.phase[3], lane_phase(3));
+    }
+
+    /// Free-run on: the accumulator survives note-on, per oscillator and
+    /// independently — and the unison start phase does not override it either
+    /// (0283). Osc 2 here stays locked, proving the flags don't fan out.
+    #[test]
+    fn free_run_leaves_that_oscillators_accumulator_running() {
+        let opts = TriggerOpts {
+            lfo1_shape: LfoShape::Sine,
+            lfo1_free_run: false,
+            osc_free_run: [true, false],
+        };
+
+        let mut bank = fast_bank();
+        bank.osc1.phase[0] = 0.37;
+        bank.osc2.phase[0] = 0.81;
+        bank.trigger_lane(0, opts, None);
+        assert_eq!(bank.osc1.phase[0], 0.37, "free-running osc1 was reset");
+        assert_eq!(bank.osc2.phase[0], lane_phase(0), "osc2 should still stamp");
+
+        // Unison hands down an explicit start phase; free-run ignores it.
+        bank.osc1.phase[0] = 0.42;
+        bank.trigger_lane(0, opts, Some(0.9));
+        assert_eq!(bank.osc1.phase[0], 0.42, "free-run must ignore start_phase");
+        assert_eq!(bank.osc2.phase[0], 0.9, "osc2 should take start_phase");
+    }
+
+    /// The sub is unaffected by either flag: since 0281 it owns its accumulator
+    /// and is zero-referenced at note-on however the oscillators are running.
+    #[test]
+    fn free_run_does_not_reach_the_sub() {
+        let mut bank = fast_bank();
+        let opts = TriggerOpts {
+            lfo1_shape: LfoShape::Sine,
+            lfo1_free_run: false,
+            osc_free_run: [true, true],
+        };
+        // Advance the sub off zero, then retrigger.
+        let inc = [440.0 / 48_000.0; N];
+        let mut out = [0.0; N];
+        for _ in 0..37 {
+            bank.sub.process(&inc, &mut out);
+        }
+        bank.trigger_lane(0, opts, None);
+        // First sample after the reset is one increment in, exactly as it is on
+        // a fresh bank.
+        let mut fresh = PolySub::new();
+        let (mut a, mut b) = ([0.0; N], [0.0; N]);
+        bank.sub.process(&inc, &mut a);
+        fresh.process(&inc, &mut b);
+        assert_eq!(a[0], b[0], "sub onset moved with the oscillators");
+    }
+
     /// The law: unity at centre, constant power across the sweep.
     #[test]
     fn voice_pan_law_is_constant_power_with_unity_centre() {
@@ -1487,12 +1581,12 @@ mod tests {
         c.spread = 1.0;
 
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (l0, r0) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
         assert!(l0 > 0.0 && r0 < l0 * 1e-3, "stack bottom must sit hard left: {l0} vs {r0}");
 
         let mut bank = fast_bank();
-        bank.trigger_lane(7, LfoShape::Sine, false, None);
+        bank.trigger_lane(7, TriggerOpts::retrig(LfoShape::Sine), None);
         let (l7, r7) = lane_peaks(&mut bank, &c, 7, 1.0, 512);
         assert!(r7 > 0.0 && l7 < r7 * 1e-3, "stack top must sit hard right: {l7} vs {r7}");
     }
@@ -1504,7 +1598,7 @@ mod tests {
         let m = default_patch();
         let c = ctx(&m); // spread: 0.0
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
@@ -1523,7 +1617,7 @@ mod tests {
         let mut c = ctx(&m);
         c.spread = 1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (l, r) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
         assert!(l > 0.0);
         assert!((l - r).abs() < l * 1e-3, "no Pan route ⇒ centred: {l} vs {r}");
@@ -1547,13 +1641,13 @@ mod tests {
         // LFO 2 pinned hard positive ⇒ hard right, and vice versa.
         c.lfo2_val = 1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (l_right, r_right) = lane_peaks(&mut bank, &c, 0, 0.0, 2048);
         assert!(r_right > l_right * 10.0, "LFO +1 must pan right: {l_right} vs {r_right}");
 
         c.lfo2_val = -1.0;
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (l_left, r_left) = lane_peaks(&mut bank, &c, 0, 0.0, 2048);
         assert!(l_left > r_left * 10.0, "LFO −1 must pan left: {l_left} vs {r_left}");
     }
@@ -1579,7 +1673,7 @@ mod tests {
         c.spread = 0.0;
         c.lfo2_val = -1.0; // hard left: R silent
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
@@ -1784,7 +1878,7 @@ mod tests {
             note[v] = n;
             gate[v] = true;
             active[v] = true;
-            bank.trigger_lane(v, LfoShape::Sine, false, None);
+            bank.trigger_lane(v, TriggerOpts::retrig(LfoShape::Sine), None);
         }
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
@@ -1895,7 +1989,7 @@ mod tests {
         c.osc1_level = if osc == 1 { 0.8 } else { 0.0 };
         c.osc2_level = if osc == 2 { 0.8 } else { 0.0 };
         let mut bank = fast_bank();
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let frames = 4096;
         let mut l = vec![0.0; frames];
@@ -2035,7 +2129,7 @@ mod tests {
         let mut bank = RenderBank::new(48_000.0, 1);
         // Fast attack so the VCA opens within the block.
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 256];
         let mut r = vec![0.0; 256];
@@ -2052,7 +2146,7 @@ mod tests {
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.005, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let (note, gate, mut active, vel, pres, rnd) = book();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
@@ -2071,7 +2165,7 @@ mod tests {
         let mut bank = RenderBank::new(48_000.0, 1);
         // Near-instant release so the voice idles within one block.
         bank.set_envelopes((0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, (0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, 0.0);
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let note = [60u8; N];
         let gate = [false; N]; // already released
         let mut active = [false; N];
@@ -2115,7 +2209,7 @@ mod tests {
 
         let mut gate = [false; N];
         gate[0] = true;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let mut l = vec![0.0; hold];
         let mut r = vec![0.0; hold];
         bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
@@ -2217,7 +2311,7 @@ mod tests {
         c.lfo2_val = 1.0;
         let mut gate = [false; N];
         gate[0] = true;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
         bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
@@ -2374,7 +2468,7 @@ mod tests {
                 AdsrShape::Linear,
                 drift,
             );
-            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             let (note, gate, mut active, vel, pres, rnd) = book();
             let mut c = ctx(&m);
             c.osc1_level = 0.0;
@@ -2454,7 +2548,7 @@ mod tests {
         // Wheel up at the trigger → the 2× rail.
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6, "{}", bank.env_scale[1][0]);
         let scaled = attack_level(&mut bank, 0, 64);
@@ -2470,7 +2564,7 @@ mod tests {
         assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6);
 
         // The *next* note-on re-cooks it at the wheel's new position.
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_scale[1][0] - 1.0).abs() < 1e-6);
     }
@@ -2480,7 +2574,7 @@ mod tests {
         let m = default_patch();
         let render = |wheel: f32| -> Vec<f32> {
             let mut bank = env_bank();
-            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             let mut c = ctx(&m);
             c.mod_wheel = wheel;
             let (note, gate, mut active, vel, pres, rnd) = book();
@@ -2507,7 +2601,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_scale[1][0] - 2.0).abs() < 1e-6);
 
@@ -2531,7 +2625,7 @@ mod tests {
             let m = wheel_route(DestId::Env1Scale, depth);
             let mut c = ctx(&m);
             c.mod_wheel = 1.0;
-            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             render_block(&mut bank, &c);
             assert!(
                 (bank.env_scale[0][0] - want).abs() < 1e-6,
@@ -2544,7 +2638,7 @@ mod tests {
         m.slots[1] = m.slots[0];
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_scale[0][0] - 2.0).abs() < 1e-6);
     }
@@ -2573,7 +2667,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6);
         let lifted = sustain_level(&mut bank, 0);
@@ -2584,7 +2678,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((sustain_level(&mut bank, 0) - 0.25).abs() < 1e-3);
         assert_eq!(bank.env_sus_mod[0], [0.0; N]);
@@ -2600,7 +2694,7 @@ mod tests {
             let mut bank = env_bank();
             let mut c = ctx(&m);
             c.mod_wheel = 1.0;
-            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             render_block(&mut bank, &c);
             let got = sustain_level(&mut bank, 0);
             assert!((got - want).abs() < 1e-3, "depth {depth} → {got} (want {want})");
@@ -2616,7 +2710,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6);
 
@@ -2624,7 +2718,7 @@ mod tests {
         render_block(&mut bank, &c);
         assert!((bank.env_sus_mod[1][0] - 0.25).abs() < 1e-6, "must hold for the note");
 
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert_eq!(bank.env_sus_mod[1][0], 0.0, "the next note-on re-cooks");
     }
@@ -2637,7 +2731,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
 
         let env = (0.05, 0.1, 0.5, 0.2);
@@ -2654,7 +2748,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(m);
         c.mod_wheel = wheel;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         let start = bank.lfo1[0].phase();
         for _ in 0..8 {
@@ -2687,7 +2781,7 @@ mod tests {
             let mut c = ctx(&m);
             c.lfo1_rate_hz = hz; // as `sync::lfo_rate_hz` would have resolved it
             c.mod_wheel = wheel;
-            bank.trigger_lane(0, LfoShape::Sine, false, None);
+            bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             render_block(&mut bank, &c);
             let start = bank.lfo1[0].phase();
             for _ in 0..8 {
@@ -2711,14 +2805,14 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.lfo1_rate_mod[0] - 2.0).abs() < 1e-6);
 
         // Wheel down, new note: the lane is re-rated on the trigger block, so
         // the first block after it already runs at 1×.
         c.mod_wheel = 0.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         let start = bank.lfo1[0].phase();
         render_block(&mut bank, &c);
@@ -2734,7 +2828,7 @@ mod tests {
         let mut bank = env_bank();
         let mut c = ctx(&m);
         c.mod_wheel = 1.0;
-        bank.trigger_lane(0, LfoShape::Sine, false, None);
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert_eq!(bank.lfo1_rate_mod, [0.0; N], "no route → no rate offset");
         assert_eq!(lfo_rate_scale(0.0), 1.0);

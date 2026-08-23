@@ -55,12 +55,13 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 /// record (0221); `7` adds `LayerPan` (0248) and `LayerDetune` (0263); `8`
 /// splits `AssignMode` into `StackWidth` + `VoiceMode` (0266, ADR 0003); `9`
 /// adds `DelaySync` (0267); `10` adds the FX-stereo globals `PhaserStereo` and
-/// `DelayPingPong` (0279). Bump on
+/// `DelayPingPong` (0279); `11` adds the per-oscillator `Osc1FreeRun` /
+/// `Osc2FreeRun` (0283). Bump on
 /// any layout change — the
 /// block length is positional, so an older blob read at a newer length would
 /// slide topology bytes into param slots rather than fail cleanly. Rejecting the
 /// old version is what makes that impossible.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.
@@ -290,8 +291,12 @@ mod tests {
     fn nondefault_state() -> PluginState {
         // Deliberately distinct layers so a round-trip can't accidentally pass by
         // symmetry (0216: distinct matrices per layer survive save/reload).
-        let l1 = nondefault_layer(1234.0);
+        let mut l1 = nondefault_layer(1234.0);
         let mut l2 = nondefault_layer(220.0);
+        // 0283: per-layer osc free-run, set asymmetrically so the round-trip
+        // can't pass by carrying one value into both slots.
+        l1.params.set(ParamId::Osc1FreeRun, 1.0);
+        l2.params.set(ParamId::Osc2FreeRun, 1.0);
         // Give layer 2 a different topology in a slot layer 1 leaves inert.
         l2.params.set(ParamId::MatrixSlot5Depth, 0.75);
         l2.matrix.slots[5] = MatrixSlot {
@@ -323,12 +328,16 @@ mod tests {
 
         // Layer 1.
         assert_eq!(back.layers[0].params.get(ParamId::Cutoff), 1234.0);
+        assert_eq!(back.layers[0].params.get(ParamId::Osc1FreeRun), 1.0);
+        assert_eq!(back.layers[0].params.get(ParamId::Osc2FreeRun), 0.0);
         assert_eq!(back.layers[0].matrix.slots[0].source, SourceId::Env2);
         assert_eq!(back.layers[0].matrix.slots[0].depth, 1.0);
         assert_eq!(back.layers[0].matrix.slots[3].scale_src, SourceId::ModWheel);
 
         // Layer 2 — distinct params + a slot layer 1 doesn't use.
         assert_eq!(back.layers[1].params.get(ParamId::Cutoff), 220.0);
+        assert_eq!(back.layers[1].params.get(ParamId::Osc1FreeRun), 0.0);
+        assert_eq!(back.layers[1].params.get(ParamId::Osc2FreeRun), 1.0);
         assert_eq!(back.layers[1].matrix.slots[5].source, SourceId::Lfo1);
         assert_eq!(back.layers[1].matrix.slots[5].dest, DestId::Cutoff);
         assert_eq!(back.layers[1].matrix.slots[5].depth, 0.75);

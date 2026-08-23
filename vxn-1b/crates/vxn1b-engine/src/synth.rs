@@ -13,7 +13,7 @@
 
 use vxn_dsp::{CONTROL_BLOCK, LfoCore};
 
-use crate::bank::{BlockCtx, RenderBank};
+use crate::bank::{BlockCtx, RenderBank, TriggerOpts};
 use crate::matrix::MatrixTable;
 use crate::params::{CrossModType, ParamId, Params};
 use crate::state::LayerState;
@@ -194,11 +194,17 @@ impl Synth {
     /// Trigger the DSP lanes an allocation asked for, routing each 16-voice
     /// index to its (bank, lane) pair.
     fn fire(&mut self, triggers: &Triggers) {
-        let shape = self.params.lfo1_shape();
-        let free_run = self.params.bool(ParamId::Lfo1FreeRun);
+        let opts = TriggerOpts {
+            lfo1_shape: self.params.lfo1_shape(),
+            lfo1_free_run: self.params.bool(ParamId::Lfo1FreeRun),
+            osc_free_run: [
+                self.params.bool(ParamId::Osc1FreeRun),
+                self.params.bool(ParamId::Osc2FreeRun),
+            ],
+        };
         for t in triggers.as_slice() {
             let (bank, lane) = (t.voice / RenderBank::LANES, t.voice % RenderBank::LANES);
-            self.banks[bank].trigger_lane(lane, shape, free_run, t.start_phase);
+            self.banks[bank].trigger_lane(lane, opts, t.start_phase);
         }
     }
 

@@ -186,12 +186,24 @@ export function locateSyncPartners(layer) {
 // share one `watchId` and `predicate`.
 //   - `free-run`: LFO 1's delay/fade dim when Free toggles on (0042).
 //   - `filter-notch`: Slope strip dims when Filter Mode = Notch (0043).
+//   - `sync-slave`: Osc 1's Free dims under Cross Mod = Sync (0283) — osc1 is
+//     the slave there and osc2's wraps reset it whatever the flag says, so the
+//     switch is inert. Osc 2's Free stays live: it is the one that bites.
 export const BUILTIN_DIM_SPECS = [
   {
     kind: 'free-run',
     watch: 'lfo1_free_run',
     buildPredicate: () => (plain) => plain >= 0.5,
     targets: ['lfo1_delay_time', 'lfo1_fade'],
+  },
+  {
+    kind: 'sync-slave',
+    watch: 'cross_mod_type',
+    buildPredicate: (layer) => {
+      const syncIdx = variantIdx('cross_mod_type', 'Sync', layer);
+      return (plain) => syncIdx >= 0 && Math.round(plain) === syncIdx;
+    },
+    targets: ['osc1_free_run'],
   },
   {
     kind: 'filter-notch',

@@ -296,9 +296,21 @@ impl PolyOscillator {
 
     #[inline]
     pub fn reset(&mut self, v: usize) {
+        self.reset_keep_phase(v);
+        self.phase[v] = 0.0;
+    }
+
+    /// Clear voice `v`'s deferred-sync state but leave its phase running.
+    ///
+    /// The free-running note-on path (0283): an oscillator whose phase must
+    /// survive the note still has to drop `sync_resid` / `sync_pending`, which
+    /// describe a sub-sample reset owed to the *previous* note — carrying one
+    /// across a trigger would emit a stale band-limiting residual on the new
+    /// note's first sample.
+    #[inline]
+    pub fn reset_keep_phase(&mut self, v: usize) {
         self.sync_resid[v] = 0.0;
         self.sync_pending[v] = 0.0;
-        self.phase[v] = 0.0;
     }
 
     /// Re-seed the per-voice drift walks. Engine calls this at layer init so
@@ -1288,6 +1300,42 @@ mod tests {
             }
         }
         best_k
+    }
+
+    #[test]
+    fn reset_keep_phase_clears_sync_state_but_not_phase() {
+        // 0283: the free-running note-on path. Run the sync kernel until the
+        // master wrap leaves a deferred reset owed on the slave, then take the
+        // free-run branch and check the phase survives while the residual does
+        // not — carrying one across a trigger would fire a stale band-limiting
+        // correction into the new note's first sample.
+        let mut o1 = PolyOscillator::new();
+        let mut o2 = PolyOscillator::new();
+        o1.inc[0] = 750.0 / 48_000.0;
+        o2.inc[0] = 300.0 / 48_000.0;
+        let pw = [0.5; N];
+        let (mut a, mut b) = ([0.0; N], [0.0; N]);
+        // Run until a master wrap arms the slave's deferred reset.
+        let mut armed = false;
+        for _ in 0..400 {
+            o1.process_sync(&mut o2, Waveform::Saw, Waveform::Saw, &pw, &pw, &mut a, &mut b);
+            if o1.sync_pending[0] != 0.0 {
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "test never armed a deferred sync reset");
+        assert!(o1.sync_resid[0] != 0.0, "armed reset carries no residual");
+
+        let phase_before = o1.phase[0];
+        o1.reset_keep_phase(0);
+        assert_eq!(o1.phase[0], phase_before, "free-run must keep the phase");
+        assert_eq!(o1.sync_pending[0], 0.0, "stale sync_pending survived");
+        assert_eq!(o1.sync_resid[0], 0.0, "stale sync_resid survived");
+
+        // And the plain reset still zeroes the phase as well.
+        o1.reset(0);
+        assert_eq!(o1.phase[0], 0.0);
     }
 
     #[test]

@@ -102,7 +102,10 @@ __CSS__
 
   <!-- Row 1 — oscillators, mixer, filter. -->
   <div class="row row-1" data-row="1">
-    <!-- Osc 1 (0041): Wave (rotary) + 4 faders. Layer hard-bound to Upper —
+    <!-- Osc 1 (0041): Wave (rotary) + 4 faders, with Free in the bottom strip
+         (0283) — same idiom as LFO 1's Free: a quirk of the oscillator as a
+         whole, not a modifier on any one fader. On, the phase accumulator runs
+         across note-ons instead of being stamped. Layer hard-bound to Upper —
          the edit-layer toggle lands with the Voice panel in 0045. The faders
          resolve by descriptor name, not CLAP id, so a `vxn_app::PatchParam`
          reorder doesn't desync the HTML. -->
@@ -115,8 +118,12 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="osc1_fine" data-label="Fine"></div>
         <div class="ctl" data-control="fader" data-param="osc1_pw" data-label="PW"></div>
       </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="osc1_free_run" data-label="Free"></div>
+      </div>
     </div>
-    <!-- Osc 2 (0041a): identical control set to Osc 1, different param IDs. -->
+    <!-- Osc 2 (0041a): identical control set to Osc 1, different param IDs —
+         including its own Free (0283), independent of Osc 1's. -->
     <div class="panel" data-name="Osc 2" data-layered>
       <div class="panel-header">OSC 2</div>
       <div class="panel-body">
@@ -126,13 +133,16 @@ __CSS__
         <div class="ctl" data-control="fader" data-param="osc2_fine" data-label="Fine"></div>
         <div class="ctl" data-control="fader" data-param="osc2_pw" data-label="PW"></div>
       </div>
+      <div class="panel-strip">
+        <div class="ctl-strip" data-control="switch" data-param="osc2_free_run" data-label="Free"></div>
+      </div>
     </div>
     <!-- Mixer (0041a, 0061, 0062): four level faders + Col (White/Pink) as a
          column of its own. NoiseColor is a 2-variant enum — one choice with two
          positions, not two independent things to enable — so it draws as a
          rocker beside the faders rather than as a pair of checkboxes in the
-         bottom strip. Sub is a square one octave below osc1, phase-locked to
-         the source's flipflop. -->
+         bottom strip. Sub is a square one octave below the source osc, on its
+         own accumulator (0281). -->
     <div class="panel" data-name="Mixer" data-layered>
       <div class="panel-header">MIXER</div>
       <div class="panel-body">
