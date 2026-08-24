@@ -19,9 +19,23 @@ name: Release
 # and `inputs`), so an `env.` reference there resolves to the empty string —
 # which would leave the vxn-1 jobs always on and the vxn-1b jobs always off,
 # silently and in the direction that looks like it works.
+#
+# `workflow_dispatch` runs the same builds WITHOUT a release: every attach step
+# is gated on the event being a real release, so a dispatch is build-and-verify
+# only. Use it to prove a packaging or link change before cutting a tag — the
+# Windows VST3 link bug (see the verify step below) shipped three times because
+# there was no way to exercise this workflow except by publishing.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      line:
+        description: "Which release line to build"
+        required: true
+        default: vxn-1b
+        type: choice
+        options: [vxn-1b, vxn-1+vxn-2]
 
 permissions:
   contents: write
@@ -29,7 +43,7 @@ permissions:
 jobs:
   macos:
     name: macOS (universal)
-    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1+vxn-2') }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
@@ -59,6 +73,20 @@ jobs:
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Zip and attach the CLAP
+        run: ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1-macOS-universal.clap.zip
+
       - name: Verify the VST3 embeds the engine
         run: |
           BIN=target/bundled/VXN1.vst3/Contents/MacOS/VXN1
@@ -66,21 +94,18 @@ jobs:
             || { echo "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"; exit 1; }
           echo "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($(stat -f%z "$BIN") bytes)"
 
-      - name: Zip bundles
-        run: |
-          ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
-          ditto -c -k --keepParent target/bundled/VXN1.vst3 VXN1-macOS-universal.vst3.zip
+      - name: Zip and attach the VST3
+        run: ditto -c -k --keepParent target/bundled/VXN1.vst3 VXN1-macOS-universal.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN1-macOS-universal.clap.zip
-            VXN1-macOS-universal.vst3.zip
+          files: VXN1-macOS-universal.vst3.zip
 
   windows:
     name: Windows (x86_64)
-    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1+vxn-2') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +133,20 @@ jobs:
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Package and attach the CLAP
+        run: Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1-windows-x64.clap
+
       - name: Verify the VST3 embeds the engine
         shell: pwsh
         run: |
@@ -119,23 +158,18 @@ jobs:
           }
           Write-Output "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($((Get-Item $bin).Length) bytes)"
 
-      # On Windows the .clap is a single shared library; the .vst3 is a folder
-      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
-      - name: Package artifacts
-        run: |
-          Copy-Item target/bundled/VXN1.clap VXN1-windows-x64.clap
-          Compress-Archive -Path target/bundled/VXN1.vst3 -DestinationPath VXN1-windows-x64.vst3.zip
+      - name: Package and attach the VST3
+        run: Compress-Archive -Path target/bundled/VXN1.vst3 -DestinationPath VXN1-windows-x64.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN1-windows-x64.clap
-            VXN1-windows-x64.vst3.zip
+          files: VXN1-windows-x64.vst3.zip
 
   macos-vxn2:
     name: macOS vxn-2 (universal)
-    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1+vxn-2') }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
@@ -163,6 +197,20 @@ jobs:
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Zip and attach the CLAP
+        run: ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN2-macOS-universal.clap.zip
+
       - name: Verify the VST3 embeds the engine
         run: |
           BIN=target/bundled/VXN2.vst3/Contents/MacOS/VXN2
@@ -170,21 +218,18 @@ jobs:
             || { echo "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"; exit 1; }
           echo "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($(stat -f%z "$BIN") bytes)"
 
-      - name: Zip bundles
-        run: |
-          ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
-          ditto -c -k --keepParent target/bundled/VXN2.vst3 VXN2-macOS-universal.vst3.zip
+      - name: Zip and attach the VST3
+        run: ditto -c -k --keepParent target/bundled/VXN2.vst3 VXN2-macOS-universal.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN2-macOS-universal.clap.zip
-            VXN2-macOS-universal.vst3.zip
+          files: VXN2-macOS-universal.vst3.zip
 
   windows-vxn2:
     name: Windows vxn-2 (x86_64)
-    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1+vxn-2') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -212,6 +257,20 @@ jobs:
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Package and attach the CLAP
+        run: Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN2-windows-x64.clap
+
       - name: Verify the VST3 embeds the engine
         shell: pwsh
         run: |
@@ -223,23 +282,18 @@ jobs:
           }
           Write-Output "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($((Get-Item $bin).Length) bytes)"
 
-      # On Windows the .clap is a single shared library; the .vst3 is a folder
-      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
-      - name: Package artifacts
-        run: |
-          Copy-Item target/bundled/VXN2.clap VXN2-windows-x64.clap
-          Compress-Archive -Path target/bundled/VXN2.vst3 -DestinationPath VXN2-windows-x64.vst3.zip
+      - name: Package and attach the VST3
+        run: Compress-Archive -Path target/bundled/VXN2.vst3 -DestinationPath VXN2-windows-x64.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN2-windows-x64.clap
-            VXN2-windows-x64.vst3.zip
+          files: VXN2-windows-x64.vst3.zip
 
   macos-vxn1b:
     name: macOS vxn-1b (universal)
-    if: ${{ startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1b') }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build. They
@@ -277,6 +331,20 @@ jobs:
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Zip and attach the CLAP
+        run: ditto -c -k --keepParent target/bundled/vxn1b.clap VXN1b-macOS-universal.clap.zip
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1b-macOS-universal.clap.zip
+
       - name: Verify the VST3 embeds the engine
         run: |
           BIN=target/bundled/VXN1b.vst3/Contents/MacOS/VXN1b
@@ -284,21 +352,18 @@ jobs:
             || { echo "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"; exit 1; }
           echo "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($(stat -f%z "$BIN") bytes)"
 
-      - name: Zip bundles
-        run: |
-          ditto -c -k --keepParent target/bundled/vxn1b.clap VXN1b-macOS-universal.clap.zip
-          ditto -c -k --keepParent target/bundled/VXN1b.vst3 VXN1b-macOS-universal.vst3.zip
+      - name: Zip and attach the VST3
+        run: ditto -c -k --keepParent target/bundled/VXN1b.vst3 VXN1b-macOS-universal.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN1b-macOS-universal.clap.zip
-            VXN1b-macOS-universal.vst3.zip
+          files: VXN1b-macOS-universal.vst3.zip
 
   windows-vxn1b:
     name: Windows vxn-1b (x86_64)
-    if: ${{ startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1b') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -320,11 +385,51 @@ jobs:
       - name: Build VXN1b CLAP + VST3 bundles
         run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
 
+      # Diagnostics for the Windows /WHOLEARCHIVE failure. The link succeeds and
+      # produces a module with an empty factory, so the only way to see what the
+      # linker was actually told is to read the response file back.
+      - name: Diagnose the VST3 link
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Output "=== staticlib cargo produced ==="
+          Get-ChildItem target/release -Filter '*.lib' -ErrorAction SilentlyContinue |
+            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+          Write-Output "=== VXN_CLAP_STATIC as CMake cached it ==="
+          Select-String -Path target/vxn1b-wrapper-release/CMakeCache.txt `
+            -Pattern 'VXN_CLAP_STATIC' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Line }
+          Write-Output "=== link response files mentioning the module ==="
+          Get-ChildItem -Recurse target/vxn1b-wrapper-release -Filter '*.rsp' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Output "--- $($_.FullName)"
+              Get-Content $_.FullName | ForEach-Object { $_ -replace ' ', "`n" } |
+                Where-Object { $_ -match 'WHOLEARCHIVE|vxn1b_clap|FORCE' }
+            }
+          Write-Output "=== ninja's own link command ==="
+          Select-String -Path target/vxn1b-wrapper-release/build.ninja `
+            -Pattern 'WHOLEARCHIVE|vxn1b_clap' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Line.Substring(0, [Math]::Min(600, $_.Line.Length)) }
+
       # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
       # staticlib never got force-loaded still LINKS, and still produces a
       # plausible bundle — it just has an empty factory. Nothing downstream
       # notices, so assert the engine is actually in there. Shipped broken on
       # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      # CLAP first, and attached before the VST3 is verified: the two formats are
+      # independent artifacts, and a VST3 that failed to absorb the staticlib is
+      # no reason to withhold a CLAP that built fine. (The first cut of this
+      # guard gated both, and a VST3 failure shipped a release with no Windows
+      # binaries at all.)
+      - name: Package and attach the CLAP
+        run: Copy-Item target/bundled/vxn1b.clap VXN1b-windows-x64.clap
+
+      - name: Attach CLAP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VXN1b-windows-x64.clap
+
       - name: Verify the VST3 embeds the engine
         shell: pwsh
         run: |
@@ -336,23 +441,18 @@ jobs:
           }
           Write-Output "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($((Get-Item $bin).Length) bytes)"
 
-      # On Windows the .clap is a single shared library; the .vst3 is a folder
-      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
-      - name: Package artifacts
-        run: |
-          Copy-Item target/bundled/vxn1b.clap VXN1b-windows-x64.clap
-          Compress-Archive -Path target/bundled/VXN1b.vst3 -DestinationPath VXN1b-windows-x64.vst3.zip
+      - name: Package and attach the VST3
+        run: Compress-Archive -Path target/bundled/VXN1b.vst3 -DestinationPath VXN1b-windows-x64.vst3.zip
 
-      - name: Attach to release
+      - name: Attach VST3 to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VXN1b-windows-x64.clap
-            VXN1b-windows-x64.vst3.zip
+          files: VXN1b-windows-x64.vst3.zip
 
   manual:
     name: Manual (PDF)
-    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1+vxn-2') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -394,6 +494,7 @@ jobs:
         run: mdbook build
 
       - name: Attach PDF to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: vxn-1/docs/book/pandoc/pdf/vxn1-manual.pdf
