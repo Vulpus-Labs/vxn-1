@@ -130,7 +130,16 @@ foreach(_archive ${VXN_CLAP_STATIC})
   if(APPLE)
     target_link_options(vxn1b_vst3 PRIVATE "-Wl,-force_load,${_archive}")
   elseif(WIN32)
-    # MSVC: the archive basename (no path) is the library identifier.
+    # MSVC needs the archive on the link line as an INPUT as well as naming it
+    # in the directive: unlike `-force_load` / `--whole-archive`, which carry
+    # the path themselves, `/WHOLEARCHIVE:lib` only says *how* to treat a
+    # library the linker already has. Without this `target_link_libraries` the
+    # directive matched nothing, the engine was never pulled in, and — because
+    # /FORCE:MULTIPLE below suppresses the errors that would have surfaced it —
+    # the link SUCCEEDED, producing a ~516 KB module of wrapper glue with an
+    # empty factory. Shipped that way in VXN1/VXN2 0.1.1 and VXN1b 0.0.1.
+    # Pass the full path in both places so the identifiers match.
+    target_link_libraries(vxn1b_vst3 PRIVATE "${_archive}")
     target_link_options(vxn1b_vst3 PRIVATE "/WHOLEARCHIVE:${_archive}")
     # rustc bundles a short-import stub for each native dependency (ntdll,
     # etc.) as a separate archive member, and repeats them across crates.

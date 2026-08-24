@@ -54,6 +54,18 @@ jobs:
 
       # The macOS .clap/.vst3 are bundle directories; ditto zips them preserving
       # the bundle structure (and resource forks) so they unpack cleanly.
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        run: |
+          BIN=target/bundled/VXN1.vst3/Contents/MacOS/VXN1
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn1' \
+            || { echo "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($(stat -f%z "$BIN") bytes)"
+
       - name: Zip bundles
         run: |
           ditto -c -k --keepParent target/bundled/VXN1.clap VXN1-macOS-universal.clap.zip
@@ -90,6 +102,22 @@ jobs:
       - name: Build CLAP + VST3 bundles
         working-directory: vxn-1
         run: cargo xtask bundle --release --format clap,vst3
+
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        shell: pwsh
+        run: |
+          $bin = "target/bundled/VXN1.vst3/Contents/x86_64-win/VXN1.vst3"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn1')) {
+            Write-Output "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"
+            exit 1
+          }
+          Write-Output "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($((Get-Item $bin).Length) bytes)"
 
       # On Windows the .clap is a single shared library; the .vst3 is a folder
       # bundle. Rename the CLAP and zip the VST3 bundle for upload.
@@ -130,6 +158,18 @@ jobs:
         working-directory: vxn-2
         run: cargo xtask bundle --release --format clap,vst3 --universal
 
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        run: |
+          BIN=target/bundled/VXN2.vst3/Contents/MacOS/VXN2
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn2' \
+            || { echo "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($(stat -f%z "$BIN") bytes)"
+
       - name: Zip bundles
         run: |
           ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
@@ -166,6 +206,22 @@ jobs:
       - name: Build VXN2 CLAP + VST3 bundles
         working-directory: vxn-2
         run: cargo xtask bundle --release --format clap,vst3
+
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        shell: pwsh
+        run: |
+          $bin = "target/bundled/VXN2.vst3/Contents/x86_64-win/VXN2.vst3"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn2')) {
+            Write-Output "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"
+            exit 1
+          }
+          Write-Output "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($((Get-Item $bin).Length) bytes)"
 
       # On Windows the .clap is a single shared library; the .vst3 is a folder
       # bundle. Rename the CLAP and zip the VST3 bundle for upload.
@@ -216,6 +272,18 @@ jobs:
       # CLAP bundle is lowercase `vxn1b.clap` (the name already installed on
       # users' machines); only the zip around it is capitalised, to match the
       # other products' release assets.
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        run: |
+          BIN=target/bundled/VXN1b.vst3/Contents/MacOS/VXN1b
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn1b' \
+            || { echo "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($(stat -f%z "$BIN") bytes)"
+
       - name: Zip bundles
         run: |
           ditto -c -k --keepParent target/bundled/vxn1b.clap VXN1b-macOS-universal.clap.zip
@@ -251,6 +319,22 @@ jobs:
 
       - name: Build VXN1b CLAP + VST3 bundles
         run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
+
+      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
+      # staticlib never got force-loaded still LINKS, and still produces a
+      # plausible bundle — it just has an empty factory. Nothing downstream
+      # notices, so assert the engine is actually in there. Shipped broken on
+      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
+      - name: Verify the VST3 embeds the engine
+        shell: pwsh
+        run: |
+          $bin = "target/bundled/VXN1b.vst3/Contents/x86_64-win/VXN1b.vst3"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn1b')) {
+            Write-Output "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"
+            exit 1
+          }
+          Write-Output "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($((Get-Item $bin).Length) bytes)"
 
       # On Windows the .clap is a single shared library; the .vst3 is a folder
       # bundle. Rename the CLAP and zip the VST3 bundle for upload.
