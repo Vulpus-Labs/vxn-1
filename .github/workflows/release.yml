@@ -385,40 +385,6 @@ jobs:
       - name: Build VXN1b CLAP + VST3 bundles
         run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
 
-      # Diagnostics for the Windows /WHOLEARCHIVE failure. The link succeeds and
-      # produces a module with an empty factory, so the only way to see what the
-      # linker was actually told is to read the response file back.
-      - name: Diagnose the VST3 link
-        if: always()
-        shell: pwsh
-        run: |
-          Write-Output "=== staticlib cargo produced ==="
-          Get-ChildItem target/release -Filter '*.lib' -ErrorAction SilentlyContinue |
-            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
-          Write-Output "=== VXN_CLAP_STATIC as CMake cached it ==="
-          Select-String -Path target/vxn1b-wrapper-release/CMakeCache.txt `
-            -Pattern 'VXN_CLAP_STATIC' -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.Line }
-          Write-Output "=== link response files mentioning the module ==="
-          Get-ChildItem -Recurse target/vxn1b-wrapper-release -Filter '*.rsp' -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              Write-Output "--- $($_.FullName)"
-              Get-Content $_.FullName | ForEach-Object { $_ -replace ' ', "`n" } |
-                Where-Object { $_ -match 'WHOLEARCHIVE|vxn1b_clap|FORCE' }
-            }
-          Write-Output "=== module size (the tell: ~516 KB means stripped) ==="
-          $m = "target/bundled/VXN1b.vst3/Contents/x86_64-win/VXN1b.vst3"
-          if (Test-Path $m) { "{0} bytes" -f (Get-Item $m).Length } else { "not built" }
-          Write-Output "=== ninja's own link command ==="
-          Select-String -Path target/vxn1b-wrapper-release/build.ninja `
-            -Pattern 'WHOLEARCHIVE|vxn1b_clap' -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.Line.Substring(0, [Math]::Min(600, $_.Line.Length)) }
-
-      # Guard against the /WHOLEARCHIVE class of failure: a VST3 whose Rust
-      # staticlib never got force-loaded still LINKS, and still produces a
-      # plausible bundle — it just has an empty factory. Nothing downstream
-      # notices, so assert the engine is actually in there. Shipped broken on
-      # Windows in VXN1/VXN2 0.1.1 and VXN1b 0.0.1 before this check existed.
       # CLAP first, and attached before the VST3 is verified: the two formats are
       # independent artifacts, and a VST3 that failed to absorb the staticlib is
       # no reason to withhold a CLAP that built fine. (The first cut of this
