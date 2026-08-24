@@ -1149,10 +1149,13 @@ impl RenderBank {
                         // position. The summing loop keeps reading `pan_l`/
                         // `pan_r`, so the hot path is untouched — a lane with
                         // no live route never gets here and keeps its
-                        // block-start gains.
+                        // block-start gains. `level_comp` rides along exactly
+                        // as it does at block start — dropping it here made a
+                        // stack jump by √width the moment any Pan route went
+                        // live (Spread off centre, or an LFO into Pan).
                         let (gl, gr) = voice_pan_gains(self.smooth.tick_pan(v, tgt[v].pan));
-                        pan_l[v] = gl;
-                        pan_r[v] = gr;
+                        pan_l[v] = gl * ctx.level_comp;
+                        pan_r[v] = gr * ctx.level_comp;
                     }
                 }
             }
@@ -1605,6 +1608,37 @@ mod tests {
         bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
         assert!(l.iter().any(|&s| s != 0.0), "the voice must sound");
         assert_eq!(l, r, "spread 0 must stay bit-mono");
+    }
+
+    /// The stack-width compensation (`1/√width`) has to survive the *per-frame*
+    /// pan re-cook, not just the block-start cook. It did not: any live Pan
+    /// route re-cooked the gains raw, so a stack jumped by √width (+9 dB at
+    /// width 8, +15 dB at 32) the instant Spread left 0 — the bump a listener
+    /// hears as "spread makes it louder".
+    #[test]
+    fn a_live_pan_route_keeps_the_stack_level_compensation() {
+        let m = default_patch();
+        let mut c = ctx(&m);
+        c.level_comp = 0.25; // stand-in for a wide stack's 1/√width
+
+        // Spread 0: the route evaluates to 0, so the lane never goes pan-active
+        // and keeps its block-start gains.
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
+        let (l0, r0) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
+
+        // Barely off centre: pan-active now, but the gains are still ~unity, so
+        // the level must not move.
+        c.spread = 0.01;
+        let mut bank = fast_bank();
+        bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
+        let (l1, r1) = lane_peaks(&mut bank, &c, 0, -1.0, 512);
+
+        assert!(l0 > 0.0 && l1 > 0.0, "the voice must sound: {l0}, {l1}");
+        assert!(
+            (l1 - l0).abs() < l0 * 0.05 && (r1 - r0).abs() < r0 * 0.05,
+            "a hair of spread must not step the level: ({l0}, {r0}) -> ({l1}, {r1})"
+        );
     }
 
     /// Deleting the route makes the Spread knob inert — the honest consequence
