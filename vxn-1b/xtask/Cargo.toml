@@ -3,7 +3,7 @@ name = "vxn1b-xtask"
 # VXN1b versions independently of the shared 0.x line that vxn-1/vxn-2 ride
 # (workspace 0.1.1): it is a younger variant shipping its own 0.0.x releases,
 # tagged `vxn-1b-<version>`. The xtask stamps this into the bundle Info.plist.
-version = "0.0.1"
+version = "0.0.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
