@@ -85,9 +85,18 @@
   --ctl-label-h: 12px;
   --ctl-value-h: 12px;
   --ctl-gap: 2px;
+  /* Vertical fader geometry — the SMALL scale, used by every fader in the
+     LAYER pane. The FX rows run a LARGE one (`.fader-scale-lg` below): the
+     0282 travels differ by nearly 2x between the panes, and a track sized for
+     a 76 px fader reads as a hairline under a 136 px one. */
   --fader-track-w: 4px;
   --thumb-w: 18px;
   --thumb-h: 6px;
+  /* The horizontal bipolar fader keeps its own cap. It rides a 4 px track a
+     fraction of any vertical fader's travel, so it stays at the small scale
+     even where the row around it is large. */
+  --h-thumb-w: 6px;
+  --h-thumb-h: 18px;
   --wave-knob-size: 64px;     /* matches the prototype's "Compact" variant */
 }
 
@@ -455,8 +464,8 @@ html, body {
 }
 .fader-thumb {
   position: absolute;
-  width: var(--thumb-h);
-  height: var(--thumb-w);
+  width: var(--h-thumb-w);
+  height: var(--h-thumb-h);
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
@@ -755,6 +764,11 @@ html, body {
   stroke: var(--fader-fill-bright);
   stroke-width: 2;
   stroke-linecap: round;
+  /* The lit perimeter reads as a lamp, not a painted arc — a soft bloom in its
+     own colour, tight enough not to wash the dial face behind it. Two stacked
+     drop-shadows: a bright close one and a wider, fainter halo. */
+  filter: drop-shadow(0 0 1.5px var(--fader-fill-bright))
+          drop-shadow(0 0 4px rgba(122, 190, 255, 0.45));
 }
 .ctl-dial .dial-face {
   fill: var(--knob-face);
@@ -766,7 +780,11 @@ html, body {
   stroke-width: 1.5;
   stroke-linecap: round;
 }
-.ctl-dial.dragging .dial-fill { stroke: #fff; }
+/* Dragging burns the arc out to white, halo included. */
+.ctl-dial.dragging .dial-fill {
+  stroke: #fff;
+  filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 6px rgba(180, 220, 255, 0.55));
+}
 .ctl-dial.dragging .dial-indicator-line { stroke: #fff; }
 
 /* Dynamics pane (0208): six dials in a 3×2 grid on the left + the Mix fader
@@ -785,7 +803,10 @@ html, body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-template-rows: repeat(2, auto);
-  gap: 4px 6px;
+  /* Column gap is set by the LABELS, not the knobs: THRESH / MKUP run wider
+     than the 48 px dial under them, so a 6 px gap left the labels nearly
+     touching while the knobs looked strung together. */
+  gap: 4px 18px;
   align-items: center;
   justify-items: center;
 }
@@ -839,14 +860,17 @@ html, body {
    to keep the two off each other. */
 .panel[data-name="Voice"] .panel-strip { justify-content: flex-end; }
 
-/* Master's strip stacks Oversample (horizontal toggle row) over Limit
-   (single toggle) — `panel-strip` defaults to a single horizontal row,
-   so this is the one panel that overrides it. */
+/* Oversample and Limit share one line: the strip is wide enough for both, and
+   stacked they cost the panel a second row for a single toggle. Limit is
+   pushed to the far right so it reads as its own control rather than as a
+   fourth oversample option. */
 .master-strip {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
+  justify-content: space-between;
 }
+/* `space-between` alone parks Limit on the strip's right edge, a little past
+   the meter above it. Pulled back so the box + label centre on the out meter's
+   bars — the toggle then reads as belonging to that column. */
+.master-strip [data-param="limiter_on"] { margin-right: 18px; }
 
 /* ── Level meters (0240) ───────────────────────────────────────────────────
    A meter mount is NOT a param cell: it carries no `data-control` /
@@ -1262,19 +1286,54 @@ html, body {
    bands of empty panel; declaring the vars on the row lets the faders grow into
    the height instead. Nothing else has to know — `.ctl-fader`, the lit fill and
    `paintFader`'s thumb are all relative to the live element height. */
+/* LARGE fader scale — the two FX-pane rows, whose travels (136 / 120 px) are
+   nearly double the LAYER pane's. Track and thumb scale with the travel so a
+   long fader does not read as a hairline; the LAYER pane keeps the small
+   scale declared on `:root`. The horizontal bipolar fader opts out via its own
+   `--h-thumb-*` vars, which nothing overrides here. */
+.row-global-1,
+.row-global-2 {
+  --fader-track-w: 7px;
+  --thumb-w: 24px;
+  --thumb-h: 10px;
+}
+
+/* The same argument applies to the other two primitives in this row. The
+   meters (mixer strips, Dynamics in/GR/out, Master out) run the row's full
+   136 px beside the widened faders, and the dials (Dynamics' six, the mixer's
+   pan / detune) sit in panels with width to spare — both were sized for the
+   LAYER pane's tighter columns. The dial is an SVG with a viewBox, so a CSS
+   box override scales the whole drawing, strokes included; nothing in
+   `makeDial` has to know. */
+.row-global-1 .meter-bar { width: 8px; }
+.row-global-1 .ctl-dial { width: 48px; height: 48px; }
+
 .row-global-1 {
   height: var(--panel-h-global-1);
   --fader-h: 136px;
   --col-h: 170px;
-  /* The channel strip grows past its dial column here — see `.strip-dials`,
-     which centres the two knobs against the taller meter/fader pair. */
-  --strip-h: 124px;
+  /* The channel strip runs the row's fader travel exactly, so the mixer's
+     level faders and the FX faders beside them share both ends of their
+     tracks. The dial pair (two cells of label 12 + 48 knob, 4 px apart) is
+     shorter than that and `.strip-dials` centres it against the difference. */
+  --strip-h: var(--fader-h);
+  /* Slack under a standard `.ctl` column: height 170 less (label 12 + 4
+     margin + 2 gap + 136 travel). The mixer's strips and its split column are
+     not `.ctl`s but have to sit on the same lines as one, so they reproduce
+     the column's box with this. */
+  --col-slack: 16px;
+  /* Strip pitch, shared by the strips and the split column beside them. */
+  --mixer-strip-gap: 28px;
 }
 .row-global-2 {
   height: var(--panel-h-global-2);
   --fader-h: 120px;
   --col-h: 154px;
 }
+/* Delay's Sync / Ping-pong sit under the faders they re-map. The 4 px of the
+   LAYER pane's tight columns is not this row's budget — it read as the toggle
+   hanging off the fader's bottom end. */
+.row-global-2 .ctl-col-center { gap: 12px; }
 
 /* Dynamics and Master are sized by their own content, not the mixer's, so in a
    row this tall they would sit against the header with a band of empty panel
@@ -1295,7 +1354,7 @@ html, body {
 
 /* The mixer is deliberately narrow — two channel strips (meter + fader + a
    column of two dials) and the split beneath them, nothing else. */
-.row-global-1 .panel[data-name="Mixer"]    { flex-grow: 0; flex-basis: 200px; }
+.row-global-1 .panel[data-name="Mixer"]    { flex-grow: 0; flex-basis: 330px; }
 .row-global-1 .panel[data-name="Dynamics"] { flex-grow: 1.35; }
 .row-global-1 .panel[data-name="Master"]   { flex-grow: 1; }
 
@@ -1326,11 +1385,17 @@ html, body {
 }
 
 /* ── Mixer ─────────────────────────────────────────────────────────────── */
+/* Strips on the left, the split column on the right — the split is a keyboard
+   property rather than a channel, so it reads better beside the two strips
+   than stacked under them, and vertical it matches every other control in the
+   row. Children stretch to the body height: both the strips and the split
+   column pin a toggle to the body's bottom edge, which is the line Master's
+   Oversample row sits on. */
 .mixer-body {
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--mixer-strip-gap);
 }
 
 /* Two channel strips side by side. This is a mixer, so both layers show at
@@ -1339,16 +1404,31 @@ html, body {
 .mixer-strips {
   display: flex;
   flex-direction: row;
+  align-items: stretch;
   justify-content: center;
-  gap: 16px;
+  height: 100%;
+  /* The panel is wider than the two strips need, so the slack goes
+     between them rather than to the panel edges — the strips read as two
+     channels, not as one block pushed to the middle. */
+  gap: var(--mixer-strip-gap);
 }
 
+/* A strip is not a `.ctl`, but it must land on a `.ctl`'s lines: title on the
+   label row, fader track on the track row. It therefore reproduces the column
+   box — label height + 4 margin + `--ctl-gap` + travel + `--col-slack` — and
+   centres that box in the full-height strip, which is exactly what the body's
+   `align-items: center` does to the columns in the panels beside it. The mute
+   is out of flow (below) so it cannot disturb the centring. */
 .mixer-strip {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  justify-content: center;
+  gap: var(--ctl-gap);
+  height: 100%;
 }
+.mixer-strip-body { margin-bottom: var(--col-slack); }
 
 /* Spelled out rather than abbreviated: the panel has the width for it now that
    the strip is meter + fader + dial column, and "LAYER 1" needs no decoding.
@@ -1365,6 +1445,8 @@ html, body {
   line-height: var(--ctl-label-h);
   align-self: stretch;
   text-align: center;
+  /* Same 4 px as `.ctl-label` — this is the label row for the strip. */
+  margin-bottom: 4px;
 }
 
 /* Meter to the LEFT of its fader — channel-strip convention, and it puts the
@@ -1450,42 +1532,59 @@ html, body {
   margin-bottom: 1px;
 }
 
-/* Mute centred under the strip body rather than pinned to the panel edge, so
-   it reads as belonging to this strip. */
+/* Mute centred under its own strip, and pinned to the strip's bottom edge —
+   which, the strip being full-height, is the panel body's bottom edge, the
+   line Master's Oversample row and the split enable also sit on. Out of flow
+   so the strip's flow content can centre on the `.ctl` lines above it. */
 .mixer-mute {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   justify-content: center;
 }
 
-/* Split lives under the two sliders, inside the mixer panel: the point row on
-   top (full panel width, so a semitone is an easy target), the enable toggle
-   beneath it. */
+/* Split is a column at the mixer's right edge, built on the same box as a
+   strip: the note readout takes the label row, the (vertical) point slider the
+   track row, and the enable toggle is pinned to the body's bottom edge beside
+   the mutes. */
 .mixer-split {
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
-  padding-top: 2px;
-  /* The body centres its children on the cross axis, which sizes them to their
-     content — and a range input's natural width is wider than this deliberately
-     narrow panel, so the slider hung out over both edges and the note readout
-     fell off the right. Taking the body's width instead lets the slider's
-     `flex: 1 1 auto; min-width: 0` shrink it to fit. */
-  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ctl-gap);
+  height: 100%;
 }
 
+/* `column-reverse`: the markup is slider-then-readout (the readout is the
+   slider's value), but the readout is what occupies the label row, so it
+   draws above. */
 .split-point-row {
   display: flex;
-  flex-direction: row;
+  flex-direction: column-reverse;
   align-items: center;
-  gap: 5px;
+  gap: var(--ctl-gap);
+  margin-bottom: var(--col-slack);
 }
 
-/* Takes the row's free width rather than a fixed size, so the track is as long
-   as the panel allows. */
+/* Vertical, and the same travel as the faders it lines up with. Two idioms
+   because two engines: `writing-mode` + `direction: rtl` is the modern one
+   (min at the bottom); `slider-vertical` is the legacy WebKit appearance, kept
+   for older WKWebViews and ignored where the first pair works. */
 .split-point-slider {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  width: 20px;
+  height: var(--strip-h);
+  writing-mode: vertical-lr;
+  direction: rtl;
+  -webkit-appearance: slider-vertical;
+  /* The UA sheet gives a range input a 2 px margin; left in, it makes this
+     column 4 px taller than a `.ctl` and the readout sits a couple of pixels
+     above the label row it shares. */
+  margin: 0;
   accent-color: var(--track-fill);
 }
 
@@ -1495,15 +1594,27 @@ html, body {
   font-weight: 700;
   color: var(--ctl-value);
   font-variant-numeric: tabular-nums;
-  min-width: 22px;
-  text-align: right;
+  height: var(--ctl-label-h);
+  line-height: var(--ctl-label-h);
+  /* Same 4 px as `.ctl-label`; this is the label row for the column. */
+  margin-bottom: 4px;
+  text-align: center;
 }
 
 /* Split disabled: the point is inert, so grey it out. The toggle below stays
    live — it is what turns the split back on. */
 .split-point-row.dimmed { opacity: 0.4; pointer-events: none; }
 
-.split-enable-slot { display: flex; justify-content: center; }
+/* Pinned like the mutes, so the mixer's bottom line reads as one row of
+   toggles across the panel. */
+.split-enable-slot {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+}
 
 /* A split needs two layers, and so does Layer 2's mixer strip. Both dim
    (rather than vanish) while Layer 2 is off so the layout never jumps as the
@@ -1520,6 +1631,10 @@ html, body {
   align-items: flex-start;
   gap: 7px;
   flex: 0 0 auto;
+  /* A cluster is label + bar, which is shorter than a control column; without
+     the column's height the body centres it and the bars land ~8 px below the
+     fader tracks they are read against. */
+  height: var(--col-h);
 }
 /* The input cluster is a single column at the far left; no extra leading gap,
    the panel padding already sets it off. */
@@ -1535,5 +1650,6 @@ html, body {
 }
 
 /* The GR bar is single-channel, so give it a wider bar than a stereo pair —
-   it reads as one quantity rather than half a missing pair. */
-.meter-gr .meter-bar { width: 8px; }
+   it reads as one quantity rather than half a missing pair. Tracks the row's
+   widened pair (8 px) rather than sitting at a fixed figure. */
+.meter-gr .meter-bar { width: 12px; }
