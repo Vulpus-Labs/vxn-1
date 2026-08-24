@@ -1,7 +1,24 @@
 name: Release
 
-# Build the CLAP plugin for macOS and Windows and attach the binaries to the
-# GitHub Release that triggered the run.
+# Build the CLAP/VST3 plugins for macOS and Windows and attach the binaries to
+# the GitHub Release that triggered the run.
+#
+# The trigger fires on EVERY published release, so each job is gated on the tag
+# that triggered it (0213). Two release lines share this repo:
+#
+#   - vxn-1 + vxn-2 ride a shared bare-semver tag (`0.1.1`), matching the
+#     workspace version.
+#   - vxn-1b versions independently and tags `vxn-1b-<version>`.
+#
+# Each job therefore carries a `startsWith(github.event.release.tag_name, ...)`
+# guard. Without it, cutting a vxn-1b release would rebuild and re-attach vxn-1
+# and vxn-2 binaries built from whatever main happened to be.
+#
+# The predicate is repeated per job rather than hoisted into `env:` on purpose:
+# a job-level `if` cannot read the `env` context (only `github`, `needs`, `vars`
+# and `inputs`), so an `env.` reference there resolves to the empty string —
+# which would leave the vxn-1 jobs always on and the vxn-1b jobs always off,
+# silently and in the direction that looks like it works.
 on:
   release:
     types: [published]
@@ -12,6 +29,7 @@ permissions:
 jobs:
   macos:
     name: macOS (universal)
+    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
@@ -50,6 +68,7 @@ jobs:
 
   windows:
     name: Windows (x86_64)
+    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +107,7 @@ jobs:
 
   macos-vxn2:
     name: macOS vxn-2 (universal)
+    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
@@ -124,6 +144,7 @@ jobs:
 
   windows-vxn2:
     name: Windows vxn-2 (x86_64)
+    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,8 +181,94 @@ jobs:
             VXN2-windows-x64.clap
             VXN2-windows-x64.vst3.zip
 
+  macos-vxn1b:
+    name: macOS vxn-1b (universal)
+    if: ${{ startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    runs-on: macos-14
+    steps:
+      # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build. They
+      # are the repo-root checkouts vxn-1 and vxn-2 share; vxn-1b/wrapper points
+      # at the same ones rather than vendoring a third copy.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      # VXN1b has no `cargo xtask` alias (no per-product .cargo/config.toml), so
+      # the xtask package is invoked directly — the same call `deploy.sh` makes.
+      # `--release` is a no-op there (the build is always release) and is passed
+      # only to keep this line readable against the vxn-1/vxn-2 jobs above.
+      - name: Build universal VXN1b CLAP + VST3 bundles
+        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3 --universal
+
+      # The macOS .clap/.vst3 are bundle directories; ditto zips them preserving
+      # the bundle structure (and resource forks) so they unpack cleanly. The
+      # CLAP bundle is lowercase `vxn1b.clap` (the name already installed on
+      # users' machines); only the zip around it is capitalised, to match the
+      # other products' release assets.
+      - name: Zip bundles
+        run: |
+          ditto -c -k --keepParent target/bundled/vxn1b.clap VXN1b-macOS-universal.clap.zip
+          ditto -c -k --keepParent target/bundled/VXN1b.vst3 VXN1b-macOS-universal.vst3.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VXN1b-macOS-universal.clap.zip
+            VXN1b-macOS-universal.vst3.zip
+
+  windows-vxn1b:
+    name: Windows vxn-1b (x86_64)
+    if: ${{ startsWith(github.event.release.tag_name, 'vxn-1b-') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Build VXN1b CLAP + VST3 bundles
+        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
+
+      # On Windows the .clap is a single shared library; the .vst3 is a folder
+      # bundle. Rename the CLAP and zip the VST3 bundle for upload.
+      - name: Package artifacts
+        run: |
+          Copy-Item target/bundled/vxn1b.clap VXN1b-windows-x64.clap
+          Compress-Archive -Path target/bundled/VXN1b.vst3 -DestinationPath VXN1b-windows-x64.vst3.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VXN1b-windows-x64.clap
+            VXN1b-windows-x64.vst3.zip
+
   manual:
     name: Manual (PDF)
+    if: ${{ !startsWith(github.event.release.tag_name, 'vxn-1b-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

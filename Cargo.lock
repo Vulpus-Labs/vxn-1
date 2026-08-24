@@ -2487,7 +2487,7 @@ version = "0.1.1"
 
 [[package]]
 name = "vxn1b-clap"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "clack-extensions",
  "clack-plugin",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-engine"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "include_dir",
  "serde",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-ui-web"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "serde_json",
  "vxn-core-app",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-xtask"
-version = "0.1.1"
+version = "0.0.1"
 
 [[package]]
 name = "vxn2-app"

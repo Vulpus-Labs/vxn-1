@@ -1,6 +1,6 @@
 # ADR 0001 — VXN1b overall design (matrix-modulation variant of VXN1)
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-24, ticket 0213 — shipped as `vxn-1b-0.0.1`)
 - **Date:** 2026-07-25
 - **Scope:** Architecture of **VXN1b** — a variant of VXN1 (the Jupiter-8-style
   subtractive polysynth) whose *sound engine is unchanged* but whose entire

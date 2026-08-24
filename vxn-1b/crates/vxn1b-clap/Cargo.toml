@@ -1,6 +1,9 @@
 [package]
 name = "vxn1b-clap"
-version.workspace = true
+# VXN1b versions independently of the shared 0.x line that vxn-1/vxn-2 ride
+# (workspace 0.1.1): it is a younger variant shipping its own 0.0.x releases,
+# tagged `vxn-1b-<version>`. The xtask stamps this into the bundle Info.plist.
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -9,8 +12,9 @@ description = "VXN1b CLAP plugin shell (clack) — host-loadable scaffold."
 
 [lib]
 # cdylib for the host-loadable plugin; rlib so in-process tests link the shell
-# without dlopen.
-crate-type = ["cdylib", "rlib"]
+# without dlopen; staticlib for clap-wrapper to link into a bundled .vst3
+# (mirrors vxn-clap / ADR 0008 §2).
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 vxn1b-engine = { workspace = true }
