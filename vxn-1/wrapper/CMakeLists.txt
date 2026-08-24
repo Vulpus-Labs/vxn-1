@@ -137,6 +137,19 @@ foreach(_archive ${VXN_CLAP_STATIC})
     # /FORCE:MULTIPLE keeps the first definition of each and links; the
     # duplicates are byte-identical import thunks, so this is safe here.
     target_link_options(vxn1_vst3 PRIVATE "/FORCE:MULTIPLE")
+    # And root the entry point. /WHOLEARCHIVE force-INCLUDES the objects, but
+    # /OPT:REF — on by default under the /INCREMENTAL:NO that CMake's Release
+    # flags set — then DISCARDS every COMDAT not reachable from an entry point
+    # or an export. Nothing in the wrapper references `clap_entry` at link
+    # time (it is looked up at runtime), so the whole engine was included and
+    # then immediately stripped: a successful link, no diagnostics, and a
+    # ~516 KB module with an empty factory. /INCLUDE: adds the symbol as a
+    # root, and everything it reaches survives with it.
+    #
+    # macOS needs no equivalent: ld64 does not dead-strip unless asked, which
+    # is why -force_load alone was always sufficient there and only Windows
+    # shipped hollow. x64 C symbols are undecorated, so no leading underscore.
+    target_link_options(vxn1_vst3 PRIVATE "/INCLUDE:clap_entry")
   else() # Linux / other ELF
     target_link_options(vxn1_vst3 PRIVATE
       "-Wl,--whole-archive" "${_archive}" "-Wl,--no-whole-archive")

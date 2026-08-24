@@ -406,6 +406,9 @@ jobs:
               Get-Content $_.FullName | ForEach-Object { $_ -replace ' ', "`n" } |
                 Where-Object { $_ -match 'WHOLEARCHIVE|vxn1b_clap|FORCE' }
             }
+          Write-Output "=== module size (the tell: ~516 KB means stripped) ==="
+          $m = "target/bundled/VXN1b.vst3/Contents/x86_64-win/VXN1b.vst3"
+          if (Test-Path $m) { "{0} bytes" -f (Get-Item $m).Length } else { "not built" }
           Write-Output "=== ninja's own link command ==="
           Select-String -Path target/vxn1b-wrapper-release/build.ninja `
             -Pattern 'WHOLEARCHIVE|vxn1b_clap' -ErrorAction SilentlyContinue |
