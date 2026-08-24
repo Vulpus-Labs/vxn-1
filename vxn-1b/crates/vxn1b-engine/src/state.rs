@@ -56,12 +56,13 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 /// splits `AssignMode` into `StackWidth` + `VoiceMode` (0266, ADR 0003); `9`
 /// adds `DelaySync` (0267); `10` adds the FX-stereo globals `PhaserStereo` and
 /// `DelayPingPong` (0279); `11` adds the per-oscillator `Osc1FreeRun` /
-/// `Osc2FreeRun` (0283). Bump on
+/// `Osc2FreeRun` (0283); `12` adds the stack `StackPhase` / `StackDistrib`
+/// voicing pair (0284). Bump on
 /// any layout change — the
 /// block length is positional, so an older blob read at a newer length would
 /// slide topology bytes into param slots rather than fail cleanly. Rejecting the
 /// old version is what makes that impossible.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
 /// scale]`.
@@ -297,6 +298,11 @@ mod tests {
         // can't pass by carrying one value into both slots.
         l1.params.set(ParamId::Osc1FreeRun, 1.0);
         l2.params.set(ParamId::Osc2FreeRun, 1.0);
+        // 0284: same for the stack voicing pair — both off their defaults (1.0 /
+        // Linear) and different between the layers.
+        l1.params.set(ParamId::StackPhase, 0.0);
+        l1.params.set(ParamId::StackDistrib, 2.0);
+        l2.params.set(ParamId::StackPhase, 0.25);
         // Give layer 2 a different topology in a slot layer 1 leaves inert.
         l2.params.set(ParamId::MatrixSlot5Depth, 0.75);
         l2.matrix.slots[5] = MatrixSlot {
@@ -330,6 +336,8 @@ mod tests {
         assert_eq!(back.layers[0].params.get(ParamId::Cutoff), 1234.0);
         assert_eq!(back.layers[0].params.get(ParamId::Osc1FreeRun), 1.0);
         assert_eq!(back.layers[0].params.get(ParamId::Osc2FreeRun), 0.0);
+        assert_eq!(back.layers[0].params.get(ParamId::StackPhase), 0.0);
+        assert_eq!(back.layers[0].params.get(ParamId::StackDistrib), 2.0);
         assert_eq!(back.layers[0].matrix.slots[0].source, SourceId::Env2);
         assert_eq!(back.layers[0].matrix.slots[0].depth, 1.0);
         assert_eq!(back.layers[0].matrix.slots[3].scale_src, SourceId::ModWheel);
@@ -338,6 +346,8 @@ mod tests {
         assert_eq!(back.layers[1].params.get(ParamId::Cutoff), 220.0);
         assert_eq!(back.layers[1].params.get(ParamId::Osc1FreeRun), 0.0);
         assert_eq!(back.layers[1].params.get(ParamId::Osc2FreeRun), 1.0);
+        assert_eq!(back.layers[1].params.get(ParamId::StackPhase), 0.25);
+        assert_eq!(back.layers[1].params.get(ParamId::StackDistrib), 0.0);
         assert_eq!(back.layers[1].matrix.slots[5].source, SourceId::Lfo1);
         assert_eq!(back.layers[1].matrix.slots[5].dest, DestId::Cutoff);
         assert_eq!(back.layers[1].matrix.slots[5].depth, 0.75);

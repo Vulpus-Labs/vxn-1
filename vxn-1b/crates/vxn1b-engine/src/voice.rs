@@ -17,7 +17,7 @@
 
 use vxn_dsp::xorshift64;
 
-use crate::params::VoiceMode;
+use crate::params::{StackDistrib, VoiceMode};
 
 /// Lanes per synth (0264). **Local to VXN1b**, deliberately not
 /// `vxn_dsp::MAX_VOICES`: that const is vxn-1's, and raising it there would drag
@@ -49,19 +49,76 @@ pub(crate) const WIDE_GLIDE_SCALE: f32 = 0.15;
 /// sequence (and vice versa). Non-zero — `xorshift64` sticks at zero.
 const PHASE_SEED: u64 = 0x1B_5EED_0242;
 
+/// Seed for the [`StackDistrib::Random`] lane-position stream (0284). A third
+/// stream for the same reason the second one exists: a note played under Random
+/// must not shift the start-phase or humanisation sequences the next note draws
+/// from.
+const SPREAD_SEED: u64 = 0x1B_5EED_0284;
+
 /// Symmetric detune weight in `[-1, 1]` for lane `i` of a stack `width` wide
-/// (ADR 0003). Multiplied by the `UnisonDetune` cents value to fan the stack.
+/// (ADR 0003). Multiplied by the `UnisonDetune` cents value to fan the stack,
+/// and — scaled by `Spread` — by the stereo fan, so one position drives both.
 ///
 /// The denominator is `width - 1`, **not** the lane pool: `unison_detune` must
 /// mean the same *total span* at every width, so widening a stack makes it
 /// denser rather than retuning it. Width 1 is the degenerate case — one lane,
 /// no fan, whatever the detune knob says.
+///
+/// This is [`StackDistrib::Linear`]; the other laws bend it (see
+/// [`Voices::fill_stack_pos`]).
 #[inline]
 pub(crate) fn stack_spread(i: usize, width: usize) -> f32 {
     if width <= 1 {
         0.0
     } else {
         (i as f32 / (width - 1) as f32) * 2.0 - 1.0
+    }
+}
+
+/// [`StackDistrib::Geometric`] over a linear position: `sign(t) * |t|^0.5`
+/// (VXN2's law). Pulls the inner lanes toward the centre while leaving the outer
+/// pair pinned at ±1, so a wide stack reads as a dense core with two outliers
+/// rather than an even comb.
+#[inline]
+fn geometric(t: f32) -> f32 {
+    t.signum() * t.abs().sqrt()
+}
+
+/// The voicing half of a note event: everything about *how* a note is spread
+/// across lanes, read off the patch once per note-on and passed as one value.
+///
+/// A struct rather than six positional arguments (the call 0283's `TriggerOpts`
+/// made on the DSP side of the same event) — `width`/`mode`/`detune`/`legato`
+/// were already four, and 0284's phase depth and distribution law take it past
+/// what a reader can keep straight at a call site.
+#[derive(Clone, Copy, Debug)]
+pub struct StackVoicing {
+    /// Lanes per note, clamped to the pool by the allocator.
+    pub width: usize,
+    pub mode: VoiceMode,
+    /// Total detune span in cents across the stack, fanned by lane position.
+    pub unison_detune: f32,
+    pub legato: bool,
+    /// Start-phase decorrelation depth in `[0, 1]` (0284). Scales the per-lane
+    /// random draw: 0 starts every lane coherent at phase 0, 1 is the full
+    /// scatter. Ignored at width 1, which keeps its deterministic `lane_phase`.
+    pub phase: f32,
+    /// Lane layout law for the detune + stereo fan.
+    pub distrib: StackDistrib,
+}
+
+impl Default for StackVoicing {
+    fn default() -> Self {
+        Self {
+            width: 1,
+            mode: VoiceMode::Poly,
+            unison_detune: 0.0,
+            legato: false,
+            // Matches the `stack_phase` descriptor default: full scatter is what
+            // a stacked note did before the knob existed.
+            phase: 1.0,
+            distrib: StackDistrib::Linear,
+        }
     }
 }
 
@@ -250,6 +307,10 @@ pub struct Voices {
     /// trigger. Separate from `rng` so the two humanisation streams don't
     /// perturb each other.
     phase_rng: u64,
+    /// [`StackDistrib::Random`] lane-position stream (0284). Advanced only under
+    /// Random, and separate from the other two for the same reason they are
+    /// separate from each other.
+    spread_rng: u64,
 }
 
 impl Default for Voices {
@@ -281,6 +342,7 @@ impl Voices {
             next_stack_id: 0,
             rng: NOTE_RANDOM_SEED,
             phase_rng: PHASE_SEED,
+            spread_rng: SPREAD_SEED,
         }
     }
 
@@ -430,21 +492,23 @@ impl Voices {
     /// * **Solo** — one stack pinned to lanes `0..width`, last-note priority,
     ///   with `legato` deciding whether a reveal slides or articulates.
     ///
-    /// Stacked lanes take a fresh random start phase so the copies do not comb
-    /// into a synchronised null; a single lane keeps the bank's own
-    /// deterministic phase.
+    /// Stacked lanes take a scaled random start phase so the copies do not comb
+    /// into a synchronised null — how far they scatter is
+    /// [`StackVoicing::phase`]. A single lane keeps the bank's own deterministic
+    /// phase whatever that reads.
     pub fn note_on_stack(
         &mut self,
         channel: u8,
         note: u8,
         velocity: f32,
-        width: usize,
-        mode: VoiceMode,
-        unison_detune: f32,
-        legato: bool,
+        voicing: StackVoicing,
     ) -> Triggers {
-        let width = width.clamp(1, N);
+        let StackVoicing { mode, unison_detune, legato, .. } = voicing;
+        let width = voicing.width.clamp(1, N);
         self.sync_mode(width, mode);
+        // One draw of the layout per note-on: Random must not re-roll per lane
+        // read, and the other laws are pure.
+        let pos = self.fill_stack_pos(width, voicing.distrib);
         let mut out = Triggers::none();
         match mode {
             VoiceMode::Poly => {
@@ -455,10 +519,10 @@ impl Voices {
                 debug_assert_eq!(n, width, "the pool must always yield a full stack");
                 let id = self.next_stack();
                 for (i, &v) in lanes[..n].iter().enumerate() {
-                    let pos = stack_spread(i, width);
-                    self.stamp(v, channel, note, velocity, pos * unison_detune, pos, true);
+                    let p = pos[i];
+                    self.stamp(v, channel, note, velocity, p * unison_detune, p, true);
                     self.stack_id[v] = id;
-                    out.push(v, self.stack_phase(width));
+                    out.push(v, self.stack_phase(width, voicing.phase));
                 }
                 self.level_comp = level_comp(width);
             }
@@ -471,12 +535,11 @@ impl Voices {
                 // A slide keeps the sounding stack's identity along with its age
                 // and humanisation; an articulation is a new stack.
                 let id = if slide { self.stack_id[0] } else { self.next_stack() };
-                for i in 0..width {
-                    let pos = stack_spread(i, width);
-                    self.stamp(i, channel, note, velocity, pos * unison_detune, pos, !slide);
+                for (i, &p) in pos.iter().take(width).enumerate() {
+                    self.stamp(i, channel, note, velocity, p * unison_detune, p, !slide);
                     self.stack_id[i] = id;
                     if !slide {
-                        out.push(i, self.stack_phase(width));
+                        out.push(i, self.stack_phase(width, voicing.phase));
                     }
                 }
                 // Lanes past the stack are gated off, so narrowing the width (or
@@ -498,12 +561,10 @@ impl Voices {
         &mut self,
         channel: u8,
         note: u8,
-        width: usize,
-        mode: VoiceMode,
-        unison_detune: f32,
-        legato: bool,
+        voicing: StackVoicing,
     ) -> Triggers {
-        let width = width.clamp(1, N);
+        let StackVoicing { mode, unison_detune, legato, .. } = voicing;
+        let width = voicing.width.clamp(1, N);
         let mut out = Triggers::none();
         if mode != VoiceMode::Solo {
             self.note_off(channel, note);
@@ -530,24 +591,52 @@ impl Voices {
         // A legato reveal keeps the stack's identity; a re-articulated one is a
         // new stack, matching the note-on path.
         let id = if legato { self.stack_id[0] } else { self.next_stack() };
-        for i in 0..width {
-            let pos = stack_spread(i, width);
+        // A reveal re-lays the stack out, so Random re-rolls here too — the
+        // revealed note is a new note in every other respect as well.
+        let pos = self.fill_stack_pos(width, voicing.distrib);
+        for (i, &p) in pos.iter().take(width).enumerate() {
             let velocity = self.velocity[i];
-            self.stamp(i, channel, revealed, velocity, pos * unison_detune, pos, !legato);
+            self.stamp(i, channel, revealed, velocity, p * unison_detune, p, !legato);
             self.stack_id[i] = id;
             if !legato {
-                out.push(i, self.stack_phase(width));
+                out.push(i, self.stack_phase(width, voicing.phase));
             }
         }
         out
     }
 
-    /// Start phase for a lane of a `width`-wide stack: a fresh random draw once
-    /// there is more than one copy (so the stack's beating never combs into a
-    /// null), and the bank's own deterministic phase for a single lane.
+    /// Lane positions in `[-1, 1]` for a `width`-wide stack under `distrib`.
+    /// Lanes past `width` are left at 0 and never read.
+    ///
+    /// `&mut self` because [`StackDistrib::Random`] draws — which is also why the
+    /// caller takes the whole array once per note-on rather than calling a pure
+    /// helper per lane.
+    fn fill_stack_pos(&mut self, width: usize, distrib: StackDistrib) -> [f32; N] {
+        let mut out = [0.0; N];
+        for (i, slot) in out.iter_mut().enumerate().take(width) {
+            *slot = match distrib {
+                StackDistrib::Linear => stack_spread(i, width),
+                StackDistrib::Geometric => geometric(stack_spread(i, width)),
+                // `note_random_draw` is `[0, 1)`; the fan wants `[-1, 1)`.
+                StackDistrib::Random => note_random_draw(&mut self.spread_rng) * 2.0 - 1.0,
+            };
+        }
+        out
+    }
+
+    /// Start phase for a lane of a `width`-wide stack: a random draw scaled by
+    /// `depth` once there is more than one copy (so the stack's beating need not
+    /// comb into a null), and the bank's own deterministic phase — `None`, i.e.
+    /// `lane_phase(v)` — for a single lane.
+    ///
+    /// The draw is scaled *after* it is taken, so the knob cannot shift the
+    /// stream a later note pulls from: a phrase played at depth 0 and one played
+    /// at depth 1 see the same underlying sequence. At depth 0 every lane lands
+    /// on 0.0 and the stack starts coherent. (Width still gates the draw, as it
+    /// always has — a one-lane note does not consume from the stream.)
     #[inline]
-    fn stack_phase(&mut self, width: usize) -> Option<f32> {
-        (width > 1).then(|| note_random_draw(&mut self.phase_rng))
+    fn stack_phase(&mut self, width: usize, depth: f32) -> Option<f32> {
+        (width > 1).then(|| note_random_draw(&mut self.phase_rng) * depth.clamp(0.0, 1.0))
     }
 
     /// Handle a (width, mode) change detected at note-on. Entering Solo releases
@@ -736,6 +825,13 @@ pub struct RenderView<'a> {
 mod tests {
     use super::*;
     use crate::params::StackWidth;
+
+    /// The four voicing axes these tests actually vary, over 0284's defaults
+    /// (full phase scatter, Linear layout) — which is the pre-0284 behaviour, so
+    /// every test written before it still exercises what it used to.
+    fn voicing(width: usize, mode: VoiceMode, unison_detune: f32, legato: bool) -> StackVoicing {
+        StackVoicing { width, mode, unison_detune, legato, ..StackVoicing::default() }
+    }
 
     #[test]
     fn note_on_stores_channel_on_assigned_voice() {
@@ -956,7 +1052,7 @@ mod tests {
             (N, VoiceMode::Solo, N),
         ] {
             let mut v = Voices::default();
-            let t = v.note_on_stack(0, 60, 1.0, width, mode, 20.0, false);
+            let t = v.note_on_stack(0, 60, 1.0, voicing(width, mode, 20.0, false));
             assert_eq!(fired(&t).len(), lanes, "width {width} {mode:?} placed the wrong lane count");
         }
     }
@@ -968,10 +1064,10 @@ mod tests {
     #[test]
     fn full_width_poly_is_monophonic_but_retriggers() {
         let mut v = Voices::default();
-        let first = v.note_on_stack(0, 60, 1.0, N, VoiceMode::Poly, 10.0, true);
+        let first = v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Poly, 10.0, true));
         assert_eq!(fired(&first).len(), N, "the stack takes every lane");
         // Legato is on, but Poly never slides: the second note re-fires lanes.
-        let second = v.note_on_stack(0, 67, 1.0, N, VoiceMode::Poly, 10.0, true);
+        let second = v.note_on_stack(0, 67, 1.0, voicing(N, VoiceMode::Poly, 10.0, true));
         assert_eq!(fired(&second).len(), N, "a stolen full stack must retrigger");
         assert!(
             (0..N).all(|i| v.note[i] == 67),
@@ -983,8 +1079,8 @@ mod tests {
     #[test]
     fn full_width_solo_slides_under_legato() {
         let mut v = Voices::default();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 10.0, true);
-        let second = v.note_on_stack(0, 67, 1.0, N, VoiceMode::Solo, 10.0, true);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 10.0, true));
+        let second = v.note_on_stack(0, 67, 1.0, voicing(N, VoiceMode::Solo, 10.0, true));
         assert!(fired(&second).is_empty(), "a legato slide must not retrigger");
         assert!((0..N).all(|i| v.note[i] == 67), "but the pitch moves");
     }
@@ -999,7 +1095,7 @@ mod tests {
         // later (as 32 was, in 0264) cannot slip past this rule unchecked.
         for width in stack_widths().into_iter().filter(|&w| w > 1) {
             let mut v = Voices::default();
-            v.note_on_stack(0, 60, 1.0, width, VoiceMode::Solo, 25.0, false);
+            v.note_on_stack(0, 60, 1.0, voicing(width, VoiceMode::Solo, 25.0, false));
             let cents: Vec<f32> = (0..width).map(|i| v.detune_cents[i]).collect();
             let lo = cents.iter().cloned().fold(f32::INFINITY, f32::min);
             let hi = cents.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -1017,7 +1113,7 @@ mod tests {
     #[test]
     fn width_one_ignores_the_detune_knob() {
         let mut v = Voices::default();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 50.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 50.0, false));
         assert_eq!(v.detune_cents[0], 0.0);
     }
 
@@ -1029,7 +1125,7 @@ mod tests {
             let mut v = Voices::default();
             let stacks = N / width;
             for i in 0..stacks {
-                v.note_on_stack(0, 60 + i as u8, 1.0, width, VoiceMode::Poly, 0.0, false);
+                v.note_on_stack(0, 60 + i as u8, 1.0, voicing(width, VoiceMode::Poly, 0.0, false));
             }
             assert_eq!(
                 (0..N).filter(|&i| v.is_active(i)).count(),
@@ -1038,7 +1134,7 @@ mod tests {
             );
             // One more note: capacity is spent, so it steals — the note count
             // held stays at the pool size rather than growing.
-            v.note_on_stack(0, 90, 1.0, width, VoiceMode::Poly, 0.0, false);
+            v.note_on_stack(0, 90, 1.0, voicing(width, VoiceMode::Poly, 0.0, false));
             assert_eq!((0..N).filter(|&i| v.is_active(i)).count(), N);
             assert!(
                 (0..N).any(|i| v.note[i] == 90 && v.is_active(i)),
@@ -1060,12 +1156,12 @@ mod tests {
     fn the_stereo_fan_spans_the_image_at_every_width() {
         // Width 1 sits dead centre — nothing to spread.
         let mut v = Voices::default();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 0.0, false));
         assert_eq!(v.stack_pos[0], 0.0, "a single lane must be centred");
 
         for width in stack_widths().into_iter().filter(|&w| w > 1) {
             let mut v = Voices::default();
-            let t = v.note_on_stack(0, 60, 1.0, width, VoiceMode::Poly, 0.0, false);
+            let t = v.note_on_stack(0, 60, 1.0, voicing(width, VoiceMode::Poly, 0.0, false));
             let pos: Vec<f32> = fired(&t).iter().map(|&l| v.stack_pos[l]).collect();
             assert_eq!(pos.len(), width);
             // Outermost lanes reach the edges: a 2-lane stack is hard L/R, a
@@ -1094,12 +1190,12 @@ mod tests {
     #[test]
     fn one_note_on_claims_one_stack() {
         let mut v = Voices::default();
-        let t = v.note_on_stack(0, 60, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        let t = v.note_on_stack(0, 60, 1.0, voicing(8, VoiceMode::Poly, 10.0, false));
         let lanes = fired(&t);
         let id = v.stack_id[lanes[0]];
         assert!(lanes.iter().all(|&l| v.stack_id[l] == id), "one note, one stack id");
 
-        let u = v.note_on_stack(0, 67, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        let u = v.note_on_stack(0, 67, 1.0, voicing(8, VoiceMode::Poly, 10.0, false));
         assert_ne!(v.stack_id[fired(&u)[0]], id, "a second note is a second stack");
     }
 
@@ -1112,12 +1208,12 @@ mod tests {
     fn a_steal_releases_the_whole_victim_stack() {
         let mut v = Voices::default();
         for i in 0..(N / 8) {
-            v.note_on_stack(0, 60 + i as u8, 1.0, 8, VoiceMode::Poly, 10.0, false);
+            v.note_on_stack(0, 60 + i as u8, 1.0, voicing(8, VoiceMode::Poly, 10.0, false));
         }
         assert!((0..N).all(|i| v.gate[i]), "the pool must start fully held");
 
         // Width drops to 4, so the next note wants half of a victim's lanes.
-        v.note_on_stack(0, 90, 1.0, 4, VoiceMode::Poly, 10.0, false);
+        v.note_on_stack(0, 90, 1.0, voicing(4, VoiceMode::Poly, 10.0, false));
 
         assert!(
             (0..N).all(|i| !(v.gate[i] && v.note[i] == 60)),
@@ -1144,9 +1240,9 @@ mod tests {
     fn surplus_lanes_of_a_stolen_stack_ring_out_rather_than_being_cut() {
         let mut v = Voices::default();
         for i in 0..(N / 8) {
-            v.note_on_stack(0, 60 + i as u8, 1.0, 8, VoiceMode::Poly, 10.0, false);
+            v.note_on_stack(0, 60 + i as u8, 1.0, voicing(8, VoiceMode::Poly, 10.0, false));
         }
-        v.note_on_stack(0, 90, 1.0, 4, VoiceMode::Poly, 10.0, false);
+        v.note_on_stack(0, 90, 1.0, voicing(4, VoiceMode::Poly, 10.0, false));
 
         let ringing: Vec<usize> =
             (0..N).filter(|&i| v.note[i] == 60 && v.active[i] && !v.gate[i]).collect();
@@ -1158,9 +1254,9 @@ mod tests {
     #[test]
     fn releasing_a_note_frees_every_lane_of_its_stack() {
         let mut v = Voices::default();
-        v.note_on_stack(0, 60, 1.0, 8, VoiceMode::Poly, 10.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(8, VoiceMode::Poly, 10.0, false));
         assert_eq!((0..N).filter(|&i| v.gate[i]).count(), 8);
-        v.note_off_stack(0, 60, 8, VoiceMode::Poly, 10.0, false);
+        v.note_off_stack(0, 60, voicing(8, VoiceMode::Poly, 10.0, false));
         assert!((0..N).all(|i| !v.gate[i]), "every lane of the stack must release");
     }
 
@@ -1171,9 +1267,9 @@ mod tests {
     fn uniform_widths_steal_exactly_as_the_lane_policy_did() {
         let mut v = Voices::default();
         for i in 0..N {
-            v.note_on_stack(0, 24 + i as u8, 1.0, 1, VoiceMode::Poly, 0.0, false);
+            v.note_on_stack(0, 24 + i as u8, 1.0, voicing(1, VoiceMode::Poly, 0.0, false));
         }
-        let t = v.note_on_stack(0, 120, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        let t = v.note_on_stack(0, 120, 1.0, voicing(1, VoiceMode::Poly, 0.0, false));
         assert_eq!(fired(&t), vec![0], "the oldest lane is still the steal target");
     }
 
@@ -1183,10 +1279,10 @@ mod tests {
     #[test]
     fn a_width_change_leaves_held_stacks_alone() {
         let mut v = Voices::default();
-        v.note_on_stack(0, 60, 1.0, 4, VoiceMode::Poly, 10.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(4, VoiceMode::Poly, 10.0, false));
         let before: Vec<u8> = (0..4).map(|i| v.note[i]).collect();
         // Next note arrives at a different width; the held stack is untouched.
-        v.note_on_stack(0, 67, 1.0, 2, VoiceMode::Poly, 10.0, false);
+        v.note_on_stack(0, 67, 1.0, voicing(2, VoiceMode::Poly, 10.0, false));
         let after: Vec<u8> = (0..4).map(|i| v.note[i]).collect();
         assert_eq!(before, after, "the held 4-lane stack must keep its lanes");
     }
@@ -1194,7 +1290,7 @@ mod tests {
     #[test]
     fn poly_places_one_undetuned_voice() {
         let mut v = Voices::new();
-        let t = v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 50.0, false);
+        let t = v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 50.0, false));
         assert_eq!(fired(&t).len(), 1);
         assert_eq!(v.detune_cents[t.as_slice()[0].voice], 0.0);
         assert_eq!(v.level_comp(), 1.0);
@@ -1203,7 +1299,7 @@ mod tests {
     #[test]
     fn unison_stacks_every_lane_fanned_across_the_detune() {
         let mut v = Voices::new();
-        let t = v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 50.0, false);
+        let t = v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 50.0, false));
         assert_eq!(fired(&t).len(), N, "Unison triggers all 16 lanes");
         // Symmetric fan spanning the full ±detune, and every lane on the note.
         assert!((v.detune_cents[0] + 50.0).abs() < 1e-4);
@@ -1216,7 +1312,7 @@ mod tests {
     #[test]
     fn unison_start_phases_are_random_and_distinct() {
         let mut v = Voices::new();
-        let t = v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 12.0, false);
+        let t = v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 12.0, false));
         let phases: Vec<f32> = t.as_slice().iter().map(|x| x.start_phase.unwrap()).collect();
         assert!(phases.iter().all(|&p| (0.0..1.0).contains(&p)));
         assert!(
@@ -1225,10 +1321,147 @@ mod tests {
         );
     }
 
+    /// 0284: the depth knob scales the draw, it does not replace it. At 1.0 the
+    /// phases are the ones the pre-0284 engine produced from the same seed, and
+    /// at 0.0 the whole stack starts coherent.
+    #[test]
+    fn stack_phase_depth_scales_the_start_phase_draw() {
+        let full: Vec<f32> = {
+            let mut v = Voices::new();
+            let t = v.note_on_stack(0, 60, 1.0, voicing(8, VoiceMode::Poly, 12.0, false));
+            t.as_slice().iter().map(|x| x.start_phase.unwrap()).collect()
+        };
+
+        let mut v = Voices::new();
+        let half = StackVoicing { phase: 0.5, ..voicing(8, VoiceMode::Poly, 12.0, false) };
+        let t = v.note_on_stack(0, 60, 1.0, half);
+        let scaled: Vec<f32> = t.as_slice().iter().map(|x| x.start_phase.unwrap()).collect();
+        assert_eq!(scaled.len(), full.len());
+        for (s, f) in scaled.iter().zip(&full) {
+            assert!((s - f * 0.5).abs() < 1e-6, "half depth must halve the draw");
+        }
+
+        let mut v = Voices::new();
+        let none = StackVoicing { phase: 0.0, ..voicing(8, VoiceMode::Poly, 12.0, false) };
+        let t = v.note_on_stack(0, 60, 1.0, none);
+        assert!(
+            t.as_slice().iter().all(|x| x.start_phase == Some(0.0)),
+            "depth 0 must start every lane of the stack coherent"
+        );
+    }
+
+    /// The knob must not perturb the stream: two phrases played at different
+    /// depths draw the same underlying sequence, so a patch tweak cannot change
+    /// which random values a later note lands on.
+    #[test]
+    fn stack_phase_depth_does_not_shift_the_random_stream() {
+        let draws = |depth: f32| {
+            let mut v = Voices::new();
+            let mut out = Vec::new();
+            for note in [60_u8, 64, 67] {
+                let t = v.note_on_stack(
+                    0,
+                    note,
+                    1.0,
+                    StackVoicing { phase: depth, ..voicing(4, VoiceMode::Poly, 12.0, false) },
+                );
+                out.extend(t.as_slice().iter().map(|x| x.start_phase.unwrap() / depth));
+            }
+            out
+        };
+        let a = draws(1.0);
+        let b = draws(0.25);
+        assert_eq!(a.len(), 12);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-6, "the draw sequence must not depend on depth");
+        }
+    }
+
+    /// Width 1 has no stack to decorrelate, so it keeps deferring to the bank's
+    /// deterministic `lane_phase` whatever the depth reads.
+    #[test]
+    fn stack_phase_is_inert_at_width_one() {
+        for depth in [0.0, 0.5, 1.0] {
+            let mut v = Voices::new();
+            let t = v.note_on_stack(
+                0,
+                60,
+                1.0,
+                StackVoicing { phase: depth, ..voicing(1, VoiceMode::Poly, 0.0, false) },
+            );
+            assert_eq!(t.as_slice()[0].start_phase, None, "depth {depth}");
+        }
+    }
+
+    /// 0284's layout laws, judged on the positions they hand the fan. Linear is
+    /// the pre-existing even comb; Geometric keeps the edges and pulls the inner
+    /// lanes in; Random fills the span without ordering.
+    #[test]
+    fn stack_distrib_laws_lay_the_lanes_out_differently() {
+        let pos_for = |distrib| {
+            let mut v = Voices::new();
+            let t = v.note_on_stack(
+                0,
+                60,
+                1.0,
+                StackVoicing { distrib, ..voicing(8, VoiceMode::Poly, 0.0, false) },
+            );
+            fired(&t).iter().map(|&l| v.stack_pos[l]).collect::<Vec<f32>>()
+        };
+
+        let lin = pos_for(StackDistrib::Linear);
+        for (i, p) in lin.iter().enumerate() {
+            assert!((p - stack_spread(i, 8)).abs() < 1e-6);
+        }
+
+        let geo = pos_for(StackDistrib::Geometric);
+        // Same edges — the span is the law's, not the width's.
+        assert!((geo[0] + 1.0).abs() < 1e-6);
+        assert!((geo[7] - 1.0).abs() < 1e-6);
+        assert!(geo.windows(2).all(|w| w[1] > w[0]), "still monotone");
+        // Every interior lane sits further out than Linear put it (|t|^0.5 > |t|
+        // for |t| < 1), which is what "denser at the edges" means for the fan.
+        for i in 1..7 {
+            assert!(
+                geo[i].abs() > lin[i].abs() - 1e-6,
+                "lane {i}: geo {} vs lin {}",
+                geo[i],
+                lin[i]
+            );
+        }
+
+        let rnd = pos_for(StackDistrib::Random);
+        assert!(rnd.iter().all(|p| (-1.0..1.0).contains(p)));
+        assert!(
+            rnd.windows(2).any(|w| w[1] < w[0]),
+            "a random layout must not come out ordered"
+        );
+    }
+
+    /// The Random layout draws from its own stream, so playing under it cannot
+    /// shift the start phases or the humanisation values a later note sees.
+    #[test]
+    fn random_distrib_does_not_disturb_the_other_streams() {
+        let phases = |distrib| {
+            let mut v = Voices::new();
+            let t = v.note_on_stack(
+                0,
+                60,
+                1.0,
+                StackVoicing { distrib, ..voicing(4, VoiceMode::Poly, 0.0, false) },
+            );
+            let lanes = fired(&t);
+            let ph: Vec<f32> = t.as_slice().iter().map(|x| x.start_phase.unwrap()).collect();
+            let nr: Vec<f32> = lanes.iter().map(|&l| v.note_random[l]).collect();
+            (ph, nr)
+        };
+        assert_eq!(phases(StackDistrib::Linear), phases(StackDistrib::Random));
+    }
+
     #[test]
     fn twin_places_two_voices_at_the_fan_extremes() {
         let mut v = Voices::new();
-        let t = v.note_on_stack(0, 60, 1.0, 2, VoiceMode::Poly, 20.0, false);
+        let t = v.note_on_stack(0, 60, 1.0, voicing(2, VoiceMode::Poly, 20.0, false));
         let lanes = fired(&t);
         assert_eq!(lanes.len(), 2);
         assert_ne!(lanes[0], lanes[1], "Twin must use two distinct voices");
@@ -1240,8 +1473,8 @@ mod tests {
     #[test]
     fn solo_pins_lane_zero_and_quiesces_the_rest() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 30.0, false);
-        let t = v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Solo, 30.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 30.0, false));
+        let t = v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Solo, 30.0, false));
         assert_eq!(fired(&t), vec![0]);
         assert_eq!(v.detune_cents[0], 0.0, "Solo is undetuned");
         assert!((1..N).all(|i| !v.gate[i]), "the ex-Unison lanes release");
@@ -1251,31 +1484,31 @@ mod tests {
     #[test]
     fn detune_zero_leaves_the_stack_in_unison() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 0.0, false));
         assert!(v.detune_cents.iter().all(|&d| d == 0.0));
     }
 
     #[test]
     fn mono_release_reveals_the_note_beneath() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Solo, 0.0, false);
-        v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Solo, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
+        v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
         // Releasing the sounding (newest) note falls back to the held one.
-        let t = v.note_off_stack(0, 64, 1, VoiceMode::Solo, 0.0, false);
+        let t = v.note_off_stack(0, 64, voicing(1, VoiceMode::Solo, 0.0, false));
         assert_eq!(fired(&t), vec![0], "revert re-articulates without legato");
         assert_eq!(v.note[0], 60);
         assert!(v.gate[0]);
         // Releasing the last note gates off.
-        v.note_off_stack(0, 60, 1, VoiceMode::Solo, 0.0, false);
+        v.note_off_stack(0, 60, voicing(1, VoiceMode::Solo, 0.0, false));
         assert!(!v.gate[0]);
     }
 
     #[test]
     fn releasing_a_buried_note_leaves_the_sounding_one_alone() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Solo, 0.0, false);
-        v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Solo, 0.0, false);
-        let t = v.note_off_stack(0, 60, 1, VoiceMode::Solo, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
+        v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
+        let t = v.note_off_stack(0, 60, voicing(1, VoiceMode::Solo, 0.0, false));
         assert!(fired(&t).is_empty());
         assert_eq!(v.note[0], 64, "the top of the stack still sounds");
         assert!(v.gate[0]);
@@ -1284,10 +1517,10 @@ mod tests {
     #[test]
     fn legato_slides_instead_of_retriggering() {
         let mut v = Voices::new();
-        let first = v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Solo, 0.0, true);
+        let first = v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Solo, 0.0, true));
         assert_eq!(fired(&first), vec![0], "the first note always articulates");
         let latched = v.note_random(0);
-        let second = v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Solo, 0.0, true);
+        let second = v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Solo, 0.0, true));
         assert!(fired(&second).is_empty(), "a slur must not retrigger");
         assert_eq!(v.note[0], 64, "but it does re-point the pitch");
         assert_eq!(v.note_random(0), latched, "a slide keeps the latched humanisation");
@@ -1296,8 +1529,8 @@ mod tests {
     #[test]
     fn legato_slide_restamps_the_unison_fan() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 40.0, true);
-        v.note_on_stack(0, 64, 1.0, N, VoiceMode::Solo, 40.0, true);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 40.0, true));
+        v.note_on_stack(0, 64, 1.0, voicing(N, VoiceMode::Solo, 40.0, true));
         assert!((v.detune_cents[N - 1] - 40.0).abs() < 1e-4, "fan survives the slur");
         assert!((0..N).all(|i| v.note[i] == 64));
     }
@@ -1305,9 +1538,9 @@ mod tests {
     #[test]
     fn entering_a_mono_mode_releases_held_poly_voices() {
         let mut v = Voices::new();
-        let a = v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 0.0, false).as_slice()[0].voice;
-        let b = v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Poly, 0.0, false).as_slice()[0].voice;
-        v.note_on_stack(0, 67, 1.0, N, VoiceMode::Solo, 0.0, false);
+        let a = v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 0.0, false)).as_slice()[0].voice;
+        let b = v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Poly, 0.0, false)).as_slice()[0].voice;
+        v.note_on_stack(0, 67, 1.0, voicing(N, VoiceMode::Solo, 0.0, false));
         // The poly holds are released, not stranded gated-on. (Lane 0/1 may be
         // re-taken by the Unison stack, which re-gates them on the new note.)
         assert!([a, b].iter().all(|&i| v.note[i] == 67 || !v.gate[i]));
@@ -1318,8 +1551,8 @@ mod tests {
         // A note placed under Poly isn't on the mono stack; releasing it under a
         // mono mode must fall back to the poly path rather than strand it.
         let mut v = Voices::new();
-        let a = v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 0.0, false).as_slice()[0].voice;
-        v.note_off_stack(0, 60, N, VoiceMode::Solo, 0.0, false);
+        let a = v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 0.0, false)).as_slice()[0].voice;
+        v.note_off_stack(0, 60, voicing(N, VoiceMode::Solo, 0.0, false));
         assert!(!v.gate[a]);
     }
 
@@ -1327,7 +1560,7 @@ mod tests {
     fn mono_stack_survives_overflow() {
         let mut v = Voices::new();
         for i in 0..(MONO_STACK + 4) {
-            v.note_on_stack(0, 40 + i as u8, 1.0, 1, VoiceMode::Solo, 0.0, false);
+            v.note_on_stack(0, 40 + i as u8, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
         }
         assert_eq!(v.mono_len, MONO_STACK);
         // The newest note still sounds and the stack is intact enough to unwind.
@@ -1337,22 +1570,22 @@ mod tests {
     #[test]
     fn repeating_a_held_note_moves_it_to_the_top() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Solo, 0.0, false);
-        v.note_on_stack(0, 64, 1.0, 1, VoiceMode::Solo, 0.0, false);
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Solo, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
+        v.note_on_stack(0, 64, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Solo, 0.0, false));
         assert_eq!(v.mono_len, 2, "no duplicate entry");
-        v.note_off_stack(0, 60, 1, VoiceMode::Solo, 0.0, false);
+        v.note_off_stack(0, 60, voicing(1, VoiceMode::Solo, 0.0, false));
         assert_eq!(v.note[0], 64);
     }
 
     #[test]
     fn level_comp_shrinks_with_stack_width() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, 1, VoiceMode::Poly, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(1, VoiceMode::Poly, 0.0, false));
         let poly = v.level_comp();
-        v.note_on_stack(0, 60, 1.0, 2, VoiceMode::Poly, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(2, VoiceMode::Poly, 0.0, false));
         let twin = v.level_comp();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 0.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 0.0, false));
         let uni = v.level_comp();
         assert!(poly > twin && twin > uni, "poly {poly} twin {twin} unison {uni}");
     }
@@ -1360,7 +1593,7 @@ mod tests {
     #[test]
     fn reset_clears_detune_and_the_mono_stack() {
         let mut v = Voices::new();
-        v.note_on_stack(0, 60, 1.0, N, VoiceMode::Solo, 50.0, false);
+        v.note_on_stack(0, 60, 1.0, voicing(N, VoiceMode::Solo, 50.0, false));
         v.reset();
         assert!(v.detune_cents.iter().all(|&d| d == 0.0));
         assert_eq!(v.mono_len, 0);

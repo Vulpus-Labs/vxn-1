@@ -260,28 +260,46 @@ __CSS__
        controls make better use of. -->
   <div class="row row-layer-3" data-row="3">
     <!-- Voice (0045, 0266, + Cross Mod 0242/0282): the two orthogonal halves of
-         the old AssignMode —
-         Width (lanes per note, 1–16) as a button group, and Voice (Poly/Solo)
-         as a switch beside it. Detune fans the stack across its full 0–50 ct at
-         every width, with the Legato toggle drawn beneath the fader (Legato
-         only bites in Solo, so the composite dims it in Poly). Glide fader
-         (0 = off); Spread fader. Legato is *not* its own column — the
-         detune-legato primitive handles both params. -->
+         the old AssignMode — Width (lanes per note) as a button group and Voice
+         (Poly/Solo) as a rocker under it, with Legato under that; the three read
+         as one group because they answer one question. Legato only bites in
+         Solo, so a `legato-poly` dim rule greys it under Poly — it used to be
+         drawn by a Detune+Legato composite that existed for no other reason.
+         Detune fans the stack across its full 0–50 ct at every width; Glide
+         (0 = off), Spread, and 0284's Phase + Distrib are plain faders. -->
     <div class="panel" data-name="Voice" data-layered>
       <div class="panel-header">VOICE</div>
       <div class="panel-body">
-        <!-- Voice mode, then Width. Six widths in a single vertical list is
-             taller than the panel, so the button group runs in TWO columns
-             (`data-columns="2"`, filled column-major: 1/2/4 then 8/16/32) —
-             which also reads as what it is, a doubling scale. Poly/Solo leads
-             the panel as its own column: it is the other half of the same
-             decision, and a rocker beside a checkbox list can't be misread as
-             a seventh width the way a stack of the two invited. -->
-        <div class="ctl-strip voice-mode" data-control="rocker" data-param="voice_mode"></div>
-        <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width" data-columns="2"></div>
-        <div class="ctl" data-control="detune-legato" data-param="unison_detune" data-label="Detune" data-legato-param="legato" data-mode-param="voice_mode"></div>
+        <!-- The voice-allocation stack: Width, then how it is played. Six
+             widths in a single vertical list is taller than the panel, so the
+             button group runs in TWO ROWS of three, read across
+             (`data-columns="3" data-flow="row"`: 1 · 2 · 4 over 8 · 16 · 32) —
+             which also reads as what it is, a doubling scale.
+             Poly/Solo and Legato sit under it in the same column rather than
+             beside it: all three answer "how does a note take lanes", and the
+             rocker laid out horizontally spans the two width columns, which
+             groups them visually without a rule. The rocker is horizontal here
+             and vertical everywhere else (`data-orient="h"`) precisely because
+             it is the one that has a width to span. -->
+        <div class="ctl-col voice-stack">
+          <div class="ctl" data-control="buttongroup" data-param="stack_width" data-label="Width" data-columns="3" data-flow="row"></div>
+          <div class="ctl-strip voice-mode" data-control="rocker" data-param="voice_mode" data-orient="h"></div>
+          <div class="ctl-strip voice-legato" data-control="switch" data-param="legato" data-label="Legato"></div>
+        </div>
+        <div class="ctl" data-control="fader" data-param="unison_detune" data-label="Detune"></div>
         <div class="ctl" data-control="fader" data-param="portamento_time" data-label="Glide"></div>
         <div class="ctl" data-control="fader" data-param="spread" data-label="Spread"></div>
+        <!-- Stack voicing (0284). Phase scales the per-lane random start phase a
+             stacked note takes: 0 starts the copies coherent, 1 is the full
+             scatter the engine used to hardwire (hence the default). It dims
+             when BOTH oscillators free-run — a free-running oscillator ignores
+             the stamped start phase, so with both on nothing consumes the value;
+             one on and one off leaves it live on the locked oscillator.
+             Distrib is the layout law for the lane positions that drive the
+             detune fan and, via Spread, the stereo fan — VXN2's Linear /
+             Geometric / Random. -->
+        <div class="ctl" data-control="fader" data-param="stack_phase" data-label="Phase"></div>
+        <div class="ctl" data-control="buttongroup" data-param="stack_distrib" data-label="Distrib"></div>
         <!-- Cross Mod (0242), folded in here by 0282. Still patch topology —
              how the two oscillators are wired to each other, not a modulation
              depth — which is why it is on the faceplate and not in the matrix

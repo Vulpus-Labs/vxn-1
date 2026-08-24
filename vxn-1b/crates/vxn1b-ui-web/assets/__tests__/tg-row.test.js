@@ -33,7 +33,7 @@ describe('tgRow — standalone form', () => {
 describe('tgRow — mount form', () => {
   it('returns the supplied target and fills it in place', () => {
     const target = document.createElement('div');
-    target.className = 'ctl-detune-legato ctl-tg-row';
+    target.className = 'voice-legato ctl-tg-row';
     document.body.appendChild(target);
     const result = tgRow('legato', { mount: target });
     expect(result).toBe(target);
@@ -43,8 +43,8 @@ describe('tgRow — mount form', () => {
 
   it('does not overwrite the target\'s class (caller\'s classes apply)', () => {
     const target = document.createElement('div');
-    target.className = 'ctl-detune-legato ctl-tg-row';
+    target.className = 'voice-legato ctl-tg-row';
     tgRow('legato', { mount: target });
-    expect(target.className).toBe('ctl-detune-legato ctl-tg-row');
+    expect(target.className).toBe('voice-legato ctl-tg-row');
   });
 });

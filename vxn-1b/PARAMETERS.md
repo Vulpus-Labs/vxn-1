@@ -7,7 +7,7 @@ cargo run --release --example gen_parameters_doc -p vxn1b-engine \
   > vxn-1b/PARAMETERS.md
 ```
 
-The host sees **181 parameters**: 73 patch params per layer × 2, plus 35 globals shared by both layers. A Layer 1 control and its Layer 2 twin are separate automation targets; Layer 2's CLAP id is its Layer 1 id + 73.
+The host sees **185 parameters**: 75 patch params per layer × 2, plus 35 globals shared by both layers. A Layer 1 control and its Layer 2 twin are separate automation targets; Layer 2's CLAP id is its Layer 1 id + 75.
 
 Columns:
 
@@ -118,27 +118,29 @@ Each of these exists twice — once for Layer 1, once for Layer 2 — with indep
 | 54 | `unison_detune` | Detune | f | 0 .. 50 ct | 12 ct |
 | 55 | `portamento_time` | Glide Time | f | 0 .. 0.5 s *(exp, mid 0.1)* | 0 s |
 | 56 | `spread` | Spread | f | 0 .. 1 | 0 |
+| 57 | `stack_phase` | Phase | f | 0 .. 1 | 1 |
+| 58 | `stack_distrib` | Distrib | e {Lin, Geo, Rnd} | 3 variants | `Lin` |
 
 ### Mod-matrix depths
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 57 | `matrix_slot0_depth` | Slot 1 Depth | f | -1 .. 1 | 0 |
-| 58 | `matrix_slot1_depth` | Slot 2 Depth | f | -1 .. 1 | 0 |
-| 59 | `matrix_slot2_depth` | Slot 3 Depth | f | -1 .. 1 | 0 |
-| 60 | `matrix_slot3_depth` | Slot 4 Depth | f | -1 .. 1 | 0 |
-| 61 | `matrix_slot4_depth` | Slot 5 Depth | f | -1 .. 1 | 0 |
-| 62 | `matrix_slot5_depth` | Slot 6 Depth | f | -1 .. 1 | 0 |
-| 63 | `matrix_slot6_depth` | Slot 7 Depth | f | -1 .. 1 | 0 |
-| 64 | `matrix_slot7_depth` | Slot 8 Depth | f | -1 .. 1 | 0 |
-| 65 | `matrix_slot8_depth` | Slot 9 Depth | f | -1 .. 1 | 0 |
-| 66 | `matrix_slot9_depth` | Slot 10 Depth | f | -1 .. 1 | 0 |
-| 67 | `matrix_slot10_depth` | Slot 11 Depth | f | -1 .. 1 | 0 |
-| 68 | `matrix_slot11_depth` | Slot 12 Depth | f | -1 .. 1 | 0 |
-| 69 | `matrix_slot12_depth` | Slot 13 Depth | f | -1 .. 1 | 0 |
-| 70 | `matrix_slot13_depth` | Slot 14 Depth | f | -1 .. 1 | 0 |
-| 71 | `matrix_slot14_depth` | Slot 15 Depth | f | -1 .. 1 | 0 |
-| 72 | `matrix_slot15_depth` | Slot 16 Depth | f | -1 .. 1 | 0 |
+| 59 | `matrix_slot0_depth` | Slot 1 Depth | f | -1 .. 1 | 0 |
+| 60 | `matrix_slot1_depth` | Slot 2 Depth | f | -1 .. 1 | 0 |
+| 61 | `matrix_slot2_depth` | Slot 3 Depth | f | -1 .. 1 | 0 |
+| 62 | `matrix_slot3_depth` | Slot 4 Depth | f | -1 .. 1 | 0 |
+| 63 | `matrix_slot4_depth` | Slot 5 Depth | f | -1 .. 1 | 0 |
+| 64 | `matrix_slot5_depth` | Slot 6 Depth | f | -1 .. 1 | 0 |
+| 65 | `matrix_slot6_depth` | Slot 7 Depth | f | -1 .. 1 | 0 |
+| 66 | `matrix_slot7_depth` | Slot 8 Depth | f | -1 .. 1 | 0 |
+| 67 | `matrix_slot8_depth` | Slot 9 Depth | f | -1 .. 1 | 0 |
+| 68 | `matrix_slot9_depth` | Slot 10 Depth | f | -1 .. 1 | 0 |
+| 69 | `matrix_slot10_depth` | Slot 11 Depth | f | -1 .. 1 | 0 |
+| 70 | `matrix_slot11_depth` | Slot 12 Depth | f | -1 .. 1 | 0 |
+| 71 | `matrix_slot12_depth` | Slot 13 Depth | f | -1 .. 1 | 0 |
+| 72 | `matrix_slot13_depth` | Slot 14 Depth | f | -1 .. 1 | 0 |
+| 73 | `matrix_slot14_depth` | Slot 15 Depth | f | -1 .. 1 | 0 |
+| 74 | `matrix_slot15_depth` | Slot 16 Depth | f | -1 .. 1 | 0 |
 
 ## Global parameters
 
@@ -148,71 +150,71 @@ One instance each, applied to both layers: tuning, master level, the limiter, ov
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 146 | `pitch_bend_range` | Bend Range | f | 0 .. 12 st | 2 st |
+| 150 | `pitch_bend_range` | Bend Range | f | 0 .. 12 st | 2 st |
 
 ### Master
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 147 | `master_tune` | Master Tune | f | -12 .. 12 st | 0 st |
-| 148 | `master_volume` | Volume | f | 0 .. 1 | 0.7 |
-| 149 | `master_drift` | Drift | f | 0 .. 1 | 0 |
-| 150 | `limiter_on` | Limiter | b | off / on | off |
-| 151 | `oversample` | Oversample | e {O/S OFF, 2x, 4x, 8x} | 4 variants | `2x` |
+| 151 | `master_tune` | Master Tune | f | -12 .. 12 st | 0 st |
+| 152 | `master_volume` | Volume | f | 0 .. 1 | 0.7 |
+| 153 | `master_drift` | Drift | f | 0 .. 1 | 0 |
+| 154 | `limiter_on` | Limiter | b | off / on | off |
+| 155 | `oversample` | Oversample | e {O/S OFF, 2x, 4x, 8x} | 4 variants | `2x` |
 
 ### Chorus
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 152 | `chorus_on` | Chorus | b | off / on | off |
-| 153 | `chorus_rate` | Chorus Rate | f | 0.05 .. 8 Hz | 0.6 Hz |
-| 154 | `chorus_depth` | Chorus Depth | f | 0 .. 1 | 0.5 |
-| 155 | `chorus_mix` | Chorus Mix | f | 0 .. 1 | 0.4 |
+| 156 | `chorus_on` | Chorus | b | off / on | off |
+| 157 | `chorus_rate` | Chorus Rate | f | 0.05 .. 8 Hz | 0.6 Hz |
+| 158 | `chorus_depth` | Chorus Depth | f | 0 .. 1 | 0.5 |
+| 159 | `chorus_mix` | Chorus Mix | f | 0 .. 1 | 0.4 |
 
 ### Phaser
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 156 | `phaser_on` | Phaser | b | off / on | off |
-| 157 | `phaser_rate` | Phaser Rate | f | 0.05 .. 10 Hz *(exp, mid 1)* | 0.5 Hz |
-| 158 | `phaser_depth` | Phaser Depth | f | 0 .. 1 | 0.7 |
-| 159 | `phaser_fb` | Phaser FB | f | -0.9 .. 0.9 | 0 |
-| 160 | `phaser_mix` | Phaser Mix | f | 0 .. 1 | 0.5 |
-| 161 | `phaser_stereo` | Phaser Stereo | f | 0 .. 180 ° | 180 ° |
+| 160 | `phaser_on` | Phaser | b | off / on | off |
+| 161 | `phaser_rate` | Phaser Rate | f | 0.05 .. 10 Hz *(exp, mid 1)* | 0.5 Hz |
+| 162 | `phaser_depth` | Phaser Depth | f | 0 .. 1 | 0.7 |
+| 163 | `phaser_fb` | Phaser FB | f | -0.9 .. 0.9 | 0 |
+| 164 | `phaser_mix` | Phaser Mix | f | 0 .. 1 | 0.5 |
+| 165 | `phaser_stereo` | Phaser Stereo | f | 0 .. 180 ° | 180 ° |
 
 ### Delay
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 162 | `delay_on` | Delay | b | off / on | off |
-| 163 | `delay_time` | Delay Time | f | 0.01 .. 2 s | 0.35 s |
-| 164 | `delay_feedback` | Delay FB | f | 0 .. 0.95 | 0.4 |
-| 165 | `delay_mix` | Delay Mix | f | 0 .. 1 | 0.25 |
-| 166 | `delay_sync` | Delay Sync | b | off / on | off |
-| 167 | `delay_pingpong` | Ping-Pong | b | off / on | on |
+| 166 | `delay_on` | Delay | b | off / on | off |
+| 167 | `delay_time` | Delay Time | f | 0.01 .. 2 s | 0.35 s |
+| 168 | `delay_feedback` | Delay FB | f | 0 .. 0.95 | 0.4 |
+| 169 | `delay_mix` | Delay Mix | f | 0 .. 1 | 0.25 |
+| 170 | `delay_sync` | Delay Sync | b | off / on | off |
+| 171 | `delay_pingpong` | Ping-Pong | b | off / on | on |
 
 ### Reverb
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 168 | `reverb_on` | Reverb | b | off / on | off |
-| 169 | `reverb_size` | Reverb Size | f | 0 .. 1 | 0.5 |
-| 170 | `reverb_decay` | Reverb Decay | f | 0.2 .. 10 s *(exp, mid 2)* | 2.5 s |
-| 171 | `reverb_damp` | Reverb Damp | f | 0 .. 1 | 0.4 |
-| 172 | `reverb_mix` | Reverb Mix | f | 0 .. 1 | 0.3 |
+| 172 | `reverb_on` | Reverb | b | off / on | off |
+| 173 | `reverb_size` | Reverb Size | f | 0 .. 1 | 0.5 |
+| 174 | `reverb_decay` | Reverb Decay | f | 0.2 .. 10 s *(exp, mid 2)* | 2.5 s |
+| 175 | `reverb_damp` | Reverb Damp | f | 0 .. 1 | 0.4 |
+| 176 | `reverb_mix` | Reverb Mix | f | 0 .. 1 | 0.3 |
 
 ### Dynamics
 
 | CLAP id | Name | Label | Type | Range | Default |
 |--------:|------|-------|------|-------|---------|
-| 173 | `dynamics_on` | Dynamics | b | off / on | off |
-| 174 | `dynamics_threshold` | Dyn Threshold | f | -60 .. 0 dB | -12 dB |
-| 175 | `dynamics_ratio` | Dyn Ratio | f | 1 .. 20 | 4 |
-| 176 | `dynamics_attack` | Dyn Attack | f | 0.1 .. 200 ms *(exp, mid 10)* | 10 ms |
-| 177 | `dynamics_release` | Dyn Release | f | 5 .. 1000 ms *(exp, mid 100)* | 100 ms |
-| 178 | `dynamics_makeup` | Dyn Makeup | f | 0 .. 24 dB | 0 dB |
-| 179 | `dynamics_drive` | Dyn Drive | f | 0 .. 36 dB | 0 dB |
-| 180 | `dynamics_mix` | Dyn Mix | f | 0 .. 1 | 1 |
+| 177 | `dynamics_on` | Dynamics | b | off / on | off |
+| 178 | `dynamics_threshold` | Dyn Threshold | f | -60 .. 0 dB | -12 dB |
+| 179 | `dynamics_ratio` | Dyn Ratio | f | 1 .. 20 | 4 |
+| 180 | `dynamics_attack` | Dyn Attack | f | 0.1 .. 200 ms *(exp, mid 10)* | 10 ms |
+| 181 | `dynamics_release` | Dyn Release | f | 5 .. 1000 ms *(exp, mid 100)* | 100 ms |
+| 182 | `dynamics_makeup` | Dyn Makeup | f | 0 .. 24 dB | 0 dB |
+| 183 | `dynamics_drive` | Dyn Drive | f | 0 .. 36 dB | 0 dB |
+| 184 | `dynamics_mix` | Dyn Mix | f | 0 .. 1 | 1 |
 
 ## Mod matrix
 

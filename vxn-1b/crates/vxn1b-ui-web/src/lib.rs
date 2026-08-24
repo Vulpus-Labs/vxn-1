@@ -693,10 +693,9 @@ mod tests {
             ".ctl-label",
             ".ctl-dropdown",
             ".dial-grid",
-            // Composite + state classes. `.dimmed` is only ever compounded
+            // Stacked-column + state classes. `.dimmed` is only ever compounded
             // onto a cell, so assert the real head rather than a bare class.
-            ".ctl-detune",
-            ".ctl-detune-legato",
+            ".ctl-col",
             ".ctl.dimmed",
             "[data-layer2-gated].dimmed",
             // Meters (0240/0241).

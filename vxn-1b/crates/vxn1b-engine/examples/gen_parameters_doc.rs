@@ -35,7 +35,7 @@ const PATCH_GROUPS: &[Group] = &[
     ("Layer mix", 4),
     ("LFO 1", 6),
     ("LFO 2", 3),
-    ("Voice", 6),
+    ("Voice", 8),
     ("Mod-matrix depths", 16),
 ];
 

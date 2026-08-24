@@ -1,15 +1,14 @@
 // panels/fader.js — the continuous / fader-family controls: the vertical
-// fader, the LFO-rate subdivision label, the rotary waveform knob, and the
-// Detune+Legato composite, plus the waveform glyph polylines they draw.
+// fader, the LFO-rate subdivision label, the rotary waveform knob and the
+// bipolar dial, plus the waveform glyph polylines they draw.
 //
 // `import` lines are dropped by the splice loader (the shared bindings ride
 // the bridge slot; the sibling helpers are concatenated in the same scope);
 // under Node ESM they resolve so the suites can pull these in via the
-// `../panels.js` barrel. `variantIdx` is a concat-global from dispatch.js
-// (referenced only inside `makeDetuneLegato`, at editor-ready time).
+// `../panels.js` barrel.
 import {
   paintFader, wireFaderDrag, attachValuePop, clampVariant,
-  PIXELS_PER_DETENT, KNOB_INDICATOR_TRANSITION_MS, tgRow,
+  PIXELS_PER_DETENT, KNOB_INDICATOR_TRANSITION_MS,
 } from '../util/drag.js';
 import { wireDrag } from '../../../../../crates/vxn-core-ui-web/assets/wire-drag.js';
 
@@ -45,12 +44,6 @@ export function glyphPath(label, w, h) {
 }
 
 // ─── Control primitives ────────────────────────────────────────────────────
-
-// Detune ceiling in Twin assign mode (cents). Twin's "useful" range is
-// Retired with the Twin assign mode (0266): detune runs the descriptor's full
-// range at every stack width now. Kept exported and unused-by-the-panel only
-// long enough for the suite that pins the old behaviour to be retired with it.
-export const TWIN_TOP_CT = 20.0;
 
 export function makeFader(el, id, desc, opts) {
   const noLabel = el.hasAttribute('data-no-label');
@@ -543,131 +536,6 @@ export function makeBipolar(el, id, desc) {
       paint(norm);
       lastDisplay = display;
       pop.refresh();
-    },
-  };
-}
-
-// ─── Detune + Legato composite (Voice panel, 0045) ─────────────────────────
-//
-// Two params + one watch in a single column: the Detune fader on top and the
-// Legato toggle beneath it, with the voice mode driving the hint (Legato only
-// bites in Solo, so it dims in Poly).
-//
-// The fader's full travel is the descriptor's own 0–50 ct at every width
-// (0266): VXN1's 20 ct ceiling existed because Twin was a fixed 2-lane mode
-// nobody chose, and with width an explicit control the player is entitled to
-// the whole range at any of them.
-//
-// `data-legato-param` / `data-mode-param` name the descriptor names this
-// cell pairs with; both are resolved per layer at bind time so a layer
-// rebind (0045) rebuilds the cell with the new ids.
-export function makeDetuneLegato(el, ids, descs, modeName, layer) {
-  const { detune, legato, mode } = ids;
-  const label = el.dataset.label || descs.detune.label;
-  el.classList.add('ctl-detune');
-  el.innerHTML =
-    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
-    '<div class="ctl-detune-body">' +
-      '<div class="ctl-fader">' +
-        '<div class="ctl-fader-track"></div>' +
-        '<div class="ctl-fader-thumb"></div>' +
-      '</div>' +
-      '<div class="ctl-detune-legato ctl-tg-row"></div>' +
-    '</div>';
-  const fader = el.querySelector('.ctl-fader');
-  const thumb = el.querySelector('.ctl-fader-thumb');
-  const legatoRow = el.querySelector('.ctl-detune-legato');
-  tgRow('LEGATO', { mount: legatoRow });
-
-  const DESC_TOP = descs.detune.max;
-  // Legato only applies in Solo. Found by name so a label reorder can't desync
-  // the index.
-  const lookupVariant = (name) => variantIdx(modeName, name, layer);
-  const MONO_IDXS = new Set();
-  ['Solo'].forEach((n) => {
-    const i = lookupVariant(n);
-    if (i >= 0) MONO_IDXS.add(i);
-  });
-
-  let lastDetunePlain = 0;
-  let lastModePlain = 0;
-
-  function currentTop() {
-    return DESC_TOP;
-  }
-  function setThumbFromPlain(plain) {
-    const top = currentTop();
-    paintFader(fader, thumb, top > 0 ? plain / top : 0);
-  }
-
-  let drag;
-  let lastDetuneDisplay = null;
-  const detuneLabel = () =>
-    lastDetuneDisplay || (lastDetunePlain.toFixed(1) + ' ct');
-  const pop = attachValuePop({
-    isHovered:  () => drag.isHovered(),
-    isDragging: () => drag.isDragging(),
-  }, detuneLabel);
-  drag = wireFaderDrag(fader, {
-    onEnter: (ev) => pop.markEntered(ev),
-    onLeave: () => pop.markLeft(),
-    onDown: (ev, n) => {
-      window.vxn.send.beginGesture(detune);
-      const plain = n * currentTop();
-      lastDetunePlain = plain;
-      lastDetuneDisplay = plain.toFixed(1) + ' ct';
-      setThumbFromPlain(plain);
-      window.vxn.send.setParam(detune, plain);
-      pop.markGrabbed(ev);
-    },
-    onMove: (_ev, n) => {
-      const plain = n * currentTop();
-      lastDetunePlain = plain;
-      lastDetuneDisplay = plain.toFixed(1) + ' ct';
-      setThumbFromPlain(plain);
-      window.vxn.send.setParam(detune, plain);
-      pop.refresh();
-    },
-    onUp: () => {
-      window.vxn.send.endGesture(detune);
-      pop.markReleased();
-    },
-  });
-
-  legatoRow.addEventListener('pointerdown', (ev) => {
-    ev.preventDefault();
-    const on = legatoRow.classList.contains('active') ? 0 : 1;
-    window.vxn.send.discrete(legato, on);
-  });
-  // Double-click resets the detune fader (descriptor default).
-  el.addEventListener('dblclick', (ev) => {
-    ev.preventDefault();
-    window.vxn.send.discrete(detune, descs.detune.default);
-  });
-
-  function applyLegatoDim() {
-    legatoRow.classList.toggle('disabled', !MONO_IDXS.has(Math.round(lastModePlain)));
-  }
-
-  return {
-    // The composite registers three model.controls entries (detune, legato, mode)
-    // pointing at three updater closures returned here — `init()` then
-    // routes each ParamChanged into the matching closure.
-    detuneUpdate(plain, _norm, display) {
-      lastDetunePlain = plain;
-      lastDetuneDisplay = display || (plain.toFixed(1) + ' ct');
-      setThumbFromPlain(plain);
-      pop.refresh();
-    },
-    legatoUpdate(plain) {
-      legatoRow.classList.toggle('active', plain >= 0.5);
-    },
-    modeUpdate(plain) {
-      // Voice mode only dims Legato now — there is no mode-dependent detune
-      // ceiling to re-clamp against (0266).
-      lastModePlain = plain;
-      setThumbFromPlain(lastDetunePlain);
-      applyLegatoDim();
     },
   };
 }

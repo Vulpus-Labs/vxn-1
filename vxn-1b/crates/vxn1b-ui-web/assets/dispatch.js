@@ -91,9 +91,9 @@ export function isLayeredEl(el) {
 // reads as "init builds the model; dispatch reads + mutates it" rather
 // than a dozen free-floating globals.
 export const model = {
-  // ParamChanged routing: id → [updater closures]. Composite cells
-  // (detune-legato) register secondary watchers on related ids; dispatch
-  // fans each echo out to every updater on the id.
+  // ParamChanged routing: id → [updater closures]. An id can carry more than
+  // one (Voice mode is painted by its rocker and watched by Legato's dim rule);
+  // dispatch fans each echo out to every updater on the id.
   controls: new Map(),
   // Last (plain, norm, display) seen per id. Sync-partner refresh /
   // dim refresh / layer rebind reseed from here.
@@ -183,12 +183,21 @@ export function locateSyncPartners(layer) {
 // Built-in dim specs that don't fit the HTML-attribute model (targets are
 // named params resolved at bind time, not DOM elements picked up by a
 // querySelectorAll). Each entry fans out into N `DIM_RULES` entries that
-// share one `watchId` and `predicate`.
+// share one `predicate` (and, unless `watch` is a list, one `watchId`).
 //   - `free-run`: LFO 1's delay/fade dim when Free toggles on (0042).
 //   - `filter-notch`: Slope strip dims when Filter Mode = Notch (0043).
+//   - `legato-poly`: Legato dims under Voice = Poly, where nothing reads it.
 //   - `sync-slave`: Osc 1's Free dims under Cross Mod = Sync (0283) — osc1 is
 //     the slave there and osc2's wraps reset it whatever the flag says, so the
 //     switch is inert. Osc 2's Free stays live: it is the one that bites.
+//   - `stack-phase`: the stack start-phase depth dims when *both* oscillators
+//     free-run (0284) — a free-running oscillator ignores the stamped start
+//     phase, so with both on nothing reads the knob. The first spec whose
+//     `watch` is a **list**: it fans out into one rule per watched id, all
+//     sharing a predicate that reads the cached value of every one of them.
+//     `model.lastParam` is written before `applyDimRulesFor` runs, so the
+//     predicate always sees the echo that triggered it; an id with no echo yet
+//     reads as off.
 export const BUILTIN_DIM_SPECS = [
   {
     kind: 'free-run',
@@ -204,6 +213,35 @@ export const BUILTIN_DIM_SPECS = [
       return (plain) => syncIdx >= 0 && Math.round(plain) === syncIdx;
     },
     targets: ['osc1_free_run'],
+  },
+  {
+    kind: 'stack-phase',
+    watch: ['osc1_free_run', 'osc2_free_run'],
+    buildPredicate: (layer) => {
+      const ids = ['osc1_free_run', 'osc2_free_run']
+        .map((n) => paramIdByNameAtLayer(n, layer));
+      // Ignores the incoming value: the rule is an AND over both flags, so it
+      // re-reads the cache rather than trusting whichever one just changed.
+      return () => ids.every((id) => {
+        if (id == null) return false;
+        const last = model.lastParam.get(id);
+        return !!(last && last.plain >= 0.5);
+      });
+    },
+    targets: ['stack_phase'],
+  },
+  {
+    // Legato decides whether a Solo reveal slides or re-articulates, so under
+    // Poly — where every note takes its own stack and nothing is ever revealed
+    // — the engine never reads it (`note_off_stack` returns early). Dimmed
+    // rather than hidden: it is a patch value that survives the mode flip.
+    kind: 'legato-poly',
+    watch: 'voice_mode',
+    buildPredicate: (layer) => {
+      const soloIdx = variantIdx('voice_mode', 'Solo', layer);
+      return (plain) => soloIdx < 0 || Math.round(plain) !== soloIdx;
+    },
+    targets: ['legato'],
   },
   {
     kind: 'filter-notch',
@@ -251,12 +289,20 @@ export function rebuildDimRules(layer) {
     model.dimRules.push({ watchId, predicate, target: spec.target });
   }
   for (const spec of BUILTIN_DIM_SPECS) {
-    const watchId = paramIdByNameAtLayer(spec.watch, layer);
-    if (watchId == null) continue;
+    // `watch` is one name or a list of them; a list means the predicate is a
+    // function of all of them, so every id has to be able to trigger it.
+    const watchNames = Array.isArray(spec.watch) ? spec.watch : [spec.watch];
+    const watchIds = watchNames
+      .map((n) => paramIdByNameAtLayer(n, layer))
+      .filter((id) => id != null);
+    if (watchIds.length !== watchNames.length) continue;
     const predicate = spec.buildPredicate(layer);
     for (const name of spec.targets) {
       const target = document.querySelector(`[data-param="${name}"]`);
-      if (target) model.dimRules.push({ watchId, predicate, target });
+      if (!target) continue;
+      for (const watchId of watchIds) {
+        model.dimRules.push({ watchId, predicate, target });
+      }
     }
   }
 }
@@ -365,31 +411,6 @@ export function bindCell(entry, layer) {
     case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;
     case 'dropdown':      ctl = makeDropdown(el, id, desc); break;
     case 'header-switch': ctl = makeHeaderSwitch(el, id, desc); break;
-    case 'detune-legato': {
-      const legatoId = paramIdByNameAtLayer(entry.extras.legatoName, layer);
-      const modeId   = paramIdByNameAtLayer(entry.extras.modeName, layer);
-      if (legatoId == null || modeId == null) return null;
-      const composite = makeDetuneLegato(
-        el,
-        { detune: id, legato: legatoId, mode: modeId },
-        {
-          detune: desc,
-          legato: window.vxn.params[legatoId],
-          mode:   window.vxn.params[modeId],
-        },
-        entry.extras.modeName,
-        layer,
-      );
-      // Fan composite updaters through model.controls by id. Mode is also bound
-      // by the AssignMode buttongroup cell — `addCtl` keeps both updaters
-      // alive on the same id so the buttongroup repaints and the detune-
-      // legato visuals (top-override, Legato dim, Twin clamp) follow the
-      // same echo.
-      addCtl(id,       { update: (p, n, d) => composite.detuneUpdate(p, n, d) });
-      addCtl(legatoId, { update: (p) => composite.legatoUpdate(p) });
-      addCtl(modeId,   { update: (p) => composite.modeUpdate(p) });
-      return { ids: [id, legatoId, modeId] };
-    }
     default:
       console.warn('vxn: unknown control type', kind);
       return null;
@@ -418,7 +439,7 @@ export function bindCell(entry, layer) {
 //
 // Clearing `innerHTML` is not enough. It disposes of listeners bound to the
 // children a primitive built, which is most of them, but not of any bound to the
-// cell root: the rocker's click, the detune composite's double-click, and
+// cell root: the rocker's click, the switch rows' clicks, and
 // `bindCell`'s reset-to-default double-click all attach there. Those survived
 // the reset and accumulated one closure per layer flip, each still holding the
 // id of the layer it was bound under — so after visiting Layer 2, a click on the
@@ -868,12 +889,6 @@ export function init() {
       // hand-maintained list of the classes each kind adds.
       baseClass: el.className,
     };
-    if (kind === 'detune-legato') {
-      entry.extras = {
-        legatoName: el.dataset.legatoParam,
-        modeName: el.dataset.modeParam,
-      };
-    }
     model.cells.push(entry);
   });
   // Tab shell + Layer 2 toggle (0219). Wired before the first rebind so the

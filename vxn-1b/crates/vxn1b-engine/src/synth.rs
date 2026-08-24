@@ -17,7 +17,7 @@ use crate::bank::{BlockCtx, RenderBank, TriggerOpts};
 use crate::matrix::MatrixTable;
 use crate::params::{CrossModType, ParamId, Params};
 use crate::state::LayerState;
-use crate::voice::{Triggers, Voices, WIDE_GLIDE_SCALE};
+use crate::voice::{StackVoicing, Triggers, Voices, WIDE_GLIDE_SCALE};
 
 /// Per-synth seed set: one RNG seed per render bank (distinct so a synth's
 /// banks' noise/drift streams decorrelate) plus its LFO 2 seed. The two synths
@@ -167,28 +167,32 @@ impl Synth {
     /// sounds on: the first triggered lane, or lane 0 when a legato slide
     /// triggered none (a slide only happens in Solo, which pins lane 0).
     pub(crate) fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
-        let width = self.params.stack_width().lanes();
-        let mode = self.params.voice_mode();
-        let detune = self.params.get(ParamId::UnisonDetune);
-        let legato = self.params.bool(ParamId::Legato);
-        let triggers =
-            self.voices
-                .note_on_stack(channel, note, velocity, width, mode, detune, legato);
+        let triggers = self
+            .voices
+            .note_on_stack(channel, note, velocity, self.voicing());
         self.fire(&triggers);
         triggers.as_slice().first().map_or(0, |t| t.voice)
     }
 
     pub(crate) fn note_off(&mut self, channel: u8, note: u8) {
-        let width = self.params.stack_width().lanes();
-        let mode = self.params.voice_mode();
-        let detune = self.params.get(ParamId::UnisonDetune);
-        let legato = self.params.bool(ParamId::Legato);
         // Mono modes revert to the highest-priority note still held, which can
         // re-trigger the stack — hence a trigger list on note-*off* too.
-        let triggers = self
-            .voices
-            .note_off_stack(channel, note, width, mode, detune, legato);
+        let triggers = self.voices.note_off_stack(channel, note, self.voicing());
         self.fire(&triggers);
+    }
+
+    /// The patch's voicing, read once per note event so a chord's lanes cannot
+    /// disagree about width or layout mid-allocation (`TriggerOpts` does the
+    /// same for the DSP half of the event).
+    fn voicing(&self) -> StackVoicing {
+        StackVoicing {
+            width: self.params.stack_width().lanes(),
+            mode: self.params.voice_mode(),
+            unison_detune: self.params.get(ParamId::UnisonDetune),
+            legato: self.params.bool(ParamId::Legato),
+            phase: self.params.get(ParamId::StackPhase),
+            distrib: self.params.stack_distrib(),
+        }
     }
 
     /// Trigger the DSP lanes an allocation asked for, routing each 16-voice

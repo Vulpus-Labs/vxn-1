@@ -97,6 +97,38 @@ impl VoiceMode {
     }
 }
 
+/// How a stack's lanes are laid out across the `[-1, +1]` position axis that
+/// drives both the detune fan and the stereo fan (ticket 0284, VXN2's
+/// `StackDistrib`). Orthogonal to [`StackWidth`]: the law says *where* the lanes
+/// sit, the width how many there are, and `Spread` / `UnisonDetune` how far the
+/// position carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(usize)]
+pub enum StackDistrib {
+    /// Even spacing — lane `i` of `width` sits at `2i/(width-1) - 1`.
+    #[default]
+    Linear,
+    /// `sign(t) * |t|^0.5` over the linear position: inner lanes pull toward the
+    /// centre, outer lanes stay at the edges, so a wide stack reads as a dense
+    /// core with a pair of outliers rather than an even comb.
+    Geometric,
+    /// A fresh draw per lane per note-on. The stack stops being repeatable —
+    /// detune *and* pan scatter together, since one position feeds both.
+    Random,
+}
+
+impl StackDistrib {
+    pub const COUNT: usize = StackDistrib::Random as usize + 1;
+
+    pub fn from_index(i: usize) -> StackDistrib {
+        match i {
+            1 => StackDistrib::Geometric,
+            2 => StackDistrib::Random,
+            _ => StackDistrib::Linear,
+        }
+    }
+}
+
 /// Oscillator-interaction type (Off / Sync / PM ("FM" in labels) / Ring).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(usize)]
@@ -255,6 +287,13 @@ pub enum ParamId {
     UnisonDetune,
     PortamentoTime,
     Spread,
+    // Start-phase decorrelation depth for a stacked note (0284). Scales the
+    // per-lane random offset: 0 starts every lane coherent, 1 is the full
+    // scatter the engine used to hardwire. Inert at width 1, which keeps its
+    // deterministic `lane_phase`.
+    StackPhase,
+    // Lane layout law — see [`StackDistrib`]. Drives detune and pan together.
+    StackDistrib,
     // ── Master ──
     MasterTune,
     MasterVolume,
@@ -380,7 +419,7 @@ impl Layer {
 /// synth (osc, mixer, filter, envelopes, layer level/mute, LFO 1/2, voice, and
 /// the 16 matrix depths). Order *defines* the patch-block CLAP id layout; Layer
 /// 2's block is the same list offset by [`PATCH_COUNT`].
-pub const PATCH_PARAMS: [ParamId; 73] = {
+pub const PATCH_PARAMS: [ParamId; 75] = {
     use ParamId::*;
     [
         // Osc / mixer (19)
@@ -403,8 +442,9 @@ pub const PATCH_PARAMS: [ParamId; 73] = {
         Lfo1Shape, Lfo1Rate, Lfo1Sync, Lfo1DelayTime, Lfo1Fade, Lfo1FreeRun,
         // LFO 2 (3)
         Lfo2Shape, Lfo2Rate, Lfo2Sync,
-        // Voice (5)
+        // Voice (8)
         StackWidth, VoiceMode, Legato, UnisonDetune, PortamentoTime, Spread,
+        StackPhase, StackDistrib,
         // Matrix depths (16)
         MatrixSlot0Depth, MatrixSlot1Depth, MatrixSlot2Depth, MatrixSlot3Depth,
         MatrixSlot4Depth, MatrixSlot5Depth, MatrixSlot6Depth, MatrixSlot7Depth,
@@ -517,6 +557,9 @@ const OVERSAMPLE_LABELS: &[&str] = &["O/S OFF", "2x", "4x", "8x"];
 /// Lanes per note. Labelled by the number itself — it is a count, not a name.
 const WIDTH_LABELS: &[&str] = &["1", "2", "4", "8", "16", "32"];
 const VOICE_MODE_LABELS: &[&str] = &["Poly", "Solo"];
+/// Lane layout law. Abbreviated the way the envelope shapes are — the panel has
+/// one column's width for them, and the host's value text follows the faceplate.
+const DISTRIB_LABELS: &[&str] = &["Lin", "Geo", "Rnd"];
 /// PM is labelled "FM" — players expect that name (VXN1 ADR 0004 §3).
 const CROSS_MOD_LABELS: &[&str] = &["Off", "Sync", "FM", "Ring"];
 
@@ -675,6 +718,10 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", Taper::Linear),
     f("portamento_time", "Glide Time", 0.0, 0.5, 0.0, "s", Taper::Exp { mid: 0.1 }),
     f("spread", "Spread", 0.0, 1.0, 0.0, "", Taper::Linear),
+    // Default 1.0 (0284): full scatter is what a stacked note did before the knob
+    // existed, so every patch written without it sounds unchanged.
+    f("stack_phase", "Phase", 0.0, 1.0, 1.0, "", Taper::Linear),
+    e("stack_distrib", "Distrib", DISTRIB_LABELS, 0.0),
     // ── Master ──
     f("master_tune", "Master Tune", -12.0, 12.0, 0.0, "st", Taper::Linear),
     f("master_volume", "Volume", 0.0, 1.0, 0.7, "", Taper::Linear),
@@ -846,6 +893,13 @@ impl Params {
         StackWidth::from_index(enum_index(self.get(ParamId::StackWidth), StackWidth::COUNT - 1))
     }
 
+    pub fn stack_distrib(&self) -> StackDistrib {
+        StackDistrib::from_index(enum_index(
+            self.get(ParamId::StackDistrib),
+            StackDistrib::COUNT - 1,
+        ))
+    }
+
     pub fn voice_mode(&self) -> VoiceMode {
         VoiceMode::from_index(enum_index(self.get(ParamId::VoiceMode), VoiceMode::COUNT - 1))
     }
@@ -932,7 +986,7 @@ mod tests {
             let in_global = GLOBAL_PARAMS.contains(&p);
             assert!(in_patch ^ in_global, "{p:?} must be exactly one of patch/global");
         }
-        assert_eq!(TOTAL_PARAMS, 2 * 73 + 35);
+        assert_eq!(TOTAL_PARAMS, 2 * 75 + 35);
     }
 
     #[test]

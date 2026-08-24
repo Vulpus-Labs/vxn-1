@@ -82,6 +82,10 @@
   --row-hgap: 6px;
   --header-h: 16px;
   --header-toggle-slot: 16px; /* reserves the Chorus/Delay header switch (0045) */
+  /* Toggle box, and so the height of a `.ctl-tg-row` — the label beside it is
+     9px type in an 11px line box. Named because the Voice panel's Width grid
+     reserves a row of exactly this height. */
+  --tg-box: 11px;
   --ctl-label-h: 12px;
   --ctl-value-h: 12px;
   --ctl-gap: 2px;
@@ -277,13 +281,20 @@ html, body {
 .row-2 .panel[data-name="Env 1"] { flex-grow: 0.9; }
 .row-2 .panel[data-name="Env 2"] { flex-grow: 0.9; }
 
-/* Layer pane's bottom row — Voice · Scope. Voice is sized close to its natural
-   width (seven columns since Cross Mod folded into it), and the scope takes
-   everything left over: a waveform is the one thing here that reads better the
-   wider it is, while a column of toggles gains nothing from the extra pixels. */
+/* Layer pane's bottom row — Voice · Scope. Voice is sized to its natural width
+   and the scope takes literally everything left over: a waveform is the one
+   thing here that reads better the wider it is, while a column of toggles gains
+   nothing from the extra pixels — a share of the row it cannot fill just shows
+   as dead panel to the right of Cross Mod.
+   This is the one row that opts out of the pure-ratio scheme above. Voice's
+   width is the sum of its columns, which changed twice (Cross Mod folding in,
+   then 0284's Phase + Distrib) and each time left the tuned ratio either
+   squeezing the labels together or trailing ~58px of nothing. `flex: 0 1 auto`
+   takes the number out of the stylesheet: the panel asks for what its columns
+   need and still shrinks first if the row ever runs short. */
 .row-layer-3 { height: var(--panel-h-3); }
-.row-layer-3 .panel[data-name="Voice"] { flex-grow: 1.0; }
-.row-layer-3 .panel[data-name="Scope"] { flex-grow: 1.4; }
+.row-layer-3 .panel[data-name="Voice"] { flex: 0 1 auto; }
+.row-layer-3 .panel[data-name="Scope"] { flex-grow: 1.0; }
 
 /* Hairline rule between two groups of columns inside one panel body — Voice's
    allocation columns and the cross-mod pair. Full body height, so it reads as a
@@ -639,6 +650,15 @@ html, body {
   height: var(--ctl-label-h);
   line-height: var(--ctl-label-h);
   margin-bottom: 4px;
+  /* One line, always. The height above is a single line's worth, so a label
+     that wraps does not make room for its second line — it paints over the
+     control underneath ("CROSS MOD" over the Off variant). Column widths come
+     out of the labels' max-content size, which fits every one of them exactly
+     and leaves no slack, so whether a two-word label wraps comes down to the
+     renderer's font metrics: the same markup that sits on one line in Chrome
+     wrapped in the plugin's web view. `nowrap` settles it in the layout instead
+     of in the font — the column simply asks for the width the text needs. */
+  white-space: nowrap;
 }
 
 /* `.value-pop` moved to the shared `vxn-core-ui-web/assets/value-pop.css`
@@ -854,10 +874,10 @@ html, body {
   align-items: center;
 }
 
-/* The Voice panel's strip carries the Mod Matrix button, and its Detune cell
-   parks the Legato toggle at the panel's bottom-LEFT corner
-   (`.ctl-detune-legato`), so the button is pushed to the right end of the strip
-   to keep the two off each other. */
+/* The Voice panel's strip carries the Mod Matrix button alone. Pushed to the
+   right end so it sits under Cross Mod — the far side of the panel's dividing
+   rule from the voice-allocation columns, which is the group it does not
+   belong to either way, but the end the eye leaves the panel from. */
 .panel[data-name="Voice"] .panel-strip { justify-content: flex-end; }
 
 /* Oversample and Limit share one line: the strip is wide enough for both, and
@@ -1027,8 +1047,8 @@ html, body {
   cursor: pointer;
 }
 .ctl-tg-box {
-  width: 11px;
-  height: 11px;
+  width: var(--tg-box);
+  height: var(--tg-box);
   background: #4a4a4a;
   border: 1px solid #8a8a8a;
   border-radius: 2px;
@@ -1077,6 +1097,15 @@ html, body {
   gap: 5px 12px;
   justify-items: start;
 }
+/* Row-major variant (`data-flow="row"` beside `data-columns`). Column-major is
+   the default because it suits a doubling run read down a column; a group laid
+   out to be read ACROSS — Width as 1 · 2 · 4 over 8 · 16 · 32 — needs the other
+   flow, and then it is the column count the grid has to be told. */
+.ctl-buttongroup[data-columns][data-flow="row"] .ctl-tg-rows {
+  grid-auto-flow: row;
+  grid-template-rows: none;
+  grid-template-columns: repeat(var(--ctl-cols, 2), auto);
+}
 
 /* A stacked pair of cells sharing one column of the panel body — the Voice
    panel's Width group with its Poly/Solo rocker beneath. `.ctl` sets a fixed
@@ -1090,6 +1119,34 @@ html, body {
   min-width: 0;
 }
 .ctl-col > .ctl { height: auto; }
+
+/* Voice's allocation stack: Width, the Poly/Solo rocker, Legato. The column is
+   as wide as the Width group (its widest child), and the rocker stretches to
+   that width so its two labels land over the two button columns — which is the
+   whole reason it is the horizontal one. Legato keeps its natural width; a
+   checkbox stretched to 60px would read as a bar, not a toggle. */
+.voice-stack > .voice-mode { align-self: stretch; }
+/* The rocker's natural width (two labels either side of the travel) is wider
+   than the two button columns at their natural gutter, so it is the rocker that
+   sets the column width — and the width group spreads to match rather than
+   sitting short of it. The two button columns then land under POLY and SOLO,
+   which is what makes the rocker read as spanning them instead of merely
+   sitting below. */
+.voice-stack > [data-param="stack_width"] { align-self: stretch; }
+/* Selector matches the row-major rule's specificity and then some, on purpose:
+   that rule sets `grid-template-rows: none`, and a plainer selector here loses
+   to it however far down the file it sits. */
+.voice-stack > [data-param="stack_width"][data-flow="row"] .ctl-tg-rows {
+  align-self: stretch;
+  justify-content: space-between;
+  /* Three explicit rows for two rows of buttons. The third is deliberately
+     empty: the six widths used to run 3×2 and the rocker and Legato sat under
+     that, so reserving the row they vacated keeps both where the eye already
+     expects them instead of sliding the group up into the gap. An empty
+     template row, not padding — it is a row's worth of space, and saying so in
+     the grid means the gap above it comes for free. */
+  grid-template-rows: repeat(3, var(--tg-box));
+}
 
 /* Centred variant — a toggle parked directly beneath the fader it modifies
    (LFO Rate ↔ Sync, Cutoff ↔ Tuned), centred on the fader rather than
@@ -1186,6 +1243,33 @@ html, body {
   top: 15px;
 }
 
+/* Horizontal variant (`data-orient="h"` on the cell) — the same three parts
+   laid on a row, travel between the two labels. Used only by Voice's Poly/Solo,
+   which sits under the Width group rather than beside it: stacked in a column
+   of its own the vertical form is what keeps a rocker narrow, but *under* a
+   two-column button group there is a width to fill and a horizontal travel is
+   the one that reads as spanning it. Everything else keeps the vertical form.
+   The knob's `.right` offset has to be re-stated: the vertical rule above still
+   matches, and a `top: 15px` on a 12px-tall track drops it out of the bottom. */
+.ctl-rocker[data-orient="h"] { align-items: stretch; }
+.ctl-rocker[data-orient="h"] .ctl-rocker-body {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ctl-rocker[data-orient="h"] .ctl-rocker-track {
+  width: 26px;
+  height: 12px;
+}
+.ctl-rocker[data-orient="h"] .ctl-rocker-knob {
+  transition: left 90ms ease, background 90ms ease;
+}
+.ctl-rocker[data-orient="h"].right .ctl-rocker-knob {
+  top: 1px;
+  left: 15px;
+}
+
 /* Dropdown — native <select> styled to match the dark palette. Fallback for
    enums that don't fit ButtonGroup (too many variants, or a long name list). */
 .ctl-dropdown {
@@ -1235,39 +1319,6 @@ html, body {
   border-color: #84cdff;
   box-shadow: 0 0 6px #36b3ff;
 }
-
-/* Voice panel's Detune column — a normal fader column. The Legato toggle
-   is created inside the cell by `makeDetuneLegato` but absolute-positioned
-   to the panel's bottom-left corner, so the detune column itself reads as
-   a plain fader column width-wise (0045). `position: static` overrides the
-   `.ctl` base's `position: relative` so the absolute legato child escapes
-   up to `.panel` (the nearest remaining positioned ancestor) instead of
-   anchoring to this cell. */
-.ctl-detune {
-  position: static;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--ctl-gap);
-  height: var(--col-h);
-  min-width: 0;
-}
-.ctl-detune-body {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-}
-.ctl-detune-legato {
-  position: absolute;
-  bottom: var(--panel-pad);
-  left: var(--panel-pad);
-}
-/* Legato is parked at the panel's bottom-left corner, which is now under the
-   Poly/Solo rocker rather than under the Width group. The rocker's column ends
-   well above it — a label row plus ~50px of switch inside a 134px body — so
-   the two need no nudging apart. */
-.ctl-detune-legato.disabled { opacity: 0.4; pointer-events: none; }
 
 /* ── FX/Global tab (0220 / 0241) ───────────────────────────────────────────
    Two rows:

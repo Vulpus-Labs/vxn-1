@@ -6,9 +6,9 @@
 // flip, each holding the id of the layer it was bound under — so after visiting
 // Layer 2, one click on the Voice rocker wrote Poly/Solo to *both* layers, and
 // one double-click reset both layers' values. The cell root carries at least
-// three such listeners today (the rocker's click, the detune composite's
-// double-click, and the generic reset-to-default double-click), so the fix is
-// structural: the node itself is replaced on rebind.
+// two such listeners today (the rocker's click and the generic
+// reset-to-default double-click), so the fix is structural: the node itself is
+// replaced on rebind.
 //
 // Driven with the REAL `makeRocker` rather than a stub — a stub that never binds
 // a listener cannot show the leak.

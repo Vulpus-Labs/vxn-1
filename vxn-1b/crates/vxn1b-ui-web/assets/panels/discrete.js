@@ -91,7 +91,11 @@ export function makeButtonGroup(el, id, desc) {
   // last rather than dropping a row off the grid.
   const columns = Math.max(1, parseInt(el.dataset.columns, 10) || 1);
   if (columns > 1) {
+    // Both counts, because the grid needs whichever one its flow direction does
+    // not derive: a column-major grid is told its rows, a row-major one
+    // (`data-flow="row"`) its columns.
     el.style.setProperty('--ctl-rows', String(Math.ceil(variants.length / columns)));
+    el.style.setProperty('--ctl-cols', String(columns));
   }
   // `rows[i]` corresponds to variant index `i` (not display position), so
   // the update path can flip the active class by plain value directly.

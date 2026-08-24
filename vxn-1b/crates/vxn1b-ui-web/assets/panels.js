@@ -6,7 +6,7 @@
 //   util/drag.js          — drag / paint / value-popup primitives + clampVariant
 //                           / tgRow (consumes the shared wireDrag, 0140)
 //   panels/fader.js       — fader, LFO-rate subdivision label, wave knob,
-//                           Detune+Legato composite, waveform glyphs
+//                           bipolar dial, waveform glyphs
 //   panels/discrete.js    — Switch / ButtonGroup / Dropdown / HeaderSwitch
 //   panels/keys.js        — the Keys panel + its constants
 //   panels/meter.js       — level-meter ballistics + the stereo meter widget
@@ -38,8 +38,8 @@ export {
 } from './util/drag.js';
 
 export {
-  WAVE_GLYPHS, glyphPath, SVG_NS, TWIN_TOP_CT,
-  makeFader, subdivisionLabel, makeWave, makeDial, makeBipolar, makeDetuneLegato,
+  WAVE_GLYPHS, glyphPath, SVG_NS,
+  makeFader, subdivisionLabel, makeWave, makeDial, makeBipolar,
 } from './panels/fader.js';
 
 export {
