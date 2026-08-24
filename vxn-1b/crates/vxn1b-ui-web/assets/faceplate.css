@@ -1650,6 +1650,14 @@ html, body {
   /* Same 4 px as `.ctl-label`; this is the label row for the column. */
   margin-bottom: 4px;
   text-align: center;
+  /* Fixed: the readout is the widest thing in the split column, so its
+     intrinsic width is the column's, and a sharp ("F#3" vs "F3") widened the
+     whole column and shoved the mixer's strips sideways as the slider moved.
+     26 px clears the widest name the 12..96 range produces ("A#0") at 10 px
+     bold condensed; `nowrap` keeps a name that ever exceeds it on one line
+     rather than pushing the label row's height. */
+  width: 26px;
+  white-space: nowrap;
 }
 
 /* Split disabled: the point is inert, so grey it out. The toggle below stays
