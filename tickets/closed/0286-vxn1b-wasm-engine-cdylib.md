@@ -136,3 +136,32 @@ pointing the ring; reading frames back out is the new transport), and any
   [[vxn-concurrent-vxn2-work-no-git-add-all]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]].
 - Blocks 0287 (JS codec twin) and 0289 (worklet + coordinator).
+
+## Close-out (2026-08-25)
+
+- `vxn-1b/crates/vxn1b-wasm` created as a `cdylib` + `rlib`, in the workspace,
+  with `vxn1b-engine` its only dependency.
+- [codec.rs](../../vxn-1b/crates/vxn1b-wasm/src/codec.rs): 16 live tags over
+  vxn-1's unchanged 16-byte framing, pinned by
+  `tests::encode_matches_the_golden_table` (17 rows). Unknown AND reserved tags
+  (incl. 6) decode to `None` — `tests::unknown_and_reserved_tags_decode_to_none`.
+- Ids re-exported from the engine, never literals
+  ([codec.rs:74](../../vxn-1b/crates/vxn1b-wasm/src/codec.rs#L74)), guarded by
+  `tests::total_params_matches_the_engine` — the drift [[0285]] was.
+- [host.rs](../../vxn-1b/crates/vxn1b-wasm/src/host.rs) wraps ONE `Engine` (it is
+  already the facade the CLAP shell drives) and slices at event offsets;
+  `tests::an_event_applies_at_its_sample_offset_not_at_block_start` proves frames
+  before `k` are exactly 0.0 and after it are not.
+- `tests::a_matrix_edit_retargets_the_slot_and_leaves_its_depth_alone` — topology
+  moves, the depth param does not, and the other layer's same-numbered slot is
+  untouched.
+- MPE: `tests::a_note_off_on_the_wrong_channel_does_not_release_the_voice`.
+- Builds for `wasm32-unknown-unknown --release` with `+simd128`; the artifact
+  carries all 19 `vxn1b_*` exports (13 at close of this ticket, 6 more from
+  [[0288]]) and **0 imports**, so it instantiates in an AudioWorkletGlobalScope.
+- Design corrected against the engine before writing the wire: no sustain tag
+  (`vxn1b-clap`'s dispatch has no CC64 path) and no layer-copy tag (`copy_layer`
+  is a `SharedParams` operation, so a copy arrives as param writes + matrix
+  edits). Both recorded in the ticket body and in `WIRE-FORMAT.md`.
+- `cargo test -p vxn1b-wasm` 28 pass; `cargo test --workspace` 1566 → 1571 pass,
+  0 fail.

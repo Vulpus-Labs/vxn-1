@@ -141,3 +141,30 @@ a comparison of two red runs.
 - Out of scope: the eight divergent modules; any behaviour change; VXN1b's own
   `web/` directory (0285+); the `key-mode.mjs` module (vxn-1-only, no vxn-2 twin
   to share with, and VXN1b's key state is a different shape).
+
+## Close-out (2026-08-25)
+
+- `crates/vxn-core-web/` created and added to the workspace members + path
+  dependencies. Holds exactly the six shared modules in
+  [assets/](../../crates/vxn-core-web/assets); `git ls-files` shows one copy of
+  each — the vxn-1 and vxn-2 duplicates are gone.
+- Config threaded rather than baked: `openPresetDB(indexedDB, db)` now REQUIRES a
+  `{ name, version }` identity and rejects a missing one;
+  `PresetPersistence` / `StateAutosave` forward it via a new `dbId` option;
+  `patch-io` takes `product` for its default filename and rejection message.
+  Each bridge exports its own `DB_ID` / `PRODUCT`, and the port tests import
+  those so they open the database the browser actually opens.
+- Resolution by injected seams: both bridges dropped their static imports for a
+  lazy `loadGlue()` over the flat-dist siblings, overridable per call. vxn-2's
+  `_attachInputs` became async as a result and `boot()` awaits it.
+- `cargo test -p vxn-core-web` — 4 pass, incl.
+  `tests::no_shared_module_hardcodes_a_per_port_config_value` (a grep sweep for
+  `vxn1-presets` / `VXN2 Patch` / … over every shared source) and
+  `tests::open_preset_db_refuses_to_guess_a_database`.
+- Both xtask module tables split into local + `CORE_MODULES`; verified
+  `cargo run -p vxn1-xtask -- web` → 24 files and
+  `cargo run -p vxn2-xtask -- web` → 20 files, 6/6 shared modules present in each.
+- Suites: vxn-1 web 29/29, vxn-2 web 89/89, both 0 skipped;
+  `cargo test --workspace` 1543 pass / 0 fail at the time of landing.
+- Turned up two pre-existing product bugs, both split out rather than bundled:
+  [[0285]] (param mirror drift, both ports dead) and, later, [[0296]].

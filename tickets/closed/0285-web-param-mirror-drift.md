@@ -81,3 +81,28 @@ header error. That masking is why it was worth chasing rather than deleting.
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
 - Out of scope: making the mirror generated rather than declared; the shared-dist
   collision between the two ports' `xtask web` (noted above).
+
+## Close-out (2026-08-25)
+
+- vxn-1 [event-codec.mjs:63](../../vxn-1/crates/vxn-wasm/web/event-codec.mjs#L63)
+  `GLOBAL_COUNT` 27 → 29, `TOTAL_PARAMS` → 167; vxn-2
+  [event-codec.mjs:59](../../vxn-2/crates/vxn2-wasm/web/event-codec.mjs#L59)
+  `TOTAL_PARAMS` 208 → 209. Both now agree with their engine, so
+  `WebController.instantiate`'s handshake passes and the pages boot.
+- Cause confirmed by `git log -S`: `9b5d222` (0277-0279) inserted `PhaserStereo`
+  and `DelayPingPong` mid-enum in vxn-1's `GlobalParam` — shifting every global
+  clap id from `PhaserStereo` on — and bumped `vxn_app::state::VERSION` 1 → 2;
+  `3630407` (0280) appended one param to vxn-2, no id moved.
+- The version bump's quieter victim: `faceplate-bridge.test.mjs`'s hand-built
+  state blob carried `u32le(1)`, and `restore` rejects any other version, so it
+  surfaced as "the factory preset silently failed to apply" four assertions into
+  the factory round-trip. Now
+  [:88](../../vxn-1/crates/vxn-wasm/web/faceplate-bridge.test.mjs#L88).
+- Hardcoded counts tracked in `param-store.test.mjs`, `event-codec.test.mjs`,
+  `controller.test.mjs`; stale totals corrected in `param-store.mjs`,
+  `coordinator.mjs`, `controller.mjs` in both ports.
+- Golden wire tables untouched — vxn-2's id-208 sample is still a valid id under
+  the new count.
+- Suites: vxn-1 24/29 → **29/29**, vxn-2 78/89 → **89/89**, both 0 skipped.
+  Pre-existence proved by stashing and rebuilding: identical failure, identical
+  five files.

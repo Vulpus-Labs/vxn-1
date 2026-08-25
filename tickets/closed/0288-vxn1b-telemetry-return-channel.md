@@ -126,3 +126,40 @@ first call there is no allocation in the render path.
   `ev.kind === 'meters' | 'scope'` contract.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]].
+
+## Close-out (2026-08-25)
+
+- Six new C-ABI exports on [host.rs](../../vxn-1b/crates/vxn1b-wasm/src/host.rs):
+  `vxn1b_host_drain_meters` / `_meters_ptr`, `vxn1b_host_read_scope` /
+  `_scope_ptr`, `vxn1b_meter_len`, `vxn1b_scope_window` — the last two so JS
+  sizes its SAB regions from the engine, not a literal.
+- Scope reads go through `ScopeBus::read_window` into a host-owned buffer rather
+  than `ScopeFrame::read`, which allocates a `Vec` per call;
+  `tests::repeated_scope_reads_do_not_reallocate` holds capacity constant across
+  16 reads.
+- [telemetry.mjs](../../vxn-1b/crates/vxn1b-wasm/web/telemetry.mjs): SAB layout,
+  `TelemetryWriter` (worklet) and `TelemetryReader` (main) with a per-region
+  seqlock. Writer never blocks — two atomic stores, no CAS; reader retries a
+  bounded number of times and otherwise keeps its previous frame.
+- Torn-read rejection proven:
+  `a reader will not return a frame while the writer is mid-update` (odd counter
+  plus a planted value the reader must never surface).
+- Rate division proven by consequence, not by counting:
+  `a published frame covers every quantum since the last publish` plants a
+  transient in an early quantum and asserts it survives the read-and-clear drain
+  to the UI. `tick()` publishes every 6 quanta at 48 kHz, scope every second
+  publish.
+- Silence rule: one silent frame delivered (the view needs the zero that starts
+  its decay), subsequent ones suppressed, audio resumes delivery — all in
+  `one silent frame is delivered, then silence is suppressed`.
+- Scope respects the tap: `the_scope_captures_the_selected_tap_and_nothing_while_off`
+  renders a full window's worth with the tap Off and gets 0 samples.
+- End-to-end through the real wasm: a sounding note yields a non-zero master
+  meter and a non-flat window on the main side.
+- **Bug found by that e2e test**: the reader's `_seen` counters were seeded to
+  `-1`, so the first read saw `0 !== -1`, concluded something was new, and handed
+  back its own zeroed region as though the engine had published silence — burning
+  the single silent frame the suppression rule allows, so the engine's real first
+  frame was the one dropped. Seeded to `0` now, with a regression test.
+- `cargo test -p vxn1b-wasm` 28 pass; web suite 55/55, 0 skipped;
+  `cargo test --workspace` 1571 pass, 0 fail.

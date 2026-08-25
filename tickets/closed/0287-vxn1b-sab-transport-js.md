@@ -104,3 +104,32 @@ Checked against vxn-2's prior art rather than assumed:
 - Out of scope: the worklet + coordinator (0289), the faceplate rewire (0290),
   and the meter/scope return channel (0288).
 - Blocks 0288 and 0289.
+
+## Close-out (2026-08-25)
+
+- Four files under
+  [vxn1b-wasm/web/](../../vxn-1b/crates/vxn1b-wasm/web): `event-codec.mjs`,
+  `event-ring.mjs`, `param-store.mjs`, `WIRE-FORMAT.md`. Ported from vxn-1's
+  (two-layer, 2×75 + 35 = 185), not vxn-2's flat layout.
+- **Cross-language contract made standing, not one-off.** Each side asserted its
+  own golden table, so both could pass while differing. `event-codec.test.mjs`
+  now parses the Rust table out of `codec.rs` and compares row by row; verified
+  it catches a real divergence by planting one (it named the row).
+- `wasm-agreement.test.mjs` reads `vxn1b_total_params()` out of the built
+  artifact and asserts the JS mirror agrees, then drives a JS-encoded note-on
+  through the ring into the real engine and checks it renders at its offset.
+- It **fails, never skips**, when the artifact is missing, naming the build
+  command — verified by moving the artifact aside (5 fail, 0 skipped).
+- Matrix addresses round-trip for every layer/slot/field, and out-of-range
+  addresses unpack to `null` rather than clamping onto a nearby slot.
+- Ring: block-writer overflow, wrap, partial `drainRawInto` reclaim, and the
+  producer surface for every VXN1b event. No JS block-slicing loop — slicing
+  lives in Rust, one implementation.
+- Store: two-layer `LAYOUT` (`L1_BASE` 0 / `L2_BASE` 75 / `GLOBAL_BASE` 150),
+  bulk write, NaN-seeded first poll, readback diff pump.
+- `WIRE-FORMAT.md` records what would otherwise be rediscovered: tags 1–10 are
+  common across the three synths and **11+ are not** (vxn-2 uses 11/12 for
+  `matrix_row`/`patch_swap`), plus why VXN1b carries no sustain, no patch-swap
+  pulse, no bulk-state event and no layer-copy tag — each checked against the
+  engine rather than assumed.
+- Web suite 42/42, 0 skipped.

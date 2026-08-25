@@ -98,3 +98,38 @@ test-only function in the shipped ABI.
 - Out of scope: the faceplate rewire and the controller wasm (0290), the xtask
   bundle (0291). Nothing here fetches `factory.bin`.
 - Blocks 0290.
+
+## Close-out (2026-08-25)
+
+- Four modules: [audio-host.mjs](../../vxn-1b/crates/vxn1b-wasm/web/audio-host.mjs),
+  [host-runner.mjs](../../vxn-1b/crates/vxn1b-wasm/web/host-runner.mjs),
+  [vxn1b-processor.js](../../vxn-1b/crates/vxn1b-wasm/web/vxn1b-processor.js),
+  [coordinator.mjs](../../vxn-1b/crates/vxn1b-wasm/web/coordinator.mjs).
+- Render loop: store fold → raw ring drain → one `vxn1b_host_render(host, n)` →
+  output copy → telemetry tick. No key-mode/split arguments — that state rides
+  the ring, so the coordinator has no latched shared state to replay.
+- Steady state allocates nothing:
+  `the steady-state render does not rebuild its memory views` holds all three
+  cached views identical across 32 quanta.
+- Silence before ready, and a note pushed pre-ready is not lost (the ring's read
+  index is untouched until the worklet drains).
+- Trap policy proven with a throwing fake rather than a force-trap export in the
+  shipped ABI: output goes silent, nothing escapes `process()`, `onTrap` fires,
+  and the runner re-instantiates over the same SABs so a later note still sounds.
+  The default handler is asserted LOUD — `the default trap handler is loud rather
+  than silent` requires a warning naming the re-broadcast consequence.
+- Coordinator: three SABs, gate machine (idle → starting → running → suspended →
+  closed), suspend/resume with the resume-only voice flush, rebuild over the same
+  SABs, teardown, and the full producer surface incl. MPE channel, matrix edits,
+  scope tap and tempo.
+- Seeding-before-fold verified from the failure side: with a zeroed store the
+  same note is silent, and with defaults seeded it sounds — which is why
+  `start()` seeds before the node is constructed.
+- **Bug found by testing rebuild()'s documented behaviour**: `rebuild()` calls
+  `start()`, which seeded the store unconditionally, so rebuilding reset every
+  param the user had touched — despite `rebuild()` existing so the patch survives
+  a sample-rate change. Seeding is now once per `WebHost` (`_storeSeeded`). vxn-1
+  and vxn-2 have the same bug; filed as [[0296]] rather than fixed here.
+- Web suite 80/80, 0 skipped.
+- Trap-recovery re-broadcast is deliberately left to 0290, which owns the
+  controller; the signal and a loud default are wired here.

@@ -75,3 +75,24 @@ different ticket with a different risk profile.
 - Found while building VXN1b's transport; the same guard shape was deliberately
   avoided there.
 - vxn-1's suite already behaves correctly — no change needed.
+
+## Close-out (2026-08-25)
+
+- No `skip:` remains in `vxn-2/crates/vxn2-wasm/web/*.test.mjs` (grep sweep
+  clean). 12 guards across five files became assertions.
+- Each wasm-backed test asserts through a `requireWasm()` helper carrying the
+  exact build command.
+- `patch-io`, `state-autosave`, `preset-persistence` and `host-runner` now read
+  `target/wasm32-unknown-unknown/{release,debug}/` — the crates' own output,
+  which no other product's tooling touches.
+- `controller-wasm.test.mjs` keeps the bundle dependency (it asserts against the
+  real baked `factory.bin`) but fails with `cargo run -p vxn2-xtask -- web`, and
+  its bank-size assertion now explains that a low count usually means the shared
+  directory holds another product's bundle.
+- Verified by hand, both failure paths: both controller artifacts moved aside →
+  4 fail / 0 skipped naming the cargo build; vxn-1's `xtask web` run to wipe the
+  bundle → `controller-wasm` fails naming vxn-2's build.
+- vxn-2 web suite **89 pass, 0 skipped** (was 76 pass + 13 skipped). vxn-1 29/29
+  and vxn-1b 80/80 unaffected.
+- Per-product dist directories deliberately not done — rationale in the ticket
+  body; the shared directory is benign once the tests do not depend on it.
