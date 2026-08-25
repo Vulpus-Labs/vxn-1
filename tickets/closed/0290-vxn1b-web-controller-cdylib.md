@@ -182,3 +182,111 @@ and TOML export/import.
   [[vxn-no-parallel-cargo-test]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
 - Blocks 0291.
+
+## Close-out (2026-08-25)
+
+- **Crate.** `vxn-1b/crates/vxn1b-web-controller` — `crate-type = ["cdylib", "rlib"]`
+  (rlib so the tests link), registered in the workspace members + path deps.
+  `cargo build --target wasm32-unknown-unknown --release`: **48 exports, 0 imports,
+  772 762 bytes**. Deps are `vxn1b-engine` + `vxn-core-app` only.
+- **One arbiter, no fork.** Wraps `Controller<SharedParams>`
+  ([lib.rs:265](../../vxn-1b/crates/vxn1b-web-controller/src/lib.rs#L265)) — the same
+  type `vxn1b-clap` constructs at
+  [lib.rs:186](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L186). No controller logic
+  copied; `apply_custom_ui` mirrors the native downcast chain.
+- **`vxnc_total_params`** agrees with the engine and decomposes as
+  `2 × PATCH_COUNT + GLOBAL_COUNT` — `tests::total_params_agrees_with_the_engine`.
+  `vxnc_patch_count` added (not in vxn-2's surface): the JS side needs the layer
+  split back for the two-layer map.
+- **Taper on the norm path.** `set_normalized` → `from_fader`, not
+  `from_normalized`. `tests::norm_path_applies_the_descriptor_taper` proves it on
+  Cutoff (`Exp { mid: 800 }`) by asserting the value is >25 % off the *linear*
+  midpoint, so a regression to the 0243 bug fails the test.
+- **Echo left at default `true`.** `grep -c set_echo_param_writes` = **0** in the
+  crate. `tests::set_param_surfaces_exactly_one_param_changed` asserts exactly one
+  record — not zero (vxn-2's echo-off setup, no bits to drain here) and not two.
+- **`norm` + `display` round-trip** — the two fields `param-store.mjs` stubs:
+  `tests::view_batch_round_trips_norm_and_display`, which also asserts `display`
+  is not a raw stringify.
+- **Sync-aware display + partner refresh.** The echo's own string comes from
+  `descriptor.display()` and is wrong for a synced rate, so
+  [`pack_param_changed`](../../vxn-1b/crates/vxn1b-web-controller/src/lib.rs#L440)
+  recomputes it via `sync_aware_display`, and the drain synthesises a partner
+  record for any emitted sync flag. `tests::sync_flip_refreshes_its_rate_partner`
+  asserts the partner surfaces, its label changes, and its **value** does not.
+- **Three writes behind the Controller's back re-broadcast explicitly** —
+  `restore_state`, `import_toml` and `PatchOp::CopyLayer` (which moves ~80 params
+  through `SharedParams::set`). Covered by
+  `tests::snapshot_restore_round_trips_and_rebroadcasts`,
+  `tests::export_import_toml_round_trips` and
+  `tests::copy_layer_duplicates_patch_and_topology_but_not_the_mixer_strip`, each
+  asserting all `TOTAL_PARAMS` ids re-broadcast.
+- **`copy_layer`** duplicates patch params + topology and leaves the mixer strip
+  alone (same test asserts `LayerLevel` on the target is untouched), matching
+  `SharedParams::copy_layer`'s `COPY_LAYER_EXCLUDED`.
+- **Non-param echoes.** Matrix topology and key state have no view-side change
+  flag, so both ride memo diffs ported from the native shell
+  ([`push_matrix_echo`](../../vxn-1b/crates/vxn1b-web-controller/src/lib.rs#L560) /
+  `push_key_echo`), re-armed on `take_editor_ready_flag`.
+  `tests::first_tick_seeds_the_non_param_echoes_then_quiesces`,
+  `tests::matrix_edit_reaches_the_model_and_echoes`,
+  `tests::key_ops_reach_the_model_and_echo`.
+- **Full re-broadcast on attach** — `tests::editor_ready_rebroadcasts_params_and_non_param_state`
+  asserts all 181 params plus the matrix and key records.
+- **User presets + folders.** Cache mutates synchronously and journals:
+  `tests::user_save_journals_and_republishes_the_corpus`,
+  `tests::user_save_load_rename_move_delete_round_trip`,
+  `tests::folder_ops_mutate_the_cache_and_journal`, plus 11 in
+  `user_store::tests`. Hydration replays without journalling
+  (`tests::hydrate_seeds_the_cache_without_journalling`).
+- **Record format reused verbatim**, per the ticket's non-drift requirement.
+  `user_store::tests::stored_record_is_the_desktop_toml_format` parses the
+  journal's bytes with the engine's own `read_preset` — not the store's decoder —
+  and asserts the `PluginState` survives. `sanitize_name` / `preset_filename` /
+  `unique_folder_name` reused from
+  [preset_io.rs:34-72](../../vxn-1b/crates/vxn1b-engine/src/preset_io.rs#L34-L72)
+  (already `pub`; the Notes' question answered — nothing needed exporting).
+- **State + TOML round-trip**, with rejection paths pinned:
+  `tests::restore_rejects_a_bad_blob_without_mutating` (also asserts a rejected
+  restore emits nothing) and `tests::import_rejects_garbage_without_mutating`.
+- **Tests green.** `cargo test -p vxn1b-web-controller`: 34 pass.
+  `cargo test --workspace`: **101 suites, 1605 passed, 0 failed**, 5 ignored (all
+  pre-existing deliberate diagnostics — the per-algo feedback dump, the two long
+  audibility sweeps, an HTML dump, an `ftz` doctest).
+
+### Two criteria that did not close as written
+
+- **"Factory bank parses from baked bytes"** — **superseded, outcome met by a
+  different mechanism.** There are no baked bytes: the store delegates its
+  factory half to `EnginePresetStore`, whose factory methods touch no filesystem.
+  vxn-1's reason for baking (0062: keep the DSP engine out of a lean controller
+  wasm) does not transfer, because this crate links `vxn1b-engine` for
+  `SharedParams` regardless. Verified rather than assumed — the `include_dir!`
+  preset names are present in the release wasm, which is **smaller** than vxn-2's
+  controller (772 762 vs 831 258 bytes) while carrying its bank inline; VXN1b's
+  bank is 8 presets / 32 KB against vxn-2's 206 / 828 KB. The corpus JSON lists
+  it at construction (`tests::factory_bank_is_embedded_and_listed_in_the_corpus`)
+  and loading works (`tests::factory_load_rebroadcasts_and_reports`).
+  **Consequence for [0292](0292-vxn1b-xtask-web-pipeline.md): no `bake-factory`
+  step and no `factory.bin` in `dist/`.**
+- **"A test pins which opcodes are controller-only vs which the bridge must also
+  put on the ring"** — **half done.** The controller-side half is pinned:
+  key ops and matrix edits reach the model, `copy_layer` is controller-only, and
+  `tests::scope_op_is_ring_only_and_never_reaches_the_model` snapshot-compares the
+  patch across a `ScopeOp` so a future refactor that routes the tap through the
+  model fails loudly. The *ring* half cannot be tested here — this crate has no
+  ring. The pairing is documented on each opcode; **[0291](0291-vxn1b-faceplate-rewire.md)
+  must pin that the three "both" ops actually reach the ring.**
+
+### Provisional by design
+
+The sync-aware recompute, the partner synthesis and the three explicit
+re-broadcasts exist only because `vxn1b-engine`'s `SharedParams` has no dirty
+bits. [[E046]] adds them and [[0303]] deletes all four from this file; they are
+commented as such in the source rather than as settled design.
+
+### Not closed here
+
+Browser verification (a real page loading a preset, copying a layer, importing a
+patch) belongs to [0291](0291-vxn1b-faceplate-rewire.md) — nothing in this
+ticket's criteria required it, and there is no JS consumer of these opcodes yet.
