@@ -816,10 +816,18 @@ const WEB_WORKLET: &str = "vxn1b-processor.js";
 /// Shared browser modules, from `crates/vxn-core-web/assets` rather than this
 /// port's `web/` (ticket 0284 — the "don't fork a third time" extraction).
 ///
-/// Only what VXN1b actually imports: the two input adapters (0294). The four
-/// persistence modules join when 0293 wires them — shipping a file no page
-/// loads is dead weight on every visit.
-const CORE_MODULES: [&str; 2] = ["midi-input.mjs", "keyboard-input.mjs"];
+/// Everything VXN1b actually imports: the two input adapters (0294) and the four
+/// persistence modules (0293). Nothing speculative — a file no page loads is
+/// dead weight on every visit, and the closure test below fails the moment a
+/// reference outruns this list.
+const CORE_MODULES: [&str; 6] = [
+    "midi-input.mjs",
+    "keyboard-input.mjs",
+    "preset-storage.mjs",
+    "preset-persistence.mjs",
+    "state-autosave.mjs",
+    "patch-io.mjs",
+];
 
 /// Netlify / Cloudflare-Pages `_headers`: COOP/COEP (+CORP) on every path, so a
 /// static host serves the page cross-origin isolated and `SharedArrayBuffer` is

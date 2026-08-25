@@ -256,16 +256,24 @@ export class FaceplateBridge {
     controller,
     coordinator = null,
     win = globalThis,
-    onJournal = null,
+    onFlushJournal = null,
+    onModelChanged = null,
     raf = null,
   } = {}) {
     if (!controller) throw new Error("FaceplateBridge needs a controller");
     this.controller = controller;
     this.coordinator = coordinator;
     this.win = win;
-    // Journal drain hook — 0293 wires it to IndexedDB. Until then the ops are
-    // drained and dropped, so the wasm journal cannot grow unbounded.
-    this.onJournal = onJournal;
+    // Journal flush hook (0293). Called once per pump; the OWNER drains, because
+    // `PresetPersistence.flush()` calls `takeJournal()` itself and also owns the
+    // write chaining and the storage-availability flag. If the pump drained too,
+    // it would steal the ops and persistence would write nothing.
+    this.onFlushJournal = onFlushJournal;
+    /// Called on a pump whose batch carried a MODEL change (0293). Autosave
+    /// debounces a write behind it. Telemetry deliberately does not count: meter
+    /// and scope frames arrive every frame while sound plays, and treating them
+    /// as changes would rewrite the state blob forever.
+    this.onModelChanged = onModelChanged;
     this._raf =
       raf || (win && win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
     this._running = false;
@@ -505,10 +513,18 @@ export class FaceplateBridge {
     // (1) Engine resync from the echoes, BEFORE the mirror — see the ordering
     // note at the top of this file. Topology first, depths second.
     let corpusDirty = false;
+    // Whether anything in the PATCH moved. Computed here, before the telemetry
+    // frames are appended below, so a sounding note never reads as an edit.
+    let modelMoved = false;
     for (const ev of events) {
-      if (ev.kind === "matrix") this._resendMatrix(ev.slots);
-      else if (ev.kind === "keys") this._resendKey(ev);
-      else if (ev.kind === "preset_corpus_changed") corpusDirty = true;
+      if (ev.kind === "matrix") {
+        this._resendMatrix(ev.slots);
+        modelMoved = true;
+      } else if (ev.kind === "keys") {
+        this._resendKey(ev);
+        modelMoved = true;
+      } else if (ev.kind === "preset_corpus_changed") corpusDirty = true;
+      else if (ev.kind === "param_changed" || ev.kind === "preset_loaded") modelMoved = true;
     }
 
     // (2) Param values into the store SAB the worklet folds in at block start.
@@ -528,10 +544,14 @@ export class FaceplateBridge {
     this._deliver(events);
     if (corpusDirty) this.publishCorpus();
 
-    // (4) Persistence ops off the tick. Always drained, even with no sink, so
-    // the wasm journal cannot grow without bound.
-    const ops = this.controller.takeJournal();
-    if (ops.length && this.onJournal) this.onJournal(ops);
+    // (4) Persistence ops off the tick. With a flush hook the owner drains; with
+    // none, drain and drop anyway, or the wasm journal grows without bound in a
+    // page that has no storage.
+    if (this.onFlushJournal) this.onFlushJournal();
+    else this.controller.takeJournal();
+
+    // (5) Autosave, debounced behind a real patch change.
+    if (modelMoved && this.onModelChanged) this.onModelChanged();
 
     this._frame++;
     return events;
@@ -586,6 +606,7 @@ export async function boot({
   fetchImpl,
   autoGesture = true,
   autoInputs = true,
+  autoPersist = true,
   adapters = null,
 } = {}) {
   // Dynamic so a headless importer (the node suites) never pulls the audio
@@ -616,7 +637,20 @@ export async function boot({
 
   // Install before the first pump so the opcodes the page queued during parse —
   // `ready` among them — are routed into this tick rather than the next.
+  // Persistence FIRST, before the queued opcodes are flushed. `ready` is in that
+  // queue and triggers the re-broadcast that paints every control and seeds the
+  // param SAB — so hydrating and restoring now means the restored patch is what
+  // gets painted. Install afterwards and the page paints defaults, then quietly
+  // disagrees with the model. The boot stub keeps queuing meanwhile, which is
+  // what it is for.
+  let persistence = null;
+  let autosave = null;
+  if (autoPersist) {
+    ({ persistence, autosave } = await attachPersistence(win, controller, bridge, adapters));
+  }
+
   bridge.install();
+  // After hydration, so the browser panel gets factory AND the user's folders.
   bridge.publishCorpus();
   bridge.start();
 
@@ -633,7 +667,68 @@ export async function boot({
   // reflex.
   if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
 
-  return { host, controller, bridge, inputs };
+  return { host, controller, bridge, inputs, persistence, autosave };
+}
+
+/// VXN1b's IndexedDB identity. Its own name, so the three synths' corpora never
+/// collide in one origin (`vxn1-presets` / `vxn2-presets` are the siblings).
+export const DB_ID = { name: "vxn1b-presets", version: 1 };
+
+/// Browser persistence (0293): user presets in IndexedDB, full-state autosave,
+/// and the patch export / import / share helpers.
+///
+/// Every path is best-effort by design ([[0297]]): persistence here is
+/// convenience — your patch is still there next visit — not durability. Private
+/// mode, a blocked IndexedDB, a quota eviction: log it once and carry on with a
+/// playable instrument at defaults. Nothing may throw out of boot.
+async function attachPersistence(win, controller, bridge, injected) {
+  let persistence = null;
+  let autosave = null;
+  try {
+    const PresetPersistence = await sharedAdapter(
+      injected, "preset-persistence.mjs", "PresetPersistence");
+    persistence = new PresetPersistence({ controller, dbId: DB_ID });
+    await persistence.hydrate();
+    persistence.attachFlushOnHide(win, win.document);
+    // The pump asks for a flush each frame; `flush()` drains the journal itself
+    // and chains the IndexedDB write off the tick.
+    bridge.onFlushJournal = () => persistence.flush();
+  } catch (e) {
+    console.warn("vxn: user-preset persistence unavailable", e && e.message);
+  }
+
+  try {
+    const StateAutosave = await sharedAdapter(injected, "state-autosave.mjs", "StateAutosave");
+    const patchIo = injected && injected.patchIo ? injected.patchIo : await import("./patch-io.mjs");
+    autosave = new StateAutosave({ controller, dbId: DB_ID });
+    // A share link wins over the autosaved session: it is an explicit thing the
+    // user followed, and restoring last time's patch over it would silently
+    // discard what they clicked.
+    const fromShare = patchIo.applyShareLinkOnBoot(controller, {
+      location: win.location,
+      history: win.history,
+    });
+    if (!fromShare) await autosave.restore();
+    autosave.attachFlushOnHide(win, win.document);
+    // Autosave watches the model through the bridge's pump rather than a timer
+    // of its own: every tick that produced view events is a change worth
+    // debouncing a write behind.
+    bridge.onModelChanged = () => autosave.schedule();
+
+    // No faceplate button for these yet, so expose them on the page surface —
+    // usable from the console and ready for a UI without touching this again.
+    const vxn = win.__vxn || (win.__vxn = {});
+    vxn.exportPatch = (name) =>
+      patchIo.exportPatchFile(controller, { name, product: "VXN-1b", doc: win.document });
+    vxn.importPatch = (onResult) =>
+      patchIo.importPatchFile(controller, { product: "VXN-1b", doc: win.document, onResult });
+    vxn.shareLink = () => patchIo.shareLinkFor(controller, win.location);
+  } catch (e) {
+    console.warn("vxn: state autosave unavailable", e && e.message);
+  }
+  // Returned so a caller can flush and stop them; a pending debounce timer that
+  // fires after the controller is torn down would trap the wasm.
+  return { persistence, autosave };
 }
 
 /// Resolve a shared adapter (0284). In `dist/` everything is FLAT, so

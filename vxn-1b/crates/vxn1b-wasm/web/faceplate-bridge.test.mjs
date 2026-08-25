@@ -381,25 +381,28 @@ test("a cancelled prompt delivers null, matching the native contract", async () 
   controller.destroy();
 });
 
-test("journal ops are drained every pump, with or without a sink", async () => {
+test("the flush hook owns the drain; without one the pump drains anyway", async () => {
   const store = new ParamStore(createParamSAB());
   const controller = await new WebController({ wasmBytes, store }).instantiate();
+
+  // With a hook, the pump must NOT drain — PresetPersistence.flush() does, and
+  // a pump that drained first would leave it nothing to write.
   const seen = [];
   const bridge = new FaceplateBridge({
     controller,
     coordinator: new FakeCoordinator(),
     win: fakeWin(),
-    onJournal: (ops) => seen.push(...ops),
+    onFlushJournal: () => seen.push(...controller.takeJournal()),
   });
   bridge.handle({ op: "save_preset", name: "Journalled", folder: null });
   bridge.pump();
-  assert.ok(seen.some((o) => o.key.includes("Journalled")), "the save did not reach the sink");
+  assert.ok(seen.some((o) => o.key.includes("Journalled")), "the save did not reach the hook");
 
-  // With no sink the journal must still drain, or the wasm buffer grows forever.
+  // With no hook it still drains, or the wasm journal grows without bound.
   const bare = new FaceplateBridge({ controller, win: fakeWin() });
-  bridge.handle({ op: "save_preset", name: "Dropped", folder: null });
+  bare.handle({ op: "save_preset", name: "Dropped", folder: null });
   bare.pump();
-  assert.deepEqual(controller.takeJournal(), [], "journal was not drained without a sink");
+  assert.deepEqual(controller.takeJournal(), [], "journal was not drained without a hook");
   controller.destroy();
 });
 

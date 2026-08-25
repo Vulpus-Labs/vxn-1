@@ -167,20 +167,36 @@ export function decodeJournal(buffer, ptr, len) {
     off += n;
     return s;
   };
+  const bytes = () => {
+    const n = u32();
+    // Copied, not a view: the next opcode's `_stage` can resize (and detach)
+    // the wasm heap this points into.
+    const b = new Uint8Array(buffer, ptr + off, n).slice();
+    off += n;
+    return b;
+  };
   const count = u32();
   const ops = [];
   for (let i = 0; i < count; i++) {
     const tag = u32();
-    const key = str();
-    if (tag === JW_PUT) {
-      const n = u32();
-      // Copied, not a view: the next opcode's `_stage` can resize (and detach)
-      // the wasm heap this points into.
-      const bytes = new Uint8Array(buffer, ptr + off, n).slice();
-      off += n;
-      ops.push({ tag, key, bytes });
-    } else {
-      ops.push({ tag, key });
+    switch (tag) {
+      // The `kind` strings and the key/name split are `preset-storage.mjs`'s
+      // contract, not ours: `applyWrites` switches on them, and folder ops carry
+      // `name` where preset ops carry `key`.
+      case JW_PUT:
+        ops.push({ kind: "put", key: str(), bytes: bytes() });
+        break;
+      case JW_DELETE:
+        ops.push({ kind: "delete", key: str() });
+        break;
+      case JW_PUT_FOLDER:
+        ops.push({ kind: "put_folder", name: str() });
+        break;
+      case JW_DELETE_FOLDER:
+        ops.push({ kind: "delete_folder", name: str() });
+        break;
+      default:
+        throw new Error(`controller: unknown journal tag ${tag}`);
     }
   }
   return ops;

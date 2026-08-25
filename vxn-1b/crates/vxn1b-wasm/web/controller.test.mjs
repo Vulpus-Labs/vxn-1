@@ -15,7 +15,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { WebController, decodeViewEvents, JW_PUT, JW_PUT_FOLDER } from "./controller.mjs";
+import { WebController, decodeViewEvents } from "./controller.mjs";
 import { ParamStore, createParamSAB, TOTAL_PARAMS, patchClapId } from "./param-store.mjs";
 import { LAYER_L1, LAYER_L2, MATRIX_FIELD_DEST, MATRIX_FIELD_SOURCE } from "./event-codec.mjs";
 
@@ -199,7 +199,7 @@ test("string args round-trip, including the root-folder sentinel and non-ASCII",
   assert.ok(names.includes("Pâté Bass"), `non-ASCII name lost: ${names}`);
 
   const ops = c.takeJournal();
-  const put = ops.find((o) => o.tag === JW_PUT);
+  const put = ops.find((o) => o.kind === "put");
   assert.ok(put, "no Put journalled");
   assert.ok(put.key.includes("Bass"), `unexpected key ${put.key}`);
   assert.ok(put.bytes instanceof Uint8Array && put.bytes.length > 0);
@@ -213,8 +213,10 @@ test("saving into a folder journals the folder op too", async () => {
   c.savePreset("Lead", "Leads");
   c.tick();
   const ops = c.takeJournal();
-  assert.ok(ops.some((o) => o.tag === JW_PUT_FOLDER && o.key === "Leads"));
-  assert.ok(ops.some((o) => o.tag === JW_PUT && o.key === "Leads/Lead.toml"));
+  // Folder ops carry `name`, preset ops carry `key` — preset-storage.mjs's
+  // contract, which applyWrites switches on.
+  assert.ok(ops.some((o) => o.kind === "put_folder" && o.name === "Leads"));
+  assert.ok(ops.some((o) => o.kind === "put" && o.key === "Leads/Lead.toml"));
   c.destroy();
 });
 
@@ -258,7 +260,7 @@ test("hydration replays a stored record without journalling", async () => {
   a.tick();
   a.savePreset("Hydrated", "F");
   a.tick();
-  const put = a.takeJournal().find((o) => o.tag === JW_PUT && o.key === "F/Hydrated.toml");
+  const put = a.takeJournal().find((o) => o.kind === "put" && o.key === "F/Hydrated.toml");
   assert.ok(put, "no Put to hydrate from");
 
   const b = await fresh();
