@@ -79,13 +79,6 @@ export class AudioHost {
       : null;
   }
 
-  /// Rebuild the engine at a new sample rate. An AudioContext's rate is fixed
-  /// for its lifetime, so in practice this is reached only by a context
-  /// teardown/rebuild or an offline render.
-  setSampleRate(sr) {
-    this.x.vxn1b_host_set_sample_rate(this.host, sr);
-  }
-
   /// Drop every sounding voice without touching ring or store — used on
   /// resume-after-suspend so nothing is left hanging from before the stop.
   reset() {

@@ -93,7 +93,6 @@ test("every export the JS transport calls is present", async () => {
     "vxn1b_host_max_events",
     "vxn1b_host_set_param",
     "vxn1b_host_get_param",
-    "vxn1b_host_set_sample_rate",
     "vxn1b_host_render",
     "vxn1b_host_out_l",
     "vxn1b_host_out_r",

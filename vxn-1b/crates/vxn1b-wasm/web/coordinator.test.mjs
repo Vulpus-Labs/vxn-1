@@ -122,7 +122,6 @@ async function boot(extra = {}) {
     wasmBytes: wasmBytes(),
     AudioContextClass: FakeContext,
     AudioWorkletNodeClass: FakeNode,
-    mediaDevices: null,
     ...extra,
   });
   await host.start();
@@ -133,7 +132,7 @@ async function boot(extra = {}) {
 // ── Construction and boot ──────────────────────────────────────────────────
 
 test("the transport exists before start(), so events can be queued pre-gesture", () => {
-  const host = new WebHost({ wasmBytes: wasmBytes(), AudioContextClass: FakeContext, mediaDevices: null });
+  const host = new WebHost({ wasmBytes: wasmBytes(), AudioContextClass: FakeContext });
   assert.ok(host.ringSab && host.storeSab, "the SABs are allocated up front");
   assert.equal(host.gateState, "idle");
   assert.equal(host.noteOn(60, 1.0), true, "a note can be queued before audio exists");
@@ -262,28 +261,6 @@ test("a browser-driven suspend/resume drives the gate the same way", async () =>
   await host.teardown();
 });
 
-test("rebuild() re-boots over the SAME SABs so transport state survives", async () => {
-  const host = await boot();
-  host.setParam(9, 0.375);
-  const ringSab = host.ringSab;
-  const storeSab = host.storeSab;
-  const oldNode = host.node;
-
-  await host.rebuild();
-  await host.node.booted;
-
-  assert.equal(host.ringSab, ringSab, "same ring SAB");
-  assert.equal(host.storeSab, storeSab, "same store SAB");
-  assert.notEqual(host.node, oldNode, "a fresh worklet node");
-  assert.ok(oldNode.destroyed, "the old worklet was told to destroy");
-  // The point of rebuilding over the same SABs: the user's patch survives a
-  // context change. Re-seeding defaults on every start() would silently reset
-  // their sound on a device switch.
-  assert.equal(host.readParam(9), 0.375, "param state survived the rebuild");
-  assert.equal(host.gateState, "running");
-  await host.teardown();
-});
-
 test("teardown closes the context, destroys the worklet, and drops the SABs", async () => {
   const host = await boot();
   const node = host.node;
@@ -296,7 +273,6 @@ test("teardown closes the context, destroys the worklet, and drops the SABs", as
   assert.equal(host.storeSab, null);
   assert.equal(host.telemetrySab, null);
   assert.equal(host.gateState, "closed");
-  await assert.rejects(() => host.rebuild(), /torn down/);
 });
 
 test("a trap is surfaced to the main thread with its count", async () => {

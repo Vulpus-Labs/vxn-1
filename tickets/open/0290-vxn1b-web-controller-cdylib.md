@@ -35,9 +35,7 @@ Concretely, three things are stubbed or absent today and all of them live here:
   stringifies it as `display`. Both are descriptor-derived and wrong for any
   tapered param; the page's readouts depend on them.
 - There is no corpus JSON, so the preset browser has nothing to render.
-- [0289](0289-vxn1b-worklet-coordinator.md) deliberately left a gap: a render
-  trap rebuilds the engine and loses every piece of non-automatable state. The
-  re-broadcast has to come from whoever holds the authoritative model — this.
+- The preset corpus and every user-preset operation.
 
 ## Design
 
@@ -154,14 +152,16 @@ and TOML export/import.
 - [ ] User save/load/rename/delete/move + folder ops mutate the cache
       synchronously and journal the persistence op.
 - [ ] State snapshot/restore and TOML export/import round-trip.
-- [ ] A full re-broadcast reproduces every param plus the non-automatable state —
-      the trap-recovery path 0289 left open.
+- [ ] A full re-broadcast reproduces every param plus the non-automatable state
+      (the editor-attach path — a fresh page needs seeding).
 - [ ] `cargo test -p vxn1b-web-controller` and `cargo test --workspace` green.
 
 ## Notes
 
 - Reference: `vxn-2/crates/vxn2-web-controller/src/{lib.rs,user_store.rs}` (1590 +
-  512 lines) — the closest relative.
+  512 lines) — the closest relative. Port with the demo posture of [[0297]] in
+  mind: this build's failure story is "reload the page", so anything there that
+  exists to survive a long-lived DAW session is a candidate to leave out.
 - `vxn1b-engine` exposes `sanitize_name` / `preset_filename` /
   `unique_folder_name`? vxn-2 had to make those `pub` for its web store; check
   and do the same rather than re-rolling them.

@@ -190,6 +190,26 @@ needs everything from it.
       `deploy-web.sh` that does **not** clobber the vxn-1/vxn-2 `_headers` blocks
       ([[vxn-web-publish-flow]]); hosting doc; DAW-free browser smoke.
 
+## Scope: this is a demo
+
+Settled 2026-08-25, after 0289 had already ported a pile of vxn-1's robustness
+machinery. **The browser build is a demo, not a product.** Its answer to a
+changed audio device, a wasm trap, or anything else structural is *reload the
+page*. [[0297]] removed what had already been carried over — graph rebuild,
+device-change following, sample-rate change, trap re-instantiation, and the
+audio→main param readback — and the same posture applies to what is left:
+
+- **0291** — the faceplate needs to work, not to survive being left open for
+  eight hours.
+- **0293** — persistence is for convenience (your patch is still there next
+  visit), not durability. Losing it should never be worse than annoying.
+- **0294** — ship means a URL that plays, not an SLA.
+
+What is *not* in scope to cut: anything that is a browser fact rather than a DAW
+one. The autoplay gesture gate, suspend/resume with a voice flush on the way
+back, and cross-origin isolation are all load-bearing for a page that anyone
+actually opens.
+
 ## Risks
 
 - **Telemetry channel is unproven.** 0289 has no prior art in this repo.

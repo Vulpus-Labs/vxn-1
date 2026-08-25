@@ -12,25 +12,22 @@
 // fresh host over the same SABs resumes exactly where the dead one left off.
 //
 // ===========================================================================
-// WHAT A TRAP COSTS, AND WHY THIS RUNNER DOES NOT TRY TO FIX IT ALL
+// A TRAP STOPS THE AUDIO. IT DOES NOT PRETEND TO RECOVER. (ticket 0297)
 // ===========================================================================
 //
-// After a re-instantiate the params come back on their own: the worklet-side
-// mirror is NaN-seeded, so the first fold reapplies every id from the store.
+// vxn-1's runner re-instantiates over the same SABs after a trap, so audio comes
+// back. VXN1b deliberately does not, because here that would come back WRONG.
 //
-// The NON-automatable state does not. VXN1b's is key state (mode, split point,
-// LFO 2 link), the whole per-layer matrix topology, the scope tap and the tempo
-// — none of it in the param store, and none of it re-sent by a ring that has
-// already delivered it. vxn-1's runner shadows its equivalent because its
-// equivalent is two bytes; VXN1b's would mean decoding every record this runner
-// currently copies as opaque bytes, and keeping a second copy of the topology
-// free to drift from the engine's.
+// A rebuilt engine reloads its params for free — the worklet-side mirror is
+// NaN-seeded, so the first fold reapplies every id from the store. But none of
+// the non-automatable state returns: key mode, split point, LFO 2 link, the
+// whole per-layer matrix topology, the scope tap and the tempo are not in the
+// store, and a ring that has already delivered them will not resend. The synth
+// would resume playing a different patch, with nothing on screen saying so.
 //
-// The controller already holds the authoritative model, so the replay belongs
-// there. This runner raises the signal (`onTrap`) and the coordinator surfaces
-// it; the re-broadcast lands with the controller bridge (0290). Until then a
-// trap costs routing — which is why the default handler is LOUD rather than
-// silent.
+// For a demo, "the sound stopped, reload the page" beats that. So: catch the
+// trap (it must not escape `process()` and wedge the context), go silent, report
+// loudly — and stop.
 
 import { AudioHost } from "./audio-host.mjs";
 
@@ -57,17 +54,12 @@ export class WorkletHostRunner {
     this.onTrap =
       onTrap ||
       ((e, count) =>
-        console.warn(
-          `vxn1b: render trap #${count} — engine rebuilt; routing state needs a ` +
-            `re-broadcast from the controller`,
-          e,
-        ));
+        console.warn(`vxn1b: render trap #${count} — audio stopped; reload the page`, e));
     this.onReady = onReady || (() => {});
 
     this.host = null;
     this.ready = false;
     this.trapCount = 0;
-    this._reinitInFlight = false;
   }
 
   /// Instantiate the wasm and build the host. Until it resolves, `process()`
@@ -90,11 +82,6 @@ export class WorkletHostRunner {
     this.onReady();
   }
 
-  setSampleRate(sr) {
-    this.sampleRate = sr;
-    if (this.host) this.host.setSampleRate(sr);
-  }
-
   /// All-notes-off without dropping ring or store state. Called on resume after
   /// a suspend, to clear voices that were mid-flight when audio stopped.
   reset() {
@@ -102,9 +89,9 @@ export class WorkletHostRunner {
   }
 
   /// Render one quantum. Silence until ready. A trap in the wasm render is
-  /// caught HERE, at the worklet boundary: output silence, notify, and kick an
-  /// async re-instantiate over the same SABs so audio recovers instead of the
-  /// context being permanently wedged. Returns true iff real audio was rendered.
+  /// caught HERE, at the worklet boundary: output silence and notify. The engine
+  /// stays down — see the note at the top of this file. Returns true iff real
+  /// audio was rendered.
   process(outL, outR) {
     if (!this.ready || !this.host) {
       outL.fill(0);
@@ -115,22 +102,13 @@ export class WorkletHostRunner {
       this.host.process(outL, outR);
       return true;
     } catch (e) {
-      // The instance is poisoned after a trap; tear it down and rebuild.
+      // The instance is poisoned after a trap. Drop it and stay down.
       this.ready = false;
       this.host = null;
       this.trapCount++;
       outL.fill(0);
       if (outR) outR.fill(0);
       this.onTrap(e, this.trapCount);
-      if (!this._reinitInFlight) {
-        this._reinitInFlight = true;
-        Promise.resolve()
-          .then(() => this._instantiate())
-          .catch(() => {}) // recovery is best-effort; stays silent if it can't
-          .finally(() => {
-            this._reinitInFlight = false;
-          });
-      }
       return false;
     }
   }

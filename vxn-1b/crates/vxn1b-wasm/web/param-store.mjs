@@ -1,9 +1,16 @@
-// Cross-thread parameter store + audio->main diff readback (0287).
+// Cross-thread parameter store (0287, trimmed by 0297).
 //
 // The web analogue of the native `SharedParams`: one atomic per CLAP id holding
 // the param's PLAIN f32 value, bit-cast into an i32 slot. Audio (worklet) reads
 // lock-free in the render loop; the controller (main thread) writes on edits and
 // bulk preset loads. Latest-value-wins.
+//
+// ONE direction only. vxn-1's store carries a second `readback` region so the
+// main thread can see params the AUDIO thread changed — which for a plugin means
+// CLAP host automation writing `SharedParams` from `process()`. There is no host
+// in a browser: every value here originates in the controller's model, and the
+// worklet would only ever echo back what it had just read. The region and its
+// diff pump were carried over from vxn-1 and removed once that was traced.
 //
 // The id layout is owned by `event-codec.mjs`, itself a declared mirror of
 // vxn1b-engine's params.rs. Imported here so the store and the codec can never
@@ -35,17 +42,13 @@ export const LAYOUT = Object.freeze({
 });
 
 // ===========================================================================
-// SAB LAYOUT  (two regions, one buffer)
+// SAB LAYOUT
 // ===========================================================================
 //
-// ONE SharedArrayBuffer carrying two i32 regions, so a host passes the worklet a
-// single buffer:
+//   Int32Array(TOTAL_PARAMS)   main -> audio current values
 //
-//   region STORE    : Int32Array(TOTAL_PARAMS)   main -> audio current values
-//   region READBACK : Int32Array(TOTAL_PARAMS)   audio -> main applied echo
-//
-// Both are i32 atomics; each word holds an f32 PLAIN value bit-cast via
-// Atomics.load/store of the bits (mirroring AtomicU32 + f32::to_bits).
+// Each word holds an f32 PLAIN value bit-cast via Atomics.load/store of the bits
+// (mirroring AtomicU32 + f32::to_bits).
 //
 // PER-SLOT ATOMICITY: every write is a single Atomics.store of one 32-bit word,
 // every read a single Atomics.load. A concurrent reader always sees a slot as
@@ -55,18 +58,14 @@ export const LAYOUT = Object.freeze({
 // some new and some old slots, exactly as the native SharedParams gives.
 // Latest-value-wins per id is the contract the audio thread is built on.
 
-const STORE_WORDS = TOTAL_PARAMS;
-const READBACK_WORDS = TOTAL_PARAMS;
-const TOTAL_WORDS = STORE_WORDS + READBACK_WORDS;
-
+const TOTAL_WORDS = TOTAL_PARAMS;
 const STORE_BASE_WORD = 0;
-const READBACK_BASE_WORD = STORE_WORDS;
 
 export const STORE_BYTES = TOTAL_WORDS * 4;
 
-/// Allocate the param SAB (store + readback). In the browser the host allocates
-/// and posts it to the worklet via processorOptions; in Node a plain
-/// SharedArrayBuffer is constructible without isolation.
+/// Allocate the param SAB. In the browser the host allocates and posts it to the
+/// worklet via processorOptions; in Node a plain SharedArrayBuffer is
+/// constructible without isolation.
 export function createParamSAB() {
   const Buf = typeof SharedArrayBuffer !== "undefined" ? SharedArrayBuffer : ArrayBuffer;
   return new Buf(STORE_BYTES);
@@ -134,75 +133,6 @@ export class ParamStore {
     for (let id = 0; id < TOTAL_PARAMS; id++) out[id] = this.read(id);
     return out;
   }
-
-  // ---- diff readback: audio writes, main reads --------------------------
-
-  /// AUDIO SIDE. Publish the value the worklet actually applied for `id`.
-  /// Single atomic word store — never blocks the render thread.
-  publishReadback(id, value) {
-    Atomics.store(this.i32, READBACK_BASE_WORD + id, this._bitsOf(value));
-  }
-
-  /// Read the current readback value for `id` (lock-free).
-  readReadback(id) {
-    return this._floatOf(Atomics.load(this.i32, READBACK_BASE_WORD + id));
-  }
-}
-
-// ===========================================================================
-// DIFF-READBACK PUMP — port of the native push_param_diffs
-// ===========================================================================
-//
-// The native pump scans SharedParams against a main-thread `last_seen` mirror
-// and emits ParamChanged for any audio-thread write the controller never
-// processed (host automation, modulation echo). NaN-seed semantics force a full
-// broadcast on the first tick after the editor opens.
-//
-// Web mapping: the worklet publishes applied values into the READBACK region;
-// the main thread polls it on rAF and diffs against `lastSeen`.
-
-/// Fresh `lastSeen` mirror seeded with NaN, so the FIRST pollDiffs broadcasts
-/// every id (NaN never equals itself) — mirroring the native all-NaN seed.
-export function newLastSeen() {
-  const a = new Float32Array(TOTAL_PARAMS);
-  a.fill(NaN);
-  return a;
-}
-
-/// MAIN SIDE. Scan the readback region against `lastSeen`, update it in place,
-/// and return the changed params as ParamChanged-equivalent records.
-///
-/// NaN-aware compare, exactly like the native pump: `plain === lastSeen[id]` is
-/// false when either is NaN, so the all-NaN seed surfaces every slot on the
-/// first call. A genuine NaN in the readback would re-emit every poll, but the
-/// engine never produces NaN param values (descriptors clamp), matching native.
-export function pollDiffs(store, lastSeen) {
-  const out = [];
-  for (let id = 0; id < TOTAL_PARAMS; id++) {
-    const plain = store.readReadback(id);
-    if (plain === lastSeen[id]) continue;
-    lastSeen[id] = plain;
-    out.push(paramChanged(id, plain));
-  }
-  return out;
-}
-
-/// Build one ParamChanged-equivalent record, so the shape is declared in one
-/// place.
-///
-/// `norm` and `display` are derived from the param descriptor (taper) and the
-/// sync-aware display, both owned by the engine's param table and reachable only
-/// from the controller wasm (0288+). Until that is wired, `norm` passes `plain`
-/// through — NOT correct for tapered params — and `display` stringifies it. The
-/// readback PLUMBING is what this module owns; the exact norm/display strings
-/// are the controller's to fill.
-function paramChanged(id, plain) {
-  return {
-    id, // u32 CLAP id
-    plain, // f32 plain value, straight from the readback word
-    norm: plain, // TODO(0290): descriptor taper via the controller wasm
-    display: String(plain), // TODO(0290): sync-aware display via the controller wasm
-  };
 }
 
 // ===========================================================================
@@ -218,8 +148,8 @@ export function newWorkletSeen() {
 }
 
 /// WORKLET SIDE. Fold the current-value store into the engine: for every id
-/// whose store value differs from what was last applied, apply it and echo it
-/// into the readback region. Returns the count applied (instrumentation).
+/// whose store value differs from what was last applied, apply it. Returns the
+/// count applied (instrumentation).
 ///
 /// `engine.setParam(id, value)` is the `vxn1b_host_set_param` shim. The mirror
 /// avoids re-applying an unchanged value every quantum — the SAB is
@@ -232,7 +162,6 @@ export function applyStoreToEngine(store, engine, workletSeen) {
     if (v === workletSeen[id]) continue; // unchanged (NaN seed forces first apply)
     workletSeen[id] = v;
     engine.setParam(id, v);
-    store.publishReadback(id, v); // echo so main-thread pollDiffs observes it
     applied++;
   }
   return applied;

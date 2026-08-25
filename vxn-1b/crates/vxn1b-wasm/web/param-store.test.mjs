@@ -15,8 +15,6 @@ import {
   GLOBAL_COUNT,
   patchClapId,
   globalClapId,
-  newLastSeen,
-  pollDiffs,
   newWorkletSeen,
   applyStoreToEngine,
 } from "./param-store.mjs";
@@ -39,8 +37,11 @@ test("the two-layer layout matches vxn1b-engine's id partition", () => {
   assert.equal(globalClapId(0), LAYOUT.GLOBAL_BASE);
 });
 
-test("the SAB carries a store region and a readback region", () => {
-  assert.equal(STORE_BYTES, TOTAL_PARAMS * 4 * 2);
+// One direction only: there is no host in a browser, so nothing but the
+// controller ever originates a param value and the audio->main readback vxn-1
+// carries has nothing to report (0297).
+test("the SAB carries exactly one word per param, no readback region", () => {
+  assert.equal(STORE_BYTES, TOTAL_PARAMS * 4);
   assert.equal(createParamSAB().byteLength, STORE_BYTES);
 });
 
@@ -72,6 +73,14 @@ test("a layer-1 write does not leak into its layer-2 twin", () => {
   assert.equal(s.read(l1), 0.75);
 });
 
+test("two views over the same SAB see each other's writes", () => {
+  const sab = createParamSAB();
+  const main = new ParamStore(sab);
+  const worklet = new ParamStore(sab);
+  main.write(42, 0.5);
+  assert.equal(worklet.read(42), 0.5);
+});
+
 test("writeBulk fills every slot and rejects a wrong-length array", () => {
   const s = store();
   const values = Float32Array.from({ length: TOTAL_PARAMS }, (_, i) => i);
@@ -84,50 +93,9 @@ test("writeBulk fills every slot and rejects a wrong-length array", () => {
   assert.throws(() => s.writeBulk(new Float32Array(TOTAL_PARAMS + 1)), /expects 185 values/);
 });
 
-test("two views over the same SAB see each other's writes", () => {
-  const sab = createParamSAB();
-  const main = new ParamStore(sab);
-  const worklet = new ParamStore(sab);
-  main.write(42, 0.5);
-  assert.equal(worklet.read(42), 0.5);
-  worklet.publishReadback(42, 0.25);
-  assert.equal(main.readReadback(42), 0.25);
-});
-
-test("the store region and the readback region are independent", () => {
-  const s = store();
-  s.write(7, 1.0);
-  s.publishReadback(7, 2.0);
-  assert.equal(s.read(7), 1.0, "readback must not alias the store");
-  assert.equal(s.readReadback(7), 2.0);
-});
-
 // The NaN seed is how the native pump forces a full broadcast on the first tick
 // after the editor opens; without it a freshly-opened UI shows stale defaults
 // for every control the user has not touched.
-test("the first poll after a NaN seed broadcasts every id, then only drift", () => {
-  const s = store();
-  const seen = newLastSeen();
-  assert.equal(pollDiffs(s, seen).length, TOTAL_PARAMS, "first poll broadcasts all");
-  assert.equal(pollDiffs(s, seen).length, 0, "a quiet region yields nothing");
-
-  s.publishReadback(3, 0.5);
-  const diffs = pollDiffs(s, seen);
-  assert.equal(diffs.length, 1);
-  assert.equal(diffs[0].id, 3);
-  assert.equal(diffs[0].plain, 0.5);
-  assert.equal(pollDiffs(s, seen).length, 0, "and settles again");
-});
-
-test("a diff record carries the ParamChanged-equivalent shape", () => {
-  const s = store();
-  const seen = newLastSeen();
-  pollDiffs(s, seen); // absorb the seed broadcast
-  s.publishReadback(9, 0.75);
-  const [rec] = pollDiffs(s, seen);
-  assert.deepEqual(Object.keys(rec).sort(), ["display", "id", "norm", "plain"]);
-  assert.equal(rec.plain, 0.75);
-});
 
 // The worklet-side fold. The mirror is what keeps a steady-state quantum from
 // re-applying 185 unchanged params; the NaN seed is what makes the first one
@@ -149,20 +117,3 @@ test("the worklet fold applies every id once, then only what changed", () => {
   assert.deepEqual(applied, [[12, 0.5]]);
 });
 
-test("the worklet fold echoes what it applied into the readback", () => {
-  const s = store();
-  const engine = { setParam: () => {} };
-  const workletSeen = newWorkletSeen();
-  const lastSeen = newLastSeen();
-
-  s.write(4, 0.6);
-  applyStoreToEngine(s, engine, workletSeen);
-  assert.equal(s.readReadback(4), f32(0.6));
-
-  // ...and the main-thread pump therefore observes it.
-  const diffs = pollDiffs(s, lastSeen);
-  assert.ok(
-    diffs.some((d) => d.id === 4 && d.plain === f32(0.6)),
-    "the applied value reaches the main thread",
-  );
-});

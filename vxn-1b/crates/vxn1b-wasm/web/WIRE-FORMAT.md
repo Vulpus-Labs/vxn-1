@@ -99,7 +99,12 @@ Checked against the other ports rather than assumed:
 Two channels, and the split is load-bearing:
 
 - **The param store** (`param-store.mjs`) carries everything with a CLAP id,
-  block-granular, latest-value-wins. That includes each matrix slot's **depth**.
+  block-granular, latest-value-wins, **main → worklet only**. That includes each
+  matrix slot's **depth**. vxn-1's store has a second `readback` region so the
+  main thread can see params the audio thread changed — CLAP host automation
+  writing `SharedParams` from `process()`. There is no host in a browser, so
+  every value here originates in the controller's model and the region was
+  removed (0297).
 - **The ring** carries notes, sample-accurate param automation, and every piece
   of non-automatable domain state: key mode, split point, LFO 2 link, matrix
   **topology**, scope tap, tempo.

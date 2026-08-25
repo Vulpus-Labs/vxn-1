@@ -52,9 +52,8 @@ class Vxn1bHostProcessor extends AudioWorkletProcessor {
       sampleRate, // worklet global
       capacity: opts.capacity,
       onReady: () => this.port.postMessage({ type: "ready" }),
-      // A trap rebuilt the engine, so the controller has to re-broadcast the
-      // non-automatable state (key mode, split, LFO 2 link, matrix topology,
-      // scope tap, tempo) — the param store restores itself, that does not.
+      // A trap takes the engine down for good on this port (0297): recovering
+      // audio without the non-automatable state would resume the WRONG patch.
       onTrap: (e, count) =>
         this.port.postMessage({
           type: "trap",
@@ -68,9 +67,6 @@ class Vxn1bHostProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (e) => {
       const m = e.data;
       switch (m.type) {
-        case "sampleRate":
-          this.runner.setSampleRate(m.value);
-          break;
         case "reset":
           this.runner.reset(); // resume-after-suspend
           break;

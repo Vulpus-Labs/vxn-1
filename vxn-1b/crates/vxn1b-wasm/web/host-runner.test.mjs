@@ -182,26 +182,27 @@ test("a render trap goes silent, reports, and does not throw out of process()", 
   assert.equal(r.ready, false, "the poisoned instance is dropped");
 });
 
-test("after a trap the runner re-instantiates over the same SABs and recovers", async () => {
+// vxn-1 rebuilds the engine here and audio returns. VXN1b deliberately does not:
+// a rebuilt engine reloads its params from the store but NOT the key state,
+// matrix topology, scope tap or tempo, so it would resume playing a different
+// patch with nothing on screen saying so. Stopping is the honest outcome (0297).
+test("after a trap the engine stays down rather than resuming the wrong patch", async () => {
   const ringSab = createRingSAB();
   const ring = new EventRing(ringSab);
   const r = await runner({ ringSab });
 
-  // Poison the live host, then render: the runner catches, drops it, and kicks
-  // an async rebuild.
   r.host = new AudioHost(throwingWasm(), { ringSab, sampleRate: 48000 });
   const [l, right] = buffers();
   r.process(l, right);
   assert.equal(r.ready, false);
 
-  // Let the async re-instantiate settle.
-  for (let i = 0; i < 10 && !r.ready; i++) await new Promise((res) => setTimeout(res, 5));
-  assert.equal(r.ready, true, "the runner rebuilds itself");
+  // Give any async recovery a chance to happen; there must not be one.
+  for (let i = 0; i < 10; i++) await new Promise((res) => setTimeout(res, 5));
+  assert.equal(r.ready, false, "no silent re-instantiate");
 
-  // The SABs survived, so a note pushed now still sounds.
   ring.pushNoteOn(0, 60, 1.0);
   r.process(l, right);
-  assert.ok(peak(l) > 0, "audio recovers over the same transport");
+  assert.equal(peak(l), 0, "and it stays silent");
 });
 
 test("the default trap handler is loud rather than silent", () => {
@@ -219,8 +220,8 @@ test("the default trap handler is loud rather than silent", () => {
   // A trap rebuilds the engine and loses the non-automatable state; that must
   // not pass unremarked just because nobody registered a handler.
   assert.ok(
-    seen.some((s) => /render trap/.test(s) && /re-broadcast/.test(s)),
-    `expected a warning naming the consequence, got ${JSON.stringify(seen)}`,
+    seen.some((s) => /render trap/.test(s) && /reload the page/.test(s)),
+    `expected a warning telling the user what to do, got ${JSON.stringify(seen)}`,
   );
 });
 

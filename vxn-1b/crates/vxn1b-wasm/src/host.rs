@@ -213,26 +213,6 @@ pub unsafe extern "C" fn vxn1b_host_get_param(ptr: *mut Host, index: u32) -> f32
     }
 }
 
-/// Rebuild the engine at a new sample rate.
-///
-/// `Engine` has no in-place `set_sample_rate` (the plugin never needs one — the
-/// host tells it the rate at activation), so this constructs a fresh one. That
-/// drops all live voices and the FX tails, which is correct for the case it
-/// serves: an AudioContext's `sampleRate` is fixed for its lifetime, so this is
-/// only reached via a context teardown/rebuild, where the graph is being torn
-/// down anyway. Params come back on the next quantum — the coordinator's
-/// worklet-side mirror is NaN-seeded after a rebuild, so the first fold reapplies
-/// every id.
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_set_sample_rate(ptr: *mut Host, sample_rate: f32) {
-    if let Some(h) = unsafe { ptr.as_mut() } {
-        h.engine = Engine::new(sample_rate, QUANTUM);
-    }
-}
-
 /// Render one quantum, applying the first `n_events` records in the scratch at
 /// their sample offsets. Returns nothing; JS reads the output through
 /// [`vxn1b_host_out_l`] / [`vxn1b_host_out_r`].

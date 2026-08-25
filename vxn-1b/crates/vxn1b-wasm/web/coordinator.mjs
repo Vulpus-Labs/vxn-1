@@ -22,12 +22,25 @@
 //
 // vxn-1 sends its key mode and split point over the PORT, because its wire
 // predates having anywhere better to put them. VXN1b's ride the ring with
-// everything else, which is why this coordinator has no latched shared state to
-// replay onto a fresh worklet — the ring's contents are not lost by a rebuild,
-// since the SABs survive it.
+// everything else.
+//
+// ===========================================================================
+// SCOPE: THIS IS A DEMO (ticket 0297)
+// ===========================================================================
+//
+// Deliberately NOT here, though vxn-1's coordinator has all of it: rebuilding
+// the graph for a sample-rate change, following a device switch via setSinkId,
+// and listening for devicechange. Those matter for an instrument somebody leaves
+// open in a DAW all day; the browser build's answer to a changed audio device is
+// to reload the page.
+//
+// What IS here is not plugin-grade robustness but browser fact: the gesture gate
+// (autoplay policy — without it there is no sound at all) and suspend/resume
+// mirroring with a voice flush (tabs get backgrounded constantly, and coming
+// back with stuck notes is not exotic, it is Tuesday).
 
 import { EventRing, createRingSAB, DEFAULT_CAPACITY } from "./event-ring.mjs";
-import { ParamStore, createParamSAB, TOTAL_PARAMS, newLastSeen, pollDiffs } from "./param-store.mjs";
+import { ParamStore, createParamSAB, TOTAL_PARAMS } from "./param-store.mjs";
 import { createTelemetrySAB, TelemetryReader } from "./telemetry.mjs";
 
 const DEFAULT_WASM_URL = "./vxn1b_wasm.wasm";
@@ -58,7 +71,7 @@ export class WebHost {
   //                           where the meter is disabled.
   //   AudioContextClass /
   //   AudioWorkletNodeClass : injection seams for headless testing.
-  //   fetchImpl, mediaDevices: seams; mediaDevices null disables device-change.
+  //   fetchImpl             : fetch seam.
   constructor({
     wasmUrl = DEFAULT_WASM_URL,
     workletUrl = DEFAULT_WORKLET_URL,
@@ -71,7 +84,6 @@ export class WebHost {
     AudioContextClass = globalThis.AudioContext,
     AudioWorkletNodeClass = globalThis.AudioWorkletNode,
     fetchImpl = globalThis.fetch,
-    mediaDevices = globalThis.navigator ? globalThis.navigator.mediaDevices : null,
   } = {}) {
     this.wasmUrl = wasmUrl;
     this.workletUrl = workletUrl;
@@ -84,7 +96,6 @@ export class WebHost {
     this._AudioContext = AudioContextClass;
     this._AudioWorkletNode = AudioWorkletNodeClass;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
-    this._mediaDevices = mediaDevices || null;
 
     // Allocate the transport up front — cheap, needs no audio context — so the
     // producer surface is usable the instant the WebHost exists. Events written
@@ -94,7 +105,6 @@ export class WebHost {
     this.storeSab = createParamSAB();
     this.ring = new EventRing(this.ringSab, this.capacity); // producer side
     this.store = new ParamStore(this.storeSab); // controller side
-    this._lastSeen = newLastSeen(); // readback diff mirror
 
     // Telemetry is sized from the engine, so the SAB is allocated once the wasm
     // is available (start()); until then there is nothing to read.
@@ -114,7 +124,6 @@ export class WebHost {
     // transitions and never drives it out of band.
     this.gateState = "idle";
     this._statechange = null;
-    this._devicechange = null;
     this._tornDown = false;
 
     // Resolves at "audio live". start() does NOT block on it — resume can settle
@@ -142,7 +151,6 @@ export class WebHost {
     this.ctx = new this._AudioContext();
 
     this._attachStateChange();
-    this._attachDeviceChange();
 
     // Worklet scope cannot fetch, so the main thread fetches the wasm and hands
     // the bytes over through processorOptions. addModule resolves the worklet's
@@ -206,12 +214,11 @@ export class WebHost {
   /// The telemetry SAB is sized here too, from the same instance — its region
   /// lengths are engine constants, so this is the first point they are known.
   ///
-  /// ONCE, not on every start(). `rebuild()` re-runs start() over the SAME SABs
-  /// precisely so the live patch survives a context change; re-seeding there
-  /// would overwrite every param with its default and silently reset the user's
-  /// sound on a sample-rate change or a device switch. The zero-fold this
-  /// guards against is a first-boot problem only — after that the store holds
-  /// the authoritative values.
+  /// ONCE, not on every start(). The zero-fold this guards against is a
+  /// first-boot problem only; after that the store holds the authoritative
+  /// values, and re-seeding would overwrite the live patch with defaults. There
+  /// is no second start() on this port now that rebuild() is gone (0297), but
+  /// the guard stays: it is the property that matters, not the caller.
   async _seedStoreFromDefaults(wasmBytes) {
     if (this._storeSeeded) return;
     const { instance } = await WebAssembly.instantiate(wasmBytes, {});
@@ -339,58 +346,6 @@ export class WebHost {
     }
   }
 
-  // ---- device change ------------------------------------------------------
-  //
-  // Two cases, decided by whether the sample rate moves:
-  //   (a) same rate, different device — re-route in place via setSink(), no
-  //       graph change: the engine keeps rendering and only the sink moves.
-  //   (b) rate change — an AudioContext's sampleRate is immutable, so this needs
-  //       a NEW context. rebuild() re-boots over the SAME SABs, so transport
-  //       state survives.
-
-  _attachDeviceChange() {
-    const md = this._mediaDevices;
-    if (!md || typeof md.addEventListener !== "function") return;
-    this._devicechange = () => this._onDeviceChange();
-    md.addEventListener("devicechange", this._devicechange);
-  }
-  _detachDeviceChange() {
-    const md = this._mediaDevices;
-    if (md && this._devicechange && typeof md.removeEventListener === "function") {
-      md.removeEventListener("devicechange", this._devicechange);
-    }
-    this._devicechange = null;
-  }
-
-  /// No structural action by default: most device changes do not move the
-  /// context rate, so the graph stays up. A hook rather than a policy, so the
-  /// faceplate can override without re-listening.
-  _onDeviceChange() {}
-
-  /// Re-route output to a specific device without rebuilding the graph. Resolves
-  /// true if the sink moved, false where setSinkId is unavailable.
-  async setSink(sinkId) {
-    if (this.ctx && typeof this.ctx.setSinkId === "function") {
-      await this.ctx.setSinkId(sinkId);
-      return true;
-    }
-    return false;
-  }
-
-  /// Rebuild the graph at a (possibly new) sample rate, reusing the SAME SABs so
-  /// transport and param state survive. Must be called from a user gesture (it
-  /// resumes a fresh context). The ring's read index is wherever the old worklet
-  /// left it, so no events are lost; voices sounding at teardown go with the old
-  /// engine — a clean break rather than a stuck note.
-  async rebuild() {
-    if (this._tornDown) throw new Error("WebHost torn down; construct a fresh one");
-    await this._disposeGraph();
-    this.ready = false;
-    this.whenReady = new Promise((res) => (this._resolveReady = res));
-    this._setGate("idle");
-    return this.start();
-  }
-
   // ---- producer surface: everything the UI sends downstream ---------------
   //
   // The main-thread half of the SPSC ring; the worklet drains it in its render
@@ -469,10 +424,6 @@ export class WebHost {
   readParam(id) {
     return this.store.read(id);
   }
-  /// Drain the audio->main readback into ParamChanged-equivalent records.
-  pollParamDiffs() {
-    return pollDiffs(this.store, this._lastSeen);
-  }
 
   // ---- telemetry ----------------------------------------------------------
 
@@ -488,10 +439,9 @@ export class WebHost {
 
   // ---- teardown -----------------------------------------------------------
 
-  /// Tear down the audio graph but KEEP the transport SABs, so rebuild() can
-  /// re-boot over the same shared state.
+  /// Tear down the audio graph, leaving the transport SABs alone — `teardown()`
+  /// drops those.
   async _disposeGraph() {
-    this._detachDeviceChange();
     this._detachStateChange();
     if (this.node) {
       try {
@@ -516,7 +466,7 @@ export class WebHost {
 
   /// Full teardown: dispose the graph AND drop the SAB references so nothing —
   /// engine, node, context or shared memory — leaks. The WebHost is spent
-  /// afterwards; a fresh boot needs a new one. The worklet nulls its own SAB
+  /// afterwards; a fresh boot needs a new one (or, in practice, a reload). The worklet nulls its own SAB
   /// refs on `destroy`, so once these go the SABs are unreferenced on both
   /// threads and collectable.
   async teardown() {
