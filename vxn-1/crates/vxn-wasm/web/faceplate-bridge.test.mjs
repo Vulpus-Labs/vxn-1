@@ -81,7 +81,11 @@ function makeStateBlob(controller) {
   const floats = controller.globalCount + 2 * controller.patchCount;
   return concatBytes([
     enc.encode("VXN1"),
-    u32le(1),
+    // vxn_app::state::VERSION. Bumped 1 -> 2 by 0278, which added the two
+    // FX-stereo globals (phaser_stereo, delay_pingpong) and so lengthened the
+    // global block. `restore` rejects any other version outright, so a stale
+    // value here reads as "factory preset failed to apply", not as a bad header.
+    u32le(2),
     new Uint8Array(floats * 4), // zeros = f32 0.0
     new Uint8Array([0, 60]), // key_mode = Whole, split = 60
   ]);

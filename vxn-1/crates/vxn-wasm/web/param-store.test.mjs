@@ -6,12 +6,12 @@
 // proves the ring — driving the EXACT shared code path (param-store.mjs) the
 // AudioWorklet will use, with hard asserts. Covers:
 //
-//   1. bulk update: write 165 params, read them all back correct.
+//   1. bulk update: write 167 params, read them all back correct.
 //   2. lock-free single read/write round-trips incl. f32 bit-cast edge values
 //      (0.0, -0.0, NaN, 1.0, negative, denormal, +/-Inf, FLT_MAX).
 //   3. diff readback: an audio-side write surfaces as exactly one
 //      ParamChanged-equivalent; no spurious diffs when nothing changed; the
-//      first poll after a NaN seed broadcasts all 165 (NaN-seed behaviour).
+//      first poll after a NaN seed broadcasts all 167 (NaN-seed behaviour).
 //   4. bulk-preset-load "no glitch": a concurrent reader interleaved with a
 //      bulk write only ever sees old-or-new per slot, never a torn float
 //      (per-slot atomicity guarantee).
@@ -52,12 +52,12 @@ check(
   typeof Atomics !== "undefined" && typeof Atomics.load === "function",
   "Atomics available",
 );
-check(TOTAL_PARAMS === 165, `TOTAL_PARAMS == 165 (got ${TOTAL_PARAMS})`);
+check(TOTAL_PARAMS === 167, `TOTAL_PARAMS == 167 (got ${TOTAL_PARAMS})`);
 check(
   LAYOUT.PATCH_COUNT === 69 &&
-    LAYOUT.GLOBAL_COUNT === 27 &&
+    LAYOUT.GLOBAL_COUNT === 29 &&
     LAYOUT.LAYER_COUNT === 2,
-  `layout counts 69/27/2 (matches ADR 0009 §3 / vxn-app)`,
+  `layout counts 69/29/2 (matches ADR 0009 §3 / vxn-app)`,
 );
 check(LAYOUT.UPPER_BASE === 0, "Upper base = 0");
 check(LAYOUT.LOWER_BASE === 69, "Lower base = 69");
@@ -65,9 +65,9 @@ check(LAYOUT.GLOBAL_BASE === 138, "Global base = 138");
 check(patchClapId(0, 0) === 0, "patchClapId(Upper,0) = 0");
 check(patchClapId(1, 0) === 69, "patchClapId(Lower,0) = 69");
 check(globalClapId(0) === 138, "globalClapId(0) = 138");
-check(globalClapId(26) === 164, "globalClapId(26) = 164 (last id)");
+check(globalClapId(28) === 166, "globalClapId(28) = 166 (last id)");
 
-console.log("\n=== 1. bulk update: write 165, read 165 back correct ===");
+console.log("\n=== 1. bulk update: write 167, read 167 back correct ===");
 {
   const store = new ParamStore(createParamSAB());
   // A distinct value per id so a mis-indexed read is caught.
@@ -89,11 +89,11 @@ console.log("\n=== 1. bulk update: write 165, read 165 back correct ===");
   // writeBulk wrong-length is rejected.
   let threw = false;
   try {
-    store.writeBulk(new Float32Array(164));
+    store.writeBulk(new Float32Array(166));
   } catch {
     threw = true;
   }
-  check(threw, "writeBulk rejects a wrong-length (164) array");
+  check(threw, "writeBulk rejects a wrong-length (166) array");
 }
 
 console.log("\n=== 2. single read/write round-trips incl. f32 bit-cast edges ===");
@@ -134,7 +134,7 @@ console.log("\n=== 3. diff readback: audio write surfaces as ParamChanged ===");
   const store = new ParamStore(createParamSAB());
   const lastSeen = newLastSeen();
 
-  // 3a. First poll after NaN seed broadcasts ALL 165 (NaN-seed behaviour).
+  // 3a. First poll after NaN seed broadcasts ALL 167 (NaN-seed behaviour).
   // Seed the readback region with concrete values (the worklet would publish
   // these on its first render). Use 0.0 so they're real, non-NaN values.
   for (let id = 0; id < TOTAL_PARAMS; id++) store.publishReadback(id, f32(id));
@@ -148,7 +148,7 @@ console.log("\n=== 3. diff readback: audio write surfaces as ParamChanged ===");
   );
   check(r0.id === 0 && r0.plain === 0, "first record is id 0, plain 0");
   const rLast = first[TOTAL_PARAMS - 1];
-  check(rLast.id === 164 && rLast.plain === f32(164), "last record is id 164, plain 164");
+  check(rLast.id === 166 && rLast.plain === f32(166), "last record is id 166, plain 166");
 
   // 3b. No spurious diffs when nothing changed.
   const second = pollDiffs(store, lastSeen);
@@ -229,7 +229,7 @@ console.log("\n=== 5. worklet integration: store -> engine -> readback -> pollDi
   for (let id = 0; id < TOTAL_PARAMS; id++) preset[id] = f32(id * 0.01);
   store.writeBulk(preset);
 
-  // First worklet pass applies ALL 165 (NaN-seeded workletSeen) and echoes them.
+  // First worklet pass applies ALL 167 (NaN-seeded workletSeen) and echoes them.
   const n1 = applyStoreToEngine(store, engine, workletSeen);
   check(n1 === TOTAL_PARAMS, `first render applies all ${TOTAL_PARAMS} store values to the engine (got ${n1})`);
   check(applied.get(64) === preset[64], "engine received the correct value for a sample id (64)");

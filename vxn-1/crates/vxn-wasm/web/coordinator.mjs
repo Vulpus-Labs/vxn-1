@@ -204,7 +204,7 @@ export class WebHost {
 
     // Seed the param store with the engine's defaults BEFORE the worklet starts.
     // The store's slots are zero-initialised and the worklet's first-quantum fold
-    // (NaN-seeded workletSeen) applies ALL 165 — so an unseeded store would clobber
+    // (NaN-seeded workletSeen) applies ALL 167 — so an unseeded store would clobber
     // every param to 0.0 and silence the voice. The 0039 store contract is "the
     // controller seeds the store before the worklet starts"; until the controller
     // wasm (0044) owns defaults via vxn-app, we snapshot them off a throwaway
@@ -341,7 +341,7 @@ export class WebHost {
     return resp.arrayBuffer();
   }
 
-  // Snapshot the engine's 165 default param values off a throwaway main-thread
+  // Snapshot the engine's 167 default param values off a throwaway main-thread
   // instance and bulk-write them into the store, so the worklet's first fold is
   // a no-op against the engine rather than a zeroing pass. The instance is
   // discarded immediately; only its defaults survive (in the SAB).
@@ -486,7 +486,7 @@ export class WebHost {
     this.store.write(id, value);
   }
   setParamsBulk(values) {
-    this.store.writeBulk(values); // length-165 plain values (preset load)
+    this.store.writeBulk(values); // length-167 plain values (preset load)
   }
   readParam(id) {
     return this.store.read(id);

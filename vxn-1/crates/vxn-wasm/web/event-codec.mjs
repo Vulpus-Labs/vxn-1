@@ -54,10 +54,15 @@ export const SLOT_BYTES = 16; // must equal event-ring.mjs SLOT_BYTES
 // Rust side reads them from vxn-app (the single source of truth); JS asserts
 // them against the wasm exports at host init (0038) so drift is caught. The
 // id-layout test in event-codec.test.mjs guards the contract here.
+//
+// GLOBAL_COUNT went 27 -> 29 in 9b5d222 (0277-0279: PhaserStereo, DelayPingPong).
+// Both were INSERTED mid-enum, not appended, so every global id from PhaserStereo
+// on shifted up — which is why this is a mirror update, not a bump. Patch ids are
+// untouched: the two new params are globals, and the patch block sits below them.
 export const PATCH_COUNT = 69; // per-layer patch params
-export const GLOBAL_COUNT = 27; // global params
+export const GLOBAL_COUNT = 29; // global params
 export const LAYER_COUNT = 2; // Upper, Lower
-export const TOTAL_PARAMS = LAYER_COUNT * PATCH_COUNT + GLOBAL_COUNT; // 165
+export const TOTAL_PARAMS = LAYER_COUNT * PATCH_COUNT + GLOBAL_COUNT; // 167
 
 // Layer ids (match vxn-app Layer discriminants).
 export const LAYER_UPPER = 0;

@@ -9,7 +9,8 @@
 // AudioWorklet wiring, so what we prove headlessly is byte-for-byte what the
 // browser runs — same discipline as event-ring.mjs (0035).
 //
-// Implements ADR 0009 §2 (SAB of 165 atomics) and §3 (the 165-id layout), and
+// Implements ADR 0009 §2 (SAB of TOTAL_PARAMS atomics) and §3 (the flat id
+// layout), and
 // ports the param-diff pump from vxn-clap/src/lib.rs:193-236.
 //
 // ===========================================================================
@@ -17,14 +18,14 @@
 // ===========================================================================
 //
 //   counts:  PATCH_COUNT  = 69   (PatchParam::Osc1Wave .. Spread)
-//            GLOBAL_COUNT = 27   (GlobalParam::MasterTune .. ReverbMix)
+//            GLOBAL_COUNT = 29   (GlobalParam::MasterTune .. ReverbMix)
 //            LAYER_COUNT  = 2    (Upper, Lower)
-//            TOTAL_PARAMS = 2*69 + 27 = 165
+//            TOTAL_PARAMS = 2*69 + 29 = 167
 //
 //   id ranges:
 //     [  0 ..  69 )   Upper layer per-patch params  (clap_id = patch_index)
 //     [ 69 .. 138 )   Lower layer per-patch params  (clap_id = 69 + patch_index)
-//     [138 .. 165 )   global params                 (clap_id = 138 + global_index)
+//     [138 .. 167 )   global params                 (clap_id = 138 + global_index)
 //
 // These JS constants MUST match vxn-app's `PATCH_COUNT` / `GLOBAL_COUNT` /
 // `TOTAL_PARAMS`. The Rust side (codec 0037, audio-host 0038) pulls them from
@@ -33,7 +34,7 @@
 // LAYOUT exported and named so 0037's codec can assert agreement.
 //
 // Non-automatable shared state (KeyMode, split point — ADR 0003 §3) is NOT in
-// the 165 and never occupies a slot; it travels out-of-band on the ring.
+// the 167 and never occupies a slot; it travels out-of-band on the ring.
 
 // The id layout is owned by the 0037 codec (event-codec.mjs), itself mirroring
 // vxn-app's PATCH_COUNT / GLOBAL_COUNT / TOTAL_PARAMS. Import it here so the
@@ -73,13 +74,13 @@ export const LAYOUT = Object.freeze({
 // We allocate ONE SharedArrayBuffer carrying two i32 regions, so a host only
 // passes one buffer to the worklet (processorOptions):
 //
-//   region STORE    : Int32Array(165)   main -> audio current-value store
+//   region STORE    : Int32Array(167)   main -> audio current-value store
 //                                        (controller writes, worklet reads)
-//   region READBACK : Int32Array(165)   audio -> main echo of applied values
+//   region READBACK : Int32Array(167)   audio -> main echo of applied values
 //                                        (worklet writes, main polls + diffs)
 //
-//   byte 0                                165*4                       330*4
-//   |----------- STORE (165 i32) ---------|------- READBACK (165 i32) -------|
+//   byte 0                                167*4                       334*4
+//   |----------- STORE (167 i32) ---------|------- READBACK (167 i32) -------|
 //
 // Both regions are i32 atomics; each word holds an f32 PLAIN value bit-cast via
 // Atomics.load/store of the bits (mirroring AtomicU32 + f32::to_bits). We read
@@ -91,9 +92,9 @@ export const LAYOUT = Object.freeze({
 // 32-bit word; every read is a single Atomics.load of one 32-bit word. A
 // concurrent reader therefore always sees a slot as either fully the old value
 // or fully the new value — never a torn 32-bit float. This holds for the bulk
-// writeBulk() path too: it is 165 independent single-word stores. There is NO
+// writeBulk() path too: it is 167 independent single-word stores. There is NO
 // cross-slot transactionality (a reader mid-bulk-load can see some new + some
-// old slots), exactly as the native SharedParams gives (165 independent
+// old slots), exactly as the native SharedParams gives (167 independent
 // Relaxed AtomicU32 stores). Latest-value-wins per id; that is the contract
 // the audio thread is built on.
 
@@ -159,10 +160,10 @@ export class ParamStore {
     return this._floatOf(Atomics.load(this.i32, STORE_BASE_WORD + id));
   }
 
-  /// Bulk write all 165 params (preset load — ADR 0009: ~1us, the case SAB
-  /// wins on). 165 independent single-word atomic stores; see the per-slot
+  /// Bulk write all 167 params (preset load — ADR 0009: ~1us, the case SAB
+  /// wins on). 167 independent single-word atomic stores; see the per-slot
   /// atomicity note above for the (intended) lack of cross-slot
-  /// transactionality. `values` is a length-165 array/Float32Array of PLAIN
+  /// transactionality. `values` is a length-167 array/Float32Array of PLAIN
   /// values.
   writeBulk(values) {
     if (values.length !== TOTAL_PARAMS) {
@@ -175,7 +176,7 @@ export class ParamStore {
     }
   }
 
-  /// Snapshot all 165 plain values into a fresh Float32Array (e.g. for a
+  /// Snapshot all 167 plain values into a fresh Float32Array (e.g. for a
   /// state save). Lock-free per-slot reads.
   readAll() {
     const out = new Float32Array(TOTAL_PARAMS);
@@ -227,7 +228,7 @@ export class ParamStore {
 // descriptors — see TODO.
 
 /// Create a fresh `last_seen` mirror seeded with NaN, so the FIRST pollDiffs
-/// broadcasts all 165 (mirrors the native all-NaN seed vector — lib.rs:206-207
+/// broadcasts all 167 (mirrors the native all-NaN seed vector — lib.rs:206-207
 /// "the seeded all-NaN vector forces a full broadcast on the first tick").
 export function newLastSeen() {
   const a = new Float32Array(TOTAL_PARAMS);
@@ -242,7 +243,7 @@ export function newLastSeen() {
 /// a freshly-seeded (all-NaN) `lastSeen` forces a full broadcast on the first
 /// call. Thereafter only genuine drift surfaces; an unchanged region yields [].
 ///
-/// `lastSeen` MUST be a Float32Array(165) from newLastSeen() (or a prior poll).
+/// `lastSeen` MUST be a Float32Array(167) from newLastSeen() (or a prior poll).
 /// Returns an array of { id, plain, norm, display }.
 export function pollDiffs(store, lastSeen) {
   const out = [];
@@ -297,7 +298,7 @@ function paramChanged(id, plain) {
 // mirror of what it last applied (avoids re-applying an unchanged value every
 // quantum — the SAB is latest-value-wins, not an event stream).
 
-/// Fresh worklet-side mirror. Seeded NaN so the first render applies all 165
+/// Fresh worklet-side mirror. Seeded NaN so the first render applies all 167
 /// (matches the controller seeding the store before the worklet starts).
 export function newWorkletSeen() {
   const a = new Float32Array(TOTAL_PARAMS);

@@ -180,7 +180,7 @@ export class WebController {
     this.x = instance.exports;
 
     // Param addressing is read FROM the wasm (ADR 0009 §3 / §3 stability): the
-    // 165-id layout is owned by vxn-app/params.rs, never hard-coded here. Assert
+    // The id layout is owned by vxn-app/params.rs, never hard-coded here. Assert
     // the JS mirror (param-store.mjs TOTAL_PARAMS) agrees so drift is caught at
     // boot rather than as silent corruption.
     const total = this.x.vxnc_total_params();

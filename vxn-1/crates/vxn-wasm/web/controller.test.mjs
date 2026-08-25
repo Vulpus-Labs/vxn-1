@@ -64,7 +64,7 @@ async function main() {
   // (1) counts read from wasm agree with the JS mirror.
   check(ctrl.totalParams === TOTAL_PARAMS, `total ${ctrl.totalParams} == ${TOTAL_PARAMS}`);
   check(ctrl.patchCount === 69, `patch count ${ctrl.patchCount} == 69`);
-  check(ctrl.globalCount === 27, `global count ${ctrl.globalCount} == 27`);
+  check(ctrl.globalCount === 29, `global count ${ctrl.globalCount} == 29`);
   check(
     ctrl.patchCount * 2 + ctrl.globalCount === ctrl.totalParams,
     "2*patch + global == total",
@@ -107,7 +107,7 @@ async function main() {
   const AUTO_ID = 10;
   const AUTO_VAL = store.read(AUTO_ID) + 0.123; // a value the controller never set
   store.publishReadback(AUTO_ID, AUTO_VAL);
-  // First pump has a NaN-seeded last_seen, so it broadcasts ALL 165. Run it once
+  // First pump has a NaN-seeded last_seen, so it broadcasts ALL 167. Run it once
   // to settle the seed, then assert the SINGLE drift surfaces on the next pump.
   // (NaN-seed full-broadcast is the documented first-tick behaviour.)
   // Seed every readback slot to the store's current value so only AUTO_ID drifts.

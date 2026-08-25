@@ -77,10 +77,10 @@ const GOLDEN = [
   ["split_point 127", ev.splitPoint(127, 0), row(EV_SPLIT_POINT, 0, 0, f0, 0, 127)],
 ];
 
-test("id layout matches ADR 0009 / vxn-app (165 = 2*69 + 27)", () => {
+test("id layout matches ADR 0009 / vxn-app (167 = 2*69 + 29)", () => {
   assert.equal(PATCH_COUNT, 69);
-  assert.equal(GLOBAL_COUNT, 27);
-  assert.equal(TOTAL_PARAMS, 165);
+  assert.equal(GLOBAL_COUNT, 29);
+  assert.equal(TOTAL_PARAMS, 167);
   assert.equal(TOTAL_PARAMS, 2 * PATCH_COUNT + GLOBAL_COUNT);
   // forward mappings line up with the ranges
   assert.equal(patchClapId(0, 0), 0); // Upper p0
@@ -88,7 +88,7 @@ test("id layout matches ADR 0009 / vxn-app (165 = 2*69 + 27)", () => {
   assert.equal(patchClapId(1, 0), 69); // Lower p0
   assert.equal(patchClapId(1, 68), 137); // Lower last
   assert.equal(globalClapId(0), 138); // global 0
-  assert.equal(globalClapId(26), 164); // global last == TOTAL-1
+  assert.equal(globalClapId(28), 166); // global last == TOTAL-1
 });
 
 test("encode matches golden bytes (== Rust golden table)", () => {
