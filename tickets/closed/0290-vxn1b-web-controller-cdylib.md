@@ -232,7 +232,7 @@ and TOML export/import.
   `tests::matrix_edit_reaches_the_model_and_echoes`,
   `tests::key_ops_reach_the_model_and_echo`.
 - **Full re-broadcast on attach** — `tests::editor_ready_rebroadcasts_params_and_non_param_state`
-  asserts all 181 params plus the matrix and key records.
+  asserts all 185 params plus the matrix and key records.
 - **User presets + folders.** Cache mutates synchronously and journals:
   `tests::user_save_journals_and_republishes_the_corpus`,
   `tests::user_save_load_rename_move_delete_round_trip`,

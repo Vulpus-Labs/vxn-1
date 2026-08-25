@@ -1182,7 +1182,7 @@ pub extern "C" fn vxnc_view_len() -> u32 {
 
 /// Pointer to the model's plain-value snapshot (`TOTAL_PARAMS` f32s), refreshed
 /// each tick. JS reads it to mirror the controller model into the worklet param
-/// SAB — the bulk path a preset load needs (181 values at once).
+/// SAB — the bulk path a preset load needs (185 values at once).
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_values_ptr() -> *const f32 {
     state().values_out.as_ptr()

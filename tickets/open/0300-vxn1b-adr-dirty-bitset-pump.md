@@ -60,7 +60,7 @@ to unify them and break `take_reload`.
 ### The case for declining
 
 Worth writing down honestly, because it is not weak: every symptom is already
-worked around and shipped. Two memo-diffs and a poll over 181 floats at 60 Hz
+worked around and shipped. Two memo-diffs and a poll over 185 floats at 60 Hz
 cost nothing measurable, and VXN1b is a released product. The counter is
 coverage, not cost — the memo-per-field pattern has already been applied twice
 and the field list is still growing (LFO 2 link, layer copy, scope tap). If the

@@ -81,7 +81,7 @@ that owns it.
    8); vxn-2 had none and reserved the tags. VXN1b reclaims 7/8 and adds
    more: LFO2 link, matrix edit, layer copy, scope tap.
 
-3. **181 params, two-layer map.** `2 * PATCH_COUNT + GLOBAL_COUNT` — a
+3. **185 params, two-layer map.** `2 * PATCH_COUNT + GLOBAL_COUNT` — a
    flat CLAP surface over the layer-indexed table ([[vxn1b-two-layer-param-map]]).
    Larger store than vxn-1's 165 and vxn-2's 209-flat; the 16-bit codec
    index field is fine. The JS side needs the layer split back

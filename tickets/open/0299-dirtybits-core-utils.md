@@ -44,7 +44,7 @@ Minimum viable surface, from what the three consumers actually need:
 - Out-of-range masking: vxn-2's
   [`dirty_values_full_word`](../../vxn-2/crates/vxn2-engine/src/shared.rs#L314)
   keeps the tail word's unused bits clear so `mark_all` + drain never emit a
-  phantom id. Generalise it — the param counts differ per synth (209 / 181 / 165).
+  phantom id. Generalise it — the param counts differ per synth (209 / 185 / 165).
 
 The single-bit flags (`dirty_ks_curve`, VXN1b's key channel) stay plain
 `AtomicBool`; a one-bit `DirtyBits` buys nothing.

@@ -110,7 +110,7 @@ against.
       reasoning and settles the `key_dirty` two-reader split before any code
       moves.
 - [ ] **0301** *(vxn-1b)* — `vxn1b-engine::SharedParams`: `dirty_values`
-      (181 ids → 3 words), a matrix dirty word, and split `key_dirty` into an
+      (185 ids → 3 words), a matrix dirty word, and split `key_dirty` into an
       audio-consumer flag and a view-consumer bit.
 - [ ] **0306** *(monorepo)* — `vxn-core-app`: gate `load_preset`'s broadcast on
       `echo_param_writes`, matching `StateLoaded`. Touches all three synths.

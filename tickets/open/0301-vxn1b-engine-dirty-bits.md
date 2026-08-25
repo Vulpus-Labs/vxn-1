@@ -23,7 +23,7 @@ their existing poll/memo paths through this ticket, so it lands green and inert.
 
 Per [[0300]]'s ADR:
 
-- **`dirty_values`** — `DirtyBits<3>` from [[0299]] (181 ids → 3 words, tail
+- **`dirty_values`** — `DirtyBits<3>` from [[0299]] (185 ids → 3 words, tail
   masked). Flipped by [`set`](../../vxn-1b/crates/vxn1b-engine/src/shared.rs#L131)
   and [`set_normalized`](../../vxn-1b/crates/vxn1b-engine/src/shared.rs#L167)
   after the value store, `Release`. Seeded all-set so the first tick after open
@@ -55,7 +55,7 @@ shell.
 - [ ] `set` / `set_normalized` mark; a test asserts a write then a drain yields
       exactly that id, and a second drain yields nothing.
 - [ ] Seeded-full construction: the first drain on a fresh `SharedParams` yields
-      all 181 ids.
+      all 185 ids.
 - [ ] `restore_from_bytes` marks the full value table, the matrix and the key
       channel — one test per channel.
 - [ ] `copy_layer` marks the copied params, the target layer's matrix and the key
