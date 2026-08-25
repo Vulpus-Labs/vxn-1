@@ -21,9 +21,32 @@ import { DB_ID } from "./faceplate-bridge.mjs";
 import { StateAutosave } from "../../../../crates/vxn-core-web/assets/state-autosave.mjs";
 import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
-const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
-const HAVE = existsSync(WASM);
-const wasmBytes = HAVE ? readFileSync(WASM) : null;
+// The crate's OWN build output, not the shared `target/web-dist/` bundle: both
+// ports' `xtask web` create AND WIPE that directory, so reading the artifact
+// from there let vxn-1's build silently disarm vxn-2's integration coverage
+// (ticket 0295).
+const WASM = ["release", "debug"]
+  .map((profile) =>
+    fileURLToPath(
+      new URL(
+        `../../../../target/wasm32-unknown-unknown/${profile}/vxn2_web_controller.wasm`,
+        import.meta.url,
+      ),
+    ),
+  )
+  .find((p) => existsSync(p));
+const wasmBytes = WASM ? readFileSync(WASM) : null;
+
+// Asserted, never skipped. A missing artifact is a setup problem with a known
+// fix, and skipping turns "I could not check this" into a green tick — which is
+// exactly how ticket 0285 stayed hidden for weeks.
+function requireWasm() {
+  assert.ok(
+    wasmBytes,
+    "vxn2_web_controller.wasm not found — this test must not be skipped. Build it:\n" +
+      "  cargo build -p vxn2-web-controller --target wasm32-unknown-unknown --release",
+  );
+}
 
 function fakeIndexedDB() {
   const stores = {
@@ -102,7 +125,8 @@ async function newController() {
 
 const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
-test("autosave → restore reproduces the exact patch across a reload", { skip: !HAVE }, async () => {
+test("autosave → restore reproduces the exact patch across a reload", async () => {
+  requireWasm();
   const idb = fakeIndexedDB();
 
   // session 1: edit the patch, autosave it.
@@ -130,7 +154,8 @@ test("autosave → restore reproduces the exact patch across a reload", { skip: 
   assert.ok(eq(blob1, c2.snapshotState()), "re-snapshot is byte-identical to the saved patch");
 });
 
-test("corrupt / short blobs are rejected, model left at defaults", { skip: !HAVE }, async () => {
+test("corrupt / short blobs are rejected, model left at defaults", async () => {
+  requireWasm();
   const c = await newController();
   const def = c.snapshotState();
   assert.equal(c.restoreState(new Uint8Array(4)), false, "short blob rejected");
@@ -138,7 +163,8 @@ test("corrupt / short blobs are rejected, model left at defaults", { skip: !HAVE
   assert.ok(eq(c.snapshotState(), def), "model left at defaults after a rejected restore");
 });
 
-test("flush-on-hide writes the latest patch", { skip: !HAVE }, async () => {
+test("flush-on-hide writes the latest patch", async () => {
+  requireWasm();
   const idb = fakeIndexedDB();
   const listeners = {};
   const fakeWin = { addEventListener: (ev, cb) => (listeners["win:" + ev] = cb), removeEventListener: () => {} };
@@ -165,7 +191,8 @@ test("flush-on-hide writes the latest patch", { skip: !HAVE }, async () => {
   assert.ok(eq(c1.snapshotState(), c2.snapshotState()), "the persisted patch matches the edited one");
 });
 
-test("storage unavailable degrades gracefully", { skip: !HAVE }, async () => {
+test("storage unavailable degrades gracefully", async () => {
+  requireWasm();
   const c = await newController();
   const a = new StateAutosave({ controller: c, dbId: DB_ID, indexedDB: null }); // no IDB
   assert.equal(await a.restore(), false, "restore false when storage unavailable");

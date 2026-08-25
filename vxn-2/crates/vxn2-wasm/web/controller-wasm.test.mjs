@@ -1,11 +1,17 @@
-// End-to-end factory-preset test (ticket 0159, minimal) over the REAL controller
-// wasm + baked factory.bin. Run after `cargo xtask web`:
-//   node --test crates/vxn2-wasm/web/controller-wasm.test.mjs
+// End-to-end factory-preset test (ticket 0159) over the REAL controller wasm +
+// the REAL baked factory.bin:
+//   cargo run -p vxn2-xtask -- web
+//   node --test vxn-2/crates/vxn2-wasm/web/controller-wasm.test.mjs
 //
-// Loads the actual `vxn2_web_controller.wasm` and `factory.bin` from the built
-// bundle, drives the WebController through loadFactoryAsset → corpusJson →
-// loadFactory(0) → tick, and asserts the factory bank + a PresetLoaded surface.
-// Skips (not fails) when the bundle isn't built.
+// Drives the WebController through loadFactoryAsset → corpusJson → loadFactory(0)
+// → tick, and asserts the shipped bank plus a PresetLoaded surface.
+//
+// This is the one test here that genuinely needs the BUNDLE rather than a crate
+// artifact, because it asserts against the real baked bank. It therefore still
+// reads `target/web-dist/` — which both ports' `xtask web` create and wipe — so
+// a run right after vxn-1's build will fail rather than pass. That is the
+// intended behaviour: it FAILS and says what to run (ticket 0295). It used to
+// skip, which is how ticket 0285 stayed hidden for weeks.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,15 +22,26 @@ import { WebController } from "./controller.mjs";
 const DIST = new URL("../../../../target/web-dist/", import.meta.url);
 const WASM = fileURLToPath(new URL("vxn2_web_controller.wasm", DIST));
 const FACTORY = fileURLToPath(new URL("factory.bin", DIST));
-const HAVE = existsSync(WASM) && existsSync(FACTORY);
 
-test("real controller wasm loads the factory bank and a preset", { skip: !HAVE }, async () => {
+const BUILD_HINT = "cargo run -p vxn2-xtask -- web";
+
+test("real controller wasm loads the factory bank and a preset", async () => {
+  assert.ok(
+    existsSync(WASM) && existsSync(FACTORY),
+    `the vxn-2 web bundle is not built at ${fileURLToPath(DIST)} — this test ` +
+      `must not be skipped. Build it:\n  ${BUILD_HINT}`,
+  );
   const ctrl = new WebController({ wasmBytes: readFileSync(WASM) });
   await ctrl.instantiate();
 
   // Load the baked bank.
   const count = ctrl.loadFactoryAsset(readFileSync(FACTORY));
-  assert.ok(count >= 5, `expected the factory bank, got ${count}`);
+  assert.ok(
+    count >= 5,
+    `expected the vxn-2 factory bank, got ${count} presets. A low or zero count ` +
+      `usually means target/web-dist/ holds ANOTHER product's bundle — both ports' ` +
+      `xtask web share that directory. Rebuild vxn-2\u2019s:\n  ${BUILD_HINT}`,
+  );
 
   // The corpus JSON lists factory presets.
   const corpus = ctrl.corpusJson();

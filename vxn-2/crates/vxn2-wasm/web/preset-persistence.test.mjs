@@ -22,9 +22,32 @@ import { DB_ID } from "./faceplate-bridge.mjs";
 import { PresetPersistence } from "../../../../crates/vxn-core-web/assets/preset-persistence.mjs";
 import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
-const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
-const HAVE = existsSync(WASM);
-const wasmBytes = HAVE ? readFileSync(WASM) : null;
+// The crate's OWN build output, not the shared `target/web-dist/` bundle: both
+// ports' `xtask web` create AND WIPE that directory, so reading the artifact
+// from there let vxn-1's build silently disarm vxn-2's integration coverage
+// (ticket 0295).
+const WASM = ["release", "debug"]
+  .map((profile) =>
+    fileURLToPath(
+      new URL(
+        `../../../../target/wasm32-unknown-unknown/${profile}/vxn2_web_controller.wasm`,
+        import.meta.url,
+      ),
+    ),
+  )
+  .find((p) => existsSync(p));
+const wasmBytes = WASM ? readFileSync(WASM) : null;
+
+// Asserted, never skipped. A missing artifact is a setup problem with a known
+// fix, and skipping turns "I could not check this" into a green tick — which is
+// exactly how ticket 0285 stayed hidden for weeks.
+function requireWasm() {
+  assert.ok(
+    wasmBytes,
+    "vxn2_web_controller.wasm not found — this test must not be skipped. Build it:\n" +
+      "  cargo build -p vxn2-web-controller --target wasm32-unknown-unknown --release",
+  );
+}
 
 // ---- minimal in-memory IndexedDB fake (shared across "sessions") -----------
 function fakeIndexedDB() {
@@ -114,7 +137,8 @@ function findUserPath(corpus, name) {
   return null;
 }
 
-test("user presets persist across a reload; corpus is synchronous", { skip: !HAVE }, async () => {
+test("user presets persist across a reload; corpus is synchronous", async () => {
+  requireWasm();
   const idb = fakeIndexedDB(); // one db, two controller "sessions"
 
   // session 1: save presets + a folder, flush to storage.
@@ -161,7 +185,8 @@ test("user presets persist across a reload; corpus is synchronous", { skip: !HAV
   assert.ok(pl && pl.source && pl.source.kind === "user" && pl.source.path === miniPath, "hydrated preset loads");
 });
 
-test("delete persists across a reload", { skip: !HAVE }, async () => {
+test("delete persists across a reload", async () => {
+  requireWasm();
   const idb = fakeIndexedDB();
   const c1 = await newController();
   const p1 = new PresetPersistence({ controller: c1, dbId: DB_ID, indexedDB: idb });
@@ -186,7 +211,8 @@ test("delete persists across a reload", { skip: !HAVE }, async () => {
   assert.ok(findUserPath(c2.corpusJson(), "Stay"), "the surviving preset is still there");
 });
 
-test("flush-on-hide persists a pending save", { skip: !HAVE }, async () => {
+test("flush-on-hide persists a pending save", async () => {
+  requireWasm();
   const idb = fakeIndexedDB();
   const listeners = {};
   const fakeWin = { addEventListener: (ev, cb) => (listeners["win:" + ev] = cb), removeEventListener: () => {} };
@@ -210,7 +236,8 @@ test("flush-on-hide persists a pending save", { skip: !HAVE }, async () => {
   assert.ok(findUserPath(c2.corpusJson(), "HideSaved"), "flush-on-hide persisted the pending save");
 });
 
-test("storage unavailable degrades gracefully", { skip: !HAVE }, async () => {
+test("storage unavailable degrades gracefully", async () => {
+  requireWasm();
   const c = await newController();
   const p = new PresetPersistence({ controller: c, dbId: DB_ID, indexedDB: null }); // no IDB
   assert.equal(await p.hydrate(), false, "hydrate false when storage unavailable");

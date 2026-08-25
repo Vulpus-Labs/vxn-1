@@ -28,9 +28,32 @@ import {
   MAX_SHARE_FRAGMENT_LEN,
 } from "../../../../crates/vxn-core-web/assets/patch-io.mjs";
 
-const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
-const HAVE = existsSync(WASM);
-const wasmBytes = HAVE ? readFileSync(WASM) : null;
+// The crate's OWN build output, not the shared `target/web-dist/` bundle: both
+// ports' `xtask web` create AND WIPE that directory, so reading the artifact
+// from there let vxn-1's build silently disarm vxn-2's integration coverage
+// (ticket 0295).
+const WASM = ["release", "debug"]
+  .map((profile) =>
+    fileURLToPath(
+      new URL(
+        `../../../../target/wasm32-unknown-unknown/${profile}/vxn2_web_controller.wasm`,
+        import.meta.url,
+      ),
+    ),
+  )
+  .find((p) => existsSync(p));
+const wasmBytes = WASM ? readFileSync(WASM) : null;
+
+// Asserted, never skipped. A missing artifact is a setup problem with a known
+// fix, and skipping turns "I could not check this" into a green tick — which is
+// exactly how ticket 0285 stayed hidden for weeks.
+function requireWasm() {
+  assert.ok(
+    wasmBytes,
+    "vxn2_web_controller.wasm not found — this test must not be skipped. Build it:\n" +
+      "  cargo build -p vxn2-web-controller --target wasm32-unknown-unknown --release",
+  );
+}
 
 const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -99,7 +122,8 @@ test("share-link glue (fake controller): build → boot apply → strip", () => 
   );
 });
 
-test("TOML export→import round-trips through the real wasm", { skip: !HAVE }, async () => {
+test("TOML export→import round-trips through the real wasm", async () => {
+  requireWasm();
   const newController = async () => {
     const c = new WebController({ wasmBytes });
     await c.instantiate();
@@ -129,7 +153,8 @@ test("TOML export→import round-trips through the real wasm", { skip: !HAVE }, 
   assert.ok(eq(c3.snapshotState(), before), "model left at defaults after a rejected import");
 });
 
-test("share-link end-to-end reproduces the patch byte-for-byte (real wasm)", { skip: !HAVE }, async () => {
+test("share-link end-to-end reproduces the patch byte-for-byte (real wasm)", async () => {
+  requireWasm();
   const newController = async () => {
     const c = new WebController({ wasmBytes });
     await c.instantiate();

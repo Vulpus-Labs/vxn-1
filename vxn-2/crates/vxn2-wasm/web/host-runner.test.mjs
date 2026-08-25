@@ -18,11 +18,32 @@ import { fileURLToPath } from "node:url";
 import { WorkletHostRunner } from "./host-runner.mjs";
 import { EventRing, createRingSAB, DEFAULT_CAPACITY } from "./event-ring.mjs";
 
-const WASM_PATH = fileURLToPath(
-  new URL("../../../../target/wasm32-unknown-unknown/release/vxn2_wasm.wasm", import.meta.url),
-);
-const HAVE_WASM = existsSync(WASM_PATH);
-const wasmBytes = HAVE_WASM ? readFileSync(WASM_PATH) : null;
+// The crate's OWN build output, not the shared `target/web-dist/` bundle: both
+// ports' `xtask web` create AND WIPE that directory, so reading the artifact
+// from there let vxn-1's build silently disarm vxn-2's integration coverage
+// (ticket 0295).
+const WASM = ["release", "debug"]
+  .map((profile) =>
+    fileURLToPath(
+      new URL(
+        `../../../../target/wasm32-unknown-unknown/${profile}/vxn2_wasm.wasm`,
+        import.meta.url,
+      ),
+    ),
+  )
+  .find((p) => existsSync(p));
+const wasmBytes = WASM ? readFileSync(WASM) : null;
+
+// Asserted, never skipped. A missing artifact is a setup problem with a known
+// fix, and skipping turns "I could not check this" into a green tick — which is
+// exactly how ticket 0285 stayed hidden for weeks.
+function requireWasm() {
+  assert.ok(
+    wasmBytes,
+    "vxn2_wasm.wasm not found — this test must not be skipped. Build it:\n" +
+      "  cargo build -p vxn2-wasm --target wasm32-unknown-unknown --release",
+  );
+}
 
 const Q = 128;
 
@@ -33,7 +54,8 @@ function peak(l, r) {
   return m;
 }
 
-test("silence-until-ready then a ring note-on renders audible output", { skip: !HAVE_WASM }, async () => {
+test("silence-until-ready then a ring note-on renders audible output", async () => {
+  requireWasm();
   const ringSab = createRingSAB(DEFAULT_CAPACITY);
   const ring = new EventRing(ringSab, DEFAULT_CAPACITY); // producer
   const runner = new WorkletHostRunner({
@@ -66,7 +88,8 @@ test("silence-until-ready then a ring note-on renders audible output", { skip: !
   assert.ok(loud > 1e-4, `expected audible tone through the ring, got peak ${loud}`);
 });
 
-test("render-thread trap is caught and the engine recovers", { skip: !HAVE_WASM }, async () => {
+test("render-thread trap is caught and the engine recovers", async () => {
+  requireWasm();
   const traps = [];
   const runner = new WorkletHostRunner({
     wasmBytes,
