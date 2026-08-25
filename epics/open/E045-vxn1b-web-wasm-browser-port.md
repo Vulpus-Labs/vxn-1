@@ -139,60 +139,56 @@ and forcing them into one file would cost more than it saves.
 ## Planned tickets
 
 Chain: **0284 → 0286 → 0287 → 0288 → 0289 → 0290 → 0291 → 0292 → 0293 → 0294**
-(0285 is the unrelated param-mirror fix 0284 turned up),
-with 0288 parallelisable against 0289/0290 once 0287 lands.
+(0285 is the unrelated param-mirror fix 0284 turned up; 0295 and 0296 are two more
+product bugs this epic surfaced in the shipped ports).
 
-- [ ] **0284** — `crates/vxn-core-web`: extract the six shared JS modules
-      (`midi-input`, `keyboard-input`, `preset-persistence`,
-      `state-autosave`, `patch-io`, `preset-storage`) from the vxn-1 /
-      vxn-2 forks; parameterise the deltas; repoint both existing ports at
-      the shared copy with their suites still green. No VXN1b code yet —
-      this is the "don't fork a third time" ticket, and it's the only one
-      that touches shipped products.
-- [ ] **0286** — `vxn1b-wasm` engine cdylib: C-ABI host render loop +
-      event codec over `vxn1b_engine::Synth` ×2 + global block. Reclaims
-      tags 7/8 (key mode / split point) and adds `EV_LFO2_LINK`,
-      `EV_MATRIX_EDIT`, `EV_LAYER_COPY`, `EV_SCOPE_TAP`, `EV_TEMPO`.
-      Golden wire table is the contract with 0287.
-- [ ] **0287** — `vxn1b-web-controller` cdylib: `Controller<SharedParams>`
-      + `WebPresetStore` over the C-ABI opcode surface (port
-      `vxn2-web-controller`, including its `user_store.rs`). Reuses
-      `vxn1b-engine`'s TOML preset codec and `EnginePresetStore` shape —
-      web and desktop must not drift on the preset record format.
-- [ ] **0288** — SAB transport JS: `event-ring` / `param-store` /
-      `event-codec` + `WIRE-FORMAT.md`, byte-identical to 0286's Rust
-      def. Two-layer param space (port vxn-1's `patchClapId` /
-      `globalClapId`, not vxn-2's flat version).
-- [ ] **0289** — **Telemetry return channel (new)**: worklet→main SAB for
-      `MeterFrame` (read-and-clear, every tick) and `ScopeFrame`
-      (`SCOPE_WINDOW` f32, half rate, gated on `ScopeTap`). Decide
-      seqlock vs double-buffer; frames must be tear-free without blocking
-      the audio thread. Feeds `panels/meter.js` + `panels/scope.js`
-      unchanged — the page keeps its `ev.kind === 'meters' | 'scope'`
-      contract, only the transport under it changes.
-- [ ] **0290** — AudioWorklet + coordinator bootstrap: processor,
-      host-runner, audio-host, AudioContext lifecycle (gesture unlock,
-      suspend/resume, sample-rate rebuild over the same SABs).
+**Numbering note.** The ids below were reconciled on 2026-08-25 against what was
+actually built. The transport JS, telemetry and worklet landed before the
+controller cdylib rather than after it, so 0287-0289 carry those and the
+controller took 0290 — which is also the order the dependencies actually run in:
+the worklet half needs nothing from the controller, and the faceplate rewire
+needs everything from it.
+
+- [x] **0284** — `crates/vxn-core-web`: extract the six shared JS modules from
+      the vxn-1 / vxn-2 forks; parameterise the deltas; repoint both existing
+      ports. The "don't fork a third time" ticket, and the only one that touches
+      shipped products. **Closed.**
+- [x] **0286** — `vxn1b-wasm` engine cdylib: C-ABI host render loop + event codec
+      over `vxn1b_engine::Engine`. **Closed.**
+- [x] **0287** — SAB transport JS: `event-ring` / `param-store` / `event-codec` +
+      `WIRE-FORMAT.md`, byte-identical to 0286's Rust def, two-layer param space.
+      **Closed.**
+- [x] **0288** — Telemetry return channel: worklet→main SAB for `MeterFrame` and
+      `ScopeFrame` under a seqlock, published on a rate division. The first
+      audio→view path in any VXN web port. **Closed.**
+- [x] **0289** — AudioWorklet + coordinator bootstrap: processor, host-runner,
+      audio-host, AudioContext lifecycle. **Closed.**
+- [ ] **0290** — `vxn1b-web-controller` cdylib: `Controller<SharedParams>` +
+      `WebPresetStore` over the C-ABI opcode surface (port `vxn2-web-controller`,
+      including its `user_store.rs`). Reuses `vxn1b-engine`'s TOML preset codec
+      and `EnginePresetStore` shape — web and desktop must not drift on the
+      preset record format. Owns the descriptor taper and display strings that
+      `param-store.mjs`'s `paramChanged()` currently stubs.
 - [ ] **0291** — Faceplate rewire: `controller.mjs` + `faceplate-bridge.mjs`
       replacing wry `window.ipc` / `evaluate_script`; route VXN1b's custom
-      opcodes (`set_key_mode`, `set_split_point`, `set_lfo2_link`,
-      `set_matrix`, layer copy, `set_scope_tap`) to the right side —
-      topology to the ring, presets to the controller. `build_web_faceplate_html()`
-      + `gen-web-page` already exist; check the vxn-2 `routeOpcode` quirk
-      (numeric `op` field collision) doesn't recur in VXN1b's dispatch.
-- [ ] **0292** — `vxn1b-xtask web` pipeline: build both wasms
-      (release + `simd128`), `bake-factory` bin → `factory.bin`,
-      `gen-web-page` → `index.html`, assemble `target/web-dist/`, emit
-      COOP/COEP `_headers`, `serve-coep.mjs` dev server. **Rebase on the
-      in-flight uncommitted xtask work** (683 changed lines, 0213).
+      opcodes to the right side — topology to the ring, presets to the
+      controller. `build_web_faceplate_html()` + `gen-web-page` already exist;
+      check the vxn-2 `routeOpcode` quirk (numeric `op` field collision) doesn't
+      recur in VXN1b's dispatch. Also closes 0289's deliberate gap: a render trap
+      rebuilds the engine, and the controller is what re-broadcasts the
+      non-automatable state.
+- [ ] **0292** — `vxn1b-xtask web` pipeline: build both wasms (release +
+      `simd128`), `bake-factory` bin → `factory.bin`, `gen-web-page` →
+      `index.html`, assemble `target/web-dist/`, emit COOP/COEP `_headers`,
+      `serve-coep.mjs` dev server. **Rebase on the in-flight uncommitted xtask
+      work** (0213).
 - [ ] **0293** — Browser persistence: IndexedDB user presets (`vxn1b-presets`),
-      state autosave, patch export/import/URL-share — over 0284's shared
-      modules, not a fresh fork.
-- [ ] **0294** — Input adapters + ship: Web MIDI (**incl. MPE channel/
-      pressure**, delta 4) + computer keyboard → ring producers; BPM
-      control (delta 5); `deploy-web.sh` that does **not** clobber the
-      vxn-1/vxn-2 `_headers` blocks ([[vxn-web-publish-flow]]); hosting
-      doc; DAW-free browser smoke.
+      state autosave, patch export/import/URL-share — over 0284's shared modules,
+      not a fresh fork.
+- [ ] **0294** — Input adapters + ship: Web MIDI (**incl. MPE channel/pressure**,
+      delta 4) + computer keyboard → ring producers; BPM control (delta 5);
+      `deploy-web.sh` that does **not** clobber the vxn-1/vxn-2 `_headers` blocks
+      ([[vxn-web-publish-flow]]); hosting doc; DAW-free browser smoke.
 
 ## Risks
 
