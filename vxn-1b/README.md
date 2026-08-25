@@ -45,9 +45,11 @@ LFOs, and the chorus / phaser / delay / reverb / dynamics chain.
 
 ## Parameters
 
-The host sees **181 parameters**: 73 per layer × 2, plus 35 globals. The layer
+The host sees **185 parameters**: 75 per layer × 2, plus 35 globals. The layer
 parameters are a flat two-layer map over an otherwise unchanged per-synth table
 — a Layer 1 control and its Layer 2 twin are separate automation targets.
+[PARAMETERS.md](PARAMETERS.md) is generated from the engine table and is the
+authority on the count; this paragraph is a summary and can lag it.
 
 Matrix *topology* (which source feeds which destination, through which curve) is
 not automatable; it lives in the patch state and is edited in the faceplate's
