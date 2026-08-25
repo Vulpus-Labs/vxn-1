@@ -172,6 +172,41 @@ since both ports' `xtask web` write and wipe the same `target/web-dist`, a norma
 run reported "89 pass" with 13 tests silently skipped — including every one that
 would have caught 0285.
 
+## The return channel (audio -> view)
+
+Everything above travels main -> worklet. Meter and scope frames travel back, over
+a **second SAB** with its own layout ([`telemetry.mjs`](telemetry.mjs), ticket
+0288):
+
+```text
+i32[0] meterSeq        seqlock counter: even = stable, odd = mid-write
+i32[1] scopeSeq        ditto
+i32[2] scopeLen        samples valid in the scope region (0 = nothing yet)
+i32[3] reserved
+f32[4 ..)              meter frame, MeterTap order, linear peak magnitudes
+f32[..)                scope window, oldest -> newest
+```
+
+Region sizes come from `vxn1b_meter_len()` / `vxn1b_scope_window()`, never from
+literals — adding a meter tap must not silently truncate the frame.
+
+A **seqlock**, not the param store's plain per-slot atomics: a frame is not a set
+of independently meaningful slots, and a scope window stitched from two captures
+shows a discontinuity that reads as a glitch rather than as stale data. The
+writer never blocks (two atomic stores, no CAS); the reader retries a bounded
+number of times and otherwise keeps the frame it had.
+
+The writer publishes on a **rate division**, not every quantum. `MeterFrame::drain`
+is read-and-clear, so each frame reports the extreme since the last drain;
+draining every quantum at 48 kHz would be ~375 drains against a 60 Hz reader and
+would discard five quanta of peaks unseen. It divides to ~60 Hz, and publishes
+the scope every second time (~30 Hz), matching the native `SCOPE_TICK_DIVISOR`.
+
+Silence suppression — deliver one silent frame, then stop until audio returns —
+lives on the **main** thread. The write is nearly free and the reader polls
+anyway, so the render thread stays unconditional and the policy sits where it
+costs nothing.
+
 ## Running the tests
 
 ```sh

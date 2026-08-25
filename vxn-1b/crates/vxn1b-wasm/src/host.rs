@@ -41,11 +41,17 @@
 
 use crate::QUANTUM;
 use crate::codec::{self, SLOT_BYTES};
-use vxn1b_engine::Engine;
+use vxn1b_engine::{Engine, MeterFrame, SCOPE_DECIMATION, SCOPE_WINDOW};
+use vxn1b_engine::MeterTap;
 
 /// Max events decoded per quantum. Matches the ring capacity, so a full ring
 /// drains in one render.
 pub const MAX_EVENTS: usize = 1024;
+
+/// Floats in one drained meter frame — one per tap, in `MeterTap` order.
+/// Exported to JS so the telemetry SAB is sized from the engine rather than
+/// from a number someone typed into a JS file (see ticket 0285).
+pub const METER_LEN: usize = MeterTap::COUNT;
 
 /// The worklet audio-host: an [`Engine`], its stereo output (read straight out
 /// of linear memory by JS), and the event-decode scratch JS copies ring bytes
@@ -57,6 +63,13 @@ pub struct Host {
     /// Raw 16-byte wire records for the current quantum. JS writes here (via the
     /// pointer from [`vxn1b_host_events_ptr`]) then calls [`vxn1b_host_render`].
     events: [u8; SLOT_BYTES * MAX_EVENTS],
+    /// Last drained meter frame, in `MeterTap` order. JS reads it out of linear
+    /// memory via [`vxn1b_host_meters_ptr`] after [`vxn1b_host_drain_meters`].
+    meters: [f32; METER_LEN],
+    /// Last read scope window. A `Vec` rather than an array because
+    /// `ScopeBus::read_window` fills one; it is reserved to `SCOPE_WINDOW` up
+    /// front so the render path never allocates after construction.
+    scope: Vec<f32>,
 }
 
 impl Host {
@@ -68,6 +81,8 @@ impl Host {
             out_l: [0.0; QUANTUM],
             out_r: [0.0; QUANTUM],
             events: [0u8; SLOT_BYTES * MAX_EVENTS],
+            meters: [0.0; METER_LEN],
+            scope: Vec::with_capacity(SCOPE_WINDOW),
         }
     }
 
@@ -77,7 +92,7 @@ impl Host {
     fn render(&mut self, n: usize) {
         // Disjoint field borrows so decode (reads `events`) and render (writes
         // the output buffers, mutates `engine`) can coexist.
-        let Host { engine, out_l, out_r, events } = self;
+        let Host { engine, out_l, out_r, events, .. } = self;
 
         let n = n.min(MAX_EVENTS);
         let q = QUANTUM;
@@ -266,6 +281,117 @@ pub unsafe extern "C" fn vxn1b_host_reset(ptr: *mut Host) {
     }
 }
 
+// ── Telemetry: the audio→view direction (0288) ──────────────────────────────
+//
+// Natively the meter and scope buses are `Arc`-shared with the ~60 Hz timer, and
+// the frames ride the existing `ViewEvent` batch for free. Here the engine is a
+// separate wasm with its own linear memory, so the worklet has to read the
+// frames out and publish them into a return SAB. These exports are that read.
+//
+// Both fill a host-owned buffer and return how much is valid; JS then copies
+// from the buffer pointer into the SAB under a seqlock. Nothing here converts
+// units or applies ballistics — meter values stay linear peak magnitudes,
+// because the dB mapping and the decay belong to the view.
+
+/// Floats in a meter frame. JS sizes its SAB region from this rather than from a
+/// literal, so adding a tap does not silently truncate the frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn1b_meter_len() -> u32 {
+    METER_LEN as u32
+}
+
+/// Samples in a scope window.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn1b_scope_window() -> u32 {
+    SCOPE_WINDOW as u32
+}
+
+/// Drain every meter tap into the host's frame buffer, CLEARING the bus.
+///
+/// Read-and-clear is the contract: the frame reports the extreme since the
+/// previous drain. The caller therefore controls the measurement window by how
+/// often it calls this — the worklet divides down to ~60 Hz so each frame covers
+/// the span the UI is about to show. Draining every quantum would instead report
+/// only the newest quantum's peak and discard the rest unseen.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn1b_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn1b_host_drain_meters(ptr: *mut Host) {
+    if let Some(h) = unsafe { ptr.as_mut() } {
+        let f = MeterFrame::drain(h.engine.meters());
+        h.meters = [
+            f.layer1.0,
+            f.layer1.1,
+            f.layer2.0,
+            f.layer2.1,
+            f.dynamics_in.0,
+            f.dynamics_in.1,
+            f.dynamics_out.0,
+            f.dynamics_out.1,
+            f.dynamics_gr,
+            f.master.0,
+            f.master.1,
+        ];
+    }
+}
+
+/// Pointer to the drained meter frame (`vxn1b_meter_len()` f32s) in linear
+/// memory.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn1b_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn1b_host_meters_ptr(ptr: *mut Host) -> *const f32 {
+    match unsafe { ptr.as_ref() } {
+        Some(h) => h.meters.as_ptr(),
+        None => core::ptr::null(),
+    }
+}
+
+/// Read the latest scope window into the host's buffer. Returns the sample
+/// count, or 0 when the ring holds less than a full window — freshly cleared, or
+/// the tap is Off.
+///
+/// Unlike the meter drain this does NOT clear: the ring is a moving window, so
+/// two reads without an intervening block legitimately overlap, and nothing
+/// downstream needs frames to be disjoint.
+///
+/// Goes to `ScopeBus::read_window` directly rather than through
+/// `ScopeFrame::read`, which allocates a fresh `Vec` per call. The host's buffer
+/// is reserved to `SCOPE_WINDOW` at construction, so in steady state this path
+/// allocates nothing — it runs on the render thread.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn1b_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn1b_host_read_scope(ptr: *mut Host) -> u32 {
+    match unsafe { ptr.as_mut() } {
+        Some(h) => {
+            let Host { engine, scope, .. } = h;
+            if engine.scope().read_window(SCOPE_DECIMATION, SCOPE_WINDOW, scope) {
+                scope.len() as u32
+            } else {
+                0
+            }
+        }
+        None => 0,
+    }
+}
+
+/// Pointer to the last read scope window in linear memory. Valid for the count
+/// [`vxn1b_host_read_scope`] returned.
+///
+/// # Safety
+/// `ptr` must be a valid handle from [`vxn1b_host_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vxn1b_host_scope_ptr(ptr: *mut Host) -> *const f32 {
+    match unsafe { ptr.as_ref() } {
+        Some(h) => h.scope.as_ptr(),
+        None => core::ptr::null(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +530,103 @@ mod tests {
         assert_eq!(peak(h.out_l()), 0.0, "applied at the very end, so this quantum is silent");
         h.render(0);
         assert!(peak(h.out_l()) > 0.0, "and audible from the next one");
+    }
+
+    // ── Telemetry (0288) ────────────────────────────────────────────────
+
+    #[test]
+    fn draining_meters_reports_the_master_peak_and_then_clears() {
+        let mut h = snappy_host();
+        let n = load(&mut h, &[Event::NoteOn { offset: 0, channel: 0, note: 60, velocity: 1.0 }]);
+        h.render(n);
+
+        unsafe { vxn1b_host_drain_meters(&mut h) };
+        let master_l = h.meters[9];
+        assert!(master_l > 0.0, "a sounding note must register on the master tap");
+
+        // Read-and-clear: a second drain with nothing rendered in between
+        // reports rest, which is what lets the view's decay start falling.
+        unsafe { vxn1b_host_drain_meters(&mut h) };
+        assert_eq!(h.meters[9], 0.0, "the drain must clear the bus");
+    }
+
+    #[test]
+    fn the_meter_frame_is_one_float_per_tap() {
+        assert_eq!(METER_LEN, vxn1b_meter_len() as usize);
+        assert_eq!(METER_LEN, vxn1b_engine::MeterTap::COUNT);
+    }
+
+    /// The scope ring only yields a window once it holds one: a fresh host has
+    /// captured nothing, so the reader must be told "no frame" rather than
+    /// handed a half-full buffer that would draw as a truncated trace.
+    #[test]
+    fn a_cold_scope_ring_yields_no_window() {
+        let mut h = snappy_host();
+        assert_eq!(unsafe { vxn1b_host_read_scope(&mut h) }, 0);
+    }
+
+    #[test]
+    fn the_scope_captures_the_selected_tap_and_nothing_while_off() {
+        let quanta_for_a_window = (SCOPE_DECIMATION * SCOPE_WINDOW).div_ceil(QUANTUM) + 2;
+
+        // Tap off (the default): render plenty, still no window.
+        let mut off = snappy_host();
+        let n = load(&mut off, &[Event::NoteOn { offset: 0, channel: 0, note: 60, velocity: 1.0 }]);
+        off.render(n);
+        for _ in 0..quanta_for_a_window {
+            off.render(0);
+        }
+        assert_eq!(
+            unsafe { vxn1b_host_read_scope(&mut off) },
+            0,
+            "an unselected ring must stay empty — the audio thread only captures what is watched"
+        );
+
+        // Tap on Layer 1: a full window arrives, and it is not flat.
+        let mut on = snappy_host();
+        let n = load(
+            &mut on,
+            &[
+                Event::ScopeTapEv { offset: 0, tap: 1 },
+                Event::NoteOn { offset: 0, channel: 0, note: 60, velocity: 1.0 },
+            ],
+        );
+        on.render(n);
+        for _ in 0..quanta_for_a_window {
+            on.render(0);
+        }
+        let count = unsafe { vxn1b_host_read_scope(&mut on) };
+        assert_eq!(count as usize, SCOPE_WINDOW, "a full window or nothing");
+        assert!(
+            on.scope.iter().any(|&s| s != 0.0),
+            "the captured window must not be flat while a note is sounding"
+        );
+    }
+
+    /// `ScopeFrame::read` allocates a fresh Vec per call, which is why this path
+    /// goes to `read_window` with a host-owned buffer instead. The buffer is
+    /// reserved at construction, so the render thread never reallocates.
+    #[test]
+    fn repeated_scope_reads_do_not_reallocate() {
+        let mut h = snappy_host();
+        let n = load(
+            &mut h,
+            &[
+                Event::ScopeTapEv { offset: 0, tap: 1 },
+                Event::NoteOn { offset: 0, channel: 0, note: 60, velocity: 1.0 },
+            ],
+        );
+        h.render(n);
+        for _ in 0..((SCOPE_DECIMATION * SCOPE_WINDOW).div_ceil(QUANTUM) + 2) {
+            h.render(0);
+        }
+
+        assert!(h.scope.capacity() >= SCOPE_WINDOW, "reserved up front");
+        let cap = h.scope.capacity();
+        for _ in 0..16 {
+            assert_eq!(unsafe { vxn1b_host_read_scope(&mut h) } as usize, SCOPE_WINDOW);
+            assert_eq!(h.scope.capacity(), cap, "steady state must not grow the buffer");
+        }
     }
 
     #[test]
