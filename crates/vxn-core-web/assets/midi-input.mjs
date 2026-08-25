@@ -16,9 +16,25 @@
 // Everything else (program change, aftertouch, other CCs, SysEx, clock) is
 // ignored — MIDI output / clock / MPE are explicitly out of E017's scope.
 //
-// CHANNELS: we are a single-timbral synth; all 16 channels fold onto the one
-// engine (no per-channel routing). This matches vxn-clap, which also ignores
-// the MIDI channel nibble.
+// CHANNELS + CAPABILITIES: the decoder adapts to the host it is given rather
+// than assuming one synth's surface (ticket 0294).
+//
+//   - The channel nibble is passed as a TRAILING argument to noteOn / noteOff.
+//     vxn-1 and vxn-2 are single-timbral and their producers take three
+//     arguments, so the extra one is dropped by JS and they fold every channel
+//     onto one engine exactly as before. VXN1b's dispatch is MPE-aware and its
+//     producer accepts it.
+//   - Sustain (CC 64) is sent only if the host HAS a `sustain` method. VXN1b
+//     deliberately has no CC 64 path — its codec reserves the tag and decodes
+//     it to `None`, so that the web build cannot behave differently from the
+//     plugin — and calling it would be a TypeError on the first pedal press.
+//   - Poly / channel aftertouch is sent only if the host has `polyPressure` /
+//     `channelPressure`. vxn-1 and vxn-2 have neither, so both messages stay
+//     ignored there, as they were.
+//
+// Feature detection rather than a per-synth fork: this module is shared by all
+// three web ports (ticket 0284), and the differences are three method
+// signatures, not three behaviours.
 //
 // ===========================================================================
 // TIMESTAMP -> SAMPLE-OFFSET  (the honest version — see 0054)
@@ -75,7 +91,9 @@
 // Status byte high-nibble message types (low nibble = channel, ignored).
 const MSG_NOTE_OFF = 0x80;
 const MSG_NOTE_ON = 0x90;
+const MSG_POLY_PRESSURE = 0xa0;
 const MSG_CONTROL_CHANGE = 0xb0;
+const MSG_CHANNEL_PRESSURE = 0xd0;
 const MSG_PITCH_BEND = 0xe0;
 
 const CC_MOD_WHEEL = 1;
@@ -144,18 +162,34 @@ export function decodeMidiMessage(host, data, offset = 0) {
   const status = data[0];
   if (status < 0x80) return; // not a status byte (running status unsupported)
   const type = status & 0xf0;
+  // Trailing argument: meaningful to an MPE-aware host, dropped by a
+  // single-timbral one. See the CHANNELS note above.
+  const channel = status & 0x0f;
 
   switch (type) {
     case MSG_NOTE_ON: {
       const note = data[1];
       const vel = data[2] | 0;
       // Running-status convention: NoteOn velocity 0 IS a NoteOff.
-      if (vel === 0) host.noteOff(note, offset);
-      else host.noteOn(note, cc7ToUnit(vel), offset);
+      if (vel === 0) host.noteOff(note, offset, channel);
+      else host.noteOn(note, cc7ToUnit(vel), offset, channel);
       break;
     }
     case MSG_NOTE_OFF: {
-      host.noteOff(data[1], offset);
+      host.noteOff(data[1], offset, channel);
+      break;
+    }
+    case MSG_POLY_PRESSURE: {
+      // Per-note pressure. Only MPE-aware hosts have somewhere to put it.
+      if (typeof host.polyPressure === "function") {
+        host.polyPressure(data[1], cc7ToUnit(data[2] | 0), offset, channel);
+      }
+      break;
+    }
+    case MSG_CHANNEL_PRESSURE: {
+      if (typeof host.channelPressure === "function") {
+        host.channelPressure(cc7ToUnit(data[1] | 0), offset, channel);
+      }
       break;
     }
     case MSG_PITCH_BEND: {
@@ -166,12 +200,15 @@ export function decodeMidiMessage(host, data, offset = 0) {
       const cc = data[1];
       const val = data[2] | 0;
       if (cc === CC_MOD_WHEEL) host.modWheel(cc7ToUnit(val), offset);
-      else if (cc === CC_SUSTAIN) host.sustain(val >= 64, offset);
+      // Only if the host has a pedal path at all — VXN1b deliberately does not.
+      else if (cc === CC_SUSTAIN && typeof host.sustain === "function") {
+        host.sustain(val >= 64, offset);
+      }
       // Other CCs: ignored (out of scope).
       break;
     }
     default:
-      break; // aftertouch / program-change / system: ignored
+      break; // program-change / system: ignored
   }
 }
 
