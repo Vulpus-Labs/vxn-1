@@ -772,6 +772,14 @@ html, body {
   display: block;
   cursor: ns-resize;
   touch-action: none;
+  /* The lit arc's halo has to paint OUTSIDE this box. An `<svg>` clips to its
+     viewport by default, and the geometry leaves no room: the arc sits at
+     r=15 with a 2px stroke, so its outer edge is 16 from the centre of an
+     18-radius box — 2px of headroom for a drop-shadow whose outer blur is 4px.
+     Clipped, the bloom stops dead on a hard square just outside the ring, which
+     reads as a lit panel rather than a lit lamp. Chrome shows it plainly; the
+     plugin's WebKit does the same thing more faintly. */
+  overflow: visible;
 }
 .ctl-dial .dial-track {
   fill: none;
