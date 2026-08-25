@@ -585,6 +585,8 @@ export async function boot({
   controllerWasmUrl,
   fetchImpl,
   autoGesture = true,
+  autoInputs = true,
+  adapters = null,
 } = {}) {
   // Dynamic so a headless importer (the node suites) never pulls the audio
   // stack in just to exercise the router.
@@ -618,9 +620,63 @@ export async function boot({
   bridge.publishCorpus();
   bridge.start();
 
-  if (autoGesture) attachGestureGate(win, host, bridge);
+  // The computer keyboard attaches NOW, before audio exists. A keypress then
+  // does both jobs at once: it satisfies the gesture gate and its note lands in
+  // the ring, which the runner applies on the first live quantum
+  // (silence-until-ready). Attaching it after `start()` instead would eat the
+  // very keystroke the player used to wake the thing up.
+  let inputs = null;
+  if (autoInputs) inputs = await attachKeyboardInput(win, host, adapters);
 
-  return { host, controller, bridge };
+  // Web MIDI waits for the gesture: asking for the permission prompt on page
+  // load, before the player has touched anything, is rude and easy to deny by
+  // reflex.
+  if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
+
+  return { host, controller, bridge, inputs };
+}
+
+/// Resolve a shared adapter (0284). In `dist/` everything is FLAT, so
+/// `./keyboard-input.mjs` sits beside this file and the dynamic import just
+/// works; in the source tree it lives under `crates/vxn-core-web/assets`, two
+/// roots away, so a headless caller injects it instead. Same seam vxn-2 uses,
+/// and the reason the import is dynamic rather than static.
+async function sharedAdapter(injected, name, symbol) {
+  if (injected && typeof injected[symbol] === "function") return injected[symbol];
+  const mod = await import(`./${name}`);
+  return mod[symbol];
+}
+
+/// Computer keyboard → ring. Shared adapter; it calls noteOn/noteOff only, so it
+/// needs no VXN1b-specific handling.
+async function attachKeyboardInput(win, host, injected) {
+  if (!win.document) return null;
+  try {
+    const attach = await sharedAdapter(injected, "keyboard-input.mjs", "attachKeyboard");
+    return attach(host, { target: win.document });
+  } catch (e) {
+    console.warn("vxn: keyboard input unavailable", e);
+    return null;
+  }
+}
+
+/// Web MIDI → ring. Resolves even when access is denied or Web MIDI is absent
+/// (Safari): the adapter reports `state.granted === false` rather than throwing,
+/// and the computer keyboard is already attached as the fallback.
+async function attachMidiInput(host, injected) {
+  try {
+    const attachMidi = await sharedAdapter(injected, "midi-input.mjs", "attachMidi");
+    const midi = await attachMidi(host, {
+      onError: (err) => console.warn("vxn: Web MIDI unavailable", err),
+    });
+    if (midi && midi.state && midi.state.granted === false) {
+      console.info("vxn: no Web MIDI — use the computer keyboard");
+    }
+    return midi;
+  } catch (e) {
+    console.warn("vxn: Web MIDI attach failed", e);
+    return null;
+  }
 }
 
 /// Start audio on the first user gesture, then resync the engine.
@@ -630,7 +686,7 @@ export async function boot({
 /// cutting the rest of the lifecycle machinery. Listeners are one-shot and cover
 /// both pointer and keyboard, so a player who reaches for the computer-keyboard
 /// octave first is not left in silence wondering.
-export function attachGestureGate(win, host, bridge) {
+export function attachGestureGate(win, host, bridge, { autoInputs = true, adapters = null } = {}) {
   const doc = win.document;
   if (!doc) return () => {};
   let started = false;
@@ -645,6 +701,7 @@ export function attachGestureGate(win, host, bridge) {
       // push made while the ring had no consumer may have been refused. Tell the
       // engine everything again — see `resyncEngine`.
       bridge.resyncEngine();
+      if (autoInputs) await attachMidiInput(host, adapters);
     } catch (e) {
       console.error("vxn: audio failed to start", e);
     }

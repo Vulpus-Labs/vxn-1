@@ -786,10 +786,10 @@ const CONTROLLER_ARTIFACT: &str = "vxn1b_web_controller.wasm";
 /// verified by [`web`] failing on a missing file rather than shipping a `dist/`
 /// that 404s at runtime.
 ///
-/// vxn-2's bundle also copies six SHARED modules from `crates/vxn-core-web`
-/// (persistence ×4, input ×2). Nothing in VXN1b imports them yet; they arrive
-/// with 0293 (persistence) and 0294 (MIDI + keyboard), and each of those adds
-/// its own rather than this shipping files nothing loads.
+/// The SHARED modules live in `crates/vxn-core-web/assets` and are listed
+/// separately ([`CORE_MODULES`]) because they come from a different source root;
+/// `dist/` is flat, so both land side by side and the browser's `./x.mjs`
+/// specifiers resolve either way.
 const WEB_MODULES: [&str; 9] = [
     "event-ring.mjs",
     "event-codec.mjs",
@@ -805,6 +805,14 @@ const WEB_MODULES: [&str; 9] = [
 /// The AudioWorklet processor. Plain `.js`, not `.mjs`: `addModule()` loads it
 /// as a classic script into the worklet scope.
 const WEB_WORKLET: &str = "vxn1b-processor.js";
+
+/// Shared browser modules, from `crates/vxn-core-web/assets` rather than this
+/// port's `web/` (ticket 0284 — the "don't fork a third time" extraction).
+///
+/// Only what VXN1b actually imports: the two input adapters (0294). The four
+/// persistence modules join when 0293 wires them — shipping a file no page
+/// loads is dead weight on every visit.
+const CORE_MODULES: [&str; 2] = ["midi-input.mjs", "keyboard-input.mjs"];
 
 /// Netlify / Cloudflare-Pages `_headers`: COOP/COEP (+CORP) on every path, so a
 /// static host serves the page cross-origin isolated and `SharedArrayBuffer` is
@@ -844,6 +852,14 @@ fn web(serve: bool, port: Option<&str>) -> Result<(), String> {
             return Err(format!("missing web module {}", from.display()));
         }
         fs::copy(&from, dist.join(m)).map_err(|e| format!("copy web module {m}: {e}"))?;
+    }
+    let core_src = root.join("crates/vxn-core-web/assets");
+    for m in CORE_MODULES {
+        let from = core_src.join(m);
+        if !from.exists() {
+            return Err(format!("missing shared web module {}", from.display()));
+        }
+        fs::copy(&from, dist.join(m)).map_err(|e| format!("copy shared web module {m}: {e}"))?;
     }
 
     // 3. The faceplate page, GENERATED rather than copied: `gen-web-page` runs
@@ -956,17 +972,29 @@ mod web_tests {
 
     /// Every module the bundle ships, plus the worklet.
     fn bundled() -> Vec<&'static str> {
-        WEB_MODULES.iter().copied().chain([WEB_WORKLET]).collect()
+        WEB_MODULES
+            .iter()
+            .copied()
+            .chain([WEB_WORKLET])
+            .chain(CORE_MODULES)
+            .collect()
     }
 
-    fn web_src() -> PathBuf {
-        workspace_root().join("vxn-1b/crates/vxn1b-wasm/web")
+    /// Where a bundled module comes from — the two source roots `dist/`
+    /// flattens together.
+    fn src_of(m: &str) -> PathBuf {
+        let root = workspace_root();
+        if CORE_MODULES.contains(&m) {
+            root.join("crates/vxn-core-web/assets").join(m)
+        } else {
+            root.join("vxn-1b/crates/vxn1b-wasm/web").join(m)
+        }
     }
 
     #[test]
     fn every_bundled_module_exists() {
         for m in bundled() {
-            let p = web_src().join(m);
+            let p = src_of(m);
             assert!(p.exists(), "web module {m} is listed but missing at {}", p.display());
         }
     }
@@ -981,7 +1009,7 @@ mod web_tests {
         let names: Vec<&str> = bundled();
         let mut found = 0usize;
         for m in &names {
-            let src = fs::read_to_string(web_src().join(m))
+            let src = fs::read_to_string(src_of(m))
                 .unwrap_or_else(|e| panic!("read {m}: {e}"));
             for referenced in relative_refs(&src) {
                 found += 1;

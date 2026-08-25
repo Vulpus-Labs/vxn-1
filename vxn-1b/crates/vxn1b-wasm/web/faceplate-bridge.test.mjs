@@ -692,3 +692,44 @@ test("boot() stands the whole thing up", async () => {
   assert.ok(Number.isFinite(host.store.read(patchClapId(LAYER_L1, CUTOFF))));
   controller.destroy();
 });
+
+test("boot attaches the computer keyboard before audio exists", async () => {
+  // The keyboard must be live BEFORE the gesture: the keypress that wakes the
+  // context should also sound a note, which it can, because notes pushed before
+  // `ready` wait in the ring and apply on the first live quantum. Attaching
+  // after start() would swallow exactly that keystroke.
+  const { boot } = await import("./faceplate-bridge.mjs");
+  const engineWasm = await readFile(
+    path.resolve(here, "../../../../target/wasm32-unknown-unknown/release/vxn1b_wasm.wasm"),
+  );
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => (String(url).includes("controller") ? wasmBytes : engineWasm),
+  });
+
+  const listeners = {};
+  const win = fakeWin();
+  win.document = {
+    addEventListener: (t, fn) => ((listeners[t] ||= []).push(fn)),
+    removeEventListener: () => {},
+    createElement: () => ({ append() {}, addEventListener() {}, focus() {}, select() {}, remove() {} }),
+    body: { append() {} },
+  };
+
+  // Inject the REAL shared adapter: dist/ is flat so the production dynamic
+  // import resolves there, but from the source tree it is two roots away.
+  const { attachKeyboard } = await import(
+    "../../../../crates/vxn-core-web/assets/keyboard-input.mjs"
+  );
+  const { bridge, controller, inputs } = await boot({
+    win,
+    fetchImpl,
+    adapters: { attachKeyboard },
+    autoGesture: false, // the MIDI half waits for a gesture; not exercised here
+  });
+  bridge.stop();
+
+  assert.ok(inputs, "boot did not attach the keyboard adapter");
+  assert.ok(listeners.keydown?.length, "no keydown listener — nothing can play the synth");
+  controller.destroy();
+});
