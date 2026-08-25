@@ -83,6 +83,7 @@ import {
   MATRIX_FIELD_SCALE_SRC,
   MATRIX_SLOTS,
 } from "./event-codec.mjs";
+import { WebController } from "./controller.mjs";
 
 /// Scope-tap wire codes (match `vxn1b_engine::ScopeTap::code()`), keyed by the
 /// strings the page sends.
@@ -285,16 +286,62 @@ export class FaceplateBridge {
     const self = this;
     this.win.ipc = {
       postMessage(json) {
-        let msg = null;
-        try {
-          msg = JSON.parse(json);
-        } catch (e) {
-          console.warn("vxn: unparseable opcode", e);
-          return;
-        }
-        self.handle(msg);
+        self._post(json);
       },
     };
+    return this.drainBootQueue();
+  }
+
+  _post(json) {
+    let msg = null;
+    try {
+      msg = JSON.parse(json);
+    } catch (e) {
+      console.warn("vxn: unparseable opcode", e);
+      return;
+    }
+    this.handle(msg);
+  }
+
+  /// Drain the opcodes the page buffered before this module loaded.
+  ///
+  /// `WEB_BOOT_HEAD` installs a synchronous queuing `window.ipc` during page
+  /// parse, because the faceplate's `init()` fires `ready` (and whatever else
+  /// binding produces) long before an async wasm boot can finish. Those live in
+  /// `window.__VXN_UI_QUEUE__` as raw JSON strings. Dropping them would cost the
+  /// `ready` opcode, and with it the full re-broadcast that paints every control
+  /// — the page would come up blank and stay blank until something moved.
+  drainBootQueue() {
+    const q = this.win.__VXN_UI_QUEUE__;
+    if (Array.isArray(q)) {
+      // Splice rather than reassign: the stub closed over this exact array.
+      const pending = q.splice(0, q.length);
+      for (const json of pending) this._post(json);
+    }
+    return this;
+  }
+
+  /// Tell the engine everything again: re-push the whole topology and key
+  /// record, and rewrite every param slot.
+  ///
+  /// Called when the worklet reports ready. Two things make it necessary, both
+  /// consequences of the faceplate being live before the audio gesture:
+  /// `WebHost.start()` seeds the store with the ENGINE's defaults (clobbering
+  /// anything edited while waiting), and ring pushes made before audio existed
+  /// can have been refused if the ring filled, with the memo believing they
+  /// landed.
+  resyncEngine() {
+    // Clearing this side's memos is necessary but NOT sufficient: the resend
+    // only runs when a matrix / key record arrives in the batch, and the
+    // controller has memos of its own that have not moved — so it would emit
+    // nothing and the resend would never fire. `EditorReady` is the mechanism
+    // that already exists for "something needs seeding from scratch": it
+    // re-broadcasts every param and clears the controller's echo memos, so both
+    // records land on the next tick.
+    this._sentMatrix = null;
+    this._sentKey = null;
+    this.controller.invalidateMirror();
+    this.controller.editorReady();
     return this;
   }
 
@@ -314,12 +361,61 @@ export class FaceplateBridge {
   /// `text_input_result` the page's dispatcher already expects, so the
   /// promptText callback fires exactly as it does natively.
   _promptText(id, title, initial) {
-    const value = this._prompt
-      ? this._prompt(title, initial)
-      : this.win.prompt
-        ? this.win.prompt(title, initial)
-        : null;
-    this._deliver([{ kind: "text_input_result", id, value: value ?? null }]);
+    if (this._prompt) {
+      const value = this._prompt(title, initial);
+      this._deliver([{ kind: "text_input_result", id, value: value ?? null }]);
+      return;
+    }
+    const doc = this.win.document;
+    if (!doc) {
+      // Headless: answer immediately rather than leaving the page's callback
+      // pending forever.
+      this._deliver([{ kind: "text_input_result", id, value: null }]);
+      return;
+    }
+    // The `.vxn-ti-*` styles ship in WEB_BOOT_HEAD for exactly this: the
+    // desktop build opens a native NSWindow (outside the host's key-event
+    // monitor, so Space types instead of starting transport); a page has no such
+    // problem and builds the box itself.
+    const backdrop = doc.createElement("div");
+    backdrop.className = "vxn-ti-backdrop";
+    const box = doc.createElement("div");
+    box.className = "vxn-ti-box";
+    const label = doc.createElement("div");
+    label.className = "vxn-ti-title";
+    label.textContent = title || "";
+    const input = doc.createElement("input");
+    input.className = "vxn-ti-input";
+    input.type = "text";
+    input.value = initial || "";
+    box.append(label, input);
+    backdrop.append(box);
+    doc.body.append(backdrop);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = (value) => {
+      if (done) return; // fire-once: Enter then blur must not answer twice
+      done = true;
+      backdrop.remove();
+      this._deliver([{ kind: "text_input_result", id, value }]);
+    };
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        finish(input.value);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        finish(null);
+      }
+      // Every other key stops here: the faceplate binds single-key shortcuts on
+      // the document, and typing a preset name must not trigger them.
+      ev.stopPropagation();
+    });
+    backdrop.addEventListener("pointerdown", (ev) => {
+      if (ev.target === backdrop) finish(null); // click-outside cancels
+    });
   }
 
   /// Override the prompt (tests, or a nicer in-page modal later).
@@ -442,7 +538,14 @@ export class FaceplateBridge {
   }
 
   start() {
-    if (this._running || !this._raf) return this;
+    if (this._running) return this;
+    if (!this._raf) {
+      // Every browser has rAF, so this means a host that isn't one. Say so:
+      // a pump that never runs looks exactly like a page that booted fine and
+      // then froze.
+      console.warn("vxn: no requestAnimationFrame — the pump will not run; call pump() yourself");
+      return this;
+    }
     this._running = true;
     const loop = () => {
       if (!this._running) return;
@@ -463,4 +566,106 @@ export class FaceplateBridge {
     this._running = false;
     return this;
   }
+}
+
+// ── Boot ────────────────────────────────────────────────────────────────────
+//
+// The generated page loads THIS module (`<script type="module"
+// src="./faceplate-bridge.mjs">`, spliced into `__WEB_BOOT_LOADER__` just after
+// the faceplate's inline script), so it has to stand the whole thing up.
+
+/// Wire the audio host, the controller wasm and the bridge together, and start
+/// pumping. Resolves once the UI is live — which is BEFORE audio is: the
+/// faceplate is fully interactive while the page waits for the gesture that
+/// autoplay policy requires, and edits made in that window are held in the model
+/// and the ring until the first live quantum.
+export async function boot({
+  win = globalThis,
+  wasmUrl,
+  controllerWasmUrl,
+  fetchImpl,
+  autoGesture = true,
+} = {}) {
+  // Dynamic so a headless importer (the node suites) never pulls the audio
+  // stack in just to exercise the router.
+  const { WebHost } = await import("./coordinator.mjs");
+
+  const host = new WebHost({
+    ...(wasmUrl ? { wasmUrl } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+    onTrap: (err, count) => {
+      // 0297: a trap goes silent and REPORTS. It does not re-instantiate — a
+      // rebuilt engine loses key mode, split, LFO 2 link and the whole
+      // topology, so "recovered" audio would play the wrong patch with nothing
+      // on screen saying so. Reloading is the honest answer.
+      console.error(`vxn: render trap #${count} — audio stopped, reload the page`, err);
+    },
+  });
+
+  const controller = await new WebController({
+    ...(controllerWasmUrl ? { wasmUrl: controllerWasmUrl } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+    // ONE store: the host allocated it with the rest of the transport, and the
+    // controller mirrors the model into it. Two would silently diverge.
+    store: host.store,
+  }).instantiate();
+
+  const bridge = new FaceplateBridge({ controller, coordinator: host, win });
+
+  // Install before the first pump so the opcodes the page queued during parse —
+  // `ready` among them — are routed into this tick rather than the next.
+  bridge.install();
+  bridge.publishCorpus();
+  bridge.start();
+
+  if (autoGesture) attachGestureGate(win, host, bridge);
+
+  return { host, controller, bridge };
+}
+
+/// Start audio on the first user gesture, then resync the engine.
+///
+/// Autoplay policy requires `ctx.resume()` to happen inside a gesture call
+/// stack; without this there is no sound at all, which is why 0297 kept it while
+/// cutting the rest of the lifecycle machinery. Listeners are one-shot and cover
+/// both pointer and keyboard, so a player who reaches for the computer-keyboard
+/// octave first is not left in silence wondering.
+export function attachGestureGate(win, host, bridge) {
+  const doc = win.document;
+  if (!doc) return () => {};
+  let started = false;
+  const onGesture = async () => {
+    if (started) return;
+    started = true;
+    detach();
+    try {
+      await host.start();
+      // The store now holds the ENGINE's defaults (`_seedStoreFromDefaults`),
+      // which may have overwritten edits made before the gesture, and any ring
+      // push made while the ring had no consumer may have been refused. Tell the
+      // engine everything again — see `resyncEngine`.
+      bridge.resyncEngine();
+    } catch (e) {
+      console.error("vxn: audio failed to start", e);
+    }
+  };
+  const detach = () => {
+    doc.removeEventListener("pointerdown", onGesture);
+    doc.removeEventListener("keydown", onGesture);
+  };
+  doc.addEventListener("pointerdown", onGesture);
+  doc.addEventListener("keydown", onGesture);
+  return detach;
+}
+
+// Auto-boot when loaded as the page's module, and only then: the node suites
+// import this file for `routeOpcode` / `FaceplateBridge` and must not stand up
+// an AudioContext to do it. `__VXN_NO_AUTOBOOT__` is the escape hatch for a
+// browser test that wants to drive `boot()` itself.
+if (
+  typeof window !== "undefined" &&
+  typeof document !== "undefined" &&
+  !globalThis.__VXN_NO_AUTOBOOT__
+) {
+  boot().catch((e) => console.error("vxn: boot failed", e));
 }

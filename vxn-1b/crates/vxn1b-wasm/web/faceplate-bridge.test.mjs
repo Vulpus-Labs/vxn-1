@@ -425,3 +425,270 @@ test("a pump that throws does not kill the loop", async () => {
   assert.ok(frames >= 3, "the rAF chain died on the first throw");
   assert.ok(errs.length >= 1, "the failure was swallowed silently");
 });
+
+// ---- boot behaviours -------------------------------------------------------
+
+test("install drains the opcodes the page queued before the module loaded", async () => {
+  const { bridge, controller, win, coordinator } = await rig();
+  // What WEB_BOOT_HEAD's stub does during page parse: buffer raw JSON. `ready`
+  // is the one that matters — it carries the full re-broadcast that paints
+  // every control, so dropping the queue means a page that comes up blank.
+  win.__VXN_UI_QUEUE__ = [
+    JSON.stringify({ op: "set_key_mode", mode: 1 }),
+    JSON.stringify({ op: "ready" }),
+  ];
+  bridge.install();
+  assert.deepEqual(win.__VXN_UI_QUEUE__, [], "the queue must be emptied, not copied");
+
+  const evs = bridge.pump();
+  const ids = new Set(evs.filter((e) => e.kind === "param_changed").map((e) => e.id));
+  assert.equal(ids.size, TOTAL_PARAMS, "the queued `ready` did not re-broadcast");
+  assert.deepEqual(coordinator.of("keyMode"), [["keyMode", 1]]);
+  controller.destroy();
+});
+
+test("install splices the SAME array the stub closed over", async () => {
+  const { bridge, controller, win } = await rig();
+  const q = [JSON.stringify({ op: "ready" })];
+  win.__VXN_UI_QUEUE__ = q;
+  bridge.install();
+  // The stub holds `q` directly; reassigning a fresh [] would leave it pushing
+  // into an array nobody drains.
+  assert.equal(win.__VXN_UI_QUEUE__, q);
+  assert.equal(q.length, 0);
+  controller.destroy();
+});
+
+test("install survives a missing or malformed queue", async () => {
+  const { bridge, controller, win } = await rig();
+  delete win.__VXN_UI_QUEUE__;
+  bridge.install();
+  win.__VXN_UI_QUEUE__ = "not an array";
+  bridge.install();
+  controller.destroy();
+});
+
+test("resyncEngine re-pushes the whole topology and every param slot", async () => {
+  const { bridge, coordinator, controller, store } = await rig();
+  bridge.pump(); // boot seed: full topology + a full mirror
+  coordinator.clear();
+  bridge.pump();
+  assert.deepEqual(coordinator.calls, [], "quiescent before the resync");
+
+  // What WebHost.start() does to us: overwrite the store with engine defaults.
+  const id = patchClapId(LAYER_L1, CUTOFF);
+  bridge.handle({ op: "set_param", id, plain: 913 });
+  bridge.pump();
+  store.write(id, 1.0); // stand-in for _seedStoreFromDefaults clobbering it
+
+  bridge.resyncEngine();
+  bridge.pump();
+
+  assert.ok(
+    Math.abs(store.read(id) - 913) < 1,
+    "the resync did not rewrite a slot the audio graph had clobbered",
+  );
+  assert.equal(
+    coordinator.of("matrix").length,
+    2 * MATRIX_SLOTS * 4,
+    "the resync did not re-push the whole topology",
+  );
+  controller.destroy();
+});
+
+// ---- the DOM text-input modal ---------------------------------------------
+
+/// The smallest DOM that exercises the modal path — enough for createElement,
+/// append, focus, remove and keydown listeners.
+function fakeDoc() {
+  const mk = (tag) => {
+    const el = {
+      tagName: tag,
+      className: "",
+      textContent: "",
+      type: "",
+      value: "",
+      children: [],
+      _listeners: {},
+      append(...kids) {
+        this.children.push(...kids);
+        for (const k of kids) k.parent = this;
+      },
+      remove() {
+        if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
+        this.removed = true;
+      },
+      addEventListener(type, fn) {
+        (this._listeners[type] ||= []).push(fn);
+      },
+      removeEventListener() {},
+      focus() {
+        this.focused = true;
+      },
+      select() {},
+      fire(type, ev) {
+        for (const fn of this._listeners[type] || []) fn(ev);
+      },
+    };
+    return el;
+  };
+  const body = mk("body");
+  return { createElement: mk, body, _root: () => body.children[0] };
+}
+
+async function modalRig() {
+  const store = new ParamStore(createParamSAB());
+  const controller = await new WebController({ wasmBytes, store }).instantiate();
+  const win = fakeWin();
+  win.document = fakeDoc();
+  const bridge = new FaceplateBridge({ controller, coordinator: new FakeCoordinator(), win });
+  return { bridge, controller, win };
+}
+
+const keyEv = (key) => ({ key, preventDefault() {}, stopPropagation() {} });
+
+test("the text-input modal commits on Enter and uses the shipped CSS classes", async () => {
+  const { bridge, controller, win } = await modalRig();
+  bridge.handle({ op: "request_text_input", id: "ti1", title: "Preset name", initial: "Init" });
+
+  const backdrop = win.document._root();
+  assert.equal(backdrop.className, "vxn-ti-backdrop", "must use WEB_BOOT_HEAD's classes");
+  const box = backdrop.children[0];
+  assert.equal(box.className, "vxn-ti-box");
+  const [label, input] = box.children;
+  assert.equal(label.className, "vxn-ti-title");
+  assert.equal(label.textContent, "Preset name");
+  assert.equal(input.className, "vxn-ti-input");
+  assert.equal(input.value, "Init", "the initial value must be seeded");
+  assert.ok(input.focused, "the field must be focused or the user types into the faceplate");
+
+  input.value = "Renamed";
+  input.fire("keydown", keyEv("Enter"));
+  const ev = win.flat().find((e) => e.kind === "text_input_result");
+  assert.deepEqual(ev, { kind: "text_input_result", id: "ti1", value: "Renamed" });
+  assert.ok(backdrop.removed, "the modal must be torn down");
+  controller.destroy();
+});
+
+test("Escape and click-outside cancel with null, and answer exactly once", async () => {
+  const { bridge, controller, win } = await modalRig();
+  bridge.handle({ op: "request_text_input", id: "ti2", title: "x", initial: "" });
+  const backdrop = win.document._root();
+  backdrop.children[0].children[1].fire("keydown", keyEv("Escape"));
+  assert.equal(win.flat().filter((e) => e.kind === "text_input_result")[0].value, null);
+
+  const { bridge: b3, controller: c3, win: w3 } = await modalRig();
+  b3.handle({ op: "request_text_input", id: "ti3", title: "x", initial: "" });
+  const bd = w3.document._root();
+  bd.fire("pointerdown", { target: bd });
+  // A second cancel (Enter after the box is gone) must NOT deliver twice: the
+  // page's promptText callback is fire-once and a second answer would be lost
+  // or, worse, applied to a later prompt.
+  bd.children[0].children[1].fire("keydown", keyEv("Enter"));
+  assert.equal(w3.flat().filter((e) => e.kind === "text_input_result").length, 1);
+  controller.destroy();
+  c3.destroy();
+});
+
+test("keystrokes in the modal do not leak to the faceplate's shortcuts", async () => {
+  const { bridge, controller, win } = await modalRig();
+  bridge.handle({ op: "request_text_input", id: "ti4", title: "x", initial: "" });
+  const input = win.document._root().children[0].children[1];
+  let stopped = false;
+  input.fire("keydown", { key: "a", preventDefault() {}, stopPropagation() { stopped = true; } });
+  assert.ok(stopped, "typing a name must not trigger single-key shortcuts");
+  controller.destroy();
+});
+
+test("with no document the prompt answers rather than hanging", async () => {
+  const { bridge, controller, win } = await rig(); // no win.document
+  bridge.handle({ op: "request_text_input", id: "ti5", title: "x", initial: "" });
+  const ev = win.flat().find((e) => e.kind === "text_input_result");
+  assert.deepEqual(ev, { kind: "text_input_result", id: "ti5", value: null });
+  controller.destroy();
+});
+
+test("the gesture gate starts audio once and resyncs, then detaches", async () => {
+  const { bridge, controller, win } = await modalRig();
+  const { attachGestureGate } = await import("./faceplate-bridge.mjs");
+  let starts = 0;
+  const host = {
+    start: async () => {
+      starts++;
+    },
+  };
+  let resynced = 0;
+  bridge.resyncEngine = () => {
+    resynced++;
+    return bridge;
+  };
+  const listeners = {};
+  win.document.addEventListener = (t, fn) => {
+    (listeners[t] ||= []).push(fn);
+  };
+  win.document.removeEventListener = (t, fn) => {
+    listeners[t] = (listeners[t] || []).filter((f) => f !== fn);
+  };
+  attachGestureGate(win, host, bridge);
+  assert.ok(listeners.pointerdown?.length, "no pointer listener");
+  assert.ok(listeners.keydown?.length, "no key listener — keyboard players get silence");
+
+  // Hold the handler: firing it detaches, which empties the array.
+  const onGesture = listeners.pointerdown[0];
+  await onGesture();
+  assert.equal(listeners.pointerdown.length, 0, "pointer listener must detach after firing");
+  assert.equal(listeners.keydown.length, 0, "key listener must detach too");
+
+  // A second gesture (a queued event, or the keydown that arrives with the
+  // click) must not start a second context or resync again.
+  await onGesture();
+  assert.equal(starts, 1, "audio must start exactly once");
+  assert.equal(resynced, 1, "the engine must be resynced exactly once");
+  controller.destroy();
+});
+
+test("boot() stands the whole thing up", async () => {
+  // The only test that RUNS boot(). Everything else exercises the pieces, which
+  // is exactly how `boot()` shipped referencing WebController without importing
+  // it — green suite, ReferenceError in the browser on the first page load.
+  const { boot } = await import("./faceplate-bridge.mjs");
+  const engineWasm = await readFile(
+    path.resolve(here, "../../../../target/wasm32-unknown-unknown/release/vxn1b_wasm.wasm"),
+  );
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => (String(url).includes("controller") ? wasmBytes : engineWasm),
+  });
+
+  const win = fakeWin();
+  win.__VXN_UI_QUEUE__ = [JSON.stringify({ op: "ready" })];
+
+  const { host, controller, bridge } = await boot({
+    win,
+    fetchImpl,
+    autoGesture: false, // no document here, and no AudioContext to resume
+  });
+
+  // The ipc shim replaced the queuing stub, and the queue was drained.
+  assert.equal(typeof win.ipc.postMessage, "function");
+  assert.deepEqual(win.__VXN_UI_QUEUE__, []);
+
+  // ONE store: the host allocated it, the controller mirrors into it.
+  assert.equal(controller.store, host.store);
+
+  // The corpus reached the page without any fetch of a factory asset.
+  assert.ok(win.corpora.length >= 1);
+  assert.ok(win.corpora[0].factory.length > 0);
+
+  // The queued `ready` re-broadcast every param on the first pump. Driven by
+  // hand: this fake window has no requestAnimationFrame, so `start()` warned
+  // and did not arm the loop.
+  bridge.pump();
+  bridge.stop();
+  const ids = new Set(win.flat().filter((e) => e.kind === "param_changed").map((e) => e.id));
+  assert.equal(ids.size, TOTAL_PARAMS, "boot did not paint the faceplate");
+
+  // And the model's values reached the store the worklet will read.
+  assert.ok(Number.isFinite(host.store.read(patchClapId(LAYER_L1, CUTOFF))));
+  controller.destroy();
+});

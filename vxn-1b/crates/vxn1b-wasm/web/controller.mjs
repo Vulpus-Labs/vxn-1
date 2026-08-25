@@ -451,6 +451,19 @@ export class WebController {
     return decodeViewEvents(this.x.memory.buffer, ptr, len);
   }
 
+  /// Forget what the store has been told, so the next `mirrorToStore()` rewrites
+  /// every slot.
+  ///
+  /// Needed because the audio graph seeds the store itself: `WebHost.start()`
+  /// runs `_seedStoreFromDefaults`, a `writeBulk` of the ENGINE's defaults, on
+  /// the first start. The faceplate is interactive before that gesture, so any
+  /// edit or preset load made while waiting would be overwritten — and the
+  /// mirror would not repair it, since it only writes slots that changed. The
+  /// boot path calls this once the worklet reports ready.
+  invalidateMirror() {
+    this._mirrored.fill(NaN);
+  }
+
   /// Copy changed param values into the SAB the worklet reads. Returns the
   /// number of slots written — 0 means the model did not move this tick.
   mirrorToStore() {
