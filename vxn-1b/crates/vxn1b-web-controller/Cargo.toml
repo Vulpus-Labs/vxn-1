@@ -1,0 +1,28 @@
+# VXN1b main-thread controller wasm module (ticket 0290, epic E045). A raw C-ABI
+# cdylib — no wasm-bindgen — that runs the SAME `vxn_core_app::Controller<
+# SharedParams>` the native `vxn1b-clap` shell drives, so there is one arbiter
+# for model mutation across native and web. The engine wasm (vxn1b-wasm) renders
+# in the AudioWorklet; the two share the param SAB, not linear memory.
+[package]
+name = "vxn1b-web-controller"
+# VXN1b versions independently of the shared 0.x line vxn-1/vxn-2 ride.
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1b web main-thread controller: vxn_core_app::Controller<SharedParams> over a C-ABI opcode surface."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The model (`SharedParams`), the param table, the sparse-TOML preset codec, the
+# name-sanitisation rules and the embedded factory bank all live in the engine
+# crate. Unlike vxn-1's web controller (which deps only `vxn-app` and is fed a
+# baked `factory.bin`), this one already links the engine for `SharedParams`, so
+# the factory bank comes with it — see the WebPresetStore note in lib.rs. The
+# controller never RUNS the engine: no `Engine::process` on the main thread.
+vxn1b-engine = { workspace = true }
+vxn-core-app = { workspace = true }

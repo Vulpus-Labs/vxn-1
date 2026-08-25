@@ -2534,6 +2534,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn1b-web-controller"
+version = "0.0.1"
+dependencies = [
+ "vxn-core-app",
+ "vxn1b-engine",
+]
+
+[[package]]
 name = "vxn1b-xtask"
 version = "0.0.2"
 

@@ -162,6 +162,19 @@ and TOML export/import.
   512 lines) — the closest relative. Port with the demo posture of [[0297]] in
   mind: this build's failure story is "reload the page", so anything there that
   exists to survive a long-lived DAW session is a candidate to leave out.
+- **The echo-based change detection here is provisional.** Four things this
+  ticket hand-builds — the explicit `broadcast_all_params()` after
+  `restore_state` / `import_toml` / `copy_layer`, and the pack-time
+  `sync_aware_display` recompute — exist only because `vxn1b-engine`'s
+  `SharedParams` has no dirty bits. [[E046]] adds them; [[0303]] then deletes all
+  four from this file. Comment them as such rather than as settled design.
+- **No `factory.bin`.** vxn-1 baked one to keep the engine crate out of a lean
+  controller wasm (ticket 0062); that reason does not transfer, since this crate
+  links `vxn1b-engine` for `SharedParams` anyway, so `EnginePresetStore`'s
+  filesystem-free factory half is already in the binary. VXN1b's bank is 8
+  presets / 32 KB against vxn-2's 206 / 828 KB. Verified: the `include_dir!`
+  strings survive linking into the release wasm, which comes out *smaller* than
+  vxn-2's controller (773 KB vs 831 KB). 0292 therefore needs no bake step.
 - `vxn1b-engine` exposes `sanitize_name` / `preset_filename` /
   `unique_folder_name`? vxn-2 had to make those `pub` for its web store; check
   and do the same rather than re-rolling them.
