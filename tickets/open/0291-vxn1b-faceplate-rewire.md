@@ -53,15 +53,24 @@ panel's highlight and the preset bar's overwrite button both read it.
 
 ### Opcode routing: three destinations, and the copy/load cases are the work
 
-Per 0290's table, the page's opcodes split by destination. Straightforward:
+**Revised while building (2026-08-25).** 0290's ticket described key/matrix ops
+as going to "both" the controller and the ring. Implementing that double-pushed
+every UI topology edit — once at route time, once from the echo resend below —
+and bought only one frame of latency, on a path where param edits already wait a
+frame (they reach the SAB on the pump, not on the click). The rule that actually
+holds is simpler:
 
-| opcode | destination |
-|---|---|
-| `set_param`, `set_param_norm`, `begin_gesture`, `end_gesture` | controller **and** ring |
-| `set_key_mode`, `set_split_point`, `set_lfo2_link`, `set_matrix` | controller **and** ring |
-| `copy_layer`, all preset/folder ops, `ready` | controller only |
-| `set_scope_source` | ring only |
-| `request_text_input` | neither — see below |
+**Does the opcode have a presence in the model?**
+
+| opcode | destination | reaches the engine via |
+|---|---|---|
+| `set_param`, `set_param_norm` | controller only | the store-SAB mirror, on the pump |
+| `begin_gesture`, `end_gesture` | controller only | nothing — the engine treats gestures as a no-op, and there is no host to bracket for |
+| `set_key_mode`, `set_split_point`, `set_lfo2_link`, `set_matrix` | controller only | the echo resend, on the pump |
+| `copy_layer`, preset/folder ops, `ready` | controller only | mirror + echo resend |
+| `set_scope_source` (and tempo, 0294) | **ring only** | directly — no model presence, so no echo could carry it |
+| `request_text_input` | neither | answered in-page |
+| `reset_layer`, `set_edit_layer` | dropped | dead fork artifacts — see [[0307]] |
 
 The hard part is not the table, it is that **three controller-only paths mutate
 engine state the ring never heard about**: a preset load, a state restore, and
@@ -140,10 +149,11 @@ bridge, matching what the native shell does when it pushes them into the same
 - [ ] The binary view batch decodes to the exact objects the page's dispatcher
       expects — one golden test per `kind`, including `preset_loaded`'s nested
       `source` object and its `warnings` array.
-- [ ] Every `window.vxn.send.*` opcode routes to the right destination(s); a
-      test pins the table above, **including that the three "both" ops reach the
-      ring** (the half [0290](../closed/0290-vxn1b-web-controller-cdylib.md)
-      could not test) and that `set_scope_source` never reaches the controller.
+- [ ] Every `window.vxn.send.*` opcode routes per the table above; a test pins
+      it, **including that the non-param state ops reach the ring** (the half
+      [0290](../closed/0290-vxn1b-web-controller-cdylib.md) could not test —
+      here they arrive via the pump's resend, not at route time) and that
+      `set_scope_source` never reaches the controller.
 - [ ] A non-string or unknown `op` is dropped, not mis-routed.
 - [ ] A preset load resends topology + key state to the ring: a test drives a
       factory load and asserts the ring received the slot edits, not just the
