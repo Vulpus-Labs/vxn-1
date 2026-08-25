@@ -1,0 +1,24 @@
+# VXN1b WASM/browser audio engine (ticket 0286, epic E045). Raw C-ABI cdylib —
+# no wasm-bindgen — so the module instantiates cleanly inside an AudioWorklet
+# scope. Mirror of vxn-1's `vxn-wasm`, retargeted to VXN1b's dual-layer engine.
+[package]
+name = "vxn1b-wasm"
+# VXN1b versions independently of the shared 0.x line vxn-1/vxn-2 ride.
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN1b WASM/browser audio engine: Engine::process_block exposed over a C ABI."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Single dep. VXN1b's param table (ParamDesc / desc_for_clap_id / TOTAL_PARAMS)
+# lives in the engine crate, as does KeyState / MatrixEdit / ScopeTap — so unlike
+# vxn-1 (which pulled `vxn-app` for its id layout + KeyMode) this needs nothing
+# else. There is no `LocalParams` mirror on this path: the worklet folds the
+# param SAB straight in via `vxn1b_host_set_param` at block start.
+vxn1b-engine = { workspace = true }
