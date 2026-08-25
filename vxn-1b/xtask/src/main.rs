@@ -4,6 +4,7 @@
 //!   cargo xtask bundle [--universal] [--format clap,vst3]
 //!   cargo xtask install [--universal] [--format clap,vst3]
 //!   cargo xtask uninstall [--format clap,vst3]
+//!   cargo xtask web [--serve] [--port N]
 //!   cargo xtask --help
 //!
 //! `bundle` compiles the `vxn1b-clap` cdylib and wraps it into a `vxn1b.clap`
@@ -79,6 +80,11 @@ fn main() {
             Format::Vst3 => bundle_vst3(universal, true),
         }),
         "uninstall" => run_formats(&formats, |fmt| uninstall(fmt)),
+        "web" => {
+            let serve = args.iter().any(|a| a == "--serve");
+            let port = arg_value(&args, "--port");
+            web(serve, port.as_deref())
+        }
         "--help" | "-h" | "help" => {
             print_help();
             return;
@@ -121,6 +127,9 @@ Subcommands:
   bundle      Build {CLAP_PACKAGE} (release) and stage the artifact(s) in target/bundled/.
   install     Bundle, then copy to the user CLAP/VST3 directories.
   uninstall   Remove the installed artifact(s) if present.
+  web         Build the browser bundle into target/web-dist/: both wasm modules,
+              the transport JS + worklet, the generated faceplate page, and a
+              COOP/COEP _headers. Pass --serve [--port N] for the dev server.
   --help      Show this message.
 
 Flags:
@@ -760,5 +769,288 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err, "vst3: cmake exploded");
+    }
+}
+
+// ── Browser bundle (ticket 0292, epic E045) ─────────────────────────────────
+
+/// Engine wasm: renders in the AudioWorklet.
+const WASM_PKG: &str = "vxn1b-wasm";
+const WASM_ARTIFACT: &str = "vxn1b_wasm.wasm";
+/// Controller wasm: the main-thread model (ticket 0290).
+const CONTROLLER_PKG: &str = "vxn1b-web-controller";
+const CONTROLLER_ARTIFACT: &str = "vxn1b_web_controller.wasm";
+
+/// The production browser modules, curated by hand so the `*.test.mjs` suites
+/// never reach the bundle. Everything the page loads resolves within this list —
+/// verified by [`web`] failing on a missing file rather than shipping a `dist/`
+/// that 404s at runtime.
+///
+/// vxn-2's bundle also copies six SHARED modules from `crates/vxn-core-web`
+/// (persistence ×4, input ×2). Nothing in VXN1b imports them yet; they arrive
+/// with 0293 (persistence) and 0294 (MIDI + keyboard), and each of those adds
+/// its own rather than this shipping files nothing loads.
+const WEB_MODULES: [&str; 9] = [
+    "event-ring.mjs",
+    "event-codec.mjs",
+    "param-store.mjs",
+    "telemetry.mjs",
+    "audio-host.mjs",
+    "host-runner.mjs",
+    "coordinator.mjs",
+    "controller.mjs",
+    "faceplate-bridge.mjs",
+];
+
+/// The AudioWorklet processor. Plain `.js`, not `.mjs`: `addModule()` loads it
+/// as a classic script into the worklet scope.
+const WEB_WORKLET: &str = "vxn1b-processor.js";
+
+/// Netlify / Cloudflare-Pages `_headers`: COOP/COEP (+CORP) on every path, so a
+/// static host serves the page cross-origin isolated and `SharedArrayBuffer` is
+/// constructible. Without these the whole transport is unavailable and the page
+/// cannot boot at all.
+const WEB_DIST_HEADERS: &str = "/*\n  \
+     Cross-Origin-Opener-Policy: same-origin\n  \
+     Cross-Origin-Embedder-Policy: require-corp\n  \
+     Cross-Origin-Resource-Policy: same-origin\n";
+
+/// One command → a servable directory: both `.wasm` modules (release +
+/// SIMD128), the transport JS + worklet, and the generated faceplate page.
+///
+/// No `factory.bin`: unlike vxn-1 and vxn-2, VXN1b's factory bank is embedded in
+/// the controller wasm (`include_dir!`, ticket 0290) and its corpus is published
+/// during `vxnc_new()`, so there is no asset to bake and no boot fetch to fail.
+fn web(serve: bool, port: Option<&str>) -> Result<(), String> {
+    let root = workspace_root();
+
+    // 1. Both wasm crates, for wasm32-unknown-unknown.
+    let engine = build_wasm(&root, WASM_PKG, WASM_ARTIFACT)?;
+    let controller = build_wasm(&root, CONTROLLER_PKG, CONTROLLER_ARTIFACT)?;
+
+    // 2. Assemble from scratch, so a removed module cannot linger in the bundle.
+    let dist = root.join("target").join("web-dist-vxn1b");
+    let _ = fs::remove_dir_all(&dist);
+    fs::create_dir_all(&dist).map_err(|e| format!("create web-dist: {e}"))?;
+
+    fs::copy(&engine, dist.join(WASM_ARTIFACT)).map_err(|e| format!("copy engine wasm: {e}"))?;
+    fs::copy(&controller, dist.join(CONTROLLER_ARTIFACT))
+        .map_err(|e| format!("copy controller wasm: {e}"))?;
+
+    let web_src = root.join("vxn-1b/crates/vxn1b-wasm/web");
+    for m in WEB_MODULES.iter().chain(std::iter::once(&WEB_WORKLET)) {
+        let from = web_src.join(m);
+        if !from.exists() {
+            return Err(format!("missing web module {}", from.display()));
+        }
+        fs::copy(&from, dist.join(m)).map_err(|e| format!("copy web module {m}: {e}"))?;
+    }
+
+    // 3. The faceplate page, GENERATED rather than copied: `gen-web-page` runs
+    //    the same splice the plugin's editor does, so the param-descriptor JSON
+    //    is byte-identical and xtask needs no wry dependency.
+    let page = run_capture(
+        &root,
+        &["run", "--quiet", "-p", "vxn1b-ui-web", "--bin", "gen-web-page"],
+        "gen-web-page",
+    )?;
+    fs::write(dist.join("index.html"), &page).map_err(|e| format!("write index.html: {e}"))?;
+
+    fs::write(dist.join("_headers"), WEB_DIST_HEADERS)
+        .map_err(|e| format!("write _headers: {e}"))?;
+
+    println!("web bundle → {}", dist.display());
+
+    if serve {
+        return serve_dist(&root, &dist, port);
+    }
+    println!(
+        "  note: SharedArrayBuffer needs cross-origin isolation — serve with \
+         COOP/COEP (`cargo xtask web --serve`)"
+    );
+    Ok(())
+}
+
+/// Build one wasm crate for `wasm32-unknown-unknown` (always release: a debug
+/// wasm is too slow to render in real time) and return the artifact path.
+fn build_wasm(root: &Path, package: &str, artifact: &str) -> Result<PathBuf, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut build = Command::new(&cargo);
+    build.current_dir(root).args([
+        "build",
+        "--package",
+        package,
+        "--target",
+        "wasm32-unknown-unknown",
+        "--release",
+    ]);
+    // SIMD128 is appended, never assigned: clobbering a caller's RUSTFLAGS would
+    // silently drop whatever they set (a target-cpu, a lint level, a linker arg).
+    let existing = env::var("RUSTFLAGS").unwrap_or_default();
+    let rustflags = if existing.trim().is_empty() {
+        "-C target-feature=+simd128".to_string()
+    } else {
+        format!("{existing} -C target-feature=+simd128")
+    };
+    build.env("RUSTFLAGS", rustflags);
+    let status = build
+        .status()
+        .map_err(|e| format!("failed to run cargo for {package}: {e}"))?;
+    if !status.success() {
+        return Err(format!("wasm build failed for {package}"));
+    }
+    let path = root
+        .join("target")
+        .join("wasm32-unknown-unknown")
+        .join("release")
+        .join(artifact);
+    if !path.exists() {
+        return Err(format!("expected wasm artifact at {}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Run a cargo command and capture stdout — used for the generator bins whose
+/// output IS the artifact.
+fn run_capture(root: &Path, args: &[&str], what: &str) -> Result<Vec<u8>, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(&cargo)
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run {what}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{what} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
+}
+
+/// Serve the built bundle with COOP/COEP via `serve-coep.mjs`. Requires `node`.
+fn serve_dist(root: &Path, dist: &Path, port: Option<&str>) -> Result<(), String> {
+    let server = root.join("vxn-1b/crates/vxn1b-wasm/serve-coep.mjs");
+    if !server.exists() {
+        return Err(format!("serve-coep.mjs not found at {}", server.display()));
+    }
+    // Argument order is the script's: `serve-coep.mjs [port] [dir]`. Passing
+    // them the other way round silently serves the wrong directory on port NaN.
+    let port = port.unwrap_or("8080");
+    let status = Command::new("node")
+        .current_dir(root)
+        .arg(&server)
+        .arg(port)
+        .arg(dist)
+        .status()
+        .map_err(|e| format!("failed to run node (is it on PATH?): {e}"))?;
+    if !status.success() {
+        return Err("serve-coep.mjs exited with an error".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::*;
+
+    /// Every module the bundle ships, plus the worklet.
+    fn bundled() -> Vec<&'static str> {
+        WEB_MODULES.iter().copied().chain([WEB_WORKLET]).collect()
+    }
+
+    fn web_src() -> PathBuf {
+        workspace_root().join("vxn-1b/crates/vxn1b-wasm/web")
+    }
+
+    #[test]
+    fn every_bundled_module_exists() {
+        for m in bundled() {
+            let p = web_src().join(m);
+            assert!(p.exists(), "web module {m} is listed but missing at {}", p.display());
+        }
+    }
+
+    /// The bundle must be closed under its own references: anything a shipped
+    /// module reaches for by relative path has to be shipped too, or the page
+    /// 404s at runtime in a browser and nowhere else. This is the check that
+    /// catches a new `import` landing without a matching copy-list entry — the
+    /// failure mode that is invisible until someone opens the page.
+    #[test]
+    fn the_bundle_is_closed_under_its_own_references() {
+        let names: Vec<&str> = bundled();
+        let mut found = 0usize;
+        for m in &names {
+            let src = fs::read_to_string(web_src().join(m))
+                .unwrap_or_else(|e| panic!("read {m}: {e}"));
+            for referenced in relative_refs(&src) {
+                found += 1;
+                assert!(
+                    names.contains(&referenced.as_str()),
+                    "{m} references \"./{referenced}\", which the bundle does not ship — \
+                     add it to WEB_MODULES or drop the reference",
+                );
+            }
+        }
+        // Guard against passing vacuously: if `relative_refs` ever stops
+        // matching (a quoting change, a switch to import maps), the loop above
+        // would assert nothing at all and look green. The transport modules
+        // import each other heavily, so the real count is well above this.
+        assert!(
+            found >= 6,
+            "only {found} relative references found across {} modules — the scan is broken, \
+             not the bundle",
+            names.len(),
+        );
+    }
+
+    /// Pull every `"./thing.mjs"` / `"./thing.js"` literal out of a module —
+    /// static imports, dynamic `import()`, and the worklet's `addModule` URL all
+    /// use the same spelling, so one scan covers them.
+    fn relative_refs(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("\"./") {
+            rest = &rest[i + 3..];
+            if let Some(end) = rest.find('"') {
+                let name = &rest[..end];
+                if name.ends_with(".mjs") || name.ends_with(".js") {
+                    out.push(name.to_string());
+                }
+                rest = &rest[end..];
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The bundle deliberately ships no test files: they would be dead weight on
+    /// every page load and would pull `node:test` into a browser context.
+    #[test]
+    fn no_test_files_are_bundled() {
+        for m in bundled() {
+            assert!(!m.contains(".test."), "{m} is a test file and must not ship");
+        }
+    }
+
+    /// vxn-1 and vxn-2 bake a `factory.bin`; VXN1b embeds its bank in the
+    /// controller wasm (0290), so the bundle must not grow one back by copy-paste
+    /// from either port's xtask.
+    #[test]
+    fn no_factory_asset_is_expected() {
+        assert!(
+            !bundled().iter().any(|m| m.contains("factory")),
+            "VXN1b's factory bank is embedded in the controller wasm — no asset to bundle",
+        );
+    }
+
+    /// The isolation headers are the whole reason the transport works: without
+    /// both, `SharedArrayBuffer` is not constructible and the page cannot boot.
+    #[test]
+    fn the_headers_carry_both_isolation_directives() {
+        assert!(WEB_DIST_HEADERS.contains("Cross-Origin-Opener-Policy: same-origin"));
+        assert!(WEB_DIST_HEADERS.contains("Cross-Origin-Embedder-Policy: require-corp"));
+        assert!(WEB_DIST_HEADERS.starts_with("/*\n"), "headers must apply to every path");
     }
 }
