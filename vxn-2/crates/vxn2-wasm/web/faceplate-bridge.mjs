@@ -19,16 +19,47 @@
 
 import { WebHost } from "./coordinator.mjs";
 import { WebController } from "./controller.mjs";
-import { attachKeyboard } from "./keyboard-input.mjs";
-import { attachMidi } from "./midi-input.mjs";
-import { PresetPersistence } from "./preset-persistence.mjs";
-import { StateAutosave } from "./state-autosave.mjs";
-import {
-  applyShareLinkOnBoot,
-  exportPatchFile,
-  importPatchFile,
-  shareLinkFor,
-} from "./patch-io.mjs";
+
+// ---- shared browser glue (crates/vxn-core-web) ------------------------------
+//
+// Persistence, patch I/O and the input adapters are shared with the other web
+// ports (ticket 0284) and live in `crates/vxn-core-web/assets/`. `xtask web`
+// copies them into the flat `dist/`, so in the BROWSER they are `./x.mjs`
+// siblings of this file — but the source tree is not flat, so importing them
+// statically here would break `node --test`. They are loaded lazily at first use
+// instead, and the `glue` constructor option lets a headless caller inject its
+// own (same seam idiom as `fetchImpl`, `rafImpl`, the DOM seams).
+
+async function loadGlue() {
+  const [keyboard, midi, persistence, autosave, patchIo] = await Promise.all([
+    import("./keyboard-input.mjs"),
+    import("./midi-input.mjs"),
+    import("./preset-persistence.mjs"),
+    import("./state-autosave.mjs"),
+    import("./patch-io.mjs"),
+  ]);
+  return {
+    attachKeyboard: keyboard.attachKeyboard,
+    attachMidi: midi.attachMidi,
+    PresetPersistence: persistence.PresetPersistence,
+    StateAutosave: autosave.StateAutosave,
+    applyShareLinkOnBoot: patchIo.applyShareLinkOnBoot,
+    exportPatchFile: patchIo.exportPatchFile,
+    importPatchFile: patchIo.importPatchFile,
+    shareLinkFor: patchIo.shareLinkFor,
+  };
+}
+
+// VXN2's IndexedDB identity. Per-port on purpose: the name partitions this
+// corpus from VXN1's in the same origin, and v1 is THIS database's migration
+// history — it shipped with all three object stores, so unlike VXN1 it never
+// needed a v2. The shared storage module refuses to guess either — see
+// vxn-core-web's README.
+export const DB_ID = { name: "vxn2-presets", version: 1 };
+
+// Names this synth in the shared patch-I/O module's default download filename
+// and its rejection message.
+export const PRODUCT = "VXN2";
 
 // Opcodes that don't touch the model / audio and can be ignored on the web path.
 // Kept explicit so an unhandled opcode is a loud console warning, not a silent
@@ -161,6 +192,8 @@ export class FaceplateBridge {
   //   doc / win                   : DOM seams (default document / globalThis).
   //   hostOptions                 : extra WebHost options (AudioContext seam, …).
   //   rafImpl                     : requestAnimationFrame seam (default global).
+  //   glue                        : shared vxn-core-web modules (seam; loaded
+  //                                 from the flat dist siblings when omitted).
   constructor({
     wasmUrl,
     controllerWasmUrl,
@@ -178,7 +211,9 @@ export class FaceplateBridge {
     showWelcome = true,
     showPianoKeyboard = true,
     enablePersistence = true,
+    glue = null,
   } = {}) {
+    this._glue = glue;
     this._doc = doc;
     this._win = win;
     this._factoryUrl = factoryUrl;
@@ -256,8 +291,16 @@ export class FaceplateBridge {
     for (const msg of this._queue) routeOpcode(this.controller, msg);
     this._queue.length = 0;
     this._startPump();
-    this._attachInputs();
+    await this._attachInputs();
     return this;
+  }
+
+  // The shared glue, resolved once. Injected by a headless caller, otherwise
+  // dynamic-imported from the flat-dist siblings on first use — so a bridge with
+  // inputs and persistence both disabled never reaches for them at all.
+  async _glueModules() {
+    if (!this._glue) this._glue = await loadGlue();
+    return this._glue;
   }
 
   // Wire user-preset persistence + full-state autosave + patch-io (0159).
@@ -269,8 +312,16 @@ export class FaceplateBridge {
   async _initPersistence() {
     if (!this._enablePersistence) return;
     const controller = this.controller;
+    const {
+      PresetPersistence,
+      StateAutosave,
+      applyShareLinkOnBoot,
+      exportPatchFile,
+      importPatchFile,
+      shareLinkFor,
+    } = await this._glueModules();
     try {
-      this._persistence = new PresetPersistence({ controller });
+      this._persistence = new PresetPersistence({ controller, dbId: DB_ID });
       await this._persistence.hydrate();
       this._republishCorpus();
       this._persistence.attachFlushOnHide(this._win, this._doc);
@@ -278,7 +329,7 @@ export class FaceplateBridge {
       console.warn("vxn2 bridge: user-preset persistence unavailable", e && e.message);
     }
     try {
-      this._autosave = new StateAutosave({ controller });
+      this._autosave = new StateAutosave({ controller, dbId: DB_ID });
       // A share-link wins over the autosaved session (an explicit link the user
       // followed); otherwise restore the last session. Both are best-effort.
       const fromShare = applyShareLinkOnBoot(controller, {
@@ -293,8 +344,10 @@ export class FaceplateBridge {
     // Patch export / import / share — no faceplate button yet, so expose them on
     // the page surface for a future UI (and manual/console use).
     const vxn = this._win.__vxn || (this._win.__vxn = {});
-    vxn.exportPatch = (name) => exportPatchFile(controller, { name, doc: this._doc });
-    vxn.importPatch = (onResult) => importPatchFile(controller, { doc: this._doc, onResult });
+    vxn.exportPatch = (name) =>
+      exportPatchFile(controller, { name, product: PRODUCT, doc: this._doc });
+    vxn.importPatch = (onResult) =>
+      importPatchFile(controller, { product: PRODUCT, doc: this._doc, onResult });
     vxn.shareLink = () => shareLinkFor(controller, this._win.location);
   }
 
@@ -340,7 +393,9 @@ export class FaceplateBridge {
     }
   }
 
-  _attachInputs() {
+  async _attachInputs() {
+    if (!this._enableKeyboard && !this._enableMidi) return;
+    const { attachKeyboard, attachMidi } = await this._glueModules();
     if (this._enableKeyboard && this._doc) {
       this._keyboard = attachKeyboard(this.host, { target: this._doc });
     }

@@ -19,7 +19,7 @@ import {
   EV_NOTE_ON,
   EV_NOTE_OFF,
 } from "./event-ring.mjs";
-import { attachKeyboard, DEFAULT_BASE_NOTE } from "./keyboard-input.mjs";
+import { attachKeyboard, DEFAULT_BASE_NOTE } from "../../../../crates/vxn-core-web/assets/keyboard-input.mjs";
 
 let failures = 0;
 const check = (cond, msg) => {

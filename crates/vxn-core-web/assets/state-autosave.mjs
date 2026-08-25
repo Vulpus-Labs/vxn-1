@@ -1,4 +1,4 @@
-// Full patch-state autosave + restore (E030 / 0159).
+// Full patch-state autosave + restore.
 //
 // On desktop the HOST persists the plugin-state blob; on the web there is no
 // host, so the page owns it. This module autosaves the live patch to browser
@@ -6,10 +6,10 @@
 // next page load — the host-state-blob analogue. It is DISTINCT from user
 // presets: one fixed "last session" slot, not a named corpus entry.
 //
-//   - RESTORE: at boot, before the faceplate's re-broadcast, read the saved
-//     blob and load it into the model via controller.restoreState(). The
-//     subsequent EditorReady / full-rebroadcast seeds the UI + param SAB with
-//     the restored values (params + matrix + curves all ride the one canonical
+//   - RESTORE: at boot, before the faceplate's EditorReady re-broadcast, read
+//     the saved blob and load it into the model via controller.restoreState().
+//     The re-broadcast then seeds the UI + param SAB with the restored values
+//     (params and every non-automatable patch field ride the one canonical
 //     blob). Falls back to defaults if there is no blob or it is malformed
 //     (restoreState rejects bad blobs, leaving the model at defaults).
 //   - AUTOSAVE: schedule() marks the patch dirty and debounces; when the timer
@@ -19,7 +19,7 @@
 //
 // Same write-behind discipline and seams as preset-persistence.mjs, over the
 // SAME IndexedDB (a dedicated "state" store): one storage mechanism, one more
-// keyed entry. ONE code path — the Node test drives this class against a
+// keyed entry. ONE code path — each port's Node test drives this class against a
 // fake-IDB, the same transport the browser runs.
 
 import { openPresetDB, getState, putState } from "./preset-storage.mjs";
@@ -29,6 +29,9 @@ export class StateAutosave {
   //   controller : a WebController (controller.mjs) — already instantiated.
   //   indexedDB  : the IndexedDB factory (seam; defaults to the browser global).
   //   db         : a pre-opened IDBDatabase (the Node test injects the fake's).
+  //   dbId       : the IndexedDB identity, `{ name, version }` (REQUIRED unless a
+  //                pre-opened `db` is injected) — see openPresetDB. Each synth
+  //                passes its own so the corpora never collide.
   //   openDB / getState / putState : preset-storage.mjs seams (defaults real).
   //   debounceMs : quiet period after the last change before a write (default 400).
   //   setTimer / clearTimer : timer seam (defaults to the browser globals; the
@@ -37,6 +40,7 @@ export class StateAutosave {
     controller,
     indexedDB = globalThis.indexedDB,
     db = null,
+    dbId = null,
     openDB = openPresetDB,
     getState: gs = getState,
     putState: ps = putState,
@@ -48,6 +52,7 @@ export class StateAutosave {
     this.controller = controller;
     this._indexedDB = indexedDB;
     this._db = db;
+    this._dbId = dbId;
     this._openDB = openDB;
     this._getState = gs;
     this._putState = ps;
@@ -67,7 +72,7 @@ export class StateAutosave {
   // Open the DB (idempotent). Throws if IndexedDB is unavailable.
   async open() {
     if (this._db) return this._db;
-    this._db = await this._openDB(this._indexedDB);
+    this._db = await this._openDB(this._indexedDB, this._dbId);
     return this._db;
   }
 

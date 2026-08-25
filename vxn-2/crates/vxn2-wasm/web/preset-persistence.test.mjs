@@ -18,8 +18,9 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { WebController } from "./controller.mjs";
-import { PresetPersistence } from "./preset-persistence.mjs";
-import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "./preset-storage.mjs";
+import { DB_ID } from "./faceplate-bridge.mjs";
+import { PresetPersistence } from "../../../../crates/vxn-core-web/assets/preset-persistence.mjs";
+import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
 const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
 const HAVE = existsSync(WASM);
@@ -118,7 +119,7 @@ test("user presets persist across a reload; corpus is synchronous", { skip: !HAV
 
   // session 1: save presets + a folder, flush to storage.
   const c1 = await newController();
-  const p1 = new PresetPersistence({ controller: c1, indexedDB: idb });
+  const p1 = new PresetPersistence({ controller: c1, dbId: DB_ID, indexedDB: idb });
   assert.equal(await p1.hydrate(), true, "empty-corpus hydrate resolves true");
 
   c1.savePreset("Mini Bass", null);
@@ -143,7 +144,7 @@ test("user presets persist across a reload; corpus is synchronous", { skip: !HAV
 
   // session 2: a FRESH controller hydrated from the SAME db.
   const c2 = await newController();
-  const p2 = new PresetPersistence({ controller: c2, indexedDB: idb });
+  const p2 = new PresetPersistence({ controller: c2, dbId: DB_ID, indexedDB: idb });
   await p2.hydrate();
 
   const corpus2 = c2.corpusJson();
@@ -163,7 +164,7 @@ test("user presets persist across a reload; corpus is synchronous", { skip: !HAV
 test("delete persists across a reload", { skip: !HAVE }, async () => {
   const idb = fakeIndexedDB();
   const c1 = await newController();
-  const p1 = new PresetPersistence({ controller: c1, indexedDB: idb });
+  const p1 = new PresetPersistence({ controller: c1, dbId: DB_ID, indexedDB: idb });
   await p1.hydrate();
   c1.savePreset("Gone", null);
   c1.savePreset("Stay", null);
@@ -179,7 +180,7 @@ test("delete persists across a reload", { skip: !HAVE }, async () => {
   assert.ok(!findUserPath(c1.corpusJson(), "Gone"), "delete reflected in corpus synchronously");
 
   const c2 = await newController();
-  const p2 = new PresetPersistence({ controller: c2, indexedDB: idb });
+  const p2 = new PresetPersistence({ controller: c2, dbId: DB_ID, indexedDB: idb });
   await p2.hydrate();
   assert.ok(!findUserPath(c2.corpusJson(), "Gone"), "delete persists across a reload");
   assert.ok(findUserPath(c2.corpusJson(), "Stay"), "the surviving preset is still there");
@@ -195,7 +196,7 @@ test("flush-on-hide persists a pending save", { skip: !HAVE }, async () => {
     removeEventListener: () => {},
   };
   const c1 = await newController();
-  const p1 = new PresetPersistence({ controller: c1, indexedDB: idb });
+  const p1 = new PresetPersistence({ controller: c1, dbId: DB_ID, indexedDB: idb });
   await p1.hydrate();
   p1.attachFlushOnHide(fakeWin, fakeDoc);
   c1.savePreset("HideSaved", null);
@@ -204,14 +205,14 @@ test("flush-on-hide persists a pending save", { skip: !HAVE }, async () => {
   await p1.drain();
 
   const c2 = await newController();
-  const p2 = new PresetPersistence({ controller: c2, indexedDB: idb });
+  const p2 = new PresetPersistence({ controller: c2, dbId: DB_ID, indexedDB: idb });
   await p2.hydrate();
   assert.ok(findUserPath(c2.corpusJson(), "HideSaved"), "flush-on-hide persisted the pending save");
 });
 
 test("storage unavailable degrades gracefully", { skip: !HAVE }, async () => {
   const c = await newController();
-  const p = new PresetPersistence({ controller: c, indexedDB: null }); // no IDB
+  const p = new PresetPersistence({ controller: c, dbId: DB_ID, indexedDB: null }); // no IDB
   assert.equal(await p.hydrate(), false, "hydrate false when storage unavailable");
   assert.doesNotThrow(() => {
     c.savePreset("NoStore", null);

@@ -24,8 +24,9 @@ import { dirname, join } from "node:path";
 
 import { createParamSAB, ParamStore } from "./param-store.mjs";
 import { WebController, KEY_MODE_SPLIT } from "./controller.mjs";
-import { StateAutosave } from "./state-autosave.mjs";
-import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "./preset-storage.mjs";
+import { DB_ID } from "./faceplate-bridge.mjs";
+import { StateAutosave } from "../../../../crates/vxn-core-web/assets/state-autosave.mjs";
+import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WASM = join(
@@ -141,7 +142,7 @@ async function main() {
   const c1 = new WebController({ wasmBytes, store: store1 });
   await c1.instantiate();
   const timers1 = manualTimers();
-  const a1 = new StateAutosave({ controller: c1, indexedDB: idb, ...timers1 });
+  const a1 = new StateAutosave({ controller: c1, dbId: DB_ID, indexedDB: idb, ...timers1 });
   const restored1 = await a1.restore();
   check(restored1 === false, "AC2 fresh db: restore returns false (no saved state)");
 
@@ -171,7 +172,7 @@ async function main() {
   const store2 = new ParamStore(createParamSAB());
   const c2 = new WebController({ wasmBytes, store: store2 });
   await c2.instantiate();
-  const a2 = new StateAutosave({ controller: c2, indexedDB: idb });
+  const a2 = new StateAutosave({ controller: c2, dbId: DB_ID, indexedDB: idb });
   const restored2 = await a2.restore();
   check(restored2 === true, "AC1 restore returns true (saved state applied)");
 
@@ -208,7 +209,7 @@ async function main() {
     const cH = new WebController({ wasmBytes, store: storeH });
     await cH.instantiate();
     const tH = manualTimers();
-    const aH = new StateAutosave({ controller: cH, indexedDB: idb, ...tH });
+    const aH = new StateAutosave({ controller: cH, dbId: DB_ID, indexedDB: idb, ...tH });
     await aH.restore();
     aH.attachFlushOnHide(fakeWin, fakeDoc);
     cH.setParamNorm(5, 0.123);
@@ -222,7 +223,7 @@ async function main() {
     const storeR = new ParamStore(createParamSAB());
     const cR = new WebController({ wasmBytes, store: storeR });
     await cR.instantiate();
-    const aR = new StateAutosave({ controller: cR, indexedDB: idb });
+    const aR = new StateAutosave({ controller: cR, dbId: DB_ID, indexedDB: idb });
     check((await aR.restore()) === true, "flush-on-hide persisted the latest patch");
     cR.editorReady();
     cR.tick();
@@ -232,7 +233,7 @@ async function main() {
   // ---- storage unavailable degrades gracefully -----------------------------
   {
     const cX = await newController(wasmBytes);
-    const aX = new StateAutosave({ controller: cX, indexedDB: null }); // no IDB
+    const aX = new StateAutosave({ controller: cX, dbId: DB_ID, indexedDB: null }); // no IDB
     const ok = await aX.restore();
     check(ok === false, "restore returns false when storage is unavailable");
     let threw = false;

@@ -17,7 +17,10 @@ import {
   applyWrites,
   STORE_PRESETS,
   STORE_FOLDERS,
-} from "./preset-storage.mjs";
+} from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
+// This port's IndexedDB identity — imported from the bridge rather than
+// re-declared, so the test opens the database the browser actually opens.
+import { DB_ID } from "./faceplate-bridge.mjs";
 
 // ---- minimal in-memory IndexedDB fake --------------------------------------
 function fakeIndexedDB() {
@@ -94,7 +97,7 @@ const check = (cond, msg) => {
 };
 
 async function main() {
-  const db = await openPresetDB(fakeIndexedDB());
+  const db = await openPresetDB(fakeIndexedDB(), DB_ID);
 
   // put → getAll round-trips bytes by key.
   await putPreset(db, "Bass.toml", new Uint8Array([1, 2, 3]));

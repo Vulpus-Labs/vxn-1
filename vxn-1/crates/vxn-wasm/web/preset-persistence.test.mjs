@@ -22,8 +22,9 @@ import { dirname, join } from "node:path";
 
 import { createParamSAB, ParamStore } from "./param-store.mjs";
 import { WebController } from "./controller.mjs";
-import { PresetPersistence } from "./preset-persistence.mjs";
-import { STORE_PRESETS, STORE_FOLDERS } from "./preset-storage.mjs";
+import { DB_ID } from "./faceplate-bridge.mjs";
+import { PresetPersistence } from "../../../../crates/vxn-core-web/assets/preset-persistence.mjs";
+import { STORE_PRESETS, STORE_FOLDERS } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WASM = join(
@@ -132,7 +133,7 @@ async function main() {
 
   // ---- session 1: save presets + a folder, flush to storage ----------------
   const c1 = await newController(wasmBytes);
-  const p1 = new PresetPersistence({ controller: c1, indexedDB: idb });
+  const p1 = new PresetPersistence({ controller: c1, dbId: DB_ID, indexedDB: idb });
   const hydrated1 = await p1.hydrate();
   check(hydrated1 === true, "session 1 hydrate resolves true (empty corpus)");
 
@@ -164,7 +165,7 @@ async function main() {
 
   // ---- session 2: a FRESH controller hydrated from the SAME db -------------
   const c2 = await newController(wasmBytes);
-  const p2 = new PresetPersistence({ controller: c2, indexedDB: idb });
+  const p2 = new PresetPersistence({ controller: c2, dbId: DB_ID, indexedDB: idb });
   await p2.hydrate();
 
   const corpus2 = c2.corpusJson();
@@ -191,7 +192,7 @@ async function main() {
   check(!findUserPath(c2.corpusJson(), "Mini Bass"), "delete reflected in corpus synchronously");
 
   const c3 = await newController(wasmBytes);
-  const p3 = new PresetPersistence({ controller: c3, indexedDB: idb });
+  const p3 = new PresetPersistence({ controller: c3, dbId: DB_ID, indexedDB: idb });
   await p3.hydrate();
   check(!findUserPath(c3.corpusJson(), "Mini Bass"), "AC1 delete persists across a reload");
   check(!!findUserPath(c3.corpusJson(), "Hero"), "AC1 the surviving preset is still there");
@@ -206,7 +207,7 @@ async function main() {
       removeEventListener: () => {},
     };
     const c4 = await newController(wasmBytes);
-    const p4 = new PresetPersistence({ controller: c4, indexedDB: idb });
+    const p4 = new PresetPersistence({ controller: c4, dbId: DB_ID, indexedDB: idb });
     await p4.hydrate();
     p4.attachFlushOnHide(fakeWin, fakeDoc);
     c4.savePreset("HideSaved", null);
@@ -215,7 +216,7 @@ async function main() {
     listeners["doc:visibilitychange"]();
     await p4.drain();
     const c5 = await newController(wasmBytes);
-    const p5 = new PresetPersistence({ controller: c5, indexedDB: idb });
+    const p5 = new PresetPersistence({ controller: c5, dbId: DB_ID, indexedDB: idb });
     await p5.hydrate();
     check(!!findUserPath(c5.corpusJson(), "HideSaved"), "flush-on-hide persisted the pending save");
   }
@@ -223,7 +224,7 @@ async function main() {
   // ---- storage unavailable degrades gracefully -----------------------------
   {
     const cX = await newController(wasmBytes);
-    const pX = new PresetPersistence({ controller: cX, indexedDB: null }); // no IDB
+    const pX = new PresetPersistence({ controller: cX, dbId: DB_ID, indexedDB: null }); // no IDB
     const ok = await pX.hydrate();
     check(ok === false, "hydrate returns false when storage is unavailable");
     let threw = false;

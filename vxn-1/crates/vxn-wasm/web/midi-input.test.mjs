@@ -25,7 +25,7 @@ import {
   EV_MOD_WHEEL,
   EV_SUSTAIN,
 } from "./event-ring.mjs";
-import { attachMidi, decodeMidiMessage, makeOffsetMapper } from "./midi-input.mjs";
+import { attachMidi, decodeMidiMessage, makeOffsetMapper } from "../../../../crates/vxn-core-web/assets/midi-input.mjs";
 
 let failures = 0;
 const check = (cond, msg) => {

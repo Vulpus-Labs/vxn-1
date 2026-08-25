@@ -1,31 +1,29 @@
-// Patch export / import + URL share-link (E030 / 0159).
+// Patch export / import + URL share-link.
 //
-// The final persistence capability: share a patch OFF-device. Two channels,
-// both reusing the controller's existing byte surfaces:
+// Share a patch OFF-device. Two channels, both built on the controller's
+// existing codecs — no new format:
 //
-//   - FILE  export/import a `.toml` — the desktop-compatible name-keyed format
-//     (`vxn2_engine::preset`, byte-identical across native + wasm). Export
-//     downloads a Blob; import reads a picked file's text and applies it through
-//     `controller.importToml` (the same model-restore path a preset load uses),
-//     then re-broadcasts EditorReady so the UI + param SAB reseed.
-//   - URL   a `#patch=…` share-link encoding the COMPACT binary state blob
-//     (the snapshot) as base64url, kept in the fragment so it is never sent to a
-//     server. On boot, a present fragment is decoded + applied BEFORE the
-//     re-broadcast, then stripped from the URL so a reload doesn't re-import a
-//     stale patch over later edits.
+//   * FILE   — export/import the canonical name-keyed TOML the desktop plugin
+//     writes (each port's own `preset` codec, byte-identical across native +
+//     wasm). Export builds a Blob and clicks a transient anchor; import reads a
+//     File, hands the text to `controller.importToml`, then re-broadcasts
+//     EditorReady so the UI + param SAB reseed.
+//   * LINK   — a `#patch=` fragment carrying the compact binary state blob (the
+//     autosave snapshot) as base64url, kept in the fragment so it is never sent
+//     to a server. On boot, a present fragment is decoded + applied BEFORE the
+//     re-broadcast (same ordering as the autosave restore), then stripped from
+//     the URL so a reload doesn't re-import a stale patch over later edits.
 //
-// The pure codec (base64url, fragment parse/build, size cap) has NO DOM/wasm
-// dependency so the Node test exercises it directly; the DOM-touching export/
-// import/share helpers take seams (doc / location / url) for the same reason.
-
-// The fragment key: `#patch=…`. Kept out of the query string so it isn't sent to
-// any server (fragments are client-only).
+// SHARED (0284): one copy for every browser port. The **product name is not
+// shared** — `exportPatchFile` / `importPatchFile` take a `product` option, so
+// the default filename and the rejection message name the synth the user is
+// actually looking at.
 const FRAGMENT_KEY = "patch";
 
-// Conservative cap on the encoded patch in a URL fragment. vxn-2's binary state
-// blob is ~1.5 KB → ~2 KB base64url, under this; the cap guards a future larger
-// format from producing an impractical URL (share then falls back to file-only,
-// surfaced by the caller).
+// Conservative cap on the encoded patch in a URL fragment. The synths' binary
+// state blobs run from a few hundred bytes to a couple of KB — comfortably under
+// this once base64url'd; the cap guards a future larger format from producing an
+// impractical URL (share then falls back to file-only, surfaced by the caller).
 export const MAX_SHARE_FRAGMENT_LEN = 8192;
 
 // ---- base64url codec (RFC 4648 §5: -/_ , no padding) ------------------------
@@ -112,9 +110,9 @@ export function shareLinkFor(controller, loc = globalThis.location) {
 }
 
 // Apply a `#patch=…` fragment present at boot into the model BEFORE the
-// re-broadcast. Returns true if a patch was applied. Best-effort: a missing /
-// malformed fragment returns false (boot continues to autosave restore /
-// defaults). On success the fragment is stripped from the URL via replaceState
+// EditorReady re-broadcast. Returns true if a patch was applied. Best-effort: a
+// missing / malformed fragment returns false (boot continues to autosave restore
+// / defaults). On success the fragment is stripped from the URL via replaceState
 // so a later reload doesn't re-import the shared patch over the user's edits.
 export function applyShareLinkOnBoot(
   controller,
@@ -133,10 +131,10 @@ export function applyShareLinkOnBoot(
   return ok;
 }
 
-// Strip characters illegal in filenames; fall back to a default if empty.
-export function sanitizeFilename(name) {
+// Strip characters illegal in filenames; fall back to `fallback` if empty.
+export function sanitizeFilename(name, fallback = "Patch") {
   const s = (name || "").trim().replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-  return s || "VXN2 Patch";
+  return s || fallback;
 }
 
 // Export the current patch as a downloadable `.toml` (the desktop-compatible
@@ -144,14 +142,15 @@ export function sanitizeFilename(name) {
 // clicks a transient anchor. Returns the TOML text. DOM seams for testing.
 export function exportPatchFile(
   controller,
-  { name = "VXN2 Patch", doc = globalThis.document, url = globalThis.URL } = {},
+  { product = "", name = null, doc = globalThis.document, url = globalThis.URL } = {},
 ) {
-  const toml = controller.exportToml(name);
+  const fallback = `${product} Patch`.trim();
+  const toml = controller.exportToml(name || fallback);
   const blob = new Blob([toml], { type: "application/toml" });
   const href = url.createObjectURL(blob);
   const a = doc.createElement("a");
   a.href = href;
-  a.download = `${sanitizeFilename(name)}.toml`;
+  a.download = `${sanitizeFilename(name, fallback)}.toml`;
   doc.body.appendChild(a);
   a.click();
   doc.body.removeChild(a);
@@ -172,8 +171,9 @@ export function exportPatchFile(
 // user-visible message — never throws past the seam. DOM seams for testing.
 export function importPatchFile(
   controller,
-  { doc = globalThis.document, onResult = () => {} } = {},
+  { product = "", doc = globalThis.document, onResult = () => {} } = {},
 ) {
+  const rejected = `not a valid ${product} patch`.replace(/\s+/g, " ");
   const input = doc.createElement("input");
   input.type = "file";
   input.accept = ".toml,application/toml,text/plain";
@@ -199,7 +199,7 @@ export function importPatchFile(
       onResult({
         ok,
         name: file.name,
-        error: ok ? null : "not a valid VXN2 patch",
+        error: ok ? null : rejected,
       });
     } catch (e) {
       onResult({ ok: false, name: file.name, error: (e && e.message) || "read failed" });

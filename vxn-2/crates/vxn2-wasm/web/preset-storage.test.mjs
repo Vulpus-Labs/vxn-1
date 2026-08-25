@@ -21,7 +21,10 @@ import {
   STORE_PRESETS,
   STORE_FOLDERS,
   STORE_STATE,
-} from "./preset-storage.mjs";
+} from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
+// This port's IndexedDB identity — imported from the bridge rather than
+// re-declared, so the test opens the database the browser actually opens.
+import { DB_ID } from "./faceplate-bridge.mjs";
 
 // ---- minimal in-memory IndexedDB fake --------------------------------------
 export function fakeIndexedDB() {
@@ -97,7 +100,7 @@ export function fakeIndexedDB() {
 }
 
 test("put → getAll round-trips bytes by key; delete removes", async () => {
-  const db = await openPresetDB(fakeIndexedDB());
+  const db = await openPresetDB(fakeIndexedDB(), DB_ID);
   await putPreset(db, "Bass.toml", new Uint8Array([1, 2, 3]));
   await putPreset(db, "Pads/Warm.toml", new Uint8Array([9]));
   let all = await getAllPresets(db);
@@ -112,7 +115,7 @@ test("put → getAll round-trips bytes by key; delete removes", async () => {
 });
 
 test("applyWrites batches the journal-op shapes takeJournal hands us", async () => {
-  const db = await openPresetDB(fakeIndexedDB());
+  const db = await openPresetDB(fakeIndexedDB(), DB_ID);
   await applyWrites(db, [
     { kind: "put", key: "Lead.toml", bytes: new Uint8Array([7]) },
     { kind: "put_folder", name: "Leads" },
@@ -126,12 +129,12 @@ test("applyWrites batches the journal-op shapes takeJournal hands us", async () 
 });
 
 test("applyWrites rejects an unknown op kind", async () => {
-  const db = await openPresetDB(fakeIndexedDB());
+  const db = await openPresetDB(fakeIndexedDB(), DB_ID);
   await assert.rejects(() => applyWrites(db, [{ kind: "bogus" }]));
 });
 
 test("state slot: put → get round-trips the autosave blob; missing → null", async () => {
-  const db = await openPresetDB(fakeIndexedDB());
+  const db = await openPresetDB(fakeIndexedDB(), DB_ID);
   assert.equal(await getState(db), null);
   await putState(db, new Uint8Array([4, 5, 6]));
   const blob = await getState(db);

@@ -1,7 +1,7 @@
-// Async-storage <-> sync-controller bridge for user presets (E019 / 0064).
+// Async-storage <-> sync-controller bridge for user presets.
 //
-// IndexedDB is async; the vxn-app controller + its PresetStore are synchronous,
-// drained once per tick. This module is the impedance match the epic calls for:
+// IndexedDB is async; the web controller + its PresetStore are synchronous,
+// drained once per tick. This module is the impedance match:
 //
 //   - BOOT HYDRATION: read the persisted user corpus out of IndexedDB BEFORE the
 //     controller goes live and replay it into the wasm in-memory cache
@@ -15,10 +15,10 @@
 //     serialised on a tail promise so rapid edits can't interleave transactions
 //     or drop a write, and flush-on-hide is the reload-durability backstop.
 //
-// This module is the JS owner; the wasm side (vxn-web-controller) owns the cache
-// + journal, and preset-storage.mjs is the raw IndexedDB primitive. ONE code
-// path: the Node test drives this class against the fake-IDB, the same transport
-// the browser runs.
+// This module is the JS owner; the wasm side (each port's web-controller) owns
+// the cache + journal, and preset-storage.mjs is the raw IndexedDB primitive. ONE
+// code path: each port's Node test drives this class against a fake-IDB, the same
+// transport the browser runs.
 
 import {
   openPresetDB,
@@ -32,12 +32,16 @@ export class PresetPersistence {
   //   controller : a WebController (controller.mjs) — already instantiated.
   //   indexedDB  : the IndexedDB factory (seam; defaults to the browser global).
   //   db         : a pre-opened IDBDatabase (the Node test injects the fake's).
+  //   dbId       : the IndexedDB identity, `{ name, version }` (REQUIRED unless a
+  //                pre-opened `db` is injected) — see openPresetDB. Each synth
+  //                passes its own so the corpora never collide.
   //   openDB / getAllPresets / getAllFolders / applyWrites : preset-storage.mjs
   //                seams (defaults to the real ones).
   constructor({
     controller,
     indexedDB = globalThis.indexedDB,
     db = null,
+    dbId = null,
     openDB = openPresetDB,
     getAllPresets: gap = getAllPresets,
     getAllFolders: gaf = getAllFolders,
@@ -47,6 +51,7 @@ export class PresetPersistence {
     this.controller = controller;
     this._indexedDB = indexedDB;
     this._db = db;
+    this._dbId = dbId;
     this._openDB = openDB;
     this._getAllPresets = gap;
     this._getAllFolders = gaf;
@@ -62,7 +67,7 @@ export class PresetPersistence {
   // Open the DB (idempotent). Throws if IndexedDB is unavailable.
   async open() {
     if (this._db) return this._db;
-    this._db = await this._openDB(this._indexedDB);
+    this._db = await this._openDB(this._indexedDB, this._dbId);
     return this._db;
   }
 

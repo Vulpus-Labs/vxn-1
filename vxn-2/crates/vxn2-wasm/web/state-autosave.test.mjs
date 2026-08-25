@@ -17,8 +17,9 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { WebController } from "./controller.mjs";
-import { StateAutosave } from "./state-autosave.mjs";
-import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "./preset-storage.mjs";
+import { DB_ID } from "./faceplate-bridge.mjs";
+import { StateAutosave } from "../../../../crates/vxn-core-web/assets/state-autosave.mjs";
+import { STORE_PRESETS, STORE_FOLDERS, STORE_STATE } from "../../../../crates/vxn-core-web/assets/preset-storage.mjs";
 
 const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
 const HAVE = existsSync(WASM);
@@ -107,7 +108,7 @@ test("autosave → restore reproduces the exact patch across a reload", { skip: 
   // session 1: edit the patch, autosave it.
   const c1 = await newController();
   const timers1 = manualTimers();
-  const a1 = new StateAutosave({ controller: c1, indexedDB: idb, ...timers1 });
+  const a1 = new StateAutosave({ controller: c1, dbId: DB_ID, indexedDB: idb, ...timers1 });
   assert.equal(await a1.restore(), false, "fresh db: restore returns false");
 
   c1.setParamNorm(0, 0.42);
@@ -124,7 +125,7 @@ test("autosave → restore reproduces the exact patch across a reload", { skip: 
 
   // session 2: a FRESH controller restored from the SAME db.
   const c2 = await newController();
-  const a2 = new StateAutosave({ controller: c2, indexedDB: idb });
+  const a2 = new StateAutosave({ controller: c2, dbId: DB_ID, indexedDB: idb });
   assert.equal(await a2.restore(), true, "restore returns true (saved state applied)");
   assert.ok(eq(blob1, c2.snapshotState()), "re-snapshot is byte-identical to the saved patch");
 });
@@ -148,7 +149,7 @@ test("flush-on-hide writes the latest patch", { skip: !HAVE }, async () => {
   };
   const c1 = await newController();
   const t1 = manualTimers();
-  const a1 = new StateAutosave({ controller: c1, indexedDB: idb, ...t1 });
+  const a1 = new StateAutosave({ controller: c1, dbId: DB_ID, indexedDB: idb, ...t1 });
   await a1.restore();
   a1.attachFlushOnHide(fakeWin, fakeDoc);
   c1.setParamNorm(5, 0.123);
@@ -159,14 +160,14 @@ test("flush-on-hide writes the latest patch", { skip: !HAVE }, async () => {
   await a1.drain();
 
   const c2 = await newController();
-  const a2 = new StateAutosave({ controller: c2, indexedDB: idb });
+  const a2 = new StateAutosave({ controller: c2, dbId: DB_ID, indexedDB: idb });
   assert.equal(await a2.restore(), true, "flush-on-hide persisted the latest patch");
   assert.ok(eq(c1.snapshotState(), c2.snapshotState()), "the persisted patch matches the edited one");
 });
 
 test("storage unavailable degrades gracefully", { skip: !HAVE }, async () => {
   const c = await newController();
-  const a = new StateAutosave({ controller: c, indexedDB: null }); // no IDB
+  const a = new StateAutosave({ controller: c, dbId: DB_ID, indexedDB: null }); // no IDB
   assert.equal(await a.restore(), false, "restore false when storage unavailable");
   assert.doesNotThrow(() => {
     c.setParam(0, 0.9);

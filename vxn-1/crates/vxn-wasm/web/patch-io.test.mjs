@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 
 import { createParamSAB, ParamStore } from "./param-store.mjs";
 import { WebController, KEY_MODE_SPLIT } from "./controller.mjs";
+import { PRODUCT } from "./faceplate-bridge.mjs";
 import {
   bytesToBase64url,
   base64urlToBytes,
@@ -37,7 +38,7 @@ import {
   applyShareLinkOnBoot,
   sanitizeFilename,
   MAX_SHARE_FRAGMENT_LEN,
-} from "./patch-io.mjs";
+} from "../../../../crates/vxn-core-web/assets/patch-io.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WASM = join(here, "../../../../target/wasm32-unknown-unknown/debug/vxn_web_controller.wasm");
@@ -97,7 +98,7 @@ function testPureCodec() {
 
   // filename sanitisation.
   check(sanitizeFilename("a/b:c") === "a_b_c", "filename strips path-illegal chars");
-  check(sanitizeFilename("   ") === "VXN1 Patch", "blank name → default");
+  check(sanitizeFilename("   ", `${PRODUCT} Patch`) === `${PRODUCT} Patch`, "blank name → default");
 }
 
 function testShareGlue() {

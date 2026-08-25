@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { WebController } from "./controller.mjs";
+import { PRODUCT } from "./faceplate-bridge.mjs";
 import {
   bytesToBase64url,
   base64urlToBytes,
@@ -25,7 +26,7 @@ import {
   applyShareLinkOnBoot,
   sanitizeFilename,
   MAX_SHARE_FRAGMENT_LEN,
-} from "./patch-io.mjs";
+} from "../../../../crates/vxn-core-web/assets/patch-io.mjs";
 
 const WASM = fileURLToPath(new URL("../../../../target/web-dist/vxn2_web_controller.wasm", import.meta.url));
 const HAVE = existsSync(WASM);
@@ -70,7 +71,7 @@ test("pure codec: base64url + fragment parse/build round-trip", () => {
   assert.equal(url, `https://x.app/vxn/#patch=${bytesToBase64url(new Uint8Array([1, 2, 3]))}`);
 
   assert.equal(sanitizeFilename("a/b:c"), "a_b_c");
-  assert.equal(sanitizeFilename("   "), "VXN2 Patch");
+  assert.equal(sanitizeFilename("   ", `${PRODUCT} Patch`), `${PRODUCT} Patch`);
 });
 
 test("share-link glue (fake controller): build → boot apply → strip", () => {

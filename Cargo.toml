@@ -6,6 +6,7 @@ members = [
     "crates/vxn-core-app",
     "crates/vxn-preset",
     "crates/vxn-core-ui-web",
+    "crates/vxn-core-web",
     "crates/vxn-core-clap",
 
     # vxn-1 (synth #1).
@@ -58,6 +59,7 @@ vxn-core-utils = { path = "crates/vxn-core-utils" }
 vxn-core-app = { path = "crates/vxn-core-app" }
 vxn-preset = { path = "crates/vxn-preset" }
 vxn-core-ui-web = { path = "crates/vxn-core-ui-web" }
+vxn-core-web = { path = "crates/vxn-core-web" }
 vxn-core-clap = { path = "crates/vxn-core-clap" }
 
 # vxn-1 (path).

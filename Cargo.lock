@@ -2430,6 +2430,10 @@ name = "vxn-core-utils"
 version = "0.1.1"
 
 [[package]]
+name = "vxn-core-web"
+version = "0.1.1"
+
+[[package]]
 name = "vxn-dsp"
 version = "0.1.1"
 dependencies = [

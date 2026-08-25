@@ -28,14 +28,46 @@
 // proof is the byte-for-byte transport the page runs.
 
 import { WebController, LAYER_UPPER, LAYER_LOWER } from "./controller.mjs";
-import { PresetPersistence } from "./preset-persistence.mjs";
-import { StateAutosave } from "./state-autosave.mjs";
-import {
-  exportPatchFile,
-  importPatchFile,
-  shareLinkFor,
-  applyShareLinkOnBoot,
-} from "./patch-io.mjs";
+
+// ---- shared browser glue (crates/vxn-core-web) ------------------------------
+//
+// Persistence, patch I/O and the input adapters are shared with the other web
+// ports (ticket 0284) and live in `crates/vxn-core-web/assets/`. `xtask web`
+// copies them into the flat `dist/`, so in the BROWSER they are `./x.mjs`
+// siblings of this file — but the source tree is not flat, so importing them
+// statically here would break `node --test`. They are loaded lazily instead, and
+// `bootFaceplate` takes a `glue` override so a headless caller can inject its
+// own (same seam idiom as `WebHostClass`, `openDB`, the timers).
+
+async function loadGlue() {
+  const [persistence, autosave, patchIo, keyboard, midi] = await Promise.all([
+    import("./preset-persistence.mjs"),
+    import("./state-autosave.mjs"),
+    import("./patch-io.mjs"),
+    import("./keyboard-input.mjs"),
+    import("./midi-input.mjs"),
+  ]);
+  return {
+    PresetPersistence: persistence.PresetPersistence,
+    StateAutosave: autosave.StateAutosave,
+    exportPatchFile: patchIo.exportPatchFile,
+    importPatchFile: patchIo.importPatchFile,
+    shareLinkFor: patchIo.shareLinkFor,
+    applyShareLinkOnBoot: patchIo.applyShareLinkOnBoot,
+    attachKeyboard: keyboard.attachKeyboard,
+    attachMidi: midi.attachMidi,
+  };
+}
+
+// VXN1's IndexedDB identity. Per-port on purpose: the name partitions this
+// corpus from VXN2's in the same origin, and v2 is THIS database's migration
+// history (v1 predates the "state" store the autosave slot lives in). The shared
+// storage module refuses to guess either — see vxn-core-web's README.
+export const DB_ID = { name: "vxn1-presets", version: 2 };
+
+// Names this synth in the shared patch-I/O module's default download filename
+// and its rejection message.
+export const PRODUCT = "VXN1";
 
 // Faceplate event kinds that change the persistable patch state (params + key
 // mode + split point) — the trigger for a full-state autosave (E019 / 0065). An
@@ -336,8 +368,20 @@ export class FaceplateBridge {
 // boots: both attach to the WebHost producer surface and write into the E015
 // ring. Dynamic-imported so the headless import guard above keeps this file
 // pure under Node.
-export async function bootFaceplate({ WebHostClass } = {}) {
+export async function bootFaceplate({ WebHostClass, glue = null } = {}) {
   if (typeof document === "undefined") return null; // headless import guard
+
+  // Shared glue: injected by a headless caller, otherwise the flat-dist siblings.
+  const {
+    PresetPersistence,
+    StateAutosave,
+    exportPatchFile,
+    importPatchFile,
+    shareLinkFor,
+    applyShareLinkOnBoot,
+    attachKeyboard,
+    attachMidi,
+  } = glue || (await loadGlue());
 
   const { WebHost } = WebHostClass
     ? { WebHost: WebHostClass }
@@ -400,16 +444,12 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   // 1b. E017 input adapters → the WebHost producer surface (ring). Web MIDI +
   //     computer keyboard both write notes/CC into the same E015 ring the
   //     worklet drains; events written before audio is live buffer in the ring
-  //     and apply on first sound. Dynamic-imported so the headless test (which
-  //     returns at the document guard above) never pulls the browser-only
-  //     adapters. MIDI is best-effort: no device / denied permission is fine,
-  //     the keyboard is the fallback.
+  //     and apply on first sound. They come from the lazily-loaded shared glue
+  //     above, so the headless test (which returns at the document guard) never
+  //     pulls the browser-only adapters. MIDI is best-effort: no device / denied
+  //     permission is fine, the keyboard is the fallback.
   let input = { midi: null, keyboard: null };
   try {
-    const [{ attachKeyboard }, { attachMidi }] = await Promise.all([
-      import("./keyboard-input.mjs"),
-      import("./midi-input.mjs"),
-    ]);
     input.keyboard = attachKeyboard(host, {});
     input.midi = await attachMidi(host, {
       onError: (e) => console.info("vxn: Web MIDI unavailable", e && e.message),
@@ -449,7 +489,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   //     corpus (now factory + user) and arm the flush-on-hide backstop. Writes
   //     go through `persistence.flush()` off the tick (onCorpusChanged below).
   //     Best-effort: storage unavailable (private mode) just means no persistence.
-  const persistence = new PresetPersistence({ controller });
+  const persistence = new PresetPersistence({ controller, dbId: DB_ID });
   try {
     await persistence.hydrate();
     publishCorpus();
@@ -471,7 +511,7 @@ export async function bootFaceplate({ WebHostClass } = {}) {
   //     run before the `ready`→EditorReady flush (step 4) so the broadcast seeds
   //     the restored/imported values; the share-link decode also strips the
   //     fragment so a reload doesn't re-import it over later edits.
-  const autosave = new StateAutosave({ controller });
+  const autosave = new StateAutosave({ controller, dbId: DB_ID });
   try {
     const fromShare = applyShareLinkOnBoot(controller);
     if (!fromShare) await autosave.restore();
@@ -506,14 +546,15 @@ export async function bootFaceplate({ WebHostClass } = {}) {
     getName: () => {
       const el = document.getElementById("pbar-name");
       const n = el && el.textContent ? el.textContent.trim() : "";
-      return n || "VXN1 Patch";
+      return n || `${PRODUCT} Patch`;
     },
     onExport: (name) => {
-      exportPatchFile(controller, { name });
+      exportPatchFile(controller, { name, product: PRODUCT });
       flashPatchStatus(document, `Exported “${name}.toml”`);
     },
     onImport: () => {
       importPatchFile(controller, {
+        product: PRODUCT,
         onResult: ({ ok, name, error }) =>
           flashPatchStatus(document, ok ? `Imported ${name}` : `Import failed: ${error}`),
       });

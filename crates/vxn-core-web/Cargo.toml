@@ -1,0 +1,18 @@
+# Shared browser-glue JS for the web ports (ticket 0284, epic E045).
+#
+# The substance of this crate is `assets/*.mjs`, not Rust — same shape as
+# `vxn-core-ui-web`, whose faceplate primitives live in `assets/` too. The Rust
+# side is a manifest of what's shared plus the tests that keep it shared: the
+# modules must not name a product, and every port's `xtask web` must bundle the
+# same list.
+[package]
+name = "vxn-core-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared browser-glue JS for the VXN web ports: IndexedDB persistence, autosave, patch I/O, MIDI + keyboard input."
+publish = false
+
+[dependencies]
