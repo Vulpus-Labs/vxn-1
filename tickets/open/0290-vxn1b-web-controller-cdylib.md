@@ -75,29 +75,53 @@ threads. Here the controller updates its model and the **bridge** (0291) also
 pushes the event onto the ring. This ticket exposes the controller half and
 documents the pairing; 0291 wires it.
 
-### Param-change detection follows vxn-1, not vxn-2
+### Param-change detection: echo on, no bitset drain
 
 vxn-2's controller is the structural reference — both it and VXN1b compose the
 shared `Controller<SharedParams>` directly, where vxn-1 wraps its bespoke
 `vxn-app`. But its *change-detection* must not be copied.
 
 `vxn2-engine`'s `SharedParams` carries per-param **dirty bitsets**
-(`take_dirty_values`, 20 references), so its controller disables auto-echo and
-drains those bits once per tick. `vxn1b-engine`'s `SharedParams` has **no value
-bitset at all** — only a `key_dirty` flag and the `reload` flag. VXN1b detects
-param drift the way vxn-1 does: auto-echo on for UI writes, plus a main-thread
-diff against a NaN-seeded `last_seen` mirror for audio-thread automation
-([vxn1b-clap `push_param_diffs`](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L303)).
+(`take_dirty_values`), so its controller sets `echo_param_writes(false)` and
+drains those bits once per tick as the single Model→View emitter.
+`vxn1b-engine`'s `SharedParams` has **no value bitset at all** — only
+`key_dirty` and `reload`.
 
-Porting vxn-2's drain here would not fail to compile — it would fail to *notice*
-that half its inputs are missing, and the page would go quiet on host automation
-while looking fine under UI edits.
+So VXN1b leaves `echo_param_writes` at its default `true`
+([controller.rs:125](../../crates/vxn-core-app/src/controller.rs#L125)), which is
+what emits `ParamChanged` for every model write. Copying vxn-2's setup would
+compile and then emit **nothing**: echo disabled, and a bitset drain with no bits
+to drain.
 
-The diff must also carry the sync-partner refresh: a sync toggle flipping does
-not change its rate param's value, but it flips the readout between Hz/seconds
-and a subdivision label, and the faceplate repaints only from what it is sent.
-`vxn1b_engine::sync::{sync_aware_display, rate_partner_clap_id}` are already
-public and are what the native path uses.
+The echo carries the display work with it. A sync toggle flipping does not change
+its rate param's value, but it flips the readout between Hz/seconds and a
+subdivision label, and the faceplate repaints only from what it is sent —
+`vxn1b_engine::sync::{sync_aware_display, rate_partner_clap_id}` are public and
+are what the native path uses for exactly this.
+
+### There is no host automation here, and the readback is confirmation-only
+
+vxn-1's native shell also runs a NaN-seeded `last_seen` diff over `SharedParams`,
+because its `process()` writes params directly when the CLAP host automates them.
+**The browser has no host**, and that diff has no analogue here: tracing the web
+path, the only writer of the param SAB is the coordinator (`setParam`,
+`setParamsBulk`, the defaults seed), and the worklet's `applyStoreToEngine`
+publishes into the readback region exactly the values it just read out of the
+store.
+
+Two consequences:
+
+1. This controller needs **no** value-diff poll. Every param value originates in
+   the model, so the echo already covers it. A diff would only re-report what the
+   controller just sent.
+2. The readback region and `pollDiffs` in
+   [param-store.mjs](../../vxn-1b/crates/vxn1b-wasm/web/param-store.mjs) are
+   therefore **confirmation, not information** — they tell the main thread the
+   worklet caught up, which nothing currently needs. Left in place (it is a
+   cheap debugging affordance and keeps the three ports' stores the same shape),
+   but 0291's bridge should not poll it, and `paramChanged()`'s `norm`/`display`
+   stubs there become dead rather than needing a fix. Worth revisiting as its own
+   call if it stays unused.
 
 ### Opcode surface
 
@@ -118,9 +142,9 @@ and TOML export/import.
       applied on the norm path — proven against a tapered param, not a linear one.
 - [ ] `ViewEvent` batches serialise and round-trip, including `ParamChanged`'s
       `norm` and `display` (the fields `param-store.mjs` currently stubs).
-- [ ] Audio-thread param drift surfaces via the NaN-seeded diff, not a dirty
-      bitset vxn1b-engine does not have — with a test that writes the store
-      directly (the automation path) and asserts a `ParamChanged` appears.
+- [ ] `echo_param_writes` is left at its default `true`, and a test asserts a
+      model write produces exactly one `ParamChanged` — not zero (vxn-2's setup,
+      which has no bitsets to drain here) and not two.
 - [ ] Flipping a sync toggle re-pushes its rate partner's display.
 - [ ] VXN1b's custom opcodes are handled, and a test pins which are
       controller-only vs which the bridge must also put on the ring.
