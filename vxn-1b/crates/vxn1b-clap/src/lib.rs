@@ -161,7 +161,7 @@ impl Plugin for VxnPlugin {
 impl DefaultPluginFactory for VxnPlugin {
     fn get_descriptor() -> PluginDescriptor {
         use clack_plugin::plugin::features::*;
-        PluginDescriptor::new("labs.vulpus.vxn1b", "VXN1b").with_features([
+        PluginDescriptor::new("labs.vulpus.vxn1b", "VXN-1b").with_features([
             INSTRUMENT,
             SYNTHESIZER,
             STEREO,

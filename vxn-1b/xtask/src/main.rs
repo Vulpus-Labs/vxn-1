@@ -46,9 +46,16 @@ use std::process::Command;
 const PLUGIN_NAME: &str = "vxn1b";
 const BUNDLE_NAME: &str = "vxn1b.clap";
 /// VST3 bundle stem. Capitalised, unlike the CLAP — see the module docs.
+/// VST3 bundle FILENAME (`VXN1b.vst3`), not a display name. Renaming it would
+/// orphan every installed copy and re-scan as a new plugin, so it keeps the
+/// original spelling; the name a host shows comes from the CLAP descriptor.
 const VST3_NAME: &str = "VXN1b";
 const BUNDLE_ID: &str = "labs.vulpus.vxn1b";
-const DISPLAY_NAME: &str = "VXN1b";
+/// Human-readable product name — the DAW's plugin list and CFBundleName.
+/// Hyphenated, matching the faceplate banner and the other synths' styling.
+/// NOT an identifier: `BUNDLE_ID`, `VST3_NAME` and the user-preset directory
+/// deliberately keep their unhyphenated spelling (see their notes).
+const DISPLAY_NAME: &str = "VXN-1b";
 /// The cdylib/staticlib file stem: the `vxn1b-clap` package name with `-` → `_`
 /// (cargo's crate-name rule). Coupled to the `--package vxn1b-clap` build below
 /// by hand. A rename can't *silently* ship an empty bundle: every build path
