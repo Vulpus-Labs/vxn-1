@@ -32,7 +32,6 @@ function resetModel() {
 }
 
 function stubGlobals() {
-  globalThis.keysPanel = { wireLayerLevels: vi.fn() };
   // dispatch.js reaches `tgRow` as a splice-scope free global (util/drag.js).
   globalThis.tgRow = (name) => {
     const el = document.createElement('div');

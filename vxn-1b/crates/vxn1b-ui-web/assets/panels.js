@@ -7,8 +7,7 @@
 //                           / tgRow (consumes the shared wireDrag, 0140)
 //   panels/fader.js       — fader, LFO-rate subdivision label, wave knob,
 //                           bipolar dial, waveform glyphs
-//   panels/discrete.js    — Switch / ButtonGroup / Dropdown / HeaderSwitch
-//   panels/keys.js        — the Keys panel + its constants
+//   panels/discrete.js    — Switch / ButtonGroup / HeaderSwitch
 //   panels/meter.js       — level-meter ballistics + the stereo meter widget
 //                           and the frame registry (0240)
 //   panels/scope.js       — the layer oscilloscope: trigger search + canvas
@@ -43,14 +42,8 @@ export {
 } from './panels/fader.js';
 
 export {
-  makeSwitch, makeButtonGroup, makeRocker, makeDropdown, makeHeaderSwitch,
+  makeSwitch, makeButtonGroup, makeRocker, makeHeaderSwitch,
 } from './panels/discrete.js';
-
-export {
-  KEY_MODE_NAMES, KEY_LAYERS,
-  KEYS_DEFAULT_SPLIT, KEYS_SPLIT_MIN, KEYS_SPLIT_MAX,
-  keysPanel,
-} from './panels/keys.js';
 
 export { presetBar } from './panels/preset-bar.js';
 

@@ -284,14 +284,6 @@ test("a trap is surfaced to the main thread with its count", async () => {
   await host.teardown();
 });
 
-test("cpu messages reach the observer", async () => {
-  const cpu = [];
-  const host = await boot({ onCpu: (load, peakLoad) => cpu.push([load, peakLoad]) });
-  host.node.port._toMain({ type: "cpu", load: 0.25, peak: 0.4 });
-  assert.deepEqual(cpu, [[0.25, 0.4]]);
-  await host.teardown();
-});
-
 // ── End to end ─────────────────────────────────────────────────────────────
 
 test("a note plays and its audio comes back as a meter frame", async () => {

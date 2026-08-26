@@ -174,34 +174,6 @@ export function makeRocker(el, id, desc) {
   };
 }
 
-// `Dropdown(id, label, variants)` — native <select> fallback. Used when
-// the variant list is too long for a row of toggles to fit the cell.
-export function makeDropdown(el, id, desc) {
-  const label = el.dataset.label || desc.label;
-  const variants = desc.variants || [];
-  el.classList.add('ctl-dropdown');
-  el.innerHTML =
-    '<div class="ctl-label">' + label.toUpperCase() + '</div>' +
-    '<select></select>';
-  const select = el.querySelector('select');
-  variants.forEach((v, i) => {
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = v;
-    select.appendChild(opt);
-  });
-  select.addEventListener('change', () => {
-    const i = parseInt(select.value, 10);
-    window.vxn.send.discrete(id, i);
-  });
-  return {
-    update(plain) {
-      const p = clampVariant(plain, variants);
-      select.value = String(p);
-    },
-  };
-}
-
 // ─── Header switch (Chorus / Delay, 0045) ──────────────────────────────────
 //
 // A small toggle box centred inside a panel header's

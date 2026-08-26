@@ -75,7 +75,6 @@
      + 36 knob) plus the 4 px column gap = 104. Rows may re-declare it — the
      FX pane's mixer runs a taller strip and centres the dials in it. */
   --strip-h: 104px;
-  --dial: 62px;               /* DIAL — selector-knob box */
   --panel-pad: 5px;
   --panel-vgap: 4px;
   --row-vgap: 8px;
@@ -87,7 +86,6 @@
      reserves a row of exactly this height. */
   --tg-box: 11px;
   --ctl-label-h: 12px;
-  --ctl-value-h: 12px;
   --ctl-gap: 2px;
   /* Vertical fader geometry — the SMALL scale, used by every fader in the
      LAYER pane. The FX rows run a LARGE one (`.fader-scale-lg` below): the
@@ -908,17 +906,9 @@ html, body {
 
    Bars fill bottom-up from a `height` on `.meter-fill`; the peak marker is a
    1px rule positioned by `bottom`. Both are set as percentages by
-   `panels/meter.js`, so the geometry here only has to establish the track. */
-.ctl-meter { justify-content: flex-end; }
-
-.meter-mount {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 2px;
-  height: var(--fader-h);
-}
-
+   `panels/meter.js`, so the geometry here only has to establish the track.
+   `.ctl-meter` / `.meter-mount` themselves are set under "Meter / fader
+   alignment" below, where the label-offset rationale lives. */
 .meter-bar {
   position: relative;
   width: 5px;
@@ -1280,22 +1270,6 @@ html, body {
 
 /* Dropdown — native <select> styled to match the dark palette. Fallback for
    enums that don't fit ButtonGroup (too many variants, or a long name list). */
-.ctl-dropdown {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--ctl-gap);
-}
-.ctl-dropdown select {
-  background: #1c1c1c;
-  color: var(--text);
-  border: 1px solid #444;
-  border-radius: 2px;
-  font-family: inherit;
-  font-size: 10px;
-  padding: 1px 4px;
-}
-.ctl-dropdown select:focus { outline: 1px solid var(--ctl-value); }
 
 /* Dimmed — applied to control cells whose param is gated by a sibling
    (LFO 1's Delay/Fade dim while Free is on; Filter Slope dims when the

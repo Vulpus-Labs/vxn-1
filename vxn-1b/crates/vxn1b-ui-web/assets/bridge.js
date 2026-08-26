@@ -124,7 +124,7 @@ window.__vxn = {
 
 // Status-pill visibility window. Re-fired messages reset the timer so a
 // rapid burst stays readable; the CSS fade transition handles the dismount.
-export const STATUS_PILL_FLASH_MS = 3000;
+const STATUS_PILL_FLASH_MS = 3000;
 
 // ─── Floating text-input popup bridge (0048) ───────────────────────────────
 //

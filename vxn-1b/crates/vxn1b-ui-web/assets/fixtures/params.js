@@ -51,7 +51,7 @@ function enumDesc(name, label, variants, def = 0) {
 
 // Build a fresh params object each call so tests can mutate without
 // leaking state across files.
-export function buildParams() {
+function buildParams() {
   // The layer-rebind fixtures only need *an* enum at a known id; the real
   // surface is `stack_width` × `voice_mode` since 0266.
   const ASSIGN_VARIANTS  = ['Poly', 'Solo'];

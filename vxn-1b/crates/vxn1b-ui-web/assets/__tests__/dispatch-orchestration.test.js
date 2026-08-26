@@ -6,7 +6,7 @@
 // layer flip is a no-op and there is no dual-layer id-shifting to test.
 //
 // dispatch.js imports nothing: at splice time it shares one scope with panels.js
-// / bridge.js, so cross-module symbols (makeFader, subdivisionLabel, keysPanel,
+// / bridge.js, so cross-module symbols (makeFader, subdivisionLabel,
 // the cutoffTuned* helpers …) are free identifiers that resolve via the global
 // scope. Under Node ESM we stub them on globalThis, exactly as the splice would
 // define them.
@@ -67,7 +67,6 @@ function stubGlobals() {
   globalThis.makeBipolar = factory('bipolar');
   globalThis.makeSwitch = factory('switch');
   globalThis.makeButtonGroup = factory('buttongroup');
-  globalThis.makeDropdown = factory('dropdown');
   globalThis.makeHeaderSwitch = factory('header-switch');
   // Display helper the rate override closure calls (deterministic stand-in so
   // the wiring is observable).
@@ -77,13 +76,6 @@ function stubGlobals() {
   globalThis.cutoffTunedNormToHz = cutoffTunedNormToHz;
   globalThis.cutoffTunedHzToNorm = cutoffTunedHzToNorm;
   globalThis.cutoffTunedNoteName = cutoffTunedNoteName;
-  // Side panels touched by rebind / dispatch.
-  globalThis.keysPanel = {
-    wireLayerLevels: vi.fn(),
-    setLayer: vi.fn(),
-    setMode: vi.fn(),
-    setSplit: vi.fn(),
-  };
   globalThis.statusPill = { flash: vi.fn() };
   globalThis.presetBar = { setName: vi.fn(), setSource: vi.fn() };
   globalThis.browserPanel = { setCurrentSource: vi.fn(), followPath: vi.fn() };
@@ -115,7 +107,7 @@ beforeEach(() => {
   DRIVE     = paramIdByName('drive');
 });
 
-// Mount a [data-control] cell inside a [data-layered] wrapper so isLayeredEl
+// Mount a [data-control] cell inside a [data-layered] wrapper so binding
 // reports true. In vxn1b the layer machinery is retained but inert (single
 // patch), so a "layered" cell rebinds to the same ids on any flip.
 function mountCell(kind, name) {
@@ -219,8 +211,8 @@ describe('rebindAllForLayer', () => {
     mountCell('fader', 'cutoff');
     mountCell('fader', 'lfo1_rate');
     model.cells.push(
-      { el: document.querySelector('[data-param="cutoff"]'), kind: 'fader', name: 'cutoff', layered: true },
-      { el: document.querySelector('[data-param="lfo1_rate"]'), kind: 'fader', name: 'lfo1_rate', layered: true },
+      { el: document.querySelector('[data-param="cutoff"]'), kind: 'fader', name: 'cutoff' },
+      { el: document.querySelector('[data-param="lfo1_rate"]'), kind: 'fader', name: 'lfo1_rate' },
     );
 
     rebindAllForLayer('upper');
@@ -371,8 +363,6 @@ describe('init() → applyViewEvents', () => {
 
     window.__vxn.applyViewEvents([{ kind: 'keys', mode: 2, split: 48, link: true }]);
 
-    expect(keysPanel.setMode).toHaveBeenCalledWith(2);
-    expect(keysPanel.setSplit).toHaveBeenCalledWith(48);
     expect(model.setLayer2On).toHaveBeenCalledWith(true);
     expect(model.setSplitEnabled).toHaveBeenCalledWith(true);
     expect(model.setSplitPoint).toHaveBeenCalledWith(48);

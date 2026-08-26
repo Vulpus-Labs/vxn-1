@@ -287,7 +287,6 @@ export class FaceplateBridge {
     this._raf =
       raf || (win && win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : null);
     this._running = false;
-    this._frame = 0;
 
     // What the RING was last told, so the echo-driven resend pushes only drift.
     // Null = "tell it everything next time", which is also the boot state.
@@ -563,7 +562,6 @@ export class FaceplateBridge {
     // (5) Autosave, debounced behind a real patch change.
     if (modelMoved && this.onModelChanged) this.onModelChanged();
 
-    this._frame++;
     return events;
   }
 

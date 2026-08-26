@@ -2,7 +2,7 @@
 //
 // `import` lines are dropped by the splice loader (`strip_esm_exports`), so in
 // production every binding below rides the single concatenated scope — the
-// same arrangement `panels/keys.js` documents. Declaring the imports anyway
+// same arrangement `panels/preset-bar.js` documents. Declaring the imports anyway
 // lets the vitest suites drive functions that touch these helpers under Node
 // ESM, where the concatenated scope doesn't exist. Only the helpers the suites
 // actually reach are declared; the rest still resolve implicitly.
@@ -24,7 +24,7 @@ let _paramIdByName = null;
 // build happens exactly once per init.
 export let _paramIndexBuilds = 0;
 
-export function buildParamIndex() {
+function buildParamIndex() {
   _paramIndexBuilds += 1;
   const ix = new Map();
   const params = (window.vxn && window.vxn.params) || {};
@@ -83,9 +83,6 @@ export function variantIdx(paramName, variantName, layer) {
   return variants.indexOf(variantName);
 }
 
-export function isLayeredEl(el) {
-  return el.closest('[data-layered]') != null;
-}
 
 // Per-tick mutable state the dispatcher owns. Grouped here so the module
 // reads as "init builds the model; dispatch reads + mutates it" rather
@@ -165,11 +162,6 @@ export function locateSyncPartners(layer) {
 // ─── Generic dim rules (0044) ──────────────────────────────────────────────
 //
 // Per-cell HTML markers register a dim rule resolved at bind time:
-//   `data-dim-when-src-off="srcName"` — dim self when the named source
-//     selector reads `Off` (the depth fader paired with a source
-//     buttongroup: Pitch/PWM Mod, Cross Mod's osc2 Mod). Source
-//     selectors themselves stay bright; only their paired fader dims so
-//     a routed-Off path is still readable + clickable.
 //   `data-dim-unless-fm="typeName"` — dim self unless the named type
 //     selector reads the `FM` variant. Cross Mod's Amount fader only
 //     drives PM (labelled FM, ADR 0004 §3), so it greys out for Off and
@@ -198,7 +190,7 @@ export function locateSyncPartners(layer) {
 //     `model.lastParam` is written before `applyDimRulesFor` runs, so the
 //     predicate always sees the echo that triggered it; an id with no echo yet
 //     reads as off.
-export const BUILTIN_DIM_SPECS = [
+const BUILTIN_DIM_SPECS = [
   {
     kind: 'free-run',
     watch: 'lfo1_free_run',
@@ -256,13 +248,6 @@ export const BUILTIN_DIM_SPECS = [
 
 export function collectDimRuleSpecs() {
   model.dimRuleSpecs.length = 0;
-  document.querySelectorAll('[data-dim-when-src-off]').forEach((el) => {
-    model.dimRuleSpecs.push({
-      kind: 'src-off',
-      watchName: el.dataset.dimWhenSrcOff,
-      target: el,
-    });
-  });
   document.querySelectorAll('[data-dim-unless-fm]').forEach((el) => {
     model.dimRuleSpecs.push({
       kind: 'unless-fm',
@@ -277,15 +262,9 @@ export function rebuildDimRules(layer) {
   for (const spec of model.dimRuleSpecs) {
     const watchId = paramIdByNameAtLayer(spec.watchName, layer);
     if (watchId == null) continue;
-    let predicate;
-    if (spec.kind === 'src-off') {
-      predicate = (plain) => Math.round(plain) === 0;
-    } else if (spec.kind === 'unless-fm') {
-      const fmIdx = variantIdx(spec.watchName, 'FM', layer);
-      predicate = (plain) => fmIdx < 0 || Math.round(plain) !== fmIdx;
-    } else {
-      continue;
-    }
+    if (spec.kind !== 'unless-fm') continue;
+    const fmIdx = variantIdx(spec.watchName, 'FM', layer);
+    const predicate = (plain) => fmIdx < 0 || Math.round(plain) !== fmIdx;
     model.dimRules.push({ watchId, predicate, target: spec.target });
   }
   for (const spec of BUILTIN_DIM_SPECS) {
@@ -409,7 +388,6 @@ export function bindCell(entry, layer) {
     case 'switch':        ctl = makeSwitch(el, id, desc); break;
     case 'rocker':        ctl = makeRocker(el, id, desc); break;
     case 'buttongroup':   ctl = makeButtonGroup(el, id, desc); break;
-    case 'dropdown':      ctl = makeDropdown(el, id, desc); break;
     case 'header-switch': ctl = makeHeaderSwitch(el, id, desc); break;
     default:
       console.warn('vxn: unknown control type', kind);
@@ -482,12 +460,6 @@ export function rebindAllForLayer(layer) {
   for (const entry of model.cells) {
     bindCell(entry, layer);
   }
-  // Non-cell control subscribers (Keys panel's per-layer Level sliders)
-  // re-register here so the model.controls clear above doesn't strand
-  // them — without this they'd miss every ParamChanged echo after the
-  // first rebind. DOM event listeners are guarded inside `wireLayerLevels`
-  // and only attach once per layer.
-  keysPanel.wireLayerLevels();
   // The mod-matrix overlay's topology selectors track the edit layer too (the
   // depth dials are layered cells rebound above); reseed them from the new
   // layer's snapshot (0219).
@@ -877,13 +849,9 @@ export function init() {
     const name = el.dataset.param;
     if (!name) return;
     const kind = el.dataset.control;
-    // A fixed-layer cell is never `layered`, even if it sits inside a
-    // `data-layered` container — the two markers are mutually exclusive by
-    // construction, and honouring `layered` would re-bind it off its pin.
     const fixedLayer = el.dataset.fixedLayer || null;
     const entry = {
       el, kind, name, fixedLayer,
-      layered: fixedLayer ? false : isLayeredEl(el),
       // The markup's own classes, captured before any primitive has run.
       // `freshenCell` restores exactly this on a rebind, so the reset needs no
       // hand-maintained list of the classes each kind adds.
@@ -959,10 +927,6 @@ export function init() {
     }
     if (ev.kind === 'edit_layer_changed') {
       const layer = ev.layer === 'lower' ? 'lower' : 'upper';
-      // The Keys panel's Upper/Lower toggle always follows — it owns
-      // its own active-row paint regardless of whether the layer
-      // actually flipped (cheap idempotent setter).
-      keysPanel.setLayer(layer);
       if (layer === model.currentLayer) return;
       model.currentLayer = layer;
       rebindAllForLayer(layer);
@@ -972,7 +936,6 @@ export function init() {
       return;
     }
     if (ev.kind === 'key_mode_changed') {
-      keysPanel.setMode(ev.mode);
       // KeyMode is derived from the two toggles, so an echo decomposes back
       // into them (0220): 0 = Single, 1 = Dual, 2 = Split. Both setters are
       // reflect-only — they repaint without re-posting, so a state/preset load
@@ -982,7 +945,6 @@ export function init() {
       return;
     }
     if (ev.kind === 'split_point_changed') {
-      keysPanel.setSplit(ev.note);
       if (model.setSplitPoint) model.setSplitPoint(ev.note);
       return;
     }
@@ -996,11 +958,9 @@ export function init() {
     if (ev.kind === 'keys') {
       // `mode` is the derived 0/1/2 (Single/Dual/Split), the same encoding
       // `setKeyMode` posts — decompose it back into the two toggles.
-      keysPanel.setMode(ev.mode);
       if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
       if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
       if (ev.split != null) {
-        keysPanel.setSplit(ev.split);
         if (model.setSplitPoint) model.setSplitPoint(ev.split);
       }
       if (model.setLfo2Link) model.setLfo2Link(!!ev.link);

@@ -589,11 +589,10 @@ const BRIDGE_JS: &str = include_str!("../assets/bridge.js");
 const BROWSER_JS: &str = include_str!("../assets/browser.js");
 /// Panel UI, split into cohesive modules. Splice order: `util/drag.js` first
 /// (the shared drag/paint/clamp primitives the rest reference), then the widget
-/// modules; `keys.js` and `preset-bar.js` run load-time IIFEs so they sit last.
+/// modules; `preset-bar.js` runs a load-time IIFE so it sits last.
 const PANEL_UTIL_DRAG_JS: &str = include_str!("../assets/util/drag.js");
 const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 const PANEL_DISCRETE_JS: &str = include_str!("../assets/panels/discrete.js");
-const PANEL_KEYS_JS: &str = include_str!("../assets/panels/keys.js");
 const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
 const PANEL_MATRIX_JS: &str = include_str!("../assets/panels/matrix.js");
 const PANEL_METER_JS: &str = include_str!("../assets/panels/meter.js");
@@ -603,7 +602,6 @@ const PANELS_FILES: &[&str] = &[
     PANEL_UTIL_DRAG_JS,
     PANEL_FADER_JS,
     PANEL_DISCRETE_JS,
-    PANEL_KEYS_JS,
     PANEL_PRESET_BAR_JS,
     PANEL_MATRIX_JS,
     // Meters (0240) — must precede dispatch.js, which calls `makeMeter` /
@@ -748,7 +746,6 @@ mod tests {
             ".ctl-fader-track",
             ".ctl-fader-thumb",
             ".ctl-label",
-            ".ctl-dropdown",
             ".dial-grid",
             // Stacked-column + state classes. `.dimmed` is only ever compounded
             // onto a cell, so assert the real head rather than a bare class.

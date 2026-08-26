@@ -26,7 +26,6 @@ function stubGlobals() {
   // Real widgets for the two kinds this suite mounts; the rest are unused.
   globalThis.makeRocker = makeRocker;
   globalThis.makeFader = makeFader;
-  globalThis.keysPanel = { wireLayerLevels: vi.fn(), setLayer: vi.fn(), setMode: vi.fn(), setSplit: vi.fn() };
   globalThis.statusPill = { flash: vi.fn() };
   globalThis.presetBar = { setName: vi.fn(), setSource: vi.fn() };
   globalThis.browserPanel = { setCurrentSource: vi.fn(), followPath: vi.fn() };

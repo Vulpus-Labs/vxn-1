@@ -18,7 +18,7 @@
 //   param SAB      every CLAP-id param, block-granular, latest-value-wins,
 //                  plus the audio->main readback the diff pump reads
 //   telemetry SAB  meter and scope frames, worklet -> main
-//   the port       lifecycle only: ready, trap, cpu, reset, destroy
+//   the port       lifecycle only: ready, trap, reset, destroy
 //
 // vxn-1 sends its key mode and split point over the PORT, because its wire
 // predates having anywhere better to put them. VXN1b's ride the ring with
@@ -47,15 +47,6 @@ const DEFAULT_WASM_URL = "./vxn1b_wasm.wasm";
 const DEFAULT_WORKLET_URL = "./vxn1b-processor.js";
 const PROCESSOR_NAME = "vxn1b-host-processor";
 
-/// Safari/WebKit has no render-thread slack to spare: the per-quantum clock read
-/// plus the periodic postMessage the CPU meter needs can itself glitch the
-/// audio, and it ignores `latencyHint` so there is no output-buffer headroom to
-/// absorb the variance. Detected here so the worklet can skip the work entirely.
-function isAppleWebKit() {
-  const ua = globalThis.navigator ? globalThis.navigator.userAgent || "" : "";
-  return /AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg/.test(ua);
-}
-
 export class WebHost {
   // Options:
   //   wasmUrl / workletUrl  : dist-relative URLs (defaults match the bundle).
@@ -66,9 +57,6 @@ export class WebHost {
   //   onReady / onTrap      : lifecycle observers.
   //   onState               : gate observer (idle | starting | running |
   //                           suspended | closed).
-  //   onCpu                 : render-load observer, (load, peak) as fractions of
-  //                           the per-quantum budget. Called with (null, null)
-  //                           where the meter is disabled.
   //   AudioContextClass /
   //   AudioWorkletNodeClass : injection seams for headless testing.
   //   fetchImpl             : fetch seam.
@@ -80,7 +68,6 @@ export class WebHost {
     onReady = () => {},
     onTrap = () => {},
     onState = () => {},
-    onCpu = () => {},
     AudioContextClass = globalThis.AudioContext,
     AudioWorkletNodeClass = globalThis.AudioWorkletNode,
     fetchImpl = globalThis.fetch,
@@ -92,7 +79,6 @@ export class WebHost {
     this._onReady = onReady;
     this._onTrap = onTrap;
     this._onState = onState;
-    this._onCpu = onCpu;
     this._AudioContext = AudioContextClass;
     this._AudioWorkletNode = AudioWorkletNodeClass;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
@@ -168,7 +154,6 @@ export class WebHost {
     // it is populated before the worklet can read it.
     await this._seedStoreFromDefaults(wasmBytes);
 
-    this._cpuMeterEnabled = !isAppleWebKit();
     this.node = new this._AudioWorkletNode(this.ctx, PROCESSOR_NAME, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -179,15 +164,12 @@ export class WebHost {
         storeSab: this.storeSab,
         telemetrySab: this.telemetrySab,
         capacity: this.capacity,
-        cpuMeter: this._cpuMeterEnabled,
       },
     });
 
     this.node.port.onmessage = (e) => this._onPortMessage(e.data);
 
     this.node.connect(this.ctx.destination);
-    // No render-load source on Safari → report n/a rather than a frozen number.
-    if (!this._cpuMeterEnabled) this._onCpu(null, null);
 
     // Autoplay unlock: the context starts suspended, and resume() must be inside
     // a user-gesture call stack (start()'s contract). The statechange listener
@@ -259,13 +241,6 @@ export class WebHost {
         this.ready = false;
         this.trapCount = m.count != null ? m.count : this.trapCount + 1;
         this._onTrap(m.message, this.trapCount);
-        break;
-      case "cpu":
-        if (m.clock && !this._cpuClockLogged) {
-          console.info(`vxn1b: CPU meter clock = ${m.clock}`);
-          this._cpuClockLogged = true;
-        }
-        this._onCpu(m.load, m.peak);
         break;
       default:
         break;
