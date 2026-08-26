@@ -6,7 +6,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createCpuMeter } from "./faceplate-bridge.mjs";
+// Shared module, not the bridge: `./cpu-meter.mjs` resolves in the flat dist
+// bundle but not in the source tree, so the bridge dynamic-imports it (0309).
+import { createCpuMeter } from "../../../../crates/vxn-core-web/assets/cpu-meter.mjs";
 
 function fakeDoc() {
   const make = () => ({

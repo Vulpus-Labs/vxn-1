@@ -47,6 +47,17 @@ const DEFAULT_WASM_URL = "./vxn1b_wasm.wasm";
 const DEFAULT_WORKLET_URL = "./vxn1b-processor.js";
 const PROCESSOR_NAME = "vxn1b-host-processor";
 
+// Safari / iOS WebKit, by vendor + UA. Its AudioWorklet runs on a one-quantum
+// buffer with no render-thread slack ([[vxn1-web-safari-audioworklet]]), so the
+// CPU meter's per-quantum clock reads and periodic postMessage can themselves
+// cause the glitching the meter exists to reveal. Measure nothing there.
+function isAppleWebKit() {
+  if (typeof navigator === "undefined") return false; // Node harness
+  const ua = navigator.userAgent || "";
+  const vendor = navigator.vendor || "";
+  return /Apple/.test(vendor) && !/CriOS|FxiOS|EdgiOS|Chrome|Chromium|Edg|Android/.test(ua);
+}
+
 export class WebHost {
   // Options:
   //   wasmUrl / workletUrl  : dist-relative URLs (defaults match the bundle).
@@ -55,6 +66,8 @@ export class WebHost {
   //   capacity              : event-ring slots (power of two). Main and worklet
   //                           MUST agree; passed through processorOptions.
   //   onReady / onTrap      : lifecycle observers.
+  //   onCpu(load, peak)     : render-load meter, ~6 Hz. `null` load means the
+  //                           meter is off (Safari) — distinct from a real 0.
   //   onState               : gate observer (idle | starting | running |
   //                           suspended | closed).
   //   AudioContextClass /
@@ -68,6 +81,7 @@ export class WebHost {
     onReady = () => {},
     onTrap = () => {},
     onState = () => {},
+    onCpu = () => {},
     AudioContextClass = globalThis.AudioContext,
     AudioWorkletNodeClass = globalThis.AudioWorkletNode,
     fetchImpl = globalThis.fetch,
@@ -79,6 +93,8 @@ export class WebHost {
     this._onReady = onReady;
     this._onTrap = onTrap;
     this._onState = onState;
+    this._onCpu = onCpu;
+    this._cpuClockLogged = false;
     this._AudioContext = AudioContextClass;
     this._AudioWorkletNode = AudioWorkletNodeClass;
     this._fetch = fetchImpl ? fetchImpl.bind(globalThis) : null;
@@ -154,6 +170,8 @@ export class WebHost {
     // it is populated before the worklet can read it.
     await this._seedStoreFromDefaults(wasmBytes);
 
+    // Off on Safari, where measuring costs more than the measurement is worth.
+    this._cpuMeterEnabled = !isAppleWebKit();
     this.node = new this._AudioWorkletNode(this.ctx, PROCESSOR_NAME, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -164,8 +182,12 @@ export class WebHost {
         storeSab: this.storeSab,
         telemetrySab: this.telemetrySab,
         capacity: this.capacity,
+        cpuMeter: this._cpuMeterEnabled,
       },
     });
+    // Report "no measurement" once, so the badge can show n/a rather than a
+    // stale dash that looks like a reading which never arrived.
+    if (!this._cpuMeterEnabled) this._onCpu(null, null);
 
     this.node.port.onmessage = (e) => this._onPortMessage(e.data);
 
@@ -228,6 +250,13 @@ export class WebHost {
         this.ready = true;
         this._resolveReady(this);
         this._onReady();
+        break;
+      case "cpu":
+        if (m.clock && !this._cpuClockLogged) {
+          console.info(`vxn1b: CPU meter clock = ${m.clock}`);
+          this._cpuClockLogged = true;
+        }
+        this._onCpu(m.load, m.peak);
         break;
       case "trap":
         // The runner already caught it and kicked async recovery; this only

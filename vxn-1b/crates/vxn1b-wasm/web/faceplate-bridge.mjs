@@ -615,6 +615,7 @@ export async function boot({
   autoGesture = true,
   autoInputs = true,
   autoPiano = true,
+  autoCpuMeter = true,
   autoPersist = true,
   adapters = null,
 } = {}) {
@@ -622,9 +623,13 @@ export async function boot({
   // stack in just to exercise the router.
   const { WebHost } = await import("./coordinator.mjs");
 
+  // Created before the host, so the very first `cpu` message has somewhere to
+  // land. A stub until the shared module resolves.
+  let cpuMeter = { update() {}, el: null };
   const host = new WebHost({
     ...(wasmUrl ? { wasmUrl } : {}),
     ...(fetchImpl ? { fetchImpl } : {}),
+    onCpu: (load, peak) => cpuMeter.update(load, peak),
     onTrap: (err, count) => {
       // 0297: a trap goes silent and REPORTS. It does not re-instantiate — a
       // rebuilt engine loses key mode, split, LFO 2 link and the whole
@@ -680,12 +685,26 @@ export async function boot({
   let piano = null;
   if (autoPiano) piano = await attachPiano(win, host, adapters);
 
+  // Render-load badge (0309). Shared widget, fed by the worklet's `cpu` port
+  // messages through `onCpu` above. Worth having on a demo: this port runs 32
+  // voices with an oversampled ladder and a full FX chain in single-threaded
+  // wasm, and E045 flags worst-case performance as an open question rather than
+  // a known-good — so the number belongs on screen, not in a profiler.
+  if (autoCpuMeter && win.document && win.document.body) {
+    try {
+      const create = await sharedAdapter(adapters, "cpu-meter.mjs", "createCpuMeter");
+      cpuMeter = create(win.document);
+    } catch (e) {
+      console.warn("vxn: CPU meter unavailable", e && e.message);
+    }
+  }
+
   // Web MIDI waits for the gesture: asking for the permission prompt on page
   // load, before the player has touched anything, is rude and easy to deny by
   // reflex.
   if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
 
-  return { host, controller, bridge, inputs, piano, persistence, autosave };
+  return { host, controller, bridge, inputs, piano, cpuMeter, persistence, autosave };
 }
 
 /// VXN1b's IndexedDB identity. Its own name, so the three synths' corpora never
