@@ -23,7 +23,7 @@
 
 /// The shared modules, by filename. Each port's `xtask web` copies these out of
 /// `assets/` into its flat `dist/`, alongside its own eight.
-pub const MODULES: [&str; 6] = [
+pub const MODULES: [&str; 7] = [
     // IndexedDB primitive + the two write-behind owners layered on it.
     "preset-storage.mjs",
     "preset-persistence.mjs",
@@ -33,6 +33,7 @@ pub const MODULES: [&str; 6] = [
     // Browser input → event-ring producers.
     "midi-input.mjs",
     "keyboard-input.mjs",
+    "piano-keyboard.mjs",
 ];
 
 /// Source of one shared module, embedded at compile time. `None` for a name
@@ -49,6 +50,7 @@ pub fn module_source(name: &str) -> Option<&'static str> {
         "patch-io.mjs" => include_str!("../assets/patch-io.mjs"),
         "midi-input.mjs" => include_str!("../assets/midi-input.mjs"),
         "keyboard-input.mjs" => include_str!("../assets/keyboard-input.mjs"),
+        "piano-keyboard.mjs" => include_str!("../assets/piano-keyboard.mjs"),
         _ => return None,
     })
 }
