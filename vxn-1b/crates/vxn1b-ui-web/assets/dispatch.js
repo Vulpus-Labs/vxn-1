@@ -771,7 +771,9 @@ export function wireSplit() {
 
   slider.addEventListener('input', () => {
     const note = clampNote(slider.value);
-    // Optimistic local repaint; a `split_point_changed` echo overwrites it.
+    // Local repaint is authoritative for the drag: VXN1b's only keyboard echo
+    // is the whole `keys` record, which the engine pushes on drift rather than
+    // per edit, so nothing arrives to overwrite this mid-slide.
     readout.textContent = noteName(note);
     window.vxn.send.setSplitPoint(note);
   });
@@ -966,19 +968,6 @@ export function init() {
       // Unified dim rules: source-Off / Cross Mod Type ≠ FM (0044) plus
       // the built-in Free-run (0042) and Filter Mode = Notch (0043).
       applyDimRulesFor(ev.id, ev.plain);
-      return;
-    }
-    if (ev.kind === 'key_mode_changed') {
-      // KeyMode is derived from the two toggles, so an echo decomposes back
-      // into them (0220): 0 = Single, 1 = Dual, 2 = Split. Both setters are
-      // reflect-only — they repaint without re-posting, so a state/preset load
-      // can't bounce an opcode back at the engine.
-      if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
-      if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
-      return;
-    }
-    if (ev.kind === 'split_point_changed') {
-      if (model.setSplitPoint) model.setSplitPoint(ev.note);
       return;
     }
     // Keyboard echo (0221). KeyState — the Layer 2 toggle, the split and its
