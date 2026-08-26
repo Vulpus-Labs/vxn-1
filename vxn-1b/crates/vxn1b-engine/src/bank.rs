@@ -459,6 +459,17 @@ impl Default for EnvPatch {
     }
 }
 
+/// The read-only lane arrays [`RenderBank::lane_sources`] reads, grouped so the
+/// four `&[f32]` of identical length cannot be transposed at the call site —
+/// the same hazard [`crate::voice::LaneView`] removes from `render` (0313).
+struct SourceLanes<'a> {
+    note: &'a [u8],
+    velocity: &'a [f32],
+    pressure: &'a [f32],
+    note_random: &'a [f32],
+    stack_pos: &'a [f32],
+}
+
 impl RenderBank {
     /// Lanes per bank (= the shared DSP kernel width).
     pub const LANES: usize = N;
@@ -681,18 +692,14 @@ impl RenderBank {
     /// table. Envelope levels are read at block start, matching VXN1's
     /// modulation granularity.
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     fn lane_sources(
         &self,
         v: usize,
         ctx: &BlockCtx,
         lfo1_raw: f32,
-        velocity: &[f32],
-        note: &[u8],
-        pressure: &[f32],
-        note_random: &[f32],
-        stack_pos: &[f32],
+        lanes: &SourceLanes<'_>,
     ) -> SourceInputs {
+        let SourceLanes { note, velocity, pressure, note_random, stack_pos } = *lanes;
         SourceInputs {
             env1: self.env1[v].level,
             env2: self.env2[v].level,
@@ -914,8 +921,10 @@ impl RenderBank {
         // the amount, as VXN1 does — so the dest is gated on the mode rather
         // than silently accumulating smoother state the kernel can't read.
         let pm_mode = matches!(ctx.cross_mod_type, CrossModType::Pm);
+        // Grouped once, outside the loop: five references, no copying.
+        let src_lanes = SourceLanes { note, velocity, pressure, note_random, stack_pos };
         for v in 0..N {
-            let sources = eval_sources(&self.lane_sources(v, ctx, lfo1_raw[v], velocity, note, pressure, note_random, stack_pos));
+            let sources = eval_sources(&self.lane_sources(v, ctx, lfo1_raw[v], &src_lanes));
             let mut dests = [0.0f32; crate::matrix::N_DESTS];
             eval_dests(ctx.matrix, &sources, &mut dests);
 

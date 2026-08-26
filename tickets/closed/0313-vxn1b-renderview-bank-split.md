@@ -135,3 +135,87 @@ tidier". Same lesson as [[vxn1-ota-filter-perf]]'s stage-split.
   the profile alone.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]].
+
+## Close-out (2026-08-26)
+
+Closed with **step 1 shipped and steps 2–3 declined on measurement**. The
+defect this ticket existed for — a signature where transposing two of five
+consecutive `&[f32]` compiled, ran, and produced plausible-but-wrong audio — is
+gone. What remains was readability, and the numbers said no.
+
+### Shipped
+
+- **`render` takes a `LaneView`** (6ae87b7): 11 positional arguments → 4.
+  [`LaneView`](../../vxn-1b/crates/vxn1b-engine/src/voice.rs#L823) is one bank's
+  window onto the `Voices` arrays; `RenderView::banks(lanes)` yields them,
+  consuming the view because `active` is `&mut` and each window takes a disjoint
+  piece. `render` destructures in one line, so the 450-line body is untouched.
+  The call site in `synth.rs` went from a 15-line indexed slicing loop to three
+  lines — it had been taking a `RenderView` apart positionally to make the call,
+  so the safe thing already existed and was being deliberately unbuilt.
+
+- **`lane_sources` lost its `#[allow(clippy::too_many_arguments)]`**: 8 params →
+  4, via a `SourceLanes` record grouping the four same-typed slices, built once
+  outside the lane loop. (The step-1 commit claimed this fell out "by extension";
+  it did not — caught while verifying acceptance for this close-out.)
+  Measured free: busy +0.31%, route −0.07%.
+
+- **`build_ctx` reads `cross_mod_type()` once**, not twice (4dd4637) — review
+  finding #20, a get + round + min + from_index each time.
+
+- **19 test call sites** collapsed: `book()`'s six-tuple became a `Book` struct
+  with all eight lanes and a `view()` method, so a test that wants one field
+  different sets that field instead of re-listing eleven arguments.
+
+### Declined, with numbers
+
+**Step 2** (derive `sync`/`ring_mode`/`pm_index`, slim `BlockCtx`) costs
+**−1.32% on the routed path** over 13 interleaved pairs, 11 of 13 negative, with
+`busy_profile` flat at 0.00%. Not noise-shaped and concentrated exactly where
+cross-mod work happens — most likely `BlockCtx` layout, since dropping two
+`bool`s and an `f32` shifts every later field's offset and the frame loop reads
+a lot of `ctx`. The prize was an unrepresentable state (`sync: true,
+cross_mod_type: Off`) that nothing constructs.
+
+**Step 3** (split the body at its phase banners) was not attempted, because the
+premise was wrong. This ticket said "the seams are already written into the code
+as banner comments". They are a narrative, not a decomposition:
+
+- Phase 2 leaks ~15 locals into phases 3 and 4.
+- Phase 3 is **not** a pure function of phase 2's output, which is what the
+  planned `block_plan(&LaneBlock, ctx) -> BlockPlan` assumed. It mixes `any()`
+  reductions, configuration written into `self` (ladder response + ramp, HPF
+  coefficients, draining `trigger_pending`), and per-lane pan/amp gains — plus
+  it declares phase 4's scratch buffers.
+
+So the split would bundle 15 arrays into a record and move self-mutation into
+helpers: a strictly larger perturbation than the one that already cost 1.32%,
+for readability alone on the only hot path in [[E047]]. The banners were
+corrected instead (1469e51) so the next reader is not misled the same way, with
+the 1.32% cited where they would start cutting.
+
+`render` is therefore still ~470 lines. That is a deliberate outcome, not an
+unfinished one.
+
+### Measurement method (worth reusing)
+
+Sequential before/after profiling in this repo is **not trustworthy** — a second
+session was building throughout, load ~2.5, and sequential sampling read
+anything from 0% to −4.4% for a change ultimately measured at −0.5%. Every
+number here comes from two separately-built binaries run alternately, which puts
+the noise band at ±3% (busy) and ±1.4% (route).
+
+Also learned: byte-comparing two release binaries is a valid codegen check here
+(a control build proved identical source → identical bytes), but a comment
+change that alters line counts changes the bytes anyway, via panic-location
+metadata. Equal size with differing bytes means metadata only.
+
+Verified: `vxn1b-engine` 305 pass, plus `alloc_free`, `zipper_regression`,
+`parity`, `cross_mod_dest`, `taper_parity`, `oversampling_limiter` — the suites
+that would catch a transposed slice while the change removes the ability to
+introduce one.
+
+**Outstanding:** the manual DAW pass ([[verify-audio-in-reaper]]) with a
+stacked, detuned, cross-modulated patch. Nothing here changes an audio path and
+the parity suites are green, but this ticket reordered how per-lane slices reach
+the render bank, and that patch is what exercises every one of them.
