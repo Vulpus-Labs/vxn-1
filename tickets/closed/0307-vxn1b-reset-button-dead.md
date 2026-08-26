@@ -166,7 +166,7 @@ Verified: `vxn1b-engine` 305 pass (7 new), `vxn1b-ui-web` 14 pass (1 new) +
 Vitest 39 files / 302 pass (7 new), `node --test` 146 pass / **0 skipped**,
 `vxn1b-clap` / `vxn1b-wasm` / `vxn1b-web-controller` green.
 
-Not verified: a manual DAW pass ([[verify-audio-in-reaper]]). The op is
-covered end to end by tests and changes no audio path, but the *feel* of the
-button — confirmation wording, whether a reset layer sounds like a fresh one —
-is the user's check, still outstanding at close.
+Manual DAW pass ([[verify-audio-in-reaper]]): **done, works as intended** —
+confirmed by the user on 2026-08-26, after this ticket was first closed on test
+evidence alone. The close-out originally recorded that check as outstanding;
+it no longer is.

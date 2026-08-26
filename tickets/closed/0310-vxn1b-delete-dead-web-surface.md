@@ -142,3 +142,65 @@ and say why.
   self-declares it dead (*"No production caller takes the mount form… the option
   and its suite stay because the next composite will want it"*) — that is a
   deliberate keep, and re-litigating it belongs in [[0315]], not here.
+
+## Close-out (2026-08-26)
+
+Shipped in f3e9bd2. **13,121 bytes off the generated page — 365,800 → 352,679,
+3.6%** — measured by running `gen-web-page` either side of the change.
+
+- **`panels/keys.js` deleted** (249 lines), with `panels.js`'s barrel export,
+  `PANEL_KEYS_JS`, its splice slot, and all six no-op call sites in
+  `dispatch.js`. The IIFE guarded on `.panel[data-name="Keys"]`; the markup has
+  16 panels and none is Keys, so every export was a stub. Confirmed
+  independently by [[0308]]'s own commit message while adding the piano —
+  *"keys.js is the key-MODE panel, not a piano"*. `css_covers_every_control_primitive`
+  and the orchestration suite both still pass.
+
+- **`makeDropdown`**, its `dispatch.js` case and its three `.ctl-dropdown` CSS
+  rules: no `data-control="dropdown"` exists in the markup and the matrix picker
+  is deliberately not a `<select>`. `css_covers_every_control_primitive` failed
+  on `.ctl-dropdown` when the rules went — the test doing exactly its job — and
+  its assertion list was updated with them.
+
+- **The `src-off` dim-rule kind**: no `data-dim-when-src-off` in the markup. A
+  fork artifact — VXN1b routes through the mod matrix rather than vxn-1's fixed
+  Pitch/PWM source pairs — so the kind could never fire here.
+
+- **`entry.layered` + `isLayeredEl`**: written into every cell record and never
+  read. `rebindAllForLayer` freshens and binds *all* cells unconditionally, so
+  the comment claiming *"honouring `layered` would re-bind it off its pin"*
+  described logic that does not exist.
+
+- Four exports nothing imports made local (`BUILTIN_DIM_SPECS`,
+  `buildParamIndex`, `STATUS_PILL_FLASH_MS`, `buildParams`); `this._frame`
+  incremented every pump and never read; a byte-identical duplicate
+  `.meter-mount` block and the `.ctl-meter` rule overridden 500 lines later; two
+  never-`var()`'d custom properties.
+
+### Superseded: the CPU meter
+
+**Criterion 2 does not hold, and should not.** The meter was removed here, then
+restored by a concurrent session in 46d071a / f5bf886, which built a shared
+`cpu-meter.mjs` badge and wired it through `boot()`'s `onCpu`. That is the
+*other* branch of this ticket's own Design note — *"delete it … or wire it to a
+readout"* — chosen after the deletion landed. The chain is whole again (worklet
+timing → coordinator → badge) and the tree is green, so it was left alone rather
+than re-deleted.
+
+Net: the finding was real (nothing consumed the meter) and is now resolved the
+better way. The per-quantum render-thread cost is back, but it now buys a
+readout somebody can see.
+
+### Not done, deliberately
+
+The review's wasm-side "dead exports" list does not survive checking. Against
+the tree, `destroy` has 67 test and 9 source references, and `resume`, `suspend`,
+`teardown` and `drainInto` all have real callers. Deleting on that basis would
+have broken working code. The genuinely unreferenced ones were handled above;
+the rest want their own pass with per-symbol evidence, not a blanket sweep.
+
+Verified: `node --test` 146 pass / **0 skipped**, Vitest 39 files / 302 pass,
+`cargo test -p vxn1b-ui-web` 14 pass. Current page is 354,792 bytes — larger
+than this ticket left it, because the CPU badge and the reset button ([[0307]])
+landed afterwards; the 3.6% figure above is this ticket's own contribution,
+measured at its commit.
