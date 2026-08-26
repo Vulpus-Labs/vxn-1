@@ -297,6 +297,9 @@ export class WebController {
   copyLayer(from, to) {
     this.x.vxnc_ui_copy_layer(from >>> 0, to >>> 0);
   }
+  resetLayer(layer) {
+    this.x.vxnc_ui_reset_layer(layer >>> 0);
+  }
 
   // ---- Presets ------------------------------------------------------------
 

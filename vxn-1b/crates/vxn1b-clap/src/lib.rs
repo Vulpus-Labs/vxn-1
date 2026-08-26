@@ -481,6 +481,7 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
                 Ok(op) => {
                     match *op {
                         vxn1b_engine::PatchOp::CopyLayer { from, to } => sink.copy_layer(from, to),
+                        vxn1b_engine::PatchOp::ResetLayer { layer } => sink.reset_layer(layer),
                     }
                     return;
                 }

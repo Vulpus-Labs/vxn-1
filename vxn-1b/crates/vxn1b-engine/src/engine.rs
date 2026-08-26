@@ -108,6 +108,10 @@ pub enum PatchOp {
     /// leaving the mixer strip (level / mute / pan / detune) alone and stamping
     /// a small detune offset on the copy so the pair beats rather than sums.
     CopyLayer { from: Layer, to: Layer },
+    /// Reset one layer to the factory patch — every patch param to its default
+    /// and the matrix topology to the default patch. Unlike [`Self::CopyLayer`]
+    /// this includes the mixer strip; see `SharedParams::reset_layer` (0307).
+    ResetLayer { layer: Layer },
 }
 
 /// Which topology field of a matrix slot a UI edit targets (0219, absorbing

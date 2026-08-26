@@ -149,6 +149,16 @@ fn parse_custom_op(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
                     to: side("to")?,
                 })))
             }
+            // Reset one layer to the factory patch (0307). Like `copy_layer` a
+            // `PatchOp`; unlike it, the mixer strip resets too.
+            "reset_layer" => {
+                let layer = match v.get("layer")?.as_str()? {
+                    "lower" => Layer::L2,
+                    "upper" => Layer::L1,
+                    _ => return None,
+                };
+                Some(UiEvent::Custom(Box::new(PatchOp::ResetLayer { layer })))
+            }
             // Oscilloscope tap select. Pure view state — which layer's trace is
             // on screen — so it rides a custom op and never reaches the patch.
             // `off` is what the page sends when the scope is not showing.
@@ -974,6 +984,86 @@ mod tests {
     //
     // Mirrors `vxn-ui-web`'s gate deliberately — same var, same shape, so
     // one CI env setting un-gates both.
+    /// Every opcode the page can post must reach a handler.
+    ///
+    /// This is the guard 0307 asked for. Three dead opcodes survived the fork
+    /// from vxn-1 — `reset_layer` among them, wired to a visible RESET button
+    /// that silently did nothing — because nothing checked that the sender
+    /// surface and the parser agree. The senders live in `bridge.js` as
+    /// `op: '<name>'` literals, so they can be read straight out of the spliced
+    /// source and driven through the real `parse_ui_event`.
+    ///
+    /// A payload carrying every field any opcode wants is passed to all of
+    /// them; each arm takes what it needs via `v.get(..)?` and ignores the
+    /// rest. That keeps the test one table instead of one fixture per opcode.
+    #[test]
+    fn every_opcode_the_page_posts_has_a_handler() {
+        // Handled in the page and deliberately never sent onward. Adding to
+        // this list is a decision; forgetting to handle an opcode is not.
+        const IN_PAGE_ONLY: [&str; 1] = [
+            // The faceplate rebinds its own cells on a layer flip; nothing
+            // downstream needs the news.
+            "set_edit_layer",
+        ];
+
+        let mut posted: Vec<&str> = Vec::new();
+        let mut rest = BRIDGE_JS;
+        while let Some(i) = rest.find("op: '") {
+            rest = &rest[i + "op: '".len()..];
+            let end = rest.find('\'').expect("unterminated op literal in bridge.js");
+            posted.push(&rest[..end]);
+            rest = &rest[end..];
+        }
+        posted.sort_unstable();
+        posted.dedup();
+        assert!(
+            posted.len() > 15,
+            "scanned only {} opcodes out of bridge.js — the scan broke, not the senders",
+            posted.len()
+        );
+
+        // Superset payload: every field name any opcode reads, at the type it
+        // expects. Arms take what they need and ignore the rest.
+        //
+        // Two shapes, because `id` and `value` are polymorphic across the
+        // vocabulary — `set_param` wants a numeric id, `request_text_input` a
+        // string one. An opcode passes if EITHER shape parses, which is the
+        // property worth asserting: some well-formed payload reaches a handler.
+        let fat = serde_json::json!({
+            "id": 0, "plain": 1.0, "norm": 0.5,
+            "layer": "upper", "from": "upper", "to": "lower",
+            "mode": 1, "note": 60, "on": true,
+            "slot": 0, "field": "source", "value": 1,
+            "source": "upper",
+            "index": 0, "delta": 1,
+            "path": "a.toml", "new_name": "b", "old_name": "a",
+            "dest_folder": "f", "name": "n", "suggested": "s", "folder": "f",
+            "title": "t", "initial": "i", "text": "x",
+        });
+        let mut stringy = fat.clone();
+        stringy["id"] = serde_json::json!("prompt-id");
+        stringy["value"] = serde_json::json!("text");
+
+        let custom: vxn_core_ui_web::ParseCustomUi = std::sync::Arc::new(parse_custom_op);
+
+        for op in posted {
+            if IN_PAGE_ONLY.contains(&op) {
+                continue;
+            }
+            let parses = [&fat, &stringy].iter().any(|shape| {
+                let mut one = (*shape).clone();
+                one["op"] = serde_json::Value::String(op.to_string());
+                let body = serde_json::to_string(&one).unwrap();
+                vxn_core_ui_web::parse_ui_event(&body, Some(&custom)).is_some()
+            });
+            assert!(
+                parses,
+                "bridge.js posts `{op}` and nothing parses it — either handle it, \
+                 or add it to IN_PAGE_ONLY with a reason"
+            );
+        }
+    }
+
     #[test]
     fn js_suite_passes() {
         if std::env::var("VXN_JS_TESTS").is_err() {

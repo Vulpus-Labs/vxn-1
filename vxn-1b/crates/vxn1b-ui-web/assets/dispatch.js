@@ -103,14 +103,14 @@ export const model = {
   // fader must re-paint with a different norm + display.
   tunedOfCutoff: new Map(),
   cutoffOfTuned: new Map(),
-  // Active edit layer ('upper' | 'lower'). EditLayerChanged mutates.
+  // Active edit layer ('upper' | 'lower'). The tab shell mutates it.
   currentLayer: 'upper',
   // Dim-rule specs collected from HTML attributes + builtins (0066).
   dimRuleSpecs: [],
   // Resolved rules for the current layer: { watchId, predicate, target }.
   dimRules: [],
   // Per-cell binding info captured at init; layered entries rebuild
-  // against new layer ids on EditLayerChanged, static entries don't.
+  // against new layer ids on a tab flip, static entries don't.
   cells: [],
 };
 
@@ -507,9 +507,12 @@ export function wireTabs() {
     // The pane's edit layer drives which layer-specific panels show (the Layer 2
     // enable lives on Layer 2's tab only — CSS gates it on this attribute).
     if (layerPane) layerPane.dataset.editLayer = code;
+    syncResetLayerLabel();
     rebindAllForLayer(code);
-    // Keep the controller's edit-layer in step so preset/reset context and the
-    // KeyModeChanged/EditLayerChanged echoes target the right layer.
+    // Told to the controller for completeness; VXN1b handles the edit layer
+    // entirely in-page (the opcode is in the bridge's KNOWN_UNHANDLED set) and
+    // never echoes one back, so this function is the only thing that moves
+    // `model.currentLayer`.
     window.vxn.send.setEditLayer(code);
   };
 
@@ -677,6 +680,46 @@ export function wireCopyLayer() {
         okLabel: 'Copy',
       },
       () => window.vxn.send.copyLayer('upper', 'lower'),
+    );
+  });
+}
+
+// Reset the edit layer to the factory patch (0307).
+//
+// Direction is NOT fixed the way Copy's is — this resets whichever layer the
+// tab is on — so the label has to say which, and `syncResetLayerLabel` restamps
+// it on every flip. That is the whole reason this button needs more than an
+// `addEventListener`.
+//
+// Destructive on the same scale as Copy (every patch param plus the topology,
+// as one burst in the host's undo stack), so it takes the same confirmation.
+// The message spells out that the mixer strip goes too: that is the one place
+// Reset and Copy deliberately disagree, and the moment to say so is when the
+// player is about to lose a level they set.
+export function syncResetLayerLabel() {
+  const btn = document.getElementById('reset-layer');
+  if (!btn) return;
+  btn.textContent = model.currentLayer === 'lower' ? 'Reset L2' : 'Reset L1';
+}
+
+export function wireResetLayer() {
+  const btn = document.getElementById('reset-layer');
+  if (!btn) return;
+  syncResetLayerLabel();
+  btn.addEventListener('click', () => {
+    const lower = model.currentLayer === 'lower';
+    const which = lower ? 'Layer 2' : 'Layer 1';
+    confirmDialog.ask(
+      {
+        title: `Reset ${which}`,
+        message:
+          `${which}'s patch and mod-matrix routing will return to the factory `
+          + 'default. Its mixer strip — level, pan, mute, detune — resets too, '
+          + `so ${which} comes back centred and audible. The other layer, the `
+          + 'keyboard split and the global FX are untouched.',
+        okLabel: 'Reset',
+      },
+      () => window.vxn.send.resetLayer(lower ? 'lower' : 'upper'),
     );
   });
 }
@@ -869,6 +912,7 @@ export function init() {
   // Copy Layer 1 → Layer 2 (0265) — a hand-wired PatchOp cell in the Voice
   // panel strip, same reason.
   wireCopyLayer();
+  wireResetLayer();
   // Keyboard split (0220) — KeyState cells on the FX/Global tab, hand-wired
   // for the same reason as the LFO 2 link.
   wireSplit();
@@ -885,8 +929,7 @@ export function init() {
 
   // Dispatch one ViewEvent from Rust. ParamChanged routes by id (with the
   // partner-rate / free-run / filter-mode / generic-dim side effects pulled
-  // in from 0042–0044). EditLayerChanged triggers a full layered-cell
-  // rebind (0045). Status flashes the lower-right pill (0046). KeyModeChanged
+  // in from 0042–0044). Status flashes the lower-right pill (0046). KeyModeChanged
   // / PresetLoaded / PresetCorpusChanged are still pre-wiring — log when
   // verbose tracing is on so the contract is visible without spamming the
   // console during automation.
@@ -923,16 +966,6 @@ export function init() {
       // Unified dim rules: source-Off / Cross Mod Type ≠ FM (0044) plus
       // the built-in Free-run (0042) and Filter Mode = Notch (0043).
       applyDimRulesFor(ev.id, ev.plain);
-      return;
-    }
-    if (ev.kind === 'edit_layer_changed') {
-      const layer = ev.layer === 'lower' ? 'lower' : 'upper';
-      if (layer === model.currentLayer) return;
-      model.currentLayer = layer;
-      rebindAllForLayer(layer);
-      // A controller-driven layer flip moves the scope's tap too — the page
-      // does not always originate the change.
-      syncScopeSource();
       return;
     }
     if (ev.kind === 'key_mode_changed') {

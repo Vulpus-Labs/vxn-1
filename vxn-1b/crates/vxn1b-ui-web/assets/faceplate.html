@@ -31,6 +31,11 @@ __CSS__
          edited. Destructive — it overwrites Layer 2 and lands ~66 param changes
          in the host's undo stack as one burst — so it opens a confirmation. -->
     <button class="pbar-btn" id="copy-layer" type="button">Copy L1 &rarr; L2</button>
+    <!-- Reset the EDIT layer to the factory patch (0307). Unlike Copy its
+         direction is not fixed, so the label tracks the layer tab and
+         `wireResetLayer` restamps it on every flip. Destructive in the same way
+         Copy is, so it takes the same confirmation. -->
+    <button class="pbar-btn" id="reset-layer" type="button">Reset L1</button>
     <div class="pbar-spacer"></div>
     <div class="status-pill" id="pbar-status"></div>
   </div>

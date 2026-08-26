@@ -181,14 +181,46 @@ test("an unknown, non-string or malformed op is dropped, not mis-routed", async 
   controller.destroy();
 });
 
-test("the two known-dead fork opcodes are dropped without a warning", async () => {
+test("set_edit_layer is dropped without a warning", async () => {
   const { bridge, coordinator, controller } = await rig();
-  // reset_layer / set_edit_layer: see ticket 0307. Dropped like any unhandled
-  // op, but deliberately — the web build must not invent behaviour the plugin
-  // does not have.
-  assert.equal(bridge.handle({ op: "reset_layer", layer: "upper" }), false);
+  // Handled in-page: the faceplate rebinds its cells locally and nothing
+  // downstream needs the news, so dropping it is the correct routing rather
+  // than a gap. Listed in KNOWN_UNHANDLED so a genuinely unrouted opcode still
+  // warns.
   assert.equal(bridge.handle({ op: "set_edit_layer", layer: "lower" }), false);
   assert.deepEqual(coordinator.calls, []);
+  controller.destroy();
+});
+
+test("reset_layer reaches the controller for either layer (0307)", async () => {
+  const { bridge, controller } = await rig();
+  assert.equal(bridge.handle({ op: "reset_layer", layer: "upper" }), true);
+  assert.equal(bridge.handle({ op: "reset_layer", layer: "lower" }), true);
+  // An unknown side is refused rather than silently defaulting to Layer 1 — a
+  // typo must not quietly wipe the wrong layer.
+  assert.equal(bridge.handle({ op: "reset_layer", layer: "sideways" }), false);
+  controller.destroy();
+});
+
+test("reset_layer blanks the layer it names and spares the other", async () => {
+  const { bridge, controller, store } = await rig();
+  bridge.pump();
+  const l1 = patchClapId(LAYER_L1, CUTOFF);
+  const l2 = patchClapId(LAYER_L2, CUTOFF);
+  const factory = store.read(l1);
+
+  bridge.handle({ op: "set_param", id: l1, plain: 950 });
+  bridge.handle({ op: "set_param", id: l2, plain: 950 });
+  bridge.pump();
+  assert.ok(Math.abs(store.read(l1) - 950) < 1, "seed did not reach the SAB");
+
+  bridge.handle({ op: "reset_layer", layer: "upper" });
+  bridge.pump();
+  assert.ok(
+    Math.abs(store.read(l1) - factory) < 1e-3,
+    `L1 did not return to its default (${store.read(l1)} vs ${factory})`,
+  );
+  assert.ok(Math.abs(store.read(l2) - 950) < 1, "resetting L1 moved L2");
   controller.destroy();
 });
 

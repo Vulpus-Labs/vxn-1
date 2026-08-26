@@ -252,6 +252,7 @@ fn apply_custom_ui(ctrl: &mut Controller<SharedParams>, payload: Box<dyn std::an
     if let Ok(op) = payload.downcast::<PatchOp>() {
         match *op {
             PatchOp::CopyLayer { from, to } => model.copy_layer(from, to),
+            PatchOp::ResetLayer { layer } => model.reset_layer(layer),
         }
         ctrl.broadcast_all_params();
     }
@@ -893,6 +894,15 @@ pub extern "C" fn vxnc_ui_copy_layer(from: u32, to: u32) {
     state().post_custom(PatchOp::CopyLayer {
         from: side(from),
         to: side(to),
+    });
+}
+
+/// `PatchOp::ResetLayer` — one layer back to the factory patch, mixer strip
+/// included (0307). Controller-only, like `copy_layer`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_ui_reset_layer(layer: u32) {
+    state().post_custom(PatchOp::ResetLayer {
+        layer: if layer == 0 { Layer::L1 } else { Layer::L2 },
     });
 }
 

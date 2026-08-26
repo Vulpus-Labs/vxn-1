@@ -264,6 +264,46 @@ impl SharedParams {
         self.reload.store(true, Ordering::Release);
     }
 
+    /// Reset one layer to the factory patch (0307): every patch param back to
+    /// its descriptor default and the layer's matrix topology back to
+    /// [`crate::matrix::default_patch`].
+    ///
+    /// Installs [`LayerState::factory_default`] rather than rebuilding the
+    /// notion of "default" here, so reset, `Engine::new` and the state blob all
+    /// agree on what a fresh layer is — including the depth-authority contract
+    /// (slot-depth params seeded from the matrix, 0205), which a naive
+    /// per-param loop over descriptor defaults would silently break.
+    ///
+    /// **Unlike [`Self::copy_layer`], this does NOT spare the mixer strip.**
+    /// Copy excludes level / mute / pan / detune because writing a sound onto
+    /// the other layer should not move where that layer sits in the mix. Reset
+    /// is the opposite intent — the player is asking for a blank layer, and a
+    /// "blank" one that stays muted at -6 dB hard left is a puzzle, not a
+    /// courtesy. So the strip resets too, and the two ops deliberately do not
+    /// share [`COPY_LAYER_EXCLUDED`].
+    ///
+    /// Key state is untouched: layer enable and the split are properties of how
+    /// the layers share the keyboard, not of either layer's patch. Copy turns
+    /// Layer 2 on because a copy to a silent layer is pointless; reset has no
+    /// such reason.
+    ///
+    /// Raises no gesture flags — same as `copy_layer`. The shell brackets the
+    /// whole thing as one host edit.
+    pub fn reset_layer(&self, layer: Layer) {
+        let factory = LayerState::factory_default();
+        for &inner in PATCH_PARAMS.iter() {
+            let Some(dst) = patch_clap_id(layer, inner) else {
+                continue;
+            };
+            self.set(dst, factory.params.get(inner));
+        }
+        {
+            let mut m = self.lock();
+            m[layer as usize] = factory.matrix;
+        }
+        self.reload.store(true, Ordering::Release);
+    }
+
     /// Apply a UI matrix-topology edit to the per-layer matrix channel and flag a
     /// reload (0219). The audio thread's `take_reload` re-syncs the engine from
     /// `engine_state()`, which reads this topology (depths stay param-authoritative
@@ -677,6 +717,96 @@ mod tests {
         sp.copy_layer(Layer::L1, Layer::L2);
         let k = sp.key_state();
         assert!(k.layer2_on && k.split_enabled, "an existing split must survive");
+    }
+
+    #[test]
+    fn reset_layer_returns_every_patch_param_to_its_default() {
+        let sp = seeded_for_copy();
+        let factory = LayerState::factory_default();
+        sp.reset_layer(Layer::L1);
+        for &inner in PATCH_PARAMS.iter() {
+            let id = patch_clap_id(Layer::L1, inner).unwrap();
+            assert_eq!(sp.get(id), factory.params.get(inner), "{inner:?} did not reset");
+        }
+    }
+
+    /// The deliberate divergence from `copy_layer` (0307): copy spares the mixer
+    /// strip, reset does not. A blank layer that is still muted and panned hard
+    /// left reads as broken rather than blank.
+    #[test]
+    fn reset_layer_also_resets_the_mixer_strip() {
+        let sp = SharedParams::new();
+        for (p, v) in [
+            (ParamId::LayerLevel, 0.25),
+            (ParamId::LayerMute, 1.0),
+            (ParamId::LayerPan, -0.5),
+            (ParamId::LayerDetune, 7.0),
+        ] {
+            sp.set(patch_clap_id(Layer::L1, p).unwrap(), v);
+        }
+        sp.reset_layer(Layer::L1);
+        for p in COPY_LAYER_EXCLUDED {
+            let id = patch_clap_id(Layer::L1, p).unwrap();
+            assert_eq!(sp.get(id), p.desc().default, "{p:?} is spared by copy, not by reset");
+        }
+    }
+
+    #[test]
+    fn reset_layer_restores_the_default_matrix_topology() {
+        let sp = seeded_for_copy();
+        sp.reset_layer(Layer::L1);
+        assert_eq!(sp.matrix_snapshot()[Layer::L1 as usize], crate::matrix::default_patch());
+    }
+
+    #[test]
+    fn reset_layer_leaves_the_other_layer_alone() {
+        let sp = seeded_for_copy();
+        sp.copy_layer(Layer::L1, Layer::L2);
+        let before: Vec<f32> = PATCH_PARAMS
+            .iter()
+            .map(|&i| sp.get(patch_clap_id(Layer::L2, i).unwrap()))
+            .collect();
+        let matrix_before = sp.matrix_snapshot()[Layer::L2 as usize];
+        sp.reset_layer(Layer::L1);
+        let after: Vec<f32> = PATCH_PARAMS
+            .iter()
+            .map(|&i| sp.get(patch_clap_id(Layer::L2, i).unwrap()))
+            .collect();
+        assert_eq!(before, after, "resetting L1 moved L2");
+        assert_eq!(matrix_before, sp.matrix_snapshot()[Layer::L2 as usize]);
+    }
+
+    /// Layer enable and the split describe how the layers share the keyboard,
+    /// not either layer's patch. Copy turns Layer 2 on (a copy to a silent layer
+    /// is pointless); reset has no such reason and must not touch it.
+    #[test]
+    fn reset_layer_leaves_key_state_alone() {
+        let sp = SharedParams::new();
+        sp.apply_key_op(KeyOp::SetKeyMode(2));
+        sp.apply_key_op(KeyOp::SetSplitPoint(48));
+        let before = sp.key_state();
+        sp.reset_layer(Layer::L2);
+        let after = sp.key_state();
+        assert_eq!(before.layer2_on, after.layer2_on);
+        assert_eq!(before.split_enabled, after.split_enabled);
+        assert_eq!(before.split_point, after.split_point);
+    }
+
+    #[test]
+    fn reset_layer_flags_a_reload() {
+        let sp = seeded_for_copy();
+        sp.reset_layer(Layer::L1);
+        assert!(sp.take_reload(), "the audio thread must re-sync after a reset");
+    }
+
+    #[test]
+    fn reset_layer_raises_no_gesture_flags() {
+        let sp = seeded_for_copy();
+        sp.reset_layer(Layer::L1);
+        assert!(
+            (0..TOTAL_PARAMS).all(|id| !sp.gesture(id)),
+            "gestures suppress host echo mid-drag; a bulk write must not raise them"
+        );
     }
 
     #[test]

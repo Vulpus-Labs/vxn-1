@@ -100,12 +100,12 @@ const MATRIX_FIELD = {
   scale: MATRIX_FIELD_SCALE_SRC,
 };
 
-/// Opcodes the page still posts that VXN1b has no handler for, native or web.
-/// Dropped deliberately rather than silently: `reset_layer` is a live dead
-/// button in the shipped plugin and `set_edit_layer` is handled in-page, both
-/// fork artifacts from vxn-1 (see ticket 0307). Routing them to something
-/// invented here would make the web build behave differently from the plugin.
-const KNOWN_UNHANDLED = new Set(["reset_layer", "set_edit_layer"]);
+/// Opcodes the page posts that have no controller handler, by design.
+/// `set_edit_layer` is handled in-page — the faceplate rebinds its cells
+/// locally and nothing downstream needs the news — so dropping it is correct,
+/// not a gap. Listed rather than silently ignored so an unrouted opcode still
+/// warns. (`reset_layer` was here too until 0307 made it live.)
+const KNOWN_UNHANDLED = new Set(["set_edit_layer"]);
 
 /// Meter frame layout — `MeterTap` order, from vxn-core-utils::meter. The page
 /// wants the named shape `vxn1b_ui_web::serialise_custom_payload` produces, so
@@ -193,6 +193,15 @@ export function routeOpcode(ctrl, coord, msg, hooks = {}) {
       // Params reach the engine through the mirror; topology through the echo
       // resend in the pump. Nothing to push here.
       ctrl.copyLayer(from, to);
+      return true;
+    }
+
+    case "reset_layer": {
+      const layer = LAYER[msg.layer];
+      if (layer === undefined) return false;
+      // Same route as copy_layer: params reach the engine through the mirror,
+      // topology through the echo resend in the pump.
+      ctrl.resetLayer(layer);
       return true;
     }
 
