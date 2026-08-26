@@ -19,6 +19,31 @@
 // `cpu` port messages via WebHost.onCpu. Self-contained (inline styles, no
 // external CSS) and created once per boot; idempotent if the element already
 // exists (a re-boot reuses it). Ported verbatim from vxn-1.
+/// The fixed bottom-left row the web-only chrome sits in: the CPU badge, and
+/// whatever else a port parks beside it (VXN1b's BPM box). Created by whoever
+/// gets there first and reused thereafter, so mount order does not matter;
+/// `order` on the children decides the layout instead.
+///
+/// It exists so two widgets built by different code — this module and a port's
+/// boot head — can sit side by side without either hard-coding the other's
+/// width. Its bottom offset clears the 92px on-screen piano bar; if that height
+/// changes, this changes with it.
+export const WEB_CHROME_ROW_ID = "vxn-web-chrome";
+
+export function webChromeRow(doc = globalThis.document) {
+  if (!doc || !doc.body) return null;
+  let row = doc.getElementById(WEB_CHROME_ROW_ID);
+  if (!row) {
+    row = doc.createElement("div");
+    row.id = WEB_CHROME_ROW_ID;
+    row.style.cssText =
+      "position:fixed;left:10px;bottom:102px;z-index:9999;" +
+      "display:flex;align-items:center;gap:8px;";
+    doc.body.appendChild(row);
+  }
+  return row;
+}
+
 export function createCpuMeter(doc = globalThis.document) {
   if (!doc || !doc.body) return { update() {}, el: null };
   const ID = "vxn-cpu-meter";
@@ -27,9 +52,10 @@ export function createCpuMeter(doc = globalThis.document) {
     el = doc.createElement("div");
     el.id = ID;
     el.style.cssText =
-      // bottom offset clears the 92px on-screen piano bar (which is fixed to the
-      // page bottom); harmless extra lift when the piano is disabled.
-      "position:fixed;left:10px;bottom:102px;z-index:9999;display:flex;" +
+      // Position comes from the row (`webChromeRow`), not from here — so a
+      // sibling widget can sit beside this one without knowing its width.
+      // `order:1` keeps the badge leftmost whichever mounts first.
+      "order:1;display:flex;" +
       "align-items:center;gap:6px;font:11px/1 system-ui,sans-serif;" +
       "color:#cfd3d8;background:rgba(20,22,26,.78);padding:4px 7px;" +
       "border-radius:5px;user-select:none;pointer-events:none;";
@@ -49,7 +75,8 @@ export function createCpuMeter(doc = globalThis.document) {
     pct.textContent = "—";
     pct.style.cssText = "min-width:28px;text-align:right;font-variant-numeric:tabular-nums;";
     el.append(label, track, pct);
-    doc.body.appendChild(el);
+    const row = webChromeRow(doc);
+    (row || doc.body).appendChild(el);
     el._fill = fill;
     el._pct = pct;
   }

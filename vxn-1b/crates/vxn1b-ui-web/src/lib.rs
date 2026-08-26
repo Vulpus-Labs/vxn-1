@@ -387,14 +387,22 @@ const WEB_BOOT_HEAD: &str = r#"<style>
 /* Tempo control — WEB ONLY. The plugin takes BPM from its host transport;
    a browser has no host, and `sync.rs` resolves every LFO and delay
    subdivision against a tempo, so without this the synced rates are stuck
-   at the default forever. Parked in the banner rather than given a panel:
-   it is a host-shaped control, not part of the instrument. */
+   at the default forever.
+   Lives in the bottom-left web-chrome row beside the CPU meter, not on the
+   faceplate: both are host-shaped readouts about the browser rather than
+   parts of the instrument, so they belong together and away from the panels.
+   Position comes from the row; `order:2` puts it right of the CPU badge
+   whichever mounts first. */
 .vxn-bpm {
-  position: absolute; top: 3px; right: 10px; z-index: 5;
+  order: 2;
   display: flex; align-items: center; gap: 5px;
-  font: 10px/1 system-ui, sans-serif; letter-spacing: 0.5px;
-  color: #8a8a92;
+  font: 11px/1 system-ui, sans-serif; letter-spacing: 0.04em;
+  color: #cfd3d8;
+  background: rgba(20, 22, 26, 0.78);
+  padding: 4px 7px; border-radius: 5px;
+  user-select: none;
 }
+.vxn-bpm > span { opacity: 0.7; }
 .vxn-bpm input {
   width: 44px; padding: 2px 4px;
   font: 11px/1 system-ui, sans-serif; text-align: right;
@@ -428,8 +436,19 @@ const WEB_BOOT_HEAD: &str = r#"<style>
   // before the bridge is up and routes to the ring afterwards — tempo has no
   // model presence, so there is no echo that could carry it.
   document.addEventListener("DOMContentLoaded", function () {
-    var banner = document.querySelector(".banner");
-    if (!banner) return;
+    // The shared bottom-left chrome row (see cpu-meter.mjs). Created here if the
+    // CPU meter has not mounted yet — it boots asynchronously and this runs on
+    // DOMContentLoaded, so either can be first. Same id, same styles, both
+    // idempotent; `order` decides the layout rather than mount order.
+    var row = document.getElementById("vxn-web-chrome");
+    if (!row) {
+      row = document.createElement("div");
+      row.id = "vxn-web-chrome";
+      row.style.cssText =
+        "position:fixed;left:10px;bottom:102px;z-index:9999;" +
+        "display:flex;align-items:center;gap:8px;";
+      document.body.appendChild(row);
+    }
     var wrap = document.createElement("div");
     wrap.className = "vxn-bpm";
     var label = document.createElement("span");
@@ -454,7 +473,7 @@ const WEB_BOOT_HEAD: &str = r#"<style>
     input.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
     wrap.appendChild(label);
     wrap.appendChild(input);
-    banner.appendChild(wrap);
+    row.appendChild(wrap);
     // Seed the engine so a synced LFO is right before anyone touches this.
     send();
   });

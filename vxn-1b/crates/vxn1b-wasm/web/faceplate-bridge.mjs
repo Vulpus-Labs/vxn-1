@@ -660,7 +660,32 @@ export async function boot({
   let persistence = null;
   let autosave = null;
   if (autoPersist) {
-    ({ persistence, autosave } = await attachPersistence(win, controller, bridge, adapters));
+    // Bounded, NOT unbounded. Hydration wants to finish before `install()`
+    // flushes the queued `ready` (0293), so the restored patch is what paints —
+    // but IndexedDB can simply never answer: a blocked profile, private mode, or
+    // a headless browser with no storage backend. Awaiting that forever takes
+    // the whole instrument down with it — no install, so nothing paints; no
+    // input attach and no gesture gate, so no sound at all. Persistence is
+    // convenience ([[0297]]); it does not get to gate the synth.
+    const pending = attachPersistence(win, controller, bridge, adapters);
+    const settled = await withTimeout(pending, PERSIST_BOOT_TIMEOUT_MS);
+    if (settled === TIMED_OUT) {
+      console.warn(
+        `vxn: storage did not answer in ${PERSIST_BOOT_TIMEOUT_MS}ms — ` +
+          "carrying on without it; presets may appear late",
+      );
+      // If it does eventually land, the corpus arrived after the publish below,
+      // so republish then rather than leaving the browser panel empty.
+      pending
+        .then((r) => {
+          persistence = r.persistence;
+          autosave = r.autosave;
+          bridge.publishCorpus();
+        })
+        .catch(() => {});
+    } else {
+      ({ persistence, autosave } = settled);
+    }
   }
 
   bridge.install();
@@ -705,6 +730,30 @@ export async function boot({
   if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
 
   return { host, controller, bridge, inputs, piano, cpuMeter, persistence, autosave };
+}
+
+/// How long boot waits for storage before giving up on ordering and coming up
+/// anyway. Long enough that a normal IndexedDB open wins comfortably, short
+/// enough that a blocked one is a blink rather than a hang.
+const PERSIST_BOOT_TIMEOUT_MS = 2000;
+
+const TIMED_OUT = Symbol("timed-out");
+
+/// Resolve `promise`, or `TIMED_OUT` if it takes longer than `ms`. The timer is
+/// cleared when the promise wins, so a fast path leaves nothing pending — a
+/// dangling 2s timer would hold a test runner's loop open after the run.
+function withTimeout(promise, ms) {
+  let timer = null;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  return Promise.race([
+    promise.then((v) => {
+      if (timer !== null) clearTimeout(timer);
+      return v;
+    }),
+    deadline,
+  ]);
 }
 
 /// VXN1b's IndexedDB identity. Its own name, so the three synths' corpora never
