@@ -2,8 +2,8 @@
 # Deploy the VXN1 web bundle to the vulpus-labs-site Hugo repo (ticket 0045).
 #
 # Builds target/web-dist/ (cargo xtask web), copies it into the site's static
-# tree at the synth subpath, refreshes the root _headers that turns on
-# cross-origin isolation (COOP/COEP — required for SharedArrayBuffer), then
+# tree at the synth subpath, ensures the root _headers carries this subpath's
+# cross-origin isolation block (COOP/COEP — required for SharedArrayBuffer), then
 # stages, commits, and pushes. The site auto-deploys from `main` via Netlify, so
 # the push IS the deploy.
 #
@@ -41,10 +41,22 @@ echo "==> copying bundle → static/$SUBPATH/"
 mkdir -p "$DEST"
 rsync -a --delete --exclude _headers "$DIST"/ "$DEST"/
 
-# 3. Refresh the root _headers (cross-origin isolation, scoped to the subpath so
-#    the rest of the site is untouched). Idempotent — rewritten each run.
-echo "==> writing static/_headers"
-cat > "$SITE/static/_headers" <<EOF
+# 3. Ensure the root _headers has THIS subpath's isolation block, appending it if
+#    missing. Scoped to the subpath so the rest of the site is untouched
+#    (COOP/COEP site-wide can break third-party embeds / popups).
+#
+#    This used to `cat >` the whole file, which was fine when vxn-1 was the only
+#    web synth and silently destructive afterwards: the file carries one block
+#    per synth and there are now three (vxn-2 ticket 0158, vxn-1b ticket 0294).
+#    Overwriting it took the others off the air — their pages still loaded, then
+#    failed to construct a SharedArrayBuffer, which reads as "the synth is
+#    broken" rather than "a header went missing". Append-if-missing, like the
+#    sibling scripts.
+HEADERS="$SITE/static/_headers"
+if ! grep -qF "/$SUBPATH/*" "$HEADERS" 2>/dev/null; then
+  echo "==> appending static/_headers block for /$SUBPATH/"
+  cat >> "$HEADERS" <<EOF
+
 # Cross-origin isolation for the VXN1 web synth (vxn-1 ticket 0045).
 # SharedArrayBuffer (its audio transport) needs the page cross-origin isolated,
 # which needs COOP: same-origin + COEP: require-corp on the document. Scoped to
@@ -55,6 +67,9 @@ cat > "$SITE/static/_headers" <<EOF
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
 EOF
+else
+  echo "==> static/_headers already covers /$SUBPATH/"
+fi
 
 # 4. Stage, commit, push.
 cd "$SITE"
