@@ -26,9 +26,10 @@ pub const N_SLOTS: usize = MATRIX_SLOTS;
 /// Modulation source. `None` is the empty-slot sentinel (index 0); a slot whose
 /// source is `None` is inert and skipped by the evaluator.
 ///
-/// The ten real sources are VXN1's fixed-route inputs (Env/LFO/Velocity/Key/
-/// wheels) plus the two VXN1 lacks: `Aftertouch` (MPE per-voice pressure from
-/// 0198) and `NoteRandom` (per-voice latch from 0199).
+/// The real sources are VXN1's fixed-route inputs (Env/LFO/Velocity/Key/
+/// wheels), the two VXN1 lacks — `Aftertouch` (MPE per-voice pressure from
+/// 0198) and `NoteRandom` (per-voice latch from 0199) — and the two stack
+/// positions, `Spread` (knob-scaled, 0260) and `StackPos` (raw, 0308).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum SourceId {
@@ -48,12 +49,25 @@ pub enum SourceId {
     /// position scaled by the `Spread` param, so a route into [`DestId::Pan`]
     /// at depth 1 reproduces VXN1's hard-wired unison spread exactly. Keeping
     /// the param's scaling *inside* the source is what lets Spread stay a
-    /// front-panel knob instead of becoming "slot 3's depth".
+    /// front-panel knob instead of becoming "slot 3's depth". For the position
+    /// *without* that scaling, use [`SourceId::StackPos`] (0308).
     Spread = 11,
+    /// The voice's raw place in its stack: `stack_spread(i, width)` in
+    /// `[-1, 1]`, `0.0` for a width-1 stack — the same allocator position
+    /// [`SourceId::Spread`] carries, but **without** the `Spread` param folded
+    /// in (0308).
+    ///
+    /// Why both exist: `Spread`'s in-source scaling is what keeps the pan knob
+    /// a knob, but it makes every *other* use of lane position hostage to a pan
+    /// control — fanning envelope times across a unison stack shouldn't require
+    /// widening the stereo image, and reads as dead at the knob's `0.0` default.
+    /// This source is the position on its own, for routes that want the stack's
+    /// shape rather than its picture.
+    StackPos = 12,
 }
 
 /// Count of non-sentinel sources (`None` excluded).
-pub const N_SOURCES: usize = 11;
+pub const N_SOURCES: usize = 12;
 
 impl SourceId {
     /// Index into a per-voice source lookup, or `None` for the sentinel.
@@ -96,6 +110,7 @@ impl SourceId {
             9 => SourceId::Aftertouch,
             10 => SourceId::NoteRandom,
             11 => SourceId::Spread,
+            12 => SourceId::StackPos,
             _ => SourceId::None,
         }
     }
@@ -106,8 +121,9 @@ impl SourceId {
     /// a new source forces a polarity decision at compile time (the
     /// `is_bipolar` discipline of VXN2 ADR 0009).
     ///
-    /// - **Bipolar:** `Lfo1`, `Lfo2`, `PitchWheel`, `Spread` — genuinely swing
-    ///   ±. (`Spread` is a *position*: lanes sit either side of centre.)
+    /// - **Bipolar:** `Lfo1`, `Lfo2`, `PitchWheel`, `Spread`, `StackPos` —
+    ///   genuinely swing ±. (Both spread sources are *positions*: lanes sit
+    ///   either side of centre.)
     /// - **Unipolar:** `Env1`, `Env2`, `Velocity`, `Key`, `ModWheel`,
     ///   `Aftertouch`, `NoteRandom`. The envelopes are `[0, 1]` ADSR shapes:
     ///   treating them as bipolar would map `[0, 1]` through `(x+1)/2` → `[0.5,
@@ -118,7 +134,11 @@ impl SourceId {
     #[inline]
     pub const fn is_bipolar(self) -> bool {
         match self {
-            SourceId::Lfo1 | SourceId::Lfo2 | SourceId::PitchWheel | SourceId::Spread => true,
+            SourceId::Lfo1
+            | SourceId::Lfo2
+            | SourceId::PitchWheel
+            | SourceId::Spread
+            | SourceId::StackPos => true,
             SourceId::None
             | SourceId::Env1
             | SourceId::Env2
@@ -134,13 +154,13 @@ impl SourceId {
 /// Source machine id (kebab-case wire name). Index = `SourceId as u8`.
 pub const SOURCE_NAMES: [&str; N_SOURCES + 1] = [
     "none", "env1", "env2", "lfo1", "lfo2", "velocity", "key", "mod-wheel", "pitch-wheel",
-    "aftertouch", "note-random", "spread",
+    "aftertouch", "note-random", "spread", "stack-pos",
 ];
 
 /// Source display label. Same indexing as [`SOURCE_NAMES`].
 pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
     "—", "Env 1", "Env 2", "LFO 1", "LFO 2", "Velocity", "Key", "Mod Wheel", "Pitch Wheel",
-    "Aftertouch", "Note Rnd", "Spread",
+    "Aftertouch", "Note Rnd", "Spread", "Stack Pos",
 ];
 
 // ── DestId ──────────────────────────────────────────────────────────────────
@@ -613,7 +633,7 @@ mod tests {
     fn idx_maps_reals_and_skips_sentinel() {
         assert_eq!(SourceId::None.idx(), None);
         assert_eq!(SourceId::Env1.idx(), Some(0));
-        assert_eq!(SourceId::Spread.idx(), Some(N_SOURCES - 1));
+        assert_eq!(SourceId::StackPos.idx(), Some(N_SOURCES - 1));
         assert_eq!(DestId::None.idx(), None);
         assert_eq!(DestId::Pitch.idx(), Some(0));
         assert_eq!(DestId::Pan.idx(), Some(8));

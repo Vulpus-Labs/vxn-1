@@ -714,6 +714,9 @@ impl RenderBank {
             // the allocator put them, and stacks vary in width. Width 1 stamps
             // 0.0, so a plain poly voice is centred.
             spread_pos: stack_pos[v] * ctx.spread,
+            // The same position with the knob left out (0308), so a route can
+            // fan a stack without widening the stereo image to do it.
+            stack_pos: stack_pos[v],
         }
     }
 
@@ -2675,6 +2678,81 @@ mod tests {
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         render_block(&mut bank, &c);
         assert!((bank.env_scale[0][0] - 2.0).abs() < 1e-6);
+    }
+
+    // ── Stack Pos as a source, independent of the Spread knob (0308) ───────
+
+    /// Trigger a `width`-wide stack at the allocator's own lane positions,
+    /// render one block, and return each lane's cooked env 1 time scale.
+    fn stack_env_scales(bank: &mut RenderBank, c: &BlockCtx, width: usize) -> Vec<f32> {
+        let note = [60u8; N];
+        let mut gate = [false; N];
+        let mut active = [false; N];
+        let mut stack_pos = [0.0f32; N];
+        for v in 0..width {
+            gate[v] = true;
+            active[v] = true;
+            stack_pos[v] = crate::voice::stack_spread(v, width);
+            bank.trigger_lane(v, TriggerOpts::retrig(LfoShape::Sine), None);
+        }
+        let mut l = vec![0.0; 128];
+        let mut r = vec![0.0; 128];
+        bank.render(
+            c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &stack_pos,
+            &mut l, &mut r,
+        );
+        (0..width).map(|v| bank.env_scale[0][v]).collect()
+    }
+
+    /// A matrix with one `source` → `dest` route at `depth`.
+    fn one_route(source: SourceId, dest: DestId, depth: f32) -> MatrixTable {
+        let mut m = MatrixTable::default();
+        m.slots[0] = MatrixSlot { source, dest, depth, curve: Curve::Lin, scale_src: SourceId::None };
+        m
+    }
+
+    /// The point of the source: a stack's envelope times fan across the full
+    /// 0.5× .. 2× range with the Spread knob at its 0.0 default, so nothing has
+    /// to widen the stereo image to make the stack breathe unevenly.
+    #[test]
+    fn stack_pos_fans_env_times_with_the_spread_knob_at_zero() {
+        let m = one_route(SourceId::StackPos, DestId::Env1Scale, 1.0);
+        let c = ctx(&m); // spread: 0.0
+        let mut bank = env_bank();
+        let got = stack_env_scales(&mut bank, &c, 4);
+        let want = [0.5, (-1.0f32 / 3.0).exp2(), (1.0f32 / 3.0).exp2(), 2.0];
+        for (v, (g, w)) in got.iter().zip(want).enumerate() {
+            assert!((g - w).abs() < 1e-5, "lane {v}: {g} (want {w}) — all {got:?}");
+        }
+    }
+
+    /// Width 1 is the degenerate stack: one lane, centred, no fan — the source
+    /// reads 0 and the envelopes stay exactly as the patch cooked them.
+    #[test]
+    fn stack_pos_is_inert_for_a_width_one_stack() {
+        let m = one_route(SourceId::StackPos, DestId::Env1Scale, 1.0);
+        let c = ctx(&m);
+        let mut bank = env_bank();
+        assert_eq!(stack_env_scales(&mut bank, &c, 1), vec![1.0]);
+    }
+
+    /// `Spread` is unchanged: it still carries the knob's scaling inside the
+    /// source, so the same route reads flat at `spread = 0` and only fans once
+    /// the knob is up. This is the behaviour `StackPos` exists to sidestep, and
+    /// pinning it keeps the two sources honestly different.
+    #[test]
+    fn spread_source_still_needs_the_knob() {
+        let m = one_route(SourceId::Spread, DestId::Env1Scale, 1.0);
+
+        let mut bank = env_bank();
+        let flat = stack_env_scales(&mut bank, &ctx(&m), 4);
+        assert_eq!(flat, vec![1.0; 4], "spread 0 ⇒ no fan");
+
+        let mut c = ctx(&m);
+        c.spread = 1.0;
+        let mut bank = env_bank();
+        let fanned = stack_env_scales(&mut bank, &c, 4);
+        assert!((fanned[0] - 0.5).abs() < 1e-5 && (fanned[3] - 2.0).abs() < 1e-5, "{fanned:?}");
     }
 
     /// Level a lane's env 2 settles at after a full attack + decay — i.e. its

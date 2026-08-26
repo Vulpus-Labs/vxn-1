@@ -237,6 +237,7 @@ Only the **depths** are host parameters (listed above). The topology — which s
 | Aftertouch | `aftertouch` | unipolar |
 | Note Rnd | `note-random` | unipolar |
 | Spread | `spread` | bipolar |
+| Stack Pos | `stack-pos` | bipolar |
 
 ### Destinations
 

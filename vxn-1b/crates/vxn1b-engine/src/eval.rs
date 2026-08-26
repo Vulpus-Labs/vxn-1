@@ -65,6 +65,11 @@ pub struct SourceInputs {
     /// at depth 1 by the default patch, which is what makes unison spread work
     /// the way it always has — now as topology rather than hard wiring.
     pub spread_pos: f32,
+    /// This lane's raw place in its stack `[-1, 1]` (0308): the same allocator
+    /// position as `spread_pos`, but **not** scaled by the `Spread` param — for
+    /// routes that want the stack's shape (fan the envelope times, the LFO
+    /// rates, the cutoffs) without the pan knob in the loop.
+    pub stack_pos: f32,
 }
 
 /// MIDI note of C4 — the Key source's reference. `note − 60` is semitones
@@ -88,6 +93,7 @@ pub fn eval_sources(inp: &SourceInputs) -> SourceVals {
     v[SourceId::Aftertouch.index()] = inp.aftertouch;
     v[SourceId::NoteRandom.index()] = inp.note_random;
     v[SourceId::Spread.index()] = inp.spread_pos;
+    v[SourceId::StackPos.index()] = inp.stack_pos;
     v
 }
 
