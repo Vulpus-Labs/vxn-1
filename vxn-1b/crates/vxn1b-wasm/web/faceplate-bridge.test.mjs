@@ -58,6 +58,9 @@ class FakeCoordinator {
   setScopeTap(tap) {
     this.calls.push(["scopeTap", tap]);
   }
+  setTempo(bpm) {
+    this.calls.push(["setTempo", bpm]);
+  }
   pollMeters() {
     return this.meters ?? null;
   }
@@ -734,5 +737,25 @@ test("boot attaches the computer keyboard before audio exists", async () => {
 
   assert.ok(inputs, "boot did not attach the keyboard adapter");
   assert.ok(listeners.keydown?.length, "no keydown listener — nothing can play the synth");
+  controller.destroy();
+});
+
+test("set_tempo is ring-only and refuses a nonsense BPM", async () => {
+  const { bridge, coordinator, controller } = await rig();
+  controller.tick();
+  const before = controller.snapshotState();
+
+  bridge.handle({ op: "set_tempo", bpm: 96 });
+  assert.deepEqual(coordinator.calls, [["setTempo", 96]]);
+  // Tempo is not part of the patch — a preset must not carry the BPM you
+  // happened to be at when you saved it.
+  assert.deepEqual([...controller.snapshotState()], [...before]);
+  assert.deepEqual(controller.tick(), [], "set_tempo produced view events");
+
+  coordinator.clear();
+  for (const bad of [0, -1, NaN, Infinity, "fast", undefined]) {
+    assert.equal(bridge.handle({ op: "set_tempo", bpm: bad }), false, `accepted ${bad}`);
+  }
+  assert.deepEqual(coordinator.calls, [], "a nonsense tempo reached the engine");
   controller.destroy();
 });

@@ -229,6 +229,16 @@ export function routeOpcode(ctrl, coord, msg, hooks = {}) {
       return true;
 
     // ---- ring only -------------------------------------------------------
+    case "set_tempo": {
+      // No host transport in a browser, so BPM comes from a UI control
+      // (E045 delta 5). Ring-only: `sync.rs` resolves subdivisions against it
+      // on the audio side, and it is not part of the patch — a preset must not
+      // carry the tempo you happened to be at.
+      const bpm = Number(msg.bpm);
+      if (!Number.isFinite(bpm) || bpm <= 0) return false;
+      if (coord) coord.setTempo(bpm);
+      return true;
+    }
     case "set_scope_source": {
       const tap = SCOPE_TAP[msg.source];
       if (tap === undefined) return false;

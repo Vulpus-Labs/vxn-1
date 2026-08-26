@@ -292,6 +292,7 @@ fn assemble_faceplate(
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
         .replace("__MATRIX_JSON__", &build_matrix_json(matrices))
         .replace("__PATCH_COUNT__", &PATCH_COUNT.to_string())
+        .replace("__DEFAULT_BPM__", &vxn1b_engine::sync::DEFAULT_TEMPO_BPM.to_string())
 }
 
 /// Serialise the mod-matrix vocab + **live** topology for the overlay (0219).
@@ -382,6 +383,25 @@ const WEB_BOOT_HEAD: &str = r#"<style>
   background: #0e0e10; color: #fff; border: 1px solid #444; border-radius: 4px;
 }
 .vxn-ti-input:focus { outline: none; border-color: #6a8; }
+
+/* Tempo control — WEB ONLY. The plugin takes BPM from its host transport;
+   a browser has no host, and `sync.rs` resolves every LFO and delay
+   subdivision against a tempo, so without this the synced rates are stuck
+   at the default forever. Parked in the banner rather than given a panel:
+   it is a host-shaped control, not part of the instrument. */
+.vxn-bpm {
+  position: absolute; top: 3px; right: 10px; z-index: 5;
+  display: flex; align-items: center; gap: 5px;
+  font: 10px/1 system-ui, sans-serif; letter-spacing: 0.5px;
+  color: #8a8a92;
+}
+.vxn-bpm input {
+  width: 44px; padding: 2px 4px;
+  font: 11px/1 system-ui, sans-serif; text-align: right;
+  background: #0e0e10; color: #d8d8de;
+  border: 1px solid #33333a; border-radius: 3px;
+}
+.vxn-bpm input:focus { outline: none; border-color: #4a90d9; }
 </style>
 <script>
 // Web transport shim. No wry IPC here: buffer faceplate opcodes until the
@@ -401,6 +421,43 @@ const WEB_BOOT_HEAD: &str = r#"<style>
   window.__VXN_PARAMS__ = __PARAMS_JSON__;
   window.__VXN_SUBDIVISIONS__ = __SUBDIVISIONS_JSON__;
   window.__VXN_PATCH_COUNT__ = __PATCH_COUNT__;
+  window.__VXN_DEFAULT_BPM__ = __DEFAULT_BPM__;
+
+  // Tempo control (E045 delta 5). Web only, for the reason in the CSS above.
+  // Posts through the same `window.ipc` as every other opcode, so it queues
+  // before the bridge is up and routes to the ring afterwards — tempo has no
+  // model presence, so there is no echo that could carry it.
+  document.addEventListener("DOMContentLoaded", function () {
+    var banner = document.querySelector(".banner");
+    if (!banner) return;
+    var wrap = document.createElement("div");
+    wrap.className = "vxn-bpm";
+    var label = document.createElement("span");
+    label.textContent = "BPM";
+    var input = document.createElement("input");
+    input.type = "number";
+    input.min = "20";
+    input.max = "300";
+    input.step = "1";
+    input.value = String(window.__VXN_DEFAULT_BPM__);
+    var send = function () {
+      var bpm = Number(input.value);
+      // Clamp rather than trust: a non-finite or absurd tempo would divide
+      // through every synced rate in the engine.
+      if (!isFinite(bpm)) return;
+      bpm = Math.min(300, Math.max(20, bpm));
+      input.value = String(bpm);
+      window.ipc.postMessage(JSON.stringify({ op: "set_tempo", bpm: bpm }));
+    };
+    input.addEventListener("change", send);
+    // Typing a tempo must not trigger the faceplate's single-key shortcuts.
+    input.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    banner.appendChild(wrap);
+    // Seed the engine so a synced LFO is right before anyone touches this.
+    send();
+  });
 })();
 </script>
 "#;
