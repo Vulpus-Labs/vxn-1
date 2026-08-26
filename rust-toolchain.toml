@@ -5,6 +5,15 @@
 # and re-capture EXPECTED in the same commit.
 [toolchain]
 channel = "1.95.0"
-# Cross targets for the macOS universal (aarch64 + x86_64) bundle/release jobs,
-# so rustup installs std for them under the pinned channel.
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Cross targets for the macOS universal (aarch64 + x86_64) bundle/release jobs
+# and the browser ports' wasm, so rustup installs std for them under the pinned
+# channel. This is the ONLY place that works: a CI action's `targets:` input
+# installs them for whatever channel IT resolves, and rust-toolchain.toml then
+# overrides the channel out from under it — the target is present for a
+# toolchain cargo never uses, and the build fails with "can't find crate for
+# `std`" (0321).
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "wasm32-unknown-unknown",
+]

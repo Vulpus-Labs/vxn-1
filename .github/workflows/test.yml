@@ -24,9 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `targets:` here — rust-toolchain.toml pins the channel and carries the
+      # target list, so anything named here lands on a toolchain cargo will not use.
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
