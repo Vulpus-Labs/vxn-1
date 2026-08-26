@@ -96,11 +96,6 @@ impl OutputStage {
         }
     }
 
-    /// Recompute the fade window for a new base rate. The decimator reset itself
-    /// is [`Self::reset`], which the engine calls alongside it.
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.os_fade_len = ms_to_samples(OS_FADE_MS, sample_rate);
-    }
 
     /// Clear both decimators and the phase-alignment bookkeeping. Leaves
     /// `last_os` alone — a transport reset doesn't change the factor, so no fade

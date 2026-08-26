@@ -37,7 +37,7 @@ static A: Counting = Counting;
 
 #[test]
 fn hot_path_is_allocation_free() {
-    let mut e = Engine::new(48_000.0, 512);
+    let mut e = Engine::new(48_000.0);
     let mut l = vec![0.0f32; 512];
     let mut r = vec![0.0f32; 512];
     // Allocated before arming — the shell builds its bus once, at plugin

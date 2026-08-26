@@ -23,7 +23,7 @@ fn global(p: ParamId) -> usize {
 /// A deliberately alias-prone patch: hard sync with the slave swept far above
 /// the master, which throws energy well past Nyquist for the decimator to catch.
 fn sync_engine(os_index: f32) -> Engine {
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     let id = |p| clap_id_of(Layer::L1, p);
     e.set_param(global(ParamId::Oversample), os_index);
     e.set_param(id(ParamId::Osc1Wave), 2.0); // Saw — rich enough to alias
@@ -165,7 +165,7 @@ fn changing_factor_mid_render_does_not_step() {
 /// A patch loud enough to need limiting: full velocity, several voices, master
 /// pushed well past unity.
 fn hot_engine(limiter: bool, master: f32) -> Engine {
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     let id = |p| clap_id_of(Layer::L1, p);
     e.set_param(global(ParamId::Oversample), 0.0);
     e.set_param(global(ParamId::LimiterOn), if limiter { 1.0 } else { 0.0 });
@@ -247,7 +247,7 @@ fn limiter_off_is_a_true_bypass() {
     let mut a = hot_engine(false, 0.5);
     let (l_a, _) = render(&mut a, FRAMES);
 
-    let mut b = Engine::new(SR, FRAMES);
+    let mut b = Engine::new(SR);
     {
         let id = |p| clap_id_of(Layer::L1, p);
         b.set_param(global(ParamId::Oversample), 0.0);
@@ -296,7 +296,7 @@ fn layer_fade_time_is_independent_of_the_oversampling_factor() {
     // (that is the point of oversampling), so measure against each render's own
     // pre-mute level rather than comparing absolute amplitudes.
     let frames_to_half = |os_index: f32| {
-        let mut e = Engine::new(SR, FRAMES);
+        let mut e = Engine::new(SR);
         e.set_param(global(ParamId::Oversample), os_index);
         e.set_param(clap_id_of(Layer::L1, ParamId::Env2Attack), 0.001);
         e.set_param(clap_id_of(Layer::L1, ParamId::Env2Decay), 0.001);

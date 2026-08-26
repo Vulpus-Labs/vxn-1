@@ -24,7 +24,7 @@ const FRAMES: usize = 8192;
 /// Build an engine with a single square-LFO→`dest` route at `depth`, a steady
 /// held sine note, and LFO onset defeated (full swing from sample 0).
 fn engine_with_route(dest: DestId, depth: f32) -> Engine {
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     // Pure sine carrier, osc1 only — a clean slope for the frequency detectors.
     e.set_param(ParamId::Osc1Wave as usize, 0.0); // Sine
     e.set_param(ParamId::Osc1Level as usize, 0.9);

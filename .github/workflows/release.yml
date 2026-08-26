@@ -316,10 +316,10 @@ jobs:
 
       # VXN1b has no `cargo xtask` alias (no per-product .cargo/config.toml), so
       # the xtask package is invoked directly — the same call `deploy.sh` makes.
-      # `--release` is a no-op there (the build is always release) and is passed
-      # only to keep this line readable against the vxn-1/vxn-2 jobs above.
+      # No `--release`: the build is always release, and the flag was a no-op
+      # carried only to make this line scan like the vxn-1/vxn-2 jobs above.
       - name: Build universal VXN1b CLAP + VST3 bundles
-        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3 --universal
+        run: cargo run --package vxn1b-xtask -- bundle --format clap,vst3 --universal
 
       # The macOS .clap/.vst3 are bundle directories; ditto zips them preserving
       # the bundle structure (and resource forks) so they unpack cleanly. The
@@ -383,7 +383,7 @@ jobs:
         run: choco install ninja -y --no-progress
 
       - name: Build VXN1b CLAP + VST3 bundles
-        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
+        run: cargo run --package vxn1b-xtask -- bundle --format clap,vst3
 
       # CLAP first, and attached before the VST3 is verified: the two formats are
       # independent artifacts, and a VST3 that failed to absorb the staticlib is

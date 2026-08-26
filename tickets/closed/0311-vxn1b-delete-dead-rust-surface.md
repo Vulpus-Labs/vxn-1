@@ -118,3 +118,73 @@ a test to drop.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
+
+## Close-out (2026-08-26)
+
+All seven items gone, and the first one cascaded further than the ticket
+expected.
+
+### The second allocation policy
+
+`Voices::note_on` and `allocate` are deleted. Every one of their 31 call sites
+lived under `mod tests`; production has always gone through `note_on_stack` →
+`claim_lanes`.
+
+The tests cover **voice stealing**, which is real behaviour, so they were
+re-pointed rather than dropped — a `note_on_1` shim runs one note through the
+shipping allocator at width 1, which is exactly what the retired entry point
+did. **All 50 pass unchanged**, which is the interesting result: it confirms
+`claim_lanes`' claim that the two policies agree lane-for-lane at uniform width,
+and means the tests were never testing the dead path's *behaviour*, only its
+existence.
+
+Deleting `allocate` then made `AllocView`'s `active` and `alloc_tick` fields
+dead — it was their only reader. `steal_tier` (still live, called by
+`worst_stack`) only ever read `gate`, so `AllocView` and `Voices::view()` are
+gone too and `steal_tier` takes `&[bool; N]` directly. The struct existed to
+keep the retired policy pure and testable in isolation; nothing else wanted it.
+
+### The rest
+
+- **`_PARAM_COUNT`** ([vxn1b-clap](../../vxn-1b/crates/vxn1b-clap/src/lib.rs)) —
+  a `#[used] static` "keeping alive" a `const usize`, which has no storage to
+  keep. Cargo-culted from vxn-1.
+- **`Engine::max_frames`** — field, getter **and constructor parameter**, across
+  65 call sites. Verified it sized nothing: every buffer `Engine::new` owns is
+  `CONTROL_BLOCK * MAX_OVERSAMPLE`. It was not merely unread, it was
+  *misleading* — a reader would assume the host's block size mattered here. Note
+  the CLAP shell still reads `max_frames_count` for its own `scratch_l`/`_r`,
+  which is the honest use the engine's copy was imitating.
+- **Two `set_sample_rate` chains** — `OutputStage::` (0 callers) and
+  `MotionSmoother::` (only caller was `RenderBank::set_sample_rate`, itself 0
+  callers). The engine is rebuilt on a rate change; nothing takes this path.
+- **`last_width`** — write-only field. Removing it left `sync_mode`'s `width`
+  parameter unused, so that went too: the argument existed solely to feed a
+  field nothing read.
+- **`is_sync_flag`** — reached only from its own test.
+- **`parity.rs`'s no-op const** — and the "unused import" it claimed to prop up
+  is not unused (`ParamId` is used at line 55), so it was propping up nothing.
+- **`--release`** — dropped from the four VXN1b CI invocations, the help text
+  and the module doc. Unknown *flags* are ignored by the parser (only unknown
+  subcommands error), so a stray one is still tolerated — verified by hand — but
+  it is no longer documented or passed. It existed to make the workflow line
+  scan like vxn-1's and vxn-2's, which is not a reason for a flag to exist.
+  vxn-1's and vxn-2's own xtasks are untouched.
+
+### Verified
+
+`vxn1b-engine` 305 + `alloc_free` / `zipper_regression` / `parity` /
+`cross_mod_dest` / `taper_parity` / `fx_stereo` / `oversampling_limiter`,
+`vxn1b-clap` 7, `vxn1b-wasm` 28, `vxn1b-web-controller` 34, `vxn1b-ui-web` 14,
+`vxn1b-xtask` 5 — all green, **zero compiler warnings**. `alloc_free` matters
+most here: it is the test that would notice if the surviving allocation path
+started allocating.
+
+`busy_profile` 16.0× / 15.9× against a ~15.9–16.2× baseline — unchanged, as
+expected for deleting code that never ran.
+
+**Outstanding:** the manual DAW pass ([[verify-audio-in-reaper]]). Voice
+stealing has an audible signature and no test proves the *feel* of it; play past
+the voice limit and confirm nothing changed. Low risk — the deleted path did not
+run — but "did not run" is exactly the claim worth being sure about in a shipped
+synth.

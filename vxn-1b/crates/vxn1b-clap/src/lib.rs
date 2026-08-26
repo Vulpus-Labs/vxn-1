@@ -560,7 +560,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let max = audio_config.max_frames_count as usize;
-        let mut engine = Engine::new(audio_config.sample_rate as f32, max);
+        let mut engine = Engine::new(audio_config.sample_rate as f32);
         // Publish meters into the plugin-lifetime bus (0240), not the engine's
         // own — this `Engine` is discarded on deactivate, and the editor's drain
         // handle must survive that.
@@ -842,9 +842,6 @@ impl PluginStateImpl for VxnMainThread<'_> {
 
 clack_export_entry!(SinglePluginEntry<VxnPlugin>);
 
-// Keep the param count referenced so a thin-LTO cdylib never drops the table.
-#[used]
-static _PARAM_COUNT: usize = TOTAL_PARAMS;
 
 #[cfg(test)]
 mod tests {
@@ -896,7 +893,7 @@ mod tests {
 
     #[test]
     fn param_value_event_updates_store_and_engine() {
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         let shared = SharedParams::new();
         let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
         apply_param(&mut local, &mut engine, param_event(ParamId::Cutoff, 500.0).as_ref());
@@ -908,7 +905,7 @@ mod tests {
 
     #[test]
     fn note_on_event_makes_sound() {
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         engine.set_param(l1(ParamId::Env2Attack), 0.001);
         dispatch(&mut engine, note_on(0, 60, 1.0).as_ref());
         assert!(peak(&mut engine, 512) > 0.0, "a dispatched note must sound");
@@ -921,7 +918,7 @@ mod tests {
         // block push every one of the `TOTAL_PARAMS` CLAP values into the engine — and prove
         // synth 0 (Layer 1, single mode) still sounds.
         let shared = SharedParams::new();
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         engine.load_state(shared.engine_state());
         let local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
         for (i, &v) in local.values().iter().enumerate() {
@@ -940,7 +937,7 @@ mod tests {
         let dst = SharedParams::new();
         dst.restore_from_bytes(&blob).expect("restore factory blob");
 
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         engine.load_state(dst.engine_state());
         let local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&dst));
         for (i, &v) in local.values().iter().enumerate() {
@@ -954,7 +951,7 @@ mod tests {
     fn slot_depth_param_event_moves_modulation_through_the_shell() {
         // 0204 acceptance: automating a slot depth through the CLAP param path
         // changes the sound. Zeroing the default Env2→Amp slot silences the note.
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         let shared = SharedParams::new();
         let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
         engine.set_param(l1(ParamId::Env2Attack), 0.001);
@@ -968,7 +965,7 @@ mod tests {
     /// then the mirror's working values drive the engine — mirroring `process`.
     #[test]
     fn ui_edit_via_shared_store_reaches_engine() {
-        let mut engine = Engine::new(48_000.0, 512);
+        let mut engine = Engine::new(48_000.0);
         let shared = SharedParams::new();
         let mut local = LocalParams::<TOTAL_PARAMS>::new(&StoreRef(&shared));
         // UI edit: controller writes the store directly, no CLAP event.

@@ -674,7 +674,7 @@ mod tests {
     // ── Apply ───────────────────────────────────────────────────────────────
 
     fn engine() -> Engine {
-        Engine::new(48_000.0, 128)
+        Engine::new(48_000.0)
     }
 
     /// The 0219 split, enforced on the wire: topology travels as a matrix edit,

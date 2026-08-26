@@ -30,7 +30,7 @@ const XMOD_GAIN: f32 = 4.0;
 /// One held note on a two-oscillator patch, cross-mod `mode`, patch amount
 /// `amount`, and optionally a velocity→Cross-Mod Amt route at `depth`.
 fn render_patch(mode: f32, amount: f32, route_depth: Option<f32>) -> Vec<f32> {
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     let id = |p| clap_id_of(Layer::L1, p);
     // Sine carrier + sine modulator: PM on sines is the clean case (no
     // aliasing to muddy an equality assertion — `vxn1-crossmod-pm-aliasing`).
@@ -130,7 +130,7 @@ fn route_is_per_voice_not_per_bank() {
     // to both. Renders the pair against a bank-wide stand-in (both at the
     // harder velocity) and demands they differ.
     let two_velocities = {
-        let mut e = Engine::new(SR, FRAMES);
+        let mut e = Engine::new(SR);
         let id = |p| clap_id_of(Layer::L1, p);
         e.set_param(id(ParamId::Osc1Wave), 0.0);
         e.set_param(id(ParamId::Osc2Wave), 0.0);
@@ -153,7 +153,7 @@ fn route_is_per_voice_not_per_bank() {
         l
     };
     let one_index = {
-        let mut e = Engine::new(SR, FRAMES);
+        let mut e = Engine::new(SR);
         let id = |p| clap_id_of(Layer::L1, p);
         e.set_param(id(ParamId::Osc1Wave), 0.0);
         e.set_param(id(ParamId::Osc2Wave), 0.0);

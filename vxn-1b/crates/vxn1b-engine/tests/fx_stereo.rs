@@ -18,7 +18,7 @@ const BLOCKS: usize = 4;
 /// Hold a note through the global FX chain configured by `cfg`, returning the
 /// L−R difference signal.
 fn render_side(cfg: &[(ParamId, f32)]) -> Vec<f32> {
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     // FX are global — the layer argument is ignored for these ids.
     for &(p, v) in cfg {
         e.set_param(clap_id_of(Layer::L1, p), v);

@@ -228,7 +228,6 @@ impl KeyState {
 /// The full VXN1b engine: the global block over two synths.
 pub struct Engine {
     sample_rate: f32,
-    max_frames: usize,
     /// Host tempo in BPM (0267), mirrored down into both synths and read here
     /// for the delay's synced time. [`crate::sync::DEFAULT_TEMPO_BPM`] until a
     /// host supplies one.
@@ -315,7 +314,11 @@ fn pan_gains(pos: f32) -> (f32, f32) {
 }
 
 impl Engine {
-    pub fn new(sample_rate: f32, max_frames: usize) -> Self {
+    /// The host's max block size is deliberately not a parameter: the engine
+    /// renders in fixed `CONTROL_BLOCK` chunks and every buffer it owns is sized
+    /// from that, so a `max_frames` argument only looked load-bearing. It was
+    /// stored, exposed through a getter, and read by nothing (0311).
+    pub fn new(sample_rate: f32) -> Self {
         // Factory patch: default params + default-patch topology with the slot
         // depths already reconciled (0205) — a single source of truth shared with
         // the CLAP shell's param store ([`crate::state::PluginState::factory_default`]).
@@ -329,7 +332,6 @@ impl Engine {
         fx.set_meters(meters.clone());
         Self {
             sample_rate,
-            max_frames,
             tempo_bpm: crate::sync::DEFAULT_TEMPO_BPM,
             synths: [
                 Synth::new(sample_rate, LayerState::factory_default(), &SynthSeeds::LAYER1),
@@ -420,9 +422,6 @@ impl Engine {
         self.sample_rate
     }
 
-    pub fn max_frames(&self) -> usize {
-        self.max_frames
-    }
 
     /// Mutable access to a layer's matrix topology (for preset load / tests).
     pub fn matrix_mut(&mut self, layer: Layer) -> &mut MatrixTable {
@@ -800,7 +799,7 @@ mod tests {
 
     #[test]
     fn silent_by_default_until_a_note() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         let mut l = vec![1.0; 128];
         let mut r = vec![1.0; 128];
         e.process_block(&mut l, &mut r);
@@ -809,7 +808,7 @@ mod tests {
 
     #[test]
     fn a_held_note_makes_sound() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         // Fast attack so the VCA opens within the first blocks.
         e.set_param(ParamId::Env2Attack as usize, 0.001);
         e.note_on(0, 60, 1.0);
@@ -827,7 +826,7 @@ mod tests {
     #[test]
     fn cutoff_tuned_never_reaches_the_engine() {
         let render = |tuned: f32| {
-            let mut e = Engine::new(48_000.0, 512);
+            let mut e = Engine::new(48_000.0);
             e.set_param(l1(ParamId::Env2Attack), 0.001);
             e.set_param(l1(ParamId::CutoffTuned), tuned);
             e.note_on(0, 60, 1.0);
@@ -851,7 +850,7 @@ mod tests {
         // At the default width of 1, `MAX_VOICES` held notes fill layer 1's
         // banks; the next one steals voice 0. Keyed on the const, not on 16 —
         // 0264 widened the pool to 32 and this test predates it.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         for i in 0..MAX_VOICES {
             e.note_on(0, 24 + i as u8, 1.0);
         }
@@ -863,7 +862,7 @@ mod tests {
     /// width 1 — i.e. nothing below `Voices` caps polyphony at the old 16.
     #[test]
     fn layer1_sounds_the_whole_pool_before_stealing() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         let mut seen = std::collections::HashSet::new();
         for i in 0..MAX_VOICES {
             seen.insert(e.note_on(0, 24 + i as u8, 1.0));
@@ -878,7 +877,7 @@ mod tests {
         // every param is swept through its extremes. An extreme filter/feedback
         // combo can drive DSP state non-finite; the engine's output guard must
         // still emit only finite samples (never a NaN/inf to the host).
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true); // fuzz both synths, not just layer 1
         for i in 0..40u16 {
             let note = (i * 3) as u8;
@@ -914,7 +913,7 @@ mod tests {
     fn fresh_engine_params_match_matrix_depths() {
         // 0205: the param table and the matrix agree on every slot depth at
         // construction — no startup mismatch.
-        let e = Engine::new(48_000.0, 512);
+        let e = Engine::new(48_000.0);
         for slot in 0..MATRIX_SLOTS {
             assert_eq!(
                 e.synths[0].params().slot_depth(slot),
@@ -927,7 +926,7 @@ mod tests {
     #[test]
     fn set_param_mirrors_slot_depth_into_matrix() {
         // 0205: a depth edit reaches the copy the evaluator reads.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         // Layer 2 starts at the factory depth for this slot — capture it to prove
         // a Layer-1 edit leaves it alone.
         let l2_default = e.synths[1].matrix().slots[2].depth;
@@ -948,7 +947,7 @@ mod tests {
         // 0205: depth automation is live — zeroing the default Env2→Amp slot
         // depth kills the VCA route the evaluator/bank reads, so the note is
         // silent. Proves the param → matrix → DSP path end-to-end.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::MatrixSlot0Depth), 0.0);
         e.note_on(0, 60, 1.0);
@@ -961,7 +960,7 @@ mod tests {
 
     #[test]
     fn master_volume_scales_output() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(ParamId::Env2Attack as usize, 0.001);
         e.note_on(0, 60, 1.0);
         let mut l = vec![0.0; 512];
@@ -969,7 +968,7 @@ mod tests {
         e.process_block(&mut l, &mut r);
         let loud = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
 
-        let mut e2 = Engine::new(48_000.0, 512);
+        let mut e2 = Engine::new(48_000.0);
         e2.set_param(l1(ParamId::Env2Attack), 0.001);
         e2.set_param(l1(ParamId::MasterVolume), 0.35); // half of default 0.7 (global)
         e2.note_on(0, 60, 1.0);
@@ -987,7 +986,7 @@ mod tests {
         // the output, and it must be silent again when the note is released —
         // proving synth 2 is a real, separately-driven unit but bypassed in
         // single mode.
-        let mut single = Engine::new(48_000.0, 512);
+        let mut single = Engine::new(48_000.0);
         single.set_param(ParamId::Env2Attack as usize, 0.001);
         single.note_on(0, 60, 1.0);
         let mut l = vec![0.0; 512];
@@ -997,7 +996,7 @@ mod tests {
         assert!(single_peak > 0.0);
 
         // Same, but with layer 2 on and detuned — output must differ.
-        let mut dual = Engine::new(48_000.0, 512);
+        let mut dual = Engine::new(48_000.0);
         dual.set_layer2_on(true);
         dual.set_param(ParamId::Env2Attack as usize, 0.001);
         dual.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1019,7 +1018,7 @@ mod tests {
     #[test]
     fn global_drift_reaches_both_layers() {
         let render = |drift: f32, s: usize| -> Vec<f32> {
-            let mut e = Engine::new(48_000.0, 512);
+            let mut e = Engine::new(48_000.0);
             e.set_layer2_on(true);
             for i in 0..2 {
                 e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1062,7 +1061,7 @@ mod tests {
     fn master_meter_tracks_output_and_clears_on_drain() {
         use crate::meters::MeterFrame;
 
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
 
@@ -1090,7 +1089,7 @@ mod tests {
     fn the_scope_captures_only_the_selected_layer() {
         use crate::scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeTap};
 
-        let mut e = Engine::new(48_000.0, 4096);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for i in 0..2 {
             e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1129,7 +1128,7 @@ mod tests {
     fn the_scope_reads_silence_from_a_bypassed_layer() {
         use crate::scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeTap};
 
-        let mut e = Engine::new(48_000.0, 4096);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.scope().set_source(ScopeTap::Layer2.code());
         e.note_on(0, 60, 1.0);
@@ -1151,7 +1150,7 @@ mod tests {
     fn master_meter_holds_the_peak_across_blocks_between_drains() {
         use crate::meters::MeterFrame;
 
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         // Short decay to silence, so the loud transient is early and the later
         // blocks are quiet — the case that distinguishes hold from last-wins.
@@ -1185,7 +1184,7 @@ mod tests {
 
         let bus = Arc::new(MeterBus::new());
         {
-            let mut e = Engine::new(48_000.0, 512);
+            let mut e = Engine::new(48_000.0);
             e.set_meters(bus.clone());
             e.set_param(l1(ParamId::Env2Attack), 0.001);
             e.note_on(0, 60, 1.0);
@@ -1200,7 +1199,7 @@ mod tests {
     #[test]
     fn layer_level_scales_only_its_own_layer() {
         let peak_with = |l1_level: f32, l2_level: f32| -> (f32, f32) {
-            let mut e = Engine::new(48_000.0, 512);
+            let mut e = Engine::new(48_000.0);
             e.set_layer2_on(true);
             for i in 0..2 {
                 e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1235,7 +1234,7 @@ mod tests {
     /// unmuting resumes the held note mid-flight rather than restarting it.
     #[test]
     fn layer_mute_silences_the_layer_but_keeps_it_running() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for i in 0..2 {
             e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1274,7 +1273,7 @@ mod tests {
     /// to click. Guards the reason mute folds into the smoothed gain.
     #[test]
     fn muting_a_layer_does_not_step_the_output() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::Env2Sustain), 1.0);
         e.note_on(0, 60, 1.0);
@@ -1287,7 +1286,7 @@ mod tests {
         // The signal itself moves sample to sample; the bar is that the mute
         // adds no discontinuity beyond ordinary waveform slew.
         let pre_step = {
-            let mut e2 = Engine::new(48_000.0, 512);
+            let mut e2 = Engine::new(48_000.0);
             e2.set_param(l1(ParamId::Env2Attack), 0.001);
             e2.set_param(l1(ParamId::Env2Sustain), 1.0);
             e2.note_on(0, 60, 1.0);
@@ -1306,7 +1305,7 @@ mod tests {
     /// nothing publishes and the strip reads empty rather than stale.
     #[test]
     fn layer2_meter_is_silent_in_single_mode() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.note_on(0, 60, 1.0);
         let (mut l, mut r) = (vec![0.0; 1024], vec![0.0; 1024]);
@@ -1320,7 +1319,7 @@ mod tests {
     /// Reduction is negative only while the compressor is actually working.
     #[test]
     fn dynamics_meters_report_in_out_and_reduction() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::Env2Sustain), 1.0);
         let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
@@ -1353,7 +1352,7 @@ mod tests {
 
     #[test]
     fn key_mode_is_derived_from_toggles() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         assert_eq!(e.key_mode(), KeyMode::Single, "layer 2 off → Single");
         e.set_layer2_on(true);
         assert_eq!(e.key_mode(), KeyMode::Dual, "layer 2 on, split off → Dual");
@@ -1369,7 +1368,7 @@ mod tests {
         // 0221: the blob carries KeyState, so a state load is a complete restore
         // — an engine that loads a split patch must come back routing split,
         // without depending on the shell's separate key channel.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         assert_eq!(e.key_mode(), KeyMode::Single);
 
         let mut st = PluginState::factory_default();
@@ -1390,7 +1389,7 @@ mod tests {
     fn single_mode_leaves_synth2_silent() {
         // Single: a note reaches synth 1 only. Synth 2, given a loud fast-attack
         // patch, must stay silent because the demux never routes to it.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
         e.note_on(0, 60, 1.0);
         // Synth 2 holds no voice → tick it in isolation and it is silent.
@@ -1403,7 +1402,7 @@ mod tests {
 
     #[test]
     fn dual_fans_note_on_to_both_synths() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         e.synths[0].set_param(ParamId::Env2Attack as usize, 0.001);
         e.synths[1].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1420,7 +1419,7 @@ mod tests {
     #[test]
     fn split_routes_note_on_by_pitch() {
         // Below the split → Lower (synth 2); at/above → Upper (synth 1).
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         e.set_split_enabled(true);
         e.set_split_point(60);
@@ -1440,7 +1439,7 @@ mod tests {
         assert!(peak(&mut e, 1) > 0.0, "note below split must sound on synth 2");
 
         // The at-split boundary note (== split point) is Upper, not Lower.
-        let mut e2 = Engine::new(48_000.0, 512);
+        let mut e2 = Engine::new(48_000.0);
         e2.set_layer2_on(true);
         e2.set_split_enabled(true);
         e2.set_split_point(60);
@@ -1458,7 +1457,7 @@ mod tests {
         // it, release. The note-on routed to Upper (synth 1) at press time; the
         // note-off broadcasts to both, so synth 1 releases it even though the
         // note is now "below" the moved split. A second held note rings out.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         e.set_split_enabled(true);
         e.set_split_point(60);
@@ -1492,7 +1491,7 @@ mod tests {
     /// **different** LFO 2 rates, so nothing but the link can hold them together.
     fn dual_engine_with_lfo2_to_cutoff() -> Engine {
         use crate::matrix::{Curve, DestId, MatrixSlot, SourceId};
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for s in 0..2 {
             e.synths[s].matrix_mut().slots[1] = MatrixSlot {
@@ -1573,7 +1572,7 @@ mod tests {
     fn note_off_broadcasts_in_single_mode() {
         // Even in single mode a note-off reaches synth 2 (harmless no-op) — the
         // "always broadcast" contract holds regardless of mode.
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.note_on(0, 60, 1.0);
         e.note_off(0, 60); // must not panic / must be a clean no-op on synth 2
         assert!(!e.synths[0].voices_holding(60), "synth 1 released the note");
@@ -1660,7 +1659,7 @@ mod tests {
     /// decorrelating L and R is the pan.
     #[test]
     fn layers_panned_apart_land_in_opposite_channels() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for i in 0..2 {
             e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);
@@ -1717,7 +1716,7 @@ mod tests {
     /// existed, which is what the unity normalisation buys.
     #[test]
     fn centre_pan_leaves_the_channels_identical() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::Spread), 0.0);
         e.note_on(0, 60, 1.0);
@@ -1732,7 +1731,7 @@ mod tests {
     #[test]
     fn panning_a_layer_does_not_step_the_output() {
         let settled = |pan: f32| {
-            let mut e = Engine::new(48_000.0, 512);
+            let mut e = Engine::new(48_000.0);
             e.set_param(l1(ParamId::Env2Attack), 0.001);
             e.set_param(l1(ParamId::Env2Sustain), 1.0);
             e.set_param(l1(ParamId::LayerPan), pan);
@@ -1745,7 +1744,7 @@ mod tests {
         // Reference: the same patch already sitting hard left, no move at all.
         let steady_step = settled(-1.0);
 
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::Env2Sustain), 1.0);
         e.note_on(0, 60, 1.0);
@@ -1765,7 +1764,7 @@ mod tests {
     /// layer contributes nothing wherever it is placed.
     #[test]
     fn a_muted_layer_is_silent_at_any_pan() {
-        let mut e = Engine::new(48_000.0, 512);
+        let mut e = Engine::new(48_000.0);
         e.set_param(l1(ParamId::Env2Attack), 0.001);
         e.set_param(l1(ParamId::Env2Sustain), 1.0);
         e.set_param(l1(ParamId::LayerPan), -1.0);
@@ -1794,7 +1793,7 @@ mod tests {
     #[test]
     fn layer_detune_shifts_the_layers_pitch() {
         let render = |cents: f32| {
-            let mut e = Engine::new(48_000.0, 4096);
+            let mut e = Engine::new(48_000.0);
             e.set_param(l1(ParamId::Env2Attack), 0.001);
             e.set_param(l1(ParamId::Env2Sustain), 1.0);
             // One oscillator only, so the crossing count reads its period.
@@ -1821,7 +1820,7 @@ mod tests {
         // Osc 2 alone, at its own octave: if detune only reached osc 1 this
         // would be unchanged by the sweep.
         let render_osc2_only = |cents: f32| {
-            let mut e = Engine::new(48_000.0, 4096);
+            let mut e = Engine::new(48_000.0);
             e.set_param(l1(ParamId::Env2Attack), 0.001);
             e.set_param(l1(ParamId::Env2Sustain), 1.0);
             e.set_param(l1(ParamId::Osc1Level), 0.0);
@@ -1844,7 +1843,7 @@ mod tests {
     /// *between* layers, which needs them to move independently.
     #[test]
     fn layer_detune_is_per_layer() {
-        let mut e = Engine::new(48_000.0, 4096);
+        let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for i in 0..2 {
             e.synths[i].set_param(ParamId::Env2Attack as usize, 0.001);

@@ -173,11 +173,6 @@ impl MotionSmoother {
         }
     }
 
-    /// Re-cook coeffs for a new sample rate; state is cleared to zero (callers
-    /// reset the bank around a sample-rate change).
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        *self = Self::new(sample_rate);
-    }
 
     /// Zero all state (bank reset). Coefficients are already cooked for the
     /// current sample rate, so only the state clears — and it clears wholesale,

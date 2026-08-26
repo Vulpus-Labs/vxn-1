@@ -26,10 +26,12 @@
 //! `--universal`, on Windows an x86_64 MSVC build (run from a Developer
 //! PowerShell so `cl.exe` is on PATH).
 //!
-//! The build is **always release** — there is no `--debug`, and `--release` is
-//! accepted as a no-op so the CI invocation reads the same as vxn-1's and
-//! vxn-2's. A plugin is only ever loaded into a host, where a debug build is
-//! not useful.
+//! The build is **always release** — there is no `--debug`. A plugin is only
+//! ever loaded into a host, where a debug build is not useful. A stray
+//! `--release` is still tolerated (unknown flags are ignored; only unknown
+//! subcommands are an error), but it is no longer documented or passed by CI —
+//! it existed to make the workflow line scan like vxn-1's and vxn-2's, which is
+//! not a reason for a flag to exist (0311).
 //!
 //! Ported from `vxn-1/xtask` by 0213. Two things differ and are deliberate:
 //! the CLAP artifact is lowercase `vxn1b.clap` (the name already installed on
@@ -142,8 +144,7 @@ Subcommands:
 Flags:
   --universal  macOS only: build arm64 + x86_64 and lipo into one fat binary.
   --format     Comma-separated artifacts to produce (default: clap).
-               `vst3` needs CMake and `git submodule update --init --recursive`.
-  --release    Accepted and ignored; the build is always release."
+               `vst3` needs CMake and `git submodule update --init --recursive`."
     );
 }
 

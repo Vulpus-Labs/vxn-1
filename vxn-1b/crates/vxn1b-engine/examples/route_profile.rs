@@ -48,7 +48,7 @@ fn main() {
         _ => (true, true, true),
     };
 
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
 
     for (p, v) in [
         (ParamId::Oversample, os),

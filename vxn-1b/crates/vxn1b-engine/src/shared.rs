@@ -843,7 +843,7 @@ mod tests {
             let sp2 = SharedParams::new();
             sp2.restore_from_bytes(&sp.snapshot_bytes()).expect("round-trip");
             sp2.set(patch_clap_id(mute, ParamId::LayerMute).unwrap(), 1.0);
-            let mut e = Engine::new(48_000.0, 256);
+            let mut e = Engine::new(48_000.0);
             e.load_state(sp2.engine_state());
             e.set_key_state(sp2.key_state());
             e.note_on(0, 60, 1.0);

@@ -150,7 +150,7 @@ jobs:
       # so it is invoked by package name from the repo root — the same form
       # release.yml uses.
       - name: Build universal CLAP + VST3
-        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3 --universal
+        run: cargo run --package vxn1b-xtask -- bundle --format clap,vst3 --universal
 
       - name: Verify the VST3 embeds the engine
         run: |
@@ -194,7 +194,7 @@ jobs:
         run: choco install ninja -y --no-progress
 
       - name: Build CLAP + VST3
-        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
+        run: cargo run --package vxn1b-xtask -- bundle --format clap,vst3
 
       # This is the exact configuration that shipped a ~516 KB module of wrapper
       # glue with an empty factory: the link succeeds, no diagnostics, and only

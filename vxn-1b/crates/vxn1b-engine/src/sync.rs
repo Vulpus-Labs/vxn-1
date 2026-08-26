@@ -44,12 +44,6 @@ pub fn rate_partner_clap_id(clap_id: usize) -> Option<usize> {
     Some(partner)
 }
 
-/// Whether `clap_id` is a sync toggle whose partner needs a display refresh on
-/// flip.
-#[inline]
-pub fn is_sync_flag(clap_id: usize) -> bool {
-    rate_partner_clap_id(clap_id).is_some()
-}
 
 /// Subdivision index a rate/time value selects, using the same fader-position
 /// mapping the engine's rate resolution applies.
@@ -143,7 +137,6 @@ mod tests {
         let cutoff = clap_id_of(Layer::L1, ParamId::Cutoff);
         assert_eq!(sync_partner_clap_id(cutoff), None);
         assert_eq!(rate_partner_clap_id(cutoff), None);
-        assert!(!is_sync_flag(cutoff));
     }
 
     #[test]

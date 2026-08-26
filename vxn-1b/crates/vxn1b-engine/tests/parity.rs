@@ -47,7 +47,7 @@ fn vxn1_reference() -> (Vec<f32>, Vec<f32>) {
 
 /// VXN1b default patch with the vibrato route disabled (to match), one note.
 fn vxn1b_output() -> (Vec<f32>, Vec<f32>) {
-    let mut e = Engine::new(SR, BLOCK);
+    let mut e = Engine::new(SR);
     // Oversampling OFF, as on the VXN1 side (0249). Both synths *default* to 2×;
     // the point of this gate is the voice render, and comparing across two
     // different decimator states would only measure the halfband FIR. Aliasing
@@ -133,7 +133,3 @@ fn default_patch_amp_env_matches_shape() {
         }
     }
 }
-
-// Keep an unused import from tripping the build if ParamId isn't referenced.
-#[allow(dead_code)]
-const _: fn() -> ParamId = || ParamId::MasterVolume;

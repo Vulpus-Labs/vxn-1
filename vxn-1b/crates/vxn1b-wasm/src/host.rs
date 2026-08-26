@@ -77,7 +77,7 @@ impl Host {
         Host {
             // `max_frames` is the quantum: AudioWorklet always calls `process()`
             // with 128-frame buffers, so the engine never sees a longer block.
-            engine: Engine::new(sample_rate, QUANTUM),
+            engine: Engine::new(sample_rate),
             out_l: [0.0; QUANTUM],
             out_r: [0.0; QUANTUM],
             events: [0u8; SLOT_BYTES * MAX_EVENTS],

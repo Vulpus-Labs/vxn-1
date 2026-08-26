@@ -177,29 +177,20 @@ impl Triggers {
     }
 }
 
-/// Read-only bookkeeping the allocation policy reads. Borrows the bank's arrays
-/// so [`allocate`] runs without touching (or being able to touch) mutable voice
-/// state — the policy stays pure and unit-testable in isolation, mirroring
-/// VXN1's `AllocView` seam.
-#[derive(Clone, Copy)]
-struct AllocView<'a> {
-    active: &'a [bool; N],
-    /// Per-voice gate — `false` once a note is released (ring-out tail). A
-    /// released tail is sacrificed before a still-held note when stealing.
-    gate: &'a [bool; N],
-    /// Per-voice allocation tick — lowest is oldest, stolen first within a tier.
-    alloc_tick: &'a [u64; N],
-}
-
 /// Steal ranking (lower = sacrificed first): a released tail before a still-held
 /// note. So a melody played over a held chord eats the ringing-out tails before
 /// it ever touches a key still held. Within a tier the oldest (lowest
 /// `alloc_tick`) goes first. A trimmed form of VXN1's `steal_tier` — VXN1b has
 /// no sustain-pedal defer state in this layer yet, so held vs. released is the
 /// full ranking.
+///
+/// Takes the gate array directly. It used to take an `AllocView` borrowing
+/// three arrays, so the retired single-lane `allocate` could rank a lane
+/// without touching mutable state; `worst_stack` is the only caller now and
+/// gate is the only field the ranking ever read (0311).
 #[inline]
-fn steal_tier(view: &AllocView, v: usize) -> u8 {
-    if !view.gate[v] { 0 } else { 1 }
+fn steal_tier(gate: &[bool; N], v: usize) -> u8 {
+    if !gate[v] { 0 } else { 1 }
 }
 
 /// Seed for the note-on-random stream. Non-zero — `xorshift64` sticks at zero.
@@ -216,21 +207,6 @@ fn note_random_draw(rng: &mut u64) -> f32 {
     ((xorshift64(rng) + 1.0) * 0.5).fract()
 }
 
-/// Pick the voice a new note lands on: the first free (inactive) voice, else the
-/// steal target by [`steal_tier`] then age. Pure over the borrowed view; the
-/// caller stamps channel/note/pressure onto the returned index. Total — always
-/// returns a valid `0..N` index (steal falls back to voice 0).
-///
-/// Single-lane allocation, used by the plain [`Voices::note_on`] path. The
-/// stack path claims whole stacks instead — see [`Voices::claim_lanes`].
-fn allocate(view: &AllocView) -> usize {
-    if let Some(v) = (0..N).find(|&v| !view.active[v]) {
-        return v;
-    }
-    (0..N)
-        .min_by_key(|&v| (steal_tier(view, v), view.alloc_tick[v]))
-        .unwrap_or(0)
-}
 
 /// The 16-voice bank's allocation + per-voice performance state. Holds only the
 /// bookkeeping the allocator and pressure fold touch — the DSP kernels (osc,
@@ -286,8 +262,6 @@ pub struct Voices {
     last_mode: VoiceMode,
     /// Stack width the last note event ran under. Recorded rather than acted on:
     /// a width change does **not** re-voice sounding stacks (ADR 0003), it
-    /// applies from the next note-on.
-    last_width: usize,
     /// Output scaling for the current stack width (`1/√len`) — held here
     /// because it is a property of the *allocation*, not of any one voice. The
     /// synth copies it into the block context each render.
@@ -336,7 +310,6 @@ impl Voices {
             mono_stack: [0; MONO_STACK],
             mono_len: 0,
             last_mode: VoiceMode::Poly,
-            last_width: 1,
             level_comp: 1.0,
             next_tick: 0,
             next_stack_id: 0,
@@ -365,20 +338,6 @@ impl Voices {
         self.level_comp
     }
 
-    /// Allocate a voice for a note-on on `channel`, stamp its identity, and reset
-    /// its pressure. Returns the assigned voice index. If every voice is busy the
-    /// oldest steal-tier target is re-used and **re-parented to `channel`** — the
-    /// core MPE requirement: the stolen voice now belongs to the stealing note's
-    /// channel, so subsequent channel pressure on that channel reaches it (and on
-    /// the old channel no longer does).
-    pub fn note_on(&mut self, channel: u8, note: u8, velocity: f32) -> usize {
-        let v = allocate(&self.view());
-        self.stamp(v, channel, note, velocity, 0.0, 0.0, true);
-        // A one-lane stack, so a later stack-granular steal sees a whole note
-        // here rather than an unowned lane sharing some other note's id.
-        self.stack_id[v] = self.next_stack();
-        v
-    }
 
     /// Stamp one voice's identity for a note. `fresh` distinguishes a real
     /// trigger (re-draw the note-random, clear stale pressure, take a new
@@ -410,14 +369,14 @@ impl Voices {
     }
 
     /// The worst-ranked stack still available to steal, or `None` when every
-    /// lane is already spoken for. Ranked exactly as [`allocate`] ranks a single
-    /// lane — [`steal_tier`] then age — but judged on the stack's *oldest* lane,
-    /// so for a pool of width-1 stacks the two agree lane for lane.
+    /// lane is already spoken for. Ranked by [`steal_tier`] then age, judged on
+    /// the stack's *oldest* lane — so a pool of width-1 stacks ranks lane for
+    /// lane, which is why 0311 could retire the separate single-lane policy and
+    /// point its tests here.
     fn worst_stack(&self, taken: &[bool; N]) -> Option<u32> {
-        let view = self.view();
         (0..N)
             .filter(|&v| !taken[v] && self.active[v])
-            .min_by_key(|&v| (steal_tier(&view, v), self.alloc_tick[v]))
+            .min_by_key(|&v| (steal_tier(&self.gate, v), self.alloc_tick[v]))
             .map(|v| self.stack_id[v])
     }
 
@@ -505,7 +464,7 @@ impl Voices {
     ) -> Triggers {
         let StackVoicing { mode, unison_detune, legato, .. } = voicing;
         let width = voicing.width.clamp(1, N);
-        self.sync_mode(width, mode);
+        self.sync_mode(mode);
         // One draw of the layout per note-on: Random must not re-roll per lane
         // read, and the other laws are pure.
         let pos = self.fill_stack_pos(width, voicing.distrib);
@@ -639,12 +598,16 @@ impl Voices {
         (width > 1).then(|| note_random_draw(&mut self.phase_rng) * depth.clamp(0.0, 1.0))
     }
 
-    /// Handle a (width, mode) change detected at note-on. Entering Solo releases
-    /// voices the polyphonic allocator placed (they would sustain under an
-    /// allocator that no longer tracks them); leaving it discards the held-note
-    /// stack so a later return starts clean. A width change alone needs neither
-    /// — sounding stacks keep their lanes until released (ADR 0003).
-    fn sync_mode(&mut self, width: usize, mode: VoiceMode) {
+    /// Handle a mode change detected at note-on. Entering Solo releases voices
+    /// the polyphonic allocator placed (they would sustain under an allocator
+    /// that no longer tracks them); leaving it discards the held-note stack so a
+    /// later return starts clean.
+    ///
+    /// Width is deliberately not a parameter: a width change alone needs neither
+    /// action — sounding stacks keep their lanes until released (ADR 0003). It
+    /// used to be passed in only to be recorded in a `last_width` field nothing
+    /// ever read.
+    fn sync_mode(&mut self, mode: VoiceMode) {
         if mode != self.last_mode {
             if mode == VoiceMode::Solo {
                 for v in 0..N {
@@ -655,7 +618,6 @@ impl Voices {
             }
             self.last_mode = mode;
         }
-        self.last_width = width;
     }
 
     /// Is a mono voice currently sounding (lane 0 allocated and still pressed)?
@@ -795,14 +757,6 @@ impl Voices {
         }
     }
 
-    #[inline]
-    fn view(&self) -> AllocView<'_> {
-        AllocView {
-            active: &self.active,
-            gate: &self.gate,
-            alloc_tick: &self.alloc_tick,
-        }
-    }
 }
 
 /// Disjoint per-voice slices the render path consumes (see [`Voices::render_view`]).
@@ -884,10 +838,23 @@ mod tests {
         StackVoicing { width, mode, unison_detune, legato, ..StackVoicing::default() }
     }
 
+    /// One note through the **shipping** allocator at width 1 — what the
+    /// retired `Voices::note_on` did. These tests cover voice stealing, which
+    /// is real behaviour; they were the only thing keeping a second allocation
+    /// policy alive, so 0311 re-pointed them at `note_on_stack` rather than
+    /// keeping the code to keep the tests.
+    fn note_on_1(voices: &mut Voices, channel: u8, note: u8, velocity: f32) -> usize {
+        voices
+            .note_on_stack(channel, note, velocity, voicing(1, VoiceMode::Poly, 0.0, false))
+            .as_slice()
+            .first()
+            .map_or(0, |t| t.voice)
+    }
+
     #[test]
     fn note_on_stores_channel_on_assigned_voice() {
         let mut voices = Voices::new();
-        let v = voices.note_on(3, 60, 1.0);
+        let v = note_on_1(&mut voices, 3, 60, 1.0);
         assert!(voices.is_active(v));
         assert_eq!(voices.channel(v), 3);
         assert_eq!(voices.note(v), 60);
@@ -897,8 +864,8 @@ mod tests {
     fn per_note_pressure_isolated_to_matching_voice() {
         let mut voices = Voices::new();
         // MPE: each note on its own channel.
-        let a = voices.note_on(1, 60, 1.0);
-        let b = voices.note_on(2, 64, 1.0);
+        let a = note_on_1(&mut voices, 1, 60, 1.0);
+        let b = note_on_1(&mut voices, 2, 64, 1.0);
         voices.poly_pressure(1, 60, 0.8);
         assert_eq!(voices.pressure(a), 0.8);
         // Must not leak to the other channel/note.
@@ -908,8 +875,8 @@ mod tests {
     #[test]
     fn per_note_pressure_ignores_same_note_other_channel() {
         let mut voices = Voices::new();
-        let a = voices.note_on(1, 60, 1.0);
-        let b = voices.note_on(2, 60, 1.0); // same note, different channel
+        let a = note_on_1(&mut voices, 1, 60, 1.0);
+        let b = note_on_1(&mut voices, 2, 60, 1.0); // same note, different channel
         voices.poly_pressure(2, 60, 0.5);
         assert_eq!(voices.pressure(a), 0.0);
         assert_eq!(voices.pressure(b), 0.5);
@@ -919,9 +886,9 @@ mod tests {
     fn channel_pressure_broadcasts_to_all_voices_on_channel() {
         let mut voices = Voices::new();
         // Channel mode: several notes share one channel.
-        let a = voices.note_on(1, 60, 1.0);
-        let b = voices.note_on(1, 64, 1.0);
-        let c = voices.note_on(2, 67, 1.0); // other channel — untouched
+        let a = note_on_1(&mut voices, 1, 60, 1.0);
+        let b = note_on_1(&mut voices, 1, 64, 1.0);
+        let c = note_on_1(&mut voices, 2, 67, 1.0); // other channel — untouched
         voices.channel_pressure(1, 0.6);
         assert_eq!(voices.pressure(a), 0.6);
         assert_eq!(voices.pressure(b), 0.6);
@@ -931,8 +898,8 @@ mod tests {
     #[test]
     fn free_voice_chosen_before_steal() {
         let mut voices = Voices::new();
-        let first = voices.note_on(1, 60, 1.0);
-        let second = voices.note_on(1, 61, 1.0);
+        let first = note_on_1(&mut voices, 1, 60, 1.0);
+        let second = note_on_1(&mut voices, 1, 61, 1.0);
         assert_ne!(first, second, "distinct free voices used before any steal");
     }
 
@@ -941,10 +908,10 @@ mod tests {
         let mut voices = Voices::new();
         // Fill every voice on channel 1.
         for i in 0..N {
-            voices.note_on(1, 60 + i as u8, 1.0);
+            note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
         }
         // Next note-on on channel 2 must steal and re-parent.
-        let stolen = voices.note_on(2, 72, 1.0);
+        let stolen = note_on_1(&mut voices, 2, 72, 1.0);
         assert_eq!(voices.channel(stolen), 2, "stolen voice adopts stealing channel");
         assert_eq!(voices.note(stolen), 72);
         // Pressure was reset on steal — no stale value inherited.
@@ -959,12 +926,12 @@ mod tests {
     #[test]
     fn oldest_voice_stolen_first() {
         let mut voices = Voices::new();
-        let oldest = voices.note_on(1, 60, 1.0);
+        let oldest = note_on_1(&mut voices, 1, 60, 1.0);
         for i in 1..N {
-            voices.note_on(1, 60 + i as u8, 1.0);
+            note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
         }
         // All held; the first-allocated (oldest tick) is sacrificed.
-        let stolen = voices.note_on(1, 90, 1.0);
+        let stolen = note_on_1(&mut voices, 1, 90, 1.0);
         assert_eq!(stolen, oldest);
     }
 
@@ -972,21 +939,21 @@ mod tests {
     fn released_tail_stolen_before_held_note() {
         let mut voices = Voices::new();
         // Voice 0 is the oldest but gets released; a later voice is younger but held.
-        let released = voices.note_on(1, 60, 1.0);
+        let released = note_on_1(&mut voices, 1, 60, 1.0);
         for i in 1..N {
-            voices.note_on(1, 60 + i as u8, 1.0);
+            note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
         }
         voices.note_off(1, 60); // release the oldest → tier 0
         // A held-but-younger voice exists, yet the released tail goes first.
-        let stolen = voices.note_on(1, 90, 1.0);
+        let stolen = note_on_1(&mut voices, 1, 90, 1.0);
         assert_eq!(stolen, released);
     }
 
     #[test]
     fn note_off_matches_channel_and_note() {
         let mut voices = Voices::new();
-        let a = voices.note_on(1, 60, 1.0);
-        let b = voices.note_on(2, 60, 1.0); // same note, other channel
+        let a = note_on_1(&mut voices, 1, 60, 1.0);
+        let b = note_on_1(&mut voices, 2, 60, 1.0); // same note, other channel
         voices.note_off(1, 60);
         // Only the channel-1 voice released; channel-2 still gated (its next
         // steal tier proves the gate state).
@@ -998,7 +965,7 @@ mod tests {
     fn note_random_in_unit_interval() {
         let mut voices = Voices::new();
         for i in 0..N {
-            let v = voices.note_on(1, 60 + i as u8, 1.0);
+            let v = note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
             let r = voices.note_random(v);
             assert!((0.0..1.0).contains(&r), "note-random {r} out of [0,1)");
         }
@@ -1007,10 +974,10 @@ mod tests {
     #[test]
     fn note_random_constant_over_note_lifetime() {
         let mut voices = Voices::new();
-        let a = voices.note_on(1, 60, 1.0);
+        let a = note_on_1(&mut voices, 1, 60, 1.0);
         let latched = voices.note_random(a);
         // Unrelated activity must not disturb a held voice's latched value.
-        voices.note_on(2, 64, 1.0);
+        note_on_1(&mut voices, 2, 64, 1.0);
         voices.channel_pressure(1, 0.7);
         voices.poly_pressure(1, 60, 0.3);
         assert_eq!(voices.note_random(a), latched);
@@ -1021,7 +988,7 @@ mod tests {
         let mut voices = Voices::new();
         let mut seen: Vec<f32> = Vec::new();
         for i in 0..N {
-            let v = voices.note_on(1, 60 + i as u8, 1.0);
+            let v = note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
             let r = voices.note_random(v);
             assert!(
                 !seen.iter().any(|&s| (s - r).abs() < 1e-9),
@@ -1037,8 +1004,8 @@ mod tests {
         let mut a = Voices::new();
         let mut b = Voices::new();
         for i in 0..5 {
-            let va = a.note_on(1, 60 + i, 1.0);
-            let vb = b.note_on(1, 60 + i, 1.0);
+            let va = note_on_1(&mut a, 1, 60 + i, 1.0);
+            let vb = note_on_1(&mut b, 1, 60 + i, 1.0);
             assert_eq!(a.note_random(va), b.note_random(vb));
         }
     }
@@ -1048,15 +1015,15 @@ mod tests {
         // A reused (stolen) voice draws a fresh value, not the stale one.
         let mut voices = Voices::new();
         for i in 0..N {
-            voices.note_on(1, 60 + i as u8, 1.0);
+            note_on_1(&mut voices, 1, 60 + i as u8, 1.0);
         }
-        let stolen = voices.note_on(2, 90, 1.0);
+        let stolen = note_on_1(&mut voices, 2, 90, 1.0);
         let before = voices.note_random(stolen);
         // Steal it again with another full round + one more note.
         for i in 0..N {
-            voices.note_on(3, 40 + i as u8, 1.0);
+            note_on_1(&mut voices, 3, 40 + i as u8, 1.0);
         }
-        let stolen2 = voices.note_on(4, 91, 1.0);
+        let stolen2 = note_on_1(&mut voices, 4, 91, 1.0);
         // Overwhelmingly likely distinct; assert the draw actually re-ran by
         // checking the stream advanced (value changed for this reused slot).
         if stolen2 == stolen {
@@ -1654,7 +1621,7 @@ mod tests {
     #[test]
     fn pressure_is_clamped() {
         let mut voices = Voices::new();
-        let v = voices.note_on(1, 60, 1.0);
+        let v = note_on_1(&mut voices, 1, 60, 1.0);
         voices.channel_pressure(1, 2.5);
         assert_eq!(voices.pressure(v), 1.0);
         voices.poly_pressure(1, 60, -1.0);

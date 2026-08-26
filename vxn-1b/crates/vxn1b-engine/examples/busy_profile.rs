@@ -70,7 +70,7 @@ fn main() {
     let voicing = Voicing::parse(args.next());
     let iters: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(ITERS);
 
-    let mut e = Engine::new(SR, FRAMES);
+    let mut e = Engine::new(SR);
     let (width, notes) = voicing.setup();
 
     // Globals: 4× oversample plus FX, so the whole output stage is live.

@@ -505,15 +505,6 @@ impl RenderBank {
         }
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.env1 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
-        self.env2 = std::array::from_fn(|_| AdsrCore::new(sample_rate));
-        let control_rate = sample_rate / CONTROL_BLOCK as f32;
-        let seed = self.lfo1_seed;
-        self.lfo1 = std::array::from_fn(|i| LfoCore::new(control_rate, lfo1_seed(seed, i)));
-        self.smooth.set_sample_rate(sample_rate);
-        self.reset();
-    }
 
     pub fn reset(&mut self) {
         self.osc1 = PolyOscillator::new();
