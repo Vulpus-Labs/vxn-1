@@ -1007,11 +1007,28 @@ impl RenderBank {
             hpf_tgt[v] = self.set_lane_filter(v, &dests, ctx, note[v] as f32);
             hpf_modulated |= active[v] && hpf_tgt[v] != ctx.hpf_cutoff;
         }
-        // ═══ Phase 3: bank-wide decisions across the resolved lanes ═════════
+        // ═══ Phase 3: reductions, filter setup, and the per-lane gains ══════
         //
-        // Which smoothers any lane still needs ticked, which kernels run, and
-        // whether the VCA is constant for the whole block — each one an `any()`
-        // over what phase 2 produced, hoisted out of the frame loop.
+        // Three kinds of work, not one — worth naming, because the banners read
+        // like a pipeline and are not one, and 0313 planned an extraction along
+        // them before checking:
+        //
+        //   1. `any()` reductions over phase 2's per-lane flags, hoisted out of
+        //      the frame loop so a static patch skips whole branches.
+        //   2. Configuration written into `self` — the ladder's response and
+        //      ramp, the HPF's coefficients, and draining `trigger_pending`.
+        //      Not derivable from phase 2's output; it mutates the bank.
+        //   3. Per-lane pan and amp gains, which are lane work like phase 2's,
+        //      placed here only because they read phase 2's results.
+        //
+        // The frame loop's scratch buffers are declared here too, for the same
+        // reason C declares at block top: they are phase 4's, and live here
+        // only so the loop body does not re-zero them per frame.
+        //
+        // A reader looking to split this function should know that phase 2
+        // leaks ~15 locals into phases 3 and 4, and that bundling them into one
+        // record is exactly the change that cost 1.32% on the routed path when
+        // tried on `BlockCtx` (see 0313's step-2 note).
         let pitch_any = pitch_active.iter().any(|&a| a);
         let pwm_any = pwm_active.iter().any(|&a| a);
         let xmod_any = xmod_active.iter().any(|&a| a);
