@@ -20,7 +20,7 @@ lists worst-case performance as an **open question rather than a known-good**:
 single-threaded wasm with no NEON. The number belongs on screen where a visitor
 (and we) can see it, not in a profiler someone has to go and open.
 
-Same shape as [0308](0308-shared-on-screen-piano.md): the badge is ~66 lines of
+Same shape as [0322](0322-shared-on-screen-piano.md): the badge is ~66 lines of
 pure presentation living inside vxn-2's bridge, so it hoists to
 `crates/vxn-core-web/assets/cpu-meter.mjs` and both ports import it.
 
@@ -73,7 +73,7 @@ is Blink and measures fine. Disabling it there would be a permanent, silent
 
 ## Notes
 
-- The badge's `bottom:102px` clears the on-screen piano's 92px bar (0308). If
+- The badge's `bottom:102px` clears the on-screen piano's 92px bar (0322). If
   either number changes, they change together.
 - Not taken: testing the processor's accumulator directly. It lives inside an
   `AudioWorkletProcessor` subclass in a worklet-only file, and neither sibling

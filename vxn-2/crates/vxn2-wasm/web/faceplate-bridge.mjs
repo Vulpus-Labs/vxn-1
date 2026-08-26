@@ -661,7 +661,7 @@ export function createWelcome(doc = globalThis.document) {
 // own). Returns { el, detach, allNotesOff }.
 
 // The on-screen piano moved to `crates/vxn-core-web/assets/piano-keyboard.mjs`
-// (ticket 0308) when VXN1b needed one: it is a pure note producer with no
+// (ticket 0322) when VXN1b needed one: it is a pure note producer with no
 // knowledge of either synth's model, so a second copy would have been a fork for
 // nothing. It rides `loadGlue()` with the other shared modules — a static
 // re-export from here cannot work, because `./piano-keyboard.mjs` resolves in

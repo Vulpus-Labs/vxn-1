@@ -1,5 +1,5 @@
 ---
-id: "0308"
+id: "0322"
 product: monorepo
 title: "Hoist the on-screen piano to vxn-core-web and give VXN1b one"
 priority: medium
@@ -64,6 +64,13 @@ that gap is how this nearly shipped broken.
       monophonically rather than stacking a chord.
 
 ## Notes
+
+- **Renumbered 0308 → 0322.** Filed as 0308 while another session was closing
+  its own 0308 (`vxn1b-stack-pos-source`) — a straight collision on the
+  worklist's single global counter, from two people filing at once. Theirs moved
+  first in history and its id is referenced from closed-ticket history and from
+  `bank.rs` / `matrix.rs` / `eval.rs`, so this one moved instead. Commits between
+  the two dates cite "0308" meaning the piano; they mean this ticket.
 
 - Deliberately NOT taken here: making the piano aware of VXN1b's split point, so
   the two layers are shaded differently either side of it. That is real polish

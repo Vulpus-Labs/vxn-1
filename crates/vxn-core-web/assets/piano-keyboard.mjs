@@ -1,4 +1,4 @@
-// On-screen piano keyboard — SHARED across the browser ports (ticket 0308).
+// On-screen piano keyboard — SHARED across the browser ports (ticket 0322).
 //
 // A note producer and nothing else: it calls `host.noteOn(note, velocity, 0)` /
 // `host.noteOff(note, 0)` on the same coordinator surface the computer keyboard

@@ -149,7 +149,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // Browser input adapters: Web MIDI + computer keyboard → ring.
         "midi-input.mjs",
         "keyboard-input.mjs",
-        // The on-screen piano (ticket 0308), hoisted out of faceplate-bridge.mjs
+        // The on-screen piano (ticket 0322), hoisted out of faceplate-bridge.mjs
         // when VXN1b needed one. The bridge dynamic-imports it, so the bundle
         // MUST carry it or the keyboard silently fails to appear.
         "piano-keyboard.mjs",

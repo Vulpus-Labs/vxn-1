@@ -823,7 +823,7 @@ const WEB_WORKLET: &str = "vxn1b-processor.js";
 const CORE_MODULES: [&str; 8] = [
     "midi-input.mjs",
     "keyboard-input.mjs",
-    // The on-screen piano (0308). VXN1b's faceplate has no playable keys, so in
+    // The on-screen piano (0322). VXN1b's faceplate has no playable keys, so in
     // a browser this is the only way to sound a note without MIDI hardware or
     // the QWERTY mapping.
     "piano-keyboard.mjs",

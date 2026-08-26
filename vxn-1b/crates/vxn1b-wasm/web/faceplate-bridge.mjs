@@ -710,7 +710,7 @@ export async function boot({
   let inputs = null;
   if (autoInputs) inputs = await attachKeyboardInput(win, host, adapters);
 
-  // On-screen piano (0308). VXN1b's faceplate has no playable keys of its own —
+  // On-screen piano (0322). VXN1b's faceplate has no playable keys of its own —
   // `keys.js` is the key-MODE panel — so without this the only way to sound a
   // note in a browser is a MIDI device or knowing the QWERTY mapping. Web-only:
   // the plugin has a host and a real keyboard. It produces onto the same

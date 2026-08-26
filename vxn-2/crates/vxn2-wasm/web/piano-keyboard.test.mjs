@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 // Imported from the SHARED module, not the bridge: `./piano-keyboard.mjs`
 // resolves in the flat dist bundle but not in the source tree, so the bridge
-// dynamic-imports it with the rest of the shared glue (ticket 0308).
+// dynamic-imports it with the rest of the shared glue (ticket 0322).
 import {
   createPianoKeyboard,
   pianoLayout,
