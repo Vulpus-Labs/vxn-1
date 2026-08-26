@@ -74,6 +74,35 @@ must not touch its codegen.
 
 Step 1 makes step 3 mechanical, which is why it goes first.
 
+## Step 2 was tried and rejected (2026-08-26)
+
+Deriving `sync` / `ring_mode` / `pm_index` inside `render` and slimming
+`BlockCtx` to `cross_mod_type` + `cross_mod_amount` **costs ~1.3% on the routed
+path** and is not worth it.
+
+Measured by interleaving two separately-built `route_profile` binaries — the
+machine had a second session on it, and sequential sampling was reading ±4% of
+pure noise:
+
+| | before | after | delta |
+|---|---|---|---|
+| `route_profile`, 13 pairs | 49.38× | 48.72× | **−1.32%** |
+| `busy_profile`, 5 pairs | 15.86× | 15.86× | 0.00% |
+
+11 of 13 route pairs negative — not noise-shaped, and concentrated exactly where
+cross-mod work happens while the plain poly path is untouched. Most likely
+`BlockCtx` layout: removing two `bool`s and an `f32` shifts every later field's
+offset, and the frame loop reads a lot of `ctx`. Chasing that is the rabbit hole
+this ticket warns about, and the prize was only hygiene — the invalid
+`sync: true, cross_mod_type: Off` state, which nothing constructs.
+
+Kept from the attempt: `build_ctx` now reads `cross_mod_type()` **once** instead
+of twice (it is a get + round + min + from_index), which was finding #20 of the
+review and is free.
+
+If someone retries this, the bar is a measurable win or parity — not "it is
+tidier". Same lesson as [[vxn1-ota-filter-perf]]'s stage-split.
+
 ## Acceptance criteria
 
 - [ ] `render` takes a `RenderView`; no caller unpacks it positionally.
