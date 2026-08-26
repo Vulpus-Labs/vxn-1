@@ -4,7 +4,7 @@
 [package]
 name = "vxn1b-wasm"
 # VXN1b versions independently of the shared 0.x line vxn-1/vxn-2 ride.
-version = "0.0.1"
+version = "0.0.3"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true

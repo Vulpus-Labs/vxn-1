@@ -2491,7 +2491,7 @@ version = "0.1.1"
 
 [[package]]
 name = "vxn1b-clap"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "clack-extensions",
  "clack-plugin",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-engine"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "include_dir",
  "serde",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-ui-web"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde_json",
  "vxn-core-app",
@@ -2528,14 +2528,14 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-wasm"
-version = "0.0.1"
+version = "0.0.3"
 dependencies = [
  "vxn1b-engine",
 ]
 
 [[package]]
 name = "vxn1b-web-controller"
-version = "0.0.1"
+version = "0.0.3"
 dependencies = [
  "vxn-core-app",
  "vxn1b-engine",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "vxn1b-xtask"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "vxn2-app"

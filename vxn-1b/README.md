@@ -20,7 +20,7 @@ aim is zero divergence in how it sounds. Three things diverge:
   `source → destination` pair with a depth, a curve (linear, exponential,
   logarithmic, bipolar) and a secondary scale source that acts as a per-route
   VCA. Sources: Env 1/2, LFO 1/2, velocity, key, mod wheel, pitch wheel,
-  aftertouch, per-note random, stack spread. Destinations: pitch, cross-mod
+  aftertouch, per-note random, stack spread, stack position. Destinations: pitch, cross-mod
   sweep, cross-mod amount, PWM (both oscillators together or each alone),
   cutoff, resonance, HPF cutoff, amp, pan, Env 1/2 time scale, Env 1/2 sustain,
   and LFO 1 rate.
@@ -82,6 +82,16 @@ Unlike vxn-1 and vxn-2, VXN1b has no `cargo xtask` alias (no per-product
 `.cargo/config.toml`), so `deploy.sh` calls the xtask package directly:
 `cargo run -p vxn1b-xtask -- <subcommand>`. The build is always release.
 
+There is also a browser build — the same engine compiled to wasm, running in an
+AudioWorklet behind the same faceplate:
+
+```sh
+cargo run -p vxn1b-xtask -- web --serve    # bundle to target/web-dist/ and serve it
+```
+
+It needs the COOP/COEP cross-origin-isolation headers `SharedArrayBuffer`
+requires, which `--serve` sets for you; a static host needs them configured.
+
 The VST3 path wraps the same staticlib through
 [clap-wrapper](https://github.com/free-audio/clap-wrapper) and needs CMake plus
 the repo-root submodules:
@@ -111,7 +121,9 @@ jobs out of a VXN1b release and vice versa. See
 | [`vxn1b-engine`](crates/vxn1b-engine) | Parameter table, matrix evaluator, block render loop, preset store |
 | [`vxn1b-clap`](crates/vxn1b-clap) | CLAP shell (clack) — params, state, GUI and timer extensions |
 | [`vxn1b-ui-web`](crates/vxn1b-ui-web) | The HTML faceplate and matrix overlay, spliced into a wry WebView |
-| [`vxn1b-xtask`](xtask) | Bundling: `.clap` / `.vst3`, universal builds, install |
+| [`vxn1b-wasm`](crates/vxn1b-wasm) | The engine compiled for the browser — runs in the AudioWorklet |
+| [`vxn1b-web-controller`](crates/vxn1b-web-controller) | Main-thread controller for the web build, over the C-ABI opcode surface |
+| [`vxn1b-xtask`](xtask) | Bundling: `.clap` / `.vst3`, universal builds, install, web bundle |
 
 The DSP itself is [`vxn-dsp`](../vxn-1/crates/vxn-dsp), shared with VXN1;
 `vxn-core-*` and `vxn-preset` at the repo root are shared with every product.
