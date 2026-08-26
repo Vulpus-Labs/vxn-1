@@ -62,6 +62,10 @@ that gap is how this nearly shipped broken.
 - [ ] Both bundles ship the module.
 - [ ] Manual: clicking the keys plays, and dragging across them glissandos
       monophonically rather than stacking a chord.
+- [ ] Keys played by MIDI or the computer keyboard light up, polyphonically, and
+      unlight on note-off; a suspend/resume voice flush clears any left lit.
+- [ ] In Split mode the keys below the split point are shaded; leaving Split
+      clears the shading rather than stranding it.
 
 ## Notes
 
@@ -72,10 +76,14 @@ that gap is how this nearly shipped broken.
   `bank.rs` / `matrix.rs` / `eval.rs`, so this one moved instead. Commits between
   the two dates cite "0308" meaning the piano; they mean this ticket.
 
-- Deliberately NOT taken here: making the piano aware of VXN1b's split point, so
-  the two layers are shaded differently either side of it. That is real polish
-  and a real divergence — it would push per-synth knowledge into a shared widget
-  — so it wants its own ticket and its own decision.
+- **Split shading and note lighting: done (2026-08-26).** The earlier note said
+  split awareness "would push per-synth knowledge into a shared widget". That was
+  wrong about where the knowledge has to live: the widget takes a bare note
+  number and shades below it, and the per-synth half — *when* a split is
+  meaningful — stays in VXN1b's bridge, which already receives the key state on
+  the `keys` echo. Nothing about layers or key modes reaches the shared module.
+  Keys are also lit by any producer now, via a note tap in front of the
+  coordinator rather than anything the widget listens to.
 - vxn-2 is a shipped product. The extraction is mechanical, but land it with both
   suites green and its bundle rebuilt, not on inspection.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. Stage explicit paths —

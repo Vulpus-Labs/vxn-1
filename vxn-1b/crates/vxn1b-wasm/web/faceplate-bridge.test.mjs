@@ -61,6 +61,12 @@ class FakeCoordinator {
   setTempo(bpm) {
     this.calls.push(["setTempo", bpm]);
   }
+  noteOn(note, velocity, offset, channel) {
+    this.calls.push(["noteOn", note, velocity, offset, channel]);
+  }
+  noteOff(note, offset, channel) {
+    this.calls.push(["noteOff", note, offset, channel]);
+  }
   pollMeters() {
     return this.meters ?? null;
   }
@@ -851,5 +857,106 @@ test("boot mounts the on-screen piano, and it plays into the ring", async () => 
   piano._release();
   const after = Atomics.load(host.ring.ctrl, 0);
   assert.ok(after > before, "a piano press pushed nothing onto the ring");
+  controller.destroy();
+});
+
+// ---- piano: split shading + keys lit by other producers --------------------
+
+/// A piano stand-in that records what the bridge and the tap ask of it.
+function fakePiano() {
+  return {
+    splits: [],
+    active: [],
+    setSplit(n) {
+      this.splits.push(n);
+    },
+    setActive(note, on) {
+      this.active.push([note, on]);
+    },
+  };
+}
+
+test("the split reaches the piano only in Split mode", async () => {
+  const { bridge, controller } = await rig();
+  const piano = fakePiano();
+  bridge.piano = piano;
+  bridge.pump(); // boot keys echo — Single, so no split
+
+  bridge.handle({ op: "set_key_mode", mode: 2 }); // Split
+  bridge.handle({ op: "set_split_point", note: 55 });
+  bridge.pump();
+  assert.equal(piano.splits.at(-1), 55, "Split mode did not shade at the split point");
+
+  // Dual: the boundary means nothing, so the shading must clear rather than
+  // linger from the last time Split was on.
+  bridge.handle({ op: "set_key_mode", mode: 1 });
+  bridge.pump();
+  assert.equal(piano.splits.at(-1), null, "leaving Split left the shading behind");
+
+  bridge.handle({ op: "set_key_mode", mode: 0 }); // Single
+  bridge.pump();
+  assert.equal(piano.splits.at(-1), null);
+  controller.destroy();
+});
+
+test("notes from other producers light the keys, and still reach the ring", async () => {
+  const { controller, coordinator } = await rig();
+  const { pianoNoteTap } = await import("./faceplate-bridge.mjs");
+  const piano = fakePiano();
+  // The tap stands in front of the coordinator: adapters see this, not the host.
+  const tapped = pianoNoteTap(coordinator, piano);
+
+  tapped.noteOn(64, 0.8, 0, 3);
+  tapped.noteOff(64, 0, 3);
+  assert.deepEqual(piano.active, [
+    [64, true],
+    [64, false],
+  ]);
+  // …and the real producer still ran, channel and all — lighting a key must not
+  // cost a note.
+  assert.deepEqual(coordinator.calls, [
+    ["noteOn", 64, 0.8, 0, 3],
+    ["noteOff", 64, 0, 3],
+  ]);
+  controller.destroy();
+});
+
+test("the tap forwards every other producer call untouched", async () => {
+  const { controller } = await rig();
+  const { pianoNoteTap } = await import("./faceplate-bridge.mjs");
+  const seen = [];
+  const host = {
+    noteOn: () => seen.push("noteOn"),
+    noteOff: () => seen.push("noteOff"),
+    pitchBend: (...a) => seen.push(["pitchBend", ...a]),
+    modWheel: (...a) => seen.push(["modWheel", ...a]),
+    polyPressure: (...a) => seen.push(["polyPressure", ...a]),
+    channelPressure: (...a) => seen.push(["channelPressure", ...a]),
+    setTempo: (...a) => seen.push(["setTempo", ...a]),
+    ring: { marker: true },
+  };
+  const tapped = pianoNoteTap(host, fakePiano());
+  tapped.pitchBend(0.5, 2);
+  tapped.modWheel(0.25, 0);
+  tapped.polyPressure(60, 0.4, 0, 1);
+  tapped.channelPressure(0.6, 0, 1);
+  tapped.setTempo(96);
+  assert.deepEqual(seen, [
+    ["pitchBend", 0.5, 2],
+    ["modWheel", 0.25, 0],
+    ["polyPressure", 60, 0.4, 0, 1],
+    ["channelPressure", 0.6, 0, 1],
+    ["setTempo", 96],
+  ]);
+  // Non-function properties pass through, so `host.ring` still works.
+  assert.equal(tapped.ring.marker, true);
+  controller.destroy();
+});
+
+test("without a piano the tap is the host itself, not a wrapper", async () => {
+  const { controller, coordinator } = await rig();
+  const { pianoNoteTap } = await import("./faceplate-bridge.mjs");
+  assert.equal(pianoNoteTap(coordinator, null), coordinator);
+  assert.equal(pianoNoteTap(coordinator, {}), coordinator, "a piano with no setActive");
   controller.destroy();
 });

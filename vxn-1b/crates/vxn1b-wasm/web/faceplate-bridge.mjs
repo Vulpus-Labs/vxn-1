@@ -304,6 +304,9 @@ export class FaceplateBridge {
 
     // In-page text input.
     this._prompt = null;
+    /// The on-screen piano, once mounted. The bridge only ever tells it about
+    /// the split; note lighting is the producers' tap.
+    this.piano = null;
   }
 
   /// Install the `window.ipc` shim the page posts through. Replaces whatever is
@@ -540,6 +543,11 @@ export class FaceplateBridge {
         modelMoved = true;
       } else if (ev.kind === "keys") {
         this._resendKey(ev);
+        // Shade the on-screen keys below the split — but only in Split mode
+        // (2), where the boundary means something. The widget takes a bare note
+        // number, so nothing about layers or key modes reaches it; this is the
+        // per-synth half, and it rides the echo the model already sends.
+        if (this.piano) this.piano.setSplit(ev.mode === 2 ? ev.split : null);
         modelMoved = true;
       } else if (ev.kind === "preset_corpus_changed") corpusDirty = true;
       else if (ev.kind === "param_changed" || ev.kind === "preset_loaded") modelMoved = true;
@@ -700,24 +708,26 @@ export async function boot({
   bridge.install();
   // After hydration, so the browser panel gets factory AND the user's folders.
   bridge.publishCorpus();
-  bridge.start();
+
+  // The piano mounts BEFORE the inputs, so the note tap below can exist: an
+  // adapter attached first would capture the untapped host and its notes would
+  // sound without lighting anything.
+  let piano = null;
+  if (autoPiano) piano = await attachPiano(win, host, adapters);
+  bridge.piano = piano;
+
+  // Everything that plays a note goes through here, so MIDI and the computer
+  // keyboard light the on-screen keys exactly as a click does.
+  const noteHost = pianoNoteTap(host, piano);
 
   // The computer keyboard attaches NOW, before audio exists. A keypress then
   // does both jobs at once: it satisfies the gesture gate and its note lands in
   // the ring, which the runner applies on the first live quantum
-  // (silence-until-ready). Attaching it after `start()` instead would eat the
-  // very keystroke the player used to wake the thing up.
+  // (silence-until-ready). Attaching it after `start()` would eat the very
+  // keystroke the player used to wake the thing up.
   let inputs = null;
-  if (autoInputs) inputs = await attachKeyboardInput(win, host, adapters);
+  if (autoInputs) inputs = await attachKeyboardInput(win, noteHost, adapters);
 
-  // On-screen piano (0322). VXN1b's faceplate has no playable keys of its own —
-  // `keys.js` is the key-MODE panel — so without this the only way to sound a
-  // note in a browser is a MIDI device or knowing the QWERTY mapping. Web-only:
-  // the plugin has a host and a real keyboard. It produces onto the same
-  // coordinator surface as the other inputs, so notes pushed before audio is
-  // live buffer in the ring and sound on the first quantum.
-  let piano = null;
-  if (autoPiano) piano = await attachPiano(win, host, adapters);
 
   // Render-load badge (0309). Shared widget, fed by the worklet's `cpu` port
   // messages through `onCpu` above. Worth having on a demo: this port runs 32
@@ -736,7 +746,12 @@ export async function boot({
   // Web MIDI waits for the gesture: asking for the permission prompt on page
   // load, before the player has touched anything, is rude and easy to deny by
   // reflex.
-  if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
+  // Pump LAST. Its first tick carries the boot `keys` record, and that is what
+  // sets the initial split shading — start it before the piano is wired and the
+  // shading is missing until the key mode next changes.
+  bridge.start();
+
+  if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters, noteHost });
 
   return { host, controller, bridge, inputs, piano, cpuMeter, persistence, autosave };
 }
@@ -850,6 +865,40 @@ async function attachKeyboardInput(win, host, injected) {
   }
 }
 
+/// Wrap the coordinator so notes played by OTHER producers light the on-screen
+/// keys. The input adapters get this instead of the bare host; every call still
+/// reaches the real one, and `noteOn` / `noteOff` additionally paint.
+///
+/// A Proxy rather than a hand-written delegate because the adapters call a
+/// surface that grows: pitch bend, mod wheel, both pressure messages, and
+/// whatever a later adapter reaches for. Listing them by hand would silently
+/// drop the next one added.
+///
+/// The piano is NOT given this wrapper — it paints its own presses directly, and
+/// routing it through here would only paint the same key twice.
+export function pianoNoteTap(host, piano) {
+  if (!piano || typeof piano.setActive !== "function") return host;
+  return new Proxy(host, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      if (prop === "noteOn") {
+        return (note, velocity, offset, channel) => {
+          piano.setActive(note, true);
+          return value.call(target, note, velocity, offset, channel);
+        };
+      }
+      if (prop === "noteOff") {
+        return (note, offset, channel) => {
+          piano.setActive(note, false);
+          return value.call(target, note, offset, channel);
+        };
+      }
+      return value.bind(target);
+    },
+  });
+}
+
 /// On-screen piano → ring. Shared widget; a pure note producer that calls the
 /// same `noteOn` / `noteOff` the computer keyboard does, so the engine cannot
 /// tell which played it.
@@ -890,7 +939,7 @@ async function attachMidiInput(host, injected) {
 /// cutting the rest of the lifecycle machinery. Listeners are one-shot and cover
 /// both pointer and keyboard, so a player who reaches for the computer-keyboard
 /// octave first is not left in silence wondering.
-export function attachGestureGate(win, host, bridge, { autoInputs = true, adapters = null } = {}) {
+export function attachGestureGate(win, host, bridge, { autoInputs = true, adapters = null, noteHost = host } = {}) {
   const doc = win.document;
   if (!doc) return () => {};
   let started = false;
@@ -905,7 +954,7 @@ export function attachGestureGate(win, host, bridge, { autoInputs = true, adapte
       // push made while the ring had no consumer may have been refused. Tell the
       // engine everything again — see `resyncEngine`.
       bridge.resyncEngine();
-      if (autoInputs) await attachMidiInput(host, adapters);
+      if (autoInputs) await attachMidiInput(noteHost, adapters);
     } catch (e) {
       console.error("vxn: audio failed to start", e);
     }

@@ -65,11 +65,24 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
   const keyEls = new Map();
   const whiteW = 100 / whites.length; // percent width per white key
 
-  function styleWhite(el, active) {
-    el.style.background = active ? "#8fd0ff" : "#f4f4f2";
+  // Split point, or null for "no split" — the default, and what a single-timbral
+  // synth always passes. Purely presentational: the widget is told a note number
+  // and shades below it; it knows nothing about layers, key modes or which synth
+  // is asking.
+  let splitNote = null;
+
+  // Notes held by producers OTHER than this widget's own pointer — MIDI, the
+  // computer keyboard, anything else on the same host. Kept as a set because
+  // those are polyphonic, while a pointer drag is not.
+  const externalOn = new Set();
+
+  const belowSplit = (note) => splitNote != null && note < splitNote;
+
+  function styleWhite(el, active, lower) {
+    el.style.background = active ? "#8fd0ff" : lower ? "#d9dee6" : "#f4f4f2";
   }
-  function styleBlack(el, active) {
-    el.style.background = active ? "#4c8fbf" : "#1b1d21";
+  function styleBlack(el, active, lower) {
+    el.style.background = active ? "#4c8fbf" : lower ? "#25292f" : "#1b1d21";
   }
 
   // Lay out white keys first (flex children), then overlay black keys.
@@ -82,7 +95,7 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
     el.style.cssText =
       "flex:1;height:100%;border-right:1px solid rgba(0,0,0,.28);" +
       "border-radius:0 0 3px 3px;box-sizing:border-box;";
-    styleWhite(el, false);
+    styleWhite(el, false, false);
     bed.appendChild(el);
     keyEls.set(k.note, el);
     whiteIndex++;
@@ -102,7 +115,7 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
       "left:" + centre.toFixed(4) + "%;transform:translateX(-50%);" +
       "border-radius:0 0 3px 3px;box-sizing:border-box;z-index:2;" +
       "box-shadow:0 2px 3px rgba(0,0,0,.5);";
-    styleBlack(el, false);
+    styleBlack(el, false, false);
     bed.appendChild(el);
     keyEls.set(k.note, el);
   }
@@ -111,18 +124,44 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
   let pointerDown = false;
   let current = null; // the single note sounding from the mouse/touch drag
 
-  function paint(note, active) {
+  // One place decides a key's appearance, so a MIDI note-off cannot wipe the
+  // highlight from a key the mouse is still holding (or the reverse).
+  function paint(note) {
     const el = keyEls.get(note);
     if (!el) return;
-    if (isBlackKey(note)) styleBlack(el, active);
-    else styleWhite(el, active);
+    const active = note === current || externalOn.has(note);
+    if (isBlackKey(note)) styleBlack(el, active, belowSplit(note));
+    else styleWhite(el, active, belowSplit(note));
+  }
+
+  function repaintAll() {
+    for (const note of keyEls.keys()) paint(note);
+  }
+
+  /// Light or unlight a key WITHOUT sounding it — for notes played by another
+  /// producer (MIDI, the computer keyboard). The caller taps its own note path;
+  /// this widget never listens to anything.
+  function setActive(note, on) {
+    if (!keyEls.has(note)) return; // outside the drawn range: nothing to light
+    if (on) externalOn.add(note);
+    else externalOn.delete(note);
+    paint(note);
+  }
+
+  /// Shade keys below `note`. `null` clears it. The caller decides when a split
+  /// is meaningful — in a mode with no split it passes null.
+  function setSplit(note) {
+    const next = note == null ? null : note | 0;
+    if (next === splitNote) return;
+    splitNote = next;
+    repaintAll();
   }
 
   function press(note) {
     if (note == null || note === current) return;
     if (current != null) release(); // monophonic drag: release the old note first
     current = note;
-    paint(note, true);
+    paint(note);
     if (host && typeof host.noteOn === "function") host.noteOn(note, velocity, 0);
   }
 
@@ -130,7 +169,7 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
     if (current == null) return;
     const note = current;
     current = null;
-    paint(note, false);
+    paint(note);
     if (host && typeof host.noteOff === "function") host.noteOff(note, 0);
   }
 
@@ -172,12 +211,19 @@ export function createPianoKeyboard(doc = globalThis.document, host = null, opts
   function allNotesOff() {
     pointerDown = false;
     release();
+    // Also drop notes lit by other producers: on a suspend/resume voice flush
+    // their note-offs never arrive, and the keys would stay lit for good.
+    const stuck = [...externalOn];
+    externalOn.clear();
+    for (const note of stuck) paint(note);
   }
 
   doc.body.appendChild(bar);
 
   return {
     el: bar,
+    setActive,
+    setSplit,
     allNotesOff,
     detach() {
       allNotesOff();
