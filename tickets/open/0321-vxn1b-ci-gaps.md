@@ -109,6 +109,21 @@ commit that hollowed it.
 - Do this **before** the rest of [[E047]]. Every other ticket in the epic
   deletes something, and deleting without CI watching is how a shipped bundle
   loses a file nobody notices for six weeks.
+- **The first real run was informative, as predicted — it caught an incomplete
+  step of mine.** `node --test` needs TWO wasm artifacts; the first cut of the
+  build step made only `vxn1b-wasm`, so the three suites that drive
+  `vxn1b_web_controller.wasm` (controller, faceplate-bridge, persistence)
+  aborted. CI reported **91 tests where a complete run has 151** — and the step
+  did fail, because those suites fail rather than skip on a missing artifact
+  (0295). Without that rule it would have gone green at 60% coverage. Fixed by
+  building via `cargo run -p vxn1b-xtask -- web`, which owns the crate list, so
+  a third wasm crate cannot silently fall out of it.
+
+  Residual risk worth knowing: the step's health is judged by exit code, not by
+  test count. A future change that stops a suite from running *without* tripping
+  the fail-don't-skip rule would show as green with fewer tests. A count floor
+  would catch it, at the cost of churn every time tests are added.
+
 - Both suites were run locally before wiring and both are green (140 + 295), so
   the first CI run should not be a surprise. If it is, the difference is
   environmental — a missing wasm artifact or a Node version gap — not a real

@@ -65,15 +65,18 @@ jobs:
 
       # vxn-1b's web transport (event ring, codec, coordinator, controller,
       # telemetry, persistence, faceplate bridge) is tested by `node --test`
-      # rather than Vitest — no jsdom, and `wasm-agreement.test.mjs` drives the
-      # real engine. That suite reads the crate's own wasm artifact and FAILS
-      # rather than skips when it is absent (0295), so the build must come
-      # first. The build command is the one the test file's own error message
-      # prints.
-      - name: Build vxn-1b wasm (for the agreement suite)
-        env:
-          RUSTFLAGS: "-C target-feature=+simd128"
-        run: cargo build -p vxn1b-wasm --target wasm32-unknown-unknown --release
+      # rather than Vitest — no jsdom, and several suites drive the REAL wasm.
+      # They FAIL rather than skip when an artifact is missing (0295), so the
+      # build must come first.
+      #
+      # `xtask web` rather than hand-listing cargo builds: there are TWO wasm
+      # crates (vxn1b-wasm and vxn1b-web-controller) and the first cut of this
+      # step built only the first. CI then reported 91 passing tests where a
+      # complete run has 151 — three suites aborted on the missing controller
+      # artifact and the step still looked plausible. xtask owns the list, so a
+      # third crate cannot silently fall out of it (0321).
+      - name: Build vxn-1b web artifacts
+        run: cargo run --package vxn1b-xtask -- web
 
       - name: vxn-1b web suite (node --test)
         run: node --test vxn-1b/crates/vxn1b-wasm/web/*.test.mjs
