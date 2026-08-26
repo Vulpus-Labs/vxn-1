@@ -57,10 +57,27 @@ layout rework, since the Dynamics panel moved to the top row at the same time.
 - [x] GR reads 0 when the slot is off or the signal is below threshold
       (`dynamics_meters_report_in_out_and_reduction`).
 - [x] Contract/token tests pass; loads without JS errors.
-- [ ] Opens in a DAW — manual check outstanding.
+- [x] Opens in a DAW — verified in Reaper 2026-08-26.
 
 ## Notes
 
 - Deliberately **after** [[0220]]: the mixer meters exercise the spine's
   multi-tap path first, and the GR slot is the only tap needing a new atomic
   discipline (min, not max), so it lands on a proven bus.
+
+## Close-out (2026-08-26)
+
+- `DynamicsBlock::take_gain_reduction_db` added additively to the shared kernel
+  ([dynamics.rs:159](../../vxn-1/crates/vxn-dsp/src/dynamics.rs#L159)) — read-and-clear
+  block-min, branch-free per sample, process signature unchanged, so vxn-1 and
+  vxn-2 are unaffected.
+- Five taps published: `DynamicsInL/R` at the slot input (pre-comp, and first in
+  the serial chain per ADR 0001 §8), `DynamicsOutL/R` post comp/sat **and** post
+  the bypass crossfade, and the single stereo-linked `DynamicsGr` on atomic-min.
+  Peaks accumulate in locals, one atomic per tap per block — allocation-free.
+- Dynamics panel draws In / GR / Out left to right, GR downward from 0 dB.
+- GR reads exactly 0 when the slot is off or the signal is under threshold — the
+  true-skip gate never calls `process`, so nothing publishes and read-and-clear
+  yields 0. Pinned by
+  [`dynamics_meters_report_in_out_and_reduction`](../../vxn-1b/crates/vxn1b-engine/src/engine.rs#L1318).
+- Verified in Reaper: in / out / GR all track the compressor under load.

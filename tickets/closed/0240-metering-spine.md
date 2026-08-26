@@ -96,7 +96,7 @@ layout pass — see [[0241]].)
 - [x] Master panel on the FX/Global tab shows a live stereo out meter.
 - [x] Meter path is inert when the editor is closed (no GUI ⇒ no drain cost).
 - [x] Contract/token tests pass; loads without JS errors.
-- [ ] Opens in a DAW — manual check outstanding.
+- [x] Opens in a DAW — verified in Reaper 2026-08-26.
 
 ## Web-build compatibility
 
@@ -180,3 +180,33 @@ not ship, and are exercised only by unit tests.
   and vxn-3's per-track meters can adopt it without a second implementation.
   Coordinate with the [[vxn-core-dsp-extraction]] plan (E040–E044) — this is
   additive to `vxn-core-utils` and does not touch the crates that epic moves.
+
+## Close-out (2026-08-26)
+
+- `MeterBus` + `MeterTap` (11 slots) landed in `vxn-core-utils`, not the vxn-1b
+  engine, per the shared-spine intent
+  ([meter.rs](../../crates/vxn-core-utils/src/meter.rs)): atomic-max
+  `publish_peak`, atomic-min `publish_reduction`, read-and-clear
+  `drain_into(&mut [f32; COUNT])`. 10 unit tests, including the multi-thread
+  publish race and peak-hold across a slower-than-block read.
+- Master tap published post master volume / post finite-guard in
+  `Engine::process_block`; `MeterFrame` assembled in
+  [vxn1b-engine/src/meters.rs](../../vxn-1b/crates/vxn1b-engine/src/meters.rs) and
+  shipped as `ViewEvent::Custom` through `serialise_custom_view`, one frame per
+  controller tick, idle-suppressed after the first all-zero frame.
+- [panels/meter.js](../../vxn-1b/crates/vxn1b-ui-web/assets/panels/meter.js) holds
+  all ballistics (instant attack, ~20 dB/s decay, 1 s peak hold, −60…0 dBFS,
+  red above −0.1); vitest in
+  [__tests__/meter.test.js](../../vxn-1b/crates/vxn1b-ui-web/assets/__tests__/meter.test.js).
+  Audio thread stays at one atomic per channel per block.
+- **Web transport: option C shipped**, not deferred. The "Web-build
+  compatibility" section above is written against a tree where `vxn1b-wasm` did
+  not exist; E045 built it, and with it the drain-export path this ticket named
+  as the plan of record — `METER_LEN` / `vxn1b_host_drain_meters` /
+  `vxn1b_host_meters_ptr` in
+  [vxn1b-wasm/src/host.rs](../../vxn-1b/crates/vxn1b-wasm/src/host.rs#L51), read
+  out of linear memory by the worklet's telemetry writer in
+  [audio-host.mjs](../../vxn-1b/crates/vxn1b-wasm/web/audio-host.mjs#L58) at its own
+  ~60 Hz division. `MeterBus` was not touched to make that work, which was the
+  claim option C rested on. Treat that section as history.
+- Verified in Reaper: master stereo meter reads live on the FX/Global tab.
