@@ -616,6 +616,7 @@ export async function boot({
   fetchImpl,
   autoGesture = true,
   autoInputs = true,
+  autoPiano = true,
   autoPersist = true,
   adapters = null,
 } = {}) {
@@ -672,12 +673,21 @@ export async function boot({
   let inputs = null;
   if (autoInputs) inputs = await attachKeyboardInput(win, host, adapters);
 
+  // On-screen piano (0308). VXN1b's faceplate has no playable keys of its own —
+  // `keys.js` is the key-MODE panel — so without this the only way to sound a
+  // note in a browser is a MIDI device or knowing the QWERTY mapping. Web-only:
+  // the plugin has a host and a real keyboard. It produces onto the same
+  // coordinator surface as the other inputs, so notes pushed before audio is
+  // live buffer in the ring and sound on the first quantum.
+  let piano = null;
+  if (autoPiano) piano = await attachPiano(win, host, adapters);
+
   // Web MIDI waits for the gesture: asking for the permission prompt on page
   // load, before the player has touched anything, is rude and easy to deny by
   // reflex.
   if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters });
 
-  return { host, controller, bridge, inputs, persistence, autosave };
+  return { host, controller, bridge, inputs, piano, persistence, autosave };
 }
 
 /// VXN1b's IndexedDB identity. Its own name, so the three synths' corpora never
@@ -761,6 +771,20 @@ async function attachKeyboardInput(win, host, injected) {
     return attach(host, { target: win.document });
   } catch (e) {
     console.warn("vxn: keyboard input unavailable", e);
+    return null;
+  }
+}
+
+/// On-screen piano → ring. Shared widget; a pure note producer that calls the
+/// same `noteOn` / `noteOff` the computer keyboard does, so the engine cannot
+/// tell which played it.
+async function attachPiano(win, host, injected) {
+  if (!win.document || !win.document.body) return null;
+  try {
+    const create = await sharedAdapter(injected, "piano-keyboard.mjs", "createPianoKeyboard");
+    return create(win.document, host);
+  } catch (e) {
+    console.warn("vxn: on-screen piano unavailable", e && e.message);
     return null;
   }
 }

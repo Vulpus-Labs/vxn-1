@@ -139,7 +139,7 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
     //     specifiers resolve either way. `CORE_MODULES` is the shared list.
     let web_src = root.join("vxn-2/crates/vxn2-wasm/web");
     let core_src = root.join("crates/vxn-core-web/assets");
-    const CORE_MODULES: [&str; 6] = [
+    const CORE_MODULES: [&str; 7] = [
         // Browser persistence: IndexedDB user presets, full-state autosave, and
         // patch export/import + share-link.
         "preset-storage.mjs",
@@ -149,6 +149,10 @@ fn web(release: bool, serve: bool, port: Option<&str>) -> Result<(), String> {
         // Browser input adapters: Web MIDI + computer keyboard → ring.
         "midi-input.mjs",
         "keyboard-input.mjs",
+        // The on-screen piano (ticket 0308), hoisted out of faceplate-bridge.mjs
+        // when VXN1b needed one. The bridge dynamic-imports it, so the bundle
+        // MUST carry it or the keyboard silently fails to appear.
+        "piano-keyboard.mjs",
     ];
     const MODULES: [&str; 9] = [
         "event-ring.mjs",

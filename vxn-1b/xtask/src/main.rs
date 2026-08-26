@@ -820,9 +820,13 @@ const WEB_WORKLET: &str = "vxn1b-processor.js";
 /// persistence modules (0293). Nothing speculative — a file no page loads is
 /// dead weight on every visit, and the closure test below fails the moment a
 /// reference outruns this list.
-const CORE_MODULES: [&str; 6] = [
+const CORE_MODULES: [&str; 7] = [
     "midi-input.mjs",
     "keyboard-input.mjs",
+    // The on-screen piano (0308). VXN1b's faceplate has no playable keys, so in
+    // a browser this is the only way to sound a note without MIDI hardware or
+    // the QWERTY mapping.
+    "piano-keyboard.mjs",
     "preset-storage.mjs",
     "preset-persistence.mjs",
     "state-autosave.mjs",

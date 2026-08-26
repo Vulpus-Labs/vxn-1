@@ -759,3 +759,65 @@ test("set_tempo is ring-only and refuses a nonsense BPM", async () => {
   assert.deepEqual(coordinator.calls, [], "a nonsense tempo reached the engine");
   controller.destroy();
 });
+
+test("boot mounts the on-screen piano, and it plays into the ring", async () => {
+  // VXN1b's faceplate has no playable keys of its own, so in a browser this is
+  // the only way to sound a note without MIDI hardware or the QWERTY mapping.
+  const { boot } = await import("./faceplate-bridge.mjs");
+  const { createPianoKeyboard } = await import(
+    "../../../../crates/vxn-core-web/assets/piano-keyboard.mjs"
+  );
+  const engineWasm = await readFile(
+    path.resolve(here, "../../../../target/wasm32-unknown-unknown/release/vxn1b_wasm.wasm"),
+  );
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => (String(url).includes("controller") ? wasmBytes : engineWasm),
+  });
+
+  // Enough DOM for the widget to build itself and be appended.
+  const made = [];
+  const mkEl = () => {
+    const el = {
+      style: {}, dataset: {}, children: [],
+      set className(v) { this._c = v; }, get className() { return this._c; },
+      appendChild(k) { this.children.push(k); return k; },
+      addEventListener() {}, removeEventListener() {}, remove() {},
+    };
+    made.push(el);
+    return el;
+  };
+  const doc = {
+    body: mkEl(),
+    getElementById: () => null,
+    createElement: mkEl,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const win = { document: doc, __vxn: { applyViewEvents() {}, applyPresetCorpus() {} },
+                location: { hash: "" }, history: { replaceState() {} } };
+
+  const { piano, host, controller, bridge } = await boot({
+    win,
+    fetchImpl,
+    autoGesture: false,
+    autoInputs: false,
+    autoPersist: false,
+    adapters: { createPianoKeyboard },
+  });
+  bridge.stop();
+
+  assert.ok(piano, "boot did not mount the piano");
+  // Three octaves C3..C6 = 37 keys, 22 white + 15 black.
+  const keys = made.filter((e) => e.dataset && e.dataset.note != null);
+  assert.equal(keys.length, 37, `expected 37 keys, got ${keys.length}`);
+
+  // Pressing a key must reach the ring like any other producer. The ring is the
+  // host's, so read the write index before and after.
+  const before = Atomics.load(host.ring.ctrl, 0);
+  piano._press(60);
+  piano._release();
+  const after = Atomics.load(host.ring.ctrl, 0);
+  assert.ok(after > before, "a piano press pushed nothing onto the ring");
+  controller.destroy();
+});

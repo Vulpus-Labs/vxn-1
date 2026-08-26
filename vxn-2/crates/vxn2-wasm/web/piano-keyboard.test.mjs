@@ -8,7 +8,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPianoKeyboard, pianoLayout, isBlackKey } from "./faceplate-bridge.mjs";
+// Imported from the SHARED module, not the bridge: `./piano-keyboard.mjs`
+// resolves in the flat dist bundle but not in the source tree, so the bridge
+// dynamic-imports it with the rest of the shared glue (ticket 0308).
+import {
+  createPianoKeyboard,
+  pianoLayout,
+  isBlackKey,
+} from "../../../../crates/vxn-core-web/assets/piano-keyboard.mjs";
 
 test("isBlackKey marks the five accidentals per octave", () => {
   // C .. B for octave starting at 60 (C4). Black = C#,D#,F#,G#,A#.
