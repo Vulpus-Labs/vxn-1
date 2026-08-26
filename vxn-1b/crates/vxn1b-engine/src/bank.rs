@@ -45,6 +45,7 @@ use crate::matrix::{Curve, DestId, MatrixTable, N_SLOTS, SourceId};
 use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
 use crate::render;
+use crate::voice::LaneView;
 
 /// Lanes per bank — the shared DSP kernel width.
 const N: usize = CHANNELS_PER_LAYER;
@@ -827,24 +828,28 @@ impl RenderBank {
     }
 
     /// Render one control block for this bank into the oversampled stereo
-    /// buffers (length = `base_frames · ctx.os`), accumulating. The per-lane
-    /// bookkeeping slices (length `N`) are owned by the [`crate::voice::Voices`]
-    /// coordinator; `active` is `&mut` so fully-released voices free.
-    #[allow(clippy::too_many_arguments)]
+    /// buffers (length = `base_frames · ctx.os`), accumulating.
+    ///
+    /// The per-lane bookkeeping arrives as a [`LaneView`] — one bank's window
+    /// onto the [`crate::voice::Voices`] coordinator's arrays. Its `active` is
+    /// `&mut` so fully-released voices free during the render.
     pub fn render(
         &mut self,
         ctx: &BlockCtx,
-        note: &[u8],
-        gate: &[bool],
-        active: &mut [bool],
-        velocity: &[f32],
-        pressure: &[f32],
-        note_random: &[f32],
-        detune_cents: &[f32],
-        stack_pos: &[f32],
+        view: LaneView<'_>,
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) {
+        let LaneView {
+            note,
+            gate,
+            velocity,
+            pressure,
+            note_random,
+            detune_cents,
+            stack_pos,
+            active,
+        } = view;
         let os = ctx.os;
         let base_frames = out_l.len() / os;
         let base_rate = ctx.os_sample_rate / os as f32;
@@ -1405,15 +1410,56 @@ mod tests {
     use crate::matrix::{MatrixSlot, default_patch};
 
     #[allow(clippy::type_complexity)]
-    fn book() -> ([u8; N], [bool; N], [bool; N], [f32; N], [f32; N], [f32; N]) {
-        // One active gated voice on lane 0, note 60, full velocity.
-        let mut note = [60u8; N];
-        note[0] = 60;
-        let mut gate = [false; N];
-        let mut active = [false; N];
-        gate[0] = true;
-        active[0] = true;
-        (note, gate, active, [1.0; N], [0.0; N], [0.0; N])
+    /// The per-lane bookkeeping `render` reads, owned so a test can tweak one
+    /// field and hand over a [`LaneView`]. Replaces the six-tuple this used to
+    /// return plus five inline `&[0.0; N]` literals at every call site — which
+    /// is what made an 11-argument call worth writing 18 times.
+    struct Book {
+        note: [u8; N],
+        gate: [bool; N],
+        active: [bool; N],
+        velocity: [f32; N],
+        pressure: [f32; N],
+        note_random: [f32; N],
+        detune_cents: [f32; N],
+        stack_pos: [f32; N],
+    }
+
+    impl Book {
+        /// One active gated voice on lane 0, note 60, full velocity.
+        fn one_voice() -> Self {
+            let mut b = Self::silent();
+            b.gate[0] = true;
+            b.active[0] = true;
+            b
+        }
+
+        /// Every lane idle — for tests that gate lanes themselves.
+        fn silent() -> Self {
+            Self {
+                note: [60u8; N],
+                gate: [false; N],
+                active: [false; N],
+                velocity: [1.0; N],
+                pressure: [0.0; N],
+                note_random: [0.0; N],
+                detune_cents: [0.0; N],
+                stack_pos: [0.0; N],
+            }
+        }
+
+        fn view(&mut self) -> LaneView<'_> {
+            LaneView {
+                note: &self.note,
+                gate: &self.gate,
+                velocity: &self.velocity,
+                pressure: &self.pressure,
+                note_random: &self.note_random,
+                detune_cents: &self.detune_cents,
+                stack_pos: &self.stack_pos,
+                active: &mut self.active,
+            }
+        }
     }
 
     fn ctx<'a>(m: &'a MatrixTable) -> BlockCtx<'a> {
@@ -1471,20 +1517,13 @@ mod tests {
         pos: f32,
         frames: usize,
     ) -> (f32, f32) {
-        let mut note = [60u8; N];
-        note[lane] = 60;
-        let mut gate = [false; N];
-        let mut active = [false; N];
-        gate[lane] = true;
-        active[lane] = true;
-        let mut stack_pos = [0.0f32; N];
-        stack_pos[lane] = pos;
+        let mut bk = Book::silent();
+        bk.gate[lane] = true;
+        bk.active[lane] = true;
+        bk.stack_pos[lane] = pos;
         let mut l = vec![0.0; frames];
         let mut r = vec![0.0; frames];
-        bank.render(
-            c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &stack_pos,
-            &mut l, &mut r,
-        );
+        bank.render(c, bk.view(), &mut l, &mut r);
         (
             l.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
             r.iter().fold(0.0f32, |a, &s| a.max(s.abs())),
@@ -1605,10 +1644,10 @@ mod tests {
         let c = ctx(&m); // spread: 0.0
         let mut bank = fast_bank();
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         assert!(l.iter().any(|&s| s != 0.0), "the voice must sound");
         assert_eq!(l, r, "spread 0 must stay bit-mono");
     }
@@ -1711,15 +1750,15 @@ mod tests {
         c.lfo2_val = -1.0; // hard left: R silent
         let mut bank = fast_bank();
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         assert!(r.iter().all(|&s| s.abs() < 1e-3), "hard left should leave R quiet");
 
         // Slam to hard right for the next block.
         c.lfo2_val = 1.0;
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         let head = r[..64].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         let tail = r[448..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(tail > 0.0, "the voice must arrive in R");
@@ -1907,19 +1946,17 @@ mod tests {
         c.hpf_cutoff = base_hz;
         c.mod_wheel = wheel;
         let mut bank = fast_bank();
-        let mut note = [60u8; N];
-        let mut gate = [false; N];
-        let mut active = [false; N];
+        let mut bk = Book::silent();
         for (v, n) in notes.iter().enumerate() {
             let Some(n) = *n else { continue };
-            note[v] = n;
-            gate[v] = true;
-            active[v] = true;
+            bk.note[v] = n;
+            bk.gate[v] = true;
+            bk.active[v] = true;
             bank.trigger_lane(v, TriggerOpts::retrig(LfoShape::Sine), None);
         }
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         l
     }
 
@@ -2027,13 +2064,11 @@ mod tests {
         c.osc2_level = if osc == 2 { 0.8 } else { 0.0 };
         let mut bank = fast_bank();
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let frames = 4096;
         let mut l = vec![0.0; frames];
         let mut r = vec![0.0; frames];
-        bank.render(
-            &c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r,
-        );
+        bank.render(&c, bk.view(), &mut l, &mut r);
         let tail = &l[512..];
         (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt()
     }
@@ -2151,12 +2186,10 @@ mod tests {
     fn silent_bank_renders_silence() {
         let m = default_patch();
         let mut bank = RenderBank::new(48_000.0, 1);
-        let note = [60u8; N];
-        let gate = [false; N];
-        let mut active = [false; N];
+        let mut bk = Book::silent();
         let mut l = vec![0.0; 64];
         let mut r = vec![0.0; 64];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&ctx(&m), bk.view(), &mut l, &mut r);
         assert!(l.iter().chain(r.iter()).all(|&s| s == 0.0));
     }
 
@@ -2167,10 +2200,10 @@ mod tests {
         // Fast attack so the VCA opens within the block.
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let mut l = vec![0.0; 256];
         let mut r = vec![0.0; 256];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&ctx(&m), bk.view(), &mut l, &mut r);
         let peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak > 0.0, "a gated voice with the default patch must make sound");
     }
@@ -2184,12 +2217,12 @@ mod tests {
         let mut bank = RenderBank::new(48_000.0, 1);
         bank.set_envelopes((0.001, 0.2, 0.8, 0.2), AdsrShape::Linear, (0.005, 0.2, 0.8, 0.2), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
         let mut c = ctx(&m);
         c.os = 1;
-        bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         // Early samples (attack just started) quieter than late samples.
         let early = l[..64].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         let late = l[448..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
@@ -2203,16 +2236,14 @@ mod tests {
         // Near-instant release so the voice idles within one block.
         bank.set_envelopes((0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, (0.001, 0.001, 0.0, 0.001), AdsrShape::Linear, 0.0);
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-        let note = [60u8; N];
-        let gate = [false; N]; // already released
-        let mut active = [false; N];
-        active[0] = true;
+        let mut bk = Book::silent(); // gate already released
+        bk.active[0] = true;
         // Long enough to cover the 8 ms declick ramp the free now goes through
         // (0271) — 256 frames is 5.3 ms, less than the ramp.
         let mut l = vec![0.0; 1024];
         let mut r = vec![0.0; 1024];
-        bank.render(&ctx(&m), &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
-        assert!(!active[0], "an idle released voice must free");
+        bank.render(&ctx(&m), bk.view(), &mut l, &mut r);
+        assert!(!bk.active[0], "an idle released voice must free");
     }
 
     // ── 0271: voice lifetime is owned by the Amp routes ──────────────────────
@@ -2238,25 +2269,23 @@ mod tests {
         hold: usize,
         rel: usize,
     ) -> (bool, Vec<f32>) {
-        let note = [60u8; N];
-        let mut active = [false; N];
-        active[0] = true;
+        let mut bk = Book::silent();
+        bk.active[0] = true;
         let mut c = ctx(m);
         c.lfo2_val = 1.0; // an LFO→Amp route wide open, so the tail is audible
 
-        let mut gate = [false; N];
-        gate[0] = true;
+        bk.gate[0] = true;
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let mut l = vec![0.0; hold];
         let mut r = vec![0.0; hold];
-        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
-        assert!(active[0], "the note should still be sounding while gated");
+        bank.render(&c, bk.view(), &mut l, &mut r);
+        assert!(bk.active[0], "the note should still be sounding while gated");
 
-        let gate = [false; N];
+        bk.gate[0] = false;
         let mut l = vec![0.0; rel];
         let mut r = vec![0.0; rel];
-        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
-        (!active[0], l)
+        bank.render(&c, bk.view(), &mut l, &mut r);
+        (!bk.active[0], l)
     }
 
     /// A long envelope (10 s release) and a snappy one, for the lane whose
@@ -2341,32 +2370,31 @@ mod tests {
         let long = (0.001, 0.001, 1.0, 10.0);
         bank.set_envelopes(long, AdsrShape::Linear, long, AdsrShape::Linear, 0.0);
 
-        let note = [60u8; N];
-        let mut active = [false; N];
-        active[0] = true;
+        let mut bk = Book::silent();
+        bk.active[0] = true;
         let mut c = ctx(&m);
         c.lfo2_val = 1.0;
-        let mut gate = [false; N];
-        gate[0] = true;
+        bk.gate[0] = true;
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         let held_peak = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
 
         // Release for 2 ms — a quarter of the ramp, so the lane is part-faded
         // but has not freed.
-        let released = [false; N];
+        bk.gate[0] = false;
         let mut l = vec![0.0; 96];
         let mut r = vec![0.0; 96];
-        bank.render(&c, &note, &released, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
-        assert!(active[0], "still mid-ramp");
+        bank.render(&c, bk.view(), &mut l, &mut r);
+        assert!(bk.active[0], "still mid-ramp");
         assert!(bank.free_fade[0] < 1.0, "the ramp should have started");
 
         // Re-gate with no trigger, as a legato slide does.
+        bk.gate[0] = true;
         let mut l = vec![0.0; 512];
         let mut r = vec![0.0; 512];
-        bank.render(&c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &mut l, &mut r);
+        bank.render(&c, bk.view(), &mut l, &mut r);
         assert_eq!(bank.free_fade[0], 1.0, "a re-gate must cancel the ramp");
         let back = l.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(back > held_peak * 0.9, "re-gated lane is quiet: {back} vs {held_peak}");
@@ -2506,7 +2534,7 @@ mod tests {
                 drift,
             );
             bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
-            let (note, gate, mut active, vel, pres, rnd) = book();
+            let mut bk = Book::one_voice();
             let mut c = ctx(&m);
             c.osc1_level = 0.0;
             c.osc2_level = 0.0;
@@ -2515,7 +2543,7 @@ mod tests {
             c.drift_amount = drift;
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            bank.render(&c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r);
+            bank.render(&c, bk.view(), &mut l, &mut r);
             l
         };
         let dry = render(0.0);
@@ -2559,12 +2587,10 @@ mod tests {
 
     /// Render one 128-frame block for the lane-0 note of [`book`].
     fn render_block(bank: &mut RenderBank, c: &BlockCtx) {
-        let (note, gate, mut active, vel, pres, rnd) = book();
+        let mut bk = Book::one_voice();
         let mut l = vec![0.0; 128];
         let mut r = vec![0.0; 128];
-        bank.render(
-            c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l, &mut r,
-        );
+        bank.render(c, bk.view(), &mut l, &mut r);
     }
 
     fn env_bank() -> RenderBank {
@@ -2614,13 +2640,10 @@ mod tests {
             bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
             let mut c = ctx(&m);
             c.mod_wheel = wheel;
-            let (note, gate, mut active, vel, pres, rnd) = book();
+            let mut bk = Book::one_voice();
             let mut l = vec![0.0; 512];
             let mut r = vec![0.0; 512];
-            bank.render(
-                &c, &note, &gate, &mut active, &vel, &pres, &rnd, &[0.0; N], &[0.0; N], &mut l,
-                &mut r,
-            );
+            bank.render(&c, bk.view(), &mut l, &mut r);
             assert_eq!(bank.env_scale, [[1.0; N]; 2], "an unrouted dest must stay unity");
             assert_eq!(bank.env_sus_mod, [[0.0; N]; 2], "an unrouted dest must stay neutral");
             l
@@ -2685,22 +2708,16 @@ mod tests {
     /// Trigger a `width`-wide stack at the allocator's own lane positions,
     /// render one block, and return each lane's cooked env 1 time scale.
     fn stack_env_scales(bank: &mut RenderBank, c: &BlockCtx, width: usize) -> Vec<f32> {
-        let note = [60u8; N];
-        let mut gate = [false; N];
-        let mut active = [false; N];
-        let mut stack_pos = [0.0f32; N];
+        let mut bk = Book::silent();
         for v in 0..width {
-            gate[v] = true;
-            active[v] = true;
-            stack_pos[v] = crate::voice::stack_spread(v, width);
+            bk.gate[v] = true;
+            bk.active[v] = true;
+            bk.stack_pos[v] = crate::voice::stack_spread(v, width);
             bank.trigger_lane(v, TriggerOpts::retrig(LfoShape::Sine), None);
         }
         let mut l = vec![0.0; 128];
         let mut r = vec![0.0; 128];
-        bank.render(
-            c, &note, &gate, &mut active, &[1.0; N], &[0.0; N], &[0.0; N], &[0.0; N], &stack_pos,
-            &mut l, &mut r,
-        );
+        bank.render(c, bk.view(), &mut l, &mut r);
         (0..width).map(|v| bank.env_scale[0][v]).collect()
     }
 

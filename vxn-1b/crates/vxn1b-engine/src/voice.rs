@@ -821,6 +821,57 @@ pub struct RenderView<'a> {
     pub active: &'a mut [bool; N],
 }
 
+/// One bank's `LANES`-wide window onto a [`RenderView`] — the slices
+/// [`crate::bank::RenderBank::render`] consumes.
+///
+/// A struct rather than eight positional arguments because five of them are
+/// `&[f32]` of identical length: `velocity`, `pressure`, `note_random`,
+/// `detune_cents`, `stack_pos`. Transposing any two compiled, ran, and produced
+/// plausible-but-wrong audio — velocity landing where stack position was
+/// expected does not crash, it just makes stacked notes sound subtly off. Named
+/// fields make that unrepresentable.
+pub struct LaneView<'a> {
+    pub note: &'a [u8],
+    pub gate: &'a [bool],
+    pub velocity: &'a [f32],
+    pub pressure: &'a [f32],
+    pub note_random: &'a [f32],
+    pub detune_cents: &'a [f32],
+    pub stack_pos: &'a [f32],
+    pub active: &'a mut [bool],
+}
+
+impl<'a> RenderView<'a> {
+    /// Split the full-width view into consecutive `lanes`-wide windows, one per
+    /// bank. Consumes the view because `active` is `&mut` and each window takes
+    /// a disjoint piece of it.
+    pub fn banks(self, lanes: usize) -> impl Iterator<Item = LaneView<'a>> {
+        let RenderView {
+            note,
+            gate,
+            velocity,
+            pressure,
+            note_random,
+            detune_cents,
+            stack_pos,
+            active,
+        } = self;
+        active.chunks_mut(lanes).enumerate().map(move |(b, active)| {
+            let r = b * lanes..b * lanes + lanes;
+            LaneView {
+                note: &note[r.clone()],
+                gate: &gate[r.clone()],
+                velocity: &velocity[r.clone()],
+                pressure: &pressure[r.clone()],
+                note_random: &note_random[r.clone()],
+                detune_cents: &detune_cents[r.clone()],
+                stack_pos: &stack_pos[r],
+                active,
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

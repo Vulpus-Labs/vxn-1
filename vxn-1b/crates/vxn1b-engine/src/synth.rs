@@ -299,23 +299,8 @@ impl Synth {
         // `RenderBank::render`'s `is_silent` early-out, so widening the pool
         // costs idle blocks nothing.
         let view = self.voices.render_view();
-        let lanes = RenderBank::LANES;
-        for (b, active) in view.active.chunks_mut(lanes).enumerate() {
-            let s = b * lanes;
-            let e = s + lanes;
-            self.banks[b].render(
-                &ctx,
-                &view.note[s..e],
-                &view.gate[s..e],
-                active,
-                &view.velocity[s..e],
-                &view.pressure[s..e],
-                &view.note_random[s..e],
-                &view.detune_cents[s..e],
-                &view.stack_pos[s..e],
-                l,
-                r,
-            );
+        for (bank, lanes) in self.banks.iter_mut().zip(view.banks(RenderBank::LANES)) {
+            bank.render(&ctx, lanes, l, r);
         }
     }
 
