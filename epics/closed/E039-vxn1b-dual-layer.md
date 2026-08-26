@@ -2,7 +2,7 @@
 id: E039
 product: vxn-1b
 title: "VXN1b dual-layer — two independent synths, per-layer matrix, 3-tab UI"
-status: open
+status: closed
 created: 2026-07-31
 ---
 
