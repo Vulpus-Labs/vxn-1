@@ -1,5 +1,5 @@
 ---
-id: "0309"
+id: "0321"
 product: monorepo
 title: "CI: VXN1b's node suites run nowhere and its bundle only builds on a release tag"
 priority: high
@@ -97,6 +97,14 @@ commit that hollowed it.
       added VXN1b work.
 
 ## Notes
+
+- **Renumbered 0309 → 0321 on 2026-08-26.** A concurrent session took the same
+  next-id for [[0309]] (shared CPU meter) minutes apart; that one won the number
+  because its id is baked into source comments across two products, while this
+  one was referenced only in worklist docs. Two commits pushed before the
+  renumber still say `(0309)` in their subject —
+  `ci(vxn-1b): run the JS suites and bundle VXN1b on every push (0309)` and the
+  bundle-workflow header — and mean *this* ticket. Nothing else does.
 
 - Do this **before** the rest of [[E047]]. Every other ticket in the epic
   deletes something, and deleting without CI watching is how a shipped bundle

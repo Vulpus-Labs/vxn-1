@@ -5,7 +5,7 @@ title: "vxn-xtask-common: 3,015 lines of triplicated bundler across three produc
 priority: medium
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary
@@ -88,7 +88,7 @@ function pointer in a closure for no reason.
 
 - [ ] One `vxn-xtask-common` crate; three thin `main.rs` files.
 - [ ] All three products bundle CLAP and VST3 on macOS and Windows, verified by
-      [[0309]]'s expanded `bundle.yml` — including the non-hollow
+      [[0321]]'s expanded `bundle.yml` — including the non-hollow
       `strings | grep` check for each.
 - [ ] vxn-1 and vxn-2 gain VXN1b's `Format`-indexed dispatch, in their own
       commits, flagged as behaviour changes rather than pure refactors.
@@ -101,7 +101,7 @@ function pointer in a closure for no reason.
 
 ## Notes
 
-- Deliberately depends on [[0309]]. Moving the bundler before CI builds all
+- Deliberately depends on [[0321]]. Moving the bundler before CI builds all
   three products' bundles on every push is how you find out in six weeks.
 - This is the only ticket in [[E047]] that changes vxn-1 and vxn-2. If that is
   unwelcome scope, the fallback is to extract the crate and adopt it in VXN1b

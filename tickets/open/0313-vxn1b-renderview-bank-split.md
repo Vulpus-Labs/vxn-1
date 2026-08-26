@@ -5,7 +5,7 @@ title: "RenderBank::render — 452 lines, 11 args, five consecutive &[f32] that 
 priority: high
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary

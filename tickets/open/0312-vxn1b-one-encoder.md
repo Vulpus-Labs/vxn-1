@@ -5,7 +5,7 @@ title: "The event wire has four halves and two are ceremony — pick one encoder
 priority: high
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary
@@ -94,7 +94,7 @@ puts it **last**. One convention, across both layers.
 - [ ] The handshake asserts patch count, global count and total — not just the
       sum — and a deliberately drifted pair fails it. Verify once by hand.
 - [ ] `offset` sits in the same position in both layers' signatures.
-- [ ] Node suites green, 0 skipped, under [[0309]]'s CI.
+- [ ] Node suites green, 0 skipped, under [[0321]]'s CI.
 
 ## Notes
 

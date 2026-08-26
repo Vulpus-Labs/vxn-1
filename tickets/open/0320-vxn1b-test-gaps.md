@@ -5,7 +5,7 @@ title: "Test gaps the review exposed: untested path-escape guard, tests that exe
 priority: medium
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary
@@ -106,7 +106,7 @@ Nothing subtle. Two principles:
       with a test for the tempo clamp.
 - [ ] `makeSwitch`, `makeHeaderSwitch` and `makeWave` have real suites, not
       stubs.
-- [ ] All suites green, 0 skipped, under [[0309]].
+- [ ] All suites green, 0 skipped, under [[0321]].
 
 ## Notes
 

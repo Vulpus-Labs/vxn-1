@@ -5,7 +5,7 @@ title: "Delete the dead Rust surface, incl. a second voice-allocation policy tha
 priority: medium
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary

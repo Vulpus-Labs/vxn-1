@@ -5,7 +5,7 @@ title: "Extract the five long functions whose seams are already written in as co
 priority: medium
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary
@@ -86,7 +86,7 @@ Pure extraction, no behaviour change, one function per commit. Two constraints:
       same-typed scalars.
 - [ ] `busy_profile` / `route_profile` unchanged within noise — record the
       numbers in the close-out.
-- [ ] Full VXN1b suite green (Rust + both JS suites) under [[0309]].
+- [ ] Full VXN1b suite green (Rust + both JS suites) under [[0321]].
 - [ ] One manual DAW pass for the `process` / `render_control_block` changes —
       [[verify-audio-in-reaper]].
 

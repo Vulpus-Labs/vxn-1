@@ -9,7 +9,7 @@ name: Bundle
 #
 # Covers vxn-1 and vxn-1b. Each VST3 is checked for its bundle id after linking:
 # /OPT:REF once stripped the whole-archived staticlib out of every Windows .vst3
-# and the link still SUCCEEDED, so "it built" proves nothing (0309).
+# and the link still SUCCEEDED, so "it built" proves nothing (0321).
 on:
   push:
     branches: [main]

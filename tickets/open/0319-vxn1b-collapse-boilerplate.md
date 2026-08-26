@@ -158,7 +158,7 @@ not match: the vertical fader is absolute-mapped over `--fader-h` by
 - [ ] `busy_profile` / `route_profile` unchanged within noise — the FX macro in
       particular must generate identical code, so check the asm dump if the
       numbers move at all ([[vxn1-neon-grep-pitfall]] on how to read it).
-- [ ] Full suite green under [[0309]].
+- [ ] Full suite green under [[0321]].
 
 ## Notes
 

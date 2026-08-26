@@ -5,7 +5,7 @@ title: "Cross-language tables transcribed 2-4 times with no test binding them"
 priority: medium
 created: 2026-08-26
 epic: E047
-depends: ["0309"]
+depends: ["0321"]
 ---
 
 ## Summary
@@ -120,7 +120,7 @@ drift is documented as forbidden.
 - [ ] No comment survives that warns two constants "must not disagree" without a
       mechanism enforcing it.
 - [ ] `cargo test -p vxn1b-ui-web -p vxn1b-web-controller` and both JS suites
-      green under [[0309]].
+      green under [[0321]].
 
 ## Notes
 

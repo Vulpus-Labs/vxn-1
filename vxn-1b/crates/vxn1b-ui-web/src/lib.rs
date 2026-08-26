@@ -974,7 +974,7 @@ mod tests {
         assert!(page.contains("vxn-ti-backdrop"), "text-input popup CSS missing");
     }
 
-    // ── JS suite gate (0309) ────────────────────────────────────────────
+    // ── JS suite gate (0321) ────────────────────────────────────────────
     //
     // The Vitest + jsdom suite under `assets/__tests__/` is the behavioural
     // net for the faceplate JS. Shelling `npm test` from a `#[test]` keeps

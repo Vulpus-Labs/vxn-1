@@ -5,7 +5,7 @@ title: "Delete the dead web surface: keys.js ships unmounted, CPU meter burns re
 priority: high
 created: 2026-08-26
 epic: E047
-depends: ["0307", "0309"]
+depends: ["0307", "0321"]
 ---
 
 ## Summary
@@ -127,7 +127,7 @@ and say why.
       recorded for keeping it.
 - [ ] The shipped bundle is smaller by roughly the amount deleted — check the
       generated page byte size before and after, and record it in the close-out.
-- [ ] Both node suites and the Vitest suite green under [[0309]]'s new CI.
+- [ ] Both node suites and the Vitest suite green under [[0321]]'s new CI.
 
 ## Notes
 

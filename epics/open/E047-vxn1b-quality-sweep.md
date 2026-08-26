@@ -91,11 +91,11 @@ smells are [0298](../../tickets/open/0298-vxn2-web-controller-smells.md).
 
 ## Planned tickets
 
-Do **0309 first** — it is the cheapest ticket here and every subsequent deletion
+Do **0321 first** — it is the cheapest ticket here and every subsequent deletion
 wants CI watching it. After that the three deletion tickets (0310/0311/0312) are
 independent of each other and of the refactors.
 
-- [ ] **0309** *(monorepo, high)* — CI: run VXN1b's node suites; add a VXN1b
+- [ ] **0321** *(monorepo, high)* — CI: run VXN1b's node suites; add a VXN1b
       bundle job with the non-hollow `strings | grep` check.
 - [ ] **0310** *(vxn-1b, high)* — Delete the dead web surface: `panels/keys.js`
       and its splice slot, the CPU meter, `makeDropdown`, the `src-off` dim
@@ -148,7 +148,7 @@ independent of each other and of the refactors.
   tickets precisely so the correctness fixes are not held up behind a stylistic
   judgement call, and so the "do not cut" list above gets applied once, carefully.
 - **0317 touches three products' build tooling** and can break bundling for all
-  of them at once. It is deliberately last-ish and deliberately depends on 0309
+  of them at once. It is deliberately last-ish and deliberately depends on 0321
   landing first, so CI is watching before the bundler moves.
 
 ## Acceptance
