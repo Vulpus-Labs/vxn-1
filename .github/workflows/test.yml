@@ -25,26 +25,36 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
 
-      # Node for the vxn-1 faceplate Vitest suite (jsdom). vxn-2 ui-web has
-      # no JS test suite yet, so only vxn-1 assets need npm.
+      # Node for the vxn-1 and vxn-1b faceplate Vitest suites (jsdom), and for
+      # vxn-1b's `node --test` web-transport suite. vxn-2 ui-web has no JS test
+      # suite yet, so only those two assets dirs need npm.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: vxn-1/crates/vxn-ui-web/assets/package-lock.json
+          cache-dependency-path: |
+            vxn-1/crates/vxn-ui-web/assets/package-lock.json
+            vxn-1b/crates/vxn1b-ui-web/assets/package-lock.json
 
-      - name: Install JS deps
+      - name: Install JS deps (vxn-1)
         working-directory: vxn-1/crates/vxn-ui-web/assets
         run: npm ci
 
-      # `--workspace` covers vxn-core-*, all vxn-1 and all vxn-2 crates in a
-      # single invocation (flat workspace, E001). VXN_JS_TESTS=1 un-gates the
-      # `js_suite_passes` test in vxn-ui-web, which shells `npm test` (Vitest).
+      - name: Install JS deps (vxn-1b)
+        working-directory: vxn-1b/crates/vxn1b-ui-web/assets
+        run: npm ci
+
+      # `--workspace` covers vxn-core-*, all vxn-1, vxn-1b, vxn-2 and vxn-3
+      # crates in a single invocation (flat workspace, E001). VXN_JS_TESTS=1
+      # un-gates the `js_suite_passes` tests in vxn-ui-web and vxn1b-ui-web,
+      # which shell `npm test` (Vitest).
       # VXN_RENDER_HASH=1 un-gates baseline.rs's render-hash canary, which is
       # environment-locked to this pinned runner (macos-15) + rustc.
       - name: cargo test --workspace
@@ -52,6 +62,21 @@ jobs:
           VXN_JS_TESTS: "1"
           VXN_RENDER_HASH: "1"
         run: cargo test --workspace
+
+      # vxn-1b's web transport (event ring, codec, coordinator, controller,
+      # telemetry, persistence, faceplate bridge) is tested by `node --test`
+      # rather than Vitest — no jsdom, and `wasm-agreement.test.mjs` drives the
+      # real engine. That suite reads the crate's own wasm artifact and FAILS
+      # rather than skips when it is absent (0295), so the build must come
+      # first. The build command is the one the test file's own error message
+      # prints.
+      - name: Build vxn-1b wasm (for the agreement suite)
+        env:
+          RUSTFLAGS: "-C target-feature=+simd128"
+        run: cargo build -p vxn1b-wasm --target wasm32-unknown-unknown --release
+
+      - name: vxn-1b web suite (node --test)
+        run: node --test vxn-1b/crates/vxn1b-wasm/web/*.test.mjs
 
       # Bench code is compile-checked only — running criterion in CI is noise,
       # but bit-rotted bench code should fail the build (vxn-2 ticket 0070).

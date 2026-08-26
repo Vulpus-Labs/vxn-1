@@ -3,9 +3,13 @@ name: Bundle
 # Build the shipping plugin artifacts — CLAP + VST3 — on every push to main and
 # every PR, matching the CLAP build cadence the repo had before E010. macOS
 # produces universal (arm64 + x86_64) bundles; Windows produces x86_64. VST3 is
-# built by wrapping the same vxn-clap staticlib through clap-wrapper
+# built by wrapping the same clap staticlib through clap-wrapper
 # (`xtask --format clap,vst3`, tickets 0011/0012); a failed VST3 build fails the
 # job — it is a shipping artifact, not a side experiment (ticket 0014).
+#
+# Covers vxn-1 and vxn-1b. Each VST3 is checked for its bundle id after linking:
+# /OPT:REF once stripped the whole-archived staticlib out of every Windows .vst3
+# and the link still SUCCEEDED, so "it built" proves nothing (0309).
 on:
   push:
     branches: [main]
@@ -46,6 +50,13 @@ jobs:
       - name: Build universal CLAP + VST3
         working-directory: vxn-1
         run: cargo xtask bundle --release --format clap,vst3 --universal
+
+      - name: Verify the VST3 embeds the engine
+        run: |
+          BIN=target/bundled/VXN1.vst3/Contents/MacOS/VXN1
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn1' \
+            || { echo "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($(stat -f%z "$BIN") bytes)"
 
       - name: Upload CLAP
         uses: actions/upload-artifact@v4
@@ -91,6 +102,17 @@ jobs:
         working-directory: vxn-1
         run: cargo xtask bundle --release --format clap,vst3
 
+      - name: Verify the VST3 embeds the engine
+        shell: pwsh
+        run: |
+          $bin = "target/bundled/VXN1.vst3/Contents/x86_64-win/VXN1.vst3"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn1')) {
+            Write-Output "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"
+            exit 1
+          }
+          Write-Output "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($((Get-Item $bin).Length) bytes)"
+
       - name: Upload CLAP
         uses: actions/upload-artifact@v4
         with:
@@ -103,4 +125,101 @@ jobs:
         with:
           name: VXN1-windows-x64-vst3
           path: target/bundled/VXN1.vst3
+          if-no-files-found: error
+
+  macos-vxn1b:
+    name: macOS vxn-1b (universal — CLAP + VST3)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      # vxn-1b's xtask is a workspace member rather than a `cargo xtask` alias,
+      # so it is invoked by package name from the repo root — the same form
+      # release.yml uses.
+      - name: Build universal CLAP + VST3
+        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3 --universal
+
+      - name: Verify the VST3 embeds the engine
+        run: |
+          BIN=target/bundled/VXN1b.vst3/Contents/MacOS/VXN1b
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn1b' \
+            || { echo "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($(stat -f%z "$BIN") bytes)"
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1b-macOS-universal-clap
+          path: target/bundled/vxn1b.clap
+          if-no-files-found: error
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1b-macOS-universal-vst3
+          path: target/bundled/VXN1b.vst3
+          if-no-files-found: error
+
+  windows-vxn1b:
+    name: Windows vxn-1b (x86_64 — CLAP + VST3)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Build CLAP + VST3
+        run: cargo run --package vxn1b-xtask -- bundle --release --format clap,vst3
+
+      # This is the exact configuration that shipped a ~516 KB module of wrapper
+      # glue with an empty factory: the link succeeds, no diagnostics, and only
+      # reading the binary catches it.
+      - name: Verify the VST3 embeds the engine
+        shell: pwsh
+        run: |
+          $bin = "target/bundled/VXN1b.vst3/Contents/x86_64-win/VXN1b.vst3"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn1b')) {
+            Write-Output "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"
+            exit 1
+          }
+          Write-Output "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($((Get-Item $bin).Length) bytes)"
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1b-windows-x64-clap
+          path: target/bundled/vxn1b.clap
+          if-no-files-found: error
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN1b-windows-x64-vst3
+          path: target/bundled/VXN1b.vst3
           if-no-files-found: error

@@ -947,4 +947,31 @@ mod tests {
         );
         assert!(page.contains("vxn-ti-backdrop"), "text-input popup CSS missing");
     }
+
+    // ── JS suite gate (0309) ────────────────────────────────────────────
+    //
+    // The Vitest + jsdom suite under `assets/__tests__/` is the behavioural
+    // net for the faceplate JS. Shelling `npm test` from a `#[test]` keeps
+    // `cargo test -p vxn1b-ui-web` the single command a contributor runs.
+    // The env-gate keeps a default `cargo test` Rust-only (no Node dep); CI
+    // sets the var, so the gate is real there.
+    //
+    // Mirrors `vxn-ui-web`'s gate deliberately — same var, same shape, so
+    // one CI env setting un-gates both.
+    #[test]
+    fn js_suite_passes() {
+        if std::env::var("VXN_JS_TESTS").is_err() {
+            eprintln!(
+                "VXN_JS_TESTS unset; skipping JS suite. \
+                 Run `VXN_JS_TESTS=1 cargo test -p vxn1b-ui-web` to enable."
+            );
+            return;
+        }
+        let status = std::process::Command::new("npm")
+            .args(["test", "--silent"])
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
+            .status()
+            .expect("npm not found — install Node 20+ or unset VXN_JS_TESTS");
+        assert!(status.success(), "JS suite failed under `npm test`");
+    }
 }
