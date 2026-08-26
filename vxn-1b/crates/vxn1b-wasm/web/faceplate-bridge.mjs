@@ -753,7 +753,13 @@ export async function boot({
 
   if (autoGesture) attachGestureGate(win, host, bridge, { autoInputs, adapters, noteHost });
 
-  return { host, controller, bridge, inputs, piano, cpuMeter, persistence, autosave };
+  const wired = { host, controller, bridge, inputs, piano, cpuMeter, persistence, autosave };
+  // Reachable from the console. The auto-boot path discards this object
+  // otherwise, which leaves a running page with no handle on anything — no way
+  // to ask whether a note reached the ring, or what the gate thinks it is doing.
+  const vxn = win.__vxn || (win.__vxn = {});
+  vxn.debug = wired;
+  return wired;
 }
 
 /// How long boot waits for storage before giving up on ordering and coming up
@@ -882,15 +888,27 @@ export function pianoNoteTap(host, piano) {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
       if (typeof value !== "function") return value;
+      // Painting must NEVER cost a note. It is a cosmetic side effect on the
+      // audio path, so anything it throws is swallowed here rather than taking
+      // the note-on down with it — a lit key with no sound is the worst of both
+      // (it looks like the synth heard you), and it is exactly what an
+      // unguarded side effect in front of `noteOn` produces.
+      const light = (note, on) => {
+        try {
+          piano.setActive(note, on);
+        } catch (e) {
+          console.warn("vxn: piano paint failed", e && e.message);
+        }
+      };
       if (prop === "noteOn") {
         return (note, velocity, offset, channel) => {
-          piano.setActive(note, true);
+          light(note, true);
           return value.call(target, note, velocity, offset, channel);
         };
       }
       if (prop === "noteOff") {
         return (note, offset, channel) => {
-          piano.setActive(note, false);
+          light(note, false);
           return value.call(target, note, offset, channel);
         };
       }

@@ -960,3 +960,32 @@ test("without a piano the tap is the host itself, not a wrapper", async () => {
   assert.equal(pianoNoteTap(coordinator, {}), coordinator, "a piano with no setActive");
   controller.destroy();
 });
+
+test("a piano that throws while painting does not swallow the note", async () => {
+  // Lighting a key is cosmetic. If it can take the note-on down with it, the
+  // failure mode is the worst possible one: the key lights, so the synth looks
+  // like it heard you, and nothing sounds.
+  const { controller, coordinator } = await rig();
+  const { pianoNoteTap } = await import("./faceplate-bridge.mjs");
+  const angry = {
+    setActive() {
+      throw new Error("paint exploded");
+    },
+  };
+  const tapped = pianoNoteTap(coordinator, angry);
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => warns.push(a.join(" "));
+  try {
+    tapped.noteOn(60, 0.8, 0, 0);
+    tapped.noteOff(60, 0, 0);
+  } finally {
+    console.warn = orig;
+  }
+  assert.deepEqual(coordinator.calls, [
+    ["noteOn", 60, 0.8, 0, 0],
+    ["noteOff", 60, 0, 0],
+  ]);
+  assert.equal(warns.length, 2, "the paint failure should be reported, not hidden");
+  controller.destroy();
+});
