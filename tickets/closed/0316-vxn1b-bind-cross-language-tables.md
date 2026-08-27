@@ -136,3 +136,117 @@ drift is documented as forbidden.
   `matrixOverlay`) survives only because the splice loader flattens everything
   into one scope. Extracting a small `model.js` both sides import is the same
   shape of fix and belongs here if it is cheap.
+
+## Close-out (2026-08-27)
+
+### Verdict per item
+
+| # | item | verdict |
+|---|---|---|
+| 1 | custom-op vocabulary | **collapsed** (both Rust decoders) + **pinned** (the JS one) |
+| 2 | telemetry payload shape | **pinned** by a shared fixture, both ends |
+| 3 | `MATRIX_SLOTS` and friends | **collapsed** |
+| 4 | split-point range | **collapsed** to dispatch.js + **pinned** to the engine |
+| 5 | wave glyph keys | **pinned** by a test |
+| 6 | `Uncategorised` ×3, panel file list ×2 | **collapsed** |
+
+### Collapsed
+
+- **The vocabulary is one table.** New
+  [`vxn1b_engine::vocab`](../../vxn-1b/crates/vxn1b-engine/src/vocab.rs) owns
+  the wire names *and* the ordinals — the ordinal is the table position, so the
+  two mappings cannot disagree. `vxn1b-ui-web`'s four string matches and
+  `vxn1b-web-controller`'s `matrix_field_from_wire` both read it. Two
+  behavioural improvements fell out: `set_matrix` and `copy_layer` now **drop**
+  an out-of-range layer instead of folding anything ≠ 0 onto L2 (`layer_from_wire`),
+  and `reset_layer` / `set_scope_source` lost their own copies of the same
+  match.
+- **`UNCATEGORISED_LABEL`** is one `pub const` in `vxn-core-app`, used by
+  `vxn1b-ui-web`, `vxn1b-web-controller` and `vxn-core-ui-web`'s default. vxn-2
+  still passes its own string, which is what the parameter is for.
+- **`PANELS_FILES`** is one ordered `&[include_str!(…)]`. The splice-order
+  constraint — the whole content of the constant — is stated once above it
+  instead of four times among the consts.
+- **`controller.mjs`** imports `LAYER_COUNT` / `MATRIX_SLOTS` from
+  `event-codec.mjs`. The local copies were justified as anti-masking; that is a
+  real argument only when something compares the two, and nothing did.
+- **`matrix.js`** derives its row count from `mx.slots[0].length` — the
+  snapshot it is already rendering.
+- **The split range** exists once, as dispatch.js's `SPLIT_MIN` / `SPLIT_MAX` /
+  `SPLIT_DEFAULT`. `wireSplit` stamps `min`/`max`/`step`/`value` onto the
+  element and `faceplate.html` carries none.
+
+### Pinned
+
+- [`vocab-agreement.test.mjs`](../../vxn-1b/crates/vxn1b-wasm/web/vocab-agreement.test.mjs)
+  asserts the page's `LAYER` / `MATRIX_FIELD` / `SCOPE_TAP` / `SPLIT_POINT`,
+  `event-codec.mjs`'s field constants, and `controller.mjs`'s `VE_*` /
+  `PRESET_SRC_*` / `JW_*` tags against the **built** controller wasm, which
+  publishes them through the new `vxnc_vocab_json_ptr` / `_len`. Fails rather
+  than skips on a missing artefact ([[0295]]).
+- [`telemetry-payload.fixture.json`](../../vxn-1b/crates/vxn1b-wasm/web/telemetry-payload.fixture.json)
+  is asserted from both ends —
+  `vxn1b-ui-web::tests::telemetry_payload_matches_the_fixture` over
+  `serialise_custom_payload`, and `telemetry-payload.test.mjs` over
+  `meterEvent` / `scopeEvent`. Every fixture input is exactly representable in
+  f32, so the two languages agree bit-for-bit with no epsilon. Change either
+  serialiser and one test fails.
+- `every_wave_label_has_a_glyph` reads **which** params mount a wave knob out of
+  `faceplate.html`'s `data-control="wave"`, not from the param name — the first
+  cut filtered on `name.contains("shape")` and immediately failed on
+  `env1_shape`, which is an enum too and renders as a rocker. Then asserts every
+  variant of those four has a `WAVE_GLYPHS` entry.
+- `editor_width_matches_the_css` parses `--editor-w` out of the stylesheet.
+  `EDITOR_HEIGHT` has no single CSS constant to check against (it is the sum of
+  the row variables plus two borders), and the doc now says so instead of
+  asking to keep it in sync.
+
+### Drift verified by hand
+
+Every item, and specifically the two that fail silently today:
+
+- **Vocabulary** — swapped `curve`/`scale` in the bridge's `MATRIX_FIELD`:
+  `the bridge's matrix-field names and ordinals match the engine's` **fails**.
+  Before this ticket the op would have landed, on the wrong field.
+- **Wave glyphs** — renamed LFO `"Saw+"` → `"Ramp+"` in `params.rs`:
+  `every_wave_label_has_a_glyph` **fails**. Before, the knob would have rendered
+  with a blank icon and nothing else would have noticed.
+- Telemetry (JS clamp ±2 → ±1: 2 node failures; Rust key `dynGr` → `dynGR`: the
+  Rust test fails), split range (`SPLIT_MAX` 96 → 108 fails
+  `split_range_matches_the_engine`), `Uncategorised` (-s- → -z- in
+  `preset-browser.js` fails `the_uncategorised_label_is_the_shared_one`). All
+  restored after.
+
+### A real bug the work caught
+
+Stamping the slider needed `slider.hasAttribute('value')`, not
+`slider.value === ''`: a `<input type="range">` with no `value` attribute
+reports its range **midpoint** as its value, so the property check never fired.
+With the HTML literals removed, the shipped slider would have opened at 54
+rather than C4. The vitest added for the stamp caught it before commit.
+
+### No unenforced "must not disagree" comments left
+
+Swept `must not disagree | must match | keep in sync | must agree | mirrored
+from | hand-declared | declared mirror` across `vxn-1b/**`. What remains is
+either now backed by a test (the event-codec mirror by `wasm-agreement`, the
+`VE_*` tags and the vocabulary by `vocab-agreement`, `--editor-w` by
+`editor_width_matches_the_css`) or is not a cross-file constant pair at all
+(`coordinator.mjs`'s ring `capacity`, which is one value passed to both halves
+through `processorOptions`, so it agrees by construction).
+
+### Declined
+
+Extracting a shared `model.js` to break the `dispatch.js` ↔ `panels/matrix.js`
+ESM cycle. The Notes ask for it *if it is cheap*, and it is not:
+`paramIdByNameAtLayer` reads `_paramIdByName`, an index `dispatch.js` builds in
+`init()` and mutates on rebind, so moving the function moves shared mutable
+state across the splice boundary whose ordering [[0310]] already flagged as
+fragile. Worth its own ticket if the cycle ever costs something — today it is
+invisible, because the splice loader flattens both files into one scope.
+
+### Suites
+
+`cargo test --workspace` 1374 pass / 0 fail (was 1365 — 9 new tests).
+`node --test .../web/*.test.mjs` **158 pass, 0 skipped** (was 148 — two new
+suites). `vitest run` 304 pass / 39 files.

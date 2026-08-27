@@ -114,7 +114,7 @@ independent of each other and of the refactors.
       wrong. Correctness, not style.
 - [x] **0315** *(vxn-1b, low)* — War-story sweep: keep the constraint, drop the
       event. ~370 ticket refs, 12 quoted narrative blocks.
-- [ ] **0316** *(vxn-1b, medium)* — Bind the cross-language tables: the custom-op
+- [x] **0316** *(vxn-1b, medium)* — Bind the cross-language tables: the custom-op
       vocabulary (3 transcriptions) and the telemetry payload shape (2), neither
       pinned by a test.
 - [ ] **0317** *(monorepo, medium)* — `vxn-xtask-common`: 3,015 lines of
