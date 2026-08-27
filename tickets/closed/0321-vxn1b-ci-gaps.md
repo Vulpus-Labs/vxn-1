@@ -134,3 +134,79 @@ commit that hollowed it.
   all, which is a separate gap and out of scope.
 - One `cargo test` at a time — [[vxn-no-parallel-cargo-test]]. Stage explicit
   paths — [[vxn-concurrent-vxn2-work-no-git-add-all]].
+
+## Close-out (2026-08-27)
+
+Both gaps closed and **proven on the remote**, not just locally. Green run:
+`d992dc6`.
+
+### JS suites now run on every push
+
+`Test` workflow, all 11 steps green:
+
+- **`node --test`: `# tests 151 · pass 151 · fail 0 · skipped 0`** — byte-for-byte
+  the local result, so the whole suite ran rather than a subset.
+- **Vitest** rides the existing `cargo test --workspace` step via a
+  `js_suite_passes` gate in `vxn1b-ui-web`
+  ([lib.rs](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs)) keyed on the **same**
+  `VXN_JS_TESTS` var vxn-1 uses, so one env setting un-gates both products. Both
+  suites' Vitest runs are visible in the log.
+
+### Bundle now builds VXN1b on every push
+
+All four jobs green — `macOS vxn-1b (universal)`, `Windows vxn-1b (x86_64)`, and
+the two pre-existing vxn-1 jobs. Each VST3 is checked for its bundle id after
+linking.
+
+### What the first real run caught
+
+The step failed on its first genuine execution, which was the point of opening
+this. `node --test` needs **two** wasm artifacts; the first cut of the build
+step made only `vxn1b-wasm`, so the three suites driving
+`vxn1b_web_controller.wasm` aborted and CI reported **91 tests where a complete
+run has 151**. It failed rather than passing at 60% coverage only because those
+suites fail rather than skip on a missing artifact ([[0295]]) — that rule
+earning its keep on its first outing.
+
+Not visible locally: the controller wasm was sitting in `target/` from the 0307
+work. Reproduced by deleting it — 91 tests, 3 fail, matching CI exactly. Now
+built with `cargo run -p vxn1b-xtask -- web`, the product's own definition of
+the web artifacts, so the crate list lives in one place and a third wasm crate
+cannot silently fall out of it.
+
+Two other self-inflicted failures on the way, both worth recording:
+
+- **wasm32 was installed for the wrong toolchain.** A CI action's `targets:`
+  input installs for the channel *it* resolves (stable); `rust-toolchain.toml`
+  then pins 1.95.0 and cargo uses that, so the target was present on a toolchain
+  nothing runs — `can't find crate for std`. The `targets` list in
+  `rust-toolchain.toml` is the only place that works, and its own comment
+  already said so for the macOS cross targets.
+- **A `startup_failure` that was not ours.** Both `Test` and `Bundle` failed at
+  startup on one commit that did not touch either file; a re-run started
+  cleanly. Transient infrastructure — worth knowing before anyone debugs a
+  workflow that "broke" without changing.
+
+### Deviations from the ticket as written
+
+- **The premise was partly wrong and was corrected before landing.** VXN1b's
+  Rust crates were already workspace members, so `cargo test --workspace`
+  covered them. The gap was JS-only, plus the bundle.
+- **`bundle.yml` gained the non-hollow VST3 check for vxn-1 as well**, which is
+  a change to a pre-existing job rather than pure addition. Leaving the new
+  VXN1b jobs better-guarded than the vxn-1 ones next to them seemed the wrong
+  trade. vxn-2 still has no `bundle.yml` job at all — a separate gap, untouched.
+- **The hollow-VST3 check was verified by logic, not by hollowing a real
+  build.** On macOS, against the actual 10.9 MB `VXN1b.vst3`, the check accepts
+  the real binary and rejects a stand-in without the bundle id. The Windows form
+  is `release.yml`'s verbatim, unchanged and already proven in production, but I
+  have not run it against a deliberately stripped module. The acceptance
+  criterion asked for that; this is the honest state of it.
+
+### Residual risk
+
+The step's health is judged by exit code, not test count. A change that stops a
+suite running *without* tripping fail-don't-skip would go green with fewer
+tests — exactly the shape of what happened here, minus the rule that caught it.
+A count floor would close it, at the cost of churn whenever tests are added.
+Recorded rather than decided.
