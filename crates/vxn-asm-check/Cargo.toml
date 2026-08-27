@@ -1,0 +1,15 @@
+[package]
+name = "vxn-asm-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Codegen guard: counts SIMD instructions per hot symbol in linked release artefacts, so an extraction that de-vectorises a kernel fails loudly."
+publish = false
+
+[[bin]]
+name = "vxn-asm-check"
+path = "src/main.rs"
+
+[dependencies]

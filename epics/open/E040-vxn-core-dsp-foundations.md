@@ -58,6 +58,71 @@ Dependency chain: **0222 → {0223, 0224, 0225, 0226} → 0227**.
 - [ ] **0226** — `control` / `declick` / `fx` / `test_util` modules.
 - [ ] **0227** — Pure-move kernels: DynamicsBlock, HpfKernel, scalar OTA ladder.
 
+## Codegen + perf baselines (captured by 0223, 2026-08-27)
+
+Reference numbers every later extraction is checked against. Machine: macOS 14 /
+aarch64, rustc 1.95.0 pinned, `[profile.release]` (thin LTO, opt-level 3,
+codegen-units 1). Captured from the **linked cdylibs**, not per-crate objects —
+thin LTO means a crate-level `.o` does not show what ships.
+
+Re-check with `cargo run -p vxn-asm-check --release`. It exits non-zero if a
+watched symbol falls below its floor or vanishes entirely.
+
+### SIMD instruction counts per hot symbol
+
+| symbol | artefact | captured | floor |
+|---|---|---:|---:|
+| `bank::RenderBank::render` | vxn1b | 9632 | 6000 |
+| `poly::oscillator::PolyOscillator::process` | vxn1b | 292 | 200 |
+| `engine::Engine::process_block` | vxn1b | 282 | 180 |
+| `fx::FxChain::process_block` | vxn1b | 133 | 80 |
+| `voice::Voices::fill_stack_pos` | vxn1b | 108 | 60 |
+| `engine::Engine::cook_stacks_block` | vxn2 | 245 | 140 |
+| `stack::lane_route_algo_*` (summed) | vxn2 | 286 | 200 |
+| `stack::Stack::note_on` | vxn2 | 142 | 50 |
+| `stack::stack_tick_stereo` | vxn2 | 196 | 35 |
+
+Floors are **not** equalities. Instruction selection drifts a few percent with
+any unrelated edit; what matters is the cliff — a de-vectorised kernel drops to
+zero or near it, never by 5%. Floors sit at roughly 60-70% of capture.
+
+`lane_route_algo_*` is summed across the 22 symbols that survive linking; the
+source defines 32, and the linker folds identical ones. Watch the sum, not the
+count, or ICF changes read as regressions.
+
+### Throughput
+
+| harness | captured |
+|---|---|
+| `vxn-engine/examples/busy_profile` (16 voices, Dual, 4× OS, sync + PM, FX on) | 320 s audio in 9.48 s = **33.8× realtime** |
+
+### Criterion (`vxn2-osc-bench`, median of 100 samples)
+
+Captured at reduced sample time (`--warm-up-time 1 --measurement-time 3`) — the
+absolute numbers are comparable run-to-run on this machine, which is what a
+before/after needs; they are not comparable to a default-settings run.
+
+| bench | median |
+|---|---:|
+| `stack/stack_d1` | 54.57 µs |
+| `stack/stack_d4` | 54.82 µs |
+| `stack/stack_d8` | 55.08 µs |
+| `filter_path/filter_off` | 401.9 µs |
+| `filter_path/filter_on_4x` | 1.321 ms |
+| `filter_quiescence/sustaining_4x` | 1.317 ms |
+| `filter_quiescence/released_rungout_4x` | 16.07 µs |
+| `master_chain/master_chain_full` | 399.6 µs |
+| `master_chain/master_chain_fx_off` | 405.2 µs |
+
+Note `stack_d1` → `stack_d8` costs +0.9% for 8× the density — the SoA lane
+vectorisation working as designed ([[vxn2-stack-soa]]). If that spread ever
+opens up, the lane loop went scalar and asm-check should have caught it first.
+
+Not captured: `op_voice`, `voice`, `reverb`, `alloc`, `lfo`, `matrix`,
+`matrix_gated`, `delay`, `cleanup`. A full sweep is tens of minutes and
+[[vxn-no-parallel-cargo-test]] forbids overlapping it with anything else. Extend
+the table when a ticket needs a specific bench as its before/after.
+
 ## Acceptance
 
 - Full workspace test suite green (serialised runs) with zero golden changes.
