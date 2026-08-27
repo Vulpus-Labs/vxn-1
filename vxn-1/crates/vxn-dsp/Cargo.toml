@@ -12,5 +12,6 @@ description = "VXN1 block-processing DSP kernels (oscillators, envelopes, filter
 
 [dependencies]
 vxn-core-utils = { workspace = true }
+vxn-core-dsp = { workspace = true }
 
 [dev-dependencies]

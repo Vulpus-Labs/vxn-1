@@ -40,16 +40,8 @@ const END: usize = 84;
 // baseline windows clear of the fade tail.
 const FADE_GUARD: usize = 10;
 
-/// 4th-difference click detector: max `|b[i+2] − 4b[i+1] + 6b[i] − 4b[i−1] +
-/// b[i−2]|` over `range` (caller ensures 2 ≤ range.start, range.end + 2 ≤ len).
-fn worst_d4(buf: &[f32], range: std::ops::Range<usize>) -> f64 {
-    range
-        .map(|i| {
-            (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2]).abs()
-                as f64
-        })
-        .fold(0.0, f64::max)
-}
+// The d4 probe is canonical in vxn-core-dsp (0226).
+use vxn_core_dsp::test_util::worst_d4;
 
 /// Worst `d4` over the whole settled OFF and settled ON plateaus (not a short
 /// window). vxn-1's FX are LFO-modulated (phaser/chorus sweep, limiter pumps,
@@ -66,7 +58,8 @@ fn steady_floor(buf: &[f32]) -> f64 {
 /// and the crossfade removes. Six samples centred on the join cover the kernel's
 /// ±2 reach either side of the edge.
 fn join_d4(buf: &[f32], edge_block: usize) -> f64 {
-    worst_d4(buf, edge_block * BLK - 3..edge_block * BLK + 3)
+    // Block index here, sample index in the shared helper.
+    vxn_core_dsp::test_util::join_d4(buf, edge_block * BLK)
 }
 
 /// Boot with every master FX off (so the fades prime to off), apply `cfg`, hold

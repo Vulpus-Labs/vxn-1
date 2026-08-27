@@ -9,5 +9,6 @@ publish = false
 # Shared low-level primitives (E027/0117): one-pole smoother, FTZ guard,
 # MIDI→Hz, tempo-sync subdivision table. Replaces vxn-2's forked copies.
 vxn-core-utils = { workspace = true }
+vxn-core-dsp = { workspace = true }
 
 [dev-dependencies]

@@ -4,11 +4,5 @@
 /// over `range` (caller ensures 2 ≤ range.start and range.end + 2 ≤ buf.len()).
 /// Suppresses smooth carriers by f^4 while preserving the full amplitude of a
 /// slope discontinuity — the same probe used by the note-off-click harness (0079).
-pub fn worst_d4(buf: &[f32], range: std::ops::Range<usize>) -> f64 {
-    range
-        .map(|i| {
-            (buf[i + 2] - 4.0 * buf[i + 1] + 6.0 * buf[i] - 4.0 * buf[i - 1] + buf[i - 2])
-                .abs() as f64
-        })
-        .fold(0.0, f64::max)
-}
+// Canonical in vxn-core-dsp (0226); re-exported so `common::worst_d4` resolves.
+pub use vxn_core_dsp::test_util::worst_d4;

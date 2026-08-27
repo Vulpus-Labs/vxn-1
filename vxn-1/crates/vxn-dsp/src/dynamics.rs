@@ -328,30 +328,9 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Assert a stereo process fn is a bit-exact passthrough for `n` samples.
-    /// Inlined from vxn2-dsp's `test_util` (vxn-dsp has no shared test_util).
-    fn assert_bit_exact_passthrough(mut process_fn: impl FnMut(f32, f32) -> (f32, f32), n: usize) {
-        for i in 0..n {
-            let x = 0.4 * (TAU * 330.0 * i as f32 / SR).sin();
-            let y = -0.3 * (TAU * 110.0 * i as f32 / SR).cos();
-            let (l, r) = process_fn(x, y);
-            assert_eq!(l.to_bits(), x.to_bits(), "L not bit-exact at i={i}: {l} vs {x}");
-            assert_eq!(r.to_bits(), y.to_bits(), "R not bit-exact at i={i}: {r} vs {y}");
-        }
-    }
-
-    /// Settle `process_fn` for `settle` samples, then assert bit-exact
-    /// passthrough for `n`. Inlined from vxn2-dsp's `test_util`.
-    fn assert_bit_exact_after_settle(
-        mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
-        settle: usize,
-        n: usize,
-    ) {
-        for _ in 0..settle {
-            process_fn(0.3, 0.3);
-        }
-        assert_bit_exact_passthrough(process_fn, n);
-    }
+    // Bit-exact helpers come from vxn-core-dsp (0226) — this module carried a
+    // hand-copied pair, with a comment saying so.
+    use vxn_core_dsp::test_util::{assert_bit_exact_after_settle, assert_bit_exact_passthrough};
 
     fn params_off() -> DynamicsParams {
         DynamicsParams {

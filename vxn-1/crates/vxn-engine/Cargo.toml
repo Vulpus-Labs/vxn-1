@@ -9,6 +9,7 @@ description = "VXN1 synth engine: parameters, voice allocation, and block render
 
 [dependencies]
 vxn-dsp = { workspace = true }
+vxn-core-dsp = { workspace = true }
 vxn-app = { workspace = true }
 # Shared sparse-TOML preset scaffold (Meta/PresetError/Header/SCHEMA/value_for,
 # ticket 0143). Only the synth-specific body types stay here.

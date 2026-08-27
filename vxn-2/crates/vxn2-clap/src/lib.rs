@@ -53,7 +53,7 @@ pub(crate) fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// EG ticks) must advance at this rate regardless of host buffer size, or
 /// the level/pan ramps interpolate too coarsely and zipper returns at
 /// large buffers.
-const CONTROL_BLOCK: usize = 32;
+use vxn_core_dsp::control::CONTROL_BLOCK;
 
 /// Subdivide `[start, end)` into chunks of at most [`CONTROL_BLOCK`]
 /// samples. The tail chunk may be shorter; an empty range yields nothing.

@@ -25,28 +25,28 @@
 //!   guaranteed to vanish. "Vectorisation unchanged" is a claim to verify with
 //!   the asm-check harness, not to assume.
 //!
-//! Scaffold only as of ticket 0222 — the modules below are placeholders that
-//! later E040 tickets fill in. Nothing depends on this crate yet.
+//! `control`, `declick`, `fx` and `test_util` landed with ticket 0226; `env`
+//! and `os_region` are still stubs, filled by 0238 and 0233.
 
 /// Control-rate vocabulary: `CONTROL_BLOCK`, the `UpdateRate` taxonomy, and the
 /// `BaseRate` / `OsRate` / `CtrlRate` newtypes that keep "which sample rate is
 /// this?" a compile-time question.
 ///
 /// Filled in by ticket 0226.
-pub mod control {}
+pub mod control;
 
 /// Enable/disable declicking. `WetFade` — vxn-2's internal wet-path fade — is
 /// the shared idiom for per-FX enables (ADR 0002 §5); whole-span switches keep
 /// `BypassXfade`, which lives in `vxn-core-utils`.
 ///
 /// Filled in by ticket 0226.
-pub mod declick {}
+pub mod declick;
 
 /// The `FxKernel` trait and the shared effect components built on it, plus the
 /// `Bypassable` wrapper carrying the off→on edge-reset glue.
 ///
 /// Filled in by tickets 0226 (trait) and 0228–0232 (the effects).
-pub mod fx {}
+pub mod fx;
 
 /// `EnvLifecycle` — the note-on / note-off / tick shape that every envelope
 /// family in the repo shares, named without moving any numerics.
@@ -65,4 +65,4 @@ pub mod os_region {}
 /// suites (the d4 toolkit and friends).
 ///
 /// Filled in by ticket 0226.
-pub mod test_util {}
+pub mod test_util;

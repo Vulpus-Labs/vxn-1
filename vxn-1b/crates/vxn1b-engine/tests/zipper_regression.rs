@@ -18,7 +18,10 @@ use vxn1b_engine::{DestId, Engine, Layer, MatrixSlot, ParamId, SourceId};
 use vxn1b_engine::matrix::Curve;
 
 const SR: f32 = 48_000.0;
-const CB: usize = 32; // CONTROL_BLOCK
+/// The engine's control-block size, not a local copy of it (0226): this test
+/// asserts a per-block cadence, so a divergence here would silently stop
+/// testing what it claims to.
+const CB: usize = vxn_dsp::CONTROL_BLOCK;
 const FRAMES: usize = 8192;
 
 /// Build an engine with a single square-LFO→`dest` route at `depth`, a steady

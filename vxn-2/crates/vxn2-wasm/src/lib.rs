@@ -28,4 +28,4 @@ pub(crate) const QUANTUM: usize = 128;
 /// `len <= CONTROL_BLOCK` (it samples block-rate state once per call), so each
 /// event-sliced region is sub-chunked to this. Must equal `vxn2-clap`'s
 /// `CONTROL_BLOCK` (32) — the block-rate cadence is part of the sound.
-pub(crate) const CONTROL_BLOCK: usize = 32;
+pub(crate) use vxn_core_dsp::control::CONTROL_BLOCK;

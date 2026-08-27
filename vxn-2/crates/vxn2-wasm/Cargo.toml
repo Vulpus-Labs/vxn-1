@@ -21,3 +21,4 @@ crate-type = ["cdylib"]
 # via `Engine::snapshot_params`, so there's no `LocalParams` mirror (that lives
 # in the non-wasm-clean `vxn2-clap`) on this path.
 vxn2-engine = { workspace = true }
+vxn-core-dsp = { workspace = true }

@@ -2448,6 +2448,7 @@ version = "0.1.1"
 name = "vxn-dsp"
 version = "0.1.1"
 dependencies = [
+ "vxn-core-dsp",
  "vxn-core-utils",
 ]
 
@@ -2460,6 +2461,7 @@ dependencies = [
  "serde",
  "toml",
  "vxn-app",
+ "vxn-core-dsp",
  "vxn-dsp",
  "vxn-preset",
 ]
@@ -2573,6 +2575,7 @@ dependencies = [
  "clack-plugin",
  "vxn-core-app",
  "vxn-core-clap",
+ "vxn-core-dsp",
  "vxn-core-ui-web",
  "vxn2-app",
  "vxn2-clap",
@@ -2584,6 +2587,7 @@ dependencies = [
 name = "vxn2-dsp"
 version = "0.1.1"
 dependencies = [
+ "vxn-core-dsp",
  "vxn-core-utils",
 ]
 
@@ -2595,6 +2599,7 @@ dependencies = [
  "serde",
  "toml",
  "vxn-core-app",
+ "vxn-core-dsp",
  "vxn-core-utils",
  "vxn-preset",
  "vxn2-app",
@@ -2626,6 +2631,7 @@ dependencies = [
 name = "vxn2-wasm"
 version = "0.1.1"
 dependencies = [
+ "vxn-core-dsp",
  "vxn2-engine",
 ]
 

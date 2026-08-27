@@ -23,46 +23,11 @@ pub(crate) fn run_until_stage(mut tick: impl FnMut() -> bool, max: usize) -> boo
     false
 }
 
-/// Assert that a stereo process function is a **bit-exact passthrough** for
-/// `n` consecutive stereo samples.
-///
-/// Uses a fixed internal two-frequency sine pair (330 Hz L / 110 Hz R at
-/// 48 kHz). Panics on the first non-exact sample with an informative message.
-///
-/// The specific input waveform is immaterial — any non-trivial deterministic
-/// pair establishes the passthrough property (output == input, zero bits
-/// different).
-pub(crate) fn assert_bit_exact_passthrough(mut process_fn: impl FnMut(f32, f32) -> (f32, f32), n: usize) {
-    const SR: f32 = 48_000.0;
-    for i in 0..n {
-        let x = 0.4 * (TAU * 330.0 * i as f32 / SR).sin();
-        let y = -0.3 * (TAU * 110.0 * i as f32 / SR).cos();
-        let (l, r) = process_fn(x, y);
-        assert_eq!(
-            l.to_bits(),
-            x.to_bits(),
-            "L not bit-exact at i={i}: {l} vs {x}"
-        );
-        assert_eq!(
-            r.to_bits(),
-            y.to_bits(),
-            "R not bit-exact at i={i}: {r} vs {y}"
-        );
-    }
-}
-
-/// Settle `process_fn` for `settle` samples (arbitrary input), then assert
-/// bit-exact passthrough for `n` samples.
-pub(crate) fn assert_bit_exact_after_settle(
-    mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
-    settle: usize,
-    n: usize,
-) {
-    for _ in 0..settle {
-        process_fn(0.3, 0.3);
-    }
-    assert_bit_exact_passthrough(process_fn, n);
-}
+// The bit-exact pair is canonical in vxn-core-dsp (0226); re-exported here so
+// this crate's `test_util::` paths keep resolving.
+pub(crate) use vxn_core_dsp::test_util::{
+    assert_bit_exact_after_settle, assert_bit_exact_passthrough,
+};
 
 /// Drive `process_fn` (stereo in/out) with a `f_hz`-Hz sine at 48 kHz for
 /// `warm` samples, then return the RMS of the following `measure` samples.

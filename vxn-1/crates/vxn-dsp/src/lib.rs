@@ -54,7 +54,7 @@ pub const MAX_OVERSAMPLE: usize = 8;
 /// recomputed once per block; the per-sample inner loop runs this many times.
 /// 32 @ 48 kHz ≈ 0.67 ms — well below any audible zipper threshold for the
 /// modulation depths VXN1 uses.
-pub const CONTROL_BLOCK: usize = 32;
+pub use vxn_core_dsp::control::CONTROL_BLOCK;
 
 pub use adsr::{AdsrCore, AdsrShape, AdsrStage};
 pub use chorus::StereoChorus;
