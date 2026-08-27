@@ -524,44 +524,22 @@ impl ControllerState {
         true
     }
 
-    // ── Tick ────────────────────────────────────────────────────────────────
-
-    /// Drive one controller tick: drain the UI/host queues into the model, then
-    /// pack every resulting `ViewEvent` — plus the rate-partner refresh and the
-    /// two non-param echoes — into `view_out`. Finally refresh the JS-visible
-    /// value snapshot so a mirror pass sees this tick's writes.
-    fn tick(&mut self) {
-        self.ctrl.tick(
-            &mut apply_custom_ui,
-            // No host events originate in a browser; the channel exists because
-            // the shared Controller has one.
-            &mut |_, _| {},
-            // The post-load hook is unused: the matrix / key echoes below run
-            // every tick and catch a load's non-param drift on their own.
-            &mut |_| {},
-        );
-
-        // A re-attached page has no state; re-seed the non-param echoes so the
-        // next push is unconditional. Params re-broadcast via `EditorReady`.
-        if self.ctrl.take_editor_ready_flag() {
-            self.last_matrix = None;
-            self.last_key = None;
-        }
-
-        self.view_out.clear();
-        push_u32(&mut self.view_out, 0); // count placeholder
-        let mut count = 0u32;
-
-        // (1) Drain the channel first — the partner refresh has to know every
-        // ParamChanged id in this batch before it can decide what to synthesise.
+    /// (1) Move everything waiting on `view_rx` into `pending`, noting whether
+    /// the corpus JSON needs rebuilding at the end of the tick.
+    fn drain_view_channel(&mut self) {
         while let Ok(ev) = self.view_rx.try_recv() {
             if matches!(ev, ViewEvent::PresetCorpusChanged { .. }) {
                 self.corpus_json_dirty = true;
             }
             self.pending.push(ev);
         }
+    }
 
-        // (2) Pack, recording which param ids were emitted.
+    /// (2) Pack `pending` into `view_out`, recording which param ids were
+    /// emitted so (3) can tell a synthesised refresh from a real echo. Returns
+    /// how many records were written.
+    fn pack_pending(&mut self) -> u32 {
+        let mut count = 0u32;
         for i in 0..self.pending.len() {
             match &self.pending[i] {
                 ViewEvent::ParamChanged { id, .. } => {
@@ -589,11 +567,19 @@ impl ControllerState {
             }
         }
         self.pending.clear();
+        count
+    }
 
-        // (3) Rate-partner refresh: a sync toggle's flip does not change its
-        // rate param's value, but it swaps the readout between Hz/seconds and a
-        // subdivision label, and the faceplate repaints only from what it is
-        // sent. Same rule as the native shell's `push_param_diffs`.
+    /// (3) Rate-partner refresh: a sync toggle's flip does not change its rate
+    /// param's value, but it swaps the readout between Hz/seconds and a
+    /// subdivision label, and the faceplate repaints only from what it is sent.
+    /// Same rule as the native shell's `push_param_diffs`. Returns how many
+    /// extra records were written, and leaves `emitted` clear for the next tick.
+    ///
+    /// The loop indexes rather than iterates because it pushes onto the very
+    /// list it is walking: a synthesised partner is itself a candidate.
+    fn refresh_rate_partners(&mut self) -> u32 {
+        let mut count = 0u32;
         for i in 0..self.partner_touched.len() {
             let id = self.partner_touched[i];
             let Some(rate_id) = rate_partner_clap_id(id) else {
@@ -610,14 +596,44 @@ impl ControllerState {
         for id in self.partner_touched.drain(..) {
             self.emitted[id] = false;
         }
+        count
+    }
 
-        // (4) The two non-param echoes.
-        if self.push_matrix_echo() {
-            count += 1;
+    // ── Tick ────────────────────────────────────────────────────────────────
+
+    /// Drive one controller tick: drain the UI/host queues into the model, then
+    /// pack every resulting `ViewEvent` — plus the rate-partner refresh and the
+    /// two non-param echoes — into `view_out`. Finally refresh the JS-visible
+    /// value snapshot so a mirror pass sees this tick's writes.
+    fn tick(&mut self) {
+        self.ctrl.tick(
+            &mut apply_custom_ui,
+            // No host events originate in a browser; the channel exists because
+            // the shared Controller has one.
+            &mut |_, _| {},
+            // The post-load hook is unused: the matrix / key echoes below run
+            // every tick and catch a load's non-param drift on their own.
+            &mut |_| {},
+        );
+
+        // A re-attached page has no state; re-seed the non-param echoes so the
+        // next push is unconditional. Params re-broadcast via `EditorReady`.
+        if self.ctrl.take_editor_ready_flag() {
+            self.last_matrix = None;
+            self.last_key = None;
         }
-        if self.push_key_echo() {
-            count += 1;
-        }
+
+        self.view_out.clear();
+        push_u32(&mut self.view_out, 0); // count placeholder
+
+        // Drain the channel first — the partner refresh has to know every
+        // ParamChanged id in this batch before it can decide what to synthesise.
+        self.drain_view_channel();
+        let mut count = self.pack_pending();
+        count += self.refresh_rate_partners();
+        // The two non-param echoes.
+        count += u32::from(self.push_matrix_echo());
+        count += u32::from(self.push_key_echo());
 
         self.view_out[0..4].copy_from_slice(&count.to_le_bytes());
 
