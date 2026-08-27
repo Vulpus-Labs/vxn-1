@@ -2326,7 +2326,15 @@ impl Engine {
         // matching the param's exponential taper; clamp to the [0.1, 16] range.
         let drive =
             (fp.drive * self.dest_vals[i][0][FILTER_DRIVE_IDX].exp2()).clamp(0.1, 16.0);
-        let coeffs = OtaLadderCoeffs::new(cutoff_hz, os_rate, resonance, drive);
+        // vxn-2 caps feedback at high cutoff; vxn-1/vxn-1b deliberately do not.
+        // 0227 shared the mechanism and left this policy here (ADR 0002 §6).
+        let coeffs = OtaLadderCoeffs::new_capped(
+            cutoff_hz,
+            os_rate,
+            resonance,
+            drive,
+            vxn2_dsp::filter::k_cap(cutoff_hz),
+        );
         self.filter_l[i].set_coeffs(coeffs);
         self.filter_r[i].set_coeffs(coeffs);
         self.filter_l[i].set_response(fp.mode, fp.slope);

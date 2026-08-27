@@ -42,11 +42,24 @@ pub mod control;
 /// Filled in by ticket 0226.
 pub mod declick;
 
+/// Stereo dynamics: feed-forward peak compressor into a `tanh` saturator, with
+/// the wet/dry glide and the gain-reduction metering tap. Moved by 0227; both
+/// `vxn-dsp` and `vxn2-dsp` re-export it.
+pub mod dynamics;
+
 /// The `FxKernel` trait and the shared effect components built on it, plus the
 /// `Bypassable` wrapper carrying the off→on edge-reset glue.
 ///
 /// Filled in by tickets 0226 (trait) and 0228–0232 (the effects).
 pub mod fx;
+
+/// One-pole TPT high-pass — the scalar kernel. Moved by 0227; vxn-1's 8-wide
+/// `PolyHpf` stays per-synth (SoA body, ADR 0002 §3).
+pub mod hpf;
+
+/// OTA-C ladder: kernel, modes, mix tables and coefficients. Moved by 0227.
+/// The resonance *cap* policy stays per-synth — see `OtaLadderCoeffs::new_capped`.
+pub mod filter;
 
 /// `EnvLifecycle` — the note-on / note-off / tick shape that every envelope
 /// family in the repo shares, named without moving any numerics.

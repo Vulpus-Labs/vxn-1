@@ -1,123 +1,19 @@
-//! OTA-C ladder lowpass, the optional per-voice filter of ADR 0004.
+//! vxn-2's OTA ladder: the shared kernel, plus **vxn-2's own** resonance voicing.
 //!
-//! Four TPT one-pole stages, but the nonlinearity lives **inside each
-//! integrator** (a per-stage `tanh` on the integrator input) rather than on the
-//! global feedback sum. That gives a softer, more distributed saturation and a
-//! cleaner, more sinusoidal self-oscillation than a global-feedback ladder:
+//! The kernel, modes, mix tables, `compute_g` and `OtaLadderCoeffs` moved to
+//! `vxn-core-dsp::filter` in ticket 0227. What stayed here is the part that is
+//! not shared and should not be: [`k_cap`], the cutoff-tracked feedback ceiling.
 //!
-//! * Per-stage `tanh`, not a single global pre-feedback `tanh`.
-//! * **No** resonance-dependent input attenuation, so there is no `scale` term
-//!   and no Sharp/Smooth voicing axis. There is also **no** resonance gain
-//!   compensation: the `1/(1+k)` passband loss under resonance is left intact.
-//!   ([`k_cap`] still tames high-cutoff self-oscillation — a stability fix, not
-//!   a level restore.)
-//! * Selectable response ([`FilterMode`]): 24 / 12 dB lowpass, band-pass,
-//!   high-pass and notch, all formed as the classic analogue-ladder linear
-//!   combination of the four stage outputs and the ladder input node. The
-//!   resonance feedback loop is **always** taken from the 4th stage, so the
-//!   filter self-oscillates identically at `k ≈ 4` in every mode.
-//!
-//! Frozen-coefficient kernel on the per-control-block model: the engine
-//! recomputes coefficients once per block via [`OtaLadderCoeffs`]. The filter
-//! runs on a stack's summed stereo pair (two scalar kernels, L/R), so there is
-//! no per-lane SoA problem here.
+//! vxn-1 and vxn-1b deliberately do not cap — their ladders self-oscillate at
+//! high cutoff. vxn-2 does, because at high cutoff the discrete ladder's
+//! self-oscillation threshold falls and FM's dense inharmonic HF parks a
+//! screaming peak there. Unifying the two would have changed one synth's sound,
+//! which is why 0227 shared the *mechanism* (`new_capped`) and left the
+//! *policy* — this table — per-synth, per ADR 0002 §6.
 
-use crate::math::fast_tanh;
-use std::f32::consts::{FRAC_PI_4, PI};
-
-/// Filter response (lowpass / highpass / bandpass / notch). The actual tap-mix
-/// also depends on [`FilterSlope`] (2- vs 4-pole); see [`FilterMode::mix`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum FilterMode {
-    /// Lowpass.
-    #[default]
-    Lp,
-    /// Highpass.
-    Hp,
-    /// Bandpass.
-    Bp,
-    /// Notch / band-reject.
-    Notch,
-}
-
-/// Filter order — the 2-pole (12 dB/oct) vs 4-pole (24 dB/oct) variant of a
-/// [`FilterMode`]. The resonance feedback loop is always the 4th stage, so
-/// self-oscillation is identical in both.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum FilterSlope {
-    /// 12 dB/oct (2-pole).
-    Pole2,
-    /// 24 dB/oct (4-pole).
-    #[default]
-    Pole4,
-}
-
-impl FilterMode {
-    pub const COUNT: usize = FilterMode::Notch as usize + 1;
-    pub const ALL: [FilterMode; Self::COUNT] = [
-        FilterMode::Lp,
-        FilterMode::Hp,
-        FilterMode::Bp,
-        FilterMode::Notch,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            FilterMode::Lp => "LP",
-            FilterMode::Hp => "HP",
-            FilterMode::Bp => "BP",
-            FilterMode::Notch => "Notch",
-        }
-    }
-
-    /// Mix the ladder nodes into this mode's output at the given `slope`. `e` is
-    /// the ladder input node (post drive + resonance feedback); `y` the four
-    /// stage outputs (each a one-pole LP of the previous). These are the standard
-    /// ladder-multimode combinations.
-    ///
-    /// Notch is the 2-pole `e − 2·y0 + 2·y1` for both slopes: its transfer
-    /// function `1 − 2u + 2u²` (`u = 1/(1+jω/ω_c)`) has an *exact* zero at the
-    /// cutoff regardless of resonance, and a ladder can't form a steeper notch
-    /// with a comparably clean null, so the slope switch is a no-op for notch.
-    #[inline]
-    pub fn mix(self, slope: FilterSlope, e: f32, y: [f32; 4]) -> f32 {
-        use FilterSlope::{Pole2, Pole4};
-        match (self, slope) {
-            (FilterMode::Lp, Pole2) => y[1],
-            (FilterMode::Lp, Pole4) => y[3],
-            (FilterMode::Hp, Pole2) => e - 2.0 * y[0] + y[1],
-            (FilterMode::Hp, Pole4) => e - 4.0 * y[0] + 6.0 * y[1] - 4.0 * y[2] + y[3],
-            (FilterMode::Bp, Pole2) => 2.0 * (y[0] - y[1]),
-            (FilterMode::Bp, Pole4) => 4.0 * y[1] - 8.0 * y[2] + 4.0 * y[3],
-            (FilterMode::Notch, _) => e - 2.0 * y[0] + 2.0 * y[1],
-        }
-    }
-}
-
-/// TPT one-pole stage gain. The four-stage ladder self-oscillates at the
-/// cutoff frequency *in continuous time*, but the explicit `z⁻¹` on the
-/// resonance feedback path (`y4_prev` in [`OtaLadderKernel::tick`]) adds a
-/// `2π·fc/fs` phase lag around the loop. The four cascaded one-poles absorb
-/// that deficit by oscillating *below* their corner — observably flat by a
-/// few semitones in the kHz band at base sample rate, and dependent on the
-/// oversampling ratio.
-///
-/// To pin self-oscillation at the nominal cutoff regardless of `fs`, detune
-/// the prewarped pole upward by the inverse of the per-pole phase shift:
-/// each of the four poles must contribute `π·fc/(2fs)` less lag, i.e.
-/// `atan(fc / fc_pole) = π/4 − π·fc/(2fs)`, giving
-/// `fc_pole = fc / tan(π/4 − π·fc/(2fs))`. One extra `tan` per coeff update.
-///
-/// `sample_rate` here is the **oversampled** rate on the filter path, so the
-/// `fs`-dependent pole detune stays correct at every oversample factor.
-#[inline]
-pub(crate) fn compute_g(cutoff_hz: f32, sample_rate: f32) -> f32 {
-    let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
-    let denom = (FRAC_PI_4 - PI * fc / (2.0 * sample_rate)).tan();
-    let fc_adj = (fc / denom).min(sample_rate * 0.49);
-    let wd = (PI * fc_adj / sample_rate).tan();
-    (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
-}
+pub use vxn_core_dsp::filter::{
+    FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel, compute_g,
+};
 
 /// Cutoff-tracked feedback ceiling — the cutoff-dependent resonance damping
 /// (sound-design fix, 2026-06-12). The discrete ladder's self-oscillation
@@ -145,7 +41,7 @@ const K_CAP_BREAKS: [(f32, f32); 5] = [
 ];
 
 #[inline]
-pub(crate) fn k_cap(cutoff_hz: f32) -> f32 {
+pub fn k_cap(cutoff_hz: f32) -> f32 {
     let b = &K_CAP_BREAKS;
     let last = b.len() - 1;
     if cutoff_hz <= b[0].0 {
@@ -164,140 +60,17 @@ pub(crate) fn k_cap(cutoff_hz: f32) -> f32 {
 }
 
 /// Frozen OTA-ladder coefficients for one control block.
-#[derive(Copy, Clone, Debug)]
-pub struct OtaLadderCoeffs {
-    /// TPT one-pole stage gain in `(0, 1)`.
-    pub g: f32,
-    /// Global feedback factor in `[0, 4]` (self-oscillation at 4).
-    pub k: f32,
-    /// Input drive applied before stage 0's `tanh`.
-    pub drive: f32,
-}
-
-impl OtaLadderCoeffs {
-    /// `resonance` is taken in `[0, 1]` and scaled to the `[0, 4]` feedback
-    /// range internally (self-oscillation at `resonance = 1.0`). The param layer
-    /// feeds `[0, 1]` directly. `sample_rate` is the oversampled rate on the
-    /// filter path.
-    #[inline]
-    pub fn new(cutoff_hz: f32, sample_rate: f32, resonance: f32, drive: f32) -> Self {
-        Self {
-            g: compute_g(cutoff_hz, sample_rate),
-            // Cutoff-tracked ceiling keeps the feedback below the (falling)
-            // self-osc threshold as cutoff climbs into the inharmonic-HF danger
-            // zone, while leaving low/mid cutoff and moderate resonance
-            // untouched (see `k_cap`).
-            k: (4.0 * resonance.clamp(0.0, 1.0)).min(k_cap(cutoff_hz)),
-            drive: drive.max(0.0),
-        }
-    }
-}
-
-/// Single-voice OTA-ladder kernel. Frozen coefficients (set once per block).
-#[derive(Clone)]
-pub struct OtaLadderKernel {
-    g: f32,
-    k: f32,
-    drive: f32,
-    mode: FilterMode,
-    slope: FilterSlope,
-    s: [f32; 4],
-    y4_prev: f32,
-}
-
-impl OtaLadderKernel {
-    pub fn new() -> Self {
-        Self {
-            g: 0.5,
-            k: 0.0,
-            drive: 1.0,
-            mode: FilterMode::Lp,
-            slope: FilterSlope::Pole4,
-            s: [0.0; 4],
-            y4_prev: 0.0,
-        }
-    }
-
-    /// Replace coefficients (call once per control block).
-    #[inline]
-    pub fn set_coeffs(&mut self, c: OtaLadderCoeffs) {
-        self.g = c.g;
-        self.k = c.k;
-        self.drive = c.drive;
-    }
-
-    /// Change filter response + slope. The feedback path is unchanged, so the
-    /// filter keeps ringing identically — only the output tap-mix shifts.
-    #[inline]
-    pub fn set_response(&mut self, mode: FilterMode, slope: FilterSlope) {
-        self.mode = mode;
-        self.slope = slope;
-    }
-
-    pub fn mode(&self) -> FilterMode {
-        self.mode
-    }
-
-    pub fn slope(&self) -> FilterSlope {
-        self.slope
-    }
-
-    pub fn reset(&mut self) {
-        self.s = [0.0; 4];
-        self.y4_prev = 0.0;
-    }
-
-    /// Largest absolute value across all internal state (the four ladder stage
-    /// integrators plus the feedback-tap memory). The quiescence-skip keys on
-    /// this: a stack whose input is zero *and* whose filter
-    /// state has fallen below an audibility floor can be skipped, because its
-    /// future output is bounded by this magnitude. A self-oscillating filter
-    /// (resonance → 1) sustains large state forever, so it never reads as
-    /// quiescent and is never wrongly skipped.
-    #[inline]
-    pub fn state_abs_max(&self) -> f32 {
-        let mut m = self.y4_prev.abs();
-        for &v in &self.s {
-            m = m.max(v.abs());
-        }
-        m
-    }
-
-    /// Run one sample, return the selected mode's output mix.
-    #[inline]
-    pub fn tick(&mut self, x: f32) -> f32 {
-        let g = self.g;
-        let fed = self.drive * x - self.k * self.y4_prev;
-        let mut input = fed;
-        let mut stages = [0.0f32; 4];
-        for (i, stage) in stages.iter_mut().enumerate() {
-            let u = fast_tanh(input);
-            let v = (u - self.s[i]) * g;
-            let yn = v + self.s[i];
-            self.s[i] = yn + v;
-            *stage = yn;
-            input = yn;
-        }
-        self.y4_prev = stages[3];
-        self.mode.mix(self.slope, fed, stages)
-    }
-}
-
-impl Default for OtaLadderKernel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::PI;
 
     #[test]
     fn passes_dc_and_attenuates_hf() {
         let sr = 48_000.0;
         let mut k = OtaLadderKernel::new();
-        k.set_coeffs(OtaLadderCoeffs::new(1000.0, sr, 0.0, 1.0));
+        k.set_coeffs(OtaLadderCoeffs::new_capped(1000.0, sr, 0.0, 1.0, k_cap(1000.0)));
         let x = 0.05;
         let mut last = 0.0;
         for _ in 0..2000 {
@@ -317,7 +90,7 @@ mod tests {
     /// Steady-state energy of a `f`-Hz sine through one mode/slope at fixed coeffs.
     fn mode_energy(mode: FilterMode, slope: FilterSlope, cutoff: f32, f: f32) -> f32 {
         let sr = 48_000.0;
-        let c = OtaLadderCoeffs::new(cutoff, sr, 0.0, 1.0);
+        let c = OtaLadderCoeffs::new_capped(cutoff, sr, 0.0, 1.0, k_cap(cutoff));
         let mut k = OtaLadderKernel::new();
         k.set_coeffs(c);
         k.set_response(mode, slope);
@@ -389,7 +162,7 @@ mod tests {
     fn stable_at_high_resonance() {
         let sr = 48_000.0;
         let mut k = OtaLadderKernel::new();
-        k.set_coeffs(OtaLadderCoeffs::new(2000.0, sr, 1.0, 1.0));
+        k.set_coeffs(OtaLadderCoeffs::new_capped(2000.0, sr, 1.0, 1.0, k_cap(2000.0)));
         let mut peak = 0.0f32;
         for i in 0..48_000 {
             let x = if i == 0 { 1.0 } else { 0.0 };
@@ -442,7 +215,7 @@ mod tests {
         // 1. Non-resonant (reso=0.2, cutoff=1000 Hz): excite then silence;
         //    state must fall below the floor within ~0.5 s.
         let mut k = OtaLadderKernel::new();
-        k.set_coeffs(OtaLadderCoeffs::new(1000.0, sr, 0.2, 1.0));
+        k.set_coeffs(OtaLadderCoeffs::new_capped(1000.0, sr, 0.2, 1.0, k_cap(1000.0)));
         for _ in 0..500 {
             k.tick(0.3);
         }
@@ -462,7 +235,7 @@ mod tests {
 
         // 2. High cutoff (14 kHz, reso=1): cutoff-tracked damp forces decay.
         let mut hi = OtaLadderKernel::new();
-        hi.set_coeffs(OtaLadderCoeffs::new(14_000.0, sr, 1.0, 1.0));
+        hi.set_coeffs(OtaLadderCoeffs::new_capped(14_000.0, sr, 1.0, 1.0, k_cap(14_000.0)));
         for _ in 0..500 {
             hi.tick(0.5);
         }
@@ -482,7 +255,7 @@ mod tests {
 
         // 3. Low cutoff (1500 Hz, reso=1): self-osc sustains — never decays.
         let mut lo = OtaLadderKernel::new();
-        lo.set_coeffs(OtaLadderCoeffs::new(1500.0, sr, 1.0, 1.0));
+        lo.set_coeffs(OtaLadderCoeffs::new_capped(1500.0, sr, 1.0, 1.0, k_cap(1500.0)));
         for _ in 0..500 {
             lo.tick(0.5);
         }
@@ -514,7 +287,7 @@ mod tests {
         let sr = 48_000.0;
         let os_rate = sr * factor as f32;
         let mut k = OtaLadderKernel::new();
-        k.set_coeffs(OtaLadderCoeffs::new(cutoff, os_rate, reso, drive));
+        k.set_coeffs(OtaLadderCoeffs::new_capped(cutoff, os_rate, reso, drive, k_cap(cutoff)));
         k.set_response(mode, slope);
 
         let n = input.len();

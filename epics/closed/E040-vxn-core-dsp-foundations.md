@@ -2,7 +2,7 @@
 id: E040
 product: monorepo
 title: "vxn-core-dsp foundations — shared component crate, measurement harness, leaf + pure-move kernels (bit-exact)"
-status: open
+status: closed
 created: 2026-08-02
 ---
 
@@ -129,3 +129,41 @@ the table when a ticket needs a specific bench as its before/after.
 - asm-check NEON-operand counts per named hot symbol unchanged vs the 0223
   reference; criterion deltas within noise.
 - `vxn-core-dsp` builds standalone and via all three synth cdylibs.
+
+## Close-out (2026-08-27)
+
+All six tickets closed. `crates/vxn-core-dsp` exists and carries the component
+layer; `crates/vxn-asm-check` makes "vectorisation unchanged" a checkable claim
+rather than a comment.
+
+**Every product bit-exact throughout.** vxn-2 render hash `0x533a37a7def1921a`
+at every step; vxn-1 `baseline_render_is_stable` and its 7 declick tests
+unmodified; workspace green at each close (1638 → 1641 → 1672 → 1670, the dip
+being duplicated test helpers deleted).
+
+**Three of the epic's premises turned out to be stale**, all true when written
+on 2026-08-02 and drifted since. Recorded because the pattern matters more than
+the instances: a ticket that says "these are already duplicates" is asserting
+something about a *moving* tree, and by the time it is worked the claim may have
+expired.
+
+- **0224/0225** — `ms_to_samples` was not one function: truncating with floor 0
+  in core-utils, rounding with floor 1 in vxn-1. Same name, different contract,
+  diverging at 44.1 kHz. Kept both, added `fade_len_samples`.
+- **0226** — `CONTROL_BLOCK` had three definitions, not two, one of them across
+  a wire boundary held together by a comment.
+- **0227** — `DynamicsBlock` had diverged eight days earlier (0241's metering
+  tap), and the two OTA ladders differ in *voicing*: vxn-2 caps resonance at
+  high cutoff, vxn-1/vxn-1b do not. That one could not be unified at all; the
+  mechanism is shared and the policy stays per-synth.
+
+**Two tickets ran ahead of their own measurement tool.** 0224 and 0225 landed
+before 0223's asm-check existed and claimed "vectorisation unchanged" on
+reasoning. 0226 and 0227 got the real thing: every watched symbol byte-for-byte
+identical to the 0223 capture, `RenderBank::render` included at 9632 — the
+symbol the ladder inlines into, and the one that would have moved had the
+extraction cost anything.
+
+**Deferred to E041 by design:** `DynamicsBlock`'s `WetFade` adoption, which
+0227 sanctions deferring. `WetFade` exists and is tested; adopting it is an FX
+change, not a move.

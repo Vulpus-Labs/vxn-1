@@ -16,64 +16,12 @@ use std::f32::consts::PI;
 
 const N: usize = CHANNELS_PER_LAYER;
 
-/// Map a cutoff in Hz to the TPT one-pole coefficient `a = g/(1+g)`.
-#[inline]
-fn coeff(cutoff_hz: f32, sample_rate: f32) -> f32 {
-    let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
-    let wd = (PI * fc / sample_rate).tan();
-    (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
-}
+// The scalar kernel and its `coeff` mapping moved to `vxn-core-dsp` (0227).
+// This crate only ever used them as the differential-test oracle for
+// `PolyHpf` below, which stays here: it is an SoA lane body, and ADR 0002 §3
+// keeps those per-synth.
+pub use vxn_core_dsp::hpf::{HpfKernel, coeff};
 
-/// Single-voice one-pole high-pass kernel.
-///
-/// Test oracle for [`PolyHpf`]: the scalar reference against which lane 0 of
-/// `PolyHpf` is checked in differential tests. Only compiled under
-/// `#[cfg(test)]`.
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct HpfKernel {
-    a: f32,
-    s: f32,
-}
-
-#[cfg(test)]
-impl HpfKernel {
-    pub fn new() -> Self {
-        Self { a: 0.0, s: 0.0 }
-    }
-
-    /// Set the cutoff (call once per control block).
-    #[inline]
-    pub fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
-        self.a = coeff(cutoff_hz, sample_rate);
-    }
-
-    pub fn reset(&mut self) {
-        self.s = 0.0;
-    }
-
-    /// Run one sample; returns the high-passed value `x − lowpass(x)`.
-    #[inline]
-    pub fn tick(&mut self, x: f32) -> f32 {
-        let v = (x - self.s) * self.a;
-        let lp = v + self.s;
-        self.s = lp + v;
-        x - lp
-    }
-}
-
-#[cfg(test)]
-impl Default for HpfKernel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 16-voice structure-of-arrays one-pole high-pass, mirroring [`crate::PolyOtaLadder`]'s
-/// shape (`set_cutoff(v, …)` / `process(&in, &mut out)`). Per-voice coefficients
-/// (the cutoff is global today, but the SoA form keeps it in the same lane loop
-/// as the ladder).
-#[derive(Clone)]
 pub struct PolyHpf {
     a: [f32; N],
     s: [f32; N],
