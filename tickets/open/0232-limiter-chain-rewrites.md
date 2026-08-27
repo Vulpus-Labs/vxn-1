@@ -14,7 +14,7 @@ Final ticket of [E041](../../epics/open/E041-shared-fx-unification.md).
 `StereoLimiter` stays in vxn-core-utils; add a `Bypassable<StereoLimiter>`
 wrapper in `vxn-core-dsp::fx` carrying WetFade + the off→on edge-reset glue
 both engines duplicate (vxn-1
-[lib.rs:300-306](../../vxn-1/crates/vxn-engine/src/lib.rs#L300-L306); vxn-2
+[lib.rs:300-306](../../archive/vxn-1/crates/vxn-engine/src/lib.rs#L300-L306); vxn-2
 `limiter_was_on` in
 [engine.rs:1062-1069](../../vxn-2/crates/vxn2-engine/src/engine.rs#L1062-L1069)).
 Then rewrite both chains as thin `FxKernel` sequences:

@@ -20,7 +20,7 @@ loops:
 - **Marker monomorphisation**: runtime enum resolved once outside the lane
   loop via a `with_X!` macro to a ZST marker generic
   (`WaveKind`/`with_wave!` at
-  [poly/oscillator.rs:114-177](../../vxn-1/crates/vxn-dsp/src/poly/oscillator.rs#L114-L177),
+  [poly/oscillator.rs:114-177](../../vxn-1b/crates/vxn-dsp/src/poly/oscillator.rs#L114-L177),
   `LadderMix`/`with_mix!`). Shared as a documented macro template — the
   markers themselves stay per-synth (moving them couples codegen for zero
   dedup).

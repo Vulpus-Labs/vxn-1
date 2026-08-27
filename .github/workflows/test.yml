@@ -32,29 +32,24 @@ jobs:
         with:
           workspaces: .
 
-      # Node for the vxn-1 and vxn-1b faceplate Vitest suites (jsdom), and for
-      # vxn-1b's `node --test` web-transport suite. vxn-2 ui-web has no JS test
-      # suite yet, so only those two assets dirs need npm.
+      # Node for vxn-1b's faceplate Vitest suite (jsdom) and its `node --test`
+      # web-transport suite. vxn-2 ui-web has no JS test suite yet. (vxn-1's
+      # assets dir went with its retirement, 2026-08-27.)
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: |
-            vxn-1/crates/vxn-ui-web/assets/package-lock.json
             vxn-1b/crates/vxn1b-ui-web/assets/package-lock.json
-
-      - name: Install JS deps (vxn-1)
-        working-directory: vxn-1/crates/vxn-ui-web/assets
-        run: npm ci
 
       - name: Install JS deps (vxn-1b)
         working-directory: vxn-1b/crates/vxn1b-ui-web/assets
         run: npm ci
 
-      # `--workspace` covers vxn-core-*, all vxn-1, vxn-1b, vxn-2 and vxn-3
-      # crates in a single invocation (flat workspace, E001). VXN_JS_TESTS=1
-      # un-gates the `js_suite_passes` tests in vxn-ui-web and vxn1b-ui-web,
-      # which shell `npm test` (Vitest).
+      # `--workspace` covers vxn-core-*, vxn-1b, vxn-2 and vxn-3 in a single
+      # invocation (flat workspace, E001). `archive/vxn-1` is deliberately NOT a
+      # member and is not expected to compile. VXN_JS_TESTS=1 un-gates the
+      # `js_suite_passes` test in vxn1b-ui-web, which shells `npm test`.
       # VXN_RENDER_HASH=1 un-gates baseline.rs's render-hash canary, which is
       # environment-locked to this pinned runner (macos-15) + rustc.
       - name: cargo test --workspace

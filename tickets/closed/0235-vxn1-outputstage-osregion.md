@@ -32,3 +32,19 @@ vxn-2's bracketed span.
 If `OsRegion`'s shape doesn't fit without contortion, closing this as
 "won't-do, boundary confirmed" is a valid outcome — the boundary test says a
 shared type must fit without fake parameters.
+
+## Close-out (2026-08-27) — won't-do, vxn-1 retired
+
+Closed unbuilt. This ticket's entire subject is vxn-1's `OutputStage`, and vxn-1
+was retired on 2026-08-27 (archived under `archive/vxn-1/`, out of the
+workspace, not expected to compile).
+
+It was already marked "(stretch), explicitly skippable", and its stated purpose
+was to *prove* `OsRegion` fits the "whole path oversampled, decimator-only"
+shape as well as vxn-2's bracketed span. That evidence is now unobtainable from
+vxn-1 — but the shape has another live instance: **vxn-1b's `output.rs` does
+exactly the same thing** (whole voice path at OS rate, decimate + crossfade on
+an OS change, `OS_FADE_MS = 5`). If E042 still wants the second shape proven,
+re-file it against vxn-1b rather than resurrecting this.
+
+E042's remaining chain is unaffected: 0233 → 0234 stand.

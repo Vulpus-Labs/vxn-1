@@ -6,6 +6,14 @@ status: open
 created: 2026-08-02
 ---
 
+> **vxn-1 retired, 2026-08-27.** The original vxn-1 is archived under
+> `archive/vxn-1/`, out of the workspace and not expected to compile.
+> **vxn-1b is now the canonical virtual-analogue synth**, and it carries what
+> was vxn-1's DSP: `vxn-dsp` moved to `vxn-1b/crates/vxn-dsp` with its name
+> intact. Where this epic says "vxn-1" as an *adopter* of shared code, read
+> **vxn-1b** — the kernels are the same ones. Where it names vxn-1's shells,
+> engine or web port, that work is gone.
+
 > vxn-2 carries a duplicate `ParamDesc`/`Taper`/`ParamKind` in
 > [params.rs](../../vxn-2/crates/vxn2-engine/src/params.rs) with a `to_core()`
 > bridge onto `vxn-core-app` — a live fork of the shared schema proving the

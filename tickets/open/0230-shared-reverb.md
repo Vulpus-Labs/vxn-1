@@ -11,7 +11,7 @@ depends: ["0227"]
 ## Summary
 
 Third ticket of [E041](../../epics/open/E041-shared-fx-unification.md). The
-two FDN-8 reverbs ([fdn_reverb.rs](../../vxn-1/crates/vxn-dsp/src/fdn_reverb.rs)
+two FDN-8 reverbs ([fdn_reverb.rs](../../vxn-1b/crates/vxn-dsp/src/fdn_reverb.rs)
 vs [reverb.rs](../../vxn-2/crates/vxn2-dsp/src/reverb.rs)) share topology,
 `BASE_MS` tables, and LFO scheme; they diverge in exactly two mechanical ways:
 vxn-1 mixes equal-power (`√(1-m)·dry + √m·wet`) with bypass delegated to the

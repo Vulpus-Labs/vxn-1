@@ -6,6 +6,14 @@ status: open
 created: 2026-08-25
 ---
 
+> **vxn-1 retired, 2026-08-27.** The original vxn-1 is archived under
+> `archive/vxn-1/`, out of the workspace and not expected to compile.
+> **vxn-1b is now the canonical virtual-analogue synth**, and it carries what
+> was vxn-1's DSP: `vxn-dsp` moved to `vxn-1b/crates/vxn-dsp` with its name
+> intact. Where this epic says "vxn-1" as an *adopter* of shared code, read
+> **vxn-1b** — the kernels are the same ones. Where it names vxn-1's shells,
+> engine or web port, that work is gone.
+
 > vxn-2 replaced its poll-and-diff Model→View bridge with a dirty-bitset pump in
 > [ADR 0003](../../vxn-2/adrs/0003-dirty-bitset-diff-pump.md) (2026-06-10, epic
 > [[E005]]). vxn-1 predates it; **VXN1b post-dates it by six weeks and inherited
@@ -35,7 +43,7 @@ bug class until the discipline is uniform."*
   link, layer copy and the scope tap on top.
 - vxn-1 answered the same problem a *third* way: the `on_model_loaded` hook
   republishes key mode / split point after a known load
-  ([controller.rs:118](../../vxn-1/crates/vxn-app/src/controller.rs#L118)) —
+  ([controller.rs:118](../../archive/vxn-1/crates/vxn-app/src/controller.rs#L118)) —
   correct for loads, silent for anything else that moves them.
 
 **2. Echo duplication.** vxn-2 turned the controller echo off (ticket 0067)
@@ -98,9 +106,12 @@ and is a hard dependency of both shell rewires — not an optional cleanup.
 
 ## Planned tickets
 
-Chain: **0299 → 0300 → 0301 → 0306 → 0302 → 0303** (vxn-1b), and
-**0299 → 0304 → 0306 → 0305** (vxn-1). The two products are independent after
-0306; do vxn-1b first — it has the live pain and the web port to prove it
+Chain: **0299 → 0300 → 0301 → 0306 → 0302 → 0303** (vxn-1b).
+
+The vxn-1 arm (**0299 → 0304 → 0306 → 0305**) is **closed won't-do** with the
+2026-08-27 retirement — see [[0304]] / [[0305]]. `vxn-app::diff`, the poll this
+epic set out to delete, went with the archive. What remains is the vxn-1b chain,
+which was always the one with the live pain and the web port to prove it
 against.
 
 - [ ] **0299** *(monorepo)* — `DirtyBits` in `vxn-core-utils`: hoist vxn-2's
@@ -119,12 +130,8 @@ against.
 - [ ] **0303** *(vxn-1b)* — `vxn1b-web-controller` rewire: drain bits, delete
       0290's three explicit broadcasts and its pack-time display recompute.
       **Depends on [[0290]] shipping first.**
-- [ ] **0304** *(vxn-1)* — `vxn-engine::SharedParams` **and**
-      `vxn-web-controller::WebModel` (two `ParamModel` impls) gain bits, incl.
-      `key_mode` / `split_point`; amend ADR 0007's change-detection section.
-- [ ] **0305** *(vxn-1)* — `vxn-clap` + `vxn-web-controller` rewire; delete
-      `vxn-app::diff` wholesale and decide the fate of the web readback pump
-      (which today is vxn-1's *only* source of sync-aware displays).
+- [x] **0304** *(vxn-1)* — **won't-do, vxn-1 retired.**
+- [x] **0305** *(vxn-1)* — **won't-do, vxn-1 retired.**
 
 ## Risks
 
@@ -134,11 +141,11 @@ against.
   the *deletions* on the read side. Land engine and shell in separate commits so
   a bisect can separate them.
 - **vxn-1 has two model impls.** `SharedParams` and the web port's `WebModel`
-  ([lib.rs:70](../../vxn-1/crates/vxn-web-controller/src/lib.rs#L70)) both impl
+  ([lib.rs:70](../../archive/vxn-1/crates/vxn-web-controller/src/lib.rs#L70)) both impl
   `ParamModel`; the pump has to exist in both or vxn-1's web build silently keeps
   the old path. This is why 0304 covers both in one ticket.
 - **vxn-1's web readback pump is load-bearing today.** `nan_diff` →
-  [diff.rs:85](../../vxn-1/crates/vxn-app/src/diff.rs#L85) is where vxn-1's
+  [diff.rs:85](../../archive/vxn-1/crates/vxn-app/src/diff.rs#L85) is where vxn-1's
   browser build gets `sync_aware_display` and the rate-partner refresh at all.
   Deleting it before the bits replace it swaps every synced rate label for raw
   Hz. 0305 must sequence those two edits, not do them in parallel.

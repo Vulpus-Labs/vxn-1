@@ -5,12 +5,13 @@
 //! `mix` + a first-set snap + an inactive→active edge flag, lifted out of
 //! `DynamicsBlock` where every vxn-2 effect had already reimplemented it.
 //!
-//! vxn-1's outer `BypassXfade` (now in `vxn-core-utils::smoothing`) solved the
-//! same problem differently — crossfade the whole effect from outside. That
-//! survives for **whole-span** switches (an oversample-rate change, a bracketed
-//! span) but not for per-FX enables, because it cannot express the thing that
-//! makes this idiom work: a switch-off that keeps processing until the wet has
-//! actually reached zero, then hands back a *bit-exact* passthrough.
+//! vxn-1 solved the same problem differently — an outer `BypassXfade` that
+//! crossfaded the whole effect from outside. That approach retired with vxn-1
+//! (2026-08-27): it could not express the thing that makes this idiom work, a
+//! switch-off that keeps processing until the wet has actually reached zero and
+//! only then hands back a *bit-exact* passthrough. Whole-span switches —
+//! oversample-rate changes, bracketed spans — build their own weighting on
+//! `raised_cosine_rise` directly, which is what vxn-1b and vxn-2 already did.
 //!
 //! # The three properties that matter
 //!

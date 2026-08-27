@@ -11,16 +11,6 @@ members = [
     "crates/vxn-core-web",
     "crates/vxn-core-clap",
 
-    # vxn-1 (synth #1).
-    "vxn-1/crates/vxn-dsp",
-    "vxn-1/crates/vxn-engine",
-    "vxn-1/crates/vxn-app",
-    "vxn-1/crates/vxn-clap",
-    "vxn-1/crates/vxn-ui-web",
-    "vxn-1/crates/vxn-wasm",
-    "vxn-1/crates/vxn-web-controller",
-    "vxn-1/xtask",
-
     # vxn-2 (synth #2, in-flight).
     "vxn-2/crates/vxn2-dsp",
     "vxn-2/crates/vxn2-engine",
@@ -42,6 +32,7 @@ members = [
 
     # vxn-1b (matrix-modulation variant of vxn-1 — see vxn-1b/adrs/0001, epic E036).
     # Reuses vxn-1's vxn-dsp verbatim; only routing + faceplate diverge.
+    "vxn-1b/crates/vxn-dsp",
     "vxn-1b/crates/vxn1b-engine",
     "vxn-1b/crates/vxn1b-clap",
     "vxn-1b/crates/vxn1b-ui-web",
@@ -67,12 +58,6 @@ vxn-core-ui-web = { path = "crates/vxn-core-ui-web" }
 vxn-core-web = { path = "crates/vxn-core-web" }
 vxn-core-clap = { path = "crates/vxn-core-clap" }
 
-# vxn-1 (path).
-vxn-dsp = { path = "vxn-1/crates/vxn-dsp" }
-vxn-engine = { path = "vxn-1/crates/vxn-engine" }
-vxn-app = { path = "vxn-1/crates/vxn-app" }
-vxn-ui-web = { path = "vxn-1/crates/vxn-ui-web" }
-
 # vxn-2 (path).
 vxn2-dsp = { path = "vxn-2/crates/vxn2-dsp" }
 vxn2-engine = { path = "vxn-2/crates/vxn2-engine" }
@@ -85,7 +70,12 @@ vxn3-engine = { path = "vxn-3/crates/vxn3-engine" }
 vxn3-app = { path = "vxn-3/crates/vxn3-app" }
 vxn3-ui-web = { path = "vxn-3/crates/vxn3-ui-web" }
 
-# vxn-1b (path). Note: vxn-1b also depends on vxn-1's `vxn-dsp` (declared above).
+# vxn-1b (path) — the canonical virtual-analogue synth since vxn-1 was retired
+# (2026-08-27). `vxn-dsp` moved here with it: it is vxn-1b's kernel set now, and
+# the name is kept so the ~19 call sites and the shared crates' re-exports did
+# not have to churn. The original vxn-1 lives under `archive/` and is
+# deliberately NOT a workspace member — it is not expected to compile.
+vxn-dsp = { path = "vxn-1b/crates/vxn-dsp" }
 vxn1b-engine = { path = "vxn-1b/crates/vxn1b-engine" }
 vxn1b-ui-web = { path = "vxn-1b/crates/vxn1b-ui-web" }
 vxn1b-web-controller = { path = "vxn-1b/crates/vxn1b-web-controller" }

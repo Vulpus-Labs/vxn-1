@@ -31,5 +31,3 @@ include_dir = "0.7"
 [dev-dependencies]
 # VXN1's engine — the render-parity oracle (0202): the seeded default patch must
 # reproduce VXN1's fixed-routing output. Test-only.
-vxn-engine = { workspace = true }
-vxn-app = { workspace = true }

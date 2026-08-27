@@ -8,6 +8,16 @@
 
 ## Context
 
+> **vxn-1 retired 2026-08-27.** This ADR was written when vxn-1 and vxn-2 were
+> the only two synths, and its reasoning is stated in their terms throughout.
+> vxn-1 is now archived under `archive/vxn-1/` and out of the workspace;
+> **vxn-1b is the canonical virtual-analogue synth** and carries vxn-1's
+> `vxn-dsp` kernels. The extraction decisions here all still hold — vxn-1b,
+> vxn-2 and vxn-3 are three consumers, more than the two that justified them —
+> but read "vxn-1" below as the synth that motivated the split, not as a
+> current build target.
+
+
 Vulpus Labs ships two Rust CLAP synths from a shared repo:
 
 - **vxn-1** — Jupiter-8-idiom analogue polysynth. Shipped: full DSP

@@ -31,7 +31,7 @@ pub trait EnvLifecycle {
   [envelope.rs](../../vxn-2/crates/vxn2-dsp/src/envelope.rs)) — already
   exactly this shape, mechanical.
 - Adapter impl for `AdsrCore`
-  ([adsr.rs:132](../../vxn-1/crates/vxn-dsp/src/adsr.rs#L132),
+  ([adsr.rs:132](../../vxn-1b/crates/vxn-dsp/src/adsr.rs#L132),
   `tick(triggered, gate_high)`): `note_on` latches triggered, `note_off`
   drops gate_high, `tick(dt)` ignores dt (fixed-fs core) —
   semantic-preserving.

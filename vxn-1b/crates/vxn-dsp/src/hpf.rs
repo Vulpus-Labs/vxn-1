@@ -12,7 +12,6 @@
 //! (unlike [`crate::PolyOtaLadder`], whose cutoff is modulated).
 
 use crate::CHANNELS_PER_LAYER;
-use std::f32::consts::PI;
 
 const N: usize = CHANNELS_PER_LAYER;
 
@@ -75,6 +74,7 @@ impl PolyHpf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::PI;
 
     /// Steady-state gain at a frequency, as output peak / input peak. Both
     /// peaks are taken from the same sampled sine, so undersampling of a

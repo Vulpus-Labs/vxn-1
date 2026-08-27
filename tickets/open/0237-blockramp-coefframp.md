@@ -24,10 +24,10 @@ where drop-in bit-exact:
   protocol (retarget at **base** rate, consume at **OS** rate — the caller's
   contract, type-assisted by the 0226 rate newtypes at the cook boundary).
 - Adopt `CoeffRamp` inside
-  [poly/ladder.rs:216-257](../../vxn-1/crates/vxn-dsp/src/poly/ladder.rs#L216-L257)
+  [poly/ladder.rs:216-257](../../vxn-1b/crates/vxn-dsp/src/poly/ladder.rs#L216-L257)
   — identical linear-increment arithmetic, so bit-exact.
 - Map vxn-1 `Glide{Snap,Block,PerSample}`
-  ([smoothing.rs:155](../../vxn-1/crates/vxn-engine/src/smoothing.rs#L155))
+  ([smoothing.rs:155](../../archive/vxn-1/crates/vxn-engine/src/smoothing.rs#L155))
   and vxn-1b Motion/Fx classifications onto the shared `UpdateRate` names —
   rename-level. vxn-2's `RampState`/`PitchSmoother` are documented against
   the taxonomy, **not rewritten** (the EG-fold and 16-sample quantum are
@@ -38,7 +38,7 @@ where drop-in bit-exact:
 - [ ] Primitives in `vxn-core-dsp::control` with exact-landing + snap-epsilon
       unit tests.
 - [ ] `PolyOtaLadder` on `CoeffRamp`: ladder exact-landing test
-      ([ladder.rs:356](../../vxn-1/crates/vxn-dsp/src/poly/ladder.rs#L356)),
+      ([ladder.rs:356](../../vxn-1b/crates/vxn-dsp/src/poly/ladder.rs#L356)),
       vxn-1 baseline, vxn-1b parity all byte-identical.
 - [ ] asm-check: `poly/ladder` monomorph NEON counts unchanged — this is the
       one hot-path change in the epic.

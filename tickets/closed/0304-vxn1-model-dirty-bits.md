@@ -78,3 +78,19 @@ record.
 - One `cargo test` at a time — [[vxn-no-parallel-cargo-test]]. No `cargo fmt` —
   [[vxn-no-cargo-fmt]].
 - Blocks 0305.
+
+## Close-out (2026-08-27) — won't-do, vxn-1 retired
+
+Closed unbuilt. vxn-1 was retired on 2026-08-27 and archived out of the
+workspace, so its two `ParamModel` impls — the whole subject of this ticket —
+no longer ship or compile.
+
+Nothing here transfers. The vxn-1b arm of [E046](../../epics/open/E046-dirty-bitset-pump-vxn1-vxn1b.md)
+(0299 → 0300 → 0301 → 0306 → 0302 → 0303) is unaffected and already has the
+bits it needs from [[0299]].
+
+Worth recording rather than losing: this ticket documented that vxn-1 was the
+**origin** of the poll-and-diff idiom (its ADR 0007, 2026-05-30), which vxn-2
+superseded ten days later and VXN1b inherited by forking vxn-1's shell. That
+inheritance is why the vxn-1b arm exists at all — the idiom outlived the synth
+that introduced it.

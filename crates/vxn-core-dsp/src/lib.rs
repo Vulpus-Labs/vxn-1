@@ -36,8 +36,8 @@
 pub mod control;
 
 /// Enable/disable declicking. `WetFade` — vxn-2's internal wet-path fade — is
-/// the shared idiom for per-FX enables (ADR 0002 §5); whole-span switches keep
-/// `BypassXfade`, which lives in `vxn-core-utils`.
+/// the shared idiom for per-FX enables (ADR 0002 §5); whole-span switches build
+/// their own weighting on `vxn-core-utils`' `raised_cosine_rise`.
 ///
 /// Filled in by ticket 0226.
 pub mod declick;

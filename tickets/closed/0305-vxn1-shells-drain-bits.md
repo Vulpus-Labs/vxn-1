@@ -87,3 +87,13 @@ consumers once both shells are converted; VXN1b never used it.
   [[vxn-no-cargo-fmt]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
 - Closes E046 with [[0303]].
+
+## Close-out (2026-08-27) — won't-do, vxn-1 retired
+
+Closed unbuilt, with [[0304]] which it depended on. vxn-1's CLAP shell and web
+controller are archived, and `vxn-app::diff` — "the poll that started the whole
+idiom", which this ticket existed to delete — went with them. The deletion
+happened, just not the way the ticket planned it.
+
+[E046](../../epics/open/E046-dirty-bitset-pump-vxn1-vxn1b.md) loses its vxn-1
+arm entirely and is now the vxn-1b chain alone.

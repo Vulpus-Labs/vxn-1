@@ -13,9 +13,9 @@ depends: ["0227"]
 Second ticket of [E041](../../epics/open/E041-shared-fx-unification.md).
 vxn-1's `StereoChorus` has two non-equivalent entry points:
 `process_block_stereo`
-([chorus.rs:150](../../vxn-1/crates/vxn-dsp/src/chorus.rs#L150), true stereo —
+([chorus.rs:150](../../vxn-1b/crates/vxn-dsp/src/chorus.rs#L150), true stereo —
 what vxn-1's engine uses) and per-sample `process`
-([chorus.rs:201](../../vxn-1/crates/vxn-dsp/src/chorus.rs#L201), **mono-sums
+([chorus.rs:201](../../vxn-1b/crates/vxn-dsp/src/chorus.rs#L201), **mono-sums
 the input** — what vxn-1b's FxChain uses). A naive per-sample trait with a
 blanket block impl would silently change vxn-1's sound. Resolution: the shared
 kernel keeps only the true-stereo path; `FxKernel::process` becomes a

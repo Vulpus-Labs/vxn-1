@@ -34,7 +34,7 @@ in `vxn-core-dsp::delay`:
 - [ ] Adoption commit (vxn-1 + vxn-1b together): pingpong=true, damping param
       mapped, equal-power → linear mix, 40 ms slew → 100 ms glide; outer
       `delay_fade` + DELAY slot fade deleted;
-      [vxn-dsp/src/delay.rs](../../vxn-1/crates/vxn-dsp/src/delay.rs) retired
+      [vxn-dsp/src/delay.rs](../../vxn-1b/crates/vxn-dsp/src/delay.rs) retired
       (or shimmed until nothing imports it).
 - [ ] `REBASELINE:` commit: vxn-1 delay_toggle declick + the delay-time-sweep
       test (its slew-vs-snap comparison re-anchored to the 100 ms glide) +
@@ -45,7 +45,7 @@ in `vxn-core-dsp::delay`:
 ## Notes
 
 vxn-1's engine currently snaps `DelayTime` because the ramp lives in-kernel
-([delay.rs:6-12](../../vxn-1/crates/vxn-dsp/src/delay.rs#L6-L12)) — that
+([delay.rs:6-12](../../vxn-1b/crates/vxn-dsp/src/delay.rs#L6-L12)) — that
 contract carries over unchanged (glide still lives in-kernel), only the
 constant/curve differs. Sync plumbing on vxn-1 is optional scope: wire
 `sync=off` initially, sync exposure is a separate feature decision.

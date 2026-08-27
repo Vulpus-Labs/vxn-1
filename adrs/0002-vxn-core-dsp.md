@@ -2,7 +2,10 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
-- **Scope:** Where DSP code lives now that the repo ships four synths.
+- **Scope:** Where DSP code lives. Written when the repo shipped four synths;
+  vxn-1 was retired 2026-08-27 and lives under `archive/`, leaving vxn-1b (the
+  canonical virtual-analogue synth), vxn-2 and vxn-3. The reasoning is unchanged
+  — three consumers still clear the bar §1 sets.
   Supersedes [ADR 0001](0001-vxn-core-split.md) §2 **for the component layer
   only** — the rest of §2's not-extracted list stands unchanged. Companion to
   epic [E040](../epics/open/E040-vxn-core-dsp-foundations.md).
@@ -101,11 +104,16 @@ mnemonic, not the operands ([[vxn1-neon-grep-pitfall]]) — a naive
 Settled during E040 planning, recorded so they are not relitigated per-ticket:
 
 - **Declick unifies on the vxn-2 idiom.** vxn-2's `WetFade` (internal fade, wet
-  path only) becomes the shared enable/disable mechanism; vxn-1's outer
-  `BypassXfade` around the whole FX is retired *for per-FX enables*. It survives
-  as the primitive for **whole-span** switches — vxn-1's oversample-change
-  crossfade, vxn-2's span fades — which are a different thing wearing a similar
-  shape.
+  path only) is the shared enable/disable mechanism.
+
+  > **Amended 2026-08-27 (vxn-1 retirement).** As first written this said
+  > vxn-1's outer `BypassXfade` "survives as the primitive for whole-span
+  > switches — vxn-1's oversample-change crossfade, vxn-2's span fades". The
+  > vxn-2 half was wrong when written: vxn-2's span fades build their own
+  > weighting on `raised_cosine_rise` and never used the struct, as does
+  > vxn-1b's oversample fade. With vxn-1 archived the type had **no consumers
+  > at all** and was deleted. Whole-span switches use `raised_cosine_rise`
+  > directly; there is no `BypassXfade`.
 - **Re-baselining is allowed, in flagged commits only.** Most of E040 is
   bit-exact and the goldens must not move. Where a later epic deliberately
   changes a mix law (0230's reverb, 0231's delay), the commit is marked

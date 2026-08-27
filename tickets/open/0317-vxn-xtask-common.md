@@ -10,8 +10,16 @@ depends: ["0321"]
 
 ## Summary
 
-`vxn-1/xtask`, `vxn-2/xtask` and `vxn-1b/xtask` are the same tool three times.
-About **fifteen functions are near-verbatim** in all three:
+`vxn-1b/xtask`, `vxn-2/xtask` and `vxn-3/xtask` are the same tool three times.
+About **fifteen functions are near-verbatim** across them:
+
+> **Amended 2026-08-27 (vxn-1 retirement).** As filed this named
+> `vxn-1/xtask`, `vxn-2/xtask` and `vxn-1b/xtask`. vxn-1's went to the archive,
+> so the third seat passes to `vxn-3/xtask` and the line count below is stale —
+> re-measure before quoting it. The argument is unchanged and if anything
+> stronger: the fork that got the best version (VXN1b's `Format`-indexed
+> `install_path` / `run_formats`) is now also the canonical synth's, and the
+> other two still will not receive it.
 
 `ensure_cmake`, `ensure_msvc`, `ensure_submodules`, `ninja_available`,
 `find_vst3`, `find_named_dirs`, `copy_dir_recursive`, `copy_artifact`, `io`,
