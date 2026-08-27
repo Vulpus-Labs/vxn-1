@@ -10,6 +10,7 @@ members = [
     "crates/vxn-core-ui-web",
     "crates/vxn-core-web",
     "crates/vxn-core-clap",
+    "crates/vxn-xtask-common",
 
     # vxn-2 (synth #2, in-flight).
     "vxn-2/crates/vxn2-dsp",

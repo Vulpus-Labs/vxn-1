@@ -11,3 +11,4 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+vxn-xtask-common = { path = "../../crates/vxn-xtask-common" }
