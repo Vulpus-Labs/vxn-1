@@ -91,6 +91,152 @@ export function scopeEvent(frame) {
   return { kind: "scope", s };
 }
 
+/// One entry per opcode the page can post, keyed by its `op` string. Each
+/// handler takes the whole routing context as one record and returns whether it
+/// handled the op, so adding an opcode is adding one entry — the shape
+/// `routeOpcode` used to spell out as a 13-arm switch.
+///
+/// `ctx` is `{ctrl, coord, msg, hooks}`: the controller wasm, the ring
+/// coordinator (used by exactly two opcodes), the decoded message, and the
+/// page-side hooks.
+const OPCODE_HANDLERS = {
+  // ---- controller only: params + gestures ------------------------------
+  set_param: ({ ctrl, msg }) => {
+    ctrl.setParam(msg.id, msg.plain);
+    return true;
+  },
+  set_param_norm: ({ ctrl, msg }) => {
+    ctrl.setParamNorm(msg.id, msg.norm);
+    return true;
+  },
+  begin_gesture: ({ ctrl, msg }) => {
+    ctrl.beginGesture(msg.id);
+    return true;
+  },
+  end_gesture: ({ ctrl, msg }) => {
+    ctrl.endGesture(msg.id);
+    return true;
+  },
+  ready: ({ ctrl }) => {
+    ctrl.editorReady();
+    return true;
+  },
+
+  // ---- controller only: non-param state --------------------------------
+  //
+  // These have no CLAP id, so the store mirror cannot carry them — but they
+  // DO live in the model, so the pump's echo resend puts them on the ring on
+  // the next frame. Pushing here as well would double every edit.
+  set_key_mode: ({ ctrl, msg }) => {
+    ctrl.setKeyMode(msg.mode | 0);
+    return true;
+  },
+  set_split_point: ({ ctrl, msg }) => {
+    ctrl.setSplitPoint(msg.note | 0);
+    return true;
+  },
+  set_lfo2_link: ({ ctrl, msg }) => {
+    ctrl.setLfo2Link(!!msg.on);
+    return true;
+  },
+  set_matrix: ({ ctrl, msg }) => {
+    const layer = LAYER[msg.layer];
+    const field = MATRIX_FIELD[msg.field];
+    if (layer === undefined || field === undefined) return false;
+    ctrl.setMatrix(layer, msg.slot | 0, field, msg.value | 0);
+    return true;
+  },
+
+  // ---- controller only: bulk patch ops ---------------------------------
+  copy_layer: ({ ctrl, msg }) => {
+    const from = LAYER[msg.from];
+    const to = LAYER[msg.to];
+    if (from === undefined || to === undefined) return false;
+    // Params reach the engine through the mirror; topology through the echo
+    // resend in the pump. Nothing to push here.
+    ctrl.copyLayer(from, to);
+    return true;
+  },
+  reset_layer: ({ ctrl, msg }) => {
+    const layer = LAYER[msg.layer];
+    if (layer === undefined) return false;
+    // Same route as copy_layer: params reach the engine through the mirror,
+    // topology through the echo resend in the pump.
+    ctrl.resetLayer(layer);
+    return true;
+  },
+
+  // ---- controller only: presets + folders ------------------------------
+  load_factory: ({ ctrl, msg }) => {
+    ctrl.loadFactory(msg.index | 0);
+    return true;
+  },
+  load_user: ({ ctrl, msg }) => {
+    ctrl.loadUser(msg.path);
+    return true;
+  },
+  step_preset: ({ ctrl, msg }) => {
+    ctrl.stepPreset(msg.delta | 0);
+    return true;
+  },
+  save_preset: ({ ctrl, msg }) => {
+    ctrl.savePreset(msg.name, msg.folder ?? null);
+    return true;
+  },
+  rename_preset: ({ ctrl, msg }) => {
+    ctrl.renamePreset(msg.path, msg.new_name);
+    return true;
+  },
+  delete_preset: ({ ctrl, msg }) => {
+    ctrl.deletePreset(msg.path);
+    return true;
+  },
+  move_preset: ({ ctrl, msg }) => {
+    ctrl.movePreset(msg.path, msg.dest_folder ?? null);
+    return true;
+  },
+  new_folder: ({ ctrl, msg }) => {
+    ctrl.newFolder(msg.suggested);
+    return true;
+  },
+  rename_folder: ({ ctrl, msg }) => {
+    ctrl.renameFolder(msg.old_name, msg.new_name);
+    return true;
+  },
+  delete_folder: ({ ctrl, msg }) => {
+    ctrl.deleteFolder(msg.name);
+    return true;
+  },
+
+  // ---- ring only -------------------------------------------------------
+  set_tempo: ({ coord, msg }) => {
+    // No host transport in a browser, so BPM comes from a UI control
+    // (E045 delta 5). Ring-only: `sync.rs` resolves subdivisions against it
+    // on the audio side, and it is not part of the patch — a preset must not
+    // carry the tempo you happened to be at.
+    const bpm = Number(msg.bpm);
+    if (!Number.isFinite(bpm) || bpm <= 0) return false;
+    if (coord) coord.setTempo(bpm);
+    return true;
+  },
+  set_scope_source: ({ coord, msg }) => {
+    const tap = SCOPE_TAP[msg.source];
+    if (tap === undefined) return false;
+    if (coord) coord.setScopeTap(tap);
+    return true;
+  },
+
+  // ---- neither: answered in-page ---------------------------------------
+  request_text_input: ({ msg, hooks }) => {
+    // The native opcode exists because the plugin editor needs an NSWindow
+    // outside the host's event monitor. A page can prompt itself, so this
+    // never reaches the controller — whose OpenTextInput / TextInputResult
+    // variants 0290 deliberately does not pack.
+    if (hooks.promptText) hooks.promptText(msg.id, msg.title ?? "", msg.initial ?? "");
+    return true;
+  },
+};
+
 /// Route one page opcode. Pure with respect to its arguments — no DOM, no
 /// timers — so the destination table is testable with fakes. `coord` is used
 /// for exactly one opcode (the scope tap); everything else with a model
@@ -98,131 +244,12 @@ export function scopeEvent(frame) {
 ///
 /// Returns `true` if the opcode was handled. An unknown or non-string `op` is
 /// dropped and returns `false` rather than being guessed at — VXN1b's page only
-/// ever posts a string `op`.
+/// ever posts a string `op`. `hasOwn` rather than a bare lookup so an `op` of
+/// `"toString"` finds no inherited `Object.prototype` member to call.
 export function routeOpcode(ctrl, coord, msg, hooks = {}) {
   if (!msg || typeof msg.op !== "string") return false;
-  switch (msg.op) {
-    // ---- controller only: params + gestures ------------------------------
-    case "set_param":
-      ctrl.setParam(msg.id, msg.plain);
-      return true;
-    case "set_param_norm":
-      ctrl.setParamNorm(msg.id, msg.norm);
-      return true;
-    case "begin_gesture":
-      ctrl.beginGesture(msg.id);
-      return true;
-    case "end_gesture":
-      ctrl.endGesture(msg.id);
-      return true;
-    case "ready":
-      ctrl.editorReady();
-      return true;
-
-    // ---- controller only: non-param state --------------------------------
-    //
-    // These have no CLAP id, so the store mirror cannot carry them — but they
-    // DO live in the model, so the pump's echo resend puts them on the ring on
-    // the next frame. Pushing here as well would double every edit.
-    case "set_key_mode":
-      ctrl.setKeyMode(msg.mode | 0);
-      return true;
-    case "set_split_point":
-      ctrl.setSplitPoint(msg.note | 0);
-      return true;
-    case "set_lfo2_link":
-      ctrl.setLfo2Link(!!msg.on);
-      return true;
-    case "set_matrix": {
-      const layer = LAYER[msg.layer];
-      const field = MATRIX_FIELD[msg.field];
-      if (layer === undefined || field === undefined) return false;
-      ctrl.setMatrix(layer, msg.slot | 0, field, msg.value | 0);
-      return true;
-    }
-
-    // ---- controller only: bulk patch ops ---------------------------------
-    case "copy_layer": {
-      const from = LAYER[msg.from];
-      const to = LAYER[msg.to];
-      if (from === undefined || to === undefined) return false;
-      // Params reach the engine through the mirror; topology through the echo
-      // resend in the pump. Nothing to push here.
-      ctrl.copyLayer(from, to);
-      return true;
-    }
-
-    case "reset_layer": {
-      const layer = LAYER[msg.layer];
-      if (layer === undefined) return false;
-      // Same route as copy_layer: params reach the engine through the mirror,
-      // topology through the echo resend in the pump.
-      ctrl.resetLayer(layer);
-      return true;
-    }
-
-    // ---- controller only: presets + folders ------------------------------
-    case "load_factory":
-      ctrl.loadFactory(msg.index | 0);
-      return true;
-    case "load_user":
-      ctrl.loadUser(msg.path);
-      return true;
-    case "step_preset":
-      ctrl.stepPreset(msg.delta | 0);
-      return true;
-    case "save_preset":
-      ctrl.savePreset(msg.name, msg.folder ?? null);
-      return true;
-    case "rename_preset":
-      ctrl.renamePreset(msg.path, msg.new_name);
-      return true;
-    case "delete_preset":
-      ctrl.deletePreset(msg.path);
-      return true;
-    case "move_preset":
-      ctrl.movePreset(msg.path, msg.dest_folder ?? null);
-      return true;
-    case "new_folder":
-      ctrl.newFolder(msg.suggested);
-      return true;
-    case "rename_folder":
-      ctrl.renameFolder(msg.old_name, msg.new_name);
-      return true;
-    case "delete_folder":
-      ctrl.deleteFolder(msg.name);
-      return true;
-
-    // ---- ring only -------------------------------------------------------
-    case "set_tempo": {
-      // No host transport in a browser, so BPM comes from a UI control
-      // (E045 delta 5). Ring-only: `sync.rs` resolves subdivisions against it
-      // on the audio side, and it is not part of the patch — a preset must not
-      // carry the tempo you happened to be at.
-      const bpm = Number(msg.bpm);
-      if (!Number.isFinite(bpm) || bpm <= 0) return false;
-      if (coord) coord.setTempo(bpm);
-      return true;
-    }
-    case "set_scope_source": {
-      const tap = SCOPE_TAP[msg.source];
-      if (tap === undefined) return false;
-      if (coord) coord.setScopeTap(tap);
-      return true;
-    }
-
-    // ---- neither: answered in-page ---------------------------------------
-    case "request_text_input":
-      // The native opcode exists because the plugin editor needs an NSWindow
-      // outside the host's event monitor. A page can prompt itself, so this
-      // never reaches the controller — whose OpenTextInput / TextInputResult
-      // variants 0290 deliberately does not pack.
-      if (hooks.promptText) hooks.promptText(msg.id, msg.title ?? "", msg.initial ?? "");
-      return true;
-
-    default:
-      return false;
-  }
+  if (!Object.hasOwn(OPCODE_HANDLERS, msg.op)) return false;
+  return OPCODE_HANDLERS[msg.op]({ ctrl, coord, msg, hooks });
 }
 
 /// Drives the controller wasm and the page: one pump per animation frame.
