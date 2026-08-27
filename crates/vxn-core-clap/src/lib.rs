@@ -35,3 +35,7 @@ pub use local::{LocalParams, bracket};
 pub use state::{load_blob, save_blob};
 pub use transport::{playing_from_transport, tempo_from_transport};
 pub use vxn_core_app::ParamModel;
+
+// ── CLAP `gui` boilerplate ──────────────────────────────────────────────────
+
+pub mod gui;

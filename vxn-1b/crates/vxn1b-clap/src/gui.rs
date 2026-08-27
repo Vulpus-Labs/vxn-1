@@ -3,9 +3,10 @@
 //! [`vxn_core_app::Controller`]; view-event drain + controller tick run off the
 //! host's main-thread timer (see [`crate::VxnMainThread::on_timer`]).
 //!
-//! Mirrors VXN1's `vxn-clap/src/gui.rs` — the platform parent-handle branch, the
-//! fixed-size editor, and the ~16 ms timer registration are the same shape;
-//! only the crate names (`vxn1b_ui_web`) and dimensions differ.
+//! The nine ceremonial `PluginGuiImpl` methods, the parent-handle branch and
+//! the timer period are `vxn_core_clap::gui`'s, shared with vxn-2 and vxn-3
+//! (0317). What is left here is what this product actually decides: which
+//! editor to open, what to hand it, and what to tear down with the window.
 
 use crate::VxnMainThread;
 use clack_extensions::gui::*;
@@ -13,29 +14,11 @@ use clack_extensions::timer::HostTimer;
 use clack_plugin::prelude::*;
 use std::sync::Arc;
 
-/// 16 ms ≈ 60 Hz — responsive on automation echo, inside CLAP's supported
-/// timer envelope (hosts are asked to support at least 30 Hz).
-const WEBVIEW_TIMER_PERIOD_MS: u32 = 16;
-
 impl PluginGuiImpl for VxnMainThread<'_> {
-    fn is_api_supported(&mut self, config: GuiConfiguration) -> bool {
-        Some(config.api_type) == GuiApiType::default_for_current_platform() && !config.is_floating
-    }
-
-    fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
-        Some(GuiConfiguration {
-            api_type: GuiApiType::default_for_current_platform()?,
-            is_floating: false,
-        })
-    }
-
-    fn create(&mut self, config: GuiConfiguration) -> Result<(), PluginError> {
-        if config.is_floating || Some(config.api_type) != GuiApiType::default_for_current_platform()
-        {
-            return Err(PluginError::Message("Unsupported GUI configuration"));
-        }
-        Ok(())
-    }
+    vxn_core_clap::impl_fixed_size_gui_boilerplate!(
+        vxn1b_ui_web::EDITOR_WIDTH,
+        vxn1b_ui_web::EDITOR_HEIGHT
+    );
 
     fn destroy(&mut self) {
         if let Some((host_timer, id)) = self.timer.take() {
@@ -52,41 +35,11 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         self.shared.scope.set_source(vxn1b_engine::ScopeTap::Off.code());
     }
 
-    fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn get_size(&mut self) -> Option<GuiSize> {
-        Some(GuiSize {
-            width: vxn1b_ui_web::EDITOR_WIDTH,
-            height: vxn1b_ui_web::EDITOR_HEIGHT,
-        })
-    }
-
-    fn set_size(&mut self, _size: GuiSize) -> Result<(), PluginError> {
-        // Fixed-size editor for now; accept whatever the host asks.
-        Ok(())
-    }
-
     fn set_parent(&mut self, window: Window) -> Result<(), PluginError> {
-        // The host hands us its native parent window for the current platform's
-        // GUI API (gated by `is_api_supported`/`get_preferred_api`). Pull the
-        // raw pointer per platform; the WebView wraps it inside `open_editor`.
-        // Without the per-OS branch the accessor returns `None` off-macOS, so
-        // the editor never opens (the Windows "no UI" bug).
-        #[cfg(target_os = "macos")]
-        let parent = window.as_cocoa_nsview().ok_or(PluginError::Message(
-            "Expected a Cocoa (NSView) parent window",
-        ))?;
-        #[cfg(target_os = "windows")]
-        let parent = window.as_win32_hwnd().ok_or(PluginError::Message(
-            "Expected a Win32 (HWND) parent window",
-        ))?;
-        #[cfg(target_os = "linux")]
-        let parent = window
-            .as_x11_handle()
-            .map(|h| h as *mut std::ffi::c_void)
-            .ok_or(PluginError::Message("Expected an X11 parent window"))?;
+        // The per-OS branch lives in core: without it the accessor returns
+        // `None` off macOS and the editor never opens (the Windows "no UI"
+        // bug), and that fix should not have to be made three times.
+        let parent = vxn_core_clap::gui::parent_pointer(&window)?;
 
         // The webview takes the parent, a controller handle, and the shared
         // preset-corpus snapshot — the editor's browser re-reads it on every
@@ -110,22 +63,12 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         // channel), but automation won't echo to the page until a tick lands —
         // a degraded mode, not a broken one, so we don't fail GUI creation.
         if let Some(host_timer) = self.host.shared().info().get_extension::<HostTimer>() {
-            if let Ok(id) = host_timer.register_timer(&mut self.host, WEBVIEW_TIMER_PERIOD_MS) {
+            let period = vxn_core_clap::gui::WEBVIEW_TIMER_PERIOD_MS;
+            if let Ok(id) = host_timer.register_timer(&mut self.host, period) {
                 self.timer = Some((host_timer, id));
             }
         }
         Ok(())
     }
 
-    fn set_transient(&mut self, _window: Window) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn show(&mut self) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn hide(&mut self) -> Result<(), PluginError> {
-        Ok(())
-    }
 }

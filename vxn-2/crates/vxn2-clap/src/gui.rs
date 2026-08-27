@@ -11,30 +11,11 @@ use std::sync::Arc;
 
 use crate::{VxnMainThread, lock_mut};
 
-/// 16 ms ≈ 60 Hz. Fast enough to feel responsive on automation echo,
-/// slow enough that hosts won't clamp it (CLAP spec asks for ≥ 30 Hz).
-pub(crate) const WEBVIEW_TIMER_PERIOD_MS: u32 = 16;
-
 impl PluginGuiImpl for VxnMainThread<'_> {
-    fn is_api_supported(&mut self, config: GuiConfiguration) -> bool {
-        Some(config.api_type) == GuiApiType::default_for_current_platform() && !config.is_floating
-    }
-
-    fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
-        Some(GuiConfiguration {
-            api_type: GuiApiType::default_for_current_platform()?,
-            is_floating: false,
-        })
-    }
-
-    fn create(&mut self, config: GuiConfiguration) -> Result<(), PluginError> {
-        if config.is_floating
-            || Some(config.api_type) != GuiApiType::default_for_current_platform()
-        {
-            return Err(PluginError::Message("Unsupported GUI configuration"));
-        }
-        Ok(())
-    }
+    vxn_core_clap::impl_fixed_size_gui_boilerplate!(
+        vxn2_ui_web::EDITOR_WIDTH,
+        vxn2_ui_web::EDITOR_HEIGHT
+    );
 
     fn destroy(&mut self) {
         if let Some((host_timer, id)) = self.timer.take() {
@@ -50,36 +31,11 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         }
     }
 
-    fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn get_size(&mut self) -> Option<GuiSize> {
-        Some(GuiSize {
-            width: vxn2_ui_web::EDITOR_WIDTH,
-            height: vxn2_ui_web::EDITOR_HEIGHT,
-        })
-    }
-
-    fn set_size(&mut self, _size: GuiSize) -> Result<(), PluginError> {
-        // Fixed-size editor for now; accept whatever the host asks.
-        Ok(())
-    }
-
     fn set_parent(&mut self, window: Window) -> Result<(), PluginError> {
-        #[cfg(target_os = "macos")]
-        let parent = window.as_cocoa_nsview().ok_or(PluginError::Message(
-            "Expected a Cocoa (NSView) parent window",
-        ))?;
-        #[cfg(target_os = "windows")]
-        let parent = window.as_win32_hwnd().ok_or(PluginError::Message(
-            "Expected a Win32 (HWND) parent window",
-        ))?;
-        #[cfg(target_os = "linux")]
-        let parent = window
-            .as_x11_handle()
-            .map(|h| h as *mut std::ffi::c_void)
-            .ok_or(PluginError::Message("Expected an X11 parent window"))?;
+        // The per-OS branch lives in core: without it the accessor returns
+        // `None` off macOS and the editor never opens (the Windows "no UI"
+        // bug), and that fix should not have to be made three times.
+        let parent = vxn_core_clap::gui::parent_pointer(&window)?;
 
         let ctrl_handle = lock_mut(&self.controller).handle();
         let corpus = Arc::clone(&self.corpus);
@@ -97,7 +53,7 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         // a failure.
         if let Some(host) = self.host.as_mut() {
             if let Some(host_timer) = host.shared().info().get_extension::<HostTimer>() {
-                if let Ok(id) = host_timer.register_timer(host, WEBVIEW_TIMER_PERIOD_MS) {
+                if let Ok(id) = host_timer.register_timer(host, vxn_core_clap::gui::WEBVIEW_TIMER_PERIOD_MS) {
                     self.timer = Some((host_timer, id));
                 }
             }
@@ -105,15 +61,4 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         Ok(())
     }
 
-    fn set_transient(&mut self, _window: Window) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn show(&mut self) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn hide(&mut self) -> Result<(), PluginError> {
-        Ok(())
-    }
 }

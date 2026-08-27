@@ -20,6 +20,8 @@ clack-extensions = { workspace = true, features = [
     "note-ports",
     "params",
     "state",
+    "gui",
+    "timer",
     "clack-plugin",
 ] }
 

@@ -2232,6 +2232,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn-xtask-common"
+version = "0.1.1"
+
+[[package]]
 name = "vxn1b-clap"
 version = "0.0.3"
 dependencies = [
@@ -2284,6 +2288,9 @@ dependencies = [
 [[package]]
 name = "vxn1b-xtask"
 version = "0.0.3"
+dependencies = [
+ "vxn-xtask-common",
+]
 
 [[package]]
 name = "vxn2-app"
@@ -2373,6 +2380,9 @@ dependencies = [
 [[package]]
 name = "vxn2-xtask"
 version = "0.1.1"
+dependencies = [
+ "vxn-xtask-common",
+]
 
 [[package]]
 name = "vxn3-app"
@@ -2421,6 +2431,9 @@ dependencies = [
 [[package]]
 name = "vxn3-xtask"
 version = "0.1.1"
+dependencies = [
+ "vxn-xtask-common",
+]
 
 [[package]]
 name = "walkdir"
