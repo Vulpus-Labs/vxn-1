@@ -29,79 +29,106 @@ function matrixData() {
 // A custom div dropdown mimicking enough of <select>: settable `.value`, a
 // "change" event on commit, and a body-attached fixed popup (so the overlay's
 // overflow can't clip it). `vocab` entries are `{ value, label }`.
-function buildCombo(vocab, field) {
-  const btn = document.createElement('div');
-  btn.className = 'vxn-mm-combo';
-  btn.tabIndex = 0;
-  btn.dataset.field = field;
-  const labelSpan = document.createElement('span');
-  labelSpan.className = 'vxn-mm-combo-label';
-  const caret = document.createElement('span');
-  caret.className = 'vxn-mm-combo-caret';
-  caret.textContent = '▾';
-  btn.appendChild(labelSpan);
-  btn.appendChild(caret);
+//
+// A class rather than a stack of closures over shared `let`s: the popup's
+// lifecycle is four methods that all read the same three fields (`_vocab`,
+// `_value`, `_popup`), and the two document-level capture listeners need
+// stable references to remove themselves with. Callers only ever see the
+// element — `buildCombo` hands that back — so `.value` is installed on it and
+// forwards here.
+class Combo {
+  constructor(vocab, field) {
+    this._vocab = vocab;
+    this._value = vocab.length ? String(vocab[0].value) : '0';
+    this._popup = null;
 
-  let curVal = vocab.length ? String(vocab[0].value) : '0';
-  const labelFor = (v) => {
-    const hit = vocab.find((o) => String(o.value) === String(v));
-    return hit ? hit.label : '';
-  };
-  const render = () => {
-    labelSpan.textContent = labelFor(curVal);
-  };
-  render();
-  Object.defineProperty(btn, 'value', {
-    get: () => curVal,
-    set: (v) => {
-      curVal = String(v);
-      render();
-    },
-  });
+    const btn = document.createElement('div');
+    btn.className = 'vxn-mm-combo';
+    btn.tabIndex = 0;
+    btn.dataset.field = field;
+    this._label = document.createElement('span');
+    this._label.className = 'vxn-mm-combo-label';
+    const caret = document.createElement('span');
+    caret.className = 'vxn-mm-combo-caret';
+    caret.textContent = '▾';
+    btn.appendChild(this._label);
+    btn.appendChild(caret);
+    this.el = btn;
+    this._render();
 
-  let popup = null;
-  const onDocDown = (e) => {
-    if (popup && !popup.contains(e.target) && !btn.contains(e.target)) closePopup();
-  };
-  const onKey = (e) => {
-    if (e.key === 'Escape' || e.keyCode === 27) {
-      e.stopPropagation(); // dismiss only the popup, not the whole overlay
-      closePopup();
-    }
-  };
-  function closePopup() {
-    if (popup) {
-      popup.remove();
-      popup = null;
-    }
-    document.removeEventListener('mousedown', onDocDown, true);
-    document.removeEventListener('keydown', onKey, true);
-    btn.classList.remove('open');
+    Object.defineProperty(btn, 'value', {
+      get: () => this._value,
+      set: (v) => {
+        this._value = String(v);
+        this._render();
+      },
+    });
+
+    // Bound once so `close()` can hand `removeEventListener` the same
+    // references `open()` registered — both are capture-phase.
+    this._onDocDown = (e) => {
+      if (this._popup && !this._popup.contains(e.target) && !btn.contains(e.target)) {
+        this._close();
+      }
+    };
+    this._onKey = (e) => {
+      if (e.key === 'Escape' || e.keyCode === 27) {
+        e.stopPropagation(); // dismiss only the popup, not the whole overlay
+        this._close();
+      }
+    };
+
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      btn.focus();
+      if (this._popup) this._close();
+      else this._open();
+    });
   }
-  function pick(entry) {
-    const changed = String(entry.value) !== curVal;
-    curVal = String(entry.value);
-    render();
-    closePopup();
-    btn.blur();
-    if (changed) btn.dispatchEvent(new Event('change'));
+
+  _render() {
+    const hit = this._vocab.find((o) => String(o.value) === String(this._value));
+    this._label.textContent = hit ? hit.label : '';
   }
-  function openPopup() {
-    popup = document.createElement('div');
+
+  _close() {
+    if (this._popup) {
+      this._popup.remove();
+      this._popup = null;
+    }
+    document.removeEventListener('mousedown', this._onDocDown, true);
+    document.removeEventListener('keydown', this._onKey, true);
+    this.el.classList.remove('open');
+  }
+
+  _pick(entry) {
+    const changed = String(entry.value) !== this._value;
+    this._value = String(entry.value);
+    this._render();
+    this._close();
+    this.el.blur();
+    if (changed) this.el.dispatchEvent(new Event('change'));
+  }
+
+  _open() {
+    const popup = document.createElement('div');
+    this._popup = popup;
     popup.className = 'vxn-mm-combo-pop';
-    for (const entry of vocab) {
+    for (const entry of this._vocab) {
       const opt = document.createElement('div');
       opt.className = 'vxn-mm-combo-opt';
       opt.textContent = entry.label;
-      if (String(entry.value) === curVal) opt.classList.add('sel');
+      if (String(entry.value) === this._value) opt.classList.add('sel');
       opt.addEventListener('mousedown', (e) => {
         e.preventDefault(); // keep webview focus
-        pick(entry);
+        this._pick(entry);
       });
       popup.appendChild(opt);
     }
     document.body.appendChild(popup);
-    const r = btn.getBoundingClientRect();
+    // Fixed-position under the button, flipped above it when it would run off
+    // the bottom of the window.
+    const r = this.el.getBoundingClientRect();
     popup.style.position = 'fixed';
     popup.style.left = `${r.left}px`;
     popup.style.top = `${r.bottom}px`;
@@ -110,17 +137,14 @@ function buildCombo(vocab, field) {
     if (pr.bottom > window.innerHeight) {
       popup.style.top = `${Math.max(0, r.top - pr.height)}px`;
     }
-    btn.classList.add('open');
-    document.addEventListener('mousedown', onDocDown, true);
-    document.addEventListener('keydown', onKey, true);
+    this.el.classList.add('open');
+    document.addEventListener('mousedown', this._onDocDown, true);
+    document.addEventListener('keydown', this._onKey, true);
   }
-  btn.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    btn.focus();
-    if (popup) closePopup();
-    else openPopup();
-  });
-  return btn;
+}
+
+function buildCombo(vocab, field) {
+  return new Combo(vocab, field).el;
 }
 
 export const matrixOverlay = {
