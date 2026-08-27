@@ -577,8 +577,10 @@ impl ControllerState {
                     count += 1;
                 }
                 _ => {
-                    // Clone out of `pending` to satisfy the borrow checker —
-                    // non-param events are a handful per tick, never a burst.
+                    // Move out of `pending` rather than clone: `pack_other`
+                    // needs `&self` while the event is borrowed from `self`, so
+                    // the slot is swapped for an empty Status placeholder that
+                    // the `pending.clear()` below discards.
                     let ev = std::mem::replace(&mut self.pending[i], ViewEvent::Status {
                         line: String::new(),
                     });

@@ -6,10 +6,9 @@
 // headless tests.
 //
 // Split of concerns: `AudioHost` is the steady-state render loop, this runner is
-// the lifecycle and failure policy around it. The runner owns the wasm bytes and
-// the SABs so it can re-instantiate after a trap WITHOUT losing transport state
-// — the ring's read/write indices and the param store live in the SABs, so a
-// fresh host over the same SABs resumes exactly where the dead one left off.
+// the lifecycle and failure policy around it. The runner holds the wasm bytes
+// and the SAB references for construction and teardown — NOT so it can rebuild
+// after a trap. It deliberately does not; see below.
 //
 // ===========================================================================
 // A TRAP STOPS THE AUDIO. IT DOES NOT PRETEND TO RECOVER. (ticket 0297)

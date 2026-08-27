@@ -126,7 +126,7 @@ impl Default for StackVoicing {
 ///
 /// Not `1/len` — the copies are detuned and independently phased, so they sum
 /// as a random walk (~√len), not coherently. `1/√len` holds the perceived level
-/// roughly constant across assign modes at any detune, with no comb null when
+/// roughly constant across stack widths at any detune, with no comb null when
 /// detune is zero (VXN1's `level_comp` rationale).
 #[inline]
 fn level_comp(len: usize) -> f32 {
@@ -208,7 +208,8 @@ fn note_random_draw(rng: &mut u64) -> f32 {
 }
 
 
-/// The 16-voice bank's allocation + per-voice performance state. Holds only the
+/// The lane pool's allocation + per-voice performance state
+/// ([`crate::MAX_VOICES`] voices). Holds only the
 /// bookkeeping the allocator and pressure fold touch — the DSP kernels (osc,
 /// filter, envelopes) are wired in later tickets over this same channel/pressure
 /// spine. Every field is a fixed array: no method allocates.
@@ -331,8 +332,8 @@ impl Voices {
         // note/channel/alloc_tick are stale-until-reused; queries gate on `active`.
     }
 
-    /// Output scaling for the current stack width — `1/√len`, so switching
-    /// assign modes doesn't jump the perceived level. See [`level_comp`].
+    /// Output scaling for the current stack width — `1/√len`, so changing width
+    /// doesn't jump the perceived level. See [`level_comp`].
     #[inline]
     pub fn level_comp(&self) -> f32 {
         self.level_comp
@@ -760,7 +761,8 @@ impl Voices {
 }
 
 /// Disjoint per-voice slices the render path consumes (see [`Voices::render_view`]).
-/// Arrays are the full 16-voice width; the engine slices each 8-lane bank out.
+/// Arrays are the full pool width ([`Voices::CAPACITY`]); the engine slices each
+/// 8-lane bank out of them.
 pub struct RenderView<'a> {
     pub note: &'a [u8; N],
     pub gate: &'a [bool; N],

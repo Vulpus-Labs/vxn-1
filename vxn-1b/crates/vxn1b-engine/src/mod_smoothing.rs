@@ -17,7 +17,8 @@
 //!   continuous but its *velocity* jumps 0→max instantly, and that velocity
 //!   step is the click. A second pole makes the output slope start at zero, so
 //!   sharp LFO shapes routed to pitch ramp in clean (VXN2's `PitchSmoother`
-//!   rationale, ported and trimmed from 16 stack-lanes to VXN1b's 8).
+//!   rationale, ported and trimmed from VXN2's 16 stack-lanes to one VXN1b
+//!   render bank's [`RenderBank::LANES`](crate::bank::RenderBank::LANES)).
 //! * **Non-env Amp** — a single **per-frame one-pole** on the static
 //!   (non-envelope) part of the VCA coefficient. Amplitude is the most
 //!   click-prone target of all: a residual *block-held* stairstep on a slow

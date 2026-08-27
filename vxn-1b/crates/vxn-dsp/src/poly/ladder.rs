@@ -122,8 +122,8 @@ macro_rules! with_mix {
 
 // ── PolyOtaLadder ─────────────────────────────────────────────────────────────
 
-/// 16-voice OTA-C ladder lowpass. Poly
-/// sibling of [`crate::ota_ladder::OtaLadderKernel`].
+/// [`crate::CHANNELS_PER_LAYER`]-wide OTA-C ladder lowpass. Poly sibling of
+/// [`crate::ota_ladder::OtaLadderKernel`].
 ///
 /// Coefficients are *interpolated per sample* across each control block: the
 /// engine samples the modulators once per block, calls [`set_coeffs`](Self::set_coeffs)

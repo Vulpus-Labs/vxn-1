@@ -47,8 +47,8 @@ use std::process::Command;
 /// CLAP bundle stem *and* the executable name inside the macOS bundle.
 const PLUGIN_NAME: &str = "vxn1b";
 const BUNDLE_NAME: &str = "vxn1b.clap";
-/// VST3 bundle stem. Capitalised, unlike the CLAP — see the module docs.
-/// VST3 bundle FILENAME (`VXN1b.vst3`), not a display name. Renaming it would
+/// VST3 bundle FILENAME (`VXN1b.vst3`), not a display name. Capitalised, unlike
+/// the CLAP's stem — see the module docs. Renaming it would
 /// orphan every installed copy and re-scan as a new plugin, so it keeps the
 /// original spelling; the name a host shows comes from the CLAP descriptor.
 const VST3_NAME: &str = "VXN1b";

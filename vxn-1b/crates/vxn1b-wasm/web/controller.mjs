@@ -21,7 +21,10 @@
 //   - No factory asset. 0290 embeds the bank, so the corpus JSON is readable
 //     immediately after `vxnc_new()` — there is nothing to fetch and no
 //     `loadFactoryAsset`.
-//   - Two-layer param space, so `patchCount()` is exposed for the id split.
+//   - Two-layer param space, so the wasm exports patch and global counts. JS
+//     stores `patchCount` but does not compute ids from it — the page gets
+//     `__PATCH_COUNT__` baked in from Rust. It is here because the boot
+//     handshake checks it against the mirror (0312).
 
 import { PATCH_COUNT, GLOBAL_COUNT, TOTAL_PARAMS } from "./param-store.mjs";
 

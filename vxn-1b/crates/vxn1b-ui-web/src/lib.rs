@@ -693,16 +693,6 @@ mod tests {
         assert!(!assembled().contains("import "));
     }
 
-    /// Every control primitive the faceplate mounts must have styling in the
-    /// spliced sheet.
-    ///
-    /// Regression guard: a bulk edit that removed the retired tabbed-FX rules
-    /// (0220) sliced from the FX banner to the *next* banner comment and took
-    /// the toggle / button / dropdown primitives with it. Nothing failed —
-    /// every unit test still passed, because the breakage was purely visual:
-    /// toggle boxes vanished and labels fell back to the browser default size
-    /// across all three tabs. Selector presence is cheap to assert and would
-    /// have caught it at the source.
     /// Collect the selectors that actually *head a rule* in `css`.
     ///
     /// A plain substring search is not enough: `.ctl-tg-box` also occurs inside
@@ -742,6 +732,16 @@ mod tests {
         heads
     }
 
+    /// Every control primitive the faceplate mounts must have styling in the
+    /// spliced sheet.
+    ///
+    /// Regression guard: a bulk edit that removed the retired tabbed-FX rules
+    /// (0220) sliced from the FX banner to the *next* banner comment and took
+    /// the toggle / button / dropdown primitives with it. Nothing failed —
+    /// every unit test still passed, because the breakage was purely visual:
+    /// toggle boxes vanished and labels fell back to the browser default size
+    /// across all three tabs. Selector presence is cheap to assert and would
+    /// have caught it at the source.
     #[test]
     fn css_covers_every_control_primitive() {
         let heads = rule_heads(FACEPLATE_CSS);

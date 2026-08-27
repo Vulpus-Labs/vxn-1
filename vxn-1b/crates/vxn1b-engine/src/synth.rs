@@ -195,8 +195,8 @@ impl Synth {
         }
     }
 
-    /// Trigger the DSP lanes an allocation asked for, routing each 16-voice
-    /// index to its (bank, lane) pair.
+    /// Trigger the DSP lanes an allocation asked for, routing each pool index
+    /// to its (bank, lane) pair.
     fn fire(&mut self, triggers: &Triggers) {
         let opts = TriggerOpts {
             lfo1_shape: self.params.lfo1_shape(),
@@ -237,15 +237,15 @@ impl Synth {
     /// This layer's LFO 2 phase after the last control-block tick. The global
     /// block reads Layer 1's to drive Layer 2's LFO 2 link (0217, ADR 0002 §5).
     #[inline]
-    /// Whether every voice in this synth is idle — the engine folds both
-    /// synths' answers into the decimator's drain-skip (0249). Cheap: a scan of
-    /// the 16 active flags, once per control block.
-    pub(crate) fn is_silent(&self) -> bool {
-        !(0..Voices::CAPACITY).any(|v| self.voices.is_active(v))
-    }
-
     pub(crate) fn lfo2_phase(&self) -> f32 {
         self.lfo2.phase()
+    }
+
+    /// Whether every voice in this synth is idle — the engine folds both
+    /// synths' answers into the decimator's drain-skip (0249). Cheap: a scan of
+    /// `Voices::CAPACITY` active flags, once per control block.
+    pub(crate) fn is_silent(&self) -> bool {
+        !(0..Voices::CAPACITY).any(|v| self.voices.is_active(v))
     }
 
     /// Render one ≤`CONTROL_BLOCK` control block, **accumulating** this synth's

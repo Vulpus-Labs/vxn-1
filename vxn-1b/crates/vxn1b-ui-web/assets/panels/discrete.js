@@ -1,5 +1,6 @@
-// panels/discrete.js — the click-to-pick widgets (Switch / ButtonGroup /
-// Dropdown / HeaderSwitch) and the FX tab strip.
+// panels/discrete.js — the click-to-pick widgets: Switch, ButtonGroup, Dropdown
+// and HeaderSwitch. (The three-tab strip is not here — it is `wireTabs` in
+// `dispatch.js`.)
 //
 // All four pickers share the same write semantics: a click sends
 // `begin_gesture` → `set_param` → `end_gesture` (via `send.discrete`) so the
@@ -54,16 +55,17 @@ export function makeSwitch(el, id, desc) {
   };
 }
 
-// `ButtonGroup(id, label, variants)` — for Oversample, CrossModType,
-// AssignMode. Vertical stack of labelled toggles under a column label
+// `ButtonGroup(id, label, variants)` — for Oversample, Cross Mod type and
+// Voice's stack width. Vertical stack of labelled toggles under a column label
 // (matches vizia's `enum_list_body`).
 //
-// `data-no-label` — render no column header (used inside `.route-col`,
-// where the route header (LFO/Env) is the only column label).
-// `data-order` — comma-separated display permutation of the variant
-// indices (e.g. `0,3,1,2` for AssignMode → Poly/Twin/Unison/Solo); the
-// stored value stays each variant's own descriptor index. Mirrors
-// vxn-ui-vizia's `ASSIGN_DISPLAY_ORDER`.
+// `data-no-label` — render no column header, for a group whose surrounding
+// layout already labels it. Supported here; no ButtonGroup in the current
+// faceplate sets it (the faders do, in the mixer strips).
+// `data-order` — comma-separated display permutation of the variant indices
+// (e.g. `0,3,1,2`); the stored value stays each variant's own descriptor
+// index. Also supported-but-unused: it exists for a group whose descriptor
+// order does not read well, and the shipped three read fine in order.
 // `data-columns` — lay the rows out in N columns instead of one tall
 // stack (Voice's six Widths). Column-major, so a 6-variant group in 2
 // columns reads 1/2/4 · 8/16/32; the row count the CSS grid needs is

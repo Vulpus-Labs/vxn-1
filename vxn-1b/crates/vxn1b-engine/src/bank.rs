@@ -9,10 +9,13 @@
 //! VXN1's, so the sound is identical when the matrix reproduces VXN1's routes.
 //!
 //! **Width.** `vxn-dsp`'s poly kernels are 8-wide (`CHANNELS_PER_LAYER`), reused
-//! verbatim (ADR §1). A bank is one 8-lane SoA group; the engine runs **two**
-//! for 16-voice poly (step 3). The per-voice bookkeeping (note/gate/active/…)
-//! lives in the 16-wide [`crate::voice::Voices`] coordinator and is threaded in
-//! per render call; this bank owns only DSP + trigger state.
+//! verbatim (ADR §1). A bank is one 8-lane SoA group ([`RenderBank::LANES`]) and
+//! [`Synth::BANKS`](crate::Synth::BANKS) of them tile the lane pool
+//! ([`crate::MAX_VOICES`]) — never spelled as a number here, because 0264 widened
+//! it once already and prose does not recompile. The per-voice bookkeeping
+//! (note/gate/active/…) lives in the [`crate::voice::Voices`] coordinator, whose
+//! `CAPACITY` is that same pool, and is threaded in per render call; this bank
+//! owns only DSP + trigger state.
 //!
 //! **Per-frame Amp (step 2).** Every non-Amp dest is resolved once per control
 //! block from block-start source values (VXN1's `resolve_mod` granularity). The
@@ -23,9 +26,11 @@
 //! envelope levels are substituted — 2 FMAs, not a full matrix re-eval (which
 //! the ticket forbids on the hot path).
 //!
-//! **Scope (this step).** All four assign modes are live: the
-//! [`crate::voice::Voices`] coordinator resolves Poly/Unison/Solo/Twin and hands
-//! this bank a per-lane detune (cents) plus a stack-width `level_comp`.
+//! **Scope (this step).** Voicing is live: the [`crate::voice::Voices`]
+//! coordinator resolves [`StackWidth`](crate::params::StackWidth) ×
+//! [`VoiceMode`](crate::params::VoiceMode) — the two orthogonal params 0266 /
+//! ADR 0003 split VXN1's four-way assign mode into — and hands this bank a
+//! per-lane detune (cents) plus a stack-width `level_comp`.
 //! `CrossModAmount` is live per lane (0242) — the PM kernel takes a per-lane
 //! index whenever a route is active, and the broadcast scalar otherwise, so an
 //! unrouted patch is bit-unchanged. `HpfCutoff` is live per lane too (0272), on
@@ -111,8 +116,8 @@ fn trim_draw(base: u64, salt: u64, lane: usize) -> f32 {
 /// Fixed per-lane trim table: one normalised `[-1, 1]` draw per lane per target,
 /// generated once from the bank seed and never reset on note-on — a property of
 /// the lane, mirroring the drift seed. Scaled at apply time by `drift_amount`
-/// and the per-target magnitude. The two banks of a synth take distinct seeds,
-/// so all 16 voices draw independently.
+/// and the per-target magnitude. Each bank of a synth takes a distinct seed, so
+/// every lane in the pool draws independently.
 #[derive(Clone, Copy)]
 struct VoiceTrim {
     /// Multiplies envelope attack/decay/release per lane.

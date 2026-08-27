@@ -88,9 +88,10 @@
   --ctl-label-h: 12px;
   --ctl-gap: 2px;
   /* Vertical fader geometry — the SMALL scale, used by every fader in the
-     LAYER pane. The FX rows run a LARGE one (`.fader-scale-lg` below): the
-     0282 travels differ by nearly 2x between the panes, and a track sized for
-     a 76 px fader reads as a hairline under a 136 px one. */
+     LAYER pane. The FX rows run a LARGE one, declared further down on
+     `.row-global-1, .row-global-2`: the 0282 travels differ by nearly 2x
+     between the panes, and a track sized for a 76 px fader reads as a hairline
+     under a 136 px one. */
   --fader-track-w: 4px;
   --thumb-w: 18px;
   --thumb-h: 6px;
@@ -602,8 +603,9 @@ html, body {
 }
 /* Panels whose first body child is a selector buttongroup anchor it to the
    panel's left edge so the distance from panel padding → first button is
-   uniform across Filter / Cross Mod / Reverb. Subsequent faders flow with
-   a fixed gap rather than the body's default `space-evenly`.
+   uniform across the panels that lead with one — Filter and Reverb (Cross Mod
+   folded into Voice in 0282). Subsequent faders flow with a fixed gap rather
+   than the body's default `space-evenly`.
    Voice gets the same treatment by name: its body now leads with the Poly/Solo
    rocker rather than the Width group, and the anchoring belongs to the panel's
    layout either way. Stating it here (rather than matching a first-child
@@ -1069,7 +1071,8 @@ html, body {
 
 /* ButtonGroup — rendered exactly like a strip of toggles (same `.ctl-tg-row`
    children) but inside a normal column with a label on top. Used for
-   Oversample / CrossModType / AssignMode. */
+   Oversample, Cross Mod type and Voice's stack width (the last of which is
+   half of what VXN1 called AssignMode; 0266 split it). */
 .ctl-buttongroup {
   display: flex;
   flex-direction: column;

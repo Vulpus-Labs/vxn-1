@@ -259,14 +259,16 @@ export class WebHost {
         this._onCpu(m.load, m.peak);
         break;
       case "trap":
-        // The runner already caught it and kicked async recovery; this only
-        // observes. `ready` flips back true on the next `ready` after re-init.
+        // The runner caught it, went silent and STAYED DOWN — 0297. There is no
+        // re-instantiate and no second `ready`, so `ready` is cleared here for
+        // good and the only recovery is a page reload.
         //
-        // IMPORTANT: the rebuilt engine has lost every piece of non-automatable
-        // state (key mode, split point, LFO 2 link, matrix topology, scope tap,
-        // tempo). Params restore themselves from the store; that state does not,
-        // and the controller has to re-broadcast it. The faceplate bridge (0290)
-        // is what listens for this.
+        // That is deliberate: a rebuilt engine would reload its params from the
+        // store for free, but not key mode, split point, LFO 2 link, matrix
+        // topology, scope tap or tempo — none of which live there. It would
+        // resume playing a different patch with nothing on screen saying so.
+        // `onTrap` therefore reports rather than repairs (the faceplate bridge
+        // logs it and tells the user to reload).
         this.ready = false;
         this.trapCount = m.count != null ? m.count : this.trapCount + 1;
         this._onTrap(m.message, this.trapCount);

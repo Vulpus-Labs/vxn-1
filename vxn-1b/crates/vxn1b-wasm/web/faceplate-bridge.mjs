@@ -353,7 +353,8 @@ export class FaceplateBridge {
   /// Tell the engine everything again: re-push the whole topology and key
   /// record, and rewrite every param slot.
   ///
-  /// Called when the worklet reports ready. Two things make it necessary, both
+  /// Called by the gesture gate once `host.start()` resolves — which is BEFORE
+  /// the worklet posts `ready`, not after. Two things make it necessary, both
   /// consequences of the faceplate being live before the audio gesture:
   /// `WebHost.start()` seeds the store with the ENGINE's defaults (clobbering
   /// anything edited while waiting), and ring pushes made before audio existed

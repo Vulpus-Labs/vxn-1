@@ -1,10 +1,11 @@
 //! VXN1b CLAP plugin shell (clack) — params, state, MPE event routing (0204).
 //!
-//! Wires [`vxn1b_engine::Engine`] to CLAP with **host-generic knobs**: a stereo
-//! output, a CLAP+MIDI note input, the flat param table (incl. the 16 matrix
-//! slot depths), and `clap.state` save/restore. There is no faceplate yet — the
-//! HTML editor + its controller land in E038; the E036 bar is "playable in a
-//! DAW with the host's generic parameter UI".
+//! Wires [`vxn1b_engine::Engine`] to CLAP: a stereo output, a CLAP+MIDI note
+//! input, the flat param table (incl. the 16 matrix slot depths), `clap.state`
+//! save/restore, and `clap.gui` — the HTML faceplate, mounted through [`gui`]
+//! and driven by `vxn1b-ui-web` (E038). A host that declines the GUI still gets
+//! a fully playable plugin through its generic parameter UI, which was the E036
+//! bar and is still the fallback.
 //!
 //! **Threading.** [`SharedParams`] is the lock-free crossing: the audio thread
 //! writes host automation into it as events arrive; the main thread reads it for
@@ -203,8 +204,8 @@ impl DefaultPluginFactory for VxnPlugin {
 }
 
 /// State shared between the main and audio threads: the lock-free param store
-/// behind an `Arc` so the (future) editor can hold a clone too, plus the meter
-/// bus the audio thread publishes into and the editor timer drains.
+/// behind an `Arc` so the editor holds a clone too, plus the meter bus the audio
+/// thread publishes into and the editor timer drains.
 pub struct VxnShared {
     params: Arc<SharedParams>,
     /// Meter bus (0240). Lives here rather than inside the `Engine` because it

@@ -5,10 +5,12 @@
 //! sets (ADR 0001 §2–§3). This ticket is **types + defaults only** — evaluation
 //! (source fan-out, curve/scale application, dest smoothing) is 0202.
 //!
-//! VXN1b is a **flat 16-voice** instrument, so — unlike VXN2 — there are no
-//! stacks/lanes and no granularity *tiers* or coherence rules: every source and
-//! destination is a per-voice (or patch-global) scalar the evaluator will read
-//! once per voice per control block.
+//! VXN1b's matrix is **flat**, so — unlike VXN2 — there are no granularity
+//! *tiers* and no coherence rules: every source and destination is a per-lane
+//! (or patch-global) scalar the evaluator will read once per lane per control
+//! block. [`StackWidth`](crate::params::StackWidth) (0266) spends several lanes
+//! on one note, but that adds no tier — a stacked note's lanes are ordinary
+//! lanes, each evaluating the matrix for itself.
 //!
 //! A slot is `(source, dest, depth, curve, scale_src)`. `depth` mirrors the
 //! CLAP param (0200); the other four fields are **patch topology** (state + TOML,

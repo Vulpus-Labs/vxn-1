@@ -7,9 +7,17 @@
 //! whole bank at build time — a malformed factory preset fails CI.
 //!
 //! Structure follows vxn-2's bank ([`vxn2-engine/src/factory.rs`]): the
-//! directory name is the **category** (the browser's grouping) and the file's
-//! `[meta] name` is the display name. [`crate::preset_io::EnginePresetStore`]
-//! consumes [`factory`] without touching the filesystem.
+//! directory name is the **category** and the file's `[meta] name` is the
+//! display name. [`crate::preset_io::EnginePresetStore`] consumes [`factory`]
+//! without touching the filesystem.
+//!
+//! Two things carry a category and they are not the same field. The browser
+//! GROUPS on `[meta] category` out of the TOML; the directory name lands in
+//! [`FactoryPreset::category`] and drives only the bank's SORT order. Nothing in
+//! the loader forces them to agree, so a file moved between directories without
+//! its `[meta]` being updated would sort under one heading and group under
+//! another. [`tests::the_directory_is_the_meta_category`] is what makes that
+//! fail loudly instead.
 //!
 //! **Editing the bank does not trigger a rebuild.** `include_dir!` emits no
 //! `rerun-if-changed`, so adding or changing a TOML leaves a stale bank baked
@@ -27,7 +35,9 @@ static FACTORY: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/presets/factory
 /// One embedded factory preset.
 #[derive(Clone, Debug)]
 pub struct FactoryPreset {
-    /// Category = the immediate parent directory, e.g. `"Bass"`.
+    /// Category = the immediate parent directory, e.g. `"Bass"`. Drives the
+    /// bank's sort order; the browser groups on `meta.category`, which a test
+    /// pins to this (see the module docs).
     pub category: String,
     /// Display name from `[meta] name`.
     pub name: String,
@@ -102,6 +112,28 @@ mod tests {
     #[test]
     fn bank_is_non_empty() {
         assert!(!factory_files().is_empty(), "no factory presets embedded");
+    }
+
+    /// The directory a preset lives in and the `[meta] category` it declares
+    /// must be the same string. They feed different things — the directory
+    /// sorts the bank, `meta.category` is what the browser groups on — so a
+    /// file moved without its `[meta]` updated would sort under one heading and
+    /// appear under another, with nothing failing.
+    #[test]
+    fn the_directory_is_the_meta_category() {
+        for (dir, contents) in factory_files() {
+            let (meta, _state, _warnings) =
+                read_preset(contents).unwrap_or_else(|e| panic!("`{dir}` failed to parse: {e:?}"));
+            let declared = meta.category.as_deref().unwrap_or_else(|| {
+                panic!("factory preset `{dir}/{}` declares no [meta] category", meta.name)
+            });
+            assert_eq!(
+                declared, dir,
+                "factory preset `{}` sits in `{dir}/` but declares category `{declared}` — \
+                 the browser would group it under one and sort it under the other",
+                meta.name
+            );
+        }
     }
 
     /// The shippable contract: every file parses under the current schema and

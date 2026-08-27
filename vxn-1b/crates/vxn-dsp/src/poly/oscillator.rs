@@ -238,8 +238,8 @@ const DRIFT_MAX_SEMITONES: f32 = 0.125;
 /// advances every 64 audio samples.
 const DRIFT_BLOCK_PERIOD: u8 = 2;
 
-/// 16-voice oscillator. Phase + increment per voice; pulse width per voice
-/// (PWM modulation differs per voice).
+/// [`crate::CHANNELS_PER_LAYER`]-wide poly oscillator. Phase + increment per voice;
+/// pulse width per voice (PWM modulation differs per voice).
 ///
 /// `sync_resid` / `sync_pending` carry hard-sync polyBLEP state across samples:
 /// when [`process_pair`](Self::process_pair) resets this oscillator (it is the
@@ -700,8 +700,8 @@ impl PolyOscillator {
 
 // ── Sub-osc (square one octave below the source) ────────────────
 
-/// 16-voice sub-oscillator: a band-limited square running at exactly half the
-/// source oscillator's frequency, on its own phase accumulator.
+/// [`crate::CHANNELS_PER_LAYER`]-wide sub-oscillator: a band-limited square running at
+/// exactly half the source oscillator's frequency, on its own phase accumulator.
 ///
 /// The source is osc1 on the Off / Ring / PM paths and osc2 (the master) on
 /// Sync — the sub tracks whichever one sets the audible period — but it only

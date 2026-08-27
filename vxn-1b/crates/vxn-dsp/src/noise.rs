@@ -62,8 +62,9 @@ fn noise_seed(base: u64, ch: usize) -> u64 {
         | 1
 }
 
-/// 16-voice (per-layer `N`) noise generator in structure-of-arrays form: one
-/// PRNG state and pink shaper per channel.
+/// `N`-wide noise generator in structure-of-arrays form: one PRNG state and
+/// pink shaper per channel. The engine instantiates it at
+/// [`crate::CHANNELS_PER_LAYER`].
 #[derive(Clone)]
 pub struct PolyNoise<const N: usize> {
     state: [u64; N],

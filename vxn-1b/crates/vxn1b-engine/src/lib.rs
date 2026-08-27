@@ -5,7 +5,8 @@
 //! by a generic mod matrix. Module map:
 //!
 //! - [`params`] — the flat param table (0200): `ParamId` = CLAP id = index.
-//! - [`voice`] — the MPE-aware 16-voice allocation + pressure spine (0198/0199).
+//! - [`voice`] — the MPE-aware allocation + pressure spine over the lane pool
+//!   ([`MAX_VOICES`]), 0198/0199.
 //! - [`matrix`] — the mod-matrix data model + default patch (0201).
 //! - [`eval`] — the generic source→dest evaluator (0202).
 //! - [`render`] — maps evaluated dest totals onto VXN1's DSP consumption points.
