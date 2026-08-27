@@ -117,7 +117,7 @@ independent of each other and of the refactors.
 - [x] **0316** *(vxn-1b, medium)* — Bind the cross-language tables: the custom-op
       vocabulary (3 transcriptions) and the telemetry payload shape (2), neither
       pinned by a test.
-- [ ] **0317** *(monorepo, medium)* — `vxn-xtask-common`: 3,015 lines of
+- [x] **0317** *(monorepo, medium)* — `vxn-xtask-common`: 3,015 lines of
       triplicated bundler across three products, plus `gui.rs` ×3.
 - [ ] **0318** *(vxn-1b, medium)* — Extract the five remaining long functions.
       Every one has its seams already written in as banner comments.
