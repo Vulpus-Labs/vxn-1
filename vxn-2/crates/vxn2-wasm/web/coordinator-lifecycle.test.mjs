@@ -230,6 +230,67 @@ test("rebuild() makes a new context over the SAME SABs (sample-rate change)", as
   assert.equal(host.storeSab, storeBefore);
 });
 
+// --- default seeding (0296) -------------------------------------------------
+//
+// These do NOT stub `_seedStoreFromDefaults` — the guard being tested lives
+// inside it. Instead they fake `WebAssembly.instantiate` so the real method
+// runs end to end against a throwaway "engine" whose every default is 0.25.
+
+/// A host whose real seeding path is live, over a fake wasm engine.
+/// `seeds` counts how many times the engine was actually instantiated.
+function seedingHost() {
+  const seeds = [];
+  const realInstantiate = WebAssembly.instantiate;
+  WebAssembly.instantiate = async () => {
+    seeds.push(1);
+    return {
+      instance: {
+        exports: {
+          vxn_host_new: () => 1,
+          vxn_host_get_param: () => 0.25, // every default is 0.25
+          vxn_host_destroy: () => {},
+        },
+      },
+    };
+  };
+  const h = makeHost();
+  delete h.host._seedStoreFromDefaults; // drop makeHost's no-op; use the real one
+  return { ...h, seeds, restore: () => (WebAssembly.instantiate = realInstantiate) };
+}
+
+test("a fresh WebHost seeds its store, so the first boot is not silent", async () => {
+  const { host, seeds, restore } = seedingHost();
+  try {
+    assert.equal(host.store.read(0), 0, "store starts zero-initialised");
+    await host.start();
+    assert.equal(seeds.length, 1, "the first start() did not seed");
+    assert.equal(host.store.read(0), 0.25, "defaults did not reach the store");
+  } finally {
+    restore();
+  }
+});
+
+test("rebuild() keeps the live patch — the seed does not run twice (0296)", async () => {
+  const { host, restore } = seedingHost();
+  try {
+    await host.start();
+    // The user moves a param. This is what rebuild() must not throw away.
+    host.store.write(3, 0.75);
+    assert.equal(host.store.read(3), 0.75);
+
+    await host.rebuild();
+
+    assert.equal(
+      host.store.read(3),
+      0.75,
+      "rebuild() re-seeded the store and reset the param to its default",
+    );
+    assert.equal(host._storeSeeded, true);
+  } finally {
+    restore();
+  }
+});
+
 // --- teardown ---------------------------------------------------------------
 
 test("teardown closes the context, destroys the worklet, drops SAB refs", async () => {

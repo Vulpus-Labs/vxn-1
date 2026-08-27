@@ -123,6 +123,9 @@ export class WebHost {
     this.store = new ParamStore(this.storeSab); // controller side
     this._lastSeen = newLastSeen(); // readback diff mirror (E018 consumes)
 
+    // Seeded once, on the first start(); see _seedStoreFromDefaults.
+    this._storeSeeded = false;
+
     this.ctx = null;
     this.node = null;
     this.ready = false; // worklet posted `ready`
@@ -345,7 +348,15 @@ export class WebHost {
   // instance and bulk-write them into the store, so the worklet's first fold is
   // a no-op against the engine rather than a zeroing pass. The instance is
   // discarded immediately; only its defaults survive (in the SAB).
+  //
+  // ONCE, not on every start(). The zero-fold this guards against is a
+  // first-boot problem only; after that the store holds the authoritative
+  // patch, and re-seeding would overwrite it with defaults. rebuild() calls
+  // start() a second time to follow a sample-rate change, and its whole
+  // contract is that param state survives — without this guard it reset every
+  // param the user had touched (0296).
   async _seedStoreFromDefaults(wasmBytes) {
+    if (this._storeSeeded) return;
     const { instance } = await WebAssembly.instantiate(wasmBytes, {});
     const x = instance.exports;
     const sr = this.ctx ? this.ctx.sampleRate : 48000;
@@ -354,6 +365,7 @@ export class WebHost {
     for (let id = 0; id < TOTAL_PARAMS; id++) vals[id] = x.vxn_host_get_param(h, id);
     this.store.writeBulk(vals);
     x.vxn_host_destroy(h);
+    this._storeSeeded = true;
   }
 
   _onPortMessage(m) {

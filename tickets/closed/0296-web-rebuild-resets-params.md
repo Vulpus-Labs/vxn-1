@@ -57,3 +57,33 @@ which is easy to blame on the browser.
   and vxn-2 product bug, and burying it in a VXN1b diff would hide it, the same
   mistake [0285](0285-web-param-mirror-drift.md) warns about.
 - VXN1b's guard is the reference implementation.
+
+## Close-out (2026-08-27)
+
+- `_seedStoreFromDefaults` now runs **once per `WebHost`** in both ports, guarded
+  by a `_storeSeeded` flag set in the constructor and flipped after the bulk
+  write — VXN1b's reference implementation, ported verbatim:
+  [vxn-1 coordinator.mjs:127](../../vxn-1/crates/vxn-wasm/web/coordinator.mjs#L127)
+  / [:359](../../vxn-1/crates/vxn-wasm/web/coordinator.mjs#L359) / [:368](../../vxn-1/crates/vxn-wasm/web/coordinator.mjs#L368),
+  [vxn-2 coordinator.mjs:85](../../vxn-2/crates/vxn2-wasm/web/coordinator.mjs#L85)
+  / [:253](../../vxn-2/crates/vxn2-wasm/web/coordinator.mjs#L253) / [:262](../../vxn-2/crates/vxn2-wasm/web/coordinator.mjs#L262).
+  The doc comment on each says why it is once-only, in the terms the bug was
+  found in.
+- Two tests per port, in each `coordinator-lifecycle.test.mjs`:
+  *"a fresh WebHost seeds its store, so the first boot is not silent"* (store
+  starts zero, one instantiation, defaults land) and *"rebuild() keeps the live
+  patch — the seed does not run twice (0296)"* (set id 3 to 0.75, `rebuild()`,
+  assert still 0.75).
+- These deliberately do **not** stub `_seedStoreFromDefaults` the way the
+  existing lifecycle mocks do — the guard under test lives inside that method,
+  so stubbing it would test nothing. They fake `WebAssembly.instantiate` instead
+  and restore it in a `finally`, so the real method runs end to end.
+- **Both tests were confirmed to fail without the guard.** Removing the
+  `if (this._storeSeeded) return;` line makes exactly the rebuild test fail in
+  each port, with `rebuild() re-seeded the store and reset the param to its
+  default`. The guard was then restored and the suites re-run.
+- Web suites green, 0 skipped: vxn-1 **31** (was 29), vxn-2 **91** (was 89),
+  vxn-1b **151** (unchanged — its guard already existed).
+- VXN1b's own guard still has no direct test; it is now the only port without
+  one. Not in this ticket's scope (vxn-1 and vxn-2 are the named products), but
+  worth a line in a future VXN1b test-gap sweep — [[0320]] is the natural home.
