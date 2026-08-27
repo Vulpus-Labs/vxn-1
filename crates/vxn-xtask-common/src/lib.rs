@@ -51,6 +51,11 @@ pub struct Product {
     pub clap_package: &'static str,
     /// The product's own `CARGO_PKG_VERSION` — see the module docs.
     pub version: &'static str,
+    /// `LSMinimumSystemVersion` for the bundle plist. Per-product because the
+    /// three genuinely differ (vxn-1b declares 11.0.0, the other two 10.13.0),
+    /// and quietly unifying them would change what hosts believe about two
+    /// shipped products.
+    pub min_macos: &'static str,
     /// VST3 support, or `None` for a CLAP-only product.
     pub vst3: Option<Vst3>,
 }
@@ -418,7 +423,7 @@ impl Product {
     <key>CFBundleShortVersionString</key><string>{version}</string>
     <key>CFBundleSupportedPlatforms</key>
     <array><string>MacOSX</string></array>
-    <key>LSMinimumSystemVersion</key><string>11.0.0</string>
+    <key>LSMinimumSystemVersion</key><string>{min_macos}</string>
 </dict>
 </plist>
 "#,
@@ -426,6 +431,7 @@ impl Product {
             id = self.bundle_id,
             display = self.display_name,
             version = self.version,
+            min_macos = self.min_macos,
         )
     }
 }
@@ -745,6 +751,7 @@ mod tests {
         lib_name: "vxnX_clap",
         clap_package: "vxnX-clap",
         version: "9.9.9",
+        min_macos: "11.0.0",
         vst3: Some(Vst3 {
             name: "VXNX",
             wrapper_dir: "vxn-X/wrapper",
@@ -783,6 +790,7 @@ mod tests {
         assert!(plist.contains("<key>CFBundleIdentifier</key><string>labs.vulpus.vxnX</string>"));
         assert!(plist.contains("<key>CFBundleName</key><string>VXN-X</string>"));
         assert!(plist.contains("<string>9.9.9</string>"), "the product's version");
+        assert!(plist.contains("<string>11.0.0</string>"), "the product's macOS floor");
         assert!(!plist.contains(env!("CARGO_PKG_VERSION")), "not this crate's");
     }
 

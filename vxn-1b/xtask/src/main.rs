@@ -71,6 +71,7 @@ const PRODUCT: Product = Product {
     lib_name: "vxn1b_clap",
     clap_package: "vxn1b-clap",
     version: env!("CARGO_PKG_VERSION"),
+    min_macos: "11.0.0",
     vst3: Some(Vst3 {
         name: "VXN1b",
         wrapper_dir: "vxn-1b/wrapper",
