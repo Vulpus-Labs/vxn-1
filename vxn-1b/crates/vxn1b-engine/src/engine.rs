@@ -313,6 +313,90 @@ fn pan_gains(pos: f32) -> (f32, f32) {
     (core::f32::consts::SQRT_2 * cos, core::f32::consts::SQRT_2 * sin)
 }
 
+/// The `self` fields one layer's render touches, borrowed as separate fields so
+/// the caller can still hold the bus slices — which come from *other* `self`
+/// fields — across the call.
+struct LayerParts<'a> {
+    synth: &'a mut Synth,
+    /// This layer's per-channel mix gain, `[L, R]`.
+    gain: &'a mut [Smoothed; 2],
+    meters: &'a MeterBus,
+    scope: &'a ScopeBus,
+}
+
+/// What differs between the two layers' renders, once the shared shape is
+/// factored out: where the gain is heading, whether LFO 2 adopts a master
+/// phase, and which pair of taps the result is published to.
+struct LayerSpec {
+    /// `(L, R)` mix gain to fade toward — see [`Engine::layer_gain_target`].
+    gain_target: [f32; 2],
+    /// Layer 1's just-advanced LFO 2 phase when the cross-layer link is on,
+    /// `None` for the free-running path. Always `None` for layer 1 itself,
+    /// which IS that master.
+    lfo2_master: Option<f32>,
+    os: usize,
+    meter_tap: MeterTap,
+    scope_tap: ScopeTap,
+}
+
+impl LayerSpec {
+    /// The spec for layer `i`, which fixes the tap pair; the caller supplies
+    /// only what varies per block.
+    fn for_layer(
+        layer: usize,
+        gain_target: [f32; 2],
+        lfo2_master: Option<f32>,
+        os: usize,
+    ) -> Self {
+        let (meter_tap, scope_tap) = if layer == 0 {
+            (MeterTap::Layer1L, ScopeTap::Layer1)
+        } else {
+            (MeterTap::Layer2L, ScopeTap::Layer2)
+        };
+        LayerSpec { gain_target, lfo2_master, os, meter_tap, scope_tap }
+    }
+}
+
+/// Render one layer into `out_l`/`out_r` at the oversampled rate, scale it by
+/// its ramping mix gain, and publish its post-fader meter + scope taps.
+///
+/// Both layers run this: layer 1 into the OS bus it is summed in, layer 2 into
+/// scratch that the caller then adds. Before 0318 the two were copy-pasted —
+/// identical gain/OS loops, matching `set_target` pairs, matching publishes —
+/// with layer 1's copy in a different statement order for no reason.
+///
+/// Per control block (≤32 base frames), not per sample.
+fn render_layer(parts: LayerParts<'_>, out_l: &mut [f32], out_r: &mut [f32], spec: LayerSpec) {
+    let os_n = out_l.len();
+    let n = os_n / spec.os;
+    out_l.fill(0.0);
+    out_r.fill(0.0);
+    parts.synth.render_control_block(out_l, out_r, spec.lfo2_master, spec.os);
+    parts.gain[0].set_target(spec.gain_target[0]);
+    parts.gain[1].set_target(spec.gain_target[1]);
+    // The gain smoothers tick once per BASE frame and are held across that
+    // frame's OS sub-samples: a fader or pan move must take the same
+    // wall-clock time to land at 8x as at 1x.
+    for i in 0..n {
+        let (gl, gr) = (parts.gain[0].tick(), parts.gain[1].tick());
+        for k in 0..spec.os {
+            out_l[i * spec.os + k] *= gl;
+            out_r[i * spec.os + k] *= gr;
+        }
+    }
+    // Post-fader tap: what this layer actually contributes to the mix, so a
+    // muted or pulled-down layer reads zero — which is what a mixer strip
+    // should show. Post-*pan* too, so a hard-panned layer reads on one channel
+    // only.
+    parts.meters.publish_block_peak(spec.meter_tap, out_l, out_r);
+    // Scope capture at the same point, so the trace and the layer meter are
+    // reading the same signal. `os` is the stride: the buses are at the
+    // oversampled rate here, and the ring wants base-rate frames so the trace's
+    // time axis doesn't change when Oversample does. A no-op unless this is the
+    // tap the editor selected.
+    parts.scope.publish_stride(spec.scope_tap.code(), out_l, out_r, spec.os);
+}
+
 impl Engine {
     /// The host's max block size is deliberately not a parameter: the engine
     /// renders in fixed `CONTROL_BLOCK` chunks and every buffer it owns is sized
@@ -636,94 +720,21 @@ impl Engine {
         limiter_on: bool,
     ) {
         let n = l.len();
-        // Voices render into the oversampled buses; `l`/`r` receive the
-        // decimated result further down. At os = 1 the decimator is a
-        // pass-through, so the OS-off render is bit-identical to the pre-0251
-        // path.
-        let os_n = n * os;
-        // Gain targets read `self.synths`, so resolve them before the `os_bus`
-        // borrow starts — the split below holds `self` mutably for the rest of
-        // the render.
-        let gain_target = [self.layer_gain_target(0), self.layer_gain_target(1)];
-        // Same reason: the decimator's silence hint is a voice read.
-        let both_silent =
-            self.synths[0].is_silent() && (!self.key.layer2_on || self.synths[1].is_silent());
-        let (bus_l, bus_r) = self.os_bus.split_at_mut(1);
-        let (bus_l, bus_r) = (&mut bus_l[0][..os_n], &mut bus_r[0][..os_n]);
-        bus_l.fill(0.0);
-        bus_r.fill(0.0);
-
-        // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
-        // Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
-        // master when the cross-layer link is on: layer 2 adopts it
-        // instead of running its own accumulator. Link off → `None`, the
-        // free-running path, at no cost.
-        //
-        // Layer 1 renders straight into the output and is scaled in place; layer
-        // 2 renders into scratch so the two can take different gains before they
-        // sum. Both gains ramp per sample, so a fader move, a mute or a
-        // pan sweep is a short fade, not a step.
-        self.synths[0].render_control_block(bus_l, bus_r, None, os);
-        self.layer_gain[0][0].set_target(gain_target[0][0]);
-        self.layer_gain[0][1].set_target(gain_target[0][1]);
-        // The gain smoothers tick once per BASE frame and are held across that
-        // frame's OS sub-samples: a fader or pan move must take the same
-        // wall-clock time to land at 8x as at 1x.
-        for i in 0..n {
-            let (gl, gr) = (self.layer_gain[0][0].tick(), self.layer_gain[0][1].tick());
-            for k in 0..os {
-                bus_l[i * os + k] *= gl;
-                bus_r[i * os + k] *= gr;
-            }
-        }
-        // Post-fader tap: what this layer actually contributes to the
-        // mix, so a muted or pulled-down layer reads zero — which is what a
-        // mixer strip should show. Post-*pan* too, so a hard-panned layer
-        // reads on one channel only.
-        self.meters.publish_block_peak(MeterTap::Layer1L, bus_l, bus_r);
-        // Scope capture at the same point, so the trace and the L1 meter are
-        // reading the same signal. `os` is the stride: the buses are at the
-        // oversampled rate here, and the ring wants base-rate frames so the
-        // trace's time axis doesn't change when Oversample does. A no-op unless
-        // this is the tap the editor selected.
-        self.scope.publish_stride(ScopeTap::Layer1.code(), bus_l, bus_r, os);
-
-        if self.key.layer2_on {
-            let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
-            self.layer_gain[1][0].set_target(gain_target[1][0]);
-            self.layer_gain[1][1].set_target(gain_target[1][1]);
-            // Split the scratch borrow so both halves are live at once.
-            let (scratch_l, scratch_r) = self.mix_scratch.split_at_mut(1);
-            let (s_l, s_r) = (&mut scratch_l[0][..os_n], &mut scratch_r[0][..os_n]);
-            s_l.fill(0.0);
-            s_r.fill(0.0);
-            self.synths[1].render_control_block(s_l, s_r, lfo2_master, os);
-
-            for i in 0..n {
-                let (gl, gr) = (self.layer_gain[1][0].tick(), self.layer_gain[1][1].tick());
-                for k in 0..os {
-                    s_l[i * os + k] *= gl;
-                    s_r[i * os + k] *= gr;
-                }
-            }
-            self.meters.publish_block_peak(MeterTap::Layer2L, s_l, s_r);
-            self.scope.publish_stride(ScopeTap::Layer2.code(), s_l, s_r, os);
-            for i in 0..os_n {
-                bus_l[i] += s_l[i];
-                bus_r[i] += s_r[i];
-            }
-        } else {
-            // Synth 2 is bypassed, so its gain must not sit part-way through a
-            // fade waiting to be resumed — snap it, and let its meter rest.
-            self.layer_gain[1][0].snap(gain_target[1][0]);
-            self.layer_gain[1][1].snap(gain_target[1][1]);
-        }
+        let both_silent = self.render_layers_into_bus(n, os);
 
         // Decimate the oversampled buses down to the base rate. Both channels
         // always decimate (0262 dropped the spread-0 mono skip — pan makes it
         // unanswerable at block rate); both synths silent ⇒ the drain-skip can
         // eventually zero-fill. That bookkeeping lives in `OutputStage`.
-        self.output.decimate_block(bus_l, bus_r, l, r, os, both_silent);
+        let (bus_l, bus_r) = self.os_bus.split_at_mut(1);
+        self.output.decimate_block(
+            &bus_l[0][..n * os],
+            &bus_r[0][..n * os],
+            l,
+            r,
+            os,
+            both_silent,
+        );
 
         // Serial FX chain over the summed voices, at the base rate. Each effect
         // is a true skip when off and settled, so the default FX-off patch is a
@@ -731,6 +742,86 @@ impl Engine {
         self.fx.set_params(&FxParams::from_params(self.synths[0].params(), self.tempo_bpm));
         self.fx.process_block(l, r);
 
+        self.apply_master(l, r, master, limiter_on);
+    }
+
+    /// Render both layers into `self.os_bus` at the oversampled rate, summed and
+    /// post-fader. Returns the decimator's silence hint, which has to be read
+    /// **before** the render advances the voices.
+    ///
+    /// Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
+    /// Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
+    /// master when the cross-layer link is on: layer 2 adopts it instead of
+    /// running its own accumulator. Link off → `None`, the free-running path, at
+    /// no cost.
+    ///
+    /// Layer 1 renders straight into the bus; layer 2 renders into scratch so
+    /// the two can take different gains before they sum. Both gains ramp per
+    /// sample, so a fader move, a mute or a pan sweep is a short fade, not a
+    /// step.
+    fn render_layers_into_bus(&mut self, n: usize, os: usize) -> bool {
+        // Voices render into the oversampled buses; `l`/`r` receive the
+        // decimated result in the caller. At os = 1 the decimator is a
+        // pass-through, so the OS-off render is bit-identical to the pre-0251
+        // path.
+        let os_n = n * os;
+        // Gain targets read `self.synths`, so resolve them before the `os_bus`
+        // borrow starts — the split below holds those fields for the rest of
+        // the render.
+        let gain_target = [self.layer_gain_target(0), self.layer_gain_target(1)];
+        // Same reason, and the ordering constraint in the doc comment: the
+        // decimator's silence hint is a voice read, and the render advances
+        // them.
+        let both_silent =
+            self.synths[0].is_silent() && (!self.key.layer2_on || self.synths[1].is_silent());
+        let (bus_l, bus_r) = self.os_bus.split_at_mut(1);
+        let (bus_l, bus_r) = (&mut bus_l[0][..os_n], &mut bus_r[0][..os_n]);
+
+        render_layer(
+            LayerParts {
+                synth: &mut self.synths[0],
+                gain: &mut self.layer_gain[0],
+                meters: &self.meters,
+                scope: &self.scope,
+            },
+            bus_l,
+            bus_r,
+            LayerSpec::for_layer(0, gain_target[0], None, os),
+        );
+
+        if !self.key.layer2_on {
+            // Synth 2 is bypassed, so its gain must not sit part-way through a
+            // fade waiting to be resumed — snap it, and let its meter rest.
+            self.layer_gain[1][0].snap(gain_target[1][0]);
+            self.layer_gain[1][1].snap(gain_target[1][1]);
+            return both_silent;
+        }
+
+        let lfo2_master = self.key.lfo2_link.then(|| self.synths[0].lfo2_phase());
+        // Split the scratch borrow so both halves are live at once.
+        let (scratch_l, scratch_r) = self.mix_scratch.split_at_mut(1);
+        let (s_l, s_r) = (&mut scratch_l[0][..os_n], &mut scratch_r[0][..os_n]);
+        render_layer(
+            LayerParts {
+                synth: &mut self.synths[1],
+                gain: &mut self.layer_gain[1],
+                meters: &self.meters,
+                scope: &self.scope,
+            },
+            s_l,
+            s_r,
+            LayerSpec::for_layer(1, gain_target[1], lfo2_master, os),
+        );
+        for i in 0..os_n {
+            bus_l[i] += s_l[i];
+            bus_r[i] += s_r[i];
+        }
+        both_silent
+    }
+
+    /// Master volume, the finite guard, the limiter and the master meter tap —
+    /// everything after the FX chain, in the order it has to run in.
+    fn apply_master(&mut self, l: &mut [f32], r: &mut [f32], master: f32, limiter_on: bool) {
         // Master volume + a final finite guard. A denormal-free RT plugin must
         // never emit NaN/inf: an extreme param + dense-voice combo can drive a
         // ladder/feedback state non-finite, and one NaN sample poisons the host
