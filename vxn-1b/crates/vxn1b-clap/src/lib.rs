@@ -451,6 +451,49 @@ impl<'a> VxnMainThread<'a> {
     }
 }
 
+/// Apply one custom UI payload from the editor's controller.
+///
+/// Four vxn1b payloads share the `on_custom_ui` hook: a `KeyOp` (Layer 2 enable
+/// / split), a `MatrixEdit` (topology), a `PatchOp` (bulk patch duplication,
+/// 0265), or a `ScopeOp` (which signal the oscilloscope captures). There is no
+/// enum over them — clack hands the hook a `Box<dyn Any>` — so this is a
+/// downcast chain, each arm handing the box back on a miss.
+///
+/// A free function rather than a closure body so `on_timer` reads as the five
+/// pushes it is; the two Arcs are what the closure captures.
+fn apply_custom_op(
+    sink: &Arc<SharedParams>,
+    scope: &Arc<ScopeBus>,
+    payload: Box<dyn std::any::Any + Send>,
+) {
+    let payload = match payload.downcast::<vxn1b_engine::KeyOp>() {
+        Ok(op) => return sink.apply_key_op(*op),
+        Err(p) => p,
+    };
+    let payload = match payload.downcast::<vxn1b_engine::MatrixEdit>() {
+        Ok(edit) => return sink.edit_matrix_slot(*edit),
+        Err(p) => p,
+    };
+    let payload = match payload.downcast::<vxn1b_engine::PatchOp>() {
+        Ok(op) => {
+            match *op {
+                vxn1b_engine::PatchOp::CopyLayer { from, to } => sink.copy_layer(from, to),
+                vxn1b_engine::PatchOp::ResetLayer { layer } => sink.reset_layer(layer),
+            }
+            return;
+        }
+        Err(p) => p,
+    };
+    // The tap goes straight onto the shared ring rather than through the param
+    // store: it is view state (which panel is on screen), so it must not touch
+    // the patch, the state blob or the undo stack.
+    if let Ok(op) = payload.downcast::<vxn1b_engine::ScopeOp>() {
+        match *op {
+            vxn1b_engine::ScopeOp::SetTap(tap) => scope.set_source(tap.code()),
+        }
+    }
+}
+
 /// Push a scope frame every Nth timer tick. The timer runs at ~60 Hz, so 2 puts
 /// the trace at ~30 Hz.
 const SCOPE_TICK_DIVISOR: u8 = 2;
@@ -465,37 +508,7 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         let sink = self.shared.params.clone();
         let scope = self.shared.scope.clone();
         let mut on_custom_ui = move |_ctrl: &mut _, payload: Box<dyn std::any::Any + Send>| {
-            // Four vxn1b custom payloads share this hook: a KeyOp (Layer 2
-            // enable / split), a MatrixEdit (topology), a PatchOp (bulk
-            // patch duplication, 0265), or a ScopeOp (which signal the
-            // oscilloscope captures). Try each; downcast hands the box back
-            // on a miss.
-            let payload = match payload.downcast::<vxn1b_engine::KeyOp>() {
-                Ok(op) => return sink.apply_key_op(*op),
-                Err(p) => p,
-            };
-            let payload = match payload.downcast::<vxn1b_engine::MatrixEdit>() {
-                Ok(edit) => return sink.edit_matrix_slot(*edit),
-                Err(p) => p,
-            };
-            let payload = match payload.downcast::<vxn1b_engine::PatchOp>() {
-                Ok(op) => {
-                    match *op {
-                        vxn1b_engine::PatchOp::CopyLayer { from, to } => sink.copy_layer(from, to),
-                        vxn1b_engine::PatchOp::ResetLayer { layer } => sink.reset_layer(layer),
-                    }
-                    return;
-                }
-                Err(p) => p,
-            };
-            // The tap goes straight onto the shared ring rather than through
-            // the param store: it is view state (which panel is on screen), so
-            // it must not touch the patch, the state blob or the undo stack.
-            if let Ok(op) = payload.downcast::<vxn1b_engine::ScopeOp>() {
-                match *op {
-                    vxn1b_engine::ScopeOp::SetTap(tap) => scope.set_source(tap.code()),
-                }
-            }
+            apply_custom_op(&sink, &scope, payload);
         };
         let editor_ready = {
             let mut ctrl = lock_mut(&self.controller);
