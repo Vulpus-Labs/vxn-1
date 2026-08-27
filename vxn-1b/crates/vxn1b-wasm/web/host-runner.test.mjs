@@ -159,7 +159,6 @@ function throwingWasm({ throwOn = 1 } = {}) {
     vxn1b_host_out_r: () => 8192,
     vxn1b_host_set_param: () => {},
     vxn1b_host_reset: () => {},
-    vxn1b_host_set_sample_rate: () => {},
     vxn1b_host_render: () => {
       if (++calls === throwOn) throw new Error("unreachable executed");
     },

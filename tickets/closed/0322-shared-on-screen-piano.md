@@ -88,3 +88,29 @@ that gap is how this nearly shipped broken.
   suites green and its bundle rebuilt, not on inspection.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
+
+## Close-out (2026-08-27)
+
+- `isBlackKey` / `pianoLayout` / `createPianoKeyboard` live once, in
+  [piano-keyboard.mjs](../../crates/vxn-core-web/assets/piano-keyboard.mjs).
+  Grep for `createPianoKeyboard` across the tree returns only the shared module
+  and its three consumers' bridges — no fork in either port.
+- vxn-2 unchanged: its web suite is 89 passed / 0 failed / 0 skipped, including
+  `piano-keyboard.test.mjs` driving the shared module.
+- VXN1b mounts at boot. `faceplate-bridge.test.mjs` — *"boot mounts the
+  on-screen piano, and it plays into the ring"* asserts 37 keys (C3..C6, 22
+  white + 15 black) and that `_press(60)` advances the ring write index.
+- Split shading: *"the split reaches the piano only in Split mode"* pins that
+  leaving Split pushes `null` rather than stranding the shading. The widget takes
+  a bare note number ([piano-keyboard.mjs:153](../../crates/vxn-core-web/assets/piano-keyboard.mjs#L153));
+  when a split is meaningful stays in VXN1b's bridge.
+- Lighting by any producer: *"notes from other producers light the keys, and
+  still reach the ring"*, *"the tap forwards every other producer call
+  untouched"*, *"a piano that throws while painting does not swallow the note"*.
+  The suspend/resume flush drops lit keys
+  ([piano-keyboard.mjs:214](../../crates/vxn-core-web/assets/piano-keyboard.mjs#L214)).
+- Both bundles ship it: `piano-keyboard.mjs` present in `target/web-dist-vxn1b/`
+  (via `CORE_MODULES`) and in vxn-2's `target/web-dist/`.
+- **Not verified here:** the manual click/glissando feel. Mechanically the
+  monophonic drag is [piano-keyboard.mjs:17](../../crates/vxn-core-web/assets/piano-keyboard.mjs#L17)'s
+  documented behaviour; confirm by ear in the browser.

@@ -70,3 +70,36 @@ runtime and the 0172 host param surface.
   don't survive a reload. The factory/user bank ticket (0188+; 0187 is taken by vxn-2)
   moves flavours to `include_dir!` TOML and adds user-bank storage.
 - Mind [[vxn3-flavour-runtime]].
+
+## Close-out (2026-08-27)
+
+- **Faceplate** ([app.js](../../vxn-3/crates/vxn3-ui-web/assets/app.js)):
+  Pattern + Voices tabs, a voice library (`voices[]`, add / duplicate / delete),
+  the voice browser overlay (`#voice-browser`, "Assign voice → Track N"), base
+  sliders, and per-slot macro bindings with target / depth / curve rows —
+  multi-binding per slot, additive-from-base
+  ([:439-486](../../vxn-3/crates/vxn3-ui-web/assets/app.js#L439-L486)) — plus
+  renameable macros (`flav.macro_names[slot]`, `""` = derive).
+- **`assign_voice`** parses base + bindings + macro defaults + names
+  ([vxn3-ui-web/src/lib.rs:140](../../vxn-3/crates/vxn3-ui-web/src/lib.rs#L140)),
+  routes as `Vxn3UiCustom::AssignVoice { track, kind, flavour }`
+  ([vxn3-app/src/lib.rs:115](../../vxn-3/crates/vxn3-app/src/lib.rs#L115)), and a
+  voice edit re-sends it to every lane referencing that voice
+  ([app.js:160](../../vxn-3/crates/vxn3-ui-web/assets/app.js#L160)).
+  Unit-tested by `parses_assign_voice`.
+- **`value_to_text`** renders a macro slot flavour-aware — override name /
+  first-bound-param / `M<n>`, plus knob percent — reading the main-thread
+  `FlavourStore` and falling back to the fixed 0172 engine map only if
+  unavailable ([vxn3-clap/src/lib.rs:509-535](../../vxn-3/crates/vxn3-clap/src/lib.rs#L509-L535)).
+  `text_to_value` inverts it (`flavour_macro_parse`), so the transform
+  round-trips.
+- **Per-lane flavour through `clap.state`**: `FlavourStore` is saved and loaded
+  with the param cache and track kinds
+  ([vxn3-clap/src/state.rs:46](../../vxn-3/crates/vxn3-clap/src/state.rs#L46)).
+- **clap-validator on `target/release/vxn3.clap`: 20 tests run, 17 passed,
+  0 failed, 3 skipped** — including `state-reproducibility-basic`, `-flush`,
+  `-null-cookies` and `state-buffered-streams`. The 3 skips are the unimplemented
+  preset-discovery factory; the 1 warning is a 334 ms scan time.
+- `cargo test --workspace` (covers vxn3-engine / vxn3-clap / vxn3-app /
+  vxn3-ui-web): 1622 passed, 0 failed. `cargo clippy -p vxn3-engine -p vxn3-clap
+  -p vxn3-app -p vxn3-ui-web --all-targets`: 0 diagnostics.

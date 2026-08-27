@@ -104,3 +104,33 @@ already exists; what is missing is somewhere to put the control and a default of
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
+
+## Close-out (2026-08-27)
+
+- Channel rides note events: `midi-input.test.mjs` — *"the channel nibble rides
+  note events for an MPE-aware host"*, *"a second channel is not folded onto the
+  first"*, *"note-on with velocity 0 is a note-off, and keeps its channel"*.
+- Aftertouch: *"poly and channel aftertouch reach an MPE-aware host"* and
+  *"aftertouch is NOT sent to a host without those methods"* — vxn-1's and
+  vxn-2's hosts have neither, so both messages stay off their wire.
+- The regression this ticket was most likely to cause is pinned from both sides:
+  *"a sustain pedal does not throw on a host with no pedal path"* and *"…and
+  still reaches a host that has one"*. `CC_SUSTAIN` is gated on
+  `typeof host.sustain === "function"`
+  ([midi-input.mjs:204](../../crates/vxn-core-web/assets/midi-input.mjs#L204)).
+- *"a single-timbral host still sees plain three-argument notes"* — the trailing
+  channel argument is dropped by JS arity, so neither shipped port changes shape.
+- Computer keyboard attaches before audio exists and is reachable when Web MIDI
+  is denied: `faceplate-bridge.test.mjs` — *"boot attaches the computer keyboard
+  before audio exists"*; the adapter resolves rather than throws on a denied
+  permission ([midi-input.mjs:234](../../crates/vxn-core-web/assets/midi-input.mjs#L234)).
+- BPM sends tempo on the ring: *"set_tempo is ring-only and refuses a nonsense
+  BPM"* ([faceplate-bridge.mjs:241](../../vxn-1b/crates/vxn1b-wasm/web/faceplate-bridge.mjs#L241)).
+- The shared module is edited, so both shipped ports were re-run, not just this
+  one: vxn-1 29 passed, vxn-2 89 passed, VXN1b 151 passed — all 0 skipped.
+- [deploy-web.sh](../../vxn-1b/crates/vxn1b-wasm/deploy-web.sh) exists alongside
+  vxn-1's and vxn-2's; vxn-1's `_headers` clobber was fixed separately
+  (`e5badae`) — [[vxn-web-publish-flow]].
+- **Not verified here:** the hardware-MIDI pass (notes / velocity / bend / mod
+  wheel from a real keyboard), the audible synced-LFO-follows-BPM check, and the
+  browser smoke that 0290/0291/0292 were also waiting on.

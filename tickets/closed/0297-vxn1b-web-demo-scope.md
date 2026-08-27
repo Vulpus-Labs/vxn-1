@@ -85,3 +85,28 @@ Not everything inherited is plugin-grade. These are browser facts, not DAW ones:
 - The demo posture should carry into the rest of E045 — notably 0293
   (persistence) and 0294 (ship): a demo wants a working instrument and a
   shareable link, not a durability story.
+
+## Close-out (2026-08-27)
+
+- `rebuild()`, `setSink()`, the `devicechange` listener and the `mediaDevices`
+  option are gone from `coordinator.mjs` — the only survivors are the deliberate
+  "why this is absent" notes at
+  [coordinator.mjs:31-33](../../vxn-1b/crates/vxn1b-wasm/web/coordinator.mjs#L31-L33)
+  and [:224](../../vxn-1b/crates/vxn1b-wasm/web/coordinator.mjs#L224).
+- `setSampleRate` is gone from all four JS sites and from the C ABI: grep for
+  `vxn1b_host_set_sample_rate` over `vxn-1b/` now returns nothing. The Rust
+  export is absent from [host.rs](../../vxn-1b/crates/vxn1b-wasm/src/host.rs)
+  (`vxn1b_host_set_param` and `vxn1b_host_reset` remain).
+- A render trap still goes silent, still does not escape `process()`, still
+  reports, and no longer re-instantiates — `host-runner.test.mjs`, *"a render
+  trap goes silent, reports, and does not throw out of process()"*.
+- Readback region gone: `STORE_BYTES == TOTAL_PARAMS * 4` asserted at
+  [param-store.test.mjs:44](../../vxn-1b/crates/vxn1b-wasm/web/param-store.test.mjs#L44),
+  with `createParamSAB().byteLength` pinned to it.
+- `WIRE-FORMAT.md` records the removal and the reason (no host in a browser) at
+  [:103](../../vxn-1b/crates/vxn1b-wasm/web/WIRE-FORMAT.md#L103).
+- Closing sweep found one vestige: `host-runner.test.mjs` still stubbed
+  `vxn1b_host_set_sample_rate` on its fake wasm, for an export that no longer
+  exists. Deleted; the suite is 9/9.
+- VXN1b web suite 151 passed / 0 skipped; `cargo test --workspace` 1622 passed,
+  0 failed.

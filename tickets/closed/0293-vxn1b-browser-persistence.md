@@ -105,3 +105,28 @@ no faceplate button for them yet, so expose them on `window.__vxn` as vxn-2 does
   [[0294]] introduced for the input adapters. Reuse it.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
+
+## Close-out (2026-08-27)
+
+Pinned by `persistence.test.mjs`, green inside VXN1b's 151-test suite (0 skipped).
+
+- *"a user preset survives a reload, with its folder and its sound"* — covers the
+  reload, the folder and the corpus lookup in one.
+- *"boot hydrates BEFORE the queued `ready`, so the restored patch is painted"* —
+  the ordering asserted rather than eyeballed, as the criterion asked.
+- The published corpus carries factory **and** hydrated user presets
+  (`corpusJson().user` walked by `findUserPath`).
+- *"rename, move and delete survive a reload"* — the journal's Delete+Put pairs
+  applied in order.
+- Journal drained exactly once per pump, and still drained with no persistence
+  so the wasm buffer cannot grow:
+  [persistence.test.mjs:276-281](../../vxn-1b/crates/vxn1b-wasm/web/persistence.test.mjs#L276-L281).
+- *"state autosave restores the last patch"* and *"a share link wins over the
+  autosaved session"*.
+- *"no IndexedDB leaves a playable instrument, and does not throw"*.
+- *"an exported patch re-imports to the same sound"* — `exportPatch` /
+  `importPatch` / `shareLink`.
+- `CORE_MODULES` carries `preset-storage`, `preset-persistence`, `state-autosave`
+  and `patch-io` ([main.rs:824](../../vxn-1b/xtask/src/main.rs#L824)); all four
+  are in `target/web-dist-vxn1b/` and the closure test enforces the list.
+- vxn-1 (29) and vxn-2 (89) suites both green and untouched.

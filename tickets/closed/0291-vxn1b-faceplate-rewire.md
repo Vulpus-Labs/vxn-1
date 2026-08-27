@@ -191,3 +191,43 @@ bridge, matching what the native shell does when it pushes them into the same
   [[vxn-no-parallel-cargo-test]]. Stage explicit paths —
   [[vxn-concurrent-vxn2-work-no-git-add-all]].
 - Blocks 0292 (which bundles these modules into `dist/`).
+
+## Close-out (2026-08-27)
+
+All criteria below are pinned by `controller.test.mjs` and
+`faceplate-bridge.test.mjs`, green inside VXN1b's 151-test suite (0 skipped).
+
+- Plain `WebAssembly.instantiate`, no wasm-bindgen; *"every `vxnc_ui_*` export
+  has a wrapper method"* fails the moment a new Rust export goes unwired, and
+  *"instantiate agrees with the engine's param layout"* pins the table.
+- String args: *"string args round-trip, including the root-folder sentinel and
+  non-ASCII"*.
+- Batch decode, one golden per `kind`: *"a param write decodes to the page's
+  param_changed shape"*, *"the matrix record carries both layers, 16 slots,
+  topology only"*, *"the key record carries mode, split and the lfo2 link as a
+  bool"*, *"a factory load decodes preset_loaded with a nested source and
+  re-broadcasts"*, and *"an unknown record tag fails loudly rather than emitting
+  garbage"*.
+- Routing table: *"params and gestures go to the controller only, never the
+  ring"*, *"non-param state reaches the model at route time and the ring on the
+  pump"*, *"the scope tap is ring-only and never reaches the model"*. The
+  0290-untestable half — non-param state arriving at the ring via the pump's
+  resend — is the second of those.
+- *"an unknown, non-string or malformed op is dropped, not mis-routed"*.
+- Preset load and `copy_layer` resend topology: *"a preset load resends topology
+  to the ring, not just params"*, *"copy_layer reaches the engine as params + a
+  topology resend"*, plus the ordering invariant *"topology is pushed to the ring
+  BEFORE depths are mirrored"*.
+- Full-table resend in one block: *"the first pump seeds the ring with the whole
+  topology and key state"* and *"resyncEngine re-pushes the whole topology and
+  every param slot"*.
+- `request_text_input` answered in-page: *"request_text_input is answered in-page
+  and never reaches the controller"*, *"a cancelled prompt delivers null,
+  matching the native contract"*, and three modal-behaviour tests.
+- Corpus with no fetch: *"the corpus is readable before any tick — no factory
+  fetch"*.
+- Telemetry rides the same batch: *"telemetry rides the same batch as the
+  controller's events"*.
+- `cargo test --workspace` 1622 passed, 0 failed.
+- **Not verified here:** the browser pass (boot, play, fader, sync-toggle label,
+  factory load, layer copy, user-preset save/reload).

@@ -38,3 +38,24 @@ smoke, and flip [ADR 0001](../../vxn-1b/adrs/0001-vxn1b-overall-design.md) statu
 - README + PARAMETERS.md land for VXN1b.
 - ADR 0001 status → Accepted.
 - Epic [[E038]] close-out written; epic closed.
+
+## Close-out (2026-08-27)
+
+- Bundle path works end to end: `cargo run -p vxn1b-xtask -- bundle` produces
+  `target/bundled/vxn1b.clap`; the release workflow builds macOS universal + the
+  Windows VST3 via clap-wrapper, with the `/INCLUDE:clap_entry` fix that stopped
+  `/OPT:REF` stripping the whole-archived staticlib ([[vxn-windows-vst3-optref-strip]],
+  `6599f54`). Shipped as `vxn-1b-0.0.1` (`9842c0c`); tag line is `vxn-1b-*`
+  ([[vxn-release-process]]).
+- **clap-validator on `target/bundled/vxn1b.clap`: 20 tests run, 17 passed,
+  0 failed, 3 skipped, 1 warning** — clean. The skips are the unimplemented
+  preset-discovery factory.
+- [README.md](../../vxn-1b/README.md) and
+  [PARAMETERS.md](../../vxn-1b/PARAMETERS.md) both land for VXN1b.
+- [ADR 0001](../../vxn-1b/adrs/0001-vxn1b-design.md) status is
+  **Accepted (2026-08-24, ticket 0213 — shipped as `vxn-1b-0.0.1`)**.
+- `cargo test --workspace` 1622 passed, 0 failed.
+- **Not verified here:** the Reaper DAW smoke (faceplate, matrix overlay, FX
+  tabs, factory bank, play) — [[verify-audio-in-reaper]], user-verified by hand.
+- E038's other child (0212, factory preset bank) is already closed, so this is
+  the last one — `close-epic E038` now applies.

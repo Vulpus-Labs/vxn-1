@@ -79,3 +79,24 @@ is Blink and measures fine. Disabling it there would be a permanent, silent
   `AudioWorkletProcessor` subclass in a worklet-only file, and neither sibling
   tests theirs either. The wiring around it IS tested; the arithmetic is not.
   Worth its own harness if the meter ever misreports.
+
+## Close-out (2026-08-27)
+
+- `createCpuMeter` lives once, in
+  [cpu-meter.mjs](../../crates/vxn-core-web/assets/cpu-meter.mjs); neither port
+  has a copy. vxn-2's `cpu-meter.test.mjs` runs against the shared module and is
+  green inside its 89-test suite.
+- VXN1b's processor times a quantum only when enabled and posts
+  `{type:"cpu", load, peak}`; the coordinator forwards to `onCpu` and logs the
+  clock kind once — `coordinator.test.mjs`, *"a cpu port message reaches onCpu,
+  and the clock kind is logged once"* (two messages, one `console.info`).
+- Platform gating pinned by three tests: *"the meter is enabled off Safari and
+  the worklet is told so"* (`processorOptions.cpuMeter === true`), *"on Safari
+  the meter is off, and onCpu reports null rather than staying silent"*, and
+  *"Chrome on iOS is not treated as Safari"*.
+- Both bundles ship `cpu-meter.mjs` — `target/web-dist-vxn1b/` via `CORE_MODULES`,
+  and vxn-2's `target/web-dist/`.
+- All three web suites green, 0 skipped: vxn-1b 151, vxn-2 89, vxn-1 29.
+- **Not verified here:** the manual "badge reads a plausible load that rises with
+  held voices" pass. The wiring is tested; the arithmetic inside the worklet
+  accumulator is not (see Notes).

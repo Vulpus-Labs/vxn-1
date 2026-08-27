@@ -136,7 +136,7 @@ Subcommands:
   bundle      Build {CLAP_PACKAGE} (release) and stage the artifact(s) in target/bundled/.
   install     Bundle, then copy to the user CLAP/VST3 directories.
   uninstall   Remove the installed artifact(s) if present.
-  web         Build the browser bundle into target/web-dist/: both wasm modules,
+  web         Build the browser bundle into target/web-dist-vxn1b/: both wasm modules,
               the transport JS + worklet, the generated faceplate page, and a
               COOP/COEP _headers. Pass --serve [--port N] for the dev server.
   --help      Show this message.
