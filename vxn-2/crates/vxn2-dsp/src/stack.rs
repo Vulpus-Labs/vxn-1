@@ -444,8 +444,9 @@ pub const NYQUIST_FADE_LO: f32 = 0.45;
 /// the lane is fully muted (fade = 0.0) before its running frequency can fold.
 pub const NYQUIST_FADE_HI: f32 = 0.49;
 
-/// `running_hz / fs` per Q32 increment: `phase_inc / 2^32`.
-const INV_PM_SCALE_Q32: f32 = 1.0 / PM_SCALE_Q32;
+/// `running_hz / fs` per Q32 increment: `phase_inc / 2^32`. The shared constant
+/// (0224) — same value, and exact, since 2^32 is a power of two.
+use vxn_core_utils::math::INV_Q32_PER_CYCLE as INV_PM_SCALE_Q32;
 
 /// Level fade factor for a lane whose running frequency is `f_over_fs` of the
 /// sample rate. 1.0 below [`NYQUIST_FADE_LO`], smoothstep down to 0.0 at

@@ -40,6 +40,7 @@
 //! the `vxn2_dsp::lfo::…` paths.
 
 use crate::sine::scalar::fast_sine_q32;
+use vxn_core_utils::math::q32_to_unit;
 use crate::stack::STACK_LANES;
 
 /// LFO waveform set. Six shapes shared by LFO1 + LFO2.
@@ -98,15 +99,15 @@ fn eval_shape(shape: LfoShape, phase: u32, sh_value: f32) -> f32 {
     match shape {
         LfoShape::Sine => fast_sine_q32(phase),
         LfoShape::Triangle => {
-            let p = phase as f32 * (1.0 / 4_294_967_296.0);
+            let p = q32_to_unit(phase);
             1.0 - 4.0 * (p - 0.5).abs()
         }
         LfoShape::SawUp => {
-            let p = phase as f32 * (1.0 / 4_294_967_296.0);
+            let p = q32_to_unit(phase);
             2.0 * p - 1.0
         }
         LfoShape::SawDown => {
-            let p = phase as f32 * (1.0 / 4_294_967_296.0);
+            let p = q32_to_unit(phase);
             1.0 - 2.0 * p
         }
         LfoShape::Pulse => {
@@ -121,7 +122,7 @@ fn eval_shape(shape: LfoShape, phase: u32, sh_value: f32) -> f32 {
 }
 
 /// Q32 phase units per full cycle (2^32). One LFO cycle wraps the `u32` phase.
-pub const U32_PER_CYCLE: f64 = 4_294_967_296.0;
+pub use vxn_core_utils::math::Q32_PER_CYCLE_F64 as U32_PER_CYCLE;
 
 /// Clamp for a matrix-modulated LFO rate (Hz). The `*→lfo{1,2}-rate` routes
 /// apply `rate · 2^oct` in the log domain; this keeps the result

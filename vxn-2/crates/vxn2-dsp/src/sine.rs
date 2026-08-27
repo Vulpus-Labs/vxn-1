@@ -23,7 +23,7 @@ pub mod scalar {
     /// Bhaskara+Moser polynomial sine. Q32 phase in, f32 out.
     #[inline(always)]
     pub fn fast_sine_q32(phase: u32) -> f32 {
-        fast_sine_01(phase as f32 * (1.0 / 4_294_967_296.0))
+        fast_sine_01(vxn_core_utils::math::q32_to_unit(phase))
     }
 }
 
@@ -32,7 +32,7 @@ mod tests {
     use super::*;
 
     fn sin_truth_q32(phase: u32) -> f32 {
-        let p = phase as f64 / 4_294_967_296.0;
+        let p = vxn_core_utils::math::q32_to_unit_f64(phase);
         (p * std::f64::consts::TAU).sin() as f32
     }
 

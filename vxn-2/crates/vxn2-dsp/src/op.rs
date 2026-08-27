@@ -106,7 +106,7 @@ pub struct OpState {
 
 /// 2^32 — scales an f32 modulator in [-1, +1] to a Q32 phase offset (unit
 /// modulator = one cycle = 2π radians of phase shift).
-pub const PM_SCALE_Q32: f32 = 4_294_967_296.0;
+pub use vxn_core_utils::math::Q32_PER_CYCLE as PM_SCALE_Q32;
 
 /// Operator base frequency (Hz) from its ratio/fixed mode and the played key,
 /// *before* any per-lane stack detune. Ratio mode: `note_to_hz(key)` times the
@@ -134,7 +134,7 @@ impl OpState {
     /// if a clean note-on is wanted (see [`Self::reset_phase`]).
     pub fn cook(&mut self, params: &OpParams, key: u8, velocity: u8, sample_rate: f32) {
         let base_hz = compute_base_hz(params, key);
-        self.phase_inc = ((base_hz / sample_rate) * PM_SCALE_Q32) as u32;
+        self.phase_inc = vxn_core_utils::math::phase_inc_q32(base_hz, sample_rate);
 
         let ks_lvl = ks_level_mult(
             key,
