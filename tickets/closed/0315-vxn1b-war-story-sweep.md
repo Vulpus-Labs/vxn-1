@@ -157,3 +157,80 @@ current behaviour:
   keep it (*"the next composite will want it and it is three lines"*). That is a
   legitimate keep. If the argument no longer convinces, delete the code — but do
   not leave the comment describing code that isn't there.
+
+## Close-out (2026-08-27)
+
+**Ticket refs: 915 → 762** (−153, −17%), by
+`grep -roE '\b0[0-9]{3}\b'` over `vxn-1b/**` `*.rs|*.mjs|*.js|*.css|*.html|*.txt`,
+excluding `target/` and `node_modules/`. Per area, before → after:
+assets 210 → 195, engine 480 → 356, wasm 111 → 112 (0312's own refs landed
+there), clap 30 → 16, web-controller 16 → 16, ui-web/src 25 → 24.
+
+Most of the remainder is what the ticket says it should be: bare provenance
+tags on a statement of what the code does. The reduction came from deleting
+narrative, plus **one rule added during the pass**: *one tag per ticket per
+file*, at the site where the mechanism is defined, rather than repeated at
+every later use. `bank.rs` cited 0271 nine times, 0268 eight, 0218 seven —
+that repetition is the changelog texture the ticket describes, even though each
+instance is individually a legal bare tag. Verified no ticket vanished entirely
+from any file it was cited in, and ADR refs (0001–0006) were exempt throughout.
+
+### Every quoted block
+
+- **0262 mono fast path, four tellings → one.** Deleted from `output.rs`'s
+  module header and rewritten at
+  [`decimate_block`](../../vxn-1b/crates/vxn1b-engine/src/output.rs) as an
+  imperative — *do not add a mono fast path*, because pan is a modulation
+  destination and "is this patch mono?" has no block-rate answer. The two test
+  docs and `engine.rs`'s pan test now state their case without re-narrating.
+- **The empty-factory VST3 incident, twice → once each, as constraints.** Both
+  CMake blocks keep what a later editor must not undo (`/WHOLEARCHIVE` needs the
+  archive as an input *and* in the directive; `/OPT:REF` needs
+  `/INCLUDE:clap_entry` to root it) plus the load-bearing fact that **the
+  failure is silent**. The 516 KB, the shipped versions and the second telling
+  of the postmortem are gone ([[vxn-windows-vst3-optref-strip]] holds them).
+- **`render.rs:22-28`** — the five deleted functions go; the rule for adding a
+  dest is promoted to its own paragraph.
+- **`web-controller/src/lib.rs`** — the readback section is three lines saying
+  there deliberately isn't one; the 36-line vxn-2 comparison is four lines
+  saying *do not copy `echo_param_writes(false)` + a bitset drain, it compiles
+  here and emits nothing*.
+- **`matrix.rs`** — the retired pre-wired Key→Cutoff slot; **`state.rs`** — the
+  11-entry version changelog, replaced by the bump-and-reject rule it was
+  burying.
+- **Debugging sessions** — `ui-web/src/lib.rs`'s 554-vs-556 px, `faceplate.css`'s
+  dial-under-the-FX-row and mixer-shoved-sideways, `dispatch.js`'s `freshenCell`
+  layer-2 double-write, `telemetry.mjs`'s `-1` seed, and the CSS-coverage test's
+  "nothing failed" paragraph: each now states the rule and the symptom, without
+  the incident.
+- **Gossip about the other synths** — cut from `coordinator.mjs` (incl. "it is
+  Tuesday"), `event-ring.mjs`, `param-store.mjs`, `controller.mjs`,
+  `faceplate-bridge.mjs`'s "an earlier cut of this file" and its `routeOpcode`
+  aside about vxn-2's numeric ops.
+- **`util/drag.js`** — a legitimate keep, per the Notes. Kept the "no production
+  caller / three lines" argument, dropped the composite it used to serve.
+
+### Do not cut
+
+Nothing on the list is shorter. Checked by diff: `event-ring.mjs`'s byte loop
+and block-writer policy, `telemetry.mjs`'s SAB-not-`postMessage`,
+`vxn1b-processor.js`'s `performance.now()` note and `param-store.mjs`'s
+per-slot atomicity contract are **untouched**. `coordinator.mjs`'s Safari
+paragraph is untouched. `mod_smoothing.rs`'s C1 argument is untouched.
+`faceplate.css`'s specificity note is **longer** — it gained "Do not simplify."
+The two CMake constraints and `render.rs`'s factoring rationale survive as
+constraints, which is what the list asked for.
+
+`faceplate-bridge.mjs`'s header is **18 lines**, down from 75, and opens with
+what the file is. The ring-before-store ordering invariant was **not shortened**
+— it moved verbatim into `pump`'s step (1) comment, beside the code it governs,
+where the ticket's "not shorter" and "header under ~15 lines" criteria stop
+fighting each other.
+
+### No behaviour change
+
+Mechanically verified, not asserted: for all 25 changed files, stripping
+comments (line, block and HTML, string-literal aware) from the `HEAD` version
+and the working-tree version yields **byte-identical** output. `cargo test
+--workspace` 1365 pass / 0 fail; `node --test .../web/*.test.mjs` 148 pass /
+0 skipped; `vitest run` 302 pass / 39 files.

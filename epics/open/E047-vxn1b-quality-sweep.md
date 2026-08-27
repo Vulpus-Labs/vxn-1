@@ -112,7 +112,7 @@ independent of each other and of the refactors.
       four cross-mod fields from the one enum.
 - [x] **0314** *(vxn-1b, high)* — Correct the module docs that are factually
       wrong. Correctness, not style.
-- [ ] **0315** *(vxn-1b, low)* — War-story sweep: keep the constraint, drop the
+- [x] **0315** *(vxn-1b, low)* — War-story sweep: keep the constraint, drop the
       event. ~370 ticket refs, 12 quoted narrative blocks.
 - [ ] **0316** *(vxn-1b, medium)* — Bind the cross-language tables: the custom-op
       vocabulary (3 transcriptions) and the telemetry payload shape (2), neither
