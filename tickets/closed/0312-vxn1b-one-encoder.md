@@ -106,3 +106,82 @@ puts it **last**. One convention, across both layers.
 - The ring's own comments about the byte loop (JSC GC stalls the render thread)
   and the block-writer overflow policy are load-bearing constraints, not
   narration — they survive this ticket and [[0315]].
+
+## Close-out (2026-08-27)
+
+- **One encoder, one decoder.** JS encodes, Rust decodes, and neither has a
+  counterpart. `EventRing._push` now takes a built `ev.*` event and writes the
+  slot through
+  [`encodeInto`](../../vxn-1b/crates/vxn1b-wasm/web/event-codec.mjs#L126) —
+  option 2 from the Design section — stamping `seq` over the zero the codec
+  leaves at off 10, before it advances the write index (so an unknown tag
+  throws without publishing). The JS `encode` wrapper, `decodeAt`, `decode` and
+  the module's decode half are deleted; `grep 'decodeAt|export function decode'`
+  over the wire files returns nothing.
+- **The golden table now exercises the encoder that ships — and it is proving
+  something different from what it proved before.** Before 0312 it drove a JS
+  `encode` that nothing called, checked against a JS `decode` that nothing
+  called either, while every byte the worklet saw came from `_push`, which no
+  table touched. It now drives `encodeInto` at a non-zero `base`, the way the
+  ring does. A green run here is **not continuity** with the old green run: the
+  old one was compatible with `_push` being wrong. The cross-language check
+  against `codec.rs::tests::golden` is unchanged, and there is a new
+  `encodeInto overwrites all 16 bytes` case — the ring reuses slots, so a field
+  the codec skips would carry the previous event's bytes round the wrap.
+- **Rust's encode half is `#[cfg(test)]` with the reason in a section banner**
+  ([codec.rs:261](../../vxn-1b/crates/vxn1b-wasm/src/codec.rs#L261)): `encode`,
+  `encode_into`, `put_u16`, `put_f32`, and with them `Event::tag` /
+  `Event::offset` — `host.rs`'s slice loop reads tag and offset out of the raw
+  slot bytes, so nothing shipping calls either. `pack_matrix_addr` and
+  `matrix_field_code` likewise: production only ever *un*packs, and they exist
+  to prove `unpack_matrix_addr` against the packing it inverts. That removes
+  two of the four hand-maintained 16-arm matches the Notes flagged for
+  [[0319]]; decode and apply remain.
+- **No function advertises a hot path it is not on.** The `encode_into` claim
+  is gone; `grep -rni 'hot.path' vxn-1b/crates/vxn1b-wasm/` leaves only
+  `controller.mjs`'s UI-event banner, which is a path that ships.
+- **The slot layout is written out in full in exactly one place.** `grep -rl
+  'off 0  u8'` over `vxn-1b/` → `WIRE-FORMAT.md` alone. `codec.rs`'s module doc
+  and `event-codec.mjs`'s header both link to it, as the latter already
+  claimed. `event-codec.mjs`'s param-id block was also de-literalised — it
+  stated `PATCH_COUNT = 75` two lines above the `export const` that declares
+  it; it now states the ranges as formulae in P and G.
+- **`readSlot` is not a third half.**
+  [event-ring.mjs:230](../../vxn-1b/crates/vxn1b-wasm/web/event-ring.mjs#L230)
+  reports a slot's raw fields with no switch on the tag — the inverse of the
+  ring's framing, not of the codec's. `drainInto` (the documented debug drain)
+  and the ring's own tests are its only callers; it replaced the `decode` calls
+  in `event-ring.test.mjs`'s raw-drain assertions.
+- **The count handshake checks all three.** New exports
+  [`vxn1b_patch_count`](../../vxn-1b/crates/vxn1b-wasm/src/host.rs#L188) /
+  [`vxn1b_global_count`](../../vxn-1b/crates/vxn1b-wasm/src/host.rs#L194) and
+  [`vxnc_global_count`](../../vxn-1b/crates/vxn1b-web-controller/src/lib.rs#L789),
+  sourced from the engine via new `codec::PATCH_COUNT` / `codec::GLOBAL_COUNT`
+  re-exports. Asserted in `wasm-agreement.test.mjs` (against the built artifact)
+  and in `WebController.instantiate`'s boot handshake, plus
+  `codec::tests::total_params_matches_the_engine` and
+  `vxn1b-web-controller`'s `total_params_agrees_with_the_engine`.
+- **Drift verified by hand.** Set `PATCH_COUNT = 76` / `GLOBAL_COUNT = 33` in
+  `event-codec.mjs`: `TOTAL_PARAMS` still computes 185, so the old total-only
+  guard passes. Both new guards fail — `wasm-agreement` with `patch count:
+  … drifted from the engine`, and every controller-backed suite with
+  `controller PATCH_COUNT 75 != JS mirror 76 — param layout drift` (16 failures
+  in `controller.test.mjs` alone). Restored and re-ran green.
+- **`offset` sits in one position at all three layers** — `ev.*`,
+  `EventRing.push*`, `WebHost.*`: the event's own fields, then `offset`, then
+  `channel`, the last two defaulted. It used to lead on the ring
+  (`_push(type, offset, …)`, `pushMatrixEdit(offset, layer, …)`) and trail on
+  `WebHost.setMatrix`. All 15 coordinator call sites and every test producer
+  updated.
+- **Suites.** `cargo test --workspace`: 1364 pass, 0 fail. `node --test
+  vxn-1b/crates/vxn1b-wasm/web/*.test.mjs`: **148 pass, 0 skipped** — down from
+  151 because the three JS decode tests (`decode of golden bytes`, `round-trips
+  through encode -> decode`, `unknown and reserved tags decode to null`) went
+  with the decoder; their contract is covered by `codec.rs`'s
+  `decode_of_golden_bytes_yields_the_event`, `every_event_round_trips` and
+  `unknown_and_reserved_tags_decode_to_none`. The count in
+  [test.yml](../../.github/workflows/test.yml#L69)'s 0321 narrative was
+  reworded off the literal so it does not rot again.
+- **No DAW pass needed.** Behaviour-preserving by construction: the bytes on
+  the wire are unchanged (the golden table is the proof), and nothing in the
+  render path moved.

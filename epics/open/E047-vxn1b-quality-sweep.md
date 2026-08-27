@@ -95,19 +95,19 @@ Do **0321 first** — it is the cheapest ticket here and every subsequent deleti
 wants CI watching it. After that the three deletion tickets (0310/0311/0312) are
 independent of each other and of the refactors.
 
-- [ ] **0321** *(monorepo, high)* — CI: run VXN1b's node suites; add a VXN1b
+- [x] **0321** *(monorepo, high)* — CI: run VXN1b's node suites; add a VXN1b
       bundle job with the non-hollow `strings | grep` check.
-- [ ] **0310** *(vxn-1b, high)* — Delete the dead web surface: `panels/keys.js`
+- [x] **0310** *(vxn-1b, high)* — Delete the dead web surface: `panels/keys.js`
       and its splice slot, the CPU meter, `makeDropdown`, the `src-off` dim
       rule, ~22 unreferenced exports. **Depends on [[0307]]** — the Reset button
       lives in the file being deleted.
-- [ ] **0311** *(vxn-1b, medium)* — Delete the dead Rust surface: the single-lane
+- [x] **0311** *(vxn-1b, medium)* — Delete the dead Rust surface: the single-lane
       allocation path, `_PARAM_COUNT`, `max_frames`, two `set_sample_rate`
       chains, `is_sync_flag`, `last_width`, the `--release` no-op flag.
-- [ ] **0312** *(vxn-1b, high)* — One encoder: collapse the wire's two dead
+- [x] **0312** *(vxn-1b, high)* — One encoder: collapse the wire's two dead
       halves and point the golden table at the encoder that ships. Adds the
       patch/global count handshake.
-- [ ] **0313** *(vxn-1b, high)* — Pass `RenderView` into `RenderBank::render`,
+- [x] **0313** *(vxn-1b, high)* — Pass `RenderView` into `RenderBank::render`,
       then split the 452-line body at its own phase banners; derive `BlockCtx`'s
       four cross-mod fields from the one enum.
 - [ ] **0314** *(vxn-1b, high)* — Correct the module docs that are factually
