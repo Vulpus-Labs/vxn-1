@@ -1,10 +1,15 @@
 // Binary event codec — the JS half of the browser event wire (0287).
 //
-// ONE definition, two implementations. The Rust half is
-// `vxn-1b/crates/vxn1b-wasm/src/codec.rs` (0286); this file must stay
-// byte-identical to it. The golden table in `event-codec.test.mjs` replicates
-// the Rust golden table row for row, so drift in either language fails a test
-// rather than silently mis-routing a note.
+// ONE definition, two halves, and they are NOT symmetric (0312). This side
+// ENCODES; `vxn-1b/crates/vxn1b-wasm/src/codec.rs` DECODES. Nothing in the
+// browser reads a slot back — the ring hands raw bytes to wasm — so there is no
+// JS decoder here to drift.
+//
+// `encodeInto` below is the only thing that writes a wire byte: `EventRing._push`
+// calls it, every producer goes through the ring, and the golden table in
+// `event-codec.test.mjs` checks it against a row-for-row transcription of the
+// Rust golden table. So a layout change in either language fails a test rather
+// than silently mis-routing a note.
 //
 // The slot layout and tags are documented once, in `WIRE-FORMAT.md`. Read that
 // before changing anything here.
@@ -13,25 +18,28 @@
 // PARAM ID LAYOUT — mirrors vxn1b-engine's params.rs
 // ===========================================================================
 //
-//   counts:  PATCH_COUNT  = 75   (per-layer patch params)
-//            GLOBAL_COUNT = 35   (globals, shared by both layers)
-//            LAYER_COUNT  = 2    (L1, L2)
-//            TOTAL_PARAMS = 2*75 + 35 = 185
+//   [ 0*P .. 1*P )   Layer 1 patch params   clap_id = patch_index
+//   [ 1*P .. 2*P )   Layer 2 patch params   clap_id = P + patch_index
+//   [ 2*P .. 2*P+G ) global params          clap_id = 2*P + global_index
 //
-//   id ranges:
-//     [  0 ..  75 )   Layer 1 patch params   (clap_id = patch_index)
-//     [ 75 .. 150 )   Layer 2 patch params   (clap_id = 75 + patch_index)
-//     [150 .. 185 )   global params          (clap_id = 150 + global_index)
+// ...where P = PATCH_COUNT and G = GLOBAL_COUNT, declared below. Written as
+// formulae rather than today's numbers so this block cannot rot against the
+// constants two lines under it; WIRE-FORMAT.md carries the worked example.
 //
 // These constants are a HAND-DECLARED MIRROR of the engine's, and that is the
 // dangerous kind of constant: ticket 0285 killed both other browser builds by
 // letting exactly this drift behind an engine that had grown two params. Two
 // things guard it, and both matter:
 //
-//   1. the wasm exports `vxn1b_total_params()`, and the controller handshake
-//      refuses to start on a mismatch (the check that caught 0285);
-//   2. `event-codec.test.mjs` reads that export out of the BUILT artifact and
-//      fails — never skips — if the two disagree.
+//   1. the wasm exports `vxn1b_patch_count()` / `vxn1b_global_count()` /
+//      `vxn1b_total_params()` (the controller exports the `vxnc_*` triple), and
+//      the handshake refuses to start on a mismatch (the check that caught 0285);
+//   2. `wasm-agreement.test.mjs` reads those exports out of the BUILT artifact
+//      and fails — never skips — if they disagree.
+//
+// ALL THREE counts are checked, never the sum alone: a drift of +1 patch and
+// -2 global leaves TOTAL_PARAMS untouched while `patchClapId(L2, …)` and
+// `globalClapId` compute wrong ids on both sides of the wire (0312).
 //
 // If a param is added to the engine, update the four constants below and the
 // counts in WIRE-FORMAT.md. Nothing else in JS hard-codes them.
@@ -113,16 +121,16 @@ export function unpackMatrixAddr(addr) {
 
 // ── Encode ─────────────────────────────────────────────────────────────────
 
-/// Encode one event into a fresh 16-byte Uint8Array. `seq` (off 10) is owned by
-/// the ring writer, not the codec, so it is left zero here.
-export function encode(event) {
-  const buf = new Uint8Array(SLOT_BYTES);
-  encodeInto(new DataView(buf.buffer), 0, event);
-  return buf;
-}
-
 /// Encode `event` into `view` at byte `base`, writing exactly 16 bytes.
-/// Alloc-free; the hot-path entry point.
+///
+/// The ONE encoder on this wire. `EventRing._push` writes ring slots through it,
+/// so every byte the worklet decodes comes from here; there is no second
+/// allocating wrapper, because nothing needs a detached slot.
+///
+/// `seq` (off 10) is owned by the ring writer, not the codec, and is left zero —
+/// the ring stamps it after this returns. Throws on an unknown tag rather than
+/// publishing a blank slot; `_push` calls this BEFORE it advances the write
+/// index, so a throw leaves the ring untouched.
 export function encodeInto(view, base, event) {
   // Zero the whole slot first so unused fields are deterministic.
   view.setUint8(base + 0, event.type & 0xff);
@@ -190,94 +198,13 @@ export function encodeInto(view, base, event) {
   }
 }
 
-// ── Decode ─────────────────────────────────────────────────────────────────
-
-/// Decode the 16-byte slot at `base`. Returns `null` for an unknown or reserved
-/// tag (forward-compat) — the same contract as the Rust `decode`.
-export function decodeAt(view, base) {
-  const type = view.getUint8(base + 0);
-  const offset = view.getUint8(base + 1);
-  switch (type) {
-    case EV_NOTE_ON:
-      return {
-        type,
-        offset,
-        channel: view.getUint8(base + 9),
-        note: view.getUint8(base + 8),
-        velocity: view.getFloat32(base + 4, true),
-      };
-    case EV_NOTE_OFF:
-      return {
-        type,
-        offset,
-        channel: view.getUint8(base + 9),
-        note: view.getUint8(base + 8),
-      };
-    case EV_PARAM:
-      return {
-        type,
-        offset,
-        id: view.getUint16(base + 2, true),
-        value: view.getFloat32(base + 4, true),
-        norm: (view.getUint8(base + 9) & PARAM_FLAG_NORM) !== 0,
-      };
-    case EV_GESTURE_BEGIN:
-    case EV_GESTURE_END:
-      return { type, offset, id: view.getUint16(base + 2, true) };
-    case EV_PITCH_BEND:
-    case EV_MOD_WHEEL:
-      return { type, offset, value: view.getFloat32(base + 4, true) };
-    case EV_KEY_MODE:
-      return { type, offset, mode: view.getUint8(base + 9) };
-    case EV_SPLIT_POINT:
-      return { type, offset, note: view.getUint8(base + 9) };
-    case EV_LFO2_LINK:
-      return { type, offset, on: view.getUint8(base + 9) !== 0 };
-    case EV_MATRIX_EDIT:
-      return {
-        type,
-        offset,
-        addr: view.getUint16(base + 2, true),
-        value: view.getUint8(base + 9),
-      };
-    case EV_SCOPE_TAP:
-      return { type, offset, tap: view.getUint8(base + 9) };
-    case EV_TEMPO:
-      return { type, offset, bpm: view.getFloat32(base + 4, true) };
-    case EV_POLY_PRESSURE:
-      return {
-        type,
-        offset,
-        channel: view.getUint8(base + 9),
-        note: view.getUint8(base + 8),
-        value: view.getFloat32(base + 4, true),
-      };
-    case EV_CHANNEL_PRESSURE:
-      return {
-        type,
-        offset,
-        channel: view.getUint8(base + 9),
-        value: view.getFloat32(base + 4, true),
-      };
-    default:
-      return null; // unknown or reserved: ignore (forward-compat)
-  }
-}
-
-/// Decode a standalone 16-byte buffer. `null` if it is short or unknown.
-export function decode(bytes) {
-  if (!bytes || bytes.length < SLOT_BYTES) return null;
-  const view =
-    bytes instanceof DataView
-      ? bytes
-      : new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return decodeAt(view, 0);
-}
-
 // ── Constructors ───────────────────────────────────────────────────────────
 //
-// Named builders so producers never assemble raw tag objects by hand. The
-// `channel` default of 0 is the non-MPE case.
+// Named builders so producers never assemble raw tag objects by hand — every
+// `EventRing.push*` is one of these plus the ring's bookkeeping. `offset` sits
+// in the same position here, on the ring and on `WebHost`: after the event's own
+// fields, defaulted to 0 ("as soon as possible"). The `channel` default of 0 is
+// the non-MPE case.
 
 export const ev = {
   noteOn: (note, velocity, offset = 0, channel = 0) => ({

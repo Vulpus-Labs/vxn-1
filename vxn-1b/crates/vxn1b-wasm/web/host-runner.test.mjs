@@ -63,7 +63,7 @@ test("a note pushed onto the ring before ready is not lost", async () => {
   const ring = new EventRing(ringSab);
   // Written while the runner is still instantiating: the ring's read index is
   // untouched until the worklet drains, so nothing is dropped.
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushNoteOn(60, 1.0);
 
   const r = await runner({ ringSab });
   const [l, right] = buffers();
@@ -80,7 +80,7 @@ test("the store fold seeds the engine before the first render", async () => {
   // A zeroed store is the pathological case the coordinator's seeding exists to
   // prevent: the NaN-seeded fold applies every id, so every param goes to 0.
   const r = await runner({ ringSab, storeSab });
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushNoteOn(60, 1.0);
   const [l, right] = buffers();
   r.process(l, right);
   // With every param zeroed the instrument is silent — which is exactly why
@@ -96,7 +96,7 @@ test("the store fold seeds the engine before the first render", async () => {
   store.writeBulk(vals);
 
   const r2 = await runner({ ringSab, storeSab });
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushNoteOn(60, 1.0);
   const [l2, r2out] = buffers();
   r2.process(l2, r2out);
   assert.ok(peak(l2) > 0, "a seeded store lets the note sound");
@@ -125,7 +125,7 @@ test("telemetry ticks with the render and reaches a reader", async () => {
   const ring = new EventRing(ringSab);
   const r = await runner({ ringSab, telemetrySab });
 
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushNoteOn(60, 1.0);
   const [l, right] = buffers();
   let meters = null;
   for (let i = 0; i < 64 && !meters; i++) {
@@ -199,7 +199,7 @@ test("after a trap the engine stays down rather than resuming the wrong patch", 
   for (let i = 0; i < 10; i++) await new Promise((res) => setTimeout(res, 5));
   assert.equal(r.ready, false, "no silent re-instantiate");
 
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushNoteOn(60, 1.0);
   r.process(l, right);
   assert.equal(peak(l), 0, "and it stays silent");
 });

@@ -23,7 +23,7 @@
 //     `loadFactoryAsset`.
 //   - Two-layer param space, so `patchCount()` is exposed for the id split.
 
-import { TOTAL_PARAMS } from "./param-store.mjs";
+import { PATCH_COUNT, GLOBAL_COUNT, TOTAL_PARAMS } from "./param-store.mjs";
 
 const DEFAULT_CONTROLLER_WASM_URL = "./vxn1b_web_controller.wasm";
 
@@ -231,17 +231,28 @@ export class WebController {
     const { instance } = await WebAssembly.instantiate(bytes, {});
     this.x = instance.exports;
 
-    // The param count is owned by the wasm (vxn1b-engine); assert the JS mirror
-    // agrees so layout drift is caught at boot rather than as silent corruption
-    // of whichever half is shorter.
+    // The param counts are owned by the wasm (vxn1b-engine); assert the JS
+    // mirror agrees so layout drift is caught at boot rather than as silent
+    // corruption of whichever half is shorter.
+    //
+    // All THREE counts, not the total alone: a compensating drift (+1 patch,
+    // -2 global) leaves the total intact while every Layer 2 and global id the
+    // mirror computes is wrong — a boot that passes the handshake and then
+    // writes the wrong params (0312).
     const total = this.x.vxnc_total_params();
-    if (total !== TOTAL_PARAMS) {
-      throw new Error(
-        `controller TOTAL_PARAMS ${total} != JS mirror ${TOTAL_PARAMS} — param layout drift`,
-      );
+    const patch = this.x.vxnc_patch_count();
+    const global = this.x.vxnc_global_count();
+    for (const [what, got, want] of [
+      ["PATCH_COUNT", patch, PATCH_COUNT],
+      ["GLOBAL_COUNT", global, GLOBAL_COUNT],
+      ["TOTAL_PARAMS", total, TOTAL_PARAMS],
+    ]) {
+      if (got !== want) {
+        throw new Error(`controller ${what} ${got} != JS mirror ${want} — param layout drift`);
+      }
     }
     this.totalParams = total;
-    this.patchCount = this.x.vxnc_patch_count();
+    this.patchCount = patch;
     this.x.vxnc_new();
     return this;
   }

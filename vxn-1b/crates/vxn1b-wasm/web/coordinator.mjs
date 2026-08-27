@@ -356,65 +356,67 @@ export class WebHost {
   // loop. All return the ring's block-writer boolean (false iff it is
   // momentarily full — the caller can retry; in practice it is sized so this
   // never fires). `offset` is the sample offset within the next quantum for
-  // sample-accurate placement; 0 means "as soon as possible".
+  // sample-accurate placement; 0 means "as soon as possible". It sits in the
+  // same position here, on `EventRing.push*` and on the codec's `ev.*` builders:
+  // after the event's own fields, defaulted (0312).
   //
   // Notes carry a MIDI channel because VXN1b is MPE-aware; a non-MPE caller
   // simply omits it and gets channel 0.
 
   noteOn(note, velocity = 1, offset = 0, channel = 0) {
-    return this.ring.pushNoteOn(offset, note, velocity, channel);
+    return this.ring.pushNoteOn(note, velocity, offset, channel);
   }
   noteOff(note, offset = 0, channel = 0) {
-    return this.ring.pushNoteOff(offset, note, channel);
+    return this.ring.pushNoteOff(note, offset, channel);
   }
   polyPressure(note, value, offset = 0, channel = 0) {
-    return this.ring.pushPolyPressure(offset, note, value, channel);
+    return this.ring.pushPolyPressure(note, value, offset, channel);
   }
   channelPressure(value, offset = 0, channel = 0) {
-    return this.ring.pushChannelPressure(offset, value, channel);
+    return this.ring.pushChannelPressure(value, offset, channel);
   }
   pitchBend(value, offset = 0) {
-    return this.ring.pushPitchBend(offset, value);
+    return this.ring.pushPitchBend(value, offset);
   }
   modWheel(value, offset = 0) {
-    return this.ring.pushModWheel(offset, value);
+    return this.ring.pushModWheel(value, offset);
   }
 
   /// Sample-accurate param automation. A plain edit should go through
   /// `setParam` (the store) instead — this is for automation that has to land at
   /// a specific frame.
   paramAt(id, plain, offset = 0) {
-    return this.ring.pushParam(offset, id, plain);
+    return this.ring.pushParam(id, plain, offset);
   }
   gestureBegin(id, offset = 0) {
-    return this.ring.pushGestureBegin(offset, id);
+    return this.ring.pushGestureBegin(id, offset);
   }
   gestureEnd(id, offset = 0) {
-    return this.ring.pushGestureEnd(offset, id);
+    return this.ring.pushGestureEnd(id, offset);
   }
 
   // Non-automatable domain state. None of it has a CLAP id, so none of it
   // occupies a store slot; it all rides the ring.
   setKeyMode(mode, offset = 0) {
-    return this.ring.pushKeyMode(offset, mode & 0xff);
+    return this.ring.pushKeyMode(mode & 0xff, offset);
   }
   setSplitPoint(note, offset = 0) {
-    return this.ring.pushSplitPoint(offset, note & 0xff);
+    return this.ring.pushSplitPoint(note & 0xff, offset);
   }
   setLfo2Link(on, offset = 0) {
-    return this.ring.pushLfo2Link(offset, on);
+    return this.ring.pushLfo2Link(on, offset);
   }
   /// One matrix slot's topology field. Slot DEPTH is a CLAP param and goes
   /// through `setParam` instead — that split is what lets a slot be automated
   /// without its routing changing underneath the automation.
   setMatrix(layer, slot, field, value, offset = 0) {
-    return this.ring.pushMatrixEdit(offset, layer, slot, field, value);
+    return this.ring.pushMatrixEdit(layer, slot, field, value, offset);
   }
   setScopeTap(tap, offset = 0) {
-    return this.ring.pushScopeTap(offset, tap & 0xff);
+    return this.ring.pushScopeTap(tap & 0xff, offset);
   }
   setTempo(bpm, offset = 0) {
-    return this.ring.pushTempo(offset, bpm);
+    return this.ring.pushTempo(bpm, offset);
   }
 
   // ---- param store --------------------------------------------------------

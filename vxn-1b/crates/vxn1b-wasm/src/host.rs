@@ -178,9 +178,26 @@ pub extern "C" fn vxn1b_quantum() -> u32 {
 /// Total addressable CLAP ids. The JS side asserts its declared mirror against
 /// this at controller-instantiate; ticket 0285 is what happens when that mirror
 /// is allowed to rot, so this export is the whole reason the check can exist.
+///
+/// The total is exported alongside [`vxn1b_patch_count`] and
+/// [`vxn1b_global_count`] because on its own it is a weak guard: a drift of
+/// `+1 patch / -2 global` leaves the sum untouched while every Layer 2 and
+/// global id computed from it is wrong. Check all three.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxn1b_total_params() -> u32 {
     codec::TOTAL_PARAMS as u32
+}
+
+/// Per-layer patch params — the stride `patchClapId(layer, i)` multiplies by.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn1b_patch_count() -> u32 {
+    codec::PATCH_COUNT as u32
+}
+
+/// Globals, shared by both layers — the tail of the id space.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxn1b_global_count() -> u32 {
+    codec::GLOBAL_COUNT as u32
 }
 
 /// Set a param by CLAP id. The worklet calls this block-start for each param the

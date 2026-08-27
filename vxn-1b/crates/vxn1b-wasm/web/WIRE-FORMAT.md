@@ -1,17 +1,23 @@
 # VXN1b browser wire format
 
-The main→worklet transport, defined once. Two implementations must agree
-byte-for-byte:
+The main→worklet transport, defined once. The two halves must agree
+byte-for-byte, and they are **not symmetric** — there is exactly one encoder and
+exactly one decoder (0312):
 
-| half | file |
-|---|---|
-| Rust (worklet, decodes + applies) | [`../src/codec.rs`](../src/codec.rs) |
-| JS (main thread, encodes) | [`event-codec.mjs`](event-codec.mjs) |
+| half | file | ships |
+|---|---|---|
+| JS (main thread) | [`event-codec.mjs`](event-codec.mjs) `encodeInto` | the only thing that writes a wire byte, via `EventRing._push` |
+| Rust (worklet) | [`../src/codec.rs`](../src/codec.rs) `decode` + `apply` | the only thing that reads one |
 
-Each has a hand-written golden byte table, and each asserts its own encoder
-against it. They are transcriptions of one another — that duplication is
-deliberate, because two independent tables that must match will catch a layout
-change that one shared table would silently absorb.
+Each still has a hand-written golden byte table, and they are transcriptions of
+one another — that duplication is deliberate, because two independent tables
+that must match will catch a layout change that one shared table would silently
+absorb. `codec.rs` keeps a `#[cfg(test)]` encoder purely to drive its table
+round-trip; nothing in the worklet encodes.
+
+`event-ring.mjs`'s `readSlot` is not a third half. It reports a slot's raw
+fields with no switch on the tag, so it is the inverse of the ring's framing,
+not of the codec's.
 
 ## Slot layout (16 bytes, little-endian)
 
@@ -25,7 +31,8 @@ off 8  u8   note      MIDI note number (note + poly-pressure events)
 off 9  u8   flag      MIDI channel, key mode, split note, scope tap, matrix
                       value byte, OR the param-norm bit
 off 10 u16  seq       producer sequence — owned by the RING, not the codec.
-                      `encode` writes 0; `decode` ignores it.
+                      `encodeInto` writes 0 and `_push` stamps it after;
+                      `decode` ignores it.
 off 12 f32  reserved  zero
 ```
 
@@ -113,6 +120,12 @@ Slot depth on the store and slot topology on the ring is the 0219 split, and it
 is why a slot can be automated without its routing changing underneath the
 automation. A `matrix_edit` must never touch depth.
 
+The producer surface is one convention at all three layers — `ev.*` builders,
+`EventRing.push*`, `WebHost.*` — and it is: the event's own fields, then
+`offset`, then `channel`, the last two defaulted. `offset` used to lead on the
+ring and trail on `WebHost`, which is the kind of disagreement that transposes
+two arguments silently (0312).
+
 Topology is applied **at its sample offset**, in the same slice loop as params —
 never hoisted to block start. A preset load moves params and topology together;
 hoisting would land the new routing ahead of the depths travelling with it, and a
@@ -170,9 +183,15 @@ When a param is added or removed:
 Nothing else in JS hard-codes them — `param-store.mjs` imports from the codec,
 and Rust re-exports from `vxn1b-engine` rather than declaring anything.
 
-`wasm-agreement.test.mjs` reads `vxn1b_total_params()` out of the built artifact
-and fails if the mirror disagrees. It **fails rather than skips** when the wasm
-is missing, by design: vxn-2's equivalent tests skip on a missing artifact, and
+`wasm-agreement.test.mjs` reads `vxn1b_patch_count()`, `vxn1b_global_count()` and
+`vxn1b_total_params()` out of the built artifact and fails if the mirror
+disagrees; the controller handshake checks the same three `vxnc_*` exports at
+boot. **All three, never the sum alone** — a compensating drift of +1 patch and
+−2 global leaves `TOTAL_PARAMS` at 185 while `patchClapId(L2, i)` and
+`globalClapId(i)` both compute ids the engine does not have, which is 0285's
+failure mode wearing a green tick (0312).
+
+It **fails rather than skips** when the wasm is missing, by design: vxn-2's equivalent tests skip on a missing artifact, and
 since both ports' `xtask web` write and wipe the same `target/web-dist`, a normal
 run reported "89 pass" with 13 tests silently skipped — including every one that
 would have caught 0285.

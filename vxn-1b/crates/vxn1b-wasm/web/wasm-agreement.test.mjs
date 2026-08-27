@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { TOTAL_PARAMS, SLOT_BYTES } from "./event-codec.mjs";
+import { PATCH_COUNT, GLOBAL_COUNT, TOTAL_PARAMS, SLOT_BYTES } from "./event-codec.mjs";
 
 const BUILD_HINT =
   'RUSTFLAGS="-C target-feature=+simd128" cargo build -p vxn1b-wasm ' +
@@ -51,14 +51,20 @@ async function exports_() {
   return instance.exports;
 }
 
-test("the JS param mirror matches the engine's TOTAL_PARAMS", async () => {
+// All three counts, never the sum alone. TOTAL_PARAMS is invariant under a
+// compensating drift (+1 patch, -2 global), and under exactly that drift
+// `patchClapId(LAYER_L2, i)` and `globalClapId(i)` both compute ids the engine
+// does not have — which is 0285's failure mode wearing a green tick (0312).
+test("the JS param mirror matches the engine's patch, global and total counts", async () => {
   const x = await exports_();
-  assert.equal(
-    TOTAL_PARAMS,
-    x.vxn1b_total_params(),
-    "event-codec.mjs's declared count has drifted from the engine — update " +
-      "PATCH_COUNT / GLOBAL_COUNT there and the counts in WIRE-FORMAT.md",
-  );
+  const hint =
+    "event-codec.mjs's declared counts have drifted from the engine — update " +
+    "PATCH_COUNT / GLOBAL_COUNT there and the counts in WIRE-FORMAT.md";
+  assert.equal(PATCH_COUNT, x.vxn1b_patch_count(), `patch count: ${hint}`);
+  assert.equal(GLOBAL_COUNT, x.vxn1b_global_count(), `global count: ${hint}`);
+  assert.equal(TOTAL_PARAMS, x.vxn1b_total_params(), `total: ${hint}`);
+  // ...and the JS mirror's own arithmetic agrees with the three it just pinned.
+  assert.equal(TOTAL_PARAMS, 2 * PATCH_COUNT + GLOBAL_COUNT);
 });
 
 test("the JS quantum and slot size match the engine", async () => {
@@ -98,6 +104,8 @@ test("every export the JS transport calls is present", async () => {
     "vxn1b_host_out_r",
     "vxn1b_host_reset",
     "vxn1b_quantum",
+    "vxn1b_patch_count",
+    "vxn1b_global_count",
     "vxn1b_total_params",
   ]) {
     assert.ok(got.has(name), `missing export ${name}`);
@@ -117,7 +125,7 @@ test("a JS-encoded note-on renders in the real engine at its sample offset", asy
   const Q = x.vxn1b_quantum();
 
   const ring = new EventRing(createRingSAB());
-  assert.ok(ring.pushNoteOn(64, 60, 1.0, 3), "push must succeed on an empty ring");
+  assert.ok(ring.pushNoteOn(60, 1.0, 64, 3), "push must succeed on an empty ring");
 
   const h = x.vxn1b_host_new(48000);
   const scratch = new Uint8Array(x.memory.buffer, x.vxn1b_host_events_ptr(h), SLOT_BYTES * 8);

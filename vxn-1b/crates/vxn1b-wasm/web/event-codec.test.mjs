@@ -1,9 +1,16 @@
-// Headless test for the JS event codec (0287).
+// Headless test for the JS event codec (0287, retargeted by 0312).
 //
 // The golden table below is a transcription of the Rust one in
 // `src/codec.rs::tests::golden`. That duplication is the point: two independent
 // hand-written tables that must agree byte-for-byte, so a layout change in
 // either language fails here instead of silently mis-routing events at runtime.
+//
+// WHAT THIS PROVES CHANGED IN 0312. It used to check an `encode` wrapper that
+// nothing called, against a `decode` that nothing called either; the bytes the
+// worklet actually saw came from `EventRing._push`, which no golden table
+// touched. Now `_push` writes through `encodeInto` and the table below drives
+// that same function, so the encoder under test is the encoder that ships. The
+// decode direction is checked once, in Rust, by the half that does the decoding.
 //
 //   node --test vxn-1b/crates/vxn1b-wasm/web/event-codec.test.mjs
 
@@ -18,8 +25,7 @@ import {
   TOTAL_PARAMS,
   patchClapId,
   globalClapId,
-  encode,
-  decode,
+  encodeInto,
   ev,
   packMatrixAddr,
   unpackMatrixAddr,
@@ -42,8 +48,19 @@ const fneg1 = [0x00, 0x00, 0x80, 0xbf];
 const f120 = [0x00, 0x00, 0xf0, 0x42];
 const f0 = [0, 0, 0, 0];
 
+/// Encode one event the way the ring does — into a slot of a larger buffer,
+/// at a non-zero base — and hand back just those 16 bytes. `base = SLOT_BYTES`
+/// rather than 0 so a `base`-ignoring write would fail here rather than only in
+/// a wrapped ring.
+function slotBytes(event) {
+  const buf = new Uint8Array(SLOT_BYTES * 2);
+  encodeInto(new DataView(buf.buffer), SLOT_BYTES, event);
+  return Array.from(buf.subarray(SLOT_BYTES));
+}
+
 /// One 16-byte row: type, offset, paramIdx (u16 LE), value (f32 LE), note, flag,
-/// then seq (u16) + reserved (f32), both always zero out of `encode`.
+/// then seq (u16) + reserved (f32). Both are zero out of the codec — `seq` is
+/// the RING's to stamp, after `encodeInto` returns.
 const row = (type, offset, paramIdx, value, note, flag) => [
   type,
   offset,
@@ -87,48 +104,33 @@ const GOLDEN = [
   ["channel_pressure ch3 1.0", ev.channelPressure(1.0, 0, 3), row(16, 0, 0, f1, 0, 3)],
 ];
 
-test("encode matches the golden bytes (== the Rust golden table)", () => {
+test("encodeInto matches the golden bytes (== the Rust golden table)", () => {
   for (const [label, event, expected] of GOLDEN) {
-    assert.deepEqual(Array.from(encode(event)), expected, `encode mismatch for ${label}`);
+    assert.deepEqual(slotBytes(event), expected, `encode mismatch for ${label}`);
   }
 });
 
-test("decode of golden bytes yields the equivalent event", () => {
+// Every unused field must be written, not merely left alone: the ring reuses
+// slots, so a field the codec skips would carry the previous event's bytes
+// round the wrap.
+test("encodeInto overwrites all 16 bytes, leaving nothing from a prior event", () => {
+  const buf = new Uint8Array(SLOT_BYTES * 2).fill(0xaa);
+  const view = new DataView(buf.buffer);
   for (const [label, event, expected] of GOLDEN) {
-    const got = decode(Uint8Array.from(expected));
-    assert.ok(got, `${label} must decode`);
-    assert.equal(got.type, event.type, `${label} type`);
-    assert.equal(got.offset, event.offset ?? 0, `${label} offset`);
+    encodeInto(view, SLOT_BYTES, event);
+    assert.deepEqual(Array.from(buf.subarray(SLOT_BYTES)), expected, `stale bytes after ${label}`);
+    assert.ok(
+      buf.subarray(0, SLOT_BYTES).every((b) => b === 0xaa),
+      `${label} wrote outside its slot`,
+    );
+    buf.fill(0xaa);
   }
 });
 
-test("every event round-trips through encode -> decode", () => {
-  for (const [label, event] of GOLDEN) {
-    const got = decode(encode(event));
-    assert.ok(got, `${label} must round-trip`);
-    for (const key of Object.keys(event)) {
-      if (key === "type" || key === "offset") continue;
-      assert.deepEqual(got[key], event[key], `${label}: field ${key}`);
-    }
-  }
-});
-
-test("every slot is exactly 16 bytes", () => {
-  for (const [label, event] of GOLDEN) {
-    assert.equal(encode(event).length, SLOT_BYTES, `${label} slot size`);
-  }
-});
-
-test("unknown and reserved tags decode to null (forward-compat)", () => {
-  for (const tag of [0, EV_SUSTAIN_RESERVED, 17, 200, 255]) {
-    const buf = new Uint8Array(SLOT_BYTES);
-    buf[0] = tag;
-    assert.equal(decode(buf), null, `tag ${tag} must not decode`);
-  }
-});
-
-test("a short slot decodes to null", () => {
-  assert.equal(decode(Uint8Array.from([1, 0, 0])), null);
+// The reserved tag has no encoder — the assertion that it (and any unknown tag)
+// decodes to nothing lives with the decoder, in `src/codec.rs`.
+test("the reserved tag is not encodable", () => {
+  assert.throws(() => slotBytes({ type: EV_SUSTAIN_RESERVED, offset: 0 }), /unknown event type/);
 });
 
 test("id layout matches vxn1b-engine (185 = 2*75 + 35)", () => {
@@ -173,14 +175,14 @@ test("out-of-range matrix addresses unpack to null, never a nearby slot", () => 
 });
 
 test("encoding an unknown event type throws rather than emitting a blank slot", () => {
-  assert.throws(() => encode({ type: 99, offset: 0 }), /unknown event type/);
+  assert.throws(() => slotBytes({ type: 99, offset: 0 }), /unknown event type/);
 });
 
 // ── Cross-language contract ────────────────────────────────────────────────
 //
 // Everything above asserts the JS encoder against the JS table, and codec.rs
-// asserts the Rust encoder against the Rust table. Both can pass while the two
-// TABLES disagree — a transcription slip would then ship as a silent
+// asserts its (test-only) encoder against the Rust table. Both can pass while
+// the two TABLES disagree — a transcription slip would then ship as a silent
 // mis-routing, which is precisely the failure mode 0285 taught us not to leave
 // to review.
 //
@@ -223,6 +225,6 @@ test("the Rust golden table and this one are byte-identical", async () => {
   for (const [label, event] of GOLDEN) {
     const theirs = rust.get(label);
     assert.ok(theirs, `codec.rs has no golden row labelled "${label}"`);
-    assert.deepEqual(Array.from(encode(event)), theirs, `golden rows differ for ${label}`);
+    assert.deepEqual(slotBytes(event), theirs, `golden rows differ for ${label}`);
   }
 });

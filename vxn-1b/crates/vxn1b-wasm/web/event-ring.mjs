@@ -37,26 +37,7 @@
 // (`host.rs`), reached via `drainRawInto` — one implementation, not two that can
 // disagree about what "apply at offset k" means.
 
-import {
-  SLOT_BYTES,
-  EV_NOTE_ON,
-  EV_NOTE_OFF,
-  EV_PARAM,
-  EV_PITCH_BEND,
-  EV_MOD_WHEEL,
-  EV_KEY_MODE,
-  EV_SPLIT_POINT,
-  EV_GESTURE_BEGIN,
-  EV_GESTURE_END,
-  EV_LFO2_LINK,
-  EV_MATRIX_EDIT,
-  EV_SCOPE_TAP,
-  EV_TEMPO,
-  EV_POLY_PRESSURE,
-  EV_CHANNEL_PRESSURE,
-  PARAM_FLAG_NORM,
-  packMatrixAddr,
-} from "./event-codec.mjs";
+import { SLOT_BYTES, encodeInto, ev } from "./event-codec.mjs";
 
 export { SLOT_BYTES };
 export const CTRL_I32 = 2; // writeIdx, readIdx
@@ -108,87 +89,92 @@ export class EventRing {
     return this._seq & 0xffff;
   }
 
-  /// Low-level slot writer. BLOCK-WRITER: returns false if the ring is full so
-  /// the caller decides. Acquire-load the reader index; release-store the writer
-  /// index AFTER the slot bytes land, so the consumer never observes a
-  /// half-written slot.
-  _push(type, offset, paramIdx, value, note, flag) {
+  /// Publish one built event (`ev.*` from the codec) into the next slot.
+  /// BLOCK-WRITER: returns false if the ring is full so the caller decides.
+  /// Acquire-load the reader index; release-store the writer index AFTER the
+  /// slot bytes land, so the consumer never observes a half-written slot.
+  ///
+  /// The slot bytes come from `encodeInto` — the wire's one encoder, and the one
+  /// the golden table checks (0312). The ring owns exactly two things the codec
+  /// does not: which slot, and the `seq` stamp written over the zero the codec
+  /// leaves at off 10. Encoding happens before the write index advances, so an
+  /// unknown tag throws without publishing anything.
+  ///
+  /// The event object is allocated per push. This runs on the MAIN thread at
+  /// gesture rate — never in the worklet — so the churn is nominal, and one
+  /// named encoder is worth more than avoiding it.
+  _push(event) {
     const w = Atomics.load(this.ctrl, I_WRITE);
     const r = Atomics.load(this.ctrl, I_READ);
     if (w - r >= this.capacity) return false; // full -> block-writer
     const base = (w & this.mask) * SLOT_BYTES;
-    const d = this.data;
-    d.setUint8(base + 0, type);
-    d.setUint8(base + 1, offset & 0xff);
-    d.setUint16(base + 2, paramIdx & 0xffff, true);
-    d.setFloat32(base + 4, value, true);
-    d.setUint8(base + 8, note & 0xff);
-    d.setUint8(base + 9, flag & 0xff);
-    d.setUint16(base + 10, this._seq & 0xffff, true);
-    d.setFloat32(base + 12, 0, true);
+    encodeInto(this.data, base, event);
+    this.data.setUint16(base + 10, this._seq & 0xffff, true);
     this._seq = (this._seq + 1) & 0x7fffffff;
     // Release: publish the write index only after the slot is fully written.
     Atomics.store(this.ctrl, I_WRITE, w + 1);
     return true;
   }
 
-  // Notes carry the MIDI channel in `flag` — VXN1b is MPE-aware, and a
-  // channel-agnostic producer simply passes 0.
-  pushNoteOn(offset, note, velocity, channel = 0) {
-    return this._push(EV_NOTE_ON, offset, 0, velocity, note, channel);
+  // The producer surface is `ev.*` plus the ring bookkeeping, one for one, so
+  // the argument lists match the builders' and `WebHost`'s: the event's own
+  // fields, then `offset`, then `channel`. Notes carry the MIDI channel in
+  // `flag` — VXN1b is MPE-aware, and a channel-agnostic producer omits it.
+  pushNoteOn(note, velocity, offset = 0, channel = 0) {
+    return this._push(ev.noteOn(note, velocity, offset, channel));
   }
-  pushNoteOff(offset, note, channel = 0) {
-    return this._push(EV_NOTE_OFF, offset, 0, 0, note, channel);
+  pushNoteOff(note, offset = 0, channel = 0) {
+    return this._push(ev.noteOff(note, offset, channel));
   }
-  pushPolyPressure(offset, note, value, channel = 0) {
-    return this._push(EV_POLY_PRESSURE, offset, 0, value, note, channel);
+  pushPolyPressure(note, value, offset = 0, channel = 0) {
+    return this._push(ev.polyPressure(note, value, offset, channel));
   }
-  pushChannelPressure(offset, value, channel = 0) {
-    return this._push(EV_CHANNEL_PRESSURE, offset, 0, value, 0, channel);
-  }
-
-  pushParam(offset, paramIdx, plain) {
-    return this._push(EV_PARAM, offset, paramIdx, plain, 0, 0);
-  }
-  pushParamNorm(offset, paramIdx, norm) {
-    return this._push(EV_PARAM, offset, paramIdx, norm, 0, PARAM_FLAG_NORM);
-  }
-  pushGestureBegin(offset, paramIdx) {
-    return this._push(EV_GESTURE_BEGIN, offset, paramIdx, 0, 0, 0);
-  }
-  pushGestureEnd(offset, paramIdx) {
-    return this._push(EV_GESTURE_END, offset, paramIdx, 0, 0, 0);
+  pushChannelPressure(value, offset = 0, channel = 0) {
+    return this._push(ev.channelPressure(value, offset, channel));
   }
 
-  pushPitchBend(offset, value) {
-    return this._push(EV_PITCH_BEND, offset, 0, value, 0, 0);
+  pushParam(paramIdx, plain, offset = 0) {
+    return this._push(ev.setParam(paramIdx, plain, offset));
   }
-  pushModWheel(offset, value) {
-    return this._push(EV_MOD_WHEEL, offset, 0, value, 0, 0);
+  pushParamNorm(paramIdx, norm, offset = 0) {
+    return this._push(ev.setParamNorm(paramIdx, norm, offset));
+  }
+  pushGestureBegin(paramIdx, offset = 0) {
+    return this._push(ev.gestureBegin(paramIdx, offset));
+  }
+  pushGestureEnd(paramIdx, offset = 0) {
+    return this._push(ev.gestureEnd(paramIdx, offset));
+  }
+
+  pushPitchBend(value, offset = 0) {
+    return this._push(ev.pitchBend(value, offset));
+  }
+  pushModWheel(value, offset = 0) {
+    return this._push(ev.modWheel(value, offset));
   }
 
   // Non-automatable domain state (key mode, split point, LFO 2 link) — not
   // params, so they never occupy a store slot; they travel here.
-  pushKeyMode(offset, mode) {
-    return this._push(EV_KEY_MODE, offset, 0, 0, 0, mode);
+  pushKeyMode(mode, offset = 0) {
+    return this._push(ev.keyMode(mode, offset));
   }
-  pushSplitPoint(offset, note) {
-    return this._push(EV_SPLIT_POINT, offset, 0, 0, 0, note);
+  pushSplitPoint(note, offset = 0) {
+    return this._push(ev.splitPoint(note, offset));
   }
-  pushLfo2Link(offset, on) {
-    return this._push(EV_LFO2_LINK, offset, 0, 0, 0, on ? 1 : 0);
+  pushLfo2Link(on, offset = 0) {
+    return this._push(ev.lfo2Link(on, offset));
   }
 
   /// One matrix slot's topology field. Slot DEPTH is a CLAP param and goes
   /// through pushParam / the store instead — that split is the point of 0219.
-  pushMatrixEdit(offset, layer, slot, field, value) {
-    return this._push(EV_MATRIX_EDIT, offset, packMatrixAddr(layer, slot, field), 0, 0, value);
+  pushMatrixEdit(layer, slot, field, value, offset = 0) {
+    return this._push(ev.matrixEdit(layer, slot, field, value, offset));
   }
-  pushScopeTap(offset, tap) {
-    return this._push(EV_SCOPE_TAP, offset, 0, 0, 0, tap);
+  pushScopeTap(tap, offset = 0) {
+    return this._push(ev.scopeTap(tap, offset));
   }
-  pushTempo(offset, bpm) {
-    return this._push(EV_TEMPO, offset, 0, bpm, 0, 0);
+  pushTempo(bpm, offset = 0) {
+    return this._push(ev.tempo(bpm, offset));
   }
 
   // ---- consumer side (worklet render thread) ----------------------------
@@ -211,16 +197,7 @@ export class EventRing {
     let r = Atomics.load(this.ctrl, I_READ);
     const d = this.data;
     while (r !== w) {
-      const base = (r & this.mask) * SLOT_BYTES;
-      out.push({
-        type: d.getUint8(base + 0),
-        offset: d.getUint8(base + 1),
-        paramIdx: d.getUint16(base + 2, true),
-        value: d.getFloat32(base + 4, true),
-        note: d.getUint8(base + 8),
-        flag: d.getUint8(base + 9),
-        seq: d.getUint16(base + 10, true),
-      });
+      out.push(readSlot(d, (r & this.mask) * SLOT_BYTES));
       r++;
     }
     Atomics.store(this.ctrl, I_READ, w); // release: slots reclaimed
@@ -254,4 +231,29 @@ export class EventRing {
     Atomics.store(this.ctrl, I_READ, r); // release: reclaim only what we copied
     return count;
   }
+}
+
+/// The raw FIELD view of a 16-byte slot: the six wire fields plus the ring's
+/// `seq`, verbatim, with no interpretation of the tag.
+///
+/// Deliberately not a decoder — the wire has exactly one of those and it is in
+/// Rust (`src/codec.rs`). Nothing here switches on `type`, so there is no
+/// per-event semantics to drift; it is the inverse of the ring's framing, not of
+/// the codec's. `drainInto` and the ring's own tests are its only callers.
+///
+/// Accepts a DataView or any typed-array/buffer view over the slot bytes.
+export function readSlot(view, base = 0) {
+  const d =
+    view instanceof DataView
+      ? view
+      : new DataView(view.buffer, view.byteOffset, view.byteLength);
+  return {
+    type: d.getUint8(base + 0),
+    offset: d.getUint8(base + 1),
+    paramIdx: d.getUint16(base + 2, true),
+    value: d.getFloat32(base + 4, true),
+    note: d.getUint8(base + 8),
+    flag: d.getUint8(base + 9),
+    seq: d.getUint16(base + 10, true),
+  };
 }

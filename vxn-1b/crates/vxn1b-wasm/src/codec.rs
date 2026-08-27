@@ -1,26 +1,14 @@
 //! Binary event codec — the wire format for the browser event ring (0286).
 //!
-//! ONE definition, two implementations. This is the Rust half; the JS half
-//! lands in 0287 as `web/event-codec.mjs`. Both are typed encode/decode layers
-//! over the **exact 16-byte fixed slot framing** vxn-1 froze in spike 0035 —
+//! ONE definition, two halves, and they are **not symmetric**: JS encodes
+//! (`web/event-codec.mjs`, driven by the ring's producer) and this module
+//! decodes. The framing is the 16-byte fixed slot vxn-1 froze in spike 0035 —
 //! this module does not invent a layout, it formalises VXN1b's event set over
 //! the existing slot and keeps it byte-compatible across all three synths.
 //!
-//! # Slot layout (16 bytes, little-endian) — shared with vxn-1 / vxn-2
-//!
-//! ```text
-//! off 0  u8   type      EV_* tag
-//! off 1  u8   offset    sample offset within the upcoming quantum, 0..Q-1
-//! off 2  u16  paramIdx  CLAP param id (EV_PARAM / gestures), or the packed
-//!                       matrix address (EV_MATRIX_EDIT)
-//! off 4  f32  value     velocity / param value / bend / wheel / pressure / BPM
-//! off 8  u8   note      MIDI note number (note + poly-pressure events)
-//! off 9  u8   flag      small int: MIDI channel, key mode, split note, scope
-//!                       tap, matrix value byte, OR the param-norm bit
-//! off 10 u16  seq       producer sequence — owned by the ring, not the codec;
-//!                       encode writes 0, decode ignores it.
-//! off 12 f32  reserved  zero
-//! ```
+//! **The slot layout is written out in full in one place: `web/WIRE-FORMAT.md`.**
+//! Read that before changing anything here; the tag table below states each
+//! event's *meaning*, not the byte offsets.
 //!
 //! # VXN1b's event set vs vxn-1's
 //!
@@ -66,11 +54,24 @@
 //! the guard against repeating it here.
 
 use vxn1b_engine::params::{
-    Layer, TOTAL_PARAMS as ENGINE_TOTAL_PARAMS, desc_for_clap_id,
+    GLOBAL_COUNT as ENGINE_GLOBAL_COUNT, Layer, PATCH_COUNT as ENGINE_PATCH_COUNT,
+    TOTAL_PARAMS as ENGINE_TOTAL_PARAMS, desc_for_clap_id,
 };
 use vxn1b_engine::{Engine, KeyOp, MatrixEdit, MatrixField, ScopeTap};
 
+/// Per-layer patch params. Re-exported (never restated) so `vxn1b_patch_count()`
+/// can hand JS the engine's own number.
+pub const PATCH_COUNT: u16 = ENGINE_PATCH_COUNT as u16;
+
+/// Globals, shared by both layers.
+pub const GLOBAL_COUNT: u16 = ENGINE_GLOBAL_COUNT as u16;
+
 /// Total addressable CLAP ids (`2 * PATCH_COUNT + GLOBAL_COUNT`).
+///
+/// The total alone is a weak guard: a `+1 patch / -2 global` drift leaves it
+/// unchanged while `patchClapId` / `globalClapId` compute wrong ids on both
+/// sides of the wire. All three counts are exported, and the handshake checks
+/// all three.
 pub const TOTAL_PARAMS: u16 = ENGINE_TOTAL_PARAMS as u16;
 
 /// Bytes per slot — must equal the ring's `SLOT_BYTES`.
@@ -108,7 +109,8 @@ pub const EV_GESTURE_END: u8 = 10;
 /// `lfo2_link { on }`. `flag` 0/1 → `KeyOp::SetLfo2Link`.
 pub const EV_LFO2_LINK: u8 = 11;
 /// `matrix_edit { layer, slot, field, value }`. `paramIdx` = the packed address
-/// (see [`pack_matrix_addr`]), `flag` = the value byte.
+/// (`layer << 12 | slot << 8 | field`; see [`unpack_matrix_addr`]), `flag` = the
+/// value byte.
 pub const EV_MATRIX_EDIT: u8 = 12;
 /// `scope_tap { tap }`. `flag` = `ScopeTap` code (0 Off, 1 Layer1, 2 Layer2).
 pub const EV_SCOPE_TAP: u8 = 13;
@@ -131,14 +133,19 @@ pub const PARAM_FLAG_NORM: u8 = 1;
 /// Room to spare — 2 layers, 16 slots, 4 fields — and it keeps `flag` free for
 /// the value byte, so the whole edit fits one slot with no second record and no
 /// framing change.
+///
+/// **Test-only.** Nothing in this crate packs an address: the JS producer does
+/// (`packMatrixAddr`), and this side only ever unpacks. It exists so
+/// [`unpack_matrix_addr`] can be proven against the packing it inverts.
+#[cfg(test)]
 #[inline]
 pub const fn pack_matrix_addr(layer: u8, slot: u8, field: u8) -> u16 {
     ((layer as u16) << 12) | ((slot as u16) << 8) | (field as u16)
 }
 
-/// Inverse of [`pack_matrix_addr`]. `None` for a layer, slot or field outside
-/// the engine's range — a malformed record is dropped, never clamped onto a
-/// valid slot it wasn't aimed at.
+/// Unpack a matrix-slot address (`layer << 12 | slot << 8 | field`). `None` for
+/// a layer, slot or field outside the engine's range — a malformed record is
+/// dropped, never clamped onto a valid slot it wasn't aimed at.
 #[inline]
 pub fn unpack_matrix_addr(addr: u16) -> Option<(Layer, u8, MatrixField)> {
     let layer = match addr >> 12 {
@@ -161,7 +168,9 @@ pub fn unpack_matrix_addr(addr: u16) -> Option<(Layer, u8, MatrixField)> {
 }
 
 /// Wire byte for a [`MatrixField`] — the inverse of [`unpack_matrix_addr`]'s
-/// field decode, kept beside it so the two can't drift.
+/// field decode, kept beside it so the two can't drift. **Test-only**, for the
+/// same reason as [`pack_matrix_addr`].
+#[cfg(test)]
 #[inline]
 pub const fn matrix_field_code(field: MatrixField) -> u8 {
     match field {
@@ -196,6 +205,11 @@ pub enum Event {
     ChannelPressure { offset: u8, channel: u8, value: f32 },
 }
 
+/// **Test-only**, and only because the encoder is. Both of these exist to serve
+/// [`encode_into`]; production reads the tag and the offset straight out of the
+/// raw slot (`host.rs`'s slice loop indexes bytes 0 and 1) rather than decoding
+/// first, so nothing shipping calls either one.
+#[cfg(test)]
 impl Event {
     /// The wire tag this event encodes to.
     #[inline]
@@ -243,14 +257,23 @@ impl Event {
     }
 }
 
-// ── Encode ──────────────────────────────────────────────────────────────────
+// ── Encode (test-only) ──────────────────────────────────────────────────────
+//
+// This crate never encodes. The bytes the worklet decodes are written by JS —
+// `EventRing._push` via `encodeInto` — so an encoder here would be a second
+// implementation of a format that already has two. It is kept `#[cfg(test)]`
+// because the golden table's round-trip is worth having: it proves this
+// module's decode against a table the JS golden table is checked against in
+// turn, so a layout slip in either language fails a test.
 
+#[cfg(test)]
 #[inline]
 fn put_u16(buf: &mut [u8; SLOT_BYTES], at: usize, v: u16) {
     buf[at] = (v & 0xff) as u8;
     buf[at + 1] = (v >> 8) as u8;
 }
 
+#[cfg(test)]
 #[inline]
 fn put_f32(buf: &mut [u8; SLOT_BYTES], at: usize, v: f32) {
     buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -266,9 +289,10 @@ fn get_f32(buf: &[u8], at: usize) -> f32 {
     f32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
 }
 
-/// Encode `event` into a fresh 16-byte slot. Alloc-free (returns the array by
-/// value, on the stack). The `seq` field (off 10) is owned by the ring writer,
-/// not the codec, so it is left zero here.
+/// Encode `event` into a fresh 16-byte slot. **Test-only** — see the section
+/// banner. The `seq` field (off 10) is owned by the ring writer, not the codec,
+/// so it is left zero here.
+#[cfg(test)]
 #[inline]
 pub fn encode(event: &Event) -> [u8; SLOT_BYTES] {
     let mut buf = [0u8; SLOT_BYTES];
@@ -277,7 +301,8 @@ pub fn encode(event: &Event) -> [u8; SLOT_BYTES] {
 }
 
 /// Encode `event` into an existing 16-byte buffer in place (fully overwrites all
-/// 16 bytes). The hot-path entry point — no allocation.
+/// 16 bytes). **Test-only** — see the section banner.
+#[cfg(test)]
 #[inline]
 pub fn encode_into(event: &Event, buf: &mut [u8; SLOT_BYTES]) {
     *buf = [0u8; SLOT_BYTES];
@@ -639,7 +664,10 @@ mod tests {
     /// re-exported from the engine so it cannot.
     #[test]
     fn total_params_matches_the_engine() {
+        assert_eq!(PATCH_COUNT as usize, vxn1b_engine::params::PATCH_COUNT);
+        assert_eq!(GLOBAL_COUNT as usize, vxn1b_engine::params::GLOBAL_COUNT);
         assert_eq!(TOTAL_PARAMS as usize, vxn1b_engine::params::TOTAL_PARAMS);
+        assert_eq!(TOTAL_PARAMS, 2 * PATCH_COUNT + GLOBAL_COUNT, "the three must be consistent");
         assert!(TOTAL_PARAMS as usize <= u16::MAX as usize, "must fit the u16 paramIdx field");
     }
 

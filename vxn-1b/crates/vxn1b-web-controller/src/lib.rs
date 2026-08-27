@@ -786,6 +786,14 @@ pub extern "C" fn vxnc_patch_count() -> u32 {
     vxn1b_engine::PATCH_COUNT as u32
 }
 
+/// Global param count. Exported so the JS handshake can check all three counts
+/// rather than the sum alone — a `+1 patch / -2 global` drift leaves the total
+/// unchanged and every id past Layer 1 wrong.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_global_count() -> u32 {
+    vxn1b_engine::GLOBAL_PARAMS.len() as u32
+}
+
 // UiEvent hot path (1:1 with UiEvent variants).
 
 /// `UiEvent::SetParamNorm` — set a param from a normalised fader position.
@@ -1360,6 +1368,7 @@ mod tests {
     fn total_params_agrees_with_the_engine() {
         assert_eq!(vxnc_total_params() as usize, TOTAL_PARAMS);
         assert_eq!(vxnc_patch_count() as usize, vxn1b_engine::PATCH_COUNT);
+        assert_eq!(vxnc_global_count() as usize, vxn1b_engine::GLOBAL_PARAMS.len());
         assert_eq!(TOTAL_PARAMS, 2 * vxn1b_engine::PATCH_COUNT + vxn1b_engine::GLOBAL_PARAMS.len());
     }
 

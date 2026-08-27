@@ -273,8 +273,8 @@ test("a sounding note reaches the main thread as meter and scope frames", async 
 
   // Point the scope at layer 1, then hold a note.
   const ring = new EventRing(createRingSAB());
-  ring.pushScopeTap(0, 1);
-  ring.pushNoteOn(0, 60, 1.0);
+  ring.pushScopeTap(1);
+  ring.pushNoteOn(60, 1.0);
   const scratch = new Uint8Array(x.memory.buffer, x.vxn1b_host_events_ptr(h), SLOT_BYTES * 16);
   x.vxn1b_host_render(h, ring.drainRawInto(scratch));
   w.tick();

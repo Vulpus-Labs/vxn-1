@@ -66,10 +66,10 @@ jobs:
       #
       # `xtask web` rather than hand-listing cargo builds: there are TWO wasm
       # crates (vxn1b-wasm and vxn1b-web-controller) and the first cut of this
-      # step built only the first. CI then reported 91 passing tests where a
-      # complete run has 151 — three suites aborted on the missing controller
-      # artifact and the step still looked plausible. xtask owns the list, so a
-      # third crate cannot silently fall out of it (0321).
+      # step built only the first. CI then reported 91 passing tests against a
+      # full suite well over half as large again — three suites aborted on the
+      # missing controller artifact and the step still looked plausible. xtask
+      # owns the list, so a third crate cannot silently fall out of it (0321).
       - name: Build vxn-1b web artifacts
         run: cargo run --package vxn1b-xtask -- web
 
