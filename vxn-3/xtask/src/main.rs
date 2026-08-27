@@ -36,6 +36,7 @@ const PRODUCT: Product = Product {
     lib_name: "vxn3_clap",
     clap_package: "vxn3-clap",
     version: env!("CARGO_PKG_VERSION"),
+    resources_dir: None,
     min_macos: "10.13.0",
     vst3: None,
 };

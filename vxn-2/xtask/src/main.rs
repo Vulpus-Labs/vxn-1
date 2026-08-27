@@ -18,13 +18,38 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PLUGIN_NAME: &str = "vxn2";
-const BUNDLE_NAME: &str = "VXN2.clap";
-const BUNDLE_ID: &str = "labs.vulpus.vxn2";
-const DISPLAY_NAME: &str = "VXN2";
-/// Cargo lib stem: the `vxn2-clap` package name with `-` → `_`.
-const LIB_NAME: &str = "vxn2_clap";
-const CLAP_PACKAGE: &str = "vxn2-clap";
+use vxn_xtask_common::{
+    Format, Product, Profile, Vst3, parse_formats, run_formats,
+};
+
+/// This product, for the shared bundler (0317).
+///
+/// `bundle_name` is capitalised (`VXN2.clap`) where vxn-1b's is not — both are
+/// the names already installed on users' machines, and neither can be derived
+/// from the other. `min_macos` stays 10.13.0: vxn-1b declares 11.0.0, and
+/// unifying them here would change what a host believes about this plugin.
+const PRODUCT: Product = Product {
+    plugin_name: "vxn2",
+    bundle_name: "VXN2.clap",
+    bundle_id: "labs.vulpus.vxn2",
+    display_name: "VXN2",
+    lib_name: "vxn2_clap",
+    clap_package: "vxn2-clap",
+    version: env!("CARGO_PKG_VERSION"),
+    resources_dir: Some("vxn-2/crates/vxn2-ui-web/assets"),
+    min_macos: "10.13.0",
+    vst3: Some(Vst3 {
+        name: "VXN2",
+        wrapper_dir: "vxn-2/wrapper",
+        build_dir_stem: "vxn2-wrapper-release",
+    }),
+};
+
+/// The workspace root. Two `.parent()` calls: `CARGO_MANIFEST_DIR` is
+/// `.../vxn-2/xtask/` and the repo root is one flat workspace.
+fn workspace_root() -> PathBuf {
+    vxn_xtask_common::workspace_root(env!("CARGO_MANIFEST_DIR"))
+}
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -33,12 +58,24 @@ fn main() {
     let universal = args.iter().any(|a| a == "--universal");
     let do_install = args.iter().any(|a| a == "--install");
 
+    let profile = if release { Profile::Release } else { Profile::Debug };
+    let formats = match parse_formats(&args) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("xtask: {e}");
+            std::process::exit(2);
+        }
+    };
+
     let result = match cmd {
-        // `--format clap,vst3` (0170) selects which artifact(s) to emit; absent
-        // → clap. `--install` copies each built artifact to its user plugin dir.
-        "bundle" => bundle_formats(&args, release, do_install, universal),
-        "install" => install(),
-        "uninstall" => uninstall(),
+        // `--format clap,vst3` (0170) selects which artifact(s) to act on;
+        // absent → clap. 0317 gave `install` / `uninstall` the same dispatch
+        // `bundle` already had, so all three take the flag.
+        "bundle" => run_formats(&formats, |fmt| bundle(fmt, profile, universal, do_install)),
+        "install" => run_formats(&formats, |fmt| {
+            bundle(fmt, Profile::Release, universal, true)
+        }),
+        "uninstall" => run_formats(&formats, |fmt| PRODUCT.uninstall(fmt)),
         "level-presets" => level_presets(&args[1..]),
         "web" => {
             let serve = args.iter().any(|a| a == "--serve");
@@ -76,16 +113,18 @@ fn print_help() {
         "cargo xtask <subcommand>
 
 Subcommands:
-  bundle      Build {CLAP_PACKAGE} and assemble target/bundled/{BUNDLE_NAME}.
+  bundle      Build {pkg} and assemble target/bundled/{bundle}.
               macOS: a bundle dir (Contents/MacOS/ + Info.plist + Resources).
-              Windows/Linux: the shared library renamed to {BUNDLE_NAME}.
+              Windows/Linux: the shared library renamed to {bundle}.
               Pass --release to build in release mode.
               Pass --universal (macOS only) to lipo arm64+x86_64 into one fat binary.
               Pass --format clap,vst3 (default clap) to also emit VXN2.vst3 via
               the vxn-2/wrapper clap-wrapper project (macOS + Windows only).
               Pass --install to copy each built artifact to its user plugin dir.
-  install     Bundle (release) + copy to user CLAP directory. macOS only.
-  uninstall   Remove ~/Library/Audio/Plug-Ins/CLAP/{BUNDLE_NAME}. macOS only.
+  install     Bundle (release) + copy to the user plugin directory. Takes
+              --format like bundle, and works on every platform the format
+              does — it was macOS + CLAP only before 0317.
+  uninstall   Remove the installed artifact(s) if present. Takes --format.
   level-presets  Render every factory preset (held C-major triad over C4),
                  measure LUFS/peak, and rebalance each `master-volume`.
                  Dry run by default; pass `--apply` to rewrite the TOMLs.
@@ -95,7 +134,9 @@ Subcommands:
               faceplate page, factory.bin, and a COOP/COEP _headers.
               Pass --debug for a debug wasm build.
               Pass --serve [--port N] to run the COOP/COEP dev server.
-  --help      Show this message."
+  --help      Show this message.",
+        pkg = PRODUCT.clap_package,
+        bundle = PRODUCT.bundle_name,
     );
 }
 
@@ -325,645 +366,67 @@ fn level_presets(rest: &[String]) -> Result<(), String> {
     }
 }
 
-fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is .../vxn-1/vxn-2/xtask/. The flat workspace
-    // root sits two levels up (E001 promoted the repo root to a single
-    // workspace). The target/ dir + asset paths key off this.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .to_path_buf()
-}
-
-fn bundled_dir() -> PathBuf {
-    workspace_root().join("target").join("bundled")
-}
-
-fn bundle_path() -> PathBuf {
-    bundled_dir().join(BUNDLE_NAME)
-}
-
-/// Path to the vxn2-clap shared library under a profile dir.
-/// Mirrors the helper in vxn-1/xtask so the cross-platform lib naming is
-/// handled in one place rather than scattered through bundle().
-fn lib_path(profile_dir: &Path) -> PathBuf {
-    let (prefix, ext) = if cfg!(target_os = "windows") {
-        ("", "dll")
-    } else if cfg!(target_os = "macos") {
-        ("lib", "dylib")
-    } else {
-        ("lib", "so")
+/// Build one format and stage it in `target/bundled/`; optionally install it.
+fn bundle(
+    fmt: Format,
+    profile: Profile,
+    universal: bool,
+    install: bool,
+) -> Result<(), String> {
+    let root = workspace_root();
+    let out = match fmt {
+        Format::Clap => PRODUCT.bundle_clap(&root, profile, universal)?,
+        Format::Vst3 => PRODUCT.bundle_vst3(&root, profile, universal)?,
     };
-    profile_dir.join(format!("{prefix}{LIB_NAME}.{ext}"))
-}
-
-fn install_dest() -> Result<PathBuf, String> {
-    if !cfg!(target_os = "macos") {
-        return Err("install/uninstall only supported on macOS".into());
+    println!("bundled → {}", out.display());
+    if install {
+        PRODUCT.install_artifact(fmt, &out)?;
     }
-    let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(PathBuf::from(home)
-        .join("Library/Audio/Plug-Ins/CLAP")
-        .join(BUNDLE_NAME))
+    Ok(())
 }
 
 // ── VST3 build path (0170; ports vxn-1 E010) ────────────────────────────────
 
-/// Output formats `bundle` can emit, selected by `--format` (0170).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Clap,
-    Vst3,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Value of a `--flag value` pair (e.g. `--format clap,vst3`).
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-}
-
-/// Parse `--format a,b` into a deduped, order-preserving format list. Absent or
-/// value-less → `[Clap]`. Unknown tokens are a hard error.
-fn parse_formats(args: &[String]) -> Result<Vec<Format>, String> {
-    let Some(raw) = arg_value(args, "--format") else {
-        return Ok(vec![Format::Clap]);
-    };
-    let mut out: Vec<Format> = Vec::new();
-    for tok in raw.split(',') {
-        let tok = tok.trim();
-        if tok.is_empty() {
-            continue;
-        }
-        let fmt = match tok {
-            "clap" => Format::Clap,
-            "vst3" => Format::Vst3,
-            other => {
-                return Err(format!(
-                    "unknown --format '{other}' (expected comma-separated: clap, vst3)"
-                ));
-            }
-        };
-        if !out.contains(&fmt) {
-            out.push(fmt);
-        }
-    }
-    if out.is_empty() {
-        return Ok(vec![Format::Clap]);
-    }
-    Ok(out)
-}
-
-/// `bundle` entry point: build every requested `--format`, installing each to
-/// its user plugin dir when `--install` is set (mirrors vxn-1's bundle).
-fn bundle_formats(args: &[String], release: bool, install: bool, universal: bool) -> Result<(), String> {
-    for fmt in parse_formats(args)? {
-        match fmt {
-            Format::Clap => {
-                let p = bundle(release, universal)?;
-                println!("bundled → {}", p.display());
-                if install {
-                    install_clap_bundle(&p)?;
-                }
-            }
-            Format::Vst3 => bundle_vst3(release, install, universal)?,
-        }
-    }
-    Ok(())
-}
-
-/// The user CLAP install directory for the host platform (cross-platform
-/// analogue of [`install_dest`], used by the `bundle --install` path).
-fn clap_install_dir() -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") {
-        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-        Ok(PathBuf::from(home).join("Library/Audio/Plug-Ins/CLAP"))
-    } else if cfg!(target_os = "windows") {
-        let local = env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".to_string())?;
-        Ok(PathBuf::from(local).join(r"Programs\Common\CLAP"))
-    } else {
-        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-        Ok(PathBuf::from(home).join(".clap"))
-    }
-}
-
-/// Copy a freshly-bundled `VXN2.clap` to the user CLAP directory.
-fn install_clap_bundle(src: &Path) -> Result<(), String> {
-    let dest_dir = clap_install_dir()?;
-    fs::create_dir_all(&dest_dir).map_err(io("create CLAP install dir"))?;
-    let dest = dest_dir.join(BUNDLE_NAME);
-    copy_artifact(src, &dest)?;
-    println!("installed → {}", dest.display());
-    Ok(())
-}
-
-/// Build `VXN2.vst3` by wrapping the `vxn2-clap` staticlib through clap-wrapper
-/// (0170; ports vxn-1's `bundle_vst3`). The engine, params, controller and
-/// faceplate are the same source as the CLAP; VST3 is purely a distribution
-/// artifact.
-///
-/// Flow: build the staticlib slice(s) → configure + build the `vxn-2/wrapper`
-/// CMake project (whole-archives the archive into a VST3 MODULE) → copy the
-/// staged `VXN2.vst3` bundle to `target/bundled/`, and on `--install` to the
-/// user VST3 directory. macOS (universal) and Windows (x86_64 MSVC); the
-/// wrapper CMake handles both platforms' bundle layout.
-fn bundle_vst3(release: bool, install: bool, universal: bool) -> Result<(), String> {
-    if !(cfg!(target_os = "macos") || cfg!(target_os = "windows")) {
-        return Err("--format vst3 is supported on macOS and Windows only".into());
-    }
-    if universal && !cfg!(target_os = "macos") {
-        return Err("--universal is macOS-only (omit it on Windows; the build is x86_64)".into());
-    }
-    let root = workspace_root();
-    let profile = if release { "release" } else { "debug" };
-
-    // Preflight: fail early with actionable hints rather than letting CMake or
-    // the linker fail opaquely deep in the build.
-    ensure_cmake()?;
-    ensure_msvc()?;
-    ensure_submodules(&root)?;
-
-    // 1. Build the staticlib. `cargo build -p vxn2-clap` emits the .a alongside
-    //    the cdylib (crate-type cdylib+rlib+staticlib), so this also produces
-    //    the dylib but we only consume the archive. For a universal build we
-    //    lipo the two thin archives into one fat .a — the wrapper force_loads a
-    //    single archive per link, so two thin slices won't do (see
-    //    wrapper/CMakeLists.txt VXN_CLAP_STATIC note).
-    let archive = if universal {
-        build_universal_static(&root, release)?
-    } else {
-        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut build = Command::new(&cargo);
-        build.current_dir(&root).args(["build", "-p", CLAP_PACKAGE]);
-        if release {
-            build.arg("--release");
-        }
-        let status = build
-            .status()
-            .map_err(|e| format!("failed to run cargo: {e}"))?;
-        if !status.success() {
-            return Err(format!("`cargo build -p {CLAP_PACKAGE}` failed"));
-        }
-        let a = static_lib_path(&root.join("target").join(profile));
-        if !a.exists() {
-            return Err(format!("built static archive not found at {}", a.display()));
-        }
-        a
-    };
-
-    // 2. Configure + build the wrapper CMake project. The build dir is reused
-    //    across runs (CMake decides what to rebuild).
-    let build_dir = root.join("target").join(format!("vxn2-wrapper-{profile}"));
-    let out_dir = build_dir.join("out");
-    fs::create_dir_all(&build_dir).map_err(io("create wrapper build dir"))?;
-
-    let mut cfg = Command::new("cmake");
-    cfg.current_dir(&root)
-        .arg("-S")
-        .arg("vxn-2/wrapper")
-        .arg("-B")
-        .arg(&build_dir)
-        .arg(format!("-DVXN_CLAP_STATIC={}", archive.display()))
-        .arg(format!(
-            "-DVXN_CLAP_SDK_DIR={}",
-            root.join("vendor/clap").display()
-        ))
-        .arg(format!(
-            "-DVXN_VST3_SDK_DIR={}",
-            root.join("vendor/vst3sdk").display()
-        ))
-        .arg(format!(
-            "-DVXN_CLAP_WRAPPER_DIR={}",
-            root.join("vendor/clap-wrapper").display()
-        ))
-        .arg(format!("-DVXN_OUTPUT_DIR={}", out_dir.display()));
-    if universal {
-        cfg.arg("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64");
-    }
-    // Ninja is single-config: without an explicit build type it defaults to an
-    // empty/Debug config (the `--config Release` on the build step is ignored),
-    // leaving the C++ side on the debug CRT while the Rust staticlib is built
-    // `--release`. Pin Release here so both sides use the release runtime; it is
-    // harmless on multi-config generators, which honour `--config` instead.
-    cfg.arg("-DCMAKE_BUILD_TYPE=Release");
-    // Prefer Ninja when present (fast, single-config); otherwise the platform
-    // default generator. The `--config Release` on the build below is harmless
-    // on Ninja and required on multi-config generators (Xcode/MSBuild).
-    if ninja_available() {
-        cfg.arg("-G").arg("Ninja");
-    }
-    let status = cfg
-        .status()
-        .map_err(|e| format!("failed to run cmake configure: {e}"))?;
-    if !status.success() {
-        return Err("cmake configure failed (see output above)".into());
+    /// 0317's per-product criterion: two `.parent()` calls must land on the
+    /// directory holding the workspace manifest ([[vxn2-xtask-flat-workspace]]
+    /// is this exact mistake, made here).
+    #[test]
+    fn workspace_root_holds_the_workspace_manifest() {
+        let root = workspace_root();
+        assert!(root.join("Cargo.toml").is_file(), "{} has no Cargo.toml", root.display());
+        assert!(
+            root.join("vxn-2/crates/vxn2-clap/Cargo.toml").is_file(),
+            "{} is not the repo root",
+            root.display()
+        );
     }
 
-    let status = Command::new("cmake")
-        .current_dir(&root)
-        .arg("--build")
-        .arg(&build_dir)
-        .arg("--parallel")
-        .arg("--config")
-        .arg("Release")
-        .status()
-        .map_err(|e| format!("failed to run cmake --build: {e}"))?;
-    if !status.success() {
-        return Err("cmake --build failed (see output above)".into());
+    /// The CLAP bundle is capitalised here and lowercase in vxn-1b. Both are
+    /// the names already on users' machines; neither is derivable.
+    #[test]
+    fn the_bundle_names_are_this_products_own() {
+        assert_eq!(PRODUCT.bundle_name, "VXN2.clap");
+        assert_eq!(PRODUCT.vst3.expect("vxn-2 ships a VST3").name, "VXN2");
     }
 
-    // 3. Locate the finished bundle. Our CMake stages it to VXN_OUTPUT_DIR, but
-    //    multi-config generators can also leave one under a `Release/` subdir;
-    //    find the newest `VXN2.vst3` under the build tree to be generator-proof.
-    let vst3 = find_vst3(&out_dir, &build_dir)?;
-
-    // 4. Copy to target/bundled/VXN2.vst3 (mirrors the CLAP output location).
-    let bundled = bundled_dir();
-    fs::create_dir_all(&bundled).map_err(io("create bundled dir"))?;
-    let dest = bundled.join(format!("{DISPLAY_NAME}.vst3"));
-    let _ = fs::remove_dir_all(&dest);
-    copy_dir_recursive(&vst3, &dest)?;
-    println!("bundled → {}", dest.display());
-
-    // 5. Optionally install to the user VST3 directory.
-    if install {
-        let dest_dir = vst3_install_dir()?;
-        fs::create_dir_all(&dest_dir).map_err(io("create VST3 install dir"))?;
-        let installed = dest_dir.join(format!("{DISPLAY_NAME}.vst3"));
-        copy_artifact(&dest, &installed)?;
-        println!("installed → {}", installed.display());
-    }
-    Ok(())
-}
-
-/// Path to the `vxn2-clap` static archive under a profile dir (the `.a`/`.lib`
-/// analogue of [`lib_path`]).
-fn static_lib_path(profile_dir: &Path) -> PathBuf {
-    if cfg!(target_os = "windows") {
-        profile_dir.join(format!("{LIB_NAME}.lib"))
-    } else {
-        profile_dir.join(format!("lib{LIB_NAME}.a"))
-    }
-}
-
-/// Build both macOS slices of the staticlib and `lipo` them into one fat
-/// archive; returns its path. The static analogue of [`build_universal`] — the
-/// wrapper force_loads a single archive, so the slices must be combined here.
-fn build_universal_static(root: &Path, release: bool) -> Result<PathBuf, String> {
-    const TRIPLES: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
-    let profile = if release { "release" } else { "debug" };
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-
-    let mut slices = Vec::new();
-    for triple in TRIPLES {
-        let mut build = Command::new(&cargo);
-        build
-            .current_dir(root)
-            .args(["build", "-p", CLAP_PACKAGE, "--target", triple]);
-        if release {
-            build.arg("--release");
-        }
-        let status = build
-            .status()
-            .map_err(|e| format!("failed to run cargo for {triple}: {e}"))?;
-        if !status.success() {
-            return Err(format!("cargo build failed for {triple}"));
-        }
-        let a = static_lib_path(&root.join("target").join(triple).join(profile));
-        if !a.exists() {
-            return Err(format!("{triple} static archive not found at {}", a.display()));
-        }
-        slices.push(a);
+    /// vxn-2 declares an older floor than vxn-1b, and the shared bundler must
+    /// not have quietly raised it.
+    #[test]
+    fn the_plist_keeps_this_products_macos_floor() {
+        let plist = PRODUCT.info_plist();
+        assert!(plist.contains("<string>10.13.0</string>"), "not vxn-1b's 11.0.0");
+        assert!(plist.contains("<key>CFBundleIdentifier</key><string>labs.vulpus.vxn2</string>"));
     }
 
-    let out_dir = root.join("target").join("universal").join(profile);
-    fs::create_dir_all(&out_dir).map_err(io("create universal dir"))?;
-    let out = out_dir.join(format!("lib{LIB_NAME}.a"));
-    let status = Command::new("lipo")
-        .arg("-create")
-        .args(&slices)
-        .arg("-output")
-        .arg(&out)
-        .status()
-        .map_err(|e| format!("failed to run lipo: {e}"))?;
-    if !status.success() {
-        return Err("lipo failed".into());
+    /// vxn-2 keeps a real debug path — 0311 removed vxn-1b's no-op `--release`,
+    /// but here the flag selects a profile that is actually built.
+    #[test]
+    fn both_profiles_name_a_cargo_directory() {
+        assert_eq!(Profile::Release.dir(), "release");
+        assert_eq!(Profile::Debug.dir(), "debug");
     }
-    Ok(out)
-}
-
-/// Error unless `cmake` is invokable, with an install hint.
-fn ensure_cmake() -> Result<(), String> {
-    Command::new("cmake")
-        .arg("--version")
-        .output()
-        .map(|_| ())
-        .map_err(|_| {
-            "cmake not found on PATH — install it (`brew install cmake`, or \
-             https://cmake.org/download/) to build the VST3"
-                .to_string()
-        })
-}
-
-/// On Windows, error unless the MSVC toolchain (`cl.exe`) is reachable, hinting
-/// at the Developer PowerShell. We deliberately don't locate and source
-/// `vcvars64.bat` ourselves. No-op on other platforms.
-fn ensure_msvc() -> Result<(), String> {
-    if !cfg!(target_os = "windows") {
-        return Ok(());
-    }
-    Command::new("cl.exe").output().map(|_| ()).map_err(|_| {
-        "MSVC compiler (cl.exe) not found on PATH — run xtask from a \
-         \"Developer PowerShell for VS 2022\" (or a shell where you've run \
-         vcvars64.bat) so the C++ toolchain and its INCLUDE/LIB env are set"
-            .to_string()
-    })
-}
-
-/// Error unless the `vendor/` submodules the wrapper CMake needs are checked
-/// out, pointing at the init command rather than letting CMake fail opaquely.
-fn ensure_submodules(root: &Path) -> Result<(), String> {
-    for sub in ["vendor/clap", "vendor/clap-wrapper", "vendor/vst3sdk"] {
-        let p = root.join(sub);
-        let empty = fs::read_dir(&p)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true);
-        if empty {
-            return Err(format!(
-                "submodule {sub} is missing or empty — run \
-                 `git submodule update --init --recursive`"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Whether `ninja` is invokable (preferred CMake generator when present).
-fn ninja_available() -> bool {
-    Command::new("ninja").arg("--version").output().is_ok()
-}
-
-/// Find the staged `VXN2.vst3` bundle. Prefer the copy our CMake stages into
-/// `out_dir`; fall back to the newest `VXN2.vst3` anywhere under the build tree
-/// (multi-config generators can place it under a `Release/` subdir).
-fn find_vst3(out_dir: &Path, build_dir: &Path) -> Result<PathBuf, String> {
-    let staged = out_dir.join(format!("{DISPLAY_NAME}.vst3"));
-    if staged.exists() {
-        return Ok(staged);
-    }
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    find_named_dirs(build_dir, &format!("{DISPLAY_NAME}.vst3"), &mut |p| {
-        let mtime = fs::metadata(p).and_then(|m| m.modified()).ok();
-        if let Some(t) = mtime {
-            if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) {
-                best = Some((t, p.to_path_buf()));
-            }
-        }
-    });
-    best.map(|(_, p)| p).ok_or_else(|| {
-        format!(
-            "{DISPLAY_NAME}.vst3 not found under {} after a successful build",
-            build_dir.display()
-        )
-    })
-}
-
-/// Recursively visit directories named `name` under `dir`, calling `f` on each.
-/// Does not descend into a matched directory (a bundle is a leaf for our needs).
-fn find_named_dirs(dir: &Path, name: &str, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            if entry.file_name() == *name {
-                f(&p);
-            } else {
-                find_named_dirs(&p, name, f);
-            }
-        }
-    }
-}
-
-/// The user VST3 install directory for the host platform.
-fn vst3_install_dir() -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") {
-        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-        Ok(PathBuf::from(home).join("Library/Audio/Plug-Ins/VST3"))
-    } else if cfg!(target_os = "windows") {
-        // Per-user VST3 path (`%LOCALAPPDATA%\Programs\Common\VST3`) rather than
-        // the machine-wide `%CommonProgramFiles%\VST3` — the latter needs admin
-        // and we install for the current user, matching the CLAP path.
-        let local = env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".to_string())?;
-        Ok(PathBuf::from(local).join(r"Programs\Common\VST3"))
-    } else {
-        let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-        Ok(PathBuf::from(home).join(".vst3"))
-    }
-}
-
-/// Copy a bundle (dir) or single-file plugin from `src` to `dest`, replacing
-/// any existing artifact. Used by the `--install` paths.
-fn copy_artifact(src: &Path, dest: &Path) -> Result<(), String> {
-    if src.is_dir() {
-        let _ = fs::remove_dir_all(dest);
-        copy_dir_recursive(src, dest)
-    } else {
-        let _ = fs::remove_file(dest);
-        fs::copy(src, dest).map(|_| ()).map_err(io("install copy"))
-    }
-}
-
-fn bundle(release: bool, universal: bool) -> Result<PathBuf, String> {
-    if universal && !cfg!(target_os = "macos") {
-        return Err("--universal is macOS-only".into());
-    }
-    let profile = if release { "release" } else { "debug" };
-    let root = workspace_root();
-
-    let lib = if universal {
-        build_universal(&root, release)?
-    } else {
-        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut build = Command::new(&cargo);
-        build
-            .current_dir(&root)
-            .args(["build", "-p", CLAP_PACKAGE]);
-        if release {
-            build.arg("--release");
-        }
-        let status = build
-            .status()
-            .map_err(|e| format!("failed to run cargo: {e}"))?;
-        if !status.success() {
-            return Err(format!("`cargo build -p {CLAP_PACKAGE}` failed"));
-        }
-        let l = lib_path(&root.join("target").join(profile));
-        if !l.exists() {
-            return Err(format!(
-                "expected library not found at {} (cross-compile target?)",
-                l.display()
-            ));
-        }
-        l
-    };
-
-    let bundle = bundle_path();
-    fs::create_dir_all(&bundled_dir()).map_err(io("create bundled dir"))?;
-
-    if cfg!(target_os = "macos") {
-        let _ = fs::remove_dir_all(&bundle);
-        let macos_dir = bundle.join("Contents").join("MacOS");
-        fs::create_dir_all(&macos_dir).map_err(io("create Contents/MacOS"))?;
-        fs::copy(&lib, macos_dir.join(PLUGIN_NAME)).map_err(io("copy dylib into bundle"))?;
-        fs::write(bundle.join("Contents").join("Info.plist"), info_plist())
-            .map_err(io("write Info.plist"))?;
-        fs::write(bundle.join("Contents").join("PkgInfo"), "BNDL????")
-            .map_err(io("write PkgInfo"))?;
-
-        // Stage the HTML faceplate assets into Contents/Resources/ so a
-        // developer can iterate on CSS/JS without rebuilding the cdylib:
-        // with VXN2_DEV_ASSETS=1 set in the host's environment, the editor
-        // reads from the bundle path instead of its `include_str!` embed.
-        // Production users never set the env var and run from the embed.
-        // Windows/Linux dev hot-reload is a follow-up (E013 out-of-scope).
-        let assets_src = workspace_root()
-            .join("vxn-2")
-            .join("crates")
-            .join("vxn2-ui-web")
-            .join("assets");
-        if !assets_src.is_dir() {
-            return Err(format!(
-                "expected ui-web assets at {}, but the directory is missing",
-                assets_src.display()
-            ));
-        }
-        let resources_dir = bundle.join("Contents").join("Resources");
-        copy_dir_recursive(&assets_src, &resources_dir)?;
-    } else {
-        // Windows/Linux: a CLAP is just the shared library with a .clap name.
-        let _ = fs::remove_file(&bundle);
-        fs::copy(&lib, &bundle).map_err(io("copy library"))?;
-    }
-
-    Ok(bundle)
-}
-
-fn install() -> Result<(), String> {
-    let dest = install_dest()?;
-    let src = bundle_path();
-
-    // Always re-bundle in release mode. Cargo's own freshness check makes the
-    // build a no-op when nothing has changed; the bundle copy after it is cheap.
-    bundle(true, false)?;
-
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(io("create install parent"))?;
-    }
-    let _ = fs::remove_dir_all(&dest);
-    copy_dir_recursive(&src, &dest)?;
-    println!("installed → {}", dest.display());
-    Ok(())
-}
-
-fn uninstall() -> Result<(), String> {
-    let dest = install_dest()?;
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(io("remove install"))?;
-        println!("uninstalled → {}", dest.display());
-    } else {
-        println!("nothing to uninstall at {}", dest.display());
-    }
-    Ok(())
-}
-
-/// Build both macOS slices and `lipo` them into one fat dylib; returns its path.
-/// Each target's dylib lands under `target/<triple>/<profile>/`; the combined
-/// binary is written to `target/universal/<profile>/`.
-fn build_universal(root: &Path, release: bool) -> Result<PathBuf, String> {
-    const TRIPLES: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
-    let profile = if release { "release" } else { "debug" };
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-
-    let mut slices = Vec::new();
-    for triple in TRIPLES {
-        let mut build = Command::new(&cargo);
-        build
-            .current_dir(root)
-            .args(["build", "-p", CLAP_PACKAGE, "--target", triple]);
-        if release {
-            build.arg("--release");
-        }
-        let status = build
-            .status()
-            .map_err(|e| format!("failed to run cargo for {triple}: {e}"))?;
-        if !status.success() {
-            return Err(format!("cargo build failed for {triple}"));
-        }
-        let lib = lib_path(&root.join("target").join(triple).join(profile));
-        if !lib.exists() {
-            return Err(format!("{triple} library not found at {}", lib.display()));
-        }
-        slices.push(lib);
-    }
-
-    let out_dir = root.join("target").join("universal").join(profile);
-    fs::create_dir_all(&out_dir).map_err(io("create universal dir"))?;
-    let out = out_dir.join(format!("lib{LIB_NAME}.dylib"));
-    let status = Command::new("lipo")
-        .arg("-create")
-        .args(&slices)
-        .arg("-output")
-        .arg(&out)
-        .status()
-        .map_err(|e| format!("failed to run lipo: {e}"))?;
-    if !status.success() {
-        return Err("lipo failed".into());
-    }
-    Ok(out)
-}
-
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(io("mkdir"))?;
-    for entry in fs::read_dir(src).map_err(io("read_dir"))? {
-        let entry = entry.map_err(io("dir entry"))?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            fs::copy(&from, &to).map_err(io("copy file"))?;
-        }
-    }
-    Ok(())
-}
-
-fn info_plist() -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key><string>English</string>
-    <key>CFBundleExecutable</key><string>{PLUGIN_NAME}</string>
-    <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
-    <key>CFBundleName</key><string>{DISPLAY_NAME}</string>
-    <key>CFBundlePackageType</key><string>BNDL</string>
-    <key>CFBundleVersion</key><string>{version}</string>
-    <key>CFBundleShortVersionString</key><string>{version}</string>
-    <key>CFBundleSupportedPlatforms</key>
-    <array><string>MacOSX</string></array>
-    <key>LSMinimumSystemVersion</key><string>10.13.0</string>
-</dict>
-</plist>
-"#,
-        version = env!("CARGO_PKG_VERSION"),
-    )
-}
-
-fn io(ctx: &'static str) -> impl Fn(std::io::Error) -> String {
-    move |e| format!("{ctx}: {e}")
 }

@@ -58,6 +58,16 @@ pub struct Product {
     pub min_macos: &'static str,
     /// VST3 support, or `None` for a CLAP-only product.
     pub vst3: Option<Vst3>,
+    /// Directory (relative to the workspace root) staged into the macOS
+    /// bundle's `Contents/Resources/`, or `None` for a product whose assets are
+    /// only ever `include_str!`-embedded.
+    ///
+    /// vxn-2 uses it for dev hot-reload: with `VXN2_DEV_ASSETS=1` the editor
+    /// reads CSS/JS from the bundle instead of its embed, so a designer can
+    /// iterate without rebuilding the cdylib. Production never sets the var.
+    /// **This field is why `Product` is not just names** — the first cut of
+    /// 0317 dropped the staging, and the bundle still built and still loaded.
+    pub resources_dir: Option<&'static str>,
 }
 
 /// The VST3 half of a [`Product`], for the ones that have one.
@@ -406,6 +416,26 @@ impl Product {
         Ok(())
     }
 
+    /// Stage `resources_dir` into the bundle, if this product has one.
+    ///
+    /// Errors rather than skipping when the directory is missing: a silently
+    /// empty `Resources/` is a dev-assets path that fails only when someone
+    /// sets the env var, which is exactly when they are least able to explain
+    /// it.
+    fn stage_resources(&self, root: &Path, bundle_path: &Path) -> Result<(), String> {
+        let Some(rel) = self.resources_dir else {
+            return Ok(());
+        };
+        let src = root.join(rel);
+        if !src.is_dir() {
+            return Err(format!(
+                "expected bundle resources at {}, but the directory is missing",
+                src.display()
+            ));
+        }
+        copy_dir_recursive(&src, &bundle_path.join("Contents").join("Resources"))
+    }
+
     /// The bundle's `Info.plist`. `CFBundleExecutable` must match the file the
     /// bundle actually contains.
     pub fn info_plist(&self) -> String {
@@ -474,6 +504,7 @@ impl Product {
 
         if cfg!(target_os = "macos") {
             self.build_macos_bundle(&clap_path, &lib)?;
+            self.stage_resources(root, &clap_path)?;
         } else {
             // Linux/Windows: a CLAP is just the shared library with a .clap name.
             let _ = fs::remove_file(&clap_path);
@@ -752,6 +783,7 @@ mod tests {
         clap_package: "vxnX-clap",
         version: "9.9.9",
         min_macos: "11.0.0",
+        resources_dir: None,
         vst3: Some(Vst3 {
             name: "VXNX",
             wrapper_dir: "vxn-X/wrapper",
@@ -830,6 +862,20 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(e, "vst3: cmake exploded");
+    }
+
+    /// A product that declares a resources dir must fail loudly when it is
+    /// absent — the failure mode otherwise is an empty `Resources/` that only
+    /// bites the person who sets the dev-assets env var.
+    #[test]
+    fn missing_bundle_resources_are_an_error_not_an_empty_dir() {
+        let with_res = Product { resources_dir: Some("no/such/dir"), ..P };
+        let e = with_res
+            .stage_resources(Path::new("/definitely/not/here"), Path::new("/tmp/x.clap"))
+            .unwrap_err();
+        assert!(e.contains("directory is missing"), "got: {e}");
+        // ...and a product without one stages nothing and succeeds.
+        assert!(P.stage_resources(Path::new("/nope"), Path::new("/tmp/x.clap")).is_ok());
     }
 
     #[test]
