@@ -131,3 +131,78 @@ and grouping under another.
   checking each claim against the code rather than by taste.
 - Several stale test *names* still say `assign_mode`. Renaming them is in scope;
   changing what they assert is not.
+
+## Close-out (2026-08-27)
+
+Rule 1 held throughout: where a count was wrong, the fix names the const
+(`RenderBank::LANES`, `Synth::BANKS`, `crate::MAX_VOICES`, `Voices::CAPACITY`,
+`crate::CHANNELS_PER_LAYER`) rather than writing today's number and setting up
+the same bug for 0264's successor. Rule 2 held too — the doc moved to match the
+code everywhere except `synth.rs:237`, where the misplaced `#[inline]` was the
+point.
+
+- **The three self-contradicting comments.**
+  [host-runner.mjs:8](../../vxn-1b/crates/vxn1b-wasm/web/host-runner.mjs#L8) no
+  longer claims re-instantiation — the runner holds the bytes and SABs for
+  construction and teardown, and the 0297 banner below is now the only word on
+  traps.
+  [coordinator.mjs's `"trap"` case](../../vxn-1b/crates/vxn1b-wasm/web/coordinator.mjs#L261)
+  says `ready` is cleared for good and reload is the only recovery; the
+  "controller has to re-broadcast it" / "bridge listens for this" claims are
+  gone, because `boot()`'s `onTrap` only reports.
+  [vxn1b-clap/src/lib.rs:3](../../vxn-1b/crates/vxn1b-clap/src/lib.rs#L3) names
+  `clap.gui` and the E038 faceplate, keeping the generic-UI fallback as the
+  fallback it now is; `:207`'s "(future) editor" likewise.
+- **Engine shape.** `bank.rs`'s width and scope paragraphs, `matrix.rs`'s "flat
+  16-voice … so no stacks/lanes" (the conclusion — no granularity tiers — is
+  still true, so the premise was replaced rather than the paragraph deleted; a
+  stacked note's lanes are ordinary lanes), `voice.rs:211` / `:763` / `:129` /
+  `:335`, `synth.rs:198`, `lib.rs:8`, `mod_smoothing.rs:20`.
+- **`vxn-dsp` was carrying the same bug** and was not on the ticket's list:
+  `PolyOscillator`, `PolySub`, `PolyOtaLadder` and `PolyNoise` all said
+  "16-voice" with `const N: usize = CHANNELS_PER_LAYER` = 8 directly above them.
+  In scope under the `vxn-1b/**` criterion; fixed the same way.
+- **`lfo2_phase` has its doc and its `#[inline]`; `is_silent` has its own**
+  ([synth.rs:237](../../vxn-1b/crates/vxn1b-engine/src/synth.rs#L237)). The
+  functions were reordered so each attribute sits on its own item — this is the
+  one place code moved, and it un-breaks an `#[inline]` on a per-control-block
+  call.
+- **`css_covers_every_control_primitive`'s doc sits on the test**
+  ([lib.rs](../../vxn-1b/crates/vxn1b-ui-web/src/lib.rs)); `rule_heads` keeps
+  its own.
+- **`factory.rs`: enforced, not just corrected.** The module doc now states
+  plainly that two different fields carry a category — the browser groups on
+  `[meta] category`, the directory name only sorts — and
+  `factory::tests::the_directory_is_the_meta_category` asserts they agree for
+  every embedded preset. Passes on the shipped bank unchanged, which is what
+  the ticket predicted; the value is that a moved file now fails loudly.
+- **Smaller items, all corrected:** `resyncEngine`'s doc names its real caller
+  (the gesture gate, after `host.start()` resolves — which is *before* the
+  worklet posts `ready`); web-controller's "clone out of `pending` to satisfy
+  the borrow checker" now describes the `mem::replace` that is there precisely
+  to avoid a clone; `controller.mjs:24` says `patchCount` is stored for the boot
+  handshake, not read for the id split (the page gets `__PATCH_COUNT__` baked in
+  from Rust); `xtask`'s two stacked `VST3_NAME` docs merged into one;
+  `faceplate.css:91`'s `.fader-scale-lg` replaced with the selector that
+  actually carries the large scale (`.row-global-1, .row-global-2`); `:606`'s
+  Cross Mod panel (folded into Voice by 0282) dropped from the uniformity list;
+  `:1072`'s `AssignMode` button-group example replaced with Voice's stack
+  width; `discrete.js:2` no longer claims the FX tab strip (it is
+  `dispatch.js::wireTabs`); `discrete.js:61`'s `.route-col` replaced — both
+  `data-no-label` and `data-order` are supported-but-unused on ButtonGroup, and
+  the doc now says so rather than inventing a user.
+- **Acceptance sweep.** `grep -rn '16-voice|16 voices|full 16|16-wide|16-lane'`
+  over `vxn-1b/` (excluding `adrs/`) → **nothing**. `AssignMode` /
+  `assign mode` survives in eight places, every one a deliberate historical or
+  comparative statement that is *true*: `README.md` and `params.rs` describing
+  what VXN1 had, `state.rs` and `preset.rs` describing the legacy TOML key the
+  loader still migrates, `bank.rs` / `voice.rs` / `faceplate.css` /
+  `faceplate.html` naming what 0266 split. No stale test names remain —
+  `legacy_assign_mode_maps_onto_width_and_voice_mode` and
+  `unrecognised_legacy_assign_mode_warns` are correctly named for what they
+  assert.
+- **Verification.** No new rustdoc warnings: `cargo doc --no-deps` gives 23
+  warnings for `vxn1b-engine` and 12 for `vxn-dsp`, identical to a stashed
+  working tree. `cargo test` over the five touched crates: 469 pass, 0 fail.
+  `node --test .../web/*.test.mjs`: 148 pass, 0 skipped. Doc-only apart from the
+  `#[inline]` move and the new factory test, so no DAW pass.

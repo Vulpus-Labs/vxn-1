@@ -110,7 +110,7 @@ independent of each other and of the refactors.
 - [x] **0313** *(vxn-1b, high)* — Pass `RenderView` into `RenderBank::render`,
       then split the 452-line body at its own phase banners; derive `BlockCtx`'s
       four cross-mod fields from the one enum.
-- [ ] **0314** *(vxn-1b, high)* — Correct the module docs that are factually
+- [x] **0314** *(vxn-1b, high)* — Correct the module docs that are factually
       wrong. Correctness, not style.
 - [ ] **0315** *(vxn-1b, low)* — War-story sweep: keep the constraint, drop the
       event. ~370 ticket refs, 12 quoted narrative blocks.
