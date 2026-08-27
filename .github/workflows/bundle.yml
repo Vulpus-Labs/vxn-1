@@ -7,9 +7,12 @@ name: Bundle
 # (`xtask --format clap,vst3`, tickets 0011/0012); a failed VST3 build fails the
 # job — it is a shipping artifact, not a side experiment (ticket 0014).
 #
-# Covers vxn-1 and vxn-1b. Each VST3 is checked for its bundle id after linking:
-# /OPT:REF once stripped the whole-archived staticlib out of every Windows .vst3
-# and the link still SUCCEEDED, so "it built" proves nothing (0321).
+# Covers vxn-1b, vxn-2 and vxn-3. Each VST3 is checked for its bundle id after
+# linking: /OPT:REF once stripped the whole-archived staticlib out of every
+# Windows .vst3 and the link still SUCCEEDED, so "it built" proves nothing
+# (0321). vxn-1's jobs were still here after it was archived, building a
+# directory that no longer existed — deleted, and vxn-2/vxn-3 given the seats
+# they should have had all along (0317).
 on:
   push:
     branches: [main]
@@ -23,11 +26,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  macos:
-    name: macOS (universal — CLAP + VST3)
+  macos-vxn2:
+    name: macOS vxn-2 (universal — CLAP + VST3)
     runs-on: macos-14
     steps:
-      # clap-wrapper + vst3sdk must be present before xtask invokes CMake.
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -40,40 +42,39 @@ jobs:
         with:
           workspaces: .
 
-      # CMake ships on the macOS runner image; Ninja does not — install it so the
-      # wrapper build uses the fast single-config generator (xtask falls back to
-      # the default generator if absent, but Ninja keeps us under the build-time
-      # budget).
       - name: Install Ninja
         run: brew install ninja
 
+      # vxn-2 keeps a `cargo xtask` alias in `vxn-2/.cargo/config.toml`, which
+      # only resolves from that directory — hence the working-directory rather
+      # than vxn-1b's package-name form.
       - name: Build universal CLAP + VST3
-        working-directory: vxn-1
+        working-directory: vxn-2
         run: cargo xtask bundle --release --format clap,vst3 --universal
 
       - name: Verify the VST3 embeds the engine
         run: |
-          BIN=target/bundled/VXN1.vst3/Contents/MacOS/VXN1
-          strings -a "$BIN" | grep -q 'labs.vulpus.vxn1' \
-            || { echo "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"; exit 1; }
-          echo "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($(stat -f%z "$BIN") bytes)"
+          BIN=target/bundled/VXN2.vst3/Contents/MacOS/VXN2
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn2' \
+            || { echo "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"; exit 1; }
+          echo "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($(stat -f%z "$BIN") bytes)"
 
       - name: Upload CLAP
         uses: actions/upload-artifact@v4
         with:
-          name: VXN1-macOS-universal-clap
-          path: target/bundled/VXN1.clap
+          name: VXN2-macOS-universal-clap
+          path: target/bundled/VXN2.clap
           if-no-files-found: error
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
-          name: VXN1-macOS-universal-vst3
-          path: target/bundled/VXN1.vst3
+          name: VXN2-macOS-universal-vst3
+          path: target/bundled/VXN2.vst3
           if-no-files-found: error
 
-  windows:
-    name: Windows (x86_64 — CLAP + VST3)
+  windows-vxn2:
+    name: Windows vxn-2 (x86_64 — CLAP + VST3)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,45 +87,75 @@ jobs:
         with:
           workspaces: .
 
-      # MSVC env (cl.exe + the VS-bundled Ninja/CMake on PATH) so the wrapper
-      # CMake builds under Ninja + MSVC. xtask's ensure_msvc preflight requires
-      # cl.exe; this provides it.
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      # CMake ships on the windows runner image; ensure Ninja is present too
-      # (msvc-dev-cmd exposes the VS copy, but install explicitly so the
-      # generator choice is not image-dependent).
       - name: Install Ninja
         run: choco install ninja -y --no-progress
 
       - name: Build CLAP + VST3
-        working-directory: vxn-1
+        working-directory: vxn-2
         run: cargo xtask bundle --release --format clap,vst3
 
+      # The configuration that shipped hollow: /OPT:REF stripped the
+      # whole-archived staticlib and the link still succeeded.
       - name: Verify the VST3 embeds the engine
         shell: pwsh
         run: |
-          $bin = "target/bundled/VXN1.vst3/Contents/x86_64-win/VXN1.vst3"
+          $bin = "target/bundled/VXN2.vst3/Contents/x86_64-win/VXN2.vst3"
           $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($bin))
-          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn1')) {
-            Write-Output "::error::VXN1.vst3 does not contain labs.vulpus.vxn1 — the staticlib was not force-loaded"
+          if ($text -notmatch [regex]::Escape('labs.vulpus.vxn2')) {
+            Write-Output "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"
             exit 1
           }
-          Write-Output "ok: VXN1.vst3 embeds labs.vulpus.vxn1 ($((Get-Item $bin).Length) bytes)"
+          Write-Output "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($((Get-Item $bin).Length) bytes)"
 
       - name: Upload CLAP
         uses: actions/upload-artifact@v4
         with:
-          name: VXN1-windows-x64-clap
-          path: target/bundled/VXN1.clap
+          name: VXN2-windows-x64-clap
+          path: target/bundled/VXN2.clap
           if-no-files-found: error
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
-          name: VXN1-windows-x64-vst3
-          path: target/bundled/VXN1.vst3
+          name: VXN2-windows-x64-vst3
+          path: target/bundled/VXN2.vst3
+          if-no-files-found: error
+
+  # vxn-3 is CLAP-only and macOS-only — it has no wrapper directory and no
+  # Windows path yet, so there is no VST3 job and nothing to strings-check. The
+  # job exists so its bundler is exercised on every push like the other two.
+  macos-vxn3:
+    name: macOS vxn-3 (CLAP)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build CLAP
+        working-directory: vxn-3
+        run: cargo xtask bundle
+
+      - name: Verify the bundle carries the engine
+        run: |
+          BIN=target/release/vxn3.clap/Contents/MacOS/vxn3
+          test -f "$BIN" || { echo "::error::vxn3.clap has no executable"; exit 1; }
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn3' \
+            || { echo "::error::vxn3.clap does not contain labs.vulpus.vxn3"; exit 1; }
+          echo "ok: vxn3.clap embeds labs.vulpus.vxn3 ($(stat -f%z "$BIN") bytes)"
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN3-macOS-clap
+          path: target/release/vxn3.clap
           if-no-files-found: error
 
   macos-vxn1b:
