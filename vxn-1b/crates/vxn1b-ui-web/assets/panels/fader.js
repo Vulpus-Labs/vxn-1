@@ -151,56 +151,54 @@ export function subdivisionLabel(norm) {
 // value, so the CSS transition always sweeps along the populated arc.
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 
-export function makeWave(el, id, desc) {
-  const label = el.dataset.label || desc.label;
-  const variants = desc.variants || [];
-  el.innerHTML = `<div class="ctl-label">${label.toUpperCase()}</div>`;
+/// Wave-selector geometry, in the SVG's own 64×64 user units. Prefixed like the
+/// dial's constants below because everything in this file lands in one flat
+/// script scope once spliced.
+const WAVE_SIZE = 64;
+const WAVE_CX = WAVE_SIZE / 2;
+const WAVE_CY = WAVE_SIZE / 2;
+/// Knob face radius; the indicator line stops 2 units short of it.
+const WAVE_KNOB_R = 13;
+/// Radius the glyph labels sit on, and their box.
+const WAVE_GLYPH_R = 26;
+const WAVE_GLYPH_W = 14;
+const WAVE_GLYPH_H = 10;
+/// 270° arc with a 90° gap at the bottom. Angles measured in degrees CW from
+/// "straight up" (0°), so -135° = SW corner, +135° = SE.
+const WAVE_ARC_START = -135;
+const WAVE_ARC_SWEEP = 270;
 
-  const size = 64;
-  const cx = size / 2, cy = size / 2;
-  const knobR = 13;
-  const glyphR = 26;
-  const glyphW = 14, glyphH = 10;
+/// Where each variant sits on the arc: `degAt(i)` for variant `i`, evenly
+/// spaced across the sweep. A single-variant control parks at the start rather
+/// than dividing by zero.
+function waveArc(count) {
+  const step = count > 1 ? WAVE_ARC_SWEEP / (count - 1) : 0;
+  return { degAt: (i) => WAVE_ARC_START + i * step };
+}
 
-  // 270° arc with a 90° gap at the bottom. Angles measured in degrees CW
-  // from "straight up" (0°), so -135° = SW corner, +135° = SE.
-  const ARC_START = -135;
-  const ARC_SWEEP = 270;
-  const N = variants.length;
-  const STEP_DEG = N > 1 ? ARC_SWEEP / (N - 1) : 0;
-  const variantDeg = (i) => ARC_START + i * STEP_DEG;
-
-  let value = 0;
-  let displayedAngle = variantDeg(0);
-  let lastDisplay = variants[0] || '';
-
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('width', size);
-  svg.setAttribute('height', size);
-  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
-  svg.classList.add('ctl-wave');
-  el.appendChild(svg);
-
-  // Glyph labels along the arc. Transparent rect behind the path makes
-  // the whole label area clickable, not just the stroked pixels.
-  const glyphEls = variants.map((name, i) => {
-    const a = variantDeg(i) * Math.PI / 180;
-    const gx = cx + glyphR * Math.sin(a);
-    const gy = cy - glyphR * Math.cos(a);
+/// The glyph labels along the arc, one `<g>` per variant, appended in order.
+/// A transparent rect behind each path makes the whole label area clickable
+/// rather than just the stroked pixels; the pointerdown stops propagation so
+/// the knob's drag never sees a glyph pick.
+function buildWaveGlyphs(svg, arc, variants, id) {
+  return variants.map((name, i) => {
+    const a = arc.degAt(i) * Math.PI / 180;
+    const gx = WAVE_CX + WAVE_GLYPH_R * Math.sin(a);
+    const gy = WAVE_CY - WAVE_GLYPH_R * Math.cos(a);
     const g = document.createElementNS(SVG_NS, 'g');
     g.setAttribute('transform',
-      `translate(${(gx - glyphW / 2).toFixed(2)} ${(gy - glyphH / 2).toFixed(2)})`);
+      `translate(${(gx - WAVE_GLYPH_W / 2).toFixed(2)} ${(gy - WAVE_GLYPH_H / 2).toFixed(2)})`);
     g.setAttribute('cursor', 'pointer');
 
     const hit = document.createElementNS(SVG_NS, 'rect');
     hit.setAttribute('x', -3); hit.setAttribute('y', -3);
-    hit.setAttribute('width',  glyphW + 6);
-    hit.setAttribute('height', glyphH + 6);
+    hit.setAttribute('width',  WAVE_GLYPH_W + 6);
+    hit.setAttribute('height', WAVE_GLYPH_H + 6);
     hit.setAttribute('fill', 'transparent');
     g.appendChild(hit);
 
     const path = document.createElementNS(SVG_NS, 'path');
-    const d = glyphPath(name, glyphW, glyphH);
+    const d = glyphPath(name, WAVE_GLYPH_W, WAVE_GLYPH_H);
     if (d) {
       path.setAttribute('d', d);
       path.setAttribute('fill', 'none');
@@ -219,37 +217,66 @@ export function makeWave(el, id, desc) {
     svg.appendChild(g);
     return { g, path, name };
   });
+}
 
-  // Knob face: rim + inner dimple, both purely visual.
+/// Knob face: rim + inner dimple, both purely visual and neither retained.
+function buildWaveFace(svg) {
   const rim = document.createElementNS(SVG_NS, 'circle');
-  rim.setAttribute('cx', cx); rim.setAttribute('cy', cy);
-  rim.setAttribute('r', knobR);
+  rim.setAttribute('cx', WAVE_CX); rim.setAttribute('cy', WAVE_CY);
+  rim.setAttribute('r', WAVE_KNOB_R);
   rim.setAttribute('fill', 'var(--knob-face)');
   rim.setAttribute('stroke', 'var(--knob-rim)');
   rim.setAttribute('stroke-width', 1);
   svg.appendChild(rim);
 
   const dimple = document.createElementNS(SVG_NS, 'circle');
-  dimple.setAttribute('cx', cx); dimple.setAttribute('cy', cy);
-  dimple.setAttribute('r', knobR * 0.62);
+  dimple.setAttribute('cx', WAVE_CX); dimple.setAttribute('cy', WAVE_CY);
+  dimple.setAttribute('r', WAVE_KNOB_R * 0.62);
   dimple.setAttribute('fill', 'var(--knob-dimple)');
   dimple.setAttribute('stroke', 'var(--knob-dimple-rim)');
   dimple.setAttribute('stroke-width', 0.5);
   svg.appendChild(dimple);
+}
 
-  // Rotating indicator — a line from centre to rim, rotated by a <g>.
-  // CSS transition smooths automation moves between detents.
+/// Rotating indicator — a line from centre to rim, rotated by the `<g>` this
+/// returns. CSS transition on the group smooths automation moves between
+/// detents.
+function buildWaveIndicator(svg) {
   const indicatorG = document.createElementNS(SVG_NS, 'g');
-  indicatorG.setAttribute('transform-origin', `${cx} ${cy}`);
+  indicatorG.setAttribute('transform-origin', `${WAVE_CX} ${WAVE_CY}`);
   indicatorG.style.transition = `transform ${KNOB_INDICATOR_TRANSITION_MS}ms ease-out`;
   const indicator = document.createElementNS(SVG_NS, 'line');
-  indicator.setAttribute('x1', cx); indicator.setAttribute('y1', cy);
-  indicator.setAttribute('x2', cx); indicator.setAttribute('y2', cy - knobR + 2);
+  indicator.setAttribute('x1', WAVE_CX); indicator.setAttribute('y1', WAVE_CY);
+  indicator.setAttribute('x2', WAVE_CX); indicator.setAttribute('y2', WAVE_CY - WAVE_KNOB_R + 2);
   indicator.setAttribute('stroke', 'var(--knob-indicator)');
   indicator.setAttribute('stroke-width', 2);
   indicator.setAttribute('stroke-linecap', 'round');
   indicatorG.appendChild(indicator);
   svg.appendChild(indicatorG);
+  return indicatorG;
+}
+
+export function makeWave(el, id, desc) {
+  const label = el.dataset.label || desc.label;
+  const variants = desc.variants || [];
+  el.innerHTML = `<div class="ctl-label">${label.toUpperCase()}</div>`;
+
+  const arc = waveArc(variants.length);
+  let value = 0;
+  let lastDisplay = variants[0] || '';
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('width', WAVE_SIZE);
+  svg.setAttribute('height', WAVE_SIZE);
+  svg.setAttribute('viewBox', `0 0 ${WAVE_SIZE} ${WAVE_SIZE}`);
+  svg.classList.add('ctl-wave');
+  el.appendChild(svg);
+
+  // Append order is paint order: glyphs first, then the face over them, then
+  // the indicator on top.
+  const glyphEls = buildWaveGlyphs(svg, arc, variants, id);
+  buildWaveFace(svg);
+  const indicatorG = buildWaveIndicator(svg);
 
   // ── Hover + vertical-drag rotation (no wrap) ───────────────────────────
   // Glyph hits stopPropagation; the knob face falls through to wireDrag.
@@ -281,8 +308,7 @@ export function makeWave(el, id, desc) {
 
   function applyValue(v, display) {
     value = v;
-    displayedAngle = variantDeg(v);
-    indicatorG.setAttribute('transform', `rotate(${displayedAngle.toFixed(2)})`);
+    indicatorG.setAttribute('transform', `rotate(${arc.degAt(v).toFixed(2)})`);
     glyphEls.forEach((g, i) => {
       g.path.setAttribute('stroke',
         i === v ? 'var(--glyph-active)' : 'var(--glyph)');
