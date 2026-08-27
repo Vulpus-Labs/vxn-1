@@ -183,8 +183,9 @@ started allocating.
 `busy_profile` 16.0× / 15.9× against a ~15.9–16.2× baseline — unchanged, as
 expected for deleting code that never ran.
 
-**Outstanding:** the manual DAW pass ([[verify-audio-in-reaper]]). Voice
-stealing has an audible signature and no test proves the *feel* of it; play past
-the voice limit and confirm nothing changed. Low risk — the deleted path did not
-run — but "did not run" is exactly the claim worth being sure about in a shipped
-synth.
+**Manual DAW pass ([[verify-audio-in-reaper]]): done 2026-08-27, no change
+heard.** Voice stealing has an audible signature and no test proves the *feel*
+of it, so playing past the voice limit was the check that mattered — and it
+confirms the claim the whole ticket rested on: the deleted allocation path did
+not run. Closed on test evidence a day earlier; this is the confirmation, not a
+caveat.

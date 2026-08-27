@@ -215,7 +215,9 @@ Verified: `vxn1b-engine` 305 pass, plus `alloc_free`, `zipper_regression`,
 that would catch a transposed slice while the change removes the ability to
 introduce one.
 
-**Outstanding:** the manual DAW pass ([[verify-audio-in-reaper]]) with a
-stacked, detuned, cross-modulated patch. Nothing here changes an audio path and
-the parity suites are green, but this ticket reordered how per-lane slices reach
-the render bank, and that patch is what exercises every one of them.
+**Manual DAW pass ([[verify-audio-in-reaper]]): done 2026-08-27, no change
+heard.** A stacked, detuned, cross-modulated patch — the one that exercises
+every per-lane slice this ticket reordered (velocity, pressure, note_random,
+detune_cents, stack_pos). That is the check the parity suites cannot make: a
+transposed pair would still have rendered, just wrongly, and only stacked
+detuned notes make the difference audible.
