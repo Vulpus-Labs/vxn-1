@@ -8,6 +8,7 @@
 //! external dependencies; uses `std` (matches both consumer synths — strict
 //! `no_std` would force `libm` and bring no real win at this layer).
 
+pub mod dirty;
 pub mod ftz;
 pub mod halfband;
 pub mod limiter;
@@ -18,6 +19,7 @@ pub mod scope;
 pub mod smoothing;
 pub mod sync;
 
+pub use dirty::{DirtyBits, words_for};
 pub use ftz::ScopedFlushToZero;
 pub use halfband::{DEFAULT_CENTRE, DEFAULT_TAPS, HalfbandFir, Oversampler, roundtrip_latency_base_samples};
 pub use limiter::StereoLimiter;

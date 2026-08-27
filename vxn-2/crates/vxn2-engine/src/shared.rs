@@ -22,6 +22,7 @@
 //! reads, no allocation.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use vxn_core_utils::dirty::{DirtyBits, words_for};
 
 use vxn2_dsp::delay::StereoDelayParams;
 use vxn2_dsp::eg::EgCurve;
@@ -305,30 +306,14 @@ const GESTURE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
 /// Dirty-bitset word count for the value table. One bit per CLAP id;
 /// flipped on every `set` / `set_normalised` / `set_matrix_row_raw` write
 /// and drained by the main-thread tick.
-pub const N_DIRTY_VALUE_WORDS: usize = (TOTAL_PARAMS + 63) / 64;
+pub const N_DIRTY_VALUE_WORDS: usize = words_for(TOTAL_PARAMS);
 
-/// Mask of the valid bits in dirty-value word `w` (out-of-range bits in
-/// the last word stay zero so a full re-broadcast doesn't emit phantom
-/// ids past [`TOTAL_PARAMS`]).
-#[inline]
-const fn dirty_values_full_word(w: usize) -> u64 {
-    let start = w * 64;
-    if start >= TOTAL_PARAMS {
-        0
-    } else {
-        let n = TOTAL_PARAMS - start;
-        if n >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << n) - 1
-        }
-    }
-}
+/// The value-table change channel. Tail-word masking and the drain walk live
+/// in [`DirtyBits`] (ticket 0299); this is the vxn-2 sizing of it.
+type DirtyValues = DirtyBits<N_DIRTY_VALUE_WORDS, TOTAL_PARAMS>;
 
-/// All matrix-slot dirty bits set (16-bit fully-occupied mask). Used to
-/// force a whole-table `MatrixSnapshot` after a bulk store (state load,
-/// reset to defaults, first tick post-init).
-const DIRTY_MATRIX_ALL: u64 = (1u64 << N_MATRIX_SLOTS) - 1;
+/// The matrix-slot change channel — one bit per slot, well inside one word.
+type DirtyMatrix = DirtyBits<{ words_for(N_MATRIX_SLOTS) }, N_MATRIX_SLOTS>;
 
 /// Lock-free param store. Sized to [`TOTAL_PARAMS`]. Cheap to
 /// share via `Arc` — every field is an atomic.
@@ -361,13 +346,13 @@ pub struct SharedParams {
     ///
     /// Seeded with every valid bit set so the first tick after open
     /// broadcasts the whole table.
-    dirty_values: [AtomicU64; N_DIRTY_VALUE_WORDS],
+    dirty_values: DirtyValues,
     /// Dirty bitset for matrix-slot topology (one bit per slot). Any
     /// non-zero word triggers a whole-table `MatrixSnapshot` push on the
     /// next tick. Slot bits cover both meta drift and the slot-9-16
     /// depth side-table; slot 1-8 depth drift also rides
     /// [`dirty_values`] (its CLAP id lives in [`OFF_MTX`]).
-    dirty_matrix: AtomicU64,
+    dirty_matrix: DirtyMatrix,
     /// Per-op, per-side KS level-curve selectors packed 2 bits each
     /// (`N_OPS * 2` fields). Non-CLAP / non-automatable patch state —
     /// persisted in the blob trailer and the preset `params` table,
@@ -431,8 +416,8 @@ impl SharedParams {
             // Full-broadcast seed: first tick after open pushes every id
             // + a MatrixSnapshot, hydrating the editor with current
             // state without a bespoke push from the caller.
-            dirty_values: std::array::from_fn(|w| AtomicU64::new(dirty_values_full_word(w))),
-            dirty_matrix: AtomicU64::new(DIRTY_MATRIX_ALL),
+            dirty_values: DirtyValues::new_all_set(),
+            dirty_matrix: DirtyMatrix::new_all_set(),
             ks_curve_meta: AtomicU32::new(default_ks_curve_meta()),
             // Seed dirty so the first tick pushes a KsCurveSnapshot alongside
             // the full value + matrix re-broadcast.
@@ -487,7 +472,7 @@ impl SharedParams {
         if id < TOTAL_PARAMS {
             let d = &PARAMS[id];
             self.values[id].store(d.clamp(value).to_bits(), Ordering::Relaxed);
-            self.dirty_values[id / 64].fetch_or(1u64 << (id % 64), Ordering::Release);
+            self.dirty_values.mark(id);
         }
     }
 
@@ -551,10 +536,8 @@ impl SharedParams {
     /// Also exposed through `Vxn2Params::mark_all_dirty` so the page can
     /// re-seed itself on demand (e.g. after late-binding primitives).
     pub fn mark_all_dirty(&self) {
-        for w in 0..N_DIRTY_VALUE_WORDS {
-            self.dirty_values[w].fetch_or(dirty_values_full_word(w), Ordering::Release);
-        }
-        self.dirty_matrix.fetch_or(DIRTY_MATRIX_ALL, Ordering::Release);
+        self.dirty_values.mark_all();
+        self.dirty_matrix.mark_all();
         self.dirty_ks_curve.store(true, Ordering::Release);
         self.dirty_eg_curve.store(true, Ordering::Release);
     }
@@ -568,17 +551,20 @@ impl SharedParams {
     /// a subsequent `get(id)` for a popped bit sees the value the
     /// writer stored before flipping the bit.
     pub fn take_dirty_values(&self) -> [u64; N_DIRTY_VALUE_WORDS] {
-        let mut out = [0u64; N_DIRTY_VALUE_WORDS];
-        for w in 0..N_DIRTY_VALUE_WORDS {
-            out[w] = self.dirty_values[w].swap(0, Ordering::Acquire);
-        }
-        out
+        self.dirty_values.take()
+    }
+
+    /// Drain the value bitset straight into `f`, one call per changed id, with
+    /// no intermediate allocation. The preferred drain — [`Self::take_dirty_values`]
+    /// remains for callers that want the raw words.
+    pub fn drain_dirty_values(&self, f: impl FnMut(usize)) {
+        self.dirty_values.drain(f);
     }
 
     /// Drain the matrix dirty bitset. Same contract as
     /// [`Self::take_dirty_values`]: single reader on the main thread.
     pub fn take_dirty_matrix(&self) -> u64 {
-        self.dirty_matrix.swap(0, Ordering::Acquire)
+        self.dirty_matrix.take()[0]
     }
 
     /// Drain the KS-curve dirty flag. Same single-reader contract as
@@ -710,7 +696,7 @@ impl SharedParams {
             self.matrix_extra_depth[slot - N_MATRIX_CLAP_SLOTS]
                 .store(row.depth.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
         }
-        self.dirty_matrix.fetch_or(1u64 << slot, Ordering::Release);
+        self.dirty_matrix.mark(slot);
     }
 }
 
@@ -1970,6 +1956,10 @@ mod tests {
         words.iter().map(|w| w.count_ones()).sum()
     }
 
+    /// Every matrix slot bit set — was a module const before 0299 hoisted
+    /// the masking into `DirtyBits`.
+    const DIRTY_MATRIX_ALL_TEST: u64 = (1u64 << N_MATRIX_SLOTS) - 1;
+
     /// Fresh `SharedParams` carries an all-ones seed (full re-broadcast
     /// on the first tick).
     #[test]
@@ -1979,9 +1969,11 @@ mod tests {
         assert_eq!(drain_total(&values), TOTAL_PARAMS as u32);
         // Last word only carries the in-range bits.
         let last_word = values[N_DIRTY_VALUE_WORDS - 1];
-        let expected_last = dirty_values_full_word(N_DIRTY_VALUE_WORDS - 1);
+        // In-range bits of the tail word: TOTAL_PARAMS is not a multiple of 64.
+        let tail = TOTAL_PARAMS - (N_DIRTY_VALUE_WORDS - 1) * 64;
+        let expected_last = (1u64 << tail) - 1;
         assert_eq!(last_word, expected_last);
-        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL);
+        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL_TEST);
     }
 
     /// Writing one id sets exactly one value bit; other bits stay zero.
@@ -2096,7 +2088,7 @@ mod tests {
 
         let values = dst.take_dirty_values();
         assert_eq!(drain_total(&values), TOTAL_PARAMS as u32);
-        assert_eq!(dst.take_dirty_matrix(), DIRTY_MATRIX_ALL);
+        assert_eq!(dst.take_dirty_matrix(), DIRTY_MATRIX_ALL_TEST);
     }
 
     /// `reset_to_defaults` flips every dirty bit so the next tick
@@ -2108,7 +2100,7 @@ mod tests {
         let _ = s.take_dirty_matrix();
         s.reset_to_defaults();
         assert_eq!(drain_total(&s.take_dirty_values()), TOTAL_PARAMS as u32);
-        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL);
+        assert_eq!(s.take_dirty_matrix(), DIRTY_MATRIX_ALL_TEST);
     }
 
     #[test]
