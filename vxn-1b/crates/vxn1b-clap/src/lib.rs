@@ -614,12 +614,16 @@ impl VxnAudioProcessor<'_> {
     /// Copy the rendered scratch into the host's output channels. Mono hosts get
     /// the left channel only; `frames` is already clamped to the scratch length
     /// by the caller, and each channel is clamped again to its own.
-    fn write_out(&self, out: &mut OutputChannels<'_, f32>, frames: usize, nch: usize) {
+    ///
+    /// The channel count is read back off `out` rather than passed alongside
+    /// `frames`: two adjacent `usize` arguments is a transposition waiting to
+    /// happen, and the buffer already knows.
+    fn write_out(&self, out: &mut OutputChannels<'_, f32>, frames: usize) {
         if let Some(ch) = out.channel_mut(0) {
             let n = ch.len().min(frames);
             ch[..n].copy_from_slice(&self.scratch_l[..n]);
         }
-        if nch >= 2 {
+        if out.channel_count() >= 2 {
             if let Some(ch) = out.channel_mut(1) {
                 let n = ch.len().min(frames);
                 ch[..n].copy_from_slice(&self.scratch_r[..n]);
@@ -677,8 +681,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             .ok_or(PluginError::Message("Expected f32 output"))?;
 
         let frames = (out.frames_count() as usize).min(self.scratch_l.len());
-        let nch = out.channel_count() as usize;
-        if nch == 0 {
+        if out.channel_count() == 0 {
             return Err(PluginError::Message("Expected ≥1 output channel"));
         }
 
@@ -707,7 +710,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             }
         }
 
-        self.write_out(&mut out, frames, nch);
+        self.write_out(&mut out, frames);
 
         // Fold host automation back into the shared store (so the UI/host see
         // it) and echo UI edits to the host as gesture-bracketed param events.
