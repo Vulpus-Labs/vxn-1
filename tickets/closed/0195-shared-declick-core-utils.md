@@ -70,3 +70,33 @@ Keep it dependency-free (`math.rs`/`smoothing.rs` in core-utils use `std`, no
 - If the two-place vxn-2 usage wants slightly different framing (gain-only OS
   fade vs dry/wet), keep `raised_cosine_rise` as the shared primitive and let
   each site build its own weighting on top — don't over-abstract the struct.
+
+## Close-out (2026-08-27) — superseded, not implemented
+
+Closed as **absorbed by [0225](0225-bypassxfade-core-utils.md)**, not as done.
+No code changed under this id.
+
+- 0225's title and Summary both say it "executes and absorbs open ticket 0195
+  **unchanged**": same move (`raised_cosine_rise` + `BypassXfade` from
+  [vxn-engine/src/smoothing.rs:47-150](../../vxn-1/crates/vxn-engine/src/smoothing.rs#L47-L150)
+  into `vxn-core-utils::smoothing`), same two vxn-2 inline sites repointed, same
+  duplicate `ms_to_samples` dropped. Every acceptance criterion above is a subset
+  of 0225's.
+- 0195 was filed 2026-06 as "do it when next touching either engine's FX chain";
+  [E040](../../epics/open/E040-vxn-core-dsp-foundations.md) is that moment, and
+  it scheduled the work as 0225 with a dependency on the 0222 scaffold. Keeping
+  both open meant two ids for one change and a standing risk of doing it twice.
+- The three Notes above are **not** lost — they carry the parts most likely to
+  be got wrong, and 0225 must honour them:
+  1. Confirm the vxn-2 render-hash baseline rather than assuming it holds; a
+     different `cos` evaluation order could shift it.
+  2. Keep `raised_cosine_rise` as the shared primitive and let each site build
+     its own weighting on top — don't over-abstract the struct for the
+     gain-only-OS-fade vs dry/wet split.
+  3. `tests/declick.rs` should pass byte-for-byte with no baseline re-capture —
+     verify, don't assume.
+- One scope note for 0225 from [ADR 0002](../../adrs/0002-vxn-core-dsp.md) §5,
+  written after this ticket: `BypassXfade` is no longer the mechanism for
+  *per-FX* enables — `WetFade` replaces those in E041. It stays as the primitive
+  for **whole-span** switches (vxn-1's oversample-change crossfade, vxn-2's span
+  fades). The move is still correct; what it will be used for narrowed.
