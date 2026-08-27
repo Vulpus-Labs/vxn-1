@@ -31,6 +31,7 @@ use clack_plugin::events::event_types::NoteExpressionType;
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::events::{Match, UnknownEvent};
 use clack_plugin::prelude::*;
+use clack_plugin::process::audio::OutputChannels;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::ffi::CStr;
 use std::io::{Read, Write};
@@ -566,6 +567,67 @@ pub struct VxnAudioProcessor<'a> {
     was_playing: bool,
 }
 
+impl VxnAudioProcessor<'_> {
+    /// Everything the block needs from outside the event stream, folded into the
+    /// engine before a sample is rendered: host transport, a state/preset load
+    /// that landed while active, a UI key-mode edit, and UI param edits.
+    ///
+    /// Audio thread. Every call here is a lock-free read of the shared store or
+    /// a plain engine write — no allocation, no blocking.
+    fn sync_from_store(&mut self, process: &Process) {
+        // Host transport → engine tempo for the synced LFO rates and delay
+        // time. Take the BPM only when the transport actually carries one;
+        // otherwise the engine keeps its sane default and never sees a NaN. A
+        // stop→play edge realigns a synced LFO 2 to the bar grid.
+        let is_playing = process
+            .transport
+            .map(vxn_core_clap::playing_from_transport)
+            .unwrap_or(false);
+        if !self.was_playing && is_playing {
+            self.engine.on_transport_restart();
+        }
+        self.was_playing = is_playing;
+        if let Some(bpm) = process.transport.and_then(vxn_core_clap::tempo_from_transport) {
+            self.engine.set_tempo(bpm as f32);
+        }
+
+        // A state/preset load that landed while active: re-sync the whole patch.
+        if self.shared.params.take_reload() {
+            self.engine.load_state(self.shared.params.engine_state());
+        }
+        // A Layer 2 key-mode / split edit from the UI: apply the new
+        // KeyState so the demux enables/bypasses synth 2 and routes note-ons.
+        if let Some(key) = self.shared.params.take_key_state() {
+            self.engine.set_key_state(key);
+        }
+
+        // Fold UI edits made since the last process into the local mirror, then
+        // drive the engine from the working values (UI + last host state). This
+        // is the path that makes faceplate knob edits audible.
+        self.local.fetch_ui_changes(&StoreRef(&self.shared.params));
+        let engine = &mut self.engine;
+        for (i, &v) in self.local.values().iter().enumerate() {
+            engine.set_param(i, v);
+        }
+    }
+
+    /// Copy the rendered scratch into the host's output channels. Mono hosts get
+    /// the left channel only; `frames` is already clamped to the scratch length
+    /// by the caller, and each channel is clamped again to its own.
+    fn write_out(&self, out: &mut OutputChannels<'_, f32>, frames: usize, nch: usize) {
+        if let Some(ch) = out.channel_mut(0) {
+            let n = ch.len().min(frames);
+            ch[..n].copy_from_slice(&self.scratch_l[..n]);
+        }
+        if nch >= 2 {
+            if let Some(ch) = out.channel_mut(1) {
+                let n = ch.len().min(frames);
+                ch[..n].copy_from_slice(&self.scratch_r[..n]);
+            }
+        }
+    }
+}
+
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
     fn activate(
         _host: HostAudioProcessorHandle<'a>,
@@ -604,42 +666,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Host transport → engine tempo for the synced LFO rates and delay
-        // time. Take the BPM only when the transport actually carries one;
-        // otherwise the engine keeps its sane default and never sees a NaN. A
-        // stop→play edge realigns a synced LFO 2 to the bar grid.
-        let is_playing = process
-            .transport
-            .map(vxn_core_clap::playing_from_transport)
-            .unwrap_or(false);
-        if !self.was_playing && is_playing {
-            self.engine.on_transport_restart();
-        }
-        self.was_playing = is_playing;
-        if let Some(bpm) = process.transport.and_then(vxn_core_clap::tempo_from_transport) {
-            self.engine.set_tempo(bpm as f32);
-        }
-
-        // A state/preset load that landed while active: re-sync the whole patch.
-        if self.shared.params.take_reload() {
-            self.engine.load_state(self.shared.params.engine_state());
-        }
-        // A Layer 2 key-mode / split edit from the UI: apply the new
-        // KeyState so the demux enables/bypasses synth 2 and routes note-ons.
-        if let Some(key) = self.shared.params.take_key_state() {
-            self.engine.set_key_state(key);
-        }
-
-        // Fold UI edits made since the last process into the local mirror, then
-        // drive the engine from the working values (UI + last host state). This
-        // is the path that makes faceplate knob edits audible.
-        self.local.fetch_ui_changes(&StoreRef(&self.shared.params));
-        {
-            let engine = &mut self.engine;
-            for (i, &v) in self.local.values().iter().enumerate() {
-                engine.set_param(i, v);
-            }
-        }
+        self.sync_from_store(&process);
 
         let mut output_port = audio
             .output_port(0)
@@ -680,16 +707,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             }
         }
 
-        if let Some(ch) = out.channel_mut(0) {
-            let n = ch.len().min(frames);
-            ch[..n].copy_from_slice(&self.scratch_l[..n]);
-        }
-        if nch >= 2 {
-            if let Some(ch) = out.channel_mut(1) {
-                let n = ch.len().min(frames);
-                ch[..n].copy_from_slice(&self.scratch_r[..n]);
-            }
-        }
+        self.write_out(&mut out, frames, nch);
 
         // Fold host automation back into the shared store (so the UI/host see
         // it) and echo UI edits to the host as gesture-bracketed param events.
