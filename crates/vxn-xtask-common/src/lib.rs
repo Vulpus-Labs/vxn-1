@@ -100,6 +100,16 @@ impl Profile {
             Profile::Release => "release",
         }
     }
+
+    /// CMake's spelling of this profile — both the `CMAKE_BUILD_TYPE` a
+    /// single-config generator needs at configure time and the `--config` a
+    /// multi-config one needs at build time.
+    pub fn cmake_config(self) -> &'static str {
+        match self {
+            Profile::Debug => "Debug",
+            Profile::Release => "Release",
+        }
+    }
 }
 
 // ── Formats ─────────────────────────────────────────────────────────────────
@@ -597,85 +607,48 @@ pub fn find_vst3(out_dir: &Path, build_dir: &Path, name: &str) -> Result<PathBuf
     })
 }
 
-impl Product {
-    /// Build `<name>.vst3` by wrapping this product's clap staticlib through
-    /// clap-wrapper, and stage it in `target/bundled/`. Returns its path.
-    ///
-    /// The engine, params, controller and faceplate are the same source as the
-    /// CLAP; VST3 is purely a distribution artifact.
-    ///
-    /// Flow: build the staticlib slice(s) → configure + build the product's
-    /// wrapper CMake project (whole-archives the archive into a VST3 MODULE) →
-    /// copy the staged bundle to `target/bundled/`. macOS (universal) and
-    /// Windows (x86_64 MSVC); the wrapper CMake handles both bundle layouts.
-    pub fn bundle_vst3(
-        &self,
-        root: &Path,
-        profile: Profile,
-        universal: bool,
-    ) -> Result<PathBuf, String> {
-        let vst3 = self.vst3_or_err()?;
-        if !(cfg!(target_os = "macos") || cfg!(target_os = "windows")) {
-            return Err("--format vst3 is supported on macOS and Windows only".into());
-        }
-        if universal && !cfg!(target_os = "macos") {
-            return Err(
-                "--universal is macOS-only (omit it on Windows; the build is x86_64)".into(),
-            );
-        }
+/// One wrapper CMake build, resolved: the paths it reads and writes plus the
+/// two switches that change what it produces. A record rather than a seven-
+/// argument pair of functions — `configure` and `build` need almost all of it,
+/// and every field is a path or a flag that would otherwise thread through both
+/// call sites in the same order.
+struct WrapperBuild<'a> {
+    root: &'a Path,
+    vst3: Vst3,
+    /// The Rust staticlib CMake whole-archives into the VST3 module.
+    archive: PathBuf,
+    /// Reused across runs — CMake decides what to rebuild, and removing this
+    /// directory is what forces a clean one.
+    build_dir: PathBuf,
+    /// Where our CMake stages the finished bundle (`VXN_OUTPUT_DIR`).
+    out_dir: PathBuf,
+    profile: Profile,
+    universal: bool,
+}
 
-        // Preflight: fail early with actionable hints rather than letting CMake
-        // or the linker fail opaquely deep in the build.
-        ensure_cmake()?;
-        ensure_msvc()?;
-        ensure_submodules(root)?;
-
-        // 1. Build the staticlib. The cdylib comes out of the same invocation;
-        //    we only consume the archive here.
-        let archive = if universal {
-            self.build_universal(
-                root,
-                profile,
-                Product::static_lib_path,
-                &format!("lib{}.a", self.lib_name),
-            )?
-        } else {
-            self.cargo_build(root, profile, None)?;
-            let a = self.static_lib_path(&root.join("target").join(profile.dir()));
-            if !a.exists() {
-                return Err(format!("built static archive not found at {}", a.display()));
-            }
-            a
-        };
-
-        // 2. Configure + build the wrapper CMake project. The build dir is
-        //    reused across runs (CMake decides what to rebuild); removing it
-        //    forces a clean rebuild.
-        let build_dir = root.join("target").join(vst3.build_dir_stem);
-        let out_dir = build_dir.join("out");
-        fs::create_dir_all(&build_dir).map_err(io("create wrapper build dir"))?;
-
+impl WrapperBuild<'_> {
+    fn configure(&self) -> Result<(), String> {
         let mut cfg = Command::new("cmake");
-        cfg.current_dir(root)
+        cfg.current_dir(self.root)
             .arg("-S")
-            .arg(vst3.wrapper_dir)
+            .arg(self.vst3.wrapper_dir)
             .arg("-B")
-            .arg(&build_dir)
-            .arg(format!("-DVXN_CLAP_STATIC={}", archive.display()))
+            .arg(&self.build_dir)
+            .arg(format!("-DVXN_CLAP_STATIC={}", self.archive.display()))
             .arg(format!(
                 "-DVXN_CLAP_SDK_DIR={}",
-                root.join("vendor/clap").display()
+                self.root.join("vendor/clap").display()
             ))
             .arg(format!(
                 "-DVXN_VST3_SDK_DIR={}",
-                root.join("vendor/vst3sdk").display()
+                self.root.join("vendor/vst3sdk").display()
             ))
             .arg(format!(
                 "-DVXN_CLAP_WRAPPER_DIR={}",
-                root.join("vendor/clap-wrapper").display()
+                self.root.join("vendor/clap-wrapper").display()
             ))
-            .arg(format!("-DVXN_OUTPUT_DIR={}", out_dir.display()));
-        if universal {
+            .arg(format!("-DVXN_OUTPUT_DIR={}", self.out_dir.display()));
+        if self.universal {
             cfg.arg("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64");
         }
         // Ninja is single-config: without an explicit build type it defaults to
@@ -684,10 +657,7 @@ impl Product {
         // staticlib is built `--release`. Pin the type here so both sides use
         // the same runtime; harmless on multi-config generators, which honour
         // `--config` instead.
-        cfg.arg(match profile {
-            Profile::Release => "-DCMAKE_BUILD_TYPE=Release",
-            Profile::Debug => "-DCMAKE_BUILD_TYPE=Debug",
-        });
+        cfg.arg(format!("-DCMAKE_BUILD_TYPE={}", self.profile.cmake_config()));
         // Prefer Ninja when present (fast, single-config); otherwise the
         // platform default generator.
         if ninja_available() {
@@ -699,31 +669,105 @@ impl Product {
         if !status.success() {
             return Err("cmake configure failed (see output above)".into());
         }
+        Ok(())
+    }
 
-        let config = match profile {
-            Profile::Release => "Release",
-            Profile::Debug => "Debug",
-        };
+    fn build(&self) -> Result<(), String> {
         let status = Command::new("cmake")
-            .current_dir(root)
+            .current_dir(self.root)
             .arg("--build")
-            .arg(&build_dir)
+            .arg(&self.build_dir)
             .arg("--parallel")
             .arg("--config")
-            .arg(config)
+            .arg(self.profile.cmake_config())
             .status()
             .map_err(|e| format!("failed to run cmake --build: {e}"))?;
         if !status.success() {
             return Err("cmake --build failed (see output above)".into());
         }
+        Ok(())
+    }
+}
 
-        // 3. Locate the finished bundle. Our CMake stages it to
-        //    VXN_OUTPUT_DIR, but multi-config generators can also leave one
-        //    under a `Release/` subdir; find the newest match under the build
-        //    tree to be generator-proof.
-        let staged = find_vst3(&out_dir, &build_dir, vst3.name)?;
+/// Reject the host/flag combinations the wrapper build cannot serve, then check
+/// its three external prerequisites. Runs before anything is built so a missing
+/// toolchain fails in a sentence rather than opaquely deep inside CMake or the
+/// linker.
+fn vst3_preflight(root: &Path, universal: bool) -> Result<(), String> {
+    if !(cfg!(target_os = "macos") || cfg!(target_os = "windows")) {
+        return Err("--format vst3 is supported on macOS and Windows only".into());
+    }
+    if universal && !cfg!(target_os = "macos") {
+        return Err("--universal is macOS-only (omit it on Windows; the build is x86_64)".into());
+    }
+    ensure_cmake()?;
+    ensure_msvc()?;
+    ensure_submodules(root)
+}
 
-        // 4. Copy to target/bundled/ (mirrors the CLAP output location).
+impl Product {
+    /// Build the Rust staticlib CMake will whole-archive, and return its path.
+    /// The cdylib comes out of the same invocation; only the archive is
+    /// consumed here.
+    fn build_vst3_archive(
+        &self,
+        root: &Path,
+        profile: Profile,
+        universal: bool,
+    ) -> Result<PathBuf, String> {
+        if universal {
+            return self.build_universal(
+                root,
+                profile,
+                Product::static_lib_path,
+                &format!("lib{}.a", self.lib_name),
+            );
+        }
+        self.cargo_build(root, profile, None)?;
+        let a = self.static_lib_path(&root.join("target").join(profile.dir()));
+        if !a.exists() {
+            return Err(format!("built static archive not found at {}", a.display()));
+        }
+        Ok(a)
+    }
+
+    /// Build `<name>.vst3` by wrapping this product's clap staticlib through
+    /// clap-wrapper, and stage it in `target/bundled/`. Returns its path.
+    ///
+    /// The engine, params, controller and faceplate are the same source as the
+    /// CLAP; VST3 is purely a distribution artifact.
+    ///
+    /// Flow: preflight → build the staticlib slice(s) → configure + build the
+    /// product's wrapper CMake project (whole-archives the archive into a VST3
+    /// MODULE) → copy the staged bundle to `target/bundled/`. macOS (universal)
+    /// and Windows (x86_64 MSVC); the wrapper CMake handles both bundle
+    /// layouts.
+    pub fn bundle_vst3(
+        &self,
+        root: &Path,
+        profile: Profile,
+        universal: bool,
+    ) -> Result<PathBuf, String> {
+        let vst3 = self.vst3_or_err()?;
+        vst3_preflight(root, universal)?;
+
+        let archive = self.build_vst3_archive(root, profile, universal)?;
+
+        let build_dir = root.join("target").join(vst3.build_dir_stem);
+        let out_dir = build_dir.join("out");
+        fs::create_dir_all(&build_dir).map_err(io("create wrapper build dir"))?;
+        let wrapper =
+            WrapperBuild { root, vst3, archive, build_dir, out_dir, profile, universal };
+        wrapper.configure()?;
+        wrapper.build()?;
+
+        // Locate the finished bundle. Our CMake stages it to VXN_OUTPUT_DIR,
+        // but multi-config generators can also leave one under a `Release/`
+        // subdir; find the newest match under the build tree to be
+        // generator-proof.
+        let staged = find_vst3(&wrapper.out_dir, &wrapper.build_dir, vst3.name)?;
+
+        // Copy to target/bundled/ (mirrors the CLAP output location).
         let bundled = bundled_dir(root);
         fs::create_dir_all(&bundled).map_err(io("create bundled dir"))?;
         let dest = bundled.join(format!("{}.vst3", vst3.name));
