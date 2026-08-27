@@ -1,0 +1,16 @@
+[package]
+name = "vxn-core-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared DSP components for VXN synth plugins (control vocabulary, declick, FX kernels, envelope lifecycle, oversampled regions)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+vxn-core-utils.workspace = true
+
+[dev-dependencies]

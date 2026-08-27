@@ -78,6 +78,15 @@ supplies its own DSP, voice allocator, param table, and HTML faceplate.
 
 ### 2. Explicit not-extracted list
 
+> **Addendum (2026-08-27, ticket 0222).** The "revisit if a third synth
+> shows up" condition below was met by vxn-1b, vxn-3 and vxn-2's FX
+> chain. [ADR 0002](0002-vxn-core-dsp.md) supersedes this section **for
+> the DSP component layer only** — components (a `Params` struct, a
+> sample-rate constructor, or a declick lifecycle) move to
+> `crates/vxn-core-dsp`. The signal-model reasoning here still governs
+> voice kernels, allocators, mod routing and param tables, all of which
+> stay per-synth.
+
 The following stay synth-local and the decision is recorded so we
 don't relitigate it:
 

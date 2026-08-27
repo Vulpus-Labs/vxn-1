@@ -2414,6 +2414,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn-core-dsp"
+version = "0.1.1"
+dependencies = [
+ "vxn-core-utils",
+]
+
+[[package]]
 name = "vxn-core-ui-web"
 version = "0.1.1"
 dependencies = [

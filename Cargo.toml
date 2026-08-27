@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # Shared core (E001 extraction target).
     "crates/vxn-core-utils",
+    "crates/vxn-core-dsp",
     "crates/vxn-core-app",
     "crates/vxn-preset",
     "crates/vxn-core-ui-web",
@@ -58,6 +59,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Shared core (path).
 vxn-core-utils = { path = "crates/vxn-core-utils" }
+vxn-core-dsp = { path = "crates/vxn-core-dsp" }
 vxn-core-app = { path = "crates/vxn-core-app" }
 vxn-preset = { path = "crates/vxn-preset" }
 vxn-core-ui-web = { path = "crates/vxn-core-ui-web" }
