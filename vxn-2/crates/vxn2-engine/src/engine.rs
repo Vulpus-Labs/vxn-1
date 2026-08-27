@@ -31,6 +31,7 @@
 //! Changes mid-note take effect on the next note-on (which matches how DAWs
 //! typically use master_tune — a per-song setup, not a performance gesture).
 
+use vxn_core_utils::smoothing::raised_cosine_rise;
 use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
@@ -1979,7 +1980,7 @@ impl Engine {
                 let t = ((start + sample as f32) / span).min(1.0);
                 // Raised-cosine rise, zero slope at both ends. `to_os`: OS weight
                 // rises 0→1 (base→OS, engaging); else it falls 1→0 (OS→base).
-                let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
+                let rise = raised_cosine_rise(t);
                 let w_os = if to_os { rise } else { 1.0 - rise };
                 let w_base = 1.0 - w_os;
                 self.dry_l[sample] = w_os * self.dry_l[sample] + w_base * self.dry_alt_l[sample];
@@ -2111,7 +2112,7 @@ impl Engine {
         let start = (self.filter_xfade_len - remaining as usize) as f32;
         let weight_at = |pos: f32, span: f32| {
             let t = (pos / span).min(1.0);
-            let rise = 0.5 - 0.5 * (core::f32::consts::PI * t).cos();
+            let rise = raised_cosine_rise(t);
             if to_on { (1.0 - rise, rise) } else { (rise, 1.0 - rise) }
         };
 

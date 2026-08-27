@@ -71,7 +71,10 @@ pub use oscillator::Waveform;
 pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
 pub use phaser::StereoPhaser;
 pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, PolySub, poly_ring_mod};
-pub use vxn_core_utils::smoothing::{self as smoothing, Smoothed, ms_to_samples, one_pole_coeff};
+pub use vxn_core_utils::smoothing::{
+    self as smoothing, BypassXfade, Smoothed, fade_len_samples, ms_to_samples, one_pole_coeff,
+    raised_cosine_rise,
+};
 pub use vxn_core_utils::ScopedFlushToZero;
 pub use vxn_core_utils::ftz::flush_denormal;
 

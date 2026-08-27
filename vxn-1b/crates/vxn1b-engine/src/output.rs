@@ -27,7 +27,11 @@
 //! The whole stage is fixed-size and allocation-free: decimator state is owned,
 //! and the OS buses are the caller's stack scratch.
 
-use vxn_dsp::{Oversampler, ms_to_samples};
+// `raised_cosine_rise` is the shared primitive (0225) — this file had the
+// fourth byte-identical copy of it. `ms_to_samples` here is deliberately the
+// truncating one, unchanged: see the close-out note on the 44.1 kHz drift
+// against vxn-1's fade length.
+use vxn_dsp::{Oversampler, ms_to_samples, raised_cosine_rise};
 
 /// Consecutive silent blocks before the decimator skip kicks in. `HalfbandFir`
 /// is 33 taps; at OS = 8 the worst-case cascaded drain is well under one block
@@ -39,15 +43,6 @@ const DECIMATOR_DRAIN_BLOCKS: u32 = 4;
 /// bury the rebuilt FIR's settle, short enough that the frozen level isn't
 /// audible as a hold.
 const OS_FADE_MS: f32 = 5.0;
-
-/// Equal-gain raised-cosine rise `0.5 − 0.5·cos(π·t)` for `t ∈ [0, 1]`. Zero
-/// slope at *both* endpoints, so neither the start nor the steady handoff leaves
-/// a slope corner (a corner reads as a click). Same law as VXN1's fade and the
-/// FX bypass crossfade.
-#[inline]
-fn raised_cosine_rise(t: f32) -> f32 {
-    0.5 - 0.5 * (core::f32::consts::PI * t).cos()
-}
 
 /// The oversampled synthesis path's L/R anti-aliasing decimators plus the
 /// bookkeeping their skip paths need. Owned as one unit so the duplicated

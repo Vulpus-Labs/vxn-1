@@ -36,7 +36,11 @@ pub use preset_io::{
 // and the factory bank's category labels).
 pub use vxn_app::UNCATEGORIZED;
 pub use shared::SharedParams;
-use smoothing::{BypassXfade, ParamSmoother, ms_to_samples, raised_cosine_rise};
+use smoothing::ParamSmoother;
+// Fade primitives are shared (0225). `fade_len_samples` is NOT `ms_to_samples`:
+// it rounds and floors at 1, which is what this engine's fades have always
+// used — see its doc for the 44.1 kHz case.
+use vxn_dsp::{BypassXfade, fade_len_samples, raised_cosine_rise};
 pub use state::PluginState;
 
 use voice::{
@@ -199,11 +203,11 @@ impl MasterFx {
             delay: StereoDelay::new(sample_rate, 2.0),
             reverb: FdnReverb::new(sample_rate),
             limiter: StereoLimiter::new(sample_rate),
-            phaser_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
-            chorus_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
-            delay_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
-            reverb_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
-            limiter_fade: BypassXfade::new(ms_to_samples(FX_XFADE_MS, sample_rate)),
+            phaser_fade: BypassXfade::new(fade_len_samples(FX_XFADE_MS, sample_rate)),
+            chorus_fade: BypassXfade::new(fade_len_samples(FX_XFADE_MS, sample_rate)),
+            delay_fade: BypassXfade::new(fade_len_samples(FX_XFADE_MS, sample_rate)),
+            reverb_fade: BypassXfade::new(fade_len_samples(FX_XFADE_MS, sample_rate)),
+            limiter_fade: BypassXfade::new(fade_len_samples(FX_XFADE_MS, sample_rate)),
             fades_primed: false,
         }
     }
@@ -482,7 +486,7 @@ impl OutputStage {
             silent_blocks: 0,
             last_os: 1,
             os_fade_remaining: 0,
-            os_fade_len: ms_to_samples(OS_FADE_MS, sample_rate),
+            os_fade_len: fade_len_samples(OS_FADE_MS, sample_rate),
             prev_last_l: 0.0,
             prev_last_r: 0.0,
             os_hold_l: 0.0,
@@ -494,7 +498,7 @@ impl OutputStage {
     /// Recompute the fade window for a new base rate. (Called on sample-rate
     /// change; the decimator reset itself is [`Self::reset`].)
     fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.os_fade_len = ms_to_samples(OS_FADE_MS, sample_rate);
+        self.os_fade_len = fade_len_samples(OS_FADE_MS, sample_rate);
     }
 
     /// Clear both decimators and the phase-alignment bookkeeping. (Leaves
