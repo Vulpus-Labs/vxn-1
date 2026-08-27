@@ -35,47 +35,45 @@ use user_store::{UserState, UserWrite, decode_record};
 /// per flipped value bit (with the sync-aware display + rate-partner refresh),
 /// plus a whole-table matrix / KS-curve / EG-curve snapshot when the respective
 /// dirty flag was set.
-fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
-    let mut out: Vec<ViewEvent> = Vec::new();
-    let value_bits = params.take_dirty_values();
-    let mut emitted = vec![false; TOTAL_PARAMS];
-    let mut force_rate_refresh: Vec<usize> = Vec::new();
-    for (w, mut bits) in value_bits.iter().copied().enumerate() {
-        while bits != 0 {
-            let b = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let id = w * 64 + b;
-            if id >= TOTAL_PARAMS {
-                continue;
-            }
-            out.push(param_changed_event(params, id));
-            emitted[id] = true;
-            if let Some(rate_id) = rate_partner_clap_id(id) {
-                force_rate_refresh.push(rate_id);
-            }
+fn drain_dirty_bits(params: &SharedParams, mut emit: impl FnMut(ViewEvent)) {
+    // Stack arrays, not `Vec`s. This runs every tick, and the two per-tick
+    // allocations it used to make were finding 7 of ticket 0298 — fixed here as
+    // a side effect of 0299's callback drain rather than as its own change.
+    let mut emitted = [false; TOTAL_PARAMS];
+    let mut needs_rate = [false; TOTAL_PARAMS];
+
+    // `DirtyBits` masks its tail word, so every id it yields is in range — the
+    // `id >= TOTAL_PARAMS` guard this loop used to carry is now the primitive's
+    // invariant (`tail_word_padding_never_surfaces`).
+    params.drain_dirty_values(|id| {
+        emit(param_changed_event(params, id));
+        emitted[id] = true;
+        if let Some(rate_id) = rate_partner_clap_id(id)
+            && rate_id < TOTAL_PARAMS
+        {
+            needs_rate[rate_id] = true;
         }
-    }
+    });
+
     // Refresh sync-partner rate displays only when the partner wasn't already
     // emitted (both a rate and its sync toggle can drift in one tick).
-    for rate_id in force_rate_refresh {
-        if rate_id >= TOTAL_PARAMS || emitted[rate_id] {
-            continue;
+    for rate_id in 0..TOTAL_PARAMS {
+        if needs_rate[rate_id] && !emitted[rate_id] {
+            emit(param_changed_event(params, rate_id));
         }
-        out.push(param_changed_event(params, rate_id));
-        emitted[rate_id] = true;
     }
+
     // Whole-table snapshots when any topology / curve bit was set — one event
     // each; the view-side renderer already collapses to one path.
     if params.take_dirty_matrix() != 0 {
-        out.push(matrix_snapshot_event(params));
+        emit(matrix_snapshot_event(params));
     }
     if Vxn2Params::take_dirty_ks_curve(params) {
-        out.push(ks_curve_snapshot_event(params));
+        emit(ks_curve_snapshot_event(params));
     }
     if Vxn2Params::take_dirty_eg_curve(params) {
-        out.push(eg_curve_snapshot_event(params));
+        emit(eg_curve_snapshot_event(params));
     }
-    out
 }
 
 fn param_changed_event(params: &SharedParams, id: usize) -> ViewEvent {
@@ -556,11 +554,13 @@ impl ControllerState {
             }
         }
         // (2) The canonical dirty-bitset drain (ParamChanged + snapshots).
-        for ev in drain_dirty_bits(&self.model) {
-            if pack_view_event(&mut self.view_out, &ev) {
+        //     Packed straight out of the drain — no intermediate Vec (0299).
+        let view_out = &mut self.view_out;
+        drain_dirty_bits(&self.model, |ev| {
+            if pack_view_event(view_out, &ev) {
                 count += 1;
             }
-        }
+        });
         self.view_out[0..4].copy_from_slice(&count.to_le_bytes());
 
         // A user-corpus mutation this tick — rebuild the JS-visible corpus JSON

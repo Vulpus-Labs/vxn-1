@@ -218,32 +218,26 @@ impl<'a> VxnMainThread<'a> {
 /// display.
 fn drain_dirty_bits(params: &SharedParams) -> Vec<ViewEvent> {
     let mut out: Vec<ViewEvent> = Vec::new();
-    let value_bits = params.take_dirty_values();
     let mut emitted = vec![false; TOTAL_PARAMS];
     let mut force_rate_refresh: Vec<usize> = Vec::new();
-    for (w, mut bits) in value_bits.iter().copied().enumerate() {
-        while bits != 0 {
-            let b = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let id = w * 64 + b;
-            if id >= TOTAL_PARAMS {
-                continue;
-            }
-            let plain = params.get(id);
-            let norm = params.get_normalised(id);
-            let display = sync_aware_display(params, id, plain);
-            out.push(ViewEvent::ParamChanged {
-                id: ParamId::new(id),
-                plain,
-                norm,
-                display,
-            });
-            emitted[id] = true;
-            if let Some(rate_id) = rate_partner_clap_id(id) {
-                force_rate_refresh.push(rate_id);
-            }
+    // The set-bit walk lives in `DirtyBits` (ticket 0299), not here — this was
+    // the second hand-rolled copy of it. `DirtyBits` masks its tail word, so
+    // the `id >= TOTAL_PARAMS` guard this loop carried is now its invariant.
+    params.drain_dirty_values(|id| {
+        let plain = params.get(id);
+        let norm = params.get_normalised(id);
+        let display = sync_aware_display(params, id, plain);
+        out.push(ViewEvent::ParamChanged {
+            id: ParamId::new(id),
+            plain,
+            norm,
+            display,
+        });
+        emitted[id] = true;
+        if let Some(rate_id) = rate_partner_clap_id(id) {
+            force_rate_refresh.push(rate_id);
         }
-    }
+    });
     // Refresh sync-partner rate displays only when the partner wasn't
     // already emitted in the main pass — both the rate and its sync
     // toggle can drift in the same tick (notably on the all-ones seed
