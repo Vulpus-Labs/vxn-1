@@ -44,14 +44,10 @@
      not the sum — the banner and tab strip carry 1 px borders outside their
      declared heights.
 
-     Widths and travels were both opened out in the 0282 geometry pass. A
-     `.ctl` column reserved 90 px for a label (12 + 4) and a 56 px fader, so
-     every fader in the editor sat above ~18 px of dead column; the faders now
-     take that back (`--fader-h` 76) and the rows grew to keep the under-fader
-     toggles (Cutoff's Tuned, the LFO Syncs) clearing the panel floor. Width
-     went 940 → 1060 for the same reason in the other axis: the top row's
-     panels came to 902 of 920 px, which is not a layout with any give in
-     it. */
+     Widths and travels were opened out in the 0282 geometry pass; the rows
+     are sized so the under-fader toggles (Cutoff's Tuned, the LFO Syncs) clear
+     the panel floor at `--fader-h` 76, and the top row's panels come to 902 px
+     of the 1060 width. Neither has much give. */
   --editor-w: 1060px;
   --pad-outer: 10px;
   --banner-h: 26px;
@@ -750,7 +746,7 @@ html, body {
   box-shadow: 0 2px 3px rgba(0, 0, 0, 0.55), 0 0 6px var(--ctl-value);
 }
 
-/* Rotary waveform selector (0041). SVG-based: knob face + rotating
+/* Rotary waveform selector. SVG-based: knob face + rotating
    indicator + glyph labels arranged at the corners (SW/NW/NE/SE) outside
    the rim. All visuals + hit-testing live in the SVG; no DOM children to
    reflow. Layout stability comes for free — the dial occupies a fixed
@@ -815,7 +811,7 @@ html, body {
 }
 .ctl-dial.dragging .dial-indicator-line { stroke: #fff; }
 
-/* Dynamics pane (0208): six dials in a 3×2 grid on the left + the Mix fader
+/* Dynamics pane: six dials in a 3×2 grid on the left + the Mix fader
    beside them. Kept narrow — the dials are 36px, so the whole panel reads
    compact next to the taller vertical-fader panels. The dial cells carry no
    `.ctl` column-flex; the grid owns their placement. */
@@ -1134,9 +1130,9 @@ html, body {
    which is what makes the rocker read as spanning them instead of merely
    sitting below. */
 .voice-stack > [data-param="stack_width"] { align-self: stretch; }
-/* Selector matches the row-major rule's specificity and then some, on purpose:
+/* Selector matches the row-major rule's specificity and then some, ON PURPOSE:
    that rule sets `grid-template-rows: none`, and a plainer selector here loses
-   to it however far down the file it sits. */
+   to it however far down the file it sits. Do not simplify. */
 .voice-stack > [data-param="stack_width"][data-flow="row"] .ctl-tg-rows {
   align-self: stretch;
   justify-content: space-between;
@@ -1317,7 +1313,7 @@ html, body {
    window is sized to the LAYER pane (428 px of rows), and even at this height
    the global pane's two rows come to 424, so the row is taking slack that was
    already there rather than growing the editor. */
-/* Both FX-pane rows carry their own control scale (0282). The pane holds less
+/* Both FX-pane rows carry their own control scale. The pane holds less
    than the LAYER pane does, so at the shared `--fader-h` it rendered as two
    bands of empty panel; declaring the vars on the row lets the faders grow into
    the height instead. Nothing else has to know — `.ctl-fader`, the lit fill and
@@ -1535,12 +1531,11 @@ html, body {
    to occupy — so the strip gets back the height the split section wanted, and
    the meter/fader pair spans the column rather than sitting short of it.
 
-   `height: auto`: a `.ctl` reserves a full `--col-h` control column, and a
-   36 px dial claiming 90 px of it pushed the mute and the whole split section
-   out of the panel (they rendered *underneath* the FX row's panels, which is
-   why they looked deleted rather than overflowing). Nothing in the strip is a
-   full column — the strip title is the label row for the meter and fader, and
-   the dials carry their own one-word labels. */
+   `height: auto` is load-bearing: a `.ctl` otherwise reserves a full `--col-h`
+   control column, and a 36 px dial claiming 90 px of one pushes the mute and
+   the whole split section out of the panel. Nothing in the strip is a full
+   column — the strip title is the label row for the meter and fader, and the
+   dials carry their own one-word labels. */
 .strip-dials {
   display: flex;
   flex-direction: column;
@@ -1635,9 +1630,9 @@ html, body {
   /* Same 4 px as `.ctl-label`; this is the label row for the column. */
   margin-bottom: 4px;
   text-align: center;
-  /* Fixed: the readout is the widest thing in the split column, so its
-     intrinsic width is the column's, and a sharp ("F#3" vs "F3") widened the
-     whole column and shoved the mixer's strips sideways as the slider moved.
+  /* Must stay FIXED, not intrinsic: the readout is the widest thing in the
+     split column, so an intrinsic width makes the column — and the mixer's
+     strips beside it — move as the note name changes width ("F#3" vs "F3").
      26 px clears the widest name the 12..96 range produces ("A#0") at 10 px
      bold condensed; `nowrap` keeps a name that ever exceeds it on one line
      rather than pushing the label row's height. */

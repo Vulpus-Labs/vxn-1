@@ -91,9 +91,8 @@ export function clampVariant(plain, variants) {
 // `tgRow(name)` returns a fresh `.ctl-tg-row` containing the box + label
 // pair. `tgRow(name, { mount })` instead fills the supplied target and returns
 // it, leaving the caller's classes alone — for a container that is already
-// classed and only wants the inner markup. No production caller takes the
-// mount form since the Voice panel's Detune+Legato composite was split into
-// two plain cells; the option and its suite stay because the next composite
+// classed and only wants the inner markup. No production caller takes the mount
+// form today; the option and its suite stay because the next composite cell
 // will want it and it is three lines.
 export function tgRow(name, opts) {
   const target = (opts && opts.mount) || document.createElement('div');

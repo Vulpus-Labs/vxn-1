@@ -93,7 +93,7 @@ pub enum KeyOp {
     SetKeyMode(u8),
     /// Split point (MIDI note).
     SetSplitPoint(u8),
-    /// Cross-layer LFO 2 link (0217): Layer 2's LFO 2 slaves to Layer 1's.
+    /// Cross-layer LFO 2 link: Layer 2's LFO 2 slaves to Layer 1's.
     /// Named *link*, not sync — `lfo2_sync` is the (per-layer, automatable)
     /// tempo-sync param.
     SetLfo2Link(bool),
@@ -125,7 +125,7 @@ pub enum MatrixField {
     ScaleSrc,
 }
 
-/// A UI edit to one matrix slot's topology on one layer (0219). `value` is the
+/// A UI edit to one matrix slot's topology on one layer. `value` is the
 /// wire `u8` (a `SourceId` / `DestId` / `Curve` discriminant); the store decodes
 /// it via `from_u8`. Carried as a `UiEvent::Custom` payload alongside [`KeyOp`],
 /// applied to the shared per-layer matrix channel + a reload.
@@ -141,7 +141,7 @@ pub struct MatrixEdit {
 /// split point, and the one cross-layer link (LFO 2, ADR 0002 §5). Not in the
 /// CLAP param table (ADR 0002 §3) — it rides the plugin-state blob. `KeyMode` is
 /// derived from it. Kept a self-contained record so the two-layer `clap.state`
-/// format (0221) can serialise it directly.
+/// format can serialise it directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyState {
     /// Layer 2 active. Off → [`KeyMode::Single`] (synth 2 bypassed).
@@ -171,7 +171,7 @@ impl Default for KeyState {
 }
 
 impl KeyState {
-    /// Apply a UI key-op (0219). A KeyMode index maps back to the two toggles
+    /// Apply a UI key-op. A KeyMode index maps back to the two toggles
     /// (Single → layer 2 off; Dual → on, split off; Split → on, split on),
     /// preserving the split point; a SetSplitPoint sets the point.
     pub fn apply(&mut self, op: KeyOp) {
@@ -241,7 +241,7 @@ pub struct Engine {
     /// The single global serial FX chain (0207): dynamics → chorus → phaser →
     /// delay → reverb, run over the summed synths before master volume.
     fx: FxChain,
-    /// Lock-free meter publish target (0240). Owned so a bare `Engine` (tests,
+    /// Lock-free meter publish target. Owned so a bare `Engine` (tests,
     /// the web build) meters without ceremony; the CLAP shell swaps in the
     /// plugin-lifetime bus via [`Self::set_meters`] at activate so the main
     /// thread's drain handle survives deactivate/reactivate cycles.
@@ -274,8 +274,8 @@ pub struct Engine {
     os_bus: [[f32; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
     /// Decimators + the OS-change / silence / mono bookkeeping.
     output: OutputStage,
-    /// Master brickwall limiter, last in the signal path — *after* master volume
-    /// (0251), so a master boost can't push past the ceiling. Bypassed unless
+    /// Master brickwall limiter, last in the signal path — *after* master
+    /// volume, so a master boost can't push past the ceiling. Bypassed unless
     /// `limiter_on`, with a short dry↔limited crossfade on the toggle and a
     /// lookahead reset on the off→on edge.
     limiter: StereoLimiter,
@@ -293,7 +293,7 @@ pub struct Engine {
 /// to mask a click, short enough that a mute feels immediate.
 const LAYER_FADE_MS: f32 = 10.0;
 
-/// Constant-power pan gains for a position in `[-1, 1]` (0248).
+/// Constant-power pan gains for a position in `[-1, 1]`.
 ///
 /// `gl = √2·cos(θ)`, `gr = √2·sin(θ)` with `θ = (pos + 1)·π/4`, so
 /// `gl² + gr²` is constant across the whole sweep — the point of the law: a
@@ -363,7 +363,7 @@ impl Engine {
         }
     }
 
-    /// Adopt a caller-owned meter bus (0240). The CLAP shell holds one for the
+    /// Adopt a caller-owned meter bus. The CLAP shell holds one for the
     /// plugin's whole lifetime in its `Shared` state and hands it here at
     /// `activate`, so the main-thread drain keeps reading the same slots across
     /// a deactivate/reactivate (which rebuilds the `Engine`).
@@ -394,12 +394,12 @@ impl Engine {
 
     /// Overwrite **both layers'** patches from a decoded [`PluginState`] — the
     /// CLAP state-load / preset path (0216). The KeyMode / split state is applied
-    /// separately via [`Self::set_key_state`] (0221).
+    /// separately via [`Self::set_key_state`].
     pub fn load_state(&mut self, state: PluginState) {
         let [l1, l2] = state.layers;
         self.synths[0].load_state(l1);
         self.synths[1].load_state(l2);
-        // The blob carries the keyboard record too (0221), so a state load
+        // The blob carries the keyboard record too, so a state load
         // restores the routing mode along with the patches. The CLAP shell also
         // pushes it down its own key channel (that channel exists for plain UI
         // edits, which carry no state blob); applying it here as well is
@@ -498,7 +498,7 @@ impl Engine {
         }
     }
 
-    /// Host tempo in BPM, for the tempo-synced LFO rates and delay time (0267).
+    /// Host tempo in BPM, for the tempo-synced LFO rates and delay time.
     /// Pushed to both synths unconditionally — a layer switched on mid-session
     /// must not inherit a stale tempo — and cached here for the FX chain's
     /// delay-time resolution. Ignores a non-finite / non-positive BPM.
@@ -571,7 +571,7 @@ impl Engine {
         self.fx.reset();
         // Decimator + limiter state is transport state: a stale FIR history or
         // lookahead window would leak the pre-reset signal into the first block
-        // after the transport restarts (0251).
+        // after the transport restarts.
         self.output.reset();
         self.limiter.reset();
         self.limiter_fade.snap(0.0);
@@ -637,7 +637,7 @@ impl Engine {
     ) {
         let n = l.len();
         // Voices render into the oversampled buses; `l`/`r` receive the
-        // decimated result further down (0251). At os = 1 the decimator is a
+        // decimated result further down. At os = 1 the decimator is a
         // pass-through, so the OS-off render is bit-identical to the pre-0251
         // path.
         let os_n = n * os;
@@ -655,20 +655,20 @@ impl Engine {
 
         // Layer 1 always; layer 2 only when on — single mode never ticks synth 2.
         // Layer 1 ticks first, so its just-advanced LFO 2 phase is this block's
-        // master when the cross-layer link is on (0217): layer 2 adopts it
+        // master when the cross-layer link is on: layer 2 adopts it
         // instead of running its own accumulator. Link off → `None`, the
         // free-running path, at no cost.
         //
         // Layer 1 renders straight into the output and is scaled in place; layer
         // 2 renders into scratch so the two can take different gains before they
-        // sum (0220). Both gains ramp per sample, so a fader move, a mute or a
+        // sum. Both gains ramp per sample, so a fader move, a mute or a
         // pan sweep is a short fade, not a step.
         self.synths[0].render_control_block(bus_l, bus_r, None, os);
         self.layer_gain[0][0].set_target(gain_target[0][0]);
         self.layer_gain[0][1].set_target(gain_target[0][1]);
         // The gain smoothers tick once per BASE frame and are held across that
         // frame's OS sub-samples: a fader or pan move must take the same
-        // wall-clock time to land at 8x as at 1x (0251).
+        // wall-clock time to land at 8x as at 1x.
         for i in 0..n {
             let (gl, gr) = (self.layer_gain[0][0].tick(), self.layer_gain[0][1].tick());
             for k in 0..os {
@@ -676,9 +676,9 @@ impl Engine {
                 bus_r[i * os + k] *= gr;
             }
         }
-        // Post-fader tap (0220): what this layer actually contributes to the
+        // Post-fader tap: what this layer actually contributes to the
         // mix, so a muted or pulled-down layer reads zero — which is what a
-        // mixer strip should show. Post-*pan* too (0248), so a hard-panned layer
+        // mixer strip should show. Post-*pan* too, so a hard-panned layer
         // reads on one channel only.
         self.meters.publish_block_peak(MeterTap::Layer1L, bus_l, bus_r);
         // Scope capture at the same point, so the trace and the L1 meter are
@@ -722,7 +722,7 @@ impl Engine {
         // Decimate the oversampled buses down to the base rate. Both channels
         // always decimate (0262 dropped the spread-0 mono skip — pan makes it
         // unanswerable at block rate); both synths silent ⇒ the drain-skip can
-        // eventually zero-fill. That bookkeeping lives in `OutputStage` (0251).
+        // eventually zero-fill. That bookkeeping lives in `OutputStage`.
         self.output.decimate_block(bus_l, bus_r, l, r, os, both_silent);
 
         // Serial FX chain over the summed voices, at the base rate. Each effect
@@ -741,7 +741,7 @@ impl Engine {
             *s = if v.is_finite() { v } else { 0.0 };
         }
 
-        // Master limiter, genuinely last (0251): after master volume, so raising
+        // Master limiter, genuinely last: after master volume, so raising
         // the master can't push the output past the ceiling. Re-engaging clears
         // the lookahead first, or a stale transient leaks into the first block;
         // the fade crossfades dry↔limited so the toggle can't step level. Off
@@ -768,7 +768,7 @@ impl Engine {
             }
         }
 
-        // Master-out meter tap (0240) — after master volume, the limiter and the
+        // Master-out meter tap — after master volume, the limiter and the
         // finite guard, so it reports exactly what leaves the plugin. The bus
         // accumulates the max across control blocks, so the UI's ~60 Hz drain
         // sees the loudest sample since its last frame regardless of how many
@@ -1612,7 +1612,7 @@ mod tests {
         assert!(!k.layer2_on);
         k.apply(KeyOp::SetSplitPoint(72));
         assert_eq!(k.split_point, 72);
-        // The cross-layer LFO 2 link rides the same op channel (0217) and is
+        // The cross-layer LFO 2 link rides the same op channel and is
         // orthogonal to the key mode.
         assert!(!k.lfo2_link, "link is off by default");
         k.apply(KeyOp::SetLfo2Link(true));
@@ -1623,7 +1623,7 @@ mod tests {
         assert!(!k.lfo2_link);
     }
 
-    // ── Layer pan (0248) ────────────────────────────────────────────────────
+    // ── Layer pan ────────────────────────────────────────────────────
 
     /// The law itself: unity at centre, constant power across the sweep.
     #[test]
@@ -1654,9 +1654,8 @@ mod tests {
         assert_eq!(pan_gains(4.0), pan_gains(1.0));
     }
 
-    /// Two layers panned apart land in opposite channels. Also the case the
-    /// mono fast path used to swallow (0262): spread is 0, so the only thing
-    /// decorrelating L and R is the pan.
+    /// Two layers panned apart land in opposite channels with spread at 0 — pan
+    /// alone decorrelates L and R, which is why `output.rs` decimates both.
     #[test]
     fn layers_panned_apart_land_in_opposite_channels() {
         let mut e = Engine::new(48_000.0);

@@ -200,13 +200,13 @@ impl SharedParams {
     }
 
     /// Apply a UI key-op to the shared [`KeyState`] and flag the audio thread to
-    /// re-sync (0219). Called on the controller (main) thread.
+    /// re-sync. Called on the controller (main) thread.
     pub fn apply_key_op(&self, op: KeyOp) {
         self.key.lock().unwrap_or_else(|e| e.into_inner()).apply(op);
         self.key_dirty.store(true, Ordering::Release);
     }
 
-    /// Duplicate `from`'s patch onto `to` — params and matrix topology (0265).
+    /// Duplicate `from`'s patch onto `to` — params and matrix topology.
     ///
     /// **Excludes the mixer strip.** `LayerLevel`, `LayerMute`, `LayerPan` and
     /// `LayerDetune` are balance and placement *between* the two copies, not
@@ -305,7 +305,7 @@ impl SharedParams {
     }
 
     /// Apply a UI matrix-topology edit to the per-layer matrix channel and flag a
-    /// reload (0219). The audio thread's `take_reload` re-syncs the engine from
+    /// reload. The audio thread's `take_reload` re-syncs the engine from
     /// `engine_state()`, which reads this topology (depths stay param-authoritative
     /// — the codec re-seeds them). Out-of-range slot indices are ignored.
     pub fn edit_matrix_slot(&self, edit: MatrixEdit) {
@@ -356,8 +356,8 @@ impl SharedParams {
     /// Build a two-layer [`PluginState`] from the current store contents. Each
     /// layer's params come from its CLAP block (+ shared globals); its matrix
     /// topology comes from the per-layer topology channel, with slot depths
-    /// re-seeded from the params so depth stays param-authoritative (0205). The
-    /// keyboard record rides along from the key channel (0221), so a `state.save`
+    /// re-seeded from the params so depth stays param-authoritative. The
+    /// keyboard record rides along from the key channel, so a `state.save`
     /// carries the routing mode as well as the two patches.
     pub fn to_state(&self) -> PluginState {
         let matrices = self.matrix_snapshot();
@@ -392,7 +392,7 @@ impl SharedParams {
             self.values[id].store(g.get(gp).to_bits(), Ordering::Relaxed);
         }
         *self.lock() = [state.layers[0].matrix, state.layers[1].matrix];
-        // Keyboard state (0221) travels its own channel to the engine, so the
+        // Keyboard state travels its own channel to the engine, so the
         // reload flag alone would not carry it: raise `key_dirty` too, and the
         // audio thread's `take_key_state` applies the loaded routing mode.
         *self.key.lock().unwrap_or_else(|e| e.into_inner()) = state.key;
@@ -413,7 +413,7 @@ impl SharedParams {
 // The E038 editor's [`vxn_core_app::Controller`] drives the parameter store
 // through [`vxn_core_app::ParamModel`]; this is the adaptor that lets it. Pure
 // delegation to the inherent methods above. `SharedParams` stays trait-free on
-// the audio path (0204); the trait surface is only the controller's generic
+// the audio path; the trait surface is only the controller's generic
 // seam. Lives in-crate so the orphan rules don't bite (both `SharedParams` and
 // the trait would be foreign to the clap crate).
 
@@ -480,7 +480,7 @@ mod tests {
                 "param {id}"
             );
         }
-        // The seeded Amp depth (0205) is present in the store on both layers.
+        // The seeded Amp depth is present in the store on both layers.
         assert_eq!(sp.get(clap_id_of(Layer::L1, ParamId::MatrixSlot0Depth)), 1.0);
         assert_eq!(sp.get(clap_id_of(Layer::L2, ParamId::MatrixSlot0Depth)), 1.0);
     }
@@ -608,7 +608,7 @@ mod tests {
         assert!(!sp.take_reload(), "a failed restore does not flag reload");
     }
 
-    // ── Copy Layer 1 → Layer 2 (0265) ───────────────────────────────────────
+    // ── Copy Layer 1 → Layer 2 ───────────────────────────────────────
 
     /// Seed layer 1 with a recognisable patch and a route the factory lacks.
     fn seeded_for_copy() -> SharedParams {
@@ -730,7 +730,7 @@ mod tests {
         }
     }
 
-    /// The deliberate divergence from `copy_layer` (0307): copy spares the mixer
+    /// The deliberate divergence from `copy_layer`: copy spares the mixer
     /// strip, reset does not. A blank layer that is still muted and panned hard
     /// left reads as broken rather than blank.
     #[test]

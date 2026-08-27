@@ -287,7 +287,7 @@ pub enum ParamId {
     UnisonDetune,
     PortamentoTime,
     Spread,
-    // Start-phase decorrelation depth for a stacked note (0284). Scales the
+    // Start-phase decorrelation depth for a stacked note. Scales the
     // per-lane random offset: 0 starts every lane coherent, 1 is the full
     // scatter the engine used to hardwire. Inert at width 1, which keeps its
     // deterministic `lane_phase`.
@@ -624,7 +624,7 @@ const fn i(
     }
 }
 /// A bipolar matrix slot-depth descriptor (`[-1, 1]`, linear, unitless). The
-/// evaluator scales this normalised depth per destination (0202).
+/// evaluator scales this normalised depth per destination.
 const fn slot(name: &'static str, label: &'static str) -> ParamDesc {
     f(name, label, -1.0, 1.0, 0.0, "", Taper::Linear)
 }
@@ -685,7 +685,7 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     e("env2_shape", "Env 2 Shape", SHAPE_LABELS, 1.0),
     // ── Amp ──
     b("amp_env_bypass", "Amp Gate", 0.0),
-    // ── Layer mix (0220) ──
+    // ── Layer mix ──
     // Unity default so a layer switched on sits at full level — turning Layer 2
     // on must not require finding a fader before anything is heard.
     f("layer_level", "Layer Level", 0.0, 1.0, 1.0, "", Taper::Linear),
@@ -696,7 +696,7 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     // ±50 ct, but the musical range is the inner part of it: past ~25 ct two
     // layers read as out of tune rather than wide. `BipolarExp { mid: 20 }`
     // puts ±20 ct at half travel each way, so the useful span occupies most of
-    // the slider and the extremes stay reachable (0263).
+    // the slider and the extremes stay reachable.
     f("layer_detune", "Layer Detune", -50.0, 50.0, 0.0, "ct", Taper::BipolarExp { mid: 20.0 }),
     // ── LFO 1 ──
     e("lfo1_shape", "LFO 1 Shape", LFO_LABELS, 0.0),
@@ -718,7 +718,7 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     f("unison_detune", "Detune", 0.0, 50.0, 12.0, "ct", Taper::Linear),
     f("portamento_time", "Glide Time", 0.0, 0.5, 0.0, "s", Taper::Exp { mid: 0.1 }),
     f("spread", "Spread", 0.0, 1.0, 0.0, "", Taper::Linear),
-    // Default 1.0 (0284): full scatter is what a stacked note did before the knob
+    // Default 1.0: full scatter is what a stacked note did before the knob
     // existed, so every patch written without it sounds unchanged.
     f("stack_phase", "Phase", 0.0, 1.0, 1.0, "", Taper::Linear),
     e("stack_distrib", "Distrib", DISTRIB_LABELS, 0.0),
@@ -752,7 +752,7 @@ pub static PARAMS: [ParamDesc; ParamId::COUNT] = [
     // subdivision instead of literal seconds. Same rate/sync pairing as the two
     // LFOs — see `crate::sync`.
     b("delay_sync", "Delay Sync", 0.0),
-    // Feedback crossfeed (0277). On is how the kernel has always run, so it
+    // Feedback crossfeed. On is how the kernel has always run, so it
     // stays the default; off keeps each line's feedback on its own side.
     b("delay_pingpong", "Ping-Pong", 1.0),
     b("reverb_on", "Reverb", 0.0),
@@ -1111,7 +1111,7 @@ mod tests {
             assert_eq!(ParamId::slot_depth_index(id), Some(s));
         }
         // Non-slot ids (below the slot block and past the table) return None
-        // without underflowing — the `then` vs `then_some` trap (0205).
+        // without underflowing — the `then` vs `then_some` trap.
         assert_eq!(ParamId::slot_depth_index(ParamId::Cutoff as usize), None);
         assert_eq!(ParamId::slot_depth_index(0), None);
         assert_eq!(ParamId::slot_depth_index(ParamId::COUNT), None);

@@ -49,19 +49,11 @@ use std::io::{self, Read, Write};
 /// VXN1's `b"VXN1"` — the two share no bytes (ADR 0001 §6).
 pub const MAGIC: [u8; 4] = *b"VX1B";
 
-/// Format version. `2` = the two-layer format (0216); `3` adds the per-layer
-/// mix params (0220); `4` adds `FilterKeyTrack` (0245); `5` adds `CutoffTuned`
-/// (0250) — each lengthens the layer's param block; `6` appends the [`KeyState`]
-/// record (0221); `7` adds `LayerPan` (0248) and `LayerDetune` (0263); `8`
-/// splits `AssignMode` into `StackWidth` + `VoiceMode` (0266, ADR 0003); `9`
-/// adds `DelaySync` (0267); `10` adds the FX-stereo globals `PhaserStereo` and
-/// `DelayPingPong` (0279); `11` adds the per-oscillator `Osc1FreeRun` /
-/// `Osc2FreeRun` (0283); `12` adds the stack `StackPhase` / `StackDistrib`
-/// voicing pair (0284). Bump on
-/// any layout change — the
-/// block length is positional, so an older blob read at a newer length would
-/// slide topology bytes into param slots rather than fail cleanly. Rejecting the
-/// old version is what makes that impossible.
+/// Format version. **Bump on any layout change, and keep rejecting every older
+/// value** — the layer's param block is positional and unlengthed, so a blob
+/// written at an older version and read at a newer one would slide topology
+/// bytes into param slots rather than fail cleanly. The rejection three lines
+/// down is what makes that impossible; the version history is in the git log.
 pub const VERSION: u32 = 12;
 
 /// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,

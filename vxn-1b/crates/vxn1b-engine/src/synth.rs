@@ -345,8 +345,8 @@ fn build_ctx<'a>(
     level_comp: f32,
     tempo_bpm: f32,
 ) -> BlockCtx<'a> {
-    // One read, not two: `cross_mod_type()` is a get + round + min + from_index,
-    // and it used to be called again below to fill `cross_mod_type`.
+    // Read once and reuse: `cross_mod_type()` is a get + round + min +
+    // from_index, and the field below wants the same answer.
     let xmod = p.cross_mod_type();
     let (sync, pm_index, ring_mode) = match xmod {
         CrossModType::Off => (false, 0.0, false),

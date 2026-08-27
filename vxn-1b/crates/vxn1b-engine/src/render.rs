@@ -19,13 +19,12 @@
 //! deliberately so. `Pitch`, `XModSweep`, `Pan`, `Amp` and `CrossModAmount` all
 //! pass through a [`crate::mod_smoothing::MotionSmoother`] between the dest
 //! total and the DSP, so their apply step is inseparable from the render loop's
-//! per-quantum tick. This module used to carry a second, pure implementation of
-//! each of those (`voice_pitches`, `voice_pw1`/`voice_pw2`, `voice_amp`,
-//! `voice_cross_mod_amount`); every one had gone unreachable outside its own
-//! tests while the bank quietly did the real work, so 0273 deleted them and
-//! moved their assertions onto the live code. The rule to follow when adding a
-//! dest: if the bank has to smooth it, its statement lives in the bank
-//! (`sweep_gates`, `cooked_pw`, `cooked_pm_index`, `vca`) and is tested there.
+//! per-quantum tick.
+//!
+//! **The rule when adding a dest:** if the bank has to smooth it, its statement
+//! lives in the bank (`sweep_gates`, `cooked_pw`, `cooked_pm_index`, `vca`) and
+//! is tested there. A pure duplicate here would only go unreachable — that is
+//! what happened to five of them before 0273 deleted the lot.
 
 use vxn_dsp::fast_exp2;
 

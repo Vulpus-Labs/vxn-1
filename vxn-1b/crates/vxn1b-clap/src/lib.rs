@@ -102,7 +102,7 @@ fn dispatch(engine: &mut Engine, event: &UnknownEvent) {
                 engine.note_off(channel_of(e.channel()), key as u8);
             }
         }
-        // Per-note (MPE) pressure → the matching voice (0198).
+        // Per-note (MPE) pressure → the matching voice.
         Some(CoreEventSpace::NoteExpression(e))
             if e.expression_type() == Some(NoteExpressionType::Pressure) =>
         {
@@ -263,7 +263,7 @@ pub struct VxnMainThread<'a> {
     /// from `set_parent`, but the page's `applyViewEvents` only exists from the
     /// `ready` handshake, so a push in between is dropped on the floor.
     last_key: Option<vxn1b_engine::KeyState>,
-    /// Whether the previous tick's meter frame was all-zero (0240). Lets the
+    /// Whether the previous tick's meter frame was all-zero. Lets the
     /// drain push the *first* silent frame — the view needs that zero to start
     /// its decay — then go quiet until there is signal again, so an idle plugin
     /// costs nothing on the bridge.
@@ -332,7 +332,7 @@ impl<'a> VxnMainThread<'a> {
         }
     }
 
-    /// Push the matrix topology to the page when it changes (0247).
+    /// Push the matrix topology to the page when it changes.
     ///
     /// Topology is not a CLAP param, so none of the param machinery carries it:
     /// a preset load, a host `state.load`, or a host undo all rewrite the shared
@@ -365,7 +365,7 @@ impl<'a> VxnMainThread<'a> {
         })));
     }
 
-    /// Push the keyboard state to the page when it changes (0221).
+    /// Push the keyboard state to the page when it changes.
     ///
     /// Exactly the topology echo's problem one type over: `KeyState` is not a
     /// CLAP param (ADR 0002 §3), so a preset load, a host `state.load`, or a
@@ -390,7 +390,7 @@ impl<'a> VxnMainThread<'a> {
         handle.push_view_event(ViewEvent::Custom(Box::new(live)));
     }
 
-    /// Drain the meter bus into one `ViewEvent::Custom(MeterFrame)` (0240).
+    /// Drain the meter bus into one `ViewEvent::Custom(MeterFrame)`.
     ///
     /// Runs only with the GUI open, so a closed editor pays nothing — the audio
     /// thread's publish is a few atomics either way, but nothing is read,
@@ -520,11 +520,11 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // dedupes ParamChanged by id in `flush_view_events`, so the overlap is
         // free on the wire.
         self.push_param_diffs();
-        // Topology echo (0247) — cheap, and only pushes on a real change.
+        // Topology echo — cheap, and only pushes on a real change.
         self.push_matrix_echo();
-        // Keyboard echo (0221) — the same, for the state the blob now carries.
+        // Keyboard echo — the same, for the state the blob now carries.
         self.push_key_echo();
-        // Meters (0240) join the same batch — no extra bridge call.
+        // Meters join the same batch — no extra bridge call.
         self.push_meter_frame();
         // The scope trace rides it too, at half the tick rate.
         self.push_scope_frame();
@@ -548,7 +548,7 @@ pub struct VxnAudioProcessor<'a> {
     local: LocalParams<TOTAL_PARAMS>,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
-    /// Last known transport playing state (0267) — a stop→play edge realigns the
+    /// Last known transport playing state — a stop→play edge realigns the
     /// synced LFO 2s to the bar grid.
     was_playing: bool,
 }
@@ -562,7 +562,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
     ) -> Result<Self, PluginError> {
         let max = audio_config.max_frames_count as usize;
         let mut engine = Engine::new(audio_config.sample_rate as f32);
-        // Publish meters into the plugin-lifetime bus (0240), not the engine's
+        // Publish meters into the plugin-lifetime bus, not the engine's
         // own — this `Engine` is discarded on deactivate, and the editor's drain
         // handle must survive that.
         engine.set_meters(shared.meters.clone());
@@ -591,8 +591,8 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Host transport → engine tempo for the synced LFO rates and delay time
-        // (0267). Take the BPM only when the transport actually carries one;
+        // Host transport → engine tempo for the synced LFO rates and delay
+        // time. Take the BPM only when the transport actually carries one;
         // otherwise the engine keeps its sane default and never sees a NaN. A
         // stop→play edge realigns a synced LFO 2 to the bar grid.
         let is_playing = process
@@ -611,7 +611,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         if self.shared.params.take_reload() {
             self.engine.load_state(self.shared.params.engine_state());
         }
-        // A Layer 2 key-mode / split edit from the UI (0219): apply the new
+        // A Layer 2 key-mode / split edit from the UI: apply the new
         // KeyState so the demux enables/bypasses synth 2 and routes note-ons.
         if let Some(key) = self.shared.params.take_key_state() {
             self.engine.set_key_state(key);
@@ -777,7 +777,7 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         if desc_for_clap_id(id).is_none() {
             return Err(std::fmt::Error);
         }
-        // Synced rate/time params read out as their subdivision label (0267), so
+        // Synced rate/time params read out as their subdivision label, so
         // the host's value display matches the editor's popup. Same helper the
         // `ParamChanged` broadcast uses, so the two can't disagree.
         write!(writer, "{}", sync_aware_display(&self.shared.params, id, value as f32))
@@ -852,8 +852,8 @@ mod tests {
     use clack_plugin::utils::Cookie;
     use vxn1b_engine::{Layer, ParamId, clap_id_of};
 
-    /// Layer-1 CLAP id for an inner param — the CLAP surface is the two-layer map
-    /// (0216), so a test that means "layer 1's X" resolves it, not `X as usize`.
+    /// Layer-1 CLAP id for an inner param — the CLAP surface is the two-layer
+    /// map, so a test that means "layer 1's X" resolves it, not `X as usize`.
     fn l1(p: ParamId) -> usize {
         clap_id_of(Layer::L1, p)
     }

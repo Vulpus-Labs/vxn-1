@@ -5,12 +5,10 @@
 // lock-free in the render loop; the controller (main thread) writes on edits and
 // bulk preset loads. Latest-value-wins.
 //
-// ONE direction only. vxn-1's store carries a second `readback` region so the
-// main thread can see params the AUDIO thread changed — which for a plugin means
-// CLAP host automation writing `SharedParams` from `process()`. There is no host
-// in a browser: every value here originates in the controller's model, and the
-// worklet would only ever echo back what it had just read. The region and its
-// diff pump were carried over from vxn-1 and removed once that was traced.
+// ONE direction only, and do not add a readback region (0297). A plugin needs
+// one so the main thread can see params CLAP host automation wrote from
+// `process()`; there is no host in a browser, every value here originates in the
+// controller's model, and the worklet would only echo back what it just read.
 //
 // The id layout is owned by `event-codec.mjs`, itself a declared mirror of
 // vxn1b-engine's params.rs. Imported here so the store and the codec can never

@@ -159,12 +159,12 @@ pub const DEST_GAIN: [f32; N_DESTS] = {
     g
 };
 
-/// Widest envelope-time excursion, in octaves of time: ±1 octave → the 0.5×
-/// .. 2.0× range of [`DestId::Env1Scale`] (0268).
+/// Widest envelope-time excursion, in octaves of time: ±1 octave → the
+/// 0.5× .. 2.0× range of [`DestId::Env1Scale`].
 const ENV_SCALE_OCTAVES: f32 = 1.0;
 
 /// Convert an `Env1Scale` / `Env2Scale` dest total into the A/D/R **multiplier**
-/// the bank applies (0268): `2^x` over the total clamped to ±[`ENV_SCALE_OCTAVES`].
+/// the bank applies: `2^x` over the total clamped to ±[`ENV_SCALE_OCTAVES`].
 ///
 /// Exponential rather than linear so the two directions are musically
 /// symmetric — a route at `+d` lengthens by exactly as much as `−d` shortens —
@@ -181,11 +181,11 @@ pub fn env_time_scale(total: f32) -> f32 {
 }
 
 /// Widest LFO-rate excursion, in octaves of rate: ±2 octaves → the 0.25× .. 4×
-/// range of [`DestId::Lfo1Rate`] (0269).
+/// range of [`DestId::Lfo1Rate`].
 const LFO_RATE_OCTAVES: f32 = 2.0;
 
 /// Convert a `Lfo1Rate` dest total into the **multiplier** on the lane's
-/// resolved rate (0269): `2^x` over the total clamped to ±[`LFO_RATE_OCTAVES`].
+/// resolved rate: `2^x` over the total clamped to ±[`LFO_RATE_OCTAVES`].
 ///
 /// Exponential for the same reasons as [`env_time_scale`], plus one specific to
 /// rate: powers of two are the musical intervals of a tempo-synced LFO, so a

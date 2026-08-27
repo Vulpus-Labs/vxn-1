@@ -47,17 +47,17 @@ pub enum SourceId {
     PitchWheel = 8,
     Aftertouch = 9,
     NoteRandom = 10,
-    /// The voice's own place in the stereo image (0260): the lane's fixed
+    /// The voice's own place in the stereo image: the lane's fixed
     /// position scaled by the `Spread` param, so a route into [`DestId::Pan`]
     /// at depth 1 reproduces VXN1's hard-wired unison spread exactly. Keeping
     /// the param's scaling *inside* the source is what lets Spread stay a
     /// front-panel knob instead of becoming "slot 3's depth". For the position
-    /// *without* that scaling, use [`SourceId::StackPos`] (0308).
+    /// *without* that scaling, use [`SourceId::StackPos`].
     Spread = 11,
     /// The voice's raw place in its stack: `stack_spread(i, width)` in
     /// `[-1, 1]`, `0.0` for a width-1 stack — the same allocator position
     /// [`SourceId::Spread`] carries, but **without** the `Spread` param folded
-    /// in (0308).
+    /// in.
     ///
     /// Why both exist: `Spread`'s in-source scaling is what keeps the pan knob
     /// a knob, but it makes every *other* use of lane position hostage to a pan
@@ -97,7 +97,7 @@ impl SourceId {
     }
 
     /// Decode a wire-format `u8`. Out-of-range → [`SourceId::None`] so a corrupt
-    /// patch blob degrades to an inert slot rather than panicking (0203).
+    /// patch blob degrades to an inert slot rather than panicking.
     #[inline]
     pub fn from_u8(v: u8) -> Self {
         match v {
@@ -118,7 +118,7 @@ impl SourceId {
     }
 
     /// Whether this source emits a **bipolar** `[-1, 1]` shape (vs a unipolar
-    /// `[0, 1]` one). Consumed by the evaluator's `scale_norm` (0202) to fold a
+    /// `[0, 1]` one). Consumed by the evaluator's `scale_norm` to fold a
     /// bipolar scale source into the `[0, 1]` VCA range. **Exhaustive match** —
     /// a new source forces a polarity decision at compile time (the
     /// `is_bipolar` discipline of VXN2 ADR 0009).
@@ -185,7 +185,7 @@ pub enum DestId {
     HpfCutoff = 6,
     Amp = 7,
     CrossModAmount = 8,
-    /// Voice position in the stereo image, `[-1, 1]` (0260). Replaces VXN1's
+    /// Voice position in the stereo image, `[-1, 1]`. Replaces VXN1's
     /// hard-wired `pan_position(lane) × spread`: the default patch routes
     /// [`SourceId::Spread`] here at depth 1, and anything else routed on top
     /// (LFO auto-pan, an envelope throwing a transient left) sums with it.
@@ -195,7 +195,7 @@ pub enum DestId {
     /// Two detuned pulse oscs get their thickness from the widths sweeping
     /// *independently*, which a single shared dest cannot express.
     Osc1Pwm = 10,
-    /// Osc 2's pulse width alone (0261). Mirror of [`DestId::Osc1Pwm`].
+    /// Osc 2's pulse width alone. Mirror of [`DestId::Osc1Pwm`].
     Osc2Pwm = 11,
     /// Envelope 1's **A/D/R times**, as a multiplier cooked at note-on (0268):
     /// `2^x` over the dest total clamped to `[-1, 1]`, so the reachable range
@@ -206,7 +206,7 @@ pub enum DestId {
     /// is latched when the voice triggers and held for the life of the note
     /// (see [`crate::eval::env_time_scale`]).
     Env1Scale = 12,
-    /// Envelope 2's A/D/R times (0268). Mirror of [`DestId::Env1Scale`].
+    /// Envelope 2's A/D/R times. Mirror of [`DestId::Env1Scale`].
     Env2Scale = 13,
     /// Per-voice LFO 1's **rate**, as a multiplier on the resolved Hz (0269):
     /// `2^x` over the dest total clamped to `[-2, 2]`, so a full-depth route
@@ -237,7 +237,7 @@ pub enum DestId {
     /// ringing note (and, through the decay rate it also sets, bend a decay
     /// already in flight).
     Env1Sustain = 15,
-    /// Envelope 2's sustain level (0270). Mirror of [`DestId::Env1Sustain`].
+    /// Envelope 2's sustain level. Mirror of [`DestId::Env1Sustain`].
     Env2Sustain = 16,
 }
 
@@ -448,7 +448,7 @@ impl MatrixTable {
     /// into [`DestId::Pan`] at all, using the first free slot. Returns whether
     /// one was installed.
     ///
-    /// Why loading needs this (0260): before pan was a destination, spread was
+    /// Why loading needs this: before pan was a destination, spread was
     /// hard-wired DSP, so every patch written until now carries no pan route
     /// and would load dead-centre — a silent regression on every existing
     /// preset. Seeding on load fixes that without a format change, since the
@@ -526,18 +526,16 @@ pub const DEFAULT_VIBRATO_DEPTH: f32 = 0.160_918;
 ///   Essential — without it the VCA never opens.
 /// - **Slot 1 — LFO1 → Pitch @ [`DEFAULT_VIBRATO_DEPTH`].** Reproduces VXN1's
 ///   gentle default vibrato (0.05 st), so VXN1b's factory patch matches VXN1's
-///   real default — the render-parity target (0202).
+///   real default — the render-parity target.
 ///
 /// - **Slot 2 — Spread → Pan @ 1.0.** Reproduces VXN1's hard-wired unison
-///   spread, which used to be a line of DSP (`pan_position(lane) × spread`) and
-///   is now a route like any other (0260). Depth 1.0 is the identity, so the
+///   spread as an ordinary route. Depth 1.0 is the identity, so the
 ///   `Spread` knob keeps its full range and meaning; delete the route and the
 ///   knob goes inert, which is the honest consequence of routing being visible.
 ///
-/// Filter key-track is **not** here: it used to occupy a pre-wired Key→Cutoff
-/// slot standing in for VXN1's missing param, and 0245 gave it back its own
-/// param ([`ParamId::FilterKeyTrack`](crate::params::ParamId), default `0.0`
-/// like VXN1's). The slot is the player's again.
+/// Filter key-track is **not** here — it is its own param
+/// ([`ParamId::FilterKeyTrack`](crate::params::ParamId), default `0.0` like
+/// VXN1's), so the slot stays the player's.
 pub fn default_patch() -> MatrixTable {
     let mut table = MatrixTable::default();
     table.slots[0] = MatrixSlot {
@@ -559,7 +557,7 @@ pub fn default_patch() -> MatrixTable {
 }
 
 /// The `Spread → Pan` route the default patch seeds and
-/// [`MatrixTable::ensure_pan_route`] restores (0260). Depth 1.0 is the
+/// [`MatrixTable::ensure_pan_route`] restores. Depth 1.0 is the
 /// identity: the `Spread` param does the scaling inside the source.
 pub const SPREAD_TO_PAN: MatrixSlot = MatrixSlot {
     source: SourceId::Spread,
@@ -675,7 +673,7 @@ mod tests {
         }
     }
 
-    // ── ensure_pan_route (0260) ─────────────────────────────────────────────
+    // ── ensure_pan_route ─────────────────────────────────────────────
 
     #[test]
     fn ensure_pan_route_seeds_a_patch_with_no_pan_opinion() {
@@ -769,10 +767,10 @@ mod tests {
             }
         );
         // Slot 2: Spread → Pan at unity — VXN1's unison spread, as a route
-        // rather than hard-wired DSP (0260).
+        // rather than hard-wired DSP.
         assert_eq!(t.slots[2], SPREAD_TO_PAN);
         assert_eq!(t.slots[2].depth, 1.0);
-        // Key-track is a param (0245), not a pre-wired slot: nothing in the
+        // Key-track is a param, not a pre-wired slot: nothing in the
         // factory patch touches Cutoff, and every remaining slot is the
         // player's.
         for s in &t.slots[3..] {

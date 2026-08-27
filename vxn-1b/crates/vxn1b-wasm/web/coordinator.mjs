@@ -16,13 +16,12 @@
 //                  domain state (key mode, split point, LFO 2 link, matrix
 //                  topology, scope tap, tempo)
 //   param SAB      every CLAP-id param, block-granular, latest-value-wins,
-//                  plus the audio->main readback the diff pump reads
+//                  main -> worklet only (0297 removed the readback region)
 //   telemetry SAB  meter and scope frames, worklet -> main
 //   the port       lifecycle only: ready, trap, reset, destroy
 //
-// vxn-1 sends its key mode and split point over the PORT, because its wire
-// predates having anywhere better to put them. VXN1b's ride the ring with
-// everything else.
+// The port carries no domain state. Key mode and split point in particular ride
+// the ring, so they are applied at a sample offset like everything else.
 //
 // ===========================================================================
 // SCOPE: THIS IS A DEMO (ticket 0297)
@@ -36,8 +35,8 @@
 //
 // What IS here is not plugin-grade robustness but browser fact: the gesture gate
 // (autoplay policy — without it there is no sound at all) and suspend/resume
-// mirroring with a voice flush (tabs get backgrounded constantly, and coming
-// back with stuck notes is not exotic, it is Tuesday).
+// mirroring with a voice flush (a backgrounded tab that comes back with stuck
+// notes is the common case, not an edge one).
 
 import { EventRing, createRingSAB, DEFAULT_CAPACITY } from "./event-ring.mjs";
 import { ParamStore, createParamSAB, TOTAL_PARAMS } from "./param-store.mjs";

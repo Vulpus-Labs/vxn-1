@@ -8,8 +8,7 @@
 //! chain and master volume run.
 //!
 //! Three behaviours ride along, each one a shipped VXN1 bug fix rather than a
-//! nicety. (A fourth, VXN1 0107's `spread == 0` mono skip, was removed in 0262 —
-//! see [`OutputStage::decimate_block`].)
+//! nicety.
 //!
 //! * **Silent-drain skip** (VXN1 0106). Once the banks have been silent long
 //!   enough for the FIR state to flush ([`DECIMATOR_DRAIN_BLOCKS`]), decimation
@@ -127,13 +126,10 @@ impl OutputStage {
     /// Decimate the oversampled L/R buses into `dst_l`/`dst_r` at the base rate.
     /// `both_silent` drives the drain-skip.
     ///
-    /// Both channels always decimate. There was a mono fast path here — when
-    /// every sounding layer had `Spread == 0` the R decimator was skipped and
-    /// `dst_r` copied from `dst_l` — and it was removed in 0262: Spread stopped
-    /// being the only thing that decorrelates L and R once layers could be
-    /// panned (0248) and pan became a modulation destination (0260). "Is this
-    /// patch mono?" is a per-sample question now, so no block-rate hint can
-    /// answer it; a hint that is right until an LFO moves is worse than no hint.
+    /// **Both channels always decimate — do not add a mono fast path** (0262).
+    /// Skipping the R decimator needs a block-rate answer to "is this patch
+    /// mono?", and there isn't one: pan is a modulation destination, so a hint
+    /// that is right until an LFO moves is worse than no hint.
     pub fn decimate_block(
         &mut self,
         l_os: &[f32],
@@ -212,10 +208,8 @@ mod tests {
         assert_eq!(out, bus, "OS = 1 must not touch the samples");
     }
 
-    /// 0262: both channels always decimate. Identical input still yields
-    /// identical output — that was the old fast path's whole justification, and
-    /// it holds without it because the two decimators see the same weights in
-    /// the same order. What changed is that *different* input now survives.
+    /// Identical input still yields identical output with both decimators
+    /// running — the two see the same weights in the same order.
     #[test]
     fn identical_input_stays_bit_mono_without_the_fast_path() {
         for os in [1usize, 2, 4, 8] {
@@ -229,9 +223,9 @@ mod tests {
         }
     }
 
-    /// The case the fast path swallowed: a patch with `Spread == 0` but a panned
-    /// layer feeds different L and R buses, and the difference must reach the
-    /// output rather than being overwritten by a copy of L.
+    /// The pair to the above, and the reason there is no mono fast path: with
+    /// `Spread == 0` a panned layer still feeds different L and R buses, and
+    /// the difference must reach the output.
     #[test]
     fn differing_channels_survive_at_every_factor() {
         for os in [1usize, 2, 4, 8] {

@@ -15,14 +15,10 @@
 //!
 //! # Change detection: echo on, no bitset drain
 //!
-//! `vxn2-web-controller` is the structural reference — both it and this crate
-//! compose the shared `Controller` directly — but its *change detection* is not
-//! portable. `vxn2-engine`'s `SharedParams` carries per-param dirty bitsets, so
-//! its controller sets `echo_param_writes(false)` and drains those bits as the
-//! single Model→View emitter. `vxn1b-engine`'s `SharedParams` has **no value
-//! bitset at all** — only `key_dirty` and `reload`. So this controller leaves
-//! `echo_param_writes` at its default `true`; copying vxn-2's setup would
-//! compile and then emit nothing.
+//! `vxn1b-engine`'s `SharedParams` has **no per-param value bitset** — only
+//! `key_dirty` and `reload` — so this controller leaves `echo_param_writes` at
+//! its default `true`. Do not copy vxn-2's `echo_param_writes(false)` + bitset
+//! drain: it compiles here and then emits nothing.
 //!
 //! Three consequences, each handled explicitly here because the echo alone does
 //! not cover them:
@@ -50,13 +46,9 @@
 //! [[E046]] would replace all six of those mechanisms with one dirty-bitset
 //! pump; ticket 0303 is the follow-up that deletes them from this file.
 //!
-//! # No host, no readback
-//!
-//! vxn-1's web controller runs a NaN-seeded `last_seen` diff over a readback
-//! region because its native shell needs one for CLAP host automation. The
-//! browser has no host: the only writer of the param SAB is the coordinator,
-//! and ticket 0297 removed the readback half of the SAB outright. There is no
-//! `pump_readback` here and nothing for one to observe.
+//! There is deliberately **no readback pump**. The browser has no host, so the
+//! coordinator is the param SAB's only writer and 0297 removed the readback
+//! region outright — a `last_seen` diff here would have nothing to observe.
 //!
 //! [`sync_aware_display`]: vxn1b_engine::sync::sync_aware_display
 //! [`push_key_echo`]: ControllerState::push_key_echo

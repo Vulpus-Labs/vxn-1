@@ -76,12 +76,12 @@ struct PresetFile {
     /// are omitted on write and default-inert on read.
     #[serde(default)]
     matrix: Vec<MatrixRowFile>,
-    /// Layer 2's patch (0221). Absent → the factory patch, i.e. a single-layer
+    /// Layer 2's patch. Absent → the factory patch, i.e. a single-layer
     /// preset. Declared **after** the top-level array-of-tables so the emitted
     /// TOML puts `[layer2]` past the last `[[matrix]]` row rather than inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layer2: Option<LayerFile>,
-    /// Keyboard record (0221). Absent → `Single` at the default split point with
+    /// Keyboard record. Absent → `Single` at the default split point with
     /// no LFO 2 link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keys: Option<KeysFile>,
@@ -1033,7 +1033,7 @@ dest = "pitch"
         let (_m, st, warnings) = read_preset(s).unwrap();
         assert!(warnings.iter().any(|w| w.contains("out of range")), "{warnings:?}");
         // The bad row is dropped; the only live slot is the `Spread → Pan`
-        // route seeded on load for a patch that says nothing about pan (0260).
+        // route seeded on load for a patch that says nothing about pan.
         let live: Vec<_> = st.layers[0].matrix.slots.iter().filter(|s| s.is_active()).collect();
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(live[0].dest, DestId::Pan);

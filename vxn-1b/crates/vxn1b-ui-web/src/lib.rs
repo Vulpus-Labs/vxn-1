@@ -33,19 +33,14 @@ pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 
 /// Logical pixel dimensions of the editor (ADR 0001 §7 compact layout). Height
 /// tracks the CSS geometry in `faceplate.css`, sized to the **tallest tab pane**
-/// — the Layer pane's three rows (0219): 20 pad + 26 banner + 30 preset-bar +
-/// 26 tab-strip + 3×8 chrome gaps + (124 + 124 + 164 rows + 2×8 pane gaps) = 554
-/// nominal, **556 as laid out**: the banner and the tab strip carry 1 px borders
-/// outside their declared heights, and the host window has to fit the page as
-/// rendered, not as summed. At 554 the last 2 px — the bottom row's panel border
-/// — were cut off.
+/// — the Layer pane's three rows (0219).
 ///
-/// The FX/Global pane is two rows (mixer + FX), and since its first row grew to
-/// hold the whole mixer strip it comes to 424 against the Layer pane's 428 — so
-/// it fills the window without driving its height.
+/// Sum the declared heights and you get 2 px less than this: the banner and the
+/// tab strip carry 1 px borders *outside* theirs, and the host window must fit
+/// the page as rendered, not as summed. Under-size it and the bottom row's
+/// panel border is clipped.
 ///
-/// Width was widened from the initial 760 for top-row breathing room + the
-/// standalone Dynamics panel. Keep in sync with `--editor-w` / the row heights.
+/// Keep in sync with `--editor-w` / the row heights.
 pub const EDITOR_WIDTH: u32 = 1060;
 pub const EDITOR_HEIGHT: u32 = 616;
 
@@ -735,13 +730,9 @@ mod tests {
     /// Every control primitive the faceplate mounts must have styling in the
     /// spliced sheet.
     ///
-    /// Regression guard: a bulk edit that removed the retired tabbed-FX rules
-    /// (0220) sliced from the FX banner to the *next* banner comment and took
-    /// the toggle / button / dropdown primitives with it. Nothing failed —
-    /// every unit test still passed, because the breakage was purely visual:
-    /// toggle boxes vanished and labels fell back to the browser default size
-    /// across all three tabs. Selector presence is cheap to assert and would
-    /// have caught it at the source.
+    /// Nothing else can catch a lost rule: the breakage is purely visual, so
+    /// every other test stays green while toggle boxes vanish and labels fall
+    /// back to the browser default. Selector presence is cheap to assert.
     #[test]
     fn css_covers_every_control_primitive() {
         let heads = rule_heads(FACEPLATE_CSS);

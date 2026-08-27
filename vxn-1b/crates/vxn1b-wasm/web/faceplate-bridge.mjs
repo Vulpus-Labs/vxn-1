@@ -8,71 +8,14 @@
 //         window.__vxn.applyPresetCorpus(snap)   on a corpus change
 //
 // Natively wry provides the first and `evaluate_script` the second. This module
-// provides both: an `ipc` shim that routes each opcode to the controller wasm
-// and a pump that turns controller ticks + telemetry frames into one
-// `applyViewEvents` call per animation frame.
+// provides both: an `ipc` shim routing each opcode to the controller wasm, and a
+// pump turning controller ticks + telemetry frames into one `applyViewEvents`
+// call per animation frame.
 //
-// # Where each opcode goes, and why
-//
-// The model and the engine are separate wasms with separate linear memories —
-// natively one `SharedParams` is visible to both threads and this split does not
-// exist at all. One rule decides where an opcode goes: **does the opcode have a presence in the model?**
-//
-//   - IT DOES → post it to the controller and nothing else. It reaches the
-//     engine on the next pump, as a diff: param VALUES through the store SAB
-//     mirror, non-param state (key mode, split point, LFO 2 link, matrix
-//     topology) through the echo resend below. That covers params, gestures,
-//     presets, folders and copy_layer.
-//   - IT DOES NOT → push it straight onto the ring. Only the scope tap and the
-//     tempo qualify: pure audio-thread view state with no CLAP id and no model
-//     presence, so there is no echo to carry them and routing them through the
-//     model would put view state into the patch.
-//
-// An earlier cut of this file ALSO pushed key/matrix ops onto the ring at route
-// time, "because the engine needs them too". That double-pushed every UI
-// topology edit — once from the router, once from the resend — and bought
-// nothing: the extra push is one tick earlier, which is the same tick a param
-// edit waits for anyway (params reach the SAB on the pump, not on the click).
-// Gestures stop at the controller for a different reason: the engine treats
-// them as a no-op ("controller / host-echo concern, they never reach
-// rendering" — codec.rs), and there is no host here to bracket edits for.
-//
-// # The load / restore / copy problem
-//
-// A preset load, a state restore and `copy_layer` all rewrite matrix topology
-// and the keyboard record inside the CONTROLLER, so the ring never hears about
-// them and the engine would keep playing the old routing. Rather than
-// enumerating those three causes, the pump uses the controller's own echoes as
-// the trigger: 0290 emits a matrix / key record exactly when either changes,
-// from any cause, so the bridge diffs each against what it last pushed and
-// resends the fields that moved. Load, restore, copy and any future cause are
-// covered by one mechanism.
-//
-// # Ordering (see also audio-host.mjs step 1 vs step 3)
-//
-// Slot DEPTH is a CLAP param (store SAB); slot TOPOLOGY is a ring event. A load
-// moves both, and nothing makes the two writes atomic against a block boundary,
-// so a block can see one and not the other.
-//
-// The worklet reads the store FIRST and the ring SECOND within one quantum
-// (`audio-host.mjs` process(): applyStoreToEngine at (1), drainRawInto at (2)).
-// Given that, pushing the ring BEFORE mirroring the store makes the harmful tear
-// impossible: for a block to see new depths with old topology it would need the
-// mirror (second) to land before the store read AND the ring push (first) to
-// land after the ring read — i.e. the first write after the second. The only
-// reachable tear is new-topology-with-old-depth, which is the right route at a
-// stale amount rather than a stale route at a new amount.
-//
-// **If audio-host.mjs ever reads the ring before the store, this inverts and
-// nothing here will fail — it will just occasionally click on preset load.**
-// The two orderings are load-bearing as a pair.
-//
-// This is a small effect and not a browser-only one: the native plugin has the
-// same window (`SharedParams::restore_from_bytes` writes params, then topology,
-// then the reload flag, while the audio thread folds params every block), and
-// the click-prone destinations are smoothed anyway (`mod_smoothing.rs`, 0208).
-// Getting the order right is free, so it is done; nothing more elaborate is
-// warranted.
+// Routing rule: an opcode with a presence in the MODEL goes to the controller
+// and nowhere else; one with none goes straight onto the ring (`routeOpcode`
+// argues each case). `pump`'s step (1)/(2) ordering is load-bearing — read the
+// comment there before touching it.
 
 import {
   LAYER_L1,
@@ -140,9 +83,8 @@ function scopeEvent(frame) {
 /// presence reaches the engine through the pump's diffs.
 ///
 /// Returns `true` if the opcode was handled. An unknown or non-string `op` is
-/// dropped and returns `false` rather than being guessed at: VXN1b's page never
-/// posts a numeric `op` (vxn-2's does, for its operator tab, which is why its
-/// router has to sniff the type first).
+/// dropped and returns `false` rather than being guessed at — VXN1b's page only
+/// ever posts a string `op`.
 export function routeOpcode(ctrl, coord, msg, hooks = {}) {
   if (!msg || typeof msg.op !== "string") return false;
   switch (msg.op) {
@@ -532,8 +474,32 @@ export class FaceplateBridge {
   pump() {
     const events = this.controller.tick();
 
-    // (1) Engine resync from the echoes, BEFORE the mirror — see the ordering
-    // note at the top of this file. Topology first, depths second.
+    // (1) Engine resync from the echoes, BEFORE the mirror at (2). Topology
+    // first, depths second — and that order is LOAD-BEARING.
+    //
+    // Slot DEPTH is a CLAP param (store SAB); slot TOPOLOGY is a ring event. A
+    // load moves both, and nothing makes the two writes atomic against a block
+    // boundary, so a block can see one and not the other.
+    //
+    // The worklet reads the store FIRST and the ring SECOND within one quantum
+    // (`audio-host.mjs` process(): applyStoreToEngine at (1), drainRawInto at
+    // (2)). Given that, pushing the ring BEFORE mirroring the store makes the
+    // harmful tear impossible: for a block to see new depths with old topology
+    // it would need the mirror (second) to land before the store read AND the
+    // ring push (first) to land after the ring read — i.e. the first write
+    // after the second. The only reachable tear is new-topology-with-old-depth,
+    // which is the right route at a stale amount rather than a stale route at a
+    // new amount.
+    //
+    // **If audio-host.mjs ever reads the ring before the store, this inverts
+    // and nothing here will fail — it will just occasionally click on preset
+    // load.** The two orderings are load-bearing as a pair.
+    //
+    // This is a small effect and not a browser-only one: the native plugin has
+    // the same window (`SharedParams::restore_from_bytes` writes params, then
+    // topology, then the reload flag, while the audio thread folds params every
+    // block), and the click-prone destinations are smoothed anyway
+    // (`mod_smoothing.rs`, 0208).
     let corpusDirty = false;
     // Whether anything in the PATCH moved. Computed here, before the telemetry
     // frames are appended below, so a sounding note never reads as an edit.

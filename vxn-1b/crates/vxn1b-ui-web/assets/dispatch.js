@@ -415,16 +415,14 @@ export function bindCell(entry, layer) {
 // classes or inline styles the last primitive added — and, crucially, **no
 // event listeners**.
 //
-// Clearing `innerHTML` is not enough. It disposes of listeners bound to the
-// children a primitive built, which is most of them, but not of any bound to the
-// cell root: the rocker's click, the switch rows' clicks, and
-// `bindCell`'s reset-to-default double-click all attach there. Those survived
-// the reset and accumulated one closure per layer flip, each still holding the
-// id of the layer it was bound under — so after visiting Layer 2, a click on the
-// Voice rocker wrote Poly/Solo to layer 1 *and* layer 2, and a double-click
-// reset both layers' values.
+// Clearing `innerHTML` is not enough: it disposes of listeners bound to the
+// children a primitive built, but not of any bound to the CELL ROOT — the
+// rocker's click, the switch rows' clicks and `bindCell`'s reset-to-default
+// double-click all attach there. Those would survive and accumulate one closure
+// per layer flip, each still holding the id of the layer it was bound under, so
+// a single click would write both layers.
 //
-// Replacing the node fixes every such case at once, including ones nobody has
+// Replacing the node covers every such case at once, including ones nobody has
 // written yet: a new primitive can attach listeners wherever it likes and stay
 // correct across a rebind by construction.
 function freshenCell(entry) {
@@ -536,8 +534,8 @@ export function wireTabs() {
   }
 }
 
-// Layer 2 on/off toggle (0219). Off (default) → Single (synth 2 bypassed); on →
-// Dual. Split (mode 2) is the FX/Global tab's concern (0220). Posts the derived
+// Layer 2 on/off toggle. Off (default) → Single (synth 2 bypassed); on →
+// Dual. Split (mode 2) is the FX/Global tab's concern. Posts the derived
 // KeyMode via `setKeyMode`; the engine-side apply (KeyState → audio thread) lands
 // with the topology wire, so this is currently the view's own state until an echo
 // reconciles it. Exposed for `setLayer2On` so a KeyModeChanged echo can reflect.
@@ -549,7 +547,7 @@ export function wireLayer2Toggle() {
     el.classList.toggle('on', _layer2On);
     // Panels that only mean something with two layers (the Layer 2 mixer strip,
     // the whole Split panel) dim rather than disappear, so the layout doesn't
-    // jump as the layer toggles (0220).
+    // jump as the layer toggles.
     document.querySelectorAll('[data-layer2-gated]').forEach((p) => {
       p.classList.toggle('dimmed', !_layer2On);
     });
@@ -904,21 +902,21 @@ export function init() {
     };
     model.cells.push(entry);
   });
-  // Tab shell + Layer 2 toggle (0219). Wired before the first rebind so the
+  // Tab shell + Layer 2 toggle. Wired before the first rebind so the
   // layer pane starts on Layer 1 (upper) and the toggle reflects single mode.
   wireTabs();
   wireLayer2Toggle();
-  // Cross-layer LFO 2 link (0217) — a hand-wired KeyState cell in the LFO 2
+  // Cross-layer LFO 2 link — a hand-wired KeyState cell in the LFO 2
   // panel strip, so it must not be left to `rebindAllForLayer`.
   wireLfo2Link();
-  // Copy Layer 1 → Layer 2 (0265) — a hand-wired PatchOp cell in the Voice
+  // Copy Layer 1 → Layer 2 — a hand-wired PatchOp cell in the Voice
   // panel strip, same reason.
   wireCopyLayer();
   wireResetLayer();
-  // Keyboard split (0220) — KeyState cells on the FX/Global tab, hand-wired
+  // Keyboard split — KeyState cells on the FX/Global tab, hand-wired
   // for the same reason as the LFO 2 link.
   wireSplit();
-  // Level meters (0240). Mount points are `data-meter="<frame key>"`, so a
+  // Level meters. Mount points are `data-meter="<frame key>"`, so a
   // panel opts in from HTML and the registry needs no per-panel wiring.
   wireMeters();
   // Layer scope — mounted before the first `syncScopeSource` below, which is
@@ -965,8 +963,8 @@ export function init() {
           for (const c of cutoffCtls) c.update(last.plain, last.norm, last.display);
         }
       }
-      // Unified dim rules: source-Off / Cross Mod Type ≠ FM (0044) plus
-      // the built-in Free-run (0042) and Filter Mode = Notch (0043).
+      // Unified dim rules: source-Off / Cross Mod Type ≠ FM plus
+      // the built-in Free-run and Filter Mode = Notch.
       applyDimRulesFor(ev.id, ev.plain);
       return;
     }
@@ -1001,7 +999,7 @@ export function init() {
       }
       return;
     }
-    // Meter frame (0240). Raw linear peaks since the previous frame; the
+    // Meter frame. Raw linear peaks since the previous frame; the
     // registry fans them to whichever meters are mounted and the rAF loop
     // renders the ballistics. Purely view-bound — nothing here touches the
     // model, so the MVC parity rule is unaffected.

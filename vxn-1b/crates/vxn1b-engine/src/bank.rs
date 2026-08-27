@@ -36,7 +36,7 @@
 //! unrouted patch is bit-unchanged. `HpfCutoff` is live per lane too (0272), on
 //! the same rule: routed means per-lane coefficients, unrouted means the
 //! bank-wide one. The
-//! per-voice component trims landed with global drift (0218) and are likewise
+//! per-voice component trims landed with global drift and are likewise
 //! inert at the default `MasterDrift = 0`.
 
 use vxn_dsp::{
@@ -308,19 +308,17 @@ struct AmpRoute {
 /// The patch's `Amp` routes, resolved **once per control block** (0274).
 ///
 /// The matrix is scanned for Amp slots here rather than inside the per-lane
-/// loop: the answer is pure topology, so scanning it sixteen times was sixteen
-/// times too many, and it used to happen *twice* over — once in `amp_coeffs`
-/// for the VCA factoring and again in a separate `amp_envelopes` walk for the
-/// voice-lifetime predicate (0271). Both now come off this one pass, and the
-/// per-lane factoring walks only the live routes (usually one) instead of all
-/// sixteen slots.
+/// loop, because the answer is pure topology — the same for every lane. Both
+/// consumers come off this one pass: the VCA factoring ([`AmpCoeffs`]) and the
+/// voice-lifetime predicate. The per-lane factoring then walks only the live
+/// routes, usually one, instead of all `N_SLOTS`.
 #[derive(Clone, Copy)]
 struct AmpRoutes {
     routes: [AmpRoute; N_SLOTS],
     n: usize,
     /// Whether Env 1 / Env 2 reach `Amp` at all — the only envelopes that can
     /// end a note, and so the only ones allowed to hold a lane open after
-    /// gate-off (0271).
+    /// gate-off.
     ///
     /// Topology + depth, *not* the [`AmpCoeffs`]: those collect only `Lin`-curve
     /// Env→Amp slots (the rest fold into `stat`), and a curved Env→Amp route
@@ -419,7 +417,7 @@ pub struct RenderBank {
     /// scaled at apply time by the global drift amount.
     trim: VoiceTrim,
     /// The patch's envelope settings as last pushed by [`Self::set_envelopes`],
-    /// kept so a lane's cooked params can be *re-derived* (0268). Without this
+    /// kept so a lane's cooked params can be *re-derived*. Without this
     /// the per-lane note-on env scale would be wiped by the next envelope or
     /// drift param change, which re-pushes the patch values to every lane.
     env_patch: EnvPatch,
@@ -440,7 +438,7 @@ pub struct RenderBank {
 /// The envelope half of the patch: both ADSRs, their shapes, and the drift
 /// amount scaling the per-lane trims. Held by [`RenderBank`] so
 /// [`RenderBank::apply_env_lane`] can re-cook one lane without the caller
-/// having to re-supply the patch (0268).
+/// having to re-supply the patch.
 #[derive(Clone, Copy)]
 struct EnvPatch {
     env1: (f32, f32, f32, f32),
@@ -550,13 +548,13 @@ impl RenderBank {
     /// Apply ADSR params to all lanes (called when an envelope param *or*
     /// `drift_amount` changed).
     ///
-    /// `drift_amount` scales the fixed per-lane trims (0218): each lane's A/D/R
+    /// `drift_amount` scales the fixed per-lane trims: each lane's A/D/R
     /// times and sustain get a constant multiplicative nudge from [`VoiceTrim`],
     /// so a held chord's voices breathe at subtly different rates like real
     /// per-voice analog tolerance. At `drift_amount = 0` every factor is exactly
     /// `1.0`, so all lanes receive bit-identical params.
     ///
-    /// The patch is *stored* as well as applied (0268), so the per-lane note-on
+    /// The patch is *stored* as well as applied, so the per-lane note-on
     /// envelope scale can be folded in here and survive a param change mid-note:
     /// tweaking Decay while a scaled note rings re-cooks that lane at its own
     /// multiplier rather than snapping it back to the patch value.
@@ -575,8 +573,8 @@ impl RenderBank {
     }
 
     /// Cook one lane's two envelopes from the stored patch × that lane's drift
-    /// trims (0218) × its latched matrix time scale (0268), with the latched
-    /// sustain offset added on top (0270). The time factors are independent
+    /// trims × its latched matrix time scale, with the latched sustain offset
+    /// added on top. The time factors are independent
     /// multipliers on A/D/R; sustain takes the drift trim multiplicatively and
     /// the matrix offset additively, clamped into `[0, 1]` last so no
     /// combination of the two can leave the legal range.
@@ -598,7 +596,7 @@ impl RenderBank {
         self.env2[v].set_shape(p.env2_shape);
     }
 
-    /// Latch lane `v`'s envelope time scales (0268) and sustain offsets (0270)
+    /// Latch lane `v`'s envelope time scales and sustain offsets
     /// from this block's dest totals, and re-cook the lane if any moved.
     ///
     /// Called **only** on the lane's note-on trigger: `AdsrCore` holds cooked
@@ -609,7 +607,7 @@ impl RenderBank {
     /// keypress) said at the moment it started, for the whole life of the note —
     /// including its release, which is the point of scaling R at all.
     ///
-    /// The same argument covers sustain (0270): it is the envelope's *held*
+    /// The same argument covers sustain: it is the envelope's *held*
     /// level, and it also sets the decay rate, so tracking it continuously
     /// would both step a ringing note and bend a decay already in flight.
     ///
@@ -642,7 +640,7 @@ impl RenderBank {
     /// coefficient bank — the OTA ladder ramps them itself per frame, which is
     /// why neither dest has a [`MotionSmoother`] entry. The HPF cutoff is
     /// *returned* instead of written, because whether the bank takes the
-    /// per-lane or the broadcast path is a decision across all lanes (0272).
+    /// per-lane or the broadcast path is a decision across all lanes.
     #[inline]
     fn set_lane_filter(
         &mut self,
@@ -653,7 +651,7 @@ impl RenderBank {
     ) -> f32 {
         // Filter key-track: the played note against VXN1's C0 pivot, at the
         // `filter_key_track` amount (0245), and — at that same amount — the
-        // voice's *drifted* pitch (0218), since the keyboard CV a real VCF
+        // voice's *drifted* pitch, since the keyboard CV a real VCF
         // tracks carries the VCO's drift, so the tracked cutoff wanders with it.
         // Plus the fixed per-lane cutoff tolerance: a constant
         // ±TRIM_CUTOFF_CENTS offset at full drift, enough for gentle
@@ -708,8 +706,8 @@ impl RenderBank {
             pitch_wheel: ctx.pitch_wheel,
             aftertouch: pressure[v],
             note_random: note_random[v],
-            // The lane's place in the image, already scaled by the Spread knob
-            // (0260). Routing this to `Pan` at depth 1 — what the default patch
+            // The lane's place in the image, already scaled by the Spread
+            // knob. Routing this to `Pan` at depth 1 — what the default patch
             // does — is VXN1's hard-wired unison spread, now expressed as
             // topology rather than hard wiring.
             //
@@ -763,7 +761,7 @@ impl RenderBank {
     }
 
     /// Advance the declick ramp on every released lane and free the ones that
-    /// have finished (0271). One frame's worth.
+    /// have finished. One frame's worth.
     ///
     /// A released lane is held open only by the envelopes actually routed to
     /// `Amp` — those are the ones that can still make sound. An unrouted (or
@@ -862,7 +860,7 @@ impl RenderBank {
         // Per-voice LFO 1: tick each lane's phase once for this block. LFOs tick
         // even on silent blocks so free-run phase keeps drifting.
         // The rate is the panel's resolved Hz — sync already applied (0267) —
-        // times this lane's `Lfo1Rate` multiplier from last block (0269), so a
+        // times this lane's `Lfo1Rate` multiplier from last block, so a
         // synced LFO under a power-of-two amount stays on the grid.
         let mut lfo1_raw = [0.0f32; N];
         for (v, (lfo, raw)) in self.lfo1.iter_mut().zip(lfo1_raw.iter_mut()).enumerate() {
@@ -895,7 +893,7 @@ impl RenderBank {
         // glides. `g1`/`g2` gate XModSweep onto the mode-selected osc — see
         // `sweep_gates`.
         let (g1, g2) = sweep_gates(ctx.cross_mod_type);
-        // The patch's Amp topology, scanned once for the whole block (0274):
+        // The patch's Amp topology, scanned once for the whole block:
         // the per-lane factoring below and the voice-lifetime check in the frame
         // loop both read it.
         let amp_routes = AmpRoutes::resolve(ctx.matrix);
@@ -908,7 +906,7 @@ impl RenderBank {
         let mut pwm_active = [false; N];
         let mut xmod_active = [false; N];
         let mut pan_active = [false; N];
-        // Per-lane HPF cutoff (0272). `hpf_modulated` stays false for a patch
+        // Per-lane HPF cutoff. `hpf_modulated` stays false for a patch
         // with no route on the dest, which keeps the bank-wide `set_cutoff_all`
         // path — and with it the bit-exact unrouted render.
         let mut hpf_tgt = [0.0f32; N];
@@ -948,7 +946,7 @@ impl RenderBank {
             tgt[v].sweep = dests[DestId::XModSweep.index()];
             tgt[v].pwm =
                 (render::pwm_offset(&dests, DestId::Osc1Pwm), render::pwm_offset(&dests, DestId::Osc2Pwm));
-            // Pan (0260). Clamped here rather than at the gains: the smoother
+            // Pan. Clamped here rather than at the gains: the smoother
             // should chase a reachable position, or an over-deep route would
             // leave it creeping toward a target the law can never render.
             tgt[v].pan = dests[DestId::Pan.index()].clamp(-1.0, 1.0);
@@ -966,11 +964,11 @@ impl RenderBank {
 
             // A fresh note snaps its lane so it starts settled (static sources
             // land zipper-free; no glide from the stolen voice's stale state).
-            // Next block's rate for this lane (0269).
+            // Next block's rate for this lane.
             self.lfo1_rate_mod[v] = dests[DestId::Lfo1Rate.index()];
 
             if self.trigger_pending[v] {
-                // Envelope time scales (0268) and sustain offsets (0270) are
+                // Envelope time scales and sustain offsets are
                 // latched here, before the envelopes re-arm below.
                 self.cook_env_mods(v, &dests);
                 // A fresh note must not inherit the *stolen* note's LFO rate for
@@ -1041,7 +1039,7 @@ impl RenderBank {
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         // The HPF runs when the panel opens it *or* when a route lifts any
-        // sounding lane off the 20 Hz rail (0272) — gating on the raw param
+        // sounding lane off the 20 Hz rail — gating on the raw param
         // alone would make a route inert on a patch with the filter parked at
         // its minimum, which is exactly the patch that most wants one.
         //
@@ -1085,7 +1083,7 @@ impl RenderBank {
         let mut filt = [0.0f32; N];
         let mut amp = [0.0f32; N];
 
-        // Voice pan (0260). The position comes from the matrix `Pan` dest —
+        // Voice pan. The position comes from the matrix `Pan` dest —
         // the default patch routes `Spread` there at depth 1, which is how
         // unison spread survives as topology rather than hard wiring — and the
         // law is the same unity-centre constant power the layer mixer uses
@@ -1121,8 +1119,8 @@ impl RenderBank {
         let osc2_runs = ctx.sync || pm_on || ring_on || ctx.osc2_level != 0.0;
 
         // Only Env→Amp routes can end a note, so only they hold a lane open
-        // after gate-off (0271); the declick ramp does the rest. Which envelopes
-        // those are came off the block's one Amp scan (0274).
+        // after gate-off; the declick ramp does the rest. Which envelopes those
+        // are came off the block's one Amp scan.
         let fade_step = 1.0 / (FREE_FADE_SECS * base_rate);
 
         let env_static = self.envelopes_static(&trig, active, gate);
@@ -1352,7 +1350,7 @@ fn block_glide(portamento_time: f32, base_frames: usize, base_rate: f32) -> (boo
 /// slot folds into `static` at its block-start value.
 ///
 /// Walks the routes [`AmpRoutes::resolve`] found for this block, not the whole
-/// slot table (0274). The gain arrives pre-cooked; only the `scale_src` VCA is
+/// slot table. The gain arrives pre-cooked; only the `scale_src` VCA is
 /// per-voice, and it comes from [`crate::eval::slot_scale`] so the scale rule
 /// has one definition.
 fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeffs {
@@ -1790,10 +1788,10 @@ mod tests {
         );
     }
 
-    /// The block's single Amp scan (0274) has to answer both questions the two
-    /// old walks answered, and keep 0271's deliberate asymmetries: the lifetime
-    /// flags count **every** curve and ignore `scale_src`, where the `e1`/`e2`
-    /// per-frame coefficients collect only `Lin` Env→Amp slots.
+    /// The block's single Amp scan answers both questions, with deliberately
+    /// different rules: the lifetime flags count **every** curve and ignore
+    /// `scale_src`, where the `e1`/`e2` per-frame coefficients collect only
+    /// `Lin` Env→Amp slots.
     #[test]
     fn the_amp_scan_answers_factoring_and_lifetime_together() {
         let mut m = MatrixTable::default();
@@ -1835,9 +1833,8 @@ mod tests {
 
     // ── The routing rules the bank owns (0273) ──────────────────────────────
     //
-    // These moved off `render.rs`'s pure mirrors, which had gone unreachable
-    // outside their own tests while the bank did the real work. The assertions
-    // are the same; they now sit on the code that ships.
+    // Asserted against the shipping code, not a pure mirror of it — see the
+    // rule in `render.rs`'s module docs.
 
     /// `XModSweep` is mode-gated exactly as VXN1 gates its sweep, and `Pitch`
     /// is not gated at all.
@@ -2260,8 +2257,8 @@ mod tests {
         bank.trigger_lane(0, TriggerOpts::retrig(LfoShape::Sine), None);
         let mut bk = Book::silent(); // gate already released
         bk.active[0] = true;
-        // Long enough to cover the 8 ms declick ramp the free now goes through
-        // (0271) — 256 frames is 5.3 ms, less than the ramp.
+        // Long enough to cover the 8 ms declick ramp the free goes through —
+        // 256 frames is 5.3 ms, less than the ramp.
         let mut l = vec![0.0; 1024];
         let mut r = vec![0.0; 1024];
         bank.render(&ctx(&m), bk.view(), &mut l, &mut r);
@@ -2319,10 +2316,9 @@ mod tests {
         bank.set_envelopes(e1, AdsrShape::Linear, e2, AdsrShape::Linear, 0.0);
     }
 
-    /// The bug this rule fixes: Env 2 → Amp is the only thing that can end a
-    /// note, but a long *unrouted* Env 1 used to hold the lane open — and an
-    /// LFO → Amp route kept that held lane sounding long after the amp envelope
-    /// had closed. The lane must now free on Env 2 alone.
+    /// A lane frees on the envelopes actually ROUTED to Amp. An unrouted Env 1
+    /// must not hold it open — with an LFO → Amp route alongside, a held lane
+    /// keeps sounding long after the amp envelope has closed.
     #[test]
     fn an_unrouted_envelope_no_longer_holds_a_lane_open() {
         let m = table_of(&[

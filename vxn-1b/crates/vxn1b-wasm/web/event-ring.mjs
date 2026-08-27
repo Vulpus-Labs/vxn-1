@@ -1,9 +1,8 @@
 // Lock-free SPSC event ring — main thread produces, worklet drains (0287).
 //
-// Ported from vxn-1's ring (spike 0035), whose framing every VXN synth shares.
-// The mechanism is unchanged; what differs is the producer surface, which
-// carries VXN1b's event set (MIDI channel on notes, matrix topology, scope tap,
-// tempo, per-note pressure). See WIRE-FORMAT.md.
+// The framing is the one every VXN synth shares (spike 0035); the producer
+// surface below is VXN1b's own event set (MIDI channel on notes, matrix
+// topology, scope tap, tempo, per-note pressure). See WIRE-FORMAT.md.
 //
 // The ring is a fixed-stride slot array carved out of a SharedArrayBuffer.
 // Fixed slots (not byte-packed variable records) are deliberate:
@@ -32,10 +31,9 @@
 // gesture-end. The ring is sized so this should never happen; if it does, the
 // audio thread has died, and dropping events would only mask that.
 //
-// There is deliberately NO JS block-slicing loop here. vxn-1's ring carries one
-// (its spike drove the slice loop from JS); VXN1b's slicing lives in Rust
-// (`host.rs`), reached via `drainRawInto` — one implementation, not two that can
-// disagree about what "apply at offset k" means.
+// Do NOT add a JS block-slicing loop here. Slicing lives in Rust (`host.rs`),
+// reached via `drainRawInto` — one implementation, not two that can disagree
+// about what "apply at offset k" means.
 
 import { SLOT_BYTES, encodeInto, ev } from "./event-codec.mjs";
 

@@ -99,7 +99,7 @@ pub struct StackVoicing {
     /// Total detune span in cents across the stack, fanned by lane position.
     pub unison_detune: f32,
     pub legato: bool,
-    /// Start-phase decorrelation depth in `[0, 1]` (0284). Scales the per-lane
+    /// Start-phase decorrelation depth in `[0, 1]`. Scales the per-lane
     /// random draw: 0 starts every lane coherent at phase 0, 1 is the full
     /// scatter. Ignored at width 1, which keeps its deterministic `lane_phase`.
     pub phase: f32,
@@ -184,10 +184,8 @@ impl Triggers {
 /// no sustain-pedal defer state in this layer yet, so held vs. released is the
 /// full ranking.
 ///
-/// Takes the gate array directly. It used to take an `AllocView` borrowing
-/// three arrays, so the retired single-lane `allocate` could rank a lane
-/// without touching mutable state; `worst_stack` is the only caller now and
-/// gate is the only field the ranking ever read (0311).
+/// Takes the gate array directly — it is the only field the ranking reads, and
+/// `worst_stack` is the only caller (0311).
 #[inline]
 fn steal_tier(gate: &[bool; N], v: usize) -> u8 {
     if !gate[v] { 0 } else { 1 }
@@ -232,16 +230,16 @@ pub struct Voices {
     /// (ADR 0001 §2). Updated by per-note pressure (only the matching
     /// note+channel voice) or channel pressure (every active voice on the
     /// channel). Latched to 0 at note-on so a reused voice never inherits a
-    /// stale value. Sampled by the evaluator at control rate (0202).
+    /// stale value. Sampled by the evaluator at control rate.
     pressure: [f32; N],
     /// Per-voice **note-on random** in `[0, 1)`, latched once at note-on and held
     /// for the note's lifetime (ADR 0001 §2). Decorrelates stacked/adjacent
-    /// voices — a per-voice humanisation source the matrix reads (0202). Drawn
+    /// voices — a per-voice humanisation source the matrix reads. Drawn
     /// from `rng`, so successive allocations differ and the sequence is
     /// reproducible.
     note_random: [f32; N],
     /// Per-voice note velocity `[0, 1]`, stamped at note-on — the matrix
-    /// Velocity source (0202).
+    /// Velocity source.
     velocity: [f32; N],
     /// Per-voice detune in **cents**, added to both oscillators by the render
     /// bank. Zero for Poly and Solo; the fanned `UnisonDetune` spread for
@@ -282,7 +280,7 @@ pub struct Voices {
     /// trigger. Separate from `rng` so the two humanisation streams don't
     /// perturb each other.
     phase_rng: u64,
-    /// [`StackDistrib::Random`] lane-position stream (0284). Advanced only under
+    /// [`StackDistrib::Random`] lane-position stream. Advanced only under
     /// Random, and separate from the other two for the same reason they are
     /// separate from each other.
     spread_rng: u64,
@@ -381,7 +379,7 @@ impl Voices {
             .map(|v| self.stack_id[v])
     }
 
-    /// Claim `width` lanes for one note as **whole stacks** (0266).
+    /// Claim `width` lanes for one note as **whole stacks**.
     ///
     /// Free lanes first, then victim stacks worst-ranked first. The victim is
     /// picked by lane but released by *stack*: every lane sharing the victim's
@@ -605,9 +603,7 @@ impl Voices {
     /// later return starts clean.
     ///
     /// Width is deliberately not a parameter: a width change alone needs neither
-    /// action — sounding stacks keep their lanes until released (ADR 0003). It
-    /// used to be passed in only to be recorded in a `last_width` field nothing
-    /// ever read.
+    /// action — sounding stacks keep their lanes until released (ADR 0003).
     fn sync_mode(&mut self, mode: VoiceMode) {
         if mode != self.last_mode {
             if mode == VoiceMode::Solo {
@@ -691,14 +687,14 @@ impl Voices {
     }
 
     /// Voice `v`'s current pressure `[0, 1]` — the per-voice aftertouch source
-    /// the matrix evaluator samples (0202).
+    /// the matrix evaluator samples.
     #[inline]
     pub fn pressure(&self, v: usize) -> f32 {
         self.pressure[v]
     }
 
     /// Voice `v`'s note-on random value `[0, 1)` — latched at note-on, constant
-    /// for the note's lifetime. The per-voice humanisation source (0202).
+    /// for the note's lifetime. The per-voice humanisation source.
     #[inline]
     pub fn note_random(&self, v: usize) -> f32 {
         self.note_random[v]
@@ -1203,7 +1199,7 @@ mod tests {
         }
     }
 
-    // ── Stack-granular allocation (0266) ────────────────────────────────────
+    // ── Stack-granular allocation ────────────────────────────────────
 
     /// Lanes claimed by one note-on share a stack identity — the thing that
     /// makes a steal able to release a whole note.

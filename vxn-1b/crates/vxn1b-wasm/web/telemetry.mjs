@@ -176,13 +176,12 @@ export class TelemetryReader extends TelemetryView {
     // Scratch the caller reads from; reused so a 60 Hz poll allocates nothing.
     this._meterOut = new Float32Array(meterLen);
     this._scopeOut = new Float32Array(scopeWindow);
-    // Seeded to 0, the counter's value BEFORE any publish — not -1. A -1 seed
-    // makes the very first read see "0 !== -1", conclude something is new, and
-    // hand back the still-zeroed region as though the engine had published
-    // silence. That fabricated frame then consumes the one silent frame the
-    // rule below allows, so the real first frame is the one that gets
-    // suppressed. The writer's first publish takes the counter 0 -> 2, so a
-    // genuine frame is always distinguishable from "nothing yet".
+    // Must be 0 — the counter's value BEFORE any publish — and not -1. A -1 seed
+    // reads "0 !== -1" as news and hands back the still-zeroed region as a
+    // published silent frame, which then consumes the one silent frame the rule
+    // below allows and suppresses the real first frame. The writer's first
+    // publish takes the counter 0 -> 2, so a genuine frame stays
+    // distinguishable from "nothing yet".
     this._meterSeen = 0;
     this._scopeSeen = 0;
     // Silence rule: deliver the FIRST silent frame (the view needs the zero that

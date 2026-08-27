@@ -133,12 +133,10 @@ foreach(_archive ${VXN_CLAP_STATIC})
     # MSVC needs the archive on the link line as an INPUT as well as naming it
     # in the directive: unlike `-force_load` / `--whole-archive`, which carry
     # the path themselves, `/WHOLEARCHIVE:lib` only says *how* to treat a
-    # library the linker already has. Without this `target_link_libraries` the
-    # directive matched nothing, the engine was never pulled in, and — because
-    # /FORCE:MULTIPLE below suppresses the errors that would have surfaced it —
-    # the link SUCCEEDED, producing a ~516 KB module of wrapper glue with an
-    # empty factory. Shipped that way in VXN1/VXN2 0.1.1 and VXN1b 0.0.1.
-    # Pass the full path in both places so the identifiers match.
+    # library the linker already has. Drop either half and the directive matches
+    # nothing, the engine is never pulled in, and /FORCE:MULTIPLE below hides
+    # the errors that would have said so — the link succeeds and ships a hollow
+    # module. Pass the full path in both places so the identifiers match.
     target_link_libraries(vxn1b_vst3 PRIVATE "${_archive}")
     target_link_options(vxn1b_vst3 PRIVATE "/WHOLEARCHIVE:${_archive}")
     # rustc bundles a short-import stub for each native dependency (ntdll,
@@ -148,18 +146,17 @@ foreach(_archive ${VXN_CLAP_STATIC})
     # /FORCE:MULTIPLE keeps the first definition of each and links; the
     # duplicates are byte-identical import thunks, so this is safe here.
     target_link_options(vxn1b_vst3 PRIVATE "/FORCE:MULTIPLE")
-    # And root the entry point. /WHOLEARCHIVE force-INCLUDES the objects, but
-    # /OPT:REF — on by default under the /INCREMENTAL:NO that CMake's Release
-    # flags set — then DISCARDS every COMDAT not reachable from an entry point
-    # or an export. Nothing in the wrapper references `clap_entry` at link
-    # time (it is looked up at runtime), so the whole engine was included and
-    # then immediately stripped: a successful link, no diagnostics, and a
-    # ~516 KB module with an empty factory. /INCLUDE: adds the symbol as a
-    # root, and everything it reaches survives with it.
+    # And root the entry point, or /WHOLEARCHIVE's work is undone: /OPT:REF —
+    # on by default under the /INCREMENTAL:NO that CMake's Release flags set —
+    # discards every COMDAT not reachable from an entry point or an export, and
+    # nothing in the wrapper references `clap_entry` at link time (it is looked
+    # up at runtime). /INCLUDE: adds it as a root and everything it reaches
+    # survives with it. Again: silent, so the failure is a shipped hollow
+    # module, not a link error.
     #
-    # macOS needs no equivalent: ld64 does not dead-strip unless asked, which
-    # is why -force_load alone was always sufficient there and only Windows
-    # shipped hollow. x64 C symbols are undecorated, so no leading underscore.
+    # macOS needs no equivalent — ld64 does not dead-strip unless asked, which
+    # is why -force_load alone suffices there. x64 C symbols are undecorated,
+    # so no leading underscore.
     target_link_options(vxn1b_vst3 PRIVATE "/INCLUDE:clap_entry")
   else() # Linux / other ELF
     target_link_options(vxn1b_vst3 PRIVATE

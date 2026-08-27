@@ -15,16 +15,12 @@
 // `faceplate-bridge.mjs`'s job, so the two destinations stay legible in one
 // place rather than being buried in half the setters here.
 //
-// Ported from vxn-2's `controller.mjs`, with three shape differences:
-//   - 6 record tags, not 8 (no operator tab, no KS/EG curves; VXN1b adds the
-//     matrix snapshot and the keyboard record).
-//   - No factory asset. 0290 embeds the bank, so the corpus JSON is readable
-//     immediately after `vxnc_new()` — there is nothing to fetch and no
-//     `loadFactoryAsset`.
-//   - Two-layer param space, so the wasm exports patch and global counts. JS
-//     stores `patchCount` but does not compute ids from it — the page gets
-//     `__PATCH_COUNT__` baked in from Rust. It is here because the boot
-//     handshake checks it against the mirror (0312).
+// Two things that catch people out:
+//   - There is no factory asset to fetch. 0290 embeds the bank, so the corpus
+//     JSON is readable immediately after `vxnc_new()`.
+//   - `patchCount` is stored but never used to compute an id — the page gets
+//     `__PATCH_COUNT__` baked in from Rust. It is read so the boot handshake
+//     can check it against the JS mirror (0312).
 
 import { PATCH_COUNT, GLOBAL_COUNT, TOTAL_PARAMS } from "./param-store.mjs";
 
