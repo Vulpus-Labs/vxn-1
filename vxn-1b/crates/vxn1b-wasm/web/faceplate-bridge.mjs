@@ -99,7 +99,12 @@ export function scopeEvent(frame) {
 /// `ctx` is `{ctrl, coord, msg, hooks}`: the controller wasm, the ring
 /// coordinator (used by exactly two opcodes), the decoded message, and the
 /// page-side hooks.
+///
+/// Null-prototyped so a bare lookup cannot reach an inherited member: an `op`
+/// of `"constructor"` has to miss, not hand back a callable.
 const OPCODE_HANDLERS = {
+  __proto__: null,
+
   // ---- controller only: params + gestures ------------------------------
   set_param: ({ ctrl, msg }) => {
     ctrl.setParam(msg.id, msg.plain);
@@ -244,12 +249,12 @@ const OPCODE_HANDLERS = {
 ///
 /// Returns `true` if the opcode was handled. An unknown or non-string `op` is
 /// dropped and returns `false` rather than being guessed at — VXN1b's page only
-/// ever posts a string `op`. `hasOwn` rather than a bare lookup so an `op` of
-/// `"toString"` finds no inherited `Object.prototype` member to call.
+/// ever posts a string `op`.
 export function routeOpcode(ctrl, coord, msg, hooks = {}) {
   if (!msg || typeof msg.op !== "string") return false;
-  if (!Object.hasOwn(OPCODE_HANDLERS, msg.op)) return false;
-  return OPCODE_HANDLERS[msg.op]({ ctrl, coord, msg, hooks });
+  const handler = OPCODE_HANDLERS[msg.op];
+  if (!handler) return false;
+  return handler({ ctrl, coord, msg, hooks });
 }
 
 /// Drives the controller wasm and the page: one pump per animation frame.

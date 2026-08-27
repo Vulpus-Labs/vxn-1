@@ -967,7 +967,12 @@ function refreshPartner(partnerOf, id) {
 /// Adding a ViewEvent variant to the faceplate is adding one entry here.
 /// A kind with no entry is dropped — `key_mode_changed` is the live example;
 /// uncomment the trace in `dispatch` to see them go past.
+///
+/// Null-prototyped so a bare lookup cannot reach an inherited member: a `kind`
+/// of `"constructor"` has to miss, not hand back a callable.
 const VIEW_HANDLERS = {
+  __proto__: null,
+
   param_changed(ev) {
     // Cache last-seen value so the sync-flip / dim-refresh / layer-
     // rebind reseed paths can reapply without waiting for the next echo.
@@ -1075,17 +1080,16 @@ const VIEW_HANDLERS = {
   },
 };
 
-/// Dispatch one ViewEvent from Rust. `hasOwn` rather than a bare lookup so a
-/// `kind` of `"constructor"` finds no inherited `Object.prototype` member to
-/// call; an unhandled kind is dropped.
+/// Dispatch one ViewEvent from Rust. An unhandled kind is dropped.
 export function dispatch(ev) {
-  if (!ev || !Object.hasOwn(VIEW_HANDLERS, ev.kind)) {
+  const handler = ev && VIEW_HANDLERS[ev.kind];
+  if (!handler) {
     // key_mode_changed lands here. Uncomment for verbose tracing during
     // development:
     // console.log('vxn:view', ev);
     return;
   }
-  VIEW_HANDLERS[ev.kind](ev);
+  handler(ev);
 }
 
 /// Publish the dispatcher onto the two entry points Rust calls, after replaying
