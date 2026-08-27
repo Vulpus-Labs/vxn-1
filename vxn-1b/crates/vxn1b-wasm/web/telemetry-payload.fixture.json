@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "Cross-language fixture for the telemetry payload shape (0316).",
+    "",
+    "Two serialisers produce these frames for the page and they are not shared:",
+    "`vxn1b_ui_web::serialise_custom_payload` for the native editor, and",
+    "`faceplate-bridge.mjs`'s `meterEvent` / `scopeEvent` for the browser. Same",
+    "key names, same clamp, same rounding — and, before this fixture, the same",
+    "comment about the stereo-linked detector, word for word in both files, with",
+    "nothing comparing them.",
+    "",
+    "Both sides now assert against this file: Rust in",
+    "`vxn1b-ui-web`'s `telemetry_payload_matches_the_fixture`, JS in",
+    "`telemetry-payload.test.mjs`. Change one serialiser and one test fails.",
+    "",
+    "Every input is exactly representable in f32, so the two languages agree",
+    "bit-for-bit after widening and there is no epsilon anywhere.",
+    "",
+    "`meterIn` is MeterTap order — the order `MeterFrame::drain` writes and the",
+    "order the telemetry SAB carries: l1 L/R, l2 L/R, dynIn L/R, dynOut L/R,",
+    "dynGr, master L/R."
+  ],
+  "meterIn": [0.5, 0.25, 0.125, 0.0625, 1.0, 0.75, 0.375, 0.1875, -6.5, 0.875, 0.03125],
+  "meterOut": {
+    "kind": "meters",
+    "l1": [0.5, 0.25],
+    "l2": [0.125, 0.0625],
+    "dynIn": [1.0, 0.75],
+    "dynOut": [0.375, 0.1875],
+    "dynGr": -6.5,
+    "master": [0.875, 0.03125]
+  },
+  "_scopeComment": [
+    "Rails and rounding, not a waveform: 2.5 and -3 must clamp to +/-2 (the",
+    "trace clips there anyway, and one runaway sample would otherwise bloat the",
+    "frame), and 0.0625 must round to 3 dp — the canvas is ~120 px tall, so",
+    "anything finer is invisible and full f32 printing would triple the length",
+    "of an array shipped 30x a second."
+  ],
+  "scopeIn": [0.0, 0.5, -0.5, 2.5, -3.0, 0.0625, 1.0, -1.0],
+  "scopeOut": {
+    "kind": "scope",
+    "s": [0.0, 0.5, -0.5, 2.0, -2.0, 0.063, 1.0, -1.0]
+  }
+}

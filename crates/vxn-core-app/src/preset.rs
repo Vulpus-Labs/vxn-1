@@ -93,6 +93,16 @@ pub trait PresetStore: Send + 'static {
     fn list_user_tree(&self) -> Vec<UserFolderEntry>;
 }
 
+/// Display label for the virtual root group of a user preset corpus — the
+/// presets that sit in no folder.
+///
+/// One constant rather than a literal per surface: it is shown by the native
+/// editor, the browser controller and `preset-browser.js`, and the three
+/// carried their own copies with a comment asking them not to disagree (0316).
+/// A synth that wants a different word passes it explicitly — vxn-2 does, and
+/// spells it with a -z-.
+pub const UNCATEGORISED_LABEL: &str = "Uncategorised";
+
 /// Serialise a [`PresetCorpus`] for the JS browser panel. Factory
 /// presets are grouped by `meta.category` (presets without a category
 /// fall into `uncategorised_label`); user folders preserve their

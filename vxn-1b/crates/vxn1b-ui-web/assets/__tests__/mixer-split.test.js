@@ -109,6 +109,37 @@ function press(el) {
   el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
 }
 
+// The markup carries no min/max/value — `wireSplit` stamps them from
+// SPLIT_MIN / SPLIT_MAX / SPLIT_DEFAULT, which are in turn pinned to
+// `vxn1b_engine::vocab` by a Rust test (0316). A slider whose `max` disagreed
+// with `clampNote` would silently refuse the top of its own range.
+describe('wireSplit — slider range', () => {
+  it('stamps the range and default onto a bare input', () => {
+    document.body.innerHTML = `
+      <div class="split-enable-slot" id="split-enable"></div>
+      <input type="range" id="split-point-slider" />
+      <div id="split-point-readout"></div>
+    `;
+    wireSplit();
+    const slider = document.getElementById('split-point-slider');
+    expect(slider.min).toBe(String(SPLIT_MIN));
+    expect(slider.max).toBe(String(SPLIT_MAX));
+    expect(slider.step).toBe('1');
+    expect(slider.value).toBe(String(SPLIT_DEFAULT));
+  });
+
+  it('leaves a value the caller already set alone', () => {
+    // A rebind must not snap the slider back to C4 under the player.
+    document.body.innerHTML = `
+      <div class="split-enable-slot" id="split-enable"></div>
+      <input type="range" id="split-point-slider" min="12" max="96" value="48" />
+      <div id="split-point-readout"></div>
+    `;
+    wireSplit();
+    expect(document.getElementById('split-point-slider').value).toBe('48');
+  });
+});
+
 describe('wireSplit — enable toggle', () => {
   it('does not post while Layer 2 is off', () => {
     // A split with one layer is meaningless, and posting Split (2) would turn

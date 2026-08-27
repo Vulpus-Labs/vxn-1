@@ -28,20 +28,34 @@ import {
 } from "./event-codec.mjs";
 import { WebController } from "./controller.mjs";
 
-/// Scope-tap wire codes (match `vxn1b_engine::ScopeTap::code()`), keyed by the
-/// strings the page sends.
-const SCOPE_TAP = { off: 0, upper: 1, lower: 2 };
+// ── The custom-op vocabulary ───────────────────────────────────────────────
+//
+// The JS half of `vxn1b_engine::vocab`, and the only copy of it outside Rust:
+// the page sends NAMES, these tables turn them into the ordinals the wire and
+// the controller carry. `vocab-agreement.test.mjs` asserts all four against the
+// built controller wasm, because every failure here is silent — a renamed name
+// makes the lookup `undefined` and `routeOpcode` drops the op (the knob moves,
+// the sound does not), and a reordered ordinal is worse: the op lands, on the
+// wrong field.
 
-/// Layer names the page uses → wire layer index.
-const LAYER = { upper: LAYER_L1, lower: LAYER_L2 };
+/// Scope tap names → `vxn1b_engine::ScopeTap::code()`.
+export const SCOPE_TAP = { off: 0, upper: 1, lower: 2 };
 
-/// Matrix field names the page uses → wire field index.
-const MATRIX_FIELD = {
+/// Layer names → wire layer index (`Layer`'s discriminant).
+export const LAYER = { upper: LAYER_L1, lower: LAYER_L2 };
+
+/// Matrix field names → wire field index.
+export const MATRIX_FIELD = {
   source: MATRIX_FIELD_SOURCE,
   dest: MATRIX_FIELD_DEST,
   curve: MATRIX_FIELD_CURVE,
   scale: MATRIX_FIELD_SCALE_SRC,
 };
+
+/// Split-point slider range and default, mirrored from `vxn1b_engine::vocab`
+/// (`SPLIT_POINT_MIN` / `MAX` / `DEFAULT_SPLIT_POINT`). The page stamps the
+/// input's `min`/`max`/`value` from here rather than hard-coding them in HTML.
+export const SPLIT_POINT = { min: 12, max: 96, default: 60 };
 
 /// Opcodes the page posts that have no controller handler, by design.
 /// `set_edit_layer` is handled in-page — the faceplate rebinds its cells
@@ -53,7 +67,7 @@ const KNOWN_UNHANDLED = new Set(["set_edit_layer"]);
 /// Meter frame layout — `MeterTap` order, from vxn-core-utils::meter. The page
 /// wants the named shape `vxn1b_ui_web::serialise_custom_payload` produces, so
 /// the flat telemetry region is mapped here rather than in the page.
-function meterEvent(frame) {
+export function meterEvent(frame) {
   return {
     kind: "meters",
     l1: [frame[0], frame[1]],
@@ -69,7 +83,7 @@ function meterEvent(frame) {
 /// Scope frame → the page's shape. Rounded to 3 dp exactly as the native
 /// serialiser does: the canvas is ~120 px tall, so finer is invisible, and a
 /// 384-sample frame at 30 Hz is worth not tripling in length.
-function scopeEvent(frame) {
+export function scopeEvent(frame) {
   const s = new Array(frame.length);
   for (let i = 0; i < frame.length; i++) {
     s[i] = Math.round(Math.min(2, Math.max(-2, frame[i])) * 1000) / 1000;

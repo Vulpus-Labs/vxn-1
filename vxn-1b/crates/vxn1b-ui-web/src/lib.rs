@@ -40,13 +40,18 @@ pub use vxn_core_ui_web::{EditorHandle, OpenEditorError, prompt_text};
 /// the page as rendered, not as summed. Under-size it and the bottom row's
 /// panel border is clipped.
 ///
-/// Keep in sync with `--editor-w` / the row heights.
+/// `--editor-w` in the stylesheet must agree; `editor_width_matches_the_css`
+/// asserts it rather than asking (0316). The height has no single CSS constant
+/// to check against — it is the sum of the row variables plus two borders — so
+/// it stays a number with the reasoning above it.
 pub const EDITOR_WIDTH: u32 = 1060;
 pub const EDITOR_HEIGHT: u32 = 616;
 
 /// Display label for the virtual root group of the user preset corpus.
-/// VXN1b has no per-synth override, so this matches the shared default.
-const UNCATEGORISED: &str = "Uncategorised";
+/// VXN1b has no per-synth override; the constant is the shared one so the
+/// native page, the browser controller and `preset-browser.js` cannot disagree
+/// (0316 — they used to be three literals and a comment saying they must not).
+const UNCATEGORISED: &str = vxn_core_app::UNCATEGORISED_LABEL;
 
 /// Open the VXN1b editor under `parent`. Thin wrapper over
 /// [`vxn_core_ui_web::open_editor`]: builds VXN1b's faceplate HTML and a
@@ -93,7 +98,7 @@ pub fn open_editor(
 /// shape is testable without a WebView.
 fn parse_custom_op(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
     {
-        use vxn1b_engine::{KeyOp, Layer, MatrixEdit, MatrixField, PatchOp, ScopeOp, ScopeTap};
+        use vxn1b_engine::{KeyOp, MatrixEdit, PatchOp, ScopeOp, vocab};
         match op {
             "set_key_mode" => Some(UiEvent::Custom(Box::new(KeyOp::SetKeyMode(
                 v.get("mode")?.as_u64()? as u8,
@@ -109,36 +114,16 @@ fn parse_custom_op(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
             }
             // Matrix topology edit (0219/0210): source/dest/curve/scale on one
             // slot of one layer. Depth is a normal CLAP param, not this op.
-            "set_matrix" => {
-                let layer = if v.get("layer")?.as_str()? == "lower" {
-                    Layer::L2
-                } else {
-                    Layer::L1
-                };
-                let field = match v.get("field")?.as_str()? {
-                    "source" => MatrixField::Source,
-                    "dest" => MatrixField::Dest,
-                    "curve" => MatrixField::Curve,
-                    "scale" => MatrixField::ScaleSrc,
-                    _ => return None,
-                };
-                Some(UiEvent::Custom(Box::new(MatrixEdit {
-                    layer,
-                    slot: v.get("slot")?.as_u64()? as u8,
-                    field,
-                    value: v.get("value")?.as_u64()? as u8,
-                })))
-            }
+            "set_matrix" => Some(UiEvent::Custom(Box::new(MatrixEdit {
+                layer: vocab::layer_from_name(v.get("layer")?.as_str()?)?,
+                slot: v.get("slot")?.as_u64()? as u8,
+                field: vocab::matrix_field_from_name(v.get("field")?.as_str()?)?,
+                value: v.get("value")?.as_u64()? as u8,
+            }))),
             // Bulk patch duplication (0265). A `PatchOp`, not a `KeyOp`: this
             // rewrites params and topology rather than KeyState.
             "copy_layer" => {
-                let side = |k: &str| -> Option<Layer> {
-                    Some(match v.get(k)?.as_str()? {
-                        "lower" => Layer::L2,
-                        "upper" => Layer::L1,
-                        _ => return None,
-                    })
-                };
+                let side = |k: &str| vocab::layer_from_name(v.get(k)?.as_str()?);
                 Some(UiEvent::Custom(Box::new(PatchOp::CopyLayer {
                     from: side("from")?,
                     to: side("to")?,
@@ -146,26 +131,15 @@ fn parse_custom_op(op: &str, v: &serde_json::Value) -> Option<UiEvent> {
             }
             // Reset one layer to the factory patch (0307). Like `copy_layer` a
             // `PatchOp`; unlike it, the mixer strip resets too.
-            "reset_layer" => {
-                let layer = match v.get("layer")?.as_str()? {
-                    "lower" => Layer::L2,
-                    "upper" => Layer::L1,
-                    _ => return None,
-                };
-                Some(UiEvent::Custom(Box::new(PatchOp::ResetLayer { layer })))
-            }
+            "reset_layer" => Some(UiEvent::Custom(Box::new(PatchOp::ResetLayer {
+                layer: vocab::layer_from_name(v.get("layer")?.as_str()?)?,
+            }))),
             // Oscilloscope tap select. Pure view state — which layer's trace is
             // on screen — so it rides a custom op and never reaches the patch.
             // `off` is what the page sends when the scope is not showing.
-            "set_scope_source" => {
-                let tap = match v.get("source")?.as_str()? {
-                    "upper" => ScopeTap::Layer1,
-                    "lower" => ScopeTap::Layer2,
-                    "off" => ScopeTap::Off,
-                    _ => return None,
-                };
-                Some(UiEvent::Custom(Box::new(ScopeOp::SetTap(tap))))
-            }
+            "set_scope_source" => Some(UiEvent::Custom(Box::new(ScopeOp::SetTap(
+                vocab::scope_tap_from_name(v.get("source")?.as_str()?)?,
+            )))),
             _ => None,
         }
     }
@@ -611,31 +585,32 @@ const FACEPLATE_CSS: &str = include_str!("../assets/faceplate.css");
 const BRIDGE_JS: &str = include_str!("../assets/bridge.js");
 /// Preset browser panel glue.
 const BROWSER_JS: &str = include_str!("../assets/browser.js");
-/// Panel UI, split into cohesive modules. Splice order: `util/drag.js` first
-/// (the shared drag/paint/clamp primitives the rest reference), then the widget
-/// modules; `preset-bar.js` runs a load-time IIFE so it sits last.
-const PANEL_UTIL_DRAG_JS: &str = include_str!("../assets/util/drag.js");
-const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
-const PANEL_DISCRETE_JS: &str = include_str!("../assets/panels/discrete.js");
-const PANEL_PRESET_BAR_JS: &str = include_str!("../assets/panels/preset-bar.js");
-const PANEL_MATRIX_JS: &str = include_str!("../assets/panels/matrix.js");
-const PANEL_METER_JS: &str = include_str!("../assets/panels/meter.js");
-const PANEL_SCOPE_JS: &str = include_str!("../assets/panels/scope.js");
-/// The split panel source files, in splice order.
+/// The split panel sources, **in splice order** — one list, not a const per
+/// file plus a second list naming them (0316).
+///
+/// The order is the whole content of this constant. These files are
+/// concatenated into one script scope with no module resolution, so a file must
+/// appear after everything it calls at load time: `util/drag.js` first (the
+/// shared drag/paint/clamp primitives the rest reference), the widget modules
+/// after it, and `meter.js` / `scope.js` before `dispatch.js` (spliced
+/// separately, below), whose `wireMeters` / `wireScope` call `makeMeter` and
+/// `makeScope`. `preset-bar.js` runs a load-time IIFE, so it must come after
+/// what that IIFE touches.
 const PANELS_FILES: &[&str] = &[
-    PANEL_UTIL_DRAG_JS,
-    PANEL_FADER_JS,
-    PANEL_DISCRETE_JS,
-    PANEL_PRESET_BAR_JS,
-    PANEL_MATRIX_JS,
-    // Meters (0240) — must precede dispatch.js, which calls `makeMeter` /
-    // `meterRegistry` from `wireMeters`. The splice is order-sensitive: these
-    // files share one concatenated scope with no module resolution.
-    PANEL_METER_JS,
-    // Scope — same ordering constraint as the meters: dispatch.js calls
-    // `makeScope` from `wireScope`.
-    PANEL_SCOPE_JS,
+    include_str!("../assets/util/drag.js"),
+    include_str!("../assets/panels/fader.js"),
+    include_str!("../assets/panels/discrete.js"),
+    include_str!("../assets/panels/preset-bar.js"),
+    include_str!("../assets/panels/matrix.js"),
+    include_str!("../assets/panels/meter.js"),
+    include_str!("../assets/panels/scope.js"),
 ];
+
+/// Waveform glyph table, read for [`tests::every_wave_label_has_a_glyph`].
+/// Also a member of [`PANELS_FILES`]; included twice deliberately, because the
+/// test needs it by name and the splice needs it by position.
+#[cfg(test)]
+const PANEL_FADER_JS: &str = include_str!("../assets/panels/fader.js");
 /// `init()` + per-tick ViewEvent dispatcher + dim rules. Splices last because
 /// it references the panel objects defined above.
 const DISPATCH_JS: &str = include_str!("../assets/dispatch.js");
@@ -1053,6 +1028,173 @@ mod tests {
                  or add it to IN_PAGE_ONLY with a reason"
             );
         }
+    }
+
+    // ── Cross-language tables (0316) ────────────────────────────────────────
+    //
+    // These bind a JS table to the Rust one it mirrors, by reading the spliced
+    // asset. Crude, and the same trade `event-codec.test.mjs` already takes: a
+    // build step to export the table would be tidier, and the contract is worth
+    // more than the tidiness.
+
+    /// Collect the keys of a JS object literal `const NAME = { ... }` — enough
+    /// parsing for a flat table of `'Key': value` / `Key: value` entries, which
+    /// is all these are.
+    fn js_object_keys(src: &str, decl: &str) -> Vec<String> {
+        let start = src.find(decl).unwrap_or_else(|| panic!("no `{decl}` in the asset"));
+        let body = &src[start + decl.len()..];
+        let end = body.find("\n};").unwrap_or_else(|| panic!("`{decl}` is not brace-closed"));
+        let mut keys = Vec::new();
+        for line in body[..end].lines() {
+            let line = line.trim();
+            let Some((head, _)) = line.split_once(':') else { continue };
+            let head = head.trim().trim_matches(|c| c == '\'' || c == '"');
+            if head.is_empty() || head.contains(' ') || head.starts_with("//") {
+                continue;
+            }
+            keys.push(head.to_string());
+        }
+        keys
+    }
+
+    /// **Every waveform label the params table can produce must have a glyph.**
+    ///
+    /// This is the sharpest of the cross-language seams because it fails
+    /// silently and cosmetically: `glyphPath` returns `null` for an unknown
+    /// label, the `d` attribute is skipped, and the control renders with a blank
+    /// icon on a synth whose faceplate is its whole interface. A Rust-side
+    /// relabel touches nothing else and no test would have noticed.
+    #[test]
+    fn every_wave_label_has_a_glyph() {
+        let glyphs = js_object_keys(PANEL_FADER_JS, "export const WAVE_GLYPHS = {");
+        assert!(glyphs.len() >= 8, "parsed only {} glyph keys — parser needs updating", glyphs.len());
+
+        // Which params draw a glyph is the MARKUP's answer, not a guess from
+        // the name: `data-control="wave"` is what mounts the wave knob, and
+        // `env*_shape` is an enum too but renders as a rocker.
+        let mut checked = 0;
+        for chunk in PLACEHOLDER_HTML.split("data-control=\"wave\"").skip(1) {
+            let at = chunk.find("data-param=\"").expect("a wave control with no data-param");
+            let rest = &chunk[at + "data-param=\"".len()..];
+            let name = &rest[..rest.find('"').expect("unterminated data-param")];
+
+            let desc = (0..TOTAL_PARAMS)
+                .filter_map(desc_for_clap_id)
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("faceplate mounts `{name}`, which is not a param"));
+            let ParamKind::Enum { variants } = desc.kind else {
+                panic!("`{name}` is mounted as a wave knob but is not an enum");
+            };
+            for v in variants {
+                assert!(
+                    glyphs.iter().any(|g| g == v),
+                    "`{name}` variant \"{v}\" has no WAVE_GLYPHS entry — it would render \
+                     with a blank icon, silently. Add it to assets/panels/fader.js.",
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 4, "found only {checked} wave controls — parser needs updating");
+    }
+
+    /// The split slider's range and default are the engine's. `dispatch.js`
+    /// stamps the element from these, and `faceplate.html` carries no literals,
+    /// so this is the only other place they exist.
+    #[test]
+    fn split_range_matches_the_engine() {
+        use vxn1b_engine::vocab::{SPLIT_POINT_MAX, SPLIT_POINT_MIN};
+        for (decl, want) in [
+            ("export const SPLIT_MIN = ", SPLIT_POINT_MIN),
+            ("export const SPLIT_MAX = ", SPLIT_POINT_MAX),
+            ("export const SPLIT_DEFAULT = ", vxn1b_engine::DEFAULT_SPLIT_POINT),
+        ] {
+            let at = DISPATCH_JS.find(decl).unwrap_or_else(|| panic!("no `{decl}` in dispatch.js"));
+            let tail = &DISPATCH_JS[at + decl.len()..];
+            let got: u8 = tail[..tail.find(';').expect("unterminated")]
+                .trim()
+                .parse()
+                .expect("not a number");
+            assert_eq!(got, want, "`{decl}` disagrees with the engine");
+        }
+        // ...and the markup must NOT carry its own copy, or the stamp is a
+        // no-op that looks like it works until the two drift.
+        assert!(
+            !PLACEHOLDER_HTML.contains("id=\"split-point-slider\"\n                   min="),
+            "faceplate.html has re-grown min/max literals on the split slider"
+        );
+    }
+
+    /// The Rust half of the telemetry payload contract. `meterEvent` /
+    /// `scopeEvent` in `faceplate-bridge.mjs` produce the same frames for the
+    /// same page; the fixture is what makes that a checked claim rather than
+    /// two files carrying the same comment word for word.
+    #[test]
+    fn telemetry_payload_matches_the_fixture() {
+        use vxn1b_engine::{MeterFrame, ScopeFrame};
+        const FIXTURE: &str =
+            include_str!("../../vxn1b-wasm/web/telemetry-payload.fixture.json");
+        let fx: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture parses");
+        let nums = |k: &str| -> Vec<f32> {
+            fx[k]
+                .as_array()
+                .unwrap_or_else(|| panic!("fixture key {k}"))
+                .iter()
+                .map(|v| v.as_f64().expect("number") as f32)
+                .collect()
+        };
+
+        let m = nums("meterIn");
+        assert_eq!(m.len(), 11, "MeterTap order is 11 values");
+        let frame = MeterFrame {
+            layer1: (m[0], m[1]),
+            layer2: (m[2], m[3]),
+            dynamics_in: (m[4], m[5]),
+            dynamics_out: (m[6], m[7]),
+            dynamics_gr: m[8],
+            master: (m[9], m[10]),
+        };
+        assert_eq!(
+            serialise_custom_payload(&frame).expect("meters serialise"),
+            fx["meterOut"],
+            "the meter payload has drifted from the fixture the JS half also asserts"
+        );
+
+        let scope = ScopeFrame { samples: nums("scopeIn") };
+        assert_eq!(
+            serialise_custom_payload(&scope).expect("scope serialises"),
+            fx["scopeOut"],
+            "the scope payload has drifted from the fixture the JS half also asserts"
+        );
+    }
+
+    /// The host window's width and the stylesheet's must agree. They are set in
+    /// different languages by different people, and a mismatch is a scroll bar
+    /// or a strip of dead chrome — visible, but only if someone opens the
+    /// editor.
+    #[test]
+    fn editor_width_matches_the_css() {
+        const DECL: &str = "--editor-w: ";
+        let at = FACEPLATE_CSS.find(DECL).expect("no `--editor-w` in faceplate.css");
+        let tail = &FACEPLATE_CSS[at + DECL.len()..];
+        let value = &tail[..tail.find(';').expect("unterminated --editor-w")];
+        let px: u32 = value
+            .trim()
+            .strip_suffix("px")
+            .unwrap_or_else(|| panic!("--editor-w is `{value}`, not a px length"))
+            .parse()
+            .expect("--editor-w is not an integer");
+        assert_eq!(px, EDITOR_WIDTH, "--editor-w and EDITOR_WIDTH disagree");
+    }
+
+    /// The ungrouped-preset label is one constant, not three literals.
+    #[test]
+    fn the_uncategorised_label_is_the_shared_one() {
+        assert_eq!(UNCATEGORISED, vxn_core_app::UNCATEGORISED_LABEL);
+        let browser = include_str!("../../../../crates/vxn-core-ui-web/assets/preset-browser.js");
+        assert!(
+            browser.contains(&format!("export const UNCATEGORISED = '{UNCATEGORISED}'")),
+            "preset-browser.js's label has drifted from vxn_core_app::UNCATEGORISED_LABEL"
+        );
     }
 
     #[test]

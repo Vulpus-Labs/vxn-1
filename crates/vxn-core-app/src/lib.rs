@@ -24,6 +24,6 @@ pub use events::{HostEvent, PresetSource, UiEvent, ViewEvent};
 pub use model::{ParamId, ParamModel};
 pub use params::{ParamDesc, ParamKind, Taper};
 pub use preset::{
-    PresetCorpus, PresetLoad, PresetMeta, PresetStore, UserFolderEntry, UserPresetEntry,
-    corpus_snapshot_json,
+    PresetCorpus, PresetLoad, PresetMeta, PresetStore, UNCATEGORISED_LABEL, UserFolderEntry,
+    UserPresetEntry, corpus_snapshot_json,
 };

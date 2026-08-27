@@ -439,8 +439,10 @@ __CSS__
                off — the control is inert then, and the toggle beneath it stays
                live so it can be turned back on. -->
           <div class="split-point-row" id="split-point-row">
-            <input type="range" class="split-point-slider" id="split-point-slider"
-                   min="12" max="96" step="1" value="60" />
+            <!-- Range and default are stamped by `wireSplit` from dispatch.js's
+                 SPLIT_MIN / SPLIT_MAX / SPLIT_DEFAULT, so the numbers live in
+                 one place and are pinned to the engine (0316). -->
+            <input type="range" class="split-point-slider" id="split-point-slider" />
             <div class="split-point-readout" id="split-point-readout">C4</div>
           </div>
           <div class="split-enable-slot" id="split-enable"></div>

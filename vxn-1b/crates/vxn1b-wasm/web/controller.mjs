@@ -26,7 +26,10 @@ import { PATCH_COUNT, GLOBAL_COUNT, TOTAL_PARAMS } from "./param-store.mjs";
 
 const DEFAULT_CONTROLLER_WASM_URL = "./vxn1b_web_controller.wasm";
 
-// ViewEvent record tags — MUST match vxn1b-web-controller/src/lib.rs (VE_*).
+// ViewEvent record tags, PresetSource discriminants and journal tags — the JS
+// half of `vxn1b-web-controller`'s `VE_*` / `PRESET_SRC_*` / `JW_*`. Asserted
+// against the built wasm by `vocab-agreement.test.mjs` (0316); this used to be
+// a comment saying they "MUST match", which is not a mechanism.
 export const VE_PARAM_CHANGED = 1;
 export const VE_MATRIX_SNAPSHOT = 2;
 export const VE_KEY_STATE = 3;
@@ -34,12 +37,10 @@ export const VE_PRESET_LOADED = 4;
 export const VE_CORPUS_CHANGED = 5;
 export const VE_STATUS = 6;
 
-// PresetSource discriminants inside VE_PRESET_LOADED (match lib.rs).
-const PRESET_SRC_NONE = 0;
-const PRESET_SRC_FACTORY = 1;
-const PRESET_SRC_USER = 2;
+export const PRESET_SRC_NONE = 0;
+export const PRESET_SRC_FACTORY = 1;
+export const PRESET_SRC_USER = 2;
 
-// Persistence-journal wire tags (match lib.rs JW_*).
 export const JW_PUT = 1;
 export const JW_DELETE = 2;
 export const JW_PUT_FOLDER = 3;
@@ -48,11 +49,11 @@ export const JW_DELETE_FOLDER = 4;
 // Sentinel length for an absent optional opcode argument (folder = root).
 export const ARG_NONE = 0xffffffff;
 
-// Matrix geometry, mirrored from the Rust packer. Kept local rather than
-// imported from event-codec.mjs so a decode bug can't be masked by the same
-// constant being wrong in both places — `wasm-agreement` pins the real ones.
-const LAYERS = 2;
-const SLOTS_PER_LAYER = 16;
+// Matrix geometry, from the one JS declaration of it. It used to be re-declared
+// here on an anti-masking argument, which is a real argument only when something
+// compares the two copies — nothing did (0316). Both are now the same constants,
+// and `vocab-agreement.test.mjs` pins them to `vxn1b_engine::vocab`.
+import { LAYER_COUNT as LAYERS, MATRIX_SLOTS as SLOTS_PER_LAYER } from "./event-codec.mjs";
 
 /// Decode the packed ViewEvent drain into event objects whose shape matches
 /// what the page's dispatcher consumes — the SAME JSON the native serialisers

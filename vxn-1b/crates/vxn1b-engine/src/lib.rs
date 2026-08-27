@@ -40,6 +40,7 @@ pub mod shared;
 pub mod state;
 pub mod sync;
 pub mod synth;
+pub mod vocab;
 pub mod voice;
 
 pub use bank::{BlockCtx, RenderBank};

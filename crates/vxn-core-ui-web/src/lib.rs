@@ -209,7 +209,7 @@ impl WebEditorConfig {
             html,
             width,
             height,
-            uncategorised_label: "Uncategorised",
+            uncategorised_label: vxn_core_app::UNCATEGORISED_LABEL,
             max_batch_bytes: DEFAULT_MAX_BATCH_BYTES,
             webview2_vendor: None,
             webview2_product: None,

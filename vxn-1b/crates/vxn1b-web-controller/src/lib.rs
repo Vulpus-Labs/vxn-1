@@ -60,8 +60,9 @@ use std::sync::{Arc, Mutex};
 use vxn1b_engine::preset_io::EnginePresetStore;
 use vxn1b_engine::shared::SharedParams;
 use vxn1b_engine::sync::{rate_partner_clap_id, sync_aware_display};
+use vxn1b_engine::vocab;
 use vxn1b_engine::{
-    KeyOp, KeyState, Layer, MatrixEdit, MatrixField, MatrixTable, PatchOp, TOTAL_PARAMS,
+    KeyOp, KeyState, Layer, MatrixEdit, MatrixTable, PatchOp, TOTAL_PARAMS,
 };
 use vxn_core_app::{
     Controller, CorpusHandle, ParamId, ParamModel, PresetLoad, PresetMeta, PresetSource,
@@ -71,11 +72,12 @@ use vxn_core_app::{
 mod user_store;
 use user_store::{UserState, UserWrite, decode_record};
 
-/// Display label for the virtual root group of the user preset corpus. Matches
-/// `vxn1b_ui_web`'s — the native page and the browser page must not disagree
-/// about what the ungrouped presets are called (note the -s- spelling; vxn-2
-/// uses the -z-).
-const UNCATEGORISED: &str = "Uncategorised";
+/// Display label for the virtual root group of the user preset corpus. The
+/// shared constant, so the browser page and the native page cannot disagree
+/// about what the ungrouped presets are called — this used to be a second
+/// literal with a comment asking for what a `const` gives for free (0316).
+/// Note the -s- spelling; vxn-2 uses the -z-.
+const UNCATEGORISED: &str = vxn_core_app::UNCATEGORISED_LABEL;
 
 // ViewEvent out-buffer — the single-drain wire format.
 //
@@ -279,6 +281,9 @@ struct ControllerState {
     toml_buf: Vec<u8>,
     /// UTF-8 corpus JSON, rebuilt at most once per tick when dirtied.
     corpus_json: Vec<u8>,
+    /// The custom-op vocabulary as JSON — built once, never invalidated. The
+    /// page asserts its own tables against it (0316).
+    vocab_json: Vec<u8>,
     /// Packed ViewEvent drain buffer JS reads after each tick.
     view_out: Vec<u8>,
     /// Model plain-value snapshot, exported for JS to mirror into the worklet
@@ -333,6 +338,7 @@ impl ControllerState {
             state_buf: Vec::new(),
             toml_buf: Vec::with_capacity(4 * 1024),
             corpus_json: Vec::new(),
+            vocab_json: vocab_json_with_tags().into_bytes(),
             view_out: Vec::with_capacity(8 * 1024),
             values_out: vec![0.0; TOTAL_PARAMS],
             corpus_json_dirty: true,
@@ -859,44 +865,40 @@ pub extern "C" fn vxnc_ui_set_lfo2_link(on: u32) {
 }
 
 /// `MatrixEdit` — one topology field of one slot of one layer. Depth is a normal
-/// CLAP param and rides `vxnc_ui_set_param`. `layer`: 0 = L1 (upper), 1 = L2
-/// (lower). `field`: 0 source, 1 dest, 2 curve, 3 scale. **Also goes on the
-/// ring.** An unknown `field` is dropped rather than guessed.
+/// CLAP param and rides `vxnc_ui_set_param`. `layer` and `field` are the wire
+/// ordinals [`vxn1b_engine::vocab`] defines; the page gets them from
+/// [`vxnc_vocab_json_ptr`] rather than declaring its own. **Also goes on the
+/// ring.** An unknown `layer` or `field` is dropped rather than guessed.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_set_matrix(layer: u32, slot: u32, field: u32, value: u32) {
-    let Some(field) = matrix_field_from_wire(field) else {
+    let (Some(layer), Some(field)) = (layer_from_wire(layer), vocab::matrix_field_from_wire(field))
+    else {
         return;
     };
     state().post_custom(MatrixEdit {
-        layer: if layer == 0 { Layer::L1 } else { Layer::L2 },
+        layer,
         slot: slot as u8,
         field,
         value: value as u8,
     });
 }
 
-/// Decode the wire `field` selector of [`vxnc_ui_set_matrix`]. `None` for an
-/// unknown value, which the opcode drops rather than guessing at — a bad
-/// selector must not silently rewrite the wrong field.
-fn matrix_field_from_wire(field: u32) -> Option<MatrixField> {
-    Some(match field {
-        0 => MatrixField::Source,
-        1 => MatrixField::Dest,
-        2 => MatrixField::Curve,
-        3 => MatrixField::ScaleSrc,
-        _ => return None,
-    })
+/// Decode a layer side from its wire ordinal (`Layer`'s own discriminant).
+/// `None` out of range — an edit aimed at a layer that does not exist is
+/// dropped, not folded onto Layer 1.
+fn layer_from_wire(v: u32) -> Option<Layer> {
+    Layer::ALL.get(v as usize).copied()
 }
+
 
 /// `PatchOp::CopyLayer` — duplicate one layer's patch + topology onto the other.
 /// Controller-only: the engine sees the result as ordinary param writes.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_copy_layer(from: u32, to: u32) {
-    let side = |v: u32| if v == 0 { Layer::L1 } else { Layer::L2 };
-    state().post_custom(PatchOp::CopyLayer {
-        from: side(from),
-        to: side(to),
-    });
+    let (Some(from), Some(to)) = (layer_from_wire(from), layer_from_wire(to)) else {
+        return;
+    };
+    state().post_custom(PatchOp::CopyLayer { from, to });
 }
 
 /// `PatchOp::ResetLayer` — one layer back to the factory patch, mixer strip
@@ -909,6 +911,68 @@ pub extern "C" fn vxnc_ui_reset_layer(layer: u32) {
 }
 
 // Presets — factory bank is embedded, so there is no load-the-asset opcode.
+
+/// The engine's custom-op vocabulary plus this crate's own wire tags — the
+/// `VE_*` record tags, the `PresetSource` discriminants inside
+/// `VE_PRESET_LOADED`, and the `JW_*` journal tags.
+///
+/// `controller.mjs` re-declares all three sets and used to carry a comment
+/// saying they "MUST match" this file, which is a comment doing a test's job
+/// (0316). Published here so `vocab-agreement.test.mjs` can check them out of
+/// the built artifact instead.
+fn vocab_json_with_tags() -> String {
+    let base = vocab::vocab_json();
+    let obj = |pairs: &[(&str, u32)]| {
+        pairs
+            .iter()
+            .map(|(n, v)| format!("\"{n}\":{v}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let extra = format!(
+        "\"viewEvent\":{{{}}},\"presetSource\":{{{}}},\"journal\":{{{}}}",
+        obj(&[
+            ("paramChanged", VE_PARAM_CHANGED),
+            ("matrixSnapshot", VE_MATRIX_SNAPSHOT),
+            ("keyState", VE_KEY_STATE),
+            ("presetLoaded", VE_PRESET_LOADED),
+            ("corpusChanged", VE_CORPUS_CHANGED),
+            ("status", VE_STATUS),
+        ]),
+        obj(&[
+            ("none", PRESET_SRC_NONE),
+            ("factory", PRESET_SRC_FACTORY),
+            ("user", PRESET_SRC_USER),
+        ]),
+        obj(&[
+            ("put", JW_PUT),
+            ("delete", JW_DELETE),
+            ("putFolder", JW_PUT_FOLDER),
+            ("deleteFolder", JW_DELETE_FOLDER),
+        ]),
+    );
+    // Splice into the engine's object rather than nesting: one flat vocabulary
+    // is what the page asserts against. Drop exactly the closing brace — the
+    // base ends `...:60}}`, so trimming *all* trailing braces would eat the
+    // nested object too.
+    debug_assert!(base.ends_with('}'));
+    format!("{},{}}}", &base[..base.len() - 1], extra)
+}
+
+/// Pointer to the custom-op vocabulary JSON — the wire names and ordinals from
+/// [`vxn1b_engine::vocab`], published so the page's tables can be asserted
+/// against the BUILT artifact instead of transcribed and hoped over (0316).
+/// Static for the process's lifetime.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_vocab_json_ptr() -> *const u8 {
+    state().vocab_json.as_ptr()
+}
+
+/// Byte length of [`vxnc_vocab_json_ptr`]'s JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn vxnc_vocab_json_len() -> u32 {
+    state().vocab_json.len() as u32
+}
 
 /// Pointer to the browser corpus JSON (valid until the next tick).
 #[unsafe(no_mangle)]
@@ -1205,7 +1269,7 @@ mod tests {
     use super::*;
     use vxn1b_engine::params::{ParamId as P, clap_id_of};
     use vxn1b_engine::params::MATRIX_SLOTS;
-    use vxn1b_engine::{Curve, DestId, KeyMode, PATCH_PARAMS, ScopeOp, ScopeTap, SourceId};
+    use vxn1b_engine::{Curve, DestId, KeyMode, MatrixField, PATCH_PARAMS, ScopeOp, ScopeTap, SourceId};
 
     fn fresh() -> Box<ControllerState> {
         ControllerState::new()
@@ -1554,16 +1618,19 @@ mod tests {
         assert_eq!(slots[MATRIX_SLOTS + 3][1], DestId::Cutoff as u8);
     }
 
-    /// An unknown matrix field is dropped, not guessed at — a bad selector must
-    /// never silently rewrite a different field of the slot.
+    /// An unknown matrix field or layer is dropped, not guessed at — a bad
+    /// selector must never silently rewrite a different field, or the other
+    /// layer's slot. The field table itself lives in `vxn1b_engine::vocab` and
+    /// is tested there; this pins the opcode's use of it.
     #[test]
-    fn unknown_matrix_field_is_dropped() {
-        assert_eq!(matrix_field_from_wire(0), Some(MatrixField::Source));
-        assert_eq!(matrix_field_from_wire(1), Some(MatrixField::Dest));
-        assert_eq!(matrix_field_from_wire(2), Some(MatrixField::Curve));
-        assert_eq!(matrix_field_from_wire(3), Some(MatrixField::ScaleSrc));
-        assert_eq!(matrix_field_from_wire(4), None);
-        assert_eq!(matrix_field_from_wire(u32::MAX), None);
+    fn unknown_matrix_field_or_layer_is_dropped() {
+        assert_eq!(vocab::matrix_field_from_wire(0), Some(MatrixField::Source));
+        assert_eq!(vocab::matrix_field_from_wire(3), Some(MatrixField::ScaleSrc));
+        assert_eq!(vocab::matrix_field_from_wire(4), None);
+        assert_eq!(vocab::matrix_field_from_wire(u32::MAX), None);
+        assert_eq!(layer_from_wire(0), Some(Layer::L1));
+        assert_eq!(layer_from_wire(1), Some(Layer::L2));
+        assert_eq!(layer_from_wire(2), None);
     }
 
     /// The scope tap is **ring-only**: pure audio-thread view state, so it must

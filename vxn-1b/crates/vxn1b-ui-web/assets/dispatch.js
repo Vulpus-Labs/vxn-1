@@ -732,6 +732,11 @@ export function wireResetLayer() {
 // Layer 2 is off would otherwise silently turn Layer 2 on as a side effect.
 // While Layer 2 is off the control is inert (the panel is dimmed by CSS) and
 // the flag is simply remembered for when Layer 2 comes back.
+// The split slider's range and default. THE JS declaration of them — the HTML
+// carries no `min`/`max`/`value` literals; `wireSplit` stamps the element below
+// (0316). Mirrors `vxn1b_engine::vocab`'s SPLIT_POINT_MIN / MAX /
+// DEFAULT_SPLIT_POINT, which `vocab-agreement.test.mjs` pins on the web side and
+// `split_range_matches_the_engine` pins for the native page.
 export const SPLIT_MIN = 12;
 export const SPLIT_MAX = 96;
 export const SPLIT_DEFAULT = 60;
@@ -742,6 +747,17 @@ export function wireSplit() {
   const slider = document.getElementById('split-point-slider');
   const readout = document.getElementById('split-point-readout');
   if (!enableEl || !slider || !readout) return;
+
+  // Stamp the range from the constants above rather than trusting the markup:
+  // a slider whose `max` disagrees with `clampNote` silently refuses the top of
+  // its own range.
+  slider.min = String(SPLIT_MIN);
+  slider.max = String(SPLIT_MAX);
+  slider.step = '1';
+  // The ATTRIBUTE, not the property: a range input with no `value` attribute
+  // reports the midpoint of its range as its value, so a property check would
+  // never fire and the bare element would sit at 54 rather than C4.
+  if (!slider.hasAttribute('value')) slider.value = String(SPLIT_DEFAULT);
 
   const pointRow = document.getElementById('split-point-row');
   enableEl.innerHTML = '';

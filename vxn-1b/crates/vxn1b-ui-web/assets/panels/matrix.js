@@ -17,7 +17,6 @@
 import '../bridge.js';
 import { paramIdByNameAtLayer } from '../dispatch.js';
 
-const MATRIX_SLOTS = 16;
 const layerIdx = (layer) => (layer === 'lower' ? 1 : 0);
 const FIELDS = ['source', 'dest', 'curve', 'scale'];
 
@@ -147,7 +146,10 @@ export const matrixOverlay = {
     }
     list.appendChild(header);
 
-    for (let slot = 0; slot < MATRIX_SLOTS; slot++) {
+    // Row count comes from the snapshot, not a local constant: the Rust side
+    // already tells us how many slots a layer has, and a second declaration of
+    // `MATRIX_SLOTS` here would be one nothing compares (0316).
+    for (let slot = 0; slot < mx.slots[0].length; slot++) {
       list.appendChild(this._buildRow(slot, mx));
     }
 
