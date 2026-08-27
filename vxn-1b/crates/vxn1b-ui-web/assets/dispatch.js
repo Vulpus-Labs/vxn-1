@@ -897,29 +897,39 @@ export function syncScopeSource() {
   window.vxn.send.setScopeSource(next);
 }
 
-export function init() {
-  // Categorize every mount point by descriptor name + kind, layer-
-  // agnostic. The actual id resolution + primitive instantiation happens
-  // in `rebindAllForLayer`, which is also what a layer flip calls.
-  // Build the mod-matrix overlay first so its depth dials (data-control cells)
-  // are present for the sweep below and get bound + rebound like any other cell.
-  matrixOverlay.build();
+/// Categorize every mount point by descriptor name + kind, layer-agnostic. The
+/// actual id resolution + primitive instantiation happens in
+/// `rebindAllForLayer`, which is also what a layer flip calls.
+///
+/// Runs after `matrixOverlay.build()` so the overlay's depth dials (which are
+/// `data-control` cells like any other) are swept in and get bound + rebound
+/// with the rest.
+function collectCells() {
   document.querySelectorAll('[data-control]').forEach((el) => {
     const name = el.dataset.param;
     if (!name) return;
-    const kind = el.dataset.control;
-    const fixedLayer = el.dataset.fixedLayer || null;
-    const entry = {
-      el, kind, name, fixedLayer,
+    model.cells.push({
+      el,
+      kind: el.dataset.control,
+      name,
+      fixedLayer: el.dataset.fixedLayer || null,
       // The markup's own classes, captured before any primitive has run.
       // `freshenCell` restores exactly this on a rebind, so the reset needs no
       // hand-maintained list of the classes each kind adds.
       baseClass: el.className,
-    };
-    model.cells.push(entry);
+    });
   });
-  // Tab shell + Layer 2 toggle. Wired before the first rebind so the
-  // layer pane starts on Layer 1 (upper) and the toggle reflects single mode.
+}
+
+/// Wire everything that is NOT a `data-control` cell, and so is not
+/// `rebindAllForLayer`'s business: the tab shell, the hand-wired KeyState /
+/// PatchOp switches, the meter mounts and the scope.
+///
+/// Order matters in one place only — the tab shell goes first so the layer pane
+/// starts on Layer 1 (upper) with the toggle reading single mode, and
+/// `wireScope` follows `wireMeters` because the scope keeps a handle to a meter
+/// the registry has to have seen already.
+function wirePanels() {
   wireTabs();
   wireLayer2Toggle();
   // Cross-layer LFO 2 link — a hand-wired KeyState cell in the LFO 2
@@ -935,157 +945,172 @@ export function init() {
   // Level meters. Mount points are `data-meter="<frame key>"`, so a
   // panel opts in from HTML and the registry needs no per-panel wiring.
   wireMeters();
-  // Layer scope — mounted before the first `syncScopeSource` below, which is
+  // Layer scope — mounted before the first `syncScopeSource`, which is
   // what actually turns capture on.
   wireScope();
+}
+
+/// Re-push a partnered param's last-seen value through its controls. Used where
+/// a *different* param's change alters how this one reads without altering its
+/// value — the fader recomputes its own display from the new mode. A no-op if
+/// the partner has no cached value yet or nothing is bound to it.
+function refreshPartner(partnerOf, id) {
+  const partnerId = partnerOf.get(id);
+  if (partnerId == null) return;
+  const last = model.lastParam.get(partnerId);
+  const ctls = model.controls.get(partnerId);
+  if (!last || !ctls) return;
+  for (const c of ctls) c.update(last.plain, last.norm, last.display);
+}
+
+/// One entry per `ev.kind` the Rust side emits, keyed by the kind string.
+/// Adding a ViewEvent variant to the faceplate is adding one entry here.
+/// A kind with no entry is dropped — `key_mode_changed` is the live example;
+/// uncomment the trace in `dispatch` to see them go past.
+const VIEW_HANDLERS = {
+  param_changed(ev) {
+    // Cache last-seen value so the sync-flip / dim-refresh / layer-
+    // rebind reseed paths can reapply without waiting for the next echo.
+    model.lastParam.set(ev.id, { plain: ev.plain, norm: ev.norm, display: ev.display });
+    const ctls = model.controls.get(ev.id);
+    if (ctls) for (const c of ctls) c.update(ev.plain, ev.norm, ev.display);
+    // If this is an LFO/Delay sync toggle, the partnered rate/time fader
+    // display label needs to flip Hz/s ↔ subdivision.
+    refreshPartner(model.rateOfSync, ev.id);
+    // Cutoff Tuned toggled: refresh the cutoff fader so its norm + popup
+    // pick up the new mode (linear MIDI map + note-name display, or
+    // exp-Hz default).
+    refreshPartner(model.cutoffOfTuned, ev.id);
+    // Unified dim rules: source-Off / Cross Mod Type ≠ FM plus
+    // the built-in Free-run and Filter Mode = Notch.
+    applyDimRulesFor(ev.id, ev.plain);
+  },
+
+  // Keyboard echo (0221). KeyState — the Layer 2 toggle, the split and its
+  // point, the LFO 2 link — is not a CLAP param, so a preset load / host state
+  // load / undo moves it with nothing in the param machinery to carry the
+  // news. The engine diffs it each tick and pushes this on any drift; without
+  // it a loaded split patch plays split while the faceplate still reads
+  // Single. Reflect-only: every setter here repaints without posting, so an
+  // echo can't bounce an opcode back at the engine.
+  keys(ev) {
+    // `mode` is the derived 0/1/2 (Single/Dual/Split), the same encoding
+    // `setKeyMode` posts — decompose it back into the two toggles.
+    if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
+    if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
+    if (ev.split != null) {
+      if (model.setSplitPoint) model.setSplitPoint(ev.split);
+    }
+    if (model.setLfo2Link) model.setLfo2Link(!!ev.link);
+  },
+
+  // Matrix topology echo (0247). Topology is not a CLAP param, so a preset
+  // load / host state load / undo rewrites it with nothing in the param
+  // machinery to carry the news; without this the source/dest combos keep
+  // showing the previous patch until the editor is reopened. Reflect-only —
+  // swapping the snapshot and repainting posts no `set_matrix`, so an echo
+  // can't bounce back at the engine.
+  matrix(ev) {
+    if (window.vxn && window.vxn.matrix && Array.isArray(ev.slots)) {
+      window.vxn.matrix.slots = ev.slots;
+      matrixOverlay.refreshForLayer(model.currentLayer);
+    }
+  },
+
+  // Meter frame. Raw linear peaks since the previous frame; the
+  // registry fans them to whichever meters are mounted and the rAF loop
+  // renders the ballistics. Purely view-bound — nothing here touches the
+  // model, so the MVC parity rule is unaffected.
+  meters(ev) {
+    meterRegistry.apply(ev);
+    pushScopeMeter(ev);
+  },
+
+  // Scope window (oldest → newest) for whichever layer the page asked for.
+  // Purely view-bound, like the meter frame: the trigger search and the
+  // drawing are the widget's business, and nothing here touches the model.
+  scope(ev) {
+    if (_scope && Array.isArray(ev.s)) _scope.push(ev.s);
+  },
+
+  status(ev) {
+    statusPill.flash(ev.line);
+  },
+
+  text_input_result(ev) {
+    // Fire-once: drop the entry before invoking so a re-entrant
+    // promptText() from inside the callback can't see a stale id.
+    const cb = _textInputCallbacks.get(ev.id);
+    if (!cb) return;
+    _textInputCallbacks.delete(ev.id);
+    try { cb(ev.value == null ? null : ev.value); }
+    catch (e) { console.warn('promptText callback threw', e); }
+  },
+
+  preset_loaded(ev) {
+    // 0049: preset bar name binds here. Warnings (if any) flash
+    // through the status chip — they belong with the load result,
+    // not in the corner.
+    presetBar.setName(ev.name);
+    // 0094: also seeds the Save (overwrite) button — enabled iff the
+    // source is a user preset AND a later write marks the patch dirty.
+    presetBar.setSource(ev.source || null);
+    // 0050: feed the browser panel's "currently loaded" highlight
+    // from the same event. `source` is null on host state-load
+    // (no on-disk anchor) — the panel just clears the highlight.
+    browserPanel.setCurrentSource(ev.source || null);
+    if (Array.isArray(ev.warnings) && ev.warnings.length) {
+      statusPill.flash(ev.warnings.join('; '));
+    }
+  },
+
+  // 0050: corpus snapshot arrives via __vxn.applyPresetCorpus
+  // (separate Rust→JS channel), not through this batch. The
+  // PresetCorpusChanged ViewEvent is the trigger for that push, so
+  // by the time we get here the corpus is already rendered.
+  // 0052: a non-null `follow` means a Move/Rename produced a new
+  // path — jump the panel to its new folder and scroll it into view.
+  preset_corpus_changed(ev) {
+    if (ev.follow) browserPanel.followPath(ev.follow);
+  },
+};
+
+/// Dispatch one ViewEvent from Rust. `hasOwn` rather than a bare lookup so a
+/// `kind` of `"constructor"` finds no inherited `Object.prototype` member to
+/// call; an unhandled kind is dropped.
+export function dispatch(ev) {
+  if (!ev || !Object.hasOwn(VIEW_HANDLERS, ev.kind)) {
+    // key_mode_changed lands here. Uncomment for verbose tracing during
+    // development:
+    // console.log('vxn:view', ev);
+    return;
+  }
+  VIEW_HANDLERS[ev.kind](ev);
+}
+
+/// Publish the dispatcher onto the two entry points Rust calls, after replaying
+/// anything that arrived between bootstrap and now.
+function installDispatcher() {
+  for (const ev of _earlyViewEvents) dispatch(ev);
+  _earlyViewEvents.length = 0;
+  // Batched bridge entry — Rust calls this once per controller tick.
+  window.__vxn.applyViewEvents = function (arr) {
+    for (const ev of arr) dispatch(ev);
+  };
+  window.vxn.onViewEvent = dispatch;
+}
+
+export function init() {
+  // Build the mod-matrix overlay first so its depth dials (data-control cells)
+  // are present for the sweep below and get bound + rebound like any other cell.
+  matrixOverlay.build();
+  collectCells();
+  wirePanels();
   // Build the name → id reverse index once, before the first rebind so
   // every per-cell `paramIdByName` lookup hits the cached map (N5).
   _paramIdByName = buildParamIndex();
   rebindAllForLayer(model.currentLayer);
-
-  // Dispatch one ViewEvent from Rust. ParamChanged routes by id (with the
-  // partner-rate / free-run / filter-mode / generic-dim side effects pulled
-  // in from 0042–0044). Status flashes the lower-right pill (0046). KeyModeChanged
-  // / PresetLoaded / PresetCorpusChanged are still pre-wiring — log when
-  // verbose tracing is on so the contract is visible without spamming the
-  // console during automation.
-  const dispatch = function (ev) {
-    if (ev.kind === 'param_changed') {
-      // Cache last-seen value so the sync-flip / dim-refresh / layer-
-      // rebind reseed paths can reapply without waiting for the next echo.
-      model.lastParam.set(ev.id, { plain: ev.plain, norm: ev.norm, display: ev.display });
-      const ctls = model.controls.get(ev.id);
-      if (ctls) for (const c of ctls) c.update(ev.plain, ev.norm, ev.display);
-      // If this is an LFO/Delay sync toggle, the partnered rate/time fader
-      // display label needs to flip Hz/s ↔ subdivision. Re-update the
-      // partner with its last-seen value — the fader's displayOverride
-      // will recompute.
-      const rateId = model.rateOfSync.get(ev.id);
-      if (rateId != null) {
-        const last = model.lastParam.get(rateId);
-        const rateCtls = model.controls.get(rateId);
-        if (last && rateCtls) {
-          for (const c of rateCtls) c.update(last.plain, last.norm, last.display);
-        }
-      }
-      // Cutoff Tuned toggled: refresh the cutoff fader so its norm + popup
-      // pick up the new mode (linear MIDI map + note-name display, or
-      // exp-Hz default).
-      const cutoffId = model.cutoffOfTuned.get(ev.id);
-      if (cutoffId != null) {
-        const last = model.lastParam.get(cutoffId);
-        const cutoffCtls = model.controls.get(cutoffId);
-        if (last && cutoffCtls) {
-          for (const c of cutoffCtls) c.update(last.plain, last.norm, last.display);
-        }
-      }
-      // Unified dim rules: source-Off / Cross Mod Type ≠ FM plus
-      // the built-in Free-run and Filter Mode = Notch.
-      applyDimRulesFor(ev.id, ev.plain);
-      return;
-    }
-    // Keyboard echo (0221). KeyState — the Layer 2 toggle, the split and its
-    // point, the LFO 2 link — is not a CLAP param, so a preset load / host state
-    // load / undo moves it with nothing in the param machinery to carry the
-    // news. The engine diffs it each tick and pushes this on any drift; without
-    // it a loaded split patch plays split while the faceplate still reads
-    // Single. Reflect-only: every setter here repaints without posting, so an
-    // echo can't bounce an opcode back at the engine.
-    if (ev.kind === 'keys') {
-      // `mode` is the derived 0/1/2 (Single/Dual/Split), the same encoding
-      // `setKeyMode` posts — decompose it back into the two toggles.
-      if (model.setLayer2On) model.setLayer2On(ev.mode >= 1);
-      if (model.setSplitEnabled) model.setSplitEnabled(ev.mode === 2);
-      if (ev.split != null) {
-        if (model.setSplitPoint) model.setSplitPoint(ev.split);
-      }
-      if (model.setLfo2Link) model.setLfo2Link(!!ev.link);
-      return;
-    }
-    // Matrix topology echo (0247). Topology is not a CLAP param, so a preset
-    // load / host state load / undo rewrites it with nothing in the param
-    // machinery to carry the news; without this the source/dest combos keep
-    // showing the previous patch until the editor is reopened. Reflect-only —
-    // swapping the snapshot and repainting posts no `set_matrix`, so an echo
-    // can't bounce back at the engine.
-    if (ev.kind === 'matrix') {
-      if (window.vxn && window.vxn.matrix && Array.isArray(ev.slots)) {
-        window.vxn.matrix.slots = ev.slots;
-        matrixOverlay.refreshForLayer(model.currentLayer);
-      }
-      return;
-    }
-    // Meter frame. Raw linear peaks since the previous frame; the
-    // registry fans them to whichever meters are mounted and the rAF loop
-    // renders the ballistics. Purely view-bound — nothing here touches the
-    // model, so the MVC parity rule is unaffected.
-    if (ev.kind === 'meters') {
-      meterRegistry.apply(ev);
-      pushScopeMeter(ev);
-      return;
-    }
-    // Scope window (oldest → newest) for whichever layer the page asked for.
-    // Purely view-bound, like the meter frame: the trigger search and the
-    // drawing are the widget's business, and nothing here touches the model.
-    if (ev.kind === 'scope') {
-      if (_scope && Array.isArray(ev.s)) _scope.push(ev.s);
-      return;
-    }
-    if (ev.kind === 'status') {
-      statusPill.flash(ev.line);
-      return;
-    }
-    if (ev.kind === 'text_input_result') {
-      // Fire-once: drop the entry before invoking so a re-entrant
-      // promptText() from inside the callback can't see a stale id.
-      const cb = _textInputCallbacks.get(ev.id);
-      if (cb) {
-        _textInputCallbacks.delete(ev.id);
-        try { cb(ev.value == null ? null : ev.value); }
-        catch (e) { console.warn('promptText callback threw', e); }
-      }
-      return;
-    }
-    if (ev.kind === 'preset_loaded') {
-      // 0049: preset bar name binds here. Warnings (if any) flash
-      // through the status chip — they belong with the load result,
-      // not in the corner.
-      presetBar.setName(ev.name);
-      // 0094: also seeds the Save (overwrite) button — enabled iff the
-      // source is a user preset AND a later write marks the patch dirty.
-      presetBar.setSource(ev.source || null);
-      // 0050: feed the browser panel's "currently loaded" highlight
-      // from the same event. `source` is null on host state-load
-      // (no on-disk anchor) — the panel just clears the highlight.
-      browserPanel.setCurrentSource(ev.source || null);
-      if (Array.isArray(ev.warnings) && ev.warnings.length) {
-        statusPill.flash(ev.warnings.join('; '));
-      }
-      return;
-    }
-    // 0050: corpus snapshot arrives via __vxn.applyPresetCorpus
-    // (separate Rust→JS channel), not through this batch. The
-    // PresetCorpusChanged ViewEvent is the trigger for that push, so
-    // by the time we get here the corpus is already rendered.
-    // 0052: a non-null `follow` means a Move/Rename produced a new
-    // path — jump the panel to its new folder and scroll it into view.
-    if (ev.kind === 'preset_corpus_changed') {
-      if (ev.follow) browserPanel.followPath(ev.follow);
-      return;
-    }
-    // key_mode_changed lands here too. Uncomment for verbose
-    // tracing during development:
-    // console.log('vxn:view', ev);
-  };
-  // Batched bridge entry — Rust calls this once per controller tick.
-  const applyViewEvents = function (arr) {
-    for (const ev of arr) dispatch(ev);
-  };
-  // Replay any events buffered between bootstrap and init.
-  for (const ev of _earlyViewEvents) dispatch(ev);
-  _earlyViewEvents.length = 0;
-  window.__vxn.applyViewEvents = applyViewEvents;
-  window.vxn.onViewEvent = dispatch;
+  installDispatcher();
 
   // Point the capture ring at the pane that is actually showing (Layer 1 on a
   // fresh open). Until this lands the audio thread captures nothing.
