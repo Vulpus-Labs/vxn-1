@@ -2,7 +2,7 @@
 id: E047
 product: vxn-1b
 title: "VXN1b post-ship quality sweep: dead code, duplicated wire, comment archaeology"
-status: open
+status: closed
 created: 2026-08-26
 ---
 
@@ -119,12 +119,12 @@ independent of each other and of the refactors.
       pinned by a test.
 - [x] **0317** *(monorepo, medium)* — `vxn-xtask-common`: 3,015 lines of
       triplicated bundler across three products, plus `gui.rs` ×3.
-- [ ] **0318** *(vxn-1b, medium)* — Extract the five remaining long functions.
+- [x] **0318** *(vxn-1b, medium)* — Extract the five remaining long functions.
       Every one has its seams already written in as banner comments.
-- [ ] **0319** *(vxn-1b, low)* — Collapse intra-file boilerplate: the FX `run_*`
+- [x] **0319** *(vxn-1b, low)* — Collapse intra-file boilerplate: the FX `run_*`
       quintuplet, the ×4 smoother pattern, the hand-synced matrix enum tables,
       `.lock()` ×8, `*_buf_reserve` ×3, the arg-pair decode ×5.
-- [ ] **0320** *(vxn-1b, medium)* — Close the test gaps the sweep exposed:
+- [x] **0320** *(vxn-1b, medium)* — Close the test gaps the sweep exposed:
       `preset_io`'s untested filesystem half (including the path-escape guard),
       hydrate opcodes whose tests exercise copies, and `WEB_BOOT_HEAD`'s
       un-linted inline JS.
@@ -166,3 +166,68 @@ independent of each other and of the refactors.
   pinned by a test that fails on drift.
 - Both products' suites green, 0 skipped ([[0295]]); one manual DAW pass for
   0311 and 0313.
+
+## Close-out (2026-08-28)
+
+All twelve tickets closed. The epic's own acceptance, checked against the tree
+rather than against the close-outs:
+
+- **No unreachable code in the shipped bundle.** `panels/keys.js` is gone along
+  with its splice slot; `_PARAM_COUNT`, `is_sync_flag`, `last_width` and
+  `makeDropdown` grep to zero (0310, 0311). No survivors needed listing.
+- **CI on every push.** [test.yml](../../.github/workflows/test.yml) runs
+  VXN1b's Rust tests and `node --test vxn-1b/crates/vxn1b-wasm/web/*.test.mjs`;
+  [bundle.yml](../../.github/workflows/bundle.yml) has `macos-vxn1b` and
+  `windows-vxn1b` jobs, each failing the build on a hollow VST3 via the
+  `strings | grep labs.vulpus.vxn1b` check. Both workflows trigger on
+  `push`/`pull_request` to main, not on a release tag (0321).
+- **One encoder, one decoder.** The JS `EventRing._push` is the only encoder
+  that ships; the Rust `encode_into` is `#[cfg(test)]` and the golden table is
+  pointed at the shipping one (0312).
+- **The three named doc drifts are gone**, and with them the class:
+  `bank.rs` no longer describes a two-bank/16-voice engine and `AssignMode`
+  greps to zero in it; `host-runner.mjs` now says it deliberately does *not*
+  rebuild after a trap, agreeing with the block below it; `vxn1b-clap`'s header
+  describes the HTML faceplate it has (0314, 0315).
+- **Cross-language tables pinned.** `vocab-agreement.test.mjs` and
+  `wasm-agreement.test.mjs` assert the custom-op vocabulary and the telemetry
+  payload shape against the built wasm (0316), and 0319 added the matrix enum
+  correspondence test the length-only check could not give.
+- **Suites green, 0 skipped.** `cargo test --workspace` 1402 pass / 0 fail
+  (VXN1b's own share: 420 pass, 0 ignored); vitest 343 pass / 0 skipped;
+  `node --test` 158 pass / 0 skipped / 0 todo; `xtask web` clean. The 5
+  workspace-wide `#[ignore]`s are pre-existing vxn-2 long-sweeps plus one
+  `vxn_core_utils` doc-test — none in VXN1b. Manual DAW passes recorded in
+  0311's and 0313's close-outs.
+
+### What the sweep cost, and what it caught
+
+Behaviour-preserving by construction, and shown to be rather than assumed: the
+two tickets that touched DSP proved **bit-identical** output against the
+pre-change engine (0318's `render_control_block` split, 0319's FX macro and
+smoother rework), and both hot-path profiles were measured as alternating
+old/new pairs to cancel thermal drift — no movement on either.
+
+Three real defects surfaced, none of them the tickets' stated targets:
+
+- `FxChain::clear_slot`'s catch-all was `_ => self.dynamics.clear()`, so any
+  bogus slot index silently reset the compressor (0319).
+- The web BPM field clamped an emptied box to 20 — `Number('')` is `0`, and a
+  number input reads back as `''` whenever its contents are invalid, so typing a
+  letter slammed the tempo (0320).
+- `Object.hasOwn` (ES2022) was briefly introduced into faceplate JS that must
+  run on the WKWebView of the declared macOS 11 minimum, i.e. Safari 14. It
+  would have thrown at first dispatch on the oldest supported host and passed
+  every test here (0318).
+
+The last is the one worth carrying forward: **nothing in the suite constrains
+the JS language level**, so the floor is held by review alone.
+
+### Deliberately not done
+
+**0319 item 5, `codec.rs`.** Its premise was overtaken by 0312 — `Event::tag()`,
+`Event::offset()` and `encode_into` are all `#[cfg(test)]` now, so only `decode`
+ships. The suggested `Slot { offset, kind }` hoist would restructure the
+production event type and the audio-thread decode path to remove duplication
+that is now test-only. Recorded in 0319's close-out; worth its own ticket if the
+`Event` vocabulary grows again.
