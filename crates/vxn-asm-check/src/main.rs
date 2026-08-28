@@ -45,19 +45,47 @@ use std::process::Command;
 /// we are guarding against the fall to *scalar*, not against narrowing.
 const ARRANGEMENTS: [&str; 7] = [".16b", ".8b", ".8h", ".4h", ".4s", ".2s", ".2d"];
 
-/// A hot symbol to watch, and the floor its SIMD count must not fall below.
+/// A hot code path to watch, and the floor its SIMD count must not fall below.
 ///
 /// Floors are deliberately **not** exact counts. Instruction selection moves a
 /// little with every compiler and every unrelated edit; pinning exact numbers
 /// would make this a tripwire for noise rather than for de-vectorisation. What
 /// we care about is the cliff — a kernel that stops vectorising drops to zero or
 /// near it, never by 5%.
+///
+/// # Why a path is a *set* of symbols
+///
+/// A watch names one or more needles and sums across everything they match.
+/// Summing across monomorphs was always necessary — a generic kernel appears
+/// once per instantiation, and `stack::lane_route_algo_` is 22 symbols the
+/// linker partly folds. Summing across *different* symbols is necessary for a
+/// second reason, learned the hard way:
+///
+/// **Outlining looks exactly like de-vectorisation to a single-symbol watch.**
+/// Ticket 0318 split `Engine::process_block`'s two copy-pasted per-layer halves
+/// into one shared `render_layer`. Nothing de-vectorised — output stayed
+/// bit-identical and `busy_profile` stayed at 16.1x — but the watched symbol
+/// fell 282 → 111 because half its body now lived under a name the watch list
+/// had never heard of. That read as a FAIL for a whole epic.
+///
+/// The dangerous half of that is the inverse. Had the outlined loop *also* gone
+/// scalar, the watch would have reported the same drop, and the obvious
+/// "fix" — lowering the floor to match — would have silently blessed a real
+/// regression. A watch that covers every symbol the path can be spread across
+/// keeps the sum stable under refactoring, so a fall in it means what it says.
+///
+/// So when a refactor moves hot code into a new function, add that function to
+/// the relevant watch's `needles` rather than re-baselining the floor.
 struct Watch {
-    /// Substring matched against the demangled symbol name.
-    needle: &'static str,
+    /// How the path is named in the report.
+    label: &'static str,
+    /// Substrings matched against demangled symbol names. A symbol counts once
+    /// however many needles it matches.
+    needles: &'static [&'static str],
     /// Which artefact it lives in.
     artefact: &'static str,
-    /// Minimum SIMD instruction count. `0` means "record only, no floor yet".
+    /// Minimum SIMD instruction count, summed over every matched symbol. `0`
+    /// means "record only, no floor yet".
     floor: usize,
     /// What breaks if this de-vectorises.
     why: &'static str,
@@ -68,7 +96,8 @@ struct Watch {
 const WATCHES: &[Watch] = &[
     // ---- vxn-1 / vxn-1b (libvxn1b_clap.dylib) ----
     Watch {
-        needle: "bank::RenderBank::render",
+        label: "bank::RenderBank::render",
+        needles: &["bank::RenderBank::render"],
         artefact: "libvxn1b_clap.dylib",
         floor: 6000,
         why: "The whole per-block voice path inlines here — oscillators, the OTA \
@@ -77,7 +106,8 @@ const WATCHES: &[Watch] = &[
               possible signal that an extraction de-vectorised the hot path.",
     },
     Watch {
-        needle: "poly::oscillator::PolyOscillator::process",
+        label: "poly::oscillator::PolyOscillator::process",
+        needles: &["poly::oscillator::PolyOscillator::process"],
         artefact: "libvxn1b_clap.dylib",
         floor: 200,
         why: "Poly oscillator: the sync/PM monomorphs inline into this symbol. A \
@@ -85,21 +115,34 @@ const WATCHES: &[Watch] = &[
               (memory vxn1-soa-match-defeats-simd).",
     },
     Watch {
-        needle: "engine::Engine::process_block",
+        label: "engine block entry (3 symbols)",
+        // Three symbols, because this path has been spread across three since
+        // 0318 outlined the per-layer render. `decimate_block` was already
+        // separate at the 0223 capture and went unmeasured despite `why`
+        // naming it — the 282 baseline covered `process_block` alone.
+        needles: &[
+            "engine::Engine::process_block",
+            "engine::render_layer",
+            "output::OutputStage::decimate_block",
+        ],
         artefact: "libvxn1b_clap.dylib",
         floor: 180,
         why: "Block entry: mixing, metering and the output stage. 0235 would \
-              touch the OutputStage decimator that lives here.",
+              touch the OutputStage decimator this now actually covers.",
     },
     Watch {
-        needle: "fx::FxChain::process_block",
+        label: "fx::FxChain::process_block",
+        needles: &["fx::FxChain::process_block"],
         artefact: "libvxn1b_clap.dylib",
         floor: 80,
         why: "The FX chain E041 rewrites wholesale (0228-0232). The single most \
-              likely place for a shared-kernel extraction to cost vectorisation.",
+              likely place for a shared-kernel extraction to cost vectorisation. \
+              The kernels must keep inlining into it: a shared effect that stops \
+              doing so shows up here as a drop and as its own new symbol.",
     },
     Watch {
-        needle: "voice::Voices::fill_stack_pos",
+        label: "voice::Voices::fill_stack_pos",
+        needles: &["voice::Voices::fill_stack_pos"],
         artefact: "libvxn1b_clap.dylib",
         floor: 60,
         why: "Per-voice SoA scatter. 0067-0071's ratio-locked pitch work lives \
@@ -107,14 +150,16 @@ const WATCHES: &[Watch] = &[
     },
     // ---- vxn-2 (libvxn2_clap.dylib) ----
     Watch {
-        needle: "engine::Engine::cook_stacks_block",
+        label: "engine::Engine::cook_stacks_block",
+        needles: &["engine::Engine::cook_stacks_block"],
         artefact: "libvxn2_clap.dylib",
         floor: 140,
         why: "vxn-2's largest DSP symbol: per-block stack cook. 0234 rewrites the \
               span plumbing that feeds it and 0237 the coefficient ramps.",
     },
     Watch {
-        needle: "stack::lane_route_algo_",
+        label: "stack::lane_route_algo_",
+        needles: &["stack::lane_route_algo_"],
         artefact: "libvxn2_clap.dylib",
         floor: 200,
         why: "The 32 #[inline(never)] lane-route monomorphs, summed (286 across \
@@ -123,13 +168,15 @@ const WATCHES: &[Watch] = &[
               type reaches them they go scalar.",
     },
     Watch {
-        needle: "stack::Stack::note_on",
+        label: "stack::Stack::note_on",
+        needles: &["stack::Stack::note_on"],
         artefact: "libvxn2_clap.dylib",
         floor: 50,
         why: "Voice-stack note-on scatter across 8 lanes.",
     },
     Watch {
-        needle: "stack::stack_tick_stereo",
+        label: "stack::stack_tick_stereo",
+        needles: &["stack::stack_tick_stereo"],
         artefact: "libvxn2_clap.dylib",
         floor: 35,
         why: "Per-sample stereo tick over the stack — the innermost vxn-2 loop.",
@@ -200,35 +247,39 @@ fn main() {
         }
 
         for w in watches {
-            // Sum across monomorphs: a generic kernel appears once per
-            // instantiation, and which ones exist is not this tool's business.
-            let matched: Vec<(&String, &usize)> =
-                counts.iter().filter(|(s, _)| s.contains(w.needle)).collect();
+            let matched = match_symbols(&counts, w.needles);
             let total: usize = matched.iter().map(|(_, n)| **n).sum();
-            rows.push((w.needle.to_string(), total, w.floor));
+            rows.push((w.label.to_string(), total, w.floor));
 
             if matched.is_empty() {
                 failures.push(format!(
-                    "{}: NO SYMBOL matched `{}` in {}.\n    \
+                    "{}: NO SYMBOL matched {:?} in {}.\n    \
                      Either it was renamed/inlined away, or the artefact is stale.\n    \
                      Why it is watched: {}",
-                    w.needle, w.needle, artefact, w.why
+                    w.label, w.needles, artefact, w.why
                 ));
             } else if total < w.floor {
+                let breakdown = matched
+                    .iter()
+                    .map(|(s, n)| format!("\n      {n:6}  {s}"))
+                    .collect::<String>();
                 failures.push(format!(
-                    "{}: {} SIMD instructions across {} monomorph(s), floor is {}.\n    \
-                     Why it is watched: {}",
-                    w.needle,
+                    "{}: {} SIMD instructions across {} symbol(s), floor is {}.\n    \
+                     Why it is watched: {}\n    Matched:{}\n    \
+                     If a refactor outlined hot code into a NEW symbol, add it to \
+                     this watch's needles — do not lower the floor.",
+                    w.label,
                     total,
                     matched.len(),
                     w.floor,
-                    w.why
+                    w.why,
+                    breakdown
                 ));
             }
         }
     }
 
-    println!("\n{:<52} {:>8} {:>8}", "symbol", "simd", "floor");
+    println!("\n{:<52} {:>8} {:>8}", "path", "simd", "floor");
     println!("{}", "-".repeat(70));
     for (sym, n, floor) in &rows {
         let short = if sym.len() > 50 { &sym[sym.len() - 50..] } else { sym.as_str() };
@@ -242,13 +293,13 @@ fn main() {
     }
 
     if !failures.is_empty() {
-        eprintln!("\nasm-check FAILED — {} symbol(s) lost vectorisation:\n", failures.len());
+        eprintln!("\nasm-check FAILED — {} path(s) below floor:\n", failures.len());
         for f in &failures {
             eprintln!("  {f}\n");
         }
         std::process::exit(1);
     }
-    println!("\nasm-check OK — every watched symbol is still vectorised.");
+    println!("\nasm-check OK — every watched path is still vectorised.");
 }
 
 /// Disassemble with demangled symbol names.
@@ -287,6 +338,23 @@ fn count_per_symbol(text: &str) -> BTreeMap<String, usize> {
         }
     }
     counts
+}
+
+/// Every symbol a watch's path is spread over: the monomorphs of one generic,
+/// plus the separate functions a refactor may have outlined it into.
+///
+/// A symbol matching two needles is returned **once**. That matters as soon as
+/// needles overlap — `engine::Engine::process_block` and `engine::Engine` would
+/// otherwise double its instructions and hold a floor up on a path that had
+/// actually shrunk.
+fn match_symbols<'a>(
+    counts: &'a BTreeMap<String, usize>,
+    needles: &[&str],
+) -> Vec<(&'a String, &'a usize)> {
+    counts
+        .iter()
+        .filter(|(s, _)| needles.iter().any(|n| s.contains(n)))
+        .collect()
 }
 
 /// `0000000000002788 <some::symbol>:` → `some::symbol`.
@@ -404,6 +472,51 @@ mod tests {
     fn suffix_in_a_symbol_name_is_not_an_instruction() {
         assert!(!is_simd("0000000000002788 <weird::name.4s>:"));
         assert!(!is_simd("some line with .4s but no tab"));
+    }
+
+    fn counts_of(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
+        pairs.iter().map(|(s, n)| ((*s).to_string(), *n)).collect()
+    }
+
+    /// The regression this whole field exists for: 0318 outlined half of
+    /// `Engine::process_block` into `render_layer`, and a single-needle watch
+    /// read the move as a 282 → 111 de-vectorisation. Spanning both keeps the
+    /// sum stable across the refactor.
+    #[test]
+    fn a_path_sums_across_the_symbols_it_was_outlined_into() {
+        let counts = counts_of(&[
+            ("vxn1b_engine::engine::Engine::process_block::h01", 111),
+            ("vxn1b_engine::engine::render_layer::h02", 120),
+            ("vxn1b_engine::output::OutputStage::decimate_block::h03", 23),
+            ("something::unrelated::h04", 9999),
+        ]);
+        let needles = ["engine::Engine::process_block", "engine::render_layer", "OutputStage::decimate_block"];
+        let matched = match_symbols(&counts, &needles);
+        let total: usize = matched.iter().map(|(_, n)| **n).sum();
+        assert_eq!(matched.len(), 3, "unrelated symbols must not be swept in");
+        assert_eq!(total, 254);
+    }
+
+    /// Monomorph summing, the behaviour that predates multi-needle watches.
+    #[test]
+    fn one_needle_still_sums_across_monomorphs() {
+        let counts = counts_of(&[
+            ("vxn2_dsp::stack::lane_route_algo_0::h01", 13),
+            ("vxn2_dsp::stack::lane_route_algo_1::h02", 13),
+            ("vxn2_dsp::stack::lane_route_algo_2::h03", 13),
+        ]);
+        let matched = match_symbols(&counts, &["stack::lane_route_algo_"]);
+        assert_eq!(matched.iter().map(|(_, n)| **n).sum::<usize>(), 39);
+    }
+
+    /// Overlapping needles must not inflate the total — an inflated sum holds a
+    /// floor up over a path that has actually lost vectorisation.
+    #[test]
+    fn a_symbol_matching_two_needles_counts_once() {
+        let counts = counts_of(&[("vxn1b_engine::engine::Engine::process_block::h01", 111)]);
+        let matched = match_symbols(&counts, &["engine::Engine", "Engine::process_block"]);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched.iter().map(|(_, n)| **n).sum::<usize>(), 111);
     }
 
     #[test]
