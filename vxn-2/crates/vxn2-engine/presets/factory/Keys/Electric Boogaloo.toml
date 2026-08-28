@@ -1,0 +1,154 @@
+schema = 1
+
+[meta]
+name = "Electric Boogaloo"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "The DX7 'E.PIANO 1' voice, thickened. The operator table is the original translation — algo 5, 14:1 tine on op2, three unison carriers detuned +2/0/-5 against each other — but four stack lanes at 9 cents turn that internal detuning into a proper chorus, panned apart so it moves across the stereo field rather than just beating in the middle. Light reverb behind it; the patch supplies its own thickness, so the room only needs to stop it sounding dry."
+
+[params]
+algo = 5
+feedback = 4.2
+
+# op1
+op1-num = 1
+op1-detune = 2
+op1-level = 99
+op1-vel-sens = 2
+op1-eg-r1 = 96
+op1-eg-r2 = 25
+op1-eg-r3 = 25
+op1-eg-r4 = 67
+op1-eg-l1 = 99
+op1-eg-l2 = 75
+op1-eg-l3 = 0
+op1-eg-l4 = 0
+op1-ks-rate = 3
+op1-ks-l-depth = 0
+op1-ks-r-depth = 0
+
+# op2
+op2-num = 14
+op2-level = 58
+op2-vel-sens = 7
+op2-eg-r1 = 95
+op2-eg-r2 = 50
+op2-eg-r3 = 35
+op2-eg-r4 = 78
+op2-eg-l1 = 99
+op2-eg-l2 = 75
+op2-eg-l3 = 0
+op2-eg-l4 = 0
+op2-ks-rate = 3
+op2-ks-l-depth = 0
+op2-ks-r-depth = 0
+
+# op3
+op3-num = 1
+op3-level = 99
+op3-vel-sens = 2
+op3-eg-r1 = 95
+op3-eg-r2 = 20
+op3-eg-r3 = 20
+op3-eg-r4 = 50
+op3-eg-l1 = 99
+op3-eg-l2 = 95
+op3-eg-l3 = 0
+op3-eg-l4 = 0
+op3-ks-rate = 3
+op3-ks-l-depth = 0
+op3-ks-r-depth = 0
+
+# op4
+op4-num = 1
+op4-level = 89
+op4-vel-sens = 6
+op4-eg-r1 = 95
+op4-eg-r2 = 29
+op4-eg-r3 = 20
+op4-eg-r4 = 50
+op4-eg-l1 = 99
+op4-eg-l2 = 95
+op4-eg-l3 = 0
+op4-eg-l4 = 0
+op4-ks-rate = 3
+op4-ks-l-depth = 0
+op4-ks-r-depth = 0
+
+# op5
+op5-num = 1
+op5-detune = -5
+op5-level = 99
+op5-vel-sens = 0
+op5-eg-r1 = 95
+op5-eg-r2 = 20
+op5-eg-r3 = 20
+op5-eg-r4 = 50
+op5-eg-l1 = 99
+op5-eg-l2 = 95
+op5-eg-l3 = 0
+op5-eg-l4 = 0
+op5-ks-rate = 3
+op5-ks-l-depth = 0
+op5-ks-r-depth = 0
+
+# op6
+op6-num = 1
+op6-detune = 5
+op6-level = 79
+op6-vel-sens = 6
+op6-eg-r1 = 95
+op6-eg-r2 = 29
+op6-eg-r3 = 20
+op6-eg-r4 = 50
+op6-eg-l1 = 99
+op6-eg-l2 = 95
+op6-eg-l3 = 0
+op6-eg-l4 = 0
+op6-ks-rate = 3
+op6-ks-break-pt = 62
+op6-ks-l-depth = 0
+op6-ks-r-depth = 19
+op6-ks-r-curve = "neg-lin"
+
+# Four lanes at 9 cents: the chorus. Linear distribution so the lanes are
+# evenly spaced rather than clustered, which keeps the beating regular
+# instead of lumpy. The original voice already detunes its three carriers,
+# so this stacks a wide shimmer on top of a narrow one.
+master-volume = -18.04
+
+stack-density = 4
+stack-detune = 9.0
+stack-spread = 0.75
+stack-distrib = "Linear"
+
+delay-on = false
+
+reverb-on = true
+reverb-size = 0.42
+reverb-decay = 1.6
+reverb-damp = 0.48
+reverb-mix = 0.13
+
+# Pan the carriers against each other across the lane spread — this is what
+# makes the detuning read as chorus rather than as a thicker mono note.
+[[matrix]]
+slot = 0
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.8
+
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.8
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 0.5
