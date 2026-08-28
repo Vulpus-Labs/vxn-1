@@ -55,7 +55,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use vxn1b_engine::preset_io::EnginePresetStore;
 use vxn1b_engine::shared::SharedParams;
@@ -155,6 +155,15 @@ struct WebPresetStore {
     user: Arc<Mutex<UserState>>,
 }
 
+impl WebPresetStore {
+    /// Lock the user corpus, turning a poisoned mutex into the trait's error
+    /// type. Nine of the eleven `PresetStore` methods opened with this same
+    /// three-line incantation before 0319; each is now `self.user()?.op(..)`.
+    fn user(&self) -> Result<MutexGuard<'_, UserState>, String> {
+        self.user.lock().map_err(|_| "user store poisoned".to_string())
+    }
+}
+
 impl PresetStore for WebPresetStore {
     fn factory_len(&self) -> usize {
         self.factory.factory_len()
@@ -166,7 +175,7 @@ impl PresetStore for WebPresetStore {
         self.factory.factory_meta(index)
     }
     fn user_load(&self, path: &Path) -> Result<PresetLoad, String> {
-        self.user.lock().map_err(|_| "user store poisoned")?.load(path)
+        self.user()?.load(path)
     }
     fn user_save(
         &self,
@@ -175,43 +184,25 @@ impl PresetStore for WebPresetStore {
         meta: &PresetMeta,
         blob: &[u8],
     ) -> Result<PathBuf, String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .save(name, folder, meta, blob)
+        self.user()?.save(name, folder, meta, blob)
     }
     fn user_delete(&self, path: &Path) -> Result<(), String> {
-        self.user.lock().map_err(|_| "user store poisoned")?.delete(path)
+        self.user()?.delete(path)
     }
     fn user_rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .rename(path, new_name)
+        self.user()?.rename(path, new_name)
     }
     fn user_move(&self, path: &Path, dest_folder: Option<&str>) -> Result<PathBuf, String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .move_preset(path, dest_folder)
+        self.user()?.move_preset(path, dest_folder)
     }
     fn user_create_folder(&self, suggested: &str) -> Result<(PathBuf, String), String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .create_folder(suggested)
+        self.user()?.create_folder(suggested)
     }
     fn user_rename_folder(&self, old: &str, new: &str) -> Result<(PathBuf, String), String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .rename_folder(old, new)
+        self.user()?.rename_folder(old, new)
     }
     fn user_delete_folder(&self, name: &str) -> Result<(), String> {
-        self.user
-            .lock()
-            .map_err(|_| "user store poisoned")?
-            .delete_folder(name)
+        self.user()?.delete_folder(name)
     }
     fn list_user_tree(&self) -> Vec<UserFolderEntry> {
         self.user.lock().map(|u| u.list_tree()).unwrap_or_default()
@@ -382,10 +373,36 @@ impl ControllerState {
     /// Read a UTF-8 string out of the argument staging buffer, clamped to the
     /// buffer so a malformed length can't panic.
     fn arg_string(&self, start: usize, len: usize) -> String {
+        String::from_utf8_lossy(self.arg_slice(start, len)).into_owned()
+    }
+
+    /// The same window as [`Self::arg_string`], copied out as bytes — for the
+    /// one staged argument that is a blob rather than UTF-8 (a hydrated preset
+    /// record).
+    fn arg_bytes(&self, start: usize, len: usize) -> Vec<u8> {
+        self.arg_slice(start, len).to_vec()
+    }
+
+    /// Clamp a `(start, len)` window to the staged argument buffer. Both bounds
+    /// are saturating: JS supplies the lengths, so a wrong one must yield a
+    /// short read rather than a panic in wasm.
+    fn arg_slice(&self, start: usize, len: usize) -> &[u8] {
         let n = self.arg_in.len();
         let s = start.min(n);
         let e = start.saturating_add(len).min(n);
-        String::from_utf8_lossy(&self.arg_in[s..e]).into_owned()
+        &self.arg_in[s..e]
+    }
+
+    /// Decode two consecutive staged arguments: the first at offset 0 with
+    /// length `a`, the second immediately after it with length `b`. `ARG_NONE`
+    /// in the second slot means the optional argument is absent (root folder /
+    /// no destination), which is why the pair is decoded together rather than
+    /// by two `arg_string` calls — the second's *offset* is the first's length,
+    /// and five call sites were re-deriving that by hand.
+    fn arg_pair(&self, a: u32, b: u32) -> (String, Option<String>) {
+        let first = self.arg_string(0, a as usize);
+        let second = (b != ARG_NONE).then(|| self.arg_string(a as usize, b as usize));
+        (first, second)
     }
 
     #[inline]
@@ -1032,26 +1049,34 @@ pub extern "C" fn vxnc_ui_step_preset(delta: i32) {
 // opcode with each argument's byte length. `ARG_NONE` in a length slot means an
 // absent optional argument (root folder / no destination).
 
-/// Reserve `len` bytes in the argument staging buffer and return its pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn vxnc_arg_buf_reserve(len: u32) -> *mut u8 {
-    let s = state();
-    s.arg_in.clear();
-    s.arg_in.resize(len as usize, 0);
-    s.arg_in.as_mut_ptr()
+/// Reserve `len` bytes in one of the wasm-side scratch buffers and hand JS its
+/// pointer. Three byte-identical copies before 0319, differing only in which
+/// `Vec<u8>` they touched.
+macro_rules! buf_reserve {
+    ($(#[$meta:meta])* $name:ident, $field:ident) => {
+        $(#[$meta])*
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(len: u32) -> *mut u8 {
+            let s = state();
+            s.$field.clear();
+            s.$field.resize(len as usize, 0);
+            s.$field.as_mut_ptr()
+        }
+    };
 }
+
+buf_reserve!(
+    /// Reserve `len` bytes in the argument staging buffer and return its pointer.
+    vxnc_arg_buf_reserve,
+    arg_in
+);
 
 /// `UiEvent::SavePreset` — snapshot the model + write through the user store.
 /// Args: name (`name_len`), then folder (`folder_len`, `ARG_NONE` → root).
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_save_preset(name_len: u32, folder_len: u32) {
     let s = state();
-    let name = s.arg_string(0, name_len as usize);
-    let folder = if folder_len == ARG_NONE {
-        None
-    } else {
-        Some(s.arg_string(name_len as usize, folder_len as usize))
-    };
+    let (name, folder) = s.arg_pair(name_len, folder_len);
     s.post(UiEvent::SavePreset { name, folder });
 }
 
@@ -1071,8 +1096,10 @@ pub extern "C" fn vxnc_ui_load_user(path_len: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_rename_preset(path_len: u32, name_len: u32) {
     let s = state();
-    let path = s.arg_string(0, path_len as usize);
-    let new_name = s.arg_string(path_len as usize, name_len as usize);
+    // `new_name` is required, so the `ARG_NONE` branch is unreachable from the
+    // page; empty is what the store rejects anyway.
+    let (path, new_name) = s.arg_pair(path_len, name_len);
+    let new_name = new_name.unwrap_or_default();
     s.post(UiEvent::RenamePreset {
         path: PathBuf::from(path),
         new_name,
@@ -1094,12 +1121,7 @@ pub extern "C" fn vxnc_ui_delete_preset(path_len: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_move_preset(path_len: u32, folder_len: u32) {
     let s = state();
-    let path = s.arg_string(0, path_len as usize);
-    let dest_folder = if folder_len == ARG_NONE {
-        None
-    } else {
-        Some(s.arg_string(path_len as usize, folder_len as usize))
-    };
+    let (path, dest_folder) = s.arg_pair(path_len, folder_len);
     s.post(UiEvent::MovePreset {
         path: PathBuf::from(path),
         dest_folder,
@@ -1118,8 +1140,9 @@ pub extern "C" fn vxnc_ui_new_folder(suggested_len: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_ui_rename_folder(old_len: u32, new_len: u32) {
     let s = state();
-    let old_name = s.arg_string(0, old_len as usize);
-    let new_name = s.arg_string(old_len as usize, new_len as usize);
+    // Both names are required — see `vxnc_ui_rename_preset`.
+    let (old_name, new_name) = s.arg_pair(old_len, new_len);
+    let new_name = new_name.unwrap_or_default();
     s.post(UiEvent::RenameFolder { old_name, new_name });
 }
 
@@ -1151,11 +1174,7 @@ pub extern "C" fn vxnc_hydrate_folder(name_len: u32) {
 pub extern "C" fn vxnc_hydrate_preset(key_len: u32, rec_len: u32) -> u32 {
     let s = state();
     let key = s.arg_string(0, key_len as usize);
-    let start = (key_len as usize).min(s.arg_in.len());
-    let end = (key_len as usize)
-        .saturating_add(rec_len as usize)
-        .min(s.arg_in.len());
-    let rec = s.arg_in[start..end].to_vec();
+    let rec = s.arg_bytes(key_len as usize, rec_len as usize);
     match decode_record(&rec) {
         Ok((meta, blob, warnings)) => {
             if let Ok(mut u) = s.user.lock() {
@@ -1204,14 +1223,11 @@ pub extern "C" fn vxnc_state_out_ptr() -> *const u8 {
     state().state_buf.as_ptr()
 }
 
-/// Reserve `len` bytes in the state scratch buffer and return its pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn vxnc_state_buf_reserve(len: u32) -> *mut u8 {
-    let s = state();
-    s.state_buf.clear();
-    s.state_buf.resize(len as usize, 0);
-    s.state_buf.as_mut_ptr()
-}
+buf_reserve!(
+    /// Reserve `len` bytes in the state scratch buffer and return its pointer.
+    vxnc_state_buf_reserve,
+    state_buf
+);
 
 /// Restore the model from the `len`-byte blob staged in the state scratch
 /// buffer. Returns 1 on success, 0 if malformed (model left untouched).
@@ -1235,14 +1251,11 @@ pub extern "C" fn vxnc_toml_out_ptr() -> *const u8 {
     state().toml_buf.as_ptr()
 }
 
-/// Reserve `len` bytes in the TOML scratch buffer and return its pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn vxnc_toml_buf_reserve(len: u32) -> *mut u8 {
-    let s = state();
-    s.toml_buf.clear();
-    s.toml_buf.resize(len as usize, 0);
-    s.toml_buf.as_mut_ptr()
-}
+buf_reserve!(
+    /// Reserve `len` bytes in the TOML scratch buffer and return its pointer.
+    vxnc_toml_buf_reserve,
+    toml_buf
+);
 
 /// Parse the `len`-byte TOML staged in the TOML scratch buffer and apply it.
 /// Returns 1 on success, 0 if malformed (model left untouched).
