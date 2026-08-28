@@ -167,6 +167,26 @@ pub struct FxChain {
     on: [bool; N_SLOTS],
 }
 
+/// One serial FX slot's per-sample runner: skip entirely while bypassed and
+/// settled, otherwise run the kernel and crossfade it against the dry input.
+///
+/// Five byte-identical copies of this before 0319, differing only in the slot
+/// constant and the kernel field. A `dyn`-dispatched slot list would read
+/// better and be a deoptimisation — this is per-sample hot — so the repetition
+/// moves into a macro that expands to exactly the code that was there.
+macro_rules! fx_slot {
+    ($run:ident, $slot:ident, $kernel:ident) => {
+        #[inline]
+        fn $run(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+            if !self.on[$slot] && self.fades[$slot].current() == 0.0 {
+                return (xl, xr);
+            }
+            let (wl, wr) = self.$kernel.process(xl, xr);
+            blend(xl, xr, wl, wr, self.fades[$slot].tick())
+        }
+    };
+}
+
 impl FxChain {
     pub fn new(sample_rate: f32) -> Self {
         let fade = vxn_dsp::smoothing::Smoothed::new(0.0, FX_FADE_MS, sample_rate);
@@ -263,20 +283,15 @@ impl FxChain {
             // runs first in the chain (ADR 0001 §8).
             in_pk_l = in_pk_l.max(xl.abs());
             in_pk_r = in_pk_r.max(xr.abs());
-            let o = self.run_dynamics(xl, xr);
-            (xl, xr) = o;
+            (xl, xr) = self.run_dynamics(xl, xr);
             // Output is post comp/sat AND post the bypass crossfade, so it
             // reads what the slot actually hands to the chorus.
             out_pk_l = out_pk_l.max(xl.abs());
             out_pk_r = out_pk_r.max(xr.abs());
-            let o = self.run_chorus(xl, xr);
-            (xl, xr) = o;
-            let o = self.run_phaser(xl, xr);
-            (xl, xr) = o;
-            let o = self.run_delay(xl, xr);
-            (xl, xr) = o;
-            let o = self.run_reverb(xl, xr);
-            (xl, xr) = o;
+            (xl, xr) = self.run_chorus(xl, xr);
+            (xl, xr) = self.run_phaser(xl, xr);
+            (xl, xr) = self.run_delay(xl, xr);
+            (xl, xr) = self.run_reverb(xl, xr);
             *ls = xl;
             *rs = xr;
         }
@@ -302,60 +317,26 @@ impl FxChain {
         self.fades[slot].set_target(if on { 1.0 } else { 0.0 });
     }
 
+    /// Clear one slot's kernel state. `DYNAMICS` is spelled out rather than
+    /// left as the catch-all: as `_ =>` it meant any bogus index silently reset
+    /// the compressor, which is a real state change attributed to the wrong
+    /// slot. An unknown index is now a no-op.
     fn clear_slot(&mut self, slot: usize) {
         match slot {
             CHORUS => self.chorus.clear(),
             PHASER => self.phaser.clear(),
             DELAY => self.delay.clear(),
             REVERB => self.reverb.reset(),
-            _ => self.dynamics.clear(),
+            DYNAMICS => self.dynamics.clear(),
+            _ => {}
         }
     }
 
-    #[inline]
-    fn run_chorus(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        if !self.on[CHORUS] && self.fades[CHORUS].current() == 0.0 {
-            return (xl, xr);
-        }
-        let (wl, wr) = self.chorus.process(xl, xr);
-        blend(xl, xr, wl, wr, self.fades[CHORUS].tick())
-    }
-
-    #[inline]
-    fn run_phaser(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        if !self.on[PHASER] && self.fades[PHASER].current() == 0.0 {
-            return (xl, xr);
-        }
-        let (wl, wr) = self.phaser.process(xl, xr);
-        blend(xl, xr, wl, wr, self.fades[PHASER].tick())
-    }
-
-    #[inline]
-    fn run_delay(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        if !self.on[DELAY] && self.fades[DELAY].current() == 0.0 {
-            return (xl, xr);
-        }
-        let (wl, wr) = self.delay.process(xl, xr);
-        blend(xl, xr, wl, wr, self.fades[DELAY].tick())
-    }
-
-    #[inline]
-    fn run_reverb(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        if !self.on[REVERB] && self.fades[REVERB].current() == 0.0 {
-            return (xl, xr);
-        }
-        let (wl, wr) = self.reverb.process(xl, xr);
-        blend(xl, xr, wl, wr, self.fades[REVERB].tick())
-    }
-
-    #[inline]
-    fn run_dynamics(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        if !self.on[DYNAMICS] && self.fades[DYNAMICS].current() == 0.0 {
-            return (xl, xr);
-        }
-        let (wl, wr) = self.dynamics.process(xl, xr);
-        blend(xl, xr, wl, wr, self.fades[DYNAMICS].tick())
-    }
+    fx_slot!(run_dynamics, DYNAMICS, dynamics);
+    fx_slot!(run_chorus, CHORUS, chorus);
+    fx_slot!(run_phaser, PHASER, phaser);
+    fx_slot!(run_delay, DELAY, delay);
+    fx_slot!(run_reverb, REVERB, reverb);
 }
 
 /// Linear bypass crossfade: `g = 0` → dry input, `g = 1` → kernel wet output.
