@@ -41,7 +41,7 @@
 
 use crate::QUANTUM;
 use crate::codec::{self, SLOT_BYTES};
-use vxn1b_engine::{Engine, MeterFrame, SCOPE_DECIMATION, SCOPE_WINDOW};
+use vxn1b_engine::{Engine, SCOPE_DECIMATION, SCOPE_WINDOW};
 use vxn1b_engine::MeterTap;
 
 /// Max events decoded per quantum. Matches the ring capacity, so a full ring
@@ -149,17 +149,45 @@ pub unsafe extern "C" fn vxn1b_host_destroy(ptr: *mut Host) {
     }
 }
 
+/// A `*const`/`*mut` accessor onto one of the host's linear-memory buffers, for
+/// JS to read or fill. Five copies of the same `ptr.as_ref()` → `as_ptr()` →
+/// null-on-null shape before 0319.
+///
+/// The null arm is the point: JS holds the handle, so a stale or zeroed one has
+/// to come back as a null pointer rather than dereference.
+macro_rules! host_ptr {
+    ($(#[$meta:meta])* $name:ident -> *const $ty:ty = $field:ident) => {
+        $(#[$meta])*
+        ///
+        /// # Safety
+        /// `ptr` must be a valid handle from [`vxn1b_host_new`].
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(ptr: *mut Host) -> *const $ty {
+            match unsafe { ptr.as_ref() } {
+                Some(h) => h.$field.as_ptr(),
+                None => core::ptr::null(),
+            }
+        }
+    };
+    ($(#[$meta:meta])* $name:ident -> *mut $ty:ty = $field:ident) => {
+        $(#[$meta])*
+        ///
+        /// # Safety
+        /// `ptr` must be a valid handle from [`vxn1b_host_new`].
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(ptr: *mut Host) -> *mut $ty {
+            match unsafe { ptr.as_mut() } {
+                Some(h) => h.$field.as_mut_ptr(),
+                None => core::ptr::null_mut(),
+            }
+        }
+    };
+}
+
+host_ptr! {
 /// Pointer to the event-decode scratch in linear memory. JS copies drained ring
 /// records here (`n * 16` bytes, offset-ordered) before [`vxn1b_host_render`].
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_events_ptr(ptr: *mut Host) -> *mut u8 {
-    match unsafe { ptr.as_mut() } {
-        Some(h) => h.events.as_mut_ptr(),
-        None => core::ptr::null_mut(),
-    }
+    vxn1b_host_events_ptr -> *mut u8 = events
 }
 
 /// Capacity of the event scratch in records (so JS never overruns it).
@@ -243,28 +271,14 @@ pub unsafe extern "C" fn vxn1b_host_render(ptr: *mut Host, n_events: u32) {
     }
 }
 
+host_ptr! {
 /// Pointer to the rendered left channel (`QUANTUM` f32s) in linear memory.
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_out_l(ptr: *mut Host) -> *const f32 {
-    match unsafe { ptr.as_ref() } {
-        Some(h) => h.out_l.as_ptr(),
-        None => core::ptr::null(),
-    }
+    vxn1b_host_out_l -> *const f32 = out_l
 }
 
+host_ptr! {
 /// Pointer to the rendered right channel (`QUANTUM` f32s) in linear memory.
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_out_r(ptr: *mut Host) -> *const f32 {
-    match unsafe { ptr.as_ref() } {
-        Some(h) => h.out_r.as_ptr(),
-        None => core::ptr::null(),
-    }
+    vxn1b_host_out_r -> *const f32 = out_r
 }
 
 /// Drop every sounding voice (panic button / context suspend).
@@ -316,34 +330,18 @@ pub extern "C" fn vxn1b_scope_window() -> u32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vxn1b_host_drain_meters(ptr: *mut Host) {
     if let Some(h) = unsafe { ptr.as_mut() } {
-        let f = MeterFrame::drain(h.engine.meters());
-        h.meters = [
-            f.layer1.0,
-            f.layer1.1,
-            f.layer2.0,
-            f.layer2.1,
-            f.dynamics_in.0,
-            f.dynamics_in.1,
-            f.dynamics_out.0,
-            f.dynamics_out.1,
-            f.dynamics_gr,
-            f.master.0,
-            f.master.1,
-        ];
+        // Straight from the bus into the export buffer. Going via `MeterFrame`
+        // meant array → struct → array, with the last hop re-flattening into a
+        // hand-written order that had to match `MeterTap`'s discriminants;
+        // `drain_into` is order-correct by construction.
+        h.engine.meters().drain_into(&mut h.meters);
     }
 }
 
+host_ptr! {
 /// Pointer to the drained meter frame (`vxn1b_meter_len()` f32s) in linear
 /// memory.
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_meters_ptr(ptr: *mut Host) -> *const f32 {
-    match unsafe { ptr.as_ref() } {
-        Some(h) => h.meters.as_ptr(),
-        None => core::ptr::null(),
-    }
+    vxn1b_host_meters_ptr -> *const f32 = meters
 }
 
 /// Read the latest scope window into the host's buffer. Returns the sample
@@ -376,17 +374,10 @@ pub unsafe extern "C" fn vxn1b_host_read_scope(ptr: *mut Host) -> u32 {
     }
 }
 
+host_ptr! {
 /// Pointer to the last read scope window in linear memory. Valid for the count
 /// [`vxn1b_host_read_scope`] returned.
-///
-/// # Safety
-/// `ptr` must be a valid handle from [`vxn1b_host_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vxn1b_host_scope_ptr(ptr: *mut Host) -> *const f32 {
-    match unsafe { ptr.as_ref() } {
-        Some(h) => h.scope.as_ptr(),
-        None => core::ptr::null(),
-    }
+    vxn1b_host_scope_ptr -> *const f32 = scope
 }
 
 #[cfg(test)]

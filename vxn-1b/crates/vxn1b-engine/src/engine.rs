@@ -568,18 +568,29 @@ impl Engine {
         self.key.lfo2_link = on;
     }
 
-    pub fn set_pitch_bend(&mut self, bend: f32) {
-        self.synths[0].set_pitch_bend(bend);
+    /// Run `f` on every synth the current key mode has live: layer 1 always,
+    /// layer 2 only when it is on. The shape behind the four controller fan-outs
+    /// below — pitch bend, mod wheel, poly pressure, channel pressure — each of
+    /// which spelled it out.
+    ///
+    /// Single mode must not tick synth 2 at all (ADR 0002's byte-for-byte
+    /// claim), which is what the gate is for; note-*offs* deliberately do not
+    /// use this, because they broadcast to both synths in every mode so a
+    /// split-point move cannot strand a held note.
+    #[inline]
+    fn each_live_synth(&mut self, mut f: impl FnMut(&mut Synth)) {
+        f(&mut self.synths[0]);
         if self.key.layer2_on {
-            self.synths[1].set_pitch_bend(bend);
+            f(&mut self.synths[1]);
         }
     }
 
+    pub fn set_pitch_bend(&mut self, bend: f32) {
+        self.each_live_synth(|s| s.set_pitch_bend(bend));
+    }
+
     pub fn set_mod_wheel(&mut self, w: f32) {
-        self.synths[0].set_mod_wheel(w);
-        if self.key.layer2_on {
-            self.synths[1].set_mod_wheel(w);
-        }
+        self.each_live_synth(|s| s.set_mod_wheel(w));
     }
 
     /// Host tempo in BPM, for the tempo-synced LFO rates and delay time.
@@ -636,17 +647,11 @@ impl Engine {
     /// Poly pressure → the matching voice on both synths when layer 2 is on
     /// (fanned; ADR 0002 §2). The synth without that pitch held no-ops.
     pub fn poly_pressure(&mut self, channel: u8, note: u8, value: f32) {
-        self.synths[0].poly_pressure(channel, note, value);
-        if self.key.layer2_on {
-            self.synths[1].poly_pressure(channel, note, value);
-        }
+        self.each_live_synth(|s| s.poly_pressure(channel, note, value));
     }
 
     pub fn channel_pressure(&mut self, channel: u8, value: f32) {
-        self.synths[0].channel_pressure(channel, value);
-        if self.key.layer2_on {
-            self.synths[1].channel_pressure(channel, value);
-        }
+        self.each_live_synth(|s| s.channel_pressure(channel, value));
     }
 
     pub fn reset(&mut self) {

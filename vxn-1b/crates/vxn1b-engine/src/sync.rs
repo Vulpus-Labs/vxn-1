@@ -17,31 +17,49 @@ pub use vxn_core_utils::sync::{
     subdivision_hz as synced_hz, subdivision_seconds as synced_seconds,
 };
 
+/// The three sync pairs, as `(rate/time, sync toggle)` [`ParamId`]s.
+///
+/// [`sync_partner_clap_id`] and [`rate_partner_clap_id`] are exact inverses,
+/// and before 0319 each spelled the mapping out as its own three-arm match —
+/// mirror images kept in step by hand, so adding a fourth syncable control
+/// meant remembering to edit both. Searching one table in either direction
+/// makes them inverses by construction.
+///
+/// The delay pair is patch-global (only layer 1 carries it); the two LFO pairs
+/// are per-layer. `layer_of` on the resolved [`ClapRef`] is what carries that
+/// distinction, so it is not encoded here.
+const SYNC_PAIRS: [(ParamId, ParamId); 3] = [
+    (ParamId::Lfo1Rate, ParamId::Lfo1Sync),
+    (ParamId::Lfo2Rate, ParamId::Lfo2Sync),
+    (ParamId::DelayTime, ParamId::DelaySync),
+];
+
+/// Resolve one half of a sync pair to the CLAP id of its partner. `pick` reads
+/// the partner out of a matched row, so the two public directions differ by
+/// that one closure and nothing else.
+fn partner_clap_id(clap_id: usize, pick: fn(&(ParamId, ParamId)) -> (ParamId, ParamId)) -> Option<usize> {
+    let (layer, param) = match clap_ref(clap_id)? {
+        ClapRef::Patch(layer, param) => (layer, param),
+        // A global sync param belongs to the one delay, which layer 1 owns.
+        ClapRef::Global(param) => (crate::params::Layer::L1, param),
+    };
+    let row = SYNC_PAIRS.iter().find(|pair| pick(pair).0 == param)?;
+    Some(clap_id_of(layer, pick(row).1))
+}
+
 /// Sync-toggle CLAP id partnered with a rate/time param's CLAP id. `None` for
 /// anything that isn't sync-pairable. Mirrors the faceplate's
 /// `locateSyncPartners`, so the host's `value_to_text` and the editor's popup
 /// agree on when a subdivision label is shown.
 pub fn sync_partner_clap_id(clap_id: usize) -> Option<usize> {
-    let partner = match clap_ref(clap_id)? {
-        ClapRef::Patch(layer, ParamId::Lfo1Rate) => clap_id_of(layer, ParamId::Lfo1Sync),
-        ClapRef::Patch(layer, ParamId::Lfo2Rate) => clap_id_of(layer, ParamId::Lfo2Sync),
-        ClapRef::Global(ParamId::DelayTime) => clap_id_of(crate::params::Layer::L1, ParamId::DelaySync),
-        _ => return None,
-    };
-    Some(partner)
+    partner_clap_id(clap_id, |&(rate, sync)| (rate, sync))
 }
 
 /// Inverse of [`sync_partner_clap_id`]: the rate/time partner of a sync flag.
 /// Used to refresh a synced fader's readout when the toggle flips but the
 /// underlying rate value hasn't changed.
 pub fn rate_partner_clap_id(clap_id: usize) -> Option<usize> {
-    let partner = match clap_ref(clap_id)? {
-        ClapRef::Patch(layer, ParamId::Lfo1Sync) => clap_id_of(layer, ParamId::Lfo1Rate),
-        ClapRef::Patch(layer, ParamId::Lfo2Sync) => clap_id_of(layer, ParamId::Lfo2Rate),
-        ClapRef::Global(ParamId::DelaySync) => clap_id_of(crate::params::Layer::L1, ParamId::DelayTime),
-        _ => return None,
-    };
-    Some(partner)
+    partner_clap_id(clap_id, |&(rate, sync)| (sync, rate))
 }
 
 
@@ -171,5 +189,59 @@ mod tests {
         assert!((delay_time_seconds(&p, 60.0) - 4.0).abs() < 1e-4, "1/1 at 60 BPM is a full 4 s");
         // Only past the line's capacity does it flatten.
         assert!((delay_time_seconds(&p, 30.0) - crate::fx::DELAY_MAX_SECONDS).abs() < 1e-6);
+    }
+
+    /// 0319 replaced two hand-mirrored three-arm matches with one table read in
+    /// both directions. Neither function had a test, and "exact inverses" is
+    /// exactly the property that was being maintained by hand — so pin it, over
+    /// every CLAP id rather than the three the matches happened to name.
+    #[test]
+    fn sync_and_rate_partners_are_exact_inverses() {
+        use crate::params::{Layer, TOTAL_PARAMS};
+
+        let mut paired = 0usize;
+        for id in 0..TOTAL_PARAMS {
+            match sync_partner_clap_id(id) {
+                Some(sync_id) => {
+                    paired += 1;
+                    assert_eq!(
+                        rate_partner_clap_id(sync_id),
+                        Some(id),
+                        "clap id {id} → sync {sync_id} did not come back"
+                    );
+                }
+                // Not a rate: then it must not be reachable as one from the
+                // other side either, unless it is itself a sync toggle.
+                None => {
+                    if let Some(rate_id) = rate_partner_clap_id(id) {
+                        assert_eq!(rate_partner_clap_id(id), Some(rate_id));
+                        assert_eq!(sync_partner_clap_id(rate_id), Some(id));
+                    }
+                }
+            }
+        }
+        // Two LFOs per layer plus the one patch-global delay.
+        assert_eq!(paired, 2 * 2 + 1, "expected five sync pairs across both layers");
+
+        // Spot-check that the pairs are the ones intended, not merely
+        // self-consistent.
+        for layer in [Layer::L1, Layer::L2] {
+            assert_eq!(
+                sync_partner_clap_id(clap_id_of(layer, ParamId::Lfo1Rate)),
+                Some(clap_id_of(layer, ParamId::Lfo1Sync))
+            );
+            assert_eq!(
+                sync_partner_clap_id(clap_id_of(layer, ParamId::Lfo2Rate)),
+                Some(clap_id_of(layer, ParamId::Lfo2Sync))
+            );
+        }
+        assert_eq!(
+            sync_partner_clap_id(clap_id_of(Layer::L1, ParamId::DelayTime)),
+            Some(clap_id_of(Layer::L1, ParamId::DelaySync))
+        );
+        // A param with no sync partner stays unpaired in both directions.
+        let cutoff = clap_id_of(Layer::L1, ParamId::Cutoff);
+        assert_eq!(sync_partner_clap_id(cutoff), None);
+        assert_eq!(rate_partner_clap_id(cutoff), None);
     }
 }

@@ -22,8 +22,8 @@ use std::ffi::c_void;
 
 use vxn1b_engine::matrix::MatrixTable;
 use vxn1b_engine::params::{TOTAL_PARAMS, desc_for_clap_id};
-use vxn_core_app::{ControllerHandle, CorpusHandle, ParamDesc, ParamKind, Taper, UiEvent};
-use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig};
+use vxn_core_app::{ControllerHandle, CorpusHandle, ParamDesc, UiEvent};
+use vxn_core_ui_web::WebEditorConfig;
 
 // The WebView lifecycle, IPC bridge, batched view-event sink, corpus
 // snapshot push, and native text-input popup all live in the shared
@@ -51,6 +51,10 @@ pub const EDITOR_HEIGHT: u32 = 616;
 /// VXN1b has no per-synth override; the constant is the shared one so the
 /// native page, the browser controller and `preset-browser.js` cannot disagree
 /// (0316 — they used to be three literals and a comment saying they must not).
+/// The shared uncategorised-folder label. Only the test below reads it now:
+/// it exists to pin `preset-browser.js`'s hard-coded copy of the string to
+/// `vxn_core_app::UNCATEGORISED_LABEL`, which nothing else can check.
+#[cfg(test)]
 const UNCATEGORISED: &str = vxn_core_app::UNCATEGORISED_LABEL;
 
 /// Open the VXN1b editor under `parent`. Thin wrapper over
@@ -75,8 +79,9 @@ pub fn open_editor(
 ) -> Result<EditorHandle, OpenEditorError> {
     let html = build_faceplate_html(matrices);
     let mut config = WebEditorConfig::new(html, EDITOR_WIDTH, EDITOR_HEIGHT);
-    config.uncategorised_label = UNCATEGORISED;
-    config.max_batch_bytes = DEFAULT_MAX_BATCH_BYTES;
+    // `uncategorised_label` and `max_batch_bytes` are left alone: until 0319
+    // this re-set each to the exact value `WebEditorConfig::new` already
+    // applies, which reads as a deliberate override and is not one.
     // WebView2 user-data folder: `%LOCALAPPDATA%\VulpusLabs\VXN1b\WebView2`
     // (the shared crate joins vendor/product/"WebView2"). Avoids the
     // admin-only `C:\Program Files\<host>\<exe>.WebView2` default.
@@ -244,8 +249,8 @@ fn assemble_faceplate(
 ) -> String {
     let browser_js = format!(
         "{}\n;\n{}",
-        strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
-        strip_esm_exports(BROWSER_JS),
+        vxn_core_ui_web::strip_esm_exports(vxn_core_ui_web::PRESET_BROWSER_JS),
+        vxn_core_ui_web::strip_esm_exports(BROWSER_JS),
     );
     let css = format!(
         "{}\n{}\n{}",
@@ -257,7 +262,7 @@ fn assemble_faceplate(
     let bridge_js = format!(
         "{}\n;\n{}",
         vxn_core_ui_web::shared_widgets_js(),
-        strip_esm_exports(BRIDGE_JS),
+        vxn_core_ui_web::strip_esm_exports(BRIDGE_JS),
     );
     PLACEHOLDER_HTML
         .replace("__WEB_BOOT_HEAD__", web_boot_head)
@@ -266,7 +271,7 @@ fn assemble_faceplate(
         .replace("__BRIDGE_JS__", &bridge_js)
         .replace("__BROWSER_JS__", &browser_js)
         .replace("__PANELS_JS__", &panels_js())
-        .replace("__DISPATCH_JS__", &strip_esm_exports(DISPATCH_JS))
+        .replace("__DISPATCH_JS__", &vxn_core_ui_web::strip_esm_exports(DISPATCH_JS))
         .replace("__PARAMS_JSON__", &build_params_json())
         .replace("__SUBDIVISIONS_JSON__", &build_subdivisions_json())
         .replace("__MATRIX_JSON__", &build_matrix_json(matrices))
@@ -483,15 +488,6 @@ pub fn build_web_faceplate_html() -> String {
     )
 }
 
-/// Drop ESM module syntax from every line of `src`. The faceplate JS modules
-/// carry `export` markers (and a couple of cross-module `import`s) so Node can
-/// load them for the test suite; the splice loader concatenates them into one
-/// inline `<script>` where module syntax is illegal, so we strip per line
-/// before splicing.
-fn strip_esm_exports(src: &str) -> String {
-    // Thin local alias over the shared crate's implementation.
-    vxn_core_ui_web::strip_esm_exports(src)
-}
 
 /// Concatenate the split panel source files into one ESM-stripped blob for the
 /// `__PANELS_JS__` slot. Joined the same way as the bridge / browser concats
@@ -500,7 +496,7 @@ fn strip_esm_exports(src: &str) -> String {
 fn panels_js() -> String {
     PANELS_FILES
         .iter()
-        .map(|src| strip_esm_exports(src))
+        .map(|src| vxn_core_ui_web::strip_esm_exports(src))
         .collect::<Vec<_>>()
         .join("\n;\n")
 }
@@ -526,48 +522,17 @@ fn build_params_json() -> String {
     format!("{{{}}}", entries.join(","))
 }
 
-/// Serialise one param descriptor for the spliced `window.vxn.params` map.
+/// One param descriptor as the JSON object the faceplate splices into
+/// `window.vxn.params`.
 ///
-/// Near-identical to [`vxn_core_ui_web::descriptor_to_json`] but kept local
-/// deliberately: this returns the `String` the faceplate splice wants (the
-/// shared one returns a `serde_json::Value`). The shape is the same, so if the
-/// two ever diverge, reconcile here — the JS reads them identically.
+/// The shared crate builds the same object; this exists only to hand back the
+/// `String` the splice wants rather than its `Value`. Until 0319 it was a
+/// second *implementation* — with `taper_to_json` copied byte-identically
+/// beside it — under a doc that conceded the duplication and planned to
+/// "reconcile here if the two ever diverge", which is a plan to notice a
+/// silent drift rather than to prevent it.
 fn descriptor_to_json(d: &ParamDesc) -> String {
-    use serde_json::{Map, Value, json};
-    let mut obj = Map::new();
-    obj.insert("name".into(), json!(d.name));
-    obj.insert("label".into(), json!(d.label));
-    obj.insert("min".into(), json!(d.min));
-    obj.insert("max".into(), json!(d.max));
-    obj.insert("default".into(), json!(d.default));
-    match d.kind {
-        ParamKind::Float { unit, taper } => {
-            obj.insert("kind".into(), json!("float"));
-            obj.insert("unit".into(), json!(unit));
-            obj.insert("taper".into(), json!(taper_to_json(taper)));
-        }
-        ParamKind::Int { unit } => {
-            obj.insert("kind".into(), json!("int"));
-            obj.insert("unit".into(), json!(unit));
-        }
-        ParamKind::Bool => {
-            obj.insert("kind".into(), json!("bool"));
-        }
-        ParamKind::Enum { variants } => {
-            obj.insert("kind".into(), json!("enum"));
-            obj.insert("variants".into(), json!(variants));
-        }
-    }
-    Value::Object(obj).to_string()
-}
-
-fn taper_to_json(t: Taper) -> serde_json::Value {
-    use serde_json::json;
-    match t {
-        Taper::Linear => json!({"kind": "linear"}),
-        Taper::Exp { mid } => json!({"kind": "exp", "mid": mid}),
-        Taper::BipolarExp { mid } => json!({"kind": "bipolar-exp", "mid": mid}),
-    }
+    vxn_core_ui_web::descriptor_to_json(d).to_string()
 }
 
 // ── Faceplate page ──────────────────────────────────────────────────────────
@@ -620,6 +585,9 @@ const DISPATCH_JS: &str = include_str!("../assets/dispatch.js");
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests destructure a descriptor kind; the module itself hands the
+    // whole descriptor to the shared serialiser.
+    use vxn_core_app::ParamKind;
 
     // Assemble once per test run — `build_faceplate_html` walks every CLAP
     // id to build the descriptor map, so caching keeps the checks cheap.
