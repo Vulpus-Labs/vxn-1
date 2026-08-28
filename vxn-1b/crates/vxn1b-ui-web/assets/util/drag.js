@@ -59,6 +59,59 @@ export function attachValuePop(host, getLabel) {
   };
 }
 
+/// The shared **relative-norm** drag: a delta-mapped `[0, 1]` value with
+/// gesture brackets, the hover/drag value popup, and a clamped write that
+/// paints locally and posts the norm.
+///
+/// The rotary dial and the bipolar depth fader carried a copy each before
+/// 0319 — same `writeFromDrag` clamp, same `attachValuePop`
+/// forward-declaration dance, same `wireDrag({raf: true, downContext})` call,
+/// same gesture brackets — differing only in axis, sign and travel. (The
+/// vertical faders are *absolute*-mapped over their own height by
+/// `wireFaderDrag`, which is why they are not this.)
+///
+/// - `axis` — `'y'` (up raises, i.e. a negative `dy`) or `'x'` (right raises).
+/// - `rangePx` — pointer travel for the full 0..1 span.
+/// - `paint(norm)` — the caller's local repaint; also called on grab to
+///   re-anchor at the pointer.
+/// - `getNorm()` / `getLabel()` — the caller's current norm and popup text.
+///
+/// Returns the value popup, which the caller's `update` refreshes on an echo.
+export function wireNormDrag(el, id, { axis, rangePx, paint, getNorm, getLabel }) {
+  const write = (rawNorm) => {
+    const n = rawNorm < 0 ? 0 : rawNorm > 1 ? 1 : rawNorm;
+    paint(n);
+    window.vxn.send.setParamNorm(id, n);
+  };
+  // `drag` is forward-declared because the popup's host reads the drag's
+  // hover/drag getters, and `wireDrag` needs the popup's callbacks.
+  let drag;
+  const pop = attachValuePop({
+    isHovered:  () => drag.isHovered(),
+    isDragging: () => drag.isDragging(),
+  }, getLabel);
+  drag = wireDrag(el, {
+    axis,
+    raf: true,
+    downContext: () => ({ startNorm: getNorm() }),
+  }, {
+    onEnter: (ev) => pop.markEntered(ev),
+    onLeave: () => pop.markLeft(),
+    onDown: (ev) => {
+      window.vxn.send.beginGesture(id);
+      write(getNorm()); // re-anchor at the grab point
+      pop.markGrabbed(ev);
+    },
+    onMove: (_ev, info) =>
+      write(info.ctx.startNorm + (axis === 'x' ? info.dx : -info.dy) / rangePx),
+    onUp: () => {
+      window.vxn.send.endGesture(id);
+      pop.markReleased();
+    },
+  });
+  return pop;
+}
+
 // Paint a vertical fader's thumb at a [0, 1] norm. Norm 0 = bottom, 1 = top.
 // Pins in pixel space against the live element height so the thumb's
 // bounding box stays inside `.ctl-fader` exactly at both ends regardless of

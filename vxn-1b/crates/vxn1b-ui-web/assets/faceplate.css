@@ -25,6 +25,13 @@
      blue gradient the knob travels over, revealing more of it as it rises. */
   --fader-fill-pale: #35507e;
   --fader-fill-bright: #6cb1ff;
+  /* "Lit toggle" — the shared on-state for every small square switch: the tab
+     switches, the panel-header switches, the toggle-grid rows and the preset
+     bar's active button. Four blocks hardcoded these same three hexes before
+     0319, so a palette change meant finding all four. */
+  --lit-bg: #1f9cff;
+  --lit-border: #84cdff;
+  --lit-glow: #36b3ff;
   --thumb-bg: #87afb2;
   --thumb-border: #a7cfe2;       /* matches --glyph-active / --knob-indicator */
   --glyph: #888888;
@@ -177,8 +184,10 @@ html, body {
   color: var(--ctl-label);
 }
 .pbar-btn.active {
-  background: #1f9cff;
-  border-color: #84cdff;
+  /* Same lit fill as the switches, deliberately without their glow: this is a
+     text button, not a lamp. */
+  background: var(--lit-bg);
+  border-color: var(--lit-border);
   color: #fff;
 }
 .pbar-step { padding: 0 6px; min-width: 18px; text-align: center; }
@@ -325,9 +334,9 @@ html, body {
 }
 .tab-switch:hover { border-color: #141414; }
 .tab-switch.on {
-  background: #1f9cff;
-  border-color: #84cdff;
-  box-shadow: 0 0 6px #36b3ff;
+  background: var(--lit-bg);
+  border-color: var(--lit-border);
+  box-shadow: 0 0 6px var(--lit-glow);
 }
 
 /* Mod-matrix modal + rows — ported from vxn-2 (style.css .overlay-* / .vxn-mm-*),
@@ -1052,9 +1061,9 @@ html, body {
 }
 .ctl-tg-row:hover .ctl-tg-box { border-color: #c4c4c4; }
 .ctl-tg-row.active .ctl-tg-box {
-  background: #1f9cff;
-  border-color: #84cdff;
-  box-shadow: 0 0 6px #36b3ff;
+  background: var(--lit-bg);
+  border-color: var(--lit-border);
+  box-shadow: 0 0 6px var(--lit-glow);
 }
 .ctl-tg-lbl {
   font-size: 9px;
@@ -1296,9 +1305,9 @@ html, body {
 }
 .panel-header-switch:hover { border-color: #141414; }
 .panel-header-switch.active {
-  background: #1f9cff;
-  border-color: #84cdff;
-  box-shadow: 0 0 6px #36b3ff;
+  background: var(--lit-bg);
+  border-color: var(--lit-border);
+  box-shadow: 0 0 6px var(--lit-glow);
 }
 
 /* ── FX/Global tab (0220 / 0241) ───────────────────────────────────────────

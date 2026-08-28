@@ -33,7 +33,7 @@ export {
 
 export {
   PIXELS_PER_DETENT, KNOB_INDICATOR_TRANSITION_MS,
-  wireFaderDrag, attachValuePop, paintFader, clampVariant, tgRow,
+  wireFaderDrag, wireNormDrag, attachValuePop, paintFader, clampVariant, tgRow,
 } from './util/drag.js';
 
 export {

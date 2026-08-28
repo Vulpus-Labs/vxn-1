@@ -328,22 +328,26 @@ function cutoffTunedOn(id) {
   const last = model.lastParam.get(tunedId);
   return !!(last && last.plain >= 0.5);
 }
+/// The three cutoff overrides each apply only to a cutoff fader — i.e. one with
+/// a Tuned partner — and each opened with the same null guard. `ifCutoff` is
+/// that guard: it returns the override, or `null` for every other fader, which
+/// is what `bindCell` reads as "no override".
+function ifCutoff(id, override) {
+  return model.tunedOfCutoff.get(id) == null ? null : override;
+}
 export function cutoffInteractionOverride(id) {
-  if (model.tunedOfCutoff.get(id) == null) return null;
-  return (rawNorm) => {
+  return ifCutoff(id, (rawNorm) => {
     if (!cutoffTunedOn(id)) return null;
     const hz = cutoffTunedNormToHz(rawNorm);
     return { plain: hz, norm: cutoffTunedHzToNorm(hz) };
-  };
+  });
 }
 export function cutoffNormOverride(id) {
-  if (model.tunedOfCutoff.get(id) == null) return null;
-  return (plain) => (cutoffTunedOn(id) ? cutoffTunedHzToNorm(plain) : null);
+  return ifCutoff(id, (plain) => (cutoffTunedOn(id) ? cutoffTunedHzToNorm(plain) : null));
 }
 export function cutoffDisplayOverride(id) {
-  if (model.tunedOfCutoff.get(id) == null) return null;
-  return (plain, norm, display) =>
-    cutoffTunedOn(id) ? cutoffTunedNoteName(plain) : null;
+  return ifCutoff(id, (plain, norm, display) =>
+    cutoffTunedOn(id) ? cutoffTunedNoteName(plain) : null);
 }
 
 // Layer pan readout (0248): a bipolar `[-1, 1]` position reads as a mixer

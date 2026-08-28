@@ -7,7 +7,7 @@
 // under Node ESM they resolve so the suites can pull these in via the
 // `../panels.js` barrel.
 import {
-  paintFader, wireFaderDrag, attachValuePop, clampVariant,
+  paintFader, wireFaderDrag, wireNormDrag, attachValuePop, clampVariant,
   PIXELS_PER_DETENT, KNOB_INDICATOR_TRANSITION_MS,
 } from '../util/drag.js';
 import { wireDrag } from '../../../../../crates/vxn-core-ui-web/assets/wire-drag.js';
@@ -349,7 +349,17 @@ export function makeWave(el, id, desc) {
 // map so the fill + indicator always agree.
 const DIAL_ARC_START = -135;
 const DIAL_ARC_SWEEP = 270;
-const DIAL_RANGE_PX = 200; // px for full 0..1 travel (matches the fader)
+/// Pointer travel for a dial's full 0..1 span. NOT "matches the fader", as the
+/// comment here used to claim: the vertical faders are absolute-mapped over
+/// their own height by `wireFaderDrag`, so they have no px-per-span figure to
+/// match. 200 px is simply the dial's own calibration.
+const DIAL_RANGE_PX = 200;
+
+/// The bipolar depth fader's travel, declared beside the dial's rather than
+/// inside `makeBipolar`. A wide 400 px full-scale span (2× vxn-2's) makes
+/// gentle depths easy to dial without Shift; Shift still gives 0.1× fine, and
+/// double-click resets to 0 (0219 §3 calibration).
+const BIPOLAR_RANGE_PX = 400;
 const DIAL_SIZE = 36;
 const DIAL_CX = DIAL_SIZE / 2;
 const DIAL_CY = DIAL_SIZE / 2;
@@ -427,35 +437,13 @@ export function makeDial(el, id, desc, opts) {
       'd', dialDescribeArc(DIAL_CX, DIAL_CY, DIAL_ARC_R, startDeg, startDeg + sweep));
   }
 
-  const writeFromDrag = (rawNorm) => {
-    const n = rawNorm < 0 ? 0 : rawNorm > 1 ? 1 : rawNorm;
-    paint(n);
-    window.vxn.send.setParamNorm(id, n);
-  };
-
-  let drag;
-  const pop = attachValuePop({
-    isHovered:  () => drag.isHovered(),
-    isDragging: () => drag.isDragging(),
-  }, () => lastDisplay);
-  drag = wireDrag(svg, {
+  // Vertical relative drag: up raises.
+  const pop = wireNormDrag(svg, id, {
     axis: 'y',
-    raf: true,
-    downContext: () => ({ startNorm: currentNorm }),
-  }, {
-    onEnter: (ev) => pop.markEntered(ev),
-    onLeave: () => pop.markLeft(),
-    onDown: (ev) => {
-      window.vxn.send.beginGesture(id);
-      writeFromDrag(currentNorm);   // re-anchor at the grab point
-      pop.markGrabbed(ev);
-    },
-    // Up (a negative clientY delta) raises the value.
-    onMove: (_ev, info) => writeFromDrag(info.ctx.startNorm - info.dy / DIAL_RANGE_PX),
-    onUp: () => {
-      window.vxn.send.endGesture(id);
-      pop.markReleased();
-    },
+    rangePx: DIAL_RANGE_PX,
+    paint,
+    getNorm: () => currentNorm,
+    getLabel: () => lastDisplay,
   });
 
   // Seed at norm 0; the bind-time echo repaints authoritatively (matches
@@ -518,38 +506,13 @@ export function makeBipolar(el, id, desc) {
     thumb.style.left = `${pct}%`;
   }
 
-  const writeFromDrag = (rawNorm) => {
-    const n = rawNorm < 0 ? 0 : rawNorm > 1 ? 1 : rawNorm;
-    paint(n);
-    window.vxn.send.setParamNorm(id, n);
-  };
-
-  let drag;
-  const pop = attachValuePop({
-    isHovered:  () => drag.isHovered(),
-    isDragging: () => drag.isDragging(),
-  }, () => lastDisplay);
-  // Horizontal relative drag: right (+dx) raises. A wide 400 px full-scale
-  // travel (2× vxn-2's) makes gentle depths easy to dial without Shift; Shift
-  // still gives 0.1× fine, and double-click resets to 0 (0219 §3 calibration).
-  const RANGE_PX = 400;
-  drag = wireDrag(track, {
+  // Horizontal relative drag: right raises.
+  const pop = wireNormDrag(track, id, {
     axis: 'x',
-    raf: true,
-    downContext: () => ({ startNorm: currentNorm }),
-  }, {
-    onEnter: (ev) => pop.markEntered(ev),
-    onLeave: () => pop.markLeft(),
-    onDown: (ev) => {
-      window.vxn.send.beginGesture(id);
-      writeFromDrag(currentNorm); // re-anchor at the grab point
-      pop.markGrabbed(ev);
-    },
-    onMove: (_ev, info) => writeFromDrag(info.ctx.startNorm + info.dx / RANGE_PX),
-    onUp: () => {
-      window.vxn.send.endGesture(id);
-      pop.markReleased();
-    },
+    rangePx: BIPOLAR_RANGE_PX,
+    paint,
+    getNorm: () => currentNorm,
+    getLabel: () => lastDisplay,
   });
 
   // Seed at centre (0 depth); the bind-time echo repaints authoritatively.
