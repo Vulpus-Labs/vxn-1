@@ -38,7 +38,7 @@ use vxn2_dsp::delay::StereoDelay;
 use vxn2_dsp::dynamics::DynamicsBlock;
 use vxn2_dsp::limiter::StereoLimiter;
 use vxn2_dsp::op::RatioMode;
-use vxn2_dsp::phaser::StereoPhaser;
+use vxn2_dsp::phaser::{FxKernel as _, StereoPhaser};
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler, roundtrip_latency_base_samples};
 use vxn2_dsp::hpf::HpfKernel;

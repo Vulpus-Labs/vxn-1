@@ -142,3 +142,25 @@ mod q32_tests {
         assert!((q32_to_unit(0x8000_0000) - 0.5).abs() < 1e-7);
     }
 }
+
+/// xorshift64\* — advances `state` in place and returns the scrambled word.
+///
+/// Canonical Vigna triple (13, 7, 17) plus the star multiplier; the top bits
+/// are the strong ones, so callers that want a fraction take `>> 40` rather
+/// than the low bits. Non-zero seeds only — xorshift sticks at zero.
+///
+/// **Not** the same generator as `vxn-dsp`'s `xorshift64`, which omits the
+/// multiply and scales by `i64::MAX`. The two produce different streams from
+/// the same seed; that difference is audible wherever a stream seeds a
+/// per-stage scatter, so neither is a drop-in for the other. This one is the
+/// canon for shared components (`vxn-core-dsp`), because moving vxn-2's
+/// kernels here had to leave vxn-2's output bit-identical.
+#[inline]
+pub fn xorshift64_star(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+}

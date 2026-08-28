@@ -100,6 +100,27 @@ impl WetFade {
         self.retarget();
     }
 
+    /// Set the enable flag and the wet level **together**, priming once.
+    ///
+    /// Prefer this to `set_enabled` + `set_mix` when a params snapshot carries
+    /// both — which is the normal case, since an FX kernel's `set_params` fans
+    /// an `on` flag and a `mix` in from the same struct.
+    ///
+    /// The difference is only visible on the very first call, and it matters:
+    /// the separate setters prime on whichever lands first, so
+    /// `set_enabled(true)` snaps to the *default* target and the following
+    /// `set_mix(m)` then glides down to `m` — an audible ride-in on a patch
+    /// that loads with the effect already engaged. Setting both before priming
+    /// snaps straight to `m`, which is what vxn-2's hand-rolled
+    /// `enabled` + `mix_primed` pair did and what the moved kernels must keep
+    /// doing to stay bit-exact.
+    #[inline]
+    pub fn set(&mut self, on: bool, mix: f32) {
+        self.enabled = on;
+        self.target = mix.clamp(0.0, 1.0);
+        self.retarget();
+    }
+
     #[inline]
     fn retarget(&mut self) {
         let t = if self.enabled { self.target } else { 0.0 };

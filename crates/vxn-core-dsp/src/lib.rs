@@ -53,6 +53,11 @@ pub mod dynamics;
 /// Filled in by tickets 0226 (trait) and 0228–0232 (the effects).
 pub mod fx;
 
+/// Stereo allpass phaser: four allpass sections per channel swept by a shared
+/// triangle LFO, with internal `WetFade` bypass. Moved by 0228 from `vxn2-dsp`,
+/// whose copy was the superset; `vxn-dsp` and `vxn2-dsp` re-export it.
+pub mod phaser;
+
 /// One-pole TPT high-pass — the scalar kernel. Moved by 0227; vxn-1's 8-wide
 /// `PolyHpf` stays per-synth (SoA body, ADR 0002 §3).
 pub mod hpf;
