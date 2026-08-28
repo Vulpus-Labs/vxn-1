@@ -10,30 +10,35 @@
 //!
 //! ## On/off discipline
 //!
-//! Each of the five slots carries a short bypass **fade** (a `Smoothed` 0..1) and
-//! is gated on it:
+//! Every slot is a **true skip** when it is bypassed and its bypass has fully
+//! settled: the kernel's `process` is never called, so five idle effects cost
+//! five gate checks rather than five wet=0 multiplies through the DSP (the E037
+//! CPU risk). What differs between slots is *where the bypass fade lives*, and
+//! E041 is in the middle of moving them all to one answer.
 //!
-//! - **Steady off** (`on == false` and the fade has reached exactly 0) is a
-//!   *true skip* — the kernel's `process` is never called, so five idle effects
-//!   cost five gate checks, not five wet=0 multiplies through the DSP (E037 CPU
-//!   risk).
-//! - **Toggling** ramps the fade 0↔1 over [`FX_FADE_MS`], crossfading dry input
-//!   against the kernel's wet output so a switch doesn't click. `Smoothed` snaps
-//!   to its target within `SNAP_EPS`, so the fade genuinely reaches 0 and the
-//!   true-skip gate re-arms.
+//! - **Phaser** — bypass is inside the kernel, as a `WetFade` (ticket 0228).
+//!   `FxChain` gates on `is_active()` and otherwise just calls `process`; the
+//!   dry/wet crossfade happens once, in the kernel, against the mix the patch
+//!   asked for. This is the idiom the other four slots are migrating to.
+//! - **The remaining four** — a short outer bypass fade (a `Smoothed` 0..1)
+//!   held here, ramped 0↔1 over [`FX_FADE_MS`] and crossfaded against the dry
+//!   input. `Smoothed` snaps to its target within `SNAP_EPS`, so the fade
+//!   genuinely reaches 0 and the true-skip gate re-arms. These kernels are held
+//!   **internally on**, their own `mix` argument carrying the musical wet
+//!   amount while the outer fade owns bypass; on an off→on edge the slot's
+//!   kernel state is cleared so a re-enabled delay / reverb doesn't dump a
+//!   stale tail. Tickets 0229–0232 retire this half.
 //!
-//! The kernels are held **internally on** and their own `mix` argument carries
-//! the musical wet amount; this outer fade owns bypass. That's the same split
-//! VXN1's `MasterFx` uses for its reverb (bypass owned by the outer fade, kernel
-//! `on` held true). On an off→on edge the slot's kernel state is cleared so a
-//! re-enabled delay / reverb doesn't dump a stale tail.
+//! No slot ever carries both (E041's double-fade ban) — a kernel with an
+//! internal `WetFade` has no entry in `fades`/`on` at all.
 
 use std::sync::Arc;
 
 use vxn_core_utils::{MeterBus, MeterTap};
+use vxn_dsp::phaser::FxKernel as _;
 use vxn_dsp::{
-    DynamicsBlock, DynamicsParams, FdnReverb, FdnReverbParams, StereoChorus, StereoDelay,
-    StereoPhaser,
+    DynamicsBlock, DynamicsParams, FdnReverb, FdnReverbParams, PhaserParams, StereoChorus,
+    StereoDelay, StereoPhaser,
 };
 
 use crate::params::{ParamId, Params};
@@ -58,12 +63,16 @@ pub(crate) const DELAY_MAX_SECONDS: f32 = 4.0;
 // Slot indices into the fade / on-state arrays, in chain order. Dynamics runs
 // FIRST (input compression / drive ahead of the modulation + time effects),
 // matching the faceplate order (Dynamics left of FX) and VXN2's FX bus.
+//
+// The **phaser is absent**: it owns its bypass internally since 0228, so giving
+// it a fade slot here would be the double fade E041 bans. The chain still runs
+// it in position, between chorus and delay — these indices address the fade
+// arrays, not the signal path.
 const DYNAMICS: usize = 0;
 const CHORUS: usize = 1;
-const PHASER: usize = 2;
-const DELAY: usize = 3;
-const REVERB: usize = 4;
-const N_SLOTS: usize = 5;
+const DELAY: usize = 2;
+const REVERB: usize = 3;
+const N_SLOTS: usize = 4;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
 /// block. Character values map straight to each kernel's setter; the `*_on`
@@ -213,7 +222,9 @@ impl FxChain {
     /// reset alongside the voice/bank reset.
     pub fn reset(&mut self) {
         self.chorus.clear();
-        self.phaser.clear();
+        // `reset`, not `clear`: the phaser's bypass lives inside it, so re-idling
+        // it means settling that fade too, not just emptying the cascade.
+        self.phaser.reset();
         self.delay.clear();
         self.reverb.reset();
         self.dynamics.clear();
@@ -229,19 +240,21 @@ impl FxChain {
     /// carries the wet amount and this chain's fade owns bypass.
     pub fn set_params(&mut self, p: &FxParams) {
         self.retarget(CHORUS, p.chorus_on);
-        self.retarget(PHASER, p.phaser_on);
         self.retarget(DELAY, p.delay_on);
         self.retarget(REVERB, p.reverb_on);
         self.retarget(DYNAMICS, p.dynamics_on);
 
         self.chorus.set_params(p.chorus_rate, p.chorus_depth, p.chorus_mix);
-        self.phaser.set_params(
-            p.phaser_rate,
-            p.phaser_depth,
-            p.phaser_feedback,
-            p.phaser_mix,
-            p.phaser_stereo,
-        );
+        // The only kernel taking its own `on` — everything else is held
+        // internally on with bypass owned by this chain's fade.
+        self.phaser.set_params(&PhaserParams {
+            on: p.phaser_on,
+            rate_hz: p.phaser_rate,
+            depth: p.phaser_depth,
+            feedback: p.phaser_feedback,
+            mix: p.phaser_mix,
+            spread: p.phaser_stereo,
+        });
         self.delay.set_params(
             p.delay_time,
             p.delay_time,
@@ -324,7 +337,6 @@ impl FxChain {
     fn clear_slot(&mut self, slot: usize) {
         match slot {
             CHORUS => self.chorus.clear(),
-            PHASER => self.phaser.clear(),
             DELAY => self.delay.clear(),
             REVERB => self.reverb.reset(),
             DYNAMICS => self.dynamics.clear(),
@@ -332,9 +344,20 @@ impl FxChain {
         }
     }
 
+    /// The phaser slot. Not an [`fx_slot!`] because it has no outer fade to
+    /// gate on: since 0228 the kernel carries its own `WetFade`, so bypass is
+    /// `is_active()` and the dry/wet crossfade is the kernel's own — including
+    /// the wet-makeup curve, which an outer blend would have re-scaled.
+    #[inline]
+    fn run_phaser(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.phaser.is_active() {
+            return (xl, xr);
+        }
+        self.phaser.process(xl, xr)
+    }
+
     fx_slot!(run_dynamics, DYNAMICS, dynamics);
     fx_slot!(run_chorus, CHORUS, chorus);
-    fx_slot!(run_phaser, PHASER, phaser);
     fx_slot!(run_delay, DELAY, delay);
     fx_slot!(run_reverb, REVERB, reverb);
 }
@@ -464,6 +487,85 @@ mod tests {
             assert_eq!(l[0].to_bits(), x.to_bits(), "L not skipped after settle i={i}");
             assert_eq!(r[0].to_bits(), y.to_bits(), "R not skipped after settle i={i}");
         }
+    }
+
+    #[test]
+    fn phaser_bypass_settles_to_a_bit_exact_skip() {
+        // The phaser is the one slot with no outer fade (0228) — its `WetFade`
+        // lives in the kernel. Same guarantee as the other four all the same:
+        // on, then off, then a bit-exact passthrough once the fade has landed.
+        // Nothing else in the tree covers this slot's bypass now.
+        let mut fx = FxChain::new(SR);
+        let mut p = all_off();
+        p.phaser_on = true;
+        p.phaser_mix = 1.0;
+        p.phaser_feedback = 0.7;
+        fx.set_params(&p);
+
+        let mut diverged = false;
+        for i in 0..4_000 {
+            let (x, y) = sig(i);
+            let (mut l, mut r) = ([x], [y]);
+            fx.process_block(&mut l, &mut r);
+            if (l[0] - x).abs() > 1.0e-3 {
+                diverged = true;
+            }
+        }
+        assert!(diverged, "phaser on did not change the signal");
+
+        p.phaser_on = false;
+        fx.set_params(&p);
+        // The kernel's fade is 30 ms, longer than the chain's 10 ms outer one —
+        // 0.5 s is well past the one-pole's snap floor.
+        for i in 0..(SR * 0.5) as usize {
+            let (x, y) = sig(i);
+            let (mut l, mut r) = ([x], [y]);
+            fx.process_block(&mut l, &mut r);
+        }
+        for i in 0..1_000 {
+            let (x, y) = sig(i);
+            let (mut l, mut r) = ([x], [y]);
+            fx.process_block(&mut l, &mut r);
+            assert_eq!(l[0].to_bits(), x.to_bits(), "L not skipped after settle i={i}");
+            assert_eq!(r[0].to_bits(), y.to_bits(), "R not skipped after settle i={i}");
+        }
+    }
+
+    #[test]
+    fn phaser_switch_off_glides_rather_than_cutting() {
+        // The point of moving bypass inside the kernel: switching off must not
+        // step the output. The first post-switch sample stays continuous with
+        // the wet one before it, and is not already the dry input.
+        let mut fx = FxChain::new(SR);
+        let mut p = all_off();
+        p.phaser_on = true;
+        p.phaser_mix = 1.0;
+        fx.set_params(&p);
+        for i in 0..4_000 {
+            let (x, y) = sig(i);
+            let (mut l, mut r) = ([x], [y]);
+            fx.process_block(&mut l, &mut r);
+        }
+        let (x, y) = sig(4_000);
+        let (mut l, mut r) = ([x], [y]);
+        fx.process_block(&mut l, &mut r);
+        let before = l[0];
+
+        p.phaser_on = false;
+        fx.set_params(&p);
+        let (x, y) = sig(4_001);
+        let (mut l, mut r) = ([x], [y]);
+        fx.process_block(&mut l, &mut r);
+        let after = l[0];
+
+        assert!(
+            (after - before).abs() < 0.05,
+            "switch-off stepped the output: {before} -> {after}"
+        );
+        assert!(
+            (after - x).abs() > 1.0e-5,
+            "switch-off was instant (already dry at {after})"
+        );
     }
 
     #[test]

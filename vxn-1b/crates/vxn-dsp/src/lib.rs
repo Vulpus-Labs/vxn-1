@@ -69,7 +69,7 @@ pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine, xorshift64};
 pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::Waveform;
 pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
-pub use phaser::StereoPhaser;
+pub use phaser::{PhaserParams, StereoPhaser};
 pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, PolySub, poly_ring_mod};
 pub use vxn_core_utils::smoothing::{
     self as smoothing, Smoothed, ms_to_samples, one_pole_coeff, raised_cosine_rise,
