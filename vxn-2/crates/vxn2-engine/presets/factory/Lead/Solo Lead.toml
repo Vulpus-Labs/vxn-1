@@ -48,14 +48,16 @@ lfo2-delay = 350.0
 lfo2-fade = 200.0
 
 # Slap delay, small room.
+delay-on = true
 delay-time = 250.0
 delay-sync = false
 delay-feedback = 0.32
 delay-mix = 0.16
+reverb-on = true
 reverb-size = 0.3
 reverb-mix = 0.12
 
-master-volume = -8.34
+master-volume = -8.60
 [[matrix]]
 slot = 0
 source = "lfo2"

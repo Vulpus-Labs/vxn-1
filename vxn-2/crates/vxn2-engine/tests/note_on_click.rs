@@ -27,7 +27,6 @@ mod common;
 
 use vxn2_engine::alloc::AssignMode;
 use vxn2_engine::engine::Engine;
-use vxn2_engine::factory::factory;
 use vxn2_engine::preset::from_toml_str;
 use vxn2_engine::shared::{ParamModel, SharedParams};
 use vxn_core_dsp::control::CONTROL_BLOCK;
@@ -183,11 +182,11 @@ fn solo_steal_is_click_free() {
 /// Worst 4th-difference transient at the note boundaries of a FLUTE 2 solo
 /// 16th-note line at 100 BPM, for the given stacking density and stack phase.
 fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
-    let fp = factory()
-        .into_iter()
-        .find(|p| p.name == "Flute 2")
-        .expect("Flute 2 factory preset present");
-    let (_meta, blob, _warn) = from_toml_str(fp.contents).expect("FLUTE 2 parses");
+    // Fixture, not a factory preset: this test needs a patch whose modulators
+    // decay to sustain 0 (an unmasked FM transient on retrigger), and it must
+    // keep testing that regardless of what the shipping bank contains.
+    const FLUTE2: &str = include_str!("fixtures/flute2.toml");
+    let (_meta, blob, _warn) = from_toml_str(FLUTE2).expect("FLUTE 2 parses");
     let shared = SharedParams::new();
     shared.load_bytes(&blob).expect("FLUTE 2 loads");
 
@@ -230,7 +229,7 @@ fn flute2_solo_sixteenths_boundary_d4(density: u8, stack_phase: f32) -> f64 {
     worst
 }
 
-/// The FLUTE 2 factory preset played as a solo 16th-note line at 100 BPM must
+/// The FLUTE 2 fixture patch played as a solo 16th-note line at 100 BPM must
 /// be click-free. The patch's modulators decay to sustain 0, so retriggering
 /// them mid-phrase would be an unmasked FM transient; solo round-robins to a
 /// fresh voice per note and declicks the previous one instead.

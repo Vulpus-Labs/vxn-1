@@ -64,12 +64,13 @@ stack-detune = 18.0
 stack-spread = 0.85
 
 # Big hall.
+reverb-on = true
 reverb-size = 0.8
 reverb-decay = 4.5
 reverb-mix = 0.4
 delay-on = false
 
-master-volume = -20.89
+master-volume = -19.75
 [[matrix]]
 slot = 0
 source = "lfo2"

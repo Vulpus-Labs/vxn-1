@@ -71,14 +71,16 @@ stack-detune = 12.0
 stack-spread = 0.9
 
 # Huge ambient tail + ping-pong delay.
+reverb-on = true
 reverb-size = 0.85
 reverb-decay = 6.0
 reverb-mix = 0.45
+delay-on = true
 delay-feedback = 0.55
 delay-mix = 0.22
 delay-pingpong = true
 
-master-volume = -19.86
+master-volume = -19.51
 [[matrix]]
 slot = 0
 source = "lfo2"

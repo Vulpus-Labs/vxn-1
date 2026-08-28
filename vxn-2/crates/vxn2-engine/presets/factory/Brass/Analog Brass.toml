@@ -59,11 +59,12 @@ stack-density = 2
 stack-detune = 7.0
 stack-spread = 0.35
 
+reverb-on = true
 reverb-size = 0.45
 reverb-mix = 0.18
 delay-on = false
 
-master-volume = -16.60
+master-volume = -16.66
 [[matrix]]
 slot = 0
 source = "lfo2"
