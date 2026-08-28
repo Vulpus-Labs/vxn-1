@@ -23,37 +23,166 @@ use crate::params::MATRIX_SLOTS;
 /// can never disagree on how many slots exist.
 pub const N_SLOTS: usize = MATRIX_SLOTS;
 
+// ── matrix_enum! ───────────────────────────────────────────────────────────
+
+/// Declare a matrix enum and everything keyed on its discriminants: the enum
+/// itself, the wire-name table, the display-label table, the `from_u8` decoder,
+/// an `ALL` slice in discriminant order, and — for the source enum — the
+/// polarity predicate.
+///
+/// Before 0319 each of those was written out separately and kept in step by
+/// hand: five parallel lists for [`SourceId`], five for [`DestId`], four for
+/// [`Curve`], all indexed by the same `u8`. The tests checked their *lengths*
+/// and the `from_u8` round-trip, so a transposed name/label pair was invisible
+/// until a user read the wrong name in the mod matrix. Generating them from one
+/// row list makes that transposition unrepresentable rather than merely
+/// untested.
+///
+/// A row is `Variant = discriminant, "wire-name", "Label"`, plus `uni` / `bi`
+/// when the enum declares `polarity`. Doc comments and attributes on a row pass
+/// through to the variant, so `#[default]` marks the sentinel exactly as before.
+///
+/// `fallback` is what `from_u8` returns for an out-of-range byte — the sentinel
+/// for source/dest, `Lin` for curves.
+macro_rules! matrix_enum {
+    // Entry point: with a polarity column (the source enum).
+    (
+        $(#[$emeta:meta])*
+        $name:ident, fallback = $fallback:ident, names = $names:ident,
+        labels = $labels:ident, polarity;
+        $(
+            $(#[$vmeta:meta])*
+            $variant:ident = $disc:literal, $wire:literal, $label:literal, $pol:ident;
+        )+
+    ) => {
+        matrix_enum! {
+            @base
+            $(#[$emeta])*
+            $name, fallback = $fallback, names = $names, labels = $labels;
+            $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
+        }
+
+        impl $name {
+            /// Whether this source emits a **bipolar** `[-1, 1]` shape (vs a
+            /// unipolar `[0, 1]` one). Consumed by the evaluator's `scale_norm`
+            /// to fold a bipolar scale source into the `[0, 1]` VCA range.
+            ///
+            /// The `uni` / `bi` column is not optional, so a new source still
+            /// forces a polarity decision at compile time — the `is_bipolar`
+            /// discipline of VXN2 ADR 0009, no longer able to drift from the row
+            /// it belongs to.
+            #[inline]
+            pub const fn is_bipolar(self) -> bool {
+                match self {
+                    $( $name::$variant => matrix_enum!(@pol $pol) ),+
+                }
+            }
+        }
+    };
+
+    // Entry point: no polarity column (the dest and curve enums).
+    (
+        $(#[$emeta:meta])*
+        $name:ident, fallback = $fallback:ident, names = $names:ident,
+        labels = $labels:ident;
+        $(
+            $(#[$vmeta:meta])*
+            $variant:ident = $disc:literal, $wire:literal, $label:literal;
+        )+
+    ) => {
+        matrix_enum! {
+            @base
+            $(#[$emeta])*
+            $name, fallback = $fallback, names = $names, labels = $labels;
+            $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
+        }
+    };
+
+    (@pol bi) => { true };
+    (@pol uni) => { false };
+
+    // The shared half: enum, both tables, decoder, ALL.
+    (
+        @base
+        $(#[$emeta:meta])*
+        $name:ident, fallback = $fallback:ident, names = $names:ident, labels = $labels:ident;
+        $(
+            $(#[$vmeta:meta])*
+            $variant:ident = $disc:literal, $wire:literal, $label:literal;
+        )+
+    ) => {
+        $(#[$emeta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+        #[repr(u8)]
+        pub enum $name {
+            $( $(#[$vmeta])* $variant = $disc, )+
+        }
+
+        #[doc = concat!(
+            "Machine id (kebab-case wire name) for each [`", stringify!($name),
+            "`]. Index = discriminant."
+        )]
+        pub const $names: [&str; [$($disc),+].len()] = [ $($wire),+ ];
+
+        #[doc = concat!(
+            "Display label for each [`", stringify!($name), "`]. Same indexing as [`",
+            stringify!($names), "`]."
+        )]
+        pub const $labels: [&str; [$($disc),+].len()] = [ $($label),+ ];
+
+        impl $name {
+            /// Every variant, in discriminant order: `ALL[i] as u8 == i`. That
+            /// is the property the name and label tables are indexed on, and
+            /// `variant_order_matches_the_tables` asserts it.
+            pub const ALL: [$name; [$($disc),+].len()] = [ $($name::$variant),+ ];
+
+            #[doc = concat!(
+                "Decode a wire-format `u8`. Out of range → [`", stringify!($name), "::",
+                stringify!($fallback), "`], so a corrupt patch blob degrades to an inert ",
+                "slot rather than panicking."
+            )]
+            #[inline]
+            pub fn from_u8(v: u8) -> Self {
+                match v {
+                    $( $disc => $name::$variant, )+
+                    _ => $name::$fallback,
+                }
+            }
+        }
+    };
+}
+
 // ── SourceId ────────────────────────────────────────────────────────────────
 
-/// Modulation source. `None` is the empty-slot sentinel (index 0); a slot whose
-/// source is `None` is inert and skipped by the evaluator.
-///
-/// The real sources are VXN1's fixed-route inputs (Env/LFO/Velocity/Key/
-/// wheels), the two VXN1 lacks — `Aftertouch` (MPE per-voice pressure from
-/// 0198) and `NoteRandom` (per-voice latch from 0199) — and the two stack
-/// positions, `Spread` (knob-scaled, 0260) and `StackPos` (raw, 0308).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum SourceId {
+matrix_enum! {
+    /// Modulation source. `None` is the empty-slot sentinel (index 0); a slot whose
+    /// source is `None` is inert and skipped by the evaluator.
+    ///
+    /// The real sources are VXN1's fixed-route inputs (Env/LFO/Velocity/Key/
+    /// wheels), the two VXN1 lacks — `Aftertouch` (MPE per-voice pressure from
+    /// 0198) and `NoteRandom` (per-voice latch from 0199) — and the two stack
+    /// positions, `Spread` (knob-scaled, 0260) and `StackPos` (raw, 0308).
+    SourceId, fallback = None, names = SOURCE_NAMES,
+    labels = SOURCE_LABELS, polarity;
     #[default]
-    None = 0,
-    Env1 = 1,
-    Env2 = 2,
-    Lfo1 = 3,
-    Lfo2 = 4,
-    Velocity = 5,
-    Key = 6,
-    ModWheel = 7,
-    PitchWheel = 8,
-    Aftertouch = 9,
-    NoteRandom = 10,
+    None = 0, "none", "—", uni;
+    Env1 = 1, "env1", "Env 1", uni;
+    Env2 = 2, "env2", "Env 2", uni;
+    Lfo1 = 3, "lfo1", "LFO 1", bi;
+    Lfo2 = 4, "lfo2", "LFO 2", bi;
+    Velocity = 5, "velocity", "Velocity", uni;
+    Key = 6, "key", "Key", uni;
+    ModWheel = 7, "mod-wheel", "Mod Wheel", uni;
+    PitchWheel = 8, "pitch-wheel", "Pitch Wheel", bi;
+    Aftertouch = 9, "aftertouch", "Aftertouch", uni;
+    NoteRandom = 10, "note-random", "Note Rnd", uni;
     /// The voice's own place in the stereo image: the lane's fixed
     /// position scaled by the `Spread` param, so a route into [`DestId::Pan`]
     /// at depth 1 reproduces VXN1's hard-wired unison spread exactly. Keeping
     /// the param's scaling *inside* the source is what lets Spread stay a
     /// front-panel knob instead of becoming "slot 3's depth". For the position
     /// *without* that scaling, use [`SourceId::StackPos`].
-    Spread = 11,
+    Spread = 11, "spread", "Spread", bi;
     /// The voice's raw place in its stack: `stack_spread(i, width)` in
     /// `[-1, 1]`, `0.0` for a width-1 stack — the same allocator position
     /// [`SourceId::Spread`] carries, but **without** the `Spread` param folded
@@ -65,11 +194,12 @@ pub enum SourceId {
     /// widening the stereo image, and reads as dead at the knob's `0.0` default.
     /// This source is the position on its own, for routes that want the stack's
     /// shape rather than its picture.
-    StackPos = 12,
+    StackPos = 12, "stack-pos", "Stack Pos", bi;
 }
 
-/// Count of non-sentinel sources (`None` excluded).
-pub const N_SOURCES: usize = 12;
+/// Count of non-sentinel sources (`None` excluded). Derived from the generated
+/// table, so adding a row cannot leave it stale.
+pub const N_SOURCES: usize = SOURCE_NAMES.len() - 1;
 
 impl SourceId {
     /// Index into a per-voice source lookup, or `None` for the sentinel.
@@ -96,107 +226,41 @@ impl SourceId {
         }
     }
 
-    /// Decode a wire-format `u8`. Out-of-range → [`SourceId::None`] so a corrupt
-    /// patch blob degrades to an inert slot rather than panicking.
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => SourceId::Env1,
-            2 => SourceId::Env2,
-            3 => SourceId::Lfo1,
-            4 => SourceId::Lfo2,
-            5 => SourceId::Velocity,
-            6 => SourceId::Key,
-            7 => SourceId::ModWheel,
-            8 => SourceId::PitchWheel,
-            9 => SourceId::Aftertouch,
-            10 => SourceId::NoteRandom,
-            11 => SourceId::Spread,
-            12 => SourceId::StackPos,
-            _ => SourceId::None,
-        }
-    }
 
-    /// Whether this source emits a **bipolar** `[-1, 1]` shape (vs a unipolar
-    /// `[0, 1]` one). Consumed by the evaluator's `scale_norm` to fold a
-    /// bipolar scale source into the `[0, 1]` VCA range. **Exhaustive match** —
-    /// a new source forces a polarity decision at compile time (the
-    /// `is_bipolar` discipline of VXN2 ADR 0009).
-    ///
-    /// - **Bipolar:** `Lfo1`, `Lfo2`, `PitchWheel`, `Spread`, `StackPos` —
-    ///   genuinely swing ±. (Both spread sources are *positions*: lanes sit
-    ///   either side of centre.)
-    /// - **Unipolar:** `Env1`, `Env2`, `Velocity`, `Key`, `ModWheel`,
-    ///   `Aftertouch`, `NoteRandom`. The envelopes are `[0, 1]` ADSR shapes:
-    ///   treating them as bipolar would map `[0, 1]` through `(x+1)/2` → `[0.5,
-    ///   1]` as a scale VCA and never gate to zero (the same trap VXN2 flags for
-    ///   `VoiceRand`), so they stay unipolar passthrough. `Key` is unipolar for
-    ///   *scale* purposes; as a primary source its value is signed octaves rel
-    ///   C4 (see [`KEY_CUTOFF_UNITY_DEPTH`]).
-    #[inline]
-    pub const fn is_bipolar(self) -> bool {
-        match self {
-            SourceId::Lfo1
-            | SourceId::Lfo2
-            | SourceId::PitchWheel
-            | SourceId::Spread
-            | SourceId::StackPos => true,
-            SourceId::None
-            | SourceId::Env1
-            | SourceId::Env2
-            | SourceId::Velocity
-            | SourceId::Key
-            | SourceId::ModWheel
-            | SourceId::Aftertouch
-            | SourceId::NoteRandom => false,
-        }
-    }
 }
-
-/// Source machine id (kebab-case wire name). Index = `SourceId as u8`.
-pub const SOURCE_NAMES: [&str; N_SOURCES + 1] = [
-    "none", "env1", "env2", "lfo1", "lfo2", "velocity", "key", "mod-wheel", "pitch-wheel",
-    "aftertouch", "note-random", "spread", "stack-pos",
-];
-
-/// Source display label. Same indexing as [`SOURCE_NAMES`].
-pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
-    "—", "Env 1", "Env 2", "LFO 1", "LFO 2", "Velocity", "Key", "Mod Wheel", "Pitch Wheel",
-    "Aftertouch", "Note Rnd", "Spread", "Stack Pos",
-];
 
 // ── DestId ──────────────────────────────────────────────────────────────────
 
-/// Modulation destination. `None` is the empty-slot sentinel. The core v1 dest
-/// set (ADR 0001 §2): the continuous synthesis targets the fixed VXN1 routes
-/// used to reach. `XModSweep` is the wide, mode-aware osc-sweep target (inherits
-/// VXN1 ADR 0004's mode-gated behaviour); `CrossModAmount` modulates the FM/sync
-/// index.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum DestId {
+matrix_enum! {
+    /// Modulation destination. `None` is the empty-slot sentinel. The core v1 dest
+    /// set (ADR 0001 §2): the continuous synthesis targets the fixed VXN1 routes
+    /// used to reach. `XModSweep` is the wide, mode-aware osc-sweep target (inherits
+    /// VXN1 ADR 0004's mode-gated behaviour); `CrossModAmount` modulates the FM/sync
+    /// index.
+    DestId, fallback = None, names = DEST_NAMES,
+    labels = DEST_LABELS;
     #[default]
-    None = 0,
-    Pitch = 1,
-    XModSweep = 2,
-    Pwm = 3,
-    Cutoff = 4,
-    Resonance = 5,
-    HpfCutoff = 6,
-    Amp = 7,
-    CrossModAmount = 8,
+    None = 0, "none", "—";
+    Pitch = 1, "pitch", "Pitch";
+    XModSweep = 2, "xmod-sweep", "Cross Mod Sweep";
+    Pwm = 3, "pwm", "PWM (Both)";
+    Cutoff = 4, "cutoff", "Cutoff";
+    Resonance = 5, "resonance", "Resonance";
+    HpfCutoff = 6, "hpf-cutoff", "HPF Cutoff";
+    Amp = 7, "amp", "Amp";
+    CrossModAmount = 8, "cross-mod-amount", "Cross Mod Amt";
     /// Voice position in the stereo image, `[-1, 1]`. Replaces VXN1's
     /// hard-wired `pan_position(lane) × spread`: the default patch routes
     /// [`SourceId::Spread`] here at depth 1, and anything else routed on top
     /// (LFO auto-pan, an envelope throwing a transient left) sums with it.
-    Pan = 9,
+    Pan = 9, "pan", "Pan";
     /// Osc 1's pulse width alone (0261). Sums with [`DestId::Pwm`], which stays
     /// as the both-oscillators route: osc 1's offset is `Pwm + Osc1Pwm`.
     /// Two detuned pulse oscs get their thickness from the widths sweeping
     /// *independently*, which a single shared dest cannot express.
-    Osc1Pwm = 10,
+    Osc1Pwm = 10, "osc1-pwm", "Osc 1 PWM";
     /// Osc 2's pulse width alone. Mirror of [`DestId::Osc1Pwm`].
-    Osc2Pwm = 11,
+    Osc2Pwm = 11, "osc2-pwm", "Osc 2 PWM";
     /// Envelope 1's **A/D/R times**, as a multiplier cooked at note-on (0268):
     /// `2^x` over the dest total clamped to `[-1, 1]`, so the reachable range
     /// is 0.5× (half as long) .. 2.0× (twice as long) with 0 exactly unity.
@@ -205,9 +269,9 @@ pub enum DestId {
     /// Unlike every other dest this one is **not continuous**: the multiplier
     /// is latched when the voice triggers and held for the life of the note
     /// (see [`crate::eval::env_time_scale`]).
-    Env1Scale = 12,
+    Env1Scale = 12, "env1-scale", "Env 1 Scale";
     /// Envelope 2's A/D/R times. Mirror of [`DestId::Env1Scale`].
-    Env2Scale = 13,
+    Env2Scale = 13, "env2-scale", "Env 2 Scale";
     /// Per-voice LFO 1's **rate**, as a multiplier on the resolved Hz (0269):
     /// `2^x` over the dest total clamped to `[-2, 2]`, so a full-depth route
     /// spans 0.25× .. 4× the panel rate with 0 exactly unity.
@@ -221,7 +285,7 @@ pub enum DestId {
     /// total: LFO 1 is itself a source, and the lanes tick before the matrix is
     /// evaluated, so a same-block read would be circular. The lag is one
     /// control block (32 samples, ~0.7 ms at 48 kHz).
-    Lfo1Rate = 14,
+    Lfo1Rate = 14, "lfo1-rate", "LFO 1 Rate";
     /// Envelope 1's **sustain level**, as an offset cooked at note-on (0270):
     /// the dest total is *added* to the patch sustain and clamped to `[0, 1]`,
     /// so depth 1 spans the whole range.
@@ -236,13 +300,13 @@ pub enum DestId {
     /// envelope's *held* value, so tracking it continuously would step a
     /// ringing note (and, through the decay rate it also sets, bend a decay
     /// already in flight).
-    Env1Sustain = 15,
+    Env1Sustain = 15, "env1-sustain", "Env 1 Sustain";
     /// Envelope 2's sustain level. Mirror of [`DestId::Env1Sustain`].
-    Env2Sustain = 16,
+    Env2Sustain = 16, "env2-sustain", "Env 2 Sustain";
 }
 
-/// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 16;
+/// Count of non-sentinel destinations. Derived, like [`N_SOURCES`].
+pub const N_DESTS: usize = DEST_NAMES.len() - 1;
 
 impl DestId {
     /// Index into a per-voice dest accumulator, or `None` for the sentinel.
@@ -265,29 +329,6 @@ impl DestId {
         }
     }
 
-    /// Decode a wire-format `u8`. Out-of-range → [`DestId::None`].
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => DestId::Pitch,
-            2 => DestId::XModSweep,
-            3 => DestId::Pwm,
-            4 => DestId::Cutoff,
-            5 => DestId::Resonance,
-            6 => DestId::HpfCutoff,
-            7 => DestId::Amp,
-            8 => DestId::CrossModAmount,
-            9 => DestId::Pan,
-            10 => DestId::Osc1Pwm,
-            11 => DestId::Osc2Pwm,
-            12 => DestId::Env1Scale,
-            13 => DestId::Env2Scale,
-            14 => DestId::Lfo1Rate,
-            15 => DestId::Env1Sustain,
-            16 => DestId::Env2Sustain,
-            _ => DestId::None,
-        }
-    }
 
     /// Cubic depth taper for the semitone `Pitch` dest (VXN2's `cook_depth`
     /// idiom). With a linear depth the whole vibrato range lives in the bottom
@@ -315,79 +356,30 @@ impl DestId {
     }
 }
 
-/// Destination machine id (kebab-case wire name). Index = `DestId as u8`.
-pub const DEST_NAMES: [&str; N_DESTS + 1] = [
-    "none", "pitch", "xmod-sweep", "pwm", "cutoff", "resonance", "hpf-cutoff", "amp",
-    "cross-mod-amount", "pan", "osc1-pwm", "osc2-pwm", "env1-scale", "env2-scale",
-    "lfo1-rate", "env1-sustain", "env2-sustain",
-];
-
-/// Destination display label. Same indexing as [`DEST_NAMES`].
-pub const DEST_LABELS: [&str; N_DESTS + 1] = [
-    "—",
-    "Pitch",
-    // Spelled out to match the Cross Mod panel it sweeps; the wire name stays
-    // `"xmod-sweep"`, so presets and state blobs written before the rename
-    // decode unchanged.
-    "Cross Mod Sweep",
-    // 0261 relabelled this one; its wire name stays `"pwm"`, so presets and
-    // state blobs written before the split decode unchanged.
-    "PWM (Both)",
-    "Cutoff",
-    "Resonance",
-    "HPF Cutoff",
-    "Amp",
-    "Cross Mod Amt",
-    "Pan",
-    "Osc 1 PWM",
-    "Osc 2 PWM",
-    "Env 1 Scale",
-    "Env 2 Scale",
-    "LFO 1 Rate",
-    "Env 1 Sustain",
-    "Env 2 Sustain",
-];
-
 // ── Curve ───────────────────────────────────────────────────────────────────
 
-/// Curve applied to a source value before depth scaling (per VXN2's model).
-///
-/// - `Lin` — identity passthrough.
-/// - `Exp` — signed square `sign(v)·v²`: more extreme excursions.
-/// - `Log` — signed root `sign(v)·√|v|`: compresses toward 0.
-/// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via `2v − 1`
-///   (centred swing when routing mod-wheel/aftertouch into a bipolar dest).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum Curve {
+matrix_enum! {
+    /// Curve applied to a source value before depth scaling (per VXN2's model).
+    ///
+    /// - `Lin` — identity passthrough.
+    /// - `Exp` — signed square `sign(v)·v²`: more extreme excursions.
+    /// - `Log` — signed root `sign(v)·√|v|`: compresses toward 0.
+    /// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via `2v − 1`
+    ///   (centred swing when routing mod-wheel/aftertouch into a bipolar dest).
+    Curve, fallback = Lin, names = CURVE_NAMES,
+    labels = CURVE_LABELS;
     #[default]
-    Lin = 0,
-    Exp = 1,
-    Log = 2,
-    Bipolar = 3,
+    Lin = 0, "lin", "Lin";
+    Exp = 1, "exp", "Exp";
+    Log = 2, "log", "Log";
+    Bipolar = 3, "bipolar", "Bipolar";
 }
 
-/// Count of curve variants.
-pub const N_CURVES: usize = 4;
+/// Count of curve variants. No sentinel here — `Lin` is a real curve.
+pub const N_CURVES: usize = CURVE_NAMES.len();
 
 impl Curve {
-    /// Decode a wire-format `u8`. Out-of-range → [`Curve::Lin`].
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Curve::Exp,
-            2 => Curve::Log,
-            3 => Curve::Bipolar,
-            _ => Curve::Lin,
-        }
-    }
 }
-
-/// Curve machine id. Index = `Curve as u8`.
-pub const CURVE_NAMES: [&str; N_CURVES] = ["lin", "exp", "log", "bipolar"];
-
-/// Curve display label. Same indexing as [`CURVE_NAMES`].
-pub const CURVE_LABELS: [&str; N_CURVES] = ["Lin", "Exp", "Log", "Bipolar"];
 
 // ── MatrixSlot / MatrixTable ────────────────────────────────────────────────
 
@@ -651,6 +643,67 @@ mod tests {
         assert_eq!(DEST_LABELS.len(), N_DESTS + 1);
         assert_eq!(CURVE_NAMES.len(), N_CURVES);
         assert_eq!(CURVE_LABELS.len(), N_CURVES);
+    }
+
+    /// `ALL` is the bridge between a variant and its row in the two string
+    /// tables, so it has to be dense and in discriminant order: `ALL[i] as u8`
+    /// must be `i`, or every name and label after a gap is off by one.
+    #[test]
+    fn variant_order_matches_the_tables() {
+        macro_rules! check {
+            ($ty:ident, $names:ident, $labels:ident) => {
+                for (i, v) in $ty::ALL.iter().enumerate() {
+                    assert_eq!(*v as usize, i, "{} is not at index {i}", stringify!($ty));
+                    assert_eq!($ty::from_u8(i as u8), *v, "{}::from_u8({i})", stringify!($ty));
+                }
+                assert_eq!($ty::ALL.len(), $names.len());
+                assert_eq!($ty::ALL.len(), $labels.len());
+            };
+        }
+        check!(SourceId, SOURCE_NAMES, SOURCE_LABELS);
+        check!(DestId, DEST_NAMES, DEST_LABELS);
+        check!(Curve, CURVE_NAMES, CURVE_LABELS);
+    }
+
+    /// Name N must *describe* variant N — the property the old length-only
+    /// check could not see, and the one a user notices first because the wrong
+    /// word is sitting in the mod-matrix combo.
+    ///
+    /// Generation makes a transposition unrepresentable, so this is here to
+    /// catch the other half: a reordered or mis-transcribed row. Deliberately
+    /// spot-checks the pairs most likely to be swapped — adjacent rows, the
+    /// mirrored Env1/Env2 pairs, and the two spread sources that differ by one
+    /// word — rather than restating the whole table, which would just be the
+    /// parallel list again.
+    #[test]
+    fn names_and_labels_describe_their_own_variant() {
+        let src = |s: SourceId| (SOURCE_NAMES[s as usize], SOURCE_LABELS[s as usize]);
+        assert_eq!(src(SourceId::None), ("none", "—"));
+        assert_eq!(src(SourceId::Lfo1), ("lfo1", "LFO 1"));
+        assert_eq!(src(SourceId::Lfo2), ("lfo2", "LFO 2"));
+        assert_eq!(src(SourceId::ModWheel), ("mod-wheel", "Mod Wheel"));
+        assert_eq!(src(SourceId::PitchWheel), ("pitch-wheel", "Pitch Wheel"));
+        assert_eq!(src(SourceId::Spread), ("spread", "Spread"));
+        assert_eq!(src(SourceId::StackPos), ("stack-pos", "Stack Pos"));
+
+        let dst = |d: DestId| (DEST_NAMES[d as usize], DEST_LABELS[d as usize]);
+        assert_eq!(dst(DestId::None), ("none", "—"));
+        // The two renames whose wire name deliberately did NOT follow the label.
+        assert_eq!(dst(DestId::XModSweep), ("xmod-sweep", "Cross Mod Sweep"));
+        assert_eq!(dst(DestId::Pwm), ("pwm", "PWM (Both)"));
+        assert_eq!(dst(DestId::Osc1Pwm), ("osc1-pwm", "Osc 1 PWM"));
+        assert_eq!(dst(DestId::Osc2Pwm), ("osc2-pwm", "Osc 2 PWM"));
+        assert_eq!(dst(DestId::Env1Scale), ("env1-scale", "Env 1 Scale"));
+        assert_eq!(dst(DestId::Env2Scale), ("env2-scale", "Env 2 Scale"));
+        assert_eq!(dst(DestId::Env1Sustain), ("env1-sustain", "Env 1 Sustain"));
+        assert_eq!(dst(DestId::Env2Sustain), ("env2-sustain", "Env 2 Sustain"));
+        assert_eq!(dst(DestId::Lfo1Rate), ("lfo1-rate", "LFO 1 Rate"));
+
+        let cur = |c: Curve| (CURVE_NAMES[c as usize], CURVE_LABELS[c as usize]);
+        assert_eq!(cur(Curve::Lin), ("lin", "Lin"));
+        assert_eq!(cur(Curve::Exp), ("exp", "Exp"));
+        assert_eq!(cur(Curve::Log), ("log", "Log"));
+        assert_eq!(cur(Curve::Bipolar), ("bipolar", "Bipolar"));
     }
 
     #[test]
