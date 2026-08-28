@@ -1,0 +1,44 @@
+/* DOM text-input popup (replaces the desktop floating NSWindow). */
+.vxn-ti-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.vxn-ti-box {
+  background: #1b1b1f; color: #eee; padding: 16px 18px; border-radius: 8px;
+  min-width: 240px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  font: 13px system-ui, sans-serif;
+}
+.vxn-ti-title { margin-bottom: 8px; opacity: 0.85; }
+.vxn-ti-input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 14px;
+  background: #0e0e10; color: #fff; border: 1px solid #444; border-radius: 4px;
+}
+.vxn-ti-input:focus { outline: none; border-color: #6a8; }
+
+/* Tempo control — WEB ONLY. The plugin takes BPM from its host transport;
+   a browser has no host, and `sync.rs` resolves every LFO and delay
+   subdivision against a tempo, so without this the synced rates are stuck
+   at the default forever.
+   Lives in the bottom-left web-chrome row beside the CPU meter, not on the
+   faceplate: both are host-shaped readouts about the browser rather than
+   parts of the instrument, so they belong together and away from the panels.
+   Position comes from the row; `order:2` puts it right of the CPU badge
+   whichever mounts first. */
+.vxn-bpm {
+  order: 2;
+  display: flex; align-items: center; gap: 5px;
+  font: 11px/1 system-ui, sans-serif; letter-spacing: 0.04em;
+  color: #cfd3d8;
+  background: rgba(20, 22, 26, 0.78);
+  padding: 4px 7px; border-radius: 5px;
+  user-select: none;
+}
+.vxn-bpm > span { opacity: 0.7; }
+.vxn-bpm input {
+  width: 44px; padding: 2px 4px;
+  font: 11px/1 system-ui, sans-serif; text-align: right;
+  background: #0e0e10; color: #d8d8de;
+  border: 1px solid #33333a; border-radius: 3px;
+}
+.vxn-bpm input:focus { outline: none; border-color: #4a90d9; }

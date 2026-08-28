@@ -337,10 +337,9 @@ fn slots_json(table: &MatrixTable) -> serde_json::Value {
 /// `+PATCH_COUNT`. Spliced into the `__PATCH_COUNT__` slot.
 const PATCH_COUNT: u32 = vxn1b_engine::PATCH_COUNT as u32;
 
-/// Web boot head. Spliced into the `__WEB_BOOT_HEAD__` slot of
-/// `faceplate.html`, which sits just BEFORE the inlined faceplate `<script>`,
-/// so it runs first. Carries its own `__*_JSON__` placeholders — see
-/// [`assemble_faceplate`], which splices this in before the JSON pass.
+/// Web boot head: the web-only stylesheet, the transport shim, and the tempo
+/// control, spliced into the `__WEB_BOOT_HEAD__` slot of `faceplate.html`,
+/// which sits just BEFORE the inlined faceplate `<script>` so it runs first.
 ///
 /// On the web there is no wry IPC: the faceplate posts opcodes via
 /// `window.ipc.postMessage(json)`, so this installs a SYNCHRONOUS queuing stub
@@ -349,54 +348,33 @@ const PATCH_COUNT: u32 = vxn1b_engine::PATCH_COUNT as u32;
 /// `ready` opcode during page parse — before the async controller boot
 /// finishes — so the stub buffers every opcode in `__VXN_UI_QUEUE__` until
 /// `faceplate-bridge.mjs` drains it.
-const WEB_BOOT_HEAD: &str = r#"<style>
-/* DOM text-input popup (replaces the desktop floating NSWindow). */
-.vxn-ti-backdrop {
-  position: fixed; inset: 0; z-index: 1000;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
+///
+/// 0320 moved the CSS and the tempo control into `assets/`, matching every
+/// other asset in this crate. What is left inline is the shim, which carries
+/// its own `__*_JSON__` placeholders — see [`assemble_faceplate`], which
+/// splices this in before the JSON pass — and so could not be a valid `.js`
+/// file for the suite to load. The tempo control could, and now is.
+fn web_boot_head() -> String {
+    format!(
+        "<style>\n{}</style>\n<script>\n{}\n{}\n</script>\n",
+        WEB_BOOT_CSS,
+        WEB_BOOT_SHIM,
+        vxn_core_ui_web::strip_esm_exports(WEB_BOOT_BPM_JS),
+    )
 }
-.vxn-ti-box {
-  background: #1b1b1f; color: #eee; padding: 16px 18px; border-radius: 8px;
-  min-width: 240px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  font: 13px system-ui, sans-serif;
-}
-.vxn-ti-title { margin-bottom: 8px; opacity: 0.85; }
-.vxn-ti-input {
-  width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 14px;
-  background: #0e0e10; color: #fff; border: 1px solid #444; border-radius: 4px;
-}
-.vxn-ti-input:focus { outline: none; border-color: #6a8; }
 
-/* Tempo control — WEB ONLY. The plugin takes BPM from its host transport;
-   a browser has no host, and `sync.rs` resolves every LFO and delay
-   subdivision against a tempo, so without this the synced rates are stuck
-   at the default forever.
-   Lives in the bottom-left web-chrome row beside the CPU meter, not on the
-   faceplate: both are host-shaped readouts about the browser rather than
-   parts of the instrument, so they belong together and away from the panels.
-   Position comes from the row; `order:2` puts it right of the CPU badge
-   whichever mounts first. */
-.vxn-bpm {
-  order: 2;
-  display: flex; align-items: center; gap: 5px;
-  font: 11px/1 system-ui, sans-serif; letter-spacing: 0.04em;
-  color: #cfd3d8;
-  background: rgba(20, 22, 26, 0.78);
-  padding: 4px 7px; border-radius: 5px;
-  user-select: none;
-}
-.vxn-bpm > span { opacity: 0.7; }
-.vxn-bpm input {
-  width: 44px; padding: 2px 4px;
-  font: 11px/1 system-ui, sans-serif; text-align: right;
-  background: #0e0e10; color: #d8d8de;
-  border: 1px solid #33333a; border-radius: 3px;
-}
-.vxn-bpm input:focus { outline: none; border-color: #4a90d9; }
-</style>
-<script>
-// Web transport shim. No wry IPC here: buffer faceplate opcodes until the
+/// Web-only styles: the DOM text-input popup and the tempo control.
+const WEB_BOOT_CSS: &str = include_str!("../assets/web-boot.css");
+
+/// The tempo control (E045 delta 5). A real module, so the Vitest glob reaches
+/// it — before 0320 it was the one piece of faceplate JS with no test and no
+/// lint.
+const WEB_BOOT_BPM_JS: &str = include_str!("../assets/web-boot-bpm.js");
+
+/// Web transport shim: the queuing `window.ipc` stub plus the descriptor data
+/// the bridge module reads. Stays inline because of the `__*_JSON__`
+/// substitution points — it is a template, not a program.
+const WEB_BOOT_SHIM: &str = r#"// Web transport shim. No wry IPC here: buffer faceplate opcodes until the
 // controller wasm is live, then faceplate-bridge.mjs drains the queue.
 (function () {
   var q = (window.__VXN_UI_QUEUE__ = window.__VXN_UI_QUEUE__ || []);
@@ -414,56 +392,10 @@ const WEB_BOOT_HEAD: &str = r#"<style>
   window.__VXN_SUBDIVISIONS__ = __SUBDIVISIONS_JSON__;
   window.__VXN_PATCH_COUNT__ = __PATCH_COUNT__;
   window.__VXN_DEFAULT_BPM__ = __DEFAULT_BPM__;
-
-  // Tempo control (E045 delta 5). Web only, for the reason in the CSS above.
-  // Posts through the same `window.ipc` as every other opcode, so it queues
-  // before the bridge is up and routes to the ring afterwards — tempo has no
-  // model presence, so there is no echo that could carry it.
-  document.addEventListener("DOMContentLoaded", function () {
-    // The shared bottom-left chrome row (see cpu-meter.mjs). Created here if the
-    // CPU meter has not mounted yet — it boots asynchronously and this runs on
-    // DOMContentLoaded, so either can be first. Same id, same styles, both
-    // idempotent; `order` decides the layout rather than mount order.
-    var row = document.getElementById("vxn-web-chrome");
-    if (!row) {
-      row = document.createElement("div");
-      row.id = "vxn-web-chrome";
-      row.style.cssText =
-        "position:fixed;left:10px;bottom:102px;z-index:9999;" +
-        "display:flex;align-items:center;gap:8px;";
-      document.body.appendChild(row);
-    }
-    var wrap = document.createElement("div");
-    wrap.className = "vxn-bpm";
-    var label = document.createElement("span");
-    label.textContent = "BPM";
-    var input = document.createElement("input");
-    input.type = "number";
-    input.min = "20";
-    input.max = "300";
-    input.step = "1";
-    input.value = String(window.__VXN_DEFAULT_BPM__);
-    var send = function () {
-      var bpm = Number(input.value);
-      // Clamp rather than trust: a non-finite or absurd tempo would divide
-      // through every synced rate in the engine.
-      if (!isFinite(bpm)) return;
-      bpm = Math.min(300, Math.max(20, bpm));
-      input.value = String(bpm);
-      window.ipc.postMessage(JSON.stringify({ op: "set_tempo", bpm: bpm }));
-    };
-    input.addEventListener("change", send);
-    // Typing a tempo must not trigger the faceplate's single-key shortcuts.
-    input.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
-    wrap.appendChild(label);
-    wrap.appendChild(input);
-    row.appendChild(wrap);
-    // Seed the engine so a synced LFO is right before anyone touches this.
-    send();
-  });
 })();
-</script>
-"#;
+document.addEventListener("DOMContentLoaded", function () {
+  mountBpmControl(document, window.ipc, window.__VXN_DEFAULT_BPM__);
+});"#;
 
 /// Module-loader tag spliced into the `__WEB_BOOT_LOADER__` slot of
 /// `faceplate.html`, just AFTER the inlined faceplate `<script>`: it boots
@@ -482,7 +414,7 @@ pub fn build_web_faceplate_html() -> String {
     // factory topology *is* its live topology.
     let factory = vxn1b_engine::PluginState::factory_default();
     assemble_faceplate(
-        WEB_BOOT_HEAD,
+        &web_boot_head(),
         WEB_BOOT_LOADER,
         &[factory.layers[0].matrix, factory.layers[1].matrix],
     )
@@ -622,6 +554,58 @@ mod tests {
             "__WEB_BOOT_LOADER__",
         ] {
             assert!(!assembled().contains(ph), "native page leaks placeholder {ph}");
+        }
+    }
+
+    /// The splice is a blind textual replace over the whole page, so a
+    /// substitution token appearing in a spliced ASSET — even inside a comment —
+    /// gets filled in there too. 0320 did exactly that: a comment in
+    /// `web-boot-bpm.js` mentioning the params token had the entire descriptor
+    /// JSON pasted into it, growing the page by 25 KB of nonsense that still
+    /// parsed as a comment and so broke nothing visibly.
+    ///
+    /// Three assets are templates by design and are exempt: `faceplate.html`
+    /// owns the slots, `bridge.js` reads four of the JSON tokens directly, and
+    /// the web-boot shim carries its own. Everything else is a program, and a
+    /// token in a program is a mistake.
+    #[test]
+    fn no_asset_contains_a_placeholder_token() {
+        let tokens = [
+            "__CSS__",
+            "__BRIDGE_JS__",
+            "__BROWSER_JS__",
+            "__PANELS_JS__",
+            "__DISPATCH_JS__",
+            "__PARAMS_JSON__",
+            "__SUBDIVISIONS_JSON__",
+            "__MATRIX_JSON__",
+            "__PATCH_COUNT__",
+            "__DEFAULT_BPM__",
+            "__WEB_BOOT_HEAD__",
+            "__WEB_BOOT_LOADER__",
+        ];
+        let mut assets: Vec<(&str, &str)> = vec![
+            ("faceplate.css", FACEPLATE_CSS),
+            ("browser.js", BROWSER_JS),
+            ("dispatch.js", DISPATCH_JS),
+            ("web-boot.css", WEB_BOOT_CSS),
+            ("web-boot-bpm.js", WEB_BOOT_BPM_JS),
+        ];
+        // The panel sources are a positional list with no names attached; the
+        // index is enough to find the offender.
+        let panel_labels: Vec<String> =
+            (0..PANELS_FILES.len()).map(|i| format!("PANELS_FILES[{i}]")).collect();
+        for (i, src) in PANELS_FILES.iter().enumerate() {
+            assets.push((panel_labels[i].as_str(), src));
+        }
+        for (name, src) in assets {
+            for token in tokens {
+                assert!(
+                    !src.contains(token),
+                    "{name} contains the substitution token {token}; the splice would \
+                     fill it in there too — reword, do not spell it out"
+                );
+            }
         }
     }
 
