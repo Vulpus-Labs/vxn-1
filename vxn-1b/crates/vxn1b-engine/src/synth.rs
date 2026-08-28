@@ -408,6 +408,7 @@ fn build_ctx<'a>(
         spread: p.get(ParamId::Spread),
         level_comp,
         matrix,
+        routes: crate::eval::RouteList::compile(matrix),
         mod_wheel,
         pitch_wheel: pitch_bend,
     }

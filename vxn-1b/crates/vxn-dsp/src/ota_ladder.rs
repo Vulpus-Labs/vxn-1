@@ -12,7 +12,7 @@
 //! lane body, ADR 0002 §3.
 
 pub use vxn_core_dsp::filter::{
-    FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel, compute_g,
+    FilterMode, FilterSlope, OtaLadderCoeffs, OtaLadderKernel, compute_g, compute_g_into,
 };
 
 #[cfg(test)]

@@ -27,7 +27,9 @@
 //! Everything here is fixed-size and branch-light (curve dispatch is per slot,
 //! not per source) — allocation-free and NEON-friendly.
 
-use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, N_DESTS, N_SOURCES, SourceId};
+use crate::matrix::{
+    Curve, DestId, MatrixSlot, MatrixTable, N_DESTS, N_SLOTS, N_SOURCES, SourceId,
+};
 
 /// One voice's normalised source lookup, indexed by [`SourceId::idx`].
 pub type SourceVals = [f32; N_SOURCES];
@@ -271,6 +273,188 @@ pub fn eval_dests(table: &MatrixTable, sources: &SourceVals, out: &mut DestVals)
     }
 }
 
+// ── bank-wide evaluation ────────────────────────────────────────────────────
+
+/// One active slot with its **lane-invariant half already resolved**.
+///
+/// [`eval_dests`] recomputes all of this per voice: the two sentinel checks,
+/// the zero-depth skip, the `cook_depth` taper and the `DEST_GAIN` lookup are
+/// pure functions of the patch, yet a 32-lane synth ran them 32 times a block.
+/// Compiling them out once is half of what makes [`eval_dests_bank`] cheaper;
+/// the other half is that `curve` and `scale_src` become **outer**-loop
+/// dispatch, so the lane loop underneath is branch-free and vectorises.
+#[derive(Clone, Copy, Debug)]
+pub struct Route {
+    /// Index into [`SourceVals`].
+    pub src: u8,
+    /// Index into [`DestVals`].
+    pub dest: u8,
+    /// Shape applied to the source value.
+    pub curve: Curve,
+    /// [`slot_topology_gain`] — `cook_depth(depth) · DEST_GAIN[dest]`.
+    pub gain: f32,
+    /// The per-route VCA's source index, or `None` for an unscaled route.
+    pub scale: Option<u8>,
+    /// Whether that VCA source is bipolar (so [`scale_norm`]'s two arms also
+    /// hoist out of the lane loop).
+    pub scale_bipolar: bool,
+}
+
+/// The block's active routes, compiled once from the patch.
+///
+/// Slot order is preserved, which is what keeps [`eval_dests_bank`] bit-exact
+/// against [`eval_dests`]: dests accumulate additively, and float addition is
+/// not associative, so "same routes in the same order" is the whole contract.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteList {
+    routes: [Route; N_SLOTS],
+    n: usize,
+}
+
+impl RouteList {
+    /// Resolve a patch's slots into active routes. Empty (`None` endpoint) and
+    /// zero-depth slots are dropped here rather than branched over per lane.
+    pub fn compile(table: &MatrixTable) -> Self {
+        let mut routes = [Route {
+            src: 0,
+            dest: 0,
+            curve: Curve::Lin,
+            gain: 0.0,
+            scale: None,
+            scale_bipolar: false,
+        }; N_SLOTS];
+        let mut n = 0;
+        for slot in &table.slots {
+            let (Some(si), Some(di)) = (slot.source.idx(), slot.dest.idx()) else {
+                continue;
+            };
+            if slot.depth == 0.0 {
+                continue;
+            }
+            routes[n] = Route {
+                src: si as u8,
+                dest: di as u8,
+                curve: slot.curve,
+                gain: slot_topology_gain(slot),
+                scale: slot.scale_src.idx().map(|sc| sc as u8),
+                scale_bipolar: slot.scale_src.is_bipolar(),
+            };
+            n += 1;
+        }
+        Self { routes, n }
+    }
+
+    /// The active routes, in slot order.
+    #[inline]
+    pub fn active(&self) -> &[Route] {
+        &self.routes[..self.n]
+    }
+
+    /// Whether any slot is live. A patch with an empty matrix skips the pass.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+}
+
+/// Lane-major source table: `[source][lane]`.
+pub type SourceLanesSoa<const L: usize> = [[f32; L]; N_SOURCES];
+/// Lane-major dest accumulator: `[dest][lane]`.
+pub type DestLanesSoa<const L: usize> = [[f32; L]; N_DESTS];
+
+/// [`eval_dests`] for a whole lane bank at once.
+///
+/// Identical arithmetic in an identical order — see [`RouteList`] — but
+/// transposed: the outer loop is routes, the inner loop is lanes, and every
+/// branch the scalar form ran per lane (sentinel, zero depth, curve match,
+/// scale-source match, bipolar test) has been hoisted above the inner loop or
+/// compiled away. What is left is a contiguous multiply-accumulate over `L`
+/// contiguous floats, which LLVM contracts to NEON.
+///
+/// The scatter goes too. `out[di] += …` with a runtime `di` serialised on a
+/// store-to-load chain whenever two slots shared a dest; here a route owns its
+/// dest row for the whole inner loop.
+#[inline]
+pub fn eval_dests_bank<const L: usize>(
+    routes: &RouteList,
+    src: &SourceLanesSoa<L>,
+    out: &mut DestLanesSoa<L>,
+) {
+    for row in out.iter_mut() {
+        row.fill(0.0);
+    }
+    // The per-route VCA, resolved for every lane before the accumulate. Kept
+    // outside the route loop so it is written, not allocated, per route.
+    let mut scale = [1.0f32; L];
+    for r in routes.active() {
+        match r.scale {
+            None => scale = [1.0; L],
+            Some(sc) => {
+                let s = &src[sc as usize];
+                if r.scale_bipolar {
+                    for l in 0..L {
+                        scale[l] = ((s[l] + 1.0) * 0.5).clamp(0.0, 1.0);
+                    }
+                } else {
+                    for l in 0..L {
+                        scale[l] = s[l].clamp(0.0, 1.0);
+                    }
+                }
+            }
+        }
+        let s = &src[r.src as usize];
+        let row = &mut out[r.dest as usize];
+        let g = r.gain;
+        // `shape(v) * (gain * scale)` — the association matters. The scalar
+        // form multiplies by `slot_gain`, which is `topology * scale` already
+        // folded, so grouping them the other way would round differently and
+        // cost the bit-exactness the parity test asserts.
+        macro_rules! accumulate {
+            ($shape:expr) => {
+                for l in 0..L {
+                    row[l] += $shape(s[l]) * (g * scale[l]);
+                }
+            };
+        }
+        match r.curve {
+            Curve::Lin => accumulate!(|v: f32| v),
+            Curve::Exp => accumulate!(|v: f32| v.abs() * v),
+            Curve::Log => accumulate!(|v: f32| {
+                let m = v.abs().sqrt();
+                if v < 0.0 { -m } else { m }
+            }),
+            Curve::Bipolar => accumulate!(|v: f32| 2.0 * v - 1.0),
+        }
+    }
+}
+
+/// Transpose `L` voices' source tables into the lane-major layout
+/// [`eval_dests_bank`] reads.
+#[inline]
+pub fn sources_to_soa<const L: usize>(per_lane: &[SourceVals; L]) -> SourceLanesSoa<L> {
+    let mut soa = [[0.0f32; L]; N_SOURCES];
+    for (l, vals) in per_lane.iter().enumerate() {
+        for (s, &v) in vals.iter().enumerate() {
+            soa[s][l] = v;
+        }
+    }
+    soa
+}
+
+/// Read one lane's dest totals back out of the lane-major accumulator.
+///
+/// Per lane, not one block transpose: the whole-bank version writes with a
+/// `N_DESTS`-float stride and measured 95 ns/quantum *slower* — strided stores
+/// cost more than the strided loads they replace.
+#[inline]
+pub fn dests_for_lane<const L: usize>(soa: &DestLanesSoa<L>, lane: usize) -> DestVals {
+    let mut d = [0.0f32; N_DESTS];
+    for (i, row) in soa.iter().enumerate() {
+        d[i] = row[lane];
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +466,69 @@ mod tests {
 
     fn scaled(source: SourceId, dest: DestId, depth: f32, scale_src: SourceId) -> MatrixSlot {
         MatrixSlot { source, dest, depth, curve: Curve::Lin, scale_src }
+    }
+
+    /// The bank evaluator must be the scalar one, lane for lane, **bit-exact**
+    /// — not close. It is a transposition, not a reformulation: any drift means
+    /// an operation was reassociated, and the two paths would then voice the
+    /// same patch differently depending on how many lanes were live.
+    #[test]
+    fn eval_dests_bank_is_bit_exact_against_the_scalar_form() {
+        const L: usize = 8;
+        // A deterministic spread of patches: every curve, scaled and unscaled
+        // routes, several slots sharing a dest (the accumulate order case), and
+        // inert slots interleaved so compaction is exercised.
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let curves = [Curve::Lin, Curve::Exp, Curve::Log, Curve::Bipolar];
+        for _ in 0..200 {
+            let mut t = MatrixTable::default();
+            for slot in t.slots.iter_mut() {
+                let pick = next();
+                *slot = MatrixSlot {
+                    source: SourceId::from_u8((pick % (N_SOURCES as u64 + 1)) as u8),
+                    dest: DestId::from_u8(((pick >> 8) % (N_DESTS as u64 + 1)) as u8),
+                    depth: ((pick >> 16) % 2001) as f32 / 1000.0 - 1.0,
+                    curve: curves[((pick >> 32) % 4) as usize],
+                    scale_src: SourceId::from_u8(((pick >> 40) % (N_SOURCES as u64 + 1)) as u8),
+                };
+            }
+            let mut per_lane = [[0.0f32; N_SOURCES]; L];
+            for lane in per_lane.iter_mut() {
+                for v in lane.iter_mut() {
+                    *v = ((next() % 4001) as f32 / 2000.0) - 1.0;
+                }
+            }
+
+            let routes = RouteList::compile(&t);
+            let mut soa = [[0.0f32; L]; N_DESTS];
+            eval_dests_bank(&routes, &sources_to_soa(&per_lane), &mut soa);
+
+            for (l, sources) in per_lane.iter().enumerate() {
+                let mut want = [0.0f32; N_DESTS];
+                eval_dests(&t, sources, &mut want);
+                assert_eq!(
+                    dests_for_lane(&soa, l).to_bits_array(),
+                    want.to_bits_array(),
+                    "lane {l}"
+                );
+            }
+        }
+    }
+
+    /// Compare by bit pattern, so a `-0.0` / `0.0` swap or a NaN cannot pass.
+    trait BitsArray {
+        fn to_bits_array(&self) -> [u32; N_DESTS];
+    }
+    impl BitsArray for DestVals {
+        fn to_bits_array(&self) -> [u32; N_DESTS] {
+            std::array::from_fn(|i| self[i].to_bits())
+        }
     }
 
     fn table(slots: &[MatrixSlot]) -> MatrixTable {

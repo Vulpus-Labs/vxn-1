@@ -68,7 +68,7 @@ pub use limiter::StereoLimiter;
 pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine, xorshift64};
 pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::Waveform;
-pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs};
+pub use ota_ladder::{FilterMode, FilterSlope, OtaLadderCoeffs, compute_g_into};
 pub use phaser::{PhaserParams, StereoPhaser};
 pub use poly::{PolyNoiseBank, PolyOscillator, PolyOtaLadder, PolySub, poly_ring_mod};
 pub use vxn_core_utils::smoothing::{

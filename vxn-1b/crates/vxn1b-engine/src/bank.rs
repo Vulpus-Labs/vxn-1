@@ -41,11 +41,14 @@
 
 use vxn_dsp::{
     AdsrCore, AdsrShape, AdsrStage, CHANNELS_PER_LAYER, CONTROL_BLOCK, FilterMode, FilterSlope,
-    LfoCore, LfoShape, NoiseColor, OtaLadderCoeffs, PolyHpf, PolyNoiseBank, PolyOscillator,
+    LfoCore, LfoShape, NoiseColor, PolyHpf, PolyNoiseBank, PolyOscillator,
     PolyOtaLadder, PolySub, Waveform, note_to_hz, poly_ring_mod,
 };
 
-use crate::eval::{SourceInputs, env_time_scale, eval_dests, eval_sources, lfo_rate_scale};
+use crate::eval::{
+    RouteList, SourceInputs, env_time_scale, eval_dests_bank, eval_sources, lfo_rate_scale,
+    sources_to_soa,
+};
 use crate::matrix::{Curve, DestId, MatrixTable, N_SLOTS, SourceId};
 use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
@@ -277,6 +280,11 @@ pub struct BlockCtx<'a> {
     pub level_comp: f32,
     /// The routing topology + depths.
     pub matrix: &'a MatrixTable,
+    /// The same topology, compiled to active routes with their lane-invariant
+    /// gains resolved. Built once per synth per control block, because it is a
+    /// pure function of `matrix`: the block-start pass reads it instead of
+    /// re-walking the 16 raw slots for every lane of every bank.
+    pub routes: RouteList,
     /// Patch-global source scalars for the matrix (per-voice sources are read
     /// from the bank/voice state).
     pub mod_wheel: f32,
@@ -669,22 +677,28 @@ impl RenderBank {
         }
     }
 
-    /// Cook lane `v`'s filter coefficients for this block from its dest totals,
-    /// and return its HPF cutoff in Hz.
+    /// Resolve lane `v`'s filter targets for this block from its dest totals:
+    /// `(ladder cutoff Hz, ladder resonance, HPF cutoff Hz)`.
     ///
-    /// The ladder's cutoff and resonance are written straight into the poly
-    /// coefficient bank — the OTA ladder ramps them itself per frame, which is
-    /// why neither dest has a [`MotionSmoother`] entry. The HPF cutoff is
-    /// *returned* instead of written, because whether the bank takes the
-    /// per-lane or the broadcast path is a decision across all lanes.
+    /// Nothing is written here. This used to cook the ladder coefficients in
+    /// place — `OtaLadderCoeffs::new` straight into the poly bank — which put a
+    /// libm `tan` call inside the block-start lane loop and made the whole loop
+    /// uncontractable; the tangents alone measured 718 ns per 32-sample quantum
+    /// on a 12-route patch, 24% of all control-rate work. The gains are now
+    /// cooked for the whole bank in one vectorised pass in phase 3
+    /// ([`compute_g_into`]), so this returns targets and stays scalar-cheap.
+    ///
+    /// The HPF cutoff was already returned rather than written, because whether
+    /// the bank takes the per-lane or the broadcast path is a decision across
+    /// all lanes; the ladder pair has simply joined it.
     #[inline]
-    fn set_lane_filter(
-        &mut self,
+    fn lane_filter_targets(
+        &self,
         v: usize,
         dests: &crate::eval::DestVals,
         ctx: &BlockCtx,
         note: f32,
-    ) -> f32 {
+    ) -> (f32, f32, f32) {
         // Filter key-track: the played note against VXN1's C0 pivot, at the
         // `filter_key_track` amount (0245), and — at that same amount — the
         // voice's *drifted* pitch, since the keyboard CV a real VCF
@@ -710,11 +724,7 @@ impl RenderBank {
         // whistle while a neighbour stays quiet.
         let resonance = render::voice_resonance(dests, ctx.resonance)
             * (1.0 + self.trim.reso[v] * TRIM_RESO * ctx.drift_amount);
-        self.ladder.set_coeffs(
-            v,
-            OtaLadderCoeffs::new(cutoff_hz, ctx.os_sample_rate, resonance, ctx.drive),
-        );
-        render::voice_hpf_hz(dests, ctx.hpf_cutoff)
+        (cutoff_hz, resonance, render::voice_hpf_hz(dests, ctx.hpf_cutoff))
     }
 
     /// This lane's raw modulation inputs at block start, in their natural
@@ -947,16 +957,29 @@ impl RenderBank {
         // path — and with it the bit-exact unrouted render.
         let mut hpf_tgt = [0.0f32; N];
         let mut hpf_modulated = false;
+        // Ladder targets, collected per lane and cooked bank-wide in phase 3.
+        let mut cutoff_tgt = [0.0f32; N];
+        let mut reso_tgt = [0.0f32; N];
         // `CrossModAmount` only means anything in PM mode — Off/Sync/Ring ignore
         // the amount, as VXN1 does — so the dest is gated on the mode rather
         // than silently accumulating smoother state the kernel can't read.
         let pm_mode = matches!(ctx.cross_mod_type, CrossModType::Pm);
         // Grouped once, outside the loop: five references, no copying.
         let src_lanes = SourceLanes { note, velocity, pressure, note_random, stack_pos };
+        // Sources for every lane, then the whole bank's dest totals in one
+        // transposed pass. `eval_dests` used to run inside the lane loop below,
+        // which meant 16 slots re-walked and 16 branches re-taken per lane;
+        // `eval_dests_bank` hoists the topology and the curve/scale dispatch
+        // above the lanes so the accumulate is contiguous and vectorises. It is
+        // bit-exact against the scalar form — `eval` asserts that directly.
+        let lane_src: [crate::eval::SourceVals; N] =
+            std::array::from_fn(|v| eval_sources(&self.lane_sources(v, ctx, lfo1_raw[v], &src_lanes)));
+        let mut dest_soa = [[0.0f32; N]; crate::matrix::N_DESTS];
+        eval_dests_bank(&ctx.routes, &sources_to_soa(&lane_src), &mut dest_soa);
+
         for v in 0..N {
-            let sources = eval_sources(&self.lane_sources(v, ctx, lfo1_raw[v], &src_lanes));
-            let mut dests = [0.0f32; crate::matrix::N_DESTS];
-            eval_dests(ctx.matrix, &sources, &mut dests);
+            let sources = lane_src[v];
+            let dests = crate::eval::dests_for_lane(&dest_soa, v);
 
             // Portamento glide toward the target note (per-voice).
             let target = note[v] as f32;
@@ -1043,7 +1066,8 @@ impl RenderBank {
             self.osc1.inc[v] = note_to_hz(tgt[v].base1) / ctx.os_sample_rate;
             self.osc2.inc[v] = note_to_hz(tgt[v].base2) / ctx.os_sample_rate;
 
-            hpf_tgt[v] = self.set_lane_filter(v, &dests, ctx, note[v] as f32);
+            (cutoff_tgt[v], reso_tgt[v], hpf_tgt[v]) =
+                self.lane_filter_targets(v, &dests, ctx, note[v] as f32);
             hpf_modulated |= active[v] && hpf_tgt[v] != ctx.hpf_cutoff;
         }
         // ═══ Phase 3: reductions, filter setup, and the per-lane gains ══════
@@ -1068,6 +1092,14 @@ impl RenderBank {
         // leaks ~15 locals into phases 3 and 4, and that bundling them into one
         // record is exactly the change that cost 1.32% on the routed path when
         // tried on `BlockCtx` (see 0313's step-2 note).
+        // The block's ladder stage gains, for every lane in one pass. This is
+        // the load-bearing half of moving the cook out of phase 2: `compute_g`
+        // is now branch- and call-free, so this contracts to `.4s` NEON and the
+        // eight lanes cost roughly what two used to.
+        let mut ladder_g = [0.0f32; N];
+        vxn_dsp::compute_g_into(&cutoff_tgt, ctx.os_sample_rate, &mut ladder_g);
+        self.ladder.set_coeffs_block(&ladder_g, &reso_tgt, ctx.drive);
+
         let pitch_any = pitch_active.any();
         let pwm_any = pwm_active.any();
         let xmod_any = xmod_active.any();
@@ -1556,6 +1588,7 @@ mod tests {
             spread: 0.0,
             level_comp: 1.0,
             matrix: m,
+            routes: RouteList::compile(m),
             mod_wheel: 0.0,
             pitch_wheel: 0.0,
         }

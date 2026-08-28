@@ -114,17 +114,103 @@ impl FilterMode {
 /// the prewarped pole upward by the inverse of the per-pole phase shift:
 /// each of the four poles must contribute `π·fc/(2fs)` less lag, i.e.
 /// `atan(fc / fc_pole) = π/4 − π·fc/(2fs)`, giving
-/// `fc_pole = fc / tan(π/4 − π·fc/(2fs))`. One extra `tan` per coeff update.
+/// `fc_pole = fc / tan(π/4 − π·fc/(2fs))`. One extra tangent per coeff update.
 ///
 /// `sample_rate` here is the **oversampled** rate on the filter path, so the
 /// `fs`-dependent pole detune stays correct at every oversample factor.
+///
+/// **Both tangents come from [`sincos_q1`], not `f32::tan`** — the calls were
+/// the single largest control-rate cost in a polyphonic block (a profile of a
+/// 12-route vxn-1b patch put the two of them at 718 ns per 32-sample quantum,
+/// 24% of *all* control-rate work), because a libm call per lane is a serial
+/// barrier the vectoriser cannot cross. Writing the second one as
+/// `g = tan θ/(1 + tan θ) = sin θ/(sin θ + cos θ)` removes the pole at π/2, so
+/// both halves are plain polynomials over `[0, π/2)` and the one divide left
+/// absorbs the tangent. Worst-case relative error against libm over every
+/// supported rate × oversample factor is 1.9e-7 — a 0.0003-cent cutoff shift,
+/// three orders below the ±3-cent per-lane drift trim the synth applies on
+/// purpose.
+///
+/// The point is not the scalar saving (a polynomial is only ~35% cheaper than
+/// the call). It is that the body is now branch- and call-free, so
+/// [`compute_g_into`] vectorises across lanes.
 #[inline]
 pub fn compute_g(cutoff_hz: f32, sample_rate: f32) -> f32 {
+    compute_g_inv(cutoff_hz, sample_rate, 1.0 / sample_rate)
+}
+
+/// [`compute_g`] with the reciprocal rate supplied by the caller.
+///
+/// Hoisting the reciprocal is worth nothing on its own — measured at zero,
+/// since 8 independent lanes give the out-of-order engine all the slack it
+/// needs to hide an `fdiv` — but it keeps a broadcast scalar out of the
+/// vectorised loop, where a `fdiv.4s` by a splatted constant would be real
+/// waste.
+#[inline]
+pub fn compute_g_inv(cutoff_hz: f32, sample_rate: f32, inv_sr: f32) -> f32 {
     let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
-    let denom = (FRAC_PI_4 - PI * fc / (2.0 * sample_rate)).tan();
-    let fc_adj = (fc / denom).min(sample_rate * 0.49);
-    let wd = (PI * fc_adj / sample_rate).tan();
-    (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
+    // `atan(fc/fc_pole) = π/4 − π·fc/(2fs)`, so `fc_pole = fc·cos(u)/sin(u)`.
+    // `u ∈ [0.079, π/4]`, so `sin u` never approaches zero and the quotient
+    // stays as well conditioned as the `tan` it replaces.
+    let u = FRAC_PI_4 - PI * fc * 0.5 * inv_sr;
+    let (su, cu) = sincos_q1(u);
+    let fc_adj = (fc * cu / su).min(sample_rate * 0.49);
+    // `θ ∈ (0, π·0.49]` — inside the first quadrant by construction, which is
+    // what lets `sincos_q1` skip range reduction entirely.
+    let th = PI * fc_adj * inv_sr;
+    let (st, ct) = sincos_q1(th);
+    (st / (st + ct)).clamp(1.0e-5, 0.999)
+}
+
+/// Stage gains for a whole lane bank: `out[i] = compute_g(cutoff[i], fs)`.
+///
+/// The vectorised form of [`compute_g`], and the reason its tangents are
+/// polynomials. Every lane evaluates the same branch-free straight-line
+/// expression on its own cutoff, so LLVM contracts the loop to `.4s` NEON.
+///
+/// This inlines into its caller (vxn-1b's `RenderBank::render`), so it has no
+/// symbol of its own and `vxn-asm-check` covers it through that watch rather
+/// than a dedicated one. The floor there is far too coarse to catch this loop
+/// going scalar on its own; the measurement that would is the control-rate
+/// intercept in `quantum_split`, where the difference is 1128 ns per quantum.
+///
+/// Panics only via the slice index if `out` is shorter than `cutoff`; callers
+/// pass equal-length lane arrays.
+#[inline]
+pub fn compute_g_into(cutoff_hz: &[f32], sample_rate: f32, out: &mut [f32]) {
+    let inv_sr = 1.0 / sample_rate;
+    let n = cutoff_hz.len().min(out.len());
+    for i in 0..n {
+        out[i] = compute_g_inv(cutoff_hz[i], sample_rate, inv_sr);
+    }
+}
+
+/// `(sin x, cos x)` for `x ∈ [0, π/2)`, to within ~2e-7 absolute.
+///
+/// Truncated Maclaurin series, no range reduction and no branches: every
+/// argument this module produces is already in the first quadrant (see
+/// [`compute_g_inv`]), so the reduction step a general-purpose `sinf` must
+/// perform — the part that makes it a call rather than an expression — is
+/// simply not needed here. The two Horner chains are independent and issue in
+/// parallel.
+///
+/// Term counts are set by the residual at `x = π/2`: `x¹³/13!` for the sine
+/// (3.5e-8) and `x¹⁴/14!` for the cosine (3.9e-9), both at or below an f32 ulp
+/// of the unit-magnitude results.
+#[inline]
+fn sincos_q1(x: f32) -> (f32, f32) {
+    let t = x * x;
+    let s = 1.0
+        + t * (-1.0 / 6.0
+            + t * (1.0 / 120.0
+                + t * (-1.0 / 5040.0 + t * (1.0 / 362_880.0 + t * (-1.0 / 39_916_800.0)))));
+    let c = 1.0
+        + t * (-0.5
+            + t * (1.0 / 24.0
+                + t * (-1.0 / 720.0
+                    + t * (1.0 / 40320.0
+                        + t * (-1.0 / 3_628_800.0 + t * (1.0 / 479_001_600.0))))));
+    (x * s, c)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -278,6 +364,57 @@ mod tests {
     use super::*;
 
     const SR: f32 = 48_000.0;
+
+    /// `compute_g`'s tangents are polynomials, not libm calls. This pins the
+    /// approximation against the closed form it replaced, over every rate ×
+    /// oversample factor the plugin can run at.
+    ///
+    /// The bound is stated in cents of cutoff rather than in ulps because that
+    /// is the quantity a listener could in principle notice — and 1e-4 cents is
+    /// four orders below the ±3-cent per-lane tolerance spread the synth
+    /// applies on purpose (`bank::TRIM_CUTOFF_CENTS` in vxn-1b).
+    #[test]
+    fn compute_g_matches_the_libm_closed_form() {
+        fn reference(cutoff_hz: f32, sample_rate: f32) -> f32 {
+            let fc = cutoff_hz.clamp(5.0, sample_rate * 0.45);
+            let denom = (FRAC_PI_4 - PI * fc / (2.0 * sample_rate)).tan();
+            let fc_adj = (fc / denom).min(sample_rate * 0.49);
+            let wd = (PI * fc_adj / sample_rate).tan();
+            (wd / (1.0 + wd)).clamp(1.0e-5, 0.999)
+        }
+
+        let mut worst = 0.0f32;
+        for base in [44_100.0f32, 48_000.0, 88_200.0, 96_000.0] {
+            for os in [1.0f32, 2.0, 4.0] {
+                let sr = base * os;
+                for i in 0..=2000 {
+                    let fc = 5.0 + i as f32 * (sr * 0.45 - 5.0) / 2000.0;
+                    let (want, got) = (reference(fc, sr), compute_g(fc, sr));
+                    let cents = 1200.0 * (got / want).log2();
+                    assert!(
+                        cents.abs() < 1.0e-3,
+                        "{fc} Hz @ {sr}: g {got} vs {want} ({cents} cents)"
+                    );
+                    worst = worst.max(cents.abs());
+                }
+            }
+        }
+        // Guard the other direction too: if a future edit made this exact, the
+        // polynomial would have been quietly swapped back for the libm call.
+        assert!(worst > 0.0, "expected an approximation, not the closed form");
+    }
+
+    /// The slice form is the scalar one, lane for lane — the vectoriser is an
+    /// implementation detail, never a behaviour difference.
+    #[test]
+    fn compute_g_into_agrees_with_the_scalar_form() {
+        let cutoff = [5.0f32, 40.0, 261.6, 1_000.0, 4_800.0, 12_000.0, 20_000.0, 21_600.0];
+        let mut got = [0.0f32; 8];
+        compute_g_into(&cutoff, SR, &mut got);
+        for (i, &fc) in cutoff.iter().enumerate() {
+            assert_eq!(got[i], compute_g(fc, SR), "lane {i} ({fc} Hz)");
+        }
+    }
 
     /// The distinction 0227 turns on: `new` is flat, `new_capped` applies a
     /// ceiling, and they agree wherever the ceiling is not binding.

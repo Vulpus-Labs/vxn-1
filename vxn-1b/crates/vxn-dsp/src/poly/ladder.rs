@@ -219,6 +219,26 @@ impl PolyOtaLadder {
         self.td[v] = c.drive;
     }
 
+    /// Set every lane's target coefficients at once, from stage gains already
+    /// cooked for the whole bank.
+    ///
+    /// The companion to [`compute_g_into`](vxn_core_dsp::filter::compute_g_into).
+    /// Cooking `g` lane by lane through [`OtaLadderCoeffs::new`] put a libm
+    /// `tan` call in the middle of the caller's block-start loop, which pinned
+    /// that loop scalar; splitting the gains out into their own vectorised pass
+    /// leaves this as a straight copy plus the `[0,1] → [0,4]` feedback scaling.
+    ///
+    /// `drive` is layer-wide (no dest reaches it), so it broadcasts.
+    #[inline]
+    pub fn set_coeffs_block(&mut self, g: &[f32; N], resonance: &[f32; N], drive: f32) {
+        let d = drive.max(0.0);
+        for v in 0..N {
+            self.tg[v] = g[v];
+            self.tk[v] = 4.0 * resonance[v].clamp(0.0, 1.0);
+            self.td[v] = d;
+        }
+    }
+
     /// Compute per-sample increments so the current coefficients reach their
     /// targets after exactly `steps` [`process`] calls. `steps <= 1` snaps.
     #[inline]
