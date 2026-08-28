@@ -8,7 +8,7 @@ comment = "Dark and geological. The pitch envelope is the point: it starts a sem
 
 [params]
 algo = 21
-feedback = 2.0
+feedback = 3
 
 # Carriers 1, 2, 4, 5 — low, slow, overlapping.
 op1-eg-r1 = 30

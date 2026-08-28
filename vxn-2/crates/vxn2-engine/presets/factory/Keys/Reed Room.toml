@@ -8,7 +8,7 @@ comment = "The other electric piano — struck reed, not struck tine, so the bar
 
 [params]
 algo = 5
-feedback = 3.4
+feedback = 4.49
 
 op1-eg-r1 = 99
 op1-eg-r2 = 56

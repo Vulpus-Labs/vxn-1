@@ -8,7 +8,7 @@ comment = "A mono lead built to be leaned on. Aftertouch does three things at on
 
 [params]
 algo = 1
-feedback = 4.2
+feedback = 5.26
 
 # op1 low carrier, op3 the upper carrier of the 6->5->4->3 stack.
 op1-eg-r1 = 92

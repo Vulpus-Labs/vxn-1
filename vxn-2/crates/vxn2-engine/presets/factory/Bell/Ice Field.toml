@@ -8,7 +8,7 @@ comment = "Thin, glassy and very high. A static high-pass at 900 Hz removes the 
 
 [params]
 algo = 29
-feedback = 2.4
+feedback = 3.49
 
 # Ops 1 and 2 pure carriers, high and detuned against each other.
 op1-num = 4

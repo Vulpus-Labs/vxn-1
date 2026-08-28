@@ -8,7 +8,7 @@ comment = "Mono FM lead: solo + legato + glide, algo 1 with a bright 2:1 modulat
 
 [params]
 algo = 1
-feedback = 5.0
+feedback = 6
 
 # Mono, legato, with glide for expressive playing.
 assign-mode = "Solo"

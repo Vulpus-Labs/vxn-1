@@ -8,7 +8,7 @@ comment = "All top and no bottom — a high-pass ladder removes the fundamental 
 
 [params]
 algo = 31
-feedback = 1.0
+feedback = 2
 
 # Ops 1-4 pure carriers, stacked in octaves and fifths.
 op1-num = 2

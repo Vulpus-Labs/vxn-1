@@ -8,7 +8,7 @@ comment = "The DX7 'E.PIANO 1' voice, thickened. The operator table is the origi
 
 [params]
 algo = 5
-feedback = 4.2
+feedback = 5.26
 
 # op1
 op1-num = 1

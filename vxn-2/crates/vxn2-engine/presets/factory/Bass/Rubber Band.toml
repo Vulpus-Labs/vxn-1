@@ -8,7 +8,7 @@ comment = "Snap-and-release plucked bass. Algo 5's three parallel 2-stacks all d
 
 [params]
 algo = 5
-feedback = 2.8
+feedback = 3.85
 
 # Carriers 1/3/5 — instant attack, everything gone in half a second.
 op1-eg-r1 = 99

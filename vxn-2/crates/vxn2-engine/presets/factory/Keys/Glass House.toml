@@ -8,7 +8,7 @@ comment = "Struck glass rather than struck string. Algo 25 leaves ops 1-3 as pur
 
 [params]
 algo = 25
-feedback = 2.2
+feedback = 3.26
 
 # Three pure carriers. The 5.51 is deliberately off-integer.
 op1-eg-r1 = 99

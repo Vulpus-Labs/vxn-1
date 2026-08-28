@@ -8,7 +8,7 @@ comment = "Pizzicato: the string is stopped almost before it sounds. Every envel
 
 [params]
 algo = 5
-feedback = 1.8
+feedback = 2.85
 
 op1-eg-r1 = 99
 op1-eg-r2 = 88

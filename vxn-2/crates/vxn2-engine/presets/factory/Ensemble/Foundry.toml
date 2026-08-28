@@ -8,7 +8,7 @@ comment = "FM brass section: algo 1, a 4-op modulator chain into op3 plus op2 in
 
 [params]
 algo = 1
-feedback = 3.0
+feedback = 4
 
 # Carrier Op 1 — medium attack so the section blares in, high sustain.
 op1-eg-r1 = 76

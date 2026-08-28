@@ -8,7 +8,7 @@ comment = "Dark, dense and not quite pitched. Feedback near maximum drives op6 i
 
 [params]
 algo = 16
-feedback = 6.8
+feedback = 7
 
 op1-eg-r1 = 38
 op1-eg-r2 = 28

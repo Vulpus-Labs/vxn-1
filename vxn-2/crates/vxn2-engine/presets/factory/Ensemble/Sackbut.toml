@@ -8,7 +8,7 @@ comment = "A brass section that responds to how hard you blow. Velocity is route
 
 [params]
 algo = 18
-feedback = 4.6
+feedback = 5.68
 
 # op1 sole carrier; 2 and 3 into it, 4 fed by 5 and 6 in parallel.
 op1-eg-r1 = 62

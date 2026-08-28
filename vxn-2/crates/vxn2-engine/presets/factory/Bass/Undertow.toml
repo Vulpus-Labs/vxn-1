@@ -8,7 +8,7 @@ comment = "Deep FM bass with a filter that opens under the note rather than over
 
 [params]
 algo = 16
-feedback = 2.4
+feedback = 3.49
 
 # op1 — sole carrier. Fast attack, sustains flat, short tail.
 op1-eg-r1 = 99

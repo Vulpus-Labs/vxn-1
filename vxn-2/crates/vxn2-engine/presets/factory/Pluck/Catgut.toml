@@ -8,7 +8,7 @@ comment = "Nylon-string guitar with a body that scales. The band-pass is ratio-l
 
 [params]
 algo = 3
-feedback = 2.6
+feedback = 3.68
 
 op1-eg-r1 = 99
 op1-eg-r2 = 58

@@ -64,8 +64,12 @@ only the wiring. Per-op level meanings (carrier amp vs modulator FM index)
 change as a *consequence* of the new wiring, hence the UI re-colours op tabs
 on algo change.
 
-`feedback` (int, 0..7) sits next to the algo and drives the structural
-feedback loop of whichever op the algorithm designates as its FB op.
+`feedback` (float, 0..7) sits next to the algo and drives the structural
+feedback loop of whichever op the algorithm designates as its FB op. It follows
+the hardware ladder `2^(fb − 8)` — a gain of 1/2 on the two-sample-averaged
+feedback signal at 7, halving per whole step, fading to silence below 1. The
+control is continuous and the taper is geometric, so equal intervals anywhere on
+the range are equal in dB.
 
 ---
 

@@ -12,7 +12,7 @@ algo = 32
 # so feedback ladders the COMPLETE harmonic series (1,2,3,4,5...) — brightens
 # neutrally with no fifth/octave emphasis. Cost: it's the loudest carrier, so FB
 # buzz is most audible and heavy FB can smear pitch. Tune by ear.
-feedback = 2.5
+feedback = 3.58
 
 # Six carriers, harmonic ratios 1..6 at ~1/sqrt(n). Op->ratio NOT slot-ordered:
 # the fundamental moves to op6 (the FB op); the 6th harmonic takes op1's vacated

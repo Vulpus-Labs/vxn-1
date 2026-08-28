@@ -8,7 +8,7 @@ comment = "Slow, thick and overdriven. Algo 17 puts the feedback on op2 where it
 
 [params]
 algo = 17
-feedback = 5.4
+feedback = 6.49
 
 op1-eg-r1 = 88
 op1-eg-r2 = 48

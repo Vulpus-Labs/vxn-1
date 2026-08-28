@@ -8,7 +8,7 @@ comment = "Bioluminescence — cold light with no heat under it. All the energy 
 
 [params]
 algo = 31
-feedback = 1.8
+feedback = 2.85
 
 op1-num = 3
 op1-eg-r1 = 52

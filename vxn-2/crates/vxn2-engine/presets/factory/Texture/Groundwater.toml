@@ -8,7 +8,7 @@ comment = "A drone with something moving in it. The band-pass is ratio-locked to
 
 [params]
 algo = 2
-feedback = 2.6
+feedback = 3.68
 
 op1-eg-r1 = 32
 op1-eg-r2 = 24

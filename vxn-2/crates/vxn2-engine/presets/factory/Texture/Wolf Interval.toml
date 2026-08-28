@@ -8,7 +8,7 @@ comment = "Named for the interval old tuning systems could not fix. A notch filt
 
 [params]
 algo = 19
-feedback = 3.8
+feedback = 4.85
 
 # Carriers 1, 4, 5 — deliberately irrational intervals apart.
 op1-eg-r1 = 46

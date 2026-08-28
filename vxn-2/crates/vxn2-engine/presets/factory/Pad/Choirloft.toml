@@ -8,7 +8,7 @@ comment = "A voice pad that swells under the hand. Algo 22 fans op6 across three
 
 [params]
 algo = 22
-feedback = 1.6
+feedback = 2.68
 
 op1-eg-r1 = 44
 op1-eg-r2 = 34

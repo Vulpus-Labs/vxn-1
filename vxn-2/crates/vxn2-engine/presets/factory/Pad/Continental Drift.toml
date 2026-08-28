@@ -8,7 +8,7 @@ comment = "Nothing here happens quickly. The mod-env takes three seconds to reac
 
 [params]
 algo = 2
-feedback = 1.4
+feedback = 2.49
 
 # Carriers 1 and 4 — very slow attack, full sustain, long tail.
 op1-eg-r1 = 26

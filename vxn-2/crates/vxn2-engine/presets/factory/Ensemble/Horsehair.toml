@@ -8,7 +8,7 @@ comment = "Lush ensemble strings: algo 22 (four carriers fanned from op6, op2->o
 
 [params]
 algo = 22
-feedback = 2.0
+feedback = 3
 
 # Carrier Op 1 — slow bowed swell, high sustain, slow release, full keyboard.
 op1-eg-r1 = 46

@@ -11,7 +11,7 @@ algo = 32
 # op6 is the algo-32 structural FB op. Ratio 3 is parked there so feedback
 # ladders 3, 6, 9, 12... — pretty/vocal, but reinforces the fifth-above pitch
 # (3rd harmonic = octave+fifth). Tune by ear.
-feedback = 2.5
+feedback = 3.58
 
 # Six carriers, harmonic ratios 1..6 at ~1/sqrt(n). Op->ratio NOT slot-ordered:
 # the 3rd harmonic moves to op6 (the FB op); the 6th harmonic takes op3's

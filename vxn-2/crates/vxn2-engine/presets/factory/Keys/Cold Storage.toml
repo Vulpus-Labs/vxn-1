@@ -8,7 +8,7 @@ comment = "The tine electric piano, done honestly: op2 sits at a 14:1 ratio and 
 
 [params]
 algo = 5
-feedback = 1.8
+feedback = 2.85
 
 # op1 — main body carrier.
 op1-eg-r1 = 99

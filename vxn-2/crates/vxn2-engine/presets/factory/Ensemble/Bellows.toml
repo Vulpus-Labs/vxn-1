@@ -8,7 +8,7 @@ comment = "Accordion, tuned musette. Three lanes at 18 cents is far too wide for
 
 [params]
 algo = 32
-feedback = 0.6
+feedback = 1.26
 
 # Six reeds, all carriers, odd-weighted for the buzzy free-reed spectrum.
 op1-eg-r1 = 78

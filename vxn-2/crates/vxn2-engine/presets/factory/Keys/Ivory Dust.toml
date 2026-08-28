@@ -8,7 +8,7 @@ comment = "A piano heard through a closed door — felted, soft-edged, no hammer
 
 [params]
 algo = 3
-feedback = 0.8
+feedback = 1.68
 
 op1-eg-r1 = 94
 op1-eg-r2 = 46

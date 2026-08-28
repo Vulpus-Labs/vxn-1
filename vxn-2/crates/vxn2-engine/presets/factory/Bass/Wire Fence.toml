@@ -8,7 +8,7 @@ comment = "Bright, taut, metallic. Algo 22 fans one modulator across three carri
 
 [params]
 algo = 22
-feedback = 3.6
+feedback = 4.68
 
 # Carriers 1, 3, 4, 5 — 1 and 3 an octave apart, 4/5 the metallic pair.
 op1-eg-r1 = 99

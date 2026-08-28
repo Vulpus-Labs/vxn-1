@@ -8,7 +8,7 @@ comment = "Slow, breathing FM pad: algo 5 with gentle modulators, very slow atta
 
 # Algo 5 is the default; gentle op6 feedback.
 [params]
-feedback = 1.0
+feedback = 2
 
 # Carrier Op 1 — very slow attack, near-full sustain, long release, full range.
 op1-eg-r1 = 28

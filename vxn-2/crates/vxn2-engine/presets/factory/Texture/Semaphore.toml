@@ -8,7 +8,7 @@ comment = "A patch that plays itself. LFO1 runs sample-and-hold, tempo-synced, s
 
 [params]
 algo = 22
-feedback = 3.0
+feedback = 4
 
 op1-eg-r1 = 90
 op1-eg-r2 = 40

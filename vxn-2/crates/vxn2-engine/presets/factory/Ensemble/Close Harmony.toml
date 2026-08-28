@@ -8,7 +8,7 @@ comment = "A tight vocal section rather than a cathedral choir — four lanes, n
 
 [params]
 algo = 22
-feedback = 1.4
+feedback = 2.49
 
 op1-eg-r1 = 58
 op1-eg-r2 = 44

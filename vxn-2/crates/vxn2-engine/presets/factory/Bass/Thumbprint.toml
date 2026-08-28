@@ -8,7 +8,7 @@ comment = "Fretless: mono, legato, and it slides. Solo assign with a 90 ms glide
 
 [params]
 algo = 3
-feedback = 3.2
+feedback = 4.26
 
 # op1 sole low carrier — soft attack, long sustain, singing.
 op1-eg-r1 = 76

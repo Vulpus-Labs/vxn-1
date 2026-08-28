@@ -8,7 +8,7 @@ comment = "Hammered dulcimer. Each note on the real instrument is two or three s
 
 [params]
 algo = 14
-feedback = 3.0
+feedback = 4
 
 op1-eg-r1 = 99
 op1-eg-r2 = 62
