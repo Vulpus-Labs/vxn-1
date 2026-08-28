@@ -169,3 +169,137 @@ not match: the vertical fader is absolute-mapped over `--fader-h` by
   tests cannot catch it. If only one item from this ticket gets done, do that one.
 - No `cargo fmt` — [[vxn-no-cargo-fmt]]. One `cargo test` at a time —
   [[vxn-no-parallel-cargo-test]].
+
+## Close-out (2026-08-28)
+
+Eight of the nine clusters plus the whole "smaller, same pass" list, one
+cluster per commit. `codec.rs` (item 5) is deliberately **not** done — see the
+end of this section.
+
+### Where a macro was required (hot path)
+
+- **FX `run_*` ×5** →
+  [`fx_slot!`](../../vxn-1b/crates/vxn1b-engine/src/fx.rs). Expands to exactly
+  the code that was there; a `dyn`-dispatched slot list would have been a
+  deoptimisation, as the ticket said. `process_block`'s five
+  `let o = …; (xl, xr) = o;` are destructuring assignments.
+- **`clear_slot`'s catch-all** was `_ => self.dynamics.clear()`, so a bogus slot
+  index silently reset the compressor — a real state change attributed to the
+  wrong slot. `DYNAMICS` is spelled out; unknown is a no-op. **The one actual
+  defect in the ticket.**
+- **The 12 delegating smoother wrappers** →
+  [`one_pole_api!`](../../vxn-1b/crates/vxn1b-engine/src/mod_smoothing.rs).
+  Doc comments pass *through* rather than being generated: each says which
+  render-loop fast path that predicate gates, which is the half that was not
+  boilerplate. `tick_pitch`'s unrolled cascade is untouched (verified by diff);
+  `pwm` stays hand-written, being a pair of poles behind one name.
+- **bank.rs's four-step pattern** → `LaneMask`, which takes the fourth
+  hand-written `.iter().any()` and the chance of reducing the wrong array. The
+  *steps* stay where they are: they interleave with per-dest work, and the file
+  records that bundling hot-loop locals into a record cost 1.32%
+  ([bank.rs](../../vxn-1b/crates/vxn1b-engine/src/bank.rs)).
+
+### Where it was just repetition
+
+- **The 14 parallel matrix lists** →
+  [`matrix_enum!`](../../vxn-1b/crates/vxn1b-engine/src/matrix.rs). Polarity
+  stays a required column, so a new source still forces a compile-time polarity
+  decision. `N_SOURCES` / `N_DESTS` / `N_CURVES` derive from the generated
+  tables.
+- **The four value enums** now use the
+  [`indexed_param_enum!`](../../vxn-1b/crates/vxn1b-engine/src/params.rs) that
+  was already in the file, via a new `enum Name: default = Variant` form for
+  the one difference that kept them out (they decode an `f32` a host can set to
+  anything, so `from_index` folds rather than returning `Option`).
+  `CrossModType::COUNT` is no longer a bare literal.
+- **`WebPresetStore`** — nine of eleven methods → `self.user()?.op(..)`;
+  **three `*_buf_reserve`** → `buf_reserve!`; **five two-argument decodes** →
+  `arg_pair`. Also `hydrate_preset`, which re-derived `arg_string`'s saturating
+  clamp by hand; both now share one `arg_slice`
+  ([web-controller](../../vxn-1b/crates/vxn1b-web-controller/src/lib.rs)).
+- **The duplicated drag wiring** →
+  [`wireNormDrag`](../../vxn-1b/crates/vxn1b-ui-web/assets/util/drag.js), used
+  by `makeDial` and `makeBipolar`. `makeFader` (absolute-mapped) and `makeWave`
+  (detent-mapped) keep their own, sharing only the popup dance.
+  `DIAL_RANGE_PX`'s "matches the fader" comment was wrong and is corrected;
+  `BIPOLAR_RANGE_PX` sits beside it instead of inside the function.
+
+### Smaller, same pass
+
+- Five pointer accessors → `host_ptr!`; `drain_meters` → `drain_into`, which is
+  order-correct by construction where the old array → struct → array hop
+  re-flattened into a hand-written order that had to match `MeterTap`
+  ([host.rs](../../vxn-1b/crates/vxn1b-wasm/src/host.rs)).
+- `sync_partner_clap_id` / `rate_partner_clap_id` → one `SYNC_PAIRS` table read
+  both ways ([sync.rs](../../vxn-1b/crates/vxn1b-engine/src/sync.rs)).
+- Four layer fan-outs → `each_live_synth`. Note-*offs* keep their own
+  broadcast: they reach both synths in every mode so a split-point move cannot
+  strand a held note.
+- Three lit-toggle CSS blocks (four, counting the preset bar) → `--lit-bg` /
+  `--lit-border` / `--lit-glow`.
+- The three cutoff overrides' shared null guard → `ifCutoff`.
+- `descriptor_to_json` / `taper_to_json` / `strip_esm_exports` now call the
+  shared crate instead of duplicating it — `taper_to_json` was byte-identical,
+  under a doc planning to "reconcile here if the two ever diverge", which is a
+  plan to *notice* a drift rather than prevent one. Two config assignments that
+  re-set `WebEditorConfig::new`'s exact defaults are gone.
+
+### Verification
+
+- **`clear_slot`** fixed; **`tick_pitch`** untouched (no line of the cascade
+  appears in the diff).
+- **Matrix tables**: all six dumped and diffed against the hand-written
+  originals — **byte-identical**. `names_and_labels_describe_their_own_variant`
+  was checked to **FAIL** when one label pair is transposed, which the old
+  length-only `name_and_label_tables_are_sized` did not.
+- **FX output BIT-IDENTICAL**: FNV-1a over every sample of 240 blocks × 2
+  configurations with all five slots toggled off and back on mid-run, so the
+  crossfade, the settled-skip path and `clear_slot` each run for every slot.
+- **Smoother output BIT-IDENTICAL**: 240 blocks × 2 configurations (OS off/4×,
+  width 1 and 8) with nine matrix routes live — one per smoothed dest, so
+  pitch, sweep, both PWMs, cross-mod, pan and the two filter dests all leave
+  their block-constant fast paths.
+- **Profiles unchanged**, measured as alternating old/new *pairs* because a
+  naive before/after shows thermal drift: FX macro 6.3% either way ×3;
+  smoother/LaneMask `busy_profile` 6.2–6.3% both sides, `route_profile`
+  2.02–2.06% old vs 2.02–2.04% new. No movement, so no asm dump was needed.
+- **Assembled faceplate HTML byte-identical**, 329,752 bytes.
+- **Suites** ([[0321]]'s four commands): `cargo test --workspace` **1393 pass,
+  0 fail** (was 1389 — the four new Rust tests below), vitest **318**,
+  `xtask web` clean, `node --test` **158**.
+
+### Four things had no test and got one first
+
+`matrix_enum!`, the four value enums and the two sync-partner functions were
+all generated-or-restructured with nothing asserting their behaviour:
+
+- `matrix::tests::variant_order_matches_the_tables`
+- `matrix::tests::names_and_labels_describe_their_own_variant`
+- `params::tests::value_enums_count_and_fold_out_of_range`
+- `sync::tests::sync_and_rate_partners_are_exact_inverses` — walks **every**
+  CLAP id rather than the three the old matches happened to name.
+
+### The acceptance criterion that is only half true
+
+> Adding a sixth FX slot, a fifth smoothed dest, a new matrix source or a new
+> value-enum variant each requires editing exactly one place.
+
+Two of the four hold exactly: a **matrix source** is one row, a **value-enum
+variant** is one row. The other two are reduced but not to one. A **sixth FX
+slot** still needs a slot const, a kernel field, an `fx_slot!` line, a
+`clear_slot` arm and a `process_block` line — the eight-line `run_*` body, i.e.
+the copy-paste, is gone, but the wiring is not. A **fifth smoothed dest** needs
+a field, a `one_pole_api!` block, and its use in the render loop. That last
+part is inherent: the loop has to consume the new dest, which is integration
+rather than boilerplate.
+
+### Not done: item 5, `codec.rs`
+
+Its premise was largely overtaken by [[0312]]. `Event::tag()`, `Event::offset()`
+and `encode_into` are all `#[cfg(test)]` now, so only `decode` ships. The
+ticket's fix — hoisting `offset: u8` into a `Slot { offset, kind }` — would
+restructure the production `Event` type and the audio-thread decode/apply loop
+in order to remove duplication that is now **test-only**. That is a poor trade
+for a ticket whose own note says nothing in it is a defect, so it was left
+rather than done quietly at that risk. Worth its own ticket if the `Event`
+vocabulary grows again; not worth this one.
