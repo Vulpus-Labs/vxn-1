@@ -55,6 +55,42 @@ use crate::voice::LaneView;
 /// Lanes per bank — the shared DSP kernel width.
 const N: usize = CHANNELS_PER_LAYER;
 
+/// A per-lane "this dest needs per-quantum work this block" mask, with the
+/// block-level reduce the fast paths gate on.
+///
+/// Four copies of the same three-step shape before 0319 — declare `[bool; N]`,
+/// set `mask[v] = active[v] && smooth.<dest>_active(..)` in the lane loop,
+/// reduce with `.any()` before the frame loop — one per smoothed dest. The
+/// steps stay where they are (they are interleaved with genuinely per-dest
+/// work, and this file records what bundling hot-loop locals into a record
+/// cost); what the newtype removes is the fourth hand-written `.iter().any()`
+/// and the chance of reducing the wrong array.
+#[derive(Clone, Copy, Default)]
+struct LaneMask([bool; N]);
+
+impl LaneMask {
+    /// Whether any lane needs the work. Read once per block, not per lane.
+    #[inline]
+    fn any(&self) -> bool {
+        self.0.iter().any(|&a| a)
+    }
+}
+
+impl std::ops::Index<usize> for LaneMask {
+    type Output = bool;
+    #[inline]
+    fn index(&self, v: usize) -> &bool {
+        &self.0[v]
+    }
+}
+
+impl std::ops::IndexMut<usize> for LaneMask {
+    #[inline]
+    fn index_mut(&mut self, v: usize) -> &mut bool {
+        &mut self.0[v]
+    }
+}
+
 /// HPF cutoff at or below this (Hz) is bypassed (matches VXN1).
 const HPF_OFF_HZ: f32 = 20.0;
 
@@ -902,10 +938,10 @@ impl RenderBank {
         let mut amp_c = [AmpCoeffs::default(); N];
         let mut tgt = [LaneTargets::default(); N];
         let mut pm_idx = [0.0f32; N];
-        let mut pitch_active = [false; N];
-        let mut pwm_active = [false; N];
-        let mut xmod_active = [false; N];
-        let mut pan_active = [false; N];
+        let mut pitch_active = LaneMask::default();
+        let mut pwm_active = LaneMask::default();
+        let mut xmod_active = LaneMask::default();
+        let mut pan_active = LaneMask::default();
         // Per-lane HPF cutoff. `hpf_modulated` stays false for a patch
         // with no route on the dest, which keeps the bank-wide `set_cutoff_all`
         // path — and with it the bit-exact unrouted render.
@@ -1032,10 +1068,10 @@ impl RenderBank {
         // leaks ~15 locals into phases 3 and 4, and that bundling them into one
         // record is exactly the change that cost 1.32% on the routed path when
         // tried on `BlockCtx` (see 0313's step-2 note).
-        let pitch_any = pitch_active.iter().any(|&a| a);
-        let pwm_any = pwm_active.iter().any(|&a| a);
-        let xmod_any = xmod_active.iter().any(|&a| a);
-        let pan_any = pan_active.iter().any(|&a| a);
+        let pitch_any = pitch_active.any();
+        let pwm_any = pwm_active.any();
+        let xmod_any = xmod_active.any();
+        let pan_any = pan_active.any();
         self.ladder.set_response(ctx.filter_mode, ctx.filter_slope);
 
         // The HPF runs when the panel opens it *or* when a route lifts any

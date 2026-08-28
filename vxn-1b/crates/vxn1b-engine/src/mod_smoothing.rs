@@ -120,6 +120,70 @@ impl LaneOnePole {
     }
 }
 
+/// Generate one smoothed quantity's public API over a [`LaneOnePole`] field.
+///
+/// [`LaneOnePole`]'s own doc states the goal as *"keeps a new smoothed dest to
+/// one field instead of a field plus four hand-written methods"* — and until
+/// 0319 this file then wrote three to four hand-written delegating methods per
+/// quantity, twelve in all. Every body was a one-line forward whose only real
+/// content was which coefficient tier the quantity belongs to (`slow_coeff` per
+/// quantum, `amp_coeff` per frame), which is now the macro's second argument.
+///
+/// Doc comments pass through, because they are the part that is *not*
+/// boilerplate: each says which render-loop fast path that predicate gates.
+///
+/// Method names are given explicitly rather than concatenated — the existing
+/// names are two patterns, not one (`<q>_active` but `tick_<q>`), and this crate
+/// has no `paste` dependency to build identifiers with.
+///
+/// `pwm` is deliberately not expressed here: it is a *pair* of poles behind one
+/// name, so its three methods have a different shape rather than a different
+/// field.
+macro_rules! one_pole_api {
+    (
+        $field:ident, $coeff:ident;
+        $( $(#[$meta:meta])* $kind:ident = $name:ident; )+
+    ) => {
+        $( one_pole_api!(@m $kind, $name, $field, $coeff $(, #[$meta])*); )+
+    };
+
+    (@m active, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
+        $(#[$meta])*
+        #[inline]
+        pub fn $name(&self, v: usize, target: f32) -> bool {
+            self.$field.active(v, target)
+        }
+    };
+    (@m settled, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
+        $(#[$meta])*
+        #[inline]
+        pub fn $name(&self, v: usize, target: f32) -> bool {
+            self.$field.settled(v, target)
+        }
+    };
+    (@m tick, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
+        $(#[$meta])*
+        #[inline]
+        pub fn $name(&mut self, v: usize, target: f32) -> f32 {
+            self.$field.tick(v, target, self.$coeff)
+        }
+    };
+    (@m current, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
+        $(#[$meta])*
+        #[inline]
+        pub fn $name(&self, v: usize) -> f32 {
+            self.$field.current(v)
+        }
+    };
+    (@m snap, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
+        $(#[$meta])*
+        #[inline]
+        pub fn $name(&mut self, v: usize, target: f32) {
+            self.$field.snap(v, target);
+        }
+    };
+}
+
 /// Per-lane motion smoothers for one render bank.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionSmoother {
@@ -227,30 +291,50 @@ impl MotionSmoother {
         self.amp_stat.snap(v, amp_stat_target);
     }
 
-    /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
-    /// because a *stolen* lane must not glide across the image from wherever
-    /// the previous note sat — it starts where its own patch puts it.
-    #[inline]
-    pub fn snap_pan(&mut self, v: usize, target: f32) {
-        self.pan.snap(v, target);
+
+
+
+
+    one_pole_api! {
+        pan, slow_coeff;
+        /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
+        /// because a *stolen* lane must not glide across the image from wherever
+        /// the previous note sat — it starts where its own patch puts it.
+        snap = snap_pan;
+        /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
+        active = pan_active;
+        /// Advance one lane's pan one-pole a quantum step and return the new value.
+        tick = tick_pan;
+        /// This lane's current smoothed pan without advancing it.
+        current = pan_current;
     }
 
-    /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
-    #[inline]
-    pub fn pan_active(&self, v: usize, target: f32) -> bool {
-        self.pan.active(v, target)
+    one_pole_api! {
+        xmod, slow_coeff;
+        /// Whether lane `v`'s cross-mod one-pole needs ticking; when false the
+        /// render keeps the block-start PM index — and, with every lane inactive,
+        /// stays on the broadcast PM kernel entirely.
+        active = xmod_active;
+        /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
+        /// smoothed PM-index *offset* (the patch amount is added by the render).
+        tick = tick_xmod;
+        /// Lane `v`'s current smoothed cross-mod offset, without advancing.
+        current = xmod_current;
     }
 
-    /// Advance one lane's pan one-pole a quantum step and return the new value.
-    #[inline]
-    pub fn tick_pan(&mut self, v: usize, target: f32) -> f32 {
-        self.pan.tick(v, target, self.slow_coeff)
-    }
-
-    /// This lane's current smoothed pan without advancing it.
-    #[inline]
-    pub fn pan_current(&self, v: usize) -> f32 {
-        self.pan.current(v)
+    one_pole_api! {
+        amp_stat, amp_coeff;
+        /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
+        /// smoothed static Amp coefficient. Ticked per sample (not per quantum)
+        /// because a block-held amplitude stair is itself an audible click on a slow
+        /// carrier — hence `amp_coeff` rather than `slow_coeff`.
+        tick = tick_amp_stat;
+        /// Lane `v`'s current smoothed Amp coefficient, without advancing.
+        current = amp_stat_current;
+        /// True when lane `v`'s Amp one-pole has arrived at `target` — the render
+        /// loop keeps its envelope-static constant-amp fast path only while this
+        /// holds for every active lane.
+        settled = amp_stat_settled;
     }
 
     /// Advance one lane's pitch cascade one quantum step toward the targets and
@@ -310,49 +394,11 @@ impl MotionSmoother {
         (self.pwm[0].current(v), self.pwm[1].current(v))
     }
 
-    /// Whether lane `v`'s cross-mod one-pole needs ticking; when false the
-    /// render keeps the block-start PM index — and, with every lane inactive,
-    /// stays on the broadcast PM kernel entirely.
-    #[inline]
-    pub fn xmod_active(&self, v: usize, target: f32) -> bool {
-        self.xmod.active(v, target)
-    }
 
-    /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
-    /// smoothed PM-index *offset* (the patch amount is added by the render).
-    #[inline]
-    pub fn tick_xmod(&mut self, v: usize, target: f32) -> f32 {
-        self.xmod.tick(v, target, self.slow_coeff)
-    }
 
-    /// Lane `v`'s current smoothed cross-mod offset, without advancing.
-    #[inline]
-    pub fn xmod_current(&self, v: usize) -> f32 {
-        self.xmod.current(v)
-    }
 
-    /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
-    /// smoothed static Amp coefficient. Ticked per sample (not per quantum)
-    /// because a block-held amplitude stair is itself an audible click on a slow
-    /// carrier — hence `amp_coeff` rather than `slow_coeff`.
-    #[inline]
-    pub fn tick_amp_stat(&mut self, v: usize, target: f32) -> f32 {
-        self.amp_stat.tick(v, target, self.amp_coeff)
-    }
 
-    /// Lane `v`'s current smoothed Amp coefficient, without advancing.
-    #[inline]
-    pub fn amp_stat_current(&self, v: usize) -> f32 {
-        self.amp_stat.current(v)
-    }
 
-    /// True when lane `v`'s Amp one-pole has arrived at `target` — the render
-    /// loop keeps its envelope-static constant-amp fast path only while this
-    /// holds for every active lane.
-    #[inline]
-    pub fn amp_stat_settled(&self, v: usize, target: f32) -> bool {
-        self.amp_stat.settled(v, target)
-    }
 }
 
 #[cfg(test)]
