@@ -15,6 +15,7 @@ pub mod limiter;
 pub mod math;
 pub mod meter;
 pub mod midi;
+pub mod random_walk;
 pub mod scope;
 pub mod smoothing;
 pub mod sync;
@@ -26,6 +27,7 @@ pub use limiter::StereoLimiter;
 pub use math::{fast_tanh, xorshift64_star};
 pub use meter::{MeterBus, MeterTap};
 pub use midi::{MIDI_0_HZ, note_to_hz};
+pub use random_walk::{BoundedRandomWalk, OSCILLATOR_DRIFT_STEP};
 pub use scope::{SCOPE_RING_SAMPLES, SCOPE_SOURCE_OFF, ScopeBus};
 pub use smoothing::{Smoothed, ms_to_samples, one_pole_coeff};
 pub use sync::{
