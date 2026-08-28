@@ -14,6 +14,7 @@ pub mod filter;
 pub mod halfband;
 pub mod hpf;
 pub mod ks;
+pub mod level;
 pub mod lfo;
 pub mod limiter;
 pub mod math;

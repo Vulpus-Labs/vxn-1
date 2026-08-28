@@ -23,11 +23,9 @@
 //!   raw 0..99 break-point parameter and offsets by 17; we store the break
 //!   point as a MIDI note, `raw + 21`, hence `note − bp + 4`.)
 //!
-//! Level scaling can *boost* as well as cut, and the hardware clamps the summed
-//! level at its ceiling — so an operator already at full output gets no boost
-//! at all. Callers apply that clamp as `(level_norm × ks).min(1.0)`, before
-//! velocity (which only ever attenuates, and is added after the clamp on
-//! hardware).
+//! Level scaling can *boost* as well as cut, and the accumulator clamps the
+//! summed level at its ceiling before velocity — so an operator already at full
+//! output gets no boost at all.
 //!
 //! ## Rate scaling
 //!
@@ -42,10 +40,6 @@ const EXP_SCALE_DATA: [u8; 33] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110, 126,
     142, 158, 174, 190, 206, 222, 238, 250,
 ];
-
-/// Level units per octave. The level domain is ~0.75 dB/step (ADR 0007's
-/// `2^((L-99)/8)`), so 8 steps make 6.02 dB.
-const LEVEL_UNITS_PER_OCTAVE: f32 = 8.0;
 
 /// Semitones the scaling pivot sits below the stored (MIDI) break point.
 /// Hardware: `offset = note − raw_bp − 17`, and `raw_bp = bp_midi − 21`.
@@ -88,8 +82,8 @@ fn scale_curve(group: u32, depth: u8, curve: KsCurve) -> i32 {
 }
 
 /// Keyboard-level offset for a note, in level units (~0.75 dB each). Positive
-/// boosts, negative cuts, zero at the pivot. Exposed for the UI curve readout
-/// and tests; the audio path wants [`ks_level_mult`].
+/// boosts, negative cuts, zero at the pivot. Summed into the operator's level
+/// accumulator by [`crate::level::op_max_amp`].
 pub fn ks_level_offset(
     key: u8,
     break_pt: u8,
@@ -104,29 +98,6 @@ pub fn ks_level_offset(
     } else {
         scale_curve(((-(offset - 1)) / 3) as u32, l_depth, l_curve)
     }
-}
-
-/// Compute the keyboard-level multiplier for a given note — the
-/// [`ks_level_offset`] level offset expressed as an amplitude factor, `1.0` at
-/// the pivot. Multiplied against the per-op level to produce the cooked
-/// per-note amplitude scaler.
-///
-/// Callers must clamp the product against full scale — see the module docs.
-///
-/// `depth` parameters are 0..99; `key` and `break_pt` are MIDI note numbers.
-pub fn ks_level_mult(
-    key: u8,
-    break_pt: u8,
-    l_depth: u8,
-    l_curve: KsCurve,
-    r_depth: u8,
-    r_curve: KsCurve,
-) -> f32 {
-    let units = ks_level_offset(key, break_pt, l_depth, l_curve, r_depth, r_curve);
-    if units == 0 {
-        return 1.0;
-    }
-    (units as f32 / LEVEL_UNITS_PER_OCTAVE).exp2()
 }
 
 /// Rate-scaling multiplier on EG rates. `1.0` at MIDI A3 (note 57). Above
@@ -183,20 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn unity_at_the_pivot() {
+    fn zero_offset_at_the_pivot() {
         // Full depth both sides, but at the pivot the offset is 0 → no change.
-        let m = ks_level_mult(56, 60, 99, PosExp, 99, NegLin);
-        assert!((m - 1.0).abs() < 1e-6, "at pivot, mult = {m}");
+        assert_eq!(ks_level_offset(56, 60, 99, PosExp, 99, NegLin), 0);
     }
 
     #[test]
     fn neg_curves_cut_and_pos_curves_boost() {
         // 3 octaves above the break point, full depth.
-        assert!(ks_level_mult(96, 60, 0, PosLin, 99, NegLin) < 0.01);
-        assert!(ks_level_mult(96, 60, 0, PosLin, 99, PosLin) > 100.0);
+        assert!(ks_level_offset(96, 60, 0, PosLin, 99, NegLin) < -60);
+        assert!(ks_level_offset(96, 60, 0, PosLin, 99, PosLin) > 60);
         // 3 octaves below, full depth.
-        assert!(ks_level_mult(24, 60, 99, PosLin, 0, NegLin) > 100.0);
-        assert!(ks_level_mult(24, 60, 99, NegLin, 0, NegLin) < 0.01);
+        assert!(ks_level_offset(24, 60, 99, PosLin, 0, NegLin) > 60);
+        assert!(ks_level_offset(24, 60, 99, NegLin, 0, NegLin) < -60);
     }
 
     /// Exp ramps far more gently than lin near the break point — the tabulated
@@ -215,7 +185,6 @@ mod tests {
     fn zero_depth_is_flat() {
         for note in [0u8, 24, 60, 96, 127] {
             assert_eq!(ks_level_offset(note, 60, 0, NegLin, 0, NegExp), 0);
-            assert!((ks_level_mult(note, 60, 0, NegLin, 0, NegExp) - 1.0).abs() < 1e-6);
         }
     }
 

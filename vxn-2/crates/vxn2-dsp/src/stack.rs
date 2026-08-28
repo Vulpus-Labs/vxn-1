@@ -38,9 +38,9 @@
 use crate::algo::{N_ALGOS, N_OPS, spec_of};
 use crate::eg::EgStage;
 use crate::envelope::{ModEnvState, PitchEgState};
-use crate::ks::{ks_level_mult, ks_rate_mult};
+use crate::ks::ks_rate_mult;
 use crate::lfo::Lfo2Stack;
-use crate::op::{OpParams, PM_SCALE_Q32, compute_base_hz};
+use crate::op::{OpParams, PM_SCALE_Q32, compute_base_hz, cook_max_amp};
 use crate::sine::scalar::fast_sine_q32;
 use crate::tables::{fb_scale, vel_factor};
 use crate::voice::VoiceParams;
@@ -1041,21 +1041,8 @@ impl Stack {
             self.core.ops[i].base_phase_inc[k] = (base_inc * lane_factor) as u32;
         }
 
-        let ks_lvl = ks_level_mult(
-            key,
-            params.ks_break_pt,
-            params.ks_l_depth,
-            params.ks_l_curve,
-            params.ks_r_depth,
-            params.ks_r_curve,
-        );
         let vel = vel_factor(params.vel_sens, velocity);
-        // Operator output level shares the EG level curve (see `eg::level_to_amp`).
-        let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
-        // Level scaling can boost as well as cut; hardware clamps the summed
-        // level at full scale before velocity is applied (velocity only ever
-        // attenuates), so an op already at full output gets no boost.
-        let max_amp = (level_norm * ks_lvl).min(1.0) * vel;
+        let max_amp = cook_max_amp(params, key, vel);
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         // Every lane cooks identically here; per-lane `eg-rate` divergence is
         // applied afterward by `rescale_eg_rates`, which the engine
