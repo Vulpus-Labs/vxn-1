@@ -393,6 +393,41 @@ impl ControllerState {
         &self.arg_in[s..e]
     }
 
+    /// Insert a hydrated (already-persisted) folder from the staged argument.
+    ///
+    /// The `extern "C"` shim is one line over this so the tests can drive the
+    /// shipping body: before 0320 they re-implemented it, and the copy dropped
+    /// the clamp — the only defensive code in the opcode was the part no test
+    /// reached.
+    fn hydrate_folder_arg(&mut self, name_len: u32) {
+        let name = self.arg_string(0, name_len as usize);
+        if let Ok(mut u) = self.user.lock() {
+            u.hydrate_folder(&name);
+        }
+    }
+
+    /// Insert a hydrated preset from the two staged arguments — synthetic key,
+    /// then its stored TOML record. Returns 1 on success, 0 if the record fails
+    /// to parse (a corrupt / foreign entry is skipped rather than aborting
+    /// hydration).
+    ///
+    /// `arg_bytes` clamps the record window to the staged buffer: JS supplies
+    /// both lengths, so a wrong one must be a short read rather than a panic in
+    /// wasm.
+    fn hydrate_preset_arg(&mut self, key_len: u32, rec_len: u32) -> u32 {
+        let key = self.arg_string(0, key_len as usize);
+        let rec = self.arg_bytes(key_len as usize, rec_len as usize);
+        match decode_record(&rec) {
+            Ok((meta, blob, warnings)) => {
+                if let Ok(mut u) = self.user.lock() {
+                    u.hydrate_preset(&key, meta, blob, warnings);
+                }
+                1
+            }
+            Err(_) => 0,
+        }
+    }
+
     /// Decode two consecutive staged arguments: the first at offset 0 with
     /// length `a`, the second immediately after it with length `b`. `ARG_NONE`
     /// in the second slot means the optional argument is absent (root folder /
@@ -1160,11 +1195,7 @@ pub extern "C" fn vxnc_ui_delete_folder(name_len: u32) {
 /// Register a hydrated (already-persisted) folder — arg: folder name.
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_hydrate_folder(name_len: u32) {
-    let s = state();
-    let name = s.arg_string(0, name_len as usize);
-    if let Ok(mut u) = s.user.lock() {
-        u.hydrate_folder(&name);
-    }
+    state().hydrate_folder_arg(name_len);
 }
 
 /// Insert a hydrated preset — args: synthetic key (`key_len`), then its stored
@@ -1172,18 +1203,7 @@ pub extern "C" fn vxnc_hydrate_folder(name_len: u32) {
 /// (a corrupt / foreign entry is skipped rather than aborting hydration).
 #[unsafe(no_mangle)]
 pub extern "C" fn vxnc_hydrate_preset(key_len: u32, rec_len: u32) -> u32 {
-    let s = state();
-    let key = s.arg_string(0, key_len as usize);
-    let rec = s.arg_bytes(key_len as usize, rec_len as usize);
-    match decode_record(&rec) {
-        Ok((meta, blob, warnings)) => {
-            if let Ok(mut u) = s.user.lock() {
-                u.hydrate_preset(&key, meta, blob, warnings);
-            }
-            1
-        }
-        Err(_) => 0,
-    }
+    state().hydrate_preset_arg(key_len, rec_len)
 }
 
 /// Finish hydration: refresh the user corpus from the cache + rebuild the corpus
@@ -1926,6 +1946,45 @@ mod tests {
         assert!(ops.iter().any(|(t, k)| *t == JW_DELETE_FOLDER && k == "Bells"));
     }
 
+    /// 0320: the two hydrate opcodes used to be tested through instance-scoped
+    /// re-implementations, and the copies sliced `arg_in` raw. The clamp in the
+    /// shipping opcode — the only defensive code in it — was therefore the one
+    /// part no test reached, and a wrong length from JS would have panicked in
+    /// wasm. Now that the tests drive the real body, assert the clamp.
+    #[test]
+    fn hydrate_clamps_lengths_that_overrun_the_staged_buffer() {
+        let mut s = fresh();
+        s.tick();
+
+        // A record length far past what was staged: short read, no panic. The
+        // truncated bytes are not a valid record, so it reports failure rather
+        // than inventing a preset.
+        s.arg_in.clear();
+        s.arg_in.extend_from_slice(b"F/Short.toml");
+        assert_eq!(s.hydrate_preset_arg("F/Short.toml".len() as u32, u32::MAX / 2), 0);
+
+        // A key length past the buffer too — both windows clamp independently.
+        assert_eq!(s.hydrate_preset_arg(u32::MAX / 2, u32::MAX / 2), 0);
+
+        // Nothing was hydrated by either.
+        let tree = s.ctrl.preset_store().list_user_tree();
+        assert!(
+            tree.iter().all(|f| f.presets.is_empty()),
+            "a clamped short read must not produce a preset"
+        );
+
+        // Same for the folder opcode: an overrunning name is truncated to what
+        // was staged, not read past it.
+        s.arg_in.clear();
+        s.arg_in.extend_from_slice(b"Keys");
+        s.hydrate_folder_arg(u32::MAX / 2);
+        let tree = s.ctrl.preset_store().list_user_tree();
+        assert!(
+            tree.iter().any(|f| f.name.as_deref() == Some("Keys")),
+            "the folder name should have been read as the staged \"Keys\""
+        );
+    }
+
     #[test]
     fn hydrate_seeds_the_cache_without_journalling() {
         // Save in one instance to get a real stored record…
@@ -1960,10 +2019,10 @@ mod tests {
         // …and replay it into a fresh one, as the boot path does.
         let mut b = fresh();
         stage(&mut b, &[b"F"]);
-        vxnc_hydrate_folder_on(&mut b, 1);
+        b.hydrate_folder_arg(1);
         stage(&mut b, &[b"F/Hydrated.toml", &record]);
         assert_eq!(
-            vxnc_hydrate_preset_on(&mut b, "F/Hydrated.toml".len(), record.len()),
+            b.hydrate_preset_arg("F/Hydrated.toml".len() as u32, record.len() as u32),
             1,
             "hydration rejected a record it had just written"
         );
@@ -1977,24 +2036,6 @@ mod tests {
                 .user_load(&PathBuf::from("F/Hydrated.toml"))
                 .is_ok()
         );
-    }
-
-    // Instance-scoped stand-ins for the two hydrate opcodes (the real ones read
-    // the global STATE, which tests do not construct).
-    fn vxnc_hydrate_folder_on(s: &mut ControllerState, name_len: usize) {
-        let name = s.arg_string(0, name_len);
-        s.user.lock().unwrap().hydrate_folder(&name);
-    }
-    fn vxnc_hydrate_preset_on(s: &mut ControllerState, key_len: usize, rec_len: usize) -> u32 {
-        let key = s.arg_string(0, key_len);
-        let rec = s.arg_in[key_len..key_len + rec_len].to_vec();
-        match decode_record(&rec) {
-            Ok((meta, blob, warnings)) => {
-                s.user.lock().unwrap().hydrate_preset(&key, meta, blob, warnings);
-                1
-            }
-            Err(_) => 0,
-        }
     }
 
     // ── State + TOML ────────────────────────────────────────────────────────
