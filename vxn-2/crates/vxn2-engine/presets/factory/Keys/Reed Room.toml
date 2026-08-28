@@ -1,0 +1,110 @@
+schema = 1
+
+[meta]
+name = "Reed Room"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "The other electric piano — struck reed, not struck tine, so the bark is at 3:1 rather than 14:1 and it distorts rather than chimes. LFO1 runs a true amplitude tremolo across both carriers at once, which is the sound of the amp, not the instrument. Hit it hard and the reed overblows."
+
+[params]
+algo = 5
+feedback = 3.4
+
+op1-eg-r1 = 99
+op1-eg-r2 = 56
+op1-eg-l2 = 74
+op1-eg-l3 = 52
+op1-eg-r4 = 68
+op1-vel-sens = 5
+op1-ks-r-depth = 24
+
+# op2 -> op1 at 3:1 — the reedy bark, hard velocity dependence.
+op2-num = 3
+op2-level = 72
+op2-vel-sens = 7
+op2-eg-r1 = 99
+op2-eg-r2 = 74
+op2-eg-l2 = 34
+op2-eg-l3 = 16
+op2-eg-r4 = 80
+
+op3-level = 84
+op3-detune = 4
+op3-eg-r1 = 99
+op3-eg-r2 = 58
+op3-eg-l2 = 68
+op3-eg-l3 = 46
+op3-eg-r4 = 70
+op3-vel-sens = 5
+op3-ks-r-depth = 26
+
+op4-num = 6
+op4-level = 54
+op4-vel-sens = 7
+op4-eg-r1 = 99
+op4-eg-r2 = 80
+op4-eg-l2 = 24
+op4-eg-l3 = 8
+op4-eg-r4 = 82
+
+op5-num = 2
+op5-level = 46
+op5-eg-r1 = 99
+op5-eg-r2 = 66
+op5-eg-l2 = 40
+op5-eg-l3 = 20
+op5-eg-r4 = 74
+
+op6-num = 5
+op6-level = 38
+op6-vel-sens = 6
+op6-eg-r2 = 82
+op6-eg-l2 = 20
+op6-eg-l3 = 0
+
+# Amp tremolo — LFO1 is patch-global, so both carriers dip together.
+lfo1-shape = "Sine"
+lfo1-rate = 5.4
+
+filter-enable = true
+filter-cutoff = 2600.0
+filter-resonance = 0.10
+filter-slope = "2-Pole"
+filter-drive = 2.8
+filter-keytrack = 0.40
+
+hp-cutoff = 60.0
+
+reverb-on = true
+reverb-size = 0.4
+reverb-decay = 1.6
+reverb-mix = 0.16
+
+master-volume = -24.04
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "op1-level"
+curve = "lin"
+depth = 0.22
+
+[[matrix]]
+slot = 1
+source = "lfo1"
+dest = "op3-level"
+curve = "lin"
+depth = 0.22
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op2-level"
+curve = "exp"
+depth = 0.48
+
+[[matrix]]
+slot = 3
+source = "velocity"
+dest = "filter-drive"
+curve = "lin"
+depth = 0.30

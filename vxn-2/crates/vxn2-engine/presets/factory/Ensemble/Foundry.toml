@@ -1,9 +1,9 @@
 schema = 1
 
 [meta]
-name = "Analog Brass"
+name = "Foundry"
 author = "Vulpus Labs"
-category = "Brass"
+category = "Ensemble"
 comment = "FM brass section: algo 1, a 4-op modulator chain into op3 plus op2 into op1, medium attack swell, op6 feedback edge. Mod wheel opens brightness."
 
 [params]

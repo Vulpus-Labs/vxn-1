@@ -1,9 +1,9 @@
 schema = 1
 
 [meta]
-name = "FM Strings"
+name = "Horsehair"
 author = "Vulpus Labs"
-category = "Strings"
+category = "Ensemble"
 comment = "Lush ensemble strings: algo 22 (four carriers fanned from op6, op2->op1), slow bowed attack, 8-voice detuned unison, big hall reverb. Slow auto-vibrato."
 
 [params]

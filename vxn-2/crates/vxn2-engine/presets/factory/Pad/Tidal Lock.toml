@@ -1,0 +1,133 @@
+schema = 1
+
+[meta]
+name = "Tidal Lock"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "Dark and geological. The pitch envelope is the point: it starts a semitone flat and takes four seconds to arrive, and it is routed to two operators at opposite depths so the patch tunes itself from both directions at once. Held long enough it settles; played short it never resolves."
+
+[params]
+algo = 21
+feedback = 2.0
+
+# Carriers 1, 2, 4, 5 — low, slow, overlapping.
+op1-eg-r1 = 30
+op1-eg-r2 = 26
+op1-eg-l2 = 94
+op1-eg-l3 = 90
+op1-eg-r4 = 18
+op1-ks-r-depth = 4
+
+op2-num = 2
+op2-level = 72
+op2-detune = -8
+op2-eg-r1 = 28
+op2-eg-l2 = 86
+op2-eg-l3 = 80
+op2-eg-r4 = 18
+
+op4-num = 3
+op4-level = 62
+op4-detune = 6
+op4-eg-r1 = 26
+op4-eg-l2 = 82
+op4-eg-l3 = 74
+op4-eg-r4 = 16
+
+op5-num = 4
+op5-level = 52
+op5-detune = -5
+op5-eg-r1 = 24
+op5-eg-l2 = 76
+op5-eg-l3 = 68
+op5-eg-r4 = 16
+
+# op3 mods carriers 1 and 2; op6 mods 4 and 5 and carries feedback.
+op3-num = 5
+op3-denom = 2
+op3-level = 38
+op3-eg-r1 = 24
+op3-eg-l2 = 62
+op3-eg-l3 = 52
+op3-eg-r4 = 18
+
+op6-num = 7
+op6-denom = 2
+op6-level = 32
+op6-eg-r1 = 22
+op6-eg-l2 = 58
+op6-eg-l3 = 46
+op6-eg-r4 = 18
+
+# Pitch EG: starts flat, arrives slowly. L2 = 0 is centre.
+peg-r1 = 22
+peg-r2 = 18
+peg-l1 = -8
+peg-l2 = 0
+peg-l3 = 0
+peg-l4 = 0
+peg-depth = 12.0
+
+filter-enable = true
+filter-cutoff = 480.0
+filter-resonance = 0.24
+filter-slope = "4-Pole"
+filter-keytrack = 0.20
+
+mod-env-a = 2400.0
+mod-env-d = 3200.0
+mod-env-s = 0.55
+mod-env-r = 2200.0
+
+stack-density = 6
+stack-detune = 11.0
+stack-spread = 0.9
+
+reverb-on = true
+reverb-size = 0.88
+reverb-decay = 7.0
+reverb-damp = 0.55
+reverb-mix = 0.40
+
+master-volume = -9.46
+[[matrix]]
+slot = 0
+source = "pitch-eg"
+dest = "op3-pitch"
+curve = "lin"
+depth = 0.45
+
+[[matrix]]
+slot = 1
+source = "pitch-eg"
+dest = "op6-pitch"
+curve = "lin"
+depth = -0.35
+
+[[matrix]]
+slot = 2
+source = "mod-env"
+dest = "cutoff"
+curve = "lin"
+depth = 0.50
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.9
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -0.9
+
+[[matrix]]
+slot = 5
+source = "voice-rand"
+dest = "op2-phase"
+curve = "lin"
+depth = 1.0

@@ -1,0 +1,120 @@
+schema = 1
+
+[meta]
+name = "Diapason"
+author = "Vulpus Labs"
+category = "Ensemble"
+comment = "Pipe organ, built the way an organ is: algo 32 makes all six operators carriers with no modulation between them, so the ratios 1, 2, 3, 4, 6 and 8 are literally drawbars — 16', 8', 5 1/3', 4', 2 2/3' and 2'. Key position is routed to the upper ranks so the mixture gets stronger toward the treble, which is what real pipework does and why organs do not go muddy in the bass."
+
+[params]
+algo = 32
+feedback = 0.0
+
+# 16' — the foundation.
+op1-eg-r1 = 82
+op1-eg-r2 = 40
+op1-eg-l2 = 99
+op1-eg-l3 = 99
+op1-eg-r4 = 78
+
+# 8' principal.
+op2-num = 2
+op2-level = 92
+op2-eg-r1 = 84
+op2-eg-l2 = 99
+op2-eg-l3 = 99
+op2-eg-r4 = 78
+
+# 5 1/3' quint.
+op3-num = 3
+op3-level = 58
+op3-eg-r1 = 80
+op3-eg-l2 = 99
+op3-eg-l3 = 99
+op3-eg-r4 = 76
+
+# 4' octave.
+op4-num = 4
+op4-level = 70
+op4-eg-r1 = 86
+op4-eg-l2 = 99
+op4-eg-l3 = 99
+op4-eg-r4 = 78
+
+# 2 2/3' twelfth — part of the mixture, key-scaled below.
+op5-num = 6
+op5-level = 44
+op5-eg-r1 = 88
+op5-eg-l2 = 99
+op5-eg-l3 = 99
+op5-eg-r4 = 80
+
+# 2' fifteenth — the top of the mixture.
+op6-num = 8
+op6-level = 38
+op6-eg-r1 = 90
+op6-eg-l2 = 99
+op6-eg-l3 = 99
+op6-eg-r4 = 80
+
+# Chiff: a fast blip of the upper ranks on note-on, then gone.
+mod-env-a = 0.0
+mod-env-d = 55.0
+mod-env-s = 0.0
+mod-env-r = 40.0
+mod-env-shape = "Exp"
+
+filter-enable = true
+filter-cutoff = 6000.0
+filter-resonance = 0.0
+filter-slope = "2-Pole"
+filter-keytrack = 0.30
+
+stack-density = 2
+stack-detune = 2.0
+stack-spread = 0.5
+
+reverb-on = true
+reverb-size = 0.95
+reverb-decay = 5.5
+reverb-damp = 0.35
+reverb-mix = 0.42
+
+# Key position -> upper ranks. This is the mixture: stronger in the treble,
+# absent in the pedal. `key` is a per-stack source, so it is sampled once at
+# note-on rather than smeared across the lanes.
+master-volume = -15.40
+[[matrix]]
+slot = 0
+source = "key"
+dest = "op5-level"
+curve = "lin"
+depth = 0.42
+
+[[matrix]]
+slot = 1
+source = "key"
+dest = "op6-level"
+curve = "lin"
+depth = 0.50
+
+[[matrix]]
+slot = 2
+source = "mod-env"
+dest = "op6-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.5
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -0.5

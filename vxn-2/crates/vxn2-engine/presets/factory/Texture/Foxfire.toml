@@ -1,0 +1,140 @@
+schema = 1
+
+[meta]
+name = "Foxfire"
+author = "Vulpus Labs"
+category = "Texture"
+comment = "Bioluminescence — cold light with no heat under it. All the energy is above 1 kHz and the two LFOs run at different rates on different targets, one per-lane and one patch-wide, so the glitter never settles into a pattern you can follow. Long undamped tail and a ping-pong delay just under the reverb."
+
+[params]
+algo = 31
+feedback = 1.8
+
+op1-num = 3
+op1-eg-r1 = 52
+op1-eg-r2 = 40
+op1-eg-l2 = 78
+op1-eg-l3 = 70
+op1-eg-r4 = 34
+
+op2-num = 5
+op2-level = 76
+op2-detune = 7
+op2-eg-r1 = 50
+op2-eg-l2 = 74
+op2-eg-l3 = 64
+op2-eg-r4 = 34
+
+op3-num = 7
+op3-level = 64
+op3-detune = -8
+op3-eg-r1 = 48
+op3-eg-l2 = 68
+op3-eg-l3 = 58
+op3-eg-r4 = 32
+
+op4-num = 9
+op4-level = 54
+op4-detune = 6
+op4-eg-r1 = 46
+op4-eg-l2 = 62
+op4-eg-l3 = 52
+op4-eg-r4 = 32
+
+op5-num = 12
+op5-level = 46
+op5-eg-r1 = 44
+op5-eg-l2 = 56
+op5-eg-l3 = 46
+op5-eg-r4 = 30
+
+op6-num = 17
+op6-level = 40
+op6-eg-r1 = 42
+op6-eg-l2 = 50
+op6-eg-l3 = 40
+op6-eg-r4 = 30
+
+# Pulse LFO, patch-global — hard on/off flicker, not a smooth sweep.
+lfo1-shape = "Pulse"
+lfo1-rate = 3.1
+
+# Triangle LFO, per-lane — each lane breathes on its own clock.
+lfo2-shape = "Tri"
+lfo2-rate = 0.7
+lfo2-fade = 1400.0
+
+filter-enable = true
+filter-cutoff = 1000.0
+filter-resonance = 0.24
+filter-mode = "HP"
+filter-slope = "2-Pole"
+filter-keytrack = 0.25
+
+stack-density = 6
+stack-detune = 9.0
+stack-spread = 1.0
+stack-distrib = "Random"
+
+reverb-on = true
+reverb-size = 0.95
+reverb-decay = 9.5
+reverb-damp = 0.15
+reverb-mix = 0.44
+
+delay-on = true
+delay-time = 333.0
+delay-sync = false
+delay-feedback = 0.62
+delay-mix = 0.26
+delay-pingpong = true
+
+master-volume = 3.75
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "op6-level"
+curve = "lin"
+depth = 0.42
+
+[[matrix]]
+slot = 1
+source = "lfo2"
+dest = "op4-level"
+curve = "lin"
+depth = 0.34
+
+[[matrix]]
+slot = 2
+source = "lfo2"
+dest = "op5-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 3
+source = "voice-rand"
+dest = "lfo2-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 4
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 6
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0

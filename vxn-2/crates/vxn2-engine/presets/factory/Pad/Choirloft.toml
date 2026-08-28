@@ -1,0 +1,121 @@
+schema = 1
+
+[meta]
+name = "Choirloft"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "A voice pad that swells under the hand. Algo 22 fans op6 across three carriers, so aftertouch on that single operator brightens all three together like a choir leaning into a note. Formant-ish fixed-frequency content on op5 keeps a vowel in the sound as the pitch moves. Six lanes, long reverb, no delay."
+
+[params]
+algo = 22
+feedback = 1.6
+
+op1-eg-r1 = 44
+op1-eg-r2 = 34
+op1-eg-l2 = 92
+op1-eg-l3 = 88
+op1-eg-r4 = 30
+op1-ks-r-depth = 8
+
+op2-level = 44
+op2-eg-r1 = 40
+op2-eg-l2 = 66
+op2-eg-l3 = 58
+op2-eg-r4 = 30
+
+op3-num = 2
+op3-level = 80
+op3-detune = -6
+op3-eg-r1 = 42
+op3-eg-l2 = 86
+op3-eg-l3 = 80
+op3-eg-r4 = 28
+
+op4-num = 3
+op4-level = 66
+op4-detune = 5
+op4-eg-r1 = 40
+op4-eg-l2 = 80
+op4-eg-l3 = 72
+op4-eg-r4 = 28
+
+# op5 in fixed mode — a stationary formant around 1.1 kHz.
+op5-ratio-mode = "Fixed"
+op5-fixed-hz = 1100.0
+op5-level = 40
+op5-eg-r1 = 38
+op5-eg-l2 = 62
+op5-eg-l3 = 52
+op5-eg-r4 = 30
+
+# op6 fans out to carriers 3, 4 and 5 — the aftertouch handle.
+op6-num = 2
+op6-level = 34
+op6-eg-r1 = 38
+op6-eg-l2 = 58
+op6-eg-l3 = 48
+op6-eg-r4 = 30
+
+filter-enable = true
+filter-cutoff = 2200.0
+filter-resonance = 0.16
+filter-slope = "2-Pole"
+filter-keytrack = 0.45
+
+lfo2-shape = "Sine"
+lfo2-rate = 4.2
+lfo2-delay = 700.0
+lfo2-fade = 900.0
+
+stack-density = 6
+stack-detune = 9.0
+stack-spread = 0.95
+
+reverb-on = true
+reverb-size = 0.92
+reverb-decay = 6.5
+reverb-damp = 0.45
+reverb-mix = 0.44
+
+master-volume = -8.33
+[[matrix]]
+slot = 0
+source = "aftertouch"
+dest = "op6-level"
+curve = "lin"
+depth = 0.55
+
+[[matrix]]
+slot = 1
+source = "aftertouch"
+dest = "cutoff"
+curve = "lin"
+depth = 0.28
+
+[[matrix]]
+slot = 2
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.016
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.85
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.85
+
+[[matrix]]
+slot = 5
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0

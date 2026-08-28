@@ -1,0 +1,118 @@
+schema = 1
+
+[meta]
+name = "Sympathetic"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Sitar: a buzzing bridge and strings you did not pluck. Feedback near maximum gives the jawari rasp, and a high-resonance band-pass ratio-locked to the 4th harmonic rings whatever the buzz throws at it — locked, so the rasp sits at the same interval on every note instead of wandering. Four detuned lanes stand in for the sympathetic strings."
+
+[params]
+algo = 8
+feedback = 6.4
+
+op1-eg-r1 = 99
+op1-eg-r2 = 46
+op1-eg-l2 = 72
+op1-eg-l3 = 40
+op1-eg-r3 = 28
+op1-eg-r4 = 44
+op1-vel-sens = 4
+op1-ks-r-depth = 20
+
+op2-num = 3
+op2-level = 74
+op2-vel-sens = 6
+op2-eg-r1 = 99
+op2-eg-r2 = 62
+op2-eg-l2 = 46
+op2-eg-l3 = 22
+op2-eg-r4 = 56
+
+# op4 carries the feedback in algo 8 — the bridge buzz.
+op3-num = 2
+op3-level = 80
+op3-detune = 6
+op3-eg-r1 = 99
+op3-eg-r2 = 52
+op3-eg-l2 = 62
+op3-eg-l3 = 30
+op3-eg-r3 = 30
+op3-eg-r4 = 48
+op3-ks-r-depth = 24
+
+op4-num = 5
+op4-level = 66
+op4-vel-sens = 7
+op4-eg-r1 = 99
+op4-eg-r2 = 58
+op4-eg-l2 = 52
+op4-eg-l3 = 26
+op4-eg-r4 = 54
+
+op5-num = 7
+op5-level = 48
+op5-detune = -7
+op5-eg-r1 = 99
+op5-eg-r2 = 70
+op5-eg-l2 = 30
+op5-eg-l3 = 12
+
+op6-num = 11
+op6-level = 34
+op6-eg-r2 = 78
+op6-eg-l2 = 18
+op6-eg-l3 = 0
+
+# Ratio-locked to the 4th harmonic (4 x 16.3516), high resonance = the rasp.
+filter-enable = true
+filter-cutoff = 65.4064
+filter-resonance = 0.72
+filter-mode = "BP"
+filter-slope = "2-Pole"
+filter-drive = 2.2
+filter-keytrack = 1.0
+
+stack-density = 4
+stack-detune = 9.0
+stack-spread = 0.8
+
+reverb-on = true
+reverb-size = 0.6
+reverb-decay = 2.6
+reverb-mix = 0.24
+
+master-volume = -6.11
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op4-level"
+curve = "exp"
+depth = 0.42
+
+[[matrix]]
+slot = 1
+source = "mod-env"
+dest = "cutoff"
+curve = "exp"
+depth = 0.25
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.8
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.8
+
+[[matrix]]
+slot = 4
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0

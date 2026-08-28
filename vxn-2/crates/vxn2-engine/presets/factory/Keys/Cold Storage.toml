@@ -1,0 +1,113 @@
+schema = 1
+
+[meta]
+name = "Cold Storage"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "The tine electric piano, done honestly: op2 sits at a 14:1 ratio and decays in a blink, so it is a strike rather than a tone, and velocity drives its index hard. Play softly and you get the woody body; dig in and the bell appears on top. Two lanes through a slow phaser for the amp-and-vibrato half of the sound."
+
+[params]
+algo = 5
+feedback = 1.8
+
+# op1 — main body carrier.
+op1-eg-r1 = 99
+op1-eg-r2 = 52
+op1-eg-l2 = 72
+op1-eg-l3 = 58
+op1-eg-r4 = 62
+op1-vel-sens = 4
+op1-ks-r-depth = 22
+
+# op2 -> op1 at 14:1 — the tine strike. Gone in ~80 ms.
+op2-num = 14
+op2-level = 68
+op2-vel-sens = 7
+op2-eg-r1 = 99
+op2-eg-r2 = 94
+op2-eg-l2 = 0
+op2-eg-l3 = 0
+op2-eg-r3 = 90
+op2-eg-r4 = 92
+
+# op3 — second carrier, the wooden knock under the tine.
+op3-level = 82
+op3-eg-r1 = 99
+op3-eg-r2 = 60
+op3-eg-l2 = 62
+op3-eg-l3 = 46
+op3-eg-r4 = 66
+op3-vel-sens = 5
+op3-ks-r-depth = 26
+
+op4-num = 3
+op4-level = 52
+op4-vel-sens = 6
+op4-eg-r1 = 99
+op4-eg-r2 = 82
+op4-eg-l2 = 22
+op4-eg-l3 = 8
+op4-eg-r4 = 84
+
+# op5 — quiet detuned third carrier for slow beating against op1.
+op5-level = 58
+op5-detune = -5
+op5-eg-r1 = 96
+op5-eg-r2 = 50
+op5-eg-l2 = 60
+op5-eg-l3 = 48
+op5-eg-r4 = 60
+op5-ks-r-depth = 24
+
+op6-num = 2
+op6-level = 40
+op6-vel-sens = 4
+op6-eg-r2 = 72
+op6-eg-l2 = 30
+op6-eg-l3 = 16
+
+stack-density = 2
+stack-detune = 4.0
+stack-spread = 0.55
+
+# The amp: slow phaser standing in for the vibrato bar.
+phaser-on = true
+phaser-rate = 0.35
+phaser-depth = 0.55
+phaser-feedback = 0.25
+phaser-mix = 0.40
+phaser-spread = 150.0
+
+reverb-on = true
+reverb-size = 0.35
+reverb-decay = 1.4
+reverb-mix = 0.14
+
+master-volume = -6.13
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op2-level"
+curve = "exp"
+depth = 0.55
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op4-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.6
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.6

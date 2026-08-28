@@ -1,0 +1,103 @@
+schema = 1
+
+[meta]
+name = "Campanile"
+author = "Vulpus Labs"
+category = "Bell"
+comment = "Tubular bells. No filter — a bell's spectrum is already the instrument, and band-limiting it just makes it a smaller bell. The partials are deliberately non-integer (2.76, 5.40, 8.93) which is roughly where a struck tube actually rings, and the two carriers are detuned against each other so the strike beats slowly as it decays."
+
+[params]
+algo = 5
+feedback = 4.4
+
+op1-eg-r1 = 99
+op1-eg-r2 = 34
+op1-eg-l2 = 62
+op1-eg-l3 = 30
+op1-eg-r3 = 22
+op1-eg-r4 = 34
+op1-vel-sens = 3
+op1-ks-r-depth = 12
+
+op2-num = 11
+op2-denom = 4
+op2-fine = 4
+op2-level = 76
+op2-vel-sens = 6
+op2-eg-r1 = 99
+op2-eg-r2 = 40
+op2-eg-l2 = 44
+op2-eg-l3 = 18
+op2-eg-r4 = 38
+
+op3-level = 88
+op3-detune = -7
+op3-eg-r1 = 99
+op3-eg-r2 = 32
+op3-eg-l2 = 58
+op3-eg-l3 = 26
+op3-eg-r3 = 20
+op3-eg-r4 = 32
+op3-ks-r-depth = 14
+
+op4-num = 27
+op4-denom = 5
+op4-level = 66
+op4-detune = 5
+op4-vel-sens = 6
+op4-eg-r1 = 99
+op4-eg-r2 = 44
+op4-eg-l2 = 36
+op4-eg-l3 = 12
+op4-eg-r4 = 42
+
+# op5/op6 — the hammer strike, gone in under a second.
+op5-num = 9
+op5-level = 58
+op5-vel-sens = 7
+op5-eg-r1 = 99
+op5-eg-r2 = 80
+op5-eg-l2 = 10
+op5-eg-l3 = 0
+op5-eg-r4 = 82
+
+op6-num = 45
+op6-denom = 5
+op6-level = 52
+op6-vel-sens = 7
+op6-eg-r1 = 99
+op6-eg-r2 = 88
+op6-eg-l2 = 6
+op6-eg-l3 = 0
+
+stack-density = 2
+stack-detune = 4.0
+stack-spread = 0.7
+
+reverb-on = true
+reverb-size = 0.82
+reverb-decay = 5.0
+reverb-damp = 0.3
+reverb-mix = 0.32
+
+master-volume = -12.64
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op6-level"
+curve = "exp"
+depth = 0.52
+
+[[matrix]]
+slot = 1
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.7
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.7

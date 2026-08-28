@@ -1,0 +1,112 @@
+schema = 1
+
+[meta]
+name = "Hammerfall"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Hammered dulcimer. Each note on the real instrument is two or three strings tuned very slightly apart and struck together, which is exactly what four narrow-detuned lanes do — the beating is the sound, so the detune stays under 8 cents where it shimmers rather than chorusing. Hard mallet on top, wood underneath."
+
+[params]
+algo = 14
+feedback = 3.0
+
+op1-eg-r1 = 99
+op1-eg-r2 = 62
+op1-eg-l2 = 58
+op1-eg-l3 = 24
+op1-eg-r3 = 38
+op1-eg-r4 = 62
+op1-vel-sens = 5
+op1-ks-r-depth = 28
+
+op2-num = 4
+op2-level = 64
+op2-vel-sens = 7
+op2-eg-r1 = 99
+op2-eg-r2 = 84
+op2-eg-l2 = 18
+op2-eg-l3 = 0
+op2-eg-r4 = 84
+
+op3-num = 2
+op3-level = 82
+op3-detune = 5
+op3-eg-r1 = 99
+op3-eg-r2 = 66
+op3-eg-l2 = 48
+op3-eg-l3 = 18
+op3-eg-r3 = 42
+op3-eg-r4 = 66
+op3-ks-r-depth = 32
+
+op4-num = 3
+op4-level = 56
+op4-vel-sens = 6
+op4-eg-r1 = 99
+op4-eg-r2 = 78
+op4-eg-l2 = 26
+op4-eg-l3 = 6
+op4-eg-r4 = 78
+
+op5-num = 6
+op5-level = 44
+op5-vel-sens = 7
+op5-eg-r1 = 99
+op5-eg-r2 = 88
+op5-eg-l2 = 12
+op5-eg-l3 = 0
+
+op6-num = 9
+op6-level = 32
+op6-vel-sens = 6
+op6-eg-r1 = 99
+op6-eg-r2 = 92
+op6-eg-l2 = 8
+op6-eg-l3 = 0
+
+filter-enable = true
+filter-cutoff = 3200.0
+filter-resonance = 0.14
+filter-slope = "2-Pole"
+filter-drive = 1.8
+filter-keytrack = 0.55
+
+# Courses, not chorus: narrow detune, linear spread.
+stack-density = 4
+stack-detune = 7.0
+stack-spread = 0.6
+stack-distrib = "Linear"
+
+reverb-on = true
+reverb-size = 0.62
+reverb-decay = 2.8
+reverb-mix = 0.26
+
+master-volume = -13.68
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op2-level"
+curve = "exp"
+depth = 0.48
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.6
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.6

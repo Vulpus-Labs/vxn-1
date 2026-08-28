@@ -1,0 +1,114 @@
+schema = 1
+
+[meta]
+name = "Semaphore"
+author = "Vulpus Labs"
+category = "Texture"
+comment = "A patch that plays itself. LFO1 runs sample-and-hold, tempo-synced, stepping two operator levels to a new random value every beat — so a single held note becomes a shifting pattern rather than a drone. The delay is synced too, so the steps and the echoes lock together instead of fighting. Hold one key and let it talk."
+
+[params]
+algo = 22
+feedback = 3.0
+
+op1-eg-r1 = 90
+op1-eg-r2 = 40
+op1-eg-l2 = 94
+op1-eg-l3 = 92
+op1-eg-r4 = 56
+op1-ks-r-depth = 10
+
+op2-num = 2
+op2-level = 58
+op2-eg-r1 = 88
+op2-eg-l2 = 70
+op2-eg-l3 = 64
+
+op3-num = 3
+op3-level = 74
+op3-detune = 5
+op3-eg-r1 = 90
+op3-eg-l2 = 88
+op3-eg-l3 = 84
+op3-eg-r4 = 56
+
+op4-num = 4
+op4-level = 62
+op4-detune = -6
+op4-eg-r1 = 90
+op4-eg-l2 = 84
+op4-eg-l3 = 78
+op4-eg-r4 = 56
+
+op5-num = 6
+op5-level = 50
+op5-eg-r1 = 88
+op5-eg-l2 = 76
+op5-eg-l3 = 70
+op5-eg-r4 = 56
+
+# op6 fans across 3, 4 and 5 — the operator S&H drives hardest.
+op6-num = 5
+op6-level = 48
+op6-eg-r1 = 88
+op6-eg-l2 = 72
+op6-eg-l3 = 66
+
+# Sample-and-hold, locked to host tempo.
+lfo1-shape = "S&H"
+lfo1-rate = 2.0
+lfo1-sync = true
+
+filter-enable = true
+filter-cutoff = 1600.0
+filter-resonance = 0.42
+filter-slope = "4-Pole"
+filter-drive = 1.8
+filter-keytrack = 0.35
+
+delay-on = true
+delay-time = 375.0
+delay-sync = true
+delay-feedback = 0.52
+delay-mix = 0.30
+delay-pingpong = true
+
+reverb-on = true
+reverb-size = 0.7
+reverb-decay = 3.4
+reverb-mix = 0.26
+
+master-volume = -6.43
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "op6-level"
+curve = "lin"
+depth = 0.55
+
+[[matrix]]
+slot = 1
+source = "lfo1"
+dest = "op2-level"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 2
+source = "lfo1"
+dest = "cutoff"
+curve = "lin"
+depth = 0.22
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = 0.9
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -0.9

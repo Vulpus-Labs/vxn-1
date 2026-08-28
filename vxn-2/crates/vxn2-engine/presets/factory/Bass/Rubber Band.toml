@@ -1,0 +1,101 @@
+schema = 1
+
+[meta]
+name = "Rubber Band"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Snap-and-release plucked bass. Algo 5's three parallel 2-stacks all decay to nothing, so the note is pure attack; a 2-pole ladder with a fast mod-env sweep supplies the rubbery thwack. Velocity is routed to feedback, so digging in adds harmonic bite rather than just level."
+
+[params]
+algo = 5
+feedback = 2.8
+
+# Carriers 1/3/5 — instant attack, everything gone in half a second.
+op1-eg-r1 = 99
+op1-eg-r2 = 72
+op1-eg-l2 = 55
+op1-eg-l3 = 0
+op1-eg-r3 = 62
+op1-eg-r4 = 82
+op1-ks-r-depth = 12
+
+op3-num = 2
+op3-level = 88
+op3-eg-r1 = 99
+op3-eg-r2 = 78
+op3-eg-l2 = 44
+op3-eg-l3 = 0
+op3-eg-r3 = 66
+op3-eg-r4 = 82
+op3-ks-r-depth = 16
+
+op5-num = 3
+op5-level = 72
+op5-eg-r1 = 99
+op5-eg-r2 = 84
+op5-eg-l2 = 30
+op5-eg-l3 = 0
+op5-eg-r3 = 70
+op5-eg-r4 = 84
+op5-ks-r-depth = 20
+
+# Modulators — shorter than their carriers, so the timbre closes first.
+op2-level = 66
+op2-vel-sens = 5
+op2-eg-r2 = 86
+op2-eg-l2 = 24
+op2-eg-l3 = 0
+op2-eg-r4 = 88
+
+op4-num = 3
+op4-level = 58
+op4-vel-sens = 5
+op4-eg-r2 = 88
+op4-eg-l2 = 18
+op4-eg-l3 = 0
+op4-eg-r4 = 88
+
+op6-num = 5
+op6-level = 46
+op6-vel-sens = 6
+op6-eg-r2 = 90
+op6-eg-l2 = 14
+op6-eg-l3 = 0
+op6-eg-r4 = 90
+
+# 2-pole so the sweep stays springy rather than woolly.
+filter-enable = true
+filter-cutoff = 620.0
+filter-resonance = 0.52
+filter-slope = "2-Pole"
+filter-drive = 3.0
+filter-keytrack = 0.40
+
+mod-env-a = 1.0
+mod-env-d = 180.0
+mod-env-s = 0.0
+mod-env-r = 120.0
+
+hp-cutoff = 32.0
+
+master-volume = -13.08
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "cutoff"
+curve = "exp"
+depth = 0.72
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "feedback"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.26

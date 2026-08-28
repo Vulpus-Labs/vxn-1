@@ -1,0 +1,125 @@
+schema = 1
+
+[meta]
+name = "Vertigo"
+author = "Vulpus Labs"
+category = "Lead"
+comment = "A mono lead built to be leaned on. Aftertouch does three things at once — raises op2's index, speeds the vibrato and opens the filter — so pressure on a held note makes it climb rather than just get louder. Legato with a short glide, so a fast line slurs and only the first note strikes."
+
+[params]
+algo = 1
+feedback = 4.2
+
+# op1 low carrier, op3 the upper carrier of the 6->5->4->3 stack.
+op1-eg-r1 = 92
+op1-eg-r2 = 48
+op1-eg-l2 = 90
+op1-eg-l3 = 86
+op1-eg-r4 = 66
+op1-ks-r-depth = 12
+
+op2-num = 2
+op2-level = 66
+op2-vel-sens = 5
+op2-eg-r1 = 90
+op2-eg-r2 = 52
+op2-eg-l2 = 62
+op2-eg-l3 = 54
+op2-eg-r4 = 68
+
+op3-num = 2
+op3-level = 82
+op3-detune = 4
+op3-eg-r1 = 90
+op3-eg-r2 = 50
+op3-eg-l2 = 84
+op3-eg-l3 = 78
+op3-eg-r4 = 66
+op3-ks-r-depth = 16
+
+op4-num = 3
+op4-level = 58
+op4-vel-sens = 5
+op4-eg-r1 = 88
+op4-eg-r2 = 58
+op4-eg-l2 = 54
+op4-eg-l3 = 44
+op4-eg-r4 = 70
+
+op5-num = 4
+op5-level = 42
+op5-eg-r1 = 86
+op5-eg-r2 = 66
+op5-eg-l2 = 38
+op5-eg-l3 = 26
+
+op6-num = 6
+op6-level = 30
+op6-eg-r1 = 84
+op6-eg-r2 = 72
+op6-eg-l2 = 28
+op6-eg-l3 = 14
+
+assign-mode = "Solo"
+legato = true
+glide-time = 45.0
+
+filter-enable = true
+filter-cutoff = 2400.0
+filter-resonance = 0.30
+filter-slope = "4-Pole"
+filter-drive = 1.8
+filter-keytrack = 0.55
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.0
+lfo2-delay = 320.0
+lfo2-fade = 480.0
+
+delay-on = true
+delay-time = 375.0
+delay-sync = true
+delay-feedback = 0.34
+delay-mix = 0.18
+delay-pingpong = true
+
+reverb-on = true
+reverb-size = 0.45
+reverb-decay = 2.0
+reverb-mix = 0.14
+
+master-volume = 0.81
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.022
+
+[[matrix]]
+slot = 1
+source = "aftertouch"
+dest = "op2-level"
+curve = "lin"
+depth = 0.45
+
+[[matrix]]
+slot = 2
+source = "aftertouch"
+dest = "lfo2-rate"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 3
+source = "aftertouch"
+dest = "cutoff"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 4
+source = "velocity"
+dest = "op4-level"
+curve = "lin"
+depth = 0.30

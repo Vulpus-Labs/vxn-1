@@ -1,0 +1,134 @@
+schema = 1
+
+[meta]
+name = "Ash Cloud"
+author = "Vulpus Labs"
+category = "Texture"
+comment = "Dark, dense and not quite pitched. Feedback near maximum drives op6 into noise, and voice-idx is routed to operator pitch so each of the eight lanes sits at a slightly different place — the stack does not detune around a centre so much as smear across a region. The pitch envelope falls a full tone over six seconds, so held chords sag."
+
+[params]
+algo = 16
+feedback = 6.8
+
+op1-eg-r1 = 38
+op1-eg-r2 = 28
+op1-eg-l2 = 90
+op1-eg-l3 = 84
+op1-eg-r4 = 22
+op1-ks-r-depth = 6
+
+op2-num = 3
+op2-denom = 2
+op2-level = 72
+op2-eg-r1 = 36
+op2-eg-l2 = 74
+op2-eg-l3 = 66
+op2-eg-r4 = 22
+
+op3-num = 5
+op3-denom = 4
+op3-level = 66
+op3-detune = -10
+op3-eg-r1 = 34
+op3-eg-l2 = 68
+op3-eg-l3 = 58
+
+op4-num = 7
+op4-denom = 3
+op4-level = 58
+op4-eg-r1 = 32
+op4-eg-l2 = 62
+op4-eg-l3 = 52
+
+op5-num = 9
+op5-denom = 4
+op5-level = 50
+op5-detune = 11
+op5-eg-r1 = 30
+op5-eg-l2 = 56
+op5-eg-l3 = 46
+
+op6-num = 11
+op6-denom = 3
+op6-level = 62
+op6-eg-r1 = 28
+op6-eg-l2 = 60
+op6-eg-l3 = 50
+
+# A full tone of sag over the first several seconds.
+peg-r1 = 30
+peg-r2 = 22
+peg-l1 = 0
+peg-l2 = -6
+peg-l3 = -6
+peg-l4 = 0
+peg-depth = 8.0
+
+filter-enable = true
+filter-cutoff = 900.0
+filter-resonance = 0.26
+filter-slope = "4-Pole"
+filter-drive = 4.0
+filter-keytrack = 0.20
+
+mod-env-a = 2000.0
+mod-env-d = 5000.0
+mod-env-s = 0.5
+mod-env-r = 3000.0
+
+stack-density = 8
+stack-detune = 16.0
+stack-spread = 1.0
+stack-distrib = "Random"
+
+hp-cutoff = 30.0
+
+reverb-on = true
+reverb-size = 0.9
+reverb-decay = 7.5
+reverb-damp = 0.62
+reverb-mix = 0.38
+
+# Per-lane pitch offsets: the stack smears rather than detuning symmetrically.
+master-volume = -26.58
+[[matrix]]
+slot = 0
+source = "voice-idx"
+dest = "op2-pitch"
+curve = "lin"
+depth = 0.06
+
+[[matrix]]
+slot = 1
+source = "voice-idx"
+dest = "op4-pitch"
+curve = "lin"
+depth = -0.05
+
+[[matrix]]
+slot = 2
+source = "mod-env"
+dest = "cutoff"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 3
+source = "aftertouch"
+dest = "feedback"
+curve = "lin"
+depth = 0.20
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 5
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0

@@ -1,0 +1,115 @@
+schema = 1
+
+[meta]
+name = "Paper Lantern"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Plucked zither, no filter anywhere — the FM is doing all of it. Algo 31 leaves ops 1 to 4 as pure carriers tuned to a stretched partial series, so the decay is slightly inharmonic and the note shimmers as its partials drift out of step. Three lanes with randomised start phase keep repeated notes from sounding identical."
+
+[params]
+algo = 31
+feedback = 1.2
+
+op1-eg-r1 = 99
+op1-eg-r2 = 54
+op1-eg-l2 = 62
+op1-eg-l3 = 26
+op1-eg-r3 = 32
+op1-eg-r4 = 52
+op1-vel-sens = 4
+
+op2-num = 2
+op2-fine = 1
+op2-level = 78
+op2-detune = 4
+op2-eg-r1 = 99
+op2-eg-r2 = 60
+op2-eg-l2 = 52
+op2-eg-l3 = 20
+op2-eg-r3 = 36
+op2-eg-r4 = 56
+
+op3-num = 3
+op3-fine = 3
+op3-level = 62
+op3-detune = -6
+op3-eg-r1 = 99
+op3-eg-r2 = 68
+op3-eg-l2 = 40
+op3-eg-l3 = 12
+op3-eg-r3 = 42
+op3-eg-r4 = 60
+
+op4-num = 5
+op4-fine = 5
+op4-level = 46
+op4-detune = 8
+op4-eg-r1 = 99
+op4-eg-r2 = 76
+op4-eg-l2 = 28
+op4-eg-l3 = 6
+op4-eg-r4 = 66
+
+# op5 carrier modulated by op6 — the plectrum click.
+op5-num = 8
+op5-level = 40
+op5-vel-sens = 7
+op5-eg-r1 = 99
+op5-eg-r2 = 90
+op5-eg-l2 = 10
+op5-eg-l3 = 0
+op5-eg-r4 = 90
+
+op6-num = 13
+op6-level = 44
+op6-vel-sens = 7
+op6-eg-r1 = 99
+op6-eg-r2 = 94
+op6-eg-l2 = 6
+op6-eg-l3 = 0
+
+stack-density = 3
+stack-detune = 6.0
+stack-spread = 0.75
+
+reverb-on = true
+reverb-size = 0.55
+reverb-decay = 2.4
+reverb-damp = 0.4
+reverb-mix = 0.22
+
+master-volume = -7.34
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op6-level"
+curve = "exp"
+depth = 0.46
+
+[[matrix]]
+slot = 1
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 2
+source = "voice-rand"
+dest = "op3-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.7
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op2-pan"
+curve = "lin"
+depth = -0.7

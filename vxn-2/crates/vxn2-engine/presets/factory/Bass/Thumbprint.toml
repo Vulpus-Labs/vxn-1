@@ -1,0 +1,100 @@
+schema = 1
+
+[meta]
+name = "Thumbprint"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Fretless: mono, legato, and it slides. Solo assign with a 90 ms glide means overlapping notes bend into each other and never retrigger the envelope, so a phrase reads as one continuous line. The mod wheel adds growl by raising op2's index, not by adding vibrato."
+
+[params]
+algo = 3
+feedback = 3.2
+
+# op1 sole low carrier — soft attack, long sustain, singing.
+op1-eg-r1 = 76
+op1-eg-r2 = 44
+op1-eg-l2 = 94
+op1-eg-l3 = 90
+op1-eg-r4 = 52
+op1-ks-r-depth = 4
+
+op2-level = 64
+op2-vel-sens = 5
+op2-eg-r1 = 72
+op2-eg-r2 = 46
+op2-eg-l2 = 66
+op2-eg-l3 = 58
+op2-eg-r4 = 56
+
+op3-num = 2
+op3-level = 48
+op3-eg-r1 = 70
+op3-eg-l2 = 52
+op3-eg-l3 = 42
+
+# Second stack 6->5->4, op4 the upper carrier — the "mwah".
+op4-num = 2
+op4-level = 62
+op4-eg-r1 = 68
+op4-eg-r2 = 50
+op4-eg-l2 = 70
+op4-eg-l3 = 60
+op4-eg-r4 = 54
+
+op5-num = 3
+op5-level = 44
+op5-eg-r2 = 62
+op5-eg-l2 = 42
+op5-eg-l3 = 30
+
+op6-num = 5
+op6-level = 28
+op6-eg-r2 = 74
+op6-eg-l2 = 26
+op6-eg-l3 = 12
+
+# Mono and connected.
+assign-mode = "Solo"
+legato = true
+glide-time = 90.0
+
+filter-enable = true
+filter-cutoff = 900.0
+filter-resonance = 0.22
+filter-slope = "4-Pole"
+filter-drive = 2.0
+filter-keytrack = 0.50
+
+# Slow, late vibrato — arrives only on held notes.
+lfo2-shape = "Sine"
+lfo2-rate = 4.6
+lfo2-delay = 420.0
+lfo2-fade = 500.0
+
+hp-cutoff = 28.0
+reverb-on = true
+reverb-size = 0.3
+reverb-decay = 1.2
+reverb-mix = 0.10
+
+master-volume = -0.89
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.018
+
+[[matrix]]
+slot = 1
+source = "mod-wheel"
+dest = "op2-level"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.30

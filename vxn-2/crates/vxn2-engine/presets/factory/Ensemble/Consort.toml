@@ -1,0 +1,131 @@
+schema = 1
+
+[meta]
+name = "Consort"
+author = "Vulpus Labs"
+category = "Ensemble"
+comment = "Recorders and shawms — a renaissance wind band, breathy and slightly out of tune with itself. Blowing harder shortens the attack via velocity on the envelope rates, the way a wind instrument speaks faster under pressure. Three lanes at linear detune so the tuning error is even across the band rather than clustered."
+
+[params]
+algo = 5
+feedback = 1.0
+
+op1-eg-r1 = 64
+op1-eg-r2 = 46
+op1-eg-l2 = 94
+op1-eg-l3 = 90
+op1-eg-r4 = 62
+op1-vel-sens = 4
+op1-ks-r-depth = 18
+
+# Odd-harmonic modulator — the hollow, stopped-pipe colour.
+op2-num = 3
+op2-level = 52
+op2-vel-sens = 5
+op2-eg-r1 = 60
+op2-eg-r2 = 52
+op2-eg-l2 = 62
+op2-eg-l3 = 54
+op2-eg-r4 = 64
+
+op3-num = 2
+op3-level = 78
+op3-detune = 7
+op3-eg-r1 = 62
+op3-eg-r2 = 48
+op3-eg-l2 = 88
+op3-eg-l3 = 82
+op3-eg-r4 = 62
+op3-ks-r-depth = 22
+
+op4-num = 5
+op4-level = 42
+op4-vel-sens = 5
+op4-eg-r1 = 58
+op4-eg-r2 = 56
+op4-eg-l2 = 52
+op4-eg-l3 = 42
+op4-eg-r4 = 66
+
+op5-num = 4
+op5-level = 56
+op5-detune = -8
+op5-eg-r1 = 60
+op5-eg-l2 = 76
+op5-eg-l3 = 68
+op5-eg-r4 = 64
+
+# Breath noise stand-in: a high fixed tone, quiet, fading in with the note.
+op6-ratio-mode = "Fixed"
+op6-fixed-hz = 3400.0
+op6-level = 26
+op6-vel-sens = 6
+op6-eg-r1 = 72
+op6-eg-r2 = 60
+op6-eg-l2 = 34
+op6-eg-l3 = 26
+
+filter-enable = true
+filter-cutoff = 2400.0
+filter-resonance = 0.12
+filter-slope = "2-Pole"
+filter-keytrack = 0.45
+
+lfo2-shape = "Tri"
+lfo2-rate = 4.4
+lfo2-delay = 450.0
+lfo2-fade = 650.0
+
+stack-density = 3
+stack-detune = 10.0
+stack-spread = 0.7
+stack-distrib = "Linear"
+
+reverb-on = true
+reverb-size = 0.72
+reverb-decay = 3.0
+reverb-damp = 0.45
+reverb-mix = 0.28
+
+master-volume = -5.84
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op1-eg-rate"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op3-eg-rate"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op6-level"
+curve = "exp"
+depth = 0.42
+
+[[matrix]]
+slot = 3
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.020
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.7
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.7

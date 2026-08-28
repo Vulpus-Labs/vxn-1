@@ -1,0 +1,118 @@
+schema = 1
+
+[meta]
+name = "Wolf Interval"
+author = "Vulpus Labs"
+category = "Texture"
+comment = "Named for the interval old tuning systems could not fix. A notch filter sits in the middle of the spectrum removing the frequencies that would let the partials agree, and the mod-env slowly widens the stack detune underneath — so the patch grows more out of tune with itself the longer it is held. Unpleasant on purpose, and useful for it."
+
+[params]
+algo = 19
+feedback = 3.8
+
+# Carriers 1, 4, 5 — deliberately irrational intervals apart.
+op1-eg-r1 = 46
+op1-eg-r2 = 34
+op1-eg-l2 = 92
+op1-eg-l3 = 88
+op1-eg-r4 = 34
+op1-ks-r-depth = 8
+
+op2-num = 7
+op2-denom = 5
+op2-level = 62
+op2-eg-r1 = 44
+op2-eg-l2 = 70
+op2-eg-l3 = 62
+
+op3-num = 11
+op3-denom = 8
+op3-level = 54
+op3-eg-r1 = 42
+op3-eg-l2 = 62
+op3-eg-l3 = 54
+
+op4-num = 17
+op4-denom = 12
+op4-level = 80
+op4-detune = 9
+op4-eg-r1 = 44
+op4-eg-l2 = 86
+op4-eg-l3 = 80
+op4-eg-r4 = 34
+
+op5-num = 23
+op5-denom = 16
+op5-level = 72
+op5-detune = -11
+op5-eg-r1 = 42
+op5-eg-l2 = 82
+op5-eg-l3 = 74
+op5-eg-r4 = 34
+
+# op6 modulates both 4 and 5 and carries the feedback.
+op6-num = 13
+op6-denom = 6
+op6-level = 44
+op6-eg-r1 = 40
+op6-eg-l2 = 58
+op6-eg-l3 = 48
+
+# Notch: take out the middle so nothing can resolve.
+filter-enable = true
+filter-cutoff = 1100.0
+filter-resonance = 0.30
+filter-mode = "Notch"
+filter-keytrack = 0.35
+
+mod-env-a = 2800.0
+mod-env-d = 3600.0
+mod-env-s = 0.85
+mod-env-r = 2400.0
+
+stack-density = 6
+stack-detune = 8.0
+stack-spread = 0.9
+stack-distrib = "Random"
+
+reverb-on = true
+reverb-size = 0.85
+reverb-decay = 6.0
+reverb-mix = 0.36
+
+# The stack pulls itself apart as the note is held.
+master-volume = -8.25
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "stack-detune"
+curve = "lin"
+depth = 0.55
+
+[[matrix]]
+slot = 1
+source = "mod-env"
+dest = "stack-spread"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "voice-idx"
+dest = "op4-pitch"
+curve = "lin"
+depth = 0.04
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 4
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0

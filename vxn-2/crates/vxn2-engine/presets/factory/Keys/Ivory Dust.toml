@@ -1,0 +1,111 @@
+schema = 1
+
+[meta]
+name = "Ivory Dust"
+author = "Vulpus Labs"
+category = "Keys"
+comment = "A piano heard through a closed door — felted, soft-edged, no hammer. Modulation indices stay under a third of full so no patch ever gets glassy, and key scaling takes the top octaves down further still. Velocity moves the timbre gently rather than the volume violently; there is no hard attack anywhere in it."
+
+[params]
+algo = 3
+feedback = 0.8
+
+op1-eg-r1 = 94
+op1-eg-r2 = 46
+op1-eg-l2 = 68
+op1-eg-l3 = 40
+op1-eg-r3 = 32
+op1-eg-r4 = 48
+op1-vel-sens = 3
+op1-ks-r-depth = 30
+
+op2-level = 42
+op2-vel-sens = 5
+op2-eg-r1 = 92
+op2-eg-r2 = 64
+op2-eg-l2 = 34
+op2-eg-l3 = 14
+op2-eg-r4 = 62
+op2-ks-break-pt = 48
+op2-ks-r-depth = 52
+
+op3-num = 3
+op3-level = 30
+op3-vel-sens = 4
+op3-eg-r1 = 90
+op3-eg-r2 = 72
+op3-eg-l2 = 22
+op3-eg-l3 = 6
+op3-ks-break-pt = 48
+op3-ks-r-depth = 60
+
+# Second stack: op4 the quiet upper carrier a fifth up.
+op4-num = 3
+op4-level = 46
+op4-detune = 4
+op4-eg-r1 = 88
+op4-eg-r2 = 50
+op4-eg-l2 = 48
+op4-eg-l3 = 24
+op4-eg-r3 = 34
+op4-eg-r4 = 52
+op4-ks-r-depth = 44
+
+op5-num = 2
+op5-level = 32
+op5-eg-r1 = 86
+op5-eg-r2 = 70
+op5-eg-l2 = 24
+op5-eg-l3 = 8
+
+op6-num = 5
+op6-level = 18
+op6-eg-r2 = 78
+op6-eg-l2 = 16
+op6-eg-l3 = 0
+
+# Gentle top-end roll-off — the door, not a filter sweep.
+filter-enable = true
+filter-cutoff = 3600.0
+filter-resonance = 0.0
+filter-slope = "2-Pole"
+filter-keytrack = 0.35
+
+stack-density = 2
+stack-detune = 3.0
+stack-spread = 0.45
+
+reverb-on = true
+reverb-size = 0.55
+reverb-decay = 2.2
+reverb-damp = 0.62
+reverb-mix = 0.24
+
+master-volume = -8.19
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.28
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.22
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.4
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -0.4

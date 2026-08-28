@@ -1,0 +1,110 @@
+schema = 1
+
+[meta]
+name = "Catgut"
+author = "Vulpus Labs"
+category = "Pluck"
+comment = "Nylon-string guitar with a body that scales. The band-pass is ratio-locked: keytrack 1.0 with the base cutoff at 2x the C0 floor puts its centre exactly on the 2nd harmonic of whatever note you play, so the resonance is the same interval above the fundamental everywhere on the neck. The mod-env lifts it exactly one octave — to the 4th harmonic — for the pluck, then lets it fall back."
+
+[params]
+algo = 3
+feedback = 2.6
+
+op1-eg-r1 = 99
+op1-eg-r2 = 58
+op1-eg-l2 = 66
+op1-eg-l3 = 32
+op1-eg-r3 = 36
+op1-eg-r4 = 58
+op1-vel-sens = 4
+op1-ks-r-depth = 26
+
+op2-num = 2
+op2-level = 68
+op2-vel-sens = 6
+op2-eg-r1 = 99
+op2-eg-r2 = 76
+op2-eg-l2 = 32
+op2-eg-l3 = 10
+op2-eg-r4 = 72
+
+op3-num = 3
+op3-level = 48
+op3-vel-sens = 5
+op3-eg-r1 = 99
+op3-eg-r2 = 84
+op3-eg-l2 = 20
+op3-eg-l3 = 0
+
+# Second stack — the upper string body.
+op4-num = 3
+op4-level = 58
+op4-detune = 5
+op4-eg-r1 = 99
+op4-eg-r2 = 66
+op4-eg-l2 = 44
+op4-eg-l3 = 18
+op4-eg-r3 = 40
+op4-eg-r4 = 62
+op4-ks-r-depth = 32
+
+op5-num = 4
+op5-level = 42
+op5-eg-r1 = 99
+op5-eg-r2 = 80
+op5-eg-l2 = 22
+op5-eg-l3 = 0
+
+op6-num = 6
+op6-level = 28
+op6-eg-r2 = 86
+op6-eg-l2 = 14
+op6-eg-l3 = 0
+
+# Ratio-locked band-pass: centre = 2 x the played pitch, at every pitch.
+# 32.7032 = 2 x CUTOFF_MIN_HZ (16.3516); keytrack 1.0 does the tracking.
+filter-enable = true
+filter-cutoff = 32.7032
+filter-resonance = 0.48
+filter-mode = "BP"
+filter-slope = "2-Pole"
+filter-drive = 2.0
+filter-keytrack = 1.0
+
+# Cutoff dest is +/-4 octaves at full depth, so 0.25 = exactly one octave:
+# the 2nd harmonic up to the 4th, and back. Keep ratio-locked BP sweeps to
+# whole-octave amounts and keep them SHORT — every octave the centre climbs
+# away from the fundamental costs ~7 dB, because a band-pass moving up does
+# not brighten the way a low-pass does, it abandons the body. Velocity works
+# the FM index here instead of the cutoff, for the same reason.
+mod-env-a = 1.0
+mod-env-d = 260.0
+mod-env-s = 0.0
+mod-env-r = 180.0
+
+reverb-on = true
+reverb-size = 0.42
+reverb-decay = 1.5
+reverb-mix = 0.16
+
+master-volume = -9.82
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "cutoff"
+curve = "exp"
+depth = 0.25
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op2-level"
+curve = "exp"
+depth = 0.46
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op3-level"
+curve = "lin"
+depth = 0.32

@@ -1,7 +1,7 @@
 schema = 1
 
 [meta]
-name = "Soft Ambient Pad"
+name = "Slow Weather"
 author = "Vulpus Labs"
 category = "Pad"
 comment = "Slow, breathing FM pad: algo 5 with gentle modulators, very slow attack/release, 6-voice wide unison. Mod-env opens harmonics; LFO2 shimmer; huge reverb + ping-pong delay."

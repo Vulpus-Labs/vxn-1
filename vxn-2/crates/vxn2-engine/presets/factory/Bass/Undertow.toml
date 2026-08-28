@@ -1,0 +1,96 @@
+schema = 1
+
+[meta]
+name = "Undertow"
+author = "Vulpus Labs"
+category = "Bass"
+comment = "Deep FM bass with a filter that opens under the note rather than over it. Algo 16 funnels five modulators into one carrier; the mod-env drives the ladder up from 400 Hz so the harmonics arrive a beat after the fundamental. Velocity reaches both the filter and op2's index, so hard playing is brighter twice over."
+
+[params]
+algo = 16
+feedback = 2.4
+
+# op1 — sole carrier. Fast attack, sustains flat, short tail.
+op1-eg-r1 = 99
+op1-eg-r2 = 62
+op1-eg-l2 = 92
+op1-eg-l3 = 88
+op1-eg-r4 = 72
+op1-ks-r-depth = 8
+
+# op2 -> op1 at unison: thickens the fundamental, velocity-scaled below.
+op2-level = 58
+op2-vel-sens = 6
+op2-eg-r2 = 58
+op2-eg-l2 = 62
+op2-eg-l3 = 48
+op2-eg-r4 = 74
+
+# op3 -> op1 at 2:1 — the octave edge that lets the bass read on small speakers.
+op3-num = 2
+op3-level = 54
+op3-eg-r2 = 55
+op3-eg-l2 = 58
+op3-eg-l3 = 40
+op3-eg-r4 = 74
+
+# op4 -> op3 at 3:1: upper grit, decays out fast so it reads as attack only.
+op4-num = 3
+op4-level = 42
+op4-eg-r2 = 78
+op4-eg-l2 = 28
+op4-eg-l3 = 0
+op4-eg-r4 = 80
+
+# op5 -> op3 at unison, op6 -> op5 at 4:1 carrying the feedback.
+op5-level = 44
+op5-eg-r2 = 66
+op5-eg-l2 = 50
+op5-eg-l3 = 34
+op6-num = 4
+op6-level = 30
+op6-eg-r2 = 82
+op6-eg-l2 = 22
+op6-eg-l3 = 0
+
+# Ladder under the FM: low, resonant, key-tracked so it stays proportional.
+filter-enable = true
+filter-cutoff = 400.0
+filter-resonance = 0.34
+filter-slope = "4-Pole"
+filter-drive = 2.2
+filter-keytrack = 0.45
+
+# The sweep. Short-ish, so it lands inside the note.
+mod-env-a = 6.0
+mod-env-d = 420.0
+mod-env-s = 0.18
+mod-env-r = 200.0
+
+hp-cutoff = 28.0
+reverb-on = true
+reverb-size = 0.25
+reverb-decay = 0.9
+reverb-mix = 0.07
+
+master-volume = -14.26
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "cutoff"
+curve = "lin"
+depth = 0.58
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.35

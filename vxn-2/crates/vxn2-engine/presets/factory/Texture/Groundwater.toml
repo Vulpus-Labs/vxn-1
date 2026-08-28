@@ -1,0 +1,131 @@
+schema = 1
+
+[meta]
+name = "Groundwater"
+author = "Vulpus Labs"
+category = "Texture"
+comment = "A drone with something moving in it. The band-pass is ratio-locked to the fundamental, so the resonant peak sits on the note wherever you play it and the patch keeps its weight across the whole keyboard instead of thinning out in the bass. An exponential mod-env over four seconds walks it up one octave to the 2nd harmonic and back down — slow enough that you notice it has moved rather than hearing it move."
+
+[params]
+algo = 2
+feedback = 2.6
+
+op1-eg-r1 = 32
+op1-eg-r2 = 24
+op1-eg-l2 = 96
+op1-eg-l3 = 94
+op1-eg-r4 = 16
+op1-ks-r-depth = 4
+
+# op2 carries the feedback in algo 2 — a slow churn under the drone.
+op2-level = 58
+op2-eg-r1 = 30
+op2-eg-l2 = 76
+op2-eg-l3 = 70
+op2-eg-r4 = 16
+
+op3-num = 3
+op3-denom = 2
+op3-level = 46
+op3-eg-r1 = 28
+op3-eg-l2 = 66
+op3-eg-l3 = 58
+op3-eg-r4 = 16
+
+op4-num = 2
+op4-level = 82
+op4-detune = -9
+op4-eg-r1 = 30
+op4-eg-l2 = 90
+op4-eg-l3 = 86
+op4-eg-r4 = 16
+op4-ks-r-depth = 6
+
+op5-num = 5
+op5-denom = 2
+op5-level = 50
+op5-detune = 7
+op5-eg-r1 = 28
+op5-eg-l2 = 70
+op5-eg-l3 = 62
+op5-eg-r4 = 16
+
+op6-num = 4
+op6-level = 36
+op6-eg-r1 = 26
+op6-eg-l2 = 60
+op6-eg-l3 = 50
+op6-eg-r4 = 16
+
+# Ratio-locked to the fundamental: 16.3516 = CUTOFF_MIN_HZ, keytrack 1.0.
+# High resonance, low drive — a resonant peak that rings rather than growls.
+filter-enable = true
+filter-cutoff = 16.3516
+filter-resonance = 0.70
+filter-mode = "BP"
+filter-slope = "2-Pole"
+filter-drive = 1.4
+filter-keytrack = 1.0
+
+# Exactly one octave of travel (0.25 x 4 oct), so the peak lands on the
+# 2nd harmonic at the top of the sweep and back on the fundamental below.
+mod-env-a = 4000.0
+mod-env-d = 4000.0
+mod-env-s = 0.35
+mod-env-r = 3000.0
+mod-env-shape = "Exp"
+
+stack-density = 5
+stack-detune = 12.0
+stack-spread = 0.95
+
+hp-cutoff = 24.0
+
+reverb-on = true
+reverb-size = 0.92
+reverb-decay = 8.5
+reverb-damp = 0.5
+reverb-mix = 0.40
+
+delay-on = true
+delay-time = 750.0
+delay-sync = false
+delay-feedback = 0.6
+delay-mix = 0.20
+delay-pingpong = true
+
+master-volume = -18.33
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "cutoff"
+curve = "lin"
+depth = 0.25
+
+[[matrix]]
+slot = 1
+source = "aftertouch"
+dest = "resonance"
+curve = "lin"
+depth = 0.25
+
+[[matrix]]
+slot = 2
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op4-pan"
+curve = "lin"
+depth = -1.0
+
+[[matrix]]
+slot = 4
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0

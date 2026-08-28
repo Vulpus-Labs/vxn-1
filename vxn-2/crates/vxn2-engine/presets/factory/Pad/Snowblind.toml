@@ -1,0 +1,137 @@
+schema = 1
+
+[meta]
+name = "Snowblind"
+author = "Vulpus Labs"
+category = "Pad"
+comment = "All top and no bottom — a high-pass ladder removes the fundamental entirely, so what remains is the glare above it. Eight lanes with randomised start phase never quite lock together, and LFO2 runs per-lane so each one shimmers on its own clock instead of the whole chord pulsing as a block."
+
+[params]
+algo = 31
+feedback = 1.0
+
+# Ops 1-4 pure carriers, stacked in octaves and fifths.
+op1-num = 2
+op1-eg-r1 = 40
+op1-eg-l2 = 88
+op1-eg-l3 = 84
+op1-eg-r4 = 28
+
+op2-num = 3
+op2-level = 90
+op2-detune = 5
+op2-eg-r1 = 36
+op2-eg-l2 = 84
+op2-eg-l3 = 78
+op2-eg-r4 = 26
+
+op3-num = 4
+op3-level = 82
+op3-detune = -6
+op3-eg-r1 = 34
+op3-eg-l2 = 80
+op3-eg-l3 = 72
+op3-eg-r4 = 26
+
+op4-num = 6
+op4-level = 70
+op4-detune = 8
+op4-eg-r1 = 32
+op4-eg-l2 = 74
+op4-eg-l3 = 66
+op4-eg-r4 = 24
+
+# op5 carrier, modulated by op6 (the only FM in the patch).
+op5-num = 8
+op5-level = 62
+op5-eg-r1 = 30
+op5-eg-l2 = 70
+op5-eg-l3 = 60
+op5-eg-r4 = 24
+
+op6-num = 5
+op6-level = 44
+op6-eg-r1 = 28
+op6-eg-l2 = 64
+op6-eg-l3 = 52
+op6-eg-r4 = 22
+
+# Take the bottom out; the ladder is the sound.
+filter-enable = true
+filter-cutoff = 300.0
+filter-resonance = 0.22
+filter-mode = "HP"
+filter-slope = "2-Pole"
+filter-keytrack = 0.30
+
+lfo2-shape = "Tri"
+lfo2-rate = 0.55
+lfo2-fade = 1800.0
+
+stack-density = 8
+stack-detune = 10.0
+stack-spread = 1.0
+stack-phase = 1.0
+
+reverb-on = true
+reverb-size = 0.95
+reverb-decay = 9.0
+reverb-damp = 0.18
+reverb-mix = 0.46
+
+delay-on = true
+delay-time = 440.0
+delay-sync = false
+delay-feedback = 0.58
+delay-mix = 0.24
+delay-pingpong = true
+
+master-volume = -3.46
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "op4-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 1
+source = "lfo2"
+dest = "op5-level"
+curve = "lin"
+depth = 0.26
+
+[[matrix]]
+slot = 2
+source = "voice-rand"
+dest = "op1-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 3
+source = "voice-rand"
+dest = "op2-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 4
+source = "voice-rand"
+dest = "lfo2-phase"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 6
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0

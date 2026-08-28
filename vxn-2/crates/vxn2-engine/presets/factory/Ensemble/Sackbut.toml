@@ -1,0 +1,119 @@
+schema = 1
+
+[meta]
+name = "Sackbut"
+author = "Vulpus Labs"
+category = "Ensemble"
+comment = "A brass section that responds to how hard you blow. Velocity is routed to the operator envelope RATES, not just their levels, so a hard attack does not merely arrive louder — it arrives faster, which is most of what separates a fanfare from a swell. The mod wheel adds the section's own crescendo on top."
+
+[params]
+algo = 18
+feedback = 4.6
+
+# op1 sole carrier; 2 and 3 into it, 4 fed by 5 and 6 in parallel.
+op1-eg-r1 = 62
+op1-eg-r2 = 48
+op1-eg-l2 = 92
+op1-eg-l3 = 88
+op1-eg-r4 = 64
+op1-vel-sens = 5
+op1-ks-r-depth = 14
+
+op2-num = 2
+op2-level = 74
+op2-vel-sens = 6
+op2-eg-r1 = 58
+op2-eg-r2 = 50
+op2-eg-l2 = 74
+op2-eg-l3 = 66
+op2-eg-r4 = 66
+
+op3-num = 3
+op3-level = 62
+op3-vel-sens = 6
+op3-eg-r1 = 56
+op3-eg-r2 = 54
+op3-eg-l2 = 66
+op3-eg-l3 = 56
+op3-eg-r4 = 68
+
+op4-num = 4
+op4-level = 54
+op4-vel-sens = 6
+op4-eg-r1 = 54
+op4-eg-r2 = 58
+op4-eg-l2 = 58
+op4-eg-l3 = 46
+op4-eg-r4 = 70
+
+op5-num = 5
+op5-level = 42
+op5-detune = 6
+op5-eg-r1 = 52
+op5-eg-l2 = 48
+op5-eg-l3 = 36
+
+op6-num = 7
+op6-level = 34
+op6-detune = -5
+op6-eg-r1 = 50
+op6-eg-l2 = 42
+op6-eg-l3 = 28
+
+filter-enable = true
+filter-cutoff = 2800.0
+filter-resonance = 0.18
+filter-slope = "2-Pole"
+filter-drive = 2.2
+filter-keytrack = 0.50
+
+lfo2-shape = "Sine"
+lfo2-rate = 4.8
+lfo2-delay = 500.0
+lfo2-fade = 700.0
+
+stack-density = 3
+stack-detune = 8.0
+stack-spread = 0.75
+
+reverb-on = true
+reverb-size = 0.68
+reverb-decay = 2.8
+reverb-mix = 0.26
+
+# Velocity -> envelope rate: hard playing sharpens the attack itself.
+master-volume = -16.29
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "global-eg-rate"
+curve = "lin"
+depth = 0.45
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.38
+
+[[matrix]]
+slot = 2
+source = "mod-wheel"
+dest = "op3-level"
+curve = "lin"
+depth = 0.40
+
+[[matrix]]
+slot = 3
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.015
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.8
