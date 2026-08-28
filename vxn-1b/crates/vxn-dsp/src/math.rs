@@ -2,21 +2,6 @@
 
 use std::f32::consts::TAU;
 
-/// Xorshift64 PRNG mapped to `[-1, 1]`. `state` must be non-zero (zero is a
-/// stuck fixed point); seed with `instance_id + 1`. Shared by the S&H LFO, the
-/// chorus noise floor, and the BBD companding dither.
-///
-/// A distinct generator from vxn-2's xorshift64\* (`vxn2-dsp/src/rng.rs`):
-/// plain xorshift (13,7,17) scaled by `i64::MAX` here vs. the multiplied star
-/// variant with a `>> 40` mapping there. Their output streams differ.
-#[inline]
-pub fn xorshift64(state: &mut u64) -> f32 {
-    *state ^= *state << 13;
-    *state ^= *state >> 7;
-    *state ^= *state << 17;
-    (*state as i64 as f32) / (i64::MAX as f32)
-}
-
 #[cfg(test)]
 mod rng_tests {
     use super::xorshift64;
@@ -35,7 +20,7 @@ mod rng_tests {
 /// Scalar Padé(5,6) `tanh`. Re-exported from `vxn-core-utils::math`. Distinct
 /// from `poly::oscillator::tanh_c`: that branchless `clamp` form vectorises in
 /// the poly lane loop where this early-return form would not.
-pub use vxn_core_utils::math::fast_tanh;
+pub use vxn_core_utils::math::{fast_tanh, xorshift64};
 
 static SINE_TABLE: std::sync::LazyLock<Vec<f32>> =
     std::sync::LazyLock::new(|| (0..1024).map(|i| (i as f32 / 1024.0 * TAU).sin()).collect());

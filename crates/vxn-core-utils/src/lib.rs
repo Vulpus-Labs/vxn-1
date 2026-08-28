@@ -24,7 +24,7 @@ pub use dirty::{DirtyBits, words_for};
 pub use ftz::ScopedFlushToZero;
 pub use halfband::{DEFAULT_CENTRE, DEFAULT_TAPS, HalfbandFir, Oversampler, roundtrip_latency_base_samples};
 pub use limiter::StereoLimiter;
-pub use math::{fast_tanh, xorshift64_star};
+pub use math::{fast_tanh, xorshift64, xorshift64_star};
 pub use meter::{MeterBus, MeterTap};
 pub use midi::{MIDI_0_HZ, note_to_hz};
 pub use random_walk::{BoundedRandomWalk, OSCILLATOR_DRIFT_STEP};

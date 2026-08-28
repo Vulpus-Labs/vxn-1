@@ -57,7 +57,7 @@ pub const MAX_OVERSAMPLE: usize = 8;
 pub use vxn_core_dsp::control::CONTROL_BLOCK;
 
 pub use adsr::{AdsrCore, AdsrShape, AdsrStage};
-pub use chorus::StereoChorus;
+pub use chorus::{ChorusParams, StereoChorus};
 pub use delay::{DelayLine, StereoDelay};
 pub use dynamics::{DynamicsBlock, DynamicsParams};
 pub use fdn_reverb::{FdnReverb, FdnReverbParams};

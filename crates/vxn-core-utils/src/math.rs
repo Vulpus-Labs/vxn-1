@@ -143,6 +143,21 @@ mod q32_tests {
     }
 }
 
+/// Plain xorshift (13, 7, 17), scaled to `[-1, 1]`. **Not** the same generator
+/// as [`xorshift64_star`] — no star multiplier — so the two produce different
+/// streams from the same seed. Both are here because both are load-bearing:
+/// this one seeds vxn-1b's LFO sample-and-hold, noise source and BBD hiss,
+/// where the exact stream is part of the shipped sound.
+///
+/// Non-zero seeds only — xorshift sticks at zero.
+#[inline]
+pub fn xorshift64(state: &mut u64) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state as i64 as f32) / (i64::MAX as f32)
+}
+
 /// xorshift64\* — advances `state` in place and returns the scrambled word.
 ///
 /// Canonical Vigna triple (13, 7, 17) plus the star multiplier; the top bits

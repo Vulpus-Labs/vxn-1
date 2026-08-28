@@ -53,6 +53,11 @@ pub mod dynamics;
 /// Filled in by tickets 0226 (trait) and 0228–0232 (the effects).
 pub mod fx;
 
+/// Stereo BBD chorus: two modulated delay lines swept by one inverted-pair
+/// triangle LFO, with internal `WetFade` bypass. Moved by 0229, which also
+/// deleted its mono-summing per-sample entry point.
+pub mod chorus;
+
 /// Bucket-brigade delay line: the modulated-delay primitive the chorus is
 /// built on, with its filter banks, bucket saturation and clock jitter. Moved
 /// by 0229 with its only consumer.
