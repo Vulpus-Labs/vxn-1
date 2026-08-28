@@ -53,6 +53,11 @@ pub mod dynamics;
 /// Filled in by tickets 0226 (trait) and 0228–0232 (the effects).
 pub mod fx;
 
+/// Bucket-brigade delay line: the modulated-delay primitive the chorus is
+/// built on, with its filter banks, bucket saturation and clock jitter. Moved
+/// by 0229 with its only consumer.
+pub mod delay_line;
+
 /// Stereo allpass phaser: four allpass sections per channel swept by a shared
 /// triangle LFO, with internal `WetFade` bypass. Moved by 0228 from `vxn2-dsp`,
 /// whose copy was the superset; `vxn-dsp` and `vxn2-dsp` re-export it.
