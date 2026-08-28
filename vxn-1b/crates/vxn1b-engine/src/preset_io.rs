@@ -119,11 +119,29 @@ pub fn ensure_user_dir() -> io::Result<PathBuf> {
 }
 
 /// Canonicalise the target path against the user dir and refuse anything that
-/// lands outside it. Targets that don't exist yet (Save-As, rename dest, new
-/// folder) fall back to canonicalising the parent and rejoining the filename.
+/// lands outside it.
+///
+/// The base is resolved here and the check itself is [`ensure_within`], which
+/// takes it as an argument: the guard is the security-shaped part of this
+/// module, and testing it must not depend on — or write to — the developer's
+/// real preset directory (0320).
 fn ensure_within_user_dir(target: &Path) -> io::Result<()> {
-    let base = ensure_user_dir()?;
-    let canon_base = fs::canonicalize(&base).unwrap_or(base);
+    ensure_within(&ensure_user_dir()?, target)
+}
+
+/// Refuse any `target` that does not land inside `base` once both are
+/// canonicalised.
+///
+/// Targets that don't exist yet (Save-As, rename dest, new folder) fall back to
+/// canonicalising the *parent* and rejoining the filename — a path cannot be
+/// canonicalised before it exists, and refusing every not-yet-created path
+/// would refuse every save.
+///
+/// Canonicalising is what makes this a real guard rather than a string check:
+/// it resolves `..` segments and follows symlinks, so neither
+/// `<base>/../../etc/passwd` nor a symlink planted inside the tree can escape.
+fn ensure_within(base: &Path, target: &Path) -> io::Result<()> {
+    let canon_base = fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
     let canon_target = if target.exists() {
         fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
     } else if let Some(parent) = target.parent() {
@@ -381,12 +399,17 @@ fn read_preset_at(path: &Path, folder: Option<String>) -> Option<UserPreset> {
 
 /// Create a new user subfolder with a unique name. Returns `(path, chosen_name)`.
 pub fn create_user_folder(suggested: &str) -> io::Result<(PathBuf, String)> {
-    let base = ensure_user_dir()?;
+    create_user_folder_in(&ensure_user_dir()?, suggested)
+}
+
+/// [`create_user_folder`] against an explicit base — the form the tests drive,
+/// so they exercise the shipping logic rather than a stand-in (0320).
+fn create_user_folder_in(base: &Path, suggested: &str) -> io::Result<(PathBuf, String)> {
     let stem = sanitize_name(suggested);
-    let existing = existing_folder_names_ci(&base)?;
+    let existing = existing_folder_names_ci(base)?;
     let name = unique_folder_name(&stem, &existing);
     let path = base.join(&name);
-    ensure_within_user_dir(&path)?;
+    ensure_within(base, &path)?;
     fs::create_dir(&path)?;
     Ok((path, name))
 }
@@ -394,12 +417,16 @@ pub fn create_user_folder(suggested: &str) -> io::Result<(PathBuf, String)> {
 /// Rename an existing user subfolder. Refuses to overwrite an existing
 /// destination. Returns `(new_path, sanitised_new_name)`.
 pub fn rename_user_folder(old: &str, new: &str) -> io::Result<(PathBuf, String)> {
-    let base = ensure_user_dir()?;
+    rename_user_folder_in(&ensure_user_dir()?, old, new)
+}
+
+/// [`rename_user_folder`] against an explicit base.
+fn rename_user_folder_in(base: &Path, old: &str, new: &str) -> io::Result<(PathBuf, String)> {
     let old_path = base.join(sanitize_name(old));
     let new_name = sanitize_name(new);
     let new_path = base.join(&new_name);
-    ensure_within_user_dir(&old_path)?;
-    ensure_within_user_dir(&new_path)?;
+    ensure_within(base, &old_path)?;
+    ensure_within(base, &new_path)?;
     if old_path == new_path {
         return Ok((new_path, new_name));
     }
@@ -415,32 +442,45 @@ pub fn rename_user_folder(old: &str, new: &str) -> io::Result<(PathBuf, String)>
 
 /// Delete a user subfolder and everything in it (recursive).
 pub fn delete_user_folder(name: &str) -> io::Result<()> {
-    let base = ensure_user_dir()?;
+    delete_user_folder_in(&ensure_user_dir()?, name)
+}
+
+/// [`delete_user_folder`] against an explicit base.
+fn delete_user_folder_in(base: &Path, name: &str) -> io::Result<()> {
     let path = base.join(sanitize_name(name));
-    ensure_within_user_dir(&path)?;
+    ensure_within(base, &path)?;
     fs::remove_dir_all(&path)
 }
 
 /// Delete a user preset file. Refuses paths outside the user directory.
 pub fn delete_user_preset(path: &Path) -> io::Result<()> {
-    ensure_within_user_dir(path)?;
+    delete_user_preset_in(&ensure_user_dir()?, path)
+}
+
+/// [`delete_user_preset`] against an explicit base.
+fn delete_user_preset_in(base: &Path, path: &Path) -> io::Result<()> {
+    ensure_within(base, path)?;
     fs::remove_file(path)
 }
 
 /// Move a user preset into the named subfolder (or back to the root with
 /// `dest_folder = None`). The on-disk filename is preserved.
 pub fn move_user_preset(path: &Path, dest_folder: Option<&str>) -> io::Result<PathBuf> {
-    ensure_within_user_dir(path)?;
-    let base = ensure_user_dir()?;
+    move_user_preset_in(&ensure_user_dir()?, path, dest_folder)
+}
+
+/// [`move_user_preset`] against an explicit base.
+fn move_user_preset_in(base: &Path, path: &Path, dest_folder: Option<&str>) -> io::Result<PathBuf> {
+    ensure_within(base, path)?;
     let dest_dir = match dest_folder {
         Some(name) => base.join(sanitize_name(name)),
-        None => base,
+        None => base.to_path_buf(),
     };
     let filename = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "preset has no filename"))?;
     let new_path = dest_dir.join(filename);
-    ensure_within_user_dir(&new_path)?;
+    ensure_within(base, &new_path)?;
     if new_path == path {
         return Ok(new_path);
     }
@@ -458,12 +498,17 @@ pub fn move_user_preset(path: &Path, dest_folder: Option<&str>) -> io::Result<Pa
 /// Rename a user preset: load → mutate `meta.name` → write under the new
 /// filename → remove the old. The parent directory is unchanged.
 pub fn rename_user_preset(path: &Path, new_name: &str) -> io::Result<PathBuf> {
-    ensure_within_user_dir(path)?;
+    rename_user_preset_in(&ensure_user_dir()?, path, new_name)
+}
+
+/// [`rename_user_preset`] against an explicit base.
+fn rename_user_preset_in(base: &Path, path: &Path, new_name: &str) -> io::Result<PathBuf> {
+    ensure_within(base, path)?;
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "preset has no parent"))?;
     let new_path = parent.join(preset_filename(new_name));
-    ensure_within_user_dir(&new_path)?;
+    ensure_within(base, &new_path)?;
     if new_path != path && new_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -572,5 +617,199 @@ mod tests {
         let store = EnginePresetStore::new();
         assert!(store.factory_load(store.factory_len()).is_err());
         assert!(store.factory_meta(store.factory_len()).is_none());
+    }
+
+    // ── Filesystem half (0320) ──────────────────────────────────────────────
+    //
+    // Until 0320 nothing here touched the filesystem at all: the two tests
+    // above cover the embedded factory bank and stop. Everything below — the
+    // path-escape guard especially — is reused by `vxn1b-web-controller`'s user
+    // store, where the names arrive from a browser.
+    //
+    // Each op has a `*_in(base, ..)` inner that the public function delegates
+    // to, so these drive the shipping logic against a `tempdir` rather than a
+    // stand-in, and never touch the developer's real preset directory.
+
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn tmp() -> TempDir {
+        TempDir::new().expect("tempdir")
+    }
+
+    /// A guard returning `Ok` for a good path proves very little; these are the
+    /// paths it exists to refuse.
+    #[test]
+    fn the_escape_guard_refuses_traversal_and_absolute_paths() {
+        let dir = tmp();
+        let base = dir.path();
+
+        // Inside is fine — including a not-yet-existing file, which is the
+        // Save-As case the parent-canonicalise branch exists for.
+        assert!(ensure_within(base, &base.join("Lead.toml")).is_ok());
+        fs::create_dir(base.join("Bass")).unwrap();
+        assert!(ensure_within(base, &base.join("Bass")).is_ok());
+        assert!(ensure_within(base, &base.join("Bass/Sub.toml")).is_ok());
+
+        // `..` traversal, both bare and buried mid-path. Canonicalisation is
+        // what collapses these — a `starts_with` on the raw string would pass
+        // the second one.
+        for escape in [
+            base.join("../outside.toml"),
+            base.join("../../outside.toml"),
+            base.join("Bass/../../outside.toml"),
+        ] {
+            let err = ensure_within(base, &escape)
+                .expect_err(&format!("{} escaped the base", escape.display()));
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        // An absolute path elsewhere.
+        let other = tmp();
+        let err = ensure_within(base, &other.path().join("elsewhere.toml"))
+            .expect_err("an absolute path outside the base was allowed");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(ensure_within(base, Path::new("/etc/passwd")).is_err());
+    }
+
+    /// Symlinks are the reason the guard canonicalises rather than string-
+    /// matches: a link planted *inside* the tree must not become a way out.
+    #[cfg(unix)]
+    #[test]
+    fn the_escape_guard_follows_symlinks_out_of_the_tree() {
+        let dir = tmp();
+        let outside = tmp();
+        let base = dir.path();
+        fs::write(outside.path().join("secret.toml"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), base.join("escape")).unwrap();
+
+        // The link itself resolves outside, and so does anything under it.
+        assert!(ensure_within(base, &base.join("escape")).is_err());
+        assert!(ensure_within(base, &base.join("escape/secret.toml")).is_err());
+    }
+
+    #[test]
+    fn sanitize_name_keeps_the_safe_set_and_never_returns_empty() {
+        assert_eq!(sanitize_name("Fat Bass"), "Fat Bass");
+        assert_eq!(sanitize_name("Lead-2_alt"), "Lead-2_alt");
+        // Separators and traversal characters are the ones that matter here:
+        // this is what stands between a browser-supplied name and a path.
+        assert_eq!(sanitize_name("../etc/passwd"), "___etc_passwd");
+        assert_eq!(sanitize_name("a/b\\c"), "a_b_c");
+        assert_eq!(sanitize_name("nul\0byte"), "nul_byte");
+        // Trimmed, and never empty — an empty filename is not a filename.
+        assert_eq!(sanitize_name("  padded  "), "padded");
+        assert_eq!(sanitize_name(""), "Untitled");
+        assert_eq!(sanitize_name("   "), "Untitled");
+        // Not "Untitled": every separator maps to `_`, so this is non-empty and
+        // still a single safe path segment. Only a name that is empty *after*
+        // trimming falls back.
+        assert_eq!(sanitize_name("///"), "___");
+        // Non-ASCII alphanumerics are kept: they are not path-dangerous.
+        assert_eq!(sanitize_name("Café"), "Café");
+    }
+
+    #[test]
+    fn unique_folder_name_counts_up_case_insensitively() {
+        assert_eq!(unique_folder_name("Leads", &[]), "Leads");
+        // The existing list is lowercased by `existing_folder_names_ci`, and the
+        // comparison must be case-insensitive or a case-only clash slips
+        // through on a case-insensitive filesystem.
+        assert_eq!(unique_folder_name("Leads", &["leads".into()]), "Leads 1");
+        assert_eq!(
+            unique_folder_name("Leads", &["leads".into(), "leads 1".into()]),
+            "Leads 2"
+        );
+        // A gap is filled, not skipped past.
+        assert_eq!(
+            unique_folder_name("Leads", &["leads".into(), "leads 2".into()]),
+            "Leads 1"
+        );
+        assert_eq!(unique_folder_name("Leads", &["pads".into()]), "Leads");
+    }
+
+    #[test]
+    fn folder_operations_round_trip_on_a_real_tree() {
+        let dir = tmp();
+        let base = dir.path();
+
+        let (path, name) = create_user_folder_in(base, "Leads").unwrap();
+        assert_eq!(name, "Leads");
+        assert!(path.is_dir());
+
+        // Same name again uniquifies rather than colliding or erroring.
+        let (_, second) = create_user_folder_in(base, "Leads").unwrap();
+        assert_eq!(second, "Leads 1");
+
+        // A traversal-shaped name is sanitised into a plain folder inside the
+        // base, not followed.
+        let (esc_path, esc_name) = create_user_folder_in(base, "../escape").unwrap();
+        assert_eq!(esc_name, "___escape");
+        assert_eq!(esc_path.parent().unwrap(), base);
+
+        let (renamed, new_name) = rename_user_folder_in(base, "Leads", "Pads").unwrap();
+        assert_eq!(new_name, "Pads");
+        assert!(renamed.is_dir());
+        assert!(!base.join("Leads").exists());
+
+        // Refuses to clobber an existing destination.
+        let err = rename_user_folder_in(base, "Leads 1", "Pads").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        delete_user_folder_in(base, "Pads").unwrap();
+        assert!(!renamed.exists());
+    }
+
+    #[test]
+    fn preset_operations_round_trip_on_a_real_tree() {
+        let dir = tmp();
+        let base = dir.path();
+        let meta = Meta {
+            name: "Fat Bass".into(),
+            ..Default::default()
+        };
+        let state = PluginState::factory_default();
+        let text = write_preset(&meta, &state).unwrap();
+        let root_file = base.join(preset_filename("Fat Bass"));
+        fs::write(&root_file, &text).unwrap();
+
+        // Rename rewrites the file AND the embedded meta name, and removes the
+        // old file — the round-trip is what proves the second half.
+        let renamed = rename_user_preset_in(base, &root_file, "Thin Bass").unwrap();
+        assert_eq!(renamed.file_name().unwrap(), "Thin Bass.toml");
+        assert!(!root_file.exists());
+        let (m, _, _) = load_preset_file(&renamed).unwrap();
+        assert_eq!(m.name, "Thin Bass");
+
+        // Move into a folder, then back to the root.
+        create_user_folder_in(base, "Bass").unwrap();
+        let moved = move_user_preset_in(base, &renamed, Some("Bass")).unwrap();
+        assert_eq!(moved.parent().unwrap(), base.join("Bass"));
+        assert!(!renamed.exists());
+        let back = move_user_preset_in(base, &moved, None).unwrap();
+        assert_eq!(back.parent().unwrap(), base);
+
+        delete_user_preset_in(base, &back).unwrap();
+        assert!(!back.exists());
+    }
+
+    /// The guard is not merely present in these paths — it stops them.
+    #[test]
+    fn the_preset_operations_refuse_a_path_outside_the_base() {
+        let dir = tmp();
+        let outside = tmp();
+        let base = dir.path();
+        let intruder = outside.path().join("elsewhere.toml");
+        fs::write(&intruder, "x").unwrap();
+
+        for kind in [
+            delete_user_preset_in(base, &intruder).map(|_| ()).unwrap_err().kind(),
+            move_user_preset_in(base, &intruder, None).map(|_| ()).unwrap_err().kind(),
+            rename_user_preset_in(base, &intruder, "Nope").map(|_| ()).unwrap_err().kind(),
+        ] {
+            assert_eq!(kind, io::ErrorKind::PermissionDenied);
+        }
+        // And the file is still there — refused, not deleted.
+        assert!(intruder.exists());
     }
 }

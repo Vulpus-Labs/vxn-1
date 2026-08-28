@@ -29,5 +29,10 @@ toml = "0.8"
 include_dir = "0.7"
 
 [dev-dependencies]
-# VXN1's engine — the render-parity oracle (0202): the seeded default patch must
-# reproduce VXN1's fixed-routing output. Test-only.
+# Real directories for the user-preset filesystem tests (0320). The path-escape
+# guard and the folder operations are only meaningfully testable against a live
+# tree, and they must not touch the developer's own preset directory.
+#
+# (The VXN1 render-parity oracle used to be declared here; vxn-1 was archived
+# out of the workspace on 2026-08-27 and only this comment survived it.)
+tempfile = "3"
