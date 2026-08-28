@@ -96,38 +96,50 @@
     const RATE_PIVOT = 57;
     function xAt(m) { return 6 + (m / 127) * (W - 12); }
 
-    // Port of ks::ks_level_mult with the live per-side curves. The curve
-    // discriminant carries sign (bit0: 1 = boost, 0 = cut) and shape
-    // (bit1: 1 = exp, 0 = lin). Boost lifts the curve above the unity
-    // midline; cut drops it below. Each side ramps from the BP to the
-    // keyboard edge it faces (0 left, 127 right) — full depth at the extreme.
-    // KS_EXP_K must match ks::KS_EXP_K in the DSP.
-    const KS_EXP_K = 3.0;
-    function curveShape(curve, t) {
-      if (!(curve & 2)) return t;
-      return (Math.exp(KS_EXP_K * t) - 1) / (Math.exp(KS_EXP_K) - 1);
-    }
-    function curveSign(curve) { return (curve & 1) ? 1.0 : -1.0; }
-    function ksLevelMult(key, breakPt, lDep, rDep) {
-      const semis = key - breakPt;
-      let mult;
-      if (semis >= 0) {
-        const reach = 127 - breakPt;
-        const t = reach > 0 ? Math.min(semis / reach, 1.0) : 0.0;
-        mult = 1.0 + curveSign(rCurve) * (rDep / 99.0) * curveShape(rCurve, t);
+    // Port of ks::ks_level_offset — the same integer arithmetic as the DSP,
+    // returning a level offset in ~0.75 dB units. The curve discriminant
+    // carries sign (bit0: 1 = boost, 0 = cut) and shape (bit1: 1 = exp,
+    // 0 = lin). Keep in lockstep with ks.rs: the constants below are the
+    // hardware's, not tuning.
+    const EXP_SCALE_DATA = [
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66,
+      80, 94, 110, 126, 142, 158, 174, 190, 206, 222, 238, 250,
+    ];
+    const BP_PIVOT_OFFSET = 4;      // pivot sits this far below the MIDI break point
+    const LEVEL_UNITS_PER_OCTAVE = 8;
+    const DB_PER_UNIT = 6.0206 / LEVEL_UNITS_PER_OCTAVE;
+    function scaleCurve(group, depth, curve) {
+      const d = Math.max(0, Math.min(99, depth));
+      let scale;
+      if (!(curve & 2)) {
+        scale = (group * d * 329) >> 12;
       } else {
-        const reach = breakPt;
-        const t = reach > 0 ? Math.min(-semis / reach, 1.0) : 0.0;
-        mult = 1.0 + curveSign(lCurve) * (lDep / 99.0) * curveShape(lCurve, t);
+        const raw = EXP_SCALE_DATA[Math.min(group, EXP_SCALE_DATA.length - 1)];
+        scale = (raw * d * 329) >> 15;
       }
-      return mult < 0 ? 0 : mult;
+      return (curve & 1) ? scale : -scale;
     }
-    // multiplier (≈[0,2], 1 = unity at BP) → graph Y. Boost above centre,
-    // cut below.
-    function yAtMult(mult) { return cy - (mult - 1.0) * halfH; }
-    function dbStr(mult) {
-      if (mult <= 0.0001) return "−∞ dB";
-      const db = 20 * Math.log10(mult);
+    // Level offset in units. `key` may be fractional along the plotted path;
+    // floor it so the 3-semitone grouping steps where the DSP steps.
+    function ksLevelUnits(key, breakPt, lDep, rDep) {
+      const off = Math.floor(key) - breakPt + BP_PIVOT_OFFSET;
+      if (off >= 0) return scaleCurve(Math.trunc((off + 1) / 3), rDep, rCurve);
+      return scaleCurve(Math.trunc(-(off - 1) / 3), lDep, lCurve);
+    }
+    // Level scaling is logarithmic and can reach ±90 dB at full depth, so the
+    // graph's Y axis is dB, not the old linear-multiplier axis (which only had
+    // to span [0,2] back when the curve barely moved). Fixed window, clipped
+    // at the edges: an autoscaled axis would make depth 4 look like depth 99,
+    // and would shift under the cursor mid-drag. The readout carries the exact
+    // figure when a curve pegs.
+    const DB_SPAN = 48;
+    function yAtUnits(units) {
+      const db = Math.max(-DB_SPAN, Math.min(DB_SPAN, units * DB_PER_UNIT));
+      return cy - (db / DB_SPAN) * halfH;
+    }
+    function dbStr(units) {
+      const db = units * DB_PER_UNIT;
+      if (db <= -90) return "−∞ dB";
       return (db >= 0 ? "+" : "−") + Math.abs(db).toFixed(1) + " dB";
     }
 
@@ -178,7 +190,7 @@
       for (let i = 0; i <= 16; i++) {
         const k = fromKey + step * i;
         const x = xAt(Math.max(0, Math.min(127, k)));
-        const y = yAtMult(ksLevelMult(k, bp, lDepth, rDepth));
+        const y = yAtUnits(ksLevelUnits(k, bp, lDepth, rDepth));
         d += (i === 0 ? "M " : " L ") + x.toFixed(2) + " " + y.toFixed(2);
       }
       return d;
@@ -191,8 +203,8 @@
     // extreme they govern.
     function liveReadout(which) {
       if (which === "bp") return "BP " + vxn.noteName(bp);
-      if (which === "l") return "L " + dbStr(ksLevelMult(0, bp, lDepth, rDepth)) + " @ " + vxn.noteName(0);
-      return "R " + dbStr(ksLevelMult(127, bp, lDepth, rDepth)) + " @ " + vxn.noteName(127);
+      if (which === "l") return "L " + dbStr(ksLevelUnits(0, bp, lDepth, rDepth)) + " @ " + vxn.noteName(0);
+      return "R " + dbStr(ksLevelUnits(127, bp, lDepth, rDepth)) + " @ " + vxn.noteName(127);
     }
 
     function paint() {
@@ -207,9 +219,9 @@
       bpHandle.setAttribute("cx", bpX);
       bpHandle.setAttribute("cy", cy);
       lHandle.setAttribute("cx", xAt(0));
-      lHandle.setAttribute("cy", yAtMult(ksLevelMult(0, bp, lDepth, rDepth)));
+      lHandle.setAttribute("cy", yAtUnits(ksLevelUnits(0, bp, lDepth, rDepth)));
       rHandle.setAttribute("cx", xAt(127));
-      rHandle.setAttribute("cy", yAtMult(ksLevelMult(127, bp, lDepth, rDepth)));
+      rHandle.setAttribute("cy", yAtUnits(ksLevelUnits(127, bp, lDepth, rDepth)));
     }
 
     function bindKsHandles() {

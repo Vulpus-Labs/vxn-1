@@ -1052,7 +1052,10 @@ impl Stack {
         let vel = vel_factor(params.vel_sens, velocity);
         // Operator output level shares the EG level curve (see `eg::level_to_amp`).
         let level_norm = crate::eg::level_to_amp(params.level, params.eg_curve);
-        let max_amp = level_norm * ks_lvl * vel;
+        // Level scaling can boost as well as cut; hardware clamps the summed
+        // level at full scale before velocity is applied (velocity only ever
+        // attenuates), so an op already at full output gets no boost.
+        let max_amp = (level_norm * ks_lvl).min(1.0) * vel;
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         // Every lane cooks identically here; per-lane `eg-rate` divergence is
         // applied afterward by `rescale_eg_rates`, which the engine

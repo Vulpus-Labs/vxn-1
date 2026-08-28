@@ -1,22 +1,55 @@
 //! Key scaling — both level and rate.
 //!
-//! At the break point, scaling has no effect. Below the BP the `l_*`
-//! parameters apply; above, the `r_*` parameters. Curve type sets shape (lin
-//! vs exp) and sign (boost vs cut). Each side ramps from the break point to
-//! the keyboard edge it faces (note 0 on the left, 127 on the right): full
-//! depth lands exactly at the extreme note, so the ramp's reach scales with
-//! break-point position. Reference hardware uses tabulated dB offsets; we
-//! approximate with a continuous closed-form, smooth across the key range.
+//! ## Level scaling
+//!
+//! A port of the reference hardware's `ScaleLevel`/`ScaleCurve`, not an
+//! approximation of it. The hardware computes a **level offset** — in the same
+//! ~0.75 dB units as the operator output level — and *adds* it to that level
+//! before the level→amplitude conversion. We return the offset already folded
+//! into an amplitude multiplier (adding in dB ≡ multiplying in amplitude), so
+//! the call sites keep their `level_norm × ks × vel` shape.
+//!
+//! Three details are load-bearing, and all three were wrong in the closed-form
+//! approximation this replaces (which produced −0.1…−3.8 dB where the hardware
+//! produces +17…−49, i.e. a control that did almost nothing):
+//!
+//! * **The offset is logarithmic, not a linear amplitude fade.** Depth is dB
+//!   per semitone.
+//! * **The slope is fixed per depth**, independent of break-point position.
+//!   The old code normalised the ramp to the far edge of the keyboard, so the
+//!   same depth meant a different slope for every break point.
+//! * **The pivot sits 4 semitones below the break point**, with a ~±2-semitone
+//!   dead zone from the hardware's 3-semitone grouping. (Hardware works in the
+//!   raw 0..99 break-point parameter and offsets by 17; we store the break
+//!   point as a MIDI note, `raw + 21`, hence `note − bp + 4`.)
+//!
+//! Level scaling can *boost* as well as cut, and the hardware clamps the summed
+//! level at its ceiling — so an operator already at full output gets no boost
+//! at all. Callers apply that clamp as `(level_norm × ks).min(1.0)`, before
+//! velocity (which only ever attenuates, and is added after the clamp on
+//! hardware).
+//!
+//! ## Rate scaling
 //!
 //! Rate scaling speeds up all four EG rates as note pitch rises. A single
 //! `ks_rate` (0..7) parameter applies uniformly.
 
-/// Curvature of the exponential shape. The `exp` curve is a true normalised
-/// exponential `(e^(K·t) − 1) / (e^K − 1)` mapping `t∈[0,1] → [0,1]`; the
-/// endpoints are fixed (0 at the BP, 1 at the edge) and `K` only bends the
-/// interior. Larger `K` = later, sharper onset. Kept in lockstep with the
-/// UI port in `ks-graph.js` (`KS_EXP_K`).
-pub const KS_EXP_K: f32 = 3.0;
+/// Per-group offsets for the **exponential** curves, from the reference
+/// hardware. Indexed by the 3-semitone group number (saturating at the last
+/// entry, i.e. 96 semitones out); the linear curves use the group number
+/// directly instead.
+const EXP_SCALE_DATA: [u8; 33] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110, 126,
+    142, 158, 174, 190, 206, 222, 238, 250,
+];
+
+/// Level units per octave. The level domain is ~0.75 dB/step (ADR 0007's
+/// `2^((L-99)/8)`), so 8 steps make 6.02 dB.
+const LEVEL_UNITS_PER_OCTAVE: f32 = 8.0;
+
+/// Semitones the scaling pivot sits below the stored (MIDI) break point.
+/// Hardware: `offset = note − raw_bp − 17`, and `raw_bp = bp_midi − 21`.
+const BP_PIVOT_OFFSET: i32 = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -33,9 +66,52 @@ impl Default for KsCurve {
     }
 }
 
-/// Compute the keyboard-level multiplier for a given note. Returns a value
-/// usually in `[0.0, ~2.0]` — `1.0` at the break point. Multiplied against
-/// the per-op `level` to produce the cooked per-note amplitude scaler.
+/// One side's level offset, in level units (~0.75 dB each). `group` is the
+/// 3-semitone group number away from the pivot; `depth` is 0..99. Mirrors the
+/// hardware's `ScaleCurve`, including its integer truncation — the steps are
+/// audible at low depths and smoothing them would not be more faithful.
+fn scale_curve(group: u32, depth: u8, curve: KsCurve) -> i32 {
+    let depth = depth.min(99) as u32;
+    let scale = match curve {
+        // Linear: the group number itself is the ramp.
+        KsCurve::NegLin | KsCurve::PosLin => (group * depth * 329) >> 12,
+        // Exponential: a tabulated ramp, then the same depth scaling.
+        KsCurve::NegExp | KsCurve::PosExp => {
+            let raw = EXP_SCALE_DATA[(group as usize).min(EXP_SCALE_DATA.len() - 1)] as u32;
+            (raw * depth * 329) >> 15
+        }
+    };
+    match curve {
+        KsCurve::NegLin | KsCurve::NegExp => -(scale as i32),
+        KsCurve::PosLin | KsCurve::PosExp => scale as i32,
+    }
+}
+
+/// Keyboard-level offset for a note, in level units (~0.75 dB each). Positive
+/// boosts, negative cuts, zero at the pivot. Exposed for the UI curve readout
+/// and tests; the audio path wants [`ks_level_mult`].
+pub fn ks_level_offset(
+    key: u8,
+    break_pt: u8,
+    l_depth: u8,
+    l_curve: KsCurve,
+    r_depth: u8,
+    r_curve: KsCurve,
+) -> i32 {
+    let offset = key.min(127) as i32 - break_pt.min(127) as i32 + BP_PIVOT_OFFSET;
+    if offset >= 0 {
+        scale_curve(((offset + 1) / 3) as u32, r_depth, r_curve)
+    } else {
+        scale_curve(((-(offset - 1)) / 3) as u32, l_depth, l_curve)
+    }
+}
+
+/// Compute the keyboard-level multiplier for a given note — the
+/// [`ks_level_offset`] level offset expressed as an amplitude factor, `1.0` at
+/// the pivot. Multiplied against the per-op level to produce the cooked
+/// per-note amplitude scaler.
+///
+/// Callers must clamp the product against full scale — see the module docs.
 ///
 /// `depth` parameters are 0..99; `key` and `break_pt` are MIDI note numbers.
 pub fn ks_level_mult(
@@ -46,36 +122,11 @@ pub fn ks_level_mult(
     r_depth: u8,
     r_curve: KsCurve,
 ) -> f32 {
-    let key = key.min(127) as i32;
-    let bp = break_pt.min(127) as i32;
-    let semitones = key - bp;
-    // Pick the facing side and its reach to the keyboard edge: right side
-    // spans BP..127, left side spans 0..BP. `t` is 0 at the BP and 1 at the
-    // extreme note, so full depth lands on the edge rather than a fixed span.
-    let (depth, curve, reach) = if semitones >= 0 {
-        (r_depth, r_curve, 127 - bp)
-    } else {
-        (l_depth, l_curve, bp)
-    };
-    let t = if reach > 0 {
-        (semitones.unsigned_abs() as f32 / reach as f32).min(1.0)
-    } else {
-        0.0
-    };
-    let shape = match curve {
-        KsCurve::PosLin | KsCurve::NegLin => t,
-        KsCurve::PosExp | KsCurve::NegExp => {
-            // True normalised exponential: bends late, sharp near the edge.
-            ((KS_EXP_K * t).exp() - 1.0) / (KS_EXP_K.exp() - 1.0)
-        }
-    };
-    let sign = match curve {
-        KsCurve::PosLin | KsCurve::PosExp => 1.0,
-        KsCurve::NegLin | KsCurve::NegExp => -1.0,
-    };
-    let depth_norm = (depth.min(99) as f32) / 99.0;
-    let mult = 1.0 + sign * depth_norm * shape;
-    mult.max(0.0)
+    let units = ks_level_offset(key, break_pt, l_depth, l_curve, r_depth, r_curve);
+    if units == 0 {
+        return 1.0;
+    }
+    (units as f32 / LEVEL_UNITS_PER_OCTAVE).exp2()
 }
 
 /// Rate-scaling multiplier on EG rates. `1.0` at MIDI A3 (note 57). Above
@@ -93,37 +144,79 @@ pub fn ks_rate_mult(key: u8, ks_rate: u8) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use KsCurve::*;
 
+    /// Level offsets against the reference implementation, computed from its
+    /// `ScaleLevel`/`ScaleCurve` for these exact inputs. Integers, so this is an
+    /// exact match, not a tolerance — any drift in the grouping, the pivot
+    /// offset, the 329/shift constants or the exp table trips it.
     #[test]
-    fn unity_at_break_point() {
-        let m = ks_level_mult(60, 60, 99, KsCurve::PosExp, 99, KsCurve::NegLin);
-        assert!((m - 1.0).abs() < 1e-6, "at BP, mult = {m}");
+    fn level_offset_matches_hardware_reference() {
+        // (key, bp, l_depth, l_curve, r_depth, r_curve) -> level units
+        let cases: [(u8, u8, u8, KsCurve, u8, KsCurve, i32); 8] = [
+            (60, 60, 0, NegLin, 0, NegLin, 0),
+            (56, 60, 99, PosLin, 99, NegLin, 0), // inside the pivot dead zone
+            (96, 60, 0, PosLin, 99, NegLin, -103),
+            (96, 60, 0, PosLin, 99, NegExp, -18),
+            (24, 60, 99, PosLin, 0, NegLin, 87), // left side boosts
+            (96, 21, 0, PosLin, 74, NegLin, -154),
+            (96, 68, 0, PosLin, 74, NegLin, -65),
+            (84, 60, 0, PosLin, 30, NegExp, -2),
+        ];
+        for (key, bp, ld, lc, rd, rc, want) in cases {
+            let got = ks_level_offset(key, bp, ld, lc, rd, rc);
+            assert_eq!(got, want, "ks_level_offset(key {key}, bp {bp}, r_depth {rd})");
+        }
+    }
+
+    /// The property the old closed form got wrong: depth sets a fixed slope in
+    /// dB per semitone, so the same distance from the pivot gives the same
+    /// offset wherever the break point sits. The old code normalised its ramp
+    /// to the far edge of the keyboard, making the slope a function of the
+    /// break point.
+    #[test]
+    fn slope_is_independent_of_break_point() {
+        let at = |bp: u8| ks_level_offset(bp + 24, bp, 0, PosLin, 50, NegLin);
+        assert_eq!(at(40), -36);
+        assert_eq!(at(60), -36);
+        assert_eq!(at(80), -36);
     }
 
     #[test]
-    fn neg_lin_cuts_above_bp() {
-        let m = ks_level_mult(96, 60, 0, KsCurve::PosLin, 99, KsCurve::NegLin);
-        // Right reach = 127 - 60 = 67; t = 36/67 ≈ 0.537; lin, -depth →
-        // 1 - 0.537 ≈ 0.463.
-        assert!(m > 0.44 && m < 0.48, "neg lin above bp: {m}");
+    fn unity_at_the_pivot() {
+        // Full depth both sides, but at the pivot the offset is 0 → no change.
+        let m = ks_level_mult(56, 60, 99, PosExp, 99, NegLin);
+        assert!((m - 1.0).abs() < 1e-6, "at pivot, mult = {m}");
     }
 
     #[test]
-    fn full_depth_at_keyboard_edge() {
-        // Full depth is reached at the extreme note, not a fixed span.
-        let m = ks_level_mult(127, 60, 0, KsCurve::PosLin, 99, KsCurve::PosExp);
-        assert!(m > 1.99, "pos exp at top of keyboard: {m}");
-        let m = ks_level_mult(0, 60, 99, KsCurve::NegLin, 0, KsCurve::PosLin);
-        assert!(m < 0.01, "neg lin at bottom of keyboard: {m}");
+    fn neg_curves_cut_and_pos_curves_boost() {
+        // 3 octaves above the break point, full depth.
+        assert!(ks_level_mult(96, 60, 0, PosLin, 99, NegLin) < 0.01);
+        assert!(ks_level_mult(96, 60, 0, PosLin, 99, PosLin) > 100.0);
+        // 3 octaves below, full depth.
+        assert!(ks_level_mult(24, 60, 99, PosLin, 0, NegLin) > 100.0);
+        assert!(ks_level_mult(24, 60, 99, NegLin, 0, NegLin) < 0.01);
     }
 
+    /// Exp ramps far more gently than lin near the break point — the tabulated
+    /// curve only accelerates in the top half of its range.
     #[test]
-    fn exp_bends_below_lin_in_interior() {
-        // Same key/depth: the exponential curve sits closer to unity than the
-        // linear one until the shared edge endpoint.
-        let lin = ks_level_mult(90, 60, 0, KsCurve::PosLin, 99, KsCurve::PosLin);
-        let exp = ks_level_mult(90, 60, 0, KsCurve::PosLin, 99, KsCurve::PosExp);
-        assert!(exp < lin, "exp {exp} should bend below lin {lin}");
+    fn exp_bends_below_lin_across_the_interior() {
+        for note in [66u8, 72, 78, 84, 90, 96] {
+            let lin = ks_level_offset(note, 60, 0, PosLin, 99, NegLin);
+            let exp = ks_level_offset(note, 60, 0, PosLin, 99, NegExp);
+            assert!(exp > lin, "note {note}: exp {exp} should cut less than lin {lin}");
+        }
+    }
+
+    /// A depth of 0 is a flat keyboard on either side, at any break point.
+    #[test]
+    fn zero_depth_is_flat() {
+        for note in [0u8, 24, 60, 96, 127] {
+            assert_eq!(ks_level_offset(note, 60, 0, NegLin, 0, NegExp), 0);
+            assert!((ks_level_mult(note, 60, 0, NegLin, 0, NegExp) - 1.0).abs() < 1e-6);
+        }
     }
 
     #[test]

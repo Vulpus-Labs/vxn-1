@@ -36,8 +36,8 @@ For each operator `op{1..6}`:
 | `vel_sens`      | i    | 0 .. 7         | 3       | Velocity sensitivity for `level`. Higher = louder/brighter on hard hits. DX7-style 0-7 scale. |
 | `eg_r1..r4`     | i    | 0 .. 99        | 99,50,35,60 | EG rates. R1 = attack speed, R2 = decay-to-sustain, R3 = sustain decay (slow drift), R4 = release. Higher = faster. |
 | `eg_l1..l4`     | i    | 0 .. 99        | 99,70,50,0  | EG levels. L1 = peak after attack, L2 = decay target, L3 = sustain level, L4 = release floor (and pre-attack start). Carriers usually L4=0. |
-| `ks_break_pt`   | i    | 0 .. 127       | 60 (C4) | Keyboard break point (MIDI note). At this note, key-scaling applies zero offset to `level`. |
-| `ks_l_depth`    | i    | 0 .. 99        | 0       | Level scaling depth for notes *below* the break point. |
+| `ks_break_pt`   | i    | 0 .. 127       | 60 (C4) | Keyboard break point (MIDI note). Level scaling pivots 4 semitones below this (hardware's raw-parameter offset), with a ~±2-semitone flat zone from its 3-semitone grouping. |
+| `ks_l_depth`    | i    | 0 .. 99        | 0       | Level scaling depth for notes *below* the break point. Depth sets a **fixed dB-per-semitone slope**, not a ramp to the keyboard edge — at full depth the linear curve reaches ~±77 dB three octaves out. |
 | `ks_r_depth`    | i    | 0 .. 99        | 30      | Level scaling depth for notes *above* the break point. |
 | `ks_l_curve`    | e    | {+lin, −lin, +exp, −exp} | −lin | Shape of level scaling left of break point. `+` boosts, `−` cuts. Lin = linear, exp = exponential. |
 | `ks_r_curve`    | e    | {+lin, −lin, +exp, −exp} | −exp | Shape of level scaling right of break point. |
