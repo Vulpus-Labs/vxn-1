@@ -6,9 +6,12 @@
 //! segment. Level may be increasing or decreasing in any segment (rising
 //! decays and rising releases are supported).
 //!
-//! Fidelity: levels (0..99) → amplitude via a perceptual square curve,
-//! `amp = (L/99)^2`. Rates (0..99) → log-spaced amp-per-second between
-//! ~0.05/s (R=0, ~20 s sweep) and ~250/s (R=99, ~4 ms sweep).
+//! Fidelity: levels (0..99) → amplitude via the log curve of ADR 0007
+//! (`amp = 2^((L-99)/8)`), or a perceptual square `(L/99)^2` on the `Lin`
+//! escape hatch. Rates (0..99) drive two laws: the `Exp` curve marches every
+//! segment — attack included — in the log domain on the hardware's quantised
+//! rate ladder ([`rate_to_log2_per_sec`]), while `Lin` uses the amplitude-domain
+//! [`rate_to_amp_per_sec`] / [`rate_to_attack_per_sec`] pair.
 //!
 //! Tick rate: the EG advances per *control sample* — typically once per
 //! audio block, or every M samples for sub-block envelopes. The caller
@@ -44,10 +47,10 @@ pub struct EgState {
     /// Per-segment amplitude march rates (amp/sec) — the `Lin` path and the
     /// declick ([`kill_release`](Self::kill_release)).
     pub rates_per_sec: [f32; 4],
-    /// Curve selected at cook. `Exp` marches the **downward**
-    /// segments (Decay1/Decay2/Release) in the log2 domain — linear-in-dB →
-    /// exponential amplitude taper. Attack stays a linear-amplitude rise
-    /// (fast/punchy, not a dead-quiet log creep). `Lin` marches every segment
+    /// Curve selected at cook. `Exp` marches **every** segment in the log2
+    /// domain — linear-in-dB, so decays taper exponentially and the attack
+    /// rises from a jump-start floor with the hardware's distance-to-target
+    /// boost (see [`EgState::march_attack_log`]). `Lin` marches every segment
     /// in amplitude.
     curve: EgCurve,
     /// Linear amplitude ceiling (`OL × ks × vel`) applied after `exp2` on the
@@ -61,6 +64,12 @@ pub struct EgState {
     log_targets: [f32; 4],
     /// `Exp` log2 march rates (log2 units/sec).
     log_rates: [f32; 4],
+    /// `log2(max_amp)` — the op's ceiling in octaves below full scale. The
+    /// `Exp` attack's jump-start floor and its distance-to-target boost are
+    /// defined on the *absolute* (full-scale-referred) level, as on hardware
+    /// where the EG level already folds in output level / velocity / key
+    /// scaling, so a quiet operator attacks proportionally quicker.
+    max_log: f32,
     /// Declick override: a [`kill_release`](Self::kill_release) marches `level`
     /// linearly to 0 in the amplitude domain on **both** curves (a fast smooth
     /// ramp, no exponential tail needed), so the Release stage ignores the log
@@ -73,6 +82,36 @@ pub struct EgState {
 /// the stage transition — `2^EG_LOG_FLOOR` is inaudible, and marching to a
 /// finite floor keeps the dB/sec rate well-defined (true 0 is `-inf` in log2).
 const EG_LOG_FLOOR: f32 = -15.0;
+
+/// `Exp` attack jump-start, in octaves below full scale (≈ −44 dB). A note-on
+/// snaps the log marcher up to this floor before the rise, so the attack never
+/// crawls out of silence — the hardware's `jumptarget` (level 1716 ≪ 16, i.e.
+/// 6.703 octaves, against a unity level of 14 octaves). This is what gives a
+/// struck/plucked patch its instant onset.
+const EG_ATTACK_JUMP: f32 = -7.297;
+
+/// `Exp` attack distance-to-target boost. The hardware's rising branch adds
+/// `((17 ≪ 24) − level) ≫ 24` increments per tick — i.e. the *same* per-rate
+/// increment as a decay, multiplied by the whole octaves remaining to a target
+/// 3 octaves *above* unity. The multiplier therefore runs 11× at the jump-start
+/// floor down to 3× at full level: an attack is several times faster than a
+/// decay at the same rate number, and front-loaded.
+const EG_ATTACK_BOOST_TOP: f32 = 3.0;
+const EG_ATTACK_BOOST_MAX: f32 = 11.0;
+
+/// Ceiling on the `Exp` attack march, in octaves/sec: a full jump-floor→top
+/// rise can complete no faster than 1.45 ms.
+///
+/// Not a taste knob — it restores the hardware's own envelope resolution. The
+/// reference EG advances once per 64 samples at 44.1 kHz (1.45 ms) and its
+/// fastest attacks (R ≳ 85) complete in a single such step, so 1.45 ms is the
+/// shortest onset the hardware can produce. Our control block is 32 samples at
+/// 48 kHz — 0.67 ms, less than half — so a literal port of the rate law makes
+/// top-rate attacks *sharper than the instrument being modelled*, buying a
+/// harder transient that no DX7 ever emitted. Capping the rate (not clamping a
+/// duration) keeps a partial attack — a retrigger from a level already part-way
+/// up — proportionally quicker, as the linear-in-log march requires.
+const EG_ATTACK_MAX_OCT_PER_SEC: f32 = -EG_ATTACK_JUMP / 1.45e-3;
 
 /// Per-operator level→amplitude curve. Selects how a level (0..99) — for both
 /// the EG L-values and the operator output level — maps to a normalised
@@ -110,20 +149,24 @@ pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
 ///
 /// R=0 ≈ 0.05/s (~20s sweep); R=99 ≈ ~250/s (~4ms sweep). Log-spaced.
 ///
-/// Used for the **downward** Lin-path segments and the pitch EG. The **attack**
-/// segment has its own anchored curve — see [`rate_to_attack_per_sec`].
+/// Used for the **downward** Lin-path segments and the pitch EG. The Lin
+/// **attack** has its own anchored curve — see [`rate_to_attack_per_sec`]. The
+/// `Exp` path uses neither: it marches in log2 throughout
+/// ([`rate_to_log2_per_sec`]).
 #[inline]
 pub fn rate_to_amp_per_sec(rate: u8) -> f32 {
     let r = rate.min(99) as f32;
     0.05 * (2_f32).powf(r * 0.125)
 }
 
-/// Convert a rate (0..99) to the **attack** amplitude-per-second (full 0→1
-/// rise). Split from [`rate_to_amp_per_sec`] so the attack can be calibrated
-/// independently of the downward segments.
+/// Convert a rate (0..99) to the **`Lin`-curve attack** amplitude-per-second
+/// (full 0→1 rise). Split from [`rate_to_amp_per_sec`] so the attack can be
+/// calibrated independently of the downward segments.
 ///
-/// The attack is a linear-amplitude rise (not the log creep of the downward
-/// path — attacks are fast/punchy). Anchored to measured attack times:
+/// `Exp` — the default — does **not** use this: it marches the attack in the
+/// log domain like the hardware, on [`rate_to_log2_per_sec`]. This curve
+/// survives for the `Lin` escape hatch, whose linear-amplitude rise is anchored
+/// to these times:
 ///
 /// | R  | full 0→1 attack |
 /// |----|-----------------|
@@ -180,6 +223,7 @@ impl EgState {
     pub fn cook(&mut self, params: &EgParams, max_amp: f32, rate_mult: f32, curve: EgCurve) {
         self.curve = curve;
         self.max_amp = max_amp;
+        self.max_log = if max_amp > 0.0 { max_amp.log2() } else { EG_LOG_FLOOR };
         for i in 0..4 {
             self.targets[i] = level_to_amp(params.l[i], curve) * max_amp;
             // Segment 0 is the attack (its own linear-amplitude curve);
@@ -220,6 +264,10 @@ impl EgState {
     /// supports retrigger without click.
     pub fn note_on(&mut self) {
         self.kill = false;
+        // Seed the Exp attack marcher from the current amplitude (retrigger
+        // continues from where it was, click-free) but never below the
+        // jump-start floor.
+        self.log_level = amp_to_log(self.level, self.max_amp).max(EG_ATTACK_JUMP - self.max_log);
         self.stage = EgStage::Attack;
     }
 
@@ -254,24 +302,24 @@ impl EgState {
     /// Advance one control tick, `dt` seconds since the previous tick.
     /// Returns the post-tick level.
     ///
-    /// `Lin` marches every segment linearly in amplitude. `Exp` marches the
-    /// downward segments (Decay1/Decay2/Release) linearly in log2 (→ exponential
-    /// amplitude taper), but keeps a linear-amplitude attack and an
-    /// amplitude-domain declick. The marcher is scalar, run once per control
-    /// tick — never in the per-sample lane loop.
+    /// `Lin` marches every segment linearly in amplitude. `Exp` marches every
+    /// segment linearly in log2 — the downward ones at a plain per-rate step
+    /// (→ exponential amplitude taper), the attack with a jump-start and a
+    /// distance-to-target boost — keeping only the declick in the amplitude
+    /// domain. The marcher is scalar, run once per control tick — never in the
+    /// per-sample lane loop.
     pub fn tick(&mut self, dt: f32) -> f32 {
         let log = self.curve == EgCurve::Exp;
         match self.stage {
             EgStage::Idle => {
                 self.level = self.targets[3];
             }
-            // Attack is always a linear-amplitude rise. On Exp, seed the log
-            // marcher from the reached top so Decay1 continues smoothly.
+            // Exp attacks in the log domain (hardware model); Lin keeps the
+            // linear-amplitude rise and seeds the log marcher at the top so a
+            // mixed-curve Decay1 continues smoothly.
+            EgStage::Attack if log => self.march_attack_log(EgStage::Decay1, dt),
             EgStage::Attack => {
                 self.march(0, EgStage::Decay1, dt);
-                if log && self.stage == EgStage::Decay1 {
-                    self.log_level = amp_to_log(self.level, self.max_amp);
-                }
             }
             EgStage::Decay1 if log => self.march_log(1, EgStage::Decay2, dt),
             EgStage::Decay2 if log => self.march_log(2, EgStage::Sustain, dt),
@@ -282,6 +330,41 @@ impl EgState {
             EgStage::Release => self.march(3, EgStage::Idle, dt),
         }
         self.level
+    }
+
+    /// March the `Exp` attack: `log_level` rises toward `log_targets[0]` at
+    /// `log_rates[0]` *multiplied by the octaves remaining* to a virtual target
+    /// [`EG_ATTACK_BOOST_TOP`] octaves above full scale (11× at the jump-start
+    /// floor, 3× at the top). Reproduces the hardware's rising branch: an
+    /// attack shares the decay's per-rate increment but runs 3–11× faster over
+    /// a ~44 dB span, so R=81 lands in ~3 ms rather than tens of ms. The rate is
+    /// capped at [`EG_ATTACK_MAX_OCT_PER_SEC`] so a top-rate attack is no
+    /// sharper than the hardware's own 1.45 ms envelope step.
+    #[inline]
+    fn march_attack_log(&mut self, next: EgStage, dt: f32) {
+        let target = self.log_targets[0];
+        if self.log_level >= target {
+            self.level = self.targets[0];
+            self.stage = next;
+            return;
+        }
+        // Absolute (full-scale-referred) octaves — the boost is defined there.
+        let abs_oct = self.log_level + self.max_log;
+        let boost = (EG_ATTACK_BOOST_TOP - abs_oct.floor())
+            .clamp(1.0, EG_ATTACK_BOOST_MAX);
+        let oct_per_sec = (self.log_rates[0] * boost).min(EG_ATTACK_MAX_OCT_PER_SEC);
+        self.log_level += oct_per_sec * dt;
+        if self.log_level >= target {
+            self.log_level = target;
+            self.level = self.targets[0];
+            self.stage = next;
+        } else {
+            self.level = if self.log_level <= EG_LOG_FLOOR {
+                0.0
+            } else {
+                self.max_amp * self.log_level.exp2()
+            };
+        }
     }
 
     /// March `log_level` linearly toward `log_targets[idx]` at `log_rates[idx]`
@@ -600,7 +683,10 @@ mod tests {
 
     #[test]
     fn rate_mult_speeds_attack() {
-        let params = default_params();
+        // A mid attack rate, not the default's R=99: a top-rate attack is
+        // already pinned to `EG_ATTACK_MAX_OCT_PER_SEC`, so key-rate scaling
+        // has no headroom to shorten it further and both runs would tie.
+        let params = EgParams { r: [50, 50, 35, 60], l: [99, 70, 50, 0] };
         let mut a = EgState::default();
         a.cook(&params, 1.0, 1.0, EgCurve::Exp);
         a.note_on();

@@ -3,6 +3,25 @@
 //! steps. The fresh-note path seeds the level at silence and ramps the onset
 //! across the first block, so even a near-zero attack (rate 99) fades in (~one
 //! block) rather than stepping 0 → full at sample 0.
+//!
+//! ## What these guards do and don't cover
+//!
+//! The probe is [`common::worst_d4`] — a *slope-discontinuity* detector. The
+//! discontinuity worth guarding is the silence → note boundary, so the windows
+//! below are one [`CONTROL_BLOCK`] wide, starting at the note-on.
+//!
+//! They deliberately stop short of the attack apex. A DX7-faithful attack
+//! marches linear-in-dB (`eg::march_attack_log`), so amplitude *accelerates*
+//! into the L1 corner and the sharpest slope change on a fast-attack patch sits
+//! at the top of the attack, two to four blocks in — not at the onset. That
+//! corner is the percussive transient the instrument exists to produce; a
+//! window wide enough to include it cannot distinguish it from a click, and a
+//! threshold loose enough to admit it would no longer catch a real one. Before
+//! the attack curve was corrected the distinction did not arise, because no
+//! attack was fast enough to place a corner anywhere near the onset.
+//!
+//! [`onset_probe_detects_a_hard_gate`] pins the narrowed window's sensitivity:
+//! an ungated 0 → full step still measures ~200× the threshold inside it.
 
 mod common;
 
@@ -11,9 +30,15 @@ use vxn2_engine::engine::Engine;
 use vxn2_engine::factory::factory;
 use vxn2_engine::preset::from_toml_str;
 use vxn2_engine::shared::{ParamModel, SharedParams};
+use vxn_core_dsp::control::CONTROL_BLOCK;
 
 const SR: f32 = 48_000.0;
-const BLK: usize = 32;
+/// Render cadence — the shipping one. Both host shells slice buffers to
+/// `CONTROL_BLOCK` before `Engine::process_block`, so this is the granularity
+/// at which an onset ramp is actually emitted.
+const BLK: usize = CONTROL_BLOCK;
+/// Onset-window transient ceiling, shared by the note-on and steal guards.
+const ONSET_D4_MAX: f64 = 5e-3;
 
 #[test]
 fn note_on_onset_is_click_free_on_fast_attack() {
@@ -43,14 +68,49 @@ fn note_on_onset_is_click_free_on_fast_attack() {
             e.process_block(&mut l, &mut r);
             buf.extend_from_slice(&l);
         }
-        // 4th-difference transient detector over the onset window (same
-        // discontinuity probe as the note-off test).
-        let worst = common::worst_d4(&buf, on_t..buf.len() - 2);
+        // 4th-difference transient detector across the silence → note boundary
+        // (same discontinuity probe as the note-off test). One control block:
+        // the span over which the fresh-note path ramps the seeded-silent level
+        // up. See the module docs on why it stops there.
+        let worst = common::worst_d4(&buf, on_t..on_t + BLK);
         assert!(
-            worst < 5e-3,
+            worst < ONSET_D4_MAX,
             "note {note}: onset |d4| {worst:.2e} — fast-attack onset click is back"
         );
     }
+}
+
+/// Sensitivity pin for the narrowed onset window: splice a *fully attacked*
+/// note onto silence at a block boundary — the exact defect the guard exists to
+/// catch, an onset that steps to full instead of ramping — and confirm the
+/// one-block window still sees it, by a wide margin. Without this, narrowing the
+/// window could quietly turn the guard into a no-op.
+#[test]
+fn onset_probe_detects_a_hard_gate() {
+    let mut e = Engine::new(SR, BLK);
+    e.params.delay.on = false;
+    e.params.delay.mix = 0.0;
+    e.params.reverb.on = false;
+    e.params.reverb.mix = 0.0;
+    let mut l = [0.0_f32; BLK];
+    let mut r = [0.0_f32; BLK];
+    e.note_on(60, 100);
+    let mut sounding = Vec::new();
+    for _ in 0..(SR as usize / 8 / BLK) {
+        e.process_block(&mut l, &mut r);
+        sounding.extend_from_slice(&l);
+    }
+    // Discard the first 100 ms so the splice point is at full, steady level.
+    let mut gated = vec![0.0_f32; 2 * BLK];
+    let on_t = gated.len();
+    gated.extend_from_slice(&sounding[(SR as usize / 10)..]);
+
+    let worst = common::worst_d4(&gated, on_t..on_t + BLK);
+    assert!(
+        worst > ONSET_D4_MAX * 100.0,
+        "hard-gated onset |d4| {worst:.2e} — the one-block window has lost its \
+         teeth; a real onset step would now slip past the guard"
+    );
 }
 
 /// Solo-mode steal (legato off): stealing a *sounding* note must be click-free.
@@ -58,6 +118,13 @@ fn note_on_onset_is_click_free_on_fast_attack() {
 /// click-free) and declicks the previous note — a ~5 ms fade to silence that
 /// overlaps the new onset. Measure the steal transient with the same
 /// 4th-difference probe as the note-off test and require it near the floor.
+///
+/// A steal *contains* a fresh onset, so it is scored against one: the reference
+/// is this run's own first note-on, measured over the same one-block window.
+/// The absolute ceiling is the onset guard's. (The reference used to be
+/// `4..steal_t`, which spans the first note-on — it was measuring that onset,
+/// not the steady state it was named for, so the two sides of the comparison
+/// were the same quantity.)
 #[test]
 fn solo_steal_is_click_free() {
     let mut e = Engine::new(SR, BLK);
@@ -75,6 +142,13 @@ fn solo_steal_is_click_free() {
     let mut r = [0.0_f32; BLK];
     let mut buf = Vec::new();
 
+    // Settled-silence pre-roll, so the first note-on has a measurable boundary
+    // to serve as the onset reference.
+    for _ in 0..2 {
+        e.process_block(&mut l, &mut r);
+        buf.extend_from_slice(&l);
+    }
+    let on_t = buf.len();
     // First note, settle to a steady sounding level.
     e.note_on(60, 100);
     for _ in 0..(SR as usize / 10 / BLK) {
@@ -89,15 +163,20 @@ fn solo_steal_is_click_free() {
         buf.extend_from_slice(&l);
     }
 
-    let steal_worst = common::worst_d4(&buf, steal_t..buf.len() - 2);
-    let baseline = common::worst_d4(&buf, 4..steal_t - 2);
+    let steal_worst = common::worst_d4(&buf, steal_t..steal_t + BLK);
+    let onset_ref = common::worst_d4(&buf, on_t..on_t + BLK);
 
-    // Crossfade + ~5 ms declick measures ~0.006 here; a phase-reset steal
-    // click measures ~0.6. Gate well between the two.
+    // Crossfade + ~5 ms declick measures ~0.001 here; a phase-reset steal click
+    // measures ~1. Gate well between the two, on both counts.
     assert!(
-        steal_worst < 1.5e-2,
-        "solo steal transient |d4| {steal_worst:.2e} (steady baseline {baseline:.2e}) — \
-         a steal-of-sounding-note click is back"
+        steal_worst < ONSET_D4_MAX,
+        "solo steal transient |d4| {steal_worst:.2e} — a steal-of-sounding-note \
+         click is back"
+    );
+    assert!(
+        steal_worst <= 2.0 * onset_ref,
+        "solo steal transient |d4| {steal_worst:.2e} exceeds twice a plain note-on \
+         ({onset_ref:.2e}) — the steal is clickier than the onset it replaces"
     );
 }
 
