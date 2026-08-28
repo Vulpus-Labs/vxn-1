@@ -28,145 +28,80 @@ use vxn_dsp::{AdsrShape, FilterMode, FilterSlope, LfoShape, NoiseColor, Waveform
 
 // ── Param-value enums (variant indices stored as f32) ───────────────────────
 
-/// Lanes per note — the *voicing* half of what VXN1's four-way assign mode
-/// used to conflate (ADR 0003, ticket 0266). Powers of two only: the width
-/// divides the lane pool exactly, so there are never orphaned lanes.
+/// Define a `#[repr(usize)]` enum with contiguous discriminants and a **safe**
+/// `from_index` (exhaustive match, no `unsafe transmute`), plus `COUNT`,
+/// `index`, and `all`. The variant list is written once, so a new variant can't
+/// leave `from_index`/`COUNT` out of sync. (Ported verbatim from VXN1.)
 ///
-/// Simultaneous notes = [`MAX_VOICES_1B`](crate::MAX_VOICES) `/ width`, so the
-/// widest setting (32, the whole pool — ticket 0264) is monophonic *by
-/// capacity* while still being polyphonic *by behaviour*: a new note steals the
-/// stack and retriggers, with no legato. That combination is unreachable in
-/// VXN1's enum, and it is the point of splitting the two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(usize)]
-pub enum StackWidth {
-    #[default]
-    One,
-    Two,
-    Four,
-    Eight,
-    Sixteen,
-    ThirtyTwo,
-}
-
-impl StackWidth {
-    pub const COUNT: usize = StackWidth::ThirtyTwo as usize + 1;
-
-    pub fn from_index(i: usize) -> StackWidth {
-        match i {
-            1 => StackWidth::Two,
-            2 => StackWidth::Four,
-            3 => StackWidth::Eight,
-            4 => StackWidth::Sixteen,
-            5 => StackWidth::ThirtyTwo,
-            _ => StackWidth::One,
-        }
-    }
-
-    /// Lanes per note.
-    #[inline]
-    pub fn lanes(self) -> usize {
-        1 << (self as usize)
-    }
-}
-
-/// Keyboard behaviour — the *articulation* half. Orthogonal to [`StackWidth`]:
-/// any width can be played either way.
+/// Two forms, differing only in what an out-of-range index means:
 ///
-/// - `Poly` — each note takes its own stack; a new note steals when the pool is
-///   full and always retriggers.
-/// - `Solo` — one stack, last-note priority, with the notes beneath it held on
-///   a stack so releasing the top reveals what is under it. `Legato` then
-///   decides whether the reveal slides or articulates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(usize)]
-pub enum VoiceMode {
-    #[default]
-    Poly,
-    Solo,
-}
-
-impl VoiceMode {
-    pub const COUNT: usize = VoiceMode::Solo as usize + 1;
-
-    pub fn from_index(i: usize) -> VoiceMode {
-        match i {
-            1 => VoiceMode::Solo,
-            _ => VoiceMode::Poly,
-        }
-    }
-}
-
-/// How a stack's lanes are laid out across the `[-1, +1]` position axis that
-/// drives both the detune fan and the stereo fan (ticket 0284, VXN2's
-/// `StackDistrib`). Orthogonal to [`StackWidth`]: the law says *where* the lanes
-/// sit, the width how many there are, and `Spread` / `UnisonDetune` how far the
-/// position carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(usize)]
-pub enum StackDistrib {
-    /// Even spacing — lane `i` of `width` sits at `2i/(width-1) - 1`.
-    #[default]
-    Linear,
-    /// `sign(t) * |t|^0.5` over the linear position: inner lanes pull toward the
-    /// centre, outer lanes stay at the edges, so a wide stack reads as a dense
-    /// core with a pair of outliers rather than an even comb.
-    Geometric,
-    /// A fresh draw per lane per note-on. The stack stops being repeatable —
-    /// detune *and* pan scatter together, since one position feeds both.
-    Random,
-}
-
-impl StackDistrib {
-    pub const COUNT: usize = StackDistrib::Random as usize + 1;
-
-    pub fn from_index(i: usize) -> StackDistrib {
-        match i {
-            1 => StackDistrib::Geometric,
-            2 => StackDistrib::Random,
-            _ => StackDistrib::Linear,
-        }
-    }
-}
-
-/// Oscillator-interaction type (Off / Sync / PM ("FM" in labels) / Ring).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(usize)]
-pub enum CrossModType {
-    #[default]
-    Off,
-    Sync,
-    Pm,
-    Ring,
-}
-
-impl CrossModType {
-    pub const COUNT: usize = 4;
-
-    pub fn from_index(i: usize) -> CrossModType {
-        match i {
-            1 => CrossModType::Sync,
-            2 => CrossModType::Pm,
-            3 => CrossModType::Ring,
-            _ => CrossModType::Off,
-        }
-    }
-}
-
-// ── Param id enum ───────────────────────────────────────────────────────────
-
-/// Define a `#[repr(usize)]` param-id enum with contiguous discriminants and a
-/// **safe** `from_index` (exhaustive match, no `unsafe transmute`), plus
-/// `COUNT`, `index`, and `all`. The variant list is written once, so a new param
-/// can't leave `from_index`/`COUNT` out of sync. (Ported verbatim from VXN1.)
+/// - **`enum Name { .. }`** — `from_index` returns `Option`. For [`ParamId`],
+///   where an index past the last variant is a caller error.
+/// - **`enum Name: default = Variant { .. }`** — `from_index` returns the enum,
+///   folding anything out of range to `Variant`. For the param-*value* enums
+///   below, which decode an `f32` a host can set to anything, so there is
+///   nothing to hand an error to.
+///
+/// The value enums hand-rolled the second form until 0319 — four copies, one of
+/// which (`CrossModType::COUNT`) was a bare literal rather than derived from the
+/// variant list, unlike its three siblings.
 macro_rules! indexed_param_enum {
+    // Defaulting form. Matched first; the `: default =` clause is what tells it
+    // apart from the Option-returning form below.
     (
         $(#[$meta:meta])*
-        $vis:vis enum $name:ident { $($variant:ident),+ $(,)? }
+        $vis:vis enum $name:ident : default = $fallback:ident {
+            $( $(#[$vmeta:meta])* $variant:ident ),+ $(,)?
+        }
+    ) => {
+        indexed_param_enum! { @common $(#[$meta])* $vis enum $name { $( $(#[$vmeta])* $variant ),+ } }
+
+        impl $name {
+            #[doc = concat!(
+                "Inverse of [`Self::index`]. Out of range folds to [`", stringify!($name),
+                "::", stringify!($fallback), "`], so a host writing a nonsense param value ",
+                "lands on the default rather than panicking."
+            )]
+            pub fn from_index(i: usize) -> $name {
+                match i {
+                    $(x if x == $name::$variant as usize => $name::$variant,)+
+                    _ => $name::$fallback,
+                }
+            }
+        }
+    };
+
+    // Option-returning form.
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$vmeta:meta])* $variant:ident ),+ $(,)?
+        }
+    ) => {
+        indexed_param_enum! { @common $(#[$meta])* $vis enum $name { $( $(#[$vmeta])* $variant ),+ } }
+
+        impl $name {
+            /// Inverse of [`Self::index`]; `None` past the last variant.
+            pub fn from_index(i: usize) -> Option<$name> {
+                match i {
+                    $(x if x == $name::$variant as usize => Some($name::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+
+    // Everything both forms share.
+    (
+        @common
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$vmeta:meta])* $variant:ident ),+ $(,)?
+        }
     ) => {
         $(#[$meta])*
         #[repr(usize)]
-        $vis enum $name { $($variant),+ }
+        $vis enum $name { $( $(#[$vmeta])* $variant ),+ }
 
         impl $name {
             /// Number of variants (= the flat table length).
@@ -182,17 +117,92 @@ macro_rules! indexed_param_enum {
             pub fn index(self) -> usize {
                 self as usize
             }
-
-            /// Inverse of [`Self::index`]; `None` past the last variant.
-            pub fn from_index(i: usize) -> Option<$name> {
-                match i {
-                    $(x if x == $name::$variant as usize => Some($name::$variant),)+
-                    _ => None,
-                }
-            }
         }
     };
 }
+
+
+indexed_param_enum! {
+    /// Lanes per note — the *voicing* half of what VXN1's four-way assign mode
+    /// used to conflate (ADR 0003, ticket 0266). Powers of two only: the width
+    /// divides the lane pool exactly, so there are never orphaned lanes.
+    ///
+    /// Simultaneous notes = [`MAX_VOICES_1B`](crate::MAX_VOICES) `/ width`, so the
+    /// widest setting (32, the whole pool — ticket 0264) is monophonic *by
+    /// capacity* while still being polyphonic *by behaviour*: a new note steals the
+    /// stack and retriggers, with no legato. That combination is unreachable in
+    /// VXN1's enum, and it is the point of splitting the two.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum StackWidth: default = One {
+        #[default]
+        One,
+        Two,
+        Four,
+        Eight,
+        Sixteen,
+        ThirtyTwo,
+    }
+}
+
+impl StackWidth {
+    /// Lanes per note.
+    #[inline]
+    pub fn lanes(self) -> usize {
+        1 << (self as usize)
+    }
+}
+
+indexed_param_enum! {
+    /// Keyboard behaviour — the *articulation* half. Orthogonal to [`StackWidth`]:
+    /// any width can be played either way.
+    ///
+    /// - `Poly` — each note takes its own stack; a new note steals when the pool is
+    ///   full and always retriggers.
+    /// - `Solo` — one stack, last-note priority, with the notes beneath it held on
+    ///   a stack so releasing the top reveals what is under it. `Legato` then
+    ///   decides whether the reveal slides or articulates.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum VoiceMode: default = Poly {
+        #[default]
+        Poly,
+        Solo,
+    }
+}
+
+indexed_param_enum! {
+    /// How a stack's lanes are laid out across the `[-1, +1]` position axis that
+    /// drives both the detune fan and the stereo fan (ticket 0284, VXN2's
+    /// `StackDistrib`). Orthogonal to [`StackWidth`]: the law says *where* the lanes
+    /// sit, the width how many there are, and `Spread` / `UnisonDetune` how far the
+    /// position carries.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum StackDistrib: default = Linear {
+        /// Even spacing — lane `i` of `width` sits at `2i/(width-1) - 1`.
+        #[default]
+        Linear,
+        /// `sign(t) * |t|^0.5` over the linear position: inner lanes pull toward the
+        /// centre, outer lanes stay at the edges, so a wide stack reads as a dense
+        /// core with a pair of outliers rather than an even comb.
+        Geometric,
+        /// A fresh draw per lane per note-on. The stack stops being repeatable —
+        /// detune *and* pan scatter together, since one position feeds both.
+        Random,
+    }
+}
+
+indexed_param_enum! {
+    /// Oscillator-interaction type (Off / Sync / PM ("FM" in labels) / Ring).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum CrossModType: default = Off {
+        #[default]
+        Off,
+        Sync,
+        Pm,
+        Ring,
+    }
+}
+
+// ── Param id enum ───────────────────────────────────────────────────────────
 
 indexed_param_enum! {
 /// VXN1b parameter ids. Discriminant = CLAP id = index into [`PARAMS`].
@@ -952,6 +962,38 @@ mod tests {
             assert_eq!(ParamId::from_index(p.index()), Some(p));
         }
         assert_eq!(ParamId::from_index(ParamId::COUNT), None);
+    }
+
+    /// The four param-*value* enums moved onto `indexed_param_enum!` in 0319 and
+    /// had no coverage of their own before that: `COUNT` was hand-written (a
+    /// bare literal for `CrossModType`) and `from_index`'s out-of-range fold was
+    /// four separate `_ =>` arms. Both are generated now, so pin what they mean.
+    #[test]
+    fn value_enums_count_and_fold_out_of_range() {
+        macro_rules! check {
+            ($ty:ident, $count:expr, $default:expr) => {
+                assert_eq!($ty::COUNT, $count, "{} COUNT", stringify!($ty));
+                assert_eq!($ty::all().count(), $count);
+                for (i, v) in $ty::all().enumerate() {
+                    assert_eq!(v.index(), i);
+                    assert_eq!($ty::from_index(i), v);
+                }
+                // Anything past the last variant folds to the default rather
+                // than panicking — a host can write any f32 into these.
+                assert_eq!($ty::from_index($count), $default);
+                assert_eq!($ty::from_index(usize::MAX), $default);
+                assert_eq!($ty::default(), $default);
+            };
+        }
+        check!(StackWidth, 6, StackWidth::One);
+        check!(VoiceMode, 2, VoiceMode::Poly);
+        check!(StackDistrib, 3, StackDistrib::Linear);
+        check!(CrossModType, 4, CrossModType::Off);
+        // The width enum's whole point: lanes are powers of two, contiguous.
+        assert_eq!(
+            StackWidth::all().map(|w| w.lanes()).collect::<Vec<_>>(),
+            vec![1, 2, 4, 8, 16, 32]
+        );
     }
 
     #[test]
