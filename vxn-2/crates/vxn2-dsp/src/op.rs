@@ -119,8 +119,19 @@ pub fn compute_base_hz(params: &OpParams, key: u8) -> f32 {
         RatioMode::Ratio => {
             let num_eff = params.num as f32 + (params.fine as f32) * 0.01;
             let denom = params.denom.max(1) as f32;
-            let cents = params.detune as f32;
-            note_to_hz(key as f32) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
+            // Detune is a pitch offset, so it joins the note — one exponential
+            // instead of two, and cents end up in the same domain as every
+            // other pitch contributor (bend, glide, pitch EG, matrix mod, stack
+            // detune), which `apply_pitch_mult` already sums in semitones.
+            //
+            // The ratio deliberately stays a rational multiply. An FM ratio
+            // *is* a rational, and it is the one quantity here that must be
+            // exact: a 14:1 modulator has to sit precisely on the 14th
+            // harmonic. Folding it onto the semitone accumulator would mean a
+            // log2/exp2 round trip, which returns 45:1 as 45.000003815 and
+            // 3:2 as 1.500000119 — inaudible beating, but a locked harmonic
+            // relationship silently stopped being locked.
+            note_to_hz(key as f32 + params.detune as f32 / 100.0) * (num_eff / denom)
         }
         RatioMode::Fixed => params.fixed_hz,
     }
@@ -243,6 +254,50 @@ mod tests {
     fn cook_sets_phase_inc_to_a4_at_48k() {
         // 440 Hz at 48k: inc = 440 / 48000 * 2^32 ≈ 39_370_534. Exact (tol=0).
         test_util::assert_cooked_hz(&OpParams::default(), 440.0, 0);
+    }
+
+    /// Detune joining the note is mathematically the same as its own
+    /// exponential — `2^((k + c/100 − 69)/12)` ≡ `2^((k−69)/12) · 2^(c/1200)` —
+    /// but not bit-identical, since one `powf` rounds differently from two.
+    /// Measured worst case across the whole key range and the ratios in use:
+    /// 7 ULP, 2.03e-4 cents — some 5000× below a 1-cent just-noticeable
+    /// difference. Bit-identity was ticket 0327's stated bar and is not
+    /// reachable by any reordering; this is the bound that replaced it.
+    #[test]
+    fn detune_on_note_matches_the_separate_exponential() {
+        for &(num, denom) in &[(1u8, 1u8), (3, 2), (14, 1), (45, 1)] {
+            for det in [-7i8, -3, 0, 3, 7] {
+                for key in 0..=127u8 {
+                    let mut p = OpParams { num, denom, detune: det, ..OpParams::default() };
+                    p.fine = 0;
+                    let got = compute_base_hz(&p, key);
+                    let want = note_to_hz(key as f32)
+                        * (num as f32 / denom as f32)
+                        * 2_f32.powf(det as f32 / 1200.0);
+                    let cents = 1200.0 * (got as f64 / want as f64).log2();
+                    assert!(
+                        cents.abs() < 1e-3,
+                        "{num}/{denom} det {det} key {key}: {cents:.2e} cents adrift"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The ratio stays exactly rational. This is the property that kept the
+    /// ratio off the semitone accumulator: a modulator on the 14th harmonic
+    /// must be on it exactly, or it beats against the partial it is meant to
+    /// reinforce.
+    #[test]
+    fn ratio_is_exactly_rational() {
+        let base = compute_base_hz(&OpParams::default(), 60);
+        for &(num, denom, want) in &[
+            (14u8, 1u8, 14.0f32), (45, 1, 45.0), (3, 2, 1.5), (7, 4, 1.75), (1, 2, 0.5),
+        ] {
+            let p = OpParams { num, denom, ..OpParams::default() };
+            let got = compute_base_hz(&p, 60) / base;
+            assert_eq!(got, want, "ratio {num}/{denom} is not exact");
+        }
     }
 
     #[test]

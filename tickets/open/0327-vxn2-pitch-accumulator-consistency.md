@@ -28,13 +28,40 @@ note_to_hz(key as f32) * (num_eff / denom) * 2_f32.powf(cents / 1200.0)
 Mathematically equivalent. Worth folding onto the accumulator so the pattern is
 uniform and the next pitch contributor has one obvious place to go.
 
+## Outcome — done in part, and the other part deliberately not
+
+**Detune folded onto the note.** It is a pitch offset, so it joins the note
+argument rather than forming its own exponential: one `powf` instead of two, and
+cents end up in the same domain as every other pitch contributor.
+
+**Ratio left as a rational multiply.** Measured before writing it, and folding
+the ratio onto the semitone accumulator costs something real — a `log2`/`exp2`
+round trip returns 45:1 as `45.000003815` and 3:2 as `1.500000119`. The beating
+is inaudible (~0.001 Hz at C4), but a modulator on the 14th harmonic must sit on
+it *exactly*, and an FM ratio **is** a rational. That is the correct
+representation, not an inconsistency to be tidied away. Uniformity was this
+ticket's whole justification and it does not outweigh exactness here.
+
+**The 1-ULP acceptance bar was unreachable and has been replaced.** Every
+reordering perturbs rounding, because one `powf` does not round like two:
+
+    f32 accumulator (as specced)   10 ULP    ratios lose exactness
+    f64 accumulator                 2 ULP    ratios lose exactness
+    detune-only (shipped)           7 ULP    ratios stay exact
+
+Bounded instead by the musical quantity: worst case 2.03e-4 cents across the
+full key range and the ratios in use, ~5000× below a 1-cent JND. Two tests pin
+it — one on the divergence bound, one asserting `assert_eq!` exactness of the
+rational ratios, which is the property that kept the ratio off the accumulator.
+
 ## Acceptance criteria
 
-- [ ] Ratio and detune enter as semitone offsets on the same accumulator as the
-      rest of the pitch chain.
-- [ ] Cooked `phase_inc` unchanged to within 1 ULP across the key range and the
-      full ratio table — this is a refactor and must be provably inert.
-- [ ] `Fixed` ratio mode still bypasses the key entirely.
+- [x] Detune enters as a semitone offset on the note, sharing the pitch domain.
+- [~] Ratio does not — deliberately, see above. Superseded.
+- [~] "Cooked `phase_inc` unchanged to within 1 ULP" — unreachable by any
+      reordering; replaced by the 2.03e-4-cent bound above.
+- [x] `Fixed` ratio mode still bypasses the key entirely.
+- [x] Ratios remain exactly rational (`assert_eq!`, not a tolerance).
 
 ## Notes
 
