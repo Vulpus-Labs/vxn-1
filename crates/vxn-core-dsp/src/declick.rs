@@ -186,12 +186,24 @@ impl WetFade {
         self.was_active = self.is_active();
     }
 
-    /// Re-idle for a transport reset or sample-rate change: drop to the settled
-    /// state for the current flag and forget the edge, so the next active tick
-    /// reports `RisingClear` and the caller clears.
+    /// Re-idle for a transport reset or sample-rate change: drop to silence,
+    /// forget the edge so the next active tick reports `RisingClear`, and
+    /// **un-prime**, so the next `set`/`set_mix` snaps to the patch value
+    /// instead of gliding to it.
+    ///
+    /// Un-priming is the part that matters, and it is what a re-idle means:
+    /// nothing is playing, so the following parameter fan-in is a fresh load
+    /// and should land at its value the way a patch load does. Snapping to the
+    /// *current* enable flag and staying primed — the obvious reading — leaves
+    /// a chain whose `reset` promises "every slot fully bypassed" gliding down
+    /// from the old mix instead, which is audible on the first block after a
+    /// transport reset and is what
+    /// `vxn1b-engine::fx::tests::reset_snaps_to_bypass` caught.
     #[inline]
     pub fn reset(&mut self) {
-        self.snap();
+        self.mix.snap(0.0);
+        self.enabled = false;
+        self.primed = false;
         self.was_active = false;
     }
 }
@@ -328,11 +340,43 @@ mod tests {
     }
 
     #[test]
-    fn reset_idles_and_rearms_the_edge() {
+    fn reset_unprimes_so_the_next_load_snaps() {
+        // A reset mid-effect must not leave the fade gliding down from the old
+        // mix when the patch comes back on: the next `set` is a fresh load.
         let mut f = on_fade();
         f.tick();
         f.reset();
-        let (_, edge) = f.tick();
-        assert_eq!(edge, EdgeAction::RisingClear, "reset must re-arm the clear");
+        assert!(f.settled_off(), "reset should drop to silence");
+        f.set(true, 0.4);
+        let (w, edge) = f.tick();
+        assert_eq!(w, 0.4, "post-reset load should snap, not glide");
+        assert_eq!(edge, EdgeAction::RisingClear, "and re-arm the clear");
+    }
+
+    #[test]
+    fn reset_then_bypass_is_immediately_settled() {
+        // What `FxChain::reset` relies on: reset, then params that say "off",
+        // and the very next tick is already a bit-exact passthrough.
+        let mut f = on_fade();
+        f.tick();
+        f.reset();
+        f.set(false, 0.4);
+        assert!(f.settled_off(), "off-after-reset must not ride down");
+        assert_eq!(f.tick().0, 0.0);
+    }
+
+    /// The complement of `reset_unprimes_so_the_next_load_snaps`: a reset with
+    /// no params behind it must sit silent rather than report an edge. The
+    /// clear re-arms for whenever the effect next becomes active, which is not
+    /// necessarily the next tick.
+    #[test]
+    fn reset_idles_until_params_arrive() {
+        let mut f = on_fade();
+        f.tick();
+        f.reset();
+        for _ in 0..64 {
+            assert_eq!(f.tick(), (0.0, EdgeAction::None), "idle after reset");
+        }
+        assert!(f.settled_off());
     }
 }

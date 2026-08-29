@@ -609,6 +609,20 @@ mod tests {
         assert!(r_e > 1e-5, "R wet silent (R_e={r_e})");
     }
 
+    /// The `FxKernel` contract. vxn-1b's copy carried an out-of-place
+    /// `process_block` and a hand-rolled equivalence test; the block path is
+    /// the trait's default here (it loops `process`, since the FDN's
+    /// per-sample serial dependencies do not vectorise across samples), so the
+    /// check moves to the shared harness rather than being dropped with it.
+    #[test]
+    fn block_matches_per_sample() {
+        test_util::assert_block_matches_sample(
+            || FdnReverb::new(SR),
+            &FdnReverbParams::default(),
+            64,
+        );
+    }
+
     #[test]
     fn reset_zeros_state() {
         let mut r = make();

@@ -42,7 +42,7 @@ use vxn2_dsp::phaser::{FxKernel as _, StereoPhaser};
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
 use vxn2_dsp::halfband::{Interpolator, Oversampler, roundtrip_latency_base_samples};
 use vxn2_dsp::hpf::HpfKernel;
-use vxn2_dsp::reverb::{FdnReverb, FxKernel as _};
+use vxn2_dsp::reverb::FdnReverb;
 use vxn2_dsp::stack::{STACK_LANES, stack_tick_stereo};
 
 use crate::alloc::{N_STACKS, PolyAlloc};

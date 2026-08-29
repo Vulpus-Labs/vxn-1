@@ -16,19 +16,19 @@
 //! CPU risk). What differs between slots is *where the bypass fade lives*, and
 //! E041 is in the middle of moving them all to one answer.
 //!
-//! - **Chorus and phaser** — bypass is inside the kernel, as a `WetFade`
-//!   (tickets 0228, 0229). `FxChain` gates on `is_active()` and otherwise just
-//!   calls `process`; the dry/wet crossfade happens once, in the kernel,
-//!   against the mix the patch asked for. This is the idiom the rest are
-//!   migrating to.
-//! - **The remaining three** — a short outer bypass fade (a `Smoothed` 0..1)
+//! - **Chorus, phaser and reverb** — bypass is inside the kernel, as a
+//!   `WetFade` (tickets 0228-0230). `FxChain` gates on `is_active()` and
+//!   otherwise just calls `process`; the dry/wet crossfade happens once, in the
+//!   kernel, against the mix the patch asked for. This is the idiom the rest
+//!   are migrating to.
+//! - **The remaining two** — a short outer bypass fade (a `Smoothed` 0..1)
 //!   held here, ramped 0↔1 over [`FX_FADE_MS`] and crossfaded against the dry
 //!   input. `Smoothed` snaps to its target within `SNAP_EPS`, so the fade
 //!   genuinely reaches 0 and the true-skip gate re-arms. These kernels are held
 //!   **internally on**, their own `mix` argument carrying the musical wet
 //!   amount while the outer fade owns bypass; on an off→on edge the slot's
 //!   kernel state is cleared so a re-enabled delay / reverb doesn't dump a
-//!   stale tail. Tickets 0230–0232 retire this half.
+//!   stale tail. Tickets 0231–0232 retire this half.
 //!
 //! No slot ever carries both (E041's double-fade ban) — a kernel with an
 //! internal `WetFade` has no entry in `fades`/`on` at all.
@@ -65,14 +65,13 @@ pub(crate) const DELAY_MAX_SECONDS: f32 = 4.0;
 // FIRST (input compression / drive ahead of the modulation + time effects),
 // matching the faceplate order (Dynamics left of FX) and VXN2's FX bus.
 //
-// The **chorus and phaser are absent**: they own their bypass internally since
-// 0228/0229, so giving them fade slots here would be the double fade E041 bans.
-// The chain still runs them in position — these indices address the fade
+// **Chorus, phaser and reverb are absent**: they own their bypass internally
+// since 0228-0230, so giving them fade slots here would be the double fade E041
+// bans. The chain still runs them in position — these indices address the fade
 // arrays, not the signal path.
 const DYNAMICS: usize = 0;
 const DELAY: usize = 1;
-const REVERB: usize = 2;
-const N_SLOTS: usize = 3;
+const N_SLOTS: usize = 2;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
 /// block. Character values map straight to each kernel's setter; the `*_on`
@@ -225,8 +224,8 @@ impl FxChain {
         // them: re-idling has to settle that fade too, not just empty the state.
         self.chorus.reset();
         self.phaser.reset();
-        self.delay.clear();
         self.reverb.reset();
+        self.delay.clear();
         self.dynamics.clear();
         for f in &mut self.fades {
             f.snap(0.0);
@@ -240,7 +239,6 @@ impl FxChain {
     /// carries the wet amount and this chain's fade owns bypass.
     pub fn set_params(&mut self, p: &FxParams) {
         self.retarget(DELAY, p.delay_on);
-        self.retarget(REVERB, p.reverb_on);
         self.retarget(DYNAMICS, p.dynamics_on);
 
         self.chorus.set_params(&ChorusParams {
@@ -267,7 +265,7 @@ impl FxChain {
             p.delay_pingpong,
         );
         self.reverb.set_params(&FdnReverbParams {
-            on: true,
+            on: p.reverb_on,
             size: p.reverb_size,
             decay_secs: p.reverb_decay,
             damp: p.reverb_damp,
@@ -340,7 +338,6 @@ impl FxChain {
     fn clear_slot(&mut self, slot: usize) {
         match slot {
             DELAY => self.delay.clear(),
-            REVERB => self.reverb.reset(),
             DYNAMICS => self.dynamics.clear(),
             _ => {}
         }
@@ -367,9 +364,19 @@ impl FxChain {
         self.phaser.process(xl, xr)
     }
 
+    /// The reverb slot, internal fade since 0230. `is_active()` stays true
+    /// through the whole switch-off glide, so the tail rings out through the
+    /// fade rather than being cut at the slot boundary.
+    #[inline]
+    fn run_reverb(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.reverb.is_active() {
+            return (xl, xr);
+        }
+        self.reverb.process(xl, xr)
+    }
+
     fx_slot!(run_dynamics, DYNAMICS, dynamics);
     fx_slot!(run_delay, DELAY, delay);
-    fx_slot!(run_reverb, REVERB, reverb);
 }
 
 /// Linear bypass crossfade: `g = 0` → dry input, `g = 1` → kernel wet output.
@@ -580,6 +587,19 @@ mod tests {
                 p.chorus_depth = 0.8;
             },
             |p| p.chorus_on = false,
+        );
+    }
+
+    #[test]
+    fn reverb_slot_bypass_fades_and_settles() {
+        assert_internal_fade_slot(
+            "reverb",
+            |p| {
+                p.reverb_on = true;
+                p.reverb_mix = 1.0;
+                p.reverb_decay = 2.0;
+            },
+            |p| p.reverb_on = false,
         );
     }
 
