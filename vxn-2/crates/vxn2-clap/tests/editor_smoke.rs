@@ -146,8 +146,8 @@ fn custom_set_matrix_row_routes_through_controller() {
 /// Full preset-load path: JS dispatches `{op:"load_factory", index}`; the
 /// shared backend parses it, the controller loads the factory blob through
 /// `Vxn2PresetStore` and restores it into the model. After one tick the
-/// store reflects the factory preset's params. We target `Brass/Analog Brass`
-/// — algo 1, distinct from the default patch's algo 5 — a clean witness that
+/// store reflects the factory preset's params. We target `Brass/Clarion`
+/// — algo 17, distinct from the default patch's algo 5 — a clean witness that
 /// the preset landed. Located by name rather than a fixed index so adding
 /// presets in alpha-earlier categories (e.g. Bass) doesn't break the test.
 #[test]
@@ -155,16 +155,16 @@ fn load_factory_round_trips_into_shared_params() {
     let shared = Arc::new(SharedParams::new());
     let (mut controller, _view_rx, corpus) =
         Controller::new(shared.clone(), Box::new(Vxn2PresetStore::new()));
-    // The published corpus carries the embedded factory bank. Find Analog
-    // Brass by name; `load_factory` indexes this same sorted listing.
+    // The published corpus carries the embedded factory bank. Find Clarion by
+    // name; `load_factory` indexes this same sorted listing.
     let brass_index = {
         let c = corpus.lock().unwrap();
         assert!(c.factory.len() >= 5, "factory corpus too small: {}", c.factory.len());
         let idx = c
             .factory
             .iter()
-            .position(|m| m.name == "Analog Brass")
-            .expect("factory bank should contain Analog Brass");
+            .position(|m| m.name == "Clarion")
+            .expect("factory bank should contain Clarion");
         assert_eq!(c.factory[idx].category.as_deref(), Some("Brass"));
         idx
     };
@@ -180,15 +180,15 @@ fn load_factory_round_trips_into_shared_params() {
 
     assert_eq!(
         shared.get(algo),
-        1.0,
-        "Analog Brass (factory 0) should load algo 1, got {}",
+        17.0,
+        "Clarion should load algo 17, got {}",
         shared.get(algo)
     );
-    // feedback 3.0 is part of that preset; the default patch is feedback 6.0.
+    // feedback 4.6 is part of that preset; the default patch is feedback 6.0.
     let fb = id_of("feedback").unwrap();
     assert!(
-        (shared.get(fb) - 3.0).abs() < 1e-4,
-        "feedback {} (want 3.0)",
+        (shared.get(fb) - 4.6).abs() < 1e-4,
+        "feedback {} (want 4.6)",
         shared.get(fb)
     );
 }

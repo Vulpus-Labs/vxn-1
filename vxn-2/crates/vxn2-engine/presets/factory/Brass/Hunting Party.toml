@@ -1,0 +1,161 @@
+schema = 1
+
+[meta]
+name = "Hunting Party"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "French horns, heard across a field. Algo 5 is three independent carrier/modulator pairs, so this is literally three players, each a few cents off the others, multiplied again by three stack lanes. Pairs 1 and 3 take 1:1 modulators; pair 2 takes a 2:1, which is what fills the third and fourth harmonics — with 1:1 everywhere they only arrive as third-order Bessel skirts and the mid goes hollow. Measured against a horn at mf the partials land at 0, -4, -11 dB, and fall away faster above that, which is the instrument and the 2.6 kHz filter agreeing with each other. Slow attacks, long releases, a big damped hall."
+
+[params]
+algo = 5
+# Mild. Feedback sits on op6, the third pair's modulator, so it only roughens
+# one of the three voices — the section is uneven, which is the point.
+feedback = 3.4
+
+# Pair 1.
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 2
+op1-eg-r1 = 62
+op1-eg-r2 = 48
+op1-eg-r3 = 20
+op1-eg-r4 = 52
+op1-eg-l2 = 97
+op1-eg-l3 = 96
+
+op2-num = 1
+op2-level = 85
+op2-vel-sens = 6
+op2-eg-r1 = 56
+op2-eg-r2 = 44
+op2-eg-r3 = 18
+op2-eg-r4 = 54
+op2-eg-l2 = 92
+op2-eg-l3 = 90
+
+# Pair 2, six cents flat, and the one carrying the 2:1 modulator.
+op3-num = 1
+op3-detune = -6
+op3-level = 94
+op3-vel-sens = 2
+op3-eg-r1 = 60
+op3-eg-r2 = 48
+op3-eg-r3 = 20
+op3-eg-r4 = 52
+op3-eg-l2 = 97
+op3-eg-l3 = 96
+
+op4-num = 2
+op4-detune = 5
+op4-level = 86
+op4-vel-sens = 6
+op4-eg-r1 = 55
+op4-eg-r2 = 44
+op4-eg-r3 = 18
+op4-eg-r4 = 54
+op4-eg-l2 = 91
+op4-eg-l3 = 88
+
+# Pair 3, eleven cents sharp and the slowest to speak.
+op5-num = 1
+op5-detune = 11
+op5-level = 90
+op5-vel-sens = 2
+op5-eg-r1 = 58
+op5-eg-r2 = 46
+op5-eg-r3 = 20
+op5-eg-r4 = 52
+op5-eg-l2 = 95
+op5-eg-l3 = 93
+
+op6-num = 1
+op6-detune = -9
+op6-level = 80
+op6-vel-sens = 5
+op6-eg-r1 = 54
+op6-eg-r2 = 44
+op6-eg-r3 = 18
+op6-eg-r4 = 54
+op6-eg-l2 = 88
+op6-eg-l3 = 85
+
+lfo2-shape = "Sine"
+lfo2-rate = 4.6
+lfo2-delay = 700.0
+lfo2-fade = 900.0
+
+# Three lanes on top of three in-patch pairs: nine slightly disagreeing horns.
+stack-density = 3
+stack-detune = 9.0
+stack-spread = 0.75
+stack-phase = 0.50
+stack-distrib = "Linear"
+
+filter-enable = true
+filter-cutoff = 2600.0
+filter-resonance = 0.12
+filter-slope = "2-Pole"
+filter-drive = 1.4
+filter-keytrack = 0.50
+
+hp-cutoff = 50.0
+
+reverb-on = true
+reverb-size = 0.75
+reverb-decay = 3.4
+reverb-damp = 0.55
+reverb-mix = 0.30
+delay-on = false
+
+master-volume = -14.85
+
+# Always-on vibrato, late and shallow (~0.08 st) — section players do not
+# agree on when to start, which is what the 900 ms fade buys.
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.15
+
+[[matrix]]
+slot = 1
+source = "mod-wheel"
+dest = "op2-level"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 2
+source = "mod-wheel"
+dest = "op4-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 3
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.90
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.90
+
+[[matrix]]
+slot = 6
+source = "voice-spread"
+dest = "op5-pan"
+curve = "lin"
+depth = 0.60

@@ -1,0 +1,171 @@
+schema = 1
+
+[meta]
+name = "Shout Chorus"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "The big-band stab: five trumpets and four bones hitting the same chord at the top of the last chorus. Algo 8 gives two carriers, one plain-modulated and one driven by a 1:1 and a 2:1 in parallel with a 4:1 above them, so the second carrier is markedly the ruder of the two. Everything is fast — 13 ms carriers, velocity onto the envelope rates as well as the levels — and the dynamics stage is on to glue the transient. Four detuned lanes make it a section rather than a chord."
+
+[params]
+algo = 8
+# Feedback on op4, the 1:1 modulator of the second carrier. That carrier is the
+# one meant to bark; the first stays comparatively clean.
+feedback = 5.2
+
+# Carrier 1 — the trumpets.
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 3
+op1-eg-r1 = 82
+op1-eg-r2 = 52
+op1-eg-r3 = 26
+op1-eg-r4 = 68
+op1-eg-l2 = 94
+op1-eg-l3 = 88
+
+# Index 2.4 on the attack, 0.8 held: it blares and then backs off.
+op2-num = 1
+op2-level = 88
+op2-vel-sens = 7
+op2-eg-r1 = 80
+op2-eg-r2 = 50
+op2-eg-r3 = 24
+op2-eg-r4 = 70
+op2-eg-l2 = 90
+op2-eg-l3 = 86
+
+# Carrier 2 — the bones, eight cents sharp.
+op3-num = 1
+op3-detune = 8
+op3-level = 94
+op3-vel-sens = 3
+op3-eg-r1 = 82
+op3-eg-r2 = 52
+op3-eg-r3 = 26
+op3-eg-r4 = 68
+op3-eg-l2 = 94
+op3-eg-l3 = 88
+
+op4-num = 1
+op4-detune = -6
+op4-level = 88
+op4-vel-sens = 7
+op4-eg-r1 = 80
+op4-eg-r2 = 50
+op4-eg-r3 = 24
+op4-eg-r4 = 70
+op4-eg-l2 = 90
+op4-eg-l3 = 85
+
+# 2:1 in parallel with op4 into carrier 2, and 4:1 above it. Both collapse
+# quickly, so the top end is entirely an attack phenomenon.
+op5-num = 2
+op5-level = 84
+op5-vel-sens = 7
+op5-eg-r1 = 84
+op5-eg-r2 = 56
+op5-eg-r4 = 72
+op5-eg-l2 = 88
+op5-eg-l3 = 86
+
+op6-num = 4
+op6-level = 64
+op6-vel-sens = 7
+op6-eg-r1 = 86
+op6-eg-r2 = 60
+op6-eg-r4 = 74
+op6-eg-l2 = 66
+op6-eg-l3 = 56
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.8
+lfo2-delay = 300.0
+lfo2-fade = 400.0
+
+stack-density = 4
+stack-detune = 11.0
+stack-spread = 0.80
+stack-phase = 0.60
+
+filter-enable = true
+filter-cutoff = 7000.0
+filter-resonance = 0.08
+filter-slope = "2-Pole"
+filter-drive = 2.0
+filter-keytrack = 0.30
+
+hp-cutoff = 70.0
+
+# Glue. The comp is upstream of the reverb, so it evens the stab before the
+# tail accumulates it rather than pumping the tail.
+dyn-on = true
+dyn-threshold = -14.0
+dyn-ratio = 3.5
+dyn-attack = 4.0
+dyn-release = 90.0
+dyn-makeup = 3.0
+dyn-drive = 6.0
+dyn-mix = 0.85
+
+reverb-on = true
+reverb-size = 0.40
+reverb-decay = 1.4
+reverb-damp = 0.50
+reverb-mix = 0.14
+delay-on = false
+
+limiter-on = true
+
+master-volume = -12.29
+
+# The defining route: velocity onto the envelope rates. A hard stab is not a
+# louder version of a soft one, it is a faster one.
+[[matrix]]
+slot = 0
+source = "velocity"
+dest = "global-eg-rate"
+curve = "lin"
+depth = 0.45
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op5-level"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 3
+source = "mod-wheel"
+dest = "op6-level"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 1.0
+
+[[matrix]]
+slot = 5
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -1.0
+
+# Barely there — enough that a held stab does not stand perfectly still.
+[[matrix]]
+slot = 6
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.12

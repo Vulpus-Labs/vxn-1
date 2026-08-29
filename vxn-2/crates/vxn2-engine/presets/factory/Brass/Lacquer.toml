@@ -1,0 +1,131 @@
+schema = 1
+
+[meta]
+name = "Lacquer"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "Flugelhorn — the dark end of the brass family, where the tone is nearly a sine with a soft second on top. Everything here is restraint: index 1.4 at the peak and 0.66 held, a 2.2 kHz filter with heavy key-tracking, feedback low enough to round the modulator rather than sharpen it. The second carrier sits an octave up at a quarter of the level, which is most of what separates a flugel from a muted trumpet. Solo with a short glide and continuous shallow vibrato."
+
+[params]
+algo = 2
+# Gentle. Op2 is the modulator; a little feedback fattens it without turning it
+# into a saw, which would put edges on an instrument that has none.
+feedback = 2.6
+
+# Carrier. ~103 ms attack — a flugel speaks slowly.
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 3
+op1-eg-r1 = 66
+op1-eg-r2 = 46
+op1-eg-r3 = 18
+op1-eg-r4 = 54
+op1-eg-l2 = 97
+op1-eg-l3 = 96
+
+op2-num = 1
+op2-level = 82
+op2-vel-sens = 6
+op2-eg-r1 = 58
+op2-eg-r2 = 42
+op2-eg-r3 = 16
+op2-eg-r4 = 56
+op2-eg-l2 = 92
+op2-eg-l3 = 90
+
+# Second carrier at 2:1, six cents sharp and 37 level units down — an octave
+# ghost, not a second voice.
+op3-num = 2
+op3-detune = 6
+op3-level = 62
+op3-vel-sens = 3
+op3-eg-r1 = 62
+op3-eg-r2 = 46
+op3-eg-r3 = 18
+op3-eg-r4 = 54
+op3-eg-l2 = 90
+op3-eg-l3 = 86
+
+# 1:1 into the octave carrier, softening it further.
+op4-num = 1
+op4-level = 68
+op4-vel-sens = 5
+op4-eg-r1 = 56
+op4-eg-r2 = 44
+op4-eg-r4 = 56
+op4-eg-l2 = 86
+op4-eg-l3 = 84
+
+# Ops 5 and 6 form the chain above op4; silenced, op4 stays a plain sine.
+op5-level = 0
+op6-level = 0
+
+lfo2-shape = "Sine"
+lfo2-rate = 4.9
+lfo2-delay = 600.0
+lfo2-fade = 800.0
+
+assign-mode = "Solo"
+legato = true
+glide-time = 25.0
+
+# Two lanes, barely apart. Enough to stop it sounding synthetic; not enough to
+# read as a section.
+stack-density = 2
+stack-detune = 5.0
+stack-spread = 0.35
+
+filter-enable = true
+filter-cutoff = 2200.0
+filter-resonance = 0.10
+filter-slope = "2-Pole"
+filter-drive = 1.3
+filter-keytrack = 0.55
+
+hp-cutoff = 45.0
+
+reverb-on = true
+reverb-size = 0.60
+reverb-decay = 2.4
+reverb-damp = 0.60
+reverb-mix = 0.24
+delay-on = false
+
+master-volume = -4.35
+
+# Continuous vibrato, ~0.12 st, in after 600 ms. No wheel gating: a flugel
+# player is not waiting for permission.
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.17
+
+[[matrix]]
+slot = 1
+source = "aftertouch"
+dest = "op2-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 2
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.22
+
+[[matrix]]
+slot = 3
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.26
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op1-pan"
+curve = "lin"
+depth = 0.45

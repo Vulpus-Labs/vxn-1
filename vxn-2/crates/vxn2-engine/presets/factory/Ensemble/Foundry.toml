@@ -4,7 +4,7 @@ schema = 1
 name = "Foundry"
 author = "Vulpus Labs"
 category = "Ensemble"
-comment = "FM brass section: algo 1, a 4-op modulator chain into op3 plus op2 into op1, medium attack swell, op6 feedback edge. Mod wheel opens brightness."
+comment = "FM brass section: algo 1, a 4-op modulator chain into op3 plus op2 into op1, medium attack swell, op6 feedback edge. Mod wheel opens brightness. Every modulator here is 1:1, so the chain folds a full harmonic series rather than a sparse one; effective modulator level is op-level + L3 - 99, which is the number to move when the section wants more or less blare. Partials land at 0, -1, -10, -21 dB."
 
 [params]
 algo = 1
@@ -17,10 +17,10 @@ op1-eg-l3 = 88
 op1-eg-r4 = 58
 
 # Op 2 -> Op 1 modulator.
-op2-level = 78
+op2-level = 90
 op2-eg-r1 = 70
-op2-eg-l2 = 88
-op2-eg-l3 = 82
+op2-eg-l2 = 92
+op2-eg-l3 = 89
 op2-eg-r4 = 58
 
 # Carrier Op 3.
@@ -30,22 +30,22 @@ op3-eg-l3 = 88
 op3-eg-r4 = 58
 
 # Modulator chain Op 6 -> Op 5 -> Op 4 -> Op 3.
-op4-level = 74
+op4-level = 90
 op4-eg-r1 = 68
-op4-eg-l2 = 86
-op4-eg-l3 = 80
+op4-eg-l2 = 92
+op4-eg-l3 = 88
 op4-eg-r4 = 58
 
-op5-level = 62
+op5-level = 80
 op5-eg-r1 = 68
-op5-eg-l2 = 84
-op5-eg-l3 = 76
+op5-eg-l2 = 88
+op5-eg-l3 = 82
 op5-eg-r4 = 58
 
-op6-level = 55
+op6-level = 70
 op6-eg-r1 = 68
 op6-eg-l2 = 84
-op6-eg-l3 = 74
+op6-eg-l3 = 76
 op6-eg-r4 = 58
 
 # Gentle delayed vibrato.
@@ -64,13 +64,13 @@ reverb-size = 0.45
 reverb-mix = 0.18
 delay-on = false
 
-master-volume = -18.77
+master-volume = -16.11
 [[matrix]]
 slot = 0
 source = "lfo2"
 dest = "global-pitch"
 curve = "lin"
-depth = 0.05
+depth = 0.17
 
 # Mod wheel opens the section's brightness via the inner modulator.
 [[matrix]]

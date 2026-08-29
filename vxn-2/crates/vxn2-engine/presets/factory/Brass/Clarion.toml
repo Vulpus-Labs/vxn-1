@@ -1,0 +1,150 @@
+schema = 1
+
+[meta]
+name = "Clarion"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "Solo trumpet. One carrier, two 1:1 modulators seven cents apart, and feedback on the principal modulator so its wave is saw-like rather than sinusoidal — that is where the buzz comes from, not from a higher index. Brightness is carried by op velocity sensitivity (7 on the modulators, 2 on the carrier), so hard playing brightens far more than it loudens, and the modulator EG peaks at L1 then settles to L3: index 2.9 on the attack, 1.1 held. Solo/legato with 40 ms glide and a 0.32-semitone lip scoop at note-on. Mod wheel is vibrato depth."
+
+[params]
+algo = 17
+# Feedback lands on op2, the principal modulator — a saw-shaped modulator gives
+# the full harmonic series at a low index. Feedback on the carrier instead would
+# just add fizz to the output.
+feedback = 4.6
+
+# Carrier. Attack ~38 ms, near-flat sustain, ~150 ms release.
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 2
+op1-eg-r1 = 76
+op1-eg-r2 = 48
+op1-eg-r3 = 22
+op1-eg-r4 = 60
+op1-eg-l2 = 96
+op1-eg-l3 = 94
+op1-ks-r-depth = 18
+
+# Principal 1:1 modulator. Effective modulator level is op-level + L3 - 99 (both
+# live in the same 0.75 dB/unit domain), so 90 + 88 - 99 = 79: index 1.1 held,
+# 2.9 at the L1 peak.
+# Attack deliberately slower than the carrier's (~76 ms) so the brightness
+# arrives just behind the note — the brass swell, in miniature.
+op2-num = 1
+op2-level = 90
+op2-vel-sens = 7
+op2-eg-r1 = 70
+op2-eg-r2 = 46
+op2-eg-r3 = 20
+op2-eg-r4 = 62
+op2-eg-l2 = 90
+op2-eg-l3 = 88
+
+# Second 1:1 modulator, +7 cents. Sums with op2 into the carrier, so the pair
+# beat against each other and the index drifts instead of sitting still.
+op3-num = 1
+op3-detune = 7
+op3-level = 78
+op3-vel-sens = 6
+op3-eg-r1 = 68
+op3-eg-r2 = 44
+op3-eg-r3 = 20
+op3-eg-r4 = 62
+op3-eg-l2 = 86
+op3-eg-l3 = 84
+
+# Ratio 3 into op3: sidebands at 1 +/- 3, the fizz on a hard-blown note.
+# Decays away, so it is an attack colour rather than a sustained edge.
+op4-num = 3
+op4-level = 62
+op4-vel-sens = 7
+op4-eg-r1 = 72
+op4-eg-r2 = 50
+op4-eg-r4 = 66
+op4-eg-l2 = 78
+op4-eg-l3 = 70
+
+# Ops 5 and 6 are silenced: op5 would sum into op3 alongside op4, and op6 only
+# feeds op5, so zeroing op5 retires both.
+op5-level = 0
+op6-level = 0
+
+# Lip scoop: start 0.32 st flat, reach pitch in ~36 ms, sag back over the
+# release. Depth 2 st is the full-scale reference, not the excursion.
+peg-depth = 2.0
+peg-l4 = -16
+peg-r1 = 28
+peg-r2 = 99
+peg-r3 = 99
+peg-r4 = 10
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.6
+lfo2-delay = 420.0
+lfo2-fade = 500.0
+
+assign-mode = "Solo"
+legato = true
+glide-time = 40.0
+
+# One lane: a trumpet is one player.
+stack-density = 1
+
+filter-enable = true
+filter-cutoff = 6000.0
+filter-resonance = 0.10
+filter-slope = "2-Pole"
+filter-drive = 1.8
+filter-keytrack = 0.35
+
+hp-cutoff = 60.0
+
+reverb-on = true
+reverb-size = 0.35
+reverb-decay = 1.2
+reverb-damp = 0.60
+reverb-mix = 0.13
+delay-on = false
+
+master-volume = -9.59
+
+# Wheel vibrato. Depth is cubic-tapered, so 0.21 is ~0.22 st (22 cents) at full
+# wheel, not the 5 st a linear reading would suggest.
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.21
+scale-src = "mod-wheel"
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op2-level"
+curve = "lin"
+depth = 0.25
+
+# The wheel also brings in the ratio-3 fizz, so it opens the tone as well as
+# adding movement.
+[[matrix]]
+slot = 2
+source = "mod-wheel"
+dest = "op4-level"
+curve = "lin"
+depth = 0.30
+
+[[matrix]]
+slot = 3
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.30
+
+# Press into a held note and it grows brighter, the way a player leans on it.
+[[matrix]]
+slot = 4
+source = "aftertouch"
+dest = "op2-level"
+curve = "lin"
+depth = 0.30

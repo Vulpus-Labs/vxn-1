@@ -1,0 +1,175 @@
+schema = 1
+
+[meta]
+name = "Aerosol"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "Synth brass, the hairspray kind — an analogue patch built out of FM parts. Algo 32 stacks six carriers at ratios 1..6 with true 1/n levels for a sawtooth (darker than Floodlight's brighter 1/sqrt(n) tilt), even harmonics phase-flipped so the time-domain shape is right, and the fundamental parked on op6 so feedback ladders the complete series. What makes it brass is not the oscillator: it is the mod envelope opening a resonant 4-pole ladder from 420 Hz over 130 ms and letting it fall back to a sustain. Velocity and the wheel both open it further."
+
+[params]
+algo = 32
+# Op6 is algo 32's structural feedback op and carries ratio 1, so feedback
+# ladders the whole integer series above the six-partial ceiling — neutral
+# brightening with no pitch bias.
+feedback = 2.4
+
+# Six carriers, ratios 1..6 at 1/n (8 level units per halving). Op-to-ratio is
+# not slot-ordered: the fundamental moves to op6 so it gets the feedback, and
+# the sixth harmonic takes the vacated op1. Even harmonics carry phase 0.5 = pi.
+op1-num = 6
+op1-level = 78
+op1-phase = 0.5
+op1-vel-sens = 3
+op1-eg-r1 = 72
+op1-eg-r2 = 50
+op1-eg-r3 = 20
+op1-eg-r4 = 58
+op1-eg-l2 = 98
+op1-eg-l3 = 97
+
+op2-num = 2
+op2-level = 91
+op2-phase = 0.5
+op2-vel-sens = 3
+op2-eg-r1 = 72
+op2-eg-r2 = 50
+op2-eg-r3 = 20
+op2-eg-r4 = 58
+op2-eg-l2 = 98
+op2-eg-l3 = 97
+
+op3-num = 3
+op3-level = 86
+op3-vel-sens = 3
+op3-eg-r1 = 72
+op3-eg-r2 = 50
+op3-eg-r3 = 20
+op3-eg-r4 = 58
+op3-eg-l2 = 98
+op3-eg-l3 = 97
+
+op4-num = 4
+op4-level = 83
+op4-phase = 0.5
+op4-vel-sens = 3
+op4-eg-r1 = 72
+op4-eg-r2 = 50
+op4-eg-r3 = 20
+op4-eg-r4 = 58
+op4-eg-l2 = 98
+op4-eg-l3 = 97
+
+op5-num = 5
+op5-level = 80
+op5-vel-sens = 3
+op5-eg-r1 = 72
+op5-eg-r2 = 50
+op5-eg-r3 = 20
+op5-eg-r4 = 58
+op5-eg-l2 = 98
+op5-eg-l3 = 97
+
+op6-num = 1
+op6-level = 99
+op6-vel-sens = 3
+op6-eg-r1 = 72
+op6-eg-r2 = 50
+op6-eg-r3 = 20
+op6-eg-r4 = 58
+op6-eg-l2 = 98
+op6-eg-l3 = 97
+
+# The brass swell, in the filter rather than the index. 130 ms up, ~900 ms back
+# to a 0.62 sustain: the classic subtractive brass contour.
+mod-env-a = 130.0
+mod-env-d = 900.0
+mod-env-s = 0.62
+mod-env-r = 260.0
+mod-env-shape = "Exp"
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.2
+lfo2-delay = 500.0
+lfo2-fade = 600.0
+
+stack-density = 3
+stack-detune = 14.0
+stack-spread = 0.70
+stack-phase = 0.55
+
+# 4-pole with real resonance — the one place in this bank where the filter is
+# the instrument rather than a tone control. Key-track keeps the top octave
+# from closing up.
+filter-enable = true
+filter-cutoff = 420.0
+filter-resonance = 0.24
+filter-mode = "LP"
+filter-slope = "4-Pole"
+filter-drive = 2.2
+filter-keytrack = 0.35
+
+hp-cutoff = 60.0
+
+dyn-on = true
+dyn-threshold = -16.0
+dyn-ratio = 4.0
+dyn-attack = 8.0
+dyn-release = 120.0
+dyn-makeup = 3.0
+dyn-drive = 4.0
+dyn-mix = 0.90
+
+reverb-on = true
+reverb-size = 0.45
+reverb-decay = 1.6
+reverb-damp = 0.50
+reverb-mix = 0.16
+delay-on = false
+
+limiter-on = true
+
+master-volume = -9.46
+
+# Cutoff modulates in the log domain: depth 1 is four octaves, so 0.42 is a
+# ~1.7-octave sweep off the 420 Hz base.
+[[matrix]]
+slot = 0
+source = "mod-env"
+dest = "cutoff"
+curve = "lin"
+depth = 0.42
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.28
+
+[[matrix]]
+slot = 2
+source = "mod-wheel"
+dest = "cutoff"
+curve = "lin"
+depth = 0.20
+
+[[matrix]]
+slot = 3
+source = "voice-spread"
+dest = "op6-pan"
+curve = "lin"
+depth = 0.90
+
+[[matrix]]
+slot = 4
+source = "voice-spread"
+dest = "op3-pan"
+curve = "lin"
+depth = -0.90
+
+[[matrix]]
+slot = 5
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.13

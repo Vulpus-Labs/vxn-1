@@ -1,0 +1,141 @@
+schema = 1
+
+[meta]
+name = "Slide Rule"
+author = "Vulpus Labs"
+category = "Brass"
+comment = "Trombone. Solo and legato with 110 ms of glide, because on a trombone the glide is not an effect — it is how the instrument changes note. Algo 18: op2 at 1:1 does the body, op3 at 2:1 carries the feedback and supplies the rasp, and op4 at 3:1 lights op3 up only when you hit it hard. Op3 sustains almost nothing, so the edge is an attack event and a velocity event, not a permanent condition. A 0.67-semitone scoop at note-on lets each note arrive into pitch."
+
+[params]
+algo = 18
+# Feedback on op3 — a modulator, and the one whose sidebands land highest.
+# A saw-shaped 2:1 modulator is the brassy rip; on the carrier it would only
+# add hiss.
+feedback = 5.4
+
+# Carrier. ~76 ms attack, ~200 ms release.
+op1-num = 1
+op1-level = 99
+op1-vel-sens = 2
+op1-eg-r1 = 70
+op1-eg-r2 = 48
+op1-eg-r3 = 20
+op1-eg-r4 = 56
+op1-eg-l2 = 97
+op1-eg-l3 = 95
+op1-ks-r-depth = 22
+
+# Body: 1:1. Effective level is op-level + L3 - 99, so 90 + 88 - 99 = 79 —
+# index 1.1 held, 2.9 at the peak.
+op2-num = 1
+op2-level = 90
+op2-vel-sens = 7
+op2-eg-r1 = 64
+op2-eg-r2 = 46
+op2-eg-r3 = 18
+op2-eg-r4 = 58
+op2-eg-l2 = 90
+op2-eg-l3 = 88
+
+# Rasp: 2:1 with feedback. L3 80 against L1 99 keeps it mostly a bark on the
+# front of the note rather than a permanent edge.
+op3-num = 2
+op3-level = 80
+op3-vel-sens = 7
+op3-eg-r1 = 62
+op3-eg-r2 = 44
+op3-eg-r3 = 18
+op3-eg-r4 = 58
+op3-eg-l2 = 84
+op3-eg-l3 = 80
+
+# 3:1 into op3, decaying fast — the extra harshness of a hard entry.
+op4-num = 3
+op4-level = 58
+op4-vel-sens = 7
+op4-eg-r1 = 66
+op4-eg-r2 = 52
+op4-eg-r4 = 62
+op4-eg-l2 = 70
+op4-eg-l3 = 58
+
+# Ops 5 and 6 both feed op4 in this algorithm; silencing them leaves op4 a
+# clean sine modulator.
+op5-level = 0
+op6-level = 0
+
+# Slide into pitch: 0.67 st flat at note-on, arriving over ~91 ms, sagging back
+# across the release.
+peg-depth = 3.0
+peg-l4 = -22
+peg-r1 = 22
+peg-r2 = 99
+peg-r3 = 99
+peg-r4 = 8
+
+lfo2-shape = "Sine"
+lfo2-rate = 5.0
+lfo2-delay = 500.0
+lfo2-fade = 600.0
+
+assign-mode = "Solo"
+legato = true
+glide-time = 110.0
+
+stack-density = 1
+
+filter-enable = true
+filter-cutoff = 3400.0
+filter-resonance = 0.14
+filter-slope = "2-Pole"
+filter-drive = 2.4
+filter-keytrack = 0.45
+
+hp-cutoff = 40.0
+
+reverb-on = true
+reverb-size = 0.50
+reverb-decay = 1.8
+reverb-damp = 0.55
+reverb-mix = 0.18
+delay-on = false
+
+master-volume = -11.06
+
+[[matrix]]
+slot = 0
+source = "lfo2"
+dest = "global-pitch"
+curve = "lin"
+depth = 0.20
+scale-src = "mod-wheel"
+
+[[matrix]]
+slot = 1
+source = "velocity"
+dest = "op3-level"
+curve = "lin"
+depth = 0.35
+
+[[matrix]]
+slot = 2
+source = "aftertouch"
+dest = "op2-level"
+curve = "lin"
+depth = 0.28
+
+[[matrix]]
+slot = 3
+source = "velocity"
+dest = "cutoff"
+curve = "lin"
+depth = 0.32
+
+# Velocity onto the envelope rates as well as the levels: a hard entry does not
+# only arrive louder and brighter, it arrives sooner.
+[[matrix]]
+slot = 4
+source = "velocity"
+dest = "global-eg-rate"
+curve = "lin"
+depth = 0.30
