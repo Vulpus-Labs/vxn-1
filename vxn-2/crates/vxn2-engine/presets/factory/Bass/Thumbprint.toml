@@ -18,40 +18,40 @@ op1-eg-l3 = 90
 op1-eg-r4 = 52
 op1-ks-r-depth = 4
 
-op2-level = 64
+op2-level = 84
 op2-vel-sens = 5
 op2-eg-r1 = 72
 op2-eg-r2 = 46
-op2-eg-l2 = 66
-op2-eg-l3 = 58
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 56
 
 op3-num = 2
-op3-level = 48
+op3-level = 72
 op3-eg-r1 = 70
-op3-eg-l2 = 52
-op3-eg-l3 = 42
+op3-eg-l2 = 84
+op3-eg-l3 = 80
 
 # Second stack 6->5->4, op4 the upper carrier — the "mwah".
 op4-num = 2
-op4-level = 62
+op4-level = 88
 op4-eg-r1 = 68
 op4-eg-r2 = 50
-op4-eg-l2 = 70
-op4-eg-l3 = 60
+op4-eg-l2 = 92
+op4-eg-l3 = 88
 op4-eg-r4 = 54
 
 op5-num = 3
-op5-level = 44
+op5-level = 60
 op5-eg-r2 = 62
-op5-eg-l2 = 42
-op5-eg-l3 = 30
+op5-eg-l2 = 82
+op5-eg-l3 = 76
 
 op6-num = 5
-op6-level = 28
+op6-level = 46
 op6-eg-r2 = 74
-op6-eg-l2 = 26
-op6-eg-l3 = 12
+op6-eg-l2 = 80
+op6-eg-l3 = 72
 
 # Mono and connected.
 assign-mode = "Solo"
@@ -77,7 +77,7 @@ reverb-size = 0.3
 reverb-decay = 1.2
 reverb-mix = 0.10
 
-master-volume = -3.66
+master-volume = -4.35
 [[matrix]]
 slot = 0
 source = "lfo2"

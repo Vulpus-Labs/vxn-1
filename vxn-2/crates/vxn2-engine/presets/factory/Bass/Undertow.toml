@@ -19,39 +19,39 @@ op1-eg-r4 = 72
 op1-ks-r-depth = 8
 
 # op2 -> op1 at unison: thickens the fundamental, velocity-scaled below.
-op2-level = 58
+op2-level = 82
 op2-vel-sens = 6
 op2-eg-r2 = 58
-op2-eg-l2 = 62
-op2-eg-l3 = 48
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 74
 
 # op3 -> op1 at 2:1 — the octave edge that lets the bass read on small speakers.
 op3-num = 2
-op3-level = 54
+op3-level = 74
 op3-eg-r2 = 55
-op3-eg-l2 = 58
-op3-eg-l3 = 40
+op3-eg-l2 = 86
+op3-eg-l3 = 82
 op3-eg-r4 = 74
 
 # op4 -> op3 at 3:1: upper grit, decays out fast so it reads as attack only.
 op4-num = 3
-op4-level = 42
+op4-level = 62
 op4-eg-r2 = 78
-op4-eg-l2 = 28
-op4-eg-l3 = 0
+op4-eg-l2 = 70
+op4-eg-l3 = 40
 op4-eg-r4 = 80
 
 # op5 -> op3 at unison, op6 -> op5 at 4:1 carrying the feedback.
-op5-level = 44
+op5-level = 66
 op5-eg-r2 = 66
-op5-eg-l2 = 50
-op5-eg-l3 = 34
+op5-eg-l2 = 84
+op5-eg-l3 = 78
 op6-num = 4
-op6-level = 30
+op6-level = 50
 op6-eg-r2 = 82
-op6-eg-l2 = 22
-op6-eg-l3 = 0
+op6-eg-l2 = 60
+op6-eg-l3 = 30
 
 # Ladder under the FM: low, resonant, key-tracked so it stays proportional.
 filter-enable = true
@@ -73,7 +73,7 @@ reverb-size = 0.25
 reverb-decay = 0.9
 reverb-mix = 0.07
 
-master-volume = -13.98
+master-volume = -13.68
 [[matrix]]
 slot = 0
 source = "mod-env"

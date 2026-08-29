@@ -19,44 +19,44 @@ op1-eg-r4 = 18
 op1-ks-r-depth = 4
 
 op2-num = 2
-op2-level = 72
+op2-level = 91
 op2-detune = -8
 op2-eg-r1 = 28
-op2-eg-l2 = 86
-op2-eg-l3 = 80
+op2-eg-l2 = 92
+op2-eg-l3 = 88
 op2-eg-r4 = 18
 
 op4-num = 3
-op4-level = 62
+op4-level = 87
 op4-detune = 6
 op4-eg-r1 = 26
-op4-eg-l2 = 82
-op4-eg-l3 = 74
+op4-eg-l2 = 90
+op4-eg-l3 = 86
 op4-eg-r4 = 16
 
 op5-num = 4
-op5-level = 52
+op5-level = 84
 op5-detune = -5
 op5-eg-r1 = 24
-op5-eg-l2 = 76
-op5-eg-l3 = 68
+op5-eg-l2 = 88
+op5-eg-l3 = 84
 op5-eg-r4 = 16
 
 # op3 mods carriers 1 and 2; op6 mods 4 and 5 and carries feedback.
 op3-num = 5
 op3-denom = 2
-op3-level = 38
+op3-level = 70
 op3-eg-r1 = 24
-op3-eg-l2 = 62
-op3-eg-l3 = 52
+op3-eg-l2 = 84
+op3-eg-l3 = 78
 op3-eg-r4 = 18
 
 op6-num = 7
 op6-denom = 2
-op6-level = 32
+op6-level = 64
 op6-eg-r1 = 22
-op6-eg-l2 = 58
-op6-eg-l3 = 46
+op6-eg-l2 = 82
+op6-eg-l3 = 74
 op6-eg-r4 = 18
 
 # Pitch EG: starts flat, arrives slowly. L2 = 0 is centre.
@@ -89,7 +89,7 @@ reverb-decay = 7.0
 reverb-damp = 0.55
 reverb-mix = 0.40
 
-master-volume = -11.21
+master-volume = -12.28
 [[matrix]]
 slot = 0
 source = "pitch-eg"

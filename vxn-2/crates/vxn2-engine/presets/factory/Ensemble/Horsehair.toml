@@ -18,10 +18,10 @@ op1-eg-r4 = 34
 op1-ks-r-depth = 0
 
 # Op 2 -> Op 1 modulator.
-op2-level = 64
+op2-level = 92
 op2-eg-r1 = 44
-op2-eg-l2 = 88
-op2-eg-l3 = 84
+op2-eg-l2 = 92
+op2-eg-l3 = 90
 op2-eg-r4 = 34
 
 # Carrier Op 3.
@@ -46,10 +46,10 @@ op5-eg-r4 = 34
 op5-ks-r-depth = 0
 
 # Op 6 -> fans into carriers 3, 4, 5; carries feedback.
-op6-level = 55
+op6-level = 86
 op6-eg-r1 = 44
-op6-eg-l2 = 86
-op6-eg-l3 = 82
+op6-eg-l2 = 90
+op6-eg-l3 = 88
 op6-eg-r4 = 34
 
 # Slow, deep unison-y auto-vibrato.
@@ -70,7 +70,7 @@ reverb-decay = 4.5
 reverb-mix = 0.4
 delay-on = false
 
-master-volume = -22.20
+master-volume = -20.54
 [[matrix]]
 slot = 0
 source = "lfo2"

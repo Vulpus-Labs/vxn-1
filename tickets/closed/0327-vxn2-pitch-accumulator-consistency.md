@@ -68,3 +68,20 @@ rational ratios, which is the property that kept the ratio off the accumulator.
 Low priority and independent of the 0323→0326 chain. Do it when the amplitude
 work is landed, or not at all — the value is uniformity, and it is only worth
 having if the amplitude side actually gets there.
+
+## Close-out (2026-08-29)
+
+- Detune folded onto the note in `compute_base_hz`
+  ([op.rs](../../vxn-2/crates/vxn2-dsp/src/op.rs)): one `powf` instead of two,
+  cents sharing the domain `apply_pitch_mult` already sums in.
+- Ratio deliberately **not** folded. Measured first: a `log2`/`exp2` round trip
+  returns 45:1 as `45.000003815` and 3:2 as `1.500000119`. Inaudible
+  (~0.001 Hz beat at C4) but an FM ratio *is* a rational and must be exact —
+  that is the correct representation, not an inconsistency to tidy away.
+  `ratio_is_exactly_rational` guards it with `assert_eq!`, not a tolerance.
+- The "within 1 ULP" bar was unreachable by any reordering (10 ULP for the
+  specced f32 accumulator, 2 with an f64 intermediate, 7 for what shipped —
+  one `powf` does not round like two). Replaced by the musical bound: 2.03e-4
+  cents worst case over the full key range and every ratio in the bank, ~5000×
+  under a 1-cent JND, pinned by
+  `detune_on_note_matches_the_separate_exponential`.

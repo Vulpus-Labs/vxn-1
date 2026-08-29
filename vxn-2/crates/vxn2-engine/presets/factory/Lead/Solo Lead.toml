@@ -22,24 +22,24 @@ op1-eg-l3 = 88
 
 # Op 2 -> Op 1: 2:1 for a bright, hollow lead.
 op2-num = 2
-op2-level = 82
+op2-level = 94
 op2-eg-l2 = 90
-op2-eg-l3 = 82
+op2-eg-l3 = 86
 
 # Carrier Op 3.
 op3-eg-l2 = 94
 op3-eg-l3 = 88
 
 # Modulator chain Op 6 -> Op 5 -> Op 4 -> Op 3.
-op4-level = 70
+op4-level = 84
 op4-eg-l2 = 88
-op4-eg-l3 = 80
-op5-level = 65
+op4-eg-l3 = 84
+op5-level = 74
 op5-eg-l2 = 86
-op5-eg-l3 = 78
-op6-level = 60
+op5-eg-l3 = 82
+op6-level = 64
 op6-eg-l2 = 84
-op6-eg-l3 = 76
+op6-eg-l3 = 80
 
 # Auto-vibrato: sine, delayed + faded so it blooms on sustain.
 lfo2-shape = "Sine"
@@ -57,7 +57,7 @@ reverb-on = true
 reverb-size = 0.3
 reverb-mix = 0.12
 
-master-volume = -10.00
+master-volume = -9.55
 [[matrix]]
 slot = 0
 source = "lfo2"

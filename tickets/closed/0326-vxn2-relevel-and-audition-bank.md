@@ -61,3 +61,25 @@ that started this, and its `op2` is the bank's only `kvs 7` operator.
 
 Audition is a listening task, not a harness — see the standing practice of
 verifying audio by ear in a DAW rather than building headless checks for it.
+
+## Close-out (2026-08-29)
+
+- The leveller itself was wrong first: it rendered at a 512-sample block against
+  the `CONTROL_BLOCK` cadence both host shells use, so it set master volumes
+  from attack transients no build produces — and the dynamics stage, being
+  upstream of the master gain, responds to a transient's shape. Fixed in
+  [level_presets.rs](../../vxn-2/crates/vxn2-engine/examples/level_presets.rs).
+  That alone moved peaks up to 6.7 dB (Snapback −6.7, Tin Roof −6.3, Rubber
+  Band −5.6), dominating the engine changes the sweep was run to absorb.
+- Swept twice: once for E048's engine changes, and again after the EG L-values
+  joined the ladder (`fb80db2`), which had left 24 presets adrift by up to
+  2.3 dB. All **51** presets now measure exactly −6.0 dBFS, a re-run proposing
+  no correction, nothing clamped at either end of the range.
+- Audition passed. `Electric Boogaloo`'s tine reads correctly without a hand
+  boost on op2's output level, and is now guarded by
+  `tine_brightness_tracks_velocity` (0324) rather than by ear alone.
+- Presets needing re-voicing were re-voiced: the two brass ensembles, plus a new
+  Brass category (`4050e6d`).
+- `ks-r-depth` on the outliers: reviewed under audition and kept —
+  `Ivory Dust` retains its high per-op depths (52/60/44), which now do what
+  they say.

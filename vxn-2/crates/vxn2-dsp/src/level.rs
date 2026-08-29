@@ -259,6 +259,23 @@ mod tests {
         }
     }
 
+    /// Non-decreasing in velocity at every sensitivity — harder always means at
+    /// least as much level. Asserted here rather than on a rendered spectrum,
+    /// where interference between an algorithm's several chains can dip the
+    /// measured harmonic without the law being violated (see
+    /// `velocity_brightness.rs`).
+    #[test]
+    fn vel_level_offset_is_monotone_in_velocity() {
+        for sens in 0..=7u8 {
+            let mut prev = i32::MIN;
+            for vel in 0..=127u8 {
+                let got = vel_level_offset(vel, sens);
+                assert!(got >= prev, "sens {sens}: vel {vel} gave {got} after {prev}");
+                prev = got;
+            }
+        }
+    }
+
     /// Sensitivity 0 is exactly velocity-independent.
     #[test]
     fn zero_sensitivity_ignores_velocity() {

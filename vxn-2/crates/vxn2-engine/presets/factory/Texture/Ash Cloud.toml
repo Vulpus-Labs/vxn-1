@@ -19,41 +19,41 @@ op1-ks-r-depth = 6
 
 op2-num = 3
 op2-denom = 2
-op2-level = 72
+op2-level = 86
 op2-eg-r1 = 36
-op2-eg-l2 = 74
-op2-eg-l3 = 66
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 22
 
 op3-num = 5
 op3-denom = 4
-op3-level = 66
+op3-level = 80
 op3-detune = -10
 op3-eg-r1 = 34
-op3-eg-l2 = 68
-op3-eg-l3 = 58
+op3-eg-l2 = 86
+op3-eg-l3 = 82
 
 op4-num = 7
 op4-denom = 3
-op4-level = 58
+op4-level = 74
 op4-eg-r1 = 32
-op4-eg-l2 = 62
-op4-eg-l3 = 52
+op4-eg-l2 = 84
+op4-eg-l3 = 78
 
 op5-num = 9
 op5-denom = 4
-op5-level = 50
+op5-level = 68
 op5-detune = 11
 op5-eg-r1 = 30
-op5-eg-l2 = 56
-op5-eg-l3 = 46
+op5-eg-l2 = 82
+op5-eg-l3 = 74
 
 op6-num = 11
 op6-denom = 3
-op6-level = 62
+op6-level = 90
 op6-eg-r1 = 28
-op6-eg-l2 = 60
-op6-eg-l3 = 50
+op6-eg-l2 = 86
+op6-eg-l3 = 80
 
 # A full tone of sag over the first several seconds.
 peg-r1 = 30
@@ -90,7 +90,7 @@ reverb-damp = 0.62
 reverb-mix = 0.38
 
 # Per-lane pitch offsets: the stack smears rather than detuning symmetrically.
-master-volume = -28.23
+master-volume = -28.79
 [[matrix]]
 slot = 0
 source = "voice-idx"

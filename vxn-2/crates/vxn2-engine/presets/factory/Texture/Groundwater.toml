@@ -18,15 +18,15 @@ op1-eg-r4 = 16
 op1-ks-r-depth = 4
 
 # op2 carries the feedback in algo 2 — a slow churn under the drone.
-op2-level = 58
+op2-level = 80
 op2-eg-r1 = 30
-op2-eg-l2 = 76
-op2-eg-l3 = 70
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 16
 
 op3-num = 3
 op3-denom = 2
-op3-level = 46
+op3-level = 90
 op3-eg-r1 = 28
 op3-eg-l2 = 66
 op3-eg-l3 = 58
@@ -43,18 +43,18 @@ op4-ks-r-depth = 6
 
 op5-num = 5
 op5-denom = 2
-op5-level = 50
+op5-level = 70
 op5-detune = 7
 op5-eg-r1 = 28
-op5-eg-l2 = 70
-op5-eg-l3 = 62
+op5-eg-l2 = 84
+op5-eg-l3 = 78
 op5-eg-r4 = 16
 
 op6-num = 4
-op6-level = 36
+op6-level = 58
 op6-eg-r1 = 26
-op6-eg-l2 = 60
-op6-eg-l3 = 50
+op6-eg-l2 = 80
+op6-eg-l3 = 70
 op6-eg-r4 = 16
 
 # Ratio-locked to the fundamental: 16.3516 = CUTOFF_MIN_HZ, keytrack 1.0.
@@ -94,7 +94,7 @@ delay-feedback = 0.6
 delay-mix = 0.20
 delay-pingpong = true
 
-master-volume = -19.41
+master-volume = -22.17
 [[matrix]]
 slot = 0
 source = "mod-env"

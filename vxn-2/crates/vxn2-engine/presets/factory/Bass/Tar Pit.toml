@@ -18,38 +18,38 @@ op1-eg-r4 = 58
 op1-ks-r-depth = 6
 
 # op2 carries the feedback loop — the source of the growl.
-op2-level = 74
+op2-level = 84
 op2-vel-sens = 4
 op2-eg-r1 = 84
 op2-eg-r2 = 44
-op2-eg-l2 = 72
-op2-eg-l3 = 66
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 62
 
 op3-num = 2
-op3-level = 62
+op3-level = 74
 op3-eg-r1 = 86
-op3-eg-l2 = 60
-op3-eg-l3 = 52
+op3-eg-l2 = 86
+op3-eg-l3 = 82
 
 op4-num = 1
 op4-denom = 2
-op4-level = 48
+op4-level = 64
 op4-eg-r1 = 80
-op4-eg-l2 = 55
-op4-eg-l3 = 46
+op4-eg-l2 = 86
+op4-eg-l3 = 82
 
 op5-num = 3
-op5-level = 40
+op5-level = 54
 op5-eg-r2 = 70
-op5-eg-l2 = 34
-op5-eg-l3 = 22
+op5-eg-l2 = 84
+op5-eg-l3 = 78
 
 op6-num = 6
-op6-level = 26
+op6-level = 42
 op6-eg-r2 = 78
-op6-eg-l2 = 20
-op6-eg-l3 = 0
+op6-eg-l2 = 82
+op6-eg-l3 = 74
 
 filter-enable = true
 filter-cutoff = 260.0
@@ -60,7 +60,7 @@ filter-keytrack = 0.30
 
 hp-cutoff = 26.0
 
-master-volume = -24.57
+master-volume = -23.20
 [[matrix]]
 slot = 0
 source = "aftertouch"

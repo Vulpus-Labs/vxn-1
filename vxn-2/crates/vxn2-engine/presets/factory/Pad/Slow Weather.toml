@@ -18,7 +18,7 @@ op1-eg-r4 = 22
 op1-ks-r-depth = 0
 
 # Op 2 -> Op 1: soft modulator (low index), slowly opened by the mod-env.
-op2-level = 35
+op2-level = 74
 op2-eg-r1 = 28
 op2-eg-l2 = 88
 op2-eg-l3 = 84
@@ -32,7 +32,7 @@ op3-eg-r4 = 22
 op3-ks-r-depth = 0
 
 # Op 4 -> Op 3.
-op4-level = 38
+op4-level = 76
 op4-eg-r1 = 28
 op4-eg-l2 = 88
 op4-eg-l3 = 84
@@ -48,7 +48,7 @@ op5-ks-r-depth = 0
 
 # Op 6 -> Op 5: soft modulator, carries feedback.
 op6-detune = 4
-op6-level = 35
+op6-level = 74
 op6-eg-r1 = 28
 op6-eg-l2 = 88
 op6-eg-l3 = 84
@@ -80,7 +80,7 @@ delay-feedback = 0.55
 delay-mix = 0.22
 delay-pingpong = true
 
-master-volume = -21.68
+master-volume = -21.57
 [[matrix]]
 slot = 0
 source = "lfo2"

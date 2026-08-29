@@ -74,3 +74,24 @@ Do not compensate for this in preset data. Boosting an operator's output level
 is a constant where the error is velocity-dependent: it corrects loud notes and
 over-brightens soft ones, flattening exactly the dynamic response `kvs` exists
 to provide.
+
+## Close-out (2026-08-29)
+
+- `vel_level_offset` in [level.rs](../../vxn-2/crates/vxn2-dsp/src/level.rs):
+  64-entry `VELOCITY_DATA`, signed, `const fn` so `MAX_ATTAINABLE_AMP` derives
+  from the ladder. Asserted exactly across all 128 × 8 inputs
+  (`level::tests::vel_level_offset_matches_hardware`), the negative-shift
+  flooring included.
+- Enters the accumulator between its ceiling and floor, which is what lets it
+  exceed nominal. `vel_factor` retired (`grep` → 0 hits); velocity's law is
+  shared by both level curves, being a property of the keyboard not the curve.
+- `zero_sensitivity_ignores_velocity` and
+  `vel_level_offset_is_monotone_in_velocity` pin the two structural properties.
+- Tine regression:
+  [velocity_brightness.rs](../../vxn-2/crates/vxn2-engine/tests/velocity_brightness.rs).
+  `tine_brightness_tracks_velocity` measures the 15th harmonic of
+  Electric Boogaloo (ratio-1 carrier × ratio-14 modulator) and requires the vel
+  40 → 110 span to exceed 22 dB; it was ~14 dB before this ticket and is ~29 dB
+  now. Monotonicity is asserted on the offset rather than the spectrum — algo 5
+  puts three chains near that harmonic and they interfere, so the rendered ratio
+  dips at some velocities without the law being violated.

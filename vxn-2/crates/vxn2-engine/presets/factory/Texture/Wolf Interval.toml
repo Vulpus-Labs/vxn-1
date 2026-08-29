@@ -20,43 +20,43 @@ op1-ks-r-depth = 8
 
 op2-num = 7
 op2-denom = 5
-op2-level = 62
+op2-level = 82
 op2-eg-r1 = 44
-op2-eg-l2 = 70
-op2-eg-l3 = 62
+op2-eg-l2 = 84
+op2-eg-l3 = 80
 
 op3-num = 11
 op3-denom = 8
-op3-level = 54
+op3-level = 74
 op3-eg-r1 = 42
-op3-eg-l2 = 62
-op3-eg-l3 = 54
+op3-eg-l2 = 82
+op3-eg-l3 = 76
 
 op4-num = 17
 op4-denom = 12
-op4-level = 80
+op4-level = 92
 op4-detune = 9
 op4-eg-r1 = 44
-op4-eg-l2 = 86
-op4-eg-l3 = 80
+op4-eg-l2 = 90
+op4-eg-l3 = 86
 op4-eg-r4 = 34
 
 op5-num = 23
 op5-denom = 16
-op5-level = 72
+op5-level = 88
 op5-detune = -11
 op5-eg-r1 = 42
-op5-eg-l2 = 82
-op5-eg-l3 = 74
+op5-eg-l2 = 88
+op5-eg-l3 = 84
 op5-eg-r4 = 34
 
 # op6 modulates both 4 and 5 and carries the feedback.
 op6-num = 13
 op6-denom = 6
-op6-level = 44
+op6-level = 66
 op6-eg-r1 = 40
-op6-eg-l2 = 58
-op6-eg-l3 = 48
+op6-eg-l2 = 80
+op6-eg-l3 = 72
 
 # Notch: take out the middle so nothing can resolve.
 filter-enable = true
@@ -81,7 +81,7 @@ reverb-decay = 6.0
 reverb-mix = 0.36
 
 # The stack pulls itself apart as the note is held.
-master-volume = -10.35
+master-volume = -10.37
 [[matrix]]
 slot = 0
 source = "mod-env"

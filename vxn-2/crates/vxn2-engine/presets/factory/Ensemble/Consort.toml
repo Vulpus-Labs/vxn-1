@@ -20,16 +20,16 @@ op1-ks-r-depth = 18
 
 # Odd-harmonic modulator — the hollow, stopped-pipe colour.
 op2-num = 3
-op2-level = 52
+op2-level = 78
 op2-vel-sens = 5
 op2-eg-r1 = 60
 op2-eg-r2 = 52
-op2-eg-l2 = 62
-op2-eg-l3 = 54
+op2-eg-l2 = 86
+op2-eg-l3 = 82
 op2-eg-r4 = 64
 
 op3-num = 2
-op3-level = 78
+op3-level = 92
 op3-detune = 7
 op3-eg-r1 = 62
 op3-eg-r2 = 48
@@ -39,31 +39,31 @@ op3-eg-r4 = 62
 op3-ks-r-depth = 22
 
 op4-num = 5
-op4-level = 42
+op4-level = 68
 op4-vel-sens = 5
 op4-eg-r1 = 58
 op4-eg-r2 = 56
-op4-eg-l2 = 52
-op4-eg-l3 = 42
+op4-eg-l2 = 84
+op4-eg-l3 = 78
 op4-eg-r4 = 66
 
 op5-num = 4
-op5-level = 56
+op5-level = 86
 op5-detune = -8
 op5-eg-r1 = 60
-op5-eg-l2 = 76
-op5-eg-l3 = 68
+op5-eg-l2 = 86
+op5-eg-l3 = 80
 op5-eg-r4 = 64
 
 # Breath noise stand-in: a high fixed tone, quiet, fading in with the note.
 op6-ratio-mode = "Fixed"
 op6-fixed-hz = 3400.0
-op6-level = 26
+op6-level = 72
 op6-vel-sens = 6
 op6-eg-r1 = 72
 op6-eg-r2 = 60
-op6-eg-l2 = 34
-op6-eg-l3 = 26
+op6-eg-l2 = 82
+op6-eg-l3 = 76
 
 filter-enable = true
 filter-cutoff = 2400.0
@@ -87,7 +87,7 @@ reverb-decay = 3.0
 reverb-damp = 0.45
 reverb-mix = 0.28
 
-master-volume = -8.75
+master-volume = -11.76
 [[matrix]]
 slot = 0
 source = "velocity"

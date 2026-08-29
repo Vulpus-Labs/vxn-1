@@ -18,30 +18,30 @@ feedback = 3.58
 # the fundamental moves to op6 (the FB op); the 6th harmonic takes op1's vacated
 # slot. Even harmonics (2, 6) carry phase 0.5 = π so the sum stays saw-like.
 op1-num = 6
-op1-level = 40
+op1-level = 89
 op1-phase = 0.5
 op1-eg-l2 = 99
 op1-eg-l3 = 99
 
 op2-num = 2
-op2-level = 70
+op2-level = 95
 op2-phase = 0.5
 op2-eg-l2 = 99
 op2-eg-l3 = 99
 
 op3-num = 3
-op3-level = 57
+op3-level = 93
 op3-eg-l2 = 99
 op3-eg-l3 = 99
 
 op4-num = 4
-op4-level = 50
+op4-level = 91
 op4-phase = 0.5
 op4-eg-l2 = 99
 op4-eg-l3 = 99
 
 op5-num = 5
-op5-level = 44
+op5-level = 90
 op5-eg-l2 = 99
 op5-eg-l3 = 99
 
@@ -64,7 +64,7 @@ reverb-mix = 0.20
 # Carrier-count comp (1/sqrt 6) now level-matches algo 32 in the engine, so the
 # old manual -6 for "six carriers run hot" is redundant. Back to the -6 default.
 # Limiter stays on for safety.
-master-volume = -14.30
+master-volume = -18.86
 limiter-on = true
 
 # Lane spread -> per-carrier pan for stereo width.

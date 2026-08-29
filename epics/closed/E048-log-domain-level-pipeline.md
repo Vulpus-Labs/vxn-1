@@ -2,7 +2,7 @@
 id: E048
 product: vxn-2
 title: "One log-domain level accumulator for the operator amplitude chain"
-status: open
+status: closed
 created: 2026-08-29
 ---
 
@@ -52,6 +52,25 @@ Chain: **0323 → 0324 → 0325 → 0326**, with **0327** independent.
       covering key scaling, feedback and velocity together.
 - [ ] **0327** — Fold ratio and detune onto the semitone accumulator in
       `compute_base_hz`. Consistency, not correction.
+
+## Outcome
+
+Two of the five tickets ended up contradicting their own specification, and both
+amendments are recorded rather than quietly applied:
+
+- **0325** shipped the opposite of what it and ADR 0010 §4 specified. Renormalising
+  full scale was implemented, then rejected on evidence — the level-dependent
+  stages sit upstream of the master gain, so a uniform cut at the source moves
+  operating points no master sweep can restore. Ceiling raised instead; nominal
+  untouched.
+- **0327** did half its scope. Detune joined the note; the ratio deliberately did
+  not, an FM ratio being a rational that must stay exact. Its "within 1 ULP" bar
+  was unreachable by any reordering and was replaced by a musical bound.
+
+One gap fell outside the ticket list and was closed separately: ADR 0010 moved
+the *operator output level* onto the hardware ladder but left the EG's L-values
+on ADR 0007's straight line, so 0007 §1's "one curve for both" quietly held only
+above the knee. Fixed in `fb80db2`, with ADR 0007 annotated.
 
 ## Acceptance
 

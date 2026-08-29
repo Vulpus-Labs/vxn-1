@@ -73,3 +73,23 @@ ADR 0010 §4 is amended accordingly.
 Peaks rise by up to 5.25 dB on hard-struck patches while nominal is unchanged, so
 0326's master-volume sweep still runs — to re-seat peak headroom, not to undo a
 uniform shift.
+
+## Close-out (2026-08-29)
+
+- Shipped the **opposite** of what this ticket originally specified. Stage 8's
+  ceiling in [engine.rs](../../vxn-2/crates/vxn2-engine/src/engine.rs) is raised
+  to `level::MAX_ATTAINABLE_AMP` (≈1.834); nominal stays at unity.
+- Renormalisation was implemented first and rejected on evidence: the
+  level-dependent stages (filter drive, dynamics saturator) sit *upstream* of
+  the master gain, so a uniform 5.25 dB cut at the source moves their operating
+  points and no master sweep restores them. It surfaced as
+  `filter_toggle_over_live_dynamics_is_click_free` failing at 8.3× the steady
+  baseline against a bound of 8× — the compressor sitting further below
+  threshold. That test passes unchanged under the raised ceiling, which is the
+  evidence nominal really is untouched.
+- ADR 0010 §4 amended, superseded reasoning kept.
+- `max_attainable_amp_tracks_the_ladder` pins the constant against
+  `frac_to_amp(FULL_SCALE_FRAC + vel_level_offset(127, 7))` and sweeps
+  level × key scaling × sensitivity × velocity to confirm it is the true
+  supremum. `nominal_is_unity_and_velocity_reaches_above_it` pins the 5.25 dB.
+- `vxn-asm-check` clean; `stack_tick_stereo` 196.

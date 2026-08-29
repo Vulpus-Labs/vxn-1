@@ -71,3 +71,27 @@ accurate than the hardware's lookup.
 The `.min(1.0)` this replaces was correct only by coincidence: it equals
 `min(127)` because `level_to_amp(99) = 1.0`. Making the clamp operate on units
 is the point, not a refactor.
+
+## Close-out (2026-08-29)
+
+- [level.rs](../../vxn-2/crates/vxn2-dsp/src/level.rs) holds the accumulator:
+  `scale_outlevel` (20-entry `LEVELLUT` + `28 + OL` above the knee),
+  `op_max_amp` summing level units and converting once via `exp2`.
+- `scale_outlevel` asserted exactly against the reference on all 100 inputs
+  (`level::tests::scale_outlevel_matches_hardware`). Its relationship to
+  ADR 0007 is pinned in both directions:
+  `agrees_with_adr_0007_above_the_knee` (exact for OL ≥ 20 — `28 + OL` against
+  full scale 127 *is* `2^((OL−99)/8)`, so 0007's 0.75 dB/step was the hardware's
+  own arithmetic) and `diverges_below_the_knee_by_the_table`.
+- Both cook sites go through one `cook_max_amp`
+  ([op.rs](../../vxn-2/crates/vxn2-dsp/src/op.rs)), following the
+  `compute_base_hz` precedent. `grep ks_level_mult` → 0 hits: retired.
+- Ceiling is `min(127)` on units, before velocity's insertion point; floor
+  after. `key_scaling_cannot_boost_past_nominal` pins both the clamp point and
+  an exact unclamped boost ratio.
+- Three `exp2` per operator per cook became one.
+- 45-preset A/B against the previous commit: 39 bit-identical; the three largest
+  movers (Bell Jar −119 dB, Draughtsman −126, Ivory Dust −161) are exactly the
+  three presets carrying an operator below the OL 20 knee, the other three
+  (−198…−176 dB) float reassociation. Nothing audible, as the ticket predicted.
+- `vxn-asm-check` clean; `stack_tick_stereo` 196, unchanged.

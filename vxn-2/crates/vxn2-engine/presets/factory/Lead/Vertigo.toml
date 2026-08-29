@@ -19,16 +19,16 @@ op1-eg-r4 = 66
 op1-ks-r-depth = 12
 
 op2-num = 2
-op2-level = 66
+op2-level = 88
 op2-vel-sens = 5
 op2-eg-r1 = 90
 op2-eg-r2 = 52
-op2-eg-l2 = 62
-op2-eg-l3 = 54
+op2-eg-l2 = 88
+op2-eg-l3 = 84
 op2-eg-r4 = 68
 
 op3-num = 2
-op3-level = 82
+op3-level = 92
 op3-detune = 4
 op3-eg-r1 = 90
 op3-eg-r2 = 50
@@ -38,27 +38,27 @@ op3-eg-r4 = 66
 op3-ks-r-depth = 16
 
 op4-num = 3
-op4-level = 58
+op4-level = 76
 op4-vel-sens = 5
 op4-eg-r1 = 88
 op4-eg-r2 = 58
-op4-eg-l2 = 54
-op4-eg-l3 = 44
+op4-eg-l2 = 84
+op4-eg-l3 = 78
 op4-eg-r4 = 70
 
 op5-num = 4
-op5-level = 42
+op5-level = 62
 op5-eg-r1 = 86
 op5-eg-r2 = 66
-op5-eg-l2 = 38
-op5-eg-l3 = 26
+op5-eg-l2 = 80
+op5-eg-l3 = 72
 
 op6-num = 6
-op6-level = 30
+op6-level = 48
 op6-eg-r1 = 84
 op6-eg-r2 = 72
-op6-eg-l2 = 28
-op6-eg-l3 = 14
+op6-eg-l2 = 76
+op6-eg-l3 = 66
 
 assign-mode = "Solo"
 legato = true
@@ -88,7 +88,7 @@ reverb-size = 0.45
 reverb-decay = 2.0
 reverb-mix = 0.14
 
-master-volume = -1.44
+master-volume = -7.88
 [[matrix]]
 slot = 0
 source = "lfo2"

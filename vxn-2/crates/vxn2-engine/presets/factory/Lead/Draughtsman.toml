@@ -21,29 +21,29 @@ op1-eg-l2 = 99
 op1-eg-l3 = 99
 
 op2-num = 2
-op2-level = 50
+op2-level = 91
 op2-phase = 0.5
 op2-eg-l2 = 99
 op2-eg-l3 = 99
 
 op3-num = 3
-op3-level = 33
+op3-level = 86
 op3-eg-l2 = 99
 op3-eg-l3 = 99
 
 op4-num = 4
-op4-level = 25
+op4-level = 83
 op4-phase = 0.5
 op4-eg-l2 = 99
 op4-eg-l3 = 99
 
 op5-num = 5
-op5-level = 20
+op5-level = 80
 op5-eg-l2 = 99
 op5-eg-l3 = 99
 
 op6-num = 6
-op6-level = 17
+op6-level = 78
 op6-phase = 0.5
 op6-eg-l2 = 99
 op6-eg-l3 = 99
@@ -61,7 +61,7 @@ reverb-size = 0.5
 reverb-mix = 0.20
 
 # Lane spread → per-carrier pan for stereo width (matches FM Strings).
-master-volume = -14.14
+master-volume = -16.25
 [[matrix]]
 slot = 0
 source = "voice-spread"
