@@ -1,7 +1,6 @@
 /// Shared test helpers for vxn2-dsp unit tests. All `pub(crate)`, consumed only
 /// by this crate's `#[cfg(test)]` modules.
 
-use std::f32::consts::TAU;
 
 /// Tick a closure until it returns `true` (stage reached) or `max` ticks elapse.
 /// Returns `true` if the stage was reached.
@@ -23,35 +22,10 @@ pub(crate) fn run_until_stage(mut tick: impl FnMut() -> bool, max: usize) -> boo
     false
 }
 
-// The bit-exact pair is canonical in vxn-core-dsp (0226); re-exported here so
-// this crate's `test_util::` paths keep resolving.
-pub(crate) use vxn_core_dsp::test_util::{
-    assert_bit_exact_after_settle, assert_bit_exact_passthrough,
-};
-
-/// Drive `process_fn` (stereo in/out) with a `f_hz`-Hz sine at 48 kHz for
-/// `warm` samples, then return the RMS of the following `measure` samples.
-pub(crate) fn sine_rms(
-    mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
-    f_hz: f32,
-    warm: usize,
-    measure: usize,
-) -> f32 {
-    const SR: f32 = 48_000.0;
-    for n in 0..warm {
-        let t = n as f32 / SR;
-        let s = (t * f_hz * TAU).sin();
-        let _ = process_fn(s, s);
-    }
-    let mut e = 0.0_f32;
-    for n in 0..measure {
-        let t = (warm + n) as f32 / SR;
-        let s = (t * f_hz * TAU).sin();
-        let (l, r) = process_fn(s, s);
-        e += l * l + r * r;
-    }
-    (e / (2.0 * measure as f32)).sqrt()
-}
+// The bit-exact pair and `sine_rms` are canonical in vxn-core-dsp (0226,
+// 0230). Nothing in this crate calls them any more — their users were the
+// phaser and the FDN reverb, both of which have moved there — so the
+// re-export shim is gone rather than kept as a dangling alias.
 
 /// Algo 32 with all ops having `r[3] = 99`: all 6 ops are carriers with no
 /// modulator edges, so each op runs its own path with no inter-op coupling.

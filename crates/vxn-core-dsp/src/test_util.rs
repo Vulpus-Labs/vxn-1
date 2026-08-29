@@ -205,3 +205,31 @@ mod tests {
         assert!(at_edge > away * 10.0, "edge {at_edge} vs away {away}");
     }
 }
+
+/// Drive `process_fn` (stereo in/out) with an `f_hz` sine at 48 kHz for `warm`
+/// samples, then return the RMS of the following `measure` samples.
+///
+/// The shape every "is this filter/damping actually attenuating?" test wants:
+/// warm the state up, then measure a steady window. Moved here from `vxn2-dsp`
+/// by ticket 0230, with the FDN reverb whose damping test uses it.
+pub fn sine_rms(
+    mut process_fn: impl FnMut(f32, f32) -> (f32, f32),
+    f_hz: f32,
+    warm: usize,
+    measure: usize,
+) -> f32 {
+    const SR: f32 = 48_000.0;
+    for n in 0..warm {
+        let t = n as f32 / SR;
+        let s = (t * f_hz * core::f32::consts::TAU).sin();
+        let _ = process_fn(s, s);
+    }
+    let mut e = 0.0_f32;
+    for n in 0..measure {
+        let t = (warm + n) as f32 / SR;
+        let s = (t * f_hz * core::f32::consts::TAU).sin();
+        let (l, r) = process_fn(s, s);
+        e += l * l + r * r;
+    }
+    (e / (2.0 * measure as f32)).sqrt()
+}

@@ -63,6 +63,11 @@ pub mod chorus;
 /// by 0229 with its only consumer.
 pub mod delay_line;
 
+/// 8-line FDN reverb: Hadamard feedback, per-line damping and LFO flutter,
+/// with internal `WetFade` bypass. Moved by 0230; both synths' copies were the
+/// same kernel differing only in where bypass lived.
+pub mod reverb;
+
 /// Stereo allpass phaser: four allpass sections per channel swept by a shared
 /// triangle LFO, with internal `WetFade` bypass. Moved by 0228 from `vxn2-dsp`,
 /// whose copy was the superset; `vxn-dsp` and `vxn2-dsp` re-export it.
