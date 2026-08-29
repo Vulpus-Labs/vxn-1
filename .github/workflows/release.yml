@@ -3,42 +3,44 @@ name: Release
 # Build the CLAP/VST3 plugins for macOS and Windows and attach the binaries to
 # the GitHub Release that triggered the run.
 #
-# The trigger fires on EVERY published release, so each job is gated on the tag
-# that triggered it (0213). Two release lines share this repo:
+# ONE release line. vxn-2 and VXN1b ship together on the bare-semver tag
+# matching the workspace version (`0.2.0`), and every published release builds
+# both products: four jobs, eight assets, no conditions on the tag name.
 #
-#   - vxn-2 rides the bare-semver tag (`0.2.0`), matching the
-#     workspace version.
-#   - vxn-1b tags `vxn-1b-<version>` off its own pinned version. Since 0.2.0
-#     that number is aligned with the workspace line, but the two release
-#     LINES are still independent — the guards below are what separate them,
-#     not the version numbers, which may well diverge again.
+# It was not always so. Until 0.2.0 the two shipped on separate tag lines —
+# vxn-2 on the bare semver, VXN1b on `vxn-1b-<version>` cut with
+# `--latest=false` — and every job carried a
+# `startsWith(github.event.release.tag_name, 'vxn-1b-')` guard to keep them
+# apart. That split is retired: the products are versioned and released as one.
+# The old `vxn-1b-*` tags remain as history, and `vxn-1b-0.2.0` is kept as a
+# signpost to 0.2.0. Nothing here reads the tag name any more, so were such a
+# tag ever cut again it would simply get both products, which is now the
+# correct answer.
 #
-# Each job therefore carries a `startsWith(github.event.release.tag_name, ...)`
-# guard. Without it, cutting a vxn-1b release would rebuild and re-attach vxn-1
-# and vxn-2 binaries built from whatever main happened to be.
-#
-# The predicate is repeated per job rather than hoisted into `env:` on purpose:
-# a job-level `if` cannot read the `env` context (only `github`, `needs`, `vars`
-# and `inputs`), so an `env.` reference there resolves to the empty string —
-# which would leave the vxn-1 jobs always on and the vxn-1b jobs always off,
-# silently and in the direction that looks like it works.
+# The lesson that outlived the guards: a job-level `if` cannot read the `env`
+# context (only `github`, `needs`, `vars` and `inputs`). An `env.` reference
+# there resolves to the empty string rather than erroring — so a hoisted
+# predicate fails silently, and in the direction that looks like it works.
+# `inputs` IS readable, which is what the dispatch conditions below rely on.
 #
 # `workflow_dispatch` runs the same builds WITHOUT a release: every attach step
 # is gated on the event being a real release, so a dispatch is build-and-verify
 # only. Use it to prove a packaging or link change before cutting a tag — the
-# Windows VST3 link bug (see the verify step below) shipped three times because
-# there was no way to exercise this workflow except by publishing.
+# Windows VST3 link bug (see the verify steps below) shipped three times because
+# there was no way to exercise this workflow except by publishing. Its `line`
+# input no longer selects a release line (there is one); it only narrows which
+# product to build, so a packaging fix to one need not wait on the other.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       line:
-        description: "Which release line to build"
+        description: "Which product(s) to build (dispatch only — releases always build both)"
         required: true
-        default: vxn-1b
+        default: all
         type: choice
-        options: [vxn-1b, vxn-2]
+        options: [all, vxn-2, vxn-1b]
 
 permissions:
   contents: write
@@ -46,7 +48,7 @@ permissions:
 jobs:
   macos-vxn2:
     name: macOS vxn-2 (universal)
-    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-2') }}
+    if: ${{ github.event_name == 'release' || inputs.line == 'all' || inputs.line == 'vxn-2' }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build.
@@ -106,7 +108,7 @@ jobs:
 
   windows-vxn2:
     name: Windows vxn-2 (x86_64)
-    if: ${{ (github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-2') }}
+    if: ${{ github.event_name == 'release' || inputs.line == 'all' || inputs.line == 'vxn-2' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,7 +172,7 @@ jobs:
 
   macos-vxn1b:
     name: macOS vxn-1b (universal)
-    if: ${{ (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1b') }}
+    if: ${{ github.event_name == 'release' || inputs.line == 'all' || inputs.line == 'vxn-1b' }}
     runs-on: macos-14
     steps:
       # Submodules (clap-wrapper + vst3sdk) are needed for the VST3 build. They
@@ -240,7 +242,7 @@ jobs:
 
   windows-vxn1b:
     name: Windows vxn-1b (x86_64)
-    if: ${{ (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'vxn-1b-')) || (github.event_name == 'workflow_dispatch' && inputs.line == 'vxn-1b') }}
+    if: ${{ github.event_name == 'release' || inputs.line == 'all' || inputs.line == 'vxn-1b' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

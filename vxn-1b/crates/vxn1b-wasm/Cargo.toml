@@ -3,9 +3,8 @@
 # scope. Mirror of vxn-1's `vxn-wasm`, retargeted to VXN1b's dual-layer engine.
 [package]
 name = "vxn1b-wasm"
-# VXN1b pins its own version (own tag line, `vxn-1b-<version>`), aligned with
-# the shared workspace line vxn-2 rides as of 0.2.0.
-version = "0.2.0"
+# Workspace version — VXN1b ships with vxn-2 on one tag since 0.2.0.
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true

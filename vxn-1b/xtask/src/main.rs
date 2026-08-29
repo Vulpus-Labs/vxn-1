@@ -60,9 +60,10 @@ use vxn_xtask_common::{
 /// cannot *silently* ship an empty bundle, because every build path checks the
 /// artifact exists at that name and errors with the path if it does not.
 ///
-/// `version` is THIS crate's `CARGO_PKG_VERSION`, and has to be passed rather
-/// than read inside the shared crate: VXN1b versions independently of the
-/// workspace 0.x line, and the Info.plist stamps it.
+/// `version` is THIS crate's `CARGO_PKG_VERSION`, which since 0.2.0 IS the
+/// workspace version — VXN1b and vxn-2 ship as one release. It is still passed
+/// in rather than read inside the shared crate: the shared crate would report
+/// its own version, and the Info.plist must stamp the product's.
 const PRODUCT: Product = Product {
     plugin_name: "vxn1b",
     bundle_name: "vxn1b.clap",
@@ -217,8 +218,9 @@ mod tests {
         assert_eq!(f, vec![Format::Clap]);
     }
 
-    /// The bundle stamps VXN1b's OWN version, not the shared xtask crate's —
-    /// this product rides a separate 0.0.x line.
+    /// The bundle stamps the version of THIS crate, not whatever the shared
+    /// xtask crate reports. Those agree now that VXN1b is on the workspace
+    /// version, but the plist must follow the product, not the helper.
     #[test]
     fn the_plist_stamps_this_crates_version_and_identity() {
         let plist = PRODUCT.info_plist();

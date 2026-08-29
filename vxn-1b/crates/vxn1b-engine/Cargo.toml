@@ -1,11 +1,9 @@
 [package]
 name = "vxn1b-engine"
-# Kept as an explicit pin rather than `version.workspace`: VXN1b ships on its
-# own tag line (`vxn-1b-<version>`) and stays free to diverge again. As of 0.2.0
-# the NUMBER is deliberately aligned with the shared workspace line vxn-2 rides,
-# retiring the earlier independent 0.0.x sequence — the release lines stay two,
-# only the versions now agree. The xtask stamps this into the bundle Info.plist.
-version = "0.2.0"
+# Workspace version: since 0.2.0 VXN1b and vxn-2 are one release, on one tag,
+# so an independent pin here could only ever drift out of step with the thing
+# it ships beside. The xtask stamps this into the bundle Info.plist.
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
