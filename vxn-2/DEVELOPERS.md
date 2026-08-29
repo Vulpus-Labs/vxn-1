@@ -667,9 +667,10 @@ The design decisions, with their load-bearing numbers:
   ~5 ms EG release (5 ms clears the ~0.06 transient of a single 0.67 ms block
   down to ~0.006); one extra idle-grace block before retire.
 - **[0007](adrs/0007-dx7-log-level-curve.md) — DX7 log level curve.** One shared
-  curve for op output level and EG L-values: `level_to_amp(L) = 2^((L−99)/8)`
-  for L∈[1,99], `0` at L=0. ≈0.75 dB/step (−37 dB at L=50, −74 dB at L=1).
-  Evaluated only in `cook`.
+  curve for op output level and EG L-values, ≈0.75 dB/step (−37 dB at L=50).
+  Since 0010 that curve is the hardware ladder — `2^((scale_outlevel(L)−127)/8)`,
+  a straight line above L=20 and the table's steeper fall below it (−91.8 dB at
+  L=1, `0` at L=0). Evaluated only in `cook`.
 - **[0008](adrs/0008-declick-headroom-voice-stealing.md) — Declick-headroom
   stealing.** 20 physical stacks, 16 active cap, 4 declick spares; poly steal
   takes a spare and onsets fresh while the victim declicks in place — same

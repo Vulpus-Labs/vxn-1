@@ -46,6 +46,13 @@ Both the EG L-values (`EgState::cook`) and the **operator output level**
 (`op.rs` / `stack.rs` cook → `level_norm`) route through this one function, as on
 DX7 where OL and EG levels share a domain.
 
+> **Superseded in shape, not in principle, by [ADR 0010](0010-log-domain-level-pipeline.md).**
+> The domain is now the hardware's `scale_outlevel` ladder,
+> `2^((scale_outlevel(L) − 127)/8)` — identical to the formula above for
+> L ≥ 20, compressed below it. The "one curve for both" requirement of this
+> section is what 0010's amendment restores; for a while it held only above the
+> knee.
+
 ### 2. Calibration
 
 Cross-checked against the DX7's ~0.75 dB/step at L = 50: `2^((50-99)/8)` ≈

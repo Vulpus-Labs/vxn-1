@@ -145,6 +145,47 @@ consistency, not correction.
 - One bank re-audition covers this, the key-scaling fix and the feedback ladder
   together, instead of three passes.
 
+## Amendment (2026-08-29) — the EG's L-values join the ladder
+
+As first written, §2 ported `scale_outlevel` for the **operator output level**
+only. The EG's L-values stayed on ADR 0007's straight line, `2^((L−99)/8)`, so
+the two halves of what ADR 0007 §1 called "one logarithmic level curve, shared by
+EG levels and operator output level" quietly stopped being one curve below L=20
+— the knee is exactly where they parted. On the reference the same
+`scaleoutlevel` serves both: the EG's per-segment target is its L run through
+that table, in the same units the output level contributes.
+
+The straight line reads high down there, by the table's own compression:
+
+| L  | straight line | ladder    | error  |
+|---:|--------------:|----------:|-------:|
+| 19 | −60.2 dB      | −61.0 dB  | +0.8   |
+| 12 | −65.5 dB      | −69.2 dB  | +3.8   |
+| 4  | −71.5 dB      | −82.8 dB  | +11.3  |
+
+`eg::level_to_amp(_, Exp)` is now `2^((scale_outlevel(L) − 127)/8)`, and
+`EgState::cook` derives both target arrays from it — `log_targets` for the
+marcher's projection, `targets` for the snap that ends a segment, so the two
+cannot drift apart. `L = 0` stays hard silence, and its log target stays
+`EG_LOG_FLOOR` rather than the ladder's −95.6 dB: the marcher's floor governs how
+long a decay-to-silence takes, and moving it would lengthen every slow release.
+
+`Lin` is untouched — its square curve never joined the level domain (§3).
+
+**Audible consequence: near none, and the sweep proves it.** The knee only
+moves L < 20, and the ladder is 0.75 dB/step over 99 steps — so *every* level
+it touches already sat below −60 dB. Across the bank, 60 of 612 EG L-entries
+fall in that range (19 of 51 presets), all of them L2/L3 decay targets: they
+drop from −60…−72 dB to −61…−83 dB. What actually changes is the shape of a
+tail's last few dB before it crosses `EG_LOG_FLOOR`, not any level a listener
+weighs.
+
+Re-running the auto-leveller confirms it: all 51 presets still measure exactly
+−6.0 dBFS peak on the reference chord, and the largest master-volume correction
+the sweep proposes is 0.1 dB (rounding). Anything at L ≥ 20 is bit-exact, and
+peaks are set by attack apexes far above the knee. No re-level, no re-audition
+— this is a correctness fix that the bank cannot hear.
+
 ## Prerequisites
 
 The key-scaling port and the feedback ladder land first: this ADR generalises

@@ -73,13 +73,15 @@ const LEVELLUT: [i32; 20] = [
     0, 5, 9, 13, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 42, 43, 45, 46,
 ];
 
-/// Operator output level (0..99) → level units (0..127).
+/// Operator level (0..99) → level units (0..127). Serves the operator output
+/// level *and* the EG's L-values ([`crate::eg::level_to_amp`]), which is how the
+/// hardware does it — one `scaleoutlevel` for both.
 ///
-/// Above the knee this is exactly [`crate::eg::level_to_amp`]'s curve — `28 + OL`
-/// against a full scale of 127 is `2^((OL−99)/8)`, which is why ADR 0007's
-/// 0.75 dB/step matched the hardware without per-patch fudging. Below `OL 20`
-/// they diverge: the table compresses (−95.6 dB at OL 0 against ADR 0007's
-/// −74.5 dB), so a very quiet operator is quieter here than it was.
+/// Above the knee this is ADR 0007's curve exactly — `28 + OL` against a full
+/// scale of 127 is `2^((OL−99)/8)`, which is why 0.75 dB/step matched the
+/// hardware without per-patch fudging. Below `OL 20` the table compresses
+/// (−95.6 dB at OL 0 against the straight line's −74.5 dB), so a very quiet
+/// operator, or an EG segment resting at a low L, falls away faster.
 #[inline]
 pub fn scale_outlevel(level: u8) -> i32 {
     let l = level.min(99) as i32;
@@ -175,31 +177,37 @@ mod tests {
         assert_eq!(scale_outlevel(99), MAX_UNITS, "OL 99 is full scale");
     }
 
-    /// Above the knee the accumulator reproduces ADR 0007's curve exactly, so
-    /// the calibration that bank is voiced against is preserved.
+    /// The accumulator and the EG's level curve are **one** curve, at every
+    /// level — ADR 0007 §1's "one logarithmic level curve, shared by EG levels
+    /// and operator output level", which held above the knee only until the EG
+    /// joined this ladder too.
     #[test]
-    fn agrees_with_adr_0007_above_the_knee() {
+    fn agrees_with_the_eg_level_curve() {
         // Referred to nominal, since 0325 put full scale above it.
         let nominal = op_max_amp(99, 0, 0);
-        for l in 20..=99u8 {
+        for l in 1..=99u8 {
             let via_units = op_max_amp(l, 0, 0) / nominal;
             let via_curve = level_to_amp(l, EgCurve::Exp);
             let ratio_db = 20.0 * (via_units / via_curve).log10();
-            assert!(ratio_db.abs() < 1e-3, "OL {l}: {ratio_db:.4} dB apart");
+            assert!(ratio_db.abs() < 1e-3, "L {l}: {ratio_db:.4} dB apart");
         }
+        assert_eq!(op_max_amp(0, 0, 0), 0.0, "OL 0 is hard silence");
+        assert_eq!(level_to_amp(0, EgCurve::Exp), 0.0, "L 0 is hard silence");
     }
 
-    /// Below the knee it deliberately does not: the table compresses. Pinned so
-    /// the divergence is a recorded decision rather than a surprise.
+    /// What the knee is worth, against the straight `2^((L−99)/8)` line the EG
+    /// used to draw. Pinned because it is exactly the amount every low sustain
+    /// in the bank moves by.
     #[test]
-    fn diverges_below_the_knee_by_the_table() {
-        let nominal = op_max_amp(99, 0, 0);
-        let db =
-            |l: u8| 20.0 * (op_max_amp(l, 0, 0) / nominal / level_to_amp(l, EgCurve::Exp)).log10();
-        assert!((db(19) - -0.8).abs() < 0.15, "OL 19: {}", db(19));
-        assert!((db(12) - -3.8).abs() < 0.15, "OL 12: {}", db(12));
-        assert!((db(4) - -11.3).abs() < 0.15, "OL 4: {}", db(4));
-        assert_eq!(op_max_amp(0, 0, 0), 0.0, "OL 0 is hard silence");
+    fn the_knee_is_what_the_straight_line_missed() {
+        let straight = |l: u8| 2_f32.powf((l as f32 - 99.0) / 8.0);
+        let db = |l: u8| 20.0 * (op_max_amp(l, 0, 0) / straight(l)).log10();
+        assert!((db(19) - -0.8).abs() < 0.15, "L 19: {}", db(19));
+        assert!((db(12) - -3.8).abs() < 0.15, "L 12: {}", db(12));
+        assert!((db(4) - -11.3).abs() < 0.15, "L 4: {}", db(4));
+        for l in 20..=99u8 {
+            assert!(db(l).abs() < 1e-3, "L {l} is above the knee: {}", db(l));
+        }
     }
 
     /// The ceiling is on *units*, before velocity — an operator at full output

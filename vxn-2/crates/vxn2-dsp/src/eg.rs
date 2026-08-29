@@ -6,9 +6,9 @@
 //! segment. Level may be increasing or decreasing in any segment (rising
 //! decays and rising releases are supported).
 //!
-//! Fidelity: levels (0..99) → amplitude via the log curve of ADR 0007
-//! (`amp = 2^((L-99)/8)`), or a perceptual square `(L/99)^2` on the `Lin`
-//! escape hatch. Rates (0..99) drive two laws: the `Exp` curve marches every
+//! Fidelity: levels (0..99) → amplitude through the level ladder of ADR 0010
+//! — [`crate::level::scale_outlevel`], the same table the operator output level
+//! rides — or a perceptual square `(L/99)^2` on the `Lin` escape hatch. Rates (0..99) drive two laws: the `Exp` curve marches every
 //! segment — attack included — in the log domain on the hardware's quantised
 //! rate ladder ([`rate_to_log2_per_sec`]), while `Lin` uses the amplitude-domain
 //! [`rate_to_amp_per_sec`] / [`rate_to_attack_per_sec`] pair.
@@ -60,7 +60,8 @@ pub struct EgState {
     /// `Exp` downward-segment marcher position, in log2 units relative to
     /// `max_amp` (0 → full `max_amp`, [`EG_LOG_FLOOR`] → silent).
     log_level: f32,
-    /// `Exp` log2 targets per segment (`(L-99)/8`, or [`EG_LOG_FLOOR`] for L=0).
+    /// `Exp` log2 targets per segment (`(scale_outlevel(L) − 127)/8`, or
+    /// [`EG_LOG_FLOOR`] for L=0).
     log_targets: [f32; 4],
     /// `Exp` log2 march rates (log2 units/sec).
     log_rates: [f32; 4],
@@ -120,24 +121,42 @@ const EG_ATTACK_MAX_OCT_PER_SEC: f32 = -EG_ATTACK_JUMP / 1.45e-3;
 /// is untouched (see [`level_to_amp`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum EgCurve {
-    /// **Logarithmic** level curve (`amp = 2^((L-99)/8)`, ~6 dB per 8 steps).
-    /// The default. See ADR 0007.
+    /// **Logarithmic** level curve: the [`crate::level`] ladder, ~0.75 dB per
+    /// step with the hardware's compression below L=20. The default.
+    /// See ADR 0007 (the curve) and ADR 0010 (the ladder it became).
     #[default]
     Exp = 0,
     /// Perceptual **square** curve (`(L/99)^2`), selectable per-op.
     Lin = 1,
 }
 
+/// A level (1..99) in log2 octaves relative to full scale, through the
+/// hardware's [`crate::level::scale_outlevel`] ladder. `L=0` has no log
+/// representation — it is hard silence — so callers handle it separately.
+#[inline]
+fn level_log2(level: u8) -> f32 {
+    (crate::level::scale_outlevel(level) - crate::level::MAX_UNITS) as f32
+        / crate::level::UNITS_PER_OCTAVE
+}
+
 /// Convert a level (0..99) to a normalised amplitude in [0, 1] under the given
 /// per-op [`EgCurve`]. `L=0` is always hard silence.
+///
+/// `Exp` is the level domain of ADR 0010 — the same ladder the operator output
+/// level rides, knee included. ADR 0007 §1 asked for *one* logarithmic curve
+/// shared by EG levels and output level; 0010 ported the hardware's table for
+/// output level only, leaving the EG on a straight `(L-99)/8` line that sits up
+/// to 11 dB high below L=20. This reunites them, as on hardware, where the same
+/// `scaleoutlevel` serves both.
 #[inline]
 pub fn level_to_amp(level: u8, curve: EgCurve) -> f32 {
     if level == 0 {
         return 0.0;
     }
     match curve {
-        // Log curve: 0 dB at L=99, −6 dB per 8 steps (≈ −74 dB at L=1).
-        EgCurve::Exp => 2_f32.powf((level.min(99) as f32 - 99.0) / 8.0),
+        // Log curve: 0 dB at L=99, −0.75 dB per step above the knee, the
+        // table's steeper fall below it (≈ −91.8 dB at L=1).
+        EgCurve::Exp => level_log2(level).exp2(),
         EgCurve::Lin => {
             let l = level.min(99) as f32 / 99.0;
             l * l
@@ -225,7 +244,22 @@ impl EgState {
         self.max_amp = max_amp;
         self.max_log = if max_amp > 0.0 { max_amp.log2() } else { EG_LOG_FLOOR };
         for i in 0..4 {
-            self.targets[i] = level_to_amp(params.l[i], curve) * max_amp;
+            // Exp downward-marcher target: log2 relative to `max_amp`. L=0 is
+            // the silence floor; the clamp bites only at L=1, whose −91.8 dB
+            // already sits below the marcher's floor.
+            self.log_targets[i] = if params.l[i] == 0 {
+                EG_LOG_FLOOR
+            } else {
+                level_log2(params.l[i]).max(EG_LOG_FLOOR)
+            };
+            // Amplitude target. On `Exp` it is derived from the log target, so
+            // the snap ending a segment lands exactly where the marcher's
+            // `max_amp × 2^log_level` projection was already heading.
+            self.targets[i] = match curve {
+                EgCurve::Exp if params.l[i] == 0 => 0.0,
+                EgCurve::Exp => max_amp * self.log_targets[i].exp2(),
+                EgCurve::Lin => level_to_amp(params.l[i], EgCurve::Lin) * max_amp,
+            };
             // Segment 0 is the attack (its own linear-amplitude curve);
             // 1..=3 are the downward Lin-path segments.
             let rate_per_sec = if i == 0 {
@@ -234,14 +268,6 @@ impl EgState {
                 rate_to_amp_per_sec(params.r[i])
             };
             self.rates_per_sec[i] = rate_per_sec * rate_mult;
-            // Exp downward-marcher state: log2 target (normalised to max_amp) and
-            // a log2/sec rate. `(L-99)/8` is exactly `log2(level_to_amp(L, Exp))`;
-            // L=0 → the silence floor.
-            self.log_targets[i] = if params.l[i] == 0 {
-                EG_LOG_FLOOR
-            } else {
-                (params.l[i].min(99) as f32 - 99.0) / 8.0
-            };
             self.log_rates[i] = rate_to_log2_per_sec(params.r[i]) * rate_mult;
         }
     }
@@ -436,6 +462,47 @@ mod tests {
         EgParams {
             r: [99, 50, 35, 60],
             l: [99, 70, 50, 0],
+        }
+    }
+
+    /// EG L-values ride the same `scale_outlevel` ladder as operator output
+    /// level, knee and all — a low sustain rests where the hardware puts it,
+    /// not up to 11 dB above it (the straight `(L−99)/8` line this replaced).
+    /// Both target arrays are checked: the marcher projects through
+    /// `log_targets`, and snaps to `targets` at the end of a segment, so a
+    /// mismatch between them would be a step at every stage transition.
+    #[test]
+    fn eg_targets_ride_the_level_ladder() {
+        let params = EgParams { r: [50; 4], l: [99, 19, 10, 4] };
+        let mut eg = EgState::default();
+        eg.cook(&params, 1.0, 1.0, EgCurve::Exp);
+        for (i, &l) in params.l.iter().enumerate() {
+            let want = crate::level::op_max_amp(l, 0, 0);
+            let db = 20.0 * (eg.targets[i] / want).log10();
+            assert!(db.abs() < 1e-3, "L{} = {l}: {db:.4} dB off the ladder", i + 1);
+            let via_log = eg.log_targets[i].exp2();
+            assert!(
+                (via_log - eg.targets[i]).abs() < 1e-6,
+                "L{} = {l}: log target {via_log} != amp target {}",
+                i + 1,
+                eg.targets[i]
+            );
+        }
+        // The straight line sat ~11 dB high at L=4 — the size of the fix.
+        let straight = 2_f32.powf((4.0 - 99.0) / 8.0);
+        let moved = 20.0 * (straight / eg.targets[3]).log10();
+        assert!((moved - 11.3).abs() < 0.15, "L4 moved {moved:.2} dB");
+    }
+
+    /// `L = 0` stays hard silence on both curves, and its log target is the
+    /// marcher's floor rather than the ladder's −95.6 dB.
+    #[test]
+    fn zero_level_target_is_true_silence() {
+        for curve in [EgCurve::Exp, EgCurve::Lin] {
+            let mut eg = EgState::default();
+            eg.cook(&EgParams { r: [50; 4], l: [0; 4] }, 1.0, 1.0, curve);
+            assert_eq!(eg.targets[3], 0.0, "{curve:?}: L4 = 0 is silence");
+            assert_eq!(eg.log_targets[3], EG_LOG_FLOOR, "{curve:?}: floored");
         }
     }
 
