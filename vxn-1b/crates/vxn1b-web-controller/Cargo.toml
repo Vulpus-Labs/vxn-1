@@ -5,8 +5,9 @@
 # in the AudioWorklet; the two share the param SAB, not linear memory.
 [package]
 name = "vxn1b-web-controller"
-# VXN1b versions independently of the shared 0.x line vxn-1/vxn-2 ride.
-version = "0.0.3"
+# VXN1b pins its own version (own tag line, `vxn-1b-<version>`), aligned with
+# the shared workspace line vxn-2 rides as of 0.2.0.
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true

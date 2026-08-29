@@ -1,9 +1,11 @@
 [package]
 name = "vxn1b-ui-web"
-# VXN1b versions independently of the shared 0.x line that vxn-1/vxn-2 ride
-# (workspace 0.1.1): it is a younger variant shipping its own 0.0.x releases,
-# tagged `vxn-1b-<version>`. The xtask stamps this into the bundle Info.plist.
-version = "0.0.3"
+# Kept as an explicit pin rather than `version.workspace`: VXN1b ships on its
+# own tag line (`vxn-1b-<version>`) and stays free to diverge again. As of 0.2.0
+# the NUMBER is deliberately aligned with the shared workspace line vxn-2 rides,
+# retiring the earlier independent 0.0.x sequence — the release lines stay two,
+# only the versions now agree. The xtask stamps this into the bundle Info.plist.
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true

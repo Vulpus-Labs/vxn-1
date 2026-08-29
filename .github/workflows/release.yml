@@ -6,9 +6,12 @@ name: Release
 # The trigger fires on EVERY published release, so each job is gated on the tag
 # that triggered it (0213). Two release lines share this repo:
 #
-#   - vxn-2 rides the bare-semver tag (`0.1.1`), matching the
+#   - vxn-2 rides the bare-semver tag (`0.2.0`), matching the
 #     workspace version.
-#   - vxn-1b versions independently and tags `vxn-1b-<version>`.
+#   - vxn-1b tags `vxn-1b-<version>` off its own pinned version. Since 0.2.0
+#     that number is aligned with the workspace line, but the two release
+#     LINES are still independent — the guards below are what separate them,
+#     not the version numbers, which may well diverge again.
 #
 # Each job therefore carries a `startsWith(github.event.release.tag_name, ...)`
 # guard. Without it, cutting a vxn-1b release would rebuild and re-attach vxn-1
