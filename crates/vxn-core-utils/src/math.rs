@@ -143,6 +143,25 @@ mod q32_tests {
     }
 }
 
+/// Bhaskara I + Moser polynomial sine of a phase fraction `p in [0, 1)`
+/// (`p = phase / cycle`). Branch-free, pure ALU. Max abs err ~0.001 vs
+/// `f64::sin`; THD ~-59 dB.
+///
+/// `#[inline(always)]` is load-bearing, not decoration: vxn-2's operator core
+/// calls this through `fast_sine_q32` inside an 8-lane SoA loop that LLVM
+/// auto-vectorises, and a call that failed to inline across the crate boundary
+/// would drop that loop to scalar.
+///
+/// Moved here by ticket 0230, which found the identical polynomial written out
+/// a second time inside vxn-1b's FDN reverb LFO — two copies of a sine that
+/// have to agree and nothing making them.
+#[inline(always)]
+pub fn fast_sine_01(p: f32) -> f32 {
+    let x1 = p - 0.5;
+    let x2 = x1 * 16.0 * (x1.abs() - 0.5);
+    x2 + 0.225 * x2 * (x2.abs() - 1.0)
+}
+
 /// Plain xorshift (13, 7, 17), scaled to `[-1, 1]`. **Not** the same generator
 /// as [`xorshift64_star`] — no star multiplier — so the two produce different
 /// streams from the same seed. Both are here because both are load-bearing:

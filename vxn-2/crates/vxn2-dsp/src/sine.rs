@@ -9,16 +9,10 @@
 //!   pure ALU. Max abs err ≈ 0.001 vs `f64::sin`. THD ≈ -59 dB.
 
 pub mod scalar {
-    /// Bhaskara+Moser polynomial sine of a phase fraction `p ∈ [0, 1)`
-    /// (`p = phase / cycle`). Branch-free, pure ALU. The float-phase form of
-    /// the operator-core sine; [`fast_sine_q32`] is the Q32 wrapper and the
-    /// reverb LFO ([`crate::reverb`]) calls this directly.
-    #[inline(always)]
-    pub fn fast_sine_01(p: f32) -> f32 {
-        let x1 = p - 0.5;
-        let x2 = x1 * 16.0 * (x1.abs() - 0.5);
-        x2 + 0.225 * x2 * (x2.abs() - 1.0)
-    }
+    /// Re-export: the float-phase form of the operator-core sine moved to
+    /// `vxn-core-utils` in ticket 0230, so the shared FDN reverb's LFO and this
+    /// crate's operator core read one definition instead of two copies.
+    pub use vxn_core_utils::math::fast_sine_01;
 
     /// Bhaskara+Moser polynomial sine. Q32 phase in, f32 out.
     #[inline(always)]
