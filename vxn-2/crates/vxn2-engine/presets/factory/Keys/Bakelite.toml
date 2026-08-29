@@ -83,7 +83,7 @@ delay-sync = false
 delay-feedback = 0.18
 delay-mix = 0.10
 
-master-volume = -9.11
+master-volume = -12.09
 [[matrix]]
 slot = 0
 source = "velocity"

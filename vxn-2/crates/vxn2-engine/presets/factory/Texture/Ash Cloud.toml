@@ -90,7 +90,7 @@ reverb-damp = 0.62
 reverb-mix = 0.38
 
 # Per-lane pitch offsets: the stack smears rather than detuning symmetrically.
-master-volume = -26.58
+master-volume = -28.23
 [[matrix]]
 slot = 0
 source = "voice-idx"

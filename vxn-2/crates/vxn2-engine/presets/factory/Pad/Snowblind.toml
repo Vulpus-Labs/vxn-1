@@ -86,7 +86,7 @@ delay-feedback = 0.58
 delay-mix = 0.24
 delay-pingpong = true
 
-master-volume = -3.46
+master-volume = -4.80
 [[matrix]]
 slot = 0
 source = "lfo2"

@@ -80,7 +80,7 @@ reverb-size = 0.35
 reverb-decay = 1.1
 reverb-mix = 0.14
 
-master-volume = -7.90
+master-volume = -3.66
 [[matrix]]
 slot = 0
 source = "mod-env"

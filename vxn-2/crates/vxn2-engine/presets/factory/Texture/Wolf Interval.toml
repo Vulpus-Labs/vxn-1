@@ -81,7 +81,7 @@ reverb-decay = 6.0
 reverb-mix = 0.36
 
 # The stack pulls itself apart as the note is held.
-master-volume = -8.25
+master-volume = -10.35
 [[matrix]]
 slot = 0
 source = "mod-env"

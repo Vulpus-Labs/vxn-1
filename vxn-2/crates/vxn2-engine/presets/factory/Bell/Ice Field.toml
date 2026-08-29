@@ -84,7 +84,7 @@ delay-feedback = 0.44
 delay-mix = 0.16
 delay-pingpong = true
 
-master-volume = -4.90
+master-volume = -7.68
 [[matrix]]
 slot = 0
 source = "velocity"

@@ -79,7 +79,7 @@ reverb-decay = 2.2
 reverb-damp = 0.5
 reverb-mix = 0.22
 
-master-volume = -4.51
+master-volume = -7.38
 [[matrix]]
 slot = 0
 source = "key"

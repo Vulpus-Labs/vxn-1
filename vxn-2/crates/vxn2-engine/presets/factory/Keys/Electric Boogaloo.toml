@@ -115,7 +115,7 @@ op6-ks-r-curve = "neg-lin"
 # evenly spaced rather than clustered, which keeps the beating regular
 # instead of lumpy. The original voice already detunes its three carriers,
 # so this stacks a wide shimmer on top of a narrow one.
-master-volume = -18.04
+master-volume = -19.05
 
 stack-density = 4
 stack-detune = 9.0

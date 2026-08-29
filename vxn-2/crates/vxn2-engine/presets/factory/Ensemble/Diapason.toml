@@ -83,7 +83,7 @@ reverb-mix = 0.42
 # Key position -> upper ranks. This is the mixture: stronger in the treble,
 # absent in the pedal. `key` is a per-stack source, so it is sampled once at
 # note-on rather than smeared across the lanes.
-master-volume = -15.40
+master-volume = -17.21
 [[matrix]]
 slot = 0
 source = "key"

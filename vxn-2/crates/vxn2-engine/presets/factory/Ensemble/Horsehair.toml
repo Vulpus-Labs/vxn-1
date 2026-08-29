@@ -70,7 +70,7 @@ reverb-decay = 4.5
 reverb-mix = 0.4
 delay-on = false
 
-master-volume = -19.75
+master-volume = -22.20
 [[matrix]]
 slot = 0
 source = "lfo2"

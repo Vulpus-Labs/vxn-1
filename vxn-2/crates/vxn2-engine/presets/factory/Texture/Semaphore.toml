@@ -77,7 +77,7 @@ reverb-size = 0.7
 reverb-decay = 3.4
 reverb-mix = 0.26
 
-master-volume = -6.43
+master-volume = -8.48
 [[matrix]]
 slot = 0
 source = "lfo1"

@@ -22,7 +22,13 @@ use vxn2_engine::preset::from_toml_str;
 use vxn2_engine::shared::{ParamModel, SharedParams};
 
 const SR: f32 = 48_000.0;
-const BLOCK: usize = 512;
+/// Render at the shipping control cadence, not a host-sized buffer. Both host
+/// shells slice to `CONTROL_BLOCK` before `Engine::process_block`, so envelopes
+/// advance every 32 samples in the plugin; at 512 this tool ticked them 16×
+/// slower and measured attack transients no build ever produces. That matters
+/// for the peak it is setting levels from, because the dynamics stage is
+/// upstream of the master gain and responds to the transient's shape.
+const BLOCK: usize = vxn_core_dsp::control::CONTROL_BLOCK;
 // Adaptive render window. The chord's true sample peak lands at the apex of the
 // carriers' attack, which for a slow attack rate is *seconds* away (rate 13
 // ≈ 6.4 s to full amplitude; rate 0 ≈ 20 s). A fixed short window measures the

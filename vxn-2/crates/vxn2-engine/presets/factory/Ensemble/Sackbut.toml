@@ -82,7 +82,7 @@ reverb-decay = 2.8
 reverb-mix = 0.26
 
 # Velocity -> envelope rate: hard playing sharpens the attack itself.
-master-volume = -16.29
+master-volume = -19.11
 [[matrix]]
 slot = 0
 source = "velocity"

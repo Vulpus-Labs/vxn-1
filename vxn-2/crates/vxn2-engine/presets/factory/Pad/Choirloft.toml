@@ -77,7 +77,7 @@ reverb-decay = 6.5
 reverb-damp = 0.45
 reverb-mix = 0.44
 
-master-volume = -8.33
+master-volume = -10.33
 [[matrix]]
 slot = 0
 source = "aftertouch"

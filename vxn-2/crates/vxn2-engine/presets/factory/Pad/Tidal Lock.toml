@@ -89,7 +89,7 @@ reverb-decay = 7.0
 reverb-damp = 0.55
 reverb-mix = 0.40
 
-master-volume = -9.46
+master-volume = -11.21
 [[matrix]]
 slot = 0
 source = "pitch-eg"

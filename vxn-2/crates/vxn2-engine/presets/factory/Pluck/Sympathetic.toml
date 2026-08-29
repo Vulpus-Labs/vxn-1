@@ -81,7 +81,7 @@ reverb-size = 0.6
 reverb-decay = 2.6
 reverb-mix = 0.24
 
-master-volume = -6.11
+master-volume = -15.25
 [[matrix]]
 slot = 0
 source = "velocity"

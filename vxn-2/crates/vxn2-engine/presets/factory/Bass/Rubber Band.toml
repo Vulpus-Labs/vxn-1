@@ -78,7 +78,7 @@ mod-env-r = 120.0
 
 hp-cutoff = 32.0
 
-master-volume = -13.08
+master-volume = -9.56
 [[matrix]]
 slot = 0
 source = "mod-env"

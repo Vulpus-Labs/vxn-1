@@ -60,7 +60,7 @@ filter-keytrack = 0.30
 
 hp-cutoff = 26.0
 
-master-volume = -23.54
+master-volume = -24.57
 [[matrix]]
 slot = 0
 source = "aftertouch"

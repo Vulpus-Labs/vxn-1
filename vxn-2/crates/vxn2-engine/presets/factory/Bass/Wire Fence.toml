@@ -74,7 +74,7 @@ stack-spread = 0.7
 
 hp-cutoff = 30.0
 
-master-volume = -4.86
+master-volume = -7.69
 [[matrix]]
 slot = 0
 source = "velocity"

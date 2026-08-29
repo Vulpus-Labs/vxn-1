@@ -39,11 +39,19 @@ that started this, and its `op2` is the bank's only `kvs 7` operator.
 
 ## Acceptance criteria
 
-- [ ] `level_presets` re-swept and applied; no preset clamps at the volume
-      floor or ceiling.
-- [ ] DAW audition of all 45, with attention to the lists above.
+- [x] `level_presets` re-swept and applied; no preset clamps at the volume
+      floor or ceiling. All 45 converge on -6.0 dBFS; a second pass is a no-op.
+- [x] The sweep itself fixed first: it rendered at a 512-sample block, 16x
+      coarser than the `CONTROL_BLOCK` cadence both host shells actually use, so
+      it was setting levels from attack transients no build produces. That alone
+      moved measured peaks by up to 6.7 dB (Snapback -6.7, Tin Roof -6.3,
+      Rubber Band -5.6), dominating the engine changes it was meant to measure.
+- [ ] DAW audition of all 45, with attention to the lists above. **Outstanding —
+      this is the ticket's remaining half.**
 - [ ] `Electric Boogaloo`'s tine reads right at playing velocity **without** a
-      hand boost on `op2`'s output level.
+      hand boost on `op2`'s output level. Measured +13.6 dB at vel 110 and
+      +17.8 dB at vel 127 on the 15th-harmonic sideband, its velocity span
+      widening from 24 dB to 43 dB — confirm by ear.
 - [ ] Any preset needing re-voicing is either fixed or has a ticket.
 - [ ] `ks-r-depth` values reviewed on the two outliers: those were dialled while
       the control was inert, so they may carry no design intent and be worth

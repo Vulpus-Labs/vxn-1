@@ -71,7 +71,7 @@ reverb-size = 0.5
 reverb-decay = 1.8
 reverb-mix = 0.18
 
-master-volume = -10.99
+master-volume = -12.95
 [[matrix]]
 slot = 0
 source = "key"

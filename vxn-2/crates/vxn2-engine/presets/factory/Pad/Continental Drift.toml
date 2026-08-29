@@ -91,7 +91,7 @@ delay-feedback = 0.5
 delay-mix = 0.18
 delay-pingpong = true
 
-master-volume = -12.57
+master-volume = -15.18
 [[matrix]]
 slot = 0
 source = "mod-env"
