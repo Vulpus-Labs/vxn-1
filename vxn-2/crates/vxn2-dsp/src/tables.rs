@@ -3,18 +3,6 @@
 //! PARAMETERS.md and ADR 0001 — fidelity target is "sounds like an FM
 //! operator", not byte-exact reproduction.
 
-/// Velocity sensitivity (0..7). Approximate vel-sens curve: at 0,
-/// `level` is independent of velocity (1.0 always). At 7, a velocity of 1
-/// yields ~0 amplitude and 127 yields full. Intermediate `vs` interpolates
-/// linearly between the two extremes.
-#[inline]
-pub fn vel_factor(vs: u8, velocity: u8) -> f32 {
-    let vs = vs.min(7) as f32 / 7.0;
-    let v = velocity.min(127) as f32 / 127.0;
-    let v_curve = v * v; // squared = perceptual-ish.
-    1.0 - vs * (1.0 - v_curve)
-}
-
 /// Layer-level feedback (continuous, `[0.0, 7.0]`) → the multiplier applied to
 /// the 2-sample-averaged feedback signal before it is mixed into the
 /// phase-modulation input.
@@ -51,20 +39,6 @@ pub fn fb_scale(feedback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn vel_factor_endpoints() {
-        // vs = 0: velocity-independent.
-        for v in [1u8, 64, 127] {
-            assert!((vel_factor(0, v) - 1.0).abs() < 1e-6);
-        }
-        // vs = 7: full attenuation at v=0, no attenuation at v=127.
-        assert!(vel_factor(7, 0) < 0.05);
-        assert!((vel_factor(7, 127) - 1.0).abs() < 1e-6);
-        // monotonic in velocity for non-zero vs.
-        assert!(vel_factor(7, 1) < vel_factor(7, 64));
-        assert!(vel_factor(7, 64) < vel_factor(7, 127));
-    }
 
     #[test]
     fn fb_scale_monotone() {

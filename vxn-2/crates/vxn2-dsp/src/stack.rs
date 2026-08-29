@@ -42,7 +42,7 @@ use crate::ks::ks_rate_mult;
 use crate::lfo::Lfo2Stack;
 use crate::op::{OpParams, PM_SCALE_Q32, compute_base_hz, cook_max_amp};
 use crate::sine::scalar::fast_sine_q32;
-use crate::tables::{fb_scale, vel_factor};
+use crate::tables::fb_scale;
 use crate::voice::VoiceParams;
 
 /// Fixed packed-lane width. All stack DSP runs over 8 lanes; `density < 8`
@@ -1041,8 +1041,7 @@ impl Stack {
             self.core.ops[i].base_phase_inc[k] = (base_inc * lane_factor) as u32;
         }
 
-        let vel = vel_factor(params.vel_sens, velocity);
-        let max_amp = cook_max_amp(params, key, vel);
+        let max_amp = cook_max_amp(params, key, velocity);
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         // Every lane cooks identically here; per-lane `eg-rate` divergence is
         // applied afterward by `rescale_eg_rates`, which the engine

@@ -19,7 +19,6 @@ use crate::eg::{EgCurve, EgParams, EgState};
 use vxn_core_utils::note_to_hz;
 use crate::ks::{KsCurve, ks_level_offset, ks_rate_mult};
 use crate::sine;
-use crate::tables::vel_factor;
 #[cfg(test)]
 use crate::tables::fb_scale;
 
@@ -132,11 +131,11 @@ pub fn compute_base_hz(params: &OpParams, key: u8) -> f32 {
 /// definition shared by [`OpState::cook`] (scalar reference path) and
 /// `Stack::cook_op` (the production per-lane path), like [`compute_base_hz`].
 ///
-/// `vel` is the velocity factor. It is still a multiplier here; ticket 0324
-/// moves velocity onto the accumulator as a signed level offset, which is what
-/// lets it boost above nominal as the hardware does.
+/// Velocity enters as a signed level offset like everything else, so a
+/// high-sensitivity operator struck hard rises *above* its nominal level, as on
+/// hardware — which is most of what gives a tine or a brass swell its bite.
 #[inline]
-pub fn cook_max_amp(params: &OpParams, key: u8, vel: f32) -> f32 {
+pub fn cook_max_amp(params: &OpParams, key: u8, velocity: u8) -> f32 {
     let ks_units = ks_level_offset(
         key,
         params.ks_break_pt,
@@ -145,14 +144,17 @@ pub fn cook_max_amp(params: &OpParams, key: u8, vel: f32) -> f32 {
         params.ks_r_depth,
         params.ks_r_curve,
     );
+    let vel_frac = crate::level::vel_level_offset(velocity, params.vel_sens);
     match params.eg_curve {
-        EgCurve::Exp => crate::level::op_max_amp(params.level, ks_units, 0) * vel,
+        EgCurve::Exp => crate::level::op_max_amp(params.level, ks_units, vel_frac),
         // The `Lin` escape hatch's square level curve was never part of the
         // level domain, so it keeps the multiplier form: key scaling as a gain,
-        // clamped at full scale.
+        // clamped at full scale, then velocity. Velocity's *law* is shared —
+        // it is a property of the keyboard, not of the level curve.
         EgCurve::Lin => {
             let ks = crate::level::units_to_gain(ks_units);
-            (crate::eg::level_to_amp(params.level, EgCurve::Lin) * ks).min(1.0) * vel
+            (crate::eg::level_to_amp(params.level, EgCurve::Lin) * ks).min(1.0)
+                * crate::level::frac_to_gain(vel_frac)
         }
     }
 }
@@ -166,8 +168,7 @@ impl OpState {
         let base_hz = compute_base_hz(params, key);
         self.phase_inc = vxn_core_utils::math::phase_inc_q32(base_hz, sample_rate);
 
-        let vel = vel_factor(params.vel_sens, velocity);
-        let max_amp = cook_max_amp(params, key, vel);
+        let max_amp = cook_max_amp(params, key, velocity);
         let rate_mult = ks_rate_mult(key, params.ks_rate);
         self.eg.cook(&params.eg, max_amp, rate_mult, params.eg_curve);
 
