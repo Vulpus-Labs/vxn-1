@@ -35,7 +35,10 @@ fn main() {
     }
     files.sort();
 
-    println!("{:<32} {:>10} {:>10}   partials (dB re fundamental)", "preset", "cent.atk", "cent.sus");
+    println!(
+        "{:<32} {:>7} {:>8} {:>8}   partials (dB re fundamental)",
+        "preset", "sus dB", "cent.atk", "cent.sus"
+    );
     for path in &files {
         let label = format!(
             "{}/{}",
@@ -47,9 +50,9 @@ fn main() {
         }
         let src = std::fs::read_to_string(path).unwrap();
         let (_m, blob, _w) = from_toml_str(&src).unwrap();
-        let (atk, sus) = spectrum(&blob);
+        let (atk, sus, sus_db) = spectrum(&blob);
         println!(
-            "{label:<32} {:>10.2} {:>10.2}   {}",
+            "{label:<32} {sus_db:>7.0} {:>8.2} {:>8.2}   {}",
             centroid(&atk),
             centroid(&sus),
             sus.iter()
@@ -65,8 +68,12 @@ fn main() {
 }
 
 /// Harmonic magnitudes over an attack window (10–90 ms) and a sustain window
-/// (600–1100 ms).
-fn spectrum(blob: &[u8]) -> ([f32; N_HARM], [f32; N_HARM]) {
+/// (600–2600 ms), plus the sustain RMS relative to the attack RMS in dB. That
+/// last figure separates the two reasons a sustain window can read as a sine:
+/// a patch that legitimately decayed away (pluck, bell) reads very negative,
+/// while a patch still sounding at full level reads near 0 and a centroid of
+/// 1.0 there means its modulators have gone silent.
+fn spectrum(blob: &[u8]) -> ([f32; N_HARM], [f32; N_HARM], f32) {
     let shared = SharedParams::new();
     shared.load_bytes(blob).unwrap();
     // Isolate the voice: one lane (no detune smear), no time FX, no limiter.
@@ -105,7 +112,15 @@ fn spectrum(blob: &[u8]) -> ([f32; N_HARM], [f32; N_HARM]) {
         n += k;
     }
 
-    (dft(&buf[atk_win.0..atk_win.1], f0), dft(&buf[sus_win.0..sus_win.1], f0))
+    let rms = |x: &[f32]| (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len() as f64).sqrt();
+    let a = rms(&buf[atk_win.0..atk_win.1]);
+    let s = rms(&buf[sus_win.0..sus_win.1]);
+    let sus_db = 20.0 * (s / a.max(1e-12)).max(1e-6).log10();
+    (
+        dft(&buf[atk_win.0..atk_win.1], f0),
+        dft(&buf[sus_win.0..sus_win.1], f0),
+        sus_db as f32,
+    )
 }
 
 /// Naive DFT evaluated only at `k·f0`, Hann-windowed.
