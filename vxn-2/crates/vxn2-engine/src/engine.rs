@@ -1444,14 +1444,19 @@ impl Engine {
             // offset: `op_level_mod_target = clamp(eg·(1+m), 0, 1) − eg`.
             // `eg = 0` forces eff = 0, so a RELEASED op always closes.
             //
-            // The block-rate `clamp(…, 0, 1)` is the ONE bound for the whole
-            // path: it absorbs boost overflow (`eg·(1+m) > 1` when eg > 0.5)
-            // and multi-route `m` overflow (several slots summing into one
-            // level dest) alike. Because both the ramp's start point (the
-            // previous block's in-range effective level, carried by the EG
-            // rebase below) and its end point (this clamped target) give
-            // `eff ∈ [0, 1]`, the per-sample linear ramp stays in range too —
-            // so `stack_tick_*` needs no per-sample clamp.
+            // The block-rate clamp is the ONE bound for the whole path: it
+            // absorbs boost overflow (`eg·(1+m)` past the ceiling) and
+            // multi-route `m` overflow (several slots summing into one level
+            // dest) alike. Because both the ramp's start point (the previous
+            // block's in-range effective level, carried by the EG rebase below)
+            // and its end point (this clamped target) are in range, the
+            // per-sample linear ramp stays in range too — so `stack_tick_*`
+            // needs no per-sample clamp. The property is "bounded at both
+            // ends", not "bounded at 1.0"; the ceiling is
+            // `level::MAX_ATTAINABLE_AMP`, because velocity is a signed level
+            // offset that takes no ceiling above and so lifts a hard strike
+            // ~5.25 dB past nominal (ADR 0010). Clamping at 1.0 would silently
+            // eat exactly the dynamic response velocity exists to provide.
             //
             // The EG marches once per block; `op_level_mod` is rebased
             // by the block delta so the sum the tick reads stays continuous
@@ -1465,7 +1470,8 @@ impl Engine {
                     // Per-lane EG level: each lane's own envelope drives its
                     // own effective level and block-edge rebase.
                     let eg = stack.core.ops[op_i].eg[k].level;
-                    let eff = (eg * (1.0 + level_targets[op_i][k])).clamp(0.0, 1.0);
+                    let eff = (eg * (1.0 + level_targets[op_i][k]))
+                        .clamp(0.0, vxn2_dsp::level::MAX_ATTAINABLE_AMP);
                     level_targets[op_i][k] = eff - eg;
                     // Keep the rendered level (`eg + op_level_mod`) continuous
                     // across the EG's block-edge march; the delta is folded into
@@ -2949,14 +2955,14 @@ mod tests {
             .expect("note is held");
         let level_idx = DestId::Op1Level.idx().unwrap();
         // Replicate the engine's multiplicative projection:
-        // `target = clamp(eg·(1+m), 0, 1) − eg`, taken against the op's
+        // `target = clamp(eg·(1+m), 0, MAX_ATTAINABLE_AMP) − eg`, against the op's
         // post-tick EG level, which is what `eg.level` holds after
         // `process_block` returns. The ramp must converge each block on this
         // target — no smoothing.
         let target = |e: &Engine, k: usize| {
             let eg = e.alloc.stacks[slot].core.ops[0].eg[k].level;
             let m = self::tests_dest_val(e, slot, k, level_idx);
-            (eg * (1.0 + m)).clamp(0.0, 1.0) - eg
+            (eg * (1.0 + m)).clamp(0.0, vxn2_dsp::level::MAX_ATTAINABLE_AMP) - eg
         };
         let mut saw_ramp = false;
         for _ in 0..30 {

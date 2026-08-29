@@ -88,20 +88,36 @@ its **quantisation is part of the sound**:
 Also out, as not being level-domain concepts at all: pan, the Nyquist carrier
 fade, per-lane stack gain, master volume.
 
-### 4. Full scale is the maximum attainable level, not nominal
+### 4. The rendered-level ceiling rises; nominal stays at unity
 
 Hardware clamps the accumulator at the bottom only after velocity, so a `kvs 7`
-operator at velocity 127 sits **+5.25 dB above** its nominal level. VXN2 cannot
-currently represent that: `cook_stacks_block` stage 8 computes
-`eff = (eg·(1 + m)).clamp(0.0, 1.0)`, and that single bound is what allows the
-per-sample ramp to skip a clamp of its own — both endpoints in range implies the
+operator at velocity 127 sits **+5.25 dB above** its nominal level. VXN2 could
+not represent that: `cook_stacks_block` stage 8 computed
+`eff = (eg·(1 + m)).clamp(0.0, 1.0)`, and that single bound is what lets the
+per-sample ramp skip a clamp of its own — both endpoints in range implies the
 interpolation is in range.
 
-Rather than raise that ceiling and re-establish the invariant, **renormalise**:
-amplitude `1.0` denotes the maximum attainable level (nominal + maximum velocity
-boost, a factor of 1.83), so a nominal `OL 99` carrier sits at `0.546`. The
-`[0, 1]` invariant is untouched, the hot loop is unchanged, and the resulting
-−5.25 dB of output is absorbed by one master-volume re-sweep.
+Raise the ceiling to `level::MAX_ATTAINABLE_AMP` (≈1.834, derived from the
+velocity ladder). The invariant the lane loop depends on is *bounded at both
+ends*, not *bounded at 1.0*, so it survives a different constant untouched.
+
+**Superseded:** this section first specified the opposite — renormalise so that
+the maximum attainable level *is* 1.0, putting nominal at 0.546, on the reasoning
+that the resulting 5.25 dB could be recovered by a master-volume re-sweep. That
+reasoning was wrong, and ticket 0325 found it: the **level-dependent stages sit
+between the operators and the master volume**. The render chain is voices →
+filter (with its drive and saturator) → `dynamics.process` (compressor +
+saturator) → delay → reverb → master gain → limiter. A uniform cut at the source
+moves the operating point of every non-linear stage in that chain, and turning
+the master back up afterwards cannot put it back — it would have quietly
+re-voiced the compressor on all 45 presets. The regression surfaced as
+`filter_toggle_over_live_dynamics_is_click_free`, whose disengage transient
+drifted past its bound because the compressor was working further below
+threshold.
+
+Raising the ceiling leaves nominal at unity, so every downstream operating point
+is exactly preserved and only a hard strike reaches above — which is the dynamic
+response velocity exists to provide, and which the dynamics stage *should* track.
 
 ### 5. Pitch is already conformant
 
@@ -123,6 +139,9 @@ consistency, not correction.
 - Every preset's velocity response changes, and unlike the feedback ladder there
   is no mechanical migration — a curve change is not a gain change. Patches
   voiced hard get brighter and louder; patches voiced soft barely move.
+- Peaks rise by up to 5.25 dB on hard-struck patches while nominal is unchanged,
+  so the master-volume sweep still runs — to re-seat peak headroom, not to undo
+  a uniform shift.
 - One bank re-audition covers this, the key-scaling fix and the feedback ladder
   together, instead of three passes.
 
