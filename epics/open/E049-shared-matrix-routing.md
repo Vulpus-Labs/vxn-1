@@ -30,6 +30,11 @@ noise floor and far beneath audibility, while leaving ample room for last-bit
 reordering (a reassociated sum of ≤16 `f32` terms perturbs by ~1e-7 relative,
 around −140 dBFS).
 
+The harness does not exist yet — the repo has only the hash. Building it is part
+of [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md), sited in
+`vxn_core_dsp::test_util` alongside the other render-comparison helpers, and it
+gates every later ticket's verification.
+
 Workflow: if the hash doesn't move, nothing changed and you are done. If it
 moves, run the null test. If the null test passes, re-capture the hash and say so
 in the close-out. **A change that exceeds −100 dBFS stops** for a listening check
@@ -112,7 +117,7 @@ have no layout dependency and land early; the evaluator waits on 0328 because
 | # | Ticket | Depends |
 |---|---|---|
 | [0328](../../tickets/open/0328-matrix-dest-major-lane-accumulators.md) | vxn-2 matrix eval doesn't vectorise: transpose to dest-major | — |
-| [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam | — |
+| [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam + **null-test harness** | — |
 | [0330](../../tickets/open/0330-share-curve-vocabulary.md) | Share the polarity/shape/scale-VCA vocabulary | 0329 |
 | [0331](../../tickets/open/0331-matrix-golden-vector-harness.md) | Golden-vector test harness + synthetic roster | 0329 |
 | [0332](../../tickets/open/0332-roster-row-declares-everything.md) | Roster row declares gain, taper, tier, smoothing | 0329 |
