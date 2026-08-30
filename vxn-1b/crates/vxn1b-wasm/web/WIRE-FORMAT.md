@@ -142,7 +142,22 @@ layer << 12 | slot << 8 | field
 
 - `layer` — 0 = Layer 1, 1 = Layer 2
 - `slot` — 0..15
-- `field` — 0 Source, 1 Dest, 2 Curve, 3 ScaleSrc
+- `field` — 0 Source, 1 Dest, 2 Polarity, 3 ScaleSrc, 4 Shape, 5 ScaleShape,
+  6 Enabled
+
+Field ordinals are `vxn1b_engine::vocab::MATRIX_FIELD_NAMES` positions and are
+**frozen**. 0..3 predate the curve → polarity/shape split, so Shape, ScaleShape
+and Enabled were appended at 4..6 rather than inserted where they read; ordinal
+2 kept its number and became Polarity, the old curve enum's only polarity being
+`bipolar`. Renumbering into reading order re-aims every address on the wire.
+
+Note this is **not** the order the VE_MATRIX_SNAPSHOT record packs those fields
+in. That record is written in reading order — `source, dest, polarity, shape,
+scale_src, scale_shape, enabled`, seven bytes per slot — by `pack_matrix` in
+`vxn1b-web-controller`. Two orderings, one field set: read the packer, not this
+list, when changing the snapshot decode.
+
+Enabled is a bool that travels as 0/1, matching the snapshot record.
 
 An out-of-range layer, slot or field **unpacks to nothing and the record is
 dropped**, never clamped onto a valid slot. Clamping would land the edit on a

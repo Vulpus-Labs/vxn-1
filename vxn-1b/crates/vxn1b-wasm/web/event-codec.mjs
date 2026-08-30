@@ -95,10 +95,20 @@ export const PARAM_FLAG_NORM = 1;
 // ── Matrix address packing ─────────────────────────────────────────────────
 
 export const MATRIX_SLOTS = 16;
+// Ordinals are `vxn1b_engine::vocab::MATRIX_FIELD_NAMES` positions, and they are
+// FROZEN: 0..3 predate the polarity/shape split, so `shape`, `scale-shape` and
+// `enabled` were appended at 4/5/6 rather than inserted in reading order. Match
+// `vxn1b_wasm::codec::unpack_matrix_addr`, which decodes exactly this order —
+// renumbering here lands edits on the wrong field, silently.
 export const MATRIX_FIELD_SOURCE = 0;
 export const MATRIX_FIELD_DEST = 1;
-export const MATRIX_FIELD_CURVE = 2;
+// Slot 2 was "curve" before the axes split; `polarity` inherited both the
+// ordinal and the meaning, and the shape half became its own field at 4.
+export const MATRIX_FIELD_POLARITY = 2;
 export const MATRIX_FIELD_SCALE_SRC = 3;
+export const MATRIX_FIELD_SHAPE = 4;
+export const MATRIX_FIELD_SCALE_SHAPE = 5;
+export const MATRIX_FIELD_ENABLED = 6;
 
 /// Pack a matrix-slot address into the 16-bit paramIdx field:
 /// `layer << 12 | slot << 8 | field`. Mirrors Rust's `pack_matrix_addr`.
@@ -115,7 +125,7 @@ export function unpackMatrixAddr(addr) {
   const slot = (addr >> 8) & 0x0f;
   if (slot >= MATRIX_SLOTS) return null;
   const field = addr & 0xff;
-  if (field > MATRIX_FIELD_SCALE_SRC) return null;
+  if (field > MATRIX_FIELD_ENABLED) return null;
   return { layer, slot, field };
 }
 

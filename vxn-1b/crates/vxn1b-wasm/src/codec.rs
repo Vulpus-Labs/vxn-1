@@ -130,9 +130,10 @@ pub const PARAM_FLAG_NORM: u8 = 1;
 /// Pack a matrix-slot address into the 16-bit `paramIdx` field:
 /// `layer << 12 | slot << 8 | field`.
 ///
-/// Room to spare — 2 layers, 16 slots, 4 fields — and it keeps `flag` free for
+/// Room to spare — 2 layers, 16 slots, 7 fields — and it keeps `flag` free for
 /// the value byte, so the whole edit fits one slot with no second record and no
-/// framing change.
+/// framing change. The field nibble is a full byte wide, so the curve →
+/// polarity/shape split cost the layout nothing.
 ///
 /// **Test-only.** Nothing in this crate packs an address: the JS producer does
 /// (`packMatrixAddr`), and this side only ever unpacks. It exists so

@@ -1,7 +1,8 @@
 // Cross-language vocabulary agreement (0316).
 //
 // The page's custom ops carry NAMES — "upper"/"lower", "source"/"dest"/
-// "curve"/"scale", "off"/"upper"/"lower" — and three places used to decide
+// "polarity"/"scale"/"shape"/"scale-shape"/"enabled", "off"/"upper"/"lower" —
+// and three places used to decide
 // independently what each one meant: `vxn1b-ui-web` (strings → enums, native
 // editor), `vxn1b-web-controller` (ordinals → enums, browser), and
 // `faceplate-bridge.mjs` (strings → ordinals, browser). The first two now read
@@ -47,8 +48,11 @@ import {
   MATRIX_SLOTS,
   MATRIX_FIELD_SOURCE,
   MATRIX_FIELD_DEST,
-  MATRIX_FIELD_CURVE,
+  MATRIX_FIELD_POLARITY,
   MATRIX_FIELD_SCALE_SRC,
+  MATRIX_FIELD_SHAPE,
+  MATRIX_FIELD_SCALE_SHAPE,
+  MATRIX_FIELD_ENABLED,
 } from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -102,12 +106,42 @@ test("the bridge's matrix-field names and ordinals match the engine's", async ()
     {
       source: MATRIX_FIELD_SOURCE,
       dest: MATRIX_FIELD_DEST,
-      curve: MATRIX_FIELD_CURVE,
+      polarity: MATRIX_FIELD_POLARITY,
       scale: MATRIX_FIELD_SCALE_SRC,
+      shape: MATRIX_FIELD_SHAPE,
+      "scale-shape": MATRIX_FIELD_SCALE_SHAPE,
+      enabled: MATRIX_FIELD_ENABLED,
     },
     v.matrixField,
     "event-codec.mjs's field constants must agree too — the ring packs them",
   );
+});
+
+// The `deepEqual`s above are exact in both directions ALREADY — a field Rust
+// gained and the page did not fails them, and so does a field the two agree on
+// but at different ordinals. What they cannot catch is the two sides moving
+// TOGETHER, which is exactly what a well-meaning "put these in reading order"
+// edit does. So this one pins the Rust table to literals: 0..3 predate the
+// polarity/shape split and are frozen, which is why `scale` sits at 3 and
+// `shape` was APPENDED at 4 rather than inserted where it reads. Tidying that
+// silently re-aims every in-flight matrix address, so it must fail here first.
+test("the seven matrix fields sit at the exact ordinals the wire address uses", async () => {
+  const v = await rustVocab();
+  assert.deepEqual(v.matrixField, {
+    source: 0,
+    dest: 1,
+    polarity: 2,
+    scale: 3,
+    shape: 4,
+    "scale-shape": 5,
+    enabled: 6,
+  });
+  assert.equal(Object.keys(v.matrixField).length, 7, "field count moved");
+  // Ordinals are a dense 0..n-1 with no duplicates: a gap is an address the
+  // engine rejects, a duplicate makes one field unreachable and silently
+  // redirects edits meant for it onto the other.
+  const ordinals = Object.values(v.matrixField).sort((a, b) => a - b);
+  assert.deepEqual(ordinals, [...ordinals.keys()], "ordinals are not dense 0..n-1");
 });
 
 test("the bridge's scope taps match the engine's ScopeTap codes", async () => {
@@ -135,7 +169,11 @@ test("every name the page can send is one the engine decodes", async () => {
   ]) {
     assert.ok(names.length > 0, `${table} is empty`);
     for (const n of names) {
-      assert.ok(src.includes(`${n}:`), `${table} name "${n}" appears in no page table`);
+      // Either key form counts: a name that is not a bare JS identifier has to
+      // be quoted in the table, which is why `scale-shape` is written
+      // `"scale-shape":` and would miss a bare-`${n}:` search.
+      const present = src.includes(`${n}:`) || src.includes(`"${n}":`);
+      assert.ok(present, `${table} name "${n}" appears in no page table`);
     }
   }
 });
