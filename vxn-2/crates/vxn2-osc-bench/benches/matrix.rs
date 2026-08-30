@@ -143,8 +143,8 @@ fn bench_matrix(c: &mut Criterion) {
     g.throughput(Throughput::Elements(N_SLOTS as u64));
     g.bench_function("matrix_eval_full", |b| {
         let table = full_table();
-        let mut src_buf: LaneSourceVals = [[0.0; N_SOURCES]; STACK_LANES];
-        let mut dest_buf: LaneDestVals = [[0.0; N_DESTS]; STACK_LANES];
+        let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
+        let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
             eval_sources(
                 black_box(&patch),
@@ -160,8 +160,8 @@ fn bench_matrix(c: &mut Criterion) {
     g.throughput(Throughput::Elements(N_SLOTS as u64));
     g.bench_function("matrix_eval_scaled", |b| {
         let table = scaled_table();
-        let mut src_buf: LaneSourceVals = [[0.0; N_SOURCES]; STACK_LANES];
-        let mut dest_buf: LaneDestVals = [[0.0; N_DESTS]; STACK_LANES];
+        let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
+        let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
             eval_sources(
                 black_box(&patch),
@@ -177,8 +177,8 @@ fn bench_matrix(c: &mut Criterion) {
     g.throughput(Throughput::Elements(1));
     g.bench_function("matrix_eval_empty", |b| {
         let table = MatrixTable::default();
-        let mut src_buf: LaneSourceVals = [[0.0; N_SOURCES]; STACK_LANES];
-        let mut dest_buf: LaneDestVals = [[0.0; N_DESTS]; STACK_LANES];
+        let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
+        let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
             eval_sources(
                 black_box(&patch),

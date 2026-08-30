@@ -15,8 +15,8 @@
 //! - **Per-lane** ([`LaneSources`]): `lfo2`, `voice_idx`, `voice_spread`,
 //!   `voice_rand`. One value per lane of the 8-lane stack.
 //!
-//! [`eval_sources`] fans these out into a single `[[f32; N_SOURCES];
-//! STACK_LANES]` lookup table per stack — the slot eval inner loop reads from
+//! [`eval_sources`] fans these out into a single `[[f32; STACK_LANES];
+//! N_SOURCES]` lookup table per stack — the slot eval inner loop reads from
 //! one contiguous matrix regardless of source kind. Broadcast cost is paid
 //! once per block at the source-eval site, never inside the per-slot loop.
 //!
@@ -68,16 +68,19 @@
 //! its two decisions into the arms below cut a fully-scaled 16-slot eval by
 //! ~47% (253 ns → 133 ns, `matrix_eval_scaled`).
 //!
-//! The **route accumulate does not vectorise**, and the reason is layout:
-//! `sources[k][si]` and `out[k][di]` stride a whole row per lane, so the loop is
-//! a gather/scatter. Measured post-LTO on a linked binary — 895 instructions,
-//! 277 scalar FP ops, 16 vector ops, and every one of those 16 is in the
-//! *scale-VCA* loop, which walks a contiguous `[f32; STACK_LANES]` local. The
-//! same function, the same optimisation level: contiguous vectorises, strided
-//! does not. Fixing it means transposing [`LaneSourceVals`] / [`LaneDestVals`]
-//! to dest-major, which the engine's lane-major reads make a larger change than
-//! it looks (ticket 0328). Straight-line-per-lane is still worth keeping for the
-//! branch-prediction and code-size win it does deliver.
+//! Both buffers are stored **transposed** — [`LaneSourceVals`] source-major,
+//! [`LaneDestVals`] dest-major — so a slot's source row and dest row are each
+//! a contiguous `[f32; STACK_LANES]` and each curve arm's accumulate compiles
+//! to a `ldr q` / `fmul.4s` / `fadd.4s` / `str q` over two vectors, not a
+//! gather-scatter (ticket 0328). Under the old lane-major layout
+//! `sources[k][si]` and `out[k][di]` strided a whole row per lane and the
+//! accumulate stayed scalar. Measured post-LTO on the linked `matrix` bench
+//! binary, lane-major → transposed: 895 → 569 instructions, 383 → 112 scalar
+//! FP ops, 23 → 74 `.4s` ops — and where every vector op used to live in the
+//! *scale-VCA* loop (the one loop already walking a contiguous local), the
+//! curve arms now carry `fabs.4s` / `fneg.4s` / `fcmlt.4s` of their own.
+//! Straight-line-per-lane is worth keeping on top of that, for the
+//! branch-prediction and code-size win.
 //!
 //! **Measure this post-LTO or not at all.** `cargo rustc --emit asm` on this
 //! crate runs *no* loop vectoriser — with `lto` set, cargo passes
@@ -782,8 +785,8 @@ impl DestId {
     }
 }
 
-/// Pitch-shaped destinations in canonical order. [`PitchSmoother`] iterates
-/// over this list when copying targets out of [`LaneDestVals`].
+/// Pitch-shaped destinations in canonical order. [`PitchSmoother`] rows are
+/// indexed by position in this list.
 pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = [
     DestId::GlobalPitch,
     DestId::Lfo2Phase,
@@ -794,6 +797,22 @@ pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = [
     DestId::Op5Pitch,
     DestId::Op6Pitch,
 ];
+
+/// [`LaneDestVals`] row index for each [`PITCH_DESTS`] entry, same order.
+/// Since the accumulator is dest-major, `dest_vals[PITCH_DEST_ROWS[i]]` is
+/// smoother row `i`'s per-lane target directly — no gather, no transpose.
+pub const PITCH_DEST_ROWS: [usize; N_PITCH_DESTS] = {
+    let mut rows = [0_usize; N_PITCH_DESTS];
+    let mut i = 0;
+    while i < N_PITCH_DESTS {
+        rows[i] = match PITCH_DESTS[i].idx() {
+            Some(d) => d,
+            None => panic!("PITCH_DESTS entries are never None"),
+        };
+        i += 1;
+    }
+    rows
+};
 
 pub const N_PITCH_DESTS: usize = 8;
 
@@ -1133,11 +1152,19 @@ pub struct LaneSources {
     pub voice_rand: [f32; STACK_LANES],
 }
 
-/// Per-lane source lookup populated by [`eval_sources`].
-pub type LaneSourceVals = [[f32; N_SOURCES]; STACK_LANES];
+/// Per-lane source lookup populated by [`eval_sources`], **source-major**:
+/// `[source][lane]`, so one source's lanes are contiguous. This is the layout
+/// `vxn_core_matrix::storage::SourceLanes` defines and the one vxn-1b's
+/// `SourceLanesSoa` already uses (0328).
+pub type LaneSourceVals = [[f32; STACK_LANES]; N_SOURCES];
 
-/// Per-lane destination accumulator populated by [`eval_dests`].
-pub type LaneDestVals = [[f32; N_DESTS]; STACK_LANES];
+/// Per-lane destination accumulator populated by [`eval_dests`],
+/// **dest-major**: `[dest][lane]`, the mirror of [`LaneSourceVals`]. One
+/// dest's lanes are contiguous, so the slot accumulate is a contiguous 8-lane
+/// read-modify-write (two 4-wide vectors) instead of a scatter (0328). Matches
+/// `vxn_core_matrix::storage::DestLanes` and [`PitchSmoother`]'s own state
+/// layout.
+pub type LaneDestVals = [[f32; STACK_LANES]; N_DESTS];
 
 /// Fan patch + stack + lane sources into a per-lane lookup the slot eval
 /// loop can read with one index per source.
@@ -1149,21 +1176,19 @@ pub fn eval_sources(
     out: &mut LaneSourceVals,
 ) {
     // Index expressions evaluate at compile time — `SourceId::Lfo1 as usize`
-    // is a constant. Each lane assignment is straight stores.
-    for k in 0..STACK_LANES {
-        let v = &mut out[k];
-        v[(SourceId::Lfo1 as usize) - 1] = patch.lfo1;
-        v[(SourceId::Lfo2 as usize) - 1] = lanes.lfo2[k];
-        v[(SourceId::PitchEg as usize) - 1] = stack.pitch_eg;
-        v[(SourceId::ModEnv as usize) - 1] = stack.mod_env;
-        v[(SourceId::ModWheel as usize) - 1] = patch.mod_wheel;
-        v[(SourceId::Aftertouch as usize) - 1] = patch.aftertouch;
-        v[(SourceId::Velocity as usize) - 1] = stack.velocity;
-        v[(SourceId::Key as usize) - 1] = stack.key;
-        v[(SourceId::VoiceIdx as usize) - 1] = lanes.voice_idx[k];
-        v[(SourceId::VoiceSpread as usize) - 1] = lanes.voice_spread[k];
-        v[(SourceId::VoiceRand as usize) - 1] = lanes.voice_rand[k];
-    }
+    // is a constant. Source-major storage makes each row one whole store: a
+    // patch/stack scalar is a lane splat, a per-lane array is a row copy.
+    out[(SourceId::Lfo1 as usize) - 1] = [patch.lfo1; STACK_LANES];
+    out[(SourceId::Lfo2 as usize) - 1] = lanes.lfo2;
+    out[(SourceId::PitchEg as usize) - 1] = [stack.pitch_eg; STACK_LANES];
+    out[(SourceId::ModEnv as usize) - 1] = [stack.mod_env; STACK_LANES];
+    out[(SourceId::ModWheel as usize) - 1] = [patch.mod_wheel; STACK_LANES];
+    out[(SourceId::Aftertouch as usize) - 1] = [patch.aftertouch; STACK_LANES];
+    out[(SourceId::Velocity as usize) - 1] = [stack.velocity; STACK_LANES];
+    out[(SourceId::Key as usize) - 1] = [stack.key; STACK_LANES];
+    out[(SourceId::VoiceIdx as usize) - 1] = lanes.voice_idx;
+    out[(SourceId::VoiceSpread as usize) - 1] = lanes.voice_spread;
+    out[(SourceId::VoiceRand as usize) - 1] = lanes.voice_rand;
 }
 
 /// Normalise a scale source's value to the `[0, 1]` VCA range, then bend it
@@ -1209,8 +1234,8 @@ pub fn scale_norm(src: SourceId, v: f32, shape: ShapeKind) -> f32 {
 /// branch never lands in the hot inner loop.
 #[inline]
 pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneDestVals) {
-    for k in 0..STACK_LANES {
-        out[k].fill(0.0);
+    for d in out.iter_mut() {
+        d.fill(0.0);
     }
     for slot in &table.slots {
         let Some(si) = slot.source.idx() else {
@@ -1236,10 +1261,11 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
         // doubles the whole eval — see the module's inner-loop note.
         let mut scale = [1.0_f32; STACK_LANES];
         if let Some(sc) = slot.scale_src.idx() {
+            let sv = &sources[sc];
             macro_rules! scale_arm {
                 ($fold:path, $bend:path) => {
                     for k in 0..STACK_LANES {
-                        scale[k] = $bend(clamp_unit($fold(sources[k][sc])));
+                        scale[k] = $bend(clamp_unit($fold(sv[k])));
                     }
                 };
             }
@@ -1256,10 +1282,18 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
         // one straight-line lane loop with both maps inlined — the 3×3 split
         // costs nothing in the loop body that the old flat enum didn't
         // (`matrix_eval_full` is unchanged at ~111 ns across the split).
+        //
+        // Both rows are hoisted out of the lane loop: source-major `sv` and
+        // dest-major `acc` are each `[f32; STACK_LANES]` contiguous, which is
+        // what lets the accumulate vectorise (0328). Accumulation order across
+        // slots is untouched, so the sum is bit-identical to the lane-major
+        // version.
+        let sv = &sources[si];
+        let acc = &mut out[di];
         macro_rules! curve_arm {
             ($pol:path, $shape:path) => {
                 for k in 0..STACK_LANES {
-                    out[k][di] += $shape($pol(sources[k][si])) * depth * scale[k];
+                    acc[k] += $shape($pol(sv[k])) * depth * scale[k];
                 }
             };
         }
@@ -1277,8 +1311,9 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
     }
 }
 
-/// Per-lane × per-pitch-dest one-pole IIR. Block-rate `set_targets_from`
-/// updates targets; per-sample `tick` glides state toward them.
+/// Per-lane × per-pitch-dest one-pole IIR. Reads its targets straight out of
+/// the block's dest-major [`LaneDestVals`] (rows [`PITCH_DEST_ROWS`]);
+/// per-sample `tick` glides state toward them.
 #[derive(Clone, Copy, Debug)]
 pub struct PitchSmoother {
     /// First cascade stage (intermediate). Not the output — see `state`.
@@ -1317,43 +1352,45 @@ impl PitchSmoother {
         }
     }
 
-    /// Pull the latest block target out of `dest_block` for each pitch dest.
-    pub fn targets_from(&self, dest_block: &LaneDestVals) -> [[f32; STACK_LANES]; N_PITCH_DESTS] {
-        let mut tgt = [[0.0; STACK_LANES]; N_PITCH_DESTS];
-        for (i, d) in PITCH_DESTS.iter().enumerate() {
-            let di = d.idx().expect("PITCH_DESTS entries are never None");
-            for k in 0..STACK_LANES {
-                tgt[i][k] = dest_block[k][di];
-            }
-        }
-        tgt
+    /// Zero both cascade stages (engine reset). Same effect as snapping to an
+    /// all-zero target, without materialising a whole [`LaneDestVals`] to snap
+    /// against.
+    pub fn clear(&mut self) {
+        self.stage1 = [[0.0; STACK_LANES]; N_PITCH_DESTS];
+        self.state = [[0.0; STACK_LANES]; N_PITCH_DESTS];
     }
 
-    /// Advance one sample toward `target`, return current smoothed state.
-    /// Two cascaded one-poles: `stage1` chases the target, `state` chases
-    /// `stage1`. The second stage is what gives the output a zero starting
-    /// slope so sharp LFO-into-pitch steps ramp in without a click.
+    /// Advance one sample toward the pitch rows of `dests`, return current
+    /// smoothed state. Two cascaded one-poles: `stage1` chases the target,
+    /// `state` chases `stage1`. The second stage is what gives the output a
+    /// zero starting slope so sharp LFO-into-pitch steps ramp in without a
+    /// click.
+    ///
+    /// The target is the block accumulator itself: since [`LaneDestVals`] is
+    /// dest-major, row `PITCH_DEST_ROWS[i]` *is* this smoother row's per-lane
+    /// target and needs no copy (0328 — the old `targets_from` transpose).
     #[inline]
-    pub fn tick(
-        &mut self,
-        target: &[[f32; STACK_LANES]; N_PITCH_DESTS],
-    ) -> &[[f32; STACK_LANES]; N_PITCH_DESTS] {
+    pub fn tick(&mut self, dests: &LaneDestVals) -> &[[f32; STACK_LANES]; N_PITCH_DESTS] {
         let a = self.coeff;
         for i in 0..N_PITCH_DESTS {
+            let target = &dests[PITCH_DEST_ROWS[i]];
             for k in 0..STACK_LANES {
-                self.stage1[i][k] += a * (target[i][k] - self.stage1[i][k]);
+                self.stage1[i][k] += a * (target[k] - self.stage1[i][k]);
                 self.state[i][k] += a * (self.stage1[i][k] - self.state[i][k]);
             }
         }
         &self.state
     }
 
-    /// Snap state to `target` without smoothing (preset load, voice steal).
-    /// Both cascade stages snap so a re-armed smoother starts settled, not
-    /// mid-ramp.
-    pub fn snap_to(&mut self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS]) {
-        self.stage1 = *target;
-        self.state = *target;
+    /// Snap state to the pitch rows of `dests` without smoothing (preset load,
+    /// voice steal). Both cascade stages snap so a re-armed smoother starts
+    /// settled, not mid-ramp.
+    pub fn snap_to(&mut self, dests: &LaneDestVals) {
+        for i in 0..N_PITCH_DESTS {
+            let target = dests[PITCH_DEST_ROWS[i]];
+            self.stage1[i] = target;
+            self.state[i] = target;
+        }
     }
 
     /// True when every lane of *both* cascade stages is within `eps` of its
@@ -1362,11 +1399,12 @@ impl PitchSmoother {
     /// route). Both stages must be checked: the output (`state`) can pass
     /// through the target while `stage1` is still mid-ramp, and freezing
     /// there would strand the output short of the real target.
-    pub fn converged(&self, target: &[[f32; STACK_LANES]; N_PITCH_DESTS], eps: f32) -> bool {
+    pub fn converged(&self, dests: &LaneDestVals, eps: f32) -> bool {
         for i in 0..N_PITCH_DESTS {
+            let target = &dests[PITCH_DEST_ROWS[i]];
             for k in 0..STACK_LANES {
-                if (self.state[i][k] - target[i][k]).abs() > eps
-                    || (self.stage1[i][k] - target[i][k]).abs() > eps
+                if (self.state[i][k] - target[k]).abs() > eps
+                    || (self.stage1[i][k] - target[k]).abs() > eps
                 {
                     return false;
                 }
@@ -1426,7 +1464,7 @@ mod tests {
             lanes.voice_spread[k] = -1.0 + (k as f32) * 0.286;
             lanes.voice_rand[k] = (k as f32) * 0.127;
         }
-        let mut out = [[0.0; N_SOURCES]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_SOURCES];
         eval_sources(&patch, &stack, &lanes, &mut out);
         out
     }
@@ -1439,7 +1477,7 @@ mod tests {
             mod_wheel,
             aftertouch: 0.0,
         };
-        let mut out = [[0.0; N_SOURCES]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_SOURCES];
         eval_sources(
             &patch,
             &StackScalarSources::default(),
@@ -1480,20 +1518,20 @@ mod tests {
         let di = DestId::GlobalPitch.idx().unwrap();
 
         // Wheel at 0 → route contributes nothing regardless of LFO.
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources_with(0.8, 0.0), &mut out);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][di], 0.0, "lane {k} must be silent at wheel 0");
+            assert_eq!(out[di][k], 0.0, "lane {k} must be silent at wheel 0");
         }
 
         // Wheel at 1 → identical to the same route with no scale source.
         eval_dests(&table, &sources_with(0.8, 1.0), &mut out);
         let mut unscaled_table = table;
         unscaled_table.slots[0].scale_src = SourceId::None;
-        let mut unscaled = [[0.0; N_DESTS]; STACK_LANES];
+        let mut unscaled = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&unscaled_table, &sources_with(0.8, 1.0), &mut unscaled);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][di], unscaled[k][di], "lane {k} full at wheel 1");
+            assert_eq!(out[di][k], unscaled[di][k], "lane {k} full at wheel 1");
         }
     }
 
@@ -1512,18 +1550,18 @@ mod tests {
             scale_shape: ShapeKind::Lin,
         };
         let di = DestId::GlobalPitch.idx().unwrap();
-        let mut scaled = [[0.0; N_DESTS]; STACK_LANES];
+        let mut scaled = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources_with(0.0, 0.6), &mut scaled);
 
         table.slots[0].scale_src = SourceId::None;
-        let mut full = [[0.0; N_DESTS]; STACK_LANES];
+        let mut full = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources_with(0.0, 0.6), &mut full);
         for k in 0..STACK_LANES {
             assert!(
-                (scaled[k][di] - 0.5 * full[k][di]).abs() < 1e-6,
+                (scaled[di][k] - 0.5 * full[di][k]).abs() < 1e-6,
                 "lane {k}: {} != half of {}",
-                scaled[k][di],
-                full[k][di]
+                scaled[di][k],
+                full[di][k]
             );
         }
     }
@@ -1534,17 +1572,17 @@ mod tests {
     fn scale_src_none_is_bit_identical() {
         let src = default_lane_sources();
         let slot = full_slot(SourceId::Lfo1, DestId::Op2Level, 0.7, ShapeKind::Exp);
-        let mut a = [[0.0; N_DESTS]; STACK_LANES];
+        let mut a = [[0.0; STACK_LANES]; N_DESTS];
         let mut table = MatrixTable::default();
         table.slots[0] = slot;
         eval_dests(&table, &src, &mut a);
         let di = DestId::Op2Level.idx().unwrap();
         // Recompute the expected accumulation by hand.
         for k in 0..STACK_LANES {
-            let v = src[k][SourceId::Lfo1.idx().unwrap()];
+            let v = src[SourceId::Lfo1.idx().unwrap()][k];
             let depth = 0.7 * DEST_GAIN[DestId::Op2Level as usize];
             let expect = v.abs() * v * depth;
-            assert_eq!(a[k][di], expect, "lane {k}");
+            assert_eq!(a[di][k], expect, "lane {k}");
         }
     }
 
@@ -1625,15 +1663,15 @@ mod tests {
         let sources = default_lane_sources();
         // Patch + stack scalars: same across lanes.
         for k in 0..STACK_LANES {
-            assert_eq!(sources[k][SourceId::Lfo1.idx().unwrap()], 0.5);
-            assert_eq!(sources[k][SourceId::ModWheel.idx().unwrap()], 0.3);
-            assert_eq!(sources[k][SourceId::PitchEg.idx().unwrap()], 0.75);
-            assert_eq!(sources[k][SourceId::Velocity.idx().unwrap()], 0.9);
+            assert_eq!(sources[SourceId::Lfo1.idx().unwrap()][k], 0.5);
+            assert_eq!(sources[SourceId::ModWheel.idx().unwrap()][k], 0.3);
+            assert_eq!(sources[SourceId::PitchEg.idx().unwrap()][k], 0.75);
+            assert_eq!(sources[SourceId::Velocity.idx().unwrap()][k], 0.9);
         }
         // Lane-strided sources differ.
         let mut lfo2_vals = std::collections::HashSet::new();
         for k in 0..STACK_LANES {
-            lfo2_vals.insert(sources[k][SourceId::Lfo2.idx().unwrap()].to_bits());
+            lfo2_vals.insert(sources[SourceId::Lfo2.idx().unwrap()][k].to_bits());
         }
         assert_eq!(lfo2_vals.len(), STACK_LANES);
     }
@@ -1642,11 +1680,11 @@ mod tests {
     fn empty_table_writes_zero_accumulator() {
         let table = MatrixTable::default();
         let sources = default_lane_sources();
-        let mut out = [[42.0; N_DESTS]; STACK_LANES];
+        let mut out = [[42.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
             for d in 0..N_DESTS {
-                assert_eq!(out[k][d], 0.0, "lane {k} dest {d}");
+                assert_eq!(out[d][k], 0.0, "lane {k} dest {d}");
             }
         }
     }
@@ -1658,21 +1696,21 @@ mod tests {
         let mut table = MatrixTable::default();
         table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let dest_idx = DestId::Op1Pan.idx().unwrap();
         for k in 0..STACK_LANES {
             // Lfo1 = 0.5, depth = 0.5, lin, gain = 1 → 0.25 across every lane.
             assert!(
-                (out[k][dest_idx] - 0.25).abs() < 1e-6,
+                (out[dest_idx][k] - 0.25).abs() < 1e-6,
                 "lane {k} got {}",
-                out[k][dest_idx]
+                out[dest_idx][k]
             );
             for d in 0..N_DESTS {
                 if d == dest_idx {
                     continue;
                 }
-                assert_eq!(out[k][d], 0.0, "lane {k} non-target dest {d}");
+                assert_eq!(out[d][k], 0.0, "lane {k} non-target dest {d}");
             }
         }
     }
@@ -1683,11 +1721,11 @@ mod tests {
         table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, ShapeKind::Lin);
         table.slots[1] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let want = 0.5 * 0.5 + 1.0 * 0.3;
         for k in 0..STACK_LANES {
-            assert!((out[k][DestId::Op1Pan.idx().unwrap()] - want).abs() < 1e-6);
+            assert!((out[DestId::Op1Pan.idx().unwrap()][k] - want).abs() < 1e-6);
         }
     }
 
@@ -1698,12 +1736,12 @@ mod tests {
         table.slots[0] =
             full_slot(SourceId::Lfo1, DestId::GlobalPitch, 1.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let di = DestId::GlobalPitch.idx().unwrap();
         // Lfo1 = 0.5, depth = 1, gain = 24 → 12 semitones.
         for k in 0..STACK_LANES {
-            assert!((out[k][di] - 12.0).abs() < 1e-4, "lane {k} got {}", out[k][di]);
+            assert!((out[di][k] - 12.0).abs() < 1e-4, "lane {k} got {}", out[di][k]);
         }
     }
 
@@ -1713,12 +1751,12 @@ mod tests {
         table.slots[0] =
             full_slot(SourceId::ModWheel, DestId::Feedback, 1.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let di = DestId::Feedback.idx().unwrap();
         // ModWheel = 0.3, depth = 1, gain = 7 → 2.1.
         for k in 0..STACK_LANES {
-            assert!((out[k][di] - 2.1).abs() < 1e-4, "lane {k} got {}", out[k][di]);
+            assert!((out[di][k] - 2.1).abs() < 1e-4, "lane {k} got {}", out[di][k]);
         }
     }
 
@@ -1728,12 +1766,12 @@ mod tests {
         table.slots[0] =
             full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let pan_idx = DestId::Op1Pan.idx().unwrap();
         let mut distinct = std::collections::HashSet::new();
         for k in 0..STACK_LANES {
-            distinct.insert(out[k][pan_idx].to_bits());
+            distinct.insert(out[pan_idx][k].to_bits());
         }
         assert_eq!(distinct.len(), STACK_LANES);
     }
@@ -1751,10 +1789,10 @@ mod tests {
             scale_shape: ShapeKind::Lin,
         };
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][DestId::Op1Pan.idx().unwrap()], 0.0);
+            assert_eq!(out[DestId::Op1Pan.idx().unwrap()][k], 0.0);
         }
     }
 
@@ -1771,11 +1809,11 @@ mod tests {
             scale_shape: ShapeKind::Lin,
         };
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
             for d in 0..N_DESTS {
-                assert_eq!(out[k][d], 0.0);
+                assert_eq!(out[d][k], 0.0);
             }
         }
     }
@@ -1785,10 +1823,10 @@ mod tests {
         let mut table = MatrixTable::default();
         table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         for k in 0..STACK_LANES {
-            assert_eq!(out[k][DestId::Op1Pan.idx().unwrap()], 0.0);
+            assert_eq!(out[DestId::Op1Pan.idx().unwrap()][k], 0.0);
         }
     }
 
@@ -1802,20 +1840,20 @@ mod tests {
         let mut exp_t = MatrixTable::default();
         exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Exp);
         let sources = default_lane_sources();
-        let mut lin_out = [[0.0; N_DESTS]; STACK_LANES];
-        let mut exp_out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut lin_out = [[0.0; STACK_LANES]; N_DESTS];
+        let mut exp_out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&lin_t, &sources, &mut lin_out);
         eval_dests(&exp_t, &sources, &mut exp_out);
         let pi = DestId::Op1Pan.idx().unwrap();
         assert!(
-            (lin_out[0][pi] - 0.3).abs() < 1e-6,
+            (lin_out[pi][0] - 0.3).abs() < 1e-6,
             "lin {} != 0.3",
-            lin_out[0][pi]
+            lin_out[pi][0]
         );
         assert!(
-            (exp_out[0][pi] - 0.09).abs() < 1e-6,
+            (exp_out[pi][0] - 0.09).abs() < 1e-6,
             "exp {} != 0.09",
-            exp_out[0][pi]
+            exp_out[pi][0]
         );
     }
 
@@ -1824,11 +1862,11 @@ mod tests {
         let mut log_t = MatrixTable::default();
         log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Log);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&log_t, &sources, &mut out);
         // ModWheel = 0.3, sqrt(0.3) ≈ 0.5477.
         let want = (0.3_f32).sqrt();
-        assert!((out[0][DestId::Op1Pan.idx().unwrap()] - want).abs() < 1e-6);
+        assert!((out[DestId::Op1Pan.idx().unwrap()][0] - want).abs() < 1e-6);
     }
 
     #[test]
@@ -1842,10 +1880,10 @@ mod tests {
             ShapeKind::Lin,
         );
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&bp_t, &sources, &mut out);
         // ModWheel = 0.3 → 2*0.3 - 1 = -0.4.
-        assert!((out[0][DestId::Op1Pan.idx().unwrap()] - (-0.4)).abs() < 1e-6);
+        assert!((out[DestId::Op1Pan.idx().unwrap()][0] - (-0.4)).abs() < 1e-6);
     }
 
     #[test]
@@ -1857,34 +1895,47 @@ mod tests {
         for k in 0..STACK_LANES {
             lanes.voice_spread[k] = -0.5;
         }
-        let mut sources = [[0.0; N_SOURCES]; STACK_LANES];
+        let mut sources = [[0.0; STACK_LANES]; N_SOURCES];
         eval_sources(&patch, &stack, &lanes, &mut sources);
         for curve in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
             let mut table = MatrixTable::default();
             table.slots[0] = full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, curve);
-            let mut out = [[0.0; N_DESTS]; STACK_LANES];
+            let mut out = [[0.0; STACK_LANES]; N_DESTS];
             eval_dests(&table, &sources, &mut out);
-            let v = out[0][DestId::Op1Pan.idx().unwrap()];
+            let v = out[DestId::Op1Pan.idx().unwrap()][0];
             assert!(v < 0.0, "{curve:?} dropped sign: {v}");
         }
     }
 
+    /// `PITCH_DEST_ROWS` maps each smoother row onto the right dest-major
+    /// accumulator row — the mapping that replaced the old `targets_from`
+    /// transpose (0328). `snap_to`, `tick` and `converged` all index through
+    /// it; `snap_to` is the one that shows the mapping without the IIR in the
+    /// way, so it is what this pins.
     #[test]
-    fn smoother_targets_from_picks_pitch_dest_columns() {
-        let mut dest = [[0.0; N_DESTS]; STACK_LANES];
+    fn smoother_reads_the_pitch_dest_rows() {
+        let mut dest = [[0.0; STACK_LANES]; N_DESTS];
         let pitch_idx = DestId::GlobalPitch.idx().unwrap();
         let op_pitch_idx = DestId::Op1Pitch.idx().unwrap();
         for k in 0..STACK_LANES {
-            dest[k][pitch_idx] = 1.0;
-            dest[k][op_pitch_idx] = 0.25;
+            dest[pitch_idx][k] = 1.0;
+            dest[op_pitch_idx][k] = 0.25;
         }
-        let s = PitchSmoother::default();
-        let tgt = s.targets_from(&dest);
+        let mut s = PitchSmoother::default();
+        s.snap_to(&dest);
         let pidx = PITCH_DESTS.iter().position(|&d| d == DestId::GlobalPitch).unwrap();
         let ridx = PITCH_DESTS.iter().position(|&d| d == DestId::Op1Pitch).unwrap();
+        assert_eq!(PITCH_DEST_ROWS[pidx], pitch_idx);
+        assert_eq!(PITCH_DEST_ROWS[ridx], op_pitch_idx);
         for k in 0..STACK_LANES {
-            assert_eq!(tgt[pidx][k], 1.0);
-            assert_eq!(tgt[ridx][k], 0.25);
+            assert_eq!(s.current()[pidx][k], 1.0);
+            assert_eq!(s.current()[ridx][k], 0.25);
+            // Every other smoother row stayed at the accumulator's zero.
+            for i in 0..N_PITCH_DESTS {
+                if i != pidx && i != ridx {
+                    assert_eq!(s.current()[i][k], 0.0, "row {i} lane {k}");
+                }
+            }
         }
     }
 
@@ -1893,9 +1944,10 @@ mod tests {
         let sr = 48_000.0;
         let block_secs = 64.0 / sr;
         let mut s = PitchSmoother::new(block_secs, sr);
-        let mut tgt = [[0.0; STACK_LANES]; N_PITCH_DESTS];
+        // Smoother row 0 is `GlobalPitch`; drive its accumulator row.
+        let mut tgt = [[0.0; STACK_LANES]; N_DESTS];
         for k in 0..STACK_LANES {
-            tgt[0][k] = 1.0;
+            tgt[PITCH_DEST_ROWS[0]][k] = 1.0;
         }
         // Run ~10 blocks worth of samples; should converge well past 99%.
         for _ in 0..(10 * 64) {
@@ -1913,9 +1965,9 @@ mod tests {
     #[test]
     fn smoother_snap_jumps_immediately() {
         let mut s = PitchSmoother::default();
-        let mut tgt = [[0.0; STACK_LANES]; N_PITCH_DESTS];
+        let mut tgt = [[0.0; STACK_LANES]; N_DESTS];
         for k in 0..STACK_LANES {
-            tgt[0][k] = 0.75;
+            tgt[PITCH_DEST_ROWS[0]][k] = 0.75;
         }
         s.snap_to(&tgt);
         assert_eq!(s.current()[0][0], 0.75);
@@ -2085,14 +2137,14 @@ mod tests {
         table.slots[0] =
             full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, ShapeKind::Lin);
         let sources = default_lane_sources();
-        let mut out = [[0.0; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let di = DestId::Op3StackPitch.idx().unwrap();
         // Lfo1 = 0.5, depth 1, gain 24 → 12 st in its own column.
         for k in 0..STACK_LANES {
-            assert!((out[k][di] - 12.0).abs() < 1e-4);
+            assert!((out[di][k] - 12.0).abs() < 1e-4);
             // The per-op pitch column is untouched.
-            assert_eq!(out[k][DestId::Op3Pitch.idx().unwrap()], 0.0);
+            assert_eq!(out[DestId::Op3Pitch.idx().unwrap()][k], 0.0);
         }
     }
 
@@ -2184,17 +2236,17 @@ mod tests {
             PolarityKind::Abs,
             ShapeKind::Lin,
         );
-        let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
+        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
         let si = SourceId::VoiceSpread.idx().unwrap();
-        sources[0][si] = -1.0;
-        sources[1][si] = 0.0;
-        sources[2][si] = 1.0;
-        let mut out = [[0.0_f32; N_DESTS]; STACK_LANES];
+        sources[si][0] = -1.0;
+        sources[si][1] = 0.0;
+        sources[si][2] = 1.0;
+        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let di = DestId::Op1Pan.idx().unwrap();
-        assert!((out[0][di] - out[2][di]).abs() < 1e-6, "extremes must match");
-        assert!(out[0][di] > 0.0, "rectified extreme is positive");
-        assert!(out[1][di].abs() < 1e-6, "centre lane unmodulated");
+        assert!((out[di][0] - out[di][2]).abs() < 1e-6, "extremes must match");
+        assert!(out[di][0] > 0.0, "rectified extreme is positive");
+        assert!(out[di][1].abs() < 1e-6, "centre lane unmodulated");
     }
 
     /// The scale VCA bends independently of the primary route. `exp` on a
@@ -2202,16 +2254,16 @@ mod tests {
     /// motivating case for shaping the gate rather than the source.
     #[test]
     fn scale_shape_bends_the_vca_not_the_route() {
-        let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
+        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
         let si = SourceId::ModEnv.idx().unwrap();
         let vi = SourceId::Velocity.idx().unwrap();
         for k in 0..STACK_LANES {
-            sources[k][si] = 1.0;
-            sources[k][vi] = 0.5;
+            sources[si][k] = 1.0;
+            sources[vi][k] = 0.5;
         }
         let di = DestId::Op1Level.idx().unwrap();
 
-        let mut out = [[0.0_f32; N_DESTS]; STACK_LANES];
+        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
         let mut gated = |scale_shape: ShapeKind| {
             let mut table = MatrixTable::default();
             let mut slot = full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, ShapeKind::Lin);
@@ -2219,7 +2271,7 @@ mod tests {
             slot.scale_shape = scale_shape;
             table.slots[0] = slot;
             eval_dests(&table, &sources, &mut out);
-            out[0][di]
+            out[di][0]
         };
 
         let lin = gated(ShapeKind::Lin);
@@ -2270,11 +2322,11 @@ mod tests {
             let sc = scale_src.idx().unwrap();
             for shape in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
                 for v in [-2.0_f32, -1.0, -0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 3.0] {
-                    let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
+                    let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
                     let si = SourceId::ModEnv.idx().unwrap();
                     for k in 0..STACK_LANES {
-                        sources[k][si] = 1.0;
-                        sources[k][sc] = v;
+                        sources[si][k] = 1.0;
+                        sources[sc][k] = v;
                     }
                     let mut slot =
                         full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, ShapeKind::Lin);
@@ -2282,16 +2334,16 @@ mod tests {
                     slot.scale_shape = shape;
                     let mut table = MatrixTable::default();
                     table.slots[0] = slot;
-                    let mut out = [[0.0_f32; N_DESTS]; STACK_LANES];
+                    let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
                     eval_dests(&table, &sources, &mut out);
                     // Route is source 1.0 × depth 1.0 × gain, so the dest value
                     // is the scale factor times that constant.
                     let expect = scale_norm(scale_src, v, shape)
                         * DEST_GAIN[DestId::Op1Level as usize];
                     assert_eq!(
-                        out[0][di], expect,
+                        out[di][0], expect,
                         "{scale_src:?}/{shape:?}/{v}: loop {} vs scale_norm {expect}",
-                        out[0][di]
+                        out[di][0]
                     );
                 }
             }
@@ -2310,17 +2362,17 @@ mod tests {
             PolarityKind::Abs,
             ShapeKind::Lin,
         );
-        let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
+        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
         let si = SourceId::VoiceSpread.idx().unwrap();
-        sources[0][si] = -1.0;
-        sources[1][si] = 0.0;
-        sources[2][si] = 1.0;
-        let mut out = [[0.0_f32; N_DESTS]; STACK_LANES];
+        sources[si][0] = -1.0;
+        sources[si][1] = 0.0;
+        sources[si][2] = 1.0;
+        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
         eval_dests(&table, &sources, &mut out);
         let di = DestId::Op1Pan.idx().unwrap();
-        assert!(out[0][di] < 0.0, "extremes pull the other way");
-        assert!((out[0][di] - out[2][di]).abs() < 1e-6, "extremes still match");
-        assert!(out[1][di].abs() < 1e-6, "centre lane keeps the param value");
+        assert!(out[di][0] < 0.0, "extremes pull the other way");
+        assert!((out[di][0] - out[di][2]).abs() < 1e-6, "extremes still match");
+        assert!(out[di][1].abs() < 1e-6, "centre lane keeps the param value");
     }
 
 }
