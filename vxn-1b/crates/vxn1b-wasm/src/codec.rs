@@ -496,24 +496,15 @@ fn apply_key_op(engine: &mut Engine, op: KeyOp) {
 
 /// Write one topology field of one matrix slot.
 ///
-/// Mirrors `SharedParams::edit_matrix_slot` — the same `from_u8` decodes, so an
-/// out-of-range wire byte lands on the same fallback the plugin picks rather
-/// than on a different one.
+/// Resolves the layer and hands the record to
+/// [`vxn1b_engine::topology::apply_edit`], which is the **only** `MatrixField`
+/// write-match in the tree (0339): the store's main-thread table, the plugin's
+/// audio-thread drain and this web decode path all go through it. So an
+/// out-of-range wire byte lands on the same `from_u8` fallback the plugin picks
+/// by construction, not by two transcriptions happening to agree.
 #[inline]
 fn apply_matrix_edit(engine: &mut Engine, edit: MatrixEdit) {
-    use vxn1b_engine::matrix::{DestId, Polarity, Shape, SourceId};
-    let table = engine.matrix_mut(edit.layer);
-    if let Some(slot) = table.slots.get_mut(edit.slot as usize) {
-        match edit.field {
-            MatrixField::Source => slot.source = SourceId::from_u8(edit.value),
-            MatrixField::Dest => slot.dest = DestId::from_u8(edit.value),
-            MatrixField::Polarity => slot.polarity = Polarity::from_u8(edit.value),
-            MatrixField::Shape => slot.shape = Shape::from_u8(edit.value),
-            MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
-            MatrixField::ScaleShape => slot.scale_shape = Shape::from_u8(edit.value),
-            MatrixField::Enabled => slot.enabled = edit.value != 0,
-        }
-    }
+    vxn1b_engine::topology::apply_edit(engine.matrix_mut(edit.layer), edit);
 }
 
 /// Decode a raw 16-byte slot and apply it in one shot. Unknown tags are ignored
