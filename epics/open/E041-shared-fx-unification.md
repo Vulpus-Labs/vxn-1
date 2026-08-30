@@ -14,7 +14,12 @@ created: 2026-08-02
 > **vxn-1b** — the kernels are the same ones. Where it names vxn-1's shells,
 > engine or web port, that work is gone.
 
-> **The behavioural epic.** Three enable/disable conventions exist today:
+> **The behavioural epic.** *(Written 2026-08-02. Two of its premises have not
+> survived contact: vxn-1 was archived 2026-08-27, so every "vxn-1 AND vxn-1b in
+> one commit" rule is vacuous; and 0230's reverb mix-law change does not exist —
+> see its close-out. Read the per-ticket close-outs for what actually shipped.)*
+>
+> Three enable/disable conventions exist today:
 > vxn-1's outer raised-cosine `BypassXfade` per stage, vxn-2's in-kernel
 > `Smoothed` wet + `mix_primed` + bit-exact passthrough when settled, vxn-1b's
 > per-slot linear fade with true skip. This epic unifies on the **vxn-2
@@ -55,7 +60,11 @@ all kernels migrated).
 
 - [ ] **0228** — Phaser: vxn-2 superset shared; vxn-1/1b adopt.
 - [ ] **0229** — Chorus: true-stereo only; mono-sum `process` deleted.
-- [ ] **0230** — Reverb: linear mix law canonical (largest perceptual change).
+- [ ] **0230** — Reverb: bypass moves inside the kernel. (**The "linear mix
+      law canonical / largest perceptual change" framing was wrong** — vxn-2
+      has mixed equal-power since 5460922, 2026-06-22, six weeks before this
+      epic; the claim came from stale doc comments. No mix-law change, no
+      mid-mix dip, no compensation curve. See 0230's close-out.)
 - [ ] **0231** — Delay: vxn-2-superset kernel + damping gate; vxn-1/1b adopt.
 - [ ] **0232** — Limiter bypass wrapper + MasterFx/FxChain rewrites.
 
