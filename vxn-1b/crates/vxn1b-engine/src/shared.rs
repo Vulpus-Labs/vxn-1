@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::{KeyOp, KeyState, MatrixEdit, MatrixField};
-use crate::matrix::{Curve, DestId, MatrixTable, SourceId};
+use crate::matrix::{DestId, MatrixTable, Polarity, Shape, SourceId};
 use crate::params::{
     ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
     clap_ref, desc_for_clap_id, global_clap_id, patch_clap_id,
@@ -315,8 +315,13 @@ impl SharedParams {
                 match edit.field {
                     MatrixField::Source => slot.source = SourceId::from_u8(edit.value),
                     MatrixField::Dest => slot.dest = DestId::from_u8(edit.value),
-                    MatrixField::Curve => slot.curve = Curve::from_u8(edit.value),
+                    MatrixField::Polarity => slot.polarity = Polarity::from_u8(edit.value),
+                    MatrixField::Shape => slot.shape = Shape::from_u8(edit.value),
                     MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
+                    MatrixField::ScaleShape => {
+                        slot.scale_shape = Shape::from_u8(edit.value)
+                    }
+                    MatrixField::Enabled => slot.enabled = edit.value != 0,
                 }
             }
         }
@@ -506,8 +511,11 @@ mod tests {
                 source: crate::matrix::SourceId::Lfo2,
                 dest: crate::matrix::DestId::Cutoff,
                 depth: 0.0,
-                curve: crate::matrix::Curve::Lin,
+                polarity: crate::matrix::Polarity::Direct,
+                shape: crate::matrix::Shape::Lin,
+                enabled: true,
                 scale_src: crate::matrix::SourceId::None,
+                scale_shape: crate::matrix::Shape::Lin,
             };
         }
         let blob = sp.snapshot_bytes();
@@ -674,7 +682,19 @@ mod tests {
         for slot in 0..MATRIX_SLOTS {
             assert_eq!(m[0].slots[slot].source, m[1].slots[slot].source, "slot {slot} source");
             assert_eq!(m[0].slots[slot].dest, m[1].slots[slot].dest, "slot {slot} dest");
-            assert_eq!(m[0].slots[slot].curve, m[1].slots[slot].curve, "slot {slot} curve");
+            assert_eq!(
+                m[0].slots[slot].polarity, m[1].slots[slot].polarity,
+                "slot {slot} polarity"
+            );
+            assert_eq!(m[0].slots[slot].shape, m[1].slots[slot].shape, "slot {slot} shape");
+            assert_eq!(
+                m[0].slots[slot].enabled, m[1].slots[slot].enabled,
+                "slot {slot} enabled"
+            );
+            assert_eq!(
+                m[0].slots[slot].scale_shape, m[1].slots[slot].scale_shape,
+                "slot {slot} scale shape"
+            );
             assert_eq!(
                 m[0].slots[slot].scale_src, m[1].slots[slot].scale_src,
                 "slot {slot} scale"

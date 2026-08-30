@@ -15,10 +15,19 @@ const DESTS = [
   { value: 0, name: 'none', label: '—' },
   { value: 4, name: 'cutoff', label: 'Cutoff' },
 ];
-const CURVES = [{ value: 0, name: 'lin', label: 'Lin' }];
+const POLARITIES = [{ value: 0, name: 'direct', label: 'Direct' }];
+const SHAPES = [{ value: 0, name: 'lin', label: 'Lin' }];
 
 const emptySlots = () =>
-  Array.from({ length: 16 }, () => ({ source: 0, dest: 0, curve: 0, scale: 0 }));
+  Array.from({ length: 16 }, () => ({
+    source: 0,
+    dest: 0,
+    polarity: 0,
+    shape: 0,
+    scale: 0,
+    scaleShape: 0,
+    enabled: false,
+  }));
 
 // `mousedown` because that is the event the combo listens on — it deliberately
 // commits before focus moves, to keep focus inside the webview.
@@ -32,7 +41,8 @@ describe('the mod-matrix combo popup', () => {
       matrix: {
         sources: SOURCES,
         dests: DESTS,
-        curves: CURVES,
+        polarities: POLARITIES,
+        shapes: SHAPES,
         slots: [emptySlots(), emptySlots()],
       },
       send: { setMatrix: vi.fn(), setParam: vi.fn() },

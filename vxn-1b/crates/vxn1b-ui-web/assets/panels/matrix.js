@@ -2,7 +2,8 @@
 //
 // Ported from vxn-2's `panels/mod-matrix.js` (styling + interaction) and adapted
 // to vxn-1b's two-layer model: a **modal** (backdrop + panel + close) holding a
-// 16-slot editor — one row per slot: source / dest / depth / curve / scale. It
+// 16-slot editor — one row per slot: on / source / dest / depth / polarity /
+// shape / scale / scale-bend. It
 // is **per layer** — the same DOM rebinds to the active edit layer.
 //
 // Custom div-combos, NOT native <select>: on macOS (WKWebView, the in-DAW wry
@@ -11,18 +12,47 @@
 // (`buildCombo`) keeps focus in the page. (vxn-2 mod-matrix.js §buildSelect.)
 //
 // Depth is the automatable `matrix_slot{n}_depth` CLAP dial (a data-control cell
-// dispatch binds + rebinds + echoes); the four topology selectors are
+// dispatch binds + rebinds + echoes); the topology controls are
 // non-automatable and post `set_matrix` custom ops, reflecting from the local
 // `window.vxn.matrix` snapshot (MVC: never read the engine model).
 import '../bridge.js';
 import { paramIdByNameAtLayer } from '../dispatch.js';
 
 const layerIdx = (layer) => (layer === 'lower' ? 1 : 0);
-const FIELDS = ['source', 'dest', 'curve', 'scale'];
+
+// Snapshot key ↔ wire field name. They differ for the scale bend only, because
+// the wire vocabulary is kebab-case (`vocab::MATRIX_FIELD_NAMES`) while the
+// snapshot JSON is camelCase like the rest of `window.vxn`. Keeping the pairing
+// in one table means neither spelling is written out twice.
+const FIELDS = [
+  { key: 'source', wire: 'source' },
+  { key: 'dest', wire: 'dest' },
+  { key: 'polarity', wire: 'polarity' },
+  { key: 'shape', wire: 'shape' },
+  { key: 'scale', wire: 'scale' },
+  { key: 'scaleShape', wire: 'scale-shape' },
+];
+const WIRE_OF = Object.fromEntries(FIELDS.map((f) => [f.key, f.wire]));
+// The shape of a slot with nothing set — also what the bin resets a row to.
+const BLANK_SLOT = {
+  source: 0,
+  dest: 0,
+  polarity: 0,
+  shape: 0,
+  scale: 0,
+  scaleShape: 0,
+  enabled: false,
+};
 
 function matrixData() {
   return (
-    (window.vxn && window.vxn.matrix) || { sources: [], dests: [], curves: [], slots: [[], []] }
+    (window.vxn && window.vxn.matrix) || {
+      sources: [],
+      dests: [],
+      polarities: [],
+      shapes: [],
+      slots: [[], []],
+    }
   );
 }
 
@@ -162,7 +192,18 @@ export const matrixOverlay = {
     // Column header.
     const header = document.createElement('div');
     header.className = 'vxn-mm-header';
-    for (const t of ['#', 'Source', 'Destination', 'Amount', 'Curve', 'Scale By', '']) {
+    for (const t of [
+      '',
+      '#',
+      'Source',
+      'Destination',
+      'Amount',
+      'Polarity',
+      'Shape',
+      'Scale By',
+      'Scale Bend',
+      '',
+    ]) {
       const h = document.createElement('span');
       h.className = 'vxn-mm-h';
       h.textContent = t;
@@ -215,11 +256,24 @@ export const matrixOverlay = {
     num.className = 'vxn-mm-slot-num';
     num.textContent = String(slot + 1);
 
+    // The on/off switch. Separate from the wiring: a route can be set up and
+    // switched off, which is what makes A/B-ing one non-destructive.
+    const onBox = document.createElement('input');
+    onBox.type = 'checkbox';
+    onBox.className = 'vxn-mm-on';
+    onBox.title = 'Route on / off';
+
     const src = buildCombo(mx.sources, 'source');
     const dst = buildCombo(mx.dests, 'dest');
-    const curve = buildCombo(mx.curves, 'curve');
+    const polarity = buildCombo(mx.polarities, 'polarity');
+    polarity.title = 'Range mapping applied to the source';
+    const shape = buildCombo(mx.shapes, 'shape');
+    shape.title = 'Response bend, applied after the range mapping';
     const scale = buildCombo(mx.sources, 'scale');
     scale.classList.add('vxn-mm-scale');
+    const scaleShape = buildCombo(mx.shapes, 'scaleShape');
+    scaleShape.classList.add('vxn-mm-scale');
+    scaleShape.title = 'Response bend on the scale amount';
 
     // Depth: the automatable per-layer bipolar CLAP fader (center-origin, signed
     // fill). dispatch binds/rebinds/echoes it like any other cell.
@@ -238,31 +292,66 @@ export const matrixOverlay = {
     bin.title = 'Clear slot';
     bin.textContent = '✕';
 
-    for (const sel of [src, dst, curve, scale]) {
+    for (const sel of [src, dst, polarity, shape, scale, scaleShape]) {
       sel.addEventListener('change', () => {
-        this._edit(slot, sel.dataset.field, Number(sel.value));
+        const field = sel.dataset.field;
+        const value = Number(sel.value);
+        // Read the *previous* source before the edit lands: the auto-enable
+        // below keys on the None→real edge, which is gone once the snapshot is
+        // updated.
+        const before = this._snap(slot);
+        const wasBlank = !!before && before.source === 0 && !before.enabled;
+        this._edit(slot, field, value);
+        // First-time source pick: a blank row sits at source=None switched off,
+        // so choosing a real source switches it on rather than making the
+        // player click twice. Only on that edge — retuning a route the player
+        // deliberately switched off must leave it off. (vxn-2 does the same.)
+        if (field === 'source' && value !== 0 && wasBlank) {
+          this._edit(slot, 'enabled', true);
+          onBox.checked = true;
+        }
         this._markActive(row);
       });
     }
-    bin.addEventListener('click', () => this._clear(slot, row, { src, dst, curve, scale }));
+    onBox.addEventListener('change', () => {
+      this._edit(slot, 'enabled', onBox.checked);
+      this._markActive(row);
+    });
+    bin.addEventListener('click', () =>
+      this._clear(slot, row, { src, dst, polarity, shape, scale, scaleShape, onBox })
+    );
 
-    for (const child of [num, src, dst, depth, curve, scale, bin]) row.appendChild(child);
+    for (const child of [onBox, num, src, dst, depth, polarity, shape, scale, scaleShape, bin]) {
+      row.appendChild(child);
+    }
     return row;
   },
 
-  // Post a topology edit + keep the local snapshot in step (no model read).
-  _edit(slot, field, value) {
-    const snap = matrixData().slots[layerIdx(this._layer)][slot];
-    if (snap) snap[field] = value;
-    window.vxn.send.setMatrix(this._layer, slot, field, value);
+  _snap(slot) {
+    return matrixData().slots[layerIdx(this._layer)][slot];
   },
 
-  // Clear a slot: zero the four topology fields + the depth CLAP param.
+  // Post a topology edit + keep the local snapshot in step (no model read).
+  // `enabled` is a boolean in the snapshot and 0/1 on the wire; every other
+  // field is already the wire `u8`.
+  _edit(slot, field, value) {
+    const snap = this._snap(slot);
+    if (snap) snap[field] = value;
+    const wire = WIRE_OF[field] || field;
+    const wireValue = value === true ? 1 : value === false ? 0 : value;
+    window.vxn.send.setMatrix(this._layer, slot, wire, wireValue);
+  },
+
+  // Clear a slot: zero every topology field, switch it off, and zero the depth
+  // CLAP param.
   _clear(slot, row, combos) {
-    for (const f of FIELDS) {
-      this._edit(slot, f, 0);
-      combos[f === 'source' ? 'src' : f === 'dest' ? 'dst' : f].value = '0';
+    for (const { key } of FIELDS) {
+      this._edit(slot, key, 0);
+      const el = combos[key === 'source' ? 'src' : key === 'dest' ? 'dst' : key];
+      if (el) el.value = '0';
     }
+    this._edit(slot, 'enabled', false);
+    if (combos.onBox) combos.onBox.checked = false;
     const id = paramIdByNameAtLayer(`matrix_slot${slot}_depth`, this._layer);
     if (id != null) window.vxn.send.setParam(id, 0);
     this._markActive(row);
@@ -277,18 +366,22 @@ export const matrixOverlay = {
     if (label) label.textContent = layer === 'lower' ? 'Layer 2' : 'Layer 1';
     const slots = matrixData().slots[layerIdx(layer)] || [];
     list.querySelectorAll('.vxn-mm-row').forEach((row) => {
-      const s = slots[Number(row.dataset.slot)] || { source: 0, dest: 0, curve: 0, scale: 0 };
-      for (const f of FIELDS) {
-        const el = row.querySelector(`.vxn-mm-combo[data-field="${f}"]`);
-        if (el) el.value = String(s[f] ?? 0);
+      const s = slots[Number(row.dataset.slot)] || BLANK_SLOT;
+      for (const { key } of FIELDS) {
+        const el = row.querySelector(`.vxn-mm-combo[data-field="${key}"]`);
+        if (el) el.value = String(s[key] ?? 0);
       }
+      const onBox = row.querySelector('.vxn-mm-on');
+      if (onBox) onBox.checked = !!s.enabled;
       this._markActive(row);
     });
   },
 
-  // Calm-when-sparse: a row reads active only when both endpoints are real.
+  // Calm-when-sparse: a row reads active only when it is switched on **and**
+  // both endpoints are real — the same predicate as `MatrixSlot::is_active`, so
+  // a switched-off route greys out exactly as an unwired one does.
   _markActive(row) {
     const s = matrixData().slots[layerIdx(this._layer)][Number(row.dataset.slot)] || {};
-    row.dataset.active = s.source > 0 && s.dest > 0 ? '1' : '0';
+    row.dataset.active = s.enabled && s.source > 0 && s.dest > 0 ? '1' : '0';
   },
 };

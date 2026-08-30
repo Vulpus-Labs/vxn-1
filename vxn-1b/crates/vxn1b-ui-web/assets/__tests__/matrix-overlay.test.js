@@ -13,21 +13,42 @@ const DESTS = [
   { value: 0, name: 'none', label: '—' },
   { value: 4, name: 'cutoff', label: 'Cutoff' },
 ];
-const CURVES = [
+const POLARITIES = [
+  { value: 0, name: 'direct', label: 'Direct' },
+  { value: 1, name: 'bipolar', label: 'Bipolar' },
+  { value: 2, name: 'abs', label: 'Abs' },
+];
+const SHAPES = [
   { value: 0, name: 'lin', label: 'Lin' },
-  { value: 3, name: 'bipolar', label: 'Bipolar' },
+  { value: 1, name: 'exp', label: 'Exp' },
+  { value: 2, name: 'log', label: 'Log' },
 ];
 
-const emptySlots = () =>
-  Array.from({ length: 16 }, () => ({ source: 0, dest: 0, curve: 0, scale: 0 }));
+const blank = () => ({
+  source: 0,
+  dest: 0,
+  polarity: 0,
+  shape: 0,
+  scale: 0,
+  scaleShape: 0,
+  enabled: false,
+});
+const emptySlots = () => Array.from({ length: 16 }, blank);
 
 let sends;
 
 beforeEach(() => {
   const l0 = emptySlots();
-  l0[0] = { source: 1, dest: 4, curve: 0, scale: 0 }; // Env1 → Cutoff, live
+  // Env1 → Cutoff, wired and switched on.
+  l0[0] = { ...blank(), source: 1, dest: 4, enabled: true };
   window.vxn = {
-    matrix: { sources: SOURCES, dests: DESTS, curves: CURVES, slots: [l0, emptySlots()] },
+    matrix: {
+      sources: SOURCES,
+      dests: DESTS,
+      polarities: POLARITIES,
+      shapes: SHAPES,
+      slots: [l0, emptySlots()],
+    },
     send: {
       setMatrix: vi.fn((...a) => sends.push(['matrix', ...a])),
       setParam: vi.fn((...a) => sends.push(['param', ...a])),
@@ -49,6 +70,11 @@ beforeEach(() => {
 
 const rows = () => document.querySelectorAll('#matrix-rows .vxn-mm-row');
 const combo = (i, field) => rows()[i].querySelector(`.vxn-mm-combo[data-field="${field}"]`);
+const onBox = (i) => rows()[i].querySelector('.vxn-mm-on');
+const setCheck = (el, v) => {
+  el.checked = v;
+  el.dispatchEvent(new Event('change'));
+};
 const setCombo = (el, v) => {
   el.value = String(v);
   el.dispatchEvent(new Event('change'));
@@ -87,13 +113,64 @@ describe('matrixOverlay.build', () => {
     expect(rows()[2].dataset.active).toBe('1');
   });
 
-  it('the bin clears a slot (four topology zeros)', () => {
+  it('the bin clears a slot (every topology field zeroed, switch off)', () => {
     matrixOverlay.build();
     rows()[0].querySelector('.vxn-mm-bin').click();
-    for (const f of ['source', 'dest', 'curve', 'scale']) {
+    // Wire names, not snapshot keys — the scale bend differs between the two.
+    for (const f of ['source', 'dest', 'polarity', 'shape', 'scale', 'scale-shape', 'enabled']) {
       expect(sends).toContainEqual(['matrix', 'upper', 0, f, 0]);
     }
     expect(rows()[0].dataset.active).toBe('0');
+    expect(onBox(0).checked).toBe(false);
+  });
+
+  it('the on/off switch posts enabled without touching the wiring', () => {
+    matrixOverlay.build();
+    expect(onBox(0).checked).toBe(true); // slot 0 is the live Env1 → Cutoff
+    setCheck(onBox(0), false);
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'enabled', 0]);
+    // Greyed out, but the endpoints are untouched — switching off is not a
+    // delete, which is the whole reason the flag is separate from the wiring.
+    expect(rows()[0].dataset.active).toBe('0');
+    expect(window.vxn.matrix.slots[0][0].source).toBe(1);
+    expect(window.vxn.matrix.slots[0][0].dest).toBe(4);
+    expect(combo(0, 'source').value).toBe('1');
+
+    setCheck(onBox(0), true);
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'enabled', 1]);
+    expect(rows()[0].dataset.active).toBe('1');
+  });
+
+  it('picking a source on a blank row switches it on', () => {
+    matrixOverlay.build();
+    expect(onBox(1).checked).toBe(false);
+    setCombo(combo(1, 'source'), 4);
+    expect(sends).toContainEqual(['matrix', 'upper', 1, 'source', 4]);
+    expect(sends).toContainEqual(['matrix', 'upper', 1, 'enabled', 1]);
+    expect(onBox(1).checked).toBe(true);
+  });
+
+  it('retuning a deliberately disabled row leaves it disabled', () => {
+    matrixOverlay.build();
+    setCheck(onBox(0), false);
+    sends.length = 0;
+    setCombo(combo(0, 'source'), 4);
+    // The auto-enable fires only on the None→real edge; slot 0 already had a
+    // source, so this is a retune of a route the player switched off.
+    expect(sends).not.toContainEqual(['matrix', 'upper', 0, 'enabled', 1]);
+    expect(onBox(0).checked).toBe(false);
+  });
+
+  it('the two curve axes post independently', () => {
+    matrixOverlay.build();
+    setCombo(combo(0, 'polarity'), 2);
+    setCombo(combo(0, 'shape'), 1);
+    setCombo(combo(0, 'scaleShape'), 2);
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'polarity', 2]);
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'shape', 1]);
+    // Snapshot key `scaleShape`, wire name `scale-shape`.
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'scale-shape', 2]);
+    expect(window.vxn.matrix.slots[0][0].scaleShape).toBe(2);
   });
 });
 

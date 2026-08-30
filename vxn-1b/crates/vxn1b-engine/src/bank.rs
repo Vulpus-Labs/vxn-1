@@ -49,7 +49,7 @@ use crate::eval::{
     RouteList, SourceInputs, env_time_scale, eval_dests_bank, eval_sources, lfo_rate_scale,
     sources_to_soa,
 };
-use crate::matrix::{Curve, DestId, MatrixTable, N_SLOTS, SourceId};
+use crate::matrix::{DestId, MatrixTable, N_SLOTS, Polarity, Shape, SourceId};
 use crate::mod_smoothing::{MotionSmoother, PITCH_QUANTUM};
 use crate::params::CrossModType;
 use crate::render;
@@ -343,8 +343,10 @@ pub(crate) struct LaneTargets {
 struct AmpRoute {
     source: SourceId,
     src_idx: usize,
-    curve: Curve,
+    polarity: Polarity,
+    shape: Shape,
     scale_src: SourceId,
+    scale_shape: Shape,
     /// `cook_depth(depth) · DEST_GAIN[Amp]` — see [`crate::eval::slot_topology_gain`].
     gain: f32,
 }
@@ -364,8 +366,9 @@ struct AmpRoutes {
     /// end a note, and so the only ones allowed to hold a lane open after
     /// gate-off.
     ///
-    /// Topology + depth, *not* the [`AmpCoeffs`]: those collect only `Lin`-curve
-    /// Env→Amp slots (the rest fold into `stat`), and a curved Env→Amp route
+    /// Topology + depth, *not* the [`AmpCoeffs`]: those collect only
+    /// identity-curve Env→Amp slots (the rest fold into `stat`), and a curved
+    /// Env→Amp route
     /// must silence its note exactly like a linear one. A `scale_src` sitting at
     /// zero is likewise ignored — a route that exists counts as a route, so a
     /// momentarily gated VCA cannot make a note un-endable.
@@ -379,8 +382,10 @@ impl AmpRoutes {
         let empty = AmpRoute {
             source: SourceId::None,
             src_idx: 0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
             gain: 0.0,
         };
         let mut out =
@@ -395,8 +400,10 @@ impl AmpRoutes {
             out.routes[out.n] = AmpRoute {
                 source: slot.source,
                 src_idx,
-                curve: slot.curve,
+                polarity: slot.polarity,
+                shape: slot.shape,
                 scale_src: slot.scale_src,
+                scale_shape: slot.scale_shape,
                 gain: crate::eval::slot_topology_gain(slot),
             };
             out.n += 1;
@@ -1425,16 +1432,22 @@ fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeff
     let mut c = AmpCoeffs::default();
     for r in &routes.routes[..routes.n] {
         let scale = match r.scale_src.idx() {
-            Some(sc) => crate::eval::scale_norm(r.scale_src, sources[sc]),
+            Some(sc) => crate::eval::scale_norm(r.scale_src, sources[sc], r.scale_shape),
             None => 1.0,
         };
         let coeff = r.gain * scale;
         // Linear env sources become per-frame coefficients; everything else is
         // resolved at block-start value into `stat`.
-        match (r.source, r.curve) {
-            (SourceId::Env1, Curve::Lin) => c.e1 += coeff,
-            (SourceId::Env2, Curve::Lin) => c.e2 += coeff,
-            _ => c.stat += crate::eval::shape(r.curve, sources[r.src_idx]) * coeff,
+        // "Linear" now means both axes at identity — a rectified or bent route
+        // is no longer a straight multiple of the envelope, so it folds into
+        // `stat` exactly like a curved one always did.
+        match (r.source, r.polarity, r.shape) {
+            (SourceId::Env1, Polarity::Direct, Shape::Lin) => c.e1 += coeff,
+            (SourceId::Env2, Polarity::Direct, Shape::Lin) => c.e2 += coeff,
+            _ => {
+                c.stat +=
+                    crate::eval::shape(r.polarity, r.shape, sources[r.src_idx]) * coeff;
+            }
         }
     }
     c
@@ -1797,7 +1810,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Pan,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         let mut c = ctx(&m);
@@ -1831,7 +1847,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Pan,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         let mut c = ctx(&m);
@@ -1867,23 +1886,41 @@ mod tests {
         // A curved Env 1 route: folds into `stat`, but still owns the lifetime.
         m.slots[0] = MatrixSlot {
             source: SourceId::Env1, dest: DestId::Amp, depth: 1.0,
-            curve: Curve::Exp, scale_src: SourceId::None,
-        };
+            polarity: Polarity::Direct, shape: Shape::Exp, enabled: true, scale_src: SourceId::None,
+         scale_shape: Shape::Lin };
         // A linear Env 2 route gated by a wheel sitting at zero: contributes
         // nothing this block, but a route that exists is still a route.
         m.slots[1] = MatrixSlot {
-            source: SourceId::Env2, dest: DestId::Amp, depth: 1.0,
-            curve: Curve::Lin, scale_src: SourceId::ModWheel,
+            source: SourceId::Env2,
+            dest: DestId::Amp,
+            depth: 1.0,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::ModWheel,
+            scale_shape: Shape::Lin,
         };
         // A zero-depth route is not a route at all.
         m.slots[2] = MatrixSlot {
-            source: SourceId::Lfo1, dest: DestId::Amp, depth: 0.0,
-            curve: Curve::Lin, scale_src: SourceId::None,
+            source: SourceId::Lfo1,
+            dest: DestId::Amp,
+            depth: 0.0,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
         };
         // And a non-Amp route is invisible here.
         m.slots[3] = MatrixSlot {
-            source: SourceId::Lfo2, dest: DestId::Cutoff, depth: 1.0,
-            curve: Curve::Lin, scale_src: SourceId::None,
+            source: SourceId::Lfo2,
+            dest: DestId::Cutoff,
+            depth: 1.0,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
         };
 
         let r = AmpRoutes::resolve(&m);
@@ -1897,7 +1934,7 @@ mod tests {
         let c = amp_coeffs(&r, &sources);
         assert_eq!(c.e1, 0.0, "the curved Env 1 route folds into stat, not e1");
         assert_eq!(c.e2, 0.0, "Env 2's wheel is shut, so it contributes nothing");
-        assert!((c.stat - crate::eval::shape(Curve::Exp, 0.5)).abs() < 1e-6);
+        assert!((c.stat - crate::eval::shape(Polarity::Direct, Shape::Exp, 0.5)).abs() < 1e-6);
     }
 
     // ── The routing rules the bank owns (0273) ──────────────────────────────
@@ -1980,14 +2017,17 @@ mod tests {
     #[test]
     fn amp_folding_uses_the_evaluators_curve() {
         use crate::eval::shape;
-        for curve in [Curve::Lin, Curve::Exp, Curve::Log, Curve::Bipolar] {
+        for curve in [Shape::Lin, Shape::Exp, Shape::Log, Shape::Lin] {
             let mut m = MatrixTable::default();
             m.slots[0] = MatrixSlot {
                 source: SourceId::ModWheel,
                 dest: DestId::Amp,
                 depth: 1.0,
-                curve,
+                polarity: Polarity::Direct,
+                shape: curve,
+                enabled: true,
                 scale_src: SourceId::None,
+                scale_shape: Shape::Lin,
             };
             let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
                 mod_wheel: 0.25,
@@ -1996,7 +2036,7 @@ mod tests {
             let c = amp_coeffs(&AmpRoutes::resolve(&m), &sources);
             // Non-envelope routes fold entirely into `stat`, at the evaluator's
             // shaped value × the Amp gain (1.0).
-            let want = shape(curve, 0.25);
+            let want = shape(Polarity::Direct, curve, 0.25);
             assert!((c.stat - want).abs() < 1e-6, "{curve:?}: {} vs {want}", c.stat);
             assert_eq!((c.e1, c.e2), (0.0, 0.0));
         }
@@ -2019,7 +2059,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::HpfCutoff,
             depth,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         m
@@ -2099,7 +2142,10 @@ mod tests {
             source: SourceId::Key,
             dest: DestId::HpfCutoff,
             depth: 0.5, // 24 st of HPF per octave of key
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         let pair = hpf_render_notes(&m, 200.0, 0.0, &[Some(48), Some(84)]);
@@ -2168,7 +2214,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         m
@@ -2218,7 +2267,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Osc1Pwm,
             depth: 0.3,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         // Osc 1 under (Pwm 0.3 + Osc1Pwm 0.3) should match a single Pwm 0.6.
@@ -2346,7 +2398,16 @@ mod tests {
     }
 
     fn route(source: SourceId, dest: DestId, depth: f32) -> MatrixSlot {
-        MatrixSlot { source, dest, depth, curve: Curve::Lin, scale_src: SourceId::None }
+        MatrixSlot {
+            source,
+            dest,
+            depth,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
+        }
     }
 
     /// Gate lane 0 on for `hold` frames, then release it for `rel` frames.
@@ -2434,9 +2495,9 @@ mod tests {
     /// and so cannot be detected from those.
     #[test]
     fn an_amp_routed_envelope_holds_its_lane_whatever_the_curve() {
-        for curve in [Curve::Lin, Curve::Exp, Curve::Log] {
+        for curve in [Shape::Lin, Shape::Exp, Shape::Log] {
             let mut slot = route(SourceId::Env2, DestId::Amp, 1.0);
-            slot.curve = curve;
+            slot.shape = curve;
             let m = table_of(&[slot]);
             let mut bank = RenderBank::new(48_000.0, 1);
             let long = (0.001, 0.001, 1.0, 10.0);
@@ -2653,7 +2714,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         m
@@ -2811,7 +2875,16 @@ mod tests {
     /// A matrix with one `source` → `dest` route at `depth`.
     fn one_route(source: SourceId, dest: DestId, depth: f32) -> MatrixTable {
         let mut m = MatrixTable::default();
-        m.slots[0] = MatrixSlot { source, dest, depth, curve: Curve::Lin, scale_src: SourceId::None };
+        m.slots[0] = MatrixSlot {
+            source,
+            dest,
+            depth,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
+        };
         m
     }
 

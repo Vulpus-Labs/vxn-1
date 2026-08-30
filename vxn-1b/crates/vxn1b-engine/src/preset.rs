@@ -53,8 +53,8 @@ use vxn_core_app::{ParamDesc, ParamKind};
 
 use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
-    CURVE_NAMES, Curve, DEST_NAMES, DestId, MatrixSlot, MatrixTable, N_SLOTS, SOURCE_NAMES,
-    SourceId,
+    CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, N_SLOTS, Polarity, SHAPE_NAMES,
+    SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
 };
 use crate::params::{PARAMS, ParamId, Params};
 use crate::state::{LayerState, PluginState};
@@ -135,10 +135,35 @@ struct MatrixRowFile {
         skip_serializing_if = "is_none_src"
     )]
     scale_src: String,
+    /// Response bend on the scale VCA. Omitted when `lin` (the identity), so a
+    /// preset with a straight-line VCA round-trips exactly as before.
+    #[serde(
+        rename = "scale-shape",
+        default = "default_curve",
+        skip_serializing_if = "is_lin"
+    )]
+    scale_shape: String,
+    /// The player's on/off switch. Absent → `true`: every preset written before
+    /// the toggle existed listed only routed slots, and meant them to sound.
+    /// Omitted when on, so an all-on patch is unchanged on disk.
+    #[serde(default = "default_enabled", skip_serializing_if = "is_true")]
+    enabled: bool,
 }
 
 fn default_curve() -> String {
     "lin".to_string()
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+fn is_lin(s: &str) -> bool {
+    s == "lin"
 }
 
 fn default_scale_src() -> String {
@@ -174,19 +199,25 @@ fn params_table(params: &Params) -> toml::Table {
     t
 }
 
-/// The `[[matrix]]` rows: one per routed slot, topology only.
+/// The `[[matrix]]` rows: one per **wired** slot, topology only.
+///
+/// Wired, not active — a route the player has switched off still has endpoints,
+/// shaping and a scale source worth persisting, and dropping it would turn the
+/// toggle into a destructive delete across a save/load.
 fn matrix_rows(matrix: &MatrixTable) -> Vec<MatrixRowFile> {
     let mut out = Vec::new();
     for (s, slot) in matrix.slots.iter().enumerate() {
-        if !slot.is_active() {
+        if !slot.is_wired() {
             continue;
         }
         out.push(MatrixRowFile {
             slot: s as u8,
             source: SOURCE_NAMES[slot.source as usize].to_string(),
             dest: DEST_NAMES[slot.dest as usize].to_string(),
-            curve: CURVE_NAMES[slot.curve as usize].to_string(),
+            curve: CURVE_NAMES[curve_code(slot.polarity, slot.shape) as usize].to_string(),
             scale_src: SOURCE_NAMES[slot.scale_src as usize].to_string(),
+            scale_shape: SHAPE_NAMES[slot.scale_shape as usize].to_string(),
+            enabled: slot.enabled,
         });
     }
     out
@@ -364,12 +395,25 @@ fn parse_layer(
             ));
             0
         });
+        let scale_shape = name_to_u8(&SHAPE_NAMES, &row.scale_shape).unwrap_or_else(|| {
+            warnings.push(format!(
+                "matrix slot {}: unknown scale shape `{}` (using lin)",
+                row.slot, row.scale_shape
+            ));
+            0
+        });
+        let (polarity, shape) = curve_split(curve);
         matrix.slots[slot] = MatrixSlot {
             source: SourceId::from_u8(source),
             dest: DestId::from_u8(dest),
-            curve: Curve::from_u8(curve),
+            polarity,
+            shape,
+            // A row exists in the file only because it was routed, and every
+            // preset written before the toggle meant "on". Absent key → on.
+            enabled: row.enabled,
             depth: 0.0, // seeded from params below
             scale_src: SourceId::from_u8(scale_src),
+            scale_shape: Shape::from_u8(scale_shape),
         };
     }
     // Depth authority is the param block — seed every slot from it.
@@ -503,14 +547,20 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         matrix.slots[2] = MatrixSlot {
             source: SourceId::Lfo1,
             dest: DestId::Pitch,
             depth: -0.25,
-            curve: Curve::Bipolar,
+            polarity: Polarity::Bipolar,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
         LayerState { params, matrix }
@@ -534,7 +584,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Cutoff,
             depth: 0.75,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         PluginState {
@@ -638,7 +691,10 @@ dest = "pan"
             source: SourceId::Spread,
             dest: DestId::Pan,
             depth: 0.6,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         let toml = write_preset(&meta("PanRT"), &st).unwrap();
@@ -698,14 +754,16 @@ dest = "pan"
         let s0 = l1.matrix.slots[0];
         assert_eq!(s0.source, SourceId::Env2);
         assert_eq!(s0.dest, DestId::Amp);
-        assert_eq!(s0.curve, Curve::Lin);
+        assert_eq!((s0.polarity, s0.shape), (Polarity::Direct, Shape::Lin));
         assert_eq!(s0.scale_src, SourceId::None);
         assert_eq!(s0.depth, 1.0); // from the param
 
         let s2 = l1.matrix.slots[2];
         assert_eq!(s2.source, SourceId::Lfo1);
         assert_eq!(s2.dest, DestId::Pitch);
-        assert_eq!(s2.curve, Curve::Bipolar);
+        // Legacy spelling `bipolar` still decodes to the bipolar polarity with
+        // a linear bend — the property `curve_code` exists to preserve.
+        assert_eq!((s2.polarity, s2.shape), (Polarity::Bipolar, Shape::Lin));
         assert_eq!(s2.scale_src, SourceId::ModWheel);
         assert_eq!(s2.depth, -0.25);
     }
@@ -917,7 +975,10 @@ dest = "pitch"
         let matrix = st.layers[0].matrix;
         assert_eq!(matrix.slots[0].source, SourceId::Lfo1);
         assert_eq!(matrix.slots[0].dest, DestId::Pitch);
-        assert_eq!(matrix.slots[0].curve, Curve::Lin);
+        assert_eq!(
+            (matrix.slots[0].polarity, matrix.slots[0].shape),
+            (Polarity::Direct, Shape::Lin)
+        );
         assert_eq!(matrix.slots[0].scale_src, SourceId::None);
     }
 

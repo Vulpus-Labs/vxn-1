@@ -356,30 +356,106 @@ impl DestId {
     }
 }
 
-// ── Curve ───────────────────────────────────────────────────────────────────
+// ── Polarity / Shape ────────────────────────────────────────────────────────
 
 matrix_enum! {
-    /// Curve applied to a source value before depth scaling (per VXN2's model).
+    /// Range mapping applied to a source value, **before** the [`Shape`] bend.
+    ///
+    /// - `Direct` — passthrough; the source's native polarity reaches the dest.
+    /// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via
+    ///   `2v − 1` (centred swing when routing mod-wheel/aftertouch into a
+    ///   bipolar dest).
+    /// - `Abs` — rectify a bipolar source to `[0, 1]` via `|v|`, so the route is
+    ///   strongest at *both* extremes and silent at centre. `spread → pan` is
+    ///   the motivating case: `direct` pans each voice in proportion to its
+    ///   spread position, `abs` instead moves only the voices at the edges of
+    ///   the spread and leaves the centre ones alone. Identity for a source
+    ///   already unipolar.
+    ///
+    ///   Depth sign covers the mirror case, so there is deliberately no
+    ///   `1 − |v|` mapping: pull depth negative and the edge voices are driven
+    ///   *away* from the destination's own parameter value while the centre
+    ///   voices keep it. "More at the centre" falls out of the parameter
+    ///   already being the offset such a mapping would re-derive.
+    Polarity, fallback = Direct, names = POLARITY_NAMES,
+    labels = POLARITY_LABELS;
+    #[default]
+    Direct = 0, "direct", "Direct";
+    Bipolar = 1, "bipolar", "Bipolar";
+    Abs = 2, "abs", "Abs";
+}
+
+matrix_enum! {
+    /// Response bend applied **after** the [`Polarity`] mapping.
     ///
     /// - `Lin` — identity passthrough.
     /// - `Exp` — signed square `sign(v)·v²`: more extreme excursions.
     /// - `Log` — signed root `sign(v)·√|v|`: compresses toward 0.
-    /// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via `2v − 1`
-    ///   (centred swing when routing mod-wheel/aftertouch into a bipolar dest).
-    Curve, fallback = Lin, names = CURVE_NAMES,
-    labels = CURVE_LABELS;
+    ///
+    /// Both bends preserve sign, so neither moves a value across zero.
+    Shape, fallback = Lin, names = SHAPE_NAMES,
+    labels = SHAPE_LABELS;
     #[default]
     Lin = 0, "lin", "Lin";
     Exp = 1, "exp", "Exp";
     Log = 2, "log", "Log";
-    Bipolar = 3, "bipolar", "Bipolar";
 }
 
-/// Count of curve variants. No sentinel here — `Lin` is a real curve.
-pub const N_CURVES: usize = CURVE_NAMES.len();
+/// Count of polarity variants.
+pub const N_POLARITIES: usize = POLARITY_NAMES.len();
+/// Count of shape variants. No sentinel — `Lin` is a real shape.
+pub const N_SHAPES: usize = SHAPE_NAMES.len();
 
-impl Curve {
+/// Count of `(polarity, shape)` combinations — the width of the flat curve code
+/// that **preset files** carry.
+pub const N_CURVES: usize = N_POLARITIES * N_SHAPES;
+
+/// Compose a `(polarity, shape)` pair into the flat preset code,
+/// `polarity · N_SHAPES + shape`.
+///
+/// This exists for one reason: preset TOML is the only surface where the two
+/// axes are still spelled as a single `curve` value. The stride is chosen so the
+/// four pre-split codes keep their exact meanings — `0 = lin`, `1 = exp`,
+/// `2 = log`, `3 = bipolar` (which was always bipolar with a linear bend) — and
+/// [`CURVE_NAMES`] elides the `direct` polarity and the `lin` shape, so those
+/// four spellings still parse. Presets written before the split load unchanged.
+///
+/// The `clap.state` blob does **not** use this: it stores the two axes as
+/// separate bytes, because vxn-1b rejects older blobs on read rather than
+/// migrating them (see [`crate::state`]) and so is free to pick the honest
+/// layout. Neither does the UI edit wire, which addresses one field at a time
+/// (`MatrixField::Polarity` / `::Shape`).
+#[inline]
+pub const fn curve_code(polarity: Polarity, shape: Shape) -> u8 {
+    polarity as u8 * N_SHAPES as u8 + shape as u8
 }
+
+/// Split a flat preset code back into its `(polarity, shape)` pair. Out-of-range
+/// codes degrade to `(Direct, Lin)` rather than aliasing onto a real curve.
+#[inline]
+pub fn curve_split(code: u8) -> (Polarity, Shape) {
+    if code as usize >= N_CURVES {
+        return (Polarity::Direct, Shape::Lin);
+    }
+    (
+        Polarity::from_u8(code / N_SHAPES as u8),
+        Shape::from_u8(code % N_SHAPES as u8),
+    )
+}
+
+/// Flat curve machine id for preset files, indexed by [`curve_code`]. The four
+/// legacy spellings are load-bearing — see [`curve_code`].
+pub const CURVE_NAMES: [&str; N_CURVES] = [
+    "lin",
+    "exp",
+    "log",
+    "bipolar",
+    "bipolar-exp",
+    "bipolar-log",
+    "abs",
+    "abs-exp",
+    "abs-log",
+];
 
 // ── MatrixSlot / MatrixTable ────────────────────────────────────────────────
 
@@ -390,13 +466,29 @@ pub struct MatrixSlot {
     pub source: SourceId,
     pub dest: DestId,
     pub depth: f32,
-    pub curve: Curve,
+    /// Range mapping, applied to the source value first.
+    pub polarity: Polarity,
+    /// Response bend, applied after [`Self::polarity`].
+    pub shape: Shape,
+    /// Whether the player has this route switched **on**. Independent of whether
+    /// it is *wired*: a slot can have both endpoints set and still be off, which
+    /// is what makes A/B-ing a route possible without losing its setup. Before
+    /// this field, "active" was derived purely from the endpoints, so the only
+    /// way to silence a route was to clear it.
+    pub enabled: bool,
     /// Optional secondary "scale" source — the per-route VCA of VXN2 ADR 0009.
     /// When non-`None`, the slot's contribution is multiplied by this source's
     /// value normalised to `[0, 1]` (evaluator, 0202), e.g. mod-wheel gating an
     /// LFO→pitch vibrato. `None` is identity. A *leaf* value (read from the same
     /// per-voice source table), so it can never form a cycle.
     pub scale_src: SourceId,
+    /// Response bend on the normalised scale value, so the VCA need not be a
+    /// straight line — `velocity` scaling an `env2 → amp` route wants `Exp` so
+    /// soft playing backs the route off faster than linear.
+    ///
+    /// No polarity twin: `scale_norm` already folds by the scale *source's* own
+    /// polarity, and the VCA has to land in `[0, 1]` regardless.
+    pub scale_shape: Shape,
 }
 
 impl Default for MatrixSlot {
@@ -405,18 +497,39 @@ impl Default for MatrixSlot {
             source: SourceId::None,
             dest: DestId::None,
             depth: 0.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            // A blank slot is off; picking a source switches it on (the editor
+            // does that on the None→real edge, matching vxn-2).
+            enabled: false,
             scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
         }
     }
 }
 
 impl MatrixSlot {
-    /// A slot is **active** (contributes to a dest) only when both endpoints are
-    /// real. The evaluator additionally skips `depth == 0` slots; an inactive
-    /// slot here is inert regardless of depth.
+    /// A slot is **active** (contributes to a dest) only when it is switched on
+    /// *and* both endpoints are real. The evaluator additionally skips
+    /// `depth == 0` slots; an inactive slot here is inert regardless of depth.
+    ///
+    /// `enabled` is the player's switch and `source`/`dest` are the wiring —
+    /// deliberately separate, so switching a route off preserves everything
+    /// needed to switch it back on.
     #[inline]
     pub fn is_active(&self) -> bool {
+        self.enabled && self.is_wired()
+    }
+
+    /// Whether both endpoints are real, **regardless of the on/off switch**.
+    ///
+    /// This is the "has the player set this slot up?" question, and it is the
+    /// one persistence asks: a switched-off route still has wiring worth
+    /// saving, so anything that writes only the slots worth writing must test
+    /// `is_wired`, not [`Self::is_active`]. Using the latter would quietly
+    /// discard exactly what the toggle exists to preserve.
+    #[inline]
+    pub fn is_wired(&self) -> bool {
         self.source != SourceId::None && self.dest != DestId::None
     }
 }
@@ -447,14 +560,18 @@ impl MatrixTable {
     /// preset text is name-keyed and sparse rather than positional.
     ///
     /// A patch that *does* route `Pan` — even from some other source, even at
-    /// depth 0 — is left alone: it has an opinion about pan, and overriding it
-    /// would be worse than the problem being solved. A table with all 16 slots
-    /// occupied is likewise left alone rather than evicting the player's work.
+    /// depth 0, even switched off — is left alone: it has an opinion about pan,
+    /// and overriding it would be worse than the problem being solved. A table
+    /// with all 16 slots **wired** is likewise left alone rather than evicting
+    /// the player's work.
     pub fn ensure_pan_route(&mut self) -> bool {
         if self.slots.iter().any(|s| s.dest == DestId::Pan) {
             return false;
         }
-        match self.slots.iter_mut().find(|s| !s.is_active()) {
+        // A *free* slot means an unwired one — `is_active` would also match a
+        // route the player set up and switched off, and seeding over that would
+        // destroy their work to solve a problem they don't have.
+        match self.slots.iter_mut().find(|s| !s.is_wired()) {
             Some(slot) => {
                 *slot = SPREAD_TO_PAN;
                 true
@@ -534,14 +651,20 @@ pub fn default_patch() -> MatrixTable {
         source: SourceId::Env2,
         dest: DestId::Amp,
         depth: 1.0,
-        curve: Curve::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
+        enabled: true,
+        scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
     table.slots[1] = MatrixSlot {
         source: SourceId::Lfo1,
         dest: DestId::Pitch,
         depth: DEFAULT_VIBRATO_DEPTH,
-        curve: Curve::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
+        enabled: true,
+        scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
     table.slots[2] = SPREAD_TO_PAN;
@@ -555,7 +678,10 @@ pub const SPREAD_TO_PAN: MatrixSlot = MatrixSlot {
     source: SourceId::Spread,
     dest: DestId::Pan,
     depth: 1.0,
-    curve: Curve::Lin,
+    polarity: Polarity::Direct,
+    shape: Shape::Lin,
+    enabled: true,
+    scale_shape: Shape::Lin,
     scale_src: SourceId::None,
 };
 
@@ -614,11 +740,51 @@ mod tests {
     }
 
     #[test]
-    fn curve_u8_roundtrips_and_degrades() {
-        for v in 0..(N_CURVES as u8) {
-            assert_eq!(Curve::from_u8(v) as u8, v);
+    fn polarity_and_shape_u8_roundtrip_and_degrade() {
+        for v in 0..(N_POLARITIES as u8) {
+            assert_eq!(Polarity::from_u8(v) as u8, v);
         }
-        assert_eq!(Curve::from_u8(200), Curve::Lin);
+        for v in 0..(N_SHAPES as u8) {
+            assert_eq!(Shape::from_u8(v) as u8, v);
+        }
+        assert_eq!(Polarity::from_u8(200), Polarity::Direct);
+        assert_eq!(Shape::from_u8(200), Shape::Lin);
+    }
+
+    /// The flat code is what **preset files** carry, so the four spellings that
+    /// predate the axis split must still land on their original meanings —
+    /// codes 0..=3 are load-bearing.
+    #[test]
+    fn curve_code_preserves_pre_split_preset_encoding() {
+        let legacy = [
+            (0u8, Polarity::Direct, Shape::Lin, "lin"),
+            (1, Polarity::Direct, Shape::Exp, "exp"),
+            (2, Polarity::Direct, Shape::Log, "log"),
+            (3, Polarity::Bipolar, Shape::Lin, "bipolar"),
+        ];
+        for (code, pol, shape, name) in legacy {
+            assert_eq!(curve_code(pol, shape), code, "{name} code moved");
+            assert_eq!(curve_split(code), (pol, shape), "{name} decode moved");
+            assert_eq!(CURVE_NAMES[code as usize], name);
+        }
+    }
+
+    /// Every pair round-trips through the flat code with no collisions, and
+    /// anything past the roster degrades rather than aliasing onto a real curve.
+    #[test]
+    fn curve_code_round_trips_every_pair() {
+        let mut seen = std::collections::HashSet::new();
+        for p in Polarity::ALL {
+            for sh in Shape::ALL {
+                let code = curve_code(p, sh);
+                assert!((code as usize) < N_CURVES, "{p:?}/{sh:?} out of range");
+                assert!(seen.insert(code), "{p:?}/{sh:?} collided on {code}");
+                assert_eq!(curve_split(code), (p, sh));
+            }
+        }
+        assert_eq!(seen.len(), N_CURVES);
+        assert_eq!(curve_split(N_CURVES as u8), (Polarity::Direct, Shape::Lin));
+        assert_eq!(curve_split(255), (Polarity::Direct, Shape::Lin));
     }
 
     #[test]
@@ -641,8 +807,13 @@ mod tests {
         assert_eq!(SOURCE_LABELS.len(), N_SOURCES + 1);
         assert_eq!(DEST_NAMES.len(), N_DESTS + 1);
         assert_eq!(DEST_LABELS.len(), N_DESTS + 1);
+        assert_eq!(POLARITY_NAMES.len(), N_POLARITIES);
+        assert_eq!(POLARITY_LABELS.len(), N_POLARITIES);
+        assert_eq!(SHAPE_NAMES.len(), N_SHAPES);
+        assert_eq!(SHAPE_LABELS.len(), N_SHAPES);
+        // The flat preset table spans the whole product of the two axes.
         assert_eq!(CURVE_NAMES.len(), N_CURVES);
-        assert_eq!(CURVE_LABELS.len(), N_CURVES);
+        assert_eq!(N_CURVES, N_POLARITIES * N_SHAPES);
     }
 
     /// `ALL` is the bridge between a variant and its row in the two string
@@ -662,7 +833,8 @@ mod tests {
         }
         check!(SourceId, SOURCE_NAMES, SOURCE_LABELS);
         check!(DestId, DEST_NAMES, DEST_LABELS);
-        check!(Curve, CURVE_NAMES, CURVE_LABELS);
+        check!(Polarity, POLARITY_NAMES, POLARITY_LABELS);
+        check!(Shape, SHAPE_NAMES, SHAPE_LABELS);
     }
 
     /// Name N must *describe* variant N — the property the old length-only
@@ -699,31 +871,15 @@ mod tests {
         assert_eq!(dst(DestId::Env2Sustain), ("env2-sustain", "Env 2 Sustain"));
         assert_eq!(dst(DestId::Lfo1Rate), ("lfo1-rate", "LFO 1 Rate"));
 
-        let cur = |c: Curve| (CURVE_NAMES[c as usize], CURVE_LABELS[c as usize]);
-        assert_eq!(cur(Curve::Lin), ("lin", "Lin"));
-        assert_eq!(cur(Curve::Exp), ("exp", "Exp"));
-        assert_eq!(cur(Curve::Log), ("log", "Log"));
-        assert_eq!(cur(Curve::Bipolar), ("bipolar", "Bipolar"));
-    }
+        let pol = |p: Polarity| (POLARITY_NAMES[p as usize], POLARITY_LABELS[p as usize]);
+        assert_eq!(pol(Polarity::Direct), ("direct", "Direct"));
+        assert_eq!(pol(Polarity::Bipolar), ("bipolar", "Bipolar"));
+        assert_eq!(pol(Polarity::Abs), ("abs", "Abs"));
 
-    #[test]
-    fn polarity_table_is_locked() {
-        // Bipolar: genuine ± swingers.
-        for s in [SourceId::Lfo1, SourceId::Lfo2, SourceId::PitchWheel] {
-            assert!(s.is_bipolar(), "{s:?} should be bipolar");
-        }
-        // Unipolar: everything else, incl. the [0,1] envelopes (see doc).
-        for s in [
-            SourceId::Env1,
-            SourceId::Env2,
-            SourceId::Velocity,
-            SourceId::Key,
-            SourceId::ModWheel,
-            SourceId::Aftertouch,
-            SourceId::NoteRandom,
-        ] {
-            assert!(!s.is_bipolar(), "{s:?} should be unipolar");
-        }
+        let shp = |s: Shape| (SHAPE_NAMES[s as usize], SHAPE_LABELS[s as usize]);
+        assert_eq!(shp(Shape::Lin), ("lin", "Lin"));
+        assert_eq!(shp(Shape::Exp), ("exp", "Exp"));
+        assert_eq!(shp(Shape::Log), ("log", "Log"));
     }
 
     // ── ensure_pan_route ─────────────────────────────────────────────
@@ -735,7 +891,10 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         assert!(t.ensure_pan_route(), "a pan-less patch must be seeded");
@@ -749,10 +908,18 @@ mod tests {
         // Any route into Pan counts — including one from another source, and
         // including one parked at depth 0. The patch has an opinion; honour it.
         for existing in [
-            MatrixSlot { source: SourceId::Lfo1, dest: DestId::Pan, depth: 0.5,
-                         curve: Curve::Lin, scale_src: SourceId::None },
-            MatrixSlot { source: SourceId::Spread, dest: DestId::Pan, depth: 0.0,
-                         curve: Curve::Lin, scale_src: SourceId::None },
+            MatrixSlot {
+                source: SourceId::Lfo1,
+                dest: DestId::Pan,
+                depth: 0.5,
+                ..MatrixSlot::default()
+            },
+            MatrixSlot {
+                source: SourceId::Spread,
+                dest: DestId::Pan,
+                depth: 0.0,
+                ..MatrixSlot::default()
+            },
         ] {
             let mut t = MatrixTable::default();
             t.slots[4] = existing;
@@ -765,6 +932,31 @@ mod tests {
         }
     }
 
+    /// A switched-off route is still the player's work: the pan seed must skip
+    /// it and take a genuinely blank slot instead. Using `is_active` to find a
+    /// free slot would silently overwrite a route someone had parked.
+    #[test]
+    fn ensure_pan_route_does_not_evict_a_switched_off_route() {
+        let mut t = MatrixTable::default();
+        let parked = MatrixSlot {
+            source: SourceId::Lfo2,
+            dest: DestId::Cutoff,
+            depth: 0.5,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: false,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
+        };
+        t.slots[0] = parked;
+        assert!(t.ensure_pan_route(), "there are blank slots left to seed into");
+        assert_eq!(t.slots[0], parked, "the parked route must survive untouched");
+        assert!(
+            t.slots.iter().any(|s| s.dest == DestId::Pan),
+            "and the seed still landed somewhere"
+        );
+    }
+
     #[test]
     fn ensure_pan_route_gives_up_rather_than_evicting() {
         // Sixteen live routes, none of them pan: the player's work wins over
@@ -775,7 +967,10 @@ mod tests {
                 source: SourceId::Lfo1,
                 dest: DestId::Cutoff,
                 depth: 0.5,
-                curve: Curve::Lin,
+                polarity: Polarity::Direct,
+                shape: Shape::Lin,
+                enabled: true,
+                scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };
         }
@@ -804,7 +999,10 @@ mod tests {
                 source: SourceId::Env2,
                 dest: DestId::Amp,
                 depth: 1.0,
-                curve: Curve::Lin,
+                polarity: Polarity::Direct,
+                shape: Shape::Lin,
+                enabled: true,
+                scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }
         );
@@ -815,7 +1013,10 @@ mod tests {
                 source: SourceId::Lfo1,
                 dest: DestId::Pitch,
                 depth: DEFAULT_VIBRATO_DEPTH,
-                curve: Curve::Lin,
+                polarity: Polarity::Direct,
+                shape: Shape::Lin,
+                enabled: true,
+                scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }
         );

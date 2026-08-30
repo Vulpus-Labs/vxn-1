@@ -15,7 +15,7 @@
 //! ladder ramps its own coefficients, so it already passes the same gate.
 
 use vxn1b_engine::{DestId, Engine, Layer, MatrixSlot, ParamId, SourceId};
-use vxn1b_engine::matrix::Curve;
+use vxn1b_engine::matrix::{Polarity, Shape};
 
 const SR: f32 = 48_000.0;
 /// The engine's control-block size, not a local copy of it (0226): this test
@@ -63,7 +63,10 @@ fn engine_with_route(dest: DestId, depth: f32) -> Engine {
         source: SourceId::Lfo1,
         dest,
         depth,
-        curve: Curve::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
+        enabled: true,
+        scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
     e.note_on(0, 60, 1.0);

@@ -218,9 +218,11 @@ One instance each, applied to both layers: tuning, master level, the limiter, ov
 
 ## Mod matrix
 
-16 slots per layer. A slot is a `source → destination` pair with a depth, a curve, and a secondary *scale* source acting as a per-route VCA.
+16 slots per layer. A slot is a `source → destination` pair with a depth, an on/off switch, curve shaping (a *polarity* and a *shape*), and a secondary *scale* source acting as a per-route VCA — itself shapeable.
 
-Only the **depths** are host parameters (listed above). The topology — which source feeds which destination, through which curve — lives in the patch state and is edited in the faceplate's matrix overlay. That split is what lets a depth be automated without the routing changing underneath it.
+Only the **depths** are host parameters (listed above). The topology — the switch, which source feeds which destination, and how it is shaped — lives in the patch state and is edited in the faceplate's matrix overlay. That split is what lets a depth be automated without the routing changing underneath it.
+
+The **on/off switch** is separate from the wiring: a route can be set up and switched off, so A/B-ing one costs nothing. A switched-off route keeps its endpoints and shaping across a save and reload.
 
 ### Sources
 
@@ -260,7 +262,21 @@ Only the **depths** are host parameters (listed above). The topology — which s
 | Env 1 Sustain | `env1-sustain` |
 | Env 2 Sustain | `env2-sustain` |
 
-### Curves
+### Curve shaping
 
-Lin, Exp, Log, Bipolar
+Shaping is two orthogonal axes. **Polarity** maps the source's range; **shape** bends the response inside it. Polarity runs first, so `bipolar` + `exp` squares the AC-coupled value rather than the raw one.
+
+| Polarity | Mapping | Notes |
+|----------|---------|-------|
+| Direct | `v` | Passthrough — the source's native polarity reaches the dest. |
+| Bipolar | `2v - 1` | AC-couples a unipolar `[0, 1]` source to `[-1, 1]`, e.g. mod wheel into a dest that wants centred swing. |
+| Abs | `abs(v)` | Rectifies a bipolar source to `[0, 1]`, so the route is strongest at *both* extremes and silent at centre. `spread → pan` is the motivating case: pan only the voices at the edges of the spread. Negative depth gives the mirror. |
+
+| Shape | Bend |
+|-------|------|
+| Lin | `v` — identity. |
+| Exp | `sign(v)·v²` — steepens. |
+| Log | `sign(v)·sqrt(abs(v))` — compresses toward 0. Both preserve sign. |
+
+The scale VCA takes a **shape** of its own (same roster), so the gate need not be a straight line — velocity scaling an `env2 → amp` route wants `exp` so soft playing backs it off faster than linear. It has no polarity axis: the VCA is folded by its own source's polarity and always lands in `[0, 1]`.
 

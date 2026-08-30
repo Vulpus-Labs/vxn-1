@@ -415,11 +415,13 @@ html, body {
   flex-direction: column;
 }
 
-/* Row grid: # | source | dest | amount | curve | scale | bin. */
+/* Row grid: on | # | source | dest | amount | polarity | shape | scale |
+ * scale-bend | bin. Curve became two columns when it split into the polarity
+ * and shape axes, and the scale VCA gained a bend beside its source. */
 .vxn-mm-header,
 .vxn-mm-row {
   display: grid;
-  grid-template-columns: 24px 1fr 1fr 130px 88px 1fr 24px;
+  grid-template-columns: 20px 24px 1fr 1fr 130px 80px 72px 1fr 72px 24px;
   gap: 6px;
   align-items: center;
   padding: 3px 0;
@@ -438,6 +440,16 @@ html, body {
 .vxn-mm-row[data-active="1"] { color: var(--text); }
 .vxn-mm-slot-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; }
 .vxn-mm-scale { min-width: 0; }
+/* The per-row on/off switch. Sized down and centred so it reads as a switch in
+ * a dense grid rather than a form control. */
+.vxn-mm-on {
+  margin: 0;
+  justify-self: center;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--track-fill);
+  cursor: pointer;
+}
 
 /* Bipolar fader (ported from vxn-2 .vxn-mm-depth): a compact centre-origin
    HORIZONTAL fader. The centre tick marks 0; the fill grows signed left/right

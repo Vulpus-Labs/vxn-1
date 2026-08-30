@@ -280,9 +280,11 @@ fn assemble_faceplate(
 }
 
 /// Serialise the mod-matrix vocab + **live** topology for the overlay (0219).
-/// The page reads it as `window.vxn.matrix = { sources, dests, curves, slots }`:
-/// each vocab entry is `{value, name, label}` (value = the wire `u8`), and
-/// `slots[layer][i]` is `{source, dest, curve, scale}` for slot `i`.
+/// The page reads it as
+/// `window.vxn.matrix = { sources, dests, polarities, shapes, slots }`: each
+/// vocab entry is `{value, name, label}` (value = the wire `u8`), and
+/// `slots[layer][i]` is `{source, dest, polarity, shape, scale, scaleShape,
+/// enabled}` for slot `i`.
 /// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
 ///
 /// `matrices` MUST be the plugin's current per-layer topology, not the factory
@@ -292,7 +294,8 @@ fn assemble_faceplate(
 fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
     use serde_json::{Value, json};
     use vxn1b_engine::matrix::{
-        CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, SOURCE_LABELS, SOURCE_NAMES,
+        DEST_LABELS, DEST_NAMES, POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES,
+        SOURCE_LABELS, SOURCE_NAMES,
     };
     let vocab = |names: &[&str], labels: &[&str]| -> Vec<Value> {
         names
@@ -305,13 +308,18 @@ fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
     json!({
         "sources": vocab(&SOURCE_NAMES, &SOURCE_LABELS),
         "dests": vocab(&DEST_NAMES, &DEST_LABELS),
-        "curves": vocab(&CURVE_NAMES, &CURVE_LABELS),
+        // Two axes, two pick-lists. The flat `curve` vocab is gone from the
+        // page's surface entirely — it survives only inside preset files, which
+        // the page never reads.
+        "polarities": vocab(&POLARITY_NAMES, &POLARITY_LABELS),
+        "shapes": vocab(&SHAPE_NAMES, &SHAPE_LABELS),
         "slots": [slots_json(&matrices[0]), slots_json(&matrices[1])],
     })
     .to_string()
 }
 
-/// One layer's slots as `[{source, dest, curve, scale}, …]` — the wire shape the
+/// One layer's slots as
+/// `[{source, dest, polarity, shape, scale, scaleShape, enabled}, …]` — the wire shape the
 /// page reads, shared by the open-time seed ([`build_matrix_json`]) and the
 /// running echo (the `kind: "matrix"` view payload). One writer, so the two can
 /// never drift into disagreeing about field names or value encodings.
@@ -324,8 +332,11 @@ fn slots_json(table: &MatrixTable) -> serde_json::Value {
                 serde_json::json!({
                     "source": s.source as u8,
                     "dest": s.dest as u8,
-                    "curve": s.curve as u8,
+                    "polarity": s.polarity as u8,
+                    "shape": s.shape as u8,
                     "scale": s.scale_src as u8,
+                    "scaleShape": s.scale_shape as u8,
+                    "enabled": s.enabled,
                 })
             })
             .collect(),
@@ -764,7 +775,7 @@ mod tests {
     /// on GUI close/reopen.
     #[test]
     fn matrix_json_carries_the_live_topology_not_the_factory() {
-        use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        use vxn1b_engine::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         let mut live = factory_matrices();
         // A route the factory patch does not have, on the second layer, in a
         // slot the factory leaves inert — so a factory seed can't fake it.
@@ -772,7 +783,10 @@ mod tests {
             source: SourceId::Aftertouch,
             dest: DestId::HpfCutoff,
             depth: 0.5,
-            curve: Curve::Exp,
+            polarity: Polarity::Direct,
+            shape: Shape::Exp,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
         let json = build_matrix_json(&live);
@@ -780,7 +794,8 @@ mod tests {
         let slot = &v["slots"][1][7];
         assert_eq!(slot["source"], SourceId::Aftertouch as u8);
         assert_eq!(slot["dest"], DestId::HpfCutoff as u8);
-        assert_eq!(slot["curve"], Curve::Exp as u8);
+        assert_eq!(slot["polarity"], Polarity::Direct as u8);
+        assert_eq!(slot["shape"], Shape::Exp as u8);
         assert_eq!(slot["scale"], SourceId::ModWheel as u8);
         // Layer 1 still reads the (unmodified) live table it was handed.
         assert_eq!(v["slots"][0][0]["source"], SourceId::Env2 as u8);
@@ -794,13 +809,16 @@ mod tests {
     /// pins that the seed really goes through it.
     #[test]
     fn echo_slot_shape_matches_the_open_time_seed() {
-        use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        use vxn1b_engine::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         let mut live = factory_matrices();
         live[0].slots[3] = MatrixSlot {
             source: SourceId::Velocity,
             dest: DestId::Resonance,
             depth: -0.25,
-            curve: Curve::Log,
+            polarity: Polarity::Direct,
+            shape: Shape::Log,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::Env1,
         };
         let seed: serde_json::Value =

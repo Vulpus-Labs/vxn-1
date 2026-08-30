@@ -108,7 +108,7 @@ pub fn voice_hpf_hz(dests: &DestVals, base_hz: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::eval::{DestVals, SourceInputs, eval_dests, eval_sources};
-    use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, N_DESTS, SourceId};
+    use crate::matrix::{DestId, MatrixSlot, MatrixTable, N_DESTS, Polarity, Shape, SourceId};
 
     fn zeros() -> DestVals {
         [0.0; N_DESTS]
@@ -182,7 +182,10 @@ mod tests {
             source: SourceId::Key,
             dest: DestId::Cutoff,
             depth: KEY_CUTOFF_UNITY_DEPTH,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         let s = eval_sources(&SourceInputs { note: 72, ..Default::default() });

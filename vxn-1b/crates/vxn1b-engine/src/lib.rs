@@ -50,7 +50,7 @@ pub use engine::{
 pub use eval::{DestVals, SourceInputs, SourceVals, eval_dests, eval_sources};
 pub use fx::{FxChain, FxParams};
 pub use matrix::{
-    Curve, DestId, MatrixSlot, MatrixSnapshot, MatrixTable, SourceId, default_patch,
+    DestId, MatrixSlot, MatrixSnapshot, MatrixTable, Polarity, Shape, SourceId, default_patch,
 };
 pub use meters::MeterFrame;
 pub use scope::{SCOPE_DECIMATION, SCOPE_WINDOW, ScopeFrame, ScopeOp, ScopeTap};

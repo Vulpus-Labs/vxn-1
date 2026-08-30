@@ -23,7 +23,7 @@
 
 use std::time::Instant;
 
-use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+use vxn1b_engine::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 use vxn1b_engine::params::{global_clap_id, patch_clap_id};
 use vxn1b_engine::{Engine, Layer, MAX_VOICES, ParamId};
 
@@ -93,21 +93,30 @@ fn main() {
             source: SourceId::Lfo2,
             dest: DestId::Lfo1Rate,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         table.slots[4] = MatrixSlot {
             source: SourceId::Lfo1,
             dest: DestId::CrossModAmount,
             depth: 0.8,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         table.slots[5] = MatrixSlot {
             source: SourceId::Env1,
             dest: DestId::Pwm,
             depth: 0.7,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         for (slot, depth) in [(3usize, 1.0f32), (4, 0.8), (5, 0.7)] {

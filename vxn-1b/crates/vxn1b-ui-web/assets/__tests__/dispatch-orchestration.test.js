@@ -300,7 +300,7 @@ describe('init() → applyViewEvents', () => {
   it('swaps the matrix snapshot and repaints the overlay on a topology echo', () => {
     globalThis.window.__vxn = {};
     window.vxn.send = { ready: vi.fn(), setMatrix: vi.fn() };
-    window.vxn.matrix = { sources: [], dests: [], curves: [], slots: [[], []] };
+    window.vxn.matrix = { sources: [], dests: [], polarities: [], shapes: [], slots: [[], []] };
 
     const root = document.createElement('div');
     root.id = 'faceplate';
@@ -323,7 +323,7 @@ describe('init() → applyViewEvents', () => {
     globalThis.window.__vxn = {};
     window.vxn.send = { ready: vi.fn(), setMatrix: vi.fn() };
     const kept = [[{ source: 1, dest: 4, curve: 0, scale: 0 }], []];
-    window.vxn.matrix = { sources: [], dests: [], curves: [], slots: kept };
+    window.vxn.matrix = { sources: [], dests: [], polarities: [], shapes: [], slots: kept };
 
     const root = document.createElement('div');
     root.id = 'faceplate';

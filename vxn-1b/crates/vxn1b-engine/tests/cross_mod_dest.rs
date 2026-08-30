@@ -11,7 +11,7 @@
 //! makes the modulated render directly comparable to an equivalent *patch*
 //! amount, which is a far tighter statement than "the output changed".
 
-use vxn1b_engine::matrix::Curve;
+use vxn1b_engine::matrix::{Polarity, Shape};
 use vxn1b_engine::{DestId, Engine, Layer, MatrixSlot, ParamId, SourceId, clap_id_of};
 
 const SR: f32 = 48_000.0;
@@ -54,7 +54,10 @@ fn render_patch(mode: f32, amount: f32, route_depth: Option<f32>) -> Vec<f32> {
             source: SourceId::Velocity,
             dest: DestId::CrossModAmount,
             depth,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
     }
@@ -142,7 +145,10 @@ fn route_is_per_voice_not_per_bank() {
             source: SourceId::Velocity,
             dest: DestId::CrossModAmount,
             depth: 0.5,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         e.note_on(0, 60, 1.0);

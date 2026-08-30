@@ -10,7 +10,8 @@
 //!   params ([`ParamId::MatrixSlot0Depth`]…), so they serialise in the `f32`
 //!   block like every other param — never in the topology bytes.
 //! - **Topology is not automatable, so it lives here.** Each slot's
-//!   `source`/`dest`/`curve`/`scale_src` is packed as a fixed 5-byte record.
+//!   `enabled`/`source`/`dest`/`polarity`/`shape`/`scale_src`/`scale_shape` is
+//!   packed as a fixed 7-byte record.
 //!
 //! Layout (little-endian):
 //!
@@ -26,7 +27,8 @@
 //!
 //! ```text
 //! params  : f32 × ParamId::COUNT          (inner per-synth block; 16 depths incl.)
-//! matrix  : [active, source, dest, curve, scale] × N_SLOTS   (5 bytes/slot)
+//! matrix  : [enabled, source, dest, polarity, shape, scale, scale-shape]
+//!           × N_SLOTS                                    (7 bytes/slot)
 //! ```
 //!
 //! **No migration pre-release.** Older blobs are rejected on read — every layout
@@ -41,7 +43,7 @@
 //! depth).
 
 use crate::engine::KeyState;
-use crate::matrix::{Curve, DestId, MatrixSlot, MatrixTable, SourceId};
+use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
 use crate::params::{ParamId, Params};
 use std::io::{self, Read, Write};
 
@@ -54,11 +56,17 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 /// written at an older version and read at a newer one would slide topology
 /// bytes into param slots rather than fail cleanly. The rejection three lines
 /// down is what makes that impossible; the version history is in the git log.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
-/// Bytes per packed matrix-topology slot record: `[active, source, dest, curve,
-/// scale]`.
-const SLOT_RECORD: usize = 5;
+/// Bytes per packed matrix-topology slot record: `[enabled, source, dest,
+/// polarity, shape, scale, scale_shape]`.
+///
+/// Widened from 5 at version 13, when the single `curve` byte became the
+/// `polarity`/`shape` pair and the scale VCA gained its own bend. The two axes
+/// are stored as separate bytes rather than the flat code preset files use —
+/// this format rejects older blobs outright (see [`VERSION`]), so it is free to
+/// store the honest shape instead of preserving a legacy encoding.
+const SLOT_RECORD: usize = 7;
 
 /// Inner per-synth param-block length (f32 count) — one [`LayerState`] carries
 /// this many values, ahead of its topology.
@@ -91,20 +99,25 @@ impl LayerState {
         Self { params, matrix }
     }
 
-    /// Write one layer: the inner param block, then one 5-byte topology record
+    /// Write one layer: the inner param block, then one 7-byte topology record
     /// per slot. Slot depths are already in the param block, so the topology
-    /// carries only `source`/`dest`/`curve`/`scale`.
+    /// carries only the switch, the endpoints and the shaping.
     fn write(&self, w: &mut impl Write) -> io::Result<()> {
         for i in 0..LAYER_PARAMS {
             w.write_all(&self.params.get_index(i).to_le_bytes())?;
         }
         for slot in &self.matrix.slots {
             w.write_all(&[
-                slot.is_active() as u8,
+                // The player's switch, not `is_active()` — a switched-off route
+                // must come back switched off with its wiring intact, which is
+                // the whole point of the toggle.
+                slot.enabled as u8,
                 slot.source as u8,
                 slot.dest as u8,
-                slot.curve as u8,
+                slot.polarity as u8,
+                slot.shape as u8,
                 slot.scale_src as u8,
+                slot.scale_shape as u8,
             ])?;
         }
         Ok(())
@@ -203,22 +216,27 @@ impl PluginState {
     }
 }
 
-/// Decode one 5-byte topology record. The active byte is the authoritative
-/// gate (ADR 0009): a cleared bit yields the inert default slot regardless of
-/// the id bytes, and out-of-range ids degrade to `None` via `from_u8`.
+/// Decode one 7-byte topology record.
+///
+/// Byte 0 is the player's on/off switch, and — unlike the pre-13 format, where
+/// it meant "is this slot wired at all" and a cleared bit discarded the record —
+/// a cleared bit here still decodes the rest. A switched-off route keeps its
+/// wiring across a save/load, which is what makes the toggle non-destructive.
+/// Out-of-range ids still degrade to `None` / the fallback via `from_u8`.
 fn decode_slot(rec: [u8; SLOT_RECORD]) -> MatrixSlot {
-    if rec[0] == 0 {
-        return MatrixSlot::default();
-    }
     MatrixSlot {
+        enabled: rec[0] != 0,
         source: SourceId::from_u8(rec[1]),
         dest: DestId::from_u8(rec[2]),
-        curve: Curve::from_u8(rec[3]),
+        polarity: Polarity::from_u8(rec[3]),
+        shape: Shape::from_u8(rec[4]),
         // depth is re-seeded from the param block by the caller.
         depth: 0.0,
-        scale_src: SourceId::from_u8(rec[4]),
+        scale_src: SourceId::from_u8(rec[5]),
+        scale_shape: Shape::from_u8(rec[6]),
     }
 }
+
 
 /// Read one whole slot record. `Ok(None)` on a clean end at a record boundary
 /// (no bytes left — the default-read case); `Ok(Some(_))` on a full record; an
@@ -268,14 +286,20 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         matrix.slots[3] = MatrixSlot {
             source: SourceId::Lfo2,
             dest: DestId::Pitch,
             depth: -0.5,
-            curve: Curve::Bipolar,
+            polarity: Polarity::Bipolar,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
         LayerState { params, matrix }
@@ -301,7 +325,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Cutoff,
             depth: 0.75,
-            curve: Curve::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
         PluginState {

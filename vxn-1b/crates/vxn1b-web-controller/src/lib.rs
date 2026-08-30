@@ -86,8 +86,10 @@ const UNCATEGORISED: &str = vxn_core_app::UNCATEGORISED_LABEL;
 //
 //   VE_PARAM_CHANGED (1):    u32 id, f32 plain, f32 norm, u32 len, [len UTF-8]
 //   VE_MATRIX_SNAPSHOT (2):  per layer (2), per slot (16): u8 source, u8 dest,
-//                            u8 curve, u8 scale_src. Depths are params and ride
-//                            VE_PARAM_CHANGED — same split as the native echo.
+//                            u8 polarity, u8 shape, u8 scale_src,
+//                            u8 scale_shape, u8 enabled. Depths are params and
+//                            ride VE_PARAM_CHANGED — same split as the native
+//                            echo.
 //   VE_KEY_STATE (3):        u8 mode (0 Single / 1 Dual / 2 Split), u8 split
 //                            point, u8 lfo2_link
 //   VE_PRESET_LOADED (4):    u32 name_len + name, u32 source_kind
@@ -529,8 +531,11 @@ impl ControllerState {
             for slot in table.slots.iter() {
                 self.view_out.push(slot.source as u8);
                 self.view_out.push(slot.dest as u8);
-                self.view_out.push(slot.curve as u8);
+                self.view_out.push(slot.polarity as u8);
+                self.view_out.push(slot.shape as u8);
                 self.view_out.push(slot.scale_src as u8);
+                self.view_out.push(slot.scale_shape as u8);
+                self.view_out.push(slot.enabled as u8);
             }
         }
     }
@@ -1318,7 +1323,9 @@ mod tests {
     use super::*;
     use vxn1b_engine::params::{ParamId as P, clap_id_of};
     use vxn1b_engine::params::MATRIX_SLOTS;
-    use vxn1b_engine::{Curve, DestId, KeyMode, MatrixField, PATCH_PARAMS, ScopeOp, ScopeTap, SourceId};
+    use vxn1b_engine::{
+        DestId, KeyMode, MatrixField, PATCH_PARAMS, Polarity, ScopeOp, ScopeTap, Shape, SourceId,
+    };
 
     fn fresh() -> Box<ControllerState> {
         ControllerState::new()
@@ -1337,7 +1344,7 @@ mod tests {
             norm: f32,
             display: String,
         },
-        Matrix(Vec<[u8; 4]>),
+        Matrix(Vec<[u8; 7]>),
         Key {
             mode: u8,
             split: u8,
@@ -1396,7 +1403,15 @@ mod tests {
                 VE_MATRIX_SNAPSHOT => {
                     let mut slots = Vec::new();
                     for _ in 0..(2 * MATRIX_SLOTS) {
-                        slots.push([c.u8(), c.u8(), c.u8(), c.u8()]);
+                        slots.push([
+                            c.u8(),
+                            c.u8(),
+                            c.u8(),
+                            c.u8(),
+                            c.u8(),
+                            c.u8(),
+                            c.u8(),
+                        ]);
                     }
                     Rec::Matrix(slots)
                 }
@@ -1462,7 +1477,7 @@ mod tests {
         })
     }
 
-    fn matrix_rec(recs: &[Rec]) -> Option<Vec<[u8; 4]>> {
+    fn matrix_rec(recs: &[Rec]) -> Option<Vec<[u8; 7]>> {
         recs.iter().find_map(|r| match r {
             Rec::Matrix(s) => Some(s.clone()),
             _ => None,
@@ -1675,7 +1690,11 @@ mod tests {
     fn unknown_matrix_field_or_layer_is_dropped() {
         assert_eq!(vocab::matrix_field_from_wire(0), Some(MatrixField::Source));
         assert_eq!(vocab::matrix_field_from_wire(3), Some(MatrixField::ScaleSrc));
-        assert_eq!(vocab::matrix_field_from_wire(4), None);
+        // 0..=3 are frozen (they predate the polarity/shape split); 4..=6 were
+        // appended after, so 7 is the first ordinal past the table.
+        assert_eq!(vocab::matrix_field_from_wire(4), Some(MatrixField::Shape));
+        assert_eq!(vocab::matrix_field_from_wire(6), Some(MatrixField::Enabled));
+        assert_eq!(vocab::matrix_field_from_wire(7), None);
         assert_eq!(vocab::matrix_field_from_wire(u32::MAX), None);
         assert_eq!(layer_from_wire(0), Some(Layer::L1));
         assert_eq!(layer_from_wire(1), Some(Layer::L2));
@@ -2056,8 +2075,8 @@ mod tests {
         s.post_custom(MatrixEdit {
             layer: Layer::L1,
             slot: 2,
-            field: MatrixField::Curve,
-            value: Curve::Exp as u8,
+            field: MatrixField::Shape,
+            value: Shape::Exp as u8,
         });
         s.tick();
 
@@ -2073,8 +2092,8 @@ mod tests {
         s.post_custom(MatrixEdit {
             layer: Layer::L1,
             slot: 2,
-            field: MatrixField::Curve,
-            value: Curve::Lin as u8,
+            field: MatrixField::Shape,
+            value: Shape::Lin as u8,
         });
         s.tick();
 
@@ -2085,7 +2104,7 @@ mod tests {
 
         assert!((s.model.get(cutoff) - 640.0).abs() < 1.0);
         assert_eq!(s.model.key_state().key_mode(), KeyMode::Split);
-        assert_eq!(s.model.matrix_snapshot()[0].slots[2].curve, Curve::Exp);
+        assert_eq!(s.model.matrix_snapshot()[0].slots[2].shape, Shape::Exp);
 
         let recs = decode(&s.view_out);
         let mut ids = params(&recs);

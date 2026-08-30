@@ -157,11 +157,16 @@ pub fn unpack_matrix_addr(addr: u16) -> Option<(Layer, u8, MatrixField)> {
     if slot as usize >= vxn1b_engine::matrix::N_SLOTS {
         return None;
     }
+    // Ordinals match `vocab::MATRIX_FIELD_NAMES` positions, which are frozen —
+    // 0..3 predate the polarity/shape split and must not move.
     let field = match addr & 0xff {
         0 => MatrixField::Source,
         1 => MatrixField::Dest,
-        2 => MatrixField::Curve,
+        2 => MatrixField::Polarity,
         3 => MatrixField::ScaleSrc,
+        4 => MatrixField::Shape,
+        5 => MatrixField::ScaleShape,
+        6 => MatrixField::Enabled,
         _ => return None,
     };
     Some((layer, slot, field))
@@ -176,8 +181,11 @@ pub const fn matrix_field_code(field: MatrixField) -> u8 {
     match field {
         MatrixField::Source => 0,
         MatrixField::Dest => 1,
-        MatrixField::Curve => 2,
+        MatrixField::Polarity => 2,
         MatrixField::ScaleSrc => 3,
+        MatrixField::Shape => 4,
+        MatrixField::ScaleShape => 5,
+        MatrixField::Enabled => 6,
     }
 }
 
@@ -492,14 +500,17 @@ fn apply_key_op(engine: &mut Engine, op: KeyOp) {
 /// than on a different one.
 #[inline]
 fn apply_matrix_edit(engine: &mut Engine, edit: MatrixEdit) {
-    use vxn1b_engine::matrix::{Curve, DestId, SourceId};
+    use vxn1b_engine::matrix::{DestId, Polarity, Shape, SourceId};
     let table = engine.matrix_mut(edit.layer);
     if let Some(slot) = table.slots.get_mut(edit.slot as usize) {
         match edit.field {
             MatrixField::Source => slot.source = SourceId::from_u8(edit.value),
             MatrixField::Dest => slot.dest = DestId::from_u8(edit.value),
-            MatrixField::Curve => slot.curve = Curve::from_u8(edit.value),
+            MatrixField::Polarity => slot.polarity = Polarity::from_u8(edit.value),
+            MatrixField::Shape => slot.shape = Shape::from_u8(edit.value),
             MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
+            MatrixField::ScaleShape => slot.scale_shape = Shape::from_u8(edit.value),
+            MatrixField::Enabled => slot.enabled = edit.value != 0,
         }
     }
 }
@@ -516,7 +527,7 @@ pub fn decode_and_apply(buf: &[u8], engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vxn1b_engine::matrix::{Curve, DestId, SourceId};
+    use vxn1b_engine::matrix::{DestId, Polarity, Shape, SourceId};
     use vxn1b_engine::params::{ParamId, clap_id_of};
 
     // ── Golden byte table ───────────────────────────────────────────────────
@@ -678,8 +689,11 @@ mod tests {
                 for field in [
                     MatrixField::Source,
                     MatrixField::Dest,
-                    MatrixField::Curve,
+                    MatrixField::Polarity,
                     MatrixField::ScaleSrc,
+                    MatrixField::Shape,
+                    MatrixField::ScaleShape,
+                    MatrixField::Enabled,
                 ] {
                     let addr = pack_matrix_addr(layer_ix, slot, matrix_field_code(field));
                     assert_eq!(unpack_matrix_addr(addr), Some((layer, slot, field)));
@@ -695,7 +709,9 @@ mod tests {
     fn out_of_range_matrix_addresses_decode_to_none() {
         assert_eq!(unpack_matrix_addr(pack_matrix_addr(2, 0, 0)), None, "layer 2");
         assert_eq!(unpack_matrix_addr(0x0001 | (4 << 8) | (0xf << 12)), None, "layer 15");
-        assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 4)), None, "field 4");
+        // Fields 0..=6 are real now that curve split into polarity + shape and
+        // the scale bend + on/off switch joined them; 7 is the first past the end.
+        assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 7)), None, "field 7");
         assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 255)), None, "field 255");
     }
 
@@ -738,11 +754,30 @@ mod tests {
     }
 
     #[test]
-    fn a_curve_edit_decodes_through_the_same_from_u8_the_store_uses() {
+    fn a_shape_edit_decodes_through_the_same_from_u8_the_store_uses() {
         let mut e = engine();
-        let addr = pack_matrix_addr(0, 2, matrix_field_code(MatrixField::Curve));
-        apply(&Event::MatrixEditEv { offset: 0, addr, value: Curve::Exp as u8 }, &mut e);
-        assert_eq!(e.matrix_mut(Layer::L1).slots[2].curve, Curve::Exp);
+        let addr = pack_matrix_addr(0, 2, matrix_field_code(MatrixField::Shape));
+        apply(&Event::MatrixEditEv { offset: 0, addr, value: Shape::Exp as u8 }, &mut e);
+        assert_eq!(e.matrix_mut(Layer::L1).slots[2].shape, Shape::Exp);
+    }
+
+    /// The on/off switch rides the same address wire as every other topology
+    /// field — `value` is simply 0 or 1.
+    #[test]
+    fn an_enabled_edit_toggles_the_slot_without_touching_its_wiring() {
+        let mut e = engine();
+        let addr = pack_matrix_addr(0, 0, matrix_field_code(MatrixField::Enabled));
+        let wired = e.matrix_mut(Layer::L1).slots[0];
+        assert!(wired.is_active(), "the default patch's slot 0 is a live route");
+
+        apply(&Event::MatrixEditEv { offset: 0, addr, value: 0 }, &mut e);
+        let off = e.matrix_mut(Layer::L1).slots[0];
+        assert!(!off.is_active(), "switched off");
+        assert!(off.is_wired(), "but still wired");
+        assert_eq!((off.source, off.dest), (wired.source, wired.dest));
+
+        apply(&Event::MatrixEditEv { offset: 0, addr, value: 1 }, &mut e);
+        assert_eq!(e.matrix_mut(Layer::L1).slots[0], wired, "lossless round trip");
     }
 
     /// The three key-ops fold through `KeyState`, so the mode→toggles mapping is

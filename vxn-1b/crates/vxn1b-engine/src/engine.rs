@@ -121,14 +121,24 @@ pub enum PatchOp {
 pub enum MatrixField {
     Source,
     Dest,
-    Curve,
+    Polarity,
     ScaleSrc,
+    /// Appended after `ScaleSrc` on purpose: `matrix_field_from_wire` decodes by
+    /// **table position**, so the browser wire ordinals of the fields that
+    /// already existed must not move. `Polarity` reuses the retired `Curve`
+    /// slot, which carried the same meaning for a table whose only polarity was
+    /// the `bipolar` curve.
+    Shape,
+    ScaleShape,
+    /// The player's on/off switch. `value` is `0` / `1`.
+    Enabled,
 }
 
 /// A UI edit to one matrix slot's topology on one layer. `value` is the
-/// wire `u8` (a `SourceId` / `DestId` / `Curve` discriminant); the store decodes
-/// it via `from_u8`. Carried as a `UiEvent::Custom` payload alongside [`KeyOp`],
-/// applied to the shared per-layer matrix channel + a reload.
+/// wire `u8` (a `SourceId` / `DestId` / `Polarity` / `Shape` discriminant, or
+/// `0`/`1` for `Enabled`); the store decodes it via `from_u8`. Carried as a
+/// `UiEvent::Custom` payload alongside [`KeyOp`], applied to the shared
+/// per-layer matrix channel + a reload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatrixEdit {
     pub layer: Layer,
@@ -1586,7 +1596,7 @@ mod tests {
     /// Wire `LFO 2 → Cutoff` at full depth on both layers and give them
     /// **different** LFO 2 rates, so nothing but the link can hold them together.
     fn dual_engine_with_lfo2_to_cutoff() -> Engine {
-        use crate::matrix::{Curve, DestId, MatrixSlot, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         let mut e = Engine::new(48_000.0);
         e.set_layer2_on(true);
         for s in 0..2 {
@@ -1594,7 +1604,10 @@ mod tests {
                 source: SourceId::Lfo2,
                 dest: DestId::Cutoff,
                 depth: 1.0,
-                curve: Curve::Lin,
+                polarity: Polarity::Direct,
+                shape: Shape::Lin,
+                enabled: true,
+                scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };
             e.synths[s].set_param(ParamId::MatrixSlot1Depth as usize, 1.0);

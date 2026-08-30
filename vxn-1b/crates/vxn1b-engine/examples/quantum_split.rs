@@ -25,7 +25,7 @@
 
 use std::time::Instant;
 
-use vxn1b_engine::matrix::{Curve, DestId, MatrixSlot, SourceId};
+use vxn1b_engine::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 use vxn1b_engine::params::{global_clap_id, patch_clap_id};
 use vxn1b_engine::{Engine, Layer, ParamId};
 
@@ -96,20 +96,20 @@ fn sequence(cap: usize) -> Vec<(usize, Ev)> {
 /// The routes, in the order they are filled. Deliberately spread across cheap
 /// dests (scalars the block-start pass just stores) and expensive ones (the
 /// per-quantum smoothed pitch family, the filter cook, the chained `Lfo1Rate`),
-/// with two `scale_src` VCAs and two non-linear curves.
-const ROUTES: [(SourceId, DestId, f32, Curve, SourceId); 12] = [
-    (SourceId::Env2, DestId::Amp, 1.0, Curve::Lin, SourceId::None),
-    (SourceId::Lfo1, DestId::Pitch, 0.35, Curve::Lin, SourceId::ModWheel),
-    (SourceId::Spread, DestId::Pan, 1.0, Curve::Lin, SourceId::None),
-    (SourceId::Env1, DestId::Cutoff, 0.55, Curve::Exp, SourceId::Velocity),
-    (SourceId::Velocity, DestId::Amp, 0.4, Curve::Lin, SourceId::None),
-    (SourceId::Lfo2, DestId::Lfo1Rate, 0.6, Curve::Lin, SourceId::None),
-    (SourceId::Lfo1, DestId::Pwm, 0.5, Curve::Lin, SourceId::None),
-    (SourceId::Key, DestId::Cutoff, 0.3, Curve::Lin, SourceId::None),
-    (SourceId::Aftertouch, DestId::CrossModAmount, 0.7, Curve::Exp, SourceId::None),
-    (SourceId::Env1, DestId::XModSweep, 0.45, Curve::Lin, SourceId::None),
-    (SourceId::NoteRandom, DestId::Osc2Pwm, 0.3, Curve::Lin, SourceId::None),
-    (SourceId::Lfo2, DestId::HpfCutoff, 0.35, Curve::Lin, SourceId::None),
+/// with two `scale_src` VCAs and two non-linear shapes.
+const ROUTES: [(SourceId, DestId, f32, Shape, SourceId); 12] = [
+    (SourceId::Env2, DestId::Amp, 1.0, Shape::Lin, SourceId::None),
+    (SourceId::Lfo1, DestId::Pitch, 0.35, Shape::Lin, SourceId::ModWheel),
+    (SourceId::Spread, DestId::Pan, 1.0, Shape::Lin, SourceId::None),
+    (SourceId::Env1, DestId::Cutoff, 0.55, Shape::Exp, SourceId::Velocity),
+    (SourceId::Velocity, DestId::Amp, 0.4, Shape::Lin, SourceId::None),
+    (SourceId::Lfo2, DestId::Lfo1Rate, 0.6, Shape::Lin, SourceId::None),
+    (SourceId::Lfo1, DestId::Pwm, 0.5, Shape::Lin, SourceId::None),
+    (SourceId::Key, DestId::Cutoff, 0.3, Shape::Lin, SourceId::None),
+    (SourceId::Aftertouch, DestId::CrossModAmount, 0.7, Shape::Exp, SourceId::None),
+    (SourceId::Env1, DestId::XModSweep, 0.45, Shape::Lin, SourceId::None),
+    (SourceId::NoteRandom, DestId::Osc2Pwm, 0.3, Shape::Lin, SourceId::None),
+    (SourceId::Lfo2, DestId::HpfCutoff, 0.35, Shape::Lin, SourceId::None),
 ];
 
 fn env(key: &str, default: f32) -> f32 {
@@ -178,8 +178,11 @@ fn build(routes: usize, dual: bool, os: f32, fx: f32) -> Engine {
                     source: r.0,
                     dest: r.1,
                     depth: r.2,
-                    curve: r.3,
+                    polarity: Polarity::Direct,
+                    shape: r.3,
+                    enabled: true,
                     scale_src: r.4,
+                    scale_shape: Shape::Lin,
                 };
             }
         }
