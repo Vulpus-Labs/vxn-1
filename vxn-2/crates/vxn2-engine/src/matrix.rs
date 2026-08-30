@@ -99,8 +99,31 @@
 
 use vxn2_dsp::smoother::one_pole_coeff;
 use vxn2_dsp::stack::STACK_LANES;
+use vxn_core_matrix::curve::{
+    bend_exp, bend_lin, bend_log, clamp_unit, fold_bipolar, fold_unipolar, pol_abs, pol_bipolar,
+    pol_direct, shape_exp, shape_lin, shape_log,
+};
+use vxn_core_matrix::matrix_enum;
 
 use crate::modulation::ModBlock;
+
+/// The curve-shaping vocabulary, re-exported from [`vxn_core_matrix::curve`] so
+/// that `crate::matrix::Shape` keeps meaning what it always did.
+///
+/// Both axes, their name/label tables, the flat wire codec and the scale VCA
+/// live in the shared crate as of ticket 0330 (epic E049). VXN1b's matrix is a
+/// hand-port of this one and had picked up its own copy of all of it 96 minutes
+/// after this one was written; what stays here is the roster — which sources and
+/// destinations *this* synth can route, and what they mean.
+///
+/// The two enums were `ShapeKind` / `PolarityKind` here and `Shape` / `Polarity`
+/// in vxn-1b. The shorter names won: there is no other `Shape` in this crate to
+/// disambiguate from (the LFO and ADSR shapes are param enums in `params`, not
+/// types), and the `Kind` suffix was carrying no information.
+pub use vxn_core_matrix::curve::{
+    CURVE_LABELS, CURVE_NAMES, N_CURVES, N_POLARITIES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES,
+    Polarity, SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split, scale_norm,
+};
 
 /// Slot count per patch. ADR §6 sets this at 16 for v1.
 pub const N_SLOTS: usize = 16;
@@ -202,28 +225,37 @@ pub fn coherence(src: SourceId, dst: DestId) -> Coherence {
     Coherence::Ok
 }
 
-/// Modulation source. `None` is the "empty slot" sentinel — slots whose
-/// source is `None` skip evaluation cheaply.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum SourceId {
+matrix_enum! {
+    /// Modulation source. `None` is the "empty slot" sentinel — slots whose
+    /// source is `None` skip evaluation cheaply.
+    ///
+    /// The `uni` / `bi` column is this source's own polarity, which
+    /// [`scale_norm`] folds a scale source by. It is not optional, so a new
+    /// source forces a polarity decision at compile time and cannot drift from
+    /// the row it belongs to.
+    SourceId, fallback = None, names = SOURCE_NAMES,
+    labels = SOURCE_LABELS, polarity;
     #[default]
-    None = 0,
-    Lfo1 = 1,
-    Lfo2 = 2,
-    PitchEg = 3,
-    ModEnv = 4,
-    ModWheel = 5,
-    Aftertouch = 6,
-    Velocity = 7,
-    Key = 8,
-    VoiceIdx = 9,
-    VoiceSpread = 10,
-    VoiceRand = 11,
+    None = 0, "none", "—", uni;
+    Lfo1 = 1, "lfo1", "LFO 1", bi;
+    Lfo2 = 2, "lfo2", "LFO 2", bi;
+    PitchEg = 3, "pitch-eg", "Pitch EG", bi;
+    ModEnv = 4, "mod-env", "Mod Env", uni;
+    ModWheel = 5, "mod-wheel", "Mod Wheel", uni;
+    Aftertouch = 6, "aftertouch", "Aftertouch", uni;
+    Velocity = 7, "velocity", "Velocity", uni;
+    Key = 8, "key", "Key", uni;
+    VoiceIdx = 9, "voice-idx", "Voice Idx", uni;
+    VoiceSpread = 10, "voice-spread", "Voice Spread", bi;
+    /// Per-lane note-on random. `[0, 1)` and therefore **unipolar**: treating
+    /// it as bipolar would compress the random into `[0.5, 1)` and it could
+    /// never gate a route to zero.
+    VoiceRand = 11, "voice-rand", "Voice Rand", uni;
 }
 
-/// Count of non-sentinel sources (i.e. `SourceId::None` excluded).
-pub const N_SOURCES: usize = 11;
+/// Count of non-sentinel sources (i.e. `SourceId::None` excluded). Derived from
+/// the generated table, so adding a row cannot leave it stale.
+pub const N_SOURCES: usize = SOURCE_NAMES.len() - 1;
 
 impl SourceId {
     /// Granularity tier of this source. Exhaustive — a new source
@@ -244,22 +276,6 @@ impl SourceId {
         }
     }
 
-    /// Whether this source emits a bipolar `[-1, 1]` shape (vs a unipolar
-    /// `[0, 1]` one). Used by [`scale_norm`] to fold a bipolar scale source
-    /// into the `[0, 1]` VCA range. Exhaustive so a new source forces a
-    /// polarity decision at compile time.
-    ///
-    /// NB: `VoiceRand` is `[0, 1)` (unipolar) — treating it as bipolar would
-    /// compress a `[0, 1)` random into `[0.5, 1)` and never gate to zero, so
-    /// it stays unipolar (passthrough) here.
-    #[inline]
-    pub const fn is_bipolar(self) -> bool {
-        matches!(
-            self,
-            SourceId::Lfo1 | SourceId::Lfo2 | SourceId::PitchEg | SourceId::VoiceSpread
-        )
-    }
-
     /// Index into the per-lane source lookup, or `None` for the sentinel.
     #[inline]
     pub const fn idx(self) -> Option<usize> {
@@ -268,154 +284,113 @@ impl SourceId {
             _ => Some(self as usize - 1),
         }
     }
-
-    /// Decode a wire-format `u8`. Out-of-range → [`SourceId::None`] so a
-    /// corrupt patch blob degrades to an inert slot rather than panicking.
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => SourceId::Lfo1,
-            2 => SourceId::Lfo2,
-            3 => SourceId::PitchEg,
-            4 => SourceId::ModEnv,
-            5 => SourceId::ModWheel,
-            6 => SourceId::Aftertouch,
-            7 => SourceId::Velocity,
-            8 => SourceId::Key,
-            9 => SourceId::VoiceIdx,
-            10 => SourceId::VoiceSpread,
-            11 => SourceId::VoiceRand,
-            _ => SourceId::None,
-        }
-    }
 }
 
-/// Source machine id (kebab-case, stable wire name). Index matches
-/// `SourceId as u8` — `None` at index 0, then `Lfo1`..`VoiceRand`.
-pub const SOURCE_NAMES: [&str; N_SOURCES + 1] = [
-    "none",
-    "lfo1",
-    "lfo2",
-    "pitch-eg",
-    "mod-env",
-    "mod-wheel",
-    "aftertouch",
-    "velocity",
-    "key",
-    "voice-idx",
-    "voice-spread",
-    "voice-rand",
-];
-
-/// Source display label. Same indexing as [`SOURCE_NAMES`].
-pub const SOURCE_LABELS: [&str; N_SOURCES + 1] = [
-    "—",
-    "LFO 1",
-    "LFO 2",
-    "Pitch EG",
-    "Mod Env",
-    "Mod Wheel",
-    "Aftertouch",
-    "Velocity",
-    "Key",
-    "Voice Idx",
-    "Voice Spread",
-    "Voice Rand",
-];
-
-/// Modulation destination. `None` is the "empty slot" sentinel.
-///
-/// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
-/// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
-/// 2 FX, a single `Feedback` dest, plus 2 filter dests (`Cutoff`,
-/// `Resonance`), plus 6 per-op stack-pitch dests (`OpNStackPitch`). Feedback
-/// modulates the algorithm's structural FB op only, but applies per lane —
-/// it's a voice property, unlike the post-mixdown FX dests.
-///
-/// Appended dests (stack-pitch, phase, filter-drive, eg-rate) sit past
-/// `Resonance` so the blob dest space stays a 1:1 prefix for older patches.
-///
-/// ## Audio wiring status
-///
-/// Live (consumed by [`crate::engine::Engine::process_block`]):
-/// - `Op{1..6}Level` — additive per-lane offset on EG level pre-sine.
-/// - `Op{1..6}Pitch` — per-lane semitones added to the op pitch sum before
-///   `phase_inc` recompute.
-/// - `Op{1..6}Pan` — added to the equal-power pan curve per lane.
-/// - `GlobalPitch` — per-lane semitones added to the stack pitch sum.
-/// - `DelayMix` / `ReverbMix` — averaged at lane 0 across active stacks
-///   and pushed to the FX param surface each block.
-/// - `Feedback` — per-lane: each lane's accumulated amount is added to the
-///   patch feedback and cooked via `set_feedback_live_lanes`, so per-lane
-///   sources (VoiceSpread, LFO2, …) give each unison lane its own growl.
-///
-/// Live (continued):
-/// - `Lfo2Phase` — per-lane LFO2 phase offset. The smoothed per-lane value is
-///   applied as a wrapping Q32 phase add to each stack's LFO2 before its
-///   next-block `eval` (one-block latency). `voice-rand → lfo2-phase` is the
-///   canonical supersaw-shimmer route.
-/// - `Lfo1Rate` (patch-global) / `Lfo2Rate` (per-stack) — log-domain rate
-///   offset: the accumulator is in *octaves*, applied as `rate · 2^oct`.
-///   Computed from the previous block's accumulator (one-block latency) to
-///   sidestep rate-on-self ordering, and gated so an un-targeted dest leaves
-///   the LFO tick bit-identical.
-/// - `StackDetune` (per-stack) — scales the per-lane note-on detune by
-///   `(1 + mod)`, folded into the block-rate `apply_pitch_mult` recompute.
-///   Fresh notes snap; dynamic motion is one-pole smoothed.
-/// - `StackSpread` (per-stack) — scales the `VoiceSpread` matrix source's
-///   width by `(1 + mod)` (one-block latency).
-///
-/// Routable in the matrix UI but NOT yet consumed in audio:
-/// - `Cutoff` / `Resonance` — the optional per-voice filter dests. Both
-///   collapse to a per-stack scalar (lane-0). `Cutoff` is in octaves (log
-///   domain); `Resonance` is an additive `[0, 1]` offset.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum DestId {
+matrix_enum! {
+    /// Modulation destination. `None` is the "empty slot" sentinel.
+    ///
+    /// Per-op dests are laid out in op-major order (`op1_*` block, then `op2_*`,
+    /// …). 6 ops × 3 dests each = 18 op dests. Plus 4 global, 2 stack-macro,
+    /// 2 FX, a single `Feedback` dest, plus 2 filter dests (`Cutoff`,
+    /// `Resonance`), plus 6 per-op stack-pitch dests (`OpNStackPitch`). Feedback
+    /// modulates the algorithm's structural FB op only, but applies per lane —
+    /// it's a voice property, unlike the post-mixdown FX dests.
+    ///
+    /// Appended dests (stack-pitch, phase, filter-drive, eg-rate) sit past
+    /// `Resonance` so the blob dest space stays a 1:1 prefix for older patches.
+    ///
+    /// ## Audio wiring status
+    ///
+    /// Live (consumed by [`crate::engine::Engine::process_block`]):
+    /// - `Op{1..6}Level` — additive per-lane offset on EG level pre-sine.
+    /// - `Op{1..6}Pitch` — per-lane semitones added to the op pitch sum before
+    ///   `phase_inc` recompute.
+    /// - `Op{1..6}Pan` — added to the equal-power pan curve per lane.
+    /// - `GlobalPitch` — per-lane semitones added to the stack pitch sum.
+    /// - `DelayMix` / `ReverbMix` — averaged at lane 0 across active stacks
+    ///   and pushed to the FX param surface each block.
+    /// - `Feedback` — per-lane: each lane's accumulated amount is added to the
+    ///   patch feedback and cooked via `set_feedback_live_lanes`, so per-lane
+    ///   sources (VoiceSpread, LFO2, …) give each unison lane its own growl.
+    ///
+    /// Live (continued):
+    /// - `Lfo2Phase` — per-lane LFO2 phase offset. The smoothed per-lane value is
+    ///   applied as a wrapping Q32 phase add to each stack's LFO2 before its
+    ///   next-block `eval` (one-block latency). `voice-rand → lfo2-phase` is the
+    ///   canonical supersaw-shimmer route.
+    /// - `Lfo1Rate` (patch-global) / `Lfo2Rate` (per-stack) — log-domain rate
+    ///   offset: the accumulator is in *octaves*, applied as `rate · 2^oct`.
+    ///   Computed from the previous block's accumulator (one-block latency) to
+    ///   sidestep rate-on-self ordering, and gated so an un-targeted dest leaves
+    ///   the LFO tick bit-identical.
+    /// - `StackDetune` (per-stack) — scales the per-lane note-on detune by
+    ///   `(1 + mod)`, folded into the block-rate `apply_pitch_mult` recompute.
+    ///   Fresh notes snap; dynamic motion is one-pole smoothed.
+    /// - `StackSpread` (per-stack) — scales the `VoiceSpread` matrix source's
+    ///   width by `(1 + mod)` (one-block latency).
+    ///
+    /// Routable in the matrix UI but NOT yet consumed in audio:
+    /// - `Cutoff` / `Resonance` — the optional per-voice filter dests. Both
+    ///   collapse to a per-stack scalar (lane-0). `Cutoff` is in octaves (log
+    ///   domain); `Resonance` is an additive `[0, 1]` offset.
+    DestId, fallback = None, names = DEST_NAMES,
+    labels = DEST_LABELS;
     #[default]
-    None = 0,
-    Op1Pitch = 1, Op1Level, Op1Pan,
-    Op2Pitch, Op2Level, Op2Pan,
-    Op3Pitch, Op3Level, Op3Pan,
-    Op4Pitch, Op4Level, Op4Pan,
-    Op5Pitch, Op5Level, Op5Pan,
-    Op6Pitch, Op6Level, Op6Pan,
-    GlobalPitch,
-    Lfo1Rate,
-    Lfo2Rate,
-    Lfo2Phase,
-    StackDetune,
-    StackSpread,
-    DelayMix,
-    ReverbMix,
-    Feedback,
-    Cutoff,
-    Resonance,
+    None = 0, "none", "—";
+    Op1Pitch = 1, "op1-pitch", "Op 1 Pitch";
+    Op1Level = 2, "op1-level", "Op 1 Level";
+    Op1Pan = 3, "op1-pan", "Op 1 Pan";
+    Op2Pitch = 4, "op2-pitch", "Op 2 Pitch";
+    Op2Level = 5, "op2-level", "Op 2 Level";
+    Op2Pan = 6, "op2-pan", "Op 2 Pan";
+    Op3Pitch = 7, "op3-pitch", "Op 3 Pitch";
+    Op3Level = 8, "op3-level", "Op 3 Level";
+    Op3Pan = 9, "op3-pan", "Op 3 Pan";
+    Op4Pitch = 10, "op4-pitch", "Op 4 Pitch";
+    Op4Level = 11, "op4-level", "Op 4 Level";
+    Op4Pan = 12, "op4-pan", "Op 4 Pan";
+    Op5Pitch = 13, "op5-pitch", "Op 5 Pitch";
+    Op5Level = 14, "op5-level", "Op 5 Level";
+    Op5Pan = 15, "op5-pan", "Op 5 Pan";
+    Op6Pitch = 16, "op6-pitch", "Op 6 Pitch";
+    Op6Level = 17, "op6-level", "Op 6 Level";
+    Op6Pan = 18, "op6-pan", "Op 6 Pan";
+    GlobalPitch = 19, "global-pitch", "Global Pitch";
+    Lfo1Rate = 20, "lfo1-rate", "LFO 1 Rate";
+    Lfo2Rate = 21, "lfo2-rate", "LFO 2 Rate";
+    Lfo2Phase = 22, "lfo2-phase", "LFO 2 Phase";
+    StackDetune = 23, "stack-detune", "Stack Detune";
+    StackSpread = 24, "stack-spread", "Stack Spread";
+    DelayMix = 25, "delay-mix", "Delay Mix";
+    ReverbMix = 26, "reverb-mix", "Reverb Mix";
+    Feedback = 27, "feedback", "Feedback";
+    Cutoff = 28, "cutoff", "Cutoff";
+    Resonance = 29, "resonance", "Resonance";
     // Stack-pitch dests: a pitch route to `OpNStackPitch` bends op N *and its
     // whole ratio-coherent FM stack* by the same semitone delta (cook-time
     // scatter). Same per-lane pitch semantics as `OpNPitch`.
-    Op1StackPitch,
-    Op2StackPitch,
-    Op3StackPitch,
-    Op4StackPitch,
-    Op5StackPitch,
-    Op6StackPitch,
+    Op1StackPitch = 30, "op1-stack-pitch", "Op 1 Stack Pitch";
+    Op2StackPitch = 31, "op2-stack-pitch", "Op 2 Stack Pitch";
+    Op3StackPitch = 32, "op3-stack-pitch", "Op 3 Stack Pitch";
+    Op4StackPitch = 33, "op4-stack-pitch", "Op 4 Stack Pitch";
+    Op5StackPitch = 34, "op5-stack-pitch", "Op 5 Stack Pitch";
+    Op6StackPitch = 35, "op6-stack-pitch", "Op 6 Stack Pitch";
     // Per-op note-on phase offset dests: a continuous, ramped per-lane phase
     // offset added at the sine read, on top of the static note-on
     // `op{n}-phase`. Per-lane, linear (no cubic taper), gain 1.0 = ±1 cycle.
     // Applied via the level/pan-style ramp, not the pitch smoother — it's a
     // phase offset, not a frequency.
-    Op1Phase,
-    Op2Phase,
-    Op3Phase,
-    Op4Phase,
-    Op5Phase,
-    Op6Phase,
+    Op1Phase = 36, "op1-phase", "Op 1 Phase";
+    Op2Phase = 37, "op2-phase", "Op 2 Phase";
+    Op3Phase = 38, "op3-phase", "Op 3 Phase";
+    Op4Phase = 39, "op4-phase", "Op 4 Phase";
+    Op5Phase = 40, "op5-phase", "Op 5 Phase";
+    Op6Phase = 41, "op6-phase", "Op 6 Phase";
     // Filter drive dest: scales the OTA ladder pre-gain. Per-stack scalar like
     // cutoff/resonance (collapses to lane 0). Log/octave domain (gain 4.0 = ±4
     // oct), consumer applies `drive · 2^value` then clamps to the [0.1, 16]
     // param range.
-    FilterDrive,
+    FilterDrive = 42, "filter-drive", "Filter Drive";
     // Amp-EG rate dests: scale the amplitude envelope's march *rate* per unison
     // lane, so a `voice-spread → eg-rate` route makes the voices in a stack
     // evolve their envelopes at slightly different speeds. **Per-lane** (each
@@ -426,92 +401,30 @@ pub enum DestId {
     // LFO-rate / cutoff dests). `GlobalEgRate` scales all the envelopes (the six
     // op amp EGs, the pitch EG, and the mod env); the per-op / per-env dests add
     // on top of it.
-    GlobalEgRate,
-    Op1EgRate,
-    Op2EgRate,
-    Op3EgRate,
-    Op4EgRate,
-    Op5EgRate,
-    Op6EgRate,
+    GlobalEgRate = 43, "global-eg-rate", "Global EG Rate";
+    Op1EgRate = 44, "op1-eg-rate", "Op 1 EG Rate";
+    Op2EgRate = 45, "op2-eg-rate", "Op 2 EG Rate";
+    Op3EgRate = 46, "op3-eg-rate", "Op 3 EG Rate";
+    Op4EgRate = 47, "op4-eg-rate", "Op 4 EG Rate";
+    Op5EgRate = 48, "op5-eg-rate", "Op 5 EG Rate";
+    Op6EgRate = 49, "op6-eg-rate", "Op 6 EG Rate";
     // Pitch-EG rate dest: scales the per-lane Pitch EG sweep rate, so a
     // `voice-spread → pitch-eg-rate` route decorrelates the pitch sweep across
     // the unison stack (chorusing). **Per-lane** like the amp eg-rate dests;
     // `GlobalEgRate` also feeds it. Same note-on-static log/octave (±4 oct)
     // treatment.
-    PitchEgRate,
+    PitchEgRate = 50, "pitch-eg-rate", "Pitch EG Rate";
     // Mod-Env rate dest: scales the Mod Env's ADSR speed. The Mod Env is
     // one-per-voice (it drives per-stack targets like filter cutoff, where lane
     // decorrelation is meaningless), so this is **per-stack** — a `voice-spread`
     // source correctly reads as tier-collapse; drive it from per-stack sources
     // (velocity, key, LFO). `GlobalEgRate` (lane-0 collapse) also feeds it.
-    ModEnvRate,
+    ModEnvRate = 51, "mod-env-rate", "Mod Env Rate";
 }
 
-/// Count of non-sentinel destinations.
-pub const N_DESTS: usize = 51;
-
-/// Destination machine id (kebab-case wire name). Index matches
-/// `DestId as u8` — `None` at index 0, then `Op1Pitch`..`Feedback`.
-pub const DEST_NAMES: [&str; N_DESTS + 1] = [
-    "none",
-    "op1-pitch", "op1-level", "op1-pan",
-    "op2-pitch", "op2-level", "op2-pan",
-    "op3-pitch", "op3-level", "op3-pan",
-    "op4-pitch", "op4-level", "op4-pan",
-    "op5-pitch", "op5-level", "op5-pan",
-    "op6-pitch", "op6-level", "op6-pan",
-    "global-pitch",
-    "lfo1-rate",
-    "lfo2-rate",
-    "lfo2-phase",
-    "stack-detune",
-    "stack-spread",
-    "delay-mix",
-    "reverb-mix",
-    "feedback",
-    "cutoff",
-    "resonance",
-    "op1-stack-pitch", "op2-stack-pitch", "op3-stack-pitch",
-    "op4-stack-pitch", "op5-stack-pitch", "op6-stack-pitch",
-    "op1-phase", "op2-phase", "op3-phase",
-    "op4-phase", "op5-phase", "op6-phase",
-    "filter-drive",
-    "global-eg-rate",
-    "op1-eg-rate", "op2-eg-rate", "op3-eg-rate",
-    "op4-eg-rate", "op5-eg-rate", "op6-eg-rate",
-    "pitch-eg-rate", "mod-env-rate",
-];
-
-/// Destination display label. Same indexing as [`DEST_NAMES`].
-pub const DEST_LABELS: [&str; N_DESTS + 1] = [
-    "—",
-    "Op 1 Pitch", "Op 1 Level", "Op 1 Pan",
-    "Op 2 Pitch", "Op 2 Level", "Op 2 Pan",
-    "Op 3 Pitch", "Op 3 Level", "Op 3 Pan",
-    "Op 4 Pitch", "Op 4 Level", "Op 4 Pan",
-    "Op 5 Pitch", "Op 5 Level", "Op 5 Pan",
-    "Op 6 Pitch", "Op 6 Level", "Op 6 Pan",
-    "Global Pitch",
-    "LFO 1 Rate",
-    "LFO 2 Rate",
-    "LFO 2 Phase",
-    "Stack Detune",
-    "Stack Spread",
-    "Delay Mix",
-    "Reverb Mix",
-    "Feedback",
-    "Cutoff",
-    "Resonance",
-    "Op 1 Stack Pitch", "Op 2 Stack Pitch", "Op 3 Stack Pitch",
-    "Op 4 Stack Pitch", "Op 5 Stack Pitch", "Op 6 Stack Pitch",
-    "Op 1 Phase", "Op 2 Phase", "Op 3 Phase",
-    "Op 4 Phase", "Op 5 Phase", "Op 6 Phase",
-    "Filter Drive",
-    "Global EG Rate",
-    "Op 1 EG Rate", "Op 2 EG Rate", "Op 3 EG Rate",
-    "Op 4 EG Rate", "Op 5 EG Rate", "Op 6 EG Rate",
-    "Pitch EG Rate", "Mod Env Rate",
-];
+/// Count of non-sentinel destinations. Derived from the generated table, like
+/// [`N_SOURCES`].
+pub const N_DESTS: usize = DEST_NAMES.len() - 1;
 
 /// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
 /// a unitless `[-1, 1]`; each source is a normalized shape, and this table
@@ -678,66 +591,6 @@ impl DestId {
         }
     }
 
-    /// Decode a wire-format `u8`. Out-of-range → [`DestId::None`] so a corrupt
-    /// patch blob degrades to an inert slot rather than panicking.
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => DestId::Op1Pitch,
-            2 => DestId::Op1Level,
-            3 => DestId::Op1Pan,
-            4 => DestId::Op2Pitch,
-            5 => DestId::Op2Level,
-            6 => DestId::Op2Pan,
-            7 => DestId::Op3Pitch,
-            8 => DestId::Op3Level,
-            9 => DestId::Op3Pan,
-            10 => DestId::Op4Pitch,
-            11 => DestId::Op4Level,
-            12 => DestId::Op4Pan,
-            13 => DestId::Op5Pitch,
-            14 => DestId::Op5Level,
-            15 => DestId::Op5Pan,
-            16 => DestId::Op6Pitch,
-            17 => DestId::Op6Level,
-            18 => DestId::Op6Pan,
-            19 => DestId::GlobalPitch,
-            20 => DestId::Lfo1Rate,
-            21 => DestId::Lfo2Rate,
-            22 => DestId::Lfo2Phase,
-            23 => DestId::StackDetune,
-            24 => DestId::StackSpread,
-            25 => DestId::DelayMix,
-            26 => DestId::ReverbMix,
-            27 => DestId::Feedback,
-            28 => DestId::Cutoff,
-            29 => DestId::Resonance,
-            30 => DestId::Op1StackPitch,
-            31 => DestId::Op2StackPitch,
-            32 => DestId::Op3StackPitch,
-            33 => DestId::Op4StackPitch,
-            34 => DestId::Op5StackPitch,
-            35 => DestId::Op6StackPitch,
-            36 => DestId::Op1Phase,
-            37 => DestId::Op2Phase,
-            38 => DestId::Op3Phase,
-            39 => DestId::Op4Phase,
-            40 => DestId::Op5Phase,
-            41 => DestId::Op6Phase,
-            42 => DestId::FilterDrive,
-            43 => DestId::GlobalEgRate,
-            44 => DestId::Op1EgRate,
-            45 => DestId::Op2EgRate,
-            46 => DestId::Op3EgRate,
-            47 => DestId::Op4EgRate,
-            48 => DestId::Op5EgRate,
-            49 => DestId::Op6EgRate,
-            50 => DestId::PitchEgRate,
-            51 => DestId::ModEnvRate,
-            _ => DestId::None,
-        }
-    }
-
     /// Cubic depth taper for the ±24 st semitone dests. Linear depth puts
     /// vibrato-scale amounts (≤ 0.5 st) inside the bottom 2% of widget
     /// travel; `d³` keeps the sign and the full ±2 oct reach while widening
@@ -797,234 +650,15 @@ pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = [
 
 pub const N_PITCH_DESTS: usize = 8;
 
-/// Shaping applied to a source value before depth scaling.
-///
-/// A slot's shaping decomposes into two orthogonal axes: a [`PolarityKind`]
-/// that maps the source's range, then a `ShapeKind` that bends the response
-/// within it. Polarity runs **first**, shape second — so `bipolar` + `exp`
-/// squares the AC-coupled value, not the raw one.
-///
-/// - `Lin` — identity (passthrough).
-/// - `Exp` — signed square: `sign(v) · v²`. More extreme excursions.
-/// - `Log` — signed square root: `sign(v) · √|v|`. Compresses toward 0.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum ShapeKind {
-    #[default]
-    Lin = 0,
-    Exp,
-    Log,
-}
-
-/// Count of shape variants.
-pub const N_SHAPES: usize = 3;
-
-/// Shape machine id. Index matches `ShapeKind as u8`.
-pub const SHAPE_NAMES: [&str; N_SHAPES] = ["lin", "exp", "log"];
-
-/// Shape display label. Same indexing as [`SHAPE_NAMES`].
-pub const SHAPE_LABELS: [&str; N_SHAPES] = ["Lin", "Exp", "Log"];
-
-impl ShapeKind {
-    /// Decode a wire-format `u8`. Out-of-range → [`ShapeKind::Lin`].
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => ShapeKind::Exp,
-            2 => ShapeKind::Log,
-            _ => ShapeKind::Lin,
-        }
-    }
-}
-
-/// Range mapping applied to a source value before the [`ShapeKind`] bend.
-///
-/// - `Direct` — passthrough. The source's native polarity reaches the dest.
-/// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, +1]` via
-///   `2v - 1`. Useful when routing mod-wheel / aftertouch into a pitch dest
-///   that wants centred swing.
-/// - `Abs` — rectify a bipolar `[-1, +1]` source to `[0, 1]` via `|v|`, so
-///   the route is strongest at *both* extremes and silent at centre. The
-///   motivating case is `voice-spread → op-pan`: `direct` pans lanes in
-///   proportion to their spread position, `abs` instead applies the route
-///   only to the outer lanes and leaves the centre lanes alone. Identity for
-///   a source that is already unipolar.
-///
-///   Depth sign picks which way the edges move, which covers the mirror case
-///   too: with negative depth the edge lanes are pulled *away* from the
-///   dest's own parameter value while the centre lanes keep it — "more at the
-///   centre" needs no separate `1 - |v|` mapping, because the parameter is
-///   already the offset such a mapping would re-derive.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum PolarityKind {
-    #[default]
-    Direct = 0,
-    Bipolar,
-    Abs,
-}
-
-/// Count of polarity variants.
-pub const N_POLARITIES: usize = 3;
-
-/// Polarity machine id. Index matches `PolarityKind as u8`.
-pub const POLARITY_NAMES: [&str; N_POLARITIES] = ["direct", "bipolar", "abs"];
-
-/// Polarity display label. Same indexing as [`POLARITY_NAMES`].
-pub const POLARITY_LABELS: [&str; N_POLARITIES] = ["Direct", "Bipolar", "Abs"];
-
-impl PolarityKind {
-    /// Decode a wire-format `u8`. Out-of-range → [`PolarityKind::Direct`].
-    #[inline]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => PolarityKind::Bipolar,
-            2 => PolarityKind::Abs,
-            _ => PolarityKind::Direct,
-        }
-    }
-}
-
-/// Count of `(polarity, shape)` combinations — the width of the flat curve
-/// code that the wire format and preset files carry.
-pub const N_CURVES: usize = N_POLARITIES * N_SHAPES;
-
-/// Compose a `(polarity, shape)` pair into the flat wire code:
-/// `polarity * N_SHAPES + shape`.
-///
-/// The stride is chosen so the four pre-decomposition codes keep their exact
-/// meanings — `0 = lin`, `1 = exp`, `2 = log`, `3 = bipolar` (which was always
-/// bipolar-with-a-linear-bend). Saved state and preset files written before
-/// the axes were split decode unchanged.
-#[inline]
-pub const fn curve_code(polarity: PolarityKind, shape: ShapeKind) -> u8 {
-    polarity as u8 * N_SHAPES as u8 + shape as u8
-}
-
-/// Split a flat wire code back into its `(polarity, shape)` pair. Out-of-range
-/// codes degrade to `(Direct, Lin)` rather than aliasing onto a real curve.
-#[inline]
-pub fn curve_split(code: u8) -> (PolarityKind, ShapeKind) {
-    if code as usize >= N_CURVES {
-        return (PolarityKind::Direct, ShapeKind::Lin);
-    }
-    (
-        PolarityKind::from_u8(code / N_SHAPES as u8),
-        ShapeKind::from_u8(code % N_SHAPES as u8),
-    )
-}
-
-/// Flat curve machine id, indexed by [`curve_code`]. Preset files carry these
-/// strings, so the four legacy spellings are load-bearing: the `direct`
-/// polarity and the `lin` shape are both elided from the name, which makes
-/// `lin` / `exp` / `log` / `bipolar` mean exactly what they meant before the
-/// decomposition. Everything else is `polarity-shape`.
-pub const CURVE_NAMES: [&str; N_CURVES] = [
-    "lin",
-    "exp",
-    "log",
-    "bipolar",
-    "bipolar-exp",
-    "bipolar-log",
-    "abs",
-    "abs-exp",
-    "abs-log",
-];
-
-/// Flat curve display label. Same indexing as [`CURVE_NAMES`].
-pub const CURVE_LABELS: [&str; N_CURVES] = [
-    "Lin",
-    "Exp",
-    "Log",
-    "Bipolar",
-    "Bipolar Exp",
-    "Bipolar Log",
-    "Abs",
-    "Abs Exp",
-    "Abs Log",
-];
-
-/// Polarity maps. Applied to the raw source value, before the shape bend.
-#[inline(always)]
-fn pol_direct(v: f32) -> f32 {
-    v
-}
-#[inline(always)]
-fn pol_bipolar(v: f32) -> f32 {
-    2.0 * v - 1.0
-}
-#[inline(always)]
-fn pol_abs(v: f32) -> f32 {
-    v.abs()
-}
-
-/// Shape bends. Applied to the polarity-mapped value. `Exp` and `Log` are
-/// sign-preserving, so they never move a value across zero.
-#[inline(always)]
-fn shape_lin(v: f32) -> f32 {
-    v
-}
-#[inline(always)]
-fn shape_exp(v: f32) -> f32 {
-    v.abs() * v
-}
-#[inline(always)]
-fn shape_log(v: f32) -> f32 {
-    // `copysign`, not a branch — this runs once per lane inside the hot loop,
-    // and a compare-and-select there costs the whole arm its vectorisation.
-    let mag = v.abs().sqrt();
-    if v < 0.0 { -mag } else { mag }
-}
-
-/// Scale-source polarity folds. Both map the source's native range onto the
-/// VCA's `[0, 1]`; which one applies is a per-slot constant, so the choice is
-/// hoisted out of the lane loop rather than re-tested per lane.
-#[inline(always)]
-fn fold_unipolar(v: f32) -> f32 {
-    v
-}
-#[inline(always)]
-fn fold_bipolar(v: f32) -> f32 {
-    (v + 1.0) * 0.5
-}
-
-/// Clamp to the VCA's `[0, 1]`.
-///
-/// `max`/`min` rather than [`f32::clamp`]: `clamp` carries a `min > max`
-/// assertion whose panic path lands in the hot loop and costs ~7% of the whole
-/// eval. The two agree on every finite input; they differ only on NaN, where
-/// this returns `0.0` (`f32::max` yields the non-NaN operand) instead of
-/// propagating. Shutting the gate on a NaN source is the better failure mode
-/// anyway — the alternative poisons the dest accumulator for the whole block.
-#[inline(always)]
-fn clamp_unit(v: f32) -> f32 {
-    v.max(0.0).min(1.0)
-}
-
-/// Scale bends. Input is already clamped to `[0, 1]`, so these need none of
-/// the sign handling [`shape_exp`] / [`shape_log`] carry.
-#[inline(always)]
-fn bend_lin(v: f32) -> f32 {
-    v
-}
-#[inline(always)]
-fn bend_exp(v: f32) -> f32 {
-    v * v
-}
-#[inline(always)]
-fn bend_log(v: f32) -> f32 {
-    v.sqrt()
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct MatrixSlot {
     pub source: SourceId,
     pub dest: DestId,
     pub depth: f32,
     /// Range mapping, applied to the source value first.
-    pub polarity: PolarityKind,
+    pub polarity: Polarity,
     /// Response bend, applied after [`Self::polarity`].
-    pub shape: ShapeKind,
+    pub shape: Shape,
     /// Optional secondary "scale" source. When non-`None`, this slot's
     /// per-lane contribution is multiplied by the scale source's value
     /// normalised to `[0, 1]` (see [`scale_norm`]) — a VCA on the route's
@@ -1034,7 +668,7 @@ pub struct MatrixSlot {
     /// cycle (unlike routing a dest output back into depth).
     pub scale_src: SourceId,
     /// Response bend applied to the normalised scale value, so the VCA need
-    /// not be a straight line. Shares the [`ShapeKind`] roster with the
+    /// not be a straight line. Shares the [`Shape`] roster with the
     /// primary route; `Lin` is the identity and the default.
     ///
     /// There is no polarity axis here: [`scale_norm`] already folds the scale
@@ -1043,7 +677,7 @@ pub struct MatrixSlot {
     /// *within* that range — e.g. `velocity` scaling a `mod-env → op-level`
     /// route wants `exp` so soft playing backs the route off faster than
     /// linear, matching how velocity reads to the hand.
-    pub scale_shape: ShapeKind,
+    pub scale_shape: Shape,
 }
 
 impl Default for MatrixSlot {
@@ -1052,10 +686,10 @@ impl Default for MatrixSlot {
             source: SourceId::None,
             dest: DestId::None,
             depth: 0.0,
-            polarity: PolarityKind::Direct,
-            shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         }
     }
 }
@@ -1166,32 +800,6 @@ pub fn eval_sources(
     }
 }
 
-/// Normalise a scale source's value to the `[0, 1]` VCA range, then bend it
-/// by `shape`.
-///
-/// Unipolar sources pass through (already `[0, 1]`); bipolar sources map
-/// `(x + 1) × 0.5`. Clamping happens *before* the bend, so the shape only ever
-/// sees `[0, 1]` and therefore can't leave it: on a non-negative input
-/// [`ShapeKind::Exp`] is `v²` and [`ShapeKind::Log`] is `√v`, both fixing
-/// 0 and 1 and monotonic between. `0 → route contributes nothing`,
-/// `1 → route at its full configured depth`, either way.
-///
-/// `Lin` is exact identity, so a slot that doesn't bend its scale is
-/// bit-identical to one from before the shape existed.
-#[inline]
-pub fn scale_norm(src: SourceId, v: f32, shape: ShapeKind) -> f32 {
-    let n = clamp_unit(if src.is_bipolar() {
-        fold_bipolar(v)
-    } else {
-        fold_unipolar(v)
-    });
-    match shape {
-        ShapeKind::Lin => bend_lin(n),
-        ShapeKind::Exp => bend_exp(n),
-        ShapeKind::Log => bend_log(n),
-    }
-}
-
 /// Walk slots, accumulate `source · curve · depth · scale` into `out`. Zeroes
 /// `out` before accumulating, so the caller can hand in any buffer. Empty slots
 /// (source = `None` or dest = `None` or depth = 0) are skipped.
@@ -1244,12 +852,12 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
                 };
             }
             match (slot.scale_src.is_bipolar(), slot.scale_shape) {
-                (false, ShapeKind::Lin) => scale_arm!(fold_unipolar, bend_lin),
-                (false, ShapeKind::Exp) => scale_arm!(fold_unipolar, bend_exp),
-                (false, ShapeKind::Log) => scale_arm!(fold_unipolar, bend_log),
-                (true, ShapeKind::Lin) => scale_arm!(fold_bipolar, bend_lin),
-                (true, ShapeKind::Exp) => scale_arm!(fold_bipolar, bend_exp),
-                (true, ShapeKind::Log) => scale_arm!(fold_bipolar, bend_log),
+                (false, Shape::Lin) => scale_arm!(fold_unipolar, bend_lin),
+                (false, Shape::Exp) => scale_arm!(fold_unipolar, bend_exp),
+                (false, Shape::Log) => scale_arm!(fold_unipolar, bend_log),
+                (true, Shape::Lin) => scale_arm!(fold_bipolar, bend_lin),
+                (true, Shape::Exp) => scale_arm!(fold_bipolar, bend_exp),
+                (true, Shape::Log) => scale_arm!(fold_bipolar, bend_log),
             }
         }
         // Polarity × shape is dispatched once per slot, so each arm expands to
@@ -1264,15 +872,15 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
             };
         }
         match (slot.polarity, slot.shape) {
-            (PolarityKind::Direct, ShapeKind::Lin) => curve_arm!(pol_direct, shape_lin),
-            (PolarityKind::Direct, ShapeKind::Exp) => curve_arm!(pol_direct, shape_exp),
-            (PolarityKind::Direct, ShapeKind::Log) => curve_arm!(pol_direct, shape_log),
-            (PolarityKind::Bipolar, ShapeKind::Lin) => curve_arm!(pol_bipolar, shape_lin),
-            (PolarityKind::Bipolar, ShapeKind::Exp) => curve_arm!(pol_bipolar, shape_exp),
-            (PolarityKind::Bipolar, ShapeKind::Log) => curve_arm!(pol_bipolar, shape_log),
-            (PolarityKind::Abs, ShapeKind::Lin) => curve_arm!(pol_abs, shape_lin),
-            (PolarityKind::Abs, ShapeKind::Exp) => curve_arm!(pol_abs, shape_exp),
-            (PolarityKind::Abs, ShapeKind::Log) => curve_arm!(pol_abs, shape_log),
+            (Polarity::Direct, Shape::Lin) => curve_arm!(pol_direct, shape_lin),
+            (Polarity::Direct, Shape::Exp) => curve_arm!(pol_direct, shape_exp),
+            (Polarity::Direct, Shape::Log) => curve_arm!(pol_direct, shape_log),
+            (Polarity::Bipolar, Shape::Lin) => curve_arm!(pol_bipolar, shape_lin),
+            (Polarity::Bipolar, Shape::Exp) => curve_arm!(pol_bipolar, shape_exp),
+            (Polarity::Bipolar, Shape::Log) => curve_arm!(pol_bipolar, shape_log),
+            (Polarity::Abs, Shape::Lin) => curve_arm!(pol_abs, shape_lin),
+            (Polarity::Abs, Shape::Exp) => curve_arm!(pol_abs, shape_exp),
+            (Polarity::Abs, Shape::Log) => curve_arm!(pol_abs, shape_log),
         }
     }
 }
@@ -1385,16 +993,16 @@ mod tests {
     use super::*;
 
     /// Slot with the default `direct` polarity — the common case.
-    fn full_slot(source: SourceId, dest: DestId, depth: f32, shape: ShapeKind) -> MatrixSlot {
-        full_slot_pol(source, dest, depth, PolarityKind::Direct, shape)
+    fn full_slot(source: SourceId, dest: DestId, depth: f32, shape: Shape) -> MatrixSlot {
+        full_slot_pol(source, dest, depth, Polarity::Direct, shape)
     }
 
     fn full_slot_pol(
         source: SourceId,
         dest: DestId,
         depth: f32,
-        polarity: PolarityKind,
-        shape: ShapeKind,
+        polarity: Polarity,
+        shape: Shape,
     ) -> MatrixSlot {
         MatrixSlot {
             source,
@@ -1403,7 +1011,7 @@ mod tests {
             polarity,
             shape,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         }
     }
 
@@ -1452,15 +1060,15 @@ mod tests {
     #[test]
     fn scale_norm_maps_polarity() {
         // Unipolar: passthrough (already [0, 1]).
-        assert_eq!(scale_norm(SourceId::ModWheel, 0.3, ShapeKind::Lin), 0.3);
-        assert_eq!(scale_norm(SourceId::Velocity, 1.0, ShapeKind::Lin), 1.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 0.3, Shape::Lin), 0.3);
+        assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 1.0, Shape::Lin), 1.0);
         // Bipolar: (x + 1) / 2.
-        assert_eq!(scale_norm(SourceId::Lfo1, 0.0, ShapeKind::Lin), 0.5);
-        assert_eq!(scale_norm(SourceId::Lfo1, 1.0, ShapeKind::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::Lfo1, -1.0, ShapeKind::Lin), 0.0);
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 0.0, Shape::Lin), 0.5);
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 1.0, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), -1.0, Shape::Lin), 0.0);
         // Clamp both ends.
-        assert_eq!(scale_norm(SourceId::ModWheel, 1.7, ShapeKind::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::ModWheel, -0.4, ShapeKind::Lin), 0.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 1.7, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), -0.4, Shape::Lin), 0.0);
     }
 
     /// A mod-wheel scale source gates an LFO→pitch route: 0 at wheel 0, full
@@ -1472,10 +1080,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::GlobalPitch,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         let di = DestId::GlobalPitch.idx().unwrap();
 
@@ -1506,10 +1114,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::GlobalPitch,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::Lfo1, // bipolar; lfo1 = 0.0 → scale 0.5
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         let di = DestId::GlobalPitch.idx().unwrap();
         let mut scaled = [[0.0; N_DESTS]; STACK_LANES];
@@ -1533,7 +1141,7 @@ mod tests {
     #[test]
     fn scale_src_none_is_bit_identical() {
         let src = default_lane_sources();
-        let slot = full_slot(SourceId::Lfo1, DestId::Op2Level, 0.7, ShapeKind::Exp);
+        let slot = full_slot(SourceId::Lfo1, DestId::Op2Level, 0.7, Shape::Exp);
         let mut a = [[0.0; N_DESTS]; STACK_LANES];
         let mut table = MatrixTable::default();
         table.slots[0] = slot;
@@ -1656,7 +1264,7 @@ mod tests {
         // Use a gain=1 dest (Op1Pan) so the numerical check covers the
         // accumulator + curve math without the per-dest gain table mixing in.
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, ShapeKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1680,8 +1288,8 @@ mod tests {
     #[test]
     fn two_slots_into_same_dest_accumulate() {
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, ShapeKind::Lin);
-        table.slots[1] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, Shape::Lin);
+        table.slots[1] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1696,7 +1304,7 @@ mod tests {
         // Pitch dests sweep ±2 octaves at full depth: depth × source × 24.
         let mut table = MatrixTable::default();
         table.slots[0] =
-            full_slot(SourceId::Lfo1, DestId::GlobalPitch, 1.0, ShapeKind::Lin);
+            full_slot(SourceId::Lfo1, DestId::GlobalPitch, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1711,7 +1319,7 @@ mod tests {
     fn feedback_dest_gain_scales_depth() {
         let mut table = MatrixTable::default();
         table.slots[0] =
-            full_slot(SourceId::ModWheel, DestId::Feedback, 1.0, ShapeKind::Lin);
+            full_slot(SourceId::ModWheel, DestId::Feedback, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1726,7 +1334,7 @@ mod tests {
     fn per_lane_source_writes_distinct_lane_values() {
         let mut table = MatrixTable::default();
         table.slots[0] =
-            full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, ShapeKind::Lin);
+            full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1745,10 +1353,10 @@ mod tests {
             source: SourceId::None,
             dest: DestId::Op1Pan,
             depth: 99.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
@@ -1765,10 +1373,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::None,
             depth: 99.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
@@ -1783,7 +1391,7 @@ mod tests {
     #[test]
     fn zero_depth_short_circuits() {
         let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.0, ShapeKind::Lin);
+        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -1798,9 +1406,9 @@ mod tests {
         // for |v| < 1, but characterised by the signed-square shape, not by
         // gain). Just verify it's different from lin.
         let mut lin_t = MatrixTable::default();
-        lin_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Lin);
+        lin_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Lin);
         let mut exp_t = MatrixTable::default();
-        exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Exp);
+        exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Exp);
         let sources = default_lane_sources();
         let mut lin_out = [[0.0; N_DESTS]; STACK_LANES];
         let mut exp_out = [[0.0; N_DESTS]; STACK_LANES];
@@ -1822,7 +1430,7 @@ mod tests {
     #[test]
     fn curve_log_compresses_toward_zero() {
         let mut log_t = MatrixTable::default();
-        log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, ShapeKind::Log);
+        log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Log);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&log_t, &sources, &mut out);
@@ -1838,8 +1446,8 @@ mod tests {
             SourceId::ModWheel,
             DestId::Op1Pan,
             1.0,
-            PolarityKind::Bipolar,
-            ShapeKind::Lin,
+            Polarity::Bipolar,
+            Shape::Lin,
         );
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
@@ -1859,7 +1467,7 @@ mod tests {
         }
         let mut sources = [[0.0; N_SOURCES]; STACK_LANES];
         eval_sources(&patch, &stack, &lanes, &mut sources);
-        for curve in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
+        for curve in [Shape::Lin, Shape::Exp, Shape::Log] {
             let mut table = MatrixTable::default();
             table.slots[0] = full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, curve);
             let mut out = [[0.0; N_DESTS]; STACK_LANES];
@@ -2083,7 +1691,7 @@ mod tests {
         // per-op pitch and the two must not alias.
         let mut table = MatrixTable::default();
         table.slots[0] =
-            full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, ShapeKind::Lin);
+            full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; N_DESTS]; STACK_LANES];
         eval_dests(&table, &sources, &mut out);
@@ -2106,6 +1714,10 @@ mod tests {
 
     #[test]
     fn source_dest_curve_label_tables_match_enum_widths() {
+        // The four `N_* + 1` widths are tautologies now that the counts are
+        // *derived* from the generated tables (0330) rather than written out —
+        // kept as documentation of the relationship, with
+        // `variant_order_matches_the_tables` carrying the load they used to.
         assert_eq!(SOURCE_NAMES.len(), N_SOURCES + 1);
         assert_eq!(SOURCE_LABELS.len(), N_SOURCES + 1);
         assert_eq!(DEST_NAMES.len(), N_DESTS + 1);
@@ -2124,16 +1736,86 @@ mod tests {
         assert_eq!(POLARITY_LABELS.len(), N_POLARITIES);
     }
 
+    /// `ALL` is the bridge between a variant and its row in the two string
+    /// tables, so it has to be dense and in discriminant order: `ALL[i] as u8`
+    /// must be `i`, or every name and label after a gap is off by one.
+    ///
+    /// This matters more here than it reads. `DestId`'s discriminants were
+    /// implicit until 0330 — the language guaranteed contiguity — and are now
+    /// 52 numbers written out to feed `matrix_enum!`, which builds the tables
+    /// in *declaration* order while every consumer indexes them by
+    /// `variant as usize`. A row typed one off, or inserted out of order, would
+    /// compile, collide with nothing, and silently shift every name, label and
+    /// `from_u8` decode after it — the wrong destination in the matrix combo,
+    /// and saved blobs and preset TOML landing on the wrong dest. Ported from
+    /// vxn-1b, which has had this test since its tables were generated.
+    #[test]
+    fn variant_order_matches_the_tables() {
+        macro_rules! check {
+            ($ty:ident, $names:ident, $labels:ident) => {
+                for (i, v) in $ty::ALL.iter().enumerate() {
+                    assert_eq!(*v as usize, i, "{} is not at index {i}", stringify!($ty));
+                    assert_eq!($ty::from_u8(i as u8), *v, "{}::from_u8({i})", stringify!($ty));
+                }
+                assert_eq!($ty::ALL.len(), $names.len());
+                assert_eq!($ty::ALL.len(), $labels.len());
+            };
+        }
+        check!(SourceId, SOURCE_NAMES, SOURCE_LABELS);
+        check!(DestId, DEST_NAMES, DEST_LABELS);
+        check!(Polarity, POLARITY_NAMES, POLARITY_LABELS);
+        check!(Shape, SHAPE_NAMES, SHAPE_LABELS);
+    }
+
+    /// Name N must *describe* variant N — the property the length-only checks
+    /// cannot see, and the one a user notices first because the wrong word is
+    /// sitting in the mod-matrix combo. Generation makes a transposed
+    /// name/label pair unrepresentable; this catches the other half, a
+    /// mis-transcribed or reordered row. Spot-checks the rows most likely to be
+    /// swapped — the block boundaries and the near-identical `op{N}` families —
+    /// rather than restating the whole table, which would just be the parallel
+    /// list again.
+    #[test]
+    fn names_and_labels_describe_their_own_variant() {
+        let src = |s: SourceId| (SOURCE_NAMES[s as usize], SOURCE_LABELS[s as usize]);
+        assert_eq!(src(SourceId::None), ("none", "—"));
+        assert_eq!(src(SourceId::Lfo1), ("lfo1", "LFO 1"));
+        assert_eq!(src(SourceId::Lfo2), ("lfo2", "LFO 2"));
+        assert_eq!(src(SourceId::PitchEg), ("pitch-eg", "Pitch EG"));
+        assert_eq!(src(SourceId::ModEnv), ("mod-env", "Mod Env"));
+        assert_eq!(src(SourceId::VoiceSpread), ("voice-spread", "Voice Spread"));
+        assert_eq!(src(SourceId::VoiceRand), ("voice-rand", "Voice Rand"));
+
+        let dst = |d: DestId| (DEST_NAMES[d as usize], DEST_LABELS[d as usize]);
+        assert_eq!(dst(DestId::None), ("none", "—"));
+        // Ends of the op-major block, where an off-by-one first shows.
+        assert_eq!(dst(DestId::Op1Pitch), ("op1-pitch", "Op 1 Pitch"));
+        assert_eq!(dst(DestId::Op6Pan), ("op6-pan", "Op 6 Pan"));
+        assert_eq!(dst(DestId::GlobalPitch), ("global-pitch", "Global Pitch"));
+        // The three appended families, each of which repeats `op{N}`.
+        assert_eq!(dst(DestId::Op1StackPitch), ("op1-stack-pitch", "Op 1 Stack Pitch"));
+        assert_eq!(dst(DestId::Op6StackPitch), ("op6-stack-pitch", "Op 6 Stack Pitch"));
+        assert_eq!(dst(DestId::Op1Phase), ("op1-phase", "Op 1 Phase"));
+        assert_eq!(dst(DestId::Op6Phase), ("op6-phase", "Op 6 Phase"));
+        assert_eq!(dst(DestId::Op1EgRate), ("op1-eg-rate", "Op 1 EG Rate"));
+        assert_eq!(dst(DestId::Op6EgRate), ("op6-eg-rate", "Op 6 EG Rate"));
+        // The singletons wedged between those families, and the last row.
+        assert_eq!(dst(DestId::FilterDrive), ("filter-drive", "Filter Drive"));
+        assert_eq!(dst(DestId::GlobalEgRate), ("global-eg-rate", "Global EG Rate"));
+        assert_eq!(dst(DestId::PitchEgRate), ("pitch-eg-rate", "Pitch EG Rate"));
+        assert_eq!(dst(DestId::ModEnvRate), ("mod-env-rate", "Mod Env Rate"));
+    }
+
     /// The flat code is what state blobs and preset files carry, so the four
     /// spellings that predate the polarity/shape split must still land on
     /// their original meanings — codes 0..=3 are load-bearing.
     #[test]
     fn curve_code_preserves_pre_split_encoding() {
         let legacy = [
-            (0u8, PolarityKind::Direct, ShapeKind::Lin, "lin"),
-            (1, PolarityKind::Direct, ShapeKind::Exp, "exp"),
-            (2, PolarityKind::Direct, ShapeKind::Log, "log"),
-            (3, PolarityKind::Bipolar, ShapeKind::Lin, "bipolar"),
+            (0u8, Polarity::Direct, Shape::Lin, "lin"),
+            (1, Polarity::Direct, Shape::Exp, "exp"),
+            (2, Polarity::Direct, Shape::Log, "log"),
+            (3, Polarity::Bipolar, Shape::Lin, "bipolar"),
         ];
         for (code, pol, shape, name) in legacy {
             assert_eq!(curve_code(pol, shape), code, "{name} code moved");
@@ -2149,11 +1831,11 @@ mod tests {
     fn curve_code_round_trips_every_pair() {
         let mut seen = std::collections::HashSet::new();
         for p in [
-            PolarityKind::Direct,
-            PolarityKind::Bipolar,
-            PolarityKind::Abs,
+            Polarity::Direct,
+            Polarity::Bipolar,
+            Polarity::Abs,
         ] {
-            for sh in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
+            for sh in [Shape::Lin, Shape::Exp, Shape::Log] {
                 let code = curve_code(p, sh);
                 assert!((code as usize) < N_CURVES, "{p:?}/{sh:?} code out of range");
                 assert!(seen.insert(code), "{p:?}/{sh:?} collided on code {code}");
@@ -2163,11 +1845,11 @@ mod tests {
         assert_eq!(seen.len(), N_CURVES);
         assert_eq!(
             curve_split(N_CURVES as u8),
-            (PolarityKind::Direct, ShapeKind::Lin)
+            (Polarity::Direct, Shape::Lin)
         );
         assert_eq!(
             curve_split(255),
-            (PolarityKind::Direct, ShapeKind::Lin)
+            (Polarity::Direct, Shape::Lin)
         );
     }
 
@@ -2181,8 +1863,8 @@ mod tests {
             SourceId::VoiceSpread,
             DestId::Op1Pan,
             1.0,
-            PolarityKind::Abs,
-            ShapeKind::Lin,
+            Polarity::Abs,
+            Shape::Lin,
         );
         let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
         let si = SourceId::VoiceSpread.idx().unwrap();
@@ -2212,9 +1894,9 @@ mod tests {
         let di = DestId::Op1Level.idx().unwrap();
 
         let mut out = [[0.0_f32; N_DESTS]; STACK_LANES];
-        let mut gated = |scale_shape: ShapeKind| {
+        let mut gated = |scale_shape: Shape| {
             let mut table = MatrixTable::default();
-            let mut slot = full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, ShapeKind::Lin);
+            let mut slot = full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, Shape::Lin);
             slot.scale_src = SourceId::Velocity;
             slot.scale_shape = scale_shape;
             table.slots[0] = slot;
@@ -2222,9 +1904,9 @@ mod tests {
             out[0][di]
         };
 
-        let lin = gated(ShapeKind::Lin);
-        let exp = gated(ShapeKind::Exp);
-        let log = gated(ShapeKind::Log);
+        let lin = gated(Shape::Lin);
+        let exp = gated(Shape::Exp);
+        let log = gated(Shape::Log);
         // Velocity 0.5 is unipolar, so scale_norm is 0.5 before the bend:
         // lin → 0.5, exp → 0.25, log → ~0.707.
         assert!((lin - 0.5).abs() < 1e-6, "lin scale: {lin}");
@@ -2238,17 +1920,17 @@ mod tests {
     /// the bend, so an out-of-range source can't escape either.
     #[test]
     fn scale_shape_stays_within_unit_range() {
-        for shape in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
+        for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
             for v in [-4.0_f32, -1.0, -0.3, 0.0, 0.25, 0.5, 1.0, 7.0] {
                 for src in [SourceId::Velocity, SourceId::Lfo1] {
-                    let n = scale_norm(src, v, shape);
+                    let n = scale_norm(src.is_bipolar(), v, shape);
                     assert!((0.0..=1.0).contains(&n), "{src:?}/{shape:?}/{v} → {n}");
                 }
             }
             // Endpoints are fixed points of every bend, so a fully-open or
             // fully-shut gate means the same thing on all three.
-            assert!(scale_norm(SourceId::Velocity, 0.0, shape).abs() < 1e-6);
-            assert!((scale_norm(SourceId::Velocity, 1.0, shape) - 1.0).abs() < 1e-6);
+            assert!(scale_norm(SourceId::Velocity.is_bipolar(), 0.0, shape).abs() < 1e-6);
+            assert!((scale_norm(SourceId::Velocity.is_bipolar(), 1.0, shape) - 1.0).abs() < 1e-6);
         }
     }
 
@@ -2268,7 +1950,7 @@ mod tests {
             SourceId::VoiceRand,
         ] {
             let sc = scale_src.idx().unwrap();
-            for shape in [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log] {
+            for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
                 for v in [-2.0_f32, -1.0, -0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 3.0] {
                     let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
                     let si = SourceId::ModEnv.idx().unwrap();
@@ -2277,7 +1959,7 @@ mod tests {
                         sources[k][sc] = v;
                     }
                     let mut slot =
-                        full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, ShapeKind::Lin);
+                        full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, Shape::Lin);
                     slot.scale_src = scale_src;
                     slot.scale_shape = shape;
                     let mut table = MatrixTable::default();
@@ -2286,7 +1968,7 @@ mod tests {
                     eval_dests(&table, &sources, &mut out);
                     // Route is source 1.0 × depth 1.0 × gain, so the dest value
                     // is the scale factor times that constant.
-                    let expect = scale_norm(scale_src, v, shape)
+                    let expect = scale_norm(scale_src.is_bipolar(), v, shape)
                         * DEST_GAIN[DestId::Op1Level as usize];
                     assert_eq!(
                         out[0][di], expect,
@@ -2307,8 +1989,8 @@ mod tests {
             SourceId::VoiceSpread,
             DestId::Op1Pan,
             -1.0,
-            PolarityKind::Abs,
-            ShapeKind::Lin,
+            Polarity::Abs,
+            Shape::Lin,
         );
         let mut sources = [[0.0_f32; N_SOURCES]; STACK_LANES];
         let si = SourceId::VoiceSpread.idx().unwrap();

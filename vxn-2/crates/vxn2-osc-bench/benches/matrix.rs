@@ -17,7 +17,7 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_dsp::stack::STACK_LANES;
 use vxn2_engine::matrix::{
-    DestId, PolarityKind, ShapeKind, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
+    DestId, Polarity, Shape, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
     N_DESTS, N_SOURCES, N_SLOTS, PatchSources, SourceId, StackScalarSources, eval_dests,
     eval_sources,
 };
@@ -93,10 +93,10 @@ fn full_table() -> MatrixTable {
     // One of each polarity plus the shape roster — keeps the bench walking
     // every dispatch arm rather than a single hot one.
     let curves = [
-        (PolarityKind::Direct, ShapeKind::Lin),
-        (PolarityKind::Direct, ShapeKind::Exp),
-        (PolarityKind::Abs, ShapeKind::Log),
-        (PolarityKind::Bipolar, ShapeKind::Lin),
+        (Polarity::Direct, Shape::Lin),
+        (Polarity::Direct, Shape::Exp),
+        (Polarity::Abs, Shape::Log),
+        (Polarity::Bipolar, Shape::Lin),
     ];
     let mut table = MatrixTable::default();
     for i in 0..N_SLOTS {
@@ -107,7 +107,7 @@ fn full_table() -> MatrixTable {
             polarity: curves[i % 4].0,
             shape: curves[i % 4].1,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
     }
     table
@@ -124,7 +124,7 @@ fn scaled_table() -> MatrixTable {
         SourceId::ModWheel,
         SourceId::PitchEg,
     ];
-    let scale_shapes = [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log];
+    let scale_shapes = [Shape::Lin, Shape::Exp, Shape::Log];
     let mut table = full_table();
     for i in 0..N_SLOTS {
         table.slots[i].scale_src = scale_srcs[i % scale_srcs.len()];

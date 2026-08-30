@@ -516,7 +516,7 @@ pub fn from_toml_str(s: &str) -> Result<(Meta, Vec<u8>, Vec<String>), PresetErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::{DestId, PolarityKind, ShapeKind, SourceId, curve_code};
+    use crate::matrix::{DestId, Polarity, Shape, SourceId, curve_code};
     use crate::params::id_of;
 
     fn meta(name: &str) -> Meta {
@@ -616,7 +616,7 @@ mod tests {
             MatrixRowRaw {
                 source: SourceId::Lfo2 as u8,
                 dest: DestId::GlobalPitch as u8,
-                curve: curve_code(PolarityKind::Direct, ShapeKind::Lin),
+                curve: curve_code(Polarity::Direct, Shape::Lin),
                 active: true,
                 depth: 0.5,
                 scale_src: SourceId::ModWheel as u8,
@@ -643,7 +643,7 @@ mod tests {
             MatrixRowRaw {
                 source: SourceId::Lfo1 as u8,
                 dest: DestId::GlobalPitch as u8,
-                curve: curve_code(PolarityKind::Direct, ShapeKind::Lin),
+                curve: curve_code(Polarity::Direct, Shape::Lin),
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
@@ -772,7 +772,7 @@ depth = 0.5
         assert_eq!(mtx[0].dest, DestId::GlobalPitch as u8);
         assert_eq!(
             mtx[0].curve,
-            curve_code(PolarityKind::Direct, ShapeKind::Lin)
+            curve_code(Polarity::Direct, Shape::Lin)
         );
         assert!(mtx[0].active);
         assert!((mtx[0].depth - 0.5).abs() < 1e-6);

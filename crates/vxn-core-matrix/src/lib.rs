@@ -28,9 +28,14 @@
 //! [0329](../../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) — this
 //! one — lands the crate and the roster trait **with no consumers**, so the
 //! seam gets reviewed before anything is ported through it. If the trait is
-//! wrong, that is the cheap moment to find out. The curve vocabulary arrives in
-//! 0330, the generated roster row in 0332, slots and route compilation in 0333,
-//! the evaluator in 0334 and the smoother bank in 0335.
+//! wrong, that is the cheap moment to find out.
+//!
+//! Ticket [0330](../../../tickets/open/0330-share-curve-vocabulary.md) gave the
+//! crate its first consumers: [`curve`] holds the polarity/shape axes, the
+//! `matrix_enum!` generator behind every name/label table in both synths, the
+//! flat preset codec and the scale VCA. The generated roster row arrives in
+//! 0332, slots and route compilation in 0333, the evaluator in 0334 and the
+//! smoother bank in 0335.
 //!
 //! ## Writing code in this crate
 //!
@@ -58,6 +63,20 @@
 //! stops a roster and its storage disagreeing, and the measurements behind
 //! both — including what per-roster monomorphisation costs and why `L` is
 //! generic when nothing in the repo yet uses a second lane count.
+
+/// The curve-shaping vocabulary — the mechanism half's smallest piece, and the
+/// duplication that prompted the epic: [`Polarity`](curve::Polarity) /
+/// [`Shape`](curve::Shape) and their tables, the flat preset codec
+/// ([`curve_code`](curve::curve_code) / [`curve_split`](curve::curve_split)),
+/// the polarity maps and shape bends, and the scale VCA
+/// ([`scale_norm`](curve::scale_norm)).
+///
+/// Also home to the [`matrix_enum!`](crate::matrix_enum) generator, which both
+/// synths now use for their own source and destination enums — it is exported
+/// at the crate root, not from this module.
+///
+/// Filled in by ticket 0330.
+pub mod curve;
 
 /// The roster half of the seam: [`MatrixRoster`](roster::MatrixRoster) and the
 /// two shared vocabularies keyed on a destination, [`Tier`](roster::Tier) and

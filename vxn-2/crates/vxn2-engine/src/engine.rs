@@ -50,7 +50,7 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     DestId, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS, N_DESTS,
-    N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, ShapeKind,
+    N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, Shape,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -861,7 +861,7 @@ impl Engine {
                 // (harmless — an inactive slot's primary source is `None`, so
                 // eval skips it before the scale multiply matters).
                 scale_src: SourceId::from_u8(row.scale_src),
-                scale_shape: ShapeKind::from_u8(row.scale_shape),
+                scale_shape: Shape::from_u8(row.scale_shape),
             };
         }
         // Apply the live assign mode before the block's note events so a
@@ -2638,17 +2638,17 @@ mod tests {
         dest: crate::matrix::DestId,
         depth: f32,
     ) -> Engine {
-        use crate::matrix::{MatrixSlot, MatrixTable, PolarityKind, ShapeKind};
+        use crate::matrix::{MatrixSlot, MatrixTable, Polarity, Shape};
         let mut e = Engine::new(SR, BLK);
         e.matrix = MatrixTable::default();
         e.matrix.slots[0] = MatrixSlot {
             source,
             dest,
             depth,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e
     }
@@ -2844,7 +2844,7 @@ mod tests {
     /// discarded the value.
     #[test]
     fn matrix_lfo1_to_op_level_modulates_audio() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut modulated = Engine::new(SR, BLK);
         // Make sure LFO1 has motion: bump rate to ~5 Hz and amplitude full.
@@ -2853,10 +2853,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Level,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.note_on(60, 100);
 
@@ -2909,7 +2909,7 @@ mod tests {
     /// differ.)
     #[test]
     fn matrix_lfo1_to_op_phase_modulates_audio() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut modulated = Engine::new(SR, BLK);
         modulated.params.mod_params.lfo1.rate_hz = 5.0;
@@ -2917,10 +2917,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Phase,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.note_on(60, 100);
 
@@ -2968,7 +2968,7 @@ mod tests {
     /// bit-identical.
     #[test]
     fn eg_rate_dest_diverges_lane_rates_on_fresh_block() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = Engine::new(SR, BLK);
         e.params.patch.stack.density = 4;
@@ -2977,10 +2977,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::GlobalEgRate,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.note_on(60, 100);
 
@@ -3022,7 +3022,7 @@ mod tests {
     /// different points (chorusing). Un-routed engines keep the lanes locked.
     #[test]
     fn pitch_eg_rate_dest_decorrelates_lane_sweeps() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         use vxn2_dsp::envelope::PitchEgParams;
 
         let setup = |route: bool| {
@@ -3037,10 +3037,10 @@ mod tests {
                     source: SourceId::VoiceSpread,
                     dest: DestId::PitchEgRate,
                     depth: 1.0,
-                    polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+                    polarity: Polarity::Direct,
+        shape: Shape::Lin,
                     scale_src: SourceId::None,
-                    scale_shape: ShapeKind::Lin,
+                    scale_shape: Shape::Lin,
                 };
             }
             e.note_on(60, 100);
@@ -3066,7 +3066,7 @@ mod tests {
     /// patch keeps the flag off entirely.
     #[test]
     fn level_pan_mod_ramps_converge_each_block() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = Engine::new(SR, BLK);
         e.params.mod_params.lfo1.rate_hz = 6.0;
@@ -3075,19 +3075,19 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Level,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.matrix.slots[1] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.set_mod_wheel(0.7);
         e.note_on(60, 100);
@@ -3173,7 +3173,7 @@ mod tests {
     /// so an additive refill would actually show up here.
     #[test]
     fn released_voice_closes_under_positive_level_mod() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         // Peak of the release tail (0.25–0.5 s after note-off), optionally with
         // a full-depth positive LFO on op3's (a carrier) level.
@@ -3189,10 +3189,10 @@ mod tests {
                     source: SourceId::Lfo1,
                     dest: DestId::Op3Level,
                     depth: 1.0,
-                    polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+                    polarity: Polarity::Direct,
+        shape: Shape::Lin,
                     scale_src: SourceId::None,
-                    scale_shape: ShapeKind::Lin,
+                    scale_shape: Shape::Lin,
                 };
             }
             e.note_on(60, 100);
@@ -3289,7 +3289,7 @@ mod tests {
     /// steps stay inaudible (< 4 cents).
     #[test]
     fn pitch_smoother_removes_block_rate_stepping() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         use vxn2_dsp::smoother::one_pole_coeff;
 
         const BIG_BLK: usize = 256;
@@ -3302,10 +3302,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::GlobalPitch,
             depth: 0.5,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BIG_BLK];
@@ -3346,7 +3346,7 @@ mod tests {
     /// offset.
     #[test]
     fn pitch_smoother_snaps_on_fresh_note() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = Engine::new(SR, BLK);
         // Constant full-scale pitch offset: mod wheel pinned at 1.0.
@@ -3354,10 +3354,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::GlobalPitch,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -3387,7 +3387,7 @@ mod tests {
     /// even though their PitchEG paths are identical.
     #[test]
     fn matrix_mod_env_to_global_pitch_shifts_phase_inc() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut modulated = Engine::new(SR, BLK);
         modulated.matrix.slots[0] = MatrixSlot {
@@ -3395,10 +3395,10 @@ mod tests {
             dest: DestId::GlobalPitch,
             // Depth 12 → ModEnv at 1.0 lifts pitch by an octave.
             depth: 12.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.note_on(60, 100);
 
@@ -3713,17 +3713,17 @@ mod tests {
     /// the fresh note.
     #[test]
     fn matrix_key_to_stack_detune_shifts_phase_inc() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut modulated = stacked_engine();
         modulated.matrix.slots[0] = MatrixSlot {
             source: SourceId::Key,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.note_on(72, 100);
 
@@ -3750,7 +3750,7 @@ mod tests {
     /// spread route absent (the AC's "source tracks the modulated spread").
     #[test]
     fn matrix_velocity_to_stack_spread_widens_voice_spread_source() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let pan_span = |e: &Engine| -> f32 {
             let a = active_stack(e);
@@ -3768,19 +3768,19 @@ mod tests {
             source: SourceId::Velocity,
             dest: DestId::StackSpread,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.matrix.slots[1] = MatrixSlot {
             source: SourceId::VoiceSpread,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.note_on(60, 120);
 
@@ -3789,10 +3789,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         baseline.note_on(60, 120);
 
@@ -3829,17 +3829,17 @@ mod tests {
     /// `stack-detune` amounts.
     #[test]
     fn matrix_stack_detune_is_per_stack() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = stacked_engine();
         e.matrix.slots[0] = MatrixSlot {
             source: SourceId::Key,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.note_on(36, 100);
         e.note_on(96, 100);
@@ -3861,17 +3861,17 @@ mod tests {
     /// guard. Static (fresh) sources still snap (covered above).
     #[test]
     fn matrix_stack_detune_dynamic_change_is_ramped() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = stacked_engine();
         e.matrix.slots[0] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.set_mod_wheel(0.0);
         e.note_on(60, 100);
@@ -3898,17 +3898,17 @@ mod tests {
     /// no-matrix baseline.
     #[test]
     fn matrix_mod_wheel_to_op_pan_moves_pan_table() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut modulated = Engine::new(SR, BLK);
         modulated.matrix.slots[0] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         modulated.set_mod_wheel(1.0);
         modulated.note_on(60, 100);
@@ -3937,7 +3937,7 @@ mod tests {
     /// patch default sets it low.
     #[test]
     fn matrix_mod_wheel_to_delay_mix_pushes_to_delay() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 
         let mut e = Engine::new(SR, BLK);
         // Pin the patch's delay mix to 0 so the matrix is the only source.
@@ -3947,10 +3947,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::DelayMix,
             depth: 0.8,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -3993,7 +3993,7 @@ mod tests {
     /// silently inert.
     #[test]
     fn shared_matrix_meta_writes_reach_engine_matrix() {
-        use crate::matrix::{DestId, ShapeKind, SourceId};
+        use crate::matrix::{DestId, Shape, SourceId};
         use crate::shared::MatrixRowRaw;
 
         let shared = SharedParams::new();
@@ -4004,11 +4004,11 @@ mod tests {
             MatrixRowRaw {
                 source: SourceId::ModEnv as u8,
                 dest: DestId::Op1Level as u8,
-                curve: ShapeKind::Lin as u8,
+                curve: Shape::Lin as u8,
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: ShapeKind::Lin as u8,
+                scale_shape: Shape::Lin as u8,
             },
         );
 
@@ -4017,7 +4017,7 @@ mod tests {
         let slot = e.matrix.slots[9];
         assert_eq!(slot.source, SourceId::ModEnv);
         assert_eq!(slot.dest, DestId::Op1Level);
-        assert_eq!(slot.shape, ShapeKind::Lin);
+        assert_eq!(slot.shape, Shape::Lin);
         assert!((slot.depth - 0.5).abs() < 1e-6);
     }
 
@@ -4198,7 +4198,7 @@ mod tests {
             active: true,
             depth: 0.0,
             scale_src: 0,
-            scale_shape: ShapeKind::Lin as u8,
+            scale_shape: Shape::Lin as u8,
         };
         e.params.mtx_depths[0] = 0.5;
         // Non-pitch dest at the same depth: passthrough.
@@ -4209,7 +4209,7 @@ mod tests {
             active: true,
             depth: 0.0,
             scale_src: 0,
-            scale_shape: ShapeKind::Lin as u8,
+            scale_shape: Shape::Lin as u8,
         };
         e.params.mtx_depths[1] = 0.5;
         // Non-CLAP slot: depth rides in the row.
@@ -4221,7 +4221,7 @@ mod tests {
             active: true,
             depth: -0.5,
             scale_src: 0,
-            scale_shape: ShapeKind::Lin as u8,
+            scale_shape: Shape::Lin as u8,
         };
         e.apply_block_params();
 
@@ -4346,7 +4346,7 @@ mod tests {
     /// 4.0, and the structural FB op's `fb_scale` should land on `fb_scale(4.0)`.
     #[test]
     fn matrix_mod_wheel_to_feedback_updates_fb_scale() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         use vxn2_dsp::algo::spec_of;
         use vxn2_dsp::tables::fb_scale;
 
@@ -4358,10 +4358,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Feedback,
             depth: 4.0 / 7.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -4386,7 +4386,7 @@ mod tests {
     /// outer-left lane below the patch value, outer-right above, symmetric.
     #[test]
     fn matrix_voice_spread_to_feedback_is_per_lane() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         use vxn2_dsp::algo::spec_of;
         use vxn2_dsp::tables::fb_scale;
 
@@ -4399,10 +4399,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::Feedback,
             depth: 2.0 / 7.0, // ±2.0 native feedback units at full spread
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BLK];
@@ -4442,7 +4442,7 @@ mod tests {
                 active: false,
                 depth: 0.03,
                 scale_src: 0,
-                scale_shape: ShapeKind::Lin as u8,
+                scale_shape: Shape::Lin as u8,
             },
         );
         let mut e = Engine::new(SR, BLK);
@@ -4611,7 +4611,7 @@ mod tests {
     /// at 0 vs 1 (driving Cutoff up many octaves) yields different energy.
     #[test]
     fn matrix_cutoff_modulates_filter() {
-        use crate::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
         let mk = |wheel: f32| {
             let mut e = Engine::new(SR, BLK);
             e.params_mut().filter = FilterParams {
@@ -4628,10 +4628,10 @@ mod tests {
                 source: SourceId::ModWheel,
                 dest: DestId::Cutoff,
                 depth: 1.0,
-                polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+                polarity: Polarity::Direct,
+        shape: Shape::Lin,
                 scale_src: SourceId::None,
-                scale_shape: ShapeKind::Lin,
+                scale_shape: Shape::Lin,
             };
             e.set_mod_wheel(wheel);
             e.note_on(60, 110);
@@ -4827,17 +4827,17 @@ mod tests {
     /// rather than the CLAP-automatable slot-1..8 depth.)
     #[test]
     fn scale_source_gates_route_end_to_end() {
-        use crate::matrix::{DestId, ShapeKind, SourceId};
+        use crate::matrix::{DestId, Shape, SourceId};
         use crate::shared::MatrixRowRaw;
         let mut e = Engine::new(SR, BLK);
         e.params.matrix_rows[8] = MatrixRowRaw {
             source: SourceId::Lfo1 as u8,
             dest: DestId::GlobalPitch as u8,
-            curve: ShapeKind::Lin as u8,
+            curve: Shape::Lin as u8,
             active: true,
             depth: 1.0,
             scale_src: SourceId::ModWheel as u8,
-            scale_shape: ShapeKind::Lin as u8,
+            scale_shape: Shape::Lin as u8,
         };
         e.mod_wheel = 0.0;
         e.note_on(60, 100);
@@ -4871,7 +4871,7 @@ mod tests {
         fixed_ops: &[usize],
         target_op: usize,
     ) -> [[f32; N_DESTS]; STACK_LANES] {
-        use crate::matrix::{DestId, MatrixSlot, MatrixTable, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
         let dest = DestId::from_u8(DestId::Op1StackPitch as u8 + (target_op as u8 - 1));
         let mut e = Engine::new(SR, BLK);
         e.params.patch.voice.algo = algo;
@@ -4886,10 +4886,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -4923,7 +4923,7 @@ mod tests {
     /// `Op4Pitch` route stacks on top of the bend on op4 only.
     #[test]
     fn stack_pitch_additive_with_per_op_pitch() {
-        use crate::matrix::{DestId, MatrixSlot, MatrixTable, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
         let mut e = Engine::new(SR, BLK);
         e.params.patch.voice.algo = 1;
         e.apply_block_params();
@@ -4932,20 +4932,20 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Op3StackPitch,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         // Per-op pitch on op4, gain 24, but cubic-tapered depth 1.0 → 1.0.
         e.matrix.slots[1] = MatrixSlot {
             source: SourceId::ModWheel,
             dest: DestId::Op4Pitch,
             depth: 1.0,
-            polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+            polarity: Polarity::Direct,
+        shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_shape: ShapeKind::Lin,
+            scale_shape: Shape::Lin,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -5031,7 +5031,7 @@ mod tests {
     /// StackPitch` route (depth 1.0, mod_wheel 0.5 → +12 st = one octave).
     /// Returns each op's settled lane-0 `phase_inc` (∝ frequency).
     fn harmonic_phase_incs(stack_pitch_target: Option<usize>) -> [u32; 6] {
-        use crate::matrix::{DestId, MatrixSlot, MatrixTable, PolarityKind, ShapeKind, SourceId};
+        use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
         let mut e = Engine::new(SR, BLK);
         e.params.patch.voice.algo = 1;
         e.params.patch.voice.ops[3].num = 2;
@@ -5045,10 +5045,10 @@ mod tests {
                 source: SourceId::ModWheel,
                 dest,
                 depth: 1.0,
-                polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+                polarity: Polarity::Direct,
+        shape: Shape::Lin,
                 scale_src: SourceId::None,
-                scale_shape: ShapeKind::Lin,
+                scale_shape: Shape::Lin,
             };
             e.mod_wheel = 0.5;
         }
