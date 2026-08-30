@@ -54,14 +54,52 @@ at the boundary, exactly as they already do at the wire boundary.
 [0332](0332-roster-row-declares-everything.md) for what fills them in and
 [0335](0335-declared-target-smoothing.md) for what consumes `Smoothing`.
 
-Whether the trait carries const arrays or functions is an implementation call
-for whoever picks this up: const-generic array sizing (`[f32; R::N_DESTS]`)
-needs `generic_const_exprs`, which is unstable, so the likely shape is a
-fixed-capacity buffer sized by a `const MAX_DESTS` with the roster's real count
-as a runtime bound. **Measure that** — vxn-2 has 51 dests and vxn-1b 16, and a
-shared 64-wide buffer costs vxn-1b 3× the accumulator clears per block. If the
-cost is real, the fallback is a macro that stamps out a monomorphic engine per
-roster instead of a generic one, which is uglier but has no such tax.
+### Sizing: plain const generics, no unstable features, no wasted space
+
+Each synth gets storage sized exactly to its own roster — vxn-2's 51
+destinations and vxn-1b's 16 — with the sizes known at compile time. The trick
+is that the size is **its own const generic parameter, inferred from the
+argument**, rather than derived from an associated const:
+
+```rust
+pub fn eval<R: Roster, const NS: usize, const ND: usize, const L: usize>(
+    src: &[[f32; L]; NS],
+    out: &mut [[f32; L]; ND],
+) {
+    const { assert!(NS == R::N_SOURCES && ND == R::N_DESTS) };
+    ...
+}
+
+eval::<Vxn2Roster,  _, _, _>(&src, &mut out);  // [[f32; 8]; 51]
+eval::<Vxn1bRoster, _, _, _>(&src, &mut out);  // [[f32; 4]; 16]
+```
+
+Verified to compile on the pinned stable toolchain (edition 2024). Writing
+`[f32; R::N_DESTS]` — deriving the length from the associated const — is what
+needs `generic_const_exprs`; taking the length as a parameter does not. The two
+read almost the same and behave completely differently.
+
+The `const {}` block is not decoration: it is checked, and it fires. Handing
+`eval::<Vxn1bRoster, _, _, _>` a 51-wide accumulator fails to compile with
+`evaluation of eval::<Vxn1b, 11, 51, 4>::{constant#4} failed`. So the roster and
+the storage cannot silently disagree — which is the failure this sizing scheme
+would otherwise invite, since `ND` is inferred from whatever array the caller
+happens to pass.
+
+That removes the concern an earlier draft of this ticket raised about a shared
+`MAX_DESTS` buffer taxing vxn-1b with 3× the accumulator clears per block. There
+is no shared buffer and no runtime bound: each instantiation is monomorphised to
+its own exact size, exactly as the per-crate constants do today.
+
+Two things still worth measuring rather than assuming:
+
+- **Monomorphisation cost.** Two rosters × the lane counts each uses means
+  several copies of the evaluator. That is what you want for speed and what you
+  don't want for compile time and instruction cache. Check the binary size delta.
+- **Whether `L` wants to be generic at all.** vxn-1b already has
+  `eval_dests_bank<const L: usize>`; vxn-2 has a single `STACK_LANES`. If only
+  the tests exercise a second value of `L` for a given synth, the genericity is
+  paying for test convenience.
 
 ## The null-test harness
 
