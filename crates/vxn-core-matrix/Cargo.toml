@@ -1,0 +1,21 @@
+[package]
+name = "vxn-core-matrix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared modulation-matrix routing for VXN synth plugins (the roster/mechanism seam; the evaluator, route compilation and smoother bank land on top of it)."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Exposes the synthetic `TestRoster` outside this crate's own unit tests, for
+# consumers that want to exercise the mechanism without dragging in a synth's
+# roster. Off by default — a synth never wants it in a shipped binary.
+testing = []
+
+[dependencies]
+
+[dev-dependencies]
