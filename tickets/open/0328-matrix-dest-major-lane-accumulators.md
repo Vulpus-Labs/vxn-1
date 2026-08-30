@@ -4,18 +4,37 @@ product: vxn-2
 title: "Mod-matrix eval doesn't vectorise: transpose lane accumulators to dest-major"
 priority: low
 created: 2026-08-30
-epic: null
+epic: E049
 depends: []
 ---
 
 ## Summary
 
-[`eval_dests`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1201) compiles to
-entirely scalar code on AArch64 — checked against the emitted asm, zero NEON
-arithmetic ops in the function body (1592 instructions, `fmul` ×199, `fadd`
-×143, and the only vector op is `movi.2d` zeroing). The module doc claimed it
-"autovectorises to NEON on AArch64" for a long time; that claim was struck when
-this was measured, and the current note says plainly that it doesn't.
+Prerequisite for [E049](../../epics/open/E049-shared-matrix-routing.md): the
+shared evaluator ([0334](0334-share-the-evaluator.md)) cannot be built until
+both synths agree on accumulator layout, and this is where vxn-2 converges on
+vxn-1b's. Opened standalone before that epic existed, hence the low priority —
+E049 raises the stakes but not the difficulty.
+
+[`eval_dests`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1201) leaves its
+main accumulate loop scalar. Measured on the **linked** bench binary
+(`llvm-objdump` on `target/release/deps/matrix-*`, post-LTO): 895 instructions,
+277 scalar FP ops, and 16 vector ops — all of which are 2-wide and all of which
+are in the *scale-VCA* loop (`fold_bipolar`'s `+1.0` / `×0.5`, `clamp_unit`'s
+`fmaxnm`/`fminnm`). The route accumulate itself contributes none.
+
+> **Measure post-LTO or not at all.** An earlier revision of this ticket claimed
+> "zero NEON arithmetic ops, 1592 instructions" from `cargo rustc --emit asm` on
+> the library crate. That number was meaningless: with `lto` set, cargo passes
+> `-C linker-plugin-lto` and rustc defers the optimisation pipeline — **the loop
+> vectorizer included** — to link time. Under that method a 1024-element
+> `d[i] = s[i] * 2.0` also compiles scalar, which is the tell. Use
+> `llvm-objdump` from the rustup toolchain on a linked artifact. See
+> [[vxn-per-crate-asm-has-no-vectoriser]].
+
+That the *same function* vectorises its contiguous loop and not its strided one,
+under one compiler invocation at one optimisation level, is the cleanest
+available evidence for the diagnosis below.
 
 The cause is the accumulator layout. Both matrix buffers are **lane-major**:
 
@@ -73,10 +92,11 @@ rather than read-modify-written, so it may matter less.
 
 - [ ] `LaneDestVals` is `[[f32; STACK_LANES]; N_DESTS]`; `eval_dests` writes it
       contiguously across lanes.
-- [ ] Emitted asm for `eval_dests` contains NEON 4-wide arithmetic. Check with
-      `llvm-objdump` and grep the **mnemonic** for `.4s`, not the operands — see
-      [[vxn1-neon-grep-pitfall]]; a `grep 'v\d+\.4s'` returns nothing on
-      genuinely vectorised ARM64 code.
+- [ ] The route accumulate in `eval_dests` contains 4-wide arithmetic.
+      **Measure on a linked binary** (`cargo bench --no-run`, then `llvm-objdump
+      -d --disassemble-symbols=…`) — per-crate `--emit asm` runs no vectoriser
+      at all and will show scalar code either way. Grep the **mnemonic** for
+      `.4s`, not the operands ([[vxn1-neon-grep-pitfall]]).
 - [ ] `matrix_eval_full` and `matrix_eval_scaled` (vxn2-osc-bench `matrix`)
       both improve, or the ticket is closed as "measured, not worth it" with the
       numbers recorded.
@@ -89,9 +109,10 @@ rather than read-modify-written, so it may matter less.
 
 ## Notes
 
-- **This is an optimisation with no user-visible payoff**, hence `priority:
-  low`. Context for sizing it: at engine level the matrix is already noise —
-  `matrix_gated` (full render) shows no measurable difference between a
+- **This is an optimisation with no user-visible payoff on its own**, hence
+  `priority: low` — though it is now on E049's critical path, which is the
+  better reason to do it. Context for sizing it: at engine level the matrix is
+  already noise — `matrix_gated` (full render) shows no measurable difference between a
   baseline table and one with routes live, all three cases sitting at ~402µs.
   The eval is ~125ns per stack per control block; against a 1.33ms control
   block at 48kHz that's well under a percent even at 16 stacks. Do this for the

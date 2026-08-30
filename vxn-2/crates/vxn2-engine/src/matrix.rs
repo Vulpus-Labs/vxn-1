@@ -68,14 +68,24 @@
 //! its two decisions into the arms below cut a fully-scaled 16-slot eval by
 //! ~47% (253 ns → 133 ns, `matrix_eval_scaled`).
 //!
-//! This does **not** autovectorise, despite an earlier note here claiming so.
-//! `sources[k][si]` and `out[k][di]` stride by a whole row per lane, so the
-//! loop is a gather/scatter and compiles to scalar `fmul`/`fadd` on AArch64
-//! (checked against the emitted asm: zero NEON arithmetic ops in `eval_dests`).
-//! Making it vectorise means transposing [`LaneSourceVals`] / [`LaneDestVals`]
-//! to dest-major, which is a bigger change than it looks — the engine reads
-//! these accumulators lane-major. Straight-line-per-lane is still worth keeping
-//! for the branch-prediction and code-size win it does deliver.
+//! The **route accumulate does not vectorise**, and the reason is layout:
+//! `sources[k][si]` and `out[k][di]` stride a whole row per lane, so the loop is
+//! a gather/scatter. Measured post-LTO on a linked binary — 895 instructions,
+//! 277 scalar FP ops, 16 vector ops, and every one of those 16 is in the
+//! *scale-VCA* loop, which walks a contiguous `[f32; STACK_LANES]` local. The
+//! same function, the same optimisation level: contiguous vectorises, strided
+//! does not. Fixing it means transposing [`LaneSourceVals`] / [`LaneDestVals`]
+//! to dest-major, which the engine's lane-major reads make a larger change than
+//! it looks (ticket 0328). Straight-line-per-lane is still worth keeping for the
+//! branch-prediction and code-size win it does deliver.
+//!
+//! **Measure this post-LTO or not at all.** `cargo rustc --emit asm` on this
+//! crate runs *no* loop vectoriser — with `lto` set, cargo passes
+//! `-C linker-plugin-lto` and the pipeline is deferred to link time, so even a
+//! trivially vectorisable loop shows up scalar. Use `llvm-objdump` on a linked
+//! artifact. An earlier revision of this note asserted "autovectorises to NEON",
+//! a later one asserted the exact opposite; both were written from unlinked
+//! per-crate asm, and neither was evidence.
 //!
 //! ## CLAP exposure
 //!
