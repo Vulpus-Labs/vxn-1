@@ -9,7 +9,9 @@
 //! sample rate this gives an RT factor (`thrpt / SR`).
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use vxn2_dsp::reverb::{FdnReverb, FdnReverbParams};
+// `new` / `set_params` / `process` arrive through `FxKernel` since ticket 0230
+// moved the reverb into vxn-core-dsp; the trait has to be in scope to call them.
+use vxn2_dsp::reverb::{FdnReverb, FdnReverbParams, FxKernel};
 
 const SR: f32 = 48_000.0;
 const BLK: usize = 256;
