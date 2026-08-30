@@ -534,6 +534,11 @@ impl<'a> PluginTimerImpl for VxnMainThread<'a> {
         // dedupes ParamChanged by id in `flush_view_events`, so the overlap is
         // free on the wire.
         self.push_param_diffs();
+        // Republish a topology snapshot the audio thread never got — only ever
+        // owed after a ring overflow, and a pair of atomic loads when not
+        // (0338). Before the echo, so a serviced resync and the page's repaint
+        // land on the same tick.
+        self.shared.params.service_topology_resync();
         // Topology echo — cheap, and only pushes on a real change.
         self.push_matrix_echo();
         // Keyboard echo — the same, for the state the blob now carries.
@@ -591,9 +596,33 @@ impl VxnAudioProcessor<'_> {
             self.engine.set_tempo(bpm as f32);
         }
 
-        // A state/preset load that landed while active: re-sync the whole patch.
-        if self.shared.params.take_reload() {
-            self.engine.load_state(self.shared.params.engine_state());
+        // Topology edits posted by the editor since the last block (0338).
+        // Lock-free: a bounded drain of an SPSC ring, each record applied
+        // straight onto the engine's own tables. A single combo pick costs one
+        // field write here, not a whole-patch re-sync — and the audio thread no
+        // longer blocks on the editor thread to learn about it.
+        let mut saw_snapshot = self.shared.params.drain_topology(&mut self.engine);
+        // A state/preset load that landed while active: re-sync the whole patch
+        // from the store.
+        //
+        // The producer publishes a bulk change as *two* stores — the snapshot
+        // onto the ring, then `reload` — and this block has to be immune to
+        // landing between them in either direction. `saw_snapshot` covers the
+        // early half (topology arrived, flag not yet set): a snapshot is only
+        // ever produced by a bulk change, so it implies the re-sync. The second
+        // drain covers the late half: seeing `reload` set means the snapshot
+        // store already happened, so one more pop is guaranteed to find it —
+        // without it, this block would render the new patch's params through
+        // the old patch's routing.
+        let reload = self.shared.params.take_reload();
+        if reload && !saw_snapshot {
+            saw_snapshot = self.shared.params.drain_topology(&mut self.engine);
+        }
+        // `state_with` hands the engine's just-updated tables back rather than
+        // reading the store's guarded copy, which is what keeps this lock-free.
+        if reload || saw_snapshot {
+            let matrices = self.engine.matrices();
+            self.engine.load_state(self.shared.params.state_with(matrices));
         }
         // A Layer 2 key-mode / split edit from the UI: apply the new
         // KeyState so the demux enables/bypasses synth 2 and routes note-ons.
@@ -650,8 +679,18 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         engine.set_scope(shared.scope.clone());
         // Adopt whatever the store holds (factory default, or a state loaded
         // while the plugin was inactive). Clears any stale reload flag.
+        //
+        // `activate` is a main-thread call with no audio thread in existence,
+        // so reading the store's guarded topology here is free of the hazard
+        // 0338 removed from `process`. Anything still queued on the topology
+        // channel predates this adoption and would walk the engine backwards,
+        // so a fresh snapshot is pushed *behind* it: the first drain replays the
+        // stale records and then this supersedes them, before a sample is
+        // rendered. Superseding rather than discarding keeps the read cursor
+        // the audio thread's alone.
         shared.params.take_reload();
         engine.load_state(shared.params.engine_state());
+        shared.params.request_topology_resync();
         Ok(Self {
             engine,
             // Seed the mirror from the store *after* `load_state`, so it starts
@@ -826,6 +865,12 @@ impl PluginMainThreadParams for VxnMainThread<'_> {
         // Main-thread flush (plugin inactive): fold host automation into the
         // store. The engine picks it up on the next `activate` (which always
         // re-syncs from the store), so no reload flag is needed here.
+        //
+        // Also the second unconditional servicer for a topology snapshot the
+        // ring had no room for (0338): the editor tick is the first, but it
+        // stops with the editor window, and a host that flushes an inactive
+        // plugin must not be the case where a deferred resync sits forever.
+        self.shared.params.service_topology_resync();
         for event in input {
             if let Some(CoreEventSpace::ParamValue(e)) = event.as_core_event() {
                 if let Some(pid) = e.param_id() {

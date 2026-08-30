@@ -33,6 +33,12 @@ impl PluginGuiImpl for VxnMainThread<'_> {
         // the timer is unregistered above — so without this the audio thread
         // would keep filling a ring nobody reads until the editor reopens.
         self.shared.scope.set_source(vxn1b_engine::ScopeTap::Off.code());
+        // Same argument one channel over (0338): the timer is the topology
+        // ring's regular resync servicer, and it has just stopped. A resync
+        // owed at this moment — the editor drove the ring past full while the
+        // host was not processing — would otherwise wait for the next store
+        // edit. Service it on the way out instead.
+        self.shared.params.service_topology_resync();
     }
 
     fn set_parent(&mut self, window: Window) -> Result<(), PluginError> {

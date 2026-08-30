@@ -8,17 +8,42 @@
 //! - **Params** — one `AtomicU32` (f32 bits) per CLAP id. Writes cross without
 //!   locks: the audio thread stores host automation as it happens, the main
 //!   thread reads it back for `get_value`.
-//! - **Matrix topology** — behind a `Mutex`. It changes only on state/preset
-//!   load (main thread), never per sample, so a lock the audio thread takes
-//!   once when the `reload` flag is set is cheap and RT-safe in practice.
-//! - **`reload`** — set by [`Self::restore_from_bytes`]; the audio thread swaps
-//!   it to `false` at the top of `process` and re-syncs the engine from the
-//!   store. This is how a state load that lands while the plugin is active
-//!   reaches the running engine.
+//! - **Matrix topology** — a `Mutex` **the audio thread never takes** (0338).
+//!   This used to be justified as changing "only on state/preset load", which
+//!   stopped being true the moment [`Self::edit_matrix_slot`] started raising
+//!   the reload flag: every combo pick in the matrix overlay then routed the
+//!   render through the lock, one editor preemption away from an audible
+//!   dropout. The guarded tables are now **main-thread only** — the store's own
+//!   authoritative copy, read by `state.save` and the editor's echo — and the
+//!   audio thread learns about topology exclusively over the lock-free
+//!   [`crate::topology`] ring.
+//! - **Topology ring** — an SPSC queue of [`TopoMsg`] records. A single-field
+//!   edit crosses as one [`TopoMsg::Edit`] and costs the audio thread one field
+//!   write; a bulk change (preset load, `state.load`, copy/reset layer) crosses
+//!   as one [`TopoMsg::Snapshot`], and that snapshot is also the ring's
+//!   overflow backstop. See the module doc there for the overflow policy.
+//! - **`reload`** — set by [`Self::restore_from_bytes`] and the bulk patch ops;
+//!   the audio thread swaps it to `false` at the top of `process` and re-syncs
+//!   the **params** from the store. This is how a state load that lands while
+//!   the plugin is active reaches the running engine. Draining a `Snapshot`
+//!   implies the same re-sync, so the two can't come apart whichever order the
+//!   producer's two stores land in.
+//! - **Keyboard state** — one `AtomicU32` (0338): three flags and a MIDI note
+//!   pack losslessly into a word, so the audio thread's `take_key_state` is a
+//!   pair of atomic loads rather than a second lock on the render path.
 //!
 //! Depth stays param-authoritative (ADR 0001 §5 / 0205): the stored topology's
 //! depths already mirror the depth params (the codec seeds them), so a reload
 //! that pushes params-then-topology can't disagree.
+//!
+//! **The web build uses this store as a UI model only.** `vxn1b-web-controller`
+//! shares `SharedParams` with the native shell, but the worklet's engine is fed
+//! by `vxn1b-wasm`'s own event codec, so nothing over there ever drains the
+//! topology ring: after enough edits it sits permanently full with a resync
+//! owed. That is inert (the guarded tables — the only thing the web build reads
+//! — stay correct, and a full ring costs one refused push per edit), but it does
+//! mean [`SharedParams::topology_backlog`] and
+//! [`SharedParams::topology_resync_pending`] are meaningless off the CLAP path.
 //!
 //! **Gesture channel (E038).** Each param carries an `AtomicBool` gesture flag
 //! the editor raises/lowers around a knob drag, so the controller can bracket a
@@ -28,13 +53,14 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::engine::{KeyOp, KeyState, MatrixEdit, MatrixField};
-use crate::matrix::{DestId, MatrixTable, Polarity, Shape, SourceId};
+use crate::engine::{Engine, KeyOp, KeyState, MatrixEdit};
+use crate::matrix::MatrixTable;
 use crate::params::{
     ClapRef, GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_PARAMS, ParamId, Params, TOTAL_PARAMS,
     clap_ref, desc_for_clap_id, global_clap_id, patch_clap_id,
 };
 use crate::state::{LayerState, PluginState};
+use crate::topology::{TOPO_RING_SLOTS, TopoMsg, TopologyRing};
 
 /// Detune stamped on the copy by [`SharedParams::copy_layer`] (0265), in cents.
 /// Small enough to read as one wide sound rather than two instruments, large
@@ -55,13 +81,23 @@ pub struct SharedParams {
     /// Per-param live-drag flags the editor raises around a UI gesture (E038).
     gestures: Vec<AtomicBool>,
     /// One matrix topology **per layer** (0216): index 0 = Layer 1, 1 = Layer 2.
+    ///
+    /// **Main thread only** (0338). This is the store's authoritative copy —
+    /// what `state.save` serialises and what the editor's echo diffs against.
+    /// The audio thread's copy lives in the engine and is fed by `topo`.
     matrix: Mutex<[MatrixTable; 2]>,
-    /// Raised on `restore_from_bytes`; the audio thread clears it and re-syncs.
+    /// Topology deltas + snapshots on their way to the audio thread. Lock-free
+    /// both ends; see [`crate::topology`].
+    topo: TopologyRing,
+    /// Raised when the **params** need a full re-sync (state load, preset load,
+    /// copy/reset layer); the audio thread clears it and re-reads the store.
+    /// Topology edits deliberately do *not* raise it — they ride `topo`.
     reload: AtomicBool,
-    /// Non-automatable keyboard state (0219). Written by the controller tick from
-    /// a `set_key_mode` / `set_split_point` custom op; the audio thread swaps
+    /// Non-automatable keyboard state (0219), packed into one word by
+    /// [`KeyState::to_bits`]. Written by the controller tick from a
+    /// `set_key_mode` / `set_split_point` custom op; the audio thread swaps
     /// `key_dirty` and re-applies it to the engine's [`KeyState`].
-    key: Mutex<KeyState>,
+    key: AtomicU32,
     key_dirty: AtomicBool,
 }
 
@@ -90,12 +126,15 @@ impl SharedParams {
             values,
             gestures,
             matrix: Mutex::new([factory.layers[0].matrix, factory.layers[1].matrix]),
+            topo: TopologyRing::new(),
             reload: AtomicBool::new(false),
-            key: Mutex::new(KeyState::default()),
+            key: AtomicU32::new(KeyState::default().to_bits()),
             key_dirty: AtomicBool::new(false),
         }
     }
 
+    /// The authoritative topology tables. **Main thread only** — nothing
+    /// reachable from `process` may call this (0338).
     #[inline]
     fn lock(&self) -> std::sync::MutexGuard<'_, [MatrixTable; 2]> {
         // Recover a poisoned lock rather than propagating a panic: the guarded
@@ -202,7 +241,12 @@ impl SharedParams {
     /// Apply a UI key-op to the shared [`KeyState`] and flag the audio thread to
     /// re-sync. Called on the controller (main) thread.
     pub fn apply_key_op(&self, op: KeyOp) {
-        self.key.lock().unwrap_or_else(|e| e.into_inner()).apply(op);
+        // Read-modify-write without a CAS loop: the key channel has exactly one
+        // writer (the CLAP main thread — controller tick, state load, preset
+        // load), and the audio thread only ever reads.
+        let mut key = self.key_state();
+        key.apply(op);
+        self.key.store(key.to_bits(), Ordering::Relaxed);
         self.key_dirty.store(true, Ordering::Release);
     }
 
@@ -261,6 +305,9 @@ impl SharedParams {
         if !self.key_state().layer2_on {
             self.apply_key_op(KeyOp::SetKeyMode(1));
         }
+        // Topology first, params second: `reload` is only ever observed after
+        // the snapshot it belongs with is already queued.
+        self.request_topology_resync();
         self.reload.store(true, Ordering::Release);
     }
 
@@ -301,31 +348,104 @@ impl SharedParams {
             let mut m = self.lock();
             m[layer as usize] = factory.matrix;
         }
+        self.request_topology_resync();
         self.reload.store(true, Ordering::Release);
     }
 
-    /// Apply a UI matrix-topology edit to the per-layer matrix channel and flag a
-    /// reload. The audio thread's `take_reload` re-syncs the engine from
-    /// `engine_state()`, which reads this topology (depths stay param-authoritative
-    /// — the codec re-seeds them). Out-of-range slot indices are ignored.
+    /// Apply a UI matrix-topology edit to the store's tables and post it to the
+    /// audio thread (0338). Out-of-range slot indices are ignored.
+    ///
+    /// **This is the path that used to make the render take a lock.** It raises
+    /// no reload flag and triggers no whole-patch re-sync: the record crosses on
+    /// the topology ring, and the audio thread applies exactly the one field it
+    /// names, on the next block. Depth is not a topology field — it is a CLAP
+    /// param and rides the value store.
     pub fn edit_matrix_slot(&self, edit: MatrixEdit) {
         {
             let mut m = self.lock();
-            if let Some(slot) = m[edit.layer as usize].slots.get_mut(edit.slot as usize) {
-                match edit.field {
-                    MatrixField::Source => slot.source = SourceId::from_u8(edit.value),
-                    MatrixField::Dest => slot.dest = DestId::from_u8(edit.value),
-                    MatrixField::Polarity => slot.polarity = Polarity::from_u8(edit.value),
-                    MatrixField::Shape => slot.shape = Shape::from_u8(edit.value),
-                    MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
-                    MatrixField::ScaleShape => {
-                        slot.scale_shape = Shape::from_u8(edit.value)
+            crate::topology::apply_edit(&mut m[edit.layer as usize], edit);
+        }
+        self.publish_topology(TopoMsg::Edit(edit));
+    }
+
+    /// Post one record to the audio thread, or fall back to the snapshot path.
+    ///
+    /// A resync already owed supersedes an individual edit — the snapshot it
+    /// will carry is taken from the table the edit has just been applied to —
+    /// so in that state the record is deliberately withheld rather than queued.
+    fn publish_topology(&self, msg: TopoMsg) {
+        if self.topo.resync_pending() || !self.topo.try_push(msg) {
+            self.topo.request_resync();
+        }
+        self.service_topology_resync();
+    }
+
+    /// Declare that the whole topology changed: the audio thread must adopt the
+    /// store's tables wholesale. The bulk path (preset load, `state.load`,
+    /// copy/reset layer) and the ring's overflow backstop are the same code.
+    pub fn request_topology_resync(&self) {
+        self.topo.request_resync();
+        self.service_topology_resync();
+    }
+
+    /// Publish the owed snapshot if there is one and the ring has room.
+    /// **Main thread**; idempotent, and a no-op in the overwhelmingly common
+    /// case where nothing is owed. The CLAP shell also calls this from its
+    /// editor tick so a snapshot deferred by a full ring cannot sit unsent.
+    pub fn service_topology_resync(&self) {
+        // Cheap gates before the table copy: nothing owed, or nowhere to put it.
+        if !self.topo.resync_pending() || self.topo.len() >= TOPO_RING_SLOTS {
+            return;
+        }
+        let snapshot = *self.lock();
+        if self.topo.try_push(TopoMsg::Snapshot(snapshot)) {
+            self.topo.clear_resync();
+        }
+    }
+
+    /// Drain the topology channel onto `engine`. **Audio thread**, once at the
+    /// top of `process`, before the param re-sync.
+    ///
+    /// Wait-free: a bounded number of pops, each a plain copy out of a
+    /// pre-allocated cell, and a field write on the engine's own table. No
+    /// lock, no allocation, no whole-patch rebuild for a single-field edit.
+    ///
+    /// Returns whether a snapshot was applied. A snapshot is only ever produced
+    /// by a bulk change, which also rewrote the param store, so the caller must
+    /// treat `true` as a reload: that makes the producer's two stores
+    /// order-independent, and it re-seeds the slot depths the snapshot
+    /// deliberately left alone.
+    pub fn drain_topology(&self, engine: &mut Engine) -> bool {
+        let mut saw_snapshot = false;
+        while let Some(msg) = self.topo.pop() {
+            match msg {
+                TopoMsg::Edit(edit) => {
+                    crate::topology::apply_edit(engine.matrix_mut(edit.layer), edit);
+                }
+                TopoMsg::Snapshot(tables) => {
+                    saw_snapshot = true;
+                    for layer in [Layer::L1, Layer::L2] {
+                        crate::topology::apply_snapshot(
+                            engine.matrix_mut(layer),
+                            &tables[layer as usize],
+                        );
                     }
-                    MatrixField::Enabled => slot.enabled = edit.value != 0,
                 }
             }
         }
-        self.reload.store(true, Ordering::Release);
+        saw_snapshot
+    }
+
+    /// Records queued on the topology channel (tests / diagnostics).
+    #[inline]
+    pub fn topology_backlog(&self) -> usize {
+        self.topo.len()
+    }
+
+    /// Whether a full-table resync is owed because the ring overflowed (tests).
+    #[inline]
+    pub fn topology_resync_pending(&self) -> bool {
+        self.topo.resync_pending()
     }
 
     /// The current keyboard state, if a key-op landed since the last call
@@ -334,7 +454,7 @@ impl SharedParams {
     #[inline]
     pub fn take_key_state(&self) -> Option<KeyState> {
         if self.key_dirty.swap(false, Ordering::Acquire) {
-            Some(*self.key.lock().unwrap_or_else(|e| e.into_inner()))
+            Some(self.key_state())
         } else {
             None
         }
@@ -346,7 +466,7 @@ impl SharedParams {
     /// happened to land first would swallow the re-sync.
     #[inline]
     pub fn key_state(&self) -> KeyState {
-        *self.key.lock().unwrap_or_else(|e| e.into_inner())
+        KeyState::from_bits(self.key.load(Ordering::Relaxed))
     }
 
     /// Snapshot the whole store to a `clap.state` blob (params + topology).
@@ -365,7 +485,18 @@ impl SharedParams {
     /// keyboard record rides along from the key channel, so a `state.save`
     /// carries the routing mode as well as the two patches.
     pub fn to_state(&self) -> PluginState {
-        let matrices = self.matrix_snapshot();
+        self.state_with(self.matrix_snapshot())
+    }
+
+    /// [`Self::to_state`] with the topology supplied by the caller rather than
+    /// read from the guarded tables — everything else (params, key record,
+    /// depth re-seeding) is identical.
+    ///
+    /// This is the **audio thread's** re-sync path (0338) and the reason it can
+    /// stay lock-free: it is passed the engine's own tables, which the topology
+    /// ring has already brought up to date, so the render never reaches for the
+    /// store's copy.
+    pub fn state_with(&self, matrices: [MatrixTable; 2]) -> PluginState {
         let layers = [Layer::L1, Layer::L2].map(|layer| {
             let params = self.layer_params(layer);
             let mut matrix = matrices[layer as usize];
@@ -400,14 +531,20 @@ impl SharedParams {
         // Keyboard state travels its own channel to the engine, so the
         // reload flag alone would not carry it: raise `key_dirty` too, and the
         // audio thread's `take_key_state` applies the loaded routing mode.
-        *self.key.lock().unwrap_or_else(|e| e.into_inner()) = state.key;
+        self.key.store(state.key.to_bits(), Ordering::Relaxed);
         self.key_dirty.store(true, Ordering::Release);
+        // Topology is a third channel again (0338): a load is a bulk change, so
+        // it crosses as one snapshot rather than 32 edits. Queued before
+        // `reload` is raised, so an audio thread that sees the flag already has
+        // the snapshot in front of it.
+        self.request_topology_resync();
         self.reload.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// Sync a freshly-decoded engine-ready [`PluginState`] out of the store (used
-    /// by the audio thread on reload / activate).
+    /// A freshly-decoded engine-ready [`PluginState`] out of the store, topology
+    /// included. **Main thread** (`activate`, the web build, tests) — the audio
+    /// thread's reload uses [`Self::state_with`] instead, which takes no lock.
     pub fn engine_state(&self) -> PluginState {
         self.to_state()
     }
@@ -467,6 +604,8 @@ impl vxn_core_app::ParamModel for SharedParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::MatrixField;
+    use crate::matrix::{DestId, SourceId};
     use crate::params::{ParamId, clap_id_of};
 
     #[test]
@@ -580,31 +719,297 @@ mod tests {
     }
 
     #[test]
-    fn matrix_edit_updates_the_right_layer_and_flags_reload() {
-        use crate::engine::{MatrixEdit, MatrixField};
-        use crate::matrix::{DestId, SourceId};
-        use crate::params::Layer;
+    fn matrix_edit_updates_the_right_layer_and_rides_the_ring() {
         let sp = SharedParams::new();
         // Edit Layer 2, slot 7: route LFO2 → Cutoff.
-        sp.edit_matrix_slot(MatrixEdit {
-            layer: Layer::L2,
-            slot: 7,
-            field: MatrixField::Source,
-            value: SourceId::Lfo2 as u8,
-        });
-        sp.edit_matrix_slot(MatrixEdit {
-            layer: Layer::L2,
-            slot: 7,
-            field: MatrixField::Dest,
-            value: DestId::Cutoff as u8,
-        });
-        assert!(sp.take_reload(), "a topology edit must flag a reload");
+        sp.edit_matrix_slot(source_edit(Layer::L2, 7, SourceId::Lfo2));
+        sp.edit_matrix_slot(dest_edit(Layer::L2, 7, DestId::Cutoff));
+        // 0338: topology has its own channel now. Raising the param reload flag
+        // here is what used to drag the audio thread through the matrix mutex
+        // on every combo pick.
+        assert!(!sp.take_reload(), "a topology edit must not flag a param reload");
+        assert_eq!(sp.topology_backlog(), 2, "one record per edit, on the ring");
+        assert!(!sp.topology_resync_pending());
 
         let m = sp.matrix_snapshot();
         assert_eq!(m[1].slots[7].source, SourceId::Lfo2);
         assert_eq!(m[1].slots[7].dest, DestId::Cutoff);
         // Layer 1's same slot is untouched.
         assert!(!m[0].slots[7].is_active());
+    }
+
+    // ── The topology channel (0338) ──────────────────────────────────────
+
+    fn source_edit(layer: Layer, slot: u8, src: SourceId) -> MatrixEdit {
+        MatrixEdit { layer, slot, field: MatrixField::Source, value: src as u8 }
+    }
+
+    fn dest_edit(layer: Layer, slot: u8, dest: DestId) -> MatrixEdit {
+        MatrixEdit { layer, slot, field: MatrixField::Dest, value: dest as u8 }
+    }
+
+    /// An engine holding the store's patch with the channel already settled —
+    /// the CLAP shell's `activate` followed by its first drain.
+    fn activated(sp: &SharedParams) -> crate::engine::Engine {
+        let mut e = crate::engine::Engine::new(48_000.0);
+        sp.take_reload();
+        e.load_state(sp.engine_state());
+        sp.request_topology_resync();
+        sp.drain_topology(&mut e);
+        e
+    }
+
+    /// The other half of "no whole-patch re-sync": the drain writes the one
+    /// field the record names and touches nothing else — not the other layer,
+    /// not the other slots, and above all not the params.
+    #[test]
+    fn a_single_field_edit_applies_that_field_and_nothing_else() {
+        let sp = SharedParams::new();
+        let mut e = activated(&sp);
+
+        // Drive one engine param away from the store. A whole-patch re-sync
+        // would stomp it back; a field write must leave it alone.
+        let cutoff_id = clap_id_of(Layer::L1, ParamId::Cutoff);
+        e.set_param(cutoff_id, 1234.0);
+        let before = e.matrices();
+
+        sp.edit_matrix_slot(source_edit(Layer::L2, 7, SourceId::Lfo2));
+        assert!(!sp.drain_topology(&mut e), "an edit is not a snapshot");
+
+        let after = e.matrices();
+        assert_eq!(after[1].slots[7].source, SourceId::Lfo2, "the edited field landed");
+        assert_eq!(after[0], before[0], "the other layer must not move");
+        for slot in 0..MATRIX_SLOTS {
+            if slot != 7 {
+                assert_eq!(after[1].slots[slot], before[1].slots[slot], "slot {slot}");
+            }
+        }
+        assert_eq!(after[1].slots[7].dest, before[1].slots[7].dest, "dest untouched");
+        assert_eq!(after[1].slots[7].depth, before[1].slots[7].depth, "depth untouched");
+        assert_eq!(e.param(cutoff_id), 1234.0, "a field edit must not re-sync params");
+    }
+
+    /// Ring overflow is a defined path, not an argument that it cannot happen:
+    /// the dropped record is subsumed by a full snapshot, and the audio thread
+    /// converges on exactly the store's topology.
+    #[test]
+    fn a_full_ring_falls_back_to_the_snapshot_path() {
+        let sp = SharedParams::new();
+        let mut e = activated(&sp);
+
+        // Nothing drains, so the ring fills exactly.
+        for i in 0..TOPO_RING_SLOTS {
+            let slot = (i % MATRIX_SLOTS) as u8;
+            sp.edit_matrix_slot(source_edit(Layer::L1, slot, SourceId::Lfo2));
+        }
+        assert_eq!(sp.topology_backlog(), TOPO_RING_SLOTS, "the ring is full");
+        assert!(!sp.topology_resync_pending(), "full is not yet overflowed");
+
+        // One more has nowhere to go. It still lands on the store's table.
+        sp.edit_matrix_slot(source_edit(Layer::L1, 5, SourceId::Aftertouch));
+        assert!(sp.topology_resync_pending(), "an overflow owes a snapshot");
+        assert_eq!(sp.topology_backlog(), TOPO_RING_SLOTS, "and nothing was queued");
+        assert_eq!(sp.matrix_snapshot()[0].slots[5].source, SourceId::Aftertouch);
+
+        // The audio thread drains what fits; the dropped record is still missing.
+        assert!(!sp.drain_topology(&mut e), "no snapshot has been queued yet");
+        assert_eq!(e.matrices()[0].slots[5].source, SourceId::Lfo2, "the tail was dropped");
+
+        // Now there is room, so the producer's next service publishes the debt.
+        sp.service_topology_resync();
+        assert!(!sp.topology_resync_pending(), "the snapshot is queued");
+        assert_eq!(sp.topology_backlog(), 1, "one snapshot, not 32 slot edits");
+        assert!(sp.drain_topology(&mut e), "the drain must report the snapshot");
+
+        // Converged: the engine's topology is the store's, dropped edit included.
+        let (store, engine) = (sp.matrix_snapshot(), e.matrices());
+        for layer in 0..2 {
+            for slot in 0..MATRIX_SLOTS {
+                let (a, b) = (store[layer].slots[slot], engine[layer].slots[slot]);
+                assert_eq!(a.source, b.source, "layer {layer} slot {slot} source");
+                assert_eq!(a.dest, b.dest, "layer {layer} slot {slot} dest");
+                assert_eq!(a.enabled, b.enabled, "layer {layer} slot {slot} enabled");
+            }
+        }
+    }
+
+    /// While a resync is owed, individual edits are withheld rather than queued
+    /// — the snapshot is taken *after* they hit the table, so it carries them.
+    #[test]
+    fn edits_made_while_a_resync_is_owed_ride_the_snapshot() {
+        let sp = SharedParams::new();
+        let mut e = activated(&sp);
+
+        for _ in 0..(TOPO_RING_SLOTS + 1) {
+            sp.edit_matrix_slot(source_edit(Layer::L1, 0, SourceId::Lfo2));
+        }
+        assert!(sp.topology_resync_pending());
+        // Drain everything queued; the debt outlives it.
+        sp.drain_topology(&mut e);
+        assert!(sp.topology_resync_pending());
+
+        // A fresh edit posted while still owing. Room exists now, so servicing
+        // the debt publishes a snapshot that already includes it.
+        sp.edit_matrix_slot(source_edit(Layer::L1, 11, SourceId::Aftertouch));
+        assert!(!sp.topology_resync_pending());
+        assert_eq!(sp.topology_backlog(), 1);
+        assert!(sp.drain_topology(&mut e), "the record must be the snapshot");
+        assert_eq!(
+            e.matrices()[0].slots[11].source,
+            SourceId::Aftertouch,
+            "the edit made mid-debt must still reach the engine"
+        );
+    }
+
+    /// Preset / state load is bulk: one snapshot record, never decomposed into
+    /// per-field edits, and it still raises the param reload flag beside it.
+    #[test]
+    fn a_state_restore_crosses_as_one_snapshot_not_as_edits() {
+        let sp = SharedParams::new();
+        sp.edit_matrix_slot(source_edit(Layer::L1, 3, SourceId::Lfo2));
+        sp.edit_matrix_slot(dest_edit(Layer::L1, 3, DestId::Cutoff));
+        sp.set(clap_id_of(Layer::L1, ParamId::Cutoff), 987.0);
+        let blob = sp.snapshot_bytes();
+
+        let back = SharedParams::new();
+        let mut e = activated(&back);
+        back.restore_from_bytes(&blob).unwrap();
+        assert_eq!(back.topology_backlog(), 1, "one snapshot for the whole load");
+        assert!(back.take_reload(), "a load still re-syncs the params");
+
+        assert!(back.drain_topology(&mut e), "the record must be a snapshot");
+        assert_eq!(e.matrices()[0].slots[3].source, SourceId::Lfo2);
+        assert_eq!(e.matrices()[0].slots[3].dest, DestId::Cutoff);
+    }
+
+    /// A snapshot leaves depth alone (it is param-authoritative, 0205) and the
+    /// re-sync it implies re-seeds it — so the pair converge in one block.
+    #[test]
+    fn a_snapshot_leaves_depth_to_the_params() {
+        let sp = SharedParams::new();
+        let mut e = activated(&sp);
+
+        sp.set(clap_id_of(Layer::L1, ParamId::MatrixSlot4Depth), -0.75);
+        sp.request_topology_resync();
+        assert!(sp.drain_topology(&mut e));
+        // The snapshot alone must not have written a depth...
+        assert_ne!(e.matrices()[0].slots[4].depth, -0.75);
+        // ...but the re-sync it implies does, from the params, in the same block.
+        let matrices = e.matrices();
+        e.load_state(sp.state_with(matrices));
+        assert_eq!(e.matrices()[0].slots[4].depth, -0.75);
+    }
+
+    /// `activate` adopts the store directly, so anything already queued predates
+    /// that adoption. It is superseded rather than dropped — a snapshot pushed
+    /// *behind* the stale records, so the producer never has to reach across the
+    /// channel for the consumer's cursor.
+    #[test]
+    fn activate_supersedes_records_older_than_the_state_it_adopts() {
+        let sp = SharedParams::new();
+        // A stale edit posted before the table change that supersedes it.
+        sp.edit_matrix_slot(source_edit(Layer::L1, 6, SourceId::Lfo2));
+        {
+            let mut m = sp.lock();
+            m[0].slots[6].source = SourceId::Aftertouch;
+        }
+
+        let mut e = activated(&sp);
+        assert_eq!(sp.topology_backlog(), 0, "activate's snapshot drained with it");
+        assert!(!sp.drain_topology(&mut e));
+        assert_eq!(
+            e.matrices()[0].slots[6].source,
+            SourceId::Aftertouch,
+            "the stale edit was replayed but the snapshot behind it won"
+        );
+    }
+
+    /// The reverse-order half of the bulk hand-off. The producer pushes the
+    /// snapshot and *then* raises `reload`; a consumer that reads the flag
+    /// between its own drain and the check would otherwise install the new
+    /// params over the old topology for a block. Seeing `reload` set means the
+    /// snapshot is already queued, so one more drain always finds it.
+    #[test]
+    fn a_reload_seen_after_the_drain_still_finds_its_snapshot() {
+        let sp = SharedParams::new();
+        let mut e = activated(&sp);
+
+        // Block N: the shell drains an empty channel...
+        assert!(!sp.drain_topology(&mut e));
+        // ...and the load lands in the window before it reads the flag.
+        let other = SharedParams::new();
+        other.edit_matrix_slot(source_edit(Layer::L1, 12, SourceId::Aftertouch));
+        sp.restore_from_bytes(&other.snapshot_bytes()).unwrap();
+
+        assert!(sp.take_reload());
+        assert!(
+            sp.drain_topology(&mut e),
+            "the second drain must pick up the snapshot the flag implies"
+        );
+        assert_eq!(e.matrices()[0].slots[12].source, SourceId::Aftertouch);
+    }
+
+    /// The latency criterion: an edit posted after block N is in block N+1's
+    /// render, exactly as the mutex path managed. The control writes the same
+    /// fields straight onto the engine at the same instant — a zero-latency
+    /// transport by construction — and the two renders must be bit-identical.
+    #[test]
+    fn an_edit_posted_between_blocks_is_audible_in_the_next_one() {
+        const FRAMES: usize = 128;
+
+        // Slot 9: LFO 2 → Cutoff, switched on, at full depth. The depth is a
+        // param, so it is in place from the start; only the topology is late.
+        let edits = [
+            source_edit(Layer::L1, 9, SourceId::Lfo2),
+            dest_edit(Layer::L1, 9, DestId::Cutoff),
+            MatrixEdit { layer: Layer::L1, slot: 9, field: MatrixField::Enabled, value: 1 },
+        ];
+        let seeded = || {
+            let sp = SharedParams::new();
+            sp.set(clap_id_of(Layer::L1, ParamId::MatrixSlot9Depth), 1.0);
+            sp
+        };
+        let block = |e: &mut crate::engine::Engine| {
+            let (mut l, mut r) = (vec![0.0f32; FRAMES], vec![0.0f32; FRAMES]);
+            e.process_block(&mut l, &mut r);
+            l
+        };
+
+        // (a) Posted between block 0 and block 1, drained at the top of block 1
+        // — the CLAP shell's order.
+        let sp = seeded();
+        let mut e_ring = activated(&sp);
+        e_ring.note_on(0, 60, 1.0);
+        let _ = block(&mut e_ring);
+        for e in edits {
+            sp.edit_matrix_slot(e);
+        }
+        assert!(!sp.drain_topology(&mut e_ring), "edits, not a snapshot");
+        let via_ring = block(&mut e_ring);
+
+        // (b) The same three field writes, applied directly at the same instant.
+        let control = seeded();
+        let mut e_direct = activated(&control);
+        e_direct.note_on(0, 60, 1.0);
+        let _ = block(&mut e_direct);
+        for e in edits {
+            crate::topology::apply_edit(e_direct.matrix_mut(e.layer), e);
+        }
+        let via_direct = block(&mut e_direct);
+
+        // (c) And the same block with the route never wired, so (a) == (b) is
+        // not two identical renders of nothing.
+        let plain = seeded();
+        let mut e_plain = activated(&plain);
+        e_plain.note_on(0, 60, 1.0);
+        let _ = block(&mut e_plain);
+        let unwired = block(&mut e_plain);
+
+        assert_eq!(
+            via_ring, via_direct,
+            "the ring must not defer the edit by a block"
+        );
+        assert_ne!(via_ring, unwired, "the wired route must be audible in that block");
     }
 
     #[test]
