@@ -4,6 +4,7 @@ members = [
     # Shared core (E001 extraction target).
     "crates/vxn-core-utils",
     "crates/vxn-core-dsp",
+    "crates/vxn-core-matrix",
     "crates/vxn-asm-check",
     "crates/vxn-core-app",
     "crates/vxn-preset",
@@ -53,6 +54,7 @@ rust-version = "1.85"
 # Shared core (path).
 vxn-core-utils = { path = "crates/vxn-core-utils" }
 vxn-core-dsp = { path = "crates/vxn-core-dsp" }
+vxn-core-matrix = { path = "crates/vxn-core-matrix" }
 vxn-core-app = { path = "crates/vxn-core-app" }
 vxn-preset = { path = "crates/vxn-preset" }
 vxn-core-ui-web = { path = "crates/vxn-core-ui-web" }
