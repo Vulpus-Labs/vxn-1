@@ -22,8 +22,11 @@ import {
   LAYER_L2,
   MATRIX_FIELD_SOURCE,
   MATRIX_FIELD_DEST,
-  MATRIX_FIELD_CURVE,
+  MATRIX_FIELD_POLARITY,
   MATRIX_FIELD_SCALE_SRC,
+  MATRIX_FIELD_SHAPE,
+  MATRIX_FIELD_SCALE_SHAPE,
+  MATRIX_FIELD_ENABLED,
   MATRIX_SLOTS,
 } from "./event-codec.mjs";
 import { WebController } from "./controller.mjs";
@@ -44,13 +47,52 @@ export const SCOPE_TAP = { off: 0, upper: 1, lower: 2 };
 /// Layer names → wire layer index (`Layer`'s discriminant).
 export const LAYER = { upper: LAYER_L1, lower: LAYER_L2 };
 
-/// Matrix field names → wire field index.
+/// Matrix field names → wire field index. Keys are the wire spellings the
+/// matrix panel sends (`assets/panels/matrix.js`'s `wire:` column) and the
+/// values are `vxn1b_engine::vocab::MATRIX_FIELD_NAMES` positions — including
+/// the hyphenated `scale-shape`, which is why this one entry is quoted.
+///
+/// The ordinals are deliberately not in reading order: `scale` sits at 3 and
+/// `shape` at 4 because 0..3 predate the polarity/shape split and are frozen.
 export const MATRIX_FIELD = {
   source: MATRIX_FIELD_SOURCE,
   dest: MATRIX_FIELD_DEST,
-  curve: MATRIX_FIELD_CURVE,
+  polarity: MATRIX_FIELD_POLARITY,
   scale: MATRIX_FIELD_SCALE_SRC,
+  shape: MATRIX_FIELD_SHAPE,
+  "scale-shape": MATRIX_FIELD_SCALE_SHAPE,
+  enabled: MATRIX_FIELD_ENABLED,
 };
+
+/// The same seven fields keyed by SNAPSHOT property instead of wire name, for
+/// `_resendMatrix`'s diff. A second table rather than a reuse of `MATRIX_FIELD`
+/// because the two vocabularies genuinely differ: the wire says `scale-shape`,
+/// the snapshot (`vxn1b_ui_web::slots_json`, and `controller.mjs`'s decode of
+/// the same record) says `scaleShape`. An array, so the resend order is the
+/// ordinal order and a test can pin the whole list in one `deepEqual`.
+const RESEND_FIELDS = [
+  ["source", MATRIX_FIELD_SOURCE],
+  ["dest", MATRIX_FIELD_DEST],
+  ["polarity", MATRIX_FIELD_POLARITY],
+  ["scale", MATRIX_FIELD_SCALE_SRC],
+  ["shape", MATRIX_FIELD_SHAPE],
+  ["scaleShape", MATRIX_FIELD_SCALE_SHAPE],
+  ["enabled", MATRIX_FIELD_ENABLED],
+];
+
+/// Look a name up in one of the vocabulary tables above, `undefined` unless the
+/// table OWNS that key.
+///
+/// A plain `TABLE[name]` inherits from `Object.prototype`, so `"constructor"`
+/// and `"__proto__"` come back truthy, sail past the `=== undefined` guards
+/// below, and are then coerced by `field >>> 0` to 0 — turning a junk opcode
+/// into an edit of slot N's *source*. That is precisely the silent mis-route the
+/// rest of this file is built to prevent, so every lookup goes through here.
+/// `hasOwnProperty.call` rather than `Object.hasOwn` only to keep the floor at
+/// the Safari version the audio path already needs.
+function vocabLookup(table, name) {
+  return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
+}
 
 /// Split-point slider range and default, mirrored from `vxn1b_engine::vocab`
 /// (`SPLIT_POINT_MIN` / `MAX` / `DEFAULT_SPLIT_POINT`). The page stamps the
@@ -145,8 +187,8 @@ const OPCODE_HANDLERS = {
     return true;
   },
   set_matrix: ({ ctrl, msg }) => {
-    const layer = LAYER[msg.layer];
-    const field = MATRIX_FIELD[msg.field];
+    const layer = vocabLookup(LAYER, msg.layer);
+    const field = vocabLookup(MATRIX_FIELD, msg.field);
     if (layer === undefined || field === undefined) return false;
     ctrl.setMatrix(layer, msg.slot | 0, field, msg.value | 0);
     return true;
@@ -154,8 +196,8 @@ const OPCODE_HANDLERS = {
 
   // ---- controller only: bulk patch ops ---------------------------------
   copy_layer: ({ ctrl, msg }) => {
-    const from = LAYER[msg.from];
-    const to = LAYER[msg.to];
+    const from = vocabLookup(LAYER, msg.from);
+    const to = vocabLookup(LAYER, msg.to);
     if (from === undefined || to === undefined) return false;
     // Params reach the engine through the mirror; topology through the echo
     // resend in the pump. Nothing to push here.
@@ -163,7 +205,7 @@ const OPCODE_HANDLERS = {
     return true;
   },
   reset_layer: ({ ctrl, msg }) => {
-    const layer = LAYER[msg.layer];
+    const layer = vocabLookup(LAYER, msg.layer);
     if (layer === undefined) return false;
     // Same route as copy_layer: params reach the engine through the mirror,
     // topology through the echo resend in the pump.
@@ -225,7 +267,7 @@ const OPCODE_HANDLERS = {
     return true;
   },
   set_scope_source: ({ coord, msg }) => {
-    const tap = SCOPE_TAP[msg.source];
+    const tap = vocabLookup(SCOPE_TAP, msg.source);
     if (tap === undefined) return false;
     if (coord) coord.setScopeTap(tap);
     return true;
@@ -470,20 +512,12 @@ export class FaceplateBridge {
       for (let slot = 0; slot < MATRIX_SLOTS; slot++) {
         const now = slots[layer][slot];
         const was = this._sentMatrix ? this._sentMatrix[layer][slot] : null;
-        if (!was || was.source !== now.source) {
-          this.coordinator.setMatrix(layer, slot, MATRIX_FIELD_SOURCE, now.source);
-          pushed++;
-        }
-        if (!was || was.dest !== now.dest) {
-          this.coordinator.setMatrix(layer, slot, MATRIX_FIELD_DEST, now.dest);
-          pushed++;
-        }
-        if (!was || was.curve !== now.curve) {
-          this.coordinator.setMatrix(layer, slot, MATRIX_FIELD_CURVE, now.curve);
-          pushed++;
-        }
-        if (!was || was.scale !== now.scale) {
-          this.coordinator.setMatrix(layer, slot, MATRIX_FIELD_SCALE_SRC, now.scale);
+        for (const [key, field] of RESEND_FIELDS) {
+          if (was && was[key] === now[key]) continue;
+          // `enabled` is a bool in the snapshot and 0/1 on the ring; the rest
+          // are already the wire `u8`. Same conversion the panel's `_edit` does.
+          const v = now[key];
+          this.coordinator.setMatrix(layer, slot, field, v === true ? 1 : v === false ? 0 : v);
           pushed++;
         }
       }

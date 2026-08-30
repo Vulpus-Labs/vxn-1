@@ -133,14 +133,36 @@ export function decodeViewEvents(buffer, ptr, len) {
         });
         break;
       case VE_MATRIX_SNAPSHOT: {
-        // Both layers, 16 slots each: source, dest, curve, scale_src. Depths
-        // are CLAP params and arrive as `param_changed`, exactly as they do
-        // natively — the page's overlay merges the two.
+        // Both layers, 16 slots each, SEVEN bytes per slot, in the order
+        // `pack_matrix` writes them: source, dest, polarity, shape, scale_src,
+        // scale_shape, enabled. That byte order is NOT the field-ordinal order —
+        // `scale` is ordinal 3 but the fifth byte — because the ordinals are
+        // frozen for the wire address while the snapshot packs in reading order.
+        // Read the packer, not the ordinal table, when changing this.
+        //
+        // The field names are `vxn1b_ui_web::slots_json`'s keys, because the
+        // matrix panel consumes the native echo and this decode interchangeably;
+        // `enabled` is a bool there and 0/1 on the wire, the same convention
+        // VE_KEY_STATE's `link` uses below.
+        //
+        // Depths stay out — they are CLAP params and arrive as `param_changed`,
+        // exactly as they do natively; the page's overlay merges the two.
+        //
+        // Under-reading here is not a local bug: the cursor stays short by the
+        // bytes it missed and every LATER record decodes as garbage, surfacing
+        // as `unknown ViewEvent tag` from a record that is perfectly fine.
         const slots = [];
         for (let l = 0; l < LAYERS; l++) {
           const layer = [];
           for (let s = 0; s < SLOTS_PER_LAYER; s++) {
-            layer.push({ source: c.u8(), dest: c.u8(), curve: c.u8(), scale: c.u8() });
+            const source = c.u8();
+            const dest = c.u8();
+            const polarity = c.u8();
+            const shape = c.u8();
+            const scale = c.u8();
+            const scaleShape = c.u8();
+            const enabled = c.u8() !== 0;
+            layer.push({ source, dest, polarity, shape, scale, scaleShape, enabled });
           }
           slots.push(layer);
         }

@@ -22,6 +22,11 @@ import {
   MATRIX_SLOTS,
   MATRIX_FIELD_DEST,
   MATRIX_FIELD_SOURCE,
+  MATRIX_FIELD_POLARITY,
+  MATRIX_FIELD_SCALE_SRC,
+  MATRIX_FIELD_SHAPE,
+  MATRIX_FIELD_SCALE_SHAPE,
+  MATRIX_FIELD_ENABLED,
 } from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -181,9 +186,84 @@ test("an unknown, non-string or malformed op is dropped, not mis-routed", async 
   assert.equal(bridge.handle({ op: "set_matrix", layer: "upper", slot: 0, field: "wobble", value: 1 }), false);
   assert.equal(bridge.handle({ op: "set_scope_source", source: "elsewhere" }), false);
   assert.equal(bridge.handle({ op: "copy_layer", from: "upper", to: "sideways" }), false);
+  // Inherited Object.prototype members are not vocabulary. Left to a bare
+  // `TABLE[name]` these come back truthy, clear the `=== undefined` guards, and
+  // are coerced to 0 by `field >>> 0` — landing a junk op on slot 3's SOURCE.
+  // `op` itself is covered by OPCODE_HANDLERS' null prototype; these are the
+  // enum members inside a known op.
+  for (const inherited of ["constructor", "__proto__", "toString", "valueOf"]) {
+    const at = `"${inherited}"`;
+    assert.equal(
+      bridge.handle({ op: "set_matrix", layer: "upper", slot: 3, field: inherited, value: 5 }),
+      false,
+      `set_matrix accepted field ${at}`,
+    );
+    assert.equal(
+      bridge.handle({ op: "set_matrix", layer: inherited, slot: 3, field: "dest", value: 5 }),
+      false,
+      `set_matrix accepted layer ${at}`,
+    );
+    assert.equal(
+      bridge.handle({ op: "reset_layer", layer: inherited }),
+      false,
+      `reset_layer accepted layer ${at}`,
+    );
+    assert.equal(
+      bridge.handle({ op: "copy_layer", from: inherited, to: "lower" }),
+      false,
+      `copy_layer accepted from ${at}`,
+    );
+    assert.equal(
+      bridge.handle({ op: "set_scope_source", source: inherited }),
+      false,
+      `set_scope_source accepted source ${at}`,
+    );
+  }
 
   assert.deepEqual(coordinator.calls, []);
   assert.deepEqual([...controller.snapshotState()], [...before]);
+  controller.destroy();
+});
+
+// Every wire name `assets/panels/matrix.js` can put on a `set_matrix` op has to
+// route, and route to its OWN ordinal. A missing entry is silent — `routeOpcode`
+// returns false and the knob moves while the sound does not — and a wrong one is
+// worse, because the edit lands on a different field.
+test("every matrix field name the panel sends routes to its own ordinal", async () => {
+  const { bridge, controller } = await rig();
+  // Watched at the MODEL edge rather than the ring: `set_matrix` reaches the
+  // controller at route time and the ring only later, via the pump's resend,
+  // which drops fields that did not actually move — so the ring cannot show one
+  // push per name.
+  const seen = [];
+  const orig = controller.setMatrix.bind(controller);
+  controller.setMatrix = (layer, slot, field, value) => {
+    seen.push([layer, slot, field, value]);
+    orig(layer, slot, field, value);
+  };
+  const expected = [
+    ["source", MATRIX_FIELD_SOURCE],
+    ["dest", MATRIX_FIELD_DEST],
+    ["polarity", MATRIX_FIELD_POLARITY],
+    ["scale", MATRIX_FIELD_SCALE_SRC],
+    ["shape", MATRIX_FIELD_SHAPE],
+    ["scale-shape", MATRIX_FIELD_SCALE_SHAPE],
+    ["enabled", MATRIX_FIELD_ENABLED],
+  ];
+  for (const [name] of expected) {
+    assert.equal(
+      bridge.handle({ op: "set_matrix", layer: "upper", slot: 1, field: name, value: 1 }),
+      true,
+      `set_matrix field "${name}" did not route`,
+    );
+  }
+  assert.deepEqual(
+    seen,
+    expected.map(([, ordinal]) => [LAYER_L1, 1, ordinal, 1]),
+  );
+  // Distinct ordinals: two names sharing one would pass the check above while
+  // making one of the two fields unreachable.
+  assert.equal(new Set(expected.map(([, o]) => o)).size, expected.length);
   controller.destroy();
 });
 
@@ -242,13 +322,13 @@ test("routeOpcode works without a coordinator (headless / audio not started)", a
 test("the first pump seeds the ring with the whole topology and key state", async () => {
   const { bridge, coordinator, controller } = await rig();
   bridge.pump();
-  // 2 layers x 16 slots x 4 fields, from a cold memo.
-  assert.equal(coordinator.of("matrix").length, 2 * MATRIX_SLOTS * 4);
+  // 2 layers x 16 slots x 7 fields, from a cold memo.
+  assert.equal(coordinator.of("matrix").length, 2 * MATRIX_SLOTS * 7);
   assert.equal(coordinator.of("keyMode").length, 1);
   assert.equal(coordinator.of("splitPoint").length, 1);
   assert.equal(coordinator.of("lfo2Link").length, 1);
-  // 131 events, against a 1024-slot ring — one block, no bulk tag needed.
-  assert.equal(coordinator.calls.length, 131);
+  // 227 events, against a 1024-slot ring — one block, no bulk tag needed.
+  assert.equal(coordinator.calls.length, 2 * MATRIX_SLOTS * 7 + 3);
 
   // Nothing moved → the second pump pushes nothing.
   coordinator.clear();
@@ -303,7 +383,7 @@ test("the resend pushes only fields that actually moved", async () => {
   const { bridge, coordinator, controller } = await rig();
   bridge.pump();
   coordinator.clear();
-  bridge.handle({ op: "set_matrix", layer: "lower", slot: 7, field: "curve", value: 2 });
+  bridge.handle({ op: "set_matrix", layer: "lower", slot: 7, field: "polarity", value: 2 });
   bridge.pump();
   // One field changed → exactly one ring push: not a whole-table resend, and
   // not two (the route-time + resend double-push this caught).
@@ -534,7 +614,7 @@ test("resyncEngine re-pushes the whole topology and every param slot", async () 
   );
   assert.equal(
     coordinator.of("matrix").length,
-    2 * MATRIX_SLOTS * 4,
+    2 * MATRIX_SLOTS * 7,
     "the resync did not re-push the whole topology",
   );
   controller.destroy();

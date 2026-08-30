@@ -17,7 +17,17 @@ import path from "node:path";
 
 import { WebController, decodeViewEvents } from "./controller.mjs";
 import { ParamStore, createParamSAB, TOTAL_PARAMS, patchClapId } from "./param-store.mjs";
-import { LAYER_L1, LAYER_L2, MATRIX_FIELD_DEST, MATRIX_FIELD_SOURCE } from "./event-codec.mjs";
+import {
+  LAYER_L1,
+  LAYER_L2,
+  MATRIX_FIELD_DEST,
+  MATRIX_FIELD_SOURCE,
+  MATRIX_FIELD_POLARITY,
+  MATRIX_FIELD_SCALE_SRC,
+  MATRIX_FIELD_SHAPE,
+  MATRIX_FIELD_SCALE_SHAPE,
+  MATRIX_FIELD_ENABLED,
+} from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WASM = path.resolve(
@@ -142,8 +152,59 @@ test("the matrix record carries both layers, 16 slots, topology only", async () 
   assert.equal(m.slots[0].length, 16);
   assert.equal(m.slots[1].length, 16);
   assert.equal(m.slots[1][3].dest, 5);
-  // Depth is a param and must NOT be in the topology record.
-  assert.deepEqual(Object.keys(m.slots[0][0]).sort(), ["curve", "dest", "scale", "source"]);
+  // Depth is a param and must NOT be in the topology record. The other six are
+  // all here: an under-read of this record does not fail locally, it shifts the
+  // cursor and corrupts every LATER record in the drain (the `unknown ViewEvent
+  // tag` cascade), so the width is pinned by naming every key.
+  assert.deepEqual(Object.keys(m.slots[0][0]).sort(), [
+    "dest",
+    "enabled",
+    "polarity",
+    "scale",
+    "scaleShape",
+    "shape",
+    "source",
+  ]);
+  // `enabled` is 0/1 on the wire and a bool once decoded, matching the native
+  // `slots_json` the same panel reads.
+  assert.equal(typeof m.slots[0][0].enabled, "boolean");
+  c.destroy();
+});
+
+// The ordinals and the snapshot byte order are two DIFFERENT orderings of the
+// same seven fields — `scale` is ordinal 3 but the fifth byte packed — so a
+// decoder that reads them in ordinal order still parses a full-width record and
+// merely reports the wrong values. Distinct values per field, chosen so no two
+// adjacent fields share one, turn any transposition into a failure.
+test("every matrix field round-trips through its own ordinal and its own byte", async () => {
+  const c = await fresh();
+  // The default patch is not an empty table, so the untouched-slot check below
+  // compares against what was actually there, not against zeros.
+  const before = c.tick().find((e) => e.kind === "matrix");
+  assert.ok(before, "no matrix seed on the first tick");
+  const untouched = { ...before.slots[1][2] };
+  const want = {
+    source: 1,
+    dest: 3,
+    polarity: 2,
+    shape: 1,
+    scale: 4,
+    scaleShape: 2,
+    enabled: true,
+  };
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SOURCE, want.source);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_DEST, want.dest);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_POLARITY, want.polarity);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SHAPE, want.shape);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SCALE_SRC, want.scale);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SCALE_SHAPE, want.scaleShape);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_ENABLED, 1);
+  const m = c.tick().find((e) => e.kind === "matrix");
+  assert.ok(m, "no matrix echo after the edits");
+  assert.deepEqual(m.slots[0][2], want);
+  // The edits landed on layer 1 slot 2 and nowhere else — the same slot index
+  // on the other layer is untouched, which a layer-shifted decode would miss.
+  assert.deepEqual(m.slots[1][2], untouched);
   c.destroy();
 });
 
