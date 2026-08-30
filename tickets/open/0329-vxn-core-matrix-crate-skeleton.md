@@ -71,7 +71,7 @@ pub fn eval<R: Roster, const NS: usize, const ND: usize, const L: usize>(
 }
 
 eval::<Vxn2Roster,  _, _, _>(&src, &mut out);  // [[f32; 8]; 51]
-eval::<Vxn1bRoster, _, _, _>(&src, &mut out);  // [[f32; 4]; 16]
+eval::<Vxn1bRoster, _, _, _>(&src, &mut out);  // [[f32; 8]; 16]
 ```
 
 Verified to compile on the pinned stable toolchain (edition 2024). Writing
@@ -81,7 +81,7 @@ read almost the same and behave completely differently.
 
 The `const {}` block is not decoration: it is checked, and it fires. Handing
 `eval::<Vxn1bRoster, _, _, _>` a 51-wide accumulator fails to compile with
-`evaluation of eval::<Vxn1b, 11, 51, 4>::{constant#4} failed`. So the roster and
+`evaluation of eval::<Vxn1b, 12, 51, 8>::{constant#4} failed`. So the roster and
 the storage cannot silently disagree — which is the failure this sizing scheme
 would otherwise invite, since `ND` is inferred from whatever array the caller
 happens to pass.
@@ -97,9 +97,10 @@ Two things still worth measuring rather than assuming:
   several copies of the evaluator. That is what you want for speed and what you
   don't want for compile time and instruction cache. Check the binary size delta.
 - **Whether `L` wants to be generic at all.** vxn-1b already has
-  `eval_dests_bank<const L: usize>`; vxn-2 has a single `STACK_LANES`. If only
-  the tests exercise a second value of `L` for a given synth, the genericity is
-  paying for test convenience.
+  `eval_dests_bank<const L: usize>`; vxn-2 has a single `STACK_LANES`. Both are
+  in fact 8 today (`RenderBank::LANES = CHANNELS_PER_LAYER = 8`,
+  `STACK_LANES = 8`) — if only the tests exercise a second value of `L`, the
+  genericity is paying for test convenience.
 
 ## The null-test harness
 
@@ -127,7 +128,21 @@ difference is the whole judgement.
 Capturing the reference: the pragmatic route is to render to a file checked in
 beside the baseline test, in the same spirit as the golden hash. Keep it small —
 the reference patch is already deterministic and a second or two of stereo at
-48 kHz is enough to catch drift.
+48 kHz is enough to catch drift. Keep it *short* for a second reason: E049
+§"The bar" — ULP-level pitch perturbations integrate into phase drift, and a
+long render lets an inaudible reorder walk past −100 dBFS.
+
+Two more gaps this ticket closes, because every later ticket's criteria assume
+they exist:
+
+- **vxn-1b has no render-hash baseline today** — only vxn-2 does
+  (`vxn2-engine/tests/baseline.rs`, gated on `VXN_RENDER_HASH=1`, CI-only).
+  Add the vxn-1b equivalent with the same gating; until it exists, every
+  "both baselines" criterion in this epic names a thing with one instance.
+- **vxn-1b has no matrix bench** — `route_profile.rs` is a profiling example,
+  not a criterion bench. 0334 and the 0337 close-out table need before/after
+  numbers for vxn-1b; add a bench mirroring vxn2-osc-bench's
+  `matrix_eval_full` / `matrix_eval_scaled`.
 
 ## Acceptance criteria
 
@@ -143,6 +158,10 @@ the reference patch is already deterministic and a second or two of stereo at
       reference by a known amount and check the reported peak matches. A null
       test that silently passes on everything is worse than no null test, and
       that is the failure mode nobody notices.
+- [ ] vxn-1b render-hash baseline test exists, gated like vxn-2's
+      (`VXN_RENDER_HASH=1`, CI-only), hash captured.
+- [ ] vxn-1b criterion matrix bench exists and produces stable numbers to quote
+      in later close-outs.
 - [ ] The routing crate itself has **no consumers** — no vxn-1b or vxn-2 file
       changes to use `vxn-core-matrix`. (The harness necessarily touches both
       synths' test dirs; that is the one deliberate exception, and it is why
@@ -159,5 +178,6 @@ the reference patch is already deterministic and a second or two of stereo at
   wrong, this is the cheap moment to find out.
 - The harness half is not inert, and is the more urgent of the two: every
   subsequent ticket's acceptance criteria reference a measurement that cannot be
-  taken until it exists. If this ticket gets split, split it that way round —
-  harness first.
+  taken until it exists — including [0328](0328-matrix-dest-major-lane-accumulators.md),
+  which now depends on this ticket for exactly that reason. If this ticket gets
+  split, split it that way round — harness first.

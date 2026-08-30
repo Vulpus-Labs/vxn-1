@@ -7,10 +7,10 @@ created: 2026-08-30
 ---
 
 > **The behaviour-preserving epic.** Unlike
-> [E041](E041-shared-fx-unification.md), which unified genuinely different
-> declick idioms and accepted flagged re-baselines, this one has **no intended
-> behaviour change at all**. But behaviour-preserving is not bit-frozen — see
-> the bar below.
+> [E041](E041-shared-fx-unification.md), which unifies genuinely different
+> declick idioms and accepts flagged re-baselines (still in progress: 0231,
+> 0232 open), this one has **no intended behaviour change at all**. But
+> behaviour-preserving is not bit-frozen — see the bar below.
 
 ## The bar: null-tested, not bit-frozen
 
@@ -30,10 +30,25 @@ noise floor and far beneath audibility, while leaving ample room for last-bit
 reordering (a reassociated sum of ≤16 `f32` terms perturbs by ~1e-7 relative,
 around −140 dBFS).
 
-The harness does not exist yet — the repo has only the hash. Building it is part
-of [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md), sited in
-`vxn_core_dsp::test_util` alongside the other render-comparison helpers, and it
-gates every later ticket's verification.
+One known way the audio bar trips on an innocent change: **a pitch
+destination**. A reordered sum can move a pitch total by an ULP, and frequency
+error *integrates* — on a sustained tone with quasi-static modulation the
+rounding bias is systematic, phase drifts linearly, and a 2 s render can show a
+difference peak near −75 dBFS from a change nothing could hear. (Random-sign
+rounding only random-walks to ~−107 dBFS; the systematic case is what misses
+the bar.) So for matrix-arithmetic tickets the primary check is a null test on
+the **dest-total streams at control rate** — ULP-scale tolerance, no integrator
+between the change and the measurement — with the audio null test as the
+end-to-end backstop. Keep reference renders short, and when the audio bar trips
+while the dest totals are clean, that is the listening-check path working as
+designed, not a failed ticket.
+
+The harness does not exist yet — the repo has only the hash, and **only vxn-2's
+hash at that: vxn-1b has no render-hash baseline today**. Building the harness,
+the vxn-1b baseline and a vxn-1b matrix bench is part of
+[0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md); the
+comparator sits in `vxn_core_dsp::test_util` alongside the other
+render-comparison helpers, and it gates every later ticket's verification.
 
 Workflow: if the hash doesn't move, nothing changed and you are done. If it
 moves, run the null test. If the null test passes, re-capture the hash and say so
@@ -100,24 +115,36 @@ own tickets were wrong before that was caught. Run the canary first.
 
 Smallest blast radius first. The curve vocabulary and the roster declaration
 have no layout dependency and land early; the evaluator waits on 0328 because
-**it cannot be shared until both synths agree on memory layout**.
+**it cannot be shared until both synths agree on memory layout**. 0328 itself
+waits on 0329's harness: its acceptance bar is a null test, unmeasurable until
+the harness exists — and the reference renders must be captured before 0328
+reorders any arithmetic, so the pre-epic reference really is pre-epic.
 
+```text
+0338 mutex fix — independent, land first
+
+0329 skeleton + harness ─┬─ 0330 curve vocab ──┬─ 0333 slot + RouteList ─┐
+                         ├─ 0332 roster decl ──┤                         │
+                         │        └─ 0336 coherence                      ├─ 0334 evaluator ── 0335 smoothing
+                         ├─ 0331 golden-vector harness ──────────────────┤     (0335 also needs 0332)
+                         └─ 0328 vxn-2 dest-major ───────────────────────┘
+
+0337 close-out — after everything above
 ```
-0328 (vxn-2 dest-major)  ─────────────────┐
-                                          ▼
-0329 crate skeleton ── 0330 curve vocab ── 0333 slot + RouteList ── 0334 evaluator
-       │                     │                                          │
-       │                     └── 0331 golden-vector harness ────────────┤
-       │                                                                │
-       └── 0332 roster declaration ── 0335 smoothing ── 0336 coherence ──┴── 0337 close-out
-```
+
+Once 0329 lands, four lanes can run concurrently: **0338** (independent
+throughout — different files entirely); **0328** (vxn-2 engine only, no shared
+crate); **0330 → 0332** (serial with each other — 0332 extends the
+`matrix_enum!` that 0330 moves — parallel with everything else); **0331**
+(shared crate tests only). The merge point is 0333, which needs both 0330 and
+0332; the choke point is 0334, which needs everything except 0335/0336.
 
 ## Tickets
 
 | # | Ticket | Depends |
 |---|---|---|
-| [0328](../../tickets/open/0328-matrix-dest-major-lane-accumulators.md) | vxn-2 matrix eval doesn't vectorise: transpose to dest-major | — |
-| [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam + **null-test harness** | — |
+| [0328](../../tickets/open/0328-matrix-dest-major-lane-accumulators.md) | vxn-2 matrix eval doesn't vectorise: transpose to dest-major | 0329 (harness) |
+| [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam + **null-test harness** + vxn-1b baseline & bench | — |
 | [0330](../../tickets/open/0330-share-curve-vocabulary.md) | Share the polarity/shape/scale-VCA vocabulary | 0329 |
 | [0331](../../tickets/open/0331-matrix-golden-vector-harness.md) | Golden-vector test harness + synthetic roster | 0329 |
 | [0332](../../tickets/open/0332-roster-row-declares-everything.md) | Roster row declares gain, taper, tier, smoothing | 0329 |
@@ -154,4 +181,7 @@ have no layout dependency and land early; the evaluator waits on 0328 because
   evaluator or the smoother bank.
 - Mechanism is tested once, in the shared crate, against a synthetic roster, in
   the declarative `routes + sources ⇒ expected` form.
-- Both render-hash baselines are byte-identical to their pre-epic values.
+- The end-to-end null test against the pre-epic reference passes at ≤ −100 dBFS
+  on both synths (0337). The hashes match their last captured values, with
+  every re-capture named in a ticket close-out — §"The bar" above deliberately
+  does not require them byte-identical to pre-epic.

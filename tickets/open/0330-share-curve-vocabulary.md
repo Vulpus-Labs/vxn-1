@@ -13,7 +13,7 @@ depends: ["0329"]
 Move the curve-shaping vocabulary into `vxn-core-matrix` and have both synths
 use it. This is the duplication that prompted
 [E049](../../epics/open/E049-shared-matrix-routing.md): commits `bbff167` and
-`868faef` added the same design to each synth by hand, days apart.
+`868faef` added the same design to each synth by hand, 96 minutes apart.
 
 Moving, in both directions from one shared definition:
 
@@ -71,6 +71,12 @@ same inlining problem as within one.
 
 - Lowest-risk slice in the epic and the one with the clearest payoff: it is the
   code that was literally written twice this week.
+- **`clamp_unit` exists only in vxn-2 today** — vxn-1b's `scale_norm` uses plain
+  `n.clamp(0.0, 1.0)`, panic path and all. Unifying on `clamp_unit` is the right
+  call, but it is the one piece of this ticket that is not pure movement for
+  vxn-1b: results are identical for finite inputs (so the byte-identical
+  criterion stands), but NaN saturates under `max`/`min` where `clamp`
+  propagates it, and the instruction sequence changes. Say so in the close-out.
 - No layout dependency — this can land before
   [0328](0328-matrix-dest-major-lane-accumulators.md).
 - Out of scope: the slot type, route compilation, the evaluator. Vocabulary

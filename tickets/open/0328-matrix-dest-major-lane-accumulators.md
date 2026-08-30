@@ -2,10 +2,10 @@
 id: "0328"
 product: vxn-2
 title: "Mod-matrix eval doesn't vectorise: transpose lane accumulators to dest-major"
-priority: low
+priority: medium
 created: 2026-08-30
 epic: E049
-depends: []
+depends: ["0329"]
 ---
 
 ## Summary
@@ -13,8 +13,11 @@ depends: []
 Prerequisite for [E049](../../epics/open/E049-shared-matrix-routing.md): the
 shared evaluator ([0334](0334-share-the-evaluator.md)) cannot be built until
 both synths agree on accumulator layout, and this is where vxn-2 converges on
-vxn-1b's. Opened standalone before that epic existed, hence the low priority —
-E049 raises the stakes but not the difficulty.
+vxn-1b's. Opened standalone (at priority low) before that epic existed; now on
+E049's critical path — 0334 waits on it — hence medium. It depends on
+[0329](0329-vxn-core-matrix-crate-skeleton.md) for one reason only: the null
+test below is unmeasurable until 0329's harness exists, and the reference
+renders must be captured before this ticket reorders any arithmetic.
 
 [`eval_dests`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1201) leaves its
 main accumulate loop scalar. Measured on the **linked** bench binary
@@ -111,9 +114,9 @@ rather than read-modify-written, so it may matter less.
 
 ## Notes
 
-- **This is an optimisation with no user-visible payoff on its own**, hence
-  `priority: low` — though it is now on E049's critical path, which is the
-  better reason to do it. Context for sizing it: at engine level the matrix is
+- **This is an optimisation with no user-visible payoff on its own** — its
+  priority comes from being on E049's critical path, not from the cycles.
+  Context for sizing it: at engine level the matrix is
   already noise — `matrix_gated` (full render) shows no measurable difference between a
   baseline table and one with routes live, all three cases sitting at ~402µs.
   The eval is ~125ns per stack per control block; against a 1.33ms control

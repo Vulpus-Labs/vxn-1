@@ -37,7 +37,7 @@ Verbatim-or-near, no design content:
 | `Polarity` × `Shape` axes, nine dispatch arms | `matrix.rs`, `eval.rs` | `matrix.rs` |
 | `curve_code` / `curve_split` / `CURVE_NAMES` legacy table | same | same |
 | `scale_norm` fold-then-bend + `is_bipolar` (ADR 0009) | same | same |
-| `cook_depth` cubic taper on semitone dests | `Pitch` | 8 pitch dests |
+| `cook_depth` cubic taper on semitone dests | `Pitch` | 13 pitch-class dests (7 of the 8 smoothed ones — `Lfo2Phase` passes through — plus the 6 stack-pitch dests) |
 | `DEST_GAIN` native-unit scaling | same idea | same idea |
 | Slot / table shape, `enabled` + `is_wired` semantics | same | same |
 | Sub-block smoothing tiers + two-pole cascade rationale | explicit port | original |
@@ -65,8 +65,9 @@ parallel lists by hand and tests only their lengths.
   [0328](../tickets/open/0328-matrix-dest-major-lane-accumulators.md).
 - **Route precompilation.** vxn-1b compiles a `RouteList` once per block,
   hoisting the sentinel checks, the zero-depth skip, `cook_depth` and the
-  `DEST_GAIN` lookup out of the per-voice loop. vxn-2 redoes that work on every
-  eval. Again a gap, not a disagreement.
+  `DEST_GAIN` lookup out of the per-voice loop. vxn-2 hoists only `cook_depth`
+  (applied once at table-rebuild time, engine.rs:857) and redoes the rest on
+  every eval. Again a gap, not a disagreement — narrower than first written.
 - **State encoding policy.** vxn-2 nibble-packs into spare bits because its
   blobs must stay readable; vxn-1b widens its record and bumps the version
   because it rejects older blobs outright. **Correctly divergent** — each
@@ -119,13 +120,14 @@ clicks; pitch stairsteps audibly at every control-block edge (~1.5 kHz at
 48 kHz). A uniform per-sample policy across vxn-2's 51 destinations would buy
 nothing for most of them and cost real cycles per lane.
 
-**Declared in the roster, not listed elsewhere.** The classes, which between
-them cover everything both synths do today:
+**Declared in the roster, not listed elsewhere.** The classes — which cover
+every smoother both synths run today, though not every *motion*; see the
+exceptions below the Amp paragraph:
 
 | Class | Filter | Ticked | Used today for |
 |---|---|---|---|
 | `Block` | none — held for the control block | — | the default; most dests |
-| `Quantum` | one-pole | every render quantum | vxn-1b PWM, cross-mod amount |
+| `Quantum` | one-pole | every render quantum | vxn-1b PWM, cross-mod amount, Pan |
 | `QuantumCascade` | two cascaded one-poles | every render quantum | pitch (both synths), vxn-1b `XModSweep` |
 | `PerSample` | one-pole | every frame | vxn-1b non-envelope Amp |
 
@@ -176,6 +178,16 @@ decides what to feed it. `Amp` is therefore declared `Block` in vxn-1b's roster
 and its bank applies `PerSample` smoothing to the part it chooses. If vxn-2 ever
 needs the same split, it gets the same escape hatch — this is a deliberate limit
 on the abstraction, not an oversight.
+
+vxn-2 in fact already exercises that escape hatch in three more places, all
+engine-side motion applied *after* the matrix and none of it a smoother in the
+bank's sense: the op level/pan/phase dests **ramp per-sample linearly** to each
+block's target; `StackDetune`/`StackSpread` take a **block-rate one-pole**
+(`STACK_MACRO_SMOOTH`, snap-on-fresh); and the nine EG-rate dests are consumed
+**once, at note-on** — consumption-time semantics, not smoothing at all. All of
+these declare `Block` in the roster and keep their motion where it lives today,
+in the synth's target application. Migrating any of them into the bank would be
+a behaviour change and is out of E049's scope.
 
 ### 4. Two transports, split by what changes — not one
 
@@ -242,8 +254,9 @@ smooths as `QuantumCascade`. Plus the property tests that already exist —
 variant order matches the tables, every dest is reachable, the factory patch
 drives the amp.
 
-**Both synths keep their render-hash baselines**, which is what actually pins
-"nothing changed" through the extraction.
+**vxn-2 keeps its render-hash baseline, and vxn-1b gains one in 0329** — it has
+none today. The pair then pins "nothing changed" through the extraction, as a
+tripwire under the null-test bar.
 
 ## Consequences
 
@@ -265,8 +278,8 @@ drives the amp.
   null test at −100 dBFS against the pre-step render, with the hash kept as a
   free tripwire; two pure-movement steps stay strictly bit-exact because there a
   moved bit means a mistranscription. E049 §"The bar" has the detail. Unlike
-  [E041](../epics/open/E041-shared-fx-unification.md), which unified genuinely
-  different declick idioms and accepted flagged re-baselines, this extraction has
+  [E041](../epics/open/E041-shared-fx-unification.md), which unifies genuinely
+  different declick idioms and accepts flagged re-baselines, this extraction has
   **no** intended behaviour change — but "no intended change" is enforced by
   measuring the difference, not by freezing the bits.
 - A third synth wanting modulation routing (vxn-3 has none today) inherits the

@@ -115,6 +115,16 @@ try to express it in the engine.
   vxn-1b at its own `PITCH_QUANTUM`. If the constants differ, they stay
   per-synth — the *class* is shared, the *rate* is a synth's render-loop
   property.
+- **Ordering trap**: vxn-2's `scatter_stack_pitch` writes stack-pitch
+  contributions into `dest_vals` *after* `eval_dests` and *before* the smoother
+  captures its targets. The shared bank must capture post-scatter, or E022's
+  stack pitch bypasses smoothing.
+- vxn-1b's counterpart to `snap_to` is `snap_all`, and it takes
+  `bank::LaneTargets` today — the shared bank needs a synth-neutral snap
+  signature; the smoother is not bank-independent as it stands.
+- vxn-1b also smooths **Pan** on the slow tier — mod_smoothing.rs's own module
+  doc omits it (written before 0260). Four smoothed quantities there, not
+  three; the roster row for Pan declares `quantum`.
 - Out of scope: adding smoothing to dests that don't have it today. Behaviour
   preserving means preserving the absences too. New classifications are a
   follow-up with listening tests behind them.

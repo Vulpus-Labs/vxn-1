@@ -64,10 +64,25 @@ Preserve, and do not "clean up":
 
 ## Notes
 
-- Highest-risk ticket in the epic. Both synths have render-hash baselines and
-  this changes the arithmetic's *shape* without intending to change its
-  *result*; that is the exact scenario float non-associativity punishes. Land it
-  alone, not batched with anything else.
+- Highest-risk ticket in the epic. Both synths have render-hash baselines by
+  this point (vxn-1b's lands in 0329) and this changes the arithmetic's *shape*
+  without intending to change its *result*; that is the exact scenario float
+  non-associativity punishes. Land it alone, not batched with anything else.
+- **vxn-2 engine couplings the extraction must not disturb** (verified
+  2026-08-30). Four dest→source feedback paths with deliberate one-block
+  latency: `stack_spread_mod` → next block's VoiceSpread source; smoothed
+  `Lfo2Phase` applied as a wrapping delta into LFO2's phase; `lfo2.rate_mult`
+  read from lane 0; LFO1-rate summed across stacks into next block's
+  patch-global source. `scatter_stack_pitch` mutates `dest_vals` in place
+  *between* `eval_dests` and the smoother's target capture. Patch-global dests
+  are produced by a cross-stack lane-0 reduction the per-stack evaluator can't
+  see. And `TargetFlags` gating is what keeps un-targeted paths bit-identical —
+  that guarantee lives in the engine, not the evaluator, and stays there.
+- **vxn-1b couplings**: bank.rs re-applies the evaluator's arithmetic piecewise
+  for its Amp factoring (`shape`/`bend`/`slot_topology_gain` are `pub(crate)`
+  for exactly this) — the shared crate must export those primitives or the Amp
+  fast path loses bit-exactness. `Lfo1Rate` reads the *previous* block's total,
+  a deliberate lag the eval-order contract preserves.
 - If the generic form cannot be made bit-exact for both, **stop and re-scope** —
   [E049](../../epics/open/E049-shared-matrix-routing.md) takes no re-baselines.
   A macro stamping out a monomorphic evaluator per roster is the fallback: less

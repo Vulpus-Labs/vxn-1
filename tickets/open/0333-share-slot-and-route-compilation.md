@@ -20,8 +20,11 @@ question that persistence asks.
 
 vxn-1b additionally compiles a `RouteList` once per block, hoisting the sentinel
 checks, the zero-depth skip, `cook_depth` and the `DEST_GAIN` lookup out of the
-per-voice loop — its own comment notes a 32-lane synth was otherwise running
-them 32 times a block. vxn-2 redoes that work on every eval.
+per-voice loop — its own comment notes these are pure functions of the patch
+that were being re-run per lane per block (ignore that comment's "32-lane"
+figure; the bank is 8 lanes — the point stands, the number is stale). vxn-2
+already hoists `cook_depth` to table-rebuild time but redoes the sentinel
+checks, zero-depth skip and `DEST_GAIN` lookup on every eval.
 
 ## Design
 
@@ -54,8 +57,19 @@ what makes that class of bug structurally impossible rather than merely tested.
 
 ## Notes
 
-- vxn-2's `MatrixSlot` carries `depth` already cooked by `dest.cook_depth`
-  at snapshot time while vxn-1b cooks inside `slot_topology_gain`. Check which
-  before assuming they compose the same way — this is exactly the sort of
-  quiet difference that survives a "these look identical" reading.
+- Cook sites, confirmed 2026-08-30: vxn-2's `MatrixSlot` carries `depth`
+  already cooked by `dest.cook_depth` at table-rebuild time (engine.rs:857);
+  vxn-1b folds `cook_depth · DEST_GAIN` into `Route.gain` at
+  `RouteList::compile` (eval.rs:375–390). Both are per-block — only the *site*
+  differs. The shared `RouteList::compile` must take **raw** depths and do the
+  cooking itself, and vxn-2's rebuild must stop pre-cooking when it adopts it —
+  cooked-twice is the quiet bug here.
+- Slot-semantics mismatch, also confirmed: vxn-2 folds `active` into
+  `source = None` at rebuild (engine.rs:841–847), so its evaluator never checks
+  the flag; vxn-1b's `Route` keeps it live. The shared compile step picks one
+  convention and the parity/golden tests prove both synths drop a switched-off
+  route identically.
+- vxn-2 sources depths from two places — slots 0–7 read the CLAP-automatable
+  `mtx_depths`, 8–15 the row's own depth. That mapping stays synth-side,
+  outside the shared table.
 - Out of scope: the evaluator itself ([0334](0334-share-the-evaluator.md)).

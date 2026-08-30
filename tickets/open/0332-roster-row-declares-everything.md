@@ -74,3 +74,15 @@ already works this way in vxn-1b.
   [ADR 0003](../../adrs/0003-vxn-core-matrix.md) §3: the envelope part must stay
   per-frame exact, so vxn-1b's VCA does its own factoring and the engine is not
   told about it. Put that in a comment on the row, or someone will "fix" it.
+- The same applies to vxn-2's engine-side motion (ADR 0003 §3): op
+  level/pan/phase dests (per-sample linear ramp), `StackDetune`/`StackSpread`
+  (block-rate one-pole) and the nine EG-rate dests (consumed once at note-on)
+  all declare `block` — their motion is target application, not routing.
+  Comment each of those rows too.
+- Taper column facts to transcribe carefully: **13** vxn-2 dests take the cubic
+  taper — 7 of the 8 `PITCH_DESTS` (`Lfo2Phase` explicitly passes through,
+  gain 1.0) plus the 6 stack-pitch dests, which are *not* in `PITCH_DESTS`.
+  The taper set and the smoothing set overlap but are not the same set; keep
+  the columns independent and derive neither from the other. Don't forget the
+  fifth hand-synced structure while retiring the four named above:
+  `is_pitch_shaped`, kept in step with `PITCH_DESTS` only by a test.
