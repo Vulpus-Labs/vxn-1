@@ -98,13 +98,12 @@ try to express it in the engine.
 - [ ] `snap_to` on voice start preserved in both.
 - [ ] vxn-1b's non-envelope-Amp smoothing still behaves exactly as before, and a
       comment at the call site says why it is not a `Smoothing` class.
-- [ ] Both render-hash baselines byte-identical. Smoother state is audible; a
-      diff here is a real regression, not rounding. **Note the tension:** the
-      two-pass split changes the order operations are issued in but not the
-      arithmetic any single element sees — each element still computes
-      `y += c*(x-y)` from the same inputs — so it should be bit-exact. Verify
-      that rather than assuming it; if it isn't, the reordering is wrong
-      somewhere.
+- [ ] Null test against the pre-ticket render passes: difference peak ≤ −100
+      dBFS. Smoother state is audible, so this is the ticket where the bar earns
+      its keep — a tau that quietly changed shows up here, while pure reordering
+      does not. The two-pass split changes the *order* operations are issued in
+      but not the arithmetic any single element sees, so it may well come out
+      bit-exact; treat that as a nice-to-have, not a requirement.
 - [ ] The two-pass restructure is measured on a **linked binary**, before and
       after, and the numbers go in the close-out.
 - [ ] The zipper/discontinuity regression tests in both synths still pass.

@@ -56,7 +56,10 @@ already works this way in vxn-1b.
       not to keep the old array alive.
 - [ ] vxn-2's `PITCH_DESTS` is derived from `smooth = quantum_cascade` rather
       than declared separately.
-- [ ] Both render-hash baselines byte-identical.
+- [ ] Both render-hash baselines **byte-identical** — constants are transcribed
+      here, not recomputed, so this is the other ticket held strictly. A moved
+      bit means a gain or taper was transcribed wrong, which the elementwise
+      diff above should already have caught.
 
 ## Notes
 

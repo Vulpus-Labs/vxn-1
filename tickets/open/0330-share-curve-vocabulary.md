@@ -59,8 +59,10 @@ same inlining problem as within one.
 - [ ] `curve_code(Bipolar, Lin) == 3` and `CURVE_NAMES[3] == "bipolar"` still
       hold — the legacy preset encoding is load-bearing in both synths.
 - [ ] Every factory preset in both synths still loads with no warnings.
-- [ ] Both render-hash baselines byte-identical. This ticket is pure movement;
-      any diff is a bug.
+- [ ] Both render-hash baselines **byte-identical** — one of the two tickets
+      held to that (see [E049](../../epics/open/E049-shared-matrix-routing.md)
+      §"The bar"). Nothing here reorders an arithmetic operation; code changes
+      crate, that is all. A moved bit means something was mistranscribed.
 - [ ] `matrix_eval_full` / `matrix_eval_scaled` (vxn2-osc-bench) within noise of
       their pre-ticket numbers, or the regression is explained and accepted in
       the close-out.

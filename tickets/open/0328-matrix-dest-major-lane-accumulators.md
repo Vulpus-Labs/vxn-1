@@ -102,9 +102,11 @@ rather than read-modify-written, so it may matter less.
       numbers recorded.
 - [ ] `PitchSmoother::targets_from` is gone or reduced to a borrow — the
       transpose it performs is the thing this ticket removes.
-- [ ] The render-hash baseline (`vxn2-engine/tests/baseline.rs`) is unchanged.
-      This is a pure layout change; **any** audible difference is a bug, not a
-      REBASELINE.
+- [ ] Null test against the pre-ticket render passes: difference peak ≤ −100
+      dBFS. Transposing the accumulators reorders float additions, so the render
+      hash will very likely move and that alone is not a regression — but this
+      is a pure *layout* change, so anything audible is a bug rather than a
+      re-baseline.
 - [ ] `cargo test --workspace` green.
 
 ## Notes

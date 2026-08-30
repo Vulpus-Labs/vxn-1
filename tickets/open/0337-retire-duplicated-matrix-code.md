@@ -30,8 +30,10 @@ what actually shipped.
       above the lane loop; `clamp_unit` not `f32::clamp`; the branch in
       `shape_log` beats `copysign`. All three are counter-intuitive and all
       three were measured.
-- [ ] Both render-hash baselines byte-identical to their **pre-epic** values —
-      not merely to the previous ticket's. Check against the commit before 0329.
+- [ ] Null test against the **pre-epic** render — not merely the previous
+      ticket's — passes at ≤ −100 dBFS. Check against the commit before 0329;
+      per-ticket passes do not compose into an end-to-end one, and a slow drift
+      across eight tickets is exactly what this catches.
 - [ ] Benchmark table in the close-out: `matrix_eval_full` / `matrix_eval_scaled`
       for vxn-2 and the equivalent for vxn-1b, before the epic and after.
 - [ ] [ADR 0003](../../adrs/0003-vxn-core-matrix.md) status → Accepted, with any
@@ -43,6 +45,9 @@ what actually shipped.
 - If the evaluator ([0334](0334-share-the-evaluator.md)) was re-scoped to the
   macro fallback, say so plainly in the ADR — a future reader comparing the ADR
   to the code should not have to reconstruct why they differ.
-- The epic's stated bar is **no re-baselines**. If one was taken anyway, that is
-  the single most important thing the close-out records, and the ADR's
-  "no intended behaviour change" claim needs amending to match.
+- The epic's bar is a **null test at −100 dBFS**, not an unchanged hash. Record
+  the measured difference peak in the close-out, not just "passed" — the number
+  is what a future reader needs to judge whether a later change is in the same
+  league. If any ticket exceeded the bar and was accepted after a listening
+  check, that is the single most important thing the close-out records, and the
+  ADR's "no intended behaviour change" claim needs amending to match.

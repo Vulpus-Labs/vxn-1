@@ -46,7 +46,9 @@ what makes that class of bug structurally impossible rather than merely tested.
       persistence writes `is_wired` slots (a switched-off route keeps its
       wiring) and that vxn-1b's `ensure_pan_route` seeds into `!is_wired` slots
       so it cannot evict a parked route.
-- [ ] Both render-hash baselines byte-identical.
+- [ ] Null test against the pre-ticket render passes: difference peak
+      ≤ −100 dBFS (see [E049](../../epics/open/E049-shared-matrix-routing.md)
+      §"The bar"). Re-capture the render hashes if they moved, and say so.
 - [ ] `matrix_eval_full` improves or holds on vxn-2 — the precompilation is
       supposed to be free or better. If it regresses, say why in the close-out.
 

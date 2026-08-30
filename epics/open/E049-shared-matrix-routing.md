@@ -1,7 +1,7 @@
 ---
 id: E049
 product: monorepo
-title: "Shared matrix routing — one modulation engine under vxn-1b and vxn-2, rosters stay per-synth (behaviour-preserving, no re-baselines)"
+title: "Shared matrix routing — one modulation engine under vxn-1b and vxn-2, rosters stay per-synth (behaviour-preserving; null-tested, not bit-frozen)"
 status: open
 created: 2026-08-30
 ---
@@ -9,9 +9,44 @@ created: 2026-08-30
 > **The behaviour-preserving epic.** Unlike
 > [E041](E041-shared-fx-unification.md), which unified genuinely different
 > declick idioms and accepted flagged re-baselines, this one has **no intended
-> behaviour change at all**. Both synths keep their render-hash baselines
-> untouched through every ticket. A step that cannot be made bit-exact stops and
-> gets re-scoped — it does not get a REBASELINE commit.
+> behaviour change at all**. But behaviour-preserving is not bit-frozen — see
+> the bar below.
+
+## The bar: null-tested, not bit-frozen
+
+The render-hash baselines are a **tripwire, not the bar**. A hash is binary — it
+cannot express a tolerance — and several tickets here legitimately reorder float
+operations: transposing accumulators (0328), sharing an evaluator across two
+lane counts (0334), splitting the smoother's fused cascade into two passes
+(0335). Float addition is not associative, so those change bits without changing
+what anyone hears. Demanding an unchanged hash would rule out the very
+restructuring the epic exists to do. (The baseline's own header already concedes
+the point: the hash "rounds differently across targets and OS releases", so it is
+CI-only and dev machines skip it.)
+
+**The bar is a null test.** Render the reference patch before and after; the
+difference signal's peak must sit at or below **−100 dBFS** — beneath the 16-bit
+noise floor and far beneath audibility, while leaving ample room for last-bit
+reordering (a reassociated sum of ≤16 `f32` terms perturbs by ~1e-7 relative,
+around −140 dBFS).
+
+Workflow: if the hash doesn't move, nothing changed and you are done. If it
+moves, run the null test. If the null test passes, re-capture the hash and say so
+in the close-out. **A change that exceeds −100 dBFS stops** for a listening check
+and an explicit decision — it does not get re-baselined quietly.
+
+**Two things stay strictly bit-exact**, because there a difference is a bug
+rather than a consequence:
+
+- **Two evaluator paths in the same build** (scalar vs banked). They evaluate
+  the same routes in the same order by construction; vxn-1b already states this
+  as its contract, and [0331](../../tickets/open/0331-matrix-golden-vector-harness.md)
+  generalises it.
+- **Pure-movement tickets** — [0330](../../tickets/open/0330-share-curve-vocabulary.md)
+  (code moves crates, no arithmetic changes) and
+  [0332](../../tickets/open/0332-roster-row-declares-everything.md) (constants
+  are transcribed, not recomputed). If those move a bit, something was
+  mistranscribed.
 
 ## Why
 

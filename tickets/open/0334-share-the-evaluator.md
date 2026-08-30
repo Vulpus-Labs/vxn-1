@@ -55,7 +55,9 @@ Preserve, and do not "clean up":
       both synths' lane counts. Grep the **mnemonic** for `.4s`, not the operands
       — see [[vxn1-neon-grep-pitfall]]; `grep 'v\d+\.4s'` returns nothing on
       genuinely vectorised ARM64 and would make success look like failure.
-- [ ] Both render-hash baselines byte-identical.
+- [ ] Null test against the pre-ticket render passes: difference peak
+      ≤ −100 dBFS (see [E049](../../epics/open/E049-shared-matrix-routing.md)
+      §"The bar"). Re-capture the render hashes if they moved, and say so.
 - [ ] Benchmarks: vxn-2's `matrix_eval_*` improve (it is gaining vectorisation);
       vxn-1b's hold. A vxn-1b regression means the generic form cost it
       something the monomorphic one didn't — measure and report before accepting.

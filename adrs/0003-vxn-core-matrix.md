@@ -258,12 +258,17 @@ drives the amp.
   prerequisite for the evaluator ticket, not an optional cleanup. The curve
   vocabulary and the roster declaration have no such dependency and can land
   first.
-- Every step must prove bit-identical render output on both synths. This is the
-  main risk and the reason the epic is sequenced smallest-blast-radius first.
-  A step that cannot be made bit-exact stops and is re-scoped rather than
-  re-baselined: unlike [E041](../epics/open/E041-shared-fx-unification.md),
-  which unified genuinely different declick idioms and accepted flagged
-  re-baselines, this extraction has **no** intended behaviour change.
+- Every step must prove it changed nothing audible on either synth — which is
+  **not** the same as bit-identical output. Several steps legitimately reorder
+  float operations, and float addition is not associative, so the render hash
+  will move without anything changing that a listener could detect. The bar is a
+  null test at −100 dBFS against the pre-step render, with the hash kept as a
+  free tripwire; two pure-movement steps stay strictly bit-exact because there a
+  moved bit means a mistranscription. E049 §"The bar" has the detail. Unlike
+  [E041](../epics/open/E041-shared-fx-unification.md), which unified genuinely
+  different declick idioms and accepted flagged re-baselines, this extraction has
+  **no** intended behaviour change — but "no intended change" is enforced by
+  measuring the difference, not by freezing the bits.
 - A third synth wanting modulation routing (vxn-3 has none today) inherits the
   engine by declaring a roster.
 - The abstraction is deliberately bounded: it owns routing and the smoothers,
