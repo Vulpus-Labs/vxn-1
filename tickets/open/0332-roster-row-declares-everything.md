@@ -66,6 +66,14 @@ already works this way in vxn-1b.
 - Transcription is where this ticket will go wrong: 51 vxn-2 destinations, each
   with four properties, moved by hand. Do it in one mechanical pass and lean on
   the elementwise diff test above rather than reading it twice.
+- **The row list generates two name tables, not one.** The roster's `u8` is a
+  storage index with the sentinel excluded, so its tables are `N` long while the
+  synth's existing wire tables stay `N + 1` with `None` at 0. Both come off the
+  same row list; neither is hand-maintained. Decided in 0329 and recorded in
+  [ADR 0003](../../adrs/0003-vxn-core-matrix.md) §2 — read that before writing
+  the macro, because it is the difference between transcribing the existing
+  tables unchanged and generating a second, shorter pair.
+
 - `Smoothing` is only *declared* here — nothing reads it until
   [0335](0335-declared-target-smoothing.md). Declaring it early means the
   smoothing ticket is a consumer change, not a data-entry change.

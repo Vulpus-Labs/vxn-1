@@ -105,6 +105,34 @@ The property this buys is the same one `matrix_enum!` already buys for names:
 **you cannot add a destination without deciding**, because the row will not
 compile until every column is filled.
 
+#### The `u8` crossing the seam is the storage index, not the wire discriminant
+
+Settled while building the skeleton (0329), recorded here because it decides
+what `matrix_enum!` emits and so has to be known before 0332 writes it.
+
+A roster's `u8` is a **storage index**, `0..N_DESTS`, with the `None` sentinel
+excluded — so `dest_names().len() == N_DESTS`, one shorter than the
+`[&str; N + 1]` wire tables both synths keep for decoding. The alternative, the
+wire discriminant with the sentinel at 0, would let the existing tables be
+transcribed unchanged, but it leaves a dead row at index 0 in every
+accumulator-shaped array — `out[di]`, `DEST_GAIN[di]`, the smoother's state
+rows — and puts an off-by-one at every one of those uses. Both synths already
+carry an `idx()` that drops the sentinel, so the conversion is not new work;
+it is where the conversion already happens.
+
+Two consequences worth stating:
+
+- **0332 generates two tables from one row list**, not one. The synth keeps its
+  `[&str; N + 1]` wire table for decode; the roster additionally gets the
+  sentinel-free `N`-long one. That is a property of the generator, not a second
+  hand-maintained list.
+- **It is what makes §3's contiguity affordable.** The smoothing bank wants each
+  class to occupy an unbroken run of rows, which collides with vxn-2's frozen
+  dest discriminants — but only if wire id and storage row are the same number.
+  Holding them apart from the start means 0335 can order storage rows freely
+  without touching a wire encoding, and the decoupling costs one compile-time
+  lookup per route in `RouteList::compile`, never anything in a lane loop.
+
 ### 3. Smoothing is post-sum, per-destination, and declared
 
 *(The question this ADR was asked to settle.)*
