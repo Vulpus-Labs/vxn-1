@@ -36,3 +36,15 @@ include_dir = "0.7"
 # (The VXN1 render-parity oracle used to be declared here; vxn-1 was archived
 # out of the workspace on 2026-08-27 and only this comment survived it.)
 tempfile = "3"
+# `test_util::assert_null_test` — the shared render comparator E049 is judged
+# against (0329). A dev-dep only: nothing in the engine's own build depends on
+# it, and `vxn-dsp` already pulls the crate in, so this costs no extra compile.
+vxn-core-dsp = { workspace = true }
+# Matrix bench (0329). vxn-1b had only `examples/route_profile.rs`, which times
+# a whole render rather than the routing stage, so 0334/0337 had no vxn-1b
+# before/after numbers to quote.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "matrix"
+harness = false

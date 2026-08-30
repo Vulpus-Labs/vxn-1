@@ -12,6 +12,11 @@
 //!   `dynamics` test module.
 //! - `worst_d4` / `join_d4` — the 4th-difference click detector, from vxn-1's
 //!   declick suite. vxn-2's declick harness uses the same probe.
+//!
+//! `null_test_peak_dbfs` / `assert_null_test` joined them with ticket 0329 —
+//! the same genre (compare two renders, say how far apart they are), one
+//! tolerance wider. Each synth keeps its own *reference* render, because
+//! capturing one needs that synth's engine; only the comparator is shared.
 
 use std::f32::consts::TAU;
 
@@ -140,6 +145,85 @@ pub fn join_d4(buf: &[f32], edge_sample: usize) -> f64 {
     worst_d4(buf, edge_sample - 3..edge_sample + 3)
 }
 
+// ── null test ───────────────────────────────────────────────────────────────
+
+/// Worst per-sample difference between two renders: `(index, |a − b|)` in
+/// linear amplitude.
+///
+/// The index is half the answer. A null test that only reports a magnitude
+/// tells you the render moved but not *where*, and "where" is what separates a
+/// one-block transient at a note-on from a drift that grows across the tail —
+/// the two failure modes E049 has to tell apart.
+///
+/// NaN is caught explicitly rather than left to `f64::max`: comparisons against
+/// NaN are all false, so a silent `>` test would fold a non-finite render into a
+/// zero difference and report a perfect null.
+fn null_test_peak(a: &[f32], b: &[f32]) -> (usize, f64) {
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "null test needs two renders of the same length, got {} and {}",
+        a.len(),
+        b.len()
+    );
+    // Two empty renders agree perfectly, which is the most convincing possible
+    // pass and never the answer anyone wanted: a helper whose block count
+    // floored to zero would report a flawless null on a synth it never ran.
+    assert!(!a.is_empty(), "null test needs a render, got two empty slices");
+    let mut worst = 0.0_f64;
+    let mut at = 0_usize;
+    for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+        let d = (x as f64 - y as f64).abs();
+        if d.is_nan() {
+            return (i, f64::INFINITY);
+        }
+        if d > worst {
+            worst = d;
+            at = i;
+        }
+    }
+    (at, worst)
+}
+
+/// Peak difference between two renders, in dBFS. `-inf` for identical buffers.
+///
+/// Full scale is `1.0`, so the reading is directly comparable to the numbers
+/// E049 §"The bar" quotes: −100 dBFS is beneath the 16-bit noise floor, and a
+/// reassociated sum of a handful of `f32` terms lands nearer −140.
+///
+/// The slices are compared **as given** — for an interleaved stereo render the
+/// index [`assert_null_test`] reports counts samples, not frames. Nothing here
+/// knows about channels, and a difference is a difference in either of them.
+///
+/// A zero difference maps to `-inf` rather than to some floor value on purpose:
+/// bit-identical is a categorically different answer from "quiet enough", and
+/// the two should not be confusable in a log.
+pub fn null_test_peak_dbfs(a: &[f32], b: &[f32]) -> f64 {
+    let (_, peak) = null_test_peak(a, b);
+    20.0 * peak.log10()
+}
+
+/// Assert two renders differ by no more than `limit_dbfs`, reporting the
+/// measured peak and the sample index where it occurred on failure.
+///
+/// Both numbers are in the message because neither is enough alone: "exceeded
+/// −100 dBFS" does not say whether the change under test sits at −99 dBFS
+/// (last-bit reordering that drifted slightly further than expected) or at
+/// −12 dBFS (a routing bug), and that difference is the whole judgement. The
+/// linear peak rides along so a `-inf`/NaN reading is still legible.
+///
+/// The comparison is `<=`, so a difference sitting exactly on the limit passes.
+pub fn assert_null_test(a: &[f32], b: &[f32], limit_dbfs: f64) {
+    let (at, peak) = null_test_peak(a, b);
+    let dbfs = 20.0 * peak.log10();
+    assert!(
+        dbfs <= limit_dbfs,
+        "null test failed: peak difference {dbfs:.2} dBFS exceeds the {limit_dbfs:.2} dBFS \
+         limit — {peak:.3e} linear at sample {at} of {}",
+        a.len()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +287,113 @@ mod tests {
         let at_edge = join_d4(&buf, 64);
         let away = join_d4(&buf, 20);
         assert!(at_edge > away * 10.0, "edge {at_edge} vs away {away}");
+    }
+
+    // ── null test ──────────────────────────────────────────────────────────
+    //
+    // The "prove it by making it fail" cases. A comparator that passes
+    // everything is worse than none at all — it reads as verification in every
+    // close-out that quotes it — so the perturbations below land on *known*
+    // dBFS values rather than merely somewhere over the limit.
+
+    /// Zeros everywhere except one sample of `b`, so the peak difference is the
+    /// perturbation exactly and its dBFS is arithmetic rather than a fit.
+    fn one_sample_off(at: usize, by: f32) -> (Vec<f32>, Vec<f32>) {
+        let a = vec![0.0_f32; 64];
+        let mut b = a.clone();
+        b[at] = by;
+        (a, b)
+    }
+
+    /// The panic payload of a failing `assert_null_test`, as a string.
+    fn null_test_failure(a: Vec<f32>, b: Vec<f32>, limit_dbfs: f64) -> String {
+        let err = std::panic::catch_unwind(move || assert_null_test(&a, &b, limit_dbfs))
+            .expect_err("the difference is over the limit and must fail");
+        err.downcast_ref::<String>()
+            .cloned()
+            .expect("assert! panics with a formatted String")
+    }
+
+    #[test]
+    fn identical_renders_read_as_negative_infinity() {
+        let a: Vec<f32> = (0..256).map(|i| (i as f32 * 0.05).sin()).collect();
+        assert_eq!(null_test_peak_dbfs(&a, &a), f64::NEG_INFINITY);
+        // …and pass at any limit, including an absurdly strict one.
+        assert_null_test(&a, &a, -300.0);
+    }
+
+    /// The headline number. `1e-5` of full scale is −100 dBFS, which is E049's
+    /// bar, so this pins the reading against the constant every later ticket is
+    /// judged on.
+    ///
+    /// The tolerance is for the *literal*, not the comparator: `1e-5_f32` is
+    /// only the nearest `f32` to one part in a hundred thousand, which is a few
+    /// times 1e-7 dB off the round decimal. `0.5` is exact and reads exact.
+    #[test]
+    fn a_known_perturbation_reads_back_at_its_known_level() {
+        for (by, want) in [(1e-5_f32, -100.0_f64), (1e-3, -60.0), (0.5, -6.020_599_913_279_624)] {
+            let (a, b) = one_sample_off(7, by);
+            let got = null_test_peak_dbfs(&a, &b);
+            assert!(
+                (got - want).abs() < 1e-5,
+                "{by} of full scale should read {want} dBFS, got {got}"
+            );
+        }
+    }
+
+    /// A difference sitting exactly on the limit passes — the bar is "at or
+    /// below −100 dBFS", not "below".
+    #[test]
+    fn a_difference_exactly_at_the_limit_passes() {
+        let (a, b) = one_sample_off(7, 1e-5);
+        assert_null_test(&a, &b, -100.0);
+    }
+
+    /// The failure message has to carry both numbers, so assert on both: a
+    /// message naming only the limit is the failure mode nobody notices.
+    #[test]
+    fn a_failure_names_the_measured_peak_and_the_sample() {
+        let (a, b) = one_sample_off(41, 1e-3);
+        let msg = null_test_failure(a, b, -100.0);
+        assert!(msg.contains("-60.00 dBFS"), "message lost the measured peak: {msg}");
+        assert!(msg.contains("sample 41"), "message lost the sample index: {msg}");
+    }
+
+    /// The peak is the *worst* difference, not the first or the last one.
+    #[test]
+    fn the_reported_index_is_the_worst_sample_not_the_first() {
+        let a = vec![0.0_f32; 64];
+        let mut b = a.clone();
+        b[5] = 1e-4;
+        b[50] = 1e-2;
+        b[60] = 1e-3;
+        let msg = null_test_failure(a, b, -100.0);
+        assert!(msg.contains("sample 50"), "should report the largest difference: {msg}");
+    }
+
+    /// A NaN sample must not read as a perfect null. `d > worst` is false for
+    /// NaN, so without the explicit check a blown-up render would report −inf —
+    /// the most convincing possible pass.
+    #[test]
+    fn a_nan_render_fails_rather_than_nulling_perfectly() {
+        let a = vec![0.0_f32; 8];
+        let mut b = a.clone();
+        b[3] = f32::NAN;
+        assert_eq!(null_test_peak_dbfs(&a, &b), f64::INFINITY);
+        let msg = null_test_failure(a, b, -100.0);
+        assert!(msg.contains("sample 3"), "{msg}");
+    }
+
+    #[test]
+    #[should_panic(expected = "same length")]
+    fn mismatched_lengths_are_a_harness_error_not_a_null() {
+        null_test_peak_dbfs(&[0.0; 8], &[0.0; 9]);
+    }
+
+    #[test]
+    #[should_panic(expected = "needs a render")]
+    fn two_empty_renders_are_a_harness_error_not_a_perfect_null() {
+        null_test_peak_dbfs(&[], &[]);
     }
 }
 
