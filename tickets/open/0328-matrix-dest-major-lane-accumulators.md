@@ -1,0 +1,111 @@
+---
+id: "0328"
+product: vxn-2
+title: "Mod-matrix eval doesn't vectorise: transpose lane accumulators to dest-major"
+priority: low
+created: 2026-08-30
+epic: null
+depends: []
+---
+
+## Summary
+
+[`eval_dests`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1201) compiles to
+entirely scalar code on AArch64 — checked against the emitted asm, zero NEON
+arithmetic ops in the function body (1592 instructions, `fmul` ×199, `fadd`
+×143, and the only vector op is `movi.2d` zeroing). The module doc claimed it
+"autovectorises to NEON on AArch64" for a long time; that claim was struck when
+this was measured, and the current note says plainly that it doesn't.
+
+The cause is the accumulator layout. Both matrix buffers are **lane-major**:
+
+```rust
+pub type LaneSourceVals = [[f32; N_SOURCES]; STACK_LANES];  // matrix.rs:1127
+pub type LaneDestVals   = [[f32; N_DESTS];   STACK_LANES];  // matrix.rs:1130
+```
+
+Every per-slot inner loop walks lanes with the source and dest indices fixed:
+
+```rust
+for k in 0..STACK_LANES {
+    out[k][di] += $shape($pol(sources[k][si])) * depth * scale[k];
+}
+```
+
+`sources[k][si]` strides `N_SOURCES` floats per lane and `out[k][di]` strides
+`N_DESTS` floats per lane, so the loop is a gather/scatter — LLVM can't form a
+contiguous 4-wide load or store and falls back to scalar. Every branch and match
+is already hoisted out of these loops (ticket work on 2026-08-30 took a
+fully-scaled 16-slot eval from 253ns → 125ns by hoisting `scale_norm`'s
+dispatch), so the loop bodies are as straight-line as they can get. Layout is
+what's left.
+
+Transposing to **dest-major** — `[[f32; STACK_LANES]; N_DESTS]` — makes the
+lane loop contiguous and 4-wide-able across the 8 lanes.
+
+## Design
+
+The transpose is not speculative: [`PitchSmoother`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1275)
+**already** stores its state dest-major (`[[f32; STACK_LANES]; N_PITCH_DESTS]`),
+and [`targets_from`](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L1311) exists
+purely to transpose `LaneDestVals` into that shape on every block. So the engine
+already pays for one transpose per stack per block, and dest-major would delete
+it rather than add one.
+
+What resists the change is the consumer side. `dest_vals` is
+[declared lane-major in the engine](../../vxn-2/crates/vxn2-engine/src/engine.rs#L395)
+and read as `dest_vals[i][k][idx]` in **17 places** — the stage-5 pitch
+resolution and the stage-6 per-op level/pan/phase target projection
+([engine.rs:1496-1531](../../vxn-2/crates/vxn2-engine/src/engine.rs#L1496-L1531))
+being the dense ones. Those reads mostly walk *one dest across all lanes*, which
+is exactly the access pattern dest-major favours, so several of them should get
+faster too — but each has to be re-derived and re-checked, not blind-swapped.
+
+`scatter_stack_pitch` and the stack-pitch masks also index the block and need
+the same treatment.
+
+Suggested order: flip `LaneDestVals` first (bigger win, and it's the one
+`PitchSmoother` already wants), measure, then decide whether `LaneSourceVals`
+is worth flipping separately — the source side is read once per slot per lane
+rather than read-modify-written, so it may matter less.
+
+## Acceptance criteria
+
+- [ ] `LaneDestVals` is `[[f32; STACK_LANES]; N_DESTS]`; `eval_dests` writes it
+      contiguously across lanes.
+- [ ] Emitted asm for `eval_dests` contains NEON 4-wide arithmetic. Check with
+      `llvm-objdump` and grep the **mnemonic** for `.4s`, not the operands — see
+      [[vxn1-neon-grep-pitfall]]; a `grep 'v\d+\.4s'` returns nothing on
+      genuinely vectorised ARM64 code.
+- [ ] `matrix_eval_full` and `matrix_eval_scaled` (vxn2-osc-bench `matrix`)
+      both improve, or the ticket is closed as "measured, not worth it" with the
+      numbers recorded.
+- [ ] `PitchSmoother::targets_from` is gone or reduced to a borrow — the
+      transpose it performs is the thing this ticket removes.
+- [ ] The render-hash baseline (`vxn2-engine/tests/baseline.rs`) is unchanged.
+      This is a pure layout change; **any** audible difference is a bug, not a
+      REBASELINE.
+- [ ] `cargo test --workspace` green.
+
+## Notes
+
+- **This is an optimisation with no user-visible payoff**, hence `priority:
+  low`. Context for sizing it: at engine level the matrix is already noise —
+  `matrix_gated` (full render) shows no measurable difference between a
+  baseline table and one with routes live, all three cases sitting at ~402µs.
+  The eval is ~125ns per stack per control block; against a 1.33ms control
+  block at 48kHz that's well under a percent even at 16 stacks. Do this for the
+  layout coherence with `PitchSmoother` as much as for the cycles.
+- Measure before believing. Three of the four perf guesses on this code were
+  wrong last time round — see [[vxn2-matrix-hot-loop-lessons]] (`clamp` carries
+  a panic path; `copysign` lost to the branch it replaced) and
+  [[vxn1-tanh-branchless-only]].
+- Related but distinct: [[vxn1-soa-match-defeats-simd]] is about a runtime match
+  in the lane body defeating SIMD. That problem is already fixed here — the
+  dispatch is hoisted into per-slot macro arms. This ticket is purely about
+  memory layout.
+- Per-crate asm is misleading pre-LTO ([[vxn1-ota-filter-perf]]). `eval_dests`
+  is `#[inline]`, so it emits no standalone symbol; the 2026-08-30 measurement
+  used a temporary `#[no_mangle]` wrapper to force one, then removed it.
+- Out of scope: changing what the matrix computes, the slot roster, or the
+  `(polarity, shape)` curve encoding. Bit-identical output is the constraint.
