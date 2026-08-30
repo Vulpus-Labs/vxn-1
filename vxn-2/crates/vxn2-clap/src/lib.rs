@@ -1235,6 +1235,7 @@ mod tests {
             vxn2_engine::MatrixRowRaw {
                 source: 4, dest: 2, curve: 0, active: true, depth: 0.3,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
         let evs = drain_dirty_bits(&shared.params);

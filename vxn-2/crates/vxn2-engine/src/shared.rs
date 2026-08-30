@@ -320,7 +320,7 @@ type DirtyMatrix = DirtyBits<{ words_for(N_MATRIX_SLOTS) }, N_MATRIX_SLOTS>;
 ///
 /// Beyond the CLAP-automatable `values` array the store also holds the
 /// non-CLAP shared state the controller needs to read / write: per-param
-/// gesture flags, matrix-row topology (source / dest / curve / active),
+/// gesture flags, matrix-row topology (source / dest / curve / scale / active),
 /// slot 9-16 depths.
 pub struct SharedParams {
     values: [AtomicU32; TOTAL_PARAMS],
@@ -404,9 +404,10 @@ impl SharedParams {
                 AtomicU32::new(pack_matrix_meta(
                     slot.source as u8,
                     slot.dest as u8,
-                    slot.curve as u8,
+                    crate::matrix::curve_code(slot.polarity, slot.shape),
                     active,
                     slot.scale_src as u8,
+                    slot.scale_shape as u8,
                 ))
             }),
             matrix_extra_depth: std::array::from_fn(|s| {
@@ -511,9 +512,10 @@ impl SharedParams {
             let packed = pack_matrix_meta(
                 slot.source as u8,
                 slot.dest as u8,
-                slot.curve as u8,
+                crate::matrix::curve_code(slot.polarity, slot.shape),
                 active,
                 slot.scale_src as u8,
+                slot.scale_shape as u8,
             );
             self.matrix_meta[s].store(packed, Ordering::Relaxed);
         }
@@ -669,10 +671,11 @@ impl SharedParams {
         MatrixRowRaw {
             source: ((packed >> 24) & 0xFF) as u8,
             dest: ((packed >> 16) & 0xFF) as u8,
-            curve: ((packed >> 8) & 0xFF) as u8,
+            curve: ((packed >> 8) & 0x0F) as u8,
             active: (packed & 0x01) != 0,
             depth,
             scale_src: ((packed >> 1) & 0x7F) as u8,
+            scale_shape: ((packed >> 12) & 0x0F) as u8,
         }
     }
 
@@ -688,7 +691,14 @@ impl SharedParams {
         if slot >= N_MATRIX_SLOTS {
             return;
         }
-        let packed = pack_matrix_meta(row.source, row.dest, row.curve, row.active, row.scale_src);
+        let packed = pack_matrix_meta(
+            row.source,
+            row.dest,
+            row.curve,
+            row.active,
+            row.scale_src,
+            row.scale_shape,
+        );
         self.matrix_meta[slot].store(packed, Ordering::Relaxed);
         if slot < N_MATRIX_CLAP_SLOTS {
             self.set(OFF_MTX + slot, row.depth);
@@ -714,18 +724,36 @@ pub struct MatrixRowRaw {
     /// free low-byte bits of the packed `matrix_meta` word (see
     /// [`pack_matrix_meta`]).
     pub scale_src: u8,
+    /// Response bend applied to the normalised scale value
+    /// ([`vxn2_engine::matrix::ShapeKind`] as `u8`). Rides the curve byte's
+    /// high nibble, which was always zero before the field existed — so a
+    /// pre-E0xx blob decodes as `Lin`, an exact no-op.
+    pub scale_shape: u8,
 }
 
 /// Pack a matrix row's topology into one `u32`:
-/// `source<<24 | dest<<16 | curve<<8 | scale_src<<1 | active`.
+/// `source<<24 | dest<<16 | scale_shape<<12 | curve<<8 | scale_src<<1 | active`.
+///
+/// The curve byte is split into nibbles: the low one holds the flat
+/// `(polarity, shape)` code (0..=8, see [`vxn2_engine::matrix::curve_code`]),
+/// the high one the scale shape. Both were zero in every pre-split blob, so
+/// old state decodes to its original meaning.
 ///
 /// `active` is bit 0; the scale source (≤ 11) rides bits 1..=7 of the low byte.
 /// A blob with those bits clear decodes to `scale_src = None`.
 #[inline]
-pub(crate) fn pack_matrix_meta(source: u8, dest: u8, curve: u8, active: bool, scale_src: u8) -> u32 {
+pub(crate) fn pack_matrix_meta(
+    source: u8,
+    dest: u8,
+    curve: u8,
+    active: bool,
+    scale_src: u8,
+    scale_shape: u8,
+) -> u32 {
     ((source as u32) << 24)
         | ((dest as u32) << 16)
-        | ((curve as u32) << 8)
+        | (((curve & 0x0F) as u32) << 8)
+        | (((scale_shape & 0x0F) as u32) << 12)
         | (((scale_src & 0x7F) as u32) << 1)
         | (active as u32)
 }
@@ -966,6 +994,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
             active: raw.active,
             depth: raw.depth,
             scale_src: raw.scale_src,
+            scale_shape: raw.scale_shape,
         }
     }
 
@@ -979,6 +1008,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
                 active: row.active,
                 depth: row.depth,
                 scale_src: row.scale_src,
+                scale_shape: row.scale_shape,
             },
         );
     }
@@ -1617,6 +1647,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 5, // mod-wheel
+                scale_shape: 0,
             },
         );
         let bytes = src.snapshot_bytes();
@@ -1643,6 +1674,7 @@ mod tests {
                 active: true,
                 depth: 0.3,
                 scale_src: 7, // stripped below to simulate the bits-clear case
+                scale_shape: 0,
             },
         );
         let mut bytes = src.snapshot_bytes();
@@ -1749,6 +1781,7 @@ mod tests {
                 active: true,
                 depth: 0.42,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
         src.set_matrix_row_raw(
@@ -1760,6 +1793,7 @@ mod tests {
                 active: true,
                 depth: -0.6,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
 
@@ -1927,6 +1961,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
         let bytes = src.snapshot_bytes();
@@ -2026,7 +2061,15 @@ mod tests {
         let _ = s.take_dirty_matrix();
         s.set_matrix_row_raw(
             9,
-            MatrixRowRaw { source: 4, dest: 2, curve: 0, active: true, depth: 0.3, scale_src: 0 },
+            MatrixRowRaw {
+                source: 4,
+                dest: 2,
+                curve: 0,
+                active: true,
+                depth: 0.3,
+                scale_src: 0,
+                scale_shape: 0,
+            },
         );
         // Slot 9 lives past N_MATRIX_CLAP_SLOTS; depth doesn't touch a
         // CLAP id, so the value bitset stays empty.
@@ -2044,7 +2087,15 @@ mod tests {
         let _ = s.take_dirty_matrix();
         s.set_matrix_row_raw(
             0,
-            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.5, scale_src: 0 },
+            MatrixRowRaw {
+                source: 4,
+                dest: 2,
+                curve: 1,
+                active: true,
+                depth: 0.5,
+                scale_src: 0,
+                scale_shape: 0,
+            },
         );
         assert_eq!(s.take_dirty_matrix(), 1u64 << 0);
         let bits = s.take_dirty_values();
@@ -2078,7 +2129,15 @@ mod tests {
         src.set(id_of("master-volume").unwrap(), -3.0);
         src.set_matrix_row_raw(
             0,
-            MatrixRowRaw { source: 4, dest: 2, curve: 1, active: true, depth: 0.42, scale_src: 0 },
+            MatrixRowRaw {
+                source: 4,
+                dest: 2,
+                curve: 1,
+                active: true,
+                depth: 0.42,
+                scale_src: 0,
+                scale_shape: 0,
+            },
         );
         let bytes = src.snapshot_bytes();
 

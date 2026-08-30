@@ -1002,8 +1002,10 @@ html, body {
  * .overlay-backdrop / .overlay-panel / .mm-overlay rules above. */
 .vxn-mm-row {
   display: grid;
-  /* slot | active | source | dest | amount | scaling | scale-by | bin */
-  grid-template-columns: 28px 24px 1fr 1fr 140px 64px 1fr 24px;
+  /* slot | active | source | dest | amount | polarity | shape | scale-by
+   * | scale-bend | bin. Curve is two columns since E0xx split it into the
+   * polarity and shape axes; the scale VCA gained its own bend beside it. */
+  grid-template-columns: 28px 24px 1fr 1fr 140px 72px 64px 1fr 64px 24px;
   gap: 6px;
   align-items: center;
   padding: 4px 0;
@@ -1015,7 +1017,7 @@ html, body {
  * the full width. */
 .vxn-mm-header {
   display: grid;
-  grid-template-columns: 28px 24px 1fr 1fr 140px 64px 1fr 24px;
+  grid-template-columns: 28px 24px 1fr 1fr 140px 72px 64px 1fr 64px 24px;
   gap: 6px;
   align-items: center;
   padding: 2px 0;
@@ -1053,6 +1055,8 @@ html, body {
 /* E033 scale-source selector: min-width 0 so the extra column can shrink; the
  * "—" (None) default renders dimmer so an unscaled slot reads as off. */
 .vxn-mm-scale { min-width: 0; }
+/* Scale bend sits with the scale source; same shrink allowance. */
+.vxn-mm-scale-shape { min-width: 0; }
 
 /* Custom dropdown (mod-matrix.js buildSelect) — replaces the native <select>
  * so no NSMenu steals webview first-responder (the first-click-swallow bug on

@@ -126,6 +126,7 @@ fn base_context(s: &SharedParams) {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
     }
@@ -315,6 +316,7 @@ fn context_override(name: &str, s: &SharedParams) -> Capture {
                         active: true,
                         depth: 1.0,
                         scale_src: 0,
+                        scale_shape: 0,
                     },
                 );
                 cap.sustain_blocks = 110;

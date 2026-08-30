@@ -185,8 +185,47 @@ The matrix is a 16-slot table per patch. Each slot has:
 | `source`   | e    | One of: `lfo1`, `lfo2`, `pitch_eg`, `mod_env`, `mod_wheel`, `aftertouch`, `velocity`, `key`, `voice_idx`, `voice_spread`, `voice_rand`. |
 | `dest`     | e    | One of the routable destinations (see below).                                                    |
 | `depth`    | f    | −1.0 .. +1.0 (normalised; multiplied by dest-specific range to get plain offset).                |
-| `curve`    | e    | {lin, exp, log, bipolar}.                                                                        |
+| `polarity` | e    | {direct, bipolar, abs} — range mapping, applied first.                                           |
+| `shape`    | e    | {lin, exp, log} — response bend, applied after `polarity`.                                       |
 | `scale_src`| e    | Optional **secondary scale source** (E033), same roster as `source`; `none` (default) = depth unscaled. |
+| `scale_shape` | e | {lin, exp, log} — response bend on the scale VCA. `lin` (default) = straight-line gate.          |
+
+**Curve shapes.** `lin` is passthrough; `exp` (`sign(v)·v²`) and `log`
+(`sign(v)·√|v|`) steepen or compress while preserving sign; `bipolar`
+(`2v − 1`) AC-couples a unipolar source so it swings either side of centre.
+
+**Curve shaping** decomposes into two orthogonal axes. `polarity` maps the
+source's range; `shape` bends the response inside it. Polarity runs **first**,
+so `bipolar` + `exp` squares the AC-coupled value rather than the raw one.
+
+| `polarity` | Mapping | Notes |
+| --- | --- | --- |
+| `direct` | `v` | Passthrough — the source's native polarity reaches the dest. |
+| `bipolar` | `2v − 1` | AC-couples a unipolar `[0, 1]` source to `[-1, +1]`, e.g. mod wheel into a pitch dest that wants centred swing. |
+| `abs` | `\|v\|` | Rectifies a bipolar source to `[0, 1]`. Identity for a source already unipolar. |
+
+| `shape` | Bend | Notes |
+| --- | --- | --- |
+| `lin` | `v` | Identity. |
+| `exp` | `sign(v) · v²` | Steepens — more extreme excursions. |
+| `log` | `sign(v) · √\|v\|` | Compresses toward 0. Both bends preserve sign. |
+
+`abs` keys the route off a bipolar source's *distance from centre* rather than
+its sign. The motivating case is `voice_spread → op{N}_pan`: `spread` runs
+`−1 .. +1` across the stack's lanes, so `direct` pans each lane in proportion
+to its position, but `abs` applies the route only to the lanes at the edges of
+the spread and leaves the centre lanes untouched.
+
+Depth sign covers the mirror case, so there is no `1 − |v|` polarity: pull
+`depth` negative and the edge lanes are driven *away* from the dest's own
+parameter value while the centre lanes keep it — "more at the centre" falls out
+of the parameter already being the offset.
+
+**Encoding.** State blobs and preset files carry one flat code,
+`polarity × 3 + shape`, spelled `polarity-shape` with the `direct` polarity and
+the `lin` shape elided. That keeps codes `0..3` and the names `lin` / `exp` /
+`log` / `bipolar` meaning exactly what they meant before the axes were split,
+so patches written by an earlier build load unchanged.
 
 **Secondary scale source** (E033 / ADR 0009). Beyond the additive
 `source → dest` routing, each slot has an optional `scale_src` that
@@ -204,8 +243,18 @@ source is normalised to `[0, 1]`:
 
 Both clamped to `[0, 1]`. `scale_src = none` is exact identity (multiply by
 `1.0`), so an unscaled patch renders bit-identically to a pre-E033 engine.
-`scale_src` is patch topology (like `source`/`dest`/`curve`) — **not** a new
-CLAP-automatable param.
+`scale_src` is patch topology (like `source`/`dest`/`polarity`/`shape`) —
+**not** a new CLAP-automatable param.
+
+The normalised scale value then passes through `scale_shape`, drawn from the
+same `{lin, exp, log}` roster as the route's own bend, so the VCA need not be a
+straight line: `velocity` scaling a `mod_env → op{N}_level` route wants `exp`
+so soft playing backs the route off faster than linear. Clamping happens
+*before* the bend, so on a `[0, 1]` input `exp` is `v²` and `log` is `√v` —
+both fix 0 and 1 and stay monotonic between, meaning a bend can never invert
+the route or push it past its configured depth. There is no polarity axis here:
+`scale_norm` already folds by the *source's* polarity and the VCA has to land
+in `[0, 1]` regardless. `lin` is exact identity.
 
 **Destinations** (29 total):
 
@@ -276,7 +325,7 @@ interpretation shifted.
 
 **CLAP exposure**: slots **1–8 `depth`** are CLAP params
 (`mtx1_depth` … `mtx8_depth` = 8 CLAP params). Slots 9–16 `depth` and
-*all* slot `source` / `dest` / `curve` fields are patch state only, not
+*all* slot `source` / `dest` / `polarity` / `shape` fields are patch state only, not
 CLAP-automatable. Rationale: 16 slots × 4 fields = 64 params is mostly
 meaningless to automate (source / dest are topology selectors), but users
 do want a few automatable depths for expressive macros. 8 slots is the
@@ -287,7 +336,7 @@ users park their DAW-driven routings there.
 ### Replacing keyboard splits
 
 If you want note-range-dependent timbre within one patch, the matrix
-exposes `key` as a source with a curve — route `key` (bipolar curve to
+exposes `key` as a source with a curve — route `key` (bipolar polarity to
 centre at C4) into the destination you want to vary by note range. Splits
 across two contrasting patches are host territory (DAW MIDI ranges /
 track stacks) and no longer live inside the synth.
@@ -430,9 +479,9 @@ rather than sweeping. `cutoff`/`resonance`/`drive` are continuous.
 | Quantity                | Value          |
 |-------------------------|----------------|
 | Per-patch + patch       | 163 + 23 = **186** |
-| Mod matrix non-CLAP fields | source + dest + curve × 16 slots + depth × slots 9–16 = 56 fields (patch sub-table, not CLAP) |
+| Mod matrix non-CLAP fields | source + dest + curve (polarity × shape) × 16 slots + depth × slots 9–16 = 56 fields (patch sub-table, not CLAP) |
 
-Mod matrix slot `source`, `dest`, `curve` are excluded from CLAP because
+Mod matrix slot `source`, `dest`, `polarity`, `shape` are excluded from CLAP because
 they're topology selectors (changing them mid-automation rewires routing,
 not a useful continuous control). Slot `depth` is the modulatable quantity:
 slots **1–8** depth is CLAP-automatable; slots 9–16 depth is patch state

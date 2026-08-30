@@ -4,6 +4,9 @@
 //!
 //! - `matrix_eval_full` — all 16 slots active, every source / dest distinct,
 //!   curve mix across the four kinds. Worst-case per-slot path.
+//! - `matrix_eval_scaled` — same 16 slots, but every one carries a secondary
+//!   scale source and a scale bend, so the per-lane VCA loop runs too. The
+//!   delta against `matrix_eval_full` is the whole cost of the scale path.
 //! - `matrix_eval_empty` — all 16 slots `None`. Slot loop short-circuits at
 //!   the first match; only the per-lane accumulator clear runs.
 //!
@@ -14,7 +17,7 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_dsp::stack::STACK_LANES;
 use vxn2_engine::matrix::{
-    CurveKind, DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
+    DestId, PolarityKind, ShapeKind, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
     N_DESTS, N_SOURCES, N_SLOTS, PatchSources, SourceId, StackScalarSources, eval_dests,
     eval_sources,
 };
@@ -87,16 +90,45 @@ fn full_table() -> MatrixTable {
         DestId::DelayMix,
         DestId::ReverbMix,
     ];
-    let curves = [CurveKind::Lin, CurveKind::Exp, CurveKind::Log, CurveKind::Bipolar];
+    // One of each polarity plus the shape roster — keeps the bench walking
+    // every dispatch arm rather than a single hot one.
+    let curves = [
+        (PolarityKind::Direct, ShapeKind::Lin),
+        (PolarityKind::Direct, ShapeKind::Exp),
+        (PolarityKind::Abs, ShapeKind::Log),
+        (PolarityKind::Bipolar, ShapeKind::Lin),
+    ];
     let mut table = MatrixTable::default();
     for i in 0..N_SLOTS {
         table.slots[i] = MatrixSlot {
             source: sources[i],
             dest: dests[i],
             depth: 0.5,
-            curve: curves[i % 4],
+            polarity: curves[i % 4].0,
+            shape: curves[i % 4].1,
             scale_src: SourceId::None,
+            scale_shape: ShapeKind::Lin,
         };
+    }
+    table
+}
+
+/// Same table, but every slot gated by a secondary scale source with a bend.
+/// Scale sources cycle through both polarities (bipolar `lfo1` / `pitch_eg`
+/// fold, unipolar `velocity` / `mod_wheel` pass through) and all three bends,
+/// so no single scale path stays hot across the table.
+fn scaled_table() -> MatrixTable {
+    let scale_srcs = [
+        SourceId::Velocity,
+        SourceId::Lfo1,
+        SourceId::ModWheel,
+        SourceId::PitchEg,
+    ];
+    let scale_shapes = [ShapeKind::Lin, ShapeKind::Exp, ShapeKind::Log];
+    let mut table = full_table();
+    for i in 0..N_SLOTS {
+        table.slots[i].scale_src = scale_srcs[i % scale_srcs.len()];
+        table.slots[i].scale_shape = scale_shapes[i % scale_shapes.len()];
     }
     table
 }
@@ -111,6 +143,23 @@ fn bench_matrix(c: &mut Criterion) {
     g.throughput(Throughput::Elements(N_SLOTS as u64));
     g.bench_function("matrix_eval_full", |b| {
         let table = full_table();
+        let mut src_buf: LaneSourceVals = [[0.0; N_SOURCES]; STACK_LANES];
+        let mut dest_buf: LaneDestVals = [[0.0; N_DESTS]; STACK_LANES];
+        b.iter(|| {
+            eval_sources(
+                black_box(&patch),
+                black_box(&stack),
+                black_box(&lanes),
+                &mut src_buf,
+            );
+            eval_dests(black_box(&table), &src_buf, &mut dest_buf);
+            black_box(&dest_buf);
+        })
+    });
+
+    g.throughput(Throughput::Elements(N_SLOTS as u64));
+    g.bench_function("matrix_eval_scaled", |b| {
+        let table = scaled_table();
         let mut src_buf: LaneSourceVals = [[0.0; N_SOURCES]; STACK_LANES];
         let mut dest_buf: LaneDestVals = [[0.0; N_DESTS]; STACK_LANES];
         b.iter(|| {

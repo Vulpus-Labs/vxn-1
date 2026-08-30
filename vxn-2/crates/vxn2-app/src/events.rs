@@ -6,13 +6,14 @@
 //! Plain (non-Custom) CLAP-param edits ride the shared vocabulary —
 //! `UiEvent::SetParam` etc. The matrix slot 1-8 depth values are CLAP
 //! params, so they flow through that path; everything else about a matrix
-//! row (source / dest / curve / active flag; depths 9-16) is non-CLAP and
+//! row (source / dest / curve / scale / active flag; depths 9-16) is non-CLAP and
 //! rides Custom.
 
 /// Single mod-matrix row. Source / dest are opaque u8 indices into the
 /// engine's `matrix::SourceId` / `matrix::DestId` enums; the engine's
-/// `Vxn2Params` impl decodes them at storage time. `curve` is an index
-/// into `matrix::CurveKind`.
+/// `Vxn2Params` impl decodes them at storage time. `curve` is the flat
+/// `(polarity, shape)` code from `matrix::curve_code`; `scale_shape` is an
+/// index into `matrix::ShapeKind`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MatrixRow {
     pub source: u8,
@@ -23,6 +24,9 @@ pub struct MatrixRow {
     /// Secondary scale source. Opaque u8 index into `matrix::SourceId`,
     /// same encoding as `source`. `0` = `None` = depth unscaled.
     pub scale_src: u8,
+    /// Response bend on the normalised scale value. Index into
+    /// `matrix::ShapeKind`; `0` = `Lin` = the VCA is a straight line.
+    pub scale_shape: u8,
 }
 
 impl Default for MatrixRow {
@@ -34,6 +38,7 @@ impl Default for MatrixRow {
             active: false,
             depth: 0.0,
             scale_src: 0,
+            scale_shape: 0,
         }
     }
 }

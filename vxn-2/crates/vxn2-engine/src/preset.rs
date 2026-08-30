@@ -25,9 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::matrix::{
-    CURVE_NAMES, DEST_NAMES, N_SLOTS, SOURCE_NAMES,
-};
+use crate::matrix::{CURVE_NAMES, DEST_NAMES, N_SLOTS, SHAPE_NAMES, SOURCE_NAMES};
 use crate::params::{PARAMS, ParamDesc, ParamKind, TOTAL_PARAMS, id_of};
 use crate::shared::{MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, ParamModel, SharedParams};
 
@@ -140,6 +138,15 @@ struct MatrixRowFile {
     /// presets with no key reading as unscaled.
     #[serde(rename = "scale-src", default = "default_scale_src", skip_serializing_if = "is_none_src")]
     scale_src: String,
+    /// Response bend on the scale VCA. Omitted when `lin` (the identity), so
+    /// presets written before the field existed — and every preset that keeps
+    /// a straight-line VCA — round-trip byte-identically.
+    #[serde(
+        rename = "scale-shape",
+        default = "default_curve",
+        skip_serializing_if = "is_lin_shape"
+    )]
+    scale_shape: String,
 }
 
 fn default_curve() -> String {
@@ -152,6 +159,10 @@ fn default_scale_src() -> String {
 
 fn is_none_src(s: &str) -> bool {
     s == "none"
+}
+
+fn is_lin_shape(s: &str) -> bool {
+    s == "lin"
 }
 
 /// Decode a host-state blob into the flat value table + matrix rows. Reuses
@@ -251,6 +262,10 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
             .get(row.scale_src as usize)
             .copied()
             .unwrap_or("none");
+        let scale_shape = SHAPE_NAMES
+            .get(row.scale_shape as usize)
+            .copied()
+            .unwrap_or("lin");
         out.push(MatrixRowFile {
             slot: s as u8,
             source: source.to_string(),
@@ -258,6 +273,7 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
             curve: curve.to_string(),
             depth: row.depth as f64,
             scale_src: scale_src.to_string(),
+            scale_shape: scale_shape.to_string(),
         });
     }
     out
@@ -469,6 +485,13 @@ pub fn read_preset(
             ));
             0
         });
+        let scale_shape = name_to_u8(&SHAPE_NAMES, &row.scale_shape).unwrap_or_else(|| {
+            warnings.push(format!(
+                "matrix slot {}: unknown scale shape `{}` (using lin)",
+                row.slot, row.scale_shape
+            ));
+            0
+        });
         matrix[slot] = MatrixRowRaw {
             source,
             dest,
@@ -476,6 +499,7 @@ pub fn read_preset(
             active: source != 0 && dest != 0,
             depth,
             scale_src,
+            scale_shape,
         };
     }
 
@@ -492,7 +516,7 @@ pub fn from_toml_str(s: &str) -> Result<(Meta, Vec<u8>, Vec<String>), PresetErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::{CurveKind, DestId, SourceId};
+    use crate::matrix::{DestId, PolarityKind, ShapeKind, SourceId, curve_code};
     use crate::params::id_of;
 
     fn meta(name: &str) -> Meta {
@@ -592,10 +616,11 @@ mod tests {
             MatrixRowRaw {
                 source: SourceId::Lfo2 as u8,
                 dest: DestId::GlobalPitch as u8,
-                curve: CurveKind::Lin as u8,
+                curve: curve_code(PolarityKind::Direct, ShapeKind::Lin),
                 active: true,
                 depth: 0.5,
                 scale_src: SourceId::ModWheel as u8,
+                scale_shape: 0,
             },
         );
         let blob = ParamModel::snapshot_bytes(&src);
@@ -618,10 +643,11 @@ mod tests {
             MatrixRowRaw {
                 source: SourceId::Lfo1 as u8,
                 dest: DestId::GlobalPitch as u8,
-                curve: CurveKind::Lin as u8,
+                curve: curve_code(PolarityKind::Direct, ShapeKind::Lin),
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
+                scale_shape: 0,
             },
         );
         let blob = ParamModel::snapshot_bytes(&src);
@@ -744,7 +770,10 @@ depth = 0.5
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(mtx[0].source, SourceId::Lfo2 as u8);
         assert_eq!(mtx[0].dest, DestId::GlobalPitch as u8);
-        assert_eq!(mtx[0].curve, CurveKind::Lin as u8);
+        assert_eq!(
+            mtx[0].curve,
+            curve_code(PolarityKind::Direct, ShapeKind::Lin)
+        );
         assert!(mtx[0].active);
         assert!((mtx[0].depth - 0.5).abs() < 1e-6);
     }

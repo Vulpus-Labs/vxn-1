@@ -46,6 +46,7 @@ fn edge_interior_ratio(dest: u8) -> (f64, f64) {
         active: true,
         depth: 1.0,
         scale_src: 0,
+        scale_shape: 0,
     };
     e.params.mtx_depths[0] = 1.0;
     e.apply_block_params();

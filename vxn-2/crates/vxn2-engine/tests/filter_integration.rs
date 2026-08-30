@@ -179,6 +179,7 @@ fn matrix_cutoff_resonance_routes_stay_finite() {
             active: true,
             depth: 1.0,
             scale_src: 0,
+            scale_shape: 0,
         },
     );
     s.set_matrix_row_raw(
@@ -190,6 +191,7 @@ fn matrix_cutoff_resonance_routes_stay_finite() {
             active: true,
             depth: 1.0,
             scale_src: 0,
+            scale_shape: 0,
         },
     );
 

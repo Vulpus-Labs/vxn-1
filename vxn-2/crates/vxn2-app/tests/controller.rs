@@ -97,6 +97,7 @@ fn matrix_row_custom_event_writes_model_no_echo() {
         active: true,
         depth: 0.42,
         scale_src: 0,
+        scale_shape: 0,
     };
     let handle = ctrl.handle();
     handle
@@ -145,6 +146,7 @@ fn request_matrix_snapshot_emits_full_16_row_table() {
         active: true,
         depth: 0.1,
         scale_src: 0,
+        scale_shape: 0,
     };
     let row_b = MatrixRow {
         source: 7,
@@ -153,6 +155,7 @@ fn request_matrix_snapshot_emits_full_16_row_table() {
         active: false,
         depth: -0.25,
         scale_src: 0,
+        scale_shape: 0,
     };
     Vxn2Params::set_matrix_row(&*model, 2, row_a);
     Vxn2Params::set_matrix_row(&*model, 9, row_b);
@@ -223,6 +226,7 @@ fn matrix_row_slot_9_uses_extra_depth_storage() {
         active: true,
         depth: -0.6,
         scale_src: 0,
+        scale_shape: 0,
     };
     ctrl.handle()
         .post(UiEvent::Custom(Box::new(Vxn2UiCustom::SetMatrixRow {

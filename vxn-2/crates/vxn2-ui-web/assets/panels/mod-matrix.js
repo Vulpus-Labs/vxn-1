@@ -14,7 +14,7 @@
 //     CLAP `values[OFF_MTX + slot]` anyway.
 //   - Slots 9-16 depth-only edit → `set_matrix_row { row }`
 //     No CLAP id; depth lives in the engine's `matrix_extra_depth`.
-//   - Topology edit (source, dest, curve, active) on any slot →
+//   - Topology edit (source, dest, polarity, shape, scale, active) on any slot →
 //     `set_matrix_row { row }` with depth riding inside `row`.
 // PARAMETERS.md §"CLAP exposure" / E005.
 
@@ -214,7 +214,21 @@
     var overlay = root.querySelector('[data-vxn-section="mod-matrix"]');
     var sourcesList = window.__vxn.matrix.sources;
     var destsList = window.__vxn.matrix.dests;
-    var curvesList = window.__vxn.matrix.curves;
+    // The row's `curve` field is one flat code; the engine exports the two
+    // axes it decomposes into plus the stride to compose them with, so the
+    // page never hardcodes the arithmetic in `matrix::curve_code`.
+    var shapesList = window.__vxn.matrix.shapes;
+    var polaritiesList = window.__vxn.matrix.polarities;
+    var CURVE_STRIDE = window.__vxn.matrix.curve_stride | 0;
+    function curveCode(polarity, shape) {
+      return (polarity | 0) * CURVE_STRIDE + (shape | 0);
+    }
+    function curvePolarity(code) {
+      return Math.floor((code | 0) / CURVE_STRIDE);
+    }
+    function curveShape(code) {
+      return (code | 0) % CURVE_STRIDE;
+    }
     // Flat coherence[srcId][dstId] verdict table exported by the engine
     // (E008 0090). The UI reads the verdict — it never re-derives the rule,
     // so engine and faceplate can't drift. "ok" (and any missing entry) is
@@ -257,6 +271,7 @@
     function dispatchRow(slot, partial) {
       var current = window.__vxn.matrix.rows[slot] || {
         source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
+        scale_shape: 0,
       };
       var next = {
         source: partial.source != null ? partial.source : current.source,
@@ -266,6 +281,10 @@
         depth: partial.depth != null ? partial.depth : current.depth,
         // E033 secondary scale source (VCA on depth). Topology, like curve.
         scale: partial.scale != null ? partial.scale : (current.scale || 0),
+        // Bend on that VCA — also topology.
+        scale_shape: partial.scale_shape != null
+          ? partial.scale_shape
+          : (current.scale_shape || 0),
       };
       // Local optimistic update so the UI doesn't flash before the
       // pump's next-tick MatrixSnapshot lands.
@@ -278,7 +297,8 @@
         || partial.dest != null
         || partial.curve != null
         || partial.active != null
-        || partial.scale != null;
+        || partial.scale != null
+        || partial.scale_shape != null;
 
       if (topologyChanged) {
         // Any topology field carries the whole row (depth included).
@@ -306,12 +326,22 @@
     function buildRow(slot) {
       var sourceSel = buildSelect(sourcesList, "source");
       var destSel = buildSelect(destDisplayOrder(destsList), "dest");
-      var curveSel = buildSelect(curvesList, "curve");
+      // Curve is two pick-lists, not one: polarity maps the source's range,
+      // shape bends the response inside it.
+      var polaritySel = buildSelect(polaritiesList, "polarity");
+      polaritySel.title = "Range mapping applied to the source";
+      var shapeSel = buildSelect(shapesList, "shape");
+      shapeSel.title = "Response bend, applied after the range mapping";
       // E033: secondary scale source. Reuses the full source roster; index 0
       // ("—") is the None default so an unscaled slot reads as off at a glance.
       var scaleSel = buildSelect(sourcesList, "scale");
       scaleSel.classList.add("vxn-mm-scale");
       scaleSel.title = "Scale depth by (secondary source)";
+      // Bend on the scale VCA, so e.g. velocity gating a route need not be a
+      // straight line. No polarity twin — the VCA is always [0, 1].
+      var scaleShapeSel = buildSelect(shapesList, "scale_shape");
+      scaleShapeSel.classList.add("vxn-mm-scale-shape");
+      scaleShapeSel.title = "Response bend on the scale amount";
 
       // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop
       // readout, double-click numeric entry, shift-drag fine — built on the
@@ -378,8 +408,10 @@
           sourceSel,
           destSel,
           depth,
-          curveSel,
+          polaritySel,
+          shapeSel,
           scaleSel,
+          scaleShapeSel,
           bin,
         ]
       );
@@ -405,13 +437,30 @@
         dispatchRow(slot, { dest: parseInt(destSel.value, 10) | 0 });
         destSel.blur();
       });
-      curveSel.addEventListener("change", function () {
-        dispatchRow(slot, { curve: parseInt(curveSel.value, 10) | 0 });
-        curveSel.blur();
+      // Either axis rewrites the one flat code the row carries.
+      function commitCurve() {
+        dispatchRow(slot, {
+          curve: curveCode(
+            parseInt(polaritySel.value, 10) | 0,
+            parseInt(shapeSel.value, 10) | 0
+          ),
+        });
+      }
+      polaritySel.addEventListener("change", function () {
+        commitCurve();
+        polaritySel.blur();
+      });
+      shapeSel.addEventListener("change", function () {
+        commitCurve();
+        shapeSel.blur();
       });
       scaleSel.addEventListener("change", function () {
         dispatchRow(slot, { scale: parseInt(scaleSel.value, 10) | 0 });
         scaleSel.blur();
+      });
+      scaleShapeSel.addEventListener("change", function () {
+        dispatchRow(slot, { scale_shape: parseInt(scaleShapeSel.value, 10) | 0 });
+        scaleShapeSel.blur();
       });
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
@@ -423,6 +472,7 @@
         // mtxN-depth CLAP ids on slots 1-8.
         dispatchRow(slot, {
           source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
+          scale_shape: 0,
         });
       });
 
@@ -432,8 +482,10 @@
         dest: destSel,
         depth: depth,
         depthFader: depthFader,
-        curve: curveSel,
+        polarity: polaritySel,
+        shape: shapeSel,
         scale: scaleSel,
+        scaleShape: scaleShapeSel,
         active: active,
       };
     }
@@ -453,8 +505,10 @@
         h("Source"),
         h("Destination"),
         h("Amount"),
-        h("Scaling"),
+        h("Polarity"),
+        h("Shape"),
         h("Scale By"),
+        h("Scale Bend"),
         el("span", {}, []),
       ]);
     }
@@ -492,11 +546,17 @@
       if (document.activeElement !== r.dest) {
         r.dest.value = String((row.dest | 0));
       }
-      if (document.activeElement !== r.curve) {
-        r.curve.value = String((row.curve | 0));
+      if (document.activeElement !== r.polarity) {
+        r.polarity.value = String(curvePolarity(row.curve));
+      }
+      if (document.activeElement !== r.shape) {
+        r.shape.value = String(curveShape(row.curve));
       }
       if (document.activeElement !== r.scale) {
         r.scale.value = String((row.scale | 0));
+      }
+      if (document.activeElement !== r.scaleShape) {
+        r.scaleShape.value = String((row.scale_shape | 0));
       }
       // The bipolar fader's `set` no-ops while its own drag-gate is active,
       // so a snapshot echo can't stomp an in-progress depth drag.
@@ -515,6 +575,7 @@
       for (var i = 0; i < SLOT_COUNT; i++) {
         var row = (table && table[i]) || {
           source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
+          scale_shape: 0,
         };
         paintRow(i, row);
       }

@@ -364,6 +364,8 @@ fn matrix_row_from_json(v: &JsonValue) -> Option<MatrixRow> {
         depth: v.get("depth")?.as_f64()? as f32,
         // E033 scale source; absent (older page / unscaled) → 0 = None.
         scale_src: v.get("scale").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
+        // Scale VCA bend; absent (older page / straight-line VCA) → 0 = Lin.
+        scale_shape: v.get("scale_shape").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
     })
 }
 
@@ -375,16 +377,18 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
         "active": row.active,
         "depth": row.depth,
         "scale": row.scale_src,
+        "scale_shape": row.scale_shape,
     })
 }
 
-/// Walk the engine's mod-matrix enum tables and emit the source / dest
-/// / curve pick-lists the page populates the `<select>`s from. Shape:
+/// Walk the engine's mod-matrix enum tables and emit the source / dest /
+/// polarity / shape pick-lists the page populates the `<select>`s from. Shape:
 ///
 /// ```json
 /// {"sources": [{"id": N, "name": "...", "label": "..."}, ...],
 ///  "dests":   [...],
-///  "curves":  [...]}
+///  "curves":  [...], "shapes": [...], "polarities": [...],
+///  "curve_stride": 3}
 /// ```
 ///
 /// `id` is the engine's `SourceId` / `DestId` / `CurveKind` u8
@@ -392,8 +396,8 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
 /// never invents indices; it picks from this table.
 pub fn build_matrix_lists_json() -> String {
     use vxn2_engine::matrix::{
-        coherence, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES,
-        SOURCE_LABELS, SOURCE_NAMES,
+        coherence, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, N_SHAPES,
+        POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS, SOURCE_NAMES,
     };
     // `id` is the wire discriminant; `tier` is the granularity tier:
     // 0 = patch-global, 1 = per-stack, 2 = per-lane. The UI reads `tier` and
@@ -416,9 +420,26 @@ pub fn build_matrix_lists_json() -> String {
             serde_json::json!({ "id": i, "name": n, "label": l, "tier": tier })
         })
         .collect();
+    // The flat curve list is what the wire carries; `shapes` / `polarities`
+    // are the two axes it decomposes into, which is what the page shows as
+    // separate pick-lists. `curve_stride` is the engine's `N_SHAPES`, exported
+    // so the page composes `polarity * stride + shape` without hardcoding the
+    // arithmetic and drifting from `matrix::curve_code`.
     let curves: Vec<JsonValue> = CURVE_NAMES
         .iter()
         .zip(CURVE_LABELS.iter())
+        .enumerate()
+        .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
+        .collect();
+    let shapes: Vec<JsonValue> = SHAPE_NAMES
+        .iter()
+        .zip(SHAPE_LABELS.iter())
+        .enumerate()
+        .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
+        .collect();
+    let polarities: Vec<JsonValue> = POLARITY_NAMES
+        .iter()
+        .zip(POLARITY_LABELS.iter())
         .enumerate()
         .map(|(i, (n, l))| serde_json::json!({ "id": i, "name": n, "label": l }))
         .collect();
@@ -437,6 +458,9 @@ pub fn build_matrix_lists_json() -> String {
         "sources": sources,
         "dests": dests,
         "curves": curves,
+        "shapes": shapes,
+        "polarities": polarities,
+        "curve_stride": N_SHAPES,
         "coherence": coherence_table,
     })
     .to_string()
@@ -974,6 +998,7 @@ mod tests {
             source: 3,
             dest: 5,
             curve: 2,
+            scale_shape: 0,
             active: true,
             depth: 0.25,
             scale_src: 0,
@@ -993,7 +1018,9 @@ mod tests {
         assert_eq!(v["sources"].as_array().unwrap().len(), 12);
         // Expected dest count = 52 (None + 51 routable dests).
         assert_eq!(v["dests"].as_array().unwrap().len(), 52);
-        assert_eq!(v["curves"].as_array().unwrap().len(), 4);
+        assert_eq!(v["curves"].as_array().unwrap().len(), 9);
+        assert_eq!(v["shapes"].as_array().unwrap().len(), 3);
+        assert_eq!(v["polarities"].as_array().unwrap().len(), 3);
         assert_eq!(v["sources"][0]["name"], "none");
         assert_eq!(v["sources"][1]["name"], "lfo1");
         assert_eq!(v["dests"][26]["name"], "reverb-mix");
@@ -1011,6 +1038,25 @@ mod tests {
         assert_eq!(v["dests"][50]["name"], "pitch-eg-rate");
         assert_eq!(v["dests"][51]["name"], "mod-env-rate");
         assert_eq!(v["curves"][3]["name"], "bipolar");
+        assert_eq!(v["curves"][6]["name"], "abs");
+        assert_eq!(v["shapes"][1]["name"], "exp");
+        assert_eq!(v["polarities"][2]["name"], "abs");
+    }
+
+    /// The page composes a flat curve code from the two axis pick-lists, so
+    /// the stride it composes with has to be the engine's own — an exported
+    /// constant, never a literal on the JS side.
+    #[test]
+    fn build_matrix_lists_json_stride_matches_shape_count() {
+        let v = matrix_lists_value();
+        let stride = v["curve_stride"].as_u64().unwrap() as usize;
+        assert_eq!(stride, v["shapes"].as_array().unwrap().len());
+        assert_eq!(
+            v["curves"].as_array().unwrap().len(),
+            stride * v["polarities"].as_array().unwrap().len()
+        );
+        // Spot-check the composition the page performs: abs(2) × lin(0).
+        assert_eq!(v["curves"][2 * stride + 0]["name"], "abs");
     }
 
     #[test]

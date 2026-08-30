@@ -528,7 +528,9 @@ the first slides from the previous sounding pitch, tracked via a block-rate
 <code>GlideState</code>.</p>
 <h3 id="32-the-mod-matrix-matrixrs-modulationrs">3.2 The mod matrix (<a href="crates/vxn2-engine/src/matrix.rs"><code>matrix.rs</code></a>, <a href="crates/vxn2-engine/src/modulation.rs"><code>modulation.rs</code></a>)<a class="headerlink" href="#32-the-mod-matrix-matrixrs-modulationrs" title="Permanent link">¶</a></h3>
 <p>The matrix is <strong>the only routing mechanism</strong> — there is no hard-wired "mod
-wheel → cutoff". 16 slots, each <code>(source, dest, depth, curve)</code>. Depths for
+wheel → cutoff". 16 slots, each <code>(source, dest, depth, polarity, shape, scale_src,
+scale_shape)</code> — curve shaping is two axes, a range mapping then a response bend,
+and the scale VCA carries its own bend. Depths for
 slots 1–8 are CLAP-automatable; slots 9–16 and all topology (source/dest/curve)
 are patch state only.</p>
 <p>Sources and destinations live in <strong>three granularity tiers</strong>:</p>
@@ -763,7 +765,7 @@ these custom events rather than the param table.</p>
 in with <code>include_str!</code> at compile time; there is no runtime filesystem
 dependency (a <code>VXN2_DEV_ASSETS=1</code> dev mode reads from disk for hot iteration).
 At build time the bootstrap splices in Rust-generated JSON: the param
-descriptor table (<code>build_params_json</code>), the matrix source/dest/curve lists +
+descriptor table (<code>build_params_json</code>), the matrix source/dest/polarity/shape lists +
 the <strong>coherence matrix</strong> (<code>build_matrix_lists_json</code>), the default patch and the
 tempo subdivisions.</p>
 <p>The message protocol is <strong>JSON over the wry WebView bridge</strong>
