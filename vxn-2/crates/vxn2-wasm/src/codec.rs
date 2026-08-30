@@ -63,12 +63,13 @@ pub const EV_MATRIX_ROW: u8 = 11;
 /// 7 bits carry the curve discriminant.
 pub const MATRIX_FLAG_ACTIVE: u8 = 0x80;
 
-/// `patch_swap {}`. A preset load / reset bumps the shared
-/// `load_epoch` on the native host so the engine silences the outgoing patch's
-/// still-ringing voices. The web build's worklet has a SEPARATE `SharedParams`
-/// and the epoch is not a value param, so this event carries the pulse: apply
-/// bumps the worklet's `load_epoch`, and the next `snapshot_params` silences.
-/// No payload — the tag alone is the signal.
+/// `patch_swap {}`. A preset load / reset bumps the shared `load_epoch` on the
+/// native host so the engine runs its changeover — fade the outgoing patch to
+/// zero, then hard-reset voices and FX tails into the new one. The web build's
+/// worklet has a SEPARATE `SharedParams` and the epoch is not a value param, so
+/// this event carries the pulse: apply bumps the worklet's `load_epoch`, and the
+/// next `snapshot_params` arms the changeover. No payload — the tag is the
+/// signal.
 pub const EV_PATCH_SWAP: u8 = 12;
 
 /// `flag` bit on [`EV_PARAM`] selecting the normalised encoding. `0` = plain
@@ -105,8 +106,8 @@ pub enum Event {
         /// reserved byte; `seq` is at 10..12). `0` = `None`.
         scale_src: u8,
     },
-    /// Patch-swap pulse. Bumps the worklet's `load_epoch` so the
-    /// engine silences the outgoing patch's voices. No payload.
+    /// Patch-swap pulse. Bumps the worklet's `load_epoch` so the engine fades
+    /// the outgoing patch out and resets into the new one. No payload.
     PatchSwap { offset: u8 },
 }
 
@@ -329,9 +330,8 @@ pub fn apply(event: &Event, engine: &mut Engine, shared: &SharedParams) {
                 MatrixRowRaw { source, dest, curve, active, depth, scale_src },
             );
         }
-        // Patch swap: bump the epoch so the next snapshot_params silences the
-        // outgoing patch's voices. Native shares the epoch; web must carry it
-        // as an event.
+        // Patch swap: bump the epoch so the next snapshot_params arms the
+        // changeover. Native shares the epoch; web must carry it as an event.
         Event::PatchSwap { .. } => shared.bump_load_epoch(),
         // Gestures never touch the renderer.
         Event::GestureBegin { .. } | Event::GestureEnd { .. } => {}

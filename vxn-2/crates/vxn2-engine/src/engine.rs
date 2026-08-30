@@ -155,6 +155,32 @@ const FILTER_QUIESCENT_EPS: f32 = 1.0e-5;
 /// ~8 ms is long enough to bury the ~0.6 ms OS group-delay shift and the level
 /// step, short enough to feel instant when the user clicks the toggle.
 const FILTER_XFADE_MS: f32 = 8.0;
+
+/// Preset-changeover fade window. A whole-patch swap moves every FX parameter
+/// at once — delay time, reverb size, filter cutoff — under whatever tail the
+/// outgoing patch still has ringing. Retuning a delay line under a live tail
+/// scrubs it; retuning an FDN under one splatters. The only clean answer is to
+/// zap every buffer, and the only way to zap them without a click is to fade
+/// the output to zero first. ~6 ms is inaudible as a gap and long enough that
+/// the silence at the end of it is a true zero, not a truncated waveform.
+const PRESET_FADE_MS: f32 = 6.0;
+
+/// Whole-patch swap lifecycle. A bumped `load_epoch` arms `FadeOut`; the engine
+/// keeps rendering the *outgoing* patch (its params frozen — see
+/// [`Engine::preset_changeover_holds_params`]) under a raised-cosine fall to
+/// zero. At zero it parks in `Pending`, emitting silence, until the shell pushes
+/// the incoming patch's params and calls
+/// [`Engine::finish_preset_changeover`], which hard-resets every voice, FX
+/// buffer, and smoother before the first block of the new patch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Changeover {
+    /// Steady state: params flow through, output is untouched.
+    Idle,
+    /// Fading the outgoing patch out; `remaining` samples of window left.
+    FadeOut { remaining: usize },
+    /// Faded to zero. Output is forced silent until the reset lands.
+    Pending,
+}
 const _: () = {
     assert!(DestId::Op1Pitch.idx().unwrap() == 0);
     assert!(DestId::Op1Level.idx().unwrap() == 1);
@@ -513,6 +539,15 @@ pub struct Engine {
     /// audible tone. On the change we declick-kill releasing voices; held voices
     /// re-route and morph. `0` is the never-applied sentinel (algos are 1-based).
     last_algo: u8,
+    /// Whole-patch swap lifecycle — see [`Changeover`].
+    changeover: Changeover,
+    /// Fade-to-zero window in samples (`PRESET_FADE_MS`).
+    preset_fade_len: usize,
+    /// Has any block been rendered since construction / the last [`Self::reset`]?
+    /// False ⇒ nothing can be ringing, so a patch swap skips the fade and hands
+    /// over on the spot (plugin instantiation loading its state, a preset picked
+    /// while the instrument is idle).
+    rendered_since_reset: bool,
 }
 
 impl Engine {
@@ -590,6 +625,9 @@ impl Engine {
             // open doesn't read as a preset change and silence the boot patch.
             last_load_epoch: 0,
             last_algo: 0, // never-applied sentinel
+            changeover: Changeover::Idle,
+            preset_fade_len: (PRESET_FADE_MS * 0.001 * sample_rate) as usize,
+            rendered_since_reset: false,
         };
         e.apply_block_params();
         e
@@ -631,6 +669,7 @@ impl Engine {
     /// host on transport restart / plugin reset. Preserves params, tempo,
     /// and performance controllers (bend / wheel / aftertouch).
     pub fn reset(&mut self) {
+        self.rendered_since_reset = false;
         self.alloc.clear();
         self.cleanup.reset();
         self.dynamics.clear();
@@ -707,18 +746,74 @@ impl Engine {
     /// Pull every CLAP id out of `shared` and push fresh per-block targets
     /// into FX, matrix depths, and master state.
     pub fn snapshot_params(&mut self, shared: &SharedParams) {
-        self.params.snapshot_from(shared);
         // A bumped load-epoch means the whole patch was just swapped (preset
-        // load / reset). Silence any voice still ringing from the old patch
-        // *before* apply_block_params live-swaps the algorithm, so its
-        // operators — possibly re-roled (modulator → carrier) — can't sound
-        // through the new topology.
+        // load / state restore). Arm the changeover and hold the *outgoing*
+        // params frozen for the fade: adopting the incoming FX settings now
+        // would retune the delay line and the reverb under the tail we are
+        // about to throw away, which is exactly the scrub/splatter the fade
+        // exists to avoid.
         let epoch = shared.load_epoch();
         if epoch != self.last_load_epoch {
             self.last_load_epoch = epoch;
-            self.alloc.silence_all();
+            self.begin_preset_changeover();
         }
-        self.apply_block_params();
+        match self.changeover {
+            // Fade in flight — keep rendering the old patch, unchanged.
+            Changeover::FadeOut { .. } => {}
+            // Output has reached zero: adopt the new patch and hard-reset into it.
+            Changeover::Pending => {
+                self.params.snapshot_from(shared);
+                self.finish_preset_changeover();
+            }
+            Changeover::Idle => {
+                self.params.snapshot_from(shared);
+                self.apply_block_params();
+            }
+        }
+    }
+
+    /// Arm the whole-patch-swap fade. Hosts that drive the engine through
+    /// [`Self::snapshot_params`] get this for free; the CLAP shell — which
+    /// pushes params from its own `LocalParams` mirror rather than from
+    /// `SharedParams` — watches `load_epoch` itself and calls this.
+    ///
+    /// Re-arming an in-flight changeover is a no-op: a second preset click
+    /// during the fade must not restart it, or the fade never reaches zero and
+    /// the handover never happens.
+    pub fn begin_preset_changeover(&mut self) {
+        if self.changeover != Changeover::Idle {
+            return;
+        }
+        self.changeover = if self.preset_fade_len > 0 && self.rendered_since_reset {
+            Changeover::FadeOut { remaining: self.preset_fade_len }
+        } else {
+            // Nothing has been rendered since the last reset (so nothing can be
+            // ringing), or the sample rate is too low for a window: go straight
+            // to the handover.
+            Changeover::Pending
+        };
+    }
+
+    /// True while a patch swap is in flight (fading or parked at zero). The
+    /// caller must not push new params into the engine while this holds; the
+    /// handover point is [`Self::preset_changeover_pending`].
+    pub fn preset_changeover_holds_params(&self) -> bool {
+        self.changeover != Changeover::Idle
+    }
+
+    /// True once the fade has reached zero. The caller should push the incoming
+    /// patch's params and then call [`Self::finish_preset_changeover`].
+    pub fn preset_changeover_pending(&self) -> bool {
+        self.changeover == Changeover::Pending
+    }
+
+    /// Complete a patch swap: a full [`Self::reset`] — voices, delay + reverb
+    /// tails, filter and resampler state, every smoother — with the incoming
+    /// params already in place, so the new patch starts from true silence
+    /// instead of inheriting the old one's ring.
+    pub fn finish_preset_changeover(&mut self) {
+        self.changeover = Changeover::Idle;
+        self.reset();
     }
 
     /// Refresh FX / matrix / master state from the current
@@ -779,8 +874,9 @@ impl Engine {
         // carrier under the new algo, dumping its long release tail onto the audio
         // bus as a surprise tone. Declick-kill those releasing voices before the
         // re-route; held (gated) voices re-route and morph as intended. Preset
-        // loads take the `load_epoch` → `silence_all` path instead, so by here
-        // those voices are already idle and skipped.
+        // loads take the `load_epoch` → changeover path instead (fade to zero,
+        // then a full reset), so by here those voices are already idle and
+        // skipped.
         let algo_changed = voice.algo != self.last_algo;
         self.last_algo = voice.algo;
         for i in 0..self.alloc.stacks.len() {
@@ -921,6 +1017,7 @@ impl Engine {
         if n == 0 {
             return;
         }
+        self.rendered_since_reset = true;
         let dt = n as f32 / self.sample_rate;
         // Block-rate dispatch: the filter-enable flag selects one of two render
         // bodies (ADR 0004 §5) — no per-sample branch. Read once here so the
@@ -1068,6 +1165,36 @@ impl Engine {
                 .process_block(&mut out_l[..n], &mut out_r[..n]);
         }
         self.limiter_was_on = limiter_on;
+
+        // Patch-swap fade — last in the chain, after the limiter, so no
+        // downstream gain stage can ride the ramp back up. `Pending` holds hard
+        // silence until the shell hands the incoming patch over.
+        match self.changeover {
+            Changeover::Idle => {}
+            Changeover::Pending => {
+                out_l[..n].fill(0.0);
+                out_r[..n].fill(0.0);
+            }
+            Changeover::FadeOut { remaining } => {
+                let len = self.preset_fade_len as f32;
+                let start = (self.preset_fade_len - remaining) as f32;
+                let span = (len - 1.0).max(1.0);
+                for sample in 0..n {
+                    let t = ((start + sample as f32) / span).min(1.0);
+                    // Raised-cosine fall, zero slope at both ends: no corner at
+                    // the top of the ramp, and a true zero at the bottom.
+                    let g = 1.0 - raised_cosine_rise(t);
+                    out_l[sample] *= g;
+                    out_r[sample] *= g;
+                }
+                let left = remaining.saturating_sub(n);
+                self.changeover = if left == 0 {
+                    Changeover::Pending
+                } else {
+                    Changeover::FadeOut { remaining: left }
+                };
+            }
+        }
     }
 
     /// Advance the [`OsSpan`] lifecycle one block from `(filter_on, dyn_active)`
@@ -3880,17 +4007,35 @@ mod tests {
         }
         assert!(any_sounding(&e), "voice should be sounding before preset load");
 
-        // Simulate a preset load: bump the shared store's load-epoch. The next
-        // per-block snapshot must silence the held voice outright.
+        // Simulate a preset load: bump the shared store's load-epoch. The
+        // snapshot arms the changeover but must NOT silence yet — the voice
+        // keeps rendering under the fade, which is what makes the kill
+        // click-free.
         shared.reset_to_defaults();
         e.snapshot_params(&shared);
         assert!(
+            e.preset_changeover_holds_params(),
+            "an epoch bump must arm the changeover"
+        );
+        assert!(any_sounding(&e), "the outgoing voice renders through the fade");
+
+        // Run the fade out. Each block re-snapshots, as the host shell does;
+        // the params stay frozen until the fade lands.
+        let fade_blocks = e.preset_fade_len.div_ceil(BLK);
+        for _ in 0..fade_blocks {
+            e.process_block(&mut l, &mut r);
+            e.snapshot_params(&shared);
+        }
+        // Fade complete ⇒ the pending handover resolved on that last snapshot:
+        // full reset, every operator silenced.
+        assert!(!e.preset_changeover_holds_params(), "changeover must complete");
+        assert!(
             !any_sounding(&e),
-            "all operators must be silenced on the snapshot after a preset load"
+            "all operators must be silenced once the changeover completes"
         );
 
         // A fresh note under the new preset, followed by an ordinary same-epoch
-        // snapshot, must survive — the silence fires only on an epoch change.
+        // snapshot, must survive — the changeover fires only on an epoch change.
         e.note_on(64, 100);
         for _ in 0..16 {
             e.process_block(&mut l, &mut r);
@@ -3900,6 +4045,55 @@ mod tests {
             any_sounding(&e),
             "a same-epoch snapshot must not silence sounding voices"
         );
+    }
+
+    /// The changeover fade is monotone down to a true zero, and the block that
+    /// completes it hands over silence — no truncated waveform, no click. Then
+    /// the reset must have zapped the FX tails: with the voice killed and the
+    /// delay + reverb cleared, the first blocks of the new patch are silent.
+    #[test]
+    fn preset_changeover_fades_to_zero_then_clears_fx_tails() {
+        let shared = SharedParams::new();
+        let mut e = Engine::new(SR, BLK);
+        // Loud, wet: a tail that would ring on for seconds if it survived.
+        e.params.delay.on = true;
+        e.params.delay.mix = 0.5;
+        e.params.reverb.on = true;
+        e.params.reverb.mix = 0.5;
+        e.params.reverb.decay_secs = 4.0;
+        e.apply_block_params();
+        e.note_on(60, 110);
+        let mut l = [0.0_f32; BLK];
+        let mut r = [0.0_f32; BLK];
+        for _ in 0..64 {
+            e.process_block(&mut l, &mut r);
+        }
+        let before = l.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+        assert!(before > 1e-3, "need audible signal before the swap");
+
+        e.begin_preset_changeover();
+        let fade_blocks = e.preset_fade_len.div_ceil(BLK);
+        let mut prev_peak = f32::INFINITY;
+        let mut last = 0.0_f32;
+        for _ in 0..fade_blocks {
+            e.process_block(&mut l, &mut r);
+            let peak = l.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+            assert!(peak <= prev_peak + 1e-6, "fade must not rise: {peak} > {prev_peak}");
+            prev_peak = peak;
+            last = l[BLK - 1].abs().max(r[BLK - 1].abs());
+        }
+        assert!(last < 1e-6, "fade must land on a true zero, got {last}");
+
+        // Hand over to the (unchanged, but freshly reset) patch. Every buffer is
+        // zapped, so the tail that was ringing a moment ago is gone.
+        assert!(e.preset_changeover_pending());
+        e.snapshot_params(&shared);
+        e.process_block(&mut l, &mut r);
+        let after = l
+            .iter()
+            .chain(r.iter())
+            .fold(0.0_f32, |m, v| m.max(v.abs()));
+        assert!(after < 1e-6, "reset must leave no voice or FX tail, got {after}");
     }
 
     /// A non-CLAP KS-curve write on the shared store threads through

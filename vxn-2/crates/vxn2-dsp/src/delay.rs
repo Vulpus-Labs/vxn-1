@@ -186,6 +186,10 @@ pub struct StereoDelay {
     mix: Smoothed,
     /// First `set_params` snaps `mix` to target (no startup sweep from the seed).
     mix_primed: bool,
+    /// Same, for the delay *length*. Cleared by [`reset`](Self::reset): the
+    /// length is a read offset into the line, so gliding it across a re-idle
+    /// scrubs the (now empty, refilling) buffer instead of just retuning it.
+    samples_primed: bool,
     pingpong: bool,
     on: bool,
 }
@@ -219,6 +223,7 @@ impl StereoDelay {
             feedback: p.feedback.clamp(0.0, MAX_FEEDBACK),
             mix: Smoothed::new(p.mix.clamp(0.0, 1.0), MIX_SMOOTH_MS, sample_rate),
             mix_primed: false,
+            samples_primed: true,
             pingpong: p.pingpong,
             on: p.on,
         }
@@ -250,7 +255,12 @@ impl StereoDelay {
             p.time_ms.clamp(MIN_DELAY_MS, MAX_DELAY_MS) * 0.001
         };
         let target = (secs * self.sr).clamp(1.0, self.max_offset);
-        self.samples.set_target(target);
+        if self.samples_primed {
+            self.samples.set_target(target);
+        } else {
+            self.samples.snap(target);
+            self.samples_primed = true;
+        }
     }
 
     /// Process one stereo sample. When `on = false` the wet first fades to 0,
@@ -290,12 +300,16 @@ impl StereoDelay {
         (out_l, out_r)
     }
 
-    /// Zero buffers + DC blocker state. Smoother target is preserved.
+    /// Zero buffers + DC blocker state, and un-prime the length smoother so the
+    /// next `set_params` snaps the tap rather than sweeping it across an empty
+    /// buffer. The mix smoother keeps its target — it is a gain, not a read
+    /// offset, so it has nothing to scrub.
     pub fn reset(&mut self) {
         self.buf_l.clear();
         self.buf_r.clear();
         self.dc_l.reset();
         self.dc_r.reset();
+        self.samples_primed = false;
     }
 
     pub fn buffer_capacity(&self) -> usize {
@@ -311,6 +325,43 @@ mod tests {
 
     fn make() -> StereoDelay {
         StereoDelay::new(SR)
+    }
+
+    /// A `reset` + fresh `set_params` — the patch-swap sequence — must land the
+    /// new delay time outright. Gliding there sweeps the read tap over
+    /// `SMOOTH_MS` while the buffer is refilling, which is the "you hear the
+    /// delay time move" artefact on a preset change.
+    #[test]
+    fn reset_then_set_params_snaps_delay_time_instead_of_gliding() {
+        let mut d = make();
+        // `sync: false` — the default syncs to tempo and ignores `time_ms`.
+        let short =
+            StereoDelayParams { on: true, sync: false, time_ms: 50.0, mix: 0.5, ..Default::default() };
+        let long =
+            StereoDelayParams { on: true, sync: false, time_ms: 800.0, mix: 0.5, ..Default::default() };
+        d.set_params(&short, 120.0);
+        for _ in 0..48_000 {
+            let _ = d.process(0.3, -0.2);
+        }
+        let short_samps = d.samples.current();
+
+        d.reset();
+        d.set_params(&long, 120.0);
+        let want = 0.8 * SR;
+        assert!(
+            (d.samples.current() - want).abs() < 1.0,
+            "delay length must snap on a re-idle, got {}",
+            d.samples.current()
+        );
+        assert!((short_samps - want).abs() > 1.0, "test needs the two times to differ");
+
+        // A live time move (no reset) must still glide — that is what the
+        // smoother is for.
+        d.set_params(&short, 120.0);
+        assert!(
+            (d.samples.current() - want).abs() < 1.0,
+            "a live delay-time move must still glide, not jump"
+        );
     }
 
     #[test]

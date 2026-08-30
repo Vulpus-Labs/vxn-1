@@ -311,6 +311,11 @@ pub struct VxnAudioProcessor<'a> {
     scratch_r: Vec<f32>,
     /// Last known transport playing state — detect play→stop to fire all_notes_off.
     was_playing: bool,
+    /// Last [`SharedParams::load_epoch`] seen. A move means the whole patch was
+    /// swapped (preset click, host state restore); the engine fades out and
+    /// hard-resets rather than letting the outgoing patch's voices and FX tails
+    /// ring on through the incoming patch's settings.
+    last_load_epoch: u64,
 }
 
 impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProcessor<'a> {
@@ -328,6 +333,7 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             scratch_l: vec![0.0; max],
             scratch_r: vec![0.0; max],
             was_playing: false,
+            last_load_epoch: shared.params.load_epoch(),
         })
     }
 
@@ -342,11 +348,26 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         // different thread.
         let _ftz = ScopedFlushToZero::new();
 
+        // A bumped load-epoch is a whole-patch swap. Arm the engine's fade and
+        // stop pushing params until it has faded to zero — the incoming
+        // preset's delay time / reverb size must not be applied under the
+        // outgoing patch's tail (that scrub-and-splatter is what the changeover
+        // exists to avoid). The handover happens in the render loop below, at
+        // control-block granularity, so the swap costs the fade window and not
+        // a whole host buffer.
+        let epoch = self.shared.params.load_epoch();
+        if epoch != self.last_load_epoch {
+            self.last_load_epoch = epoch;
+            self.engine.begin_preset_changeover();
+        }
+
         // Fold any UI edits made since the last block into the local mirror,
         // then push the authoritative param set into the engine.
-        self.local.fetch_ui_changes(&self.shared.params);
-        self.local.write_to(self.engine.params_mut());
-        self.engine.apply_block_params();
+        if !self.engine.preset_changeover_holds_params() {
+            self.local.fetch_ui_changes(&self.shared.params);
+            self.local.write_to(self.engine.params_mut());
+            self.engine.apply_block_params();
+        }
 
         // Host transport → engine tempo for LFO1 sync + delay sync. Read on
         // every block so BPM changes track without waiting for a reset.
@@ -398,6 +419,14 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
             }
             let (start, end) = batch_range(event_batch.sample_bounds(), frames);
             for (a, b) in control_chunks(start, end) {
+                // Fade has reached zero: adopt the incoming patch and hard-reset
+                // into it (voices, FX tails, filter + resampler state) before
+                // rendering its first sample.
+                if engine.preset_changeover_pending() {
+                    local.fetch_ui_changes(shared);
+                    local.write_to(engine.params_mut());
+                    engine.finish_preset_changeover();
+                }
                 engine.process_block(&mut l[a..b], &mut r[a..b]);
             }
         }
@@ -704,6 +733,7 @@ mod tests {
             scratch_l: vec![0.0; 64],
             scratch_r: vec![0.0; 64],
             was_playing: false,
+            last_load_epoch: shared.params.load_epoch(),
         }
     }
 

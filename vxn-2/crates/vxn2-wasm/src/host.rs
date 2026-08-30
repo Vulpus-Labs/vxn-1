@@ -334,6 +334,51 @@ mod tests {
         assert!(any, "note-on produced no audible output");
     }
 
+    /// A `PatchSwap` pulse must drive the same changeover the native shell gets:
+    /// the outgoing patch fades out over a few quanta and the engine hard-resets
+    /// into the new one, leaving no ringing voice and no FX tail. The web build
+    /// reaches it through `Engine::snapshot_params`, which `render` calls at the
+    /// top of every quantum.
+    #[test]
+    fn patch_swap_fades_out_then_resets_to_silence() {
+        let mut host = Host::new(48_000.0);
+        load(
+            &mut host,
+            &[Event::NoteOn { offset: 0, note: 64, velocity: 1.0 }],
+        );
+        host.render(1);
+        for _ in 0..8 {
+            host.render(0);
+        }
+        let peak = |h: &Host| {
+            h.out_l
+                .iter()
+                .chain(h.out_r.iter())
+                .fold(0.0_f32, |m, v| m.max(v.abs()))
+        };
+        assert!(peak(&host) > 1e-4, "need audible signal before the swap");
+
+        // Pulse the swap, then let the fade + handover run.
+        load(&mut host, &[Event::PatchSwap { offset: 0 }]);
+        host.render(1);
+        let mut silent_from = None;
+        for q in 0..8 {
+            host.render(0);
+            if peak(&host) < 1e-6 {
+                silent_from = Some(q);
+                break;
+            }
+        }
+        let q = silent_from.expect("patch swap must silence the engine");
+
+        // ...and it stays silent: the reset cleared the voice and every FX tail,
+        // so nothing rings back in.
+        for _ in 0..8 {
+            host.render(0);
+            assert!(peak(&host) < 1e-6, "tail rang back after the swap (quantum {q})");
+        }
+    }
+
     #[test]
     fn sliced_host_matches_per_event_reference() {
         // The host's one-call render must produce byte-identical audio to the

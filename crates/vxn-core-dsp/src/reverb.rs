@@ -194,6 +194,13 @@ pub struct FdnReverb {
     base_samps: [f32; LINES],
     /// `size` (the user-facing parameter) smoothed; multiplies `base_samps`.
     size: Smoothed,
+    /// Has `size` been set since the last re-idle? False ⇒ the next
+    /// `set_params` snaps instead of gliding. `size` moves the *read offsets*
+    /// into the delay lines, so gliding it over `SIZE_SMOOTH_MS` scrubs the
+    /// tail — right for a live size-knob move, wrong after a `reset`, where
+    /// the buffers are empty and the incoming value is a fresh patch load, not
+    /// a continuation of the old one. Same argument as `WetFade`'s `primed`.
+    size_primed: bool,
 
     /// LFO phase per line (0..1).
     lfo_phase: [f32; LINES],
@@ -269,6 +276,7 @@ impl FxKernel for FdnReverb {
             max_offset,
             base_samps,
             size,
+            size_primed: true,
             lfo_phase,
             lfo_inc,
             damp_y: [0.0; LINES],
@@ -290,7 +298,12 @@ impl FxKernel for FdnReverb {
         self.fade.set(p.on, p.mix);
 
         let target_scale = scale_from_size(p.size);
-        self.size.set_target(target_scale);
+        if self.size_primed {
+            self.size.set_target(target_scale);
+        } else {
+            self.size.snap(target_scale);
+            self.size_primed = true;
+        }
 
         self.update_damp(p.damp);
         // Use the *target* scale for the feedback derivation so RT60
@@ -375,6 +388,10 @@ impl FxKernel for FdnReverb {
     fn reset(&mut self) {
         self.clear();
         self.fade.reset();
+        // Un-prime the geometry too: the following parameter fan-in is a fresh
+        // load, and gliding the read offsets over half a second while the empty
+        // lines refill is an audible squelch on the new patch.
+        self.size_primed = false;
     }
 
     #[inline]
@@ -620,6 +637,34 @@ mod tests {
             || FdnReverb::new(SR),
             &FdnReverbParams::default(),
             64,
+        );
+    }
+
+    /// A `reset` + fresh `set_params` — the patch-swap sequence — must land the
+    /// new size outright. Gliding there takes `SIZE_SMOOTH_MS` (half a second)
+    /// of moving read offsets while the emptied lines refill, which is audible
+    /// on the incoming patch as a squelch.
+    #[test]
+    fn reset_then_set_params_snaps_size_instead_of_gliding() {
+        let mut r = make();
+        r.set_params(&FdnReverbParams { size: 0.1, mix: 1.0, ..Default::default() });
+        for _ in 0..48_000 {
+            let _ = r.process(0.3, -0.2);
+        }
+        let small = r.size.current();
+
+        r.reset();
+        r.set_params(&FdnReverbParams { size: 0.95, mix: 1.0, ..Default::default() });
+        let big = scale_from_size(0.95);
+        assert!((r.size.current() - big).abs() < 1e-6, "size must snap on a re-idle");
+        assert!((small - big).abs() > 1e-3, "test needs the two sizes to differ");
+
+        // A live size move (no reset) must still glide — this is the zipper fix
+        // the smoother exists for.
+        r.set_params(&FdnReverbParams { size: 0.1, mix: 1.0, ..Default::default() });
+        assert!(
+            (r.size.current() - big).abs() < 1e-6,
+            "a live size move must still glide, not jump"
         );
     }
 

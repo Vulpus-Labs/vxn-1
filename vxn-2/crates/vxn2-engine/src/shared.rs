@@ -526,7 +526,7 @@ impl SharedParams {
         self.ks_curve_meta.store(default_ks_curve_meta(), Ordering::Relaxed);
         self.eg_curve_meta.store(default_eg_curve_meta(), Ordering::Relaxed);
         self.mark_all_dirty();
-        // A reset is a patch swap — cue the engine to silence held voices.
+        // A reset is a patch swap — cue the engine's fade-then-reset changeover.
         self.load_epoch.fetch_add(1, Ordering::Release);
     }
 
@@ -898,7 +898,8 @@ impl ParamModel for SharedParams {
         // table.
         self.mark_all_dirty();
         // Loading a blob is a whole-patch swap — bump the epoch so the audio
-        // engine silences any voice still ringing from the previous preset.
+        // engine fades out and hard-resets rather than letting the previous
+        // preset's voices and FX tails ring on under the new settings.
         self.load_epoch.fetch_add(1, Ordering::Release);
         Ok(())
     }
