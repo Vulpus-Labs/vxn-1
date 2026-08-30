@@ -21,6 +21,8 @@
 //! - [`preset`] — the portable sparse-TOML preset codec (0203).
 //! - [`meters`] — meter frames over the shared lock-free bus (0240).
 //! - [`scope`] — oscilloscope capture taps + frames over the shared ring.
+//! - [`topology`] — the lock-free UI → audio-thread channel the matrix
+//!   overlay's edits ride, so the render never takes a lock (0338).
 
 pub mod bank;
 pub mod engine;
@@ -40,6 +42,7 @@ pub mod shared;
 pub mod state;
 pub mod sync;
 pub mod synth;
+pub mod topology;
 pub mod vocab;
 pub mod voice;
 
@@ -64,6 +67,7 @@ pub use preset_io::EnginePresetStore;
 pub use shared::SharedParams;
 pub use state::{LayerState, PluginState};
 pub use synth::Synth;
+pub use topology::{TOPO_RING_SLOTS, TopoMsg, TopologyRing};
 pub use voice::Voices;
 
 /// Lanes per synth: four 8-lane banks (0264). **Diverges from VXN1**, which

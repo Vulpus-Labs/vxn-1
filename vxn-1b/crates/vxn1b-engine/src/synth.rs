@@ -116,7 +116,7 @@ impl Synth {
         &mut self.matrix
     }
 
-    #[cfg(test)]
+    /// This synth's matrix topology, read-only (`Engine::matrices`, tests).
     pub(crate) fn matrix(&self) -> &MatrixTable {
         &self.matrix
     }

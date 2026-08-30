@@ -233,6 +233,30 @@ impl KeyState {
             lfo2_link: b[3] != 0,
         })
     }
+
+    /// Pack the record into one word so the CLAP store can hold it in a single
+    /// `AtomicU32` (0338) rather than a `Mutex` the audio thread has to take.
+    /// The whole record is three flags and a MIDI note, so it fits with room to
+    /// spare and the pack is lossless — [`Self::from_bits`] is its exact
+    /// inverse.
+    #[inline]
+    pub fn to_bits(self) -> u32 {
+        (self.layer2_on as u32)
+            | ((self.split_enabled as u32) << 1)
+            | ((self.lfo2_link as u32) << 2)
+            | ((self.split_point as u32) << 8)
+    }
+
+    /// Unpack [`Self::to_bits`].
+    #[inline]
+    pub fn from_bits(bits: u32) -> Self {
+        Self {
+            layer2_on: bits & 1 != 0,
+            split_enabled: bits & 0b10 != 0,
+            lfo2_link: bits & 0b100 != 0,
+            split_point: (bits >> 8) as u8,
+        }
+    }
 }
 
 /// The full VXN1b engine: the global block over two synths.
@@ -520,6 +544,16 @@ impl Engine {
     /// Mutable access to a layer's matrix topology (for preset load / tests).
     pub fn matrix_mut(&mut self, layer: Layer) -> &mut MatrixTable {
         self.synths[layer as usize].matrix_mut()
+    }
+
+    /// Both layers' live matrix topology, by value.
+    ///
+    /// The audio thread's re-sync reads this instead of the shared store's
+    /// tables (0338): topology reaches the engine only over the lock-free
+    /// topology ring, so the engine's own copy *is* the current one, and a
+    /// param re-sync must carry it forward rather than reach for a lock.
+    pub fn matrices(&self) -> [MatrixTable; 2] {
+        [*self.synths[0].matrix(), *self.synths[1].matrix()]
     }
 
     /// Set a CLAP-id param (0216 two-layer map). A Layer-1/Layer-2 patch id routes
@@ -1467,6 +1501,26 @@ mod tests {
         // Split-enable is inert while layer 2 is off — Single dominates.
         e.set_layer2_on(false);
         assert_eq!(e.key_mode(), KeyMode::Single, "split-enable ignored with layer 2 off");
+    }
+
+    /// The key channel is an `AtomicU32` on the CLAP side (0338), so the pack
+    /// has to be lossless across the whole reachable state space — every flag
+    /// combination and every MIDI note.
+    #[test]
+    fn key_state_packs_and_unpacks_losslessly() {
+        for bits in 0..8u8 {
+            for split_point in 0..=u8::MAX {
+                let k = KeyState {
+                    layer2_on: bits & 1 != 0,
+                    split_enabled: bits & 2 != 0,
+                    lfo2_link: bits & 4 != 0,
+                    split_point,
+                };
+                assert_eq!(KeyState::from_bits(k.to_bits()), k, "{k:?}");
+            }
+        }
+        // The default is what a fresh store seeds its word with.
+        assert_eq!(KeyState::from_bits(KeyState::default().to_bits()), KeyState::default());
     }
 
     #[test]
