@@ -51,8 +51,9 @@
 
 /// Declare a matrix enum and everything keyed on its discriminants: the enum
 /// itself, the wire-name table, the display-label table, the `from_u8` decoder,
-/// an `ALL` slice in discriminant order, and — for a source enum — the polarity
-/// predicate.
+/// an `ALL` slice in discriminant order, the sentinel-free roster tables, and —
+/// depending on which entry form is used — the source polarity predicate or the
+/// destination's gain, depth taper, tier and smoothing class.
 ///
 /// Before this, each of those was written out separately and kept in step by
 /// hand: five parallel lists per enum, all indexed by the same `u8`, in each
@@ -61,9 +62,54 @@
 /// the mod matrix. Generating them from one row list makes that transposition
 /// unrepresentable rather than merely untested.
 ///
-/// A row is `Variant = discriminant, "wire-name", "Label"`, plus `uni` / `bi`
-/// when the enum declares `polarity`. Doc comments and attributes on a row pass
-/// through to the variant, so `#[default]` marks the sentinel exactly as before.
+/// # The three entry forms
+///
+/// **Axis enums** (`Polarity`, `Shape`) have no sentinel and no columns beyond
+/// the name pair — a row is `Variant = discriminant, "wire-name", "Label"`.
+///
+/// **Source enums** add a `sentinel` row and a `uni` / `bi` column carrying the
+/// source's own polarity.
+///
+/// **Destination enums** add a `sentinel` row and four columns, all mandatory:
+///
+/// ```text
+/// Cutoff = 4, "cutoff", "Cutoff", gain = 48.0, taper = linear,
+///              tier = per_stack, smooth = block;
+/// Pitch  = 1, "pitch",  "Pitch",  gain = 12.0, taper = cubic,
+///              tier = per_lane,  smooth = quantum_cascade;
+/// ```
+///
+/// `taper` is `linear` or `cubic`; `tier` is `patch_global` / `per_stack` /
+/// `per_lane` ([`Tier`](crate::roster::Tier)); `smooth` is `block` / `quantum` /
+/// `quantum_cascade` / `per_sample` ([`Smoothing`](crate::roster::Smoothing)).
+/// The property this buys is the one the name tables already buy: **you cannot
+/// add a destination without deciding**, because a row with a column missing
+/// does not match the rule and the macro does not expand:
+///
+/// ```compile_fail
+/// use vxn_core_matrix::matrix_enum;
+/// matrix_enum! {
+///     Dest, fallback = None, names = D_NAMES, labels = D_LABELS,
+///     roster_names = RD_NAMES, roster_labels = RD_LABELS, roster_gains = RD_GAIN;
+///     sentinel None = 0, "none", "—";
+///     // `smooth` is missing, so this row matches no rule and the enum is
+///     // never declared. Same for any other omitted column.
+///     Cutoff = 1, "cutoff", "Cutoff", gain = 48.0, taper = linear,
+///                 tier = per_stack;
+/// }
+/// ```
+///
+/// # The sentinel row is spelled out
+///
+/// Source and destination enums reserve discriminant 0 for the "empty slot"
+/// sentinel, so it is declared with a `sentinel` keyword rather than as an
+/// ordinary row. That is what lets the macro emit **two** name tables from one
+/// row list: the synth's `[&str; N + 1]` wire tables (sentinel at 0, for
+/// decoding a patch blob) and the roster's `[&str; N]` tables, whose index is
+/// the *storage* index a compiled route carries — see
+/// [ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §2 for why the two are
+/// held apart. The macro also supplies the sentinel's `#[default]` attribute and
+/// its inert column values, so neither can drift.
 ///
 /// `fallback` is what `from_u8` returns for an out-of-range byte — the sentinel
 /// for source/dest, `Lin` for shapes.
@@ -72,11 +118,109 @@
 /// `use vxn_core_matrix::matrix_enum;` rather than through this module.
 #[macro_export]
 macro_rules! matrix_enum {
-    // Entry point: with a polarity column (a source enum).
+    // Entry point: a destination enum — a sentinel row plus four mandatory
+    // columns per row.
     (
         $(#[$emeta:meta])*
         $name:ident, fallback = $fallback:ident, names = $names:ident,
-        labels = $labels:ident, polarity;
+        labels = $labels:ident, roster_names = $rnames:ident,
+        roster_labels = $rlabels:ident, roster_gains = $rgains:ident;
+        $(#[$smeta:meta])*
+        sentinel $sname:ident = $sdisc:literal, $swire:literal, $slabel:literal;
+        $(
+            $(#[$vmeta:meta])*
+            $variant:ident = $disc:literal, $wire:literal, $label:literal,
+            gain = $gain:literal, taper = $taper:ident, tier = $tier:ident,
+            smooth = $smooth:ident;
+        )+
+    ) => {
+        $crate::matrix_enum! {
+            @base
+            $(#[$emeta])*
+            $name, fallback = $fallback, names = $names, labels = $labels;
+            $(#[$smeta])* #[default] $sname = $sdisc, $swire, $slabel;
+            $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
+        }
+
+        $crate::matrix_enum! {
+            @roster $name, $rnames, $rlabels; $( $wire, $label; )+
+        }
+
+        #[doc = concat!(
+            "Native-unit gain for each [`", stringify!($name), "`], indexed by **storage** ",
+            "index like [`", stringify!($rnames), "`] — the factor that turns a normalised ",
+            "`[-1, 1]` route product into the destination's own unit, so that a depth of 1.0 ",
+            "means something musically comparable across dest kinds. Per-dest rationale lives ",
+            "on the row that declares it."
+        )]
+        pub const $rgains: [f32; [$($disc),+].len()] = [ $($gain),+ ];
+
+        impl $name {
+            #[doc = concat!(
+                "Native-unit gain for this destination — the `gain =` column of its row. ",
+                "The sentinel reports `1.0`: it is inert (a slot with no dest is skipped ",
+                "before any gain is read), and the identity is the answer that cannot ",
+                "mislead if one ever is."
+            )]
+            #[inline]
+            pub const fn gain(self) -> f32 {
+                match self {
+                    $name::$sname => 1.0,
+                    $( $name::$variant => $gain, )+
+                }
+            }
+
+            #[doc = concat!(
+                "Taper applied to a slot's raw depth for this destination, **before** ",
+                "[`", stringify!($name), "::gain`]. `linear` passes through; `cubic` is ",
+                "`d³`, which keeps the sign and the full reach while widening the musical ",
+                "low end — semitone dests need it because vibrato-scale amounts otherwise ",
+                "live in the bottom couple of percent of fader travel."
+            )]
+            #[inline]
+            pub fn cook_depth(self, depth: f32) -> f32 {
+                match self {
+                    $name::$sname => depth,
+                    $( $name::$variant => $crate::matrix_enum!(@taper $taper, depth), )+
+                }
+            }
+
+            #[doc = concat!(
+                "Granularity tier of this destination — the `tier =` column. The sentinel ",
+                "reports the finest tier; it is inert, and the coherence predicate ",
+                "short-circuits an empty slot before it reads a tier."
+            )]
+            #[inline]
+            pub const fn tier(self) -> $crate::roster::Tier {
+                match self {
+                    $name::$sname => $crate::roster::Tier::PerLane,
+                    $( $name::$variant => $crate::matrix_enum!(@tier $tier), )+
+                }
+            }
+
+            #[doc = concat!(
+                "Smoothing class for this destination's summed total — the `smooth =` ",
+                "column. Post-sum and per-destination, per ADR 0003 §3; the sentinel is ",
+                "`Block`, which is also the class that costs nothing."
+            )]
+            #[inline]
+            pub const fn smoothing(self) -> $crate::roster::Smoothing {
+                match self {
+                    $name::$sname => $crate::roster::Smoothing::Block,
+                    $( $name::$variant => $crate::matrix_enum!(@smooth $smooth), )+
+                }
+            }
+        }
+    };
+
+    // Entry point: a source enum — a sentinel row plus a polarity column.
+    (
+        $(#[$emeta:meta])*
+        $name:ident, fallback = $fallback:ident, names = $names:ident,
+        labels = $labels:ident, roster_names = $rnames:ident,
+        roster_labels = $rlabels:ident, polarity;
+        $(#[$smeta:meta])*
+        sentinel $sname:ident = $sdisc:literal, $swire:literal, $slabel:literal;
         $(
             $(#[$vmeta:meta])*
             $variant:ident = $disc:literal, $wire:literal, $label:literal, $pol:ident;
@@ -86,7 +230,12 @@ macro_rules! matrix_enum {
             @base
             $(#[$emeta])*
             $name, fallback = $fallback, names = $names, labels = $labels;
+            $(#[$smeta])* #[default] $sname = $sdisc, $swire, $slabel;
             $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
+        }
+
+        $crate::matrix_enum! {
+            @roster $name, $rnames, $rlabels; $( $wire, $label; )+
         }
 
         impl $name {
@@ -97,17 +246,19 @@ macro_rules! matrix_enum {
             ///
             /// The `uni` / `bi` column is not optional, so a new source still
             /// forces a polarity decision at compile time — no longer able to
-            /// drift from the row it belongs to.
+            /// drift from the row it belongs to. The sentinel is unipolar,
+            /// which is the passthrough fold.
             #[inline]
             pub const fn is_bipolar(self) -> bool {
                 match self {
-                    $( $name::$variant => $crate::matrix_enum!(@pol $pol) ),+
+                    $name::$sname => false,
+                    $( $name::$variant => $crate::matrix_enum!(@pol $pol), )+
                 }
             }
         }
     };
 
-    // Entry point: no polarity column (dest and axis enums).
+    // Entry point: an axis enum — no sentinel, no columns.
     (
         $(#[$emeta:meta])*
         $name:ident, fallback = $fallback:ident, names = $names:ident,
@@ -127,6 +278,34 @@ macro_rules! matrix_enum {
 
     (@pol bi) => { true };
     (@pol uni) => { false };
+
+    (@taper linear, $depth:ident) => { $depth };
+    (@taper cubic, $depth:ident) => { $depth * $depth * $depth };
+
+    (@tier patch_global) => { $crate::roster::Tier::PatchGlobal };
+    (@tier per_stack) => { $crate::roster::Tier::PerStack };
+    (@tier per_lane) => { $crate::roster::Tier::PerLane };
+
+    (@smooth block) => { $crate::roster::Smoothing::Block };
+    (@smooth quantum) => { $crate::roster::Smoothing::Quantum };
+    (@smooth quantum_cascade) => { $crate::roster::Smoothing::QuantumCascade };
+    (@smooth per_sample) => { $crate::roster::Smoothing::PerSample };
+
+    // The sentinel-free half: the tables the roster seam is indexed by.
+    (@roster $name:ident, $rnames:ident, $rlabels:ident; $( $wire:literal, $label:literal; )+) => {
+        #[doc = concat!(
+            "Machine ids for each routable [`", stringify!($name), "`], **sentinel ",
+            "excluded**. Index = storage index, `0..N`, which is one less than the wire ",
+            "discriminant and is what a compiled route carries (ADR 0003 §2)."
+        )]
+        pub const $rnames: [&str; [$($wire),+].len()] = [ $($wire),+ ];
+
+        #[doc = concat!(
+            "Display label for each routable [`", stringify!($name), "`]. Same indexing as [`",
+            stringify!($rnames), "`]."
+        )]
+        pub const $rlabels: [&str; [$($label),+].len()] = [ $($label),+ ];
+    };
 
     // The shared half: enum, both tables, decoder, ALL.
     (
@@ -157,9 +336,32 @@ macro_rules! matrix_enum {
         )]
         pub const $labels: [&str; [$($disc),+].len()] = [ $($label),+ ];
 
+        // Every generated table is positional, so the row list's order *is* the
+        // discriminant order or nothing lines up. Since 0332 that invariant
+        // carries gains and tapers as well as names: a row inserted next to its
+        // siblings rather than at its discriminant would shift every later
+        // dest's gain and wire name at once, and no test downstream could see
+        // it, because they would all read the same shifted tables. Pinned here
+        // so it is a compile error instead.
+        const _: () = {
+            let mut i = 0;
+            while i < $name::ALL.len() {
+                assert!(
+                    $name::ALL[i] as usize == i,
+                    concat!(
+                        stringify!($name),
+                        ": rows must be listed in discriminant order, one per discriminant, ",
+                        "starting at 0 — every generated table is indexed by position"
+                    )
+                );
+                i += 1;
+            }
+        };
+
         impl $name {
             /// Every variant, in discriminant order: `ALL[i] as u8 == i`. That
-            /// is the property the name and label tables are indexed on.
+            /// is the property the name and label tables are indexed on, and it
+            /// is asserted at compile time beside this declaration.
             pub const ALL: [$name; [$($disc),+].len()] = [ $($name::$variant),+ ];
 
             #[doc = concat!(

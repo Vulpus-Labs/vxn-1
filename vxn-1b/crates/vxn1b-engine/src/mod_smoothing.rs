@@ -37,6 +37,34 @@
 //! its own coefficients per frame ([`crate::bank`] `prepare_ramp`/`tick_coeffs`),
 //! which already absorbs their block-edge steps.
 //!
+//! ## Which dest gets which tier is now declared, not described
+//!
+//! The three tiers above used to live only in this prose and in the shape of
+//! [`MotionSmoother`]'s fields — nothing tied them to the destinations they
+//! smooth, so a new dest simply stairstepped until someone noticed. As of 0332
+//! each destination's class is the `smooth =` column of its row in
+//! [`crate::matrix::DestId`], and reads as: `quantum_cascade` for `Pitch` and
+//! `XModSweep`, `quantum` for the three PWM dests, `CrossModAmount` and `Pan`,
+//! `block` for everything else.
+//!
+//! Two mismatches between that column and this module are deliberate:
+//!
+//! * **`Amp` declares `block`.** The per-frame one-pole below is applied to the
+//!   *non-envelope* part of the VCA coefficient only — the envelope part must
+//!   stay per-frame exact or the attack smears. That factoring is a property of
+//!   VXN1b's VCA, not of routing, so it stays here and the roster declares the
+//!   class the shared bank would apply to the whole total, which is none. It is
+//!   the one acknowledged exception in ADR 0003 §3.
+//! * **The three PWM dests share two smoothers.** `Pwm`, `Osc1Pwm` and
+//!   `Osc2Pwm` are summed *per oscillator* before the one-pole, so three rows of
+//!   one class land on two poles. Post-sum smoothing is linear, so that is
+//!   arithmetically the same filter — it is a layout detail, not a third tier.
+//!
+//! Nothing here reads the column yet; the bank that does is
+//! [0335](../../../../tickets/open/0335-declared-target-smoothing.md). Declaring
+//! it early is what makes that ticket a consumer change rather than a pass over
+//! every destination in two synths.
+//!
 //! All state is fixed-size `[f32; N]` per smoothed quantity — allocation-free,
 //! `Copy`, NEON-friendly. A fresh note **snaps** its lane (both cascade stages
 //! and the one-poles) to the block target so the voice starts settled: static
