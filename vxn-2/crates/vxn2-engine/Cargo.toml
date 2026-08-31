@@ -26,3 +26,9 @@ toml = "0.8"
 include_dir = "0.7"
 
 [dev-dependencies]
+# `vxn_core_matrix::golden` — the shared golden-vector table (0331). The
+# `testing` feature exposes it (and the synthetic roster it is written against)
+# outside the crate's own unit tests; declaring it here rather than above keeps
+# it out of every shipped binary, and costs no extra compile because the engine
+# already depends on the crate.
+vxn-core-matrix = { workspace = true, features = ["testing"] }

@@ -480,6 +480,24 @@ pub fn dests_for_lane<const L: usize>(soa: &DestLanesSoa<L>, lane: usize) -> Des
     d
 }
 
+/// # What is tested here, and what is not
+///
+/// The **mechanism** — that a route multiplies, sums, shapes, gates and
+/// short-circuits correctly — is tested once for both synths in
+/// `vxn_core_matrix::golden`, against a synthetic roster whose gains are all
+/// 1.0 and whose taper is the identity
+/// ([ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §5, ticket 0331).
+/// Asserting it here meant baking roster constants into an expectation:
+/// `out[Cutoff] == 24.0` claimed three things at once — the evaluator
+/// multiplies, `DEST_GAIN[Cutoff]` is 48, and `Cutoff` takes no taper — so
+/// changing a gain failed a test of the evaluator.
+///
+/// What stays below is **roster tests** plus the randomised scalar-vs-bank
+/// parity sweep. A roster test asserts a fact about *this synth's* table — this
+/// gain is 48, these dests take the cubic taper, the default patch drives the
+/// amp — and reads the evaluator only as the most direct way to observe it.
+/// The sweep stays because the golden table covers the cases someone thought
+/// of and the sweep covers the ones they didn't.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,19 +523,6 @@ mod tests {
             shape,
             enabled: true,
             scale_src: SourceId::None,
-            scale_shape: Shape::Lin,
-        }
-    }
-
-    fn scaled(source: SourceId, dest: DestId, depth: f32, scale_src: SourceId) -> MatrixSlot {
-        MatrixSlot {
-            source,
-            dest,
-            depth,
-            polarity: Polarity::Direct,
-            shape: Shape::Lin,
-            enabled: true,
-            scale_src,
             scale_shape: Shape::Lin,
         }
     }
@@ -613,6 +618,110 @@ mod tests {
         t
     }
 
+    // ── the shared golden-vector table, run through VXN1b's own evaluators ──
+
+    /// VXN1b endpoints standing in for the synthetic roster's four sources,
+    /// in its storage-index order: two bipolar, then two unipolar.
+    const GOLDEN_SOURCES: [SourceId; 4] = [
+        SourceId::Lfo1,
+        SourceId::Lfo2,
+        SourceId::ModWheel,
+        SourceId::Velocity,
+    ];
+
+    /// …and for its four destinations. Every one of these has `DEST_GAIN` 1.0
+    /// and the identity taper, which is what lets a case's expectation — written
+    /// against a roster with no gain and no taper — carry over unchanged. The
+    /// assertion below holds them to it, so swapping in a scaled dest fails
+    /// here rather than producing a plausible-looking wrong number.
+    const GOLDEN_DESTS: [DestId; 4] = [
+        DestId::Resonance,
+        DestId::Amp,
+        DestId::Pan,
+        DestId::Env1Sustain,
+    ];
+
+    /// The mechanism table from `vxn_core_matrix::golden`, evaluated by
+    /// **VXN1b's** evaluators rather than by the harness's reference pair.
+    ///
+    /// This is what makes the deleted mechanism tests a move rather than a
+    /// loss. The shared table's own paths prove the shared arithmetic
+    /// self-consistent; nothing there touches `eval_dests`, so without this
+    /// bridge a transposed arm in this file's nine-way dispatch — `Abs` wired
+    /// to `pol_direct`, say — would be invisible. Both of this synth's
+    /// evaluators run every case, so the compaction path is covered too.
+    #[test]
+    fn the_shared_golden_vectors_hold_for_vxn1b() {
+        use vxn_core_matrix::golden::{CASES, NONE, expected_totals};
+        use vxn_core_matrix::roster::MatrixRoster;
+        use vxn_core_matrix::test_roster::TestRoster;
+
+        for (i, d) in GOLDEN_DESTS.iter().enumerate() {
+            assert_eq!(DEST_GAIN[d.index()], 1.0, "{d:?} is not a unit-gain dest");
+            assert_eq!(d.cook_depth(0.5), 0.5, "{d:?} does not take the identity taper");
+            assert_eq!(
+                GOLDEN_SOURCES[i].is_bipolar(),
+                TestRoster::source_is_bipolar(i as u8),
+                "source {i} stands in for the wrong polarity"
+            );
+        }
+
+        let endpoint = |i: u8, table: &[SourceId; 4]| {
+            if i == NONE { SourceId::None } else { table[i as usize] }
+        };
+        for case in CASES {
+            let mut t = MatrixTable::default();
+            for (i, r) in case.routes.iter().enumerate() {
+                let (polarity, shape) = vxn_core_matrix::curve::curve_split(r.curve);
+                t.slots[i] = MatrixSlot {
+                    source: endpoint(r.source, &GOLDEN_SOURCES),
+                    dest: if r.dest == NONE {
+                        DestId::None
+                    } else {
+                        GOLDEN_DESTS[r.dest as usize]
+                    },
+                    depth: r.depth,
+                    polarity,
+                    shape,
+                    enabled: r.enabled,
+                    scale_src: endpoint(r.scale_src, &GOLDEN_SOURCES),
+                    scale_shape: Shape::from_u8(r.scale_bend),
+                };
+            }
+            let mut sources = [0.0f32; N_SOURCES];
+            for &(si, v) in case.sources {
+                sources[GOLDEN_SOURCES[si as usize].index()] = v;
+            }
+
+            let want: [f32; 4] = expected_totals::<TestRoster, 4>(case);
+            let mut got = [0.0; N_DESTS];
+            eval_dests(&t, &sources, &mut got);
+
+            const L: usize = 8;
+            let mut soa = [[0.0f32; L]; N_DESTS];
+            eval_dests_bank(&RouteList::compile(&t), &sources_to_soa(&[sources; L]), &mut soa);
+            let banked = dests_for_lane(&soa, L - 1);
+
+            for (d, x) in got.iter().enumerate() {
+                // A dest the case does not name must come out exactly zero, and
+                // so must every VXN1b dest the mapping never touches.
+                let expect = GOLDEN_DESTS
+                    .iter()
+                    .position(|g| g.index() == d)
+                    .map_or(0.0, |g| want[g]);
+                assert_eq!(x.to_bits(), expect.to_bits(), "'{}': scalar dest {d}", case.name);
+                assert_eq!(
+                    banked[d].to_bits(),
+                    expect.to_bits(),
+                    "'{}': banked dest {d}",
+                    case.name
+                );
+            }
+        }
+    }
+
+    // ── roster tests: facts about VXN1b's own source and destination tables ──
+
     #[test]
     fn key_source_is_octaves_relative_to_c4() {
         let at_c4 = eval_sources(&SourceInputs { note: 60, ..Default::default() });
@@ -621,16 +730,6 @@ mod tests {
         assert_eq!(one_oct_up[SourceId::Key.index()], 1.0);
         let one_oct_down = eval_sources(&SourceInputs { note: 48, ..Default::default() });
         assert_eq!(one_oct_down[SourceId::Key.index()], -1.0);
-    }
-
-    #[test]
-    fn single_route_scales_by_depth_and_gain() {
-        // LFO1 (=1.0) → Cutoff (linear depth), 0.5 × 48 st = 24 st.
-        let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
-        let t = table(&[slot(SourceId::Lfo1, DestId::Cutoff, 0.5, Shape::Lin)]);
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Cutoff.index()] - 24.0).abs() < 1e-5);
     }
 
     #[test]
@@ -656,208 +755,18 @@ mod tests {
         }
     }
 
+    /// A switched-off slot keeps its wiring: persistence writes it, and
+    /// re-enabling is lossless. **Roster/slot-semantics test** — the
+    /// evaluator half of the old test (a disabled slot contributes nothing,
+    /// re-enabling restores exactly what it contributed) is a mechanism claim
+    /// and lives in `vxn_core_matrix::golden`, which asserts it against every
+    /// evaluator path rather than against this one.
     #[test]
-    fn slots_to_one_dest_sum_additively() {
-        let s = eval_sources(&SourceInputs { lfo1: 1.0, env1: 0.5, ..Default::default() });
-        let t = table(&[
-            slot(SourceId::Lfo1, DestId::Cutoff, 0.5, Shape::Lin), // 0.5·48 = 24
-            slot(SourceId::Env1, DestId::Cutoff, 1.0, Shape::Lin), // 0.5·1·48 = 24
-        ]);
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&t, &s, &mut out);
-        assert!((out[DestId::Cutoff.index()] - 48.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn none_and_zero_depth_slots_are_inert() {
-        let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
-        let t = table(&[
-            slot(SourceId::None, DestId::Pitch, 1.0, Shape::Lin),
-            slot(SourceId::Lfo1, DestId::None, 1.0, Shape::Lin),
-            slot(SourceId::Lfo1, DestId::Pitch, 0.0, Shape::Lin),
-        ]);
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&t, &s, &mut out);
-        assert!(out.iter().all(|&x| x == 0.0));
-    }
-
-    #[test]
-    fn scale_norm_unipolar_passthrough_bipolar_folds() {
-        // Unipolar (mod wheel): 0 → 0, 1 → 1.
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 0.0, Shape::Lin), 0.0);
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 1.0, Shape::Lin), 1.0);
-        // Bipolar (LFO): (x+1)/2, clamped.
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 0.0, Shape::Lin), 0.5);
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 1.0, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), -1.0, Shape::Lin), 0.0);
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 2.0, Shape::Lin), 1.0); // clamp
-    }
-
-    #[test]
-    fn scale_src_modwheel_gates_route_zero_to_full() {
-        let t = table(&[scaled(SourceId::Lfo1, DestId::Pitch, 1.0, SourceId::ModWheel)]);
-        // Wheel at 0 → route contributes nothing.
-        let s0 = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 0.0, ..Default::default() });
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&t, &s0, &mut out);
-        assert_eq!(out[DestId::Pitch.index()], 0.0);
-        // Wheel at 1 → full configured depth (1.0·12 st).
-        let s1 = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 1.0, ..Default::default() });
-        eval_dests(&t, &s1, &mut out);
-        assert!((out[DestId::Pitch.index()] - 12.0).abs() < 1e-6);
-        // Wheel at 0.5 → half.
-        let sh = eval_sources(&SourceInputs { lfo1: 1.0, mod_wheel: 0.5, ..Default::default() });
-        eval_dests(&t, &sh, &mut out);
-        assert!((out[DestId::Pitch.index()] - 6.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn bipolar_scale_src_follows_half_shift() {
-        // Scale by a bipolar LFO2 at 0 → (0+1)/2 = 0.5 gate.
-        let t = table(&[scaled(SourceId::Env1, DestId::Cutoff, 1.0, SourceId::Lfo2)]);
-        let s = eval_sources(&SourceInputs { env1: 1.0, lfo2: 0.0, ..Default::default() });
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&t, &s, &mut out);
-        // 1.0(env) · 1.0(depth) · 48(gain) · 0.5(scale) = 24.
-        assert!((out[DestId::Cutoff.index()] - 24.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn curves_shape_the_source() {
-        let s = eval_sources(&SourceInputs { lfo1: 0.5, ..Default::default() });
-        // Exp: sign(v)·v² = 0.25; ·depth1·gain12 = 3.0.
-        let mut out = [0.0; N_DESTS];
-        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Shape::Exp)]), &s, &mut out);
-        assert!((out[DestId::Pitch.index()] - 3.0).abs() < 1e-6);
-        // Log: √0.5 ≈ 0.7071; ·12 ≈ 8.485.
-        eval_dests(&table(&[slot(SourceId::Lfo1, DestId::Pitch, 1.0, Shape::Log)]), &s, &mut out);
-        assert!((out[DestId::Pitch.index()] - 0.5_f32.sqrt() * 12.0).abs() < 1e-5);
-        // Bipolar polarity on a unipolar mod-wheel 0.5 → 2·0.5−1 = 0 → nothing.
-        let sw = eval_sources(&SourceInputs { mod_wheel: 0.5, ..Default::default() });
-        eval_dests(
-            &table(&[slot_pol(
-                SourceId::ModWheel,
-                DestId::Pitch,
-                1.0,
-                Polarity::Bipolar,
-                Shape::Lin,
-            )]),
-            &sw,
-            &mut out,
-        );
-        assert_eq!(out[DestId::Pitch.index()], 0.0);
-    }
-
-    /// `abs` rectifies: a bipolar source drives the dest the same way at both
-    /// extremes and not at all at centre. `spread → pan` is the motivating
-    /// route — edge voices moved, centre voices left alone.
-    #[test]
-    fn abs_polarity_rectifies_a_bipolar_source() {
-        let route = |spread: f32| {
-            let s = eval_sources(&SourceInputs { spread_pos: spread, ..Default::default() });
-            let mut out = [0.0; N_DESTS];
-            eval_dests(
-                &table(&[slot_pol(
-                    SourceId::Spread,
-                    DestId::Pan,
-                    1.0,
-                    Polarity::Abs,
-                    Shape::Lin,
-                )]),
-                &s,
-                &mut out,
-            );
-            out[DestId::Pan.index()]
-        };
-        let (neg, mid, pos) = (route(-1.0), route(0.0), route(1.0));
-        assert!((neg - pos).abs() < 1e-6, "extremes must match: {neg} vs {pos}");
-        assert!(neg > 0.0, "rectified extreme is positive");
-        assert!(mid.abs() < 1e-6, "centre voice unmodulated");
-    }
-
-    /// Polarity runs before shape, so the bend sees the *mapped* value. On a
-    /// unipolar 0.5, bipolar maps to 0 and the bend of 0 is 0 — a shape applied
-    /// first would instead square 0.5 and then map to −0.5.
-    #[test]
-    fn polarity_is_applied_before_shape() {
-        let s = eval_sources(&SourceInputs { mod_wheel: 0.5, ..Default::default() });
-        let mut out = [0.0; N_DESTS];
-        eval_dests(
-            &table(&[slot_pol(
-                SourceId::ModWheel,
-                DestId::Pitch,
-                1.0,
-                Polarity::Bipolar,
-                Shape::Exp,
-            )]),
-            &s,
-            &mut out,
-        );
-        assert_eq!(out[DestId::Pitch.index()], 0.0, "bend of the mapped 0 is 0");
-    }
-
-    /// The scale VCA bends independently of the route. Velocity 0.5 gates to
-    /// 0.5 linear, 0.25 under `Exp`, √0.5 under `Log`.
-    #[test]
-    fn scale_shape_bends_the_vca() {
-        let gated = |bend: Shape| {
-            let s = eval_sources(&SourceInputs {
-                env2: 1.0,
-                velocity: 0.5,
-                ..Default::default()
-            });
-            let mut sl = slot(SourceId::Env2, DestId::Amp, 1.0, Shape::Lin);
-            sl.scale_src = SourceId::Velocity;
-            sl.scale_shape = bend;
-            let mut out = [0.0; N_DESTS];
-            eval_dests(&table(&[sl]), &s, &mut out);
-            out[DestId::Amp.index()]
-        };
-        let (lin, exp, log) = (gated(Shape::Lin), gated(Shape::Exp), gated(Shape::Log));
-        let g = DEST_GAIN[DestId::Amp.index()];
-        assert!((lin - 0.5 * g).abs() < 1e-6, "lin: {lin}");
-        assert!((exp - 0.25 * g).abs() < 1e-6, "exp: {exp}");
-        assert!((log - 0.5_f32.sqrt() * g).abs() < 1e-6, "log: {log}");
-        assert!(exp < lin && lin < log, "bends order exp < lin < log");
-    }
-
-    /// Whatever the bend, the VCA stays inside `[0, 1]` — it can never invert a
-    /// route's sign or push it past its configured depth.
-    #[test]
-    fn scale_shape_stays_within_unit_range() {
-        for bend in Shape::ALL {
-            for v in [-4.0_f32, -1.0, -0.3, 0.0, 0.25, 0.5, 1.0, 7.0] {
-                for src in [SourceId::Velocity, SourceId::Lfo1] {
-                    let n = scale_norm(src.is_bipolar(), v, bend);
-                    assert!((0.0..=1.0).contains(&n), "{src:?}/{bend:?}/{v} → {n}");
-                }
-            }
-            assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 0.0, bend), 0.0);
-            assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 1.0, bend), 1.0);
-        }
-    }
-
-    /// A switched-off slot contributes nothing, and switching it back on
-    /// restores exactly what it contributed before — the wiring is untouched.
-    #[test]
-    fn disabled_slot_is_inert_but_keeps_its_wiring() {
-        let s = eval_sources(&SourceInputs { lfo1: 1.0, ..Default::default() });
+    fn disabled_slot_keeps_its_wiring() {
         let mut sl = slot(SourceId::Lfo1, DestId::Cutoff, 0.5, Shape::Lin);
-        let mut on = [0.0; N_DESTS];
-        eval_dests(&table(&[sl]), &s, &mut on);
-        assert!((on[DestId::Cutoff.index()] - 24.0).abs() < 1e-5);
-
+        assert!(sl.is_wired() && sl.is_active());
         sl.enabled = false;
-        let mut off = [0.0; N_DESTS];
-        eval_dests(&table(&[sl]), &s, &mut off);
-        assert!(off.iter().all(|&x| x == 0.0), "switched off must contribute nothing");
-        // Still wired — persistence writes it, and re-enabling is lossless.
         assert!(sl.is_wired() && !sl.is_active());
-
-        sl.enabled = true;
-        let mut back = [0.0; N_DESTS];
-        eval_dests(&table(&[sl]), &s, &mut back);
-        assert_eq!(back, on, "re-enabling must restore the exact contribution");
     }
 
     #[test]
