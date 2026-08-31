@@ -100,3 +100,18 @@ pub mod storage;
 /// `testing` feature. Built on by ticket 0331.
 #[cfg(any(test, feature = "testing"))]
 pub mod test_roster;
+
+/// The declarative mechanism test surface (ADR 0003 §5): a
+/// [`Case`](golden::Case) is *these routes at these depths, these source
+/// values, these modulation amounts*, and [`run_case`](golden::run_case) puts
+/// every case through every evaluator path the crate offers, requiring them to
+/// agree bit-exactly.
+///
+/// Run against [`test_roster::TestRoster`], so a number in an assertion is the
+/// evaluator's arithmetic and nothing else. Same gating as `test_roster` —
+/// available to this crate's tests always, to other crates via `testing`.
+///
+/// Filled in by ticket 0331; ticket 0334 registers the shared evaluator as a
+/// further path and the whole table covers it without new test code.
+#[cfg(any(test, feature = "testing"))]
+pub mod golden;
