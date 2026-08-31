@@ -13,7 +13,7 @@
 /// engine's `matrix::SourceId` / `matrix::DestId` enums; the engine's
 /// `Vxn2Params` impl decodes them at storage time. `curve` is the flat
 /// `(polarity, shape)` code from `matrix::curve_code`; `scale_shape` is an
-/// index into `matrix::ShapeKind`.
+/// index into `matrix::Shape`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MatrixRow {
     pub source: u8,
@@ -25,7 +25,7 @@ pub struct MatrixRow {
     /// same encoding as `source`. `0` = `None` = depth unscaled.
     pub scale_src: u8,
     /// Response bend on the normalised scale value. Index into
-    /// `matrix::ShapeKind`; `0` = `Lin` = the VCA is a straight line.
+    /// `matrix::Shape`; `0` = `Lin` = the VCA is a straight line.
     pub scale_shape: u8,
 }
 

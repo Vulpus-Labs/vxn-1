@@ -10,6 +10,10 @@ vxn2-dsp = { workspace = true }
 vxn-core-dsp = { workspace = true }
 vxn-core-app = { workspace = true }
 vxn-core-utils = { workspace = true }
+# Shared mod-matrix routing (ADR 0003 / epic E049): the polarity/shape axes,
+# the `matrix_enum!` generator behind every name/label table, the flat curve
+# codec and the scale VCA.
+vxn-core-matrix = { workspace = true }
 vxn2-app = { workspace = true }
 # Shared sparse-TOML preset scaffold (Meta/PresetError/Header/SCHEMA/value_for,
 # ticket 0143). Only the synth-specific body types stay here.

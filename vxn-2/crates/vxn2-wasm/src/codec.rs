@@ -106,7 +106,7 @@ pub enum Event {
         /// Secondary scale source (E033). Rides byte 12 of the slot (a
         /// reserved byte; `seq` is at 10..12). `0` = `None`.
         scale_src: u8,
-        /// Response bend on the scale VCA (`matrix::ShapeKind` as `u8`).
+        /// Response bend on the scale VCA (`matrix::Shape` as `u8`).
         /// Rides byte 13, the next reserved byte. `0` = `Lin` = no bend, so a
         /// page that never writes it behaves exactly as before.
         scale_shape: u8,

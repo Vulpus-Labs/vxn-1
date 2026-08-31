@@ -1432,7 +1432,9 @@ fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeff
     let mut c = AmpCoeffs::default();
     for r in &routes.routes[..routes.n] {
         let scale = match r.scale_src.idx() {
-            Some(sc) => crate::eval::scale_norm(r.scale_src, sources[sc], r.scale_shape),
+            Some(sc) => {
+                crate::eval::scale_norm(r.scale_src.is_bipolar(), sources[sc], r.scale_shape)
+            }
             None => 1.0,
         };
         let coeff = r.gain * scale;

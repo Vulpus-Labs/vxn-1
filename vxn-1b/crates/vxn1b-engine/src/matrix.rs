@@ -16,141 +16,27 @@
 //! CLAP param (0200); the other four fields are **patch topology** (state + TOML,
 //! 0203). Slots to the same dest sum (additive) — the evaluator's job.
 
+use vxn_core_matrix::matrix_enum;
+
 use crate::params::MATRIX_SLOTS;
+
+/// The curve-shaping vocabulary, re-exported from
+/// [`vxn_core_matrix::curve`] so that `crate::matrix::Polarity` keeps meaning
+/// what it always did.
+///
+/// Both axes, their tables, the flat preset codec and the scale VCA live in the
+/// shared crate as of 0330 — VXN1b's copy was a hand-port of VXN2's, added 96
+/// minutes after it, and the two had already started drifting. What stays here
+/// is the roster: which sources and destinations *this* synth can route.
+pub use vxn_core_matrix::curve::{
+    CURVE_NAMES, N_CURVES, N_POLARITIES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES, Polarity,
+    SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split,
+};
 
 /// Slot count — the single source of truth is the param table's slot-depth count
 /// ([`crate::params::MATRIX_SLOTS`]), so the topology and the automatable depths
 /// can never disagree on how many slots exist.
 pub const N_SLOTS: usize = MATRIX_SLOTS;
-
-// ── matrix_enum! ───────────────────────────────────────────────────────────
-
-/// Declare a matrix enum and everything keyed on its discriminants: the enum
-/// itself, the wire-name table, the display-label table, the `from_u8` decoder,
-/// an `ALL` slice in discriminant order, and — for the source enum — the
-/// polarity predicate.
-///
-/// Before 0319 each of those was written out separately and kept in step by
-/// hand: five parallel lists for [`SourceId`], five for [`DestId`], four for
-/// [`Curve`], all indexed by the same `u8`. The tests checked their *lengths*
-/// and the `from_u8` round-trip, so a transposed name/label pair was invisible
-/// until a user read the wrong name in the mod matrix. Generating them from one
-/// row list makes that transposition unrepresentable rather than merely
-/// untested.
-///
-/// A row is `Variant = discriminant, "wire-name", "Label"`, plus `uni` / `bi`
-/// when the enum declares `polarity`. Doc comments and attributes on a row pass
-/// through to the variant, so `#[default]` marks the sentinel exactly as before.
-///
-/// `fallback` is what `from_u8` returns for an out-of-range byte — the sentinel
-/// for source/dest, `Lin` for curves.
-macro_rules! matrix_enum {
-    // Entry point: with a polarity column (the source enum).
-    (
-        $(#[$emeta:meta])*
-        $name:ident, fallback = $fallback:ident, names = $names:ident,
-        labels = $labels:ident, polarity;
-        $(
-            $(#[$vmeta:meta])*
-            $variant:ident = $disc:literal, $wire:literal, $label:literal, $pol:ident;
-        )+
-    ) => {
-        matrix_enum! {
-            @base
-            $(#[$emeta])*
-            $name, fallback = $fallback, names = $names, labels = $labels;
-            $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
-        }
-
-        impl $name {
-            /// Whether this source emits a **bipolar** `[-1, 1]` shape (vs a
-            /// unipolar `[0, 1]` one). Consumed by the evaluator's `scale_norm`
-            /// to fold a bipolar scale source into the `[0, 1]` VCA range.
-            ///
-            /// The `uni` / `bi` column is not optional, so a new source still
-            /// forces a polarity decision at compile time — the `is_bipolar`
-            /// discipline of VXN2 ADR 0009, no longer able to drift from the row
-            /// it belongs to.
-            #[inline]
-            pub const fn is_bipolar(self) -> bool {
-                match self {
-                    $( $name::$variant => matrix_enum!(@pol $pol) ),+
-                }
-            }
-        }
-    };
-
-    // Entry point: no polarity column (the dest and curve enums).
-    (
-        $(#[$emeta:meta])*
-        $name:ident, fallback = $fallback:ident, names = $names:ident,
-        labels = $labels:ident;
-        $(
-            $(#[$vmeta:meta])*
-            $variant:ident = $disc:literal, $wire:literal, $label:literal;
-        )+
-    ) => {
-        matrix_enum! {
-            @base
-            $(#[$emeta])*
-            $name, fallback = $fallback, names = $names, labels = $labels;
-            $( $(#[$vmeta])* $variant = $disc, $wire, $label; )+
-        }
-    };
-
-    (@pol bi) => { true };
-    (@pol uni) => { false };
-
-    // The shared half: enum, both tables, decoder, ALL.
-    (
-        @base
-        $(#[$emeta:meta])*
-        $name:ident, fallback = $fallback:ident, names = $names:ident, labels = $labels:ident;
-        $(
-            $(#[$vmeta:meta])*
-            $variant:ident = $disc:literal, $wire:literal, $label:literal;
-        )+
-    ) => {
-        $(#[$emeta])*
-        #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-        #[repr(u8)]
-        pub enum $name {
-            $( $(#[$vmeta])* $variant = $disc, )+
-        }
-
-        #[doc = concat!(
-            "Machine id (kebab-case wire name) for each [`", stringify!($name),
-            "`]. Index = discriminant."
-        )]
-        pub const $names: [&str; [$($disc),+].len()] = [ $($wire),+ ];
-
-        #[doc = concat!(
-            "Display label for each [`", stringify!($name), "`]. Same indexing as [`",
-            stringify!($names), "`]."
-        )]
-        pub const $labels: [&str; [$($disc),+].len()] = [ $($label),+ ];
-
-        impl $name {
-            /// Every variant, in discriminant order: `ALL[i] as u8 == i`. That
-            /// is the property the name and label tables are indexed on, and
-            /// `variant_order_matches_the_tables` asserts it.
-            pub const ALL: [$name; [$($disc),+].len()] = [ $($name::$variant),+ ];
-
-            #[doc = concat!(
-                "Decode a wire-format `u8`. Out of range → [`", stringify!($name), "::",
-                stringify!($fallback), "`], so a corrupt patch blob degrades to an inert ",
-                "slot rather than panicking."
-            )]
-            #[inline]
-            pub fn from_u8(v: u8) -> Self {
-                match v {
-                    $( $disc => $name::$variant, )+
-                    _ => $name::$fallback,
-                }
-            }
-        }
-    };
-}
 
 // ── SourceId ────────────────────────────────────────────────────────────────
 
@@ -355,107 +241,6 @@ impl DestId {
         }
     }
 }
-
-// ── Polarity / Shape ────────────────────────────────────────────────────────
-
-matrix_enum! {
-    /// Range mapping applied to a source value, **before** the [`Shape`] bend.
-    ///
-    /// - `Direct` — passthrough; the source's native polarity reaches the dest.
-    /// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via
-    ///   `2v − 1` (centred swing when routing mod-wheel/aftertouch into a
-    ///   bipolar dest).
-    /// - `Abs` — rectify a bipolar source to `[0, 1]` via `|v|`, so the route is
-    ///   strongest at *both* extremes and silent at centre. `spread → pan` is
-    ///   the motivating case: `direct` pans each voice in proportion to its
-    ///   spread position, `abs` instead moves only the voices at the edges of
-    ///   the spread and leaves the centre ones alone. Identity for a source
-    ///   already unipolar.
-    ///
-    ///   Depth sign covers the mirror case, so there is deliberately no
-    ///   `1 − |v|` mapping: pull depth negative and the edge voices are driven
-    ///   *away* from the destination's own parameter value while the centre
-    ///   voices keep it. "More at the centre" falls out of the parameter
-    ///   already being the offset such a mapping would re-derive.
-    Polarity, fallback = Direct, names = POLARITY_NAMES,
-    labels = POLARITY_LABELS;
-    #[default]
-    Direct = 0, "direct", "Direct";
-    Bipolar = 1, "bipolar", "Bipolar";
-    Abs = 2, "abs", "Abs";
-}
-
-matrix_enum! {
-    /// Response bend applied **after** the [`Polarity`] mapping.
-    ///
-    /// - `Lin` — identity passthrough.
-    /// - `Exp` — signed square `sign(v)·v²`: more extreme excursions.
-    /// - `Log` — signed root `sign(v)·√|v|`: compresses toward 0.
-    ///
-    /// Both bends preserve sign, so neither moves a value across zero.
-    Shape, fallback = Lin, names = SHAPE_NAMES,
-    labels = SHAPE_LABELS;
-    #[default]
-    Lin = 0, "lin", "Lin";
-    Exp = 1, "exp", "Exp";
-    Log = 2, "log", "Log";
-}
-
-/// Count of polarity variants.
-pub const N_POLARITIES: usize = POLARITY_NAMES.len();
-/// Count of shape variants. No sentinel — `Lin` is a real shape.
-pub const N_SHAPES: usize = SHAPE_NAMES.len();
-
-/// Count of `(polarity, shape)` combinations — the width of the flat curve code
-/// that **preset files** carry.
-pub const N_CURVES: usize = N_POLARITIES * N_SHAPES;
-
-/// Compose a `(polarity, shape)` pair into the flat preset code,
-/// `polarity · N_SHAPES + shape`.
-///
-/// This exists for one reason: preset TOML is the only surface where the two
-/// axes are still spelled as a single `curve` value. The stride is chosen so the
-/// four pre-split codes keep their exact meanings — `0 = lin`, `1 = exp`,
-/// `2 = log`, `3 = bipolar` (which was always bipolar with a linear bend) — and
-/// [`CURVE_NAMES`] elides the `direct` polarity and the `lin` shape, so those
-/// four spellings still parse. Presets written before the split load unchanged.
-///
-/// The `clap.state` blob does **not** use this: it stores the two axes as
-/// separate bytes, because vxn-1b rejects older blobs on read rather than
-/// migrating them (see [`crate::state`]) and so is free to pick the honest
-/// layout. Neither does the UI edit wire, which addresses one field at a time
-/// (`MatrixField::Polarity` / `::Shape`).
-#[inline]
-pub const fn curve_code(polarity: Polarity, shape: Shape) -> u8 {
-    polarity as u8 * N_SHAPES as u8 + shape as u8
-}
-
-/// Split a flat preset code back into its `(polarity, shape)` pair. Out-of-range
-/// codes degrade to `(Direct, Lin)` rather than aliasing onto a real curve.
-#[inline]
-pub fn curve_split(code: u8) -> (Polarity, Shape) {
-    if code as usize >= N_CURVES {
-        return (Polarity::Direct, Shape::Lin);
-    }
-    (
-        Polarity::from_u8(code / N_SHAPES as u8),
-        Shape::from_u8(code % N_SHAPES as u8),
-    )
-}
-
-/// Flat curve machine id for preset files, indexed by [`curve_code`]. The four
-/// legacy spellings are load-bearing — see [`curve_code`].
-pub const CURVE_NAMES: [&str; N_CURVES] = [
-    "lin",
-    "exp",
-    "log",
-    "bipolar",
-    "bipolar-exp",
-    "bipolar-log",
-    "abs",
-    "abs-exp",
-    "abs-log",
-];
 
 // ── MatrixSlot / MatrixTable ────────────────────────────────────────────────
 

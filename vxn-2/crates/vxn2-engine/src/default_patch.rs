@@ -17,7 +17,7 @@
 //! Stack `voice_rand` (used by Mtx slot 2 to decorrelate per-lane LFO2 phase)
 //! is sampled in the allocator at note-on, independent of these defaults.
 
-use crate::matrix::{DestId, MatrixSlot, MatrixTable, PolarityKind, ShapeKind, SourceId};
+use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
 use crate::params::{PARAMS, TOTAL_PARAMS, id_of};
 
 /// Plain-units default value for every CLAP id. Replaces a per-descriptor
@@ -151,37 +151,37 @@ pub fn default_matrix() -> MatrixTable {
         source: SourceId::Lfo2,
         dest: DestId::GlobalPitch,
         depth: 0.0,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     t.slots[1] = MatrixSlot {
         source: SourceId::VoiceRand,
         dest: DestId::Lfo2Phase,
         depth: 1.0,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     t.slots[2] = MatrixSlot {
         source: SourceId::Velocity,
         dest: DestId::Op2Level,
         depth: 0.0,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Exp,
+        polarity: Polarity::Direct,
+        shape: Shape::Exp,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     t.slots[3] = MatrixSlot {
         source: SourceId::ModWheel,
         dest: DestId::Lfo1Rate,
         depth: 0.6,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     // Lane spread → per-carrier pan, wired explicitly through the matrix so
     // the macro is one of many possible spread → pan curves users can dial in.
@@ -189,19 +189,19 @@ pub fn default_matrix() -> MatrixTable {
         source: SourceId::VoiceSpread,
         dest: DestId::Op1Pan,
         depth: 1.0,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     t.slots[5] = MatrixSlot {
         source: SourceId::VoiceSpread,
         dest: DestId::Op3Pan,
         depth: 1.0,
-        polarity: PolarityKind::Direct,
-        shape: ShapeKind::Lin,
+        polarity: Polarity::Direct,
+        shape: Shape::Lin,
         scale_src: SourceId::None,
-        scale_shape: ShapeKind::Lin,
+        scale_shape: Shape::Lin,
     };
     t
 }
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(m.slots[1].dest, DestId::Lfo2Phase);
         assert_eq!(m.slots[2].source, SourceId::Velocity);
         assert_eq!(m.slots[2].dest, DestId::Op2Level);
-        assert_eq!(m.slots[2].shape, ShapeKind::Exp);
+        assert_eq!(m.slots[2].shape, Shape::Exp);
         assert_eq!(m.slots[3].source, SourceId::ModWheel);
         assert_eq!(m.slots[3].dest, DestId::Lfo1Rate);
         // Slots 5/6: VoiceSpread → carrier-op pan.

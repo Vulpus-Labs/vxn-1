@@ -15,6 +15,10 @@ description = "VXN1b engine — param table + mod-matrix routing loop over VXN1'
 # not a fork — later tickets wire these kernels rather than porting them.
 vxn-dsp = { workspace = true }
 vxn-core-utils = { workspace = true }
+# Shared mod-matrix routing (ADR 0003 / epic E049): the polarity/shape axes,
+# the `matrix_enum!` generator behind every name/label table below, the flat
+# preset curve codec and the scale VCA.
+vxn-core-matrix = { workspace = true }
 # ParamDesc / ParamKind / Taper — the shared param schema shape + taper math
 # (VXN1's table forks the same descriptor type, ADR 0001 §5).
 vxn-core-app = { workspace = true }

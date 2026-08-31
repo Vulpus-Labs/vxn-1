@@ -725,7 +725,7 @@ pub struct MatrixRowRaw {
     /// [`pack_matrix_meta`]).
     pub scale_src: u8,
     /// Response bend applied to the normalised scale value
-    /// ([`vxn2_engine::matrix::ShapeKind`] as `u8`). Rides the curve byte's
+    /// ([`vxn2_engine::matrix::Shape`] as `u8`). Rides the curve byte's
     /// high nibble, which was always zero before the field existed — so a
     /// pre-E0xx blob decodes as `Lin`, an exact no-op.
     pub scale_shape: u8,

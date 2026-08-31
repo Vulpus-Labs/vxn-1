@@ -27,9 +27,25 @@
 //! Everything here is fixed-size and branch-light (curve dispatch is per slot,
 //! not per source) — allocation-free and NEON-friendly.
 
+use vxn_core_matrix::curve::{
+    bend_exp, bend_lin, bend_log, clamp_unit, fold_bipolar, fold_unipolar, pol_abs, pol_bipolar,
+    pol_direct, shape_exp, shape_lin, shape_log,
+};
+
 use crate::matrix::{
     DestId, MatrixSlot, MatrixTable, N_DESTS, N_SLOTS, N_SOURCES, Polarity, Shape, SourceId,
 };
+
+/// The shaping arithmetic itself, re-exported from
+/// [`vxn_core_matrix::curve`] so that `crate::eval::shape` keeps meaning what it
+/// always did (0330).
+///
+/// [`shape`] stays `pub` here for the same reason it was `pub(crate)` before:
+/// the bank's Amp factoring ([`crate::bank`]) has to fold non-linear Amp routes
+/// at their block-start value and must shape them exactly as this evaluator
+/// does, so it composes the same two functions rather than spelling the
+/// arithmetic a second time.
+pub use vxn_core_matrix::curve::{bend, bend_unit, map_polarity, scale_norm, shape};
 
 /// One voice's normalised source lookup, indexed by [`SourceId::idx`].
 pub type SourceVals = [f32; N_SOURCES];
@@ -198,69 +214,6 @@ pub fn lfo_rate_scale(total: f32) -> f32 {
     total.clamp(-LFO_RATE_OCTAVES, LFO_RATE_OCTAVES).exp2()
 }
 
-/// Map a source value's range, then bend its response — the two axes VXN2's
-/// model splits a "curve" into. Polarity runs **first**, so `Bipolar` + `Exp`
-/// squares the AC-coupled value rather than the raw one.
-///
-/// `pub(crate)` because the bank's Amp factoring ([`crate::bank`]) has to fold
-/// non-linear Amp routes at their block-start value and must shape them exactly
-/// as the evaluator does — it used to carry its own copy of this match.
-#[inline]
-pub(crate) fn shape(polarity: Polarity, shape: Shape, v: f32) -> f32 {
-    bend(shape, map_polarity(polarity, v))
-}
-
-/// The polarity half. Split out so both the scalar and the bank evaluator
-/// compose the same two functions rather than each spelling the arithmetic.
-#[inline]
-pub(crate) fn map_polarity(polarity: Polarity, v: f32) -> f32 {
-    match polarity {
-        Polarity::Direct => v,
-        Polarity::Bipolar => 2.0 * v - 1.0,
-        Polarity::Abs => v.abs(),
-    }
-}
-
-/// The shape half. Sign-preserving, so neither bend moves a value across zero.
-#[inline]
-pub(crate) fn bend(shape: Shape, v: f32) -> f32 {
-    match shape {
-        Shape::Lin => v,
-        Shape::Exp => v.abs() * v, // signed square
-        Shape::Log => {
-            let m = v.abs().sqrt();
-            if v < 0.0 { -m } else { m }
-        }
-    }
-}
-
-/// Normalise a scale source's value to the `[0, 1]` VCA range (ADR 0009), then
-/// bend it by `shape`: unipolar sources pass through; bipolar map `(x + 1)·0.5`.
-/// Always clamped **before** the bend, so the bend only ever sees `[0, 1]` and
-/// therefore can't leave it — on a non-negative input `Exp` is `v²` and `Log` is
-/// `√v`, both fixing 0 and 1 and monotonic between. `0 → route contributes
-/// nothing`, `1 → route at full configured depth`, whichever bend is set.
-///
-/// `Shape::Lin` is exact identity, so an unbent VCA is bit-identical to one from
-/// before the bend existed.
-#[inline]
-pub fn scale_norm(src: SourceId, v: f32, shape: Shape) -> f32 {
-    let n = if src.is_bipolar() { (v + 1.0) * 0.5 } else { v };
-    bend_unit(shape, n.clamp(0.0, 1.0))
-}
-
-/// The scale bend on an already-clamped `[0, 1]` value. Separate from [`bend`]
-/// because the input's sign is known, so none of the sign handling is needed —
-/// and because the bank evaluator hoists this choice out of its lane loop.
-#[inline]
-pub(crate) fn bend_unit(shape: Shape, v: f32) -> f32 {
-    match shape {
-        Shape::Lin => v,
-        Shape::Exp => v * v,
-        Shape::Log => v.sqrt(),
-    }
-}
-
 /// The **topology half** of a slot's gain: `cook_depth(depth) · DEST_GAIN[dest]`.
 /// Depends only on the patch, so a consumer that resolves routes once per block
 /// can hoist it out of its per-voice loop ([`crate::bank`]'s Amp factoring does).
@@ -274,7 +227,7 @@ pub(crate) fn slot_topology_gain(slot: &MatrixSlot) -> f32 {
 #[inline]
 pub(crate) fn slot_scale(slot: &MatrixSlot, sources: &SourceVals) -> f32 {
     match slot.scale_src.idx() {
-        Some(sc) => scale_norm(slot.scale_src, sources[sc], slot.scale_shape),
+        Some(sc) => scale_norm(slot.scale_src.is_bipolar(), sources[sc], slot.scale_shape),
         None => 1.0,
     }
 }
@@ -444,22 +397,23 @@ pub fn eval_dests_bank<const L: usize>(
                 // Fold and bend are both per-route constants, so both are
                 // dispatched here — six straight-line arms rather than a
                 // `scale_norm` call carrying two branches into the lane loop.
+                // The arms are the shared crate's free functions, which is what
+                // keeps this loop's arithmetic and `scale_norm`'s the same
+                // arithmetic rather than two spellings that agree today.
                 macro_rules! vca {
-                    ($fold:expr, $bend:expr) => {
+                    ($fold:path, $bend:path) => {
                         for l in 0..L {
-                            scale[l] = $bend($fold(s[l]).clamp(0.0, 1.0));
+                            scale[l] = $bend(clamp_unit($fold(s[l])));
                         }
                     };
                 }
-                let bi = |v: f32| (v + 1.0) * 0.5;
-                let id = |v: f32| v;
                 match (r.scale_bipolar, r.scale_shape) {
-                    (false, Shape::Lin) => vca!(id, id),
-                    (false, Shape::Exp) => vca!(id, |v: f32| v * v),
-                    (false, Shape::Log) => vca!(id, |v: f32| v.sqrt()),
-                    (true, Shape::Lin) => vca!(bi, id),
-                    (true, Shape::Exp) => vca!(bi, |v: f32| v * v),
-                    (true, Shape::Log) => vca!(bi, |v: f32| v.sqrt()),
+                    (false, Shape::Lin) => vca!(fold_unipolar, bend_lin),
+                    (false, Shape::Exp) => vca!(fold_unipolar, bend_exp),
+                    (false, Shape::Log) => vca!(fold_unipolar, bend_log),
+                    (true, Shape::Lin) => vca!(fold_bipolar, bend_lin),
+                    (true, Shape::Exp) => vca!(fold_bipolar, bend_exp),
+                    (true, Shape::Log) => vca!(fold_bipolar, bend_log),
                 }
             }
         }
@@ -478,31 +432,23 @@ pub fn eval_dests_bank<const L: usize>(
             };
         }
         // Polarity x shape, dispatched once per route. Nine arms, each a
-        // straight-line multiply-accumulate over L contiguous floats.
+        // straight-line multiply-accumulate over L contiguous floats, built from
+        // the same shared maps and bends [`shape`] dispatches on.
         macro_rules! arm {
-            ($pol:expr, $bend:expr) => {
+            ($pol:path, $bend:path) => {
                 accumulate!(|v: f32| $bend($pol(v)))
             };
         }
-        let p_dir = |v: f32| v;
-        let p_bip = |v: f32| 2.0 * v - 1.0;
-        let p_abs = |v: f32| v.abs();
-        let b_lin = |v: f32| v;
-        let b_exp = |v: f32| v.abs() * v;
-        let b_log = |v: f32| {
-            let m = v.abs().sqrt();
-            if v < 0.0 { -m } else { m }
-        };
         match (r.polarity, r.shape) {
-            (Polarity::Direct, Shape::Lin) => arm!(p_dir, b_lin),
-            (Polarity::Direct, Shape::Exp) => arm!(p_dir, b_exp),
-            (Polarity::Direct, Shape::Log) => arm!(p_dir, b_log),
-            (Polarity::Bipolar, Shape::Lin) => arm!(p_bip, b_lin),
-            (Polarity::Bipolar, Shape::Exp) => arm!(p_bip, b_exp),
-            (Polarity::Bipolar, Shape::Log) => arm!(p_bip, b_log),
-            (Polarity::Abs, Shape::Lin) => arm!(p_abs, b_lin),
-            (Polarity::Abs, Shape::Exp) => arm!(p_abs, b_exp),
-            (Polarity::Abs, Shape::Log) => arm!(p_abs, b_log),
+            (Polarity::Direct, Shape::Lin) => arm!(pol_direct, shape_lin),
+            (Polarity::Direct, Shape::Exp) => arm!(pol_direct, shape_exp),
+            (Polarity::Direct, Shape::Log) => arm!(pol_direct, shape_log),
+            (Polarity::Bipolar, Shape::Lin) => arm!(pol_bipolar, shape_lin),
+            (Polarity::Bipolar, Shape::Exp) => arm!(pol_bipolar, shape_exp),
+            (Polarity::Bipolar, Shape::Log) => arm!(pol_bipolar, shape_log),
+            (Polarity::Abs, Shape::Lin) => arm!(pol_abs, shape_lin),
+            (Polarity::Abs, Shape::Exp) => arm!(pol_abs, shape_exp),
+            (Polarity::Abs, Shape::Log) => arm!(pol_abs, shape_log),
         }
     }
 }
@@ -738,13 +684,13 @@ mod tests {
     #[test]
     fn scale_norm_unipolar_passthrough_bipolar_folds() {
         // Unipolar (mod wheel): 0 → 0, 1 → 1.
-        assert_eq!(scale_norm(SourceId::ModWheel, 0.0, Shape::Lin), 0.0);
-        assert_eq!(scale_norm(SourceId::ModWheel, 1.0, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 0.0, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 1.0, Shape::Lin), 1.0);
         // Bipolar (LFO): (x+1)/2, clamped.
-        assert_eq!(scale_norm(SourceId::Lfo1, 0.0, Shape::Lin), 0.5);
-        assert_eq!(scale_norm(SourceId::Lfo1, 1.0, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::Lfo1, -1.0, Shape::Lin), 0.0);
-        assert_eq!(scale_norm(SourceId::ModWheel, 2.0, Shape::Lin), 1.0); // clamp
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 0.0, Shape::Lin), 0.5);
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 1.0, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), -1.0, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 2.0, Shape::Lin), 1.0); // clamp
     }
 
     #[test]
@@ -882,12 +828,12 @@ mod tests {
         for bend in Shape::ALL {
             for v in [-4.0_f32, -1.0, -0.3, 0.0, 0.25, 0.5, 1.0, 7.0] {
                 for src in [SourceId::Velocity, SourceId::Lfo1] {
-                    let n = scale_norm(src, v, bend);
+                    let n = scale_norm(src.is_bipolar(), v, bend);
                     assert!((0.0..=1.0).contains(&n), "{src:?}/{bend:?}/{v} → {n}");
                 }
             }
-            assert_eq!(scale_norm(SourceId::Velocity, 0.0, bend), 0.0);
-            assert_eq!(scale_norm(SourceId::Velocity, 1.0, bend), 1.0);
+            assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 0.0, bend), 0.0);
+            assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 1.0, bend), 1.0);
         }
     }
 

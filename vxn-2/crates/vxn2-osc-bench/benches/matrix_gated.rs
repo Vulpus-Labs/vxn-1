@@ -14,7 +14,7 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_engine::engine::Engine;
-use vxn2_engine::matrix::{DestId, MatrixSlot, PolarityKind, ShapeKind, SourceId};
+use vxn2_engine::matrix::{DestId, MatrixSlot, Polarity, Shape, SourceId};
 use vxn2_engine::params::id_of;
 use vxn2_engine::shared::SharedParams;
 
@@ -60,7 +60,7 @@ fn bench_gated(c: &mut Criterion) {
     let mut g = c.benchmark_group("matrix_gated");
     g.throughput(Throughput::Elements(BLK as u64));
 
-    let lin = ShapeKind::Lin;
+    let lin = Shape::Lin;
     let cases: [(&str, Option<MatrixSlot>); 3] = [
         ("baseline", None),
         (
@@ -69,10 +69,10 @@ fn bench_gated(c: &mut Criterion) {
                 source: SourceId::Velocity,
                 dest: DestId::Lfo2Rate,
                 depth: 1.0,
-                polarity: PolarityKind::Direct,
+                polarity: Polarity::Direct,
                 shape: lin,
                 scale_src: SourceId::None,
-                scale_shape: ShapeKind::Lin,
+                scale_shape: Shape::Lin,
             }),
         ),
         (
@@ -81,10 +81,10 @@ fn bench_gated(c: &mut Criterion) {
                 source: SourceId::Key,
                 dest: DestId::StackDetune,
                 depth: 1.0,
-                polarity: PolarityKind::Direct,
+                polarity: Polarity::Direct,
                 shape: lin,
                 scale_src: SourceId::None,
-                scale_shape: ShapeKind::Lin,
+                scale_shape: Shape::Lin,
             }),
         ),
     ];
