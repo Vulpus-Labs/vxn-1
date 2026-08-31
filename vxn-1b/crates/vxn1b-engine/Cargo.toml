@@ -40,6 +40,12 @@ include_dir = "0.7"
 # (The VXN1 render-parity oracle used to be declared here; vxn-1 was archived
 # out of the workspace on 2026-08-27 and only this comment survived it.)
 tempfile = "3"
+# `vxn_core_matrix::golden` — the shared golden-vector table (0331). The
+# `testing` feature exposes it (and the synthetic roster it is written against)
+# outside that crate's own unit tests; declaring it here rather than in
+# `[dependencies]` keeps it out of every shipped binary, and costs no extra
+# compile because the engine already depends on the crate.
+vxn-core-matrix = { workspace = true, features = ["testing"] }
 # `test_util::assert_null_test` — the shared render comparator E049 is judged
 # against (0329). A dev-dep only: nothing in the engine's own build depends on
 # it, and `vxn-dsp` already pulls the crate in, so this costs no extra compile.

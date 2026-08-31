@@ -1004,6 +1004,26 @@ impl PitchSmoother {
     }
 }
 
+/// # What is tested here, and what is not
+///
+/// The **mechanism** — that a route multiplies, sums, shapes, gates and
+/// short-circuits correctly, and that an out-of-range curve code degrades
+/// rather than aliasing — is tested once for both synths in
+/// `vxn_core_matrix::golden`, against a synthetic roster whose gains are all
+/// 1.0 and whose taper is the identity
+/// ([ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §5, ticket 0331).
+/// Asserting it here meant baking roster constants into an expectation —
+/// `out[GlobalPitch] == 12.0` claimed the evaluator multiplies *and* that
+/// `DEST_GAIN[GlobalPitch]` is 24 — so changing a gain failed a test of the
+/// evaluator.
+///
+/// What stays below is **roster tests**: facts about this synth's own tables —
+/// which gain, which taper, which tier, which coherence verdict, which name for
+/// which variant — reading the evaluator only where that is the most direct way
+/// to observe one. Plus the one thing that is neither: the bit-exactness
+/// contract between `eval_dests`' hoisted scale arms and `scale_norm`, which is
+/// about *this* loop's duplicate spelling of shared arithmetic and so cannot
+/// move to the shared crate.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,123 +1073,6 @@ mod tests {
         let mut out = [[0.0; STACK_LANES]; N_SOURCES];
         eval_sources(&patch, &stack, &lanes, &mut out);
         out
-    }
-
-    /// Build a source table with a chosen patch-global LFO1 + mod-wheel value;
-    /// everything else zeroed. Used by the scale tests.
-    fn sources_with(lfo1: f32, mod_wheel: f32) -> LaneSourceVals {
-        let patch = PatchSources {
-            lfo1,
-            mod_wheel,
-            aftertouch: 0.0,
-        };
-        let mut out = [[0.0; STACK_LANES]; N_SOURCES];
-        eval_sources(
-            &patch,
-            &StackScalarSources::default(),
-            &LaneSources::default(),
-            &mut out,
-        );
-        out
-    }
-
-    #[test]
-    fn scale_norm_maps_polarity() {
-        // Unipolar: passthrough (already [0, 1]).
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 0.3, Shape::Lin), 0.3);
-        assert_eq!(scale_norm(SourceId::Velocity.is_bipolar(), 1.0, Shape::Lin), 1.0);
-        // Bipolar: (x + 1) / 2.
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 0.0, Shape::Lin), 0.5);
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), 1.0, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::Lfo1.is_bipolar(), -1.0, Shape::Lin), 0.0);
-        // Clamp both ends.
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), 1.7, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(SourceId::ModWheel.is_bipolar(), -0.4, Shape::Lin), 0.0);
-    }
-
-    /// A mod-wheel scale source gates an LFO→pitch route: 0 at wheel 0, full
-    /// configured depth at wheel 1 (the mod-wheel-vibrato case).
-    #[test]
-    fn mod_wheel_scale_gates_route_to_zero_and_full() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = MatrixSlot {
-            source: SourceId::Lfo1,
-            dest: DestId::GlobalPitch,
-            depth: 1.0,
-            polarity: Polarity::Direct,
-        shape: Shape::Lin,
-            scale_src: SourceId::ModWheel,
-            scale_shape: Shape::Lin,
-        };
-        let di = DestId::GlobalPitch.idx().unwrap();
-
-        // Wheel at 0 → route contributes nothing regardless of LFO.
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources_with(0.8, 0.0), &mut out);
-        for k in 0..STACK_LANES {
-            assert_eq!(out[di][k], 0.0, "lane {k} must be silent at wheel 0");
-        }
-
-        // Wheel at 1 → identical to the same route with no scale source.
-        eval_dests(&table, &sources_with(0.8, 1.0), &mut out);
-        let mut unscaled_table = table;
-        unscaled_table.slots[0].scale_src = SourceId::None;
-        let mut unscaled = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&unscaled_table, &sources_with(0.8, 1.0), &mut unscaled);
-        for k in 0..STACK_LANES {
-            assert_eq!(out[di][k], unscaled[di][k], "lane {k} full at wheel 1");
-        }
-    }
-
-    /// A bipolar scale source at its centre (0.0) halves the route, following
-    /// `(x + 1) × 0.5 = 0.5`.
-    #[test]
-    fn bipolar_scale_source_halves_at_centre() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = MatrixSlot {
-            source: SourceId::ModWheel,
-            dest: DestId::GlobalPitch,
-            depth: 1.0,
-            polarity: Polarity::Direct,
-        shape: Shape::Lin,
-            scale_src: SourceId::Lfo1, // bipolar; lfo1 = 0.0 → scale 0.5
-            scale_shape: Shape::Lin,
-        };
-        let di = DestId::GlobalPitch.idx().unwrap();
-        let mut scaled = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources_with(0.0, 0.6), &mut scaled);
-
-        table.slots[0].scale_src = SourceId::None;
-        let mut full = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources_with(0.0, 0.6), &mut full);
-        for k in 0..STACK_LANES {
-            assert!(
-                (scaled[di][k] - 0.5 * full[di][k]).abs() < 1e-6,
-                "lane {k}: {} != half of {}",
-                scaled[di][k],
-                full[di][k]
-            );
-        }
-    }
-
-    /// `scale_src = None` is exact identity: the output equals the unscaled
-    /// route bit-for-bit.
-    #[test]
-    fn scale_src_none_is_bit_identical() {
-        let src = default_lane_sources();
-        let slot = full_slot(SourceId::Lfo1, DestId::Op2Level, 0.7, Shape::Exp);
-        let mut a = [[0.0; STACK_LANES]; N_DESTS];
-        let mut table = MatrixTable::default();
-        table.slots[0] = slot;
-        eval_dests(&table, &src, &mut a);
-        let di = DestId::Op2Level.idx().unwrap();
-        // Recompute the expected accumulation by hand.
-        for k in 0..STACK_LANES {
-            let v = src[SourceId::Lfo1.idx().unwrap()][k];
-            let depth = 0.7 * DEST_GAIN[DestId::Op2Level as usize];
-            let expect = v.abs() * v * depth;
-            assert_eq!(a[di][k], expect, "lane {k}");
-        }
     }
 
     #[test]
@@ -1264,6 +1167,41 @@ mod tests {
         assert_eq!(DestId::Feedback.cook_depth(0.5), 0.5);
     }
 
+    /// Each destination's native unit, stated as a number rather than inferred
+    /// from an evaluator result.
+    ///
+    /// This is what `pitch_dest_gain_scales_depth` and
+    /// `feedback_dest_gain_scales_depth` were really pinning — that a pitch
+    /// dest spans ±24 st and feedback its 0..7 range — with a whole matrix eval
+    /// wrapped round the claim. The eval belonged to the mechanism and moved to
+    /// `vxn_core_matrix::golden`; the constants are roster facts and stay here.
+    ///
+    /// Spot-checks one dest per *kind* of unit rather than restating the table,
+    /// which would just be `DEST_GAIN` written twice.
+    #[test]
+    fn dest_gains_are_the_native_unit_scalings() {
+        let gain = |d: DestId| DEST_GAIN[d as usize];
+        // Semitone dests: ±24 st at full depth, per-op and global alike.
+        assert_eq!(gain(DestId::GlobalPitch), 24.0);
+        assert_eq!(gain(DestId::Op1Pitch), 24.0);
+        assert_eq!(gain(DestId::Op6StackPitch), 24.0);
+        // Feedback covers its own 0..7 param range.
+        assert_eq!(gain(DestId::Feedback), 7.0);
+        // Log-domain dests are in octaves, ±4 of them.
+        assert_eq!(gain(DestId::Cutoff), 4.0);
+        assert_eq!(gain(DestId::Lfo1Rate), 4.0);
+        assert_eq!(gain(DestId::FilterDrive), 4.0);
+        assert_eq!(gain(DestId::Op1EgRate), 4.0);
+        // Everything else is already normalised: depth *is* the native unit.
+        assert_eq!(gain(DestId::Op1Level), 1.0);
+        assert_eq!(gain(DestId::Op1Pan), 1.0);
+        assert_eq!(gain(DestId::StackDetune), 1.0);
+        assert_eq!(gain(DestId::Lfo2Phase), 1.0);
+        // The sentinel row exists so `DEST_GAIN[dest as usize]` needs no
+        // off-by-one, and must never scale anything.
+        assert_eq!(gain(DestId::None), 1.0);
+    }
+
     #[test]
     fn eval_sources_broadcasts_scalars_and_keeps_lane_values() {
         let sources = default_lane_sources();
@@ -1282,234 +1220,115 @@ mod tests {
         assert_eq!(lfo2_vals.len(), STACK_LANES);
     }
 
-    #[test]
-    fn empty_table_writes_zero_accumulator() {
-        let table = MatrixTable::default();
-        let sources = default_lane_sources();
-        let mut out = [[42.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        for k in 0..STACK_LANES {
-            for d in 0..N_DESTS {
-                assert_eq!(out[d][k], 0.0, "lane {k} dest {d}");
-            }
-        }
-    }
+    // ── the shared golden-vector table, run through VXN2's own evaluator ────
 
+    /// VXN2 endpoints standing in for the synthetic roster's four sources, in
+    /// its storage-index order: two bipolar, then two unipolar.
+    const GOLDEN_SOURCES: [SourceId; 4] = [
+        SourceId::Lfo1,
+        SourceId::Lfo2,
+        SourceId::ModWheel,
+        SourceId::Velocity,
+    ];
+
+    /// …and for its four destinations. Every one of these has `DEST_GAIN` 1.0
+    /// and the identity taper, which is what lets a case's expectation —
+    /// written against a roster with no gain and no taper — carry over
+    /// unchanged. The assertion below holds them to it, so swapping in a scaled
+    /// dest fails here rather than producing a plausible-looking wrong number.
+    const GOLDEN_DESTS: [DestId; 4] = [
+        DestId::Op1Pan,
+        DestId::Op2Pan,
+        DestId::Op3Pan,
+        DestId::Op4Pan,
+    ];
+
+    /// The mechanism table from `vxn_core_matrix::golden`, evaluated by
+    /// **VXN2's** [`eval_dests`] rather than by the harness's reference pair.
+    ///
+    /// This is what makes the deleted mechanism tests a move rather than a
+    /// loss. The shared table's own paths prove the shared arithmetic
+    /// self-consistent; nothing there touches this function, so without this
+    /// bridge a transposed arm in the nine-way curve dispatch or the six-way
+    /// scale dispatch — `Abs` wired to `pol_direct`, say — would be invisible.
+    /// VXN2 has a single evaluator and no scalar twin to compare it against,
+    /// which is exactly why it needs the shared table pointed at it.
+    ///
+    /// Two deliberate mismatches in the translation, neither of which touches a
+    /// number: VXN2's slot has no on/off switch, so a switched-off case route
+    /// maps to an unwired one (the effect the switch has here is to make the
+    /// slot inert, and that is what is being checked); and VXN2 cooks depth at
+    /// table-rebuild time rather than in the evaluator, which is invisible
+    /// because every destination above takes the identity taper.
     #[test]
-    fn single_lin_slot_writes_only_target_dest() {
-        // Use a gain=1 dest (Op1Pan) so the numerical check covers the
-        // accumulator + curve math without the per-dest gain table mixing in.
-        let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let dest_idx = DestId::Op1Pan.idx().unwrap();
-        for k in 0..STACK_LANES {
-            // Lfo1 = 0.5, depth = 0.5, lin, gain = 1 → 0.25 across every lane.
-            assert!(
-                (out[dest_idx][k] - 0.25).abs() < 1e-6,
-                "lane {k} got {}",
-                out[dest_idx][k]
+    fn the_shared_golden_vectors_hold_for_vxn2() {
+        use vxn_core_matrix::golden::{CASES, NONE, expected_totals};
+        use vxn_core_matrix::roster::MatrixRoster;
+        use vxn_core_matrix::test_roster::TestRoster;
+
+        for (i, d) in GOLDEN_DESTS.iter().enumerate() {
+            assert_eq!(DEST_GAIN[*d as usize], 1.0, "{d:?} is not a unit-gain dest");
+            assert_eq!(d.cook_depth(0.5), 0.5, "{d:?} does not take the identity taper");
+            assert_eq!(
+                GOLDEN_SOURCES[i].is_bipolar(),
+                TestRoster::source_is_bipolar(i as u8),
+                "source {i} stands in for the wrong polarity"
             );
-            for d in 0..N_DESTS {
-                if d == dest_idx {
-                    continue;
-                }
-                assert_eq!(out[d][k], 0.0, "lane {k} non-target dest {d}");
-            }
         }
-    }
 
-    #[test]
-    fn two_slots_into_same_dest_accumulate() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.5, Shape::Lin);
-        table.slots[1] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let want = 0.5 * 0.5 + 1.0 * 0.3;
-        for k in 0..STACK_LANES {
-            assert!((out[DestId::Op1Pan.idx().unwrap()][k] - want).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn pitch_dest_gain_scales_depth() {
-        // Pitch dests sweep ±2 octaves at full depth: depth × source × 24.
-        let mut table = MatrixTable::default();
-        table.slots[0] =
-            full_slot(SourceId::Lfo1, DestId::GlobalPitch, 1.0, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let di = DestId::GlobalPitch.idx().unwrap();
-        // Lfo1 = 0.5, depth = 1, gain = 24 → 12 semitones.
-        for k in 0..STACK_LANES {
-            assert!((out[di][k] - 12.0).abs() < 1e-4, "lane {k} got {}", out[di][k]);
-        }
-    }
-
-    #[test]
-    fn feedback_dest_gain_scales_depth() {
-        let mut table = MatrixTable::default();
-        table.slots[0] =
-            full_slot(SourceId::ModWheel, DestId::Feedback, 1.0, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let di = DestId::Feedback.idx().unwrap();
-        // ModWheel = 0.3, depth = 1, gain = 7 → 2.1.
-        for k in 0..STACK_LANES {
-            assert!((out[di][k] - 2.1).abs() < 1e-4, "lane {k} got {}", out[di][k]);
-        }
-    }
-
-    #[test]
-    fn per_lane_source_writes_distinct_lane_values() {
-        let mut table = MatrixTable::default();
-        table.slots[0] =
-            full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let pan_idx = DestId::Op1Pan.idx().unwrap();
-        let mut distinct = std::collections::HashSet::new();
-        for k in 0..STACK_LANES {
-            distinct.insert(out[pan_idx][k].to_bits());
-        }
-        assert_eq!(distinct.len(), STACK_LANES);
-    }
-
-    #[test]
-    fn empty_slot_skipped_when_source_none() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = MatrixSlot {
-            source: SourceId::None,
-            dest: DestId::Op1Pan,
-            depth: 99.0,
-            polarity: Polarity::Direct,
-        shape: Shape::Lin,
-            scale_src: SourceId::None,
-            scale_shape: Shape::Lin,
-        };
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        for k in 0..STACK_LANES {
-            assert_eq!(out[DestId::Op1Pan.idx().unwrap()][k], 0.0);
-        }
-    }
-
-    #[test]
-    fn empty_slot_skipped_when_dest_none() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = MatrixSlot {
-            source: SourceId::Lfo1,
-            dest: DestId::None,
-            depth: 99.0,
-            polarity: Polarity::Direct,
-        shape: Shape::Lin,
-            scale_src: SourceId::None,
-            scale_shape: Shape::Lin,
-        };
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        for k in 0..STACK_LANES {
-            for d in 0..N_DESTS {
-                assert_eq!(out[d][k], 0.0);
-            }
-        }
-    }
-
-    #[test]
-    fn zero_depth_short_circuits() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = full_slot(SourceId::Lfo1, DestId::Op1Pan, 0.0, Shape::Lin);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        for k in 0..STACK_LANES {
-            assert_eq!(out[DestId::Op1Pan.idx().unwrap()][k], 0.0);
-        }
-    }
-
-    #[test]
-    fn curve_exp_more_extreme_than_lin() {
-        // Source = 0.5 → lin = 0.5, exp = 0.25 (less extreme magnitude-wise
-        // for |v| < 1, but characterised by the signed-square shape, not by
-        // gain). Just verify it's different from lin.
-        let mut lin_t = MatrixTable::default();
-        lin_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Lin);
-        let mut exp_t = MatrixTable::default();
-        exp_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Exp);
-        let sources = default_lane_sources();
-        let mut lin_out = [[0.0; STACK_LANES]; N_DESTS];
-        let mut exp_out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&lin_t, &sources, &mut lin_out);
-        eval_dests(&exp_t, &sources, &mut exp_out);
-        let pi = DestId::Op1Pan.idx().unwrap();
-        assert!(
-            (lin_out[pi][0] - 0.3).abs() < 1e-6,
-            "lin {} != 0.3",
-            lin_out[pi][0]
-        );
-        assert!(
-            (exp_out[pi][0] - 0.09).abs() < 1e-6,
-            "exp {} != 0.09",
-            exp_out[pi][0]
-        );
-    }
-
-    #[test]
-    fn curve_log_compresses_toward_zero() {
-        let mut log_t = MatrixTable::default();
-        log_t.slots[0] = full_slot(SourceId::ModWheel, DestId::Op1Pan, 1.0, Shape::Log);
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&log_t, &sources, &mut out);
-        // ModWheel = 0.3, sqrt(0.3) ≈ 0.5477.
-        let want = (0.3_f32).sqrt();
-        assert!((out[DestId::Op1Pan.idx().unwrap()][0] - want).abs() < 1e-6);
-    }
-
-    #[test]
-    fn curve_bipolar_shifts_unipolar_source() {
-        let mut bp_t = MatrixTable::default();
-        bp_t.slots[0] = full_slot_pol(
-            SourceId::ModWheel,
-            DestId::Op1Pan,
-            1.0,
-            Polarity::Bipolar,
-            Shape::Lin,
-        );
-        let sources = default_lane_sources();
-        let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&bp_t, &sources, &mut out);
-        // ModWheel = 0.3 → 2*0.3 - 1 = -0.4.
-        assert!((out[DestId::Op1Pan.idx().unwrap()][0] - (-0.4)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn curve_preserves_sign_for_lin_exp_log() {
-        // Negative source preserves sign through Lin/Exp/Log.
-        let patch = PatchSources::default();
-        let stack = StackScalarSources::default();
-        let mut lanes = LaneSources::default();
-        for k in 0..STACK_LANES {
-            lanes.voice_spread[k] = -0.5;
-        }
-        let mut sources = [[0.0; STACK_LANES]; N_SOURCES];
-        eval_sources(&patch, &stack, &lanes, &mut sources);
-        for curve in [Shape::Lin, Shape::Exp, Shape::Log] {
+        for case in CASES {
             let mut table = MatrixTable::default();
-            table.slots[0] = full_slot(SourceId::VoiceSpread, DestId::Op1Pan, 1.0, curve);
-            let mut out = [[0.0; STACK_LANES]; N_DESTS];
+            for (i, r) in case.routes.iter().enumerate() {
+                let (polarity, shape) = curve_split(r.curve);
+                let source = if r.source == NONE || !r.enabled {
+                    SourceId::None
+                } else {
+                    GOLDEN_SOURCES[r.source as usize]
+                };
+                table.slots[i] = MatrixSlot {
+                    source,
+                    dest: if r.dest == NONE {
+                        DestId::None
+                    } else {
+                        GOLDEN_DESTS[r.dest as usize]
+                    },
+                    depth: r.depth,
+                    polarity,
+                    shape,
+                    scale_src: if r.scale_src == NONE {
+                        SourceId::None
+                    } else {
+                        GOLDEN_SOURCES[r.scale_src as usize]
+                    },
+                    scale_shape: Shape::from_u8(r.scale_bend),
+                };
+            }
+            let mut sources = [[0.0f32; STACK_LANES]; N_SOURCES];
+            for &(si, v) in case.sources {
+                let row = GOLDEN_SOURCES[si as usize].idx().unwrap();
+                sources[row] = [v; STACK_LANES];
+            }
+
+            let want: [f32; 4] = expected_totals::<TestRoster, 4>(case);
+            let mut out = [[0.0f32; STACK_LANES]; N_DESTS];
             eval_dests(&table, &sources, &mut out);
-            let v = out[DestId::Op1Pan.idx().unwrap()][0];
-            assert!(v < 0.0, "{curve:?} dropped sign: {v}");
+
+            for d in 0..N_DESTS {
+                // A dest the case does not name must come out exactly zero, and
+                // so must every VXN2 dest the mapping never touches.
+                let expect = GOLDEN_DESTS
+                    .iter()
+                    .position(|g| g.idx() == Some(d))
+                    .map_or(0.0, |g| want[g]);
+                for k in 0..STACK_LANES {
+                    assert_eq!(
+                        out[d][k].to_bits(),
+                        expect.to_bits(),
+                        "'{}': dest {d} lane {k}",
+                        case.name
+                    );
+                }
+            }
         }
     }
 
@@ -1858,134 +1677,6 @@ mod tests {
         assert_eq!(dst(DestId::ModEnvRate), ("mod-env-rate", "Mod Env Rate"));
     }
 
-    /// The flat code is what state blobs and preset files carry, so the four
-    /// spellings that predate the polarity/shape split must still land on
-    /// their original meanings — codes 0..=3 are load-bearing.
-    #[test]
-    fn curve_code_preserves_pre_split_encoding() {
-        let legacy = [
-            (0u8, Polarity::Direct, Shape::Lin, "lin"),
-            (1, Polarity::Direct, Shape::Exp, "exp"),
-            (2, Polarity::Direct, Shape::Log, "log"),
-            (3, Polarity::Bipolar, Shape::Lin, "bipolar"),
-        ];
-        for (code, pol, shape, name) in legacy {
-            assert_eq!(curve_code(pol, shape), code, "{name} code moved");
-            assert_eq!(curve_split(code), (pol, shape), "{name} decode moved");
-            assert_eq!(CURVE_NAMES[code as usize], name);
-        }
-    }
-
-    /// Every `(polarity, shape)` pair round-trips through the flat code, and
-    /// anything past the roster degrades to `(Direct, Lin)` rather than
-    /// aliasing onto a real curve.
-    #[test]
-    fn curve_code_round_trips_every_pair() {
-        let mut seen = std::collections::HashSet::new();
-        for p in [
-            Polarity::Direct,
-            Polarity::Bipolar,
-            Polarity::Abs,
-        ] {
-            for sh in [Shape::Lin, Shape::Exp, Shape::Log] {
-                let code = curve_code(p, sh);
-                assert!((code as usize) < N_CURVES, "{p:?}/{sh:?} code out of range");
-                assert!(seen.insert(code), "{p:?}/{sh:?} collided on code {code}");
-                assert_eq!(curve_split(code), (p, sh));
-            }
-        }
-        assert_eq!(seen.len(), N_CURVES);
-        assert_eq!(
-            curve_split(N_CURVES as u8),
-            (Polarity::Direct, Shape::Lin)
-        );
-        assert_eq!(
-            curve_split(255),
-            (Polarity::Direct, Shape::Lin)
-        );
-    }
-
-    /// `abs` rectifies: both spread extremes push the dest the same way and
-    /// the centre lanes get nothing. This is the motivating route — edge
-    /// lanes panned outward, middle lanes left alone.
-    #[test]
-    fn curve_abs_rectifies_bipolar_source() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = full_slot_pol(
-            SourceId::VoiceSpread,
-            DestId::Op1Pan,
-            1.0,
-            Polarity::Abs,
-            Shape::Lin,
-        );
-        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
-        let si = SourceId::VoiceSpread.idx().unwrap();
-        sources[si][0] = -1.0;
-        sources[si][1] = 0.0;
-        sources[si][2] = 1.0;
-        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let di = DestId::Op1Pan.idx().unwrap();
-        assert!((out[di][0] - out[di][2]).abs() < 1e-6, "extremes must match");
-        assert!(out[di][0] > 0.0, "rectified extreme is positive");
-        assert!(out[di][1].abs() < 1e-6, "centre lane unmodulated");
-    }
-
-    /// The scale VCA bends independently of the primary route. `exp` on a
-    /// mid-range velocity backs the route off harder than linear — the
-    /// motivating case for shaping the gate rather than the source.
-    #[test]
-    fn scale_shape_bends_the_vca_not_the_route() {
-        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
-        let si = SourceId::ModEnv.idx().unwrap();
-        let vi = SourceId::Velocity.idx().unwrap();
-        for k in 0..STACK_LANES {
-            sources[si][k] = 1.0;
-            sources[vi][k] = 0.5;
-        }
-        let di = DestId::Op1Level.idx().unwrap();
-
-        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
-        let mut gated = |scale_shape: Shape| {
-            let mut table = MatrixTable::default();
-            let mut slot = full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, Shape::Lin);
-            slot.scale_src = SourceId::Velocity;
-            slot.scale_shape = scale_shape;
-            table.slots[0] = slot;
-            eval_dests(&table, &sources, &mut out);
-            out[di][0]
-        };
-
-        let lin = gated(Shape::Lin);
-        let exp = gated(Shape::Exp);
-        let log = gated(Shape::Log);
-        // Velocity 0.5 is unipolar, so scale_norm is 0.5 before the bend:
-        // lin → 0.5, exp → 0.25, log → ~0.707.
-        assert!((lin - 0.5).abs() < 1e-6, "lin scale: {lin}");
-        assert!((exp - 0.25).abs() < 1e-6, "exp scale: {exp}");
-        assert!((log - 0.5_f32.sqrt()).abs() < 1e-6, "log scale: {log}");
-        assert!(exp < lin && lin < log, "bends must order exp < lin < log");
-    }
-
-    /// Whatever the bend, the VCA stays inside `[0, 1]` — it can't invert the
-    /// route's sign or push it past its configured depth. Clamping runs before
-    /// the bend, so an out-of-range source can't escape either.
-    #[test]
-    fn scale_shape_stays_within_unit_range() {
-        for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
-            for v in [-4.0_f32, -1.0, -0.3, 0.0, 0.25, 0.5, 1.0, 7.0] {
-                for src in [SourceId::Velocity, SourceId::Lfo1] {
-                    let n = scale_norm(src.is_bipolar(), v, shape);
-                    assert!((0.0..=1.0).contains(&n), "{src:?}/{shape:?}/{v} → {n}");
-                }
-            }
-            // Endpoints are fixed points of every bend, so a fully-open or
-            // fully-shut gate means the same thing on all three.
-            assert!(scale_norm(SourceId::Velocity.is_bipolar(), 0.0, shape).abs() < 1e-6);
-            assert!((scale_norm(SourceId::Velocity.is_bipolar(), 1.0, shape) - 1.0).abs() < 1e-6);
-        }
-    }
-
     /// The hot loop dispatches the polarity fold and the bend into six macro
     /// arms rather than calling [`scale_norm`] per lane. That is a duplicate
     /// definition of the same math, so pin them together: every source
@@ -2030,31 +1721,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// The mirror case needs no second curve: negative depth moves the edge
-    /// lanes away from the dest's own value while the centre lanes keep it.
-    #[test]
-    fn curve_abs_mirrors_under_negative_depth() {
-        let mut table = MatrixTable::default();
-        table.slots[0] = full_slot_pol(
-            SourceId::VoiceSpread,
-            DestId::Op1Pan,
-            -1.0,
-            Polarity::Abs,
-            Shape::Lin,
-        );
-        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
-        let si = SourceId::VoiceSpread.idx().unwrap();
-        sources[si][0] = -1.0;
-        sources[si][1] = 0.0;
-        sources[si][2] = 1.0;
-        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
-        let di = DestId::Op1Pan.idx().unwrap();
-        assert!(out[di][0] < 0.0, "extremes pull the other way");
-        assert!((out[di][0] - out[di][2]).abs() < 1e-6, "extremes still match");
-        assert!(out[di][1].abs() < 1e-6, "centre lane keeps the param value");
     }
 
 }
