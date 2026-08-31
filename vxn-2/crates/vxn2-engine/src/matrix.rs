@@ -151,12 +151,10 @@ pub const N_CLAP_DEPTH_SLOTS: usize = 8;
 /// `crate::matrix::Tier` keeps meaning what it always did.
 ///
 /// This crate had its own three-variant copy, identical in variant names and
-/// discriminants, written before the shared crate existed. A destination's tier
-/// is now a column on its roster row (0332) and the generated `tier()` returns
-/// the shared type, so keeping a local duplicate would mean a conversion at
-/// every use for no gain. What still lives here is [`Coherence`] — the verdict
-/// vocabulary and the two special cases, which move in
-/// [0336](../../../../tickets/open/0336-coherence-in-the-shared-engine.md).
+/// discriminants, written before the shared crate existed. A source's and a
+/// destination's tier are now columns on their roster rows (0332 for dests,
+/// 0336 for sources) and the generated `tier()` returns the shared type, so
+/// keeping a local duplicate would mean a conversion at every use for no gain.
 ///
 /// The coarseness order is the discriminant order and [`coherence`] depends on
 /// it: a routing is **coherent** iff the source tier is coarser-or-equal to the
@@ -164,76 +162,98 @@ pub const N_CLAP_DEPTH_SLOTS: usize = 8;
 /// finer source into a coarser dest is a lossy collapse (which lane wins?).
 pub use vxn_core_matrix::roster::Tier;
 
-/// Why a routing is degenerate/incoherent, or [`Coherence::Ok`] if it sounds.
-/// Single source of truth shared by the wiring (which sources to honour per
-/// dest), the table validator, and the docs. Exported into the matrix
-/// descriptor so the UI reads the verdict rather than re-deriving the rule.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum Coherence {
-    /// Coherent — source tier coarser-or-equal to dest tier (or an empty slot).
-    Ok = 0,
-    /// Finer source into a coarser dest: the per-lane/-stack value collapses
-    /// to a single lane (lane 0) — lossy, ambiguous.
-    TierCollapse = 1,
-    /// An LFO modulating its own rate (`lfo1→lfo1-rate`, `lfo2→lfo2-rate`):
-    /// self-referential.
-    SelfRate = 2,
-    /// `voice-idx` into a lane-0-collapsed dest: `voice_idx[0]` is always 0
-    /// ([`vxn2_dsp::stack`]), so the route is a constant zero — no effect.
-    Degenerate = 3,
-}
+/// The coherence verdict vocabulary, re-exported from
+/// [`vxn_core_matrix::coherence`] so that `crate::matrix::Coherence` keeps
+/// meaning what it always did — including for the descriptor export, whose
+/// `name()` strings are the faceplate's contract.
+///
+/// This crate wrote the enum, and 0336 moved it: the tier rule behind it is
+/// arithmetic on two declared columns and was never FM-specific. What stays
+/// here is [`Vxn2Coherence`] — the two special cases, which name *this* synth's
+/// variants and are deliberately not shared (vxn-1b runs an
+/// `lfo1 → lfo1-rate` route on purpose).
+pub use vxn_core_matrix::coherence::Coherence;
 
-impl Coherence {
-    /// Machine name for the descriptor export / tooltips. Index-stable.
+/// vxn-2's coherence roster: the declared tiers, plus the two special cases the
+/// generic tier rule does not cover.
+///
+/// A marker type rather than a function, because the shared predicate owns the
+/// *shape* — the empty-slot short circuit and the precedence of a special case
+/// over the tier rule — and each synth fills in only the holes. See
+/// [`vxn_core_matrix::coherence`] for why the hook is per-synth at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Vxn2Coherence;
+
+impl vxn_core_matrix::coherence::CoherenceRoster for Vxn2Coherence {
+    type Source = SourceId;
+    type Dest = DestId;
+
     #[inline]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Coherence::Ok => "ok",
-            Coherence::TierCollapse => "tier-collapse",
-            Coherence::SelfRate => "self-rate",
-            Coherence::Degenerate => "degenerate",
+    fn source_tier(src: SourceId) -> Option<Tier> {
+        match src {
+            SourceId::None => None,
+            _ => Some(src.tier()),
         }
     }
+
+    #[inline]
+    fn dest_tier(dst: DestId) -> Option<Tier> {
+        match dst {
+            DestId::None => None,
+            _ => Some(dst.tier()),
+        }
+    }
+
+    /// Checked before the tier rule, so each gets the more specific tooltip
+    /// even where the tiers would also flag a collapse.
+    #[inline]
+    fn special_case(src: SourceId, dst: DestId) -> Option<Coherence> {
+        // Self-rate: an LFO into its own rate. Tier-legal (both the same tier)
+        // but self-referential — this synth's LFOs are ticked from the rate the
+        // route is trying to set, within the same block.
+        if matches!(
+            (src, dst),
+            (SourceId::Lfo1, DestId::Lfo1Rate) | (SourceId::Lfo2, DestId::Lfo2Rate)
+        ) {
+            return Some(Coherence::SelfRate);
+        }
+        // Degenerate: `voice_idx[0]` is always 0 ([`vxn2_dsp::stack`]), so
+        // routing it into a dest that collapses to lane 0 is a constant zero at
+        // any depth — "no effect" is more use to a player than "lossy".
+        if src == SourceId::VoiceIdx
+            && matches!(
+                dst,
+                DestId::Cutoff
+                    | DestId::Resonance
+                    | DestId::FilterDrive
+                    | DestId::DelayMix
+                    | DestId::ReverbMix
+            )
+        {
+            return Some(Coherence::Degenerate);
+        }
+        None
+    }
 }
 
-/// Coherence verdict for a `source → dest` routing, per the coherence rule.
-/// Empty slots (`None` source or dest) are always [`Coherence::Ok`].
+/// Coherence verdict for a `source → dest` routing — [`Vxn2Coherence`] through
+/// the shared predicate, kept as a free function because that is what every
+/// call site in this crate and the faceplate descriptor already says.
 ///
-/// Precedence: self-rate and degenerate special cases are checked **before**
-/// the generic tier-collapse so they get the more specific tooltip even when
-/// the tiers would also flag a collapse.
+/// Empty slots (`None` source or dest) are always [`Coherence::Ok`].
+#[inline]
 pub fn coherence(src: SourceId, dst: DestId) -> Coherence {
-    // Empty slot — nothing to flag.
-    if src == SourceId::None || dst == DestId::None {
-        return Coherence::Ok;
-    }
-    // Self-rate: an LFO into its own rate. Tier-legal (both same tier) but
-    // self-referential.
-    if matches!(
-        (src, dst),
-        (SourceId::Lfo1, DestId::Lfo1Rate) | (SourceId::Lfo2, DestId::Lfo2Rate)
-    ) {
-        return Coherence::SelfRate;
-    }
-    // Degenerate: voice-idx into any lane-0-collapsed dest reads constant 0.
-    if src == SourceId::VoiceIdx
-        && matches!(
-            dst,
-            DestId::Cutoff
-                | DestId::Resonance
-                | DestId::FilterDrive
-                | DestId::DelayMix
-                | DestId::ReverbMix
-        )
-    {
-        return Coherence::Degenerate;
-    }
-    // Generic rule: finer source into coarser dest is a lossy collapse.
-    if (src.tier() as u8) > (dst.tier() as u8) {
-        return Coherence::TierCollapse;
-    }
-    Coherence::Ok
+    vxn_core_matrix::coherence::coherence::<Vxn2Coherence>(src, dst)
+}
+
+/// The dense `[srcWireId][dstWireId]` verdict table the faceplate descriptor
+/// carries, as [`Coherence::name`] strings — sentinel row and column included,
+/// so the page looks a verdict up with the same `u8` its pick-lists carry.
+///
+/// Built here rather than in the UI crate so the index space is decided once,
+/// on the side that owns the enums.
+pub fn coherence_name_grid() -> Vec<Vec<&'static str>> {
+    vxn_core_matrix::coherence::coherence_name_grid::<Vxn2Coherence>(&SourceId::ALL, &DestId::ALL)
 }
 
 matrix_enum! {
@@ -248,20 +268,20 @@ matrix_enum! {
     labels = SOURCE_LABELS, roster_names = ROSTER_SOURCE_NAMES,
     roster_labels = ROSTER_SOURCE_LABELS, polarity;
     sentinel None = 0, "none", "—";
-    Lfo1 = 1, "lfo1", "LFO 1", bi;
-    Lfo2 = 2, "lfo2", "LFO 2", bi;
-    PitchEg = 3, "pitch-eg", "Pitch EG", bi;
-    ModEnv = 4, "mod-env", "Mod Env", uni;
-    ModWheel = 5, "mod-wheel", "Mod Wheel", uni;
-    Aftertouch = 6, "aftertouch", "Aftertouch", uni;
-    Velocity = 7, "velocity", "Velocity", uni;
-    Key = 8, "key", "Key", uni;
-    VoiceIdx = 9, "voice-idx", "Voice Idx", uni;
-    VoiceSpread = 10, "voice-spread", "Voice Spread", bi;
+    Lfo1 = 1, "lfo1", "LFO 1", bi, tier = patch_global;
+    Lfo2 = 2, "lfo2", "LFO 2", bi, tier = per_lane;
+    PitchEg = 3, "pitch-eg", "Pitch EG", bi, tier = per_stack;
+    ModEnv = 4, "mod-env", "Mod Env", uni, tier = per_stack;
+    ModWheel = 5, "mod-wheel", "Mod Wheel", uni, tier = patch_global;
+    Aftertouch = 6, "aftertouch", "Aftertouch", uni, tier = patch_global;
+    Velocity = 7, "velocity", "Velocity", uni, tier = per_stack;
+    Key = 8, "key", "Key", uni, tier = per_stack;
+    VoiceIdx = 9, "voice-idx", "Voice Idx", uni, tier = per_lane;
+    VoiceSpread = 10, "voice-spread", "Voice Spread", bi, tier = per_lane;
     /// Per-lane note-on random. `[0, 1)` and therefore **unipolar**: treating
     /// it as bipolar would compress the random into `[0.5, 1)` and it could
     /// never gate a route to zero.
-    VoiceRand = 11, "voice-rand", "Voice Rand", uni;
+    VoiceRand = 11, "voice-rand", "Voice Rand", uni, tier = per_lane;
 }
 
 /// Count of non-sentinel sources (i.e. `SourceId::None` excluded). Derived from
@@ -269,24 +289,6 @@ matrix_enum! {
 pub const N_SOURCES: usize = SOURCE_NAMES.len() - 1;
 
 impl SourceId {
-    /// Granularity tier of this source. Exhaustive — a new source
-    /// forces a tier decision at compile time. `None` reports the coarsest
-    /// tier (it is inert; [`coherence`] short-circuits `None` before reading
-    /// tiers, so the value is never consulted for a real verdict).
-    #[inline]
-    pub const fn tier(self) -> Tier {
-        match self {
-            SourceId::None => Tier::PatchGlobal,
-            SourceId::Lfo1 | SourceId::ModWheel | SourceId::Aftertouch => Tier::PatchGlobal,
-            SourceId::PitchEg | SourceId::ModEnv | SourceId::Velocity | SourceId::Key => {
-                Tier::PerStack
-            }
-            SourceId::Lfo2 | SourceId::VoiceIdx | SourceId::VoiceSpread | SourceId::VoiceRand => {
-                Tier::PerLane
-            }
-        }
-    }
-
     /// Index into the per-lane source lookup, or `None` for the sentinel.
     #[inline]
     pub const fn idx(self) -> Option<usize> {
@@ -1489,36 +1491,95 @@ mod tests {
         assert_eq!(coherence(SourceId::VoiceIdx, DestId::Op1Pan), Coherence::Ok);
     }
 
+    /// Every verdict this synth produced **immediately before 0336** moved the
+    /// predicate into `vxn-core-matrix`, dumped from that build and pasted
+    /// here. One row per `SourceId` discriminant, one character per `DestId`
+    /// discriminant, sentinels included: `o` = ok, `t` = tier-collapse,
+    /// `s` = self-rate, `d` = degenerate.
+    ///
+    /// A recorded table rather than a re-derivation. The test this replaced
+    /// walked the same grid but recomputed `want` from a copy of the rule, so
+    /// it could only ever catch the predicate disagreeing with a transcription
+    /// of itself — a tier column mistyped on a roster row would move both sides
+    /// together and the assertion would still pass. These characters were
+    /// produced by code that no longer exists, which is the only way the
+    /// assertion is about *behaviour being unchanged* rather than about the
+    /// current rule being self-consistent.
+    ///
+    /// Editing a character here is therefore a deliberate act: it says a
+    /// routing that used to be flagged one way is now flagged another, and the
+    /// commit that does it owes an explanation.
+    const COHERENCE_BEFORE_0336: [&str; 12] = [
+        // none            0
+        "oooooooooooooooooooooooooooooooooooooooooooooooooooo",
+        // lfo1            1
+        "oooooooooooooooooooosooooooooooooooooooooooooooooooo",
+        // lfo2            2
+        "ooooooooooooooooooootsottttottooooooooooootoooooooot",
+        // pitch-eg        3
+        "ooooooooooooooooooootoooottooooooooooooooooooooooooo",
+        // mod-env         4
+        "ooooooooooooooooooootoooottooooooooooooooooooooooooo",
+        // mod-wheel       5
+        "oooooooooooooooooooooooooooooooooooooooooooooooooooo",
+        // aftertouch      6
+        "oooooooooooooooooooooooooooooooooooooooooooooooooooo",
+        // velocity        7
+        "ooooooooooooooooooootoooottooooooooooooooooooooooooo",
+        // key             8
+        "ooooooooooooooooooootoooottooooooooooooooooooooooooo",
+        // voice-idx       9
+        "oooooooooooooooooooottottddoddoooooooooooodoooooooot",
+        // voice-spread   10
+        "oooooooooooooooooooottottttottooooooooooootoooooooot",
+        // voice-rand     11
+        "oooooooooooooooooooottottttottooooooooooootoooooooot",
+    ];
+
     #[test]
-    fn coherence_grid_matches_tier_rule_with_special_cases() {
-        for s in all_sources() {
-            for d in all_dests() {
-                let got = coherence(s, d);
-                let want = if s == SourceId::None || d == DestId::None {
-                    Coherence::Ok
-                } else if matches!(
-                    (s, d),
-                    (SourceId::Lfo1, DestId::Lfo1Rate) | (SourceId::Lfo2, DestId::Lfo2Rate)
-                ) {
-                    Coherence::SelfRate
-                } else if s == SourceId::VoiceIdx
-                    && matches!(
-                        d,
-                        DestId::Cutoff
-                            | DestId::Resonance
-                            | DestId::FilterDrive
-                            | DestId::DelayMix
-                            | DestId::ReverbMix
-                    ) {
-                    Coherence::Degenerate
-                } else if (s.tier() as u8) > (d.tier() as u8) {
-                    Coherence::TierCollapse
-                } else {
-                    Coherence::Ok
+    fn coherence_grid_matches_the_pre_0336_table() {
+        assert_eq!(
+            COHERENCE_BEFORE_0336.len(),
+            SOURCE_NAMES.len(),
+            "a source was added or removed without re-recording the baseline"
+        );
+        for (si, row) in COHERENCE_BEFORE_0336.iter().enumerate() {
+            assert_eq!(
+                row.len(),
+                DEST_NAMES.len(),
+                "row {si} ({}): a dest was added or removed without re-recording \
+                 the baseline",
+                SOURCE_NAMES[si]
+            );
+            let s = SourceId::from_u8(si as u8);
+            for (di, code) in row.chars().enumerate() {
+                let d = DestId::from_u8(di as u8);
+                let want = match code {
+                    'o' => Coherence::Ok,
+                    't' => Coherence::TierCollapse,
+                    's' => Coherence::SelfRate,
+                    'd' => Coherence::Degenerate,
+                    c => panic!("unknown verdict code {c:?} at [{si}][{di}]"),
                 };
-                assert_eq!(got, want, "{s:?}→{d:?}");
+                assert_eq!(
+                    coherence(s, d),
+                    want,
+                    "{}→{} ({s:?}→{d:?}) moved",
+                    SOURCE_NAMES[si],
+                    DEST_NAMES[di]
+                );
             }
         }
+    }
+
+    /// The baseline above is exhaustive only while it covers every pairing, so
+    /// pin that it does — otherwise a dest added at a new discriminant would
+    /// widen the grid and the length check above is the only thing standing
+    /// between that and an unasserted column.
+    #[test]
+    fn the_baseline_covers_every_source_dest_pairing() {
+        assert_eq!(all_sources().len(), COHERENCE_BEFORE_0336.len());
+        assert_eq!(all_dests().len(), COHERENCE_BEFORE_0336[0].len());
     }
 
     #[test]

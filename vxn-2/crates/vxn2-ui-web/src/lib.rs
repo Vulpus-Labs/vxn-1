@@ -396,8 +396,9 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
 /// never invents indices; it picks from this table.
 pub fn build_matrix_lists_json() -> String {
     use vxn2_engine::matrix::{
-        coherence, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, N_SHAPES,
-        POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS, SOURCE_NAMES,
+        coherence_name_grid, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES,
+        N_SHAPES, POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS,
+        SOURCE_NAMES,
     };
     // `id` is the wire discriminant; `tier` is the granularity tier:
     // 0 = patch-global, 1 = per-stack, 2 = per-lane. The UI reads `tier` and
@@ -446,14 +447,9 @@ pub fn build_matrix_lists_json() -> String {
     // Flat `coherence[srcId][dstId]` verdict table — the canonical engine
     // predicate baked in so the validator never drifts from the rule.
     // Values are the machine-name strings ("ok", "tier-collapse", …).
-    let coherence_table: Vec<Vec<&str>> = (0..SOURCE_NAMES.len())
-        .map(|si| {
-            let src = SourceId::from_u8(si as u8);
-            (0..DEST_NAMES.len())
-                .map(|di| coherence(src, DestId::from_u8(di as u8)).name())
-                .collect()
-        })
-        .collect();
+    // The engine builds it, indexed by wire id with the sentinel row and column
+    // included, so this side never re-derives an index space.
+    let coherence_table = coherence_name_grid();
     serde_json::json!({
         "sources": sources,
         "dests": dests,
@@ -1085,26 +1081,187 @@ mod tests {
         assert_eq!(coh[0][5], "ok");
     }
 
+    /// Keys read off `window.__vxn.matrix` anywhere in `src`, in order of first
+    /// appearance. Used to check the bootstrap's copy against what the panels
+    /// actually consume.
+    fn matrix_keys_read(src: &str) -> Vec<&str> {
+        const READ: &str = "window.__vxn.matrix.";
+        let mut keys: Vec<&str> = Vec::new();
+        let mut rest = src;
+        while let Some(at) = rest.find(READ) {
+            let tail = &rest[at + READ.len()..];
+            let end = tail
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(tail.len());
+            let key = &tail[..end];
+            if !key.is_empty() && !keys.contains(&key) {
+                keys.push(key);
+            }
+            rest = &tail[end..];
+        }
+        keys
+    }
+
+    /// One line of JS with anything that could carry a stray bracket removed:
+    /// double- and single-quoted string literals, then a trailing `//` comment.
+    ///
+    /// Both removals matter to the scanner below. A bracket inside a string or
+    /// a comment is not structure, and miscounting one leaves the brace depth
+    /// wrong for the rest of the file — which would make the scan run past the
+    /// end of the literal and collect keys that are not in it. That failure is
+    /// silent and *widens* the accepted set, i.e. it disarms the guard in
+    /// exactly the way the bug it guards against was disarmed.
+    fn strip_js_noise(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' | '\'' => {
+                    let quote = c;
+                    let mut escaped = false;
+                    for s in chars.by_ref() {
+                        if escaped {
+                            escaped = false;
+                        } else if s == '\\' {
+                            escaped = true;
+                        } else if s == quote {
+                            break;
+                        }
+                    }
+                }
+                '/' if chars.peek() == Some(&'/') => break,
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Keys assigned in bootstrap.js's `matrix: { … }` literal — the object the
+    /// panels read. Scanned by brace matching from the literal's opening brace,
+    /// taking `ident:` at nesting depth 1.
+    fn matrix_keys_bootstrapped() -> Vec<String> {
+        let at = BOOTSTRAP_JS
+            .find("matrix: {")
+            .expect("bootstrap must build window.__vxn.matrix");
+        let body = &BOOTSTRAP_JS[at + "matrix: {".len()..];
+        let mut depth = 1usize;
+        let mut keys: Vec<String> = Vec::new();
+        for line in body.lines() {
+            let code = strip_js_noise(line);
+            let code = code.trim();
+            if let Some((head, _)) = code.split_once(':') {
+                let head = head.trim();
+                if depth == 1
+                    && !head.is_empty()
+                    && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    keys.push(head.to_string());
+                }
+            }
+            for c in code.chars() {
+                match c {
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    return keys;
+                }
+            }
+        }
+        panic!("unterminated `matrix: {{` literal in bootstrap.js");
+    }
+
+    /// Every JS asset `build_faceplate_html` bundles. The guard below has to
+    /// read all of them, not just the mod-matrix panel: a second consumer of
+    /// `window.__vxn.matrix` reaching for a field the bootstrap does not copy
+    /// is the same bug again, and scanning one file would not see it.
+    fn all_bundled_js() -> [(&'static str, &'static str); 16] {
+        [
+            ("knob.js", PANEL_KNOB_JS),
+            ("dial.js", PANEL_DIAL_JS),
+            ("fader.js", PANEL_FADER_JS),
+            ("button-group.js", PANEL_BUTTON_GROUP_JS),
+            ("graph.js", PANEL_GRAPH_JS),
+            ("algo-diagram.js", PANEL_ALGO_DIAGRAM_JS),
+            ("algo-data.js", PANEL_ALGO_DATA_JS),
+            ("ks-graph.js", PANEL_KS_GRAPH_JS),
+            ("eg-graph.js", PANEL_EG_GRAPH_JS),
+            ("op-faders.js", PANEL_OP_FADERS_JS),
+            ("op-row.js", PANEL_OP_ROW_JS),
+            ("mod-matrix.js", PANEL_MOD_MATRIX_JS),
+            ("preset-bar.js", PANEL_PRESET_BAR_JS),
+            ("preset-browser.js", PANEL_PRESET_BROWSER_JS),
+            ("fx-tabs.js", PANEL_FX_TABS_JS),
+            ("main.js", MAIN_JS),
+        ]
+    }
+
+    /// **The bug this test was written for.** The descriptor built four fields
+    /// the mod-matrix panel needs — `coherence`, `shapes`, `polarities`,
+    /// `curve_stride` — and bootstrap.js copied only `sources`, `dests` and
+    /// `curves` into `window.__vxn.matrix`. The panel read `undefined`, fell
+    /// back to `[]`, and `verdictFor` returned "ok" for every pair: no row was
+    /// ever flagged, in any build, since the feature shipped.
+    ///
+    /// The test that was here could not see it — it grepped the *panel* for the
+    /// string `"matrix.coherence"`, which was present and reading nothing. So
+    /// this one checks the actual join: every key any panel reads off
+    /// `window.__vxn.matrix` must be assigned in the bootstrap's literal, and
+    /// the descriptor must emit it. That is the whole chain, and it catches the
+    /// next field to be added as well as the four that were missing.
+    #[test]
+    fn bootstrap_copies_every_matrix_field_the_panels_read() {
+        assert!(
+            matrix_keys_read(PANEL_MOD_MATRIX_JS).contains(&"coherence"),
+            "the panel must consume the exported coherence table"
+        );
+        let bootstrapped = matrix_keys_bootstrapped();
+        let descriptor = matrix_lists_value();
+        for (file, src) in all_bundled_js() {
+            for key in matrix_keys_read(src) {
+                assert!(
+                    bootstrapped.iter().any(|k| k == key),
+                    "bootstrap.js does not copy `{key}` into window.__vxn.matrix — \
+                     {file} reads it and would see undefined"
+                );
+                // `rows` is live topology the bootstrap seeds empty and the
+                // engine fills in later; everything else has to come from the
+                // descriptor.
+                if key != "rows" {
+                    assert!(
+                        !descriptor[key].is_null(),
+                        "build_matrix_lists_json emits no `{key}` for the bootstrap \
+                         to copy, and {file} reads it"
+                    );
+                }
+            }
+        }
+    }
+
     // Contract guard: the mod-matrix panel consumes the engine's coherence
     // verdict table across the Rust↔JS boundary. The reason tokens are emitted
-    // verbatim by `matrix::Coherence::reason()` (vxn2-engine/src/matrix.rs);
-    // renaming a verdict there silently kills the JS tooltip — so these guard a
-    // real cross-language contract, not JS internals. Live panel behaviour (row
-    // repaint, edit-time validation) is JS wiring and is not asserted here.
+    // verbatim by `matrix::Coherence::name()` (vxn-core-matrix's
+    // `coherence.rs`, re-exported through vxn2-engine/src/matrix.rs); renaming
+    // a verdict there silently kills the JS tooltip — so these guard a real
+    // cross-language contract, not JS internals. Live panel behaviour (row
+    // repaint, edit-time validation) is JS wiring, exercised by the headless
+    // DOM check rather than here.
     #[test]
     fn mod_matrix_panel_wires_coherence_validation() {
-        // Panel reads the exported table (`window.__vxn.matrix.coherence`)
-        // rather than re-deriving verdicts.
-        assert!(
-            PANEL_MOD_MATRIX_JS.contains("matrix.coherence"),
-            "panel must consume the exported coherence table"
-        );
-        // Reason strings are the wire contract with `Coherence::reason()` —
-        // keep in lockstep with that enum.
-        for reason in ["self-rate", "tier-collapse", "degenerate"] {
+        // Reason strings are the wire contract with `Coherence::name()` — keep
+        // in lockstep with that enum, which is why they are read off it rather
+        // than written out again.
+        use vxn2_engine::matrix::Coherence;
+        for verdict in [
+            Coherence::TierCollapse,
+            Coherence::SelfRate,
+            Coherence::Degenerate,
+        ] {
             assert!(
-                PANEL_MOD_MATRIX_JS.contains(reason),
-                "missing reason mapping for {reason} (see Coherence::reason)"
+                PANEL_MOD_MATRIX_JS.contains(verdict.name()),
+                "missing reason mapping for {} (see Coherence::name)",
+                verdict.name()
             );
         }
         // Invalid-row feedback is a JS→CSS class contract: the panel toggles

@@ -67,8 +67,31 @@
 /// **Axis enums** (`Polarity`, `Shape`) have no sentinel and no columns beyond
 /// the name pair — a row is `Variant = discriminant, "wire-name", "Label"`.
 ///
-/// **Source enums** add a `sentinel` row and a `uni` / `bi` column carrying the
-/// source's own polarity.
+/// **Source enums** add a `sentinel` row and two mandatory columns — a
+/// `uni` / `bi` polarity, and a `tier`:
+///
+/// ```text
+/// Lfo1     = 1, "lfo1",     "LFO 1",    bi,  tier = patch_global;
+/// Velocity = 7, "velocity", "Velocity", uni, tier = per_stack;
+/// ```
+///
+/// The tier column is the same vocabulary as a destination's and is read by the
+/// same rule ([`coherence`](crate::coherence)). It is here rather than in a
+/// hand-written `tier()` match because that match was the last parallel list
+/// left in vxn-2's roster after 0332 — the one place a new source could still
+/// be added without a granularity decision, and the decision it skipped is the
+/// one that silently collapses eight lanes into one. Omit it and the row
+/// matches no rule, so the enum is never declared:
+///
+/// ```compile_fail
+/// use vxn_core_matrix::matrix_enum;
+/// matrix_enum! {
+///     Src, fallback = None, names = S_NAMES, labels = S_LABELS,
+///     roster_names = RS_NAMES, roster_labels = RS_LABELS, polarity;
+///     sentinel None = 0, "none", "—";
+///     Lfo1 = 1, "lfo1", "LFO 1", bi;
+/// }
+/// ```
 ///
 /// **Destination enums** add a `sentinel` row and four columns, all mandatory:
 ///
@@ -213,7 +236,8 @@ macro_rules! matrix_enum {
         }
     };
 
-    // Entry point: a source enum — a sentinel row plus a polarity column.
+    // Entry point: a source enum — a sentinel row plus a polarity and a tier
+    // column.
     (
         $(#[$emeta:meta])*
         $name:ident, fallback = $fallback:ident, names = $names:ident,
@@ -223,7 +247,8 @@ macro_rules! matrix_enum {
         sentinel $sname:ident = $sdisc:literal, $swire:literal, $slabel:literal;
         $(
             $(#[$vmeta:meta])*
-            $variant:ident = $disc:literal, $wire:literal, $label:literal, $pol:ident;
+            $variant:ident = $disc:literal, $wire:literal, $label:literal, $pol:ident,
+            tier = $tier:ident;
         )+
     ) => {
         $crate::matrix_enum! {
@@ -253,6 +278,20 @@ macro_rules! matrix_enum {
                 match self {
                     $name::$sname => false,
                     $( $name::$variant => $crate::matrix_enum!(@pol $pol), )+
+                }
+            }
+
+            #[doc = concat!(
+                "Granularity tier of this source — the `tier =` column. The sentinel ",
+                "reports the *coarsest* tier, mirroring the destination sentinel's finest: ",
+                "each is the value that cannot itself provoke a verdict, and the coherence ",
+                "predicate short-circuits an empty slot before it reads either."
+            )]
+            #[inline]
+            pub const fn tier(self) -> $crate::roster::Tier {
+                match self {
+                    $name::$sname => $crate::roster::Tier::PatchGlobal,
+                    $( $name::$variant => $crate::matrix_enum!(@tier $tier), )+
                 }
             }
         }
