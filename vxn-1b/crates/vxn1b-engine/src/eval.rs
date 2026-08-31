@@ -185,12 +185,21 @@ pub fn lfo_rate_scale(total: f32) -> f32 {
     total.clamp(-LFO_RATE_OCTAVES, LFO_RATE_OCTAVES).exp2()
 }
 
-/// The **topology half** of a slot's gain: `cook_depth(depth) · DEST_GAIN[dest]`.
+/// The **topology half** of a slot's gain: `cook_depth(depth) · gain(dest)`.
 /// Depends only on the patch, so a consumer that resolves routes once per block
 /// can hoist it out of its per-voice loop ([`crate::bank`]'s Amp factoring does).
+/// The same product [`RouteList::compile`] folds into [`Route::gain`], spelled
+/// once so the bank's Amp factoring and the compiled routes cannot drift.
+///
+/// Asks the destination for its gain rather than indexing [`DEST_GAIN`], which
+/// is equal for every real dest (asserted above) but not for the sentinel: the
+/// generated table is sentinel-free, so `DestId::None.index()`'s fold-to-0 would
+/// read `Pitch`'s 12 and quietly scale an unwired slot 12×. `gain()` answers
+/// 1.0 there, which is the identity a caller that forgot to check `is_active`
+/// would want.
 #[inline]
 pub(crate) fn slot_topology_gain(slot: &MatrixSlot) -> f32 {
-    slot.dest.cook_depth(slot.depth) * DEST_GAIN[slot.dest.index()]
+    slot.dest.cook_depth(slot.depth) * slot.dest.gain()
 }
 
 /// The **per-voice half** of a slot's gain: its `scale_src` VCA resolved against
@@ -236,99 +245,26 @@ pub fn eval_dests(table: &MatrixTable, sources: &SourceVals, out: &mut DestVals)
 
 // ── bank-wide evaluation ────────────────────────────────────────────────────
 
-/// One active slot with its **lane-invariant half already resolved**.
+/// One active slot with its **lane-invariant half already resolved**, and the
+/// block's list of them — both shared with VXN2 as of 0333.
 ///
-/// [`eval_dests`] recomputes all of this per voice: the two sentinel checks,
-/// the zero-depth skip, the `cook_depth` taper and the `DEST_GAIN` lookup are
-/// pure functions of the patch, yet a 32-lane synth ran them 32 times a block.
-/// Compiling them out once is half of what makes [`eval_dests_bank`] cheaper;
-/// the other half is that `curve` and `scale_src` become **outer**-loop
-/// dispatch, so the lane loop underneath is branch-free and vectorises.
-#[derive(Clone, Copy, Debug)]
-pub struct Route {
-    /// Index into [`SourceVals`].
-    pub src: u8,
-    /// Index into [`DestVals`].
-    pub dest: u8,
-    /// Range mapping applied to the source value.
-    pub polarity: Polarity,
-    /// Response bend applied after [`Self::polarity`].
-    pub shape: Shape,
-    /// [`slot_topology_gain`] — `cook_depth(depth) · DEST_GAIN[dest]`.
-    pub gain: f32,
-    /// The per-route VCA's source index, or `None` for an unscaled route.
-    pub scale: Option<u8>,
-    /// Whether that VCA source is bipolar (so [`scale_norm`]'s two arms also
-    /// hoist out of the lane loop).
-    pub scale_bipolar: bool,
-    /// Bend on the VCA, hoisted out of the lane loop for the same reason.
-    pub scale_shape: Shape,
-}
-
-/// The block's active routes, compiled once from the patch.
+/// [`eval_dests`] recomputes all of it per voice: the two sentinel checks, the
+/// on/off switch, the zero-depth skip, the `cook_depth` taper and the dest-gain
+/// lookup are pure functions of the patch, yet a whole bank of lanes ran them
+/// once each per block. Compiling them out once is half of what makes
+/// [`eval_dests_bank`] cheaper; the other half is that `curve` and `scale_src`
+/// become **outer**-loop dispatch, so the lane loop underneath is branch-free
+/// and vectorises.
 ///
-/// Slot order is preserved, which is what keeps [`eval_dests_bank`] bit-exact
-/// against [`eval_dests`]: dests accumulate additively, and float addition is
-/// not associative, so "same routes in the same order" is the whole contract.
-#[derive(Clone, Copy, Debug)]
-pub struct RouteList {
-    routes: [Route; N_SLOTS],
-    n: usize,
-}
+/// [`RouteList::compile`] takes the **raw** depth and cooks it itself, which is
+/// why this synth's slots must never store a cooked one. Slot order survives
+/// compilation, which is what keeps [`eval_dests_bank`] bit-exact against
+/// [`eval_dests`]: dests accumulate additively, float addition is not
+/// associative, so "same routes in the same order" is the whole contract.
+pub use vxn_core_matrix::slot::Route;
 
-impl RouteList {
-    /// Resolve a patch's slots into active routes. Switched-off, empty
-    /// (`None` endpoint) and zero-depth slots are dropped here rather than
-    /// branched over per lane.
-    pub fn compile(table: &MatrixTable) -> Self {
-        let mut routes = [Route {
-            src: 0,
-            dest: 0,
-            polarity: Polarity::Direct,
-            shape: Shape::Lin,
-            gain: 0.0,
-            scale: None,
-            scale_bipolar: false,
-            scale_shape: Shape::Lin,
-        }; N_SLOTS];
-        let mut n = 0;
-        for slot in &table.slots {
-            // `is_active` covers the player's on/off switch as well as the two
-            // endpoints, so a switched-off route is dropped here — it never
-            // reaches a lane loop, exactly like an unwired one.
-            if !slot.is_active() || slot.depth == 0.0 {
-                continue;
-            }
-            let (Some(si), Some(di)) = (slot.source.idx(), slot.dest.idx()) else {
-                continue;
-            };
-            routes[n] = Route {
-                src: si as u8,
-                dest: di as u8,
-                polarity: slot.polarity,
-                shape: slot.shape,
-                gain: slot_topology_gain(slot),
-                scale: slot.scale_src.idx().map(|sc| sc as u8),
-                scale_bipolar: slot.scale_src.is_bipolar(),
-                scale_shape: slot.scale_shape,
-            };
-            n += 1;
-        }
-        Self { routes, n }
-    }
-
-    /// The active routes, in slot order.
-    #[inline]
-    pub fn active(&self) -> &[Route] {
-        &self.routes[..self.n]
-    }
-
-    /// Whether any slot is live. A patch with an empty matrix skips the pass.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.n == 0
-    }
-}
+/// The block's active routes, compiled once from the patch — see [`Route`].
+pub type RouteList = vxn_core_matrix::slot::RouteList<N_SLOTS>;
 
 /// Lane-major source table: `[source][lane]`.
 pub type SourceLanesSoa<const L: usize> = [[f32; L]; N_SOURCES];

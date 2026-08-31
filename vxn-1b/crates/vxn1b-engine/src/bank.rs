@@ -366,18 +366,29 @@ struct AmpRoutes {
     /// end a note, and so the only ones allowed to hold a lane open after
     /// gate-off.
     ///
-    /// Topology + depth, *not* the [`AmpCoeffs`]: those collect only
+    /// Topology + switch + depth, *not* the [`AmpCoeffs`]: those collect only
     /// identity-curve Env→Amp slots (the rest fold into `stat`), and a curved
     /// Env→Amp route
     /// must silence its note exactly like a linear one. A `scale_src` sitting at
     /// zero is likewise ignored — a route that exists counts as a route, so a
-    /// momentarily gated VCA cannot make a note un-endable.
+    /// momentarily gated VCA cannot make a note un-endable. A route the player
+    /// has **switched off** is a different case: it does not exist this block,
+    /// for this pass as for the evaluator.
     holds_env1: bool,
     holds_env2: bool,
 }
 
 impl AmpRoutes {
     /// Scan one patch's slots for live `Amp` routes.
+    ///
+    /// "Live" is [`MatrixSlot::is_active`] plus a nonzero depth — the same
+    /// predicate [`RouteList::compile`] drops on, and the reason to spell it the
+    /// same way here. Until 0333 this pass tested only `dest == Amp` and the
+    /// depth, so a **switched-off** Env→Amp route still set `holds_env*` and
+    /// still contributed to [`AmpCoeffs`], while the matrix evaluator had
+    /// already dropped it: the VCA read a route the modulation totals did not
+    /// have, and a note could be held open by an envelope that was routing
+    /// nothing.
     fn resolve(table: &MatrixTable) -> Self {
         let empty = AmpRoute {
             source: SourceId::None,
@@ -391,7 +402,7 @@ impl AmpRoutes {
         let mut out =
             Self { routes: [empty; N_SLOTS], n: 0, holds_env1: false, holds_env2: false };
         for slot in &table.slots {
-            if slot.dest != DestId::Amp || slot.depth == 0.0 {
+            if slot.dest != DestId::Amp || !slot.is_active() || slot.depth == 0.0 {
                 continue;
             }
             out.holds_env1 |= slot.source == SourceId::Env1;
@@ -1937,6 +1948,52 @@ mod tests {
         assert_eq!(c.e1, 0.0, "the curved Env 1 route folds into stat, not e1");
         assert_eq!(c.e2, 0.0, "Env 2's wheel is shut, so it contributes nothing");
         assert!((c.stat - crate::eval::shape(Polarity::Direct, Shape::Exp, 0.5)).abs() < 1e-6);
+    }
+
+    /// A **switched-off** Env→Amp route is invisible to the Amp scan, exactly as
+    /// it is to [`RouteList::compile`].
+    ///
+    /// This is the case the scan got wrong until 0333: it tested `dest == Amp`
+    /// and a nonzero depth, never the switch. So a parked route still fed the
+    /// VCA a coefficient the matrix totals did not have, and still claimed the
+    /// note's lifetime — an envelope that was routing nothing could hold a lane
+    /// open past its gate. Both halves of the answer are asserted, because they
+    /// are separate fields fed by the same loop.
+    #[test]
+    fn a_switched_off_amp_route_is_invisible_to_the_scan() {
+        let live = MatrixSlot {
+            source: SourceId::Env2,
+            dest: DestId::Amp,
+            depth: 1.0,
+            polarity: Polarity::Direct,
+            shape: Shape::Lin,
+            enabled: true,
+            scale_src: SourceId::None,
+            scale_shape: Shape::Lin,
+        };
+        let mut m = MatrixTable::default();
+        m.slots[0] = live;
+        m.slots[1] = MatrixSlot { source: SourceId::Env1, enabled: false, ..live };
+
+        let r = AmpRoutes::resolve(&m);
+        assert_eq!(r.n, 1, "only the switched-on route is live");
+        assert!(r.holds_env2);
+        assert!(!r.holds_env1, "a switched-off Env 1 route cannot hold the note open");
+
+        // …and it contributes no VCA coefficient either. Env 1 at full level
+        // would show up in `e1` if the route counted.
+        let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
+            env1: 1.0, env2: 1.0, ..Default::default()
+        });
+        let c = amp_coeffs(&r, &sources);
+        assert_eq!(c.e1, 0.0, "the parked Env 1 route must not reach the VCA");
+        assert_eq!(c.e2, crate::eval::DEST_GAIN[DestId::Amp.index()]);
+
+        // Switching it back on is lossless: the wiring never went anywhere.
+        m.slots[1].enabled = true;
+        let back = AmpRoutes::resolve(&m);
+        assert_eq!(back.n, 2);
+        assert!(back.holds_env1 && back.holds_env2);
     }
 
     // ── The routing rules the bank owns (0273) ──────────────────────────────

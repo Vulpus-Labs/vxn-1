@@ -536,31 +536,12 @@ matrix_enum! {
 /// [`N_SOURCES`].
 pub const N_DESTS: usize = DEST_NAMES.len() - 1;
 
-/// Per-destination depth gain applied inside [`eval_dests`], indexed by **wire
-/// discriminant** (`DestId as usize`, sentinel at 0). Depth widgets run a
-/// unitless `[-1, 1]`; each source is a normalized shape, and this table
-/// converts `depth × shape` to the dest's native unit so a fixed depth is
-/// musically comparable across dest kinds.
-///
-/// Each value is the `gain =` column of the destination's roster row, which is
-/// also where the per-dest rationale now lives — this is a *view* of the row
-/// list, not a second list to keep in step (0332). The storage-indexed twin the
-/// shared roster seam reads is [`ROSTER_DEST_GAIN`]; both are generated from the
-/// same rows and this one exists only because vxn-2's evaluator still indexes by
-/// discriminant. It retires when
-/// [0333](../../../../tickets/open/0333-share-slot-and-route-compilation.md)
-/// moves the lookup onto storage indices.
-pub const DEST_GAIN: [f32; N_DESTS + 1] = {
-    let mut g = [1.0_f32; N_DESTS + 1];
-    let mut i = 0;
-    // `DestId::ALL` is in discriminant order (`ALL[i] as u8 == i`), so this is
-    // the same table the hand-written one built, filled in one pass.
-    while i < DestId::ALL.len() {
-        g[i] = DestId::ALL[i].gain();
-        i += 1;
-    }
-    g
-};
+// The discriminant-indexed `DEST_GAIN` table retired in 0333, as its own
+// doc-comment said it would. It existed because `eval_dests` looked a gain up
+// per slot per stack, by wire discriminant; the lookup now happens once per
+// block inside `RouteList::compile`, through the roster seam's storage index.
+// [`ROSTER_DEST_GAIN`] and [`DestId::gain`] are what remain, and they are the
+// same `gain =` column of the same row list (0332).
 
 impl DestId {
     #[inline]
@@ -647,62 +628,81 @@ pub const fn pitch_smoother_row(dest: DestId) -> Option<usize> {
     None
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct MatrixSlot {
-    pub source: SourceId,
-    pub dest: DestId,
-    pub depth: f32,
-    /// Range mapping, applied to the source value first.
-    pub polarity: Polarity,
-    /// Response bend, applied after [`Self::polarity`].
-    pub shape: Shape,
-    /// Optional secondary "scale" source. When non-`None`, this slot's
-    /// per-lane contribution is multiplied by the scale source's value
-    /// normalised to `[0, 1]` (see [`scale_norm`]) — a VCA on the route's
-    /// depth, e.g. mod wheel gating an LFO→pitch vibrato. `None` is identity
-    /// (multiply by 1.0). The scale source is a *leaf* value read from the same
-    /// `[lane][source]` table as the primary source, so it can never form a
-    /// cycle (unlike routing a dest output back into depth).
-    pub scale_src: SourceId,
-    /// Response bend applied to the normalised scale value, so the VCA need
-    /// not be a straight line. Shares the [`Shape`] roster with the
-    /// primary route; `Lin` is the identity and the default.
-    ///
-    /// There is no polarity axis here: [`scale_norm`] already folds the scale
-    /// source into `[0, 1]` according to that source's own polarity, and the
-    /// VCA has to land in `[0, 1]` regardless. The shape bends the response
-    /// *within* that range — e.g. `velocity` scaling a `mod-env → op-level`
-    /// route wants `exp` so soft playing backs the route off faster than
-    /// linear, matching how velocity reads to the hand.
-    pub scale_shape: Shape,
-}
+/// The endpoint seam: what the shared routing mechanism needs to know about a
+/// [`SourceId`] — which row it names, and which way it swings.
+///
+/// Both methods forward to the inherent ones, which keep name resolution:
+/// `source.idx()` at a VXN2 call site still reaches the inherent `idx`, trait
+/// in scope or not.
+impl vxn_core_matrix::slot::SourceEndpoint for SourceId {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        SourceId::idx(self)
+    }
 
-impl Default for MatrixSlot {
-    fn default() -> Self {
-        Self {
-            source: SourceId::None,
-            dest: DestId::None,
-            depth: 0.0,
-            polarity: Polarity::Direct,
-            shape: Shape::Lin,
-            scale_src: SourceId::None,
-            scale_shape: Shape::Lin,
-        }
+    #[inline]
+    fn is_bipolar(self) -> bool {
+        SourceId::is_bipolar(self)
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct MatrixTable {
-    pub slots: [MatrixSlot; N_SLOTS],
-}
+/// The endpoint seam for a [`DestId`]: its row, its native-unit gain and its
+/// depth taper — the two numeric columns [`RouteList::compile`] folds into a
+/// route's single gain factor, **once per block**, from the raw depth.
+impl vxn_core_matrix::slot::DestEndpoint for DestId {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        DestId::idx(self)
+    }
 
-impl Default for MatrixTable {
-    fn default() -> Self {
-        Self {
-            slots: [MatrixSlot::default(); N_SLOTS],
-        }
+    #[inline]
+    fn gain(self) -> f32 {
+        DestId::gain(self)
+    }
+
+    #[inline]
+    fn cook_depth(self, depth: f32) -> f32 {
+        DestId::cook_depth(self, depth)
     }
 }
+
+/// One matrix route: two endpoints, a **raw** depth, the two shaping axes, the
+/// player's on/off switch and an optional scale VCA.
+///
+/// Shared with VXN1b as of 0333 ([`vxn_core_matrix::slot::MatrixSlot`]); what
+/// stays here is the roster the two type parameters name. Two things changed for
+/// VXN2 in that move, and they changed together on purpose:
+///
+/// - `depth` is now the raw, untapered value. It used to arrive already cooked
+///   from `apply_block_params`, and [`RouteList::compile`] cooks — a slot that
+///   still pre-cooked would cube an already-cubed depth and quietly lose ~64× of
+///   a pitch route.
+/// - `enabled` is a real field rather than the `source = None` this engine used
+///   to fold "inactive" into at rebuild time. That fold is why VXN2 had no
+///   `is_wired` to ask and no `active` column in its preset format; the
+///   distinction is now the shared slot's, and the wire encodings
+///   ([`crate::shared`]'s packed `u32`) are unchanged — `active` was already a
+///   bit there.
+pub type MatrixSlot = vxn_core_matrix::slot::MatrixSlot<SourceId, DestId>;
+
+/// The patch's 16-slot routing topology, shared with VXN1b (0333). Slot order is
+/// load-bearing: dests accumulate additively and float addition is not
+/// associative.
+pub type MatrixTable = vxn_core_matrix::slot::MatrixTable<SourceId, DestId, N_SLOTS>;
+
+/// One active slot with its lane-invariant half resolved, and the block's list
+/// of them. Re-exported under this module's names so `matrix::RouteList` reads
+/// like the rest of the routing vocabulary.
+///
+/// [`RouteList::compile`] is what this engine gained in 0333: the sentinel
+/// checks, the on/off switch, the zero-depth skip, the depth taper and the dest
+/// gain used to be re-derived inside [`eval_dests`], which runs **once per
+/// active stack**. They are pure functions of the patch, so they now happen once
+/// per block instead of up to sixteen times.
+pub use vxn_core_matrix::slot::Route;
+
+/// The block's active routes — see [`Route`].
+pub type RouteList = vxn_core_matrix::slot::RouteList<N_SLOTS>;
 
 /// Patch-global scalar sources. Broadcast across every stack and every lane
 /// inside [`eval_sources`].
@@ -730,7 +730,7 @@ impl PatchSources {
 ///
 /// All fields are **normalized shapes**: every source emits a
 /// documented `[-1, 1]` (bipolar) or `[0, 1]` (unipolar) range, and the dest's
-/// [`DEST_GAIN`] converts that shape to the dest's native unit. No source
+/// [`DestId::gain`] converts that shape to the dest's native unit. No source
 /// carries hidden units a dest then re-scales.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StackScalarSources {
@@ -803,51 +803,46 @@ pub fn eval_sources(
     out[(SourceId::VoiceRand as usize) - 1] = lanes.voice_rand;
 }
 
-/// Walk slots, accumulate `source · curve · depth · scale` into `out`. Zeroes
-/// `out` before accumulating, so the caller can hand in any buffer. Empty slots
-/// (source = `None` or dest = `None` or depth = 0) are skipped.
+/// Walk the block's compiled routes, accumulating `curve(source) · gain · scale`
+/// into `out`. Zeroes `out` before accumulating, so the caller can hand in any
+/// buffer.
 ///
-/// `scale` is the secondary-source VCA: each slot's per-lane contribution
-/// is multiplied by [`scale_norm`] of its `scale_src` value read from the same
-/// `[lane][source]` table as the primary source, at the slot's own lane, bent
-/// by the slot's `scale_shape`. A `scale_src` of `None` leaves the per-lane
-/// factor at `1.0` (identity, table untouched).
+/// Takes a [`RouteList`], not a [`MatrixTable`] (0333). Switched-off, unwired
+/// and zero-depth slots never arrive; nor does the depth taper or the dest-gain
+/// lookup, both already folded into [`Route::gain`]. That matters here because
+/// this function runs **once per active stack** while its input is a pure
+/// function of the patch: up to sixteen repeats of work that belongs once per
+/// block.
 ///
-/// Curve match happens once per slot — the `(polarity, shape)` pair is
+/// `scale` is the secondary-source VCA: each route's per-lane contribution is
+/// multiplied by [`scale_norm`] of its scale source's value, read from the same
+/// `[source][lane]` table as the primary source, bent by the route's
+/// `scale_shape`. An unscaled route leaves the per-lane factor at `1.0`.
+///
+/// Curve match happens once per route — the `(polarity, shape)` pair is
 /// dispatched outside the lane loop, so each arm's body is straight-line (no
 /// branch per lane — see the module's inner-loop note). The scale factor is
-/// resolved once per slot·lane *before* the curve dispatch, so the polarity
-/// branch never lands in the hot inner loop.
+/// resolved for the whole lane row *before* the curve dispatch, so the polarity
+/// branch never lands in the hot inner loop either.
 #[inline]
-pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneDestVals) {
+pub fn eval_dests(routes: &RouteList, sources: &LaneSourceVals, out: &mut LaneDestVals) {
     for d in out.iter_mut() {
         d.fill(0.0);
     }
-    for slot in &table.slots {
-        let Some(si) = slot.source.idx() else {
-            continue;
-        };
-        let Some(di) = slot.dest.idx() else {
-            continue;
-        };
-        if slot.depth == 0.0 {
-            continue;
-        }
-        // Pre-scale depth by the destination's native-unit gain. Pitch
-        // dests sweep ±2 octaves at full depth; feedback covers its 0..7
-        // range; everything else uses 1.0 (depth = native units).
-        let depth = slot.depth * DEST_GAIN[slot.dest as usize];
-        // Secondary scale (VCA on the route). Default 1.0 per lane; only read
-        // the source table when a scale source is set.
-        //
+    for r in routes.active() {
+        // The per-route VCA, resolved for every lane before the accumulate.
+        // Declared inside the loop: it is a fixed-size stack array either way,
+        // and this keeps the unscaled arm a plain all-ones local rather than a
+        // reset of a carried one. Measured neutral against the hoisted form on
+        // `matrix_eval_full`; kept as the form that reads as what it is.
+        let mut scale = [1.0_f32; STACK_LANES];
         // Both halves of `scale_norm` — the polarity fold and the bend — are
-        // per-slot constants, so they are dispatched *here*, once, and each arm
+        // per-route constants, so they are dispatched *here*, once, and each arm
         // is a straight-line lane loop. Calling `scale_norm` per lane instead
         // puts a bool test and a 3-way match in the loop body, which nearly
         // doubles the whole eval — see the module's inner-loop note.
-        let mut scale = [1.0_f32; STACK_LANES];
-        if let Some(sc) = slot.scale_src.idx() {
-            let sv = &sources[sc];
+        if let Some(sc) = r.scale {
+            let sv = &sources[sc as usize];
             macro_rules! scale_arm {
                 ($fold:path, $bend:path) => {
                     for k in 0..STACK_LANES {
@@ -855,7 +850,7 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
                     }
                 };
             }
-            match (slot.scale_src.is_bipolar(), slot.scale_shape) {
+            match (r.scale_bipolar, r.scale_shape) {
                 (false, Shape::Lin) => scale_arm!(fold_unipolar, bend_lin),
                 (false, Shape::Exp) => scale_arm!(fold_unipolar, bend_exp),
                 (false, Shape::Log) => scale_arm!(fold_unipolar, bend_log),
@@ -864,26 +859,32 @@ pub fn eval_dests(table: &MatrixTable, sources: &LaneSourceVals, out: &mut LaneD
                 (true, Shape::Log) => scale_arm!(fold_bipolar, bend_log),
             }
         }
-        // Polarity × shape is dispatched once per slot, so each arm expands to
+        // Polarity × shape is dispatched once per route, so each arm expands to
         // one straight-line lane loop with both maps inlined — the 3×3 split
         // costs nothing in the loop body that the old flat enum didn't
         // (`matrix_eval_full` is unchanged at ~111 ns across the split).
         //
         // Both rows are hoisted out of the lane loop: source-major `sv` and
         // dest-major `acc` are each `[f32; STACK_LANES]` contiguous, which is
-        // what lets the accumulate vectorise (0328). Accumulation order across
-        // slots is untouched, so the sum is bit-identical to the lane-major
-        // version.
-        let sv = &sources[si];
-        let acc = &mut out[di];
+        // what lets the accumulate vectorise (0328).
+        //
+        // `shaped · (gain · scale)` — the association is deliberate. This loop
+        // grouped it `shaped · depth · scale` until 0333; the shared route
+        // carries `cook_depth · dest_gain` as one pre-folded factor, which is
+        // also how VXN1b's evaluators and the shared golden harness group it.
+        // Float multiplication is not associative, so this is a real (last-bit)
+        // change, judged by E049's null test rather than by an unchanged hash.
+        let sv = &sources[r.src as usize];
+        let acc = &mut out[r.dest as usize];
+        let g = r.gain;
         macro_rules! curve_arm {
             ($pol:path, $shape:path) => {
                 for k in 0..STACK_LANES {
-                    acc[k] += $shape($pol(sv[k])) * depth * scale[k];
+                    acc[k] += $shape($pol(sv[k])) * (g * scale[k]);
                 }
             };
         }
-        match (slot.polarity, slot.shape) {
+        match (r.polarity, r.shape) {
             (Polarity::Direct, Shape::Lin) => curve_arm!(pol_direct, shape_lin),
             (Polarity::Direct, Shape::Exp) => curve_arm!(pol_direct, shape_exp),
             (Polarity::Direct, Shape::Log) => curve_arm!(pol_direct, shape_log),
@@ -1014,7 +1015,7 @@ impl PitchSmoother {
 /// ([ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §5, ticket 0331).
 /// Asserting it here meant baking roster constants into an expectation —
 /// `out[GlobalPitch] == 12.0` claimed the evaluator multiplies *and* that
-/// `DEST_GAIN[GlobalPitch]` is 24 — so changing a gain failed a test of the
+/// `DestId::GlobalPitch.gain()` is 24 — so changing a gain failed a test of the
 /// evaluator.
 ///
 /// What stays below is **roster tests**: facts about this synth's own tables —
@@ -1048,6 +1049,7 @@ mod tests {
             shape,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         }
     }
 
@@ -1177,10 +1179,10 @@ mod tests {
     /// `vxn_core_matrix::golden`; the constants are roster facts and stay here.
     ///
     /// Spot-checks one dest per *kind* of unit rather than restating the table,
-    /// which would just be `DEST_GAIN` written twice.
+    /// which would just be the `gain =` column written twice.
     #[test]
     fn dest_gains_are_the_native_unit_scalings() {
-        let gain = |d: DestId| DEST_GAIN[d as usize];
+        let gain = |d: DestId| d.gain();
         // Semitone dests: ±24 st at full depth, per-op and global alike.
         assert_eq!(gain(DestId::GlobalPitch), 24.0);
         assert_eq!(gain(DestId::Op1Pitch), 24.0);
@@ -1197,8 +1199,8 @@ mod tests {
         assert_eq!(gain(DestId::Op1Pan), 1.0);
         assert_eq!(gain(DestId::StackDetune), 1.0);
         assert_eq!(gain(DestId::Lfo2Phase), 1.0);
-        // The sentinel row exists so `DEST_GAIN[dest as usize]` needs no
-        // off-by-one, and must never scale anything.
+        // The sentinel is inert — a slot with no dest is dropped before any
+        // gain is read — and reports the identity, which cannot mislead.
         assert_eq!(gain(DestId::None), 1.0);
     }
 
@@ -1231,7 +1233,7 @@ mod tests {
         SourceId::Velocity,
     ];
 
-    /// …and for its four destinations. Every one of these has `DEST_GAIN` 1.0
+    /// …and for its four destinations. Every one of these has gain 1.0
     /// and the identity taper, which is what lets a case's expectation —
     /// written against a roster with no gain and no taper — carry over
     /// unchanged. The assertion below holds them to it, so swapping in a scaled
@@ -1254,12 +1256,10 @@ mod tests {
     /// VXN2 has a single evaluator and no scalar twin to compare it against,
     /// which is exactly why it needs the shared table pointed at it.
     ///
-    /// Two deliberate mismatches in the translation, neither of which touches a
-    /// number: VXN2's slot has no on/off switch, so a switched-off case route
-    /// maps to an unwired one (the effect the switch has here is to make the
-    /// slot inert, and that is what is being checked); and VXN2 cooks depth at
-    /// table-rebuild time rather than in the evaluator, which is invisible
-    /// because every destination above takes the identity taper.
+    /// The translation is now literal in both places it used to fudge: a
+    /// switched-off case route maps to a switched-off slot (rather than an
+    /// unwired one standing in for the effect), and a case's depth goes in raw,
+    /// because [`RouteList::compile`] is what cooks (0333).
     #[test]
     fn the_shared_golden_vectors_hold_for_vxn2() {
         use vxn_core_matrix::golden::{CASES, NONE, expected_totals};
@@ -1267,7 +1267,7 @@ mod tests {
         use vxn_core_matrix::test_roster::TestRoster;
 
         for (i, d) in GOLDEN_DESTS.iter().enumerate() {
-            assert_eq!(DEST_GAIN[*d as usize], 1.0, "{d:?} is not a unit-gain dest");
+            assert_eq!(d.gain(), 1.0, "{d:?} is not a unit-gain dest");
             assert_eq!(d.cook_depth(0.5), 0.5, "{d:?} does not take the identity taper");
             assert_eq!(
                 GOLDEN_SOURCES[i].is_bipolar(),
@@ -1276,17 +1276,19 @@ mod tests {
             );
         }
 
+        let endpoint = |i: u8| {
+            if i == NONE {
+                SourceId::None
+            } else {
+                GOLDEN_SOURCES[i as usize]
+            }
+        };
         for case in CASES {
             let mut table = MatrixTable::default();
             for (i, r) in case.routes.iter().enumerate() {
                 let (polarity, shape) = curve_split(r.curve);
-                let source = if r.source == NONE || !r.enabled {
-                    SourceId::None
-                } else {
-                    GOLDEN_SOURCES[r.source as usize]
-                };
                 table.slots[i] = MatrixSlot {
-                    source,
+                    source: endpoint(r.source),
                     dest: if r.dest == NONE {
                         DestId::None
                     } else {
@@ -1295,12 +1297,9 @@ mod tests {
                     depth: r.depth,
                     polarity,
                     shape,
-                    scale_src: if r.scale_src == NONE {
-                        SourceId::None
-                    } else {
-                        GOLDEN_SOURCES[r.scale_src as usize]
-                    },
+                    scale_src: endpoint(r.scale_src),
                     scale_shape: Shape::from_u8(r.scale_bend),
+                    enabled: r.enabled,
                 };
             }
             let mut sources = [[0.0f32; STACK_LANES]; N_SOURCES];
@@ -1311,7 +1310,7 @@ mod tests {
 
             let want: [f32; 4] = expected_totals::<TestRoster, 4>(case);
             let mut out = [[0.0f32; STACK_LANES]; N_DESTS];
-            eval_dests(&table, &sources, &mut out);
+            eval_dests(&RouteList::compile(&table), &sources, &mut out);
 
             for d in 0..N_DESTS {
                 // A dest the case does not name must come out exactly zero, and
@@ -1548,8 +1547,8 @@ mod tests {
             // Cubic taper + ±24 st gain match per-op pitch exactly.
             assert_eq!(stack_pitch.cook_depth(0.5), op_pitch.cook_depth(0.5));
             assert_eq!(
-                DEST_GAIN[stack_pitch as usize],
-                DEST_GAIN[op_pitch as usize]
+                stack_pitch.gain(),
+                op_pitch.gain()
             );
         }
     }
@@ -1565,7 +1564,7 @@ mod tests {
             full_slot(SourceId::Lfo1, DestId::Op3StackPitch, 1.0, Shape::Lin);
         let sources = default_lane_sources();
         let mut out = [[0.0; STACK_LANES]; N_DESTS];
-        eval_dests(&table, &sources, &mut out);
+        eval_dests(&RouteList::compile(&table), &sources, &mut out);
         let di = DestId::Op3StackPitch.idx().unwrap();
         // Lfo1 = 0.5, depth 1, gain 24 → 12 st in its own column.
         for k in 0..STACK_LANES {
@@ -1708,11 +1707,11 @@ mod tests {
                     let mut table = MatrixTable::default();
                     table.slots[0] = slot;
                     let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
-                    eval_dests(&table, &sources, &mut out);
+                    eval_dests(&RouteList::compile(&table), &sources, &mut out);
                     // Route is source 1.0 × depth 1.0 × gain, so the dest value
                     // is the scale factor times that constant.
                     let expect = scale_norm(scale_src.is_bipolar(), v, shape)
-                        * DEST_GAIN[DestId::Op1Level as usize];
+                        * DestId::Op1Level.gain();
                     assert_eq!(
                         out[di][0], expect,
                         "{scale_src:?}/{shape:?}/{v}: loop {} vs scale_norm {expect}",

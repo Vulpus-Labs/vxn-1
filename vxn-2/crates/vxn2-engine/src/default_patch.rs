@@ -155,6 +155,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Lin,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     t.slots[1] = MatrixSlot {
         source: SourceId::VoiceRand,
@@ -164,6 +165,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Lin,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     t.slots[2] = MatrixSlot {
         source: SourceId::Velocity,
@@ -173,6 +175,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Exp,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     t.slots[3] = MatrixSlot {
         source: SourceId::ModWheel,
@@ -182,6 +185,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Lin,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     // Lane spread → per-carrier pan, wired explicitly through the matrix so
     // the macro is one of many possible spread → pan curves users can dial in.
@@ -193,6 +197,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Lin,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     t.slots[5] = MatrixSlot {
         source: SourceId::VoiceSpread,
@@ -202,6 +207,7 @@ pub fn default_matrix() -> MatrixTable {
         shape: Shape::Lin,
         scale_src: SourceId::None,
         scale_shape: Shape::Lin,
+        enabled: true,
     };
     t
 }

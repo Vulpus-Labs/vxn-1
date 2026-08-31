@@ -53,8 +53,8 @@ use vxn_core_app::{ParamDesc, ParamKind};
 
 use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
-    CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, N_SLOTS, Polarity, SHAPE_NAMES,
-    SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
+    CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, MatrixTableExt, N_SLOTS, Polarity,
+    SHAPE_NAMES, SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
 };
 use crate::params::{PARAMS, ParamId, Params};
 use crate::state::{LayerState, PluginState};

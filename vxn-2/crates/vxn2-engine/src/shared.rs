@@ -399,13 +399,15 @@ impl SharedParams {
             gestures: std::array::from_fn(|_| AtomicU64::new(0)),
             matrix_meta: std::array::from_fn(|s| {
                 let slot = default_matrix.slots[s];
-                let active = slot.source != crate::matrix::SourceId::None
-                    && slot.dest != crate::matrix::DestId::None;
                 AtomicU32::new(pack_matrix_meta(
                     slot.source as u8,
                     slot.dest as u8,
                     crate::matrix::curve_code(slot.polarity, slot.shape),
-                    active,
+                    // The slot's own switch, since 0333 — this used to be
+                    // re-derived from the endpoints because the slot had no
+                    // flag to read. Same answer for the factory patch, and the
+                    // right one for any table where the two differ.
+                    slot.is_active(),
                     slot.scale_src as u8,
                     slot.scale_shape as u8,
                 ))
@@ -507,13 +509,11 @@ impl SharedParams {
         let default_matrix = crate::default_patch::default_matrix();
         for s in 0..N_MATRIX_SLOTS {
             let slot = default_matrix.slots[s];
-            let active = slot.source != crate::matrix::SourceId::None
-                && slot.dest != crate::matrix::DestId::None;
             let packed = pack_matrix_meta(
                 slot.source as u8,
                 slot.dest as u8,
                 crate::matrix::curve_code(slot.polarity, slot.shape),
-                active,
+                slot.is_active(),
                 slot.scale_src as u8,
                 slot.scale_shape as u8,
             );
