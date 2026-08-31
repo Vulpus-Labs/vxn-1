@@ -128,6 +128,17 @@ pub use vxn_core_matrix::curve::{
     Polarity, SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split, scale_norm,
 };
 
+/// How a destination's summed total is moved from one control block's value to
+/// the next — the `smooth =` column of a roster row, re-exported from
+/// [`vxn_core_matrix::roster`].
+///
+/// Only [`Smoothing::QuantumCascade`] is read today, to derive [`PITCH_DESTS`].
+/// The rest is declaration ahead of its consumer: the shared smoother bank
+/// ([0335](../../../../tickets/open/0335-declared-target-smoothing.md)) is what
+/// turns the other classes into behaviour, and declaring them here first means
+/// that ticket is a consumer change rather than a data-entry pass over 51 rows.
+pub use vxn_core_matrix::roster::Smoothing;
+
 /// Slot count per patch. ADR §6 sets this at 16 for v1.
 pub const N_SLOTS: usize = 16;
 
@@ -135,26 +146,23 @@ pub const N_SLOTS: usize = 16;
 /// count are patch-state only.
 pub const N_CLAP_DEPTH_SLOTS: usize = 8;
 
-/// Granularity tier of a source or destination — how many independent values
-/// it carries per patch. Coarse → fine, and the discriminant order *is* the
-/// coarseness order (used by [`coherence`]).
+/// Granularity tier of a source or destination — how many independent values it
+/// carries per patch, re-exported from [`vxn_core_matrix::roster`] so that
+/// `crate::matrix::Tier` keeps meaning what it always did.
 ///
-/// - `PatchGlobal` — one value per patch (e.g. `lfo1`, `delay-mix`).
-/// - `PerStack` — one value per played voice/stack (e.g. `velocity`,
-///   `cutoff`). Broadcast across the stack's 8 unison lanes.
-/// - `PerLane` — one value per unison lane (e.g. `lfo2`, `op1-pitch`).
+/// This crate had its own three-variant copy, identical in variant names and
+/// discriminants, written before the shared crate existed. A destination's tier
+/// is now a column on its roster row (0332) and the generated `tier()` returns
+/// the shared type, so keeping a local duplicate would mean a conversion at
+/// every use for no gain. What still lives here is [`Coherence`] — the verdict
+/// vocabulary and the two special cases, which move in
+/// [0336](../../../../tickets/open/0336-coherence-in-the-shared-engine.md).
 ///
-/// A routing is **coherent** iff the source tier is coarser-or-equal to the
-/// dest tier: a coarser source broadcasts unambiguously to a finer dest; a
+/// The coarseness order is the discriminant order and [`coherence`] depends on
+/// it: a routing is **coherent** iff the source tier is coarser-or-equal to the
+/// dest tier — a coarser source broadcasts unambiguously to a finer dest; a
 /// finer source into a coarser dest is a lossy collapse (which lane wins?).
-/// See [`coherence`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum Tier {
-    PatchGlobal = 0,
-    PerStack = 1,
-    PerLane = 2,
-}
+pub use vxn_core_matrix::roster::Tier;
 
 /// Why a routing is degenerate/incoherent, or [`Coherence::Ok`] if it sounds.
 /// Single source of truth shared by the wiring (which sources to honour per
@@ -237,9 +245,9 @@ matrix_enum! {
     /// source forces a polarity decision at compile time and cannot drift from
     /// the row it belongs to.
     SourceId, fallback = None, names = SOURCE_NAMES,
-    labels = SOURCE_LABELS, polarity;
-    #[default]
-    None = 0, "none", "—", uni;
+    labels = SOURCE_LABELS, roster_names = ROSTER_SOURCE_NAMES,
+    roster_labels = ROSTER_SOURCE_LABELS, polarity;
+    sentinel None = 0, "none", "—";
     Lfo1 = 1, "lfo1", "LFO 1", bi;
     Lfo2 = 2, "lfo2", "LFO 2", bi;
     PitchEg = 3, "pitch-eg", "Pitch EG", bi;
@@ -336,256 +344,225 @@ matrix_enum! {
     /// - `Cutoff` / `Resonance` — the optional per-voice filter dests. Both
     ///   collapse to a per-stack scalar (lane-0). `Cutoff` is in octaves (log
     ///   domain); `Resonance` is an additive `[0, 1]` offset.
+    /// ## Reading a row
+    ///
+    /// `gain` converts the normalised `[-1, 1]` route product into the dest's
+    /// own unit, so a fixed depth is musically comparable across dest kinds:
+    /// 24.0 = ±24 semitones (±2 oct), 4.0 = ±4 octaves in a log domain
+    /// (`x · 2^v`), 7.0 = the 0..7 feedback clamp, 1.0 = the dest's own natural
+    /// full scale (a pan sweep, a `[0, 1]` mix offset, ±1 cycle of phase).
+    ///
+    /// `taper` is `cubic` on the 13 semitone dests and `linear` everywhere
+    /// else — the log-domain rate/cutoff dests and the `[-1, 1]`-scale stack
+    /// macros have a gain that is *already* log/ratio-shaped, so a depth taper
+    /// would double-bend the response. Note the taper set and the
+    /// `quantum_cascade` set overlap without coinciding: `Lfo2Phase` smooths
+    /// but is linear (gain 1.0), and the six stack-pitch dests taper but are
+    /// not smoothed.
+    ///
+    /// `smooth` is the class the *shared* smoother bank applies, not an
+    /// inventory of every motion this engine applies to a dest. Several dests
+    /// declare `block` and then move engine-side after the matrix — see the
+    /// comments on their rows and ADR 0003 §3.
     DestId, fallback = None, names = DEST_NAMES,
-    labels = DEST_LABELS;
-    #[default]
-    None = 0, "none", "—";
-    Op1Pitch = 1, "op1-pitch", "Op 1 Pitch";
-    Op1Level = 2, "op1-level", "Op 1 Level";
-    Op1Pan = 3, "op1-pan", "Op 1 Pan";
-    Op2Pitch = 4, "op2-pitch", "Op 2 Pitch";
-    Op2Level = 5, "op2-level", "Op 2 Level";
-    Op2Pan = 6, "op2-pan", "Op 2 Pan";
-    Op3Pitch = 7, "op3-pitch", "Op 3 Pitch";
-    Op3Level = 8, "op3-level", "Op 3 Level";
-    Op3Pan = 9, "op3-pan", "Op 3 Pan";
-    Op4Pitch = 10, "op4-pitch", "Op 4 Pitch";
-    Op4Level = 11, "op4-level", "Op 4 Level";
-    Op4Pan = 12, "op4-pan", "Op 4 Pan";
-    Op5Pitch = 13, "op5-pitch", "Op 5 Pitch";
-    Op5Level = 14, "op5-level", "Op 5 Level";
-    Op5Pan = 15, "op5-pan", "Op 5 Pan";
-    Op6Pitch = 16, "op6-pitch", "Op 6 Pitch";
-    Op6Level = 17, "op6-level", "Op 6 Level";
-    Op6Pan = 18, "op6-pan", "Op 6 Pan";
-    GlobalPitch = 19, "global-pitch", "Global Pitch";
-    Lfo1Rate = 20, "lfo1-rate", "LFO 1 Rate";
-    Lfo2Rate = 21, "lfo2-rate", "LFO 2 Rate";
-    Lfo2Phase = 22, "lfo2-phase", "LFO 2 Phase";
-    StackDetune = 23, "stack-detune", "Stack Detune";
-    StackSpread = 24, "stack-spread", "Stack Spread";
-    DelayMix = 25, "delay-mix", "Delay Mix";
-    ReverbMix = 26, "reverb-mix", "Reverb Mix";
-    Feedback = 27, "feedback", "Feedback";
-    Cutoff = 28, "cutoff", "Cutoff";
-    Resonance = 29, "resonance", "Resonance";
+    labels = DEST_LABELS, roster_names = ROSTER_DEST_NAMES,
+    roster_labels = ROSTER_DEST_LABELS, roster_gains = ROSTER_DEST_GAIN;
+    sentinel None = 0, "none", "—";
+    // `op{n}-level` / `op{n}-pan` declare `block` and then **ramp per-sample,
+    // linearly**, to each block's target in the engine's target application
+    // (ADR 0003 §3). That motion is not a smoother in the bank's sense and
+    // moving it into the bank would be a behaviour change — do not "fix" the
+    // column to match what the render does.
+    Op1Pitch = 1, "op1-pitch", "Op 1 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op1Level = 2, "op1-level", "Op 1 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op1Pan = 3, "op1-pan", "Op 1 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op2Pitch = 4, "op2-pitch", "Op 2 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op2Level = 5, "op2-level", "Op 2 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op2Pan = 6, "op2-pan", "Op 2 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op3Pitch = 7, "op3-pitch", "Op 3 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op3Level = 8, "op3-level", "Op 3 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op3Pan = 9, "op3-pan", "Op 3 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op4Pitch = 10, "op4-pitch", "Op 4 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op4Level = 11, "op4-level", "Op 4 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op4Pan = 12, "op4-pan", "Op 4 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op5Pitch = 13, "op5-pitch", "Op 5 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op5Level = 14, "op5-level", "Op 5 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op5Pan = 15, "op5-pan", "Op 5 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op6Pitch = 16, "op6-pitch", "Op 6 Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Op6Level = 17, "op6-level", "Op 6 Level", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op6Pan = 18, "op6-pan", "Op 6 Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    GlobalPitch = 19, "global-pitch", "Global Pitch", gain = 24.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    Lfo1Rate = 20, "lfo1-rate", "LFO 1 Rate", gain = 4.0, taper = linear,
+        tier = patch_global, smooth = block;
+    Lfo2Rate = 21, "lfo2-rate", "LFO 2 Rate", gain = 4.0, taper = linear,
+        tier = per_stack, smooth = block;
+    // Smoothed by the same cascade as the pitch dests (a phase offset stepping
+    // at a block edge clicks the same way), but **linear** and gain 1.0: it is
+    // a fraction of an LFO cycle, not semitones, so it takes no cubic taper.
+    Lfo2Phase = 22, "lfo2-phase", "LFO 2 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = quantum_cascade;
+    // `stack-detune` / `stack-spread` declare `block` and then take a
+    // **block-rate one-pole** engine-side (`STACK_MACRO_SMOOTH`, snap-on-fresh)
+    // folded into the pitch-mult recompute — target application, not routing
+    // (ADR 0003 §3). Their gain is 1.0 because both are multiplicative scale
+    // factors `(1 + depth·shape)`: depth 1 doubles the macro (0→2×).
+    StackDetune = 23, "stack-detune", "Stack Detune", gain = 1.0, taper = linear,
+        tier = per_stack, smooth = block;
+    StackSpread = 24, "stack-spread", "Stack Spread", gain = 1.0, taper = linear,
+        tier = per_stack, smooth = block;
+    DelayMix = 25, "delay-mix", "Delay Mix", gain = 1.0, taper = linear,
+        tier = patch_global, smooth = block;
+    ReverbMix = 26, "reverb-mix", "Reverb Mix", gain = 1.0, taper = linear,
+        tier = patch_global, smooth = block;
+    Feedback = 27, "feedback", "Feedback", gain = 7.0, taper = linear,
+        tier = per_lane, smooth = block;
+    // Cutoff modulates in the log/octave domain so a fixed depth is musically
+    // uniform across the cutoff range (ADR 0004 §7): the dest value is in
+    // *octaves* and the consumer applies `cutoff · 2^value`, so full depth is
+    // ±4 octaves (×16). Resonance is a plain `[0, 1]` additive offset. Neither
+    // is smoothed here: the OTA ladder ramps its own coefficients per frame,
+    // which already absorbs the block-edge step.
+    Cutoff = 28, "cutoff", "Cutoff", gain = 4.0, taper = linear,
+        tier = per_stack, smooth = block;
+    Resonance = 29, "resonance", "Resonance", gain = 1.0, taper = linear,
+        tier = per_stack, smooth = block;
     // Stack-pitch dests: a pitch route to `OpNStackPitch` bends op N *and its
     // whole ratio-coherent FM stack* by the same semitone delta (cook-time
-    // scatter). Same per-lane pitch semantics as `OpNPitch`.
-    Op1StackPitch = 30, "op1-stack-pitch", "Op 1 Stack Pitch";
-    Op2StackPitch = 31, "op2-stack-pitch", "Op 2 Stack Pitch";
-    Op3StackPitch = 32, "op3-stack-pitch", "Op 3 Stack Pitch";
-    Op4StackPitch = 33, "op4-stack-pitch", "Op 4 Stack Pitch";
-    Op5StackPitch = 34, "op5-stack-pitch", "Op 5 Stack Pitch";
-    Op6StackPitch = 35, "op6-stack-pitch", "Op 6 Stack Pitch";
-    // Per-op note-on phase offset dests: a continuous, ramped per-lane phase
-    // offset added at the sine read, on top of the static note-on
-    // `op{n}-phase`. Per-lane, linear (no cubic taper), gain 1.0 = ±1 cycle.
-    // Applied via the level/pan-style ramp, not the pitch smoother — it's a
-    // phase offset, not a frequency.
-    Op1Phase = 36, "op1-phase", "Op 1 Phase";
-    Op2Phase = 37, "op2-phase", "Op 2 Phase";
-    Op3Phase = 38, "op3-phase", "Op 3 Phase";
-    Op4Phase = 39, "op4-phase", "Op 4 Phase";
-    Op5Phase = 40, "op5-phase", "Op 5 Phase";
-    Op6Phase = 41, "op6-phase", "Op 6 Phase";
+    // scatter). Same per-lane ±24 st semantics as `OpNPitch` — hence the same
+    // gain and cubic taper — but the delta is scattered into every component
+    // op at cook time rather than smoothed, so these are **not** in the
+    // cascade. The taper column and the smoothing column part company here.
+    Op1StackPitch = 30, "op1-stack-pitch", "Op 1 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    Op2StackPitch = 31, "op2-stack-pitch", "Op 2 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    Op3StackPitch = 32, "op3-stack-pitch", "Op 3 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    Op4StackPitch = 33, "op4-stack-pitch", "Op 4 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    Op5StackPitch = 34, "op5-stack-pitch", "Op 5 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    Op6StackPitch = 35, "op6-stack-pitch", "Op 6 Stack Pitch", gain = 24.0,
+        taper = cubic, tier = per_lane, smooth = block;
+    // Per-op note-on phase offset dests: a continuous per-lane phase offset
+    // added at the sine read, on top of the static note-on `op{n}-phase`.
+    // Per-lane, linear (no cubic taper), gain 1.0 = ±1 cycle. Like the
+    // level/pan dests these declare `block` and then **ramp per-sample,
+    // linearly**, engine-side — it's a phase offset, not a frequency, so it
+    // does not belong on the pitch cascade (ADR 0003 §3).
+    Op1Phase = 36, "op1-phase", "Op 1 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op2Phase = 37, "op2-phase", "Op 2 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op3Phase = 38, "op3-phase", "Op 3 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op4Phase = 39, "op4-phase", "Op 4 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op5Phase = 40, "op5-phase", "Op 5 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op6Phase = 41, "op6-phase", "Op 6 Phase", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
     // Filter drive dest: scales the OTA ladder pre-gain. Per-stack scalar like
     // cutoff/resonance (collapses to lane 0). Log/octave domain (gain 4.0 = ±4
     // oct), consumer applies `drive · 2^value` then clamps to the [0.1, 16]
     // param range.
-    FilterDrive = 42, "filter-drive", "Filter Drive";
+    FilterDrive = 42, "filter-drive", "Filter Drive", gain = 4.0, taper = linear,
+        tier = per_stack, smooth = block;
     // Amp-EG rate dests: scale the amplitude envelope's march *rate* per unison
     // lane, so a `voice-spread → eg-rate` route makes the voices in a stack
     // evolve their envelopes at slightly different speeds. **Per-lane** (each
     // lane owns its EG) and **note-on static**: the value is resolved once at
     // note-on and folded into each lane's cooked EG rates
     // (`Stack::rescale_eg_rates`) — it does *not* track live sources during the
-    // note. Log/octave domain (gain 4.0 = ±4 oct = ×16 / ÷16 rate, like the
-    // LFO-rate / cutoff dests). `GlobalEgRate` scales all the envelopes (the six
-    // op amp EGs, the pitch EG, and the mod env); the per-op / per-env dests add
-    // on top of it.
-    GlobalEgRate = 43, "global-eg-rate", "Global EG Rate";
-    Op1EgRate = 44, "op1-eg-rate", "Op 1 EG Rate";
-    Op2EgRate = 45, "op2-eg-rate", "Op 2 EG Rate";
-    Op3EgRate = 46, "op3-eg-rate", "Op 3 EG Rate";
-    Op4EgRate = 47, "op4-eg-rate", "Op 4 EG Rate";
-    Op5EgRate = 48, "op5-eg-rate", "Op 5 EG Rate";
-    Op6EgRate = 49, "op6-eg-rate", "Op 6 EG Rate";
+    // note. That is why the nine eg-rate dests declare `smooth = block`:
+    // consumption-time semantics, not smoothing at all (ADR 0003 §3) — putting
+    // them on a smoother would give the bank state nothing ever reads.
+    // Log/octave domain (gain 4.0 = ±4 oct = ×16 / ÷16 rate, like the LFO-rate /
+    // cutoff dests): summing many unison lanes averages their envelopes, so a
+    // narrow span reads as almost no effect. The consumer clamps the summed
+    // octaves to ±4 so a multi-route stack can't run off. `GlobalEgRate` scales
+    // all the envelopes (the six op amp EGs, the pitch EG, and the mod env); the
+    // per-op / per-env dests add on top of it.
+    GlobalEgRate = 43, "global-eg-rate", "Global EG Rate", gain = 4.0,
+        taper = linear, tier = per_lane, smooth = block;
+    Op1EgRate = 44, "op1-eg-rate", "Op 1 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op2EgRate = 45, "op2-eg-rate", "Op 2 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op3EgRate = 46, "op3-eg-rate", "Op 3 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op4EgRate = 47, "op4-eg-rate", "Op 4 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op5EgRate = 48, "op5-eg-rate", "Op 5 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Op6EgRate = 49, "op6-eg-rate", "Op 6 EG Rate", gain = 4.0, taper = linear,
+        tier = per_lane, smooth = block;
     // Pitch-EG rate dest: scales the per-lane Pitch EG sweep rate, so a
     // `voice-spread → pitch-eg-rate` route decorrelates the pitch sweep across
     // the unison stack (chorusing). **Per-lane** like the amp eg-rate dests;
     // `GlobalEgRate` also feeds it. Same note-on-static log/octave (±4 oct)
-    // treatment.
-    PitchEgRate = 50, "pitch-eg-rate", "Pitch EG Rate";
+    // treatment, and `block` for the same reason.
+    PitchEgRate = 50, "pitch-eg-rate", "Pitch EG Rate", gain = 4.0,
+        taper = linear, tier = per_lane, smooth = block;
     // Mod-Env rate dest: scales the Mod Env's ADSR speed. The Mod Env is
     // one-per-voice (it drives per-stack targets like filter cutoff, where lane
     // decorrelation is meaningless), so this is **per-stack** — a `voice-spread`
     // source correctly reads as tier-collapse; drive it from per-stack sources
     // (velocity, key, LFO). `GlobalEgRate` (lane-0 collapse) also feeds it.
-    ModEnvRate = 51, "mod-env-rate", "Mod Env Rate";
+    ModEnvRate = 51, "mod-env-rate", "Mod Env Rate", gain = 4.0, taper = linear,
+        tier = per_stack, smooth = block;
 }
 
 /// Count of non-sentinel destinations. Derived from the generated table, like
 /// [`N_SOURCES`].
 pub const N_DESTS: usize = DEST_NAMES.len() - 1;
 
-/// Per-destination depth gain applied inside [`eval_dests`]. Depth widgets run
-/// a unitless `[-1, 1]`; each source is a normalized shape, and this table
+/// Per-destination depth gain applied inside [`eval_dests`], indexed by **wire
+/// discriminant** (`DestId as usize`, sentinel at 0). Depth widgets run a
+/// unitless `[-1, 1]`; each source is a normalized shape, and this table
 /// converts `depth × shape` to the dest's native unit so a fixed depth is
 /// musically comparable across dest kinds.
 ///
-/// **Unit table (`depth = 1` full-scale, per dest):**
-///
-/// | Dest | Gain | Native unit @ depth 1 |
-/// |---|---|---|
-/// | `op{N}-pitch`, `global-pitch` | 24.0 | ±24 semitones (±2 oct) |
-/// | `op{N}-level` | 1.0 | full multiplicative tremolo on the EG |
-/// | `op{N}-pan` | 1.0 | hard L↔R |
-/// | `feedback` | 7.0 | the 0..7 feedback clamp range |
-/// | `cutoff` | 4.0 | ±4 octaves (log domain, `cutoff · 2^v`) |
-/// | `resonance` | 1.0 | additive `[0, 1]` offset |
-/// | `lfo1-rate`, `lfo2-rate` | 4.0 | ±4 octaves (log domain, `rate · 2^v`) |
-/// | `stack-detune` | 1.0 | scales the note-on detune by `(1 + v)` (0→2×) |
-/// | `stack-spread` | 1.0 | scales the VoiceSpread width by `(1 + v)` |
-/// | `delay-mix`, `reverb-mix` | 1.0 | additive `[0, 1]` mix offset |
-/// | `lfo2-phase` | 1.0 | ±1 full LFO2 cycle of per-lane phase offset |
-/// | `op{N}-phase` | 1.0 | ±1 full carrier cycle of per-lane phase offset |
-///
-/// **Cubic taper:** the 7 semitone pitch dests (`global-pitch`, `op{N}-pitch`)
-/// additionally take a `d³` taper on the stored depth before the gain (see
-/// [`DestId::cook_depth`]) to widen the musical low end. All other dests —
-/// including the log-domain rate/cutoff and the `[-1,1]`-scale stack macros —
-/// stay **linear**: their gain is already log/ratio-shaped, so a depth taper
-/// would double-bend the response.
+/// Each value is the `gain =` column of the destination's roster row, which is
+/// also where the per-dest rationale now lives — this is a *view* of the row
+/// list, not a second list to keep in step (0332). The storage-indexed twin the
+/// shared roster seam reads is [`ROSTER_DEST_GAIN`]; both are generated from the
+/// same rows and this one exists only because vxn-2's evaluator still indexes by
+/// discriminant. It retires when
+/// [0333](../../../../tickets/open/0333-share-slot-and-route-compilation.md)
+/// moves the lookup onto storage indices.
 pub const DEST_GAIN: [f32; N_DESTS + 1] = {
     let mut g = [1.0_f32; N_DESTS + 1];
-    g[DestId::Op1Pitch as usize] = 24.0;
-    g[DestId::Op2Pitch as usize] = 24.0;
-    g[DestId::Op3Pitch as usize] = 24.0;
-    g[DestId::Op4Pitch as usize] = 24.0;
-    g[DestId::Op5Pitch as usize] = 24.0;
-    g[DestId::Op6Pitch as usize] = 24.0;
-    g[DestId::GlobalPitch as usize] = 24.0;
-    // Stack-pitch dests carry the same ±24 st semitone span as per-op pitch —
-    // the scatter adds this delta into every component op's pitch.
-    g[DestId::Op1StackPitch as usize] = 24.0;
-    g[DestId::Op2StackPitch as usize] = 24.0;
-    g[DestId::Op3StackPitch as usize] = 24.0;
-    g[DestId::Op4StackPitch as usize] = 24.0;
-    g[DestId::Op5StackPitch as usize] = 24.0;
-    g[DestId::Op6StackPitch as usize] = 24.0;
-    g[DestId::Feedback as usize] = 7.0;
-    // Cutoff modulates in the log/octave domain so a fixed depth is musically
-    // uniform across the cutoff range (ADR 0004 §7): the dest value is in
-    // *octaves*; the consumer applies `cutoff · 2^value`. Full depth = ±4
-    // octaves — so e.g. mod-env [0,1] at full depth sweeps cutoff up four
-    // octaves (×16). (Key-tracking is a dedicated engine control, not a matrix
-    // route.) Resonance is a plain `[0, 1]` additive offset (1.0).
-    g[DestId::Cutoff as usize] = 4.0;
-    // LFO-rate dests modulate in the log/octave domain: the dest value is in
-    // *octaves*; the consumer applies `rate · 2^value`. Full depth = ±4
-    // octaves, matching the cutoff span (a fixed depth is musically uniform
-    // across the rate range).
-    g[DestId::Lfo1Rate as usize] = 4.0;
-    g[DestId::Lfo2Rate as usize] = 4.0;
-    // Filter drive modulates in the log/octave domain like cutoff: the dest
-    // value is in *octaves*; the consumer applies `drive · 2^value` then clamps
-    // to the [0.1, 16] param range. The drive param's own taper is exponential
-    // around 1.0, so a log-domain mod is musically uniform. Full depth = ±4
-    // octaves (×16 / ÷16), spanning the whole drive range.
-    g[DestId::FilterDrive as usize] = 4.0;
-    // stack-detune / stack-spread are multiplicative scale factors
-    // `(1 + depth·shape)`; gain 1.0 means depth 1 doubles the macro (0→2×).
-    // Left at the table default of 1.0 — listed here so the audit is explicit.
-    //
-    // eg-rate dests modulate in the log/octave domain like the LFO-rate /
-    // cutoff / filter-drive dests: the value is in *octaves* and the consumer
-    // applies `rate · 2^value` once at note-on. Full depth = ±4 octaves (×16 /
-    // ÷16 the EG speed), matching the sibling rate dests — summing many unison
-    // lanes averages their envelopes, so a narrow span reads as almost no effect;
-    // ±4 oct gives the spread real audible bite (dial back with depth). The
-    // consumer clamps the summed octaves to ±4 so a multi-route stack can't run
-    // off. Note the `voice-spread` *source* is itself scaled by the Stack-Spread
-    // param, so a low spread setting shrinks this route regardless of depth.
-    g[DestId::GlobalEgRate as usize] = 4.0;
-    g[DestId::Op1EgRate as usize] = 4.0;
-    g[DestId::Op2EgRate as usize] = 4.0;
-    g[DestId::Op3EgRate as usize] = 4.0;
-    g[DestId::Op4EgRate as usize] = 4.0;
-    g[DestId::Op5EgRate as usize] = 4.0;
-    g[DestId::Op6EgRate as usize] = 4.0;
-    g[DestId::PitchEgRate as usize] = 4.0;
-    g[DestId::ModEnvRate as usize] = 4.0;
+    let mut i = 0;
+    // `DestId::ALL` is in discriminant order (`ALL[i] as u8 == i`), so this is
+    // the same table the hand-written one built, filled in one pass.
+    while i < DestId::ALL.len() {
+        g[i] = DestId::ALL[i].gain();
+        i += 1;
+    }
     g
 };
 
 impl DestId {
-    /// Granularity tier of this dest. Exhaustive — a new dest
-    /// forces a tier decision at compile time. `None` reports the finest tier
-    /// (inert; [`coherence`] short-circuits `None`).
-    ///
-    /// Per-op dests, `global-pitch`, `feedback`, `lfo2-phase` are **per-lane**
-    /// (applied per unison lane). `lfo2-rate`, `stack-detune`, `stack-spread`,
-    /// `cutoff`, `resonance` are **per-stack** (one value per voice; filter +
-    /// LFO2 rate are stack-scalar). `lfo1-rate`, `delay-mix`, `reverb-mix` are
-    /// **patch-global**.
-    #[inline]
-    pub const fn tier(self) -> Tier {
-        match self {
-            DestId::None => Tier::PerLane,
-            DestId::Lfo1Rate | DestId::DelayMix | DestId::ReverbMix => Tier::PatchGlobal,
-            DestId::Lfo2Rate
-            | DestId::StackDetune
-            | DestId::StackSpread
-            | DestId::Cutoff
-            | DestId::Resonance
-            | DestId::FilterDrive => Tier::PerStack,
-            DestId::Op1Pitch
-            | DestId::Op1Level
-            | DestId::Op1Pan
-            | DestId::Op2Pitch
-            | DestId::Op2Level
-            | DestId::Op2Pan
-            | DestId::Op3Pitch
-            | DestId::Op3Level
-            | DestId::Op3Pan
-            | DestId::Op4Pitch
-            | DestId::Op4Level
-            | DestId::Op4Pan
-            | DestId::Op5Pitch
-            | DestId::Op5Level
-            | DestId::Op5Pan
-            | DestId::Op6Pitch
-            | DestId::Op6Level
-            | DestId::Op6Pan
-            | DestId::GlobalPitch
-            | DestId::Feedback
-            | DestId::Lfo2Phase
-            | DestId::Op1StackPitch
-            | DestId::Op2StackPitch
-            | DestId::Op3StackPitch
-            | DestId::Op4StackPitch
-            | DestId::Op5StackPitch
-            | DestId::Op6StackPitch
-            | DestId::Op1Phase
-            | DestId::Op2Phase
-            | DestId::Op3Phase
-            | DestId::Op4Phase
-            | DestId::Op5Phase
-            | DestId::Op6Phase
-            | DestId::GlobalEgRate
-            | DestId::Op1EgRate
-            | DestId::Op2EgRate
-            | DestId::Op3EgRate
-            | DestId::Op4EgRate
-            | DestId::Op5EgRate
-            | DestId::Op6EgRate
-            | DestId::PitchEgRate => Tier::PerLane,
-            // Mod Env is one-per-voice → its rate dest collapses to lane 0.
-            DestId::ModEnvRate => Tier::PerStack,
-        }
-    }
-
     #[inline]
     pub const fn idx(self) -> Option<usize> {
         match self {
@@ -593,63 +570,42 @@ impl DestId {
             _ => Some(self as usize - 1),
         }
     }
-
-    /// Cubic depth taper for the ±24 st semitone dests. Linear depth puts
-    /// vibrato-scale amounts (≤ 0.5 st) inside the bottom 2% of widget
-    /// travel; `d³` keeps the sign and the full ±2 oct reach while widening
-    /// the musical low end (25% travel ≈ ±0.4 st, 50% ≈ ±3 st). Applied at
-    /// slot-cook time (block rate), never in the per-sample path. Non-pitch
-    /// dests pass through untouched — `Lfo2Phase` (gain 1.0) included.
-    #[inline]
-    pub fn cook_depth(self, depth: f32) -> f32 {
-        match self {
-            DestId::GlobalPitch
-            | DestId::Op1Pitch
-            | DestId::Op2Pitch
-            | DestId::Op3Pitch
-            | DestId::Op4Pitch
-            | DestId::Op5Pitch
-            | DestId::Op6Pitch
-            | DestId::Op1StackPitch
-            | DestId::Op2StackPitch
-            | DestId::Op3StackPitch
-            | DestId::Op4StackPitch
-            | DestId::Op5StackPitch
-            | DestId::Op6StackPitch => depth * depth * depth,
-            _ => depth,
-        }
-    }
-
-    /// Pitch-shaped destinations are zipper-sensitive: per-sample smoothing
-    /// applies. All others apply at block boundary.
-    #[inline]
-    pub fn is_pitch_shaped(self) -> bool {
-        matches!(
-            self,
-            DestId::GlobalPitch
-                | DestId::Lfo2Phase
-                | DestId::Op1Pitch
-                | DestId::Op2Pitch
-                | DestId::Op3Pitch
-                | DestId::Op4Pitch
-                | DestId::Op5Pitch
-                | DestId::Op6Pitch
-        )
-    }
 }
 
-/// Pitch-shaped destinations in canonical order. [`PitchSmoother`] rows are
-/// indexed by position in this list.
-pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = [
-    DestId::GlobalPitch,
-    DestId::Lfo2Phase,
-    DestId::Op1Pitch,
-    DestId::Op2Pitch,
-    DestId::Op3Pitch,
-    DestId::Op4Pitch,
-    DestId::Op5Pitch,
-    DestId::Op6Pitch,
-];
+/// Destinations the [`PitchSmoother`] cascade smooths, **derived** from the
+/// `smooth = quantum_cascade` column rather than listed a second time, in
+/// discriminant order. Smoother rows are indexed by position in this list; use
+/// [`pitch_smoother_row`] to name one rather than writing the position down.
+///
+/// Before 0332 this was a hand-kept constant with a hand-kept `is_pitch_shaped`
+/// predicate beside it, the two held together only by a test. Both are now the
+/// same column of the same row.
+pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = {
+    let mut out = [DestId::None; N_PITCH_DESTS];
+    let mut i = 0;
+    let mut n = 0;
+    while i < DestId::ALL.len() {
+        if matches!(DestId::ALL[i].smoothing(), Smoothing::QuantumCascade) {
+            out[n] = DestId::ALL[i];
+            n += 1;
+        }
+        i += 1;
+    }
+    out
+};
+
+/// Count of [`PITCH_DESTS`] — the [`PitchSmoother`]'s row count.
+pub const N_PITCH_DESTS: usize = {
+    let mut n = 0;
+    let mut i = 0;
+    while i < DestId::ALL.len() {
+        if matches!(DestId::ALL[i].smoothing(), Smoothing::QuantumCascade) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+};
 
 /// [`LaneDestVals`] row index for each [`PITCH_DESTS`] entry, same order.
 /// Since the accumulator is dest-major, `dest_vals[PITCH_DEST_ROWS[i]]` is
@@ -667,7 +623,29 @@ pub const PITCH_DEST_ROWS: [usize; N_PITCH_DESTS] = {
     rows
 };
 
-pub const N_PITCH_DESTS: usize = 8;
+/// Which [`PitchSmoother`] row carries `dest`, or `None` for a destination the
+/// cascade does not smooth.
+///
+/// [`PITCH_DESTS`] is derived from a column now, so its *order* is the dest
+/// enum's discriminant order and moves whenever a cascade-smoothed dest is
+/// added. Every consumer therefore asks for its row by name; a written-down
+/// literal would be right until the next roster row and then silently address
+/// someone else's pitch.
+///
+/// `const`, so a caller naming a dest it knows is smoothed resolves the row at
+/// compile time. It returns an `Option` rather than panicking on a miss because
+/// it is `pub`: a runtime caller (0335's bank walks classes it did not choose)
+/// gets a value to branch on instead of an audio-thread panic.
+pub const fn pitch_smoother_row(dest: DestId) -> Option<usize> {
+    let mut i = 0;
+    while i < N_PITCH_DESTS {
+        if PITCH_DESTS[i] as u8 == dest as u8 {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct MatrixSlot {
@@ -1240,15 +1218,35 @@ mod tests {
         assert_eq!(DestId::from_u8(51), DestId::ModEnvRate);
     }
 
+    /// `PITCH_DESTS` is now the `smooth = quantum_cascade` column, so the set it
+    /// names cannot disagree with itself and the old
+    /// `pitch_shaped_set_matches_constant` test has nothing left to check. What
+    /// is still worth pinning is the roster fact: *these* eight dests are the
+    /// ones the cascade smooths, and the taper column is a different set.
     #[test]
-    fn pitch_shaped_set_matches_constant() {
-        for d in PITCH_DESTS {
-            assert!(d.is_pitch_shaped(), "{d:?} missing from is_pitch_shaped");
+    fn cascade_smoothed_set_is_the_pitch_family() {
+        assert_eq!(
+            PITCH_DESTS,
+            [
+                DestId::Op1Pitch,
+                DestId::Op2Pitch,
+                DestId::Op3Pitch,
+                DestId::Op4Pitch,
+                DestId::Op5Pitch,
+                DestId::Op6Pitch,
+                DestId::GlobalPitch,
+                DestId::Lfo2Phase,
+            ]
+        );
+        for d in [DestId::Op1Level, DestId::DelayMix, DestId::StackDetune] {
+            assert_eq!(d.smoothing(), Smoothing::Block, "{d:?}");
         }
-        // Spot-check non-pitch-shaped dests.
-        assert!(!DestId::Op1Level.is_pitch_shaped());
-        assert!(!DestId::DelayMix.is_pitch_shaped());
-        assert!(!DestId::StackDetune.is_pitch_shaped());
+        // The six stack-pitch dests take the cubic taper without riding the
+        // cascade — the two columns overlap, they are not the same set.
+        assert_eq!(DestId::Op1StackPitch.smoothing(), Smoothing::Block);
+        assert_eq!(DestId::Op1StackPitch.cook_depth(0.5), 0.125);
+        // …and `Lfo2Phase` rides the cascade without the taper.
+        assert_eq!(DestId::Lfo2Phase.cook_depth(0.5), 0.5);
     }
 
     #[test]
@@ -1552,7 +1550,9 @@ mod tests {
         let sr = 48_000.0;
         let block_secs = 64.0 / sr;
         let mut s = PitchSmoother::new(block_secs, sr);
-        // Smoother row 0 is `GlobalPitch`; drive its accumulator row.
+        // Any cascade row will do — this asserts the filter's glide, not which
+        // dest sits where. Row order follows the `smooth = quantum_cascade`
+        // column (0332), so naming a specific dest here would go stale.
         let mut tgt = [[0.0; STACK_LANES]; N_DESTS];
         for k in 0..STACK_LANES {
             tgt[PITCH_DEST_ROWS[0]][k] = 1.0;

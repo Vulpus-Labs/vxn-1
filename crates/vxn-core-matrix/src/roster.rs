@@ -82,7 +82,7 @@ impl Tier {
 /// | `Block` | none — held for the control block | — | the default; most dests |
 /// | `Quantum` | one-pole | per render quantum | vxn-1b PWM, cross-mod, Pan |
 /// | `QuantumCascade` | two cascaded one-poles | per render quantum | pitch (both synths), vxn-1b `XModSweep` |
-/// | `PerSample` | one-pole | per frame | vxn-1b non-envelope Amp |
+/// | `PerSample` | one-pole | per frame | **nothing** — see the Amp exception below |
 ///
 /// They do **not** cover every *motion*. vxn-2 applies several kinds of
 /// engine-side movement after the matrix that are not smoothers in this sense —
@@ -93,7 +93,10 @@ impl Tier {
 /// a behaviour change and is out of E049's scope. vxn-1b's Amp is the same
 /// deliberate escape hatch: it declares `Block` and smooths only the
 /// non-envelope part of its VCA coefficient itself, because smoothing the
-/// envelope part would smear the attack.
+/// envelope part would smear the attack — which is why, as of 0332, no row in
+/// either roster declares `PerSample`. The class stays in the vocabulary
+/// because the *filter* it names is one vxn-1b runs; what no roster asks for is
+/// that filter over a destination's whole total.
 ///
 /// Consumed by
 /// [0335](../../../../tickets/open/0335-declared-target-smoothing.md), which

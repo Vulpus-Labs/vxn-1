@@ -120,61 +120,32 @@ pub fn eval_sources(inp: &SourceInputs) -> SourceVals {
 /// musically comparable across dest kinds (VXN2's `DEST_GAIN` idiom). Indexed by
 /// [`DestId::idx`].
 ///
+/// Generated from the destination row list (0332) and re-exported here under the
+/// name it has always had: each value is the `gain =` column of its row, and the
+/// row is also where that gain's rationale lives. It was a hand-written table in
+/// this module until three other structures keyed on the same destination —
+/// the taper, the tier and the smoothing class — grew into three more places to
+/// remember.
+///
 /// **Provisional** — matched to VXN1's fixed-route full-scale ranges (ADR 0004);
 /// the render-parity work (0202 render fork) may refine individual gains. The
 /// evaluator's *mechanics* (accumulation, curve, scale) are independent of these
 /// constants; only the felt depth-to-effect mapping is.
-///
-/// | Dest | Gain | Native unit @ depth 1 |
-/// |---|---|---|
-/// | `Pitch` | 12.0 | ±12 st (±1 oct vibrato) |
-/// | `XModSweep` | 48.0 | ±48 st (VXN1 wide sweep) |
-/// | `Pwm` | 0.5 | ±0.5 pulse-width fraction (both oscs) |
-/// | `Osc1Pwm` / `Osc2Pwm` | 0.5 | ±0.5 pulse-width fraction (one osc) |
-/// | `Cutoff` | 48.0 | ±48 st of cutoff |
-/// | `Resonance` | 1.0 | additive `[0, 1]` |
-/// | `HpfCutoff` | 48.0 | ±48 st of HPF cutoff |
-/// | `Amp` | 1.0 | full VCA gain (Env2→Amp @1 = VXN1 VCA) |
-/// | `CrossModAmount` | 4.0 | the 0..4 cross-mod range |
-/// | `Pan` | 1.0 | ±1 pan position (hard left .. hard right) |
-/// | `Env1Scale` / `Env2Scale` | 1.0 | ±1 octave of envelope time (0.5× .. 2×) |
-/// | `Lfo1Rate` | 2.0 | ±2 octaves of LFO rate (0.25× .. 4×) |
-/// | `Env1Sustain` / `Env2Sustain` | 1.0 | ±1 of sustain level (additive, clamped) |
-///
-/// **Cubic taper:** `Pitch` additionally takes a `d³` taper on the stored depth
-/// before this gain ([`DestId::cook_depth`]) so vibrato-scale amounts are
-/// dialable; every other dest stays linear.
-pub const DEST_GAIN: [f32; N_DESTS] = {
-    let mut g = [1.0_f32; N_DESTS];
-    g[DestId::Pitch.index()] = 12.0;
-    g[DestId::XModSweep.index()] = 48.0;
-    g[DestId::Pwm.index()] = 0.5;
-    g[DestId::Cutoff.index()] = 48.0;
-    g[DestId::Resonance.index()] = 1.0;
-    g[DestId::HpfCutoff.index()] = 48.0;
-    g[DestId::Amp.index()] = 1.0;
-    g[DestId::CrossModAmount.index()] = 4.0;
-    // Pan's native unit *is* the normalised depth: ±1 spans the image, so a
-    // route at full depth reaches hard left/right and nothing needs scaling.
-    g[DestId::Pan.index()] = 1.0;
-    // Same unit and gain as the combined `Pwm` (0261) — the three sum per osc,
-    // so a route moved from `Pwm` to `Osc1Pwm` keeps its felt depth.
-    g[DestId::Osc1Pwm.index()] = 0.5;
-    g[DestId::Osc2Pwm.index()] = 0.5;
-    // The envelope time scales are exponential (0268): their native unit is
-    // *octaves of time*, so gain 1.0 means depth 1 reaches the 2× rail and the
-    // range stays symmetric about unity (−1 → 0.5×, the same musical distance).
-    g[DestId::Env1Scale.index()] = 1.0;
-    g[DestId::Env2Scale.index()] = 1.0;
-    // LFO rate is exponential too (0269), but wants a wider reach than the
-    // envelopes: two octaves either way turns a 5 Hz wobble into a 1.25 Hz sway
-    // or a 20 Hz buzz, which is the range the wheel/velocity routes are for.
-    g[DestId::Lfo1Rate.index()] = 2.0;
-    // Sustain is an absolute `[0, 1]` level and the dest is *additive* (0270),
-    // so unity gain means depth 1 spans the full range in either direction.
-    g[DestId::Env1Sustain.index()] = 1.0;
-    g[DestId::Env2Sustain.index()] = 1.0;
-    g
+pub use crate::matrix::ROSTER_DEST_GAIN as DEST_GAIN;
+
+/// The alias holds only while the evaluator's index and the roster's are the
+/// same number: the generated table drops the sentinel, so its row 0 is the
+/// first real destination and [`DestId::index`] must agree, row for row.
+const _: () = {
+    assert!(DEST_GAIN.len() == N_DESTS);
+    let mut i = 0;
+    while i < N_DESTS {
+        // Ask `index()` for the row rather than assuming it is `i`: that is the
+        // agreement being pinned, and indexing by `i` would hold by
+        // construction of the macro whatever `index()` did.
+        assert!(DEST_GAIN[DestId::ALL[i + 1].index()] == DestId::ALL[i + 1].gain());
+        i += 1;
+    }
 };
 
 /// Widest envelope-time excursion, in octaves of time: ±1 octave → the
