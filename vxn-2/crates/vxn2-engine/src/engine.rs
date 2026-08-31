@@ -50,7 +50,7 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
-    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, Shape,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, Shape,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -78,15 +78,39 @@ const OP_STACK_PITCH_BASE_IDX: usize = DestId::Op1StackPitch.idx().unwrap();
 /// LFO) is ramped, keeping the re-cooked detune zipper-free at musical rates.
 /// ~0.5 ⇒ converges within a few blocks (~ms).
 const STACK_MACRO_SMOOTH: f32 = 0.5;
-/// Row of `Lfo2Phase` inside the per-stack `PitchSmoother` (the smoother's
-/// row order is `PITCH_DESTS`: `[GlobalPitch, Lfo2Phase, Op1..Op6]`). The
-/// matrix `*→lfo2_phase` route reads this smoother row and applies it as a
-/// per-lane LFO2 phase offset.
-const LFO2_PHASE_SMOOTHER_ROW: usize = 1;
-const _: () = assert!(matches!(
-    PITCH_DESTS[LFO2_PHASE_SMOOTHER_ROW],
-    DestId::Lfo2Phase
-));
+/// Row of `Lfo2Phase` inside the per-stack `PitchSmoother`. The matrix
+/// `*→lfo2_phase` route reads this smoother row and applies it as a per-lane
+/// LFO2 phase offset.
+///
+/// Asked for by name rather than written down: `PITCH_DESTS` is derived from the
+/// `smooth = quantum_cascade` column (0332), so its order follows the dest
+/// discriminants and shifts the moment another cascade-smoothed dest is added.
+const LFO2_PHASE_SMOOTHER_ROW: usize = pitch_smoother_row(DestId::Lfo2Phase);
+/// Row of `GlobalPitch`, and the rows of the six `OpNPitch` dests, in the same
+/// smoother — the rest of what `project_pitch_state` copies out.
+const GLOBAL_PITCH_SMOOTHER_ROW: usize = pitch_smoother_row(DestId::GlobalPitch);
+const OP_PITCH_SMOOTHER_ROWS: [usize; vxn2_dsp::algo::N_OPS] = {
+    let mut rows = [0_usize; vxn2_dsp::algo::N_OPS];
+    let mut i = 0;
+    while i < vxn2_dsp::algo::N_OPS {
+        // Per-op dests are op-major with a stride of 3 (`pitch, level, pan`),
+        // which this module's `Op1Pitch.idx() == 0` assertion block pins.
+        rows[i] = pitch_smoother_row(DestId::ALL[DestId::Op1Pitch as usize + 3 * i]);
+        i += 1;
+    }
+    rows
+};
+
+/// [`crate::matrix::pitch_smoother_row`] for the const call sites above, which
+/// name a destination they *know* rides the cascade — so a miss is a typo in
+/// this file and belongs at compile time, not in an `Option` every use has to
+/// unwrap.
+const fn pitch_smoother_row(dest: DestId) -> usize {
+    match crate::matrix::pitch_smoother_row(dest) {
+        Some(row) => row,
+        None => panic!("dest does not ride the pitch cascade — check its `smooth =` column"),
+    }
+}
 /// Lowest cutoff the ladder is driven to — C0 (MIDI 12), ≈16.35 Hz. Lets a
 /// fully key-tracked, C0-based cutoff reach bass pitches.
 const CUTOFF_MIN_HZ: f32 = 16.3516;
@@ -1759,9 +1783,10 @@ impl Engine {
             //           (applied after this block's lfo2.eval in STAGE 3). ==
             // LFO2 phase offset (`*→lfo2_phase`). The smoothed
             // per-lane Lfo2Phase value rides the same PitchSmoother as the
-            // pitch dests (it is `is_pitch_shaped`); read its row and apply
-            // the *delta* vs last block as a wrapping Q32 add to each lane's
-            // LFO2 phase. Delta-not-absolute so a static offset settles to a
+            // pitch dests (its row declares `smooth = quantum_cascade`); read
+            // its row and apply the *delta* vs last block as a wrapping Q32
+            // add to each lane's LFO2 phase.
+            // Delta-not-absolute so a static offset settles to a
             // fixed scatter instead of running away. This lands *after* this
             // block's `lfo2.eval` (top of loop), so it takes effect on the
             // next block — a one-block latency, consistent with the other
@@ -2600,20 +2625,19 @@ fn scatter_stack_pitch(dest_vals: &mut LaneDestVals, masks: &[u8; vxn2_dsp::algo
 }
 
 /// Copy a smoother's current pitch state into the stack's per-lane pitch-mod
-/// fields. [`crate::matrix::PITCH_DESTS`] order: `[GlobalPitch, Lfo2Phase,
-/// Op1Pitch .. Op6Pitch]` — `Lfo2Phase` (row 1) is *not* projected here: it
-/// is consumed directly in `process_block` as a per-lane LFO2 phase offset,
-/// so this fn skips row 1 and projects only the pitch dests.
+/// fields. The `Lfo2Phase` row shares the cascade but is *not* projected here:
+/// it is consumed directly in `process_block` as a per-lane LFO2 phase offset,
+/// so this fn touches only the rows that are semitones.
 fn project_pitch_state(
     stack: &mut vxn2_dsp::stack::Stack,
     st: &[[f32; STACK_LANES]; N_PITCH_DESTS],
 ) {
     for k in 0..STACK_LANES {
-        stack.modulation.global_pitch_mod_st[k] = st[0][k];
+        stack.modulation.global_pitch_mod_st[k] = st[GLOBAL_PITCH_SMOOTHER_ROW][k];
     }
     for op_i in 0..vxn2_dsp::algo::N_OPS {
         for k in 0..STACK_LANES {
-            stack.modulation.op_pitch_mod_st[op_i][k] = st[2 + op_i][k];
+            stack.modulation.op_pitch_mod_st[op_i][k] = st[OP_PITCH_SMOOTHER_ROWS[op_i]][k];
         }
     }
 }
@@ -3332,9 +3356,10 @@ mod tests {
             let slot = (0..N_STACKS)
                 .find(|&i| !e.alloc.stacks[i].is_idle())
                 .expect("note is held");
-            let s0 = e.pitch_smoothers[slot].current()[0][0];
+            let s0 = e.pitch_smoothers[slot].current()[GLOBAL_PITCH_SMOOTHER_ROW][0];
             e.process_block(&mut l, &mut r);
-            let t = e.dest_vals[slot][crate::matrix::PITCH_DEST_ROWS[0]][0];
+            let row = crate::matrix::PITCH_DEST_ROWS[GLOBAL_PITCH_SMOOTHER_ROW];
+            let t = e.dest_vals[slot][row][0];
             max_block_jump = max_block_jump.max((t - s0).abs());
             max_quantum_step = max_quantum_step.max((a * (t - s0)).abs());
         }
@@ -3374,8 +3399,9 @@ mod tests {
         let slot = (0..N_STACKS)
             .find(|&i| !e.alloc.stacks[i].is_idle())
             .expect("note is held");
-        let state = e.pitch_smoothers[slot].current()[0][0];
-        let target = e.dest_vals[slot][crate::matrix::PITCH_DEST_ROWS[0]][0];
+        let state = e.pitch_smoothers[slot].current()[GLOBAL_PITCH_SMOOTHER_ROW][0];
+        let row = crate::matrix::PITCH_DEST_ROWS[GLOBAL_PITCH_SMOOTHER_ROW];
+        let target = e.dest_vals[slot][row][0];
         assert!(target > 0.5, "fixture: mod wheel must drive the target");
         assert!(
             (state - target).abs() < 1e-5,

@@ -49,9 +49,9 @@ matrix_enum! {
     /// 0198) and `NoteRandom` (per-voice latch from 0199) — and the two stack
     /// positions, `Spread` (knob-scaled, 0260) and `StackPos` (raw, 0308).
     SourceId, fallback = None, names = SOURCE_NAMES,
-    labels = SOURCE_LABELS, polarity;
-    #[default]
-    None = 0, "none", "—", uni;
+    labels = SOURCE_LABELS, roster_names = ROSTER_SOURCE_NAMES,
+    roster_labels = ROSTER_SOURCE_LABELS, polarity;
+    sentinel None = 0, "none", "—";
     Env1 = 1, "env1", "Env 1", uni;
     Env2 = 2, "env2", "Env 2", uni;
     Lfo1 = 3, "lfo1", "LFO 1", bi;
@@ -123,30 +123,83 @@ matrix_enum! {
     /// used to reach. `XModSweep` is the wide, mode-aware osc-sweep target (inherits
     /// VXN1 ADR 0004's mode-gated behaviour); `CrossModAmount` modulates the FM/sync
     /// index.
+    /// ## Reading a row
+    ///
+    /// `gain` converts the normalised `[-1, 1]` route product into the dest's
+    /// own unit (semitones of pitch or cutoff, a pulse-width fraction, octaves
+    /// of envelope time), so a fixed depth is musically comparable across dest
+    /// kinds. `taper` is `cubic` only on `Pitch`; `tier` is `per_lane` for every
+    /// row, because VXN1b's matrix is flat — the tier column is the degenerate
+    /// case of VXN2's model rather than a rival one, and it costs nothing until
+    /// this synth grows a patch-global destination.
+    ///
+    /// `smooth` is the class the smoother bank applies to the dest's summed
+    /// total ([`crate::mod_smoothing`]), not an inventory of every motion the
+    /// render applies — see the comment on `Amp`.
+    ///
+    /// The taper is applied at *consumption* ([`crate::eval::eval_dests`]),
+    /// never to the stored slot depth: the CLAP param, the preset file and the
+    /// state blob all stay linear, so automation and round-trips are unaffected.
     DestId, fallback = None, names = DEST_NAMES,
-    labels = DEST_LABELS;
-    #[default]
-    None = 0, "none", "—";
-    Pitch = 1, "pitch", "Pitch";
-    XModSweep = 2, "xmod-sweep", "Cross Mod Sweep";
-    Pwm = 3, "pwm", "PWM (Both)";
-    Cutoff = 4, "cutoff", "Cutoff";
-    Resonance = 5, "resonance", "Resonance";
-    HpfCutoff = 6, "hpf-cutoff", "HPF Cutoff";
-    Amp = 7, "amp", "Amp";
-    CrossModAmount = 8, "cross-mod-amount", "Cross Mod Amt";
+    labels = DEST_LABELS, roster_names = ROSTER_DEST_NAMES,
+    roster_labels = ROSTER_DEST_LABELS, roster_gains = ROSTER_DEST_GAIN;
+    sentinel None = 0, "none", "—";
+    /// ±12 st (±1 oct) of vibrato, and the only `cubic` row. With a linear
+    /// depth the whole vibrato range lives in the bottom sliver of fader travel
+    /// — VXN1's default 0.05 st is 0.4% of the ±12 st span, so a single pixel of
+    /// movement is a semitone-scale jump and precise vibrato is undialable. `d³`
+    /// keeps the sign and the full ±12 st reach while widening the musical low
+    /// end: 25% travel ≈ ±0.19 st, 50% ≈ ±1.5 st, 100% ≈ ±12 st.
+    Pitch = 1, "pitch", "Pitch", gain = 12.0, taper = cubic,
+        tier = per_lane, smooth = quantum_cascade;
+    // The wide osc sweep rides the same cascade as `Pitch` (a stepped sweep
+    // clicks the same way) but stays **linear**: it is a sweep amount, not a
+    // tuning offset, so a depth taper would fight the range it exists to reach.
+    XModSweep = 2, "xmod-sweep", "Cross Mod Sweep", gain = 48.0, taper = linear,
+        tier = per_lane, smooth = quantum_cascade;
+    Pwm = 3, "pwm", "PWM (Both)", gain = 0.5, taper = linear,
+        tier = per_lane, smooth = quantum;
+    // `Cutoff` / `HpfCutoff` are deliberately **not** tapered: their gain is
+    // already log/semitone-shaped, so a depth taper would double-bend the
+    // response (same rule as VXN2). Nor are they smoothed here — the OTA ladder
+    // ramps its own coefficients per frame (`bank::prepare_ramp` /
+    // `tick_coeffs`), which already absorbs their block-edge steps.
+    Cutoff = 4, "cutoff", "Cutoff", gain = 48.0, taper = linear,
+        tier = per_lane, smooth = block;
+    Resonance = 5, "resonance", "Resonance", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    HpfCutoff = 6, "hpf-cutoff", "HPF Cutoff", gain = 48.0, taper = linear,
+        tier = per_lane, smooth = block;
+    // **`block` is deliberate here, and is the one documented exception in
+    // ADR 0003 §3 — do not "fix" it to `per_sample`.** VXN1b's VCA smooths only
+    // the *non-envelope* part of its Amp coefficient, per frame; the envelope
+    // part has to stay per-frame exact or the attack smears. That factoring is a
+    // property of this synth's VCA, not of routing, so the engine is not told
+    // about it: the bank splits the coefficient itself
+    // (`bank`'s `amp_stat` one-pole) and the roster declares the class the
+    // *shared* bank would apply to the whole total, which is none.
+    Amp = 7, "amp", "Amp", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
+    CrossModAmount = 8, "cross-mod-amount", "Cross Mod Amt", gain = 4.0,
+        taper = linear, tier = per_lane, smooth = quantum;
     /// Voice position in the stereo image, `[-1, 1]`. Replaces VXN1's
     /// hard-wired `pan_position(lane) × spread`: the default patch routes
     /// [`SourceId::Spread`] here at depth 1, and anything else routed on top
     /// (LFO auto-pan, an envelope throwing a transient left) sums with it.
-    Pan = 9, "pan", "Pan";
+    Pan = 9, "pan", "Pan", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = quantum;
     /// Osc 1's pulse width alone (0261). Sums with [`DestId::Pwm`], which stays
     /// as the both-oscillators route: osc 1's offset is `Pwm + Osc1Pwm`.
     /// Two detuned pulse oscs get their thickness from the widths sweeping
     /// *independently*, which a single shared dest cannot express.
-    Osc1Pwm = 10, "osc1-pwm", "Osc 1 PWM";
+    ///
+    /// Same gain as the combined [`DestId::Pwm`] because the two sum per
+    /// oscillator: a route moved from one to the other keeps its felt depth.
+    Osc1Pwm = 10, "osc1-pwm", "Osc 1 PWM", gain = 0.5, taper = linear,
+        tier = per_lane, smooth = quantum;
     /// Osc 2's pulse width alone. Mirror of [`DestId::Osc1Pwm`].
-    Osc2Pwm = 11, "osc2-pwm", "Osc 2 PWM";
+    Osc2Pwm = 11, "osc2-pwm", "Osc 2 PWM", gain = 0.5, taper = linear,
+        tier = per_lane, smooth = quantum;
     /// Envelope 1's **A/D/R times**, as a multiplier cooked at note-on (0268):
     /// `2^x` over the dest total clamped to `[-1, 1]`, so the reachable range
     /// is 0.5× (half as long) .. 2.0× (twice as long) with 0 exactly unity.
@@ -154,10 +207,16 @@ matrix_enum! {
     ///
     /// Unlike every other dest this one is **not continuous**: the multiplier
     /// is latched when the voice triggers and held for the life of the note
-    /// (see [`crate::eval::env_time_scale`]).
-    Env1Scale = 12, "env1-scale", "Env 1 Scale";
+    /// (see [`crate::eval::env_time_scale`]). Latched, so there is nothing for a
+    /// smoother to glide: `smooth = block`.
+    ///
+    /// The gain is 1.0 because the native unit is *octaves of time* — depth 1
+    /// reaches the 2× rail and −1 the 0.5× one, the same musical distance.
+    Env1Scale = 12, "env1-scale", "Env 1 Scale", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
     /// Envelope 2's A/D/R times. Mirror of [`DestId::Env1Scale`].
-    Env2Scale = 13, "env2-scale", "Env 2 Scale";
+    Env2Scale = 13, "env2-scale", "Env 2 Scale", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
     /// Per-voice LFO 1's **rate**, as a multiplier on the resolved Hz (0269):
     /// `2^x` over the dest total clamped to `[-2, 2]`, so a full-depth route
     /// spans 0.25× .. 4× the panel rate with 0 exactly unity.
@@ -171,7 +230,12 @@ matrix_enum! {
     /// total: LFO 1 is itself a source, and the lanes tick before the matrix is
     /// evaluated, so a same-block read would be circular. The lag is one
     /// control block (32 samples, ~0.7 ms at 48 kHz).
-    Lfo1Rate = 14, "lfo1-rate", "LFO 1 Rate";
+    ///
+    /// Exponential like the envelope time scales but wanting a wider reach: two
+    /// octaves either way turns a 5 Hz wobble into a 1.25 Hz sway or a 20 Hz
+    /// buzz, which is the range the wheel/velocity routes are for.
+    Lfo1Rate = 14, "lfo1-rate", "LFO 1 Rate", gain = 2.0, taper = linear,
+        tier = per_lane, smooth = block;
     /// Envelope 1's **sustain level**, as an offset cooked at note-on (0270):
     /// the dest total is *added* to the patch sustain and clamped to `[0, 1]`,
     /// so depth 1 spans the whole range.
@@ -185,10 +249,13 @@ matrix_enum! {
     /// Latched at note-on like the time scales: the sustain level is the
     /// envelope's *held* value, so tracking it continuously would step a
     /// ringing note (and, through the decay rate it also sets, bend a decay
-    /// already in flight).
-    Env1Sustain = 15, "env1-sustain", "Env 1 Sustain";
+    /// already in flight). Latched, so `smooth = block`; unity gain, because an
+    /// additive `[0, 1]` level wants depth 1 to span the whole range.
+    Env1Sustain = 15, "env1-sustain", "Env 1 Sustain", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
     /// Envelope 2's sustain level. Mirror of [`DestId::Env1Sustain`].
-    Env2Sustain = 16, "env2-sustain", "Env 2 Sustain";
+    Env2Sustain = 16, "env2-sustain", "Env 2 Sustain", gain = 1.0, taper = linear,
+        tier = per_lane, smooth = block;
 }
 
 /// Count of non-sentinel destinations. Derived, like [`N_SOURCES`].
@@ -212,32 +279,6 @@ impl DestId {
         match self.idx() {
             Some(i) => i,
             None => 0,
-        }
-    }
-
-
-    /// Cubic depth taper for the semitone `Pitch` dest (VXN2's `cook_depth`
-    /// idiom). With a linear depth the whole vibrato range lives in the bottom
-    /// sliver of fader travel — VXN1's default 0.05 st is 0.4% of the ±12 st
-    /// span, so a single pixel of movement is a semitone-scale jump and precise
-    /// vibrato is undialable. `d³` keeps the sign and the full ±12 st reach
-    /// while widening the musical low end: 25% travel ≈ ±0.19 st, 50% ≈ ±1.5 st,
-    /// 100% ≈ ±12 st.
-    ///
-    /// Applied at *consumption* ([`crate::eval::eval_dests`]), never to the
-    /// stored slot depth — the CLAP param, preset file and state blob all stay
-    /// linear, so automation and round-trips are unaffected.
-    ///
-    /// Non-pitch dests pass through untouched. `Cutoff` / `HpfCutoff` are
-    /// deliberately excluded: their gain is already log/semitone-shaped, so a
-    /// depth taper would double-bend the response (same rule as VXN2). The
-    /// ±48 st `XModSweep` is left linear for now — it is a sweep amount, not a
-    /// tuning offset.
-    #[inline]
-    pub fn cook_depth(self, depth: f32) -> f32 {
-        match self {
-            DestId::Pitch => depth * depth * depth,
-            _ => depth,
         }
     }
 }
