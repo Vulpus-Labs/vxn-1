@@ -64,3 +64,34 @@ costs a future reader real time.
   slot type ends up is [0333](0333-share-slot-and-route-compilation.md)'s
   question; this ticket only stops vxn-1b keeping two copies of its own.
 - `priority: low` — compiler-enforced, no user-visible effect.
+
+## Close-out (2026-08-31)
+
+- `codec::apply_matrix_edit` is now a single delegation to
+  [`topology::apply_edit`](../../vxn-1b/crates/vxn1b-engine/src/topology.rs#L108):
+  7 insertions, 16 deletions, one file. The seven-arm `MatrixField` match and
+  the function-local `use vxn1b_engine::matrix::{DestId, Polarity, Shape,
+  SourceId}` are gone —
+  [codec.rs:497](../../vxn-1b/crates/vxn1b-wasm/src/codec.rs#L497).
+- Grep sweep `MatrixField::.* => slot\.` across `vxn-1b/`, `vxn-2/` and
+  `crates/` returns exactly seven lines, all in `topology.rs:113-119`. The only
+  other match over the field is `codec.rs`'s `matrix_field_code`, which is
+  `#[cfg(test)]` and encodes a wire byte rather than writing a slot.
+- Doc comment rewritten: it now names `topology::apply_edit` as the only
+  `MatrixField` write-match and lists the three callers that funnel through it.
+  The stale pointer to `SharedParams::edit_matrix_slot` is gone — 0338 had
+  already converted that method to a delegation
+  ([shared.rs:363](../../vxn-1b/crates/vxn1b-engine/src/shared.rs#L363)).
+- **Correction to the ticket's premise:** `MatrixField` does *not* become an
+  unused import. `unpack_matrix_addr`
+  ([codec.rs:151](../../vxn-1b/crates/vxn1b-wasm/src/codec.rs#L151)) still
+  constructs all seven variants from the wire byte, so the `codec.rs:60` import
+  stays. No new warnings.
+- Tests green, unchanged: `codec::tests::a_matrix_edit_retargets_the_slot_and_leaves_its_depth_alone`,
+  `topology::tests::apply_edit_ignores_an_out_of_range_slot`, and the wasm
+  round-trip cases. Full `cargo test --workspace` on the merged tree: 91 test
+  binaries, 0 failures. Node web suite 161/161.
+- Render hash unchanged and the null test is `-inf dBFS` on both synths — the
+  renders are bit-identical, as a decode-path refactor should be.
+- Landed via `e049/0339-fold-apply-edit` @ `f5dd46a`, merged to `main` in
+  `c58167c`.
