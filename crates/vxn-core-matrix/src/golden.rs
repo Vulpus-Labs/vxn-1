@@ -338,10 +338,12 @@ struct Compiled {
 /// differently on values that are not exactly representable, which is the
 /// difference the two paths exist to catch. [`CASES`] cannot see it (its values
 /// are chosen exact, so every grouping agrees); `paths_agree_on_values_that_do_not_round_exactly`
-/// can, and does. Note vxn-2's shipped loop groups the other way today
-/// (`shaped · depth · scale`) — that divergence is real, is not a bug in either,
-/// and is what
-/// [0334](../../../../tickets/open/0334-share-the-evaluator.md) settles.
+/// can, and does. vxn-2's shipped loop grouped the other way
+/// (`shaped · depth · scale`) until 0333 gave it a compiled
+/// [`crate::slot::Route`] carrying one pre-folded factor; both synths and this
+/// harness now group the same way,
+/// so [0334](../../../../tickets/open/0334-share-the-evaluator.md) inherits one
+/// association rather than reconciling two.
 fn eval_banked<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize>(
     routes: &[Route],
     src: &SourceLanes<NS, L>,

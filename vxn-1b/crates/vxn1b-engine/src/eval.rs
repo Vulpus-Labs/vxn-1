@@ -185,12 +185,21 @@ pub fn lfo_rate_scale(total: f32) -> f32 {
     total.clamp(-LFO_RATE_OCTAVES, LFO_RATE_OCTAVES).exp2()
 }
 
-/// The **topology half** of a slot's gain: `cook_depth(depth) · DEST_GAIN[dest]`.
+/// The **topology half** of a slot's gain: `cook_depth(depth) · gain(dest)`.
 /// Depends only on the patch, so a consumer that resolves routes once per block
 /// can hoist it out of its per-voice loop ([`crate::bank`]'s Amp factoring does).
+/// The same product [`RouteList::compile`] folds into [`Route::gain`], spelled
+/// once so the bank's Amp factoring and the compiled routes cannot drift.
+///
+/// Asks the destination for its gain rather than indexing [`DEST_GAIN`], which
+/// is equal for every real dest (asserted above) but not for the sentinel: the
+/// generated table is sentinel-free, so `DestId::None.index()`'s fold-to-0 would
+/// read `Pitch`'s 12 and quietly scale an unwired slot 12×. `gain()` answers
+/// 1.0 there, which is the identity a caller that forgot to check `is_active`
+/// would want.
 #[inline]
 pub(crate) fn slot_topology_gain(slot: &MatrixSlot) -> f32 {
-    slot.dest.cook_depth(slot.depth) * DEST_GAIN[slot.dest.index()]
+    slot.dest.cook_depth(slot.depth) * slot.dest.gain()
 }
 
 /// The **per-voice half** of a slot's gain: its `scale_src` VCA resolved against

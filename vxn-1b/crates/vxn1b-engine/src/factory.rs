@@ -212,13 +212,21 @@ mod tests {
 
     /// Every preset needs a VCA: without a route into `Amp` the patch is either
     /// silent or stuck open. Cheap guard against a bank edit that clears slot 0.
+    ///
+    /// `is_active`, not just the dest: a preset persists switched-off routes on
+    /// purpose, and the Amp scan skips them (0333), so a patch whose only Amp
+    /// route is parked renders silent while a dest-only test says it is fine.
     #[test]
     fn every_factory_preset_drives_the_amp() {
         for (category, contents) in factory_files() {
             let (meta, state, _) = read_preset(contents).expect("parses");
             assert!(
-                state.layers[0].matrix.slots.iter().any(|s| s.dest == DestId::Amp),
-                "`{category}/{}` layer 1 has no route into Amp",
+                state.layers[0]
+                    .matrix
+                    .slots
+                    .iter()
+                    .any(|s| s.dest == DestId::Amp && s.is_active()),
+                "`{category}/{}` layer 1 has no live route into Amp",
                 meta.name
             );
         }
