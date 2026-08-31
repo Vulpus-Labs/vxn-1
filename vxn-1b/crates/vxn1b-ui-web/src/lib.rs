@@ -281,11 +281,20 @@ fn assemble_faceplate(
 
 /// Serialise the mod-matrix vocab + **live** topology for the overlay (0219).
 /// The page reads it as
-/// `window.vxn.matrix = { sources, dests, polarities, shapes, slots }`: each
-/// vocab entry is `{value, name, label}` (value = the wire `u8`), and
-/// `slots[layer][i]` is `{source, dest, polarity, shape, scale, scaleShape,
+/// `window.vxn.matrix = { sources, dests, polarities, shapes, coherence,
+/// slots }`: each vocab entry is `{value, name, label}` (value = the wire `u8`),
+/// and `slots[layer][i]` is `{source, dest, polarity, shape, scale, scaleShape,
 /// enabled}` for slot `i`.
 /// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
+///
+/// `coherence[srcValue][destValue]` is the engine's verdict for that pairing as
+/// a machine-name string, sentinel row and column included — the same table
+/// VXN2's descriptor carries (0336). It sits beside `sources` / `dests` rather
+/// than inside `slots` because both layers share one roster, so the verdict is
+/// layer-independent. Every entry is `"ok"` today; the export is what makes a
+/// future patch-global destination visible in the faceplate the day it lands
+/// rather than a silently-collapsed route, and the page is free to ignore it
+/// until then.
 ///
 /// `matrices` MUST be the plugin's current per-layer topology, not the factory
 /// default: topology is non-automatable, so nothing replays it to a freshly
@@ -313,6 +322,7 @@ fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
         // the page never reads.
         "polarities": vocab(&POLARITY_NAMES, &POLARITY_LABELS),
         "shapes": vocab(&SHAPE_NAMES, &SHAPE_LABELS),
+        "coherence": vxn1b_engine::matrix::coherence_name_grid(),
         "slots": [slots_json(&matrices[0]), slots_json(&matrices[1])],
     })
     .to_string()

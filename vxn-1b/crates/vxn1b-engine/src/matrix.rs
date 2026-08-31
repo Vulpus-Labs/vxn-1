@@ -5,12 +5,19 @@
 //! sets (ADR 0001 §2–§3). This ticket is **types + defaults only** — evaluation
 //! (source fan-out, curve/scale application, dest smoothing) is 0202.
 //!
-//! VXN1b's matrix is **flat**, so — unlike VXN2 — there are no granularity
-//! *tiers* and no coherence rules: every source and destination is a per-lane
-//! (or patch-global) scalar the evaluator will read once per lane per control
-//! block. [`StackWidth`](crate::params::StackWidth) (0266) spends several lanes
-//! on one note, but that adds no tier — a stacked note's lanes are ordinary
-//! lanes, each evaluating the matrix for itself.
+//! VXN1b's matrix is **flat**: every source and destination is a per-lane
+//! scalar the evaluator reads once per lane per control block, so — unlike VXN2
+//! — no routing here is a lossy collapse and every coherence verdict is `Ok`.
+//! [`StackWidth`](crate::params::StackWidth) (0266) spends several lanes on one
+//! note, but that adds no tier — a stacked note's lanes are ordinary lanes,
+//! each evaluating the matrix for itself.
+//!
+//! Flat is the **degenerate case** of VXN2's granularity model rather than the
+//! absence of one, so the tier column and the [`coherence`] predicate are here
+//! (0336) and constant-`Ok` today. The failure they guard against is silent: a
+//! per-voice source driving a patch-global effect collapses to whichever lane
+//! happens to be lane 0, and adding a `delay-mix` destination is all it would
+//! take.
 //!
 //! A slot is `(source, dest, depth, curve, scale_src)`. `depth` mirrors the
 //! CLAP param (0200); the other four fields are **patch topology** (state + TOML,
@@ -33,6 +40,11 @@ pub use vxn_core_matrix::curve::{
     SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split,
 };
 
+/// Granularity tier of a source or destination, re-exported from
+/// [`vxn_core_matrix::roster`]. Every VXN1b endpoint declares `PerLane` — see
+/// the module header for why the column is here at all.
+pub use vxn_core_matrix::roster::Tier;
+
 /// Slot count — the single source of truth is the param table's slot-depth count
 /// ([`crate::params::MATRIX_SLOTS`]), so the topology and the automatable depths
 /// can never disagree on how many slots exist.
@@ -48,27 +60,47 @@ matrix_enum! {
     /// wheels), the two VXN1 lacks — `Aftertouch` (MPE per-voice pressure from
     /// 0198) and `NoteRandom` (per-voice latch from 0199) — and the two stack
     /// positions, `Spread` (knob-scaled, 0260) and `StackPos` (raw, 0308).
+    ///
+    /// `tier` is `per_lane` on every row, for the same reason it is on every
+    /// destination: VXN1b's matrix is flat, and the tier describes the
+    /// granularity *the matrix* sees. Every source here is read out of the
+    /// voice's own source table ([`crate::bank`]), one value per lane per
+    /// control block, including the ones that are a single patch-wide scalar
+    /// upstream — the wheels are broadcast into every lane before the matrix
+    /// runs. One granularity across the whole roster, so every coherence
+    /// verdict is `Ok` and the column costs this synth nothing.
+    ///
+    /// **Revisit this list, not just the destinations, the day VXN1b grows an
+    /// endpoint at another tier.** `mod-wheel` and `pitch-wheel` carry one
+    /// value per patch and `velocity` / `key` / `note-random` one per note, so
+    /// against a future patch-global destination (`delay-mix` is the obvious
+    /// one) a blanket `per_lane` would score `mod-wheel → delay-mix` a tier
+    /// collapse when it is the coherent case — a coarse source broadcasting to
+    /// a coarse dest. Declaring the truth now would be harmless but would put
+    /// the roster at odds with [ADR 0003](../../../../adrs/0003-vxn-core-matrix.md),
+    /// which states outright that *every* VXN1b endpoint is `PerLane`; the two
+    /// move together or neither does.
     SourceId, fallback = None, names = SOURCE_NAMES,
     labels = SOURCE_LABELS, roster_names = ROSTER_SOURCE_NAMES,
     roster_labels = ROSTER_SOURCE_LABELS, polarity;
     sentinel None = 0, "none", "—";
-    Env1 = 1, "env1", "Env 1", uni;
-    Env2 = 2, "env2", "Env 2", uni;
-    Lfo1 = 3, "lfo1", "LFO 1", bi;
-    Lfo2 = 4, "lfo2", "LFO 2", bi;
-    Velocity = 5, "velocity", "Velocity", uni;
-    Key = 6, "key", "Key", uni;
-    ModWheel = 7, "mod-wheel", "Mod Wheel", uni;
-    PitchWheel = 8, "pitch-wheel", "Pitch Wheel", bi;
-    Aftertouch = 9, "aftertouch", "Aftertouch", uni;
-    NoteRandom = 10, "note-random", "Note Rnd", uni;
+    Env1 = 1, "env1", "Env 1", uni, tier = per_lane;
+    Env2 = 2, "env2", "Env 2", uni, tier = per_lane;
+    Lfo1 = 3, "lfo1", "LFO 1", bi, tier = per_lane;
+    Lfo2 = 4, "lfo2", "LFO 2", bi, tier = per_lane;
+    Velocity = 5, "velocity", "Velocity", uni, tier = per_lane;
+    Key = 6, "key", "Key", uni, tier = per_lane;
+    ModWheel = 7, "mod-wheel", "Mod Wheel", uni, tier = per_lane;
+    PitchWheel = 8, "pitch-wheel", "Pitch Wheel", bi, tier = per_lane;
+    Aftertouch = 9, "aftertouch", "Aftertouch", uni, tier = per_lane;
+    NoteRandom = 10, "note-random", "Note Rnd", uni, tier = per_lane;
     /// The voice's own place in the stereo image: the lane's fixed
     /// position scaled by the `Spread` param, so a route into [`DestId::Pan`]
     /// at depth 1 reproduces VXN1's hard-wired unison spread exactly. Keeping
     /// the param's scaling *inside* the source is what lets Spread stay a
     /// front-panel knob instead of becoming "slot 3's depth". For the position
     /// *without* that scaling, use [`SourceId::StackPos`].
-    Spread = 11, "spread", "Spread", bi;
+    Spread = 11, "spread", "Spread", bi, tier = per_lane;
     /// The voice's raw place in its stack: `stack_spread(i, width)` in
     /// `[-1, 1]`, `0.0` for a width-1 stack — the same allocator position
     /// [`SourceId::Spread`] carries, but **without** the `Spread` param folded
@@ -80,7 +112,7 @@ matrix_enum! {
     /// widening the stereo image, and reads as dead at the knob's `0.0` default.
     /// This source is the position on its own, for routes that want the stack's
     /// shape rather than its picture.
-    StackPos = 12, "stack-pos", "Stack Pos", bi;
+    StackPos = 12, "stack-pos", "Stack Pos", bi, tier = per_lane;
 }
 
 /// Count of non-sentinel sources (`None` excluded). Derived from the generated
@@ -281,6 +313,70 @@ impl DestId {
             None => 0,
         }
     }
+}
+
+// ── Coherence ───────────────────────────────────────────────────────────────
+
+/// The coherence verdict vocabulary, re-exported from
+/// [`vxn_core_matrix::coherence`].
+///
+/// Every verdict this synth produces is [`Coherence::Ok`] today, and the test
+/// below asserts the whole grid is. That is not a reason to leave the surface
+/// out: VXN1b is the **degenerate case** of the same model rather than a
+/// tier-free one, and the moment a patch-global destination appears — a
+/// `delay-mix` or `reverb-mix` is exactly the addition — a per-voice source
+/// driving it collapses to whichever lane happens to be lane 0, silently. The
+/// machinery costs a flat roster nothing and is live the day that changes.
+pub use vxn_core_matrix::coherence::Coherence;
+
+/// VXN1b's coherence roster: the declared tiers, and **no special cases**.
+///
+/// The empty `special_case` is a decision, not an omission. VXN2 flags an LFO
+/// routed into its own rate as self-referential; VXN1b ships exactly that route
+/// on purpose — [`DestId::Lfo1Rate`] reads the *previous* control block's total
+/// precisely so the cycle is broken, and `lfo1 → lfo1-rate` is a working,
+/// documented, one-block-lagged modulation. Inheriting VXN2's special cases
+/// would paint a shipped feature red, which is why they are a per-synth hook
+/// rather than part of the shared rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Vxn1bCoherence;
+
+impl vxn_core_matrix::coherence::CoherenceRoster for Vxn1bCoherence {
+    type Source = SourceId;
+    type Dest = DestId;
+
+    #[inline]
+    fn source_tier(src: SourceId) -> Option<Tier> {
+        match src {
+            SourceId::None => None,
+            _ => Some(src.tier()),
+        }
+    }
+
+    #[inline]
+    fn dest_tier(dst: DestId) -> Option<Tier> {
+        match dst {
+            DestId::None => None,
+            _ => Some(dst.tier()),
+        }
+    }
+}
+
+/// Coherence verdict for a `source → dest` routing — [`Vxn1bCoherence`] through
+/// the shared predicate. Constant [`Coherence::Ok`] while the roster is flat.
+#[inline]
+pub fn coherence(src: SourceId, dst: DestId) -> Coherence {
+    vxn_core_matrix::coherence::coherence::<Vxn1bCoherence>(src, dst)
+}
+
+/// The dense `[srcWireId][dstWireId]` verdict table the faceplate descriptor
+/// carries, as [`Coherence::name`] strings — sentinel row and column included,
+/// so a page can index it by the same `u8` its pick-lists carry.
+///
+/// The table is layer-independent (both layers share one roster), so it sits
+/// beside `sources` / `dests` in the descriptor rather than inside `slots`.
+pub fn coherence_name_grid() -> Vec<Vec<&'static str>> {
+    vxn_core_matrix::coherence::coherence_name_grid::<Vxn1bCoherence>(&SourceId::ALL, &DestId::ALL)
 }
 
 // ── MatrixSlot / MatrixTable ────────────────────────────────────────────────
@@ -837,5 +933,88 @@ mod tests {
         );
         // The calibration constant survives as the *extra* tracking's unity mark.
         assert_eq!(KEY_CUTOFF_UNITY_DEPTH, 0.25);
+    }
+
+    // ── coherence (0336) ────────────────────────────────────────────────────
+
+    /// **The flat-matrix assumption, asserted rather than believed.**
+    ///
+    /// Every one of VXN1b's 12 sources × 16 destinations — plus both sentinels,
+    /// so the empty-slot short circuit is covered too — must come back `Ok`.
+    /// ADR 0003 records that VXN1b is the degenerate case of VXN2's granularity
+    /// model; this is the claim, and it is the sort of claim that is true right
+    /// up until someone adds a `delay-mix`.
+    ///
+    /// **If this test fails, it is telling you something, not obstructing
+    /// you.** A non-`Ok` verdict means a routing this synth can express now
+    /// collapses a per-voice value onto whichever lane happens to be lane 0 —
+    /// silently, at render time. The fix is to decide what that route should
+    /// do and surface the verdict in the faceplate, not to weaken the
+    /// assertion.
+    #[test]
+    fn every_routing_vxn1b_can_express_is_coherent() {
+        for si in 0..=(N_SOURCES as u8) {
+            for di in 0..=(N_DESTS as u8) {
+                let (s, d) = (SourceId::from_u8(si), DestId::from_u8(di));
+                assert_eq!(
+                    coherence(s, d),
+                    Coherence::Ok,
+                    "{}→{}: VXN1b's matrix is supposed to be flat — see the doc \
+                     on this test before changing it",
+                    SOURCE_NAMES[si as usize],
+                    DEST_NAMES[di as usize]
+                );
+            }
+        }
+    }
+
+    /// The reason the grid above is all-`Ok`: one tier, declared on every row.
+    /// Asserted separately so a failure says *which* premise broke — a new
+    /// endpoint at another tier, or the predicate itself.
+    ///
+    /// Sentinels are excluded because they have no granularity to declare: the
+    /// generator gives each an inert value (coarsest for a source, finest for a
+    /// dest) precisely so it can never provoke a verdict, and the predicate
+    /// short-circuits an empty slot before reading either.
+    #[test]
+    fn every_routable_endpoint_declares_the_same_tier() {
+        for s in SourceId::ALL.into_iter().filter(|s| *s != SourceId::None) {
+            assert_eq!(s.tier(), Tier::PerLane, "{s:?}");
+        }
+        for d in DestId::ALL.into_iter().filter(|d| *d != DestId::None) {
+            assert_eq!(d.tier(), Tier::PerLane, "{d:?}");
+        }
+    }
+
+    /// VXN1b deliberately does **not** inherit VXN2's self-rate special case:
+    /// `lfo1 → lfo1-rate` is a shipped route here, reading the previous control
+    /// block's total so the cycle is broken (see [`DestId::Lfo1Rate`]). Pinned
+    /// because it is exactly the verdict a future "share the special cases too"
+    /// tidy-up would break.
+    #[test]
+    fn an_lfo_into_its_own_rate_is_a_feature_here() {
+        assert_eq!(
+            coherence(SourceId::Lfo1, DestId::Lfo1Rate),
+            Coherence::Ok,
+            "VXN1b's one-block-lagged self-rate route must not be flagged"
+        );
+    }
+
+    /// The descriptor's table is indexed by wire discriminant, sentinel row and
+    /// column included, so a page can look a verdict up with the same `u8` its
+    /// pick-lists carry.
+    #[test]
+    fn the_descriptor_grid_is_indexed_by_wire_discriminant() {
+        let grid = coherence_name_grid();
+        assert_eq!(grid.len(), SOURCE_NAMES.len());
+        for (si, row) in grid.iter().enumerate() {
+            assert_eq!(row.len(), DEST_NAMES.len(), "row {si}");
+            for (di, verdict) in row.iter().enumerate() {
+                assert_eq!(
+                    *verdict,
+                    coherence(SourceId::from_u8(si as u8), DestId::from_u8(di as u8)).name()
+                );
+            }
+        }
     }
 }

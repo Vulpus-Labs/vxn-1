@@ -49,10 +49,30 @@
     // Tempo-sync subdivision labels (coarse→fine). A synced rate/time fader
     // maps its normalised position into this list while dragging.
     subdivisions: SUBDIVISIONS,
+    // Every field of the engine's matrix descriptor, verbatim — this object is
+    // the mod-matrix panel's only view of it. Copying a subset is how the
+    // coherence warning came to be dead code: the panel read
+    // `window.__vxn.matrix.coherence`, found `undefined`, fell back to `[]`,
+    // and every row scored "ok" no matter what the engine said. `shapes`,
+    // `polarities` and `curve_stride` were missing the same way. A Rust test
+    // now pins that every key the panel reads is assigned here (0336), so this
+    // list cannot fall behind the descriptor again.
     matrix: {
       sources: (MATRIX_LISTS && MATRIX_LISTS.sources) || [],
       dests: (MATRIX_LISTS && MATRIX_LISTS.dests) || [],
       curves: (MATRIX_LISTS && MATRIX_LISTS.curves) || [],
+      shapes: (MATRIX_LISTS && MATRIX_LISTS.shapes) || [],
+      polarities: (MATRIX_LISTS && MATRIX_LISTS.polarities) || [],
+      // The `polarity * stride + shape` composition the panel performs; 0
+      // would silently collapse every curve code onto its shape, so fall back
+      // to the shape count the descriptor also carries.
+      curve_stride:
+        (MATRIX_LISTS && MATRIX_LISTS.curve_stride) ||
+        ((MATRIX_LISTS && MATRIX_LISTS.shapes) || []).length,
+      // Dense [srcWireId][dstWireId] verdict names ("ok", "tier-collapse",
+      // "self-rate", "degenerate") — the engine's own predicate, so the panel
+      // flags rows without re-deriving the rule.
+      coherence: (MATRIX_LISTS && MATRIX_LISTS.coherence) || [],
       rows: emptyTable(),
     },
     // Per-op [left, right] KS level-curve discriminants (KsCurve: 0 NegLin,

@@ -79,6 +79,13 @@
 /// Filled in by ticket 0330.
 pub mod curve;
 
+/// The coherence predicate: [`Coherence`](coherence::Coherence), the verdict a
+/// faceplate paints a row red on, and [`CoherenceRoster`](coherence::CoherenceRoster),
+/// the per-synth hook for the special cases the tier rule does not cover.
+///
+/// Filled in by ticket 0336.
+pub mod coherence;
+
 /// The roster half of the seam: [`MatrixRoster`](roster::MatrixRoster) and the
 /// two shared vocabularies keyed on a destination, [`Tier`](roster::Tier) and
 /// [`Smoothing`](roster::Smoothing).
