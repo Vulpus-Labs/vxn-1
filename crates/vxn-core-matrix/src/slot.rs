@@ -309,6 +309,12 @@ impl<const N: usize> RouteList<N> {
     }
 
     /// The active routes, in slot order.
+    ///
+    /// Bounding with `min` to spare the caller a slice-range panic path was
+    /// tried and **measured slower** (vxn-2 `matrix_eval_full`, 95.5 → 98.2 ns):
+    /// the `umin` lands in the loop preheader on every call, and the panic path
+    /// it removes is cold and predicted-not-taken anyway. Left as the plain
+    /// range.
     #[inline]
     pub fn active(&self) -> &[Route] {
         &self.routes[..self.n]

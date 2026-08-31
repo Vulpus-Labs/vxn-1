@@ -829,34 +829,34 @@ pub fn eval_dests(routes: &RouteList, sources: &LaneSourceVals, out: &mut LaneDe
     for d in out.iter_mut() {
         d.fill(0.0);
     }
-    // The per-route VCA, resolved for every lane before the accumulate. Kept
-    // outside the route loop so it is written, not allocated, per route.
-    let mut scale = [1.0_f32; STACK_LANES];
     for r in routes.active() {
+        // The per-route VCA, resolved for every lane before the accumulate.
+        // Declared inside the loop: it is a fixed-size stack array either way,
+        // and this keeps the unscaled arm a plain all-ones local rather than a
+        // reset of a carried one. Measured neutral against the hoisted form on
+        // `matrix_eval_full`; kept as the form that reads as what it is.
+        let mut scale = [1.0_f32; STACK_LANES];
         // Both halves of `scale_norm` — the polarity fold and the bend — are
         // per-route constants, so they are dispatched *here*, once, and each arm
         // is a straight-line lane loop. Calling `scale_norm` per lane instead
         // puts a bool test and a 3-way match in the loop body, which nearly
         // doubles the whole eval — see the module's inner-loop note.
-        match r.scale {
-            None => scale = [1.0; STACK_LANES],
-            Some(sc) => {
-                let sv = &sources[sc as usize];
-                macro_rules! scale_arm {
-                    ($fold:path, $bend:path) => {
-                        for k in 0..STACK_LANES {
-                            scale[k] = $bend(clamp_unit($fold(sv[k])));
-                        }
-                    };
-                }
-                match (r.scale_bipolar, r.scale_shape) {
-                    (false, Shape::Lin) => scale_arm!(fold_unipolar, bend_lin),
-                    (false, Shape::Exp) => scale_arm!(fold_unipolar, bend_exp),
-                    (false, Shape::Log) => scale_arm!(fold_unipolar, bend_log),
-                    (true, Shape::Lin) => scale_arm!(fold_bipolar, bend_lin),
-                    (true, Shape::Exp) => scale_arm!(fold_bipolar, bend_exp),
-                    (true, Shape::Log) => scale_arm!(fold_bipolar, bend_log),
-                }
+        if let Some(sc) = r.scale {
+            let sv = &sources[sc as usize];
+            macro_rules! scale_arm {
+                ($fold:path, $bend:path) => {
+                    for k in 0..STACK_LANES {
+                        scale[k] = $bend(clamp_unit($fold(sv[k])));
+                    }
+                };
+            }
+            match (r.scale_bipolar, r.scale_shape) {
+                (false, Shape::Lin) => scale_arm!(fold_unipolar, bend_lin),
+                (false, Shape::Exp) => scale_arm!(fold_unipolar, bend_exp),
+                (false, Shape::Log) => scale_arm!(fold_unipolar, bend_log),
+                (true, Shape::Lin) => scale_arm!(fold_bipolar, bend_lin),
+                (true, Shape::Exp) => scale_arm!(fold_bipolar, bend_exp),
+                (true, Shape::Log) => scale_arm!(fold_bipolar, bend_log),
             }
         }
         // Polarity × shape is dispatched once per route, so each arm expands to

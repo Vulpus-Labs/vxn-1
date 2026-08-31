@@ -1,14 +1,28 @@
 //! Mod matrix evaluation cost.
 //!
-//! Two scenarios at one block (control rate) per iteration, one stack:
+//! ## The two rates this splits along (0333)
+//!
+//! Routing used to be one loop over raw slots, run once per active stack. It is
+//! now two: `RouteList::compile` **once per control block**, then `eval_dests`
+//! **once per active stack** against the compiled list. The engine runs up to 16
+//! stacks a block, so the two belong in separate measurements — timing them
+//! together measures a patch with exactly one voice down, which is the one case
+//! the split cannot help.
+//!
+//! - `matrix_compile_full` — the per-block half: 16 wired slots resolved into 16
+//!   routes. Paid once however many voices are sounding.
+//! - `matrix_eval_*` — the per-stack half, with the list compiled outside the
+//!   timed loop, exactly as `cook_stacks_block` has it.
+//!
+//! The eval scenarios, one block per iteration, one stack:
 //!
 //! - `matrix_eval_full` — all 16 slots active, every source / dest distinct,
 //!   curve mix across the four kinds. Worst-case per-slot path.
 //! - `matrix_eval_scaled` — same 16 slots, but every one carries a secondary
 //!   scale source and a scale bend, so the per-lane VCA loop runs too. The
 //!   delta against `matrix_eval_full` is the whole cost of the scale path.
-//! - `matrix_eval_empty` — all 16 slots `None`. Slot loop short-circuits at
-//!   the first match; only the per-lane accumulator clear runs.
+//! - `matrix_eval_empty` — all 16 slots `None`. The route list is empty, so
+//!   only the per-lane accumulator clear runs.
 //!
 //! Empty case should be near-free relative to full. Throughput = active slot
 //! evaluations per call (16 for full, 0 for empty — `Elements` is mostly
@@ -141,9 +155,18 @@ fn bench_matrix(c: &mut Criterion) {
     let stack = build_stack_sources();
     let lanes = build_lane_sources();
 
+    // The per-block half: 16 wired slots in, 16 routes out. Paid once a block
+    // however many stacks are sounding, which is why it is not in the eval
+    // measurements below.
+    g.throughput(Throughput::Elements(N_SLOTS as u64));
+    g.bench_function("matrix_compile_full", |b| {
+        let table = full_table();
+        b.iter(|| black_box(RouteList::compile(black_box(&table))))
+    });
+
     g.throughput(Throughput::Elements(N_SLOTS as u64));
     g.bench_function("matrix_eval_full", |b| {
-        let table = full_table();
+        let routes = RouteList::compile(&full_table());
         let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
         let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
@@ -153,18 +176,14 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(
-                &RouteList::compile(black_box(&table)),
-                &src_buf,
-                &mut dest_buf,
-            );
+            eval_dests(black_box(&routes), &src_buf, &mut dest_buf);
             black_box(&dest_buf);
         })
     });
 
     g.throughput(Throughput::Elements(N_SLOTS as u64));
     g.bench_function("matrix_eval_scaled", |b| {
-        let table = scaled_table();
+        let routes = RouteList::compile(&scaled_table());
         let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
         let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
@@ -174,18 +193,14 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(
-                &RouteList::compile(black_box(&table)),
-                &src_buf,
-                &mut dest_buf,
-            );
+            eval_dests(black_box(&routes), &src_buf, &mut dest_buf);
             black_box(&dest_buf);
         })
     });
 
     g.throughput(Throughput::Elements(1));
     g.bench_function("matrix_eval_empty", |b| {
-        let table = MatrixTable::default();
+        let routes = RouteList::compile(&MatrixTable::default());
         let mut src_buf: LaneSourceVals = [[0.0; STACK_LANES]; N_SOURCES];
         let mut dest_buf: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
         b.iter(|| {
@@ -195,11 +210,7 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(
-                &RouteList::compile(black_box(&table)),
-                &src_buf,
-                &mut dest_buf,
-            );
+            eval_dests(black_box(&routes), &src_buf, &mut dest_buf);
             black_box(&dest_buf);
         })
     });
