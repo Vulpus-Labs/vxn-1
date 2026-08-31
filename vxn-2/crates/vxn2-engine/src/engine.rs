@@ -49,8 +49,8 @@ use crate::alloc::{N_STACKS, PolyAlloc};
 use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
-    DestId, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS, N_DESTS,
-    N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, Shape,
+    DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PITCH_DESTS, PatchSources, PitchSmoother, Shape,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -388,22 +388,22 @@ pub struct Engine {
     /// MIDI channel aftertouch, normalised `[0, 1]`. Same routing role as
     /// [`Self::mod_wheel`].
     pub aftertouch: f32,
-    /// Per-stack mod-matrix destination accumulator. Rewritten every block by
-    /// [`Self::process_block`] before the per-sample render loop; per-sample
-    /// destinations read from `stack.op_level_mod` (a projected slice of this
-    /// buffer). Sized to one entry per `PolyAlloc` slot.
-    dest_vals: Vec<[[f32; N_DESTS]; STACK_LANES]>,
+    /// Per-stack mod-matrix destination accumulator, dest-major
+    /// (`[dest][lane]`). Rewritten every block by [`Self::process_block`]
+    /// before the per-sample render loop; per-sample destinations read from
+    /// `stack.op_level_mod` (a projected slice of this buffer). It is also the
+    /// pitch smoothers' target buffer directly — the dest-major rows *are* the
+    /// smoother rows (0328). Sized to one entry per `PolyAlloc` slot.
+    dest_vals: Vec<LaneDestVals>,
     /// Reusable per-stack source lookup. Fan-out of every patch / stack /
-    /// lane scalar into a `[lane][source]` table so [`eval_dests`] reads a
-    /// contiguous matrix per slot.
+    /// lane scalar into a `[source][lane]` table so [`eval_dests`] reads a
+    /// contiguous lane row per slot.
     lane_sources: LaneSourceVals,
-    /// Per-stack pitch-dest smoothers. Targets refresh at
-    /// block rate from `dest_vals`; state advances every
+    /// Per-stack pitch-dest smoothers. Targets are read straight off
+    /// `dest_vals`' pitch rows; state advances every
     /// [`PITCH_SMOOTH_QUANTUM`] samples inside the render loop and is
     /// projected into the stack pitch-mod fields before `apply_pitch_mult`.
     pitch_smoothers: [PitchSmoother; N_STACKS],
-    /// Block-rate smoother targets, captured per active stack.
-    pitch_targets: [[[f32; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
     /// Allocation generation last seen per slot — a change means a fresh
     /// note-on reused the slot, so every smoothing/ramp state (pitch
     /// smoother, level + pan ramps) snaps instead of gliding in from the
@@ -575,15 +575,14 @@ impl Engine {
             tempo_bpm: 120.0,
             mod_wheel: 0.0,
             aftertouch: 0.0,
-            dest_vals: vec![[[0.0_f32; N_DESTS]; STACK_LANES]; N_STACKS],
-            lane_sources: [[0.0_f32; N_SOURCES]; STACK_LANES],
+            dest_vals: vec![[[0.0_f32; STACK_LANES]; N_DESTS]; N_STACKS],
+            lane_sources: [[0.0_f32; STACK_LANES]; N_SOURCES],
             // Smoothers tick once per quantum, so the coeff is derived from
             // the quantum rate; tau stays ≈ one control block.
             pitch_smoothers: [PitchSmoother::new(
                 block_size as f32 / sample_rate,
                 sample_rate / PITCH_SMOOTH_QUANTUM as f32,
             ); N_STACKS],
-            pitch_targets: [[[0.0; STACK_LANES]; N_PITCH_DESTS]; N_STACKS],
             mod_seq: [u64::MAX; N_STACKS],
             prev_lfo2_phase_off: [[0.0; STACK_LANES]; N_STACKS],
             lfo1_rate_oct: 0.0,
@@ -689,12 +688,14 @@ impl Engine {
         // the matrix accumulator.
         self.patch_mod.lfo1.rate_mult = 1.0;
         self.lfo1_rate_oct = 0.0;
-        // Zero the pitch smoothers — a voice played after reset must not
-        // glide in from pre-reset modulation state.
-        let zero = [[0.0; STACK_LANES]; N_PITCH_DESTS];
+        // Zero the pitch smoothers and the accumulator they read their
+        // targets from — a voice played after reset must not glide in from
+        // pre-reset modulation state. (`alloc.clear()` above idles every
+        // stack, so no smoother ticks against the stale accumulator in
+        // between; the zeroing keeps the invariant explicit.)
         for i in 0..N_STACKS {
-            self.pitch_smoothers[i].snap_to(&zero);
-            self.pitch_targets[i] = zero;
+            self.pitch_smoothers[i].clear();
+            self.dest_vals[i] = [[0.0; STACK_LANES]; N_DESTS];
             self.mod_seq[i] = u64::MAX;
             self.prev_lfo2_phase_off[i] = [0.0; STACK_LANES];
             self.stack_detune_mod[i] = 0.0;
@@ -1330,8 +1331,9 @@ impl Engine {
     ///  5  Matrix eval        sources->dests, then stack-pitch scatter (after dests,
     ///                        before stage 7's smoother capture)
     ///  6  Target projection  per-op level/pan/phase targets from dest_vals
-    ///  7  Pitch smoother     capture targets + fresh snap & filter/HP reset;
-    ///                        before stage 9 (fresh path reads snapped state)
+    ///  7  Pitch smoother     fresh snap (targets are read in place off dest_vals)
+    ///                        & filter/HP reset; before stage 9 (fresh path reads
+    ///                        snapped state)
     ///  8  Level + EG rebase  multiplicative level projection; rebase BEFORE stage 9
     ///                        (the ramp interpolates the rebased level)
     ///  9  Ramp compute       fresh snap vs continuing glide for level/pan/phase
@@ -1492,17 +1494,22 @@ impl Engine {
                 let mut eg_rate_scale = [[1.0_f32; STACK_LANES]; vxn2_dsp::algo::N_OPS];
                 // Pitch EG: per-lane (global + pitch route).
                 let mut pitch_scale = [1.0_f32; STACK_LANES];
-                for k in 0..STACK_LANES {
-                    let g = self.dest_vals[i][k][global_idx];
-                    for op_i in 0..vxn2_dsp::algo::N_OPS {
-                        let oct = (g + self.dest_vals[i][k][op_eg_base + op_i]).clamp(-4.0, 4.0);
+                // Dest-major: each of these is one contiguous lane row.
+                let g_row = &self.dest_vals[i][global_idx];
+                for op_i in 0..vxn2_dsp::algo::N_OPS {
+                    let op_row = &self.dest_vals[i][op_eg_base + op_i];
+                    for k in 0..STACK_LANES {
+                        let oct = (g_row[k] + op_row[k]).clamp(-4.0, 4.0);
                         eg_rate_scale[op_i][k] = oct.exp2();
                     }
-                    pitch_scale[k] = (g + self.dest_vals[i][k][pitch_idx]).clamp(-4.0, 4.0).exp2();
+                }
+                let pitch_row = &self.dest_vals[i][pitch_idx];
+                for k in 0..STACK_LANES {
+                    pitch_scale[k] = (g_row[k] + pitch_row[k]).clamp(-4.0, 4.0).exp2();
                 }
                 // Mod Env: one-per-voice → lane-0 collapse (global + mod route).
                 let mod_oct =
-                    (self.dest_vals[i][0][global_idx] + self.dest_vals[i][0][mod_idx]).clamp(-4.0, 4.0);
+                    (g_row[0] + self.dest_vals[i][mod_idx][0]).clamp(-4.0, 4.0);
                 let stack = &mut self.alloc.stacks[i];
                 stack.rescale_eg_rates(&eg_rate_scale);
                 stack.rescale_pitch_eg_rates(&pitch_scale);
@@ -1524,29 +1531,29 @@ impl Engine {
             let phase_base = DestId::Op1Phase.idx().unwrap();
             let stack = &mut self.alloc.stacks[i];
             for op_i in 0..vxn2_dsp::algo::N_OPS {
-                let level_idx = op_i * 3 + 1;
-                let pan_idx = op_i * 3 + 2;
-                let phase_idx = phase_base + op_i;
+                // Dest-major: a dest's lane row is contiguous, so level and pan
+                // are whole-row copies and only phase needs a lane loop.
+                level_targets[op_i] = self.dest_vals[i][op_i * 3 + 1];
+                stack.modulation.op_pan_mod[op_i] = self.dest_vals[i][op_i * 3 + 2];
+                let phase_row = &self.dest_vals[i][phase_base + op_i];
                 for k in 0..STACK_LANES {
-                    level_targets[op_i][k] = self.dest_vals[i][k][level_idx];
-                    stack.modulation.op_pan_mod[op_i][k] = self.dest_vals[i][k][pan_idx];
                     // Wrap the (possibly multi-route) cycle offset into [0,1) and
                     // scale to Q32; `as u32` wraps cleanly at the cycle boundary.
-                    let pcyc = self.dest_vals[i][k][phase_idx].rem_euclid(1.0);
+                    let pcyc = phase_row[k].rem_euclid(1.0);
                     phase_targets_q32[op_i][k] = (pcyc * vxn2_dsp::op::PM_SCALE_Q32) as u32;
                 }
             }
-            // == STAGE 7: Pitch-smoother target capture + fresh-note snap & filter/HP
-            //          reset. Must precede the ramp compute (STAGE 9 reads snapped
-            //          state on a fresh note). ==
-            // Capture this block's pitch-dest targets. A slot whose
-            // allocation generation changed since the last block carries a
-            // fresh note — snap every smoothing/ramp state (pitch smoother,
-            // level + pan ramps) so the new voice doesn't glide in from the
-            // previous voice's modulation.
-            self.pitch_targets[i] = self.pitch_smoothers[i].targets_from(&self.dest_vals[i]);
+            // == STAGE 7: Fresh-note pitch-smoother snap & filter/HP reset. Must
+            //          precede the ramp compute (STAGE 9 reads snapped state on a
+            //          fresh note). ==
+            // The smoother reads this block's pitch-dest targets straight off
+            // `dest_vals`' pitch rows — dest-major storage means no capture step
+            // (0328). A slot whose allocation generation changed since the last
+            // block carries a fresh note — snap every smoothing/ramp state (pitch
+            // smoother, level + pan ramps) so the new voice doesn't glide in from
+            // the previous voice's modulation.
             if fresh {
-                self.pitch_smoothers[i].snap_to(&self.pitch_targets[i]);
+                self.pitch_smoothers[i].snap_to(&self.dest_vals[i]);
                 // A re-used slot carries a fresh note — clear its filter state
                 // (kernels + interpolators) so the new voice starts clean
                 // (ADR 0004: `reset()` on note-on). Only when the filter is on;
@@ -1713,8 +1720,9 @@ impl Engine {
             // (unlike the FX dests below, which apply post-mixdown).
             let mut fb_lanes = [0.0_f32; STACK_LANES];
             let mut fb_any = false;
+            let fb_row = &self.dest_vals[i][FEEDBACK_IDX];
             for k in 0..STACK_LANES {
-                let m = self.dest_vals[i][k][FEEDBACK_IDX];
+                let m = fb_row[k];
                 fb_any |= m != 0.0;
                 fb_lanes[k] = (patch_feedback + m).clamp(0.0, 7.0);
             }
@@ -1728,7 +1736,7 @@ impl Engine {
             // motion of a dynamic source otherwise. Gated: when un-targeted,
             // zero the offset once so the pitch path stays bit-identical.
             if flags.stack_detune {
-                let target = self.dest_vals[i][0][STACK_DETUNE_IDX];
+                let target = self.dest_vals[i][STACK_DETUNE_IDX][0];
                 self.stack_detune_mod[i] = if fresh {
                     target
                 } else {
@@ -1784,7 +1792,7 @@ impl Engine {
             // multiplier for *next* block's `eval` (one-block latency). Gated:
             // an un-targeted stack keeps `rate_mult = 1.0` (bit-identical tick).
             lfo2.rate_mult = if flags.lfo2_rate {
-                self.dest_vals[i][0][LFO2_RATE_IDX].exp2()
+                self.dest_vals[i][LFO2_RATE_IDX][0].exp2()
             } else {
                 1.0
             };
@@ -1796,7 +1804,7 @@ impl Engine {
             // — the source is built before the matrix eval). Snap on fresh,
             // one-pole otherwise; zero when un-targeted.
             if flags.stack_spread {
-                let target = self.dest_vals[i][0][STACK_SPREAD_IDX];
+                let target = self.dest_vals[i][STACK_SPREAD_IDX][0];
                 self.stack_spread_mod[i] = if fresh {
                     target
                 } else {
@@ -1811,11 +1819,11 @@ impl Engine {
             // sees patch-source contributions exactly once; per-stack
             // sources (velocity, mod env, …) average naturally across the
             // active stacks below.
-            fx_delay_mix_sum += self.dest_vals[i][0][DELAY_MIX_IDX];
-            fx_reverb_mix_sum += self.dest_vals[i][0][REVERB_MIX_IDX];
+            fx_delay_mix_sum += self.dest_vals[i][DELAY_MIX_IDX][0];
+            fx_reverb_mix_sum += self.dest_vals[i][REVERB_MIX_IDX][0];
             // LFO1 rate is patch-global — aggregate at lane 0 like the FX mixes
             // and cache for next block (one-block latency).
-            lfo1_rate_oct_sum += self.dest_vals[i][0][LFO1_RATE_IDX];
+            lfo1_rate_oct_sum += self.dest_vals[i][LFO1_RATE_IDX][0];
             fx_active += 1;
         }
 
@@ -2456,13 +2464,13 @@ impl Engine {
         // Dedicated key-tracking (VXN-1 `FilterKeyTrack`), added to the matrix
         // cutoff modulation (both in octaves).
         let keytrack_oct = keytrack_octaves(self.alloc.stacks[i].meta.note, fp.keytrack);
-        let cutoff_oct = self.dest_vals[i][0][CUTOFF_IDX] + keytrack_oct;
+        let cutoff_oct = self.dest_vals[i][CUTOFF_IDX][0] + keytrack_oct;
         let cutoff_hz = (fp.cutoff_hz * cutoff_oct.exp2()).clamp(CUTOFF_MIN_HZ, CUTOFF_MAX_HZ);
-        let resonance = (fp.resonance + self.dest_vals[i][0][RESONANCE_IDX]).clamp(0.0, 1.0);
+        let resonance = (fp.resonance + self.dest_vals[i][RESONANCE_IDX][0]).clamp(0.0, 1.0);
         // Drive modulates in the log/octave domain (matrix gain 4.0 → ±4 oct),
         // matching the param's exponential taper; clamp to the [0.1, 16] range.
         let drive =
-            (fp.drive * self.dest_vals[i][0][FILTER_DRIVE_IDX].exp2()).clamp(0.1, 16.0);
+            (fp.drive * self.dest_vals[i][FILTER_DRIVE_IDX][0].exp2()).clamp(0.1, 16.0);
         // vxn-2 caps feedback at high cutoff; vxn-1/vxn-1b deliberately do not.
         // 0227 shared the mechanism and left this policy here (ADR 0002 §6).
         let coeffs = OtaLadderCoeffs::new_capped(
@@ -2488,10 +2496,10 @@ impl Engine {
         if self.alloc.stacks[i].is_idle() {
             return;
         }
-        if self.pitch_smoothers[i].converged(&self.pitch_targets[i], PITCH_SMOOTH_EPS_ST) {
+        if self.pitch_smoothers[i].converged(&self.dest_vals[i], PITCH_SMOOTH_EPS_ST) {
             return;
         }
-        let st = self.pitch_smoothers[i].tick(&self.pitch_targets[i]);
+        let st = self.pitch_smoothers[i].tick(&self.dest_vals[i]);
         let stack = &mut self.alloc.stacks[i];
         project_pitch_state(stack, st);
         stack.apply_pitch_mult();
@@ -2546,10 +2554,10 @@ impl Engine {
             if self.alloc.stacks[i].is_idle() {
                 continue;
             }
-            if self.pitch_smoothers[i].converged(&self.pitch_targets[i], PITCH_SMOOTH_EPS_ST) {
+            if self.pitch_smoothers[i].converged(&self.dest_vals[i], PITCH_SMOOTH_EPS_ST) {
                 continue;
             }
-            let st = self.pitch_smoothers[i].tick(&self.pitch_targets[i]);
+            let st = self.pitch_smoothers[i].tick(&self.dest_vals[i]);
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, st);
             stack.apply_pitch_mult();
@@ -2566,28 +2574,27 @@ impl Engine {
 /// no audio-inner-loop change ([[vxn2-stack-soa]] packing untouched). A zero
 /// mask (walled / fixed target → empty component) is a clean no-op.
 #[inline]
-fn scatter_stack_pitch(
-    dest_vals: &mut [[f32; N_DESTS]; STACK_LANES],
-    masks: &[u8; vxn2_dsp::algo::N_OPS],
-) {
+fn scatter_stack_pitch(dest_vals: &mut LaneDestVals, masks: &[u8; vxn2_dsp::algo::N_OPS]) {
     for n in 0..vxn2_dsp::algo::N_OPS {
         let mask = masks[n];
         if mask == 0 {
             continue;
         }
-        let src_col = OP_STACK_PITCH_BASE_IDX + n;
-        for k in 0..STACK_LANES {
-            let delta = dest_vals[k][src_col];
-            if delta == 0.0 {
-                continue;
+        // Dest-major: the source accumulator's lane row is contiguous, so it
+        // copies out once and each member op's pitch row takes one contiguous
+        // 8-lane add. (The old per-lane `delta == 0.0` skip is dropped: the
+        // accumulator starts at +0.0 and only ever grows by `+=`, so a zero
+        // delta can only be +0.0 and `x += 0.0` is an exact no-op.)
+        let delta = dest_vals[OP_STACK_PITCH_BASE_IDX + n];
+        let mut m = mask;
+        while m != 0 {
+            let op = m.trailing_zeros() as usize;
+            // Per-op pitch row is op-major stride 3 (Pitch, Level, Pan).
+            let dst = &mut dest_vals[op * 3];
+            for k in 0..STACK_LANES {
+                dst[k] += delta[k];
             }
-            let mut m = mask;
-            while m != 0 {
-                let op = m.trailing_zeros() as usize;
-                // Per-op pitch column is op-major stride 3 (Pitch, Level, Pan).
-                dest_vals[k][op * 3] += delta;
-                m &= m - 1;
-            }
+            m &= m - 1;
         }
     }
 }
@@ -3128,7 +3135,7 @@ mod tests {
     /// Helper: read the block dest accumulator (private field access from
     /// the test module).
     fn tests_dest_val(e: &Engine, slot: usize, lane: usize, dest_idx: usize) -> f32 {
-        e.dest_vals[slot][lane][dest_idx]
+        e.dest_vals[slot][dest_idx][lane]
     }
 
     /// With no moving level/pan route and settled EGs the ramp flag must
@@ -3327,7 +3334,7 @@ mod tests {
                 .expect("note is held");
             let s0 = e.pitch_smoothers[slot].current()[0][0];
             e.process_block(&mut l, &mut r);
-            let t = e.pitch_targets[slot][0][0];
+            let t = e.dest_vals[slot][crate::matrix::PITCH_DEST_ROWS[0]][0];
             max_block_jump = max_block_jump.max((t - s0).abs());
             max_quantum_step = max_quantum_step.max((a * (t - s0)).abs());
         }
@@ -3368,7 +3375,7 @@ mod tests {
             .find(|&i| !e.alloc.stacks[i].is_idle())
             .expect("note is held");
         let state = e.pitch_smoothers[slot].current()[0][0];
-        let target = e.pitch_targets[slot][0][0];
+        let target = e.dest_vals[slot][crate::matrix::PITCH_DEST_ROWS[0]][0];
         assert!(target > 0.5, "fixture: mod wheel must drive the target");
         assert!(
             (state - target).abs() < 1e-5,
@@ -3653,7 +3660,7 @@ mod tests {
             e.note_on(60, 100);
             render_blocks(&mut e, 40);
             let a = active_stack(&e);
-            e.dest_vals[a][0][gp_idx]
+            e.dest_vals[a][gp_idx][0]
         };
         // Full positive EG (shape +1) → +24 st (±2 oct), not +48.
         let pos = run(99);
@@ -3687,7 +3694,7 @@ mod tests {
         for _ in 0..40 {
             e.process_block(&mut l, &mut r);
             let a = active_stack(&e);
-            peak = peak.max(e.dest_vals[a][0][pan_idx].abs());
+            peak = peak.max(e.dest_vals[a][pan_idx][0].abs());
         }
         assert!(peak <= 1.0 + 1e-4, "pitch-eg source not normalized: peak {peak}");
         assert!(peak > 0.9, "pitch-eg source did not reach full shape: peak {peak}");
@@ -4851,7 +4858,7 @@ mod tests {
         let gi = DestId::GlobalPitch.idx().unwrap();
         for k in 0..STACK_LANES {
             assert_eq!(
-                e.dest_vals[st][k][gi], 0.0,
+                e.dest_vals[st][gi][k], 0.0,
                 "wheel 0 must gate the vibrato route to silence (lane {k})"
             );
         }
@@ -4870,7 +4877,7 @@ mod tests {
         algo: u8,
         fixed_ops: &[usize],
         target_op: usize,
-    ) -> [[f32; N_DESTS]; STACK_LANES] {
+    ) -> LaneDestVals {
         use crate::matrix::{DestId, MatrixSlot, MatrixTable, Polarity, Shape, SourceId};
         let dest = DestId::from_u8(DestId::Op1StackPitch as u8 + (target_op as u8 - 1));
         let mut e = Engine::new(SR, BLK);
@@ -4908,14 +4915,14 @@ mod tests {
         for k in 0..STACK_LANES {
             for op in [3, 4, 5, 6] {
                 assert!(
-                    (dv[k][op_pitch_col(op)] - 12.0).abs() < 1e-3,
+                    (dv[op_pitch_col(op)][k] - 12.0).abs() < 1e-3,
                     "op{op} pitch {} != 12",
-                    dv[k][op_pitch_col(op)]
+                    dv[op_pitch_col(op)][k]
                 );
             }
             // Ops outside the component get no bend.
-            assert_eq!(dv[k][op_pitch_col(1)], 0.0);
-            assert_eq!(dv[k][op_pitch_col(2)], 0.0);
+            assert_eq!(dv[op_pitch_col(1)][k], 0.0);
+            assert_eq!(dv[op_pitch_col(2)][k], 0.0);
         }
     }
 
@@ -4955,10 +4962,10 @@ mod tests {
         let dv = e.dest_vals[active_stack(&e)];
         for k in 0..STACK_LANES {
             // op4 = stack bend (12) + per-op pitch (12) = 24.
-            assert!((dv[k][op_pitch_col(4)] - 24.0).abs() < 1e-3);
+            assert!((dv[op_pitch_col(4)][k] - 24.0).abs() < 1e-3);
             // op3/5/6 only the stack bend.
-            assert!((dv[k][op_pitch_col(3)] - 12.0).abs() < 1e-3);
-            assert!((dv[k][op_pitch_col(5)] - 12.0).abs() < 1e-3);
+            assert!((dv[op_pitch_col(3)][k] - 12.0).abs() < 1e-3);
+            assert!((dv[op_pitch_col(5)][k] - 12.0).abs() < 1e-3);
         }
     }
 
@@ -4968,11 +4975,11 @@ mod tests {
     fn stack_pitch_wall_splits_component() {
         let dv = run_stack_pitch(1, &[5], 3);
         for k in 0..STACK_LANES {
-            assert!((dv[k][op_pitch_col(3)] - 12.0).abs() < 1e-3);
-            assert!((dv[k][op_pitch_col(4)] - 12.0).abs() < 1e-3);
+            assert!((dv[op_pitch_col(3)][k] - 12.0).abs() < 1e-3);
+            assert!((dv[op_pitch_col(4)][k] - 12.0).abs() < 1e-3);
             // op5 walled (excluded), op6 severed past the wall.
-            assert_eq!(dv[k][op_pitch_col(5)], 0.0);
-            assert_eq!(dv[k][op_pitch_col(6)], 0.0);
+            assert_eq!(dv[op_pitch_col(5)][k], 0.0);
+            assert_eq!(dv[op_pitch_col(6)][k], 0.0);
         }
     }
 
@@ -4984,7 +4991,7 @@ mod tests {
         for k in 0..STACK_LANES {
             for op in 1..=6 {
                 assert_eq!(
-                    dv[k][op_pitch_col(op)], 0.0,
+                    dv[op_pitch_col(op)][k], 0.0,
                     "op{op} bent despite fixed target"
                 );
             }
@@ -5099,12 +5106,12 @@ mod tests {
         for k in 0..STACK_LANES {
             for op in [3, 4, 5, 6] {
                 assert!(
-                    (dv[k][op_pitch_col(op)] - 12.0).abs() < 1e-3,
+                    (dv[op_pitch_col(op)][k] - 12.0).abs() < 1e-3,
                     "shared-mod op{op} not bent"
                 );
             }
-            assert_eq!(dv[k][op_pitch_col(1)], 0.0);
-            assert_eq!(dv[k][op_pitch_col(2)], 0.0);
+            assert_eq!(dv[op_pitch_col(1)][k], 0.0);
+            assert_eq!(dv[op_pitch_col(2)][k], 0.0);
         }
     }
 }
