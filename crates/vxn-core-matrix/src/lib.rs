@@ -33,8 +33,9 @@
 //! Ticket [0330](../../../tickets/open/0330-share-curve-vocabulary.md) gave the
 //! crate its first consumers: [`curve`] holds the polarity/shape axes, the
 //! `matrix_enum!` generator behind every name/label table in both synths, the
-//! flat preset codec and the scale VCA. The generated roster row arrives in
-//! 0332, slots and route compilation in 0333, the evaluator in 0334 and the
+//! flat preset codec and the scale VCA. 0332 added the generated roster row and
+//! 0333 the [`slot`] layer — the patch table both synths hold and the
+//! `RouteList` both compile it into. The evaluator follows in 0334 and the
 //! smoother bank in 0335.
 //!
 //! ## Writing code in this crate
@@ -85,6 +86,16 @@ pub mod curve;
 /// Filled in by ticket 0329; ticket 0332 replaces hand-written implementations
 /// with one generated from a row list per enum.
 pub mod roster;
+
+/// The patch's routing table and the block's compiled routes:
+/// [`MatrixSlot`](slot::MatrixSlot), [`MatrixTable`](slot::MatrixTable),
+/// [`Route`](slot::Route) and [`RouteList`](slot::RouteList), plus the two
+/// endpoint traits a synth's own `SourceId` / `DestId` cross the seam through.
+///
+/// Filled in by ticket 0333; [`RouteList::compile`](slot::RouteList::compile)
+/// is the single place a slot's on/off switch, its zero-depth skip, its depth
+/// taper and its dest gain are resolved, for both synths.
+pub mod slot;
 
 /// Lane-major matrix storage sized to a roster — the const-generic scheme, and
 /// the `const {}` guard that makes a roster/storage mismatch a compile error.

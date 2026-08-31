@@ -285,100 +285,75 @@ impl DestId {
 
 // ── MatrixSlot / MatrixTable ────────────────────────────────────────────────
 
+/// The endpoint seam: what the shared routing mechanism needs to know about a
+/// [`SourceId`] — which row it names, and which way it swings.
+///
+/// Both methods forward to the generated inherent ones, which keep name
+/// resolution: `source.idx()` at a VXN1b call site still reaches the inherent
+/// `idx`, trait in scope or not.
+impl vxn_core_matrix::slot::SourceEndpoint for SourceId {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        SourceId::idx(self)
+    }
+
+    #[inline]
+    fn is_bipolar(self) -> bool {
+        SourceId::is_bipolar(self)
+    }
+}
+
+/// The endpoint seam for a [`DestId`]: its row, its native-unit gain and its
+/// depth taper — the two numeric columns
+/// [`RouteList::compile`](vxn_core_matrix::slot::RouteList::compile) folds into
+/// a route's single gain factor.
+impl vxn_core_matrix::slot::DestEndpoint for DestId {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        DestId::idx(self)
+    }
+
+    #[inline]
+    fn gain(self) -> f32 {
+        DestId::gain(self)
+    }
+
+    #[inline]
+    fn cook_depth(self, depth: f32) -> f32 {
+        DestId::cook_depth(self, depth)
+    }
+}
+
 /// One matrix route. `depth` mirrors the slot's CLAP param (0200, bipolar
-/// `[-1, 1]`); `source`/`dest`/`curve`/`scale_src` are patch topology.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MatrixSlot {
-    pub source: SourceId,
-    pub dest: DestId,
-    pub depth: f32,
-    /// Range mapping, applied to the source value first.
-    pub polarity: Polarity,
-    /// Response bend, applied after [`Self::polarity`].
-    pub shape: Shape,
-    /// Whether the player has this route switched **on**. Independent of whether
-    /// it is *wired*: a slot can have both endpoints set and still be off, which
-    /// is what makes A/B-ing a route possible without losing its setup. Before
-    /// this field, "active" was derived purely from the endpoints, so the only
-    /// way to silence a route was to clear it.
-    pub enabled: bool,
-    /// Optional secondary "scale" source — the per-route VCA of VXN2 ADR 0009.
-    /// When non-`None`, the slot's contribution is multiplied by this source's
-    /// value normalised to `[0, 1]` (evaluator, 0202), e.g. mod-wheel gating an
-    /// LFO→pitch vibrato. `None` is identity. A *leaf* value (read from the same
-    /// per-voice source table), so it can never form a cycle.
-    pub scale_src: SourceId,
-    /// Response bend on the normalised scale value, so the VCA need not be a
-    /// straight line — `velocity` scaling an `env2 → amp` route wants `Exp` so
-    /// soft playing backs the route off faster than linear.
-    ///
-    /// No polarity twin: `scale_norm` already folds by the scale *source's* own
-    /// polarity, and the VCA has to land in `[0, 1]` regardless.
-    pub scale_shape: Shape,
-}
+/// `[-1, 1]`) and stays **raw** — the taper is applied at compile time, not
+/// stored; `source`/`dest`/`curve`/`scale_src`/`enabled` are patch topology.
+///
+/// The type itself is [`vxn_core_matrix::slot::MatrixSlot`] as of 0333: VXN2's
+/// slot was the same eight fields under a different `enabled` convention, and
+/// the on/off vs wired distinction below is the part that kept being
+/// re-derived. What stays here is the roster the two type parameters name.
+pub type MatrixSlot = vxn_core_matrix::slot::MatrixSlot<SourceId, DestId>;
 
-impl Default for MatrixSlot {
-    fn default() -> Self {
-        Self {
-            source: SourceId::None,
-            dest: DestId::None,
-            depth: 0.0,
-            polarity: Polarity::Direct,
-            shape: Shape::Lin,
-            // A blank slot is off; picking a source switches it on (the editor
-            // does that on the None→real edge, matching vxn-2).
-            enabled: false,
-            scale_src: SourceId::None,
-            scale_shape: Shape::Lin,
-        }
-    }
-}
+/// The 16-slot patch topology + depths, shared with VXN2 (0333). Slot order is
+/// the load-bearing part: dests accumulate additively and float addition is not
+/// associative, so "the same routes in the same order" is what keeps the scalar
+/// and banked evaluators bit-exact against each other.
+pub type MatrixTable = vxn_core_matrix::slot::MatrixTable<SourceId, DestId, N_SLOTS>;
 
-impl MatrixSlot {
-    /// A slot is **active** (contributes to a dest) only when it is switched on
-    /// *and* both endpoints are real. The evaluator additionally skips
-    /// `depth == 0` slots; an inactive slot here is inert regardless of depth.
-    ///
-    /// `enabled` is the player's switch and `source`/`dest` are the wiring —
-    /// deliberately separate, so switching a route off preserves everything
-    /// needed to switch it back on.
-    #[inline]
-    pub fn is_active(&self) -> bool {
-        self.enabled && self.is_wired()
-    }
-
-    /// Whether both endpoints are real, **regardless of the on/off switch**.
-    ///
-    /// This is the "has the player set this slot up?" question, and it is the
-    /// one persistence asks: a switched-off route still has wiring worth
-    /// saving, so anything that writes only the slots worth writing must test
-    /// `is_wired`, not [`Self::is_active`]. Using the latter would quietly
-    /// discard exactly what the toggle exists to preserve.
-    #[inline]
-    pub fn is_wired(&self) -> bool {
-        self.source != SourceId::None && self.dest != DestId::None
-    }
-}
-
-/// The 16-slot patch topology + depths.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MatrixTable {
-    pub slots: [MatrixSlot; N_SLOTS],
-}
-
-impl Default for MatrixTable {
-    fn default() -> Self {
-        Self {
-            slots: [MatrixSlot::default(); N_SLOTS],
-        }
-    }
-}
-
-impl MatrixTable {
+/// VXN1b-only behaviour on the shared [`MatrixTable`].
+///
+/// An extension trait rather than an inherent `impl` because the type is now
+/// defined in `vxn-core-matrix`, and an inherent method may only be written in
+/// the crate that owns the type. Nothing about pan seeding belongs in the shared
+/// mechanism: it exists because *this* synth used to hard-wire unison spread.
+pub trait MatrixTableExt {
     /// Install the default `Spread → Pan` route if this table has **no** route
     /// into [`DestId::Pan`] at all, using the first free slot. Returns whether
     /// one was installed.
-    ///
+    fn ensure_pan_route(&mut self) -> bool;
+}
+
+impl MatrixTableExt for MatrixTable {
     /// Why loading needs this: before pan was a destination, spread was
     /// hard-wired DSP, so every patch written until now carries no pan route
     /// and would load dead-centre — a silent regression on every existing
@@ -390,7 +365,7 @@ impl MatrixTable {
     /// and overriding it would be worse than the problem being solved. A table
     /// with all 16 slots **wired** is likewise left alone rather than evicting
     /// the player's work.
-    pub fn ensure_pan_route(&mut self) -> bool {
+    fn ensure_pan_route(&mut self) -> bool {
         if self.slots.iter().any(|s| s.dest == DestId::Pan) {
             return false;
         }

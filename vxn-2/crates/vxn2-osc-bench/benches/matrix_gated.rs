@@ -73,6 +73,7 @@ fn bench_gated(c: &mut Criterion) {
                 shape: lin,
                 scale_src: SourceId::None,
                 scale_shape: Shape::Lin,
+                enabled: true,
             }),
         ),
         (
@@ -85,6 +86,7 @@ fn bench_gated(c: &mut Criterion) {
                 shape: lin,
                 scale_src: SourceId::None,
                 scale_shape: Shape::Lin,
+                enabled: true,
             }),
         ),
     ];

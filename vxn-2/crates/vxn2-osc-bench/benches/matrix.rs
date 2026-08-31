@@ -18,7 +18,7 @@ use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_mai
 use vxn2_dsp::stack::STACK_LANES;
 use vxn2_engine::matrix::{
     DestId, Polarity, Shape, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
-    N_DESTS, N_SOURCES, N_SLOTS, PatchSources, SourceId, StackScalarSources, eval_dests,
+    N_DESTS, N_SOURCES, N_SLOTS, PatchSources, RouteList, SourceId, StackScalarSources, eval_dests,
     eval_sources,
 };
 
@@ -108,6 +108,7 @@ fn full_table() -> MatrixTable {
             shape: curves[i % 4].1,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
     }
     table
@@ -152,7 +153,11 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(black_box(&table), &src_buf, &mut dest_buf);
+            eval_dests(
+                &RouteList::compile(black_box(&table)),
+                &src_buf,
+                &mut dest_buf,
+            );
             black_box(&dest_buf);
         })
     });
@@ -169,7 +174,11 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(black_box(&table), &src_buf, &mut dest_buf);
+            eval_dests(
+                &RouteList::compile(black_box(&table)),
+                &src_buf,
+                &mut dest_buf,
+            );
             black_box(&dest_buf);
         })
     });
@@ -186,7 +195,11 @@ fn bench_matrix(c: &mut Criterion) {
                 black_box(&lanes),
                 &mut src_buf,
             );
-            eval_dests(black_box(&table), &src_buf, &mut dest_buf);
+            eval_dests(
+                &RouteList::compile(black_box(&table)),
+                &src_buf,
+                &mut dest_buf,
+            );
             black_box(&dest_buf);
         })
     });

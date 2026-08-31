@@ -50,7 +50,7 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
-    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, Shape,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, RouteList, Shape,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -863,28 +863,27 @@ impl Engine {
             } else {
                 row.depth
             };
-            // Inactive slot: zero the source so eval_dests skips without
-            // having to also check an "active" flag.
-            let source = if row.active {
-                SourceId::from_u8(row.source)
-            } else {
-                SourceId::None
-            };
             let dest = DestId::from_u8(row.dest);
             // One flat wire byte, two model axes (see `matrix::curve_split`).
             let (polarity, shape) = curve_split(row.curve);
             self.matrix.slots[s] = MatrixSlot {
-                source,
+                // The row's source verbatim, and the switch as a switch. This
+                // used to fold `!active` into `SourceId::None` so the evaluator
+                // needed no flag; the shared slot has one, and folding as well
+                // would leave a switched-off route unable to say what it was
+                // wired to (0333).
+                source: SourceId::from_u8(row.source),
                 dest,
-                // Stored / CLAP depth stays linear; semitone dests get the
-                // cubic taper here so host automation and the UI widget see
-                // the same response.
-                depth: dest.cook_depth(depth),
+                // **Raw.** `RouteList::compile` applies the dest's taper, once
+                // per block. Cooking here as well would cube an already-cubed
+                // depth — silent, plausible, and ~64× of a pitch route gone.
+                depth,
                 polarity,
                 shape,
-                // Inactive slots still carry their scale source through
-                // (harmless — an inactive slot's primary source is `None`, so
-                // eval skips it before the scale multiply matters).
+                enabled: row.active,
+                // Switched-off slots still carry their scale source through:
+                // an inactive route is dropped whole at compile time, so the
+                // field is simply preserved rather than needing to be inert.
                 scale_src: SourceId::from_u8(row.scale_src),
                 scale_shape: Shape::from_u8(row.scale_shape),
             };
@@ -952,6 +951,12 @@ impl Engine {
     /// True if any active matrix slot drives one of the six stack-pitch dests.
     /// Block-rate gate (mirrors [`Self::dest_targeted`]) so the un-targeted
     /// scatter is skipped entirely and the off-path stays bit-identical.
+    ///
+    /// The liveness test is [`MatrixSlot::is_active`] — the switch *and* both
+    /// endpoints, exactly what `RouteList::compile` drops on. Testing
+    /// `source != None` alone was the same predicate while `apply_block_params`
+    /// folded the switch into the source; since 0333 it is not, and a
+    /// switched-off route would arm the scatter.
     #[inline]
     fn stack_pitch_targeted(&self) -> bool {
         self.matrix.slots.iter().any(|s| {
@@ -963,7 +968,7 @@ impl Engine {
                     | DestId::Op4StackPitch
                     | DestId::Op5StackPitch
                     | DestId::Op6StackPitch
-            ) && s.source != SourceId::None
+            ) && s.is_active()
                 && s.depth != 0.0
         })
     }
@@ -984,7 +989,7 @@ impl Engine {
                     | DestId::Op6EgRate
                     | DestId::PitchEgRate
                     | DestId::ModEnvRate
-            ) && s.source != SourceId::None
+            ) && s.is_active()
                 && s.depth != 0.0
         })
     }
@@ -1024,15 +1029,16 @@ impl Engine {
         }
     }
 
-    /// True if any active matrix slot drives `dest` (source set + nonzero
-    /// depth). Block-rate gate for the deferred rate/re-cook dests so an
-    /// un-targeted dest pays no extra math and the LFO tick stays bit-identical.
+    /// True if any active matrix slot drives `dest` (switched on, both endpoints
+    /// real, nonzero depth — the predicate `RouteList::compile` drops on).
+    /// Block-rate gate for the deferred rate/re-cook dests so an un-targeted
+    /// dest pays no extra math and the LFO tick stays bit-identical.
     #[inline]
     fn dest_targeted(&self, dest: DestId) -> bool {
         self.matrix
             .slots
             .iter()
-            .any(|s| s.dest == dest && s.source != SourceId::None && s.depth != 0.0)
+            .any(|s| s.dest == dest && s.is_active() && s.depth != 0.0)
     }
 
     /// Render one control block. `out_l.len() == out_r.len()` is the block
@@ -1392,6 +1398,13 @@ impl Engine {
         // (which multiplies the cooked rates) lands exactly once per note.
         let eg_rate_targeted = self.eg_rate_targeted();
 
+        // The patch's routes, compiled once for the whole block (0333). Stage 5
+        // runs per *active stack*, and everything hoisted in here — the sentinel
+        // checks, the on/off switch, the zero-depth skip, the depth taper, the
+        // dest gain — is a pure function of the patch, so doing it per stack was
+        // up to sixteen repeats of one answer.
+        let routes = RouteList::compile(&self.matrix);
+
         for i in 0..self.alloc.stacks.len() {
             // == STAGE 1: Idle skip — release the slot's ramp, forget its EG (early-out). ==
             if self.alloc.stacks[i].is_idle() {
@@ -1488,7 +1501,7 @@ impl Engine {
                 &mut self.lane_sources,
             );
             eval_dests(
-                &self.matrix,
+                &routes,
                 &self.lane_sources,
                 &mut self.dest_vals[i],
             );
@@ -2680,6 +2693,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e
     }
@@ -2888,6 +2902,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.note_on(60, 100);
 
@@ -2952,6 +2967,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.note_on(60, 100);
 
@@ -3012,6 +3028,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.note_on(60, 100);
 
@@ -3072,6 +3089,7 @@ mod tests {
         shape: Shape::Lin,
                     scale_src: SourceId::None,
                     scale_shape: Shape::Lin,
+                    enabled: true,
                 };
             }
             e.note_on(60, 100);
@@ -3110,6 +3128,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.matrix.slots[1] = MatrixSlot {
             source: SourceId::ModWheel,
@@ -3119,6 +3138,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.set_mod_wheel(0.7);
         e.note_on(60, 100);
@@ -3224,6 +3244,7 @@ mod tests {
         shape: Shape::Lin,
                     scale_src: SourceId::None,
                     scale_shape: Shape::Lin,
+                    enabled: true,
                 };
             }
             e.note_on(60, 100);
@@ -3337,6 +3358,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BIG_BLK];
@@ -3390,6 +3412,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -3432,6 +3455,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.note_on(60, 100);
 
@@ -3757,6 +3781,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.note_on(72, 100);
 
@@ -3805,6 +3830,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.matrix.slots[1] = MatrixSlot {
             source: SourceId::VoiceSpread,
@@ -3814,6 +3840,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.note_on(60, 120);
 
@@ -3826,6 +3853,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         baseline.note_on(60, 120);
 
@@ -3873,6 +3901,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.note_on(36, 100);
         e.note_on(96, 100);
@@ -3905,6 +3934,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.set_mod_wheel(0.0);
         e.note_on(60, 100);
@@ -3942,6 +3972,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         modulated.set_mod_wheel(1.0);
         modulated.note_on(60, 100);
@@ -3984,6 +4015,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -4214,12 +4246,19 @@ mod tests {
         assert_eq!(e.params.patch.voice.ops[0].eg_curve, EgCurve::Exp);
     }
 
-    /// Semitone-dest depths take the cubic taper at slot-cook time, on both
-    /// depth sources (CLAP `mtx_depths` for slots 0..N_CLAP_DEPTH_SLOTS,
-    /// raw row depth above). Non-pitch dests stay linear.
+    /// The slot table carries **raw** depth from both depth sources (CLAP
+    /// `mtx_depths` for slots 0..N_CLAP_DEPTH_SLOTS, the raw row depth above),
+    /// and the cubic taper on semitone dests lands in the compiled route's gain
+    /// instead.
+    ///
+    /// This test used to assert the opposite — that `apply_block_params` stored
+    /// a cooked depth — and it is the tripwire for the one quiet way 0333 can go
+    /// wrong. `RouteList::compile` cooks; a rebuild that cooked as well would
+    /// cube an already-cubed depth (0.5 → 0.125 → ~0.00195) and lose ~64× of a
+    /// pitch route without failing anything that only looks at a slot.
     #[test]
-    fn apply_block_params_tapers_semitone_depths() {
-        use crate::matrix::{DestId, SourceId};
+    fn apply_block_params_keeps_depth_raw_and_the_route_carries_the_taper() {
+        use crate::matrix::{DestId, RouteList, SourceId};
         use crate::shared::MatrixRowRaw;
 
         let mut e = Engine::new(SR, BLK);
@@ -4258,9 +4297,30 @@ mod tests {
         };
         e.apply_block_params();
 
-        assert!((e.matrix.slots[0].depth - 0.125).abs() < 1e-7);
-        assert!((e.matrix.slots[1].depth - 0.5).abs() < 1e-7);
-        assert!((e.matrix.slots[hi].depth - -0.125).abs() < 1e-7);
+        // The table holds what the param holds.
+        assert_eq!(e.matrix.slots[0].depth, 0.5);
+        assert_eq!(e.matrix.slots[1].depth, 0.5);
+        assert_eq!(e.matrix.slots[hi].depth, -0.5);
+
+        // The taper — and the dest's native gain — arrive together, once, in
+        // the compiled route. Looked up by dest rather than by position: the
+        // factory patch's own routes are in this table too.
+        let routes = RouteList::compile(&e.matrix);
+        let gain_into = |d: DestId| {
+            routes
+                .active()
+                .iter()
+                .find(|r| r.dest as usize == d.idx().expect("a real dest"))
+                .map(|r| r.gain)
+                .unwrap_or_else(|| panic!("no route into {d:?}"))
+        };
+        // 0.5³ · 24 st — the cubic, then the native unit, in that order.
+        assert!((gain_into(DestId::GlobalPitch) - 0.125 * 24.0).abs() < 1e-5);
+        // Non-pitch dest: untapered, unit gain.
+        assert!((gain_into(DestId::Op1Level) - 0.5).abs() < 1e-7);
+        // Sign survives the cube, and the non-automatable slot takes the same
+        // path as the automatable ones.
+        assert!((gain_into(DestId::Op2Pitch) + 0.125 * 24.0).abs() < 1e-5);
     }
 
     /// A live algo change declick-kills a *releasing* voice (so a former
@@ -4395,6 +4455,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.set_mod_wheel(1.0);
         e.note_on(60, 100);
@@ -4436,6 +4497,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.note_on(60, 100);
         let mut l = [0.0_f32; BLK];
@@ -4456,12 +4518,17 @@ mod tests {
         }
     }
 
-    /// Clearing a slot by writing `active: false` (or source/dest = None)
-    /// must remove the modulation on the next snapshot. The engine projects
-    /// `active=false` to `SourceId::None`, which `eval_dests` short-circuits.
+    /// Clearing a slot by writing `active: false` (or source/dest = None) must
+    /// remove the modulation on the next snapshot — **without** unwiring it.
+    ///
+    /// The engine used to project `active = false` onto `SourceId::None`, so
+    /// "switched off" and "never wired" were the same state and the endpoints
+    /// were lost. Since 0333 the switch is the slot's own field: the route stays
+    /// wired (so the UI, a preset save and a re-enable all still see what it was
+    /// wired to) and `RouteList::compile` drops it.
     #[test]
     fn shared_matrix_meta_inactive_slot_clears_engine_routing() {
-        use crate::matrix::SourceId;
+        use crate::matrix::{RouteList, SourceId};
         use crate::shared::MatrixRowRaw;
 
         let shared = SharedParams::new();
@@ -4480,7 +4547,17 @@ mod tests {
         );
         let mut e = Engine::new(SR, BLK);
         e.snapshot_params(&shared);
-        assert_eq!(e.matrix.slots[0].source, SourceId::None);
+        let slot = e.matrix.slots[0];
+        assert!(!slot.is_active(), "a muted row must not route");
+        assert!(slot.is_wired(), "…and must keep its wiring");
+        assert_eq!(slot.source, SourceId::Lfo2);
+        assert!(
+            RouteList::compile(&e.matrix)
+                .active()
+                .iter()
+                .all(|r| r.dest != crate::matrix::DestId::GlobalPitch.idx().unwrap() as u8),
+            "the muted route must not reach the evaluator"
+        );
     }
 
     #[test]
@@ -4665,6 +4742,7 @@ mod tests {
         shape: Shape::Lin,
                 scale_src: SourceId::None,
                 scale_shape: Shape::Lin,
+                enabled: true,
             };
             e.set_mod_wheel(wheel);
             e.note_on(60, 110);
@@ -4923,6 +5001,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -4969,6 +5048,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         // Per-op pitch on op4, gain 24, but cubic-tapered depth 1.0 → 1.0.
         e.matrix.slots[1] = MatrixSlot {
@@ -4979,6 +5059,7 @@ mod tests {
         shape: Shape::Lin,
             scale_src: SourceId::None,
             scale_shape: Shape::Lin,
+            enabled: true,
         };
         e.mod_wheel = 0.5;
         e.note_on(60, 100);
@@ -5082,6 +5163,7 @@ mod tests {
         shape: Shape::Lin,
                 scale_src: SourceId::None,
                 scale_shape: Shape::Lin,
+                enabled: true,
             };
             e.mod_wheel = 0.5;
         }
